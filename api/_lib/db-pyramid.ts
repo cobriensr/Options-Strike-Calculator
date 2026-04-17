@@ -11,6 +11,7 @@
  */
 
 import { getDb } from './db.js';
+import { getETDateStr } from '../../src/utils/timezone.js';
 import type { PyramidChainInput, PyramidLegInput } from './validation.js';
 
 // ============================================================
@@ -274,10 +275,13 @@ async function getLeg1StopDistance(chainId: string): Promise<number | null> {
 /**
  * Compute stop_compression_ratio for a leg. Returns null when either
  * the current leg's stop_distance_pts or leg 1's stop_distance_pts
- * is missing. For leg 1 itself, the ratio is always 1.0 when
- * stop_distance_pts is present.
+ * is missing or zero. For leg 1 itself, the ratio is always 1.0 when
+ * stop_distance_pts is present and non-zero.
+ *
+ * Exported for direct unit testing; also consumed internally by
+ * createLeg and updateLeg.
  */
-function computeCompressionRatio(
+export function computeCompressionRatio(
   legNumber: number,
   currentStopDistance: number | null | undefined,
   leg1StopDistance: number | null,
@@ -287,6 +291,8 @@ function computeCompressionRatio(
   }
   if (legNumber === 1) {
     // Leg 1 is the reference — ratio against itself is 1.
+    // A zero distance on leg 1 is a divide-by-zero trap for siblings,
+    // so we refuse to store a ratio at all in that case.
     return currentStopDistance === 0 ? null : 1;
   }
   if (leg1StopDistance === null || leg1StopDistance === 0) return null;
@@ -294,19 +300,50 @@ function computeCompressionRatio(
 }
 
 /**
+ * Error thrown when the caller tries to insert leg N (N > 1) before
+ * leg 1 exists for the chain. We reject explicitly rather than silently
+ * storing a permanently-null `stop_compression_ratio` — the spec's
+ * "log live, in order" workflow makes out-of-order inserts a user error,
+ * and stale nulls would silently corrupt the research data.
+ */
+export class PyramidLegOrderError extends Error {
+  constructor(chainId: string, legNumber: number) {
+    super(
+      `Cannot insert leg ${legNumber} for chain ${chainId}: leg 1 does not exist yet. Insert legs in order (leg 1 first).`,
+    );
+    this.name = 'PyramidLegOrderError';
+  }
+}
+
+/**
  * Insert a new leg. Computes `stop_compression_ratio` server-side
  * as `stop_distance_pts / leg_1_stop_distance_for_chain` when both
  * values are present. Otherwise stores NULL.
+ *
+ * Throws `PyramidLegOrderError` when the caller tries to insert leg
+ * N > 1 before leg 1 has been inserted for the chain.
  */
 export async function createLeg(
   input: PyramidLegInput,
 ): Promise<PyramidLegRow> {
   const sql = getDb();
 
-  const leg1Stop =
-    input.leg_number === 1
-      ? (input.stop_distance_pts ?? null)
-      : await getLeg1StopDistance(input.chain_id);
+  let leg1Stop: number | null;
+  if (input.leg_number === 1) {
+    leg1Stop = input.stop_distance_pts ?? null;
+  } else {
+    // Enforce in-order insertion. If leg 1 is missing the ratio would
+    // be permanently null for this leg — we'd rather fail loud.
+    const existsRows = await sql`
+      SELECT 1 AS ok FROM pyramid_legs
+      WHERE chain_id = ${input.chain_id} AND leg_number = 1
+      LIMIT 1
+    `;
+    if (existsRows.length === 0) {
+      throw new PyramidLegOrderError(input.chain_id, input.leg_number);
+    }
+    leg1Stop = await getLeg1StopDistance(input.chain_id);
+  }
 
   const compressionRatio = computeCompressionRatio(
     input.leg_number,
@@ -363,8 +400,18 @@ export async function createLeg(
 }
 
 /**
- * Partial update of a leg. If `stop_distance_pts` is present in the patch,
- * `stop_compression_ratio` is recomputed from leg 1's stop distance.
+ * Partial update of a leg. Semantics:
+ *
+ *   - Fields OMITTED from the patch are left untouched (via COALESCE).
+ *   - `stop_distance_pts` is the one exception: omitted leaves it alone,
+ *     but explicit null CLEARS it (no COALESCE swallow). This keeps the
+ *     distance and the derived `stop_compression_ratio` in sync — when
+ *     the distance is cleared, the ratio is cleared too.
+ *   - When `stop_distance_pts` is in the patch (including explicit null),
+ *     `stop_compression_ratio` is recomputed from leg 1's stop distance.
+ *   - When the updated row is leg 1 itself AND `stop_distance_pts` is in
+ *     the patch, every sibling leg's `stop_compression_ratio` is cascaded
+ *     in the same transaction — otherwise sibling ratios would go stale.
  *
  * Always bumps `updated_at`.
  */
@@ -374,11 +421,14 @@ export async function updateLeg(
 ): Promise<PyramidLegRow | null> {
   const sql = getDb();
 
-  // If stop_distance_pts is being updated, recompute the compression
-  // ratio and write it explicitly. Otherwise leave the ratio column
-  // alone by passing NULL through COALESCE.
   const recomputeRatio = patch.stop_distance_pts !== undefined;
+  // Normalize explicit undefined to null so the SQL binding is a concrete
+  // value. When recomputeRatio is false this value is not read; when true
+  // it becomes the new stop_distance_pts for the target leg.
+  const newDistance: number | null = patch.stop_distance_pts ?? null;
   let ratioOverride: number | null = null;
+  let cascadeSiblings = false;
+  let chainIdForCascade: string | null = null;
 
   if (recomputeRatio) {
     const existingRows = await sql`
@@ -391,22 +441,29 @@ export async function updateLeg(
     };
     const leg1Stop =
       existing.leg_number === 1
-        ? (patch.stop_distance_pts ?? null)
+        ? newDistance
         : await getLeg1StopDistance(existing.chain_id);
     ratioOverride = computeCompressionRatio(
       existing.leg_number,
-      patch.stop_distance_pts,
+      newDistance,
       leg1Stop,
     );
+    cascadeSiblings = existing.leg_number === 1;
+    chainIdForCascade = existing.chain_id;
   }
 
-  const rows = await sql`
+  // Build the statements. When cascading, we run both UPDATEs atomically
+  // via sql.transaction so a partial failure can't leave ratios stale.
+  const targetUpdate = sql`
     UPDATE pyramid_legs SET
       signal_type                      = COALESCE(${patch.signal_type ?? null}, signal_type),
       entry_time_ct                    = COALESCE(${patch.entry_time_ct ?? null}, entry_time_ct),
       entry_price                      = COALESCE(${patch.entry_price ?? null}, entry_price),
       stop_price                       = COALESCE(${patch.stop_price ?? null}, stop_price),
-      stop_distance_pts                = COALESCE(${patch.stop_distance_pts ?? null}, stop_distance_pts),
+      stop_distance_pts                = CASE
+                                           WHEN ${recomputeRatio}::boolean THEN ${newDistance}
+                                           ELSE stop_distance_pts
+                                         END,
       stop_compression_ratio           = CASE
                                            WHEN ${recomputeRatio}::boolean THEN ${ratioOverride}
                                            ELSE stop_compression_ratio
@@ -434,8 +491,36 @@ export async function updateLeg(
     WHERE id = ${id}
     RETURNING *
   `;
+
+  if (cascadeSiblings && chainIdForCascade !== null) {
+    // Recompute every sibling's compression ratio against the new leg 1
+    // distance in the same atomic transaction. The CASE expression handles
+    // the "new distance is null/zero" and "sibling distance is null" cases
+    // by writing NULL rather than producing a divide-by-zero or stale
+    // value.
+    const cascadeUpdate = sql`
+      UPDATE pyramid_legs
+      SET
+        stop_compression_ratio = CASE
+          WHEN stop_distance_pts IS NULL
+            OR ${newDistance}::numeric IS NULL
+            OR ${newDistance}::numeric = 0
+          THEN NULL
+          ELSE stop_distance_pts / ${newDistance}::numeric
+        END,
+        updated_at = NOW()
+      WHERE chain_id = ${chainIdForCascade}
+        AND leg_number > 1
+    `;
+    const [targetResult] = await sql.transaction([targetUpdate, cascadeUpdate]);
+    const rows = targetResult as unknown as PyramidLegRow[];
+    if (!rows || rows.length === 0) return null;
+    return rows[0]!;
+  }
+
+  const rows = (await targetUpdate) as unknown as PyramidLegRow[];
   if (rows.length === 0) return null;
-  return rows[0] as PyramidLegRow;
+  return rows[0]!;
 }
 
 /**
@@ -464,7 +549,7 @@ export async function deleteLeg(id: string): Promise<boolean> {
 export async function getProgressCounts(): Promise<ProgressCounts> {
   const sql = getDb();
 
-  // Total chains + day_type breakdown in one pass.
+  // Chain-level aggregates: total + day_type breakdown + earliest trade date.
   const chainAgg = await sql`
     SELECT
       COUNT(*)::int                                                    AS total_chains,
@@ -487,14 +572,13 @@ export async function getProgressCounts(): Promise<ProgressCounts> {
   };
 
   // Elapsed calendar days since the earliest chain's trade_date.
-  let elapsed: number | null = null;
-  if (agg.first_trade_date) {
-    const first = new Date(agg.first_trade_date);
-    if (!Number.isNaN(first.getTime())) {
-      const diffMs = Date.now() - first.getTime();
-      elapsed = Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
-    }
-  }
+  //
+  // Both dates are interpreted as Eastern-Time calendar dates (the
+  // trading-day convention used throughout this codebase — see
+  // src/utils/timezone.ts and db-analyses.ts). computeElapsedCalendarDays
+  // compares YYYY-MM-DD strings as UTC midnights so DST transitions and
+  // host-TZ drift cannot produce off-by-one errors.
+  const elapsed = computeElapsedCalendarDays(agg.first_trade_date);
 
   // Per-column fill rates. Build a single SELECT with COUNT(*) and
   // COUNT(col) for each nullable column, then divide.
@@ -508,7 +592,7 @@ export async function getProgressCounts(): Promise<ProgressCounts> {
     (col) => `COUNT(${col})::int AS ${col}`,
   );
   const fillQuery = `SELECT COUNT(*)::int AS total_legs, ${selectParts.join(', ')} FROM pyramid_legs`;
-  const fillResult = (await sql.query(fillQuery)) as Array<
+  const fillResult = (await sql.query(fillQuery, [])) as Array<
     Record<string, number>
   >;
   const fillRow = fillResult[0];
@@ -535,4 +619,40 @@ export async function getProgressCounts(): Promise<ProgressCounts> {
     elapsed_calendar_days: elapsed,
     fill_rates: fillRates,
   };
+}
+
+const DATE_STR_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * Compute whole calendar days between `firstTradeDate` (YYYY-MM-DD in ET)
+ * and today (also in ET). Returns null when the input is missing or not a
+ * valid YYYY-MM-DD string. Exported for direct unit testing.
+ */
+export function computeElapsedCalendarDays(
+  firstTradeDate: string | null | undefined,
+): number | null {
+  if (!firstTradeDate) return null;
+  const match = DATE_STR_RE.exec(firstTradeDate);
+  if (!match) return null;
+  const firstUtcMs = Date.UTC(
+    Number.parseInt(match[1]!, 10),
+    Number.parseInt(match[2]!, 10) - 1,
+    Number.parseInt(match[3]!, 10),
+  );
+  if (!Number.isFinite(firstUtcMs)) return null;
+
+  // Today's ET calendar date -> UTC midnight. Using getETDateStr ensures
+  // we compare calendar-date to calendar-date rather than instants, so
+  // DST transitions and a server running in UTC don't produce off-by-ones.
+  const todayStr = getETDateStr(new Date());
+  const todayMatch = DATE_STR_RE.exec(todayStr);
+  if (!todayMatch) return null;
+  const todayUtcMs = Date.UTC(
+    Number.parseInt(todayMatch[1]!, 10),
+    Number.parseInt(todayMatch[2]!, 10) - 1,
+    Number.parseInt(todayMatch[3]!, 10),
+  );
+
+  const diffDays = Math.floor((todayUtcMs - firstUtcMs) / 86_400_000);
+  return Math.max(0, diffDays);
 }

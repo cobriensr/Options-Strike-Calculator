@@ -351,7 +351,12 @@ export const pyramidChainSchema = z.object({
   day_type: z.enum(['trend', 'chop', 'news', 'mixed']).optional().nullable(),
   higher_tf_bias: z.string().optional().nullable(),
   notes: z.string().optional().nullable(),
-  status: z.enum(['open', 'closed']).optional().nullable(),
+  // status is NOT NULL in the DB with default 'open'. We accept it as
+  // optional (omit -> DB default / keep existing) but reject explicit
+  // null to match updateChain's behavior: a null patch is silently
+  // swallowed by the COALESCE, so allowing null at the schema level
+  // would be misleading.
+  status: z.enum(['open', 'closed']).optional(),
 });
 
 export type PyramidChainInput = z.infer<typeof pyramidChainSchema>;
@@ -359,7 +364,7 @@ export type PyramidChainInput = z.infer<typeof pyramidChainSchema>;
 export const pyramidLegSchema = z.object({
   id: z.string().min(1, 'leg id is required'),
   chain_id: z.string().min(1, 'chain_id is required'),
-  leg_number: z.number().int().min(1, 'leg_number must be ≥ 1'),
+  leg_number: z.number().int().min(1, 'leg_number must be >= 1'),
   signal_type: z.enum(['CHoCH', 'BOS']).optional().nullable(),
   entry_time_ct: z.string().optional().nullable(),
   entry_price: z.number().optional().nullable(),
