@@ -2,7 +2,7 @@
 
 **Date**: 2026-04-16
 **Author**: scoped collaboratively w/ Claude; for single-owner research use
-**Status**: Draft — pending implementation
+**Status**: **Implemented** — 2026-04-17. All phases (1A, 1B, 1C, 2A, 2B, 2C, 3) shipped on branch `cobriensr/feat/pyramid-trade-tracker`. Cleanup runbook at [`../plans/pyramid-tracker-cleanup-runbook.md`](../plans/pyramid-tracker-cleanup-runbook.md).
 
 ## Goal
 
