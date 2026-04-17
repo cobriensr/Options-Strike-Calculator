@@ -1796,4 +1796,18 @@ export const MIGRATIONS: Migration[] = [
       sql`CREATE INDEX IF NOT EXISTS idx_pyramid_legs_chain ON pyramid_legs (chain_id, leg_number)`,
     ],
   },
+  {
+    id: 66,
+    description:
+      'Add LuxAlgo OB volume-profile metrics to pyramid_legs. Captures POC price + node distribution for ML concentration features.',
+    statements: (sql) => [
+      sql`ALTER TABLE pyramid_legs ADD COLUMN IF NOT EXISTS ob_high NUMERIC`,
+      sql`ALTER TABLE pyramid_legs ADD COLUMN IF NOT EXISTS ob_low NUMERIC`,
+      sql`ALTER TABLE pyramid_legs ADD COLUMN IF NOT EXISTS ob_poc_price NUMERIC`,
+      sql`ALTER TABLE pyramid_legs ADD COLUMN IF NOT EXISTS ob_poc_pct NUMERIC CHECK (ob_poc_pct BETWEEN 0 AND 100)`,
+      sql`ALTER TABLE pyramid_legs ADD COLUMN IF NOT EXISTS ob_secondary_node_pct NUMERIC CHECK (ob_secondary_node_pct BETWEEN 0 AND 100)`,
+      sql`ALTER TABLE pyramid_legs ADD COLUMN IF NOT EXISTS ob_tertiary_node_pct NUMERIC CHECK (ob_tertiary_node_pct BETWEEN 0 AND 100)`,
+      sql`ALTER TABLE pyramid_legs ADD COLUMN IF NOT EXISTS ob_total_volume NUMERIC`,
+    ],
+  },
 ];

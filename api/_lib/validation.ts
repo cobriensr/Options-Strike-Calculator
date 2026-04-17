@@ -407,6 +407,13 @@ export const pyramidLegSchema = z.object({
   r_multiple: z.number().optional().nullable(),
   was_profitable: z.boolean().optional().nullable(),
   notes: z.string().optional().nullable(),
+  ob_high: z.number().optional().nullable(),
+  ob_low: z.number().optional().nullable(),
+  ob_poc_price: z.number().optional().nullable(),
+  ob_poc_pct: z.number().min(0).max(100).optional().nullable(),
+  ob_secondary_node_pct: z.number().min(0).max(100).optional().nullable(),
+  ob_tertiary_node_pct: z.number().min(0).max(100).optional().nullable(),
+  ob_total_volume: z.number().optional().nullable(),
 });
 
 export type PyramidLegInput = z.infer<typeof pyramidLegSchema>;

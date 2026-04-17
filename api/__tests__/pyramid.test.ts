@@ -106,6 +106,13 @@ const legRow = {
   r_multiple: null,
   was_profitable: null,
   notes: null,
+  ob_high: null,
+  ob_low: null,
+  ob_poc_price: null,
+  ob_poc_pct: null,
+  ob_secondary_node_pct: null,
+  ob_tertiary_node_pct: null,
+  ob_total_volume: null,
   created_at: '2026-04-16T14:30:00Z',
   updated_at: '2026-04-16T14:30:00Z',
 };
@@ -358,6 +365,26 @@ describe('/api/pyramid/legs', () => {
       mockRequest({
         method: 'POST',
         body: { id: legRow.id, chain_id: legRow.chain_id, leg_number: 0 },
+      }),
+      res,
+    );
+    expect(res._status).toBe(400);
+    expect(createLeg).not.toHaveBeenCalled();
+  });
+
+  it('POST rejects ob_poc_pct > 100 with 400 (Zod boundary)', async () => {
+    // Zod schema caps ob_poc_pct at 100 — catches invalid input before
+    // it hits the DB CHECK constraint.
+    const res = mockResponse();
+    await legsHandler(
+      mockRequest({
+        method: 'POST',
+        body: {
+          id: legRow.id,
+          chain_id: legRow.chain_id,
+          leg_number: 1,
+          ob_poc_pct: 101,
+        },
       }),
       res,
     );

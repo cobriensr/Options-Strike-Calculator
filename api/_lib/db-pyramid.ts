@@ -69,6 +69,13 @@ export interface PyramidLegRow {
   r_multiple: number | null;
   was_profitable: boolean | null;
   notes: string | null;
+  ob_high: number | null;
+  ob_low: number | null;
+  ob_poc_price: number | null;
+  ob_poc_pct: number | null;
+  ob_secondary_node_pct: number | null;
+  ob_tertiary_node_pct: number | null;
+  ob_total_volume: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -117,6 +124,13 @@ const LEG_FILL_RATE_COLUMNS = [
   'r_multiple',
   'was_profitable',
   'notes',
+  'ob_high',
+  'ob_low',
+  'ob_poc_price',
+  'ob_poc_pct',
+  'ob_secondary_node_pct',
+  'ob_tertiary_node_pct',
+  'ob_total_volume',
 ] as const;
 
 // ============================================================
@@ -363,7 +377,9 @@ export async function createLeg(
       session_high_at_entry, session_low_at_entry,
       retracement_extreme_before_entry,
       exit_price, exit_reason, points_captured,
-      r_multiple, was_profitable, notes
+      r_multiple, was_profitable, notes,
+      ob_high, ob_low, ob_poc_price, ob_poc_pct,
+      ob_secondary_node_pct, ob_tertiary_node_pct, ob_total_volume
     ) VALUES (
       ${input.id},
       ${input.chain_id},
@@ -392,7 +408,14 @@ export async function createLeg(
       ${input.points_captured ?? null},
       ${input.r_multiple ?? null},
       ${input.was_profitable ?? null},
-      ${input.notes ?? null}
+      ${input.notes ?? null},
+      ${input.ob_high ?? null},
+      ${input.ob_low ?? null},
+      ${input.ob_poc_price ?? null},
+      ${input.ob_poc_pct ?? null},
+      ${input.ob_secondary_node_pct ?? null},
+      ${input.ob_tertiary_node_pct ?? null},
+      ${input.ob_total_volume ?? null}
     )
     RETURNING *
   `;
@@ -487,6 +510,13 @@ export async function updateLeg(
       r_multiple                       = COALESCE(${patch.r_multiple ?? null}, r_multiple),
       was_profitable                   = COALESCE(${patch.was_profitable ?? null}, was_profitable),
       notes                            = COALESCE(${patch.notes ?? null}, notes),
+      ob_high                          = COALESCE(${patch.ob_high ?? null}, ob_high),
+      ob_low                           = COALESCE(${patch.ob_low ?? null}, ob_low),
+      ob_poc_price                     = COALESCE(${patch.ob_poc_price ?? null}, ob_poc_price),
+      ob_poc_pct                       = COALESCE(${patch.ob_poc_pct ?? null}, ob_poc_pct),
+      ob_secondary_node_pct            = COALESCE(${patch.ob_secondary_node_pct ?? null}, ob_secondary_node_pct),
+      ob_tertiary_node_pct             = COALESCE(${patch.ob_tertiary_node_pct ?? null}, ob_tertiary_node_pct),
+      ob_total_volume                  = COALESCE(${patch.ob_total_volume ?? null}, ob_total_volume),
       updated_at                       = NOW()
     WHERE id = ${id}
     RETURNING *

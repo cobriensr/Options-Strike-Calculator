@@ -303,6 +303,62 @@ describe('db-pyramid.ts', () => {
       expect(mockSql).toHaveBeenCalledTimes(3);
     });
 
+    it('round-trips all 7 OB volume-profile fields through the INSERT', async () => {
+      // Leg 1 insert so only one SQL call (no leg 1 lookup).
+      const row = {
+        id: '2026-04-16-MNQ-1-L1',
+        chain_id: '2026-04-16-MNQ-1',
+        leg_number: 1,
+        ob_high: 18250.5,
+        ob_low: 18240.25,
+        ob_poc_price: 18247.75,
+        ob_poc_pct: 32,
+        ob_secondary_node_pct: 29,
+        ob_tertiary_node_pct: 13,
+        ob_total_volume: 15420,
+      };
+      mockSql.mockResolvedValueOnce([row]);
+
+      const result = await createLeg({
+        id: '2026-04-16-MNQ-1-L1',
+        chain_id: '2026-04-16-MNQ-1',
+        leg_number: 1,
+        ob_high: 18250.5,
+        ob_low: 18240.25,
+        ob_poc_price: 18247.75,
+        ob_poc_pct: 32,
+        ob_secondary_node_pct: 29,
+        ob_tertiary_node_pct: 13,
+        ob_total_volume: 15420,
+      });
+
+      expect(result).toEqual(row);
+      // The tagged-template call passes the values array as the second
+      // argument. Assert every OB value is present and in the correct order.
+      const callArgs = mockSql.mock.calls[0] as unknown as [
+        TemplateStringsArray,
+        ...unknown[],
+      ];
+      const values = callArgs.slice(1);
+      expect(values).toContain(18250.5);
+      expect(values).toContain(18240.25);
+      expect(values).toContain(18247.75);
+      expect(values).toContain(32);
+      expect(values).toContain(29);
+      expect(values).toContain(13);
+      expect(values).toContain(15420);
+      // Column list and values block both mention all 7 new columns.
+      const sqlFragments = callArgs[0] as readonly string[];
+      const fullSql = sqlFragments.join(' ');
+      expect(fullSql).toContain('ob_high');
+      expect(fullSql).toContain('ob_low');
+      expect(fullSql).toContain('ob_poc_price');
+      expect(fullSql).toContain('ob_poc_pct');
+      expect(fullSql).toContain('ob_secondary_node_pct');
+      expect(fullSql).toContain('ob_tertiary_node_pct');
+      expect(fullSql).toContain('ob_total_volume');
+    });
+
     it('leg N>1 without leg 1 throws PyramidLegOrderError', async () => {
       // EXISTS returns empty → throw before any INSERT runs.
       mockSql.mockResolvedValueOnce([]);
@@ -448,6 +504,33 @@ describe('db-pyramid.ts', () => {
       expect(mockSql).toHaveBeenCalledTimes(1);
       expect(mockSql.transaction).not.toHaveBeenCalled();
     });
+
+    it('patch on ob_poc_pct alone includes it in the SET clause', async () => {
+      // No stop_distance_pts in patch → skips existence lookup, straight to UPDATE.
+      const updatedLeg = {
+        id: '2026-04-16-MNQ-1-L1',
+        leg_number: 1,
+        ob_poc_pct: 45,
+      };
+      mockSql.mockResolvedValueOnce([updatedLeg]);
+
+      const result = await updateLeg('2026-04-16-MNQ-1-L1', {
+        ob_poc_pct: 45,
+      });
+
+      expect(result).toEqual(updatedLeg);
+      expect(mockSql).toHaveBeenCalledTimes(1);
+      const callArgs = mockSql.mock.calls[0] as unknown as [
+        TemplateStringsArray,
+        ...unknown[],
+      ];
+      const sqlFragments = callArgs[0] as readonly string[];
+      const fullSql = sqlFragments.join(' ');
+      expect(fullSql).toContain('ob_poc_pct');
+      // The new value is among the bound parameters.
+      const values = callArgs.slice(1);
+      expect(values).toContain(45);
+    });
   });
 
   // ============================================================
@@ -580,6 +663,51 @@ describe('db-pyramid.ts', () => {
       expect(result.fill_rates.entry_price).toBe(0.8);
       expect(result.fill_rates.ob_quality).toBe(0.5);
       expect(result.fill_rates.notes).toBe(0);
+    });
+
+    it('includes all 7 OB volume-profile columns in fill_rates output keys', async () => {
+      mockSql.mockResolvedValueOnce([
+        {
+          total_chains: 1,
+          trend: 1,
+          chop: 0,
+          news: 0,
+          mixed: 0,
+          unspecified: 0,
+          first_trade_date: '2026-04-16',
+        },
+      ]);
+      // Fill row must include every LEG_FILL_RATE_COLUMNS entry — the prod
+      // query selects COUNT(col) for each, and missing keys would read
+      // as 0/total via the `?? 0` fallback. We care that the *output*
+      // exposes all 7 new keys regardless of whether the DB returned them.
+      mockSql.query.mockResolvedValueOnce([
+        {
+          total_legs: 4,
+          ob_high: 3,
+          ob_low: 3,
+          ob_poc_price: 2,
+          ob_poc_pct: 2,
+          ob_secondary_node_pct: 1,
+          ob_tertiary_node_pct: 1,
+          ob_total_volume: 2,
+        },
+      ]);
+
+      const result = await getProgressCounts();
+
+      const keys = Object.keys(result.fill_rates);
+      expect(keys).toContain('ob_high');
+      expect(keys).toContain('ob_low');
+      expect(keys).toContain('ob_poc_price');
+      expect(keys).toContain('ob_poc_pct');
+      expect(keys).toContain('ob_secondary_node_pct');
+      expect(keys).toContain('ob_tertiary_node_pct');
+      expect(keys).toContain('ob_total_volume');
+      // Fill rates are computed against total_legs = 4.
+      expect(result.fill_rates.ob_high).toBe(0.75);
+      expect(result.fill_rates.ob_poc_pct).toBe(0.5);
+      expect(result.fill_rates.ob_tertiary_node_pct).toBe(0.25);
     });
   });
 });
