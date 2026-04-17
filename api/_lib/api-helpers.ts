@@ -43,11 +43,22 @@ const SCHWAB_TRADER_BASE = 'https://api.schwabapi.com/trader/v1';
  * Skips the check entirely in local dev — botid requires client-side tokens
  * that aren't present outside Vercel's infrastructure, producing terminal spam.
  * VERCEL=1 is set automatically by Vercel; it's unset in local dev.
+ *
+ * Also short-circuits for authenticated owner sessions. The `sc-owner` cookie
+ * is a random secret set by the Schwab OAuth callback, compared with
+ * `timingSafeEqual` against `OWNER_SECRET`. If a caller presents a valid
+ * owner cookie, they have already cleared a strictly stronger authentication
+ * gate than any anti-bot heuristic — running Vercel BotID on top is redundant
+ * and produces false positives on privacy-respecting browsers (Firefox with
+ * Enhanced Tracking Protection, DNT + Sec-GPC, etc.) that Kasada scores as
+ * high-risk. Public / anonymous traffic still goes through the full BotID
+ * challenge flow.
  */
 export async function checkBot(
   req: VercelRequest,
 ): Promise<{ isBot: boolean }> {
   if (!process.env.VERCEL) return { isBot: false };
+  if (isOwner(req)) return { isBot: false };
   return checkBotId({ advancedOptions: { headers: req.headers } });
 }
 
