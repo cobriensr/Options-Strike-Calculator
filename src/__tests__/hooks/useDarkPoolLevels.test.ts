@@ -592,6 +592,49 @@ describe('useDarkPoolLevels: time scrubbing', () => {
     expect(result.current.scrubTime).toBe('15:00');
   });
 
+  it('scrubTo jumps directly to a valid mid-grid time slot', async () => {
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    await act(async () => {});
+
+    act(() => result.current.scrubTo('10:30'));
+    await act(async () => {});
+
+    expect(result.current.scrubTime).toBe('10:30');
+    expect(result.current.isScrubbed).toBe(true);
+  });
+
+  it('scrubTo to the last grid slot (15:00) resumes live mode', async () => {
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    await act(async () => {});
+
+    // First, scrub away from live.
+    act(() => result.current.scrubPrev());
+    await act(async () => {});
+    expect(result.current.isScrubbed).toBe(true);
+
+    // scrubTo('15:00') is the last slot — should reset to live (null).
+    act(() => result.current.scrubTo('15:00'));
+    await act(async () => {});
+
+    expect(result.current.scrubTime).toBeNull();
+    expect(result.current.isLive).toBe(true);
+  });
+
+  it('scrubTo with an invalid time string is a no-op', async () => {
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    await act(async () => {});
+
+    // Starting from live; invalid time should not change scrubTime.
+    act(() => result.current.scrubTo('99:99'));
+    await act(async () => {});
+    expect(result.current.scrubTime).toBeNull();
+
+    // Also should not enter scrub mode from a non-grid value.
+    act(() => result.current.scrubTo('12:34'));
+    await act(async () => {});
+    expect(result.current.scrubTime).toBeNull();
+  });
+
   it('lastGridTimeBeforeNow anchors to 08:30 when current CT time is before market open', async () => {
     // Simulate a time well before market open (06:00 CT = 11:00 UTC in CDT)
     vi.setSystemTime(new Date('2026-04-13T11:00:00Z'));

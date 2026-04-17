@@ -170,6 +170,75 @@ describe('useMarketInternals', () => {
     expect(result.current.error).toMatch(/Failed to fetch/);
   });
 
+  it('swallows AbortError without setting error state', async () => {
+    // First resolved response so we get past the initial fetch.
+    fetchMock.mockResolvedValueOnce(
+      buildResponse([tickBar('2026-04-15T17:59:00Z', 100)]),
+    );
+    // Second fetch rejects with AbortError.
+    fetchMock.mockRejectedValueOnce(new DOMException('aborted', 'AbortError'));
+
+    const { result } = renderHook(() =>
+      useMarketInternals({ marketOpen: true }),
+    );
+
+    await flushPromises();
+    expect(result.current.error).toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    await flushPromises();
+
+    // AbortError should NOT populate the error state.
+    expect(result.current.error).toBeNull();
+  });
+
+  it('does not setState when fetch resolves after unmount', async () => {
+    // Hold the fetch promise open.
+    let resolveFetch: (v: Response) => void = () => {};
+    const pending = new Promise<Response>((res) => {
+      resolveFetch = res;
+    });
+    fetchMock.mockReturnValueOnce(pending);
+
+    const { result, unmount } = renderHook(() =>
+      useMarketInternals({ marketOpen: true }),
+    );
+
+    unmount();
+
+    resolveFetch(buildResponse([tickBar('2026-04-15T18:00:00Z', 999)]));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+
+    // Bars remain empty since setState bailed after unmount.
+    expect(result.current.bars).toEqual([]);
+    expect(result.current.asOf).toBeNull();
+  });
+
+  it('does not setState when fetch rejects after unmount', async () => {
+    let rejectFetch: (err: Error) => void = () => {};
+    const pending = new Promise<Response>((_res, rej) => {
+      rejectFetch = rej;
+    });
+    fetchMock.mockReturnValueOnce(pending);
+
+    const { result, unmount } = renderHook(() =>
+      useMarketInternals({ marketOpen: true }),
+    );
+
+    unmount();
+
+    rejectFetch(new Error('late fail'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+
+    expect(result.current.error).toBeNull();
+  });
+
   it('cancels in-flight fetch and stops polling after unmount', async () => {
     // Spy on AbortController.abort so we can assert the cleanup path
     // fired (covers the "cancel in-flight fetch" half of the contract).

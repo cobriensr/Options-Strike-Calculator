@@ -321,4 +321,122 @@ describe('useOptionsFlow', () => {
     expect(result.current.error).toBeNull();
     expect(result.current.data).toBeNull();
   });
+
+  // ─── Scrub mode (asOf non-null) ──────────────────────────
+
+  it('scrub mode: fetches once with as_of and does not poll', async () => {
+    renderHook(() =>
+      useOptionsFlow({
+        marketOpen: true,
+        asOf: '2026-04-14T14:30:00Z',
+        pollIntervalMs: 10_000,
+      }),
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    const url = fetchMock.mock.calls[0]?.[0] as string;
+    expect(url).toContain('as_of=');
+    expect(url).toContain(encodeURIComponent('2026-04-14T14:30:00Z'));
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    // Scrub mode = one-shot, no polling.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('scrub mode takes precedence over marketOpen=false', async () => {
+    renderHook(() =>
+      useOptionsFlow({
+        marketOpen: false,
+        asOf: '2026-04-14T14:30:00Z',
+      }),
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const url = fetchMock.mock.calls[0]?.[0] as string;
+    expect(url).toContain('as_of=');
+  });
+
+  // ─── Past date branch ──────────────────────────────────────
+
+  it('past date: fetches once with ?date= and does not poll', async () => {
+    // Use a clearly past date (today ET is never 2020-01-02).
+    renderHook(() =>
+      useOptionsFlow({
+        marketOpen: true,
+        selectedDate: '2020-01-02',
+        pollIntervalMs: 10_000,
+      }),
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const url = fetchMock.mock.calls[0]?.[0] as string;
+    expect(url).toContain('date=2020-01-02');
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('today date (matches ET today) uses live mode + polls', async () => {
+    // Compute today ET exactly as the hook does.
+    const todayET = new Date().toLocaleDateString('en-CA', {
+      timeZone: 'America/New_York',
+    });
+
+    renderHook(() =>
+      useOptionsFlow({
+        marketOpen: true,
+        selectedDate: todayET,
+        pollIntervalMs: 10_000,
+      }),
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+    // Poll should fire because today == todayET means "not past date".
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  });
+
+  // ─── refresh() callback ─────────────────────────────────────
+
+  it('refresh() aborts in-flight request and triggers a new fetch', async () => {
+    const { result } = renderHook(() =>
+      useOptionsFlow({ marketOpen: true, pollIntervalMs: 60_000 }),
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      result.current.refresh();
+    });
+
+    // refresh bumps the refresh token → effect re-runs → fetch fires again.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  });
+
+  it('refresh() works in scrub mode (one-shot refetch)', async () => {
+    const { result } = renderHook(() =>
+      useOptionsFlow({
+        marketOpen: true,
+        asOf: '2026-04-14T14:30:00Z',
+      }),
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      result.current.refresh();
+    });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  });
 });

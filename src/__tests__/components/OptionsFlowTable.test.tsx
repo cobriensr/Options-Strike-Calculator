@@ -291,6 +291,100 @@ describe('OptionsFlowTable', () => {
     expect(mixedRow.className).not.toMatch(/bg-amber-500\/\[0\.03\]/);
   });
 
+  describe('sortable column coverage', () => {
+    // Each test exercises one of the `getSortValue` switch branches
+    // (OptionsFlowTable.tsx lines 126-150) so every sortable column is
+    // covered, not just strike / premium / score / gex.
+    it('sorts by Side (puts before calls ascending, calls first descending)', async () => {
+      const user = userEvent.setup();
+      const strikes = [
+        makeStrike({ strike: 6900, type: 'call', score: 50 }),
+        makeStrike({ strike: 6850, type: 'put', score: 60 }),
+      ];
+      render(<OptionsFlowTable {...BASE_PROPS} strikes={strikes} />);
+
+      const sideBtn = screen.getByRole('button', { name: /side/i });
+      // First click → desc. getSortValue: call=1, put=0 → call first.
+      await user.click(sideBtn);
+      let rows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+      expect(within(rows[0]!).getByText('6,900')).toBeInTheDocument();
+
+      // Second click → asc. put first.
+      await user.click(sideBtn);
+      rows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+      expect(within(rows[0]!).getByText('6,850')).toBeInTheDocument();
+    });
+
+    it('sorts by Δ Spot distance_from_spot', async () => {
+      const user = userEvent.setup();
+      const strikes = [
+        makeStrike({ strike: 6900, distance_from_spot: 50, score: 1 }),
+        makeStrike({ strike: 6800, distance_from_spot: -50, score: 2 }),
+        makeStrike({ strike: 6850, distance_from_spot: 0, score: 3 }),
+      ];
+      render(<OptionsFlowTable {...BASE_PROPS} strikes={strikes} />);
+
+      await user.click(screen.getByRole('button', { name: /δ spot/i }));
+      const rows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+      // desc: +50, 0, -50
+      expect(within(rows[0]!).getByText('6,900')).toBeInTheDocument();
+      expect(within(rows[1]!).getByText('6,850')).toBeInTheDocument();
+      expect(within(rows[2]!).getByText('6,800')).toBeInTheDocument();
+    });
+
+    it('sorts by Δ % (distance_pct)', async () => {
+      const user = userEvent.setup();
+      const strikes = [
+        makeStrike({ strike: 6900, distance_pct: 0.01, score: 1 }),
+        makeStrike({ strike: 6850, distance_pct: 0.05, score: 2 }),
+      ];
+      render(<OptionsFlowTable {...BASE_PROPS} strikes={strikes} />);
+
+      await user.click(screen.getByRole('button', { name: /δ %/i }));
+      const rows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+      expect(within(rows[0]!).getByText('6,850')).toBeInTheDocument();
+    });
+
+    it('sorts by Ask %', async () => {
+      const user = userEvent.setup();
+      const strikes = [
+        makeStrike({ strike: 6900, ask_side_ratio: 0.2, score: 1 }),
+        makeStrike({ strike: 6850, ask_side_ratio: 0.95, score: 2 }),
+      ];
+      render(<OptionsFlowTable {...BASE_PROPS} strikes={strikes} />);
+
+      await user.click(screen.getByRole('button', { name: /ask %/i }));
+      const rows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+      expect(within(rows[0]!).getByText('6,850')).toBeInTheDocument();
+    });
+
+    it('sorts by Vol/OI', async () => {
+      const user = userEvent.setup();
+      const strikes = [
+        makeStrike({ strike: 6900, volume_oi_ratio: 0.1, score: 1 }),
+        makeStrike({ strike: 6850, volume_oi_ratio: 3.5, score: 2 }),
+      ];
+      render(<OptionsFlowTable {...BASE_PROPS} strikes={strikes} />);
+
+      await user.click(screen.getByRole('button', { name: /vol\/oi/i }));
+      const rows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+      expect(within(rows[0]!).getByText('6,850')).toBeInTheDocument();
+    });
+
+    it('sorts by Hits (hit_count)', async () => {
+      const user = userEvent.setup();
+      const strikes = [
+        makeStrike({ strike: 6900, hit_count: 2, score: 1 }),
+        makeStrike({ strike: 6850, hit_count: 10, score: 2 }),
+      ];
+      render(<OptionsFlowTable {...BASE_PROPS} strikes={strikes} />);
+
+      await user.click(screen.getByRole('button', { name: /^hits/i }));
+      const rows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+      expect(within(rows[0]!).getByText('6,850')).toBeInTheDocument();
+    });
+  });
+
   it('sort by Net GEX places rows missing a lookup entry at the bottom in both directions', async () => {
     const user = userEvent.setup();
     const strikes = [

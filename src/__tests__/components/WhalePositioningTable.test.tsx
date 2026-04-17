@@ -332,6 +332,159 @@ describe('WhalePositioningTable', () => {
     expect(screen.getByText('15m ago')).toBeInTheDocument();
   });
 
+  describe('sortable column coverage', () => {
+    // Each test exercises one of the `getSortValue` switch branches
+    // (WhalePositioningTable.tsx lines 184-200) so every non-null-handling
+    // sortable column is covered.
+    it('sorts by Side (type)', async () => {
+      const user = userEvent.setup();
+      const alerts = [
+        makeAlert({
+          option_chain: 'A',
+          strike: 5700,
+          type: 'call',
+          total_premium: 2_000_000,
+        }),
+        makeAlert({
+          option_chain: 'B',
+          strike: 5650,
+          type: 'put',
+          total_premium: 2_000_000,
+        }),
+      ];
+      render(<WhalePositioningTable {...BASE_PROPS} alerts={alerts} />);
+
+      const sideBtn = screen.getByRole('button', { name: /^side/i });
+      // Desc — call=1 > put=0, so call strike first.
+      await user.click(sideBtn);
+      let rows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+      expect(within(rows[0]!).getByText('5,700')).toBeInTheDocument();
+
+      // Asc — put first.
+      await user.click(sideBtn);
+      rows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+      expect(within(rows[0]!).getByText('5,650')).toBeInTheDocument();
+    });
+
+    it('sorts by Expiry (dte_at_alert)', async () => {
+      const user = userEvent.setup();
+      const alerts = [
+        makeAlert({
+          option_chain: 'A',
+          strike: 5700,
+          dte_at_alert: 2,
+          total_premium: 2_000_000,
+        }),
+        makeAlert({
+          option_chain: 'B',
+          strike: 5650,
+          dte_at_alert: 7,
+          total_premium: 2_000_000,
+        }),
+      ];
+      render(<WhalePositioningTable {...BASE_PROPS} alerts={alerts} />);
+
+      await user.click(screen.getByRole('button', { name: /expiry/i }));
+      const rows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+      // desc: 7d first (5650), 2d second (5700)
+      expect(within(rows[0]!).getByText('5,650')).toBeInTheDocument();
+    });
+
+    it('sorts by Distance (distance_from_spot)', async () => {
+      const user = userEvent.setup();
+      const alerts = [
+        makeAlert({
+          option_chain: 'A',
+          strike: 5700,
+          distance_from_spot: 20,
+          total_premium: 2_000_000,
+        }),
+        makeAlert({
+          option_chain: 'B',
+          strike: 5650,
+          distance_from_spot: -30,
+          total_premium: 2_000_000,
+        }),
+      ];
+      render(<WhalePositioningTable {...BASE_PROPS} alerts={alerts} />);
+
+      await user.click(screen.getByRole('button', { name: /^distance/i }));
+      const rows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+      // desc: +20 first
+      expect(within(rows[0]!).getByText('5,700')).toBeInTheDocument();
+    });
+
+    it('sorts by Size (total_size)', async () => {
+      const user = userEvent.setup();
+      const alerts = [
+        makeAlert({
+          option_chain: 'A',
+          strike: 5700,
+          total_size: 1000,
+          total_premium: 2_000_000,
+        }),
+        makeAlert({
+          option_chain: 'B',
+          strike: 5650,
+          total_size: 8000,
+          total_premium: 2_000_000,
+        }),
+      ];
+      render(<WhalePositioningTable {...BASE_PROPS} alerts={alerts} />);
+
+      await user.click(screen.getByRole('button', { name: /^size/i }));
+      const rows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+      expect(within(rows[0]!).getByText('5,650')).toBeInTheDocument();
+    });
+
+    it('sorts by Vol/OI (volume_oi_ratio)', async () => {
+      const user = userEvent.setup();
+      const alerts = [
+        makeAlert({
+          option_chain: 'A',
+          strike: 5700,
+          volume_oi_ratio: 0.5,
+          total_premium: 2_000_000,
+        }),
+        makeAlert({
+          option_chain: 'B',
+          strike: 5650,
+          volume_oi_ratio: 8.0,
+          total_premium: 2_000_000,
+        }),
+      ];
+      render(<WhalePositioningTable {...BASE_PROPS} alerts={alerts} />);
+
+      await user.click(screen.getByRole('button', { name: /vol\/oi/i }));
+      const rows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+      expect(within(rows[0]!).getByText('5,650')).toBeInTheDocument();
+    });
+
+    it('sorts by Age (age_minutes)', async () => {
+      const user = userEvent.setup();
+      const alerts = [
+        makeAlert({
+          option_chain: 'A',
+          strike: 5700,
+          age_minutes: 30,
+          total_premium: 2_000_000,
+        }),
+        makeAlert({
+          option_chain: 'B',
+          strike: 5650,
+          age_minutes: 5,
+          total_premium: 2_000_000,
+        }),
+      ];
+      render(<WhalePositioningTable {...BASE_PROPS} alerts={alerts} />);
+
+      await user.click(screen.getByRole('button', { name: /^age/i }));
+      const rows = screen.getAllByRole('row').slice(1) as HTMLElement[];
+      // desc: 30 first (5700)
+      expect(within(rows[0]!).getByText('5,700')).toBeInTheDocument();
+    });
+  });
+
   describe('ask_side_ratio null-handling in sort', () => {
     // Server returns ask_side_ratio: null when total_premium is 0 / non-finite.
     // Those rows must sink to the bottom regardless of sort direction — a

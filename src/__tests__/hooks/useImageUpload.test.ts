@@ -333,4 +333,127 @@ describe('useImageUpload', () => {
 
     expect(result.current.images).toHaveLength(0);
   });
+
+  // ── Additional branch coverage ──
+
+  it('handleReplaceFile no-ops when replaceTargetIndex is out of bounds', () => {
+    const { result } = renderHook(() => useImageUpload());
+
+    // Add a single image.
+    act(() => {
+      result.current.addImage(makeFile('only.png'));
+    });
+
+    // Request replace at index 9 (1-based → targetIdx=8, far out of bounds).
+    act(() => {
+      result.current.replaceImage(9);
+    });
+
+    const file = makeFile('new.png');
+    const event = {
+      target: { files: [file], value: '' },
+    } as unknown as React.ChangeEvent<HTMLInputElement>;
+
+    mockRevokeObjectURL.mockClear();
+    act(() => {
+      result.current.handleReplaceFile(event);
+    });
+
+    // Original image untouched — out-of-bounds early return took the prev path.
+    expect(result.current.images).toHaveLength(1);
+    expect(result.current.images[0]!.file.name).toBe('only.png');
+    // No URL revocation (since replacement never happened).
+    expect(mockRevokeObjectURL).not.toHaveBeenCalled();
+  });
+
+  it('handleReplaceFile no-ops when replaceTargetIndex is zero (targetIdx=-1)', () => {
+    const { result } = renderHook(() => useImageUpload());
+
+    act(() => {
+      result.current.addImage(makeFile('only.png'));
+    });
+
+    // replaceImage(0) → targetIdx = -1, triggers the < 0 branch.
+    act(() => {
+      result.current.replaceImage(0);
+    });
+
+    const file = makeFile('new.png');
+    const event = {
+      target: { files: [file], value: '' },
+    } as unknown as React.ChangeEvent<HTMLInputElement>;
+
+    act(() => {
+      result.current.handleReplaceFile(event);
+    });
+
+    expect(result.current.images).toHaveLength(1);
+    expect(result.current.images[0]!.file.name).toBe('only.png');
+  });
+
+  it('handleFileSelect handles null files list gracefully', () => {
+    const { result } = renderHook(() => useImageUpload());
+
+    // e.target.files can be null on some browsers/events.
+    const event = {
+      target: { files: null, value: '' },
+    } as unknown as React.ChangeEvent<HTMLInputElement>;
+
+    act(() => {
+      result.current.handleFileSelect(event);
+    });
+
+    // No image added; no crash.
+    expect(result.current.images).toEqual([]);
+  });
+
+  it('ignores paste events with no clipboardData', () => {
+    const { result } = renderHook(() => useImageUpload());
+
+    const pasteEvent = new Event('paste', {
+      bubbles: true,
+    }) as unknown as ClipboardEvent;
+
+    Object.defineProperty(pasteEvent, 'clipboardData', { value: null });
+
+    act(() => {
+      document.dispatchEvent(pasteEvent);
+    });
+
+    // Array.from(undefined ?? []) -> empty; no image added.
+    expect(result.current.images).toEqual([]);
+  });
+
+  it('ignores paste image items whose getAsFile returns null', () => {
+    const { result } = renderHook(() => useImageUpload());
+
+    const pasteEvent = new Event('paste', {
+      bubbles: true,
+    }) as unknown as ClipboardEvent;
+
+    const preventDefaultSpy = vi.fn();
+    Object.defineProperty(pasteEvent, 'preventDefault', {
+      value: preventDefaultSpy,
+    });
+
+    // Image type but getAsFile yields null — the `if (file)` branch falls through.
+    Object.defineProperty(pasteEvent, 'clipboardData', {
+      value: {
+        items: [
+          {
+            type: 'image/png',
+            getAsFile: () => null,
+          },
+        ],
+      },
+    });
+
+    act(() => {
+      document.dispatchEvent(pasteEvent);
+    });
+
+    // preventDefault fired (type matched), but no image was added.
+    expect(preventDefaultSpy).toHaveBeenCalled();
+    expect(result.current.images).toEqual([]);
+  });
 });

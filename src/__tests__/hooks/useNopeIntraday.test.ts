@@ -138,3 +138,73 @@ describe('useNopeIntraday: polling', () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 });
+
+// ── Unmount guard branches ───────────────────────────────────
+
+describe('useNopeIntraday: unmount guards', () => {
+  it('does not setState when fetch resolves after unmount', async () => {
+    // Hold the fetch promise open so we can resolve it post-unmount.
+    let resolveFetch: (v: unknown) => void = () => {};
+    const pending = new Promise<unknown>((res) => {
+      resolveFetch = res;
+    });
+    mockFetch.mockReturnValueOnce(pending);
+
+    const { result, unmount } = renderHook(() =>
+      useNopeIntraday({ marketOpen: true }),
+    );
+    unmount();
+
+    // Resolve fetch post-unmount — setState paths should early-return.
+    resolveFetch({
+      ok: true,
+      json: async () => SAMPLE_RESPONSE,
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(50);
+    });
+
+    // State remained initial empty — late setState bailed out.
+    expect(result.current.points).toEqual([]);
+    expect(result.current.date).toBeNull();
+  });
+
+  it('does not set error when fetch rejects after unmount', async () => {
+    let rejectFetch: (err: Error) => void = () => {};
+    const pending = new Promise<unknown>((_resolve, reject) => {
+      rejectFetch = reject;
+    });
+    mockFetch.mockReturnValueOnce(pending);
+
+    const { result, unmount } = renderHook(() =>
+      useNopeIntraday({ marketOpen: true }),
+    );
+    unmount();
+
+    rejectFetch(new Error('late fail'));
+    await act(async () => {
+      vi.advanceTimersByTime(50);
+    });
+
+    expect(result.current.error).toBeNull();
+  });
+
+  it('flips ownership after mount to non-owner does not trigger fetch from fetchPoints', async () => {
+    // Start as owner, then switch useIsOwner to false. Effect will re-run
+    // and early return, verifying the ownership gate in the polling path.
+    const { rerender } = renderHook(() =>
+      useNopeIntraday({ marketOpen: true }),
+    );
+    await act(async () => {});
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    vi.mocked(useIsOwner).mockReturnValue(false);
+    rerender();
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.NOPE * 3);
+    });
+
+    // No additional fetches — both effects gate on isOwner.
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+});

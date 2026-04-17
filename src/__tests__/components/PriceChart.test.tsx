@@ -477,6 +477,264 @@ describe('PriceChart: overlay effect early return', () => {
   });
 });
 
+describe('PriceChart: interval toggle', () => {
+  // Exercises lines 417-447 — the 1m / 5m interval toggle buttons and the
+  // onIntervalChange callback. Without onIntervalChange the toggle is
+  // omitted entirely; with it both buttons render and are clickable.
+  it('does not render the interval toggle when onIntervalChange is omitted', () => {
+    const { queryByRole } = render(
+      <PriceChart
+        candles={[makeCandle()]}
+        previousClose={null}
+        score={null}
+        openingCallStrike={null}
+        openingPutStrike={null}
+      />,
+    );
+
+    expect(
+      queryByRole('button', { name: /1-minute candles/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      queryByRole('button', { name: /5-minute candles/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('renders both interval buttons with correct aria-pressed state when interval is 5m', () => {
+    const onIntervalChange = vi.fn();
+    const { getByRole } = render(
+      <PriceChart
+        candles={[makeCandle()]}
+        previousClose={null}
+        score={null}
+        openingCallStrike={null}
+        openingPutStrike={null}
+        interval="5m"
+        onIntervalChange={onIntervalChange}
+      />,
+    );
+
+    expect(getByRole('button', { name: /1-minute candles/i })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+    expect(getByRole('button', { name: /5-minute candles/i })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+  });
+
+  it('calls onIntervalChange with "1m" when the 1m button is clicked', () => {
+    const onIntervalChange = vi.fn();
+    const { getByRole } = render(
+      <PriceChart
+        candles={[makeCandle()]}
+        previousClose={null}
+        score={null}
+        openingCallStrike={null}
+        openingPutStrike={null}
+        interval="5m"
+        onIntervalChange={onIntervalChange}
+      />,
+    );
+
+    getByRole('button', { name: /1-minute candles/i }).click();
+    expect(onIntervalChange).toHaveBeenCalledWith('1m');
+  });
+
+  it('calls onIntervalChange with "5m" when the 5m button is clicked', () => {
+    const onIntervalChange = vi.fn();
+    const { getByRole } = render(
+      <PriceChart
+        candles={[makeCandle()]}
+        previousClose={null}
+        score={null}
+        openingCallStrike={null}
+        openingPutStrike={null}
+        interval="1m"
+        onIntervalChange={onIntervalChange}
+      />,
+    );
+
+    getByRole('button', { name: /5-minute candles/i }).click();
+    expect(onIntervalChange).toHaveBeenCalledWith('5m');
+  });
+
+  it('flips aria-pressed when interval prop changes to 1m', () => {
+    const onIntervalChange = vi.fn();
+    const { getByRole, rerender } = render(
+      <PriceChart
+        candles={[makeCandle()]}
+        previousClose={null}
+        score={null}
+        openingCallStrike={null}
+        openingPutStrike={null}
+        interval="5m"
+        onIntervalChange={onIntervalChange}
+      />,
+    );
+
+    rerender(
+      <PriceChart
+        candles={[makeCandle()]}
+        previousClose={null}
+        score={null}
+        openingCallStrike={null}
+        openingPutStrike={null}
+        interval="1m"
+        onIntervalChange={onIntervalChange}
+      />,
+    );
+
+    expect(getByRole('button', { name: /1-minute candles/i })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(getByRole('button', { name: /5-minute candles/i })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+  });
+});
+
+describe('PriceChart: chart options time formatters', () => {
+  // chartOptions.tickMarkFormatter and localization.timeFormatter (lines
+  // 144-149) are closures invoked by lightweight-charts at render time.
+  // The mock doesn't call them on its own, so we capture the options from
+  // the first createChart call and invoke the closures directly.
+  it('tickMarkFormatter and timeFormatter produce 24-hour CT strings', async () => {
+    const { createChart } = await import('lightweight-charts');
+    const mocked = vi.mocked(createChart);
+
+    render(
+      <PriceChart
+        candles={[makeCandle()]}
+        previousClose={null}
+        score={null}
+        openingCallStrike={null}
+        openingPutStrike={null}
+      />,
+    );
+
+    const options = mocked.mock.calls.at(-1)?.[1];
+    expect(options).toBeDefined();
+
+    // 2026-01-15T15:30:00Z → 09:30 CT (CST, UTC-6)
+    const utcSeconds = Math.floor(
+      new Date('2026-01-15T15:30:00Z').getTime() / 1000,
+    );
+    const tickMarkFmt = (
+      options as {
+        timeScale?: {
+          tickMarkFormatter?: (s: number) => string;
+        };
+      }
+    ).timeScale?.tickMarkFormatter;
+    const timeFmt = (
+      options as {
+        localization?: { timeFormatter?: (s: number) => string };
+      }
+    ).localization?.timeFormatter;
+
+    expect(typeof tickMarkFmt).toBe('function');
+    expect(typeof timeFmt).toBe('function');
+    expect(tickMarkFmt!(utcSeconds)).toBe('09:30');
+    expect(timeFmt!(utcSeconds)).toBe('09:30');
+  });
+});
+
+describe('PriceChart: momentum badge', () => {
+  // The badge (lines 400-413) only renders when momentum.signal !== 'flat'.
+  // A 'flat' signal collapses the branch so nothing is rendered.
+  it('renders the signal label when momentum.signal is non-flat', () => {
+    const { getByLabelText } = render(
+      <PriceChart
+        candles={[makeCandle()]}
+        previousClose={null}
+        score={null}
+        openingCallStrike={null}
+        openingPutStrike={null}
+        momentum={{
+          signal: 'drift-up',
+          rangeExpanding: false,
+          roc1: 2,
+          roc3: 5,
+          roc5: 7,
+          streak: 2,
+          avgRange: 3,
+          avgRangePrev: 3,
+          acceleration: 0.5,
+        }}
+      />,
+    );
+    // signalLabel('bullish') renders as visible text inside the badge.
+    expect(getByLabelText(/momentum:/i)).toBeInTheDocument();
+  });
+
+  it('appends the lightning glyph when rangeExpanding is true', () => {
+    const { getByLabelText } = render(
+      <PriceChart
+        candles={[makeCandle()]}
+        previousClose={null}
+        score={null}
+        openingCallStrike={null}
+        openingPutStrike={null}
+        momentum={{
+          signal: 'drift-down',
+          rangeExpanding: true,
+          roc1: -2,
+          roc3: -5,
+          roc5: -7,
+          streak: -3,
+          avgRange: 5,
+          avgRangePrev: 3,
+          acceleration: -0.5,
+        }}
+      />,
+    );
+    // The badge should include the ⚡ glyph (\u26A1).
+    const badge = getByLabelText(/momentum:/i);
+    expect(badge.textContent).toContain('\u26A1');
+  });
+
+  it('omits the badge when momentum.signal is "flat"', () => {
+    const { queryByLabelText } = render(
+      <PriceChart
+        candles={[makeCandle()]}
+        previousClose={null}
+        score={null}
+        openingCallStrike={null}
+        openingPutStrike={null}
+        momentum={{
+          signal: 'flat',
+          rangeExpanding: false,
+          roc1: 0,
+          roc3: 0,
+          roc5: 0,
+          streak: 0,
+          avgRange: 2,
+          avgRangePrev: 2,
+          acceleration: 0,
+        }}
+      />,
+    );
+    expect(queryByLabelText(/momentum:/i)).not.toBeInTheDocument();
+  });
+
+  it('omits the badge when momentum prop is undefined', () => {
+    const { queryByLabelText } = render(
+      <PriceChart
+        candles={[makeCandle()]}
+        previousClose={null}
+        score={null}
+        openingCallStrike={null}
+        openingPutStrike={null}
+      />,
+    );
+    expect(queryByLabelText(/momentum:/i)).not.toBeInTheDocument();
+  });
+});
+
 describe('PriceChart: ResizeObserver guard', () => {
   it('renders without error when ResizeObserver is not available', () => {
     // Simulate environments where ResizeObserver is undefined

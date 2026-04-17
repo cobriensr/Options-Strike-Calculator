@@ -334,3 +334,144 @@ describe('GexTarget: data-availability banner', () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe('GexTarget: timestamps select dropdown', () => {
+  // When timestamps.length > 1 the header renders a <select> instead of
+  // the plain <span>. Tests here exercise lines 308-329 of index.tsx.
+  it('renders a select element when timestamps has more than one entry', () => {
+    render(
+      <GexTarget
+        marketOpen={true}
+        gexTarget={makeHookResult({
+          timestamps: [
+            '2026-04-07T14:30:00Z',
+            '2026-04-07T14:35:00Z',
+            '2026-04-07T14:40:00Z',
+          ],
+          timestamp: '2026-04-07T14:40:00Z',
+        })}
+      />,
+    );
+
+    const select = screen.getByRole('combobox', {
+      name: /jump to snapshot time/i,
+    });
+    expect(select).toBeInTheDocument();
+    // Three <option> children map to the three timestamps.
+    const options = select.querySelectorAll('option');
+    expect(options).toHaveLength(3);
+  });
+
+  it('calls scrubTo when a different timestamp option is selected', () => {
+    const scrubTo = vi.fn();
+    render(
+      <GexTarget
+        marketOpen={true}
+        gexTarget={makeHookResult({
+          timestamps: ['2026-04-07T14:30:00Z', '2026-04-07T14:35:00Z'],
+          timestamp: '2026-04-07T14:35:00Z',
+          scrubTo,
+        })}
+      />,
+    );
+
+    const select = screen.getByRole('combobox', {
+      name: /jump to snapshot time/i,
+    }) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: '2026-04-07T14:30:00Z' } });
+    expect(scrubTo).toHaveBeenCalledWith('2026-04-07T14:30:00Z');
+  });
+
+  it('falls back to a span (not a select) when timestamps has exactly one entry', () => {
+    render(
+      <GexTarget
+        marketOpen={true}
+        gexTarget={makeHookResult({
+          timestamps: ['2026-04-07T14:40:00Z'],
+          timestamp: '2026-04-07T14:40:00Z',
+        })}
+      />,
+    );
+
+    expect(
+      screen.queryByRole('combobox', { name: /jump to snapshot time/i }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe('GexTarget: resume-live button', () => {
+  // The LIVE shortcut only renders when isScrubbed=true OR isToday=false.
+  // Exercises lines 360-374 and the scrubLive callback.
+  it('renders and invokes scrubLive when clicked from a scrubbed view', () => {
+    const scrubLive = vi.fn();
+    render(
+      <GexTarget
+        marketOpen={true}
+        gexTarget={makeHookResult({
+          isLive: false,
+          isScrubbed: true,
+          scrubLive,
+        })}
+      />,
+    );
+
+    const btn = screen.getByRole('button', { name: /resume live/i });
+    fireEvent.click(btn);
+    expect(scrubLive).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders from a past-date view and invokes scrubLive on click', () => {
+    const scrubLive = vi.fn();
+    render(
+      <GexTarget
+        marketOpen={false}
+        gexTarget={makeHookResult({
+          isLive: false,
+          isScrubbed: false,
+          isToday: false,
+          scrubLive,
+        })}
+      />,
+    );
+
+    const btn = screen.getByRole('button', { name: /resume live/i });
+    fireEvent.click(btn);
+    expect(scrubLive).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not render when live and viewing today', () => {
+    render(
+      <GexTarget
+        marketOpen={true}
+        gexTarget={makeHookResult({
+          isLive: true,
+          isScrubbed: false,
+          isToday: true,
+        })}
+      />,
+    );
+
+    expect(
+      screen.queryByRole('button', { name: /resume live/i }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe('GexTarget: refresh control', () => {
+  // The refresh button is always present in the header; exercises the
+  // loading-disabled branch and the spinning-icon className.
+  it('calls refresh when clicked and not loading', () => {
+    const refresh = vi.fn();
+    render(
+      <GexTarget
+        marketOpen={true}
+        gexTarget={makeHookResult({ loading: false, refresh })}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /refresh gex target data/i }),
+    );
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+});

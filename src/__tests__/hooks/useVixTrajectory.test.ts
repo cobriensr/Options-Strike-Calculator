@@ -1,8 +1,17 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { renderHook, act, waitFor } from '@testing-library/react';
 import {
   deriveTrajectory,
+  useVixTrajectory,
   type VixSnapshot,
 } from '../../hooks/useVixTrajectory';
+import { POLL_INTERVALS } from '../../constants';
+
+vi.mock('../../hooks/useIsOwner', () => ({
+  useIsOwner: vi.fn(() => true),
+}));
+
+import { useIsOwner } from '../../hooks/useIsOwner';
 
 function snap(overrides: Partial<VixSnapshot>): VixSnapshot {
   return {
@@ -105,5 +114,155 @@ describe('deriveTrajectory', () => {
       snap({ entryTime: '11:45 AM', spx: null }),
     ]);
     expect(state.spx).toBeNull();
+  });
+});
+
+// ============================================================
+// HOOK: useVixTrajectory (exercises fetch + polling branches)
+// ============================================================
+
+describe('useVixTrajectory hook', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    vi.mocked(useIsOwner).mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('does not fetch when not owner', async () => {
+    vi.mocked(useIsOwner).mockReturnValue(false);
+    const { result } = renderHook(() => useVixTrajectory(true));
+    await act(async () => {});
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.current.hasData).toBe(false);
+  });
+
+  it('does not fetch when market is closed', async () => {
+    renderHook(() => useVixTrajectory(false));
+    await act(async () => {});
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('fetches once on mount and updates state when owner + market open', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        snapshots: [
+          { entryTime: '11:30 AM', vix: 17, vix1d: 13, vix9d: 16, spx: 6900 },
+          { entryTime: '11:45 AM', vix: 17, vix1d: 14, vix9d: 16.5, spx: 6910 },
+        ],
+      }),
+    });
+
+    const { result } = renderHook(() => useVixTrajectory(true));
+
+    await waitFor(() => expect(result.current.hasData).toBe(true));
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/vix-snapshots-recent',
+      expect.objectContaining({ credentials: 'same-origin' }),
+    );
+    expect(result.current.spx).not.toBeNull();
+    expect(result.current.spx!.delta).toBeCloseTo(10, 2);
+  });
+
+  it('polls at MARKET_DATA interval while open', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ snapshots: [] }),
+    });
+
+    renderHook(() => useVixTrajectory(true));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.MARKET_DATA);
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  });
+
+  it('silently ignores non-ok responses (no state update)', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 500 });
+
+    const { result } = renderHook(() => useVixTrajectory(true));
+
+    await act(async () => {});
+    // hasData stays false because we never setState on non-ok response.
+    expect(result.current.hasData).toBe(false);
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it('swallows network errors without setting state', async () => {
+    fetchMock.mockRejectedValue(new Error('network down'));
+    const { result } = renderHook(() => useVixTrajectory(true));
+
+    await act(async () => {});
+    // No error field is exposed — just remains in EMPTY state.
+    expect(result.current.hasData).toBe(false);
+  });
+
+  it('clears interval on unmount (no further fetches)', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ snapshots: [] }),
+    });
+
+    const { unmount } = renderHook(() => useVixTrajectory(true));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    unmount();
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.MARKET_DATA * 3);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('handles response with no snapshots field (defaults to empty array)', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({}),
+    });
+
+    const { result } = renderHook(() => useVixTrajectory(true));
+
+    await waitFor(() => expect(result.current.hasData).toBe(true));
+    expect(result.current.ratio1d).toBeNull();
+    expect(result.current.spx).toBeNull();
+  });
+
+  it('does not setState after unmount when fetch resolves late', async () => {
+    // Hold the fetch open.
+    let resolveFetch: (v: unknown) => void = () => {};
+    const pending = new Promise<unknown>((res) => {
+      resolveFetch = res;
+    });
+    fetchMock.mockReturnValue(pending);
+
+    const { result, unmount } = renderHook(() => useVixTrajectory(true));
+    unmount();
+
+    resolveFetch({
+      ok: true,
+      json: async () => ({
+        snapshots: [
+          { entryTime: '11:30 AM', vix: 17, vix1d: 13, vix9d: 16, spx: 6900 },
+        ],
+      }),
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(100);
+    });
+
+    // State should still be the initial empty state (hasData=false).
+    expect(result.current.hasData).toBe(false);
   });
 });
