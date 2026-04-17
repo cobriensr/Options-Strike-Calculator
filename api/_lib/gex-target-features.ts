@@ -42,7 +42,7 @@ import {
   type Mode,
   type StrikeScore,
   type TargetScore,
-} from '../../src/utils/gex-target.js';
+} from '../../src/utils/gex-target/index.js';
 
 // ── Types ───────────────────────────────────────────────────────────────
 

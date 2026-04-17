@@ -41,7 +41,7 @@ import type {
   Tier,
   WallSide,
   Mode,
-} from '../src/utils/gex-target.js';
+} from '../src/utils/gex-target/index.js';
 
 // ── Response shape ─────────────────────────────────────────────
 

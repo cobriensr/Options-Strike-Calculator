@@ -36,7 +36,7 @@ import {
   writeFeatureRows,
 } from '../_lib/gex-target-features.js';
 import logger from '../_lib/logger.js';
-import type { GexSnapshot } from '../../src/utils/gex-target.js';
+import type { GexSnapshot } from '../../src/utils/gex-target/index.js';
 
 // ── Fixtures ────────────────────────────────────────────────────────────
 
