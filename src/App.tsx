@@ -41,6 +41,7 @@ import PreMarketInput from './components/PreMarketInput';
 import MarketRegimeSection from './components/MarketRegimeSection';
 import ResultsSection from './components/ResultsSection';
 import AnalysisHistory from './components/ChartAnalysis/AnalysisHistory';
+import { PyramidTrackerSection } from './components/PyramidTracker';
 import TradingScheduleSection from './components/TradingScheduleSection';
 import BacktestDiag from './components/BacktestDiag';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -1072,6 +1073,10 @@ export default function StrikeCalculator() {
             <span id="sec-history" className="block scroll-mt-28" />
             <ErrorBoundary label="Analysis History">
               <AnalysisHistory refreshKey={historyRefreshKey} />
+            </ErrorBoundary>
+
+            <ErrorBoundary label="Pyramid Trade Tracker">
+              <PyramidTrackerSection />
             </ErrorBoundary>
 
             {isOwner && (

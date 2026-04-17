@@ -311,3 +311,109 @@ export const analysisResponseSchema = z.object({
 });
 
 export type AnalysisResponse = z.infer<typeof analysisResponseSchema>;
+
+// ============================================================
+// /api/pyramid/chains + /api/pyramid/legs
+// ============================================================
+//
+// Droppable MNQ pyramid trade tracker experiment. Per spec
+// (docs/superpowers/specs/pyramid-tracker-2026-04-16.md):
+// ALL feature fields are optional — only identity fields (`id`,
+// `chain_id`, `leg_number`) are strictly required. Partial rows
+// must save successfully so the user can log live during trades
+// without stalling to fill every field.
+//
+// Enum values validate only when non-null. `.optional().nullable()`
+// accepts missing, undefined, or explicit null (matching the
+// Postgres schema where every non-identity column permits NULL).
+
+export const pyramidChainSchema = z.object({
+  id: z.string().min(1, 'chain id is required'),
+  trade_date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'trade_date must be YYYY-MM-DD')
+    .optional()
+    .nullable(),
+  instrument: z.string().optional().nullable(),
+  direction: z.enum(['long', 'short']).optional().nullable(),
+  entry_time_ct: z.string().optional().nullable(),
+  exit_time_ct: z.string().optional().nullable(),
+  initial_entry_price: z.number().optional().nullable(),
+  final_exit_price: z.number().optional().nullable(),
+  exit_reason: z
+    .enum(['reverse_choch', 'stopped_out', 'manual', 'eod'])
+    .optional()
+    .nullable(),
+  total_legs: z.number().int().min(0).optional().nullable(),
+  winning_legs: z.number().int().min(0).optional().nullable(),
+  net_points: z.number().optional().nullable(),
+  session_atr_pct: z.number().optional().nullable(),
+  day_type: z.enum(['trend', 'chop', 'news', 'mixed']).optional().nullable(),
+  higher_tf_bias: z.string().optional().nullable(),
+  notes: z.string().optional().nullable(),
+  // status is NOT NULL in the DB with default 'open'. We accept it as
+  // optional (omit -> DB default / keep existing) but reject explicit
+  // null to match updateChain's behavior: a null patch is silently
+  // swallowed by the COALESCE, so allowing null at the schema level
+  // would be misleading.
+  status: z.enum(['open', 'closed']).optional(),
+});
+
+export type PyramidChainInput = z.infer<typeof pyramidChainSchema>;
+
+export const pyramidLegSchema = z.object({
+  id: z.string().min(1, 'leg id is required'),
+  chain_id: z.string().min(1, 'chain_id is required'),
+  leg_number: z.number().int().min(1, 'leg_number must be >= 1'),
+  signal_type: z.enum(['CHoCH', 'BOS']).optional().nullable(),
+  entry_time_ct: z.string().optional().nullable(),
+  entry_price: z.number().optional().nullable(),
+  stop_price: z.number().optional().nullable(),
+  stop_distance_pts: z.number().optional().nullable(),
+  stop_compression_ratio: z.number().optional().nullable(),
+  vwap_at_entry: z.number().optional().nullable(),
+  vwap_1sd_upper: z.number().optional().nullable(),
+  vwap_1sd_lower: z.number().optional().nullable(),
+  vwap_band_position: z
+    .enum(['outside_upper', 'at_upper', 'inside', 'at_lower', 'outside_lower'])
+    .optional()
+    .nullable(),
+  vwap_band_distance_pts: z.number().optional().nullable(),
+  minutes_since_chain_start: z.number().int().optional().nullable(),
+  minutes_since_prior_bos: z.number().int().optional().nullable(),
+  ob_quality: z.number().int().min(1).max(5).optional().nullable(),
+  relative_volume: z.number().int().min(1).max(5).optional().nullable(),
+  session_phase: z
+    .enum([
+      'pre_open',
+      'open_drive',
+      'morning_drive',
+      'lunch',
+      'afternoon',
+      'power_hour',
+      'close',
+    ])
+    .optional()
+    .nullable(),
+  session_high_at_entry: z.number().optional().nullable(),
+  session_low_at_entry: z.number().optional().nullable(),
+  retracement_extreme_before_entry: z.number().optional().nullable(),
+  exit_price: z.number().optional().nullable(),
+  exit_reason: z
+    .enum(['reverse_choch', 'trailed_stop', 'manual'])
+    .optional()
+    .nullable(),
+  points_captured: z.number().optional().nullable(),
+  r_multiple: z.number().optional().nullable(),
+  was_profitable: z.boolean().optional().nullable(),
+  notes: z.string().optional().nullable(),
+  ob_high: z.number().optional().nullable(),
+  ob_low: z.number().optional().nullable(),
+  ob_poc_price: z.number().optional().nullable(),
+  ob_poc_pct: z.number().min(0).max(100).optional().nullable(),
+  ob_secondary_node_pct: z.number().min(0).max(100).optional().nullable(),
+  ob_tertiary_node_pct: z.number().min(0).max(100).optional().nullable(),
+  ob_total_volume: z.number().nonnegative().optional().nullable(),
+});
+
+export type PyramidLegInput = z.infer<typeof pyramidLegSchema>;
