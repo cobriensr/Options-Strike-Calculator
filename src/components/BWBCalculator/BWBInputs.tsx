@@ -1,25 +1,14 @@
 import type { BWBSide } from './bwb-math';
-
-const INPUT =
-  'bg-input border-[1.5px] border-edge-strong hover:border-edge-heavy rounded-lg text-primary p-[10px_12px] text-[15px] font-mono outline-none w-full transition-[border-color] duration-150';
-
-const INPUT_SM = INPUT.replace('p-[10px_12px]', 'p-[8px_10px]').replace(
-  'text-[15px]',
-  'text-sm',
-);
+import BWBColumn from './BWBColumn';
+import IFColumn from './IFColumn';
 
 const LABEL =
   'text-tertiary font-sans text-[10px] font-bold uppercase tracking-[0.08em]';
 
 interface BWBInputsProps {
-  side: BWBSide;
+  // Shared
   contracts: number;
-  sweetSpot: string;
-  narrowWing: number;
-  wideWing: number;
-  lowStrike: string;
-  midStrike: string;
-  highStrike: string;
+  setContracts: (n: number) => void;
   anchor: {
     strike: number;
     price: number;
@@ -27,64 +16,100 @@ interface BWBInputsProps {
     charmAdjusted: number;
   } | null;
   useCharm: boolean;
-  strikesValid: boolean;
-  onSideChange: (s: BWBSide) => void;
-  setContracts: (n: number) => void;
-  onSweetSpotChange: (value: string) => void;
-  onNarrowChange: (value: string) => void;
-  onWideChange: (value: string) => void;
-  setLowStrike: (v: string) => void;
-  setMidStrike: (v: string) => void;
-  setHighStrike: (v: string) => void;
-  setSweetSpot: (v: string) => void;
   setUseCharm: (v: boolean) => void;
   onRefreshAnchor: () => void;
+  onUseAnchor: (strike: number) => void;
+
+  // BWB
+  bwbSide: BWBSide;
+  bwbSweetSpot: string;
+  bwbNarrowWing: number;
+  bwbWideWing: number;
+  bwbLowStrike: string;
+  bwbMidStrike: string;
+  bwbHighStrike: string;
+  bwbStrikesValid: boolean;
+  bwbNetInput: string;
+  bwbIsCredit: boolean;
+  onBwbSideChange: (s: BWBSide) => void;
+  onBwbSweetSpotChange: (v: string) => void;
+  onBwbNarrowChange: (v: string) => void;
+  onBwbWideChange: (v: string) => void;
+  setBwbLowStrike: (v: string) => void;
+  setBwbMidStrike: (v: string) => void;
+  setBwbHighStrike: (v: string) => void;
+  setBwbSweetSpot: (v: string) => void;
+  setBwbNetInput: (v: string) => void;
+  setBwbIsCredit: (v: boolean) => void;
+
+  // IF
+  ifSweetSpot: string;
+  ifWing: number;
+  ifLowStrike: string;
+  ifMidStrike: string;
+  ifHighStrike: string;
+  ifStrikesValid: boolean;
+  ifNetInput: string;
+  ifIsCredit: boolean;
+  onIfSweetSpotChange: (v: string) => void;
+  onIfWingChange: (v: string) => void;
+  setIfLowStrike: (v: string) => void;
+  setIfMidStrike: (v: string) => void;
+  setIfHighStrike: (v: string) => void;
+  setIfSweetSpot: (v: string) => void;
+  setIfNetInput: (v: string) => void;
+  setIfIsCredit: (v: boolean) => void;
 }
 
 export default function BWBInputs({
-  side,
   contracts,
-  sweetSpot,
-  narrowWing,
-  wideWing,
-  lowStrike,
-  midStrike,
-  highStrike,
+  setContracts,
   anchor,
   useCharm,
-  strikesValid,
-  onSideChange,
-  setContracts,
-  onSweetSpotChange,
-  onNarrowChange,
-  onWideChange,
-  setLowStrike,
-  setMidStrike,
-  setHighStrike,
-  setSweetSpot,
   setUseCharm,
   onRefreshAnchor,
+  onUseAnchor,
+  bwbSide,
+  bwbSweetSpot,
+  bwbNarrowWing,
+  bwbWideWing,
+  bwbLowStrike,
+  bwbMidStrike,
+  bwbHighStrike,
+  bwbStrikesValid,
+  bwbNetInput,
+  bwbIsCredit,
+  onBwbSideChange,
+  onBwbSweetSpotChange,
+  onBwbNarrowChange,
+  onBwbWideChange,
+  setBwbLowStrike,
+  setBwbMidStrike,
+  setBwbHighStrike,
+  setBwbSweetSpot,
+  setBwbNetInput,
+  setBwbIsCredit,
+  ifSweetSpot,
+  ifWing,
+  ifLowStrike,
+  ifMidStrike,
+  ifHighStrike,
+  ifStrikesValid,
+  ifNetInput,
+  ifIsCredit,
+  onIfSweetSpotChange,
+  onIfWingChange,
+  setIfLowStrike,
+  setIfMidStrike,
+  setIfHighStrike,
+  setIfSweetSpot,
+  setIfNetInput,
+  setIfIsCredit,
 }: Readonly<BWBInputsProps>) {
   return (
     <>
-      {/* Side toggle + Contracts */}
+      {/* Shared header: contracts + gamma anchor */}
       <div className="mb-4 flex items-center justify-between gap-4">
-        <div className="flex gap-1.5">
-          {(['calls', 'puts'] as const).map((s) => (
-            <button
-              key={s}
-              onClick={() => onSideChange(s)}
-              className={
-                'cursor-pointer rounded-md border-[1.5px] px-4 py-1.5 font-sans text-xs font-semibold transition-colors duration-100 ' +
-                (side === s
-                  ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
-                  : 'border-chip-border bg-chip-bg text-chip-text hover:border-edge-heavy hover:bg-surface-alt')
-              }
-            >
-              {s === 'calls' ? 'Calls' : 'Puts'}
-            </button>
-          ))}
-        </div>
         <div className="flex items-center gap-0">
           <span className={LABEL + ' mr-2'}>Contracts</span>
           <button
@@ -112,173 +137,113 @@ export default function BWBInputs({
             +
           </button>
         </div>
+
+        <button
+          onClick={onRefreshAnchor}
+          className="text-muted hover:text-accent cursor-pointer text-xs transition-colors"
+          aria-label="Refresh gamma anchor"
+          title="Refresh gamma anchor"
+        >
+          &#x21BB;
+        </button>
       </div>
 
-      {/* Sweet spot auto-fill (optional) */}
-      <div className="bg-surface-alt mb-4 rounded-lg p-3">
-        <div className="mb-1.5 flex items-center justify-between">
-          <span className={LABEL}>Sweet Spot</span>
-          <button
-            onClick={onRefreshAnchor}
-            className="text-muted hover:text-accent cursor-pointer text-xs transition-colors"
-            aria-label="Refresh gamma anchor"
-            title="Refresh gamma anchor"
-          >
-            &#x21BB;
-          </button>
-        </div>
-
-        {/* Gamma anchor suggestion */}
-        {anchor &&
-          (() => {
-            const hasCharmDiff = anchor.charmAdjusted !== anchor.strike;
-            const activeStrike = useCharm
-              ? anchor.charmAdjusted
-              : anchor.strike;
-            const activeDist =
-              Math.round((activeStrike - anchor.price) * 10) / 10;
-            return (
-              <div className="border-accent/30 bg-accent/5 mb-2.5 flex items-center gap-2 rounded-md border px-2.5 py-1.5">
-                <span className="text-accent text-[10px] font-bold tracking-widest uppercase">
-                  {'\u03B3'} Anchor
-                </span>
-                <span className="text-primary font-mono text-sm font-semibold">
-                  {activeStrike}
-                </span>
-                <span className="text-muted text-[10px]">
-                  ({activeDist > 0 ? '+' : ''}
-                  {activeDist} from {anchor.price})
-                </span>
-                {/* gamma / gamma+C toggle — only shown when charm differs */}
-                {hasCharmDiff && (
-                  <div className="border-edge flex overflow-hidden rounded border text-[9px] font-bold">
-                    <button
-                      onClick={() => setUseCharm(false)}
-                      className={`px-1.5 py-0.5 transition-colors ${
-                        !useCharm
-                          ? 'bg-accent text-white'
-                          : 'text-muted hover:text-primary'
-                      }`}
-                    >
-                      {'\u03B3'}
-                    </button>
-                    <button
-                      onClick={() => setUseCharm(true)}
-                      className={`border-edge border-l px-1.5 py-0.5 transition-colors ${
-                        useCharm
-                          ? 'bg-accent text-white'
-                          : 'text-muted hover:text-primary'
-                      }`}
-                    >
-                      {'\u03B3'}+C
-                    </button>
-                  </div>
-                )}
-                <button
-                  onClick={() => onSweetSpotChange(String(activeStrike))}
-                  className="bg-accent/20 hover:bg-accent/30 text-accent ml-auto rounded px-2 py-0.5 text-[10px] font-bold transition-colors"
-                >
-                  Use
-                </button>
-              </div>
-            );
-          })()}
-
-        <div className="grid grid-cols-[1fr_1fr] items-end gap-2 sm:grid-cols-[1fr_auto_auto]">
-          <div className="col-span-2 sm:col-span-1">
-            <input
-              type="text"
-              inputMode="decimal"
-              placeholder={anchor ? String(anchor.strike) : 'e.g. 6500'}
-              value={sweetSpot}
-              onChange={(e) => onSweetSpotChange(e.target.value)}
-              className={INPUT_SM}
-              aria-label="Sweet spot strike"
-            />
-          </div>
-          <div>
-            <div className={LABEL + ' mb-1'}>Narrow</div>
-            <input
-              type="text"
-              inputMode="numeric"
-              value={narrowWing}
-              onChange={(e) => onNarrowChange(e.target.value)}
-              className={INPUT_SM + ' w-full sm:w-[60px]'}
-              aria-label="Narrow wing width"
-            />
-          </div>
-          <div>
-            <div className={LABEL + ' mb-1'}>Wide</div>
-            <input
-              type="text"
-              inputMode="numeric"
-              value={wideWing}
-              onChange={(e) => onWideChange(e.target.value)}
-              className={INPUT_SM + ' w-full sm:w-[60px]'}
-              aria-label="Wide wing width"
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* Strikes */}
-      <div className="border-edge rounded-lg border p-3">
-        <div className="mb-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
-          <div />
-          <div className={LABEL + ' text-center'}>Strike</div>
-        </div>
-        {[
-          {
-            label: 'Low',
-            sub: side === 'calls' ? 'buy 1 call' : 'buy 1 put',
-            strike: lowStrike,
-            setStrike: setLowStrike,
-          },
-          {
-            label: 'Mid',
-            sub: side === 'calls' ? 'sell 2 calls' : 'sell 2 puts',
-            strike: midStrike,
-            setStrike: setMidStrike,
-          },
-          {
-            label: 'High',
-            sub: side === 'calls' ? 'buy 1 call' : 'buy 1 put',
-            strike: highStrike,
-            setStrike: setHighStrike,
-          },
-        ].map((row) => (
-          <div
-            key={row.label}
-            className="mb-2 grid grid-cols-[auto_1fr] items-center gap-x-3"
-          >
-            <div className="whitespace-nowrap">
-              <span className="text-primary font-sans text-sm font-semibold">
-                {row.label}
+      {/* Shared gamma anchor banner */}
+      {anchor &&
+        (() => {
+          const hasCharmDiff = anchor.charmAdjusted !== anchor.strike;
+          const activeStrike = useCharm ? anchor.charmAdjusted : anchor.strike;
+          const activeDist =
+            Math.round((activeStrike - anchor.price) * 10) / 10;
+          return (
+            <div className="border-accent/30 bg-accent/5 mb-4 flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5">
+              <span className="text-accent text-[10px] font-bold tracking-widest uppercase">
+                {'\u03B3'} Anchor
               </span>
-              <span className="text-muted ml-1 text-[10px]">({row.sub})</span>
+              <span className="text-primary font-mono text-sm font-semibold">
+                {activeStrike}
+              </span>
+              <span className="text-muted text-[10px]">
+                ({activeDist > 0 ? '+' : ''}
+                {activeDist} from {anchor.price})
+              </span>
+              {hasCharmDiff && (
+                <div className="border-edge flex overflow-hidden rounded border text-[9px] font-bold">
+                  <button
+                    onClick={() => setUseCharm(false)}
+                    className={`px-1.5 py-0.5 transition-colors ${
+                      !useCharm
+                        ? 'bg-accent text-white'
+                        : 'text-muted hover:text-primary'
+                    }`}
+                  >
+                    {'\u03B3'}
+                  </button>
+                  <button
+                    onClick={() => setUseCharm(true)}
+                    className={`border-edge border-l px-1.5 py-0.5 transition-colors ${
+                      useCharm
+                        ? 'bg-accent text-white'
+                        : 'text-muted hover:text-primary'
+                    }`}
+                  >
+                    {'\u03B3'}+C
+                  </button>
+                </div>
+              )}
+              <button
+                onClick={() => onUseAnchor(activeStrike)}
+                className="bg-accent/20 hover:bg-accent/30 text-accent ml-auto rounded px-2 py-0.5 text-[10px] font-bold transition-colors"
+              >
+                Use
+              </button>
             </div>
-            <input
-              type="text"
-              inputMode="decimal"
-              placeholder="e.g. 6500"
-              value={row.strike}
-              onChange={(e) => {
-                row.setStrike(e.target.value);
-                setSweetSpot('');
-              }}
-              className={INPUT}
-              aria-label={row.label + ' strike'}
-            />
-          </div>
-        ))}
-      </div>
+          );
+        })()}
 
-      {/* Validation hints */}
-      {lowStrike && midStrike && highStrike && !strikesValid && (
-        <p className="text-danger mt-2 text-xs">
-          Strikes must be in ascending order: low {'<'} mid {'<'} high.
-        </p>
-      )}
+      {/* Two input columns side-by-side */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <BWBColumn
+          side={bwbSide}
+          sweetSpot={bwbSweetSpot}
+          narrowWing={bwbNarrowWing}
+          wideWing={bwbWideWing}
+          lowStrike={bwbLowStrike}
+          midStrike={bwbMidStrike}
+          highStrike={bwbHighStrike}
+          strikesValid={bwbStrikesValid}
+          netInput={bwbNetInput}
+          isCredit={bwbIsCredit}
+          onSideChange={onBwbSideChange}
+          onSweetSpotChange={onBwbSweetSpotChange}
+          onNarrowChange={onBwbNarrowChange}
+          onWideChange={onBwbWideChange}
+          setLowStrike={setBwbLowStrike}
+          setMidStrike={setBwbMidStrike}
+          setHighStrike={setBwbHighStrike}
+          setSweetSpot={setBwbSweetSpot}
+          setNetInput={setBwbNetInput}
+          setIsCredit={setBwbIsCredit}
+        />
+        <IFColumn
+          sweetSpot={ifSweetSpot}
+          wing={ifWing}
+          lowStrike={ifLowStrike}
+          midStrike={ifMidStrike}
+          highStrike={ifHighStrike}
+          strikesValid={ifStrikesValid}
+          netInput={ifNetInput}
+          isCredit={ifIsCredit}
+          onSweetSpotChange={onIfSweetSpotChange}
+          onWingChange={onIfWingChange}
+          setLowStrike={setIfLowStrike}
+          setMidStrike={setIfMidStrike}
+          setHighStrike={setIfHighStrike}
+          setSweetSpot={setIfSweetSpot}
+          setNetInput={setIfNetInput}
+          setIsCredit={setIfIsCredit}
+        />
+      </div>
     </>
   );
 }

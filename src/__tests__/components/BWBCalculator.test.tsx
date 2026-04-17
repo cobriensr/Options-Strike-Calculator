@@ -216,7 +216,7 @@ describe('BWBCalculator component', () => {
     expect(screen.getByText('Settlement Pin Calculator')).toBeInTheDocument();
   });
 
-  it('renders calls/puts toggle', () => {
+  it('renders calls/puts toggle (BWB column only)', () => {
     render(<BWBCalculator />);
     expect(screen.getByText('Calls')).toBeInTheDocument();
     expect(screen.getByText('Puts')).toBeInTheDocument();
@@ -227,11 +227,14 @@ describe('BWBCalculator component', () => {
     expect(screen.getByText('Clear')).toBeInTheDocument();
   });
 
-  it('renders 3 strike inputs and dual fill price inputs', () => {
+  it('renders split strike inputs and dual fill price inputs', () => {
     render(<BWBCalculator />);
-    expect(screen.getByLabelText('Low strike')).toBeInTheDocument();
-    expect(screen.getByLabelText('Mid strike')).toBeInTheDocument();
-    expect(screen.getByLabelText('High strike')).toBeInTheDocument();
+    expect(screen.getByLabelText('BWB low strike')).toBeInTheDocument();
+    expect(screen.getByLabelText('BWB mid strike')).toBeInTheDocument();
+    expect(screen.getByLabelText('BWB high strike')).toBeInTheDocument();
+    expect(screen.getByLabelText('Iron Fly low strike')).toBeInTheDocument();
+    expect(screen.getByLabelText('Iron Fly mid strike')).toBeInTheDocument();
+    expect(screen.getByLabelText('Iron Fly high strike')).toBeInTheDocument();
     expect(screen.getByLabelText('BWB fill price')).toBeInTheDocument();
     expect(screen.getByLabelText('Iron Fly fill price')).toBeInTheDocument();
     expect(screen.getAllByText('Debit')).toHaveLength(2);
@@ -241,36 +244,34 @@ describe('BWBCalculator component', () => {
   it('shows empty state when inputs are incomplete', () => {
     render(<BWBCalculator />);
     expect(
-      screen.getByText(/Enter three strikes and at least one fill price/),
+      screen.getByText(/Enter strikes and a fill price in either column/),
     ).toBeInTheDocument();
   });
 
-  it('shows BWB results when BWB fill price is entered', async () => {
+  it('shows BWB results when BWB strikes and fill price are entered', async () => {
     const user = userEvent.setup();
     render(<BWBCalculator />);
 
-    await user.type(screen.getByLabelText('Low strike'), '6480');
-    await user.type(screen.getByLabelText('Mid strike'), '6500');
-    await user.type(screen.getByLabelText('High strike'), '6540');
+    await user.type(screen.getByLabelText('BWB low strike'), '6480');
+    await user.type(screen.getByLabelText('BWB mid strike'), '6500');
+    await user.type(screen.getByLabelText('BWB high strike'), '6540');
     await user.type(screen.getByLabelText('BWB fill price'), '1.50');
     // Default is credit, click Debit (first Debit button = BWB)
     await user.click(screen.getAllByText('Debit')[0]!);
 
-    // Should show trade summary
     expect(screen.getByText(/DEBIT/)).toBeInTheDocument();
-    // Should show P&L table
     expect(
       screen.getByRole('table', { name: 'BWB P&L at expiry' }),
     ).toBeInTheDocument();
   });
 
-  it('shows Iron Fly results when IF fill price is entered', async () => {
+  it('shows Iron Fly results when IF strikes and fill price are entered', async () => {
     const user = userEvent.setup();
     render(<BWBCalculator />);
 
-    await user.type(screen.getByLabelText('Low strike'), '6480');
-    await user.type(screen.getByLabelText('Mid strike'), '6500');
-    await user.type(screen.getByLabelText('High strike'), '6540');
+    await user.type(screen.getByLabelText('Iron Fly low strike'), '6480');
+    await user.type(screen.getByLabelText('Iron Fly mid strike'), '6500');
+    await user.type(screen.getByLabelText('Iron Fly high strike'), '6520');
     await user.type(screen.getByLabelText('Iron Fly fill price'), '8.00');
 
     expect(
@@ -278,14 +279,18 @@ describe('BWBCalculator component', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows both results side by side when both fills are entered', async () => {
+  it('shows both results side by side with independent strikes', async () => {
     const user = userEvent.setup();
     render(<BWBCalculator />);
 
-    await user.type(screen.getByLabelText('Low strike'), '6480');
-    await user.type(screen.getByLabelText('Mid strike'), '6500');
-    await user.type(screen.getByLabelText('High strike'), '6540');
+    await user.type(screen.getByLabelText('BWB low strike'), '6480');
+    await user.type(screen.getByLabelText('BWB mid strike'), '6500');
+    await user.type(screen.getByLabelText('BWB high strike'), '6540');
     await user.type(screen.getByLabelText('BWB fill price'), '0.91');
+
+    await user.type(screen.getByLabelText('Iron Fly low strike'), '6490');
+    await user.type(screen.getByLabelText('Iron Fly mid strike'), '6510');
+    await user.type(screen.getByLabelText('Iron Fly high strike'), '6530');
     await user.type(screen.getByLabelText('Iron Fly fill price'), '8.00');
 
     expect(
@@ -296,42 +301,57 @@ describe('BWBCalculator component', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows validation error for non-ascending strikes', async () => {
+  it('shows validation error for non-ascending BWB strikes', async () => {
     const user = userEvent.setup();
     render(<BWBCalculator />);
 
-    await user.type(screen.getByLabelText('Low strike'), '6500');
-    await user.type(screen.getByLabelText('Mid strike'), '6480');
-    await user.type(screen.getByLabelText('High strike'), '6540');
+    await user.type(screen.getByLabelText('BWB low strike'), '6500');
+    await user.type(screen.getByLabelText('BWB mid strike'), '6480');
+    await user.type(screen.getByLabelText('BWB high strike'), '6540');
 
     expect(
       screen.getByText(/Strikes must be in ascending order/),
     ).toBeInTheDocument();
   });
 
-  it('clear button resets all inputs including both fill prices', async () => {
+  it('shows validation error for non-ascending IF strikes', async () => {
     const user = userEvent.setup();
     render(<BWBCalculator />);
 
-    await user.type(screen.getByLabelText('Low strike'), '6480');
-    await user.type(screen.getByLabelText('Mid strike'), '6500');
+    await user.type(screen.getByLabelText('Iron Fly low strike'), '6510');
+    await user.type(screen.getByLabelText('Iron Fly mid strike'), '6500');
+    await user.type(screen.getByLabelText('Iron Fly high strike'), '6520');
+
+    expect(
+      screen.getByText(/Strikes must be in ascending order/),
+    ).toBeInTheDocument();
+  });
+
+  it('clear button resets both columns fully', async () => {
+    const user = userEvent.setup();
+    render(<BWBCalculator />);
+
+    await user.type(screen.getByLabelText('BWB low strike'), '6480');
+    await user.type(screen.getByLabelText('BWB mid strike'), '6500');
     await user.type(screen.getByLabelText('BWB fill price'), '0.91');
+    await user.type(screen.getByLabelText('Iron Fly low strike'), '6490');
     await user.type(screen.getByLabelText('Iron Fly fill price'), '8.00');
     await user.click(screen.getByText('Clear'));
 
-    expect(screen.getByLabelText('Low strike')).toHaveValue('');
-    expect(screen.getByLabelText('Mid strike')).toHaveValue('');
+    expect(screen.getByLabelText('BWB low strike')).toHaveValue('');
+    expect(screen.getByLabelText('BWB mid strike')).toHaveValue('');
     expect(screen.getByLabelText('BWB fill price')).toHaveValue('');
+    expect(screen.getByLabelText('Iron Fly low strike')).toHaveValue('');
     expect(screen.getByLabelText('Iron Fly fill price')).toHaveValue('');
   });
 
-  it('switches between calls and puts', async () => {
+  it('BWB switches between calls and puts', async () => {
     const user = userEvent.setup();
     render(<BWBCalculator />);
 
-    await user.type(screen.getByLabelText('Low strike'), '6480');
-    await user.type(screen.getByLabelText('Mid strike'), '6500');
-    await user.type(screen.getByLabelText('High strike'), '6540');
+    await user.type(screen.getByLabelText('BWB low strike'), '6480');
+    await user.type(screen.getByLabelText('BWB mid strike'), '6500');
+    await user.type(screen.getByLabelText('BWB high strike'), '6540');
     await user.type(screen.getByLabelText('BWB fill price'), '1.50');
 
     // Switch to puts — trade summary changes from "Call" to "Put"
@@ -356,55 +376,68 @@ describe('BWBCalculator component', () => {
     await user.click(screen.getByText('\u2212'));
     expect(contractInput).toHaveValue('1');
 
-    // Cannot go below 1
     await user.click(screen.getByText('\u2212'));
     expect(contractInput).toHaveValue('1');
   });
 
-  it('sweet spot auto-fills strikes for calls', async () => {
+  it('BWB sweet spot auto-fills asymmetric strikes for calls', async () => {
     const user = userEvent.setup();
     render(<BWBCalculator />);
 
     // Default narrow=20, wide=40
-    await user.type(screen.getByLabelText('Sweet spot strike'), '6500');
+    await user.type(screen.getByLabelText('BWB sweet spot'), '6500');
 
     // For calls: low = 6500-20 = 6480, mid = 6500, high = 6500+40 = 6540
-    expect(screen.getByLabelText('Low strike')).toHaveValue('6480');
-    expect(screen.getByLabelText('Mid strike')).toHaveValue('6500');
-    expect(screen.getByLabelText('High strike')).toHaveValue('6540');
+    expect(screen.getByLabelText('BWB low strike')).toHaveValue('6480');
+    expect(screen.getByLabelText('BWB mid strike')).toHaveValue('6500');
+    expect(screen.getByLabelText('BWB high strike')).toHaveValue('6540');
   });
 
-  it('sweet spot auto-fills strikes for puts', async () => {
+  it('BWB sweet spot auto-fills asymmetric strikes for puts', async () => {
     const user = userEvent.setup();
     render(<BWBCalculator />);
 
     await user.click(screen.getByText('Puts'));
-    await user.type(screen.getByLabelText('Sweet spot strike'), '6500');
+    await user.type(screen.getByLabelText('BWB sweet spot'), '6500');
 
     // For puts: low = 6500-40 = 6460, mid = 6500, high = 6500+20 = 6520
-    expect(screen.getByLabelText('Low strike')).toHaveValue('6460');
-    expect(screen.getByLabelText('Mid strike')).toHaveValue('6500');
-    expect(screen.getByLabelText('High strike')).toHaveValue('6520');
+    expect(screen.getByLabelText('BWB low strike')).toHaveValue('6460');
+    expect(screen.getByLabelText('BWB mid strike')).toHaveValue('6500');
+    expect(screen.getByLabelText('BWB high strike')).toHaveValue('6520');
   });
 
-  it('clear button resets sweet spot', async () => {
+  it('IF sweet spot auto-fills symmetric strikes (default wing 20)', async () => {
     const user = userEvent.setup();
     render(<BWBCalculator />);
 
-    await user.type(screen.getByLabelText('Sweet spot strike'), '6500');
+    await user.type(screen.getByLabelText('Iron Fly sweet spot'), '6500');
+
+    expect(screen.getByLabelText('Iron Fly low strike')).toHaveValue('6480');
+    expect(screen.getByLabelText('Iron Fly mid strike')).toHaveValue('6500');
+    expect(screen.getByLabelText('Iron Fly high strike')).toHaveValue('6520');
+  });
+
+  it('clear button resets both sweet spots', async () => {
+    const user = userEvent.setup();
+    render(<BWBCalculator />);
+
+    await user.type(screen.getByLabelText('BWB sweet spot'), '6500');
+    await user.type(screen.getByLabelText('Iron Fly sweet spot'), '6500');
     await user.click(screen.getByText('Clear'));
 
-    expect(screen.getByLabelText('Sweet spot strike')).toHaveValue('');
-    expect(screen.getByLabelText('Low strike')).toHaveValue('');
+    expect(screen.getByLabelText('BWB sweet spot')).toHaveValue('');
+    expect(screen.getByLabelText('Iron Fly sweet spot')).toHaveValue('');
+    expect(screen.getByLabelText('BWB low strike')).toHaveValue('');
+    expect(screen.getByLabelText('Iron Fly low strike')).toHaveValue('');
   });
 
   it('shows key numbers section with filled inputs', async () => {
     const user = userEvent.setup();
     render(<BWBCalculator />);
 
-    await user.type(screen.getByLabelText('Low strike'), '6480');
-    await user.type(screen.getByLabelText('Mid strike'), '6500');
-    await user.type(screen.getByLabelText('High strike'), '6540');
+    await user.type(screen.getByLabelText('BWB low strike'), '6480');
+    await user.type(screen.getByLabelText('BWB mid strike'), '6500');
+    await user.type(screen.getByLabelText('BWB high strike'), '6540');
     await user.type(screen.getByLabelText('BWB fill price'), '1.50');
 
     expect(screen.getByText('Max Profit')).toBeInTheDocument();
@@ -480,18 +513,25 @@ describe('BWBCalculator anchor + charm', () => {
     expect(screen.getByText('5705')).toBeInTheDocument();
   });
 
-  it('Use button fills sweet spot with anchor strike', async () => {
+  it('Use button fills both BWB and IF sweet spots + strikes', async () => {
     const user = userEvent.setup();
     render(<BWBCalculator />);
     await waitFor(() => {
       expect(screen.getByText('Use')).toBeInTheDocument();
     });
     await user.click(screen.getByText('Use'));
-    expect(screen.getByLabelText('Sweet spot strike')).toHaveValue('5700');
-    // Auto-filled strikes (calls, narrow=20, wide=40):
-    expect(screen.getByLabelText('Low strike')).toHaveValue('5680');
-    expect(screen.getByLabelText('Mid strike')).toHaveValue('5700');
-    expect(screen.getByLabelText('High strike')).toHaveValue('5740');
+
+    // BWB: calls, narrow=20, wide=40
+    expect(screen.getByLabelText('BWB sweet spot')).toHaveValue('5700');
+    expect(screen.getByLabelText('BWB low strike')).toHaveValue('5680');
+    expect(screen.getByLabelText('BWB mid strike')).toHaveValue('5700');
+    expect(screen.getByLabelText('BWB high strike')).toHaveValue('5740');
+
+    // IF: symmetric, default wing=20
+    expect(screen.getByLabelText('Iron Fly sweet spot')).toHaveValue('5700');
+    expect(screen.getByLabelText('Iron Fly low strike')).toHaveValue('5680');
+    expect(screen.getByLabelText('Iron Fly mid strike')).toHaveValue('5700');
+    expect(screen.getByLabelText('Iron Fly high strike')).toHaveValue('5720');
   });
 
   it('passes selectedDate as query param to fetch', async () => {
@@ -532,60 +572,77 @@ describe('BWBCalculator anchor + charm', () => {
 });
 
 describe('BWBCalculator wing width + credit/debit', () => {
-  it('changing narrow width re-fills strikes', async () => {
+  it('changing BWB narrow width re-fills BWB strikes', async () => {
     const user = userEvent.setup();
     render(<BWBCalculator />);
 
-    await user.type(screen.getByLabelText('Sweet spot strike'), '6500');
+    await user.type(screen.getByLabelText('BWB sweet spot'), '6500');
     // Default narrow=20 => low=6480
-    expect(screen.getByLabelText('Low strike')).toHaveValue('6480');
+    expect(screen.getByLabelText('BWB low strike')).toHaveValue('6480');
 
-    // For controlled numeric inputs, fireEvent.change is more reliable
-    // than userEvent.type since the handler ignores non-numeric values
-    const narrowInput = screen.getByLabelText('Narrow wing width');
+    const narrowInput = screen.getByLabelText('BWB narrow wing width');
     const { fireEvent } = await import('@testing-library/react');
     fireEvent.change(narrowInput, { target: { value: '25' } });
     // low = 6500 - 25 = 6475
-    expect(screen.getByLabelText('Low strike')).toHaveValue('6475');
+    expect(screen.getByLabelText('BWB low strike')).toHaveValue('6475');
   });
 
-  it('changing wide width re-fills strikes', async () => {
+  it('changing BWB wide width re-fills BWB strikes', async () => {
     const user = userEvent.setup();
     render(<BWBCalculator />);
 
-    await user.type(screen.getByLabelText('Sweet spot strike'), '6500');
+    await user.type(screen.getByLabelText('BWB sweet spot'), '6500');
     // Default wide=40 => high=6540
-    expect(screen.getByLabelText('High strike')).toHaveValue('6540');
+    expect(screen.getByLabelText('BWB high strike')).toHaveValue('6540');
 
-    const wideInput = screen.getByLabelText('Wide wing width');
+    const wideInput = screen.getByLabelText('BWB wide wing width');
     const { fireEvent } = await import('@testing-library/react');
     fireEvent.change(wideInput, { target: { value: '50' } });
     // high = 6500 + 50 = 6550
-    expect(screen.getByLabelText('High strike')).toHaveValue('6550');
+    expect(screen.getByLabelText('BWB high strike')).toHaveValue('6550');
   });
 
-  it('manual strike edit clears sweet spot', async () => {
+  it('changing IF wing re-fills both IF wings symmetrically', async () => {
     const user = userEvent.setup();
     render(<BWBCalculator />);
 
-    await user.type(screen.getByLabelText('Sweet spot strike'), '6500');
-    expect(screen.getByLabelText('Sweet spot strike')).toHaveValue('6500');
+    await user.type(screen.getByLabelText('Iron Fly sweet spot'), '6500');
+    // Default wing=20
+    expect(screen.getByLabelText('Iron Fly low strike')).toHaveValue('6480');
+    expect(screen.getByLabelText('Iron Fly high strike')).toHaveValue('6520');
 
-    // Manually edit low strike
-    await user.clear(screen.getByLabelText('Low strike'));
-    await user.type(screen.getByLabelText('Low strike'), '6485');
-    expect(screen.getByLabelText('Sweet spot strike')).toHaveValue('');
+    const wingInput = screen.getByLabelText('Iron Fly wing width');
+    const { fireEvent } = await import('@testing-library/react');
+    fireEvent.change(wingInput, { target: { value: '30' } });
+    // low = 6500 - 30, high = 6500 + 30
+    expect(screen.getByLabelText('Iron Fly low strike')).toHaveValue('6470');
+    expect(screen.getByLabelText('Iron Fly high strike')).toHaveValue('6530');
+  });
+
+  it('manual BWB strike edit clears only BWB sweet spot', async () => {
+    const user = userEvent.setup();
+    render(<BWBCalculator />);
+
+    await user.type(screen.getByLabelText('BWB sweet spot'), '6500');
+    await user.type(screen.getByLabelText('Iron Fly sweet spot'), '6500');
+    expect(screen.getByLabelText('BWB sweet spot')).toHaveValue('6500');
+
+    await user.clear(screen.getByLabelText('BWB low strike'));
+    await user.type(screen.getByLabelText('BWB low strike'), '6485');
+
+    expect(screen.getByLabelText('BWB sweet spot')).toHaveValue('');
+    // IF sweet spot untouched
+    expect(screen.getByLabelText('Iron Fly sweet spot')).toHaveValue('6500');
   });
 
   it('credit toggle shows CREDIT label in trade summary', async () => {
     const user = userEvent.setup();
     render(<BWBCalculator />);
 
-    await user.type(screen.getByLabelText('Low strike'), '6480');
-    await user.type(screen.getByLabelText('Mid strike'), '6500');
-    await user.type(screen.getByLabelText('High strike'), '6540');
+    await user.type(screen.getByLabelText('BWB low strike'), '6480');
+    await user.type(screen.getByLabelText('BWB mid strike'), '6500');
+    await user.type(screen.getByLabelText('BWB high strike'), '6540');
     await user.type(screen.getByLabelText('BWB fill price'), '0.91');
-    // Default is credit
     expect(screen.getByText('CREDIT')).toBeInTheDocument();
   });
 
@@ -593,9 +650,9 @@ describe('BWBCalculator wing width + credit/debit', () => {
     const user = userEvent.setup();
     render(<BWBCalculator />);
 
-    await user.type(screen.getByLabelText('Low strike'), '6480');
-    await user.type(screen.getByLabelText('Mid strike'), '6500');
-    await user.type(screen.getByLabelText('High strike'), '6540');
+    await user.type(screen.getByLabelText('BWB low strike'), '6480');
+    await user.type(screen.getByLabelText('BWB mid strike'), '6500');
+    await user.type(screen.getByLabelText('BWB high strike'), '6540');
     await user.type(screen.getByLabelText('BWB fill price'), '1.50');
     await user.click(screen.getAllByText('Debit')[0]!);
     expect(screen.getByText('DEBIT')).toBeInTheDocument();
@@ -605,13 +662,12 @@ describe('BWBCalculator wing width + credit/debit', () => {
     const user = userEvent.setup();
     render(<BWBCalculator />);
 
-    await user.type(screen.getByLabelText('Low strike'), '6480');
-    await user.type(screen.getByLabelText('Mid strike'), '6500');
-    await user.type(screen.getByLabelText('High strike'), '6540');
+    await user.type(screen.getByLabelText('BWB low strike'), '6480');
+    await user.type(screen.getByLabelText('BWB mid strike'), '6500');
+    await user.type(screen.getByLabelText('BWB high strike'), '6540');
     await user.type(screen.getByLabelText('BWB fill price'), '1.50');
     await user.click(screen.getByText('+'));
     await user.click(screen.getByText('+'));
-    // 3 contracts — use getAllByText since it appears in both header and footer
     const matches = screen.getAllByText(/3 contracts/);
     expect(matches.length).toBeGreaterThan(0);
   });
@@ -624,7 +680,6 @@ describe('BWBCalculator wing width + credit/debit', () => {
     fe.change(contractInput, { target: { value: '5' } });
     expect(contractInput).toHaveValue('5');
 
-    // Empty resets to 1
     fe.change(contractInput, { target: { value: '' } });
     expect(contractInput).toHaveValue('1');
   });
