@@ -115,6 +115,13 @@ export interface PyramidLeg {
   r_multiple: number | null;
   was_profitable: boolean | null;
   notes: string | null;
+  ob_high: number | null;
+  ob_low: number | null;
+  ob_poc_price: number | null;
+  ob_poc_pct: number | null;
+  ob_secondary_node_pct: number | null;
+  ob_tertiary_node_pct: number | null;
+  ob_total_volume: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -204,6 +211,13 @@ export interface PyramidLegInput {
   r_multiple?: number | null;
   was_profitable?: boolean | null;
   notes?: string | null;
+  ob_high?: number | null;
+  ob_low?: number | null;
+  ob_poc_price?: number | null;
+  ob_poc_pct?: number | null;
+  ob_secondary_node_pct?: number | null;
+  ob_tertiary_node_pct?: number | null;
+  ob_total_volume?: number | null;
 }
 
 // ============================================================

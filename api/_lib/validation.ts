@@ -413,7 +413,7 @@ export const pyramidLegSchema = z.object({
   ob_poc_pct: z.number().min(0).max(100).optional().nullable(),
   ob_secondary_node_pct: z.number().min(0).max(100).optional().nullable(),
   ob_tertiary_node_pct: z.number().min(0).max(100).optional().nullable(),
-  ob_total_volume: z.number().optional().nullable(),
+  ob_total_volume: z.number().nonnegative().optional().nullable(),
 });
 
 export type PyramidLegInput = z.infer<typeof pyramidLegSchema>;

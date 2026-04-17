@@ -333,20 +333,26 @@ describe('db-pyramid.ts', () => {
       });
 
       expect(result).toEqual(row);
-      // The tagged-template call passes the values array as the second
-      // argument. Assert every OB value is present and in the correct order.
+      // The tagged-template call passes the values array as positional
+      // args after the TemplateStringsArray. The 7 OB columns live at the
+      // tail of the 32-column INSERT, so the last 7 bound values must
+      // equal the input in exact column order. Using .toContain() here
+      // would let a swapped ob_high↔ob_low or ob_secondary↔ob_tertiary
+      // binding pass silently — the two pct fields have identical shapes.
       const callArgs = mockSql.mock.calls[0] as unknown as [
         TemplateStringsArray,
         ...unknown[],
       ];
       const values = callArgs.slice(1);
-      expect(values).toContain(18250.5);
-      expect(values).toContain(18240.25);
-      expect(values).toContain(18247.75);
-      expect(values).toContain(32);
-      expect(values).toContain(29);
-      expect(values).toContain(13);
-      expect(values).toContain(15420);
+      expect(values.slice(-7)).toEqual([
+        18250.5, // ob_high
+        18240.25, // ob_low
+        18247.75, // ob_poc_price
+        32, // ob_poc_pct
+        29, // ob_secondary_node_pct
+        13, // ob_tertiary_node_pct
+        15420, // ob_total_volume
+      ]);
       // Column list and values block both mention all 7 new columns.
       const sqlFragments = callArgs[0] as readonly string[];
       const fullSql = sqlFragments.join(' ');
