@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { z } from 'zod';
+import { rejectIfNotOwner } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 
@@ -20,6 +21,8 @@ export default async function handler(
   req: VercelRequest,
   res: VercelResponse,
 ): Promise<void> {
+  if (req.method !== 'GET' && rejectIfNotOwner(req, res)) return;
+
   const sql = getDb();
 
   if (req.method === 'GET') {

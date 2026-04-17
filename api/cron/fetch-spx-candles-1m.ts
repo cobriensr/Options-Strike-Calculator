@@ -208,6 +208,7 @@ async function storeCandles(
     }
     return { stored, skipped: rows.length - stored };
   } catch (err) {
+    Sentry.captureException(err);
     logger.warn({ err }, 'Batch spx_candles_1m insert failed');
     return { stored: 0, skipped: rows.length };
   }

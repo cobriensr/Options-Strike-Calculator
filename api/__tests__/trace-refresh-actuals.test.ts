@@ -15,6 +15,8 @@ vi.mock('../_lib/logger.js', () => ({
 const mockSchwabFetch = vi.fn();
 vi.mock('../_lib/api-helpers.js', () => ({
   schwabFetch: (...args: unknown[]) => mockSchwabFetch(...args),
+  // rejectIfNotOwner returns false = owner check passes (single-owner app)
+  rejectIfNotOwner: vi.fn(() => false),
 }));
 
 import handler from '../trace/refresh-actuals.js';

@@ -122,7 +122,7 @@ async function storeOiChanges(
 // ── Handler ─────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res);
+  const guard = cronGuard(req, res, { marketHours: false });
   if (!guard) return;
   const { apiKey, today } = guard;
 

@@ -29,6 +29,11 @@ import {
   getETDateStr,
 } from '../../src/utils/timezone.js';
 
+// DST-safe double-fire schedule: `25 13,14 * * 1-5` runs at both
+// 13:25 UTC and 14:25 UTC. One fire always lands in the 9:00–9:30 ET
+// pre-market window; the other misfires and gets rejected by the
+// isPreMarket() gate. This way we don't shift the cron across DST.
+
 // ── Types ───────────────────────────────────────────────────
 
 interface CalendarEvent {

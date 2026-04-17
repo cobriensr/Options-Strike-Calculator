@@ -15,6 +15,8 @@
  * Environment: ANTHROPIC_API_KEY, CRON_SECRET, BLOB_READ_WRITE_TOKEN
  */
 
+import { timingSafeEqual } from 'node:crypto';
+
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { list, get } from '@vercel/blob';
 import Anthropic from '@anthropic-ai/sdk';
@@ -254,7 +256,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // ── Auth: Bearer token check against CRON_SECRET ────────
   const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret || req.headers.authorization !== `Bearer ${cronSecret}`) {
+  if (!cronSecret) {
+    done({ status: 401 });
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const authHeader = req.headers.authorization ?? '';
+  const expected = `Bearer ${cronSecret}`;
+  const authBuf = Buffer.from(authHeader);
+  const expBuf = Buffer.from(expected);
+  if (authBuf.length !== expBuf.length || !timingSafeEqual(authBuf, expBuf)) {
     done({ status: 401 });
     return res.status(401).json({ error: 'Unauthorized' });
   }

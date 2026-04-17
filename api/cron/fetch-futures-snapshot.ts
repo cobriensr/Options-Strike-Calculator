@@ -199,6 +199,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `;
     }
 
+    if (snapshots.length === 0 && errors.length > 0) {
+      return res.status(500).json({
+        error: 'All symbols failed',
+        errors,
+      });
+    }
+
     logger.info(
       {
         tradeDate,

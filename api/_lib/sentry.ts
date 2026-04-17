@@ -13,6 +13,28 @@ Sentry.init({
   environment: process.env.VERCEL_ENV ?? 'development',
   tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.25 : 1,
   enabled: process.env.VERCEL_ENV === 'production',
+  beforeSend(event) {
+    // Strip Authorization / Cookie / api-key / cron-secret headers
+    if (event.request?.headers) {
+      for (const key of Object.keys(event.request.headers)) {
+        if (/^(authorization|cookie|x-api-key|x-cron-secret)$/i.test(key)) {
+          event.request.headers[key] = '[Filtered]';
+        }
+      }
+    }
+    // Strip secret-named keys from extra / tags context
+    const scrubObject = (obj: Record<string, unknown> | undefined) => {
+      if (!obj) return;
+      for (const key of Object.keys(obj)) {
+        if (/(secret|token|api[_-]?key|password|auth)/i.test(key)) {
+          obj[key] = '[Filtered]';
+        }
+      }
+    };
+    scrubObject(event.extra);
+    scrubObject(event.tags as Record<string, unknown> | undefined);
+    return event;
+  },
 });
 
 // ============================================================

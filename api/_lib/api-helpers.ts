@@ -552,7 +552,16 @@ export async function uwFetch<T>(
   }
 
   const body = await res.json();
-  return extract ? extract(body) : (body.data ?? []);
+  if (extract) return extract(body);
+  if (body.data === undefined) {
+    logger.warn(
+      { keys: Object.keys(body as Record<string, unknown>) },
+      'uwFetch: response.data missing',
+    );
+    Sentry.captureMessage('uwFetch: response.data missing', 'warning');
+    return [];
+  }
+  return body.data ?? [];
 }
 
 /**
@@ -615,7 +624,15 @@ export function cronGuard(
   }
 
   const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret || req.headers.authorization !== `Bearer ${cronSecret}`) {
+  if (!cronSecret) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return null;
+  }
+  const authHeader = req.headers.authorization ?? '';
+  const expected = `Bearer ${cronSecret}`;
+  const authBuf = Buffer.from(authHeader);
+  const expBuf = Buffer.from(expected);
+  if (authBuf.length !== expBuf.length || !timingSafeEqual(authBuf, expBuf)) {
     res.status(401).json({ error: 'Unauthorized' });
     return null;
   }

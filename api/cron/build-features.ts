@@ -376,8 +376,9 @@ async function extractLabelsForDate(
       typeof row.full_response === 'string'
         ? JSON.parse(row.full_response)
         : row.full_response;
-  } catch {
-    logger.warn({ date: dateStr }, 'Failed to parse review full_response');
+  } catch (err) {
+    Sentry.captureException(err);
+    logger.warn({ err, date: dateStr }, 'Failed to parse review full_response');
     return null;
   }
 
@@ -926,6 +927,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           labelsExtracted++;
         }
       } catch (err) {
+        Sentry.captureException(err);
         logger.warn(
           { err, date: dateStr },
           'build-features: error processing date',

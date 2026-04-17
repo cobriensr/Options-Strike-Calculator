@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { schwabFetch } from '../_lib/api-helpers.js';
+import { rejectIfNotOwner, schwabFetch } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 
@@ -83,6 +83,8 @@ export default async function handler(
     res.status(405).json({ error: 'Method not allowed' });
     return;
   }
+
+  if (rejectIfNotOwner(req, res)) return;
 
   const sql = getDb();
 

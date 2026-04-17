@@ -97,6 +97,16 @@ if (import.meta.env.PROD)
       { path: '/api/pyramid/legs', method: 'PATCH' },
       { path: '/api/pyramid/legs', method: 'DELETE' },
       { path: '/api/pyramid/progress', method: 'GET' },
+      { path: '/api/trace/prediction', method: 'POST' },
+      { path: '/api/trace/prediction', method: 'DELETE' },
+      { path: '/api/trace/refresh-actuals', method: 'POST' },
+      { path: '/api/darkpool-levels', method: 'GET' },
+      { path: '/api/alerts', method: 'GET' },
+      { path: '/api/alerts-ack', method: 'POST' },
+      { path: '/api/gex-per-strike', method: 'GET' },
+      { path: '/api/greek-exposure-strike', method: 'GET' },
+      { path: '/api/vix-snapshots-recent', method: 'GET' },
+      { path: '/api/ml/analyze-plots', method: 'POST' },
     ],
   });
 

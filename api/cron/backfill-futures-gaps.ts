@@ -19,6 +19,13 @@ import { Sentry, metrics } from '../_lib/sentry.js';
 import { checkDataQuality, cronGuard } from '../_lib/api-helpers.js';
 import { reportCronRun } from '../_lib/axiom.js';
 
+// Sequential loop: 7 symbols × 120s timeout worst case = ~840s.
+// Vercel's 300s default kills it mid-loop; 800s keeps us under the
+// 900s hard cap with breathing room.
+export const config = {
+  maxDuration: 800,
+};
+
 // ── Constants ───────────────────────────────────────────────
 
 const DATABENTO_BASE = 'https://hist.databento.com/v0';

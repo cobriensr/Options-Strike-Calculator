@@ -151,6 +151,7 @@ async function storeStrikes(
     }
     return { stored, skipped: filtered.length - stored };
   } catch (err) {
+    Sentry.captureException(err);
     logger.warn({ err }, 'Batch strike exposure insert failed');
     return { stored: 0, skipped: filtered.length };
   }

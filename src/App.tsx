@@ -60,19 +60,52 @@ import SkeletonSection from './components/SkeletonSection';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 
-const ChartAnalysis = lazy(() => import('./components/ChartAnalysis'));
-const RiskCalculator = lazy(() => import('./components/RiskCalculator'));
-const PositionMonitor = lazy(() => import('./components/PositionMonitor'));
-const MLInsights = lazy(() => import('./components/MLInsights'));
-const FuturesPanel = lazy(
-  () => import('./components/FuturesCalculator/FuturesPanel'),
+// Wrap lazy dynamic imports so that a stale SW-cached chunk after a deploy
+// prompts the user to reload instead of silently failing inside Suspense.
+// Matches the pattern in BWBSection/IronCondorSection export buttons.
+function handleStaleChunk(err: unknown): never {
+  const isChunkError =
+    err instanceof TypeError &&
+    /dynamically imported module|fetch/i.test(err.message);
+  if (isChunkError) {
+    if (confirm('A new version is available. Reload now?')) {
+      globalThis.location.reload();
+    }
+  }
+  throw err;
+}
+
+const ChartAnalysis = lazy(() =>
+  import('./components/ChartAnalysis').catch(handleStaleChunk),
 );
-const GexPerStrike = lazy(() => import('./components/GexPerStrike'));
+const RiskCalculator = lazy(() =>
+  import('./components/RiskCalculator').catch(handleStaleChunk),
+);
+const PositionMonitor = lazy(() =>
+  import('./components/PositionMonitor').catch(handleStaleChunk),
+);
+const MLInsights = lazy(() =>
+  import('./components/MLInsights').catch(handleStaleChunk),
+);
+const FuturesPanel = lazy(() =>
+  import('./components/FuturesCalculator/FuturesPanel').catch(
+    handleStaleChunk,
+  ),
+);
+const GexPerStrike = lazy(() =>
+  import('./components/GexPerStrike').catch(handleStaleChunk),
+);
 const GexTarget = lazy(() =>
-  import('./components/GexTarget').then((m) => ({ default: m.GexTarget })),
+  import('./components/GexTarget')
+    .then((m) => ({ default: m.GexTarget }))
+    .catch(handleStaleChunk),
 );
-const GexLandscape = lazy(() => import('./components/GexLandscape'));
-const BWBCalculator = lazy(() => import('./components/BWBCalculator'));
+const GexLandscape = lazy(() =>
+  import('./components/GexLandscape').catch(handleStaleChunk),
+);
+const BWBCalculator = lazy(() =>
+  import('./components/BWBCalculator').catch(handleStaleChunk),
+);
 
 function SchwabAuthLink({
   ariaLabel,

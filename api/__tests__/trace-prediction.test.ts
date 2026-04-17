@@ -12,6 +12,11 @@ vi.mock('../_lib/logger.js', () => ({
   default: { error: vi.fn() },
 }));
 
+// rejectIfNotOwner returns false = owner check passes (single-owner app)
+vi.mock('../_lib/api-helpers.js', () => ({
+  rejectIfNotOwner: vi.fn(() => false),
+}));
+
 import handler from '../trace/prediction.js';
 
 // ---------------------------------------------------------------------------

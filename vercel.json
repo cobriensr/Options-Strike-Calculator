@@ -95,7 +95,7 @@
     },
     {
       "path": "/api/cron/fetch-oi-per-strike",
-      "schedule": "0 14 * * 1-5"
+      "schedule": "30 14 * * 1-5"
     },
     {
       "path": "/api/cron/monitor-iv",
@@ -145,7 +145,8 @@
   "functions": {
     "api/analyze.ts": { "maxDuration": 780 },
     "api/cron/curate-lessons.ts": { "maxDuration": 780 },
-    "api/cron/build-features.ts": { "maxDuration": 300 }
+    "api/cron/build-features.ts": { "maxDuration": 300 },
+    "api/cron/backfill-futures-gaps.ts": { "maxDuration": 800 }
   },
   "installCommand": "npm install --loglevel=error --no-audit --no-fund",
   "devCommand": "npm run dev",

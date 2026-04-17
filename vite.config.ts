@@ -5,7 +5,6 @@ import { VitePWA } from 'vite-plugin-pwa';
 import { visualizer } from 'rollup-plugin-visualizer';
 import { sentryVitePlugin } from '@sentry/vite-plugin';
 import { vercelToolbar } from '@vercel/toolbar/plugins/vite';
-import { resolve } from 'node:path';
 
 const analyze = process.env.ANALYZE === 'true';
 
@@ -152,11 +151,6 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
       },
-    },
-  },
-  resolve: {
-    alias: {
-      '@': resolve(import.meta.dirname, 'src'),
     },
   },
   test: {
