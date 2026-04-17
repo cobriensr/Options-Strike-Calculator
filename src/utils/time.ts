@@ -135,8 +135,8 @@ export function toETTime(
   timeAmPm: 'AM' | 'PM',
   timezone: 'ET' | 'CT',
 ): { etHour: number; etMinute: number } {
-  const h24 = to24Hour(Number.parseInt(timeHour), timeAmPm);
-  const etMinute = Number.parseInt(timeMinute) || 0;
+  const h24 = to24Hour(Number.parseInt(timeHour, 10), timeAmPm);
+  const etMinute = Number.parseInt(timeMinute, 10) || 0;
   if (timezone === 'CT') {
     const { hour, minute } = convertCTToET(h24, etMinute);
     return { etHour: hour, etMinute: minute };

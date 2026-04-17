@@ -19,6 +19,7 @@ import {
   blackScholesPrice,
   calcIVAcceleration,
 } from './black-scholes';
+import { roundToHalf } from './formatting';
 
 /**
  * Snaps a strike price to the nearest increment.
@@ -241,8 +242,8 @@ export function calcAllDeltas(
       callStrike: result.callStrike,
       putSnapped: result.putStrikeSnapped,
       callSnapped: result.callStrikeSnapped,
-      putSpySnapped: Math.round(spyPutRaw * 2) / 2,
-      callSpySnapped: Math.round(spyCallRaw * 2) / 2,
+      putSpySnapped: roundToHalf(spyPutRaw),
+      callSpySnapped: roundToHalf(spyCallRaw),
       spyPut: spyPutRaw.toFixed(2),
       spyCall: spyCallRaw.toFixed(2),
       putDistance: spotPrice - result.putStrike,

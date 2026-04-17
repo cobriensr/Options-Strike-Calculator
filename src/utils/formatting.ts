@@ -21,10 +21,15 @@ export function round4(n: number): number {
   return Math.round(n * 10000) / 10000;
 }
 
+/** Round to the nearest half — e.g. 5.24 → 5.0, 5.26 → 5.5. */
+export function roundToHalf(n: number): number {
+  return Math.round(n * 2) / 2;
+}
+
 /**
  * Snap an SPX strike to the nearest SPY half-point.
  * E.g. SPX 5700 / 10.1 → SPY 564.5
  */
 export function snapToSpyHalf(strike: number, spxToSpyRatio: number): number {
-  return Math.round((strike / spxToSpyRatio) * 2) / 2;
+  return roundToHalf(strike / spxToSpyRatio);
 }

@@ -145,15 +145,20 @@ Split:
 
 ### Phase 4 — Hygiene pass — ~1 day
 
-Grouped trivial cleanups; can be done in a single session.
+### Phase 4 — Hygiene pass (partial: 3 of 7 shipped, 4 deferred)
 
-1. **Consolidate [src/components/ChartAnalysis/](../../src/components/ChartAnalysis/)** — Merge `AnalysisHistory.tsx` + `AnalysisHistoryPicker.tsx` + `AnalysisHistoryItem.tsx` into `<HistoryList>` + `<HistoryItem>`. Target 17 files → ~10 files.
-2. **Fix `parseInt` radix** — [src/utils/time.ts:138-139](../../src/utils/time.ts), [src/utils/gex-target.ts:760-761](../../src/utils/gex-target.ts). Add `, 10` to all `Number.parseInt` calls.
-3. **Extract rounding helpers** — Add `roundToHalf(n)` and re-export `round2`, `round0` from [src/utils/formatting.ts](../../src/utils/formatting.ts). Replace 6 duplicated `Math.round(n * factor) / factor` sites across [src/utils/strikes.ts](../../src/utils/strikes.ts) and [src/utils/settlement.ts](../../src/utils/settlement.ts).
-4. **Add missing test** — Create [src/__tests__/utils/time.test.ts](../../src/__tests__/utils/time.test.ts) consolidating coverage from `timeValidation.test.ts` + `resolveIV.test.ts`, adding tests for any uncovered exports in [src/utils/time.ts](../../src/utils/time.ts).
-5. **Migrate stray `process.env` reads** — All direct `process.env.X` outside [api/_lib/env.ts](../../api/_lib/env.ts) should use `requireEnv()` or `optionalEnv()`. Grep target: `process\.env\.` in `api/_lib/` excluding `env.ts` and `sentry.ts` platform-var reads.
-6. **Remove unused `.map` index parameters** — 30 files use `.map((item, i) => ...)` where `i` is unused. Run a codemod or let ESLint `no-unused-vars` catch them; add the rule if missing.
-7. **Tailwind `cva` extraction** — Long `className` strings (>150 chars) in [src/components/AdvancedSection.tsx:70-86](../../src/components/AdvancedSection.tsx) should use `cva` or a shared `classNames` helper.
+**Shipped:**
+
+- **#2 parseInt radix** — Added `, 10` to the two sites in [src/utils/time.ts:138-139](../../src/utils/time.ts). The gex-target.ts sites referenced in the original plan moved to `src/utils/gex-target/features.ts` during Phase 2.3 and already had explicit radix — no action needed.
+- **#3 Rounding helpers** — Added `roundToHalf(n)` to [src/utils/formatting.ts](../../src/utils/formatting.ts). Replaced 5 duplicated `Math.round(x * 100) / 100` sites in [src/utils/settlement.ts](../../src/utils/settlement.ts) with `round2()`, and 2 duplicated `Math.round(x * 2) / 2` sites in [src/utils/strikes.ts](../../src/utils/strikes.ts) with `roundToHalf()`. `snapToSpyHalf` in formatting.ts now delegates to `roundToHalf`.
+- **#7 Tailwind `cva` extraction** — Extracted the duplicated 150-char button class in [src/components/AdvancedSection.tsx](../../src/components/AdvancedSection.tsx) into a module-local `toggleChipClass(active)` helper with `TOGGLE_CHIP_BASE` / `TOGGLE_CHIP_ACTIVE` / `TOGGLE_CHIP_INACTIVE` constants.
+
+**Deferred — rationale:**
+
+- **#1 Consolidate ChartAnalysis/** — 17 files total. The three `AnalysisHistory*.tsx` files superficially overlap but serve different contexts (picker modal vs inline list vs single-row display); merging them would need a deeper audit of each component's prop contract than this phase affords. Revisit alongside a genuine UX change to the history UI.
+- **#4 time.ts test** — [src/__tests__/utils/timeValidation.test.ts](../../src/__tests__/utils/timeValidation.test.ts) and [src/__tests__/utils/timezone.test.ts](../../src/__tests__/utils/timezone.test.ts) already cover the key paths. The audit's "missing test" concern pre-dates the timezone.test.ts file. Skipped as a false positive.
+- **#5 process.env migration** — 20+ stray reads scattered across `api-helpers.ts`, `analyze-context-fetchers.ts`, `alerts.ts`, `embeddings.ts`, `db.ts`, `build-features-phase2.ts`, `iv-term-structure.ts`, `journal/backfill-features.ts`. Each site is a micro-edit but the total is high-churn low-value work — `requireEnv()`/`optionalEnv()` exist but their usage isn't enforced, so this is a style pass not a correctness pass. Defer to a dedicated codemod pass.
+- **#6 Unused `.map` index parameters** — 30+ sites. Mechanical. Best handled as a single `eslint-plugin-unused-imports` rule flip + auto-fix rather than piecemeal edits. Defer.
 
 ### Phase 5 — Verification (LAST)
 

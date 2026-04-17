@@ -1,5 +1,6 @@
 import type { HistoryCandle } from '../types/api';
 import type { SettlementResult } from '../components/SettlementCheck/types';
+import { round2 } from './formatting';
 
 /**
  * Compute whether an iron condor would have survived from entry to settlement.
@@ -61,11 +62,11 @@ export function computeSettlement(
     survived: !callBreached && !putBreached,
     callBreached,
     putBreached,
-    callCushion: Math.round(callCushion * 100) / 100,
-    putCushion: Math.round(putCushion * 100) / 100,
-    settlement: Math.round(settlement * 100) / 100,
-    remainingHigh: Math.round(remainingHigh * 100) / 100,
-    remainingLow: Math.round(remainingLow * 100) / 100,
+    callCushion: round2(callCushion),
+    putCushion: round2(putCushion),
+    settlement: round2(settlement),
+    remainingHigh: round2(remainingHigh),
+    remainingLow: round2(remainingLow),
     settledSafe,
   };
 }

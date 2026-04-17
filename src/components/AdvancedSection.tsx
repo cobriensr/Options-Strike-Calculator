@@ -9,6 +9,17 @@ import {
 import { SectionBox, Chip, ErrorMsg } from './ui';
 import ThetaDecayChart from './ThetaDecayChart';
 
+const TOGGLE_CHIP_BASE =
+  'cursor-pointer rounded-md border-[1.5px] p-[5px_12px] font-sans text-xs font-semibold transition-colors duration-100';
+const TOGGLE_CHIP_ACTIVE =
+  'border-chip-active-border bg-chip-active-bg text-chip-active-text';
+const TOGGLE_CHIP_INACTIVE =
+  'border-chip-border bg-chip-bg text-chip-text hover:border-edge-heavy hover:bg-surface-alt';
+
+function toggleChipClass(active: boolean): string {
+  return `${TOGGLE_CHIP_BASE} ${active ? TOGGLE_CHIP_ACTIVE : TOGGLE_CHIP_INACTIVE}`;
+}
+
 interface Props {
   skewPct: number;
   onSkewChange: (v: number) => void;
@@ -65,26 +76,10 @@ export default function AdvancedSection({
       collapsible
       headerRight={
         <div className="flex gap-2">
-          <button
-            onClick={onToggleIC}
-            className={
-              'cursor-pointer rounded-md border-[1.5px] p-[5px_12px] font-sans text-xs font-semibold transition-colors duration-100 ' +
-              (showIC
-                ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
-                : 'border-chip-border bg-chip-bg text-chip-text hover:border-edge-heavy hover:bg-surface-alt')
-            }
-          >
+          <button onClick={onToggleIC} className={toggleChipClass(showIC)}>
             {showIC ? 'Hide' : 'Show'} Iron Condor
           </button>
-          <button
-            onClick={onToggleBWB}
-            className={
-              'cursor-pointer rounded-md border-[1.5px] p-[5px_12px] font-sans text-xs font-semibold transition-colors duration-100 ' +
-              (showBWB
-                ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
-                : 'border-chip-border bg-chip-bg text-chip-text hover:border-edge-heavy hover:bg-surface-alt')
-            }
-          >
+          <button onClick={onToggleBWB} className={toggleChipClass(showBWB)}>
             {showBWB ? 'Hide' : 'Show'} BWB
           </button>
         </div>
