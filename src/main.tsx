@@ -89,6 +89,14 @@ if (import.meta.env.PROD)
       { path: '/api/options-flow/whale-positioning', method: 'GET' },
       { path: '/api/market-internals/history', method: 'GET' },
       { path: '/api/ml/trigger-analyze', method: 'POST' },
+      { path: '/api/pyramid/chains', method: 'GET' },
+      { path: '/api/pyramid/chains', method: 'POST' },
+      { path: '/api/pyramid/chains', method: 'PATCH' },
+      { path: '/api/pyramid/chains', method: 'DELETE' },
+      { path: '/api/pyramid/legs', method: 'POST' },
+      { path: '/api/pyramid/legs', method: 'PATCH' },
+      { path: '/api/pyramid/legs', method: 'DELETE' },
+      { path: '/api/pyramid/progress', method: 'GET' },
     ],
   });
 
