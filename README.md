@@ -1,6 +1,6 @@
 # 0DTE Options Strike Calculator
 
-A production-grade 0DTE SPX options analysis platform combining Black-Scholes pricing, AI-powered chart analysis (Claude Opus 4.6), live market data (Schwab + Unusual Whales), position tracking, and a multi-phase ML pipeline — designed for professional same-day SPX/SPY options trading.
+A production-grade 0DTE SPX options analysis platform combining Black-Scholes pricing, AI-powered chart analysis (Claude Opus 4.7), live market data (Schwab + Unusual Whales), position tracking, and a multi-phase ML pipeline — designed for professional same-day SPX/SPY options trading.
 
 Built with React 19, TypeScript (strict mode), Vite, and Tailwind CSS 4. Deployed on Vercel with Neon Postgres, Upstash Redis, Schwab API, Anthropic API, OpenAI, Unusual Whales, and Sentry integrations. ES futures relay runs on Railway.
 
@@ -22,7 +22,7 @@ Live at: [theta-options.com](https://theta-options.com)
   - [Theta-Weighted Entry Timing](#theta-weighted-entry-timing)
   - [Settlement Pin Risk](#settlement-pin-risk)
   - [UI](#ui)
-- [Chart Analysis (Claude Opus 4.6)](#chart-analysis-claude-opus-46)
+- [Chart Analysis (Claude Opus 4.7)](#chart-analysis-claude-opus-47)
   - [Three Analysis Modes](#three-analysis-modes)
   - [What Claude Receives](#what-claude-receives)
   - [What Claude Returns](#what-claude-returns)
@@ -50,12 +50,12 @@ Live at: [theta-options.com](https://theta-options.com)
   - [Pre-Trade Signals](#pre-trade-signals)
   - [Dark Pool Levels](#dark-pool-levels)
 - [Data Collection & ML Pipeline](#data-collection--ml-pipeline)
-  - [Database Schema (13+ Tables)](#database-schema-13-tables)
-  - [Intraday Data Collection (22 Cron Jobs)](#intraday-data-collection-22-cron-jobs)
+  - [Database Schema (40+ Tables)](#database-schema-40-tables)
+  - [Intraday Data Collection (35 Cron Jobs)](#intraday-data-collection-35-cron-jobs)
   - [ML Pipeline (Python)](#ml-pipeline-python)
   - [Nightly Automation (GitHub Actions)](#nightly-automation-github-actions)
   - [ML Insights (Frontend)](#ml-insights-frontend)
-- [ES Futures Sidecar (Railway)](#es-futures-sidecar-railway)
+- [Futures + ES Options Sidecar (Railway)](#futures--es-options-sidecar-railway)
 - [Live Market Data API](#live-market-data-api)
   - [Architecture](#architecture)
   - [Owner Gating](#owner-gating)
@@ -135,7 +135,7 @@ You input (or auto-receive) the current SPY price, the VIX (plus optionally VIX1
 - Event day warnings for FOMC, CPI, NFP, GDP, and earnings with severity-coded alerts and actionable advice
 - Historical backtesting with full candle-by-candle replay and settlement verification
 - Position monitor with paper dashboard, execution quality analysis, and theta decay simulation
-- Automatic data collection to Postgres (13+ tables, 22 cron jobs) feeding a multi-phase ML pipeline
+- Automatic data collection to Postgres (40+ tables, 35 cron jobs) feeding a multi-phase ML pipeline
 - ML Insights section with nightly pipeline plots analyzed by Claude vision
 - ES futures WebSocket relay on Railway for overnight session data
 
@@ -248,9 +248,9 @@ Comprehensive position sizing and risk management tool:
 
 ---
 
-## Chart Analysis (Claude Opus 4.6)
+## Chart Analysis (Claude Opus 4.7)
 
-The centerpiece feature: upload screenshots of Market Tide, Net Flow (SPY/QQQ/SPX), and Periscope (Delta Flow/Gamma) from Unusual Whales, and Claude Opus 4.6 with adaptive thinking analyzes them alongside the calculator's full context to produce a complete trading plan.
+The centerpiece feature: upload screenshots of Market Tide, Net Flow (SPY/QQQ/SPX), and Periscope (Delta Flow/Gamma) from Unusual Whales, and Claude Opus 4.7 with adaptive thinking analyzes them alongside the calculator's full context to produce a complete trading plan.
 
 ### Three Analysis Modes
 
@@ -262,7 +262,7 @@ The centerpiece feature: upload screenshots of Market Tide, Net Flow (SPY/QQQ/SP
 
 ### What Claude Receives
 
-- All uploaded chart images (up to 7) with labels (Market Tide, Net Flow SPY, Net Flow QQQ, Net Flow SPX, Periscope Delta Flow, Periscope Gamma, Net Charm SPX)
+- All uploaded chart images (up to 4, validated at the Zod boundary) with labels (Market Tide, Net Flow SPY, Net Flow QQQ, Net Flow SPX, Periscope Delta Flow, Periscope Gamma, Net Charm SPX)
 - Full calculator context: SPX, VIX, VIX1D, VIX9D, VVIX, σ, T, hours remaining, delta ceiling, spread ceilings, regime zone, cluster multiplier (symmetric + directional put/call), DOW label, opening range signal, term structure signal + curve shape, RV/IV ratio, IV acceleration multiplier, overnight gap
 - Live Schwab positions: Current SPX 0DTE spreads with strikes, credits, P&L, cushion distances, and net greeks — auto-fetched before each analysis so Claude knows what's already open
 - Database-driven market context: Flow data (last 24h), GEX snapshots, SPX candles, dark pool clusters, max pain, economic events — all assembled by `buildAnalysisContext()`
@@ -283,7 +283,7 @@ The centerpiece feature: upload screenshots of Market Tide, Net Flow (SPY/QQQ/SP
 
 ### UI Features
 
-- Drag-and-drop, file picker, or clipboard paste for image upload (max 7 images)
+- Drag-and-drop, file picker, or clipboard paste for image upload (max 4 images per the Zod schema in `api/_lib/validation.ts`)
 - Per-image label selector (Market Tide, Net Flow SPY, Net Flow QQQ, Net Flow SPX, Periscope Delta Flow, Periscope Gamma, Net Charm SPX)
 - Two-step confirmation: Analyze button → confirmation bar showing image count, mode, and labels → Confirm/Go Back
 - Thinking indicator with progress bar, elapsed timer, rotating status messages, and Cancel button
@@ -294,16 +294,16 @@ The centerpiece feature: upload screenshots of Market Tide, Net Flow (SPY/QQQ/SP
 
 ### Technical Details
 
-- Model: Claude Opus 4.6 (`claude-opus-4-6`)
+- Model: Claude Opus 4.7 (`claude-opus-4-7`)
 - Adaptive thinking: `thinking: { type: 'adaptive' }` — Claude decides how much thinking budget to use per request
-- Max tokens: 32,000
-- Vercel function timeout: 780 seconds / 13 minutes (`maxDuration: 780`)
+- Max tokens: 128,000 (Opus primary) / 64,000 (Sonnet fallback)
+- Vercel function timeout: 800 seconds (`maxDuration: 800`)
 - Client-side timeout: 750 seconds / 12m 30s (AbortController)
-- Cost: ~$0.40–0.60 per analysis (7 images with charm)
+- Cost: ~$0.40–0.60 per analysis (4 images with thinking)
 - System prompt caching: `cache_control: { type: 'ephemeral' }` for ~90% cost reduction on static prompt parts (~23K tokens)
 - Owner-gated: requires authenticated session cookie
 - Rate limited: 3 analyses per minute via Upstash Redis
-- Fallback: Sonnet 4.6 if Opus unavailable
+- Fallback: Sonnet 4.6 (`claude-sonnet-4-6`) if Opus unavailable (availability errors only — request errors do not trigger fallback)
 
 ---
 
@@ -546,7 +546,7 @@ Real-time dark pool support/resistance from Unusual Whales (owner-only):
 
 ## Data Collection & ML Pipeline
 
-### Database Schema (13+ Tables)
+### Database Schema (40+ Tables)
 
 **Core Trading Tables:**
 
@@ -576,7 +576,7 @@ Real-time dark pool support/resistance from Unusual Whales (owner-only):
 | `day_labels`        | ML training labels from review analyses   | structure_correct, flow signals, settlement direction | 1 row/trading day |
 | `economic_events`   | FRED + Finnhub calendar                   | event_name, event_time, type, forecast, previous      | Per event         |
 
-### Intraday Data Collection (22 Cron Jobs)
+### Intraday Data Collection (35 Cron Jobs)
 
 All cron jobs are guarded by `CRON_SECRET` and run during market hours (13–21 UTC, Mon–Fri) unless otherwise noted.
 
@@ -684,45 +684,37 @@ Owner-only section displaying nightly pipeline results:
 
 ---
 
-## ES Futures Sidecar (Railway)
+## Futures + ES Options Sidecar (Railway)
 
-Real-time ES futures WebSocket relay deployed separately on Railway, providing overnight session data for pre-market analysis.
+A Python ingest service deployed separately on Railway, pulling 7 futures symbols (ES, NQ, ZN, RTY, CL, GC, DX) and ES options data from [Databento](https://databento.com) and writing directly to Neon Postgres. Runs outside Vercel because Databento's Python client expects a long-lived process, and because Railway offers cheaper sustained compute than Vercel Functions for this batch-ingest workload.
 
 **Architecture:**
 
 ```text
-Tradovate API (OAuth)
-  ↓ WebSocket connection
-[tradovate-ws] → Raw tick quotes
-  ↓ (1-minute aggregation)
-[bar-aggregator] → OHLCV bars
-  ↓ (upsert)
-Neon Postgres [es_bars table]
+Databento API
+  ↓ (databento SDK + psycopg2)
+[sidecar/src/main.py]
+  ├─ symbol_manager.py  → resolve ES → ESH26 front month
+  ├─ databento_client.py → fetch futures OHLCV + ES options chains
+  ├─ db.py              → direct psycopg2 upserts (not @neondatabase/serverless)
+  └─ health.py          → /health endpoint for Railway probe
+  ↓
+Neon Postgres [futures_snapshots, futures_options_daily, ...]
 ```
 
 **Key features:**
 
-- **Automatic contract rolling**: Resolves ES → ESH26, ESM26, etc. via REST API
-- **1-minute bar aggregation**: OHLCV from tick data with cumulative volume tracking
-- **Retry logic**: Exponential backoff (1s → 30s max) for disconnections
-- **Dead connection detection**: Heartbeats every 2.5s; terminate if no frames for 15s
-- **Health endpoint**: `/health` on port 8080 returns WS status, DB health, last quote timestamp
-- **Graceful shutdown**: SIGTERM/SIGINT handler flushes bars and drains connection pool
-- **Docker deployment**: Multi-stage build, `node:24-slim`, non-root user, 8080 health check
+- **Python, not Node** — `sidecar/` is its own project with `pyproject.toml`, `requirements.txt`, and a Dockerfile. Uses `psycopg2` directly (not `@neondatabase/serverless`) since it's not running in a serverless context.
+- **7 futures symbols** covering the full macro picture: ES (equities), NQ (tech equities), ZN (10Y Treasury), RTY (small caps), CL (crude), GC (gold), DX (dollar index). VX (VIX futures) is planned but deferred pending Databento availability.
+- **ES options ingest** — end-of-day chain snapshots for 14 DTE directional signal, populating `futures_options_daily`.
+- **Sentry SDK** for error tracking (`sentry_setup.py`); separate DSN from the Vercel side.
+- **Railway-specific config** — `railway.toml` for build + deploy; env vars (`DATABENTO_API_KEY`, `DATABASE_URL`, `SENTRY_DSN`) live in Railway's secret store, NOT Vercel's.
+- **Vercel build gating** — the root `vercel.json` `ignoreCommand` skips Vercel deploys when only `sidecar/`, `ml/`, or `scripts/` change, so sidecar commits don't trigger wasted frontend rebuilds.
 
-**Database table:**
+**Consumed by the Vercel side via:**
 
-```sql
-CREATE TABLE es_bars (
-  symbol TEXT,
-  ts TIMESTAMP NOT NULL,
-  open DECIMAL, high DECIMAL, low DECIMAL, close DECIMAL,
-  volume BIGINT, tick_count INT,
-  PRIMARY KEY (symbol, ts)
-)
-```
-
-Upsert logic preserves OHLC integrity: keeps existing `open`, updates `close`, uses `GREATEST()` for high/volume/tick_count, `LEAST()` for low.
+- `api/_lib/futures-context.ts` — reads `futures_snapshots` + `futures_options_daily` into Claude's analysis context, with Zod row-parsing for schema drift safety.
+- `api/cron/backfill-futures-gaps.ts` — fills in weekend / holiday gaps when Databento backfills late.
 
 ---
 
@@ -922,168 +914,231 @@ curl -X POST https://theta-options.com/api/journal/migrate \
 
 ```text
 ├── api/                                  # Vercel Serverless Functions
-│   ├── __tests__/                        # API endpoint tests (74 test files)
-│   ├── _lib/                             # 35 shared backend modules
+│   ├── __tests__/                        # 116 test files — endpoints, cron jobs, _lib
+│   ├── _lib/                             # 51 shared backend modules
 │   │   ├── schwab.ts                     # Schwab OAuth token lifecycle (Redis + distributed lock)
 │   │   ├── api-helpers.ts                # Shared fetch, cache, owner-gate, rate limiting, bot check
-│   │   ├── db.ts                         # Neon Postgres: initDb() + migrateDb() (19 migrations)
-│   │   ├── db-migrations.ts              # Migration definitions (all 13+ tables)
-│   │   ├── db-analyses.ts               # Analysis CRUD
-│   │   ├── db-flow.ts                    # Flow data queries + GEX/candle/darkpool formatters
-│   │   ├── db-snapshots.ts              # Snapshot persistence
-│   │   ├── db-positions.ts              # Position CRUD
-│   │   ├── db-darkpool.ts               # Dark pool snapshot storage
-│   │   ├── db-oi-change.ts              # OI change tracking
-│   │   ├── db-strike-helpers.ts         # Strike-level exposure utilities
-│   │   ├── analyze-prompts.ts           # Static Anthropic prompt text (system prompt parts)
-│   │   ├── analyze-context.ts           # Dynamic context assembly for Claude
-│   │   ├── analyze-calibration.ts       # Mode-specific example outputs
-│   │   ├── build-features-flow.ts       # ML: flow checkpoint features
-│   │   ├── build-features-gex.ts        # ML: GEX + Greek exposure features
-│   │   ├── build-features-phase2.ts     # ML: prev day, realized vol, dark pool, options
-│   │   ├── build-features-monitor.ts    # ML: IV monitor + flow ratio dynamics
-│   │   ├── build-features-types.ts      # ML: shared types and constants
-│   │   ├── plot-analysis-*.ts           # ML plot analysis (3 files)
-│   │   ├── embeddings.ts               # OpenAI text-embedding-3-large + vector search
-│   │   ├── lessons.ts                   # Lessons CRUD + curation logic
-│   │   ├── darkpool.ts                  # Unusual Whales dark pool fetcher
-│   │   ├── max-pain.ts                  # Max pain calculation from all SPX expirations
-│   │   ├── overnight-gap.ts             # ES overnight gap analysis
-│   │   ├── spx-candles.ts              # 5-min SPX candles via SPY translation
-│   │   ├── csv-parser.ts               # thinkorswim CSV export parser
-│   │   ├── validation.ts               # Zod schemas for all API request bodies
-│   │   ├── logger.ts                    # Structured JSON logger (pino)
-│   │   ├── sentry.ts                    # Sentry server-side init
-│   │   └── constants.ts                 # Hard-coded values
+│   │   ├── db.ts                         # Neon Postgres: initDb() + migrateDb() (35+ migrations)
+│   │   ├── db-migrations.ts              # Numbered migration definitions (40+ tables)
+│   │   ├── db-analyses.ts                # Analysis CRUD
+│   │   ├── db-flow.ts                    # Flow data queries + formatters
+│   │   ├── db-snapshots.ts               # Snapshot persistence
+│   │   ├── db-positions.ts               # Position CRUD
+│   │   ├── db-darkpool.ts                # Dark pool snapshot storage
+│   │   ├── db-oi-change.ts               # OI change tracking
+│   │   ├── db-strike-helpers.ts          # Per-strike exposure queries
+│   │   ├── db-nope.ts                    # SPY NOPE time series
+│   │   ├── analyze-prompts.ts            # Static Anthropic prompt text
+│   │   ├── analyze-context.ts            # Orchestrator — wires fetchers + assembles template
+│   │   ├── analyze-context-fetchers.ts   # 13 focused per-data-source fetchers
+│   │   ├── analyze-context-formatters.ts # Pure `format*` helpers (tests target these)
+│   │   ├── analyze-context-helpers.ts    # numOrUndef, parseEntryTimeAsUtc + shared types
+│   │   ├── analyze-calibration.ts        # Mode-specific example outputs
+│   │   ├── build-features-flow.ts        # ML: flow checkpoint features
+│   │   ├── build-features-gex.ts         # ML: GEX + Greek exposure features
+│   │   ├── build-features-phase2.ts      # ML: prev day, realized vol, dark pool, options
+│   │   ├── build-features-monitor.ts     # ML: IV monitor + flow ratio dynamics
+│   │   ├── build-features-types.ts       # FeatureRow, featureNum() narrow helper
+│   │   ├── plot-analysis-*.ts            # ML plot analysis (3 files)
+│   │   ├── embeddings.ts                 # OpenAI text-embedding-3-large + vector search
+│   │   ├── lessons.ts                    # Lessons CRUD + curation logic
+│   │   ├── darkpool.ts                   # Unusual Whales dark pool fetcher (Sentry visibility)
+│   │   ├── max-pain.ts                   # Max pain from all SPX expirations
+│   │   ├── overnight-gap.ts              # ES overnight gap analysis
+│   │   ├── spx-candles.ts                # 5-min SPX candles via SPY translation
+│   │   ├── futures-context.ts            # Reads futures_snapshots w/ Zod row validation
+│   │   ├── csv-parser.ts                 # thinkorswim CSV export parser
+│   │   ├── validation.ts                 # Zod schemas (all API request bodies + position CSV)
+│   │   ├── logger.ts                     # Structured JSON logger (pino)
+│   │   ├── sentry.ts                     # Sentry server-side init + metrics wrappers
+│   │   ├── env.ts                        # Centralized env access (requireEnv / optionalEnv)
+│   │   └── constants.ts                  # Hard-coded values
 │   ├── auth/
-│   │   ├── init.ts                      # GET → redirect to Schwab login
-│   │   └── callback.ts                  # GET → exchange code for tokens
+│   │   ├── init.ts                       # GET → redirect to Schwab login
+│   │   └── callback.ts                   # GET → exchange code for tokens
 │   ├── journal/
-│   │   ├── init.ts                      # POST → create tables + run migrations
-│   │   ├── migrate.ts                   # POST → add new columns (idempotent)
-│   │   └── status.ts                    # GET → DB connection diagnostics
-│   ├── cron/                            # 21 scheduled jobs
-│   │   ├── fetch-flow.ts               # Market Tide (all-in + OTM)
-│   │   ├── fetch-net-flow.ts           # SPX/SPY/QQQ net flow
-│   │   ├── fetch-etf-tide.ts           # SPY/QQQ ETF fund flow
-│   │   ├── fetch-zero-dte-flow.ts      # 0DTE-specific flow
-│   │   ├── fetch-greek-flow.ts         # Delta flow per symbol
-│   │   ├── fetch-greek-exposure.ts     # Agg + by-expiry Greek exposure
-│   │   ├── fetch-spot-gex.ts           # Aggregate GEX snapshots
-│   │   ├── fetch-strike-exposure.ts    # Per-strike Greeks (0DTE)
-│   │   ├── fetch-strike-all.ts         # All-strike composite data
-│   │   ├── fetch-outcomes.ts           # SPX settlement + VIX close
-│   │   ├── fetch-oi-change.ts          # Open interest changes
-│   │   ├── fetch-oi-per-strike.ts      # Per-strike OI
-│   │   ├── fetch-vol-surface.ts        # IV term structure
-│   │   ├── fetch-darkpool.ts           # $5M+ dark pool blocks
-│   │   ├── fetch-economic-calendar.ts  # FRED + Finnhub events
-│   │   ├── compute-es-overnight.ts     # ES futures overnight summary
-│   │   ├── build-features.ts           # ML feature engineering orchestrator
-│   │   ├── curate-lessons.ts           # Weekly lessons curation pipeline
-│   │   ├── monitor-iv.ts              # IV monitoring (minute-level)
-│   │   ├── monitor-flow-ratio.ts      # Flow ratio analytics (minute-level)
-│   │   └── backup-tables.ts           # Database backup to Vercel Blob
-│   ├── ml/                             # ML data export + plot analysis
-│   ├── analyze.ts                      # POST → Claude Opus 4.6 chart analysis
-│   ├── analyses.ts                     # GET → browse past analyses (public)
-│   ├── chain.ts                        # GET → live option chain
-│   ├── events.ts                       # GET → economic calendar (public)
-│   ├── history.ts                      # GET → historical candles
-│   ├── intraday.ts                     # GET → today's OHLC + opening range
-│   ├── journal.ts                      # GET → query saved analyses
-│   ├── positions.ts                    # GET/POST → live/CSV positions
-│   ├── quotes.ts                       # GET → real-time quotes
-│   ├── snapshot.ts                     # POST → save market snapshot
-│   ├── health.ts                       # GET → service health check
-│   ├── alerts.ts                       # GET → active alerts
-│   ├── alerts-ack.ts                   # POST → acknowledge alerts
-│   ├── bwb-anchor.ts                   # GET → BWB gamma anchor
-│   ├── darkpool-levels.ts             # GET → dark pool S/R levels
-│   ├── iv-term-structure.ts           # GET → vol term structure
-│   ├── movers.ts                       # GET → market movers
-│   ├── pre-market.ts                  # GET/POST → pre-market data
-│   ├── vix-ohlc.ts                    # GET → VIX OHLC from snapshots
-│   └── yesterday.ts                    # GET → prior day SPX OHLC
-├── src/                                # React 19 SPA
-│   ├── __tests__/                      # 97 unit test files
-│   │   ├── components/                 # Component tests
-│   │   ├── hooks/                      # Hook tests
-│   │   ├── utils/                      # Utility tests
-│   │   ├── data/                       # Data module tests
-│   │   └── setup.ts                    # Vitest setup (jsdom, mocks)
-│   ├── components/                     # 88 TSX component files
-│   │   ├── ChartAnalysis/             # Claude Opus chart analysis UI (13 files)
-│   │   ├── DeltaRegimeGuide/          # Delta ceiling with DOW + clustering
-│   │   ├── HedgeSection/              # Hedge calculator (reinsurance)
-│   │   ├── IronCondorSection/         # Iron condor analysis
-│   │   ├── IVInputSection/            # IV mode selection + term structure
-│   │   ├── OpeningRangeCheck/         # First-30-min range signal
-│   │   ├── PositionMonitor/           # Paper dashboard (13 files)
-│   │   ├── PreTradeSignals/           # Pre-trade signal cards
-│   │   ├── SettlementCheck/           # Backtest settlement verification
-│   │   ├── VIXRangeAnalysis/          # Historical range + survival heatmap
-│   │   ├── VIXTermStructure/          # VIX1D/VIX9D/VVIX panel
-│   │   ├── VolatilityCluster/         # Volatility clustering signal
-│   │   ├── ml-insights/               # ML pipeline results (plot carousel)
-│   │   └── (standalone)               # BWB, Risk, Pin Risk, Export, Error Boundary, etc.
-│   ├── hooks/                          # 23 custom React hooks
-│   │   ├── useAppState.ts             # Top-level UI state
-│   │   ├── useCalculation.ts          # Main calculation engine
-│   │   ├── useComputedSignals.ts      # All derived signals (single source of truth)
-│   │   ├── useMarketData.ts           # Live Schwab data polling
-│   │   ├── useChainData.ts            # Option chain polling (60s)
-│   │   ├── useChartAnalysis.ts        # Chart analysis API hook
-│   │   ├── useHistoryData.ts          # Historical candles for backtesting
-│   │   ├── useSnapshotSave.ts         # Auto-save snapshots to Postgres
-│   │   ├── useAlertPolling.ts         # Market alert polling
-│   │   ├── useDarkPoolLevels.ts       # Dark pool data polling
-│   │   ├── useMLInsights.ts           # ML pipeline results
-│   │   ├── useAnalysisContext.ts      # Context assembly for Claude
-│   │   └── ...                         # useAutoFill, useDebounced, useVixData, etc.
-│   ├── utils/                          # 21 pure calculation modules
-│   │   ├── black-scholes.ts           # BS pricing + Greeks (CDF, PDF, delta, gamma, vega, theta)
-│   │   ├── iron-condor.ts             # IC builder + PoP
-│   │   ├── hedge.ts                   # Hedge sizing + scenarios
-│   │   ├── bwb.ts                     # Broken-wing butterfly
-│   │   ├── strikes.ts                 # Strike placement + snapping
-│   │   ├── pin-risk.ts               # OI aggregation + pin risk detection
-│   │   ├── settlement.ts             # Settlement survival computation
-│   │   ├── exportXlsx.ts             # Excel export (multi-sheet)
-│   │   └── ...                        # calculator, classifiers, time, timezone, csvParser, etc.
-│   ├── types/                          # Shared TypeScript types
-│   ├── data/                           # Static data (event calendar, VIX range stats)
-│   ├── constants/                      # App-wide constants
-│   ├── themes/                         # Light/dark theme definitions
-│   ├── App.tsx                         # Root component
-│   └── main.tsx                        # React entry point + Sentry init
-├── ml/                                 # Python ML pipeline
-│   ├── src/                            # 11 Python scripts (~8,000 LOC)
-│   ├── tests/                          # 10 pytest files
-│   ├── docs/                           # Phase specs + roadmap
-│   ├── plots/                          # 21 generated plots (tracked in git)
-│   ├── experiments/                    # JSON experiment results
-│   ├── Makefile                        # Pipeline runner (make all, make eda, etc.)
-│   ├── requirements.txt               # Python dependencies
-│   └── conftest.py                     # Adds ml/src/ to sys.path
-├── sidecar/                            # ES futures WebSocket relay (Railway)
-│   ├── src/                            # TypeScript source (main, WS, auth, parser, aggregator, db)
-│   ├── package.json                    # Own dependencies (pg, pino, ws)
-│   ├── Dockerfile                      # Multi-stage Docker build
-│   └── tsconfig.json                   # Own TS config
-├── scripts/                            # 18 backfill + utility scripts
-├── e2e/                                # 32 Playwright E2E specs
-├── docs/                               # Design documents + superpowers specs
+│   │   ├── init.ts                       # POST → create tables + run migrations
+│   │   ├── migrate.ts                    # POST → add new columns (idempotent)
+│   │   └── status.ts                     # GET → DB connection diagnostics
+│   ├── cron/                             # 34 scheduled jobs (35 schedules in vercel.json)
+│   │   ├── fetch-flow.ts                 # Market Tide (all-in + OTM)
+│   │   ├── fetch-net-flow.ts             # SPX/SPY/QQQ net flow
+│   │   ├── fetch-etf-tide.ts             # SPY/QQQ ETF fund flow
+│   │   ├── fetch-zero-dte-flow.ts        # 0DTE-specific flow
+│   │   ├── fetch-greek-flow.ts           # Delta flow per symbol
+│   │   ├── fetch-greek-exposure.ts       # Agg + by-expiry Greek exposure
+│   │   ├── fetch-spot-gex.ts             # Aggregate GEX snapshots
+│   │   ├── fetch-strike-exposure.ts      # Per-strike Greeks (0DTE)
+│   │   ├── fetch-strike-all.ts           # All-strike composite data
+│   │   ├── fetch-gex-0dte.ts             # 0DTE-targeted GEX + target scoring
+│   │   ├── fetch-outcomes.ts             # SPX settlement + VIX close
+│   │   ├── fetch-oi-change.ts            # Open interest changes
+│   │   ├── fetch-oi-per-strike.ts        # Per-strike OI
+│   │   ├── fetch-vol-surface.ts          # IV term structure
+│   │   ├── fetch-darkpool.ts             # $5M+ dark pool blocks
+│   │   ├── fetch-economic-calendar.ts    # FRED + Finnhub events
+│   │   ├── fetch-market-internals.ts     # $TICK / $ADD / $VOLD / $TRIN
+│   │   ├── fetch-whale-alerts.ts         # UW whale positioning
+│   │   ├── fetch-flow-alerts.ts          # Flow-ratio breach alerts
+│   │   ├── compute-es-overnight.ts       # ES futures overnight summary
+│   │   ├── build-features.ts             # ML feature engineering orchestrator
+│   │   ├── curate-lessons.ts             # Weekly lessons curation pipeline
+│   │   ├── monitor-iv.ts                 # IV monitoring (minute-level)
+│   │   ├── monitor-flow-ratio.ts         # Flow ratio analytics (minute-level)
+│   │   ├── backfill-futures-gaps.ts      # Fill Databento weekend/holiday gaps
+│   │   └── backup-tables.ts              # Database backup to Vercel Blob
+│   ├── ml/                               # ML data export + plot analysis endpoints
+│   ├── options-flow/                     # Whale positioning + options flow endpoints
+│   ├── market-internals/                 # Breadth indicators (TICK/ADD/VOLD/TRIN)
+│   ├── analyze.ts                        # POST → Claude Opus 4.7 chart analysis
+│   ├── analyses.ts                       # GET → browse past analyses (public)
+│   ├── chain.ts                          # GET → live option chain
+│   ├── events.ts                         # GET → economic calendar (public)
+│   ├── history.ts                        # GET → historical candles
+│   ├── intraday.ts                       # GET → today's OHLC + opening range
+│   ├── journal.ts                        # GET → query saved analyses
+│   ├── positions.ts                      # GET/POST → live/CSV positions (Zod-validated)
+│   ├── quotes.ts                         # GET → real-time quotes
+│   ├── snapshot.ts                       # POST → save market snapshot
+│   ├── health.ts                         # GET → service health check
+│   ├── alerts.ts                         # GET → active alerts
+│   ├── alerts-ack.ts                     # POST → acknowledge alerts (Zod-validated)
+│   ├── bwb-anchor.ts                     # GET → BWB gamma anchor
+│   ├── darkpool-levels.ts                # GET → dark pool S/R levels
+│   ├── gex-target-history.ts             # GET → GEX target scoring history
+│   ├── iv-term-structure.ts              # GET → vol term structure
+│   ├── movers.ts                         # GET → market movers
+│   ├── pre-market.ts                     # GET/POST → pre-market data
+│   ├── vix-ohlc.ts                       # GET → VIX OHLC from snapshots
+│   └── yesterday.ts                      # GET → prior day SPX OHLC
+├── src/                                  # React 19 SPA
+│   ├── __tests__/                        # 161 unit test files (components, hooks, utils, data)
+│   │   └── setup.ts                      # Vitest setup (jsdom, mocks)
+│   ├── components/                       # 138 TSX component files, grouped by feature folder
+│   │   ├── GexPerStrike/                 # 0DTE GEX panel (Phase 2.1 decomposition, 10 files)
+│   │   │   ├── index.tsx                 # Thin orchestrator (<200 LOC)
+│   │   │   ├── useGexViewState.ts        # State + derived memos
+│   │   │   ├── Header.tsx                # Date picker + scrubber + visible-count stepper
+│   │   │   ├── OverlayControls.tsx       # Charm/vanna/dex + OI/VOL/DIR + legend
+│   │   │   ├── StrikesTable.tsx          # Price-ladder bar chart
+│   │   │   ├── SummaryCards.tsx          # Bottom aggregate tiles
+│   │   │   ├── Tooltip.tsx               # Row hover readout
+│   │   │   ├── formatters.ts             # formatNum, formatFlowPressure, formatTime
+│   │   │   ├── mode.ts                   # ViewMode accessors
+│   │   │   └── colors.ts                 # Overlay accent constants
+│   │   ├── FuturesCalculator/            # Day-trade P&L (Phase 2.2 decomposition, 16 files)
+│   │   │   ├── index.tsx                 # Orchestrator (<250 LOC)
+│   │   │   ├── useFuturesCalc.ts         # Trade inputs + derived P&L memos
+│   │   │   ├── useAccountSettings.ts     # localStorage-backed balance + risk %
+│   │   │   ├── ScenarioInputs.tsx        # Account + direction + entry/exit/contracts
+│   │   │   ├── TradeResults.tsx          # Full P&L results block
+│   │   │   ├── TickLadderTable.tsx       # Entry-only tick ladder
+│   │   │   ├── ExcursionPanels.tsx       # MAE + MFE panels (shared template)
+│   │   │   ├── PositionSizingPanel.tsx   # Risk-budget-based sizing
+│   │   │   ├── CalcHeader.tsx            # Title + symbol chips + clear
+│   │   │   ├── SpecBar.tsx               # Contract spec ribbon
+│   │   │   ├── ui-primitives.tsx         # FieldLabel, PriceInput, ResultRow
+│   │   │   ├── formatters.ts             # fmtPrice, fmtDollar, pnlColor
+│   │   │   └── ...                       # FuturesGrid, FuturesPanel, VixTermStructure, futures-calc.ts
+│   │   ├── GexTarget/                    # GEX target scoring panel (tile, strike box, sparklines)
+│   │   ├── ChartAnalysis/                # Claude chart analysis UI (19 files)
+│   │   ├── DeltaRegimeGuide/             # Delta ceiling with DOW + clustering
+│   │   ├── HedgeSection/                 # Hedge calculator (reinsurance)
+│   │   ├── IronCondorSection/            # Iron condor analysis
+│   │   ├── IVInputSection/               # IV mode selection + term structure
+│   │   ├── BWBSection/                   # Broken-wing butterfly analysis
+│   │   ├── OpeningRangeCheck/            # First-30-min range signal
+│   │   ├── PositionMonitor/              # Paper dashboard + statement parser
+│   │   ├── PreTradeSignals/              # Pre-trade signal cards
+│   │   ├── SettlementCheck/              # Backtest settlement verification
+│   │   ├── VIXRangeAnalysis/             # Historical range + survival heatmap
+│   │   ├── VIXTermStructure/             # VIX1D/VIX9D/VVIX panel
+│   │   ├── VolatilityCluster/            # Volatility clustering signal
+│   │   ├── MarketFlow/                   # Cross-ticker flow orchestrator
+│   │   ├── MarketInternals/              # Breadth indicators panel
+│   │   ├── MLInsights/                   # ML pipeline results (plot carousel)
+│   │   ├── GexLandscape/                 # Full-session gamma landscape
+│   │   ├── OptionsFlow/                  # Whale positioning + options flow
+│   │   ├── PositionVisuals/              # P&L over time, waterfall, strike map
+│   │   ├── RiskCalculator/               # Position-sizing + risk tiers
+│   │   └── (standalone)                  # Pin Risk, Export, Error Boundary, etc.
+│   ├── hooks/                            # 32 custom React hooks
+│   │   ├── useAppState.ts                # Top-level UI state (focused memoization, no 26-dep trap)
+│   │   ├── useCalculation.ts             # Main calculation engine
+│   │   ├── useComputedSignals.ts         # All derived signals (single source of truth)
+│   │   ├── useMarketData.ts              # Live Schwab data polling (fetchers split out)
+│   │   ├── useChainData.ts               # Option chain polling (60s)
+│   │   ├── useChartAnalysis.ts           # Chart analysis API hook
+│   │   ├── useHistoryData.ts             # Historical candles for backtesting
+│   │   ├── useSnapshotSave.ts            # Auto-save snapshots to Postgres
+│   │   ├── useAlertPolling.ts            # Market alert polling (typed response guards)
+│   │   ├── useDarkPoolLevels.ts          # Dark pool data polling
+│   │   ├── useMLInsights.ts              # ML pipeline results
+│   │   ├── useAnalysisContext.ts         # Context assembly for Claude
+│   │   ├── useGexPerStrike.ts            # Per-strike GEX for GexPerStrike panel
+│   │   ├── useGexTarget.ts               # GEX target scoring hook
+│   │   ├── useOptionsFlow.ts             # Whale + flow polling
+│   │   ├── useMarketInternals.ts         # Breadth indicator polling
+│   │   ├── useNopeIntraday.ts            # SPY NOPE intraday polling
+│   │   ├── useVixData.ts                 # VIX static + API (race-safe single effect)
+│   │   └── ...                           # useAutoFill, useDebounced, useVIXTrajectory, etc.
+│   ├── utils/                            # ~30 pure calculation modules
+│   │   ├── black-scholes.ts              # BS pricing + Greeks (CDF, PDF, delta, gamma, vega, theta)
+│   │   ├── iron-condor.ts                # IC builder + PoP
+│   │   ├── hedge.ts                      # Hedge sizing + scenarios
+│   │   ├── bwb.ts                        # Broken-wing butterfly
+│   │   ├── strikes.ts                    # Strike placement + snapping
+│   │   ├── pin-risk.ts                   # OI aggregation + pin risk detection
+│   │   ├── settlement.ts                 # Settlement survival computation
+│   │   ├── market-regime.ts              # TICK/ADD/VOLD/TRIN → range/trend/neutral
+│   │   ├── extreme-detector.ts           # Breadth extremes detector
+│   │   ├── candle-momentum.ts            # ROC + range expansion classifier
+│   │   ├── zero-gamma.ts                 # Gamma flip level
+│   │   ├── gex-target/                   # GEX target scoring (Phase 2.3 split, 7 files)
+│   │   │   ├── index.ts                  # Public API barrel
+│   │   │   ├── scorers.ts                # 6 component scorers + computeAttractingMomentum
+│   │   │   ├── features.ts               # Feature extraction + compute helpers
+│   │   │   ├── pipeline.ts               # pickUniverse, scoreStrike, scoreMode, computeGexTarget
+│   │   │   ├── tiers.ts                  # assignTier, assignWallSide
+│   │   │   ├── config.ts                 # GEX_TARGET_CONFIG
+│   │   │   └── types.ts                  # All shared types
+│   │   ├── formatting.ts                 # round0/1/2/4, roundToHalf, snapToSpyHalf
+│   │   ├── exportXlsx.ts                 # Excel export (multi-sheet)
+│   │   └── ...                           # calculator, classifiers, time, timezone, csvParser, etc.
+│   ├── types/                            # Shared TypeScript types
+│   ├── data/                             # Static data (event calendar, VIX range stats)
+│   ├── constants/                        # App-wide constants
+│   ├── themes/                           # Light/dark theme definitions
+│   ├── App.tsx                           # Root component
+│   └── main.tsx                          # React entry point + Sentry init
+├── ml/                                   # Python ML pipeline
+│   ├── src/                              # Python scripts (clustering, EDA, phase2, pin, viz, ...)
+│   ├── tests/                            # 14 pytest files
+│   ├── docs/                             # Phase specs + roadmap
+│   ├── plots/                            # Generated plots (tracked in git, NOT gitignored)
+│   ├── experiments/                      # JSON experiment results
+│   ├── Makefile                          # Pipeline runner (make all, make eda, etc.)
+│   ├── requirements.txt                  # Python dependencies
+│   └── conftest.py                       # Adds ml/src/ to sys.path
+├── sidecar/                              # Futures + ES options Python ingest (Railway)
+│   ├── src/                              # Python — main, databento_client, db, symbol_manager, health, sentry_setup
+│   ├── pyproject.toml                    # Python packaging
+│   ├── requirements.txt                  # databento, psycopg2, sentry-sdk, ...
+│   ├── railway.toml                      # Railway build + deploy config
+│   └── Dockerfile                        # Container build for Railway
+├── scripts/                              # Backfill + utility scripts (.mjs, shell)
+├── e2e/                                  # 32 Playwright E2E specs
+├── docs/                                 # Design documents + superpowers specs
 ├── public/
-│   ├── vix-data.json                   # 9,137 days of VIX OHLC (1990–2026)
-│   └── vix1d-daily.json               # 960 days of VIX1D daily (May 2022–Mar 2026)
+│   ├── vix-data.json                     # VIX OHLC history (1990–present, CBOE export)
+│   └── vix1d-daily.json                  # VIX1D daily history (May 2022–present)
 ├── .github/workflows/
-│   ├── ml-pipeline.yml                 # Nightly ML pipeline automation
-│   └── neon_workflow.yml               # Neon branching workflow
-├── vercel.json                         # Crons, security headers, CSP, rewrites, ignoreCommand
-├── vite.config.ts                      # Vite + Vitest + PWA + bundle analysis
-├── .env.example                        # Environment variable template
-└── .nvmrc                              # Node 24 version pin
+│   ├── ml-pipeline.yml                   # Nightly ML pipeline automation
+│   └── neon_workflow.yml                 # Neon branching workflow
+├── vercel.json                           # Crons, security headers, CSP, rewrites, ignoreCommand
+├── vite.config.ts                        # Vite + Vitest + PWA + bundle analysis
+├── .env.example                          # Environment variable template
+└── .nvmrc                                # Node 24 version pin
 ```
 
 ---
@@ -1103,7 +1158,7 @@ curl -X POST https://theta-options.com/api/journal/migrate \
                     └──────────────────┬───────────────────────────┘
                                        │ (auto-populate)
                     ┌─── Unusual Whales ──────────────────────────┐
-                    │  22 cron jobs → flow, GEX, dark pool, etc.  │
+                    │  35 cron jobs → flow, GEX, dark pool, etc.  │
                     │  → flow_data, greek_exposure, spot_exposures │
                     │  → strike_exposures, training_features       │
                     └──────────────────┬───────────────────────────┘
@@ -1117,7 +1172,7 @@ SPY + VIX + Time ──→ useCalculation() ──→ results (strikes, premiums
                     │                       │
                     ├──→ ChartAnalysis ──→ GET /api/positions ──→ Schwab Trader API
                     │        context      │
-                    │                     └──→ POST /api/analyze ──→ Claude Opus 4.6
+                    │                     └──→ POST /api/analyze ──→ Claude Opus 4.7
                     │                              │                      │
                     │                              ├─── lessons injection ←── lessons table
                     │                              ├─── flow/GEX/candles ←── market data tables
@@ -1193,7 +1248,7 @@ All owner-gated endpoints are rate-limited via Upstash Redis:
 
 ### Input Validation
 
-- Image payload: Max 7 images, max 5MB per image (base64), validated by Zod schemas
+- Image payload: Max 4 images, max 5MB per image (base64), validated by Zod schemas
 - Anthropic errors: Sanitized to generic messages, full details logged server-side only
 - DB errors: Sanitized, never expose connection details to client
 - SQL injection: Neon tagged templates auto-parameterize all queries
@@ -1251,15 +1306,15 @@ npm run build:analyze    # Opens dist/bundle-stats.html
 
 ## Testing
 
-4,239 unit tests across 171 test files + 32 Playwright E2E specs (Chromium, Firefox, and WebKit), all passing with TypeScript strict mode. ML pipeline has 10 additional pytest files.
+**6,897 unit tests across 277 test files** + 32 Playwright E2E specs (Chromium, Firefox, and WebKit), all passing with TypeScript strict mode. ML pipeline has 14 additional pytest files. Overall coverage: 95.3% statements / 87.9% branches / 96.3% functions.
 
 ### Unit Tests (Vitest)
 
 Tests are organized by source type:
 
 ```text
-src/__tests__/     97 test files — components, hooks, utils, data
-api/__tests__/     74 test files — API endpoints, cron jobs, _lib modules
+src/__tests__/     161 test files — components, hooks, utils, data
+api/__tests__/     116 test files — API endpoints, cron jobs, _lib modules
 ```
 
 | File                                | Focus                                                                                      |
@@ -1319,7 +1374,7 @@ api/__tests__/     74 test files — API endpoints, cron jobs, _lib modules
 ### ML Tests (pytest)
 
 ```bash
-cd ml && .venv/bin/pytest -v     # 10 test files covering all pipeline phases
+cd ml && .venv/bin/pytest -v     # 14 test files covering all pipeline phases
 ```
 
 | File                 | Coverage                                        |
@@ -1510,7 +1565,7 @@ Section 508 / WCAG 2.1 AA: semantic HTML, ARIA attributes, focus management, 4.5
 
 These rules are derived from backtesting and live trading. They are coded into the Claude system prompt and override default flow-based structure selection when applicable. Each rule traces to specific sessions where the rule would have prevented a loss or captured a missed opportunity.
 
-#### Chart Input Lineup (6–7 images)
+#### Chart Input Lineup (up to 4 images per the Zod schema — pick the most relevant for the session)
 
 | Slot | Chart                          | Question It Answers                                |
 | ---- | ------------------------------ | -------------------------------------------------- |
