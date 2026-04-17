@@ -834,7 +834,7 @@ export default function LegFormModal({
           {/* Section F */}
           <Section
             title="Outcome"
-            subtitle="Fill after the trade closes \u2014 all fields optional"
+            subtitle="Fill after the trade closes — all fields optional"
           >
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field label="Exit Price">

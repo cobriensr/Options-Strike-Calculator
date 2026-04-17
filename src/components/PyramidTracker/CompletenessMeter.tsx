@@ -8,10 +8,10 @@
  * on partial saves, but the meter nudges the user toward more complete
  * rows which improves downstream ML usefulness.
  *
- * Colour bands per spec:
- *   <33%  -> red
- *   33-66 -> amber
- *   >66%  -> green
+ * Colour bands per spec (see `completenessColor` in pyramid-form-helpers):
+ *   <33%   -> red
+ *   33-65% -> amber
+ *   >=66%  -> green
  */
 
 import { completenessColor } from './pyramid-form-helpers';

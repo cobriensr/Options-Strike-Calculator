@@ -106,6 +106,18 @@ describe('LegFormModal', () => {
     expect(screen.getByLabelText(/^was profitable$/i)).toHaveValue('yes');
   });
 
+  it('renders the Outcome section subtitle with a real em-dash (no literal unicode escape)', () => {
+    render(<LegFormModal {...makeProps()} />);
+    // Regression guard: `subtitle="... \u2014 ..."` on a JSX string attribute
+    // renders literally; only expressions / real characters are parsed. The
+    // subtitle must contain the actual em-dash character, and must not
+    // contain the literal six-character escape sequence.
+    expect(
+      screen.getByText(/fill after the trade closes — all fields optional/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(String.raw`\u2014`)).not.toBeInTheDocument();
+  });
+
   it('renders all 7 OB fields inside a visible Order Block section', () => {
     render(<LegFormModal {...makeProps()} />);
     // The Section component renders the title inside a <legend> element.

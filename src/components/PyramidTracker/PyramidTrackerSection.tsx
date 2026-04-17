@@ -41,11 +41,6 @@ export default function PyramidTrackerSection() {
 }
 
 /**
- * Inner body separated so the kill switch can short-circuit before
- * `usePyramidData` fetches anything. Once this function runs, the feature
- * is live and data-loading begins.
- */
-/**
  * Discriminated union describing the current modal state. `null` means
  * neither modal is open. Using a union keeps chain/leg modals mutually
  * exclusive without two independent boolean flags.
@@ -57,6 +52,11 @@ type ModalState =
   | { kind: 'leg-create'; chainId: string }
   | { kind: 'leg-edit'; chainId: string; leg: PyramidLeg };
 
+/**
+ * Inner body separated so the kill switch can short-circuit before
+ * `usePyramidData` fetches anything. Once this function runs, the feature
+ * is live and data-loading begins.
+ */
 function PyramidTrackerBody() {
   const [expanded, setExpanded] = useState(false);
   const contentId = useId();

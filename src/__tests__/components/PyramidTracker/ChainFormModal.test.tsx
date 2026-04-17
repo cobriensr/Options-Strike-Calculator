@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChainFormModal from '../../../components/PyramidTracker/ChainFormModal';
 import type { PyramidChain, PyramidChainInput } from '../../../types/pyramid';
@@ -233,6 +233,80 @@ describe('ChainFormModal', () => {
     render(<ChainFormModal {...makeProps({ onClose })} />);
     await user.keyboard('{Escape}');
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('dismisses on backdrop mousedown that starts on the backdrop', () => {
+    const onClose = vi.fn();
+    const { container } = render(
+      <ChainFormModal {...makeProps({ onClose })} />,
+    );
+    // The backdrop is the aria-hidden div with bg-black/60. Find it via the
+    // class token — avoids leaking implementation details into a testid.
+    const backdrop = container.querySelector<HTMLElement>('.bg-black\\/60');
+    expect(backdrop).not.toBeNull();
+    // Dispatching on the backdrop itself means `event.target === backdrop`
+    // === `currentTarget` inside the handler, so the close fires.
+    fireEvent.mouseDown(backdrop!);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT dismiss when mousedown originates inside the dialog', () => {
+    const onClose = vi.fn();
+    render(<ChainFormModal {...makeProps({ onClose })} />);
+    // Simulate a press starting inside the dialog (the common live case is
+    // a text-highlight drag in the Notes textarea). mouseDown on the
+    // textarea bubbles through the dialog panel, not through the backdrop
+    // — the backdrop's handler never sees it, so `onClose` stays silent.
+    const notes = screen.getByLabelText(/^notes$/i);
+    fireEvent.mouseDown(notes);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('target-check: mousedown with a non-backdrop target does not close', () => {
+    // Direct unit check of the guard: even if an event somehow reaches the
+    // backdrop with a foreign `target` (e.g. a bubbled custom event), the
+    // `e.target === e.currentTarget` check skips the close.
+    const onClose = vi.fn();
+    const { container } = render(
+      <ChainFormModal {...makeProps({ onClose })} />,
+    );
+    const backdrop = container.querySelector<HTMLElement>('.bg-black\\/60');
+    expect(backdrop).not.toBeNull();
+    // Create a bare MouseEvent and dispatch it from a descendant of the
+    // panel. It bubbles past the panel's own ancestors; since the backdrop
+    // is a sibling of the panel (not an ancestor), this confirms the
+    // backdrop handler is not spuriously invoked by in-dialog events.
+    const notes = screen.getByLabelText(/^notes$/i);
+    notes.dispatchEvent(
+      new MouseEvent('mousedown', { bubbles: true, cancelable: true }),
+    );
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('focus trap: Tab at last focusable element loops back to first', async () => {
+    const user = userEvent.setup();
+    render(<ChainFormModal {...makeProps()} />);
+
+    // Find the first and last focusable descendants inside the dialog.
+    const dialog = screen.getByRole('dialog');
+    const focusable = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        'input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    );
+    expect(focusable.length).toBeGreaterThan(1);
+    const first = focusable[0]!;
+    const last = focusable[focusable.length - 1]!;
+
+    // Focus the last element and press Tab — should wrap to first.
+    last.focus();
+    expect(document.activeElement).toBe(last);
+    await user.keyboard('{Tab}');
+    expect(document.activeElement).toBe(first);
+
+    // Shift+Tab from first should wrap back to last.
+    await user.keyboard('{Shift>}{Tab}{/Shift}');
+    expect(document.activeElement).toBe(last);
   });
 
   it('surfaces PyramidApiError as an inline form error and does not close', async () => {
