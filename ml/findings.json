@@ -3,10 +3,7 @@
   "dataset": {
     "total_days": 73,
     "labeled_days": 42,
-    "date_range": [
-      "2026-01-02",
-      "2026-04-16"
-    ],
+    "date_range": ["2026-01-02", "2026-04-16"],
     "overall_accuracy": 0.929
   },
   "structure_accuracy": {
@@ -958,7 +955,7 @@
             "n": 183
           },
           "RepeatedHitsAscendingFill|call": {
-            "mean_ret_fwd_15": 8.628813557788363e-05,
+            "mean_ret_fwd_15": 8.628813557788363e-5,
             "n": 48
           },
           "RepeatedHitsAscendingFill|put": {

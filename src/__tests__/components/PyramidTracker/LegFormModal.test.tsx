@@ -45,6 +45,8 @@ const fullLeg: PyramidLeg = {
   ob_secondary_node_pct: 24,
   ob_tertiary_node_pct: 18,
   ob_total_volume: 38914,
+  rth_structure_bias: 'bullish',
+  eth_structure_bias: 'bullish',
   created_at: '2026-04-16T15:15:00Z',
   updated_at: '2026-04-16T15:15:00Z',
 };
@@ -158,18 +160,41 @@ describe('LegFormModal', () => {
     ]);
   });
 
-  it('renders all leg exit_reason options', () => {
+  it('renders all leg exit_reason options (including migration 67 additions)', () => {
     render(<LegFormModal {...makeProps()} />);
     const select = screen.getByLabelText(/^exit reason$/i);
     const optionValues = Array.from(select.querySelectorAll('option')).map(
       (o) => o.getAttribute('value'),
     );
+    // Order reflects LEG_EXIT_REASONS in LegFormModal.tsx — original
+    // three values first, then the three migration-67 variants that map
+    // to the FVG-trail / VWAP-band / failed-re-extension exits discussed
+    // in the session-analysis thread.
     expect(optionValues).toEqual([
       '',
       'reverse_choch',
       'trailed_stop',
       'manual',
+      'fvg_close_below',
+      'vwap_band_break',
+      'failed_re_extension',
     ]);
+  });
+
+  it('renders RTH and ETH structure bias dropdowns with 3-value enum', () => {
+    render(<LegFormModal {...makeProps()} />);
+
+    const rth = screen.getByLabelText(/^rth structure bias$/i);
+    const rthValues = Array.from(rth.querySelectorAll('option')).map((o) =>
+      o.getAttribute('value'),
+    );
+    expect(rthValues).toEqual(['', 'bullish', 'bearish', 'neutral']);
+
+    const eth = screen.getByLabelText(/^eth structure bias$/i);
+    const ethValues = Array.from(eth.querySelectorAll('option')).map((o) =>
+      o.getAttribute('value'),
+    );
+    expect(ethValues).toEqual(['', 'bullish', 'bearish', 'neutral']);
   });
 
   it('pre-populates session_phase from entry_time_ct (09:45 -> morning_drive)', async () => {
@@ -297,7 +322,8 @@ describe('LegFormModal', () => {
 
   it('completeness meter reflects fill state', async () => {
     const user = userEvent.setup();
-    // 31 fillable fields in the leg modal (see fillValues in component).
+    // 33 fillable fields in the leg modal (see fillValues in component):
+    // original 31 + rth_structure_bias + eth_structure_bias from migration 67.
     render(<LegFormModal {...makeProps()} />);
 
     // Default: no fillable fields set (leg_number is identity, not fillable).
@@ -312,9 +338,9 @@ describe('LegFormModal', () => {
     await user.type(screen.getByLabelText(/^entry price$/i), '21200');
     await user.type(screen.getByLabelText(/^stop price$/i), '21190');
 
-    // 5/31 = 16%.
+    // 5/33 = 15% (floor).
     expect(screen.getByTestId('completeness-percent')).toHaveTextContent(
-      /Complete: 16%/,
+      /Complete: 15%/,
     );
   });
 

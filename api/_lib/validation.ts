@@ -399,8 +399,19 @@ export const pyramidLegSchema = z.object({
   session_low_at_entry: z.number().optional().nullable(),
   retracement_extreme_before_entry: z.number().optional().nullable(),
   exit_price: z.number().optional().nullable(),
+  // Extended in migration 67: adds FVG-trail, VWAP-band, and
+  // failed-re-extension variants alongside the original three values.
+  // `trailed_stop` remains as the generic fallback for trail exits that
+  // don't match one of the specific variants.
   exit_reason: z
-    .enum(['reverse_choch', 'trailed_stop', 'manual'])
+    .enum([
+      'reverse_choch',
+      'trailed_stop',
+      'manual',
+      'fvg_close_below',
+      'vwap_band_break',
+      'failed_re_extension',
+    ])
     .optional()
     .nullable(),
   points_captured: z.number().optional().nullable(),
@@ -414,6 +425,17 @@ export const pyramidLegSchema = z.object({
   ob_secondary_node_pct: z.number().min(0).max(100).optional().nullable(),
   ob_tertiary_node_pct: z.number().min(0).max(100).optional().nullable(),
   ob_total_volume: z.number().nonnegative().optional().nullable(),
+  // Added in migration 67. Captured separately so ML analysis can correlate
+  // RTH/ETH structure disagreement with outcome — collapsing them into a
+  // single bias field would destroy that signal.
+  rth_structure_bias: z
+    .enum(['bullish', 'bearish', 'neutral'])
+    .optional()
+    .nullable(),
+  eth_structure_bias: z
+    .enum(['bullish', 'bearish', 'neutral'])
+    .optional()
+    .nullable(),
 });
 
 export type PyramidLegInput = z.infer<typeof pyramidLegSchema>;

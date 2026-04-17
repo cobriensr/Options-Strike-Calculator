@@ -46,7 +46,25 @@ export type PyramidSessionPhase =
   | 'power_hour'
   | 'close';
 
-export type PyramidExitReasonLeg = 'reverse_choch' | 'trailed_stop' | 'manual';
+export type PyramidExitReasonLeg =
+  | 'reverse_choch'
+  | 'trailed_stop'
+  | 'manual'
+  // Migration 67 additions — captured during discussion of FVG trailing-stop
+  // mechanics vs generic `trailed_stop`. Kept as separate values so ML
+  // analysis can segment trade outcomes by exit methodology.
+  | 'fvg_close_below'
+  | 'vwap_band_break'
+  | 'failed_re_extension';
+
+/**
+ * Market-structure bias as labeled by the structure detector under each
+ * session view. Capturing RTH vs ETH separately is deliberate — the
+ * disagreement between the two is a signal downstream analysis can
+ * correlate with outcome. Collapsing them into one "bias" field would
+ * destroy that.
+ */
+export type PyramidStructureBias = 'bullish' | 'bearish' | 'neutral';
 
 export type PyramidChainStatus = 'open' | 'closed';
 
@@ -122,6 +140,8 @@ export interface PyramidLeg {
   ob_secondary_node_pct: number | null;
   ob_tertiary_node_pct: number | null;
   ob_total_volume: number | null;
+  rth_structure_bias: PyramidStructureBias | null;
+  eth_structure_bias: PyramidStructureBias | null;
   created_at: string;
   updated_at: string;
 }
@@ -218,6 +238,8 @@ export interface PyramidLegInput {
   ob_secondary_node_pct?: number | null;
   ob_tertiary_node_pct?: number | null;
   ob_total_volume?: number | null;
+  rth_structure_bias?: PyramidStructureBias | null;
+  eth_structure_bias?: PyramidStructureBias | null;
 }
 
 // ============================================================

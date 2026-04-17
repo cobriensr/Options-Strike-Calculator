@@ -76,6 +76,8 @@ export interface PyramidLegRow {
   ob_secondary_node_pct: number | null;
   ob_tertiary_node_pct: number | null;
   ob_total_volume: number | null;
+  rth_structure_bias: string | null;
+  eth_structure_bias: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -131,6 +133,8 @@ const LEG_FILL_RATE_COLUMNS = [
   'ob_secondary_node_pct',
   'ob_tertiary_node_pct',
   'ob_total_volume',
+  'rth_structure_bias',
+  'eth_structure_bias',
 ] as const;
 
 // ============================================================
@@ -379,7 +383,8 @@ export async function createLeg(
       exit_price, exit_reason, points_captured,
       r_multiple, was_profitable, notes,
       ob_high, ob_low, ob_poc_price, ob_poc_pct,
-      ob_secondary_node_pct, ob_tertiary_node_pct, ob_total_volume
+      ob_secondary_node_pct, ob_tertiary_node_pct, ob_total_volume,
+      rth_structure_bias, eth_structure_bias
     ) VALUES (
       ${input.id},
       ${input.chain_id},
@@ -415,7 +420,9 @@ export async function createLeg(
       ${input.ob_poc_pct ?? null},
       ${input.ob_secondary_node_pct ?? null},
       ${input.ob_tertiary_node_pct ?? null},
-      ${input.ob_total_volume ?? null}
+      ${input.ob_total_volume ?? null},
+      ${input.rth_structure_bias ?? null},
+      ${input.eth_structure_bias ?? null}
     )
     RETURNING *
   `;
@@ -517,6 +524,8 @@ export async function updateLeg(
       ob_secondary_node_pct            = COALESCE(${patch.ob_secondary_node_pct ?? null}, ob_secondary_node_pct),
       ob_tertiary_node_pct             = COALESCE(${patch.ob_tertiary_node_pct ?? null}, ob_tertiary_node_pct),
       ob_total_volume                  = COALESCE(${patch.ob_total_volume ?? null}, ob_total_volume),
+      rth_structure_bias               = COALESCE(${patch.rth_structure_bias ?? null}, rth_structure_bias),
+      eth_structure_bias               = COALESCE(${patch.eth_structure_bias ?? null}, eth_structure_bias),
       updated_at                       = NOW()
     WHERE id = ${id}
     RETURNING *

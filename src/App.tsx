@@ -88,9 +88,7 @@ const MLInsights = lazy(() =>
   import('./components/MLInsights').catch(handleStaleChunk),
 );
 const FuturesPanel = lazy(() =>
-  import('./components/FuturesCalculator/FuturesPanel').catch(
-    handleStaleChunk,
-  ),
+  import('./components/FuturesCalculator/FuturesPanel').catch(handleStaleChunk),
 );
 const GexPerStrike = lazy(() =>
   import('./components/GexPerStrike').catch(handleStaleChunk),
