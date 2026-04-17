@@ -74,6 +74,8 @@ function makeLeg(overrides: Partial<PyramidLeg> = {}): PyramidLeg {
     ob_secondary_node_pct: null,
     ob_tertiary_node_pct: null,
     ob_total_volume: null,
+    rth_structure_bias: null,
+    eth_structure_bias: null,
     created_at: '2026-04-16T09:30:00Z',
     updated_at: '2026-04-16T09:30:00Z',
     ...overrides,

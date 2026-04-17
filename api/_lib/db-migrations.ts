@@ -1810,4 +1810,20 @@ export const MIGRATIONS: Migration[] = [
       sql`ALTER TABLE pyramid_legs ADD COLUMN IF NOT EXISTS ob_total_volume NUMERIC`,
     ],
   },
+  {
+    id: 67,
+    description:
+      'Extend pyramid_legs exit_reason enum with FVG/VWAP trail variants and add RTH/ETH structure bias columns for session-aware ML features.',
+    statements: (sql) => [
+      // Swap the inline CHECK constraint Postgres auto-named on table
+      // creation (pyramid_legs_exit_reason_check). The original migration
+      // 65 used `exit_reason TEXT CHECK (... 3 values)`. We drop and
+      // re-add with 6 values to support the new FVG/VWAP/failed-re-extension
+      // trail exits discussed in the session-analysis thread.
+      sql`ALTER TABLE pyramid_legs DROP CONSTRAINT IF EXISTS pyramid_legs_exit_reason_check`,
+      sql`ALTER TABLE pyramid_legs ADD CONSTRAINT pyramid_legs_exit_reason_check CHECK (exit_reason IS NULL OR exit_reason IN ('reverse_choch', 'trailed_stop', 'manual', 'fvg_close_below', 'vwap_band_break', 'failed_re_extension'))`,
+      sql`ALTER TABLE pyramid_legs ADD COLUMN IF NOT EXISTS rth_structure_bias TEXT CHECK (rth_structure_bias IS NULL OR rth_structure_bias IN ('bullish', 'bearish', 'neutral'))`,
+      sql`ALTER TABLE pyramid_legs ADD COLUMN IF NOT EXISTS eth_structure_bias TEXT CHECK (eth_structure_bias IS NULL OR eth_structure_bias IN ('bullish', 'bearish', 'neutral'))`,
+    ],
+  },
 ];

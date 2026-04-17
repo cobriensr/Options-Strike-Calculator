@@ -74,6 +74,8 @@ export const LEG_COLUMNS: ReadonlyArray<keyof PyramidLeg> = [
   'ob_secondary_node_pct',
   'ob_tertiary_node_pct',
   'ob_total_volume',
+  'rth_structure_bias',
+  'eth_structure_bias',
   'created_at',
   'updated_at',
 ];

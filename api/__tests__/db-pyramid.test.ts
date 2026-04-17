@@ -334,17 +334,19 @@ describe('db-pyramid.ts', () => {
 
       expect(result).toEqual(row);
       // The tagged-template call passes the values array as positional
-      // args after the TemplateStringsArray. The 7 OB columns live at the
-      // tail of the 32-column INSERT, so the last 7 bound values must
-      // equal the input in exact column order. Using .toContain() here
-      // would let a swapped ob_high↔ob_low or ob_secondary↔ob_tertiary
-      // binding pass silently — the two pct fields have identical shapes.
+      // args after the TemplateStringsArray. Migration 67 appended 2 bias
+      // fields to the end of the INSERT, so the 7 OB columns now sit at
+      // positions -9 through -3 of the 34-column INSERT. Slicing a
+      // positional window preserves order-check integrity: using
+      // .toContain() would let a swapped ob_high↔ob_low or
+      // ob_secondary↔ob_tertiary binding pass silently since the two pct
+      // fields have identical shapes.
       const callArgs = mockSql.mock.calls[0] as unknown as [
         TemplateStringsArray,
         ...unknown[],
       ];
       const values = callArgs.slice(1);
-      expect(values.slice(-7)).toEqual([
+      expect(values.slice(-9, -2)).toEqual([
         18250.5, // ob_high
         18240.25, // ob_low
         18247.75, // ob_poc_price
@@ -363,6 +365,89 @@ describe('db-pyramid.ts', () => {
       expect(fullSql).toContain('ob_secondary_node_pct');
       expect(fullSql).toContain('ob_tertiary_node_pct');
       expect(fullSql).toContain('ob_total_volume');
+    });
+
+    it('round-trips rth/eth structure bias fields through the INSERT', async () => {
+      // Migration 67 added two new columns at the tail of the pyramid_legs
+      // INSERT. They carry information about how the market-structure
+      // detector labels the current bias when viewed with RTH-only data
+      // vs with ETH (Globex) data. Disagreement between the two is itself
+      // a signal downstream ML analysis should be able to correlate with
+      // trade outcome — collapsing them into one field would destroy that.
+      const row = {
+        id: '2026-04-17-MNQ-1-L1',
+        chain_id: '2026-04-17-MNQ-1',
+        leg_number: 1,
+        rth_structure_bias: 'bullish',
+        eth_structure_bias: 'bearish',
+      };
+      mockSql.mockResolvedValueOnce([row]);
+
+      const result = await createLeg({
+        id: '2026-04-17-MNQ-1-L1',
+        chain_id: '2026-04-17-MNQ-1',
+        leg_number: 1,
+        rth_structure_bias: 'bullish',
+        eth_structure_bias: 'bearish',
+      });
+
+      expect(result).toEqual(row);
+      const callArgs = mockSql.mock.calls[0] as unknown as [
+        TemplateStringsArray,
+        ...unknown[],
+      ];
+      const values = callArgs.slice(1);
+      // Two new columns live at the very tail of the INSERT. Order check
+      // matters — both columns accept the same 3-value enum, so a swap
+      // would silently compile and pass looser assertions.
+      expect(values.slice(-2)).toEqual(['bullish', 'bearish']);
+
+      const sqlFragments = callArgs[0] as readonly string[];
+      const fullSql = sqlFragments.join(' ');
+      expect(fullSql).toContain('rth_structure_bias');
+      expect(fullSql).toContain('eth_structure_bias');
+    });
+
+    it('accepts every new exit_reason enum variant via validation pass-through', async () => {
+      // Migration 67 extended the CHECK constraint from 3 to 6 values.
+      // Zod rejects unknown strings at the endpoint boundary; at the
+      // db-pyramid layer we just trust the string. This test pins the
+      // behavior: each extended value binds unchanged into the INSERT.
+      const extendedReasons = [
+        'fvg_close_below',
+        'vwap_band_break',
+        'failed_re_extension',
+      ] as const;
+
+      for (const reason of extendedReasons) {
+        mockSql.mockReset();
+        mockSql.mockResolvedValueOnce([
+          {
+            id: `2026-04-17-MNQ-1-L-${reason}`,
+            chain_id: '2026-04-17-MNQ-1',
+            leg_number: 1,
+            exit_reason: reason,
+          },
+        ]);
+
+        const result = await createLeg({
+          id: `2026-04-17-MNQ-1-L-${reason}`,
+          chain_id: '2026-04-17-MNQ-1',
+          leg_number: 1,
+          exit_reason: reason,
+        });
+
+        expect(result.exit_reason).toBe(reason);
+        const callArgs = mockSql.mock.calls[0] as unknown as [
+          TemplateStringsArray,
+          ...unknown[],
+        ];
+        // The reason string is one of the positional values in the INSERT;
+        // we don't need to fix its slot — contains() is safe because the
+        // exit_reason enum values are unique strings that don't collide
+        // with any other column's value domain.
+        expect(callArgs.slice(1)).toContain(reason);
+      }
     });
 
     it('leg N>1 without leg 1 throws PyramidLegOrderError', async () => {
@@ -697,6 +782,8 @@ describe('db-pyramid.ts', () => {
           ob_secondary_node_pct: 1,
           ob_tertiary_node_pct: 1,
           ob_total_volume: 2,
+          rth_structure_bias: 3,
+          eth_structure_bias: 2,
         },
       ]);
 
@@ -710,10 +797,17 @@ describe('db-pyramid.ts', () => {
       expect(keys).toContain('ob_secondary_node_pct');
       expect(keys).toContain('ob_tertiary_node_pct');
       expect(keys).toContain('ob_total_volume');
+      // Migration 67 columns also need to surface in /api/pyramid/progress
+      // so the fill-rate bar tells the user whether RTH/ETH bias capture
+      // discipline is keeping pace with the rest of the fields.
+      expect(keys).toContain('rth_structure_bias');
+      expect(keys).toContain('eth_structure_bias');
       // Fill rates are computed against total_legs = 4.
       expect(result.fill_rates.ob_high).toBe(0.75);
       expect(result.fill_rates.ob_poc_pct).toBe(0.5);
       expect(result.fill_rates.ob_tertiary_node_pct).toBe(0.25);
+      expect(result.fill_rates.rth_structure_bias).toBe(0.75);
+      expect(result.fill_rates.eth_structure_bias).toBe(0.5);
     });
   });
 });

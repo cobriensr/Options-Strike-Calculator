@@ -113,6 +113,8 @@ const legRow = {
   ob_secondary_node_pct: null,
   ob_tertiary_node_pct: null,
   ob_total_volume: null,
+  rth_structure_bias: null,
+  eth_structure_bias: null,
   created_at: '2026-04-16T14:30:00Z',
   updated_at: '2026-04-16T14:30:00Z',
 };
@@ -384,6 +386,106 @@ describe('/api/pyramid/legs', () => {
           chain_id: legRow.chain_id,
           leg_number: 1,
           ob_poc_pct: 101,
+        },
+      }),
+      res,
+    );
+    expect(res._status).toBe(400);
+    expect(createLeg).not.toHaveBeenCalled();
+  });
+
+  it('POST accepts every extended exit_reason enum variant (migration 67)', async () => {
+    // The CHECK constraint added 3 new values alongside the original
+    // trio. Zod is the first gate — if any of these are rejected at the
+    // validation layer the frontend dropdown would silently fail to save.
+    const extendedReasons = [
+      'fvg_close_below',
+      'vwap_band_break',
+      'failed_re_extension',
+    ] as const;
+
+    for (const reason of extendedReasons) {
+      vi.mocked(createLeg).mockResolvedValue({
+        ...legRow,
+        exit_reason: reason,
+      });
+      const res = mockResponse();
+      await legsHandler(
+        mockRequest({
+          method: 'POST',
+          body: {
+            id: legRow.id,
+            chain_id: legRow.chain_id,
+            leg_number: 1,
+            exit_reason: reason,
+          },
+        }),
+        res,
+      );
+      expect(res._status).toBe(200);
+      expect(createLeg).toHaveBeenCalledWith(
+        expect.objectContaining({ exit_reason: reason }),
+      );
+    }
+  });
+
+  it('POST rejects unknown exit_reason with 400 (Zod enum boundary)', async () => {
+    const res = mockResponse();
+    await legsHandler(
+      mockRequest({
+        method: 'POST',
+        body: {
+          id: legRow.id,
+          chain_id: legRow.chain_id,
+          leg_number: 1,
+          exit_reason: 'nuked_the_stop',
+        },
+      }),
+      res,
+    );
+    expect(res._status).toBe(400);
+    expect(createLeg).not.toHaveBeenCalled();
+  });
+
+  it('POST accepts rth/eth_structure_bias with valid values', async () => {
+    vi.mocked(createLeg).mockResolvedValue({
+      ...legRow,
+      rth_structure_bias: 'bullish',
+      eth_structure_bias: 'bearish',
+    });
+    const res = mockResponse();
+    await legsHandler(
+      mockRequest({
+        method: 'POST',
+        body: {
+          id: legRow.id,
+          chain_id: legRow.chain_id,
+          leg_number: 1,
+          rth_structure_bias: 'bullish',
+          eth_structure_bias: 'bearish',
+        },
+      }),
+      res,
+    );
+    expect(res._status).toBe(200);
+    expect(createLeg).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rth_structure_bias: 'bullish',
+        eth_structure_bias: 'bearish',
+      }),
+    );
+  });
+
+  it('POST rejects bias values outside the 3-value enum with 400', async () => {
+    const res = mockResponse();
+    await legsHandler(
+      mockRequest({
+        method: 'POST',
+        body: {
+          id: legRow.id,
+          chain_id: legRow.chain_id,
+          leg_number: 1,
+          rth_structure_bias: 'moonshot',
         },
       }),
       res,

@@ -27,6 +27,7 @@ import type {
   PyramidLegInput,
   PyramidSessionPhase,
   PyramidSignalType,
+  PyramidStructureBias,
   PyramidVwapBandPosition,
 } from '../../types/pyramid';
 import { PyramidApiError } from '../../hooks/usePyramidData';
@@ -96,8 +97,24 @@ const LEG_EXIT_REASONS: ReadonlyArray<{
   label: string;
 }> = [
   { value: 'reverse_choch', label: 'Reverse CHoCH' },
-  { value: 'trailed_stop', label: 'Trailed Stop' },
+  { value: 'trailed_stop', label: 'Trailed Stop (generic)' },
   { value: 'manual', label: 'Manual' },
+  // Migration 67 additions — specific trail methodologies captured
+  // separately from generic trailed_stop so ML analysis can compare
+  // capture rates across exit types. The FVG + VWAP-band reasons were
+  // the direct motivation for the extension.
+  { value: 'fvg_close_below', label: 'FVG Close-Below Trail' },
+  { value: 'vwap_band_break', label: 'VWAP ±1σ Band Break' },
+  { value: 'failed_re_extension', label: 'Failed Re-Extension' },
+];
+
+const STRUCTURE_BIASES: ReadonlyArray<{
+  value: PyramidStructureBias;
+  label: string;
+}> = [
+  { value: 'bullish', label: 'Bullish' },
+  { value: 'bearish', label: 'Bearish' },
+  { value: 'neutral', label: 'Neutral' },
 ];
 
 // ============================================================
@@ -136,6 +153,8 @@ interface LegFormState {
   session_high_at_entry: string;
   session_low_at_entry: string;
   retracement_extreme_before_entry: string;
+  rth_structure_bias: PyramidStructureBias | '';
+  eth_structure_bias: PyramidStructureBias | '';
   // F
   exit_price: string;
   exit_reason: PyramidExitReasonLeg | '';
@@ -175,6 +194,8 @@ function initialStateFromLeg(leg: PyramidLeg | undefined): LegFormState {
       session_high_at_entry: '',
       session_low_at_entry: '',
       retracement_extreme_before_entry: '',
+      rth_structure_bias: '',
+      eth_structure_bias: '',
       exit_price: '',
       exit_reason: '',
       points_captured: '',
@@ -212,6 +233,8 @@ function initialStateFromLeg(leg: PyramidLeg | undefined): LegFormState {
     retracement_extreme_before_entry: numberToInput(
       leg.retracement_extreme_before_entry,
     ),
+    rth_structure_bias: leg.rth_structure_bias ?? '',
+    eth_structure_bias: leg.eth_structure_bias ?? '',
     exit_price: numberToInput(leg.exit_price),
     exit_reason: leg.exit_reason ?? '',
     points_captured: numberToInput(leg.points_captured),
@@ -325,6 +348,8 @@ export default function LegFormModal({
       state.session_high_at_entry,
       state.session_low_at_entry,
       state.retracement_extreme_before_entry,
+      state.rth_structure_bias,
+      state.eth_structure_bias,
       state.exit_price,
       state.exit_reason,
       state.points_captured,
@@ -437,6 +462,10 @@ export default function LegFormModal({
         ob_secondary_node_pct: parseNumberInput(state.ob_secondary_node_pct),
         ob_tertiary_node_pct: parseNumberInput(state.ob_tertiary_node_pct),
         ob_total_volume: parseNumberInput(state.ob_total_volume),
+        rth_structure_bias:
+          state.rth_structure_bias === '' ? null : state.rth_structure_bias,
+        eth_structure_bias:
+          state.eth_structure_bias === '' ? null : state.eth_structure_bias,
       };
 
       setSubmitting(true);
@@ -827,6 +856,46 @@ export default function LegFormModal({
                   className={inputClass}
                   aria-label="Retracement Extreme Before Entry"
                 />
+              </Field>
+              <Field label="RTH Structure Bias">
+                <select
+                  value={state.rth_structure_bias}
+                  onChange={(e) =>
+                    set(
+                      'rth_structure_bias',
+                      e.target.value as PyramidStructureBias | '',
+                    )
+                  }
+                  className={inputClass}
+                  aria-label="RTH Structure Bias"
+                >
+                  <option value="">{'\u2014'}</option>
+                  {STRUCTURE_BIASES.map((b) => (
+                    <option key={b.value} value={b.value}>
+                      {b.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="ETH Structure Bias">
+                <select
+                  value={state.eth_structure_bias}
+                  onChange={(e) =>
+                    set(
+                      'eth_structure_bias',
+                      e.target.value as PyramidStructureBias | '',
+                    )
+                  }
+                  className={inputClass}
+                  aria-label="ETH Structure Bias"
+                >
+                  <option value="">{'\u2014'}</option>
+                  {STRUCTURE_BIASES.map((b) => (
+                    <option key={b.value} value={b.value}>
+                      {b.label}
+                    </option>
+                  ))}
+                </select>
               </Field>
             </div>
           </Section>
