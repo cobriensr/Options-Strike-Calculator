@@ -15,14 +15,14 @@
 import {
   MARKET_INTERNALS_THRESHOLDS,
   PINNED_THRESHOLD_MINUTES,
-} from '../constants/market-internals';
+} from '../constants/market-internals.js';
 import type {
   ExtremeEvent,
   InternalBandState,
   InternalBar,
   RegimeType,
-} from '../types/market-internals';
-import { classifyTickBand } from './market-regime';
+} from '../types/market-internals.js';
+import { classifyTickBand } from './market-regime.js';
 
 // ============================================================
 // MAIN

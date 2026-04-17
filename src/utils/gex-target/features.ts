@@ -10,8 +10,13 @@
  * no network, no database.
  */
 
-import { GEX_TARGET_CONFIG } from './config';
-import type { GexSnapshot, GexStrikeRow, MagnetFeatures, Mode } from './types';
+import { GEX_TARGET_CONFIG } from './config.js';
+import type {
+  GexSnapshot,
+  GexStrikeRow,
+  MagnetFeatures,
+  Mode,
+} from './types.js';
 
 // ── Mode-aware column accessors ───────────────────────────────────────
 

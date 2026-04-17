@@ -16,14 +16,14 @@
  * Pure module — no React, no fetch, no side effects.
  */
 
-import { MARKET_INTERNALS_THRESHOLDS } from '../constants/market-internals';
+import { MARKET_INTERNALS_THRESHOLDS } from '../constants/market-internals.js';
 import type {
   InternalBandState,
   InternalBar,
   InternalSymbol,
   RegimeResult,
   RegimeType,
-} from '../types/market-internals';
+} from '../types/market-internals.js';
 
 // ============================================================
 // TICK BAND CLASSIFICATION

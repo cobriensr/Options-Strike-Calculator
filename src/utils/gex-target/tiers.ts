@@ -6,8 +6,8 @@
  * them here keeps the thresholds + labeling in one spot.
  */
 
-import { GEX_TARGET_CONFIG } from './config';
-import type { Tier, WallSide } from './types';
+import { GEX_TARGET_CONFIG } from './config.js';
+import type { Tier, WallSide } from './types.js';
 
 /**
  * Assign a `Tier` from `|finalScore|` per Appendix C.5.

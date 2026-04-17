@@ -9,7 +9,7 @@
  * documented per scorer.
  */
 
-import type { MagnetFeatures, PriceMovementContext } from './types';
+import type { MagnetFeatures, PriceMovementContext } from './types.js';
 
 // ── Tuning constants ──────────────────────────────────────────────────
 

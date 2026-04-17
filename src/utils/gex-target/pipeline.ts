@@ -7,7 +7,7 @@
  * ready for the hook/endpoint layer.
  */
 
-import { GEX_TARGET_CONFIG } from './config';
+import { GEX_TARGET_CONFIG } from './config.js';
 import {
   charmScore,
   clarity,
@@ -16,9 +16,9 @@ import {
   flowConfluence,
   priceConfirm,
   proximity,
-} from './scorers';
-import { computeGexDollars, extractFeatures } from './features';
-import { assignTier, assignWallSide } from './tiers';
+} from './scorers.js';
+import { computeGexDollars, extractFeatures } from './features.js';
+import { assignTier, assignWallSide } from './tiers.js';
 import type {
   ComponentScores,
   GexSnapshot,
@@ -27,7 +27,7 @@ import type {
   PriceMovementContext,
   StrikeScore,
   TargetScore,
-} from './types';
+} from './types.js';
 
 // ── Universe selection ────────────────────────────────────────────────
 

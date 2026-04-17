@@ -29,7 +29,7 @@
  * (Appendix D of the plan doc).
  */
 
-export { GEX_TARGET_CONFIG } from './config';
+export { GEX_TARGET_CONFIG } from './config.js';
 
 export type {
   ComponentScores,
@@ -42,7 +42,7 @@ export type {
   TargetScore,
   Tier,
   WallSide,
-} from './types';
+} from './types.js';
 
 export {
   charmScore,
@@ -52,15 +52,15 @@ export {
   flowConfluence,
   priceConfirm,
   proximity,
-} from './scorers';
+} from './scorers.js';
 
-export { extractFeatures } from './features';
+export { extractFeatures } from './features.js';
 
-export { assignTier, assignWallSide } from './tiers';
+export { assignTier, assignWallSide } from './tiers.js';
 
 export {
   computeGexTarget,
   pickUniverse,
   scoreMode,
   scoreStrike,
-} from './pipeline';
+} from './pipeline.js';
