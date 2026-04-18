@@ -207,9 +207,7 @@ class TestDefinitionLagDrops:
         assert client._definition_lag_drops == 0
         assert client._last_lag_summary_ts == pytest.approx(0.0)
 
-    def test_trade_without_definition_is_dropped(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_trade_without_definition_is_dropped(self, client: DatabentoClient) -> None:
         """A trade with no matching definition must NOT reach the
         trade_processor. On the very first drop, the summary fires
         immediately (because _last_lag_summary_ts starts at 0) and
@@ -237,9 +235,7 @@ class TestDefinitionLagDrops:
         client._handle_trade(rec)
         assert client._definition_lag_drops == 0
 
-    def test_rapid_drops_are_throttled(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_rapid_drops_are_throttled(self, client: DatabentoClient) -> None:
         """Multiple drops within the 60s interval fire only one summary."""
         import time as real_time
 
@@ -271,9 +267,7 @@ class TestDefinitionLagDrops:
 
 
 class TestReconnectGap:
-    def test_small_gap_does_not_fire_sentry(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_small_gap_does_not_fire_sentry(self, client: DatabentoClient) -> None:
         """A gap under RECONNECT_GAP_WARNING_S is logged but not sent
         to Sentry."""
         last_ts = 1_000_000_000_000_000_000  # 1s in ns
@@ -284,9 +278,7 @@ class TestReconnectGap:
         client._test_capture_message.assert_not_called()
         assert client._connected is True
 
-    def test_large_gap_fires_sentry_warning(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_large_gap_fires_sentry_warning(self, client: DatabentoClient) -> None:
         """A gap of 120s (> 60s threshold) fires a structured warning."""
         last_ts = 1_000_000_000_000_000_000
         new_ts = last_ts + 120 * 1_000_000_000
@@ -308,9 +300,7 @@ class TestReconnectGap:
         client._on_reconnect(0, 0)
         assert client._reconnect_sanity_check_pending == {"ES", "NQ"}
 
-    def test_handle_ohlcv_updates_last_close(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_handle_ohlcv_updates_last_close(self, client: DatabentoClient) -> None:
         """Every successful bar write updates the per-symbol last-close
         so the sanity check always has fresh data."""
         rec = _make_bar_record(iid=1, close_raw=5800_000_000_000)
@@ -342,9 +332,7 @@ class TestReconnectGap:
 
 
 class TestFirstBarAfterReconnectSanity:
-    def test_small_price_move_does_not_warn(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_small_price_move_does_not_warn(self, client: DatabentoClient) -> None:
         """A <2% move across the gap passes the sanity check silently."""
         client._last_close_before_disconnect["ES"] = 5800.0
         client._reconnect_sanity_check_pending.add("ES")
@@ -356,9 +344,7 @@ class TestFirstBarAfterReconnectSanity:
         assert "ES" not in client._reconnect_sanity_check_pending
         client._test_capture_message.assert_not_called()
 
-    def test_large_price_move_fires_warning(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_large_price_move_fires_warning(self, client: DatabentoClient) -> None:
         """A >2% move across the gap triggers a Sentry warning."""
         client._last_close_before_disconnect["ES"] = 5800.0
         client._reconnect_sanity_check_pending.add("ES")
@@ -397,9 +383,7 @@ class TestFirstBarAfterReconnectSanity:
         client._handle_ohlcv(rec2)
         assert client._test_capture_message.call_count == 1
 
-    def test_no_sanity_check_without_prev_close(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_no_sanity_check_without_prev_close(self, client: DatabentoClient) -> None:
         """If the symbol is armed but has no previous close, no warning
         fires and no exception is raised."""
         client._reconnect_sanity_check_pending.add("ES")
@@ -410,3 +394,96 @@ class TestFirstBarAfterReconnectSanity:
 
         assert "ES" not in client._reconnect_sanity_check_pending
         client._test_capture_message.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Phase 2a — MBP-1 / TBBO routing
+# ---------------------------------------------------------------------------
+
+
+def _make_mbp1_record(
+    *,
+    rtype: int,
+    iid: int = 1,
+    ts_ns: int = 1_780_000_000_000_000_000,
+) -> MagicMock:
+    """Build a fake Mbp1Msg-like record for _handle_mbp1."""
+    rec = MagicMock()
+    rec.instrument_id = iid
+    rec.rtype = rtype
+    rec.ts_event = ts_ns
+    # The processor reads levels[0] — give it minimal valid shape so
+    # the process_mbp1 / process_tbbo methods don't trip on malformed
+    # data in these routing tests.
+    level = MagicMock()
+    level.bid_px = 4_999_500_000_000
+    level.ask_px = 5_000_500_000_000
+    level.bid_sz = 10
+    level.ask_sz = 12
+    rec.levels = (level,)
+    rec.price = 5_000_500_000_000
+    rec.size = 1
+    # Force isinstance-style name lookup in _on_record to match MBP1Msg
+    type(rec).__name__ = "MBP1Msg"
+    return rec
+
+
+class TestHandleMbp1Routing:
+    def test_rtype_1_routes_to_quote_processor_mbp1(
+        self, client: DatabentoClient
+    ) -> None:
+        """rtype == RTYPE_MBP_1 (1) dispatches to process_mbp1."""
+        qp = MagicMock()
+        client._quote_processor = qp
+        rec = _make_mbp1_record(rtype=1, iid=1)
+        client._handle_mbp1(rec)
+        qp.process_mbp1.assert_called_once_with("ES", rec)
+        qp.process_tbbo.assert_not_called()
+
+    def test_rtype_0_routes_to_quote_processor_tbbo(
+        self, client: DatabentoClient
+    ) -> None:
+        """rtype == RTYPE_TBBO (0) dispatches to process_tbbo."""
+        qp = MagicMock()
+        client._quote_processor = qp
+        rec = _make_mbp1_record(rtype=0, iid=1)
+        client._handle_mbp1(rec)
+        qp.process_tbbo.assert_called_once_with("ES", rec)
+        qp.process_mbp1.assert_not_called()
+
+    def test_no_quote_processor_is_noop(self, client: DatabentoClient) -> None:
+        """When quote_processor is None (legacy callers or tests), the
+        handler must early-return without touching the record."""
+        client._quote_processor = None
+        # Should not raise
+        client._handle_mbp1(_make_mbp1_record(rtype=1))
+
+    def test_shutdown_barrier_skips_dispatch(self, client: DatabentoClient) -> None:
+        qp = MagicMock()
+        client._quote_processor = qp
+        client._shutting_down = True
+        client._handle_mbp1(_make_mbp1_record(rtype=1))
+        qp.process_mbp1.assert_not_called()
+        qp.process_tbbo.assert_not_called()
+
+    def test_non_es_symbol_is_ignored(self, client: DatabentoClient) -> None:
+        """Phase 2a is ES-only. NQ/ZN/RTY/CL/GC records must be dropped
+        even if they somehow arrive (they shouldn't — the subscription
+        pins ES.FUT — but this is defense in depth)."""
+        qp = MagicMock()
+        client._quote_processor = qp
+        rec = _make_mbp1_record(rtype=1, iid=2)  # iid=2 resolves to NQ
+        client._handle_mbp1(rec)
+        qp.process_mbp1.assert_not_called()
+        qp.process_tbbo.assert_not_called()
+
+    def test_unknown_rtype_is_ignored(self, client: DatabentoClient) -> None:
+        """An Mbp1Msg with rtype outside {0, 1} isn't routed — the
+        subscription set never asks for one, so this is only a
+        defensive guard against SDK/Databento schema changes."""
+        qp = MagicMock()
+        client._quote_processor = qp
+        rec = _make_mbp1_record(rtype=99, iid=1)
+        client._handle_mbp1(rec)
+        qp.process_mbp1.assert_not_called()
+        qp.process_tbbo.assert_not_called()

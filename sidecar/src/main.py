@@ -34,6 +34,7 @@ from databento_client import DatabentoClient
 from db import drain_pool, is_db_healthy, verify_connection
 from health import start_health_server
 from logger_setup import log
+from quote_processor import QuoteProcessor
 from sentry_setup import capture_exception, init_sentry
 from trade_processor import TradeProcessor
 
@@ -105,10 +106,12 @@ def main() -> None:
 
     # Initialize components
     trade_processor = TradeProcessor()
+    quote_processor = QuoteProcessor()
 
     # Create the Databento client
     _client = DatabentoClient(
         trade_processor=trade_processor,
+        quote_processor=quote_processor,
     )
 
     # Start health check server. Theta reporters are always passed —

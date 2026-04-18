@@ -29,6 +29,7 @@ from symbol_manager import (
 )
 
 if TYPE_CHECKING:
+    from quote_processor import QuoteProcessor
     from trade_processor import TradeProcessor
 
 
@@ -40,6 +41,14 @@ STAT_TYPE_OPEN_INTEREST = 9
 STAT_TYPE_IMPLIED_VOL = 14
 STAT_TYPE_DELTA = 15
 
+# Databento record-type discriminators for MBP1Msg. Both mbp-1 and tbbo
+# schemas produce Mbp1Msg structs; the two are distinguished by `rtype`.
+# mbp-1 → RType.MBP_1 (1) = full book update, top-of-book in levels[0].
+# tbbo  → RType.MBP_0 (0) = trade-only record with pre-trade BBO in
+#                            levels[0] and the trade in price/size/side.
+RTYPE_MBP_1 = 1
+RTYPE_TBBO = 0
+
 
 class DatabentoClient:
     """Manages the Databento Live connection and data routing."""
@@ -47,9 +56,15 @@ class DatabentoClient:
     def __init__(
         self,
         trade_processor: TradeProcessor,
+        quote_processor: QuoteProcessor | None = None,
     ) -> None:
         self._client: db.Live | None = None
         self._trade_processor = trade_processor
+        # Optional to keep older callers (and test fixtures) compatible.
+        # In production main.py passes a real QuoteProcessor so MBP-1 +
+        # TBBO events get persisted; when None, those records are
+        # silently ignored by _handle_mbp1.
+        self._quote_processor = quote_processor
         self._connected = False
         self._last_bar_ts = 0.0
         self._options_strikes = OptionsStrikeSet()
@@ -126,6 +141,13 @@ class DatabentoClient:
         # Subscribe to futures OHLCV-1m (CME Group only — single dataset per session)
         self._subscribe_futures_ohlcv()
 
+        # Subscribe to ES L1 (MBP-1 + TBBO) for Phase 2a data plumbing.
+        # ES-only per spec — adding all 7 futures symbols at once risks
+        # ~100k rows/min peak on the Neon instance. NQ/ZN/RTY/CL/GC are
+        # explicitly out of scope for this phase.
+        if self._quote_processor is not None:
+            self._subscribe_es_l1()
+
         # Subscribe to ES options after first ES bar arrives (need price for ATM)
         self._options_subscription_pending = True
 
@@ -163,6 +185,30 @@ class DatabentoClient:
                 cme_symbols,
                 extra={"symbols": cme_symbols},
             )
+
+    def _subscribe_es_l1(self) -> None:
+        """Subscribe to ES MBP-1 + TBBO on GLBX.MDP3 (Phase 2a).
+
+        Both schemas produce Mbp1Msg records; they're differentiated at
+        the dispatch layer by `rtype`. ES parent symbology resolves to
+        the active front-month contract the same way OHLCV-1m does.
+        """
+        if not self._client:
+            return
+
+        self._client.subscribe(
+            dataset=DATASET_CME,
+            schema="mbp-1",
+            symbols=["ES.FUT"],
+            stype_in="parent",
+        )
+        self._client.subscribe(
+            dataset=DATASET_CME,
+            schema="tbbo",
+            symbols=["ES.FUT"],
+            stype_in="parent",
+        )
+        log.info("Subscribed to ES MBP-1 + TBBO on %s", DATASET_CME)
 
     def _handle_ohlcv_from_client(self, record: Any, client: db.Live | None) -> None:
         """Process an OHLCV bar using a specific client's symbology map."""
@@ -282,6 +328,10 @@ class DatabentoClient:
                 self._handle_definition(record)
             elif record_type == "SymbolMappingMsg":
                 self._handle_symbol_mapping(record)
+            elif record_type == "MBP1Msg":
+                # Both mbp-1 and tbbo schemas emit MBP1Msg; distinguish
+                # by rtype. See RTYPE_MBP_1 / RTYPE_TBBO constants above.
+                self._handle_mbp1(record)
             elif record_type in ("ErrorMsg", "SystemMsg"):
                 self._handle_system(record)
             # Ignore other record types (heartbeats, etc.)
@@ -489,6 +539,27 @@ class DatabentoClient:
             )
             self.subscribe_es_options(float(close))
 
+    def _handle_mbp1(self, record: Any) -> None:
+        """Route an Mbp1Msg record to the quote processor by rtype.
+
+        Phase 2a: ES-only. Non-ES records shouldn't arrive given that
+        the subscriptions specify `ES.FUT`, but we resolve the symbol
+        defensively in case a shared dataset ever broadens the feed.
+        """
+        if self._shutting_down or self._quote_processor is None:
+            return
+
+        symbol = self._resolve_symbol(record)
+        if symbol != "ES":
+            return
+
+        rtype = getattr(record, "rtype", None)
+        if rtype == RTYPE_MBP_1:
+            self._quote_processor.process_mbp1(symbol, record)
+        elif rtype == RTYPE_TBBO:
+            self._quote_processor.process_tbbo(symbol, record)
+        # Other rtypes silently ignored — not in our subscription set.
+
     # SIDE-012: emit a lag-drop summary at most once per this interval.
     DEFINITION_LAG_SUMMARY_INTERVAL_S = 60.0
 
@@ -518,9 +589,7 @@ class DatabentoClient:
             level="warning",
             context={
                 "drops": drops,
-                "interval_s": round(
-                    self.DEFINITION_LAG_SUMMARY_INTERVAL_S, 1
-                ),
+                "interval_s": round(self.DEFINITION_LAG_SUMMARY_INTERVAL_S, 1),
             },
         )
 
@@ -763,6 +832,8 @@ class DatabentoClient:
                 log.error("Error stopping CME client: %s", exc)
         self._client = None
         self._trade_processor.flush()
+        if self._quote_processor is not None:
+            self._quote_processor.flush()
         log.info("Databento clients stopped")
 
     def block_for_close(self, timeout: float | None = None) -> None:

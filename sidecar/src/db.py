@@ -302,6 +302,58 @@ def upsert_options_daily(
             )
 
 
+def batch_insert_top_of_book(rows: list[tuple]) -> None:
+    """Batch insert Databento MBP-1 quote events into futures_top_of_book.
+
+    Each tuple: (symbol, ts, bid, bid_size, ask, ask_size)
+
+    MBP-1 is a high-volume stream — we skip the ON CONFLICT dance because
+    migration #71 intentionally omits the UNIQUE constraint. Dedup at this
+    layer isn't meaningful; a brief Databento resend just adds a few extra
+    rows and downstream consumers (Phase 2b compute jobs) will aggregate.
+    """
+    if not rows:
+        return
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            psycopg2.extras.execute_values(
+                cur,
+                """
+                INSERT INTO futures_top_of_book
+                    (symbol, ts, bid, bid_size, ask, ask_size)
+                VALUES %s
+                """,
+                rows,
+                page_size=500,
+            )
+
+
+def batch_insert_trade_ticks(rows: list[tuple]) -> None:
+    """Batch insert Databento TBBO trade events into futures_trade_ticks.
+
+    Each tuple: (symbol, ts, price, size, aggressor_side)
+
+    aggressor_side is one of 'B' (buyer-initiated), 'S' (seller-initiated),
+    or 'N' (trade printed between the spread) — classified by
+    quote_processor.classify_aggressor() from the pre-trade BBO in the
+    TBBO record's levels[0]. See migration #72's CHECK constraint.
+    """
+    if not rows:
+        return
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            psycopg2.extras.execute_values(
+                cur,
+                """
+                INSERT INTO futures_trade_ticks
+                    (symbol, ts, price, size, aggressor_side)
+                VALUES %s
+                """,
+                rows,
+                page_size=500,
+            )
+
+
 def upsert_theta_option_eod_batch(rows: list[tuple]) -> None:
     """Batch upsert Theta EOD rows into theta_option_eod.
 

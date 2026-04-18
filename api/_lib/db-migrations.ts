@@ -1886,4 +1886,51 @@ export const MIGRATIONS: Migration[] = [
       sql`CREATE INDEX IF NOT EXISTS ix_theta_option_eod_expiration ON theta_option_eod (expiration)`,
     ],
   },
+  {
+    id: 71,
+    description:
+      'Create futures_top_of_book table for Databento MBP-1 quote events (ES L1 book, Phase 2a)',
+    statements: (sql) => [
+      // MBP-1 is a high-volume quote stream (thousands of rows/min during
+      // active CME trading). No UNIQUE constraint — dedup isn't meaningful
+      // at this layer and the write-path cost of maintaining one would
+      // dominate. Consumers read by (symbol, ts) range, hence the composite
+      // index with ts DESC for "latest N quotes" queries.
+      sql`
+        CREATE TABLE IF NOT EXISTS futures_top_of_book (
+          id        BIGSERIAL PRIMARY KEY,
+          symbol    TEXT NOT NULL,
+          ts        TIMESTAMPTZ NOT NULL,
+          bid       NUMERIC(12,4) NOT NULL,
+          bid_size  INTEGER NOT NULL,
+          ask       NUMERIC(12,4) NOT NULL,
+          ask_size  INTEGER NOT NULL
+        )
+      `,
+      sql`CREATE INDEX IF NOT EXISTS idx_ftob_symbol_ts ON futures_top_of_book (symbol, ts DESC)`,
+    ],
+  },
+  {
+    id: 72,
+    description:
+      'Create futures_trade_ticks table for Databento TBBO trade events with aggressor side (ES L1, Phase 2a)',
+    statements: (sql) => [
+      // TBBO records = trade + pre-trade BBO. We store the trade with an
+      // aggressor classification derived from trade price vs the pre-trade
+      // bid/ask (see quote_processor.classify_aggressor). 'B' buyer-
+      // initiated, 'S' seller-initiated, 'N' trade printed between the
+      // spread (rare but possible for auction crosses).
+      sql`
+        CREATE TABLE IF NOT EXISTS futures_trade_ticks (
+          id             BIGSERIAL PRIMARY KEY,
+          symbol         TEXT NOT NULL,
+          ts             TIMESTAMPTZ NOT NULL,
+          price          NUMERIC(12,4) NOT NULL,
+          size           INTEGER NOT NULL,
+          aggressor_side CHAR(1) NOT NULL CHECK (aggressor_side IN ('B','S','N'))
+        )
+      `,
+      sql`CREATE INDEX IF NOT EXISTS idx_ftt_symbol_ts ON futures_trade_ticks (symbol, ts DESC)`,
+    ],
+  },
 ];

@@ -497,6 +497,8 @@ describe('db.ts', () => {
         { id: 68 },
         { id: 69 },
         { id: 70 },
+        { id: 71 },
+        { id: 72 },
       ]);
 
       const applied = await migrateDb();
@@ -585,18 +587,20 @@ describe('db.ts', () => {
         '#68: Drop pyramid_chains + pyramid_legs tables (pyramid trade tracker experiment retired)',
         '#69: Drop trace_predictions table and purge trace plot analyses (TRACE PIN experiment retired)',
         '#70: Create theta_option_eod table for Theta Data nightly EOD option chains (SPXW/VIX/VIXW/NDXP)',
+        '#71: Create futures_top_of_book table for Databento MBP-1 quote events (ES L1 book, Phase 2a)',
+        '#72: Create futures_trade_ticks table for Databento TBBO trade events with aggressor side (ES L1, Phase 2a)',
       ]);
       // Pyramid migrations #65/66/67 remain in the chain (migration history is
       // immutable — fresh DBs replay create → alter → alter → drop). TRACE
       // migrations #56/57 also remain — #69 drops the table they created.
-      // 134 (migrations #1-41) + 4 (#42) + 4 (#43) + 2 (#44) + 2 (#45) + 3 (#46) + 4 (#47: CREATE+2 INDEX+INSERT) + 2 (#48: ALTER+INSERT) + 4 (#49: CREATE+2 INDEX+INSERT) + 3 (#50: DELETE+CREATE UNIQUE INDEX+INSERT) + 5 (#51: CREATE+3 INDEX+INSERT) + 3 (#52: CREATE+1 INDEX+INSERT) + 4 (#53: CREATE+2 INDEX+INSERT) + 2 (#54: ALTER+INSERT) + 2 (#55: ALTER+INSERT) + 2 (#56: CREATE+INSERT) + 2 (#57: ALTER+INSERT) + 3 (#58: DROP INDEX+ALTER+INSERT) + 7 (#59: CREATE+5 INDEX+INSERT) + 2 (#60: CREATE+INSERT) + 2 (#61: ALTER+INSERT) + 7 (#62: CREATE+5 INDEX+INSERT) + 3 (#63: CREATE+1 INDEX+INSERT) + 2 (#64: ALTER+INSERT) + 6 (#65: CREATE chains+2 INDEX+CREATE legs+1 INDEX+INSERT) + 8 (#66: 7 ALTER+INSERT) + 5 (#67: DROP CONSTRAINT+ADD CONSTRAINT+2 ALTER+INSERT) + 3 (#68: 2 DROP+INSERT) + 3 (#69: DELETE+DROP+INSERT) + 4 (#70: CREATE+2 INDEX+INSERT) = 237
+      // 134 (migrations #1-41) + 4 (#42) + 4 (#43) + 2 (#44) + 2 (#45) + 3 (#46) + 4 (#47: CREATE+2 INDEX+INSERT) + 2 (#48: ALTER+INSERT) + 4 (#49: CREATE+2 INDEX+INSERT) + 3 (#50: DELETE+CREATE UNIQUE INDEX+INSERT) + 5 (#51: CREATE+3 INDEX+INSERT) + 3 (#52: CREATE+1 INDEX+INSERT) + 4 (#53: CREATE+2 INDEX+INSERT) + 2 (#54: ALTER+INSERT) + 2 (#55: ALTER+INSERT) + 2 (#56: CREATE+INSERT) + 2 (#57: ALTER+INSERT) + 3 (#58: DROP INDEX+ALTER+INSERT) + 7 (#59: CREATE+5 INDEX+INSERT) + 2 (#60: CREATE+INSERT) + 2 (#61: ALTER+INSERT) + 7 (#62: CREATE+5 INDEX+INSERT) + 3 (#63: CREATE+1 INDEX+INSERT) + 2 (#64: ALTER+INSERT) + 6 (#65: CREATE chains+2 INDEX+CREATE legs+1 INDEX+INSERT) + 8 (#66: 7 ALTER+INSERT) + 5 (#67: DROP CONSTRAINT+ADD CONSTRAINT+2 ALTER+INSERT) + 3 (#68: 2 DROP+INSERT) + 3 (#69: DELETE+DROP+INSERT) + 4 (#70: CREATE+2 INDEX+INSERT) + 3 (#71: CREATE+1 INDEX+INSERT) + 3 (#72: CREATE+1 INDEX+INSERT) = 243
       // Migration #3 was converted from run: to statements: (BE-CRON-010);
       // its 4 calls (DROP INDEX + ALTER + CREATE INDEX + INSERT) still count
       // toward the total — the only delta is that they route through
       // sql.transaction() instead of sequential awaits.
-      expect(mockSql).toHaveBeenCalledTimes(237);
-      // Migrations #3 and #15-70 each call sql.transaction() once for atomic execution
-      expect(mockSql.transaction).toHaveBeenCalledTimes(57);
+      expect(mockSql).toHaveBeenCalledTimes(243);
+      // Migrations #3 and #15-72 each call sql.transaction() once for atomic execution
+      expect(mockSql.transaction).toHaveBeenCalledTimes(59);
     });
 
     it('propagates errors from migration SQL', async () => {

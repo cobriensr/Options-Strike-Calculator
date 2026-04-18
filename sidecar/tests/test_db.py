@@ -153,3 +153,110 @@ class TestBatchInsertIdempotency:
         db.batch_insert_options_trades([SAMPLE_ROW])
         kwargs = mock_execute_values.call_args.kwargs
         assert kwargs.get("page_size") == 500
+
+
+# ---------------------------------------------------------------------------
+# batch_insert_top_of_book (Phase 2a, MBP-1 ingest)
+# ---------------------------------------------------------------------------
+
+
+SAMPLE_TOB_ROW = (
+    "ES",
+    "2026-04-18 14:30:00+00",
+    Decimal("5000.25"),  # bid
+    10,  # bid_size
+    Decimal("5000.50"),  # ask
+    12,  # ask_size
+)
+
+
+class TestBatchInsertTopOfBook:
+    def test_sql_targets_correct_table_and_columns(
+        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
+    ) -> None:
+        db.batch_insert_top_of_book([SAMPLE_TOB_ROW])
+        mock_execute_values.assert_called_once()
+        sql_arg = mock_execute_values.call_args[0][1]
+        assert "INSERT INTO futures_top_of_book" in sql_arg
+        for col in ("symbol", "ts", "bid", "bid_size", "ask", "ask_size"):
+            assert col in sql_arg
+
+    def test_no_on_conflict_clause(
+        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
+    ) -> None:
+        """Migration #71 intentionally omits a UNIQUE constraint — MBP-1
+        is high-volume and dedup isn't meaningful at this layer. Pin this
+        behavior so nobody adds an ON CONFLICT clause that would then fail
+        at runtime with 'no unique or exclusion constraint matching'."""
+        db.batch_insert_top_of_book([SAMPLE_TOB_ROW])
+        sql_arg = mock_execute_values.call_args[0][1]
+        assert "ON CONFLICT" not in sql_arg
+
+    def test_empty_rows_is_noop(
+        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
+    ) -> None:
+        db.batch_insert_top_of_book([])
+        mock_execute_values.assert_not_called()
+
+    def test_preserves_page_size(
+        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
+    ) -> None:
+        db.batch_insert_top_of_book([SAMPLE_TOB_ROW])
+        kwargs = mock_execute_values.call_args.kwargs
+        assert kwargs.get("page_size") == 500
+
+    def test_multiple_rows_passed_through(
+        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
+    ) -> None:
+        rows = [SAMPLE_TOB_ROW] * 3
+        db.batch_insert_top_of_book(rows)
+        rows_arg = mock_execute_values.call_args[0][2]
+        assert len(rows_arg) == 3
+
+
+# ---------------------------------------------------------------------------
+# batch_insert_trade_ticks (Phase 2a, TBBO ingest)
+# ---------------------------------------------------------------------------
+
+
+SAMPLE_TRADE_ROW = (
+    "ES",
+    "2026-04-18 14:30:00+00",
+    Decimal("5000.50"),  # price
+    5,  # size
+    "B",  # aggressor_side
+)
+
+
+class TestBatchInsertTradeTicks:
+    def test_sql_targets_correct_table_and_columns(
+        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
+    ) -> None:
+        db.batch_insert_trade_ticks([SAMPLE_TRADE_ROW])
+        mock_execute_values.assert_called_once()
+        sql_arg = mock_execute_values.call_args[0][1]
+        assert "INSERT INTO futures_trade_ticks" in sql_arg
+        for col in ("symbol", "ts", "price", "size", "aggressor_side"):
+            assert col in sql_arg
+
+    def test_no_on_conflict_clause(
+        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
+    ) -> None:
+        """Migration #72 has no UNIQUE constraint on the trade-tick table
+        either — same reasoning as MBP-1."""
+        db.batch_insert_trade_ticks([SAMPLE_TRADE_ROW])
+        sql_arg = mock_execute_values.call_args[0][1]
+        assert "ON CONFLICT" not in sql_arg
+
+    def test_empty_rows_is_noop(
+        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
+    ) -> None:
+        db.batch_insert_trade_ticks([])
+        mock_execute_values.assert_not_called()
+
+    def test_preserves_page_size(
+        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
+    ) -> None:
+        db.batch_insert_trade_ticks([SAMPLE_TRADE_ROW])
+        kwargs = mock_execute_values.call_args.kwargs
+        assert kwargs.get("page_size") == 500
