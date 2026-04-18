@@ -303,14 +303,15 @@ def upsert_options_daily(
 
 
 def batch_insert_top_of_book(rows: list[tuple]) -> None:
-    """Batch insert Databento MBP-1 quote events into futures_top_of_book.
+    """Batch insert pre-trade top-of-book snapshots into futures_top_of_book.
 
     Each tuple: (symbol, ts, bid, bid_size, ask, ask_size)
 
-    MBP-1 is a high-volume stream — we skip the ON CONFLICT dance because
-    migration #71 intentionally omits the UNIQUE constraint. Dedup at this
-    layer isn't meaningful; a brief Databento resend just adds a few extra
-    rows and downstream consumers (Phase 2b compute jobs) will aggregate.
+    Rows come from Databento TBBO records (``levels[0]`` BBO seen at the
+    moment of each trade). No ON CONFLICT dance because migration #71
+    intentionally omits the UNIQUE constraint — dedup at this layer isn't
+    meaningful; a brief Databento resend just adds a few extra rows and
+    downstream Phase 2b compute jobs will aggregate.
     """
     if not rows:
         return

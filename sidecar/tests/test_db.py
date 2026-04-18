@@ -156,7 +156,7 @@ class TestBatchInsertIdempotency:
 
 
 # ---------------------------------------------------------------------------
-# batch_insert_top_of_book (Phase 2a, MBP-1 ingest)
+# batch_insert_top_of_book (Phase 2a, pre-trade BBO from TBBO records)
 # ---------------------------------------------------------------------------
 
 
@@ -184,10 +184,11 @@ class TestBatchInsertTopOfBook:
     def test_no_on_conflict_clause(
         self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
     ) -> None:
-        """Migration #71 intentionally omits a UNIQUE constraint — MBP-1
-        is high-volume and dedup isn't meaningful at this layer. Pin this
-        behavior so nobody adds an ON CONFLICT clause that would then fail
-        at runtime with 'no unique or exclusion constraint matching'."""
+        """Migration #71 intentionally omits a UNIQUE constraint — the
+        quote stream is high-volume (one row per trade via TBBO) and
+        dedup isn't meaningful at this layer. Pin this behavior so nobody
+        adds an ON CONFLICT clause that would then fail at runtime with
+        'no unique or exclusion constraint matching'."""
         db.batch_insert_top_of_book([SAMPLE_TOB_ROW])
         sql_arg = mock_execute_values.call_args[0][1]
         assert "ON CONFLICT" not in sql_arg
@@ -243,7 +244,7 @@ class TestBatchInsertTradeTicks:
         self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
     ) -> None:
         """Migration #72 has no UNIQUE constraint on the trade-tick table
-        either — same reasoning as MBP-1."""
+        either — same reasoning as futures_top_of_book."""
         db.batch_insert_trade_ticks([SAMPLE_TRADE_ROW])
         sql_arg = mock_execute_values.call_args[0][1]
         assert "ON CONFLICT" not in sql_arg

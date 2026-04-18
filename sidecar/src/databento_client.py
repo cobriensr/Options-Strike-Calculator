@@ -41,13 +41,13 @@ STAT_TYPE_OPEN_INTEREST = 9
 STAT_TYPE_IMPLIED_VOL = 14
 STAT_TYPE_DELTA = 15
 
-# Databento record-type discriminators for MBP1Msg. Both mbp-1 and tbbo
-# schemas produce Mbp1Msg structs; the two are distinguished by `rtype`.
-# mbp-1 → RType.MBP_1 (1) = full book update, top-of-book in levels[0].
-# tbbo  → RType.MBP_0 (0) = trade-only record with pre-trade BBO in
-#                            levels[0] and the trade in price/size/side.
-RTYPE_MBP_1 = 1
-RTYPE_TBBO = 0
+# Phase 2a note: we subscribe ONLY to ``tbbo``, never ``mbp-1``. Both
+# schemas emit ``MBP1Msg`` and share the same ``rtype``
+# (``RType.from_schema(Schema.MBP_1).value == RType.from_schema(Schema.TBBO).value == 1``),
+# so they cannot be distinguished at the record level. Subscribing to
+# both would also double-deliver every trade — TBBO is the subset of
+# MBP-1 events where ``action == 'T'``. TBBO alone gives us quotes at
+# trade moments + the trade tick in one stream with no duplication.
 
 
 class DatabentoClient:
@@ -61,9 +61,9 @@ class DatabentoClient:
         self._client: db.Live | None = None
         self._trade_processor = trade_processor
         # Optional to keep older callers (and test fixtures) compatible.
-        # In production main.py passes a real QuoteProcessor so MBP-1 +
-        # TBBO events get persisted; when None, those records are
-        # silently ignored by _handle_mbp1.
+        # In production main.py passes a real QuoteProcessor so TBBO
+        # events get persisted; when None, those records are silently
+        # ignored by _handle_tbbo and _subscribe_es_l1 is skipped.
         self._quote_processor = quote_processor
         self._connected = False
         self._last_bar_ts = 0.0
@@ -141,10 +141,9 @@ class DatabentoClient:
         # Subscribe to futures OHLCV-1m (CME Group only — single dataset per session)
         self._subscribe_futures_ohlcv()
 
-        # Subscribe to ES L1 (MBP-1 + TBBO) for Phase 2a data plumbing.
-        # ES-only per spec — adding all 7 futures symbols at once risks
-        # ~100k rows/min peak on the Neon instance. NQ/ZN/RTY/CL/GC are
-        # explicitly out of scope for this phase.
+        # Subscribe to ES TBBO for Phase 2a data plumbing. TBBO-only, not
+        # MBP-1 + TBBO — see the comment block above the class for why.
+        # ES-only per spec; NQ/ZN/RTY/CL/GC are out of scope here.
         if self._quote_processor is not None:
             self._subscribe_es_l1()
 
@@ -187,28 +186,26 @@ class DatabentoClient:
             )
 
     def _subscribe_es_l1(self) -> None:
-        """Subscribe to ES MBP-1 + TBBO on GLBX.MDP3 (Phase 2a).
+        """Subscribe to ES TBBO on GLBX.MDP3 (Phase 2a).
 
-        Both schemas produce Mbp1Msg records; they're differentiated at
-        the dispatch layer by `rtype`. ES parent symbology resolves to
-        the active front-month contract the same way OHLCV-1m does.
+        Only one schema: ``tbbo``. Each record is a trade with the
+        pre-trade BBO in ``levels[0]``, so we derive both the quote
+        snapshot and the trade tick from a single stream. MBP-1 is
+        deliberately not subscribed — see the rationale in the
+        module-level comment and in ``quote_processor``. ES parent
+        symbology resolves to the active front-month contract the same
+        way OHLCV-1m does.
         """
         if not self._client:
             return
 
         self._client.subscribe(
             dataset=DATASET_CME,
-            schema="mbp-1",
-            symbols=["ES.FUT"],
-            stype_in="parent",
-        )
-        self._client.subscribe(
-            dataset=DATASET_CME,
             schema="tbbo",
             symbols=["ES.FUT"],
             stype_in="parent",
         )
-        log.info("Subscribed to ES MBP-1 + TBBO on %s", DATASET_CME)
+        log.info("Subscribed to ES TBBO on %s", DATASET_CME)
 
     def _handle_ohlcv_from_client(self, record: Any, client: db.Live | None) -> None:
         """Process an OHLCV bar using a specific client's symbology map."""
@@ -329,9 +326,10 @@ class DatabentoClient:
             elif record_type == "SymbolMappingMsg":
                 self._handle_symbol_mapping(record)
             elif record_type == "MBP1Msg":
-                # Both mbp-1 and tbbo schemas emit MBP1Msg; distinguish
-                # by rtype. See RTYPE_MBP_1 / RTYPE_TBBO constants above.
-                self._handle_mbp1(record)
+                # We only subscribe to ``tbbo`` (not ``mbp-1``), so every
+                # MBP1Msg we see here is a TBBO record: a trade with the
+                # pre-trade BBO carried in levels[0].
+                self._handle_tbbo(record)
             elif record_type in ("ErrorMsg", "SystemMsg"):
                 self._handle_system(record)
             # Ignore other record types (heartbeats, etc.)
@@ -539,11 +537,17 @@ class DatabentoClient:
             )
             self.subscribe_es_options(float(close))
 
-    def _handle_mbp1(self, record: Any) -> None:
-        """Route an Mbp1Msg record to the quote processor by rtype.
+    def _handle_tbbo(self, record: Any) -> None:
+        """Dispatch a TBBO (``MBP1Msg``) record to the quote processor.
+
+        TBBO delivers one record per trade with the pre-trade BBO in
+        ``levels[0]``; ``process_tbbo`` extracts both the quote snapshot
+        and the trade tick from that single record. No rtype branching —
+        we only subscribe to one schema, so every MBP1Msg reaching this
+        handler is already a TBBO event.
 
         Phase 2a: ES-only. Non-ES records shouldn't arrive given that
-        the subscriptions specify `ES.FUT`, but we resolve the symbol
+        the subscription specifies ``ES.FUT``, but we resolve the symbol
         defensively in case a shared dataset ever broadens the feed.
         """
         if self._shutting_down or self._quote_processor is None:
@@ -553,12 +557,7 @@ class DatabentoClient:
         if symbol != "ES":
             return
 
-        rtype = getattr(record, "rtype", None)
-        if rtype == RTYPE_MBP_1:
-            self._quote_processor.process_mbp1(symbol, record)
-        elif rtype == RTYPE_TBBO:
-            self._quote_processor.process_tbbo(symbol, record)
-        # Other rtypes silently ignored — not in our subscription set.
+        self._quote_processor.process_tbbo(symbol, record)
 
     # SIDE-012: emit a lag-drop summary at most once per this interval.
     DEFINITION_LAG_SUMMARY_INTERVAL_S = 60.0

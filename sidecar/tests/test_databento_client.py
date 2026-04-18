@@ -397,24 +397,25 @@ class TestFirstBarAfterReconnectSanity:
 
 
 # ---------------------------------------------------------------------------
-# Phase 2a — MBP-1 / TBBO routing
+# Phase 2a — TBBO dispatch
 # ---------------------------------------------------------------------------
+#
+# Design note (verified against the installed databento_dbn SDK):
+#   RType.from_schema(Schema.MBP_1).value == RType.from_schema(Schema.TBBO).value == 1
+# and databento_dbn._lib.pyi aliases ``TBBOMsg = MBP1Msg`` — so rtype
+# CANNOT distinguish MBP-1 from TBBO at the record level. The earlier
+# implementation tried to branch on rtype 0 vs 1 and would silently drop
+# every TBBO record in production. The fix: subscribe only to ``tbbo``,
+# dispatch every MBP1Msg to ``process_tbbo`` uniformly.
 
 
-def _make_mbp1_record(
-    *,
-    rtype: int,
-    iid: int = 1,
-    ts_ns: int = 1_780_000_000_000_000_000,
-) -> MagicMock:
-    """Build a fake Mbp1Msg-like record for _handle_mbp1."""
+def _make_tbbo_record(iid: int = 1) -> MagicMock:
+    """Build a fake TBBO-shaped MBP1Msg record for _handle_tbbo."""
     rec = MagicMock()
     rec.instrument_id = iid
-    rec.rtype = rtype
-    rec.ts_event = ts_ns
-    # The processor reads levels[0] — give it minimal valid shape so
-    # the process_mbp1 / process_tbbo methods don't trip on malformed
-    # data in these routing tests.
+    rec.ts_event = 1_780_000_000_000_000_000
+    # QuoteProcessor reads ``levels[0]`` for the pre-trade BBO and
+    # ``price``/``size`` for the trade itself.
     level = MagicMock()
     level.bid_px = 4_999_500_000_000
     level.ask_px = 5_000_500_000_000
@@ -423,67 +424,73 @@ def _make_mbp1_record(
     rec.levels = (level,)
     rec.price = 5_000_500_000_000
     rec.size = 1
-    # Force isinstance-style name lookup in _on_record to match MBP1Msg
     type(rec).__name__ = "MBP1Msg"
     return rec
 
 
-class TestHandleMbp1Routing:
-    def test_rtype_1_routes_to_quote_processor_mbp1(
-        self, client: DatabentoClient
-    ) -> None:
-        """rtype == RTYPE_MBP_1 (1) dispatches to process_mbp1."""
+class TestHandleTbboRouting:
+    def test_tbbo_record_routes_to_process_tbbo(self, client: DatabentoClient) -> None:
+        """Every MBP1Msg reaching _handle_tbbo must dispatch to
+        QuoteProcessor.process_tbbo — there is no rtype branching."""
         qp = MagicMock()
         client._quote_processor = qp
-        rec = _make_mbp1_record(rtype=1, iid=1)
-        client._handle_mbp1(rec)
-        qp.process_mbp1.assert_called_once_with("ES", rec)
-        qp.process_tbbo.assert_not_called()
-
-    def test_rtype_0_routes_to_quote_processor_tbbo(
-        self, client: DatabentoClient
-    ) -> None:
-        """rtype == RTYPE_TBBO (0) dispatches to process_tbbo."""
-        qp = MagicMock()
-        client._quote_processor = qp
-        rec = _make_mbp1_record(rtype=0, iid=1)
-        client._handle_mbp1(rec)
+        rec = _make_tbbo_record(iid=1)
+        client._handle_tbbo(rec)
         qp.process_tbbo.assert_called_once_with("ES", rec)
-        qp.process_mbp1.assert_not_called()
 
     def test_no_quote_processor_is_noop(self, client: DatabentoClient) -> None:
         """When quote_processor is None (legacy callers or tests), the
         handler must early-return without touching the record."""
         client._quote_processor = None
-        # Should not raise
-        client._handle_mbp1(_make_mbp1_record(rtype=1))
+        client._handle_tbbo(_make_tbbo_record())  # must not raise
 
     def test_shutdown_barrier_skips_dispatch(self, client: DatabentoClient) -> None:
         qp = MagicMock()
         client._quote_processor = qp
         client._shutting_down = True
-        client._handle_mbp1(_make_mbp1_record(rtype=1))
-        qp.process_mbp1.assert_not_called()
+        client._handle_tbbo(_make_tbbo_record())
         qp.process_tbbo.assert_not_called()
 
     def test_non_es_symbol_is_ignored(self, client: DatabentoClient) -> None:
-        """Phase 2a is ES-only. NQ/ZN/RTY/CL/GC records must be dropped
-        even if they somehow arrive (they shouldn't — the subscription
-        pins ES.FUT — but this is defense in depth)."""
+        """Phase 2a is ES-only. NQ records (and anything else) must be
+        dropped defensively even though the subscription pins ES.FUT."""
         qp = MagicMock()
         client._quote_processor = qp
-        rec = _make_mbp1_record(rtype=1, iid=2)  # iid=2 resolves to NQ
-        client._handle_mbp1(rec)
-        qp.process_mbp1.assert_not_called()
+        rec = _make_tbbo_record(iid=2)  # iid=2 resolves to NQ in fixture
+        client._handle_tbbo(rec)
         qp.process_tbbo.assert_not_called()
 
-    def test_unknown_rtype_is_ignored(self, client: DatabentoClient) -> None:
-        """An Mbp1Msg with rtype outside {0, 1} isn't routed — the
-        subscription set never asks for one, so this is only a
-        defensive guard against SDK/Databento schema changes."""
-        qp = MagicMock()
-        client._quote_processor = qp
-        rec = _make_mbp1_record(rtype=99, iid=1)
-        client._handle_mbp1(rec)
-        qp.process_mbp1.assert_not_called()
-        qp.process_tbbo.assert_not_called()
+
+class TestSubscribeEsL1:
+    def test_issues_single_tbbo_subscription(self, client: DatabentoClient) -> None:
+        """_subscribe_es_l1 must issue exactly ONE subscribe call, for
+        ``tbbo``. Subscribing to both ``mbp-1`` and ``tbbo`` would
+        double-deliver every trade (TBBO is a subset of MBP-1 events
+        filtered to action == 'T')."""
+        client._client = MagicMock()
+
+        client._subscribe_es_l1()
+
+        assert client._client.subscribe.call_count == 1
+        call_kwargs = client._client.subscribe.call_args.kwargs
+        assert call_kwargs["schema"] == "tbbo"
+        assert call_kwargs["symbols"] == ["ES.FUT"]
+        assert call_kwargs["stype_in"] == "parent"
+
+    def test_does_not_subscribe_to_mbp1(self, client: DatabentoClient) -> None:
+        """Regression guard: future edits must NOT re-introduce an
+        mbp-1 subscription — see the TestHandleTbboRouting design note."""
+        client._client = MagicMock()
+        client._subscribe_es_l1()
+
+        schemas_subscribed = [
+            call.kwargs.get("schema")
+            for call in client._client.subscribe.call_args_list
+        ]
+        assert "mbp-1" not in schemas_subscribed
+
+    def test_noop_without_client(self, client: DatabentoClient) -> None:
+        """If the Databento Live client hasn't been created yet, the
+        method must be a safe no-op rather than raising."""
+        client._client = None
+        client._subscribe_es_l1()  # must not raise

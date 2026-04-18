@@ -1,24 +1,35 @@
-"""Process ES L1 Databento streams (MBP-1 + TBBO).
+"""Process ES TBBO (trade + pre-trade BBO) records from Databento.
 
-Phase 2a data plumbing for the max-leverage roadmap. Two schemas feed
-this module:
+Phase 2a data plumbing for the max-leverage roadmap. We subscribe ONLY
+to the ``tbbo`` schema on the ES front-month contract. Each TBBO record
+is an ``MBP1Msg`` representing a trade, with the pre-trade top-of-book
+carried in ``levels[0]``. From each record we derive two rows:
 
-- **MBP-1** (`mbp-1`): every book update, including ADDs, MODIFYs,
-  CANCELs, and trades. We extract top-of-book (levels[0]) after each
-  event and batch-insert into `futures_top_of_book`.
-- **TBBO** (`tbbo`): one record per trade carrying the pre-trade BBO
-  in levels[0]. We derive the aggressor side by comparing trade price
-  to the pre-trade bid/ask (see `classify_aggressor`) and batch-insert
-  into `futures_trade_ticks`.
+- A top-of-book snapshot (bid, bid_size, ask, ask_size) → batch-insert
+  into ``futures_top_of_book``.
+- A trade tick (price, size, classified aggressor side) → batch-insert
+  into ``futures_trade_ticks``.
 
-No compute layer lives here — OFI, spread widening, book pressure,
-and any derived signals are Phase 2b concerns. This module is purely
-a parse-and-batch pass-through so Phase 2b has a DB surface to read
-from.
+**Why TBBO-only, not MBP-1 + TBBO?** Both the ``mbp-1`` and ``tbbo``
+schemas emit ``MBP1Msg`` and share the same ``rtype`` value
+(``RType.from_schema(Schema.MBP_1).value == RType.from_schema(Schema.TBBO).value == 1``),
+so they are NOT distinguishable at the record level. Subscribing to both
+on the same Live client would also double-deliver every trade — TBBO is
+the subset of MBP-1 events where ``action == 'T'``. For Phase 2a we only
+need quotes at trade moments and trades themselves; subscribing to TBBO
+alone gives us both cleanly with no duplication. If Phase 2b later needs
+tick-by-tick quote updates between trades, we can add ``mbp-1`` back
+with an ``action != 'T'`` filter.
 
-Mirrors the structure of `trade_processor.py`: in-memory buffer per
-schema, thread-safe flush at `BATCH_SIZE`, explicit `flush()` called
-on shutdown.
+No compute layer lives here — OFI, spread widening, book pressure, and
+any derived signals are Phase 2b concerns.
+
+Mirrors the structure of ``trade_processor.py``: in-memory buffers with
+batch flush at ``BATCH_SIZE``, explicit ``flush()`` on shutdown. Unlike
+the earlier draft, the DB write runs OUTSIDE the critical section — we
+swap the buffer under the lock, then release before issuing the network
+round trip — so high-volume callbacks don't serialize behind a single
+Neon query.
 """
 
 from __future__ import annotations
@@ -33,10 +44,10 @@ from db import batch_insert_top_of_book, batch_insert_trade_ticks
 from logger_setup import log
 from sentry_setup import capture_exception
 
-# Batch size for DB inserts. Matches the 500-row pattern from
-# batch_insert_options_trades / execute_values page_size. MBP-1 on a
-# busy ES session can generate hundreds of rows/second, so smaller
-# batches would dominate on round-trip cost to Neon.
+# Batch size for DB inserts. Matches the 500-row ``page_size`` used by
+# ``batch_insert_options_trades``. TBBO on active ES sessions can emit
+# dozens of trades per second; smaller batches would let Neon round-trip
+# overhead dominate.
 BATCH_SIZE = 500
 
 
@@ -48,7 +59,7 @@ _PRICE_SCALE = Decimal(1_000_000_000)
 
 @dataclass
 class TopOfBookRow:
-    """A single parsed MBP-1 top-of-book quote."""
+    """A single parsed top-of-book quote (pre-trade BBO from a TBBO record)."""
 
     symbol: str
     ts: datetime
@@ -105,9 +116,9 @@ def _ns_to_datetime(ts_ns: int) -> datetime:
 def _extract_top_level(record: Any) -> Any | None:
     """Return the top-of-book BidAskPair (``levels[0]``) or None.
 
-    MBP-1 / TBBO records carry one book level in the ``levels`` tuple.
-    Defensive: occasional edge cases (e.g. pre-open with no book)
-    produce records without a populated top level.
+    TBBO records carry the pre-trade book level in ``levels[0]``.
+    Defensive: edge cases (pre-open with no book, auction) can produce
+    records without a populated top level.
     """
     levels = getattr(record, "levels", None)
     if not levels:
@@ -118,145 +129,173 @@ def _extract_top_level(record: Any) -> Any | None:
         return None
 
 
+def _parse_top_of_book(symbol: str, record: Any) -> TopOfBookRow | None:
+    """Extract the pre-trade BBO snapshot from a TBBO record.
+
+    Returns None on missing / malformed fields so the caller can skip.
+    """
+    level = _extract_top_level(record)
+    if level is None:
+        return None
+
+    try:
+        bid_px = getattr(level, "bid_px", None)
+        ask_px = getattr(level, "ask_px", None)
+        bid_sz = getattr(level, "bid_sz", None)
+        ask_sz = getattr(level, "ask_sz", None)
+        ts_ns = getattr(record, "ts_event", None)
+        if (
+            bid_px is None
+            or ask_px is None
+            or bid_sz is None
+            or ask_sz is None
+            or ts_ns is None
+        ):
+            return None
+
+        return TopOfBookRow(
+            symbol=symbol,
+            ts=_ns_to_datetime(int(ts_ns)),
+            bid=Decimal(bid_px) / _PRICE_SCALE,
+            bid_size=int(bid_sz),
+            ask=Decimal(ask_px) / _PRICE_SCALE,
+            ask_size=int(ask_sz),
+        )
+    except (TypeError, ValueError, ArithmeticError) as exc:
+        log.debug("Skipping malformed TBBO top-of-book: %s", exc)
+        return None
+
+
+def _parse_trade_tick(symbol: str, record: Any) -> TradeTickRow | None:
+    """Extract the trade event + classified aggressor from a TBBO record.
+
+    Returns None on missing / malformed fields so the caller can skip.
+    """
+    level = _extract_top_level(record)
+    if level is None:
+        return None
+
+    try:
+        price_raw = getattr(record, "price", None)
+        size = getattr(record, "size", None)
+        ts_ns = getattr(record, "ts_event", None)
+        bid_px = getattr(level, "bid_px", None)
+        ask_px = getattr(level, "ask_px", None)
+        if (
+            price_raw is None
+            or size is None
+            or ts_ns is None
+            or bid_px is None
+            or ask_px is None
+        ):
+            return None
+
+        price = Decimal(price_raw) / _PRICE_SCALE
+        pre_bid = Decimal(bid_px) / _PRICE_SCALE
+        pre_ask = Decimal(ask_px) / _PRICE_SCALE
+
+        return TradeTickRow(
+            symbol=symbol,
+            ts=_ns_to_datetime(int(ts_ns)),
+            price=price,
+            size=int(size),
+            aggressor_side=classify_aggressor(price, pre_bid, pre_ask),
+        )
+    except (TypeError, ValueError, ArithmeticError) as exc:
+        log.debug("Skipping malformed TBBO trade tick: %s", exc)
+        return None
+
+
 class QuoteProcessor:
-    """Accumulates ES MBP-1 + TBBO events and batches DB writes."""
+    """Accumulates ES TBBO events and batches DB writes.
+
+    Each TBBO record produces one top-of-book row AND one trade tick row.
+    Two separate in-memory buffers are maintained so the independent
+    batch-insert round trips to Neon can run on their own page_size-500
+    cadences.
+    """
 
     def __init__(self) -> None:
         self._tob_buffer: list[TopOfBookRow] = []
         self._trade_buffer: list[TradeTickRow] = []
         self._lock = threading.Lock()
 
-    # ---------------------------------------------------------------
-    # MBP-1 ingest
-    # ---------------------------------------------------------------
-
-    def process_mbp1(self, symbol: str, record: Any) -> None:
-        """Parse a Databento MBP-1 (``MBP1Msg``) record and buffer the top-of-book.
-
-        Drops records with missing or malformed fields rather than
-        crashing — this keeps one bad tick from killing the stream.
-        """
-        level = _extract_top_level(record)
-        if level is None:
-            return
-
-        try:
-            bid_px = getattr(level, "bid_px", None)
-            ask_px = getattr(level, "ask_px", None)
-            bid_sz = getattr(level, "bid_sz", None)
-            ask_sz = getattr(level, "ask_sz", None)
-            ts_ns = getattr(record, "ts_event", None)
-            if (
-                bid_px is None
-                or ask_px is None
-                or bid_sz is None
-                or ask_sz is None
-                or ts_ns is None
-            ):
-                return
-
-            row = TopOfBookRow(
-                symbol=symbol,
-                ts=_ns_to_datetime(int(ts_ns)),
-                bid=Decimal(bid_px) / _PRICE_SCALE,
-                bid_size=int(bid_sz),
-                ask=Decimal(ask_px) / _PRICE_SCALE,
-                ask_size=int(ask_sz),
-            )
-        except (TypeError, ValueError, ArithmeticError) as exc:
-            log.debug("Skipping malformed MBP-1 record: %s", exc)
-            return
-
-        with self._lock:
-            self._tob_buffer.append(row)
-            if len(self._tob_buffer) >= BATCH_SIZE:
-                self._flush_tob_locked()
-
-    # ---------------------------------------------------------------
-    # TBBO ingest
-    # ---------------------------------------------------------------
-
     def process_tbbo(self, symbol: str, record: Any) -> None:
-        """Parse a Databento TBBO record and buffer the trade tick.
+        """Parse a Databento TBBO record and buffer both the top-of-book
+        snapshot and the trade tick.
 
-        TBBO records are ``MBP1Msg`` instances with ``action == 'T'``
-        (TRADE). The pre-trade BBO sits in ``levels[0]`` and we use it
-        to classify the aggressor side.
+        Each TBBO record is a trade with the pre-trade book in
+        ``levels[0]``, so one record contributes to both buffers. A
+        malformed record skips the affected row(s) rather than crashing —
+        one bad tick must not kill the stream.
         """
-        level = _extract_top_level(record)
-        if level is None:
-            return
+        tob = _parse_top_of_book(symbol, record)
+        trade = _parse_trade_tick(symbol, record)
 
-        try:
-            price_raw = getattr(record, "price", None)
-            size = getattr(record, "size", None)
-            ts_ns = getattr(record, "ts_event", None)
-            bid_px = getattr(level, "bid_px", None)
-            ask_px = getattr(level, "ask_px", None)
-            if (
-                price_raw is None
-                or size is None
-                or ts_ns is None
-                or bid_px is None
-                or ask_px is None
-            ):
-                return
-
-            price = Decimal(price_raw) / _PRICE_SCALE
-            pre_bid = Decimal(bid_px) / _PRICE_SCALE
-            pre_ask = Decimal(ask_px) / _PRICE_SCALE
-            aggressor = classify_aggressor(price, pre_bid, pre_ask)
-
-            row = TradeTickRow(
-                symbol=symbol,
-                ts=_ns_to_datetime(int(ts_ns)),
-                price=price,
-                size=int(size),
-                aggressor_side=aggressor,
-            )
-        except (TypeError, ValueError, ArithmeticError) as exc:
-            log.debug("Skipping malformed TBBO record: %s", exc)
-            return
-
+        # Collect any buffers that have crossed BATCH_SIZE under the
+        # lock, then release before doing the DB round-trip. Holding the
+        # lock across ``execute_values`` would serialize every incoming
+        # callback behind one Neon query — untenable at TBBO volumes.
+        tob_to_flush: list[TopOfBookRow] = []
+        trades_to_flush: list[TradeTickRow] = []
         with self._lock:
-            self._trade_buffer.append(row)
-            if len(self._trade_buffer) >= BATCH_SIZE:
-                self._flush_trades_locked()
+            if tob is not None:
+                self._tob_buffer.append(tob)
+                if len(self._tob_buffer) >= BATCH_SIZE:
+                    tob_to_flush = self._tob_buffer
+                    self._tob_buffer = []
+            if trade is not None:
+                self._trade_buffer.append(trade)
+                if len(self._trade_buffer) >= BATCH_SIZE:
+                    trades_to_flush = self._trade_buffer
+                    self._trade_buffer = []
 
-    # ---------------------------------------------------------------
-    # Flush helpers — always called under self._lock
-    # ---------------------------------------------------------------
-
-    def _flush_tob_locked(self) -> None:
-        if not self._tob_buffer:
-            return
-        rows = [
-            (r.symbol, r.ts, r.bid, r.bid_size, r.ask, r.ask_size)
-            for r in self._tob_buffer
-        ]
-        self._tob_buffer.clear()
-        try:
-            batch_insert_top_of_book(rows)
-        except Exception as exc:
-            log.error("Failed to batch insert top-of-book: %s", exc)
-            capture_exception(exc, context={"rows": len(rows)})
-
-    def _flush_trades_locked(self) -> None:
-        if not self._trade_buffer:
-            return
-        rows = [
-            (r.symbol, r.ts, r.price, r.size, r.aggressor_side)
-            for r in self._trade_buffer
-        ]
-        self._trade_buffer.clear()
-        try:
-            batch_insert_trade_ticks(rows)
-        except Exception as exc:
-            log.error("Failed to batch insert trade ticks: %s", exc)
-            capture_exception(exc, context={"rows": len(rows)})
+        if tob_to_flush:
+            _write_top_of_book(tob_to_flush)
+        if trades_to_flush:
+            _write_trade_ticks(trades_to_flush)
 
     def flush(self) -> None:
-        """Force flush both buffers. Called on shutdown."""
+        """Force flush both buffers. Called on shutdown.
+
+        Swaps each buffer out under the lock, then writes outside it
+        (same pattern as ``process_tbbo``).
+        """
         with self._lock:
-            self._flush_tob_locked()
-            self._flush_trades_locked()
+            tob_to_flush = self._tob_buffer
+            trades_to_flush = self._trade_buffer
+            self._tob_buffer = []
+            self._trade_buffer = []
+
+        if tob_to_flush:
+            _write_top_of_book(tob_to_flush)
+        if trades_to_flush:
+            _write_trade_ticks(trades_to_flush)
+
+
+# ---------------------------------------------------------------------------
+# Write helpers — deliberately module-level so ``process_tbbo`` / ``flush``
+# can call them OUTSIDE ``self._lock`` without any accidental re-entrancy
+# risk. If a future subclass wants to override DB routing it can patch
+# ``quote_processor.batch_insert_*`` the same way tests do.
+# ---------------------------------------------------------------------------
+
+
+def _write_top_of_book(rows: list[TopOfBookRow]) -> None:
+    """Materialize TopOfBookRow dataclasses into tuples and batch-insert."""
+    tuples = [(r.symbol, r.ts, r.bid, r.bid_size, r.ask, r.ask_size) for r in rows]
+    try:
+        batch_insert_top_of_book(tuples)
+    except Exception as exc:
+        log.error("Failed to batch insert top-of-book: %s", exc)
+        capture_exception(exc, context={"rows": len(tuples)})
+
+
+def _write_trade_ticks(rows: list[TradeTickRow]) -> None:
+    """Materialize TradeTickRow dataclasses into tuples and batch-insert."""
+    tuples = [(r.symbol, r.ts, r.price, r.size, r.aggressor_side) for r in rows]
+    try:
+        batch_insert_trade_ticks(tuples)
+    except Exception as exc:
+        log.error("Failed to batch insert trade ticks: %s", exc)
+        capture_exception(exc, context={"rows": len(tuples)})
