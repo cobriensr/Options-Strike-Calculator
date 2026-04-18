@@ -1826,4 +1826,18 @@ export const MIGRATIONS: Migration[] = [
       sql`ALTER TABLE pyramid_legs ADD COLUMN IF NOT EXISTS eth_structure_bias TEXT CHECK (eth_structure_bias IS NULL OR eth_structure_bias IN ('bullish', 'bearish', 'neutral'))`,
     ],
   },
+  {
+    id: 68,
+    description:
+      'Drop pyramid_chains + pyramid_legs tables (pyramid trade tracker experiment retired)',
+    statements: (sql) => [
+      // Order: child (pyramid_legs) before parent (pyramid_chains) is
+      // REQUIRED. ON DELETE CASCADE on the FK is a row-level behavior and
+      // has no effect on DDL — dropping pyramid_chains first without a
+      // CASCADE keyword on DROP TABLE would fail: "cannot drop table
+      // pyramid_chains because other objects depend on it."
+      sql`DROP TABLE IF EXISTS pyramid_legs`,
+      sql`DROP TABLE IF EXISTS pyramid_chains`,
+    ],
+  },
 ];

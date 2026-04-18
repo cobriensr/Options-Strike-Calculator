@@ -16,7 +16,7 @@ src/              React 19 SPA (Tailwind CSS 4, no router)
 api/              Vercel Serverless Functions
   _lib/           21+ shared modules (see "Backend Modules" below)
   auth/           Schwab OAuth flow (init.ts, callback.ts)
-  cron/           29 scheduled jobs (market data fetching, feature building, lesson curation)
+  cron/           35 scheduled jobs (market data fetching, feature building, lesson curation)
   journal/        Journal CRUD + DB init/migrate
   ml/             ML data export endpoint
 
@@ -116,10 +116,10 @@ Everything else gets the full loop.
 ### Backend (api/)
 
 - **Auth is single-owner** — one Schwab OAuth session via httpOnly cookie. Plaintext cookie is intentional. No multi-user auth.
-- **Neon Postgres** — `@neondatabase/serverless`, lazy singleton via `getDb()`. 17+ tables managed by numbered migrations in `migrateDb()` (tracked in `schema_migrations`).
+- **Neon Postgres** — `@neondatabase/serverless`, lazy singleton via `getDb()`. 40+ tables managed by numbered migrations in `migrateDb()` (tracked in `schema_migrations`).
 - **Upstash Redis** — stores Schwab OAuth tokens (access + refresh). Env vars: `KV_REST_API_URL` / `UPSTASH_REDIS_REST_URL`.
 - **Input validation** — Zod schemas in `api/_lib/validation.ts` validate at system boundaries before data reaches Anthropic or Postgres.
-- **Cron jobs** — 14 jobs in `vercel.json`, all verify `CRON_SECRET`. Market data fetches run every 5 min during market hours (13-21 UTC, Mon-Fri).
+- **Cron jobs** — 35 jobs in `vercel.json`, all verify `CRON_SECRET`. Market data fetches run every 5 min during market hours (13-21 UTC, Mon-Fri).
 - **Bot protection** — `botid` checks on production endpoints, skipped in local dev. **When adding a new endpoint that calls `checkBot(req)`, also add its path to the `protect` array in `src/main.tsx`'s `initBotId()` call.**
 - **Logging** — `pino` logger in `api/_lib/logger.ts`.
 - **Sentry** — error tracking + metrics via `@sentry/node`.
@@ -128,7 +128,7 @@ Everything else gets the full loop.
 
 Key modules beyond the basics:
 
-- `db.ts` — `initDb()` (base tables) + `migrateDb()` (19 numbered migrations). New tables go in `migrateDb()` only, never `initDb()`.
+- `db.ts` — `initDb()` (base tables) + `migrateDb()` (68 numbered migrations, stored in `api/_lib/db-migrations.ts`). New tables go in `migrateDb()` only, never `initDb()`.
 - `db-analyses.ts`, `db-flow.ts`, `db-snapshots.ts`, `db-positions.ts`, `db-strike-helpers.ts` — query modules split from db.ts.
 - `analyze-prompts.ts` — static Anthropic prompt text (system prompt parts, rules, chart type descriptions).
 - `analyze-context.ts` — dynamic context assembly; calls formatters from `db-flow.ts` (e.g. `formatSpotExposuresForClaude()`).
