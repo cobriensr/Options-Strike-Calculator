@@ -13,13 +13,13 @@ Boot sequence:
      HTTP 200.
   5. Spawn daemon threads that:
        - Tail stderr and forward lines matching java.*Exception / FATAL /
-         ERROR to Sentry (rate-limited 1/min per signature).
+         SEVERE to Sentry (rate-limited 1/min per signature).
        - Drain stdout so the pipe buffer never fills.
        - Watch proc.poll() and restart on unexpected exit with backoff.
 
 Never raises. Every failure path reports via sentry_setup.capture_*
-so the sidecar's Databento relay keeps running even if Theta dies —
-Theta is additive, not critical.
+with tag `component=theta` so the sidecar's Databento relay keeps
+running even if Theta dies — Theta is additive, not critical.
 """
 
 from __future__ import annotations
@@ -89,6 +89,7 @@ def start() -> bool:
             "Theta jar missing at launcher init",
             level="error",
             context={"expected_path": str(_JAR_PATH)},
+            tags={"component": "theta"},
         )
         return False
 
@@ -96,7 +97,11 @@ def start() -> bool:
         _write_creds(email, password)
         _spawn_subprocess()
     except Exception as exc:
-        capture_exception(exc, context={"phase": "theta_launch"})
+        capture_exception(
+            exc,
+            context={"phase": "theta_launch"},
+            tags={"component": "theta"},
+        )
         return False
 
     if not _wait_for_ready():
@@ -109,6 +114,7 @@ def start() -> bool:
                 "timeout_s": _READINESS_TIMEOUT_S,
                 "stderr_tail": stderr_tail,
             },
+            tags={"component": "theta"},
         )
         return False
 
@@ -257,6 +263,7 @@ def _maybe_forward_to_sentry(signature: str, line: str) -> None:
         f"Theta Terminal stderr: {signature}",
         level="error",
         context={"line": line, "recent_lines": tail[-20:]},
+        tags={"component": "theta"},
     )
 
 
@@ -288,6 +295,7 @@ def _monitor_loop() -> None:
                 "uptime_s": round(uptime, 1),
                 "stderr_tail": stderr_tail,
             },
+            tags={"component": "theta"},
         )
 
         log.warning(
@@ -306,6 +314,10 @@ def _monitor_loop() -> None:
             if not _wait_for_ready():
                 log.warning("Theta restart did not reach ready state within timeout")
         except Exception as exc:
-            capture_exception(exc, context={"phase": "theta_restart"})
+            capture_exception(
+                exc,
+                context={"phase": "theta_restart"},
+                tags={"component": "theta"},
+            )
 
         backoff = min(backoff * 2, max_backoff)

@@ -85,12 +85,20 @@ def is_enabled() -> bool:
 # `if sentry_enabled:` branches.
 
 
-def capture_exception(exc: BaseException, *, context: dict[str, Any] | None = None) -> None:
+def capture_exception(
+    exc: BaseException,
+    *,
+    context: dict[str, Any] | None = None,
+    tags: dict[str, str] | None = None,
+) -> None:
     """Report an exception to Sentry and the structured log.
 
     Always logs; only forwards to Sentry when initialized. Use this
     from `except` blocks where you want a crash report plus a log line
     without duplicating the call site.
+
+    `tags` become Sentry scope tags (filterable in the Sentry UI).
+    `context` becomes scope extras (full-fidelity values in events).
     """
     if context:
         log.error("%s (context=%s)", exc, context)
@@ -104,6 +112,9 @@ def capture_exception(exc: BaseException, *, context: dict[str, Any] | None = No
         import sentry_sdk
 
         with sentry_sdk.new_scope() as scope:
+            if tags:
+                for key, value in tags.items():
+                    scope.set_tag(key, value)
             if context:
                 for key, value in context.items():
                     scope.set_extra(key, value)
@@ -117,12 +128,16 @@ def capture_message(
     *,
     level: str = "warning",
     context: dict[str, Any] | None = None,
+    tags: dict[str, str] | None = None,
 ) -> None:
     """Report a non-exception event to Sentry and the structured log.
 
     Used for things like reconnect gaps, definition-lag summaries, and
     pool saturation warnings that aren't exceptions but should still be
     visible in Sentry.
+
+    `tags` become Sentry scope tags (filterable in the Sentry UI).
+    `context` becomes scope extras.
     """
     if context:
         log.warning("%s (context=%s)", message, context)
@@ -136,6 +151,9 @@ def capture_message(
         import sentry_sdk
 
         with sentry_sdk.new_scope() as scope:
+            if tags:
+                for key, value in tags.items():
+                    scope.set_tag(key, value)
             if context:
                 for key, value in context.items():
                     scope.set_extra(key, value)

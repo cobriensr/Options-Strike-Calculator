@@ -36,11 +36,22 @@ import time
 from datetime import date, timedelta
 from typing import Any
 
+import sentry_sdk
+
 import db
 from config import settings
 from logger_setup import log
 from sentry_setup import capture_exception, capture_message
 from theta_client import EodRow, ThetaClient, ThetaSubscriptionError
+
+# Sentry tags applied to every Theta-sourced event so operators can
+# filter this feature independently from Databento / the Vercel backend.
+_THETA_TAGS = {"component": "theta"}
+
+# Sentry cron monitor slug. Configure the matching Monitor in the
+# Sentry UI with schedule `25 22 * * *` UTC (10 min grace, 30 min max
+# runtime) so a missed 17:25 ET fire pages instead of silently skipping.
+_NIGHTLY_MONITOR_SLUG = "theta-nightly-eod"
 
 # Expiration horizon. Past window catches late settlements / corrections;
 # future window covers all listed chains (SPXW goes out to ~1y forward).
@@ -121,12 +132,20 @@ def stop_scheduler() -> None:
             _scheduler = None
 
 
+@sentry_sdk.monitor(monitor_slug=_NIGHTLY_MONITOR_SLUG)
 def run_nightly() -> None:
     """Fetch prior trading day's EOD for every configured root.
 
     APScheduler calls this at 17:25 ET. Raises on unexpected failure
     so APScheduler logs + Sentry both record it; local callers should
     already be inside a try/except wrapper.
+
+    The @sentry_sdk.monitor decorator sends an in-progress check-in
+    on entry and ok/error on exit. A missing check-in at the scheduled
+    time (container crashed before 17:25 ET, Railway outage, scheduler
+    dead) triggers a Sentry alert — this is the only signal for the
+    "scheduler never fired" failure mode that exception-capture misses.
+    When SENTRY_DSN is unset the decorator is a cheap no-op.
     """
     start = time.time()
     trade_day = _prior_trading_day(date.today())
@@ -145,6 +164,7 @@ def run_nightly() -> None:
                 "trade_day": trade_day.isoformat(),
                 "rows_so_far": total,
             },
+            tags=_THETA_TAGS,
         )
         raise
 
@@ -158,6 +178,7 @@ def run_nightly() -> None:
                 "elapsed_s": round(elapsed, 1),
                 "rows_written": total,
             },
+            tags=_THETA_TAGS,
         )
 
 
@@ -195,7 +216,9 @@ def run_backfill_if_needed() -> None:
             # Log + Sentry but continue to the next root. One bad root
             # should never block the others.
             capture_exception(
-                exc, context={"phase": "theta_backfill", "root": root}
+                exc,
+                context={"phase": "theta_backfill", "root": root},
+                tags=_THETA_TAGS,
             )
 
 
@@ -224,6 +247,7 @@ def _fetch_root_range(
             "Theta denied list_expirations — skipping root",
             level="error",
             context={"root": root},
+            tags=_THETA_TAGS,
         )
         return 0
 
@@ -247,6 +271,7 @@ def _fetch_root_range(
                     "root": root,
                     "expiration": exp.isoformat(),
                 },
+                tags=_THETA_TAGS,
             )
             continue
 
@@ -269,6 +294,7 @@ def _fetch_root_range(
                             "root": root,
                             "expiration": exp.isoformat(),
                         },
+                        tags=_THETA_TAGS,
                     )
                     root_denied = True
                     break
@@ -282,6 +308,7 @@ def _fetch_root_range(
                             "strike": str(strike),
                             "right": opt_type,
                         },
+                        tags=_THETA_TAGS,
                     )
                     continue
 
