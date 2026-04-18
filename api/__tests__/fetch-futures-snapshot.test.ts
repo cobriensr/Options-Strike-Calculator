@@ -64,18 +64,30 @@ interface SymbolData {
  * Configure mockSql to dispatch based on query template content.
  * `symbolMap` keys are symbol names → data for that symbol.
  * Missing symbols return empty arrays for latest bar (→ skipped).
+ *
+ * Query shapes emitted by computeSnapshot (in order per symbol):
+ *   1. Latest bar:    ts <= ${atIso}            ORDER BY ts DESC LIMIT 1
+ *   2. 1H ago:        ts <= ${oneHourAgoIso}    ORDER BY ts DESC LIMIT 1
+ *   3. Day open:      ts >= ${dayOpenTs}        ORDER BY ts ASC  LIMIT 1
+ *   4. 20-day avg volume (AVG(daily_vol) subquery)
+ *   5. Today volume   (SUM(volume) AS today_vol)
+ *
+ * Because (1) and (2) both match `ts <= X ORDER BY ts DESC LIMIT 1`,
+ * we disambiguate by the ISO timestamp value: the latest-bar query
+ * passes the handler's "now" (MARKET_TIME), while the 1H-ago query
+ * passes MARKET_TIME - 60m.
  */
 function setupSqlDispatch(symbolMap: Record<string, SymbolData | null>) {
+  const nowIso = MARKET_TIME.toISOString();
+
   mockSql.mockImplementation(
     (strings: TemplateStringsArray, ...values: unknown[]) => {
       const query = strings.join('??');
 
-      // Detect which query this is by template content
       if (query.includes('INSERT INTO futures_snapshots')) {
         return Promise.resolve([]);
       }
 
-      // computeSnapshot queries — look for symbol in values
       const symbol = values.find(
         (v) =>
           typeof v === 'string' &&
@@ -87,15 +99,14 @@ function setupSqlDispatch(symbolMap: Record<string, SymbolData | null>) {
       const data = symbolMap[symbol];
       if (!data) return Promise.resolve([]); // no data → skip
 
-      if (query.includes('ORDER BY ts DESC LIMIT 1') && !query.includes('<=')) {
-        // Latest bar query
-        return Promise.resolve([
-          { close: data.latestClose, ts: data.latestTs },
-        ]);
-      }
-
-      if (query.includes('<=') && query.includes('ORDER BY ts DESC LIMIT 1')) {
-        // 1H ago bar
+      if (query.includes('ORDER BY ts DESC LIMIT 1') && query.includes('<=')) {
+        // Either latest or 1H-ago; disambiguate by ts bound passed in.
+        const isLatest = values.some((v) => v === nowIso);
+        if (isLatest) {
+          return Promise.resolve([
+            { close: data.latestClose, ts: data.latestTs },
+          ]);
+        }
         if (data.hourAgoClose) {
           return Promise.resolve([{ close: data.hourAgoClose }]);
         }
@@ -103,7 +114,6 @@ function setupSqlDispatch(symbolMap: Record<string, SymbolData | null>) {
       }
 
       if (query.includes('ORDER BY ts ASC LIMIT 1')) {
-        // Day open bar
         if (data.dayOpenClose) {
           return Promise.resolve([{ close: data.dayOpenClose }]);
         }
@@ -111,12 +121,10 @@ function setupSqlDispatch(symbolMap: Record<string, SymbolData | null>) {
       }
 
       if (query.includes('AVG(daily_vol)')) {
-        // 20-day avg volume
         return Promise.resolve([{ avg_vol: data.avgVol }]);
       }
 
       if (query.includes('SUM(volume) AS today_vol')) {
-        // Today volume
         return Promise.resolve([{ today_vol: data.todayVol }]);
       }
 

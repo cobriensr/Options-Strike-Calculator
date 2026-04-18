@@ -112,6 +112,8 @@ describe('GET /api/futures/snapshot', () => {
   it('returns null fields when no data exists', async () => {
     // Combined query returns no rows
     mockSql.mockResolvedValueOnce([]);
+    // MIN(ts) query for oldestTs
+    mockSql.mockResolvedValueOnce([{ oldest: '2026-03-15T13:30:00.000Z' }]);
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
@@ -123,6 +125,8 @@ describe('GET /api/futures/snapshot', () => {
       vxTermStructure: null,
       esSpxBasis: null,
       updatedAt: null,
+      oldestTs: '2026-03-15T13:30:00.000Z',
+      requestedAt: null,
     });
   });
 
@@ -142,7 +146,10 @@ describe('GET /api/futures/snapshot', () => {
       makeSnapshotRow('ZN', 110.5, 0.05, 0.1, 0.8, ts),
     ]);
 
-    // 2. SPX query (ES exists → look up SPX)
+    // 2. MIN(ts) for oldestTs
+    mockSql.mockResolvedValueOnce([{ oldest: '2026-03-15T13:30:00.000Z' }]);
+
+    // 3. SPX query (ES exists → look up SPX)
     mockSql.mockResolvedValueOnce([{ spx: '5690' }]);
 
     const res = mockResponse();
@@ -155,10 +162,14 @@ describe('GET /api/futures/snapshot', () => {
       vxTermStructure: string;
       esSpxBasis: number;
       updatedAt: string;
+      oldestTs: string;
+      requestedAt: string | null;
     };
 
     expect(json.snapshots).toHaveLength(7);
     expect(json.updatedAt).toBe(ts);
+    expect(json.oldestTs).toBe('2026-03-15T13:30:00.000Z');
+    expect(json.requestedAt).toBeNull();
 
     // ES should have price 5700
     const es = json.snapshots.find((s) => s.symbol === 'ES');
@@ -172,6 +183,7 @@ describe('GET /api/futures/snapshot', () => {
       makeSnapshotRow('VX1', 18.0),
       makeSnapshotRow('VX2', 20.0),
     ]);
+    mockSql.mockResolvedValueOnce([{ oldest: null }]);
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
@@ -193,6 +205,7 @@ describe('GET /api/futures/snapshot', () => {
       makeSnapshotRow('VX1', 22.0),
       makeSnapshotRow('VX2', 20.0),
     ]);
+    mockSql.mockResolvedValueOnce([{ oldest: null }]);
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
@@ -213,6 +226,7 @@ describe('GET /api/futures/snapshot', () => {
       makeSnapshotRow('VX1', 20.1),
       makeSnapshotRow('VX2', 20.0),
     ]);
+    mockSql.mockResolvedValueOnce([{ oldest: null }]);
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
@@ -233,6 +247,8 @@ describe('GET /api/futures/snapshot', () => {
       makeSnapshotRow('ES', 5700, 0.1, 0.5, 1.0),
       makeSnapshotRow('NQ', 20500),
     ]);
+    // MIN(ts) for oldestTs
+    mockSql.mockResolvedValueOnce([{ oldest: null }]);
     // SPX query (ES exists)
     mockSql.mockResolvedValueOnce([{ spx: '5690' }]);
 
@@ -251,6 +267,8 @@ describe('GET /api/futures/snapshot', () => {
 
   it('computes ES-SPX basis correctly', async () => {
     mockSql.mockResolvedValueOnce([makeSnapshotRow('ES', 5710)]);
+    // MIN(ts) for oldestTs
+    mockSql.mockResolvedValueOnce([{ oldest: null }]);
     // SPX query
     mockSql.mockResolvedValueOnce([{ spx: '5700' }]);
 
@@ -264,6 +282,8 @@ describe('GET /api/futures/snapshot', () => {
 
   it('returns null ES-SPX basis when no SPX data', async () => {
     mockSql.mockResolvedValueOnce([makeSnapshotRow('ES', 5710)]);
+    // MIN(ts) for oldestTs
+    mockSql.mockResolvedValueOnce([{ oldest: null }]);
     // SPX query returns empty
     mockSql.mockResolvedValueOnce([]);
 
@@ -278,6 +298,9 @@ describe('GET /api/futures/snapshot', () => {
 
   it('sets correct cache headers when data exists', async () => {
     mockSql.mockResolvedValueOnce([makeSnapshotRow('ES', 5700)]);
+    // MIN(ts) for oldestTs
+    mockSql.mockResolvedValueOnce([{ oldest: null }]);
+    // SPX query
     mockSql.mockResolvedValueOnce([]);
 
     const res = mockResponse();
@@ -290,6 +313,8 @@ describe('GET /api/futures/snapshot', () => {
 
   it('sets correct cache headers when no data exists', async () => {
     mockSql.mockResolvedValueOnce([]);
+    // MIN(ts) for oldestTs
+    mockSql.mockResolvedValueOnce([{ oldest: null }]);
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
