@@ -1852,4 +1852,38 @@ export const MIGRATIONS: Migration[] = [
       sql`DROP TABLE IF EXISTS trace_predictions`,
     ],
   },
+  {
+    id: 70,
+    description:
+      'Create theta_option_eod table for Theta Data nightly EOD option chains (SPXW/VIX/VIXW/NDXP)',
+    statements: (sql) => [
+      // Theta Data v2 returns one row per (symbol, expiration, strike, right, trade_date)
+      // with OHLC + NBBO-at-17:15 + volume. Column `option_type` matches the
+      // futures_options_daily convention and avoids the `right` SQL reserved word.
+      // Strikes stored as dollars (converted from Theta's integer-thousandths at ingest).
+      sql`
+        CREATE TABLE IF NOT EXISTS theta_option_eod (
+          symbol       TEXT NOT NULL,
+          expiration   DATE NOT NULL,
+          strike       NUMERIC(10,2) NOT NULL,
+          option_type  CHAR(1) NOT NULL CHECK (option_type IN ('C', 'P')),
+          date         DATE NOT NULL,
+          open         NUMERIC(10,2),
+          high         NUMERIC(10,2),
+          low          NUMERIC(10,2),
+          close        NUMERIC(10,2),
+          volume       BIGINT,
+          trade_count  INTEGER,
+          bid          NUMERIC(10,2),
+          ask          NUMERIC(10,2),
+          bid_size     INTEGER,
+          ask_size     INTEGER,
+          created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE (symbol, expiration, strike, option_type, date)
+        )
+      `,
+      sql`CREATE INDEX IF NOT EXISTS ix_theta_option_eod_symbol_date ON theta_option_eod (symbol, date DESC)`,
+      sql`CREATE INDEX IF NOT EXISTS ix_theta_option_eod_expiration ON theta_option_eod (expiration)`,
+    ],
+  },
 ];
