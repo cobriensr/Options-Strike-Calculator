@@ -111,12 +111,17 @@ def main() -> None:
         trade_processor=trade_processor,
     )
 
-    # Start health check server
+    # Start health check server. Theta reporters are always passed —
+    # when Theta is disabled (no credentials) the callables just return
+    # False / 0.0 / None and the /health response honestly reports that.
     start_health_server(
         port=settings.port,
         is_connected=lambda: _client.is_connected if _client else False,
         last_bar_at=lambda: _client.last_bar_ts if _client else 0.0,
         is_db_healthy=is_db_healthy,
+        theta_is_running=theta_launcher.is_running,
+        theta_last_ready_at=theta_launcher.last_ready_at,
+        theta_last_error=theta_launcher.last_error,
     )
 
     # Register signal handlers

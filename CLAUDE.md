@@ -209,6 +209,7 @@ Required env vars (pulled via `vercel env pull .env.local`):
 | `SENTRY_DSN`, `SENTRY_AUTH_TOKEN`          | Sentry                             |
 | `CRON_SECRET`                              | Vercel (cron job auth)             |
 | `UW_API_KEY`                               | Unusual Whales                     |
+| `THETA_EMAIL`, `THETA_PASSWORD`            | Theta Data (Railway sidecar only)  |
 
 Never edit `.env*` files with Claude. Never commit secrets.
 
@@ -218,7 +219,7 @@ Never edit `.env*` files with Claude. Never commit secrets.
 - **Config**: `vercel.json` — crons, security headers, CSP, bot protection rewrites, SPA fallback, `ignoreCommand` skips builds when only `sidecar/`, `ml/`, or `scripts/` change
 - **Long-running functions**: `api/analyze.ts` (800s), `api/cron/curate-lessons.ts` (780s), `api/cron/build-features.ts` (300s)
 - **DB setup**: `POST /api/journal/init` creates all tables and runs all migrations
-- **Sidecar**: Python service deployed separately to Railway (own Dockerfile). Env vars (`DATABENTO_API_KEY`, `DATABASE_URL`, `SENTRY_DSN`) are in Railway, not Vercel.
+- **Sidecar**: Python service deployed separately to Railway (own Dockerfile). Env vars (`DATABENTO_API_KEY`, `DATABASE_URL`, `SENTRY_DSN`, and optionally `THETA_EMAIL` / `THETA_PASSWORD` for the co-resident Theta Data Terminal jar) are in Railway, not Vercel.
 
 ## Anthropic Integration
 
