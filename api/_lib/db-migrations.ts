@@ -1840,4 +1840,16 @@ export const MIGRATIONS: Migration[] = [
       sql`DROP TABLE IF EXISTS pyramid_chains`,
     ],
   },
+  {
+    id: 69,
+    description:
+      'Drop trace_predictions table and purge trace plot analyses (TRACE PIN experiment retired)',
+    statements: (sql) => [
+      // Remove orphan rows in ml_plot_analyses whose plot_name targets
+      // trace_* plots — once the source table and frontend are gone these
+      // rows have no consumer and would otherwise accumulate forever.
+      sql`DELETE FROM ml_plot_analyses WHERE plot_name LIKE 'trace_%'`,
+      sql`DROP TABLE IF EXISTS trace_predictions`,
+    ],
+  },
 ];

@@ -12,7 +12,7 @@ describe('plot-analysis-calibration.ts', () => {
   // PLOT_CALIBRATIONS
   // ============================================================
   describe('PLOT_CALIBRATIONS', () => {
-    it('contains all 21 expected plot names', () => {
+    it('contains all expected plot names', () => {
       const expectedPlots = [
         'correlations',
         'range_by_regime',
@@ -35,13 +35,6 @@ describe('plot-analysis-calibration.ts', () => {
         'pin_settlement',
         'pin_time_decay',
         'pin_composite',
-        'trace_error_distribution',
-        'trace_predicted_vs_actual',
-        'trace_accuracy_by_confidence',
-        'trace_accuracy_by_vix_regime',
-        'trace_signal_strength',
-        'trace_rolling_error',
-        'trace_error_vs_range',
         'structure_by_vix',
         'rolling_accuracy',
         'flow_by_vix',

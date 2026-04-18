@@ -699,44 +699,9 @@
         "name": "timeline",
         "generated": true,
         "file_size_kb": 238.0
-      },
-      {
-        "name": "trace_accuracy_by_confidence",
-        "generated": true,
-        "file_size_kb": 49.8
-      },
-      {
-        "name": "trace_accuracy_by_vix_regime",
-        "generated": true,
-        "file_size_kb": 56.5
-      },
-      {
-        "name": "trace_error_distribution",
-        "generated": true,
-        "file_size_kb": 42.4
-      },
-      {
-        "name": "trace_error_vs_range",
-        "generated": true,
-        "file_size_kb": 84.7
-      },
-      {
-        "name": "trace_predicted_vs_actual",
-        "generated": true,
-        "file_size_kb": 102.4
-      },
-      {
-        "name": "trace_rolling_error",
-        "generated": true,
-        "file_size_kb": 84.3
-      },
-      {
-        "name": "trace_signal_strength",
-        "generated": true,
-        "file_size_kb": 66.4
       }
     ],
-    "count": 42
+    "count": 35
   },
   "backtest": {
     "strategies": {
@@ -811,95 +776,6 @@
     },
     "asymmetry_correlation": null,
     "n_days": 45
-  },
-  "trace": {
-    "n_days": 67,
-    "mae": 3.0,
-    "median_ae": 2.7,
-    "std_error": 3.47,
-    "mean_signed_error": 1.06,
-    "direction_correct": 0.9403,
-    "hit_rates": {
-      "within_5pt": 0.8657,
-      "within_10pt": 0.9851,
-      "within_15pt": 1.0,
-      "within_20pt": 1.0
-    },
-    "by_confidence": {
-      "high": {
-        "n": 24,
-        "mae": 2.15,
-        "median_ae": 2.16,
-        "direction_correct": 1.0,
-        "hit_10pt": 1.0
-      },
-      "medium": {
-        "n": 37,
-        "mae": 3.27,
-        "median_ae": 3.1,
-        "direction_correct": 0.9459,
-        "hit_10pt": 1.0
-      },
-      "low": {
-        "n": 6,
-        "mae": 4.66,
-        "median_ae": 3.38,
-        "direction_correct": 0.6667,
-        "hit_10pt": 0.8333
-      }
-    },
-    "by_vix_regime": {
-      "<15": {
-        "n": 2,
-        "mae": 1.23,
-        "direction_correct": 1.0,
-        "hit_10pt": 1.0
-      },
-      "15-20": {
-        "n": 32,
-        "mae": 2.41,
-        "direction_correct": 0.9688,
-        "hit_10pt": 0.9688
-      },
-      "20-25": {
-        "n": 22,
-        "mae": 3.38,
-        "direction_correct": 0.9091,
-        "hit_10pt": 1.0
-      },
-      "25+": {
-        "n": 11,
-        "mae": 4.24,
-        "direction_correct": 0.9091,
-        "hit_10pt": 1.0
-      }
-    },
-    "signal_strength": {
-      "0-5": {
-        "n": 7,
-        "direction_correct": 0.4286
-      },
-      "5-10": {
-        "n": 3,
-        "direction_correct": 1.0
-      },
-      "10-20": {
-        "n": 10,
-        "direction_correct": 1.0
-      },
-      "20-30": {
-        "n": 15,
-        "direction_correct": 1.0
-      },
-      "30+": {
-        "n": 32,
-        "direction_correct": 1.0
-      }
-    },
-    "date_range": {
-      "start": "2026-01-02",
-      "end": "2026-04-10"
-    }
   },
   "flow_eda": {
     "n_rows_total": 622,

@@ -283,9 +283,9 @@ describe('plot-analysis-prompts.ts', () => {
       const matches = PLOT_ANALYSIS_SYSTEM_PROMPT.match(
         /<calibration_example\/>/g,
       );
-      // Should have one per plot (43 total)
+      // Should have one per plot (36 total)
       expect(matches).not.toBeNull();
-      expect(matches!.length).toBe(43);
+      expect(matches!.length).toBe(36);
     });
 
     it('does not contain filled calibration example tags when all empty', () => {
@@ -342,13 +342,6 @@ describe('plot-analysis-prompts.ts (with calibration)', () => {
         pin_settlement: '',
         pin_time_decay: '',
         pin_composite: '',
-        trace_error_distribution: '',
-        trace_predicted_vs_actual: '',
-        trace_accuracy_by_confidence: '',
-        trace_accuracy_by_vix_regime: '',
-        trace_signal_strength: '',
-        trace_rolling_error: '',
-        trace_error_vs_range: '',
         structure_by_vix: '',
         rolling_accuracy: '',
         flow_by_vix: '',
@@ -376,9 +369,9 @@ describe('plot-analysis-prompts.ts (with calibration)', () => {
     );
 
     // Other plots should still use the self-closing tag
-    // 42 empty calibrations + 1 filled = 42 self-closing
+    // 36 total plots - 1 filled (correlations) = 35 self-closing
     const selfClosing = prompt.match(/<calibration_example\/>/g);
     expect(selfClosing).not.toBeNull();
-    expect(selfClosing!.length).toBe(42);
+    expect(selfClosing!.length).toBe(35);
   });
 });

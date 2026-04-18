@@ -15,7 +15,6 @@ import type { MLPlot } from '../../hooks/useMLInsights';
 import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
 import PlotAnalysis from './PlotAnalysis';
-import TracePinForm from './TracePinForm';
 
 interface PlotGroup {
   label: string;
@@ -65,18 +64,6 @@ const PLOT_GROUPS: PlotGroup[] = [
     label: 'Transitions',
     plots: ['prev_day_transition', 'cone_consumption'],
   },
-  {
-    label: 'TRACE Pin',
-    plots: [
-      'trace_error_distribution',
-      'trace_predicted_vs_actual',
-      'trace_accuracy_by_confidence',
-      'trace_accuracy_by_vix_regime',
-      'trace_signal_strength',
-      'trace_rolling_error',
-      'trace_error_vs_range',
-    ],
-  },
 ];
 
 /** Format plot name for display: snake_case -> Title Case */
@@ -99,12 +86,11 @@ const PlotCarousel = memo(function PlotCarousel({ plots }: Props) {
 
   const plotMap = new Map(plots.map((p) => [p.name, p]));
 
-  // Filter groups to only those with available plots, but always include TRACE Pin
-  // (it hosts the manual prediction form even when no accuracy plots exist yet).
+  // Filter groups to only those with available plots.
   const availableGroups = PLOT_GROUPS.map((group) => ({
     ...group,
     plots: group.plots.filter((name) => plotMap.has(name)),
-  })).filter((group) => group.plots.length > 0 || group.label === 'TRACE Pin');
+  })).filter((group) => group.plots.length > 0);
 
   const activeGroup = availableGroups[activeGroupIdx];
   const activePlotName = activeGroup?.plots[activePlotIdx];
@@ -287,11 +273,6 @@ const PlotCarousel = memo(function PlotCarousel({ plots }: Props) {
             plotName={activePlot.name}
           />
         </div>
-      )}
-
-      {/* TRACE Pin manual prediction entry */}
-      {availableGroups[activeGroupIdx]?.label === 'TRACE Pin' && (
-        <TracePinForm />
       )}
 
       {/* Keyboard hint */}
