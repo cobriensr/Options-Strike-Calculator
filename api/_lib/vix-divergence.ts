@@ -15,11 +15,14 @@
  *   - SPX minute bars live in `spx_candles_1m` (1-min cadence), which
  *     gives a reliable 5-min return anchor.
  *
- * If either source lacks a pair of bars spanning the 5-min window
- * the helper returns null.
+ * Partial data is preserved: the helper returns null only when BOTH
+ * the VIX and the SPX 5-min returns are missing. When only one side
+ * is available the other side's return is `null` and the formatter
+ * renders "N/A" — Claude still gets the single-sided information.
  */
 
 import { getDb } from './db.js';
+import { getETDateStr } from '../../src/utils/timezone.js';
 
 // ── Configuration ─────────────────────────────────────────────
 
@@ -53,10 +56,18 @@ export interface VixSpxDivergence {
 async function getSpxCloseAt(at: Date): Promise<number | null> {
   const sql = getDb();
   const atIso = at.toISOString();
-  const earliestIso = new Date(at.getTime() - SPX_STALENESS_MS).toISOString();
+  const earliest = new Date(at.getTime() - SPX_STALENESS_MS);
+  const earliestIso = earliest.toISOString();
+  // Include both potential ET calendar dates so the composite index
+  // (date, timestamp) on spx_candles_1m is usable. Covers the case
+  // where the staleness window straddles an ET-midnight boundary.
+  const atDate = getETDateStr(at);
+  const earliestDate = getETDateStr(earliest);
+  const dates = atDate === earliestDate ? [atDate] : [earliestDate, atDate];
   const rows = await sql`
     SELECT close FROM spx_candles_1m
-    WHERE timestamp <= ${atIso}
+    WHERE date = ANY(${dates})
+      AND timestamp <= ${atIso}
       AND timestamp >= ${earliestIso}
     ORDER BY timestamp DESC
     LIMIT 1
@@ -90,8 +101,12 @@ async function getVixAt(at: Date): Promise<number | null> {
 
 /**
  * Compute the VIX/SPX divergence flag as of `now`.
- * Returns null when either underlying source fails to produce both a
- * latest and a 5-min-prior reading.
+ *
+ * Returns null only when BOTH VIX and SPX 5-min returns cannot be
+ * computed. Partial data is preserved — if one side is missing, that
+ * side's return is null in the result and the formatter renders
+ * "N/A" for it. `triggered` only fires when both sides are available
+ * because the divergence definition requires comparing the two.
  */
 export async function computeVixSpxDivergence(
   now: Date,

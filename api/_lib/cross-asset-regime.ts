@@ -117,22 +117,40 @@ async function closeAt(
   return Number.isFinite(val) ? val : null;
 }
 
+/**
+ * Compute a return given an already-fetched latest close. Performs the
+ * prior-bar lookup internally. Null when `latest` is null or no valid
+ * prior bar exists within the staleness cap.
+ *
+ * Splitting this from the latest-close fetch lets callers that need
+ * multiple returns for the same symbol (e.g. CL at both 5-min and
+ * 30-min lookbacks) reuse one latest-close query instead of paying
+ * for two identical reads.
+ */
+async function returnFromLatest(
+  symbol: RegimeSymbol,
+  now: Date,
+  lookbackMs: number,
+  latest: number | null,
+): Promise<number | null> {
+  if (latest == null) return null;
+  const then = new Date(now.getTime() - lookbackMs);
+  // Prior bar: search back from `then` with the same staleness cap used
+  // for the latest bar. Without a cap a stale historical bar could
+  // silently satisfy the query and produce garbage returns.
+  const prior = await closeAt(symbol, then, LATEST_BAR_STALENESS_MS);
+  if (prior == null || prior === 0) return null;
+  return latest / prior - 1;
+}
+
 /** Compute a return over `lookbackMs` as of `now`. Null when either bar is missing. */
 async function symbolReturn(
   symbol: RegimeSymbol,
   now: Date,
   lookbackMs: number,
 ): Promise<number | null> {
-  const then = new Date(now.getTime() - lookbackMs);
-  // Prior bar: search back from `then` with the same staleness cap used
-  // for the latest bar. Without a cap a stale historical bar could
-  // silently satisfy the query and produce garbage returns.
-  const [latest, prior] = await Promise.all([
-    closeAt(symbol, now, LATEST_BAR_STALENESS_MS),
-    closeAt(symbol, then, LATEST_BAR_STALENESS_MS),
-  ]);
-  if (latest == null || prior == null || prior === 0) return null;
-  return latest / prior - 1;
+  const latest = await closeAt(symbol, now, LATEST_BAR_STALENESS_MS);
+  return returnFromLatest(symbol, now, lookbackMs, latest);
 }
 
 /** Classify the regime from components + flags. */
@@ -174,15 +192,20 @@ function classify(args: {
 export async function computeCrossAssetRegime(
   now: Date,
 ): Promise<CrossAssetRegimeResult | null> {
+  // CL needs both a 5-min and a 30-min return; fetch its latest close
+  // once and reuse for both derivations instead of paying for two
+  // identical "latest close" queries.
+  const clLatest = await closeAt('CL', now, LATEST_BAR_STALENESS_MS);
+
   // Fetch all 5-min returns in parallel; also grab CL 30-min return.
   const [es, nq, zn, rty, cl, gc, cl30m] = await Promise.all([
     symbolReturn('ES', now, RETURN_LOOKBACK_MS),
     symbolReturn('NQ', now, RETURN_LOOKBACK_MS),
     symbolReturn('ZN', now, RETURN_LOOKBACK_MS),
     symbolReturn('RTY', now, RETURN_LOOKBACK_MS),
-    symbolReturn('CL', now, RETURN_LOOKBACK_MS),
+    returnFromLatest('CL', now, RETURN_LOOKBACK_MS, clLatest),
     symbolReturn('GC', now, RETURN_LOOKBACK_MS),
-    symbolReturn('CL', now, CL_SPIKE_LOOKBACK_MS),
+    returnFromLatest('CL', now, CL_SPIKE_LOOKBACK_MS, clLatest),
   ]);
 
   // Without ES the signal has no anchor — return null so callers can

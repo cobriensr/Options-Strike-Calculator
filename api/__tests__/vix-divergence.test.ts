@@ -1,6 +1,13 @@
 // @vitest-environment node
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+/**
+ * Fixed "now" used by every test in this file. The mock keys off
+ * `Date.now() - atIso` to bucket queries into latest vs 5-min-prior;
+ * freezing the clock keeps that deterministic across slow CI runs.
+ */
+const FIXED_NOW = new Date('2026-04-18T15:30:00.000Z');
 
 const mockSql = vi.fn();
 
@@ -22,13 +29,23 @@ import {
  *
  * We identify which query is which by sniffing the SQL template
  * strings (VIX queries contain "market_snapshots", SPX queries contain
- * "spx_candles_1m") and the `at` parameter (latest vs 5-min prior).
+ * "spx_candles_1m") and find the `at` parameter (latest vs 5-min
+ * prior) by scanning params for the first ISO-timestamp string.
  */
 
 interface Stub {
   source: 'vix' | 'spx';
   lookbackMs: 0 | 300_000;
   value: number | null;
+}
+
+const ISO_REGEX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
+
+function firstIsoParam(params: unknown[]): string | null {
+  for (const p of params) {
+    if (typeof p === 'string' && ISO_REGEX.test(p)) return p;
+  }
+  return null;
 }
 
 function stub(stubs: Stub[]) {
@@ -38,7 +55,8 @@ function stub(stubs: Stub[]) {
       const source: 'vix' | 'spx' = sqlText.includes('market_snapshots')
         ? 'vix'
         : 'spx';
-      const [atIso] = params as [string];
+      const atIso = firstIsoParam(params);
+      if (!atIso) return [];
       const diff = Date.now() - new Date(atIso).getTime();
       const lookbackMs: 0 | 300_000 = diff < 150_000 ? 0 : 300_000;
 
@@ -56,6 +74,12 @@ function stub(stubs: Stub[]) {
 describe('computeVixSpxDivergence', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXED_NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('flags divergence when VIX > 3% and SPX < 0.1%', async () => {
@@ -65,7 +89,7 @@ describe('computeVixSpxDivergence', () => {
       { source: 'spx', lookbackMs: 0, value: 5001 },
       { source: 'spx', lookbackMs: 300_000, value: 5000 }, // +0.02%
     ]);
-    const now = new Date();
+    const now = FIXED_NOW;
 
     // Use a slightly larger VIX move to clear the strict > threshold
     stub([
@@ -90,7 +114,7 @@ describe('computeVixSpxDivergence', () => {
       { source: 'spx', lookbackMs: 300_000, value: 5000 },
     ]);
 
-    const result = await computeVixSpxDivergence(new Date());
+    const result = await computeVixSpxDivergence(FIXED_NOW);
     expect(result).not.toBeNull();
     expect(result!.triggered).toBe(false);
   });
@@ -103,14 +127,14 @@ describe('computeVixSpxDivergence', () => {
       { source: 'spx', lookbackMs: 300_000, value: 5000 },
     ]);
 
-    const result = await computeVixSpxDivergence(new Date());
+    const result = await computeVixSpxDivergence(FIXED_NOW);
     expect(result).not.toBeNull();
     expect(result!.triggered).toBe(false);
   });
 
   it('returns null when both sources have no data', async () => {
     stub([]);
-    const result = await computeVixSpxDivergence(new Date());
+    const result = await computeVixSpxDivergence(FIXED_NOW);
     expect(result).toBeNull();
   });
 
@@ -120,7 +144,7 @@ describe('computeVixSpxDivergence', () => {
       { source: 'spx', lookbackMs: 300_000, value: 5000 },
     ]);
 
-    const result = await computeVixSpxDivergence(new Date());
+    const result = await computeVixSpxDivergence(FIXED_NOW);
     expect(result).not.toBeNull();
     expect(result!.vixRet5m).toBeNull();
     expect(result!.spxRet5m).not.toBeNull();
@@ -133,7 +157,7 @@ describe('computeVixSpxDivergence', () => {
       { source: 'vix', lookbackMs: 300_000, value: 20.0 },
     ]);
 
-    const result = await computeVixSpxDivergence(new Date());
+    const result = await computeVixSpxDivergence(FIXED_NOW);
     expect(result).not.toBeNull();
     expect(result!.spxRet5m).toBeNull();
     expect(result!.vixRet5m).not.toBeNull();
@@ -148,7 +172,7 @@ describe('computeVixSpxDivergence', () => {
       { source: 'spx', lookbackMs: 300_000, value: 5000 },
     ]);
 
-    const result = await computeVixSpxDivergence(new Date());
+    const result = await computeVixSpxDivergence(FIXED_NOW);
     expect(result).not.toBeNull();
     expect(result!.vixRet5m).toBeNull();
     expect(result!.triggered).toBe(false);

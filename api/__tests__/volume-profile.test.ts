@@ -1,6 +1,12 @@
 // @vitest-environment node
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+/** Fixed system time for determinism. Although this helper's public
+ *  API takes explicit date strings (no dependency on `Date.now()`),
+ *  freezing the clock keeps behavior stable if the internal date
+ *  helpers ever grow a "today" fallback. */
+const FIXED_NOW = new Date('2026-04-18T15:30:00.000Z');
 
 const mockSql = vi.fn();
 
@@ -33,6 +39,12 @@ function bars(
 describe('computeVolumeProfile', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXED_NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('returns null when bar count is below 50 (half-day / holiday)', async () => {

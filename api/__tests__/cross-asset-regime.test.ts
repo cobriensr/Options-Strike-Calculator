@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockSql = vi.fn();
 
@@ -12,6 +12,15 @@ import {
   computeCrossAssetRegime,
   formatCrossAssetRegimeForClaude,
 } from '../_lib/cross-asset-regime.js';
+
+/**
+ * Fixed "now" used by every test in this file. The mock keys off
+ * `Date.now() - atIso` to bucket calls into latest/5m/30m windows;
+ * a real system clock can drift during slow CI runs and flip
+ * branches. `vi.setSystemTime` freezes the clock so bucketing is
+ * deterministic.
+ */
+const FIXED_NOW = new Date('2026-04-18T15:30:00.000Z');
 
 /**
  * The helper executes 14 independent DB queries in parallel via
@@ -69,10 +78,16 @@ function stubBars(bars: StubBar[]) {
 describe('computeCrossAssetRegime', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXED_NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('classifies RISK-ON when composite is large positive with ES up and ZN down', async () => {
-    const now = new Date();
+    const now = FIXED_NOW;
     // ES +0.5%, NQ +0.6% → numerator = 0.011
     // ZN -0.3%, GC -0.1% → denom = -0.002
     // composite = 0.011 / -0.002 = -5.5 (NOT risk-on since denom sign flips)
@@ -122,7 +137,7 @@ describe('computeCrossAssetRegime', () => {
   });
 
   it('classifies RISK-OFF when composite is large negative with ES down and ZN up', async () => {
-    const now = new Date();
+    const now = FIXED_NOW;
     // ES -0.5%, NQ -0.6% → num = -0.011
     // ZN +0.2%, GC +0.5% → denom = -0.003 → composite = 3.67 (POSITIVE)
     //
@@ -155,7 +170,7 @@ describe('computeCrossAssetRegime', () => {
   });
 
   it('classifies MACRO-STRESS when CL 30-min move exceeds 2% regardless of composite', async () => {
-    const now = new Date();
+    const now = FIXED_NOW;
     stubBars([
       { symbol: 'ES', lookbackMs: 0, close: 5000 },
       { symbol: 'ES', lookbackMs: 300_000, close: 5000 },
@@ -180,7 +195,7 @@ describe('computeCrossAssetRegime', () => {
   });
 
   it('flags ES/NQ divergence when |ES_ret - NQ_ret| > 0.3%', async () => {
-    const now = new Date();
+    const now = FIXED_NOW;
     stubBars([
       { symbol: 'ES', lookbackMs: 0, close: 5050 },
       { symbol: 'ES', lookbackMs: 300_000, close: 5000 }, // +1%
@@ -203,7 +218,7 @@ describe('computeCrossAssetRegime', () => {
   });
 
   it('returns MIXED and null composite when denominator ZN_ret - GC_ret is near zero', async () => {
-    const now = new Date();
+    const now = FIXED_NOW;
     stubBars([
       { symbol: 'ES', lookbackMs: 0, close: 5005 },
       { symbol: 'ES', lookbackMs: 300_000, close: 5000 },
@@ -228,7 +243,7 @@ describe('computeCrossAssetRegime', () => {
   });
 
   it('returns null when ES has no latest bar', async () => {
-    const now = new Date();
+    const now = FIXED_NOW;
     stubBars([
       // ES absent entirely
       { symbol: 'NQ', lookbackMs: 0, close: 18005 },
@@ -242,7 +257,7 @@ describe('computeCrossAssetRegime', () => {
   });
 
   it('tolerates a single missing component (NQ) without crashing', async () => {
-    const now = new Date();
+    const now = FIXED_NOW;
     stubBars([
       { symbol: 'ES', lookbackMs: 0, close: 5005 },
       { symbol: 'ES', lookbackMs: 300_000, close: 5000 },

@@ -123,15 +123,21 @@ export async function computeVolumeProfile(
 ): Promise<VolumeProfile | null> {
   const sql = getDb();
   // Select bars whose ts falls on priorTradeDate in UTC. Futures bars
-  // span a 23-hour session but for volume-profile purposes the ET
+  // span a 23-hour session but for volume-profile purposes the UTC
   // calendar boundary is close enough — we only need to filter out
   // the wrong session, not get pit-perfect timing.
+  //
+  // Upper bound: compute the exclusive next-UTC-day boundary rather
+  // than writing `T24:00:00Z` which is not valid ISO 8601 even though
+  // Postgres tolerates it.
+  const startIso = `${priorTradeDate}T00:00:00Z`;
+  const nextDayIso = `${nextUtcDate(priorTradeDate)}T00:00:00Z`;
   const rows = (await sql`
     SELECT high, low, volume
     FROM futures_bars
     WHERE symbol = ${symbol}
-      AND ts >= ${`${priorTradeDate}T00:00:00Z`}
-      AND ts < ${`${priorTradeDate}T24:00:00Z`}
+      AND ts >= ${startIso}
+      AND ts < ${nextDayIso}
   `) as Array<{
     high: string | number;
     low: string | number;
@@ -209,7 +215,22 @@ export function formatVolumeProfileForClaude(
   ].join('\n');
 }
 
-// ── Prior-trade-date helper ───────────────────────────────────
+// ── Date helpers ──────────────────────────────────────────────
+
+/**
+ * Given YYYY-MM-DD, return the next calendar day as YYYY-MM-DD.
+ * Used to build an exclusive upper bound for single-day ts queries
+ * without emitting invalid ISO strings like `T24:00:00Z`.
+ */
+function nextUtcDate(date: string): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return date;
+  d.setUTCDate(d.getUTCDate() + 1);
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
 
 /**
  * Given an ET calendar date (YYYY-MM-DD), return the prior trading
