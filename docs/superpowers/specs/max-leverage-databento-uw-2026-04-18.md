@@ -34,22 +34,18 @@ Each phase is independently shippable and goes through the project's
 Get It Right loop. Most phases will get their own sub-spec in
 `docs/superpowers/specs/` when picked up.
 
-### Phase 1 — ES options IV term structure in analyze context
+### Phase 1 — ES options IV term structure in analyze context ✅ ALREADY SHIPPED
 
-**Scope:** compute ATM ES option IV at 0DTE / 1DTE / 7DTE / 30DTE from
-the ES options trades + statistics schemas already in the sidecar.
-Surface the slope (`IV_short / IV_long`) in the analyze endpoint's
-context as a VX-term-structure substitute (`CONTANGO`, `FLAT`,
-`BACKWARDATION`).
+**Status:** Pre-existing. `api/iv-term-structure.ts` already pulls
+interpolated SPX IV term structure from UW
+(`/api/stock/SPX/interpolated-iv`), classifies shape (CONTANGO, FLAT,
+INVERTED, STEEP INVERSION), and injects into the analyze context at
+`analyze-context-fetchers.ts:307`. SPX-native is actually preferable
+to ES-options synthesis for our trading vehicle.
 
-**Why first:** directly replaces the $199/mo CFE use case for zero
-marginal cost and proves the signal value with your own trading before
-any upgrade decision.
-
-**Files:** `api/_lib/analyze-context.ts`, `api/_lib/futures-derive.ts` or
-new `api/_lib/es-iv-term.ts`, tests.
-
-**Rough effort:** 4 hours.
+**Implication:** the VX term structure signal we were going to spend
+$199/mo on is already covered for SPX via UW data. The CFE upgrade
+decision is de-prioritized further.
 
 ### Phase 2 — Cross-asset composite + volume profile + VIX/SPX divergence
 
