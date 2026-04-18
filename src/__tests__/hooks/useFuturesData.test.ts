@@ -121,7 +121,8 @@ describe('useFuturesData', () => {
       expect(result.current.loading).toBe(false);
     });
 
-    expect(result.current.error).toContain('Failed to fetch futures data');
+    // Backend body: { error: 'Server error' } — surfaced verbatim.
+    expect(result.current.error).toContain('Server error');
     expect(result.current.error).toContain('500');
     expect(result.current.snapshots).toEqual([]);
   });

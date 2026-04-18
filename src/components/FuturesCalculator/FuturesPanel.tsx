@@ -92,13 +92,11 @@ export default function FuturesPanel() {
   const timeLabel = formatUpdatedAt(updatedAt);
   const isHistorical = pickerValue !== '';
 
-  // `max` = now, computed once per render. Good enough — picker re-renders
-  // on any interaction, and being a few seconds stale is fine because the
-  // server tolerates small future-skew (FUTURE_AT_TOLERANCE_MS).
-  const maxLocal = useMemo(
-    () => isoToLocalInputValue(new Date().toISOString()),
-    [],
-  );
+  // `max` = now. Computed each render (not memoized) so a dashboard left
+  // open for hours / across midnight doesn't freeze the upper bound at
+  // mount time. `new Date()` is cheap and React diffs primitive DOM props,
+  // so this is effectively free.
+  const maxLocal = isoToLocalInputValue(new Date().toISOString());
   const minLocal = useMemo(() => isoToLocalInputValue(oldestTs), [oldestTs]);
 
   return (

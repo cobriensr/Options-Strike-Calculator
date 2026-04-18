@@ -157,8 +157,64 @@ describe('useFuturesData — historical mode', () => {
       expect(result.current.loading).toBe(false);
     });
 
-    expect(result.current.error).toContain('Failed to fetch futures data');
+    // Backend's error string is surfaced verbatim in the message.
+    expect(result.current.error).toContain('Invalid query');
     expect(result.current.error).toContain('400');
     expect(result.current.snapshots).toEqual([]);
+  });
+
+  it('surfaces the backend error string for 400 future-at responses', async () => {
+    const backendMsg = 'at must not be in the future';
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      json: () => Promise.resolve({ error: backendMsg }),
+    });
+
+    const { result } = renderHook(() =>
+      useFuturesData('2099-01-01T00:00:00.000Z'),
+    );
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.error).toContain(backendMsg);
+    expect(result.current.error).toContain('400');
+  });
+
+  it('falls back to generic message when 400 body has no error string', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      // body parses but .error is missing / non-string
+      json: () => Promise.resolve({ details: { foo: 'bar' } }),
+    });
+
+    const { result } = renderHook(() => useFuturesData('not-a-real-datetime'));
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.error).toContain('Failed to fetch futures data');
+    expect(result.current.error).toContain('400');
+  });
+
+  it('falls back to generic message when response body is not JSON', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: () => Promise.reject(new Error('not json')),
+    });
+
+    const { result } = renderHook(() => useFuturesData());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.error).toContain('Failed to fetch futures data');
+    expect(result.current.error).toContain('500');
   });
 });

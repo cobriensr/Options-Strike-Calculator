@@ -78,7 +78,18 @@ export function useFuturesData(at?: string): FuturesDataState {
       });
 
       if (!res.ok) {
-        throw new Error(`Failed to fetch futures data (HTTP ${res.status})`);
+        // Try to surface the backend's error string (e.g. Zod validation
+        // message or "at must not be in the future"). Fall back to a
+        // generic label if the body isn't JSON or the shape is unexpected.
+        const body = (await res.json().catch(() => null)) as {
+          error?: unknown;
+        } | null;
+        const reason =
+          body && typeof body.error === 'string'
+            ? body.error
+            : 'Failed to fetch futures data';
+        const msg = `${reason} (HTTP ${res.status})`;
+        throw new Error(msg);
       }
 
       const data: FuturesSnapshotResponse = await res.json();
