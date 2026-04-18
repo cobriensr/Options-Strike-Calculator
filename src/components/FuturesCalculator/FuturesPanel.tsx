@@ -4,12 +4,17 @@
  * Fetches snapshot data via useFuturesData, shows loading skeleton
  * while fetching, empty state if no data, and renders FuturesGrid
  * + VixTermStructure. Owner-gated at the App.tsx level, not here.
+ *
+ * Includes a datetime-local picker that lets the user inspect the
+ * futures snapshot at an arbitrary past moment. Default (empty picker)
+ * is live mode. Picking a value re-fetches with `?at=<UTC-ISO>`.
  */
 
+import { useMemo, useState } from 'react';
 import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
 import { useFuturesData } from '../../hooks/useFuturesData';
-import { SectionBox } from '../ui';
+import { SectionBox, StatusBadge } from '../ui';
 import FuturesGrid from './FuturesGrid';
 import VixTermStructure from './VixTermStructure';
 import FuturesCalculator from '.';
@@ -28,19 +33,73 @@ function formatUpdatedAt(iso: string | null): string | null {
   }
 }
 
+/**
+ * Format an ISO string as a `datetime-local` input value (YYYY-MM-DDTHH:mm)
+ * in the browser's local timezone. Returns null on invalid input.
+ */
+function isoToLocalInputValue(iso: string | null): string | null {
+  if (!iso) return null;
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return null;
+    // Build local-tz components manually — toISOString() would convert to UTC.
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const yyyy = d.getFullYear();
+    const mm = pad(d.getMonth() + 1);
+    const dd = pad(d.getDate());
+    const hh = pad(d.getHours());
+    const mi = pad(d.getMinutes());
+    return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Convert a `datetime-local` input value (local-tz, no offset) to a UTC ISO
+ * string suitable for the `?at=` query param. Returns null for empty input.
+ */
+function localInputToIso(value: string): string | null {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
 export default function FuturesPanel() {
+  // Raw `datetime-local` input value (local tz, no offset). Empty = live.
+  const [pickerValue, setPickerValue] = useState('');
+
+  // Derived UTC ISO that gets passed to the hook. Memoized so a render
+  // that doesn't change `pickerValue` doesn't re-trigger the hook's effect.
+  const at = useMemo(
+    () => localInputToIso(pickerValue) ?? undefined,
+    [pickerValue],
+  );
+
   const {
     snapshots,
     vxTermSpread,
     vxTermStructure,
     esSpxBasis,
     updatedAt,
+    oldestTs,
     loading,
     error,
     refetch,
-  } = useFuturesData();
+  } = useFuturesData(at);
 
   const timeLabel = formatUpdatedAt(updatedAt);
+  const isHistorical = pickerValue !== '';
+
+  // `max` = now, computed once per render. Good enough — picker re-renders
+  // on any interaction, and being a few seconds stale is fine because the
+  // server tolerates small future-skew (FUTURE_AT_TOLERANCE_MS).
+  const maxLocal = useMemo(
+    () => isoToLocalInputValue(new Date().toISOString()),
+    [],
+  );
+  const minLocal = useMemo(() => isoToLocalInputValue(oldestTs), [oldestTs]);
 
   return (
     <SectionBox
@@ -48,20 +107,58 @@ export default function FuturesPanel() {
       badge={timeLabel}
       collapsible
       headerRight={
-        <button
-          type="button"
-          onClick={refetch}
-          disabled={loading}
-          className="cursor-pointer rounded-md px-2.5 py-1 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
-          style={{
-            backgroundColor: tint(theme.accent, '12'),
-            color: theme.accent,
-            border: `1px solid ${tint(theme.accent, '25')}`,
-          }}
-          aria-label="Refresh futures data"
-        >
-          {loading ? 'Loading...' : 'Refresh'}
-        </button>
+        <div className="flex items-center gap-2">
+          {isHistorical && (
+            <span role="status">
+              <StatusBadge
+                label="VIEWING HISTORICAL"
+                color={theme.caution}
+                title="Showing a historical snapshot — click Now to return to live data"
+              />
+            </span>
+          )}
+          <label htmlFor="futures-historical-picker" className="sr-only">
+            Historical futures timestamp
+          </label>
+          <input
+            id="futures-historical-picker"
+            type="datetime-local"
+            value={pickerValue}
+            onChange={(e) => setPickerValue(e.target.value)}
+            min={minLocal ?? undefined}
+            max={maxLocal ?? undefined}
+            step="60"
+            className="text-secondary border-edge rounded border bg-transparent px-1.5 py-0.5 font-mono text-[10px]"
+          />
+          <button
+            type="button"
+            onClick={() => setPickerValue('')}
+            disabled={!isHistorical}
+            className="cursor-pointer rounded-md px-2.5 py-1 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
+            style={{
+              backgroundColor: tint(theme.accent, '12'),
+              color: theme.accent,
+              border: `1px solid ${tint(theme.accent, '25')}`,
+            }}
+            aria-label="Reset to live data"
+          >
+            Now
+          </button>
+          <button
+            type="button"
+            onClick={refetch}
+            disabled={loading}
+            className="cursor-pointer rounded-md px-2.5 py-1 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
+            style={{
+              backgroundColor: tint(theme.accent, '12'),
+              color: theme.accent,
+              border: `1px solid ${tint(theme.accent, '25')}`,
+            }}
+            aria-label="Refresh futures data"
+          >
+            {loading ? 'Loading...' : 'Refresh'}
+          </button>
+        </div>
       }
     >
       <div className="font-sans text-[11px] leading-relaxed">

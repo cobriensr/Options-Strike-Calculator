@@ -1,9 +1,11 @@
 /**
  * useFuturesData — Fetches futures snapshot data from the API.
  *
- * Calls GET /api/futures/snapshot on mount.
- * No polling (data updates every 5 min via cron, user refreshes
- * manually). Exposes a refetch function for the refresh button.
+ * Calls GET /api/futures/snapshot on mount (live mode), or with an
+ * optional `?at=<ISO>` query param when the caller supplies a historical
+ * timestamp. No polling (data updates every 5 min via cron; the caller
+ * refreshes manually via the returned `refetch`). Aborts any in-flight
+ * request when `at` changes or the component unmounts.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -25,6 +27,8 @@ export interface FuturesSnapshotResponse {
   vxTermStructure: VxTermStructure | null;
   esSpxBasis: number | null;
   updatedAt: string;
+  oldestTs: string | null;
+  requestedAt: string | null;
 }
 
 export interface FuturesDataState {
@@ -33,18 +37,20 @@ export interface FuturesDataState {
   vxTermStructure: VxTermStructure | null;
   esSpxBasis: number | null;
   updatedAt: string | null;
+  oldestTs: string | null;
   loading: boolean;
   error: string | null;
   refetch: () => Promise<void>;
 }
 
-export function useFuturesData(): FuturesDataState {
+export function useFuturesData(at?: string): FuturesDataState {
   const [snapshots, setSnapshots] = useState<FuturesSnapshot[]>([]);
   const [vxTermSpread, setVxTermSpread] = useState<number | null>(null);
   const [vxTermStructure, setVxTermStructure] =
     useState<VxTermStructure | null>(null);
   const [esSpxBasis, setEsSpxBasis] = useState<number | null>(null);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const [oldestTs, setOldestTs] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -58,7 +64,16 @@ export function useFuturesData(): FuturesDataState {
     setError(null);
 
     try {
-      const res = await fetch('/api/futures/snapshot', {
+      // Build URL cleanly — only append `?at=` when caller supplied a value.
+      // Identical to the previous `/api/futures/snapshot` string when `at`
+      // is absent (no trailing `?`).
+      let url = '/api/futures/snapshot';
+      if (at) {
+        const qs = new URLSearchParams({ at });
+        url = `${url}?${qs.toString()}`;
+      }
+
+      const res = await fetch(url, {
         signal: controller.signal,
       });
 
@@ -72,6 +87,7 @@ export function useFuturesData(): FuturesDataState {
       setVxTermStructure(data.vxTermStructure ?? null);
       setEsSpxBasis(data.esSpxBasis ?? null);
       setUpdatedAt(data.updatedAt ?? null);
+      setOldestTs(data.oldestTs ?? null);
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
         return;
@@ -80,7 +96,7 @@ export function useFuturesData(): FuturesDataState {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [at]);
 
   useEffect(() => {
     void fetchData();
@@ -95,6 +111,7 @@ export function useFuturesData(): FuturesDataState {
     vxTermStructure,
     esSpxBasis,
     updatedAt,
+    oldestTs,
     loading,
     error,
     refetch: fetchData,

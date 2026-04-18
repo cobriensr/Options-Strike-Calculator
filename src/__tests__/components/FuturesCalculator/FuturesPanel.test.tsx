@@ -17,6 +17,7 @@ function mockState(overrides: Partial<FuturesDataState> = {}) {
     vxTermStructure: null,
     esSpxBasis: null,
     updatedAt: null,
+    oldestTs: null,
     loading: false,
     error: null,
     refetch: vi.fn(),

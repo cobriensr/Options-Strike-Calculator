@@ -44,6 +44,8 @@ function makeApiResponse(
     vxTermStructure: 'CONTANGO',
     esSpxBasis: 2.5,
     updatedAt: '2026-04-05T15:30:00Z',
+    oldestTs: null,
+    requestedAt: null,
     ...overrides,
   };
 }
