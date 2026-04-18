@@ -145,6 +145,71 @@ export function getCTToETOffsetMinutes(now: Date = new Date()): number {
 }
 
 /**
+ * Convert a YYYY-MM-DD ET calendar date into the UTC ISO timestamp for
+ * 9:30 AM ET (cash-session open) on that date. Handles both EDT and EST
+ * by probing the zone's offset at noon ET on the given date via
+ * Intl.DateTimeFormat — no hardcoded offset, so the result stays correct
+ * across DST boundaries and future TZ rule changes.
+ *
+ * Example: '2026-04-17' (EDT) → '2026-04-17T13:30:00.000Z'
+ *          '2026-01-15' (EST) → '2026-01-15T14:30:00.000Z'
+ *
+ * Returns `null` when the input is malformed.
+ */
+const ET_OFFSET_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  timeZoneName: 'shortOffset',
+  year: 'numeric',
+});
+
+export function getETMarketOpenUtcIso(dateStr: string): string | null {
+  const dateMatch = DATE_STR_RE.exec(dateStr);
+  if (!dateMatch) return null;
+  const year = Number(dateMatch[1]);
+  const month = Number(dateMatch[2]);
+  const day = Number(dateMatch[3]);
+
+  // Probe ET's UTC offset at noon on the given date. Noon is safely
+  // inside the day even when DST transitions at 2 AM.
+  const probe = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+  if (Number.isNaN(probe.getTime())) return null;
+  // Reject roll-overs from invalid components (e.g. '2026-13-01' ->
+  // Date.UTC wraps it to Jan 2027). The probe Date would still be valid,
+  // so we validate each component against the reconstructed date.
+  if (
+    probe.getUTCFullYear() !== year ||
+    probe.getUTCMonth() !== month - 1 ||
+    probe.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  const parts = extractParts(ET_OFFSET_FORMATTER, probe);
+  const tzName = parts.timeZoneName ?? '';
+  // tzName is like "GMT-4" (EDT) or "GMT-5" (EST); parse the signed hour.
+  const offsetParsed = /GMT([+-]\d+)(?::(\d+))?/.exec(tzName);
+  if (!offsetParsed) return null;
+  const offsetHours = Number.parseInt(offsetParsed[1]!, 10);
+  const offsetMinutes = offsetParsed[2]
+    ? Number.parseInt(offsetParsed[2], 10)
+    : 0;
+  // Offset direction: "GMT-4" means ET is 4 hours *behind* UTC, so UTC =
+  // ET + 4 hours. 9:30 AM ET + 4h = 13:30 UTC.
+  const signedOffsetMin =
+    (offsetHours < 0 ? -1 : 1) * (Math.abs(offsetHours) * 60 + offsetMinutes);
+  // 9:30 AM ET = 9*60 + 30 = 570 minutes past ET-midnight.
+  // UTC minutes past UTC-midnight = ET minutes - signedOffsetMin.
+  // (When offset is -4h = -240, UTC = 570 - (-240) = 810 = 13:30.)
+  const utcTotalMin = 570 - signedOffsetMin;
+  const utcHour = Math.floor(utcTotalMin / 60);
+  const utcMinute = utcTotalMin % 60;
+  // Construct the UTC ISO string directly (avoids Date's local-TZ trap).
+  return new Date(
+    Date.UTC(year, month - 1, day, utcHour, utcMinute, 0, 0),
+  ).toISOString();
+}
+
+/**
  * Converts a wall-clock time from Central Time to Eastern Time, returning
  * the result as 24-hour {hour, minute}. Uses the live IANA zone data via
  * Intl.DateTimeFormat — does NOT assume a fixed +1 hour offset.

@@ -8,6 +8,7 @@ import {
   getETTotalMinutes,
   getCTToETOffsetMinutes,
   convertCTToET,
+  getETMarketOpenUtcIso,
 } from '../../utils/timezone';
 
 describe('timezone utilities', () => {
@@ -230,6 +231,30 @@ describe('timezone utilities', () => {
         hour: 10,
         minute: 30,
       });
+    });
+  });
+
+  describe('getETMarketOpenUtcIso', () => {
+    it('returns 13:30Z for an EDT date (summer)', () => {
+      // 2026-04-17 is after the 2026-03-08 spring-forward → EDT (UTC-4).
+      // 9:30 AM ET + 4h = 13:30 UTC.
+      expect(getETMarketOpenUtcIso('2026-04-17')).toBe(
+        '2026-04-17T13:30:00.000Z',
+      );
+    });
+
+    it('returns 14:30Z for an EST date (winter)', () => {
+      // 2026-01-15 is between the 2025 fall-back and 2026 spring-forward
+      // → EST (UTC-5). 9:30 AM ET + 5h = 14:30 UTC.
+      expect(getETMarketOpenUtcIso('2026-01-15')).toBe(
+        '2026-01-15T14:30:00.000Z',
+      );
+    });
+
+    it('returns null for malformed input', () => {
+      expect(getETMarketOpenUtcIso('not-a-date')).toBeNull();
+      expect(getETMarketOpenUtcIso('2026-13-01')).toBeNull();
+      expect(getETMarketOpenUtcIso('')).toBeNull();
     });
   });
 });

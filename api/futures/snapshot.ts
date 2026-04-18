@@ -56,8 +56,28 @@ interface FuturesSnapshotResponse {
 
 // ── Query validation ────────────────────────────────────────
 
+/**
+ * Small tolerance for future-`at` values to accommodate client clock
+ * skew without allowing the user to "see the future". Any actual bar
+ * with `ts > Date.now()` can't exist anyway — this just prevents a
+ * picker that's a few seconds ahead of the server from 400ing.
+ */
+const FUTURE_AT_TOLERANCE_MS = 60_000;
+
 const querySchema = z.object({
-  at: z.string().datetime().optional(),
+  // UTC-only. The frontend picker is <input type="datetime-local"> (no
+  // offset); we expect it to round-trip through new Date(...).toISOString()
+  // before hitting the endpoint, producing a `Z`-suffixed value. Accepting
+  // arbitrary offsets would create two representations of the same moment
+  // and muddy the nearest-bar semantics.
+  at: z
+    .string()
+    .datetime()
+    .refine(
+      (v) => new Date(v).getTime() <= Date.now() + FUTURE_AT_TOLERANCE_MS,
+      'at must not be in the future',
+    )
+    .optional(),
 });
 
 // ── Helpers ─────────────────────────────────────────────────

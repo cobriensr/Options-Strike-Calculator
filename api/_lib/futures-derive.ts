@@ -16,6 +16,7 @@
  *     on stale comparisons.
  */
 import { getDb } from './db.js';
+import { getETMarketOpenUtcIso } from '../../src/utils/timezone.js';
 
 // ── Constants ───────────────────────────────────────────────
 
@@ -41,6 +42,11 @@ export interface SnapshotRow {
   volumeRatio: number | null;
   /** Timestamp of the latest bar actually used for `price`. */
   latestTs: string | null;
+}
+
+/** Clamp percentages to avoid NUMERIC(8,4) overflow on stale comparisons. */
+function clampPct(v: number | null): number | null {
+  return v != null ? Math.max(-999, Math.min(999, v)) : null;
 }
 
 // ── computeSnapshot ─────────────────────────────────────────
@@ -93,9 +99,23 @@ export async function computeSnapshot(
     }
   }
 
-  // Day change: earliest bar on the picked trade date at or after
-  // today's market open (approximation: 13:30 UTC).
-  const dayOpenTs = `${tradeDate}T13:30:00Z`;
+  // Day change: earliest bar on the picked trade date at or after the
+  // ET cash-session open (9:30 AM ET). The UTC offset is DST-aware —
+  // 13:30Z during EDT, 14:30Z during EST — so we derive it from the
+  // tradeDate itself rather than hardcoding a UTC hour.
+  const dayOpenTs = getETMarketOpenUtcIso(tradeDate);
+  if (!dayOpenTs) {
+    // Malformed tradeDate — skip day-scoped metrics but keep the
+    // latest-price + 1H-change computations above.
+    return {
+      symbol,
+      price,
+      change1hPct: clampPct(change1hPct),
+      changeDayPct: null,
+      volumeRatio: null,
+      latestTs,
+    };
+  }
   const dayOpenRows = await sql`
     SELECT close FROM futures_bars
     WHERE symbol = ${symbol}
@@ -144,15 +164,11 @@ export async function computeSnapshot(
     }
   }
 
-  // Clamp percentages to avoid NUMERIC(8,4) overflow on stale comparisons
-  const clamp = (v: number | null) =>
-    v != null ? Math.max(-999, Math.min(999, v)) : null;
-
   return {
     symbol,
     price,
-    change1hPct: clamp(change1hPct),
-    changeDayPct: clamp(changeDayPct),
+    change1hPct: clampPct(change1hPct),
+    changeDayPct: clampPct(changeDayPct),
     volumeRatio,
     latestTs,
   };

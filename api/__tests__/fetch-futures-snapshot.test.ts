@@ -28,6 +28,9 @@ vi.mock('../_lib/api-helpers.js', () => ({
 
 vi.mock('../../src/utils/timezone.js', () => ({
   getETDateStr: vi.fn(() => '2026-04-03'),
+  // computeSnapshot relies on this for DST-aware cash-session open;
+  // 2026-04-03 is EDT so day-open is 13:30 UTC.
+  getETMarketOpenUtcIso: vi.fn(() => '2026-04-03T13:30:00.000Z'),
 }));
 
 import handler from '../cron/fetch-futures-snapshot.js';
@@ -78,7 +81,14 @@ interface SymbolData {
  * passes MARKET_TIME - 60m.
  */
 function setupSqlDispatch(symbolMap: Record<string, SymbolData | null>) {
-  const nowIso = MARKET_TIME.toISOString();
+  // Canonical ISO of the cron's "now" so we're resilient to sub-second
+  // precision drift (e.g. …:00Z vs …:00.000Z) when comparing bounds.
+  const nowIso = new Date(MARKET_TIME).toISOString();
+  const normalizeIso = (v: unknown): string | null => {
+    if (typeof v !== 'string') return null;
+    const parsed = new Date(v);
+    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  };
 
   mockSql.mockImplementation(
     (strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -100,8 +110,10 @@ function setupSqlDispatch(symbolMap: Record<string, SymbolData | null>) {
       if (!data) return Promise.resolve([]); // no data → skip
 
       if (query.includes('ORDER BY ts DESC LIMIT 1') && query.includes('<=')) {
-        // Either latest or 1H-ago; disambiguate by ts bound passed in.
-        const isLatest = values.some((v) => v === nowIso);
+        // Either latest or 1H-ago; disambiguate by the ts bound passed
+        // in. Normalize both sides through new Date(...).toISOString()
+        // so precision differences don't flip the branch.
+        const isLatest = values.some((v) => normalizeIso(v) === nowIso);
         if (isLatest) {
           return Promise.resolve([
             { close: data.latestClose, ts: data.latestTs },

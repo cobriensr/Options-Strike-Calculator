@@ -83,6 +83,14 @@ function setupHistoricalDispatch(opts: {
   spx?: string | null;
 }) {
   const { symbols, oldestTs, spx = null } = opts;
+  // Canonical ISO of the picked `at` so we can compare regardless of
+  // the exact sub-second formatting the endpoint happens to emit.
+  const pickedAtIso = new Date(PICKED_AT).toISOString();
+  const normalizeIso = (v: unknown): string | null => {
+    if (typeof v !== 'string') return null;
+    const parsed = new Date(v);
+    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  };
 
   mockSql.mockImplementation(
     (strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -109,9 +117,10 @@ function setupHistoricalDispatch(opts: {
       if (!data) return Promise.resolve([]);
 
       if (query.includes('ORDER BY ts DESC LIMIT 1') && query.includes('<=')) {
-        // Latest or 1H-ago. Disambiguate via bound (values include atIso
-        // for latest, and at-60min for hour-ago).
-        const isLatest = values.some((v) => v === PICKED_AT);
+        // Latest-bar query uses `atIso` as the bound; 1H-ago query uses
+        // `at - 60m`. Normalize both sides through `new Date(x).toISOString()`
+        // so we're resilient to sub-second formatting drift.
+        const isLatest = values.some((v) => normalizeIso(v) === pickedAtIso);
         if (isLatest) {
           return Promise.resolve([
             { close: data.latestClose, ts: data.latestTs },
@@ -159,6 +168,10 @@ const ALL_NULL_SYMBOLS: Record<string, SymbolData | null> = {
 
 describe('GET /api/futures/snapshot?at=<ISO>', () => {
   const originalEnv = process.env;
+  // Pin "now" to a moment AFTER PICKED_AT so the `at must not be in
+  // the future` refine doesn't reject the fixture. Future-date
+  // rejection is verified explicitly in the malformed `at` table.
+  const FAKE_NOW = new Date('2026-04-17T20:00:00.000Z');
 
   beforeEach(() => {
     vi.resetAllMocks();
@@ -166,20 +179,25 @@ describe('GET /api/futures/snapshot?at=<ISO>', () => {
     process.env = { ...originalEnv };
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(checkBot).mockResolvedValue({ isBot: false });
+    vi.setSystemTime(FAKE_NOW);
   });
 
   afterEach(() => {
     process.env = originalEnv;
+    vi.useRealTimers();
   });
 
   // ── Validation ────────────────────────────────────────────
 
-  it('returns 400 when `at` is malformed', async () => {
+  it.each([
+    ['not-a-date', 'arbitrary garbage'],
+    ['', 'empty string'],
+    ['2026-04-17', 'date-only'],
+    ['2026-04-17T19:30:00', 'no timezone suffix'],
+    ['2099-01-01T00:00:00Z', 'future date'],
+  ])('returns 400 when `at` is %j (%s)', async (value) => {
     const res = mockResponse();
-    await handler(
-      mockRequest({ method: 'GET', query: { at: 'not-a-date' } }),
-      res,
-    );
+    await handler(mockRequest({ method: 'GET', query: { at: value } }), res);
 
     expect(res._status).toBe(400);
     const json = res._json as { error: string; details: unknown };
