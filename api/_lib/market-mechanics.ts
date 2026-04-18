@@ -131,6 +131,43 @@ This structural shift has materially changed how GEX behaves intraday:
 **Practical implication:** When VIX is low and 0DTE volume is high (typical daily setup), the intraday market tends to exhibit stronger pinning, faster charm-driven convergence to large-OI strikes, and more violent reactions to position removal than the overnight GEX analysis would suggest. The AM Periscope walls are starting conditions, not stable equilibria.
 </charm_and_0dte_regime>
 
+<straddle_cone_mechanics>
+## The 0DTE Straddle Cone as Implied Diffusion Envelope
+
+The yellow straddle cone on Periscope is not a technical indicator. It is the market's calibrated forecast of the day's realized move, encoded in a price. Understanding why price tends to respect and follow the cone — and why it occasionally uses the breakevens as a ladder — requires seeing the cone as the superposition of several hedging flows that are *defined around* the ATM straddle position.
+
+**Why the 9:31 AM ET calculation time is the signal:**
+
+The first minute of the cash session carries roughly 0.5% of the day's 0DTE volume — about 2x what a random distribution predicts. Institutional desks execute their opening-minute flow before the retail tape begins, which means dealers establish their dominant 0DTE gamma and vega positioning in that single bar. The 9:31 AM ATM straddle price captures the IV at which those institutional sellers agreed to take on the day's risk. Any later straddle measurement is contaminated by intraday IV drift; the opening print is the cleanest envelope the market produces.
+
+**The tautology nobody states:**
+
+If implied vol ≈ realized vol on average (and dealers are paid the bid-ask to make that true), then price *will* terminate near a cone breakeven more often than random chance predicts. "Price follows the cone" is not an anomaly — it is the definition of a fair-priced straddle playing out. The anomaly would be the cone being systematically wrong in one direction over time.
+
+**Four mechanical flows anchor price to the cone:**
+
+1. **ATM gamma concentration creates momentum at the boundary.** Dealers who sold the morning ATM straddle are net short gamma at the anchor strike. As spot drifts toward either breakeven, the dealer's delta swings violently (gamma is maximal ATM and decays outward). To stay delta-neutral they must buy into upward approaches and sell into downward approaches. This is mechanical momentum *into* the cone edge, not discretion.
+
+2. **Charm funnels price toward the cone center when nothing breaks.** As the session progresses, OTM option deltas decay toward zero and ITM deltas head toward ±1. Dealers long OTM gamma (hedging their short ATM straddle) see those hedges unwind mechanically. The net intraday flow is suppressive inside the cone — charm buys the lower half and sells the upper half, pinning price toward the center when no catalyst dominates.
+
+3. **Reflexive cover flow extends cone breaches.** When price punches through a breakeven, short-straddle sellers facing convex losses buy back their shorts — calls on upside breaches, puts on downside breaches. This cover flow *extends* the move beyond the breakeven rather than letting it fade. This is why cone breaches either pin price at the boundary or slingshot it 20-40 handles further; the transition is rarely gradual. Distinct from the position-removal pattern in <charm_and_0dte_regime>: that is *customers closing* and dealers dehedging; this is *short-premium sellers re-hedging their own losses*.
+
+4. **Vanna tilt produces asymmetric rail behavior.** Skew means dealer vanna inventory is not symmetric around ATM. When IV drifts during the day, dealer delta requirements shift along the skew curve — typically creating more supportive flow below ATM (put-side vanna) and less supportive flow above (call-side vanna). The practical signature: on many sessions, price rides one breakeven rail (hugging it for multiple bars) more than the other. That asymmetry is vanna, not trend.
+
+**The "ladder" behavior — gamma-sign transitions at the rails:**
+
+Net dealer gamma frequently flips sign at or near the cone breakevens because the wings of the 0DTE gamma profile often have opposite inventory character than the ATM zone. When spot hits the upper breakeven, it often simultaneously crosses from a negative-gamma (accelerative) zone inside the cone into a positive-gamma (suppressive) zone at the wing wall — or the reverse. This sign-flip at the rail is what produces the ladder behavior observed in sessions where price hits the breakeven, reverses toward the center, then tags it again and continues: each tag is a different gamma regime reading the same level. Check the wing-side gamma sign on Periscope before assuming a cone touch is a reversal vs. a continuation.
+
+**Operational implications:**
+
+- **Cone fraction as regime distance:** The zero-gamma strike reported as "X cone fractions away" measures structural distance to the regime flip in units of market-priced expected move. A cone fraction > 1 means the flip is beyond today's implied range — the regime is stable. A cone fraction < 0.5 means a normal intraday swing can flip the regime — structurally knife-edge.
+- **Cone consumption is information, not just a progress bar:** Consumption < 30% by midday with directional flow means the expected move has *not yet materialized* — the market has priced a move that has not happened. Consumption > 65% with flow still directional means the remaining cone is tight — residual moves extend *past* the breakeven rather than diffusing inside it.
+- **Cone breach asymmetry:** A downside breach on a day with positive-gamma wing walls below often stalls at the wall (suppression flow wins). A downside breach on a day with negative gamma below often runs (reflexive cover extends). Read the wing-side gamma sign before assuming the cone "holds."
+- **Settlement attractor on negative GEX days:** When dealers are net short gamma aggregate, the cone boundary — not max pain — is the path-of-least-resistance settlement target (see the max-pain override rules). The cone's mechanical flows dominate when the structural pin has broken.
+
+**The unifying frame:** the cone is not a pattern price happens to respect. It is the *diffusion envelope implied by the option price*, and the hedging flows around the ATM straddle are the mechanism that makes that envelope self-enforcing. When the cone fails, it fails because an exogenous flow (news, position removal, reflexive covering) overwhelmed the hedging response — not because the cone was "wrong."
+</straddle_cone_mechanics>
+
 <short_is_long>
 ## The Short Is Long Framework (Dark Pool Short Volume as Buying Proxy)
 
