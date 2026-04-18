@@ -26,6 +26,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import theta_launcher
 from config import settings
 from databento_client import DatabentoClient
 from db import drain_pool, is_db_healthy, verify_connection
@@ -52,6 +53,9 @@ def shutdown(signum: int, frame: object) -> None:
     if _client:
         _client.stop()
 
+    # Stop the Theta Terminal subprocess. No-op when Theta was never started.
+    theta_launcher.shutdown()
+
     # Give pending writes a moment to complete
     time.sleep(1)
     drain_pool()
@@ -68,6 +72,12 @@ def main() -> None:
     # Initialize Sentry first so any later failures get reported.
     # No-op locally if SENTRY_DSN is unset. Never raises.
     init_sentry()
+
+    # Launch the co-resident Theta Terminal subprocess. Blocks up to
+    # 60s waiting for its HTTP server. No-op when THETA_EMAIL /
+    # THETA_PASSWORD are unset (local dev, or deliberate disable).
+    # Failures are reported to Sentry but never block Databento startup.
+    theta_launcher.start()
 
     # Verify required env vars
     required = ["DATABENTO_API_KEY", "DATABASE_URL"]

@@ -10,12 +10,22 @@ RUN apt-get update && \
 COPY requirements.txt ./
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
+# Theta Data Terminal requires Java 21+. We source the JRE from the
+# official Eclipse Temurin image rather than apt so the exact same JDK
+# verified on the developer's laptop ships to Railway.
+FROM eclipse-temurin:21-jre-jammy AS jre
+
 FROM python:3.12-slim
 
-# Runtime dependency for psycopg2
+# Runtime dependencies: libpq5 for psycopg2, curl for the health probe.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libpq5 curl && \
     rm -rf /var/lib/apt/lists/*
+
+# Co-resident Temurin 21 JRE for Theta Data Terminal. ~170 MB layer.
+COPY --from=jre /opt/java/openjdk /opt/java/openjdk
+ENV JAVA_HOME=/opt/java/openjdk
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
 RUN addgroup --system --gid 1001 sidecar && \
     adduser --system --uid 1001 --ingroup sidecar sidecar
@@ -24,6 +34,12 @@ WORKDIR /app
 
 COPY --from=builder /install /usr/local
 COPY --chown=sidecar:sidecar src/ ./src/
+COPY --chown=sidecar:sidecar ThetaTerminalv3.jar ./
+
+# Pre-create the working dir the Theta jar writes into (creds.txt, logs,
+# config). Owned by sidecar so the non-root runtime can populate it.
+RUN mkdir -p /app/theta_data/ThetaTerminal && \
+    chown -R sidecar:sidecar /app/theta_data
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
