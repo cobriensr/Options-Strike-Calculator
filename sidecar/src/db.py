@@ -302,6 +302,68 @@ def upsert_options_daily(
             )
 
 
+def upsert_theta_option_eod_batch(rows: list[tuple]) -> None:
+    """Batch upsert Theta EOD rows into theta_option_eod.
+
+    Each tuple must match this column order exactly:
+        (symbol, expiration, strike, option_type, date,
+         open, high, low, close, volume, trade_count,
+         bid, ask, bid_size, ask_size)
+
+    Upserts on the UNIQUE (symbol, expiration, strike, option_type, date)
+    constraint created by migration #70. On conflict we overwrite every
+    data column with EXCLUDED.* because Theta's EOD report is a full
+    snapshot — a later fetch for the same contract/day supersedes any
+    earlier partial. `created_at` deliberately stays untouched so we
+    preserve the first-seen timestamp across revisions.
+    """
+    if not rows:
+        return
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            psycopg2.extras.execute_values(
+                cur,
+                """
+                INSERT INTO theta_option_eod
+                    (symbol, expiration, strike, option_type, date,
+                     open, high, low, close, volume, trade_count,
+                     bid, ask, bid_size, ask_size)
+                VALUES %s
+                ON CONFLICT (symbol, expiration, strike, option_type, date)
+                DO UPDATE SET
+                    open        = EXCLUDED.open,
+                    high        = EXCLUDED.high,
+                    low         = EXCLUDED.low,
+                    close       = EXCLUDED.close,
+                    volume      = EXCLUDED.volume,
+                    trade_count = EXCLUDED.trade_count,
+                    bid         = EXCLUDED.bid,
+                    ask         = EXCLUDED.ask,
+                    bid_size    = EXCLUDED.bid_size,
+                    ask_size    = EXCLUDED.ask_size
+                """,
+                rows,
+                page_size=500,
+            )
+
+
+def has_theta_option_eod_rows(symbol: str) -> bool:
+    """True when theta_option_eod has at least one row for `symbol`.
+
+    Cheap existence check used by the backfill scheduler to skip roots
+    that already have data. `LIMIT 1` + the ix_theta_option_eod_symbol_date
+    index makes this O(1) even as the table grows into the millions of
+    rows over time.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM theta_option_eod WHERE symbol = %s LIMIT 1",
+                (symbol,),
+            )
+            return cur.fetchone() is not None
+
+
 def load_alert_config() -> dict[str, dict]:
     """Load all alert configurations from the alert_config table.
 

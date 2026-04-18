@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import signal
 import sys
+import threading
 import time
 
 # Ensure src/ is on the Python path for local imports
@@ -26,6 +27,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import theta_fetcher
 import theta_launcher
 from config import settings
 from databento_client import DatabentoClient
@@ -53,6 +55,10 @@ def shutdown(signum: int, frame: object) -> None:
     if _client:
         _client.stop()
 
+    # Stop Theta's APScheduler before killing the jar, so no nightly
+    # job fires mid-shutdown against a dead HTTP server.
+    theta_fetcher.stop_scheduler()
+
     # Stop the Theta Terminal subprocess. No-op when Theta was never started.
     theta_launcher.shutdown()
 
@@ -77,7 +83,15 @@ def main() -> None:
     # 60s waiting for its HTTP server. No-op when THETA_EMAIL /
     # THETA_PASSWORD are unset (local dev, or deliberate disable).
     # Failures are reported to Sentry but never block Databento startup.
-    theta_launcher.start()
+    if theta_launcher.start():
+        # Nightly 17:25 ET scheduler + one-time backfill in a daemon thread.
+        # Both are safe no-ops when Theta is dead or the table already has data.
+        theta_fetcher.start_scheduler()
+        threading.Thread(
+            target=theta_fetcher.run_backfill_if_needed,
+            name="theta-backfill",
+            daemon=True,
+        ).start()
 
     # Verify required env vars
     required = ["DATABENTO_API_KEY", "DATABASE_URL"]
