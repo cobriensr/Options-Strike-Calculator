@@ -47,6 +47,7 @@ import {
   parseEntryTimeAsUtc,
 } from './analyze-context-helpers.js';
 import {
+  fetchCrossAssetRegimeBlock,
   fetchDarkPoolContext,
   fetchDirectionalChainContext,
   fetchEconomicCalendarContext,
@@ -59,7 +60,9 @@ import {
   fetchPreMarketContext,
   fetchPriorDayFlowContext,
   fetchSpxCandlesContext,
+  fetchVixDivergenceBlock,
   fetchVolRealizedContext,
+  fetchVolumeProfileBlock,
 } from './analyze-context-fetchers.js';
 
 // ── Re-exports for backwards compatibility ────────────────────────────
@@ -230,6 +233,9 @@ export async function buildAnalysisContext(
     priorDayFlowContext,
     economicCalendarContext,
     directionalChainContext,
+    crossAssetRegimeContext,
+    volumeProfileContext,
+    vixDivergenceContext,
   ] = await Promise.all([
     fetchDarkPoolContext(context, analysisDate),
     fetchMaxPainContext(context, analysisDate),
@@ -244,6 +250,9 @@ export async function buildAnalysisContext(
       main.latestTideNcp,
       main.latestTideNpp,
     ),
+    fetchCrossAssetRegimeBlock(),
+    fetchVolumeProfileBlock(analysisDate),
+    fetchVixDivergenceBlock(),
   ]);
 
   const marketTideOtmSection = main.marketTideOtmContext
@@ -271,6 +280,9 @@ export async function buildAnalysisContext(
   if (!economicCalendarContext) unavailable.push('Economic Calendar');
   if (!main.nopeContext) unavailable.push('SPY NOPE');
   if (!main.marketInternalsContext) unavailable.push('NYSE Market Internals');
+  if (!crossAssetRegimeContext) unavailable.push('Cross-Asset Regime');
+  if (!volumeProfileContext) unavailable.push('Prior-Day Volume Profile (ES)');
+  if (!vixDivergenceContext) unavailable.push('VIX/SPX Divergence');
   const unavailableList = unavailable.map((s) => '- ' + s).join('\n');
   const unavailableSection =
     unavailable.length > 0
@@ -343,6 +355,9 @@ ${ivTermStructureContext ? `\n## IV Term Structure — σ Validation Layer (from
 ${volRealizedContext ? `\n## Realized Vol & IV Rank (from API — daily)\n  ${volRealizedContext}\n` : ''}
 ${overnightGapContext ? `\n## ES Overnight Gap Analysis (from pre-market data)\nThe ES futures overnight session data provides pre-market context for the cash session. Gap fill probability, overnight range consumption, and VWAP positioning help calibrate the opening hour bias. On high gap fill probability days, the first 30 minutes are likely to see a reversal toward the previous close. On low fill probability days, the gap direction extends and aligns with the session trend.\n\n${overnightGapContext}\n` : ''}
 ${futuresContext ? `\n${futuresContext}\nFutures signals lead options flow by 10-30 minutes. When futures and flow disagree, futures are usually right — institutional desks execute in futures first. See <futures_context_rules> in the system prompt for interpretation guidance.\n` : ''}
+${crossAssetRegimeContext ? `\n## Cross-Asset Risk Regime (from futures_bars — 5-min returns)\nComposite and per-symbol returns classifying the session as RISK-ON, RISK-OFF, MIXED, or MACRO-STRESS. See <cross_asset_regime_rules> for interpretation.\n  ${crossAssetRegimeContext}\n` : ''}
+${volumeProfileContext ? `\n## Prior-Day Volume Profile (from futures_bars)\nPOC/VAH/VAL computed from the prior session's ES minute bars. Treat these as structural reference levels — see <volume_profile_rules> for interpretation.\n${volumeProfileContext}\n` : ''}
+${vixDivergenceContext ? `\n## VIX/SPX Divergence Flag (from market_snapshots + spx_candles_1m)\n5-minute paired return check: VIX rising while SPX is flat is the classic informed-positioning canary. See <vix_divergence_rules> for interpretation.\n  ${vixDivergenceContext}\n` : ''}
 ${
   straddleConeUpper && straddleConeLower && !spxCandlesContext
     ? `\n## Straddle Cone Boundaries (from Periscope)

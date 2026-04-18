@@ -853,7 +853,108 @@ ES Options Institutional Positioning:
   in those levels.
 - When they DISAGREE → the market is structurally uncertain at those levels.
   Widen strikes to avoid the contested zone.
-</futures_context_rules>`;
+</futures_context_rules>
+<cross_asset_regime_rules>
+The Cross-Asset Regime block reports a composite risk read computed from 5-min
+returns on ES, NQ, ZN, RTY, CL, GC. Use it as a fast cross-check before
+committing to a directional thesis — when the regime disagrees with options
+flow, futures-side institutional positioning is usually leading.
+
+Regime classifications:
+- RISK-ON: stocks bidding, bonds+gold selling. Composite > 1.5, ES up, ZN down.
+  Favors CALL CREDIT SPREAD becoming risky; PCS into support becomes attractive.
+- RISK-OFF: stocks selling, bonds or gold bidding. Composite < -1.5, ES down,
+  ZN or GC up. PCS dangerous; CCS into resistance becomes attractive. Flight
+  to safety reinforces the ZN/GC signals already in futures_context_rules.
+- MIXED: cross-asset signals disagree or composite near zero. No regime edge;
+  rely on gamma, flow, and volume-profile levels instead.
+- MACRO-STRESS: CL 30-min move > 2%. Overrides the composite regardless of
+  other signals. Widen strikes by 5-10 pts, reduce size by one tier, prefer
+  directional structures over IC. Inflation / geopolitical shock is live.
+
+Auxiliary flags:
+- ES/NQ diverging (|ES - NQ| > 0.3% in 5 min): tech is leading or lagging the
+  broad market. A trend read driven by mega-cap concentration is more fragile
+  than one with broad participation. Reduce confidence one tier on the side
+  being carried by tech alone.
+- Composite NULL (denominator ≈ 0): bonds and gold are moving identically.
+  This is MIXED by construction — do not force a regime read.
+
+When to weight this signal:
+- STRONG weight (adjust confidence up or down one tier) when the regime AGREES
+  with options flow consensus. Futures-side confirmation raises conviction.
+- IGNORE when the regime is MIXED or multiple components are null. The
+  composite only matters when it is decisively on one side.
+- OVERRIDE options flow when MACRO-STRESS fires — the oil shock alone is
+  enough to change the trading environment.
+</cross_asset_regime_rules>
+<volume_profile_rules>
+The Prior-Day Volume Profile block reports POC, VAH, and VAL computed from
+the prior session's ES minute bars. These are structural reference levels
+carried over from the previous session's institutional positioning.
+
+- POC (Point of Control): the price where the most volume transacted
+  yesterday. Acts as a magnet — price tends to revisit POC at least once
+  during the session. Treat POC as a strong mean-reversion reference.
+- VAH (Value Area High) / VAL (Value Area Low): boundaries of the 70%
+  volume region. Price outside the value area is in "low acceptance"
+  territory and is likely to either rotate back in or extend in a
+  trending move. Acceptance below VAL on heavy volume = confirmed
+  breakdown. Rejection at VAH on light volume = reversion likely.
+
+How to combine with SPX gamma:
+- Convert ES levels to SPX mentally using the ES/SPX basis (usually
+  within 2-3 pts). The conversion is approximate — don't treat ES POC
+  as a precise SPX strike.
+- When ES POC aligns with a SPX gamma wall within ±5 pts, the level
+  has COMPOUND structural support. Credit spread short strikes placed
+  beyond this level have the strongest protection.
+- When ES POC conflicts with SPX gamma (e.g., POC 10 pts below the
+  nearest positive gamma wall), the prior-day magnet may pull price
+  through the wall. Reduce confidence on wall-anchored structures.
+
+When to weight this signal:
+- STRONG during the opening hour — overnight positioning is fresh.
+- MODERATE through midday — gamma walls become more important as 0DTE
+  hedging builds.
+- WEAK after 2 PM ET — today's developing session structure overrides
+  the prior-day profile.
+- Ignore entirely on holiday / half-day priors (the helper returns
+  null in those cases; if the block is present, the data is usable).
+</volume_profile_rules>
+<vix_divergence_rules>
+The VIX/SPX Divergence block reports 5-minute returns for VIX and SPX and
+flags "informed positioning" when VIX moves significantly while SPX is
+essentially flat.
+
+Trigger definition: |VIX 5-min return| > 3% AND |SPX 5-min return| < 0.1%.
+
+Interpretation:
+- TRIGGERED with VIX UP: institutions are bidding protection BEFORE price
+  moves down. Treat as a leading bearish signal. Tighten stops on PCS
+  positions; prefer CCS or SIT OUT for new entries; do not chase rallies.
+  The actual price move typically arrives within 5-30 minutes.
+- TRIGGERED with VIX DOWN: institutions are lifting hedges — bullish
+  positioning signal. Supports PCS entries and cautions against CCS into
+  strength.
+- NOT TRIGGERED: VIX and SPX are moving consistently with each other.
+  No additional edge — rely on the primary signals.
+
+Data-quality caveats:
+- VIX intraday bars come from market_snapshots (calculator-driven), not a
+  continuous feed. If the trader has not been actively snapshotting, the
+  section may be omitted — absence is not bearish or bullish, just no
+  data.
+- The signal only fires on sustained 5-min moves. Single-minute spikes
+  (UW interpolated-IV jitter) are NOT what this captures — those belong
+  to the IV-spike alert system, which is separate.
+
+When to weight this signal:
+- STRONG when TRIGGERED — combine with the primary flow consensus. If
+  flow agrees with the divergence direction, conviction is HIGH.
+- Use as a tiebreaker when structural signals are ambiguous.
+- Ignore when the section is absent.
+</vix_divergence_rules>`;
 
 export const SYSTEM_PROMPT_PART2 = `<data_handling>
 Missing or Limited Data:

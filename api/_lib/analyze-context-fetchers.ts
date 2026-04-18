@@ -53,6 +53,19 @@ import { formatOvernightForClaude } from './overnight-gap.js';
 import { fetchSPXCandles, formatSPXCandlesForClaude } from './spx-candles.js';
 import { metrics } from './sentry.js';
 import { schwabFetch } from './api-helpers.js';
+import {
+  computeCrossAssetRegime,
+  formatCrossAssetRegimeForClaude,
+} from './cross-asset-regime.js';
+import {
+  computeVolumeProfile,
+  formatVolumeProfileForClaude,
+  priorTradeDate,
+} from './volume-profile.js';
+import {
+  computeVixSpxDivergence,
+  formatVixDivergenceForClaude,
+} from './vix-divergence.js';
 import { formatFuturesForClaude } from './futures-context.js';
 import { formatIvTermStructureForClaude } from '../iv-term-structure.js';
 import type { IvTermRow } from '../iv-term-structure.js';
@@ -742,6 +755,48 @@ export async function fetchDirectionalChainContext(
       { err: error_ },
       'Failed to fetch 14 DTE chain for directional opportunity',
     );
+    return null;
+  }
+}
+
+// ── Cross-asset regime ────────────────────────────────────────
+
+export async function fetchCrossAssetRegimeBlock(): Promise<string | null> {
+  try {
+    const result = await computeCrossAssetRegime(new Date());
+    return formatCrossAssetRegimeForClaude(result);
+  } catch (err) {
+    logger.error({ err }, 'cross-asset regime fetch failed');
+    metrics.increment('analyze_context.cross_asset_regime_error');
+    return null;
+  }
+}
+
+// ── Prior-day volume profile (ES) ─────────────────────────────
+
+export async function fetchVolumeProfileBlock(
+  analysisDate: string,
+): Promise<string | null> {
+  try {
+    const prior = priorTradeDate(analysisDate);
+    const result = await computeVolumeProfile('ES', prior);
+    return formatVolumeProfileForClaude(result);
+  } catch (err) {
+    logger.error({ err }, 'volume profile fetch failed');
+    metrics.increment('analyze_context.volume_profile_error');
+    return null;
+  }
+}
+
+// ── VIX/SPX divergence ────────────────────────────────────────
+
+export async function fetchVixDivergenceBlock(): Promise<string | null> {
+  try {
+    const result = await computeVixSpxDivergence(new Date());
+    return formatVixDivergenceForClaude(result);
+  } catch (err) {
+    logger.error({ err }, 'VIX/SPX divergence fetch failed');
+    metrics.increment('analyze_context.vix_divergence_error');
     return null;
   }
 }

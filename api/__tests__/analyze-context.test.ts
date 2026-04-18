@@ -283,6 +283,22 @@ vi.mock('../iv-term-structure.js', () => ({
   formatIvTermStructureForClaude: vi.fn().mockReturnValue(null),
 }));
 
+vi.mock('../_lib/cross-asset-regime.js', () => ({
+  computeCrossAssetRegime: vi.fn().mockResolvedValue(null),
+  formatCrossAssetRegimeForClaude: vi.fn().mockReturnValue(null),
+}));
+
+vi.mock('../_lib/volume-profile.js', () => ({
+  computeVolumeProfile: vi.fn().mockResolvedValue(null),
+  formatVolumeProfileForClaude: vi.fn().mockReturnValue(null),
+  priorTradeDate: vi.fn((d: string) => d),
+}));
+
+vi.mock('../_lib/vix-divergence.js', () => ({
+  computeVixSpxDivergence: vi.fn().mockResolvedValue(null),
+  formatVixDivergenceForClaude: vi.fn().mockReturnValue(null),
+}));
+
 vi.mock('../_lib/api-helpers.js', () => ({
   schwabFetch: vi.fn().mockResolvedValue({ ok: false, status: 401 }),
 }));
@@ -668,6 +684,57 @@ describe('buildAnalysisContext', () => {
     expect(text).toContain('SPX Net Flow');
     expect(text).toContain('Dark Pool Blocks');
     expect(text).toContain('Max Pain');
+    expect(text).toContain('Cross-Asset Regime');
+    expect(text).toContain('Prior-Day Volume Profile (ES)');
+    expect(text).toContain('VIX/SPX Divergence');
+    vi.unstubAllGlobals();
+  });
+
+  it('renders the new cross-asset / volume-profile / VIX-divergence sections when fetchers return data', async () => {
+    const { formatCrossAssetRegimeForClaude } =
+      await import('../_lib/cross-asset-regime.js');
+    const { formatVolumeProfileForClaude } =
+      await import('../_lib/volume-profile.js');
+    const { formatVixDivergenceForClaude } =
+      await import('../_lib/vix-divergence.js');
+
+    vi.mocked(formatCrossAssetRegimeForClaude).mockReturnValue(
+      'Regime: RISK-ON\n  composite=1.83',
+    );
+    vi.mocked(formatVolumeProfileForClaude).mockReturnValue(
+      'Prior-day volume profile (ES, 2026-04-03)\n  POC: 5000.00',
+    );
+    vi.mocked(formatVixDivergenceForClaude).mockReturnValue(
+      'VIX 5-min return: +4.50%\n  DIVERGENCE TRIGGERED',
+    );
+
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-04-04',
+    });
+
+    const textBlock = result.content.find(
+      (b) => b.type === 'text' && b.text.includes('Cross-Asset Risk Regime'),
+    );
+    expect(textBlock).toBeDefined();
+    const text = (textBlock as { type: 'text'; text: string }).text;
+    expect(text).toContain('Regime: RISK-ON');
+    expect(text).toContain('composite=1.83');
+    expect(text).toContain('Prior-Day Volume Profile');
+    expect(text).toContain('POC: 5000.00');
+    expect(text).toContain('VIX/SPX Divergence Flag');
+    expect(text).toContain('DIVERGENCE TRIGGERED');
+
+    // All three sections should NOT appear in the unavailable manifest
+    const unavailableBlock = result.content.find(
+      (b) => b.type === 'text' && b.text.includes('Data Sources Unavailable'),
+    );
+    if (unavailableBlock) {
+      const uText = (unavailableBlock as { type: 'text'; text: string }).text;
+      expect(uText).not.toContain('- Cross-Asset Regime');
+      expect(uText).not.toContain('- Prior-Day Volume Profile (ES)');
+      expect(uText).not.toContain('- VIX/SPX Divergence');
+    }
     vi.unstubAllGlobals();
   });
 
