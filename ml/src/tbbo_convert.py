@@ -247,6 +247,24 @@ def convert_tbbo_dir_to_parquet(
             except ValueError:
                 # Schema guard failures MUST propagate — spec requires fail-loud.
                 raise
+            except RuntimeError as exc:
+                # RuntimeError is reserved for the REQUIRED_COLUMNS check — i.e.
+                # the SDK materialized a DataFrame shape we don't recognize.
+                # Flag it distinctly from generic per-file errors (corrupt DBN,
+                # filesystem EIO, etc.) so the operator knows to update
+                # REQUIRED_COLUMNS rather than re-downloading the file.
+                if "missing required columns" in str(exc).lower():
+                    log.error(
+                        "Skipping %s: SDK schema drift — %s "
+                        "(update REQUIRED_COLUMNS if this is expected)",
+                        file.name,
+                        exc,
+                    )
+                else:
+                    log.error("Skipping %s: %s", file.name, exc)
+                files_skipped += 1
+                skipped_files.append(file.name)
+                continue
             except Exception as exc:  # noqa: BLE001
                 log.error("Skipping %s: %s", file.name, exc)
                 files_skipped += 1
@@ -409,7 +427,7 @@ def _load_and_filter_file(file: Path) -> pd.DataFrame:
     missing = REQUIRED_COLUMNS - set(df.columns)
     if missing:
         raise RuntimeError(
-            f"TBBO DataFrame in {file.name} missing expected columns: "
+            f"TBBO DataFrame in {file.name} missing required columns: "
             f"{sorted(missing)}. Got: {sorted(df.columns)}. The databento SDK "
             "may have changed shapes; update REQUIRED_COLUMNS if this is expected."
         )

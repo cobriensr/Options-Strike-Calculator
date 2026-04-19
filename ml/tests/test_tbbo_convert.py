@@ -368,11 +368,15 @@ def test_missing_directory_raises(tmp_path: Path) -> None:
 def test_missing_required_column_is_counted_as_skip(
     tmp_path: Path,
     multi_file_tbbo_dir: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A file missing a required column is logged and skipped — run continues.
 
     RuntimeError from column validation is treated as a per-file failure (not a
     schema guard), so it's handled by the skip path, not the fail-loud path.
+    The log message is further differentiated: SDK-shape drift emits a
+    "SDK schema drift" prefix so an operator knows to update REQUIRED_COLUMNS
+    rather than re-download the file.
     """
     good_store = _FakeStore()
     bad_df = (
@@ -390,16 +394,23 @@ def test_missing_required_column_is_counted_as_skip(
         return good_store
 
     out = tmp_path / "out"
-    with patch.object(
-        tbbo_convert.db.DBNStore,
-        "from_file",
-        side_effect=fake_from_file,
+    with (
+        caplog.at_level("ERROR", logger="tbbo_convert"),
+        patch.object(
+            tbbo_convert.db.DBNStore,
+            "from_file",
+            side_effect=fake_from_file,
+        ),
     ):
         result = tbbo_convert.convert_tbbo_dir_to_parquet(multi_file_tbbo_dir, out)
 
     assert result.files_processed == 2
     assert result.files_skipped == 1
     assert len(result.skipped_files) == 1
+    # The differentiated log prefix should surface, so operators reading the
+    # run log can immediately tell this is a shape mismatch (fix = update
+    # REQUIRED_COLUMNS) rather than a corrupt / unreadable file.
+    assert "SDK schema drift" in caplog.text
 
 
 def test_per_file_failure_does_not_kill_run(
@@ -597,7 +608,14 @@ def test_limit_truncates_rows(
     tmp_path: Path,
     multi_file_tbbo_dir: Path,
 ) -> None:
-    """--limit caps total rows written across all files."""
+    """--limit caps total rows written across all files.
+
+    Locks in two invariants beyond the row-count cap:
+      1. File iteration stops once the limit is hit — the remaining two files
+         in the fixture are never opened (files_processed == 1).
+      2. Hitting the limit is a clean early-exit, NOT a failure — so
+         files_skipped must stay at 0.
+    """
     out = tmp_path / "out"
     with patch.object(
         tbbo_convert.db.DBNStore,
@@ -611,3 +629,67 @@ def test_limit_truncates_rows(
         )
 
     assert result.total_rows == 2
+    assert result.files_processed == 1, "limit stopped mid-file-1"
+    assert result.files_skipped == 0, "stopping on limit is not a failure"
+
+
+# ---------------------------------------------------------------------------
+# Multi-flush per year — production path that the 5-row fixtures never hit
+# ---------------------------------------------------------------------------
+
+
+def test_multi_flush_per_year_preserves_all_rows(
+    tmp_path: Path,
+    multi_file_tbbo_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: ParquetWriter append mode across multiple flushes per year.
+
+    The production 500k threshold is never crossed by the 5-row unit fixtures,
+    so the code path of ``open writer once → multiple write_table calls →
+    close at end`` is only exercised against the real 315-file input. This
+    test forces the same path by dropping the threshold to 2 rows so each
+    file triggers a flush.
+
+    Asserts:
+      * All rows survive (no silent overwrite from reopening the writer).
+      * The resulting Parquet has multiple row groups (proves append mode
+        actually ran, not a single concat-then-write).
+    """
+    monkeypatch.setattr(tbbo_convert, "FLUSH_ROW_THRESHOLD", 2)
+
+    out = tmp_path / "out"
+    with patch.object(
+        tbbo_convert.db.DBNStore,
+        "from_file",
+        return_value=_FakeStore(),
+    ):
+        result = tbbo_convert.convert_tbbo_dir_to_parquet(multi_file_tbbo_dir, out)
+
+    # 3 files × 3 rows/file surviving the symbol filter (ESU5 + NQU5 + ESH6).
+    # year=2025 gets 2 rows/file × 3 files = 6 rows.
+    # year=2026 gets 1 row/file × 3 files = 3 rows.
+    assert result.total_rows == 9
+    assert result.files_processed == 3
+    assert result.files_skipped == 0
+    assert result.rows_per_year == {2025: 6, 2026: 3}
+
+    # Confirm year=2025 Parquet has multiple row groups — one per flush — and
+    # that every row is present after all the flushes complete.
+    y2025 = out / "tbbo" / "year=2025" / "part.parquet"
+    pf_2025 = pq.ParquetFile(y2025)
+    assert pf_2025.num_row_groups > 1, (
+        f"expected multiple row groups from multi-flush path, "
+        f"got {pf_2025.num_row_groups}"
+    )
+    df_2025 = pf_2025.read().to_pandas()
+    assert len(df_2025) == 6
+    # Every row should be one of the two outright 2025 futures.
+    assert set(df_2025["symbol"].unique()) == {"ESU5", "NQU5"}
+
+    # year=2026 also must round-trip cleanly even though only the final-flush
+    # path writes its last row (buffer never hits threshold mid-loop for file 3).
+    y2026 = out / "tbbo" / "year=2026" / "part.parquet"
+    df_2026 = pq.ParquetFile(y2026).read().to_pandas()
+    assert len(df_2026) == 3
+    assert set(df_2026["symbol"].unique()) == {"ESH6"}
