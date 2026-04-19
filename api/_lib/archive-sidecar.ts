@@ -65,9 +65,7 @@ async function getJson<T>(
  * Callers should treat null as "no archive context available" and
  * proceed without it.
  */
-export async function fetchDaySummary(
-  dateIso: string,
-): Promise<string | null> {
+export async function fetchDaySummary(dateIso: string): Promise<string | null> {
   const body = await getJson<{ date: string; summary: string }>(
     `/archive/day-summary?date=${encodeURIComponent(dateIso)}`,
   );

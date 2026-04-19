@@ -521,13 +521,15 @@ export function formatSimilarDaysForClaude(
   lines.push('Today:');
   lines.push(`  ${todaySummary}`);
   lines.push('');
-  lines.push(`Top ${analogs.length} historical analog days (by embedding cosine similarity):`);
+  lines.push(
+    `Top ${analogs.length} historical analog days (by embedding cosine similarity):`,
+  );
   for (const [i, a] of analogs.entries()) {
     lines.push(`  ${(i + 1).toString().padStart(2, ' ')}. ${a.summary}`);
   }
   lines.push('');
   lines.push(
-    'These are structurally similar setups; their eventual day closes (the last field of each row) are your historical priors for what often follows a setup like today\'s. Use them to pressure-test your base-rate expectations — a cohort that mostly closed green argues against a bearish call, and vice versa. Do not treat as deterministic.',
+    "These are structurally similar setups; their eventual day closes (the last field of each row) are your historical priors for what often follows a setup like today's. Use them to pressure-test your base-rate expectations — a cohort that mostly closed green argues against a bearish call, and vice versa. Do not treat as deterministic.",
   );
   return lines.join('\n');
 }

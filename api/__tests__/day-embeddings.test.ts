@@ -27,7 +27,10 @@ function mockSql(result: unknown) {
   return sql;
 }
 
-const VALID_EMBED = Array.from({ length: DAY_EMBEDDING_DIMS }, (_, i) => i * 0.001);
+const VALID_EMBED = Array.from(
+  { length: DAY_EMBEDDING_DIMS },
+  (_, i) => i * 0.001,
+);
 const TOO_SHORT_EMBED = [0.1, 0.2];
 
 beforeEach(() => {

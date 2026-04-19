@@ -829,9 +829,8 @@ export async function fetchSimilarDaysContext(
     // embed it and find the k nearest historical days in pgvector.
     const { fetchDaySummary } = await import('./archive-sidecar.js');
     const { findSimilarDaysForSummary } = await import('./day-embeddings.js');
-    const { formatSimilarDaysForClaude } = await import(
-      './analyze-context-formatters.js'
-    );
+    const { formatSimilarDaysForClaude } =
+      await import('./analyze-context-formatters.js');
 
     const summary = await fetchDaySummary(analysisDate);
     if (!summary) return null;

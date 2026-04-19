@@ -53,13 +53,11 @@ describe('archive-sidecar', () => {
   });
 
   it('URL-encodes the date parameter', async () => {
-    const spy = vi
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: async () => ({ date: '2024-08-05', summary: 'x' }),
-      } as Response);
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ date: '2024-08-05', summary: 'x' }),
+    } as Response);
 
     await fetchDaySummary('2024-08-05');
     expect(spy).toHaveBeenCalledWith(

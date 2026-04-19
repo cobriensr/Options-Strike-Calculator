@@ -54,7 +54,11 @@ const END =
 const EMBEDDING_MODEL = 'text-embedding-3-large';
 const EMBEDDING_DIMS = 2000;
 
-for (const [k, v] of Object.entries({ SIDECAR_URL, OPENAI_API_KEY, DATABASE_URL })) {
+for (const [k, v] of Object.entries({
+  SIDECAR_URL,
+  OPENAI_API_KEY,
+  DATABASE_URL,
+})) {
   if (!v) {
     console.error(`Missing ${k}`);
     process.exit(1);
@@ -80,9 +84,7 @@ function* weekdaysBetween(startIso, endIso) {
 }
 
 async function fetchSummary(dateIso) {
-  const res = await fetch(
-    `${SIDECAR_URL}/archive/day-summary?date=${dateIso}`,
-  );
+  const res = await fetch(`${SIDECAR_URL}/archive/day-summary?date=${dateIso}`);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`sidecar ${res.status}: ${await res.text()}`);
   const body = await res.json();
