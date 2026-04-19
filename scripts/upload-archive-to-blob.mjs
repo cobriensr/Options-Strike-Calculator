@@ -183,7 +183,9 @@ async function main() {
   );
   console.log(`\nManifest URL:\n  ${manifestResult.url}\n`);
   console.log('Next step — set this as ARCHIVE_MANIFEST_URL in Railway:');
-  console.log(`  railway variables --set ARCHIVE_MANIFEST_URL=${manifestResult.url}`);
+  console.log(
+    `  railway variables --set ARCHIVE_MANIFEST_URL=${manifestResult.url}`,
+  );
 }
 
 try {

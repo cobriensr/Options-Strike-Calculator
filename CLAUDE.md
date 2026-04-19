@@ -210,8 +210,17 @@ Required env vars (pulled via `vercel env pull .env.local`):
 | `CRON_SECRET`                              | Vercel (cron job auth)             |
 | `UW_API_KEY`                               | Unusual Whales                     |
 | `THETA_EMAIL`, `THETA_PASSWORD`            | Theta Data (Railway sidecar only)  |
+| `BLOB_READ_WRITE_TOKEN`                    | Vercel Blob (also on Railway)      |
+| `ARCHIVE_MANIFEST_URL`                     | Archive manifest (Railway only)    |
+| `ARCHIVE_SEED_TOKEN`                       | Gates seed POST (Railway only)     |
+| `ARCHIVE_ROOT`                             | Volume path; default /data/archive |
 
 Never edit `.env*` files with Claude. Never commit secrets.
+
+The `ARCHIVE_*` and `BLOB_READ_WRITE_TOKEN` vars wire up the persistent
+Databento archive on the Railway sidecar's `/data` volume.
+`POST /admin/seed-archive` is a one-shot, SHA-resumable pull from Blob —
+see `docs/superpowers/specs/archive-volume-seed-2026-04-18.md`.
 
 ## Deployment
 
