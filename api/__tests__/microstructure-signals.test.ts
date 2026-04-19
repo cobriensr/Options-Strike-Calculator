@@ -19,6 +19,11 @@ import {
  * windows, one TOB). We don't rely on call order — instead we
  * classify each call by its template text + params and return the
  * appropriate stubbed rows.
+ *
+ * As of the SQL-aggregation refactor:
+ *   - Baseline query returns ONE ROW PER MINUTE BUCKET (median_spread),
+ *     aggregated by Postgres. We mock that shape directly.
+ *   - Current-minute query returns ONE ROW with median_spread + count.
  */
 const FIXED_NOW = new Date('2026-04-18T15:30:00.000Z');
 const FIXED_NOW_MS = FIXED_NOW.getTime();
@@ -42,9 +47,16 @@ interface StubResponses {
     sellVolume: number;
     totalTrades: number;
   } | null;
-  /** Array of per-minute baseline spread readings (each entry is one quote). */
-  spreadBaselineRows?: Array<{ tsMs: number; spread: number }>;
-  spreadCurrentRows?: Array<{ tsMs: number; spread: number }>;
+  /**
+   * Per-minute-bucket baseline rows as Postgres returns them after
+   * GROUP BY date_trunc('minute', ts). One entry per minute.
+   */
+  spreadBaseline?: Array<{ minuteMs: number; medianSpread: number }>;
+  /**
+   * Aggregated current-minute row. `null` simulates an empty result set
+   * (no quotes at all in the window).
+   */
+  spreadCurrent?: { medianSpread: number; n: number } | null;
   /** Most recent TOB quote (or null to simulate empty table). */
   tobLatest?: { tsMs: number; bidSize: number; askSize: number } | null;
 }
@@ -53,13 +65,14 @@ interface StubResponses {
  * Classify an incoming SQL call by the shape of its template strings.
  * The neon tag-template driver calls the mock as
  *   mockSql(strings: TemplateStringsArray, ...params: unknown[])
- * so we inspect the joined template text.
+ * so we inspect the joined template text. We distinguish the two
+ * spread queries by a unique token in each (GROUP BY vs COUNT(*));
+ * falling back to params keeps things robust if the helper is
+ * reordered.
  */
 function classify(strings: TemplateStringsArray, params: unknown[]): QueryKind {
   const joined = strings.join('');
   if (joined.includes('FROM futures_trade_ticks')) {
-    // Distinguish 1m vs 5m windows by the earliest-ts param (first
-    // param after symbol, which is the window start ISO).
     const earliestIso = params[1] as string;
     const earliestMs = new Date(earliestIso).getTime();
     const diff = FIXED_NOW_MS - earliestMs;
@@ -68,7 +81,9 @@ function classify(strings: TemplateStringsArray, params: unknown[]): QueryKind {
   }
   if (joined.includes('FROM futures_top_of_book')) {
     if (joined.includes('ORDER BY ts DESC')) return 'tob_latest';
-    // Spread queries: baseline uses 30-min start; current uses 1-min start.
+    if (joined.includes('GROUP BY')) return 'spread_baseline';
+    if (joined.includes('COUNT(*)')) return 'spread_current';
+    // Fallback: distinguish by window start param.
     const earliestIso = params[1] as string;
     const earliestMs = new Date(earliestIso).getTime();
     const diff = FIXED_NOW_MS - earliestMs;
@@ -109,18 +124,18 @@ function installMock(responses: StubResponses) {
           ];
         }
         case 'spread_baseline': {
-          const rows = responses.spreadBaselineRows ?? [];
+          const rows = responses.spreadBaseline ?? [];
+          // Neon returns NUMERIC values as strings; match that to
+          // exercise the Number.parseFloat coercion path.
           return rows.map((r) => ({
-            ts: new Date(r.tsMs).toISOString(),
-            spread: r.spread,
+            minute: new Date(r.minuteMs).toISOString(),
+            median_spread: String(r.medianSpread),
           }));
         }
         case 'spread_current': {
-          const rows = responses.spreadCurrentRows ?? [];
-          return rows.map((r) => ({
-            ts: new Date(r.tsMs).toISOString(),
-            spread: r.spread,
-          }));
+          const r = responses.spreadCurrent;
+          if (r === null || r === undefined) return [];
+          return [{ median_spread: String(r.medianSpread), n: r.n }];
         }
         case 'tob_latest': {
           const r = responses.tobLatest;
@@ -139,35 +154,19 @@ function installMock(responses: StubResponses) {
 }
 
 /**
- * Build a baseline window of quotes sufficient to produce a valid
- * z-score. 30 distinct minutes, one quote per minute, spread `base`
- * ± a small jitter so stddev is nonzero.
+ * Build a 30-minute-bucket baseline that produces a nonzero stddev.
+ * Each minute's median alternates base ± jitter.
  */
-function makeBaselineRows(
+function makeBaseline(
   base: number,
   jitter: number,
-): Array<{ tsMs: number; spread: number }> {
-  const out: Array<{ tsMs: number; spread: number }> = [];
-  // 30 minute buckets: each at FIXED_NOW - k*60_000, k ∈ [1, 30].
-  for (let k = 1; k <= 30; k++) {
-    const tsMs = FIXED_NOW_MS - k * 60_000 + 10_000; // +10s inside the bucket
-    // Alternate + / - jitter to produce nonzero stddev.
-    const spread = base + (k % 2 === 0 ? jitter : -jitter);
-    out.push({ tsMs, spread });
-  }
-  return out;
-}
-
-/** Current-minute spread quotes for the last ~60 sec. */
-function makeCurrentRows(
-  spread: number,
-  count: number,
-): Array<{ tsMs: number; spread: number }> {
-  const out: Array<{ tsMs: number; spread: number }> = [];
-  for (let i = 0; i < count; i++) {
-    // Within the last 50 seconds.
-    const tsMs = FIXED_NOW_MS - (i + 1) * 10_000;
-    out.push({ tsMs, spread });
+  bucketCount = 30,
+): Array<{ minuteMs: number; medianSpread: number }> {
+  const out: Array<{ minuteMs: number; medianSpread: number }> = [];
+  for (let k = 1; k <= bucketCount; k++) {
+    const minuteMs = Math.floor((FIXED_NOW_MS - k * 60_000) / 60_000) * 60_000;
+    const medianSpread = base + (k % 2 === 0 ? jitter : -jitter);
+    out.push({ minuteMs, medianSpread });
   }
   return out;
 }
@@ -188,8 +187,8 @@ describe('computeMicrostructureSignals', () => {
       // Neutral OFI (buy ≈ sell) with enough trades to pass the floor.
       ofi1m: { buyVolume: 500, sellVolume: 500, totalTrades: 40 },
       ofi5m: { buyVolume: 2500, sellVolume: 2500, totalTrades: 200 },
-      spreadBaselineRows: makeBaselineRows(0.25, 0.01),
-      spreadCurrentRows: makeCurrentRows(0.25, 5),
+      spreadBaseline: makeBaseline(0.25, 0.01),
+      spreadCurrent: { medianSpread: 0.25, n: 5 },
       tobLatest: {
         tsMs: FIXED_NOW_MS - 5_000,
         bidSize: 100,
@@ -210,8 +209,8 @@ describe('computeMicrostructureSignals', () => {
     installMock({
       ofi1m: { buyVolume: 800, sellVolume: 200, totalTrades: 40 },
       ofi5m: { buyVolume: 4000, sellVolume: 1000, totalTrades: 200 },
-      spreadBaselineRows: makeBaselineRows(0.25, 0.01),
-      spreadCurrentRows: makeCurrentRows(0.26, 5),
+      spreadBaseline: makeBaseline(0.25, 0.01),
+      spreadCurrent: { medianSpread: 0.26, n: 5 },
       tobLatest: {
         tsMs: FIXED_NOW_MS - 5_000,
         bidSize: 200,
@@ -230,8 +229,8 @@ describe('computeMicrostructureSignals', () => {
     installMock({
       ofi1m: { buyVolume: 200, sellVolume: 800, totalTrades: 40 },
       ofi5m: { buyVolume: 1000, sellVolume: 4000, totalTrades: 200 },
-      spreadBaselineRows: makeBaselineRows(0.25, 0.01),
-      spreadCurrentRows: makeCurrentRows(0.25, 5),
+      spreadBaseline: makeBaseline(0.25, 0.01),
+      spreadCurrent: { medianSpread: 0.25, n: 5 },
       tobLatest: {
         tsMs: FIXED_NOW_MS - 5_000,
         bidSize: 50,
@@ -252,8 +251,8 @@ describe('computeMicrostructureSignals', () => {
       ofi1m: { buyVolume: 800, sellVolume: 200, totalTrades: 40 },
       ofi5m: { buyVolume: 4000, sellVolume: 1000, totalTrades: 200 },
       // …but spread blowout fires LIQUIDITY_STRESS first.
-      spreadBaselineRows: makeBaselineRows(0.25, 0.01),
-      spreadCurrentRows: makeCurrentRows(1.0, 5),
+      spreadBaseline: makeBaseline(0.25, 0.01),
+      spreadCurrent: { medianSpread: 1.0, n: 5 },
       tobLatest: {
         tsMs: FIXED_NOW_MS - 5_000,
         bidSize: 200,
@@ -272,8 +271,8 @@ describe('computeMicrostructureSignals', () => {
     installMock({
       ofi1m: { buyVolume: 10, sellVolume: 5, totalTrades: 5 },
       ofi5m: { buyVolume: 12, sellVolume: 6, totalTrades: 8 },
-      spreadBaselineRows: makeBaselineRows(0.25, 0.01),
-      spreadCurrentRows: makeCurrentRows(0.25, 5),
+      spreadBaseline: makeBaseline(0.25, 0.01),
+      spreadCurrent: { medianSpread: 0.25, n: 5 },
       tobLatest: {
         tsMs: FIXED_NOW_MS - 5_000,
         bidSize: 100,
@@ -291,13 +290,34 @@ describe('computeMicrostructureSignals', () => {
     expect(result!.composite).toBeNull();
   });
 
-  it('drops spread z-score when fewer than 30 baseline quotes', async () => {
+  it('drops spread z-score when fewer than 30 baseline minute buckets', async () => {
     installMock({
       ofi1m: { buyVolume: 500, sellVolume: 500, totalTrades: 40 },
       ofi5m: { buyVolume: 2500, sellVolume: 2500, totalTrades: 200 },
-      // Only 10 baseline quotes — below MIN_SPREAD_BASELINE_QUOTES.
-      spreadBaselineRows: makeBaselineRows(0.25, 0.01).slice(0, 10),
-      spreadCurrentRows: makeCurrentRows(0.25, 5),
+      // Only 20 per-minute buckets — below MIN_SPREAD_BASELINE_QUOTES.
+      spreadBaseline: makeBaseline(0.25, 0.01, 20),
+      spreadCurrent: { medianSpread: 0.25, n: 5 },
+      tobLatest: {
+        tsMs: FIXED_NOW_MS - 5_000,
+        bidSize: 100,
+        askSize: 100,
+      },
+    });
+
+    const result = await computeMicrostructureSignals(FIXED_NOW);
+    expect(result).not.toBeNull();
+    expect(result!.spreadZscore).toBeNull();
+    expect(result!.ofi1m).not.toBeNull();
+    expect(result!.tobPressure).not.toBeNull();
+  });
+
+  it('drops spread z-score when current-minute n < 3', async () => {
+    installMock({
+      ofi1m: { buyVolume: 500, sellVolume: 500, totalTrades: 40 },
+      ofi5m: { buyVolume: 2500, sellVolume: 2500, totalTrades: 200 },
+      spreadBaseline: makeBaseline(0.25, 0.01),
+      // Only 2 quotes in the current minute — below MIN_SPREAD_CURRENT_QUOTES.
+      spreadCurrent: { medianSpread: 0.25, n: 2 },
       tobLatest: {
         tsMs: FIXED_NOW_MS - 5_000,
         bidSize: 100,
@@ -313,19 +333,19 @@ describe('computeMicrostructureSignals', () => {
   });
 
   it('drops spread z-score when stddev is exactly zero (flat baseline)', async () => {
-    // All baseline quotes identical → stddev = 0 → cannot compute z.
-    const flatBaseline: Array<{ tsMs: number; spread: number }> = [];
+    // All per-minute medians identical → stddev = 0.
+    const flatBaseline: Array<{ minuteMs: number; medianSpread: number }> = [];
     for (let k = 1; k <= 30; k++) {
       flatBaseline.push({
-        tsMs: FIXED_NOW_MS - k * 60_000 + 10_000,
-        spread: 0.25,
+        minuteMs: Math.floor((FIXED_NOW_MS - k * 60_000) / 60_000) * 60_000,
+        medianSpread: 0.25,
       });
     }
     installMock({
       ofi1m: { buyVolume: 500, sellVolume: 500, totalTrades: 40 },
       ofi5m: { buyVolume: 2500, sellVolume: 2500, totalTrades: 200 },
-      spreadBaselineRows: flatBaseline,
-      spreadCurrentRows: makeCurrentRows(0.25, 5),
+      spreadBaseline: flatBaseline,
+      spreadCurrent: { medianSpread: 0.25, n: 5 },
       tobLatest: {
         tsMs: FIXED_NOW_MS - 5_000,
         bidSize: 100,
@@ -342,8 +362,8 @@ describe('computeMicrostructureSignals', () => {
     installMock({
       ofi1m: { buyVolume: 500, sellVolume: 500, totalTrades: 40 },
       ofi5m: { buyVolume: 2500, sellVolume: 2500, totalTrades: 200 },
-      spreadBaselineRows: makeBaselineRows(0.25, 0.01),
-      spreadCurrentRows: makeCurrentRows(0.25, 5),
+      spreadBaseline: makeBaseline(0.25, 0.01),
+      spreadCurrent: { medianSpread: 0.25, n: 5 },
       tobLatest: {
         // 60 seconds old — fails staleness check.
         tsMs: FIXED_NOW_MS - 60_000,
@@ -361,8 +381,8 @@ describe('computeMicrostructureSignals', () => {
     installMock({
       ofi1m: { buyVolume: 500, sellVolume: 500, totalTrades: 40 },
       ofi5m: { buyVolume: 2500, sellVolume: 2500, totalTrades: 200 },
-      spreadBaselineRows: makeBaselineRows(0.25, 0.01),
-      spreadCurrentRows: makeCurrentRows(0.25, 5),
+      spreadBaseline: makeBaseline(0.25, 0.01),
+      spreadCurrent: { medianSpread: 0.25, n: 5 },
       tobLatest: {
         tsMs: FIXED_NOW_MS - 5_000,
         bidSize: 100,
@@ -379,8 +399,8 @@ describe('computeMicrostructureSignals', () => {
     installMock({
       ofi1m: { buyVolume: 0, sellVolume: 0, totalTrades: 0 },
       ofi5m: { buyVolume: 0, sellVolume: 0, totalTrades: 0 },
-      spreadBaselineRows: [],
-      spreadCurrentRows: [],
+      spreadBaseline: [],
+      spreadCurrent: null,
       tobLatest: null,
     });
 

@@ -135,9 +135,14 @@ async function computeOfiWindow(
   return (buy - sell) / denom;
 }
 
-interface QuoteRow {
-  ts: string | Date;
-  spread: string | number;
+interface BaselineBucketRow {
+  minute: string | Date;
+  median_spread: Numeric;
+}
+
+interface CurrentAggRow {
+  median_spread: Numeric;
+  n: Numeric;
 }
 
 /**
@@ -169,10 +174,14 @@ function stddev(values: number[], mean: number): number {
 }
 
 /**
- * Compute the spread z-score. Queries quotes in the 30-min baseline
- * and the 1-min current window in one round-trip each (Promise.all),
- * buckets the baseline by minute, and compares the current median to
- * the distribution of per-minute baseline medians.
+ * Compute the spread z-score. During active ES hours
+ * `futures_top_of_book` can see 1-5K updates/min, so the 30-min
+ * baseline is 30K-150K raw quote rows. We push aggregation into
+ * Postgres with `percentile_cont(0.5) WITHIN GROUP (...)`:
+ *   - Baseline query returns ~30 rows (one per minute bucket), each
+ *     with the minute's median spread.
+ *   - Current-minute query returns ONE row with the median + count.
+ * This keeps wire transfer bounded regardless of book activity.
  */
 async function computeSpreadZscore(now: Date): Promise<number | null> {
   const sql = getDb();
@@ -186,43 +195,38 @@ async function computeSpreadZscore(now: Date): Promise<number | null> {
 
   const [baselineRowsRaw, currentRowsRaw] = await Promise.all([
     sql`
-      SELECT ts, (ask - bid) AS spread
+      SELECT
+        date_trunc('minute', ts) AS minute,
+        percentile_cont(0.5) WITHIN GROUP (ORDER BY ask - bid) AS median_spread
       FROM futures_top_of_book
       WHERE symbol = ${SYMBOL}
         AND ts > ${baselineStartIso}
         AND ts <= ${nowIso}
+      GROUP BY 1
     `,
     sql`
-      SELECT ts, (ask - bid) AS spread
+      SELECT
+        percentile_cont(0.5) WITHIN GROUP (ORDER BY ask - bid) AS median_spread,
+        COUNT(*)::int AS n
       FROM futures_top_of_book
       WHERE symbol = ${SYMBOL}
         AND ts > ${currentStartIso}
         AND ts <= ${nowIso}
     `,
   ]);
-  const baselineRows = baselineRowsRaw as QuoteRow[];
-  const currentRows = currentRowsRaw as QuoteRow[];
+  const baselineRows = baselineRowsRaw as BaselineBucketRow[];
+  const currentRows = currentRowsRaw as CurrentAggRow[];
 
+  // Baseline gate: need >= MIN_SPREAD_BASELINE_QUOTES distinct minute
+  // buckets. Previously this gated on raw-quote count; per-minute
+  // bucket count is a stricter and more meaningful signal-strength
+  // floor (a 30-min window with stable traffic yields ~30 buckets).
   if (baselineRows.length < MIN_SPREAD_BASELINE_QUOTES) return null;
-  if (currentRows.length < MIN_SPREAD_CURRENT_QUOTES) return null;
-
-  // Bucket the baseline by minute-of-epoch. Per-minute median smooths
-  // single-quote spikes so the z-score reflects sustained widening,
-  // not a one-tick flicker.
-  const minuteBuckets = new Map<number, number[]>();
-  for (const row of baselineRows) {
-    const spread = Number.parseFloat(String(row.spread));
-    if (!Number.isFinite(spread) || spread < 0) continue;
-    const tsMs = new Date(row.ts).getTime();
-    const minuteKey = Math.floor(tsMs / 60_000);
-    const bucket = minuteBuckets.get(minuteKey);
-    if (bucket) bucket.push(spread);
-    else minuteBuckets.set(minuteKey, [spread]);
-  }
 
   const perMinuteMedians: number[] = [];
-  for (const bucket of minuteBuckets.values()) {
-    if (bucket.length > 0) perMinuteMedians.push(median(bucket));
+  for (const row of baselineRows) {
+    const v = Number.parseFloat(String(row.median_spread));
+    if (Number.isFinite(v) && v >= 0) perMinuteMedians.push(v);
   }
   if (perMinuteMedians.length === 0) return null;
 
@@ -230,11 +234,16 @@ async function computeSpreadZscore(now: Date): Promise<number | null> {
   const baselineStd = stddev(perMinuteMedians, baselineMedian);
   if (!Number.isFinite(baselineStd) || baselineStd === 0) return null;
 
-  const currentSpreads = currentRows
-    .map((r) => Number.parseFloat(String(r.spread)))
-    .filter((v) => Number.isFinite(v) && v >= 0);
-  if (currentSpreads.length === 0) return null;
-  const currentMedian = median(currentSpreads);
+  if (currentRows.length === 0) return null;
+  const currentRow = currentRows[0]!;
+  const currentCount = Number.parseInt(String(currentRow.n ?? 0), 10);
+  if (
+    !Number.isFinite(currentCount) ||
+    currentCount < MIN_SPREAD_CURRENT_QUOTES
+  ) {
+    return null;
+  }
+  const currentMedian = Number.parseFloat(String(currentRow.median_spread));
   if (!Number.isFinite(currentMedian)) return null;
 
   const z = (currentMedian - baselineMedian) / baselineStd;
