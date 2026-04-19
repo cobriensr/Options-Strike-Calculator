@@ -50,6 +50,9 @@ class HealthHandler(BaseHTTPRequestHandler):
         if self.path.startswith("/archive/analog-days"):
             self._handle_archive_analog_days()
             return
+        if self.path.startswith("/archive/day-summary"):
+            self._handle_archive_day_summary()
+            return
         if self.path != "/health":
             self.send_response(404)
             self.end_headers()
@@ -226,6 +229,34 @@ class HealthHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
             log.error("analog-days query failed for %s: %s", date, exc)
+            self._send_json(500, {"error": "query failed"})
+
+    def _handle_archive_day_summary(self) -> None:
+        """GET /archive/day-summary?date=YYYY-MM-DD → deterministic text.
+
+        Output is `{summary: "..."}` — deliberately narrow so the Vercel
+        caller can't accidentally depend on OHLCV details outside the
+        summary. The summary text is the ONLY input to the embedding
+        pipeline; changing its format invalidates stored embeddings.
+        """
+        from urllib.parse import parse_qs, urlparse
+        import re
+
+        qs = parse_qs(urlparse(self.path).query)
+        date = (qs.get("date") or [""])[0]
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            self._send_json(400, {"error": "date must be YYYY-MM-DD"})
+            return
+
+        try:
+            import archive_query
+
+            text = archive_query.day_summary_text(date)
+            self._send_json(200, {"date": date, "summary": text})
+        except ValueError as exc:
+            self._send_json(404, {"error": str(exc)})
+        except Exception as exc:  # noqa: BLE001
+            log.error("day-summary query failed for %s: %s", date, exc)
             self._send_json(500, {"error": "query failed"})
 
     def _send_json(self, status: int, body: dict[str, object]) -> None:

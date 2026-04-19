@@ -52,6 +52,7 @@ import {
   fetchDirectionalChainContext,
   fetchEconomicCalendarContext,
   fetchFuturesContext,
+  fetchSimilarDaysContext,
   fetchIvTermContext,
   fetchMainData,
   fetchMaxPainContext,
@@ -238,6 +239,7 @@ export async function buildAnalysisContext(
     volumeProfileContext,
     vixDivergenceContext,
     microstructureContext,
+    similarDaysContext,
   ] = await Promise.all([
     fetchDarkPoolContext(context, analysisDate),
     fetchMaxPainContext(context, analysisDate),
@@ -256,6 +258,7 @@ export async function buildAnalysisContext(
     fetchVolumeProfileBlock(analysisDate),
     fetchVixDivergenceBlock(),
     fetchMicrostructureBlock(),
+    fetchSimilarDaysContext(analysisDate),
   ]);
 
   const marketTideOtmSection = main.marketTideOtmContext
@@ -287,6 +290,7 @@ export async function buildAnalysisContext(
   if (!volumeProfileContext) unavailable.push('Prior-Day Volume Profile (ES)');
   if (!vixDivergenceContext) unavailable.push('VIX/SPX Divergence');
   if (!microstructureContext) unavailable.push('Microstructure Signals (ES)');
+  if (!similarDaysContext) unavailable.push('Historical Analog Days');
   const unavailableList = unavailable.map((s) => '- ' + s).join('\n');
   const unavailableSection =
     unavailable.length > 0
@@ -361,6 +365,7 @@ ${overnightGapContext ? `\n## ES Overnight Gap Analysis (from pre-market data)\n
 ${futuresContext ? `\n${futuresContext}\nFutures signals lead options flow by 10-30 minutes. When futures and flow disagree, futures are usually right — institutional desks execute in futures first. See <futures_context_rules> in the system prompt for interpretation guidance.\n` : ''}
 ${crossAssetRegimeContext ? `\n## Cross-Asset Risk Regime (from futures_bars — 5-min returns)\nComposite and per-symbol returns classifying the session as RISK-ON, RISK-OFF, MIXED, or MACRO-STRESS. See <cross_asset_regime_rules> for interpretation.\n  ${crossAssetRegimeContext}\n` : ''}
 ${volumeProfileContext ? `\n## Prior-Day Volume Profile (from futures_bars)\nPOC/VAH/VAL computed from the prior session's ES minute bars. Treat these as structural reference levels — see <volume_profile_rules> for interpretation.\n${volumeProfileContext}\n` : ''}
+${similarDaysContext ? `\n## Historical Analog Days (16-year ES archive, embedding similarity)\nEach row is a deterministic one-liner: date symbol | open | 1h Δ | 2h Δ | 3h Δ | range | volume | close (net). These are NOT predictions — they are empirical priors sampled by cosine-similarity on the target day's summary text.\n${similarDaysContext}\n` : ''}
 ${vixDivergenceContext ? `\n## VIX/SPX Divergence Flag (from market_snapshots + spx_candles_1m)\n5-minute paired return check: VIX rising while SPX is flat is the classic informed-positioning canary. See <vix_divergence_rules> for interpretation.\n  ${vixDivergenceContext}\n` : ''}
 ${microstructureContext ? `\n## ES Microstructure Signals (from futures_trade_ticks + futures_top_of_book)\nOrder flow imbalance (OFI 1m / 5m), spread widening z-score, and top-of-book pressure derived from the Databento L1 book + trade stream. Leading indicators with high noise — treat as a vote alongside GEX, flow, and chart structure. See <microstructure_signals_rules> for interpretation.\n  ${microstructureContext}\n` : ''}
 ${

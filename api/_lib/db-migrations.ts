@@ -1933,4 +1933,37 @@ export const MIGRATIONS: Migration[] = [
       sql`CREATE INDEX IF NOT EXISTS idx_ftt_symbol_ts ON futures_trade_ticks (symbol, ts DESC)`,
     ],
   },
+  {
+    id: 73,
+    description:
+      'Create day_embeddings table with pgvector for historical analog retrieval',
+    statements: (sql) => [
+      // pgvector 0.8.0 is already installed on Neon — the CREATE EXTENSION
+      // is idempotent and makes the migration self-bootstrapping on
+      // staging/dev DBs that may not have it yet.
+      sql`CREATE EXTENSION IF NOT EXISTS vector`,
+      // One row per trading day. `summary` is the deterministic text fed
+      // to OpenAI so we can diff/regenerate when the summary format
+      // changes. `embedding_model` is stored so we can run A/B model
+      // migrations without nuking the table.
+      sql`
+        CREATE TABLE IF NOT EXISTS day_embeddings (
+          date            DATE PRIMARY KEY,
+          symbol          TEXT NOT NULL,
+          summary         TEXT NOT NULL,
+          embedding       vector(2000) NOT NULL,
+          embedding_model TEXT NOT NULL,
+          created_at      TIMESTAMPTZ DEFAULT NOW()
+        )
+      `,
+      // HNSW cosine index — fast approximate k-NN. 2000 dims matches
+      // existing embeddings.ts (text-embedding-3-large truncated to fit
+      // Neon's HNSW 2000-dim cap). ~4000 rows query in single-digit ms.
+      sql`
+        CREATE INDEX IF NOT EXISTS day_embeddings_vec_idx
+          ON day_embeddings
+          USING hnsw (embedding vector_cosine_ops)
+      `,
+    ],
+  },
 ];

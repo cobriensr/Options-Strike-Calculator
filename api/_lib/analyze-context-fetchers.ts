@@ -817,3 +817,32 @@ export async function fetchMicrostructureBlock(): Promise<string | null> {
     return null;
   }
 }
+
+// ── Historical analogs (day embeddings) ───────────────────────────────
+
+export async function fetchSimilarDaysContext(
+  analysisDate: string,
+  k: number = 15,
+): Promise<string | null> {
+  try {
+    // Sidecar produces today's deterministic summary string; we then
+    // embed it and find the k nearest historical days in pgvector.
+    const { fetchDaySummary } = await import('./archive-sidecar.js');
+    const { findSimilarDaysForSummary } = await import('./day-embeddings.js');
+    const { formatSimilarDaysForClaude } = await import(
+      './analyze-context-formatters.js'
+    );
+
+    const summary = await fetchDaySummary(analysisDate);
+    if (!summary) return null;
+
+    const analogs = await findSimilarDaysForSummary(summary, k, analysisDate);
+    if (analogs.length === 0) return null;
+
+    return formatSimilarDaysForClaude(summary, analogs);
+  } catch (err) {
+    logger.warn({ err }, 'similar-days context fetch failed');
+    metrics.increment('analyze_context.similar_days_error');
+    return null;
+  }
+}

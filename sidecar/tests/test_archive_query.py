@@ -326,3 +326,63 @@ def test_analog_days_raises_on_no_data_for_target(tmp_path: Path) -> None:
 def test_analog_days_validates_bounds(tmp_path: Path, kwargs: dict) -> None:
     with pytest.raises(ValueError):
         archive_query.analog_days("2024-06-05", root=tmp_path, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# day_summary_text
+# ---------------------------------------------------------------------------
+
+
+def test_day_summary_text_contains_core_fields(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+
+    # 4-bar day: open, +60m, +120m, EOD. Enough to exercise the three
+    # delta-window lookups.
+    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    d1 = datetime(2024, 6, 3, 15, 30, tzinfo=timezone.utc)  # +60m
+    d2 = datetime(2024, 6, 3, 16, 30, tzinfo=timezone.utc)  # +120m
+    d3 = datetime(2024, 6, 3, 21, 0, tzinfo=timezone.utc)   # EOD
+    bars = [
+        (d0, 101, 5300.0, 5305.0, 5299.0, 5300.0, 1_000_000),
+        (d1, 101, 5300.0, 5310.0, 5299.0, 5305.5, 1_500_000),
+        (d2, 101, 5305.5, 5315.0, 5300.0, 5308.0, 500_000),
+        (d3, 101, 5308.0, 5315.0, 5280.0, 5285.0, 250_000),
+    ]
+    symbology = [(101, "ESU4", d0, d3)]
+    _build_archive(tmp_path, bars, symbology)
+
+    summary = archive_query.day_summary_text("2024-06-03", root=tmp_path)
+
+    # Spot-check structure; exact numerics are exercised in format-specific
+    # tests below. These are the fields Claude will actually read.
+    assert summary.startswith("2024-06-03 ESU4 | open 5300.00")
+    assert "1h delta +5.50" in summary
+    assert "2h delta +8.00" in summary
+    assert "vol 3.25M" in summary
+    assert summary.endswith("close 5285.00 (-15.00)")
+
+
+def test_day_summary_text_raises_on_missing_date(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+
+    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    bars = [(d0, 101, 5300.0, 5305.0, 5299.0, 5300.0, 1000)]
+    _build_archive(tmp_path, bars, [(101, "ESU4", d0, d0)])
+
+    with pytest.raises(ValueError, match="2024-06-04"):
+        archive_query.day_summary_text("2024-06-04", root=tmp_path)
+
+
+def test_day_summary_text_is_deterministic(tmp_path: Path) -> None:
+    """Same input must produce byte-identical output — embedding stability."""
+    from datetime import datetime, timezone
+
+    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    bars = [(d0, 101, 5300.0, 5305.0, 5299.0, 5304.0, 1000)]
+    _build_archive(tmp_path, bars, [(101, "ESU4", d0, d0)])
+
+    a = archive_query.day_summary_text("2024-06-03", root=tmp_path)
+    archive_query.reset_connection_for_tests()
+    b = archive_query.day_summary_text("2024-06-03", root=tmp_path)
+
+    assert a == b

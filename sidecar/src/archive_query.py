@@ -396,3 +396,115 @@ def analog_days(
         "window_minutes": until_minute,
         "analogs": analogs,
     }
+
+
+# ---------------------------------------------------------------------------
+# day_summary_text — input to the embedding pipeline
+# ---------------------------------------------------------------------------
+
+
+def _format_volume(v: float) -> str:
+    """Render volume as a short string: 3.25M, 1.07K, 421."""
+    if v >= 1_000_000:
+        return f"{v / 1_000_000:.2f}M"
+    if v >= 1_000:
+        return f"{v / 1_000:.1f}K"
+    return str(int(v))
+
+
+def day_summary_text(
+    date_iso: str,
+    *,
+    root: Path | None = None,
+) -> str:
+    """Return a compact, deterministic text summary of ES front-month activity.
+
+    The output is the *sole* input to the embedding pipeline — any change
+    here invalidates previously-stored embeddings. Keep it stable; add
+    new fields at the end rather than reordering.
+
+    Format (pipe-separated, human-readable):
+        YYYY-MM-DD SYM | open 5324.00 | 1h delta -20.50 | 2h delta -65.00
+        | 3h delta -50.00 | range 204.50 | vol 3.25M | close 5273.75 (-50.25)
+
+    Raises ValueError if the date has no ES bars in the archive.
+    """
+    conn = _connection()
+    ohlcv = _ohlcv_glob(root)
+    symbology = _symbology_path(root)
+
+    top_symbol = _front_month_symbol(conn, ohlcv, symbology, date_iso)
+    if top_symbol is None:
+        raise ValueError(f"No ES bars found for {date_iso}")
+
+    # One pass: compute open, closes at 60/120/180 minutes from session
+    # start, day high/low/close, volume. ts_event index is nanosecond,
+    # so the +60 minute boundary is captured by "<= start + 60 min".
+    row = conn.execute(
+        """
+        WITH f AS (
+            SELECT bars.ts_event, bars.open, bars.high, bars.low,
+                   bars.close, bars.volume
+            FROM read_parquet(?) AS bars
+            JOIN read_parquet(?) AS sym USING (instrument_id)
+            WHERE sym.symbol = ?
+              AND CAST(date_trunc('day', bars.ts_event) AS DATE) = ?::DATE
+        ),
+        bounds AS (
+            SELECT MIN(ts_event) AS open_ts,
+                   FIRST(open ORDER BY ts_event) AS day_open,
+                   MAX(high) AS day_high,
+                   MIN(low) AS day_low,
+                   LAST(close ORDER BY ts_event) AS day_close,
+                   SUM(volume) AS day_volume
+            FROM f
+        )
+        SELECT b.day_open,
+               b.day_high,
+               b.day_low,
+               b.day_close,
+               b.day_volume,
+               (SELECT LAST(close ORDER BY ts_event) FROM f
+                 WHERE ts_event <= b.open_ts + INTERVAL 60 MINUTE)
+                 AS close_60,
+               (SELECT LAST(close ORDER BY ts_event) FROM f
+                 WHERE ts_event <= b.open_ts + INTERVAL 120 MINUTE)
+                 AS close_120,
+               (SELECT LAST(close ORDER BY ts_event) FROM f
+                 WHERE ts_event <= b.open_ts + INTERVAL 180 MINUTE)
+                 AS close_180
+        FROM bounds b
+        """,
+        [ohlcv, symbology, top_symbol, date_iso],
+    ).fetchone()
+
+    assert row is not None
+    (
+        day_open,
+        day_high,
+        day_low,
+        day_close,
+        day_volume,
+        close_60,
+        close_120,
+        close_180,
+    ) = row
+
+    d1 = float(close_60) - float(day_open) if close_60 is not None else None
+    d2 = float(close_120) - float(day_open) if close_120 is not None else None
+    d3 = float(close_180) - float(day_open) if close_180 is not None else None
+
+    def fmt_delta(d: float | None) -> str:
+        return f"{d:+.2f}" if d is not None else "n/a"
+
+    return (
+        f"{date_iso} {top_symbol} | "
+        f"open {float(day_open):.2f} | "
+        f"1h delta {fmt_delta(d1)} | "
+        f"2h delta {fmt_delta(d2)} | "
+        f"3h delta {fmt_delta(d3)} | "
+        f"range {float(day_high) - float(day_low):.2f} | "
+        f"vol {_format_volume(float(day_volume))} | "
+        f"close {float(day_close):.2f} "
+        f"({(float(day_close) - float(day_open)):+.2f})"
+    )
