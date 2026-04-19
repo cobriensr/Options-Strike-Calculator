@@ -44,6 +44,9 @@ class HealthHandler(BaseHTTPRequestHandler):
     seed_is_busy: Callable[[], bool] | None = None
 
     def do_GET(self) -> None:
+        if self.path.startswith("/archive/es-range"):
+            self._handle_archive_es_range()
+            return
         if self.path != "/health":
             self.send_response(404)
             self.end_headers()
@@ -135,6 +138,55 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"error": str(exc)}).encode())
+
+    def _handle_archive_es_range(self) -> None:
+        """GET /archive/es-range?date=YYYY-MM-DD → ES day summary from archive.
+
+        Unauthenticated read endpoint. Data is already public market data
+        and the archive itself doesn't contain any secrets. Date is the
+        only input and is validated to match YYYY-MM-DD exactly.
+        """
+        from urllib.parse import parse_qs, urlparse
+        import re
+
+        qs = parse_qs(urlparse(self.path).query)
+        date = (qs.get("date") or [""])[0]
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {"error": "date must be YYYY-MM-DD"}
+                ).encode()
+            )
+            return
+
+        try:
+            # Local import keeps sidecar startup fast when nothing in
+            # the current deploy path touches the archive; duckdb adds
+            # ~12 MB of import cost we can defer to first query.
+            import archive_query
+
+            result = archive_query.es_day_summary(date)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(result).encode())
+        except ValueError as exc:
+            # Known "no data for this date" — return 404 with message.
+            self.send_response(404)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(exc)}).encode())
+        except Exception as exc:  # noqa: BLE001
+            log.error("es-range query failed for %s: %s", date, exc)
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps({"error": "query failed"}).encode()
+            )
 
     def _send_busy_response(self) -> None:
         self.send_response(423)
