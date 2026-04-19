@@ -1,21 +1,28 @@
-"""HTTP health check server on port 8080 (same as existing sidecar).
+"""HTTP server on port 8080 — health check + admin endpoints.
 
-Reports status of the Databento connection, data freshness, and DB health.
+Serves `GET /health` for liveness/readiness monitoring and
+`POST /admin/seed-archive` for one-shot seeding of the persistent
+volume from Vercel Blob. The admin endpoint is gated on a shared token
+and is safe to leave deployed — subsequent calls are cheap (SHA-based
+resume) and guarded by a single-flight lock in `archive_seeder`.
 """
 
 from __future__ import annotations
 
+import hmac
 import json
+import os
 import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Callable
+from typing import Any, Callable
 
+from archive_seeder import SeedBusyError
 from logger_setup import log
 
 
 class HealthHandler(BaseHTTPRequestHandler):
-    """Handle GET /health requests."""
+    """Handle GET /health + POST /admin/seed-archive requests."""
 
     # Databento / DB checks — always required.
     is_connected: Callable[[], bool]
@@ -30,6 +37,11 @@ class HealthHandler(BaseHTTPRequestHandler):
     theta_is_running: Callable[[], bool] | None = None
     theta_last_ready_at: Callable[[], float] | None = None
     theta_last_error: Callable[[], str | None] | None = None
+
+    # Archive seeder — optional. When set, enables POST /admin/seed-archive.
+    # The callable returns a dict suitable for JSON serialization.
+    seed_archive: Callable[[], dict[str, Any]] | None = None
+    seed_is_busy: Callable[[], bool] | None = None
 
     def do_GET(self) -> None:
         if self.path != "/health":
@@ -70,6 +82,67 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(body.encode())
+
+    def do_POST(self) -> None:  # noqa: N802 — http.server naming convention
+        """Dispatch POST requests. Currently only /admin/seed-archive."""
+        if self.path != "/admin/seed-archive":
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"Not found")
+            return
+
+        if self.seed_archive is None:
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps({"error": "seed endpoint not configured"}).encode()
+            )
+            return
+
+        # Auth gate — single-owner token from env. `hmac.compare_digest`
+        # prevents timing-based token guessing (constant-time comparison).
+        expected = os.environ.get("ARCHIVE_SEED_TOKEN", "")
+        got = self.headers.get("X-Admin-Token", "")
+        if not expected or not hmac.compare_digest(got, expected):
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "unauthorized"}).encode())
+            return
+
+        # Busy gate — the `seed_is_busy` probe is advisory (it can race
+        # with a concurrent handler); the authoritative single-flight
+        # check is the seeder's own lock, surfaced as SeedBusyError.
+        if self.seed_is_busy is not None and self.seed_is_busy():
+            self._send_busy_response()
+            return
+
+        try:
+            result = self.seed_archive()
+            has_failures = bool(result.get("failed", 0))
+            status = 500 if has_failures else 200
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(result).encode())
+        except SeedBusyError:
+            # Lost the race against another in-flight seed — return 423.
+            self._send_busy_response()
+        except Exception as exc:  # noqa: BLE001
+            log.error("Seed request failed: %s", exc)
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(exc)}).encode())
+
+    def _send_busy_response(self) -> None:
+        self.send_response(423)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(
+            json.dumps({"error": "seed already in progress"}).encode()
+        )
 
     def _build_theta_block(self) -> dict[str, object] | None:
         """Render the Theta status block, or None if Theta is disabled."""
@@ -141,13 +214,19 @@ def start_health_server(
     theta_is_running: Callable[[], bool] | None = None,
     theta_last_ready_at: Callable[[], float] | None = None,
     theta_last_error: Callable[[], str | None] | None = None,
+    seed_archive: Callable[[], dict[str, Any]] | None = None,
+    seed_is_busy: Callable[[], bool] | None = None,
 ) -> HTTPServer:
-    """Start the health check HTTP server in a background thread.
+    """Start the HTTP server in a background thread.
 
-    The three `theta_*` callables are optional — pass them in to expose
-    Theta Terminal status in the /health JSON response. When omitted,
-    the response body omits the `theta` block entirely so downstream
-    monitoring can cleanly detect the "Theta disabled" state.
+    Optional callables:
+      - `theta_*` exposes Theta Terminal status in the /health response.
+        Omit to disable the `theta` block.
+      - `seed_archive` / `seed_is_busy` enable POST /admin/seed-archive.
+        Omit to disable the admin endpoint (returns 503 if hit).
+
+    Class-level state is reset between calls so tests that spin up
+    multiple servers in one process don't bleed state across runs.
     """
     HealthHandler.is_connected = staticmethod(is_connected)  # type: ignore[assignment]
     HealthHandler.last_bar_at = staticmethod(last_bar_at)  # type: ignore[assignment]
@@ -167,6 +246,13 @@ def start_health_server(
         HealthHandler.theta_is_running = None
         HealthHandler.theta_last_ready_at = None
         HealthHandler.theta_last_error = None
+
+    HealthHandler.seed_archive = (
+        staticmethod(seed_archive) if seed_archive is not None else None  # type: ignore[assignment]
+    )
+    HealthHandler.seed_is_busy = (
+        staticmethod(seed_is_busy) if seed_is_busy is not None else None  # type: ignore[assignment]
+    )
 
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)

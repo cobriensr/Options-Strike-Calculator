@@ -27,6 +27,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import archive_seeder
 import theta_fetcher
 import theta_launcher
 from config import settings
@@ -114,6 +115,27 @@ def main() -> None:
         quote_processor=quote_processor,
     )
 
+    # Build the archive seed callable when the required env is present.
+    # Absence of either var disables the POST /admin/seed-archive endpoint;
+    # the handler returns 503 rather than a confusing 500.
+    manifest_url = os.environ.get("ARCHIVE_MANIFEST_URL", "").strip()
+    blob_token = os.environ.get("BLOB_READ_WRITE_TOKEN", "").strip()
+    archive_root = os.environ.get("ARCHIVE_ROOT", "/data/archive").strip()
+    seed_callable = None
+    if manifest_url and blob_token:
+
+        def seed_callable() -> dict[str, object]:
+            return archive_seeder.seed_from_manifest(
+                manifest_url, archive_root, blob_token
+            ).as_dict()
+
+        log.info("Archive seed endpoint enabled (root=%s)", archive_root)
+    else:
+        log.info(
+            "Archive seed endpoint disabled "
+            "(ARCHIVE_MANIFEST_URL or BLOB_READ_WRITE_TOKEN missing)"
+        )
+
     # Start health check server. Theta reporters are always passed —
     # when Theta is disabled (no credentials) the callables just return
     # False / 0.0 / None and the /health response honestly reports that.
@@ -125,6 +147,8 @@ def main() -> None:
         theta_is_running=theta_launcher.is_running,
         theta_last_ready_at=theta_launcher.last_ready_at,
         theta_last_error=theta_launcher.last_error,
+        seed_archive=seed_callable,
+        seed_is_busy=archive_seeder.is_seeding,
     )
 
     # Register signal handlers
