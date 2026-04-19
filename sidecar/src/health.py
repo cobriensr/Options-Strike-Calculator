@@ -47,6 +47,9 @@ class HealthHandler(BaseHTTPRequestHandler):
         if self.path.startswith("/archive/es-range"):
             self._handle_archive_es_range()
             return
+        if self.path.startswith("/archive/analog-days"):
+            self._handle_archive_analog_days()
+            return
         if self.path != "/health":
             self.send_response(404)
             self.end_headers()
@@ -187,6 +190,49 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.wfile.write(
                 json.dumps({"error": "query failed"}).encode()
             )
+
+    def _handle_archive_analog_days(self) -> None:
+        """GET /archive/analog-days?date=YYYY-MM-DD&until_minute=60&k=20"""
+        from urllib.parse import parse_qs, urlparse
+        import re
+
+        qs = parse_qs(urlparse(self.path).query)
+        date = (qs.get("date") or [""])[0]
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            self._send_json(400, {"error": "date must be YYYY-MM-DD"})
+            return
+
+        # `until_minute` and `k` have defaults in the query layer — only
+        # pass through when supplied so validation errors come from the
+        # ONE place that knows the bounds.
+        kwargs: dict[str, int] = {}
+        for name in ("until_minute", "k"):
+            raw = (qs.get(name) or [""])[0]
+            if raw:
+                try:
+                    kwargs[name] = int(raw)
+                except ValueError:
+                    self._send_json(400, {"error": f"{name} must be an integer"})
+                    return
+
+        try:
+            import archive_query
+
+            result = archive_query.analog_days(date, **kwargs)
+            self._send_json(200, result)
+        except ValueError as exc:
+            # Bounds errors ("k must be...") and no-data errors both
+            # surface as ValueError; the message is user-facing either way.
+            self._send_json(400, {"error": str(exc)})
+        except Exception as exc:  # noqa: BLE001
+            log.error("analog-days query failed for %s: %s", date, exc)
+            self._send_json(500, {"error": "query failed"})
+
+    def _send_json(self, status: int, body: dict[str, object]) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(body).encode())
 
     def _send_busy_response(self) -> None:
         self.send_response(423)

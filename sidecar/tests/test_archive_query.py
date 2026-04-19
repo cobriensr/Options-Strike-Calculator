@@ -199,3 +199,130 @@ def test_es_day_summary_isolates_day_from_surrounding_data(
     assert result["open"] == 5300.0
     assert result["close"] == 5304.0
     assert result["volume"] == 1_000
+
+
+# ---------------------------------------------------------------------------
+# analog_days
+# ---------------------------------------------------------------------------
+
+
+def _two_bar_day(
+    date_tuple: tuple[int, int, int],
+    instrument_id: int,
+    open_price: float,
+    close_at_1h: float,
+    close_eod: float,
+) -> list[tuple]:
+    """Build a two-bar day: one at session open, one 60 min later.
+
+    Enough to exercise the window-based delta comparison without writing
+    60 bars per test day. A third bar at 15:00 UTC gives us an EOD close
+    distinct from the window close.
+    """
+    from datetime import datetime, timezone
+
+    d0 = datetime(*date_tuple, 14, 30, tzinfo=timezone.utc)
+    d1 = datetime(*date_tuple, 15, 30, tzinfo=timezone.utc)  # +60m
+    d2 = datetime(*date_tuple, 21, 0, tzinfo=timezone.utc)  # EOD
+    # open/high/low/close — keep simple by making high = max of the
+    # prices we reference and low = min.
+    hi = max(open_price, close_at_1h, close_eod)
+    lo = min(open_price, close_at_1h, close_eod)
+    return [
+        (d0, instrument_id, open_price, hi, lo, open_price, 1_000),
+        (d1, instrument_id, open_price, hi, lo, close_at_1h, 1_000),
+        (d2, instrument_id, close_at_1h, hi, lo, close_eod, 1_000),
+    ]
+
+
+def test_analog_days_returns_nearest_by_window_delta(tmp_path: Path) -> None:
+    """Target delta = +5. Closest analog should be the day with delta closest to +5."""
+    from datetime import datetime, timezone
+
+    # days: (date, delta in first 60min)
+    # target:  2024-06-05, open=5300 close_at_1h=5305  -> delta +5
+    # day A:   2024-06-04, open=4000 close_at_1h=4004  -> delta +4  (distance 1)
+    # day B:   2024-06-03, open=4000 close_at_1h=4010  -> delta +10 (distance 5)
+    # day C:   2024-06-02, open=4000 close_at_1h=3995  -> delta -5  (distance 10)
+    # day D:   2024-06-01, open=4000 close_at_1h=4005  -> delta +5  (distance 0, best)
+    bars: list[tuple] = []
+    bars += _two_bar_day((2024, 6, 1), 101, 4000.0, 4005.0, 4020.0)  # D
+    bars += _two_bar_day((2024, 6, 2), 101, 4000.0, 3995.0, 3990.0)  # C
+    bars += _two_bar_day((2024, 6, 3), 101, 4000.0, 4010.0, 4015.0)  # B
+    bars += _two_bar_day((2024, 6, 4), 101, 4000.0, 4004.0, 4025.0)  # A
+    bars += _two_bar_day((2024, 6, 5), 101, 5300.0, 5305.0, 5330.0)  # target
+    sym_open = datetime(2024, 6, 1, 14, 30, tzinfo=timezone.utc)
+    sym_close = datetime(2024, 6, 5, 21, 0, tzinfo=timezone.utc)
+    symbology = [(101, "ESU4", sym_open, sym_close)]
+    _build_archive(tmp_path, bars, symbology)
+
+    result = archive_query.analog_days(
+        "2024-06-05", until_minute=60, k=3, root=tmp_path
+    )
+
+    # Target delta is +5.
+    assert result["target"]["delta"] == pytest.approx(5.0)
+    assert result["window_minutes"] == 60
+
+    # 3 nearest by |delta - 5|: D(0), A(1), C(5) or B(5) — tie; DuckDB
+    # orders by distance ASC, then arbitrary. Test that D and A come
+    # first and that the 3rd is either B or C.
+    distances = [a["distance"] for a in result["analogs"]]
+    assert distances == sorted(distances)
+    assert result["analogs"][0]["date"] == "2024-06-01"  # D — delta +5, dist 0
+    assert result["analogs"][1]["date"] == "2024-06-04"  # A — delta +4, dist 1
+    assert result["analogs"][2]["date"] in {"2024-06-02", "2024-06-03"}  # dist 5 tie
+
+
+def test_analog_days_excludes_target_from_results(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+
+    bars: list[tuple] = []
+    bars += _two_bar_day((2024, 6, 4), 101, 4000.0, 4005.0, 4010.0)
+    bars += _two_bar_day((2024, 6, 5), 101, 5300.0, 5305.0, 5310.0)
+    sym = [
+        (
+            101,
+            "ESU4",
+            datetime(2024, 6, 4, 14, 30, tzinfo=timezone.utc),
+            datetime(2024, 6, 5, 21, 0, tzinfo=timezone.utc),
+        )
+    ]
+    _build_archive(tmp_path, bars, sym)
+
+    result = archive_query.analog_days(
+        "2024-06-05", until_minute=60, k=10, root=tmp_path
+    )
+    assert all(a["date"] != "2024-06-05" for a in result["analogs"])
+
+
+def test_analog_days_raises_on_no_data_for_target(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+
+    bars: list[tuple] = _two_bar_day((2024, 6, 4), 101, 4000.0, 4005.0, 4010.0)
+    sym = [
+        (
+            101,
+            "ESU4",
+            datetime(2024, 6, 4, 14, 30, tzinfo=timezone.utc),
+            datetime(2024, 6, 4, 21, 0, tzinfo=timezone.utc),
+        )
+    ]
+    _build_archive(tmp_path, bars, sym)
+
+    with pytest.raises(ValueError, match="2024-06-05"):
+        archive_query.analog_days("2024-06-05", root=tmp_path)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"k": 0},
+        {"k": 999},
+        {"until_minute": 0},
+        {"until_minute": 1000},
+    ],
+)
+def test_analog_days_validates_bounds(tmp_path: Path, kwargs: dict) -> None:
+    with pytest.raises(ValueError):
+        archive_query.analog_days("2024-06-05", root=tmp_path, **kwargs)

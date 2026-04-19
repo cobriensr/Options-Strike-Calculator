@@ -151,3 +151,248 @@ def es_day_summary(
         "volume": int(day_volume),
         "bar_count": int(bar_count),
     }
+
+
+# ---------------------------------------------------------------------------
+# analog_days
+# ---------------------------------------------------------------------------
+
+
+_ANALOG_MAX_K = 50
+_ANALOG_MIN_WINDOW = 10
+_ANALOG_MAX_WINDOW = 390  # one regular session
+
+
+def _front_month_symbol(
+    conn: duckdb.DuckDBPyConnection,
+    ohlcv: str,
+    symbology: str,
+    date_iso: str,
+) -> str | None:
+    """Top-ES-by-volume on a date, or None if the date has no ES bars."""
+    row = conn.execute(
+        """
+        SELECT sym.symbol
+        FROM read_parquet(?) AS bars
+        JOIN read_parquet(?) AS sym USING (instrument_id)
+        WHERE sym.symbol LIKE 'ES%'
+          AND strpos(sym.symbol, ' ') = 0
+          AND CAST(date_trunc('day', bars.ts_event) AS DATE) = ?::DATE
+        GROUP BY sym.symbol
+        ORDER BY SUM(bars.volume) DESC
+        LIMIT 1
+        """,
+        [ohlcv, symbology, date_iso],
+    ).fetchone()
+    return row[0] if row else None
+
+
+def analog_days(
+    date_iso: str,
+    *,
+    until_minute: int = 60,
+    k: int = 20,
+    root: Path | None = None,
+) -> dict[str, Any]:
+    """Find historical trading days whose early-session ES path best matches `date_iso`.
+
+    Similarity is measured by absolute difference in the delta (close at
+    `until_minute` minutes into the session minus the day's open) between
+    each historical day and `date_iso`. `until_minute` bounded [10, 390].
+
+    Returns {target, analogs:[{...}]} where each analog also carries the
+    eventual day close and high/low so the caller can answer "what usually
+    happens after a morning like this?".
+
+    Raises ValueError if `date_iso` has no ES bars OR if `k`/`until_minute`
+    are out of range.
+    """
+    if k < 1 or k > _ANALOG_MAX_K:
+        raise ValueError(f"k must be in 1..{_ANALOG_MAX_K}, got {k}")
+    if until_minute < _ANALOG_MIN_WINDOW or until_minute > _ANALOG_MAX_WINDOW:
+        raise ValueError(
+            f"until_minute must be in {_ANALOG_MIN_WINDOW}..{_ANALOG_MAX_WINDOW}"
+        )
+
+    conn = _connection()
+    ohlcv = _ohlcv_glob(root)
+    symbology = _symbology_path(root)
+
+    # Single SQL computes target + all candidates + ordering in one pass.
+    # `per_day` derives open and close-at-window for every ES front-month
+    # contract-day in the archive; the outer query joins the target row
+    # to compute |delta - target_delta| and sorts.
+    #
+    # "Session open" = the minute ts of the first bar of each contract-day
+    # (not 08:30 CT) so Globex overnight activity is captured cleanly and
+    # the function stays TZ-agnostic.
+    rows = conn.execute(
+        """
+        WITH es_bars AS (
+            SELECT bars.ts_event,
+                   bars.open,
+                   bars.high,
+                   bars.low,
+                   bars.close,
+                   bars.volume,
+                   sym.symbol,
+                   CAST(date_trunc('day', bars.ts_event) AS DATE) AS day
+            FROM read_parquet(?) AS bars
+            JOIN read_parquet(?) AS sym USING (instrument_id)
+            WHERE sym.symbol LIKE 'ES%'
+              AND strpos(sym.symbol, ' ') = 0
+        ),
+        day_front AS (
+            SELECT day,
+                   symbol,
+                   SUM(volume) AS day_volume,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY day ORDER BY SUM(volume) DESC
+                   ) AS rank
+            FROM es_bars
+            GROUP BY day, symbol
+        ),
+        front_only AS (
+            SELECT b.*
+            FROM es_bars b
+            JOIN day_front f
+              ON b.day = f.day AND b.symbol = f.symbol AND f.rank = 1
+        ),
+        per_day AS (
+            SELECT day,
+                   symbol,
+                   FIRST(ts_event ORDER BY ts_event) AS session_open_ts,
+                   FIRST(open ORDER BY ts_event) AS day_open,
+                   MAX(high) AS day_high,
+                   MIN(low) AS day_low,
+                   LAST(close ORDER BY ts_event) AS day_close,
+                   SUM(volume) AS day_volume
+            FROM front_only
+            GROUP BY day, symbol
+        ),
+        window_closes AS (
+            SELECT f.day,
+                   LAST(f.close ORDER BY f.ts_event) AS close_at_window
+            FROM front_only f
+            JOIN per_day p USING (day, symbol)
+            WHERE f.ts_event
+                  <= p.session_open_ts + CAST(? AS INTEGER) * INTERVAL 1 MINUTE
+            GROUP BY f.day
+        ),
+        path AS (
+            SELECT p.day,
+                   p.symbol,
+                   p.day_open,
+                   p.day_high,
+                   p.day_low,
+                   p.day_close,
+                   p.day_volume,
+                   w.close_at_window,
+                   w.close_at_window - p.day_open AS delta
+            FROM per_day p
+            JOIN window_closes w USING (day)
+        ),
+        target AS (
+            SELECT delta AS target_delta
+            FROM path
+            WHERE day = ?::DATE
+        )
+        SELECT p.day, p.symbol, p.day_open, p.day_high, p.day_low,
+               p.day_close, p.day_volume, p.close_at_window, p.delta,
+               abs(p.delta - t.target_delta) AS distance
+        FROM path p, target t
+        WHERE p.day <> ?::DATE
+        ORDER BY distance
+        LIMIT ?
+        """,
+        [ohlcv, symbology, until_minute, date_iso, date_iso, k],
+    ).fetchall()
+
+    # target row — separate query to keep the main one focused on k-nearest
+    # (LIMIT k would otherwise bump the target out of the top rows when it
+    # fully matches itself, giving a confusing API shape).
+    target_row = conn.execute(
+        """
+        WITH es_bars AS (
+            SELECT bars.ts_event, bars.open, bars.high, bars.low,
+                   bars.close, bars.volume, sym.symbol,
+                   CAST(date_trunc('day', bars.ts_event) AS DATE) AS day
+            FROM read_parquet(?) AS bars
+            JOIN read_parquet(?) AS sym USING (instrument_id)
+            WHERE sym.symbol LIKE 'ES%'
+              AND strpos(sym.symbol, ' ') = 0
+              AND CAST(date_trunc('day', bars.ts_event) AS DATE) = ?::DATE
+        ),
+        top AS (
+            SELECT symbol
+            FROM es_bars
+            GROUP BY symbol
+            ORDER BY SUM(volume) DESC
+            LIMIT 1
+        ),
+        f AS (
+            SELECT b.*
+            FROM es_bars b
+            JOIN top USING (symbol)
+        ),
+        agg AS (
+            SELECT FIRST(ts_event ORDER BY ts_event) AS session_open_ts,
+                   FIRST(open ORDER BY ts_event) AS day_open,
+                   MAX(high) AS day_high,
+                   MIN(low) AS day_low,
+                   LAST(close ORDER BY ts_event) AS day_close,
+                   SUM(volume) AS day_volume,
+                   (SELECT symbol FROM top) AS symbol
+            FROM f
+        ),
+        win AS (
+            SELECT LAST(close ORDER BY ts_event) AS close_at_window
+            FROM f
+            WHERE ts_event
+                  <= (SELECT session_open_ts FROM agg)
+                     + CAST(? AS INTEGER) * INTERVAL 1 MINUTE
+        )
+        SELECT a.symbol, a.day_open, a.day_high, a.day_low, a.day_close,
+               a.day_volume, w.close_at_window,
+               w.close_at_window - a.day_open AS delta
+        FROM agg a, win w
+        """,
+        [ohlcv, symbology, date_iso, until_minute],
+    ).fetchone()
+
+    if target_row is None or target_row[0] is None:
+        raise ValueError(f"No ES bars found for {date_iso}")
+
+    tgt_symbol, tgt_open, tgt_high, tgt_low, tgt_close, tgt_vol, tgt_win, tgt_delta = target_row
+
+    analogs = [
+        {
+            "date": r[0].isoformat(),
+            "symbol": r[1],
+            "open": float(r[2]),
+            "high": float(r[3]),
+            "low": float(r[4]),
+            "close": float(r[5]),
+            "volume": int(r[6]),
+            "close_at_window": float(r[7]),
+            "delta": float(r[8]),
+            "distance": float(r[9]),
+        }
+        for r in rows
+    ]
+
+    return {
+        "target": {
+            "date": date_iso,
+            "symbol": tgt_symbol,
+            "open": float(tgt_open),
+            "high": float(tgt_high),
+            "low": float(tgt_low),
+            "close": float(tgt_close),
+            "volume": int(tgt_vol),
+            "close_at_window": float(tgt_win),
+            "delta": float(tgt_delta),
+        },
+        "window_minutes": until_minute,
+        "analogs": analogs,
+    }
