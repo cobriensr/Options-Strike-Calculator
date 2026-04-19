@@ -841,16 +841,22 @@ export async function fetchSimilarDaysContext(
       await import('./archive-sidecar.js');
     const { formatSimilarDaysForClaude } =
       await import('./analyze-context-formatters.js');
+    const { fetchCurrentSnapshot } = await import('./current-snapshot.js');
 
-    // Today's summary is needed in both paths — the formatter renders
-    // it as the target day line. Features backend uses it only for
-    // presentation; its vector comes from fetchDayFeatures below.
-    const summary = await fetchDaySummary(analysisDate);
+    // Fast path: refresh-current-snapshot cron materializes today's
+    // summary + features into Neon every 5 min during market hours.
+    // Hit that first so the analyze endpoint never pays the sidecar's
+    // DuckDB-cold-scan penalty on the hot path.
+    const snapshot = await fetchCurrentSnapshot(analysisDate);
+    let summary: string | null = snapshot?.summary ?? null;
+    let features: number[] | null = snapshot?.features ?? null;
+
+    if (!summary) summary = await fetchDaySummary(analysisDate);
     if (!summary) return null;
 
     if (backend === 'features') {
       const { findSimilarDaysByFeatures } = await import('./day-features.js');
-      const features = await fetchDayFeatures(analysisDate);
+      if (!features) features = await fetchDayFeatures(analysisDate);
       if (!features) return null;
       const neighbors = await findSimilarDaysByFeatures(
         features,
@@ -858,16 +864,31 @@ export async function fetchSimilarDaysContext(
         analysisDate,
       );
       if (neighbors.length === 0) return null;
-      // Features backend doesn't store per-row summaries on the table;
-      // fetch each neighbor's summary in parallel. Capped at k≤50.
-      const analogs = await Promise.all(
-        neighbors.map(async (n) => ({
-          date: n.date,
-          symbol: n.symbol,
-          distance: n.distance,
-          summary: (await fetchDaySummary(n.date)) ?? `${n.date} ${n.symbol}`,
-        })),
+      // Neighbor summaries come from day_embeddings (stored per
+      // historical row) — no sidecar round-trip per neighbor.
+      const { getDb } = await import('./db.js');
+      const sql = getDb();
+      const dates = neighbors.map((n) => n.date);
+      const rows = dates.length
+        ? await sql`
+            SELECT date, summary FROM day_embeddings
+            WHERE date = ANY(${dates})
+          `
+        : [];
+      const byDate = new Map(
+        rows.map((r) => [
+          r.date instanceof Date
+            ? r.date.toISOString().slice(0, 10)
+            : String(r.date).slice(0, 10),
+          r.summary as string,
+        ]),
       );
+      const analogs = neighbors.map((n) => ({
+        date: n.date,
+        symbol: n.symbol,
+        distance: n.distance,
+        summary: byDate.get(n.date) ?? `${n.date} ${n.symbol}`,
+      }));
       return formatSimilarDaysForClaude(summary, analogs);
     }
 

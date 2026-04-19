@@ -240,7 +240,9 @@ async function run() {
   md.push(
     `| Directional hit rate | ${textHits}/${rows.length} (${textRate.toFixed(1)}%) | ${featuresHits}/${rows.length} (${featuresRate.toFixed(1)}%) |`,
   );
-  md.push(`| Both backends agreed on a hit | ${bothHit}/${rows.length} | --- |`);
+  md.push(
+    `| Both backends agreed on a hit | ${bothHit}/${rows.length} | --- |`,
+  );
   md.push(`| Both missed | ${bothMiss}/${rows.length} | --- |`);
   md.push(
     `| Mean top-${K} overlap | ${overlapMean.toFixed(1)}/${K} (${((100 * overlapMean) / K).toFixed(0)}%) | --- |\n`,

@@ -94,6 +94,10 @@
       "schedule": "0 7 * * 2-6"
     },
     {
+      "path": "/api/cron/refresh-current-snapshot",
+      "schedule": "*/5 13-20 * * 1-5"
+    },
+    {
       "path": "/api/health",
       "schedule": "25 13 * * 1-5"
     },

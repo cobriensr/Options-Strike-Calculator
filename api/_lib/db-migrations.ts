@@ -1991,4 +1991,29 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 75,
+    description:
+      'Create current_day_snapshot for materialized live-day archive context (path 2)',
+    statements: (sql) => [
+      // Materialized live-day cache. A Vercel cron refreshes this every
+      // 5 min during market hours so the analyze endpoint never has to
+      // call the DuckDB-backed sidecar on the hot path — it reads the
+      // pre-computed summary + feature vector straight from Neon.
+      // Primary key on date lets us upsert without a second lookup.
+      sql`
+        CREATE TABLE IF NOT EXISTS current_day_snapshot (
+          date            DATE PRIMARY KEY,
+          symbol          TEXT NOT NULL,
+          summary         TEXT NOT NULL,
+          features        vector(60) NOT NULL,
+          computed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS current_day_snapshot_computed_idx
+          ON current_day_snapshot (computed_at DESC)
+      `,
+    ],
+  },
 ];
