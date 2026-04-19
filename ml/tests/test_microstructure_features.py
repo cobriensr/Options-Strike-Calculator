@@ -13,6 +13,7 @@ matching symbology file, then points the module under test at those paths.
 from __future__ import annotations
 
 import json
+import time as _time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -818,3 +819,194 @@ def test_backfill_skips_dates_with_no_trades(tbbo_root: Path) -> None:
     assert len(df) == 1
     assert df.iloc[0]["symbol"] == "ES"
     assert str(df.iloc[0]["date"]) == "2026-03-10"
+
+
+# ---------------------------------------------------------------------------
+# 15. UTC-boundary regression — the TZ-invariance fix's trigger test
+# ---------------------------------------------------------------------------
+
+
+def test_utc_boundary_trades_bucket_into_correct_date(
+    tbbo_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: ts_recv at 00:01 UTC must bucket into the UTC date, not
+    the host-TZ date.
+
+    Without ``SET TimeZone = 'UTC'`` on the connection, DuckDB's
+    ``date_trunc('day', ts_recv)`` honors the session timezone. On a Chicago
+    (CT, UTC-5/-6) machine, a trade at 2025-10-16 00:01 UTC would bucket
+    into 2025-10-15 — silently rolling one calendar day of activity into the
+    wrong feature row. This test forces a non-UTC host TZ via ``TZ`` env var
+    + ``time.tzset()`` so that the assertion fails loudly if the fix is ever
+    reverted.
+    """
+    # Force a non-UTC host TZ so this test actually exercises the bug path.
+    # time.tzset() re-reads $TZ; available on Unix (pytest skip elsewhere).
+    if not hasattr(_time, "tzset"):
+        pytest.skip("time.tzset() unavailable on this platform")
+    monkeypatch.setenv("TZ", "America/Chicago")
+    _time.tzset()
+
+    # Two trades:
+    #   1) 2025-10-16 00:01 UTC — sits inside UTC date 10-16, CT date 10-15.
+    #   2) 2025-10-16 12:00 UTC — deep inside 10-16 under any reasonable TZ.
+    rows = [
+        _make_trade_row(
+            ts_recv=datetime(2025, 10, 16, 0, 1, tzinfo=UTC),
+            instrument_id=101,
+            symbol="ESZ5",
+            side="B",
+            size=7,
+        ),
+        _make_trade_row(
+            ts_recv=datetime(2025, 10, 16, 12, 0, tzinfo=UTC),
+            instrument_id=101,
+            symbol="ESZ5",
+            side="B",
+            size=3,
+        ),
+    ]
+    _populate(tbbo_root, rows, [(101, "ESZ5")])
+
+    # Fresh connection via the module's factory — MUST have TimeZone=UTC set.
+    conn = ms._new_connection()
+    try:
+        # Querying UTC date 2025-10-16 should return BOTH trades.
+        row_for_1016 = ms.compute_daily_features(
+            _tbbo_glob_of(tbbo_root),
+            _symbology_of(tbbo_root),
+            "2025-10-16",
+            "ES",
+            conn=conn,
+        )
+        # Querying UTC date 2025-10-15 should return NONE (no trades landed
+        # on that UTC day). Pre-fix, the 00:01 UTC trade would leak here.
+        row_for_1015 = ms.compute_daily_features(
+            _tbbo_glob_of(tbbo_root),
+            _symbology_of(tbbo_root),
+            "2025-10-15",
+            "ES",
+            conn=conn,
+        )
+    finally:
+        conn.close()
+
+    assert row_for_1015 is None, (
+        "2025-10-15 should have zero trades — the 00:01 UTC trade on "
+        "2025-10-16 must NOT leak back to the prior CT calendar day. "
+        "This assertion fires when the connection's TimeZone isn't UTC."
+    )
+    assert row_for_1016 is not None
+    assert row_for_1016["trade_count"] == 2
+    assert row_for_1016["front_month_contract"] == "ESZ5"
+
+
+def test_pick_front_month_tie_break_is_stable(tbbo_root: Path) -> None:
+    """Two contracts with identical total volume -> alphabetical tie-break.
+
+    Without the ``sym.symbol ASC`` secondary sort, DuckDB's parallel
+    aggregate can return either contract across runs. Running the query
+    repeatedly should always return the same winner.
+    """
+    base = datetime(2026, 3, 10, 14, 0, tzinfo=UTC)
+    rows: list[dict[str, object]] = []
+    # Identical 100-lot trade on both contracts → tied total volume.
+    rows.append(
+        _make_trade_row(
+            ts_recv=base,
+            instrument_id=101,
+            symbol="ESH6",
+            side="B",
+            size=100,
+        )
+    )
+    rows.append(
+        _make_trade_row(
+            ts_recv=base + timedelta(seconds=1),
+            instrument_id=102,
+            symbol="ESM6",
+            side="B",
+            size=100,
+        )
+    )
+    _populate(tbbo_root, rows, [(101, "ESH6"), (102, "ESM6")])
+
+    glob = _tbbo_glob_of(tbbo_root)
+    sym_path = _symbology_of(tbbo_root)
+
+    # Five repeat calls — all must agree. Pre-fix, DuckDB's unspecified
+    # tie-break order could yield either.
+    picks = []
+    for _ in range(5):
+        conn = ms._new_connection()
+        try:
+            picks.append(
+                ms._pick_front_month(conn, glob, sym_path, "2026-03-10", "ES")
+            )
+        finally:
+            conn.close()
+    # Alphabetical tie-break: "ESH6" < "ESM6", so ESH6 always wins.
+    assert picks == ["ESH6"] * 5, f"Non-deterministic tie-break: {picks}"
+
+
+def test_backfill_loads_degraded_days_once(
+    tbbo_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: backfill must call _load_degraded_days exactly once.
+
+    Pre-fix, the per-(date, symbol) call to compute_daily_features re-read
+    condition.json every time — 1,000+ disk reads on a 500-row backfill.
+    """
+    # Seed one trade per date × symbol for 2 dates × 2 symbols.
+    rows: list[dict[str, object]] = []
+    for d_idx in range(2):
+        for sym_idx, (iid, sym) in enumerate([(101, "ESH6"), (201, "NQH6")]):
+            rows.append(
+                _make_trade_row(
+                    ts_recv=datetime(2026, 3, 10 + d_idx, 14, 0, tzinfo=UTC)
+                    + timedelta(seconds=sym_idx),
+                    instrument_id=iid,
+                    symbol=sym,
+                    side="B",
+                    size=1,
+                )
+            )
+    _populate(tbbo_root, rows, [(101, "ESH6"), (201, "NQH6")])
+
+    # Write condition.json so there's something to re-parse.
+    condition_path = tbbo_root / "tbbo_condition.json"
+    condition_path.write_text(
+        json.dumps([{"date": "2026-03-10", "condition": "degraded"}])
+    )
+
+    call_count = {"n": 0}
+    real_loader = ms._load_degraded_days
+
+    def counting_loader(path: Path | None) -> set[str]:
+        call_count["n"] += 1
+        return real_loader(path)
+
+    monkeypatch.setattr(ms, "_load_degraded_days", counting_loader)
+
+    out_path = tbbo_root.parent / "out" / "features.parquet"
+    df = ms.backfill_daily_features(
+        tbbo_root,
+        out_path=out_path,
+        start_date="2026-03-10",
+        end_date="2026-03-11",
+        symbols=("ES", "NQ"),
+    )
+
+    # Exactly one load despite 2 dates × 2 symbols = 4 compute calls.
+    assert call_count["n"] == 1, (
+        f"expected _load_degraded_days to be called once, got {call_count['n']}"
+    )
+    # Degraded flag should still propagate correctly to the 2026-03-10 rows.
+    # DataFrame column access returns a numpy.bool_ wrapper, not a Python bool,
+    # so compare by value rather than identity.
+    row_2026_03_10_es = df[
+        (df["symbol"] == "ES") & (df["date"].astype(str) == "2026-03-10")
+    ].iloc[0]
+    assert bool(row_2026_03_10_es["is_degraded"]) is True

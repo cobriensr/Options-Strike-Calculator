@@ -19,6 +19,12 @@ Design:
   are computed on the per-minute Series in pandas.
 - **Full UTC day** session window — captures Globex overnight activity that
   0DTE pre-market dynamics depend on. Per spec "Open questions" default.
+- **All queries force session TimeZone=UTC** to guarantee deterministic date
+  bucketing across environments. DuckDB's ``date_trunc('day', ts_recv)`` on a
+  ``TIMESTAMP WITH TIME ZONE`` column honors the session TZ, so running on
+  CT vs UTC vs Railway would otherwise yield different date partitions. Every
+  ``duckdb.connect()`` in this module goes through ``_new_connection()`` which
+  sets ``TimeZone = 'UTC'`` before any query runs.
 - **Deterministic output columns.** Feature functions return ``dict``; the
   orchestrator assembles into a DataFrame with a fixed column order
   (``OUTPUT_COLUMNS``) so downstream ML code sees stable shape.
@@ -172,6 +178,31 @@ def _condition_path(tbbo_root: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Connection factory
+# ---------------------------------------------------------------------------
+
+
+def _new_connection() -> duckdb.DuckDBPyConnection:
+    """Open a DuckDB connection with session TimeZone forced to UTC.
+
+    Critical correctness hook. DuckDB's ``date_trunc('day', ts_recv)`` on a
+    ``TIMESTAMP WITH TIME ZONE`` column uses the SESSION TimeZone, not UTC —
+    so without this the same archive produces different feature rows on a
+    Chicago MacBook vs a UTC cloud VM (trades at 00:30 UTC bucket into the
+    previous day on CT). Every ``duckdb.connect()`` in this module MUST go
+    through here so the guarantee holds at every query site.
+
+    Callers that accept a pre-existing ``conn`` kwarg (e.g.
+    ``compute_daily_features``) trust the caller to have used this helper
+    when they built it. ``backfill_daily_features`` and the default-branch
+    of ``compute_daily_features`` both use it.
+    """
+    conn = duckdb.connect()
+    conn.execute("SET TimeZone = 'UTC'")
+    return conn
+
+
+# ---------------------------------------------------------------------------
 # Degraded-days loader
 # ---------------------------------------------------------------------------
 
@@ -243,6 +274,10 @@ def _pick_front_month(
 
     like_pattern = f"{symbol_upper}%"
 
+    # Secondary sort by symbol ASC: on tied volume (rare but real — early in
+    # a roll cycle two contracts can briefly match), DuckDB's parallel
+    # aggregate can otherwise pick either winner non-deterministically across
+    # runs. Alphabetical tie-break is arbitrary but stable.
     row = conn.execute(
         """
         SELECT sym.symbol
@@ -253,7 +288,7 @@ def _pick_front_month(
           AND strpos(sym.symbol, '-') = 0
           AND CAST(date_trunc('day', bars.ts_recv) AS DATE) = ?::DATE
         GROUP BY sym.symbol
-        ORDER BY SUM(bars.size) DESC
+        ORDER BY SUM(bars.size) DESC, sym.symbol ASC
         LIMIT 1
         """,
         [tbbo_glob, symbology_path, like_pattern, date_iso],
@@ -437,6 +472,14 @@ def _compute_spread_widening_stats(
       * ``count_3sigma`` — count of minutes with z > 3.0
       * ``max_zscore`` — peak z observed
       * ``max_run_minutes`` — longest consecutive run of z > 2.0
+
+    TODO(Phase 4d): On real ES data the front-month spread is $0.25 (one
+    tick) on every minute of session, so ``median(ask - bid)`` is constant
+    and ``baseline_std = 0`` → zero-std guard → z = 0 universally. The
+    feature returns no signal. Phase 4d EDA should try a max-based or
+    p95-based per-minute aggregate so a single widened quote within a
+    minute can register. Not changed here to keep the correctness-pass
+    scope tight.
     """
     if per_minute is None:
         per_minute = _per_minute_stats(
@@ -665,6 +708,7 @@ def compute_daily_features(
     symbol: str,
     *,
     condition_path: Path | None = None,
+    degraded_days: set[str] | None = None,
     conn: duckdb.DuckDBPyConnection | None = None,
 ) -> dict[str, Any] | None:
     """Compute one feature row for ``(date_iso, symbol)``.
@@ -672,10 +716,16 @@ def compute_daily_features(
     Returns a dict with all keys in ``OUTPUT_COLUMNS``, or ``None`` if no
     trades landed for that symbol on that date (i.e. market holiday or a
     symbol that didn't trade — the spec says skip rather than emit zeros).
+
+    Degraded-days lookup: if ``degraded_days`` is provided (a pre-parsed
+    ``set[str]`` of ISO dates), use it directly — avoids re-reading the
+    JSON file on every call. Otherwise fall back to parsing
+    ``condition_path`` (back-compat for single-day callers). If neither is
+    provided, ``is_degraded`` is always ``False``.
     """
     owns_conn = conn is None
     if conn is None:
-        conn = duckdb.connect()
+        conn = _new_connection()
 
     try:
         contract = _pick_front_month(
@@ -692,11 +742,14 @@ def compute_daily_features(
 
         trade_count = int(per_minute["n_trades"].sum())
 
+        if degraded_days is None:
+            degraded_days = _load_degraded_days(condition_path)
+
         row: dict[str, Any] = {
             "date": date.fromisoformat(date_iso),
             "symbol": symbol.upper(),
             "front_month_contract": contract,
-            "is_degraded": date_iso in _load_degraded_days(condition_path),
+            "is_degraded": date_iso in degraded_days,
             "trade_count": trade_count,
         }
         row.update(
@@ -793,7 +846,12 @@ def backfill_daily_features(
     symbology_path = _symbology_path(tbbo_root)
     condition_path = _condition_path(tbbo_root)
 
-    conn = duckdb.connect()
+    # Parse condition.json ONCE. Previously this re-read the file on every
+    # (date, symbol) — 1,000+ disk reads in a 500-row backfill.
+    degraded_days = _load_degraded_days(condition_path)
+    log.info("Loaded %d degraded dates from %s", len(degraded_days), condition_path)
+
+    conn = _new_connection()
     try:
         # Resolve date range. When bounds weren't given, this is the
         # "full archive" path. When given explicitly, honor them verbatim
@@ -835,7 +893,7 @@ def backfill_daily_features(
                     symbology_path,
                     date_iso,
                     sym,
-                    condition_path=condition_path,
+                    degraded_days=degraded_days,
                     conn=conn,
                 )
                 dt_ms = (time.perf_counter() - t0) * 1000.0
