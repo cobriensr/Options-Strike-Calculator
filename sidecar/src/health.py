@@ -14,7 +14,7 @@ import json
 import os
 import threading
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from typing import Any, Callable
 
 from archive_seeder import SeedBusyError
@@ -418,8 +418,12 @@ def start_health_server(
         staticmethod(seed_is_busy) if seed_is_busy is not None else None  # type: ignore[assignment]
     )
 
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    # ThreadingHTTPServer spawns a new thread per request so /archive/*
+    # queries don't block the /health probe (and vice versa). Was
+    # HTTPServer (single-threaded) previously, which bottlenecked the
+    # backfill at 1 req/sec.
+    server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    log.info("Health server listening on port %d", port)
+    log.info("Health server listening on port %d (threaded)", port)
     return server

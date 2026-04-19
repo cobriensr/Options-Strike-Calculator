@@ -25,6 +25,7 @@ Design notes:
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -46,29 +47,42 @@ def _symbology_path(root: Path | None = None) -> str:
     return str(base / "symbology.parquet")
 
 
-# Lazy module-level connection — built on first use so tests that point
-# at a different root can construct their own.
-_conn: duckdb.DuckDBPyConnection | None = None
+# Thread-local DuckDB connections.
+#
+# Why thread-local and not a module-level singleton: DuckDB's "thread-
+# safe" only guarantees that concurrent access won't crash — it still
+# serializes queries on a single connection. Under ThreadingHTTPServer
+# (see health.py) every request lands on a fresh thread, so a shared
+# connection would serialize all /archive/* queries back into a single
+# lane. Giving each handler thread its own connection lets DuckDB run
+# queries truly in parallel. Each connection is ~1 MB of Python state
+# plus DuckDB's internal buffer; threads are short-lived, so the
+# footprint stays bounded by the HTTP server's own threading policy.
+_tls = threading.local()
 
 
 def _connection() -> duckdb.DuckDBPyConnection:
-    global _conn
-    if _conn is None:
-        _conn = duckdb.connect()
-        log.info("DuckDB connection initialized for archive queries")
-    return _conn
+    conn: duckdb.DuckDBPyConnection | None = getattr(_tls, "conn", None)
+    if conn is None:
+        conn = duckdb.connect()
+        _tls.conn = conn
+        log.debug(
+            "DuckDB connection initialized for thread %s",
+            threading.current_thread().name,
+        )
+    return conn
 
 
 def reset_connection_for_tests() -> None:
-    """Drop the shared connection so a new one is built on next use.
+    """Drop the current thread's connection. Test-only hook.
 
-    Tests that swap `_ROOT` or test_duckdb bindings call this so state
-    doesn't leak across tests.
+    Tests are single-threaded (pytest default), so clearing the calling
+    thread's connection is enough to reset state between runs.
     """
-    global _conn
-    if _conn is not None:
-        _conn.close()
-        _conn = None
+    conn: duckdb.DuckDBPyConnection | None = getattr(_tls, "conn", None)
+    if conn is not None:
+        conn.close()
+        del _tls.conn
 
 
 # ---------------------------------------------------------------------------
