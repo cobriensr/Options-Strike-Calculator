@@ -66,58 +66,70 @@ tests. Possibly a new `VolRegime` tile for the UI.
 
 **Rough effort:** 6-8 hours.
 
-### Phase 3 — Sidecar schema expansion (L1 live)
+### Phase 3 — Sidecar schema expansion (L1 live) ✅ SHIPPED 2026-04-18
 
-**Scope:** add live subscriptions in the sidecar for:
+**What shipped:** `tbbo` live stream for ES on GLBX.MDP3 — single
+schema gives trade events + pre-trade BBO in one stream (superset
+of what mbp-1/bbo-1s/trades would have given separately). See
+`docs/superpowers/specs/phase2a-sidecar-l1-ingest-2026-04-18.md`
+and `phase2b-microstructure-signals-2026-04-18.md`.
 
-- `mbp-1` on ES (+ NQ optionally) — top-of-book bid/ask + sizes
-- `tbbo` on ES — trade-with-book-before (aggressor classification)
-- `bbo-1s` on ES — 1-second quote snapshots (spread widening detection)
-- `trades` on ES (if not already) — tick data for microstructure
+**Deviation from original plan:** shipped TBBO-only rather than the
+mbp-1 + tbbo + bbo-1s + trades combo originally listed. Reason: TBBO
+emits an MBP1Msg on every trade with `levels[0]` carrying the
+pre-trade BBO, so subscribing to multiple schemas would have
+delivered duplicate trade events. Single subscription, same signal
+surface, cleaner dispatch. Critical bug caught during code review:
+rtype cannot distinguish MBP-1 and TBBO (both emit rtype=1), which
+would have silently broken the original multi-schema design.
 
-**New DB tables:**
-- `futures_top_of_book` — MBP-1 events (symbol, ts, bid, bid_size,
-  ask, ask_size)
-- `futures_trade_ticks` — TBBO events (symbol, ts, price, size,
-  aggressor_side)
+**Live tables:** `futures_top_of_book` + `futures_trade_ticks` both
+populating on Railway sidecar. Compute layer (`microstructure-signals.ts`)
+reads them on every analyze call and injects OFI/spread-widening/TOB-pressure
+into Claude's context.
 
-**Compute layer:** crons or a new cron that runs every 5 min to
-compute:
-- Order flow imbalance (OFI) — rolling 1-min + 5-min
-- Spread widening z-score — rolling vs 30-min baseline
-- Top-of-book pressure ratio — `bid_size / ask_size`
+### Phase 4 — Historical L1 backfill + ML features 🟡 IN PROGRESS
 
-**Why:** unlocks the Tier 1 leading indicators (spread widening,
-OFI) as live signals — genuinely predictive, not just confirming.
+**Sub-phase status:**
 
-**Files:** `sidecar/src/main.py`, `sidecar/src/db.py`,
-`sidecar/src/trade_processor.py`, new cron `api/cron/compute-microstructure.ts`,
-new migration, tests.
+- **4a — Converter (TBBO DBN → Parquet):** ✅ SHIPPED 2026-04-18.
+  See `phase3a-tbbo-convert-2026-04-18.md`. Commits `9d51ab6` +
+  `1b75643`. 210.6M rows / 16 instruments / 3.9GB Parquet at
+  `ml/data/archive/tbbo/year={2025,2026}/part.parquet`. Sidecar:
+  `ml/src/tbbo_convert.py`.
+- **4b — Blob upload + Railway seed + sidecar DuckDB queries:**
+  ⏸️ PAUSED. Would extend `upload-archive-to-blob.mjs`,
+  `archive_seeder.py`, `archive_query.py` — all files a parallel
+  session is actively editing for day-embeddings work. Coming back
+  once that settles OR once Phase 4c proves signal value and we
+  want Claude runtime access.
+- **4c — ML feature engineering on local Parquet:** NOT STARTED.
+  `ml/src/features/microstructure.py` — rolling OFI, spread widening
+  events, TOB pressure persistence, tick velocity. Runs against local
+  `ml/data/archive/tbbo/` via DuckDB; doesn't need Railway.
+- **4d — EDA / signal validation:** NOT STARTED. matplotlib plots +
+  correlation analysis proving features have signal before training.
 
-**Rough effort:** 12-16 hours (largest phase).
+**Why 4b is paused:** validate signal in 4c/4d before spending effort
+on Railway distribution. If the microstructure features don't improve
+regime prediction, we don't need to ship them to production; the
+local Parquet is enough for research.
 
-### Phase 4 — Historical L1 backfill + ML features
+**Original scope pivots:**
 
-**Scope:** backfill 1 year of ES `mbp-1` + `tbbo` via Databento
-Historical client into the new tables from Phase 3. Engineer
-microstructure features in `ml/` for inclusion in regime-classifier
-training.
+- Requested MBP-1 originally but the Databento bulk tool quoted
+  **2.3 TB** for 1 year ES+NQ. Pivoted to TBBO which is ~5 GB DBN,
+  ~4 GB Parquet. TBBO is a strict subset of MBP-1 (trade events
+  only, no between-trade quote updates). Adequate for the features
+  Phase 2b computes today; if richer features require between-trade
+  quotes later, revisit MBP-1 with a shorter window.
+- ES futures options dropped from the request. Existing 17-year
+  OHLCV-1m archive covers options adequately.
 
-**Features to engineer:**
-- 1-min OFI means + tails
-- Spread widening events per day
-- Quote-stuffing detection
-- Depth-weighted midpoint drift
+**Next to do:** 4c (feature engineering), then 4d (EDA validation),
+then consider 4b (Railway distribution).
 
-**Why:** once Phase 3 is running live, backfilling gives the ML
-pipeline a year of microstructure history to correlate with trade
-outcomes. Phase 3's signals become more powerful with trained
-priors.
-
-**Files:** `scripts/backfill-mbp1-tbbo.ts` (or `.py`), `ml/src/features/microstructure.py`,
-`ml/.venv/bin/python` pipelines, experiments.
-
-**Rough effort:** 8-12 hours.
+**Rough remaining effort:** 4c ~4h, 4d ~2-3h, 4b ~6-8h (when resumed).
 
 ### Phase 5 — UW data deep leverage
 
