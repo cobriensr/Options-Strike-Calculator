@@ -954,7 +954,46 @@ When to weight this signal:
   flow agrees with the divergence direction, conviction is HIGH.
 - Use as a tiebreaker when structural signals are ambiguous.
 - Ignore when the section is absent.
-</vix_divergence_rules>`;
+</vix_divergence_rules>
+<microstructure_signals_rules>
+The Microstructure Signals block reports three ES leading indicators derived
+from the Databento L1 book + trade stream: order flow imbalance (OFI),
+spread widening z-score, and top-of-book (TOB) pressure.
+
+OFI (1m / 5m): aggressor-classified flow balance in the range [-1, +1].
+Positive values = buyer-initiated volume dominates; negative = seller-
+initiated. 1m = immediate tape read (last minute); 5m = sustained bias.
+Threshold: |OFI| > 0.3 is meaningful directional pressure.
+
+Spread z-score: current 1-min median bid/ask spread vs a 30-min baseline
+of per-minute medians. z > 2.0 = dealers are widening quotes, liquidity
+pulling back — often precedes a volatile move in either direction.
+
+TOB pressure: bid_size / ask_size at the best quote (L1 only, not full
+depth). > 1.5 = buy-side book stacked; < 0.67 = sell-side stacked.
+Single snapshot, noisy — use only as confirmation.
+
+Composite labels:
+- AGGRESSIVE_BUY: OFI 5m > 0.3 AND TOB > 1.5. Favors continuation up.
+- AGGRESSIVE_SELL: OFI 5m < -0.3 AND TOB < 0.67. Favors continuation down.
+- LIQUIDITY_STRESS: spread z > 2.0 — overrides directional labels. Reduce
+  size, widen strikes, or SIT OUT; volatile moves are imminent in either
+  direction.
+- BALANCED: all three signals present, no rule fires. No edge from
+  microstructure this minute.
+
+When to weight this signal:
+- STRONG near zero-gamma crosses and in low-volume chop where dealer
+  hedging is the dominant flow.
+- MODERATE as a confirmation vote alongside Market Tide / NOPE / GEX.
+- IGNORE around major news releases (FOMC, CPI, JOBS) and at the open
+  (9:30-9:45) and close (3:45-4:00) — rebalance flows and event-driven
+  spikes dominate microstructure and the signals become noise.
+- WARNING: these are LEADING indicators with high noise. They are a
+  VOTE, never a standalone trigger. Do not size up on microstructure
+  alone; do not flip a directional read on OFI/TOB without a
+  confirming GEX or flow signal.
+</microstructure_signals_rules>`;
 
 export const SYSTEM_PROMPT_PART2 = `<data_handling>
 Missing or Limited Data:

@@ -66,6 +66,10 @@ import {
   computeVixSpxDivergence,
   formatVixDivergenceForClaude,
 } from './vix-divergence.js';
+import {
+  computeMicrostructureSignals,
+  formatMicrostructureForClaude,
+} from './microstructure-signals.js';
 import { formatFuturesForClaude } from './futures-context.js';
 import { formatIvTermStructureForClaude } from '../iv-term-structure.js';
 import type { IvTermRow } from '../iv-term-structure.js';
@@ -797,6 +801,19 @@ export async function fetchVixDivergenceBlock(): Promise<string | null> {
   } catch (err) {
     logger.error({ err }, 'VIX/SPX divergence fetch failed');
     metrics.increment('analyze_context.vix_divergence_error');
+    return null;
+  }
+}
+
+// ── Microstructure signals (OFI + spread + TOB pressure) ──────
+
+export async function fetchMicrostructureBlock(): Promise<string | null> {
+  try {
+    const result = await computeMicrostructureSignals(new Date());
+    return formatMicrostructureForClaude(result);
+  } catch (err) {
+    logger.error({ err }, 'microstructure signals fetch failed');
+    metrics.increment('analyze_context.microstructure_error');
     return null;
   }
 }

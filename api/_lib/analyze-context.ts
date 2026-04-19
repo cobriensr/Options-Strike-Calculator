@@ -55,6 +55,7 @@ import {
   fetchIvTermContext,
   fetchMainData,
   fetchMaxPainContext,
+  fetchMicrostructureBlock,
   fetchMlCalibrationContext,
   fetchOiChangeContext,
   fetchPreMarketContext,
@@ -236,6 +237,7 @@ export async function buildAnalysisContext(
     crossAssetRegimeContext,
     volumeProfileContext,
     vixDivergenceContext,
+    microstructureContext,
   ] = await Promise.all([
     fetchDarkPoolContext(context, analysisDate),
     fetchMaxPainContext(context, analysisDate),
@@ -253,6 +255,7 @@ export async function buildAnalysisContext(
     fetchCrossAssetRegimeBlock(),
     fetchVolumeProfileBlock(analysisDate),
     fetchVixDivergenceBlock(),
+    fetchMicrostructureBlock(),
   ]);
 
   const marketTideOtmSection = main.marketTideOtmContext
@@ -283,6 +286,7 @@ export async function buildAnalysisContext(
   if (!crossAssetRegimeContext) unavailable.push('Cross-Asset Regime');
   if (!volumeProfileContext) unavailable.push('Prior-Day Volume Profile (ES)');
   if (!vixDivergenceContext) unavailable.push('VIX/SPX Divergence');
+  if (!microstructureContext) unavailable.push('Microstructure Signals (ES)');
   const unavailableList = unavailable.map((s) => '- ' + s).join('\n');
   const unavailableSection =
     unavailable.length > 0
@@ -358,6 +362,7 @@ ${futuresContext ? `\n${futuresContext}\nFutures signals lead options flow by 10
 ${crossAssetRegimeContext ? `\n## Cross-Asset Risk Regime (from futures_bars — 5-min returns)\nComposite and per-symbol returns classifying the session as RISK-ON, RISK-OFF, MIXED, or MACRO-STRESS. See <cross_asset_regime_rules> for interpretation.\n  ${crossAssetRegimeContext}\n` : ''}
 ${volumeProfileContext ? `\n## Prior-Day Volume Profile (from futures_bars)\nPOC/VAH/VAL computed from the prior session's ES minute bars. Treat these as structural reference levels — see <volume_profile_rules> for interpretation.\n${volumeProfileContext}\n` : ''}
 ${vixDivergenceContext ? `\n## VIX/SPX Divergence Flag (from market_snapshots + spx_candles_1m)\n5-minute paired return check: VIX rising while SPX is flat is the classic informed-positioning canary. See <vix_divergence_rules> for interpretation.\n  ${vixDivergenceContext}\n` : ''}
+${microstructureContext ? `\n## ES Microstructure Signals (from futures_trade_ticks + futures_top_of_book)\nOrder flow imbalance (OFI 1m / 5m), spread widening z-score, and top-of-book pressure derived from the Databento L1 book + trade stream. Leading indicators with high noise — treat as a vote alongside GEX, flow, and chart structure. See <microstructure_signals_rules> for interpretation.\n  ${microstructureContext}\n` : ''}
 ${
   straddleConeUpper && straddleConeLower && !spxCandlesContext
     ? `\n## Straddle Cone Boundaries (from Periscope)

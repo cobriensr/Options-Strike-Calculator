@@ -299,6 +299,11 @@ vi.mock('../_lib/vix-divergence.js', () => ({
   formatVixDivergenceForClaude: vi.fn().mockReturnValue(null),
 }));
 
+vi.mock('../_lib/microstructure-signals.js', () => ({
+  computeMicrostructureSignals: vi.fn().mockResolvedValue(null),
+  formatMicrostructureForClaude: vi.fn().mockReturnValue(null),
+}));
+
 vi.mock('../_lib/api-helpers.js', () => ({
   schwabFetch: vi.fn().mockResolvedValue({ ok: false, status: 401 }),
 }));
@@ -687,16 +692,19 @@ describe('buildAnalysisContext', () => {
     expect(text).toContain('Cross-Asset Regime');
     expect(text).toContain('Prior-Day Volume Profile (ES)');
     expect(text).toContain('VIX/SPX Divergence');
+    expect(text).toContain('Microstructure Signals (ES)');
     vi.unstubAllGlobals();
   });
 
-  it('renders the new cross-asset / volume-profile / VIX-divergence sections when fetchers return data', async () => {
+  it('renders the new cross-asset / volume-profile / VIX-divergence / microstructure sections when fetchers return data', async () => {
     const { formatCrossAssetRegimeForClaude } =
       await import('../_lib/cross-asset-regime.js');
     const { formatVolumeProfileForClaude } =
       await import('../_lib/volume-profile.js');
     const { formatVixDivergenceForClaude } =
       await import('../_lib/vix-divergence.js');
+    const { formatMicrostructureForClaude } =
+      await import('../_lib/microstructure-signals.js');
 
     vi.mocked(formatCrossAssetRegimeForClaude).mockReturnValue(
       'Regime: RISK-ON\n  composite=1.83',
@@ -706,6 +714,9 @@ describe('buildAnalysisContext', () => {
     );
     vi.mocked(formatVixDivergenceForClaude).mockReturnValue(
       'VIX 5-min return: +4.50%\n  DIVERGENCE TRIGGERED',
+    );
+    vi.mocked(formatMicrostructureForClaude).mockReturnValue(
+      'OFI 1m: +0.42\n  OFI 5m: +0.38\n  Composite: AGGRESSIVE_BUY',
     );
 
     const result = await buildAnalysisContext([], {
@@ -724,8 +735,10 @@ describe('buildAnalysisContext', () => {
     expect(text).toContain('POC: 5000.00');
     expect(text).toContain('VIX/SPX Divergence Flag');
     expect(text).toContain('DIVERGENCE TRIGGERED');
+    expect(text).toContain('ES Microstructure Signals');
+    expect(text).toContain('AGGRESSIVE_BUY');
 
-    // All three sections should NOT appear in the unavailable manifest
+    // All four sections should NOT appear in the unavailable manifest
     const unavailableBlock = result.content.find(
       (b) => b.type === 'text' && b.text.includes('Data Sources Unavailable'),
     );
@@ -734,6 +747,7 @@ describe('buildAnalysisContext', () => {
       expect(uText).not.toContain('- Cross-Asset Regime');
       expect(uText).not.toContain('- Prior-Day Volume Profile (ES)');
       expect(uText).not.toContain('- VIX/SPX Divergence');
+      expect(uText).not.toContain('- Microstructure Signals (ES)');
     }
     vi.unstubAllGlobals();
   });
