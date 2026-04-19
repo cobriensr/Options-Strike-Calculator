@@ -71,3 +71,21 @@ export async function fetchDaySummary(dateIso: string): Promise<string | null> {
   );
   return body?.summary ?? null;
 }
+
+/**
+ * Fetch the 60-dim engineered feature vector for a single trading day.
+ * Used by the Phase C feature-embedding backend.
+ *
+ * Returns null on any sidecar / network failure. Callers should treat
+ * null as "no feature-based analog context available" and either fall
+ * back to the text-embedding backend or skip the block entirely.
+ */
+export async function fetchDayFeatures(
+  dateIso: string,
+): Promise<number[] | null> {
+  const body = await getJson<{ date: string; dim: number; vector: number[] }>(
+    `/archive/day-features?date=${encodeURIComponent(dateIso)}`,
+  );
+  if (!body || !Array.isArray(body.vector)) return null;
+  return body.vector;
+}

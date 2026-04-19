@@ -386,3 +386,132 @@ def test_day_summary_text_is_deterministic(tmp_path: Path) -> None:
     b = archive_query.day_summary_text("2024-06-03", root=tmp_path)
 
     assert a == b
+
+
+# ---------------------------------------------------------------------------
+# day_features_vector
+# ---------------------------------------------------------------------------
+
+
+def _sixty_minute_day(
+    date_tuple: tuple[int, int, int],
+    instrument_id: int,
+    open_price: float,
+    minute_closes: list[float],
+) -> list[tuple]:
+    """Build 60 one-minute bars starting at session open."""
+    from datetime import datetime, timezone, timedelta
+
+    assert len(minute_closes) == 60
+    d0 = datetime(*date_tuple, 14, 30, tzinfo=timezone.utc)
+    bars: list[tuple] = [
+        (d0, instrument_id, open_price, open_price, open_price, open_price, 1_000),
+    ]
+    for m, close in enumerate(minute_closes, start=1):
+        ts = d0 + timedelta(minutes=m)
+        bars.append(
+            (ts, instrument_id, close, close, close, close, 1_000),
+        )
+    return bars
+
+
+def test_day_features_vector_produces_60_dim_percent_changes(
+    tmp_path: Path,
+) -> None:
+    from datetime import datetime, timezone
+
+    # Simple ramp: minute N close = 5300 + N (0.01887% per minute rise).
+    closes = [5300.0 + i for i in range(1, 61)]
+    bars = _sixty_minute_day((2024, 6, 3), 101, 5300.0, closes)
+    _build_archive(
+        tmp_path,
+        bars,
+        [
+            (
+                101,
+                "ESU4",
+                datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc),
+                datetime(2024, 6, 3, 15, 30, tzinfo=timezone.utc),
+            )
+        ],
+    )
+
+    vec = archive_query.day_features_vector("2024-06-03", root=tmp_path)
+
+    assert len(vec) == archive_query.DAY_FEATURES_DIM == 60
+    # Minute 1: (5301 - 5300) / 5300 = 0.0001887 (≈ 1/5300)
+    assert vec[0] == pytest.approx(1 / 5300, rel=1e-6)
+    # Minute 60: (5360 - 5300) / 5300 = 60/5300
+    assert vec[59] == pytest.approx(60 / 5300, rel=1e-6)
+    # Monotonic on a pure ramp.
+    assert all(vec[i + 1] > vec[i] for i in range(59))
+
+
+def test_day_features_vector_raises_on_missing_date(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+
+    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    _build_archive(
+        tmp_path,
+        [(d0, 101, 5300.0, 5305.0, 5299.0, 5300.0, 1_000)],
+        [(101, "ESU4", d0, d0)],
+    )
+    with pytest.raises(ValueError, match="2024-06-04"):
+        archive_query.day_features_vector("2024-06-04", root=tmp_path)
+
+
+def test_day_features_vector_rejects_too_few_bars(tmp_path: Path) -> None:
+    """5 bars in the first hour isn't a real trading day — refuse."""
+    from datetime import datetime, timezone, timedelta
+
+    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    bars = [
+        (d0 + timedelta(minutes=i), 101, 5300.0 + i, 5300.0 + i, 5300.0 + i, 5300.0 + i, 1_000)
+        for i in range(5)
+    ]
+    _build_archive(
+        tmp_path,
+        bars,
+        [(101, "ESU4", d0, d0 + timedelta(minutes=4))],
+    )
+    with pytest.raises(ValueError, match="Insufficient"):
+        archive_query.day_features_vector("2024-06-03", root=tmp_path)
+
+
+def test_day_features_vector_forward_fills_gaps(tmp_path: Path) -> None:
+    """Sparse bars (halts, gaps) should forward-fill, not produce zeros."""
+    from datetime import datetime, timezone, timedelta
+
+    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    # 12 bars, irregularly spaced — passes the < 10-bar minimum.
+    # Gap between minute 5 and 30 should forward-fill.
+    bars: list[tuple] = [(d0, 101, 5300.0, 5300.0, 5300.0, 5300.0, 1_000)]
+    schedule: list[tuple[int, float]] = [
+        (1, 5301.0),
+        (2, 5301.0),
+        (3, 5301.0),
+        (4, 5301.0),
+        (5, 5305.0),   # then GAP to minute 30
+        (30, 5310.0),
+        (45, 5320.0),
+        (50, 5325.0),
+        (55, 5328.0),
+        (58, 5329.0),
+        (59, 5329.5),
+        (60, 5330.0),
+    ]
+    for m, close in schedule:
+        ts = d0 + timedelta(minutes=m)
+        bars.append((ts, 101, close, close, close, close, 1_000))
+    _build_archive(
+        tmp_path,
+        bars,
+        [(101, "ESU4", d0, d0 + timedelta(minutes=60))],
+    )
+
+    vec = archive_query.day_features_vector("2024-06-03", root=tmp_path)
+    # Minutes 6..29 are a gap — should carry minute-5's close (5305) forward.
+    for i in range(5, 29):  # vector index 5..28 = minutes 6..29
+        assert vec[i] == pytest.approx((5305 - 5300) / 5300, rel=1e-6)
+    # Minute 60 (index 59): 5330.
+    assert vec[59] == pytest.approx((5330 - 5300) / 5300, rel=1e-6)

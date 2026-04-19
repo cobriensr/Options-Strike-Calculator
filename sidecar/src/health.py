@@ -53,6 +53,9 @@ class HealthHandler(BaseHTTPRequestHandler):
         if self.path.startswith("/archive/day-summary"):
             self._handle_archive_day_summary()
             return
+        if self.path.startswith("/archive/day-features"):
+            self._handle_archive_day_features()
+            return
         if self.path != "/health":
             self.send_response(404)
             self.end_headers()
@@ -257,6 +260,38 @@ class HealthHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
             log.error("day-summary query failed for %s: %s", date, exc)
+            self._send_json(500, {"error": "query failed"})
+
+    def _handle_archive_day_features(self) -> None:
+        """GET /archive/day-features?date=YYYY-MM-DD → 60-dim vector.
+
+        Numeric feature vector for the engineered-embedding code path
+        (Phase C). Intentionally narrow response — just the vector —
+        so the Vercel caller stays decoupled from how the vector is
+        computed. Changing the feature set requires a coordinated
+        migration + re-backfill and should bump the response shape.
+        """
+        from urllib.parse import parse_qs, urlparse
+        import re
+
+        qs = parse_qs(urlparse(self.path).query)
+        date = (qs.get("date") or [""])[0]
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            self._send_json(400, {"error": "date must be YYYY-MM-DD"})
+            return
+
+        try:
+            import archive_query
+
+            vector = archive_query.day_features_vector(date)
+            self._send_json(
+                200,
+                {"date": date, "dim": len(vector), "vector": vector},
+            )
+        except ValueError as exc:
+            self._send_json(404, {"error": str(exc)})
+        except Exception as exc:  # noqa: BLE001
+            log.error("day-features query failed for %s: %s", date, exc)
             self._send_json(500, {"error": "query failed"})
 
     def _send_json(self, status: int, body: dict[str, object]) -> None:

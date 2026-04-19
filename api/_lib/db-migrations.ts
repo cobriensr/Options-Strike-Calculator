@@ -1966,4 +1966,29 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 74,
+    description:
+      'Create day_features table with 60-dim numeric vector for engineered path-shape analogs (Phase C)',
+    statements: (sql) => [
+      // Engineered-feature backend: sidecar computes a 60-dim vector of
+      // first-hour minute-close percent-changes (shape-only, scale-free).
+      // Kept as a separate table from day_embeddings so both backends
+      // coexist and can be A/B compared without row-level collisions.
+      sql`
+        CREATE TABLE IF NOT EXISTS day_features (
+          date         DATE PRIMARY KEY,
+          symbol       TEXT NOT NULL,
+          features     vector(60) NOT NULL,
+          feature_set  TEXT NOT NULL,
+          created_at   TIMESTAMPTZ DEFAULT NOW()
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS day_features_vec_idx
+          ON day_features
+          USING hnsw (features vector_cosine_ops)
+      `,
+    ],
+  },
 ];

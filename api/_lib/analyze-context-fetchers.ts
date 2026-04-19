@@ -820,27 +820,65 @@ export async function fetchMicrostructureBlock(): Promise<string | null> {
 
 // ── Historical analogs (day embeddings) ───────────────────────────────
 
+/**
+ * Retrieve a cohort of historical analog days for `analysisDate`.
+ *
+ * Backend is selected by `DAY_ANALOG_BACKEND`:
+ *   'features' → engineered 60-dim path-shape vector (Phase C)
+ *   anything else (or unset) → OpenAI text embedding (Phase B, default)
+ *
+ * Both paths return pre-formatted Claude block text. Absence of data
+ * (backfill hasn't reached this date, sidecar down, etc.) returns null
+ * so the orchestrator can log it to the unavailable manifest.
+ */
 export async function fetchSimilarDaysContext(
   analysisDate: string,
   k: number = 15,
 ): Promise<string | null> {
+  const backend = process.env.DAY_ANALOG_BACKEND?.toLowerCase() ?? 'text';
   try {
-    // Sidecar produces today's deterministic summary string; we then
-    // embed it and find the k nearest historical days in pgvector.
-    const { fetchDaySummary } = await import('./archive-sidecar.js');
-    const { findSimilarDaysForSummary } = await import('./day-embeddings.js');
+    const { fetchDaySummary, fetchDayFeatures } =
+      await import('./archive-sidecar.js');
     const { formatSimilarDaysForClaude } =
       await import('./analyze-context-formatters.js');
 
+    // Today's summary is needed in both paths — the formatter renders
+    // it as the target day line. Features backend uses it only for
+    // presentation; its vector comes from fetchDayFeatures below.
     const summary = await fetchDaySummary(analysisDate);
     if (!summary) return null;
 
+    if (backend === 'features') {
+      const { findSimilarDaysByFeatures } = await import('./day-features.js');
+      const features = await fetchDayFeatures(analysisDate);
+      if (!features) return null;
+      const neighbors = await findSimilarDaysByFeatures(
+        features,
+        k,
+        analysisDate,
+      );
+      if (neighbors.length === 0) return null;
+      // Features backend doesn't store per-row summaries on the table;
+      // fetch each neighbor's summary in parallel. Capped at k≤50.
+      const analogs = await Promise.all(
+        neighbors.map(async (n) => ({
+          date: n.date,
+          symbol: n.symbol,
+          distance: n.distance,
+          summary: (await fetchDaySummary(n.date)) ?? `${n.date} ${n.symbol}`,
+        })),
+      );
+      return formatSimilarDaysForClaude(summary, analogs);
+    }
+
+    // Default: text-embedding backend.
+    const { findSimilarDaysForSummary } = await import('./day-embeddings.js');
     const analogs = await findSimilarDaysForSummary(summary, k, analysisDate);
     if (analogs.length === 0) return null;
 
     return formatSimilarDaysForClaude(summary, analogs);
   } catch (err) {
-    logger.warn({ err }, 'similar-days context fetch failed');
+    logger.warn({ err, backend }, 'similar-days context fetch failed');
     metrics.increment('analyze_context.similar_days_error');
     return null;
   }

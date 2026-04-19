@@ -508,3 +508,93 @@ def day_summary_text(
         f"close {float(day_close):.2f} "
         f"({(float(day_close) - float(day_open)):+.2f})"
     )
+
+
+# ---------------------------------------------------------------------------
+# day_features_vector — engineered numeric feature vector (Phase C)
+# ---------------------------------------------------------------------------
+
+DAY_FEATURES_DIM = 60
+
+
+def day_features_vector(
+    date_iso: str,
+    *,
+    root: Path | None = None,
+) -> list[float]:
+    """Return a 60-dim feature vector: percent-change from open at each
+    of the first 60 minutes of the session.
+
+    Shape of first-hour price path. Directly comparable across days and
+    regimes because it's a scale-free percentage. Front-month ES
+    selection matches the other archive_query functions — top contract
+    by volume for the date.
+
+    Returns exactly 60 floats (forward-fill when bars are missing — rare
+    because ES trades nearly 24h, but possible on halts). Fails with
+    ValueError if the date has no ES bars OR if fewer than 10 bars exist
+    in the first-hour window (implausible data; refuse rather than
+    pad-with-zeros a bad vector into the archive).
+    """
+    conn = _connection()
+    ohlcv = _ohlcv_glob(root)
+    symbology = _symbology_path(root)
+
+    top_symbol = _front_month_symbol(conn, ohlcv, symbology, date_iso)
+    if top_symbol is None:
+        raise ValueError(f"No ES bars found for {date_iso}")
+
+    # One pass: pull the first 60 minutes of the front-month bars,
+    # numbered 1..N where N ≤ 60. Anything beyond minute 60 is ignored.
+    # Minute number is `(ts_event - session_open) / 60s`.
+    rows = conn.execute(
+        """
+        WITH f AS (
+            SELECT bars.ts_event, bars.open, bars.close
+            FROM read_parquet(?) AS bars
+            JOIN read_parquet(?) AS sym USING (instrument_id)
+            WHERE sym.symbol = ?
+              AND CAST(date_trunc('day', bars.ts_event) AS DATE) = ?::DATE
+        ),
+        agg AS (
+            SELECT FIRST(open ORDER BY ts_event)  AS day_open,
+                   MIN(ts_event)                  AS open_ts
+            FROM f
+        )
+        SELECT CAST(
+                 EXTRACT(EPOCH FROM (f.ts_event - agg.open_ts)) / 60.0
+                 AS INTEGER
+               ) AS minute_idx,
+               f.close,
+               agg.day_open AS day_open
+        FROM f, agg
+        WHERE f.ts_event > agg.open_ts
+          AND f.ts_event
+              <= agg.open_ts + CAST(? AS INTEGER) * INTERVAL 1 MINUTE
+        ORDER BY f.ts_event
+        """,
+        [ohlcv, symbology, top_symbol, date_iso, DAY_FEATURES_DIM],
+    ).fetchall()
+
+    if len(rows) < 10:
+        raise ValueError(
+            f"Insufficient first-hour bars for {date_iso}: got {len(rows)}"
+        )
+
+    day_open = float(rows[0][2])
+    # Build bucket keyed on minute index; forward-fill gaps.
+    by_minute: dict[int, float] = {}
+    for minute_idx, close, _ in rows:
+        idx = int(minute_idx)
+        if 1 <= idx <= DAY_FEATURES_DIM:
+            by_minute[idx] = float(close)
+
+    vector: list[float] = []
+    last_seen = day_open
+    for m in range(1, DAY_FEATURES_DIM + 1):
+        if m in by_minute:
+            last_seen = by_minute[m]
+        # Percent change from open — scale-free, cosine-friendly.
+        vector.append((last_seen - day_open) / day_open)
+
+    return vector
