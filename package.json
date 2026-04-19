@@ -82,7 +82,7 @@
     "rollup-plugin-visualizer": "^7.0.1",
     "tailwindcss": "^4.2.1",
     "tsx": "^4.21.0",
-    "typescript": "^6.0.2",
+    "typescript": "^6.0.3",
     "typescript-eslint": "^8.58.2",
     "vite": "^7.3.1",
     "vite-plugin-pwa": "^1.2.0",
