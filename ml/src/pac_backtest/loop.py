@@ -213,6 +213,46 @@ def intrabar_stop_hit(bar: pd.Series, trade: Trade) -> bool:
     return float(bar["high"]) >= trade.stop_price
 
 
+def apply_options_filters(
+    bar: pd.Series, params: StrategyParams
+) -> tuple[bool, str | None]:
+    """Check if an entry signal survives the options-derived regime filters.
+
+    Returns ``(allowed, skip_reason)``.
+
+    - If `iv_tercile_filter` is set, the bar must have an `iv_tercile`
+      column whose value matches. Missing column = filter is a no-op
+      (backward-compat with bars that haven't been joined with the
+      options_features overlay).
+    - If `event_day_filter` is "skip_events", bar is rejected when
+      `is_event_day` is True. If "events_only", rejected when False.
+
+    Filters all default to None (pass-through), so a caller who doesn't
+    care about options regime gets the v1 backtest behavior unchanged.
+    """
+    # IV tercile filter
+    if params.iv_tercile_filter is not None:
+        tercile = bar.get("iv_tercile")
+        if tercile is not None and pd.notna(tercile):
+            if str(tercile) != params.iv_tercile_filter:
+                return (
+                    False,
+                    f"iv_tercile={tercile} != filter={params.iv_tercile_filter}",
+                )
+
+    # Event-day filter
+    if params.event_day_filter is not None:
+        is_event = bar.get("is_event_day")
+        if is_event is not None and pd.notna(is_event):
+            is_event_bool = bool(is_event)
+            if params.event_day_filter == "skip_events" and is_event_bool:
+                return (False, "skip_events: bar is on event day")
+            if params.event_day_filter == "events_only" and not is_event_bool:
+                return (False, "events_only: bar is not on event day")
+
+    return (True, None)
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # Main event loop
 # ─────────────────────────────────────────────────────────────────────────
@@ -328,6 +368,14 @@ def run_backtest(
         if open_trade is None and eligible[i]:
             entry = detect_entry(bar, params.entry_trigger)
             if entry is not None:
+                # Options regime filter check — skips entry without
+                # marking the signal as a trade. Keeps filter-rejected
+                # signals out of downstream per-setup-tag metrics
+                # (no silent overrepresentation of bad filter buckets).
+                allowed, _skip_reason = apply_options_filters(bar, params)
+                if not allowed:
+                    continue
+
                 direction, setup_tag = entry
                 fill_side = (
                     "entry_long" if direction == "long" else "entry_short"
