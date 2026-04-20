@@ -1,0 +1,583 @@
+{
+  "generated_at": "2026-04-20T01:45:14+00:00",
+  "feature_file": "/Users/charlesobrien/Documents/Workspace/strike-calculator/ml/data/features/microstructure_daily.parquet",
+  "outcome_source": "/Users/charlesobrien/Documents/Workspace/strike-calculator/ml/data/archive/ohlcv_1m/year=*/part.parquet",
+  "n_rows": 624,
+  "n_symbols": 2,
+  "date_range": {
+    "start": "2025-04-20",
+    "end": "2026-04-17"
+  },
+  "questions": [
+    {
+      "id": "q1_distributions",
+      "summary": "Plotted 23 feature distributions. 2 feature(s) have >5% outlier fraction (3-IQR rule).",
+      "n_features": 23,
+      "n_rows": 624,
+      "per_feature": {
+        "ofi_5m_mean": {
+          "mean": 0.004302467499635116,
+          "std": 0.018641152500903296,
+          "p01": -0.04372551267933247,
+          "p50": 0.0038919779217419428,
+          "p99": 0.05842918748182444,
+          "n_missing": 0,
+          "outlier_fraction": 0.009615384615384616
+        },
+        "ofi_5m_std": {
+          "mean": 0.12475352439742984,
+          "std": 0.021815997585904537,
+          "p01": 0.0806731409805529,
+          "p50": 0.1235498701257246,
+          "p99": 0.1854701212368001,
+          "n_missing": 0,
+          "outlier_fraction": 0.003205128205128205
+        },
+        "ofi_5m_abs_p95": {
+          "mean": 0.25622211752109664,
+          "std": 0.043935843478983695,
+          "p01": 0.1601180504054969,
+          "p50": 0.25405907285619034,
+          "p99": 0.3729252165004642,
+          "n_missing": 0,
+          "outlier_fraction": 0.0016025641025641025
+        },
+        "ofi_5m_pct_extreme": {
+          "mean": 0.02930943316206097,
+          "std": 0.02456756706222437,
+          "p01": 0.0,
+          "p50": 0.02463768115942029,
+          "p99": 0.12292716001549782,
+          "n_missing": 0,
+          "outlier_fraction": 0.011217948717948718
+        },
+        "ofi_15m_mean": {
+          "mean": 0.005014713872735073,
+          "std": 0.020344681829085103,
+          "p01": -0.044574501505682255,
+          "p50": 0.004498844099122838,
+          "p99": 0.07207752038198609,
+          "n_missing": 0,
+          "outlier_fraction": 0.009615384615384616
+        },
+        "ofi_15m_std": {
+          "mean": 0.08197503046533687,
+          "std": 0.017482184770912703,
+          "p01": 0.04241395627238381,
+          "p50": 0.08108456919961718,
+          "p99": 0.13024690506510322,
+          "n_missing": 0,
+          "outlier_fraction": 0.0
+        },
+        "ofi_15m_abs_p95": {
+          "mean": 0.1713163757806263,
+          "std": 0.03520748239707085,
+          "p01": 0.08791859755041997,
+          "p50": 0.17020960569329543,
+          "p99": 0.26051575858878195,
+          "n_missing": 0,
+          "outlier_fraction": 0.0
+        },
+        "ofi_15m_pct_extreme": {
+          "mean": 0.00389516784168648,
+          "std": 0.0068034536323801536,
+          "p01": 0.0,
+          "p50": 0.0007246376811594203,
+          "p99": 0.029060402684563755,
+          "n_missing": 0,
+          "outlier_fraction": 0.04807692307692308
+        },
+        "ofi_1h_mean": {
+          "mean": 0.004603804500891264,
+          "std": 0.021897103395516173,
+          "p01": -0.056897752251708886,
+          "p50": 0.0035136761464537357,
+          "p99": 0.07802930680070509,
+          "n_missing": 0,
+          "outlier_fraction": 0.009615384615384616
+        },
+        "ofi_1h_std": {
+          "mean": 0.04688614381349584,
+          "std": 0.021617929550193055,
+          "p01": 0.0,
+          "p50": 0.046963149295147166,
+          "p99": 0.12013957421728015,
+          "n_missing": 0,
+          "outlier_fraction": 0.01282051282051282
+        },
+        "ofi_1h_abs_p95": {
+          "mean": 0.10247944614516322,
+          "std": 0.03834499171012875,
+          "p01": 0.007908922165401535,
+          "p50": 0.10203188885749151,
+          "p99": 0.200825666742266,
+          "n_missing": 0,
+          "outlier_fraction": 0.004807692307692308
+        },
+        "ofi_1h_pct_extreme": {
+          "mean": 0.0016739343682331987,
+          "std": 0.0060163244616888685,
+          "p01": 0.0,
+          "p50": 0.0,
+          "p99": 0.035173913043478236,
+          "n_missing": 0,
+          "outlier_fraction": 0.23076923076923078
+        },
+        "spread_widening_count_2sigma": {
+          "mean": 47.71474358974359,
+          "std": 61.20851845408865,
+          "p01": 0.0,
+          "p50": 2.0,
+          "p99": 202.76999999999998,
+          "n_missing": 0,
+          "outlier_fraction": 0.0
+        },
+        "spread_widening_count_3sigma": {
+          "mean": 8.91025641025641,
+          "std": 11.583792720020833,
+          "p01": 0.0,
+          "p50": 1.0,
+          "p99": 38.76999999999998,
+          "n_missing": 0,
+          "outlier_fraction": 0.0
+        },
+        "spread_widening_max_zscore": {
+          "mean": 1355833.3347021353,
+          "std": 7198426.743624223,
+          "p01": 0.0,
+          "p50": 4.19613235651898,
+          "p99": 46483706.59937968,
+          "n_missing": 0,
+          "outlier_fraction": 0.06570512820512821
+        },
+        "spread_widening_max_run_minutes": {
+          "mean": 4.375,
+          "std": 4.959814473887568,
+          "p01": 0.0,
+          "p50": 1.0,
+          "p99": 15.0,
+          "n_missing": 0,
+          "outlier_fraction": 0.0
+        },
+        "tob_extreme_minute_count": {
+          "mean": 216.93269230769232,
+          "std": 247.93648112934645,
+          "p01": 1.0,
+          "p50": 72.0,
+          "p99": 836.8499999999999,
+          "n_missing": 0,
+          "outlier_fraction": 0.0
+        },
+        "tob_max_run_buy_pressure": {
+          "mean": 3.0576923076923075,
+          "std": 2.291260946692512,
+          "p01": 0.0,
+          "p50": 2.0,
+          "p99": 10.0,
+          "n_missing": 0,
+          "outlier_fraction": 0.0016025641025641025
+        },
+        "tob_max_run_sell_pressure": {
+          "mean": 3.3461538461538463,
+          "std": 2.3153718374296015,
+          "p01": 0.0,
+          "p50": 3.0,
+          "p99": 9.769999999999982,
+          "n_missing": 0,
+          "outlier_fraction": 0.0
+        },
+        "tob_mean_abs_log_ratio": {
+          "mean": 0.19352809056844145,
+          "std": 0.18539801978442005,
+          "p01": 0.0021288391583383286,
+          "p50": 0.1126253864279716,
+          "p99": 0.6356772376851428,
+          "n_missing": 0,
+          "outlier_fraction": 0.0
+        },
+        "tick_velocity_mean": {
+          "mean": 260.9615076312882,
+          "std": 126.89647490891035,
+          "p01": 35.977649371069184,
+          "p50": 253.20068654034117,
+          "p99": 607.9465,
+          "n_missing": 0,
+          "outlier_fraction": 0.004807692307692308
+        },
+        "tick_velocity_p95": {
+          "mean": 996.3012820512819,
+          "std": 543.3372744921178,
+          "p01": 92.92199999999984,
+          "p50": 982.1749999999998,
+          "p99": 2410.751499999999,
+          "n_missing": 0,
+          "outlier_fraction": 0.00641025641025641
+        },
+        "tick_velocity_max_minute": {
+          "mean": 5174.464743589743,
+          "std": 3037.1547121527838,
+          "p01": 240.07,
+          "p50": 5301.0,
+          "p99": 13519.389999999989,
+          "n_missing": 0,
+          "outlier_fraction": 0.003205128205128205
+        }
+      }
+    },
+    {
+      "id": "q2_correlation",
+      "summary": "11 feature pair(s) with |rho| > 0.9. 0 constant column(s) excluded.",
+      "n_features_analyzed": 23,
+      "high_correlations": [
+        {
+          "a": "tick_velocity_mean",
+          "b": "tick_velocity_p95",
+          "rho": 0.970108405492869
+        },
+        {
+          "a": "ofi_5m_mean",
+          "b": "ofi_15m_mean",
+          "rho": 0.9643011235955056
+        },
+        {
+          "a": "ofi_5m_std",
+          "b": "ofi_5m_abs_p95",
+          "rho": 0.9457047743453372
+        },
+        {
+          "a": "ofi_5m_abs_p95",
+          "b": "ofi_5m_pct_extreme",
+          "rho": 0.943963177086105
+        },
+        {
+          "a": "spread_widening_count_2sigma",
+          "b": "spread_widening_max_run_minutes",
+          "rho": 0.9372835004121209
+        },
+        {
+          "a": "ofi_15m_mean",
+          "b": "ofi_1h_mean",
+          "rho": 0.9224680577849117
+        },
+        {
+          "a": "spread_widening_count_3sigma",
+          "b": "spread_widening_max_zscore",
+          "rho": 0.9114541483667296
+        },
+        {
+          "a": "spread_widening_count_2sigma",
+          "b": "spread_widening_count_3sigma",
+          "rho": 0.9106329442362969
+        },
+        {
+          "a": "ofi_15m_std",
+          "b": "ofi_15m_abs_p95",
+          "rho": 0.9084251007337338
+        },
+        {
+          "a": "tob_extreme_minute_count",
+          "b": "tob_max_run_sell_pressure",
+          "rho": 0.9076650589162117
+        },
+        {
+          "a": "spread_widening_count_3sigma",
+          "b": "spread_widening_max_run_minutes",
+          "rho": 0.9005771501178315
+        }
+      ],
+      "dropped_constant_columns": []
+    },
+    {
+      "id": "q3_spread_zero_rate",
+      "per_symbol": {
+        "ES": {
+          "zero_rate": 0.8012820512820513,
+          "n_rows": 312
+        },
+        "NQ": {
+          "zero_rate": 0.0,
+          "n_rows": 312
+        }
+      },
+      "threshold": 0.9,
+      "summary": "Spread-widening zero-rate below 90% for all symbols; feature retains signal."
+    },
+    {
+      "id": "q4_returns",
+      "summary": "ret_day n=624, ret_5d n=614 across 2 symbol(s).",
+      "forward_days": 5,
+      "up_threshold": 0.005,
+      "down_threshold": -0.005,
+      "per_symbol": {
+        "ES": {
+          "n_rows": 312,
+          "ret_day_mean": 0.0010018260072921273,
+          "ret_day_std": 0.00787506178360406,
+          "ret_5d_mean": 0.003232614397323388,
+          "ret_5d_std": 0.015233012392279368,
+          "class_counts": {
+            "up": 77,
+            "flat": 189,
+            "down": 46
+          }
+        },
+        "NQ": {
+          "n_rows": 312,
+          "ret_day_mean": 0.0012721331949376278,
+          "ret_day_std": 0.010305420715887803,
+          "ret_5d_mean": 0.00418219912793304,
+          "ret_5d_std": 0.019880786453894437,
+          "class_counts": {
+            "up": 91,
+            "flat": 164,
+            "down": 57
+          }
+        }
+      }
+    },
+    {
+      "id": "q5_feature_vs_return",
+      "summary": "3 feature(s) with p_bonf < 0.05 across 2 symbol(s) (n_tests = 23 features x 2 symbols = 46).",
+      "n_tests": 46,
+      "n_features": 23,
+      "n_symbols": 2,
+      "bonferroni_alpha": 0.0010869565217391304,
+      "top_features_es": [
+        {
+          "feature": "ofi_1h_std",
+          "spearman": 0.14100080402256407,
+          "p_value": 0.01355829090851781,
+          "p_bonf": 0.6236813817918193,
+          "n": 306,
+          "significant": false
+        },
+        {
+          "feature": "ofi_1h_mean",
+          "spearman": 0.13058116287021732,
+          "p_value": 0.022331618843476033,
+          "p_bonf": 1.0,
+          "n": 306,
+          "significant": false
+        },
+        {
+          "feature": "ofi_1h_pct_extreme",
+          "spearman": 0.12730449482144612,
+          "p_value": 0.025955760149980564,
+          "p_bonf": 1.0,
+          "n": 306,
+          "significant": false
+        },
+        {
+          "feature": "ofi_15m_mean",
+          "spearman": 0.1193064639324867,
+          "p_value": 0.036985399961935644,
+          "p_bonf": 1.0,
+          "n": 306,
+          "significant": false
+        },
+        {
+          "feature": "ofi_15m_pct_extreme",
+          "spearman": 0.11640319837214967,
+          "p_value": 0.04186970513903025,
+          "p_bonf": 1.0,
+          "n": 306,
+          "significant": false
+        },
+        {
+          "feature": "ofi_1h_abs_p95",
+          "spearman": 0.1154663526953235,
+          "p_value": 0.04355739932569144,
+          "p_bonf": 1.0,
+          "n": 306,
+          "significant": false
+        },
+        {
+          "feature": "ofi_15m_std",
+          "spearman": 0.11207877065346564,
+          "p_value": 0.05014448937143511,
+          "p_bonf": 1.0,
+          "n": 306,
+          "significant": false
+        },
+        {
+          "feature": "tick_velocity_mean",
+          "spearman": -0.10726512483556452,
+          "p_value": 0.060916032653218585,
+          "p_bonf": 1.0,
+          "n": 306,
+          "significant": false
+        },
+        {
+          "feature": "tick_velocity_p95",
+          "spearman": -0.10649515646027967,
+          "p_value": 0.06280429488910722,
+          "p_bonf": 1.0,
+          "n": 306,
+          "significant": false
+        },
+        {
+          "feature": "ofi_5m_mean",
+          "spearman": 0.09201671279736445,
+          "p_value": 0.10817348203801389,
+          "p_bonf": 1.0,
+          "n": 306,
+          "significant": false
+        }
+      ],
+      "top_features_nq": [
+        {
+          "feature": "ofi_1h_mean",
+          "spearman": 0.3131611377930785,
+          "p_value": 2.180008834698706e-08,
+          "p_bonf": 1.0028040639614048e-06,
+          "n": 306,
+          "significant": true
+        },
+        {
+          "feature": "ofi_15m_mean",
+          "spearman": 0.2784330478066167,
+          "p_value": 7.464901263261877e-07,
+          "p_bonf": 3.433854581100463e-05,
+          "n": 306,
+          "significant": true
+        },
+        {
+          "feature": "ofi_5m_mean",
+          "spearman": 0.235335789679785,
+          "p_value": 3.2048795669406435e-05,
+          "p_bonf": 0.001474244600792696,
+          "n": 306,
+          "significant": true
+        },
+        {
+          "feature": "tick_velocity_p95",
+          "spearman": -0.1253308765673018,
+          "p_value": 0.02837427133806874,
+          "p_bonf": 1.0,
+          "n": 306,
+          "significant": false
+        },
+        {
+          "feature": "tick_velocity_mean",
+          "spearman": -0.1233462980834325,
+          "p_value": 0.030998499907319094,
+          "p_bonf": 1.0,
+          "n": 306,
+          "significant": false
+        },
+        {
+          "feature": "ofi_15m_pct_extreme",
+          "spearman": -0.10182725718999587,
+          "p_value": 0.0753077949187574,
+          "p_bonf": 1.0,
+          "n": 306,
+          "significant": false
+        },
+        {
+          "feature": "tob_max_run_buy_pressure",
+          "spearman": 0.09986687133889866,
+          "p_value": 0.08112948757547042,
+          "p_bonf": 1.0,
+          "n": 306,
+          "significant": false
+        },
+        {
+          "feature": "spread_widening_count_2sigma",
+          "spearman": 0.08367228570819572,
+          "p_value": 0.14422449485916852,
+          "p_bonf": 1.0,
+          "n": 306,
+          "significant": false
+        },
+        {
+          "feature": "ofi_5m_abs_p95",
+          "spearman": -0.08118822683283455,
+          "p_value": 0.15655859550833642,
+          "p_bonf": 1.0,
+          "n": 306,
+          "significant": false
+        },
+        {
+          "feature": "ofi_5m_std",
+          "spearman": -0.07201283247319328,
+          "p_value": 0.20904853253465616,
+          "p_bonf": 1.0,
+          "n": 306,
+          "significant": false
+        }
+      ]
+    },
+    {
+      "id": "q6_cohorts",
+      "summary": "Cohort analysis on 5 feature(s); 3 with Mann-Whitney p < 0.05.",
+      "quantile": 0.25,
+      "cohorts": [
+        {
+          "feature": "ofi_1h_std",
+          "quantile": 0.25,
+          "n_bottom": 153,
+          "n_top": 153,
+          "bottom_median_ret_day": 0.00040966816878328555,
+          "top_median_ret_day": 0.0019286403085824494,
+          "bottom_mean_ret_day": 0.0010400780428616735,
+          "top_mean_ret_day": 0.002053098211002505,
+          "mannwhitney_u": 13124.0,
+          "mannwhitney_p": 0.06670847204699049,
+          "significant": false
+        },
+        {
+          "feature": "ofi_1h_mean",
+          "quantile": 0.25,
+          "n_bottom": 153,
+          "n_top": 153,
+          "bottom_median_ret_day": -0.0011878663795184795,
+          "top_median_ret_day": 0.0017506505796072865,
+          "bottom_mean_ret_day": -0.0016428361686051376,
+          "top_mean_ret_day": 0.002446494271013255,
+          "mannwhitney_u": 15828.0,
+          "mannwhitney_p": 9.94399021046238e-08,
+          "significant": true
+        },
+        {
+          "feature": "ofi_1h_pct_extreme",
+          "quantile": 0.25,
+          "n_bottom": 473,
+          "n_top": 612,
+          "bottom_median_ret_day": 0.00040966816878328555,
+          "top_median_ret_day": 0.0007089389786632207,
+          "bottom_mean_ret_day": 0.0008991660336063236,
+          "top_mean_ret_day": 0.0010915191401779916,
+          "mannwhitney_u": 147768.5,
+          "mannwhitney_p": 0.5538589315620148,
+          "significant": false
+        },
+        {
+          "feature": "ofi_15m_mean",
+          "quantile": 0.25,
+          "n_bottom": 153,
+          "n_top": 153,
+          "bottom_median_ret_day": -0.0005637943358804756,
+          "top_median_ret_day": 0.0014663322400154351,
+          "bottom_mean_ret_day": -0.0009719398243011579,
+          "top_mean_ret_day": 0.0021197691005857525,
+          "mannwhitney_u": 14786.0,
+          "mannwhitney_p": 6.854772137247409e-05,
+          "significant": true
+        },
+        {
+          "feature": "ofi_5m_mean",
+          "quantile": 0.25,
+          "n_bottom": 153,
+          "n_top": 153,
+          "bottom_median_ret_day": -0.0002905709719599012,
+          "top_median_ret_day": 0.0015514184397163121,
+          "bottom_mean_ret_day": -0.0016034954271544992,
+          "top_mean_ret_day": 0.002392406581436797,
+          "mannwhitney_u": 14889.0,
+          "mannwhitney_p": 3.88242761775089e-05,
+          "significant": true
+        }
+      ]
+    }
+  ]
+}
