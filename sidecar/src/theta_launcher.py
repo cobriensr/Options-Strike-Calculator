@@ -40,9 +40,7 @@ from sentry_setup import capture_exception, capture_message
 
 # Paths & ports. /app is the sidecar WORKDIR (set in Dockerfile).
 # THETA_DATA_DIR can override the working dir for tests/local runs.
-_THETA_HOME = Path(
-    os.environ.get("THETA_DATA_DIR", "/app/theta_data/ThetaTerminal")
-)
+_THETA_HOME = Path(os.environ.get("THETA_DATA_DIR", "/app/theta_data/ThetaTerminal"))
 _JAR_PATH = Path(os.environ.get("THETA_JAR_PATH", "/app/ThetaTerminalv3.jar"))
 _HTTP_BASE = "http://127.0.0.1:25503"
 _READINESS_PATH = "/v2/list/roots/stock"
@@ -118,9 +116,7 @@ def start() -> bool:
         )
         return False
 
-    threading.Thread(
-        target=_monitor_loop, name="theta-monitor", daemon=True
-    ).start()
+    threading.Thread(target=_monitor_loop, name="theta-monitor", daemon=True).start()
     log.info("Theta Terminal launched and serving on %s", _HTTP_BASE)
     return True
 
@@ -194,9 +190,7 @@ def _spawn_subprocess() -> None:
         )
         _state["started_at"] = time.time()
 
-    threading.Thread(
-        target=_stderr_tail_loop, name="theta-stderr", daemon=True
-    ).start()
+    threading.Thread(target=_stderr_tail_loop, name="theta-stderr", daemon=True).start()
     threading.Thread(
         target=_stdout_drain_loop, name="theta-stdout", daemon=True
     ).start()

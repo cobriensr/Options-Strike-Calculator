@@ -160,19 +160,41 @@ _REAL_EOD_PAYLOAD = {
     },
     "response": [
         [
-            62126312, 55682078,
-            77.80, 82.30, 66.00, 66.00,
-            1576, 30,
-            1, 5, 69.90, 50,
-            1, 5, 79.90, 50,
+            62126312,
+            55682078,
+            77.80,
+            82.30,
+            66.00,
+            66.00,
+            1576,
+            30,
+            1,
+            5,
+            69.90,
+            50,
+            1,
+            5,
+            79.90,
+            50,
             20240313,
         ],
         [
-            62352209, 57455017,
-            74.00, 90.05, 31.56, 51.38,
-            3655, 107,
-            20, 5, 51.20, 50,
-            20, 5, 59.60, 50,
+            62352209,
+            57455017,
+            74.00,
+            90.05,
+            31.56,
+            51.38,
+            3655,
+            107,
+            20,
+            5,
+            51.20,
+            50,
+            20,
+            5,
+            59.60,
+            50,
             20240314,
         ],
     ],
@@ -180,9 +202,7 @@ _REAL_EOD_PAYLOAD = {
 
 
 def test_fetch_eod_parses_rows_into_eod_row_objects() -> None:
-    with patch(
-        "theta_client.urlopen", return_value=_http_response(_REAL_EOD_PAYLOAD)
-    ):
+    with patch("theta_client.urlopen", return_value=_http_response(_REAL_EOD_PAYLOAD)):
         client = ThetaClient()
         rows = client.fetch_eod(
             root="SPX",

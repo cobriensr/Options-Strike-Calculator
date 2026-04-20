@@ -67,6 +67,8 @@ ml/.pytest_cache/
 ml/.ruff_cache/
 ml/htmlcov/
 ml/.coverage
+ml/src/features/__pycache__
+ml/src/pac/__pycache__
 
 # Superpowers
 .superpowers/

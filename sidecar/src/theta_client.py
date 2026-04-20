@@ -115,9 +115,7 @@ class ThetaClient:
             {"root": root, "exp": _format_yyyymmdd(expiration)},
         )
         raw = body.get("response", [])
-        return sorted(
-            {_strike_wire_to_dollars(s) for s in raw if s is not None}
-        )
+        return sorted({_strike_wire_to_dollars(s) for s in raw if s is not None})
 
     def fetch_eod(
         self,
@@ -212,14 +210,10 @@ class ThetaClient:
                     time.sleep(backoff_s)
                     backoff_s = min(backoff_s * 2, 10.0)
                     continue
-                raise ThetaClientError(
-                    f"Theta {path} network failure: {url}"
-                ) from exc
+                raise ThetaClientError(f"Theta {path} network failure: {url}") from exc
 
         # Defensive — the loop above should always raise or return.
-        raise ThetaClientError(
-            f"Theta {path} exhausted retries: {last_exc}"
-        )
+        raise ThetaClientError(f"Theta {path} exhausted retries: {last_exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -247,9 +241,7 @@ def _parse_body(raw: bytes) -> dict[str, Any]:
     try:
         return json.loads(text)
     except json.JSONDecodeError as exc:
-        raise ThetaClientError(
-            f"Theta returned non-JSON body: {text[:200]!r}"
-        ) from exc
+        raise ThetaClientError(f"Theta returned non-JSON body: {text[:200]!r}") from exc
 
 
 def _parse_yyyymmdd(value: int | str) -> date:

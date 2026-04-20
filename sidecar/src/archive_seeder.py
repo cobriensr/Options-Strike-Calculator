@@ -119,9 +119,7 @@ def is_seeding() -> bool:
 
 
 def _build_request(url: str, token: str) -> urllib.request.Request:
-    return urllib.request.Request(
-        url, headers={"Authorization": f"Bearer {token}"}
-    )
+    return urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
 
 
 def _sha256_of_file(path: Path) -> str:
@@ -211,9 +209,7 @@ def _seed_one_file(
     # not a mysterious KeyError from deep inside the download loop.
     missing = [k for k in ("path", "sha256", "blob_url") if k not in entry]
     if missing:
-        raise SeedIntegrityError(
-            f"Manifest entry missing required keys: {missing}"
-        )
+        raise SeedIntegrityError(f"Manifest entry missing required keys: {missing}")
     rel_path = entry["path"]
     expected_sha = entry["sha256"]
     blob_url = entry["blob_url"]

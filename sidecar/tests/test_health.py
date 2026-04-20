@@ -26,9 +26,7 @@ class _FakeRequest:
 
     def __init__(self, path: str = "/health") -> None:
         self.path = path
-        self.raw = (
-            f"GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode()
-        )
+        self.raw = f"GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode()
 
     def makefile(self, mode: str, *_args: object) -> io.BytesIO:
         if "r" in mode:
@@ -213,9 +211,7 @@ def test_tbbo_day_microstructure_200_happy_path(
         "ofi_15m_mean": 0.02,
         "ofi_1h_mean": 0.03,
     }
-    with patch(
-        "archive_query.tbbo_day_microstructure", return_value=sample
-    ):
+    with patch("archive_query.tbbo_day_microstructure", return_value=sample):
         status, body = _run_request(
             path="/archive/tbbo-day-microstructure?date=2025-01-15&symbol=ES"
         )
@@ -276,9 +272,7 @@ def test_tbbo_ofi_percentile_200_happy_path(
         "std": 0.09,
         "count": 252,
     }
-    with patch(
-        "archive_query.tbbo_ofi_percentile", return_value=sample
-    ):
+    with patch("archive_query.tbbo_ofi_percentile", return_value=sample):
         status, body = _run_request(
             path="/archive/tbbo-ofi-percentile?symbol=NQ&value=0.38&window=1h"
         )
@@ -291,9 +285,7 @@ def test_tbbo_ofi_percentile_404_on_missing_history(
 ) -> None:
     with patch(
         "archive_query.tbbo_ofi_percentile",
-        side_effect=ValueError(
-            "No TBBO ES OFI history available for window 1h"
-        ),
+        side_effect=ValueError("No TBBO ES OFI history available for window 1h"),
     ):
         status, body = _run_request(
             path="/archive/tbbo-ofi-percentile?symbol=ES&value=0.1&window=1h"

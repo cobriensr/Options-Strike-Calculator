@@ -187,9 +187,7 @@ def test_sha_mismatch_is_recorded_as_failure_and_leaves_no_tmp(
 ) -> None:
     files = {"bad.parquet": b"valid-bytes"}
     manifest = _make_manifest(list(files.items()))
-    fake, manifest_url = _urlopen_stub(
-        manifest, files, corrupt_files={"bad.parquet"}
-    )
+    fake, manifest_url = _urlopen_stub(manifest, files, corrupt_files={"bad.parquet"})
 
     with patch.object(archive_seeder.urllib.request, "urlopen", fake):
         result = archive_seeder.seed_from_manifest(
@@ -319,9 +317,7 @@ def test_concurrent_seed_raises_busy_error(tmp_path: Path) -> None:
         "",  # empty
     ],
 )
-def test_path_traversal_is_rejected(
-    tmp_path: Path, malicious_path: str
-) -> None:
+def test_path_traversal_is_rejected(tmp_path: Path, malicious_path: str) -> None:
     """A hostile or broken manifest can't write outside dest_root."""
     files = {malicious_path: b"pwn"} if malicious_path else {"": b"pwn"}
     manifest = {
@@ -366,9 +362,10 @@ def test_malformed_manifest_json_raises(tmp_path: Path) -> None:
     def bad_json_urlopen(_req, *, timeout=None):  # noqa: ARG001
         return _FakeResp(b"this is not json {")
 
-    with patch.object(
-        archive_seeder.urllib.request, "urlopen", bad_json_urlopen
-    ), pytest.raises(json.JSONDecodeError):
+    with (
+        patch.object(archive_seeder.urllib.request, "urlopen", bad_json_urlopen),
+        pytest.raises(json.JSONDecodeError),
+    ):
         archive_seeder.seed_from_manifest(
             "https://blob.example/manifest.json", tmp_path, token="t"
         )
@@ -383,7 +380,11 @@ def test_manifest_entry_missing_sha_is_recorded_as_failure(
     manifest = {
         "schema": 1,
         "files": [
-            {"path": "a.parquet", "size": 4, "blob_url": "https://blob.example/a.parquet"},
+            {
+                "path": "a.parquet",
+                "size": 4,
+                "blob_url": "https://blob.example/a.parquet",
+            },
         ],
     }
 

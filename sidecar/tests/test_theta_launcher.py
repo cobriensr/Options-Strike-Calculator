@@ -28,9 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
 @pytest.fixture(autouse=True)
-def _reset_state(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def _reset_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Reset module state and redirect paths to a tmp dir per test."""
     import theta_launcher
 
@@ -83,9 +81,7 @@ def test_start_returns_false_when_jar_absent(
 
     monkeypatch.setenv("THETA_EMAIL", "user@example.com")
     monkeypatch.setenv("THETA_PASSWORD", "secret")
-    monkeypatch.setattr(
-        theta_launcher, "_JAR_PATH", Path("/definitely/not/here.jar")
-    )
+    monkeypatch.setattr(theta_launcher, "_JAR_PATH", Path("/definitely/not/here.jar"))
 
     captured: list[tuple[str, dict]] = []
     monkeypatch.setattr(
@@ -155,9 +151,7 @@ def test_wait_for_ready_returns_true_and_records_timestamp(
         def __exit__(self, *_exc: object) -> None:
             return None
 
-    monkeypatch.setattr(
-        theta_launcher, "urlopen", lambda *_a, **_kw: _FakeResp()
-    )
+    monkeypatch.setattr(theta_launcher, "urlopen", lambda *_a, **_kw: _FakeResp())
 
     assert theta_launcher._wait_for_ready() is True
     assert theta_launcher._state["last_ready_at"] > 0.0
