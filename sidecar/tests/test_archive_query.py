@@ -478,6 +478,95 @@ def test_day_features_vector_rejects_too_few_bars(tmp_path: Path) -> None:
         archive_query.day_features_vector("2024-06-03", root=tmp_path)
 
 
+def test_day_summary_prediction_has_no_close_field(tmp_path: Path) -> None:
+    """Critical test: leakage-free summary must not embed EOD close.
+    Any regression would re-introduce the data leakage that inflated
+    text-backend hit-rate artifacts."""
+    from datetime import datetime, timezone
+
+    closes = [5300.0 + i for i in range(1, 61)]
+    bars = _sixty_minute_day((2024, 6, 3), 101, 5300.0, closes)
+    _build_archive(
+        tmp_path,
+        bars,
+        [
+            (
+                101,
+                "ESU4",
+                datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc),
+                datetime(2024, 6, 3, 15, 30, tzinfo=timezone.utc),
+            )
+        ],
+    )
+
+    summary = archive_query.day_summary_prediction("2024-06-03", root=tmp_path)
+    # Must NOT contain any form of "close" (EOD outcome).
+    assert "close" not in summary
+    # But must contain the first-hour fields.
+    assert "1h delta" in summary
+    assert "1h high" in summary
+    assert "1h low" in summary
+    assert "1h vol" in summary
+    assert summary.startswith("2024-06-03 ESU4 | open 5300.00")
+
+
+def test_day_summary_prediction_batch_matches_per_date(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+
+    closes_a = [5300.0 + i for i in range(1, 61)]
+    closes_b = [5400.0 + i * 0.5 for i in range(1, 61)]
+    bars = _sixty_minute_day((2024, 6, 3), 101, 5300.0, closes_a)
+    bars += _sixty_minute_day((2024, 6, 4), 101, 5400.0, closes_b)
+    _build_archive(
+        tmp_path,
+        bars,
+        [
+            (
+                101,
+                "ESU4",
+                datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc),
+                datetime(2024, 6, 4, 15, 30, tzinfo=timezone.utc),
+            )
+        ],
+    )
+
+    batch = archive_query.day_summary_prediction_batch(
+        "2024-06-03", "2024-06-04", root=tmp_path
+    )
+    assert len(batch) == 2
+    archive_query.reset_connection_for_tests()
+    single_a = archive_query.day_summary_prediction(
+        "2024-06-03", root=tmp_path
+    )
+    archive_query.reset_connection_for_tests()
+    single_b = archive_query.day_summary_prediction(
+        "2024-06-04", root=tmp_path
+    )
+    by_date = {r["date"]: r for r in batch}
+    # Byte-for-byte match across per-date and batched.
+    assert by_date["2024-06-03"]["summary"] == single_a
+    assert by_date["2024-06-04"]["summary"] == single_b
+
+
+def test_day_summary_prediction_rejects_sparse_days(tmp_path: Path) -> None:
+    """Same <10-bar guard as day_features_vector — sparse days (halts,
+    partial data) produce no embedding rather than a noisy one."""
+    from datetime import datetime, timezone, timedelta
+
+    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    bars = [
+        (d0 + timedelta(minutes=i), 101, 5300.0 + i, 5300.0 + i, 5300.0 + i, 5300.0 + i, 1_000)
+        for i in range(5)
+    ]
+    _build_archive(
+        tmp_path,
+        bars,
+        [(101, "ESU4", d0, d0 + timedelta(minutes=4))],
+    )
+    with pytest.raises(ValueError, match="Insufficient"):
+        archive_query.day_summary_prediction("2024-06-03", root=tmp_path)
+
+
 def test_day_features_batch_matches_per_date_vectors(tmp_path: Path) -> None:
     """Batched output must byte-match what the per-date function
     produces, otherwise rows written by backfill-batch would drift

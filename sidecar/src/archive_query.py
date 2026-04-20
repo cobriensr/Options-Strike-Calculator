@@ -615,6 +615,96 @@ def day_features_vector(
 
 
 # ---------------------------------------------------------------------------
+# Prediction-time summary (leakage-free, first-hour only)
+# ---------------------------------------------------------------------------
+#
+# The "close (delta)" field in day_summary_text embeds an EOD outcome
+# into the query text. When we use that summary as OpenAI embedding
+# input, analog retrieval for a target day effectively filters by
+# future knowledge — target closed +20 pulls analogs that also
+# closed +20, even though at analyze time we wouldn't have known that.
+#
+# The prediction variant only uses information available by +60 min
+# from session open: same time-cut as `day_features_vector`, so text
+# and feature embeddings become apples-to-apples.
+
+
+def day_summary_prediction(
+    date_iso: str,
+    *,
+    root: Path | None = None,
+) -> str:
+    """Return a prediction-time text summary (no future leakage).
+
+    Fields: date, symbol, open, 1h delta, first-hour high/low/range/vol.
+    All extracted from the first 60 minutes of the front-month ES bars.
+
+    Format stability matters: this is the deterministic input to the
+    OpenAI embedding call. Reordering fields invalidates stored rows.
+    """
+    conn = _connection()
+    ohlcv = _ohlcv_glob(root)
+    symbology = _symbology_path(root)
+
+    top_symbol = _front_month_symbol(conn, ohlcv, symbology, date_iso)
+    if top_symbol is None:
+        raise ValueError(f"No ES bars found for {date_iso}")
+
+    row = conn.execute(
+        """
+        WITH f AS (
+            SELECT bars.ts_event, bars.open, bars.high, bars.low,
+                   bars.close, bars.volume
+            FROM read_parquet(?) AS bars
+            JOIN read_parquet(?) AS sym USING (instrument_id)
+            WHERE sym.symbol = ?
+              AND CAST(date_trunc('day', bars.ts_event) AS DATE) = ?::DATE
+        ),
+        bounds AS (
+            SELECT MIN(ts_event) AS open_ts,
+                   FIRST(open ORDER BY ts_event) AS day_open
+            FROM f
+        ),
+        first_hour AS (
+            SELECT f.*
+            FROM f, bounds b
+            WHERE f.ts_event > b.open_ts
+              AND f.ts_event <= b.open_ts + INTERVAL 60 MINUTE
+        )
+        SELECT
+            b.day_open,
+            (SELECT LAST(close ORDER BY ts_event) FROM first_hour) AS close_60,
+            (SELECT MAX(high) FROM first_hour) AS hour_high,
+            (SELECT MIN(low)  FROM first_hour) AS hour_low,
+            (SELECT SUM(volume) FROM first_hour) AS hour_volume,
+            (SELECT COUNT(*) FROM first_hour) AS hour_bars
+        FROM bounds b
+        """,
+        [ohlcv, symbology, top_symbol, date_iso],
+    ).fetchone()
+
+    assert row is not None
+    day_open, close_60, hour_high, hour_low, hour_volume, hour_bars = row
+
+    if hour_bars is None or hour_bars < 10:
+        raise ValueError(
+            f"Insufficient first-hour bars for {date_iso}: got {hour_bars}"
+        )
+
+    d1 = float(close_60) - float(day_open)
+
+    return (
+        f"{date_iso} {top_symbol} | "
+        f"open {float(day_open):.2f} | "
+        f"1h delta {d1:+.2f} | "
+        f"1h high {float(hour_high):.2f} | "
+        f"1h low {float(hour_low):.2f} | "
+        f"1h range {float(hour_high) - float(hour_low):.2f} | "
+        f"1h vol {_format_volume(float(hour_volume))}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Batched variants — amortize Parquet scan across many dates in one query
 # ---------------------------------------------------------------------------
 
@@ -858,6 +948,101 @@ def day_summary_batch(
             f"vol {_format_volume(float(day_volume))} | "
             f"close {float(day_close):.2f} "
             f"({(float(day_close) - float(day_open)):+.2f})"
+        )
+        out.append({"date": date_str, "symbol": symbol, "summary": summary})
+    return out
+
+
+def day_summary_prediction_batch(
+    start_date: str,
+    end_date: str,
+    *,
+    root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Batched leakage-free summaries. Byte-identical format to
+    `day_summary_prediction`. Single DuckDB query per call.
+    """
+    conn = _connection()
+    ohlcv = _ohlcv_glob(root)
+    symbology = _symbology_path(root)
+
+    rows = conn.execute(
+        """
+        WITH filtered AS (
+            SELECT bars.ts_event, bars.open, bars.high, bars.low,
+                   bars.close, bars.volume,
+                   sym.symbol,
+                   CAST(date_trunc('day', bars.ts_event) AS DATE) AS day
+            FROM read_parquet(?) AS bars
+            JOIN read_parquet(?) AS sym USING (instrument_id)
+            WHERE sym.symbol LIKE 'ES%'
+              AND strpos(sym.symbol, ' ') = 0
+              AND CAST(date_trunc('day', bars.ts_event) AS DATE)
+                  BETWEEN ?::DATE AND ?::DATE
+        ),
+        contract_volume AS (
+            SELECT day, symbol, SUM(volume) AS total_vol
+            FROM filtered GROUP BY day, symbol
+        ),
+        front_contract AS (
+            SELECT day, symbol FROM (
+                SELECT day, symbol,
+                       ROW_NUMBER() OVER (PARTITION BY day ORDER BY total_vol DESC) AS rk
+                FROM contract_volume
+            ) r WHERE rk = 1
+        ),
+        fb AS (
+            SELECT f.* FROM filtered f
+            JOIN front_contract fc USING (day, symbol)
+        ),
+        day_bounds AS (
+            SELECT day, symbol,
+                   MIN(ts_event) AS open_ts,
+                   FIRST(open ORDER BY ts_event) AS day_open
+            FROM fb
+            GROUP BY day, symbol
+        ),
+        first_hour AS (
+            SELECT fb.day, fb.symbol, fb.ts_event, fb.high, fb.low,
+                   fb.close, fb.volume,
+                   db.day_open, db.open_ts
+            FROM fb
+            JOIN day_bounds db USING (day, symbol)
+            WHERE fb.ts_event > db.open_ts
+              AND fb.ts_event <= db.open_ts + INTERVAL 60 MINUTE
+        )
+        SELECT
+            db.day,
+            db.symbol,
+            db.day_open,
+            LAST(fh.close ORDER BY fh.ts_event) AS close_60,
+            MAX(fh.high) AS hour_high,
+            MIN(fh.low)  AS hour_low,
+            SUM(fh.volume) AS hour_volume,
+            COUNT(*) AS hour_bars
+        FROM day_bounds db
+        JOIN first_hour fh USING (day, symbol)
+        GROUP BY db.day, db.symbol, db.day_open
+        ORDER BY db.day
+        """,
+        [ohlcv, symbology, start_date, end_date],
+    ).fetchall()
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        day, symbol, day_open, close_60, hour_high, hour_low, hour_volume, hour_bars = row
+        if hour_bars < 10:
+            continue
+        d1 = float(close_60) - float(day_open)
+        date_str = day.isoformat() if hasattr(day, "isoformat") else str(day)
+        summary = (
+            f"{date_str} {symbol} | "
+            f"open {float(day_open):.2f} | "
+            f"1h delta {d1:+.2f} | "
+            f"1h high {float(hour_high):.2f} | "
+            f"1h low {float(hour_low):.2f} | "
+            f"1h range {float(hour_high) - float(hour_low):.2f} | "
+            f"1h vol {_format_volume(float(hour_volume))}"
         )
         out.append({"date": date_str, "symbol": symbol, "summary": summary})
     return out

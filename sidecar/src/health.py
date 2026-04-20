@@ -59,6 +59,12 @@ class HealthHandler(BaseHTTPRequestHandler):
         if self.path.startswith("/archive/day-summary-batch"):
             self._handle_archive_day_summary_batch()
             return
+        if self.path.startswith("/archive/day-summary-prediction-batch"):
+            self._handle_archive_day_summary_prediction_batch()
+            return
+        if self.path.startswith("/archive/day-summary-prediction"):
+            self._handle_archive_day_summary_prediction()
+            return
         if self.path.startswith("/archive/day-features"):
             self._handle_archive_day_features()
             return
@@ -376,6 +382,70 @@ class HealthHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"from": start, "to": end, "rows": rows})
         except Exception as exc:  # noqa: BLE001
             log.error("day-summary-batch failed for %s..%s: %s", start, end, exc)
+            self._send_json(500, {"error": "query failed"})
+
+    def _handle_archive_day_summary_prediction(self) -> None:
+        """GET /archive/day-summary-prediction?date=YYYY-MM-DD
+
+        Leakage-free text summary for a single date. Same endpoint
+        shape as /archive/day-summary but the response text only
+        includes fields available by the end of the first trading hour
+        (no EOD close, no full-day range, no full-day volume).
+        """
+        from urllib.parse import parse_qs, urlparse
+        import re
+
+        qs = parse_qs(urlparse(self.path).query)
+        date = (qs.get("date") or [""])[0]
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            self._send_json(400, {"error": "date must be YYYY-MM-DD"})
+            return
+        try:
+            import archive_query
+
+            text = archive_query.day_summary_prediction(date)
+            self._send_json(200, {"date": date, "summary": text})
+        except ValueError as exc:
+            self._send_json(404, {"error": str(exc)})
+        except Exception as exc:  # noqa: BLE001
+            log.error("day-summary-prediction failed for %s: %s", date, exc)
+            self._send_json(500, {"error": "query failed"})
+
+    def _handle_archive_day_summary_prediction_batch(self) -> None:
+        """GET /archive/day-summary-prediction-batch?from=Y-M-D&to=Y-M-D"""
+        from urllib.parse import parse_qs, urlparse
+        import re
+        from datetime import date
+
+        qs = parse_qs(urlparse(self.path).query)
+        start = (qs.get("from") or [""])[0]
+        end = (qs.get("to") or [""])[0]
+        for v in (start, end):
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+                self._send_json(400, {"error": "from/to must be YYYY-MM-DD"})
+                return
+        try:
+            d0 = date.fromisoformat(start)
+            d1 = date.fromisoformat(end)
+        except ValueError:
+            self._send_json(400, {"error": "invalid date"})
+            return
+        if d1 < d0:
+            self._send_json(400, {"error": "to must be >= from"})
+            return
+        if (d1 - d0).days > 366 * 3:
+            self._send_json(400, {"error": "range cannot exceed 3 years"})
+            return
+        try:
+            import archive_query
+
+            rows = archive_query.day_summary_prediction_batch(start, end)
+            self._send_json(200, {"from": start, "to": end, "rows": rows})
+        except Exception as exc:  # noqa: BLE001
+            log.error(
+                "day-summary-prediction-batch failed %s..%s: %s",
+                start, end, exc,
+            )
             self._send_json(500, {"error": "query failed"})
 
     def _send_json(self, status: int, body: dict[str, object]) -> None:

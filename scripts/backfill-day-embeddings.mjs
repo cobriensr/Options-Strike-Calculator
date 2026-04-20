@@ -3,32 +3,31 @@
 /**
  * Backfill the day_embeddings table from the 16-year ES archive.
  *
- * Walks every weekday from 2010-06-07 through yesterday and for each
- * one:
- *   1. Fetches the canonical summary from the sidecar's
- *      /archive/day-summary endpoint.
- *   2. Embeds it via OpenAI text-embedding-3-large (2000 dims).
- *   3. UPSERTs into day_embeddings.
+ * Uses the LEAKAGE-FREE prediction summary endpoint
+ * (/archive/day-summary-prediction-batch) — fields only include
+ * first-hour data (open, 1h delta, 1h high/low/range/vol). The EOD
+ * close is intentionally omitted so embeddings don't carry future
+ * information into analog retrieval.
  *
- * Skips:
- *   - Weekends (no trading).
- *   - Dates the sidecar returns 404 for (market holidays, converter-
- *     missing data, or the single archive-boundary day).
+ * Pipeline:
+ *   1. Fetch summaries in 6-month chunks (one batched sidecar call
+ *      per chunk — single DuckDB scan vs N cold scans).
+ *   2. Embed 100 summaries per OpenAI call (model accepts arrays).
+ *   3. Upsert rows to Neon in parallel.
  *
- * Idempotent: re-running against a populated table refreshes rows
- * (useful when the summary format changes). ~4000 days × 1 OpenAI
- * call each = ~$0.05 at list price; a few minutes of wall clock.
+ * Skips weekends + dates with no ES bars + dates with <10 first-hour
+ * bars (sparse/halt days). Idempotent via ON CONFLICT DO UPDATE so
+ * re-running refreshes existing rows.
  *
  * Usage:
  *   source .env.local && node scripts/backfill-day-embeddings.mjs
  *
  * Optional env:
- *   BACKFILL_START  — YYYY-MM-DD (default: 2010-06-07)
- *   BACKFILL_END    — YYYY-MM-DD (default: yesterday in UTC)
- *   SIDECAR_URL     — required (typically set in .env.local for Vercel)
+ *   BACKFILL_START  — YYYY-MM-DD (default 2010-06-07)
+ *   BACKFILL_END    — YYYY-MM-DD (default yesterday UTC)
+ *   SIDECAR_URL     — required
  *   OPENAI_API_KEY  — required
  *   DATABASE_URL    — required (Neon Postgres)
- *   CONCURRENCY     — parallel API calls (default 4)
  */
 
 import process from 'node:process';
@@ -41,7 +40,6 @@ import OpenAI from 'openai';
 const SIDECAR_URL = process.env.SIDECAR_URL?.trim().replace(/\/$/, '');
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const DATABASE_URL = process.env.DATABASE_URL;
-const CONCURRENCY = Number.parseInt(process.env.CONCURRENCY ?? '4', 10);
 const START = process.env.BACKFILL_START ?? '2010-06-07';
 const END =
   process.env.BACKFILL_END ??
@@ -53,6 +51,7 @@ const END =
 
 const EMBEDDING_MODEL = 'text-embedding-3-large';
 const EMBEDDING_DIMS = 2000;
+const EMBED_BATCH_SIZE = 100;
 
 for (const [k, v] of Object.entries({
   SIDECAR_URL,
@@ -70,34 +69,48 @@ const sql = neon(DATABASE_URL);
 
 // ── Helpers ────────────────────────────────────────────────────────
 
-function* weekdaysBetween(startIso, endIso) {
-  const start = new Date(`${startIso}T00:00:00Z`);
-  const end = new Date(`${endIso}T00:00:00Z`);
-  const cur = new Date(start);
-  while (cur <= end) {
-    const day = cur.getUTCDay();
-    if (day !== 0 && day !== 6) {
-      yield cur.toISOString().slice(0, 10);
-    }
-    cur.setUTCDate(cur.getUTCDate() + 1);
+function addMonthsClamped(fromIso, months, endIso) {
+  const d = new Date(`${fromIso}T00:00:00Z`);
+  d.setUTCMonth(d.getUTCMonth() + months);
+  const candidate = d.toISOString().slice(0, 10);
+  return candidate < endIso ? candidate : endIso;
+}
+
+function buildRanges(startIso, endIso) {
+  const ranges = [];
+  let cur = startIso;
+  while (cur <= endIso) {
+    const stop = addMonthsClamped(cur, 6, endIso);
+    ranges.push([cur, stop]);
+    if (stop === endIso) break;
+    const next = new Date(new Date(`${stop}T00:00:00Z`).getTime() + 86400000)
+      .toISOString()
+      .slice(0, 10);
+    if (next > endIso) break;
+    cur = next;
   }
+  return ranges;
 }
 
-async function fetchSummary(dateIso) {
-  const res = await fetch(`${SIDECAR_URL}/archive/day-summary?date=${dateIso}`);
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`sidecar ${res.status}: ${await res.text()}`);
+async function fetchSummariesBatch(fromIso, toIso) {
+  const res = await fetch(
+    `${SIDECAR_URL}/archive/day-summary-prediction-batch?from=${fromIso}&to=${toIso}`,
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`sidecar ${res.status}: ${text.slice(0, 200)}`);
+  }
   const body = await res.json();
-  return body.summary ?? null;
+  return body.rows ?? [];
 }
 
-async function embed(text) {
+async function embedBatch(texts) {
   const r = await openai.embeddings.create({
     model: EMBEDDING_MODEL,
-    input: text,
+    input: texts,
     dimensions: EMBEDDING_DIMS,
   });
-  return r.data[0]?.embedding ?? null;
+  return r.data.map((d) => d.embedding);
 }
 
 async function upsert(date, symbol, summary, embedding) {
@@ -121,68 +134,85 @@ async function upsert(date, symbol, summary, embedding) {
   `;
 }
 
-async function handleOne(date, counters) {
-  try {
-    const summary = await fetchSummary(date);
-    if (!summary) {
-      counters.skippedMissing += 1;
-      return;
-    }
-    // The canonical summary starts with "YYYY-MM-DD SYM | ...".
-    const parts = summary.split(' ');
-    const symbol = parts[1] ?? 'ES';
-    const embedding = await embed(summary);
-    if (!embedding || embedding.length !== EMBEDDING_DIMS) {
-      counters.failed += 1;
-      console.warn(`  ${date}: embed returned unexpected shape`);
-      return;
-    }
-    await upsert(date, symbol, summary, embedding);
-    counters.upserted += 1;
-  } catch (err) {
-    counters.failed += 1;
-    console.warn(`  ${date}: ${err.message}`);
+async function handleRange(fromIso, toIso, counters) {
+  const rows = await fetchSummariesBatch(fromIso, toIso);
+  if (rows.length === 0) {
+    counters.emptyChunks += 1;
+    return;
   }
-}
 
-async function runPool(dates, concurrency, counters) {
-  let idx = 0;
-  async function next() {
-    const i = idx++;
-    if (i >= dates.length) return;
-    await handleOne(dates[i], counters);
-    const done = counters.upserted + counters.skippedMissing + counters.failed;
-    if (done % 100 === 0) {
-      const pct = ((done / dates.length) * 100).toFixed(1);
-      console.log(
-        `  [${pct}%] upserted=${counters.upserted} skipped=${counters.skippedMissing} failed=${counters.failed}`,
-      );
+  // Embed in sub-chunks of EMBED_BATCH_SIZE (OpenAI accepts arrays).
+  for (let i = 0; i < rows.length; i += EMBED_BATCH_SIZE) {
+    const slice = rows.slice(i, i + EMBED_BATCH_SIZE);
+    const texts = slice.map((r) => r.summary);
+    let embeddings;
+    try {
+      embeddings = await embedBatch(texts);
+    } catch (err) {
+      counters.failed += slice.length;
+      console.warn(`  ${fromIso}..${toIso} embed batch failed: ${err.message}`);
+      continue;
     }
-    await next();
+
+    if (embeddings.length !== slice.length) {
+      counters.failed += slice.length;
+      console.warn(
+        `  embed returned ${embeddings.length} vectors for ${slice.length} inputs`,
+      );
+      continue;
+    }
+
+    await Promise.all(
+      slice.map(async (r, j) => {
+        const vec = embeddings[j];
+        if (!vec || vec.length !== EMBEDDING_DIMS) {
+          counters.failed += 1;
+          return;
+        }
+        try {
+          await upsert(r.date, r.symbol ?? 'ES', r.summary, vec);
+          counters.upserted += 1;
+        } catch (err) {
+          counters.failed += 1;
+          console.warn(`  ${r.date}: ${err.message}`);
+        }
+      }),
+    );
   }
-  await Promise.all(
-    Array.from({ length: Math.min(concurrency, dates.length) }, next),
-  );
 }
 
 // ── Main ───────────────────────────────────────────────────────────
 
 async function main() {
   console.log(
-    `Backfilling day_embeddings from ${START} through ${END} (concurrency=${CONCURRENCY})`,
+    `Backfilling day_embeddings (prediction summary) from ${START} through ${END}`,
   );
-  const dates = [...weekdaysBetween(START, END)];
-  console.log(`  ${dates.length} weekdays in range\n`);
+  const ranges = buildRanges(START, END);
+  console.log(`  ${ranges.length} 6-month chunks\n`);
 
-  const counters = { upserted: 0, skippedMissing: 0, failed: 0 };
+  const counters = { upserted: 0, failed: 0, emptyChunks: 0 };
   const startWall = Date.now();
-  await runPool(dates, CONCURRENCY, counters);
-  const elapsed = ((Date.now() - startWall) / 1000).toFixed(1);
 
-  console.log(`\n✓ Backfill complete in ${elapsed}s`);
-  console.log(`  upserted:         ${counters.upserted}`);
-  console.log(`  skipped (no data): ${counters.skippedMissing}`);
-  console.log(`  failed:           ${counters.failed}`);
+  for (const [i, [from, to]] of ranges.entries()) {
+    const t0 = Date.now();
+    try {
+      await handleRange(from, to, counters);
+    } catch (err) {
+      counters.failed += 1;
+      console.warn(`  ${from}..${to} range failed: ${err.message}`);
+    }
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    const pct = (((i + 1) / ranges.length) * 100).toFixed(1);
+    console.log(
+      `  [${pct}%] ${from}..${to} ${elapsed}s — upserted=${counters.upserted} failed=${counters.failed}`,
+    );
+  }
+
+  const totalElapsed = ((Date.now() - startWall) / 1000).toFixed(1);
+  console.log(`\n✓ Backfill complete in ${totalElapsed}s`);
+  console.log(`  upserted:     ${counters.upserted}`);
+  console.log(`  empty chunks: ${counters.emptyChunks}`);
+  console.log(`  failed:       ${counters.failed}`);
 
   const [row] = await sql`SELECT COUNT(*)::int AS n FROM day_embeddings`;
   console.log(`\n  day_embeddings rows in DB: ${row.n}`);
