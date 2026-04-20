@@ -38,6 +38,7 @@ os.environ.setdefault("SMC_CREDIT", "0")
 import pandas as pd  # noqa: E402
 from smartmoneyconcepts import smc  # noqa: E402
 
+from pac.features import add_all_features  # noqa: E402
 from pac.order_blocks import (  # noqa: E402
     enrich_ob_with_z,
     session_vwap_and_std,
@@ -158,6 +159,11 @@ class PACEngine:
         out["FVG_MitigatedIndex"] = fvg["MitigatedIndex"].values
         out["session_vwap"] = stats["session_vwap"].values
         out["session_std"] = stats["session_std"].values
+
+        # E1.4d feature additions: session bucket, ATR/ADX, VWAP z, OB strength,
+        # event-day flags. Behavior of structure detection is unchanged — these
+        # only append columns the v4 sweep can filter on.
+        out = add_all_features(out)
         return out
 
     def current_state(self, bars_up_to_now: pd.DataFrame) -> CurrentState:
