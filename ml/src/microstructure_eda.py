@@ -38,7 +38,7 @@ import argparse
 import json
 import logging
 import sys
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -144,37 +144,64 @@ def _numeric_feature_columns(feature_df: pd.DataFrame) -> list[str]:
     ]
 
 
+def _clean_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop degraded rows (if column present) and rows missing ``ret_day``.
+
+    Shared between Q5 correlation and Q6 cohort analyses — both filter
+    out degraded days because they're outliers for signal-discovery
+    purposes (see Phase 4a ``tbbo_condition.json``). Q1 + Q2 deliberately
+    keep degraded rows because outlier inspection is the explicit goal.
+    """
+    frame = df[~df["is_degraded"]] if "is_degraded" in df.columns else df
+    return frame.dropna(subset=["ret_day"])
+
+
 # ---------------------------------------------------------------------------
 # Outcome derivation (Q4 prerequisite)
 # ---------------------------------------------------------------------------
 
 
-def _fetch_day_open_close(
+def _batched_day_aggregates(
     conn: duckdb.DuckDBPyConnection,
     ohlcv_glob: str,
     symbology_path: str,
-    contract: str,
-    date_iso: str,
-) -> tuple[float | None, float | None]:
-    """First-open / last-close for ``contract`` on UTC day ``date_iso``.
+    keys: pd.DataFrame,
+) -> pd.DataFrame:
+    """One DuckDB query for per-(date, contract) open/close aggregates.
 
-    Returns ``(None, None)`` if no OHLCV rows match. Uses the same UTC
-    bucketing as the Phase 4c feature builder.
+    ``keys`` must carry columns ``date`` (``date`` dtype) and ``contract``
+    (str). Returns a DataFrame with ``date``, ``contract``, ``day_open``,
+    ``day_close``; keys with no matching OHLCV are simply absent.
+
+    Batches what used to be N per-row queries into a single scan. DuckDB
+    registers ``keys`` zero-copy via ``register`` and prunes year
+    partitions it doesn't need through the join predicate.
     """
-    row = conn.execute(
-        """
-        SELECT FIRST(open ORDER BY ts_event) AS day_open,
-               LAST(close  ORDER BY ts_event) AS day_close
-        FROM read_parquet(?) AS bars
-        JOIN read_parquet(?) AS sym USING (instrument_id)
-        WHERE sym.symbol = ?
-          AND CAST(date_trunc('day', bars.ts_event) AS DATE) = ?::DATE
-        """,
-        [ohlcv_glob, symbology_path, contract, date_iso],
-    ).fetchone()
-    if row is None or row[0] is None:
-        return None, None
-    return float(row[0]), float(row[1])
+    conn.register("target_keys", keys)
+    try:
+        df = conn.execute(
+            """
+            SELECT
+                k.date           AS date,
+                k.contract       AS contract,
+                FIRST(bars.open  ORDER BY bars.ts_event) AS day_open,
+                LAST(bars.close  ORDER BY bars.ts_event) AS day_close
+            FROM target_keys k
+            JOIN read_parquet(?) AS sym ON sym.symbol = k.contract
+            JOIN read_parquet(?) AS bars USING (instrument_id)
+            WHERE CAST(date_trunc('day', bars.ts_event) AS DATE) = k.date
+            GROUP BY k.date, k.contract
+            """,
+            [symbology_path, ohlcv_glob],
+        ).fetchdf()
+    finally:
+        conn.unregister("target_keys")
+
+    # DuckDB returns DATE as pandas datetime64[us]; coerce to python date so
+    # downstream merges key on the same dtype as the caller's key DataFrame.
+    if not df.empty and "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"]).dt.date
+    return df
 
 
 def derive_outcomes(
@@ -189,117 +216,152 @@ def derive_outcomes(
 
     * ``ret_day`` = (day_close - day_open) / day_open, using the contract's
       own open/close on that UTC day.
-    * ``ret_5d`` = (close_{t+5d} - close_t) / close_t where t+5d is the
-      5th calendar-forward date that still has OHLCV for the same contract;
-      NaN if the contract has no close on the t+5 date (roll boundary or
-      outside archive).
+    * ``ret_5d`` = (close_{t'} - close_t) / close_t where t' is the first
+      available trading date for the same contract in the window
+      ``[t+FORWARD_DAYS, t+FORWARD_DAYS+4]`` calendar days forward. This
+      coarse approximation skips weekends + holidays without requiring a
+      trading-calendar mask. NaN if no close is available in that window
+      (e.g., near the end of the archive, or after a contract rolled).
     * ``regime_label`` -> {"up", "flat", "down"} per the thresholds.
 
     Rows with no OHLCV data for their contract on ``date`` are dropped with
     a warning (degenerate — usually points at a symbology mismatch).
 
     The function never mutates ``feature_df``; returns a new DataFrame.
+
+    Implementation note: builds two key sets (same-day and forward-window)
+    and fires **one DuckDB query per set**, then computes returns in
+    pandas. Previously one query per row made a 624-row backfill scan the
+    3.9 GB archive 1,250 times (~20 minutes); batching collapses that to
+    2 scans.
     """
     owns_conn = conn is None
     if conn is None:
         conn = _new_connection()
 
+    def _to_date(v: object) -> date:
+        if isinstance(v, datetime):
+            return v.date()
+        if isinstance(v, date):
+            return v
+        return date.fromisoformat(str(v))
+
     try:
-        records: list[dict[str, Any]] = []
-        dropped = 0
-        for _, row in feature_df.iterrows():
-            date_val = row["date"]
-            date_iso = (
-                date_val.isoformat()
-                if isinstance(date_val, date)
-                else str(date_val)
-            )
-            contract = row["front_month_contract"]
-            day_open, day_close = _fetch_day_open_close(
-                conn, ohlcv_glob, symbology_path, contract, date_iso
-            )
-            if day_open is None or day_open == 0:
-                dropped += 1
-                log.warning(
-                    "Dropping row %s/%s: no OHLCV for contract %s",
-                    date_iso,
-                    row["symbol"],
-                    contract,
-                )
-                continue
-            ret_day = (day_close - day_open) / day_open
+        # Normalize ``date`` to python ``datetime.date`` so the DuckDB
+        # registration has a single predictable type.
+        work = feature_df[["date", "symbol", "front_month_contract"]].copy()
+        work["date"] = work["date"].map(_to_date)
+        work["contract"] = work["front_month_contract"].astype(str)
 
-            # ret_5d: find close 5 calendar days forward for the same contract.
-            # Calendar days, not trading days — the archive doesn't carry a
-            # trading-day index. 5 calendar days ~= 3-5 trading days depending
-            # on weekends; acceptable for a coarse forward-window feature.
-            target_date = (
-                date_val
-                if isinstance(date_val, date)
-                else date.fromisoformat(date_iso)
-            )
-            # Iterate up to FORWARD_DAYS+5 calendar days forward looking for
-            # the next date with a close for this contract. This is robust to
-            # weekends and holidays — the first found close wins.
-            future_close: float | None = None
-            for offset in range(FORWARD_DAYS, FORWARD_DAYS + 5):
-                try:
-                    future_iso = (
-                        target_date.toordinal() + offset
-                    )
-                    future_date = date.fromordinal(future_iso)
-                except (OverflowError, ValueError):
-                    break
-                _, f_close = _fetch_day_open_close(
-                    conn,
-                    ohlcv_glob,
-                    symbology_path,
-                    contract,
-                    future_date.isoformat(),
-                )
-                if f_close is not None:
-                    future_close = f_close
-                    break
-            ret_5d = (
-                (future_close - day_close) / day_close
-                if future_close is not None and day_close
-                else float("nan")
-            )
+        # --- Same-day aggregates --------------------------------------------
+        same_day_keys = (
+            work[["date", "contract"]].drop_duplicates().reset_index(drop=True)
+        )
+        same_day = _batched_day_aggregates(
+            conn, ohlcv_glob, symbology_path, same_day_keys
+        )
 
-            if ret_day > OUTCOME_UP_THRESHOLD:
-                regime = "up"
-            elif ret_day < OUTCOME_DOWN_THRESHOLD:
-                regime = "down"
-            else:
-                regime = "flat"
-
-            records.append(
-                {
-                    "date": date_val,
-                    "symbol": row["symbol"],
-                    "ret_day": ret_day,
-                    "ret_5d": ret_5d,
-                    "regime_label": regime,
-                }
-            )
-
-        if dropped:
-            log.warning("derive_outcomes: dropped %d row(s) with no OHLCV", dropped)
+        # --- Forward-window aggregates --------------------------------------
+        # Build (target_date, contract, offset, forward_date) where
+        # offset ∈ [FORWARD_DAYS, FORWARD_DAYS+4]. After fetching, pick the
+        # first offset per (target, contract) that has a close (weekends
+        # and holidays fall through).
+        offsets = list(range(FORWARD_DAYS, FORWARD_DAYS + 5))
+        forward_rows: list[dict[str, object]] = [
+            {
+                "target_date": row["date"],
+                "contract": row["contract"],
+                "offset": off,
+                "date": row["date"] + timedelta(days=off),
+            }
+            for _, row in same_day_keys.iterrows()
+            for off in offsets
+        ]
+        forward_keys_full = pd.DataFrame(forward_rows)
+        # Dedupe — many offsets map to the same (date, contract) pair across
+        # feature rows; the DuckDB side only needs unique pairs.
+        forward_keys = (
+            forward_keys_full[["date", "contract"]]
+            .drop_duplicates()
+            .reset_index(drop=True)
+        )
+        forward_agg = _batched_day_aggregates(
+            conn, ohlcv_glob, symbology_path, forward_keys
+        )
     finally:
         if owns_conn:
             conn.close()
 
-    outcomes = pd.DataFrame.from_records(records)
-    if outcomes.empty:
-        # Return feature_df with NaN outcome columns so downstream code has a
-        # stable shape to work with.
+    # --- Pandas-side assembly ----------------------------------------------
+    work = work.merge(same_day, on=["date", "contract"], how="left")
+
+    missing_mask = work["day_open"].isna() | (work["day_open"] == 0)
+    dropped = int(missing_mask.sum())
+    if dropped:
+        for _, miss in work[missing_mask].iterrows():
+            log.warning(
+                "Dropping row %s/%s: no OHLCV for contract %s",
+                miss["date"].isoformat(),
+                miss["symbol"],
+                miss["contract"],
+            )
+        log.warning("derive_outcomes: dropped %d row(s) with no OHLCV", dropped)
+
+    work = work[~missing_mask].copy()
+    work["ret_day"] = (work["day_close"] - work["day_open"]) / work["day_open"]
+
+    # Resolve ret_5d: join forward_agg onto the full (target, offset) grid,
+    # keep rows that have a close, then pick the SMALLEST offset per
+    # (target_date, contract). That yields "first available close in the
+    # [t+FORWARD_DAYS, t+FORWARD_DAYS+4] window" semantics.
+    if not forward_keys_full.empty:
+        fk = forward_keys_full.merge(
+            forward_agg[["date", "contract", "day_close"]],
+            on=["date", "contract"],
+            how="left",
+        )
+        fk = fk[fk["day_close"].notna()]
+        if not fk.empty:
+            fk = fk.sort_values(["target_date", "contract", "offset"])
+            first_future = fk.drop_duplicates(
+                subset=["target_date", "contract"], keep="first"
+            )[["target_date", "contract", "day_close"]].rename(
+                columns={"target_date": "date", "day_close": "future_close"}
+            )
+            work = work.merge(first_future, on=["date", "contract"], how="left")
+        else:
+            work["future_close"] = float("nan")
+    else:
+        work["future_close"] = float("nan")
+
+    work["ret_5d"] = np.where(
+        work["future_close"].notna() & (work["day_close"] != 0),
+        (work["future_close"] - work["day_close"]) / work["day_close"],
+        float("nan"),
+    )
+
+    def _classify(r: float) -> str:
+        if r > OUTCOME_UP_THRESHOLD:
+            return "up"
+        if r < OUTCOME_DOWN_THRESHOLD:
+            return "down"
+        return "flat"
+
+    work["regime_label"] = work["ret_day"].map(_classify)
+
+    if work.empty:
         out = feature_df.copy()
         out["ret_day"] = float("nan")
         out["ret_5d"] = float("nan")
         out["regime_label"] = "flat"
-        return out.iloc[0:0]  # zero rows — caller can detect
+        return out.iloc[0:0]
 
-    merged = feature_df.merge(outcomes, on=["date", "symbol"], how="inner")
+    outcomes = work[["date", "symbol", "ret_day", "ret_5d", "regime_label"]]
+    # Normalize feature_df["date"] for a clean merge regardless of the
+    # source dtype (object vs datetime64).
+    left = feature_df.copy()
+    left["date"] = left["date"].map(_to_date)
+    merged = left.merge(outcomes, on=["date", "symbol"], how="inner")
     return merged
 
 
@@ -653,7 +715,7 @@ def q5_feature_vs_return(df: pd.DataFrame, out_path: Path) -> dict[str, Any]:
     # Drop constants.
     features = [f for f in features if df[f].nunique(dropna=True) > 1]
 
-    clean = df[~df["is_degraded"]].dropna(subset=["ret_day"]) if "is_degraded" in df.columns else df.dropna(subset=["ret_day"])
+    clean = _clean_frame(df)
     symbols = sorted(clean["symbol"].unique())
     n_tests = max(1, len(features) * len(symbols))
 
@@ -763,7 +825,7 @@ def q6_cohorts(
     Uses Mann-Whitney U (non-parametric, no normality assumption). Excludes
     ``is_degraded=True`` rows.
     """
-    clean = df[~df["is_degraded"]].dropna(subset=["ret_day"]) if "is_degraded" in df.columns else df.dropna(subset=["ret_day"])
+    clean = _clean_frame(df)
 
     cohorts: list[dict[str, Any]] = []
     usable = [f for f in top_features if f in clean.columns]
