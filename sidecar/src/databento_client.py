@@ -796,8 +796,23 @@ class DatabentoClient:
         # Extract key fields from the definition
         instrument_class = getattr(record, "instrument_class", None)
         if instrument_class not in ("C", "P"):
-            # Not a call or put -- could be a future ('F') or other
+            # Not a call or put -- could be a future ('F') or other.
+            # NOTE: databento_dbn returns an InstrumentClass enum whose
+            # __eq__ compares True against its string value, so this
+            # ``in`` check works for both enum and bare-string inputs.
             return
+
+        # SIDE-016: coerce InstrumentClass enum → string before storing.
+        # databento_dbn.InstrumentClass.CALL compares == 'C' (that's why
+        # the filter above works) but the value stored here propagates
+        # through _handle_trade / _handle_stat into psycopg2, which
+        # can't adapt the enum ("can't adapt type 'databento_dbn.
+        # InstrumentClass'"). The .value attribute gives the bare 'C'/
+        # 'P' string; the str() fallback covers older SDKs where
+        # instrument_class is already a bare string.
+        option_type_str = getattr(
+            instrument_class, "value", str(instrument_class)
+        )
 
         strike_raw = getattr(record, "strike_price", 0)
         strike = float(strike_raw) / 1e9 if strike_raw else 0
@@ -814,7 +829,7 @@ class DatabentoClient:
         with self._lock:
             self._option_definitions[iid] = {
                 "strike": strike,
-                "option_type": instrument_class,  # 'C' or 'P'
+                "option_type": option_type_str,  # 'C' or 'P'
                 "expiry": expiry,
             }
 
@@ -822,7 +837,7 @@ class DatabentoClient:
             "Definition: iid=%d strike=%.2f type=%s expiry=%s",
             iid,
             strike,
-            instrument_class,
+            option_type_str,
             expiry,
         )
 

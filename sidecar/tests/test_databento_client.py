@@ -788,3 +788,87 @@ class TestUpdateAtmStrikes:
         client._options_subscription_pending = True
         client._update_atm_strikes(5800.0)
         assert client._options_subscription_pending is False
+
+
+# ---------------------------------------------------------------------------
+# SIDE-016 — option_type must be coerced to string before cache insert
+# ---------------------------------------------------------------------------
+
+
+class TestDefinitionOptionTypeCoercion:
+    """databento_dbn.InstrumentClass is a Rust-backed enum whose __eq__
+    compares True against its string value (so the 'C'/'P' filter works
+    for both enum and string inputs) — but the actual value is still the
+    enum, which psycopg2 cannot adapt. _handle_definition must coerce
+    to the bare string before storing in _option_definitions, or
+    downstream batch_insert_options_trades raises "can't adapt type
+    'databento_dbn.InstrumentClass'" on every flush.
+    """
+
+    def _make_def_record(
+        self,
+        *,
+        instrument_class: object,
+        iid: int = 1,
+        strike_raw: int = 5800_000_000_000,  # 5800.00 in 1e-9
+        expiration_ns: int = 1_780_000_000_000_000_000,
+    ) -> MagicMock:
+        rec = MagicMock()
+        rec.instrument_class = instrument_class
+        rec.instrument_id = iid
+        rec.strike_price = strike_raw
+        rec.expiration = expiration_ns
+        return rec
+
+    def test_enum_instrument_class_stored_as_string(
+        self, client: DatabentoClient
+    ) -> None:
+        """An InstrumentClass-like enum must land in _option_definitions
+        as a bare 'C' or 'P', not the enum instance."""
+
+        # Simulate the databento_dbn.InstrumentClass enum: has a `.value`
+        # attribute returning the bare string, and __eq__ compares equal
+        # to that string value so the ('C', 'P') filter passes.
+        class FakeEnum:
+            def __init__(self, value: str) -> None:
+                self.value = value
+
+            def __eq__(self, other: object) -> bool:
+                return self.value == other
+
+            def __hash__(self) -> int:
+                return hash(self.value)
+
+        call_enum = FakeEnum("C")
+        client._handle_definition(self._make_def_record(instrument_class=call_enum, iid=42))
+
+        stored = client._option_definitions.get(42)
+        assert stored is not None, "Definition was not cached"
+        assert stored["option_type"] == "C"
+        assert isinstance(stored["option_type"], str), (
+            f"option_type must be a str, got {type(stored['option_type']).__name__}"
+        )
+
+    def test_bare_string_still_works(self, client: DatabentoClient) -> None:
+        """Regression guard: older SDKs / tests that pass bare 'C'/'P'
+        strings must continue to work (the coercion path should be a
+        no-op for strings)."""
+        client._handle_definition(
+            self._make_def_record(instrument_class="P", iid=43)
+        )
+
+        stored = client._option_definitions.get(43)
+        assert stored is not None
+        assert stored["option_type"] == "P"
+        assert isinstance(stored["option_type"], str)
+
+    def test_non_call_or_put_still_filtered_out(
+        self, client: DatabentoClient
+    ) -> None:
+        """Regression guard: enum-or-string-wise, non-option
+        instrument classes (futures 'F', spread 'S', etc.) must still
+        hit the early-return and NOT populate _option_definitions."""
+        client._handle_definition(
+            self._make_def_record(instrument_class="F", iid=44)
+        )
+        assert 44 not in client._option_definitions
