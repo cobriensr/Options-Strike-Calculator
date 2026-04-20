@@ -323,25 +323,38 @@ class DatabentoClient:
     def _on_record(self, record: Any) -> None:
         """Central callback for all incoming Databento records."""
         try:
-            # Route by record type
+            # Route by record type.
+            #
+            # SIDE-014: several databento-dbn record types ship versioned
+            # variants (``InstrumentDefMsg`` + ``InstrumentDefMsgV1`` +
+            # ``InstrumentDefMsgV2``, ``StatMsg`` + ``StatMsgV1``, etc.)
+            # and the live feed delivers whichever version the session
+            # advertises. Previously we matched only the bare name, so
+            # Definitions silently routed to the "unknown record" fall-
+            # through — which left ``_option_definitions`` empty and
+            # made every ES options trade look like a definition-lag
+            # drop. Prefix matching with ``startswith`` absorbs V1/V2
+            # and any future V3+ without touching this code again.
             record_type = type(record).__name__
 
             if record_type in ("OHLCVMsg", "OhlcvMsg"):
                 self._handle_ohlcv(record)
             elif record_type == "TradeMsg":
                 self._handle_trade(record)
-            elif record_type == "StatMsg":
+            elif record_type.startswith("StatMsg"):
                 self._handle_stat(record)
-            elif record_type == "InstrumentDefMsg":
+            elif record_type.startswith("InstrumentDefMsg"):
                 self._handle_definition(record)
-            elif record_type == "SymbolMappingMsg":
+            elif record_type.startswith("SymbolMappingMsg"):
                 self._handle_symbol_mapping(record)
             elif record_type == "MBP1Msg":
                 # We only subscribe to ``tbbo`` (not ``mbp-1``), so every
                 # MBP1Msg we see here is a TBBO record: a trade with the
                 # pre-trade BBO carried in levels[0].
                 self._handle_tbbo(record)
-            elif record_type in ("ErrorMsg", "SystemMsg"):
+            elif record_type.startswith("ErrorMsg") or record_type.startswith(
+                "SystemMsg"
+            ):
                 self._handle_system(record)
             # Ignore other record types (heartbeats, etc.)
         except Exception as exc:

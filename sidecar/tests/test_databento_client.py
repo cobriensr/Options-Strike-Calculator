@@ -606,3 +606,104 @@ class TestOptionsPipelineDiagnostics:
         ]
         assert len(diagnostic_lines) == 1
         assert "definitions_cached=0" in diagnostic_lines[0]
+
+
+# ---------------------------------------------------------------------------
+# SIDE-014 — versioned message routing (InstrumentDefMsgV1/V2, etc.)
+# ---------------------------------------------------------------------------
+
+
+class TestVersionedRecordRouting:
+    """The databento SDK ships versioned variants (InstrumentDefMsgV1,
+    StatMsgV1, SymbolMappingMsgV1, etc.) and the live feed may deliver
+    either the bare class or any version. Routing must accept all of
+    them — otherwise records silently fall through to the unknown-type
+    branch and downstream state (e.g. _option_definitions) never fills.
+    """
+
+    def _build(
+        self, class_name: str, bases: tuple = ()
+    ) -> type:
+        """Create a dynamically-named fake record class for routing checks."""
+        return type(class_name, bases or (object,), {})
+
+    def test_instrument_def_msg_v1_routes_to_handle_definition(
+        self, client: DatabentoClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        handler = MagicMock()
+        monkeypatch.setattr(client, "_handle_definition", handler)
+        fake = self._build("InstrumentDefMsgV1")()
+        client._on_record(fake)
+        handler.assert_called_once_with(fake)
+
+    def test_instrument_def_msg_v2_routes_to_handle_definition(
+        self, client: DatabentoClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        handler = MagicMock()
+        monkeypatch.setattr(client, "_handle_definition", handler)
+        fake = self._build("InstrumentDefMsgV2")()
+        client._on_record(fake)
+        handler.assert_called_once_with(fake)
+
+    def test_bare_instrument_def_msg_still_routes(
+        self, client: DatabentoClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression guard: the bare name must still work after the
+        startswith change — otherwise older SDK versions break."""
+        handler = MagicMock()
+        monkeypatch.setattr(client, "_handle_definition", handler)
+        fake = self._build("InstrumentDefMsg")()
+        client._on_record(fake)
+        handler.assert_called_once_with(fake)
+
+    def test_stat_msg_v1_routes_to_handle_stat(
+        self, client: DatabentoClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        handler = MagicMock()
+        monkeypatch.setattr(client, "_handle_stat", handler)
+        fake = self._build("StatMsgV1")()
+        client._on_record(fake)
+        handler.assert_called_once_with(fake)
+
+    def test_symbol_mapping_msg_v1_routes_to_handle_symbol_mapping(
+        self, client: DatabentoClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        handler = MagicMock()
+        monkeypatch.setattr(client, "_handle_symbol_mapping", handler)
+        fake = self._build("SymbolMappingMsgV1")()
+        client._on_record(fake)
+        handler.assert_called_once_with(fake)
+
+    def test_error_msg_v1_and_system_msg_v1_route_to_handle_system(
+        self, client: DatabentoClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        handler = MagicMock()
+        monkeypatch.setattr(client, "_handle_system", handler)
+        client._on_record(self._build("ErrorMsgV1")())
+        client._on_record(self._build("SystemMsgV1")())
+        assert handler.call_count == 2
+
+    def test_unknown_record_type_is_still_ignored(
+        self, client: DatabentoClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Prefix matching must not over-match — a genuinely unknown
+        class name must still fall through to the ignore path."""
+        handlers = [
+            "_handle_ohlcv",
+            "_handle_trade",
+            "_handle_stat",
+            "_handle_definition",
+            "_handle_symbol_mapping",
+            "_handle_tbbo",
+            "_handle_system",
+        ]
+        mocks = {}
+        for name in handlers:
+            m = MagicMock()
+            monkeypatch.setattr(client, name, m)
+            mocks[name] = m
+
+        client._on_record(self._build("HeartbeatMsg")())
+
+        for name, m in mocks.items():
+            assert m.call_count == 0, f"{name} should not have been called"
