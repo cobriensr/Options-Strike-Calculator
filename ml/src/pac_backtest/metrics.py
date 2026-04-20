@@ -9,12 +9,16 @@ v1 scope (Phase 1):
 - Exposure %: fraction of eligible-session time spent in a trade
 - Duration stats (median, p95)
 
-Deferred to Phase 2:
-- Deflated Sharpe Ratio (Bailey & Lopez de Prado). Requires the sweep
-  context (number of trials, correlation of trial returns) that only
-  exists at E1.4 time.
-- Stationary bootstrap CIs on Sharpe.
-- PBO (Probability of Backtest Overfitting) — again, sweep-level.
+E1.4b additions:
+- Deflated Sharpe Ratio (Bailey & Lopez de Prado 2014). Adjusts raw
+  Sharpe for sample length, skew, kurtosis, and most importantly for
+  the number of effective independent trials — so a sweep that tries
+  10K configs and picks the best doesn't get to claim the best Sharpe
+  as edge without deflation.
+
+Still deferred to the sweep orchestrator:
+- Stationary bootstrap CIs on Sharpe → `bootstrap.py`
+- PBO (Probability of Backtest Overfitting) → `pbo.py`
 
 The guiding principle per the backtesting-frameworks skill: these
 numbers are *descriptive*, not promises. The analyzer downstream is
@@ -27,6 +31,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 from pac_backtest.trades import Trade
 
@@ -225,3 +230,176 @@ def metrics_to_dict(m: BacktestMetrics) -> dict:
         "p95_duration_minutes": m.p95_duration_minutes,
         "by_setup_tag": m.by_setup_tag,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Deflated Sharpe Ratio (Bailey & Lopez de Prado 2014)
+# ─────────────────────────────────────────────────────────────────────────
+
+# Euler-Mascheroni constant — appears in the expected-max-order-statistic
+# formula for the normal distribution. Used in `expected_max_sharpe_under_null()`.
+_EULER_MASCHERONI = 0.5772156649015329
+
+
+def expected_max_sharpe_under_null(
+    n_trials: int, trial_sharpe_std: float
+) -> float:
+    """Expected maximum Sharpe ratio across N independent trials under null.
+
+    Bailey & Lopez de Prado 2014 (SSRN 2460551), Eq. 21. Models the best
+    of N IID normal-distributed Sharpe ratios drawn from a zero-mean
+    distribution with std `trial_sharpe_std`. Gives the "this is what
+    sheer luck produces" baseline.
+
+    Formula:
+        E[max SR | N, σ] ≈ σ * [ (1 - γ) * Φ^(-1)(1 - 1/N)
+                               + γ     * Φ^(-1)(1 - 1/(N*e)) ]
+
+    where γ is the Euler-Mascheroni constant and Φ^(-1) is the inverse
+    standard normal CDF.
+
+    Returns 0 when n_trials <= 1 (undefined — no luck-best to compare).
+    """
+    if n_trials <= 1 or trial_sharpe_std <= 0:
+        return 0.0
+    z1 = stats.norm.ppf(1.0 - 1.0 / n_trials)
+    z2 = stats.norm.ppf(1.0 - 1.0 / (n_trials * np.e))
+    return float(
+        trial_sharpe_std
+        * ((1 - _EULER_MASCHERONI) * z1 + _EULER_MASCHERONI * z2)
+    )
+
+
+def deflated_sharpe_ratio(
+    sharpe: float,
+    n_samples: int,
+    n_effective_trials: int,
+    trial_sharpe_std: float,
+    skewness: float = 0.0,
+    excess_kurtosis: float = 0.0,
+) -> dict:
+    """Compute the Deflated Sharpe Ratio.
+
+    Parameters
+    ----------
+    sharpe:
+        Observed Sharpe ratio (annualized or not — consistency with
+        `n_samples` is what matters).
+    n_samples:
+        Length of the returns series the Sharpe was computed from.
+    n_effective_trials:
+        Number of effectively-independent trials the search explored.
+        Optuna/TPE typically clusters samples in high-Sharpe regions;
+        use the `effective_trial_estimation.param_cluster` method in
+        `acceptance.yml` to estimate this from the full sweep.
+    trial_sharpe_std:
+        Std of Sharpe ratios across all N trials in the sweep.
+    skewness:
+        Third moment of the returns distribution (not Sharpe). Defaults
+        to 0 (Gaussian assumption). Non-zero skew affects the
+        denominator — left-skewed returns inflate the deflation.
+    excess_kurtosis:
+        Fourth-moment minus 3 (Gaussian = 0). Positive kurtosis → fatter
+        tails → more uncertainty in Sharpe → more deflation.
+
+    Returns
+    -------
+    dict with keys:
+        `dsr`                      : the Deflated Sharpe Ratio as a
+                                     probability in [0, 1]. > 0.95 means
+                                     we reject the null of zero edge at
+                                     95% confidence.
+        `expected_max_sr_null`     : the benchmark the observed Sharpe
+                                     must beat.
+        `sharpe_std_adjusted`      : denominator used in the deflation.
+        `sharpe`, `n_samples`,
+        `n_effective_trials`,
+        `trial_sharpe_std`         : inputs echoed back for audit.
+    """
+    if n_samples < 2:
+        raise ValueError(f"n_samples must be >= 2, got {n_samples}")
+
+    expected_max_sr = expected_max_sharpe_under_null(
+        n_effective_trials, trial_sharpe_std
+    )
+
+    # Denominator: Sharpe estimation std with skew/kurt adjustment.
+    # Eq. 11 in de Prado 2014 (rearranged for a one-sided comparison).
+    # Clamp the bracket to a small positive floor so very high SR values
+    # combined with extreme skew/kurt don't cause sqrt(negative).
+    bracket = 1 - skewness * sharpe + (excess_kurtosis / 4.0) * sharpe**2
+    bracket = max(bracket, 1e-9)
+    sharpe_std_adjusted = float(np.sqrt(bracket / (n_samples - 1)))
+
+    if sharpe_std_adjusted <= 0:
+        dsr = 1.0 if sharpe > expected_max_sr else 0.0
+    else:
+        z = (sharpe - expected_max_sr) / sharpe_std_adjusted
+        dsr = float(stats.norm.cdf(z))
+
+    return {
+        "dsr": dsr,
+        "expected_max_sr_null": expected_max_sr,
+        "sharpe_std_adjusted": sharpe_std_adjusted,
+        "sharpe": sharpe,
+        "n_samples": n_samples,
+        "n_effective_trials": n_effective_trials,
+        "trial_sharpe_std": trial_sharpe_std,
+    }
+
+
+def estimate_effective_trials_by_correlation(
+    param_matrix: np.ndarray,
+    correlation_threshold: float = 0.7,
+) -> int:
+    """Estimate the number of effectively-independent trials via clustering.
+
+    Used when a sweep tests thousands of parameter configurations — most
+    of which are near-duplicates (TPE/Bayesian search concentrates
+    samples in high-Sharpe regions). Naive trial count overstates
+    independence; clustering gives a defensible reduction.
+
+    Parameters
+    ----------
+    param_matrix:
+        Shape (N_trials, N_params). Each row is one trial's param vector
+        (normalized to [0, 1] or standardized before calling).
+    correlation_threshold:
+        Trials whose Pearson correlation exceeds this threshold are
+        considered the same "cluster" for effective-trial accounting.
+        0.7 matches the `acceptance.yml` default.
+
+    Returns
+    -------
+    Integer count of clusters. Used as `n_effective_trials` in
+    `deflated_sharpe_ratio()`.
+    """
+    M = np.asarray(param_matrix, dtype=np.float64)
+    if M.ndim != 2:
+        raise ValueError(f"param_matrix must be 2D, got shape {M.shape}")
+    n_trials = M.shape[0]
+    if n_trials < 2:
+        return n_trials
+
+    # Pairwise correlation between trial param vectors. Since params are
+    # different dimensions (not a time-series), we correlate ACROSS trials
+    # within each parameter, then aggregate. Simpler: just compute the
+    # row-pairwise correlation matrix.
+    corr = np.corrcoef(M)  # shape (n_trials, n_trials)
+    # Greedy clustering: walk trials in order; a trial joins cluster c if
+    # it correlates > threshold with any member of c; otherwise start new.
+    cluster_of: list[int] = [-1] * n_trials
+    next_cluster = 0
+    for i in range(n_trials):
+        assigned = -1
+        for j in range(i):
+            if cluster_of[j] >= 0 and abs(corr[i, j]) > correlation_threshold:
+                assigned = cluster_of[j]
+                break
+        if assigned < 0:
+            cluster_of[i] = next_cluster
+            next_cluster += 1
+        else:
+            cluster_of[i] = assigned
+
+    return next_cluster
