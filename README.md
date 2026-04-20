@@ -1045,6 +1045,18 @@ curl -X POST https://theta-options.com/api/journal/migrate \
 │   │   ├── fetch-market-internals.ts     # $TICK / $ADD / $VOLD / $TRIN
 │   │   ├── fetch-whale-alerts.ts         # UW whale positioning
 │   │   ├── fetch-flow-alerts.ts          # Flow-ratio breach alerts
+│   │   ├── fetch-nope.ts                 # SPY NOPE time series
+│   │   ├── fetch-vol-0dte.ts             # 0DTE volume by strike
+│   │   ├── fetch-spx-candles-1m.ts       # Pre-baked 1-min SPX candles
+│   │   ├── fetch-greek-exposure-strike.ts # Per-strike Greek exposure
+│   │   ├── fetch-futures-snapshot.ts     # Futures snapshot (macro + ES-SPX basis)
+│   │   ├── fetch-es-options-eod.ts       # ES options EOD verifier + max pain
+│   │   ├── fetch-day-ohlc.ts             # Nightly day_ohlc refresh (analog forecast)
+│   │   ├── refresh-current-snapshot.ts   # Materialize today's analog snapshot (5m)
+│   │   ├── refresh-vix1d.ts              # VIX1D intraday refresher
+│   │   ├── warm-tbbo-percentile.ts       # Daily pre-warm for archive DuckDB cache
+│   │   ├── embed-yesterday.ts            # Nightly day_embedding (OpenAI 2000-dim)
+│   │   ├── auto-prefill-premarket.ts     # Pre-market autofill for session state
 │   │   ├── compute-es-overnight.ts       # ES futures overnight summary
 │   │   ├── build-features.ts             # ML feature engineering orchestrator
 │   │   ├── curate-lessons.ts             # Weekly lessons curation pipeline
@@ -1185,13 +1197,34 @@ curl -X POST https://theta-options.com/api/journal/migrate \
 │   ├── Makefile                          # Pipeline runner (make all, make eda, etc.)
 │   ├── requirements.txt                  # Python dependencies
 │   └── conftest.py                       # Adds ml/src/ to sys.path
-├── sidecar/                              # Futures + ES options Python ingest (Railway)
-│   ├── src/                              # Python — main, databento_client, db, symbol_manager, health, sentry_setup
-│   ├── pyproject.toml                    # Python packaging
-│   ├── requirements.txt                  # databento, psycopg2, sentry-sdk, ...
-│   ├── railway.toml                      # Railway build + deploy config
-│   └── Dockerfile                        # Container build for Railway
-├── scripts/                              # Backfill + utility scripts (.mjs, shell)
+├── sidecar/                              # Full data-platform Python service (Railway)
+│   ├── src/
+│   │   ├── main.py                       # Entry point, signal handlers, graceful shutdown
+│   │   ├── config.py                     # pydantic-settings env validation
+│   │   ├── databento_client.py           # Live session: OHLCV + TBBO + ES.OPT trades/stats/defs
+│   │   ├── symbol_manager.py             # Parent-symbology + ATM strike window re-centering
+│   │   ├── trade_processor.py            # ES options trade buffer + periodic flush thread
+│   │   ├── quote_processor.py            # ES/NQ TBBO → TopOfBook + TradeTick writers
+│   │   ├── theta_launcher.py             # Co-resident Theta Terminal JVM subprocess
+│   │   ├── theta_client.py               # Theta Data HTTP client (SPX EOD chains)
+│   │   ├── theta_fetcher.py              # Nightly APScheduler + backfill
+│   │   ├── archive_seeder.py             # Vercel Blob → /data/archive (SHA-resumable)
+│   │   ├── archive_query.py              # DuckDB layer over TBBO Parquet (500 MB cap)
+│   │   ├── health.py                     # /health + /archive/* + /admin/seed-archive
+│   │   ├── db.py                         # psycopg2 upserts
+│   │   ├── logger_setup.py               # Structured JSON logger
+│   │   └── sentry_setup.py               # Sentry init (separate DSN from Vercel)
+│   ├── tests/                            # pytest suite (mocked psycopg2 + databento)
+│   ├── ThetaTerminalv3.jar               # Co-resident Theta Terminal binary
+│   ├── Dockerfile                        # Python 3.12-slim + Temurin 21 JRE
+│   ├── pyproject.toml / requirements.txt # databento, psycopg2, sentry-sdk, duckdb, ...
+│   └── railway.toml                      # Railway build + deploy config
+├── scripts/                              # Backfill + utility Node ESM scripts
+│   ├── backfill-*.mjs                    # ~25 one-shot backfillers per data source
+│   ├── compare-analog-backends.mjs       # Analog-retrieval A/B harness (text vs engineered)
+│   ├── upload-archive-to-blob.mjs        # Stream TBBO archive → Vercel Blob (SHA-tagged)
+│   ├── convert-vix-csv.mjs               # Convert CBOE VIX CSV → public/vix-data.json
+│   └── verify-darkpool.mjs               # Dark pool data verifier + Sentry breadcrumb
 ├── e2e/                                  # 32 Playwright E2E specs
 ├── docs/                                 # Design documents + superpowers specs
 ├── public/
