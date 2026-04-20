@@ -577,6 +577,7 @@ How to weight:
 - The analog forecast is a STRIKE-SIZING INPUT, not a directional signal. It does NOT predict UP vs DOWN for the day — the cohort's directional hit-rate was coin-toss in validation (50.3%). Use the range magnitudes only.
 - When cohort p85 up AND p85 down are both meaningfully wider than the current calculator's default strike offsets, widen. When both are tighter, tighten.
 - Regime check: if prior-close VIX ≥ 22 (ELEVATED or CRISIS), trust the cohort forecast aggressively — global/feature baselines catastrophically underestimate range in these regimes.
+- Regime-matched cohort preference: when a "Regime-matched cohort [BUCKET]" block is present alongside the unstratified cohort, PREFER the regime-matched strike distances whenever n ≥ 8. The regime-matched cohort filters to same-VIX-bucket mornings and adaptively corrects for vol-regime miscalibration — the unstratified numbers are the fallback when the bucket has too few historical analogs. This matters most on ELEVATED and CRISIS VIX days, where the two cohorts diverge. Use regime-matched p85 for 30Δ short strikes and regime-matched p95 for 12Δ short strikes; fall back to unstratified only if the regime-matched n < 8.
 </analog_range_forecast>
 </chart_types>
 <structure_selection_rules>
@@ -852,24 +853,29 @@ DX US Dollar Index (Headwind/Tailwind):
   thesis for PCS.
 - DX flat = neutral macro backdrop, no dollar-driven directional pressure.
 
-ES Options Institutional Positioning:
-- Heavy ES put buying at a specific strike = institutional hedge being placed.
-  This strike becomes a "futures-side support level" that may reinforce or
-  contradict SPX gamma walls.
-- AGGRESSOR SIDE MATTERS: Trades with side='B' (buy aggressor, lifting offers)
-  are active institutional buying — strongest signal. Trades with side='A' (sell
-  aggressor, hitting bids) are active selling or hedge unwinding. Trades with
-  side='N' are crossed/block trades — institutional but direction ambiguous.
-- ES options OI concentrated at a strike with >2x surrounding OI = institutional
-  consensus on a price target. Treat like a SPX gamma wall from the futures side.
-- Exchange-published delta and IV from Statistics provide the INSTITUTIONAL view
-  of Greeks — what clearing firms use for margin. When exchange delta disagrees
-  with model-estimated SPX delta at the same strike level, the exchange values
-  are more reliable for institutional positioning inference.
-- When ES options gamma walls AGREE with SPX gamma walls → very high confidence
-  in those levels.
-- When they DISAGREE → the market is structurally uncertain at those levels.
-  Widen strikes to avoid the contested zone.
+ES Options Institutional Positioning (EOD open interest):
+- The "Top Put OI" and "Top Call OI" fields report the single ES option strike
+  with the largest end-of-day open interest on each side, sourced from the
+  sidecar's Databento Statistics feed. These are FUTURES-SIDE STRUCTURAL
+  LEVELS — where institutional dealers are most concentrated in hedging
+  exposure. Treat them like SPX gamma walls projected into the futures option
+  chain.
+- Convert the ES strike to SPX-equivalent using the ES/SPX basis
+  (approximately 0.85 ratio, adjusted for the current ES-SPX basis shown in
+  the same section). When the SPX-equivalent matches an existing SPX gamma
+  wall within ±10 pts → high-confidence structural level (both options books
+  concentrate dealer exposure there).
+- When the SPX-equivalent of the top ES put or call OI does NOT align with
+  any SPX gamma wall → the futures side is pointing at a DIFFERENT level
+  than SPX. Widen strikes to respect both zones, or defer to the SPX side
+  when the trade is strictly 0DTE SPX.
+- Top Put OI strike materially below spot AND Top Call OI strike materially
+  above spot → balanced positioning, market expects range-bound session.
+  When one side's OI strike is much closer to spot than the other, the
+  futures-side consensus target is that side — factor into directional bias.
+- This data is EOD — it reflects OVERNIGHT institutional positioning as of
+  yesterday's settlement, NOT intraday flow. Use as a structural backdrop
+  that complements (not replaces) live SPX flow signals.
 </futures_context_rules>
 <cross_asset_regime_rules>
 The Cross-Asset Regime block reports a composite risk read computed from 5-min
