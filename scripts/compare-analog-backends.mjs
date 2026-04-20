@@ -122,14 +122,14 @@ async function featuresAnalogs(targetDate, k) {
   }));
 }
 
-function directionalPrediction(cohort) {
-  const signs = cohort
-    .map((c) => parseCloseDelta(c.summary))
-    .filter((d) => Number.isFinite(d));
-  if (signs.length === 0) return { pred: null, upCount: 0, n: 0 };
-  const upCount = signs.filter((d) => d > 0).length;
-  const pred = upCount > signs.length / 2 ? 'UP' : 'DOWN';
-  return { pred, upCount, n: signs.length };
+function directionalPrediction(cohort, dirMap) {
+  const dirs = cohort
+    .map((c) => dirMap.get(c.date)?.dir)
+    .filter((d) => d === 'UP' || d === 'DOWN');
+  if (dirs.length === 0) return { pred: null, upCount: 0, n: 0 };
+  const upCount = dirs.filter((d) => d === 'UP').length;
+  const pred = upCount > dirs.length / 2 ? 'UP' : 'DOWN';
+  return { pred, upCount, n: dirs.length };
 }
 
 function overlapCount(a, b) {
@@ -151,10 +151,52 @@ async function candidateDates(startIso, endIso, every) {
   return all.filter((_, i) => i % every === 0);
 }
 
-function targetActualDirection(targetSummary) {
-  const d = parseCloseDelta(targetSummary);
-  if (!Number.isFinite(d)) return null;
-  return d > 0 ? 'UP' : 'DOWN';
+// Build a date → {dir, delta} map via the batched rich-summary
+// endpoint. ONE sidecar call populates ground truth for every target
+// AND every analog across the whole comparison range.
+async function buildActualDirectionMap(startIso, endIso) {
+  const SIDECAR_URL = globalThis.process?.env?.SIDECAR_URL?.trim().replace(
+    /\/$/,
+    '',
+  );
+  if (!SIDECAR_URL) return new Map();
+
+  // Batch endpoint caps at 3 years — split if wider.
+  const toDate = (s) => new Date(`${s}T00:00:00Z`);
+  const addYears = (s, n) => {
+    const d = toDate(s);
+    d.setUTCFullYear(d.getUTCFullYear() + n);
+    return d.toISOString().slice(0, 10);
+  };
+
+  // Historical analogs can come from years before START, so fetch from
+  // the earliest known date through END to cover any analog pull.
+  const archiveStart = '2010-06-07';
+  const map = new Map();
+
+  let cur = archiveStart;
+  while (cur <= endIso) {
+    const stop = addYears(cur, 3) < endIso ? addYears(cur, 3) : endIso;
+    const res = await fetch(
+      `${SIDECAR_URL}/archive/day-summary-batch?from=${cur}&to=${stop}`,
+    );
+    if (res.ok) {
+      const body = await res.json();
+      for (const r of body.rows ?? []) {
+        const d = parseCloseDelta(r.summary);
+        if (Number.isFinite(d)) {
+          map.set(r.date, { dir: d > 0 ? 'UP' : 'DOWN', delta: d });
+        }
+      }
+    }
+    if (stop === endIso) break;
+    const next = new Date(toDate(stop).getTime() + 86400000)
+      .toISOString()
+      .slice(0, 10);
+    if (next > endIso) break;
+    cur = next;
+  }
+  return map;
 }
 
 async function run() {
@@ -164,6 +206,13 @@ async function run() {
 
   const dates = await candidateDates(START, END, EVERY);
   console.log(`  ${dates.length} target dates with both embeddings present`);
+
+  // ONE sidecar call populates ground-truth close directions for all
+  // historical dates — used for both target outcomes and analog-cohort
+  // direction scoring.
+  console.log('  Fetching ground-truth close directions via sidecar batch...');
+  const dirMap = await buildActualDirectionMap(START, END);
+  console.log(`  ${dirMap.size} dates with known actual close direction\n`);
 
   const rows = [];
   const disagreements = [];
@@ -176,19 +225,17 @@ async function run() {
   let overlapN = 0;
 
   for (const date of dates) {
-    const [targetRow] = await sql`
-      SELECT summary FROM day_embeddings WHERE date = ${date}::date
-    `;
-    const targetSummary = targetRow?.summary ?? '';
-    const actualDir = targetActualDirection(targetSummary);
+    const actualEntry = dirMap.get(date);
+    const actualDir = actualEntry?.dir ?? null;
+    const actualDelta = actualEntry?.delta ?? Number.NaN;
 
     const [tAn, fAn] = await Promise.all([
       textAnalogs(date, K),
       featuresAnalogs(date, K),
     ]);
 
-    const tPred = directionalPrediction(tAn);
-    const fPred = directionalPrediction(fAn);
+    const tPred = directionalPrediction(tAn, dirMap);
+    const fPred = directionalPrediction(fAn, dirMap);
     const overlap = overlapCount(tAn, fAn);
     overlapSum += overlap;
     overlapN += 1;
@@ -203,7 +250,7 @@ async function run() {
     rows.push({
       date,
       actualDir,
-      actualDelta: parseCloseDelta(targetSummary),
+      actualDelta,
       tPred: tPred.pred,
       tUpFrac: tPred.n ? tPred.upCount / tPred.n : 0,
       fPred: fPred.pred,
