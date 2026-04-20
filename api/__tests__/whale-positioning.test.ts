@@ -3,14 +3,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const { mockUwFetch, mockCheckBot } = vi.hoisted(() => ({
+const { mockUwFetch, mockCheckBot, mockSql } = vi.hoisted(() => ({
   mockUwFetch: vi.fn(),
   mockCheckBot: vi.fn(),
+  mockSql: vi.fn(),
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
   uwFetch: mockUwFetch,
   checkBot: mockCheckBot,
+}));
+
+vi.mock('../_lib/db.js', () => ({
+  getDb: vi.fn(() => mockSql),
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
@@ -497,5 +502,376 @@ describe('GET /api/options-flow/whale-positioning', () => {
     expect(res._headers['Cache-Control']).toBe(
       'max-age=30, stale-while-revalidate=30',
     );
+  });
+
+  // ── Pre-market newer_than behavior ───────────────────────
+
+  it('omits newer_than from UW path when called before 08:30 CT', async () => {
+    // Set time to 05:00 UTC = just after midnight CT — well before
+    // session open (08:30 CT = 13:30 UTC during CDT).
+    vi.setSystemTime(new Date('2026-04-15T05:00:00.000Z'));
+    mockUwFetch.mockResolvedValueOnce([]);
+
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const [, path] = mockUwFetch.mock.calls[0]! as [string, string];
+    expect(path).not.toContain('newer_than=');
+    // window_minutes should be 0 pre-market.
+    const body = res._json as { window_minutes: number };
+    expect(body.window_minutes).toBe(0);
+  });
+
+  // ── Invalid type rejection (live mode) ───────────────────
+
+  it('rejects alerts with unknown type (live mode)', async () => {
+    const bad = { ...SAMPLE_ALERT, type: 'straddle' } as unknown as UwAlert;
+    mockUwFetch.mockResolvedValueOnce([bad, SAMPLE_ALERT]);
+
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { strikes: unknown[] };
+    expect(body.strikes).toHaveLength(1);
+  });
+
+  it('rejects alerts with non-finite strike (live mode)', async () => {
+    const bad = makeAlertWithPremium(2_000_000, { strike: 'not-a-number' });
+    mockUwFetch.mockResolvedValueOnce([bad]);
+
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { strikes: unknown[] };
+    expect(body.strikes).toHaveLength(0);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// HISTORICAL / SCRUB MODE (date param triggers DB path)
+// ═══════════════════════════════════════════════════════════
+
+describe('GET /api/options-flow/whale-positioning — historical mode', () => {
+  // DB row shape returned from whale_alerts.
+  type DbRow = {
+    option_chain: string;
+    strike: string;
+    type: string;
+    expiry: string;
+    dte_at_alert: number | null;
+    created_at: string;
+    total_premium: string;
+    total_ask_side_prem: string | null;
+    total_bid_side_prem: string | null;
+    total_size: number | null;
+    volume: number | null;
+    open_interest: number | null;
+    volume_oi_ratio: string | null;
+    has_sweep: boolean | null;
+    has_floor: boolean | null;
+    has_multileg: boolean | null;
+    alert_rule: string;
+    underlying_price: string | null;
+    distance_from_spot: string | null;
+    distance_pct: string | null;
+    is_itm: boolean | null;
+  };
+
+  const BASE_DB_ROW: DbRow = {
+    option_chain: 'SPXW260420P06500000',
+    strike: '6500',
+    type: 'put',
+    expiry: '2026-04-20',
+    dte_at_alert: 5,
+    created_at: '2026-04-15T14:35:00.000Z',
+    total_premium: '2500000',
+    total_ask_side_prem: '2250000',
+    total_bid_side_prem: '250000',
+    total_size: 500,
+    volume: 1000,
+    open_interest: 200,
+    volume_oi_ratio: '5.0',
+    has_sweep: true,
+    has_floor: false,
+    has_multileg: false,
+    alert_rule: 'RepeatedHits',
+    underlying_price: '7001',
+    distance_from_spot: '-501',
+    distance_pct: '-0.0716',
+    is_itm: false,
+  };
+
+  function makeDbRow(overrides: Partial<DbRow> = {}): DbRow {
+    return { ...BASE_DB_ROW, ...overrides };
+  }
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockCheckBot.mockResolvedValue({ isBot: false });
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-15T18:00:00.000Z'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('queries DB (not UW) when date is provided', async () => {
+    mockSql.mockResolvedValueOnce([]); // rows
+    mockSql.mockResolvedValueOnce([]); // timestamps
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-04-15' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(mockSql).toHaveBeenCalledTimes(2);
+    expect(mockUwFetch).not.toHaveBeenCalled();
+  });
+
+  it('returns empty-shape response when DB has no rows for the date', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-04-15' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      strikes: unknown[];
+      alert_count: number;
+      total_premium: number;
+      timestamps: unknown[];
+    };
+    expect(body.strikes).toEqual([]);
+    expect(body.alert_count).toBe(0);
+    expect(body.total_premium).toBe(0);
+    expect(body.timestamps).toEqual([]);
+  });
+
+  it('transforms DB rows into WhaleAlert objects with computed derived fields', async () => {
+    const row = makeDbRow();
+    mockSql.mockResolvedValueOnce([row]);
+    mockSql.mockResolvedValueOnce([{ ts: '2026-04-15T14:35:00.000Z' }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-04-15' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      strikes: Array<{
+        strike: number;
+        type: string;
+        total_premium: number;
+        ask_side_ratio: number;
+        age_minutes: number;
+        distance_from_spot: number;
+        is_itm: boolean;
+      }>;
+      timestamps: string[];
+    };
+    expect(body.strikes).toHaveLength(1);
+    const alert = body.strikes[0]!;
+    expect(alert.strike).toBe(6500);
+    expect(alert.type).toBe('put');
+    expect(alert.total_premium).toBe(2_500_000);
+    expect(alert.ask_side_ratio).toBeCloseTo(0.9, 3);
+    // now = 18:00Z, created_at = 14:35Z → 205 min
+    expect(alert.age_minutes).toBe(205);
+    expect(alert.distance_from_spot).toBeCloseTo(-501, 5);
+    expect(alert.is_itm).toBe(false);
+    expect(body.timestamps).toEqual(['2026-04-15T14:35:00.000Z']);
+  });
+
+  it('rejects DB rows with unknown type', async () => {
+    const rows = [makeDbRow({ type: 'spread' }), makeDbRow()];
+    mockSql.mockResolvedValueOnce(rows);
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-04-15' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { strikes: unknown[] };
+    expect(body.strikes).toHaveLength(1);
+  });
+
+  it('rejects DB rows with zero/non-finite underlying_price', async () => {
+    const rows = [
+      makeDbRow({ underlying_price: '0' }),
+      makeDbRow({ underlying_price: null }),
+      makeDbRow({ underlying_price: 'garbage' }),
+      makeDbRow(),
+    ];
+    mockSql.mockResolvedValueOnce(rows);
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-04-15' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { strikes: unknown[] };
+    expect(body.strikes).toHaveLength(1);
+  });
+
+  it('falls back to computed distance values when DB columns are null', async () => {
+    const row = makeDbRow({
+      distance_from_spot: null,
+      distance_pct: null,
+      is_itm: null,
+    });
+    mockSql.mockResolvedValueOnce([row]);
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-04-15' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      strikes: Array<{
+        distance_from_spot: number;
+        distance_pct: number;
+        is_itm: boolean;
+      }>;
+    };
+    const alert = body.strikes[0]!;
+    // strike (6500) - spot (7001) = -501
+    expect(alert.distance_from_spot).toBe(-501);
+    expect(alert.distance_pct).toBeCloseTo(-501 / 7001, 6);
+    // put with strike < spot → OTM
+    expect(alert.is_itm).toBe(false);
+  });
+
+  it('sets long-lived Cache-Control when serving historical data', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-04-15' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._headers['Cache-Control']).toBe(
+      'max-age=3600, stale-while-revalidate=86400',
+    );
+  });
+
+  it('returns 500 when the historical DB query throws', async () => {
+    mockSql.mockRejectedValueOnce(new Error('connection reset'));
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-04-15' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ error: 'Historical data query failed' });
+  });
+
+  it('slices historical results to the limit', async () => {
+    // Generate 15 distinct rows.
+    const rows = Array.from({ length: 15 }, (_, i) =>
+      makeDbRow({
+        option_chain: `CHAIN_${i}`,
+        strike: String(6500 + i * 5),
+        total_premium: String((15 - i) * 1_000_000),
+      }),
+    );
+    mockSql.mockResolvedValueOnce(rows);
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-04-15', limit: '5' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { strikes: unknown[]; alert_count: number };
+    expect(body.strikes).toHaveLength(5);
+    expect(body.alert_count).toBe(5);
+  });
+
+  it('honors as_of by restricting session window to the given timestamp', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: {
+        date: '2026-04-15',
+        as_of: '2026-04-15T14:00:00.000Z',
+      },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // window_minutes is derived from (as_of - sessionOpen) / 60k.
+    // sessionOpen = 12:30 UTC (EDT on 2026-04-15), as_of = 14:00 UTC.
+    // → (14:00 - 12:30) / 60 = 90 minutes.
+    const body = res._json as { window_minutes: number };
+    expect(body.window_minutes).toBe(90);
+  });
+
+  it('rejects as_of without date (Zod refine)', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { as_of: '2026-04-15T14:00:00.000Z' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(400);
+    expect(res._json).toMatchObject({ error: 'Invalid query' });
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed date', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026/04/15' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(400);
+    expect(res._json).toMatchObject({ error: 'Invalid query' });
+    expect(mockSql).not.toHaveBeenCalled();
   });
 });

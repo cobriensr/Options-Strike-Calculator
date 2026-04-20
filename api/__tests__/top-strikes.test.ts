@@ -287,6 +287,218 @@ describe('GET /api/options-flow/top-strikes', () => {
     expect(body.window_minutes).toBe(30);
   });
 
+  // ── Date mode ──────────────────────────────────────────────
+
+  it('date mode uses session bounds instead of rolling window', async () => {
+    mockSql.mockResolvedValueOnce([]); // rows
+    mockSql.mockResolvedValueOnce([]); // timestamps
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-04-15' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(mockSql).toHaveBeenCalledTimes(2);
+  });
+
+  it('date + as_of (scrub mode) returns an empty shape when no rows match', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: {
+        date: '2026-04-15',
+        as_of: '2026-04-15T14:30:00.000Z',
+      },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      strikes: unknown[];
+      alert_count: number;
+      timestamps: unknown[];
+    };
+    expect(body.strikes).toEqual([]);
+    expect(body.alert_count).toBe(0);
+    expect(body.timestamps).toEqual([]);
+  });
+
+  it('rejects as_of without date (Zod refine)', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { as_of: '2026-04-15T14:30:00.000Z' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(400);
+    expect(res._json).toMatchObject({ error: 'Invalid query' });
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed date', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '04/15/2026' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(400);
+    expect(res._json).toMatchObject({ error: 'Invalid query' });
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  // ── Timestamps query ───────────────────────────────────────
+
+  it('returns ISO timestamps from the minute-bucket subquery', async () => {
+    mockSql.mockResolvedValueOnce([]); // main rows
+    mockSql.mockResolvedValueOnce([
+      { ts: '2026-04-15T14:30:00.000Z' },
+      { ts: '2026-04-15T14:31:00.000Z' },
+      { ts: new Date('2026-04-15T14:32:00.000Z') }, // Date instance path
+    ]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-04-15' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { timestamps: string[] };
+    expect(body.timestamps).toEqual([
+      '2026-04-15T14:30:00.000Z',
+      '2026-04-15T14:31:00.000Z',
+      '2026-04-15T14:32:00.000Z',
+    ]);
+  });
+
+  // ── Row rejection paths ────────────────────────────────────
+
+  it('rejects rows with unknown type (neither call nor put)', async () => {
+    const rows = [
+      makeRow({ type: 'spread' as 'call' }),
+      makeRow({ type: 'call' }),
+    ];
+    mockSql.mockResolvedValueOnce(rows);
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { strikes: Array<{ hit_count: number }> };
+    // Only the valid row survives scoring.
+    expect(body.strikes).toHaveLength(1);
+    expect(body.strikes[0]!.hit_count).toBe(1);
+  });
+
+  it('rejects rows with unknown alert_rule', async () => {
+    const rows = [
+      makeRow({ alert_rule: 'MysteryRule' as 'RepeatedHits' }),
+      makeRow({ alert_rule: 'RepeatedHits' }),
+    ];
+    mockSql.mockResolvedValueOnce(rows);
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { strikes: Array<{ hit_count: number }> };
+    expect(body.strikes).toHaveLength(1);
+    expect(body.strikes[0]!.hit_count).toBe(1);
+  });
+
+  it('accepts RepeatedHitsAscendingFill and RepeatedHitsDescendingFill rules', async () => {
+    const rows = [
+      makeRow({
+        alert_rule: 'RepeatedHitsAscendingFill' as 'RepeatedHits',
+        created_at: '2026-04-14T19:45:00.000Z',
+      }),
+      makeRow({
+        alert_rule: 'RepeatedHitsDescendingFill' as 'RepeatedHits',
+        created_at: '2026-04-14T19:44:00.000Z',
+      }),
+    ];
+    mockSql.mockResolvedValueOnce(rows);
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { strikes: unknown[] };
+    expect(body.strikes).toHaveLength(1);
+  });
+
+  it('rejects rows with non-finite strike', async () => {
+    const rows = [makeRow({ strike: 'NaN' }), makeRow({ strike: '6900' })];
+    mockSql.mockResolvedValueOnce(rows);
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { strikes: Array<{ hit_count: number }> };
+    expect(body.strikes).toHaveLength(1);
+    expect(body.strikes[0]!.hit_count).toBe(1);
+  });
+
+  // ── Cache header ───────────────────────────────────────────
+
+  it('sets Cache-Control: no-store on live responses', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._headers['Cache-Control']).toBe('no-store');
+  });
+
+  // ── DB error path ──────────────────────────────────────────
+
+  it('returns 500 when the primary SQL query throws', async () => {
+    mockSql.mockRejectedValueOnce(new Error('connection reset'));
+
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(500);
+    const body = res._json as { error: string; message: string };
+    expect(body.error).toBe('DB error');
+    expect(body.message).toBe('connection reset');
+  });
+
+  it('returns 500 when timestamps query throws (after rows succeed)', async () => {
+    mockSql.mockResolvedValueOnce([]); // rows succeed
+    mockSql.mockRejectedValueOnce(new Error('timestamps failed'));
+
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(500);
+    expect((res._json as { error: string }).error).toBe('DB error');
+  });
+
   // ── Numeric column parsing ────────────────────────────────
 
   it('parses NUMERIC strings into numbers before scoring', async () => {
