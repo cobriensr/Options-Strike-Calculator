@@ -82,6 +82,15 @@ const SPREAD_STRESS_THRESHOLD = 2.0;
 /** Cross-asset divergence thresholds (Phase 5a). */
 const CROSS_ASSET_DIVERGENCE_DELTA = 0.4;
 const CROSS_ASSET_ALIGNED_THRESHOLD = 0.3;
+/**
+ * Minimum |OFI| before a symbol counts as "directional" for the
+ * DIVERGENCE classification. Guards the `Math.sign(0) = 0` edge case
+ * where an exactly-zero OFI on one side would spuriously satisfy
+ * `Math.sign(nqOfi) !== Math.sign(esOfi)`. A 0.0 OFI is neutral, not
+ * "offered"; requiring both sides to be meaningfully non-zero keeps
+ * the DIVERGENCE label honest.
+ */
+const CROSS_ASSET_MIN_ABSOLUTE = 0.1;
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -487,19 +496,34 @@ export function formatMicrostructureForClaude(
  * (Phase 4d) signal is the NQ value; ES OFI serves only as
  * directional confirmation.
  *
- * - ALIGNED: both |OFI| ≥ 0.3 AND same sign — highest conviction
- * - DIVERGENCE: |NQ - ES| > 0.4 AND signs disagree — tech-leading flag
+ * - ALIGNED_BULLISH / ALIGNED_BEARISH: both |OFI| ≥ 0.3 AND same sign
+ *   — highest conviction
+ * - DIVERGENCE: |NQ - ES| > 0.4 AND both sides directional
+ *   (|OFI| ≥ CROSS_ASSET_MIN_ABSOLUTE) AND signs disagree — tech-
+ *   leading flag. The min-absolute gate guards the `Math.sign(0) = 0`
+ *   edge case: a side at exactly 0 is neutral, not "offered".
  * - MIXED: partial signal or neither rule fires
  * - INSUFFICIENT_DATA: either symbol's 1h OFI is null
+ *
+ * Exported so unit tests can pin the classification logic directly
+ * without threading stub data through `classifyCrossAssetOfi` via
+ * the full dual-symbol formatter.
  */
-function classifyCrossAssetOfi(
+export function classifyCrossAssetOfi(
   esOfi: number | null,
   nqOfi: number | null,
 ): string {
   if (esOfi == null || nqOfi == null) return 'INSUFFICIENT_DATA';
 
+  // DIVERGENCE requires BOTH sides to be meaningfully directional.
+  // Without this, ES=0.0 + NQ=+0.5 would flip signsDisagree=true
+  // (because Math.sign(0) === 0) and fire a misleading "ES offered"
+  // label when ES is actually neutral.
+  const bothMeaningful =
+    Math.abs(esOfi) >= CROSS_ASSET_MIN_ABSOLUTE &&
+    Math.abs(nqOfi) >= CROSS_ASSET_MIN_ABSOLUTE;
   const diff = Math.abs(nqOfi - esOfi);
-  const signsDisagree = Math.sign(nqOfi) !== Math.sign(esOfi);
+  const signsDisagree = bothMeaningful && Math.sign(nqOfi) !== Math.sign(esOfi);
   if (diff > CROSS_ASSET_DIVERGENCE_DELTA && signsDisagree) {
     // Divergence: the headline signal. Tag by which symbol leads.
     const leader = nqOfi > esOfi ? 'NQ bid, ES offered' : 'ES bid, NQ offered';

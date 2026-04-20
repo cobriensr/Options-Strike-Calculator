@@ -971,10 +971,16 @@ Validated signal (Phase 4d, 2026-04-19, n=312 days):
 - Same-direction alignment (both positive or both negative) is
   stronger than either symbol alone.
 
-Interpretation guardrails:
+Interpretation guardrails (per-symbol 1h OFI tier ladder):
 - OFI in [-0.2, +0.2] = BALANCED, ignore as signal
+- OFI in (+0.2, +0.3] or [-0.3, -0.2) = MILD, weak directional hint
 - NQ OFI > +0.3 with ES confirmation = AGGRESSIVE_BUY regime
 - NQ OFI < -0.3 with ES confirmation = AGGRESSIVE_SELL regime
+- MILD (|OFI| between 0.2 and 0.3): weak directional hint. Use as a
+  tie-breaker between symbols when combined with other signals, but
+  don't let it drive sizing by itself. Effect size at this band is
+  below the Phase 4d validation bar (ρ=0.313 was measured at the
+  AGGRESSIVE threshold, not the MILD band).
 - Effect size ρ=0.313 is factor-level, not standalone. Combine
   with GEX, dark pool, and IV term structure before sizing.
 - Signal weakens intraday after morning OFI has been absorbed.

@@ -9,6 +9,7 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 import {
+  classifyCrossAssetOfi,
   computeAllSymbolSignals,
   computeMicrostructureSignals,
   formatMicrostructureDualSymbolForClaude,
@@ -843,5 +844,46 @@ describe('formatMicrostructureDualSymbolForClaude', () => {
     expect(out).toContain('OFI 1h: N/A → N/A');
     expect(out).toContain('OFI 1h: +0.40 → AGGRESSIVE_BUY');
     expect(out).toContain('INSUFFICIENT_DATA');
+  });
+});
+
+describe('classifyCrossAssetOfi (Math.sign(0) edge case)', () => {
+  // Regression coverage for the Phase 5a review finding: without the
+  // CROSS_ASSET_MIN_ABSOLUTE guard, Math.sign(0) === 0 makes an
+  // exactly-zero OFI read as "opposite sign" to any directional OFI,
+  // firing a spurious DIVERGENCE label ("ES offered") when the side
+  // at 0 is actually neutral.
+
+  it('treats ES exactly 0 with NQ directional as non-divergent', () => {
+    const result = classifyCrossAssetOfi(0, 0.5);
+    expect(result).not.toContain('DIVERGENCE');
+    // NQ alone is > 0.3 but ES sits at 0 which is below the aligned
+    // threshold — falls through to MIXED.
+    expect(result).toBe('MIXED');
+  });
+
+  it('treats NQ exactly 0 with ES directional as non-divergent', () => {
+    const result = classifyCrossAssetOfi(-0.5, 0);
+    expect(result).not.toContain('DIVERGENCE');
+    expect(result).toBe('MIXED');
+  });
+
+  it('fires DIVERGENCE when both OFIs are directional and signs disagree', () => {
+    const result = classifyCrossAssetOfi(-0.3, 0.35);
+    expect(result).toContain('DIVERGENCE');
+    // |NQ - ES| = 0.65 > 0.4 threshold, signs differ, both above
+    // the CROSS_ASSET_MIN_ABSOLUTE 0.1 guard.
+    expect(result).toBe('DIVERGENCE (NQ bid, ES offered)');
+  });
+
+  it('respects the CROSS_ASSET_MIN_ABSOLUTE threshold for divergence', () => {
+    // Below threshold on ES (|-0.05| < 0.1) → no divergence despite
+    // the |NQ - ES| = 0.55 delta and opposing signs.
+    const r1 = classifyCrossAssetOfi(-0.05, 0.5);
+    expect(r1).not.toContain('DIVERGENCE');
+    // At threshold + ε on ES (|-0.11| >= 0.1), divergence can fire.
+    // |NQ - ES| = 0.61 > 0.4, signs disagree, both directional.
+    const r2 = classifyCrossAssetOfi(-0.11, 0.5);
+    expect(r2).toContain('DIVERGENCE');
   });
 });
