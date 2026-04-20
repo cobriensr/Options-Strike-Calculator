@@ -682,6 +682,50 @@ describe('buildAnalysisContext', () => {
     vi.unstubAllGlobals();
   });
 
+  it('renders affirmative FLAT positions block in midday when getLatestPositions returns null', async () => {
+    const { getLatestPositions } = await import('../_lib/db.js');
+    vi.mocked(getLatestPositions).mockResolvedValue(null as never);
+
+    const result = await buildAnalysisContext([], {
+      mode: 'midday',
+      selectedDate: '2026-04-20',
+      isBacktest: false,
+    });
+
+    const textBlock = result.content.find(
+      (b) => b.type === 'text' && b.text.includes('## Current Open Positions'),
+    );
+    expect(textBlock).toBeDefined();
+    const text = (textBlock as { type: 'text'; text: string }).text;
+    expect(text).toContain('## Current Open Positions');
+    expect(text).toContain('NONE.');
+    expect(text).toContain('Treat the account as FLAT');
+    expect(text).toContain('2026-04-20');
+    // Should NOT accidentally render the live-Schwab header
+    expect(text).not.toContain('Current Open Positions (live from Schwab)');
+    vi.unstubAllGlobals();
+  });
+
+  it('does NOT render FLAT positions block in review mode', async () => {
+    const { getLatestPositions } = await import('../_lib/db.js');
+    vi.mocked(getLatestPositions).mockResolvedValue(null as never);
+
+    const result = await buildAnalysisContext([], {
+      mode: 'review',
+      selectedDate: '2026-04-20',
+      isBacktest: false,
+    });
+
+    const flatBlock = result.content.find(
+      (b) =>
+        b.type === 'text' &&
+        b.text.includes('## Current Open Positions') &&
+        b.text.includes('NONE.'),
+    );
+    expect(flatBlock).toBeUndefined();
+    vi.unstubAllGlobals();
+  });
+
   it('populates unavailable data manifest when nothing is fetched', async () => {
     const result = await buildAnalysisContext([], {
       mode: 'entry',

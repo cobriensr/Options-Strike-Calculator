@@ -898,7 +898,7 @@ describe('POST /api/analyze', () => {
     expect(contextBlock).toContain('Current Open Positions');
   });
 
-  it('skips positions with default "No open" summary', async () => {
+  it('renders affirmative FLAT block when positions summary is "No open"', async () => {
     mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
 
     vi.mocked(getLatestPositions).mockResolvedValueOnce({
@@ -922,7 +922,14 @@ describe('POST /api/analyze', () => {
     expect(res._status).toBe(200);
     const params = mockStream.mock.calls[0]![0];
     const contextBlock = params.messages[0].content.at(-1).text;
-    expect(contextBlock).not.toContain('Current Open Positions');
+    // The "No open" summary is null-equivalent for positionContext, so the
+    // affirmative FLAT block should render (not the live-Schwab block).
+    expect(contextBlock).toContain('## Current Open Positions');
+    expect(contextBlock).toContain('NONE.');
+    expect(contextBlock).toContain('Treat the account as FLAT');
+    expect(contextBlock).not.toContain(
+      'Current Open Positions (live from Schwab)',
+    );
   });
 
   it('continues when position fetch throws', async () => {
