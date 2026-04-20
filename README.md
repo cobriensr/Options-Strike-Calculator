@@ -2,7 +2,7 @@
 
 A production-grade 0DTE SPX options analysis platform combining Black-Scholes pricing, AI-powered chart analysis (Claude Opus 4.7), live market data (Schwab + Unusual Whales), position tracking, and a multi-phase ML pipeline — designed for professional same-day SPX/SPY options trading.
 
-Built with React 19, TypeScript (strict mode), Vite, and Tailwind CSS 4. Deployed on Vercel with Neon Postgres, Upstash Redis, Schwab API, Anthropic API, OpenAI, Unusual Whales, and Sentry integrations. ES futures relay runs on Railway.
+Built with React 19, TypeScript (strict mode), Vite, and Tailwind CSS 4. Deployed on Vercel with Neon Postgres, Upstash Redis, Schwab API, Anthropic API, OpenAI, Unusual Whales, and Sentry integrations. A Python data-platform sidecar on Railway combines Databento Live ingestion (6 futures + ES options), a co-resident Theta Data Terminal for SPX EOD chains, a persistent TBBO Parquet archive seeded from Vercel Blob, and a DuckDB query layer that serves microstructure + analog-day endpoints back to the Vercel side.
 
 Live at: [theta-options.com](https://theta-options.com)
 
@@ -50,8 +50,8 @@ Live at: [theta-options.com](https://theta-options.com)
   - [Pre-Trade Signals](#pre-trade-signals)
   - [Dark Pool Levels](#dark-pool-levels)
 - [Data Collection & ML Pipeline](#data-collection--ml-pipeline)
-  - [Database Schema (40+ Tables)](#database-schema-40-tables)
-  - [Intraday Data Collection (35 Cron Jobs)](#intraday-data-collection-35-cron-jobs)
+  - [Database Schema (50+ Tables)](#database-schema-50-tables-77-numbered-migrations)
+  - [Intraday Data Collection (38 Cron Jobs)](#intraday-data-collection-38-cron-jobs)
   - [ML Pipeline (Python)](#ml-pipeline-python)
   - [Nightly Automation (GitHub Actions)](#nightly-automation-github-actions)
   - [ML Insights (Frontend)](#ml-insights-frontend)
@@ -135,9 +135,12 @@ You input (or auto-receive) the current SPY price, the VIX (plus optionally VIX1
 - Event day warnings for FOMC, CPI, NFP, GDP, and earnings with severity-coded alerts and actionable advice
 - Historical backtesting with full candle-by-candle replay and settlement verification
 - Position monitor with paper dashboard, execution quality analysis, and theta decay simulation
-- Automatic data collection to Postgres (40+ tables, 35 cron jobs) feeding a multi-phase ML pipeline
+- Automatic data collection to Neon Postgres (50+ tables, 77+ migrations, 38 cron jobs) feeding a multi-phase ML pipeline
+- Analog range forecast: strike-placement hints from 15 text-embedding-nearest historical mornings, VIX-regime-stratified for elevated/crisis days
+- Microstructure signals: validated NQ 1h OFI (ρ=0.313, p<0.001) + historical percentile rank against a 1-year TBBO archive
+- Futures-side structural levels from ES options EOD open interest, compared against SPX gamma walls
 - ML Insights section with nightly pipeline plots analyzed by Claude vision
-- ES futures WebSocket relay on Railway for overnight session data
+- Railway Python sidecar: Databento Live (6 futures + ES options) + Theta Data Terminal (nightly SPX EOD chains) + DuckDB query layer over a 3.9 GB TBBO Parquet archive
 
 ---
 
@@ -262,10 +265,15 @@ The centerpiece feature: upload screenshots of Market Tide, Net Flow (SPY/QQQ/SP
 
 ### What Claude Receives
 
-- All uploaded chart images (up to 4, validated at the Zod boundary) with labels (Market Tide, Net Flow SPY, Net Flow QQQ, Net Flow SPX, Periscope Delta Flow, Periscope Gamma, Net Charm SPX)
+- All uploaded chart images (up to 4, validated at the Zod boundary) with labels (Market Tide, Net Flow SPY, Net Flow QQQ, Net Flow SPX, Periscope Delta Flow, Periscope Gamma, Net Charm SPX, and SpotGamma Delta Pressure + Charm Pressure heatmaps)
 - Full calculator context: SPX, VIX, VIX1D, VIX9D, VVIX, σ, T, hours remaining, delta ceiling, spread ceilings, regime zone, cluster multiplier (symmetric + directional put/call), DOW label, opening range signal, term structure signal + curve shape, RV/IV ratio, IV acceleration multiplier, overnight gap
 - Live Schwab positions: Current SPX 0DTE spreads with strikes, credits, P&L, cushion distances, and net greeks — auto-fetched before each analysis so Claude knows what's already open
 - Database-driven market context: Flow data (last 24h), GEX snapshots, SPX candles, dark pool clusters, max pain, economic events — all assembled by `buildAnalysisContext()`
+- **Futures context**: 6 futures symbols (ES, NQ, ZN, RTY, CL, GC) with ES-SPX basis, NQ-ES divergence, VIX futures term structure, ZN flight-to-safety, and ES options top-Put/top-Call OI strikes as futures-side structural levels (treated as SPX gamma walls projected from the futures option chain)
+- **Microstructure signals** (Phase 5a): ES and NQ Order Flow Imbalance (OFI) at 1h window with historical 1-year percentile rank — the NQ 1h OFI is a Bonferroni-significant predictor of next-day NQ return (ρ=0.313, p<0.001, n=312)
+- **UW deltas** (Phase 5b): dark pool velocity, GEX delta, whale net, ETF divergence — delta-based reads that outperform absolute levels for directional signal
+- **Analog range forecast**: cohort-conditional strike-placement hints from the 15 text-embedding-nearest historical mornings, plus a VIX-regime-stratified cohort (same-VIX-bucket mornings only) that adaptively widens on elevated/crisis-VIX days
+- **Similar days context**: top-k analog sessions from `day_embeddings` (Phase B text-embedding backend) or `day_features` (Phase C engineered-feature backend), switchable via `DAY_ANALOG_BACKEND` env
 - Active lessons from the lessons compendium, formatted with market condition metadata for selective application
 - Previous recommendation (for mid-day/review continuity — auto-fetched from DB via `getPreviousRecommendation()`, with client-side `lastAnalysisRef` fallback for first-run or backtest scenarios)
 - Data availability notes (VIX1D missing, pre-10AM opening range, backtest mode)
@@ -546,7 +554,7 @@ Real-time dark pool support/resistance from Unusual Whales (owner-only):
 
 ## Data Collection & ML Pipeline
 
-### Database Schema (40+ Tables)
+### Database Schema (50+ Tables, 77+ numbered migrations)
 
 **Core Trading Tables:**
 
@@ -576,7 +584,7 @@ Real-time dark pool support/resistance from Unusual Whales (owner-only):
 | `day_labels`        | ML training labels from review analyses   | structure_correct, flow signals, settlement direction | 1 row/trading day |
 | `economic_events`   | FRED + Finnhub calendar                   | event_name, event_time, type, forecast, previous      | Per event         |
 
-### Intraday Data Collection (35 Cron Jobs)
+### Intraday Data Collection (38 Cron Jobs)
 
 All cron jobs are guarded by `CRON_SECRET` and run during market hours (13–21 UTC, Mon–Fri) unless otherwise noted.
 
@@ -619,9 +627,9 @@ All cron jobs are guarded by `CRON_SECRET` and run during market hours (13–21 
 
 ### ML Pipeline (Python)
 
-A multi-phase machine learning system (~8,000 lines of Python) that augments the rule-based system with statistical validation. Located in `ml/`.
+A multi-phase ML system that augments the rule-based analyze endpoint with statistical validation, analog-day retrieval, and microstructure signal engineering. Located in `ml/`. Uses its own venv (`ml/.venv`), pyproject, and pytest suite — isolated from the Node app.
 
-**Pipeline Phases:**
+**Core (structure / range / divergence) phases:**
 
 | Phase     | Name                           | Status          | Purpose                                                                                     |
 | --------- | ------------------------------ | --------------- | ------------------------------------------------------------------------------------------- |
@@ -629,29 +637,45 @@ A multi-phase machine learning system (~8,000 lines of Python) that augments the
 | Phase 1   | Day Type Clustering            | ✅ Complete     | K-Means, GMM, hierarchical clustering with PCA                                              |
 | Phase 1.5 | Exploratory Data Analysis      | ✅ Complete     | 9 analysis sections: rule validation, feature importance, flow reliability, dark pool, etc. |
 | Phase 2   | Structure Classification       | 🔄 Early        | 5-model comparison (XGBoost, LR, RF, NB, DT) with walk-forward validation                   |
-| Phase 3   | Charm Divergence Predictor     | 📊 Accumulating | Predict when naive charm chart misleads vs. Periscope                                       |
-| Phase 4   | Intraday Range Regression      | 📊 Accumulating | Predict daily H-L range, beating VIX baseline                                               |
-| Phase 5   | Optimal Exit Timing            | ⏸ Blocked       | Survival analysis — requires timestamped entry/exit data                                    |
-| Phase 6   | Flow-Price Divergence Detector | 📊 Accumulating | Automate Rule 10 with learned thresholds                                                    |
 
-**Python Scripts (`ml/src/`):**
+**Analog-retrieval (historical-similar-day) phases:**
 
-| Script               | Lines  | Purpose                                            |
-| -------------------- | ------ | -------------------------------------------------- |
-| `utils.py`           | 400+   | DB connection, feature groups, validation helpers  |
-| `eda.py`             | 1,500+ | 9-section exploratory analysis                     |
-| `clustering.py`      | 600+   | Phase 1 unsupervised clustering                    |
-| `phase2_early.py`    | 450+   | 5-model walk-forward comparison                    |
-| `visualize.py`       | 700+   | 21 publication-quality plots                       |
-| `backtest.py`        | 500+   | P&L simulation comparing 3 strategies              |
-| `pin_analysis.py`    | 600+   | Settlement pin risk using per-strike gamma         |
-| `health.py`          | 800+   | 5 pipeline health checks (freshness, stationarity) |
-| `milestone_check.py` | 500+   | Data milestone tracker + script recommendations    |
-| `explore.py`         | 200+   | Data export/summary with CSV output                |
+- **Phase B — Text-Embedding Day Analogs** ✅ Shipped. OpenAI `text-embedding-3-large` (2000-dim) over sidecar-generated session text; analog search via pgvector.
+- **Phase C — Engineered-Feature Analog Backend** ✅ Shipped. 60-dim numeric feature vector alternative; `DAY_ANALOG_BACKEND` env switches backends.
+- **Phase 3a — TBBO DBN → Parquet Converter** ✅ Shipped. Sidecar-side conversion producing the persistent archive under `year=YYYY/part.parquet`.
+- **Phase 4b — TBBO Archive + 1-Year OFI Percentile** ✅ Shipped. Archive seeded from Vercel Blob; rank today's OFI against 1-yr historical distribution.
+- **Analog Range Forecast — Cohort-Conditional Range + Asymmetric Excursion** ✅ Shipped. Strike-placement hints from 15 text-embedding-nearest historical mornings; replaces the fixed-%-of-spot heuristic.
+- **VIX-Regime-Stratified Analog Retrieval** ✅ Shipped. Cohort filtered to same-VIX-bucket mornings; adaptively corrects vol-regime miscalibration on elevated/crisis-VIX days.
+
+**Microstructure (OFI / TBBO / spread) phases:**
+
+- **Phase 4c — Microstructure Feature Engineering** ✅ Shipped. Per-day OFI (Order Flow Imbalance), spread-widening aggregates, volume imbalances from TBBO.
+- **Phase 4c1 — MAX-based Spread Aggregator** ✅ Shipped. Switched spread-widening stat from median to max for tail-event sensitivity.
+- **Phase 4d — Microstructure EDA + Signal Validation** ✅ Shipped (validated). ES OFI: no signal. **NQ 1h OFI: ρ=0.313, p<0.001, n=312** — Bonferroni-significant predictor of next-day NQ return.
+- **Phase 5a — Dual-Symbol Microstructure in Analyze** ✅ Shipped. ES + NQ OFI wired into `<microstructure_signals_rules>` in the analyze prompt.
+- **Phase 5b — UW Deltas Context** ✅ Shipped. Dark pool velocity, GEX delta, whale net, ETF divergence — all delta-based vs absolute.
+- **Phase 5c — tbbo-ofi-percentile Pre-Warm Cron** ✅ Shipped. Daily 13:00 UTC warm so analyze's first call of the day hits a warm Parquet cache.
+
+**Other phases (accumulating):**
+
+| Phase     | Name                           | Status          | Purpose                                                                 |
+| --------- | ------------------------------ | --------------- | ----------------------------------------------------------------------- |
+| Phase 3   | Charm Divergence Predictor     | 📊 Accumulating | Predict when naive charm chart misleads vs. Periscope                  |
+| Phase 4   | Intraday Range Regression      | 📊 Accumulating | Predict daily H-L range, beating VIX baseline                          |
+| Phase 5   | Optimal Exit Timing            | ⏸ Blocked       | Survival analysis — requires timestamped entry/exit data                |
+| Phase 6   | Flow-Price Divergence Detector | 📊 Accumulating | Automate Rule 10 with learned thresholds                                |
+
+**Source modules (`ml/src/`):**
+
+Core pipeline scripts: `utils.py`, `eda.py`, `clustering.py`, `phase2_early.py`, `visualize.py`, `backtest.py`, `pin_analysis.py`, `health.py`, `milestone_check.py`, `explore.py`.
+
+Microstructure pipeline (`ml/src/features/`): OFI feature engineering, TBBO conversion, Parquet writer. Uses DuckDB with its own `_new_connection()` that mirrors the sidecar's UTC-TimeZone + memory-limit safety.
+
+PAC engine scaffold (`ml/src/pac/`): DuckDB-backed order-blocks + structure detection for a future price-action-confirmation backtester.
 
 **Feature Engineering Pipeline (`build-features` cron):**
 
-The feature engineering cron (`/api/cron/build-features`) runs 4 phases after market close:
+Runs 4 phases after market close:
 
 1. **Flow checkpoints** — NCP/NPP agreement at T1–T8 intervals across 6 sources
 2. **GEX features** — Gamma OI/vol/dir at checkpoints, slopes, Greek exposure, per-strike gamma walls + charm slopes
@@ -659,6 +683,10 @@ The feature engineering cron (`/api/cron/build-features`) runs 4 phases after ma
 4. **Monitor dynamics** — IV crush rate, spike counts, flow ratio trends from minute-level data
 
 Output: One row per trading day in `training_features` (100+ columns) + `day_labels`.
+
+**Comparison-harness scripts (`scripts/compare-analog-backends.mjs` + `scripts/compare-backends-report.mjs`):**
+
+For evaluating analog-retrieval backend changes, a harness runs both Phase B (text-embedding) and Phase C (engineered) backends over N historical mornings and produces a report comparing cohort-range-forecast calibration vs realized session range. Outputs `comparison-vN-*.md` files tracked in the repo root.
 
 ### Nightly Automation (GitHub Actions)
 
@@ -686,35 +714,72 @@ Owner-only section displaying nightly pipeline results:
 
 ## Futures + ES Options Sidecar (Railway)
 
-A Python ingest service deployed separately on Railway, pulling 7 futures symbols (ES, NQ, ZN, RTY, CL, GC, DX) and ES options data from [Databento](https://databento.com) and writing directly to Neon Postgres. Runs outside Vercel because Databento's Python client expects a long-lived process, and because Railway offers cheaper sustained compute than Vercel Functions for this batch-ingest workload.
+A full Python data-platform service deployed separately on Railway, combining four distinct responsibilities: (1) real-time Databento Live ingestion of 6 futures symbols + ES options, (2) end-of-day Theta Data backfill of SPX option chains, (3) a persistent TBBO Parquet archive (distributed from Vercel Blob to Railway volume), and (4) a DuckDB query layer exposing microstructure + analog-day endpoints back to the Vercel side. Runs outside Vercel because it holds long-lived streaming connections and queries GB-scale Parquet archives — neither fits a serverless cold-start model.
 
 **Architecture:**
 
 ```text
-Databento API
-  ↓ (databento SDK + psycopg2)
-[sidecar/src/main.py]
-  ├─ symbol_manager.py  → resolve ES → ESH26 front month
-  ├─ databento_client.py → fetch futures OHLCV + ES options chains
-  ├─ db.py              → direct psycopg2 upserts (not @neondatabase/serverless)
-  └─ health.py          → /health endpoint for Railway probe
+Databento Live (streaming)         Theta Data Terminal (nightly backfill)
+  ↓ databento SDK                    ↓ theta_client.py
+[sidecar/src/]
+  ├─ main.py                       — entry point, signal handlers, shutdown barrier
+  ├─ databento_client.py           — Live session: OHLCV-1m, TBBO, ES.OPT trades/stats/definitions
+  ├─ symbol_manager.py             — parent-symbology + ATM strike window re-centering
+  ├─ trade_processor.py            — ES options trade buffering + periodic flush thread
+  ├─ quote_processor.py            — ES/NQ TBBO → TopOfBook + TradeTick writers
+  ├─ theta_launcher.py             — co-resident Theta Terminal JVM subprocess
+  ├─ theta_fetcher.py              — nightly APScheduler + SPX EOD chain backfill
+  ├─ archive_seeder.py             — one-shot pull from Vercel Blob → /data/archive (SHA-resumable)
+  ├─ archive_query.py              — DuckDB layer over the TBBO Parquet archive
+  ├─ health.py                     — /health + /archive/* + /admin/seed-archive HTTP server
+  ├─ db.py                         — psycopg2 upserts (not @neondatabase/serverless)
+  └─ sentry_setup.py               — Sentry init (separate DSN from Vercel side)
   ↓
-Neon Postgres [futures_snapshots, futures_options_daily, ...]
+Neon Postgres + Railway Volume [/data/archive/tbbo/year=*/part.parquet]
 ```
 
-**Key features:**
+**Four concurrent responsibilities:**
 
-- **Python, not Node** — `sidecar/` is its own project with `pyproject.toml`, `requirements.txt`, and a Dockerfile. Uses `psycopg2` directly (not `@neondatabase/serverless`) since it's not running in a serverless context.
-- **7 futures symbols** covering the full macro picture: ES (equities), NQ (tech equities), ZN (10Y Treasury), RTY (small caps), CL (crude), GC (gold), DX (dollar index). VX (VIX futures) is planned but deferred pending Databento availability.
-- **ES options ingest** — end-of-day chain snapshots for 14 DTE directional signal, populating `futures_options_daily`.
-- **Sentry SDK** for error tracking (`sentry_setup.py`); separate DSN from the Vercel side.
-- **Railway-specific config** — `railway.toml` for build + deploy; env vars (`DATABENTO_API_KEY`, `DATABASE_URL`, `SENTRY_DSN`) live in Railway's secret store, NOT Vercel's.
-- **Vercel build gating** — the root `vercel.json` `ignoreCommand` skips Vercel deploys when only `sidecar/`, `ml/`, or `scripts/` change, so sidecar commits don't trigger wasted frontend rebuilds.
+1. **Real-time Databento Live** — 6 futures symbols (ES, NQ, ZN, RTY, CL, GC) on OHLCV-1m plus ES+NQ TBBO for microstructure, plus full ES.OPT chain (definition snapshot at session open with `start=0`, statistics for EOD OI/IV/delta, and trades filtered to an ATM ±10 strike window). Writes to `futures_bars`, `futures_options_trades`, `futures_options_daily`, and TopOfBook/TradeTick Parquet.
+2. **Theta Data backfill** — nightly SPX option chain EOD fetcher via the co-resident Theta Terminal Java subprocess. Optional — disabled when `THETA_EMAIL`/`THETA_PASSWORD` are unset.
+3. **Archive seeder** — one-shot `POST /admin/seed-archive` pulls the 3.9 GB TBBO archive from Vercel Blob into the `/data/archive` Railway volume on a first deploy (SHA-resumable, single-flight-locked). After seeding, an EOD process keeps the archive fresh.
+4. **DuckDB query layer** — thread-local connections against the Parquet archive, cap'd at 500 MB memory with spill to `/tmp/duckdb`. Serves archive endpoints that the Vercel side consumes on analyze and ML-feature paths.
+
+**HTTP endpoints (consumed by Vercel):**
+
+| Endpoint                                 | Returns                                                                |
+| ---------------------------------------- | ---------------------------------------------------------------------- |
+| `GET /health`                            | Liveness + DB + Theta status                                           |
+| `GET /archive/day-summary?date=YYYY-MM-DD`       | Deterministic session text for embedding pipeline                 |
+| `GET /archive/day-features?date=YYYY-MM-DD`      | 60-dim numeric vector for engineered-analog retrieval            |
+| `GET /archive/day-summary-batch?from&to`         | Batched summaries for backfill (capped 3 yrs)                     |
+| `GET /archive/day-features-batch?from&to`        | Batched vectors for backfill                                      |
+| `GET /archive/day-summary-prediction?date`       | Leakage-free prediction summary (no outcome fields)               |
+| `GET /archive/analog-days?date&k`                | k-nearest historical mornings by window similarity                |
+| `GET /archive/tbbo-day-microstructure?date&symbol` | Per-day OFI + spread-widening aggregates (front month)          |
+| `GET /archive/tbbo-ofi-percentile?symbol&value`  | 1-year percentile rank of current OFI value                       |
+| `POST /admin/seed-archive`                       | One-shot seed trigger (token-gated)                               |
+
+**Key implementation details:**
+
+- **Python 3.12-slim + Temurin 21 JRE** (for Theta Terminal), multi-stage Dockerfile
+- **Thread-local DuckDB connections** — `ThreadingHTTPServer` gives each request its own connection so `/archive/*` queries run in parallel, not serialized on a shared conn
+- **Memory safety** — every DuckDB connection `SET memory_limit='500MB'` + `SET temp_directory='/tmp/duckdb'` to prevent OOM on cold-cache scans (SIDE-017)
+- **Today-guard** on `/archive/day-summary` and `/archive/day-features` returns 404 immediately for today/future dates, avoiding doomed DuckDB queries that waste ~6 queries/min during RTH (SIDE-017)
+- **Idempotent resend handling** — `futures_options_trades` has a UNIQUE index on `(ts, underlying, expiry, strike, option_type, price, size, side)` so Databento reconnect-replays don't duplicate rows (SIDE-003)
+- **Graceful shutdown barrier** — `_shutting_down` flag short-circuits in-flight callbacks; processors' periodic flush threads join with bounded timeouts (SIDE-006/011)
+- **Observability hooks** — definition-lag drop counter (SIDE-012), reconnect gap Sentry breadcrumbs (SIDE-011), options-pipeline health log (`definitions_cached=N` every OHLCV-1m interval close) (SIDE-013)
+- **Vercel build gating** — root `vercel.json` `ignoreCommand` skips Vercel deploys when only `sidecar/`, `ml/`, or `scripts/` change, so sidecar commits don't trigger wasted frontend rebuilds
+- **Env vars** in Railway's secret store (NOT Vercel's): `DATABENTO_API_KEY`, `DATABASE_URL`, `SENTRY_DSN`, `BLOB_READ_WRITE_TOKEN`, `ARCHIVE_MANIFEST_URL`, `ARCHIVE_SEED_TOKEN`, `ARCHIVE_ROOT`, and optional `THETA_EMAIL`/`THETA_PASSWORD`
 
 **Consumed by the Vercel side via:**
 
-- `api/_lib/futures-context.ts` — reads `futures_snapshots` + `futures_options_daily` into Claude's analysis context, with Zod row-parsing for schema drift safety.
-- `api/cron/backfill-futures-gaps.ts` — fills in weekend / holiday gaps when Databento backfills late.
+- `api/_lib/futures-context.ts` — reads `futures_snapshots` + `futures_options_daily` into Claude's analysis context
+- `api/_lib/archive-sidecar.ts` — typed client for all `/archive/*` endpoints
+- `api/cron/warm-tbbo-percentile.ts` — daily pre-warm so analyze's first-call latency is sub-2s (Phase 5c)
+- `api/cron/refresh-current-snapshot.ts` — every 5 min in RTH, materializes today's summary+features into Neon so analyze never pays DuckDB cold-scan on hot path
+- `api/cron/embed-yesterday.ts` — nightly, pulls yesterday's summary + stores OpenAI text-embedding-3-large (2000-dim) into `day_embeddings` for analog cohort retrieval
+- `api/cron/backfill-futures-gaps.ts` — fills weekend/holiday gaps when Databento backfills late
 
 ---
 
@@ -914,12 +979,12 @@ curl -X POST https://theta-options.com/api/journal/migrate \
 
 ```text
 ├── api/                                  # Vercel Serverless Functions
-│   ├── __tests__/                        # 116 test files — endpoints, cron jobs, _lib
-│   ├── _lib/                             # 51 shared backend modules
+│   ├── __tests__/                        # 130 test files — endpoints, cron jobs, _lib
+│   ├── _lib/                             # 63 shared backend modules
 │   │   ├── schwab.ts                     # Schwab OAuth token lifecycle (Redis + distributed lock)
 │   │   ├── api-helpers.ts                # Shared fetch, cache, owner-gate, rate limiting, bot check
-│   │   ├── db.ts                         # Neon Postgres: initDb() + migrateDb() (35+ migrations)
-│   │   ├── db-migrations.ts              # Numbered migration definitions (40+ tables)
+│   │   ├── db.ts                         # Neon Postgres: initDb() + migrateDb() (77+ migrations)
+│   │   ├── db-migrations.ts              # Numbered migration definitions (50+ tables)
 │   │   ├── db-analyses.ts                # Analysis CRUD
 │   │   ├── db-flow.ts                    # Flow data queries + formatters
 │   │   ├── db-snapshots.ts               # Snapshot persistence
@@ -960,7 +1025,7 @@ curl -X POST https://theta-options.com/api/journal/migrate \
 │   │   ├── init.ts                       # POST → create tables + run migrations
 │   │   ├── migrate.ts                    # POST → add new columns (idempotent)
 │   │   └── status.ts                     # GET → DB connection diagnostics
-│   ├── cron/                             # 34 scheduled jobs (35 schedules in vercel.json)
+│   ├── cron/                             # 38 scheduled jobs (39 schedules in vercel.json)
 │   │   ├── fetch-flow.ts                 # Market Tide (all-in + OTM)
 │   │   ├── fetch-net-flow.ts             # SPX/SPY/QQQ net flow
 │   │   ├── fetch-etf-tide.ts             # SPY/QQQ ETF fund flow
@@ -1314,7 +1379,7 @@ Tests are organized by source type:
 
 ```text
 src/__tests__/     161 test files — components, hooks, utils, data
-api/__tests__/     116 test files — API endpoints, cron jobs, _lib modules
+api/__tests__/     130 test files — API endpoints, cron jobs, _lib modules
 ```
 
 | File                                | Focus                                                                                      |
