@@ -87,8 +87,33 @@ class TestComputeMetrics:
         t1 = _closed_trade("2024-01-02 13:30:00+00:00", 100.0, 106.0)  # +$12 - $1.90 = $10.10
         t2 = _closed_trade("2024-01-02 14:30:00+00:00", 100.0, 90.0)  # -$20 - $1.90 = -$21.90
         m = compute_metrics([t1, t2])
-        # Equity: 10.10, -11.80 → peak 10.10, trough -11.80 → drawdown -21.90
+        # Equity (anchored at $25K starting_equity):
+        #   25_010.10 → peak, 24_988.20 → trough → drawdown -$21.90
+        # DD% = -21.90 / 25_010.10 ≈ -0.000876 (near zero — as it should be on a $25K account)
         assert m.max_drawdown_dollars == pytest.approx(-21.90)
+        assert m.max_drawdown_pct == pytest.approx(-21.90 / 25_010.10)
+
+    def test_starting_equity_baseline_makes_dd_pct_meaningful(self):
+        """A small loss against a tiny per-trade peak no longer reports a
+        massive percentage — the bug that hid in folds 0-3 of the 6-month
+        ES sweep (2024-07 → 2024-12) where a $-8 drawdown reported -54%.
+
+        Helper math: 1 point = $2 net of commission per round trip
+            (tick_value=0.50, 4 ticks/pt, commission $1.90).
+        """
+        # t1 long 100→130 = +30pt = +$60 gross − $1.90 = $58.10 net (peak)
+        t1 = _closed_trade("2024-01-02 13:30:00+00:00", 100.0, 130.0)
+        # t2 long 100→96 = −4pt = −$8 gross − $1.90 = −$9.90 net (drawdown leg)
+        t2 = _closed_trade("2024-01-02 14:30:00+00:00", 100.0, 96.0)
+        m_default = compute_metrics([t1, t2])
+        # With $25K anchor: peak ≈ $25,058.10, DD = −$9.90 → DD% ≈ −0.04%
+        assert m_default.max_drawdown_pct > -0.001
+        # Unanchored behavior is recoverable by passing a tiny baseline:
+        # peak = 1 + 58.10 = 59.10; dd_dollars = −9.90; dd_pct = −9.90/59.10
+        m_tiny = compute_metrics([t1, t2], starting_equity_dollars=1.0)
+        assert m_tiny.max_drawdown_pct == pytest.approx(
+            -9.90 / 59.10, abs=1e-6
+        )
 
     def test_sharpe_requires_at_least_two_days(self):
         """Sharpe from 1 day of P&L is undefined — defaults to 0."""

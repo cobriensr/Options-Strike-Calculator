@@ -81,6 +81,7 @@ def compute_metrics(
     trading_days_per_year: int = 252,
     eligible_bars_count: int | None = None,
     total_bars_in_trade: int | None = None,
+    starting_equity_dollars: float = 25_000.0,
 ) -> BacktestMetrics:
     """Aggregate metrics from a list of closed Trades.
 
@@ -93,6 +94,13 @@ def compute_metrics(
     eligible_bars_count, total_bars_in_trade:
         Optional for computing `exposure_pct`. If not supplied, the metric
         defaults to 0.0.
+    starting_equity_dollars:
+        Notional account size used as the percentage-drawdown baseline.
+        Default $25,000 — a typical micro-futures retail account. Without
+        a positive baseline, the per-trade equity curve starts at $0 and
+        any small early loss against a small early peak reports an
+        absurdly large percentage drawdown (e.g. -$8 / $15 peak = -55%).
+        Anchor to a real-world account size and the % becomes meaningful.
 
     Returns
     -------
@@ -136,19 +144,20 @@ def compute_metrics(
     else:
         m.profit_factor = 0.0
 
-    # --- Drawdown (computed on cumulative equity curve, per-trade cadence) ---
-    equity = pnls.cumsum()
+    # --- Drawdown (computed on equity curve anchored to starting_equity) ---
+    # Anchoring the curve to a real account size makes max_drawdown_pct
+    # comparable across folds with different trade counts and entry timing.
+    # Per-trade cumulative without anchoring divides by tiny early peaks and
+    # produces meaningless -50%+ readings on benign loss sequences.
+    equity = starting_equity_dollars + pnls.cumsum()
     peaks = np.maximum.accumulate(equity)
-    drawdowns = equity - peaks  # negative values
+    drawdowns = equity - peaks  # negative values, same regardless of anchor
     m.max_drawdown_dollars = float(drawdowns.min()) if len(drawdowns) else 0.0
-    # Percent drawdown uses the peak that preceded the trough; if peak is 0 or
-    # negative (underwater from the start), we report absolute dollars only.
     peak_at_trough_idx = int(drawdowns.argmin())
     peak_at_trough = peaks[peak_at_trough_idx]
-    if peak_at_trough > 0:
-        m.max_drawdown_pct = m.max_drawdown_dollars / peak_at_trough
-    else:
-        m.max_drawdown_pct = 0.0
+    # peak_at_trough is always >= starting_equity_dollars > 0 here, so
+    # division is always well-defined.
+    m.max_drawdown_pct = m.max_drawdown_dollars / peak_at_trough
 
     # --- Sharpe / Sortino — from daily-aggregated P&L ---
     df_trades = pd.DataFrame(
