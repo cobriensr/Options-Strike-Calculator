@@ -1087,6 +1087,12 @@ Classification signal weights:
   progress. Confirm with whale flow and GEX delta before treating
   as directional — a SURGE alone is "institutions are active" not
   "institutions are bullish."
+- Dark pool SURGE caveat: the per-strike-cluster baseline is biased
+  slightly downward (clusters that reprint appear only in the latest
+  bucket, under-counting earlier windows). Treat a DP SURGE that
+  isn't corroborated by whale flow or GEX delta as a single-source
+  signal with noise in the tail. Combine-and-confirm before acting
+  on it.
 - Dark pool DROUGHT: Informational only. Often precedes a directional
   resolution but the direction itself is not in the signal.
 - GEX STRENGTHENING with positive GEX: Dealer long-gamma regime

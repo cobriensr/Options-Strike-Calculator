@@ -9,6 +9,7 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 import {
+  classifyDarkPoolVelocity,
   classifyEtfTide,
   classifyGexIntradayDelta,
   classifyWhaleFlow,
@@ -135,6 +136,59 @@ describe('computeDarkPoolVelocity', () => {
     mockSql.mockResolvedValueOnce([]);
     const result = await computeDarkPoolVelocity(FIXED_NOW);
     expect(result).toBeNull();
+  });
+});
+
+describe('classifyDarkPoolVelocity', () => {
+  it('requires absolute delta floor for SURGE (not just z-score)', () => {
+    // baseline mean=2, std=0.5; count5m=3 → z=2.0 but delta=+1 only
+    // should NOT fire SURGE — single-cluster noise below the +3 floor.
+    const result = classifyDarkPoolVelocity({
+      count5m: 3,
+      baselineMean: 2,
+      zscore: 2.0,
+    });
+    expect(result).toBe('NORMAL');
+  });
+
+  it('fires SURGE when both z-score AND absolute delta clear the floor', () => {
+    // mean=2, count5m=10 → delta=+8 ≥ 3, z large — SURGE.
+    const result = classifyDarkPoolVelocity({
+      count5m: 10,
+      baselineMean: 2,
+      zscore: 4.0,
+    });
+    expect(result).toBe('SURGE');
+  });
+
+  it('requires absolute delta floor for DROUGHT', () => {
+    // baseline mean=3, count5m=1 → delta=-2 (below +3 floor)
+    // z=-2.5 would classify DROUGHT on z alone — should NOT fire.
+    const result = classifyDarkPoolVelocity({
+      count5m: 1,
+      baselineMean: 3,
+      zscore: -2.5,
+    });
+    expect(result).toBe('NORMAL');
+  });
+
+  it('fires DROUGHT when both z-score AND absolute delta clear the floor', () => {
+    // mean=10, count5m=1 → delta=-9 ≥ 3 magnitude, z very negative.
+    const result = classifyDarkPoolVelocity({
+      count5m: 1,
+      baselineMean: 10,
+      zscore: -3.0,
+    });
+    expect(result).toBe('DROUGHT');
+  });
+
+  it('returns NORMAL when z-score is within ±2', () => {
+    const result = classifyDarkPoolVelocity({
+      count5m: 5,
+      baselineMean: 4,
+      zscore: 1.0,
+    });
+    expect(result).toBe('NORMAL');
   });
 });
 

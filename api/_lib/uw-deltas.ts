@@ -115,6 +115,21 @@ const DP_VELOCITY_SURGE_Z = 2.0;
 const DP_VELOCITY_DROUGHT_Z = -2.0;
 
 /**
+ * Minimum absolute (count5m - baselineMean) magnitude before SURGE or
+ * DROUGHT fires, in addition to the z-score threshold. Prevents
+ * low-denominator false positives: a baseline of mean=2 std=0.5 yields
+ * z=2.0 at count=3, but that's +1 cluster — noise, not a surge.
+ *
+ * Also compensates for an ingest-side bias in `dark_pool_levels`: each
+ * strike cluster's `latest_time` is UPSERTed with GREATEST(), so a
+ * cluster that reprints within the 60-min window appears only in the
+ * MOST RECENT bucket it touched. The baseline is systematically
+ * under-counted relative to bucket 0, which inflates z-scores in both
+ * directions. The absolute-delta floor gates that noise.
+ */
+const DP_VELOCITY_SURGE_MIN_ABSOLUTE_DELTA = 3;
+
+/**
  * Minimum non-zero baseline buckets before z-score is meaningful.
  * Below this, stddev is dominated by the single active bucket and the
  * z-score blows up or collapses to ±Infinity.
@@ -306,9 +321,11 @@ export async function computeDarkPoolVelocity(
   const zscore = (count5m - baselineMean) / baselineStd;
   if (!Number.isFinite(zscore)) return null;
 
-  let classification: DarkPoolVelocityClassification = 'NORMAL';
-  if (zscore > DP_VELOCITY_SURGE_Z) classification = 'SURGE';
-  else if (zscore < DP_VELOCITY_DROUGHT_Z) classification = 'DROUGHT';
+  const classification = classifyDarkPoolVelocity({
+    count5m,
+    baselineMean,
+    zscore,
+  });
 
   return {
     count5m,
@@ -317,6 +334,29 @@ export async function computeDarkPoolVelocity(
     zscore,
     classification,
   };
+}
+
+/**
+ * Classify dark pool velocity. Requires BOTH the z-score threshold
+ * AND an absolute-count-delta floor — a z=2.0 spike at +1 cluster
+ * above a mean of 2 is noise, not institutional activity. The
+ * absolute-delta floor also compensates for the known ingest-side
+ * baseline under-count (see `DP_VELOCITY_SURGE_MIN_ABSOLUTE_DELTA`).
+ *
+ * Exported for direct unit-test coverage.
+ */
+export function classifyDarkPoolVelocity(input: {
+  count5m: number;
+  baselineMean: number;
+  zscore: number;
+}): DarkPoolVelocityClassification {
+  const { count5m, baselineMean, zscore } = input;
+  const absDelta = count5m - baselineMean;
+  const floor = DP_VELOCITY_SURGE_MIN_ABSOLUTE_DELTA;
+
+  if (zscore > DP_VELOCITY_SURGE_Z && absDelta >= floor) return 'SURGE';
+  if (zscore < DP_VELOCITY_DROUGHT_Z && -absDelta >= floor) return 'DROUGHT';
+  return 'NORMAL';
 }
 
 // ── 2. GEX intraday delta ─────────────────────────────────────
@@ -513,6 +553,11 @@ export async function computeEtfTideDivergence(
   const sql = getDb();
   const etDate = getETDateStr(now);
   const nowIso = now.toISOString();
+  // Defense-in-depth RTH floor: today's fetch-etf-tide cron only runs
+  // during market hours, but a backfill or schedule widening could
+  // insert pre-market rows. Without this floor, first_flow drifts
+  // earlier and poisons every classification for the day.
+  const rthOpenIso = rthOpenIsoFor(now);
 
   const rows = (await sql`
     WITH ranked AS (
@@ -524,6 +569,7 @@ export async function computeEtfTideDivergence(
         ROW_NUMBER() OVER (PARTITION BY source ORDER BY timestamp DESC) AS rn_desc
       FROM flow_data
       WHERE date = ${etDate}
+        AND timestamp >= ${rthOpenIso}
         AND timestamp <= ${nowIso}
         AND source IN ('spy_etf_tide', 'qqq_etf_tide')
     )
