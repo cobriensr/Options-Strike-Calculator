@@ -983,7 +983,25 @@ def day_summary_batch(
             f"close {float(day_close):.2f} "
             f"({(float(day_close) - float(day_open)):+.2f})"
         )
-        out.append({"date": date_str, "symbol": symbol, "summary": summary})
+        # Structured OHLC fields in addition to the text summary. The
+        # compare-analog-backends experiment needs these raw numbers to
+        # compute asymmetric excursion (high-open vs open-low) for
+        # iron-condor strike placement. Text summary stays byte-for-byte
+        # stable so the embedding pipeline is unaffected.
+        out.append(
+            {
+                "date": date_str,
+                "symbol": symbol,
+                "summary": summary,
+                "open": float(day_open),
+                "high": float(day_high),
+                "low": float(day_low),
+                "close": float(day_close),
+                "range": float(day_high) - float(day_low),
+                "up_excursion": float(day_high) - float(day_open),
+                "down_excursion": float(day_open) - float(day_low),
+            }
+        )
     return out
 
 

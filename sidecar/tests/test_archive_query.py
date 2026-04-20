@@ -671,9 +671,19 @@ def test_day_summary_batch_matches_per_date_format(tmp_path: Path) -> None:
     archive_query.reset_connection_for_tests()
     single = archive_query.day_summary_text("2024-06-03", root=tmp_path)
 
-    # Byte-for-byte match.
+    # Byte-for-byte match on text summary.
     assert batch[0]["summary"] == single
     assert batch[0]["symbol"] == "ESU4"
+
+    # Structured OHLC fields alongside the text. Fixtures have
+    # open=5300.0, high=5315.0, low=5280.0, close=5285.0.
+    assert batch[0]["open"] == 5300.0
+    assert batch[0]["high"] == 5315.0
+    assert batch[0]["low"] == 5280.0
+    assert batch[0]["close"] == 5285.0
+    assert batch[0]["range"] == pytest.approx(35.0)
+    assert batch[0]["up_excursion"] == pytest.approx(15.0)  # high - open
+    assert batch[0]["down_excursion"] == pytest.approx(20.0)  # open - low
 
 
 def test_day_features_vector_forward_fills_gaps(tmp_path: Path) -> None:
