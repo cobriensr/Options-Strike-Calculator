@@ -845,6 +845,139 @@ describe('formatMicrostructureDualSymbolForClaude', () => {
     expect(out).toContain('OFI 1h: +0.40 → AGGRESSIVE_BUY');
     expect(out).toContain('INSUFFICIENT_DATA');
   });
+
+  it('renders the Historical rank line when ranks are provided (Phase 4b)', () => {
+    const signals = {
+      es: {
+        symbol: 'ES',
+        ofi1m: 0.1,
+        ofi5m: 0.1,
+        ofi1h: 0.12,
+        spreadZscore: 0.0,
+        tobPressure: 1.05,
+        composite: 'BALANCED' as const,
+        computedAt: '2026-04-18T15:30:00.000Z',
+      },
+      nq: {
+        symbol: 'NQ',
+        ofi1m: 0.35,
+        ofi5m: 0.38,
+        ofi1h: 0.38,
+        spreadZscore: 0.2,
+        tobPressure: 1.6,
+        composite: 'AGGRESSIVE_BUY' as const,
+        computedAt: '2026-04-18T15:30:00.000Z',
+      },
+    };
+    const ranks = {
+      es: { percentile: 55, mean: 0.05, std: 0.12, count: 252 },
+      nq: { percentile: 92.1, mean: 0.02, std: 0.09, count: 252 },
+    };
+    const out = formatMicrostructureDualSymbolForClaude(signals, ranks);
+    expect(out).not.toBeNull();
+    // Percentile uses an ordinal suffix and cites the historical depth.
+    expect(out).toContain(
+      'Historical rank: 55th percentile of the last 252 days',
+    );
+    expect(out).toContain(
+      'Historical rank: 92nd percentile of the last 252 days',
+    );
+    // Line sits directly under OFI 1h for each symbol (Claude reads it
+    // in context of the live value).
+    expect(out).toMatch(/OFI 1h: \+0\.12 → BALANCED\n\s+Historical rank: 55th/);
+    expect(out).toMatch(
+      /OFI 1h: \+0\.38 → AGGRESSIVE_BUY\n\s+Historical rank: 92nd/,
+    );
+  });
+
+  it('omits the Historical rank line when ranks are null or missing (backward compat)', () => {
+    const signals = {
+      es: {
+        symbol: 'ES',
+        ofi1m: 0.1,
+        ofi5m: 0.1,
+        ofi1h: 0.12,
+        spreadZscore: 0.0,
+        tobPressure: 1.05,
+        composite: 'BALANCED' as const,
+        computedAt: '2026-04-18T15:30:00.000Z',
+      },
+      nq: {
+        symbol: 'NQ',
+        ofi1m: 0.35,
+        ofi5m: 0.38,
+        ofi1h: 0.4,
+        spreadZscore: 0.2,
+        tobPressure: 1.6,
+        composite: 'AGGRESSIVE_BUY' as const,
+        computedAt: '2026-04-18T15:30:00.000Z',
+      },
+    };
+
+    // Case 1: ranks omitted entirely — no Historical rank line anywhere.
+    const outNoRanks = formatMicrostructureDualSymbolForClaude(signals);
+    expect(outNoRanks).not.toContain('Historical rank');
+
+    // Case 2: ranks object present but both sides null — same outcome.
+    const outNullRanks = formatMicrostructureDualSymbolForClaude(signals, {
+      es: null,
+      nq: null,
+    });
+    expect(outNullRanks).not.toContain('Historical rank');
+
+    // Case 3: one side ranked, other null — only the ranked side renders.
+    const outOneSide = formatMicrostructureDualSymbolForClaude(signals, {
+      es: null,
+      nq: { percentile: 88, mean: 0.03, std: 0.1, count: 252 },
+    });
+    expect(outOneSide).not.toBeNull();
+    // ES has no Historical rank line.
+    expect(outOneSide).toMatch(
+      /ES \(latest front-month\):\n\s+OFI 1h: \+0\.12 → BALANCED\n\s+OFI 5m:/,
+    );
+    // NQ does.
+    expect(outOneSide).toContain('Historical rank: 88th percentile');
+  });
+
+  it('ordinal suffixes render correctly across 1-100 boundary cases', () => {
+    const makeSignals = () => ({
+      es: null,
+      nq: {
+        symbol: 'NQ',
+        ofi1m: 0.1,
+        ofi5m: 0.1,
+        ofi1h: 0.1,
+        spreadZscore: 0.0,
+        tobPressure: 1.05,
+        composite: 'BALANCED' as const,
+        computedAt: '2026-04-18T15:30:00.000Z',
+      },
+    });
+
+    // 1st, 2nd, 3rd, 4th — baseline suffixes.
+    for (const [pct, suffix] of [
+      [1, 'st'],
+      [2, 'nd'],
+      [3, 'rd'],
+      [4, 'th'],
+      // Teens: 11/12/13 must be "th" not "st/nd/rd".
+      [11, 'th'],
+      [12, 'th'],
+      [13, 'th'],
+      // Non-teens at the 1/2/3 mod10: 21st, 22nd, 23rd.
+      [21, 'st'],
+      [22, 'nd'],
+      [23, 'rd'],
+      // Top / bottom.
+      [0, 'th'],
+      [100, 'th'],
+    ] as Array<[number, string]>) {
+      const out = formatMicrostructureDualSymbolForClaude(makeSignals(), {
+        nq: { percentile: pct, mean: 0, std: 0, count: 252 },
+      });
+      expect(out).toContain(`Historical rank: ${pct}${suffix} percentile`);
+    }
+  });
 });
 
 describe('classifyCrossAssetOfi (Math.sign(0) edge case)', () => {

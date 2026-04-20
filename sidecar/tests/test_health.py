@@ -174,3 +174,129 @@ def test_health_handles_theta_reporter_exceptions(
     assert body["theta"]["running"] is True
     assert body["theta"]["last_ready_at"] is None
     assert body["theta"]["last_error"] is None
+
+
+# ---------------------------------------------------------------------------
+# TBBO archive endpoints (Phase 4b)
+# ---------------------------------------------------------------------------
+
+
+def test_tbbo_day_microstructure_400_on_malformed_date(
+    configure_base_callables,
+) -> None:
+    status, body = _run_request(
+        path="/archive/tbbo-day-microstructure?date=bad&symbol=ES"
+    )
+    assert status == 400
+    assert "YYYY-MM-DD" in body["error"]
+
+
+def test_tbbo_day_microstructure_400_on_unknown_symbol(
+    configure_base_callables,
+) -> None:
+    status, body = _run_request(
+        path="/archive/tbbo-day-microstructure?date=2025-01-15&symbol=CL"
+    )
+    assert status == 400
+    assert "ES" in body["error"]
+
+
+def test_tbbo_day_microstructure_200_happy_path(
+    configure_base_callables,
+) -> None:
+    sample = {
+        "date": "2025-01-15",
+        "symbol": "ES",
+        "front_month_contract": "ESH5",
+        "trade_count": 123,
+        "ofi_5m_mean": 0.01,
+        "ofi_15m_mean": 0.02,
+        "ofi_1h_mean": 0.03,
+    }
+    with patch(
+        "archive_query.tbbo_day_microstructure", return_value=sample
+    ):
+        status, body = _run_request(
+            path="/archive/tbbo-day-microstructure?date=2025-01-15&symbol=ES"
+        )
+    assert status == 200
+    assert body == sample
+
+
+def test_tbbo_day_microstructure_404_on_missing_data(
+    configure_base_callables,
+) -> None:
+    with patch(
+        "archive_query.tbbo_day_microstructure",
+        side_effect=ValueError("No TBBO ES bars found for 2099-01-01"),
+    ):
+        status, body = _run_request(
+            path="/archive/tbbo-day-microstructure?date=2099-01-01&symbol=ES"
+        )
+    assert status == 404
+    assert "No TBBO" in body["error"]
+
+
+def test_tbbo_ofi_percentile_400_on_missing_value(
+    configure_base_callables,
+) -> None:
+    status, _body = _run_request(
+        path="/archive/tbbo-ofi-percentile?symbol=ES&window=1h"
+    )
+    assert status == 400
+
+
+def test_tbbo_ofi_percentile_400_on_bad_window(
+    configure_base_callables,
+) -> None:
+    status, _body = _run_request(
+        path="/archive/tbbo-ofi-percentile?symbol=ES&value=0.1&window=1d"
+    )
+    assert status == 400
+
+
+def test_tbbo_ofi_percentile_400_on_non_finite_value(
+    configure_base_callables,
+) -> None:
+    status, _body = _run_request(
+        path="/archive/tbbo-ofi-percentile?symbol=ES&value=nan&window=1h"
+    )
+    assert status == 400
+
+
+def test_tbbo_ofi_percentile_200_happy_path(
+    configure_base_callables,
+) -> None:
+    sample = {
+        "symbol": "NQ",
+        "window": "1h",
+        "current_value": 0.38,
+        "percentile": 92.1,
+        "mean": 0.02,
+        "std": 0.09,
+        "count": 252,
+    }
+    with patch(
+        "archive_query.tbbo_ofi_percentile", return_value=sample
+    ):
+        status, body = _run_request(
+            path="/archive/tbbo-ofi-percentile?symbol=NQ&value=0.38&window=1h"
+        )
+    assert status == 200
+    assert body == sample
+
+
+def test_tbbo_ofi_percentile_404_on_missing_history(
+    configure_base_callables,
+) -> None:
+    with patch(
+        "archive_query.tbbo_ofi_percentile",
+        side_effect=ValueError(
+            "No TBBO ES OFI history available for window 1h"
+        ),
+    ):
+        status, body = _run_request(
+            path="/archive/tbbo-ofi-percentile?symbol=ES&value=0.1&window=1h"
+        )
+    assert status == 404
+    assert "No TBBO" in body["error"]

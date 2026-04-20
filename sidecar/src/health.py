@@ -72,6 +72,12 @@ class HealthHandler(BaseHTTPRequestHandler):
         if self.path.startswith("/archive/day-features"):
             self._handle_archive_day_features()
             return
+        if self.path.startswith("/archive/tbbo-day-microstructure"):
+            self._handle_archive_tbbo_day_microstructure()
+            return
+        if self.path.startswith("/archive/tbbo-ofi-percentile"):
+            self._handle_archive_tbbo_ofi_percentile()
+            return
         if self.path != "/health":
             self.send_response(404)
             self.end_headers()
@@ -449,6 +455,116 @@ class HealthHandler(BaseHTTPRequestHandler):
             log.error(
                 "day-summary-prediction-batch failed %s..%s: %s",
                 start, end, exc,
+            )
+            self._send_json(500, {"error": "query failed"})
+
+    def _handle_archive_tbbo_day_microstructure(self) -> None:
+        """GET /archive/tbbo-day-microstructure?date=YYYY-MM-DD&symbol=ES|NQ
+
+        Returns the per-day microstructure summary (OFI at 5m / 15m / 1h
+        plus trade count) for the requested ``(date, symbol)``.
+
+        Unauthenticated — TBBO data is public market data, and the
+        sidecar doesn't expose any secrets through this shape.
+        """
+        from urllib.parse import parse_qs, urlparse
+        import re
+
+        qs = parse_qs(urlparse(self.path).query)
+        date = (qs.get("date") or [""])[0]
+        symbol = (qs.get("symbol") or [""])[0].upper()
+
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            self._send_json(400, {"error": "date must be YYYY-MM-DD"})
+            return
+        if symbol not in {"ES", "NQ"}:
+            self._send_json(400, {"error": "symbol must be 'ES' or 'NQ'"})
+            return
+
+        try:
+            import archive_query
+
+            result = archive_query.tbbo_day_microstructure(date, symbol)
+            self._send_json(200, result)
+        except ValueError as exc:
+            # "No TBBO X bars found..." = 404; invalid-input errors were
+            # caught by the regex / allowlist above. Any ValueError here
+            # is a missing-data case.
+            self._send_json(404, {"error": str(exc)})
+        except Exception as exc:  # noqa: BLE001
+            log.error(
+                "tbbo-day-microstructure failed for %s/%s: %s",
+                date,
+                symbol,
+                exc,
+            )
+            self._send_json(500, {"error": "query failed"})
+
+    def _handle_archive_tbbo_ofi_percentile(self) -> None:
+        """GET /archive/tbbo-ofi-percentile?symbol=ES|NQ&value=<float>&window=5m|15m|1h
+
+        Returns ``{symbol, window, current_value, percentile, mean, std, count}``
+        describing where ``value`` falls in the last 252 days of historical
+        daily-mean OFI at ``window`` for ``symbol`` (front-month only).
+        """
+        from urllib.parse import parse_qs, urlparse
+        import math
+
+        qs = parse_qs(urlparse(self.path).query)
+        symbol = (qs.get("symbol") or [""])[0].upper()
+        value_raw = (qs.get("value") or [""])[0]
+        window = (qs.get("window") or ["1h"])[0]
+        horizon_raw = (qs.get("horizon_days") or [""])[0]
+
+        if symbol not in {"ES", "NQ"}:
+            self._send_json(400, {"error": "symbol must be 'ES' or 'NQ'"})
+            return
+        if window not in {"5m", "15m", "1h"}:
+            self._send_json(
+                400, {"error": "window must be '5m', '15m', or '1h'"}
+            )
+            return
+        if not value_raw:
+            self._send_json(400, {"error": "value is required"})
+            return
+        try:
+            value = float(value_raw)
+        except ValueError:
+            self._send_json(400, {"error": "value must be a finite number"})
+            return
+        if not math.isfinite(value):
+            self._send_json(400, {"error": "value must be a finite number"})
+            return
+
+        kwargs: dict[str, object] = {"window": window}
+        if horizon_raw:
+            try:
+                horizon = int(horizon_raw)
+            except ValueError:
+                self._send_json(
+                    400, {"error": "horizon_days must be an integer"}
+                )
+                return
+            if horizon < 1:
+                self._send_json(
+                    400, {"error": "horizon_days must be >= 1"}
+                )
+                return
+            kwargs["horizon_days"] = horizon
+
+        try:
+            import archive_query
+
+            result = archive_query.tbbo_ofi_percentile(symbol, value, **kwargs)
+            self._send_json(200, result)
+        except ValueError as exc:
+            # No-data errors → 404 (empty archive / window never had data);
+            # other ValueError messages are input-shape (shouldn't reach
+            # the query layer after the validation above).
+            self._send_json(404, {"error": str(exc)})
+        except Exception as exc:  # noqa: BLE001
+            log.error(
+                "tbbo-ofi-percentile failed for %s/%s: %s", symbol, window, exc
             )
             self._send_json(500, {"error": "query failed"})
 

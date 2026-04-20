@@ -4,11 +4,24 @@
  * Upload the Databento DBN→Parquet archive to Vercel Blob so the
  * Railway sidecar can seed its persistent volume from it.
  *
- * Source:  ml/data/archive/  (produced by ml/src/archive_convert.py)
+ * Source:  ml/data/archive/  (produced by ml/src/archive_convert.py
+ *          and ml/src/tbbo_convert.py)
  * Target:  archive/v1/<relative-path> on Vercel Blob (private access;
  *          matches this project's Blob store configuration).
  * Output:  archive/v1/manifest.json listing every uploaded file with
  *          size, SHA-256, and Blob URL for the sidecar seeder.
+ *
+ * Subtrees uploaded (see `ARCHIVE_SUBTREES` below):
+ *   - `ohlcv_1m/year=YYYY/part.parquet` (Phase 2 OHLCV archive)
+ *   - `tbbo/year=YYYY/part.parquet` (Phase 4a TBBO archive, Phase 4b distribute)
+ *   - `symbology.parquet` (instrument_id → symbol mapping)
+ *   - `condition.json`, `tbbo_condition.json` (degraded-day flags)
+ *   - `convert_summary.json`, `tbbo_convert_summary.json` (converter metadata)
+ *
+ * Why list subtrees explicitly: the seeder walks whatever the manifest
+ * lists, so silent additions (e.g. a half-written partial conversion
+ * left in `ml/data/archive/wip/`) would be uploaded without review.
+ * Declaring the allowed subtrees makes additions an explicit choice.
  *
  * Why private access: the project's Blob store is configured as private,
  * so every put() must match. The sidecar reads with BLOB_READ_WRITE_TOKEN
@@ -41,6 +54,24 @@ const ARCHIVE_SRC = process.env.ARCHIVE_SRC ?? 'ml/data/archive';
 const CONCURRENCY = Number.parseInt(process.env.CONCURRENCY ?? '3', 10);
 const BLOB_PREFIX = 'archive/v1';
 const MANIFEST_SCHEMA_VERSION = 1;
+
+/**
+ * Subtrees / files under ARCHIVE_SRC that get uploaded. Directories
+ * are walked recursively; single files are uploaded as-is. Anything
+ * under ARCHIVE_SRC NOT listed here is skipped.
+ *
+ * Missing entries are tolerated (e.g. a laptop that only ran the OHLCV
+ * converter won't have `tbbo/` yet). The script logs and moves on.
+ */
+const ARCHIVE_SUBTREES = [
+  { name: 'ohlcv_1m', kind: 'dir' },
+  { name: 'tbbo', kind: 'dir' },
+  { name: 'symbology.parquet', kind: 'file' },
+  { name: 'convert_summary.json', kind: 'file' },
+  { name: 'tbbo_convert_summary.json', kind: 'file' },
+  { name: 'condition.json', kind: 'file' },
+  { name: 'tbbo_condition.json', kind: 'file' },
+];
 
 if (!BLOB_TOKEN) {
   console.error('Missing BLOB_READ_WRITE_TOKEN (source .env.local first)');
@@ -126,10 +157,39 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`Scanning ${ARCHIVE_SRC}...`);
-  const files = await walk(ARCHIVE_SRC);
+  console.log(
+    `Scanning ${ARCHIVE_SRC} (subtrees: ${ARCHIVE_SUBTREES.map((s) => s.name).join(', ')})...`,
+  );
+
+  const files = [];
+  for (const entry of ARCHIVE_SUBTREES) {
+    const absPath = join(ARCHIVE_SRC, entry.name);
+    const entryStat = await stat(absPath).catch(() => null);
+    if (!entryStat) {
+      console.log(`  (skipped — not present: ${entry.name})`);
+      continue;
+    }
+    if (entry.kind === 'dir') {
+      if (!entryStat.isDirectory()) {
+        console.warn(`  Expected directory but got file: ${entry.name}`);
+        continue;
+      }
+      files.push(...(await walk(absPath)));
+    } else {
+      if (!entryStat.isFile()) {
+        console.warn(`  Expected file but got directory: ${entry.name}`);
+        continue;
+      }
+      files.push(absPath);
+    }
+  }
   // Stable ordering makes the manifest diff-friendly across re-runs.
   files.sort();
+
+  if (files.length === 0) {
+    console.error('No files found in any configured subtree — aborting.');
+    process.exit(1);
+  }
 
   const totalBytes = (
     await Promise.all(files.map(async (f) => (await stat(f)).size))

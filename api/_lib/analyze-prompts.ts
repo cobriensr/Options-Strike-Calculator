@@ -1038,6 +1038,16 @@ When to weight this signal:
   ρ=0.313 (factor-level effect size, not a standalone strategy). Do
   not size up on microstructure alone; do not flip a directional read
   on OFI/TOB without a confirming GEX or flow signal.
+
+Historical OFI percentile rank (Phase 4b): when today's OFI value is
+in the top or bottom 10% of the last 252 days, the directional signal
+is meaningfully unusual. Percentile between 25 and 75 is "typical for
+this symbol" — weight the live classification less strongly. Percentile
+above 95 or below 5 is a genuine outlier day; weight the classification
+more strongly. Combine with cross-asset read and other signals before
+sizing. When the Historical rank line is absent, no distribution is
+available (sidecar down, archive missing, non-finite live OFI) — fall
+back to the raw OFI tier ladder above.
 </microstructure_signals_rules>
 <uw_deltas_rules>
 The UW Deltas block reports four institutional-activity VELOCITY /

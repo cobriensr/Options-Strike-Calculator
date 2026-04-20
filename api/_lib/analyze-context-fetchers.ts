@@ -69,7 +69,9 @@ import {
 import {
   computeAllSymbolSignals,
   formatMicrostructureDualSymbolForClaude,
+  type MicrostructureOfiRanks,
 } from './microstructure-signals.js';
+import { fetchTbboOfiPercentile } from './archive-sidecar.js';
 import { computeUwDeltas, formatUwDeltasForClaude } from './uw-deltas.js';
 import { formatFuturesForClaude } from './futures-context.js';
 import { formatIvTermStructureForClaude } from '../iv-term-structure.js';
@@ -817,12 +819,66 @@ export async function fetchVixDivergenceBlock(): Promise<string | null> {
 export async function fetchMicrostructureBlock(): Promise<string | null> {
   try {
     const result = await computeAllSymbolSignals(new Date());
-    return formatMicrostructureDualSymbolForClaude(result);
+    const ranks = await fetchPercentileRanks(result);
+    return formatMicrostructureDualSymbolForClaude(result, ranks);
   } catch (err) {
     logger.error({ err }, 'microstructure signals fetch failed');
     metrics.increment('analyze_context.microstructure_error');
     return null;
   }
+}
+
+/**
+ * Enrich the live Phase 5a dual-symbol signals with each symbol's 1h
+ * OFI historical percentile rank from the sidecar's TBBO archive
+ * (Phase 4b). Returns null when both symbols lack a 1h OFI value or
+ * when the sidecar is unreachable — the formatter gracefully drops the
+ * Historical rank line.
+ *
+ * Per-symbol fetches run in parallel via `Promise.allSettled` so one
+ * side failing (archive doesn't have ES history yet, transient 5xx,
+ * whatever) never suppresses the other side's rank. Non-finite 1h OFI
+ * values short-circuit without a fetch.
+ */
+async function fetchPercentileRanks(
+  result: Awaited<ReturnType<typeof computeAllSymbolSignals>>,
+): Promise<MicrostructureOfiRanks | null> {
+  const esOfi1h = result.es?.ofi1h ?? null;
+  const nqOfi1h = result.nq?.ofi1h ?? null;
+  if (
+    !(esOfi1h != null && Number.isFinite(esOfi1h)) &&
+    !(nqOfi1h != null && Number.isFinite(nqOfi1h))
+  ) {
+    return null;
+  }
+  const [esRank, nqRank] = await Promise.allSettled([
+    esOfi1h != null && Number.isFinite(esOfi1h)
+      ? fetchTbboOfiPercentile('ES', esOfi1h, '1h')
+      : Promise.resolve(null),
+    nqOfi1h != null && Number.isFinite(nqOfi1h)
+      ? fetchTbboOfiPercentile('NQ', nqOfi1h, '1h')
+      : Promise.resolve(null),
+  ]);
+  return {
+    es:
+      esRank.status === 'fulfilled' && esRank.value != null
+        ? {
+            percentile: esRank.value.percentile,
+            mean: esRank.value.mean,
+            std: esRank.value.std,
+            count: esRank.value.count,
+          }
+        : null,
+    nq:
+      nqRank.status === 'fulfilled' && nqRank.value != null
+        ? {
+            percentile: nqRank.value.percentile,
+            mean: nqRank.value.mean,
+            std: nqRank.value.std,
+            count: nqRank.value.count,
+          }
+        : null,
+  };
 }
 
 // ── UW deltas (Phase 5b: DP velocity, GEX delta, whale, ETF) ──

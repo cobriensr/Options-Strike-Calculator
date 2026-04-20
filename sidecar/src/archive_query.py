@@ -42,6 +42,17 @@ def _ohlcv_glob(root: Path | None = None) -> str:
     return str(base / "ohlcv_1m" / "year=*" / "part.parquet")
 
 
+def _tbbo_glob(root: Path | None = None) -> str:
+    """TBBO Parquet glob across year partitions.
+
+    Mirrors `_ohlcv_glob` but for the Phase 4a TBBO archive (quote-stamped
+    trades). The sidecar's volume at `/data/archive/tbbo/year=*/part.parquet`
+    is seeded from Vercel Blob via `archive_seeder`.
+    """
+    base = root or _ROOT
+    return str(base / "tbbo" / "year=*" / "part.parquet")
+
+
 def _symbology_path(root: Path | None = None) -> str:
     base = root or _ROOT
     return str(base / "symbology.parquet")
@@ -1046,3 +1057,396 @@ def day_summary_prediction_batch(
         )
         out.append({"date": date_str, "symbol": symbol, "summary": summary})
     return out
+
+
+# ---------------------------------------------------------------------------
+# TBBO microstructure queries (Phase 4b)
+# ---------------------------------------------------------------------------
+#
+# The Phase 4a TBBO archive holds ~1 year of quote-stamped trades for ES and
+# NQ front-month (and neighboring-month) contracts. These functions mirror
+# the SQL in `ml/src/features/microstructure.py` — but adapted for on-demand
+# runtime queries over the seeded Railway volume rather than offline feature
+# engineering on the laptop.
+#
+# Scope for Phase 4b is deliberately narrow: just the per-day summary (OFI
+# at three windows + trade count) and a percentile-rank query against the
+# last N days of computed 1h OFI. The remaining 19 features from
+# `microstructure.py` are a follow-up if the percentile-rank signal proves
+# valuable in Claude's analyze context.
+
+_TBBO_ALLOWED_SYMBOLS = frozenset({"ES", "NQ"})
+_TBBO_OFI_WINDOWS: dict[str, int] = {"5m": 5, "15m": 15, "1h": 60}
+# OFI below this combined-trade count is noise-floor — same threshold the
+# ml pipeline uses (`OFI_MIN_TRADES_PER_WINDOW = 20`). Skip such windows
+# rather than letting them dominate the mean.
+_TBBO_OFI_MIN_TRADES_PER_WINDOW = 20
+# Default rolling horizon for percentile ranking — ~1 trading year.
+_TBBO_OFI_DEFAULT_HORIZON_DAYS = 252
+
+
+def _tbbo_front_month(
+    conn: duckdb.DuckDBPyConnection,
+    tbbo_glob: str,
+    symbology: str,
+    date_iso: str,
+    symbol_root: str,
+) -> str | None:
+    """Top-volume (ES|NQ) outright contract for ``date_iso`` UTC day.
+
+    Returns contract string like ``'ESZ5'`` / ``'NQM6'`` or ``None`` if no
+    trades landed for the requested root on that date. Excludes calendar
+    spreads (hyphenated) and options (space-separated).
+    """
+    like_pattern = f"{symbol_root}%"
+    row = conn.execute(
+        """
+        SELECT sym.symbol
+        FROM read_parquet(?) AS bars
+        JOIN read_parquet(?) AS sym USING (instrument_id)
+        WHERE sym.symbol LIKE ?
+          AND strpos(sym.symbol, ' ') = 0
+          AND strpos(sym.symbol, '-') = 0
+          AND CAST(date_trunc('day', bars.ts_recv) AS DATE) = ?::DATE
+        GROUP BY sym.symbol
+        ORDER BY SUM(bars.size) DESC, sym.symbol ASC
+        LIMIT 1
+        """,
+        [tbbo_glob, symbology, like_pattern, date_iso],
+    ).fetchone()
+    return row[0] if row else None
+
+
+def tbbo_day_microstructure(
+    date_iso: str,
+    symbol: str,
+    *,
+    root: Path | None = None,
+) -> dict[str, Any]:
+    """Return the per-day microstructure summary for ``(date, symbol)``.
+
+    Minimum-viable Phase 4b shape (see spec for rationale):
+
+        {
+            "date": "2025-10-15",
+            "symbol": "ES",                # root, as passed in (upper)
+            "front_month_contract": "ESZ5",# resolved from TBBO symbology
+            "trade_count": 676_965,
+            "ofi_5m_mean": 0.011,
+            "ofi_15m_mean": 0.014,
+            "ofi_1h_mean": 0.017,
+        }
+
+    OFI at each window is computed in DuckDB as a one-shot: for each minute
+    bucket we sum buy/sell volume filtered by aggressor side ('B' / 'A'),
+    then for each minute compute an ``W``-minute trailing sum and derive
+    ``(buy_sum - sell_sum) / (buy_sum + sell_sum)``. Windows with total
+    volume below the noise floor are excluded from the day aggregate.
+
+    Raises:
+        ValueError: If ``symbol`` is not ``'ES'`` or ``'NQ'``.
+        ValueError: If the TBBO archive has no bars for the requested
+            ``(date, symbol)`` pair.
+    """
+    symbol_root = symbol.upper()
+    if symbol_root not in _TBBO_ALLOWED_SYMBOLS:
+        raise ValueError(
+            f"symbol must be one of {sorted(_TBBO_ALLOWED_SYMBOLS)}, got {symbol!r}"
+        )
+
+    conn = _connection()
+    tbbo = _tbbo_glob(root)
+    symbology = _symbology_path(root)
+
+    contract = _tbbo_front_month(conn, tbbo, symbology, date_iso, symbol_root)
+    if contract is None:
+        raise ValueError(
+            f"No TBBO {symbol_root} bars found for {date_iso}"
+        )
+
+    # Per-minute buy/sell volume in a single DuckDB scan. Then three
+    # rolling window aggregates (5m / 15m / 1h) against the per-minute
+    # series, via DuckDB window functions. All aggregation happens
+    # server-side; Python only materializes summary scalars, not the
+    # per-minute timestamps (which would force pytz import on a
+    # TIMESTAMPTZ materialization in DuckDB 1.5+).
+    #
+    # Minute filling: a day with no trade in a given minute bucket simply
+    # has no row. The rolling SUM uses a ROWS BETWEEN clause, which
+    # operates on the row count rather than the minute count — so a
+    # quiet overnight stretch of 1-trade-per-10-minutes produces a
+    # 5-row rolling sum that spans 50 wall-clock minutes, not 5. For
+    # the Phase 4b minimum summary we accept this approximation (it
+    # only affects the mean, not the extremes); the ML pipeline's
+    # dense-reindex pandas path is the authoritative version.
+    summary_row = conn.execute(
+        """
+        WITH per_minute AS (
+            SELECT CAST(date_trunc('minute', bars.ts_recv) AS TIMESTAMP) AS minute,
+                   COALESCE(SUM(bars.size) FILTER (WHERE bars.side = 'B'), 0)
+                       AS buy_vol,
+                   COALESCE(SUM(bars.size) FILTER (WHERE bars.side = 'A'), 0)
+                       AS sell_vol,
+                   COUNT(*) AS n_trades
+            FROM read_parquet(?) AS bars
+            JOIN read_parquet(?) AS sym USING (instrument_id)
+            WHERE sym.symbol = ?
+              AND CAST(date_trunc('day', bars.ts_recv) AS DATE) = ?::DATE
+            GROUP BY 1
+        ),
+        rolling AS (
+            SELECT minute,
+                   n_trades,
+                   SUM(buy_vol) OVER w5   AS buy5,
+                   SUM(sell_vol) OVER w5  AS sell5,
+                   SUM(buy_vol) OVER w15  AS buy15,
+                   SUM(sell_vol) OVER w15 AS sell15,
+                   SUM(buy_vol) OVER w60  AS buy60,
+                   SUM(sell_vol) OVER w60 AS sell60
+            FROM per_minute
+            WINDOW
+                w5  AS (ORDER BY minute
+                        ROWS BETWEEN 4 PRECEDING AND CURRENT ROW),
+                w15 AS (ORDER BY minute
+                        ROWS BETWEEN 14 PRECEDING AND CURRENT ROW),
+                w60 AS (ORDER BY minute
+                        ROWS BETWEEN 59 PRECEDING AND CURRENT ROW)
+        )
+        SELECT
+            SUM(n_trades)::BIGINT AS trade_count,
+            AVG(CASE
+                WHEN (buy5 + sell5) >= ?
+                THEN (buy5 - sell5) / (buy5 + sell5)
+            END)::DOUBLE AS ofi_5m_mean,
+            AVG(CASE
+                WHEN (buy15 + sell15) >= ?
+                THEN (buy15 - sell15) / (buy15 + sell15)
+            END)::DOUBLE AS ofi_15m_mean,
+            AVG(CASE
+                WHEN (buy60 + sell60) >= ?
+                THEN (buy60 - sell60) / (buy60 + sell60)
+            END)::DOUBLE AS ofi_1h_mean
+        FROM rolling
+        """,
+        [
+            tbbo,
+            symbology,
+            contract,
+            date_iso,
+            _TBBO_OFI_MIN_TRADES_PER_WINDOW,
+            _TBBO_OFI_MIN_TRADES_PER_WINDOW,
+            _TBBO_OFI_MIN_TRADES_PER_WINDOW,
+        ],
+    ).fetchone()
+
+    if summary_row is None or summary_row[0] is None:
+        # _tbbo_front_month returned a contract but the join-then-filter
+        # produced no per-minute rows — should not happen in practice;
+        # surface as a clear empty-day error.
+        raise ValueError(
+            f"No TBBO {symbol_root} bars found for {date_iso}"
+        )
+
+    trade_count, ofi_5m_mean, ofi_15m_mean, ofi_1h_mean = summary_row
+
+    def _nan_to_none(v: object) -> float | None:
+        if v is None:
+            return None
+        fv = float(v)
+        if fv != fv:  # NaN check without `math` import noise
+            return None
+        return fv
+
+    return {
+        "date": date_iso,
+        "symbol": symbol_root,
+        "front_month_contract": contract,
+        "trade_count": int(trade_count),
+        "ofi_5m_mean": _nan_to_none(ofi_5m_mean),
+        "ofi_15m_mean": _nan_to_none(ofi_15m_mean),
+        "ofi_1h_mean": _nan_to_none(ofi_1h_mean),
+    }
+
+
+def tbbo_ofi_percentile(
+    symbol: str,
+    current_value: float,
+    *,
+    window: str = "1h",
+    horizon_days: int = _TBBO_OFI_DEFAULT_HORIZON_DAYS,
+    root: Path | None = None,
+) -> dict[str, Any]:
+    """Rank ``current_value`` against the last ``horizon_days`` of daily-mean
+    OFI values for ``symbol`` at the requested ``window``.
+
+    Answers "today's 1h OFI of +0.38 — how unusual is that, historically?"
+    The distribution is the set of daily-mean OFI values at ``window``
+    across the last ``horizon_days`` of archive dates, front-month only.
+
+    Returns:
+        ``{symbol, window, current_value, percentile, mean, std, count}``
+
+        ``percentile`` is the fraction of historical values strictly less
+        than ``current_value`` scaled to 0-100 (so the minimum value maps
+        to 0, the maximum to 100, ties resolve to the lower rank).
+
+    Raises:
+        ValueError: If ``symbol`` is not ``'ES'`` or ``'NQ'``.
+        ValueError: If ``window`` is not ``'5m'``, ``'15m'``, or ``'1h'``.
+        ValueError: If ``current_value`` is not a finite number.
+        ValueError: If ``horizon_days < 1``.
+        ValueError: If the archive has zero days of front-month data for
+            the requested symbol / window (nothing to rank against).
+    """
+    symbol_root = symbol.upper()
+    if symbol_root not in _TBBO_ALLOWED_SYMBOLS:
+        raise ValueError(
+            f"symbol must be one of {sorted(_TBBO_ALLOWED_SYMBOLS)}, got {symbol!r}"
+        )
+    if window not in _TBBO_OFI_WINDOWS:
+        raise ValueError(
+            f"window must be one of {sorted(_TBBO_OFI_WINDOWS)}, got {window!r}"
+        )
+    if horizon_days < 1:
+        raise ValueError(f"horizon_days must be >= 1, got {horizon_days}")
+    try:
+        current_float = float(current_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"current_value must be a number, got {current_value!r}") from exc
+    import math as _math
+
+    if not _math.isfinite(current_float):
+        raise ValueError(f"current_value must be finite, got {current_value!r}")
+
+    window_minutes = _TBBO_OFI_WINDOWS[window]
+    preceding = window_minutes - 1
+
+    conn = _connection()
+    tbbo = _tbbo_glob(root)
+    symbology = _symbology_path(root)
+
+    # Build the historical distribution in one DuckDB pass. Strategy:
+    #   1. filtered: TBBO rows for the symbol root, joined to symbology
+    #      so we see the resolved contract name.
+    #   2. contract_day_volume: volume per (day, contract).
+    #   3. front_contract: top-volume contract per day (the front month).
+    #   4. per_minute: buy/sell volume per minute of each (day, contract).
+    #   5. rolling: rolling W-minute sums via a WINDOW over the ordered
+    #      per_minute rows (partitioned by day so day boundaries don't
+    #      bleed into each other).
+    #   6. daily_mean: daily mean OFI across valid windows.
+    #   7. LIMIT horizon_days by ORDER BY day DESC.
+    #
+    # The `preceding` count is a template parameter, not a bind parameter
+    # (DuckDB's ROWS BETWEEN doesn't accept runtime scalars in older
+    # versions). We validated `window` against a fixed allowlist above so
+    # the interpolation is safe.
+    daily = conn.execute(
+        f"""
+        WITH filtered AS (
+            SELECT bars.ts_recv,
+                   bars.side,
+                   bars.size,
+                   sym.symbol AS contract,
+                   CAST(date_trunc('day', bars.ts_recv) AS DATE) AS day
+            FROM read_parquet(?) AS bars
+            JOIN read_parquet(?) AS sym USING (instrument_id)
+            WHERE sym.symbol LIKE ?
+              AND strpos(sym.symbol, ' ') = 0
+              AND strpos(sym.symbol, '-') = 0
+        ),
+        contract_day_volume AS (
+            SELECT day, contract, SUM(size) AS total_vol
+            FROM filtered
+            GROUP BY day, contract
+        ),
+        front_contract AS (
+            SELECT day, contract
+            FROM (
+                SELECT day, contract,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY day
+                           ORDER BY total_vol DESC, contract ASC
+                       ) AS rk
+                FROM contract_day_volume
+            ) r
+            WHERE rk = 1
+        ),
+        per_minute AS (
+            SELECT f.day,
+                   CAST(date_trunc('minute', f.ts_recv) AS TIMESTAMP) AS minute,
+                   COALESCE(SUM(f.size) FILTER (WHERE f.side = 'B'), 0)
+                       AS buy_vol,
+                   COALESCE(SUM(f.size) FILTER (WHERE f.side = 'A'), 0)
+                       AS sell_vol
+            FROM filtered f
+            JOIN front_contract fc USING (day, contract)
+            GROUP BY f.day, 2
+        ),
+        rolling AS (
+            SELECT day,
+                   minute,
+                   SUM(buy_vol) OVER (
+                       PARTITION BY day
+                       ORDER BY minute
+                       ROWS BETWEEN {preceding} PRECEDING AND CURRENT ROW
+                   ) AS buy_sum,
+                   SUM(sell_vol) OVER (
+                       PARTITION BY day
+                       ORDER BY minute
+                       ROWS BETWEEN {preceding} PRECEDING AND CURRENT ROW
+                   ) AS sell_sum
+            FROM per_minute
+        ),
+        ofi_per_minute AS (
+            SELECT day,
+                   CASE
+                       WHEN (buy_sum + sell_sum) >= ?
+                       THEN (buy_sum - sell_sum) / (buy_sum + sell_sum)
+                       ELSE NULL
+                   END AS ofi
+            FROM rolling
+        )
+        SELECT day, AVG(ofi) AS ofi_mean
+        FROM ofi_per_minute
+        WHERE ofi IS NOT NULL
+        GROUP BY day
+        ORDER BY day DESC
+        LIMIT ?
+        """,
+        [
+            tbbo,
+            symbology,
+            f"{symbol_root}%",
+            _TBBO_OFI_MIN_TRADES_PER_WINDOW,
+            horizon_days,
+        ],
+    ).fetchall()
+
+    values = [float(row[1]) for row in daily if row[1] is not None]
+    if not values:
+        raise ValueError(
+            f"No TBBO {symbol_root} OFI history available for window {window}"
+        )
+
+    below = sum(1 for v in values if v < current_float)
+    # Fraction strictly below, scaled 0-100. At the true minimum, zero values
+    # are strictly below so percentile=0; at the maximum (or above), all are
+    # below so percentile=100. This matches pandas' `rank(pct=True)` with
+    # ``method='min'`` semantics for the strict-less-than comparison.
+    percentile = (below / len(values)) * 100.0
+    mean_val = sum(values) / len(values)
+    # Population std — matches the "describe this symbol's OFI distribution"
+    # framing (same choice as `microstructure.py`'s `ddof=0`).
+    variance = sum((v - mean_val) ** 2 for v in values) / len(values)
+    std_val = variance ** 0.5
+
+    return {
+        "symbol": symbol_root,
+        "window": window,
+        "current_value": current_float,
+        "percentile": percentile,
+        "mean": mean_val,
+        "std": std_val,
+        "count": len(values),
+    }

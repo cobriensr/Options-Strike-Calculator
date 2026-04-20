@@ -89,3 +89,74 @@ export async function fetchDayFeatures(
   if (!body || !Array.isArray(body.vector)) return null;
   return body.vector;
 }
+
+/**
+ * Per-day microstructure summary from the TBBO archive (Phase 4b).
+ *
+ * Minimum-viable shape — OFI means at 5m / 15m / 1h plus metadata.
+ * See `sidecar/src/archive_query.py::tbbo_day_microstructure` for the
+ * authoritative schema.
+ */
+export interface TbboDayMicrostructure {
+  date: string;
+  symbol: 'ES' | 'NQ';
+  front_month_contract: string;
+  trade_count: number;
+  ofi_5m_mean: number | null;
+  ofi_15m_mean: number | null;
+  ofi_1h_mean: number | null;
+}
+
+/** Historical percentile rank of a given OFI value. */
+export interface TbboOfiPercentile {
+  symbol: 'ES' | 'NQ';
+  window: '5m' | '15m' | '1h';
+  current_value: number;
+  percentile: number;
+  mean: number;
+  std: number;
+  count: number;
+}
+
+/**
+ * Fetch the per-day microstructure summary for `(date, symbol)` from
+ * the sidecar's TBBO archive.
+ *
+ * Returns null on any failure (sidecar unreachable, date missing from
+ * archive, etc.). The analyze endpoint treats this as additive context.
+ */
+export async function fetchTbboDayMicrostructure(
+  dateIso: string,
+  symbol: 'ES' | 'NQ',
+): Promise<TbboDayMicrostructure | null> {
+  const qs = `date=${encodeURIComponent(dateIso)}&symbol=${encodeURIComponent(symbol)}`;
+  const body = await getJson<TbboDayMicrostructure>(
+    `/archive/tbbo-day-microstructure?${qs}`,
+  );
+  return body ?? null;
+}
+
+/**
+ * Fetch the historical percentile rank of an OFI `value` for `symbol`
+ * at `window`, against the last ~1y of archive data.
+ *
+ * Used by the analyze endpoint to enrich the Phase 5a live OFI signal
+ * with "today's 1h OFI is in the Nth percentile of the last 252 days"
+ * historical context. Null on any failure — the formatter drops the
+ * Historical rank line cleanly.
+ */
+export async function fetchTbboOfiPercentile(
+  symbol: 'ES' | 'NQ',
+  value: number,
+  window: '5m' | '15m' | '1h' = '1h',
+): Promise<TbboOfiPercentile | null> {
+  if (!Number.isFinite(value)) return null;
+  const qs =
+    `symbol=${encodeURIComponent(symbol)}` +
+    `&value=${encodeURIComponent(String(value))}` +
+    `&window=${encodeURIComponent(window)}`;
+  const body = await getJson<TbboOfiPercentile>(
+    `/archive/tbbo-ofi-percentile?${qs}`,
+  );
+  return body ?? null;
+}

@@ -542,10 +542,42 @@ export function classifyCrossAssetOfi(
   return 'MIXED';
 }
 
+/**
+ * Per-symbol historical OFI percentile rank (Phase 4b).
+ *
+ * `value` is the same 1h OFI number that `MicrostructureSignals.ofi1h`
+ * carries at call time; `percentile` is where that value sits in the
+ * last `count` trading days of daily-mean 1h OFI distribution for the
+ * symbol. Null `percentile` (or a null overall rank) means the
+ * historical rank is unavailable — the formatter omits the line.
+ */
+export interface MicrostructureOfiRank {
+  /** 0-100 percentile of `value` vs the historical distribution. */
+  percentile: number;
+  /** Historical distribution mean — render-friendly diagnostic. */
+  mean: number;
+  /** Historical distribution std (population). */
+  std: number;
+  /** Number of historical days in the distribution. */
+  count: number;
+}
+
+/**
+ * Optional percentile-rank enrichment for the dual-symbol formatter.
+ * Keys are optional; a missing key OR an explicit `null` value both
+ * render as "no Historical rank line" (backward-compatible with the
+ * pre-Phase-4b formatter output).
+ */
+export interface MicrostructureOfiRanks {
+  es?: MicrostructureOfiRank | null;
+  nq?: MicrostructureOfiRank | null;
+}
+
 /** Render one symbol's block as indented lines. */
 function formatSymbolBlock(
   symbol: string,
   s: MicrostructureSignals | null,
+  rank: MicrostructureOfiRank | null = null,
 ): string {
   if (s == null) {
     return [
@@ -557,15 +589,43 @@ function formatSymbolBlock(
     ].join('\n');
   }
   const classification = classifyOfi1h(s.ofi1h);
-  return [
+  const lines = [
     `  ${symbol} (latest front-month):`,
     `    OFI 1h: ${formatSigned(s.ofi1h, 2)} → ${classification}`,
+  ];
+  // Insert the Historical rank line directly under OFI 1h so Claude
+  // reads the percentile in context of the live value. Skip cleanly
+  // when the rank is null (backward-compat with callers that don't
+  // supply percentile data, e.g. the sidecar being unreachable).
+  if (rank != null && Number.isFinite(rank.percentile)) {
+    const pctText = rank.percentile.toFixed(0);
+    const ordinal = ordinalSuffix(Math.round(rank.percentile));
+    lines.push(
+      `    Historical rank: ${pctText}${ordinal} percentile of the last ${rank.count} days`,
+    );
+  }
+  lines.push(
     `    OFI 5m: ${formatSigned(s.ofi5m, 2)}`,
     `    OFI 1m: ${formatSigned(s.ofi1m, 2)}`,
     `    Spread z-score (30m): ${formatSigned(s.spreadZscore, 2)}`,
     `    TOB pressure (bid/ask): ${formatRatio(s.tobPressure)}`,
     `    Composite (short-horizon): ${s.composite ?? 'N/A'}`,
-  ].join('\n');
+  );
+  return lines.join('\n');
+}
+
+/**
+ * Render a plain-English ordinal suffix for a 0-100 percentile rank.
+ * 1 → "st", 2 → "nd", 3 → "rd", 4-20 → "th", then cycles.
+ */
+function ordinalSuffix(n: number): string {
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 13) return 'th';
+  const mod10 = n % 10;
+  if (mod10 === 1) return 'st';
+  if (mod10 === 2) return 'nd';
+  if (mod10 === 3) return 'rd';
+  return 'th';
 }
 
 /**
@@ -573,12 +633,18 @@ function formatSymbolBlock(
  * analyze prompt. Returns null only when BOTH symbols are null — a
  * one-sided result is still useful.
  *
+ * The optional `ranks` argument (Phase 4b) threads per-symbol 1h OFI
+ * historical percentile ranks into the rendered output. Missing /
+ * null ranks are omitted rather than rendered as "N/A" — consistent
+ * with the existing partial-data policy on the live signals.
+ *
  * The output is wrapped in a `<microstructure_signals>` tag so the
  * cached `<microstructure_signals_rules>` block in the system prompt
  * can reference this section by name.
  */
 export function formatMicrostructureDualSymbolForClaude(
   result: DualSymbolMicrostructure | null,
+  ranks: MicrostructureOfiRanks | null = null,
 ): string | null {
   if (!result) return null;
   const { es, nq } = result;
@@ -591,9 +657,9 @@ export function formatMicrostructureDualSymbolForClaude(
 
   const lines: string[] = [];
   lines.push('<microstructure_signals>');
-  lines.push(formatSymbolBlock('ES', es));
+  lines.push(formatSymbolBlock('ES', es, ranks?.es ?? null));
   lines.push('');
-  lines.push(formatSymbolBlock('NQ', nq));
+  lines.push(formatSymbolBlock('NQ', nq, ranks?.nq ?? null));
   lines.push('');
   lines.push('  Cross-asset read (1h OFI):');
   lines.push(`    ${crossAsset}`);
