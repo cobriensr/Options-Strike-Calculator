@@ -1200,3 +1200,47 @@ def test_tbbo_day_microstructure_honors_utc_day_on_non_utc_host(
         archive_query.tbbo_day_microstructure(
             "2025-10-15", "ES", root=tmp_path
         )
+
+
+# ---------------------------------------------------------------------------
+# SIDE-017 — DuckDB memory_limit + temp_directory set on every connection
+# ---------------------------------------------------------------------------
+
+
+def test_connection_sets_memory_limit_and_temp_directory(tmp_path: Path) -> None:
+    """Every DuckDB connection must have memory_limit + temp_directory
+    set so a cold-cache query over the 3.9 GB TBBO archive spills to
+    disk instead of OOM-killing the Railway container."""
+    archive_query.reset_connection_for_tests()
+    try:
+        conn = archive_query._connection()
+
+        # DuckDB exposes settings via duckdb_settings() system table.
+        settings = dict(
+            conn.execute(
+                "SELECT name, value FROM duckdb_settings() "
+                "WHERE name IN ('memory_limit', 'temp_directory')"
+            ).fetchall()
+        )
+        # DuckDB reports memory_limit in MiB (1024-based) — our 500 MB
+        # SET becomes "476.8 MiB" (500_000_000 / 1024 / 1024). Assert
+        # the value is in the ballpark of 500 MB, not the exact string.
+        limit_str = settings.get("memory_limit", "")
+        assert limit_str != "", "memory_limit should be set, got empty"
+        import re as _re
+
+        match = _re.search(r"([\d.]+)", limit_str)
+        assert match is not None, f"no number in memory_limit {limit_str!r}"
+        limit_mib = float(match.group(1))
+        # Accept either MiB-denominated (~476) or raw-MB value (~500).
+        assert 400 < limit_mib < 600, (
+            f"memory_limit should be ~500MB (≈476.8 MiB), got {limit_mib} "
+            f"from {limit_str!r}"
+        )
+
+        temp_dir = settings.get("temp_directory", "")
+        assert "/tmp/duckdb" in temp_dir, (
+            f"temp_directory should point to /tmp/duckdb, got {temp_dir!r}"
+        )
+    finally:
+        archive_query.reset_connection_for_tests()

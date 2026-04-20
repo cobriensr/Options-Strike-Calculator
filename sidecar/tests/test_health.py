@@ -321,3 +321,122 @@ def test_tbbo_ofi_percentile_400_on_horizon_days_over_cap(
     )
     assert status == 400
     assert "horizon_days" in body["error"]
+
+
+# ---------------------------------------------------------------------------
+# SIDE-017 — /archive/day-summary and /archive/day-features short-circuit
+# today/future dates to avoid memory-expensive DuckDB queries that are
+# guaranteed to miss (archive only has past days' partitions)
+# ---------------------------------------------------------------------------
+
+
+class TestArchiveDateGuards:
+    def _future_date(self) -> str:
+        """Return a date string far in the future — always 'today or future'."""
+        from datetime import datetime, timedelta, timezone
+
+        return (datetime.now(timezone.utc).date() + timedelta(days=30)).isoformat()
+
+    def _today_utc(self) -> str:
+        from datetime import datetime, timezone
+
+        return datetime.now(timezone.utc).date().isoformat()
+
+    def _past_date(self) -> str:
+        """Return a date 45 days in the past — always a valid archive target."""
+        from datetime import datetime, timedelta, timezone
+
+        return (datetime.now(timezone.utc).date() - timedelta(days=45)).isoformat()
+
+    def test_day_summary_short_circuits_today(self) -> None:
+        """Today's date must 404 immediately without invoking DuckDB."""
+        import health
+
+        with patch.object(
+            health, "_is_today_or_future_utc", wraps=health._is_today_or_future_utc
+        ) as guard_spy:
+            with patch("archive_query.day_summary_text") as mock_query:
+                status, body = _run_request(
+                    f"/archive/day-summary?date={self._today_utc()}"
+                )
+
+        assert status == 404
+        assert body.get("error", "").startswith("date not yet in archive")
+        # DuckDB query must not have been called
+        mock_query.assert_not_called()
+        # Guard must have fired
+        guard_spy.assert_called()
+
+    def test_day_summary_short_circuits_future(self) -> None:
+        """Future dates must 404 immediately (no DuckDB)."""
+        with patch("archive_query.day_summary_text") as mock_query:
+            status, body = _run_request(
+                f"/archive/day-summary?date={self._future_date()}"
+            )
+        assert status == 404
+        assert body.get("error", "").startswith("date not yet in archive")
+        mock_query.assert_not_called()
+
+    def test_day_summary_past_date_hits_duckdb(self) -> None:
+        """Past dates must still reach the DuckDB query path (normal flow)."""
+        with patch(
+            "archive_query.day_summary_text", return_value="sample summary"
+        ) as mock_query:
+            status, body = _run_request(
+                f"/archive/day-summary?date={self._past_date()}"
+            )
+        assert status == 200
+        assert body["summary"] == "sample summary"
+        mock_query.assert_called_once()
+
+    def test_day_features_short_circuits_today(self) -> None:
+        """Today's date must 404 immediately for /archive/day-features too."""
+        with patch("archive_query.day_features_vector") as mock_query:
+            status, body = _run_request(
+                f"/archive/day-features?date={self._today_utc()}"
+            )
+        assert status == 404
+        assert body.get("error", "").startswith("date not yet in archive")
+        mock_query.assert_not_called()
+
+    def test_day_features_past_date_hits_duckdb(self) -> None:
+        """Past dates still run the DuckDB feature-vector computation."""
+        with patch(
+            "archive_query.day_features_vector", return_value=[0.0] * 60
+        ) as mock_query:
+            status, body = _run_request(
+                f"/archive/day-features?date={self._past_date()}"
+            )
+        assert status == 200
+        assert body["dim"] == 60
+        mock_query.assert_called_once()
+
+    def test_malformed_date_still_400s_before_date_guard(self) -> None:
+        """The malformed-format 400 must fire before the today-guard —
+        a caller that sends garbage shouldn't be told 'not yet in archive.'"""
+        with patch("archive_query.day_summary_text") as mock_query:
+            status, body = _run_request("/archive/day-summary?date=not-a-date")
+        assert status == 400
+        assert body.get("error", "").startswith("date must be")
+        mock_query.assert_not_called()
+
+
+class TestIsTodayOrFutureUtc:
+    """Pure helper — exercised independently from the HTTP layer."""
+
+    def test_today_returns_true(self) -> None:
+        from datetime import datetime, timezone
+        import health
+
+        today = datetime.now(timezone.utc).date().isoformat()
+        assert health._is_today_or_future_utc(today) is True
+
+    def test_future_returns_true(self) -> None:
+        import health
+
+        assert health._is_today_or_future_utc("2099-12-31") is True
+
+    def test_past_returns_false(self) -> None:
+        import health
+
+        assert health._is_today_or_future_utc("2020-01-01") is False

@@ -21,6 +21,23 @@ from archive_seeder import SeedBusyError
 from logger_setup import log
 
 
+def _is_today_or_future_utc(date_str: str) -> bool:
+    """Return True when date_str (YYYY-MM-DD) is >= today in UTC.
+
+    SIDE-017: used by /archive/day-summary and /archive/day-features
+    to short-circuit queries for dates that cannot possibly be in the
+    archive yet. The refresh-current-snapshot Vercel cron polls for
+    today's summary+features every 5 min during RTH (``*/5 13-20 * *
+    1-5``), but the archive only gets today's partitions after the
+    EOD ETL. Before this guard, each doomed call ran a 3–7s DuckDB
+    query against 3.9 GB of Parquet just to discover the date had
+    no rows — ~96 wasted queries per session, each contributing
+    memory pressure on an already-strained Railway tier.
+    """
+    today_utc = datetime.now(timezone.utc).date().isoformat()
+    return date_str >= today_utc
+
+
 class HealthHandler(BaseHTTPRequestHandler):
     """Handle GET /health + POST /admin/seed-archive requests."""
 
@@ -273,6 +290,15 @@ class HealthHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "date must be YYYY-MM-DD"})
             return
 
+        # SIDE-017: short-circuit today/future — archive never has
+        # those partitions during RTH. Avoids a 3–7s DuckDB query that
+        # is guaranteed to miss and consume memory each time.
+        if _is_today_or_future_utc(date):
+            self._send_json(
+                404, {"error": "date not yet in archive (today or future)"}
+            )
+            return
+
         try:
             import archive_query
 
@@ -300,6 +326,15 @@ class HealthHandler(BaseHTTPRequestHandler):
         date = (qs.get("date") or [""])[0]
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
             self._send_json(400, {"error": "date must be YYYY-MM-DD"})
+            return
+
+        # SIDE-017: short-circuit today/future — same rationale as
+        # _handle_archive_day_summary. The refresh-current-snapshot
+        # cron fires both of these in parallel every 5 min in RTH.
+        if _is_today_or_future_utc(date):
+            self._send_json(
+                404, {"error": "date not yet in archive (today or future)"}
+            )
             return
 
         try:

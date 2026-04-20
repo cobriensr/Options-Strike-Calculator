@@ -99,6 +99,18 @@ def _connection() -> duckdb.DuckDBPyConnection:
         # under `TZ=America/Chicago` and would fail loudly if this SET
         # is ever removed.
         conn.execute("SET TimeZone = 'UTC'")
+        # SIDE-017: cap DuckDB memory and spill to disk rather than
+        # OOM-killing the container. Without this, a cold-cache query
+        # over the 3.9 GB TBBO archive (e.g. tbbo_ofi_percentile) can
+        # allocate unbounded RAM until Railway kills the process. With
+        # memory_limit set, DuckDB writes intermediate results to
+        # temp_directory when it would otherwise exceed the limit.
+        # 500 MB leaves headroom for Python + Databento Live buffers +
+        # the cached _option_definitions dict within typical Railway
+        # tier memory. Latency may rise modestly on spill but
+        # correctness and process stability take priority.
+        conn.execute("SET memory_limit = '500MB'")
+        conn.execute("SET temp_directory = '/tmp/duckdb'")
         _tls.conn = conn
         log.debug(
             "DuckDB connection initialized for thread %s",
