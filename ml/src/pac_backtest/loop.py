@@ -30,6 +30,7 @@ Not yet implemented (Phase 2):
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from pac_backtest.fills import compute_fill_price
@@ -261,6 +262,8 @@ def apply_options_filters(
 def run_backtest(
     bars: pd.DataFrame,
     params: StrategyParams,
+    *,
+    entry_eligible_indices: np.ndarray | None = None,
 ) -> list[Trade]:
     """Run one backtest over `bars` with `params`. Return closed Trades.
 
@@ -273,6 +276,16 @@ def run_backtest(
     Preconditions:
     - `bars` is sorted by ts_event ascending.
     - PAC engine has already run — structure columns are populated.
+
+    Optional args:
+    - `entry_eligible_indices`: if provided, restricts entry signals to
+      bars whose integer position is in this numpy int array. ANDs with
+      the session-window mask. Used by the CPCV sweep to restrict
+      entries to a specific fold window while ATR + structure detection
+      stay continuous across the full bar history (no warmup loss).
+      Open trades opened inside the window are still managed to their
+      natural exits even if those fall outside the window — matches
+      the "embargo" discipline in CPCV.
     """
     required_cols = {
         "ts_event",
@@ -296,8 +309,14 @@ def run_backtest(
     # Pre-compute ATR vectorized
     atr_series = compute_atr(bars, period=14).to_numpy()
 
-    # Pre-compute session eligibility mask
+    # Pre-compute session eligibility mask. If a fold restriction was
+    # passed, AND it in — trades only open on bars that satisfy BOTH
+    # the session window AND the fold membership.
     eligible = session_window_mask(bars, params.session).to_numpy()
+    if entry_eligible_indices is not None:
+        fold_mask = np.zeros(len(bars), dtype=np.bool_)
+        fold_mask[entry_eligible_indices] = True
+        eligible = eligible & fold_mask
 
     trades: list[Trade] = []
     open_trade: Trade | None = None
