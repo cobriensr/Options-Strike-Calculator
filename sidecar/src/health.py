@@ -550,6 +550,24 @@ class HealthHandler(BaseHTTPRequestHandler):
                     400, {"error": "horizon_days must be >= 1"}
                 )
                 return
+            # Import locally to keep `archive_query` (and thus DuckDB)
+            # off the import path of unrelated handlers.
+            import archive_query as _archive_query
+
+            if horizon > _archive_query._TBBO_OFI_MAX_HORIZON_DAYS:
+                # Public unauthenticated endpoint — cap at ~4 trading
+                # years to bound query cost. A caller requesting an
+                # absurd horizon would otherwise full-scan the archive.
+                self._send_json(
+                    400,
+                    {
+                        "error": (
+                            "horizon_days must be <= "
+                            f"{_archive_query._TBBO_OFI_MAX_HORIZON_DAYS}"
+                        )
+                    },
+                )
+                return
             kwargs["horizon_days"] = horizon
 
         try:

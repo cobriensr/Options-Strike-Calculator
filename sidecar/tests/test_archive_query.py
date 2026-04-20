@@ -1013,6 +1013,18 @@ def test_tbbo_ofi_percentile_validates_inputs(tmp_path: Path) -> None:
         archive_query.tbbo_ofi_percentile(
             "ES", 0.1, window="1h", horizon_days=0, root=tmp_path
         )
+    # Upper-bound cap (Phase 4b rework): anything above
+    # `_TBBO_OFI_MAX_HORIZON_DAYS` must be rejected at the library layer.
+    # Guards a public unauthenticated endpoint against the
+    # `horizon_days=10_000_000` full-archive-scan attack.
+    with pytest.raises(ValueError, match="horizon_days"):
+        archive_query.tbbo_ofi_percentile(
+            "ES",
+            0.1,
+            window="1h",
+            horizon_days=archive_query._TBBO_OFI_MAX_HORIZON_DAYS + 1,
+            root=tmp_path,
+        )
     with pytest.raises(ValueError, match="finite"):
         archive_query.tbbo_ofi_percentile(
             "ES", float("nan"), window="1h", root=tmp_path
@@ -1075,3 +1087,106 @@ def test_tbbo_ofi_percentile_respects_horizon_days(tmp_path: Path) -> None:
         "ES", 0.9, window="1h", horizon_days=3, root=tmp_path
     )
     assert result3["count"] == 3
+
+
+# ---------------------------------------------------------------------------
+# TZ-boundary regression (Phase 4b rework — Phase 4c bug re-landed)
+# ---------------------------------------------------------------------------
+
+
+def test_tbbo_day_microstructure_honors_utc_day_on_non_utc_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: a trade at 00:30 UTC must bucket into the UTC date,
+    regardless of the host's OS timezone.
+
+    DuckDB's ``date_trunc('day', <TIMESTAMPTZ>)`` honors the session
+    ``TimeZone``, which DuckDB initializes from the host ``TZ`` env var.
+    Without the ``SET TimeZone = 'UTC'`` hook in
+    ``archive_query._connection``, a trade at 2025-10-16 00:30 UTC on
+    a Chicago (CT, UTC-5/-6) host would bucket into the 2025-10-15 CT
+    calendar day — silently shifting a whole day of TBBO activity into
+    the wrong feature row. This exact bug landed once in Phase 4c
+    (``ml/src/features/microstructure.py``, commit ``dd9f390``) and was
+    fixed there; Phase 4b's first cut re-introduced it on the sidecar
+    side.
+
+    The test forces ``TZ=America/Chicago`` via ``monkeypatch.setenv`` +
+    ``time.tzset()`` so the assertion actually exercises the bug path.
+    Under the fix this test passes; without it, the 00:30 UTC trade
+    leaks into the prior date and both assertions below fail.
+    """
+    import time as _time
+    from datetime import datetime, timezone
+
+    # time.tzset() is Unix-only. Skip on platforms where it's unavailable
+    # (rare in this project's CI, but be defensive).
+    if not hasattr(_time, "tzset"):
+        pytest.skip("time.tzset() unavailable on this platform")
+
+    monkeypatch.setenv("TZ", "America/Chicago")
+    _time.tzset()
+
+    # Drop any thread-local DuckDB connection that was built before
+    # this test set TZ, so `_connection()` re-opens under the patched
+    # environment. Important: pytest's test ordering can otherwise
+    # recycle a connection that silently cached the wrong SESSION TZ
+    # resolution from an earlier test's fresh connect().
+    archive_query.reset_connection_for_tests()
+
+    # Two trades, both on UTC date 2025-10-16:
+    #   1) 00:30 UTC — under CT (UTC-5), this clock time is 19:30 on
+    #      2025-10-15 local. A buggy session-TZ-aware date_trunc would
+    #      bucket this into 2025-10-15.
+    #   2) 12:00 UTC — deep inside 2025-10-16 under any reasonable TZ.
+    # Need ≥ 20 trades total to clear the OFI noise floor in the 1h
+    # window (_TBBO_OFI_MIN_TRADES_PER_WINDOW). We pad with extra
+    # neutral minutes on 10-16 at 12:00+.
+    from datetime import timedelta
+
+    ts_boundary = datetime(2025, 10, 16, 0, 30, tzinfo=timezone.utc)
+    ts_midday = datetime(2025, 10, 16, 12, 0, tzinfo=timezone.utc)
+    padding = [
+        (
+            ts_midday + timedelta(minutes=i),
+            101,
+            "B",
+            1,
+            5300.0,
+            5300.25,
+            10,
+            10,
+            "ESZ5",
+        )
+        for i in range(25)
+    ]
+    bars: list[tuple] = [
+        (ts_boundary, 101, "B", 5, 5300.0, 5300.25, 10, 10, "ESZ5"),
+        (ts_midday, 101, "B", 5, 5300.0, 5300.25, 10, 10, "ESZ5"),
+        *padding,
+    ]
+    sym_first_seen = datetime(2025, 10, 16, 0, 0, tzinfo=timezone.utc)
+    sym_last_seen = datetime(2025, 10, 16, 23, 59, tzinfo=timezone.utc)
+    _build_tbbo_archive(
+        tmp_path,
+        bars,
+        [(101, "ESZ5", sym_first_seen, sym_last_seen)],
+    )
+
+    # Querying UTC date 2025-10-16 must see BOTH trades (the boundary
+    # one + midday) plus the padding — total trade_count 27.
+    row_1016 = archive_query.tbbo_day_microstructure(
+        "2025-10-16", "ES", root=tmp_path
+    )
+    assert row_1016["trade_count"] == 27
+    assert row_1016["front_month_contract"] == "ESZ5"
+
+    # Querying UTC date 2025-10-15 must see NONE — the archive has no
+    # trades on 10-15 UTC. Pre-fix, the 00:30 UTC trade on 2025-10-16
+    # would leak into the 2025-10-15 CT day and produce a non-empty
+    # result here.
+    with pytest.raises(ValueError, match="2025-10-15"):
+        archive_query.tbbo_day_microstructure(
+            "2025-10-15", "ES", root=tmp_path
+        )

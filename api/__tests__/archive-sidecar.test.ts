@@ -206,5 +206,40 @@ describe('archive-sidecar', () => {
       );
       expect(await fetchTbboOfiPercentile('NQ', 0.1, '1h')).toBeNull();
     });
+
+    it('returns null when the sidecar exceeds the 2s timeout', async () => {
+      // Phase 4b rework: the 2-second AbortSignal timeout was previously
+      // untested. Simulate a sidecar that never responds (common sign
+      // of a hung worker) and confirm the fetcher aborts + returns null
+      // rather than letting the analyze endpoint stall.
+      //
+      // We wire a Promise that rejects with an AbortError when the
+      // AbortSignal fires, mirroring how `fetch()` actually behaves
+      // when its signal aborts. Fake timers drive the 2000ms clock
+      // without burning real wall time.
+      vi.useFakeTimers();
+      try {
+        vi.spyOn(globalThis, 'fetch').mockImplementationOnce(
+          (_input, init) =>
+            new Promise((_resolve, reject) => {
+              const signal = (init as RequestInit | undefined)?.signal;
+              signal?.addEventListener('abort', () => {
+                reject(
+                  new DOMException('The operation was aborted', 'AbortError'),
+                );
+              });
+            }),
+        );
+
+        const promise = fetchTbboOfiPercentile('NQ', 0.25, '1h');
+        // Advance past the 2000ms AbortSignal timeout wired in
+        // archive-sidecar.getJson.
+        await vi.advanceTimersByTimeAsync(2100);
+        const result = await promise;
+        expect(result).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

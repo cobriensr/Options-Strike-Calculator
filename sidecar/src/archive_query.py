@@ -76,6 +76,29 @@ def _connection() -> duckdb.DuckDBPyConnection:
     conn: duckdb.DuckDBPyConnection | None = getattr(_tls, "conn", None)
     if conn is None:
         conn = duckdb.connect()
+        # Force session TimeZone to UTC on every new connection. DuckDB's
+        # `date_trunc('day', <TIMESTAMPTZ>)` honors the SESSION TimeZone,
+        # which DuckDB initializes from the host's TZ env var. A Railway
+        # container without `TZ=UTC` set inherits whatever the base image
+        # defaults to — currently UTC on `python:3.12-slim`, but that is
+        # implementation-defined, not contractual. On a Chicago-locale
+        # laptop a trade at 2025-10-16 00:30 UTC would bucket into the
+        # 2025-10-15 CT date, silently shifting a whole calendar day of
+        # TBBO activity into the wrong per-day aggregate. The Phase 4c
+        # ML pipeline (`ml/src/features/microstructure.py::_new_connection`)
+        # was patched with the exact same hook; this is the sidecar
+        # counterpart. The TBBO queries under this connection are the
+        # critical consumers; `es_day_summary` / `analog_days` also
+        # benefit (no correctness regression — they operate on the same
+        # date-bucket SQL pattern).
+        #
+        # Validating the TZ name requires the `pytz` package in DuckDB's
+        # native path, which is why it is an explicit sidecar dep —
+        # see `sidecar/requirements.txt`. There is a TZ-boundary
+        # regression test at `tests/test_archive_query.py` that runs
+        # under `TZ=America/Chicago` and would fail loudly if this SET
+        # is ever removed.
+        conn.execute("SET TimeZone = 'UTC'")
         _tls.conn = conn
         log.debug(
             "DuckDB connection initialized for thread %s",
@@ -1083,6 +1106,13 @@ _TBBO_OFI_WINDOWS: dict[str, int] = {"5m": 5, "15m": 15, "1h": 60}
 _TBBO_OFI_MIN_TRADES_PER_WINDOW = 20
 # Default rolling horizon for percentile ranking — ~1 trading year.
 _TBBO_OFI_DEFAULT_HORIZON_DAYS = 252
+# Upper bound on `horizon_days`. Public unauthenticated endpoint; a
+# caller could otherwise request `horizon_days=10_000_000` and force a
+# full archive scan. Cap at ~4 trading years (one presidential cycle —
+# sensible ceiling for any "how unusual is today" question). Chosen in
+# the same spirit as the 3-year calendar-day cap on the batched
+# endpoints in `health.py`.
+_TBBO_OFI_MAX_HORIZON_DAYS = _TBBO_OFI_DEFAULT_HORIZON_DAYS * 4
 
 
 def _tbbo_front_month(
@@ -1294,9 +1324,17 @@ def tbbo_ofi_percentile(
         ValueError: If ``symbol`` is not ``'ES'`` or ``'NQ'``.
         ValueError: If ``window`` is not ``'5m'``, ``'15m'``, or ``'1h'``.
         ValueError: If ``current_value`` is not a finite number.
-        ValueError: If ``horizon_days < 1``.
+        ValueError: If ``horizon_days`` is outside
+            ``[1, _TBBO_OFI_MAX_HORIZON_DAYS]``.
         ValueError: If the archive has zero days of front-month data for
             the requested symbol / window (nothing to rank against).
+
+    Cold-start latency: the first call per day scans ~1y of TBBO Parquet
+    (3.9 GB) and takes ~10-20s. Subsequent calls in the same sidecar
+    process hit DuckDB's Parquet metadata cache and complete in sub-
+    second. Phase 4b ships without a pre-warm cron; if the analyze
+    endpoint's first-call-of-day latency becomes user-visible, a
+    startup trigger can fire a cheap warm-up call after seed completes.
     """
     symbol_root = symbol.upper()
     if symbol_root not in _TBBO_ALLOWED_SYMBOLS:
@@ -1309,6 +1347,14 @@ def tbbo_ofi_percentile(
         )
     if horizon_days < 1:
         raise ValueError(f"horizon_days must be >= 1, got {horizon_days}")
+    if horizon_days > _TBBO_OFI_MAX_HORIZON_DAYS:
+        # Defense in depth: the HTTP handler also caps before calling
+        # in, but the function must be safe for any library-layer
+        # caller too (e.g. a future cron that invokes it directly).
+        raise ValueError(
+            f"horizon_days must be <= {_TBBO_OFI_MAX_HORIZON_DAYS}, "
+            f"got {horizon_days}"
+        )
     try:
         current_float = float(current_value)
     except (TypeError, ValueError) as exc:

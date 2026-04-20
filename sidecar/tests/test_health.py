@@ -300,3 +300,24 @@ def test_tbbo_ofi_percentile_404_on_missing_history(
         )
     assert status == 404
     assert "No TBBO" in body["error"]
+
+
+def test_tbbo_ofi_percentile_400_on_horizon_days_over_cap(
+    configure_base_callables,
+) -> None:
+    """Phase 4b rework: the HTTP handler caps ``horizon_days`` to
+    protect the public unauthenticated endpoint from a full-archive
+    scan request. Library-layer cap is defense-in-depth; this HTTP
+    gate is the first line. Importing `archive_query` for the cap
+    value keeps the test coupled to the code, not a magic number."""
+    import archive_query
+
+    over_cap = archive_query._TBBO_OFI_MAX_HORIZON_DAYS + 1
+    status, body = _run_request(
+        path=(
+            "/archive/tbbo-ofi-percentile?symbol=ES&value=0.1"
+            f"&window=1h&horizon_days={over_cap}"
+        )
+    )
+    assert status == 400
+    assert "horizon_days" in body["error"]
