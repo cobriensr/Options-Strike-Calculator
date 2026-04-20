@@ -44,26 +44,30 @@ class HealthHandler(BaseHTTPRequestHandler):
     seed_is_busy: Callable[[], bool] | None = None
 
     def do_GET(self) -> None:
+        # Route dispatch ordered by specificity — longer/more-specific
+        # prefixes MUST come before shorter ones or they get swallowed.
+        # e.g. `/archive/day-summary-prediction` would match
+        # `/archive/day-summary` if that route check ran first.
         if self.path.startswith("/archive/es-range"):
             self._handle_archive_es_range()
             return
         if self.path.startswith("/archive/analog-days"):
             self._handle_archive_analog_days()
             return
-        if self.path.startswith("/archive/day-summary"):
-            self._handle_archive_day_summary()
-            return
-        if self.path.startswith("/archive/day-features-batch"):
-            self._handle_archive_day_features_batch()
-            return
-        if self.path.startswith("/archive/day-summary-batch"):
-            self._handle_archive_day_summary_batch()
-            return
         if self.path.startswith("/archive/day-summary-prediction-batch"):
             self._handle_archive_day_summary_prediction_batch()
             return
         if self.path.startswith("/archive/day-summary-prediction"):
             self._handle_archive_day_summary_prediction()
+            return
+        if self.path.startswith("/archive/day-summary-batch"):
+            self._handle_archive_day_summary_batch()
+            return
+        if self.path.startswith("/archive/day-summary"):
+            self._handle_archive_day_summary()
+            return
+        if self.path.startswith("/archive/day-features-batch"):
+            self._handle_archive_day_features_batch()
             return
         if self.path.startswith("/archive/day-features"):
             self._handle_archive_day_features()
