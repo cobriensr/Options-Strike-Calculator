@@ -13,7 +13,10 @@ import {
   FLOOR_ENTRY_DELTA,
   PREFERRED_ENTRY_DELTA,
 } from '../constants';
-import type { AnalysisContext } from '../components/ChartAnalysis';
+import type {
+  AnalysisContext,
+  DeltaRung,
+} from '../components/ChartAnalysis/types';
 import type { CalculationResults } from '../types';
 import type { ComputedSignals } from './useComputedSignals';
 import type { ChainResponse, ChainStrike, EventItem } from '../types/api';
@@ -43,14 +46,7 @@ function nearestByAbsDelta(
  * onto the same actual strike, keeps the rung whose |delta| target is closest
  * to that strike's |delta|.
  */
-function buildDeltaRungs(strikes: readonly ChainStrike[]): Array<{
-  delta: number;
-  strike: number;
-  bid: number;
-  ask: number;
-  iv: number;
-  oi: number;
-}> {
+function buildDeltaRungs(strikes: readonly ChainStrike[]): DeltaRung[] {
   if (strikes.length === 0) return [];
   // Map strike -> { match, targetRung } so dedupe can keep the best rung.
   const byStrike = new Map<

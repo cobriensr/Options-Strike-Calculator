@@ -21,7 +21,7 @@ import AnalysisDisplay from './AnalysisDisplay';
 import { useImageUpload } from '../../hooks/useImageUpload';
 import { useChartAnalysis } from '../../hooks/useChartAnalysis';
 
-export type { AnalysisContext } from './types';
+export type { AnalysisContext, DeltaRung, TargetDeltaStrikes } from './types';
 
 interface Props {
   readonly results: CalculationResults | null;

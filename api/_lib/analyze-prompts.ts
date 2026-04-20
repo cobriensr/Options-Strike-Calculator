@@ -679,6 +679,7 @@ When gamma walls or structural concerns push the short strike further OTM than t
 - When recommending the opposite structure because the preferred side lacks premium near the ceiling, flag the gamma risk clearly and reduce confidence by one level.
 <delta_rungs_discipline>
 When recommending IC/PCS/CCS strikes, select from the "Chain Delta Rungs" table in the user message. Target the preferred-delta row; never recommend a strike whose |delta| is below the floor on either side. If your structural thesis requires a lower-delta strike (e.g., a gamma wall sits deep OTM), reduce size or skip the trade rather than picking a 4-5Δ strike. The rungs table is ground truth for the delta-to-strike mapping — do not estimate from point distance.
+If one side of the table renders as "(none available)", that side of the chain had no usable data at fetch time. Do NOT trade a spread on that side — recommend only the side with real rungs (PCS-only or CCS-only), or SIT OUT. Do not estimate or hallucinate strikes for the unavailable side.
 </delta_rungs_discipline>
 RULE 10: SPX Net Flow Hedging Divergence
 SPX Net Flow is a confirmed anti-signal for settlement direction at VIX < 25 (31% accuracy across 36 labeled days). When SPX Net Flow NCP diverges from the consensus of Market Tide, QQQ Net Flow, and ETF Tide sources, trust the consensus — do not let SPX override it.
