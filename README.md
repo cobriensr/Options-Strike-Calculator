@@ -631,12 +631,12 @@ A multi-phase ML system that augments the rule-based analyze endpoint with stati
 
 **Core (structure / range / divergence) phases:**
 
-| Phase     | Name                           | Status          | Purpose                                                                                     |
-| --------- | ------------------------------ | --------------- | ------------------------------------------------------------------------------------------- |
-| Phase 0   | Data Infrastructure            | ✅ Complete     | 100+ feature columns, daily engineering, feature tracking                                   |
-| Phase 1   | Day Type Clustering            | ✅ Complete     | K-Means, GMM, hierarchical clustering with PCA                                              |
-| Phase 1.5 | Exploratory Data Analysis      | ✅ Complete     | 9 analysis sections: rule validation, feature importance, flow reliability, dark pool, etc. |
-| Phase 2   | Structure Classification       | 🔄 Early        | 5-model comparison (XGBoost, LR, RF, NB, DT) with walk-forward validation                   |
+| Phase     | Name                      | Status      | Purpose                                                                                     |
+| --------- | ------------------------- | ----------- | ------------------------------------------------------------------------------------------- |
+| Phase 0   | Data Infrastructure       | ✅ Complete | 100+ feature columns, daily engineering, feature tracking                                   |
+| Phase 1   | Day Type Clustering       | ✅ Complete | K-Means, GMM, hierarchical clustering with PCA                                              |
+| Phase 1.5 | Exploratory Data Analysis | ✅ Complete | 9 analysis sections: rule validation, feature importance, flow reliability, dark pool, etc. |
+| Phase 2   | Structure Classification  | 🔄 Early    | 5-model comparison (XGBoost, LR, RF, NB, DT) with walk-forward validation                   |
 
 **Analog-retrieval (historical-similar-day) phases:**
 
@@ -658,12 +658,12 @@ A multi-phase ML system that augments the rule-based analyze endpoint with stati
 
 **Other phases (accumulating):**
 
-| Phase     | Name                           | Status          | Purpose                                                                 |
-| --------- | ------------------------------ | --------------- | ----------------------------------------------------------------------- |
-| Phase 3   | Charm Divergence Predictor     | 📊 Accumulating | Predict when naive charm chart misleads vs. Periscope                  |
-| Phase 4   | Intraday Range Regression      | 📊 Accumulating | Predict daily H-L range, beating VIX baseline                          |
-| Phase 5   | Optimal Exit Timing            | ⏸ Blocked       | Survival analysis — requires timestamped entry/exit data                |
-| Phase 6   | Flow-Price Divergence Detector | 📊 Accumulating | Automate Rule 10 with learned thresholds                                |
+| Phase   | Name                           | Status          | Purpose                                                  |
+| ------- | ------------------------------ | --------------- | -------------------------------------------------------- |
+| Phase 3 | Charm Divergence Predictor     | 📊 Accumulating | Predict when naive charm chart misleads vs. Periscope    |
+| Phase 4 | Intraday Range Regression      | 📊 Accumulating | Predict daily H-L range, beating VIX baseline            |
+| Phase 5 | Optimal Exit Timing            | ⏸ Blocked       | Survival analysis — requires timestamped entry/exit data |
+| Phase 6 | Flow-Price Divergence Detector | 📊 Accumulating | Automate Rule 10 with learned thresholds                 |
 
 **Source modules (`ml/src/`):**
 
@@ -747,18 +747,18 @@ Neon Postgres + Railway Volume [/data/archive/tbbo/year=*/part.parquet]
 
 **HTTP endpoints (consumed by Vercel):**
 
-| Endpoint                                 | Returns                                                                |
-| ---------------------------------------- | ---------------------------------------------------------------------- |
-| `GET /health`                            | Liveness + DB + Theta status                                           |
-| `GET /archive/day-summary?date=YYYY-MM-DD`       | Deterministic session text for embedding pipeline                 |
-| `GET /archive/day-features?date=YYYY-MM-DD`      | 60-dim numeric vector for engineered-analog retrieval            |
-| `GET /archive/day-summary-batch?from&to`         | Batched summaries for backfill (capped 3 yrs)                     |
-| `GET /archive/day-features-batch?from&to`        | Batched vectors for backfill                                      |
-| `GET /archive/day-summary-prediction?date`       | Leakage-free prediction summary (no outcome fields)               |
-| `GET /archive/analog-days?date&k`                | k-nearest historical mornings by window similarity                |
-| `GET /archive/tbbo-day-microstructure?date&symbol` | Per-day OFI + spread-widening aggregates (front month)          |
-| `GET /archive/tbbo-ofi-percentile?symbol&value`  | 1-year percentile rank of current OFI value                       |
-| `POST /admin/seed-archive`                       | One-shot seed trigger (token-gated)                               |
+| Endpoint                                           | Returns                                                |
+| -------------------------------------------------- | ------------------------------------------------------ |
+| `GET /health`                                      | Liveness + DB + Theta status                           |
+| `GET /archive/day-summary?date=YYYY-MM-DD`         | Deterministic session text for embedding pipeline      |
+| `GET /archive/day-features?date=YYYY-MM-DD`        | 60-dim numeric vector for engineered-analog retrieval  |
+| `GET /archive/day-summary-batch?from&to`           | Batched summaries for backfill (capped 3 yrs)          |
+| `GET /archive/day-features-batch?from&to`          | Batched vectors for backfill                           |
+| `GET /archive/day-summary-prediction?date`         | Leakage-free prediction summary (no outcome fields)    |
+| `GET /archive/analog-days?date&k`                  | k-nearest historical mornings by window similarity     |
+| `GET /archive/tbbo-day-microstructure?date&symbol` | Per-day OFI + spread-widening aggregates (front month) |
+| `GET /archive/tbbo-ofi-percentile?symbol&value`    | 1-year percentile rank of current OFI value            |
+| `POST /admin/seed-archive`                         | One-shot seed trigger (token-gated)                    |
 
 **Key implementation details:**
 

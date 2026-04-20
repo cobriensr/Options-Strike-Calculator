@@ -408,23 +408,23 @@
         {
           "feature": "ofi_1h_mean",
           "spearman": 0.3131611377930785,
-          "p_value": 2.180008834698706e-08,
-          "p_bonf": 1.0028040639614048e-06,
+          "p_value": 2.180008834698706e-8,
+          "p_bonf": 1.0028040639614048e-6,
           "n": 306,
           "significant": true
         },
         {
           "feature": "ofi_15m_mean",
           "spearman": 0.2784330478066167,
-          "p_value": 7.464901263261877e-07,
-          "p_bonf": 3.433854581100463e-05,
+          "p_value": 7.464901263261877e-7,
+          "p_bonf": 3.433854581100463e-5,
           "n": 306,
           "significant": true
         },
         {
           "feature": "ofi_5m_mean",
           "spearman": 0.235335789679785,
-          "p_value": 3.2048795669406435e-05,
+          "p_value": 3.2048795669406435e-5,
           "p_bonf": 0.001474244600792696,
           "n": 306,
           "significant": true
@@ -515,7 +515,7 @@
           "bottom_mean_ret_day": -0.0016428361686051376,
           "top_mean_ret_day": 0.002446494271013255,
           "mannwhitney_u": 15828.0,
-          "mannwhitney_p": 9.94399021046238e-08,
+          "mannwhitney_p": 9.94399021046238e-8,
           "significant": true
         },
         {
@@ -541,7 +541,7 @@
           "bottom_mean_ret_day": -0.0009719398243011579,
           "top_mean_ret_day": 0.0021197691005857525,
           "mannwhitney_u": 14786.0,
-          "mannwhitney_p": 6.854772137247409e-05,
+          "mannwhitney_p": 6.854772137247409e-5,
           "significant": true
         },
         {
@@ -554,7 +554,7 @@
           "bottom_mean_ret_day": -0.0016034954271544992,
           "top_mean_ret_day": 0.002392406581436797,
           "mannwhitney_u": 14889.0,
-          "mannwhitney_p": 3.88242761775089e-05,
+          "mannwhitney_p": 3.88242761775089e-5,
           "significant": true
         }
       ]
