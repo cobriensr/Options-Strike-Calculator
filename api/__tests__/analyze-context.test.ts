@@ -301,7 +301,9 @@ vi.mock('../_lib/vix-divergence.js', () => ({
 
 vi.mock('../_lib/microstructure-signals.js', () => ({
   computeMicrostructureSignals: vi.fn().mockResolvedValue(null),
+  computeAllSymbolSignals: vi.fn().mockResolvedValue({ es: null, nq: null }),
   formatMicrostructureForClaude: vi.fn().mockReturnValue(null),
+  formatMicrostructureDualSymbolForClaude: vi.fn().mockReturnValue(null),
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
@@ -692,7 +694,7 @@ describe('buildAnalysisContext', () => {
     expect(text).toContain('Cross-Asset Regime');
     expect(text).toContain('Prior-Day Volume Profile (ES)');
     expect(text).toContain('VIX/SPX Divergence');
-    expect(text).toContain('Microstructure Signals (ES)');
+    expect(text).toContain('Microstructure Signals (ES + NQ)');
     vi.unstubAllGlobals();
   });
 
@@ -703,7 +705,7 @@ describe('buildAnalysisContext', () => {
       await import('../_lib/volume-profile.js');
     const { formatVixDivergenceForClaude } =
       await import('../_lib/vix-divergence.js');
-    const { formatMicrostructureForClaude } =
+    const { formatMicrostructureDualSymbolForClaude } =
       await import('../_lib/microstructure-signals.js');
 
     vi.mocked(formatCrossAssetRegimeForClaude).mockReturnValue(
@@ -715,8 +717,17 @@ describe('buildAnalysisContext', () => {
     vi.mocked(formatVixDivergenceForClaude).mockReturnValue(
       'VIX 5-min return: +4.50%\n  DIVERGENCE TRIGGERED',
     );
-    vi.mocked(formatMicrostructureForClaude).mockReturnValue(
-      'OFI 1m: +0.42\n  OFI 5m: +0.38\n  Composite: AGGRESSIVE_BUY',
+    vi.mocked(formatMicrostructureDualSymbolForClaude).mockReturnValue(
+      [
+        '<microstructure_signals>',
+        '  ES (latest front-month):',
+        '    OFI 1h: +0.10 → BALANCED',
+        '  NQ (latest front-month):',
+        '    OFI 1h: +0.42 → AGGRESSIVE_BUY',
+        '  Cross-asset read (1h OFI):',
+        '    ALIGNED_BULLISH',
+        '</microstructure_signals>',
+      ].join('\n'),
     );
 
     const result = await buildAnalysisContext([], {
@@ -735,7 +746,10 @@ describe('buildAnalysisContext', () => {
     expect(text).toContain('POC: 5000.00');
     expect(text).toContain('VIX/SPX Divergence Flag');
     expect(text).toContain('DIVERGENCE TRIGGERED');
-    expect(text).toContain('ES Microstructure Signals');
+    expect(text).toContain('Dual-Symbol Microstructure Signals');
+    expect(text).toContain('ES (latest front-month)');
+    expect(text).toContain('NQ (latest front-month)');
+    expect(text).toContain('ALIGNED_BULLISH');
     expect(text).toContain('AGGRESSIVE_BUY');
 
     // All four sections should NOT appear in the unavailable manifest
@@ -747,7 +761,7 @@ describe('buildAnalysisContext', () => {
       expect(uText).not.toContain('- Cross-Asset Regime');
       expect(uText).not.toContain('- Prior-Day Volume Profile (ES)');
       expect(uText).not.toContain('- VIX/SPX Divergence');
-      expect(uText).not.toContain('- Microstructure Signals (ES)');
+      expect(uText).not.toContain('- Microstructure Signals (ES + NQ)');
     }
     vi.unstubAllGlobals();
   });

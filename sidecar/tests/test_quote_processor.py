@@ -524,6 +524,58 @@ class TestFlushOutsideLock:
 # ---------------------------------------------------------------------------
 
 
+class TestMultiSymbolProcessing:
+    """Phase 5a: the QuoteProcessor must treat every subscribed symbol
+    identically. ES and NQ records interleaved in the same batch are
+    written with their correct ``symbol`` values into the shared
+    ``futures_trade_ticks`` + ``futures_top_of_book`` tables. The
+    writers were always symbol-agnostic; this test pins that invariant
+    down against future refactors that might accidentally hard-code ES.
+    """
+
+    def test_nq_record_is_processed(
+        self,
+        processor: QuoteProcessor,
+        mock_tob_insert: MagicMock,
+        mock_trade_insert: MagicMock,
+    ) -> None:
+        """A single NQ record flows through the same writers with
+        symbol='NQ' attached. Phase 5a widens the pipeline — the
+        Phase 2a 'non-ES drop' behavior was an explicit scope guard
+        in databento_client._handle_tbbo, not a QuoteProcessor concern."""
+        processor.process_tbbo("NQ", _tbbo_record())
+        processor.flush()
+        mock_tob_insert.assert_called_once()
+        mock_trade_insert.assert_called_once()
+        tob_rows = mock_tob_insert.call_args[0][0]
+        trade_rows = mock_trade_insert.call_args[0][0]
+        assert tob_rows[0][0] == "NQ"
+        assert trade_rows[0][0] == "NQ"
+
+    def test_mixed_es_and_nq_batch_preserves_symbols(
+        self,
+        processor: QuoteProcessor,
+        mock_tob_insert: MagicMock,
+        mock_trade_insert: MagicMock,
+    ) -> None:
+        """Mixed ES + NQ records in a single flush batch must carry
+        their symbol through to both writers. Verifies that neither
+        buffer conflates the two — Phase 5a's dual-symbol context
+        depends on per-symbol row accounting in the underlying tables.
+        """
+        processor.process_tbbo("ES", _tbbo_record())
+        processor.process_tbbo("NQ", _tbbo_record())
+        processor.process_tbbo("ES", _tbbo_record())
+        processor.flush()
+
+        tob_rows = mock_tob_insert.call_args[0][0]
+        trade_rows = mock_trade_insert.call_args[0][0]
+        tob_symbols = [r[0] for r in tob_rows]
+        trade_symbols = [r[0] for r in trade_rows]
+        assert tob_symbols == ["ES", "NQ", "ES"]
+        assert trade_symbols == ["ES", "NQ", "ES"]
+
+
 class TestRowDataclasses:
     def test_top_of_book_row_fields(self) -> None:
         row = TopOfBookRow(

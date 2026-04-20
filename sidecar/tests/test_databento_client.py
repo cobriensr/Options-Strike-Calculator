@@ -451,37 +451,52 @@ class TestHandleTbboRouting:
         client._handle_tbbo(_make_tbbo_record())
         qp.process_tbbo.assert_not_called()
 
-    def test_non_es_symbol_is_ignored(self, client: DatabentoClient) -> None:
-        """Phase 2a is ES-only. NQ records (and anything else) must be
-        dropped defensively even though the subscription pins ES.FUT."""
+    def test_nq_symbol_is_processed(self, client: DatabentoClient) -> None:
+        """Phase 5a widens the pipeline: NQ records MUST flow through
+        to QuoteProcessor.process_tbbo alongside ES. Flipped from
+        Phase 2a's ES-only scope guard — NQ 1h OFI is the validated
+        signal (Phase 4d: ρ=0.313, p_bonf<0.001, n=312)."""
         qp = MagicMock()
         client._quote_processor = qp
         rec = _make_tbbo_record(iid=2)  # iid=2 resolves to NQ in fixture
         client._handle_tbbo(rec)
+        qp.process_tbbo.assert_called_once_with("NQ", rec)
+
+    def test_unknown_symbol_is_dropped(self, client: DatabentoClient) -> None:
+        """An instrument_id that doesn't resolve to ES or NQ is dropped
+        defensively — we only process the two subscribed parent symbols."""
+        qp = MagicMock()
+        client._quote_processor = qp
+        # iid=999 has no symbology_map entry → _resolve_symbol returns None.
+        rec = _make_tbbo_record(iid=999)
+        client._handle_tbbo(rec)
         qp.process_tbbo.assert_not_called()
 
 
-class TestSubscribeEsL1:
-    def test_issues_single_tbbo_subscription(self, client: DatabentoClient) -> None:
-        """_subscribe_es_l1 must issue exactly ONE subscribe call, for
-        ``tbbo``. Subscribing to both ``mbp-1`` and ``tbbo`` would
-        double-deliver every trade (TBBO is a subset of MBP-1 events
-        filtered to action == 'T')."""
+class TestSubscribeL1:
+    def test_issues_single_tbbo_subscription_for_es_and_nq(
+        self, client: DatabentoClient
+    ) -> None:
+        """_subscribe_l1 must issue exactly ONE subscribe call, for
+        ``tbbo`` on both ES.FUT and NQ.FUT. Subscribing to both
+        ``mbp-1`` and ``tbbo`` would double-deliver every trade (TBBO
+        is a subset of MBP-1 events filtered to action == 'T')."""
         client._client = MagicMock()
 
-        client._subscribe_es_l1()
+        client._subscribe_l1()
 
         assert client._client.subscribe.call_count == 1
         call_kwargs = client._client.subscribe.call_args.kwargs
         assert call_kwargs["schema"] == "tbbo"
-        assert call_kwargs["symbols"] == ["ES.FUT"]
+        assert set(call_kwargs["symbols"]) == {"ES.FUT", "NQ.FUT"}
         assert call_kwargs["stype_in"] == "parent"
 
     def test_does_not_subscribe_to_mbp1(self, client: DatabentoClient) -> None:
         """Regression guard: future edits must NOT re-introduce an
-        mbp-1 subscription — see the TestHandleTbboRouting design note."""
+        mbp-1 subscription — see the TestHandleTbboRouting design note.
+        Phase 5a preserves the Phase 2a anti-regression unchanged."""
         client._client = MagicMock()
-        client._subscribe_es_l1()
+        client._subscribe_l1()
 
         schemas_subscribed = [
             call.kwargs.get("schema")
@@ -493,4 +508,4 @@ class TestSubscribeEsL1:
         """If the Databento Live client hasn't been created yet, the
         method must be a safe no-op rather than raising."""
         client._client = None
-        client._subscribe_es_l1()  # must not raise
+        client._subscribe_l1()  # must not raise

@@ -141,11 +141,14 @@ class DatabentoClient:
         # Subscribe to futures OHLCV-1m (CME Group only — single dataset per session)
         self._subscribe_futures_ohlcv()
 
-        # Subscribe to ES TBBO for Phase 2a data plumbing. TBBO-only, not
-        # MBP-1 + TBBO — see the comment block above the class for why.
-        # ES-only per spec; NQ/ZN/RTY/CL/GC are out of scope here.
+        # Subscribe to ES + NQ TBBO for the Phase 5a dual-symbol pipeline.
+        # TBBO-only, not MBP-1 + TBBO — see the comment block above the
+        # class for why. Phase 4d validated NQ 1h OFI as a Bonferroni-
+        # significant predictor of next-day NQ return (ρ=0.313, p<0.001,
+        # n=312); ES OFI carries no significant signal but we keep it as
+        # qualitative tape flavor alongside NQ.
         if self._quote_processor is not None:
-            self._subscribe_es_l1()
+            self._subscribe_l1()
 
         # Subscribe to ES options after first ES bar arrives (need price for ATM)
         self._options_subscription_pending = True
@@ -185,16 +188,24 @@ class DatabentoClient:
                 extra={"symbols": cme_symbols},
             )
 
-    def _subscribe_es_l1(self) -> None:
-        """Subscribe to ES TBBO on GLBX.MDP3 (Phase 2a).
+    def _subscribe_l1(self) -> None:
+        """Subscribe to ES + NQ TBBO on GLBX.MDP3 (Phase 5a).
 
         Only one schema: ``tbbo``. Each record is a trade with the
         pre-trade BBO in ``levels[0]``, so we derive both the quote
         snapshot and the trade tick from a single stream. MBP-1 is
         deliberately not subscribed — see the rationale in the
-        module-level comment and in ``quote_processor``. ES parent
-        symbology resolves to the active front-month contract the same
-        way OHLCV-1m does.
+        module-level comment and in ``quote_processor``. Parent
+        symbology (ES.FUT, NQ.FUT) resolves to the active front-month
+        contract the same way OHLCV-1m does.
+
+        Phase 5a widens Phase 2a's ES-only subscription to include
+        NQ because Phase 4d microstructure EDA found NQ 1h OFI to be
+        Bonferroni-significant (ρ=0.313, p_bonf<0.001, n=312) for
+        next-day NQ return, while ES carries no significant signal.
+        Both symbols flow through the same QuoteProcessor writers —
+        ``futures_trade_ticks`` and ``futures_top_of_book`` already
+        carry a ``symbol`` column.
         """
         if not self._client:
             return
@@ -202,10 +213,10 @@ class DatabentoClient:
         self._client.subscribe(
             dataset=DATASET_CME,
             schema="tbbo",
-            symbols=["ES.FUT"],
+            symbols=["ES.FUT", "NQ.FUT"],
             stype_in="parent",
         )
-        log.info("Subscribed to ES TBBO on %s", DATASET_CME)
+        log.info("Subscribed to ES + NQ TBBO on %s", DATASET_CME)
 
     def _handle_ohlcv_from_client(self, record: Any, client: db.Live | None) -> None:
         """Process an OHLCV bar using a specific client's symbology map."""
@@ -546,15 +557,16 @@ class DatabentoClient:
         we only subscribe to one schema, so every MBP1Msg reaching this
         handler is already a TBBO event.
 
-        Phase 2a: ES-only. Non-ES records shouldn't arrive given that
-        the subscription specifies ``ES.FUT``, but we resolve the symbol
-        defensively in case a shared dataset ever broadens the feed.
+        Phase 5a: ES + NQ. Both symbols are subscribed and flow through
+        the same writers (``futures_trade_ticks`` + ``futures_top_of_book``
+        already carry a ``symbol`` column). Unknown / unresolved
+        instrument_ids are dropped defensively.
         """
         if self._shutting_down or self._quote_processor is None:
             return
 
         symbol = self._resolve_symbol(record)
-        if symbol != "ES":
+        if symbol not in ("ES", "NQ"):
             return
 
         self._quote_processor.process_tbbo(symbol, record)

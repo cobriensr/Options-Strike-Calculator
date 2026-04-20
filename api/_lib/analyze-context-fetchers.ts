@@ -67,8 +67,8 @@ import {
   formatVixDivergenceForClaude,
 } from './vix-divergence.js';
 import {
-  computeMicrostructureSignals,
-  formatMicrostructureForClaude,
+  computeAllSymbolSignals,
+  formatMicrostructureDualSymbolForClaude,
 } from './microstructure-signals.js';
 import { formatFuturesForClaude } from './futures-context.js';
 import { formatIvTermStructureForClaude } from '../iv-term-structure.js';
@@ -805,12 +805,18 @@ export async function fetchVixDivergenceBlock(): Promise<string | null> {
   }
 }
 
-// ── Microstructure signals (OFI + spread + TOB pressure) ──────
+// ── Microstructure signals (dual-symbol: ES + NQ) ─────────────
+//
+// Phase 5a widens this from ES-only to both symbols. The validated
+// signal is NQ 1h OFI (Phase 4d: ρ=0.313, p_bonf<0.001, n=312); ES
+// microstructure is retained as qualitative tape flavor and as the
+// cross-asset confirmation leg. See `microstructure-signals.ts` for
+// why we keep ES here even though it's not a validated predictor.
 
 export async function fetchMicrostructureBlock(): Promise<string | null> {
   try {
-    const result = await computeMicrostructureSignals(new Date());
-    return formatMicrostructureForClaude(result);
+    const result = await computeAllSymbolSignals(new Date());
+    return formatMicrostructureDualSymbolForClaude(result);
   } catch (err) {
     logger.error({ err }, 'microstructure signals fetch failed');
     metrics.increment('analyze_context.microstructure_error');

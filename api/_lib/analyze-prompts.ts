@@ -956,43 +956,82 @@ When to weight this signal:
 - Ignore when the section is absent.
 </vix_divergence_rules>
 <microstructure_signals_rules>
-The Microstructure Signals block reports three ES leading indicators derived
-from the Databento L1 book + trade stream: order flow imbalance (OFI),
-spread widening z-score, and top-of-book (TOB) pressure.
+The Microstructure Signals block reports DUAL-SYMBOL leading indicators
+(ES and NQ front-month futures) derived from the Databento L1 book + trade
+stream: order flow imbalance (OFI at 1m / 5m / 1h windows), spread widening
+z-score, and top-of-book (TOB) pressure.
 
-OFI (1m / 5m): aggressor-classified flow balance in the range [-1, +1].
-Positive values = buyer-initiated volume dominates; negative = seller-
-initiated. 1m = immediate tape read (last minute); 5m = sustained bias.
-Threshold: |OFI| > 0.3 is meaningful directional pressure.
+Validated signal (Phase 4d, 2026-04-19, n=312 days):
+- NQ 1h OFI carries Bonferroni-significant predictive power for
+  next-day NQ return (Spearman ρ=0.313, p_bonf<0.001).
+- ES OFI carries NO Bonferroni-significant predictive power.
+  Treat ES microstructure as qualitative tape flavor only.
+- Cross-asset divergence (NQ buying, ES neutral or selling) is a
+  classic tech-leading signal. Weight in directional SPX decisions.
+- Same-direction alignment (both positive or both negative) is
+  stronger than either symbol alone.
 
-Spread z-score: current 1-min median bid/ask spread vs a 30-min baseline
-of per-minute medians. z > 2.0 = dealers are widening quotes, liquidity
-pulling back — often precedes a volatile move in either direction.
+Interpretation guardrails:
+- OFI in [-0.2, +0.2] = BALANCED, ignore as signal
+- NQ OFI > +0.3 with ES confirmation = AGGRESSIVE_BUY regime
+- NQ OFI < -0.3 with ES confirmation = AGGRESSIVE_SELL regime
+- Effect size ρ=0.313 is factor-level, not standalone. Combine
+  with GEX, dark pool, and IV term structure before sizing.
+- Signal weakens intraday after morning OFI has been absorbed.
+  Pre-11:00 ET OFI is more predictive than post-14:00 ET OFI.
 
-TOB pressure: bid_size / ask_size at the best quote (L1 only, not full
-depth). > 1.5 = buy-side book stacked; < 0.67 = sell-side stacked.
-Single snapshot, noisy — use only as confirmation.
+Signal definitions:
+- OFI (1m / 5m / 1h): aggressor-classified flow balance in [-1, +1].
+  Positive = buyer-initiated volume dominates; negative = seller-
+  initiated. 1m = immediate tape read; 5m = sustained short-horizon
+  bias; 1h = the Phase 4d validated predictor on NQ.
+- Spread z-score: current 1-min median bid/ask spread vs a 30-min
+  baseline of per-minute medians. z > 2.0 = dealers are widening
+  quotes, liquidity pulling back — often precedes a volatile move in
+  either direction.
+- TOB pressure: bid_size / ask_size at the best quote (L1 only).
+  > 1.5 = buy-side book stacked; < 0.67 = sell-side stacked. Single
+  snapshot, noisy — use only as confirmation.
 
-Composite labels:
+Per-symbol composite labels (short-horizon, not the validated signal):
 - AGGRESSIVE_BUY: OFI 5m > 0.3 AND TOB > 1.5. Favors continuation up.
 - AGGRESSIVE_SELL: OFI 5m < -0.3 AND TOB < 0.67. Favors continuation down.
 - LIQUIDITY_STRESS: spread z > 2.0 — overrides directional labels. Reduce
   size, widen strikes, or SIT OUT; volatile moves are imminent in either
   direction.
-- BALANCED: all three signals present, no rule fires. No edge from
-  microstructure this minute.
+- BALANCED: all three signals present, no rule fires. No short-horizon
+  edge from microstructure this minute.
+
+Cross-asset read (1h OFI) is the tag at the bottom of the block:
+- ALIGNED_BULLISH: both ES and NQ 1h OFI > +0.3 with matching sign.
+  Highest conviction for upside continuation. Size normally; can size
+  up a notch vs a single-symbol aggressive-buy read.
+- ALIGNED_BEARISH: both < -0.3 with matching sign. Highest conviction
+  for downside continuation. Same sizing logic, short side.
+- DIVERGENCE: |NQ_OFI - ES_OFI| > 0.4 AND signs disagree. The NQ 1h
+  value is the validated signal — when NQ is bid and ES is offered,
+  tech tends to lead the tape. Weight toward NQ's direction on SPX
+  decisions but reduce size; divergence resolves unpredictably.
+- MIXED: partial signal, no rule fires. Use per-symbol composite
+  labels and treat microstructure as a minor confirmation vote.
+- INSUFFICIENT_DATA: one or both 1h OFI values are null (sidecar
+  outage, thin traffic, or window just started). Do not reference
+  microstructure in the thesis this call.
 
 When to weight this signal:
 - STRONG near zero-gamma crosses and in low-volume chop where dealer
   hedging is the dominant flow.
+- STRONG in the first hour (9:30-10:30 ET) while morning OFI hasn't
+  been fully absorbed. Phase 4d degrades the predictive power for
+  afternoon-dominated OFI.
 - MODERATE as a confirmation vote alongside Market Tide / NOPE / GEX.
 - IGNORE around major news releases (FOMC, CPI, JOBS) and at the open
   (9:30-9:45) and close (3:45-4:00) — rebalance flows and event-driven
   spikes dominate microstructure and the signals become noise.
-- WARNING: these are LEADING indicators with high noise. They are a
-  VOTE, never a standalone trigger. Do not size up on microstructure
-  alone; do not flip a directional read on OFI/TOB without a
-  confirming GEX or flow signal.
+- WARNING: these are LEADING indicators. NQ 1h OFI is validated at
+  ρ=0.313 (factor-level effect size, not a standalone strategy). Do
+  not size up on microstructure alone; do not flip a directional read
+  on OFI/TOB without a confirming GEX or flow signal.
 </microstructure_signals_rules>`;
 
 export const SYSTEM_PROMPT_PART2 = `<data_handling>
