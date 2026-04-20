@@ -40,7 +40,10 @@ from pac_backtest.loop import run_backtest
 from pac_backtest.metrics import compute_metrics
 from pac_backtest.params import (
     EntryTrigger,
+    EntryVsOb,
     ExitTrigger,
+    OnOppositeSignal,
+    SessionBucket,
     SessionFilter,
     StopPlacement,
     StrategyParams,
@@ -86,7 +89,12 @@ def fold_result_to_dict(fr: FoldResult) -> dict[str, Any]:
 
 
 def _sample_params(trial: optuna.Trial) -> StrategyParams:
-    """Sample a StrategyParams from the Optuna search space."""
+    """Sample a StrategyParams from the Optuna search space.
+
+    v4 (E1.4d) adds 9 dimensions: session_bucket, min_ob_volume_z,
+    min_ob_pct_atr, entry_vs_ob, min_z_entry_vwap, min_adx_14,
+    on_opposite_signal, exit_after_n_bos, plus OB_BOUNDARY in stop_placement.
+    """
     entry_str = trial.suggest_categorical(
         "entry_trigger",
         [t.value for t in EntryTrigger],
@@ -112,6 +120,32 @@ def _sample_params(trial: optuna.Trial) -> StrategyParams:
         "event_day_filter", [None, "skip_events", "events_only"]
     )
 
+    # ── E1.4d v4 search-space additions ───────────────────────────────
+    session_bucket_str = trial.suggest_categorical(
+        "session_bucket", [s.value for s in SessionBucket]
+    )
+    min_ob_vol_z = trial.suggest_categorical(
+        "min_ob_volume_z", [None, 0.5, 1.0, 1.5, 2.0]
+    )
+    min_ob_pct = trial.suggest_categorical(
+        "min_ob_pct_atr", [None, 30.0, 50.0, 75.0]
+    )
+    entry_vs_ob_str = trial.suggest_categorical(
+        "entry_vs_ob", [s.value for s in EntryVsOb]
+    )
+    min_z_vwap = trial.suggest_categorical(
+        "min_z_entry_vwap", [None, 0.5, 1.0, 1.5]
+    )
+    min_adx = trial.suggest_categorical(
+        "min_adx_14", [None, 15.0, 20.0, 25.0, 30.0]
+    )
+    on_opp_str = trial.suggest_categorical(
+        "on_opposite_signal", [s.value for s in OnOppositeSignal]
+    )
+    exit_after_bos = trial.suggest_categorical(
+        "exit_after_n_bos", [None, 2, 3, 4]
+    )
+
     return StrategyParams(
         entry_trigger=EntryTrigger(entry_str),
         exit_trigger=ExitTrigger(exit_str),
@@ -121,6 +155,15 @@ def _sample_params(trial: optuna.Trial) -> StrategyParams:
         session=SessionFilter(session_str),
         iv_tercile_filter=iv_filter,
         event_day_filter=event_filter,
+        # v4
+        session_bucket=SessionBucket(session_bucket_str),
+        min_ob_volume_z=min_ob_vol_z,
+        min_ob_pct_atr=min_ob_pct,
+        entry_vs_ob=EntryVsOb(entry_vs_ob_str),
+        min_z_entry_vwap=min_z_vwap,
+        min_adx_14=min_adx,
+        on_opposite_signal=OnOppositeSignal(on_opp_str),
+        exit_after_n_bos=exit_after_bos,
     )
 
 
@@ -129,6 +172,9 @@ def _params_to_vector(params: StrategyParams) -> list[float]:
 
     Categorical values are int-encoded. Floats carried as-is. Used by
     `metrics.estimate_effective_trials_by_correlation()` downstream.
+
+    v4 (E1.4d) extends the vector by 9 dimensions to mirror the expanded
+    search space.
     """
     entry_map = {t: i for i, t in enumerate(EntryTrigger)}
     exit_map = {t: i for i, t in enumerate(ExitTrigger)}
@@ -136,6 +182,14 @@ def _params_to_vector(params: StrategyParams) -> list[float]:
     session_map = {s: i for i, s in enumerate(SessionFilter)}
     iv_map = {None: 0, "low": 1, "mid": 2, "high": 3}
     event_map = {None: 0, "skip_events": 1, "events_only": 2}
+    session_bucket_map = {s: i for i, s in enumerate(SessionBucket)}
+    entry_vs_ob_map = {s: i for i, s in enumerate(EntryVsOb)}
+    on_opp_map = {s: i for i, s in enumerate(OnOppositeSignal)}
+
+    # None values for thresholds map to 0; finite values pass through. The
+    # categorical "is filter on?" signal is captured implicitly by 0 vs nonzero.
+    def _opt_float(v: float | None) -> float:
+        return 0.0 if v is None else float(v)
 
     return [
         float(entry_map[params.entry_trigger]),
@@ -146,6 +200,15 @@ def _params_to_vector(params: StrategyParams) -> list[float]:
         float(session_map[params.session]),
         float(iv_map[params.iv_tercile_filter]),
         float(event_map[params.event_day_filter]),
+        # v4
+        float(session_bucket_map[params.session_bucket]),
+        _opt_float(params.min_ob_volume_z),
+        _opt_float(params.min_ob_pct_atr),
+        float(entry_vs_ob_map[params.entry_vs_ob]),
+        _opt_float(params.min_z_entry_vwap),
+        _opt_float(params.min_adx_14),
+        float(on_opp_map[params.on_opposite_signal]),
+        _opt_float(params.exit_after_n_bos),
     ]
 
 
@@ -204,6 +267,21 @@ def _run_one_fold(
         session=SessionFilter(best_dict["session"]),
         iv_tercile_filter=best_dict["iv_tercile_filter"],
         event_day_filter=best_dict["event_day_filter"],
+        # v4 dims — fall back to defaults if a v3 study is being re-evaluated
+        session_bucket=SessionBucket(
+            best_dict.get("session_bucket", SessionBucket.ANY.value)
+        ),
+        min_ob_volume_z=best_dict.get("min_ob_volume_z"),
+        min_ob_pct_atr=best_dict.get("min_ob_pct_atr"),
+        entry_vs_ob=EntryVsOb(
+            best_dict.get("entry_vs_ob", EntryVsOb.ANY.value)
+        ),
+        min_z_entry_vwap=best_dict.get("min_z_entry_vwap"),
+        min_adx_14=best_dict.get("min_adx_14"),
+        on_opposite_signal=OnOppositeSignal(
+            best_dict.get("on_opposite_signal", OnOppositeSignal.HOLD_AND_SKIP.value)
+        ),
+        exit_after_n_bos=best_dict.get("exit_after_n_bos"),
     )
 
     oos_trades = run_backtest(bars, best_params, entry_eligible_indices=test_idx)

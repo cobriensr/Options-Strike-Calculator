@@ -36,7 +36,10 @@ import pandas as pd
 from pac_backtest.fills import compute_fill_price
 from pac_backtest.params import (
     EntryTrigger,
+    EntryVsOb,
     ExitTrigger,
+    OnOppositeSignal,
+    SessionBucket,
     SessionFilter,
     StopPlacement,
     StrategyParams,
@@ -183,8 +186,13 @@ def compute_stop_price(
     placement: StopPlacement,
     atr: float,
     params: StrategyParams,
+    active_ob: dict | None = None,
 ) -> float:
-    """Place the protective stop based on StopPlacement rule."""
+    """Place the protective stop based on StopPlacement rule.
+
+    `active_ob` is required for `OB_BOUNDARY` placement and is the dict
+    returned by `_find_active_ob_at()`. If unavailable, falls back to N_ATR.
+    """
     if placement == StopPlacement.N_ATR:
         offset = atr * params.stop_atr_multiple
         return (
@@ -204,6 +212,28 @@ def compute_stop_price(
             entry_price - offset if direction == "long" else entry_price + offset
         )
 
+    if placement == StopPlacement.OB_BOUNDARY:
+        if active_ob is not None:
+            # Long stop = OB bottom (price falls to support — break that, fail)
+            # Short stop = OB top (price rises to resistance — break that, fail)
+            candidate = (
+                active_ob["bottom"] if direction == "long" else active_ob["top"]
+            )
+            # Guard: if the OB is on the wrong side of entry, the stop would
+            # fire instantly. A live trader would never use that OB — they'd
+            # use a different reference. Fall back to N_ATR.
+            on_correct_side = (
+                (direction == "long" and candidate < entry_price)
+                or (direction == "short" and candidate > entry_price)
+            )
+            if on_correct_side:
+                return candidate
+        # No active OB or wrong-side OB: fall back to N_ATR
+        offset = atr * params.stop_atr_multiple
+        return (
+            entry_price - offset if direction == "long" else entry_price + offset
+        )
+
     raise ValueError(f"Stop placement not implemented: {placement}")
 
 
@@ -212,6 +242,108 @@ def intrabar_stop_hit(bar: pd.Series, trade: Trade) -> bool:
     if trade.direction == "long":
         return float(bar["low"]) <= trade.stop_price
     return float(bar["high"]) >= trade.stop_price
+
+
+def _find_active_ob_at(bars: pd.DataFrame, signal_idx: int) -> dict | None:
+    """Walk backward from `signal_idx` to find the most-recent active OB.
+
+    "Active" means: an OB whose MitigatedIndex is either NaN or > signal_idx
+    (not yet mitigated as of the signal bar). Returns a dict with top, bottom,
+    mid, direction; None if no active OB exists.
+    """
+    if "OB" not in bars.columns:
+        return None
+    ob_col = bars["OB"].to_numpy()
+    top_col = bars["OB_Top"].to_numpy() if "OB_Top" in bars.columns else None
+    bot_col = bars["OB_Bottom"].to_numpy() if "OB_Bottom" in bars.columns else None
+    mit_col = (
+        bars["OB_MitigatedIndex"].to_numpy()
+        if "OB_MitigatedIndex" in bars.columns
+        else None
+    )
+    if top_col is None or bot_col is None:
+        return None
+    for i in range(signal_idx, -1, -1):
+        ob_val = ob_col[i]
+        if pd.isna(ob_val) or ob_val == 0:
+            continue
+        if mit_col is not None:
+            mit = mit_col[i]
+            if pd.notna(mit) and mit != 0 and mit <= signal_idx:
+                continue
+        top = float(top_col[i])
+        bot = float(bot_col[i])
+        return {
+            "top": top,
+            "bottom": bot,
+            "mid": (top + bot) / 2.0,
+            "direction": "bullish" if ob_val == 1 else "bearish",
+            "bar_idx": i,
+        }
+    return None
+
+
+def apply_v4_entry_filters(
+    bar: pd.Series,
+    direction: str,
+    params: StrategyParams,
+    active_ob: dict | None,
+    entry_price: float,
+) -> tuple[bool, str | None]:
+    """Entry-quality filters added in E1.4d v4. Each filter defaults to OFF.
+
+    Returns ``(allowed, skip_reason)``.
+    """
+    # Session-bucket filter
+    if params.session_bucket != SessionBucket.ANY:
+        sb = bar.get("session_bucket")
+        if sb is None or pd.isna(sb) or str(sb) != params.session_bucket.value:
+            return (False, f"session_bucket={sb} != {params.session_bucket.value}")
+
+    # ADX threshold
+    if params.min_adx_14 is not None:
+        adx = bar.get("adx_14")
+        if adx is None or pd.isna(adx) or float(adx) < params.min_adx_14:
+            return (False, f"adx_14={adx} < {params.min_adx_14}")
+
+    # OB volume z threshold
+    if params.min_ob_volume_z is not None:
+        z = bar.get("ob_volume_z_50")
+        if z is None or pd.isna(z) or float(z) < params.min_ob_volume_z:
+            return (False, f"ob_volume_z_50={z} < {params.min_ob_volume_z}")
+
+    # OB %ATR threshold
+    if params.min_ob_pct_atr is not None:
+        pct = bar.get("ob_pct_atr")
+        if pct is None or pd.isna(pct) or float(pct) < params.min_ob_pct_atr:
+            return (False, f"ob_pct_atr={pct} < {params.min_ob_pct_atr}")
+
+    # VWAP z-score on the trade's side: long requires close > VWAP by N std,
+    # short requires close < VWAP by N std.
+    if params.min_z_entry_vwap is not None:
+        z = bar.get("z_close_vwap")
+        if z is None or pd.isna(z):
+            return (False, "z_close_vwap unavailable")
+        zf = float(z)
+        if direction == "long" and zf < params.min_z_entry_vwap:
+            return (False, f"z_close_vwap={zf} < +{params.min_z_entry_vwap}")
+        if direction == "short" and zf > -params.min_z_entry_vwap:
+            return (False, f"z_close_vwap={zf} > -{params.min_z_entry_vwap}")
+
+    # Entry-vs-OB filter — requires an active OB to evaluate
+    if params.entry_vs_ob != EntryVsOb.ANY:
+        if active_ob is None:
+            return (False, "entry_vs_ob filter set but no active OB")
+        if params.entry_vs_ob == EntryVsOb.ABOVE_OB_MID and entry_price <= active_ob["mid"]:
+            return (False, f"entry {entry_price} not > OB mid {active_ob['mid']}")
+        if params.entry_vs_ob == EntryVsOb.BELOW_OB_MID and entry_price >= active_ob["mid"]:
+            return (False, f"entry {entry_price} not < OB mid {active_ob['mid']}")
+        if params.entry_vs_ob == EntryVsOb.INSIDE_OB and not (
+            active_ob["bottom"] <= entry_price <= active_ob["top"]
+        ):
+            return (False, f"entry {entry_price} not in OB [{active_ob['bottom']}, {active_ob['top']}]")
+
+    return (True, None)
 
 
 def apply_options_filters(
@@ -377,11 +509,20 @@ def run_backtest(
     trades: list[Trade] = []
     open_trade: Trade | None = None
     trade_entry_idx: int | None = None
+    bos_count_since_entry: int = 0  # E1.4d: incremented on same-dir BOS post-entry
 
     for i in range(len(bars)):
         bar = bars.iloc[i]
         ts = bar["ts_event"]
         atr_val = float(atr_series[i]) if not pd.isna(atr_series[i]) else 0.0
+
+        # Detect entry-signal-on-this-bar once. Reused for both opposite-signal
+        # handling (when in a trade) and new-entry logic (when flat).
+        new_entry = detect_entry(bar, params.entry_trigger)
+
+        # If EXIT_ONLY fires this bar, we close the trade but must NOT open
+        # a new one on the same bar — the trader is "stepping aside", not flipping.
+        skip_entry_this_bar = False
 
         # ---- MANAGE OPEN TRADE ----
         if open_trade is not None:
@@ -397,6 +538,7 @@ def run_backtest(
                 trades.append(open_trade)
                 open_trade = None
                 trade_entry_idx = None
+                bos_count_since_entry = 0
                 continue
 
             # 2. Exit trigger check (fires at bar close, fills next bar open)
@@ -422,11 +564,91 @@ def run_backtest(
                     trades.append(open_trade)
                     open_trade = None
                     trade_entry_idx = None
+                    bos_count_since_entry = 0
                     continue
 
-            # 3. Session-end forced flat — close at THIS bar's close if the
+            # 3. BoS-count exit (E1.4d) — close after N same-dir BOS post-entry.
+            if params.exit_after_n_bos is not None and open_trade is not None:
+                bos_val = bar.get("BOS")
+                if pd.notna(bos_val) and bos_val != 0:
+                    same_dir = (
+                        (open_trade.direction == "long" and bos_val == 1)
+                        or (open_trade.direction == "short" and bos_val == -1)
+                    )
+                    if same_dir:
+                        bos_count_since_entry += 1
+                        if bos_count_since_entry >= params.exit_after_n_bos:
+                            fill_side = (
+                                "exit_long"
+                                if open_trade.direction == "long"
+                                else "exit_short"
+                            )
+                            exit_price = compute_fill_price(
+                                bars, i, fill_side, params
+                            )
+                            if exit_price is not None:
+                                slice_during = bars.iloc[
+                                    (trade_entry_idx or 0) + 1 : i + 2
+                                ]
+                                exit_ts = bars.iloc[i + 1]["ts_event"]
+                                open_trade.close(
+                                    exit_ts=exit_ts,
+                                    exit_price=exit_price,
+                                    exit_reason=f"exit_after_{params.exit_after_n_bos}_bos",
+                                    bars_during_trade=slice_during,
+                                )
+                                trades.append(open_trade)
+                                open_trade = None
+                                trade_entry_idx = None
+                                bos_count_since_entry = 0
+                                continue
+
+            # 4. Opposite-signal handling (E1.4d)
+            if open_trade is not None and new_entry is not None:
+                new_dir, _ = new_entry
+                if new_dir != open_trade.direction:
+                    rule = params.on_opposite_signal
+                    if rule == OnOppositeSignal.HOLD_AND_SKIP:
+                        pass  # ignore the signal; do not enter on this bar either
+                        skip_entry_this_bar = True
+                    elif rule == OnOppositeSignal.HOLD_AND_TIGHTEN:
+                        # Move stop to entry price (breakeven); skip new entry
+                        open_trade.stop_price = open_trade.entry_price
+                        skip_entry_this_bar = True
+                    elif rule in (OnOppositeSignal.EXIT_ONLY, OnOppositeSignal.EXIT_AND_FLIP):
+                        fill_side = (
+                            "exit_long"
+                            if open_trade.direction == "long"
+                            else "exit_short"
+                        )
+                        exit_price = compute_fill_price(
+                            bars, i, fill_side, params
+                        )
+                        if exit_price is not None:
+                            slice_during = bars.iloc[
+                                (trade_entry_idx or 0) + 1 : i + 2
+                            ]
+                            exit_ts = bars.iloc[i + 1]["ts_event"]
+                            open_trade.close(
+                                exit_ts=exit_ts,
+                                exit_price=exit_price,
+                                exit_reason="opposite_signal",
+                                bars_during_trade=slice_during,
+                            )
+                            trades.append(open_trade)
+                            open_trade = None
+                            trade_entry_idx = None
+                            bos_count_since_entry = 0
+                            # EXIT_AND_FLIP falls through to entry block this
+                            # iteration (open_trade is now None), letting
+                            # detect_entry's opposite-direction signal open
+                            # the flip. EXIT_ONLY blocks the entry instead.
+                            if rule == OnOppositeSignal.EXIT_ONLY:
+                                skip_entry_this_bar = True
+
+            # 5. Session-end forced flat — close at THIS bar's close if the
             #    next bar is outside the eligible window.
-            if i + 1 < len(bars) and not eligible[i + 1] and eligible[i]:
+            if open_trade is not None and i + 1 < len(bars) and not eligible[i + 1] and eligible[i]:
                 slice_during = bars.iloc[(trade_entry_idx or 0) + 1 : i + 1]
                 open_trade.close(
                     exit_ts=ts,
@@ -437,54 +659,70 @@ def run_backtest(
                 trades.append(open_trade)
                 open_trade = None
                 trade_entry_idx = None
+                bos_count_since_entry = 0
                 continue
 
         # ---- LOOK FOR NEW ENTRY ----
-        if open_trade is None and eligible[i]:
-            entry = detect_entry(bar, params.entry_trigger)
-            if entry is not None:
-                # Options regime filter check — skips entry without
-                # marking the signal as a trade. Keeps filter-rejected
-                # signals out of downstream per-setup-tag metrics
-                # (no silent overrepresentation of bad filter buckets).
-                allowed, _skip_reason = apply_options_filters(bar, params)
-                if not allowed:
-                    continue
+        if (
+            open_trade is None
+            and eligible[i]
+            and not skip_entry_this_bar
+            and new_entry is not None
+        ):
+            # Options regime filter check — skips entry without
+            # marking the signal as a trade. Keeps filter-rejected
+            # signals out of downstream per-setup-tag metrics.
+            allowed, _skip_reason = apply_options_filters(bar, params)
+            if not allowed:
+                continue
 
-                direction, setup_tag = entry
-                fill_side = (
-                    "entry_long" if direction == "long" else "entry_short"
-                )
-                entry_price = compute_fill_price(bars, i, fill_side, params)
-                if entry_price is None:
-                    continue  # no next bar — skip
+            direction, setup_tag = new_entry
+            fill_side = (
+                "entry_long" if direction == "long" else "entry_short"
+            )
+            entry_price = compute_fill_price(bars, i, fill_side, params)
+            if entry_price is None:
+                continue  # no next bar — skip
 
-                stop_price = compute_stop_price(
-                    direction,
-                    entry_price,
-                    bar,
-                    params.stop_placement,
-                    atr_val,
-                    params,
-                )
+            # Find the most-recent active OB at signal time. Used both for
+            # entry_vs_ob filter AND for OB_BOUNDARY stop placement.
+            active_ob = _find_active_ob_at(bars, i)
 
-                # Entry fills at NEXT bar's open — ts becomes next bar's ts
-                entry_ts = bars.iloc[i + 1]["ts_event"]
-                # Snapshot the signal-bar context features (what the trader
-                # saw when deciding to enter, before the next-bar fill).
-                entry_features = _snapshot_entry_features(bar)
-                open_trade = Trade(
-                    entry_ts=entry_ts,
-                    entry_price=entry_price,
-                    direction=direction,
-                    stop_price=stop_price,
-                    setup_tag=setup_tag,
-                    contracts=params.contracts,
-                    tick_value_dollars=params.tick_value_dollars,
-                    commission_per_rt=params.commission_per_rt,
-                    entry_features=entry_features,
-                )
-                trade_entry_idx = i + 1  # the entry bar is the NEXT one
+            # E1.4d v4 entry-quality filters
+            allowed_v4, _v4_reason = apply_v4_entry_filters(
+                bar, direction, params, active_ob, entry_price
+            )
+            if not allowed_v4:
+                continue
+
+            stop_price = compute_stop_price(
+                direction,
+                entry_price,
+                bar,
+                params.stop_placement,
+                atr_val,
+                params,
+                active_ob=active_ob,
+            )
+
+            # Entry fills at NEXT bar's open — ts becomes next bar's ts
+            entry_ts = bars.iloc[i + 1]["ts_event"]
+            # Snapshot the signal-bar context features (what the trader
+            # saw when deciding to enter, before the next-bar fill).
+            entry_features = _snapshot_entry_features(bar)
+            open_trade = Trade(
+                entry_ts=entry_ts,
+                entry_price=entry_price,
+                direction=direction,
+                stop_price=stop_price,
+                setup_tag=setup_tag,
+                contracts=params.contracts,
+                tick_value_dollars=params.tick_value_dollars,
+                commission_per_rt=params.commission_per_rt,
+                entry_features=entry_features,
+            )
+            trade_entry_idx = i + 1  # the entry bar is the NEXT one
+            bos_count_since_entry = 0
 
     # If we ended with an open trade (rare — would require data cutoff
     # mid-trade), force-flatten at the last bar's close.

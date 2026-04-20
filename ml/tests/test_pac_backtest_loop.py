@@ -192,6 +192,233 @@ class TestRunBacktest:
         assert trades[0].entry_features == {}
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# E1.4d Phase 3 — opposite-signal handling, BoS-count exit, v4 filters
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _bars_with_long_then_opposite_short(n: int = 30) -> pd.DataFrame:
+    """Build bars where a long signal fires at bar 5 and a short signal
+    fires at bar 12 (opposite-direction signal mid-trade)."""
+    bars = _synthetic_enriched_bars(n)
+    # Long entry: bullish CHoCH+ at bar 5
+    bars.loc[5, "CHOCH"] = 1
+    bars.loc[5, "CHOCHPlus"] = 1
+    # Opposite signal: bearish CHoCH+ at bar 12
+    bars.loc[12, "CHOCH"] = -1
+    bars.loc[12, "CHOCHPlus"] = -1
+    return bars
+
+
+class TestOnOppositeSignal:
+    """Each of the 4 OnOppositeSignal rules has a distinct trade outcome."""
+
+    def test_hold_and_skip_ignores_opposite_signal(self):
+        from pac_backtest.params import OnOppositeSignal
+        bars = _bars_with_long_then_opposite_short(40)
+        params = StrategyParams(
+            entry_trigger=EntryTrigger.CHOCH_PLUS_REVERSAL,
+            on_opposite_signal=OnOppositeSignal.HOLD_AND_SKIP,
+            # Use ATR_TARGET so the trade can run to a target instead of being closed by opposite_choch
+            exit_trigger=ExitTrigger.ATR_TARGET,
+            target_atr_multiple=4.0,  # large target so trade stays open past bar 12
+        )
+        trades = run_backtest(bars, params)
+        # HOLD_AND_SKIP must NOT close on the opposite signal at bar 12.
+        # Either: trade is still open at end (force-flat with data_end) or
+        # exited via stop / session / target — but never "opposite_signal".
+        assert all(t.exit_reason != "opposite_signal" for t in trades)
+
+    def test_exit_only_closes_but_does_not_flip(self):
+        from pac_backtest.params import OnOppositeSignal
+        bars = _bars_with_long_then_opposite_short(40)
+        params = StrategyParams(
+            entry_trigger=EntryTrigger.CHOCH_PLUS_REVERSAL,
+            on_opposite_signal=OnOppositeSignal.EXIT_ONLY,
+            exit_trigger=ExitTrigger.ATR_TARGET,
+            target_atr_multiple=10.0,
+        )
+        trades = run_backtest(bars, params)
+        # Exactly one trade — the long, exited via opposite_signal. No flip.
+        assert len(trades) == 1
+        assert trades[0].direction == "long"
+        assert trades[0].exit_reason == "opposite_signal"
+
+    def test_exit_and_flip_opens_opposite_trade(self):
+        from pac_backtest.params import OnOppositeSignal
+        bars = _bars_with_long_then_opposite_short(40)
+        params = StrategyParams(
+            entry_trigger=EntryTrigger.CHOCH_PLUS_REVERSAL,
+            on_opposite_signal=OnOppositeSignal.EXIT_AND_FLIP,
+            exit_trigger=ExitTrigger.ATR_TARGET,
+            target_atr_multiple=10.0,
+        )
+        trades = run_backtest(bars, params)
+        # Two trades: long (closed via opposite_signal), then short (flip).
+        assert len(trades) >= 2
+        assert trades[0].direction == "long"
+        assert trades[0].exit_reason == "opposite_signal"
+        assert trades[1].direction == "short"
+
+    def test_hold_and_tighten_moves_stop_to_breakeven(self):
+        from pac_backtest.params import OnOppositeSignal
+        bars = _bars_with_long_then_opposite_short(40)
+        params = StrategyParams(
+            entry_trigger=EntryTrigger.CHOCH_PLUS_REVERSAL,
+            on_opposite_signal=OnOppositeSignal.HOLD_AND_TIGHTEN,
+            exit_trigger=ExitTrigger.ATR_TARGET,
+            target_atr_multiple=10.0,
+            stop_atr_multiple=2.0,
+        )
+        trades = run_backtest(bars, params)
+        # After the bar-12 opposite signal, stop is at the entry price.
+        # If price later dips back through entry, the trade closes at
+        # stop_hit with exit_price == entry_price.
+        assert len(trades) >= 1
+        # If a trade was stopped, the stop price should equal entry price
+        # for the trade that saw the tightening event.
+        for t in trades:
+            if t.exit_reason == "stop_hit":
+                assert t.stop_price == t.entry_price
+
+
+class TestExitAfterNBos:
+    def test_close_after_two_same_direction_bos(self):
+        bars = _synthetic_enriched_bars(40)
+        # Long entry at bar 5
+        bars.loc[5, "CHOCH"] = 1
+        bars.loc[5, "CHOCHPlus"] = 1
+        # Two bullish (same-direction) BOS events post-entry at bars 8 and 11
+        bars.loc[8, "BOS"] = 1
+        bars.loc[11, "BOS"] = 1
+        params = StrategyParams(
+            entry_trigger=EntryTrigger.CHOCH_PLUS_REVERSAL,
+            exit_after_n_bos=2,
+            exit_trigger=ExitTrigger.SESSION_END,  # don't compete with the BoS exit
+        )
+        trades = run_backtest(bars, params)
+        assert len(trades) == 1
+        assert trades[0].exit_reason == "exit_after_2_bos"
+
+    def test_only_same_direction_bos_counts(self):
+        bars = _synthetic_enriched_bars(40)
+        bars.loc[5, "CHOCH"] = 1
+        bars.loc[5, "CHOCHPlus"] = 1
+        # One bullish, one bearish BOS post-entry — bearish doesn't count.
+        bars.loc[8, "BOS"] = 1
+        bars.loc[11, "BOS"] = -1
+        params = StrategyParams(
+            entry_trigger=EntryTrigger.CHOCH_PLUS_REVERSAL,
+            exit_after_n_bos=2,
+            exit_trigger=ExitTrigger.SESSION_END,
+        )
+        trades = run_backtest(bars, params)
+        # Should NOT close via exit_after_2_bos — only 1 same-direction BOS
+        assert all(t.exit_reason != "exit_after_2_bos" for t in trades)
+
+
+class TestV4EntryFilters:
+    def test_min_adx_blocks_low_adx_entry(self):
+        bars = _synthetic_enriched_bars(40)
+        bars["adx_14"] = 10.0  # below any reasonable threshold
+        bars.loc[5, "CHOCH"] = 1
+        bars.loc[5, "CHOCHPlus"] = 1
+        params = StrategyParams(
+            entry_trigger=EntryTrigger.CHOCH_PLUS_REVERSAL,
+            min_adx_14=25.0,
+        )
+        trades = run_backtest(bars, params)
+        assert trades == []
+
+    def test_min_adx_allows_high_adx_entry(self):
+        bars = _synthetic_enriched_bars(40)
+        bars["adx_14"] = 30.0
+        bars.loc[5, "CHOCH"] = 1
+        bars.loc[5, "CHOCHPlus"] = 1
+        params = StrategyParams(
+            entry_trigger=EntryTrigger.CHOCH_PLUS_REVERSAL,
+            min_adx_14=25.0,
+        )
+        trades = run_backtest(bars, params)
+        assert len(trades) >= 1
+
+    def test_session_bucket_filter_blocks_wrong_bucket(self):
+        from pac_backtest.params import SessionBucket
+        bars = _synthetic_enriched_bars(40)
+        bars["session_bucket"] = "lunch"  # signal during lunch
+        bars.loc[5, "CHOCH"] = 1
+        bars.loc[5, "CHOCHPlus"] = 1
+        params = StrategyParams(
+            entry_trigger=EntryTrigger.CHOCH_PLUS_REVERSAL,
+            session_bucket=SessionBucket.NY_OPEN,  # only ny_open allowed
+        )
+        trades = run_backtest(bars, params)
+        assert trades == []
+
+    def test_min_z_vwap_directional(self):
+        """Long entries require z_close_vwap >= +threshold."""
+        bars = _synthetic_enriched_bars(40)
+        bars["z_close_vwap"] = -0.5  # below VWAP — bad for long
+        bars.loc[5, "CHOCH"] = 1
+        bars.loc[5, "CHOCHPlus"] = 1
+        params = StrategyParams(
+            entry_trigger=EntryTrigger.CHOCH_PLUS_REVERSAL,
+            min_z_entry_vwap=0.5,
+        )
+        trades = run_backtest(bars, params)
+        # Long signal blocked because close is below VWAP, not above by +0.5
+        assert trades == []
+
+
+class TestObBoundaryStop:
+    def test_long_stop_at_ob_bottom(self):
+        """OB_BOUNDARY stop for a long trade = OB bottom (when OB is below entry)."""
+        bars = _synthetic_enriched_bars(40)
+        # Bars ramp 100 → 110, so bar 5 close ≈ 101.3, entry fills at bar 6.
+        # Place an OB whose bottom (90.0) is well below entry → valid long stop.
+        bars["OB"] = np.nan
+        bars["OB_Top"] = np.nan
+        bars["OB_Bottom"] = np.nan
+        bars["OB_MitigatedIndex"] = np.nan
+        bars.loc[4, "OB"] = 1
+        bars.loc[4, "OB_Top"] = 95.0
+        bars.loc[4, "OB_Bottom"] = 90.0
+        bars.loc[5, "CHOCH"] = 1
+        bars.loc[5, "CHOCHPlus"] = 1
+        params = StrategyParams(
+            entry_trigger=EntryTrigger.CHOCH_PLUS_REVERSAL,
+            stop_placement=StopPlacement.OB_BOUNDARY,
+        )
+        trades = run_backtest(bars, params)
+        assert len(trades) >= 1
+        assert trades[0].stop_price == pytest.approx(90.0)
+
+    def test_wrong_side_ob_falls_back_to_n_atr(self):
+        """If the OB sits ABOVE a long entry, OB-bottom would still be a
+        wrong-side stop (above entry). Loop must fall back to N_ATR rather
+        than create an instant-stop-out."""
+        bars = _synthetic_enriched_bars(40)
+        bars["OB"] = np.nan
+        bars["OB_Top"] = np.nan
+        bars["OB_Bottom"] = np.nan
+        bars["OB_MitigatedIndex"] = np.nan
+        # OB sits above the entry zone (entry ≈ 101.3 at bar 6, OB at 110/115)
+        bars.loc[4, "OB"] = 1
+        bars.loc[4, "OB_Top"] = 115.0
+        bars.loc[4, "OB_Bottom"] = 110.0
+        bars.loc[5, "CHOCH"] = 1
+        bars.loc[5, "CHOCHPlus"] = 1
+        params = StrategyParams(
+            entry_trigger=EntryTrigger.CHOCH_PLUS_REVERSAL,
+            stop_placement=StopPlacement.OB_BOUNDARY,
+            stop_atr_multiple=1.5,
+        )
+        trades = run_backtest(bars, params)
+        assert len(trades) >= 1
+        # Stop must be BELOW entry (ATR fallback), not at OB bottom (110)
+        assert trades[0].stop_price < trades[0].entry_price
+
+
 _ARCHIVE_ROOT = Path(__file__).resolve().parents[1] / "data" / "archive"
 _ARCHIVE_MISSING = not (_ARCHIVE_ROOT / "ohlcv_1m").exists()
 

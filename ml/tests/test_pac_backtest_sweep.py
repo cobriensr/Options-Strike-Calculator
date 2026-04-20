@@ -45,7 +45,9 @@ class TestParamsToVector:
     def test_produces_fixed_length(self):
         p = StrategyParams()
         v = _params_to_vector(p)
-        assert len(v) == 8  # 8 dimensions currently
+        # v3 had 8 dims; v4 (E1.4d) extends by 9 dims for the entry-quality
+        # filters, position-management rule, and BoS-count exit.
+        assert len(v) == 16
 
     def test_different_params_produce_different_vectors(self):
         p1 = StrategyParams(entry_trigger=EntryTrigger.CHOCH_REVERSAL)
