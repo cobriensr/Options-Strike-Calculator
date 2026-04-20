@@ -56,6 +56,10 @@ interface Props {
   onAmPmChange: (v: AmPm) => void;
   timezone: Timezone;
   onTimezoneChange: (v: Timezone) => void;
+  /** True while a manual time pick is suppressing live-poll sync. */
+  timeEdited: boolean;
+  /** Clears the manual-pick lock and snaps time back to current CT. */
+  onResumeLive: () => void;
   errors: Record<string, string>;
 }
 
@@ -72,6 +76,8 @@ export default function DateTimeSection({
   onAmPmChange,
   timezone,
   onTimezoneChange,
+  timeEdited,
+  onResumeLive,
   errors,
 }: Readonly<Props>) {
   return (
@@ -162,6 +168,20 @@ export default function DateTimeSection({
             </div>
           </fieldset>
         </div>
+        {timeEdited && (
+          <div className="mt-2 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onResumeLive}
+              className="text-accent hover:bg-accent-bg border-edge cursor-pointer rounded-full border px-2.5 py-1 font-mono text-[11px] font-medium transition-colors"
+            >
+              ↻ Now
+            </button>
+            <span className="text-tertiary font-mono text-[11px]">
+              Manual time — live sync paused
+            </span>
+          </div>
+        )}
         {errors['time'] && <ErrorMsg id="err-time">{errors['time']}</ErrorMsg>}
       </div>
     </SectionBox>

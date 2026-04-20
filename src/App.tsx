@@ -31,7 +31,7 @@ import { useIsOwner } from './hooks/useIsOwner';
 import { useAnalysisContext } from './hooks/useAnalysisContext';
 import { getEarlyCloseHourET } from './data/marketHours';
 import { toETTime } from './utils/time';
-import { getETTotalMinutes } from './utils/timezone';
+import { getCTTime, getETTotalMinutes } from './utils/timezone';
 import DateTimeSection from './components/DateTimeSection';
 import EventDayWarning from './components/EventDayWarning';
 import SpotPriceSection from './components/SpotPriceSection';
@@ -50,6 +50,7 @@ import { MarketInternalsPanel } from './components/MarketInternals/MarketInterna
 import NotificationPermission from './components/NotificationPermission';
 import { StatusBadge } from './components/ui';
 import { CollapseAllContext } from './components/collapse-context';
+import type { AmPm, Timezone } from './types';
 import type { CollapseSignal } from './components/collapse-context';
 import { useToast } from './hooks/useToast';
 import SectionNav from './components/SectionNav';
@@ -306,6 +307,23 @@ export default function StrikeCalculator() {
   const spotEdited = useRef(false);
   const spxEdited = useRef(false);
   const vixEdited = useRef(false);
+  // timeEdited freezes the live time-sync until the user changes the date
+  // or clicks "Resume live". Mirrored as state so the Resume-live chip
+  // re-renders when the flag flips (refs alone don't trigger renders).
+  const timeEdited = useRef(false);
+  const [timeEditedForDisplay, setTimeEditedForDisplay] = useState(false);
+  const markTimeEdited = useCallback(() => {
+    if (!timeEdited.current) {
+      timeEdited.current = true;
+      setTimeEditedForDisplay(true);
+    }
+  }, []);
+  const clearTimeEdited = useCallback(() => {
+    if (timeEdited.current) {
+      timeEdited.current = false;
+      setTimeEditedForDisplay(false);
+    }
+  }, []);
   const handleSpotChange = useCallback(
     (v: string) => {
       spotEdited.current = true;
@@ -327,12 +345,65 @@ export default function StrikeCalculator() {
     },
     [setVixInput],
   );
+  const handleTimeHourChange = useCallback(
+    (v: string) => {
+      markTimeEdited();
+      setTimeHour(v);
+    },
+    [markTimeEdited, setTimeHour],
+  );
+  const handleTimeMinuteChange = useCallback(
+    (v: string) => {
+      markTimeEdited();
+      setTimeMinute(v);
+    },
+    [markTimeEdited, setTimeMinute],
+  );
+  const handleTimeAmPmChange = useCallback(
+    (v: AmPm) => {
+      markTimeEdited();
+      setTimeAmPm(v);
+    },
+    [markTimeEdited, setTimeAmPm],
+  );
+  const handleTimezoneChange = useCallback(
+    (v: Timezone) => {
+      markTimeEdited();
+      setTimezone(v);
+    },
+    [markTimeEdited, setTimezone],
+  );
+  const { setSelectedDate: setVixSelectedDate } = vix;
+  const handleDateChange = useCallback(
+    (date: string) => {
+      // Changing the date implies a fresh intent — release the time lock
+      // so the new date inherits live-sync behavior.
+      clearTimeEdited();
+      setVixSelectedDate(date);
+    },
+    [clearTimeEdited, setVixSelectedDate],
+  );
+  const handleResumeLive = useCallback(() => {
+    clearTimeEdited();
+    const now = new Date();
+    const ct = getCTTime(now);
+    let h = ct.hour;
+    const snappedMin = Math.floor(ct.minute / 5) * 5;
+    const ampm: AmPm = h >= 12 ? 'PM' : 'AM';
+    if (h > 12) h -= 12;
+    if (h === 0) h = 12;
+    setTimeHour(String(h));
+    setTimeMinute(String(snappedMin).padStart(2, '0'));
+    setTimeAmPm(ampm);
+    setTimezone('CT');
+  }, [clearTimeEdited, setTimeHour, setTimeMinute, setTimeAmPm, setTimezone]);
 
   // Auto-fill inputs from live/historical data + compute history snapshot
   const historySnapshot = useAutoFill({
     spotEdited,
     spxEdited,
     vixEdited,
+    timeEdited,
     timeHour,
     timeMinute,
     timeAmPm,
@@ -823,16 +894,18 @@ export default function StrikeCalculator() {
               <DateTimeSection
                 chevronUrl={chevronUrl}
                 selectedDate={vix.selectedDate}
-                onDateChange={vix.setSelectedDate}
+                onDateChange={handleDateChange}
                 vixDataLoaded={vix.vixDataLoaded}
                 timeHour={timeHour}
-                onHourChange={setTimeHour}
+                onHourChange={handleTimeHourChange}
                 timeMinute={timeMinute}
-                onMinuteChange={setTimeMinute}
+                onMinuteChange={handleTimeMinuteChange}
                 timeAmPm={timeAmPm}
-                onAmPmChange={setTimeAmPm}
+                onAmPmChange={handleTimeAmPmChange}
                 timezone={timezone}
-                onTimezoneChange={setTimezone}
+                onTimezoneChange={handleTimezoneChange}
+                timeEdited={timeEditedForDisplay}
+                onResumeLive={handleResumeLive}
                 errors={errors}
               />
 

@@ -25,6 +25,8 @@ function renderSection(
     onAmPmChange: vi.fn(),
     timezone: 'ET' as const,
     onTimezoneChange: vi.fn(),
+    timeEdited: false,
+    onResumeLive: vi.fn(),
     errors: {} as Record<string, string>,
     ...overrides,
   };
@@ -262,6 +264,8 @@ describe('DateTimeSection', () => {
           onAmPmChange={vi.fn()}
           timezone="ET"
           onTimezoneChange={vi.fn()}
+          timeEdited={false}
+          onResumeLive={vi.fn()}
           errors={{}}
         />,
       );
@@ -284,6 +288,8 @@ describe('DateTimeSection', () => {
           onAmPmChange={vi.fn()}
           timezone="ET"
           onTimezoneChange={vi.fn()}
+          timeEdited={false}
+          onResumeLive={vi.fn()}
           errors={{}}
         />,
       );

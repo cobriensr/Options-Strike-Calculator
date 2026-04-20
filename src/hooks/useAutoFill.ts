@@ -28,6 +28,10 @@ interface UseAutoFillInputs {
   spotEdited: { current: boolean };
   spxEdited: { current: boolean };
   vixEdited: { current: boolean };
+  // timeEdited suppresses the live-session time-sync below so manually
+  // selected past times aren't overwritten on the next 60s poll. Cleared
+  // when the user changes the date or clicks "Resume live" in DateTimeSection.
+  timeEdited: { current: boolean };
   timeHour: string;
   timeMinute: string;
 
@@ -58,6 +62,7 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     spotEdited,
     spxEdited,
     vixEdited,
+    timeEdited,
     timeHour,
     timeMinute,
     timeAmPm,
@@ -123,7 +128,11 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     // Keep current CT time in sync during active sessions so DTE
     // calculations stay accurate on every 60s poll. When the market
     // is closed, only set time once from the default 10:00 value.
-    if (live || (timeHour === '10' && timeMinute === '00')) {
+    // timeEdited suppresses this entirely — manual picks survive polls.
+    if (
+      !timeEdited.current &&
+      (live || (timeHour === '10' && timeMinute === '00'))
+    ) {
       const now = new Date();
       const ct = getCTTime(now);
       let h = ct.hour;
@@ -159,6 +168,7 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     spotEdited,
     spxEdited,
     vixEdited,
+    timeEdited,
   ]);
 
   // ── Auto-fill from historical data when a past date is selected,

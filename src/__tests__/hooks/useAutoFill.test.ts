@@ -218,6 +218,7 @@ describe('useAutoFill', () => {
         spotEdited: { current: false },
         spxEdited: { current: false },
         vixEdited: { current: false },
+        timeEdited: { current: false },
         timeHour: '10',
         timeMinute: '00',
         timeAmPm: 'AM',
@@ -246,6 +247,7 @@ describe('useAutoFill', () => {
         spotEdited: { current: true },
         spxEdited: { current: true },
         vixEdited: { current: true },
+        timeEdited: { current: false },
         timeHour: '2',
         timeMinute: '15',
         timeAmPm: 'PM',
@@ -277,6 +279,7 @@ describe('useAutoFill', () => {
         spotEdited: { current: true },
         spxEdited: { current: true },
         vixEdited: { current: true },
+        timeEdited: { current: false },
         timeHour: '2',
         timeMinute: '15',
         timeAmPm: 'PM',
@@ -303,6 +306,7 @@ describe('useAutoFill', () => {
         spotEdited: { current: false },
         spxEdited: { current: false },
         vixEdited: { current: false },
+        timeEdited: { current: false },
         timeHour: '10',
         timeMinute: '00',
         timeAmPm: 'AM',
@@ -339,6 +343,7 @@ describe('useAutoFill', () => {
         spotEdited: { current: true },
         spxEdited: { current: true },
         vixEdited: { current: true },
+        timeEdited: { current: false },
         timeHour: '2',
         timeMinute: '00',
         timeAmPm: 'PM',
@@ -363,6 +368,7 @@ describe('useAutoFill', () => {
         spotEdited: { current: true },
         spxEdited: { current: true },
         vixEdited: { current: true },
+        timeEdited: { current: false },
         timeHour: '2',
         timeMinute: '00',
         timeAmPm: 'PM',
@@ -386,6 +392,7 @@ describe('useAutoFill', () => {
         spotEdited: { current: true },
         spxEdited: { current: true },
         vixEdited: { current: true },
+        timeEdited: { current: false },
         timeHour: '10',
         timeMinute: '00',
         timeAmPm: 'AM',
@@ -413,6 +420,7 @@ describe('useAutoFill', () => {
         spotEdited: { current: true },
         spxEdited: { current: true },
         vixEdited: { current: true },
+        timeEdited: { current: false },
         timeHour: '2',
         timeMinute: '15',
         timeAmPm: 'PM',
@@ -443,6 +451,7 @@ describe('useAutoFill', () => {
         spotEdited: { current: true },
         spxEdited: { current: true },
         vixEdited: { current: true },
+        timeEdited: { current: false },
         timeHour: '11',
         timeMinute: '00',
         timeAmPm: 'AM',
@@ -462,12 +471,73 @@ describe('useAutoFill', () => {
     expect(setters.setTimezone).toHaveBeenCalledWith('CT');
   });
 
+  it('does NOT advance time during active sessions when timeEdited is true', () => {
+    // User manually picked a past time — the poll must not stomp it,
+    // even though session is active and `live` is true.
+    const market: MarketDataState = {
+      ...createMarket(mockQuotes),
+      session: 'after-hours',
+      marketOpen: false,
+    };
+
+    renderHook(() =>
+      useAutoFill({
+        spotEdited: { current: true },
+        spxEdited: { current: true },
+        vixEdited: { current: true },
+        timeEdited: { current: true },
+        timeHour: '4',
+        timeMinute: '00',
+        timeAmPm: 'PM',
+        timezone: 'CT',
+        ...setters,
+        market,
+        vix: createVix({ selectedDate: '2026-03-17' }),
+        historyData: createHistoryData(),
+        vix1dStatic: createVix1dStatic(),
+      }),
+    );
+
+    expect(setters.setTimeHour).not.toHaveBeenCalled();
+    expect(setters.setTimeMinute).not.toHaveBeenCalled();
+    expect(setters.setTimeAmPm).not.toHaveBeenCalled();
+    expect(setters.setTimezone).not.toHaveBeenCalled();
+  });
+
+  it('does NOT seed time from 10:00 default when timeEdited is true', () => {
+    // Edge case: even on the sentinel default, an edited flag must block
+    // the one-shot initial sync (e.g. user cleared the field intentionally).
+    const market = createMarket(mockQuotes);
+
+    renderHook(() =>
+      useAutoFill({
+        spotEdited: { current: true },
+        spxEdited: { current: true },
+        vixEdited: { current: true },
+        timeEdited: { current: true },
+        timeHour: '10',
+        timeMinute: '00',
+        timeAmPm: 'AM',
+        timezone: 'CT',
+        ...setters,
+        market,
+        vix: createVix({ selectedDate: '2026-03-17' }),
+        historyData: createHistoryData(),
+        vix1dStatic: createVix1dStatic(),
+      }),
+    );
+
+    expect(setters.setTimeHour).not.toHaveBeenCalled();
+    expect(setters.setTimeMinute).not.toHaveBeenCalled();
+  });
+
   it('does nothing when no market data', () => {
     renderHook(() =>
       useAutoFill({
         spotEdited: { current: false },
         spxEdited: { current: false },
         vixEdited: { current: false },
+        timeEdited: { current: false },
         timeHour: '10',
         timeMinute: '00',
         timeAmPm: 'AM',
@@ -499,6 +569,7 @@ describe('useAutoFill', () => {
         spotEdited: { current: false },
         spxEdited: { current: false },
         vixEdited: { current: false },
+        timeEdited: { current: false },
         timeHour: '11',
         timeMinute: '30',
         timeAmPm: 'AM',
@@ -531,6 +602,7 @@ describe('useAutoFill', () => {
         spotEdited: { current: false },
         spxEdited: { current: false },
         vixEdited: { current: false },
+        timeEdited: { current: false },
         timeHour: '11',
         timeMinute: '30',
         timeAmPm: 'AM',
@@ -563,6 +635,7 @@ describe('useAutoFill', () => {
         spotEdited: { current: false },
         spxEdited: { current: false },
         vixEdited: { current: false },
+        timeEdited: { current: false },
         timeHour: '11',
         timeMinute: '30',
         timeAmPm: 'AM',
@@ -588,6 +661,7 @@ describe('useAutoFill', () => {
         spotEdited: { current: false },
         spxEdited: { current: false },
         vixEdited: { current: false },
+        timeEdited: { current: false },
         timeHour: '11',
         timeMinute: '30',
         timeAmPm: 'AM',
@@ -612,6 +686,7 @@ describe('useAutoFill', () => {
         spotEdited: { current: false },
         spxEdited: { current: false },
         vixEdited: { current: false },
+        timeEdited: { current: false },
         timeHour: '10',
         timeMinute: '00',
         timeAmPm: 'AM',
@@ -644,6 +719,7 @@ describe('useAutoFill', () => {
         spotEdited: { current: false },
         spxEdited: { current: false },
         vixEdited: { current: false },
+        timeEdited: { current: false },
         timeHour: '11',
         timeMinute: '30',
         timeAmPm: 'AM',
@@ -673,6 +749,7 @@ describe('useAutoFill', () => {
         spotEdited: { current: false },
         spxEdited: { current: false },
         vixEdited: { current: false },
+        timeEdited: { current: false },
         timeHour: '11',
         timeMinute: '30',
         timeAmPm: 'AM',
@@ -701,6 +778,7 @@ describe('useAutoFill', () => {
         spotEdited: { current: false },
         spxEdited: { current: false },
         vixEdited: { current: false },
+        timeEdited: { current: false },
         timeHour: '11',
         timeMinute: '30',
         timeAmPm: 'AM',
