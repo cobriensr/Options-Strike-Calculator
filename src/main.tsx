@@ -96,6 +96,7 @@ if (import.meta.env.PROD)
       { path: '/api/greek-exposure-strike', method: 'GET' },
       { path: '/api/vix-snapshots-recent', method: 'GET' },
       { path: '/api/ml/analyze-plots', method: 'POST' },
+      { path: '/api/cron/warm-tbbo-percentile', method: 'GET' },
     ],
   });
 
