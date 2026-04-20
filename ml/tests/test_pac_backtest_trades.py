@@ -230,3 +230,70 @@ class TestTradesToDataFrame:
         assert len(df) == 2
         assert "entry_ts" in df.columns
         assert "pnl_dollars" in df.columns
+
+
+class TestEntryFeaturesSnapshot:
+    """E1.4d Phase 2 — Trade.entry_features round-trips through to_dict
+    and trades_to_dataframe, prefixed with `ef_`."""
+
+    def test_default_entry_features_is_empty_dict(self):
+        trade = Trade(
+            entry_ts=pd.Timestamp("2024-01-02 13:30:00+00:00"),
+            entry_price=100.0,
+            direction="long",
+            stop_price=99.0,
+            setup_tag="x",
+            contracts=1,
+        )
+        assert trade.entry_features == {}
+
+    def test_entry_features_round_trip_through_to_dict(self):
+        trade = Trade(
+            entry_ts=pd.Timestamp("2024-01-02 13:30:00+00:00"),
+            entry_price=100.0,
+            direction="long",
+            stop_price=99.0,
+            setup_tag="x",
+            contracts=1,
+            entry_features={
+                "session_bucket": "ny_open",
+                "adx_14": 28.5,
+                "z_close_vwap": 1.2,
+                "is_event_day": False,
+                "ob_pct_atr": None,  # NaN-handled bars produce None
+            },
+        )
+        d = trade.to_dict()
+        assert d["ef_session_bucket"] == "ny_open"
+        assert d["ef_adx_14"] == pytest.approx(28.5)
+        assert d["ef_z_close_vwap"] == pytest.approx(1.2)
+        assert d["ef_is_event_day"] is False
+        assert d["ef_ob_pct_atr"] is None
+
+    def test_entry_features_appear_as_columns_in_dataframe(self):
+        trade = Trade(
+            entry_ts=pd.Timestamp("2024-01-02 13:30:00+00:00"),
+            entry_price=100.0,
+            direction="long",
+            stop_price=99.0,
+            setup_tag="x",
+            contracts=1,
+            entry_features={"session_bucket": "ny_open", "adx_14": 28.5},
+        )
+        during = _mini_bars_between(
+            "2024-01-02 13:31:00+00:00",
+            "2024-01-02 13:32:00+00:00",
+            [101.0, 102.0],
+            [99.5, 100.5],
+        )
+        trade.close(
+            exit_ts=pd.Timestamp("2024-01-02 13:32:00+00:00"),
+            exit_price=102.0,
+            exit_reason="target_hit",
+            bars_during_trade=during,
+        )
+        df = trades_to_dataframe([trade])
+        assert "ef_session_bucket" in df.columns
+        assert "ef_adx_14" in df.columns
+        assert df["ef_session_bucket"].iloc[0] == "ny_open"
+        assert df["ef_adx_14"].iloc[0] == pytest.approx(28.5)

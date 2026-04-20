@@ -154,6 +154,43 @@ class TestRunBacktest:
         for i in range(len(trades) - 1):
             assert trades[i].exit_ts <= trades[i + 1].entry_ts
 
+    def test_entry_features_populated_from_signal_bar(self):
+        """E1.4d Phase 2 — Trade.entry_features captures context columns
+        that exist on the signal bar at entry time."""
+        bars = _synthetic_enriched_bars(50)
+        # Add a few of the E1.4d feature columns. Loop should pick them up.
+        bars["session_bucket"] = "ny_open"
+        bars["adx_14"] = 25.0
+        bars["z_close_vwap"] = 1.5
+        bars["is_event_day"] = False
+        bars.loc[5, "CHOCH"] = 1
+        bars.loc[5, "CHOCHPlus"] = 1
+
+        trades = run_backtest(
+            bars,
+            StrategyParams(entry_trigger=EntryTrigger.CHOCH_PLUS_REVERSAL),
+        )
+        assert len(trades) >= 1
+        ef = trades[0].entry_features
+        assert ef["session_bucket"] == "ny_open"
+        assert ef["adx_14"] == 25.0
+        assert ef["z_close_vwap"] == 1.5
+        assert ef["is_event_day"] is False
+
+    def test_entry_features_partial_when_columns_missing(self):
+        """If the bar frame doesn't have E1.4d columns (legacy fixture),
+        entry_features is just an empty dict — no crash."""
+        bars = _synthetic_enriched_bars(50)
+        bars.loc[5, "CHOCH"] = 1
+        bars.loc[5, "CHOCHPlus"] = 1
+        trades = run_backtest(
+            bars,
+            StrategyParams(entry_trigger=EntryTrigger.CHOCH_PLUS_REVERSAL),
+        )
+        assert len(trades) >= 1
+        # No new columns on this fixture → snapshot is empty
+        assert trades[0].entry_features == {}
+
 
 _ARCHIVE_ROOT = Path(__file__).resolve().parents[1] / "data" / "archive"
 _ARCHIVE_MISSING = not (_ARCHIVE_ROOT / "ohlcv_1m").exists()

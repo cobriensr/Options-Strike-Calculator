@@ -255,6 +255,62 @@ def apply_options_filters(
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# Entry-bar context snapshot (E1.4d Phase 2)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+# Columns we capture into Trade.entry_features at signal time. Each is
+# only set if present on the bar — older bar frames missing columns
+# silently produce a partial snapshot rather than crashing.
+_ENTRY_FEATURE_COLUMNS = (
+    "session_bucket",
+    "minutes_from_rth_open",
+    "minutes_to_rth_close",
+    "atr_14",
+    "adx_14",
+    "di_plus_14",
+    "di_minus_14",
+    "z_close_vwap",
+    "ob_pct_atr",
+    "ob_volume_z_50",
+    "OB_z_top",
+    "OB_z_bot",
+    "OB_z_mid",
+    "OB_width",
+    "OBVolume",
+    "session_vwap",
+    "session_std",
+    "is_fomc",
+    "is_opex",
+    "is_event_day",
+)
+
+
+def _snapshot_entry_features(bar: pd.Series) -> dict:
+    """Build the entry-features dict from a single signal bar.
+
+    Coerces numpy scalar / pandas timestamp types to plain Python so the
+    dict round-trips cleanly through JSON serialization downstream.
+    """
+    snap: dict = {}
+    for col in _ENTRY_FEATURE_COLUMNS:
+        if col not in bar.index:
+            continue
+        v = bar[col]
+        if pd.isna(v):
+            snap[col] = None
+        elif isinstance(v, (np.bool_, bool)):
+            snap[col] = bool(v)
+        elif isinstance(v, (np.integer,)):
+            snap[col] = int(v)
+        elif isinstance(v, (np.floating, float)):
+            snap[col] = float(v)
+        else:
+            snap[col] = v if isinstance(v, str) else str(v)
+    return snap
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # Main event loop
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -414,6 +470,9 @@ def run_backtest(
 
                 # Entry fills at NEXT bar's open — ts becomes next bar's ts
                 entry_ts = bars.iloc[i + 1]["ts_event"]
+                # Snapshot the signal-bar context features (what the trader
+                # saw when deciding to enter, before the next-bar fill).
+                entry_features = _snapshot_entry_features(bar)
                 open_trade = Trade(
                     entry_ts=entry_ts,
                     entry_price=entry_price,
@@ -423,6 +482,7 @@ def run_backtest(
                     contracts=params.contracts,
                     tick_value_dollars=params.tick_value_dollars,
                     commission_per_rt=params.commission_per_rt,
+                    entry_features=entry_features,
                 )
                 trade_entry_idx = i + 1  # the entry bar is the NEXT one
 

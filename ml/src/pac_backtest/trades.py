@@ -62,8 +62,13 @@ class Trade:
     # --- Metadata ---
     status: TradeStatus = "open"
 
-    # Snapshot of structure state at entry (for later regime analysis)
-    snapshot: dict = field(default_factory=dict)
+    # Snapshot of per-bar context features at the signal bar (the bar on
+    # which the entry trigger fired, which is one bar before the actual
+    # fill). Mirrors the columns the live trader reads at entry decision
+    # time — session bucket, ATR/ADX, VWAP-relative position, OB strength,
+    # event-day flags. Used for post-hoc cohort analysis (E1.4e) without
+    # re-running the sweep.
+    entry_features: dict[str, float | str | bool | None] = field(default_factory=dict)
 
     def close(
         self,
@@ -129,8 +134,12 @@ class Trade:
         self.status = "closed"
 
     def to_dict(self) -> dict:
-        """Flatten to a dict for DataFrame conversion."""
-        return {
+        """Flatten to a dict for DataFrame conversion.
+
+        Entry-feature snapshot is flattened into top-level columns prefixed
+        with `ef_` so downstream `groupby` slices are direct.
+        """
+        out = {
             "entry_ts": self.entry_ts,
             "entry_price": self.entry_price,
             "direction": self.direction,
@@ -147,6 +156,9 @@ class Trade:
             "duration_minutes": self.duration_minutes,
             "status": self.status,
         }
+        for k, v in self.entry_features.items():
+            out[f"ef_{k}"] = v
+        return out
 
 
 def trades_to_dataframe(trades: list[Trade]) -> pd.DataFrame:
