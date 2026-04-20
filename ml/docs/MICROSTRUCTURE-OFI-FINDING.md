@@ -1,6 +1,6 @@
 # Microstructure OFI Signal — Validated on NQ, Null on ES
 
-**Status:** Open, positive result on NQ. Actionable rule adopted. Wiring to analyze context pending (Phase 5a).
+**Status:** Shipped. Phase 5a wiring complete — dual-symbol OFI + historical percentile rank now in Claude's cached system prompt on every analyze call. Re-validation schedule (quarterly) is the remaining governance.
 **Date range studied:** 2025-04-20 → 2026-04-17 (312 trading days × 2 symbols)
 **Data cost:** ~$0 (1-year TBBO pull is included in the $179/mo Databento Standard L1 allowance)
 **Code:** `ml/src/features/microstructure.py`, `ml/src/microstructure_eda.py`
@@ -110,28 +110,46 @@ one representative per family rather than training on all 23 features:
   (`[t+5, t+9]` first-available close on same contract) rather than
   trading-days-based. Coarse but bias-free; documented in code.
 
-## Operational plan (Phase 5a — separate spec)
+## Operational plan (Phase 5a — shipped)
 
-Wire NQ 1h OFI into the analyze context as a dedicated block. Four
-concrete changes:
+All four planned changes are live:
 
-1. **Sidecar:** add `NQ.FUT` to the existing `tbbo` live subscription
-   in `sidecar/src/databento_client.py`. Both tables (`futures_trade_ticks`
-   and `futures_top_of_book`) already take a `symbol` column, so no
-   schema change is needed.
-2. **Compute layer:** extend `api/_lib/microstructure-signals.ts` to
-   compute NQ OFI in parallel with ES. Return structure becomes
-   per-symbol.
-3. **Analyze context:** add a new formatter block exposing NQ 1h OFI +
-   classification (`AGGRESSIVE_BUY`, `AGGRESSIVE_SELL`, `BALANCED`)
-   alongside the existing ES microstructure block.
-4. **Prompt interpretation rules:** add to the cached system prompt —
-   "NQ 1h OFI predicts next-day NQ return at ρ=0.31 (p<0.001, n=312).
-   Positive = buyer aggression, negative = seller aggression. Use as
-   a regime gate and cross-asset confirmation for SPX decisions, not
-   as a standalone trigger."
+1. **Sidecar:** `sidecar/src/databento_client.py:213-217` subscribes to
+   `["ES.FUT", "NQ.FUT"]` TBBO on CME GLBX.MDP3 with `stype_in="parent"`.
+   Both tables (`futures_trade_ticks`, `futures_top_of_book`) carry a
+   `symbol` column; `_handle_tbbo` dispatches on it.
+2. **Compute layer:** `api/_lib/microstructure-signals.ts:428`
+   (`computeAllSymbolSignals`) runs ES and NQ in parallel via
+   `Promise.allSettled` and returns `DualSymbolMicrostructure { es, nq }`.
+3. **Analyze context:** `api/_lib/analyze-context-fetchers.ts` →
+   `fetchMicrostructureBlock()` calls `computeAllSymbolSignals` +
+   `fetchPercentileRanks` (historical 252-day rank per symbol via the
+   sidecar `/archive/tbbo-ofi-percentile` endpoint) and passes both
+   into `formatMicrostructureDualSymbolForClaude()`. Injected at
+   `analyze-context.ts:376` under the header `## Dual-Symbol
+   Microstructure Signals (ES + NQ, ...)`.
+4. **Prompt interpretation rules:** `api/_lib/analyze-prompts.ts:958-987`
+   inside `<microstructure_signals_rules>`. Tier ladder (BALANCED /
+   MILD / AGGRESSIVE_BUY / AGGRESSIVE_SELL), cross-asset divergence
+   rule, explicit note that ES OFI is qualitative only, reminder that
+   intraday decay makes pre-11:00 ET OFI more predictive. The entire
+   block is inside `SYSTEM_PROMPT_PART1`, which is glued into
+   `stableSystemText` with `cache_control: { type: 'ephemeral', ttl: '1h' }`
+   in `api/analyze.ts:158-161` — so the rule is cached, not re-sent on
+   every call.
 
-Estimated effort: ~8 hours across 4 files + tests.
+**Supporting infra:**
+
+- Pre-warm cron `api/cron/warm-tbbo-percentile.ts` runs `0 13 * * 1-5`
+  to exercise the sidecar percentile endpoint before market open,
+  keeping the DuckDB parquet page cache warm (25–35s cold → 1–3s warm).
+- Tests: `api/__tests__/microstructure-signals.test.ts`,
+  `api/__tests__/analyze-context-microstructure.test.ts`,
+  `api/__tests__/warm-tbbo-percentile.test.ts`,
+  `api/__tests__/archive-sidecar.test.ts`.
+- Phase 4b shipped the 1-year TBBO archive onto the Railway sidecar's
+  `/data` volume so the historical percentile query has data to rank
+  against.
 
 ## Historical re-validation schedule
 
