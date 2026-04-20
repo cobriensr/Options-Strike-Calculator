@@ -52,7 +52,7 @@ class PACParams:
     """
 
     swing_length: int = 5
-    choch_plus_lookback: int = 6
+    choch_plus_lookback: int = 3  # parity-tuned 2026-04-20; see structure.tag_choch_plus
     ob_mitigation: str = "close"  # "close" | "wick" | "average"
     close_mitigation: bool = True  # kept for forward compat with smc.ob()
 

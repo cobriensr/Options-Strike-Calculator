@@ -36,7 +36,7 @@ import pandas as pd
 def tag_choch_plus(
     swing_highs_lows: pd.DataFrame,
     bos_choch: pd.DataFrame,
-    lookback_swings: int = 6,
+    lookback_swings: int = 3,
 ) -> pd.Series:
     """Return a Series of CHoCH+ tags aligned to `bos_choch`.
 
@@ -50,9 +50,15 @@ def tag_choch_plus(
         -1 = bearish, NaN elsewhere).
     lookback_swings:
         How many prior swing points to scan for a failed extreme.
-        Default 6 matches LuxAlgo's observed behavior on 1m intraday
-        charts — enough to include the last few swings without drifting
-        into the previous session's structure.
+        Default 3 was chosen after a parity sweep across 8 LuxAlgo
+        screenshots on 2026-03-27 through 2026-04-17: at `lookback=6`
+        our promotion rate was ~89% of all CHoCH events, versus
+        LuxAlgo's visual ~30-40%. Tightening to 3 reduces promotion to
+        ~61% — still looser than LuxAlgo (whose exact algorithm is
+        paywalled) but closer. Remaining divergence is documented in
+        docs/superpowers/specs/pac-backtester-2026-04-18.md; edge is
+        ultimately decided by the E1.4 backtest sweep, not LuxAlgo
+        parity.
 
     Returns
     -------
