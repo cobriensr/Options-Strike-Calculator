@@ -1,11 +1,15 @@
-version: 3
-committed_ts: 2026-04-20 13:35:00-05:00
-commit_hash_when_locked: 3e6d9983ade5f1c09fe79a24f3c8ca19f7a27a25
+version: 4
+committed_ts: 2026-04-20 17:48:00-05:00
+commit_hash_when_locked: null
+# v4 (E1.4d): expanded search space — added 9 dims to Optuna sweep.
+# Thresholds UNCHANGED from v3 (Harvey 2017 pre-registration discipline:
+# we widen the search; we do NOT loosen the gate). The new dims live in
+# search_space_v4 below for audit traceability.
 markets:
-- symbol: NQ
-  apply_thresholds: true
-- symbol: ES
-  apply_thresholds: true
+  - symbol: NQ
+    apply_thresholds: true
+  - symbol: ES
+    apply_thresholds: true
 cross_market_gate:
   require_pass_on_all_markets: true
 thresholds:
@@ -39,3 +43,22 @@ bootstrap:
   method: stationary
   block_length_source: auto
   n_resamples: 1000
+# Search-space dimensions added in v4. Listed here for pre-registration
+# audit — any future v5 amendment changes this list with a new commit
+# hash, never silently in-place.
+search_space_v4:
+  added:
+    - session_bucket  # categorical: pre_market/ny_open/am/lunch/pm/close/any
+    - min_ob_volume_z  # None / 0.5 / 1.0 / 1.5 / 2.0
+    - min_ob_pct_atr  # None / 30 / 50 / 75
+    - entry_vs_ob  # any / above_ob_mid / inside_ob / below_ob_mid
+    - min_z_entry_vwap  # None / 0.5 / 1.0 / 1.5 (signed by direction)
+    - min_adx_14  # None / 15 / 20 / 25 / 30
+    - on_opposite_signal  # HOLD_AND_SKIP / EXIT_ONLY / EXIT_AND_FLIP / HOLD_AND_TIGHTEN
+    - exit_after_n_bos  # None / 2 / 3 / 4
+    - stop_placement.OB_BOUNDARY  # extends existing categorical
+  deferred_to_v5:
+    - vix_term_filter  # needs options_features.overlay wired into sweep prep
+    - partial_exit_at_1r  # needs mutable Trade.contracts
+    - move_stop_to_be_at_1r  # needs mutable Trade.stop_price
+    - vol_scaled_position_sizing  # whole-dim sizing variant
