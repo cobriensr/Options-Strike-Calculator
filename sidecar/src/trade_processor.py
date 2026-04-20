@@ -25,12 +25,14 @@ from decimal import Decimal
 from db import batch_insert_options_trades
 from logger_setup import log
 
-# Batch size for DB inserts. Trades are flushed when the buffer reaches
-# BATCH_SIZE and explicitly on shutdown via DatabentoClient.stop(). There
-# is no background timer — if that pattern is ever needed, add a thread
-# here rather than reviving the aspirational FLUSH_INTERVAL_S constant
-# that used to live on this line.
+# Trades are flushed (a) when the buffer reaches BATCH_SIZE, (b) by the
+# background flush thread at ~FLUSH_INTERVAL_S cadence, and (c) on
+# shutdown via TradeProcessor.stop(). The periodic flush was added after
+# observing that weekend ATM trade volume could sit below BATCH_SIZE for
+# hours, and any Railway restart before a batch-fill would lose the
+# buffered trades entirely.
 BATCH_SIZE = 100
+FLUSH_INTERVAL_S = 10.0
 
 
 @dataclass
@@ -51,9 +53,12 @@ class TradeRecord:
 class TradeProcessor:
     """Accumulates ES options trades and batches DB writes."""
 
-    def __init__(self) -> None:
+    def __init__(self, flush_interval_s: float = FLUSH_INTERVAL_S) -> None:
         self._buffer: list[TradeRecord] = []
         self._lock = threading.Lock()
+        self._flush_interval_s = flush_interval_s
+        self._stop_event = threading.Event()
+        self._flush_thread: threading.Thread | None = None
 
     def process_trade(
         self,
@@ -135,3 +140,51 @@ class TradeProcessor:
         """Force flush any remaining buffered trades."""
         with self._lock:
             self._flush_buffer()
+
+    def start_background_flush(self) -> None:
+        """Start a daemon thread that flushes the buffer at a fixed cadence.
+
+        Idempotent — subsequent calls while a thread is alive are no-ops.
+        The daemon thread exits when the main thread exits; call stop()
+        for deterministic shutdown.
+        """
+        if self._flush_thread is not None and self._flush_thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._flush_thread = threading.Thread(
+            target=self._flush_loop,
+            name="trade-processor-flush",
+            daemon=True,
+        )
+        self._flush_thread.start()
+        log.info(
+            "TradeProcessor background flush started (interval=%.1fs)",
+            self._flush_interval_s,
+        )
+
+    def _flush_loop(self) -> None:
+        """Thread body: flush periodically until stop_event is set."""
+        while True:
+            # Event.wait returns True if the event was set, False on
+            # timeout. We flush only on timeout (steady-state tick) and
+            # exit cleanly on set (shutdown path — the explicit stop()
+            # call will perform the final flush itself).
+            if self._stop_event.wait(timeout=self._flush_interval_s):
+                return
+            try:
+                self.flush()
+            except Exception as exc:
+                log.error("Background flush tick failed: %s", exc)
+
+    def stop(self) -> None:
+        """Signal the background thread to exit and force a final flush.
+
+        Safe to call even if start_background_flush() was never invoked.
+        Always performs a final self.flush() so callers get SIDE-006-style
+        shutdown semantics without having to call flush() separately.
+        """
+        self._stop_event.set()
+        thread = self._flush_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
+        self.flush()

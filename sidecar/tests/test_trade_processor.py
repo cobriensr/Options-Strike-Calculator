@@ -25,6 +25,8 @@ os.environ.setdefault("DATABENTO_API_KEY", "test-key")
 _FAKE_DB_URL = "postgresql://test:" + "fakefixture" + "@localhost/test"
 os.environ.setdefault("DATABASE_URL", _FAKE_DB_URL)
 
+import time  # noqa: E402
+
 import pytest  # noqa: E402
 import trade_processor  # noqa: E402
 from trade_processor import BATCH_SIZE, TradeProcessor  # noqa: E402
@@ -171,3 +173,98 @@ class TestBufferFlush:
         assert mock_batch_insert.call_count == 1
         processor.flush()
         assert mock_batch_insert.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# TradeProcessor — background flush thread
+# ---------------------------------------------------------------------------
+
+
+def _wait_until(predicate, timeout: float = 2.0, poll: float = 0.01) -> bool:
+    """Poll ``predicate`` until it returns truthy or the timeout elapses.
+
+    Returns True if the predicate became truthy, False on timeout. Used
+    to keep thread-timing assertions deterministic without hard sleeps.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(poll)
+    return False
+
+
+class TestBackgroundFlush:
+    """The background flush thread is the safety net against low-volume
+    weekend sessions — without it, a Railway restart before the buffer
+    hits BATCH_SIZE loses every buffered trade.
+    """
+
+    def test_background_flush_drains_sub_batch_buffer(
+        self, mock_batch_insert: MagicMock
+    ) -> None:
+        """A tick must flush buffered trades even when count < BATCH_SIZE."""
+        proc = TradeProcessor(flush_interval_s=0.05)
+        proc.start_background_flush()
+        try:
+            for _ in range(5):
+                _process_one(proc)
+            assert mock_batch_insert.call_count == 0  # not yet ticked
+            assert _wait_until(lambda: mock_batch_insert.call_count >= 1)
+            rows = mock_batch_insert.call_args[0][0]
+            assert len(rows) == 5
+        finally:
+            proc.stop()
+
+    def test_background_flush_is_noop_when_buffer_empty(
+        self, mock_batch_insert: MagicMock
+    ) -> None:
+        """A tick with no buffered trades must not call the DB."""
+        proc = TradeProcessor(flush_interval_s=0.05)
+        proc.start_background_flush()
+        try:
+            # Let the loop tick several times with nothing buffered
+            time.sleep(0.2)
+            assert mock_batch_insert.call_count == 0
+        finally:
+            proc.stop()
+
+    def test_start_background_flush_is_idempotent(
+        self, mock_batch_insert: MagicMock
+    ) -> None:
+        """Double-start must not spawn a second thread or duplicate flushes."""
+        proc = TradeProcessor(flush_interval_s=0.05)
+        proc.start_background_flush()
+        first_thread = proc._flush_thread
+        proc.start_background_flush()  # second call — should be no-op
+        try:
+            assert proc._flush_thread is first_thread
+            assert first_thread is not None and first_thread.is_alive()
+        finally:
+            proc.stop()
+
+    def test_stop_joins_thread_and_performs_final_flush(
+        self, mock_batch_insert: MagicMock
+    ) -> None:
+        """stop() must exit the thread cleanly and commit buffered trades."""
+        proc = TradeProcessor(flush_interval_s=10.0)  # long interval — no tick
+        proc.start_background_flush()
+        _process_one(proc)
+        assert mock_batch_insert.call_count == 0  # tick interval too long
+
+        proc.stop()
+        # Final flush on stop should have sent the single buffered row.
+        assert mock_batch_insert.call_count == 1
+        rows = mock_batch_insert.call_args[0][0]
+        assert len(rows) == 1
+        # And the thread should have exited within the join timeout.
+        assert proc._flush_thread is not None
+        assert not proc._flush_thread.is_alive()
+
+    def test_stop_without_start_is_safe(self, mock_batch_insert: MagicMock) -> None:
+        """stop() before start_background_flush() must still flush buffer."""
+        proc = TradeProcessor(flush_interval_s=0.05)
+        _process_one(proc)
+        proc.stop()
+        assert mock_batch_insert.call_count == 1
+        assert proc._flush_thread is None

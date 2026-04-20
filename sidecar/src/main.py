@@ -107,6 +107,7 @@ def main() -> None:
 
     # Initialize components
     trade_processor = TradeProcessor()
+    trade_processor.start_background_flush()
     quote_processor = QuoteProcessor()
 
     # Create the Databento client

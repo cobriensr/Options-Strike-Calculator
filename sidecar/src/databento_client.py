@@ -842,7 +842,10 @@ class DatabentoClient:
             except Exception as exc:
                 log.error("Error stopping CME client: %s", exc)
         self._client = None
-        self._trade_processor.flush()
+        # stop() both drains the background flush thread (if running)
+        # and performs a final flush, replacing the older flush()-only
+        # call at this site.
+        self._trade_processor.stop()
         if self._quote_processor is not None:
             self._quote_processor.flush()
         log.info("Databento clients stopped")
