@@ -707,3 +707,84 @@ class TestVersionedRecordRouting:
 
         for name, m in mocks.items():
             assert m.call_count == 0, f"{name} should not have been called"
+
+
+# ---------------------------------------------------------------------------
+# SIDE-015 — options subscription must happen before client.start() with
+# start=0 so the Definition snapshot arrives
+# ---------------------------------------------------------------------------
+
+
+class TestSubscribeEsOptionsStreams:
+    def test_definition_subscribe_passes_start_zero(
+        self, client: DatabentoClient
+    ) -> None:
+        """Definition records are delivered as a snapshot at session
+        start, and Databento rejects ``start`` after the session has
+        started. Subscribing to the definition schema with start=0 is
+        the only way to populate _option_definitions at session open."""
+        client._client = MagicMock()
+
+        client._subscribe_es_options_streams()
+
+        # Find the definition subscribe call and verify it passed start=0
+        definition_calls = [
+            call
+            for call in client._client.subscribe.call_args_list
+            if call.kwargs.get("schema") == "definition"
+        ]
+        assert len(definition_calls) == 1
+        assert definition_calls[0].kwargs["start"] == 0
+        assert definition_calls[0].kwargs["symbols"] == ["ES.OPT"]
+        assert definition_calls[0].kwargs["stype_in"] == "parent"
+
+    def test_all_three_schemas_subscribed(self, client: DatabentoClient) -> None:
+        """definition + statistics + trades, one subscribe call each."""
+        client._client = MagicMock()
+
+        client._subscribe_es_options_streams()
+
+        schemas = [
+            call.kwargs.get("schema")
+            for call in client._client.subscribe.call_args_list
+        ]
+        assert sorted(schemas) == ["definition", "statistics", "trades"]
+
+    def test_noop_without_client(self, client: DatabentoClient) -> None:
+        """Safe no-op if the Live client hasn't been created yet."""
+        client._client = None
+        client._subscribe_es_options_streams()  # must not raise
+
+
+class TestUpdateAtmStrikes:
+    def test_sets_strike_window_and_center(self, client: DatabentoClient) -> None:
+        """Updating ATM strikes must record the center price and
+        populate the 21-strike window used by _handle_trade's filter."""
+        client._update_atm_strikes(5800.0)
+
+        assert client._options_strikes.center_price == 5800.0
+        assert len(client._options_strikes.strikes) == 21
+        # 5-pt spacing, ATM ±10 → range should be 100 pts wide
+        assert max(client._options_strikes.strikes) - min(
+            client._options_strikes.strikes
+        ) == 100
+
+    def test_does_not_call_subscribe(self, client: DatabentoClient) -> None:
+        """Re-center logic must NOT re-subscribe — subscriptions are
+        established once in _subscribe_es_options_streams(). Re-issuing
+        a subscribe on every ±50 pt move would risk duplicate-delivery
+        and is also rejected by Databento for the definition schema
+        after session start."""
+        client._client = MagicMock()
+
+        client._update_atm_strikes(5800.0)
+
+        client._client.subscribe.assert_not_called()
+
+    def test_clears_pending_flag(self, client: DatabentoClient) -> None:
+        """_options_subscription_pending is the first-ES-bar sentinel.
+        Once the first ATM window is set, further bars don't need to
+        re-initialize it — only re-center logic triggers re-updates."""
+        client._options_subscription_pending = True
+        client._update_atm_strikes(5800.0)
+        assert client._options_subscription_pending is False

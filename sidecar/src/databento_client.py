@@ -150,7 +150,19 @@ class DatabentoClient:
         if self._quote_processor is not None:
             self._subscribe_l1()
 
-        # Subscribe to ES options after first ES bar arrives (need price for ATM)
+        # Subscribe to the ES.OPT streams (definition/statistics/trades)
+        # NOW, before client.start(). Definitions in particular require
+        # ``start=0`` to get a snapshot of the session's current
+        # instruments, and Databento rejects ``start`` after the session
+        # has started. Without the snapshot, the _option_definitions
+        # cache never populates and every trade silently hits the
+        # definition-lag drop path (SIDE-015). The ATM strike filter
+        # that gates writes in _handle_trade/_handle_stat still needs
+        # an ES price to set up — that happens on the first ES bar via
+        # _update_atm_strikes(), which no longer touches subscribe().
+        self._subscribe_es_options_streams()
+
+        # The ATM strike window still needs the first ES bar to center.
         self._options_subscription_pending = True
 
         # Start streaming (non-blocking with callbacks)
@@ -263,43 +275,39 @@ class DatabentoClient:
         except Exception as exc:
             log.error("Failed to upsert bar for %s: %s", symbol, exc)
 
-    def subscribe_es_options(self, es_price: float) -> None:
-        """Subscribe to ES options Trades for ATM +/-10 strikes.
+    def _subscribe_es_options_streams(self) -> None:
+        """Subscribe to the ES.OPT definition/statistics/trades streams.
 
-        Called when we have an initial ES price, or when ES moves
-        enough to warrant re-centering.
+        Must be called BEFORE self._client.start() — the Definition
+        subscribe uses ``start=0`` to request the session's current
+        snapshot of instruments, and Databento rejects ``start`` if the
+        session is already running. Without the snapshot,
+        _option_definitions stays empty and every ES option trade
+        silently hits the definition-lag drop path (SIDE-015).
+
+        The ATM strike filter in _handle_trade/_handle_stat is
+        independent of subscription — it's applied per-record after
+        the _option_definitions lookup succeeds. So there's no need to
+        know the ES spot price at subscribe time; we subscribe to all
+        ES.OPT once here, and _update_atm_strikes later narrows the
+        write filter.
         """
         if not self._client:
             return
 
-        strikes = compute_atm_strikes(es_price)
-        expiry = get_nearest_es_expiry()
-
-        self._options_strikes.center_price = es_price
-        self._options_strikes.strikes = strikes
-        self._options_strikes.nearest_expiry = expiry
-
-        # Build option symbol names for logging
-        # For Databento, we subscribe using parent symbology or raw symbols
-        # ES options use specific contract symbols on CME
-        # Format: e.g. "EW4F5 C5850" for weekly, "ESM5 C5850" for quarterly
-        # We'll use glob patterns to capture ATM strikes
-        log.info(
-            "Subscribing to ES options trades: ATM=%.0f, %d strikes, expiry=%s",
-            es_price,
-            len(strikes),
-            expiry,
-        )
-
-        # Subscribe to Definition first to discover exact symbols
+        # Definition: start=0 requests the full snapshot of currently
+        # listed ES option instruments at subscribe time, not just
+        # newly-listed ones going forward.
         self._client.subscribe(
             dataset=DATASET_CME,
             schema="definition",
             symbols=["ES.OPT"],
             stype_in="parent",
+            start=0,
         )
 
-        # Subscribe to Statistics for EOD data
+        # Statistics: live-only. EOD stats (OI, settlement, IV, delta)
+        # arrive periodically as the exchange publishes them.
         self._client.subscribe(
             dataset=DATASET_CME,
             schema="statistics",
@@ -307,9 +315,9 @@ class DatabentoClient:
             stype_in="parent",
         )
 
-        # Subscribe to Trades for ES options
-        # Using parent symbology ES.OPT captures all ES options trades
-        # We filter by strike in the callback
+        # Trades: live-only. Every ES option trade across every expiry
+        # flows through; the ATM strike filter in _handle_trade gates
+        # which ones get persisted.
         self._client.subscribe(
             dataset=DATASET_CME,
             schema="trades",
@@ -317,8 +325,36 @@ class DatabentoClient:
             stype_in="parent",
         )
 
+        log.info(
+            "Subscribed to ES.OPT definition (snapshot=start=0), "
+            "statistics, trades on %s",
+            DATASET_CME,
+        )
+
+    def _update_atm_strikes(self, es_price: float) -> None:
+        """Recenter the ATM +/-10 strike window on the current ES price.
+
+        Called on the first ES bar (to set the initial window) and on
+        any subsequent re-center trigger (±50 pt move from the last
+        center). No subscribe() calls — subscriptions are established
+        once in _subscribe_es_options_streams() at startup. This method
+        only updates the in-memory filter list that
+        _handle_trade/_handle_stat consult before persisting a record.
+        """
+        strikes = compute_atm_strikes(es_price)
+        expiry = get_nearest_es_expiry()
+
+        self._options_strikes.center_price = es_price
+        self._options_strikes.strikes = strikes
+        self._options_strikes.nearest_expiry = expiry
+
+        log.info(
+            "ATM strikes recentered: ATM=%.0f, %d strikes, expiry=%s",
+            es_price,
+            len(strikes),
+            expiry,
+        )
         self._options_subscription_pending = False
-        log.info("ES options subscriptions active")
 
     def _on_record(self, record: Any) -> None:
         """Central callback for all incoming Databento records."""
@@ -548,18 +584,21 @@ class DatabentoClient:
         except Exception as exc:
             log.error("Failed to upsert bar for %s: %s", symbol, exc)
 
-        # Check if we need to subscribe to ES options (first ES bar)
+        # Set the initial ATM window on the first ES bar. Subscriptions
+        # for ES.OPT streams were already established at startup; this
+        # only updates the strike filter that _handle_trade consults.
         if symbol == "ES" and self._options_subscription_pending:
-            self.subscribe_es_options(float(close))
+            self._update_atm_strikes(float(close))
 
-        # Check if ES options need re-centering
+        # Re-center the ATM window when ES moves far enough. Still no
+        # subscribe() call — we're already subscribed to every ES.OPT.
         if symbol == "ES" and self._options_strikes.needs_recenter(float(close)):
             log.info(
                 "ES moved to %.2f, re-centering options from %.2f",
                 float(close),
                 self._options_strikes.center_price,
             )
-            self.subscribe_es_options(float(close))
+            self._update_atm_strikes(float(close))
 
     def _handle_tbbo(self, record: Any) -> None:
         """Dispatch a TBBO (``MBP1Msg``) record to the quote processor.
