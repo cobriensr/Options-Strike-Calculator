@@ -12,13 +12,13 @@
 - 2026-04-18 (v3): **Restructured into two epics.** Epic 1 delivers the research + a manual-trade journal UI in strike-calculator, ending in a human-in-the-loop manual-live trading period. Epic 2 (aws-trade-automation) is deferred and conditional on Epic 1's manual-live confirming edge. Retracted the "credential rotation" item after git-history verification showed `.env` was never committed; standard secrets-hygiene upgrade moves to Epic 2 as a non-urgent code-quality task.
 - 2026-04-18 (v4): **Minimized manual input in E1.6 journal UI.** Redesigned to a 2-tap flow per trade (direction at entry, confirm at exit). Everything else auto-derived from Databento live bars, PAC engine streaming mode, winning-config strategy rules, and L1 tick data. Added `_source` columns to `manual_trades` schema to track auto-derived vs user-override values. Added streaming-mode requirement to E1.1 so the PAC engine can produce current-bar state in <50ms for live auto-tagging.
 - 2026-04-19 (v5): **Broadened entry-trigger set from "CHoCH+ reversal only" to "CHoCH / CHoCH+ / BOS with both reversal and continuation variants."** The sweep now tests reversal entries (CHoCH family) AND continuation entries (BOS family) through the same CPCV framework. Stop-placement and exit-trigger param spaces expanded to cover continuation semantics. The strategy is no longer pre-committed to being a reversal system — the sweep decides which structure-event family has edge. Options features and cross-market gate unchanged. Single-strategy scope preserved (not multi-strategy; the "opening balance breakout / microstructure OFI / session-boundary fade" candidates explored in scoping are deferred).
-- 2026-04-19 (v6): **Data infrastructure already in place — E1.1 scope reduces accordingly.** Databento pull is *done*: `ml/data/archive/` has 16 years of OHLCV-1m (456 MB, year-partitioned parquet) + ~1 year of TBBO/L1 tick (3.9 GB) + symbology (19 MB) + condition dictionaries. Same data mirrored in Vercel Blob for production and on a Railway mounted volume via sidecar DuckDB. DuckDB read pattern exists in [sidecar/src/archive_query.py](sidecar/src/archive_query.py) with year-partitioned globs, thread-safe singleton connection, parameterized queries, front-month-by-volume contract selection. PAC engine will reuse this pattern, not rebuild it. `joshyattridge/smart-money-concepts` is already cloned at `/Users/charlesobrien/Documents/Workspace/smart-money-concepts/` — pip-installable as editable local dep. Net effect: E1.1 scope shrinks from "pull data + build PAC engine" to "build PAC engine against existing archive"; 1–2 days instead of 2–3.
+- 2026-04-19 (v6): **Data infrastructure already in place — E1.1 scope reduces accordingly.** Databento pull is _done_: `ml/data/archive/` has 16 years of OHLCV-1m (456 MB, year-partitioned parquet) + ~1 year of TBBO/L1 tick (3.9 GB) + symbology (19 MB) + condition dictionaries. Same data mirrored in Vercel Blob for production and on a Railway mounted volume via sidecar DuckDB. DuckDB read pattern exists in [sidecar/src/archive_query.py](sidecar/src/archive_query.py) with year-partitioned globs, thread-safe singleton connection, parameterized queries, front-month-by-volume contract selection. PAC engine will reuse this pattern, not rebuild it. `joshyattridge/smart-money-concepts` is already cloned at `/Users/charlesobrien/Documents/Workspace/smart-money-concepts/` — pip-installable as editable local dep. Net effect: E1.1 scope shrinks from "pull data + build PAC engine" to "build PAC engine against existing archive"; 1–2 days instead of 2–3.
 
 ---
 
 ## Goal
 
-**Epic 1 — Strategy Research & Manual Live Validation (strike-calculator only).** Build a Python backtest harness for a LuxAlgo-PAC-style price-action strategy on NQ + ES futures using CHoCH, CHoCH+, and BOS as entry triggers (both reversal and continuation variants — not pre-committed to one direction). Validate via CPCV / PBO / Deflated-Sharpe on ~16 years of Databento 1m + options data, port the winning config to PineScript as a *charting indicator* (no webhook emission yet), and run a manual live trading period on a small real account with results captured in an owner-gated journal UI.
+**Epic 1 — Strategy Research & Manual Live Validation (strike-calculator only).** Build a Python backtest harness for a LuxAlgo-PAC-style price-action strategy on NQ + ES futures using CHoCH, CHoCH+, and BOS as entry triggers (both reversal and continuation variants — not pre-committed to one direction). Validate via CPCV / PBO / Deflated-Sharpe on ~16 years of Databento 1m + options data, port the winning config to PineScript as a _charting indicator_ (no webhook emission yet), and run a manual live trading period on a small real account with results captured in an owner-gated journal UI.
 
 **Epic 2 — Automation Pipeline (aws-trade-automation + integration). Conditional on Epic 1 success.** Harden the existing AWS webhook bridge with a risk framework, add `alertcondition()` emission to the Pine indicator, wire Aurora → Neon sync, run 90 days of paper-live with the automated pipeline, then cut over to real automated trading with progressive sizing.
 
@@ -34,11 +34,11 @@
 
 ## Repos Touched
 
-| Epic | Repo | Role |
-| --- | --- | --- |
+| Epic   | Repo                            | Role                                                                                                       |
+| ------ | ------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | Epic 1 | `strike-calculator` (this repo) | Data pull, PAC engine, options features, backtest, sweep, Pine charting indicator, manual-trade journal UI |
-| Epic 2 | `aws-trade-automation` | Webhook bridge hardening, risk framework, idempotency, observability |
-| Epic 2 | `strike-calculator` (additive) | Aurora → Neon sync, automated paper-trades panel |
+| Epic 2 | `aws-trade-automation`          | Webhook bridge hardening, risk framework, idempotency, observability                                       |
+| Epic 2 | `strike-calculator` (additive)  | Aurora → Neon sync, automated paper-trades panel                                                           |
 
 ## Cross-Repo Architecture
 
@@ -102,11 +102,11 @@ Everything in `strike-calculator` only. Zero touches to `aws-trade-automation`.
 
 ### E1.1 — PAC engine over existing archive (1–2 days)
 
-**Scope note:** Data pull is *already done*. `ml/data/archive/` has 16 years of OHLCV-1m (456 MB, `year=*/part.parquet`) + 1 year of TBBO/L1 tick (3.9 GB, same partitioning) + symbology + condition dictionaries. Mirrored to Vercel Blob for production and to a Railway mounted volume via sidecar DuckDB. **This phase is PAC engine only — no data-pull work.**
+**Scope note:** Data pull is _already done_. `ml/data/archive/` has 16 years of OHLCV-1m (456 MB, `year=*/part.parquet`) + 1 year of TBBO/L1 tick (3.9 GB, same partitioning) + symbology + condition dictionaries. Mirrored to Vercel Blob for production and to a Railway mounted volume via sidecar DuckDB. **This phase is PAC engine only — no data-pull work.**
 
 **Scope:**
 
-- Install `joshyattridge/smart-money-concepts` (already cloned at `/Users/charlesobrien/Documents/Workspace/smart-money-concepts/`) as editable local dep via `pip install -e`. Fork minimally — we *extend* upstream by importing and adding new functions, not by copying the whole package. Keeps us pulling upstream bug fixes.
+- Install `joshyattridge/smart-money-concepts` (already cloned at `/Users/charlesobrien/Documents/Workspace/smart-money-concepts/`) as editable local dep via `pip install -e`. Fork minimally — we _extend_ upstream by importing and adding new functions, not by copying the whole package. Keeps us pulling upstream bug fixes.
 - Create `ml/src/pac/` as the extension wrapper with:
   - **CHoCH+** detection: CHoCH is promoted to CHoCH+ when a prior failed HH (uptrend) or failed LL (downtrend) occurred within N bars
   - **Volumetric Order Blocks**: per-OB volume, `OB_volume`, `OB_pct_share`, `OB_z_top`/`OB_z_bot`/`OB_z_mid` (z-score vs session VWAP ± 1σ)
@@ -122,7 +122,7 @@ Everything in `strike-calculator` only. Zero touches to `aws-trade-automation`.
 - `ml/src/pac/archive_loader.py` — thin wrapper around DuckDB archive queries, returns pandas DataFrame of bars for a given `(symbol, start, end)` window
 - `ml/tests/test_pac_*.py`
 - `ml/requirements.txt` or `ml/pyproject.toml` — add `-e /Users/charlesobrien/Documents/Workspace/smart-money-concepts` and `duckdb` as deps
-- *(Not needed: data-pull script — archive is in place)*
+- _(Not needed: data-pull script — archive is in place)_
 
 **Verification:**
 
@@ -170,8 +170,8 @@ Everything in `strike-calculator` only. Zero touches to `aws-trade-automation`.
 - Track per-trade: entry/exit price + ts, exit reason, P&L, $ P&L, MAE, MFE, duration, options-feature snapshot at entry
 - Strategy params plug via dict:
   - PAC entry triggers (sweep tests all families, not pre-committed to reversal):
-    - *Reversal family (CHoCH):* `choch_reversal`, `choch_plus_reversal`, `choch_at_ob`, `choch_at_fvg_fill`
-    - *Continuation family (BOS):* `bos_breakout`, `bos_retest`, `bos_at_ob_retest`, `bos_with_volume`
+    - _Reversal family (CHoCH):_ `choch_reversal`, `choch_plus_reversal`, `choch_at_ob`, `choch_at_fvg_fill`
+    - _Continuation family (BOS):_ `bos_breakout`, `bos_retest`, `bos_at_ob_retest`, `bos_with_volume`
   - PAC exit triggers: `opposite_choch`, `opposite_bos`, `ob_mitigation`, `atr_target`, `trailing_swing`, `session_end`
   - PAC stop placement: `ob_boundary`, `n_atr`, `swing_extreme`, `broken_swing` (for BOS continuations)
   - PAC confluence filters: `pd_filter`, `liq_sweep_filter`, `session_filter`, `min_ob_volume_pct`, `fvg_alignment_required`
@@ -235,7 +235,7 @@ thresholds:
   param_stability_max_drop: 0.30
 
 effective_trial_estimation:
-  method: "param_cluster"
+  method: 'param_cluster'
   correlation_threshold: 0.7
 
 fill_model:
@@ -277,11 +277,11 @@ fill_model:
 
 ### E1.6 — Manual-trade journal UI (1–2 days)
 
-**Scope:** Owner-gated trade-entry UI in strike-calculator frontend for logging hand-placed trades during E1.7. Designed to minimize manual typing — the user inputs *only* what the system cannot derive from Databento live bars, the PAC engine, the winning-config strategy rules, or L1 tick data. All read/write endpoints owner-gated via existing `isOwner(req)` function at `api/_lib/api-helpers.ts:101` (same pattern as the analyze endpoint).
+**Scope:** Owner-gated trade-entry UI in strike-calculator frontend for logging hand-placed trades during E1.7. Designed to minimize manual typing — the user inputs _only_ what the system cannot derive from Databento live bars, the PAC engine, the winning-config strategy rules, or L1 tick data. All read/write endpoints owner-gated via existing `isOwner(req)` function at `api/_lib/api-helpers.ts:101` (same pattern as the analyze endpoint).
 
 **UX — 2-tap flow per trade:**
 
-*Entry (when placing an order):*
+_Entry (when placing an order):_
 
 - Pre-selected symbol from session context (set once per trading session, default `MNQ`)
 - User taps **[Long]** or **[Short]** — the only genuinely manual input
@@ -294,7 +294,7 @@ fill_model:
 - User taps **[Confirm]** → pending trade row written to `manual_trades`
 - Optional: paste notes, override `entry_price` if user's actual Tradovate fill differed (expand "override fill" link)
 
-*Exit (when closing):*
+_Exit (when closing):_
 
 - Pending-trade card displays current unrealized P&L, time-in-trade, distance-to-stop
 - User taps **[Log exit]** — only input needed
@@ -326,14 +326,14 @@ fill_model:
 
 - `manual_trades` table — one row per trade lifecycle (entry → exit), with `status ∈ {open, closed, cancelled}`
 - Columns grouped by derivation source:
-  - *User-entered*: `direction`, `notes`
-  - *Auto-captured*: `entry_price`, `entry_ts`, `exit_price`, `exit_ts`
-  - *Auto-derived from strategy rules*: `stop_price`, `target_price`, `dollar_risk`
-  - *Auto-detected*: `setup_tag`, `exit_reason`
-  - *Auto-computed from tick data*: `mae_price`, `mfe_price`
-  - *Auto-computed from lifecycle*: `pnl_points`, `pnl_net`, `r_multiple`, `trade_efficiency`
-  - *JSONB snapshots*: `pac_snapshot` (full PAC state at entry), `options_snapshot` (full options overlay at entry)
-  - *Metadata*: `market`, `symbol`, `status`, `created_at`, `closed_at`
+  - _User-entered_: `direction`, `notes`
+  - _Auto-captured_: `entry_price`, `entry_ts`, `exit_price`, `exit_ts`
+  - _Auto-derived from strategy rules_: `stop_price`, `target_price`, `dollar_risk`
+  - _Auto-detected_: `setup_tag`, `exit_reason`
+  - _Auto-computed from tick data_: `mae_price`, `mfe_price`
+  - _Auto-computed from lifecycle_: `pnl_points`, `pnl_net`, `r_multiple`, `trade_efficiency`
+  - _JSONB snapshots_: `pac_snapshot` (full PAC state at entry), `options_snapshot` (full options overlay at entry)
+  - _Metadata_: `market`, `symbol`, `status`, `created_at`, `closed_at`
 - **`_source` columns** for every auto-derived field: `entry_price_source`, `setup_tag_source`, `exit_reason_source`, etc. ∈ `{auto, user_override}`. Distinguishes system-derived values from user corrections for audit and for re-running analytics if the auto-derivation logic changes.
 - Migration added to `api/_lib/db-migrations.ts` with matching updates in `api/__tests__/db.test.ts`
 
@@ -384,7 +384,7 @@ fill_model:
 - ≥60 manual-live trades logged across both markets (rough minimum for statistical comparison to IS bucket)
 - Delta-DSR between manual-live window and backtest IS window computed per market
 - If delta-DSR ≥ 0 on both markets (within stationary-bootstrap CI) → green light for Epic 2
-- If delta-DSR < 0 on either market → do not promote; options are (a) abandon, (b) redesign and re-run E1.4, (c) accept that the manual-live phase *is* the outcome and keep manual-trading without Epic 2
+- If delta-DSR < 0 on either market → do not promote; options are (a) abandon, (b) redesign and re-run E1.4, (c) accept that the manual-live phase _is_ the outcome and keep manual-trading without Epic 2
 
 ---
 
@@ -518,19 +518,19 @@ Triggered only if Epic 1's E1.7 gate is green. All work in `aws-trade-automation
 
 ## Data Dependencies
 
-| Dependency | Source | Cost | Status |
-| --- | --- | --- | --- |
-| CME Globex MDP 3.0 OHLCV-1m, 16 years (~2010–2026) | Databento → `ml/data/archive/ohlcv_1m/` + Vercel Blob + sidecar DuckDB | $0 (plan) | **In place** (456 MB, year-partitioned parquet) |
-| TBBO / L1 tick data, ~1 year | Databento → `ml/data/archive/tbbo/` + Vercel Blob + sidecar DuckDB | $0 (plan) | **In place** (3.9 GB, year-partitioned parquet) |
-| Symbology + condition dictionaries | Databento → `ml/data/archive/symbology.parquet` + condition JSON | $0 (plan) | **In place** (19 MB) |
-| ES options chain snapshots | Databento | $0 (plan) | Pending pull (Phase E1.2) |
-| `joshyattridge/smart-money-concepts` baseline | GitHub → `/Users/charlesobrien/Documents/Workspace/smart-money-concepts/` | $0 | **In place** (install via `pip install -e`) |
-| Small Tradovate live account (for E1.7) | Tradovate | User-funded | Exists |
-| Tradovate demo account (for E2.4) | Tradovate | Free | Exists |
-| AWS infra (Lambda, Aurora, DynamoDB, S3) | AWS | Existing | Exists (for Epic 2) |
-| Neon Postgres | Neon | Existing | Exists |
-| Vercel Blob (alternate parquet storage) | Vercel | Existing | Exists |
-| TradingView account with Pine | TradingView | Existing | Exists |
+| Dependency                                         | Source                                                                    | Cost        | Status                                          |
+| -------------------------------------------------- | ------------------------------------------------------------------------- | ----------- | ----------------------------------------------- |
+| CME Globex MDP 3.0 OHLCV-1m, 16 years (~2010–2026) | Databento → `ml/data/archive/ohlcv_1m/` + Vercel Blob + sidecar DuckDB    | $0 (plan)   | **In place** (456 MB, year-partitioned parquet) |
+| TBBO / L1 tick data, ~1 year                       | Databento → `ml/data/archive/tbbo/` + Vercel Blob + sidecar DuckDB        | $0 (plan)   | **In place** (3.9 GB, year-partitioned parquet) |
+| Symbology + condition dictionaries                 | Databento → `ml/data/archive/symbology.parquet` + condition JSON          | $0 (plan)   | **In place** (19 MB)                            |
+| ES options chain snapshots                         | Databento                                                                 | $0 (plan)   | Pending pull (Phase E1.2)                       |
+| `joshyattridge/smart-money-concepts` baseline      | GitHub → `/Users/charlesobrien/Documents/Workspace/smart-money-concepts/` | $0          | **In place** (install via `pip install -e`)     |
+| Small Tradovate live account (for E1.7)            | Tradovate                                                                 | User-funded | Exists                                          |
+| Tradovate demo account (for E2.4)                  | Tradovate                                                                 | Free        | Exists                                          |
+| AWS infra (Lambda, Aurora, DynamoDB, S3)           | AWS                                                                       | Existing    | Exists (for Epic 2)                             |
+| Neon Postgres                                      | Neon                                                                      | Existing    | Exists                                          |
+| Vercel Blob (alternate parquet storage)            | Vercel                                                                    | Existing    | Exists                                          |
+| TradingView account with Pine                      | TradingView                                                               | Existing    | Exists                                          |
 
 ## New Tables / Migrations
 
@@ -570,44 +570,44 @@ None remaining — all closed in 2026-04-18 scoping conversation. Reopen if any 
 
 ## Risks & Mitigations
 
-| Risk | Likelihood | Mitigation |
-| --- | --- | --- |
-| Python PAC engine diverges from LuxAlgo visual; strategy trades differently in Pine than in backtest | High | Snapshot fixtures vs LuxAlgo screenshots in E1.1; require visual review before E1.5 |
-| Options-feature filter expansion inflates effective trial count, deflating DSR bar | Medium | Cap filter additions at the 5 E1.2 v1 features; require hypothesis articulation before adding any filter beyond v1 |
-| Strategy passes NQ but fails ES (or vice versa) → cross-market gate rejects every config | Medium | This is a VALID NEGATIVE result — it means the strategy has no transferable edge. Document and pivot; do not relax the gate. |
-| Manual-live P&L diverges from backtest due to human execution variance (entry delays, hand-picked signals) | Medium | Log exit reason + discrepancy between indicator signal timestamp and user's actual entry timestamp. If user is taking only a subset of signals, treat the sample as biased and flag in review. |
-| User doesn't hit 60-trade manual-live threshold within 2 months | Low-Medium | Relaxed to whatever sample size is available at end of window; use power analysis to honestly state what can/cannot be concluded |
-| Overfitting survives CPCV (high-correlation params mask effective-trial count) | Medium | PBO > 0.3 gate + param-stability perturbation + cross-market gate; reject family if any fail |
-| ES options data coverage gaps in early years (2010–2013) | Low-Medium | Use options features only from clean-coverage date; document cutoff in E1.2. PAC backbone runs on full history. |
-| Databento pull fails or rate-limits mid-way | Low | Idempotent per-month parquet writes; resume-from-last-month on restart |
-| Bayesian optimization overfits despite CPCV-fold isolation | Low | DSR with effective trial count; pre-commit thresholds prevent promotion |
-| Epic 2 bridge TLC introduces regressions in existing OANDA/Coinbase handlers | Low-Medium | Add unit tests for existing handlers as part of E2.1; run end-to-end smoke against demo endpoints before deploy |
+| Risk                                                                                                       | Likelihood | Mitigation                                                                                                                                                                                     |
+| ---------------------------------------------------------------------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Python PAC engine diverges from LuxAlgo visual; strategy trades differently in Pine than in backtest       | High       | Snapshot fixtures vs LuxAlgo screenshots in E1.1; require visual review before E1.5                                                                                                            |
+| Options-feature filter expansion inflates effective trial count, deflating DSR bar                         | Medium     | Cap filter additions at the 5 E1.2 v1 features; require hypothesis articulation before adding any filter beyond v1                                                                             |
+| Strategy passes NQ but fails ES (or vice versa) → cross-market gate rejects every config                   | Medium     | This is a VALID NEGATIVE result — it means the strategy has no transferable edge. Document and pivot; do not relax the gate.                                                                   |
+| Manual-live P&L diverges from backtest due to human execution variance (entry delays, hand-picked signals) | Medium     | Log exit reason + discrepancy between indicator signal timestamp and user's actual entry timestamp. If user is taking only a subset of signals, treat the sample as biased and flag in review. |
+| User doesn't hit 60-trade manual-live threshold within 2 months                                            | Low-Medium | Relaxed to whatever sample size is available at end of window; use power analysis to honestly state what can/cannot be concluded                                                               |
+| Overfitting survives CPCV (high-correlation params mask effective-trial count)                             | Medium     | PBO > 0.3 gate + param-stability perturbation + cross-market gate; reject family if any fail                                                                                                   |
+| ES options data coverage gaps in early years (2010–2013)                                                   | Low-Medium | Use options features only from clean-coverage date; document cutoff in E1.2. PAC backbone runs on full history.                                                                                |
+| Databento pull fails or rate-limits mid-way                                                                | Low        | Idempotent per-month parquet writes; resume-from-last-month on restart                                                                                                                         |
+| Bayesian optimization overfits despite CPCV-fold isolation                                                 | Low        | DSR with effective trial count; pre-commit thresholds prevent promotion                                                                                                                        |
+| Epic 2 bridge TLC introduces regressions in existing OANDA/Coinbase handlers                               | Low-Medium | Add unit tests for existing handlers as part of E2.1; run end-to-end smoke against demo endpoints before deploy                                                                                |
 
 ## Timeline
 
 **Epic 1 (strike-calculator):**
 
-| Phase | Nominal | User-compressed | Sequential? |
-|---|---|---|---|
-| E1.1 — PAC engine over existing archive | 1–2 days | 0.5–1 day | Blocks E1.2, E1.3 |
-| E1.2 — Options features | 1 day | 0.5 day | Blocks E1.3 if filter-gated |
-| E1.3 — Backtest harness | 2–3 days | 1–2 days | Blocks E1.4 |
-| E1.4 — CPCV + sweep + cross-market gate | 2–3 days | 1–2 days | Blocks E1.5 |
-| E1.5 — Pine charting indicator | 1–2 days | 1 day | Blocks E1.7 |
-| E1.6 — Manual-trade journal UI | 1–2 days | 1 day | Blocks E1.7 |
-| E1.7 — Manual live trading period | 30–60 days wall-clock | 30–60 days wall-clock | Decision gate before Epic 2 |
+| Phase                                   | Nominal               | User-compressed       | Sequential?                 |
+| --------------------------------------- | --------------------- | --------------------- | --------------------------- |
+| E1.1 — PAC engine over existing archive | 1–2 days              | 0.5–1 day             | Blocks E1.2, E1.3           |
+| E1.2 — Options features                 | 1 day                 | 0.5 day               | Blocks E1.3 if filter-gated |
+| E1.3 — Backtest harness                 | 2–3 days              | 1–2 days              | Blocks E1.4                 |
+| E1.4 — CPCV + sweep + cross-market gate | 2–3 days              | 1–2 days              | Blocks E1.5                 |
+| E1.5 — Pine charting indicator          | 1–2 days              | 1 day                 | Blocks E1.7                 |
+| E1.6 — Manual-trade journal UI          | 1–2 days              | 1 day                 | Blocks E1.7                 |
+| E1.7 — Manual live trading period       | 30–60 days wall-clock | 30–60 days wall-clock | Decision gate before Epic 2 |
 
 Compressed Epic 1 engineering: **~7–10 working days** before manual live starts. Then 1–2 months manual live before Epic 2 decision.
 
 **Epic 2 (aws-trade-automation + integration), conditional:**
 
-| Phase | Nominal | User-compressed |
-|---|---|---|
-| E2.1 — Bridge TLC | 2–3 days | 1–2 days |
-| E2.2 — Pine alert wiring | 0.5–1 day | 0.5 day |
-| E2.3 — Sync + auto panel | 1 day | 0.5 day |
+| Phase                    | Nominal            | User-compressed    |
+| ------------------------ | ------------------ | ------------------ |
+| E2.1 — Bridge TLC        | 2–3 days           | 1–2 days           |
+| E2.2 — Pine alert wiring | 0.5–1 day          | 0.5 day            |
+| E2.3 — Sync + auto panel | 1 day              | 0.5 day            |
 | E2.4 — 90-day paper-live | 90 days wall-clock | 90 days wall-clock |
-| E2.5 — Live cutover | 1 week | 1 week |
+| E2.5 — Live cutover      | 1 week             | 1 week             |
 
 Compressed Epic 2 engineering: **~3–5 working days** before automated paper-live starts.
 
@@ -627,4 +627,4 @@ Compressed Epic 2 engineering: **~3–5 working days** before automated paper-li
 
 ---
 
-*Plan written 2026-04-18. v2 added ES + options. v3 restructured into Epic 1 (research + manual-live in strike-calculator) and Epic 2 (automation in aws-trade-automation), introduced E1.6 manual-trade journal UI with owner-gating via `isOwner(req)` pattern, and retracted the Phase 0 credential-rotation item after git-history verification showed `.env` was never committed. v4 minimized manual input in E1.6 to a 2-tap-per-trade flow — everything else auto-derived from Databento live bars, PAC engine streaming mode, winning-config strategy rules, and L1 tick data; added `_source` audit columns to `manual_trades`; added streaming-mode requirement to E1.1. v5 (2026-04-19) broadened the entry-trigger scope from CHoCH+-reversal-only to the full CHoCH / CHoCH+ / BOS family with both reversal and continuation variants, expanded exit-trigger and stop-placement param spaces accordingly, and documented that "opening balance / microstructure OFI / session-boundary fade" alternate candidates explored in scoping are deferred to a future multi-strategy amendment once the PAC-only sweep has a baseline result. Research references: Tradovate API (live.tradovateapi.com/v1), Python backtesting frameworks (custom numba over vectorbt / nautilus_trader), open-source PAC/SMC (joshyattridge/smart-money-concepts fork baseline), walk-forward best practices (CPCV + PBO + DSR per Lopez de Prado, Wiecki, Harvey).*
+_Plan written 2026-04-18. v2 added ES + options. v3 restructured into Epic 1 (research + manual-live in strike-calculator) and Epic 2 (automation in aws-trade-automation), introduced E1.6 manual-trade journal UI with owner-gating via `isOwner(req)` pattern, and retracted the Phase 0 credential-rotation item after git-history verification showed `.env` was never committed. v4 minimized manual input in E1.6 to a 2-tap-per-trade flow — everything else auto-derived from Databento live bars, PAC engine streaming mode, winning-config strategy rules, and L1 tick data; added `_source` audit columns to `manual_trades`; added streaming-mode requirement to E1.1. v5 (2026-04-19) broadened the entry-trigger scope from CHoCH+-reversal-only to the full CHoCH / CHoCH+ / BOS family with both reversal and continuation variants, expanded exit-trigger and stop-placement param spaces accordingly, and documented that "opening balance / microstructure OFI / session-boundary fade" alternate candidates explored in scoping are deferred to a future multi-strategy amendment once the PAC-only sweep has a baseline result. Research references: Tradovate API (live.tradovateapi.com/v1), Python backtesting frameworks (custom numba over vectorbt / nautilus_trader), open-source PAC/SMC (joshyattridge/smart-money-concepts fork baseline), walk-forward best practices (CPCV + PBO + DSR per Lopez de Prado, Wiecki, Harvey)._

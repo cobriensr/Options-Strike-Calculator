@@ -82,20 +82,21 @@ Move the local-only ML pipeline to a nightly GitHub Actions workflow (M-F), uplo
 #### Shared helper in `ml/src/utils.py`
 
 New function `save_section_findings(section_name: str, data: dict)`:
+
 - Read-modify-writes `ml/findings.json` (adds/updates the named section, preserves others)
 - Updates top-level `generated_at` timestamp and `pipeline_sections` list
 - Upserts the full consolidated JSON to `ml_findings` table (existing id=1 pattern)
 
 #### Scripts to update
 
-| Script | Section Name | Key Metrics to Capture |
-|--------|-------------|----------------------|
-| `health.py` | `health` | freshness per table, completeness trend, stationarity alerts (z-scores) |
-| `eda.py` | `eda` | (existing) accuracy, calibration, flow reliability, top predictors |
-| `clustering.py` | `clustering` | best k, silhouette/CH/DB scores, cluster profiles, chi-squared p-values |
-| `phase2_early.py` | `phase2` | per-model accuracy table, walk-forward confusion matrix, top SHAP features |
-| `visualize.py` | `plots` | plot manifest: `{ name, generated: bool, file_size_kb }` for each plot |
-| `backtest.py` | `backtest` | per-strategy metrics: profit factor, win rate, max drawdown, total P&L |
+| Script            | Section Name   | Key Metrics to Capture                                                            |
+| ----------------- | -------------- | --------------------------------------------------------------------------------- |
+| `health.py`       | `health`       | freshness per table, completeness trend, stationarity alerts (z-scores)           |
+| `eda.py`          | `eda`          | (existing) accuracy, calibration, flow reliability, top predictors                |
+| `clustering.py`   | `clustering`   | best k, silhouette/CH/DB scores, cluster profiles, chi-squared p-values           |
+| `phase2_early.py` | `phase2`       | per-model accuracy table, walk-forward confusion matrix, top SHAP features        |
+| `visualize.py`    | `plots`        | plot manifest: `{ name, generated: bool, file_size_kb }` for each plot            |
+| `backtest.py`     | `backtest`     | per-strategy metrics: profit factor, win rate, max drawdown, total P&L            |
 | `pin_analysis.py` | `pin_analysis` | pin accuracy by method, gamma centroid vs peak gamma stats, asymmetry correlation |
 
 #### Makefile update
@@ -153,6 +154,7 @@ Each target already exists individually. Just expand the `all` dependency list.
    - Use a bot identity for the commit
 
 **Secrets required:**
+
 - `DATABASE_URL` — Neon connection string
 - `BLOB_READ_WRITE_TOKEN` — Vercel Blob auth
 - `CRON_SECRET` — authenticates the analyze-plots call
@@ -378,10 +380,10 @@ Contains `PLOT_REFERENCES: Record<string, PlotReference>` mapping each plot name
 
 ```typescript
 interface PlotReference {
-  sourceCode: string;       // Full Python function that generates this plot
-  featureContext: string;   // What the features/data mean in trading terms
+  sourceCode: string; // Full Python function that generates this plot
+  featureContext: string; // What the features/data mean in trading terms
   analysisGuidance: string; // What to focus on, what's signal vs noise
-  findingsKeys: string[];   // Which findings.json sections are relevant
+  findingsKeys: string[]; // Which findings.json sections are relevant
   calibrationExample: string; // Initially empty, populated after first review
 }
 ```
@@ -391,6 +393,7 @@ interface PlotReference {
 **File:** `api/_lib/plot-analysis-calibration.ts`
 
 Initially exports empty strings for all 21 plots. After the first pipeline run:
+
 1. Review Claude's uncalibrated analyses
 2. Edit each into what you actually wanted (adjust emphasis, add trading implications, correct any misreadings)
 3. Those edited analyses become the calibration examples
@@ -446,15 +449,15 @@ src/components/ml-insights/
 
 - Carousel with tab groups by topic:
 
-| Group | Plots |
-|-------|-------|
-| Overview | timeline, stationarity, correlations |
-| Regime | range_by_regime, gex_vs_range, day_of_week |
-| Flow & Pool | flow_reliability, dark_pool_vs_range |
+| Group       | Plots                                                                        |
+| ----------- | ---------------------------------------------------------------------------- |
+| Overview    | timeline, stationarity, correlations                                         |
+| Regime      | range_by_regime, gex_vs_range, day_of_week                                   |
+| Flow & Pool | flow_reliability, dark_pool_vs_range                                         |
 | Performance | structure_confidence, confidence_over_time, backtest_equity, failure_heatmap |
-| Clustering | clusters_pca, clusters_heatmap, feature_importance_comparison |
-| Pin Risk | pin_settlement, pin_time_decay, pin_composite |
-| Transitions | prev_day_transition, cone_consumption |
+| Clustering  | clusters_pca, clusters_heatmap, feature_importance_comparison                |
+| Pin Risk    | pin_settlement, pin_time_decay, pin_composite                                |
+| Transitions | prev_day_transition, cone_consumption                                        |
 
 - Active plot displayed large with analysis text below
 - Analysis text rendered as 5 labeled sections (Visualization, Data Inputs, Interpretation, Implications, Caveats)
@@ -468,18 +471,18 @@ src/components/ml-insights/
 
 ## Build Order
 
-| Phase | Scope | Files | Testable In Isolation? |
-|-------|-------|-------|----------------------|
-| **1** | Python: `save_section_findings()` helper + wire up all 7 scripts | `ml/src/utils.py`, `ml/src/health.py`, `ml/src/clustering.py`, `ml/src/phase2_early.py`, `ml/src/visualize.py`, `ml/src/backtest.py`, `ml/src/pin_analysis.py` | Yes — `make all` locally |
-| **2** | Makefile: expand `make all` | `ml/Makefile` | Yes — `make all` locally |
-| **3** | DB migration: `ml_plot_analyses` table | `api/_lib/db-migrations.ts`, `api/__tests__/db.test.ts` | Yes — POST `/api/journal/init` |
-| **4** | Plot analysis system prompt | `api/_lib/plot-analysis-prompts.ts` | No runtime test needed |
-| **5** | Plot context blocks (21 source code extractions) | `api/_lib/plot-analysis-context.ts` | No runtime test needed |
-| **6** | Plot calibration stubs | `api/_lib/plot-analysis-calibration.ts` | No runtime test needed |
-| **7** | Analyze-plots endpoint | `api/ml/analyze-plots.ts` | Yes — `curl` with CRON_SECRET |
-| **8** | Plots read endpoint | `api/ml/plots.ts` | Yes — `curl` |
-| **9** | GitHub Actions workflow | `.github/workflows/ml-pipeline.yml` | Yes — manual dispatch |
-| **10** | Frontend carousel | `src/components/ml-insights/`, `src/hooks/useMLInsights.ts` | Yes — dev server |
+| Phase  | Scope                                                            | Files                                                                                                                                                          | Testable In Isolation?         |
+| ------ | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| **1**  | Python: `save_section_findings()` helper + wire up all 7 scripts | `ml/src/utils.py`, `ml/src/health.py`, `ml/src/clustering.py`, `ml/src/phase2_early.py`, `ml/src/visualize.py`, `ml/src/backtest.py`, `ml/src/pin_analysis.py` | Yes — `make all` locally       |
+| **2**  | Makefile: expand `make all`                                      | `ml/Makefile`                                                                                                                                                  | Yes — `make all` locally       |
+| **3**  | DB migration: `ml_plot_analyses` table                           | `api/_lib/db-migrations.ts`, `api/__tests__/db.test.ts`                                                                                                        | Yes — POST `/api/journal/init` |
+| **4**  | Plot analysis system prompt                                      | `api/_lib/plot-analysis-prompts.ts`                                                                                                                            | No runtime test needed         |
+| **5**  | Plot context blocks (21 source code extractions)                 | `api/_lib/plot-analysis-context.ts`                                                                                                                            | No runtime test needed         |
+| **6**  | Plot calibration stubs                                           | `api/_lib/plot-analysis-calibration.ts`                                                                                                                        | No runtime test needed         |
+| **7**  | Analyze-plots endpoint                                           | `api/ml/analyze-plots.ts`                                                                                                                                      | Yes — `curl` with CRON_SECRET  |
+| **8**  | Plots read endpoint                                              | `api/ml/plots.ts`                                                                                                                                              | Yes — `curl`                   |
+| **9**  | GitHub Actions workflow                                          | `.github/workflows/ml-pipeline.yml`                                                                                                                            | Yes — manual dispatch          |
+| **10** | Frontend carousel                                                | `src/components/ml-insights/`, `src/hooks/useMLInsights.ts`                                                                                                    | Yes — dev server               |
 
 Phases 1-2 are Python-only. Phases 3-8 are TypeScript backend. Phase 9 is infra. Phase 10 is frontend. Each phase is independently verifiable.
 
@@ -489,13 +492,13 @@ Phases 1-2 are Python-only. Phases 3-8 are TypeScript backend. Phase 9 is infra.
 
 **Claude Sonnet vision (per pipeline run):**
 
-| Component | Tokens | Cost |
-|-----------|--------|------|
-| System prompt (cache write, call 1) | ~50K | $0.15 |
-| System prompt (cache read, calls 2-21) | ~50K × 20 | $0.03 |
-| User messages (21 calls) | ~2K each | $0.13 |
-| Output (21 calls) | ~1K each | $0.06 |
-| **Total per run** | | **~$0.37** |
+| Component                              | Tokens    | Cost       |
+| -------------------------------------- | --------- | ---------- |
+| System prompt (cache write, call 1)    | ~50K      | $0.15      |
+| System prompt (cache read, calls 2-21) | ~50K × 20 | $0.03      |
+| User messages (21 calls)               | ~2K each  | $0.13      |
+| Output (21 calls)                      | ~1K each  | $0.06      |
+| **Total per run**                      |           | **~$0.37** |
 
 After calibration examples added (~80K system prompt): **~$0.60/run**
 

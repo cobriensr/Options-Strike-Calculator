@@ -15,20 +15,20 @@ Comprehensive review of the strike-calculator stack (frontend, backend, sidecar,
 
 ### Severity legend
 
-| Severity | Meaning |
-|---|---|
-| **Critical** | Silent data corruption, broken alerts, or wrong P&L on real trades. Fix before next live use. |
-| **High** | Wrong-but-not-silent behavior, edge-case failures that will bite under stress, or correctness gaps that will eventually cause Critical incidents. Fix this week. |
-| **Medium** | Code smells, brittle patterns, or design debt that will cause real bugs in future refactors. Fix opportunistically. |
-| **Low** | Style, documentation, or "would be nicer if". Fix when adjacent code is already being touched. |
+| Severity     | Meaning                                                                                                                                                          |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Critical** | Silent data corruption, broken alerts, or wrong P&L on real trades. Fix before next live use.                                                                    |
+| **High**     | Wrong-but-not-silent behavior, edge-case failures that will bite under stress, or correctness gaps that will eventually cause Critical incidents. Fix this week. |
+| **Medium**   | Code smells, brittle patterns, or design debt that will cause real bugs in future refactors. Fix opportunistically.                                              |
+| **Low**      | Style, documentation, or "would be nicer if". Fix when adjacent code is already being touched.                                                                   |
 
 ### Verification legend
 
-| Verification | Meaning |
-|---|---|
-| `direct-read` | I personally read the file with `Read` and verified the finding line-by-line. |
-| `agent-verified` | A parallel sub-agent flagged this; I cross-checked the file or surrounding context and confirmed it. |
-| `agent-only` | A sub-agent flagged it but I did not personally re-verify. Treat with mild skepticism — verify before fixing. |
+| Verification     | Meaning                                                                                                       |
+| ---------------- | ------------------------------------------------------------------------------------------------------------- |
+| `direct-read`    | I personally read the file with `Read` and verified the finding line-by-line.                                 |
+| `agent-verified` | A parallel sub-agent flagged this; I cross-checked the file or surrounding context and confirmed it.          |
+| `agent-only`     | A sub-agent flagged it but I did not personally re-verify. Treat with mild skepticism — verify before fixing. |
 
 ---
 
@@ -90,7 +90,7 @@ Comprehensive review of the strike-calculator stack (frontend, backend, sidecar,
   ```ts
   for (const p of puts) {
     const entry = oiMap.get(p.strike) ?? { putOI: 0, callOI: 0 };
-    entry.putOI = p.oi;            // assignment, not +=
+    entry.putOI = p.oi; // assignment, not +=
     oiMap.set(p.strike, entry);
   }
   ```
@@ -113,7 +113,8 @@ Comprehensive review of the strike-calculator stack (frontend, backend, sidecar,
   }
   ```
 
-  The loop **includes** the entry candle's high/low. Whether this is correct depends on what `entryIndex` means semantically — and that's not documented. If the entry was at the close of the entry candle, the high/low of that candle were reachable *before* entry and should not count as breaches. If `entryIndex` is "first candle after entry", the loop is correct.
+  The loop **includes** the entry candle's high/low. Whether this is correct depends on what `entryIndex` means semantically — and that's not documented. If the entry was at the close of the entry candle, the high/low of that candle were reachable _before_ entry and should not count as breaches. If `entryIndex` is "first candle after entry", the loop is correct.
+
 - **Impact:** On knife-edge breaches near the entry bar, this can flip `survived` true→false or false→true. The bias is roughly ~5% on the entry bar alone. Verified during fix: `useHistoryData.getStateAtTime` sets `spot = candle.close` and `computeRunningOHLC` iterates `0..=endIdx` (entry candle in pre-entry OHLC). The old settlement loop double-counted the entry candle as both pre- and post-entry.
 - **Status:** fixed 2026-04-07
 - **Implementation:** Interpretation A (exclude entry candle from breach scan). Loop changed to `i = entryIndex + 1`. Thorough JSDoc added explaining the entry convention (spot = close of entryIndex candle → entry candle's high/low are pre-entry) and the `useHistoryData` consistency argument. The same fix applied to the parallel loop in `scripts/entry-time-analysis.ts:193` with a comment referencing this finding. Tests: renamed the existing "from entryIndex onward" test to "strictly after entryIndex" with updated data, added two new FE-MATH-003 tests (one wild-wick false-breach case, one sanity check), and updated three fixture-dependent tests in `SettlementCheck.test.tsx` (`remainingLow` 5805→5808, `ranged 25 pts`→`22 pts`, `Put breached by 15 pts`→`12 pts`, 15Δ putCushion display −45→−48) with inline comments explaining the origin. Consolidated the duplicate `src/__tests__/settlement.test.ts` into the keeper at `src/__tests__/utils/settlement.test.ts` (all unique tests ported including `makeCandleSeries` helper; minor coverage gap on strike-passthrough assertion filled with a new dedicated test).
@@ -227,7 +228,7 @@ Comprehensive review of the strike-calculator stack (frontend, backend, sidecar,
 - **Severity:** Low
 - **Verification:** direct-read
 - **File:** `src/utils/time.ts:131-135`, `src/hooks/useCalculation.ts:55-57`
-- **Issue:** `if (timezone === 'CT') h24 += 1`. Both ET and CT observe the same DST rule, so the offset is always exactly 1 hour. The code is correct *by accident*. The day someone adds MT/PT, or there's a quote at the moment of a DST transition, it breaks.
+- **Issue:** `if (timezone === 'CT') h24 += 1`. Both ET and CT observe the same DST rule, so the offset is always exactly 1 hour. The code is correct _by accident_. The day someone adds MT/PT, or there's a quote at the moment of a DST transition, it breaks.
 - **Fix:** Use a TZ-aware formatter (which already exists in `src/utils/timezone.ts`) instead of arithmetic on hours.
 - **Status:** open
 
@@ -279,6 +280,7 @@ This is the file your `project_positions_context_gap.md` memory was about.
   ```
 
   If TOS ever logs two legs of one vertical at sub-second offsets (e.g., `09:31:42.110` vs `09:31:42.140`), they fall into separate single-leg buckets and get reported as naked. This is the most likely path back to the "Claude misreads positions as naked" bug.
+
 - **Fix:** Group by ±1-second window, not exact string equality. Sort all trades by execTime, then walk and bucket any trades within 1 second of the previous one.
 - **Status:** open
 
@@ -343,6 +345,7 @@ This is the file your `project_positions_context_gap.md` memory was about.
   ```
 
   No `contingent_trade` exclusion.
+
 - **Impact:** Contingent prints leak into `clusterDarkPoolTrades` and `aggregateDarkPoolLevels`, biasing the institutional levels you ship to Claude.
 - **Fix:** Add `t.sale_cond_codes !== 'contingent_trade'` (and any other related codes — verify against the UW API field reference) to both filter chains in `darkpool.ts`.
 - **Status:** open
@@ -352,23 +355,26 @@ This is the file your `project_positions_context_gap.md` memory was about.
 - **Severity:** Critical
 - **Verification:** direct-read
 - **File:** `api/_lib/darkpool.ts` (entire file — no time-of-day check anywhere)
-- **Issue:** Your `feedback_extended_hours.md` memory says intraday analysis must be restricted to 08:30–15:00 CT. The `ext_hour_sold_codes` filter catches the *flagged* extended-hours trades, but not regular-session trades that fall outside 08:30–15:00 CT (e.g., 06:15 CT pre-open block prints with `ext_hour_sold_codes=null`).
+- **Issue:** Your `feedback_extended_hours.md` memory says intraday analysis must be restricted to 08:30–15:00 CT. The `ext_hour_sold_codes` filter catches the _flagged_ extended-hours trades, but not regular-session trades that fall outside 08:30–15:00 CT (e.g., 06:15 CT pre-open block prints with `ext_hour_sold_codes=null`).
 - **Impact:** Pre-market and post-close institutional blocks contaminate the levels Claude sees and the volume profile your clustering uses.
 - **Fix:** Add a helper:
 
   ```ts
   function isIntradayCT(executedAt: string): boolean {
     const ctParts = new Intl.DateTimeFormat('en-US', {
-      timeZone: 'America/Chicago', hour12: false,
-      hour: '2-digit', minute: '2-digit',
+      timeZone: 'America/Chicago',
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
     }).formatToParts(new Date(executedAt));
-    const h = +ctParts.find(p => p.type === 'hour')!.value;
-    const m = +ctParts.find(p => p.type === 'minute')!.value;
-    return (h * 60 + m) >= 510 && (h * 60 + m) < 900;
+    const h = +ctParts.find((p) => p.type === 'hour')!.value;
+    const m = +ctParts.find((p) => p.type === 'minute')!.value;
+    return h * 60 + m >= 510 && h * 60 + m < 900;
   }
   ```
 
   Apply in both `fetchDarkPoolBlocks` and `fetchAllDarkPoolTrades` filter chains.
+
 - **Status:** open
 
 ### BE-CRON-001 — Schwab token refresh has only an in-memory in-flight lock
@@ -410,6 +416,7 @@ This is the file your `project_positions_context_gap.md` memory was about.
   ```
 
   An agent flagged this as Critical. I verified directly: noon ET → 17:00 UTC during EST or 16:00 UTC during EDT, both fall on the same calendar day, so `getDay()` returns the correct weekday on Vercel-UTC servers. The hardcoded `-05:00` is misleading but currently harmless.
+
 - **Impact:** None today. Will silently break the day a future maintainer changes the literal time-of-day or runs the build under a non-UTC TZ.
 - **Fix:** Replace with the existing TZ-aware day-of-week helper in `src/utils/timezone.ts` (or add an equivalent in `api/_lib/`).
 - **Status:** open
@@ -549,6 +556,7 @@ This is the file your `project_positions_context_gap.md` memory was about.
   ```
 
   Databento doesn't guarantee which instrument arrives first. After a sidecar restart, the labels can flip.
+
 - **Status:** **deferred 2026-04-08** pending VX availability from Databento
 - **Deferral reason:** As of 2026-04-08 Databento does not yet offer VX (VIX futures) on the `XCBF.PITCH` dataset — Databento is working on it but no launch date. The sidecar's `_start_vxm_client` either fails cleanly with a caught exception (setting `_vxm_client = None`) or succeeds but emits zero records. **No bad data is reaching `futures_bars` from the VX path in production right now**, so the mapping bug has no current blast radius. Fixing it now is premature optimization on code that can't be tested against a real stream. The contract-month-based fix needs to be verified against actual `expiration` values in Databento's VX Definition messages — which we won't see until the dataset is live — so the shape of the fix may need to differ from the audit's original assumptions.
 - **Docstring marker:** Added to `_handle_vxm_ohlcv` in commit `1d48406` (SIDE-005/006 batch) so any developer enabling VX after the fact sees the warning about the current order-dependent mapping and the requirement to rewrite it using Definition `expiration` before pushing to production.
@@ -623,6 +631,7 @@ This is the file your `project_positions_context_gap.md` memory was about.
   ```
 
   No backfill request, no alert on gap duration, no validation against expected pricing on the first bar after reconnect.
+
 - **Status:** resolved 2026-04-08 in commit `0beeea9` (full scope per user decision, with one substitution)
 - **Implementation:** User approved "full scope" for this finding which required Sentry integration. Added sidecar Sentry prereq in commit `8198413` (`sentry_setup.py` + `sentry-sdk>=2.0.0` dep + `init_sentry()` call in `main.py`) before touching SIDE-011 itself. Then:
   - `_on_reconnect` now computes gap duration in seconds from the two nanosecond timestamps and calls `capture_message(level="warning", context={...})` if the gap exceeds `RECONNECT_GAP_WARNING_S = 60.0`. Structured context includes `last_ts_ns`, `new_start_ts_ns`, and `gap_s` so Sentry can alert on long gaps.
@@ -918,4 +927,4 @@ Listing these so we don't accidentally chase them in a future session:
 
 ---
 
-*End of audit.*
+_End of audit._

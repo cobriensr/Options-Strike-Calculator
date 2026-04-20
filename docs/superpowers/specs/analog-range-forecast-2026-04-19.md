@@ -61,7 +61,7 @@ date → backfill completes → row count matches embedding count.
 
 - [ ] New module `api/_lib/analog-range-forecast.ts` exporting one
       function: `getRangeForecast(targetDate, targetSummary): Promise<
-      RangeForecast | null>`.
+RangeForecast | null>`.
 - [ ] Embeds the target summary with OpenAI (reuse existing embed
       helper), retrieves top-15 text-nearest analogs with date <
       targetDate, pulls their structured OHLC, returns cohort quantiles
@@ -71,6 +71,7 @@ date → backfill completes → row count matches embedding count.
       `api/__tests__/analog-range-forecast.test.ts`.
 
 **Output shape:**
+
 ```ts
 {
   n: 15,
@@ -92,9 +93,9 @@ p95 > p85 > p50 always, down_exc_p85 typically exceeds up_exc_p85.
       drops the block entirely — never blocks an analyze.
 - [ ] Add format function in `analyze-context.ts` that emits a short
       block: `Historical analog range forecast (n=15 similar mornings):
-      — Expected range p50/p85/p95: 22/38/52pt — Upside excursion p85:
-      22pt, p95: 32pt — Downside excursion p85: 25pt, p95: 36pt —
-      Implied strikes: 30Δ condor ±22/±25, 12Δ condor ±32/±36`.
+— Expected range p50/p85/p95: 22/38/52pt — Upside excursion p85:
+22pt, p95: 32pt — Downside excursion p85: 25pt, p95: 36pt —
+Implied strikes: 30Δ condor ±22/±25, 12Δ condor ±32/±36`.
 - [ ] Block goes **outside** the stable cache boundary (it changes every
       morning, would invalidate the cache if placed inside).
 - [ ] Add a static rule paragraph in `analyze-prompts.ts` explaining how

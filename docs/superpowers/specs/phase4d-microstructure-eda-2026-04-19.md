@@ -163,9 +163,10 @@ on the DuckDB connection. The Phase 4c-day-1 bug happened exactly here.
 - `ml/src/microstructure_eda.py` — EDA module with CLI entrypoint.
   Follows the existing `ml/src/flow_eda.py` / `ml/src/moc_eda.py`
   pattern. Each question is its own function that produces its plot
-  + returns its findings dict; a main orchestrator composes them.
+  - returns its findings dict; a main orchestrator composes them.
 
   Core exports:
+
   ```python
   def derive_outcomes(feature_df: pd.DataFrame, ohlcv_glob: str,
                       symbology_path: str) -> pd.DataFrame: ...
@@ -178,6 +179,7 @@ on the DuckDB connection. The Phase 4c-day-1 bug happened exactly here.
   functions.
 
   CLI:
+
   ```
   cd ml
   .venv/bin/python -m src.microstructure_eda \
@@ -251,6 +253,6 @@ on the DuckDB connection. The Phase 4c-day-1 bug happened exactly here.
   are obviously interesting (e.g., overnight gap), add in Q4 but
   don't let scope creep beyond 3 windows.
 - **Directional vs magnitude signal.** Q5 asks "do features predict
-  return *direction*?" via Spearman. If Q5 shows weak direction signal
+  return _direction_?" via Spearman. If Q5 shows weak direction signal
   but feature values vary widely, a follow-up might ask about magnitude
   (|return|) — flagging as a potential Phase 5 analysis.

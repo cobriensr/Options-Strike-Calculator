@@ -28,34 +28,34 @@ feature computation + tests.
 
 `ml/data/features/microstructure_daily.parquet` with schema:
 
-| Column | Type | Description |
-|---|---|---|
-| `date` | DATE | Trading date (UTC) |
-| `symbol` | TEXT | "ES" or "NQ" — front-month aggregate, not contract-specific |
-| `front_month_contract` | TEXT | e.g., "ESZ5" — which contract was front on this date (top volume) |
-| `is_degraded` | BOOL | True if date appears in tbbo_condition.json degraded list |
-| `trade_count` | BIGINT | Total trades on the day |
-| **OFI features** |||
-| `ofi_5m_mean` | FLOAT | Mean OFI across rolling 5-min windows during session |
-| `ofi_5m_std` | FLOAT | Std of 5-min OFI |
-| `ofi_5m_abs_p95` | FLOAT | 95th percentile of \|OFI\| at 5-min resolution |
-| `ofi_5m_pct_extreme` | FLOAT | Fraction of 5-min windows with \|OFI\| > 0.3 |
-| `ofi_15m_mean`, `ofi_15m_std`, `ofi_15m_abs_p95`, `ofi_15m_pct_extreme` | FLOAT | Same for 15-min windows |
-| `ofi_1h_mean`, `ofi_1h_std`, `ofi_1h_abs_p95`, `ofi_1h_pct_extreme` | FLOAT | Same for 1h windows |
-| **Spread widening** |||
-| `spread_widening_count_2sigma` | INT | Number of 1-min buckets with spread z-score > 2.0 (vs trailing 30-min baseline) |
-| `spread_widening_count_3sigma` | INT | Same for z > 3.0 |
-| `spread_widening_max_zscore` | FLOAT | Peak z-score observed |
-| `spread_widening_max_run_minutes` | INT | Longest consecutive run of z > 2.0 |
-| **TOB pressure** |||
-| `tob_extreme_minute_count` | INT | Count of minutes where median bid_size/ask_size > 1.5 OR < 0.67 |
-| `tob_max_run_buy_pressure` | INT | Longest consecutive run of ratio > 1.5 (minutes) |
-| `tob_max_run_sell_pressure` | INT | Longest consecutive run of ratio < 0.67 (minutes) |
-| `tob_mean_abs_log_ratio` | FLOAT | Mean of \|log(bid_size/ask_size)\| across session minutes |
-| **Tick velocity** |||
-| `tick_velocity_mean` | FLOAT | Mean trades-per-minute during session |
-| `tick_velocity_p95` | FLOAT | 95th percentile trades-per-minute |
-| `tick_velocity_max_minute` | INT | Highest single-minute trade count |
+| Column                                                                  | Type   | Description                                                                     |
+| ----------------------------------------------------------------------- | ------ | ------------------------------------------------------------------------------- |
+| `date`                                                                  | DATE   | Trading date (UTC)                                                              |
+| `symbol`                                                                | TEXT   | "ES" or "NQ" — front-month aggregate, not contract-specific                     |
+| `front_month_contract`                                                  | TEXT   | e.g., "ESZ5" — which contract was front on this date (top volume)               |
+| `is_degraded`                                                           | BOOL   | True if date appears in tbbo_condition.json degraded list                       |
+| `trade_count`                                                           | BIGINT | Total trades on the day                                                         |
+| **OFI features**                                                        |        |                                                                                 |
+| `ofi_5m_mean`                                                           | FLOAT  | Mean OFI across rolling 5-min windows during session                            |
+| `ofi_5m_std`                                                            | FLOAT  | Std of 5-min OFI                                                                |
+| `ofi_5m_abs_p95`                                                        | FLOAT  | 95th percentile of \|OFI\| at 5-min resolution                                  |
+| `ofi_5m_pct_extreme`                                                    | FLOAT  | Fraction of 5-min windows with \|OFI\| > 0.3                                    |
+| `ofi_15m_mean`, `ofi_15m_std`, `ofi_15m_abs_p95`, `ofi_15m_pct_extreme` | FLOAT  | Same for 15-min windows                                                         |
+| `ofi_1h_mean`, `ofi_1h_std`, `ofi_1h_abs_p95`, `ofi_1h_pct_extreme`     | FLOAT  | Same for 1h windows                                                             |
+| **Spread widening**                                                     |        |                                                                                 |
+| `spread_widening_count_2sigma`                                          | INT    | Number of 1-min buckets with spread z-score > 2.0 (vs trailing 30-min baseline) |
+| `spread_widening_count_3sigma`                                          | INT    | Same for z > 3.0                                                                |
+| `spread_widening_max_zscore`                                            | FLOAT  | Peak z-score observed                                                           |
+| `spread_widening_max_run_minutes`                                       | INT    | Longest consecutive run of z > 2.0                                              |
+| **TOB pressure**                                                        |        |                                                                                 |
+| `tob_extreme_minute_count`                                              | INT    | Count of minutes where median bid_size/ask_size > 1.5 OR < 0.67                 |
+| `tob_max_run_buy_pressure`                                              | INT    | Longest consecutive run of ratio > 1.5 (minutes)                                |
+| `tob_max_run_sell_pressure`                                             | INT    | Longest consecutive run of ratio < 0.67 (minutes)                               |
+| `tob_mean_abs_log_ratio`                                                | FLOAT  | Mean of \|log(bid_size/ask_size)\| across session minutes                       |
+| **Tick velocity**                                                       |        |                                                                                 |
+| `tick_velocity_mean`                                                    | FLOAT  | Mean trades-per-minute during session                                           |
+| `tick_velocity_p95`                                                     | FLOAT  | 95th percentile trades-per-minute                                               |
+| `tick_velocity_max_minute`                                              | INT    | Highest single-minute trade count                                               |
 
 Row count estimate: 2 symbols × ~252 trading days = **~500 rows**.
 
@@ -75,6 +75,7 @@ feature stats that should reflect the "active" market.
 ### DuckDB over pandas
 
 Query the Parquet directly via DuckDB rather than loading to pandas.
+
 - Archive is 3.9 GB — pandas-loading even a single year is painful
 - DuckDB predicate pushdown scans only needed date/symbol rows
 - Same pattern as sidecar's `archive_query.py`
@@ -99,6 +100,7 @@ to process first" surprises.
 - `ml/src/features/__init__.py` (empty package marker, if not existing)
 - `ml/src/features/microstructure.py` — the feature computation module.
   Exports:
+
   ```python
   def compute_daily_features(
       tbbo_glob: str,
@@ -123,6 +125,7 @@ to process first" surprises.
       """Iterate all (date, symbol) combos, compute features, write Parquet.
       start_date/end_date default to archive date range."""
   ```
+
   Plus private helpers: `_compute_ofi_stats`, `_compute_spread_widening_stats`,
   `_compute_tob_persistence_stats`, `_compute_tick_velocity_stats`,
   `_pick_front_month`, `_load_degraded_days`.
@@ -239,7 +242,7 @@ Required cases:
 9. **compute_daily_features — no trades for (date, symbol):** returns None.
 10. **compute_daily_features — happy path:** returns dict with all 20+
     feature keys, types match spec.
-11. **_pick_front_month:** given two contracts with different volumes,
+11. **\_pick_front_month:** given two contracts with different volumes,
     picks the higher-volume one.
 12. **is_degraded flag:** mock condition.json with 2 degraded dates;
     those dates get `is_degraded=True`, others False.

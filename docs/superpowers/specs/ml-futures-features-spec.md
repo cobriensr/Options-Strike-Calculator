@@ -12,45 +12,45 @@ The 32 features defined in `ml/src/utils.py` (lines 140-202) and the Phase 2 com
 
 ### ES Features (8) -- Sound
 
-| Feature | Assessment |
-|---------|-----------|
+| Feature                             | Assessment                                                                                                   |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `es_momentum_t1` / `es_momentum_t2` | Good. 1H return at T1/T2 checkpoints. Aligns with the existing checkpoint system (10:00 AM and 10:30 AM ET). |
-| `es_spx_basis_t1` | Good. Requires `spx_open` from `market_snapshots` (already computed) and ES price at T1 from `futures_bars`. |
-| `es_volume_ratio_t1` | Good. Requires a 20-day lookback of ES volume, computable from `futures_bars`. |
-| `es_overnight_range` | Good. Globex high - low from overnight bars (5 PM CT to 9:30 AM ET). |
-| `es_overnight_gap` | Good. Cash open - Globex close. Depends on `spx_open` being populated. |
-| `es_gap_fill_pct_t1` | Good. Requires both gap direction and ES price movement by T1. Edge case: if gap is 0 pts, set to null. |
-| `es_vwap_deviation_t1` | Good. Requires computing VWAP from overnight bars (sum of price*volume / sum of volume). |
+| `es_spx_basis_t1`                   | Good. Requires `spx_open` from `market_snapshots` (already computed) and ES price at T1 from `futures_bars`. |
+| `es_volume_ratio_t1`                | Good. Requires a 20-day lookback of ES volume, computable from `futures_bars`.                               |
+| `es_overnight_range`                | Good. Globex high - low from overnight bars (5 PM CT to 9:30 AM ET).                                         |
+| `es_overnight_gap`                  | Good. Cash open - Globex close. Depends on `spx_open` being populated.                                       |
+| `es_gap_fill_pct_t1`                | Good. Requires both gap direction and ES price movement by T1. Edge case: if gap is 0 pts, set to null.      |
+| `es_vwap_deviation_t1`              | Good. Requires computing VWAP from overnight bars (sum of price\*volume / sum of volume).                    |
 
 **Issue identified:** `es_momentum_t2` uses a different checkpoint time than the flow T2 (10:30 AM). This is fine -- but the comment says "1H return at T2" which implies the return over the hour ending at T2, not the return from open to T2. The implementation should compute `(ES_close_at_T2 - ES_close_at_T2_minus_60min) / ES_close_at_T2_minus_60min * 100`. Clarify in implementation.
 
 ### NQ Features (4) -- Sound, One Dependency Note
 
-| Feature | Assessment |
-|---------|-----------|
-| `nq_momentum_t1` | Good. Same pattern as ES. |
-| `nq_es_ratio_t1` | Good. NQ price / ES price at T1. |
-| `nq_es_ratio_change` | Good. Requires prior day close for both NQ and ES from `futures_bars`. |
+| Feature                | Assessment                                                                                                                                                                                                                                                                                                       |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `nq_momentum_t1`       | Good. Same pattern as ES.                                                                                                                                                                                                                                                                                        |
+| `nq_es_ratio_t1`       | Good. NQ price / ES price at T1.                                                                                                                                                                                                                                                                                 |
+| `nq_es_ratio_change`   | Good. Requires prior day close for both NQ and ES from `futures_bars`.                                                                                                                                                                                                                                           |
 | `nq_qqq_divergence_t1` | **Dependency note:** Requires QQQ NCP from `flow_data` table at T1. The flow feature engineering already extracts `qqq_ncp_t1`, so this can be computed in the same pass -- just needs the sign of NQ momentum and the sign of QQQ NCP. Set to 1 if signs agree, -1 if they disagree, null if either is missing. |
 
 ### VX Features (5) -- Sound, Data Availability Concern
 
-| Feature | Assessment |
-|---------|-----------|
-| `vx_front_price` | Good. From `futures_bars` where symbol = 'VX1'. |
-| `vx_term_spread` | Good. front - back. |
-| `vx_term_slope_pct` | Good. (front - back) / back * 100. |
-| `vx_contango_signal` | Good. Binary signal. |
-| `vx_basis` | Good. VX front - spot VIX. Spot VIX is available from `market_snapshots.vix`. |
+| Feature              | Assessment                                                                    |
+| -------------------- | ----------------------------------------------------------------------------- |
+| `vx_front_price`     | Good. From `futures_bars` where symbol = 'VX1'.                               |
+| `vx_term_spread`     | Good. front - back.                                                           |
+| `vx_term_slope_pct`  | Good. (front - back) / back \* 100.                                           |
+| `vx_contango_signal` | Good. Binary signal.                                                          |
+| `vx_basis`           | Good. VX front - spot VIX. Spot VIX is available from `market_snapshots.vix`. |
 
 **Data availability concern:** VX streaming started after the other symbols. For backfill, Databento has VX OHLCV-1m history (15+ years at L0), so historical computation is fine. The concern is only for the gap period between when the sidecar went live and when VX streaming was added. For any date where `futures_bars` has no VX1/VX2 rows, all 5 VX features should be null. The `NULLABLE_FEATURE_KEYS` set in `build-features.ts` already lists all VX features, so completeness scoring handles this correctly.
 
 ### ZN Features (3) -- Sound, Correlation Requires Lookback
 
-| Feature | Assessment |
-|---------|-----------|
-| `zn_momentum_t1` | Good. |
-| `zn_daily_change` | Good. Prior day close-to-close % change. |
+| Feature                 | Assessment                                                                                                                                                                                                                                                                 |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `zn_momentum_t1`        | Good.                                                                                                                                                                                                                                                                      |
+| `zn_daily_change`       | Good. Prior day close-to-close % change.                                                                                                                                                                                                                                   |
 | `spx_zn_correlation_5d` | **Implementation note:** Requires computing Pearson correlation of daily returns over the prior 5 trading days. This needs `outcomes.settlement` for SPX and `futures_bars` daily closes for ZN. Must handle the case where fewer than 5 days of data exist (return null). |
 
 ### RTY Features (2) -- Sound
@@ -59,30 +59,31 @@ Both features are straightforward sign-comparison signals.
 
 ### CL Features (3) -- Sound
 
-| Feature | Assessment |
-|---------|-----------|
+| Feature                   | Assessment                                                                                          |
+| ------------------------- | --------------------------------------------------------------------------------------------------- |
 | `cl_overnight_change_pct` | Requires prior day settlement from `futures_bars` (last bar of prior RTH session) and Globex close. |
-| `cl_intraday_momentum_t1` | Cash open to T1 change. |
-| `cl_es_correlation_5d` | Same pattern as `spx_zn_correlation_5d`. |
+| `cl_intraday_momentum_t1` | Cash open to T1 change.                                                                             |
+| `cl_es_correlation_5d`    | Same pattern as `spx_zn_correlation_5d`.                                                            |
 
 ### ES Options Features (8) -- Sound, Most Complex Group
 
-| Feature | Assessment |
-|---------|-----------|
-| `es_put_oi_concentration` | From `futures_options_daily`. Max put OI at any strike / total put OI. |
-| `es_call_oi_concentration` | Same for calls. |
-| `es_options_max_pain_dist` | Requires computing max pain from `futures_options_daily` OI distribution. Can reuse the max pain algorithm from `api/_lib/max-pain.ts`. |
-| `es_spx_gamma_agreement` | **Most complex feature.** Requires comparing ES options OI peaks against SPX gamma walls from `greek_exposure` snapshots. Returns 0-1 score based on distance between the two sets of walls. |
-| `es_put_buy_aggressor_pct` | From `futures_options_trades`. Filter to puts, count side='B' volume / total volume. **Requires tick trades data** which is the most storage-intensive table. |
-| `es_call_buy_aggressor_pct` | Same for calls. |
-| `es_options_net_delta` | From `futures_options_daily` where `delta` is not null. Sum of delta * OI across ATM strikes. |
-| `es_atm_iv` | From `futures_options_daily` where strike is nearest ATM. |
+| Feature                     | Assessment                                                                                                                                                                                   |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `es_put_oi_concentration`   | From `futures_options_daily`. Max put OI at any strike / total put OI.                                                                                                                       |
+| `es_call_oi_concentration`  | Same for calls.                                                                                                                                                                              |
+| `es_options_max_pain_dist`  | Requires computing max pain from `futures_options_daily` OI distribution. Can reuse the max pain algorithm from `api/_lib/max-pain.ts`.                                                      |
+| `es_spx_gamma_agreement`    | **Most complex feature.** Requires comparing ES options OI peaks against SPX gamma walls from `greek_exposure` snapshots. Returns 0-1 score based on distance between the two sets of walls. |
+| `es_put_buy_aggressor_pct`  | From `futures_options_trades`. Filter to puts, count side='B' volume / total volume. **Requires tick trades data** which is the most storage-intensive table.                                |
+| `es_call_buy_aggressor_pct` | Same for calls.                                                                                                                                                                              |
+| `es_options_net_delta`      | From `futures_options_daily` where `delta` is not null. Sum of delta \* OI across ATM strikes.                                                                                               |
+| `es_atm_iv`                 | From `futures_options_daily` where strike is nearest ATM.                                                                                                                                    |
 
 **Dependency:** `es_put_buy_aggressor_pct` and `es_call_buy_aggressor_pct` require the `futures_options_trades` table to be populated. This is the most expensive backfill (12-month L1 data, ~200 MB). If trades backfill is deferred, these two features will be null for historical dates. The other 6 ES options features can be computed from `futures_options_daily` (Statistics schema, which is L0 with 15+ years of history).
 
 ### Overall Assessment
 
 The 32-feature plan is solid. No features need to be removed. The main risks are:
+
 1. VX data gap between sidecar launch and VX streaming activation (handled by nullable keys)
 2. ES options trades backfill cost/size (can defer the 2 aggressor features)
 3. Cross-symbol correlation features need careful lookback window management (first 5 days will be null)
@@ -114,6 +115,7 @@ GC_FEATURES: list[str] = [
 **`gc_es_inverse_5d`** -- The GC-ES correlation tells you whether gold is currently acting as a safe haven (negative correlation) or a risk asset (positive correlation, which happens during reflation trades). When correlation is strongly negative, GC moves become more relevant to SPX positioning.
 
 **`gc_safe_haven_signal`** -- Binary signal for the classic flight-to-safety pattern: gold up + equities down. This is the key input to the cross-asset regime score (Section 4). Computed as:
+
 - `sign(gc_momentum_t1) == 1 AND sign(es_momentum_t1) == -1` --> 1 (safe haven active)
 - `sign(gc_momentum_t1) == -1 AND sign(es_momentum_t1) == 1` --> -1 (risk-on, gold sold)
 - Otherwise --> 0 (no divergence)
@@ -215,6 +217,7 @@ regime_risk_score = max(-1, min(1, score))
 Weights match the futures-panel-redesign spec (ES 0.30, NQ 0.20, VX 0.20-->0.15 to accommodate GC/DX, ZN 0.10, GC 0.10, CL 0.05, DX 0.05) with RTY contributing to breadth. When any input is null, its weight is redistributed proportionally to non-null inputs to avoid regime score deflation.
 
 **`regime_flight_to_safety`** -- Strict definition from the futures-panel-redesign spec: all three conditions must be true at T1:
+
 - ZN 1H momentum > 0.1% (bonds rallying)
 - GC 1H momentum > 0.1% (gold rallying)
 - ES 1H momentum < -0.1% (equities selling)
@@ -274,6 +277,7 @@ else:
 ```
 
 **`regime_vol_regime`** -- Categorical label derived from VIX and VX features:
+
 - `COMPRESSED`: VIX < 15 AND vx_contango_signal == 1 AND vx_basis < 1
 - `NORMAL`: VIX 15-22 AND vx_contango_signal == 1
 - `ELEVATED`: VIX 22-30 OR vx_contango_signal == 0 (flat)
@@ -284,6 +288,7 @@ This maps to IC viability: COMPRESSED (wide, aggressive), NORMAL (standard), ELE
 ### Implementation Note
 
 Regime features depend on per-instrument features already being computed. In `buildFeaturesForDate()`, the futures feature engineering function must:
+
 1. First compute all per-instrument features (ES, NQ, VX, ZN, RTY, CL, GC, DX)
 2. Then compute ES options features
 3. Then compute regime features from the per-instrument results
@@ -300,14 +305,14 @@ With 1-minute bars available, we can aggregate to any timeframe. The question is
 
 **Analysis of timeframes for 0DTE relevance:**
 
-| Timeframe | Signal Content | 0DTE Relevance | Recommendation |
-|-----------|---------------|----------------|----------------|
-| 5 min | Microstructure noise, HFT artifacts | Low -- too noisy for credit spread decisions | Skip |
-| 15 min | Emerging trends, opening range breakouts | Medium -- useful for confirming opening range | Include for ES only |
-| 30 min | Session momentum, institutional flow cadence | High -- aligns with how institutions build positions. This is the regime scoring timeframe from the futures-panel-redesign spec. | Include for ES and NQ |
-| 1 hour | Strong trend confirmation, the "T1" timeframe | Already captured by `*_momentum_t1` features | Already included |
-| 2 hour | Mid-session trend, T1-to-T3 evolution | Medium -- captures trend persistence through the 0DTE decay window | Include for ES |
-| 4 hour | Context timeframe, macro drift | Low for 0DTE -- too long for same-day decisions | Skip |
+| Timeframe | Signal Content                                | 0DTE Relevance                                                                                                                   | Recommendation        |
+| --------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| 5 min     | Microstructure noise, HFT artifacts           | Low -- too noisy for credit spread decisions                                                                                     | Skip                  |
+| 15 min    | Emerging trends, opening range breakouts      | Medium -- useful for confirming opening range                                                                                    | Include for ES only   |
+| 30 min    | Session momentum, institutional flow cadence  | High -- aligns with how institutions build positions. This is the regime scoring timeframe from the futures-panel-redesign spec. | Include for ES and NQ |
+| 1 hour    | Strong trend confirmation, the "T1" timeframe | Already captured by `*_momentum_t1` features                                                                                     | Already included      |
+| 2 hour    | Mid-session trend, T1-to-T3 evolution         | Medium -- captures trend persistence through the 0DTE decay window                                                               | Include for ES        |
+| 4 hour    | Context timeframe, macro drift                | Low for 0DTE -- too long for same-day decisions                                                                                  | Skip                  |
 
 **Decision:** Add 15-min, 30-min, and 2-hour momentum for ES, plus 30-min for NQ. These complement the existing 1-hour features without adding excessive dimensionality.
 
@@ -472,6 +477,7 @@ GROUP BY option_type;
 ### 6.4 T1/T2 Checkpoint Timing
 
 The existing checkpoint system defines:
+
 - T1 = 10:00 AM ET (600 minutes after midnight)
 - T2 = 10:30 AM ET (630 minutes)
 - T3 = 11:00 AM ET (660 minutes)
@@ -488,6 +494,7 @@ const t1Utc = new Date(`${dateStr}T10:00:00-04:00`); // EDT
 ```
 
 For multi-timeframe lookbacks, compute the UTC timestamp for each lookback start:
+
 - 15-min: T1 minus 15 minutes
 - 30-min: T1 minus 30 minutes
 - 2-hour: T1 minus 120 minutes
@@ -565,6 +572,7 @@ ALTER TABLE training_features
 ```
 
 After adding the migration to `db-migrations.ts`, update the `api/__tests__/db.test.ts` mock:
+
 - Add `{ id: N }` to the applied-migrations mock
 - Add the migration to the expected-output list
 - Update the SQL call count (1 ALTER + 1 INSERT INTO schema_migrations)
@@ -682,51 +690,51 @@ FUTURES_FEATURES: list[str] = (
 
 These features require only `futures_bars` (historically backfilled) and `market_snapshots` / `outcomes` (already populated):
 
-| Feature | Data Source |
-|---------|-----------|
-| `es_momentum_t1`, `es_momentum_t2` | `futures_bars` (ES) |
-| `es_overnight_range`, `es_overnight_gap`, `es_gap_fill_pct_t1` | `futures_bars` (ES) + `market_snapshots` (spx_open) |
-| `es_vwap_deviation_t1` | `futures_bars` (ES) |
-| `es_volume_ratio_t1` | `futures_bars` (ES, 20-day lookback) |
-| `es_spx_basis_t1` | `futures_bars` (ES) + `market_snapshots` (spx_open) |
-| `nq_momentum_t1`, `nq_es_ratio_t1`, `nq_es_ratio_change` | `futures_bars` (NQ, ES) |
-| `nq_qqq_divergence_t1` | `futures_bars` (NQ) + `flow_data` (QQQ NCP) |
-| `vx_front_price`, `vx_term_spread`, `vx_term_slope_pct`, `vx_contango_signal` | `futures_bars` (VX1, VX2) |
-| `vx_basis` | `futures_bars` (VX1) + `market_snapshots` (VIX) |
-| `zn_momentum_t1`, `zn_daily_change` | `futures_bars` (ZN) |
-| `spx_zn_correlation_5d` | `futures_bars` (ZN) + `outcomes` (settlement) |
-| `rty_momentum_t1`, `rty_es_divergence_t1` | `futures_bars` (RTY, ES) |
-| `cl_overnight_change_pct`, `cl_intraday_momentum_t1` | `futures_bars` (CL) |
-| `cl_es_correlation_5d` | `futures_bars` (CL) + `outcomes` (settlement) |
-| `gc_overnight_change_pct`, `gc_intraday_momentum_t1` | `futures_bars` (GC) |
-| `gc_es_inverse_5d` | `futures_bars` (GC) + `outcomes` (settlement) |
-| `gc_safe_haven_signal`, `gc_zn_agreement_t1` | Derived from GC/ES/ZN momentum (above) |
-| `dx_overnight_change_pct`, `dx_intraday_momentum_t1` | `futures_bars` (DX) |
-| `dx_es_inverse_5d` | `futures_bars` (DX) + `outcomes` (settlement) |
-| `dx_strength_headwind` | Derived from DX/ES momentum (above) |
-| All 6 multi-timeframe features | `futures_bars` (ES, NQ) |
-| All 5 regime features | Derived from per-instrument features (above) |
+| Feature                                                                       | Data Source                                         |
+| ----------------------------------------------------------------------------- | --------------------------------------------------- |
+| `es_momentum_t1`, `es_momentum_t2`                                            | `futures_bars` (ES)                                 |
+| `es_overnight_range`, `es_overnight_gap`, `es_gap_fill_pct_t1`                | `futures_bars` (ES) + `market_snapshots` (spx_open) |
+| `es_vwap_deviation_t1`                                                        | `futures_bars` (ES)                                 |
+| `es_volume_ratio_t1`                                                          | `futures_bars` (ES, 20-day lookback)                |
+| `es_spx_basis_t1`                                                             | `futures_bars` (ES) + `market_snapshots` (spx_open) |
+| `nq_momentum_t1`, `nq_es_ratio_t1`, `nq_es_ratio_change`                      | `futures_bars` (NQ, ES)                             |
+| `nq_qqq_divergence_t1`                                                        | `futures_bars` (NQ) + `flow_data` (QQQ NCP)         |
+| `vx_front_price`, `vx_term_spread`, `vx_term_slope_pct`, `vx_contango_signal` | `futures_bars` (VX1, VX2)                           |
+| `vx_basis`                                                                    | `futures_bars` (VX1) + `market_snapshots` (VIX)     |
+| `zn_momentum_t1`, `zn_daily_change`                                           | `futures_bars` (ZN)                                 |
+| `spx_zn_correlation_5d`                                                       | `futures_bars` (ZN) + `outcomes` (settlement)       |
+| `rty_momentum_t1`, `rty_es_divergence_t1`                                     | `futures_bars` (RTY, ES)                            |
+| `cl_overnight_change_pct`, `cl_intraday_momentum_t1`                          | `futures_bars` (CL)                                 |
+| `cl_es_correlation_5d`                                                        | `futures_bars` (CL) + `outcomes` (settlement)       |
+| `gc_overnight_change_pct`, `gc_intraday_momentum_t1`                          | `futures_bars` (GC)                                 |
+| `gc_es_inverse_5d`                                                            | `futures_bars` (GC) + `outcomes` (settlement)       |
+| `gc_safe_haven_signal`, `gc_zn_agreement_t1`                                  | Derived from GC/ES/ZN momentum (above)              |
+| `dx_overnight_change_pct`, `dx_intraday_momentum_t1`                          | `futures_bars` (DX)                                 |
+| `dx_es_inverse_5d`                                                            | `futures_bars` (DX) + `outcomes` (settlement)       |
+| `dx_strength_headwind`                                                        | Derived from DX/ES momentum (above)                 |
+| All 6 multi-timeframe features                                                | `futures_bars` (ES, NQ)                             |
+| All 5 regime features                                                         | Derived from per-instrument features (above)        |
 
 **Total: 44 features computable from backfilled data.**
 
 ### Features Requiring `futures_options_daily` (EOD Statistics)
 
-| Feature | Data Source |
-|---------|-----------|
-| `es_put_oi_concentration` | `futures_options_daily` (OI) |
-| `es_call_oi_concentration` | `futures_options_daily` (OI) |
-| `es_options_max_pain_dist` | `futures_options_daily` (OI at all strikes) |
-| `es_spx_gamma_agreement` | `futures_options_daily` (OI) + `greek_exposure` snapshots |
-| `es_options_net_delta` | `futures_options_daily` (delta, OI) |
-| `es_atm_iv` | `futures_options_daily` (implied_vol) |
+| Feature                    | Data Source                                               |
+| -------------------------- | --------------------------------------------------------- |
+| `es_put_oi_concentration`  | `futures_options_daily` (OI)                              |
+| `es_call_oi_concentration` | `futures_options_daily` (OI)                              |
+| `es_options_max_pain_dist` | `futures_options_daily` (OI at all strikes)               |
+| `es_spx_gamma_agreement`   | `futures_options_daily` (OI) + `greek_exposure` snapshots |
+| `es_options_net_delta`     | `futures_options_daily` (delta, OI)                       |
+| `es_atm_iv`                | `futures_options_daily` (implied_vol)                     |
 
 **Total: 6 features.** Statistics schema is L0 (15+ years of history), so these can be backfilled. The `fetch-es-options-eod.ts` cron (Phase 10 in parent spec) must be running for live dates.
 
 ### Features Requiring `futures_options_trades` (Tick Data)
 
-| Feature | Data Source |
-|---------|-----------|
-| `es_put_buy_aggressor_pct` | `futures_options_trades` (side, size) |
+| Feature                     | Data Source                           |
+| --------------------------- | ------------------------------------- |
+| `es_put_buy_aggressor_pct`  | `futures_options_trades` (side, size) |
 | `es_call_buy_aggressor_pct` | `futures_options_trades` (side, size) |
 
 **Total: 2 features.** These require L1 Trades data (12-month max history). These are the most storage-intensive features. Can be deferred -- the remaining 50 features work without them.
@@ -734,6 +742,7 @@ These features require only `futures_bars` (historically backfilled) and `market
 ### Features Requiring Live Sidecar
 
 All features can be computed from backfilled data. The sidecar is required only for:
+
 - Populating `futures_bars` for **today's** date (live streaming)
 - Populating `futures_options_trades` for today (live ES options trades)
 
@@ -744,6 +753,7 @@ For historical dates, all data comes from the one-time backfill script (`scripts
 VX (VIX futures) data was added to the sidecar subscription after ES/NQ/ZN/RTY/CL. The Databento historical backfill covers VX (it trades on XCBF.PITCH, which is included in the subscription), so all historical VX features can be computed.
 
 For the gap period between initial sidecar launch and VX addition:
+
 - If backfill is complete (covers the full year), there is no gap -- historical data covers everything.
 - If there is any period where `futures_bars` has no VX1/VX2 rows, all 5 VX features + `vx_basis` are null.
 - `regime_vol_regime` falls back to using `market_snapshots.vix` (spot VIX) when VX futures data is missing.
@@ -759,40 +769,40 @@ Both GC (COMEX) and DX (ICE) are included in the Databento subscription and have
 
 ### By Group
 
-| Group | Count | Features |
-|-------|-------|----------|
-| ES Futures | 8 | `es_momentum_t1`, `es_momentum_t2`, `es_spx_basis_t1`, `es_volume_ratio_t1`, `es_overnight_range`, `es_overnight_gap`, `es_gap_fill_pct_t1`, `es_vwap_deviation_t1` |
-| NQ Futures | 4 | `nq_momentum_t1`, `nq_es_ratio_t1`, `nq_es_ratio_change`, `nq_qqq_divergence_t1` |
-| VX Futures | 5 | `vx_front_price`, `vx_term_spread`, `vx_term_slope_pct`, `vx_contango_signal`, `vx_basis` |
-| ZN Futures | 3 | `zn_momentum_t1`, `zn_daily_change`, `spx_zn_correlation_5d` |
-| RTY Futures | 2 | `rty_momentum_t1`, `rty_es_divergence_t1` |
-| CL Futures | 3 | `cl_overnight_change_pct`, `cl_intraday_momentum_t1`, `cl_es_correlation_5d` |
-| **GC Futures** | **5** | `gc_overnight_change_pct`, `gc_intraday_momentum_t1`, `gc_es_inverse_5d`, `gc_safe_haven_signal`, `gc_zn_agreement_t1` |
-| **DX Futures** | **4** | `dx_overnight_change_pct`, `dx_intraday_momentum_t1`, `dx_es_inverse_5d`, `dx_strength_headwind` |
-| **Multi-Timeframe** | **6** | `es_momentum_15m_t1`, `es_momentum_30m_t1`, `es_momentum_2h_t1`, `nq_momentum_30m_t1`, `es_momentum_accel_t1`, `es_rth_vwap_dist_t1` |
-| ES Options | 8 | `es_put_oi_concentration`, `es_call_oi_concentration`, `es_options_max_pain_dist`, `es_spx_gamma_agreement`, `es_put_buy_aggressor_pct`, `es_call_buy_aggressor_pct`, `es_options_net_delta`, `es_atm_iv` |
-| **Regime** | **5** | `regime_risk_score`, `regime_flight_to_safety`, `regime_macro_stress`, `regime_breadth_quality`, `regime_vol_regime` |
-| | | |
-| **TOTAL** | **53** | |
+| Group               | Count  | Features                                                                                                                                                                                                  |
+| ------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ES Futures          | 8      | `es_momentum_t1`, `es_momentum_t2`, `es_spx_basis_t1`, `es_volume_ratio_t1`, `es_overnight_range`, `es_overnight_gap`, `es_gap_fill_pct_t1`, `es_vwap_deviation_t1`                                       |
+| NQ Futures          | 4      | `nq_momentum_t1`, `nq_es_ratio_t1`, `nq_es_ratio_change`, `nq_qqq_divergence_t1`                                                                                                                          |
+| VX Futures          | 5      | `vx_front_price`, `vx_term_spread`, `vx_term_slope_pct`, `vx_contango_signal`, `vx_basis`                                                                                                                 |
+| ZN Futures          | 3      | `zn_momentum_t1`, `zn_daily_change`, `spx_zn_correlation_5d`                                                                                                                                              |
+| RTY Futures         | 2      | `rty_momentum_t1`, `rty_es_divergence_t1`                                                                                                                                                                 |
+| CL Futures          | 3      | `cl_overnight_change_pct`, `cl_intraday_momentum_t1`, `cl_es_correlation_5d`                                                                                                                              |
+| **GC Futures**      | **5**  | `gc_overnight_change_pct`, `gc_intraday_momentum_t1`, `gc_es_inverse_5d`, `gc_safe_haven_signal`, `gc_zn_agreement_t1`                                                                                    |
+| **DX Futures**      | **4**  | `dx_overnight_change_pct`, `dx_intraday_momentum_t1`, `dx_es_inverse_5d`, `dx_strength_headwind`                                                                                                          |
+| **Multi-Timeframe** | **6**  | `es_momentum_15m_t1`, `es_momentum_30m_t1`, `es_momentum_2h_t1`, `nq_momentum_30m_t1`, `es_momentum_accel_t1`, `es_rth_vwap_dist_t1`                                                                      |
+| ES Options          | 8      | `es_put_oi_concentration`, `es_call_oi_concentration`, `es_options_max_pain_dist`, `es_spx_gamma_agreement`, `es_put_buy_aggressor_pct`, `es_call_buy_aggressor_pct`, `es_options_net_delta`, `es_atm_iv` |
+| **Regime**          | **5**  | `regime_risk_score`, `regime_flight_to_safety`, `regime_macro_stress`, `regime_breadth_quality`, `regime_vol_regime`                                                                                      |
+|                     |        |                                                                                                                                                                                                           |
+| **TOTAL**           | **53** |                                                                                                                                                                                                           |
 
 ### By Data Dependency
 
-| Dependency | Count |
-|-----------|-------|
-| `futures_bars` only (+ existing tables) | 44 |
-| `futures_options_daily` required | 6 |
-| `futures_options_trades` required | 2 |
-| Derived (no additional data) | 1 (regime features computed from other features, counted individually above) |
-| **Total unique features** | **53** |
+| Dependency                              | Count                                                                        |
+| --------------------------------------- | ---------------------------------------------------------------------------- |
+| `futures_bars` only (+ existing tables) | 44                                                                           |
+| `futures_options_daily` required        | 6                                                                            |
+| `futures_options_trades` required       | 2                                                                            |
+| Derived (no additional data)            | 1 (regime features computed from other features, counted individually above) |
+| **Total unique features**               | **53**                                                                       |
 
 ### By Implementation Priority
 
-| Priority | Count | Rationale |
-|----------|-------|-----------|
-| P0 (implement first) | 25 | ES (8) + NQ (4) + VX (5) + ZN (3) + RTY (2) + CL (3). Original plan, highest signal density. |
-| P1 (implement second) | 15 | GC (5) + DX (4) + Multi-TF (6). New features, moderate complexity. |
-| P2 (implement third) | 11 | Regime (5) + ES Options basic (6). Depend on P0/P1 features or `futures_options_daily`. |
-| P3 (implement last) | 2 | ES Options aggressor (2). Depend on `futures_options_trades` tick data. |
+| Priority              | Count | Rationale                                                                                    |
+| --------------------- | ----- | -------------------------------------------------------------------------------------------- |
+| P0 (implement first)  | 25    | ES (8) + NQ (4) + VX (5) + ZN (3) + RTY (2) + CL (3). Original plan, highest signal density. |
+| P1 (implement second) | 15    | GC (5) + DX (4) + Multi-TF (6). New features, moderate complexity.                           |
+| P2 (implement third)  | 11    | Regime (5) + ES Options basic (6). Depend on P0/P1 features or `futures_options_daily`.      |
+| P3 (implement last)   | 2     | ES Options aggressor (2). Depend on `futures_options_trades` tick data.                      |
 
 ---
 

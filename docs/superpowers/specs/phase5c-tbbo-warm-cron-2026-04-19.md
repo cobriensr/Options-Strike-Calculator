@@ -20,6 +20,7 @@ which is the current Phase 4b behavior anyway.
 ## Why a cron and not lazy in-flight warming
 
 Alternatives considered and rejected:
+
 - **Bump fetcher timeout to 10s** — penalizes every analyze call with
   a worst-case 10s block. Pre-warm externalizes the cost.
 - **Fire-and-forget warm on first analyze call** — still costs the
@@ -48,15 +49,13 @@ Cron is the simplest durable solution.
 ```ts
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { cronGuard } from '../_lib/api-helpers.js';
-import {
-  fetchTbboOfiPercentile,
-} from '../_lib/archive-sidecar.js';
+import { fetchTbboOfiPercentile } from '../_lib/archive-sidecar.js';
 import logger from '../_lib/logger.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const guard = cronGuard(req, res, {
-    requireApiKey: false,  // not calling UW, calling sidecar
-    marketHours: false,     // runs at 13:00 UTC, before market open
+    requireApiKey: false, // not calling UW, calling sidecar
+    marketHours: false, // runs at 13:00 UTC, before market open
   });
   if (!guard) return;
 
@@ -68,10 +67,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const esOk = esResult.status === 'fulfilled' && esResult.value !== null;
   const nqOk = nqResult.status === 'fulfilled' && nqResult.value !== null;
 
-  logger.info(
-    { esOk, nqOk },
-    'tbbo-ofi-percentile pre-warm completed',
-  );
+  logger.info({ esOk, nqOk }, 'tbbo-ofi-percentile pre-warm completed');
 
   return res.status(200).json({
     ok: esOk || nqOk,

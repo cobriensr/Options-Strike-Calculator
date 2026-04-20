@@ -54,6 +54,7 @@ ml/data/archive/
 ## Converter requirements
 
 1. **CLI entrypoint:**
+
    ```
    .venv/bin/python -m src.tbbo_convert \
        --dbn-dir ~/Downloads/GLBX-20260419-FKLLGNVWNP \
@@ -108,6 +109,7 @@ ml/data/archive/
 
 8. **Summary manifest.** Write
    `ml/data/archive/tbbo_convert_summary.json`:
+
    ```json
    {
      "source_dir": "...",

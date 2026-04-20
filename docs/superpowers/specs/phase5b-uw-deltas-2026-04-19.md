@@ -13,20 +13,20 @@ time.
 Give Claude four new signals on every analyze call, each one turning
 a "point-in-time level" UW measurement into a delta / rate-of-change /
 cumulative summary. Raw UW point-in-time values are already in the
-analyze context today; Phase 5b adds the *velocity* dimension.
+analyze context today; Phase 5b adds the _velocity_ dimension.
 
 ## Why deltas, not levels
 
 UW tells you the current state (dark pool prints so far today, GEX at
-this moment, total whale premium). The deltas tell you *what changed
-over the last N minutes*, which is the actionable read for an
+this moment, total whale premium). The deltas tell you _what changed
+over the last N minutes_, which is the actionable read for an
 intraday 0DTE trader:
 
 - A steady dark pool print rate is baseline; a sudden surge is
   institutional accumulation / distribution.
 - GEX at +$1B means nothing in isolation; GEX that dropped $300M in
   the last hour means dealer positioning flipped.
-- Whale cumulative net premium is a *direction* and *magnitude* read
+- Whale cumulative net premium is a _direction_ and _magnitude_ read
   that raw flow-alert rows don't surface.
 - SPY tide up 2% and QQQ tide down 2% is a tech-disfavor signal that
   neither tide alone makes obvious.
@@ -159,7 +159,7 @@ observation.
 - `api/_lib/analyze-context-fetchers.ts` — add
   `fetchUwDeltasBlock()` wrapping `computeUwDeltas` with the usual
   `logger.error` + `metrics.increment('analyze_context.uw_deltas_error')`
-  + `return null` on failure.
+  - `return null` on failure.
 
 - `api/_lib/analyze-context.ts` — wire the new fetcher into the
   existing `Promise.all` block and into the prompt assembly, placed
@@ -169,7 +169,6 @@ observation.
   (cached) with a new `<uw_deltas_rules>` block documenting what each
   delta means, how to weight it, thresholds for classifications, and
   known limits. Concrete text covering:
-
   - Dark pool SURGE: "Large institutional accumulation / distribution.
     Confirm with whale flow and GEX delta before treating as
     directional."

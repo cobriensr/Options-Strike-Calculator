@@ -52,6 +52,7 @@ CREATE INDEX idx_ftt_symbol_ts ON futures_trade_ticks (symbol, ts DESC);
 ```
 
 `aggressor_side`:
+
 - `'B'` = buyer-initiated (trade price at/above best ask before event)
 - `'S'` = seller-initiated (trade price at/below best bid before event)
 - `'N'` = unclassifiable (trade in-between; rare but possible)
@@ -145,7 +146,7 @@ Flush on size threshold.
   cover happy path + null-safety + batch-flush.
 - Sidecar redeployed to Railway; within 15 minutes of CME open
   Sunday 5 PM CT, `SELECT COUNT(*) FROM futures_top_of_book WHERE
-  symbol = 'ES' AND ts > NOW() - INTERVAL '15 minutes'` returns
+symbol = 'ES' AND ts > NOW() - INTERVAL '15 minutes'` returns
   > 1,000 rows.
 - `futures_trade_ticks` similarly populates during the same window
   with at least a few hundred rows.

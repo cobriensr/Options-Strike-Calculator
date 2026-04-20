@@ -31,12 +31,12 @@ The purpose is **not** to display raw numbers; it is to produce a regime classif
 
 ## Thresholds (starting point — Phase 4 makes them adaptive)
 
-| Band | $TICK (NYSE, ~3,000 stocks) | $TICKQ (Nasdaq, ~3,700 stocks) |
-|---|---|---|
-| Neutral | \|x\| < 400 | \|x\| < 500 |
-| Elevated | 400–600 | 500–750 |
-| Extreme | 600–1000 | 750–1200 |
-| Blowoff | > 1000 | > 1200 |
+| Band     | $TICK (NYSE, ~3,000 stocks) | $TICKQ (Nasdaq, ~3,700 stocks) |
+| -------- | --------------------------- | ------------------------------ |
+| Neutral  | \|x\| < 400                 | \|x\| < 500                    |
+| Elevated | 400–600                     | 500–750                        |
+| Extreme  | 600–1000                    | 750–1200                       |
+| Blowoff  | > 1000                      | > 1200                         |
 
 **$ADD and $VOLD** use **slope-based classification, not fixed thresholds:**
 
@@ -159,12 +159,12 @@ Self-calibrates to volatility regime — VIX-30 weeks auto-widen, VIX-12 weeks a
 
 ## Data dependencies
 
-| Dependency | Location | Notes |
-|---|---|---|
-| Schwab OAuth session | Upstash Redis (existing) | Already authenticated; no new env vars |
-| `DATABASE_URL` | Neon Postgres (existing) | New table `market_internals` |
-| `CRON_SECRET` | Vercel env (existing) | Gates the new cron handler |
-| Schwab pricehistory endpoint | External API | **Unverified for $TICK/$ADD/$VOLD symbols — Phase 1 step 1** |
+| Dependency                   | Location                 | Notes                                                        |
+| ---------------------------- | ------------------------ | ------------------------------------------------------------ |
+| Schwab OAuth session         | Upstash Redis (existing) | Already authenticated; no new env vars                       |
+| `DATABASE_URL`               | Neon Postgres (existing) | New table `market_internals`                                 |
+| `CRON_SECRET`                | Vercel env (existing)    | Gates the new cron handler                                   |
+| Schwab pricehistory endpoint | External API             | **Unverified for $TICK/$ADD/$VOLD symbols — Phase 1 step 1** |
 
 No new env vars, no new third-party services (unless Databento fallback activates).
 
@@ -174,13 +174,13 @@ No new env vars, no new third-party services (unless Databento fallback activate
 
 Ran a one-off debug endpoint (`api/debug/verify-market-internals.ts`) hitting Schwab `/pricehistory` for all five candidate symbols. Results:
 
-| Symbol | Supported | Notes |
-|---|---|---|
-| `$TICK` | ✅ | 706 candles returned (extended-hours data included despite `needExtendedHoursData: false`) |
-| `$ADD` | ✅ | 390 candles (regular hours only — respects the flag) |
-| `$VOLD` | ✅ | 390 candles (regular hours only) |
-| `$TRIN` | ✅ bonus | 706 candles — wasn't originally in scope; cheap to include |
-| `$TICKQ` | ⚠️ empty | Schwab accepts the symbol but returns zero candles. Nasdaq internal not carried through Schwab's pricehistory, or symbol name is different |
+| Symbol   | Supported | Notes                                                                                                                                      |
+| -------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `$TICK`  | ✅        | 706 candles returned (extended-hours data included despite `needExtendedHoursData: false`)                                                 |
+| `$ADD`   | ✅        | 390 candles (regular hours only — respects the flag)                                                                                       |
+| `$VOLD`  | ✅        | 390 candles (regular hours only)                                                                                                           |
+| `$TRIN`  | ✅ bonus  | 706 candles — wasn't originally in scope; cheap to include                                                                                 |
+| `$TICKQ` | ⚠️ empty  | Schwab accepts the symbol but returns zero candles. Nasdaq internal not carried through Schwab's pricehistory, or symbol name is different |
 
 **Adjusted Phase 1 scope:**
 

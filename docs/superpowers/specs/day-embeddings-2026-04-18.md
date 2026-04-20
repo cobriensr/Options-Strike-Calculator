@@ -11,7 +11,7 @@ Same retrieval path, same table schema seam, same consumer code. Only the embedd
 
 ## Why (not scalar-delta analogs)
 
-The sidecar already has `/archive/analog-days` returning k-nearest by first-hour delta. That's interpretable but lossy: a gap-down morning and a slow-grind morning with identical 1h deltas are structurally different trading situations. Embeddings capture the *shape*; scalar deltas only capture one scalar.
+The sidecar already has `/archive/analog-days` returning k-nearest by first-hour delta. That's interpretable but lossy: a gap-down morning and a slow-grind morning with identical 1h deltas are structurally different trading situations. Embeddings capture the _shape_; scalar deltas only capture one scalar.
 
 ## Architecture (shared for B and C)
 
@@ -45,7 +45,7 @@ The sidecar already has `/archive/analog-days` returning k-nearest by first-hour
 
 ## Data dependencies
 
-- **pgvector extension** must be enabled on Neon. *Open question*: is it already? Check with `SELECT * FROM pg_available_extensions WHERE name = 'vector';` before Phase B-1.
+- **pgvector extension** must be enabled on Neon. _Open question_: is it already? Check with `SELECT * FROM pg_available_extensions WHERE name = 'vector';` before Phase B-1.
 - `OPENAI_API_KEY` — already in Vercel env (used by `embeddings.ts`).
 - Sidecar `/archive/day-summary?date=X` — new endpoint, Phase B-2.
 
@@ -60,22 +60,22 @@ The sidecar already has `/archive/analog-days` returning k-nearest by first-hour
 
 ## Files created / modified
 
-| File | Phase | Purpose |
-|---|---|---|
-| `api/_lib/db-migrations.ts` | B-1 | Migration N+1: `day_embeddings` table + pgvector index |
-| `api/__tests__/db.test.ts` | B-1 | Bump mock call counts, add migration to expected list |
-| `sidecar/src/archive_query.py` | B-2 | Add `day_summary_text(date)` function |
-| `sidecar/src/health.py` | B-2 | Add `GET /archive/day-summary?date=...` route |
-| `sidecar/tests/test_archive_query.py` | B-2 | 2-3 tests for the new function |
-| `api/_lib/archive-sidecar.ts` | B-3 | NEW. `fetchDaySummary(date)` helper that calls sidecar |
-| `api/_lib/day-embeddings.ts` | B-4 | NEW. `embedDaySummary()`, `findSimilarDays()`, `upsertDayEmbedding()` |
-| `api/_lib/analyze-context-formatters.ts` | B-5 | Add `formatSimilarDaysForClaude()` |
-| `api/_lib/analyze-context-fetchers.ts` | B-5 | Add `fetchSimilarDaysContext()` |
-| `api/_lib/analyze-context.ts` | B-5 | Wire `fetchSimilarDaysContext` into the parallel fetch block |
-| `scripts/backfill-day-embeddings.mjs` | B-6 | NEW. One-shot over 4000 historical dates |
-| `api/cron/embed-yesterday.ts` | B-7 | Nightly cron (runs once/day, embeds prior trading day) |
-| `vercel.json` | B-7 | Register the cron |
-| *(same files, swap bodies)* | C | Replace OpenAI embedding with engineered feature vector |
+| File                                     | Phase | Purpose                                                               |
+| ---------------------------------------- | ----- | --------------------------------------------------------------------- |
+| `api/_lib/db-migrations.ts`              | B-1   | Migration N+1: `day_embeddings` table + pgvector index                |
+| `api/__tests__/db.test.ts`               | B-1   | Bump mock call counts, add migration to expected list                 |
+| `sidecar/src/archive_query.py`           | B-2   | Add `day_summary_text(date)` function                                 |
+| `sidecar/src/health.py`                  | B-2   | Add `GET /archive/day-summary?date=...` route                         |
+| `sidecar/tests/test_archive_query.py`    | B-2   | 2-3 tests for the new function                                        |
+| `api/_lib/archive-sidecar.ts`            | B-3   | NEW. `fetchDaySummary(date)` helper that calls sidecar                |
+| `api/_lib/day-embeddings.ts`             | B-4   | NEW. `embedDaySummary()`, `findSimilarDays()`, `upsertDayEmbedding()` |
+| `api/_lib/analyze-context-formatters.ts` | B-5   | Add `formatSimilarDaysForClaude()`                                    |
+| `api/_lib/analyze-context-fetchers.ts`   | B-5   | Add `fetchSimilarDaysContext()`                                       |
+| `api/_lib/analyze-context.ts`            | B-5   | Wire `fetchSimilarDaysContext` into the parallel fetch block          |
+| `scripts/backfill-day-embeddings.mjs`    | B-6   | NEW. One-shot over 4000 historical dates                              |
+| `api/cron/embed-yesterday.ts`            | B-7   | Nightly cron (runs once/day, embeds prior trading day)                |
+| `vercel.json`                            | B-7   | Register the cron                                                     |
+| _(same files, swap bodies)_              | C     | Replace OpenAI embedding with engineered feature vector               |
 
 ## Thresholds / constants
 
@@ -110,7 +110,7 @@ The sidecar already has `/archive/analog-days` returning k-nearest by first-hour
 ### Phase B-2 — Sidecar day-summary endpoint
 
 - [ ] Add `day_summary_text(date)` to `archive_query.py`. Produces a compact string like:
-  `"2024-08-05 ESU4 | open 5324.00 | 1h delta -20.5 | 2h delta -65 | session range 204.5 pts | volume 3.25M (2.1x avg) | close 5273.75 (-50.25)"`
+      `"2024-08-05 ESU4 | open 5324.00 | 1h delta -20.5 | 2h delta -65 | session range 204.5 pts | volume 3.25M (2.1x avg) | close 5273.75 (-50.25)"`
 - [ ] Wire `GET /archive/day-summary?date=YYYY-MM-DD` route in `health.py`.
 - [ ] 2-3 tests covering: correct format, date with no data → 404, invalid date → 400.
 - [ ] Deploy and curl-verify against a known historical date.
@@ -187,5 +187,5 @@ The sidecar already has `/archive/analog-days` returning k-nearest by first-hour
 
 - **No scalar-delta deprecation**: keep `/archive/analog-days` even after day-embeddings ships. It's cheap, interpretable, and useful as a sanity check when the embeddings return something surprising.
 - **Why text embeddings over numeric first**: discovering which features to put in C's vector is the hard part. B's live usage will show where the OpenAI embedding wins vs loses — that's the empirical feedback you need to design C. Reversing the order (build C blind, then maybe B) wastes feature-engineering effort.
-- **`embeddings.ts` pattern reuse**: existing `api/_lib/embeddings.ts` does an analogous thing for past *analyses* — same 3-small model, same pgvector pattern, different table. Phase B is essentially "do that, but for market days."
+- **`embeddings.ts` pattern reuse**: existing `api/_lib/embeddings.ts` does an analogous thing for past _analyses_ — same 3-small model, same pgvector pattern, different table. Phase B is essentially "do that, but for market days."
 - **Cost math sanity check**: 4000 backfill days + 252 days/year × 5 years of steady state = negligible. A single analyze call embeds today's summary ≈ $0.000001. This is not a cost-sensitive feature.

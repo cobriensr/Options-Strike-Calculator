@@ -77,8 +77,8 @@ instead of `new Date()`).
 // Response unchanged, plus:
 {
   // existing fields...
-  oldestTs: string | null;        // MIN(ts) from futures_bars, for picker min
-  requestedAt: string | null;      // echoes input when historical
+  oldestTs: string | null; // MIN(ts) from futures_bars, for picker min
+  requestedAt: string | null; // echoes input when historical
 }
 ```
 

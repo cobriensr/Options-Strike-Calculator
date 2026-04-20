@@ -19,6 +19,7 @@ Compute momentum signals **client-side** from the 1-minute candles the hook alre
 New pure module — no React, no side effects.
 
 **`CandleMomentum` interface:**
+
 - `roc1`: 1-candle rate of change (pts)
 - `roc3`: 3-candle rate of change (pts)
 - `roc5`: 5-candle rate of change (pts)
@@ -32,6 +33,7 @@ New pure module — no React, no side effects.
 **`computeMomentum(candles: SPXCandle[]): CandleMomentum`**
 
 **Signal classification thresholds:**
+
 - `surge`: |streak| >= 3 AND rangeExpanding
 - `drift`: |streak| >= 2 OR |roc3| > threshold but not expanding
 - `flat`: everything else
@@ -64,13 +66,13 @@ Waiting on user input for placement decision.
 
 ## Files to Create/Modify
 
-| Phase | File | Action |
-|-------|------|--------|
-| 1 | `src/utils/candle-momentum.ts` | Create |
-| 2 | `src/components/GexTarget/PriceChart.tsx` | Modify |
-| 3 | `src/components/GexTarget/index.tsx` | Modify |
-| 4 | PriceChart or new component | TBD |
-| 5 | `src/__tests__/utils/candle-momentum.test.ts` | Create |
+| Phase | File                                          | Action |
+| ----- | --------------------------------------------- | ------ |
+| 1     | `src/utils/candle-momentum.ts`                | Create |
+| 2     | `src/components/GexTarget/PriceChart.tsx`     | Modify |
+| 3     | `src/components/GexTarget/index.tsx`          | Modify |
+| 4     | PriceChart or new component                   | TBD    |
+| 5     | `src/__tests__/utils/candle-momentum.test.ts` | Create |
 
 ## Thresholds / Constants
 

@@ -38,8 +38,8 @@ Flow:
 - Called from `api/_lib/analyze-context-fetchers.ts:617` via
   `formatFuturesForClaude()`.
 - Included in Claude's user message at `api/_lib/analyze-context.ts:371`
-  with framing: *"Futures signals lead options flow by 10-30 minutes.
-  When futures and flow disagree, futures are usually right."*
+  with framing: _"Futures signals lead options flow by 10-30 minutes.
+  When futures and flow disagree, futures are usually right."_
 - System prompt has a `<futures_context_rules>` block at
   `api/_lib/analyze-prompts.ts:771-856`.
 
@@ -64,7 +64,7 @@ and a comment at line 341 planning
 
 Net: all the tick-level data SIDE-015 unlocks is currently an orphan
 asset. Every candidate below that uses `futures_options_trades` would
-be the *first* consumer.
+be the _first_ consumer.
 
 ---
 
@@ -73,7 +73,7 @@ be the *first* consumer.
 **Data source:** `futures_options_daily.implied_vol` per
 `(strike, option_type, expiry, trade_date)`.
 
-**Hypothesis:** ES options IV is an *independent* derivatives-side
+**Hypothesis:** ES options IV is an _independent_ derivatives-side
 read on volatility pricing — exchange-computed, model-free from our
 side. The gap between ES priced skew vs SPX priced skew (which we
 already get via UW) is the diagnostic signal. When ES put skew is
@@ -167,7 +167,7 @@ section in `analyze-prompts.ts`).
 `(strike, option_type, expiry, ts)`.
 
 **Hypothesis:** Large institutional desks often execute in ES options
-*before* reflecting the same position into SPX — ES options are
+_before_ reflecting the same position into SPX — ES options are
 cheaper to hedge, have tighter BBOs at size, and let the desk build
 delta exposure across the futures leg. So "ES ATM call buy-aggressor
 % in the last 15 min" is a leading indicator of SPX direction that
@@ -177,7 +177,7 @@ to.
 **Why it'd help:**
 
 UW flow data Claude already consumes is SPX options only. ES option
-flow is a *different tape* — different counterparties, different
+flow is a _different tape_ — different counterparties, different
 pricing dynamics, different frontrunning patterns. Even if ES and SPX
 are highly correlated, the flow sides may lead/lag each other
 consistently.
@@ -271,18 +271,17 @@ strike (ES side). Compare to SPX GEX walls from the existing UW pipeline.
 
 **Hypothesis:** You already feed Claude SPX GEX walls (gamma max-pain
 strikes where dealer hedging concentrates). If the equivalent ES
-gamma-concentration strikes *agree* with SPX GEX walls, the wall is
+gamma-concentration strikes _agree_ with SPX GEX walls, the wall is
 structurally real (both dealer books concentrate positioning there). If
-they *disagree*, one of them may be positioning-driven rather than
+they _disagree_, one of them may be positioning-driven rather than
 structural — specifically, if SPX GEX wall is at 5850 but ES gamma
-concentration is at 5870, the SPX wall might break on a move toward
-5870.
+concentration is at 5870, the SPX wall might break on a move toward 5870.
 
 **Why it'd help:**
 
 Adds a cross-check against GEX walls. The analyze prompt today treats
 GEX walls as strong structural signals. A gamma-agreement score would
-let Claude *discount* walls when ES disagrees, and *strengthen* calls
+let Claude _discount_ walls when ES disagrees, and _strengthen_ calls
 when both agree.
 
 **Implementation sketch:**
@@ -420,8 +419,8 @@ ES Option Blocks (last 2h, ≥50 contracts):
 previous trading day, same strike × option_type × expiry.
 
 **Hypothesis:** Total OI is a stale signal — some of it has been there
-for weeks. Δ-OI from yesterday's settle to today's settle shows *new
-positioning*. The strikes that grew OI the most today are where new
+for weeks. Δ-OI from yesterday's settle to today's settle shows _new
+positioning_. The strikes that grew OI the most today are where new
 money is placing bets; the strikes that lost the most are where old
 positions are unwinding.
 
@@ -599,8 +598,8 @@ When you come back to this doc with data, before starting validation:
 
 Every candidate above has a stated hypothesis, a stated target, and a
 stated kill-condition. When you come back to data, the main output
-should be: for each candidate, *"target met / target missed / inconclusive,
-need more data."* Don't introduce new candidates during the first
+should be: for each candidate, _"target met / target missed / inconclusive,
+need more data."_ Don't introduce new candidates during the first
 review session — if a new idea surfaces, add it to this doc as
 Candidate #6+ for the NEXT validation pass.
 

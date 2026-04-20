@@ -41,85 +41,85 @@ Design principle: capture every datapoint the API exposes today, add nullable co
 
 #### Identity & rule
 
-| Column | Type | Source | Notes |
-| --- | --- | --- | --- |
-| `id` | BIGSERIAL PK | internal | our row id, not UW's |
-| `uw_alert_id` | UUID, nullable | detail endpoint | UW's alert id (backfill later if we enrich) |
-| `rule_id` | UUID, nullable | detail endpoint | UW's specific rule instance id |
-| `alert_rule` | TEXT NOT NULL | list | `RepeatedHits`, `RepeatedHitsAscendingFill`, `RepeatedHitsDescendingFill` |
-| `ticker` | TEXT NOT NULL | list | `SPXW` |
-| `issue_type` | TEXT | list | `Index` for SPXW |
-| `option_chain` | TEXT NOT NULL | list | OSI symbol; natural dedupe key |
-| `strike` | NUMERIC NOT NULL | list | |
-| `expiry` | DATE NOT NULL | list | |
-| `type` | TEXT NOT NULL | list | `call` or `put` |
+| Column         | Type             | Source          | Notes                                                                     |
+| -------------- | ---------------- | --------------- | ------------------------------------------------------------------------- |
+| `id`           | BIGSERIAL PK     | internal        | our row id, not UW's                                                      |
+| `uw_alert_id`  | UUID, nullable   | detail endpoint | UW's alert id (backfill later if we enrich)                               |
+| `rule_id`      | UUID, nullable   | detail endpoint | UW's specific rule instance id                                            |
+| `alert_rule`   | TEXT NOT NULL    | list            | `RepeatedHits`, `RepeatedHitsAscendingFill`, `RepeatedHitsDescendingFill` |
+| `ticker`       | TEXT NOT NULL    | list            | `SPXW`                                                                    |
+| `issue_type`   | TEXT             | list            | `Index` for SPXW                                                          |
+| `option_chain` | TEXT NOT NULL    | list            | OSI symbol; natural dedupe key                                            |
+| `strike`       | NUMERIC NOT NULL | list            |                                                                           |
+| `expiry`       | DATE NOT NULL    | list            |                                                                           |
+| `type`         | TEXT NOT NULL    | list            | `call` or `put`                                                           |
 
 #### Timing
 
-| Column | Type | Source | Notes |
-| --- | --- | --- | --- |
-| `created_at` | TIMESTAMPTZ NOT NULL | list | alert creation time (UW) |
-| `start_time` | TIMESTAMPTZ, nullable | detail | first trade in the cluster |
-| `end_time` | TIMESTAMPTZ, nullable | detail | last trade in the cluster |
+| Column        | Type                               | Source   | Notes                                         |
+| ------------- | ---------------------------------- | -------- | --------------------------------------------- |
+| `created_at`  | TIMESTAMPTZ NOT NULL               | list     | alert creation time (UW)                      |
+| `start_time`  | TIMESTAMPTZ, nullable              | detail   | first trade in the cluster                    |
+| `end_time`    | TIMESTAMPTZ, nullable              | detail   | last trade in the cluster                     |
 | `ingested_at` | TIMESTAMPTZ NOT NULL DEFAULT NOW() | internal | when WE stored it; lets us measure ingest lag |
 
 #### Pricing & volatility
 
-| Column | Type | Source | Notes |
-| --- | --- | --- | --- |
-| `price` | NUMERIC | list | avg fill price of the cluster |
-| `underlying_price` | NUMERIC | list | SPX spot at alert time |
-| `bid` | NUMERIC, nullable | detail | NBBO bid at alert |
-| `ask` | NUMERIC, nullable | detail | NBBO ask at alert |
-| `iv_start` | NUMERIC, nullable | detail | IV at cluster start |
-| `iv_end` | NUMERIC, nullable | detail | IV at cluster end |
+| Column             | Type              | Source | Notes                         |
+| ------------------ | ----------------- | ------ | ----------------------------- |
+| `price`            | NUMERIC           | list   | avg fill price of the cluster |
+| `underlying_price` | NUMERIC           | list   | SPX spot at alert time        |
+| `bid`              | NUMERIC, nullable | detail | NBBO bid at alert             |
+| `ask`              | NUMERIC, nullable | detail | NBBO ask at alert             |
+| `iv_start`         | NUMERIC, nullable | detail | IV at cluster start           |
+| `iv_end`           | NUMERIC, nullable | detail | IV at cluster end             |
 
 #### Premium & size
 
-| Column | Type | Source | Notes |
-| --- | --- | --- | --- |
-| `total_premium` | NUMERIC NOT NULL | list | |
-| `total_ask_side_prem` | NUMERIC | list | aggressive buys |
-| `total_bid_side_prem` | NUMERIC | list | sold to MMs |
-| `total_size` | INT | list | contracts in this cluster |
-| `trade_count` | INT | list | prints rolled up |
-| `expiry_count` | INT | list | distinct expiries in the alert |
-| `volume` | INT | list | contract volume at this strike |
-| `open_interest` | INT | list | |
-| `volume_oi_ratio` | NUMERIC | list | |
+| Column                | Type             | Source | Notes                          |
+| --------------------- | ---------------- | ------ | ------------------------------ |
+| `total_premium`       | NUMERIC NOT NULL | list   |                                |
+| `total_ask_side_prem` | NUMERIC          | list   | aggressive buys                |
+| `total_bid_side_prem` | NUMERIC          | list   | sold to MMs                    |
+| `total_size`          | INT              | list   | contracts in this cluster      |
+| `trade_count`         | INT              | list   | prints rolled up               |
+| `expiry_count`        | INT              | list   | distinct expiries in the alert |
+| `volume`              | INT              | list   | contract volume at this strike |
+| `open_interest`       | INT              | list   |                                |
+| `volume_oi_ratio`     | NUMERIC          | list   |                                |
 
 #### Flags
 
-| Column | Type | Source | Notes |
-| --- | --- | --- | --- |
-| `has_sweep` | BOOLEAN | list | |
-| `has_floor` | BOOLEAN | list | |
-| `has_multileg` | BOOLEAN | list | |
-| `has_singleleg` | BOOLEAN | list | confirms the inverse signal too |
-| `all_opening_trades` | BOOLEAN | list | fresh positioning (not closing) |
+| Column               | Type    | Source | Notes                           |
+| -------------------- | ------- | ------ | ------------------------------- |
+| `has_sweep`          | BOOLEAN | list   |                                 |
+| `has_floor`          | BOOLEAN | list   |                                 |
+| `has_multileg`       | BOOLEAN | list   |                                 |
+| `has_singleleg`      | BOOLEAN | list   | confirms the inverse signal too |
+| `all_opening_trades` | BOOLEAN | list   | fresh positioning (not closing) |
 
 #### Denormalized derived (computed at ingest)
 
 Cheap to compute once, avoids repeated arithmetic in ML queries over millions of rows.
 
-| Column | Type | Formula | Why pre-compute |
-| --- | --- | --- | --- |
-| `ask_side_ratio` | NUMERIC | `total_ask_side_prem / total_premium` | feature for every ML model |
-| `bid_side_ratio` | NUMERIC | `total_bid_side_prem / total_premium` | |
-| `net_premium` | NUMERIC | `total_ask_side_prem - total_bid_side_prem` | signed directional force |
-| `dte_at_alert` | INT | `expiry - created_at::date` | faster than re-deriving |
-| `distance_from_spot` | NUMERIC | `strike - underlying_price` | directional feature |
-| `distance_pct` | NUMERIC | `(strike - underlying_price) / underlying_price` | scale-invariant feature |
-| `moneyness` | NUMERIC | `underlying_price / strike` | standard options feature |
-| `is_itm` | BOOLEAN | derived from type + strike + spot | |
-| `minute_of_day` | INT | CT-minute 0-1439 | project convention (range 510-899 for session) |
-| `session_elapsed_min` | INT | minutes since 08:30 CT | time-of-day feature |
-| `day_of_week` | INT | 0=Mon, 4=Fri | calendar feature |
+| Column                | Type    | Formula                                          | Why pre-compute                                |
+| --------------------- | ------- | ------------------------------------------------ | ---------------------------------------------- |
+| `ask_side_ratio`      | NUMERIC | `total_ask_side_prem / total_premium`            | feature for every ML model                     |
+| `bid_side_ratio`      | NUMERIC | `total_bid_side_prem / total_premium`            |                                                |
+| `net_premium`         | NUMERIC | `total_ask_side_prem - total_bid_side_prem`      | signed directional force                       |
+| `dte_at_alert`        | INT     | `expiry - created_at::date`                      | faster than re-deriving                        |
+| `distance_from_spot`  | NUMERIC | `strike - underlying_price`                      | directional feature                            |
+| `distance_pct`        | NUMERIC | `(strike - underlying_price) / underlying_price` | scale-invariant feature                        |
+| `moneyness`           | NUMERIC | `underlying_price / strike`                      | standard options feature                       |
+| `is_itm`              | BOOLEAN | derived from type + strike + spot                |                                                |
+| `minute_of_day`       | INT     | CT-minute 0-1439                                 | project convention (range 510-899 for session) |
+| `session_elapsed_min` | INT     | minutes since 08:30 CT                           | time-of-day feature                            |
+| `day_of_week`         | INT     | 0=Mon, 4=Fri                                     | calendar feature                               |
 
 #### Safety net
 
-| Column | Type | Notes |
-| --- | --- | --- |
+| Column         | Type  | Notes                                                                                      |
+| -------------- | ----- | ------------------------------------------------------------------------------------------ |
 | `raw_response` | JSONB | the full UW list-response row as-is; survives any future field additions without migration |
 
 ### Constraints & indexes

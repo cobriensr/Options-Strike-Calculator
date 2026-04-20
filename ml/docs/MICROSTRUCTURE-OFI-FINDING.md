@@ -36,13 +36,13 @@ Claude's prompt, confirm the signal exists.
 
 ## Key result
 
-| Symbol | Best feature | Spearman ρ | Raw p | Bonferroni p (n=46) | Verdict |
-|---|---|---|---|---|---|
-| **NQ** | `ofi_1h_mean` | **+0.313** | 0.000 | **0.000** | **Significant** |
-| **NQ** | `ofi_15m_mean` | +0.278 | 0.000 | 0.000 | Significant |
-| **NQ** | `ofi_5m_mean` | +0.235 | 0.000 | 0.001 | Significant |
-| ES | `ofi_1h_std` | +0.141 | 0.014 | 0.624 | Not significant |
-| ES | `ofi_1h_mean` | +0.131 | 0.022 | 1.000 | Not significant |
+| Symbol | Best feature   | Spearman ρ | Raw p | Bonferroni p (n=46) | Verdict         |
+| ------ | -------------- | ---------- | ----- | ------------------- | --------------- |
+| **NQ** | `ofi_1h_mean`  | **+0.313** | 0.000 | **0.000**           | **Significant** |
+| **NQ** | `ofi_15m_mean` | +0.278     | 0.000 | 0.000               | Significant     |
+| **NQ** | `ofi_5m_mean`  | +0.235     | 0.000 | 0.001               | Significant     |
+| ES     | `ofi_1h_std`   | +0.141     | 0.014 | 0.624               | Not significant |
+| ES     | `ofi_1h_mean`  | +0.131     | 0.022 | 1.000               | Not significant |
 
 **NQ**: three OFI features survive Bonferroni correction at p < 0.001
 with Spearman ρ strictly monotone in window length (5m < 15m < 1h).
@@ -75,7 +75,7 @@ Two reinforcing explanations, both consistent with the data:
   divergence warning ("SPX setup looks bullish, NQ tape says otherwise").
 - **Do NOT wire ES microstructure as a directional predictor.** Phase 2b
   already computes ES OFI/spread/TOB and surfaces them in the analyze
-  context. Keep them as *tape-flavor* context (Claude can read them as
+  context. Keep them as _tape-flavor_ context (Claude can read them as
   qualitative signal), but treat quantitative claims like "positive ES
   OFI implies positive ES return" as unsupported.
 - **Do NOT train a classifier on ES microstructure features.** They
@@ -86,12 +86,12 @@ Two reinforcing explanations, both consistent with the data:
 The feature matrix has 11 pairs with |ρ| > 0.9, meaning ML should pick
 one representative per family rather than training on all 23 features:
 
-| Family | Representative | Runner-up(s) |
-|---|---|---|
-| OFI (windows) | `ofi_1h_mean` | ρ≈0.92-0.96 with 5m/15m variants |
-| Tick velocity | `tick_velocity_p95` | ρ=0.97 with `mean` |
-| Spread widening | `spread_widening_max_zscore` | ρ>0.9 with count variants |
-| TOB pressure | `tob_mean_abs_log_ratio` | moderate correlation with run-length features |
+| Family          | Representative               | Runner-up(s)                                  |
+| --------------- | ---------------------------- | --------------------------------------------- |
+| OFI (windows)   | `ofi_1h_mean`                | ρ≈0.92-0.96 with 5m/15m variants              |
+| Tick velocity   | `tick_velocity_p95`          | ρ=0.97 with `mean`                            |
+| Spread widening | `spread_widening_max_zscore` | ρ>0.9 with count variants                     |
+| TOB pressure    | `tob_mean_abs_log_ratio`     | moderate correlation with run-length features |
 
 ## Known limitations
 
@@ -127,7 +127,7 @@ All four planned changes are live:
    sidecar `/archive/tbbo-ofi-percentile` endpoint) and passes both
    into `formatMicrostructureDualSymbolForClaude()`. Injected at
    `analyze-context.ts:376` under the header `## Dual-Symbol
-   Microstructure Signals (ES + NQ, ...)`.
+Microstructure Signals (ES + NQ, ...)`.
 4. **Prompt interpretation rules:** `api/_lib/analyze-prompts.ts:958-987`
    inside `<microstructure_signals_rules>`. Tier ladder (BALANCED /
    MILD / AGGRESSIVE_BUY / AGGRESSIVE_SELL), cross-asset divergence

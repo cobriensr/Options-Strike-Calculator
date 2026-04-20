@@ -19,19 +19,19 @@ Companion to [analyze-prompt-enhancements-2026-04-08.md](analyze-prompt-enhancem
 
 Theta selling and directional buying are not two flavors of the same strategy — they are opposite disciplines with opposite guardrails.
 
-| Property | Theta selling (current system) | Directional buying (new) |
-|---|---|---|
-| Probability of profit | ~65-75% | ~35-45% |
-| Average win size | Small (limited to credit) | 2-4× average loss |
-| Primary edge source | Volume of correct trades + PoP | Tail winners + loss containment |
-| Time is | Your friend (theta works for you) | Your enemy (theta works against you) |
-| Vol is | Your friend (high IV = more credit) | Your enemy when high, friend when low |
-| Gamma is | Your enemy (short gamma) | Your friend (long gamma) |
-| Exit trigger | Price (hit short strike = stop) | Time (trade stale = stop) |
-| Typical stop | Price-based, binary | Time-based, continuous |
-| Scaling | Usually all-out at 50% profit | Scale-out ladder on winners |
-| Catalyst behavior | Exit BEFORE (close before FOMC) | Enter BEFORE (buy the move) |
-| Martingale behavior | Sometimes OK (defined risk, improving PoP) | Always destructive (time decay accelerates) |
+| Property              | Theta selling (current system)             | Directional buying (new)                    |
+| --------------------- | ------------------------------------------ | ------------------------------------------- |
+| Probability of profit | ~65-75%                                    | ~35-45%                                     |
+| Average win size      | Small (limited to credit)                  | 2-4× average loss                           |
+| Primary edge source   | Volume of correct trades + PoP             | Tail winners + loss containment             |
+| Time is               | Your friend (theta works for you)          | Your enemy (theta works against you)        |
+| Vol is                | Your friend (high IV = more credit)        | Your enemy when high, friend when low       |
+| Gamma is              | Your enemy (short gamma)                   | Your friend (long gamma)                    |
+| Exit trigger          | Price (hit short strike = stop)            | Time (trade stale = stop)                   |
+| Typical stop          | Price-based, binary                        | Time-based, continuous                      |
+| Scaling               | Usually all-out at 50% profit              | Scale-out ladder on winners                 |
+| Catalyst behavior     | Exit BEFORE (close before FOMC)            | Enter BEFORE (buy the move)                 |
+| Martingale behavior   | Sometimes OK (defined risk, improving PoP) | Always destructive (time decay accelerates) |
 
 **The consequence:** almost every guardrail built for theta selling is either wrong or inverted when applied to directional buying. The current system's rules are not broadly applicable; they are specifically calibrated for a short-gamma premium seller. Adding `LONG CALL` and `LONG PUT` to the output enum without adding buyer-specific rules would let Claude recommend directional buys without the discipline that makes them viable. That is the single biggest risk in adding this feature.
 
@@ -48,6 +48,7 @@ Verified via direct reads on 2026-04-08.
    - Criteria: (1) hours remaining < 4, (2) Market Tide + at least 2 of (QQQ Net Flow, SPY ETF Tide, QQQ ETF Tide) agree on direction, (3) negative gamma acceleration zone in the flow direction within 30-40 pts, (4) no high-impact event within 60 minutes.
 
 2. **`directionalOpportunity` response schema exists.** [validation.ts:227-243](../../../api/_lib/validation.ts#L227-L243):
+
    ```ts
    directionalOpportunity: z.object({
      direction: z.enum(['LONG CALL', 'LONG PUT']),
@@ -57,10 +58,14 @@ Verified via direct reads on 2026-04-08.
      stopLoss: z.string(),
      profitTarget: z.string(),
      keyLevels: z.object({
-       support, resistance, vwap
+       support,
+       resistance,
+       vwap,
      }),
      signals: z.array(z.string()),
-   }).nullable().optional()
+   })
+     .nullable()
+     .optional();
    ```
 
 3. **Backtested flow accuracy rankings are in the prompt.** Over 36 labeled days, the prompt has calibrated accuracy rankings for each flow source. From [analyze-prompts.ts:513-531](../../../api/_lib/analyze-prompts.ts#L513-L531):
@@ -83,24 +88,24 @@ Verified via direct reads on 2026-04-08.
 
 ### What's NOT yet there
 
-| Capability | Status |
-|---|---|
-| `LONG CALL` / `LONG PUT` in the main `structure` enum | ❌ Not added. Main structure enum is still `IRON CONDOR / PUT CREDIT SPREAD / CALL CREDIT SPREAD / SIT OUT` ([validation.ts:168-173](../../../api/_lib/validation.ts#L168-L173)). Directional opportunity is a secondary field, not a primary structure. |
-| Strike selection for directional buys (specific strike + DTE) | ❌ The `directionalOpportunity` field has no `strike` or `dte` field; it only has direction, confidence, reasoning, entryTiming, stop, profit target, and key levels. |
-| IV rank as a BUY filter (cheap vol = good to buy) | ❌ The RV/IV rule exists but is framed entirely around selling. No "IV rank > 60 = too expensive to buy" rule. |
-| Catalyst-aware rule for LONG positions | ❌ The existing FOMC rule exits all positions 15 min before; there's no exception for directional longs that were entered specifically to capture the catalyst. |
-| $/delta strike cost efficiency metric | ❌ Not computed anywhere in `src/utils/`. |
-| Breakeven move computation (points needed to profit) | ❌ Not present. |
-| Gamma payoff map (what does this trade look like if I'm right?) | ❌ Not present. |
-| Debit vertical vs naked long decision helper | ❌ No decision logic, no debit vertical calculator. |
-| Time stops (as distinct from price stops) | ❌ The `stopLoss` field is a single string; no structured time-stop concept. |
-| Scale-out ladder for winners | ❌ Management rules are single-target (`profitTarget` string), not ladder-based. |
-| Delta-based regime-change exit | ❌ No rule for "when delta reaches 60+, close half." |
-| Thesis invalidation exit (as distinct from price stop) | ❌ No structured concept of "entry thesis" that can be invalidated independently. |
-| Martingale guard for losing long positions | ❌ No rule. |
-| "Right direction, wrong vol" detection | ❌ No awareness of expected move consumption as a buy-timing filter. |
+| Capability                                                      | Status                                                                                                                                                                                                                                                   |
+| --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LONG CALL` / `LONG PUT` in the main `structure` enum           | ❌ Not added. Main structure enum is still `IRON CONDOR / PUT CREDIT SPREAD / CALL CREDIT SPREAD / SIT OUT` ([validation.ts:168-173](../../../api/_lib/validation.ts#L168-L173)). Directional opportunity is a secondary field, not a primary structure. |
+| Strike selection for directional buys (specific strike + DTE)   | ❌ The `directionalOpportunity` field has no `strike` or `dte` field; it only has direction, confidence, reasoning, entryTiming, stop, profit target, and key levels.                                                                                    |
+| IV rank as a BUY filter (cheap vol = good to buy)               | ❌ The RV/IV rule exists but is framed entirely around selling. No "IV rank > 60 = too expensive to buy" rule.                                                                                                                                           |
+| Catalyst-aware rule for LONG positions                          | ❌ The existing FOMC rule exits all positions 15 min before; there's no exception for directional longs that were entered specifically to capture the catalyst.                                                                                          |
+| $/delta strike cost efficiency metric                           | ❌ Not computed anywhere in `src/utils/`.                                                                                                                                                                                                                |
+| Breakeven move computation (points needed to profit)            | ❌ Not present.                                                                                                                                                                                                                                          |
+| Gamma payoff map (what does this trade look like if I'm right?) | ❌ Not present.                                                                                                                                                                                                                                          |
+| Debit vertical vs naked long decision helper                    | ❌ No decision logic, no debit vertical calculator.                                                                                                                                                                                                      |
+| Time stops (as distinct from price stops)                       | ❌ The `stopLoss` field is a single string; no structured time-stop concept.                                                                                                                                                                             |
+| Scale-out ladder for winners                                    | ❌ Management rules are single-target (`profitTarget` string), not ladder-based.                                                                                                                                                                         |
+| Delta-based regime-change exit                                  | ❌ No rule for "when delta reaches 60+, close half."                                                                                                                                                                                                     |
+| Thesis invalidation exit (as distinct from price stop)          | ❌ No structured concept of "entry thesis" that can be invalidated independently.                                                                                                                                                                        |
+| Martingale guard for losing long positions                      | ❌ No rule.                                                                                                                                                                                                                                              |
+| "Right direction, wrong vol" detection                          | ❌ No awareness of expected move consumption as a buy-timing filter.                                                                                                                                                                                     |
 
-**Summary of current state:** Claude can *detect* a directional opportunity and describe it qualitatively via the optional `directionalOpportunity` field. Claude cannot yet recommend a specific directional trade with quantitatively-calibrated strike selection, time-stop discipline, scale-out management, or catalyst awareness. The detection layer is live; the execution layer is missing.
+**Summary of current state:** Claude can _detect_ a directional opportunity and describe it qualitatively via the optional `directionalOpportunity` field. Claude cannot yet recommend a specific directional trade with quantitatively-calibrated strike selection, time-stop discipline, scale-out management, or catalyst awareness. The detection layer is live; the execution layer is missing.
 
 ---
 
@@ -113,6 +118,7 @@ Signals you already feed into the prompt, but with the interpretation inverted f
 - **Rationale:** The existing RV/IV rule ([analyze-prompts.ts:738-746](../../../api/_lib/analyze-prompts.ts#L738-L746)) is framed entirely for theta selling: "RV/IV > 1.15 → too narrow, reduce size; RV/IV < 0.85 → seller's edge, full size." For directional buying, the math inverts — when IV is rich relative to realized, long options are statistically overpriced; when IV is cheap, long options are the premium buyer's edge.
 - **Current state:** No BUY-side interpretation of RV/IV or IV rank exists in the prompt. The `iv_rank` column is fetched into context ([analyze-context.ts:415-464](../../../api/_lib/analyze-context.ts#L415-L464)) but consumed only by the seller-framed rule.
 - **Proposed rule (to add to `analyze-prompts.ts`):**
+
   ```
   ## Rule: IV Rank as Buy Filter (applies only to LONG directional trades)
   When evaluating a directional long position:
@@ -132,6 +138,7 @@ Signals you already feed into the prompt, but with the interpretation inverted f
   existing RV/IV seller rule at analyze-prompts.ts:738-746 still applies
   for IC/CCS/PCS evaluation.
   ```
+
 - **Dependencies:** The `iv_rank`, `iv_rv_spread`, and `iv_overpricing_pct` fields must already be in the prompt context. Verified present ([analyze-context.ts:418-446](../../../api/_lib/analyze-context.ts#L418-L446)).
 - **Scope:** Small. New prompt rule, no code changes, no new data. One block of prose.
 
@@ -140,6 +147,7 @@ Signals you already feed into the prompt, but with the interpretation inverted f
 - **Rationale:** The existing FOMC rule ([analyze-prompts.ts:567-573](../../../api/_lib/analyze-prompts.ts#L567-L573)) hard-exits all positions 15 minutes before any high-impact event. This is correct for theta sellers (a binary event destroys gamma-short positions) but wrong for directional buyers whose entire thesis may be "buy the move the catalyst produces." You want to be LONG into the catalyst, not flat.
 - **Current state:** The FOMC hard-exit rule makes no exception for directional longs. The existing directional opportunity check ([analyze-prompts.ts:85](../../../api/_lib/analyze-prompts.ts#L85)) requires "no high-impact event within 60 minutes," which is also the wrong direction for a catalyst-thesis trade.
 - **Proposed rule:**
+
   ```
   ## Rule: Catalyst Proximity for Long Directional Trades
   For LONG directional positions entered with an explicit catalyst thesis
@@ -164,6 +172,7 @@ Signals you already feed into the prompt, but with the interpretation inverted f
   Step 10. The catalyst exception applies only when the trade is
   explicitly designed to capture the catalyst's move.
   ```
+
 - **Dependencies:** Econ calendar must be in the context (verified — see [fetch-economic-calendar.ts](../../../api/cron/fetch-economic-calendar.ts)). The prompt must be taught to distinguish catalyst-thesis entries from opportunistic entries.
 - **Scope:** Small. New rule block + addition of `catalystTrade: boolean` and `targetedEvent: string | null` to the directionalOpportunity schema in validation.ts.
 
@@ -186,24 +195,25 @@ Math that a directional buyer needs but a theta seller doesn't.
 - **Proposed implementation:**
 
   **Step 1 — Create `src/utils/long-option-metrics.ts`:**
+
   ```ts
   export type LongOptionCandidate = {
     strike: number;
     side: 'call' | 'put';
     dte: number;
-    premium: number;        // debit paid
-    delta: number;          // 0..1 absolute
+    premium: number; // debit paid
+    delta: number; // 0..1 absolute
     gamma: number;
-    theta: number;          // per-day
-    breakevenMovePoints: number;     // premium / delta (point equivalent)
-    breakevenVsCone: number;          // breakevenMovePoints / straddleConeHalfWidth
-    dollarPerDelta: number;           // premium / delta
-    thetaPerDay: number;              // dollars of decay per day
-    gammaPayoff20pt: number;          // projected delta after 20-pt favorable move
-    gammaPayoff40pt: number;          // projected delta after 40-pt favorable move
-    expectedPnlAt20pt: number;        // projected P&L from intrinsic + residual extrinsic
+    theta: number; // per-day
+    breakevenMovePoints: number; // premium / delta (point equivalent)
+    breakevenVsCone: number; // breakevenMovePoints / straddleConeHalfWidth
+    dollarPerDelta: number; // premium / delta
+    thetaPerDay: number; // dollars of decay per day
+    gammaPayoff20pt: number; // projected delta after 20-pt favorable move
+    gammaPayoff40pt: number; // projected delta after 40-pt favorable move
+    expectedPnlAt20pt: number; // projected P&L from intrinsic + residual extrinsic
     expectedPnlAt40pt: number;
-    expectedPnlAtTimeStop: number;    // projected P&L if no move by time stop (theta burn)
+    expectedPnlAtTimeStop: number; // projected P&L if no move by time stop (theta burn)
   };
 
   export function buildLongOptionCandidates(
@@ -212,8 +222,8 @@ Math that a directional buyer needs but a theta seller doesn't.
     iv: number,
     dte: number,
     side: 'call' | 'put',
-    deltaRange: [number, number],   // e.g. [0.08, 0.45]
-    straddleConeHalfWidth: number
+    deltaRange: [number, number], // e.g. [0.08, 0.45]
+    straddleConeHalfWidth: number,
   ): LongOptionCandidate[] {
     // 1. Filter chain to strikes whose delta falls in the range
     // 2. For each candidate, compute:
@@ -229,30 +239,40 @@ Math that a directional buyer needs but a theta seller doesn't.
   When the directional opportunity check fires, build candidates for LONG CALL (if direction is bullish) or LONG PUT (if direction is bearish). Include top 3 candidates in the structured context. Also add midpoint DTE variants (0DTE + 7DTE + 14DTE) so Claude can compare across expirations.
 
   **Step 3 — Update `directionalOpportunity` schema in `validation.ts`:**
+
   ```ts
   directionalOpportunity: z.object({
     direction: z.enum(['LONG CALL', 'LONG PUT']),
     // ... existing fields ...
-    selectedStrike: z.object({
-      strike: z.number(),
-      dte: z.number(),
-      delta: z.number(),
-      premium: z.number(),
-      breakevenMove: z.number(),
-      dollarPerDelta: z.number(),
-      reasoning: z.string(),  // why this strike over others
-    }).nullable(),
-    alternatives: z.array(z.object({
-      strike: z.number(),
-      dte: z.number(),
-      delta: z.number(),
-      premium: z.number(),
-      tradeoff: z.string(),  // "higher $/delta but tighter breakeven" etc
-    })).max(3),
-  }).nullable().optional()
+    selectedStrike: z
+      .object({
+        strike: z.number(),
+        dte: z.number(),
+        delta: z.number(),
+        premium: z.number(),
+        breakevenMove: z.number(),
+        dollarPerDelta: z.number(),
+        reasoning: z.string(), // why this strike over others
+      })
+      .nullable(),
+    alternatives: z
+      .array(
+        z.object({
+          strike: z.number(),
+          dte: z.number(),
+          delta: z.number(),
+          premium: z.number(),
+          tradeoff: z.string(), // "higher $/delta but tighter breakeven" etc
+        }),
+      )
+      .max(3),
+  })
+    .nullable()
+    .optional();
   ```
 
   **Step 4 — Prompt rule for strike selection:**
+
   ```
   ## Rule: Directional Strike Selection
   When recommending a long directional position, select the strike that
@@ -287,27 +307,34 @@ Math that a directional buyer needs but a theta seller doesn't.
 - **Proposed implementation:**
 
   **Step 1 — Extend `long-option-metrics.ts` with a payoff map function:**
+
   ```ts
   export type PayoffWaypoint = {
-    spotMovePoints: number;        // e.g. +20, +40, +60
-    projectedDelta: number;        // delta after this move (via BS reprice)
-    projectedPnl: number;          // dollars P&L at this waypoint
-    projectedPnlPct: number;       // % of premium paid
+    spotMovePoints: number; // e.g. +20, +40, +60
+    projectedDelta: number; // delta after this move (via BS reprice)
+    projectedPnl: number; // dollars P&L at this waypoint
+    projectedPnlPct: number; // % of premium paid
   };
 
   export function computePayoffMap(
     candidate: LongOptionCandidate,
     spot: number,
     iv: number,
-    waypoints: number[] = [10, 20, 30, 40, 60]
-  ): { favorable: PayoffWaypoint[]; unfavorable: PayoffWaypoint[]; timeStop: PayoffWaypoint };
+    waypoints: number[] = [10, 20, 30, 40, 60],
+  ): {
+    favorable: PayoffWaypoint[];
+    unfavorable: PayoffWaypoint[];
+    timeStop: PayoffWaypoint;
+  };
   ```
+
   - `favorable` waypoints use `spot + waypoints[i]` for calls, `spot - waypoints[i]` for puts.
   - `unfavorable` uses the opposite direction (this helps size the downside).
   - `timeStop` holds spot constant but advances time by the intended hold window; computes theta burn P&L at zero directional move.
 
   **Step 2 — Include in the analyze context:**
   When a directional opportunity is active, include the payoff map for the selected strike in the structured context block:
+
   ```
   ## Long Option Payoff Map (selected strike: 6580 Call, 7 DTE, 10Δ, $50 premium)
   Favorable move:
@@ -327,6 +354,7 @@ Math that a directional buyer needs but a theta seller doesn't.
   ```
 
   **Step 3 — Prompt rule for reasoning about the payoff map:**
+
   ```
   ## Rule: Payoff Map Reasoning
   When a payoff map is provided, your directional opportunity reasoning
@@ -348,6 +376,7 @@ Math that a directional buyer needs but a theta seller doesn't.
 - **Proposed implementation:**
 
   **Step 1 — Decision rules (to encode as a prompt rule):**
+
   ```
   ## Rule: Debit Vertical vs Naked Long Decision
   When recommending a long directional trade, choose between a naked long
@@ -384,12 +413,14 @@ Math that a directional buyer needs but a theta seller doesn't.
   ```
 
   **Step 2 — Extend `directionalOpportunity` schema:**
+
   ```ts
   selectedStructure: z.enum(['NAKED LONG CALL', 'NAKED LONG PUT', 'CALL DEBIT SPREAD', 'PUT DEBIT SPREAD']),
   structureRationale: z.string(),  // why this structure over the alternative
   ```
 
   **Step 3 — Extend `long-option-metrics.ts` with vertical construction:**
+
   ```ts
   export function buildDebitVerticalCandidates(
     chain: ChainResponse,
@@ -399,9 +430,10 @@ Math that a directional buyer needs but a theta seller doesn't.
     side: 'call' | 'put',
     longDeltaRange: [number, number],
     shortDeltaRange: [number, number],
-    targetStrike: number   // where you expect price to go
+    targetStrike: number, // where you expect price to go
   ): DebitVerticalCandidate[];
   ```
+
   Returns vertical candidates with the same metrics as long options: `breakevenMove`, `dollarPerDelta`, `maxProfit`, `maxLoss`, `payoffAtTarget`.
 
 - **Dependencies:** Chain data + Black-Scholes (both already available).
@@ -424,6 +456,7 @@ The most expensive mistakes in directional buying are exit mistakes. Each of the
 - **Proposed implementation:**
 
   **Step 1 — Extend schema with structured time stop:**
+
   ```ts
   timeStop: z.object({
     expectedWindow: z.string(),           // "2 hours from entry"
@@ -435,6 +468,7 @@ The most expensive mistakes in directional buying are exit mistakes. Each of the
   ```
 
   **Step 2 — Prompt rule:**
+
   ```
   ## Rule: Directional Long Time-Stop (MANDATORY)
   Every LONG directional position must have a time stop. Compute it as follows:
@@ -473,6 +507,7 @@ The most expensive mistakes in directional buying are exit mistakes. Each of the
 - **Proposed implementation:**
 
   **Step 1 — Extend the directionalOpportunity schema:**
+
   ```ts
   scaleOutPlan: z.object({
     first: z.object({
@@ -493,6 +528,7 @@ The most expensive mistakes in directional buying are exit mistakes. Each of the
   ```
 
   **Step 2 — Prompt rule:**
+
   ```
   ## Rule: Directional Long Scale-Out Ladder
   For every LONG directional position, generate a scale-out plan with
@@ -530,6 +566,7 @@ The most expensive mistakes in directional buying are exit mistakes. Each of the
 
 - **Proposed implementation:**
   Add to the prompt rules block:
+
   ```
   ## Rule: Delta Regime-Change Exit for Long Positions
   When a long directional position's delta reaches 60+:
@@ -562,6 +599,7 @@ The most expensive mistakes in directional buying are exit mistakes. Each of the
 - **Proposed implementation:**
 
   **Step 1 — Extend schema:**
+
   ```ts
   thesisExit: z.object({
     entrySignal: z.string(),       // "Market Tide bullish + gamma flip above spot"
@@ -571,6 +609,7 @@ The most expensive mistakes in directional buying are exit mistakes. Each of the
   ```
 
   **Step 2 — Prompt rule:**
+
   ```
   ## Rule: Thesis Invalidation Exit for Long Positions
   Every LONG directional entry must declare its entry thesis in terms of a
@@ -609,6 +648,7 @@ The most expensive mistakes in directional buying are exit mistakes. Each of the
 - **Rationale:** Adding to a losing long option position is uniquely destructive because time is the enemy. Unlike averaging into a credit spread (which has defined risk, and the PoP improves as spot moves back toward the middle of the cone), averaging into a long option compounds theta exposure and almost never works. Every hour you hold the added position, the original position AND the new position both bleed. The math doesn't recover.
 - **Current state:** No rule against adding to losing long positions. The current prompt is silent on position stacking for directional longs.
 - **Proposed rule:**
+
   ```
   ## Rule: No Martingale on Losing Long Positions
   Do not recommend adding to a LOSING long directional position under any
@@ -625,6 +665,7 @@ The most expensive mistakes in directional buying are exit mistakes. Each of the
   held through a -50% position will likely end at -80%. Adding size at
   -25% converts a recoverable loss into a catastrophic one.
   ```
+
 - **Scope:** Trivial. One prompt rule block.
 
 ### ENH-BUY-011 — "Right direction, wrong vol" detection
@@ -636,6 +677,7 @@ The most expensive mistakes in directional buying are exit mistakes. Each of the
 - **Current state:** The prompt tracks straddle cone consumption ([analyze-prompts.ts:266-272](../../../api/_lib/analyze-prompts.ts#L266-L272)) but uses it only for seller-side reasoning ("cone consumed → remaining move compressed → good for premium selling"). The same data is not used as a buy-side warning.
 
 - **Proposed rule:**
+
   ```
   ## Rule: Expected Move Consumption as Long-Option Entry Filter
   When evaluating a LONG directional entry, check the straddle cone
@@ -713,15 +755,16 @@ Only after Phase 1-3 are live. Add `LONG CALL`, `LONG PUT`, `CALL DEBIT SPREAD`,
 
 Several items in this spec benefit from or depend on the enhancements in [analyze-prompt-enhancements-2026-04-08.md](analyze-prompt-enhancements-2026-04-08.md):
 
-| This spec | Depends on companion spec item | Why |
-|---|---|---|
-| ENH-BUY-003 (strike selection) | ENH-EDGE-002 (slippage-adjusted credit) | The $/delta metric should use realistic fill prices, not mid. Otherwise the calculator underestimates true cost. |
-| ENH-BUY-003 (strike selection) | ENH-SIGNAL-001 (zero-gamma distance) | Negative-gamma-side trades are specifically the ones directional buys should target. Knowing the flip distance directly informs which strike to buy. |
-| ENH-BUY-006 (time stops) | ENH-RISK-001 (daily loss gate) | Both are enforcement rules; they interact. Daily loss gate overrides everything; time stop is trade-specific. |
-| ENH-BUY-001 (IV rank flip) | Already uses existing vol_realized table | No dependency — this can ship today. |
-| Personal cohort edge (ENH-EDGE-001 in companion) | **This spec benefits from it** | Historical win rate on directional trades specifically (not lumped with IC trades) would meaningfully improve ENH-BUY confidence calibration. Consider adding a `tradeType: 'theta' \| 'directional'` filter to the cohort query. |
+| This spec                                        | Depends on companion spec item           | Why                                                                                                                                                                                                                               |
+| ------------------------------------------------ | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ENH-BUY-003 (strike selection)                   | ENH-EDGE-002 (slippage-adjusted credit)  | The $/delta metric should use realistic fill prices, not mid. Otherwise the calculator underestimates true cost.                                                                                                                  |
+| ENH-BUY-003 (strike selection)                   | ENH-SIGNAL-001 (zero-gamma distance)     | Negative-gamma-side trades are specifically the ones directional buys should target. Knowing the flip distance directly informs which strike to buy.                                                                              |
+| ENH-BUY-006 (time stops)                         | ENH-RISK-001 (daily loss gate)           | Both are enforcement rules; they interact. Daily loss gate overrides everything; time stop is trade-specific.                                                                                                                     |
+| ENH-BUY-001 (IV rank flip)                       | Already uses existing vol_realized table | No dependency — this can ship today.                                                                                                                                                                                              |
+| Personal cohort edge (ENH-EDGE-001 in companion) | **This spec benefits from it**           | Historical win rate on directional trades specifically (not lumped with IC trades) would meaningfully improve ENH-BUY confidence calibration. Consider adding a `tradeType: 'theta' \| 'directional'` filter to the cohort query. |
 
 **Suggested interleaving with the companion spec's phase plan:**
+
 - Companion Phase 1 (ENH-FIX-001, ENH-RISK-001, ENH-EDGE-002): ship alongside this spec's Phase 1 (rules-only). They're prompt-only changes and don't conflict.
 - Companion Phase 2 (ENH-EDGE-001 cohort engine): consider adding a directional-trade filter while building so directional cohort lookups are available when Phase 3 of this spec ships.
 - This spec's Phase 3 (quant primitives): ship alongside companion Phase 3 (ENH-SIGNAL-001 zero-gamma), since both need similar strike-level infrastructure and can share the Black-Scholes reprice code.
@@ -731,13 +774,16 @@ Several items in this spec benefit from or depend on the enhancements in [analyz
 ## Appendix A — Files verified during this investigation
 
 Direct reads (trust citations completely):
-- [api/_lib/analyze-prompts.ts](../../../api/_lib/analyze-prompts.ts) — Step 10 directional opportunity check (lines 80-88), flow accuracy rankings (lines 513-531), ML signal hierarchy (lines 99-114), ML calibration (lines 116-122), RV/IV seller rule (lines 738-746), FOMC exit rule (lines 567-573), cone consumption (lines 266-272)
-- [api/_lib/validation.ts](../../../api/_lib/validation.ts) — main structure enum (lines 168-173), `directionalOpportunity` schema (lines 227-243), `managementRules` schema (lines 210-217)
+
+- [api/\_lib/analyze-prompts.ts](../../../api/_lib/analyze-prompts.ts) — Step 10 directional opportunity check (lines 80-88), flow accuracy rankings (lines 513-531), ML signal hierarchy (lines 99-114), ML calibration (lines 116-122), RV/IV seller rule (lines 738-746), FOMC exit rule (lines 567-573), cone consumption (lines 266-272)
+- [api/\_lib/validation.ts](../../../api/_lib/validation.ts) — main structure enum (lines 168-173), `directionalOpportunity` schema (lines 227-243), `managementRules` schema (lines 210-217)
 
 Grep-verified:
+
 - No matches for `time.?stop`, `scale.?out`, `dollar.?per.?delta`, `breakeven.?move`, `thesis.?invalid`, `martingale` in `src/utils/` or `api/_lib/`. Confirms these concepts are not yet codified.
 
 Cross-referenced against:
+
 - [principal-engineer-audit-2026-04-07.md](principal-engineer-audit-2026-04-07.md) — this spec's time-stop and thesis-invalidation rules do not conflict with any open audit findings.
 - [analyze-prompt-enhancements-2026-04-08.md](analyze-prompt-enhancements-2026-04-08.md) — this spec is a companion, not an overlap. Dependencies are tracked in Part 7.
 
@@ -756,4 +802,4 @@ Cross-referenced against:
 
 ---
 
-*End of spec.*
+_End of spec._

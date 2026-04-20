@@ -38,15 +38,15 @@ laptop  ──upload──>  Vercel Blob  ──download──>  /data/archive (
 
 ## Files created / modified
 
-| File | Purpose |
-|---|---|
-| `scripts/upload-archive-to-blob.mjs` | NEW — laptop-side uploader |
-| `sidecar/src/archive_seeder.py` | NEW — download + SHA verify + write |
-| `sidecar/src/main.py` | MODIFIED — register `POST /admin/seed-archive` |
-| `sidecar/src/archive_query.py` | NEW (Phase 6) — DuckDB query layer |
-| `sidecar/tests/test_archive_seeder.py` | NEW — unit tests with mocked httpx |
-| `.gitignore` | MODIFIED — exclude `ml/data/archive/` |
-| `CLAUDE.md` | MODIFIED — document `ARCHIVE_*` env vars |
+| File                                   | Purpose                                        |
+| -------------------------------------- | ---------------------------------------------- |
+| `scripts/upload-archive-to-blob.mjs`   | NEW — laptop-side uploader                     |
+| `sidecar/src/archive_seeder.py`        | NEW — download + SHA verify + write            |
+| `sidecar/src/main.py`                  | MODIFIED — register `POST /admin/seed-archive` |
+| `sidecar/src/archive_query.py`         | NEW (Phase 6) — DuckDB query layer             |
+| `sidecar/tests/test_archive_seeder.py` | NEW — unit tests with mocked httpx             |
+| `.gitignore`                           | MODIFIED — exclude `ml/data/archive/`          |
+| `CLAUDE.md`                            | MODIFIED — document `ARCHIVE_*` env vars       |
 
 ## Open questions (default picks noted)
 
@@ -122,8 +122,7 @@ laptop  ──upload──>  Vercel Blob  ──download──>  /data/archive (
 
 ## Done when
 
-- [ ] `/data/archive` on Railway has all 17 year partitions + symbology.parquet
-      + condition.json + convert_summary.json.
+- [ ] `/data/archive` on Railway has all 17 year partitions + symbology.parquet + condition.json + convert_summary.json.
 - [ ] Re-triggering the seeder is a no-op (SHA match → all skipped).
 - [ ] `npm run review` is green.
 - [ ] Seeder tests pass.

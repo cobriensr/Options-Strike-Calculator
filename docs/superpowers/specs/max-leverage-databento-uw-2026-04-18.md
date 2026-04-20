@@ -23,8 +23,8 @@ microstructure signals using only schemas + endpoints already paid for.
   window for research only.
 - **Live L1 (`mbp-1`, `tbbo`, `bbo-1s`) IS in Standard.** Fair game
   for sidecar live streaming.
-- **Core schemas (`trades`, `ohlcv-*`, `definition`, `statistics`,
-  `status`) live — covered.
+- \*_Core schemas (`trades`, `ohlcv-_`, `definition`, `statistics`,
+`status`) live — covered.
 - **15+ years core historical, 1 year L1 historical** included — fair
   game for any backfill we want.
 

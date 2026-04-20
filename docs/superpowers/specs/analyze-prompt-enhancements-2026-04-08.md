@@ -16,10 +16,10 @@ Companion to [principal-engineer-audit-2026-04-07.md](principal-engineer-audit-2
 
 ### Tier meanings
 
-| Tier | Meaning |
-|---|---|
-| **Tier 1** | Directly and measurably changes P&L on real trades. Build these first. |
-| **Tier 2** | High-signal features that are cheap to build from existing data. Build after Tier 1. |
+| Tier       | Meaning                                                                                   |
+| ---------- | ----------------------------------------------------------------------------------------- |
+| **Tier 1** | Directly and measurably changes P&L on real trades. Build these first.                    |
+| **Tier 2** | High-signal features that are cheap to build from existing data. Build after Tier 1.      |
 | **Tier 3** | Genuine value but gated on other work (ML sample size, new endpoints, or infrastructure). |
 
 ---
@@ -42,25 +42,25 @@ Companion to [principal-engineer-audit-2026-04-07.md](principal-engineer-audit-2
 
 This is a curated list of signals already present in the prompt or context assembly. Confirmed via direct read or grep against `api/_lib/analyze-prompts.ts` and `api/_lib/analyze-context.ts`.
 
-| Signal | Status | Location (verified) |
-|---|---|---|
-| RV/IV ratio with rich/cheap framing + explicit rules | ✅ in prompt | [analyze-prompts.ts:738-746](../../../api/_lib/analyze-prompts.ts#L738-L746) |
-| VIX futures term structure (VX1/VX2 contango/backwardation) | ✅ in prompt | [analyze-prompts.ts:650-656](../../../api/_lib/analyze-prompts.ts#L650-L656) |
-| IV term structure (0DTE vs 30D IV) with contango/inversion rules | ✅ in prompt | [analyze-prompts.ts:340-360](../../../api/_lib/analyze-prompts.ts#L340-L360) |
-| Straddle cone + "% of cone consumed" tracking | ✅ in prompt | [analyze-prompts.ts:178-272](../../../api/_lib/analyze-prompts.ts#L178-L272) |
-| Overnight ES range as % of straddle cone | ✅ in prompt | [analyze-prompts.ts:366-373](../../../api/_lib/analyze-prompts.ts#L366-L373) |
-| Economic calendar + event-day warnings (FOMC 15-min hard exit) | ✅ in prompt | [analyze-prompts.ts:567-573](../../../api/_lib/analyze-prompts.ts#L567-L573), [EventDayWarning.tsx](../../../src/components/EventDayWarning.tsx) |
-| Cross-asset futures narrative (ES/NQ/VX/ZN/CL/GC/DX) | ✅ in context | [futures-context.ts:150-330](../../../api/_lib/futures-context.ts#L150-L330) |
-| Skew + skew ratio (>2.0 = strong put-over-call premium) | ✅ in prompt | [analyze-prompts.ts:357](../../../api/_lib/analyze-prompts.ts#L357) |
-| VIX1D inversion rule + Friday weekend-hedge bias | ✅ in prompt | [analyze-prompts.ts:479-484](../../../api/_lib/analyze-prompts.ts#L479-L484) |
-| Dark pool levels (contaminated — see BE-DARKPOOL-001/002 in audit) | ✅ in context, ⚠️ needs fix | [darkpool.ts](../../../api/_lib/darkpool.ts) |
-| Market Tide (all + OTM), SPX/SPY/QQQ Net Flow, 0DTE Index Flow, ETF Tides | ✅ in context (9 sources) | [analyze-context.ts:798-803](../../../api/_lib/analyze-context.ts#L798-L803) |
-| `zero_dte_greek_flow` — delta-weighted flow (not pure premium) | ✅ in context | Fetched via `api/cron/fetch-greek-flow.ts` |
-| Greek exposure per-expiry (MM positioning) — gamma/charm/vanna/delta | ✅ in context | [db-flow.ts:162-274](../../../api/_lib/db-flow.ts#L162-L274) |
-| Strike-level GEX (`spot-exposures/strike`) with multi-expiry profile | ✅ in context | `api/cron/fetch-gex-0dte.ts` + strike variants |
-| Pin risk analysis (OI concentration, proximity-weighted post-FE-MATH-001) | ✅ in context | [pin-risk.ts](../../../src/utils/pin-risk.ts) |
-| Lessons learned curation (narrative memory) | ✅ in prompt | [lessons.ts](../../../api/_lib/lessons.ts) |
-| Max pain, overnight gap analysis, SPX intraday candles | ✅ in context | [analyze-context.ts](../../../api/_lib/analyze-context.ts) |
+| Signal                                                                    | Status                      | Location (verified)                                                                                                                              |
+| ------------------------------------------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| RV/IV ratio with rich/cheap framing + explicit rules                      | ✅ in prompt                | [analyze-prompts.ts:738-746](../../../api/_lib/analyze-prompts.ts#L738-L746)                                                                     |
+| VIX futures term structure (VX1/VX2 contango/backwardation)               | ✅ in prompt                | [analyze-prompts.ts:650-656](../../../api/_lib/analyze-prompts.ts#L650-L656)                                                                     |
+| IV term structure (0DTE vs 30D IV) with contango/inversion rules          | ✅ in prompt                | [analyze-prompts.ts:340-360](../../../api/_lib/analyze-prompts.ts#L340-L360)                                                                     |
+| Straddle cone + "% of cone consumed" tracking                             | ✅ in prompt                | [analyze-prompts.ts:178-272](../../../api/_lib/analyze-prompts.ts#L178-L272)                                                                     |
+| Overnight ES range as % of straddle cone                                  | ✅ in prompt                | [analyze-prompts.ts:366-373](../../../api/_lib/analyze-prompts.ts#L366-L373)                                                                     |
+| Economic calendar + event-day warnings (FOMC 15-min hard exit)            | ✅ in prompt                | [analyze-prompts.ts:567-573](../../../api/_lib/analyze-prompts.ts#L567-L573), [EventDayWarning.tsx](../../../src/components/EventDayWarning.tsx) |
+| Cross-asset futures narrative (ES/NQ/VX/ZN/CL/GC/DX)                      | ✅ in context               | [futures-context.ts:150-330](../../../api/_lib/futures-context.ts#L150-L330)                                                                     |
+| Skew + skew ratio (>2.0 = strong put-over-call premium)                   | ✅ in prompt                | [analyze-prompts.ts:357](../../../api/_lib/analyze-prompts.ts#L357)                                                                              |
+| VIX1D inversion rule + Friday weekend-hedge bias                          | ✅ in prompt                | [analyze-prompts.ts:479-484](../../../api/_lib/analyze-prompts.ts#L479-L484)                                                                     |
+| Dark pool levels (contaminated — see BE-DARKPOOL-001/002 in audit)        | ✅ in context, ⚠️ needs fix | [darkpool.ts](../../../api/_lib/darkpool.ts)                                                                                                     |
+| Market Tide (all + OTM), SPX/SPY/QQQ Net Flow, 0DTE Index Flow, ETF Tides | ✅ in context (9 sources)   | [analyze-context.ts:798-803](../../../api/_lib/analyze-context.ts#L798-L803)                                                                     |
+| `zero_dte_greek_flow` — delta-weighted flow (not pure premium)            | ✅ in context               | Fetched via `api/cron/fetch-greek-flow.ts`                                                                                                       |
+| Greek exposure per-expiry (MM positioning) — gamma/charm/vanna/delta      | ✅ in context               | [db-flow.ts:162-274](../../../api/_lib/db-flow.ts#L162-L274)                                                                                     |
+| Strike-level GEX (`spot-exposures/strike`) with multi-expiry profile      | ✅ in context               | `api/cron/fetch-gex-0dte.ts` + strike variants                                                                                                   |
+| Pin risk analysis (OI concentration, proximity-weighted post-FE-MATH-001) | ✅ in context               | [pin-risk.ts](../../../src/utils/pin-risk.ts)                                                                                                    |
+| Lessons learned curation (narrative memory)                               | ✅ in prompt                | [lessons.ts](../../../api/_lib/lessons.ts)                                                                                                       |
+| Max pain, overnight gap analysis, SPX intraday candles                    | ✅ in context               | [analyze-context.ts](../../../api/_lib/analyze-context.ts)                                                                                       |
 
 **The prompt is already comprehensive on market state.** What it lacks is primarily **personal edge context** (your own historical win rate in similar regimes), **risk gating** (session P&L, regime novelty), and a few derived metrics that are computable from data you already have but haven't distilled.
 
@@ -77,7 +77,7 @@ The Unusual Whales "Delta Flow" panel displays net delta from all non-market-mak
 
 ### What's uniquely additive vs. what you already have
 
-1. **Non-MM identity filter.** Your `zero_dte_greek_flow` captures *total* delta flow (all participants, including MM gamma hedging). MM hedging in a negative-gamma tape can move large delta notional with zero informational content — it's mechanical. A non-MM-only signal strips mechanical hedging out and leaves positioning.
+1. **Non-MM identity filter.** Your `zero_dte_greek_flow` captures _total_ delta flow (all participants, including MM gamma hedging). MM hedging in a negative-gamma tape can move large delta notional with zero informational content — it's mechanical. A non-MM-only signal strips mechanical hedging out and leaves positioning.
 
 2. **Opening-only toggle.** A rolled put (close -60Δ → open -25Δ) looks like +35Δ under "all" mode, but is a fresh -25Δ bearish open under "open" mode. For 0DTE specifically this matters less (rolls are rare), but for multi-DTE positioning (which Claude should be considering when your journal shows 7-14 DTE directional buys) it matters a lot.
 
@@ -138,25 +138,28 @@ These are the highest-EV additions. Each directly improves realized returns, not
 
   **Step 1 — Define the regime fingerprint.**
   A regime fingerprint is a bucketized tuple of discrete features that represents "what kind of day is this":
+
   ```ts
   type RegimeFingerprint = {
     vixBucket: 'calm' | 'normal' | 'elevated' | 'stress'; // <15 / 15-20 / 20-27 / >27
-    vix1dInversion: 'none' | 'mild' | 'extreme';          // VIX1D vs VIX ratio buckets
-    gexSign: 'positive' | 'negative';                     // aggregate GEX sign
-    morningFlow: 'bullish' | 'neutral' | 'bearish';       // first 30 min NCP direction
-    skewRegime: 'flat' | 'normal' | 'steep';              // 25Δ put skew buckets
-    overnightGap: 'small' | 'medium' | 'large';           // gap as % of ATR
+    vix1dInversion: 'none' | 'mild' | 'extreme'; // VIX1D vs VIX ratio buckets
+    gexSign: 'positive' | 'negative'; // aggregate GEX sign
+    morningFlow: 'bullish' | 'neutral' | 'bearish'; // first 30 min NCP direction
+    skewRegime: 'flat' | 'normal' | 'steep'; // 25Δ put skew buckets
+    overnightGap: 'small' | 'medium' | 'large'; // gap as % of ATR
     dayOfWeek: 'mon' | 'tue' | 'wed' | 'thu' | 'fri';
   };
   ```
+
   Exact bucket thresholds should match the thresholds already used in `build-features-phase2.ts` so cohorts are consistent with ML training data.
 
   **Step 2 — Build the cohort query.**
   New module: `api/_lib/cohort-edge.ts`.
+
   ```ts
   async function getCohortEdge(
     current: RegimeFingerprint,
-    lookbackDays = 60
+    lookbackDays = 60,
   ): Promise<CohortEdgeResult | null> {
     // 1. Query the analyses table for sessions in the last N days with
     //    matching fingerprint (exact match on all 7 bucket fields).
@@ -165,13 +168,15 @@ These are the highest-EV additions. Each directly improves realized returns, not
     // 4. Return null if sample size < 5 (too noisy to be useful).
   }
   ```
+
   Returns a structured result:
+
   ```ts
   type CohortEdgeResult = {
-    nSimilar: number;                  // sample size
-    winRate: number;                   // 0..1
-    avgRMultiple: number;              // average P&L in R units
-    medianHoldTime: number;            // minutes
+    nSimilar: number; // sample size
+    winRate: number; // 0..1
+    avgRMultiple: number; // average P&L in R units
+    medianHoldTime: number; // minutes
     bestStructureByWinRate: 'IC' | 'CCS' | 'PCS' | 'BWB';
     bestStructureByExpectancy: 'IC' | 'CCS' | 'PCS' | 'BWB';
     fingerprint: RegimeFingerprint;
@@ -181,6 +186,7 @@ These are the highest-EV additions. Each directly improves realized returns, not
 
   **Step 3 — Wire into `analyze-context.ts`.**
   In the main context assembly function, after computing the current regime features, call `getCohortEdge(currentFingerprint)` and inject the result as a new context block:
+
   ```ts
   ${cohortContext ? `\n## Your Historical Edge in Similar Regimes (from your journal)
   Sessions with similar fingerprint in the last 60 days: ${cohort.nSimilar}
@@ -194,6 +200,7 @@ These are the highest-EV additions. Each directly improves realized returns, not
 
   **Step 4 — Add a prompt rule.**
   In `analyze-prompts.ts`:
+
   ```
   ## Personal Edge Rule
   The "Your Historical Edge" block reflects YOUR actual trading record in similar
@@ -240,11 +247,12 @@ These are the highest-EV additions. Each directly improves realized returns, not
 
   **Step 2 — Add slippage fields to calculator types.**
   In `src/types/`:
+
   ```ts
   type CreditPair = {
-    mid: number;          // theoretical mid-based credit
-    realistic: number;    // mid × (1 - slippagePct)
-    slippagePct: number;  // the haircut used
+    mid: number; // theoretical mid-based credit
+    realistic: number; // mid × (1 - slippagePct)
+    slippagePct: number; // the haircut used
   };
   ```
 
@@ -256,6 +264,7 @@ These are the highest-EV additions. Each directly improves realized returns, not
 
   **Step 4 — Send both to Claude.**
   In `analyze-context.ts`, include both the mid credit and realistic credit in the structured context. Add a prompt rule:
+
   ```
   ## Slippage Rule
   The calculator provides both "mid credit" (theoretical) and "realistic credit"
@@ -292,6 +301,7 @@ These are the highest-EV additions. Each directly improves realized returns, not
 
   **Step 2 — Compute session P&L at analyze time.**
   In `analyze-context.ts`, before the main prompt assembly:
+
   ```ts
   const sessionPnL = await computeSessionPnL(today); // sum of closed trades + mark-to-market on open
   const rUnit = getRUnit();
@@ -301,10 +311,12 @@ These are the highest-EV additions. Each directly improves realized returns, not
     softWarn: pnlInR <= -1,
   };
   ```
+
   Source the closed trades from the journal table, and mark-to-market on open positions from the most recent Schwab price quotes.
 
   **Step 3 — Inject into the prompt.**
   Add a new context block:
+
   ```
   ## Session Risk State
   Today's realized P&L: ${sessionPnL.toFixed(0)} (${pnlInR.toFixed(1)}R)
@@ -313,6 +325,7 @@ These are the highest-EV additions. Each directly improves realized returns, not
 
   **Step 4 — Add a hard prompt rule.**
   In `analyze-prompts.ts`, as a high-priority rule (priority tier similar to the FOMC hard exit rule):
+
   ```
   ## Rule: Session Loss Gate
   If `gatesActive.maxLoss` is true in the Session Risk State block, you MUST
@@ -352,16 +365,17 @@ These are the highest-EV additions. Each directly improves realized returns, not
 
   **Step 1 — Add a computation helper.**
   New file: `src/utils/zero-gamma.ts`.
+
   ```ts
   export function computeZeroGammaStrike(
     strikes: Array<{ strike: number; netGamma: number }>,
-    spot: number
+    spot: number,
   ): number | null {
     // Sort by strike ascending
     const sorted = [...strikes].sort((a, b) => a.strike - b.strike);
     // Compute running cumulative gamma from the lowest strike upward
     let cumulative = 0;
-    const withCumulative = sorted.map(s => {
+    const withCumulative = sorted.map((s) => {
       cumulative += s.netGamma;
       return { strike: s.strike, cumulative };
     });
@@ -369,8 +383,10 @@ These are the highest-EV additions. Each directly improves realized returns, not
     for (let i = 1; i < withCumulative.length; i++) {
       const prev = withCumulative[i - 1]!;
       const curr = withCumulative[i]!;
-      if ((prev.cumulative <= 0 && curr.cumulative > 0) ||
-          (prev.cumulative >= 0 && curr.cumulative < 0)) {
+      if (
+        (prev.cumulative <= 0 && curr.cumulative > 0) ||
+        (prev.cumulative >= 0 && curr.cumulative < 0)
+      ) {
         // Linearly interpolate the zero-crossing for sub-strike precision
         const t = -prev.cumulative / (curr.cumulative - prev.cumulative);
         return prev.strike + t * (curr.strike - prev.strike);
@@ -382,7 +398,7 @@ These are the highest-EV additions. Each directly improves realized returns, not
   export function distanceToFlip(
     spot: number,
     zeroGammaStrike: number,
-    dailyATR: number
+    dailyATR: number,
   ): { points: number; atr: number; side: 'positive' | 'negative' } {
     const points = spot - zeroGammaStrike;
     return {
@@ -395,11 +411,16 @@ These are the highest-EV additions. Each directly improves realized returns, not
 
   **Step 2 — Feed into analyze context.**
   In `analyze-context.ts`, when assembling the GEX section, also compute and include:
+
   ```ts
   const zeroGammaStrike = computeZeroGammaStrike(strikeGex, spot);
-  const flipDistance = zeroGammaStrike ? distanceToFlip(spot, zeroGammaStrike, dailyATR) : null;
+  const flipDistance = zeroGammaStrike
+    ? distanceToFlip(spot, zeroGammaStrike, dailyATR)
+    : null;
   ```
+
   Inject into prompt:
+
   ```
   ## Zero-Gamma Level
   Zero-gamma strike: ${zeroGammaStrike.toFixed(0)} (aggregate dealer gamma flips here)
@@ -408,6 +429,7 @@ These are the highest-EV additions. Each directly improves realized returns, not
   ```
 
   **Step 3 — Add a prompt rule.**
+
   ```
   ## Zero-Gamma Rule
   The distance-to-flip metric determines hedging regime:
@@ -446,6 +468,7 @@ These are the highest-EV additions. Each directly improves realized returns, not
 
   **Step 1 — New prediction storage table.**
   Migration in `db-migrations.ts`:
+
   ```sql
   CREATE TABLE IF NOT EXISTS ml_predictions (
     id SERIAL PRIMARY KEY,
@@ -467,6 +490,7 @@ These are the highest-EV additions. Each directly improves realized returns, not
 
   **Step 3 — Lookup in analyze context.**
   In `api/_lib/analyze-context.ts`:
+
   ```ts
   async function getMlPredictionForToday(): Promise<MlPrediction | null> {
     const result = await sql`
@@ -479,7 +503,9 @@ These are the highest-EV additions. Each directly improves realized returns, not
     return result[0] ?? null;
   }
   ```
+
   If present AND `model_confidence !== 'low'`, inject into the context:
+
   ```
   ## ML Ensemble Prediction
   Model probability (from walk-forward validated ensemble):
@@ -492,6 +518,7 @@ These are the highest-EV additions. Each directly improves realized returns, not
   ```
 
   **Step 4 — Prompt rule.**
+
   ```
   ## ML Ensemble Rule
   The ML Ensemble block reflects a walk-forward validated probabilistic
@@ -540,6 +567,7 @@ These are the highest-EV additions. Each directly improves realized returns, not
   If today's novelty score is in the top 5% (more distant from nearest neighbors than 95% of training days have been), flag as "novel regime" and force SIT OUT.
 
   **Step 4 — Wire into analyze context.**
+
   ```
   ## Regime Novelty Check
   Today's feature novelty percentile: ${noveltyPct}
@@ -551,6 +579,7 @@ These are the highest-EV additions. Each directly improves realized returns, not
   ```
 
   **Step 5 — Prompt rule.**
+
   ```
   ## Regime Novelty Rule
   If the Regime Novelty Check reports "NOVEL REGIME DETECTED", you MUST
@@ -591,6 +620,7 @@ These are the highest-EV additions. Each directly improves realized returns, not
 
   **Step 3 — Real-time consumption tracking.**
   At analyze time, compute realized vol for buckets already completed today. Compare to the conditional distribution:
+
   ```
   ## Intraday Vol Consumption
   8:30-9:00 RV: 18.2% annualized (68th percentile for VIX bucket "normal")
@@ -600,6 +630,7 @@ These are the highest-EV additions. Each directly improves realized returns, not
   ```
 
   **Step 4 — Prompt rule.**
+
   ```
   ## Intraday Vol Consumption Rule
   - Morning buckets above 75th percentile AND afternoon not yet started:
@@ -626,16 +657,16 @@ These are the highest-EV additions. Each directly improves realized returns, not
 
 These are commonly suggested enhancements that have poor ROI for this specific setup (0DTE SPX, disciplined premium selling, flat by close). Listing them here so future sessions don't re-propose them.
 
-| Enhancement | Why not |
-|---|---|
-| **MBP-1 order book pressure (Databento)** | Real signal, but 5-15 minute half-life. For 0DTE premium selling with an intraday-to-EOD decision horizon, you can't exploit it. Good for scalpers. Integration cost is high. |
-| **Twitter / Reddit / news sentiment scraping** | Noisy, expensive to build, negative expected value for disciplined trading. News is already surfaced via the econ calendar for scheduled events, which is what matters. |
-| **Correlation decoupling / dispersion signals** | Theoretically interesting, too sparse for your sample size to learn from. |
-| **More flow sources beyond the existing 9** | Bottleneck is redundancy management, not coverage. Adding a 13th flow column makes Claude's signal weighting worse, not better. See Part 2 (UW Delta Flow). |
-| **Full Kelly sizing** | Full Kelly on estimated edge blows up accounts when edge is overestimated. Fractional Kelly (¼) via the cohort edge engine gives 80% of the benefit at 10% of the variance. Use ENH-EDGE-001 instead. |
-| **Transformer-based regime models** | Walk-forward sample size does not support deep learning. Stick with gradient boosting + logistic regression per the ML pipeline design. |
-| **Retail vs institutional flow decomposition (SPY vs SPX bias)** | Theoretically interesting, practically noisy. You already have both in the prompt; if divergence mattered, ML would pick it up via ENH-SIGNAL-002. |
-| **Bid/ask spread widening as a tape-health signal** | Real but redundant with VIX and VVIX, which already capture it. |
+| Enhancement                                                      | Why not                                                                                                                                                                                               |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **MBP-1 order book pressure (Databento)**                        | Real signal, but 5-15 minute half-life. For 0DTE premium selling with an intraday-to-EOD decision horizon, you can't exploit it. Good for scalpers. Integration cost is high.                         |
+| **Twitter / Reddit / news sentiment scraping**                   | Noisy, expensive to build, negative expected value for disciplined trading. News is already surfaced via the econ calendar for scheduled events, which is what matters.                               |
+| **Correlation decoupling / dispersion signals**                  | Theoretically interesting, too sparse for your sample size to learn from.                                                                                                                             |
+| **More flow sources beyond the existing 9**                      | Bottleneck is redundancy management, not coverage. Adding a 13th flow column makes Claude's signal weighting worse, not better. See Part 2 (UW Delta Flow).                                           |
+| **Full Kelly sizing**                                            | Full Kelly on estimated edge blows up accounts when edge is overestimated. Fractional Kelly (¼) via the cohort edge engine gives 80% of the benefit at 10% of the variance. Use ENH-EDGE-001 instead. |
+| **Transformer-based regime models**                              | Walk-forward sample size does not support deep learning. Stick with gradient boosting + logistic regression per the ML pipeline design.                                                               |
+| **Retail vs institutional flow decomposition (SPY vs SPX bias)** | Theoretically interesting, practically noisy. You already have both in the prompt; if divergence mattered, ML would pick it up via ENH-SIGNAL-002.                                                    |
+| **Bid/ask spread widening as a tape-health signal**              | Real but redundant with VIX and VVIX, which already capture it.                                                                                                                                       |
 
 ---
 
@@ -684,33 +715,33 @@ A reasonable interleaving: ship ENH-RISK-001 first (smallest, highest floor), th
 
 From the Explore sub-agent investigation on 2026-04-08. Use this as the authoritative snapshot of what `api/_lib/analyze-context.ts` assembles and sends to Claude today.
 
-| # | Source | UW Endpoint | Fetch | Fields in Prompt | Aggregation |
-|---|---|---|---|---|---|
-| 1 | Market Tide (All) | `/market/market-tide?interval_5m=true` | 5 min | NCP, NPP, net_volume, direction, divergence | Cumulative 5-min candles |
-| 2 | Market Tide (OTM) | `/market/market-tide?interval_5m=true&otm_only=true` | 5 min | NCP, NPP, net_volume, direction, divergence | Cumulative 5-min candles, OTM-only |
-| 3 | SPX Net Flow | `/stock/SPX/net-prem-ticks` | 5 min | NCP, NPP, net_volume, direction | Cumulative 1-min ticks sampled 5-min |
-| 4 | SPY Net Flow | `/stock/SPY/net-prem-ticks` | 5 min | NCP, NPP, net_volume, direction | Same |
-| 5 | QQQ Net Flow | `/stock/QQQ/net-prem-ticks` | 5 min | NCP, NPP, net_volume, direction | Same |
-| 6 | SPY ETF Tide | `/net-flow/expiry` (ETF variant) | 5 min | NCP, NPP, net_volume, direction | Cumulative 5-min, holdings flow |
-| 7 | QQQ ETF Tide | `/net-flow/expiry` (ETF variant) | 5 min | NCP, NPP, net_volume, direction | Cumulative 5-min, holdings flow |
-| 8 | 0DTE Index Flow | `/net-flow/expiry?expiration=zero_dte&tide_type=index_only` | 5 min | NCP, NPP, net_volume, direction | Cumulative 5-min, SPX/NDX 0DTE |
-| 9 | 0DTE Greek Flow | `/stock/SPX/greek-flow/{date}` | 5 min | total_delta_flow, dir_delta_flow (OTM variants dropped — see ENH-FIX-001) | Per-minute delta accumulation |
-| 10 | Greek Exposure (OI) | `/stock/SPX/greek-exposure` + `/expiry` | EOD / 6h | Gamma, charm, delta, vanna per expiry | Per-expiry MM positioning |
-| 11 | Spot GEX Panel | `/stock/SPX/spot-exposures` | 5 min | Gamma/charm/vanna OI + Vol + Dir, price | Latest snapshot + 6 recent 5-min points |
-| 12 | Strike GEX | `/stock/SPX/spot-exposures/strike?limit=500` | 6h | Gamma/charm/vanna call/put/net per strike | Per-strike all-expiry snapshot |
-| 13 | Expiry-Strike GEX | `/stock/SPX/spot-exposures/expiry-strike` | 6h | Gamma/charm per strike per expiry | Per-strike per-expiry |
-| 14 | Vol Realized | Internal compute from SPX candles | Daily | iv_30d, rv_30d, iv_rv_spread, iv_overpricing_pct, iv_rank | Daily aggregate |
-| 15 | VIX / VIX1D | Multiple (internal + snapshots) | 5 min | Spot, 1D, 9D, term structure, inversion flag | Current + historical comparison |
-| 16 | IV Term Structure | Derived from SPX chain | 5 min | 0DTE IV, 30D IV, contango vs inversion | Shape classifier |
-| 17 | Dark Pool | UW dark pool endpoints | 5 min | Blocks, levels, clustering | Price-clustered institutional levels |
-| 18 | Pin Risk | Computed from chain OI | Real-time | Top OI strikes + near-spot (post FE-MATH-001) | Proximity-weighted union |
-| 19 | Max Pain | Computed from chain | Real-time | Max pain strike + current distance | Point-in-time |
-| 20 | Overnight Gap | ES futures from sidecar | Real-time | Overnight range, % of straddle cone | Session aggregate |
-| 21 | SPX Candles | Schwab or chain-derived | Real-time | OHLCV intraday bars | 1-min resampled |
-| 22 | Cross-Asset Futures | Databento sidecar | 5 min | /ES, /NQ, /VX, /ZN, /CL, /GC, /DX | Per-symbol daily + narrative |
-| 23 | Skew | Derived from chain | Real-time | 25Δ put skew, skew ratio | Point-in-time |
-| 24 | Positions (CSV) | TOS export upload | On upload | Parsed open spreads, risk summary | Structured trade context |
-| 25 | Lessons Learned | Lessons curation pipeline | Daily | Narrative past-incident memory | Curated text block |
+| #   | Source              | UW Endpoint                                                 | Fetch     | Fields in Prompt                                                          | Aggregation                             |
+| --- | ------------------- | ----------------------------------------------------------- | --------- | ------------------------------------------------------------------------- | --------------------------------------- |
+| 1   | Market Tide (All)   | `/market/market-tide?interval_5m=true`                      | 5 min     | NCP, NPP, net_volume, direction, divergence                               | Cumulative 5-min candles                |
+| 2   | Market Tide (OTM)   | `/market/market-tide?interval_5m=true&otm_only=true`        | 5 min     | NCP, NPP, net_volume, direction, divergence                               | Cumulative 5-min candles, OTM-only      |
+| 3   | SPX Net Flow        | `/stock/SPX/net-prem-ticks`                                 | 5 min     | NCP, NPP, net_volume, direction                                           | Cumulative 1-min ticks sampled 5-min    |
+| 4   | SPY Net Flow        | `/stock/SPY/net-prem-ticks`                                 | 5 min     | NCP, NPP, net_volume, direction                                           | Same                                    |
+| 5   | QQQ Net Flow        | `/stock/QQQ/net-prem-ticks`                                 | 5 min     | NCP, NPP, net_volume, direction                                           | Same                                    |
+| 6   | SPY ETF Tide        | `/net-flow/expiry` (ETF variant)                            | 5 min     | NCP, NPP, net_volume, direction                                           | Cumulative 5-min, holdings flow         |
+| 7   | QQQ ETF Tide        | `/net-flow/expiry` (ETF variant)                            | 5 min     | NCP, NPP, net_volume, direction                                           | Cumulative 5-min, holdings flow         |
+| 8   | 0DTE Index Flow     | `/net-flow/expiry?expiration=zero_dte&tide_type=index_only` | 5 min     | NCP, NPP, net_volume, direction                                           | Cumulative 5-min, SPX/NDX 0DTE          |
+| 9   | 0DTE Greek Flow     | `/stock/SPX/greek-flow/{date}`                              | 5 min     | total_delta_flow, dir_delta_flow (OTM variants dropped — see ENH-FIX-001) | Per-minute delta accumulation           |
+| 10  | Greek Exposure (OI) | `/stock/SPX/greek-exposure` + `/expiry`                     | EOD / 6h  | Gamma, charm, delta, vanna per expiry                                     | Per-expiry MM positioning               |
+| 11  | Spot GEX Panel      | `/stock/SPX/spot-exposures`                                 | 5 min     | Gamma/charm/vanna OI + Vol + Dir, price                                   | Latest snapshot + 6 recent 5-min points |
+| 12  | Strike GEX          | `/stock/SPX/spot-exposures/strike?limit=500`                | 6h        | Gamma/charm/vanna call/put/net per strike                                 | Per-strike all-expiry snapshot          |
+| 13  | Expiry-Strike GEX   | `/stock/SPX/spot-exposures/expiry-strike`                   | 6h        | Gamma/charm per strike per expiry                                         | Per-strike per-expiry                   |
+| 14  | Vol Realized        | Internal compute from SPX candles                           | Daily     | iv_30d, rv_30d, iv_rv_spread, iv_overpricing_pct, iv_rank                 | Daily aggregate                         |
+| 15  | VIX / VIX1D         | Multiple (internal + snapshots)                             | 5 min     | Spot, 1D, 9D, term structure, inversion flag                              | Current + historical comparison         |
+| 16  | IV Term Structure   | Derived from SPX chain                                      | 5 min     | 0DTE IV, 30D IV, contango vs inversion                                    | Shape classifier                        |
+| 17  | Dark Pool           | UW dark pool endpoints                                      | 5 min     | Blocks, levels, clustering                                                | Price-clustered institutional levels    |
+| 18  | Pin Risk            | Computed from chain OI                                      | Real-time | Top OI strikes + near-spot (post FE-MATH-001)                             | Proximity-weighted union                |
+| 19  | Max Pain            | Computed from chain                                         | Real-time | Max pain strike + current distance                                        | Point-in-time                           |
+| 20  | Overnight Gap       | ES futures from sidecar                                     | Real-time | Overnight range, % of straddle cone                                       | Session aggregate                       |
+| 21  | SPX Candles         | Schwab or chain-derived                                     | Real-time | OHLCV intraday bars                                                       | 1-min resampled                         |
+| 22  | Cross-Asset Futures | Databento sidecar                                           | 5 min     | /ES, /NQ, /VX, /ZN, /CL, /GC, /DX                                         | Per-symbol daily + narrative            |
+| 23  | Skew                | Derived from chain                                          | Real-time | 25Δ put skew, skew ratio                                                  | Point-in-time                           |
+| 24  | Positions (CSV)     | TOS export upload                                           | On upload | Parsed open spreads, risk summary                                         | Structured trade context                |
+| 25  | Lessons Learned     | Lessons curation pipeline                                   | Daily     | Narrative past-incident memory                                            | Curated text block                      |
 
 **Total: 25 distinct context sources.** The bottleneck is no longer coverage — it's signal rationalization (knowing which to trust when they disagree) and derived metrics that distill raw data into actionable numbers.
 
@@ -719,20 +750,24 @@ From the Explore sub-agent investigation on 2026-04-08. Use this as the authorit
 ## Appendix B — Files read or verified during this investigation
 
 Direct reads:
+
 - [docs/superpowers/specs/principal-engineer-audit-2026-04-07.md](principal-engineer-audit-2026-04-07.md) (full document, 895 lines)
-- [api/_lib/futures-context.ts](../../../api/_lib/futures-context.ts) (lines 1-50 + 150-330)
+- [api/\_lib/futures-context.ts](../../../api/_lib/futures-context.ts) (lines 1-50 + 150-330)
 
 Grep-verified citations (pattern found, file:line confirmed):
-- [api/_lib/analyze-prompts.ts](../../../api/_lib/analyze-prompts.ts) — RV/IV rule block, VX term structure rule, IV term structure rule, straddle cone rules, FOMC exit rule, VIX1D inversion rules, "gamma flip" (charm sign change, not zero-gamma)
-- [api/_lib/analyze-context.ts](../../../api/_lib/analyze-context.ts) — volRealizedContext assembly (lines 415-464), futures context integration, all formatter wiring
+
+- [api/\_lib/analyze-prompts.ts](../../../api/_lib/analyze-prompts.ts) — RV/IV rule block, VX term structure rule, IV term structure rule, straddle cone rules, FOMC exit rule, VIX1D inversion rules, "gamma flip" (charm sign change, not zero-gamma)
+- [api/\_lib/analyze-context.ts](../../../api/_lib/analyze-context.ts) — volRealizedContext assembly (lines 415-464), futures context integration, all formatter wiring
 - Negative-grep verified (absent from codebase): `gamma.?flip` as zero-gamma level, `cohort`, `personal.?edge`, `similar.?sessions`, `historical.?outcomes`, `regime.?stratified`, `ml.?prediction`, `model.?output`, `xgb.?prob`, `rf.?prob`
 
 Agent-verified (via Explore sub-agent, cross-checked against grep):
+
 - Full inventory of 13 UW endpoints currently called (see Appendix A)
 - `otm_total_delta_flow` and `otm_dir_delta_flow` fetched but discarded in `api/cron/fetch-greek-flow.ts`
 - `db-flow.ts` formatter list (formatSpotExposuresForClaude, formatGreekFlowForClaude, etc.)
 
 File existence confirmed via ls:
+
 - `api/cron/fetch-greek-flow.ts`
 - `api/_lib/analyze-prompts.ts` (1038 lines)
 - `api/_lib/futures-context.ts`
@@ -751,4 +786,4 @@ File existence confirmed via ls:
 
 ---
 
-*End of spec.*
+_End of spec._

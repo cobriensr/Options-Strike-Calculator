@@ -17,17 +17,19 @@ SectionBox "Market Flow"
 
 **State ownership**: MarketFlow container owns `selectedDate` + `scrubTimestamp`. Both hooks receive these as params. Children are pure views — no independent time state.
 
-**Timestamp unification**: Both API endpoints return `timestamps[]` (distinct 1-min buckets with data). Container merges them into a unified scrub list so the dropdown shows all times where *either* data source has data.
+**Timestamp unification**: Both API endpoints return `timestamps[]` (distinct 1-min buckets with data). Container merges them into a unified scrub list so the dropdown shows all times where _either_ data source has data.
 
 ## Data flow changes
 
 ### API: `GET /api/options-flow/top-strikes`
 
 Add optional params:
+
 - `?date=YYYY-MM-DD` — filter `flow_alerts` to that date (default: today ET)
 - `?as_of=ISO_TIMESTAMP` — filter `WHERE created_at <= as_of` before ranking
 
 Response adds:
+
 - `timestamps: string[]` — distinct 1-min bucket labels with data for the date (ascending)
 
 When `date` is today and no `as_of`: current rolling-window behavior (live mode).
@@ -36,10 +38,12 @@ When `date` is past or `as_of` is set: full-day query with cutoff, no rolling wi
 ### API: `GET /api/options-flow/whale-positioning`
 
 Add optional params:
+
 - `?date=YYYY-MM-DD` — query `whale_alerts` DB table instead of live UW proxy
 - `?as_of=ISO_TIMESTAMP` — filter `WHERE created_at <= as_of`
 
 Response adds:
+
 - `timestamps: string[]` — same pattern as top-strikes
 
 When `date` is today and no `as_of`: current live UW proxy behavior.
@@ -48,6 +52,7 @@ When `date` is past or `as_of` is set: query `whale_alerts` table.
 ### Hooks: `useOptionsFlow` + `useWhalePositioning`
 
 Add params: `selectedDate?: string`, `asOf?: string | null`
+
 - Pass to API as query params
 - When `asOf` is set: one-shot fetch (no polling)
 - When `selectedDate` is past: one-shot fetch (no polling)
@@ -58,6 +63,7 @@ Return adds: `timestamps: string[]`
 ### Frontend: `MarketFlow` container component
 
 New file: `src/components/MarketFlow/index.tsx`
+
 - Owns `selectedDate`, `scrubTimestamp` state
 - Calls both hooks with date/time params
 - Merges `timestamps[]` from both hooks (sorted union, deduped)

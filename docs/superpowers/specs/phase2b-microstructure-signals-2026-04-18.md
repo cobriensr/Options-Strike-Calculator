@@ -86,8 +86,12 @@ individual signals speak.
     ofi5m: number | null;
     spreadZscore: number | null;
     tobPressure: number | null;
-    composite: 'AGGRESSIVE_BUY' | 'AGGRESSIVE_SELL'
-             | 'LIQUIDITY_STRESS' | 'BALANCED' | null;
+    composite:
+      | 'AGGRESSIVE_BUY'
+      | 'AGGRESSIVE_SELL'
+      | 'LIQUIDITY_STRESS'
+      | 'BALANCED'
+      | null;
     computedAt: string;
   }
   export async function computeMicrostructureSignals(
@@ -106,7 +110,7 @@ individual signals speak.
 
 - `api/_lib/analyze-context-fetchers.ts` — add
   `fetchMicrostructureBlock()` following the existing null-on-error
-  + logger + `metrics.increment` pattern.
+  - logger + `metrics.increment` pattern.
 - `api/_lib/analyze-context.ts` — wire the new fetcher into the
   `Promise.all` and into the context assembly. Position next to
   the other cross-asset/futures signals.

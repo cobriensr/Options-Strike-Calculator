@@ -22,7 +22,7 @@ The architecture is already in place from Phase 2a/2b:
   `symbol` column that differentiates ES vs NQ
 - `sidecar/src/quote_processor.py` already handles trade + book
   snapshots per-symbol; the only restriction is an `if symbol != "ES"
-  return` guard added in Phase 2a as explicit scope
+return` guard added in Phase 2a as explicit scope
 - `api/_lib/microstructure-signals.ts` computes OFI + spread + TOB
   with symbol hardcoded to `ES` in SQL; needs parameterization
 
@@ -40,7 +40,7 @@ compute-layer SQL + analyze-context formatter to dual-symbol.
   `stype_in=parent`. The Databento Live client handles multiple
   parent symbols in one subscribe call.
 - `sidecar/src/quote_processor.py` — remove the `if symbol != "ES":
-  return` guard in the TBBO handler. Both ES and NQ events flow
+return` guard in the TBBO handler. Both ES and NQ events flow
   through the same `batch_insert_top_of_book` + `batch_insert_trade_ticks`
   writers; the tables already carry the symbol column.
 - `sidecar/tests/test_quote_processor.py` — update the regression
@@ -158,7 +158,7 @@ compute-layer SQL + analyze-context formatter to dual-symbol.
 
 - **Cross-asset divergence threshold:** when exactly does the analyze
   context fire a "divergence" warning? Default proposal: `|NQ_OFI -
-  ES_OFI| > 0.4 AND sign(NQ_OFI) != sign(ES_OFI)`. If that's too
+ES_OFI| > 0.4 AND sign(NQ_OFI) != sign(ES_OFI)`. If that's too
   conservative or too chatty, adjust after a week of live observation.
 - **Back-compat shape for `computeMicrostructureSignals`:** prefer
   `computeMicrostructureSignals(now, symbol='ES')` with positional

@@ -37,7 +37,7 @@ stream live today.
 
 Reads from `futures_bars` for ES.
 
-- For the *prior* trading day (not today's partial session), compute
+- For the _prior_ trading day (not today's partial session), compute
   a simple volume profile on 1-point price buckets:
   - **POC (Point of Control):** price bucket with max volume.
   - **VAH / VAL:** boundaries of the 70% volume region around POC.
@@ -64,8 +64,8 @@ back to whichever table does (investigate before coding).
 
 - `api/_lib/cross-asset-regime.ts` — compute and format the risk
   regime composite. Exports `computeCrossAssetRegime(tradeDate,
-  now)` returning `{ composite, esNqDiverging, clSpike, regime,
-  components }` and `formatCrossAssetRegimeForClaude(regime)`.
+now)` returning `{ composite, esNqDiverging, clSpike, regime,
+components }` and `formatCrossAssetRegimeForClaude(regime)`.
 - `api/_lib/volume-profile.ts` — compute POC/VAH/VAL for a symbol
   and date. Exports `computeVolumeProfile(symbol, tradeDate)` and
   `formatVolumeProfileForClaude(profile)`.
@@ -95,7 +95,7 @@ back to whichever table does (investigate before coding).
 - **No new external API calls.** Reads existing DB tables only.
 - **Three independent fetchers, each null-safe.** One failing can
   never take down another.
-- **Must be cached-stable.** The three fetchers belong *outside* the
+- **Must be cached-stable.** The three fetchers belong _outside_ the
   stable-prompt-cache boundary — they're dynamic per call. Verify
   placement against `analyze-context.ts` assembly order.
 
