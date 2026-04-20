@@ -812,6 +812,20 @@ class DatabentoClient:
                     dict(list(smap.items())[:5]),
                 )
 
+        # Options pipeline health snapshot, emitted once per OHLCV-1m
+        # interval close (~60s cadence). SIDE-013: if definitions_cached
+        # stays at 0 while drops/trades continue flowing, Definition
+        # routing or filtering is broken upstream of the trade handler
+        # — this log turns that silent failure into a visible one.
+        if "End of interval for ohlcv-1m" in msg:
+            log.info(
+                "Options pipeline: definitions_cached=%d ATM_strikes=%d "
+                "center=%.2f",
+                len(self._option_definitions),
+                len(self._options_strikes.strikes),
+                self._options_strikes.center_price,
+            )
+
     def _get_option_info(self, instrument_id: int) -> dict | None:
         """Look up option strike/type/expiry for an instrument_id."""
         return self._option_definitions.get(instrument_id)

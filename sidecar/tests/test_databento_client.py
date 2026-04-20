@@ -509,3 +509,100 @@ class TestSubscribeL1:
         method must be a safe no-op rather than raising."""
         client._client = None
         client._subscribe_l1()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# SIDE-013 — options pipeline diagnostics log
+# ---------------------------------------------------------------------------
+
+
+def _make_system_record(msg: str, is_error: bool = False) -> MagicMock:
+    """Build a fake SystemMsg / ErrorMsg for _handle_system."""
+    rec = MagicMock()
+    rec.msg = msg
+    rec.is_error = is_error
+    return rec
+
+
+class TestOptionsPipelineDiagnostics:
+    """SIDE-013: periodic health snapshot of the options pipeline.
+
+    When definitions_cached stays at 0 while trades flow, Definition
+    routing or the instrument_class filter is broken upstream — this
+    log turns that silent failure into a visible one at ~60s cadence.
+    """
+
+    def test_diagnostic_log_fires_on_ohlcv_end_of_interval(
+        self, client: DatabentoClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An OHLCV-1m end-of-interval system message must emit the
+        diagnostic line with current definitions_cached + ATM_strikes."""
+        client._option_definitions[123] = {
+            "strike": 5800.0,
+            "option_type": "C",
+            "expiry": None,
+        }
+        client._option_definitions[456] = {
+            "strike": 5805.0,
+            "option_type": "P",
+            "expiry": None,
+        }
+        client._options_strikes = MagicMock()
+        client._options_strikes.strikes = [5800.0, 5805.0, 5810.0]
+        client._options_strikes.center_price = 5800.0
+
+        with caplog.at_level("INFO"):
+            client._handle_system(
+                _make_system_record("End of interval for ohlcv-1m")
+            )
+
+        diagnostic_lines = [
+            r.message for r in caplog.records if "Options pipeline:" in r.message
+        ]
+        assert len(diagnostic_lines) == 1
+        assert "definitions_cached=2" in diagnostic_lines[0]
+        assert "ATM_strikes=3" in diagnostic_lines[0]
+
+    def test_diagnostic_does_not_fire_on_other_system_messages(
+        self, client: DatabentoClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Only OHLCV-1m end-of-interval triggers the diagnostic — other
+        system messages (subscription succeeded, tbbo end-of-interval,
+        reconnects) must not emit it, to keep cadence at ~60s."""
+        client._options_strikes = MagicMock()
+        client._options_strikes.strikes = []
+        client._options_strikes.center_price = 0.0
+
+        with caplog.at_level("INFO"):
+            client._handle_system(
+                _make_system_record("End of interval for tbbo")
+            )
+            client._handle_system(
+                _make_system_record("Subscription request 0 for tbbo succeeded")
+            )
+
+        diagnostic_lines = [
+            r.message for r in caplog.records if "Options pipeline:" in r.message
+        ]
+        assert diagnostic_lines == []
+
+    def test_diagnostic_reports_zero_when_cache_empty(
+        self, client: DatabentoClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The whole point of this log: surface definitions_cached=0
+        so a broken Definition pipeline becomes visible instead of
+        silently dropping every trade."""
+        client._options_strikes = MagicMock()
+        client._options_strikes.strikes = [5800.0]
+        client._options_strikes.center_price = 5800.0
+
+        with caplog.at_level("INFO"):
+            client._handle_system(
+                _make_system_record("End of interval for ohlcv-1m")
+            )
+
+        diagnostic_lines = [
+            r.message for r in caplog.records if "Options pipeline:" in r.message
+        ]
+        assert len(diagnostic_lines) == 1
+        assert "definitions_cached=0" in diagnostic_lines[0]
