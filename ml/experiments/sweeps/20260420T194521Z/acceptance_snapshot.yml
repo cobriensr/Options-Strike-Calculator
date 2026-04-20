@@ -1,0 +1,41 @@
+version: 3
+committed_ts: 2026-04-20 13:35:00-05:00
+commit_hash_when_locked: 3e6d9983ade5f1c09fe79a24f3c8ca19f7a27a25
+markets:
+- symbol: NQ
+  apply_thresholds: true
+- symbol: ES
+  apply_thresholds: true
+cross_market_gate:
+  require_pass_on_all_markets: true
+thresholds:
+  pbo_max: 0.3
+  dsr_min_95ci: 0.0
+  oos_vs_is_sharpe_min: 0.7
+  min_trades_per_fold: 200
+  max_drawdown_pct: 0.2
+  profit_factor_min: 1.4
+  param_stability_max_drop: 0.3
+effective_trial_estimation:
+  method: param_cluster
+  correlation_threshold: 0.7
+fill_model:
+  spread_cross: true
+  extra_slippage_ticks: 0.5
+  commission_per_rt:
+    MNQ: 1.9
+    NQ: 4.0
+    MES: 1.9
+    ES: 4.0
+sweep:
+  cpcv_n_groups: 6
+  cpcv_k_test_groups: 2
+  embargo_bars: 240
+  optuna_trials_per_fold: 150
+  optuna_sampler: TPE
+  optuna_pruner: MedianPruner
+  joblib_n_jobs: -1
+bootstrap:
+  method: stationary
+  block_length_source: auto
+  n_resamples: 1000

@@ -1,0 +1,21 @@
+{
+  "run_tag": "20260420T193741Z",
+  "git_head_sha": "3e6d998",
+  "acceptance_version": 3,
+  "acceptance_commit_snapshot": "/Users/charlesobrien/Documents/Workspace/strike-calculator/ml/src/pac_backtest/acceptance.yml",
+  "start": "2026-03-25",
+  "end": "2026-04-20",
+  "markets_run": [
+    "NQ",
+    "ES"
+  ],
+  "gate_result": {
+    "cross_market_pass_count": 0,
+    "nq_only_count": 0,
+    "es_only_count": 0,
+    "non_promoted_count": 15,
+    "cross_market_pass": [],
+    "nq_only": [],
+    "es_only": []
+  }
+}
