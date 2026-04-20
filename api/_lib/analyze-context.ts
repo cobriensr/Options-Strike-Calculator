@@ -53,6 +53,7 @@ import {
   fetchEconomicCalendarContext,
   fetchFuturesContext,
   fetchSimilarDaysContext,
+  fetchRangeForecastContext,
   fetchIvTermContext,
   fetchMainData,
   fetchMaxPainContext,
@@ -242,6 +243,7 @@ export async function buildAnalysisContext(
     microstructureContext,
     uwDeltasContext,
     similarDaysContext,
+    rangeForecastContext,
   ] = await Promise.all([
     fetchDarkPoolContext(context, analysisDate),
     fetchMaxPainContext(context, analysisDate),
@@ -262,6 +264,7 @@ export async function buildAnalysisContext(
     fetchMicrostructureBlock(),
     fetchUwDeltasBlock(),
     fetchSimilarDaysContext(analysisDate),
+    fetchRangeForecastContext(analysisDate),
   ]);
 
   const marketTideOtmSection = main.marketTideOtmContext
@@ -297,6 +300,8 @@ export async function buildAnalysisContext(
   if (!uwDeltasContext)
     unavailable.push('UW Deltas (dark pool / GEX / whale / ETF tide)');
   if (!similarDaysContext) unavailable.push('Historical Analog Days');
+  if (!rangeForecastContext)
+    unavailable.push('Analog Range Forecast (cohort-conditional strikes)');
   const unavailableList = unavailable.map((s) => '- ' + s).join('\n');
   const unavailableSection =
     unavailable.length > 0
@@ -372,6 +377,7 @@ ${futuresContext ? `\n${futuresContext}\nFutures signals lead options flow by 10
 ${crossAssetRegimeContext ? `\n## Cross-Asset Risk Regime (from futures_bars — 5-min returns)\nComposite and per-symbol returns classifying the session as RISK-ON, RISK-OFF, MIXED, or MACRO-STRESS. See <cross_asset_regime_rules> for interpretation.\n  ${crossAssetRegimeContext}\n` : ''}
 ${volumeProfileContext ? `\n## Prior-Day Volume Profile (from futures_bars)\nPOC/VAH/VAL computed from the prior session's ES minute bars. Treat these as structural reference levels — see <volume_profile_rules> for interpretation.\n${volumeProfileContext}\n` : ''}
 ${similarDaysContext ? `\n## Historical Analog Days (16-year ES archive, embedding similarity)\nEach row is a deterministic one-liner: date symbol | open | 1h Δ | 2h Δ | 3h Δ | range | volume | close (net). These are NOT predictions — they are empirical priors sampled by cosine-similarity on the target day's summary text.\n${similarDaysContext}\n` : ''}
+${rangeForecastContext ? `\n## Analog Range Forecast (cohort-conditional, for strike placement)\nValidated on 2024-2026 (n=563): text-embedding cohort p90 covers ~78% of actual daily ranges, and the cohort captures SPX's left-tail asymmetry (down p80 typically exceeds up p80). Use these numbers for 0DTE iron-condor strike sizing — they beat a fixed % of spot and dramatically beat pre-2024 global distribution, which is miscalibrated for current vol regime.\n${rangeForecastContext}\n` : ''}
 ${vixDivergenceContext ? `\n## VIX/SPX Divergence Flag (from market_snapshots + spx_candles_1m)\n5-minute paired return check: VIX rising while SPX is flat is the classic informed-positioning canary. See <vix_divergence_rules> for interpretation.\n  ${vixDivergenceContext}\n` : ''}
 ${microstructureContext ? `\n## Dual-Symbol Microstructure Signals (ES + NQ, from futures_trade_ticks + futures_top_of_book)\nOrder flow imbalance (OFI 1m/5m/1h), spread widening z-score, and top-of-book pressure derived from the Databento L1 book + trade stream for both ES and NQ front-month contracts. NQ 1h OFI is the empirically validated signal (Phase 4d: ρ=0.313, p_bonf<0.001, n=312 days). See <microstructure_signals_rules> for interpretation.\n${microstructureContext}\n` : ''}
 ${uwDeltasContext ? `\n## UW Deltas — Rate-of-Change Signals (from dark_pool_levels + spot_exposures + flow_alerts + flow_data)\nFour institutional-activity velocity / delta reads computed from data already ingested by UW crons. Dark pool print velocity (vs 60-min baseline), OI GEX intraday delta (vs RTH open), whale flow net call/put positioning, and SPY/QQQ ETF tide divergence. See <uw_deltas_rules> in the system prompt for interpretation; combine 3-of-4 agreement for highest-confidence reads.\n${uwDeltasContext}\n` : ''}

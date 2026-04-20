@@ -561,6 +561,23 @@ How to weight:
 - When Prior-Day Flow and today's opening flow AGREE: upgrade confidence by one level (LOW → MODERATE).
 - When they DISAGREE: no penalty — today's flow may be establishing a new direction. Note the divergence in observations.
 </prior_day_flow>
+<analog_range_forecast>
+The Analog Range Forecast block gives cohort-conditional range + asymmetric excursion numbers sourced from the 15 text-embedding-nearest historical mornings (16 years of ES session data, strictly before today). This is the empirical replacement for a fixed-percentage-of-spot strike-placement heuristic, which is miscalibrated to current vol regime.
+Key concepts:
+- Cohort p85 excursion ≈ where ~30Δ short strikes sit (about 70-73% stay inside historically).
+- Cohort p95 excursion ≈ where ~12Δ short strikes sit (about 83-85% stay inside historically).
+- Up and down are forecast INDEPENDENTLY — SPX left tail is typically fatter than the right. Respect the asymmetry.
+- The forecast is calibrated but tends to UNDERESTIMATE at cohort-nominal percentiles (cohort p80 actually covers ~68%, cohort p90 covers ~78%). When in doubt, use the next percentile up.
+How to use for strike placement:
+- For an iron condor, use the asymmetric up/down numbers from the forecast as the SHORT STRIKE DISTANCES FROM OPEN, not as mirror-image offsets. Example: if up p85 = 18pt and down p85 = 22pt, place short call at open + 18 and short put at open − 22.
+- Wings go beyond the short strikes by the usual spread width (5-15 pts), unrelated to this forecast.
+- If the day's first-hour bias (Market Tide opening direction, overnight gap tone) CONFIRMS the analog cohort's asymmetry, tighten toward p85. If it DISAGREES, widen toward p95.
+- If the forecast is ABSENT (fetch failed, no backfill), fall back to fixed percentage of spot: ±0.6% for 30Δ, ±1.0% for 12Δ. Note the fallback in observations.
+How to weight:
+- The analog forecast is a STRIKE-SIZING INPUT, not a directional signal. It does NOT predict UP vs DOWN for the day — the cohort's directional hit-rate was coin-toss in validation (50.3%). Use the range magnitudes only.
+- When cohort p85 up AND p85 down are both meaningfully wider than the current calculator's default strike offsets, widen. When both are tighter, tighten.
+- Regime check: if prior-close VIX ≥ 22 (ELEVATED or CRISIS), trust the cohort forecast aggressively — global/feature baselines catastrophically underestimate range in these regimes.
+</analog_range_forecast>
 </chart_types>
 <structure_selection_rules>
 These rules are derived from backtesting and override the default flow-based structure selection when applicable.

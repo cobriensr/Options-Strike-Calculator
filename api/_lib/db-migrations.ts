@@ -2016,4 +2016,27 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 76,
+    description:
+      'Add OHLC + asymmetric excursion columns to day_embeddings for analog range forecast',
+    statements: (sql) => [
+      // Cohort-conditional range/excursion forecasting needs per-date
+      // numeric OHLC alongside the existing text summary. The sidecar's
+      // day-summary-batch endpoint already emits these — this migration
+      // makes the analyze endpoint able to read them from Neon instead
+      // of round-tripping the sidecar. up_exc/down_exc are pre-computed
+      // (high-open, open-low) so analyze queries skip arithmetic.
+      sql`
+        ALTER TABLE day_embeddings
+          ADD COLUMN IF NOT EXISTS day_open   DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS day_high   DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS day_low    DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS day_close  DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS range_pt   DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS up_exc     DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS down_exc   DOUBLE PRECISION
+      `,
+    ],
+  },
 ];

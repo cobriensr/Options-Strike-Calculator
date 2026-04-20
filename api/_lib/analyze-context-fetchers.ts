@@ -986,3 +986,38 @@ export async function fetchSimilarDaysContext(
     return null;
   }
 }
+
+/**
+ * Cohort-conditional range + asymmetric excursion forecast for the
+ * analyze prompt. Same analog retrieval as fetchSimilarDaysContext, but
+ * the payload is the cohort's expected daily-range quantiles and
+ * up/down excursion numbers — the inputs for 0DTE iron-condor strike
+ * placement at ~30Δ / ~12Δ.
+ *
+ * Validated on 2024-2026 (n=563): text-cohort p90 hits 78% of actual
+ * ranges, and cohort correctly reflects SPX's left-tail asymmetry
+ * (down p80 > up p80 by ~13%). The global unconditional distribution
+ * is dangerously miscalibrated for 2024+ — this fetcher's output is
+ * the cohort-conditional replacement.
+ */
+export async function fetchRangeForecastContext(
+  analysisDate: string,
+): Promise<string | null> {
+  try {
+    const { fetchDaySummary } = await import('./archive-sidecar.js');
+    const { fetchCurrentSnapshot } = await import('./current-snapshot.js');
+    const { getRangeForecast, formatRangeForecast } =
+      await import('./analog-range-forecast.js');
+
+    const snapshot = await fetchCurrentSnapshot(analysisDate);
+    const summary = snapshot?.summary ?? (await fetchDaySummary(analysisDate));
+    if (!summary) return null;
+
+    const forecast = await getRangeForecast(analysisDate, summary);
+    return formatRangeForecast(forecast);
+  } catch (err) {
+    logger.warn({ err }, 'range-forecast context fetch failed');
+    metrics.increment('analyze_context.range_forecast_error');
+    return null;
+  }
+}
