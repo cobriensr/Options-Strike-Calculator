@@ -62,6 +62,7 @@ import {
   fetchPreMarketContext,
   fetchPriorDayFlowContext,
   fetchSpxCandlesContext,
+  fetchUwDeltasBlock,
   fetchVixDivergenceBlock,
   fetchVolRealizedContext,
   fetchVolumeProfileBlock,
@@ -239,6 +240,7 @@ export async function buildAnalysisContext(
     volumeProfileContext,
     vixDivergenceContext,
     microstructureContext,
+    uwDeltasContext,
     similarDaysContext,
   ] = await Promise.all([
     fetchDarkPoolContext(context, analysisDate),
@@ -258,6 +260,7 @@ export async function buildAnalysisContext(
     fetchVolumeProfileBlock(analysisDate),
     fetchVixDivergenceBlock(),
     fetchMicrostructureBlock(),
+    fetchUwDeltasBlock(),
     fetchSimilarDaysContext(analysisDate),
   ]);
 
@@ -291,6 +294,8 @@ export async function buildAnalysisContext(
   if (!vixDivergenceContext) unavailable.push('VIX/SPX Divergence');
   if (!microstructureContext)
     unavailable.push('Microstructure Signals (ES + NQ)');
+  if (!uwDeltasContext)
+    unavailable.push('UW Deltas (dark pool / GEX / whale / ETF tide)');
   if (!similarDaysContext) unavailable.push('Historical Analog Days');
   const unavailableList = unavailable.map((s) => '- ' + s).join('\n');
   const unavailableSection =
@@ -369,6 +374,7 @@ ${volumeProfileContext ? `\n## Prior-Day Volume Profile (from futures_bars)\nPOC
 ${similarDaysContext ? `\n## Historical Analog Days (16-year ES archive, embedding similarity)\nEach row is a deterministic one-liner: date symbol | open | 1h Δ | 2h Δ | 3h Δ | range | volume | close (net). These are NOT predictions — they are empirical priors sampled by cosine-similarity on the target day's summary text.\n${similarDaysContext}\n` : ''}
 ${vixDivergenceContext ? `\n## VIX/SPX Divergence Flag (from market_snapshots + spx_candles_1m)\n5-minute paired return check: VIX rising while SPX is flat is the classic informed-positioning canary. See <vix_divergence_rules> for interpretation.\n  ${vixDivergenceContext}\n` : ''}
 ${microstructureContext ? `\n## Dual-Symbol Microstructure Signals (ES + NQ, from futures_trade_ticks + futures_top_of_book)\nOrder flow imbalance (OFI 1m/5m/1h), spread widening z-score, and top-of-book pressure derived from the Databento L1 book + trade stream for both ES and NQ front-month contracts. NQ 1h OFI is the empirically validated signal (Phase 4d: ρ=0.313, p_bonf<0.001, n=312 days). See <microstructure_signals_rules> for interpretation.\n${microstructureContext}\n` : ''}
+${uwDeltasContext ? `\n## UW Deltas — Rate-of-Change Signals (from dark_pool_levels + spot_exposures + flow_alerts + flow_data)\nFour institutional-activity velocity / delta reads computed from data already ingested by UW crons. Dark pool print velocity (vs 60-min baseline), OI GEX intraday delta (vs RTH open), whale flow net call/put positioning, and SPY/QQQ ETF tide divergence. See <uw_deltas_rules> in the system prompt for interpretation; combine 3-of-4 agreement for highest-confidence reads.\n${uwDeltasContext}\n` : ''}
 ${
   straddleConeUpper && straddleConeLower && !spxCandlesContext
     ? `\n## Straddle Cone Boundaries (from Periscope)

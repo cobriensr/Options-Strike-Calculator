@@ -306,6 +306,11 @@ vi.mock('../_lib/microstructure-signals.js', () => ({
   formatMicrostructureDualSymbolForClaude: vi.fn().mockReturnValue(null),
 }));
 
+vi.mock('../_lib/uw-deltas.js', () => ({
+  computeUwDeltas: vi.fn().mockResolvedValue(null),
+  formatUwDeltasForClaude: vi.fn().mockReturnValue(null),
+}));
+
 vi.mock('../_lib/api-helpers.js', () => ({
   schwabFetch: vi.fn().mockResolvedValue({ ok: false, status: 401 }),
 }));
@@ -695,6 +700,7 @@ describe('buildAnalysisContext', () => {
     expect(text).toContain('Prior-Day Volume Profile (ES)');
     expect(text).toContain('VIX/SPX Divergence');
     expect(text).toContain('Microstructure Signals (ES + NQ)');
+    expect(text).toContain('UW Deltas (dark pool / GEX / whale / ETF tide)');
     vi.unstubAllGlobals();
   });
 
@@ -707,6 +713,7 @@ describe('buildAnalysisContext', () => {
       await import('../_lib/vix-divergence.js');
     const { formatMicrostructureDualSymbolForClaude } =
       await import('../_lib/microstructure-signals.js');
+    const { formatUwDeltasForClaude } = await import('../_lib/uw-deltas.js');
 
     vi.mocked(formatCrossAssetRegimeForClaude).mockReturnValue(
       'Regime: RISK-ON\n  composite=1.83',
@@ -727,6 +734,20 @@ describe('buildAnalysisContext', () => {
         '  Cross-asset read (1h OFI):',
         '    ALIGNED_BULLISH',
         '</microstructure_signals>',
+      ].join('\n'),
+    );
+    vi.mocked(formatUwDeltasForClaude).mockReturnValue(
+      [
+        '<uw_deltas>',
+        '  Dark pool velocity:',
+        '    Classification: SURGE',
+        '  GEX intraday delta:',
+        '    Classification: STRENGTHENING',
+        '  Whale flow positioning:',
+        '    Classification: AGGRESSIVE_CALL_BIAS',
+        '  ETF tide divergence:',
+        '    Classification: SPY_LEADING_BULL',
+        '</uw_deltas>',
       ].join('\n'),
     );
 
@@ -751,8 +772,14 @@ describe('buildAnalysisContext', () => {
     expect(text).toContain('NQ (latest front-month)');
     expect(text).toContain('ALIGNED_BULLISH');
     expect(text).toContain('AGGRESSIVE_BUY');
+    expect(text).toContain('UW Deltas');
+    expect(text).toContain('<uw_deltas>');
+    expect(text).toContain('Classification: SURGE');
+    expect(text).toContain('Classification: STRENGTHENING');
+    expect(text).toContain('Classification: AGGRESSIVE_CALL_BIAS');
+    expect(text).toContain('Classification: SPY_LEADING_BULL');
 
-    // All four sections should NOT appear in the unavailable manifest
+    // All five sections should NOT appear in the unavailable manifest
     const unavailableBlock = result.content.find(
       (b) => b.type === 'text' && b.text.includes('Data Sources Unavailable'),
     );
@@ -762,6 +789,9 @@ describe('buildAnalysisContext', () => {
       expect(uText).not.toContain('- Prior-Day Volume Profile (ES)');
       expect(uText).not.toContain('- VIX/SPX Divergence');
       expect(uText).not.toContain('- Microstructure Signals (ES + NQ)');
+      expect(uText).not.toContain(
+        '- UW Deltas (dark pool / GEX / whale / ETF tide)',
+      );
     }
     vi.unstubAllGlobals();
   });

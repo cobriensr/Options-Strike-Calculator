@@ -70,6 +70,7 @@ import {
   computeAllSymbolSignals,
   formatMicrostructureDualSymbolForClaude,
 } from './microstructure-signals.js';
+import { computeUwDeltas, formatUwDeltasForClaude } from './uw-deltas.js';
 import { formatFuturesForClaude } from './futures-context.js';
 import { formatIvTermStructureForClaude } from '../iv-term-structure.js';
 import type { IvTermRow } from '../iv-term-structure.js';
@@ -820,6 +821,25 @@ export async function fetchMicrostructureBlock(): Promise<string | null> {
   } catch (err) {
     logger.error({ err }, 'microstructure signals fetch failed');
     metrics.increment('analyze_context.microstructure_error');
+    return null;
+  }
+}
+
+// ── UW deltas (Phase 5b: DP velocity, GEX delta, whale, ETF) ──
+//
+// Pure compute-on-demand layer over existing UW data already in Neon.
+// Four parallel signals with Promise.allSettled fault isolation inside
+// computeUwDeltas itself — this wrapper only needs the usual catch-all
+// to log + metric the rare case where the orchestrator throws (empty
+// object literal, unexpected null, DB connection pool exhaustion).
+
+export async function fetchUwDeltasBlock(): Promise<string | null> {
+  try {
+    const result = await computeUwDeltas(new Date());
+    return formatUwDeltasForClaude(result);
+  } catch (err) {
+    logger.error({ err }, 'UW deltas fetch failed');
+    metrics.increment('analyze_context.uw_deltas_error');
     return null;
   }
 }

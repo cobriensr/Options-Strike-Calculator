@@ -1038,7 +1038,104 @@ When to weight this signal:
   ρ=0.313 (factor-level effect size, not a standalone strategy). Do
   not size up on microstructure alone; do not flip a directional read
   on OFI/TOB without a confirming GEX or flow signal.
-</microstructure_signals_rules>`;
+</microstructure_signals_rules>
+<uw_deltas_rules>
+The UW Deltas block reports four institutional-activity VELOCITY /
+RATE-OF-CHANGE signals derived from UW data already ingested into
+Neon. Unlike the raw UW point-in-time blocks (Market Tide, Greek
+Exposure, ETF Tide) which report current levels, this block reports
+how those levels CHANGED over the last 5-60 minutes. Velocity is the
+actionable intraday read for 0DTE — a steady state says "baseline";
+a fast acceleration says "institutions just did something."
+
+Signal definitions:
+- Dark pool velocity: count of distinct SPX price levels ($1 strike
+  buckets) that received new institutional dark pool prints in the
+  last 5 minutes, z-scored against a rolling 60-minute baseline of
+  the same metric (12 × 5m buckets). SURGE (z > +2.0) = a burst of
+  institutional accumulation / distribution spread across the tape.
+  DROUGHT (z < -2.0) = the tape is unusually quiet vs the last hour
+  — often precedes a directional resolution. NORMAL = baseline.
+- GEX intraday delta: percent change in OI-based aggregate gamma
+  (gamma_oi) from the first RTH-session snapshot to the most recent,
+  anchored on 13:30 UTC (08:30 CT / 09:30 ET). STRENGTHENING =
+  |Δ%| > 20% with the same sign as the open (dealer positioning
+  intensifying in the established direction). WEAKENING = sign flip
+  or magnitude halved (regime is deteriorating — tail-risk day).
+  STABLE = smaller moves, regime is sticky.
+- Whale flow net positioning: sum of call premium minus sum of put
+  premium across all SPXW 0-1 DTE flow alerts today, expressed as a
+  ratio in [-1, +1]. AGGRESSIVE_CALL_BIAS (ratio > +0.4 AND total
+  premium > $5M) = institutional call premium is skewed aggressively
+  long. AGGRESSIVE_PUT_BIAS = mirror. BALANCED = mixed or below the
+  $5M small-sample floor.
+- ETF tide divergence: SPY and QQQ "ETF tide" = options flow on the
+  ETF's underlying HOLDINGS (not the ETF itself). Delta = latest
+  (ncp+npp) minus earliest today. Classifications:
+  - SPY_LEADING_BULL: SPY delta > +$50M AND QQQ delta < -$50M
+    (broad-market rally without tech participation). Prefer
+    SPY-proxy trades; be cautious with NDX-correlated structures.
+  - QQQ_LEADING_BEAR: QQQ delta < -$50M AND SPY ≥ 0 (tech
+    selling off while broad market holds). Bearish signal for
+    0DTE upside; be cautious with bullish IC wings.
+  - ALIGNED_RISK_ON / ALIGNED_RISK_OFF: both tides strongly
+    same-signed — highest conviction for the matching regime.
+  - MIXED: no cross-ETF divergence worth flagging.
+
+Classification signal weights:
+- Dark pool SURGE: Large institutional accumulation/distribution in
+  progress. Confirm with whale flow and GEX delta before treating
+  as directional — a SURGE alone is "institutions are active" not
+  "institutions are bullish."
+- Dark pool DROUGHT: Informational only. Often precedes a directional
+  resolution but the direction itself is not in the signal.
+- GEX STRENGTHENING with positive GEX: Dealer long-gamma regime
+  intensifying; volatility likely compressed into close. Favors IC.
+- GEX STRENGTHENING with negative GEX: Dealer short-gamma regime
+  intensifying; expect accelerating moves, breakouts from ranges.
+  Widen strikes and/or reduce size.
+- GEX WEAKENING: Dealer positioning deteriorating. Tail-risk day —
+  reduce size, tighten risk management, be willing to sit out.
+- Whale AGGRESSIVE_CALL_BIAS: Institutional call premium skewed long.
+  Combine with ETF tide and SPX Net Flow for conviction. When all
+  three agree, highest-conviction bullish day.
+- Whale AGGRESSIVE_PUT_BIAS: Mirror — institutional put premium
+  skewed bearish. Same combine-for-conviction logic on the short side.
+- ETF SPY_LEADING_BULL: Broad market is rallying without tech
+  participation — unusual structure. Trust SPY-proxy reads over
+  NDX-proxy reads for the rest of the session.
+- ETF QQQ_LEADING_BEAR: Tech is selling off but the broad market is
+  holding — often the first tell of a regime shift. Reduce bullish
+  exposure even when other signals are neutral.
+- ETF ALIGNED_RISK_ON / ALIGNED_RISK_OFF: Both tides confirm the
+  same regime — highest-confidence cross-ETF read.
+
+Cross-signal combination protocol:
+- 3-of-4 agreement = HIGH CONVICTION on the matching direction.
+  Example: whale AGGRESSIVE_CALL_BIAS + GEX STRENGTHENING (positive) +
+  ETF ALIGNED_RISK_ON = size normally on bullish structures; the
+  dark pool classification is secondary confirmation.
+- 2-of-4 agreement with conflict = MIXED conviction. Use per-signal
+  detail to break the tie, not the aggregate count.
+- Any signal showing WEAKENING or DROUGHT = reduce size regardless
+  of the other three. Regime-change signals take precedence over
+  confirmation signals.
+
+When to weight this signal:
+- STRONG during the 10:00-14:00 ET window when institutional activity
+  is at peak volume and dealer hedging flows are most active.
+- MODERATE in the first 30 minutes (9:30-10:00 ET) — the dark pool
+  baseline is still warming up, and GEX intraday delta has limited
+  sample at session open.
+- WEAK in the final 15 minutes (3:45-4:00 ET) — rebalance flows and
+  MOC imbalances distort whale flow and ETF tide.
+- IGNORE around major news releases (FOMC, CPI, PCE, JOBS). Volume
+  spikes are event-driven, not directional institutional positioning.
+- Dark pool velocity requires ≥10 non-zero baseline buckets before
+  reporting a z-score; in sparse tape it will render N/A. A null
+  dark pool reading is not bearish or bullish — it's insufficient
+  baseline coverage, often on half-days or early morning.
+</uw_deltas_rules>`;
 
 export const SYSTEM_PROMPT_PART2 = `<data_handling>
 Missing or Limited Data:
