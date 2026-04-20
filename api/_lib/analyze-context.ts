@@ -264,7 +264,7 @@ export async function buildAnalysisContext(
     fetchMicrostructureBlock(),
     fetchUwDeltasBlock(),
     fetchSimilarDaysContext(analysisDate),
-    fetchRangeForecastContext(analysisDate),
+    fetchRangeForecastContext(analysisDate, numOrUndef(context.vix) ?? null),
   ]);
 
   const marketTideOtmSection = main.marketTideOtmContext

@@ -152,6 +152,10 @@
     {
       "path": "/api/cron/warm-tbbo-percentile",
       "schedule": "0 13 * * 1-5"
+    },
+    {
+      "path": "/api/cron/fetch-day-ohlc",
+      "schedule": "0 23 * * 1-5"
     }
   ],
   "functions": {

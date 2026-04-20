@@ -1002,18 +1002,24 @@ export async function fetchSimilarDaysContext(
  */
 export async function fetchRangeForecastContext(
   analysisDate: string,
+  vixClose?: number | null,
 ): Promise<string | null> {
   try {
     const { fetchDaySummary } = await import('./archive-sidecar.js');
     const { fetchCurrentSnapshot } = await import('./current-snapshot.js');
-    const { getRangeForecast, formatRangeForecast } =
+    const { getRangeForecast, formatRangeForecast, vixBucketOf } =
       await import('./analog-range-forecast.js');
 
     const snapshot = await fetchCurrentSnapshot(analysisDate);
     const summary = snapshot?.summary ?? (await fetchDaySummary(analysisDate));
     if (!summary) return null;
 
-    const forecast = await getRangeForecast(analysisDate, summary);
+    // VIX bucket drives the Phase-4 regime-matched cohort. Null → the
+    // forecast module skips the regime-matched query and returns the
+    // unstratified cohort only. Cheap lookup; no external call.
+    const vixBucket = vixBucketOf(vixClose);
+
+    const forecast = await getRangeForecast(analysisDate, summary, vixBucket);
     return formatRangeForecast(forecast);
   } catch (err) {
     logger.warn({ err }, 'range-forecast context fetch failed');

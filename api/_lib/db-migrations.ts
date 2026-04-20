@@ -2039,4 +2039,30 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 77,
+    description:
+      'Add vix_bucket column to day_embeddings for regime-stratified analog retrieval',
+    statements: (sql) => [
+      // Enables Phase 4 of the analog range forecast: filter the cohort
+      // to same-VIX-regime historical mornings so forecast calibration
+      // tightens in elevated/crisis vol (where the unstratified global
+      // distribution is catastrophically miscalibrated, per validation
+      // in comparison-v16). Bucket is a string label — {low, normal,
+      // elevated, crisis} at 15/22/30 VIX close cuts — so query
+      // filtering is an index-friendly equality check rather than a
+      // range scan. Column is NULL for rows that haven't been
+      // backfilled from public/vix-data.json yet; the forecast module
+      // treats NULL as "no regime data, use unstratified cohort".
+      sql`
+        ALTER TABLE day_embeddings
+          ADD COLUMN IF NOT EXISTS vix_bucket TEXT
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS day_embeddings_vix_bucket_idx
+          ON day_embeddings (vix_bucket)
+          WHERE vix_bucket IS NOT NULL
+      `,
+    ],
+  },
 ];

@@ -19,6 +19,12 @@ import { generateEmbedding } from './embeddings.js';
  * unconditional distribution (which was dramatically miscalibrated in
  * 2024-2026 vs the pre-2024 archive).
  *
+ * Phase 4: when the caller passes today's VIX bucket, a SECOND cohort
+ * is retrieved filtered to same-regime analogs only. Both are returned
+ * so Claude can prefer regime-matched when the subset is healthy
+ * (≥ MIN_REGIME_COHORT rows) and fall back to the unstratified cohort
+ * otherwise.
+ *
  * Temporal leakage guard: candidate pool strictly `date < targetDate`.
  * Fail-open: null forecast drops the block from the analyze context, so
  * an outage in OpenAI/Neon cannot block an analyze call.
@@ -26,19 +32,35 @@ import { generateEmbedding } from './embeddings.js';
 
 const COHORT_SIZE = 15;
 const QUANTILES = [0.5, 0.85, 0.9, 0.95] as const;
+/** Below this many regime-matched rows, the subset is statistically
+ *  too thin to trust — forecast falls back to the unstratified cohort. */
+const MIN_REGIME_COHORT = 8;
 
 type Q = (typeof QUANTILES)[number];
 
-export interface RangeForecast {
+export type VixBucket = 'low' | 'normal' | 'elevated' | 'crisis';
+
+export interface CohortQuantiles {
   n: number;
-  targetDate: string;
   range: Record<Q, number>;
   upExc: Record<Q, number>;
   downExc: Record<Q, number>;
-  /** Asymmetric strike hints for the analyze prompt. p85 ≈ 30Δ, p95 ≈ 12Δ. */
+}
+
+export interface RangeForecast {
+  targetDate: string;
+  /** Unstratified cohort — 15 text-nearest mornings across all regimes. */
+  cohort: CohortQuantiles;
+  /** Same-VIX-bucket cohort, null when bucket wasn't supplied OR when
+   *  the filtered subset was too thin (<MIN_REGIME_COHORT rows) to be
+   *  statistically trustworthy. */
+  regimeMatched: (CohortQuantiles & { vixBucket: VixBucket }) | null;
+  /** Asymmetric strike hints. Uses regime-matched when available,
+   *  unstratified otherwise. p85 ≈ 30Δ, p95 ≈ 12Δ. */
   strikes: {
     condor30d: { up: number; down: number };
     condor12d: { up: number; down: number };
+    source: 'regime-matched' | 'unstratified';
   };
 }
 
@@ -47,6 +69,20 @@ interface AnalogRow {
   range_pt: number;
   up_exc: number;
   down_exc: number;
+}
+
+/** Bucket the current VIX close into one of the four regime tags used
+ *  for day_embeddings.vix_bucket. Cut-points match the validation
+ *  harness and the system-prompt tier language. */
+export function vixBucketOf(
+  vixClose: number | null | undefined,
+): VixBucket | null {
+  if (!Number.isFinite(vixClose)) return null;
+  const v = vixClose as number;
+  if (v < 15) return 'low';
+  if (v < 22) return 'normal';
+  if (v < 30) return 'elevated';
+  return 'crisis';
 }
 
 /** Pick percentile from a sorted-ascending numeric array. Linear interp.
@@ -64,34 +100,50 @@ function percentile(sorted: number[], p: number): number {
   return loVal + (hiVal - loVal) * (idx - lo);
 }
 
-function quantiles(values: number[]): Record<Q, number> {
-  const sorted = [...values].filter(Number.isFinite).sort((a, b) => a - b);
-  const out = {} as Record<Q, number>;
-  for (const q of QUANTILES) out[q] = percentile(sorted, q);
-  return out;
+function summarizeRows(rows: AnalogRow[]): CohortQuantiles | null {
+  const ranges = rows.map((r) => Number(r.range_pt)).filter(Number.isFinite);
+  const ups = rows.map((r) => Number(r.up_exc)).filter(Number.isFinite);
+  const downs = rows.map((r) => Number(r.down_exc)).filter(Number.isFinite);
+  if (ranges.length === 0) return null;
+  const range = {} as Record<Q, number>;
+  const upExc = {} as Record<Q, number>;
+  const downExc = {} as Record<Q, number>;
+  const rSorted = [...ranges].sort((a, b) => a - b);
+  const uSorted = [...ups].sort((a, b) => a - b);
+  const dSorted = [...downs].sort((a, b) => a - b);
+  for (const q of QUANTILES) {
+    range[q] = percentile(rSorted, q);
+    upExc[q] = percentile(uSorted, q);
+    downExc[q] = percentile(dSorted, q);
+  }
+  return { n: rows.length, range, upExc, downExc };
 }
 
 /**
- * Retrieve the 15 text-embedding-nearest historical mornings to
- * `targetSummary`, strictly before `targetDate`, and compute cohort
- * quantiles for range + asymmetric excursion.
+ * Retrieve text-embedding-nearest historical mornings and compute cohort
+ * quantiles for range + asymmetric excursion. When `vixBucket` is
+ * supplied, a second regime-matched cohort is also retrieved.
  *
- * @param targetDate  ISO date (YYYY-MM-DD) for leakage guard
- * @param targetSummary  Prediction-time summary string (first-hour only)
- *                       to embed and match against historical mornings
+ * @param targetDate     ISO date (YYYY-MM-DD) for leakage guard
+ * @param targetSummary  Prediction-time summary (first-hour only)
+ * @param vixBucket      Optional today's VIX regime. When supplied and
+ *                       the filtered subset is healthy, strike hints
+ *                       come from the regime-matched cohort.
  * @returns null if OpenAI fails, if no analogs exist, or if cohort
  *          ranges are entirely missing (backfill incomplete)
  */
 export async function getRangeForecast(
   targetDate: string,
   targetSummary: string,
+  vixBucket?: VixBucket | null,
 ): Promise<RangeForecast | null> {
   const embedding = await generateEmbedding(targetSummary);
   if (!embedding) return null;
 
   const sql = getDb();
   const vectorLiteral = `[${embedding.join(',')}]`;
-  const rows = (await sql`
+
+  const unstratifiedRows = (await sql`
     SELECT date, range_pt, up_exc, down_exc
     FROM day_embeddings
     WHERE date < ${targetDate}::date
@@ -102,27 +154,50 @@ export async function getRangeForecast(
     LIMIT ${COHORT_SIZE}
   `) as unknown as AnalogRow[];
 
-  if (rows.length === 0) return null;
+  if (unstratifiedRows.length === 0) return null;
+  const cohort = summarizeRows(unstratifiedRows);
+  if (!cohort) return null;
 
-  const ranges = rows.map((r) => Number(r.range_pt)).filter(Number.isFinite);
-  const ups = rows.map((r) => Number(r.up_exc)).filter(Number.isFinite);
-  const downs = rows.map((r) => Number(r.down_exc)).filter(Number.isFinite);
+  let regimeMatched: RangeForecast['regimeMatched'] = null;
+  if (vixBucket) {
+    const regimeRows = (await sql`
+      SELECT date, range_pt, up_exc, down_exc
+      FROM day_embeddings
+      WHERE date < ${targetDate}::date
+        AND range_pt IS NOT NULL
+        AND up_exc IS NOT NULL
+        AND down_exc IS NOT NULL
+        AND vix_bucket = ${vixBucket}
+      ORDER BY embedding <=> ${vectorLiteral}::vector
+      LIMIT ${COHORT_SIZE}
+    `) as unknown as AnalogRow[];
+    if (regimeRows.length >= MIN_REGIME_COHORT) {
+      const r = summarizeRows(regimeRows);
+      if (r) regimeMatched = { ...r, vixBucket };
+    }
+  }
 
-  if (ranges.length === 0) return null;
-
-  const range = quantiles(ranges);
-  const upExc = quantiles(ups);
-  const downExc = quantiles(downs);
+  // Strike hints prefer regime-matched (higher confidence in the current
+  // vol regime) but transparently fall back when it's absent/too thin.
+  const strikeSource: 'regime-matched' | 'unstratified' = regimeMatched
+    ? 'regime-matched'
+    : 'unstratified';
+  const sourceQuantiles = regimeMatched ?? cohort;
 
   return {
-    n: rows.length,
     targetDate,
-    range,
-    upExc,
-    downExc,
+    cohort,
+    regimeMatched,
     strikes: {
-      condor30d: { up: upExc[0.85], down: downExc[0.85] },
-      condor12d: { up: upExc[0.95], down: downExc[0.95] },
+      condor30d: {
+        up: sourceQuantiles.upExc[0.85],
+        down: sourceQuantiles.downExc[0.85],
+      },
+      condor12d: {
+        up: sourceQuantiles.upExc[0.95],
+        down: sourceQuantiles.downExc[0.95],
+      },
+      source: strikeSource,
     },
   };
 }
@@ -131,16 +206,25 @@ export async function getRangeForecast(
  *  if the forecast is null — caller concatenates conditionally. */
 export function formatRangeForecast(f: RangeForecast | null): string | null {
   if (!f) return null;
-  const r = f.range;
-  const u = f.upExc;
-  const d = f.downExc;
-  return [
-    `Historical analog range forecast (n=${f.n} text-nearest mornings before ${f.targetDate}):`,
-    `  Expected daily range — p50: ${r[0.5].toFixed(1)}pt | p85: ${r[0.85].toFixed(1)}pt | p95: ${r[0.95].toFixed(1)}pt`,
-    `  Upside excursion (high − open) — p85: ${u[0.85].toFixed(1)}pt | p95: ${u[0.95].toFixed(1)}pt`,
-    `  Downside excursion (open − low) — p85: ${d[0.85].toFixed(1)}pt | p95: ${d[0.95].toFixed(1)}pt`,
-    `  Implied short-strike hints (distances from open):`,
+  const lines: string[] = [];
+  lines.push(
+    `Historical analog range forecast (n=${f.cohort.n} text-nearest mornings before ${f.targetDate}):`,
+    `  Expected daily range — p50: ${f.cohort.range[0.5].toFixed(1)}pt | p85: ${f.cohort.range[0.85].toFixed(1)}pt | p95: ${f.cohort.range[0.95].toFixed(1)}pt`,
+    `  Upside excursion (high − open) — p85: ${f.cohort.upExc[0.85].toFixed(1)}pt | p95: ${f.cohort.upExc[0.95].toFixed(1)}pt`,
+    `  Downside excursion (open − low) — p85: ${f.cohort.downExc[0.85].toFixed(1)}pt | p95: ${f.cohort.downExc[0.95].toFixed(1)}pt`,
+  );
+  if (f.regimeMatched) {
+    lines.push(
+      `Regime-matched cohort (n=${f.regimeMatched.n} same-VIX-bucket [${f.regimeMatched.vixBucket}] mornings):`,
+      `  Range — p50: ${f.regimeMatched.range[0.5].toFixed(1)}pt | p85: ${f.regimeMatched.range[0.85].toFixed(1)}pt | p95: ${f.regimeMatched.range[0.95].toFixed(1)}pt`,
+      `  Up p85: ${f.regimeMatched.upExc[0.85].toFixed(1)}pt | p95: ${f.regimeMatched.upExc[0.95].toFixed(1)}pt`,
+      `  Down p85: ${f.regimeMatched.downExc[0.85].toFixed(1)}pt | p95: ${f.regimeMatched.downExc[0.95].toFixed(1)}pt`,
+    );
+  }
+  lines.push(
+    `  Implied short-strike hints (from ${f.strikes.source} cohort, distances from open):`,
     `    ~30Δ condor: call ${f.strikes.condor30d.up.toFixed(0)}pt up / put ${f.strikes.condor30d.down.toFixed(0)}pt down`,
     `    ~12Δ condor: call ${f.strikes.condor12d.up.toFixed(0)}pt up / put ${f.strikes.condor12d.down.toFixed(0)}pt down`,
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
