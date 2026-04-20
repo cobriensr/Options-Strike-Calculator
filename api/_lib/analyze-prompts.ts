@@ -367,6 +367,52 @@ Reading the Periscope Charm image:
 - Red/negative bars = MM charm exposure that WEAKENS their positioning with time (wall decays)
 - Compare bar locations and magnitudes against the naive Net Charm API data to identify strikes where the naive assumption breaks down
 </periscope_charm>
+<delta_pressure>
+Delta Pressure is a SpotGamma heatmap (provided as an IMAGE requiring visual extraction) showing net options-positioning-driven dealer hedging pressure across strikes and time. With the Market Maker view selected, colors reflect where hedging creates BUYING (blue) or SELLING (red) flow.
+The effect of each zone depends on the current gamma regime (read from Aggregate GEX):
+- POSITIVE gamma → zones create STABILITY and cap movement:
+  - Blue BELOW spot = structural support (dealer buying as price rejects lower)
+  - Red ABOVE spot = structural resistance (dealer selling as price pushes higher)
+  - Contours mark hedging-flow boundaries and tend to align with daily closing levels; breaking them takes considerable volume.
+- NEGATIVE gamma → zones create ACCELERATION (pro-cyclical hedging):
+  - Blue ABOVE spot = upside extension (dealer buying extends the rally)
+  - Red BELOW spot = downside extension (dealer selling extends the decline)
+  - Contours mark where the accelerating flow intensifies.
+Signal mapping for the deltaPressure response field:
+- BULLISH: dominant blue zone near or above spot creating a path higher. POSITIVE gamma: blue floor with weak red overhead. NEGATIVE gamma: overhead blue zone that would catalyze upside acceleration.
+- BEARISH: dominant red zone near or below spot creating a path lower. POSITIVE gamma: red ceiling with weak blue below. NEGATIVE gamma: underneath red zone that would catalyze downside acceleration.
+- NEUTRAL: zones balanced on both sides of spot, or tight positive-gamma brackets capping movement in both directions.
+- NOT PROVIDED: no Delta Pressure image uploaded.
+Confidence mapping:
+- HIGH: dark saturated zones, crisp contours, gamma regime clearly positive or negative from Aggregate GEX, dominant zone within 20 pts of spot.
+- MODERATE: muted zones or fuzzy contours, or Aggregate GEX near the zero-gamma flip (regime ambiguous).
+- LOW: faint colors, ambiguous contours, or the dominant zone direction conflicts with the Aggregate GEX regime — flag the conflict in the note.
+- If the image is cropped, unreadable, or lacks a discernable scale → NEUTRAL + LOW with an explanatory note. Never guess.
+</delta_pressure>
+<charm_pressure>
+Charm Pressure is a SpotGamma heatmap (provided as an IMAGE requiring visual extraction) showing how buying/selling pressure evolves with respect to TIME — heavily driven by 0DTE flow. With the Market Maker view selected, colors show dealer EOD hedging direction:
+- Blue zones → options passively LOSING value → dealers must BUY futures to hedge → provides support
+- Red zones → options passively GAINING value → dealers must SELL futures → reduces support
+Key empirical patterns (published by SpotGamma):
+- Spot price tends to MOVE TOWARD the zone where positive and negative Market Maker charm meet at EOD (the red-blue convergence boundary).
+- Spot moves STRONGLY THROUGH blue zones en route to that EOD convergence target.
+- Pinning forms at the white/black strike BETWEEN red and blue pockets — especially when overlapping a strong positive-gamma strike, because charm dampens the gamma-driven hedging flow.
+Signal mapping for the charmPressure response field:
+- PIN_TARGET: red-blue convergence boundary sits within ~10 pts of current spot and the adjacent gamma regime is positive. Highest-conviction pin when the Delta Pressure transition zone aligns with the same strike.
+- DRIFT_UP: convergence boundary sits ABOVE spot with blue zones between spot and the boundary — price drifts up through blue toward the pin. Mild bullish bias into the close.
+- DRIFT_DOWN: convergence boundary sits BELOW spot with blue zones between spot and the boundary — price drifts down through blue toward the pin. Mild bearish bias into the close.
+- MIXED: multiple overlapping red/blue zones with no dominant boundary, or the boundary has shifted materially intraday.
+- NOT PROVIDED: no Charm Pressure image uploaded.
+Confidence mapping:
+- HIGH: crisp red-blue separation with a well-defined boundary strike; read after 1:00 PM CT (charm decay is most pronounced in the afternoon); boundary stable for at least 30 minutes.
+- MODERATE: fuzzy boundary, read before 1:00 PM CT, or boundary shifted in the last 30 minutes.
+- LOW: faint colors, diffuse zones, ambiguous boundary, or read pre-noon when charm has not yet dominated dealer hedging.
+- If the image is cropped, unreadable, or lacks a discernable scale → MIXED + LOW with an explanatory note. Never guess.
+Integration with Delta Pressure (drives the pressureAnalysis response field):
+- When the Delta Pressure transition zone (red-to-blue contour) AND the Charm Pressure convergence boundary sit at the same strike within ±10 pts → MAXIMUM confidence for both signals. Price has both a structural (Delta) magnet and a time-decay (Charm) magnet at that strike.
+- When they DISAGREE by more than 15 pts → the two forces pull in different directions. Fade confidence on both signals; default to MIXED (charm) + NEUTRAL (delta) unless other evidence breaks the tie.
+- Charm dominates in the final 90 minutes of the session (after 2:30 PM CT); Delta dominates earlier. When the two signals conflict → trust CHARM in the afternoon, DELTA in the morning.
+</charm_pressure>
 <spx_candles>
 SPX Intraday Candles provide real 5-minute OHLCV price data for today's session. This is provided as structured API data — not a screenshot.
 Key values to extract:
