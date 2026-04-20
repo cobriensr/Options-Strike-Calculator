@@ -13,8 +13,9 @@ Design:
   year-partitioned Parquet directly with predicate pushdown, so a per-day
   query touches only the rows it needs. No full-day loads into pandas.
 - **Per-minute aggregates in SQL, rolling windows in pandas.** SQL gives us
-  clean per-minute medians (``percentile_cont``), filtered sums
-  (``FILTER (WHERE side='B')``), and counts. Features that need a state
+  MAX spreads (``MAX(ask-bid)`` — Phase 4c1), median TOB-pressure ratios
+  (``percentile_cont``), filtered sums (``FILTER (WHERE side='B')``), and
+  counts. Features that need a state
   machine (longest consecutive run, rolling z-scores vs trailing baseline)
   are computed on the per-minute Series in pandas.
 - **Full UTC day** session window — captures Globex overnight activity that
@@ -314,7 +315,10 @@ def _per_minute_stats(
       * ``minute`` — DATETIME (TZ-naive UTC) bucket start
       * ``n_trades`` — count of trade events in the minute
       * ``buy_vol`` / ``sell_vol`` — sums of ``size`` filtered by side
-      * ``med_spread`` — median of ``ask_px_00 - bid_px_00``
+      * ``max_spread`` — max of ``ask_px_00 - bid_px_00`` (Phase 4c1
+        fix: median collapses on tick-floor products like ES where the
+        spread is $0.25 on 80%+ of minutes; max captures genuine
+        widening events that the median hides)
       * ``med_ratio`` — median of ``bid_sz_00 / NULLIF(ask_sz_00, 0)``
 
     The single-pass design matters: each side has hundreds of millions of
@@ -341,8 +345,7 @@ def _per_minute_stats(
             COUNT(*) AS n_trades,
             COALESCE(SUM(size) FILTER (WHERE side = 'B'), 0) AS buy_vol,
             COALESCE(SUM(size) FILTER (WHERE side = 'A'), 0) AS sell_vol,
-            percentile_cont(0.5) WITHIN GROUP (ORDER BY ask_px_00 - bid_px_00)
-                AS med_spread,
+            MAX(ask_px_00 - bid_px_00) AS max_spread,
             percentile_cont(0.5) WITHIN GROUP (
                 ORDER BY CAST(bid_sz_00 AS DOUBLE)
                        / NULLIF(CAST(ask_sz_00 AS DOUBLE), 0)
@@ -363,7 +366,7 @@ def _per_minute_stats(
         df["minute"] = df["minute"].dt.tz_convert("UTC").dt.tz_localize(None)
     df = df.set_index("minute").sort_index()
     # Force numeric dtype (DuckDB DECIMAL → object in edge cases).
-    for col in ("n_trades", "buy_vol", "sell_vol", "med_spread", "med_ratio"):
+    for col in ("n_trades", "buy_vol", "sell_vol", "max_spread", "med_ratio"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
@@ -462,7 +465,7 @@ def _compute_spread_widening_stats(
     """Spread widening z-score stats over the session.
 
     Z-score for minute m uses a trailing 30-minute baseline of
-    per-minute median spreads (strictly m-30 .. m-1 — ``shift(1)`` before
+    per-minute MAX spreads (strictly m-30 .. m-1 — ``shift(1)`` before
     rolling — so m never contributes to its own baseline). If baseline std
     is zero (all-flat 30m window), treat z = 0. Minutes without enough
     baseline (first 10 of session) are skipped.
@@ -473,13 +476,16 @@ def _compute_spread_widening_stats(
       * ``max_zscore`` — peak z observed
       * ``max_run_minutes`` — longest consecutive run of z > 2.0
 
-    TODO(Phase 4d): On real ES data the front-month spread is $0.25 (one
-    tick) on every minute of session, so ``median(ask - bid)`` is constant
-    and ``baseline_std = 0`` → zero-std guard → z = 0 universally. The
-    feature returns no signal. Phase 4d EDA should try a max-based or
-    p95-based per-minute aggregate so a single widened quote within a
-    minute can register. Not changed here to keep the correctness-pass
-    scope tight.
+    Phase 4c1 fix (2026-04-19): per-minute aggregator switched from
+    ``percentile_cont(0.5)`` (median) to ``MAX(ask - bid)``. ES
+    front-month spread is pinned at the $0.25 tick floor on ~80% of
+    minutes, so a median-based baseline has std = 0 and the zero-std
+    guard forces z = 0 universally — the feature carried no signal
+    (validated in Phase 4d EDA, 80.1% zero-rate on ES). MAX captures
+    single widened quotes within a minute, which is what liquidity
+    withdrawal events look like on a minimum-tick-width product. NQ
+    previously had 0% zero-rate on median and remains information-rich
+    under MAX.
     """
     if per_minute is None:
         per_minute = _per_minute_stats(
@@ -495,11 +501,11 @@ def _compute_spread_widening_stats(
         }
 
     dense = _densify_minute_index(per_minute)
-    # Median spread per minute — carry forward across dense gaps so the
+    # Max spread per minute — carry forward across dense gaps so the
     # rolling baseline sees a continuous series (halts are quiet but not
-    # structurally "narrow" — holding the last known median prevents the
+    # structurally "narrow" — holding the last known max prevents the
     # gap from NaN-poisoning the baseline).
-    spread = dense["med_spread"].ffill()
+    spread = dense["max_spread"].ffill()
 
     # Baseline is strictly the prior 30 minutes, excluding the current
     # minute from its own reference.
@@ -658,7 +664,7 @@ def _window_key(minutes: int) -> str:
 def _densify_minute_index(per_minute: pd.DataFrame) -> pd.DataFrame:
     """Reindex per-minute DataFrame onto a contiguous minute grid.
 
-    Zero-fill integer volume / count columns; leave ``med_spread`` /
+    Zero-fill integer volume / count columns; leave ``max_spread`` /
     ``med_ratio`` as NaN (caller chooses whether to forward-fill). This
     is how rolling windows see overnight halts as real gaps rather than
     collapsed neighbors.
