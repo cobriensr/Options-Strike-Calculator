@@ -11,7 +11,7 @@
 
 The current `GexMigration` component was built to answer one question ("where is gamma growing fastest?") using one ranking heuristic (sparkline urgency with proximity weighting). After using it for a few sessions and reverse-engineering Wonce's sofbot tool, two problems surfaced:
 
-1. **The model is prescriptive, not descriptive.** `GexMigration` picks a single "target strike" using opaque confidence tiers and hides the leaderboard of candidates. In a live session, the trader wants to see the full board and understand *why* a strike is being picked — not trust a black box.
+1. **The model is prescriptive, not descriptive.** `GexMigration` picks a single "target strike" using opaque confidence tiers and hides the leaderboard of candidates. In a live session, the trader wants to see the full board and understand _why_ a strike is being picked — not trust a black box.
 2. **The scoring math ignores load-bearing features.** The current code weights only Δ% urgency and proximity. It doesn't consider size dominance relative to the board, flow directionality (calls vs puts), charm (time-weighted decay alignment), price cooperation, or multi-horizon confluence. Those are exactly the features that distinguish a real magnet from a noisy one.
 
 `GexTarget` is a fundamentally different component. It's a **5-panel single-component** that shows the leaderboard, the target pick, the per-strike history at three time horizons, and a gex-annotated price chart — all driven by one mode toggle (OI/VOL/DIR) that cascades through every panel. Behind it is a richer scoring model and a persisted features table that makes backtest and ML work possible.
@@ -44,11 +44,11 @@ These are the load-bearing decisions made in discussion. They should not be reli
 The scoring function is a weighted combination of directional factors, gated multiplicatively by presence factors:
 
 ```typescript
-score = 
-    w1 * flowConfluence * dominance * proximity   // direction × strength × presence
-  + w2 * priceConfirm   * dominance * proximity   // price agreeing × presence
-  + w3 * charmScore     * proximity               // charm story × reach
-  + w4 * (clarity - 0.5)                          // clean-wall bonus / mixed-strike penalty
+score =
+  w1 * flowConfluence * dominance * proximity + // direction × strength × presence
+  w2 * priceConfirm * dominance * proximity + // price agreeing × presence
+  w3 * charmScore * proximity + // charm story × reach
+  w4 * (clarity - 0.5); // clean-wall bonus / mixed-strike penalty
 ```
 
 **Why multiplicative gates matter:** a strike 45pts away from spot with mid-pack GEX $ can't win on flow alone. `dominance ≈ 0.1` and `proximity ≈ 0.05` kill the contribution. This is the "not much more GEX $ than the other bars" failure mode we explicitly want to avoid.
@@ -61,20 +61,20 @@ The full mathematical specification is in **Appendix C**.
 
 The three modes (`oi`, `vol`, `dir`) are not a display toggle — they are three independent score pipelines computed on every snapshot, all persisted to `gex_target_features`. The mode toggle at the top of the component selects which one drives the UI; the other two are always computed and stored so (a) switching modes is instant with no refetch, and (b) the ML pipeline has three labels per snapshot to train against.
 
-| Mode | Reads | Tells you |
-|---|---|---|
-| **OI** | `call_gamma_oi + put_gamma_oi` | Standing dealer inventory — slow, structural, "the book" |
-| **VOL** | `call_gamma_vol + put_gamma_vol` | Today's fresh flow — fast, reactive, new positions |
-| **DIR** | `(call_gamma_ask - call_gamma_bid) + (put_gamma_ask - put_gamma_bid)` | Directionalized — which side is actively pushing |
+| Mode    | Reads                                                                 | Tells you                                                |
+| ------- | --------------------------------------------------------------------- | -------------------------------------------------------- |
+| **OI**  | `call_gamma_oi + put_gamma_oi`                                        | Standing dealer inventory — slow, structural, "the book" |
+| **VOL** | `call_gamma_vol + put_gamma_vol`                                      | Today's fresh flow — fast, reactive, new positions       |
+| **DIR** | `(call_gamma_ask - call_gamma_bid) + (put_gamma_ask - put_gamma_bid)` | Directionalized — which side is actively pushing         |
 
 ### Multi-horizon ratio weighting
 
 Horizon deltas are combined with weights derived from `1/n`, not hand-tuned constants. For horizons `[1, 5, 20, 60]`:
 
 ```typescript
-raw_weights = [1/1, 1/5, 1/20, 1/60] = [1.00, 0.20, 0.05, 0.017]
-sum         = 1.267
-norm_weights = [0.789, 0.158, 0.039, 0.014]
+raw_weights = [1 / 1, 1 / 5, 1 / 20, 1 / 60] = [1.0, 0.2, 0.05, 0.017];
+sum = 1.267;
+norm_weights = [0.789, 0.158, 0.039, 0.014];
 ```
 
 Adding or dropping a horizon in the future (e.g., adding 10m) re-derives the weights automatically. No re-tuning. The 1-minute horizon dominates heavily, which is the intended shape: recency is the primary signal, longer horizons are confirmation gates.
@@ -83,17 +83,17 @@ Adding or dropping a horizon in the future (e.g., adding 10m) re-derives the wei
 
 The GexTarget pipeline is organized into three persisted layers so the ML pipeline can validate each transformation independently and train threshold discovery on the right representation:
 
-| Layer | What it is | Where it lives | Example query |
-|---|---|---|---|
-| **1. Raw** | Unaltered UW snapshot rows (per-strike gamma/charm/delta/vanna columns per 1-minute snapshot) | `gex_strike_0dte` (already exists, populated by `fetch-gex-0dte` cron) | "What did the dealer-exposure surface look like at 13:47 UTC on 2026-04-08?" |
-| **2. Features** | Calculated inputs to the scorer: distance from spot, per-horizon $ deltas, per-horizon **priors**, per-horizon **percentages** (normalized per horizon), charm_net, delta_net, vanna_net, call_ratio, minutes_after_noon_ct, nearest-wall metadata | `gex_target_features` columns labelled "Layer 2" in the Phase 2 schema | "At what delta_pct_1m threshold does the best strike become predictive of a pin by close?" |
-| **3. Outputs** | Scoring results: the six component scores, the composite final_score, tier, wall_side, is_target, rank_in_mode, rank_by_size | `gex_target_features` columns labelled "Layer 3" in the Phase 2 schema | "When the system picked a HIGH target, how often did price close within 5 pts of the strike?" |
+| Layer           | What it is                                                                                                                                                                                                                                         | Where it lives                                                         | Example query                                                                                 |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| **1. Raw**      | Unaltered UW snapshot rows (per-strike gamma/charm/delta/vanna columns per 1-minute snapshot)                                                                                                                                                      | `gex_strike_0dte` (already exists, populated by `fetch-gex-0dte` cron) | "What did the dealer-exposure surface look like at 13:47 UTC on 2026-04-08?"                  |
+| **2. Features** | Calculated inputs to the scorer: distance from spot, per-horizon $ deltas, per-horizon **priors**, per-horizon **percentages** (normalized per horizon), charm_net, delta_net, vanna_net, call_ratio, minutes_after_noon_ct, nearest-wall metadata | `gex_target_features` columns labelled "Layer 2" in the Phase 2 schema | "At what delta_pct_1m threshold does the best strike become predictive of a pin by close?"    |
+| **3. Outputs**  | Scoring results: the six component scores, the composite final_score, tier, wall_side, is_target, rank_in_mode, rank_by_size                                                                                                                       | `gex_target_features` columns labelled "Layer 3" in the Phase 2 schema | "When the system picked a HIGH target, how often did price close within 5 pts of the strike?" |
 
 **Why three layers instead of one.** A single row per snapshot that stores only the final scores makes three common ML questions impossible:
 
 1. **Threshold discovery.** "Is 9% Δ% the actionable threshold, or is it 11%?" requires querying the raw Δ% directly. If only the tier is stored, the answer is garbled by the `tanh` squashing and the weighted composite.
 2. **Weight re-tuning.** Phase 10 will want to test alternative composite weights without re-fetching raw snapshots. Having Layer 2 features persisted means a new weighting is a SQL + Python recompute, not a cron re-run.
-3. **Model validation.** The ML pipeline trains on outcome labels (e.g., "did this pin by close?"). Joining labels against Layer 2 features tells you *which inputs* carry signal. Joining against Layer 3 scores tells you *whether the scoring correctly translated features into decisions*. Both questions matter, and they need separate columns.
+3. **Model validation.** The ML pipeline trains on outcome labels (e.g., "did this pin by close?"). Joining labels against Layer 2 features tells you _which inputs_ carry signal. Joining against Layer 3 scores tells you _whether the scoring correctly translated features into decisions_. Both questions matter, and they need separate columns.
 
 **Per-horizon normalization.** Each horizon's `delta_pct_*` value is normalized against **its own** prior — `delta_pct_20m = delta_gex_20m / |prev_gex_dollars_20m|`, not `/ |prev_gex_dollars_1m|`. Using a shared 1-minute baseline would produce a meaningless "percentage" for the 5m / 20m / 60m horizons and make threshold discovery impossible. See Appendix C.3.1 for the math.
 
@@ -158,17 +158,17 @@ Hand-rolled SVG was considered and rejected: the chart panel is the visual cente
 
 ### Panel responsibilities
 
-| Panel | Answers | Time horizon | Source |
-|---|---|---|---|
-| 1. Target Strike Tile | "Where is dealer flow pointing?" | Composite | `gex-target.ts` |
-| 2. 5-min Urgency | "Which strikes gained attention over 5 ticks?" | 5-tick Δ | `gex-target.ts` |
-| 3. 20-min Sparklines | "Which strikes are structurally building?" | 20-tick shape | `gex-target.ts` |
-| 4. Price Chart | "Where is price relative to the walls?" | Live tick | `spx_candles_1m` + level math |
-| 5. GEX Strike Box | "What's the top-10 board right now?" | 1-tick Δ | `gex-target.ts` |
+| Panel                 | Answers                                        | Time horizon  | Source                        |
+| --------------------- | ---------------------------------------------- | ------------- | ----------------------------- |
+| 1. Target Strike Tile | "Where is dealer flow pointing?"               | Composite     | `gex-target.ts`               |
+| 2. 5-min Urgency      | "Which strikes gained attention over 5 ticks?" | 5-tick Δ      | `gex-target.ts`               |
+| 3. 20-min Sparklines  | "Which strikes are structurally building?"     | 20-tick shape | `gex-target.ts`               |
+| 4. Price Chart        | "Where is price relative to the walls?"        | Live tick     | `spx_candles_1m` + level math |
+| 5. GEX Strike Box     | "What's the top-10 board right now?"           | 1-tick Δ      | `gex-target.ts`               |
 
 ### Panel 5 vs Panel 2 — why both
 
-Panel 5 is "tick-over-tick (1m) Δ with rank change arrows" — the *now* view, dense with columns (strike, dist, Δ%, greek bars, GEX $, flow C/P, HOT %). Panel 2 is "average Δ over a 5-tick rolling window" — the *recent momentum* view, thin and visual. They're not the same chart at different zooms; they answer different questions. Subagents implementing these panels must preserve that distinction.
+Panel 5 is "tick-over-tick (1m) Δ with rank change arrows" — the _now_ view, dense with columns (strike, dist, Δ%, greek bars, GEX $, flow C/P, HOT %). Panel 2 is "average Δ over a 5-tick rolling window" — the _recent momentum_ view, thin and visual. They're not the same chart at different zooms; they answer different questions. Subagents implementing these panels must preserve that distinction.
 
 ### Three greek bars on each row of Panel 5
 
@@ -410,7 +410,7 @@ CREATE INDEX IF NOT EXISTS idx_spx_candles_1m_date_time
 **Subagent 4B — Features backfill script**
 
 - File: `scripts/backfill-gex-target-features.mjs`
-- For each trading day in the last 30 days, loads all `gex_strike_0dte` snapshots for that day in chronological order, and for each snapshot runs the *same* feature-computation logic the cron uses (imported from `api/_lib/gex-target.ts` or similar shared location)
+- For each trading day in the last 30 days, loads all `gex_strike_0dte` snapshots for that day in chronological order, and for each snapshot runs the _same_ feature-computation logic the cron uses (imported from `api/_lib/gex-target.ts` or similar shared location)
 - Writes feature rows to `gex_target_features` with the same `math_version` tag the cron uses
 - Idempotent via the `UNIQUE (date, timestamp, mode, strike, math_version)` constraint
 - Logs per-date snapshot and row counts
@@ -470,25 +470,25 @@ CREATE INDEX IF NOT EXISTS idx_spx_candles_1m_date_time
    ```ts
    interface UseGexTargetReturn {
      // all three modes always present — never null, always computed
-     oi:  { target: StrikeScore | null, leaderboard: StrikeScore[] },
-     vol: { target: StrikeScore | null, leaderboard: StrikeScore[] },
-     dir: { target: StrikeScore | null, leaderboard: StrikeScore[] },
-     spot: number,
-     candles: SPXCandle[],
-     timestamp: string | null,
-     timestamps: string[],
-     selectedDate: string,
-     setSelectedDate: (date: string) => void,
-     isLive: boolean,
-     isScrubbed: boolean,
-     canScrubPrev: boolean,
-     canScrubNext: boolean,
-     scrubPrev: () => void,
-     scrubNext: () => void,
-     scrubLive: () => void,
-     loading: boolean,
-     error: string | null,
-     refresh: () => void,
+     oi: { target: StrikeScore | null; leaderboard: StrikeScore[] };
+     vol: { target: StrikeScore | null; leaderboard: StrikeScore[] };
+     dir: { target: StrikeScore | null; leaderboard: StrikeScore[] };
+     spot: number;
+     candles: SPXCandle[];
+     timestamp: string | null;
+     timestamps: string[];
+     selectedDate: string;
+     setSelectedDate: (date: string) => void;
+     isLive: boolean;
+     isScrubbed: boolean;
+     canScrubPrev: boolean;
+     canScrubNext: boolean;
+     scrubPrev: () => void;
+     scrubNext: () => void;
+     scrubLive: () => void;
+     loading: boolean;
+     error: string | null;
+     refresh: () => void;
    }
    ```
 
@@ -606,17 +606,17 @@ Panels 1, 2, 3, 5 all built in parallel. Panel 4 (price chart) is Phase 8 becaus
 
 Colors and styles for the Panel 4 overlay lines, to be implemented in Phase 8.
 
-| Element | Color | Style | Label |
-|---|---|---|---|
-| Candles | default green/red | solid | none |
-| VWAP | amber (`theme.chartAmber`) | dashed (2px) | "VWAP" right-anchored |
-| #1 GEX | bright green | solid 2px | "#1 GEX <strike>" left-anchored |
-| #2 GEX | medium green | solid 1.5px | "#2 GEX <strike>" left-anchored |
-| #3 GEX | dim green | solid 1px | "#3 GEX <strike>" left-anchored |
-| M+ (max call vol) | bright cyan | dashed 2px | "M+ <strike>" right-anchored |
-| M- (max put vol) | bright magenta | dashed 2px | "M- <strike>" right-anchored |
-| ZF (gamma flip) | amber | dotted 1.5px | "ZF <strike>" left-anchored |
-| Current price | white | horizontal scale marker | auto |
+| Element           | Color                      | Style                   | Label                           |
+| ----------------- | -------------------------- | ----------------------- | ------------------------------- |
+| Candles           | default green/red          | solid                   | none                            |
+| VWAP              | amber (`theme.chartAmber`) | dashed (2px)            | "VWAP" right-anchored           |
+| #1 GEX            | bright green               | solid 2px               | "#1 GEX <strike>" left-anchored |
+| #2 GEX            | medium green               | solid 1.5px             | "#2 GEX <strike>" left-anchored |
+| #3 GEX            | dim green                  | solid 1px               | "#3 GEX <strike>" left-anchored |
+| M+ (max call vol) | bright cyan                | dashed 2px              | "M+ <strike>" right-anchored    |
+| M- (max put vol)  | bright magenta             | dashed 2px              | "M- <strike>" right-anchored    |
+| ZF (gamma flip)   | amber                      | dotted 1.5px            | "ZF <strike>" left-anchored     |
+| Current price     | white                      | horizontal scale marker | auto                            |
 
 If the user selects a non-default mode (VOL or DIR), the #1/#2/#3 GEX lines recompute from that mode's top-3 strikes and the lines animate to their new positions. M+/M-/ZF do not change with mode — they're cross-mode structural levels.
 
@@ -632,9 +632,9 @@ These experiments are **not built in this plan**. They're documented here as a m
 
 **Experiment 1 — Does realized vol drop near big positive-gamma strikes?**
 
-*Hypothesis:* When price is within 5 pts of a >$1M positive-gamma wall, 1-minute realized volatility is materially lower than when price is far from any wall or near a negative-gamma wall.
+_Hypothesis:_ When price is within 5 pts of a >$1M positive-gamma wall, 1-minute realized volatility is materially lower than when price is far from any wall or near a negative-gamma wall.
 
-*Query sketch:*
+_Query sketch:_
 
 ```sql
 WITH labeled_minutes AS (
@@ -666,32 +666,32 @@ FROM labeled_minutes
 GROUP BY 1;
 ```
 
-*Success criterion:* median realized vol in the `near_pos_wall` bucket is at least 30% lower than the `free_air` bucket, with a Mann-Whitney U test `p < 0.05`.
+_Success criterion:_ median realized vol in the `near_pos_wall` bucket is at least 30% lower than the `free_air` bucket, with a Mann-Whitney U test `p < 0.05`.
 
-*What to do if it fails:* The scoring math still has value for picking growing flow, but the "dealer hedging suppresses vol" premise is weaker in your data than expected. Deprioritize the futures-confirmation layer; keep the scoring.
+_What to do if it fails:_ The scoring math still has value for picking growing flow, but the "dealer hedging suppresses vol" premise is weaker in your data than expected. Deprioritize the futures-confirmation layer; keep the scoring.
 
 **Experiment 2 — Does taker/maker imbalance flip near gamma strikes?**
 
-*Hypothesis:* Near positive-gamma walls, taker-buy ratio drifts toward 0.5 (neutral, dealers passive). Near negative-gamma walls, taker-buy ratio becomes more extreme (one-sided, dealers aggressive).
+_Hypothesis:_ Near positive-gamma walls, taker-buy ratio drifts toward 0.5 (neutral, dealers passive). Near negative-gamma walls, taker-buy ratio becomes more extreme (one-sided, dealers aggressive).
 
-*Requires:* taker-side inference on every futures tick (`trade price closer to bid = taker sell, closer to ask = taker buy`). Databento L1 data is sufficient.
+_Requires:_ taker-side inference on every futures tick (`trade price closer to bid = taker sell, closer to ask = taker buy`). Databento L1 data is sufficient.
 
-*Success criterion:* distribution of `taker_buy_ratio` in the `near_pos_wall` bucket is visibly more concentrated around 0.5 than in the `near_neg_wall` bucket.
+_Success criterion:_ distribution of `taker_buy_ratio` in the `near_pos_wall` bucket is visibly more concentrated around 0.5 than in the `near_neg_wall` bucket.
 
 **Experiment 3 — Can we predict reversal at a positive-gamma wall from tape alone?**
 
-*Hypothesis:* In the 1-minute window before price reverses at a >$1M positive-gamma wall, there's a detectable signature in L1 data (depth stack thickening on the far side, taker ratio flipping, print sizes trending down).
+_Hypothesis:_ In the 1-minute window before price reverses at a >$1M positive-gamma wall, there's a detectable signature in L1 data (depth stack thickening on the far side, taker ratio flipping, print sizes trending down).
 
-*Method:*
+_Method:_
 
 1. Label every "price touched within 3pts of a >$1M pos-gamma wall and then reversed" event in the last 30 days as positive examples.
 2. Label "price touched a wall and broke through" as negative examples.
 3. For the minute before each touch, extract L1 features: bid/ask depth at top 5 levels, taker-buy ratio, print size p95, spread width.
 4. Train a logistic regression predicting `will_reverse`.
 
-*Success criterion:* model ROC-AUC > 0.65 on a holdout set. Anything above that is a tradable edge.
+_Success criterion:_ model ROC-AUC > 0.65 on a holdout set. Anything above that is a tradable edge.
 
-*This is the highest-value experiment.* Success means the owner can use the ES tape to confirm or reject a target pick from the component *before* entering a trade.
+_This is the highest-value experiment._ Success means the owner can use the ES tape to confirm or reject a target pick from the component _before_ entering a trade.
 
 ### Appendix C — Scoring math formal specification
 
@@ -721,9 +721,9 @@ export interface MagnetFeatures {
   strike: number;
   spot: number;
   distFromSpot: number;
-  gexDollars: number;              // signed; positive = net long, negative = net short
+  gexDollars: number; // signed; positive = net long, negative = net short
   // Per-horizon dollar deltas
-  deltaGex_1m: number | null;      // signed Δ$ vs 1m-prior snapshot
+  deltaGex_1m: number | null; // signed Δ$ vs 1m-prior snapshot
   deltaGex_5m: number | null;
   deltaGex_20m: number | null;
   deltaGex_60m: number | null;
@@ -734,41 +734,41 @@ export interface MagnetFeatures {
   prevGexDollars_20m: number | null;
   prevGexDollars_60m: number | null;
   // Per-horizon percentages — normalized against each horizon's OWN prior
-  deltaPct_1m: number | null;      // deltaGex_1m / |prevGexDollars_1m|
-  deltaPct_5m: number | null;      // deltaGex_5m / |prevGexDollars_5m|
+  deltaPct_1m: number | null; // deltaGex_1m / |prevGexDollars_1m|
+  deltaPct_5m: number | null; // deltaGex_5m / |prevGexDollars_5m|
   deltaPct_20m: number | null;
   deltaPct_60m: number | null;
-  callRatio: number;               // (callVol - putVol) / (callVol + putVol), in [-1, 1]
-  charmNet: number;                // net charm at strike, signed — scored in v1
-  deltaNet: number;                // net DEX at strike, signed — stored in v1, NOT scored (see Appendix I)
-  vannaNet: number;                // net VEX at strike, signed — stored in v1, NOT scored (see Appendix I)
-  minutesAfterNoonCT: number;      // 0 at noon, 180 at 3pm CT, clamped [0, 180]
+  callRatio: number; // (callVol - putVol) / (callVol + putVol), in [-1, 1]
+  charmNet: number; // net charm at strike, signed — scored in v1
+  deltaNet: number; // net DEX at strike, signed — stored in v1, NOT scored (see Appendix I)
+  vannaNet: number; // net VEX at strike, signed — stored in v1, NOT scored (see Appendix I)
+  minutesAfterNoonCT: number; // 0 at noon, 180 at 3pm CT, clamped [0, 180]
 }
 
 export interface ComponentScores {
-  flowConfluence: number;   // -1..1
-  priceConfirm: number;     // -1..1
-  charmScore: number;       // -1..1
-  dominance: number;        // 0..1
-  clarity: number;          // 0..1
-  proximity: number;        // 0..1
+  flowConfluence: number; // -1..1
+  priceConfirm: number; // -1..1
+  charmScore: number; // -1..1
+  dominance: number; // 0..1
+  clarity: number; // 0..1
+  proximity: number; // 0..1
 }
 
 export interface StrikeScore {
   strike: number;
   features: MagnetFeatures;
   components: ComponentScores;
-  finalScore: number;       // signed
+  finalScore: number; // signed
   tier: Tier;
   wallSide: WallSide;
-  rankByScore: number;      // 1..10 within the mode
-  rankBySize: number;       // 1..10 by |gexDollars|
-  isTarget: boolean;        // true for the #1 by score, if tier !== 'NONE'
+  rankByScore: number; // 1..10 within the mode
+  rankBySize: number; // 1..10 by |gexDollars|
+  isTarget: boolean; // true for the #1 by score, if tier !== 'NONE'
 }
 
 export interface TargetScore {
   target: StrikeScore | null;
-  leaderboard: StrikeScore[];  // always length ≤ 10, sorted by finalScore desc
+  leaderboard: StrikeScore[]; // always length ≤ 10, sorted by finalScore desc
 }
 ```
 
@@ -787,25 +787,30 @@ Rationale: a strike that doesn't have meaningful standing gamma isn't worth anal
 Scorer pseudocode:
 
 ```typescript
-weights = normalize([1, 1/5, 1/20, 1/60])  // precomputed constant
-         = [0.789, 0.158, 0.039, 0.014]
+weights = normalize([1, 1 / 5, 1 / 20, 1 / 60]) =
+  // precomputed constant
+  [0.789, 0.158, 0.039, 0.014];
 
-pcts = [deltaPct_1m, deltaPct_5m, deltaPct_20m, deltaPct_60m]
+pcts = [deltaPct_1m, deltaPct_5m, deltaPct_20m, deltaPct_60m];
 
 // Missing horizons (null) are dropped and their weight is
 // redistributed proportionally over the remaining horizons.
-available = pcts.map((p, i) => p == null ? null : { pct: p, weight: weights[i] })
-            .filter(x => x != null)
-if (available.length === 0) return 0
+available = pcts
+  .map((p, i) => (p == null ? null : { pct: p, weight: weights[i] }))
+  .filter((x) => x != null);
+if (available.length === 0) return 0;
 
-total_weight = sum(available.map(a => a.weight))
-renorm = available.map(a => ({ pct: a.pct, weight: a.weight / total_weight }))
+total_weight = sum(available.map((a) => a.weight));
+renorm = available.map((a) => ({
+  pct: a.pct,
+  weight: a.weight / total_weight,
+}));
 
-weighted_pct = sum(renorm.map(r => r.pct * r.weight))
+weighted_pct = sum(renorm.map((r) => r.pct * r.weight));
 
 // Squash to [-1, 1] via tanh with a scale constant.
 // SCALE_FLOW_PCT = 0.30 → ±30% weighted Δ maps to ~tanh(1) ≈ 0.76
-return tanh(weighted_pct / 0.30)
+return tanh(weighted_pct / 0.3);
 ```
 
 Feature-extractor pseudocode (lifted from `flowConfluence` in Phase 1.5):
@@ -827,32 +832,32 @@ Requires access to `deltaSpot_1m`, `deltaSpot_3m`, `deltaSpot_5m` — spot price
 
 ```typescript
 // Spot moves are passed as arguments, not from MagnetFeatures
-priceMove = 0.5 * deltaSpot_1m + 0.3 * deltaSpot_3m + 0.2 * deltaSpot_5m
+priceMove = 0.5 * deltaSpot_1m + 0.3 * deltaSpot_3m + 0.2 * deltaSpot_5m;
 
-if (priceMove === 0) return 0
+if (priceMove === 0) return 0;
 
-toward = sign(strike - spot)  // +1 if strike above spot, -1 if below
+toward = sign(strike - spot); // +1 if strike above spot, -1 if below
 
 // Magnitude scaled: SCALE_PRICE = 3.0 → a 3-pt recent move is "significant"
-magnitude = tanh(abs(priceMove) / 3.0)
+magnitude = tanh(abs(priceMove) / 3.0);
 
-return magnitude * sign(priceMove) * toward
+return magnitude * sign(priceMove) * toward;
 ```
 
 **C.3.3 — `charmScore(features) → [-1, 1]`**
 
 ```typescript
 // Time weight: floor of 0.3, rises linearly to 1.0 at 3pm CT
-todWeight = max(0.3, min(1.0, minutesAfterNoonCT / 180))
+todWeight = max(0.3, min(1.0, minutesAfterNoonCT / 180));
 
 // Charm sign must match gamma sign for positive contribution
 // (positive gamma + positive charm = decay supporting the magnet)
-charmSign = sign(gexDollars) * sign(charmNet)
+charmSign = sign(gexDollars) * sign(charmNet);
 
 // Magnitude scaled
-charmMag = tanh(abs(charmNet) / SCALE_CHARM)  // SCALE_CHARM TBD at implementation time
+charmMag = tanh(abs(charmNet) / SCALE_CHARM); // SCALE_CHARM TBD at implementation time
 
-return charmSign * charmMag * todWeight
+return charmSign * charmMag * todWeight;
 ```
 
 `SCALE_CHARM` is the 90th percentile of `abs(charmNet)` across a sample of snapshots from the existing data. Subagent 1A computes this empirically during implementation and hard-codes the constant with a code comment explaining the methodology.
@@ -862,20 +867,20 @@ return charmSign * charmMag * todWeight
 `peerGexDollars` is the array of `|gex_dollars|` for all 10 strikes in the universe.
 
 ```typescript
-peerMedian = median(peerGexDollars)
-peerMax = max(peerGexDollars)
-peerRange = peerMax - peerMedian
+peerMedian = median(peerGexDollars);
+peerMax = max(peerGexDollars);
+peerRange = peerMax - peerMedian;
 
-if (peerRange === 0) return 0.5  // degenerate case: all strikes equal
+if (peerRange === 0) return 0.5; // degenerate case: all strikes equal
 
-raw = (abs(gexDollars) - peerMedian) / peerRange
-return clamp(raw, 0, 1)
+raw = (abs(gexDollars) - peerMedian) / peerRange;
+return clamp(raw, 0, 1);
 ```
 
 **C.3.5 — `clarity(features) → [0, 1]`**
 
 ```typescript
-return abs(callRatio)  // already in [-1, 1], we want magnitude
+return abs(callRatio); // already in [-1, 1], we want magnitude
 ```
 
 A strike with 95% call volume has `callRatio ≈ 0.9`, `clarity = 0.9`. A 50/50 strike has `clarity = 0`.
@@ -883,8 +888,8 @@ A strike with 95% call volume has `callRatio ≈ 0.9`, `clarity = 0.9`. A 50/50 
 **C.3.6 — `proximity(features) → [0, 1]`**
 
 ```typescript
-SIGMA = 15  // points
-return exp(-(distFromSpot ** 2) / (2 * SIGMA ** 2))
+SIGMA = 15; // points
+return exp(-(distFromSpot ** 2) / (2 * SIGMA ** 2));
 ```
 
 At 0 pts: 1.0. At 15 pts: 0.61. At 30 pts: 0.14. At 45 pts: 0.01.
@@ -893,16 +898,16 @@ At 0 pts: 1.0. At 15 pts: 0.61. At 30 pts: 0.14. At 45 pts: 0.01.
 
 ```typescript
 // Weights
-W1 = 0.40  // flow confluence term
-W2 = 0.25  // price confirmation term
-W3 = 0.20  // charm term
-W4 = 0.15  // clarity bonus/penalty
+W1 = 0.4; // flow confluence term
+W2 = 0.25; // price confirmation term
+W3 = 0.2; // charm term
+W4 = 0.15; // clarity bonus/penalty
 
 finalScore =
-    W1 * flowConfluence * dominance * proximity
-  + W2 * priceConfirm   * dominance * proximity
-  + W3 * charmScore     * proximity
-  + W4 * (clarity - 0.5)
+  W1 * flowConfluence * dominance * proximity +
+  W2 * priceConfirm * dominance * proximity +
+  W3 * charmScore * proximity +
+  W4 * (clarity - 0.5);
 ```
 
 Range in practice: roughly `[-0.85, +0.85]` given component bounds.
@@ -910,21 +915,21 @@ Range in practice: roughly `[-0.85, +0.85]` given component bounds.
 #### C.5 — Tier assignment
 
 ```typescript
-abs_score = abs(finalScore)
+abs_score = abs(finalScore);
 
-if      (abs_score > 0.50) tier = 'HIGH'
-else if (abs_score > 0.30) tier = 'MEDIUM'
-else if (abs_score > 0.15) tier = 'LOW'
-else                       tier = 'NONE'
+if (abs_score > 0.5) tier = 'HIGH';
+else if (abs_score > 0.3) tier = 'MEDIUM';
+else if (abs_score > 0.15) tier = 'LOW';
+else tier = 'NONE';
 ```
 
 #### C.6 — Wall side assignment
 
 ```typescript
-if (tier === 'NONE')        wallSide = 'NEUTRAL'
-else if (gexDollars > 0)    wallSide = 'CALL'
-else if (gexDollars < 0)    wallSide = 'PUT'
-else                        wallSide = 'NEUTRAL'
+if (tier === 'NONE') wallSide = 'NEUTRAL';
+else if (gexDollars > 0) wallSide = 'CALL';
+else if (gexDollars < 0) wallSide = 'PUT';
+else wallSide = 'NEUTRAL';
 ```
 
 Wall side is derived from the sign of `gex_dollars` at the strike, not from the sign of `finalScore`. A growing call wall and a dying call wall both have `wallSide = 'CALL'`; the difference is in `finalScore` (positive for growing, negative for dying).
@@ -933,11 +938,11 @@ Wall side is derived from the sign of `gex_dollars` at the strike, not from the 
 
 ```typescript
 // After all 10 strikes in the universe are scored:
-leaderboard = allScores.sort((a, b) => abs(b.finalScore) - abs(a.finalScore))
-leaderboard = leaderboard.map((s, i) => ({ ...s, rankByScore: i + 1 }))
+leaderboard = allScores.sort((a, b) => abs(b.finalScore) - abs(a.finalScore));
+leaderboard = leaderboard.map((s, i) => ({ ...s, rankByScore: i + 1 }));
 
-topStrike = leaderboard[0]
-target = topStrike.tier === 'NONE' ? null : topStrike
+topStrike = leaderboard[0];
+target = topStrike.tier === 'NONE' ? null : topStrike;
 ```
 
 If the top strike has tier `NONE`, the target is `null` — the component renders "board churning, no target." This is the first-class "no confluence" case.
@@ -951,7 +956,7 @@ function computeGexTarget(snapshots: GexSnapshot[]): {
   dir: TargetScore;
 } {
   return {
-    oi:  scoreMode(snapshots, 'oi'),
+    oi: scoreMode(snapshots, 'oi'),
     vol: scoreMode(snapshots, 'vol'),
     dir: scoreMode(snapshots, 'dir'),
   };
@@ -1120,7 +1125,7 @@ WHERE date = yesterday() AND did_pin_within_5pts_by_close IS NULL;
 
 Consensus disagreement itself becomes a useful signal: "when OI and VOL agree but DIR disagrees, what's the base rate?" is an honest question the data can answer.
 
-**Integration with the component:** once a classifier is trained, add a small `ML` chip next to the confidence tier in Panel 1 showing the model's prediction. This is purely informational — the heuristic score remains primary. If the ML consistently outperforms the heuristic across ≥60 days of out-of-sample data, *then* consider making ML the primary scorer with the heuristic as fallback.
+**Integration with the component:** once a classifier is trained, add a small `ML` chip next to the confidence tier in Panel 1 showing the model's prediction. This is purely informational — the heuristic score remains primary. If the ML consistently outperforms the heuristic across ≥60 days of out-of-sample data, _then_ consider making ML the primary scorer with the heuristic as fallback.
 
 **Do not:**
 
@@ -1228,10 +1233,10 @@ The `gex_target_features` and `spx_candles_1m` tables can be dropped and re-back
 
 This is a deliberate v1 scoping decision, not an oversight. The owner's greek primer articulates clearly why both DEX and VEX matter for dealer-behavior prediction:
 
-- **DEX** tells you where hedges *already live*. Large positive DEX creates resistance from dealer shorts; large negative DEX creates support from dealer longs. It's positional, not momentum-based — different flavor of signal from the flow-confluence math.
+- **DEX** tells you where hedges _already live_. Large positive DEX creates resistance from dealer shorts; large negative DEX creates support from dealer longs. It's positional, not momentum-based — different flavor of signal from the flow-confluence math.
 - **VEX** tells you how dealer positioning shifts under IV changes. Strongest around VIX moves, OPEX, vol-crush events. Background noise in flat-VIX regimes; dominant signal in vol-spike minutes.
 
-The question is not *whether* to incorporate them — we will — but *how and when*.
+The question is not _whether_ to incorporate them — we will — but _how and when_.
 
 #### I.1 — Three open design questions
 
@@ -1255,7 +1260,7 @@ score =
 
 Option B (modulation):
 
-DEX and VEX adjust the *weights* of other terms rather than contributing their own. Example: "if DEX is strongly negative at this strike, amplify the proximity term because the strike behaves more like a standing support level that price approaches." Implementation would look like `W_prox_eff = W_prox * (1 + k * abs(dexNormalized))`.
+DEX and VEX adjust the _weights_ of other terms rather than contributing their own. Example: "if DEX is strongly negative at this strike, amplify the proximity term because the strike behaves more like a standing support level that price approaches." Implementation would look like `W_prox_eff = W_prox * (1 + k * abs(dexNormalized))`.
 
 - **Pro:** fewer terms in the composite, more intuitive ("DEX makes this strike matter more")
 - **Con:** harder to test, harder to explain, harder for ML to decompose into feature importance
@@ -1289,7 +1294,7 @@ vexPressure = vexSign * vexMag * volRegimeWeight   // in [-1, 1]
 
 **Q3. Should DEX be unsigned in the composite but signed for display?**
 
-This is the subtlest question of the three. DEX tells you *where hedges already live*, not *which direction flow is pushing*. A strike with `dexNet < 0` is support regardless of whether the flow is currently adding or draining its gamma exposure. That's different from every other term in the v1 spec:
+This is the subtlest question of the three. DEX tells you _where hedges already live_, not _which direction flow is pushing_. A strike with `dexNet < 0` is support regardless of whether the flow is currently adding or draining its gamma exposure. That's different from every other term in the v1 spec:
 
 - `flowConfluence` is signed — direction matters (growing vs dying)
 - `priceConfirm` is signed — direction matters (moving toward vs away)

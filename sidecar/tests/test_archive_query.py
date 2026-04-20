@@ -59,9 +59,7 @@ def _build_archive(root: Path, bars: list[tuple], symbology: list[tuple]) -> Non
             )
             """
         )
-        conn.executemany(
-            "INSERT INTO bars_tmp VALUES (?, ?, ?, ?, ?, ?, ?)", year_bars
-        )
+        conn.executemany("INSERT INTO bars_tmp VALUES (?, ?, ?, ?, ?, ?, ?)", year_bars)
         conn.execute(f"COPY bars_tmp TO '{part}' (FORMAT PARQUET)")
 
     # Symbology — one file for all years.
@@ -76,9 +74,7 @@ def _build_archive(root: Path, bars: list[tuple], symbology: list[tuple]) -> Non
         """
     )
     conn.executemany("INSERT INTO sym_tmp VALUES (?, ?, ?, ?)", symbology)
-    conn.execute(
-        f"COPY sym_tmp TO '{root / 'symbology.parquet'}' (FORMAT PARQUET)"
-    )
+    conn.execute(f"COPY sym_tmp TO '{root / 'symbology.parquet'}' (FORMAT PARQUET)")
     conn.close()
 
 
@@ -341,7 +337,7 @@ def test_day_summary_text_contains_core_fields(tmp_path: Path) -> None:
     d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
     d1 = datetime(2024, 6, 3, 15, 30, tzinfo=timezone.utc)  # +60m
     d2 = datetime(2024, 6, 3, 16, 30, tzinfo=timezone.utc)  # +120m
-    d3 = datetime(2024, 6, 3, 21, 0, tzinfo=timezone.utc)   # EOD
+    d3 = datetime(2024, 6, 3, 21, 0, tzinfo=timezone.utc)  # EOD
     bars = [
         (d0, 101, 5300.0, 5305.0, 5299.0, 5300.0, 1_000_000),
         (d1, 101, 5300.0, 5310.0, 5299.0, 5305.5, 1_500_000),
@@ -466,7 +462,15 @@ def test_day_features_vector_rejects_too_few_bars(tmp_path: Path) -> None:
 
     d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
     bars = [
-        (d0 + timedelta(minutes=i), 101, 5300.0 + i, 5300.0 + i, 5300.0 + i, 5300.0 + i, 1_000)
+        (
+            d0 + timedelta(minutes=i),
+            101,
+            5300.0 + i,
+            5300.0 + i,
+            5300.0 + i,
+            5300.0 + i,
+            1_000,
+        )
         for i in range(5)
     ]
     _build_archive(
@@ -535,13 +539,9 @@ def test_day_summary_prediction_batch_matches_per_date(tmp_path: Path) -> None:
     )
     assert len(batch) == 2
     archive_query.reset_connection_for_tests()
-    single_a = archive_query.day_summary_prediction(
-        "2024-06-03", root=tmp_path
-    )
+    single_a = archive_query.day_summary_prediction("2024-06-03", root=tmp_path)
     archive_query.reset_connection_for_tests()
-    single_b = archive_query.day_summary_prediction(
-        "2024-06-04", root=tmp_path
-    )
+    single_b = archive_query.day_summary_prediction("2024-06-04", root=tmp_path)
     by_date = {r["date"]: r for r in batch}
     # Byte-for-byte match across per-date and batched.
     assert by_date["2024-06-03"]["summary"] == single_a
@@ -555,7 +555,15 @@ def test_day_summary_prediction_rejects_sparse_days(tmp_path: Path) -> None:
 
     d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
     bars = [
-        (d0 + timedelta(minutes=i), 101, 5300.0 + i, 5300.0 + i, 5300.0 + i, 5300.0 + i, 1_000)
+        (
+            d0 + timedelta(minutes=i),
+            101,
+            5300.0 + i,
+            5300.0 + i,
+            5300.0 + i,
+            5300.0 + i,
+            1_000,
+        )
         for i in range(5)
     ]
     _build_archive(
@@ -590,18 +598,12 @@ def test_day_features_batch_matches_per_date_vectors(tmp_path: Path) -> None:
         ],
     )
 
-    batch = archive_query.day_features_batch(
-        "2024-06-03", "2024-06-04", root=tmp_path
-    )
+    batch = archive_query.day_features_batch("2024-06-03", "2024-06-04", root=tmp_path)
     assert len(batch) == 2
     archive_query.reset_connection_for_tests()
-    v1_single = archive_query.day_features_vector(
-        "2024-06-03", root=tmp_path
-    )
+    v1_single = archive_query.day_features_vector("2024-06-03", root=tmp_path)
     archive_query.reset_connection_for_tests()
-    v2_single = archive_query.day_features_vector(
-        "2024-06-04", root=tmp_path
-    )
+    v2_single = archive_query.day_features_vector("2024-06-04", root=tmp_path)
 
     by_date = {r["date"]: r for r in batch}
     assert by_date["2024-06-03"]["symbol"] == "ESU4"
@@ -638,9 +640,7 @@ def test_day_features_batch_skips_days_with_too_few_bars(tmp_path: Path) -> None
         ],
     )
 
-    batch = archive_query.day_features_batch(
-        "2024-06-03", "2024-06-04", root=tmp_path
-    )
+    batch = archive_query.day_features_batch("2024-06-03", "2024-06-04", root=tmp_path)
     dates = [r["date"] for r in batch]
     assert "2024-06-03" in dates
     assert "2024-06-04" not in dates
@@ -655,7 +655,7 @@ def test_day_summary_batch_matches_per_date_format(tmp_path: Path) -> None:
     d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
     d1 = datetime(2024, 6, 3, 15, 30, tzinfo=timezone.utc)  # +60m
     d2 = datetime(2024, 6, 3, 16, 30, tzinfo=timezone.utc)  # +120m
-    d3 = datetime(2024, 6, 3, 21, 0, tzinfo=timezone.utc)   # EOD
+    d3 = datetime(2024, 6, 3, 21, 0, tzinfo=timezone.utc)  # EOD
     bars = [
         (d0, 101, 5300.0, 5305.0, 5299.0, 5300.0, 1_000_000),
         (d1, 101, 5300.0, 5310.0, 5299.0, 5305.5, 1_500_000),
@@ -664,9 +664,7 @@ def test_day_summary_batch_matches_per_date_format(tmp_path: Path) -> None:
     ]
     _build_archive(tmp_path, bars, [(101, "ESU4", d0, d3)])
 
-    batch = archive_query.day_summary_batch(
-        "2024-06-03", "2024-06-03", root=tmp_path
-    )
+    batch = archive_query.day_summary_batch("2024-06-03", "2024-06-03", root=tmp_path)
     assert len(batch) == 1
     archive_query.reset_connection_for_tests()
     single = archive_query.day_summary_text("2024-06-03", root=tmp_path)
@@ -699,7 +697,7 @@ def test_day_features_vector_forward_fills_gaps(tmp_path: Path) -> None:
         (2, 5301.0),
         (3, 5301.0),
         (4, 5301.0),
-        (5, 5305.0),   # then GAP to minute 30
+        (5, 5305.0),  # then GAP to minute 30
         (30, 5310.0),
         (45, 5320.0),
         (50, 5325.0),
@@ -784,9 +782,7 @@ def _build_tbbo_archive(
         """
     )
     conn.executemany("INSERT INTO sym_tmp VALUES (?, ?, ?, ?)", symbology)
-    conn.execute(
-        f"COPY sym_tmp TO '{root / 'symbology.parquet'}' (FORMAT PARQUET)"
-    )
+    conn.execute(f"COPY sym_tmp TO '{root / 'symbology.parquet'}' (FORMAT PARQUET)")
     conn.close()
 
 
@@ -862,9 +858,7 @@ def test_tbbo_day_microstructure_picks_front_month_and_computes_ofi(
     ]
     _build_tbbo_archive(tmp_path, bars, symbology)
 
-    result = archive_query.tbbo_day_microstructure(
-        "2024-06-03", "ES", root=tmp_path
-    )
+    result = archive_query.tbbo_day_microstructure("2024-06-03", "ES", root=tmp_path)
 
     assert result["date"] == "2024-06-03"
     assert result["symbol"] == "ES"
@@ -880,9 +874,7 @@ def test_tbbo_day_microstructure_picks_front_month_and_computes_ofi(
 
 def test_tbbo_day_microstructure_rejects_unknown_symbol(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="symbol must be"):
-        archive_query.tbbo_day_microstructure(
-            "2024-06-03", "CL", root=tmp_path
-        )
+        archive_query.tbbo_day_microstructure("2024-06-03", "CL", root=tmp_path)
 
 
 def test_tbbo_day_microstructure_raises_on_missing_date(
@@ -905,9 +897,7 @@ def test_tbbo_day_microstructure_raises_on_missing_date(
     )
 
     with pytest.raises(ValueError, match="2024-06-04"):
-        archive_query.tbbo_day_microstructure(
-            "2024-06-04", "ES", root=tmp_path
-        )
+        archive_query.tbbo_day_microstructure("2024-06-04", "ES", root=tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -960,11 +950,11 @@ def test_tbbo_ofi_percentile_ranks_value_against_history(
     # roughly -0.8 to +1.0.
     # Each day has (buy_size, sell_size) such that OFI = (b - s) / (b + s).
     profiles: list[tuple[int, int]] = [
-        (1, 9),   # OFI ~ -0.8
+        (1, 9),  # OFI ~ -0.8
         (2, 8),
         (3, 7),
         (4, 6),
-        (5, 5),   # OFI ~ 0
+        (5, 5),  # OFI ~ 0
         (6, 4),
         (7, 3),
         (8, 2),
@@ -974,9 +964,7 @@ def test_tbbo_ofi_percentile_ranks_value_against_history(
     bars = _spread_days((2024, 6, 3), 101, "ESU4", profiles)
     sym_open = datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc)
     sym_close = datetime(2024, 6, 13, 20, 0, tzinfo=timezone.utc)
-    _build_tbbo_archive(
-        tmp_path, bars, [(101, "ESU4", sym_open, sym_close)]
-    )
+    _build_tbbo_archive(tmp_path, bars, [(101, "ESU4", sym_open, sym_close)])
 
     # Value near the top of the distribution ranks high.
     result_high = archive_query.tbbo_ofi_percentile(
@@ -1012,13 +1000,9 @@ def test_tbbo_ofi_percentile_ranks_value_against_history(
 
 def test_tbbo_ofi_percentile_validates_inputs(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="symbol must be"):
-        archive_query.tbbo_ofi_percentile(
-            "CL", 0.1, window="1h", root=tmp_path
-        )
+        archive_query.tbbo_ofi_percentile("CL", 0.1, window="1h", root=tmp_path)
     with pytest.raises(ValueError, match="window must be"):
-        archive_query.tbbo_ofi_percentile(
-            "ES", 0.1, window="1d", root=tmp_path
-        )
+        archive_query.tbbo_ofi_percentile("ES", 0.1, window="1d", root=tmp_path)
     with pytest.raises(ValueError, match="horizon_days"):
         archive_query.tbbo_ofi_percentile(
             "ES", 0.1, window="1h", horizon_days=0, root=tmp_path
@@ -1063,9 +1047,7 @@ def test_tbbo_ofi_percentile_raises_on_empty_archive(tmp_path: Path) -> None:
     _build_tbbo_archive(tmp_path, bars, sym)
 
     with pytest.raises(ValueError, match="No TBBO ES"):
-        archive_query.tbbo_ofi_percentile(
-            "ES", 0.1, window="1h", root=tmp_path
-        )
+        archive_query.tbbo_ofi_percentile("ES", 0.1, window="1h", root=tmp_path)
 
 
 def test_tbbo_ofi_percentile_respects_horizon_days(tmp_path: Path) -> None:
@@ -1075,14 +1057,17 @@ def test_tbbo_ofi_percentile_respects_horizon_days(tmp_path: Path) -> None:
 
     # 5 days with variety of OFIs, then a 6th day at extreme +1.
     profiles: list[tuple[int, int]] = [
-        (1, 9), (2, 8), (5, 5), (8, 2), (9, 1), (10, 0),
+        (1, 9),
+        (2, 8),
+        (5, 5),
+        (8, 2),
+        (9, 1),
+        (10, 0),
     ]
     bars = _spread_days((2024, 6, 3), 101, "ESU4", profiles)
     sym_open = datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc)
     sym_close = datetime(2024, 6, 9, 20, 0, tzinfo=timezone.utc)
-    _build_tbbo_archive(
-        tmp_path, bars, [(101, "ESU4", sym_open, sym_close)]
-    )
+    _build_tbbo_archive(tmp_path, bars, [(101, "ESU4", sym_open, sym_close)])
 
     # horizon_days=1 → only the most recent day in the distribution.
     result = archive_query.tbbo_ofi_percentile(
@@ -1186,9 +1171,7 @@ def test_tbbo_day_microstructure_honors_utc_day_on_non_utc_host(
 
     # Querying UTC date 2025-10-16 must see BOTH trades (the boundary
     # one + midday) plus the padding — total trade_count 27.
-    row_1016 = archive_query.tbbo_day_microstructure(
-        "2025-10-16", "ES", root=tmp_path
-    )
+    row_1016 = archive_query.tbbo_day_microstructure("2025-10-16", "ES", root=tmp_path)
     assert row_1016["trade_count"] == 27
     assert row_1016["front_month_contract"] == "ESZ5"
 

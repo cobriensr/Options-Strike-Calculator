@@ -41,8 +41,10 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { readdir, stat } from 'node:fs/promises';
 import { join, relative } from 'node:path';
+import { Readable } from 'node:stream';
 import process from 'node:process';
 
 import { put } from '@vercel/blob';
@@ -110,23 +112,42 @@ function formatBytes(n) {
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
+/**
+ * Stream a file through SHA-256 without materializing it in memory.
+ * Required for files >2 GiB (Node's readFile Buffer ceiling). The OS
+ * page cache makes the subsequent upload-stream read nearly free.
+ */
+async function hashFile(absPath) {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(absPath)) {
+    hash.update(chunk);
+  }
+  return hash.digest('hex');
+}
+
 /** Upload a single file, returning its manifest entry. */
 async function uploadFile(absPath, srcRoot) {
   const relPath = relative(srcRoot, absPath);
   const blobPath = `${BLOB_PREFIX}/${relPath}`;
-  const bytes = await readFile(absPath);
-  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const { size } = await stat(absPath);
+  const sha256 = await hashFile(absPath);
 
-  const result = await put(blobPath, bytes, {
+  const nodeStream = createReadStream(absPath);
+  const webStream = Readable.toWeb(nodeStream);
+
+  const result = await put(blobPath, webStream, {
     access: 'private',
     allowOverwrite: true,
     contentType: contentTypeFor(relPath),
     token: BLOB_TOKEN,
+    // multipart chunks large files (>100MB) into parallel part uploads;
+    // required for >5 GB and strongly recommended past a few hundred MB.
+    multipart: true,
   });
 
   return {
     path: relPath,
-    size: bytes.length,
+    size,
     sha256,
     blob_url: result.url,
     content_type: contentTypeFor(relPath),

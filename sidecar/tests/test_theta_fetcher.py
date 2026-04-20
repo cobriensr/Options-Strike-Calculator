@@ -127,9 +127,7 @@ def test_backfill_skips_root_with_existing_data(monkeypatch) -> None:
         theta_fetcher.db, "has_theta_option_eod_rows", lambda _root: True
     )
     # Force a small root list for determinism.
-    monkeypatch.setattr(
-        theta_fetcher.settings, "theta_roots", "SPXW,VIX"
-    )
+    monkeypatch.setattr(theta_fetcher.settings, "theta_roots", "SPXW,VIX")
 
     fake_client = MagicMock()
     # Inject a fake ThetaClient so we can assert the fetch was never made.
@@ -166,10 +164,16 @@ def test_backfill_runs_for_root_with_empty_table(monkeypatch) -> None:
             strike=Decimal("5100.00"),
             option_type="C",
             trade_date=prior_day,
-            open=None, high=None, low=None,
+            open=None,
+            high=None,
+            low=None,
             close=Decimal("1.50"),
-            volume=None, trade_count=None,
-            bid=None, ask=None, bid_size=None, ask_size=None,
+            volume=None,
+            trade_count=None,
+            bid=None,
+            ask=None,
+            bid_size=None,
+            ask_size=None,
         )
     ]
 
@@ -205,15 +209,13 @@ def test_fetch_root_range_filters_out_of_horizon_expirations(monkeypatch) -> Non
     fake_client = MagicMock()
     # Three expirations: two out of window, one in the window.
     fake_client.list_expirations.return_value = [
-        date(2020, 1, 15),   # too old
-        date(2024, 4, 19),   # in window
-        date(2030, 1, 15),   # too far forward
+        date(2020, 1, 15),  # too old
+        date(2024, 4, 19),  # in window
+        date(2030, 1, 15),  # too far forward
     ]
     fake_client.list_strikes.return_value = []  # no strikes -> no fetch_eod
 
-    monkeypatch.setattr(
-        theta_fetcher.db, "upsert_theta_option_eod_batch", MagicMock()
-    )
+    monkeypatch.setattr(theta_fetcher.db, "upsert_theta_option_eod_batch", MagicMock())
 
     result = theta_fetcher._fetch_root_range(
         fake_client, "SPXW", target_day, target_day
@@ -228,13 +230,9 @@ def test_fetch_root_range_aborts_on_subscription_denial(monkeypatch) -> None:
     import theta_fetcher
 
     fake_client = MagicMock()
-    fake_client.list_expirations.side_effect = ThetaSubscriptionError(
-        "Not entitled"
-    )
+    fake_client.list_expirations.side_effect = ThetaSubscriptionError("Not entitled")
     upsert_mock = MagicMock()
-    monkeypatch.setattr(
-        theta_fetcher.db, "upsert_theta_option_eod_batch", upsert_mock
-    )
+    monkeypatch.setattr(theta_fetcher.db, "upsert_theta_option_eod_batch", upsert_mock)
 
     result = theta_fetcher._fetch_root_range(
         fake_client, "SPXW", date(2024, 4, 18), date(2024, 4, 18)
@@ -257,9 +255,7 @@ def test_fetch_root_range_stops_root_on_fetch_eod_denial(monkeypatch) -> None:
     fake_client.fetch_eod.side_effect = ThetaSubscriptionError("Not entitled")
 
     upsert_mock = MagicMock()
-    monkeypatch.setattr(
-        theta_fetcher.db, "upsert_theta_option_eod_batch", upsert_mock
-    )
+    monkeypatch.setattr(theta_fetcher.db, "upsert_theta_option_eod_batch", upsert_mock)
 
     result = theta_fetcher._fetch_root_range(
         fake_client, "SPXW", date(2024, 4, 18), date(2024, 4, 18)

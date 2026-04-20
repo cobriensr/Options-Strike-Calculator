@@ -8,11 +8,80 @@
 
 import { useMemo } from 'react';
 import { getTopOIStrikes } from '../utils/pin-risk';
-import type { AnalysisContext } from '../components/ChartAnalysis';
+import {
+  CHAIN_DELTA_RUNGS,
+  FLOOR_ENTRY_DELTA,
+  PREFERRED_ENTRY_DELTA,
+} from '../constants';
+import type {
+  AnalysisContext,
+  DeltaRung,
+} from '../components/ChartAnalysis/types';
 import type { CalculationResults } from '../types';
 import type { ComputedSignals } from './useComputedSignals';
-import type { ChainResponse, EventItem } from '../types/api';
+import type { ChainResponse, ChainStrike, EventItem } from '../types/api';
 import type { HistorySnapshot } from './useHistoryData';
+
+/**
+ * For a given target rung (absolute delta in %), find the nearest-|delta|
+ * strike in the provided chain side. Returns null if the side is empty.
+ */
+function nearestByAbsDelta(
+  strikes: readonly ChainStrike[],
+  targetAbsDelta: number,
+): ChainStrike | null {
+  if (strikes.length === 0) return null;
+  const target = targetAbsDelta / 100;
+  return strikes.reduce((best, s) =>
+    Math.abs(Math.abs(s.delta) - target) <
+    Math.abs(Math.abs(best.delta) - target)
+      ? s
+      : best,
+  );
+}
+
+/**
+ * Build the delta-rungs table for one side of the chain. For each rung in
+ * CHAIN_DELTA_RUNGS, picks the nearest-|delta| strike. When two rungs collapse
+ * onto the same actual strike, keeps the rung whose |delta| target is closest
+ * to that strike's |delta|.
+ */
+function buildDeltaRungs(strikes: readonly ChainStrike[]): DeltaRung[] {
+  if (strikes.length === 0) return [];
+  // Map strike -> { match, targetRung } so dedupe can keep the best rung.
+  const byStrike = new Map<
+    number,
+    { match: ChainStrike; targetRung: number }
+  >();
+  for (const rung of CHAIN_DELTA_RUNGS) {
+    const match = nearestByAbsDelta(strikes, rung);
+    if (!match) continue;
+    const existing = byStrike.get(match.strike);
+    if (!existing) {
+      byStrike.set(match.strike, { match, targetRung: rung });
+      continue;
+    }
+    // Same strike picked by two rungs — keep the one whose target is
+    // closest to the strike's actual |delta|.
+    const absDelta = Math.abs(match.delta) * 100;
+    const existingDist = Math.abs(absDelta - existing.targetRung);
+    const newDist = Math.abs(absDelta - rung);
+    if (newDist < existingDist) {
+      byStrike.set(match.strike, { match, targetRung: rung });
+    }
+  }
+  return Array.from(byStrike.values())
+    .map(({ match }) => ({
+      delta: Math.abs(match.delta),
+      strike: match.strike,
+      bid: match.bid,
+      ask: match.ask,
+      iv: match.iv,
+      oi: match.oi,
+    }))
+    .sort((a, b) => a.delta - b.delta);
+}
+
 export interface UseAnalysisContextParams {
   selectedDate: string;
   timeHour: string;
@@ -141,6 +210,18 @@ export function useAnalysisContext({
             putSkew25d,
             callSkew25d,
             skewRatio,
+          };
+        })(),
+        targetDeltaStrikes: (() => {
+          if (!chain?.puts?.length && !chain?.calls?.length) return undefined;
+          const puts = buildDeltaRungs(chain?.puts ?? []);
+          const calls = buildDeltaRungs(chain?.calls ?? []);
+          if (puts.length === 0 && calls.length === 0) return undefined;
+          return {
+            preferredDelta: PREFERRED_ENTRY_DELTA,
+            floorDelta: FLOOR_ENTRY_DELTA,
+            puts,
+            calls,
           };
         })(),
         gexLandscapeBias: gexLandscapeBias ?? undefined,

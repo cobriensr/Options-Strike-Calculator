@@ -54,8 +54,30 @@ export interface AnalysisContext {
     callSkew25d: number; // call25dIV - atmIV (vol pts)
     skewRatio: number; // |putSkew| / |callSkew|
   };
+  /** Per-strike delta rungs sampled from the live option chain (puts + calls).
+   *  Lets Claude map a target delta to an actual market strike instead of
+   *  guessing from point distance. Omitted when chain data is unavailable. */
+  targetDeltaStrikes?: TargetDeltaStrikes;
   /** Pre-formatted structural bias summary from GEX Landscape, passed as-is to analyze. */
   gexLandscapeBias?: string | null;
+}
+
+/** One rung: a chain strike selected as the nearest match for a target |delta|. */
+export interface DeltaRung {
+  delta: number; // absolute delta as decimal (0.12 = 12Δ)
+  strike: number;
+  bid: number;
+  ask: number;
+  iv: number; // decimal (0.25 = 25%)
+  oi: number;
+}
+
+/** Compact view of the live option chain for strike selection. */
+export interface TargetDeltaStrikes {
+  preferredDelta: number; // 12
+  floorDelta: number; // 10
+  puts: DeltaRung[];
+  calls: DeltaRung[];
 }
 
 export interface UploadedImage {

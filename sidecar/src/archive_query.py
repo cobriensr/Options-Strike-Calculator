@@ -423,7 +423,9 @@ def analog_days(
     if target_row is None or target_row[0] is None:
         raise ValueError(f"No ES bars found for {date_iso}")
 
-    tgt_symbol, tgt_open, tgt_high, tgt_low, tgt_close, tgt_vol, tgt_win, tgt_delta = target_row
+    tgt_symbol, tgt_open, tgt_high, tgt_low, tgt_close, tgt_vol, tgt_win, tgt_delta = (
+        target_row
+    )
 
     analogs = [
         {
@@ -877,9 +879,7 @@ def day_features_batch(
             vec.append((last_seen - day_open) / day_open)
         out.append(
             {
-                "date": day.isoformat()
-                if hasattr(day, "isoformat")
-                else str(day),
+                "date": day.isoformat() if hasattr(day, "isoformat") else str(day),
                 "symbol": state["symbol"],
                 "vector": vec,
             }
@@ -1094,7 +1094,9 @@ def day_summary_prediction_batch(
 
     out: list[dict[str, Any]] = []
     for row in rows:
-        day, symbol, day_open, close_60, hour_high, hour_low, hour_volume, hour_bars = row
+        day, symbol, day_open, close_60, hour_high, hour_low, hour_volume, hour_bars = (
+            row
+        )
         if hour_bars < 10:
             continue
         d1 = float(close_60) - float(day_open)
@@ -1220,9 +1222,7 @@ def tbbo_day_microstructure(
 
     contract = _tbbo_front_month(conn, tbbo, symbology, date_iso, symbol_root)
     if contract is None:
-        raise ValueError(
-            f"No TBBO {symbol_root} bars found for {date_iso}"
-        )
+        raise ValueError(f"No TBBO {symbol_root} bars found for {date_iso}")
 
     # Per-minute buy/sell volume in a single DuckDB scan. Then three
     # rolling window aggregates (5m / 15m / 1h) against the per-minute
@@ -1303,9 +1303,7 @@ def tbbo_day_microstructure(
         # _tbbo_front_month returned a contract but the join-then-filter
         # produced no per-minute rows — should not happen in practice;
         # surface as a clear empty-day error.
-        raise ValueError(
-            f"No TBBO {symbol_root} bars found for {date_iso}"
-        )
+        raise ValueError(f"No TBBO {symbol_root} bars found for {date_iso}")
 
     trade_count, ofi_5m_mean, ofi_15m_mean, ofi_1h_mean = summary_row
 
@@ -1382,13 +1380,14 @@ def tbbo_ofi_percentile(
         # in, but the function must be safe for any library-layer
         # caller too (e.g. a future cron that invokes it directly).
         raise ValueError(
-            f"horizon_days must be <= {_TBBO_OFI_MAX_HORIZON_DAYS}, "
-            f"got {horizon_days}"
+            f"horizon_days must be <= {_TBBO_OFI_MAX_HORIZON_DAYS}, got {horizon_days}"
         )
     try:
         current_float = float(current_value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"current_value must be a number, got {current_value!r}") from exc
+        raise ValueError(
+            f"current_value must be a number, got {current_value!r}"
+        ) from exc
     import math as _math
 
     if not _math.isfinite(current_float):
@@ -1515,7 +1514,7 @@ def tbbo_ofi_percentile(
     # Population std — matches the "describe this symbol's OFI distribution"
     # framing (same choice as `microstructure.py`'s `ddof=0`).
     variance = sum((v - mean_val) ** 2 for v in values) / len(values)
-    std_val = variance ** 0.5
+    std_val = variance**0.5
 
     return {
         "symbol": symbol_root,

@@ -17,7 +17,7 @@ Address 21 prioritized findings from the React/TypeScript audit to bring the cod
 
 ## Thresholds & Constants
 
-- **File-size ceiling:** 500 LOC for components, 400 LOC for utils, 600 LOC for api/_lib modules. Files above → split candidate.
+- **File-size ceiling:** 500 LOC for components, 400 LOC for utils, 600 LOC for api/\_lib modules. Files above → split candidate.
 - **Prop-count ceiling:** 12 props per component before grouping into settings objects.
 - **Dependency-array ceiling:** 10 dependencies on a single `useMemo`/`useEffect`. Over → split.
 - **Test coverage floor:** Every exported util in `src/utils/` must have a co-located test file.
@@ -30,14 +30,14 @@ Fix silent failures and validation bypasses first. These are production risks; e
 
 **Files to modify:**
 
-1. **[api/alerts-ack.ts:27](../../api/alerts-ack.ts)** — Replace `as { id?: number }` cast with Zod schema. Add `alertAckSchema` to [api/_lib/validation.ts](../../api/_lib/validation.ts).
+1. **[api/alerts-ack.ts:27](../../api/alerts-ack.ts)** — Replace `as { id?: number }` cast with Zod schema. Add `alertAckSchema` to [api/\_lib/validation.ts](../../api/_lib/validation.ts).
 2. **[api/positions.ts](../../api/positions.ts)** — POST accepts raw CSV with no schema. Add `positionCsvSchema` (file size + MIME check + parsed-row schema) to `validation.ts`.
-3. **[api/_lib/api-helpers.ts:517](../../api/_lib/api-helpers.ts)** — Replace `.catch(() => '')` with `.catch(e => '[parse error: ${e.message}]')` + explicit throw. Do not silently continue.
-4. **[api/_lib/darkpool.ts:104](../../api/_lib/darkpool.ts),[:192](../../api/_lib/darkpool.ts),[:234](../../api/_lib/darkpool.ts)** — Fix three swallowed errors. Line 234 specifically must add `Sentry.captureException(err)` before throw — `analyze.ts` calls this synchronously, so silent failure = Claude gets stale/empty dark pool context.
-5. **[api/_lib/spx-candles.ts:231](../../api/_lib/spx-candles.ts)** — Remove `.catch(() => '')`.
-6. **[api/_lib/max-pain.ts:56](../../api/_lib/max-pain.ts)** — Remove `.catch(() => '')`.
-7. **[api/_lib/alerts.ts:87](../../api/_lib/alerts.ts)** — Remove `.catch(() => '')`.
-8. **[api/_lib/iv-term-structure.ts:47](../../api/_lib/iv-term-structure.ts)** — Remove `.catch(() => '')`.
+3. **[api/\_lib/api-helpers.ts:517](../../api/_lib/api-helpers.ts)** — Replace `.catch(() => '')` with `.catch(e => '[parse error: ${e.message}]')` + explicit throw. Do not silently continue.
+4. **[api/\_lib/darkpool.ts:104](../../api/_lib/darkpool.ts),[:192](../../api/_lib/darkpool.ts),[:234](../../api/_lib/darkpool.ts)** — Fix three swallowed errors. Line 234 specifically must add `Sentry.captureException(err)` before throw — `analyze.ts` calls this synchronously, so silent failure = Claude gets stale/empty dark pool context.
+5. **[api/\_lib/spx-candles.ts:231](../../api/_lib/spx-candles.ts)** — Remove `.catch(() => '')`.
+6. **[api/\_lib/max-pain.ts:56](../../api/_lib/max-pain.ts)** — Remove `.catch(() => '')`.
+7. **[api/\_lib/alerts.ts:87](../../api/_lib/alerts.ts)** — Remove `.catch(() => '')`.
+8. **[api/\_lib/iv-term-structure.ts:47](../../api/_lib/iv-term-structure.ts)** — Remove `.catch(() => '')`.
 9. **[api/cron/backfill-futures-gaps.ts:99](../../api/cron/backfill-futures-gaps.ts)** — Remove `.catch(() => '')`.
 10. ~~**[tsconfig.json:24](../../tsconfig.json)** — Flip `exactOptionalPropertyTypes: false` → `true`.~~ **DEFERRED to Phase 1B (2026-04-16).** Flip produced 119 errors, well above the 50-error threshold set for this phase. See "Phase 1B — exactOptionalPropertyTypes" below.
 
@@ -83,6 +83,7 @@ Each file below is a full session. Do not attempt two in one go. Start every ses
 **Phase 2.1 — [src/components/GexPerStrike.tsx](../../src/components/GexPerStrike.tsx) (1,131 LOC)**
 
 Extract into feature folder `src/components/GexPerStrike/`:
+
 - `index.tsx` (orchestrator, <200 LOC)
 - `StrikesTable.tsx` (table DOM + row rendering)
 - `SummaryCards.tsx` (top aggregate cards)
@@ -95,6 +96,7 @@ Also fix inline `style={{...}}` objects at lines 176, 518, 536, 548 (hoist to `u
 **Phase 2.2 — [src/components/FuturesCalculator/index.tsx](../../src/components/FuturesCalculator/index.tsx) (996 LOC)**
 
 Extract:
+
 - Keep `index.tsx` as the orchestrator (<250 LOC)
 - `TickLadderTable.tsx`
 - `PositionSizingPanel.tsx`
@@ -107,6 +109,7 @@ Extract:
 **Phase 2.3 — [src/utils/gex-target.ts](../../src/utils/gex-target.ts) (1,214 LOC)**
 
 Split into folder `src/utils/gex-target/`:
+
 - `index.ts` (re-exports public API; preserves existing import paths)
 - `scorer-oi.ts` (~400 LOC, OI-based scoring)
 - `scorer-vol.ts` (~300 LOC, volume-based scoring)
@@ -130,14 +133,15 @@ return {
 
 Each sub-object: ≤10 deps. Verify downstream `React.memo` boundaries benefit — pick 2–3 child components and confirm they no longer re-render on unrelated state changes (React DevTools Profiler).
 
-**Phase 2.5 — [api/_lib/analyze-context.ts](../../api/_lib/analyze-context.ts) (1,522 LOC)**
+**Phase 2.5 — [api/\_lib/analyze-context.ts](../../api/_lib/analyze-context.ts) (1,522 LOC)**
 
 Split:
+
 - `analyze-context.ts` (builder, ~400 LOC — assembles context from fetched data)
 - `analyze-context-fetchers.ts` (~800 LOC — `fetchFlowData`, `fetchGexData`, etc.)
 - Keep public signature of `buildAnalyzeContext()` unchanged.
 
-**Verification per sub-phase:** `npm run review` + `git diff --stat` shows file-count delta but LOC delta is near-zero (code moved, not rewritten). Run [api/__tests__/analyze.test.ts](../../api/__tests__/analyze.test.ts) for Phase 2.5.
+**Verification per sub-phase:** `npm run review` + `git diff --stat` shows file-count delta but LOC delta is near-zero (code moved, not rewritten). Run [api/**tests**/analyze.test.ts](../../api/__tests__/analyze.test.ts) for Phase 2.5.
 
 ### Phase 3 — Structural fixes — ~1 day (partial: 6 of 8 shipped, 2 deferred)
 
@@ -147,9 +151,13 @@ Split:
    ```typescript
    interface AdvancedSectionProps {
      skew: { value: number; onChange: (v: number) => void };
-     ironCondor: { show: boolean; onToggle: () => void; wingWidth: number; /* ... */ };
-     bwb: { show: boolean; /* ... */ };
-     vix: { show: boolean; /* ... */ };
+     ironCondor: {
+       show: boolean;
+       onToggle: () => void;
+       wingWidth: number; /* ... */
+     };
+     bwb: { show: boolean /* ... */ };
+     vix: { show: boolean /* ... */ };
    }
    ```
 2. **[src/components/IronCondorSection/PnLProfileTable.tsx](../../src/components/IronCondorSection/PnLProfileTable.tsx) + [src/components/BWBSection/BWBPnLProfileTable.tsx](../../src/components/BWBSection/BWBPnLProfileTable.tsx)** — Extract generic `<PnLProfileTable>` to `src/components/shared/PnLProfileTable.tsx` accepting `rows: PnLRow[]` and a row-mapper function. Both IC and BWB become thin wrappers. Target: 510 LOC → ~250 LOC + two ~40-LOC mappers.
@@ -157,8 +165,8 @@ Split:
 4. **[src/hooks/useAutoFill.ts:140](../../src/hooks/useAutoFill.ts),[:210](../../src/hooks/useAutoFill.ts)** — Remove `eslint-disable-next-line react-hooks/exhaustive-deps`. Destructure ref values at hook entry and add to dep arrays explicitly. If refs are genuinely stable, document why in a single-line comment.
 5. **[src/hooks/useAlertPolling.ts:159](../../src/hooks/useAlertPolling.ts)** — Replace `as { alerts: MarketAlert[] }` with the `FetchResult<T>` discriminated pattern from [src/hooks/useMarketData.fetchers.ts](../../src/hooks/useMarketData.fetchers.ts).
 6. **[src/hooks/useChartAnalysis.ts:302](../../src/hooks/useChartAnalysis.ts)** — Same fix; replace `(err as Error & { status?: number })` with `'status' in err` type guard.
-7. **[api/_lib/build-features-types.ts](../../api/_lib/build-features-types.ts)** — Replace `FeatureRow = Record<string, any>` with a typed interface listing each feature column.
-8. **[api/_lib/futures-context.ts](../../api/_lib/futures-context.ts)** — Replace `as unknown as FuturesSnapshot[]` and `as unknown as EsOptionsDailyRow[]` with Zod `safeParse` on DB result rows.
+7. **[api/\_lib/build-features-types.ts](../../api/_lib/build-features-types.ts)** — Replace `FeatureRow = Record<string, any>` with a typed interface listing each feature column.
+8. **[api/\_lib/futures-context.ts](../../api/_lib/futures-context.ts)** — Replace `as unknown as FuturesSnapshot[]` and `as unknown as EsOptionsDailyRow[]` with Zod `safeParse` on DB result rows.
 
 ### Phase 4 — Hygiene pass — ~1 day
 
@@ -173,7 +181,7 @@ Split:
 **Deferred — rationale:**
 
 - **#1 Consolidate ChartAnalysis/** — 17 files total. The three `AnalysisHistory*.tsx` files superficially overlap but serve different contexts (picker modal vs inline list vs single-row display); merging them would need a deeper audit of each component's prop contract than this phase affords. Revisit alongside a genuine UX change to the history UI.
-- **#4 time.ts test** — [src/__tests__/utils/timeValidation.test.ts](../../src/__tests__/utils/timeValidation.test.ts) and [src/__tests__/utils/timezone.test.ts](../../src/__tests__/utils/timezone.test.ts) already cover the key paths. The audit's "missing test" concern pre-dates the timezone.test.ts file. Skipped as a false positive.
+- **#4 time.ts test** — [src/**tests**/utils/timeValidation.test.ts](../../src/__tests__/utils/timeValidation.test.ts) and [src/**tests**/utils/timezone.test.ts](../../src/__tests__/utils/timezone.test.ts) already cover the key paths. The audit's "missing test" concern pre-dates the timezone.test.ts file. Skipped as a false positive.
 - **#5 process.env migration** — 20+ stray reads scattered across `api-helpers.ts`, `analyze-context-fetchers.ts`, `alerts.ts`, `embeddings.ts`, `db.ts`, `build-features-phase2.ts`, `iv-term-structure.ts`, `journal/backfill-features.ts`. Each site is a micro-edit but the total is high-churn low-value work — `requireEnv()`/`optionalEnv()` exist but their usage isn't enforced, so this is a style pass not a correctness pass. Defer to a dedicated codemod pass.
 - **#6 Unused `.map` index parameters** — 30+ sites. Mechanical. Best handled as a single `eslint-plugin-unused-imports` rule flip + auto-fix rather than piecemeal edits. Defer.
 
@@ -197,6 +205,7 @@ Split:
 ## Files to Modify (summary)
 
 **Frontend (17):**
+
 - `src/hooks/useAppState.ts`, `useVixData.ts`, `useAutoFill.ts`, `useAlertPolling.ts`, `useChartAnalysis.ts`
 - `src/components/GexPerStrike.tsx` (→ folder), `FuturesCalculator/index.tsx`, `AdvancedSection.tsx`, `IronCondorSection/PnLProfileTable.tsx`, `BWBSection/BWBPnLProfileTable.tsx`
 - `src/utils/gex-target.ts` (→ folder), `time.ts`, `strikes.ts`, `settlement.ts`, `formatting.ts`
@@ -204,6 +213,7 @@ Split:
 - `tsconfig.json`
 
 **Backend (12):**
+
 - `api/alerts-ack.ts`, `api/positions.ts`
 - `api/_lib/validation.ts` (add schemas), `api-helpers.ts`, `darkpool.ts`, `spx-candles.ts`, `max-pain.ts`, `alerts.ts`, `iv-term-structure.ts`, `build-features-types.ts`, `futures-context.ts`, `analyze-context.ts`
 - `api/cron/backfill-futures-gaps.ts`

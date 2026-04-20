@@ -648,7 +648,9 @@ class DatabentoClient:
         from sentry_setup import capture_message
 
         capture_message(
-            f"Dropped {drops} ES option trades waiting for Definition records",
+            f"Dropped {drops} ES option trades with no cached Definition "
+            f"(unknown instrument_id — either Definition lag or an "
+            f"untracked instrument)",
             level="warning",
             context={
                 "drops": drops,
@@ -674,12 +676,15 @@ class DatabentoClient:
         iid = getattr(record, "instrument_id", 0)
         instrument_info = self._get_option_info(iid)
         if instrument_info is None:
-            # SIDE-012: the trade arrived before its Definition record.
-            # Count it and let the periodic summary surface the total.
-            # Previously this was a silent return with no visibility.
+            # SIDE-012: no Definition cached for this instrument_id —
+            # either the trade arrived before its Definition (lag) or
+            # we never received a Definition for this id at all
+            # (untracked instrument). Count it and let the periodic
+            # summary surface the total. Previously this was a silent
+            # return with no visibility.
             self._definition_lag_drops += 1
             self._maybe_log_definition_lag_summary()
-            return  # Not an option we're tracking
+            return
 
         strike = instrument_info["strike"]
         option_type = instrument_info["option_type"]

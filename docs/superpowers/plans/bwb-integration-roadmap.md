@@ -17,17 +17,18 @@ BWBs are the right structure when the data says "price will move to X and stop t
 4. **Positive charm at that wall** (strengthening with time) — the wall gets harder as the day progresses, ensuring it holds into the afternoon for settlement.
 
 Supporting signals (not required, but increase confidence):
+
 - Opening range has consumed >50% of the straddle cone (compressed remaining range reduces overshoot probability)
 - Dark pool buyer/seller clusters align with the gamma wall (institutional capital at the same level)
 
 **When to use each structure:**
 
-| Signal Combination | Structure |
-|---|---|
-| Positive GEX + directional flow + dominant wall + positive charm | **BWB** (precision) |
-| Positive GEX + neutral flow + symmetric gamma | **IC** (range) |
-| Negative GEX or no dominant wall + directional flow | **CCS/PCS** (momentum) |
-| Conflicting signals or VIX > 25 | **SIT OUT** |
+| Signal Combination                                               | Structure              |
+| ---------------------------------------------------------------- | ---------------------- |
+| Positive GEX + directional flow + dominant wall + positive charm | **BWB** (precision)    |
+| Positive GEX + neutral flow + symmetric gamma                    | **IC** (range)         |
+| Negative GEX or no dominant wall + directional flow              | **CCS/PCS** (momentum) |
+| Conflicting signals or VIX > 25                                  | **SIT OUT**            |
 
 ---
 
@@ -38,6 +39,7 @@ Supporting signals (not required, but increase confidence):
 ### 1.1 New utility module: `src/utils/bwb.ts`
 
 The BWB has 3 legs:
+
 - **Long far wing** (further OTM, defines max loss side)
 - **2x Short strikes** (the sweet spot)
 - **Long near wing** (closer to money, defines the credit side)
@@ -50,6 +52,7 @@ buildCallBWB(spot, shortStrike, narrowWidth, wideWidth, sigma, T, skew)
 ```
 
 Each returns:
+
 - **Legs:** 3 strikes with premiums from existing `blackScholesPrice()`
 - **Net credit/debit:** (2 x short premium) - long near - long far
 - **Max profit:** net credit + narrow wing width (at short strike)
@@ -71,6 +74,7 @@ The existing Advanced Section has a wing width selector (5, 10, 15, 20, 25, 30, 
 - **Wide wing:** distance from short strike to the far long (the risk side)
 
 Design options:
+
 - **Option A:** Single "narrow width" selector + a multiplier for the wide wing (e.g., narrow = 20, wide = 2x = 40). Simpler UI.
 - **Option B:** Two independent width selectors. More flexible but more cognitive load.
 - **Recommended:** Option A. Default multiplier of 2x (wide = 2 x narrow). The trader can adjust the multiplier to control credit vs max loss tradeoff. This mirrors how the existing wing width selector works for ICs.
@@ -78,6 +82,7 @@ Design options:
 ### 1.3 Tests
 
 Add to `src/__tests__/`:
+
 - P&L at expiry for put BWB at 10+ price points (verify sweet spot, breakeven, max loss, credit zone)
 - P&L at expiry for call BWB (mirror)
 - Greeks aggregate correctly across 3 legs
@@ -105,18 +110,19 @@ Add a new section (or tab within the existing Iron Condor section) that shows:
 
 Show P&L at 5-point SPX intervals across the full range, similar to the IC section but with the BWB's asymmetric profile:
 
-| SPX at Expiry | P&L | Zone |
-|---|---|---|
-| ... | +$200 | Credit kept |
-| 5390 | +$1,200 | Approaching sweet spot |
-| **5380** | **+$2,200** | **Max profit** |
-| 5370 | +$1,200 | Overshooting |
-| 5358 | $0 | Breakeven |
-| ... | -$1,800 | Max loss (capped) |
+| SPX at Expiry | P&L         | Zone                   |
+| ------------- | ----------- | ---------------------- |
+| ...           | +$200       | Credit kept            |
+| 5390          | +$1,200     | Approaching sweet spot |
+| **5380**      | **+$2,200** | **Max profit**         |
+| 5370          | +$1,200     | Overshooting           |
+| 5358          | $0          | Breakeven              |
+| ...           | -$1,800     | Max loss (capped)      |
 
 ### 2.3 Sweet spot overlay
 
 The BWB's value proposition is the sweet spot. The UI should highlight where the sweet spot sits relative to:
+
 - Current SPX price (distance in points and %)
 - The straddle cone boundaries
 - The dominant gamma wall (if chain data is loaded)
@@ -239,9 +245,9 @@ Add BWB-specific fields to the strikes section of the JSON response:
     "narrowWidth": 20,
     "wideWidth": 40,
     "sweetSpot": 5380,
-    "creditReceived": 2.00,
-    "maxProfit": 22.00,
-    "maxLoss": 18.00,
+    "creditReceived": 2.0,
+    "maxProfit": 22.0,
+    "maxLoss": 18.0,
     "breakeven": 5358
   }
 }
@@ -268,6 +274,7 @@ In `api/cron/build-features.ts`, the `day_labels` extraction currently maps `rec
 ### 4.2 Outcome evaluation
 
 BWB success/failure is different from credit spreads:
+
 - **Credit spread success:** settlement is beyond the short strike (full credit kept)
 - **BWB success:** settlement is within the profit zone (between breakeven and the narrow wing long strike)
 - **BWB optimal:** settlement is at or near the sweet spot (within 5 pts)
@@ -277,6 +284,7 @@ The `structure_correct` label in `day_labels` needs to evaluate BWB outcomes aga
 ### 4.3 Feature additions
 
 Consider adding BWB-specific features to `training_features` in a future migration:
+
 - `gamma_wall_dominant_dist` — distance from price to the largest positive gamma wall (already partially captured by `gamma_wall_above_dist` / `gamma_wall_below_dist`)
 - `cone_consumption_pct` — already exists as `opening_range_pct_consumed`
 - `charm_at_wall_sign` — whether charm is positive or negative at the nearest dominant wall
@@ -292,6 +300,7 @@ Most BWB-relevant features are already captured. The primary gap is the charm-at
 ### 5.1 Analysis response handling
 
 In the chart analysis component, handle `structure: "PUT BWB"` and `structure: "CALL BWB"` responses:
+
 - Display the 3-leg structure (long far, 2x short, long near) with premiums
 - Show the sweet spot level and its proximity to gamma walls
 - Show the P&L profile with the asymmetric shape
@@ -300,6 +309,7 @@ In the chart analysis component, handle `structure: "PUT BWB"` and `structure: "
 ### 5.2 Position Monitor
 
 When parsing Schwab CSV uploads or live positions, identify BWB structures:
+
 - 3 legs at the same expiry
 - 2x short at one strike, 1x long at each of two different strikes
 - Unequal distances from the short strike to each long
@@ -312,16 +322,16 @@ Add BWB to the Excel export module alongside IC and credit spread P&L comparison
 
 ## Implementation Sequence
 
-| Order | Phase | Effort | Dependencies |
-|---|---|---|---|
-| 1 | Phase 1 — Calculation engine | Medium | None |
-| 2 | Phase 2 — Results display | Medium | Phase 1 |
-| 3 | Phase 3.1-3.2 — Prompt rules | Medium | None (can parallel with 1-2) |
-| 4 | Phase 3.3 — Calibration example | Low | Phase 3.2 |
-| 5 | Phase 5.1 — Analysis response | Low | Phase 3 |
-| 6 | Phase 4 — ML pipeline | Low | Phase 3 (need BWB recommendations to label) |
-| 7 | Phase 2.3 — Sweet spot overlay | Low | Phase 1 + chain data |
-| 8 | Phase 5.2-5.3 — Position + export | Low | Phase 1 |
+| Order | Phase                             | Effort | Dependencies                                |
+| ----- | --------------------------------- | ------ | ------------------------------------------- |
+| 1     | Phase 1 — Calculation engine      | Medium | None                                        |
+| 2     | Phase 2 — Results display         | Medium | Phase 1                                     |
+| 3     | Phase 3.1-3.2 — Prompt rules      | Medium | None (can parallel with 1-2)                |
+| 4     | Phase 3.3 — Calibration example   | Low    | Phase 3.2                                   |
+| 5     | Phase 5.1 — Analysis response     | Low    | Phase 3                                     |
+| 6     | Phase 4 — ML pipeline             | Low    | Phase 3 (need BWB recommendations to label) |
+| 7     | Phase 2.3 — Sweet spot overlay    | Low    | Phase 1 + chain data                        |
+| 8     | Phase 5.2-5.3 — Position + export | Low    | Phase 1                                     |
 
 Phases 1-2 (calculation + display) and Phase 3.1-3.2 (prompt rules) can be built in parallel. The prompt rules don't depend on the frontend calculation — Claude recommends strikes based on the gamma profile, and the frontend calculates the P&L independently.
 

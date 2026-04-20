@@ -33,14 +33,15 @@ Replace the single-symbol Tradovate ES sidecar with a multi-symbol Databento sid
 
 ### Schemas Used
 
-| Schema | Level | History | Purpose | Frequency |
-|--------|-------|---------|---------|-----------|
-| OHLCV-1m | L0 | 15+ years | 1-minute bars for all 7 futures | Real-time streaming via sidecar |
-| Trades | L1 | 12 months | Tick-level trades for ES options — includes aggressor side (`side` field: A=sell aggressor, B=buy aggressor). Detects whether institutional volume is aggressive buying or selling, not just volume magnitude. | Real-time streaming via sidecar (ATM ±10 strikes) |
-| Statistics | L0 | 15+ years | Official venue summary statistics. `stat_type` determines the record: opening price (1), settlement price (3, with flags for preliminary/final), session low/high (4/5), cleared volume (6), **open interest (9)**, fixing/VWAP (10/13), **implied volatility (14)**, **options delta (15)**, price limits (17/18). Provides exchange-computed Greeks for ES options — not model-estimated. | Daily cron post-settlement + live for intraday OI updates |
-| Definition | L0 | 15+ years | Instrument reference data. Key fields for ES options: `instrument_class` (C=Call, P=Put, F=Future), `strike_price` (1e-9 units), `expiration` (nanosecond timestamp), `underlying` (symbol), `security_type` (OOF=Option on Future). Used for dynamic strike discovery and contract roll management. | On-demand at session start + when ES moves ±50 pts |
+| Schema     | Level | History   | Purpose                                                                                                                                                                                                                                                                                                                                                                                     | Frequency                                                 |
+| ---------- | ----- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| OHLCV-1m   | L0    | 15+ years | 1-minute bars for all 7 futures                                                                                                                                                                                                                                                                                                                                                             | Real-time streaming via sidecar                           |
+| Trades     | L1    | 12 months | Tick-level trades for ES options — includes aggressor side (`side` field: A=sell aggressor, B=buy aggressor). Detects whether institutional volume is aggressive buying or selling, not just volume magnitude.                                                                                                                                                                              | Real-time streaming via sidecar (ATM ±10 strikes)         |
+| Statistics | L0    | 15+ years | Official venue summary statistics. `stat_type` determines the record: opening price (1), settlement price (3, with flags for preliminary/final), session low/high (4/5), cleared volume (6), **open interest (9)**, fixing/VWAP (10/13), **implied volatility (14)**, **options delta (15)**, price limits (17/18). Provides exchange-computed Greeks for ES options — not model-estimated. | Daily cron post-settlement + live for intraday OI updates |
+| Definition | L0    | 15+ years | Instrument reference data. Key fields for ES options: `instrument_class` (C=Call, P=Put, F=Future), `strike_price` (1e-9 units), `expiration` (nanosecond timestamp), `underlying` (symbol), `security_type` (OOF=Option on Future). Used for dynamic strike discovery and contract roll management.                                                                                        | On-demand at session start + when ES moves ±50 pts        |
 
 **Schemas NOT used** (and why):
+
 - **MBO, MBP-10** (L2/L3) — too expensive for live streaming. Historical-only (1 month) insufficient for feature engineering.
 - **BBO, CBBO, TBBO, TCBBO** — subsets of MBP-1 sampled at intervals. OHLCV-1m provides equivalent information more efficiently for our 1-minute decision cadence.
 - **Imbalance** — auction imbalance data. Relevant for equities (MOC), not for continuous futures trading.
@@ -55,15 +56,15 @@ Replace the single-symbol Tradovate ES sidecar with a multi-symbol Databento sid
 
 ### Futures Contracts (7)
 
-| Symbol | Instrument | Exchange | Signal Category |
-|--------|-----------|----------|-----------------|
-| /ES | E-mini S&P 500 | CME | Equity momentum, overnight gap, ES-SPX basis, institutional volume |
-| /NQ | E-mini Nasdaq 100 | CME | Tech sector health, NQ/ES ratio, QQQ flow cross-validation |
-| /VXM | Micro VIX (front month) | CFE | Vol regime — current VIX futures price |
-| /VXM+1 | Micro VIX (second month) | CFE | Vol term structure — contango/backwardation spread |
-| /ZN | 10-Year Treasury Note | CBOT | Macro regime — rates, flight-to-safety, risk-on/risk-off |
-| /RTY | E-mini Russell 2000 | CME | Market breadth — small cap divergence signals narrow vs broad moves |
-| /CL | WTI Crude Oil | NYMEX | Macro — inflation expectations, geopolitical risk, direct equity correlation |
+| Symbol | Instrument               | Exchange | Signal Category                                                              |
+| ------ | ------------------------ | -------- | ---------------------------------------------------------------------------- |
+| /ES    | E-mini S&P 500           | CME      | Equity momentum, overnight gap, ES-SPX basis, institutional volume           |
+| /NQ    | E-mini Nasdaq 100        | CME      | Tech sector health, NQ/ES ratio, QQQ flow cross-validation                   |
+| /VXM   | Micro VIX (front month)  | CFE      | Vol regime — current VIX futures price                                       |
+| /VXM+1 | Micro VIX (second month) | CFE      | Vol term structure — contango/backwardation spread                           |
+| /ZN    | 10-Year Treasury Note    | CBOT     | Macro regime — rates, flight-to-safety, risk-on/risk-off                     |
+| /RTY   | E-mini Russell 2000      | CME      | Market breadth — small cap divergence signals narrow vs broad moves          |
+| /CL    | WTI Crude Oil            | NYMEX    | Macro — inflation expectations, geopolitical risk, direct equity correlation |
 
 ### ES Options (~20 contracts, rolling)
 
@@ -108,32 +109,32 @@ Databento Live TCP Client
 
 ### What Gets Removed (Tradovate)
 
-| File | Status |
-|------|--------|
-| `sidecar/src/tradovate-ws.ts` | Delete — replaced by Databento client |
-| `sidecar/src/tradovate-auth.ts` | Delete |
-| `sidecar/src/bar-aggregator.ts` | Delete — Databento provides pre-aggregated OHLCV-1m |
-| `sidecar/src/contract-roller.ts` | Delete — Databento handles continuous contracts |
-| Railway env vars: `TRADOVATE_*` | Remove — replace with `DATABENTO_API_KEY` |
+| File                             | Status                                              |
+| -------------------------------- | --------------------------------------------------- |
+| `sidecar/src/tradovate-ws.ts`    | Delete — replaced by Databento client               |
+| `sidecar/src/tradovate-auth.ts`  | Delete                                              |
+| `sidecar/src/bar-aggregator.ts`  | Delete — Databento provides pre-aggregated OHLCV-1m |
+| `sidecar/src/contract-roller.ts` | Delete — Databento handles continuous contracts     |
+| Railway env vars: `TRADOVATE_*`  | Remove — replace with `DATABENTO_API_KEY`           |
 
 ### What Gets Added
 
-| File | Purpose |
-|------|---------|
-| `sidecar/src/databento-client.ts` | Databento Live TCP connection, subscription management for OHLCV-1m + Trades + Statistics |
-| `sidecar/src/symbol-manager.ts` | Contract roll logic, ES options strike re-centering using Definition schema |
-| `sidecar/src/trade-processor.ts` | Process ES options Trades stream — extract aggressor side, aggregate rolling volume by strike, detect unusual activity |
-| `sidecar/src/alert-engine.ts` | Evaluate alert conditions on each new bar/trade, fire Twilio SMS |
-| `sidecar/src/alert-config.ts` | Configurable thresholds (DB-backed via `alert_config` table for runtime adjustment) |
+| File                              | Purpose                                                                                                                |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `sidecar/src/databento-client.ts` | Databento Live TCP connection, subscription management for OHLCV-1m + Trades + Statistics                              |
+| `sidecar/src/symbol-manager.ts`   | Contract roll logic, ES options strike re-centering using Definition schema                                            |
+| `sidecar/src/trade-processor.ts`  | Process ES options Trades stream — extract aggressor side, aggregate rolling volume by strike, detect unusual activity |
+| `sidecar/src/alert-engine.ts`     | Evaluate alert conditions on each new bar/trade, fire Twilio SMS                                                       |
+| `sidecar/src/alert-config.ts`     | Configurable thresholds (DB-backed via `alert_config` table for runtime adjustment)                                    |
 
 ### Existing Files Modified
 
-| File | Change |
-|------|--------|
-| `sidecar/src/db.ts` | Add `futures_bars` and `futures_options_bars` upserts |
-| `sidecar/src/index.ts` | Wire up Databento client instead of Tradovate |
-| `sidecar/Dockerfile` | Update dependencies |
-| `sidecar/package.json` | Replace `tradovate-*` deps with `databento` |
+| File                   | Change                                                |
+| ---------------------- | ----------------------------------------------------- |
+| `sidecar/src/db.ts`    | Add `futures_bars` and `futures_options_bars` upserts |
+| `sidecar/src/index.ts` | Wire up Databento client instead of Tradovate         |
+| `sidecar/Dockerfile`   | Update dependencies                                   |
+| `sidecar/package.json` | Replace `tradovate-*` deps with `databento`           |
 
 ---
 
@@ -241,10 +242,18 @@ Default alert configs:
 
 ```json
 {
-  "es_momentum": { "pts_threshold": 30, "window_minutes": 10, "volume_multiple": 2.0 },
+  "es_momentum": {
+    "pts_threshold": 30,
+    "window_minutes": 10,
+    "volume_multiple": 2.0
+  },
   "vx_backwardation": { "spread_threshold": 0 },
   "es_nq_divergence": { "divergence_pct": 0.5, "window_minutes": 30 },
-  "zn_flight_to_safety": { "zn_move_pts": 0.5, "es_move_pts": -20, "window_minutes": 30 },
+  "zn_flight_to_safety": {
+    "zn_move_pts": 0.5,
+    "es_move_pts": -20,
+    "window_minutes": 30
+  },
   "cl_spike": { "change_pct": 2.0, "window_minutes": 60 },
   "es_options_volume": { "volume_multiple": 5.0, "window_minutes": 15 }
 }
@@ -479,18 +488,19 @@ The alert engine runs inside the sidecar process (not on Vercel cron) for minimu
 
 ### Alert Types
 
-| Alert Type | Default Condition | Cooldown | Message Example |
-|-----------|-------------------|----------|-----------------|
-| `es_momentum` | /ES moves ±30 pts in 10 min at ≥2× volume | 30 min | "⚡ ES ALERT: /ES -35 pts in 8 min (2.4× vol). Price: 5812. SPX impact imminent." |
-| `vx_backwardation` | VXM front crosses above VXM second | 60 min | "🔴 VIX BACKWARDATION: Front 25.80 > Back 24.90. Near-term stress priced in." |
-| `es_nq_divergence` | /ES and /NQ diverge ≥0.5% in 30 min | 30 min | "⚠️ ES-NQ SPLIT: ES -0.3% but NQ +0.4% (30 min). Sector rotation active." |
-| `zn_flight_safety` | /ZN +0.5 pts while /ES -20 pts in 30 min | 60 min | "🏃 FLIGHT TO SAFETY: ZN rallying while ES dumping. Institutional exit." |
-| `cl_spike` | /CL moves ±2% in 60 min | 30 min | "🛢️ CRUDE SPIKE: /CL +2.8% in 45 min. Inflation repricing — vol expansion likely." |
-| `es_options_volume` | ES option strike hits ≥5× avg volume in 15 min, with aggressor breakdown | 30 min | "📊 ES OPTIONS: 5800P — 15K contracts in 12 min (5.2× avg). 82% buy aggressor (lifting asks). Institutional put buying." |
+| Alert Type          | Default Condition                                                        | Cooldown | Message Example                                                                                                          |
+| ------------------- | ------------------------------------------------------------------------ | -------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `es_momentum`       | /ES moves ±30 pts in 10 min at ≥2× volume                                | 30 min   | "⚡ ES ALERT: /ES -35 pts in 8 min (2.4× vol). Price: 5812. SPX impact imminent."                                        |
+| `vx_backwardation`  | VXM front crosses above VXM second                                       | 60 min   | "🔴 VIX BACKWARDATION: Front 25.80 > Back 24.90. Near-term stress priced in."                                            |
+| `es_nq_divergence`  | /ES and /NQ diverge ≥0.5% in 30 min                                      | 30 min   | "⚠️ ES-NQ SPLIT: ES -0.3% but NQ +0.4% (30 min). Sector rotation active."                                                |
+| `zn_flight_safety`  | /ZN +0.5 pts while /ES -20 pts in 30 min                                 | 60 min   | "🏃 FLIGHT TO SAFETY: ZN rallying while ES dumping. Institutional exit."                                                 |
+| `cl_spike`          | /CL moves ±2% in 60 min                                                  | 30 min   | "🛢️ CRUDE SPIKE: /CL +2.8% in 45 min. Inflation repricing — vol expansion likely."                                       |
+| `es_options_volume` | ES option strike hits ≥5× avg volume in 15 min, with aggressor breakdown | 30 min   | "📊 ES OPTIONS: 5800P — 15K contracts in 12 min (5.2× avg). 82% buy aggressor (lifting asks). Institutional put buying." |
 
 ### Configuration
 
 Thresholds stored in `alert_config` Postgres table. Adjustable via:
+
 - Direct DB update (simplest)
 - Future: small admin endpoint `POST /api/alerts/config` (optional)
 
@@ -508,12 +518,12 @@ Thresholds stored in `alert_config` Postgres table. Adjustable via:
 
 Uses Databento's batch/historical API:
 
-| Data | Symbols | Schema | Level | History Available | Rows (estimated) |
-|------|---------|--------|-------|-------------------|-------------------|
-| Futures bars | ES, NQ, VXM, ZN, RTY, CL | OHLCV-1m | L0 | 15+ years (pulling 1 year) | ~1.6M rows (~160 MB) |
-| Futures daily | ES, NQ, VXM, ZN, RTY, CL | OHLCV-1d | L0 | 15+ years (pulling 1 year) | ~1,500 rows |
-| ES options daily stats | All ES option strikes | Statistics | L0 | 15+ years (pulling 1 year) | ~500K rows (~50 MB) |
-| ES options trades | ATM ±50 strikes | Trades | L1 | 12 months max | ~2M rows (~200 MB) — optional, can skip for initial build |
+| Data                   | Symbols                  | Schema     | Level | History Available          | Rows (estimated)                                          |
+| ---------------------- | ------------------------ | ---------- | ----- | -------------------------- | --------------------------------------------------------- |
+| Futures bars           | ES, NQ, VXM, ZN, RTY, CL | OHLCV-1m   | L0    | 15+ years (pulling 1 year) | ~1.6M rows (~160 MB)                                      |
+| Futures daily          | ES, NQ, VXM, ZN, RTY, CL | OHLCV-1d   | L0    | 15+ years (pulling 1 year) | ~1,500 rows                                               |
+| ES options daily stats | All ES option strikes    | Statistics | L0    | 15+ years (pulling 1 year) | ~500K rows (~50 MB)                                       |
+| ES options trades      | ATM ±50 strikes          | Trades     | L1    | 12 months max              | ~2M rows (~200 MB) — optional, can skip for initial build |
 
 **Total without trades backfill**: ~210 MB. Well within Neon free tier.
 **Total with trades backfill**: ~410 MB. Approaching limit — may need Neon upgrade or retention policy (keep only 3 months of tick trades, full year of daily stats).
@@ -541,6 +551,7 @@ Uses Databento's batch/historical API:
 ### New: Futures Panel Component
 
 Compact dashboard section showing:
+
 - /ES, /NQ, /VXM, /ZN, /RTY, /CL — current price + 1H change + day change
 - VIX term structure status badge (CONTANGO / FLAT / BACKWARDATION)
 - ES-SPX basis
@@ -555,30 +566,30 @@ Compact dashboard section showing:
 
 ## Cron Jobs (new or modified)
 
-| Cron | Schedule | Purpose |
-|------|----------|---------|
-| `auto-prefill-premarket.ts` | 8:30 AM CT (13:30 UTC) weekdays | Compute Globex high/low/close/VWAP from overnight ES bars, write to market_snapshots |
-| `compute-futures-overnight.ts` | 8:35 AM CT weekdays | Expand existing ES overnight computation to all 7 symbols |
-| `fetch-futures-snapshot.ts` | Every 5 min during market hours | Query latest bars, compute momentum/basis/correlation, write to futures_snapshots |
-| `fetch-es-options-eod.ts` | 5:00 PM CT weekdays | Pull EOD Statistics for ES options (OI, settlement), write to futures_options_daily |
-| `build-features.ts` (modified) | 9:00 PM ET weekdays (existing) | Add 28 new futures features to training_features computation |
+| Cron                           | Schedule                        | Purpose                                                                              |
+| ------------------------------ | ------------------------------- | ------------------------------------------------------------------------------------ |
+| `auto-prefill-premarket.ts`    | 8:30 AM CT (13:30 UTC) weekdays | Compute Globex high/low/close/VWAP from overnight ES bars, write to market_snapshots |
+| `compute-futures-overnight.ts` | 8:35 AM CT weekdays             | Expand existing ES overnight computation to all 7 symbols                            |
+| `fetch-futures-snapshot.ts`    | Every 5 min during market hours | Query latest bars, compute momentum/basis/correlation, write to futures_snapshots    |
+| `fetch-es-options-eod.ts`      | 5:00 PM CT weekdays             | Pull EOD Statistics for ES options (OI, settlement), write to futures_options_daily  |
+| `build-features.ts` (modified) | 9:00 PM ET weekdays (existing)  | Add 28 new futures features to training_features computation                         |
 
 ---
 
 ## Build Phases
 
-| Phase | Scope | Files | Depends On |
-|-------|-------|-------|------------|
-| **1** | DB migrations: futures_bars, futures_options_bars, futures_options_daily, futures_snapshots, alert_config. Migrate es_bars → futures_bars. | `api/_lib/db-migrations.ts` | Nothing |
-| **2** | Sidecar rewrite: Databento client, multi-symbol subscriptions, bar writing | `sidecar/src/` (full rewrite) | Phase 1 (tables exist) |
-| **3** | Historical backfill script | `scripts/backfill-futures.ts` | Phase 1 |
-| **4** | Alert engine: condition evaluation, Twilio integration, configurable thresholds | `sidecar/src/alert-engine.ts` | Phase 2 |
-| **5** | Pre-market automation: cron + component update | `api/cron/auto-prefill-premarket.ts`, `src/components/PreMarketInput.tsx` | Phase 2 |
-| **6** | Claude prompt integration: futures_context_rules + auto-populated context | `api/_lib/analyze-prompts.ts`, `api/_lib/analyze-context.ts` | Phase 2 |
-| **7** | ML features: 28 new features in build-features + utils.py feature groups | `api/cron/build-features.ts`, `ml/src/utils.py` | Phase 3 (needs historical data) |
-| **8** | Frontend: Futures panel component | `src/components/futures/` | Phase 2 |
-| **9** | Snapshot cron + API endpoint for frontend | `api/cron/fetch-futures-snapshot.ts`, `api/futures/snapshot.ts` | Phase 2 |
-| **10** | EOD options cron | `api/cron/fetch-es-options-eod.ts` | Phase 2 |
+| Phase  | Scope                                                                                                                                      | Files                                                                     | Depends On                      |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------- | ------------------------------- |
+| **1**  | DB migrations: futures_bars, futures_options_bars, futures_options_daily, futures_snapshots, alert_config. Migrate es_bars → futures_bars. | `api/_lib/db-migrations.ts`                                               | Nothing                         |
+| **2**  | Sidecar rewrite: Databento client, multi-symbol subscriptions, bar writing                                                                 | `sidecar/src/` (full rewrite)                                             | Phase 1 (tables exist)          |
+| **3**  | Historical backfill script                                                                                                                 | `scripts/backfill-futures.ts`                                             | Phase 1                         |
+| **4**  | Alert engine: condition evaluation, Twilio integration, configurable thresholds                                                            | `sidecar/src/alert-engine.ts`                                             | Phase 2                         |
+| **5**  | Pre-market automation: cron + component update                                                                                             | `api/cron/auto-prefill-premarket.ts`, `src/components/PreMarketInput.tsx` | Phase 2                         |
+| **6**  | Claude prompt integration: futures_context_rules + auto-populated context                                                                  | `api/_lib/analyze-prompts.ts`, `api/_lib/analyze-context.ts`              | Phase 2                         |
+| **7**  | ML features: 28 new features in build-features + utils.py feature groups                                                                   | `api/cron/build-features.ts`, `ml/src/utils.py`                           | Phase 3 (needs historical data) |
+| **8**  | Frontend: Futures panel component                                                                                                          | `src/components/futures/`                                                 | Phase 2                         |
+| **9**  | Snapshot cron + API endpoint for frontend                                                                                                  | `api/cron/fetch-futures-snapshot.ts`, `api/futures/snapshot.ts`           | Phase 2                         |
+| **10** | EOD options cron                                                                                                                           | `api/cron/fetch-es-options-eod.ts`                                        | Phase 2                         |
 
 Phases 1-3 are infrastructure (DB + sidecar + history). Phases 4-10 can be parallelized after the sidecar is live.
 
@@ -586,13 +597,13 @@ Phases 1-3 are infrastructure (DB + sidecar + history). Phases 4-10 can be paral
 
 ## Cost Summary
 
-| Item | Cost |
-|------|------|
-| Databento subscription | $179/month (flat, all symbols) |
-| Railway sidecar | ~$5/month (same as current Tradovate sidecar) |
-| Twilio alerts | ~$0.02/text × ~5-15 alerts/day ≈ $2-9/month |
-| Neon storage increase | Free tier (0.09 → ~0.30 GB, within 0.5 GB limit) |
-| **Total** | ~$186-193/month |
+| Item                   | Cost                                             |
+| ---------------------- | ------------------------------------------------ |
+| Databento subscription | $179/month (flat, all symbols)                   |
+| Railway sidecar        | ~$5/month (same as current Tradovate sidecar)    |
+| Twilio alerts          | ~$0.02/text × ~5-15 alerts/day ≈ $2-9/month      |
+| Neon storage increase  | Free tier (0.09 → ~0.30 GB, within 0.5 GB limit) |
+| **Total**              | ~$186-193/month                                  |
 
 ---
 

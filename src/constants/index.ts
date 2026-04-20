@@ -239,6 +239,27 @@ export const RISK_TIERS = [1, 2, 3, 5, 10] as const;
 /** Target delta values for settlement check analysis */
 export const SETTLEMENT_DELTAS = [5, 8, 10, 12, 15] as const;
 
+/**
+ * Trader's preferred entry delta for credit spreads (|delta|).
+ * Used to anchor the Chain Delta Rungs context passed to the analyze endpoint
+ * so Claude can map the target delta to an actual market strike.
+ */
+export const PREFERRED_ENTRY_DELTA = 12;
+
+/**
+ * Absolute floor on short-strike |delta| for credit spreads (both sides of an
+ * IC). Below this floor the credit received does not justify the tail risk —
+ * if the structurally correct trade cannot reach the floor, SIT OUT.
+ */
+export const FLOOR_ENTRY_DELTA = 10;
+
+/**
+ * Delta rungs (|delta|, as integer percent) sampled from the live option chain
+ * and passed to Claude. Narrow enough to avoid token bloat, dense enough
+ * around the 10-15Δ target zone for precise strike picks.
+ */
+export const CHAIN_DELTA_RUNGS = [5, 8, 10, 12, 15, 20, 25] as const;
+
 /** IV input mode identifiers */
 export const IV_MODES = {
   VIX: 'vix',

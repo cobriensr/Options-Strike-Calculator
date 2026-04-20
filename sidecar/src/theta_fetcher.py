@@ -114,9 +114,7 @@ def start_scheduler() -> bool:
             coalesce=True,
         )
         _scheduler.start()
-        log.info(
-            "Theta scheduler started: nightly job at 17:25 America/New_York"
-        )
+        log.info("Theta scheduler started: nightly job at 17:25 America/New_York")
     return True
 
 
@@ -190,17 +188,13 @@ def run_backfill_if_needed() -> None:
     theta_option_eod rows already exist.
     """
     trade_day_end = _prior_trading_day(date.today())
-    trade_day_start = trade_day_end - timedelta(
-        days=settings.theta_backfill_days
-    )
+    trade_day_start = trade_day_end - timedelta(days=settings.theta_backfill_days)
 
     client = ThetaClient()
     for root in settings.theta_roots_list:
         try:
             if db.has_theta_option_eod_rows(root):
-                log.info(
-                    "Theta backfill skipping %s (data already present)", root
-                )
+                log.info("Theta backfill skipping %s (data already present)", root)
                 continue
             log.info(
                 "Theta backfill starting: root=%s range=[%s, %s]",
@@ -208,9 +202,7 @@ def run_backfill_if_needed() -> None:
                 trade_day_start,
                 trade_day_end,
             )
-            count = _fetch_root_range(
-                client, root, trade_day_start, trade_day_end
-            )
+            count = _fetch_root_range(client, root, trade_day_start, trade_day_end)
             log.info("Theta backfill complete for %s: %d rows", root, count)
         except Exception as exc:
             # Log + Sentry but continue to the next root. One bad root

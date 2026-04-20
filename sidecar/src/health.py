@@ -203,11 +203,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_response(400)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(
-                json.dumps(
-                    {"error": "date must be YYYY-MM-DD"}
-                ).encode()
-            )
+            self.wfile.write(json.dumps({"error": "date must be YYYY-MM-DD"}).encode())
             return
 
         try:
@@ -232,9 +228,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_response(500)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(
-                json.dumps({"error": "query failed"}).encode()
-            )
+            self.wfile.write(json.dumps({"error": "query failed"}).encode())
 
     def _handle_archive_analog_days(self) -> None:
         """GET /archive/analog-days?date=YYYY-MM-DD&until_minute=60&k=20"""
@@ -489,7 +483,9 @@ class HealthHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             log.error(
                 "day-summary-prediction-batch failed %s..%s: %s",
-                start, end, exc,
+                start,
+                end,
+                exc,
             )
             self._send_json(500, {"error": "query failed"})
 
@@ -555,9 +551,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "symbol must be 'ES' or 'NQ'"})
             return
         if window not in {"5m", "15m", "1h"}:
-            self._send_json(
-                400, {"error": "window must be '5m', '15m', or '1h'"}
-            )
+            self._send_json(400, {"error": "window must be '5m', '15m', or '1h'"})
             return
         if not value_raw:
             self._send_json(400, {"error": "value is required"})
@@ -576,14 +570,10 @@ class HealthHandler(BaseHTTPRequestHandler):
             try:
                 horizon = int(horizon_raw)
             except ValueError:
-                self._send_json(
-                    400, {"error": "horizon_days must be an integer"}
-                )
+                self._send_json(400, {"error": "horizon_days must be an integer"})
                 return
             if horizon < 1:
-                self._send_json(
-                    400, {"error": "horizon_days must be >= 1"}
-                )
+                self._send_json(400, {"error": "horizon_days must be >= 1"})
                 return
             # Import locally to keep `archive_query` (and thus DuckDB)
             # off the import path of unrelated handlers.
@@ -616,9 +606,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             # the query layer after the validation above).
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            log.error(
-                "tbbo-ofi-percentile failed for %s/%s: %s", symbol, window, exc
-            )
+            log.error("tbbo-ofi-percentile failed for %s/%s: %s", symbol, window, exc)
             self._send_json(500, {"error": "query failed"})
 
     def _send_json(self, status: int, body: dict[str, object]) -> None:
@@ -631,9 +619,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.send_response(423)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(
-            json.dumps({"error": "seed already in progress"}).encode()
-        )
+        self.wfile.write(json.dumps({"error": "seed already in progress"}).encode())
 
     def _build_theta_block(self) -> dict[str, object] | None:
         """Render the Theta status block, or None if Theta is disabled."""

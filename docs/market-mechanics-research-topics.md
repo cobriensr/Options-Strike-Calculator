@@ -10,7 +10,7 @@ These are gaps in the current Claude analyze prompt's foundational market mechan
 
 ### 1. Charm Flows — The Pin Effect's Actual Mechanism
 
-**What's missing:** Charm is ∂delta/∂time — how a position's delta changes purely from time passing, with price and IV constant. The current `<gex_at_expiry>` section describes the *outcome* of the pin (oscillation, hedging reversals at high-OI strikes) without naming or explaining the mechanism that drives it.
+**What's missing:** Charm is ∂delta/∂time — how a position's delta changes purely from time passing, with price and IV constant. The current `<gex_at_expiry>` section describes the _outcome_ of the pin (oscillation, hedging reversals at high-OI strikes) without naming or explaining the mechanism that drives it.
 
 **Why it matters:** On positive-GEX days, charm causes dealers to systematically unwind hedges as 0DTE options decay toward expiry. This creates predictable intraday drift toward high-OI strikes — not random walk, but mechanically determined drift. Understanding charm would let Claude reason correctly about:
 
@@ -62,7 +62,7 @@ This is the partial mechanical explanation for the "sell the news" pattern. Rule
 
 ### 4. VIX Term Structure Shape → GEX/VEX Implications
 
-**What's missing:** The tool already passes VIX, VIX1D, and VIX9D to the analyze endpoint. There's no framework in the prompt explaining what the *shape* of the VIX term structure implies mechanically.
+**What's missing:** The tool already passes VIX, VIX1D, and VIX9D to the analyze endpoint. There's no framework in the prompt explaining what the _shape_ of the VIX term structure implies mechanically.
 
 **Why it matters:**
 

@@ -44,23 +44,17 @@ class TestInitSentry:
         # Should log a single info line explaining it's disabled
         mock_log.info.assert_any_call("SENTRY_DSN not set — Sentry disabled")
 
-    def test_no_op_when_dsn_empty_string(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_no_op_when_dsn_empty_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SENTRY_DSN", "")
         sentry_setup.init_sentry()
         assert sentry_setup.is_enabled() is False
 
-    def test_no_op_when_dsn_whitespace(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_no_op_when_dsn_whitespace(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SENTRY_DSN", "   ")
         sentry_setup.init_sentry()
         assert sentry_setup.is_enabled() is False
 
-    def test_idempotent_second_call(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_idempotent_second_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Once initialized, calling init again is a no-op.
 
         (With DSN unset, both calls take the same 'disabled' branch, so
@@ -100,9 +94,7 @@ class TestInitSentry:
         assert init_kwargs["traces_sample_rate"] == pytest.approx(0.0)
         assert init_kwargs["server_name"] == "futures-sidecar"
 
-    def test_init_swallows_sdk_failure(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_init_swallows_sdk_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A Sentry init exception must not block sidecar startup."""
         monkeypatch.setenv("SENTRY_DSN", "https://fake@example.ingest.sentry.io/1")
 
