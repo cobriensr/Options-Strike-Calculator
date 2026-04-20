@@ -124,20 +124,25 @@ def _sample_params(trial: optuna.Trial) -> StrategyParams:
     session_bucket_str = trial.suggest_categorical(
         "session_bucket", [s.value for s in SessionBucket]
     )
+    # Cardinality reduced for v4 coarse-pass: the first sweep needs to
+    # answer "does this filter matter at all?", not pinpoint a threshold.
+    # Total search-space volume ~11× smaller than the first v4 design so
+    # 50 trials cover proportionally more of it. v5 can zoom in on
+    # whichever dims the v4 winner used.
     min_ob_vol_z = trial.suggest_categorical(
-        "min_ob_volume_z", [None, 0.5, 1.0, 1.5, 2.0]
+        "min_ob_volume_z", [None, 1.0, 2.0]
     )
     min_ob_pct = trial.suggest_categorical(
-        "min_ob_pct_atr", [None, 30.0, 50.0, 75.0]
+        "min_ob_pct_atr", [None, 50.0]
     )
     entry_vs_ob_str = trial.suggest_categorical(
         "entry_vs_ob", [s.value for s in EntryVsOb]
     )
     min_z_vwap = trial.suggest_categorical(
-        "min_z_entry_vwap", [None, 0.5, 1.0, 1.5]
+        "min_z_entry_vwap", [None, 1.0]
     )
     min_adx = trial.suggest_categorical(
-        "min_adx_14", [None, 15.0, 20.0, 25.0, 30.0]
+        "min_adx_14", [None, 20.0, 30.0]
     )
     on_opp_str = trial.suggest_categorical(
         "on_opposite_signal", [s.value for s in OnOppositeSignal]

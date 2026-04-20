@@ -1,11 +1,11 @@
 version: 4
-committed_ts: 2026-04-20 17:48:00-05:00
-commit_hash_when_locked: 02e9b0b576aea7e667ddc542de90311234d7c95d
+committed_ts: 2026-04-20 18:48:00-05:00
+commit_hash_when_locked: null
 markets:
-- symbol: NQ
-  apply_thresholds: true
-- symbol: ES
-  apply_thresholds: true
+  - symbol: NQ
+    apply_thresholds: true
+  - symbol: ES
+    apply_thresholds: true
 cross_market_gate:
   require_pass_on_all_markets: true
 thresholds:
@@ -39,19 +39,25 @@ bootstrap:
   method: stationary
   block_length_source: auto
   n_resamples: 1000
+# v4 (E1.4d) — search-space expansion vs v3. Thresholds UNCHANGED from
+# v3 per Harvey 2017 pre-registration discipline. Cardinality tuned down
+# from first v4 design after a smoke run showed 10-trial coverage was
+# too sparse — coarse first pass, precision in v5.
 search_space_v4:
   added:
-  - session_bucket
-  - min_ob_volume_z
-  - min_ob_pct_atr
-  - entry_vs_ob
-  - min_z_entry_vwap
-  - min_adx_14
-  - on_opposite_signal
-  - exit_after_n_bos
-  - stop_placement.OB_BOUNDARY
+    session_bucket: [any, pre_market, ny_open, am, lunch, pm, close]
+    min_ob_volume_z: [null, 1.0, 2.0]
+    min_ob_pct_atr: [null, 50.0]
+    entry_vs_ob: [any, above_ob_mid, inside_ob, below_ob_mid]
+    min_z_entry_vwap: [null, 1.0]
+    min_adx_14: [null, 20.0, 30.0]
+    on_opposite_signal: [hold_and_skip, exit_only, exit_and_flip, hold_and_tighten]
+    exit_after_n_bos: [null, 2, 3, 4]
+    stop_placement_adds: [ob_boundary]
   deferred_to_v5:
-  - vix_term_filter
-  - partial_exit_at_1r
-  - move_stop_to_be_at_1r
-  - vol_scaled_position_sizing
+    - vix_term_filter
+    - partial_exit_at_1r
+    - move_stop_to_be_at_1r
+    - vol_scaled_position_sizing
+    - min_ob_volume_z_finer_grid
+    - min_adx_14_finer_grid
