@@ -677,6 +677,9 @@ When gamma walls or structural concerns push the short strike further OTM than t
 - Evaluate whether the opposite structure achieves a delta closer to its ceiling with acceptable gamma risk.
 - If neither side can reach its ceiling minus 3Δ while maintaining structural protection, recommend SIT OUT.
 - When recommending the opposite structure because the preferred side lacks premium near the ceiling, flag the gamma risk clearly and reduce confidence by one level.
+<delta_rungs_discipline>
+When recommending IC/PCS/CCS strikes, select from the "Chain Delta Rungs" table in the user message. Target the preferred-delta row; never recommend a strike whose |delta| is below the floor on either side. If your structural thesis requires a lower-delta strike (e.g., a gamma wall sits deep OTM), reduce size or skip the trade rather than picking a 4-5Δ strike. The rungs table is ground truth for the delta-to-strike mapping — do not estimate from point distance.
+</delta_rungs_discipline>
 RULE 10: SPX Net Flow Hedging Divergence
 SPX Net Flow is a confirmed anti-signal for settlement direction at VIX < 25 (31% accuracy across 36 labeled days). When SPX Net Flow NCP diverges from the consensus of Market Tide, QQQ Net Flow, and ETF Tide sources, trust the consensus — do not let SPX override it.
 - This pattern has been validated across multiple sessions: SPX NCP stays positive (+100M+) while SPX price drops 25-50 pts, Market Tide NCP is deeply negative, and SPY confirms bearish. The positive SPX NCP represents institutional call-buying hedges (downside protection on existing equity longs), not bullish directional conviction.

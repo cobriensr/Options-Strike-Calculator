@@ -297,6 +297,7 @@ export async function buildAnalysisContext(
   if (!uwDeltasContext)
     unavailable.push('UW Deltas (dark pool / GEX / whale / ETF tide)');
   if (!similarDaysContext) unavailable.push('Historical Analog Days');
+  if (!context.targetDeltaStrikes) unavailable.push('Chain Delta Rungs');
   const unavailableList = unavailable.map((s) => '- ' + s).join('\n');
   const unavailableSection =
     unavailable.length > 0
@@ -433,6 +434,56 @@ ${(() => {
       'Unusually symmetric — market sees equal up/down risk. Supports IRON CONDOR.';
   else ratioSignal = 'Normal asymmetry.';
   return `\n## IV Skew Metrics (from chain data)\n  ATM IV: ${skew.atmIV.toFixed(1)}%\n  25Δ Put IV: ${skew.put25dIV.toFixed(1)}% (skew: +${skew.putSkew25d.toFixed(1)} vol pts)\n  25Δ Call IV: ${skew.call25dIV.toFixed(1)}% (skew: +${skew.callSkew25d.toFixed(1)} vol pts)\n  Skew Ratio (|put|/|call|): ${skew.skewRatio.toFixed(1)}x\n  Put Skew Signal: ${signal}\n  Skew Ratio Signal: ${ratioSignal}\n`;
+})()}
+${(() => {
+  const rungs = context.targetDeltaStrikes as
+    | {
+        preferredDelta: number;
+        floorDelta: number;
+        puts: Array<{
+          delta: number;
+          strike: number;
+          bid: number;
+          ask: number;
+          iv: number;
+          oi: number;
+        }>;
+        calls: Array<{
+          delta: number;
+          strike: number;
+          bid: number;
+          ask: number;
+          iv: number;
+          oi: number;
+        }>;
+      }
+    | undefined;
+  if (!rungs) return '';
+  if (rungs.puts.length === 0 && rungs.calls.length === 0) return '';
+  const fmtOI = (n: number) =>
+    n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(n);
+  const fmtRung = (r: {
+    delta: number;
+    strike: number;
+    bid: number;
+    ask: number;
+    iv: number;
+    oi: number;
+  }) => {
+    const mid = ((r.bid + r.ask) / 2).toFixed(2);
+    const ivPct = (r.iv * 100).toFixed(1);
+    const deltaPct = Math.round(r.delta * 100);
+    return `${deltaPct}Δ → ${r.strike} ($${mid} mid, ${ivPct}% IV, ${fmtOI(r.oi)} OI)`;
+  };
+  const putsLine =
+    rungs.puts.length > 0
+      ? `PUTS:  ${rungs.puts.map(fmtRung).join(' | ')}`
+      : 'PUTS:  (none available)';
+  const callsLine =
+    rungs.calls.length > 0
+      ? `CALLS: ${rungs.calls.map(fmtRung).join(' | ')}`
+      : 'CALLS: (none available)';
+  return `\n## Chain Delta Rungs (from live option chain, actual market strikes)\nPreferred entry delta: ${rungs.preferredDelta}Δ. Floor: ${rungs.floorDelta}Δ. Never go below floor on either IC side.\n${putsLine}\n${callsLine}\n`;
 })()}
 ${maxPainContext ? `\n## SPX 0DTE Max Pain (from API)\nMax pain is the strike where total option holder losses are maximized — MMs profit most if SPX settles here. On neutral/low-gamma days, settlement gravitates toward max pain in the final 2 hours. On days with a dominant gamma wall (Rule 6) or deeply negative GEX (cone-lower settlement pattern), the gamma wall or cone boundary overrides max pain. Use max pain as a tiebreaker when gamma and flow signals are ambiguous — if max pain aligns with a gamma wall, that level has the highest settlement probability.\n\n${maxPainContext}\n` : ''}
 ${oiChangeContext ? `\n## SPX OI Change Analysis (from API — prior day positioning)\nShows where institutions opened or closed the most positions. Ask-dominated volume indicates aggressive new positioning; bid-dominated suggests defensive or closing activity. High multi-leg percentage (>50%) indicates institutional spread activity rather than directional bets.\n\n${oiChangeContext}\n` : ''}

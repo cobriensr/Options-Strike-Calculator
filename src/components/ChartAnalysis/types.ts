@@ -54,6 +54,29 @@ export interface AnalysisContext {
     callSkew25d: number; // call25dIV - atmIV (vol pts)
     skewRatio: number; // |putSkew| / |callSkew|
   };
+  /** Per-strike delta rungs sampled from the live option chain (puts + calls).
+   *  Lets Claude map a target delta to an actual market strike instead of
+   *  guessing from point distance. Omitted when chain data is unavailable. */
+  targetDeltaStrikes?: {
+    preferredDelta: number; // 12
+    floorDelta: number; // 10
+    puts: Array<{
+      delta: number;
+      strike: number;
+      bid: number;
+      ask: number;
+      iv: number;
+      oi: number;
+    }>;
+    calls: Array<{
+      delta: number;
+      strike: number;
+      bid: number;
+      ask: number;
+      iv: number;
+      oi: number;
+    }>;
+  };
   /** Pre-formatted structural bias summary from GEX Landscape, passed as-is to analyze. */
   gexLandscapeBias?: string | null;
 }

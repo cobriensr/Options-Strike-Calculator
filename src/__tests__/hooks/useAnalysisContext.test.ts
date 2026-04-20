@@ -559,6 +559,202 @@ describe('useAnalysisContext', () => {
     expect(ctx.vixTermSignal).toBeUndefined();
   });
 
+  // ── 14. targetDeltaStrikes ────────────────────────────────
+  it('returns undefined targetDeltaStrikes when chain is null', () => {
+    const ctx = compute({ chain: null });
+    expect(ctx.targetDeltaStrikes).toBeUndefined();
+  });
+
+  it('populates targetDeltaStrikes when chain has puts and calls covering all rungs', () => {
+    // Provide at least one put and one call per target rung (5/8/10/12/15/20/25Δ).
+    const puts: ChainStrike[] = [
+      makeChainStrike({
+        strike: 7020,
+        delta: -0.05,
+        bid: 0.4,
+        ask: 0.5,
+        iv: 0.25,
+        oi: 1200,
+      }),
+      makeChainStrike({
+        strike: 7035,
+        delta: -0.08,
+        bid: 0.65,
+        ask: 0.8,
+        iv: 0.24,
+        oi: 900,
+      }),
+      makeChainStrike({
+        strike: 7045,
+        delta: -0.1,
+        bid: 0.9,
+        ask: 1.0,
+        iv: 0.23,
+        oi: 1500,
+      }),
+      makeChainStrike({
+        strike: 7055,
+        delta: -0.12,
+        bid: 1.15,
+        ask: 1.25,
+        iv: 0.23,
+        oi: 800,
+      }),
+      makeChainStrike({
+        strike: 7070,
+        delta: -0.15,
+        bid: 1.5,
+        ask: 1.6,
+        iv: 0.22,
+        oi: 700,
+      }),
+      makeChainStrike({
+        strike: 7090,
+        delta: -0.2,
+        bid: 2.1,
+        ask: 2.3,
+        iv: 0.21,
+        oi: 600,
+      }),
+      makeChainStrike({
+        strike: 7110,
+        delta: -0.25,
+        bid: 2.8,
+        ask: 3.0,
+        iv: 0.2,
+        oi: 400,
+      }),
+    ];
+    const calls: ChainStrike[] = [
+      makeChainStrike({
+        strike: 7215,
+        delta: 0.05,
+        bid: 0.35,
+        ask: 0.4,
+        iv: 0.19,
+        oi: 300,
+      }),
+      makeChainStrike({
+        strike: 7200,
+        delta: 0.08,
+        bid: 0.55,
+        ask: 0.65,
+        iv: 0.19,
+        oi: 500,
+      }),
+      makeChainStrike({
+        strike: 7190,
+        delta: 0.1,
+        bid: 0.8,
+        ask: 0.9,
+        iv: 0.18,
+        oi: 700,
+      }),
+      makeChainStrike({
+        strike: 7180,
+        delta: 0.12,
+        bid: 1.05,
+        ask: 1.15,
+        iv: 0.18,
+        oi: 1100,
+      }),
+      makeChainStrike({
+        strike: 7165,
+        delta: 0.15,
+        bid: 1.4,
+        ask: 1.55,
+        iv: 0.17,
+        oi: 900,
+      }),
+      makeChainStrike({
+        strike: 7145,
+        delta: 0.2,
+        bid: 2.0,
+        ask: 2.2,
+        iv: 0.17,
+        oi: 650,
+      }),
+      makeChainStrike({
+        strike: 7125,
+        delta: 0.25,
+        bid: 2.7,
+        ask: 2.95,
+        iv: 0.16,
+        oi: 500,
+      }),
+    ];
+    const chain = makeChain({ puts, calls });
+    const ctx = compute({ chain });
+    expect(ctx.targetDeltaStrikes).toBeDefined();
+
+    const rungs = ctx.targetDeltaStrikes!;
+    expect(rungs.preferredDelta).toBe(12);
+    expect(rungs.floorDelta).toBe(10);
+    expect(rungs.puts).toHaveLength(7);
+    expect(rungs.calls).toHaveLength(7);
+
+    // Each entry has all required fields.
+    for (const entry of [...rungs.puts, ...rungs.calls]) {
+      expect(entry).toMatchObject({
+        delta: expect.any(Number),
+        strike: expect.any(Number),
+        bid: expect.any(Number),
+        ask: expect.any(Number),
+        iv: expect.any(Number),
+        oi: expect.any(Number),
+      });
+      // Delta is stored as absolute decimal (0.05-0.25 range).
+      expect(entry.delta).toBeGreaterThan(0);
+      expect(entry.delta).toBeLessThanOrEqual(0.3);
+    }
+
+    // Put at 12Δ should map to strike 7055 (|-0.12| closest to 0.12).
+    const put12 = rungs.puts.find((p) => p.strike === 7055);
+    expect(put12).toBeDefined();
+    expect(put12!.delta).toBeCloseTo(0.12, 5);
+    expect(put12!.iv).toBeCloseTo(0.23, 5);
+  });
+
+  it('maps 12Δ rung to nearest-|delta| strike (sparse chain)', () => {
+    // Puts with |delta| [0.04, 0.10, 0.13, 0.20]:
+    // For target 0.12 → nearest is 0.13 (distance 0.01), not 0.10 (0.02) or 0.20 (0.08).
+    const puts: ChainStrike[] = [
+      makeChainStrike({ strike: 7000, delta: -0.04, iv: 0.25 }),
+      makeChainStrike({ strike: 7040, delta: -0.1, iv: 0.24 }),
+      makeChainStrike({ strike: 7060, delta: -0.13, iv: 0.23 }),
+      makeChainStrike({ strike: 7100, delta: -0.2, iv: 0.22 }),
+    ];
+    const calls: ChainStrike[] = [
+      makeChainStrike({ strike: 7200, delta: 0.12, iv: 0.18 }),
+    ];
+    const chain = makeChain({ puts, calls });
+    const ctx = compute({ chain });
+
+    const rungs = ctx.targetDeltaStrikes!;
+    const put12 = rungs.puts.find((p) => Math.abs(p.delta - 0.13) < 1e-6);
+    expect(put12).toBeDefined();
+    expect(put12!.strike).toBe(7060);
+  });
+
+  it('dedupes when two rungs collapse to the same strike', () => {
+    // Only ONE put strike exists — every rung collapses onto it.
+    // The surviving rung should be the one whose target is closest to
+    // the strike's actual |delta| (0.12 target ↔ 0.12 actual = distance 0).
+    const puts: ChainStrike[] = [
+      makeChainStrike({ strike: 7055, delta: -0.12, iv: 0.23 }),
+    ];
+    const calls: ChainStrike[] = [];
+    const chain = makeChain({ puts, calls });
+    const ctx = compute({ chain });
+
+    const rungs = ctx.targetDeltaStrikes!;
+    // Only one put entry after dedupe — the 0.12 delta strike.
+    expect(rungs.puts).toHaveLength(1);
+    const firstPut = rungs.puts.at(0)!;
+    expect(firstPut.strike).toBe(7055);
+    expect(firstPut.delta).toBeCloseTo(0.12, 5);
+  });
+
   // ── skewMetrics edge: callSkew25d === 0 → skewRatio = 0 ──
   it('returns skewRatio 0 when callSkew25d is 0', () => {
     // When call25d IV equals ATM IV, callSkew25d = 0 → division avoided
