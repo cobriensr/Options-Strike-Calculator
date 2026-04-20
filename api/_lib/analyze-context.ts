@@ -43,6 +43,7 @@ import logger from './logger.js';
 
 import {
   type AnalysisContentBlock,
+  formatOI,
   numOrUndef,
   parseEntryTimeAsUtc,
 } from './analyze-context-helpers.js';
@@ -399,11 +400,9 @@ ${(() => {
       }>
     | undefined;
   if (!topOI || topOI.length === 0) return '';
-  const fmtOI = (n: number) =>
-    n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(n);
   const lines = topOI.map(
     (s) =>
-      `  ${s.strike} — Total: ${fmtOI(s.totalOI)} (Put: ${fmtOI(s.putOI)}, Call: ${fmtOI(s.callOI)}) | ${s.distFromSpot >= 0 ? '+' : ''}${s.distFromSpot.toFixed(0)} pts (${s.distPct}%) | ${s.side}`,
+      `  ${s.strike} — Total: ${formatOI(s.totalOI)} (Put: ${formatOI(s.putOI)}, Call: ${formatOI(s.callOI)}) | ${s.distFromSpot >= 0 ? '+' : ''}${s.distFromSpot.toFixed(0)} pts (${s.distPct}%) | ${s.side}`,
   );
   return `\n## 0DTE OI Concentration — Pin Risk (from chain data)\nTop 5 strikes by total open interest. High-OI strikes act as gravitational magnets in the final 60-90 minutes. NEVER place a short strike at the #1 or #2 OI level — place short strikes 15-25 pts BEYOND a high-OI level so the gravity pulls price AWAY from your strike.\n\n${lines.join('\n')}\n`;
 })()}
@@ -460,8 +459,6 @@ ${(() => {
     | undefined;
   if (!rungs) return '';
   if (rungs.puts.length === 0 && rungs.calls.length === 0) return '';
-  const fmtOI = (n: number) =>
-    n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(n);
   const fmtRung = (r: {
     delta: number;
     strike: number;
@@ -473,7 +470,7 @@ ${(() => {
     const mid = ((r.bid + r.ask) / 2).toFixed(2);
     const ivPct = (r.iv * 100).toFixed(1);
     const deltaPct = Math.round(r.delta * 100);
-    return `${deltaPct}Δ → ${r.strike} ($${mid} mid, ${ivPct}% IV, ${fmtOI(r.oi)} OI)`;
+    return `${deltaPct}Δ → ${r.strike} ($${mid} mid, ${ivPct}% IV, ${formatOI(r.oi)} OI)`;
   };
   const putsLine =
     rungs.puts.length > 0

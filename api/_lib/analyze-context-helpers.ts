@@ -13,6 +13,11 @@ export function numOrUndef(val: unknown): number | undefined {
   return typeof val === 'number' && Number.isFinite(val) ? val : undefined;
 }
 
+/** Format an open-interest count — "1.2K" for ≥1000, otherwise the raw int. */
+export function formatOI(n: number): string {
+  return n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(n);
+}
+
 /**
  * Parse an entryTime string ("2:55 PM CT" or "2:55 PM ET") on a given date
  * into a UTC ISO string suitable for DB timestamp comparisons.
