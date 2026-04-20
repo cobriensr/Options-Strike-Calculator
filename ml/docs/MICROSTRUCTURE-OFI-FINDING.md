@@ -36,13 +36,13 @@ Claude's prompt, confirm the signal exists.
 
 ## Key result
 
-| Symbol | Best feature | Spearman ρ | Raw p | Bonferroni p (n=46) | Verdict |
-|---|---|---|---|---|---|
-| **NQ** | `ofi_1h_mean` | **+0.313** | 0.000 | **0.000** | **Significant** |
-| **NQ** | `ofi_15m_mean` | +0.278 | 0.000 | 0.000 | Significant |
-| **NQ** | `ofi_5m_mean` | +0.235 | 0.000 | 0.001 | Significant |
-| ES | `ofi_1h_std` | +0.141 | 0.014 | 0.624 | Not significant |
-| ES | `ofi_1h_mean` | +0.131 | 0.022 | 1.000 | Not significant |
+| Symbol | Best feature   | Spearman ρ | Raw p | Bonferroni p (n=46) | Verdict         |
+| ------ | -------------- | ---------- | ----- | ------------------- | --------------- |
+| **NQ** | `ofi_1h_mean`  | **+0.313** | 0.000 | **0.000**           | **Significant** |
+| **NQ** | `ofi_15m_mean` | +0.278     | 0.000 | 0.000               | Significant     |
+| **NQ** | `ofi_5m_mean`  | +0.235     | 0.000 | 0.001               | Significant     |
+| ES     | `ofi_1h_std`   | +0.141     | 0.014 | 0.624               | Not significant |
+| ES     | `ofi_1h_mean`  | +0.131     | 0.022 | 1.000               | Not significant |
 
 **NQ**: three OFI features survive Bonferroni correction at p < 0.001
 with Spearman ρ strictly monotone in window length (5m < 15m < 1h).
@@ -75,7 +75,7 @@ Two reinforcing explanations, both consistent with the data:
   divergence warning ("SPX setup looks bullish, NQ tape says otherwise").
 - **Do NOT wire ES microstructure as a directional predictor.** Phase 2b
   already computes ES OFI/spread/TOB and surfaces them in the analyze
-  context. Keep them as *tape-flavor* context (Claude can read them as
+  context. Keep them as _tape-flavor_ context (Claude can read them as
   qualitative signal), but treat quantitative claims like "positive ES
   OFI implies positive ES return" as unsupported.
 - **Do NOT train a classifier on ES microstructure features.** They
@@ -86,12 +86,12 @@ Two reinforcing explanations, both consistent with the data:
 The feature matrix has 11 pairs with |ρ| > 0.9, meaning ML should pick
 one representative per family rather than training on all 23 features:
 
-| Family | Representative | Runner-up(s) |
-|---|---|---|
-| OFI (windows) | `ofi_1h_mean` | ρ≈0.92-0.96 with 5m/15m variants |
-| Tick velocity | `tick_velocity_p95` | ρ=0.97 with `mean` |
-| Spread widening | `spread_widening_max_zscore` | ρ>0.9 with count variants |
-| TOB pressure | `tob_mean_abs_log_ratio` | moderate correlation with run-length features |
+| Family          | Representative               | Runner-up(s)                                  |
+| --------------- | ---------------------------- | --------------------------------------------- |
+| OFI (windows)   | `ofi_1h_mean`                | ρ≈0.92-0.96 with 5m/15m variants              |
+| Tick velocity   | `tick_velocity_p95`          | ρ=0.97 with `mean`                            |
+| Spread widening | `spread_widening_max_zscore` | ρ>0.9 with count variants                     |
+| TOB pressure    | `tob_mean_abs_log_ratio`     | moderate correlation with run-length features |
 
 ## Known limitations
 
@@ -101,11 +101,10 @@ one representative per family rather than training on all 23 features:
   market. Effect size may differ in volatile or trending-down regimes.
   Phase 4d's `is_degraded` filter excluded 6 degraded days × 2 symbols
   (12 rows) from Q5/Q6.
-- **Spread widening on ES:** 80.1% zero-rate (spread pinned at $0.25
-  tick-size floor). Current `median(ask-bid)` aggregator is the wrong
-  statistic for a minimum-tick-width product; `max(ask-bid)` or
-  `percentile_cont(0.95)` would surface widening events the median
-  collapses. Tracked as Phase 4c follow-up.
+- **Spread widening on ES:** ~~80.1% zero-rate~~ **RESOLVED in Phase 4c1
+  (2026-04-20).** Aggregator switched from `median(ask-bid)` to
+  `MAX(ask-bid)`; zero-rate dropped ES 80.1%→3.5%, NQ stayed 0.0%.
+  See "Phase 4c1 retest" section below.
 - **`ret_5d` approximation:** forward window is calendar-days-based
   (`[t+5, t+9]` first-available close on same contract) rather than
   trading-days-based. Coarse but bias-free; documented in code.
@@ -146,9 +145,74 @@ Estimated effort: ~8 hours across 4 files + tests.
   makes SPX 0DTE less liquid and flow returns to ES), reopen the ES
   decision.
 
+## Phase 4c1 retest (2026-04-20)
+
+After switching the per-minute spread aggregator from
+`percentile_cont(0.5)` (median) to `MAX(ask - bid)` at commit
+`3ec1cdc`, the 1-year backfill was re-run and Phase 4d EDA re-executed
+against the fresh feature matrix. Same 624 rows, same date range.
+
+### Zero-rate change (Q3)
+
+| Symbol | Pre-fix (median) | Post-fix (max) | Delta     |
+| ------ | ---------------- | -------------- | --------- |
+| ES     | 80.1%            | **3.5%**       | −76.6 pp  |
+| NQ     | 0.0%             | 0.0%           | no change |
+
+The ES zero-rate collapse confirms the Phase 4c hypothesis: median
+was hiding widening events behind the $0.25 tick-size floor. Under
+MAX, any single widened quote in a minute registers, so 96.5% of ES
+days now show at least one widening event.
+
+### Q5 signal impact (this is the load-bearing result)
+
+**NQ signals unchanged.** The validated OFI trio survives Bonferroni
+at identical ρ values to Phase 4d:
+
+- `ofi_1h_mean` ρ=+0.313, p_bonf<0.001
+- `ofi_15m_mean` ρ=+0.278, p_bonf<0.001
+- `ofi_5m_mean` ρ=+0.235, p_bonf=0.001
+
+**Spread widening family still does not surface Bonferroni-significant
+signal on either symbol.** ES top-7 is OFI-dominated (top
+`ofi_1h_std` ρ=0.141, p_bonf=0.624); no spread feature appears.
+NQ top-7 is OFI + tick-velocity; no spread feature appears.
+
+### Interpretation
+
+The fix was worth shipping — it eliminates a data-quality bug and
+makes the feature analytically sound. But the fix did NOT produce a
+new validated signal. Two reasonable readings:
+
+1. **ES is still too arbitraged.** The "ES OFI carries no signal
+   because SPX 0DTE soaks up directional flow" hypothesis from the
+   original Phase 4d finding applies to spread widening too. The
+   spread information is real (we can now see it), but it gets
+   arbitraged before it predicts end-of-day return.
+2. **Daily aggregation dilutes the signal.** MAX-based widening
+   events may carry intraday predictive value that a daily
+   aggregation hides. If a future phase backtests intraday signals,
+   this feature may still earn its keep.
+
+### What changed in the operational stack
+
+- `ml/src/features/microstructure.py` — aggregator swap (commit `3ec1cdc`)
+- `ml/data/features/microstructure_daily.parquet` — regenerated 2026-04-20
+- `ml/findings_microstructure.json` — regenerated 2026-04-20
+- `ml/plots/microstructure_q{1..6}_*.png` — regenerated 2026-04-20
+
+### What did NOT change
+
+- Analyze context wiring (Phase 5a) — still surfaces NQ 1h OFI live.
+  No new feature promoted.
+- Cached prompt interpretation rules (Phase 5a) — still reference
+  the unchanged NQ OFI validation (ρ=0.313, p_bonf<0.001, n=312).
+- ES-microstructure-is-tape-flavor-only guidance — still holds.
+
 ## References
 
 - Phase 4a converter spec: `docs/superpowers/specs/phase3a-tbbo-convert-2026-04-18.md`
 - Phase 4c feature spec: `docs/superpowers/specs/phase4c-microstructure-features-2026-04-18.md`
+- Phase 4c1 aggregator fix: commit `3ec1cdc` (2026-04-19)
 - Phase 4d EDA spec: `docs/superpowers/specs/phase4d-microstructure-eda-2026-04-19.md`
 - Max-leverage roadmap: `docs/superpowers/specs/max-leverage-databento-uw-2026-04-18.md`
