@@ -612,3 +612,252 @@ def day_features_vector(
         vector.append((last_seen - day_open) / day_open)
 
     return vector
+
+
+# ---------------------------------------------------------------------------
+# Batched variants — amortize Parquet scan across many dates in one query
+# ---------------------------------------------------------------------------
+
+
+def day_features_batch(
+    start_date: str,
+    end_date: str,
+    *,
+    root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Compute 60-dim feature vectors for every ES trading day in
+    [start_date, end_date]. Returns list of {date, symbol, vector}.
+
+    Single DuckDB query amortizes Parquet scan/metadata cost across
+    the whole range. On the production 476 MB archive this cuts
+    per-date cost from ~2-10 s (per-row variant) to ~50-200 ms.
+
+    Dates with fewer than 10 bars in the first hour are skipped (same
+    threshold as `day_features_vector`). Dates with no ES bars at all
+    are simply absent from the returned list — caller decides whether
+    to treat as a gap or an error.
+    """
+    conn = _connection()
+    ohlcv = _ohlcv_glob(root)
+    symbology = _symbology_path(root)
+
+    rows = conn.execute(
+        """
+        WITH filtered AS (
+            SELECT bars.ts_event,
+                   bars.open,
+                   bars.close,
+                   bars.volume,
+                   sym.symbol,
+                   CAST(date_trunc('day', bars.ts_event) AS DATE) AS day
+            FROM read_parquet(?) AS bars
+            JOIN read_parquet(?) AS sym USING (instrument_id)
+            WHERE sym.symbol LIKE 'ES%'
+              AND strpos(sym.symbol, ' ') = 0
+              AND CAST(date_trunc('day', bars.ts_event) AS DATE)
+                  BETWEEN ?::DATE AND ?::DATE
+        ),
+        contract_volume AS (
+            SELECT day, symbol, SUM(volume) AS total_vol
+            FROM filtered
+            GROUP BY day, symbol
+        ),
+        front_contract AS (
+            SELECT day, symbol
+            FROM (
+                SELECT day, symbol,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY day ORDER BY total_vol DESC
+                       ) AS rk
+                FROM contract_volume
+            ) ranked
+            WHERE rk = 1
+        ),
+        front_bars AS (
+            SELECT f.ts_event, f.open, f.close, f.symbol, f.day
+            FROM filtered f
+            JOIN front_contract fc USING (day, symbol)
+        ),
+        per_day AS (
+            SELECT day,
+                   symbol,
+                   MIN(ts_event) AS session_open_ts,
+                   FIRST(open ORDER BY ts_event) AS day_open,
+                   COUNT(*) AS total_bars
+            FROM front_bars
+            GROUP BY day, symbol
+        ),
+        first_hour AS (
+            SELECT fb.day,
+                   fb.symbol,
+                   pd.day_open,
+                   pd.total_bars,
+                   CAST(
+                       EXTRACT(EPOCH FROM (fb.ts_event - pd.session_open_ts))
+                       / 60.0 AS INTEGER
+                   ) AS minute_idx,
+                   fb.close
+            FROM front_bars fb
+            JOIN per_day pd USING (day, symbol)
+            WHERE fb.ts_event > pd.session_open_ts
+              AND fb.ts_event
+                  <= pd.session_open_ts + CAST(? AS INTEGER) * INTERVAL 1 MINUTE
+        )
+        SELECT day, symbol, day_open, minute_idx, close, total_bars
+        FROM first_hour
+        ORDER BY day, minute_idx
+        """,
+        [ohlcv, symbology, start_date, end_date, DAY_FEATURES_DIM],
+    ).fetchall()
+
+    # Group rows by day, compute forward-filled percent-change vector.
+    by_day: dict[Any, dict[str, Any]] = {}
+    for day, symbol, day_open, minute_idx, close, total_bars in rows:
+        state = by_day.setdefault(
+            day,
+            {
+                "symbol": symbol,
+                "day_open": float(day_open),
+                "minutes": {},
+                "total_bars": int(total_bars),
+            },
+        )
+        idx = int(minute_idx)
+        if 1 <= idx <= DAY_FEATURES_DIM:
+            state["minutes"][idx] = float(close)
+
+    out: list[dict[str, Any]] = []
+    for day, state in sorted(by_day.items()):
+        if state["total_bars"] < 10:
+            # Caller can treat this as a gap (same policy as scalar path).
+            continue
+        day_open = state["day_open"]
+        last_seen = day_open
+        minutes = state["minutes"]
+        vec: list[float] = []
+        for m in range(1, DAY_FEATURES_DIM + 1):
+            if m in minutes:
+                last_seen = minutes[m]
+            vec.append((last_seen - day_open) / day_open)
+        out.append(
+            {
+                "date": day.isoformat()
+                if hasattr(day, "isoformat")
+                else str(day),
+                "symbol": state["symbol"],
+                "vector": vec,
+            }
+        )
+    return out
+
+
+def day_summary_batch(
+    start_date: str,
+    end_date: str,
+    *,
+    root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Compute canonical text summaries for every ES trading day in
+    [start_date, end_date]. Returns list of {date, symbol, summary}.
+
+    Single DuckDB query amortizes Parquet cost. Output matches the
+    per-date `day_summary_text` format byte-for-byte — same deltas,
+    same precision, same field order — so rows emitted here can flow
+    straight into `upsertDayEmbedding` without format drift.
+    """
+    conn = _connection()
+    ohlcv = _ohlcv_glob(root)
+    symbology = _symbology_path(root)
+
+    rows = conn.execute(
+        """
+        WITH filtered AS (
+            SELECT bars.ts_event,
+                   bars.open, bars.high, bars.low, bars.close, bars.volume,
+                   sym.symbol,
+                   CAST(date_trunc('day', bars.ts_event) AS DATE) AS day
+            FROM read_parquet(?) AS bars
+            JOIN read_parquet(?) AS sym USING (instrument_id)
+            WHERE sym.symbol LIKE 'ES%'
+              AND strpos(sym.symbol, ' ') = 0
+              AND CAST(date_trunc('day', bars.ts_event) AS DATE)
+                  BETWEEN ?::DATE AND ?::DATE
+        ),
+        contract_volume AS (
+            SELECT day, symbol, SUM(volume) AS total_vol
+            FROM filtered GROUP BY day, symbol
+        ),
+        front_contract AS (
+            SELECT day, symbol FROM (
+                SELECT day, symbol,
+                       ROW_NUMBER() OVER (PARTITION BY day ORDER BY total_vol DESC) AS rk
+                FROM contract_volume
+            ) r WHERE rk = 1
+        ),
+        fb AS (
+            SELECT f.* FROM filtered f
+            JOIN front_contract fc USING (day, symbol)
+        ),
+        base AS (
+            SELECT day,
+                   symbol,
+                   MIN(ts_event) AS session_open_ts,
+                   FIRST(open ORDER BY ts_event) AS day_open,
+                   MAX(high) AS day_high,
+                   MIN(low) AS day_low,
+                   LAST(close ORDER BY ts_event) AS day_close,
+                   SUM(volume) AS day_volume
+            FROM fb
+            GROUP BY day, symbol
+        )
+        SELECT b.day, b.symbol,
+               b.day_open, b.day_high, b.day_low, b.day_close, b.day_volume,
+               (SELECT LAST(close ORDER BY ts_event) FROM fb
+                 WHERE fb.day = b.day
+                   AND fb.ts_event <= b.session_open_ts + INTERVAL 60 MINUTE) AS c60,
+               (SELECT LAST(close ORDER BY ts_event) FROM fb
+                 WHERE fb.day = b.day
+                   AND fb.ts_event <= b.session_open_ts + INTERVAL 120 MINUTE) AS c120,
+               (SELECT LAST(close ORDER BY ts_event) FROM fb
+                 WHERE fb.day = b.day
+                   AND fb.ts_event <= b.session_open_ts + INTERVAL 180 MINUTE) AS c180
+        FROM base b
+        ORDER BY b.day
+        """,
+        [ohlcv, symbology, start_date, end_date],
+    ).fetchall()
+
+    def fmt_delta(d: float | None) -> str:
+        return f"{d:+.2f}" if d is not None else "n/a"
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        (
+            day,
+            symbol,
+            day_open,
+            day_high,
+            day_low,
+            day_close,
+            day_volume,
+            c60,
+            c120,
+            c180,
+        ) = row
+        d1 = float(c60) - float(day_open) if c60 is not None else None
+        d2 = float(c120) - float(day_open) if c120 is not None else None
+        d3 = float(c180) - float(day_open) if c180 is not None else None
+        date_str = day.isoformat() if hasattr(day, "isoformat") else str(day)
+        summary = (
+            f"{date_str} {symbol} | "
+            f"open {float(day_open):.2f} | "
+            f"1h delta {fmt_delta(d1)} | "
+            f"2h delta {fmt_delta(d2)} | "
+            f"3h delta {fmt_delta(d3)} | "
+            f"range {float(day_high) - float(day_low):.2f} | "
+            f"vol {_format_volume(float(day_volume))} | "
+            f"close {float(day_close):.2f} "
+            f"({(float(day_close) - float(day_open)):+.2f})"
+        )
+        out.append({"date": date_str, "symbol": symbol, "summary": summary})
+    return out

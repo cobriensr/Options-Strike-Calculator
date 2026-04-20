@@ -478,6 +478,115 @@ def test_day_features_vector_rejects_too_few_bars(tmp_path: Path) -> None:
         archive_query.day_features_vector("2024-06-03", root=tmp_path)
 
 
+def test_day_features_batch_matches_per_date_vectors(tmp_path: Path) -> None:
+    """Batched output must byte-match what the per-date function
+    produces, otherwise rows written by backfill-batch would drift
+    from rows written by the per-date cron."""
+    closes_d1 = [5300.0 + i for i in range(1, 61)]
+    closes_d2 = [5400.0 + i * 0.5 for i in range(1, 61)]
+    bars = _sixty_minute_day((2024, 6, 3), 101, 5300.0, closes_d1)
+    bars += _sixty_minute_day((2024, 6, 4), 101, 5400.0, closes_d2)
+    from datetime import datetime, timezone
+
+    _build_archive(
+        tmp_path,
+        bars,
+        [
+            (
+                101,
+                "ESU4",
+                datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc),
+                datetime(2024, 6, 4, 15, 30, tzinfo=timezone.utc),
+            )
+        ],
+    )
+
+    batch = archive_query.day_features_batch(
+        "2024-06-03", "2024-06-04", root=tmp_path
+    )
+    assert len(batch) == 2
+    archive_query.reset_connection_for_tests()
+    v1_single = archive_query.day_features_vector(
+        "2024-06-03", root=tmp_path
+    )
+    archive_query.reset_connection_for_tests()
+    v2_single = archive_query.day_features_vector(
+        "2024-06-04", root=tmp_path
+    )
+
+    by_date = {r["date"]: r for r in batch}
+    assert by_date["2024-06-03"]["symbol"] == "ESU4"
+    for want, got in zip(v1_single, by_date["2024-06-03"]["vector"]):
+        assert got == pytest.approx(want, rel=1e-9)
+    for want, got in zip(v2_single, by_date["2024-06-04"]["vector"]):
+        assert got == pytest.approx(want, rel=1e-9)
+
+
+def test_day_features_batch_skips_days_with_too_few_bars(tmp_path: Path) -> None:
+    """Same <10-bar guard as the per-date function: sparse days aren't
+    emitted, rather than silently written as zero-ish vectors."""
+    from datetime import datetime, timezone, timedelta
+
+    bars: list[tuple] = []
+    # Day A: full 60 bars.
+    closes = [5300.0 + i for i in range(1, 61)]
+    bars += _sixty_minute_day((2024, 6, 3), 101, 5300.0, closes)
+    # Day B: only 5 bars total. Should be skipped.
+    d0 = datetime(2024, 6, 4, 14, 30, tzinfo=timezone.utc)
+    for i in range(5):
+        ts = d0 + timedelta(minutes=i)
+        bars.append((ts, 101, 5400.0 + i, 5400.0 + i, 5400.0 + i, 5400.0 + i, 1_000))
+    _build_archive(
+        tmp_path,
+        bars,
+        [
+            (
+                101,
+                "ESU4",
+                datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc),
+                datetime(2024, 6, 4, 14, 34, tzinfo=timezone.utc),
+            )
+        ],
+    )
+
+    batch = archive_query.day_features_batch(
+        "2024-06-03", "2024-06-04", root=tmp_path
+    )
+    dates = [r["date"] for r in batch]
+    assert "2024-06-03" in dates
+    assert "2024-06-04" not in dates
+
+
+def test_day_summary_batch_matches_per_date_format(tmp_path: Path) -> None:
+    """Batch summary output must be byte-identical to per-date —
+    any drift would cause embedding model mismatches on backfill."""
+    from datetime import datetime, timezone
+
+    # Reuse the same fixture shape as the per-date test.
+    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    d1 = datetime(2024, 6, 3, 15, 30, tzinfo=timezone.utc)  # +60m
+    d2 = datetime(2024, 6, 3, 16, 30, tzinfo=timezone.utc)  # +120m
+    d3 = datetime(2024, 6, 3, 21, 0, tzinfo=timezone.utc)   # EOD
+    bars = [
+        (d0, 101, 5300.0, 5305.0, 5299.0, 5300.0, 1_000_000),
+        (d1, 101, 5300.0, 5310.0, 5299.0, 5305.5, 1_500_000),
+        (d2, 101, 5305.5, 5315.0, 5300.0, 5308.0, 500_000),
+        (d3, 101, 5308.0, 5315.0, 5280.0, 5285.0, 250_000),
+    ]
+    _build_archive(tmp_path, bars, [(101, "ESU4", d0, d3)])
+
+    batch = archive_query.day_summary_batch(
+        "2024-06-03", "2024-06-03", root=tmp_path
+    )
+    assert len(batch) == 1
+    archive_query.reset_connection_for_tests()
+    single = archive_query.day_summary_text("2024-06-03", root=tmp_path)
+
+    # Byte-for-byte match.
+    assert batch[0]["summary"] == single
+    assert batch[0]["symbol"] == "ESU4"
+
+
 def test_day_features_vector_forward_fills_gaps(tmp_path: Path) -> None:
     """Sparse bars (halts, gaps) should forward-fill, not produce zeros."""
     from datetime import datetime, timezone, timedelta
