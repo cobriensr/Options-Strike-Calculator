@@ -70,6 +70,7 @@ ml/.coverage
 ml/src/features/__pycache__
 ml/src/pac/__pycache__
 ml/src/options_features/__pycache__
+ml/src/pac_backtest/__pycache__
 
 # Superpowers
 .superpowers/
