@@ -179,6 +179,49 @@ def detect_exit(
     raise ValueError(f"Exit trigger not implemented: {trigger}")
 
 
+def _find_swing_stop_level(
+    bars: pd.DataFrame,
+    signal_idx: int,
+    direction: str,
+    entry_price: float,
+    lookback: int = 50,
+) -> float | None:
+    """Walk back from the signal bar to find the nearest correct-side swing.
+
+    Long → most recent swing LOW (HighLow == -1) with level < entry_price.
+    Short → most recent swing HIGH (HighLow == 1) with level > entry_price.
+
+    The signal bar itself is excluded. This is the critical fix for the
+    stop-placement bug: BOS bars frequently coincide with swing bars of
+    the opposite type (a bullish BOS often completes a new swing HIGH at
+    the BOS bar), and blindly reading that bar's `Level_shl` plants the
+    stop on the PROFIT side of entry. Live traders don't do this — they
+    use a PRIOR structural swing on the risk side.
+
+    Returns the level or None if no valid-side swing exists within `lookback`.
+    """
+    if "HighLow" not in bars.columns or "Level_shl" not in bars.columns:
+        return None
+    target_kind = -1 if direction == "long" else 1
+    hl = bars["HighLow"].to_numpy()
+    lv = bars["Level_shl"].to_numpy()
+    start = max(0, signal_idx - lookback)
+    # Exclude signal bar (signal_idx) — it commonly has a wrong-side Level_shl.
+    for i in range(signal_idx - 1, start - 1, -1):
+        kind = hl[i]
+        if pd.isna(kind) or kind != target_kind:
+            continue
+        level = lv[i]
+        if pd.isna(level) or level == 0:
+            continue
+        level = float(level)
+        if direction == "long" and level < entry_price:
+            return level
+        if direction == "short" and level > entry_price:
+            return level
+    return None
+
+
 def compute_stop_price(
     direction: str,
     entry_price: float,
@@ -187,11 +230,14 @@ def compute_stop_price(
     atr: float,
     params: StrategyParams,
     active_ob: dict | None = None,
+    bars: pd.DataFrame | None = None,
+    signal_idx: int | None = None,
 ) -> float:
     """Place the protective stop based on StopPlacement rule.
 
-    `active_ob` is required for `OB_BOUNDARY` placement and is the dict
-    returned by `_find_active_ob_at()`. If unavailable, falls back to N_ATR.
+    `active_ob` is required for `OB_BOUNDARY` placement; `bars` + `signal_idx`
+    are required for `SWING_EXTREME`. Either falls back to N_ATR if the
+    needed context isn't available.
     """
     if placement == StopPlacement.N_ATR:
         offset = atr * params.stop_atr_multiple
@@ -200,14 +246,19 @@ def compute_stop_price(
         )
 
     if placement == StopPlacement.SWING_EXTREME:
-        # For long entries, stop = last swing low below entry
-        # For short entries, stop = last swing high above entry
-        # We use the most-recent same-direction swing from PAC engine output
-        level = bar.get("Level_shl")
-        if pd.notna(level) and level != 0:
-            return float(level)
-        # Fallback: 1.5× ATR if no nearby swing
-        offset = atr * 1.5
+        # Walk back through bars to find a correct-side swing. The earlier
+        # implementation (pre-2026-04-21) took `bar.Level_shl` blindly which
+        # is on the PROFIT side for BOS bars that coincide with swing bars —
+        # a 100% win rate bug that a 3-year sweep exposed.
+        if bars is not None and signal_idx is not None:
+            level = _find_swing_stop_level(
+                bars, signal_idx, direction, entry_price, lookback=50
+            )
+            if level is not None:
+                return level
+        # No valid-side swing in the lookback window: fall back to N_ATR
+        # using the configured stop_atr_multiple (NOT a hardcoded 1.5×).
+        offset = atr * params.stop_atr_multiple
         return (
             entry_price - offset if direction == "long" else entry_price + offset
         )
@@ -703,6 +754,8 @@ def run_backtest(
                 atr_val,
                 params,
                 active_ob=active_ob,
+                bars=bars,
+                signal_idx=i,
             )
 
             # Entry fills at NEXT bar's open — ts becomes next bar's ts
