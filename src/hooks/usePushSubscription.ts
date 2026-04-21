@@ -207,9 +207,17 @@ export function usePushSubscription(): UsePushSubscriptionReturn {
         credentials: 'same-origin',
       });
       if (!keyRes.ok) {
-        throw new Error(
-          `Failed to load VAPID key (${keyRes.status})`,
-        );
+        if (keyRes.status === 401) {
+          throw new Error(
+            'Log in first — push subscription is owner-only.',
+          );
+        }
+        if (keyRes.status === 500) {
+          throw new Error(
+            'Push not configured on the server (VAPID keys missing).',
+          );
+        }
+        throw new Error(`Failed to load VAPID key (${keyRes.status})`);
       }
       const { publicKey } = (await keyRes.json()) as VapidKeyResponse;
 
@@ -235,6 +243,11 @@ export function usePushSubscription(): UsePushSubscriptionReturn {
           await subscription.unsubscribe();
         } catch {
           // Best-effort cleanup — ignore.
+        }
+        if (subRes.status === 401) {
+          throw new Error(
+            'Log in first — push subscription is owner-only.',
+          );
         }
         throw new Error(`Server refused subscription (${subRes.status})`);
       }
