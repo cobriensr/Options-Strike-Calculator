@@ -266,19 +266,35 @@ async function enrichAnalysisEmbeddings(
   dateStr: string,
   settlement: number,
 ): Promise<void> {
-  try {
-    const sql = getDb();
-    const rows = await sql`
-      SELECT a.id, a.mode, a.entry_time, a.structure, a.confidence,
-             a.suggested_delta, a.spx, a.vix, a.vix1d, a.hedge,
-             (a.full_response->'review'->>'wasCorrect')::boolean AS was_correct,
-             ms.vix_term_signal, ms.regime_zone, ms.dow_label
-      FROM analyses a
-      LEFT JOIN market_snapshots ms ON ms.id = a.snapshot_id
-      WHERE a.date = ${dateStr}
-    `;
+  const sql = getDb();
 
-    for (const row of rows) {
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await withRetry(
+      () => sql`
+        SELECT a.id, a.mode, a.entry_time, a.structure, a.confidence,
+               a.suggested_delta, a.spx, a.vix, a.vix1d, a.hedge,
+               (a.full_response->'review'->>'wasCorrect')::boolean AS was_correct,
+               ms.vix_term_signal, ms.regime_zone, ms.dow_label
+        FROM analyses a
+        LEFT JOIN market_snapshots ms ON ms.id = a.snapshot_id
+        WHERE a.date = ${dateStr}
+      `,
+    );
+  } catch (error_) {
+    logger.error(
+      { err: error_, date: dateStr },
+      'fetch-outcomes: analysis embedding SELECT failed',
+    );
+    metrics.increment('fetch_outcomes.embedding_enrich_error');
+    Sentry.captureException(error_);
+    return;
+  }
+
+  let updated = 0;
+  let rowErrors = 0;
+  for (const row of rows) {
+    try {
       const summary = buildAnalysisSummary({
         date: dateStr,
         mode: row.mode as string,
@@ -297,30 +313,34 @@ async function enrichAnalysisEmbeddings(
         wasCorrect: row.was_correct == null ? null : Boolean(row.was_correct),
       });
 
-      const embedding = await generateEmbedding(summary);
-      if (embedding) {
-        const vectorLiteral = `[${embedding.join(',')}]`;
-        await sql`
+      const embedding = await withRetry(() => generateEmbedding(summary));
+      if (!embedding) continue;
+
+      const vectorLiteral = `[${embedding.join(',')}]`;
+      await withRetry(
+        () => sql`
           UPDATE analyses
           SET analysis_embedding = ${vectorLiteral}::vector
           WHERE id = ${row.id as number}
-        `;
-      }
-    }
-
-    if (rows.length > 0) {
-      logger.info(
-        { date: dateStr, count: rows.length },
-        'fetch-outcomes: enriched analysis embeddings with settlement',
+        `,
       );
+      updated++;
+    } catch (error_) {
+      rowErrors++;
+      logger.error(
+        { err: error_, date: dateStr, analysisId: row.id },
+        'fetch-outcomes: analysis embedding row failed',
+      );
+      metrics.increment('fetch_outcomes.embedding_enrich_error');
+      Sentry.captureException(error_);
     }
-  } catch (error_) {
-    logger.error(
-      { err: error_ },
-      'fetch-outcomes: analysis embedding enrichment failed',
+  }
+
+  if (rows.length > 0) {
+    logger.info(
+      { date: dateStr, count: rows.length, updated, rowErrors },
+      'fetch-outcomes: enriched analysis embeddings with settlement',
     );
-    metrics.increment('fetch_outcomes.embedding_enrich_error');
-    Sentry.captureException(error_);
   }
 }
 
