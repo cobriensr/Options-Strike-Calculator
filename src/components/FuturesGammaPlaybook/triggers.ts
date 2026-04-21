@@ -72,6 +72,13 @@ export interface EvaluateTriggersInput {
   phase: SessionPhase;
   esPrice: number | null;
   levels: EsLevel[];
+  /**
+   * ES price of the highest-|netGamma| strike (gamma-pin). Passed
+   * separately because it is not rendered as an EsLevel row — it would
+   * always duplicate CALL_WALL or PUT_WALL by construction. Used only
+   * by the charm-drift trigger as the pin magnet.
+   */
+  esGammaPin?: number | null;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -114,11 +121,11 @@ function proximityStatus(
  * what's missing rather than just hiding the row.
  */
 export function evaluateTriggers(input: EvaluateTriggersInput): TriggerState[] {
-  const { regime, phase, esPrice, levels } = input;
+  const { regime, phase, esPrice, levels, esGammaPin } = input;
 
   const callWall = findLevel(levels, 'CALL_WALL');
   const putWall = findLevel(levels, 'PUT_WALL');
-  const maxPain = findLevel(levels, 'MAX_PAIN');
+  const gammaPin = esGammaPin ?? null;
 
   // ── fade-call-wall ────────────────────────────────────────────────
   let fadeCallWall: TriggerState;
@@ -334,20 +341,23 @@ export function evaluateTriggers(input: EvaluateTriggersInput): TriggerState[] {
   }
 
   // ── charm-drift ───────────────────────────────────────────────────
+  // Target = highest |netGamma| strike (gamma-pin), NOT max-pain. Dealer
+  // hedging concentrates where gamma concentrates; max-pain is a separate
+  // payout-minimization concept that often but not always aligns.
   const charmRegimeOk = regime === 'POSITIVE';
   const charmPhaseOk = phase === 'AFTERNOON' || phase === 'POWER';
   let charmDrift: TriggerState;
-  if (!charmRegimeOk || !charmPhaseOk || maxPain === null) {
+  if (!charmRegimeOk || !charmPhaseOk || gammaPin === null) {
     charmDrift = {
       id: 'charm-drift',
       name: 'Charm drift to pin',
       status: 'BLOCKED',
       condition:
-        'Positive-gamma regime in afternoon/power hour with max-pain known — pin drift.',
-      levelLabel: maxPain ? 'Max pain' : null,
-      levelEsPrice: maxPain?.esPrice ?? null,
+        'Positive-gamma regime in afternoon/power hour with gamma pin known — pin drift.',
+      levelLabel: gammaPin !== null ? 'Gamma pin' : null,
+      levelEsPrice: gammaPin,
       distanceEsPoints: null,
-      blockedReason: 'Needs +GEX in afternoon/power with max-pain.',
+      blockedReason: 'Needs +GEX in afternoon/power with gamma pin.',
     };
   } else {
     // Charm-drift is a session-window trigger, not proximity-gated.
@@ -357,9 +367,9 @@ export function evaluateTriggers(input: EvaluateTriggersInput): TriggerState[] {
       name: 'Charm drift to pin',
       status: 'ACTIVE',
       condition:
-        'Positive-gamma regime in afternoon/power hour with max-pain known — pin drift.',
-      levelLabel: 'Max pain',
-      levelEsPrice: maxPain.esPrice,
+        'Positive-gamma regime in afternoon/power hour with gamma pin known — pin drift.',
+      levelLabel: 'Gamma pin',
+      levelEsPrice: gammaPin,
       distanceEsPoints: null,
       blockedReason: null,
     };

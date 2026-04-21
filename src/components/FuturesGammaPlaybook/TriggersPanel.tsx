@@ -31,6 +31,8 @@ export interface TriggersPanelProps {
   phase: SessionPhase;
   esPrice: number | null;
   levels: EsLevel[];
+  /** ES price of the highest-|GEX| strike — charm-drift magnet. */
+  esGammaPin?: number | null;
 }
 
 // ── Presentation metadata ────────────────────────────────────────────
@@ -114,10 +116,14 @@ export const TriggersPanel = memo(function TriggersPanel({
   phase,
   esPrice,
   levels,
+  esGammaPin,
 }: TriggersPanelProps) {
   const triggers = useMemo(
-    () => prioritize(evaluateTriggers({ regime, phase, esPrice, levels })),
-    [regime, phase, esPrice, levels],
+    () =>
+      prioritize(
+        evaluateTriggers({ regime, phase, esPrice, levels, esGammaPin }),
+      ),
+    [regime, phase, esPrice, levels, esGammaPin],
   );
 
   if (levels.length === 0) {

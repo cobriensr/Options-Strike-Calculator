@@ -237,22 +237,24 @@ describe('evaluateTriggers', () => {
 
   // ── charm-drift ────────────────────────────────────────────────────
 
-  it('charm-drift ACTIVE in POSITIVE regime during AFTERNOON with max-pain known', () => {
+  it('charm-drift ACTIVE in POSITIVE regime during AFTERNOON with gamma pin known', () => {
     const states = evaluateTriggers({
       regime: 'POSITIVE',
       phase: 'AFTERNOON',
       esPrice: ES_PRICE,
-      levels: [makeLevel('MAX_PAIN', 5815, -5)],
+      levels: [],
+      esGammaPin: 5815,
     });
     expect(statusOf(states, 'charm-drift')).toBe('ACTIVE');
   });
 
-  it('charm-drift ACTIVE in POSITIVE regime during POWER with max-pain known', () => {
+  it('charm-drift ACTIVE in POSITIVE regime during POWER with gamma pin known', () => {
     const states = evaluateTriggers({
       regime: 'POSITIVE',
       phase: 'POWER',
       esPrice: ES_PRICE,
-      levels: [makeLevel('MAX_PAIN', 5815, -5)],
+      levels: [],
+      esGammaPin: 5815,
     });
     expect(statusOf(states, 'charm-drift')).toBe('ACTIVE');
   });
@@ -262,16 +264,17 @@ describe('evaluateTriggers', () => {
       regime: 'POSITIVE',
       phase: 'MORNING',
       esPrice: ES_PRICE,
-      levels: [makeLevel('MAX_PAIN', 5815, -5)],
+      levels: [],
+      esGammaPin: 5815,
     });
     const row = rowOf(states, 'charm-drift');
     expect(row.status).toBe('BLOCKED');
     expect(row.blockedReason).toBe(
-      'Needs +GEX in afternoon/power with max-pain.',
+      'Needs +GEX in afternoon/power with gamma pin.',
     );
   });
 
-  it('charm-drift BLOCKED when max-pain is missing', () => {
+  it('charm-drift BLOCKED when gamma pin is missing', () => {
     const states = evaluateTriggers({
       regime: 'POSITIVE',
       phase: 'AFTERNOON',
@@ -322,8 +325,8 @@ describe('evaluateTriggers', () => {
       levels: [
         makeLevel('CALL_WALL', 5822, 2),
         makeLevel('PUT_WALL', 5817, -3),
-        makeLevel('MAX_PAIN', 5815, -5),
       ],
+      esGammaPin: 5815,
     });
     const byId = new Map(states.map((s) => [s.id, s]));
     expect(byId.get('fade-call-wall')?.levelEsPrice).toBe(5822);

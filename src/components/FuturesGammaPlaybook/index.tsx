@@ -216,6 +216,7 @@ function FuturesGammaPlaybook({
         phase={playbook.phase}
         esPrice={playbook.esPrice}
         levels={playbook.levels}
+        esGammaPin={playbook.esGammaPin}
       />
 
       {/* Panel 6: Recent server-fired events (push delivery history) */}

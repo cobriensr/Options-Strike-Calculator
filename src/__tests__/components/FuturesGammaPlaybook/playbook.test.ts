@@ -110,6 +110,7 @@ describe('rulesForRegime', () => {
     esPutWall: 5780,
     esZeroGamma: 5800,
     esMaxPain: 5795,
+    esGammaPin: 5820, // call wall has larger |GEX| in test fixtures
   };
   // Default price: far from every level so baseline rules are DISTANT.
   const FAR_PRICE = 5700;
@@ -162,7 +163,8 @@ describe('rulesForRegime', () => {
     expect(rules.map((r) => r.id)).toContain('pos-charm-drift');
     const drift = rules.find((r) => r.id === 'pos-charm-drift')!;
     expect(drift.direction).toBe('EITHER');
-    expect(drift.targetEs).toBe(5795);
+    // Target is gamma-pin (highest |GEX| strike), NOT max-pain.
+    expect(drift.targetEs).toBe(5820);
   });
 
   it('POSITIVE + POWER → charm-drift rule included', () => {
@@ -194,6 +196,7 @@ describe('rulesForRegime', () => {
         esPutWall: 5780,
         esZeroGamma: null,
         esMaxPain: null,
+        esGammaPin: null,
       },
       FAR_PRICE,
     );

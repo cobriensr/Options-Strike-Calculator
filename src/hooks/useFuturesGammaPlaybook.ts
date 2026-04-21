@@ -75,6 +75,13 @@ export interface UseFuturesGammaPlaybookReturn {
   /** Live ES − SPX basis at the displayed instant. */
   esSpxBasis: number | null;
   /**
+   * ES price of the highest-|netGamma| strike. The charm-drift magnet.
+   * Mirrors GexLandscape's "gravity" concept so the two components agree.
+   * Not rendered as an EsLevel row — it's always either the call wall or
+   * the put wall by definition, so a dedicated row would duplicate one.
+   */
+  esGammaPin: number | null;
+  /**
    * Intraday regime timeseries for the active session, sourced from
    * `/api/spot-gex-history`. Each point carries `ts`, `netGex`, `spot`,
    * and the regime classified against the current zero-gamma estimate.
@@ -131,6 +138,15 @@ interface SpxLevels {
   callWall: number | null;
   putWall: number | null;
   zeroGamma: number | null;
+  /**
+   * Strike with the largest absolute netGamma anywhere in the window —
+   * the gamma-pin / "gravity" strike. Mirrors `GexLandscape/bias.ts:50-57`
+   * so the two components always agree on which strike represents the
+   * dealer-gamma concentration. Used as the charm-drift target because
+   * dealer hedging physically concentrates at this strike as OTM 0DTE
+   * options decay to zero delta.
+   */
+  gammaPin: number | null;
   spot: number | null;
   netGex: number;
 }
@@ -140,6 +156,7 @@ interface SpxLevels {
  *   - callWall  — strike with the largest positive netGamma
  *   - putWall   — strike with the largest-magnitude negative netGamma
  *   - zeroGamma — interpolated zero crossing of cumulative netGamma
+ *   - gammaPin  — strike with the largest |netGamma| (GexLandscape gravity)
  *   - spot      — price field carried on every strike row (same value)
  *   - netGex    — sum of netGamma across all strikes
  */
@@ -149,6 +166,7 @@ function deriveSpxLevels(strikes: GexStrikeLevel[]): SpxLevels {
       callWall: null,
       putWall: null,
       zeroGamma: null,
+      gammaPin: null,
       spot: null,
       netGex: 0,
     };
@@ -156,6 +174,7 @@ function deriveSpxLevels(strikes: GexStrikeLevel[]): SpxLevels {
 
   let callWallRow: GexStrikeLevel | null = null;
   let putWallRow: GexStrikeLevel | null = null;
+  let gammaPinRow: GexStrikeLevel | null = null;
   let netGex = 0;
 
   for (const s of strikes) {
@@ -169,6 +188,12 @@ function deriveSpxLevels(strikes: GexStrikeLevel[]): SpxLevels {
         putWallRow = s;
       }
     }
+    if (
+      gammaPinRow === null ||
+      Math.abs(s.netGamma) > Math.abs(gammaPinRow.netGamma)
+    ) {
+      gammaPinRow = s;
+    }
   }
 
   const spot = strikes[0]?.price ?? null;
@@ -179,6 +204,7 @@ function deriveSpxLevels(strikes: GexStrikeLevel[]): SpxLevels {
     callWall: callWallRow?.strike ?? null,
     putWall: putWallRow?.strike ?? null,
     zeroGamma,
+    gammaPin: gammaPinRow?.strike ?? null,
     spot,
     netGex,
   };
@@ -191,6 +217,14 @@ interface EsDerivedLevels {
   esPutWall: number | null;
   esZeroGamma: number | null;
   esMaxPain: number | null;
+  /**
+   * ES price of the highest |netGamma| strike — the actual charm-drift
+   * target. Computed alongside the walls but not rendered as its own row
+   * in EsLevelsPanel (it's always either call wall or put wall by
+   * definition, so a dedicated row would duplicate one of those). Used
+   * only by the charm-drift rule.
+   */
+  esGammaPin: number | null;
 }
 
 function buildEsLevels(
@@ -205,6 +239,7 @@ function buildEsLevels(
     esPutWall: null,
     esZeroGamma: null,
     esMaxPain: null,
+    esGammaPin: null,
   };
 
   if (basis === null || esPrice === null) {
@@ -248,6 +283,12 @@ function buildEsLevels(
     else if (kind === 'PUT_WALL') derived.esPutWall = esLevelPrice;
     else if (kind === 'ZERO_GAMMA') derived.esZeroGamma = esLevelPrice;
     else if (kind === 'MAX_PAIN') derived.esMaxPain = esLevelPrice;
+  }
+
+  // Translate gammaPin independently — it is not rendered as an EsLevel
+  // row (charm-drift consumes the derived value only).
+  if (spx.gammaPin !== null) {
+    derived.esGammaPin = translateSpxToEs(spx.gammaPin, basis);
   }
 
   return { levels, derived };
@@ -489,10 +530,16 @@ export function useFuturesGammaPlaybook(
   // contribute to `firedTriggers` — IDLE/RECENTLY_FIRED are filtered out.
   const firedTriggers: string[] = useMemo(
     () =>
-      evaluateTriggers({ regime, phase, esPrice, levels })
+      evaluateTriggers({
+        regime,
+        phase,
+        esPrice,
+        levels,
+        esGammaPin: derived.esGammaPin,
+      })
         .filter((t) => t.status === 'ACTIVE')
         .map((t) => t.id),
-    [regime, phase, esPrice, levels],
+    [regime, phase, esPrice, levels, derived.esGammaPin],
   );
 
   const bias: PlaybookBias = useMemo(
@@ -550,6 +597,7 @@ export function useFuturesGammaPlaybook(
     bias,
     esPrice,
     esSpxBasis: futures.esSpxBasis,
+    esGammaPin: derived.esGammaPin,
     regimeTimeline,
     sessionPhaseBoundaries,
     loading,

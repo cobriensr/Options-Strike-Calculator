@@ -307,19 +307,24 @@ export function rulesForRegime(
       );
     }
 
-    // Charm-drift window: price grinds toward the pin/max-pain strike.
+    // Charm-drift window: price grinds toward the highest |GEX| strike
+    // (the "gamma pin") — where dealer hedging physically concentrates as
+    // OTM 0DTE options decay to zero delta. This is NOT max-pain
+    // (which is a theoretical OI-payout minimum). They often converge but
+    // when they diverge, gamma-pin is the mechanistic target because
+    // dealer hedging flow follows gamma, not payout math.
     if (
       (phase === 'AFTERNOON' || phase === 'POWER') &&
-      levels.esMaxPain !== null
+      levels.esGammaPin !== null
     ) {
       rules.push(
         finalize(
           {
             id: 'pos-charm-drift',
-            condition: `Charm drift toward max-pain at ${fmt(levels.esMaxPain)}`,
+            condition: `Charm drift toward gamma pin at ${fmt(levels.esGammaPin)}`,
             direction: 'EITHER',
             entryEs: null,
-            targetEs: levels.esMaxPain,
+            targetEs: levels.esGammaPin,
             stopEs: null,
             sizingNote: 'Enter between 13:30–14:30 CT; exit before 15:30 CT.',
           },

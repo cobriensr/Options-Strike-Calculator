@@ -60,6 +60,13 @@ export interface RuleLevels {
   esPutWall: number | null;
   esZeroGamma: number | null;
   esMaxPain: number | null;
+  /**
+   * ES price of the highest |netGamma| strike — the actual charm-drift
+   * magnet. Distinct from `esMaxPain`: max-pain minimizes option-holder
+   * payout at expiry (theoretical); gamma-pin is where dealer hedging
+   * physically concentrates (mechanistic).
+   */
+  esGammaPin: number | null;
 }
 
 export interface PlaybookBias {

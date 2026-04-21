@@ -134,15 +134,13 @@ describe('TriggersPanel', () => {
         regime="POSITIVE"
         phase="AFTERNOON"
         esPrice={5820}
-        levels={[
-          makeLevel('CALL_WALL', 5822.25, 2.25),
-          makeLevel('MAX_PAIN', 5815.5, -4.5),
-        ]}
+        levels={[makeLevel('CALL_WALL', 5822.25, 2.25)]}
+        esGammaPin={5815.5}
       />,
     );
     // Call-wall rows (fade-call-wall + break-call-wall) share an aria-label.
     const callWallPrices = screen.getAllByLabelText('Call wall at 5822.25');
     expect(callWallPrices).toHaveLength(2);
-    expect(screen.getByLabelText('Max pain at 5815.50')).toBeInTheDocument();
+    expect(screen.getByLabelText('Gamma pin at 5815.50')).toBeInTheDocument();
   });
 });
