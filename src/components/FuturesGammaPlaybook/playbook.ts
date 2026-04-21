@@ -264,8 +264,20 @@ export function rulesForRegime(
     // Stop = one ES tick ABOVE the wall (i.e. wall + ES_TICK_SIZE). The
     // stop is the INVALIDATION price — beyond it the structural thesis
     // has failed. Zero-gamma is the TARGET of the trade, not the stop.
+    //
+    // Target-placement guard: the rule emits zeroGamma as target ONLY when
+    // ZG sits below the call wall (the valid mean-revert geometry). When
+    // ZG is above the call wall (rare — happens when cumulative netGamma
+    // crosses zero above the peak-gamma strike) the structural thesis's
+    // magnet isn't below; we leave target null and the trader trails
+    // stops manually. Picking ZG anyway would place the "target" above
+    // the entry on a SHORT — a mathematically inverted trade.
     if (levels.esCallWall !== null) {
       const stop = esTickRound(levels.esCallWall + ES_TICK_SIZE);
+      const validTarget =
+        levels.esZeroGamma !== null && levels.esZeroGamma < levels.esCallWall
+          ? levels.esZeroGamma
+          : null;
       rules.push(
         finalize(
           {
@@ -273,10 +285,12 @@ export function rulesForRegime(
             condition: `Fade rallies into call wall at ${fmt(levels.esCallWall)} · stop ${fmt(stop)} (one tick above the wall)`,
             direction: 'SHORT',
             entryEs: levels.esCallWall,
-            targetEs: levels.esZeroGamma,
+            targetEs: validTarget,
             stopEs: stop,
             sizingNote:
-              'Tight stops — one ES tick above the wall invalidates the fade.',
+              validTarget === null
+                ? 'Tight stops — one ES tick above the wall invalidates the fade. Zero-gamma sits above the wall today; trail stops instead of targeting a fixed level.'
+                : 'Tight stops — one ES tick above the wall invalidates the fade.',
           },
           esPrice,
           'fade-lift',
@@ -287,8 +301,17 @@ export function rulesForRegime(
     // Lift support at the put wall — mirror fade from below.
     //
     // Stop = one ES tick BELOW the wall (put wall − ES_TICK_SIZE).
+    //
+    // Target-placement guard mirrors the fade rule: ZG must sit ABOVE the
+    // put wall to be a valid lift target. When ZG is below the put wall
+    // (unusual) leave target null so the trader trails rather than
+    // targeting a price below entry on a LONG.
     if (levels.esPutWall !== null) {
       const stop = esTickRound(levels.esPutWall - ES_TICK_SIZE);
+      const validTarget =
+        levels.esZeroGamma !== null && levels.esZeroGamma > levels.esPutWall
+          ? levels.esZeroGamma
+          : null;
       rules.push(
         finalize(
           {
@@ -296,10 +319,12 @@ export function rulesForRegime(
             condition: `Buy dips into put wall at ${fmt(levels.esPutWall)} · stop ${fmt(stop)} (one tick below the wall)`,
             direction: 'LONG',
             entryEs: levels.esPutWall,
-            targetEs: levels.esZeroGamma,
+            targetEs: validTarget,
             stopEs: stop,
             sizingNote:
-              'Tight stops — one ES tick below the wall invalidates the lift.',
+              validTarget === null
+                ? 'Tight stops — one ES tick below the wall invalidates the lift. Zero-gamma sits below the wall today; trail stops instead of targeting a fixed level.'
+                : 'Tight stops — one ES tick below the wall invalidates the lift.',
           },
           esPrice,
           'fade-lift',

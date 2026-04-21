@@ -251,6 +251,51 @@ describe('rulesForRegime', () => {
     expect(br.stopEs).toBeGreaterThan(br.entryEs!);
   });
 
+  // ── Target-placement geometry guard (2026-04-21 bug) ──────────────
+  //
+  // Before this guard, the fade/lift rules unconditionally set
+  // targetEs = esZeroGamma. When ZG sits on the wrong side of the wall
+  // (ZG > callWall, or ZG < putWall — the unusual-gamma-profile case)
+  // the emitted rule had a target placed above entry on a SHORT or
+  // below entry on a LONG — mathematically an inverted trade.
+
+  it('pos-fade-call-wall target is null when ZG sits ABOVE the call wall', () => {
+    const levels = {
+      esCallWall: 5820,
+      esPutWall: 5780,
+      esZeroGamma: 5900, // ABOVE the call wall — invalid mean-revert target
+      esMaxPain: 5795,
+      esGammaPin: 5820,
+    };
+    const rules = rulesForRegime('POSITIVE', 'MORNING', levels, FAR_PRICE);
+    const fade = rules.find((r) => r.id === 'pos-fade-call-wall')!;
+    expect(fade.targetEs).toBeNull();
+    expect(fade.sizingNote).toMatch(/trail stops/i);
+  });
+
+  it('pos-lift-put-wall target is null when ZG sits BELOW the put wall', () => {
+    const levels = {
+      esCallWall: 5820,
+      esPutWall: 5780,
+      esZeroGamma: 5700, // BELOW the put wall — invalid lift target
+      esMaxPain: 5795,
+      esGammaPin: 5780,
+    };
+    const rules = rulesForRegime('POSITIVE', 'MORNING', levels, FAR_PRICE);
+    const lift = rules.find((r) => r.id === 'pos-lift-put-wall')!;
+    expect(lift.targetEs).toBeNull();
+    expect(lift.sizingNote).toMatch(/trail stops/i);
+  });
+
+  it('fade/lift targets remain populated when ZG sits between the walls', () => {
+    // fullLevels has esZeroGamma=5800 between call=5820 and put=5780
+    const rules = rulesForRegime('POSITIVE', 'MORNING', fullLevels, FAR_PRICE);
+    const fade = rules.find((r) => r.id === 'pos-fade-call-wall')!;
+    const lift = rules.find((r) => r.id === 'pos-lift-put-wall')!;
+    expect(fade.targetEs).toBe(5800);
+    expect(lift.targetEs).toBe(5800);
+  });
+
   // ── Rule-level status + distance classification ────────────────────
 
   it('distance is signed: LONG entry above price → positive distance', () => {
