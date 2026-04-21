@@ -48,6 +48,7 @@ import {
   classifyRegime,
   classifySessionPhase,
 } from '../../src/components/FuturesGammaPlaybook/playbook.js';
+import { evaluateTriggers } from '../../src/components/FuturesGammaPlaybook/triggers.js';
 import { translateSpxToEs } from '../../src/components/FuturesGammaPlaybook/basis.js';
 import { computeZeroGammaStrike } from '../../src/utils/zero-gamma.js';
 import { computeMaxPain } from '../../src/utils/max-pain.js';
@@ -178,7 +179,12 @@ async function loadSpotExposure(
 
 async function loadGexStrikes(
   today: string,
-): Promise<{ strikes: Array<{ strike: number; netGamma: number }>; callWall: number | null; putWall: number | null }> {
+): Promise<{
+  strikes: Array<{ strike: number; netGamma: number }>;
+  callWall: number | null;
+  putWall: number | null;
+  gammaPin: number | null;
+}> {
   try {
     const sql = getDb();
     const rows = (await sql`
@@ -191,7 +197,7 @@ async function loadGexStrikes(
     `) as GexStrikeRow[];
 
     if (rows.length === 0) {
-      return { strikes: [], callWall: null, putWall: null };
+      return { strikes: [], callWall: null, putWall: null, gammaPin: null };
     }
 
     const strikes = rows.map((r) => {
@@ -213,11 +219,14 @@ async function loadGexStrikes(
     });
 
     // Walls: largest |call gamma| strike = call wall; largest |put gamma| = put wall.
-    // Null when every strike is zero on that side.
+    // gammaPin: strike with largest |netGamma| — mirrors GexLandscape/bias.ts
+    // gravity and is the charm-drift magnet. Null when every strike is zero.
     let callWall: number | null = null;
     let putWall: number | null = null;
+    let gammaPin: number | null = null;
     let bestCall = 0;
     let bestPut = 0;
+    let bestNet = 0;
     for (const s of strikes) {
       if (Math.abs(s.callGamma) > bestCall) {
         bestCall = Math.abs(s.callGamma);
@@ -227,17 +236,22 @@ async function loadGexStrikes(
         bestPut = Math.abs(s.putGamma);
         putWall = s.strike;
       }
+      if (Math.abs(s.netGamma) > bestNet) {
+        bestNet = Math.abs(s.netGamma);
+        gammaPin = s.strike;
+      }
     }
 
     return {
       strikes: strikes.map((s) => ({ strike: s.strike, netGamma: s.netGamma })),
       callWall,
       putWall,
+      gammaPin,
     };
   } catch (err) {
     Sentry.captureException(err);
     logger.warn({ err }, 'monitor-regime-events: loadGexStrikes failed');
-    return { strikes: [], callWall: null, putWall: null };
+    return { strikes: [], callWall: null, putWall: null, gammaPin: null };
   }
 }
 
@@ -420,11 +434,34 @@ export default async function handler(
         : 'TRANSITIONING';
     const phase: SessionPhase = classifySessionPhase(new Date());
 
+    // Translate gamma-pin to ES for the charm-drift trigger. Not rendered
+    // as a level row server-side; consumed only by evaluateTriggers.
+    const esGammaPin =
+      gexStrikes.gammaPin !== null && basis !== null
+        ? translateSpxToEs(gexStrikes.gammaPin, basis)
+        : null;
+
+    // Run the shared trigger evaluator so the server knows which named
+    // setups are ACTIVE right now. Pre Phase 2D this was hardcoded to []
+    // which meant TRIGGER_FIRE edges could never fire — the regime_events
+    // table got flow-events (approach/breach/regime/phase) but no
+    // trigger-fire events, and the TodaysFiredStrip rendered empty.
+    const triggerStates = evaluateTriggers({
+      regime,
+      phase,
+      esPrice,
+      levels: esLevels,
+      esGammaPin,
+    });
+    const firedTriggers = triggerStates
+      .filter((t) => t.status === 'ACTIVE')
+      .map((t) => t.id);
+
     const nextState: AlertState = {
       regime,
       phase,
       levels: esLevels,
-      firedTriggers: [],
+      firedTriggers,
       esPrice,
     };
 
