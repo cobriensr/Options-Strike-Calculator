@@ -67,7 +67,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@types/web-push": "^3.6.4",
-    "@vercel/node": "^5.7.5",
+    "@vercel/node": "^5.7.12",
     "@vitejs/plugin-react": "^5.1.4",
     "@vitest/coverage-v8": "^4.0.18",
     "@vitest/ui": "^4.0.18",
