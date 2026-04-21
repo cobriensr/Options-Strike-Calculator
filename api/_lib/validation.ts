@@ -9,6 +9,27 @@
 import { z } from 'zod';
 
 // ============================================================
+// /api/spot-gex-history
+// ============================================================
+
+/**
+ * Query params for GET /api/spot-gex-history.
+ *
+ * `date` is optional — when omitted the endpoint defaults to the latest
+ * ET trading date that has rows in `spot_exposures`. When present it
+ * must be a YYYY-MM-DD calendar date so we never feed arbitrary strings
+ * into the SQL `date = $1` parameter.
+ */
+export const spotGexHistoryQuerySchema = z.object({
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+    .optional(),
+});
+
+export type SpotGexHistoryQuery = z.infer<typeof spotGexHistoryQuerySchema>;
+
+// ============================================================
 // /api/alerts-ack
 // ============================================================
 
