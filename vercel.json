@@ -114,6 +114,10 @@
       "schedule": "* 13-21 * * 1-5"
     },
     {
+      "path": "/api/cron/monitor-regime-events",
+      "schedule": "* 13-21 * * 1-5"
+    },
+    {
       "path": "/api/cron/fetch-darkpool",
       "schedule": "* 13-21 * * 1-5"
     },

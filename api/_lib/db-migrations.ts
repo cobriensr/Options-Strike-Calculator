@@ -2097,4 +2097,54 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 79,
+    description:
+      'Create regime_events table for server-detected FuturesGammaPlaybook alerts (history + delivery audit)',
+    statements: (sql) => [
+      // Append-only history of every alert edge the monitor-regime-events
+      // cron has fired. `payload` holds the full AlertEvent JSON (≤ 4KB)
+      // so the frontend history strip can replay titles/bodies without
+      // re-deriving them. `delivered_count` is stamped from web-push
+      // wrapper's result at insert time — used for "delivered to N
+      // devices" badges in Phase 2A.4.
+      sql`
+        CREATE TABLE IF NOT EXISTS regime_events (
+          id              SERIAL PRIMARY KEY,
+          ts              TIMESTAMPTZ NOT NULL,
+          type            TEXT NOT NULL,
+          severity        TEXT NOT NULL,
+          title           TEXT NOT NULL,
+          body            TEXT NOT NULL,
+          payload         JSONB,
+          delivered_count INTEGER NOT NULL DEFAULT 0
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_regime_events_ts
+          ON regime_events (ts DESC)
+      `,
+    ],
+  },
+  {
+    id: 80,
+    description:
+      'Create regime_monitor_state singleton row for cross-run alert state (prev AlertState + cooldowns)',
+    statements: (sql) => [
+      // Exactly one row ever, keyed by `singleton_key = 'current'`. The
+      // monitor-regime-events cron reads this row for prev_state at the
+      // start of each run and upserts with ON CONFLICT (singleton_key)
+      // DO UPDATE on the way out. Simpler than inferring prev state
+      // from regime_events itself and avoids races if the cron misses
+      // a beat (the last written state is always the authoritative
+      // prev for the next run).
+      sql`
+        CREATE TABLE IF NOT EXISTS regime_monitor_state (
+          singleton_key TEXT PRIMARY KEY,
+          prev_state    JSONB,
+          last_run      TIMESTAMPTZ
+        )
+      `,
+    ],
+  },
 ];
