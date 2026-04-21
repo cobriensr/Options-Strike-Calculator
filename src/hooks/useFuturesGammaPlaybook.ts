@@ -89,9 +89,9 @@ export interface UseFuturesGammaPlaybookReturn {
   sessionPhaseBoundaries: SessionPhaseBoundariesCt;
   loading: boolean;
   /**
-   * True while the live-mode max-pain fetch is in flight. Scrub mode is
-   * synchronous (pure computation on the already-loaded strike data) so
-   * this flag never flips to `true` there.
+   * True while the max-pain fetch is in flight. The fetch fires once per
+   * `selectedDate` change in both live and scrub modes (the endpoint picks
+   * live vs. historical server-side based on the date param).
    */
   maxPainLoading: boolean;
   error: Error | null;
@@ -367,31 +367,23 @@ export function useFuturesGammaPlaybook(
 
   // ── Max-pain (SPX) ─────────────────────────────────────────────────
   //
-  // Two data sources depending on mode:
-  //   - Live  → /api/max-pain-current (UW-backed, single fetch per day).
-  //   - Scrub → client-side compute from `gex.strikes`. Historical max-pain
-  //             requires per-strike RAW call/put open interest. Our
-  //             `gex_strike_0dte` table only stores gamma-weighted OI
-  //             (call_gamma_oi / put_gamma_oi) — greek exposure, not raw
-  //             contract counts — so `computeMaxPain` can't be fed a real
-  //             max-pain input from the current schema. Until a raw-OI
-  //             column lands, scrub-mode max-pain is honestly unavailable
-  //             and we return null. The EsLevelsPanel already handles a
-  //             missing MAX_PAIN row via its `levels.find(...)` render path.
-  const [liveMaxPain, setLiveMaxPain] = useState<number | null>(null);
+  // Phase 1D.4 unified path: a single `/api/max-pain-current?date=<selected>`
+  // fetch covers both live and historical. The endpoint routes today ET to
+  // the UW live path and past dates to a DB-backed compute from the
+  // `oi_per_strike` table (populated daily by `fetch-oi-per-strike.ts`),
+  // so the hook no longer has to distinguish live vs. scrub. This replaces
+  // the prior live-only fetch that forced scrub mode to resolve to null.
+  const [spxMaxPain, setSpxMaxPain] = useState<number | null>(null);
   const [maxPainLoading, setMaxPainLoading] = useState(false);
   const isOwner = useIsOwner();
-  // One fetch per (selectedDate, isLive) combination. The key guards the
+  // One fetch per (selectedDate, isOwner) combination. The key guards the
   // effect from infinite re-fetching when the setter below triggers a
   // re-render but the identity of the fetch scope hasn't actually changed.
   const maxPainFetchKey = useRef<string | null>(null);
 
   useEffect(() => {
-    // Only fetch in live mode for today. Scrub mode uses the client compute
-    // below; past-date-but-live mode (isLive=false on a historical date)
-    // doesn't have a sensible live max-pain source either.
-    if (!gex.isLive || gex.isScrubbed || !isOwner) {
-      setLiveMaxPain(null);
+    if (!isOwner) {
+      setSpxMaxPain(null);
       setMaxPainLoading(false);
       maxPainFetchKey.current = null;
       return;
@@ -406,7 +398,10 @@ export function useFuturesGammaPlaybook(
 
     (async () => {
       try {
-        const res = await fetch('/api/max-pain-current', {
+        const url = `/api/max-pain-current?date=${encodeURIComponent(
+          gex.selectedDate,
+        )}`;
+        const res = await fetch(url, {
           credentials: 'same-origin',
           signal: AbortSignal.any([
             controller.signal,
@@ -414,31 +409,23 @@ export function useFuturesGammaPlaybook(
           ]),
         });
         if (!res.ok) {
-          setLiveMaxPain(null);
+          setSpxMaxPain(null);
           return;
         }
         const data = (await res.json()) as { maxPain: number | null };
-        setLiveMaxPain(data.maxPain ?? null);
+        setSpxMaxPain(data.maxPain ?? null);
       } catch (err) {
         if (err instanceof DOMException && err.name === 'AbortError') return;
         // Max-pain is advisory — swallow to null, don't surface as a
         // top-level hook error.
-        setLiveMaxPain(null);
+        setSpxMaxPain(null);
       } finally {
         setMaxPainLoading(false);
       }
     })();
 
     return () => controller.abort();
-  }, [gex.isLive, gex.isScrubbed, gex.selectedDate, isOwner]);
-
-  // Scrub-mode max-pain: the data source we'd need (raw per-strike OI) is
-  // not exposed by `/api/gex-per-strike` today. `callGammaOi` / `putGammaOi`
-  // are gamma-weighted, not raw contract counts — feeding them to the
-  // max-pain sum would produce a meaningless number. So scrub mode resolves
-  // to `null` until a raw-OI column is added. See `src/utils/max-pain.ts`
-  // for the pure helper that will slot in here once the schema supports it.
-  const spxMaxPain = gex.isScrubbed ? null : liveMaxPain;
+  }, [gex.selectedDate, isOwner]);
 
   const { levels, derived } = useMemo(
     () =>

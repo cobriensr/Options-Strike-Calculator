@@ -30,6 +30,28 @@ export const spotGexHistoryQuerySchema = z.object({
 export type SpotGexHistoryQuery = z.infer<typeof spotGexHistoryQuerySchema>;
 
 // ============================================================
+// /api/max-pain-current
+// ============================================================
+
+/**
+ * Query params for GET /api/max-pain-current.
+ *
+ * `date` is optional — when omitted the endpoint resolves the live UW
+ * max-pain value for today ET. When present it must be a YYYY-MM-DD
+ * calendar date; if it equals today ET the handler falls through to the
+ * live path, and if it's a past date the handler computes max-pain from
+ * the `oi_per_strike` table rather than hitting UW.
+ */
+export const maxPainCurrentQuerySchema = z.object({
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+    .optional(),
+});
+
+export type MaxPainCurrentQuery = z.infer<typeof maxPainCurrentQuerySchema>;
+
+// ============================================================
 // /api/alerts-ack
 // ============================================================
 

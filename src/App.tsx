@@ -52,6 +52,7 @@ import { StatusBadge } from './components/ui';
 import { CollapseAllContext } from './components/collapse-context';
 import type { AmPm, Timezone } from './types';
 import type { CollapseSignal } from './components/collapse-context';
+import type { PlaybookBias } from './components/FuturesGammaPlaybook/types';
 import { useToast } from './hooks/useToast';
 import SectionNav from './components/SectionNav';
 import type { NavSection } from './components/SectionNav';
@@ -100,6 +101,9 @@ const GexTarget = lazy(() =>
 );
 const GexLandscape = lazy(() =>
   import('./components/GexLandscape').catch(handleStaleChunk),
+);
+const FuturesGammaPlaybook = lazy(() =>
+  import('./components/FuturesGammaPlaybook').catch(handleStaleChunk),
 );
 const BWBCalculator = lazy(() =>
   import('./components/BWBCalculator').catch(handleStaleChunk),
@@ -492,6 +496,8 @@ export default function StrikeCalculator() {
     null,
   );
   const [gexBiasContext, setGexBiasContext] = useState<string | null>(null);
+  const [playbookBiasContext, setPlaybookBiasContext] =
+    useState<PlaybookBias | null>(null);
   const handleAnalysisSaved = useCallback(() => {
     setHistoryRefreshKey((k) => k + 1);
     toast.show('Analysis saved', 'success');
@@ -641,6 +647,9 @@ export default function StrikeCalculator() {
     events: market.data.events?.events,
     chain: chainData.chain,
     gexLandscapeBias: gexBiasContext,
+    playbookBias: playbookBiasContext
+      ? JSON.stringify(playbookBiasContext)
+      : null,
   });
 
   return (
@@ -1117,6 +1126,23 @@ export default function StrikeCalculator() {
                       onScrubTo={gexStrike.scrubTo}
                       onScrubLive={gexStrike.scrubLive}
                       onBiasChange={setGexBiasContext}
+                    />
+                  </Suspense>
+                </ErrorBoundary>
+              </>
+            )}
+
+            {isOwner && (market.hasData || !!historySnapshot) && (
+              <>
+                <span
+                  id="sec-futures-gamma-playbook"
+                  className="block scroll-mt-28"
+                />
+                <ErrorBoundary label="Futures Gamma Playbook">
+                  <Suspense fallback={<SkeletonSection lines={6} tall />}>
+                    <FuturesGammaPlaybook
+                      marketOpen={market.data.quotes?.marketOpen ?? false}
+                      onBiasChange={setPlaybookBiasContext}
                     />
                   </Suspense>
                 </ErrorBoundary>

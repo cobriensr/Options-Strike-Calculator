@@ -21,6 +21,10 @@ vi.mock('../_lib/max-pain.js', () => ({
   fetchMaxPain: vi.fn(),
 }));
 
+vi.mock('../_lib/db.js', () => ({
+  getDb: vi.fn(),
+}));
+
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
     withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
@@ -39,6 +43,7 @@ const FROZEN_NOW = new Date('2026-04-20T15:30:00Z');
 import handler from '../max-pain-current.js';
 import { rejectIfNotOwner, checkBot } from '../_lib/api-helpers.js';
 import { fetchMaxPain } from '../_lib/max-pain.js';
+import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 
@@ -55,6 +60,7 @@ beforeEach(() => {
   vi.mocked(rejectIfNotOwner).mockReturnValue(false);
   vi.mocked(checkBot).mockResolvedValue({ isBot: false });
   vi.mocked(fetchMaxPain).mockReset();
+  vi.mocked(getDb).mockReset();
   vi.mocked(Sentry.captureException).mockClear();
   vi.mocked(logger.error).mockClear();
   vi.mocked(logger.warn).mockClear();
@@ -88,7 +94,21 @@ describe('GET /api/max-pain-current', () => {
     expect(fetchMaxPain).not.toHaveBeenCalled();
   });
 
-  it('returns maxPain for exact 0DTE match', async () => {
+  it('returns 400 for malformed date', async () => {
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { date: 'not-a-date' } }),
+      res,
+    );
+    expect(res._status).toBe(400);
+    const body = res._json as { error: string };
+    expect(body.error).toMatch(/YYYY-MM-DD/);
+    expect(fetchMaxPain).not.toHaveBeenCalled();
+  });
+
+  // ── LIVE PATH ────────────────────────────────────────────
+
+  it('returns maxPain for exact 0DTE match (no date param → live)', async () => {
     vi.mocked(fetchMaxPain).mockResolvedValueOnce({
       kind: 'ok',
       data: [
@@ -105,10 +125,32 @@ describe('GET /api/max-pain-current', () => {
       ticker: string;
       maxPain: number | null;
       asOf: string;
+      source: string;
     };
     expect(body.ticker).toBe('SPX');
     expect(body.maxPain).toBe(5800);
     expect(body.asOf).toBe(FROZEN_NOW.toISOString());
+    expect(body.source).toBe('live');
+  });
+
+  it('uses live path when date equals today ET', async () => {
+    vi.mocked(fetchMaxPain).mockResolvedValueOnce({
+      kind: 'ok',
+      data: [{ expiry: TODAY_ET, max_pain: '5800' }],
+    });
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { date: TODAY_ET } }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const body = res._json as { maxPain: number | null; source: string };
+    expect(body.source).toBe('live');
+    expect(body.maxPain).toBe(5800);
+    expect(fetchMaxPain).toHaveBeenCalled();
+    expect(getDb).not.toHaveBeenCalled();
   });
 
   it('falls back to nearest upcoming expiry when no 0DTE match', async () => {
@@ -133,8 +175,9 @@ describe('GET /api/max-pain-current', () => {
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(200);
-    const body = res._json as { maxPain: number | null };
+    const body = res._json as { maxPain: number | null; source: string };
     expect(body.maxPain).toBeNull();
+    expect(body.source).toBe('live');
   });
 
   it('returns maxPain null with 200 when UW fails (never throws)', async () => {
@@ -175,5 +218,80 @@ describe('GET /api/max-pain-current', () => {
     expect(res._status).toBe(200);
     const body = res._json as { maxPain: number | null };
     expect(body.maxPain).toBeNull();
+  });
+
+  // ── HISTORICAL PATH ──────────────────────────────────────
+
+  it('computes historical maxPain from oi_per_strike when date is past', async () => {
+    // The pure computeMaxPain picks the settlement that minimizes total
+    // intrinsic payout. With a heavy OI concentration at 5800 (calls +
+    // puts), the minimum lands there.
+    const sqlMock = vi.fn(async () => [
+      { strike: 5790, call_oi: 100, put_oi: 500 },
+      { strike: 5800, call_oi: 1000, put_oi: 1000 },
+      { strike: 5810, call_oi: 500, put_oi: 100 },
+    ]);
+    vi.mocked(getDb).mockReturnValue(
+      sqlMock as unknown as ReturnType<typeof getDb>,
+    );
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { date: '2026-04-17' } }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(fetchMaxPain).not.toHaveBeenCalled();
+    expect(sqlMock).toHaveBeenCalled();
+    const body = res._json as {
+      maxPain: number | null;
+      source: string;
+      ticker: string;
+    };
+    expect(body.ticker).toBe('SPX');
+    expect(body.maxPain).toBe(5800);
+    expect(body.source).toBe('historical');
+  });
+
+  it('returns maxPain null with source=historical-empty when oi_per_strike has no rows', async () => {
+    const sqlMock = vi.fn(async () => []);
+    vi.mocked(getDb).mockReturnValue(
+      sqlMock as unknown as ReturnType<typeof getDb>,
+    );
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { date: '2026-04-17' } }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const body = res._json as { maxPain: number | null; source: string };
+    expect(body.maxPain).toBeNull();
+    expect(body.source).toBe('historical-empty');
+    expect(fetchMaxPain).not.toHaveBeenCalled();
+  });
+
+  it('degrades to maxPain null on DB error and captures to Sentry (200)', async () => {
+    const sqlMock = vi.fn(async () => {
+      throw new Error('connection refused');
+    });
+    vi.mocked(getDb).mockReturnValue(
+      sqlMock as unknown as ReturnType<typeof getDb>,
+    );
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { date: '2026-04-17' } }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const body = res._json as { maxPain: number | null; source: string };
+    expect(body.maxPain).toBeNull();
+    expect(body.source).toBe('historical');
+    expect(Sentry.captureException).toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalled();
   });
 });

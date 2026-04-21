@@ -60,6 +60,8 @@ export interface AnalysisContext {
   targetDeltaStrikes?: TargetDeltaStrikes;
   /** Pre-formatted structural bias summary from GEX Landscape, passed as-is to analyze. */
   gexLandscapeBias?: string | null;
+  /** JSON-serialized `PlaybookBias` payload from the FuturesGammaPlaybook widget. */
+  playbookBias?: string | null;
 }
 
 /** One rung: a chain strike selected as the nearest match for a target |delta|. */

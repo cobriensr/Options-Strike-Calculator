@@ -75,6 +75,7 @@ function gexReturn(
     timestamp: string | null;
     isScrubbed: boolean;
     isLive: boolean;
+    selectedDate: string;
   }> = {},
 ) {
   return {
@@ -378,11 +379,16 @@ describe('useFuturesGammaPlaybook', () => {
     expect(useSpotGexHistory).toHaveBeenCalledWith('2026-04-20', true);
   });
 
-  it('fetches live max-pain from the endpoint when isLive and not scrubbed', async () => {
+  it('fetches max-pain from the endpoint for the selected date (live)', async () => {
     mockFetch.mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => ({ ticker: 'SPX', maxPain: 5800, asOf: '' }),
+      json: async () => ({
+        ticker: 'SPX',
+        maxPain: 5800,
+        asOf: '',
+        source: 'live',
+      }),
     });
     const strikes = [
       makeStrike(5790, -100, 5812),
@@ -401,7 +407,7 @@ describe('useFuturesGammaPlaybook', () => {
     rerender();
 
     expect(mockFetch).toHaveBeenCalledWith(
-      '/api/max-pain-current',
+      '/api/max-pain-current?date=2026-04-20',
       expect.objectContaining({ credentials: 'same-origin' }),
     );
     const maxPain = result.current.levels.find((l) => l.kind === 'MAX_PAIN');
@@ -409,10 +415,19 @@ describe('useFuturesGammaPlaybook', () => {
     expect(maxPain?.esPrice).toBeCloseTo(5812, 1);
   });
 
-  it('does not populate MAX_PAIN in scrub mode (raw OI unavailable)', async () => {
-    // Scrub mode should NOT call the live endpoint and should resolve to
-    // null because the gamma-weighted OI fields aren't valid max-pain
-    // inputs. Documented tradeoff.
+  it('fetches max-pain with the scrubbed date and populates MAX_PAIN', async () => {
+    // Phase 1D.4: scrub mode now routes through the same endpoint with the
+    // historical date — the server computes from oi_per_strike.
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ticker: 'SPX',
+        maxPain: 5795,
+        asOf: '',
+        source: 'historical',
+      }),
+    });
     const strikes = [
       makeStrike(5790, -100, 5812),
       makeStrike(5800, 200, 5812),
@@ -421,28 +436,38 @@ describe('useFuturesGammaPlaybook', () => {
     vi.mocked(useGexPerStrike).mockReturnValue(
       gexReturn({
         strikes,
+        selectedDate: '2026-04-17',
         isLive: false,
         isScrubbed: true,
-        timestamp: '2026-04-20T18:15:00Z',
+        timestamp: '2026-04-17T18:15:00Z',
       }),
     );
 
-    const { result } = renderHook(() => useFuturesGammaPlaybook(true));
+    const { result, rerender } = renderHook(() =>
+      useFuturesGammaPlaybook(true),
+    );
     await vi.runOnlyPendingTimersAsync();
+    rerender();
 
-    expect(mockFetch).not.toHaveBeenCalledWith(
-      '/api/max-pain-current',
-      expect.anything(),
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/max-pain-current?date=2026-04-17',
+      expect.objectContaining({ credentials: 'same-origin' }),
     );
     const maxPain = result.current.levels.find((l) => l.kind === 'MAX_PAIN');
-    expect(maxPain).toBeUndefined();
+    // Basis 12 → ES 5807 from SPX 5795
+    expect(maxPain?.esPrice).toBeCloseTo(5807, 1);
   });
 
   it('handles missing/null max-pain gracefully', async () => {
     mockFetch.mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => ({ ticker: 'SPX', maxPain: null, asOf: '' }),
+      json: async () => ({
+        ticker: 'SPX',
+        maxPain: null,
+        asOf: '',
+        source: 'historical-empty',
+      }),
     });
     const strikes = [makeStrike(5800, 200, 5812)];
     vi.mocked(useGexPerStrike).mockReturnValue(
