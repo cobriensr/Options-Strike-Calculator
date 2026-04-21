@@ -1,8 +1,9 @@
 /**
  * Pure-function tests for the named-setup trigger evaluator.
  *
- * Covers ACTIVE and IDLE branches for each of the five triggers plus a
- * couple of cross-cutting edge cases (missing levels, missing ES price).
+ * Covers ACTIVE / ARMED / DISTANT / BLOCKED branches for each of the five
+ * triggers plus cross-cutting edge cases (missing levels, missing ES
+ * price, TRANSITIONING regime, blocked-reason content).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -33,10 +34,17 @@ function makeLevel(
   };
 }
 
-function statusOf(states: TriggerState[], id: TriggerId): TriggerState['status'] {
+function rowOf(states: TriggerState[], id: TriggerId): TriggerState {
   const row = states.find((s) => s.id === id);
   if (!row) throw new Error(`Missing trigger ${id}`);
-  return row.status;
+  return row;
+}
+
+function statusOf(
+  states: TriggerState[],
+  id: TriggerId,
+): TriggerState['status'] {
+  return rowOf(states, id).status;
 }
 
 // Standard ES price for the test scenarios.
@@ -61,15 +69,15 @@ describe('evaluateTriggers', () => {
     ]);
   });
 
-  it('marks all triggers IDLE when levels are empty', () => {
+  it('all triggers BLOCKED when levels are empty — keyed level unknown', () => {
     const states = evaluateTriggers({
       regime: 'POSITIVE',
-      phase: 'MORNING',
+      phase: 'AFTERNOON',
       esPrice: ES_PRICE,
       levels: [],
     });
     for (const row of states) {
-      expect(row.status).toBe('IDLE');
+      expect(row.status).toBe('BLOCKED');
     }
   });
 
@@ -83,27 +91,54 @@ describe('evaluateTriggers', () => {
       esPrice: ES_PRICE,
       levels: [makeLevel('CALL_WALL', 5822, 2)],
     });
-    expect(statusOf(states, 'fade-call-wall')).toBe('ACTIVE');
+    const row = rowOf(states, 'fade-call-wall');
+    expect(row.status).toBe('ACTIVE');
+    expect(row.distanceEsPoints).toBe(2);
+    expect(row.blockedReason).toBeNull();
   });
 
-  it('fade-call-wall IDLE when regime is NEGATIVE even if within proximity', () => {
-    const states = evaluateTriggers({
-      regime: 'NEGATIVE',
-      phase: 'MORNING',
-      esPrice: ES_PRICE,
-      levels: [makeLevel('CALL_WALL', 5822, 2)],
-    });
-    expect(statusOf(states, 'fade-call-wall')).toBe('IDLE');
-  });
-
-  it('fade-call-wall IDLE when ES is outside 5 pts of call wall', () => {
+  it('fade-call-wall ARMED when ES is 5-15 pts away', () => {
     const states = evaluateTriggers({
       regime: 'POSITIVE',
       phase: 'MORNING',
       esPrice: ES_PRICE,
       levels: [makeLevel('CALL_WALL', 5830, 10)],
     });
-    expect(statusOf(states, 'fade-call-wall')).toBe('IDLE');
+    expect(statusOf(states, 'fade-call-wall')).toBe('ARMED');
+  });
+
+  it('fade-call-wall DISTANT when ES is > 15 pts away', () => {
+    const states = evaluateTriggers({
+      regime: 'POSITIVE',
+      phase: 'MORNING',
+      esPrice: ES_PRICE,
+      levels: [makeLevel('CALL_WALL', 5860, 40)],
+    });
+    expect(statusOf(states, 'fade-call-wall')).toBe('DISTANT');
+  });
+
+  it('fade-call-wall BLOCKED in NEGATIVE regime with correct reason', () => {
+    const states = evaluateTriggers({
+      regime: 'NEGATIVE',
+      phase: 'MORNING',
+      esPrice: ES_PRICE,
+      levels: [makeLevel('CALL_WALL', 5822, 2)],
+    });
+    const row = rowOf(states, 'fade-call-wall');
+    expect(row.status).toBe('BLOCKED');
+    expect(row.blockedReason).toBe('Needs +GEX regime.');
+  });
+
+  it('fade-call-wall BLOCKED with "Wall level unknown." when call wall missing', () => {
+    const states = evaluateTriggers({
+      regime: 'POSITIVE',
+      phase: 'MORNING',
+      esPrice: ES_PRICE,
+      levels: [],
+    });
+    const row = rowOf(states, 'fade-call-wall');
+    expect(row.status).toBe('BLOCKED');
+    expect(row.blockedReason).toBe('Wall level unknown.');
   });
 
   // ── lift-put-wall ──────────────────────────────────────────────────
@@ -118,53 +153,68 @@ describe('evaluateTriggers', () => {
     expect(statusOf(states, 'lift-put-wall')).toBe('ACTIVE');
   });
 
-  it('lift-put-wall IDLE when ES is outside 5 pts of put wall', () => {
+  it('lift-put-wall DISTANT when ES is outside 15 pts of put wall', () => {
     const states = evaluateTriggers({
       regime: 'POSITIVE',
       phase: 'MORNING',
       esPrice: ES_PRICE,
-      levels: [makeLevel('PUT_WALL', 5800, -20)],
+      levels: [makeLevel('PUT_WALL', 5790, -30)],
     });
-    expect(statusOf(states, 'lift-put-wall')).toBe('IDLE');
+    expect(statusOf(states, 'lift-put-wall')).toBe('DISTANT');
   });
 
   // ── break-call-wall ────────────────────────────────────────────────
 
   it('break-call-wall ACTIVE in NEGATIVE regime when ES has broken above call wall', () => {
-    // Distance is negative → price is above the level (i.e. broken above).
+    // ES=5820, wall=5818 → distance = -2 → ACTIVE.
     const states = evaluateTriggers({
       regime: 'NEGATIVE',
       phase: 'MORNING',
       esPrice: ES_PRICE,
       levels: [makeLevel('CALL_WALL', 5818, -2)],
     });
-    expect(statusOf(states, 'break-call-wall')).toBe('ACTIVE');
+    const row = rowOf(states, 'break-call-wall');
+    expect(row.status).toBe('ACTIVE');
+    expect(row.distanceEsPoints).toBe(-2);
   });
 
-  it('break-call-wall IDLE in POSITIVE regime even if price is above call wall', () => {
-    const states = evaluateTriggers({
-      regime: 'POSITIVE',
-      phase: 'MORNING',
-      esPrice: ES_PRICE,
-      levels: [makeLevel('CALL_WALL', 5818, -2)],
-    });
-    expect(statusOf(states, 'break-call-wall')).toBe('IDLE');
-  });
-
-  it('break-call-wall IDLE when ES is still below call wall', () => {
+  it('break-call-wall ARMED when ES is within 15 pts BELOW the wall', () => {
+    // ES=5820, wall=5830 → distance = 10 → ARMED (pre-trigger side).
     const states = evaluateTriggers({
       regime: 'NEGATIVE',
       phase: 'MORNING',
       esPrice: ES_PRICE,
       levels: [makeLevel('CALL_WALL', 5830, 10)],
     });
-    expect(statusOf(states, 'break-call-wall')).toBe('IDLE');
+    expect(statusOf(states, 'break-call-wall')).toBe('ARMED');
+  });
+
+  it('break-call-wall DISTANT when ES is far below the wall', () => {
+    const states = evaluateTriggers({
+      regime: 'NEGATIVE',
+      phase: 'MORNING',
+      esPrice: ES_PRICE,
+      levels: [makeLevel('CALL_WALL', 5900, 80)],
+    });
+    expect(statusOf(states, 'break-call-wall')).toBe('DISTANT');
+  });
+
+  it('break-call-wall BLOCKED in POSITIVE regime with correct reason', () => {
+    const states = evaluateTriggers({
+      regime: 'POSITIVE',
+      phase: 'MORNING',
+      esPrice: ES_PRICE,
+      levels: [makeLevel('CALL_WALL', 5818, -2)],
+    });
+    const row = rowOf(states, 'break-call-wall');
+    expect(row.status).toBe('BLOCKED');
+    expect(row.blockedReason).toBe('Needs −GEX regime.');
   });
 
   // ── break-put-wall ─────────────────────────────────────────────────
 
   it('break-put-wall ACTIVE in NEGATIVE regime when ES has broken below put wall', () => {
-    // Distance is positive → level is above price (price broke below level).
+    // Distance > 0 ⇒ level is above price ⇒ price broke BELOW the level.
     const states = evaluateTriggers({
       regime: 'NEGATIVE',
       phase: 'MORNING',
@@ -174,14 +224,15 @@ describe('evaluateTriggers', () => {
     expect(statusOf(states, 'break-put-wall')).toBe('ACTIVE');
   });
 
-  it('break-put-wall IDLE when ES is still above put wall and distance is negative', () => {
+  it('break-put-wall ARMED when ES is within 15 pts above put wall', () => {
+    // ES=5820, wall=5810 → distance -10 → ARMED.
     const states = evaluateTriggers({
       regime: 'NEGATIVE',
       phase: 'MORNING',
       esPrice: ES_PRICE,
       levels: [makeLevel('PUT_WALL', 5810, -10)],
     });
-    expect(statusOf(states, 'break-put-wall')).toBe('IDLE');
+    expect(statusOf(states, 'break-put-wall')).toBe('ARMED');
   });
 
   // ── charm-drift ────────────────────────────────────────────────────
@@ -206,29 +257,33 @@ describe('evaluateTriggers', () => {
     expect(statusOf(states, 'charm-drift')).toBe('ACTIVE');
   });
 
-  it('charm-drift IDLE during MORNING even with max-pain known', () => {
+  it('charm-drift BLOCKED during MORNING with reason', () => {
     const states = evaluateTriggers({
       regime: 'POSITIVE',
       phase: 'MORNING',
       esPrice: ES_PRICE,
       levels: [makeLevel('MAX_PAIN', 5815, -5)],
     });
-    expect(statusOf(states, 'charm-drift')).toBe('IDLE');
+    const row = rowOf(states, 'charm-drift');
+    expect(row.status).toBe('BLOCKED');
+    expect(row.blockedReason).toBe(
+      'Needs +GEX in afternoon/power with max-pain.',
+    );
   });
 
-  it('charm-drift IDLE when max-pain is missing', () => {
+  it('charm-drift BLOCKED when max-pain is missing', () => {
     const states = evaluateTriggers({
       regime: 'POSITIVE',
       phase: 'AFTERNOON',
       esPrice: ES_PRICE,
       levels: [],
     });
-    expect(statusOf(states, 'charm-drift')).toBe('IDLE');
+    expect(statusOf(states, 'charm-drift')).toBe('BLOCKED');
   });
 
   // ── Cross-cutting ──────────────────────────────────────────────────
 
-  it('proximity-based triggers are IDLE when esPrice is null', () => {
+  it('proximity-based triggers fall back to DISTANT when esPrice is null', () => {
     const states = evaluateTriggers({
       regime: 'POSITIVE',
       phase: 'MORNING',
@@ -238,11 +293,11 @@ describe('evaluateTriggers', () => {
         makeLevel('PUT_WALL', 5817, -3),
       ],
     });
-    expect(statusOf(states, 'fade-call-wall')).toBe('IDLE');
-    expect(statusOf(states, 'lift-put-wall')).toBe('IDLE');
+    expect(statusOf(states, 'fade-call-wall')).toBe('DISTANT');
+    expect(statusOf(states, 'lift-put-wall')).toBe('DISTANT');
   });
 
-  it('TRANSITIONING regime never activates any trigger', () => {
+  it('TRANSITIONING regime blocks every trigger with a reason', () => {
     const states = evaluateTriggers({
       regime: 'TRANSITIONING' as GexRegime,
       phase: 'AFTERNOON' as SessionPhase,
@@ -254,7 +309,8 @@ describe('evaluateTriggers', () => {
       ],
     });
     for (const row of states) {
-      expect(row.status).toBe('IDLE');
+      expect(row.status).toBe('BLOCKED');
+      expect(row.blockedReason).not.toBeNull();
     }
   });
 
@@ -273,5 +329,20 @@ describe('evaluateTriggers', () => {
     expect(byId.get('fade-call-wall')?.levelEsPrice).toBe(5822);
     expect(byId.get('lift-put-wall')?.levelEsPrice).toBe(5817);
     expect(byId.get('charm-drift')?.levelEsPrice).toBe(5815);
+  });
+
+  it('distance is null on BLOCKED rows', () => {
+    const states = evaluateTriggers({
+      regime: 'NEGATIVE',
+      phase: 'MORNING',
+      esPrice: ES_PRICE,
+      levels: [
+        makeLevel('CALL_WALL', 5822, 2),
+        makeLevel('PUT_WALL', 5817, -3),
+      ],
+    });
+    // fade-call-wall and lift-put-wall are BLOCKED (wrong regime).
+    expect(rowOf(states, 'fade-call-wall').distanceEsPoints).toBeNull();
+    expect(rowOf(states, 'lift-put-wall').distanceEsPoints).toBeNull();
   });
 });

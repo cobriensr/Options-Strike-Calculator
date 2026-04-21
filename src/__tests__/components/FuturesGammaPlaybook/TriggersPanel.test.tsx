@@ -2,10 +2,11 @@
  * TriggersPanel tests — presentation only.
  *
  * Classification logic is covered in `triggers.test.ts`; these tests
- * assert the panel renders the correct rows, status badges, condition
- * copy, and level prices given a deterministic input set. The panel's
- * own render calls `evaluateTriggers` internally, so the tests feed
- * inputs that produce known outputs rather than mocking the evaluator.
+ * assert the panel renders the correct rows, status badges, distance
+ * column, level prices, and BLOCKED affordances (strike-through +
+ * reason tooltip) given a deterministic input set. The panel's own
+ * render calls `evaluateTriggers` internally, so the tests feed inputs
+ * that produce known outputs rather than mocking the evaluator.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -38,9 +39,7 @@ describe('TriggersPanel', () => {
       />,
     );
     expect(screen.getByText(/Triggers unavailable/i)).toBeInTheDocument();
-    expect(
-      screen.getByText(/Awaiting ES levels/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Awaiting ES levels/i)).toBeInTheDocument();
   });
 
   it('renders all five trigger rows by name', () => {
@@ -63,7 +62,7 @@ describe('TriggersPanel', () => {
     expect(screen.getByText('Charm drift to pin')).toBeInTheDocument();
   });
 
-  it('shows ACTIVE badge for an active trigger and IDLE for a dormant one', () => {
+  it('shows ACTIVE badge for an active trigger and BLOCKED for wrong-regime triggers', () => {
     render(
       <TriggersPanel
         regime="POSITIVE"
@@ -72,29 +71,61 @@ describe('TriggersPanel', () => {
         levels={[makeLevel('CALL_WALL', 5822, 2)]}
       />,
     );
-    // fade-call-wall is ACTIVE; the other four triggers are IDLE (their
-    // required levels are missing or regime doesn't match).
+    // fade-call-wall is ACTIVE; the other four triggers are BLOCKED:
+    // - lift-put-wall: wall missing
+    // - break-call-wall: regime POSITIVE (needs NEGATIVE)
+    // - break-put-wall: regime POSITIVE + wall missing
+    // - charm-drift: phase MORNING (needs AFTERNOON/POWER)
     const activeBadges = screen.getAllByLabelText('Status ACTIVE');
     expect(activeBadges).toHaveLength(1);
-    const idleBadges = screen.getAllByLabelText('Status IDLE');
-    expect(idleBadges).toHaveLength(4);
+    const blockedBadges = screen.getAllByLabelText('Status BLOCKED');
+    expect(blockedBadges).toHaveLength(4);
   });
 
-  it('renders plain-English condition copy on each row', () => {
+  it('renders signed distance on fireable rows', () => {
     render(
       <TriggersPanel
         regime="POSITIVE"
-        phase="AFTERNOON"
+        phase="MORNING"
         esPrice={5820}
-        levels={[makeLevel('MAX_PAIN', 5815, -5)]}
+        levels={[
+          makeLevel('CALL_WALL', 5830, 10), // ARMED, distance +10
+        ]}
       />,
     );
-    expect(
-      screen.getByText(/Positive-gamma regime and ES within 5 pts of the call wall/i),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(/max-pain known — pin drift/i),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText('Distance +10 pts')).toBeInTheDocument();
+  });
+
+  it('renders em-dash for BLOCKED rows in the distance column', () => {
+    render(
+      <TriggersPanel
+        regime="NEGATIVE" // fade and lift become BLOCKED
+        phase="MORNING"
+        esPrice={5820}
+        levels={[makeLevel('CALL_WALL', 5822, 2)]}
+      />,
+    );
+    // At least the four BLOCKED rows show "Distance unavailable" aria.
+    const unavailable = screen.getAllByLabelText('Distance unavailable');
+    expect(unavailable.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('floats the single actionable row to the top when all others are BLOCKED', () => {
+    // Only fade-call-wall is actionable (regime +GEX, wall known).
+    // Others are BLOCKED (missing walls / wrong regime / wrong phase).
+    render(
+      <TriggersPanel
+        regime="POSITIVE"
+        phase="MORNING"
+        esPrice={5820}
+        levels={[makeLevel('CALL_WALL', 5822, 2)]}
+      />,
+    );
+    const setupCells = screen.getAllByText(
+      /Fade call wall|Lift put wall|Break call wall|Break put wall|Charm drift to pin/,
+    );
+    // Hoisted fade should be first.
+    expect(setupCells[0]?.textContent).toBe('Fade call wall');
   });
 
   it('renders the keyed level price when present', () => {
@@ -112,25 +143,6 @@ describe('TriggersPanel', () => {
     // Call-wall rows (fade-call-wall + break-call-wall) share an aria-label.
     const callWallPrices = screen.getAllByLabelText('Call wall at 5822.25');
     expect(callWallPrices).toHaveLength(2);
-    expect(
-      screen.getByLabelText('Max pain at 5815.50'),
-    ).toBeInTheDocument();
-  });
-
-  it('shows an em-dash for trigger rows whose keyed level is missing', () => {
-    // Only put wall supplied — the three call-wall + max-pain dependent
-    // rows should render with a "—" in the level column.
-    render(
-      <TriggersPanel
-        regime="POSITIVE"
-        phase="MORNING"
-        esPrice={5820}
-        levels={[makeLevel('PUT_WALL', 5817, -3)]}
-      />,
-    );
-    // Three trigger rows lack their keyed level (fade-call, break-call,
-    // charm-drift). Each renders a "—" in the level column.
-    const emDashes = screen.getAllByText('—');
-    expect(emDashes.length).toBeGreaterThanOrEqual(3);
+    expect(screen.getByLabelText('Max pain at 5815.50')).toBeInTheDocument();
   });
 });

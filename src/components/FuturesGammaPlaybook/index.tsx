@@ -23,6 +23,7 @@ import { SectionBox } from '../ui';
 import { ScrubControls } from '../ScrubControls';
 import { useFuturesGammaPlaybook } from '../../hooks/useFuturesGammaPlaybook';
 import { RegimeHeader } from './RegimeHeader';
+import { ActionDirective } from './ActionDirective';
 import { PlaybookPanel } from './PlaybookPanel';
 import { EsLevelsPanel } from './EsLevelsPanel';
 import { RegimeTimeline } from './RegimeTimeline';
@@ -182,6 +183,13 @@ function FuturesGammaPlaybook({
     >
       {/* Panel 1: Regime header (full width) */}
       <RegimeHeader playbook={playbook} />
+
+      {/* Action directive — "what do I do right now?" banner. */}
+      <ActionDirective
+        verdict={verdict}
+        rules={rules}
+        esPrice={playbook.esPrice}
+      />
 
       {/* Panel 2: Playbook rules cheat sheet (full width) */}
       <PlaybookPanel

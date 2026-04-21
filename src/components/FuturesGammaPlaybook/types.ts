@@ -14,6 +14,19 @@ export type SessionPhase =
   | 'CLOSE'
   | 'POST_CLOSE';
 
+/**
+ * Per-rule execution status derived from the current ES price vs. entry.
+ *
+ * - ACTIVE     — |distance| ≤ RULE_ACTIVE_BAND_ES (5 pts). Enter now.
+ * - ARMED      — RULE_ACTIVE_BAND_ES < |distance| ≤ RULE_ARMED_BAND_ES (15 pts).
+ * - DISTANT    — |distance| > RULE_ARMED_BAND_ES or price is null.
+ * - INVALIDATED — fade/lift rule where price already overshot the entry
+ *   on the wrong side (e.g. SHORT fade but price is > wall + 5 pts). The
+ *   structural thesis has failed; do not take the trade. Not emitted for
+ *   EITHER-direction rules — those fall back to DISTANT instead.
+ */
+export type RuleStatus = 'ACTIVE' | 'ARMED' | 'DISTANT' | 'INVALIDATED';
+
 export interface PlaybookRule {
   id: string;
   condition: string;
@@ -22,6 +35,14 @@ export interface PlaybookRule {
   targetEs: number | null;
   stopEs: number | null;
   sizingNote: string;
+  /**
+   * Signed ES points the current price must MOVE to reach `entryEs`.
+   * - For LONG rules: positive when price must rally up to the entry.
+   * - For SHORT rules: negative when price must fall down to the entry.
+   * `null` when `esPrice` is unknown or `entryEs` is null.
+   */
+  distanceEsPoints: number | null;
+  status: RuleStatus;
 }
 
 export interface EsLevel {

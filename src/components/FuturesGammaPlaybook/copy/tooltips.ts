@@ -79,6 +79,12 @@ export const TOOLTIP = {
   } satisfies Record<TriggerId, string>,
   triggerStatus: {
     ACTIVE: 'Conditions are firing right now — setup is live.',
+    ARMED:
+      'Preconditions met and price is within 15 pts of the trigger. Close enough to pay attention.',
+    DISTANT:
+      'Preconditions met but price is > 15 pts from the trigger. Level is known but nothing to do right now.',
+    BLOCKED:
+      'A hard precondition fails (wrong regime, wrong phase, or the keyed level is unknown). The reason is shown in the row.',
     IDLE: 'Conditions are not met — setup is dormant.',
     RECENTLY_FIRED:
       'Setup fired within the last few minutes. Watch for follow-through.',

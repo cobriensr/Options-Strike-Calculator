@@ -1,8 +1,9 @@
 /**
  * PlaybookPanel — regime-reactive rules cheat sheet.
  *
- * Renders the rules produced by `rulesForRegime` as a compact table: direction
- * badge | condition text | entry ES | target ES | stop ES | sizing note.
+ * Renders the rules produced by `rulesForRegime` as a compact table:
+ * direction badge | condition text | entry | target | stop | distance |
+ * status | sizing note.
  *
  * When the rule list is empty — either because the regime is STAND_ASIDE or
  * the session is outside RTH — the panel shows a single neutral "stand aside"
@@ -13,7 +14,12 @@
  */
 
 import { memo } from 'react';
-import type { PlaybookRule, RegimeVerdict, SessionPhase } from './types';
+import type {
+  PlaybookRule,
+  RegimeVerdict,
+  RuleStatus,
+  SessionPhase,
+} from './types';
 import { Tooltip } from '../ui/Tooltip';
 import { TOOLTIP } from './copy/tooltips';
 
@@ -51,10 +57,56 @@ const DIRECTION_META: Record<
   },
 };
 
+const STATUS_META: Record<
+  RuleStatus,
+  { label: string; className: string; title: string }
+> = {
+  ACTIVE: {
+    label: 'ACTIVE',
+    className: 'bg-sky-500/20 text-sky-300',
+    title: 'Price is within proximity of the entry — act now.',
+  },
+  ARMED: {
+    label: 'ARMED',
+    className: 'bg-amber-500/20 text-amber-300',
+    title: 'Price is within 15 pts of the entry — prepare.',
+  },
+  DISTANT: {
+    label: 'DISTANT',
+    className: 'bg-white/5 text-muted',
+    title: 'Price is > 15 pts from the entry — wait.',
+  },
+  INVALIDATED: {
+    label: 'INVALIDATED',
+    className: 'bg-red-500/20 text-red-300',
+    title:
+      'Price has overshot the entry on the wrong side — do not take the trade.',
+  },
+};
+
 // ── Helpers ───────────────────────────────────────────────────────────
 
 function fmtEs(value: number | null): string {
   return value === null ? '—' : value.toFixed(2);
+}
+
+function fmtSignedPts(distance: number | null): string {
+  if (distance === null) return '—';
+  const rounded = Math.round(distance);
+  if (rounded === 0) return '0 pts';
+  const sign = rounded > 0 ? '+' : '';
+  return `${sign}${rounded} pts`;
+}
+
+/**
+ * Distance color-code: positive distance (price must rally to entry) →
+ * green, negative distance (price must fall) → red. Muted when null.
+ */
+function distanceClass(distance: number | null): string {
+  if (distance === null) return 'text-muted';
+  if (distance > 0) return 'text-emerald-400';
+  if (distance < 0) return 'text-red-400';
+  return '';
 }
 
 function standAsideReason(
@@ -75,6 +127,9 @@ function standAsideReason(
 }
 
 // ── Component ─────────────────────────────────────────────────────────
+
+const GRID_COLS =
+  'grid-cols-[68px_1fr_72px_72px_72px_80px_96px_1fr]';
 
 export const PlaybookPanel = memo(function PlaybookPanel({
   rules,
@@ -111,7 +166,7 @@ export const PlaybookPanel = memo(function PlaybookPanel({
     >
       {/* Header row */}
       <div
-        className="border-edge grid grid-cols-[68px_1fr_80px_80px_80px_1fr] items-center gap-2 border-b px-3 py-1.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
+        className={`border-edge grid ${GRID_COLS} items-center gap-2 border-b px-3 py-1.5 font-mono text-[9px] font-semibold tracking-wider uppercase`}
         style={{ color: 'var(--color-tertiary)' }}
       >
         <span>Direction</span>
@@ -127,6 +182,8 @@ export const PlaybookPanel = memo(function PlaybookPanel({
         <Tooltip content={TOOLTIP.playbookColumn.stop} side="bottom">
           <span className="w-full cursor-help text-right">Stop</span>
         </Tooltip>
+        <span className="text-right">Distance</span>
+        <span>Status</span>
         <Tooltip content={TOOLTIP.playbookColumn.sizing} side="bottom">
           <span className="cursor-help">Sizing</span>
         </Tooltip>
@@ -136,10 +193,11 @@ export const PlaybookPanel = memo(function PlaybookPanel({
       <ul className="divide-edge divide-y">
         {rules.map((rule) => {
           const dm = DIRECTION_META[rule.direction];
+          const sm = STATUS_META[rule.status];
           return (
             <li
               key={rule.id}
-              className="grid grid-cols-[68px_1fr_80px_80px_80px_1fr] items-center gap-2 px-3 py-2 text-[11px]"
+              className={`grid ${GRID_COLS} items-center gap-2 px-3 py-2 text-[11px]`}
             >
               <Tooltip content={TOOLTIP.direction[rule.direction]} side="top">
                 <span
@@ -173,6 +231,26 @@ export const PlaybookPanel = memo(function PlaybookPanel({
               >
                 {fmtEs(rule.stopEs)}
               </span>
+              <span
+                className={`text-right font-mono text-[10px] tabular-nums ${distanceClass(
+                  rule.distanceEsPoints,
+                )}`}
+                aria-label={
+                  rule.distanceEsPoints === null
+                    ? 'Distance unavailable'
+                    : `Distance ${fmtSignedPts(rule.distanceEsPoints)}`
+                }
+              >
+                {fmtSignedPts(rule.distanceEsPoints)}
+              </span>
+              <Tooltip content={sm.title} side="top">
+                <span
+                  className={`inline-flex cursor-help items-center justify-center rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${sm.className}`}
+                  aria-label={`Rule status ${sm.label}`}
+                >
+                  {sm.label}
+                </span>
+              </Tooltip>
               <span
                 className="font-mono text-[10px]"
                 style={{ color: 'var(--color-secondary)' }}

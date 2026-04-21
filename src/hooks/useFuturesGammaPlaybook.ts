@@ -479,8 +479,8 @@ export function useFuturesGammaPlaybook(
   }, [scrubKey]);
 
   const rules: PlaybookRule[] = useMemo(
-    () => rulesForRegime(regime, phase, derived),
-    [regime, phase, derived],
+    () => rulesForRegime(regime, phase, derived, esPrice),
+    [regime, phase, derived, esPrice],
   );
 
   // Named-setup trigger evaluation. Phase 1D.3 uses the same pure

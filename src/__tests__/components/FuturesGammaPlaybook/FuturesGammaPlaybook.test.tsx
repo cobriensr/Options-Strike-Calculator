@@ -72,9 +72,11 @@ function makeRule(overrides: Partial<PlaybookRule> = {}): PlaybookRule {
     direction: 'SHORT',
     entryEs: 5820,
     targetEs: 5805,
-    stopEs: 5805,
+    stopEs: 5820.25,
     sizingNote:
       'Tight stops — one ES tick above the wall invalidates the fade.',
+    distanceEsPoints: 8,
+    status: 'ARMED',
     ...overrides,
   };
 }

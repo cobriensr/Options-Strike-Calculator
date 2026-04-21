@@ -20,11 +20,13 @@
  */
 
 import { getCTTime } from '../../utils/timezone';
+import { esTickRound } from './basis';
 import type {
   GexRegime,
   PlaybookRule,
   RegimeVerdict,
   RuleLevels,
+  RuleStatus,
   SessionPhase,
 } from './types';
 
@@ -47,6 +49,19 @@ export const LEVEL_BREACH_CONFIRM_SECONDS = 60;
 
 /** ES futures minimum tick size (0.25 index points = $12.50/contract). */
 export const ES_TICK_SIZE = 0.25;
+
+/**
+ * Band (ES points) within which a rule is "ACTIVE" — enter now. Matches the
+ * existing `LEVEL_PROXIMITY_ES_POINTS` (5 pts) but named separately so the
+ * two can drift independently if we tune rule bands later.
+ */
+export const RULE_ACTIVE_BAND_ES = 5;
+
+/**
+ * Band (ES points) within which a rule is "ARMED" — close enough that the
+ * trader should pay attention. Anything beyond this is DISTANT.
+ */
+export const RULE_ARMED_BAND_ES = 15;
 
 /**
  * CT wall-clock phase windows. Values are [start, end) half-open ranges —
@@ -142,15 +157,97 @@ function fmt(level: number | null): string {
 }
 
 /**
+ * Rule archetype — shapes how INVALIDATED is detected.
+ *
+ * - `fade-lift` — mean-revert setups (+GEX fade-call / lift-put). Price
+ *   overshooting the wall by > ACTIVE band means the structural fade has
+ *   failed → INVALIDATED.
+ * - `breakout`  — trend-follow setups (−GEX break-call / break-put).
+ *   Price being on the "pre-trigger" side of the wall is not failure — it
+ *   is the normal waiting state. Classified as DISTANT / ARMED / ACTIVE.
+ *   These rules never emit INVALIDATED.
+ * - `either`    — direction-agnostic (charm-drift). Never INVALIDATED;
+ *   fall back to DISTANT by default.
+ */
+type RuleArchetype = 'fade-lift' | 'breakout' | 'either';
+
+/**
+ * Compute status + signed distance for a directional rule.
+ *
+ * Distance is signed so the UI can tell the trader which way the market
+ * must move: positive = price must rally up to entry, negative = price
+ * must fall to entry.
+ */
+function classifyRule(
+  direction: PlaybookRule['direction'],
+  entryEs: number | null,
+  esPrice: number | null,
+  archetype: RuleArchetype,
+): { distanceEsPoints: number | null; status: RuleStatus } {
+  if (esPrice === null || entryEs === null) {
+    return { distanceEsPoints: null, status: 'DISTANT' };
+  }
+  const distance = entryEs - esPrice;
+  const abs = Math.abs(distance);
+
+  // INVALIDATED detection: only fade/lift rules have a "wrong side" that
+  // kills the setup. Breakout rules and EITHER rules never invalidate.
+  if (archetype === 'fade-lift') {
+    if (direction === 'SHORT' && -distance > RULE_ACTIVE_BAND_ES) {
+      // SHORT fade — entry at call wall, price rallied through wall by
+      // more than ACTIVE band → structural fade failed.
+      return { distanceEsPoints: distance, status: 'INVALIDATED' };
+    }
+    if (direction === 'LONG' && distance > RULE_ACTIVE_BAND_ES) {
+      // LONG lift — entry at put wall, price broke below wall by more
+      // than ACTIVE band → structural lift failed.
+      return { distanceEsPoints: distance, status: 'INVALIDATED' };
+    }
+  }
+
+  if (abs <= RULE_ACTIVE_BAND_ES) {
+    return { distanceEsPoints: distance, status: 'ACTIVE' };
+  }
+  if (abs <= RULE_ARMED_BAND_ES) {
+    return { distanceEsPoints: distance, status: 'ARMED' };
+  }
+  return { distanceEsPoints: distance, status: 'DISTANT' };
+}
+
+/**
+ * Attach `distanceEsPoints` and `status` to a bare rule shape. Keeps
+ * `rulesForRegime` focused on rule ID / direction / entry / target / stop
+ * generation and delegates the price-vs-entry classification here.
+ */
+function finalize(
+  rule: Omit<PlaybookRule, 'distanceEsPoints' | 'status'>,
+  esPrice: number | null,
+  archetype: RuleArchetype,
+): PlaybookRule {
+  const { distanceEsPoints, status } = classifyRule(
+    rule.direction,
+    rule.entryEs,
+    esPrice,
+    archetype,
+  );
+  return { ...rule, distanceEsPoints, status };
+}
+
+/**
  * Generate 1-3 concrete rules for the current (regime, phase) pair.
  *
  * When no rules apply (STAND_ASIDE, outside RTH, or zero-gamma unknown)
  * returns an empty array — the panel shows a neutral "sit out" message.
+ *
+ * `esPrice` feeds the rule-level status classifier — pass null when the
+ * current futures price is unknown (pre-market, data gap) and every rule
+ * falls back to DISTANT / null distance.
  */
 export function rulesForRegime(
   regime: GexRegime,
   phase: SessionPhase,
   levels: RuleLevels,
+  esPrice: number | null,
 ): PlaybookRule[] {
   // TRANSITIONING → STAND_ASIDE verdict → no rules.
   if (verdictForRegime(regime) === 'STAND_ASIDE') return [];
@@ -163,31 +260,51 @@ export function rulesForRegime(
 
   if (regime === 'POSITIVE') {
     // Fade moves into the overhead wall; target a mean-revert pull-in.
+    //
+    // Stop = one ES tick ABOVE the wall (i.e. wall + ES_TICK_SIZE). The
+    // stop is the INVALIDATION price — beyond it the structural thesis
+    // has failed. Zero-gamma is the TARGET of the trade, not the stop.
     if (levels.esCallWall !== null) {
-      rules.push({
-        id: 'pos-fade-call-wall',
-        condition: `Fade rallies into call wall at ${fmt(levels.esCallWall)}`,
-        direction: 'SHORT',
-        entryEs: levels.esCallWall,
-        targetEs: levels.esZeroGamma,
-        stopEs: levels.esZeroGamma,
-        sizingNote:
-          'Tight stops — one ES tick above the wall invalidates the fade.',
-      });
+      const stop = esTickRound(levels.esCallWall + ES_TICK_SIZE);
+      rules.push(
+        finalize(
+          {
+            id: 'pos-fade-call-wall',
+            condition: `Fade rallies into call wall at ${fmt(levels.esCallWall)} · stop ${fmt(stop)} (one tick above the wall)`,
+            direction: 'SHORT',
+            entryEs: levels.esCallWall,
+            targetEs: levels.esZeroGamma,
+            stopEs: stop,
+            sizingNote:
+              'Tight stops — one ES tick above the wall invalidates the fade.',
+          },
+          esPrice,
+          'fade-lift',
+        ),
+      );
     }
 
     // Lift support at the put wall — mirror fade from below.
+    //
+    // Stop = one ES tick BELOW the wall (put wall − ES_TICK_SIZE).
     if (levels.esPutWall !== null) {
-      rules.push({
-        id: 'pos-lift-put-wall',
-        condition: `Buy dips into put wall at ${fmt(levels.esPutWall)}`,
-        direction: 'LONG',
-        entryEs: levels.esPutWall,
-        targetEs: levels.esZeroGamma,
-        stopEs: levels.esZeroGamma,
-        sizingNote:
-          'Tight stops — one ES tick below the wall invalidates the lift.',
-      });
+      const stop = esTickRound(levels.esPutWall - ES_TICK_SIZE);
+      rules.push(
+        finalize(
+          {
+            id: 'pos-lift-put-wall',
+            condition: `Buy dips into put wall at ${fmt(levels.esPutWall)} · stop ${fmt(stop)} (one tick below the wall)`,
+            direction: 'LONG',
+            entryEs: levels.esPutWall,
+            targetEs: levels.esZeroGamma,
+            stopEs: stop,
+            sizingNote:
+              'Tight stops — one ES tick below the wall invalidates the lift.',
+          },
+          esPrice,
+          'fade-lift',
+        ),
+      );
     }
 
     // Charm-drift window: price grinds toward the pin/max-pain strike.
@@ -195,39 +312,64 @@ export function rulesForRegime(
       (phase === 'AFTERNOON' || phase === 'POWER') &&
       levels.esMaxPain !== null
     ) {
-      rules.push({
-        id: 'pos-charm-drift',
-        condition: `Charm drift toward max-pain at ${fmt(levels.esMaxPain)}`,
-        direction: 'EITHER',
-        entryEs: null,
-        targetEs: levels.esMaxPain,
-        stopEs: null,
-        sizingNote: 'Enter between 13:30–14:30 CT; exit before 15:30 CT.',
-      });
+      rules.push(
+        finalize(
+          {
+            id: 'pos-charm-drift',
+            condition: `Charm drift toward max-pain at ${fmt(levels.esMaxPain)}`,
+            direction: 'EITHER',
+            entryEs: null,
+            targetEs: levels.esMaxPain,
+            stopEs: null,
+            sizingNote: 'Enter between 13:30–14:30 CT; exit before 15:30 CT.',
+          },
+          esPrice,
+          'either',
+        ),
+      );
     }
   } else if (regime === 'NEGATIVE') {
     // Breakouts of the walls in negative regimes — trade direction, not fades.
+    //
+    // Stop = one ES tick on the "inside" of the wall — if price pulls back
+    // through the wall the breakout has failed. LONG breakout stops BELOW
+    // the wall; SHORT breakdown stops ABOVE. Zero-gamma is NOT a valid
+    // stop: the same bug as the +GEX rules.
     if (levels.esCallWall !== null) {
-      rules.push({
-        id: 'neg-break-call-wall',
-        condition: `Trade breakouts above call wall at ${fmt(levels.esCallWall)}`,
-        direction: 'LONG',
-        entryEs: levels.esCallWall,
-        targetEs: null,
-        stopEs: levels.esZeroGamma,
-        sizingNote: 'Wider stops — negative gamma amplifies both directions.',
-      });
+      const stop = esTickRound(levels.esCallWall - ES_TICK_SIZE);
+      rules.push(
+        finalize(
+          {
+            id: 'neg-break-call-wall',
+            condition: `Trade breakouts above call wall at ${fmt(levels.esCallWall)} · stop ${fmt(stop)} (one tick below the wall)`,
+            direction: 'LONG',
+            entryEs: levels.esCallWall,
+            targetEs: null,
+            stopEs: stop,
+            sizingNote: 'Wider stops — negative gamma amplifies both directions.',
+          },
+          esPrice,
+          'breakout',
+        ),
+      );
     }
     if (levels.esPutWall !== null) {
-      rules.push({
-        id: 'neg-break-put-wall',
-        condition: `Trade breakdowns below put wall at ${fmt(levels.esPutWall)}`,
-        direction: 'SHORT',
-        entryEs: levels.esPutWall,
-        targetEs: null,
-        stopEs: levels.esZeroGamma,
-        sizingNote: 'Wider stops — negative gamma amplifies both directions.',
-      });
+      const stop = esTickRound(levels.esPutWall + ES_TICK_SIZE);
+      rules.push(
+        finalize(
+          {
+            id: 'neg-break-put-wall',
+            condition: `Trade breakdowns below put wall at ${fmt(levels.esPutWall)} · stop ${fmt(stop)} (one tick above the wall)`,
+            direction: 'SHORT',
+            entryEs: levels.esPutWall,
+            targetEs: null,
+            stopEs: stop,
+            sizingNote: 'Wider stops — negative gamma amplifies both directions.',
+          },
+          esPrice,
+          'breakout',
+        ),
+      );
     }
   }
 
