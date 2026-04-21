@@ -103,6 +103,27 @@ export const PushUnsubscribeBodySchema = z.object({
 export type PushUnsubscribeBody = z.infer<typeof PushUnsubscribeBodySchema>;
 
 // ============================================================
+// /api/push/recent-events
+// ============================================================
+
+/**
+ * Query params for GET /api/push/recent-events.
+ *
+ * `limit` is optional — when omitted the endpoint returns the last 20
+ * rows from `regime_events`. When present it must coerce to a positive
+ * integer 1..100 so the response never balloons past the budget. The
+ * raw value arrives as a string in `req.query`, so we coerce before
+ * validating.
+ */
+export const PushRecentEventsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+
+export type PushRecentEventsQuery = z.infer<
+  typeof PushRecentEventsQuerySchema
+>;
+
+// ============================================================
 // /api/positions (POST — thinkorswim CSV upload)
 // ============================================================
 

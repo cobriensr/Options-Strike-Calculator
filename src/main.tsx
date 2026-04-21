@@ -102,6 +102,7 @@ if (import.meta.env.PROD)
       { path: '/api/push/vapid-public-key', method: 'GET' },
       { path: '/api/push/subscribe', method: 'POST' },
       { path: '/api/push/unsubscribe', method: 'POST' },
+      { path: '/api/push/recent-events', method: 'GET' },
     ],
   });
 

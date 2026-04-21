@@ -23,6 +23,30 @@ vi.mock('../../../hooks/useFuturesGammaPlaybook', () => ({
   useFuturesGammaPlaybook: vi.fn(),
 }));
 
+// ServerEventsStrip + AlertConfigPanel pull in `usePushSubscription` and
+// `useRegimeEventsHistory`, which fire real `fetch` calls. Stub them
+// here so the container tests focus on layout rather than network.
+vi.mock('../../../hooks/usePushSubscription', () => ({
+  usePushSubscription: vi.fn(() => ({
+    permission: 'default',
+    isSubscribed: false,
+    isSubscribing: false,
+    error: null,
+    subscribe: vi.fn(),
+    unsubscribe: vi.fn(),
+    requestPermission: vi.fn(),
+  })),
+}));
+
+vi.mock('../../../hooks/useRegimeEventsHistory', () => ({
+  useRegimeEventsHistory: vi.fn(() => ({
+    events: [],
+    loading: false,
+    error: null,
+    refresh: vi.fn(),
+  })),
+}));
+
 import { useFuturesGammaPlaybook } from '../../../hooks/useFuturesGammaPlaybook';
 import FuturesGammaPlaybook from '../../../components/FuturesGammaPlaybook';
 

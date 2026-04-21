@@ -6,10 +6,39 @@
  * shape the panel emits on each control flip.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
+
+// Mock the push hook so we don't need to fake out serviceWorker + fetch
+// in every test — the push-section branches are driven by its return
+// value shape alone.
+vi.mock('../../../hooks/usePushSubscription', () => ({
+  usePushSubscription: vi.fn(),
+}));
+
 import { AlertConfigPanel } from '../../../components/FuturesGammaPlaybook/AlertConfig';
 import type { AlertConfig } from '../../../components/FuturesGammaPlaybook/useAlertDispatcher';
+import { usePushSubscription } from '../../../hooks/usePushSubscription';
+import type { UsePushSubscriptionReturn } from '../../../hooks/usePushSubscription';
+
+function makePush(
+  overrides: Partial<UsePushSubscriptionReturn> = {},
+): UsePushSubscriptionReturn {
+  return {
+    permission: 'default',
+    isSubscribed: false,
+    isSubscribing: false,
+    error: null,
+    subscribe: vi.fn(async () => undefined),
+    unsubscribe: vi.fn(async () => undefined),
+    requestPermission: vi.fn(async () => undefined),
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  vi.mocked(usePushSubscription).mockReturnValue(makePush());
+});
 
 function makeConfig(overrides: Partial<AlertConfig> = {}): AlertConfig {
   return {
@@ -209,5 +238,172 @@ describe('AlertConfigPanel', () => {
     expect(within(panel).getByText('Level breach')).toBeInTheDocument();
     expect(within(panel).getByText('Trigger fired')).toBeInTheDocument();
     expect(within(panel).getByText('Phase transition')).toBeInTheDocument();
+  });
+
+  // ── Push-subscription subsection ──────────────────────────────
+
+  describe('push subscription section', () => {
+    it('renders the subscribe button and "Not subscribed" when permission is default', () => {
+      vi.mocked(usePushSubscription).mockReturnValue(
+        makePush({ permission: 'default', isSubscribed: false }),
+      );
+      render(
+        <AlertConfigPanel
+          config={makeConfig()}
+          setConfig={vi.fn()}
+          permission="default"
+          requestPermission={vi.fn()}
+        />,
+      );
+      const pushGroup = screen.getByRole('group', {
+        name: /push notifications/i,
+      });
+      expect(within(pushGroup).getByText(/not subscribed/i)).toBeInTheDocument();
+      expect(
+        within(pushGroup).getByRole('button', { name: /subscribe this device/i }),
+      ).toBeInTheDocument();
+    });
+
+    it('clicking subscribe calls the hook', () => {
+      const subscribe = vi.fn(async () => undefined);
+      vi.mocked(usePushSubscription).mockReturnValue(
+        makePush({ permission: 'granted', subscribe }),
+      );
+      render(
+        <AlertConfigPanel
+          config={makeConfig()}
+          setConfig={vi.fn()}
+          permission="granted"
+          requestPermission={vi.fn()}
+        />,
+      );
+      fireEvent.click(
+        screen.getByRole('button', { name: /subscribe this device/i }),
+      );
+      expect(subscribe).toHaveBeenCalledTimes(1);
+    });
+
+    it('renders the unsubscribe button when already subscribed', () => {
+      const unsubscribe = vi.fn(async () => undefined);
+      vi.mocked(usePushSubscription).mockReturnValue(
+        makePush({
+          permission: 'granted',
+          isSubscribed: true,
+          unsubscribe,
+        }),
+      );
+      render(
+        <AlertConfigPanel
+          config={makeConfig()}
+          setConfig={vi.fn()}
+          permission="granted"
+          requestPermission={vi.fn()}
+        />,
+      );
+      const pushGroup = screen.getByRole('group', {
+        name: /push notifications/i,
+      });
+      expect(
+        within(pushGroup).getByText(/subscribed on this device/i),
+      ).toBeInTheDocument();
+      fireEvent.click(
+        within(pushGroup).getByRole('button', {
+          name: /unsubscribe this device/i,
+        }),
+      );
+      expect(unsubscribe).toHaveBeenCalledTimes(1);
+    });
+
+    it('hides subscribe when permission is denied and shows the state label', () => {
+      vi.mocked(usePushSubscription).mockReturnValue(
+        makePush({ permission: 'denied' }),
+      );
+      render(
+        <AlertConfigPanel
+          config={makeConfig()}
+          setConfig={vi.fn()}
+          permission="granted"
+          requestPermission={vi.fn()}
+        />,
+      );
+      const pushGroup = screen.getByRole('group', {
+        name: /push notifications/i,
+      });
+      expect(
+        within(pushGroup).getByText(/permission denied/i),
+      ).toBeInTheDocument();
+      expect(
+        within(pushGroup).queryByRole('button', {
+          name: /subscribe this device/i,
+        }),
+      ).not.toBeInTheDocument();
+    });
+
+    it('renders the unsupported state without action buttons', () => {
+      vi.mocked(usePushSubscription).mockReturnValue(
+        makePush({ permission: 'unsupported' }),
+      );
+      render(
+        <AlertConfigPanel
+          config={makeConfig()}
+          setConfig={vi.fn()}
+          permission="granted"
+          requestPermission={vi.fn()}
+        />,
+      );
+      const pushGroup = screen.getByRole('group', {
+        name: /push notifications/i,
+      });
+      expect(
+        within(pushGroup).getByText(/not supported on this browser/i),
+      ).toBeInTheDocument();
+      expect(
+        within(pushGroup).queryByRole('button', {
+          name: /subscribe this device/i,
+        }),
+      ).not.toBeInTheDocument();
+      expect(
+        within(pushGroup).queryByRole('button', {
+          name: /unsubscribe this device/i,
+        }),
+      ).not.toBeInTheDocument();
+    });
+
+    it('surfaces hook-level errors inside the push section', () => {
+      vi.mocked(usePushSubscription).mockReturnValue(
+        makePush({ error: 'Server refused subscription (500)' }),
+      );
+      render(
+        <AlertConfigPanel
+          config={makeConfig()}
+          setConfig={vi.fn()}
+          permission="granted"
+          requestPermission={vi.fn()}
+        />,
+      );
+      const pushGroup = screen.getByRole('group', {
+        name: /push notifications/i,
+      });
+      expect(within(pushGroup).getByRole('alert')).toHaveTextContent(
+        /server refused/i,
+      );
+    });
+
+    it('disables the subscribe button while subscribing', () => {
+      vi.mocked(usePushSubscription).mockReturnValue(
+        makePush({ permission: 'granted', isSubscribing: true }),
+      );
+      render(
+        <AlertConfigPanel
+          config={makeConfig()}
+          setConfig={vi.fn()}
+          permission="granted"
+          requestPermission={vi.fn()}
+        />,
+      );
+      expect(
+        screen.getByRole('button', { name: /subscribe this device/i }),
+      ).toBeDisabled();
+    });
   });
 });

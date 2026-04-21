@@ -28,6 +28,7 @@ import { EsLevelsPanel } from './EsLevelsPanel';
 import { RegimeTimeline } from './RegimeTimeline';
 import { TriggersPanel } from './TriggersPanel';
 import { AlertConfigPanel } from './AlertConfig';
+import { ServerEventsStrip } from './ServerEventsStrip';
 import { useAlertDispatcher } from './useAlertDispatcher';
 import type { AlertState } from './alerts';
 import type { PlaybookBias } from './types';
@@ -208,6 +209,9 @@ function FuturesGammaPlaybook({
         esPrice={playbook.esPrice}
         levels={playbook.levels}
       />
+
+      {/* Panel 6: Recent server-fired events (push delivery history) */}
+      <ServerEventsStrip marketOpen={marketOpen} />
     </SectionBox>
   );
 }
