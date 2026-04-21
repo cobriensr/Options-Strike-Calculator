@@ -74,6 +74,7 @@ function hookReturn(
       close: '2026-04-20T16:30:00-04:00',
     },
     loading: false,
+    maxPainLoading: false,
     error: null,
     timestamp: '2026-04-20T14:30:00Z',
     timestamps: [

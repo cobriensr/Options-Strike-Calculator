@@ -15,9 +15,17 @@ vi.mock('../../hooks/useGexPerStrike', () => ({
 vi.mock('../../hooks/useFuturesData', () => ({
   useFuturesData: vi.fn(),
 }));
+vi.mock('../../hooks/useSpotGexHistory', () => ({
+  useSpotGexHistory: vi.fn(),
+}));
+vi.mock('../../hooks/useIsOwner', () => ({
+  useIsOwner: vi.fn(() => true),
+}));
 
 import { useGexPerStrike } from '../../hooks/useGexPerStrike';
 import { useFuturesData } from '../../hooks/useFuturesData';
+import { useSpotGexHistory } from '../../hooks/useSpotGexHistory';
+import type { UseSpotGexHistoryReturn } from '../../hooks/useSpotGexHistory';
 import { useFuturesGammaPlaybook } from '../../hooks/useFuturesGammaPlaybook';
 
 // ── Fixtures ─────────────────────────────────────────────────
@@ -66,6 +74,7 @@ function gexReturn(
     error: string | null;
     timestamp: string | null;
     isScrubbed: boolean;
+    isLive: boolean;
   }> = {},
 ) {
   return {
@@ -85,6 +94,20 @@ function gexReturn(
     scrubNext: vi.fn(),
     scrubTo: vi.fn(),
     scrubLive: vi.fn(),
+    refresh: vi.fn(),
+    ...overrides,
+  };
+}
+
+function historyReturn(
+  overrides: Partial<UseSpotGexHistoryReturn> = {},
+): UseSpotGexHistoryReturn {
+  return {
+    series: [],
+    availableDates: [],
+    timestamp: null,
+    loading: false,
+    error: null,
     refresh: vi.fn(),
     ...overrides,
   };
@@ -120,15 +143,25 @@ const MORNING_UTC = new Date('2026-04-20T14:00:00Z');
 
 // ── Lifecycle ────────────────────────────────────────────────
 
+const mockFetch = vi.fn();
+
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(MORNING_UTC);
   vi.mocked(useGexPerStrike).mockReturnValue(gexReturn());
   vi.mocked(useFuturesData).mockReturnValue(futuresReturn());
+  vi.mocked(useSpotGexHistory).mockReturnValue(historyReturn());
+  mockFetch.mockReset().mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: async () => ({ ticker: 'SPX', maxPain: null, asOf: '' }),
+  });
+  vi.stubGlobal('fetch', mockFetch);
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 
@@ -302,9 +335,126 @@ describe('useFuturesGammaPlaybook', () => {
     expect(result.current.esSpxBasis).toBe(12);
   });
 
-  it('returns an empty regimeTimeline (Phase 1C fallback) until history lands', () => {
+  it('returns an empty regimeTimeline when history has no series', () => {
     const { result } = renderHook(() => useFuturesGammaPlaybook(true));
     expect(result.current.regimeTimeline).toEqual([]);
+  });
+
+  it('populates regimeTimeline from useSpotGexHistory', () => {
+    // Strike ladder so zero-gamma resolves above the spot used in the
+    // timeline points — the classifier needs a concrete zeroGamma to pick
+    // POSITIVE / NEGATIVE.
+    const strikes = [
+      makeStrike(5790, -100, 5812),
+      makeStrike(5800, 200, 5812),
+      makeStrike(5810, 300, 5812),
+    ];
+    vi.mocked(useGexPerStrike).mockReturnValue(gexReturn({ strikes }));
+    vi.mocked(useSpotGexHistory).mockReturnValue(
+      historyReturn({
+        series: [
+          {
+            ts: '2026-04-20T14:00:00Z',
+            netGex: 1_000_000,
+            spot: 5870,
+          },
+          {
+            ts: '2026-04-20T14:30:00Z',
+            netGex: -500_000,
+            spot: 5750,
+          },
+        ],
+      }),
+    );
+    const { result } = renderHook(() => useFuturesGammaPlaybook(true));
+    expect(result.current.regimeTimeline).toHaveLength(2);
+    expect(result.current.regimeTimeline[0]?.ts).toBe('2026-04-20T14:00:00Z');
+    // Each point carries the classified regime
+    expect(result.current.regimeTimeline[0]?.regime).toBeDefined();
+  });
+
+  it('calls useSpotGexHistory with the selected date', () => {
+    renderHook(() => useFuturesGammaPlaybook(true));
+    expect(useSpotGexHistory).toHaveBeenCalledWith('2026-04-20', true);
+  });
+
+  it('fetches live max-pain from the endpoint when isLive and not scrubbed', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ ticker: 'SPX', maxPain: 5800, asOf: '' }),
+    });
+    const strikes = [
+      makeStrike(5790, -100, 5812),
+      makeStrike(5800, 200, 5812),
+      makeStrike(5810, 300, 5812),
+    ];
+    vi.mocked(useGexPerStrike).mockReturnValue(
+      gexReturn({ strikes, isLive: true, isScrubbed: false }),
+    );
+
+    const { result, rerender } = renderHook(() =>
+      useFuturesGammaPlaybook(true),
+    );
+    // Let the async fetch settle.
+    await vi.runOnlyPendingTimersAsync();
+    rerender();
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/max-pain-current',
+      expect.objectContaining({ credentials: 'same-origin' }),
+    );
+    const maxPain = result.current.levels.find((l) => l.kind === 'MAX_PAIN');
+    // Basis 12 → ES 5812 from SPX 5800
+    expect(maxPain?.esPrice).toBeCloseTo(5812, 1);
+  });
+
+  it('does not populate MAX_PAIN in scrub mode (raw OI unavailable)', async () => {
+    // Scrub mode should NOT call the live endpoint and should resolve to
+    // null because the gamma-weighted OI fields aren't valid max-pain
+    // inputs. Documented tradeoff.
+    const strikes = [
+      makeStrike(5790, -100, 5812),
+      makeStrike(5800, 200, 5812),
+      makeStrike(5810, 300, 5812),
+    ];
+    vi.mocked(useGexPerStrike).mockReturnValue(
+      gexReturn({
+        strikes,
+        isLive: false,
+        isScrubbed: true,
+        timestamp: '2026-04-20T18:15:00Z',
+      }),
+    );
+
+    const { result } = renderHook(() => useFuturesGammaPlaybook(true));
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(mockFetch).not.toHaveBeenCalledWith(
+      '/api/max-pain-current',
+      expect.anything(),
+    );
+    const maxPain = result.current.levels.find((l) => l.kind === 'MAX_PAIN');
+    expect(maxPain).toBeUndefined();
+  });
+
+  it('handles missing/null max-pain gracefully', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ ticker: 'SPX', maxPain: null, asOf: '' }),
+    });
+    const strikes = [makeStrike(5800, 200, 5812)];
+    vi.mocked(useGexPerStrike).mockReturnValue(
+      gexReturn({ strikes, isLive: true, isScrubbed: false }),
+    );
+
+    const { result } = renderHook(() => useFuturesGammaPlaybook(true));
+    await vi.runOnlyPendingTimersAsync();
+
+    const maxPain = result.current.levels.find((l) => l.kind === 'MAX_PAIN');
+    expect(maxPain).toBeUndefined();
+    expect(result.current.bias.esCallWall).not.toBeNull();
   });
 
   it('exposes CT session phase boundaries derived from the active date', () => {

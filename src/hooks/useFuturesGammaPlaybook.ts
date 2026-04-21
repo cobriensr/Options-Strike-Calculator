@@ -20,11 +20,13 @@
  * sensible defaults are returned, nothing throws.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GexStrikeLevel, UseGexPerStrikeReturn } from './useGexPerStrike';
 import { useGexPerStrike } from './useGexPerStrike';
 import { useFuturesData } from './useFuturesData';
 import type { FuturesDataState } from './useFuturesData';
+import { useSpotGexHistory } from './useSpotGexHistory';
+import { useIsOwner } from './useIsOwner';
 import type {
   EsLevel,
   GexRegime,
@@ -72,10 +74,10 @@ export interface UseFuturesGammaPlaybookReturn {
   /** Live ES − SPX basis at the displayed instant. */
   esSpxBasis: number | null;
   /**
-   * Intraday regime timeseries for the active session. Phase 1C ships a
-   * current-state-only fallback (always `[]`) until a dedicated
-   * `/api/spot-gex-history` endpoint lands — the RegimeTimeline component
-   * renders an empty-state shell when this array is empty.
+   * Intraday regime timeseries for the active session, sourced from
+   * `/api/spot-gex-history`. Each point carries `ts`, `netGex`, `spot`,
+   * and the regime classified against the current zero-gamma estimate.
+   * Empty array while history is loading or the day has no snapshots yet.
    */
   regimeTimeline: RegimeTimelinePoint[];
   /**
@@ -85,6 +87,12 @@ export interface UseFuturesGammaPlaybookReturn {
    */
   sessionPhaseBoundaries: SessionPhaseBoundariesCt;
   loading: boolean;
+  /**
+   * True while the live-mode max-pain fetch is in flight. Scrub mode is
+   * synchronous (pure computation on the already-loaded strike data) so
+   * this flag never flips to `true` there.
+   */
+  maxPainLoading: boolean;
   error: Error | null;
 
   // ── Scrub pass-through (from the inner useGexPerStrike) ─────────────
@@ -189,14 +197,12 @@ function buildEsLevels(
   basis: number | null,
   esPrice: number | null,
   history: LevelHistoryBuffer,
+  spxMaxPain: number | null,
 ): { levels: EsLevel[]; derived: EsDerivedLevels } {
   const empty: EsDerivedLevels = {
     esCallWall: null,
     esPutWall: null,
     esZeroGamma: null,
-    // Max-pain is not currently available on the frontend; it is deferred
-    // until an SPX max-pain module/endpoint lands. Passing null keeps
-    // downstream code (rule text, bias payload) safely neutral.
     esMaxPain: null,
   };
 
@@ -208,7 +214,7 @@ function buildEsLevels(
     { kind: 'CALL_WALL', spxStrike: spx.callWall },
     { kind: 'PUT_WALL', spxStrike: spx.putWall },
     { kind: 'ZERO_GAMMA', spxStrike: spx.zeroGamma },
-    // Max-pain row is intentionally omitted until a data source is wired.
+    { kind: 'MAX_PAIN', spxStrike: spxMaxPain },
   ];
 
   const levels: EsLevel[] = [];
@@ -240,6 +246,7 @@ function buildEsLevels(
     if (kind === 'CALL_WALL') derived.esCallWall = esLevelPrice;
     else if (kind === 'PUT_WALL') derived.esPutWall = esLevelPrice;
     else if (kind === 'ZERO_GAMMA') derived.esZeroGamma = esLevelPrice;
+    else if (kind === 'MAX_PAIN') derived.esMaxPain = esLevelPrice;
   }
 
   return { levels, derived };
@@ -312,6 +319,10 @@ export function useFuturesGammaPlaybook(
   const futuresAt =
     gex.isScrubbed && gex.timestamp ? gex.timestamp : undefined;
   const futures: FuturesDataState = useFuturesData(futuresAt);
+  // Intraday SPX spot-GEX timeseries for the RegimeTimeline. Fetches the
+  // selected trading date so scrubbing backwards shows that day's series,
+  // not today's.
+  const history = useSpotGexHistory(gex.selectedDate, marketOpen);
 
   // Determine "now" for session-phase classification. When the user is
   // scrubbed we honor the pinned snapshot; otherwise live wall-clock.
@@ -354,9 +365,91 @@ export function useFuturesGammaPlaybook(
   // NEXT render has one more point of history.
   const [levelHistory, setLevelHistory] = useState<LevelHistoryBuffer>({});
 
+  // ── Max-pain (SPX) ─────────────────────────────────────────────────
+  //
+  // Two data sources depending on mode:
+  //   - Live  → /api/max-pain-current (UW-backed, single fetch per day).
+  //   - Scrub → client-side compute from `gex.strikes`. Historical max-pain
+  //             requires per-strike RAW call/put open interest. Our
+  //             `gex_strike_0dte` table only stores gamma-weighted OI
+  //             (call_gamma_oi / put_gamma_oi) — greek exposure, not raw
+  //             contract counts — so `computeMaxPain` can't be fed a real
+  //             max-pain input from the current schema. Until a raw-OI
+  //             column lands, scrub-mode max-pain is honestly unavailable
+  //             and we return null. The EsLevelsPanel already handles a
+  //             missing MAX_PAIN row via its `levels.find(...)` render path.
+  const [liveMaxPain, setLiveMaxPain] = useState<number | null>(null);
+  const [maxPainLoading, setMaxPainLoading] = useState(false);
+  const isOwner = useIsOwner();
+  // One fetch per (selectedDate, isLive) combination. The key guards the
+  // effect from infinite re-fetching when the setter below triggers a
+  // re-render but the identity of the fetch scope hasn't actually changed.
+  const maxPainFetchKey = useRef<string | null>(null);
+
+  useEffect(() => {
+    // Only fetch in live mode for today. Scrub mode uses the client compute
+    // below; past-date-but-live mode (isLive=false on a historical date)
+    // doesn't have a sensible live max-pain source either.
+    if (!gex.isLive || gex.isScrubbed || !isOwner) {
+      setLiveMaxPain(null);
+      setMaxPainLoading(false);
+      maxPainFetchKey.current = null;
+      return;
+    }
+
+    const key = gex.selectedDate;
+    if (maxPainFetchKey.current === key) return;
+    maxPainFetchKey.current = key;
+
+    const controller = new AbortController();
+    setMaxPainLoading(true);
+
+    (async () => {
+      try {
+        const res = await fetch('/api/max-pain-current', {
+          credentials: 'same-origin',
+          signal: AbortSignal.any([
+            controller.signal,
+            AbortSignal.timeout(5_000),
+          ]),
+        });
+        if (!res.ok) {
+          setLiveMaxPain(null);
+          return;
+        }
+        const data = (await res.json()) as { maxPain: number | null };
+        setLiveMaxPain(data.maxPain ?? null);
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        // Max-pain is advisory — swallow to null, don't surface as a
+        // top-level hook error.
+        setLiveMaxPain(null);
+      } finally {
+        setMaxPainLoading(false);
+      }
+    })();
+
+    return () => controller.abort();
+  }, [gex.isLive, gex.isScrubbed, gex.selectedDate, isOwner]);
+
+  // Scrub-mode max-pain: the data source we'd need (raw per-strike OI) is
+  // not exposed by `/api/gex-per-strike` today. `callGammaOi` / `putGammaOi`
+  // are gamma-weighted, not raw contract counts — feeding them to the
+  // max-pain sum would produce a meaningless number. So scrub mode resolves
+  // to `null` until a raw-OI column is added. See `src/utils/max-pain.ts`
+  // for the pure helper that will slot in here once the schema supports it.
+  const spxMaxPain = gex.isScrubbed ? null : liveMaxPain;
+
   const { levels, derived } = useMemo(
-    () => buildEsLevels(spx, futures.esSpxBasis, esPrice, levelHistory),
-    [spx, futures.esSpxBasis, esPrice, levelHistory],
+    () =>
+      buildEsLevels(
+        spx,
+        futures.esSpxBasis,
+        esPrice,
+        levelHistory,
+        spxMaxPain,
+      ),
+    [spx, futures.esSpxBasis, esPrice, levelHistory, spxMaxPain],
   );
 
   // Scrub identity key — when the user jumps to a different snapshot
@@ -426,14 +519,23 @@ export function useFuturesGammaPlaybook(
     [regime, verdict, derived, phase],
   );
 
-  // Phase 1C fallback: `/api/spot-gex-history` does not exist yet, so we
-  // ship the RegimeTimeline component with an empty timeseries. The panel
-  // renders a clear "waiting for session history" empty state in this
-  // branch, and the hook contract stays future-proof — when a dedicated
-  // endpoint or `useGexPerStrike` extension lands, only this derivation
-  // needs to change. Current-state-only intentionally yields `[]`, NOT a
-  // single point; a 1-point timeline would draw a degenerate bar.
-  const regimeTimeline: RegimeTimelinePoint[] = useMemo(() => [], []);
+  // Regime timeline — one point per spot_exposures snapshot. Each point is
+  // classified against the CURRENT session's zero-gamma estimate, not a
+  // per-point one. That's deliberate: zero-gamma is estimated from today's
+  // strike ladder; fabricating a historical estimate from only netGex+spot
+  // would be hand-wavy. The classifier handles null zero-gamma by returning
+  // TRANSITIONING, so the worst case is a timeline of TRANSITIONING bars
+  // when the strike ladder hasn't loaded yet.
+  const regimeTimeline: RegimeTimelinePoint[] = useMemo(
+    () =>
+      history.series.map((point) => ({
+        ts: point.ts,
+        netGex: point.netGex,
+        spot: point.spot,
+        regime: classifyRegime(point.netGex, spx.zeroGamma, point.spot),
+      })),
+    [history.series, spx.zeroGamma],
+  );
 
   const sessionPhaseBoundaries: SessionPhaseBoundariesCt = useMemo(
     () => computeSessionPhaseBoundaries(gex.selectedDate),
@@ -462,6 +564,7 @@ export function useFuturesGammaPlaybook(
     regimeTimeline,
     sessionPhaseBoundaries,
     loading,
+    maxPainLoading,
     error,
     // Scrub pass-through so the container component can render
     // `ScrubControls` without having to call `useGexPerStrike` a second time.
