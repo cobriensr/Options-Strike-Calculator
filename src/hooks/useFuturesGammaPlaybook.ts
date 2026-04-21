@@ -75,6 +75,15 @@ export interface UseFuturesGammaPlaybookReturn {
   /** Live ES − SPX basis at the displayed instant. */
   esSpxBasis: number | null;
   /**
+   * ES-translated zero-gamma / call wall / put wall. Forwarded off `derived`
+   * so panels don't need to `levels.find(...)` to read them. `bias` carries
+   * the same three values but is gated by a stable-serialization effect for
+   * analyze-context delivery — these fields are the ergonomic accessor.
+   */
+  esZeroGamma: number | null;
+  esCallWall: number | null;
+  esPutWall: number | null;
+  /**
    * ES price of the highest-|netGamma| strike. The charm-drift magnet.
    * Mirrors GexLandscape's "gravity" concept so the two components agree.
    * Not rendered as an EsLevel row — it's always either the call wall or
@@ -611,6 +620,9 @@ export function useFuturesGammaPlaybook(
     bias,
     esPrice,
     esSpxBasis: futures.esSpxBasis,
+    esZeroGamma: derived.esZeroGamma,
+    esCallWall: derived.esCallWall,
+    esPutWall: derived.esPutWall,
     esGammaPin: derived.esGammaPin,
     regimeTimeline,
     sessionPhaseBoundaries,

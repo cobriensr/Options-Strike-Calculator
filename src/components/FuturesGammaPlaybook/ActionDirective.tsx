@@ -7,10 +7,17 @@
  * how many ES points away it is.
  *
  * State computation (first match wins):
- *   1. STAND_ASIDE verdict       → red banner: "sit out, regime ambiguous"
- *   2. Any rule.status === ACTIVE → sky banner: "ENTER NOW {direction} ..."
- *   3. Any rule.status === ARMED  → amber banner: "ARMED: move X pts to ..."
- *   4. Otherwise pick the nearest non-INVALIDATED rule → muted "WAIT"
+ *   1. STAND_ASIDE  verdict === 'STAND_ASIDE' AND structural levels
+ *      (zero-gamma, call wall, put wall) are not all known → red "sit out:
+ *      no data" banner.
+ *   2. WATCHING     verdict === 'STAND_ASIDE' AND all three ES levels are
+ *      present → amber expectant banner that shows the wall prices, ES
+ *      distance to each, and the ES move required to commit out of the
+ *      transition band. Informational, NOT a trigger.
+ *   3. ACTIVE       any rule with status === ACTIVE → sky banner.
+ *   4. ARMED        any rule with status === ARMED → amber banner.
+ *   5. WAIT         otherwise → muted banner pointing at the nearest
+ *      non-INVALIDATED setup.
  *
  * Pure derivation — memoized so React only renders when inputs change.
  * Uses `role="status"` + `aria-live="polite"` so assistive tech announces
@@ -18,20 +25,33 @@
  */
 
 import { memo, useMemo } from 'react';
-import type { PlaybookRule, RegimeVerdict } from './types';
+import {
+  REGIME_TRANSITION_BAND_PCT,
+  RULE_ACTIVE_BAND_ES,
+} from './playbook.js';
+import type { PlaybookRule, RegimeVerdict } from './types.js';
 
 export interface ActionDirectiveProps {
   verdict: RegimeVerdict;
   rules: PlaybookRule[];
   esPrice: number | null;
+  /**
+   * ES-translated zero-gamma level. When all three level fields are
+   * non-null and the verdict is STAND_ASIDE, the banner switches from the
+   * red "sit out" copy into the amber WATCHING state.
+   */
+  esZeroGamma: number | null;
+  esCallWall: number | null;
+  esPutWall: number | null;
 }
 
 // ── Presentation metadata ────────────────────────────────────────────
 
-type DirectiveState = 'STAND_ASIDE' | 'ACTIVE' | 'ARMED' | 'WAIT';
+type DirectiveState = 'STAND_ASIDE' | 'WATCHING' | 'ACTIVE' | 'ARMED' | 'WAIT';
 
 const STATE_CLASS: Record<DirectiveState, string> = {
   STAND_ASIDE: 'bg-red-500/10 text-red-300 border-red-500/30',
+  WATCHING: 'bg-amber-500/10 text-amber-300 border-amber-500/30',
   ACTIVE: 'bg-sky-500/20 text-sky-300 border-sky-500/40',
   ARMED: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
   WAIT: 'bg-white/5 text-muted border-edge',
@@ -67,6 +87,16 @@ function fmtSignedPts(distance: number | null): string {
   if (rounded === 0) return '0 pts';
   const sign = rounded > 0 ? '+' : '';
   return `${sign}${rounded} pts`;
+}
+
+/**
+ * Format a level price as "{price} ({+/-N} pts)" showing the signed
+ * distance from the current ES price. Used by the WATCHING banner.
+ */
+function fmtLevelWithDist(level: number, esPrice: number): string {
+  const dist = Math.round(level - esPrice);
+  const sign = dist > 0 ? '+' : '';
+  return `${level.toFixed(2)} (${sign}${dist} pts)`;
 }
 
 /** Rule is INVALIDATED — do not recommend it as a nearest setup. */
@@ -110,12 +140,64 @@ interface Directive {
   text: string;
 }
 
+/**
+ * Build the WATCHING banner copy. Shows current ES, the two walls (with
+ * signed distance to each), and the transition band width — the amount of
+ * ES movement needed to commit to a regime. Direction-agnostic because
+ * whether "commit" means POSITIVE or NEGATIVE isn't known yet.
+ */
+function buildWatchingDirective(
+  esPrice: number,
+  esZeroGamma: number,
+  esCallWall: number,
+  esPutWall: number,
+): Directive {
+  // Transition-band half-width in ES points. Below `RULE_ACTIVE_BAND_ES`
+  // would imply an active setup is already close, so clamp to make sure
+  // the number always reads as "some meaningful committing move".
+  const bandHalfPts = Math.max(
+    1,
+    Math.round(esZeroGamma * REGIME_TRANSITION_BAND_PCT),
+  );
+  const bandPctDisplay = (REGIME_TRANSITION_BAND_PCT * 100).toFixed(1);
+
+  return {
+    state: 'WATCHING',
+    icon: '🔭',
+    text:
+      `WATCHING: ES ${esPrice.toFixed(2)} · ZG ${esZeroGamma.toFixed(2)} ` +
+      `(band ±${bandPctDisplay}% ≈ ${bandHalfPts} pts) · ` +
+      `Call wall ${fmtLevelWithDist(esCallWall, esPrice)} · ` +
+      `Put wall ${fmtLevelWithDist(esPutWall, esPrice)} · ` +
+      `Arm zone ±${RULE_ACTIVE_BAND_ES} pts from either wall.`,
+  };
+}
+
 function deriveDirective(
   verdict: RegimeVerdict,
   rules: PlaybookRule[],
   esPrice: number | null,
+  esZeroGamma: number | null,
+  esCallWall: number | null,
+  esPutWall: number | null,
 ): Directive {
   if (verdict === 'STAND_ASIDE') {
+    // Promote to WATCHING when we have enough context to show the trader
+    // where a setup would arm. Requires current ES too — without it the
+    // distance math is meaningless.
+    if (
+      esPrice !== null &&
+      esZeroGamma !== null &&
+      esCallWall !== null &&
+      esPutWall !== null
+    ) {
+      return buildWatchingDirective(
+        esPrice,
+        esZeroGamma,
+        esCallWall,
+        esPutWall,
+      );
+    }
     return {
       state: 'STAND_ASIDE',
       icon: '🛑',
@@ -179,10 +261,21 @@ export const ActionDirective = memo(function ActionDirective({
   verdict,
   rules,
   esPrice,
+  esZeroGamma,
+  esCallWall,
+  esPutWall,
 }: ActionDirectiveProps) {
   const directive = useMemo(
-    () => deriveDirective(verdict, rules, esPrice),
-    [verdict, rules, esPrice],
+    () =>
+      deriveDirective(
+        verdict,
+        rules,
+        esPrice,
+        esZeroGamma,
+        esCallWall,
+        esPutWall,
+      ),
+    [verdict, rules, esPrice, esZeroGamma, esCallWall, esPutWall],
   );
 
   return (

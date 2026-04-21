@@ -24,6 +24,7 @@ import { ScrubControls } from '../ScrubControls';
 import { useFuturesGammaPlaybook } from '../../hooks/useFuturesGammaPlaybook';
 import { RegimeHeader } from './RegimeHeader';
 import { ActionDirective } from './ActionDirective';
+import { RegimeFlipStrip } from './RegimeFlipStrip';
 import { PlaybookPanel } from './PlaybookPanel';
 import { EsLevelsPanel } from './EsLevelsPanel';
 import { RegimeTimeline } from './RegimeTimeline';
@@ -184,11 +185,17 @@ function FuturesGammaPlaybook({
       {/* Panel 1: Regime header (full width) */}
       <RegimeHeader playbook={playbook} />
 
+      {/* Regime flip strip — compact "is regime flickering?" dot row. */}
+      <RegimeFlipStrip timeline={playbook.regimeTimeline} />
+
       {/* Action directive — "what do I do right now?" banner. */}
       <ActionDirective
         verdict={verdict}
         rules={rules}
         esPrice={playbook.esPrice}
+        esZeroGamma={playbook.esZeroGamma}
+        esCallWall={playbook.esCallWall}
+        esPutWall={playbook.esPutWall}
       />
 
       {/* Panel 2: Playbook rules cheat sheet (full width) */}

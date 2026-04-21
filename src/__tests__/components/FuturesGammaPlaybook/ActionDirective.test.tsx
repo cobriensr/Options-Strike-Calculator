@@ -1,10 +1,12 @@
 /**
- * ActionDirective tests — the four derivation branches + transitions.
+ * ActionDirective tests — the five derivation branches + transitions.
  *
- * 1. STAND_ASIDE verdict overrides everything.
- * 2. Any ACTIVE rule → "🎯 ACTIVE: …"
- * 3. Any ARMED rule (no ACTIVE) → "⏱ ARMED: …"
- * 4. Otherwise nearest non-INVALIDATED rule → "⏸ WAIT: …"
+ * 1. STAND_ASIDE verdict + incomplete data → red "sit out" banner.
+ * 2. STAND_ASIDE verdict + complete levels → amber WATCHING banner with
+ *    walls + transition-band context.
+ * 3. Any ACTIVE rule → "🎯 ACTIVE: …"
+ * 4. Any ARMED rule (no ACTIVE) → "⏱ ARMED: …"
+ * 5. Otherwise nearest non-INVALIDATED rule → "⏸ WAIT: …"
  */
 
 import { describe, it, expect } from 'vitest';
@@ -28,18 +30,78 @@ function makeRule(overrides: Partial<PlaybookRule> = {}): PlaybookRule {
 }
 
 describe('ActionDirective', () => {
-  it('renders STAND ASIDE when verdict is STAND_ASIDE regardless of rules', () => {
+  it('renders STAND ASIDE red banner when verdict=STAND_ASIDE and structural levels are missing', () => {
     render(
       <ActionDirective
         verdict="STAND_ASIDE"
         rules={[makeRule({ status: 'ACTIVE' })]}
         esPrice={5820}
+        esZeroGamma={null}
+        esCallWall={null}
+        esPutWall={null}
       />,
     );
-    expect(screen.getByRole('status')).toHaveTextContent(/STAND ASIDE/i);
-    expect(screen.getByRole('status')).toHaveTextContent(
-      /Regime ambiguous/i,
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent(/STAND ASIDE/i);
+    expect(status).toHaveTextContent(/Regime ambiguous/i);
+    expect(status.className).toMatch(/border-red-500/);
+  });
+
+  it('promotes to WATCHING when verdict=STAND_ASIDE but walls + zero-gamma are all known', () => {
+    render(
+      <ActionDirective
+        verdict="STAND_ASIDE"
+        rules={[]}
+        esPrice={5812}
+        esZeroGamma={5810}
+        esCallWall={5830}
+        esPutWall={5790}
+      />,
     );
+    const status = screen.getByRole('status');
+    // Amber container class (the WATCHING palette).
+    expect(status.className).toMatch(/border-amber-500/);
+    expect(status).toHaveTextContent(/WATCHING/);
+    // Contains both wall prices and zero-gamma.
+    expect(status).toHaveTextContent(/5830/);
+    expect(status).toHaveTextContent(/5790/);
+    expect(status).toHaveTextContent(/5810/);
+    // Contains the transition band disclosure and arm-zone hint.
+    expect(status).toHaveTextContent(/band/i);
+    expect(status).toHaveTextContent(/Arm zone/i);
+  });
+
+  it('WATCHING shows signed distance from ES to each wall', () => {
+    render(
+      <ActionDirective
+        verdict="STAND_ASIDE"
+        rules={[]}
+        esPrice={5812}
+        esZeroGamma={5810}
+        esCallWall={5830}
+        esPutWall={5790}
+      />,
+    );
+    const status = screen.getByRole('status');
+    // Call wall is +18 above ES; put wall is -22 below.
+    expect(status).toHaveTextContent(/\+18 pts/);
+    expect(status).toHaveTextContent(/-22 pts/);
+  });
+
+  it('falls back to red STAND ASIDE when ES price is unknown even with walls present', () => {
+    render(
+      <ActionDirective
+        verdict="STAND_ASIDE"
+        rules={[]}
+        esPrice={null}
+        esZeroGamma={5810}
+        esCallWall={5830}
+        esPutWall={5790}
+      />,
+    );
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent(/STAND ASIDE/i);
+    expect(status.className).toMatch(/border-red-500/);
   });
 
   it('renders ACTIVE directive when any rule is ACTIVE', () => {
@@ -63,6 +125,9 @@ describe('ActionDirective', () => {
           }),
         ]}
         esPrice={5820}
+        esZeroGamma={5800}
+        esCallWall={5820}
+        esPutWall={5780}
       />,
     );
     const status = screen.getByRole('status');
@@ -86,6 +151,9 @@ describe('ActionDirective', () => {
           }),
         ]}
         esPrice={5810}
+        esZeroGamma={5800}
+        esCallWall={5820}
+        esPutWall={5780}
       />,
     );
     const status = screen.getByRole('status');
@@ -115,6 +183,9 @@ describe('ActionDirective', () => {
           }),
         ]}
         esPrice={5700}
+        esZeroGamma={5800}
+        esCallWall={5820}
+        esPutWall={5780}
       />,
     );
     const status = screen.getByRole('status');
@@ -146,6 +217,9 @@ describe('ActionDirective', () => {
           }),
         ]}
         esPrice={5779}
+        esZeroGamma={5800}
+        esCallWall={5820}
+        esPutWall={5780}
       />,
     );
     const status = screen.getByRole('status');
@@ -176,6 +250,9 @@ describe('ActionDirective', () => {
           }),
         ]}
         esPrice={5821}
+        esZeroGamma={5800}
+        esCallWall={5820}
+        esPutWall={5780}
       />,
     );
     const status = screen.getByRole('status');
@@ -189,6 +266,9 @@ describe('ActionDirective', () => {
         verdict="MEAN_REVERT"
         rules={[]}
         esPrice={5820}
+        esZeroGamma={null}
+        esCallWall={null}
+        esPutWall={null}
       />,
     );
     expect(screen.getByRole('status')).toHaveTextContent(/WAIT:/);
@@ -201,6 +281,9 @@ describe('ActionDirective', () => {
         verdict="MEAN_REVERT"
         rules={[]}
         esPrice={null}
+        esZeroGamma={null}
+        esCallWall={null}
+        esPutWall={null}
       />,
     );
     expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite');

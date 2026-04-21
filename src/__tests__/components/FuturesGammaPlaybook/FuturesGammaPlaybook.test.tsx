@@ -94,6 +94,9 @@ function hookReturn(
     bias,
     esPrice: 5812,
     esSpxBasis: 12,
+    esZeroGamma: bias.esZeroGamma,
+    esCallWall: bias.esCallWall,
+    esPutWall: bias.esPutWall,
     esGammaPin: null,
     regimeTimeline: [],
     sessionPhaseBoundaries: {
