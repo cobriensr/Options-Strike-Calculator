@@ -410,9 +410,12 @@ describe('useFuturesGammaPlaybook', () => {
       '/api/max-pain-current?date=2026-04-20',
       expect.objectContaining({ credentials: 'same-origin' }),
     );
+    // MAX_PAIN row is intentionally not rendered — UW returns nearest-
+    // monthly max-pain which is misleading to show alongside 0DTE levels.
+    // The fetch still fires so the value remains available for Claude's
+    // analyze context.
     const maxPain = result.current.levels.find((l) => l.kind === 'MAX_PAIN');
-    // Basis 12 → ES 5812 from SPX 5800
-    expect(maxPain?.esPrice).toBeCloseTo(5812, 1);
+    expect(maxPain).toBeUndefined();
   });
 
   it('fetches max-pain with the scrubbed date and populates MAX_PAIN', async () => {
@@ -453,9 +456,9 @@ describe('useFuturesGammaPlaybook', () => {
       '/api/max-pain-current?date=2026-04-17',
       expect.objectContaining({ credentials: 'same-origin' }),
     );
+    // MAX_PAIN row is intentionally not rendered (see previous test).
     const maxPain = result.current.levels.find((l) => l.kind === 'MAX_PAIN');
-    // Basis 12 → ES 5807 from SPX 5795
-    expect(maxPain?.esPrice).toBeCloseTo(5807, 1);
+    expect(maxPain).toBeUndefined();
   });
 
   it('handles missing/null max-pain gracefully', async () => {

@@ -246,11 +246,19 @@ function buildEsLevels(
     return { levels: [], derived: empty };
   }
 
+  // Note: MAX_PAIN is intentionally omitted from the rendered level rows.
+  // UW's max-pain endpoint only returns monthly expirations, so today's
+  // value is typically the nearest-upcoming monthly (e.g. the May chain
+  // on an April Tuesday) — that has structural institutional put OI
+  // anchoring max-pain deep OTM, which does not drag intraday SPX price.
+  // The value is still fetched and passed to Claude's analyze context
+  // via `formatMaxPainForClaude`, which labels the expiry correctly, but
+  // the realtime UI shouldn't display a misleading magnet. Charm-drift
+  // now uses `esGammaPin` (today's highest-|GEX| strike) as its target.
   const raw: Array<{ kind: LevelKind; spxStrike: number | null }> = [
     { kind: 'CALL_WALL', spxStrike: spx.callWall },
     { kind: 'PUT_WALL', spxStrike: spx.putWall },
     { kind: 'ZERO_GAMMA', spxStrike: spx.zeroGamma },
-    { kind: 'MAX_PAIN', spxStrike: spxMaxPain },
   ];
 
   const levels: EsLevel[] = [];
@@ -289,6 +297,12 @@ function buildEsLevels(
   // row (charm-drift consumes the derived value only).
   if (spx.gammaPin !== null) {
     derived.esGammaPin = translateSpxToEs(spx.gammaPin, basis);
+  }
+
+  // Keep esMaxPain on the derived payload (for analyze-context consumers)
+  // even though the row is no longer rendered in the UI.
+  if (spxMaxPain !== null) {
+    derived.esMaxPain = translateSpxToEs(spxMaxPain, basis);
   }
 
   return { levels, derived };
