@@ -21,7 +21,9 @@
  * not need to pass an explicit width prop.
  */
 
-import { memo, useMemo } from 'react';
+import { memo, useMemo, useState, type MouseEvent } from 'react';
+import { fmtGex } from '../GexLandscape/formatters';
+import { getCTTime } from '../../utils/timezone';
 import type { RegimeTimelinePoint, SessionPhaseBoundariesCt } from './types';
 
 export interface RegimeTimelineProps {
@@ -150,21 +152,91 @@ export const RegimeTimeline = memo(function RegimeTimeline({
     [xMin, xRange],
   );
 
+  // Spot y-axis range. Shared by the price polyline AND the hover-crosshair
+  // marker so both use the exact same transform (no drift between line and
+  // snap dot). Safe when the timeline is empty — the spotRange falls back
+  // to 1 and toY is never actually called (empty-state branch returns
+  // before rendering the chart).
+  const { minSpot, spotRange } = useMemo(() => {
+    if (timeline.length === 0) return { minSpot: 0, spotRange: 1 };
+    const spots = timeline.map((p) => p.spot);
+    const lo = Math.min(...spots);
+    const hi = Math.max(...spots);
+    return { minSpot: lo, spotRange: Math.max(0.01, hi - lo) };
+  }, [timeline]);
+
+  const toY = (spot: number): number =>
+    PRICE_BAND_Y + PRICE_BAND_H - ((spot - minSpot) / spotRange) * PRICE_BAND_H;
+
   // Price polyline — compact SVG path string built once per timeline update.
   const priceLine = useMemo(() => {
     if (timeline.length === 0) return '';
-    const spots = timeline.map((p) => p.spot);
-    const minSpot = Math.min(...spots);
-    const maxSpot = Math.max(...spots);
-    const spotRange = Math.max(0.01, maxSpot - minSpot);
-    const toY = (spot: number) =>
-      PRICE_BAND_Y +
-      PRICE_BAND_H -
-      ((spot - minSpot) / spotRange) * PRICE_BAND_H;
     return timeline
       .map((p) => `${toX(toMs(p.ts)).toFixed(1)},${toY(p.spot).toFixed(1)}`)
       .join(' ');
-  }, [timeline, toX]);
+    // toY is a pure function of minSpot/spotRange (already in deps).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeline, toX, minSpot, spotRange]);
+
+  // Hover crosshair — snap-to-nearest index under the cursor. Mouse-only UX;
+  // keyboard users navigate the timeline via the scrubber controls in the
+  // header, which is the accessibility-compatible alternative. We also
+  // capture the SVG's rendered pixel width at hover time so the HTML readout
+  // card can be positioned in the wrapper's pixel coord system without
+  // recomputing layout during render (layout reads belong in event handlers
+  // to avoid reflow loops).
+  const [hoverState, setHoverState] = useState<{
+    index: number;
+    svgWidthPx: number;
+  } | null>(null);
+
+  const hoverSnap = useMemo(() => {
+    if (hoverState === null) return null;
+    const pt = timeline[hoverState.index];
+    if (!pt) return null;
+    const snapX = toX(toMs(pt.ts));
+    // If the snap sits in the LEFT half of the chart, card flushes to the
+    // RIGHT of the crosshair (and vice versa) to avoid going off-viewport.
+    const cardSide =
+      snapX < CHART_PAD_X + CHART_INNER_W / 2 ? 'right' : 'left';
+    const snapPxX = (snapX / VIEW_W) * hoverState.svgWidthPx;
+    const snapY =
+      PRICE_BAND_Y +
+      PRICE_BAND_H -
+      ((pt.spot - minSpot) / spotRange) * PRICE_BAND_H;
+    return {
+      pt,
+      snapX,
+      snapY,
+      cardSide,
+      snapPxX,
+      svgWidthPx: hoverState.svgWidthPx,
+    } as const;
+  }, [hoverState, timeline, toX, minSpot, spotRange]);
+
+  const handleSvgMouseMove = (e: MouseEvent<SVGSVGElement>) => {
+    const svg = e.currentTarget;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const mouseSvgX = ((e.clientX - rect.left) / rect.width) * VIEW_W;
+    // Linear scan — timeline is ~80 pts max, so the cost is trivial.
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < timeline.length; i += 1) {
+      const px = toX(toMs(timeline[i]!.ts));
+      const d = Math.abs(px - mouseSvgX);
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = i;
+      }
+    }
+    setHoverState({ index: bestIdx, svgWidthPx: rect.width });
+  };
+
+  const handleSvgMouseLeave = () => {
+    setHoverState(null);
+  };
 
   // Empty-state shell — rendered AFTER all hooks so the hook order is
   // stable across data presence/absence.
@@ -204,7 +276,7 @@ export const RegimeTimeline = memo(function RegimeTimeline({
 
   return (
     <div
-      className="border-edge bg-surface-alt mb-3 overflow-hidden rounded-lg border p-2"
+      className="border-edge bg-surface-alt relative mb-3 overflow-hidden rounded-lg border p-2"
       aria-label="Regime timeline"
     >
       <svg
@@ -218,6 +290,9 @@ export const RegimeTimeline = memo(function RegimeTimeline({
         }, with SPX spot overlay`}
         className="block w-full"
         style={{ height: `${VIEW_H}px`, maxHeight: '160px' }}
+        onMouseMove={handleSvgMouseMove}
+        onMouseLeave={handleSvgMouseLeave}
+        data-testid="regime-timeline-svg"
       >
         {/* ── Regime bands (top) ─────────────────────────── */}
         <g data-testid="regime-bands">
@@ -361,7 +436,82 @@ export const RegimeTimeline = memo(function RegimeTimeline({
             </text>
           </g>
         ) : null}
+
+        {/* ── Hover crosshair (mouse-driven) ───────────────
+            Intentionally rendered AFTER the scrub indicator so both can
+            co-exist when the user hovers while a scrub is active — the
+            user may want to compare "where I'm scrubbed" vs "where my
+            cursor is". */}
+        {hoverSnap !== null ? (
+          <g data-testid="hover-crosshair" pointerEvents="none">
+            <line
+              x1={hoverSnap.snapX}
+              y1={REGIME_BAND_Y}
+              x2={hoverSnap.snapX}
+              y2={CROSSINGS_BAND_Y + CROSSINGS_BAND_H}
+              stroke="var(--color-tertiary)"
+              strokeWidth={1}
+              strokeDasharray="2 2"
+              opacity={0.8}
+            />
+            <circle
+              cx={hoverSnap.snapX}
+              cy={hoverSnap.snapY}
+              r={2.5}
+              fill="var(--color-accent)"
+              stroke="var(--color-surface)"
+              strokeWidth={0.75}
+            />
+          </g>
+        ) : null}
       </svg>
+
+      {/* ── Hover readout card (HTML, absolutely positioned) ───
+          Kept outside the SVG so typography renders without the
+          preserveAspectRatio="none" distortion. pointer-events:none ensures
+          the card never eats mousemove events headed for the SVG. */}
+      {hoverSnap !== null ? (
+        <div
+          data-testid="hover-readout"
+          className="border-edge bg-surface pointer-events-none absolute rounded border px-2 py-1 font-mono text-[10px] shadow"
+          style={{
+            // SVG sits 8px inside the wrapper (p-2). Add that to align the
+            // card's x with the SVG-internal snap position.
+            ...(hoverSnap.cardSide === 'right'
+              ? { left: `${8 + hoverSnap.snapPxX + 8}px` }
+              : { right: `${8 + (hoverSnap.svgWidthPx - hoverSnap.snapPxX) + 8}px` }),
+            top: '6px',
+            maxWidth: '180px',
+            color: 'var(--color-primary)',
+          }}
+        >
+          <div style={{ color: 'var(--color-tertiary)' }}>
+            {(() => {
+              const d = new Date(hoverSnap.pt.ts);
+              const { hour, minute } = getCTTime(d);
+              return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')} CT`;
+            })()}
+          </div>
+          <div
+            style={{
+              color:
+                hoverSnap.pt.regime === 'POSITIVE'
+                  ? 'rgb(74,222,128)'
+                  : hoverSnap.pt.regime === 'NEGATIVE'
+                    ? 'rgb(251,191,36)'
+                    : 'var(--color-secondary)',
+            }}
+          >
+            {hoverSnap.pt.regime === 'POSITIVE'
+              ? 'POSITIVE +GEX'
+              : hoverSnap.pt.regime === 'NEGATIVE'
+                ? 'NEGATIVE −GEX'
+                : 'TRANSITIONING'}
+          </div>
+          <div>SPX {hoverSnap.pt.spot.toFixed(2)}</div>
+          <div>{fmtGex(hoverSnap.pt.netGex)}</div>
+        </div>
+      ) : null}
     </div>
   );
 });
