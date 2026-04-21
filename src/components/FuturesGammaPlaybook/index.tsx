@@ -27,6 +27,9 @@ import { PlaybookPanel } from './PlaybookPanel';
 import { EsLevelsPanel } from './EsLevelsPanel';
 import { RegimeTimeline } from './RegimeTimeline';
 import { TriggersPanel } from './TriggersPanel';
+import { AlertConfigPanel } from './AlertConfig';
+import { useAlertDispatcher } from './useAlertDispatcher';
+import type { AlertState } from './alerts';
 import type { PlaybookBias } from './types';
 
 export interface FuturesGammaPlaybookProps {
@@ -86,24 +89,57 @@ function FuturesGammaPlaybook({
     onBiasChange(bias);
   }, [bias, biasSig, onBiasChange]);
 
+  // Alert dispatcher — composes a pure `AlertState` from the hook's output
+  // and delegates edge detection + delivery to `useAlertDispatcher`. When
+  // `isLive === false` the dispatcher only logs to `backtestAlerts` without
+  // firing any toast / Notification / audio — see that hook's docs.
+  const alertState: AlertState = useMemo(
+    () => ({
+      regime: playbook.regime,
+      phase: playbook.phase,
+      levels: playbook.levels,
+      firedTriggers: playbook.bias.firedTriggers,
+      esPrice: playbook.esPrice,
+    }),
+    [
+      playbook.regime,
+      playbook.phase,
+      playbook.levels,
+      playbook.bias.firedTriggers,
+      playbook.esPrice,
+    ],
+  );
+  const alertDispatcher = useAlertDispatcher({
+    state: alertState,
+    isLive,
+  });
+
   const headerRight = (
-    <ScrubControls
-      timestamp={timestamp}
-      timestamps={timestamps}
-      selectedDate={selectedDate}
-      onDateChange={setSelectedDate}
-      isLive={isLive}
-      isScrubbed={isScrubbed}
-      canScrubPrev={canScrubPrev}
-      canScrubNext={canScrubNext}
-      onScrubPrev={scrubPrev}
-      onScrubNext={scrubNext}
-      onScrubTo={scrubTo}
-      onScrubLive={scrubLive}
-      onRefresh={refresh}
-      loading={loading}
-      sectionLabel="Futures Gamma Playbook"
-    />
+    <div className="flex items-center gap-2">
+      <AlertConfigPanel
+        config={alertDispatcher.config}
+        setConfig={alertDispatcher.setConfig}
+        permission={alertDispatcher.permission}
+        requestPermission={alertDispatcher.requestNotificationPermission}
+      />
+      <ScrubControls
+        timestamp={timestamp}
+        timestamps={timestamps}
+        selectedDate={selectedDate}
+        onDateChange={setSelectedDate}
+        isLive={isLive}
+        isScrubbed={isScrubbed}
+        canScrubPrev={canScrubPrev}
+        canScrubNext={canScrubNext}
+        onScrubPrev={scrubPrev}
+        onScrubNext={scrubNext}
+        onScrubTo={scrubTo}
+        onScrubLive={scrubLive}
+        onRefresh={refresh}
+        loading={loading}
+        sectionLabel="Futures Gamma Playbook"
+      />
+    </div>
   );
 
   if (loading && rules.length === 0 && bias.esZeroGamma === null) {
