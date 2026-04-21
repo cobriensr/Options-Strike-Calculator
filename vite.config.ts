@@ -26,7 +26,15 @@ export default defineConfig({
       telemetry: process.env.NODE_ENV === 'production',
     }),
     VitePWA({
+      // Switched from `generateSW` to `injectManifest` in Phase 2A.1 so
+      // the custom `src/sw.ts` can ship a `push` event handler for Web
+      // Push alerts (FuturesGammaPlaybook). All previous Workbox runtime
+      // caching behavior is preserved in `src/sw.ts` — see that file's
+      // header comment for the 1:1 mapping of each former rule.
       registerType: 'autoUpdate',
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.ts',
       manifest: {
         name: '0DTE Strike Calculator',
         short_name: '0DTE Calc',
@@ -55,66 +63,8 @@ export default defineConfig({
           },
         ],
       },
-      workbox: {
-        skipWaiting: true,
-        clientsClaim: true,
-        cleanupOutdatedCaches: true,
-        navigateFallback: '/index.html',
-        navigateFallbackDenylist: [
-          /^\/api\//,
-          /^\/149e9513-01fa-4fb0-aad4-566afd725d1b\//,
-        ],
+      injectManifest: {
         globPatterns: ['**/*.{js,css,html,png,woff2}'],
-        runtimeCaching: [
-          {
-            // Bypass the service worker entirely for API calls.
-            // Without this, Chrome's 5-min SW fetch-event timeout kills
-            // long-running requests (like Claude Opus analysis) at 300s.
-            urlPattern: /^\/api\//,
-            handler: 'NetworkOnly',
-            method: 'POST',
-          },
-          {
-            urlPattern: /^\/api\//,
-            handler: 'NetworkOnly',
-            method: 'GET',
-          },
-          {
-            urlPattern: /\/vix-data\.json$/,
-            handler: 'StaleWhileRevalidate',
-            options: {
-              cacheName: 'vix-data-cache',
-            },
-          },
-          {
-            urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/,
-            handler: 'StaleWhileRevalidate',
-            options: {
-              cacheName: 'google-fonts-stylesheets',
-              expiration: {
-                maxEntries: 10,
-                maxAgeSeconds: 60 * 60 * 24 * 365,
-              },
-              cacheableResponse: {
-                statuses: [0, 200],
-              },
-            },
-          },
-          {
-            urlPattern: /^https:\/\/fonts\.gstatic\.com\/.*/,
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'google-fonts-webfonts',
-              expiration: {
-                maxEntries: 30,
-                maxAgeSeconds: 60 * 60 * 24 * 365,
-              },
-              cacheableResponse: {
-                statuses: [0, 200],
-              },
-            },
-          },
-        ],
       },
     }),
   ],
