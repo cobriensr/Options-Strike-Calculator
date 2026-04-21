@@ -20,7 +20,7 @@
  * sensible defaults are returned, nothing throws.
  */
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { GexStrikeLevel, UseGexPerStrikeReturn } from './useGexPerStrike';
 import { useGexPerStrike } from './useGexPerStrike';
 import { useFuturesData } from './useFuturesData';
@@ -30,8 +30,10 @@ import type {
   GexRegime,
   PlaybookBias,
   PlaybookRule,
+  RegimeTimelinePoint,
   RegimeVerdict,
   SessionPhase,
+  SessionPhaseBoundariesCt,
 } from '../components/FuturesGammaPlaybook/types';
 import {
   classifyLevelStatus,
@@ -46,6 +48,18 @@ import {
 } from '../components/FuturesGammaPlaybook/playbook';
 import { computeZeroGammaStrike } from '../utils/zero-gamma';
 
+/**
+ * Number of prior distance samples we retain per level kind so
+ * `classifyLevelStatus` can detect REJECTED (moved inside the proximity
+ * band then pulled out) and BROKEN (price flipped sign relative to the
+ * level) transitions. Matches the 5-point window documented in `basis.ts`.
+ */
+const LEVEL_HISTORY_WINDOW = 5;
+
+type LevelKind = EsLevel['kind'];
+
+type LevelHistoryBuffer = Partial<Record<LevelKind, number[]>>;
+
 export interface UseFuturesGammaPlaybookReturn {
   regime: GexRegime;
   verdict: RegimeVerdict;
@@ -57,6 +71,19 @@ export interface UseFuturesGammaPlaybookReturn {
   esPrice: number | null;
   /** Live ES − SPX basis at the displayed instant. */
   esSpxBasis: number | null;
+  /**
+   * Intraday regime timeseries for the active session. Phase 1C ships a
+   * current-state-only fallback (always `[]`) until a dedicated
+   * `/api/spot-gex-history` endpoint lands — the RegimeTimeline component
+   * renders an empty-state shell when this array is empty.
+   */
+  regimeTimeline: RegimeTimelinePoint[];
+  /**
+   * CT wall-clock boundaries (ISO-8601 instants) for the five session
+   * phases plotted on the RegimeTimeline x-axis. Derived from the active
+   * trading date.
+   */
+  sessionPhaseBoundaries: SessionPhaseBoundariesCt;
   loading: boolean;
   error: Error | null;
 
@@ -161,6 +188,7 @@ function buildEsLevels(
   spx: SpxLevels,
   basis: number | null,
   esPrice: number | null,
+  history: LevelHistoryBuffer,
 ): { levels: EsLevel[]; derived: EsDerivedLevels } {
   const empty: EsDerivedLevels = {
     esCallWall: null,
@@ -176,7 +204,7 @@ function buildEsLevels(
     return { levels: [], derived: empty };
   }
 
-  const raw: Array<{ kind: EsLevel['kind']; spxStrike: number | null }> = [
+  const raw: Array<{ kind: LevelKind; spxStrike: number | null }> = [
     { kind: 'CALL_WALL', spxStrike: spx.callWall },
     { kind: 'PUT_WALL', spxStrike: spx.putWall },
     { kind: 'ZERO_GAMMA', spxStrike: spx.zeroGamma },
@@ -190,7 +218,16 @@ function buildEsLevels(
     if (spxStrike === null) continue;
     const esLevelPrice = translateSpxToEs(spxStrike, basis);
     const distance = distanceInEsPoints(esPrice, esLevelPrice);
-    const status = classifyLevelStatus(distance, undefined);
+    // Feed the ring-buffer's prior values into the status classifier so
+    // REJECTED (bounced out of the proximity band) and BROKEN (price flipped
+    // sign relative to the level) transitions get detected. Undefined when
+    // the buffer has not yet accumulated any history — the classifier falls
+    // back to proximity-only.
+    const prior = history[kind];
+    const status = classifyLevelStatus(
+      distance,
+      prior && prior.length > 0 ? prior : undefined,
+    );
 
     levels.push({
       kind,
@@ -206,6 +243,51 @@ function buildEsLevels(
   }
 
   return { levels, derived };
+}
+
+/**
+ * Compute CT wall-clock session-phase boundaries (ISO-8601 instants) for a
+ * given trading date (YYYY-MM-DD in ET). Used by `RegimeTimeline` to place
+ * the x-axis phase markers. CT is always ET − 1 hour, so the boundary
+ * minutes map directly to UTC via standard ISO construction — we don't
+ * need a full tz library here.
+ */
+const ET_OFFSET_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  timeZoneName: 'longOffset',
+});
+
+/**
+ * Return the ET offset (e.g. "-04:00" in EDT, "-05:00" in EST) that applies
+ * on the given ET trading date. Sampling at noon avoids ambiguity at the DST
+ * fall-back/spring-forward transition instants.
+ */
+function etOffsetForDate(selectedDate: string): string {
+  const probe = new Date(`${selectedDate}T12:00:00Z`);
+  for (const part of ET_OFFSET_FORMATTER.formatToParts(probe)) {
+    if (part.type === 'timeZoneName') {
+      return part.value.replace(/^GMT/, '') || '+00:00';
+    }
+  }
+  return '-04:00';
+}
+
+function computeSessionPhaseBoundaries(
+  selectedDate: string,
+): SessionPhaseBoundariesCt {
+  // RegimeTimeline places x-axis markers against ISO instants. We emit
+  // ET-offset ISO strings for the four CT session boundaries so positioning
+  // math is correct year-round including across the EDT/EST switch.
+  // CT 08:30 = ET 09:30, CT 11:30 = ET 12:30, CT 14:30 = ET 15:30,
+  // CT 15:30 = ET 16:30.
+  const offset = etOffsetForDate(selectedDate);
+  const mkIso = (etTime: string) => `${selectedDate}T${etTime}:00${offset}`;
+  return {
+    open: mkIso('09:30'),
+    lunch: mkIso('12:30'),
+    power: mkIso('15:30'),
+    close: mkIso('16:30'),
+  };
 }
 
 // ── Hook ──────────────────────────────────────────────────────────────
@@ -264,10 +346,65 @@ export function useFuturesGammaPlaybook(
     return esRow?.price ?? null;
   }, [futures.snapshots]);
 
+  // Ring buffer of prior signed distances keyed by level kind. Held as
+  // React state (not a ref) so the classifier reads a stable value during
+  // render without tripping the "accessing refs during render" lint. Each
+  // render classifies against the buffer snapshot from the previous
+  // render; the effect below then appends the latest distances so the
+  // NEXT render has one more point of history.
+  const [levelHistory, setLevelHistory] = useState<LevelHistoryBuffer>({});
+
   const { levels, derived } = useMemo(
-    () => buildEsLevels(spx, futures.esSpxBasis, esPrice),
-    [spx, futures.esSpxBasis, esPrice],
+    () => buildEsLevels(spx, futures.esSpxBasis, esPrice, levelHistory),
+    [spx, futures.esSpxBasis, esPrice, levelHistory],
   );
+
+  // Scrub identity key — when the user jumps to a different snapshot
+  // (different date, scrubbed timestamp, or live↔scrub flip) the prior
+  // history becomes meaningless because it referenced a different
+  // instant. Resetting avoids leaking REJECTED/BROKEN across the seam.
+  const scrubKey = `${gex.selectedDate}|${gex.timestamp ?? ''}|${
+    gex.isScrubbed ? 's' : 'l'
+  }`;
+
+  // Distance-only signature so the append effect only fires when the raw
+  // distances change — NOT when `levels`'s identity changes because the
+  // status classifier flipped IDLE→APPROACHING based on a history update.
+  // Without this guard the effect would feed the new levels back in after
+  // every status flip, triggering an infinite render loop as the buffer
+  // churned without distance changes.
+  const distanceSignature = useMemo(
+    () =>
+      levels
+        .map((l) => `${l.kind}:${l.distanceEsPoints.toFixed(4)}`)
+        .join('|'),
+    [levels],
+  );
+
+  // After each render append the just-computed distances into the ring
+  // buffer, capped at LEVEL_HISTORY_WINDOW — longer windows would make
+  // status labels stick around past the move they describe.
+  useEffect(() => {
+    setLevelHistory((prev) => {
+      const next: LevelHistoryBuffer = { ...prev };
+      for (const level of levels) {
+        const existing = next[level.kind] ?? [];
+        const appended = [...existing, level.distanceEsPoints];
+        if (appended.length > LEVEL_HISTORY_WINDOW) appended.shift();
+        next[level.kind] = appended;
+      }
+      return next;
+    });
+    // `levels` is intentionally omitted: distanceSignature already gates
+    // the effect on the only field that should trigger it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [distanceSignature]);
+
+  // Reset the buffer when the user jumps to a different snapshot. Kept
+  // as a separate effect so the append effect above stays simple.
+  useEffect(() => {
+    setLevelHistory({});
+  }, [scrubKey]);
 
   const rules: PlaybookRule[] = useMemo(
     () => rulesForRegime(regime, phase, derived),
@@ -289,6 +426,20 @@ export function useFuturesGammaPlaybook(
     [regime, verdict, derived, phase],
   );
 
+  // Phase 1C fallback: `/api/spot-gex-history` does not exist yet, so we
+  // ship the RegimeTimeline component with an empty timeseries. The panel
+  // renders a clear "waiting for session history" empty state in this
+  // branch, and the hook contract stays future-proof — when a dedicated
+  // endpoint or `useGexPerStrike` extension lands, only this derivation
+  // needs to change. Current-state-only intentionally yields `[]`, NOT a
+  // single point; a 1-point timeline would draw a degenerate bar.
+  const regimeTimeline: RegimeTimelinePoint[] = useMemo(() => [], []);
+
+  const sessionPhaseBoundaries: SessionPhaseBoundariesCt = useMemo(
+    () => computeSessionPhaseBoundaries(gex.selectedDate),
+    [gex.selectedDate],
+  );
+
   const loading = gex.loading || futures.loading;
 
   // Unify the two error channels. `useGexPerStrike` emits strings;
@@ -308,6 +459,8 @@ export function useFuturesGammaPlaybook(
     bias,
     esPrice,
     esSpxBasis: futures.esSpxBasis,
+    regimeTimeline,
+    sessionPhaseBoundaries,
     loading,
     error,
     // Scrub pass-through so the container component can render

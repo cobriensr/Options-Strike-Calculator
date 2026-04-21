@@ -24,6 +24,8 @@ import { ScrubControls } from '../ScrubControls';
 import { useFuturesGammaPlaybook } from '../../hooks/useFuturesGammaPlaybook';
 import { RegimeHeader } from './RegimeHeader';
 import { PlaybookPanel } from './PlaybookPanel';
+import { EsLevelsPanel } from './EsLevelsPanel';
+import { RegimeTimeline } from './RegimeTimeline';
 import type { PlaybookBias } from './types';
 
 export interface FuturesGammaPlaybookProps {
@@ -151,9 +153,17 @@ function FuturesGammaPlaybook({
         esZeroGammaKnown={bias.esZeroGamma !== null}
       />
 
-      {/* Panels 3–5: reserved for later phases */}
-      {/* Phase 1C: EsLevelsPanel */}
-      {/* Phase 1C: RegimeTimeline */}
+      {/* Panel 3: SPX-derived walls mapped to ES prices (full width) */}
+      <EsLevelsPanel levels={playbook.levels} />
+
+      {/* Panel 4: Intraday regime timeline + price overlay (full width) */}
+      <RegimeTimeline
+        timeline={playbook.regimeTimeline}
+        sessionPhaseBoundaries={playbook.sessionPhaseBoundaries}
+        isScrubbed={playbook.isScrubbed}
+        scrubbedTimestamp={playbook.timestamp}
+      />
+
       {/* Phase 1D: TriggersPanel */}
     </SectionBox>
   );

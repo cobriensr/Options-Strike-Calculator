@@ -50,3 +50,27 @@ export interface PlaybookBias {
   sessionPhase: SessionPhase;
   firedTriggers: string[];
 }
+
+/**
+ * One point on the intraday regime timeline. `spot` is the SPX price at
+ * the instant; the timeline component translates to ES via the snapshot's
+ * prevailing basis at render time.
+ */
+export interface RegimeTimelinePoint {
+  ts: string;
+  netGex: number;
+  spot: number;
+  regime: GexRegime;
+}
+
+/**
+ * CT wall-clock boundaries for the five intraday session phases rendered
+ * on the RegimeTimeline x-axis. Values are ISO-8601 instants on the
+ * currently viewed trading date.
+ */
+export interface SessionPhaseBoundariesCt {
+  open: string;
+  lunch: string;
+  power: string;
+  close: string;
+}

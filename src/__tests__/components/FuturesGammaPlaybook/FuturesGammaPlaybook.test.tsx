@@ -66,6 +66,13 @@ function hookReturn(
     bias,
     esPrice: 5812,
     esSpxBasis: 12,
+    regimeTimeline: [],
+    sessionPhaseBoundaries: {
+      open: '2026-04-20T09:30:00-04:00',
+      lunch: '2026-04-20T12:30:00-04:00',
+      power: '2026-04-20T15:30:00-04:00',
+      close: '2026-04-20T16:30:00-04:00',
+    },
     loading: false,
     error: null,
     timestamp: '2026-04-20T14:30:00Z',

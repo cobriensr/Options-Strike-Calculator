@@ -301,4 +301,22 @@ describe('useFuturesGammaPlaybook', () => {
     expect(result.current.esPrice).toBe(5812);
     expect(result.current.esSpxBasis).toBe(12);
   });
+
+  it('returns an empty regimeTimeline (Phase 1C fallback) until history lands', () => {
+    const { result } = renderHook(() => useFuturesGammaPlaybook(true));
+    expect(result.current.regimeTimeline).toEqual([]);
+  });
+
+  it('exposes CT session phase boundaries derived from the active date', () => {
+    vi.mocked(useGexPerStrike).mockReturnValue(
+      gexReturn({ strikes: [], timestamp: null }),
+    );
+    const { result } = renderHook(() => useFuturesGammaPlaybook(true));
+    const b = result.current.sessionPhaseBoundaries;
+    // Default selectedDate from the gexReturn helper is '2026-04-20'.
+    expect(b.open).toMatch(/2026-04-20T09:30:00/);
+    expect(b.lunch).toMatch(/2026-04-20T12:30:00/);
+    expect(b.power).toMatch(/2026-04-20T15:30:00/);
+    expect(b.close).toMatch(/2026-04-20T16:30:00/);
+  });
 });
