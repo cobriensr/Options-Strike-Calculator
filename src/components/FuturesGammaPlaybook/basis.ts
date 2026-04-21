@@ -10,7 +10,7 @@
  * does the composition.
  */
 
-import { ES_TICK_SIZE, LEVEL_PROXIMITY_ES_POINTS } from './playbook';
+import { ES_TICK_SIZE, LEVEL_PROXIMITY_ES_POINTS } from './playbook.js';
 import type { EsLevel } from './types';
 
 /**

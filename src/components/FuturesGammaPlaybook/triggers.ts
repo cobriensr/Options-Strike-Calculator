@@ -25,7 +25,7 @@
  *                     the alerts system tracks recent fires.
  */
 
-import { LEVEL_PROXIMITY_ES_POINTS, RULE_ARMED_BAND_ES } from './playbook';
+import { LEVEL_PROXIMITY_ES_POINTS, RULE_ARMED_BAND_ES } from './playbook.js';
 import type { EsLevel, GexRegime, SessionPhase } from './types';
 
 // ── Public types ───────────────────────────────────────────────────────

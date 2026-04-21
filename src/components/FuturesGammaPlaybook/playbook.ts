@@ -19,8 +19,8 @@
  *     rather than "fade into the call wall".
  */
 
-import { getCTTime } from '../../utils/timezone';
-import { esTickRound } from './basis';
+import { getCTTime } from '../../utils/timezone.js';
+import { esTickRound } from './basis.js';
 import type {
   GexRegime,
   PlaybookRule,
