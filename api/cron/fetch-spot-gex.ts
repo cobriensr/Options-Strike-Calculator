@@ -9,8 +9,13 @@
  *   - Plus charm and vanna equivalents
  *   - SPX price at each timestamp
  *
- * Samples to 5-minute intervals for consistency with other crons.
- * Stores in spot_exposures table.
+ * Writes all 1-minute ticks newer than the high-water-mark for today in
+ * `spot_exposures`. Designed to run every minute during RTH (matches the
+ * FuturesGammaPlaybook regime-monitor cadence) so the UI sees fresh dealer
+ * positioning within 60 s. A single missed run auto-backfills on the next
+ * invocation because UW returns the full session history and we diff
+ * against the HWM before inserting. `ON CONFLICT DO NOTHING` on
+ * (date, timestamp, ticker) is the belt-and-braces dedup.
  *
  * Total API calls per invocation: 1
  *
@@ -23,7 +28,6 @@ import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
   uwFetch,
-  roundTo5Min,
   cronGuard,
   checkDataQuality,
   withRetry,
@@ -53,55 +57,72 @@ async function fetchSpotExposures(apiKey: string): Promise<SpotExposureRow[]> {
   return uwFetch<SpotExposureRow>(apiKey, '/stock/SPX/spot-exposures');
 }
 
-// ── Sample to 5-min + store latest ──────────────────────────
+// ── Bulk insert rows newer than the DB high-water-mark ──────
+//
+// UW returns today's full session history on every call. We query the
+// latest timestamp we already have for today, filter UW rows to only the
+// ones past that mark, and insert them. On a steady-state run this is
+// usually 1 row; after a missed cron it catches up all the gap rows.
 
-async function storeLatest(
+async function storeNewRows(
   rows: SpotExposureRow[],
-): Promise<{ stored: boolean; timestamp?: string }> {
-  if (rows.length === 0) return { stored: false };
-
-  // Sample to 5-min intervals, take last tick per window
-  const sampled = new Map<string, SpotExposureRow>();
-  for (const row of rows) {
-    const dt = new Date(row.start_time ?? row.time);
-    const rounded = roundTo5Min(dt);
-    sampled.set(rounded.toISOString(), row);
-  }
-
-  // Get the most recent 5-min candle
-  const keys = Array.from(sampled.keys()).sort((a, b) => a.localeCompare(b));
-  const latestKey = keys.at(-1)!;
-  const latest = sampled.get(latestKey)!;
-
-  const date = new Date(latest.start_time ?? latest.time).toLocaleDateString(
-    'en-CA',
-    { timeZone: 'America/New_York' },
-  );
+  today: string,
+): Promise<{ stored: number; timestamp?: string }> {
+  if (rows.length === 0) return { stored: 0 };
 
   const sql = getDb();
-  await sql`
-    INSERT INTO spot_exposures (
-      date, timestamp, ticker, price,
-      gamma_oi, gamma_vol, gamma_dir,
-      charm_oi, charm_vol, charm_dir,
-      vanna_oi, vanna_vol, vanna_dir
-    )
-    VALUES (
-      ${date}, ${latestKey}, 'SPX', ${latest.price},
-      ${latest.gamma_per_one_percent_move_oi},
-      ${latest.gamma_per_one_percent_move_vol},
-      ${latest.gamma_per_one_percent_move_dir},
-      ${latest.charm_per_one_percent_move_oi},
-      ${latest.charm_per_one_percent_move_vol},
-      ${latest.charm_per_one_percent_move_dir},
-      ${latest.vanna_per_one_percent_move_oi},
-      ${latest.vanna_per_one_percent_move_vol},
-      ${latest.vanna_per_one_percent_move_dir}
-    )
-    ON CONFLICT (date, timestamp, ticker) DO NOTHING
-  `;
+  const hwmRows = (await sql`
+    SELECT MAX(timestamp) AS max_ts
+    FROM spot_exposures
+    WHERE date = ${today} AND ticker = 'SPX'
+  `) as Array<{ max_ts: string | Date | null }>;
+  const rawMax = hwmRows[0]?.max_ts ?? null;
+  const hwmIso =
+    rawMax === null
+      ? null
+      : rawMax instanceof Date
+        ? rawMax.toISOString()
+        : new Date(rawMax).toISOString();
 
-  return { stored: true, timestamp: latestKey };
+  const toInsert = rows
+    .map((r) => ({
+      row: r,
+      tsIso: new Date(r.start_time ?? r.time).toISOString(),
+    }))
+    .filter(({ tsIso }) => hwmIso === null || tsIso > hwmIso)
+    .sort((a, b) => a.tsIso.localeCompare(b.tsIso));
+
+  if (toInsert.length === 0) return { stored: 0 };
+
+  for (const { row, tsIso } of toInsert) {
+    const rowDate = new Date(row.start_time ?? row.time).toLocaleDateString(
+      'en-CA',
+      { timeZone: 'America/New_York' },
+    );
+    await sql`
+      INSERT INTO spot_exposures (
+        date, timestamp, ticker, price,
+        gamma_oi, gamma_vol, gamma_dir,
+        charm_oi, charm_vol, charm_dir,
+        vanna_oi, vanna_vol, vanna_dir
+      )
+      VALUES (
+        ${rowDate}, ${tsIso}, 'SPX', ${row.price},
+        ${row.gamma_per_one_percent_move_oi},
+        ${row.gamma_per_one_percent_move_vol},
+        ${row.gamma_per_one_percent_move_dir},
+        ${row.charm_per_one_percent_move_oi},
+        ${row.charm_per_one_percent_move_vol},
+        ${row.charm_per_one_percent_move_dir},
+        ${row.vanna_per_one_percent_move_oi},
+        ${row.vanna_per_one_percent_move_vol},
+        ${row.vanna_per_one_percent_move_dir}
+      )
+      ON CONFLICT (date, timestamp, ticker) DO NOTHING
+    `;
+  }
+
+  return { stored: toInsert.length, timestamp: toInsert.at(-1)!.tsIso };
 }
 
 // ── Handler ─────────────────────────────────────────────────
@@ -115,7 +136,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const rows = await withRetry(() => fetchSpotExposures(apiKey));
-    const result = await withRetry(() => storeLatest(rows));
+    const result = await withRetry(() => storeNewRows(rows, today));
 
     // Data quality check: alert if all gamma_oi values are null/zero
     const qcRows = await getDb()`

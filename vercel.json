@@ -31,7 +31,7 @@
     },
     {
       "path": "/api/cron/fetch-spot-gex",
-      "schedule": "2,7,12,17,22,27,32,37,42,47,52,57 13-21 * * 1-5"
+      "schedule": "* 13-21 * * 1-5"
     },
     {
       "path": "/api/cron/fetch-strike-exposure",

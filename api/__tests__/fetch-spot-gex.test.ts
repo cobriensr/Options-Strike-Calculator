@@ -189,16 +189,17 @@ describe('fetch-spot-gex handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       ticks: 1,
-      stored: true,
+      stored: 1,
       timestamp: expect.any(String),
     });
-    // 1 INSERT + 1 data-quality SELECT = 2
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    // 1 HWM SELECT + 1 INSERT + 1 data-quality SELECT = 3
+    expect(mockSql).toHaveBeenCalledTimes(3);
   });
 
-  it('samples multiple rows to 5-min intervals and stores latest', async () => {
+  it('bulk-inserts all rows newer than the DB high-water-mark', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    // Three ticks within the same 5-min window, plus one in a later window
+    // Four distinct 1-minute ticks; HWM mock returns null (first run)
+    // so every row should be inserted.
     stubFetch([
       makeSpotRow({ start_time: '2026-03-24T14:00:00.000Z' }),
       makeSpotRow({ start_time: '2026-03-24T14:01:00.000Z' }),
@@ -216,13 +217,13 @@ describe('fetch-spot-gex handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       ticks: 4,
-      stored: true,
+      stored: 4,
     });
-    // 1 INSERT (latest 5-min candle) + 1 data-quality = 2
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    // 1 HWM SELECT + 4 INSERTs + 1 data-quality SELECT = 6
+    expect(mockSql).toHaveBeenCalledTimes(6);
   });
 
-  it('returns stored false for empty API response', async () => {
+  it('returns stored 0 for empty API response', async () => {
     process.env.UW_API_KEY = 'uwkey';
     stubFetch([]);
 
@@ -236,9 +237,9 @@ describe('fetch-spot-gex handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       ticks: 0,
-      stored: false,
+      stored: 0,
     });
-    // No INSERTs, but 1 data-quality SELECT still runs
+    // No INSERTs, no HWM query (short-circuits on empty), 1 data-quality SELECT
     expect(mockSql).toHaveBeenCalledTimes(1);
   });
 
@@ -256,9 +257,9 @@ describe('fetch-spot-gex handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({ stored: true });
-    // 1 INSERT + 1 data-quality = 2
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    expect(res._json).toMatchObject({ stored: 1 });
+    // 1 HWM SELECT + 1 INSERT + 1 data-quality = 3
+    expect(mockSql).toHaveBeenCalledTimes(3);
   });
 
   // ── Error handling ────────────────────────────────────────
