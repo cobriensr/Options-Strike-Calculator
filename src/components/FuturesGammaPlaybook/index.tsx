@@ -26,6 +26,7 @@ import { RegimeHeader } from './RegimeHeader';
 import { PlaybookPanel } from './PlaybookPanel';
 import { EsLevelsPanel } from './EsLevelsPanel';
 import { RegimeTimeline } from './RegimeTimeline';
+import { TriggersPanel } from './TriggersPanel';
 import type { PlaybookBias } from './types';
 
 export interface FuturesGammaPlaybookProps {
@@ -164,7 +165,13 @@ function FuturesGammaPlaybook({
         scrubbedTimestamp={playbook.timestamp}
       />
 
-      {/* Phase 1D: TriggersPanel */}
+      {/* Panel 5: Named-setup trigger checklist (full width) */}
+      <TriggersPanel
+        regime={playbook.regime}
+        phase={playbook.phase}
+        esPrice={playbook.esPrice}
+        levels={playbook.levels}
+      />
     </SectionBox>
   );
 }

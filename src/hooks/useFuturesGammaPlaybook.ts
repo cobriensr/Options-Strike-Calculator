@@ -48,6 +48,7 @@ import {
   rulesForRegime,
   verdictForRegime,
 } from '../components/FuturesGammaPlaybook/playbook';
+import { evaluateTriggers } from '../components/FuturesGammaPlaybook/triggers';
 import { computeZeroGammaStrike } from '../utils/zero-gamma';
 
 /**
@@ -316,8 +317,7 @@ export function useFuturesGammaPlaybook(
   const gex: UseGexPerStrikeReturn = useGexPerStrike(marketOpen);
   // When scrubbed, align ES data to the pinned GEX timestamp so distances
   // and basis are read from the same instant. Live → undefined → latest ES.
-  const futuresAt =
-    gex.isScrubbed && gex.timestamp ? gex.timestamp : undefined;
+  const futuresAt = gex.isScrubbed && gex.timestamp ? gex.timestamp : undefined;
   const futures: FuturesDataState = useFuturesData(futuresAt);
   // Intraday SPX spot-GEX timeseries for the RegimeTimeline. Fetches the
   // selected trading date so scrubbing backwards shows that day's series,
@@ -442,13 +442,7 @@ export function useFuturesGammaPlaybook(
 
   const { levels, derived } = useMemo(
     () =>
-      buildEsLevels(
-        spx,
-        futures.esSpxBasis,
-        esPrice,
-        levelHistory,
-        spxMaxPain,
-      ),
+      buildEsLevels(spx, futures.esSpxBasis, esPrice, levelHistory, spxMaxPain),
     [spx, futures.esSpxBasis, esPrice, levelHistory, spxMaxPain],
   );
 
@@ -468,9 +462,7 @@ export function useFuturesGammaPlaybook(
   // churned without distance changes.
   const distanceSignature = useMemo(
     () =>
-      levels
-        .map((l) => `${l.kind}:${l.distanceEsPoints.toFixed(4)}`)
-        .join('|'),
+      levels.map((l) => `${l.kind}:${l.distanceEsPoints.toFixed(4)}`).join('|'),
     [levels],
   );
 
@@ -504,6 +496,18 @@ export function useFuturesGammaPlaybook(
     [regime, phase, derived],
   );
 
+  // Named-setup trigger evaluation. Phase 1D.3 uses the same pure
+  // evaluator the TriggersPanel renders, so the bias payload Claude sees
+  // matches exactly what the trader sees on screen. Only ACTIVE rows
+  // contribute to `firedTriggers` — IDLE/RECENTLY_FIRED are filtered out.
+  const firedTriggers: string[] = useMemo(
+    () =>
+      evaluateTriggers({ regime, phase, esPrice, levels })
+        .filter((t) => t.status === 'ACTIVE')
+        .map((t) => t.id),
+    [regime, phase, esPrice, levels],
+  );
+
   const bias: PlaybookBias = useMemo(
     () => ({
       regime,
@@ -512,11 +516,9 @@ export function useFuturesGammaPlaybook(
       esCallWall: derived.esCallWall,
       esPutWall: derived.esPutWall,
       sessionPhase: phase,
-      // Triggers are populated by the (future) TriggersPanel in Phase 1D;
-      // until then the bias payload reports an empty list.
-      firedTriggers: [],
+      firedTriggers,
     }),
-    [regime, verdict, derived, phase],
+    [regime, verdict, derived, phase, firedTriggers],
   );
 
   // Regime timeline — one point per spot_exposures snapshot. Each point is
