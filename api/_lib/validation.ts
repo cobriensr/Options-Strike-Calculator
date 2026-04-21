@@ -62,6 +62,47 @@ export const alertAckSchema = z.object({
 export type AlertAckBody = z.infer<typeof alertAckSchema>;
 
 // ============================================================
+// /api/push/subscribe + /api/push/unsubscribe
+// ============================================================
+
+/**
+ * Body schema for POST /api/push/subscribe.
+ *
+ * Matches the JSON shape produced by the browser's
+ * `PushSubscription.toJSON()`. `endpoint` is the push-service URL,
+ * `keys.p256dh` / `keys.auth` are the per-device public cryptographic
+ * material web-push requires to encrypt a payload for this subscription.
+ * `userAgent` is an optional self-reported device tag — trimmed to
+ * prevent storage bloat from pathological UA strings.
+ */
+const httpsEndpoint = z
+  .string()
+  .url()
+  .refine((u) => u.startsWith('https://'), {
+    message: 'endpoint must use https',
+  });
+
+export const PushSubscribeBodySchema = z.object({
+  endpoint: httpsEndpoint,
+  keys: z.object({
+    p256dh: z.string().min(1).max(200),
+    auth: z.string().min(1).max(100),
+  }),
+});
+
+export type PushSubscribeBody = z.infer<typeof PushSubscribeBodySchema>;
+
+/**
+ * Body schema for POST /api/push/unsubscribe. Idempotent — callers
+ * pass the exact endpoint they previously subscribed with.
+ */
+export const PushUnsubscribeBodySchema = z.object({
+  endpoint: httpsEndpoint,
+});
+
+export type PushUnsubscribeBody = z.infer<typeof PushUnsubscribeBodySchema>;
+
+// ============================================================
 // /api/positions (POST — thinkorswim CSV upload)
 // ============================================================
 

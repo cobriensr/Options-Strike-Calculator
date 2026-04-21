@@ -2065,4 +2065,36 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 78,
+    description:
+      'Create push_subscriptions table for Web Push VAPID endpoints (FuturesGammaPlaybook regime alerts)',
+    statements: (sql) => [
+      // One row per browser/device. `endpoint` is the push-service URL
+      // (FCM/Mozilla/etc) and is globally unique per subscription, so we
+      // use it as the PK rather than a surrogate SERIAL — upserts on
+      // re-subscribe are natural conflict-target matches. `p256dh` and
+      // `auth` are the VAPID per-device public keys the web-push SDK
+      // needs to encrypt payloads; they're not secrets but also never
+      // logged. `failure_count` lets the delivery cron back off or prune
+      // dead endpoints after repeated 410 Gone responses. The DESC index
+      // on `created_at` supports both the "oldest first" cap enforcement
+      // in /api/push/subscribe and any future admin listing.
+      sql`
+        CREATE TABLE IF NOT EXISTS push_subscriptions (
+          endpoint          TEXT PRIMARY KEY,
+          p256dh            TEXT NOT NULL,
+          auth              TEXT NOT NULL,
+          user_agent        TEXT,
+          failure_count     INTEGER NOT NULL DEFAULT 0,
+          created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+          last_delivered_at TIMESTAMPTZ
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_push_subscriptions_created
+          ON push_subscriptions (created_at DESC)
+      `,
+    ],
+  },
 ];

@@ -99,6 +99,9 @@ if (import.meta.env.PROD)
       { path: '/api/vix-snapshots-recent', method: 'GET' },
       { path: '/api/ml/analyze-plots', method: 'POST' },
       { path: '/api/cron/warm-tbbo-percentile', method: 'GET' },
+      { path: '/api/push/vapid-public-key', method: 'GET' },
+      { path: '/api/push/subscribe', method: 'POST' },
+      { path: '/api/push/unsubscribe', method: 'POST' },
     ],
   });
 
