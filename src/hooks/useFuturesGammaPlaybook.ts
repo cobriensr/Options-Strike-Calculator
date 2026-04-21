@@ -53,8 +53,40 @@ export interface UseFuturesGammaPlaybookReturn {
   levels: EsLevel[];
   rules: PlaybookRule[];
   bias: PlaybookBias;
+  /** Current ES price (full-size contract), from the futures snapshot. */
+  esPrice: number | null;
+  /** Live ES − SPX basis at the displayed instant. */
+  esSpxBasis: number | null;
   loading: boolean;
   error: Error | null;
+
+  // ── Scrub pass-through (from the inner useGexPerStrike) ─────────────
+  /** Timestamp currently being displayed (latest if live, scrub ts if scrubbing) */
+  timestamp: string | null;
+  /** All snapshot timestamps for the active date, ascending */
+  timestamps: string[];
+  /** The date currently being viewed (YYYY-MM-DD in ET) */
+  selectedDate: string;
+  /** Change the viewed date. Clears scrub state as a side effect. */
+  setSelectedDate: (date: string) => void;
+  /** True when the displayed snapshot is genuinely live */
+  isLive: boolean;
+  /** True when the user has stepped backwards from the latest snapshot */
+  isScrubbed: boolean;
+  /** True when there is at least one earlier snapshot the user can scrub to */
+  canScrubPrev: boolean;
+  /** True when the user is currently scrubbed and can step forward */
+  canScrubNext: boolean;
+  /** Step one snapshot earlier */
+  scrubPrev: () => void;
+  /** Step one snapshot later (clears scrub when at the latest) */
+  scrubNext: () => void;
+  /** Jump directly to a specific snapshot timestamp. */
+  scrubTo: (ts: string) => void;
+  /** Resume live mode. */
+  scrubLive: () => void;
+  /** Force a one-shot refetch of the current snapshot. */
+  refresh: () => void;
 }
 
 // ── SPX-side derivations ──────────────────────────────────────────────
@@ -183,13 +215,20 @@ function buildEsLevels(
  *
  * @param marketOpen — threaded to `useGexPerStrike` for polling decisions.
  *                     Pass whatever the caller has from `useMarketData`.
- * @param futuresAt  — optional historical timestamp for `useFuturesData`.
+ *
+ * The hook derives the historical ES alignment timestamp internally from the
+ * inner `useGexPerStrike`'s scrub state, so the caller does not need to pass
+ * `futuresAt` — scrubbing the GEX snapshot automatically re-aligns the ES
+ * snapshot to the same instant.
  */
 export function useFuturesGammaPlaybook(
   marketOpen: boolean,
-  futuresAt?: string,
 ): UseFuturesGammaPlaybookReturn {
   const gex: UseGexPerStrikeReturn = useGexPerStrike(marketOpen);
+  // When scrubbed, align ES data to the pinned GEX timestamp so distances
+  // and basis are read from the same instant. Live → undefined → latest ES.
+  const futuresAt =
+    gex.isScrubbed && gex.timestamp ? gex.timestamp : undefined;
   const futures: FuturesDataState = useFuturesData(futuresAt);
 
   // Determine "now" for session-phase classification. When the user is
@@ -267,7 +306,24 @@ export function useFuturesGammaPlaybook(
     levels,
     rules,
     bias,
+    esPrice,
+    esSpxBasis: futures.esSpxBasis,
     loading,
     error,
+    // Scrub pass-through so the container component can render
+    // `ScrubControls` without having to call `useGexPerStrike` a second time.
+    timestamp: gex.timestamp,
+    timestamps: gex.timestamps,
+    selectedDate: gex.selectedDate,
+    setSelectedDate: gex.setSelectedDate,
+    isLive: gex.isLive,
+    isScrubbed: gex.isScrubbed,
+    canScrubPrev: gex.canScrubPrev,
+    canScrubNext: gex.canScrubNext,
+    scrubPrev: gex.scrubPrev,
+    scrubNext: gex.scrubNext,
+    scrubTo: gex.scrubTo,
+    scrubLive: gex.scrubLive,
+    refresh: gex.refresh,
   };
 }
