@@ -31,6 +31,7 @@ import { RegimeTimeline } from './RegimeTimeline';
 import { TriggersPanel } from './TriggersPanel';
 import { AlertConfigPanel } from './AlertConfig';
 import { ServerEventsStrip } from './ServerEventsStrip';
+import { TodaysFiredStrip } from './TodaysFiredStrip';
 import { useAlertDispatcher } from './useAlertDispatcher';
 import type { AlertState } from './alerts';
 import type { PlaybookBias } from './types';
@@ -224,6 +225,15 @@ function FuturesGammaPlaybook({
         esPrice={playbook.esPrice}
         levels={playbook.levels}
         esGammaPin={playbook.esGammaPin}
+      />
+
+      {/* Today's fired setups — focused post-hoc list of TRIGGER_FIRE
+          events with click-to-scrub. Sits above the generic server-events
+          strip so the "did I miss a setup?" view is immediately visible. */}
+      <TodaysFiredStrip
+        marketOpen={marketOpen}
+        selectedDate={selectedDate}
+        onScrubTo={scrubTo}
       />
 
       {/* Panel 6: Recent server-fired events (push delivery history) */}

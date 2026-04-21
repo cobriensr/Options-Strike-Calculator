@@ -83,6 +83,13 @@ describe('useRegimeEventsHistory: happy path', () => {
     const firstUrl = mockFetch.mock.calls[0]?.[0] as string;
     expect(firstUrl).toBe('/api/push/recent-events?limit=20');
   });
+
+  it('honours a custom limit argument', async () => {
+    renderHook(() => useRegimeEventsHistory(true, 100));
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    const firstUrl = mockFetch.mock.calls[0]?.[0] as string;
+    expect(firstUrl).toBe('/api/push/recent-events?limit=100');
+  });
 });
 
 describe('useRegimeEventsHistory: 401 handling', () => {

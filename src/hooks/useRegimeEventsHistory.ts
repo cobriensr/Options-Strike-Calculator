@@ -68,9 +68,14 @@ interface ResponseShape {
  * Fetch the recent server-fired regime events with visibility-gated
  * polling. `marketOpen` is a cadence hint — we poll regardless of its
  * value, just at a faster tempo when the market is live.
+ *
+ * `limit` bumps the server-side cap (max 100). Default of 20 matches
+ * the existing `ServerEventsStrip` usage; `TodaysFiredStrip` passes 100
+ * so a full day of edges fits in one page with headroom.
  */
 export function useRegimeEventsHistory(
   marketOpen: boolean,
+  limit: number = DEFAULT_LIMIT,
 ): UseRegimeEventsHistoryReturn {
   const isOwner = useIsOwner();
   const [events, setEvents] = useState<RegimeEventRow[]>([]);
@@ -101,7 +106,7 @@ export function useRegimeEventsHistory(
         ]);
 
         const res = await fetch(
-          `/api/push/recent-events?limit=${DEFAULT_LIMIT}`,
+          `/api/push/recent-events?limit=${limit}`,
           { credentials: 'same-origin', signal },
         );
 
@@ -144,7 +149,7 @@ export function useRegimeEventsHistory(
         if (mountedRef.current) setLoading(false);
       }
     },
-    [isOwner],
+    [isOwner, limit],
   );
 
   useEffect(() => {
