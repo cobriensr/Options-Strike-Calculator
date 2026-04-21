@@ -84,9 +84,7 @@ describe('RegimeTimeline', () => {
       />,
     );
     // 2 regime changes → 2 crossings.
-    const crossings = container.querySelectorAll(
-      '[data-testid="zg-crossing"]',
-    );
+    const crossings = container.querySelectorAll('[data-testid="zg-crossing"]');
     expect(crossings).toHaveLength(2);
   });
 

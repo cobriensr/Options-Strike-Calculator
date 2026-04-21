@@ -48,17 +48,12 @@ afterEach(() => {
 
 describe('useSpotGexHistory: happy path', () => {
   it('fetches and returns the series on mount', async () => {
-    const { result } = renderHook(() =>
-      useSpotGexHistory('2026-04-20', true),
-    );
+    const { result } = renderHook(() => useSpotGexHistory('2026-04-20', true));
 
     await waitFor(() => expect(result.current.series).toHaveLength(2));
 
     expect(result.current.series[0]?.spot).toBe(5800);
-    expect(result.current.availableDates).toEqual([
-      '2026-04-20',
-      '2026-04-17',
-    ]);
+    expect(result.current.availableDates).toEqual(['2026-04-20', '2026-04-17']);
     expect(result.current.timestamp).toBe('2026-04-20T20:00:00.000Z');
     expect(result.current.error).toBeNull();
   });
@@ -94,9 +89,7 @@ describe('useSpotGexHistory: 401 handling', () => {
       json: async () => ({ error: 'Unauthorized' }),
     });
 
-    const { result } = renderHook(() =>
-      useSpotGexHistory('2026-04-20', true),
-    );
+    const { result } = renderHook(() => useSpotGexHistory('2026-04-20', true));
 
     await waitFor(() => expect(result.current.error).not.toBeNull());
 
@@ -116,8 +109,7 @@ describe('useSpotGexHistory: 401 handling', () => {
 describe('useSpotGexHistory: date changes', () => {
   it('re-fetches when date changes', async () => {
     const { rerender } = renderHook(
-      ({ date }: { date: string | null }) =>
-        useSpotGexHistory(date, true),
+      ({ date }: { date: string | null }) => useSpotGexHistory(date, true),
       { initialProps: { date: '2026-04-20' as string | null } },
     );
 
@@ -145,9 +137,7 @@ describe('useSpotGexHistory: lifecycle', () => {
       },
     );
 
-    const { unmount } = renderHook(() =>
-      useSpotGexHistory('2026-04-20', true),
-    );
+    const { unmount } = renderHook(() => useSpotGexHistory('2026-04-20', true));
 
     // Wait for fetch to start.
     await waitFor(() => expect(mockFetch).toHaveBeenCalled());
@@ -161,9 +151,7 @@ describe('useSpotGexHistory: lifecycle', () => {
   it('does not fetch when not the owner', async () => {
     vi.mocked(useIsOwner).mockReturnValue(false);
 
-    const { result } = renderHook(() =>
-      useSpotGexHistory('2026-04-20', true),
-    );
+    const { result } = renderHook(() => useSpotGexHistory('2026-04-20', true));
 
     await act(async () => {});
 

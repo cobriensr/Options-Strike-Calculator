@@ -17,11 +17,7 @@
 
 import { memo } from 'react';
 import type { UseFuturesGammaPlaybookReturn } from '../../hooks/useFuturesGammaPlaybook';
-import type {
-  GexRegime,
-  RegimeVerdict,
-  SessionPhase,
-} from './types';
+import type { GexRegime, RegimeVerdict, SessionPhase } from './types';
 
 export interface RegimeHeaderProps {
   playbook: UseFuturesGammaPlaybookReturn;
@@ -126,8 +122,7 @@ function zeroGammaColor(
   if (distance === null || verdict === 'STAND_ASIDE') {
     return 'var(--color-muted)';
   }
-  const supportive =
-    verdict === 'MEAN_REVERT' ? distance > 0 : distance < 0;
+  const supportive = verdict === 'MEAN_REVERT' ? distance > 0 : distance < 0;
   return supportive ? '#4ade80' : '#fbbf24';
 }
 
@@ -181,7 +176,8 @@ export const RegimeHeader = memo(function RegimeHeader({
             <span
               className="rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold"
               style={{
-                background: 'color-mix(in srgb, var(--color-accent) 15%, transparent)',
+                background:
+                  'color-mix(in srgb, var(--color-accent) 15%, transparent)',
                 color: 'var(--color-accent)',
               }}
               title="Current trading session phase (CT-based)."

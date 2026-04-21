@@ -123,7 +123,9 @@ export function useSpotGexHistory(
         }
 
         if (!res.ok) {
-          setError(new Error(`Failed to load spot-GEX history (${res.status})`));
+          setError(
+            new Error(`Failed to load spot-GEX history (${res.status})`),
+          );
           setLoading(false);
           return;
         }

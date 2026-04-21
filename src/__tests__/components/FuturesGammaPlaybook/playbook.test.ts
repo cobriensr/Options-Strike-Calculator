@@ -110,38 +110,22 @@ describe('rulesForRegime', () => {
   };
 
   it('STAND_ASIDE returns no rules', () => {
-    const rules = rulesForRegime(
-      'TRANSITIONING',
-      'MORNING',
-      fullLevels,
-    );
+    const rules = rulesForRegime('TRANSITIONING', 'MORNING', fullLevels);
     expect(rules).toEqual([]);
   });
 
   it('PRE_OPEN returns no rules (outside RTH)', () => {
-    const rules = rulesForRegime(
-      'POSITIVE',
-      'PRE_OPEN',
-      fullLevels,
-    );
+    const rules = rulesForRegime('POSITIVE', 'PRE_OPEN', fullLevels);
     expect(rules).toEqual([]);
   });
 
   it('POST_CLOSE returns no rules (outside RTH)', () => {
-    const rules = rulesForRegime(
-      'NEGATIVE',
-      'POST_CLOSE',
-      fullLevels,
-    );
+    const rules = rulesForRegime('NEGATIVE', 'POST_CLOSE', fullLevels);
     expect(rules).toEqual([]);
   });
 
   it('POSITIVE + MORNING → fade calls + lift puts, no charm drift', () => {
-    const rules = rulesForRegime(
-      'POSITIVE',
-      'MORNING',
-      fullLevels,
-    );
+    const rules = rulesForRegime('POSITIVE', 'MORNING', fullLevels);
     expect(rules.map((r) => r.id)).toEqual([
       'pos-fade-call-wall',
       'pos-lift-put-wall',
@@ -154,11 +138,7 @@ describe('rulesForRegime', () => {
   });
 
   it('POSITIVE + AFTERNOON → charm-drift rule included', () => {
-    const rules = rulesForRegime(
-      'POSITIVE',
-      'AFTERNOON',
-      fullLevels,
-    );
+    const rules = rulesForRegime('POSITIVE', 'AFTERNOON', fullLevels);
     expect(rules.map((r) => r.id)).toContain('pos-charm-drift');
     const drift = rules.find((r) => r.id === 'pos-charm-drift')!;
     expect(drift.direction).toBe('EITHER');
@@ -166,29 +146,17 @@ describe('rulesForRegime', () => {
   });
 
   it('POSITIVE + POWER → charm-drift rule included', () => {
-    const rules = rulesForRegime(
-      'POSITIVE',
-      'POWER',
-      fullLevels,
-    );
+    const rules = rulesForRegime('POSITIVE', 'POWER', fullLevels);
     expect(rules.map((r) => r.id)).toContain('pos-charm-drift');
   });
 
   it('POSITIVE + LUNCH → no charm-drift (not in window)', () => {
-    const rules = rulesForRegime(
-      'POSITIVE',
-      'LUNCH',
-      fullLevels,
-    );
+    const rules = rulesForRegime('POSITIVE', 'LUNCH', fullLevels);
     expect(rules.map((r) => r.id)).not.toContain('pos-charm-drift');
   });
 
   it('NEGATIVE + POWER → breakout/breakdown rules', () => {
-    const rules = rulesForRegime(
-      'NEGATIVE',
-      'POWER',
-      fullLevels,
-    );
+    const rules = rulesForRegime('NEGATIVE', 'POWER', fullLevels);
     expect(rules.map((r) => r.id)).toEqual([
       'neg-break-call-wall',
       'neg-break-put-wall',
@@ -208,11 +176,7 @@ describe('rulesForRegime', () => {
   });
 
   it('every rule carries a sizingNote', () => {
-    const rules = rulesForRegime(
-      'POSITIVE',
-      'AFTERNOON',
-      fullLevels,
-    );
+    const rules = rulesForRegime('POSITIVE', 'AFTERNOON', fullLevels);
     for (const r of rules) {
       expect(r.sizingNote.length).toBeGreaterThan(0);
     }

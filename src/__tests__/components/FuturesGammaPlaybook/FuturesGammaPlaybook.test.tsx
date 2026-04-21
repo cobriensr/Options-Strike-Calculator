@@ -12,7 +12,10 @@ import { render, screen } from '@testing-library/react';
 import { CollapseAllContext } from '../../../components/collapse-context';
 import type { CollapseSignal } from '../../../components/collapse-context';
 import type { UseFuturesGammaPlaybookReturn } from '../../../hooks/useFuturesGammaPlaybook';
-import type { PlaybookBias, PlaybookRule } from '../../../components/FuturesGammaPlaybook/types';
+import type {
+  PlaybookBias,
+  PlaybookRule,
+} from '../../../components/FuturesGammaPlaybook/types';
 
 // ── Mocks ────────────────────────────────────────────────────
 
@@ -25,9 +28,7 @@ import FuturesGammaPlaybook from '../../../components/FuturesGammaPlaybook';
 
 // ── Helpers ──────────────────────────────────────────────────
 
-function makeBias(
-  overrides: Partial<PlaybookBias> = {},
-): PlaybookBias {
+function makeBias(overrides: Partial<PlaybookBias> = {}): PlaybookBias {
   return {
     regime: 'POSITIVE',
     verdict: 'MEAN_REVERT',
@@ -48,7 +49,8 @@ function makeRule(overrides: Partial<PlaybookRule> = {}): PlaybookRule {
     entryEs: 5820,
     targetEs: 5805,
     stopEs: 5805,
-    sizingNote: 'Tight stops — one ES tick above the wall invalidates the fade.',
+    sizingNote:
+      'Tight stops — one ES tick above the wall invalidates the fade.',
     ...overrides,
   };
 }
@@ -101,7 +103,10 @@ const collapseSignal: CollapseSignal = { version: 0, collapsed: false };
 
 function renderPanel(
   hookOverrides: Partial<UseFuturesGammaPlaybookReturn> = {},
-  props: { marketOpen?: boolean; onBiasChange?: (b: PlaybookBias) => void } = {},
+  props: {
+    marketOpen?: boolean;
+    onBiasChange?: (b: PlaybookBias) => void;
+  } = {},
 ) {
   vi.mocked(useFuturesGammaPlaybook).mockReturnValue(hookReturn(hookOverrides));
   return render(
@@ -182,7 +187,9 @@ describe('FuturesGammaPlaybook', () => {
       }),
     ];
     renderPanel({ rules });
-    expect(screen.getByText(/Fade rallies into call wall/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Fade rallies into call wall/i),
+    ).toBeInTheDocument();
     expect(screen.getByText(/Buy dips into put wall/i)).toBeInTheDocument();
     expect(screen.getByText('SHORT')).toBeInTheDocument();
     expect(screen.getByText('LONG')).toBeInTheDocument();

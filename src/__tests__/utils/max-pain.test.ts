@@ -1,8 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  computeMaxPain,
-  type MaxPainStrikeInput,
-} from '../../utils/max-pain';
+import { computeMaxPain, type MaxPainStrikeInput } from '../../utils/max-pain';
 
 describe('computeMaxPain', () => {
   it('returns null for empty input', () => {

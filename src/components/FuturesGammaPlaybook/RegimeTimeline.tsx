@@ -136,7 +136,8 @@ export const RegimeTimeline = memo(function RegimeTimeline({
   const { xMin, xRange } = useMemo(() => {
     const sessionStartMs = toMs(sessionPhaseBoundaries.open);
     const sessionEndMs = toMs(sessionPhaseBoundaries.close);
-    const firstMs = timeline.length > 0 ? toMs(timeline[0]!.ts) : sessionStartMs;
+    const firstMs =
+      timeline.length > 0 ? toMs(timeline[0]!.ts) : sessionStartMs;
     const lastMs =
       timeline.length > 0 ? toMs(timeline.at(-1)!.ts) : sessionEndMs;
     const min = Math.min(sessionStartMs, firstMs);
@@ -145,8 +146,7 @@ export const RegimeTimeline = memo(function RegimeTimeline({
   }, [timeline, sessionPhaseBoundaries.open, sessionPhaseBoundaries.close]);
 
   const toX = useMemo(
-    () => (ms: number) =>
-      CHART_PAD_X + ((ms - xMin) / xRange) * CHART_INNER_W,
+    () => (ms: number) => CHART_PAD_X + ((ms - xMin) / xRange) * CHART_INNER_W,
     [xMin, xRange],
   );
 
