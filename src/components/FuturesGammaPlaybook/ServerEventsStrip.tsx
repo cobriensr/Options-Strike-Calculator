@@ -25,6 +25,8 @@
 import { memo } from 'react';
 import { useRegimeEventsHistory } from '../../hooks/useRegimeEventsHistory';
 import type { RegimeEventRow } from '../../hooks/useRegimeEventsHistory';
+import { Tooltip } from '../ui/Tooltip';
+import { TOOLTIP } from './copy/tooltips';
 
 export interface ServerEventsStripProps {
   marketOpen: boolean;
@@ -70,6 +72,14 @@ function typeLabel(type: string): string {
   return TYPE_LABEL[type] ?? type;
 }
 
+/** Resolve the tooltip copy for an event type, falling back to generic text. */
+function typeTooltip(type: string): string {
+  const copy = (
+    TOOLTIP.serverEvent as Record<string, string | undefined>
+  )[type];
+  return copy ?? 'Server-detected edge for the playbook widget.';
+}
+
 // ── Row ──────────────────────────────────────────────────────────────
 
 interface EventRowProps {
@@ -88,18 +98,21 @@ const EventRow = memo(function EventRow({ event }: EventRowProps) {
       >
         {formatCtTime(event.ts)}
       </span>
-      <span
-        className={`border-edge rounded border px-1.5 py-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase ${severityClass(event.severity)}`}
-      >
-        {typeLabel(event.type)}
-      </span>
-      <span
-        className="truncate font-mono text-[11px]"
-        style={{ color: 'var(--color-secondary)' }}
-        title={event.body}
-      >
-        {event.title}
-      </span>
+      <Tooltip content={typeTooltip(event.type)} side="right">
+        <span
+          className={`border-edge cursor-help rounded border px-1.5 py-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase ${severityClass(event.severity)}`}
+        >
+          {typeLabel(event.type)}
+        </span>
+      </Tooltip>
+      <Tooltip content={event.body} side="bottom">
+        <span
+          className="truncate font-mono text-[11px]"
+          style={{ color: 'var(--color-secondary)' }}
+        >
+          {event.title}
+        </span>
+      </Tooltip>
       {event.deliveredCount > 0 ? (
         <span
           className="text-muted font-mono text-[10px] tabular-nums"
@@ -127,12 +140,14 @@ export const ServerEventsStrip = memo(function ServerEventsStrip({
       aria-label="Recent server events"
     >
       <header className="mb-2 flex items-center justify-between">
-        <h3
-          className="font-mono text-[10px] font-semibold tracking-wider uppercase"
-          style={{ color: 'var(--color-tertiary)' }}
-        >
-          Recent server events
-        </h3>
+        <Tooltip content={TOOLTIP.serverEvent.severity} side="bottom">
+          <h3
+            className="cursor-help font-mono text-[10px] font-semibold tracking-wider uppercase"
+            style={{ color: 'var(--color-tertiary)' }}
+          >
+            Recent server events
+          </h3>
+        </Tooltip>
         {loading && events.length === 0 ? (
           <span
             className="text-muted font-mono text-[10px]"

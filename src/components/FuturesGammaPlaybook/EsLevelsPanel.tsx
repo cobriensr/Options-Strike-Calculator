@@ -15,6 +15,8 @@
 import { memo } from 'react';
 import type { EsLevel } from './types';
 import { ES_TICK_SIZE } from './playbook';
+import { Tooltip } from '../ui/Tooltip';
+import { TOOLTIP } from './copy/tooltips';
 
 export interface EsLevelsPanelProps {
   levels: EsLevel[];
@@ -126,7 +128,7 @@ export const EsLevelsPanel = memo(function EsLevelsPanel({
 
   return (
     <div
-      className="border-edge bg-surface-alt mb-3 overflow-hidden rounded-lg border"
+      className="border-edge bg-surface-alt mb-3 rounded-lg border"
       aria-label="ES levels"
     >
       {/* Header row */}
@@ -137,7 +139,9 @@ export const EsLevelsPanel = memo(function EsLevelsPanel({
         <span>Kind</span>
         <span className="text-right">SPX</span>
         <span className="text-right">ES</span>
-        <span className="text-right">Distance</span>
+        <Tooltip content={TOOLTIP.numeric.distance} side="bottom">
+          <span className="w-full cursor-help text-right">Distance</span>
+        </Tooltip>
         <span className="text-center">Status</span>
       </div>
 
@@ -152,12 +156,13 @@ export const EsLevelsPanel = memo(function EsLevelsPanel({
               className={`grid grid-cols-[110px_80px_1fr_130px_110px] items-center gap-2 border-l-2 px-3 py-2 ${km.border}`}
             >
               {/* Kind badge */}
-              <span
-                className={`inline-flex items-center justify-center rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${km.badge}`}
-                title={km.title}
-              >
-                {km.label}
-              </span>
+              <Tooltip content={TOOLTIP.levelKind[level.kind]} side="top">
+                <span
+                  className={`inline-flex cursor-help items-center justify-center rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${km.badge}`}
+                >
+                  {km.label}
+                </span>
+              </Tooltip>
 
               {/* SPX strike (muted, small) */}
               <span
@@ -185,25 +190,27 @@ export const EsLevelsPanel = memo(function EsLevelsPanel({
               </span>
 
               {/* Signed distance: points + ticks */}
-              <span
-                className="text-right font-mono text-[11px] tabular-nums"
-                style={{ color: 'var(--color-secondary)' }}
-                title="Signed ES distance: positive means the level is above the current ES price."
-              >
-                {fmtSignedPts(level.distanceEsPoints)}{' '}
-                <span style={{ color: 'var(--color-tertiary)' }}>
-                  / {fmtSignedTicks(level.distanceEsPoints)}
+              <Tooltip content={TOOLTIP.numeric.distance} side="top">
+                <span
+                  className="w-full cursor-help text-right font-mono text-[11px] tabular-nums"
+                  style={{ color: 'var(--color-secondary)' }}
+                >
+                  {fmtSignedPts(level.distanceEsPoints)}{' '}
+                  <span style={{ color: 'var(--color-tertiary)' }}>
+                    / {fmtSignedTicks(level.distanceEsPoints)}
+                  </span>
                 </span>
-              </span>
+              </Tooltip>
 
               {/* Status badge */}
               <span className="flex items-center justify-center">
-                <span
-                  className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${sm.className}`}
-                  title={sm.title}
-                >
-                  {sm.label}
-                </span>
+                <Tooltip content={TOOLTIP.levelStatus[level.status]} side="top">
+                  <span
+                    className={`cursor-help rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${sm.className}`}
+                  >
+                    {sm.label}
+                  </span>
+                </Tooltip>
               </span>
             </li>
           );

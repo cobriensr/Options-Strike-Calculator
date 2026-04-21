@@ -19,6 +19,8 @@
 import { memo, useMemo } from 'react';
 import type { EsLevel, GexRegime, SessionPhase } from './types';
 import { evaluateTriggers, type TriggerStatus } from './triggers';
+import { Tooltip } from '../ui/Tooltip';
+import { TOOLTIP } from './copy/tooltips';
 
 export interface TriggersPanelProps {
   regime: GexRegime;
@@ -96,7 +98,7 @@ export const TriggersPanel = memo(function TriggersPanel({
 
   return (
     <div
-      className="border-edge bg-surface-alt mb-3 overflow-hidden rounded-lg border"
+      className="border-edge bg-surface-alt mb-3 rounded-lg border"
       aria-label="Setup triggers"
     >
       {/* Header row */}
@@ -119,20 +121,23 @@ export const TriggersPanel = memo(function TriggersPanel({
               key={trigger.id}
               className="grid grid-cols-[140px_140px_1fr_110px] items-center gap-2 px-3 py-2 text-[11px]"
             >
-              <span
-                className="font-mono font-semibold"
-                style={{ color: 'var(--color-primary)' }}
-              >
-                {trigger.name}
-              </span>
-              <span
-                className={`inline-flex items-center justify-center gap-1 rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${sm.className}`}
-                title={sm.title}
-                aria-label={`Status ${sm.label}`}
-              >
-                <span aria-hidden="true">{sm.icon}</span>
-                <span>{sm.label}</span>
-              </span>
+              <Tooltip content={TOOLTIP.trigger[trigger.id]} side="top">
+                <span
+                  className="cursor-help font-mono font-semibold"
+                  style={{ color: 'var(--color-primary)' }}
+                >
+                  {trigger.name}
+                </span>
+              </Tooltip>
+              <Tooltip content={TOOLTIP.triggerStatus[trigger.status]} side="top">
+                <span
+                  className={`inline-flex cursor-help items-center justify-center gap-1 rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${sm.className}`}
+                  aria-label={`Status ${sm.label}`}
+                >
+                  <span aria-hidden="true">{sm.icon}</span>
+                  <span>{sm.label}</span>
+                </span>
+              </Tooltip>
               <span
                 className="font-mono text-[10px]"
                 style={{ color: 'var(--color-secondary)' }}

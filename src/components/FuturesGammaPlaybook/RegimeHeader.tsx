@@ -18,6 +18,8 @@
 import { memo } from 'react';
 import type { UseFuturesGammaPlaybookReturn } from '../../hooks/useFuturesGammaPlaybook';
 import type { GexRegime, RegimeVerdict, SessionPhase } from './types';
+import { Tooltip } from '../ui/Tooltip';
+import { TOOLTIP } from './copy/tooltips';
 
 export interface RegimeHeaderProps {
   playbook: UseFuturesGammaPlaybookReturn;
@@ -147,43 +149,46 @@ export const RegimeHeader = memo(function RegimeHeader({
     >
       <div className="grid grid-cols-1 items-start gap-3 md:grid-cols-[auto_1fr_auto_auto]">
         {/* Big verdict tile */}
-        <div
-          className={`rounded border px-3 py-2 text-center ${vm.bg} ${vm.border}`}
-          title={vm.desc}
-        >
+        <Tooltip content={TOOLTIP.verdict[verdict]} side="bottom">
           <div
-            className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
-            style={{ color: 'var(--color-tertiary)' }}
+            className={`rounded border px-3 py-2 text-center ${vm.bg} ${vm.border}`}
           >
-            Verdict
+            <div
+              className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
+              style={{ color: 'var(--color-tertiary)' }}
+            >
+              Verdict
+            </div>
+            <div
+              className={`font-mono text-[15px] font-bold tracking-wide ${vm.color}`}
+            >
+              {vm.label}
+            </div>
           </div>
-          <div
-            className={`font-mono text-[15px] font-bold tracking-wide ${vm.color}`}
-          >
-            {vm.label}
-          </div>
-        </div>
+        </Tooltip>
 
         {/* Regime + phase badges + description */}
         <div className="flex flex-col justify-center gap-1.5">
           <div className="flex flex-wrap items-center gap-2">
-            <span
-              className={`cursor-help rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${rm.color}`}
-              title={rm.title}
-            >
-              {rm.label}
-            </span>
-            <span
-              className="rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold"
-              style={{
-                background:
-                  'color-mix(in srgb, var(--color-accent) 15%, transparent)',
-                color: 'var(--color-accent)',
-              }}
-              title="Current trading session phase (CT-based)."
-            >
-              {phaseLabel.toUpperCase()}
-            </span>
+            <Tooltip content={TOOLTIP.regimeBadge[regime]} side="bottom">
+              <span
+                className={`cursor-help rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${rm.color}`}
+              >
+                {rm.label}
+              </span>
+            </Tooltip>
+            <Tooltip content={TOOLTIP.sessionPhase[phase]} side="bottom">
+              <span
+                className="cursor-help rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold"
+                style={{
+                  background:
+                    'color-mix(in srgb, var(--color-accent) 15%, transparent)',
+                  color: 'var(--color-accent)',
+                }}
+              >
+                {phaseLabel.toUpperCase()}
+              </span>
+            </Tooltip>
           </div>
           <span
             className="font-mono text-[11px]"
@@ -201,19 +206,22 @@ export const RegimeHeader = memo(function RegimeHeader({
           >
             ES Price
           </div>
-          <div
-            className="font-mono text-[15px] font-semibold tabular-nums"
-            style={{ color: 'var(--color-primary)' }}
-          >
-            {esPrice === null ? '—' : esPrice.toFixed(2)}
-          </div>
-          <div
-            className="font-mono text-[10px]"
-            style={{ color: 'var(--color-secondary)' }}
-            title="Live ES minus SPX basis at the displayed instant."
-          >
-            basis {esSpxBasis === null ? '—' : fmtSigned(esSpxBasis)}
-          </div>
+          <Tooltip content={TOOLTIP.numeric.esPrice} side="bottom">
+            <div
+              className="cursor-help font-mono text-[15px] font-semibold tabular-nums"
+              style={{ color: 'var(--color-primary)' }}
+            >
+              {esPrice === null ? '—' : esPrice.toFixed(2)}
+            </div>
+          </Tooltip>
+          <Tooltip content={TOOLTIP.numeric.basis} side="bottom">
+            <div
+              className="cursor-help font-mono text-[10px]"
+              style={{ color: 'var(--color-secondary)' }}
+            >
+              basis {esSpxBasis === null ? '—' : fmtSigned(esSpxBasis)}
+            </div>
+          </Tooltip>
         </div>
 
         {/* Zero-gamma distance */}
@@ -224,17 +232,14 @@ export const RegimeHeader = memo(function RegimeHeader({
           >
             ZG distance
           </div>
-          <div
-            className="font-mono text-[15px] font-semibold tabular-nums"
-            style={{ color: zgColor }}
-            title={
-              zgDistance === null
-                ? 'Zero-gamma unavailable (no ES basis or insufficient strikes).'
-                : 'Signed ES points from current price to the zero-gamma level. Color reflects whether the direction supports the active verdict.'
-            }
-          >
-            {zgDistance === null ? '—' : `${fmtSigned(zgDistance)} pts`}
-          </div>
+          <Tooltip content={TOOLTIP.numeric.zeroGammaDistance} side="bottom">
+            <div
+              className="cursor-help font-mono text-[15px] font-semibold tabular-nums"
+              style={{ color: zgColor }}
+            >
+              {zgDistance === null ? '—' : `${fmtSigned(zgDistance)} pts`}
+            </div>
+          </Tooltip>
           <div
             className="font-mono text-[10px]"
             style={{ color: 'var(--color-secondary)' }}

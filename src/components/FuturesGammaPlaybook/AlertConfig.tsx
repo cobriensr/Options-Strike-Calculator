@@ -29,6 +29,8 @@ import type {
   PushPermission,
   UsePushSubscriptionReturn,
 } from '../../hooks/usePushSubscription';
+import { Tooltip } from '../ui/Tooltip';
+import { TOOLTIP } from './copy/tooltips';
 
 export interface AlertConfigPanelProps {
   config: AlertConfig;
@@ -391,15 +393,17 @@ export const AlertConfigPanel = memo(function AlertConfigPanel({
                   key={type}
                   className="grid grid-cols-[1fr_auto_60px] items-center gap-2"
                 >
-                  <label
-                    htmlFor={id}
-                    className={`font-mono text-[11px] ${
-                      childControlsDisabled ? 'opacity-50' : ''
-                    }`}
-                    style={{ color: 'var(--color-secondary)' }}
-                  >
-                    {TYPE_LABELS[type]}
-                  </label>
+                  <Tooltip content={TOOLTIP.alertType[type]} side="left">
+                    <label
+                      htmlFor={id}
+                      className={`cursor-help font-mono text-[11px] ${
+                        childControlsDisabled ? 'opacity-50' : ''
+                      }`}
+                      style={{ color: 'var(--color-secondary)' }}
+                    >
+                      {TYPE_LABELS[type]}
+                    </label>
+                  </Tooltip>
                   <input
                     id={id}
                     type="checkbox"

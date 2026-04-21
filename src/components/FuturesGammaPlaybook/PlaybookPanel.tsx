@@ -14,6 +14,8 @@
 
 import { memo } from 'react';
 import type { PlaybookRule, RegimeVerdict, SessionPhase } from './types';
+import { Tooltip } from '../ui/Tooltip';
+import { TOOLTIP } from './copy/tooltips';
 
 export interface PlaybookPanelProps {
   rules: PlaybookRule[];
@@ -104,7 +106,7 @@ export const PlaybookPanel = memo(function PlaybookPanel({
 
   return (
     <div
-      className="border-edge bg-surface-alt overflow-hidden rounded-lg border"
+      className="border-edge bg-surface-alt rounded-lg border"
       aria-label="Playbook rules"
     >
       {/* Header row */}
@@ -113,11 +115,21 @@ export const PlaybookPanel = memo(function PlaybookPanel({
         style={{ color: 'var(--color-tertiary)' }}
       >
         <span>Direction</span>
-        <span>Condition</span>
-        <span className="text-right">Entry</span>
-        <span className="text-right">Target</span>
-        <span className="text-right">Stop</span>
-        <span>Sizing</span>
+        <Tooltip content={TOOLTIP.playbookColumn.condition} side="bottom">
+          <span className="cursor-help">Condition</span>
+        </Tooltip>
+        <Tooltip content={TOOLTIP.playbookColumn.entry} side="bottom">
+          <span className="w-full cursor-help text-right">Entry</span>
+        </Tooltip>
+        <Tooltip content={TOOLTIP.playbookColumn.target} side="bottom">
+          <span className="w-full cursor-help text-right">Target</span>
+        </Tooltip>
+        <Tooltip content={TOOLTIP.playbookColumn.stop} side="bottom">
+          <span className="w-full cursor-help text-right">Stop</span>
+        </Tooltip>
+        <Tooltip content={TOOLTIP.playbookColumn.sizing} side="bottom">
+          <span className="cursor-help">Sizing</span>
+        </Tooltip>
       </div>
 
       {/* Rule rows */}
@@ -129,13 +141,14 @@ export const PlaybookPanel = memo(function PlaybookPanel({
               key={rule.id}
               className="grid grid-cols-[68px_1fr_80px_80px_80px_1fr] items-center gap-2 px-3 py-2 text-[11px]"
             >
-              <span
-                className={`inline-flex items-center justify-center gap-1 rounded px-1.5 py-0.5 font-mono font-bold ${dm.className}`}
-                title={dm.title}
-              >
-                <span aria-hidden="true">{dm.icon}</span>
-                <span>{dm.label}</span>
-              </span>
+              <Tooltip content={TOOLTIP.direction[rule.direction]} side="top">
+                <span
+                  className={`inline-flex cursor-help items-center justify-center gap-1 rounded px-1.5 py-0.5 font-mono font-bold ${dm.className}`}
+                >
+                  <span aria-hidden="true">{dm.icon}</span>
+                  <span>{dm.label}</span>
+                </span>
+              </Tooltip>
               <span
                 className="font-mono"
                 style={{ color: 'var(--color-primary)' }}
