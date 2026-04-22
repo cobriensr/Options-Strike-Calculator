@@ -14,7 +14,14 @@
 // Run on MNQ1! 1m for results matching the Python backtest.
 // =============================================================================
 
-strategy(title="PAC BOS Config B — Strategy", shorttitle="PAC BOS B Strat", overlay=true, pyramiding=0, default_qty_type=strategy.fixed, default_qty_value=1, initial_capital=25000, commission_type=strategy.commission.cash_per_order, commission_value=1.50, slippage=1, max_lines_count=500, max_labels_count=500)
+// IMPORTANT: `margin_long`/`margin_short` DEFAULT to 100 — meaning Pine requires
+// 100% of notional value as cash before it will open a position. For MNQ1! at
+// ~20,000 pts × $2/pt = ~$40,000 notional per contract, a $25K initial_capital
+// with the default 100% margin means EVERY entry silently fails and the Strategy
+// Tester shows 0 trades. Setting margin to 5% simulates realistic futures
+// maintenance margin (~$2K/contract, matching CME MNQ day-trade requirements)
+// and lets 1-contract entries fit the $25K account.
+strategy(title="PAC BOS Config B — Strategy", shorttitle="PAC BOS B Strat", overlay=true, pyramiding=0, default_qty_type=strategy.fixed, default_qty_value=1, initial_capital=25000, commission_type=strategy.commission.cash_per_order, commission_value=1.50, slippage=1, margin_long=5, margin_short=5, max_lines_count=500, max_labels_count=500)
 
 // ============================ INPUTS ============================
 
