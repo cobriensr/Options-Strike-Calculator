@@ -205,32 +205,41 @@ if longEntry and strategy.opentrades == 0
 if shortEntry and strategy.opentrades == 0
     strategy.entry("Short", strategy.short, qty=1)
 
-// Stops + optional target. Called UNCONDITIONALLY (no `if` guard) — Pine
-// handles it correctly: if no matching entry is open, strategy.exit is a
-// no-op. This matches the simple working examples in Pine v6 docs.
-//
-// Pine v6 requires explicit `float` type when initializing with na, otherwise
-// later := assignment of a float fails with "Value with NA type cannot be
-// assigned to a variable that was defined without type keyword".
-float longStopPrice = na
-float longTargetPrice = na
-float shortStopPrice = na
-float shortTargetPrice = na
+// Stops + optional target. The stop is FROZEN at entry — Python's engine
+// computes the stop once when the signal fires and holds it static for the
+// duration of the trade. Our earlier Pine version re-computed the stop on
+// every bar via findLongStop, which effectively trailed the stop to newer
+// (tighter) swing lows as price rallied, and got whipsawed on normal
+// retraces. Freezing the stop on the bar where the position opens fixes
+// that: longStopFrozen / shortStopFrozen are assigned once on the entry
+// bar and remain constant until the trade closes. They reset to na on flat.
+var float longStopFrozen = na
+var float longTargetFrozen = na
+var float shortStopFrozen = na
+var float shortTargetFrozen = na
 
-if strategy.opentrades > 0 and strategy.position_size > 0
+justOpenedLong = strategy.position_size > 0 and nz(strategy.position_size[1], 0.0) <= 0
+justOpenedShort = strategy.position_size < 0 and nz(strategy.position_size[1], 0.0) >= 0
+
+if justOpenedLong
     entryPx = strategy.opentrades.entry_price(0)
-    // Long stop: walk back through swing-low history to find correct-side
-    // level, else fall back to 2.25 × ATR(14) below entry.
-    longStopPrice := findLongStop(entryPx, atr14)
-    longTargetPrice := effExitMode == "ATR_TARGET" ? entryPx + effTargetATR * atr14 : na
+    longStopFrozen := findLongStop(entryPx, atr14)
+    longTargetFrozen := effExitMode == "ATR_TARGET" ? entryPx + effTargetATR * atr14 : na
 
-if strategy.opentrades > 0 and strategy.position_size < 0
+if justOpenedShort
     entryPx = strategy.opentrades.entry_price(0)
-    shortStopPrice := findShortStop(entryPx, atr14)
-    shortTargetPrice := effExitMode == "ATR_TARGET" ? entryPx - effTargetATR * atr14 : na
+    shortStopFrozen := findShortStop(entryPx, atr14)
+    shortTargetFrozen := effExitMode == "ATR_TARGET" ? entryPx - effTargetATR * atr14 : na
 
-strategy.exit("LongX", from_entry="Long", stop=longStopPrice, limit=longTargetPrice, comment_loss="STOP", comment_profit="TARGET")
-strategy.exit("ShortX", from_entry="Short", stop=shortStopPrice, limit=shortTargetPrice, comment_loss="STOP", comment_profit="TARGET")
+// Reset frozen levels when flat so next trade recomputes fresh.
+if strategy.opentrades == 0
+    longStopFrozen := na
+    longTargetFrozen := na
+    shortStopFrozen := na
+    shortTargetFrozen := na
+
+strategy.exit("LongX", from_entry="Long", stop=longStopFrozen, limit=longTargetFrozen, comment_loss="STOP", comment_profit="TARGET")
+strategy.exit("ShortX", from_entry="Short", stop=shortStopFrozen, limit=shortTargetFrozen, comment_loss="STOP", comment_profit="TARGET")
 
 // CHoCH exit (OPPOSITE_CHOCH mode only)
 if effExitMode == "OPPOSITE_CHOCH" and strategy.position_size > 0 and chochBear
