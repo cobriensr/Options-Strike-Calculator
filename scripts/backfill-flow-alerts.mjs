@@ -140,9 +140,8 @@ function buildPath(olderThan) {
   const qs = new URLSearchParams();
   qs.append('ticker_symbol', 'SPXW');
   qs.append('issue_types[]', 'Index');
-  qs.append('rule_name[]', 'RepeatedHits');
-  qs.append('rule_name[]', 'RepeatedHitsAscendingFill');
-  qs.append('rule_name[]', 'RepeatedHitsDescendingFill');
+  // No rule_name[] filter — ingest every rule family UW fires for SPXW 0-1 DTE.
+  // Downstream OTM Flow Alerts view filters by threshold, not by rule identity.
   qs.append('min_dte', '0');
   qs.append('max_dte', '1');
   qs.append('limit', String(PAGE_SIZE));

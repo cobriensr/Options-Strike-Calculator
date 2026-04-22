@@ -244,4 +244,94 @@ describe('OtmFlowRow — badges', () => {
     // The outer row div has a bg class tacked on when isNew.
     expect(container.firstChild).toHaveClass('bg-surface-alt/60');
   });
+
+  it('shortens FloorTradeLargeCap to "FLOOR"', () => {
+    render(
+      <OtmFlowRow
+        alert={makeAlert({
+          alert_rule: 'FloorTradeLargeCap',
+          has_sweep: false,
+        })}
+        nowMs={FIXED_NOW}
+      />,
+    );
+    expect(screen.getByText('FLOOR')).toBeInTheDocument();
+  });
+
+  it('shortens SweepsFollowedByFloor to "SWP+FL"', () => {
+    render(
+      <OtmFlowRow
+        alert={makeAlert({
+          alert_rule: 'SweepsFollowedByFloor',
+          has_sweep: false,
+        })}
+        nowMs={FIXED_NOW}
+      />,
+    );
+    expect(screen.getByText('SWP+FL')).toBeInTheDocument();
+  });
+
+  it('falls back to a trimmed uppercase form for unknown rules', () => {
+    // New UW rule we haven't mapped yet — the fallback strips
+    // Trade/Condition/Fill tokens, uppercases, and truncates to 8 chars.
+    render(
+      <OtmFlowRow
+        alert={makeAlert({
+          alert_rule: 'SomeNewRuleName',
+          has_sweep: false,
+        })}
+        nowMs={FIXED_NOW}
+      />,
+    );
+    expect(screen.getByText('SOMENEWR')).toBeInTheDocument();
+  });
+});
+
+// ══════════════════════════════════════════════════════════
+// UW CONTRACT LINK
+// ══════════════════════════════════════════════════════════
+
+describe('OtmFlowRow — UW contract link', () => {
+  it('wraps the strike in an anchor pointing at the UW contract page', () => {
+    render(
+      <OtmFlowRow
+        alert={makeAlert({
+          option_chain: 'SPXW260422C07100000',
+          strike: 7100,
+        })}
+        nowMs={FIXED_NOW}
+      />,
+    );
+    const link = screen.getByRole('link', {
+      name: /open spxw260422c07100000 on unusual whales/i,
+    });
+    expect(link).toHaveAttribute(
+      'href',
+      'https://unusualwhales.com/option-chain/SPXW260422C07100000',
+    );
+    expect(link).toHaveAttribute('target', '_blank');
+    const rel = link.getAttribute('rel') ?? '';
+    expect(rel).toContain('noopener');
+    expect(rel).toContain('noreferrer');
+    expect(link).toHaveTextContent('7100');
+  });
+
+  it('URL-encodes the option_chain in the href for defensive safety', () => {
+    // OCC symbols are always [A-Z0-9]{21} in practice, but the component
+    // calls encodeURIComponent so upstream corruption can't produce a
+    // malformed href. Verify by passing a value containing an unsafe char.
+    render(
+      <OtmFlowRow
+        alert={makeAlert({ option_chain: 'SPXW260422C07100000?x=1' })}
+        nowMs={FIXED_NOW}
+      />,
+    );
+    const link = screen.getByRole('link', {
+      name: /open spxw260422c07100000\?x=1 on unusual whales/i,
+    });
+    expect(link).toHaveAttribute(
+      'href',
+      'https://unusualwhales.com/option-chain/SPXW260422C07100000%3Fx%3D1',
+    );
+  });
 });

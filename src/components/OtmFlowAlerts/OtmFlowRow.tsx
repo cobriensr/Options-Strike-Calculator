@@ -77,6 +77,34 @@ function paletteFor(type: 'call' | 'put', side: 'ask' | 'bid'): RowPalette {
   return { accent: 'text-sky-500', label: 'Put unwind' };
 }
 
+// ── Rule shortening ───────────────────────────────────────────
+
+/**
+ * Maps UW alert rule names to compact badge labels that fit the tight
+ * footer column. Unknown rules fall back to a trimmed uppercase form so
+ * a new server-side rule renders sensibly without a frontend change.
+ * Mirrors the same shape used by WhalePositioningTable.
+ */
+const RULE_LABEL: Record<string, string> = {
+  RepeatedHits: 'RH',
+  RepeatedHitsAscendingFill: 'RH↑',
+  RepeatedHitsDescendingFill: 'RH↓',
+  FloorTradeLargeCap: 'FLOOR',
+  FloorTradeSmallCap: 'FLOOR',
+  FloorTradeMidCap: 'FLOOR',
+  SweepsFollowedByFloor: 'SWP+FL',
+  OtmEarningsFloor: 'OTMEARN',
+  LowHistoricVolumeFloor: 'LOWVOL',
+};
+
+function shortRule(rule: string): string {
+  if (RULE_LABEL[rule]) return RULE_LABEL[rule]!;
+  return rule
+    .replace(/(Trade|Condition|Fill)/g, '')
+    .toUpperCase()
+    .slice(0, 8);
+}
+
 // ── Component ─────────────────────────────────────────────────
 
 export interface OtmFlowRowProps {
@@ -113,11 +141,18 @@ export const OtmFlowRow = memo(function OtmFlowRow({
         </span>
       </div>
 
-      {/* Strike + distance */}
+      {/* Strike + distance — strike links to the contract on Unusual Whales */}
       <div className="flex min-w-[90px] flex-col text-right">
-        <span className="text-foreground font-semibold">
+        <a
+          href={`https://unusualwhales.com/option-chain/${encodeURIComponent(alert.option_chain)}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-foreground font-semibold hover:underline"
+          title={`View ${alert.option_chain} on Unusual Whales`}
+          aria-label={`Open ${alert.option_chain} on Unusual Whales (opens in new tab)`}
+        >
           {Math.round(alert.strike)}
-        </span>
+        </a>
         <span className="text-muted text-[11px]">
           {formatDistancePct(alert.distance_pct)}
         </span>
@@ -152,7 +187,7 @@ export const OtmFlowRow = memo(function OtmFlowRow({
         <div className="text-muted flex items-center justify-between text-[11px]">
           <span>{formatCtTime(alert.created_at)} CT</span>
           <span>
-            {alert.alert_rule.replace('RepeatedHits', 'RH')}
+            {shortRule(alert.alert_rule)}
             {alert.has_sweep ? ' · sweep' : ''}
             {alert.has_multileg ? ' · multi' : ''}
           </span>

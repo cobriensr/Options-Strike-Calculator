@@ -1,13 +1,28 @@
 /**
  * GET /api/cron/fetch-flow-alerts
  *
- * Fetches UW repeated-hit options flow alerts for 0-1 DTE SPXW contracts.
- * Scheduled every minute during market hours. Upserts into flow_alerts.
+ * Fetches UW options flow alerts for 0-1 DTE SPXW contracts across ALL
+ * rule families UW fires (no `rule_name[]` filter). Scheduled every minute
+ * during market hours. Upserts into flow_alerts.
+ *
+ * Rule families UW may emit for SPXW (Index + Large-Cap tier):
+ *   - RepeatedHits / AscendingFill / DescendingFill — rapid-fire same-contract
+ *     hits; core order-slicing signal (bulk of SPXW alerts)
+ *   - FloorTradeLargeCap — single institutional floor print (high-signal)
+ *   - SweepsFollowedByFloor — electronic sweep + floor finish (whale signal)
+ *   - FloorTradeSmallCap / MidCap, OtmEarningsFloor, LowHistoricVolumeFloor —
+ *     effectively never fire for SPXW but are harmless to accept; they'd be
+ *     self-filtered by the ticker_symbol + issue_types filters upstream at UW
+ *
+ * Downstream consumers of flow_alerts (whale-positioning, top-strikes,
+ * flow-scoring, analyze-context, ML pipeline) receive the wider rule set.
+ * The `alert_rule` column preserves the rule name per-row if any consumer
+ * needs to segment by it.
  *
  * Strategy:
  *   1. Read MAX(created_at) from flow_alerts to scope the request.
- *   2. Call UW with rule_name=RepeatedHits/Ascending/Descending, min_dte=0,
- *      max_dte=1, ticker_symbol=SPXW, issue_types[]=Index, limit=200.
+ *   2. Call UW with min_dte=0, max_dte=1, ticker_symbol=SPXW,
+ *      issue_types[]=Index, limit=200.
  *   3. If the DB already has rows, pass `newer_than=<max(created_at)>`.
  *      Otherwise omit — first-run backfill.
  *   4. If the response has exactly 200 rows, paginate using `older_than`
@@ -44,9 +59,8 @@ function buildAlertsPath(params: Record<string, string | undefined>): string {
   const qs = new URLSearchParams();
   qs.append('ticker_symbol', 'SPXW');
   qs.append('issue_types[]', 'Index');
-  qs.append('rule_name[]', 'RepeatedHits');
-  qs.append('rule_name[]', 'RepeatedHitsAscendingFill');
-  qs.append('rule_name[]', 'RepeatedHitsDescendingFill');
+  // No rule_name[] filter — ingest every rule family UW fires for SPXW 0-1 DTE.
+  // Downstream OTM Flow Alerts view filters by threshold, not by rule identity.
   qs.append('min_dte', '0');
   qs.append('max_dte', '1');
   qs.append('limit', String(PAGE_SIZE));
