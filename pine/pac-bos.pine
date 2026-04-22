@@ -157,44 +157,60 @@ var int   lastSwingHighBar = na
 var int   lastSwingLowBar = na
 
 // Bounded swing history for walk-back stop placement — mirrors Python's
-// `_find_swing_stop_level` (ml/src/pac_backtest/loop.py).
+// `_find_swing_stop_level` (ml/src/pac_backtest/loop.py). Parallel `*Bars`
+// arrays track WHEN each swing was confirmed so we can exclude pivots
+// confirmed at the signal bar itself (Python's `range(signal_idx - 1, ...)`).
 var array<float> swingLowHistory = array.new_float()
+var array<int> swingLowHistoryBars = array.new_int()
 var array<float> swingHighHistory = array.new_float()
+var array<int> swingHighHistoryBars = array.new_int()
 SWING_HISTORY_CAP = 50
 
 if not na(pivH)
     lastSwingHighLevel := pivH
     lastSwingHighBar := bar_index - swingLen
     array.push(swingHighHistory, pivH)
+    array.push(swingHighHistoryBars, bar_index)
     if array.size(swingHighHistory) > SWING_HISTORY_CAP
         array.shift(swingHighHistory)
+        array.shift(swingHighHistoryBars)
 if not na(pivL)
     lastSwingLowLevel := pivL
     lastSwingLowBar := bar_index - swingLen
     array.push(swingLowHistory, pivL)
+    array.push(swingLowHistoryBars, bar_index)
     if array.size(swingLowHistory) > SWING_HISTORY_CAP
         array.shift(swingLowHistory)
+        array.shift(swingLowHistoryBars)
 
 // Walk-back stop finders — iterate the swing history from most-recent to
 // oldest, return the first level on the correct side of entry. Python's
 // engine does this because the most-recent swing is often on the WRONG side
 // of entry (BOS bars frequently coincide with an opposite-side pivot).
-findLongStop(entryPx, atrVal) =>
+// `signalBar` is the bar where the BOS fired; pivots confirmed at or after
+// it are excluded to match Python's `range(signal_idx - 1, start - 1, -1)`.
+findLongStop(entryPx, atrVal, signalBar) =>
     float result = na
     n = array.size(swingLowHistory)
     if n > 0
         for i = n - 1 to 0
+            barIdx = array.get(swingLowHistoryBars, i)
+            if barIdx >= signalBar
+                continue
             level = array.get(swingLowHistory, i)
             if level < entryPx
                 result := level
                 break
     na(result) ? entryPx - stopATRMult * atrVal : result
 
-findShortStop(entryPx, atrVal) =>
+findShortStop(entryPx, atrVal, signalBar) =>
     float result = na
     n = array.size(swingHighHistory)
     if n > 0
         for i = n - 1 to 0
+            barIdx = array.get(swingHighHistoryBars, i)
+            if barIdx >= signalBar
+                continue
             level = array.get(swingHighHistory, i)
             if level > entryPx
                 result := level
@@ -251,8 +267,10 @@ shortEntry = bosBear and inRTH and not isEventDay and zClose < -minZVWAP
 
 entryPrice = close  // backtest fills next-bar-open; close is a reasonable live proxy
 
-getLongStop() => findLongStop(entryPrice, atr14)
-getShortStop() => findShortStop(entryPrice, atr14)
+// In the indicator, `getLongStop()` / `getShortStop()` are called AT the BOS
+// bar (where `longEntry` / `shortEntry` fires), so signalBar == bar_index.
+getLongStop() => findLongStop(entryPrice, atr14, bar_index)
+getShortStop() => findShortStop(entryPrice, atr14, bar_index)
 
 // ============================ STRUCTURE MARKERS ============================
 // Swing highs/lows: plot at the confirmed swing bar. pivothigh(N, N) reports

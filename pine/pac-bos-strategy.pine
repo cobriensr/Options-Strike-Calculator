@@ -123,47 +123,66 @@ var int lastSwingLowBar = na
 // Maintain a bounded history of confirmed swings. Python's
 // `_find_swing_stop_level` walks back up to 50 swings to find a correct-side
 // one for the stop. Capping the arrays at 50 matches the Python lookback.
+// Parallel `*Bars` arrays track WHEN each swing was confirmed so we can
+// exclude pivots confirmed at the signal bar itself (see findLongStop).
 var array<float> swingLowHistory = array.new_float()
+var array<int> swingLowHistoryBars = array.new_int()
 var array<float> swingHighHistory = array.new_float()
+var array<int> swingHighHistoryBars = array.new_int()
 SWING_HISTORY_CAP = 50
 
 if not na(pivH)
     lastSwingHighLevel := pivH
     lastSwingHighBar := bar_index - swingLen
     array.push(swingHighHistory, pivH)
+    array.push(swingHighHistoryBars, bar_index)
     if array.size(swingHighHistory) > SWING_HISTORY_CAP
         array.shift(swingHighHistory)
+        array.shift(swingHighHistoryBars)
 if not na(pivL)
     lastSwingLowLevel := pivL
     lastSwingLowBar := bar_index - swingLen
     array.push(swingLowHistory, pivL)
+    array.push(swingLowHistoryBars, bar_index)
     if array.size(swingLowHistory) > SWING_HISTORY_CAP
         array.shift(swingLowHistory)
+        array.shift(swingLowHistoryBars)
 
 // Walk-back stop finders — iterate the swing history from most-recent to
 // oldest, return the first level on the correct side of `entryPx`. This
 // mirrors Python's `_find_swing_stop_level` (ml/src/pac_backtest/loop.py)
-// which walks back through swings because the most-recent swing is often
-// on the WRONG side of the entry (a bullish BOS frequently completes a new
-// swing HIGH at the BOS bar itself). Using the immediate swing blindly
-// plants the stop on the PROFIT side of entry — a bug that cost us 2.8×
-// the trade count vs Python in the 2026-04-18 diff.
-findLongStop(entryPx, atrVal) =>
+// which:
+//   1. Walks back through swings to find a correct-side level (because the
+//      most-recent swing is often on the WRONG side of entry).
+//   2. EXCLUDES the signal bar itself — a bullish BOS frequently coincides
+//      with a new swing-low confirmation at the signal bar, which if used
+//      plants the stop at the profit side of entry.
+// `signalBar` is the bar where the BOS fired. At entry detection we're on
+// bar N+1 (entry fills at bar N+1 open after signal at bar N close), so
+// signalBar = bar_index - 1. Any pivot confirmed at barIdx >= signalBar is
+// excluded to match Python's `range(signal_idx - 1, ...)`.
+findLongStop(entryPx, atrVal, signalBar) =>
     float result = na
     n = array.size(swingLowHistory)
     if n > 0
         for i = n - 1 to 0
+            barIdx = array.get(swingLowHistoryBars, i)
+            if barIdx >= signalBar
+                continue
             level = array.get(swingLowHistory, i)
             if level < entryPx
                 result := level
                 break
     na(result) ? entryPx - stopATRMult * atrVal : result
 
-findShortStop(entryPx, atrVal) =>
+findShortStop(entryPx, atrVal, signalBar) =>
     float result = na
     n = array.size(swingHighHistory)
     if n > 0
         for i = n - 1 to 0
+            barIdx = array.get(swingHighHistoryBars, i)
+            if barIdx >= signalBar
+                continue
             level = array.get(swingHighHistory, i)
             if level > entryPx
                 result := level
@@ -221,14 +240,18 @@ var float shortTargetFrozen = na
 justOpenedLong = strategy.position_size > 0 and nz(strategy.position_size[1], 0.0) <= 0
 justOpenedShort = strategy.position_size < 0 and nz(strategy.position_size[1], 0.0) >= 0
 
+// Entry fills at bar N+1 open (from signal at bar N close). At entry
+// detection `bar_index` = N+1, so the signal bar is `bar_index - 1` (= N).
+signalBarIdx = bar_index - 1
+
 if justOpenedLong
     entryPx = strategy.opentrades.entry_price(0)
-    longStopFrozen := findLongStop(entryPx, atr14)
+    longStopFrozen := findLongStop(entryPx, atr14, signalBarIdx)
     longTargetFrozen := effExitMode == "ATR_TARGET" ? entryPx + effTargetATR * atr14 : na
 
 if justOpenedShort
     entryPx = strategy.opentrades.entry_price(0)
-    shortStopFrozen := findShortStop(entryPx, atr14)
+    shortStopFrozen := findShortStop(entryPx, atr14, signalBarIdx)
     shortTargetFrozen := effExitMode == "ATR_TARGET" ? entryPx - effTargetATR * atr14 : na
 
 // Reset frozen levels when flat so next trade recomputes fresh.
