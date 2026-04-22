@@ -69,17 +69,18 @@ bgcolor(isEventDay ? color.new(color.orange, 92) : na, title="Event day skip")
 atr14 = ta.atr(14)
 [diplus, diminus, adx14] = ta.dmi(14, 14)
 
-vwapVal = ta.vwap
 tp = (high + low + close) / 3.0
 
-// z_close_vwap MUST match the Python backtest:
-//   session_std = stdev of typical-price (H+L+C)/3 expanding since UTC midnight
-//   z_close     = (close - session_vwap) / session_std
-// The earlier rolling-60-bar stdev of (tp - vwap) fires FALSE z > 1 at 08:30
-// CT because the window is overnight low-vol bars — Python's cumulative
-// UTC-day stdev is larger at RTH open and correctly rejects those entries.
-// Using UTC midnight as the reset boundary matches
-// `pac.order_blocks._session_vwap_std` (ts_event.dt.floor("D")) exactly.
+// z_close_vwap MUST match the Python backtest EXACTLY. Python
+// (ml/src/pac/order_blocks.py) computes BOTH the VWAP and the stdev with
+// a UTC-midnight reset (ts_event.dt.floor("D")). Pine's built-in ta.vwap
+// resets at the chart symbol's session boundary (globex 17:00 CT) — a
+// ~2-hour mismatch vs Python that left a residual z-score divergence
+// even after we fixed the stdev reset. The fix is to compute VWAP
+// manually with the same UTC-midnight reset so numerator and denominator
+// integrate over matching windows.
+var float vwapNum = 0.0  // Σ tp × vol
+var float vwapDen = 0.0  // Σ vol
 var float tpSum = 0.0
 var float tpSumSq = 0.0
 var int tpN = 0
@@ -87,12 +88,17 @@ utcDayOfMonth = dayofmonth(time, "UTC")
 utcDayOfMonthPrev = nz(utcDayOfMonth[1], utcDayOfMonth)
 isNewUTCDay = utcDayOfMonth != utcDayOfMonthPrev
 if isNewUTCDay or bar_index == 0
+    vwapNum := 0.0
+    vwapDen := 0.0
     tpSum := 0.0
     tpSumSq := 0.0
     tpN := 0
+vwapNum := vwapNum + tp * volume
+vwapDen := vwapDen + volume
 tpSum := tpSum + tp
 tpSumSq := tpSumSq + tp * tp
 tpN := tpN + 1
+vwapVal = vwapDen > 0 ? vwapNum / vwapDen : close
 // Sample stdev (ddof=1) to match pandas .std() default used in Python engine
 meanTp = tpN > 0 ? tpSum / tpN : 0.0
 sessionVariance = tpN > 1 ? math.max(0.0, (tpSumSq - tpN * meanTp * meanTp) / (tpN - 1)) : 0.0
