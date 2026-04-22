@@ -34,6 +34,10 @@ export interface StrikeTableProps {
    * distant walls show their distance without needing a separate column.
    */
   showAtmDistance?: boolean;
+  /** Strikes that just entered the set on the latest tick (Top 5 only). */
+  justEntered?: Set<number>;
+  /** Strike that has been in the set the longest (Top 5 only). */
+  oldestStrike?: number | null;
 }
 
 export function StrikeTable({
@@ -46,6 +50,8 @@ export function StrikeTable({
   gexDelta5mMap,
   spotRowRef,
   showAtmDistance = false,
+  justEntered,
+  oldestStrike = null,
 }: StrikeTableProps) {
   return (
     <div className="border-edge overflow-hidden rounded-lg border">
@@ -88,6 +94,8 @@ export function StrikeTable({
           const meta = CLASS_META[cls];
           const pct1m = gexDeltaMap.get(s.strike) ?? null;
           const pct5m = gexDelta5mMap.get(s.strike) ?? null;
+          const isNew = justEntered?.has(s.strike) ?? false;
+          const isAnchor = oldestStrike !== null && s.strike === oldestStrike;
 
           return (
             <div
@@ -137,14 +145,32 @@ export function StrikeTable({
                 )}
               </div>
 
-              {/* Classification badge */}
-              <div className="flex items-center px-3 py-1.5">
+              {/* Classification badge + lifecycle pills (Top 5 only) */}
+              <div className="flex items-center gap-1.5 px-3 py-1.5">
                 <span
                   className={`inline-block cursor-help rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold ${meta.badgeBg} ${meta.badgeText}`}
                   title={CLS_TOOLTIP[cls]}
                 >
                   {meta.badge}
                 </span>
+                {isNew && (
+                  <span
+                    className="animate-fade-in-up inline-block rounded bg-sky-500/20 px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider text-sky-300 uppercase ring-1 ring-sky-400/40"
+                    title="Just entered Top 5 on the latest snapshot"
+                    aria-label="New entry"
+                  >
+                    New
+                  </span>
+                )}
+                {isAnchor && (
+                  <span
+                    className="inline-block rounded bg-amber-500/15 px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider text-amber-300 uppercase ring-1 ring-amber-400/30"
+                    title="Oldest strike in the Top 5 — in the set longest this session"
+                    aria-label="Anchor strike"
+                  >
+                    Anchor
+                  </span>
+                )}
               </div>
 
               {/* Direction signal */}

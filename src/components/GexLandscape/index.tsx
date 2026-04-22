@@ -39,6 +39,7 @@ import {
 } from 'react';
 import { SectionBox } from '../ui';
 import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
+import { useTopStrikesTracker } from '../../hooks/useTopStrikesTracker';
 import { BiasPanel } from './BiasPanel';
 import { ClassificationLegend } from './ClassificationLegend';
 import { ScrubControls } from '../ScrubControls';
@@ -53,6 +54,26 @@ import {
 } from './deltas';
 import { formatBiasForClaude } from './formatters';
 import type { PriceTrend, Snapshot } from './types';
+
+const TOP5_MUTE_STORAGE_KEY = 'gex-landscape-top5-muted-v1';
+
+function readTop5MutedFromStorage(): boolean {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return false;
+    return window.localStorage.getItem(TOP5_MUTE_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeTop5MutedToStorage(muted: boolean): void {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    window.localStorage.setItem(TOP5_MUTE_STORAGE_KEY, muted ? '1' : '0');
+  } catch {
+    /* private mode / quota — keep in-memory state */
+  }
+}
 
 /** View mode for the table area: full ±50pt grid or top 5 by |netGamma|. */
 type LandscapeTab = 'all' | 'top5';
@@ -133,6 +154,18 @@ const GexLandscape = memo(function GexLandscape({
   // Which view is showing in the table area — structural grid or top-5 walls.
   const [activeTab, setActiveTab] = useState<LandscapeTab>('all');
   const tablistRef = useRef<HTMLDivElement>(null);
+  // Mute the Top 5 composition-change chime. Persisted to localStorage so
+  // the preference survives reloads.
+  const [top5Muted, setTop5Muted] = useState<boolean>(() =>
+    readTop5MutedFromStorage(),
+  );
+  const toggleTop5Mute = useCallback(() => {
+    setTop5Muted((prev) => {
+      const next = !prev;
+      writeTop5MutedToStorage(next);
+      return next;
+    });
+  }, []);
 
   const currentPrice = strikes[0]?.price ?? 0;
 
@@ -153,6 +186,17 @@ const GexLandscape = memo(function GexLandscape({
       .sort((a, b) => Math.abs(b.netGamma) - Math.abs(a.netGamma))
       .slice(0, TOP_GEX_COUNT);
   }, [strikes]);
+
+  // Track Top 5 composition across polls so the trader gets a chime on
+  // any set change and can see which strike is the session anchor vs.
+  // which one just entered.
+  const { justEntered, oldestStrike } = useTopStrikesTracker({
+    topFive,
+    timestamp,
+    isLive,
+    muted: top5Muted,
+    resetKey: selectedDate,
+  });
 
   // Find the strike closest to spot for the ATM indicator.
   const spotStrike = useMemo(() => {
@@ -380,7 +424,7 @@ const GexLandscape = memo(function GexLandscape({
         ref={tablistRef}
         role="tablist"
         aria-label="GEX landscape view"
-        className="border-edge mt-2 mb-2 flex gap-1 border-b"
+        className="border-edge mt-2 mb-2 flex items-end gap-1 border-b"
       >
         {TAB_ORDER.map((tab) => {
           const selected = activeTab === tab;
@@ -408,6 +452,29 @@ const GexLandscape = memo(function GexLandscape({
             </button>
           );
         })}
+        <button
+          type="button"
+          onClick={toggleTop5Mute}
+          aria-label={
+            top5Muted
+              ? 'Unmute Top 5 composition alert'
+              : 'Mute Top 5 composition alert'
+          }
+          aria-pressed={top5Muted}
+          title={
+            top5Muted
+              ? 'Top 5 alert muted — click to enable chime on composition change'
+              : 'Top 5 alert on — click to mute chime'
+          }
+          className={[
+            'mb-1 ml-auto rounded px-2 py-1 font-mono text-[11px] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/50',
+            top5Muted
+              ? 'text-muted hover:text-secondary'
+              : 'text-sky-300 hover:text-sky-200',
+          ].join(' ')}
+        >
+          {top5Muted ? '🔕 Muted' : '🔔 Top 5 alert'}
+        </button>
       </div>
       <div
         role="tabpanel"
@@ -445,6 +512,8 @@ const GexLandscape = memo(function GexLandscape({
             gexDelta5mMap={gexDelta5mMap}
             spotRowRef={spotRowRef}
             showAtmDistance
+            justEntered={justEntered}
+            oldestStrike={oldestStrike}
           />
         )}
       </div>
