@@ -31,6 +31,7 @@ import type {
   EsLevel,
   GexRegime,
   PlaybookBias,
+  PlaybookFlowSignals,
   PlaybookRule,
   RegimeTimelinePoint,
   RegimeVerdict,
@@ -49,6 +50,13 @@ import {
   verdictForRegime,
 } from '../components/FuturesGammaPlaybook/playbook';
 import { evaluateTriggers } from '../components/FuturesGammaPlaybook/triggers';
+import { classify as classifyGex } from '../components/GexLandscape/classify';
+import {
+  computeDeltaMap,
+  computePriceTrend,
+  findClosestSnapshot,
+} from '../components/GexLandscape/deltas';
+import type { Snapshot, PriceTrend } from '../components/GexLandscape/types';
 import { computeZeroGammaStrike } from '../utils/zero-gamma';
 
 /**
@@ -58,6 +66,13 @@ import { computeZeroGammaStrike } from '../utils/zero-gamma';
  * level) transitions. Matches the 5-point window documented in `basis.ts`.
  */
 const LEVEL_HISTORY_WINDOW = 5;
+
+/** Snapshot ring-buffer horizon for Δ% and smoothing windows. */
+const SNAPSHOT_BUFFER_MS = 10 * 60 * 1000;
+/** Lookback for the 5m Δ% window used by wall-flow trends. */
+const DELTA_5M_LOOKBACK_MS = 5 * 60 * 1000;
+/** Max wall-clock skew allowed when matching a buffered snapshot to a 5m target. */
+const DELTA_5M_MATCH_TOLERANCE_MS = 2 * 60 * 1000;
 
 type LevelKind = EsLevel['kind'];
 
@@ -90,6 +105,13 @@ export interface UseFuturesGammaPlaybookReturn {
    * the put wall by definition, so a dedicated row would duplicate one.
    */
   esGammaPin: number | null;
+  /**
+   * Flow signals derived from the snapshot buffer — charm classification
+   * of the top drift targets, 5m Δ% aggregated above/below spot, and
+   * price-trend direction. Fed into `rulesForRegime` so the rule engine
+   * can emit charm-aware conviction and drift-override suppression.
+   */
+  flowSignals: PlaybookFlowSignals;
   /**
    * Intraday regime timeseries for the active session, sourced from
    * `/api/spot-gex-history`. Each point carries `ts`, `netGex`, `spot`,
@@ -158,6 +180,18 @@ interface SpxLevels {
   gammaPin: number | null;
   spot: number | null;
   netGex: number;
+  /**
+   * Row with the largest |netGamma| ABOVE spot. The top upside drift
+   * target — feeds charm classification for the fade-call conviction.
+   * Null when no above-spot strikes exist (e.g. empty window or spot at
+   * the top of the ladder).
+   */
+  topUpsideRow: GexStrikeLevel | null;
+  /**
+   * Row with the largest |netGamma| BELOW spot. Mirror of
+   * `topUpsideRow` — drives lift-put conviction.
+   */
+  topDownsideRow: GexStrikeLevel | null;
 }
 
 /**
@@ -178,13 +212,19 @@ function deriveSpxLevels(strikes: GexStrikeLevel[]): SpxLevels {
       gammaPin: null,
       spot: null,
       netGex: 0,
+      topUpsideRow: null,
+      topDownsideRow: null,
     };
   }
 
   let callWallRow: GexStrikeLevel | null = null;
   let putWallRow: GexStrikeLevel | null = null;
   let gammaPinRow: GexStrikeLevel | null = null;
+  let topUpsideRow: GexStrikeLevel | null = null;
+  let topDownsideRow: GexStrikeLevel | null = null;
   let netGex = 0;
+
+  const spot = strikes[0]?.price ?? null;
 
   for (const s of strikes) {
     netGex += s.netGamma;
@@ -203,9 +243,28 @@ function deriveSpxLevels(strikes: GexStrikeLevel[]): SpxLevels {
     ) {
       gammaPinRow = s;
     }
+    // Track top |netGamma| above and below spot separately. These mirror
+    // `GexLandscape/bias.ts` `upsideTargets[0]` / `downsideTargets[0]`:
+    // the anchoring wall for fade-call / lift-put conviction.
+    if (spot !== null) {
+      if (s.strike > spot) {
+        if (
+          topUpsideRow === null ||
+          Math.abs(s.netGamma) > Math.abs(topUpsideRow.netGamma)
+        ) {
+          topUpsideRow = s;
+        }
+      } else if (s.strike < spot) {
+        if (
+          topDownsideRow === null ||
+          Math.abs(s.netGamma) > Math.abs(topDownsideRow.netGamma)
+        ) {
+          topDownsideRow = s;
+        }
+      }
+    }
   }
 
-  const spot = strikes[0]?.price ?? null;
   const zeroGamma =
     spot !== null ? computeZeroGammaStrike(strikes, spot) : null;
 
@@ -216,6 +275,8 @@ function deriveSpxLevels(strikes: GexStrikeLevel[]): SpxLevels {
     gammaPin: gammaPinRow?.strike ?? null,
     spot,
     netGex,
+    topUpsideRow,
+    topDownsideRow,
   };
 }
 
@@ -542,9 +603,112 @@ export function useFuturesGammaPlaybook(
     setLevelHistory({});
   }, [scrubKey]);
 
+  // ── Snapshot buffer for Δ% and price-trend ────────────────────────────
+  //
+  // Mirrors `GexLandscape/index.tsx:95-252`. The buffer is held in a ref
+  // (no re-render on append); the derived 5m Δ% map and price trend are
+  // held in state and refreshed inside the snapshot-arrival effect. A
+  // pruning cutoff of SNAPSHOT_BUFFER_MS bounds memory regardless of how
+  // long the session runs.
+  const snapshotBufferRef = useRef<Snapshot[]>([]);
+  const [delta5mMap, setDelta5mMap] = useState<Map<number, number | null>>(
+    new Map(),
+  );
+  const [priceTrend, setPriceTrend] = useState<PriceTrend | null>(null);
+
+  useEffect(() => {
+    // When the user changes the active date, reset the buffer — the prior
+    // session's prints are irrelevant to today's Δ%.
+    snapshotBufferRef.current = [];
+    setDelta5mMap(new Map());
+    setPriceTrend(null);
+  }, [gex.selectedDate]);
+
+  useEffect(() => {
+    if (!gex.timestamp || gex.strikes.length === 0) return;
+    const now = new Date(gex.timestamp).getTime();
+    if (!Number.isFinite(now)) return;
+    if (snapshotBufferRef.current.at(-1)?.ts === now) return;
+
+    // Prune entries older than the buffer horizon to cap memory.
+    const cutoff = now - SNAPSHOT_BUFFER_MS;
+    const buf = snapshotBufferRef.current.filter((snap) => snap.ts >= cutoff);
+
+    const snap5m = findClosestSnapshot(
+      buf,
+      now - DELTA_5M_LOOKBACK_MS,
+      DELTA_5M_MATCH_TOLERANCE_MS,
+    );
+    setDelta5mMap(
+      snap5m ? computeDeltaMap(gex.strikes, snap5m.strikes) : new Map(),
+    );
+
+    // Append after delta computation so the current snapshot doesn't compare
+    // against itself. Price trend uses the buffer including current.
+    buf.push({ strikes: gex.strikes, ts: now });
+    snapshotBufferRef.current = buf;
+
+    const spot = gex.strikes[0]?.price ?? 0;
+    setPriceTrend(computePriceTrend(spot, buf, now));
+  }, [gex.strikes, gex.timestamp]);
+
+  // 5m wall-flow aggregates — avg Δ% across strikes above / below spot.
+  // Nullable: a non-empty `delta5mMap` but no above-spot strikes (or all
+  // null-valued) collapses to null rather than 0, so the UI can render `—`.
+  const { ceilingTrend5m, floorTrend5m } = useMemo(() => {
+    const spot = spx.spot;
+    if (spot === null || delta5mMap.size === 0) {
+      return { ceilingTrend5m: null, floorTrend5m: null };
+    }
+    const pickAvg = (predicate: (strike: number) => boolean) => {
+      let sum = 0;
+      let count = 0;
+      for (const [strike, pct] of delta5mMap) {
+        if (pct === null) continue;
+        if (!predicate(strike)) continue;
+        sum += pct;
+        count++;
+      }
+      return count > 0 ? sum / count : null;
+    };
+    return {
+      ceilingTrend5m: pickAvg((strike) => strike > spot),
+      floorTrend5m: pickAvg((strike) => strike < spot),
+    };
+  }, [delta5mMap, spx.spot]);
+
+  // Charm classifications for the top drift targets — fed into the rule
+  // engine so fade/lift rules can emit conviction overlays.
+  const flowSignals: PlaybookFlowSignals = useMemo(
+    () => ({
+      upsideTargetCls: spx.topUpsideRow
+        ? classifyGex(
+            spx.topUpsideRow.netGamma,
+            spx.topUpsideRow.netCharm,
+          )
+        : null,
+      downsideTargetCls: spx.topDownsideRow
+        ? classifyGex(
+            spx.topDownsideRow.netGamma,
+            spx.topDownsideRow.netCharm,
+          )
+        : null,
+      ceilingTrend5m,
+      floorTrend5m,
+      priceTrend,
+    }),
+    [
+      spx.topUpsideRow,
+      spx.topDownsideRow,
+      ceilingTrend5m,
+      floorTrend5m,
+      priceTrend,
+    ],
+  );
+
   const rules: PlaybookRule[] = useMemo(
-    () => rulesForRegime(regime, phase, derived, esPrice),
-    [regime, phase, derived, esPrice],
+    () => rulesForRegime(regime, phase, derived, esPrice, flowSignals),
+    [regime, phase, derived, esPrice, flowSignals],
   );
 
   // Named-setup trigger evaluation. Phase 1D.3 uses the same pure
@@ -624,6 +788,7 @@ export function useFuturesGammaPlaybook(
     esCallWall: derived.esCallWall,
     esPutWall: derived.esPutWall,
     esGammaPin: derived.esGammaPin,
+    flowSignals,
     regimeTimeline,
     sessionPhaseBoundaries,
     loading,

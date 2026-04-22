@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   classifyRegime,
   classifySessionPhase,
+  convictionFromCls,
+  DRIFT_OVERRIDE_CONSISTENCY_MIN,
   rulesForRegime,
   sizingGuidance,
   verdictForRegime,
@@ -10,6 +12,7 @@ import {
   RULE_ACTIVE_BAND_ES,
   RULE_ARMED_BAND_ES,
 } from '../../../components/FuturesGammaPlaybook/playbook';
+import type { PlaybookFlowSignals } from '../../../components/FuturesGammaPlaybook/types';
 
 // Anchor the suite at a known CT wall-clock so timezone conversions are
 // deterministic. 14:00 UTC = 09:00 CT on this date (CDT in effect).
@@ -407,5 +410,203 @@ describe('sizingGuidance', () => {
 
   it('uses the absolute value of negative delta', () => {
     expect(sizingGuidance(-0.15)).toContain('3.3');
+  });
+});
+
+// ── Phase 2+3: charm-aware conviction + drift-override ──────────────────
+
+describe('convictionFromCls', () => {
+  it('sticky-pin → high', () => {
+    expect(convictionFromCls('sticky-pin')).toBe('high');
+  });
+  it('weakening-pin → low', () => {
+    expect(convictionFromCls('weakening-pin')).toBe('low');
+  });
+  it('max-launchpad → standard (launchpad quadrants are flat)', () => {
+    expect(convictionFromCls('max-launchpad')).toBe('standard');
+  });
+  it('fading-launchpad → standard', () => {
+    expect(convictionFromCls('fading-launchpad')).toBe('standard');
+  });
+  it('null → standard', () => {
+    expect(convictionFromCls(null)).toBe('standard');
+  });
+});
+
+describe('rulesForRegime — charm-aware conviction', () => {
+  const levels = {
+    esCallWall: 5820,
+    esPutWall: 5780,
+    esZeroGamma: 5800,
+    esMaxPain: 5795,
+    esGammaPin: 5820,
+  };
+  const FAR_PRICE = 5700;
+
+  const baseFlow = (
+    overrides: Partial<PlaybookFlowSignals> = {},
+  ): PlaybookFlowSignals => ({
+    upsideTargetCls: null,
+    downsideTargetCls: null,
+    ceilingTrend5m: null,
+    floorTrend5m: null,
+    priceTrend: null,
+    ...overrides,
+  });
+
+  it('fade-call conviction follows upsideTargetCls (sticky-pin → high)', () => {
+    const rules = rulesForRegime(
+      'POSITIVE',
+      'MORNING',
+      levels,
+      FAR_PRICE,
+      baseFlow({ upsideTargetCls: 'sticky-pin' }),
+    );
+    const fade = rules.find((r) => r.id === 'pos-fade-call-wall')!;
+    expect(fade.conviction).toBe('high');
+  });
+
+  it('fade-call conviction low when upsideTargetCls is weakening-pin', () => {
+    const rules = rulesForRegime(
+      'POSITIVE',
+      'MORNING',
+      levels,
+      FAR_PRICE,
+      baseFlow({ upsideTargetCls: 'weakening-pin' }),
+    );
+    const fade = rules.find((r) => r.id === 'pos-fade-call-wall')!;
+    expect(fade.conviction).toBe('low');
+  });
+
+  it('lift-put conviction tracks downsideTargetCls independently', () => {
+    const rules = rulesForRegime(
+      'POSITIVE',
+      'MORNING',
+      levels,
+      FAR_PRICE,
+      baseFlow({
+        upsideTargetCls: 'sticky-pin',
+        downsideTargetCls: 'weakening-pin',
+      }),
+    );
+    const fade = rules.find((r) => r.id === 'pos-fade-call-wall')!;
+    const lift = rules.find((r) => r.id === 'pos-lift-put-wall')!;
+    expect(fade.conviction).toBe('high');
+    expect(lift.conviction).toBe('low');
+  });
+
+  it('breakout rules always resolve to standard (charm does not map to trend-follow)', () => {
+    const rules = rulesForRegime(
+      'NEGATIVE',
+      'POWER',
+      levels,
+      FAR_PRICE,
+      baseFlow({
+        upsideTargetCls: 'sticky-pin',
+        downsideTargetCls: 'weakening-pin',
+      }),
+    );
+    for (const rule of rules) {
+      expect(rule.conviction).toBe('standard');
+    }
+  });
+
+  it('back-compat: omitting flowSignals yields standard conviction', () => {
+    const rules = rulesForRegime('POSITIVE', 'MORNING', levels, FAR_PRICE);
+    for (const rule of rules) {
+      expect(rule.conviction).toBe('standard');
+    }
+  });
+});
+
+describe('rulesForRegime — drift-override', () => {
+  const levels = {
+    esCallWall: 5820,
+    esPutWall: 5780,
+    esZeroGamma: 5800,
+    esMaxPain: 5795,
+    esGammaPin: 5820,
+  };
+  const FAR_PRICE = 5700;
+
+  const flowWithDrift = (
+    direction: 'up' | 'down' | 'flat',
+    consistency: number,
+  ): PlaybookFlowSignals => ({
+    upsideTargetCls: null,
+    downsideTargetCls: null,
+    ceilingTrend5m: null,
+    floorTrend5m: null,
+    priceTrend: {
+      direction,
+      consistency,
+      changePct: direction === 'up' ? 0.5 : direction === 'down' ? -0.5 : 0,
+      changePts: direction === 'up' ? 25 : direction === 'down' ? -25 : 0,
+    },
+  });
+
+  it('drifting up with consistency ≥ threshold suppresses pos-fade-call-wall', () => {
+    const rules = rulesForRegime(
+      'POSITIVE',
+      'MORNING',
+      levels,
+      FAR_PRICE,
+      flowWithDrift('up', 0.8),
+    );
+    const ids = rules.map((r) => r.id);
+    expect(ids).not.toContain('pos-fade-call-wall');
+    expect(ids).toContain('pos-lift-put-wall');
+  });
+
+  it('drifting down with consistency ≥ threshold suppresses pos-lift-put-wall', () => {
+    const rules = rulesForRegime(
+      'POSITIVE',
+      'MORNING',
+      levels,
+      FAR_PRICE,
+      flowWithDrift('down', 0.8),
+    );
+    const ids = rules.map((r) => r.id);
+    expect(ids).not.toContain('pos-lift-put-wall');
+    expect(ids).toContain('pos-fade-call-wall');
+  });
+
+  it('drift below consistency threshold does NOT suppress (dead-band)', () => {
+    const rules = rulesForRegime(
+      'POSITIVE',
+      'MORNING',
+      levels,
+      FAR_PRICE,
+      flowWithDrift('up', DRIFT_OVERRIDE_CONSISTENCY_MIN - 0.1),
+    );
+    const ids = rules.map((r) => r.id);
+    expect(ids).toContain('pos-fade-call-wall');
+    expect(ids).toContain('pos-lift-put-wall');
+  });
+
+  it('flat direction does not suppress anything', () => {
+    const rules = rulesForRegime(
+      'POSITIVE',
+      'MORNING',
+      levels,
+      FAR_PRICE,
+      flowWithDrift('flat', 1.0),
+    );
+    const ids = rules.map((r) => r.id);
+    expect(ids).toContain('pos-fade-call-wall');
+    expect(ids).toContain('pos-lift-put-wall');
+  });
+
+  it('drift-override does not affect NEGATIVE regime rules', () => {
+    const rules = rulesForRegime(
+      'NEGATIVE',
+      'POWER',
+      levels,
+      FAR_PRICE,
+      flowWithDrift('up', 0.9),
+    );
+    const ids = rules.map((r) => r.id);
+    expect(ids).toContain('neg-break-call-wall');
+    expect(ids).toContain('neg-break-put-wall');
   });
 });

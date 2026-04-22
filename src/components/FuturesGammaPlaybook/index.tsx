@@ -26,6 +26,7 @@ import { RegimeHeader } from './RegimeHeader';
 import { ActionDirective } from './ActionDirective';
 import { RegimeFlipStrip } from './RegimeFlipStrip';
 import { PlaybookPanel } from './PlaybookPanel';
+import { WallFlowStrip } from './WallFlowStrip';
 import { EsLevelsPanel } from './EsLevelsPanel';
 import { RegimeTimeline } from './RegimeTimeline';
 import { TriggersPanel } from './TriggersPanel';
@@ -205,6 +206,15 @@ function FuturesGammaPlaybook({
         verdict={verdict}
         phase={phase}
         esZeroGammaKnown={bias.esZeroGamma !== null}
+        flowSignals={playbook.flowSignals}
+      />
+
+      {/* Wall-flow Δ% strip — live 5m hedging-pressure momentum above and
+          below spot. Display-only for now; a future phase may gate rule
+          status on erosion once we've watched the signal live. */}
+      <WallFlowStrip
+        ceilingTrend5m={playbook.flowSignals.ceilingTrend5m}
+        floorTrend5m={playbook.flowSignals.floorTrend5m}
       />
 
       {/* Panel 3: SPX-derived walls mapped to ES prices (full width) */}

@@ -15,13 +15,16 @@
 
 import { memo } from 'react';
 import type {
+  PlaybookFlowSignals,
   PlaybookRule,
   RegimeVerdict,
+  RuleConviction,
   RuleStatus,
   SessionPhase,
 } from './types';
 import { Tooltip } from '../ui/Tooltip';
 import { TOOLTIP } from './copy/tooltips';
+import { DRIFT_OVERRIDE_CONSISTENCY_MIN } from './playbook';
 
 export interface PlaybookPanelProps {
   rules: PlaybookRule[];
@@ -29,6 +32,12 @@ export interface PlaybookPanelProps {
   phase: SessionPhase;
   /** Zero-gamma unavailable is a common cause of STAND_ASIDE; show it if so. */
   esZeroGammaKnown: boolean;
+  /**
+   * Live flow signals — when the priceTrend drifts consistently and the
+   * opposing rule has been suppressed, we render a one-line note at the
+   * top of the panel so the trader sees why.
+   */
+  flowSignals?: PlaybookFlowSignals;
 }
 
 // ── Presentation metadata ────────────────────────────────────────────
@@ -55,6 +64,28 @@ const DIRECTION_META: Record<
     className: 'bg-white/10 text-muted',
     title: 'Direction-agnostic — trade the level, not a side.',
   },
+};
+
+const CONVICTION_META: Record<
+  RuleConviction,
+  { label: string; icon: string; className: string; title: string } | null
+> = {
+  high: {
+    label: 'HIGH',
+    icon: '▲',
+    className: 'bg-emerald-500/15 text-emerald-400',
+    title:
+      'High conviction: wall is a sticky-pin — charm strengthens the pin into the close.',
+  },
+  low: {
+    label: 'LOW',
+    icon: '▼',
+    className: 'bg-amber-500/15 text-amber-400',
+    title:
+      'Low conviction: wall is a weakening-pin — charm drains through the session.',
+  },
+  // `standard` renders no badge to keep the row uncluttered.
+  standard: null,
 };
 
 const STATUS_META: Record<
@@ -131,12 +162,32 @@ function standAsideReason(
 const GRID_COLS =
   'grid-cols-[68px_1fr_72px_72px_72px_80px_96px_1fr]';
 
+/**
+ * Detect when the priceTrend is strong enough to have suppressed one of
+ * the fade/lift rules. Returns the displayed direction (for the banner
+ * copy) or null when no override was applied.
+ */
+function driftOverrideCopy(
+  flowSignals: PlaybookFlowSignals | undefined,
+): { direction: 'up' | 'down'; suppressed: 'fade' | 'lift' } | null {
+  const trend = flowSignals?.priceTrend;
+  if (!trend) return null;
+  if (trend.consistency < DRIFT_OVERRIDE_CONSISTENCY_MIN) return null;
+  if (trend.direction === 'up') return { direction: 'up', suppressed: 'fade' };
+  if (trend.direction === 'down') {
+    return { direction: 'down', suppressed: 'lift' };
+  }
+  return null;
+}
+
 export const PlaybookPanel = memo(function PlaybookPanel({
   rules,
   verdict,
   phase,
   esZeroGammaKnown,
+  flowSignals,
 }: PlaybookPanelProps) {
+  const override = driftOverrideCopy(flowSignals);
   if (rules.length === 0) {
     return (
       <div
@@ -164,6 +215,21 @@ export const PlaybookPanel = memo(function PlaybookPanel({
       className="border-edge bg-surface-alt rounded-lg border"
       aria-label="Playbook rules"
     >
+      {/* Drift-override banner — surfaces when a fade/lift rule was
+          suppressed because the tape is grinding through the dampener. */}
+      {override && (
+        <div
+          className="border-edge border-b px-3 py-1.5 font-mono text-[11px]"
+          style={{ color: 'var(--color-tertiary)' }}
+          role="note"
+          aria-label="Drift override note"
+        >
+          {override.direction === 'up'
+            ? 'Drifting up — call-wall fade suppressed this session.'
+            : 'Drifting down — put-wall lift suppressed this session.'}
+        </div>
+      )}
+
       {/* Header row */}
       <div
         className={`border-edge grid ${GRID_COLS} items-center gap-2 border-b px-3 py-1.5 font-mono text-[9px] font-semibold tracking-wider uppercase`}
@@ -194,6 +260,7 @@ export const PlaybookPanel = memo(function PlaybookPanel({
         {rules.map((rule) => {
           const dm = DIRECTION_META[rule.direction];
           const sm = STATUS_META[rule.status];
+          const cm = CONVICTION_META[rule.conviction];
           return (
             <li
               key={rule.id}
@@ -211,6 +278,17 @@ export const PlaybookPanel = memo(function PlaybookPanel({
                 className="font-mono"
                 style={{ color: 'var(--color-primary)' }}
               >
+                {cm !== null && (
+                  <Tooltip content={cm.title} side="top">
+                    <span
+                      className={`mr-1.5 inline-flex cursor-help items-center gap-0.5 rounded px-1 py-0.5 font-mono text-[9px] font-bold ${cm.className}`}
+                      aria-label={`Conviction ${cm.label}`}
+                    >
+                      <span aria-hidden="true">{cm.icon}</span>
+                      {cm.label}
+                    </span>
+                  </Tooltip>
+                )}
                 {rule.condition}
               </span>
               <span

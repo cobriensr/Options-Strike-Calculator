@@ -1,8 +1,45 @@
 /** Shared types for the FuturesGammaPlaybook module. */
 
+import type {
+  GexClassification,
+  PriceTrend,
+} from '../GexLandscape/types';
+
 export type RegimeVerdict = 'MEAN_REVERT' | 'TREND_FOLLOW' | 'STAND_ASIDE';
 
 export type GexRegime = 'POSITIVE' | 'NEGATIVE' | 'TRANSITIONING';
+
+/**
+ * Flow signals sourced from the same snapshot buffer that drives
+ * `GexLandscape`'s BiasMetrics. Fed into `rulesForRegime` so the rule
+ * engine can emit charm-aware conviction and drift-override rule
+ * suppression without re-deriving the signals server-side.
+ *
+ * All fields are optional/nullable — upstream buffers take a few
+ * minutes to fill. When a field is null the rule engine falls back to
+ * today's pre-flow-signals behavior (standard conviction, no override).
+ */
+export interface PlaybookFlowSignals {
+  /** Charm classification of the top upside target (highest |GEX| above spot). */
+  upsideTargetCls: GexClassification | null;
+  /** Charm classification of the top downside target. */
+  downsideTargetCls: GexClassification | null;
+  /** Avg 5m Δ% of above-spot strikes. Positive = ceiling strengthening. */
+  ceilingTrend5m: number | null;
+  /** Avg 5m Δ% of below-spot strikes. Positive = floor strengthening. */
+  floorTrend5m: number | null;
+  /** Direction + consistency of the price drift over the lookback window. */
+  priceTrend: PriceTrend | null;
+}
+
+/**
+ * Per-rule conviction driven by charm classification of the anchoring
+ * wall. A fade-call rule at a `sticky-pin` wall is a high-conviction
+ * setup (charm builds into close); the same rule at a `weakening-pin`
+ * wall is low-conviction (charm draining). Breakout rules always
+ * receive `standard` — charm doesn't map cleanly to trend-follow.
+ */
+export type RuleConviction = 'high' | 'standard' | 'low';
 
 export type SessionPhase =
   | 'PRE_OPEN'
@@ -43,6 +80,12 @@ export interface PlaybookRule {
    */
   distanceEsPoints: number | null;
   status: RuleStatus;
+  /**
+   * Conviction overlay — `high` for fade/lift rules anchored at a
+   * `sticky-pin` wall, `low` for `weakening-pin`, else `standard`.
+   * Breakout rules always resolve to `standard`.
+   */
+  conviction: RuleConviction;
 }
 
 export interface EsLevel {

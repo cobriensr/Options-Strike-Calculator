@@ -77,6 +77,7 @@ function makeRule(overrides: Partial<PlaybookRule> = {}): PlaybookRule {
       'Tight stops — one ES tick above the wall invalidates the fade.',
     distanceEsPoints: 8,
     status: 'ARMED',
+    conviction: 'standard',
     ...overrides,
   };
 }
@@ -98,6 +99,13 @@ function hookReturn(
     esCallWall: bias.esCallWall,
     esPutWall: bias.esPutWall,
     esGammaPin: null,
+    flowSignals: {
+      upsideTargetCls: null,
+      downsideTargetCls: null,
+      ceilingTrend5m: null,
+      floorTrend5m: null,
+      priceTrend: null,
+    },
     regimeTimeline: [],
     sessionPhaseBoundaries: {
       open: '2026-04-20T09:30:00-04:00',

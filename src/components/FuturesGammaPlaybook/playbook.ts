@@ -23,8 +23,10 @@ import { getCTTime } from '../../utils/timezone.js';
 import { esTickRound } from './basis.js';
 import type {
   GexRegime,
+  PlaybookFlowSignals,
   PlaybookRule,
   RegimeVerdict,
+  RuleConviction,
   RuleLevels,
   RuleStatus,
   SessionPhase,
@@ -220,9 +222,10 @@ function classifyRule(
  * generation and delegates the price-vs-entry classification here.
  */
 function finalize(
-  rule: Omit<PlaybookRule, 'distanceEsPoints' | 'status'>,
+  rule: Omit<PlaybookRule, 'distanceEsPoints' | 'status' | 'conviction'>,
   esPrice: number | null,
   archetype: RuleArchetype,
+  conviction: RuleConviction = 'standard',
 ): PlaybookRule {
   const { distanceEsPoints, status } = classifyRule(
     rule.direction,
@@ -230,8 +233,28 @@ function finalize(
     esPrice,
     archetype,
   );
-  return { ...rule, distanceEsPoints, status };
+  return { ...rule, distanceEsPoints, status, conviction };
 }
+
+/**
+ * Map a charm classification to a fade/lift rule conviction overlay.
+ *
+ * - `sticky-pin`     → `high`  (+GEX + charm building → pin strengthens into close)
+ * - `weakening-pin`  → `low`   (+GEX + charm draining → pin dissolves into close)
+ * - launchpad quads  → `standard` (charm sign indicates unstable regime;
+ *                                 conviction flat, no overlay)
+ * - null             → `standard`
+ */
+export function convictionFromCls(
+  cls: PlaybookFlowSignals['upsideTargetCls'],
+): RuleConviction {
+  if (cls === 'sticky-pin') return 'high';
+  if (cls === 'weakening-pin') return 'low';
+  return 'standard';
+}
+
+/** Minimum PriceTrend consistency (0-1) for the drift-override to suppress a rule. */
+export const DRIFT_OVERRIDE_CONSISTENCY_MIN = 0.6;
 
 /**
  * Generate 1-3 concrete rules for the current (regime, phase) pair.
@@ -242,12 +265,19 @@ function finalize(
  * `esPrice` feeds the rule-level status classifier — pass null when the
  * current futures price is unknown (pre-market, data gap) and every rule
  * falls back to DISTANT / null distance.
+ *
+ * `flowSignals` is optional; when omitted (e.g. server-side cron callers
+ * that don't maintain a snapshot buffer) the rule engine emits
+ * `standard` conviction and applies no drift-override. Callers that have
+ * a live snapshot buffer (the React hook) supply it to unlock charm-aware
+ * conviction and trend-override suppression.
  */
 export function rulesForRegime(
   regime: GexRegime,
   phase: SessionPhase,
   levels: RuleLevels,
   esPrice: number | null,
+  flowSignals?: PlaybookFlowSignals,
 ): PlaybookRule[] {
   // TRANSITIONING → STAND_ASIDE verdict → no rules.
   if (verdictForRegime(regime) === 'STAND_ASIDE') return [];
@@ -257,6 +287,19 @@ export function rulesForRegime(
   if (phase === 'PRE_OPEN' || phase === 'POST_CLOSE') return [];
 
   const rules: PlaybookRule[] = [];
+
+  // Drift-override gates: when the tape is grinding consistently in one
+  // direction despite positive GEX dampening, the opposing fade/lift rule
+  // should be suppressed — the structural dampener isn't winning today.
+  // Requires both a non-flat direction AND consistency ≥ threshold so
+  // chop doesn't fire the override.
+  const drift = flowSignals?.priceTrend;
+  const driftConsistent =
+    drift !== null &&
+    drift !== undefined &&
+    drift.consistency >= DRIFT_OVERRIDE_CONSISTENCY_MIN;
+  const driftUp = driftConsistent && drift.direction === 'up';
+  const driftDown = driftConsistent && drift.direction === 'down';
 
   if (regime === 'POSITIVE') {
     // Fade moves into the overhead wall; target a mean-revert pull-in.
@@ -272,7 +315,10 @@ export function rulesForRegime(
     // magnet isn't below; we leave target null and the trader trails
     // stops manually. Picking ZG anyway would place the "target" above
     // the entry on a SHORT — a mathematically inverted trade.
-    if (levels.esCallWall !== null) {
+    //
+    // Drift-override: `driftUp` suppresses this rule — fading calls while
+    // the tape melts up is the classic +GEX trap.
+    if (levels.esCallWall !== null && !driftUp) {
       const stop = esTickRound(levels.esCallWall + ES_TICK_SIZE);
       const validTarget =
         levels.esZeroGamma !== null && levels.esZeroGamma < levels.esCallWall
@@ -294,6 +340,7 @@ export function rulesForRegime(
           },
           esPrice,
           'fade-lift',
+          convictionFromCls(flowSignals?.upsideTargetCls ?? null),
         ),
       );
     }
@@ -306,7 +353,10 @@ export function rulesForRegime(
     // put wall to be a valid lift target. When ZG is below the put wall
     // (unusual) leave target null so the trader trails rather than
     // targeting a price below entry on a LONG.
-    if (levels.esPutWall !== null) {
+    //
+    // Drift-override: `driftDown` suppresses this rule — buying put-wall
+    // dips while the tape grinds lower is the mirror +GEX trap.
+    if (levels.esPutWall !== null && !driftDown) {
       const stop = esTickRound(levels.esPutWall - ES_TICK_SIZE);
       const validTarget =
         levels.esZeroGamma !== null && levels.esZeroGamma > levels.esPutWall
@@ -328,6 +378,7 @@ export function rulesForRegime(
           },
           esPrice,
           'fade-lift',
+          convictionFromCls(flowSignals?.downsideTargetCls ?? null),
         ),
       );
     }

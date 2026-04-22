@@ -25,6 +25,7 @@ function makeRule(overrides: Partial<PlaybookRule> = {}): PlaybookRule {
     sizingNote: 'Tight stops.',
     distanceEsPoints: 0,
     status: 'DISTANT',
+    conviction: 'standard',
     ...overrides,
   };
 }
