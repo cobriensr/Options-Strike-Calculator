@@ -46,7 +46,11 @@ showSwings = input.bool(true, "Show swing high/low markers", group=grp_visual)
 showBOSLines = input.bool(true, "Show BOS break-level lines", group=grp_visual)
 
 // ============================ SESSION ============================
-inRTH = not useRTHOnly or ((hour == 8 and minute >= 30) or (hour >= 9 and hour < 15))
+// Use time(..., session_string, timezone) so RTH check is independent of the
+// chart's display timezone. Returns the opening timestamp of the session when
+// the current bar is in-session, else na.
+rthSession = time(timeframe.period, "0830-1500:23456", "America/Chicago")
+inRTH = not useRTHOnly or not na(rthSession)
 
 // ============================ EVENT DAYS ============================
 isOpex = dayofweek == dayofweek.friday and dayofmonth >= 15 and dayofmonth <= 21

@@ -73,11 +73,12 @@ useAlerts = input.bool(true, "Fire JSON webhook + sound alerts", group=grp_alert
 alertStrategyId = input.string("pac_bos_config_b", "Strategy ID (in webhook JSON)", group=grp_alerts)
 
 // ============================ SESSION ============================
-// Chart timezone should be set to America/Chicago for this to match the
-// backtest cleanly. We compare in exchange time via `hour` / `minute`.
-
-// 08:30 <= CT time < 15:00
-inRTH = not useRTHOnly or ((hour == 8 and minute >= 30) or (hour >= 9 and hour < 15))
+// Use time(..., session_string, timezone) so the RTH check is independent of
+// the chart's display timezone. "0830-1500:23456" = Mon-Fri 08:30-15:00 in
+// the specified timezone. Returns the opening timestamp of the session when
+// the current bar is in-session, else na.
+rthSession = time(timeframe.period, "0830-1500:23456", "America/Chicago")
+inRTH = not useRTHOnly or not na(rthSession)
 
 // ============================ EVENT DAYS ============================
 // OPEX = 3rd Friday of the month (day-of-month between 15 and 21, Friday)
