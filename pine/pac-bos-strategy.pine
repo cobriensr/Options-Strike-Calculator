@@ -111,39 +111,96 @@ effExitMode = disableAllFilters ? "ATR_TARGET" : exitMode  // simpler exit when 
 effExitAfterNBos = disableAllFilters ? 0 : exitAfterNBos
 effTargetATR = disableAllFilters ? 4.0 : targetATRMult
 
-// ============================ SWING + BOS + CHoCH ============================
-pivH = ta.pivothigh(swingLen, swingLen)
-pivL = ta.pivotlow(swingLen, swingLen)
+// ============================ SWING + BOS + CHoCH (smc-compatible) ============================
+// Ports `smartmoneyconcepts.swing_highs_lows()` semantics to Pine so swing
+// detection stays in sync with the Python backtest. Pine's built-in
+// ta.pivothigh(5,5) differs from smc in three material ways:
+//   1. WINDOW: smc uses 10 bars asymmetric (high[i-4..i+5]) — literally
+//      `high.shift(-5).rolling(10).max()` at row i. Pine's pivothigh uses
+//      11 bars symmetric (high[i-5..i+5]).
+//   2. EQUALITY: smc marks a swing when high[i] == max(window) — ties count.
+//      Pine's pivothigh requires STRICT greater-than, missing ties.
+//   3. PRIORITY: if both high and low conditions match the same bar, smc's
+//      nested np.where prefers high. Pine's pivothigh + pivotlow are
+//      independent and can fire both on the same bar.
+// Plus smc has a DEDUP post-processing step: consecutive same-type swings
+// (two highs in a row, or two lows) are collapsed to keep only the extreme
+// one (higher high, lower low). We replicate this per-bar by replacing the
+// last history entry when a same-type swing confirms before an opposite-type.
+//
+// This block was the last remaining source of ~105-vs-38 trade divergence
+// vs the Python backtest — the pivothigh/pivotlow semantics caught BOS
+// events on different bars than smc does.
+
+windowLen = swingLen * 2
+isSmcHighConfirm = high[swingLen] == ta.highest(high, windowLen)
+isSmcLowConfirm = low[swingLen] == ta.lowest(low, windowLen)
+
+// smc priority: check high first in the nested np.where
+newSwingKind = isSmcHighConfirm ? 1 : isSmcLowConfirm ? -1 : 0
+newSwingLevel = isSmcHighConfirm ? high[swingLen] : isSmcLowConfirm ? low[swingLen] : float(na)
+newSwingBar = bar_index - swingLen
 
 var float lastSwingHighLevel = na
 var float lastSwingLowLevel = na
 var int lastSwingHighBar = na
 var int lastSwingLowBar = na
+var int lastSwingKind = 0  // 1=last accepted swing was a high, -1=low, 0=none yet
 
-// Maintain a bounded history of confirmed swings. Python's
-// `_find_swing_stop_level` walks back up to 50 swings to find a correct-side
-// one for the stop. Capping the arrays at 50 matches the Python lookback.
-// Parallel `*Bars` arrays track WHEN each swing was confirmed so we can
-// exclude pivots confirmed at the signal bar itself (see findLongStop).
+// Bounded swing history for walk-back stop placement. Parallel `*Bars`
+// arrays track WHEN each swing was confirmed so findLongStop/findShortStop
+// can exclude pivots confirmed at the signal bar itself.
 var array<float> swingLowHistory = array.new_float()
 var array<int> swingLowHistoryBars = array.new_int()
 var array<float> swingHighHistory = array.new_float()
 var array<int> swingHighHistoryBars = array.new_int()
 SWING_HISTORY_CAP = 50
 
+// Per-bar dedup: if new swing is same-type as the last accepted one, it
+// REPLACES the last one iff it's more extreme (higher for highs, lower
+// for lows). Otherwise it's discarded. Ties favor the earlier swing, which
+// matches smc's `highs >= next_highs` and `lows <= next_lows` rules.
+float pivH = na
+float pivL = na
+replaceLast = false
+
+if newSwingKind == 1
+    if lastSwingKind == 1
+        if newSwingLevel > lastSwingHighLevel
+            pivH := newSwingLevel
+            replaceLast := true
+    else
+        pivH := newSwingLevel
+else if newSwingKind == -1
+    if lastSwingKind == -1
+        if newSwingLevel < lastSwingLowLevel
+            pivL := newSwingLevel
+            replaceLast := true
+    else
+        pivL := newSwingLevel
+
 if not na(pivH)
     lastSwingHighLevel := pivH
-    lastSwingHighBar := bar_index - swingLen
+    lastSwingHighBar := newSwingBar
+    lastSwingKind := 1
+    if replaceLast and array.size(swingHighHistory) > 0
+        array.pop(swingHighHistory)
+        array.pop(swingHighHistoryBars)
     array.push(swingHighHistory, pivH)
-    array.push(swingHighHistoryBars, bar_index)
+    array.push(swingHighHistoryBars, newSwingBar)
     if array.size(swingHighHistory) > SWING_HISTORY_CAP
         array.shift(swingHighHistory)
         array.shift(swingHighHistoryBars)
+
 if not na(pivL)
     lastSwingLowLevel := pivL
-    lastSwingLowBar := bar_index - swingLen
+    lastSwingLowBar := newSwingBar
+    lastSwingKind := -1
+    if replaceLast and array.size(swingLowHistory) > 0
+        array.pop(swingLowHistory)
+        array.pop(swingLowHistoryBars)
     array.push(swingLowHistory, pivL)
-    array.push(swingLowHistoryBars, bar_index)
+    array.push(swingLowHistoryBars, newSwingBar)
     if array.size(swingLowHistory) > SWING_HISTORY_CAP
         array.shift(swingLowHistory)
         array.shift(swingLowHistoryBars)
