@@ -180,7 +180,7 @@ findLongStop(entryPx, atrVal) =>
     float result = na
     n = array.size(swingLowHistory)
     if n > 0
-        for i = n - 1 to 0 by -1
+        for i = n - 1 to 0
             level = array.get(swingLowHistory, i)
             if level < entryPx
                 result := level
@@ -191,7 +191,7 @@ findShortStop(entryPx, atrVal) =>
     float result = na
     n = array.size(swingHighHistory)
     if n > 0
-        for i = n - 1 to 0 by -1
+        for i = n - 1 to 0
             level = array.get(swingHighHistory, i)
             if level > entryPx
                 result := level
