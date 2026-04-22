@@ -54,11 +54,7 @@
  *   AFTERNOON, we still want to announce the phase once.
  */
 
-import type {
-  EsLevel,
-  GexRegime,
-  SessionPhase,
-} from './types';
+import type { EsLevel, GexRegime, SessionPhase } from './types';
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -98,7 +94,10 @@ export interface AlertState {
 // ── Helpers ──────────────────────────────────────────────────────────
 
 /** Find the level of a given kind in a state. Returns undefined on miss. */
-function findLevel(levels: EsLevel[], kind: EsLevel['kind']): EsLevel | undefined {
+function findLevel(
+  levels: EsLevel[],
+  kind: EsLevel['kind'],
+): EsLevel | undefined {
   return levels.find((l) => l.kind === kind);
 }
 
@@ -166,12 +165,15 @@ export function detectAlertEdges(
     const fromDefinite = prev.regime !== 'TRANSITIONING';
     const toDefinite = next.regime !== 'TRANSITIONING';
     if (fromDefinite && toDefinite) {
-      events.push(
-        buildRegimeFlipEvent(prev.regime, next.regime, nowIso),
-      );
-    } else if (!fromDefinite && toDefinite) {
-      // TRANSITIONING → definite: info-severity "clarity restored" flip.
       events.push(buildRegimeFlipEvent(prev.regime, next.regime, nowIso));
+    } else if (!fromDefinite && toDefinite) {
+      // TRANSITIONING → definite: force info severity. Without the override
+      // a TRANSITIONING → NEGATIVE flip would alert as urgent, but the
+      // trader intent here is "clarity restored" — the regime wasn't
+      // well-defined before, so this is news, not a shock move.
+      events.push(
+        buildRegimeFlipEvent(prev.regime, next.regime, nowIso, 'info'),
+      );
     }
   }
 
@@ -232,8 +234,10 @@ function buildRegimeFlipEvent(
   from: GexRegime,
   to: GexRegime,
   nowIso: string,
+  severityOverride?: AlertSeverity,
 ): AlertEvent {
-  const severity: AlertSeverity = to === 'NEGATIVE' ? 'urgent' : 'info';
+  const severity: AlertSeverity =
+    severityOverride ?? (to === 'NEGATIVE' ? 'urgent' : 'info');
   return {
     id: `REGIME_FLIP::${nowIso}`,
     type: 'REGIME_FLIP',
