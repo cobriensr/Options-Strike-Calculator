@@ -110,13 +110,33 @@ atr14 = ta.atr(14)
 vwapVal = ta.vwap
 // Cumulative typical-price stdev per session — reset at midnight.
 tp = (high + low + close) / 3.0
-tpSum = ta.cum(tp)
-// A simple per-session std proxy: rolling std of (tp - vwap) — short window
-// avoids session reset complexity while still reflecting intraday spread.
-// 60 bars ~= 1 hour on 1m — long enough to smooth noise, short enough to
-// track regime shifts.
-sessionStdProxy = ta.stdev(tp - vwapVal, 60)
-zClose = sessionStdProxy > 0 ? (close - vwapVal) / sessionStdProxy : 0.0
+// z_close_vwap MUST match the Python backtest
+// (ml/src/pac/order_blocks.py:_session_vwap_std):
+//   session_std = stdev of typical-price (H+L+C)/3 expanding since UTC midnight
+//   z_close     = (close - session_vwap) / session_std
+// The earlier rolling-60-bar stdev of (tp - vwap) fires FALSE z>1 at 08:30 CT
+// because the window is overnight low-vol bars — Python's cumulative UTC-day
+// stdev is larger at RTH open and correctly rejects those entries. This was
+// the primary cause of the 2.8× trade-count inflation vs Python in the
+// 2026-04-18 trade-level diff.
+var float tpSum = 0.0
+var float tpSumSq = 0.0
+var int tpN = 0
+utcDayOfMonth = dayofmonth(time, "UTC")
+utcDayOfMonthPrev = nz(utcDayOfMonth[1], utcDayOfMonth)
+isNewUTCDay = utcDayOfMonth != utcDayOfMonthPrev
+if isNewUTCDay or bar_index == 0
+    tpSum := 0.0
+    tpSumSq := 0.0
+    tpN := 0
+tpSum := tpSum + tp
+tpSumSq := tpSumSq + tp * tp
+tpN := tpN + 1
+// Sample stdev (ddof=1) to match pandas .std() default used in Python engine.
+meanTp = tpN > 0 ? tpSum / tpN : 0.0
+sessionVariance = tpN > 1 ? math.max(0.0, (tpSumSq - tpN * meanTp * meanTp) / (tpN - 1)) : 0.0
+sessionStd = math.sqrt(sessionVariance)
+zClose = sessionStd > 0 ? (close - vwapVal) / sessionStd : 0.0
 
 // ============================ SWING DETECTION ============================
 // Pine's pivothigh(left, right) returns the pivot VALUE at the bar that is
@@ -133,12 +153,50 @@ var float lastSwingLowLevel = na
 var int   lastSwingHighBar = na
 var int   lastSwingLowBar = na
 
+// Bounded swing history for walk-back stop placement — mirrors Python's
+// `_find_swing_stop_level` (ml/src/pac_backtest/loop.py).
+var array<float> swingLowHistory = array.new_float()
+var array<float> swingHighHistory = array.new_float()
+SWING_HISTORY_CAP = 50
+
 if not na(pivH)
     lastSwingHighLevel := pivH
     lastSwingHighBar := bar_index - swingLen
+    array.push(swingHighHistory, pivH)
+    if array.size(swingHighHistory) > SWING_HISTORY_CAP
+        array.shift(swingHighHistory)
 if not na(pivL)
     lastSwingLowLevel := pivL
     lastSwingLowBar := bar_index - swingLen
+    array.push(swingLowHistory, pivL)
+    if array.size(swingLowHistory) > SWING_HISTORY_CAP
+        array.shift(swingLowHistory)
+
+// Walk-back stop finders — iterate the swing history from most-recent to
+// oldest, return the first level on the correct side of entry. Python's
+// engine does this because the most-recent swing is often on the WRONG side
+// of entry (BOS bars frequently coincide with an opposite-side pivot).
+findLongStop(entryPx, atrVal) =>
+    float result = na
+    n = array.size(swingLowHistory)
+    if n > 0
+        for i = n - 1 to 0 by -1
+            level = array.get(swingLowHistory, i)
+            if level < entryPx
+                result := level
+                break
+    na(result) ? entryPx - stopATRMult * atrVal : result
+
+findShortStop(entryPx, atrVal) =>
+    float result = na
+    n = array.size(swingHighHistory)
+    if n > 0
+        for i = n - 1 to 0 by -1
+            level = array.get(swingHighHistory, i)
+            if level > entryPx
+                result := level
+                break
+    na(result) ? entryPx + stopATRMult * atrVal : result
 
 // ============================ BOS DETECTION ============================
 // Bullish BOS: current bar closes above the most recent confirmed swing high
@@ -181,25 +239,17 @@ longEntry = bosBull and inRTH and not isEventDay and zClose > minZVWAP
 shortEntry = bosBear and inRTH and not isEventDay and zClose < -minZVWAP
 
 // ============================ STOP PLACEMENT ============================
-// SWING_EXTREME with correct-side guard. Walk back via already-tracked
-// lastSwingLow (for longs) / lastSwingHigh (for shorts). If the correct-side
-// swing is missing or on the wrong side of entry, fall back to N_ATR.
+// SWING_EXTREME via walk-back through swing history. Matches the Python
+// engine which cannot blindly use the most-recent swing — BOS bars often
+// coincide with an opposite-side pivot, planting the stop on the profit
+// side of entry. findLongStop / findShortStop (defined above) iterate the
+// swing arrays from newest to oldest to find the first correct-side level,
+// falling back to N_ATR if none exists within the 50-swing lookback.
 
 entryPrice = close  // backtest fills next-bar-open; close is a reasonable live proxy
 
-getLongStop() =>
-    candidate = not na(lastSwingLowLevel) ? lastSwingLowLevel : na
-    if not na(candidate) and candidate < entryPrice
-        candidate
-    else
-        entryPrice - stopATRMult * atr14
-
-getShortStop() =>
-    candidate = not na(lastSwingHighLevel) ? lastSwingHighLevel : na
-    if not na(candidate) and candidate > entryPrice
-        candidate
-    else
-        entryPrice + stopATRMult * atr14
+getLongStop() => findLongStop(entryPrice, atr14)
+getShortStop() => findShortStop(entryPrice, atr14)
 
 // ============================ STRUCTURE MARKERS ============================
 // Swing highs/lows: plot at the confirmed swing bar. pivothigh(N, N) reports

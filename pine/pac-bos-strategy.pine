@@ -71,8 +71,33 @@ atr14 = ta.atr(14)
 
 vwapVal = ta.vwap
 tp = (high + low + close) / 3.0
-sessionStdProxy = ta.stdev(tp - vwapVal, 60)
-zClose = sessionStdProxy > 0 ? (close - vwapVal) / sessionStdProxy : 0.0
+
+// z_close_vwap MUST match the Python backtest:
+//   session_std = stdev of typical-price (H+L+C)/3 expanding since UTC midnight
+//   z_close     = (close - session_vwap) / session_std
+// The earlier rolling-60-bar stdev of (tp - vwap) fires FALSE z > 1 at 08:30
+// CT because the window is overnight low-vol bars — Python's cumulative
+// UTC-day stdev is larger at RTH open and correctly rejects those entries.
+// Using UTC midnight as the reset boundary matches
+// `pac.order_blocks._session_vwap_std` (ts_event.dt.floor("D")) exactly.
+var float tpSum = 0.0
+var float tpSumSq = 0.0
+var int tpN = 0
+utcDayOfMonth = dayofmonth(time, "UTC")
+utcDayOfMonthPrev = nz(utcDayOfMonth[1], utcDayOfMonth)
+isNewUTCDay = utcDayOfMonth != utcDayOfMonthPrev
+if isNewUTCDay or bar_index == 0
+    tpSum := 0.0
+    tpSumSq := 0.0
+    tpN := 0
+tpSum := tpSum + tp
+tpSumSq := tpSumSq + tp * tp
+tpN := tpN + 1
+// Sample stdev (ddof=1) to match pandas .std() default used in Python engine
+meanTp = tpN > 0 ? tpSum / tpN : 0.0
+sessionVariance = tpN > 1 ? math.max(0.0, (tpSumSq - tpN * meanTp * meanTp) / (tpN - 1)) : 0.0
+sessionStd = math.sqrt(sessionVariance)
+zClose = sessionStd > 0 ? (close - vwapVal) / sessionStd : 0.0
 
 // Effective minZVWAP applied to entries — 0 when diagnostic is on
 effMinZVWAP = disableAllFilters ? 0.0 : minZVWAP
@@ -89,12 +114,55 @@ var float lastSwingLowLevel = na
 var int lastSwingHighBar = na
 var int lastSwingLowBar = na
 
+// Maintain a bounded history of confirmed swings. Python's
+// `_find_swing_stop_level` walks back up to 50 swings to find a correct-side
+// one for the stop. Capping the arrays at 50 matches the Python lookback.
+var array<float> swingLowHistory = array.new_float()
+var array<float> swingHighHistory = array.new_float()
+SWING_HISTORY_CAP = 50
+
 if not na(pivH)
     lastSwingHighLevel := pivH
     lastSwingHighBar := bar_index - swingLen
+    array.push(swingHighHistory, pivH)
+    if array.size(swingHighHistory) > SWING_HISTORY_CAP
+        array.shift(swingHighHistory)
 if not na(pivL)
     lastSwingLowLevel := pivL
     lastSwingLowBar := bar_index - swingLen
+    array.push(swingLowHistory, pivL)
+    if array.size(swingLowHistory) > SWING_HISTORY_CAP
+        array.shift(swingLowHistory)
+
+// Walk-back stop finders — iterate the swing history from most-recent to
+// oldest, return the first level on the correct side of `entryPx`. This
+// mirrors Python's `_find_swing_stop_level` (ml/src/pac_backtest/loop.py)
+// which walks back through swings because the most-recent swing is often
+// on the WRONG side of the entry (a bullish BOS frequently completes a new
+// swing HIGH at the BOS bar itself). Using the immediate swing blindly
+// plants the stop on the PROFIT side of entry — a bug that cost us 2.8×
+// the trade count vs Python in the 2026-04-18 diff.
+findLongStop(entryPx, atrVal) =>
+    float result = na
+    n = array.size(swingLowHistory)
+    if n > 0
+        for i = n - 1 to 0 by -1
+            level = array.get(swingLowHistory, i)
+            if level < entryPx
+                result := level
+                break
+    na(result) ? entryPx - stopATRMult * atrVal : result
+
+findShortStop(entryPx, atrVal) =>
+    float result = na
+    n = array.size(swingHighHistory)
+    if n > 0
+        for i = n - 1 to 0 by -1
+            level = array.get(swingHighHistory, i)
+            if level > entryPx
+                result := level
+                break
+    na(result) ? entryPx + stopATRMult * atrVal : result
 
 bosBull = not na(lastSwingHighLevel) and close > lastSwingHighLevel and close[1] <= lastSwingHighLevel
 bosBear = not na(lastSwingLowLevel) and close < lastSwingLowLevel and close[1] >= lastSwingLowLevel
@@ -145,15 +213,14 @@ float shortTargetPrice = na
 
 if strategy.opentrades > 0 and strategy.position_size > 0
     entryPx = strategy.opentrades.entry_price(0)
-    // Long stop: most recent correct-side swing, or N_ATR fallback.
-    candidateLongStop = not na(lastSwingLowLevel) and lastSwingLowLevel < entryPx ? lastSwingLowLevel : entryPx - stopATRMult * atr14
-    longStopPrice := candidateLongStop
+    // Long stop: walk back through swing-low history to find correct-side
+    // level, else fall back to 2.25 × ATR(14) below entry.
+    longStopPrice := findLongStop(entryPx, atr14)
     longTargetPrice := effExitMode == "ATR_TARGET" ? entryPx + effTargetATR * atr14 : na
 
 if strategy.opentrades > 0 and strategy.position_size < 0
     entryPx = strategy.opentrades.entry_price(0)
-    candidateShortStop = not na(lastSwingHighLevel) and lastSwingHighLevel > entryPx ? lastSwingHighLevel : entryPx + stopATRMult * atr14
-    shortStopPrice := candidateShortStop
+    shortStopPrice := findShortStop(entryPx, atr14)
     shortTargetPrice := effExitMode == "ATR_TARGET" ? entryPx - effTargetATR * atr14 : na
 
 strategy.exit("LongX", from_entry="Long", stop=longStopPrice, limit=longTargetPrice, comment_loss="STOP", comment_profit="TARGET")
