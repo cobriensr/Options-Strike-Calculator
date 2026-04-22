@@ -23,6 +23,66 @@ This Pine v6 indicator ports the validated Config A strategy (2022–2024 NQ, 2,
 6. Click **Save** → give it a name → click **Add to chart**.
 7. Verify the top-right status table appears showing live ADX / z_vwap / etc.
 
+## Setting up alerts (JSON webhook + sound)
+
+The indicator fires alerts via two mechanisms. Pick the one that matches how you want to consume signals.
+
+### Option A: Single dynamic alert (webhook + sound together)
+
+Best when you want EVERY long + short signal to hit the same webhook AND play a sound.
+
+1. Right-click the chart → **Add alert** (or press `Alt+A`).
+2. **Condition**: pick `PAC BOS Config A — Charting Only` → `Any alert() function call`.
+3. **Options** tab:
+   - **Notifications** → enable **Play sound** → pick a sound (e.g., "Triangle up" for attention) → set volume.
+   - **Webhook URL** → paste your endpoint (e.g., `https://your-domain.vercel.app/api/pac-webhook`).
+4. **Message**: leave blank — the Pine script dynamically sets the message body to a JSON payload.
+5. Click **Create**.
+
+When a signal fires, TradingView will:
+
+- Play the configured sound
+- POST this JSON body to your webhook URL:
+
+```json
+{
+  "strategy": "pac_bos_config_a",
+  "symbol": "NQ1!",
+  "action": "long",
+  "price": 21425.2500,
+  "stop": 21398.5000,
+  "target": 21445.7500,
+  "z_vwap": 1.42,
+  "adx": 28.31,
+  "atr": 10.2500,
+  "time": "2026-04-21T14:33:00Z"
+}
+```
+
+### Option B: Two static alerts (independent per-direction control)
+
+Best when you want DIFFERENT delivery channels per direction (e.g., long = webhook only, short = sound only).
+
+1. Right-click chart → **Add alert**.
+2. **Condition**: `PAC BOS Config A` → `PAC BOS — LONG entry` (or SHORT).
+3. Configure Webhook URL / sound / email independently for each.
+4. Repeat for the other direction.
+
+These static alerts send a simple text message: `"PAC BOS LONG on NQ1! @ 21425.25"`. For structured JSON, use Option A.
+
+### Testing the webhook
+
+Use [webhook.site](https://webhook.site) to capture the payload without writing any backend:
+
+1. Open <https://webhook.site> → copy your unique URL.
+2. Paste it as the Webhook URL in the TradingView alert.
+3. Wait for the next signal (or scroll the chart back and right-click a past BOS arrow → "Create alert here" → fire immediately).
+4. Observe the POST body arrive on webhook.site.
+
+### Disabling alerts
+
+The `useAlerts` input at the top of the indicator settings toggles the dynamic `alert()` calls off without removing the indicator. The static `alertcondition()` templates are always available in the alert dialog regardless of that toggle.
+
 ## What to watch for (2-week validation protocol)
 
 Goal: see if signals fire with the frequency and quality the backtest predicts, **without trading any of them**.

@@ -59,6 +59,11 @@ showLines = input.bool(true, "Show stop + target lines", group=grp_visual)
 showLabels = input.bool(true, "Show entry info labels", group=grp_visual)
 showADX = input.bool(true, "Show ADX(14) in info label", group=grp_visual)
 
+grp_alerts = "Alerts"
+useAlerts = input.bool(true, "Fire JSON webhook + sound alerts", group=grp_alerts,
+                      tooltip="Fires a single dynamic alert() per signal. Configure the delivery in the TradingView alert dialog: Webhook URL + Play sound.")
+alertStrategyId = input.string("pac_bos_config_a", "Strategy ID (in webhook JSON)", group=grp_alerts)
+
 // ============================ SESSION ============================
 // Chart timezone should be set to America/Chicago for this to match the
 // backtest cleanly. We compare in exchange time via `hour` / `minute`.
@@ -214,6 +219,54 @@ if showLabels and (longEntry or shortEntry)
               textcolor=color.white,
               style=longEntry ? label.style_label_up : label.style_label_down,
               size=size.small)
+
+// ============================ ALERTS ============================
+// Two mechanisms, both fire when a LONG or SHORT BOS entry passes all filters:
+//
+//  1. `alert()` — dynamic JSON payload. Configure ONE alert in TradingView's
+//     alert dialog using "Any alert() function call". Paste your webhook URL,
+//     check "Play sound" + pick your sound. One alert = both webhook + audio.
+//     The JSON body gets POST'd to the webhook exactly as constructed below.
+//
+//  2. `alertcondition()` — static named templates. Create TWO separate alerts
+//     via the TV alert dialog if you want independently-configurable channels
+//     (e.g. webhook-only for longs, sound-only for shorts). These appear in
+//     the alert dialog as "PAC BOS — LONG entry" and "PAC BOS — SHORT entry".
+
+// Construct JSON payload for webhook. str.tostring with "%.4f" keeps price
+// precision without excess digits. {{ticker}} + {{time}} are TV placeholders
+// that TradingView substitutes in the delivered message body.
+makeWebhookJSON(action) =>
+    stopLvl = action == "long" ? getLongStop() : getShortStop()
+    tgtLvl = action == "long" ?
+      entryPrice + targetATRMult * atr14 :
+      entryPrice - targetATRMult * atr14
+    '{' +
+      '"strategy":"' + alertStrategyId + '",' +
+      '"symbol":"{{ticker}}",' +
+      '"action":"' + action + '",' +
+      '"price":' + str.tostring(close, "#.####") + ',' +
+      '"stop":' + str.tostring(stopLvl, "#.####") + ',' +
+      '"target":' + str.tostring(tgtLvl, "#.####") + ',' +
+      '"z_vwap":' + str.tostring(zClose, "#.##") + ',' +
+      '"adx":' + str.tostring(adx14, "#.##") + ',' +
+      '"atr":' + str.tostring(atr14, "#.####") + ',' +
+      '"time":"{{time}}"' +
+    '}'
+
+if useAlerts and longEntry
+    alert(makeWebhookJSON("long"), alert.freq_once_per_bar_close)
+if useAlerts and shortEntry
+    alert(makeWebhookJSON("short"), alert.freq_once_per_bar_close)
+
+// Static named templates — create these in the TV alert dialog by picking
+// "PAC BOS Config A" in the Condition dropdown, then the alert name below.
+alertcondition(longEntry,
+               title="PAC BOS — LONG entry",
+               message="PAC BOS LONG on {{ticker}} @ {{close}}")
+alertcondition(shortEntry,
+               title="PAC BOS — SHORT entry",
+               message="PAC BOS SHORT on {{ticker}} @ {{close}}")
 
 // ============================ INFO TABLE ============================
 // Persistent top-right table showing current-bar filter state.
