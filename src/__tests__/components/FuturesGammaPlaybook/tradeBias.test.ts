@@ -64,7 +64,11 @@ describe('deriveTradeBias — POSITIVE', () => {
     const bias = deriveTradeBias({
       regime: 'POSITIVE',
       rules: [
-        rule({ id: 'pos-fade-call-wall', direction: 'SHORT', status: 'ACTIVE' }),
+        rule({
+          id: 'pos-fade-call-wall',
+          direction: 'SHORT',
+          status: 'ACTIVE',
+        }),
       ],
       levels: [],
       flowSignals: emptyFlow,
@@ -184,7 +188,11 @@ describe('deriveTradeBias — POSITIVE', () => {
     const bias = deriveTradeBias({
       regime: 'POSITIVE',
       rules: [
-        rule({ id: 'pos-fade-call-wall', direction: 'SHORT', status: 'DISTANT' }),
+        rule({
+          id: 'pos-fade-call-wall',
+          direction: 'SHORT',
+          status: 'DISTANT',
+        }),
       ],
       levels: [],
       flowSignals: {
@@ -204,9 +212,7 @@ describe('deriveTradeBias — POSITIVE', () => {
   it('all DISTANT and no drift → NEUTRAL · all setups distant', () => {
     const bias = deriveTradeBias({
       regime: 'POSITIVE',
-      rules: [
-        rule({ status: 'DISTANT' }),
-      ],
+      rules: [rule({ status: 'DISTANT' })],
       levels: [],
       flowSignals: emptyFlow,
     });

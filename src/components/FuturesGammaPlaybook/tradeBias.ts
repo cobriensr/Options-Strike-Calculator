@@ -88,8 +88,10 @@ function pickBestRule(rules: PlaybookRule[]): PlaybookRule | null {
     const cr = convictionRank[b.conviction] - convictionRank[a.conviction];
     if (cr !== 0) return cr;
     // Tiebreak on |distance| — closer rules win.
-    const da = a.distanceEsPoints === null ? Infinity : Math.abs(a.distanceEsPoints);
-    const db = b.distanceEsPoints === null ? Infinity : Math.abs(b.distanceEsPoints);
+    const da =
+      a.distanceEsPoints === null ? Infinity : Math.abs(a.distanceEsPoints);
+    const db =
+      b.distanceEsPoints === null ? Infinity : Math.abs(b.distanceEsPoints);
     return da - db;
   })[0]!;
 }
@@ -114,15 +116,18 @@ function wallFlowAligned(
   // SHORT bias likes: ceiling strengthening, floor eroding.
   if (direction === 'LONG') {
     if (floor !== null && floor >= WALL_FLOW_ALIGNMENT_THRESHOLD) return true;
-    if (ceiling !== null && ceiling <= -WALL_FLOW_ALIGNMENT_THRESHOLD) return true;
+    if (ceiling !== null && ceiling <= -WALL_FLOW_ALIGNMENT_THRESHOLD)
+      return true;
     if (floor !== null && floor <= -WALL_FLOW_ALIGNMENT_THRESHOLD) return false;
-    if (ceiling !== null && ceiling >= WALL_FLOW_ALIGNMENT_THRESHOLD) return false;
+    if (ceiling !== null && ceiling >= WALL_FLOW_ALIGNMENT_THRESHOLD)
+      return false;
     return null;
   }
   // SHORT: mirror
   if (ceiling !== null && ceiling >= WALL_FLOW_ALIGNMENT_THRESHOLD) return true;
   if (floor !== null && floor <= -WALL_FLOW_ALIGNMENT_THRESHOLD) return true;
-  if (ceiling !== null && ceiling <= -WALL_FLOW_ALIGNMENT_THRESHOLD) return false;
+  if (ceiling !== null && ceiling <= -WALL_FLOW_ALIGNMENT_THRESHOLD)
+    return false;
   if (floor !== null && floor >= WALL_FLOW_ALIGNMENT_THRESHOLD) return false;
   return null;
 }
@@ -161,7 +166,9 @@ export function deriveTradeBias(input: TradeBiasInput): TradeBias {
   // ── POSITIVE regime (mean-revert) ──────────────────────────────────
   if (regime === 'POSITIVE') {
     // Prefer an ACTIVE directional rule.
-    const activeDirectional = activeRules.filter((r) => ruleDirection(r) !== null);
+    const activeDirectional = activeRules.filter(
+      (r) => ruleDirection(r) !== null,
+    );
     const picked = pickBestRule(activeDirectional);
     if (picked && ruleDirection(picked) !== null) {
       const direction = ruleDirection(picked)!;
@@ -171,7 +178,12 @@ export function deriveTradeBias(input: TradeBiasInput): TradeBias {
         // weak trade the trader wouldn't want.
         const aligned = wallFlowAligned(direction, flowSignals);
         if (aligned === true) {
-          return directional(direction, 'mild', picked.entryEs, 'low conviction but flow aligned');
+          return directional(
+            direction,
+            'mild',
+            picked.entryEs,
+            'low conviction but flow aligned',
+          );
         }
         return neutral('low conviction · weakening pin');
       }
@@ -191,7 +203,9 @@ export function deriveTradeBias(input: TradeBiasInput): TradeBias {
     }
 
     // No ACTIVE rule — fall back to ARMED.
-    const armedDirectional = armedRules.filter((r) => ruleDirection(r) !== null);
+    const armedDirectional = armedRules.filter(
+      (r) => ruleDirection(r) !== null,
+    );
     const armed = pickBestRule(armedDirectional);
     if (armed && ruleDirection(armed) !== null) {
       return directional(
@@ -215,7 +229,9 @@ export function deriveTradeBias(input: TradeBiasInput): TradeBias {
   const callWallStatus = levelStatusOf(levels, 'CALL_WALL');
   const putWallStatus = levelStatusOf(levels, 'PUT_WALL');
 
-  const activeBreakCall = activeRules.find((r) => r.id === 'neg-break-call-wall');
+  const activeBreakCall = activeRules.find(
+    (r) => r.id === 'neg-break-call-wall',
+  );
   const activeBreakPut = activeRules.find((r) => r.id === 'neg-break-put-wall');
 
   if (activeBreakCall && callWallStatus !== 'BROKEN') {
@@ -224,7 +240,9 @@ export function deriveTradeBias(input: TradeBiasInput): TradeBias {
       'LONG',
       aligned === true ? 'strong' : 'mild',
       activeBreakCall.entryEs,
-      aligned === true ? 'break-call · flow aligned' : 'break-call continuation',
+      aligned === true
+        ? 'break-call · flow aligned'
+        : 'break-call continuation',
     );
   }
   if (activeBreakPut && putWallStatus !== 'BROKEN') {
@@ -248,7 +266,7 @@ export function deriveTradeBias(input: TradeBiasInput): TradeBias {
       const aligned = wallFlowAligned('LONG', flowSignals);
       return directional(
         'LONG',
-        aligned === true ? 'mild' : 'mild',
+        aligned === true ? 'strong' : 'mild',
         breakCall.entryEs,
         'break fired early · wait pullback',
       );
@@ -260,7 +278,7 @@ export function deriveTradeBias(input: TradeBiasInput): TradeBias {
       const aligned = wallFlowAligned('SHORT', flowSignals);
       return directional(
         'SHORT',
-        aligned === true ? 'mild' : 'mild',
+        aligned === true ? 'strong' : 'mild',
         breakPut.entryEs,
         'break fired early · wait pullback',
       );
@@ -288,9 +306,16 @@ export function deriveTradeBias(input: TradeBiasInput): TradeBias {
   // rule is in range.
   const nearest = [...rules]
     .filter((r) => ruleDirection(r) !== null && r.distanceEsPoints !== null)
-    .sort((a, b) => Math.abs(a.distanceEsPoints!) - Math.abs(b.distanceEsPoints!))[0];
-  if (nearest && Math.abs(nearest.distanceEsPoints!) <= RULE_ACTIVE_BAND_ES * 4) {
-    return neutral(`nearest setup ${Math.round(nearest.distanceEsPoints!)} pts off`);
+    .sort(
+      (a, b) => Math.abs(a.distanceEsPoints!) - Math.abs(b.distanceEsPoints!),
+    )[0];
+  if (
+    nearest &&
+    Math.abs(nearest.distanceEsPoints!) <= RULE_ACTIVE_BAND_ES * 4
+  ) {
+    return neutral(
+      `nearest setup ${Math.round(nearest.distanceEsPoints!)} pts off`,
+    );
   }
 
   return neutral('all setups distant');
