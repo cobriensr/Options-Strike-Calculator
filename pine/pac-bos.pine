@@ -1,46 +1,58 @@
 //@version=6
 // =============================================================================
-// PAC Backtest Config A — BOS Breakout (charting indicator only, no alerts)
+// PAC Backtest Config B — BOS Breakout + OPPOSITE_CHOCH exit
 // =============================================================================
 // E1.5 deliverable from docs/superpowers/specs/pac-backtester-2026-04-18.md.
 //
-// Backtested config (2022-2024 NQ 1m, 2,729 trades, 89.7% WR, $89K P&L, 36/36
-// positive months) ported as a visual-only indicator. NO alertcondition() calls
-// on purpose — this is for manual eyeball validation on live charts BEFORE any
-// automation.
+// Backtested comparison (2022-2024 NQ 1m, post-causality-fix, stressed costs):
+//   Config A (ATR_TARGET 2.0):  2729 trades, 89.7% WR, $32.65 avg, $89K total
+//   Config B (OPPOSITE_CHOCH):  1840 trades, 88.5% WR, $59.45 avg, $109K total  ← DEFAULT
+//   Config C (OPPOSITE_BOS):    1707 trades, 68.8% WR, $42.37 avg, $72K total
+//   Config D (ATR_TARGET 4.0):  2199 trades, 74.9% WR, $41.58 avg, $91K total
 //
-// Strategy semantics:
-//   entry_trigger:      BOS_BREAKOUT    (price closes beyond prior swing extreme)
-//   exit_trigger:       ATR_TARGET      (2.0 × ATR(14) from entry)
-//   stop_placement:     SWING_EXTREME   (most recent correct-side swing)
-//   session:            RTH             (08:30–15:00 CT)
-//   stop_atr_multiple:  2.25            (fallback when no correct-side swing)
-//   target_atr_multiple:2.0
-//   min_z_entry_vwap:   1.0             (signed by direction)
-//   event_day_filter:   skip_events     (FOMC + OPEX — toggle input)
+// Config B wins: highest total P&L (+23% vs A), barely-worse WR, 82% larger
+// avg trade, and only 14 stop-hits across 1840 trades (vs 230 in Config A).
+// OPPOSITE_CHOCH exits capture more of each trend move while still protecting
+// via structural reversal detection. See
+// docs/superpowers/specs/pac-exit-trigger-finding-2026-04-22.md.
+//
+// Strategy semantics (DEFAULT = Config B):
+//   entry_trigger:      BOS_BREAKOUT     (price closes beyond prior swing extreme)
+//   exit_trigger:       OPPOSITE_CHOCH   (exit on structural reversal — new LL
+//                                         for long / new HH for short)
+//   stop_placement:     SWING_EXTREME    (most recent correct-side swing)
+//   session:            RTH              (08:30–15:00 CT)
+//   stop_atr_multiple:  2.25             (fallback when no correct-side swing)
+//   min_z_entry_vwap:   1.0              (signed by direction)
+//   event_day_filter:   skip_events      (FOMC + OPEX — toggle input)
+//
+// `Exit Mode` input toggles between OPPOSITE_CHOCH (default, matches Config B)
+// and ATR_TARGET (2.0 × ATR, matches Config A). Both are kept so you can
+// eyeball the difference live.
 //
 // Plots:
 //   - Entry arrow (up/down triangle) at the BOS bar, next-bar-open fill
-//   - Horizontal stop line from entry bar to target/stop hit or session end
-//   - Horizontal target line (2.0 × ATR away from entry)
+//   - Horizontal stop line from entry bar to exit
+//   - Horizontal target/CHoCH-exit line that extends while in trade
 //   - Info label with direction / z_vwap / ADX / session at entry
+//   - Swing high/low markers + BOS break lines (always-on structure view)
 //   - Background tint on event days (trades are suppressed)
+//   - Exit markers (TARGET/STOP/OPP/EOD/CHOCH) with $ P&L per 1 contract
 //
 // Install: TradingView → Pine Editor → paste → Save → Add to chart.
 // Chart requirements: NQ 1-minute bars, RTH shown.
 // =============================================================================
 
-indicator(title="PAC BOS Config A — Charting Only", shorttitle="PAC BOS A", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=100)
+indicator(title="PAC BOS Config B — Charting Only", shorttitle="PAC BOS B", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=100)
 
 // ============================ INPUTS ============================
 
 grp_core = "Core Strategy"
-swingLen = input.int(5, "Swing Length (bars before/after)", minval=2, maxval=20, group=grp_core,
-                    tooltip="Matches backtest swing_length=5. Pine's pivothigh/low requires swingLen bars of confirmation on each side — this intentionally matches the backtest's 5-bar causality fix.")
+exitMode = input.string("OPPOSITE_CHOCH", "Exit Mode", options=["OPPOSITE_CHOCH", "ATR_TARGET"], group=grp_core, tooltip="OPPOSITE_CHOCH = Config B (let winners run, exit on structural reversal). ATR_TARGET = Config A (hard TP at N × ATR). Config B backtested +23% total P&L and 93% fewer stop hits.")
+swingLen = input.int(5, "Swing Length (bars before/after)", minval=2, maxval=20, group=grp_core, tooltip="Matches backtest swing_length=5. Pine's pivothigh/low requires swingLen bars of confirmation on each side — this intentionally matches the backtest's 5-bar causality fix.")
 stopATRMult = input.float(2.25, "Stop × ATR(14)", step=0.25, group=grp_core)
-targetATRMult = input.float(2.0, "Target × ATR(14)", step=0.25, group=grp_core)
-minZVWAP = input.float(1.0, "Min |z_close_vwap|", step=0.1, group=grp_core,
-                      tooltip="Long requires z > +1.0, short requires z < -1.0. Filters entries that aren't yet decisively on-side vs VWAP.")
+targetATRMult = input.float(2.0, "Target × ATR(14) (ATR_TARGET mode only)", step=0.25, group=grp_core)
+minZVWAP = input.float(1.0, "Min |z_close_vwap|", step=0.1, group=grp_core, tooltip="Long requires z > +1.0, short requires z < -1.0. Filters entries that aren't yet decisively on-side vs VWAP.")
 
 grp_filter = "Filters"
 useRTHOnly = input.bool(true, "Entries only in RTH (08:30–15:00 CT)", group=grp_filter)
@@ -134,6 +146,32 @@ if not na(pivL)
 bosBull = not na(lastSwingHighLevel) and close > lastSwingHighLevel and close[1] <= lastSwingHighLevel
 bosBear = not na(lastSwingLowLevel) and close < lastSwingLowLevel and close[1] >= lastSwingLowLevel
 
+// ============================ CHoCH DETECTION (simplified) ============================
+// CHoCH = Change of Character. In LuxAlgo PAC / smc semantics: a new lower-low
+// (after a series of higher-lows) or a new higher-high (after lower-highs) —
+// structurally signals a potential trend change.
+//
+// This Pine approximation tracks the two most recent swing lows and the two
+// most recent swing highs; a bearish CHoCH fires when a NEW confirmed swing
+// LOW is below the PRIOR confirmed swing low (making-lower-lows), bullish
+// CHoCH when a new swing HIGH is above the prior one (making-higher-highs).
+//
+// This is less strict than smc's 4-swing pattern matcher but captures the
+// core intent: "first structural reversal after a trend". In the Python
+// backtest, this produced the 88.5% WR / $59.45 avg / $109K 3-yr Config B
+// result — 23% better than Config A's hard-TP approach.
+
+var float prevSwingLowLevel = na
+var float prevSwingHighLevel = na
+
+if not na(pivL)
+    prevSwingLowLevel := lastSwingLowLevel[1]
+if not na(pivH)
+    prevSwingHighLevel := lastSwingHighLevel[1]
+
+chochBear = not na(pivL) and not na(prevSwingLowLevel) and pivL < prevSwingLowLevel
+chochBull = not na(pivH) and not na(prevSwingHighLevel) and pivH > prevSwingHighLevel
+
 // ============================ ENTRY GATE ============================
 // Long: bullish BOS + RTH + not event day + z_vwap > min threshold
 // Short: bearish BOS + RTH + not event day + z_vwap < -threshold
@@ -213,6 +251,8 @@ var line openStopLine = na
 var line openTargetLine = na
 
 // Open a new long when longEntry fires and we're flat.
+// Target line is only drawn in ATR_TARGET mode — in OPPOSITE_CHOCH mode there
+// is no fixed target level; exit fires on structural reversal.
 if showLines and longEntry and openDir == 0
     openDir := 1
     openEntry := close
@@ -220,7 +260,8 @@ if showLines and longEntry and openDir == 0
     openTarget := close + targetATRMult * atr14
     openEntryBar := bar_index
     openStopLine := line.new(bar_index, openStop, bar_index + 1, openStop, color=color.new(color.red, 20), width=2, style=line.style_dashed)
-    openTargetLine := line.new(bar_index, openTarget, bar_index + 1, openTarget, color=color.new(color.green, 20), width=2, style=line.style_dashed)
+    if exitMode == "ATR_TARGET"
+        openTargetLine := line.new(bar_index, openTarget, bar_index + 1, openTarget, color=color.new(color.green, 20), width=2, style=line.style_dashed)
 
 // Open a new short when shortEntry fires and we're flat.
 if showLines and shortEntry and openDir == 0
@@ -230,22 +271,33 @@ if showLines and shortEntry and openDir == 0
     openTarget := close - targetATRMult * atr14
     openEntryBar := bar_index
     openStopLine := line.new(bar_index, openStop, bar_index + 1, openStop, color=color.new(color.red, 20), width=2, style=line.style_dashed)
-    openTargetLine := line.new(bar_index, openTarget, bar_index + 1, openTarget, color=color.new(color.green, 20), width=2, style=line.style_dashed)
+    if exitMode == "ATR_TARGET"
+        openTargetLine := line.new(bar_index, openTarget, bar_index + 1, openTarget, color=color.new(color.green, 20), width=2, style=line.style_dashed)
 
-// Each bar while in a trade: extend the stop/target lines forward to keep
-// them visible as the trade develops.
+// Each bar while in a trade: extend stop line forward, and target line too
+// if it was drawn (ATR_TARGET mode).
 if openDir != 0 and not na(openStopLine)
     line.set_x2(openStopLine, bar_index)
-    line.set_x2(openTargetLine, bar_index)
+    if not na(openTargetLine)
+        line.set_x2(openTargetLine, bar_index)
 
 // Exit detection: evaluate in priority order. Intrabar stop/target checks
 // use high/low (backtest uses same convention). Opposite-signal + session-end
 // checks at bar close, exit fills at close price.
+//
+// exitMode branch:
+//   OPPOSITE_CHOCH → Config B: exit on structural reversal (chochBear for
+//                    long trade, chochBull for short). TARGET check disabled.
+//   ATR_TARGET     → Config A: exit on 2.0 × ATR fixed target. CHoCH ignored.
+
+useChochExit = exitMode == "OPPOSITE_CHOCH"
 
 hitLongStop = openDir == 1 and low <= openStop
-hitLongTarget = openDir == 1 and high >= openTarget
 hitShortStop = openDir == -1 and high >= openStop
-hitShortTarget = openDir == -1 and low <= openTarget
+hitLongTarget = not useChochExit and openDir == 1 and high >= openTarget
+hitShortTarget = not useChochExit and openDir == -1 and low <= openTarget
+chochExitLong = useChochExit and openDir == 1 and chochBear
+chochExitShort = useChochExit and openDir == -1 and chochBull
 sessionEnded = openDir != 0 and inRTH[1] and not inRTH
 oppSignalLong = openDir == 1 and shortEntry
 oppSignalShort = openDir == -1 and longEntry
@@ -258,6 +310,9 @@ if hitLongStop or hitShortStop
 if hitLongTarget or hitShortTarget
     exitReason := "TARGET"
     exitPrice := openTarget
+if chochExitLong or chochExitShort
+    exitReason := "CHOCH"
+    exitPrice := close
 if oppSignalLong or oppSignalShort
     exitReason := "OPP"
     exitPrice := close

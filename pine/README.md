@@ -1,8 +1,19 @@
-# PAC BOS Config A — TradingView Charting Indicator
+# PAC BOS — TradingView Charting Indicator (Config B default)
 
 **Status:** E1.5 deliverable from the [PAC backtester spec](../docs/superpowers/specs/pac-backtester-2026-04-18.md).
 
-This Pine v6 indicator ports the validated Config A strategy (2022–2024 NQ, 2,729 trades, 89.7% WR, $89K P&L, 36/36 positive months) to TradingView for **visual eyeball-validation only**. It does NOT fire alerts, webhooks, or trade automation. That's Epic 2.
+This Pine v6 indicator ports the validated PAC strategy to TradingView for **visual eyeball-validation only**. It does NOT fire trade automation (alerts + webhooks are optional). That's Epic 2.
+
+## Exit mode: Config B by default
+
+The `Exit Mode` dropdown in the indicator settings toggles between two exit rules, both backtested over 2022–2024 NQ with post-causality-fix + stressed cost model:
+
+| Config | Exit rule | Trades | WR | Avg | 3yr P&L | Stop hits |
+|---|---|---|---|---|---|---|
+| **B (default)** | `OPPOSITE_CHOCH` — structural reversal | 1,840 | 88.5% | **$59.45** | **$109,389** | **14** |
+| A (legacy) | `ATR_TARGET` — hard TP at 2.0 × ATR | 2,729 | 89.7% | $32.65 | $89,089 | 230 |
+
+Config B wins +23% on total P&L with 93% fewer stop-outs by letting winners run until a structural reversal (new lower-low for longs / new higher-high for shorts) instead of cutting at a fixed 2 ATR target. See [exit-trigger finding spec](../docs/superpowers/specs/pac-exit-trigger-finding-2026-04-22.md) for the 5-variant sweep that established this.
 
 ## What it plots
 
@@ -25,12 +36,13 @@ When the active trade closes, a labeled marker prints at the exit bar showing **
 
 | Label | Meaning |
 |---|---|
-| `TARGET` | Intrabar high/low crossed the 2.0× ATR target |
+| `CHOCH` | (Config B only) A structural reversal fired — new lower-low for longs, new higher-high for shorts |
+| `TARGET` | (Config A only) Intrabar high/low crossed the 2.0× ATR target |
 | `STOP` | Intrabar high/low crossed the swing-extreme (or ATR-fallback) stop |
 | `OPP` | An opposite-direction BOS signal fired while in trade (EXIT_ONLY semantics) |
 | `EOD` | RTH session ended while in trade (force-flat at session close) |
 
-The stop/target lines stop extending once the exit marker prints. A new trade can open on the next qualifying entry.
+The stop line stops extending once the exit marker prints. A new trade can open on the next qualifying entry.
 
 ### Context
 
@@ -43,7 +55,7 @@ The stop/target lines stop extending once the exit marker prints. A new trade ca
 2. Set chart to **1-minute** bars.
 3. Set chart timezone to **America/Chicago** (right-click the time axis → change timezone).
 4. Open **Pine Editor** (bottom panel).
-5. Paste the contents of [pac-bos-config-a.pine](pac-bos-config-a.pine).
+5. Paste the contents of [pac-bos.pine](pac-bos.pine).
 6. Click **Save** → give it a name → click **Add to chart**.
 7. Verify the top-right status table appears showing live ADX / z_vwap / etc.
 
