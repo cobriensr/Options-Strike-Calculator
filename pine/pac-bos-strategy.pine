@@ -126,10 +126,14 @@ if shortEntry and strategy.opentrades == 0
 // Stops + optional target. Called UNCONDITIONALLY (no `if` guard) — Pine
 // handles it correctly: if no matching entry is open, strategy.exit is a
 // no-op. This matches the simple working examples in Pine v6 docs.
-longStopPrice = na
-longTargetPrice = na
-shortStopPrice = na
-shortTargetPrice = na
+//
+// Pine v6 requires explicit `float` type when initializing with na, otherwise
+// later := assignment of a float fails with "Value with NA type cannot be
+// assigned to a variable that was defined without type keyword".
+float longStopPrice = na
+float longTargetPrice = na
+float shortStopPrice = na
+float shortTargetPrice = na
 
 if strategy.opentrades > 0 and strategy.position_size > 0
     entryPx = strategy.opentrades.entry_price(0)
