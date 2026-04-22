@@ -99,6 +99,19 @@ function fmtSigned(points: number): string {
   return `${sign}${points.toFixed(2)}`;
 }
 
+/**
+ * Integer-rounded signed points for "distance" displays. Trading
+ * mental model: you don't trail stops by 0.75 points; the sub-point
+ * precision is noise. Matches `fmtSignedPts` in `PlaybookPanel.tsx` so
+ * the header row and the rule rows speak the same numeric dialect.
+ */
+function fmtSignedPts(points: number): string {
+  const rounded = Math.round(points);
+  if (rounded === 0) return '0 pts';
+  const sign = rounded > 0 ? '+' : '';
+  return `${sign}${rounded} pts`;
+}
+
 /** Signed ES distance between the current price and the zero-gamma level. */
 function zeroGammaDistance(
   esPrice: number | null,
@@ -237,7 +250,7 @@ export const RegimeHeader = memo(function RegimeHeader({
               className="cursor-help font-mono text-[15px] font-semibold tabular-nums"
               style={{ color: zgColor }}
             >
-              {zgDistance === null ? '—' : `${fmtSigned(zgDistance)} pts`}
+              {zgDistance === null ? '—' : fmtSignedPts(zgDistance)}
             </div>
           </Tooltip>
           <div

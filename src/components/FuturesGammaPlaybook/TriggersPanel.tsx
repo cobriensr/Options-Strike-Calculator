@@ -249,12 +249,24 @@ export const TriggersPanel = memo(function TriggersPanel({
                       aria-hidden="true"
                       style={{ color: 'var(--color-tertiary)' }}
                     >
-                      {trigger.levelLabel}:
+                      {/* BLOCKED triggers still surface the keyed level
+                          for context, but we prefix with "Ref:" (short
+                          for "reference only") so the trader doesn't
+                          misread it as a live, tradeable level. Without
+                          this the row looked identical to an actionable
+                          reading — seen at 2:50 PM 2026-04-21. */}
+                      {blocked ? 'Ref:' : `${trigger.levelLabel}:`}
                     </span>
                     <span
-                      aria-label={`${trigger.levelLabel} at ${fmtEs(
-                        trigger.levelEsPrice,
-                      )}`}
+                      aria-label={
+                        blocked
+                          ? `${trigger.levelLabel} reference at ${fmtEs(
+                              trigger.levelEsPrice,
+                            )}`
+                          : `${trigger.levelLabel} at ${fmtEs(
+                              trigger.levelEsPrice,
+                            )}`
+                      }
                     >
                       {fmtEs(trigger.levelEsPrice)}
                     </span>

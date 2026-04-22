@@ -138,9 +138,33 @@ describe('TriggersPanel', () => {
         esGammaPin={5815.5}
       />,
     );
-    // Call-wall rows (fade-call-wall + break-call-wall) share an aria-label.
-    const callWallPrices = screen.getAllByLabelText('Call wall at 5822.25');
-    expect(callWallPrices).toHaveLength(2);
+    // Call-wall rows: `fade-call-wall` is actionable in POSITIVE regime
+    // → aria-label "Call wall at 5822.25". `break-call-wall` is BLOCKED
+    // (wrong regime) → aria-label "Call wall reference at 5822.25" so
+    // screen-readers distinguish live triggers from stored references.
+    expect(screen.getByLabelText('Call wall at 5822.25')).toBeInTheDocument();
+    expect(
+      screen.getByLabelText('Call wall reference at 5822.25'),
+    ).toBeInTheDocument();
     expect(screen.getByLabelText('Gamma pin at 5815.50')).toBeInTheDocument();
+  });
+
+  it('prefixes BLOCKED row labels with "Ref:" to disambiguate from live triggers', () => {
+    render(
+      <TriggersPanel
+        regime="NEGATIVE"
+        phase="POWER"
+        esPrice={5820}
+        levels={[
+          makeLevel('CALL_WALL', 5822, 2),
+          makeLevel('PUT_WALL', 5818, -2),
+        ]}
+      />,
+    );
+    // Both fade-call-wall and lift-put-wall are BLOCKED in NEGATIVE
+    // regime. Their rows should prefix "Ref:" rather than a bare
+    // "Call wall:" / "Put wall:" which reads like live data.
+    const refPrefixes = screen.getAllByText('Ref:');
+    expect(refPrefixes.length).toBeGreaterThanOrEqual(2);
   });
 });

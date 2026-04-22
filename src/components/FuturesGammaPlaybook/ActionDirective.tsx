@@ -43,6 +43,15 @@ export interface ActionDirectiveProps {
   esZeroGamma: number | null;
   esCallWall: number | null;
   esPutWall: number | null;
+  /**
+   * True when the displayed snapshot is live (not scrubbed back to a
+   * historical timestamp). When false, the banner prefixes its copy with
+   * `[BACKTEST]` and downgrades `aria-live` to `"off"` so screen readers
+   * don't announce historical trade calls as if they were actionable now.
+   * Defaults to `true` for back-compat; any scrub-aware container should
+   * pass `isLive` from `useFuturesGammaPlaybook`.
+   */
+  isLive?: boolean;
 }
 
 // ── Presentation metadata ────────────────────────────────────────────
@@ -264,6 +273,7 @@ export const ActionDirective = memo(function ActionDirective({
   esZeroGamma,
   esCallWall,
   esPutWall,
+  isLive = true,
 }: ActionDirectiveProps) {
   const directive = useMemo(
     () =>
@@ -281,14 +291,26 @@ export const ActionDirective = memo(function ActionDirective({
   return (
     <div
       role="status"
-      aria-live="polite"
-      aria-label="Action directive"
+      // Historical snapshots must not trigger assistive-tech announcements
+      // as if they were actionable. Downgrade to `off` when scrubbed.
+      aria-live={isLive ? 'polite' : 'off'}
+      aria-label={isLive ? 'Action directive' : 'Action directive (backtest)'}
       className={`mb-3 flex items-center gap-2 rounded-lg border px-3 py-2 font-mono text-[12px] font-semibold ${STATE_CLASS[directive.state]}`}
     >
       <span aria-hidden="true" className="text-[14px]">
         {directive.icon}
       </span>
-      <span>{directive.text}</span>
+      <span>
+        {!isLive && (
+          <span
+            className="mr-1.5 inline-flex items-center rounded bg-white/10 px-1 py-0.5 font-mono text-[10px] tracking-wider uppercase"
+            aria-hidden="true"
+          >
+            Backtest
+          </span>
+        )}
+        {directive.text}
+      </span>
     </div>
   );
 });

@@ -198,6 +198,7 @@ function FuturesGammaPlaybook({
         esZeroGamma={playbook.esZeroGamma}
         esCallWall={playbook.esCallWall}
         esPutWall={playbook.esPutWall}
+        isLive={isLive}
       />
 
       {/* Panel 2: Playbook rules cheat sheet (full width) */}

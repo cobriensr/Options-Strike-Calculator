@@ -289,4 +289,59 @@ describe('ActionDirective', () => {
     );
     expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite');
   });
+
+  // ── Backtest / scrub-mode indicator ──────────────────────────
+
+  it('renders a BACKTEST prefix and sets aria-live="off" when isLive is false', () => {
+    render(
+      <ActionDirective
+        verdict="MEAN_REVERT"
+        rules={[
+          makeRule({
+            id: 'pos-fade-call-wall',
+            direction: 'SHORT',
+            entryEs: 5820,
+            distanceEsPoints: 0,
+            status: 'ACTIVE',
+          }),
+        ]}
+        esPrice={5820}
+        esZeroGamma={5800}
+        esCallWall={5820}
+        esPutWall={5780}
+        isLive={false}
+      />,
+    );
+    const status = screen.getByRole('status');
+    expect(status).toHaveAttribute('aria-live', 'off');
+    expect(status).toHaveAttribute(
+      'aria-label',
+      'Action directive (backtest)',
+    );
+    expect(screen.getByText('Backtest')).toBeInTheDocument();
+  });
+
+  it('defaults to live behavior when isLive is omitted (back-compat)', () => {
+    render(
+      <ActionDirective
+        verdict="MEAN_REVERT"
+        rules={[
+          makeRule({
+            id: 'pos-fade-call-wall',
+            direction: 'SHORT',
+            entryEs: 5820,
+            distanceEsPoints: 0,
+            status: 'ACTIVE',
+          }),
+        ]}
+        esPrice={5820}
+        esZeroGamma={5800}
+        esCallWall={5820}
+        esPutWall={5780}
+      />,
+    );
+    const status = screen.getByRole('status');
+    expect(status).toHaveAttribute('aria-live', 'polite');
+    expect(screen.queryByText('Backtest')).toBeNull();
+  });
 });
