@@ -6,7 +6,7 @@
  */
 
 import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
-import { DRIFT_CONSISTENCY_THRESHOLD, DRIFT_PTS_THRESHOLD } from './constants';
+import { computePriceTrend as computePriceTrendPrimitive } from '../../utils/price-trend';
 import type { PriceTrend, Snapshot } from './types';
 
 /** Compute % change in netGamma from prev → current for each strike. */
@@ -82,51 +82,41 @@ export function computeSmoothedStrikes(
 /**
  * Compute a price trend from the snapshot buffer.
  *
- * Extracts `strikes[0].price` from each buffered snapshot within `windowMs`,
- * measures the net point/% change, and checks directional consistency to
- * distinguish sustained drifts from choppy noise.
+ * Thin adapter over `src/utils/price-trend.ts`'s primitive. Extracts
+ * `strikes[0].price` from each buffered snapshot and appends the
+ * caller's `currentPrice` as a synthesized "now" point. Keeping the
+ * existing signature here means `GexLandscape/index.tsx` doesn't need
+ * any changes.
+ *
+ * Preserves the prior semantics: require at least 3 *buffered* points
+ * (not 3 total) before emitting a directional trend. This is a
+ * deliberately stricter gate than the primitive's own MIN_SNAPSHOTS
+ * check — the extra buffered point ensures we have three
+ * step-intervals when `currentPrice` is appended, giving the
+ * consistency math real signal.
+ *
+ * The primitive lives in `src/utils/` so the server-side regime cron
+ * can import it without pulling in React / GexLandscape — see
+ * `docs/superpowers/specs/futures-playbook-server-drift-override-2026-04-21.md`.
  */
+const MIN_BUFFERED_SNAPSHOTS = 3;
+
 export function computePriceTrend(
   currentPrice: number,
   buf: Snapshot[],
   nowTs: number,
   windowMs = 5 * 60 * 1000,
 ): PriceTrend {
-  const recent = buf
-    .filter((snap) => snap.ts >= nowTs - windowMs && snap.strikes.length > 0)
-    .sort((a, b) => a.ts - b.ts);
-
-  const MIN_SNAPSHOTS = 3;
-  if (recent.length < MIN_SNAPSHOTS) {
+  const inWindow = buf.filter(
+    (snap) => snap.ts >= nowTs - windowMs && snap.strikes.length > 0,
+  );
+  if (inWindow.length < MIN_BUFFERED_SNAPSHOTS) {
     return { direction: 'flat', changePct: 0, changePts: 0, consistency: 0 };
   }
-
-  // Build price series: buffered snapshots + current price
-  const prices = recent.map((s) => s.strikes[0]!.price);
-  prices.push(currentPrice);
-
-  const first = prices[0]!;
-  const changePts = currentPrice - first;
-  const changePct = first > 0 ? (changePts / first) * 100 : 0;
-
-  // Count directional intervals (skip flat intervals)
-  let ups = 0;
-  let downs = 0;
-  for (let i = 1; i < prices.length; i++) {
-    if (prices[i]! > prices[i - 1]!) ups++;
-    else if (prices[i]! < prices[i - 1]!) downs++;
-  }
-  const total = ups + downs;
-  const dominant = Math.max(ups, downs);
-  const consistency = total > 0 ? dominant / total : 0;
-
-  let direction: PriceTrend['direction'] = 'flat';
-  if (
-    Math.abs(changePts) >= DRIFT_PTS_THRESHOLD &&
-    consistency >= DRIFT_CONSISTENCY_THRESHOLD
-  ) {
-    direction = changePts > 0 ? 'up' : 'down';
-  }
-
-  return { direction, changePct, changePts, consistency };
+  const points = inWindow.map((snap) => ({
+    price: snap.strikes[0]!.price,
+    ts: snap.ts,
+  }));
+  points.push({ price: currentPrice, ts: nowTs });
+  return computePriceTrendPrimitive(points, nowTs, windowMs);
 }

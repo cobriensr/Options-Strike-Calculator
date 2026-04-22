@@ -4,6 +4,7 @@
  */
 
 import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
+import type { PriceTrend as PriceTrendInternal } from '../../utils/price-trend';
 
 export type GexClassification =
   | 'max-launchpad'
@@ -26,16 +27,11 @@ export interface DriftTarget {
   volReinforcement: 'reinforcing' | 'opposing' | 'neutral';
 }
 
-/** Price trend computed from the snapshot buffer's price series. */
-export interface PriceTrend {
-  direction: 'up' | 'down' | 'flat';
-  /** % change from oldest buffered price to current price. */
-  changePct: number;
-  /** Point change from oldest buffered price to current price. */
-  changePts: number;
-  /** Fraction of non-flat intervals in the dominant direction (0–1). */
-  consistency: number;
-}
+// `PriceTrend` moved to `src/utils/price-trend.ts` so the server-side
+// regime cron can consume it without pulling the GexLandscape module
+// (and its React dependency graph) into the Vercel Function bundle.
+// Re-exported here for back-compat with all existing consumers.
+export type PriceTrend = PriceTrendInternal;
 
 export interface BiasMetrics {
   verdict:
@@ -70,5 +66,5 @@ export interface BiasMetrics {
   /** Avg 5m Δ% for above-spot strikes. */
   ceilingTrend5m: number | null;
   /** Price trend over the lookback window (null until enough data accumulates). */
-  priceTrend: PriceTrend | null;
+  priceTrend: PriceTrendInternal | null;
 }

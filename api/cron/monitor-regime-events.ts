@@ -52,6 +52,10 @@ import { evaluateTriggers } from '../../src/components/FuturesGammaPlaybook/trig
 import { translateSpxToEs } from '../../src/components/FuturesGammaPlaybook/basis.js';
 import { computeZeroGammaStrike } from '../../src/utils/zero-gamma.js';
 import { computeMaxPain } from '../../src/utils/max-pain.js';
+import {
+  computePriceTrend,
+  type PricePoint,
+} from '../../src/utils/price-trend.js';
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -174,6 +178,51 @@ async function loadSpotExposure(
     Sentry.captureException(err);
     logger.warn({ err }, 'monitor-regime-events: loadSpotExposure failed');
     return { netGex: null, spot: null };
+  }
+}
+
+/** Lookback for the server-side priceTrend computation. Matches the client. */
+const PRICE_TREND_WINDOW_MS = 5 * 60 * 1000;
+
+/**
+ * Pull spot prices from the last `PRICE_TREND_WINDOW_MS` so the cron can
+ * compute the same `priceTrend` the client derives from its per-strike
+ * snapshot buffer. Without this, the cron's `evaluateTriggers` call
+ * sees no flow signals and can't apply the drift-override — meaning the
+ * cron fires `TRIGGER_FIRE` push alerts for fade/lift rules the client
+ * UI has suppressed.
+ */
+async function loadRecentSpotPrices(
+  today: string,
+  nowTs: number,
+): Promise<PricePoint[]> {
+  try {
+    const sql = getDb();
+    const sinceIso = new Date(nowTs - PRICE_TREND_WINDOW_MS).toISOString();
+    const rows = (await sql`
+      SELECT timestamp, price
+      FROM spot_exposures
+      WHERE date = ${today}
+        AND ticker = 'SPX'
+        AND timestamp >= ${sinceIso}
+      ORDER BY timestamp ASC
+    `) as Array<{ timestamp: string; price: NumericCol }>;
+    const points: PricePoint[] = [];
+    for (const row of rows) {
+      const price = Number.parseFloat(String(row.price));
+      const ts = new Date(row.timestamp).getTime();
+      if (Number.isFinite(price) && Number.isFinite(ts)) {
+        points.push({ price, ts });
+      }
+    }
+    return points;
+  } catch (err) {
+    Sentry.captureException(err);
+    logger.warn(
+      { err },
+      'monitor-regime-events: loadRecentSpotPrices failed — drift-override will no-op',
+    );
+    return [];
   }
 }
 
@@ -447,19 +496,31 @@ export default async function handler(
     // table got flow-events (approach/breach/regime/phase) but no
     // trigger-fire events, and the TodaysFiredStrip rendered empty.
     //
-    // Server-side callers do NOT pass `flowSignals` — the cron has no
-    // per-strike snapshot buffer to compute priceTrend from. This means
-    // the cron may fire TRIGGER_FIRE pushes for fade/lift triggers the
-    // client UI has suppressed under drift-override. Follow-up: either
-    // compute priceTrend server-side from gex_strike_0dte history, or
-    // forward the client's priceTrend through `PlaybookBias` and store
-    // it alongside regime snapshots.
+    // Server-side `flowSignals.priceTrend` is computed from
+    // `spot_exposures` over a 5-min window so the cron applies the same
+    // drift-override the client UI applies. Without this, the cron
+    // fired push alerts for fade/lift triggers the UI had suppressed.
+    // Other flow signals (charm classifications, wall-flow Δ%) are left
+    // null — they're display-only and not consumed by evaluateTriggers.
+    const priceTrendNowMs = Date.now();
+    const recentPrices = await loadRecentSpotPrices(
+      guard.today,
+      priceTrendNowMs,
+    );
+    const priceTrend = computePriceTrend(recentPrices, priceTrendNowMs);
     const triggerStates = evaluateTriggers({
       regime,
       phase,
       esPrice,
       levels: esLevels,
       esGammaPin,
+      flowSignals: {
+        upsideTargetCls: null,
+        downsideTargetCls: null,
+        ceilingTrend5m: null,
+        floorTrend5m: null,
+        priceTrend,
+      },
     });
     const firedTriggers = triggerStates
       .filter((t) => t.status === 'ACTIVE')

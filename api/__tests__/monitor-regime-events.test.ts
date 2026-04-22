@@ -124,6 +124,7 @@ describe('monitor-regime-events handler', () => {
       .mockResolvedValueOnce([]) // loadGexStrikes
       .mockResolvedValueOnce([]) // loadMaxPain
       .mockResolvedValueOnce([{ symbol: 'ES', price: '5825.50' }]) // loadEsBasis
+      .mockResolvedValueOnce([]) // loadRecentSpotPrices
       .mockResolvedValueOnce([]) // insertRegimeEvent
       .mockResolvedValueOnce([]); // savePrevState
 
@@ -179,6 +180,7 @@ describe('monitor-regime-events handler', () => {
       ]) // loadGexStrikes (zeroGamma crossing ≈ 5810)
       .mockResolvedValueOnce([]) // loadMaxPain
       .mockResolvedValueOnce([{ symbol: 'ES', price: '5725.00' }]) // loadEsBasis
+      .mockResolvedValueOnce([]) // loadRecentSpotPrices
       .mockResolvedValueOnce([]) // insertRegimeEvent for REGIME_FLIP
       .mockResolvedValueOnce([]); // savePrevState
 
@@ -234,6 +236,7 @@ describe('monitor-regime-events handler', () => {
       ]) // loadGexStrikes
       .mockResolvedValueOnce([]) // loadMaxPain
       .mockResolvedValueOnce([{ symbol: 'ES', price: '5825.50' }]) // loadEsBasis
+      .mockResolvedValueOnce([]) // loadRecentSpotPrices
       .mockResolvedValueOnce([]); // savePrevState
 
     const res = mockResponse();
@@ -256,6 +259,7 @@ describe('monitor-regime-events handler', () => {
       .mockResolvedValueOnce([]) // loadGexStrikes
       .mockResolvedValueOnce([]) // loadMaxPain
       .mockResolvedValueOnce([]) // loadEsBasis
+      .mockResolvedValueOnce([]) // loadRecentSpotPrices
       // PHASE_TRANSITION fires (no prev state → first render)
       .mockResolvedValueOnce([]) // insertRegimeEvent
       .mockRejectedValueOnce(new Error('DB connection lost')); // savePrevState
@@ -281,6 +285,7 @@ describe('monitor-regime-events handler', () => {
       .mockResolvedValueOnce([]) // loadGexStrikes
       .mockResolvedValueOnce([]) // loadMaxPain
       .mockResolvedValueOnce([]) // loadEsBasis
+      .mockResolvedValueOnce([]) // loadRecentSpotPrices
       .mockRejectedValueOnce(new Error('insert failed')) // insertRegimeEvent
       .mockResolvedValueOnce([]); // savePrevState
 
@@ -293,5 +298,155 @@ describe('monitor-regime-events handler', () => {
       errors: 1,
     });
     expect(vi.mocked(Sentry.captureException)).toHaveBeenCalled();
+  });
+
+  // ── Drift-override parity (server ↔ client) ──────────────────────
+  //
+  // Regression for the parity gap documented in
+  // docs/superpowers/specs/futures-playbook-server-drift-override-2026-04-21.md.
+  // Without server-side priceTrend, the cron fired TRIGGER_FIRE push
+  // alerts for fade/lift rules the client UI had suppressed under
+  // drift-override — a user-facing divergence.
+
+  it('does not fire TRIGGER_FIRE for fade-call-wall when price is drifting up in POSITIVE regime', async () => {
+    // Prior state: already in POSITIVE + POWER, with fade-call-wall NOT
+    // previously fired (so a transition to ACTIVE would fire a push).
+    const prevState = {
+      state: {
+        regime: 'POSITIVE',
+        phase: 'POWER',
+        levels: [
+          {
+            kind: 'CALL_WALL',
+            spxStrike: 5818,
+            esPrice: 5822,
+            distanceEsPoints: 2,
+            status: 'IDLE',
+          },
+        ],
+        firedTriggers: [],
+        esPrice: 5818,
+      },
+      cooldowns: {},
+    };
+
+    // 5 min of up-drift in spot_exposures (prices rising 1pt/min).
+    const driftRows = [
+      { timestamp: '2026-04-21T19:25:00Z', price: '5816.00' },
+      { timestamp: '2026-04-21T19:26:00Z', price: '5817.00' },
+      { timestamp: '2026-04-21T19:27:00Z', price: '5818.00' },
+      { timestamp: '2026-04-21T19:28:00Z', price: '5819.00' },
+      { timestamp: '2026-04-21T19:29:00Z', price: '5820.00' },
+    ];
+
+    // Wall structure: call wall at 5818 (spot 5820 → inside proximity),
+    // put wall at 5780. POSITIVE regime via positive net gamma.
+    mockSql
+      .mockResolvedValueOnce([{ prev_state: prevState }]) // loadPrevState
+      .mockResolvedValueOnce([
+        {
+          timestamp: '2026-04-21T19:29:00Z',
+          price: '5820.00',
+          gamma_oi: '50000000000',
+        },
+      ]) // loadSpotExposure
+      .mockResolvedValueOnce([
+        // Small put wall + big call wall so zero-gamma interpolates to
+        // ~5780 (well outside the ±0.5% transition band from spot=5820)
+        // and classifyRegime returns POSITIVE.
+        { strike: '5780', call_gamma_oi: '0', put_gamma_oi: '-10000' },
+        { strike: '5818', call_gamma_oi: '1000000', put_gamma_oi: '0' },
+      ]) // loadGexStrikes
+      .mockResolvedValueOnce([]) // loadMaxPain
+      .mockResolvedValueOnce([{ symbol: 'ES', price: '5824.00' }]) // loadEsBasis
+      .mockResolvedValueOnce(driftRows) // loadRecentSpotPrices — strong up-drift
+      .mockResolvedValueOnce([]) // savePrevState (no edges → no insert between)
+      .mockResolvedValueOnce([]); // safety margin
+
+    const res = mockResponse();
+    await handler(makeReq(), res);
+
+    expect(res._status).toBe(200);
+    // The critical assertion: no fade-call-wall TRIGGER_FIRE push
+    // despite price being within proximity of the call wall. Client UI
+    // suppresses it under drift-override; server must agree.
+    const fadeCallFires = mockSendPushToAll.mock.calls.filter((c) => {
+      const event = c[0] as { type: string; id: string };
+      // TRIGGER_FIRE events encode the trigger id in the `id` field as
+      // `TRIGGER_FIRE:<triggerId>:<iso>` (see alerts.ts buildTriggerFireEvent).
+      return (
+        event.type === 'TRIGGER_FIRE' &&
+        event.id.includes(':fade-call-wall:')
+      );
+    });
+    expect(fadeCallFires.length).toBe(0);
+  });
+
+  it('DOES fire TRIGGER_FIRE for fade-call-wall when price is NOT drifting (parity with client)', async () => {
+    // Same setup as above but with flat price history — drift-override
+    // does not engage, so fade-call-wall fires normally.
+    const prevState = {
+      state: {
+        regime: 'POSITIVE',
+        phase: 'POWER',
+        levels: [
+          {
+            kind: 'CALL_WALL',
+            spxStrike: 5818,
+            esPrice: 5822,
+            distanceEsPoints: 2,
+            status: 'IDLE',
+          },
+        ],
+        firedTriggers: [],
+        esPrice: 5818,
+      },
+      cooldowns: {},
+    };
+
+    const flatRows = [
+      { timestamp: '2026-04-21T19:25:00Z', price: '5820.00' },
+      { timestamp: '2026-04-21T19:26:00Z', price: '5820.10' },
+      { timestamp: '2026-04-21T19:27:00Z', price: '5819.90' },
+      { timestamp: '2026-04-21T19:28:00Z', price: '5820.05' },
+      { timestamp: '2026-04-21T19:29:00Z', price: '5820.00' },
+    ];
+
+    mockSql
+      .mockResolvedValueOnce([{ prev_state: prevState }]) // loadPrevState
+      .mockResolvedValueOnce([
+        {
+          timestamp: '2026-04-21T19:29:00Z',
+          price: '5820.00',
+          gamma_oi: '50000000000',
+        },
+      ]) // loadSpotExposure
+      .mockResolvedValueOnce([
+        // Small put wall + big call wall so zero-gamma interpolates to
+        // ~5780 (well outside the ±0.5% transition band from spot=5820)
+        // and classifyRegime returns POSITIVE.
+        { strike: '5780', call_gamma_oi: '0', put_gamma_oi: '-10000' },
+        { strike: '5818', call_gamma_oi: '1000000', put_gamma_oi: '0' },
+      ]) // loadGexStrikes
+      .mockResolvedValueOnce([]) // loadMaxPain
+      .mockResolvedValueOnce([{ symbol: 'ES', price: '5824.00' }]) // loadEsBasis
+      .mockResolvedValueOnce(flatRows) // loadRecentSpotPrices — flat
+      .mockResolvedValueOnce([]) // insertRegimeEvent for TRIGGER_FIRE
+      .mockResolvedValueOnce([]); // savePrevState
+
+    const res = mockResponse();
+    await handler(makeReq(), res);
+
+    expect(res._status).toBe(200);
+    const fadeCallFires = mockSendPushToAll.mock.calls.filter((c) => {
+      const event = c[0] as { type: string; id: string };
+      // TRIGGER_FIRE events encode the trigger id in the `id` field as
+      // `TRIGGER_FIRE:<triggerId>:<iso>` (see alerts.ts buildTriggerFireEvent).
+      return (
+        event.type === 'TRIGGER_FIRE' &&
+        event.id.includes(':fade-call-wall:')
+      );
+    });
+    expect(fadeCallFires.length).toBe(1);
   });
 });

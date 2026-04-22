@@ -11,11 +11,15 @@ export const PRICE_WINDOW = 50;
 /** Points from spot within which a strike is considered "at money". */
 export const SPOT_BAND = 12;
 
-/** Minimum absolute SPX points of price change to qualify as "drifting". */
-export const DRIFT_PTS_THRESHOLD = 3;
-
-/** Minimum fraction of non-flat intervals in the dominant direction (0–1). */
-export const DRIFT_CONSISTENCY_THRESHOLD = 0.55;
+// `DRIFT_PTS_THRESHOLD` and `DRIFT_CONSISTENCY_THRESHOLD` were moved to
+// `src/utils/price-trend.ts` so the server-side regime cron can import
+// the same constants without pulling in the whole GexLandscape module.
+// Re-exported here for backward compatibility with any consumers that
+// still read them from this location.
+export {
+  DRIFT_PTS_THRESHOLD,
+  DRIFT_CONSISTENCY_THRESHOLD,
+} from '../../utils/price-trend';
 
 export interface ClassMeta {
   badge: string;
