@@ -1,0 +1,8 @@
+# Phase 1 scaffold — minimal FastAPI surface. Phases 2-4 will layer in
+# the full ml/requirements.txt so the sweep process can import the
+# backtest engine. For Phase 1 we only need HTTP + bearer auth.
+
+fastapi==0.118.3
+uvicorn[standard]==0.35.0
+pydantic==2.10.4
+httpx==0.28.1

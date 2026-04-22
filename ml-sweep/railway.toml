@@ -1,0 +1,18 @@
+# Railway config for the ml-sweep service. Sibling to sidecar/railway.toml
+# in the same `Theta-Options` project.
+#
+# watchPatterns scopes deploys: only trigger when the ml-sweep/ tree or
+# the ml/ source (which the sweep imports) changes. Avoids wasteful
+# redeploys on every Vercel-app or sidecar commit.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "ml-sweep/Dockerfile"
+
+[deploy]
+watchPatterns = ["ml-sweep/**", "ml/**"]
+# Railway's default start policy is "always" — for a sweep worker we
+# want to run on-demand only. See README for how to scale to 0 after
+# each sweep to avoid idle charges.
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3

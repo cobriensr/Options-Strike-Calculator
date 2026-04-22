@@ -81,3 +81,8 @@ tsconfig.tsbuildinfo
 
 # Superpowers
 .superpowers/
+
+# ml-sweep Railway service
+ml-sweep/__pycache__/
+ml-sweep/.env*
+ml-sweep/.venv/
