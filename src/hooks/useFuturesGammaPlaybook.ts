@@ -347,6 +347,7 @@ function buildEsLevels(
     const status = classifyLevelStatus(
       distance,
       prior && prior.length > 0 ? prior : undefined,
+      kind,
     );
 
     levels.push({
@@ -525,6 +526,13 @@ export function useFuturesGammaPlaybook(
     if (maxPainFetchKey.current === key) return;
     maxPainFetchKey.current = key;
 
+    // Clear stale value BEFORE the fetch so a date change never shows
+    // the previous date's max-pain on the new date's ES levels for the
+    // ~200ms the fetch is in flight. Without this, buildEsLevels
+    // translates a stale SPX max-pain through the CURRENT basis and
+    // emits a plausible-looking but wrong esMaxPain for one render.
+    setSpxMaxPain(null);
+
     const controller = new AbortController();
     setMaxPainLoading(true);
 
@@ -541,6 +549,9 @@ export function useFuturesGammaPlaybook(
           ]),
         });
         if (!res.ok) {
+          // Clear the key so the next effect run can retry rather than
+          // being blocked by the same-key guard above.
+          maxPainFetchKey.current = null;
           setSpxMaxPain(null);
           return;
         }
@@ -548,8 +559,14 @@ export function useFuturesGammaPlaybook(
         setSpxMaxPain(data.maxPain ?? null);
       } catch (err) {
         if (err instanceof DOMException && err.name === 'AbortError') return;
-        // Max-pain is advisory — swallow to null, don't surface as a
-        // top-level hook error.
+        // Max-pain is advisory — don't surface as a top-level hook error,
+        // but DO log + capture so a regression doesn't vanish silently.
+        // And clear the key so the user can recover from a transient
+        // failure by triggering another effect run (date change, remount).
+        if (typeof console !== 'undefined') {
+          console.warn('max-pain fetch failed — rendering advisory null', err);
+        }
+        maxPainFetchKey.current = null;
         setSpxMaxPain(null);
       } finally {
         setMaxPainLoading(false);
@@ -569,9 +586,17 @@ export function useFuturesGammaPlaybook(
   // (different date, scrubbed timestamp, or live↔scrub flip) the prior
   // history becomes meaningless because it referenced a different
   // instant. Resetting avoids leaking REJECTED/BROKEN across the seam.
+  //
+  // `gex.loading` is included so scrub-click → fetch-in-flight → fetch-
+  // resolved traverses at least one intermediate key, forcing the
+  // levelHistory reset effect to fire before the new snapshot's distances
+  // get classified against the previous snapshot's history. Without it,
+  // a single scrub showed one frame of false BROKEN/REJECTED states on
+  // the EsLevelsPanel as the classifier compared new distances against
+  // stale prior history.
   const scrubKey = `${gex.selectedDate}|${gex.timestamp ?? ''}|${
     gex.isScrubbed ? 's' : 'l'
-  }`;
+  }|${gex.loading ? '1' : '0'}`;
 
   // Distance-only signature so the append effect only fires when the raw
   // distances change — NOT when `levels`'s identity changes because the
@@ -632,7 +657,18 @@ export function useFuturesGammaPlaybook(
   }, [gex.selectedDate]);
 
   useEffect(() => {
-    if (!gex.timestamp || gex.strikes.length === 0) return;
+    // Empty snapshot (endpoint returned `strikes: []`, e.g. pre-open or a
+    // day with no data yet): don't just bail — also clear downstream flow
+    // state. Without this, a prior session's `delta5mMap` / `priceTrend`
+    // stay visible across the empty render and `WallFlowStrip` shows
+    // stale values with no hint they're stale.
+    if (!gex.timestamp || gex.strikes.length === 0) {
+      // Functional setters so we don't depend on current state values
+      // (which would create an effect-loop — the effect sets these values).
+      setDelta5mMap((prev) => (prev.size === 0 ? prev : new Map()));
+      setPriceTrend((prev) => (prev === null ? prev : null));
+      return;
+    }
     const now = new Date(gex.timestamp).getTime();
     if (!Number.isFinite(now)) return;
     if (snapshotBufferRef.current.at(-1)?.ts === now) return;
@@ -642,16 +678,30 @@ export function useFuturesGammaPlaybook(
     // prune anything older than the buffer horizon. In live mode this is
     // additive — we already have a rolling buffer. In scrub mode the
     // buffer was empty (or stale) and this is the only path that feeds it.
-    const windowEntries = gex.windowSnapshots
-      .map((snap): Snapshot | null => {
-        const ts = new Date(snap.timestamp).getTime();
-        return Number.isFinite(ts) ? { strikes: snap.strikes, ts } : null;
-      })
-      .filter((x): x is Snapshot => x !== null);
+    //
+    // Window snapshots with a bad timestamp get dropped (the `.filter`),
+    // but we log a warning so a data-quality regression upstream surfaces
+    // rather than manifesting as a silently-degraded 5m Δ%.
+    const windowEntries: Snapshot[] = [];
+    for (const snap of gex.windowSnapshots) {
+      const ts = new Date(snap.timestamp).getTime();
+      if (Number.isFinite(ts)) {
+        windowEntries.push({ strikes: snap.strikes, ts });
+      } else if (typeof console !== 'undefined') {
+        console.warn(
+          'useFuturesGammaPlaybook: dropping window snapshot with invalid timestamp',
+          snap.timestamp,
+        );
+      }
+    }
 
     // Merge existing buffer with newly arrived window entries, de-duplicated
     // by timestamp (retain the existing entry — it's authoritative). Then
-    // prune pre-horizon entries.
+    // prune pre-horizon entries only. We intentionally DO NOT prune
+    // post-`now` entries: on a forward scrub (T₁ → T₂ where T₂ > T₁),
+    // snapshots in [T₁, T₂) are valid history at T₂ and must survive.
+    // The `< now` filter is applied downstream at consumption time (in the
+    // findClosestSnapshot call below and inside `computePriceTrend`).
     const existing = snapshotBufferRef.current;
     const existingTs = new Set(existing.map((s) => s.ts));
     const merged: Snapshot[] = [
@@ -659,16 +709,19 @@ export function useFuturesGammaPlaybook(
       ...windowEntries.filter((s) => !existingTs.has(s.ts)),
     ];
     const cutoff = now - SNAPSHOT_BUFFER_MS;
-    // Prune around the `now` boundary on BOTH sides: pre-cutoff (too old)
-    // AND post-now (future snapshots left behind from a forward scrub to
-    // earlier timestamp). Without the upper bound, scrubbing backward
-    // keeps computing Δ% against future snapshots — wrong direction.
     const buf = merged
-      .filter((snap) => snap.ts >= cutoff && snap.ts < now)
+      .filter((snap) => snap.ts >= cutoff)
       .sort((a, b) => a.ts - b.ts);
 
+    // Historical slice for Δ% and priceTrend — explicitly excludes any
+    // snapshots at or after `now` so a forward-scrub doesn't compare
+    // current against a future snapshot. The full `buf` (including any
+    // post-now entries from prior live-mode accumulation) is what we
+    // persist; the history view is a read-only slice.
+    const history = buf.filter((snap) => snap.ts < now);
+
     const snap5m = findClosestSnapshot(
-      buf,
+      history,
       now - DELTA_5M_LOOKBACK_MS,
       DELTA_5M_MATCH_TOLERANCE_MS,
     );
@@ -676,13 +729,13 @@ export function useFuturesGammaPlaybook(
       snap5m ? computeDeltaMap(gex.strikes, snap5m.strikes) : new Map(),
     );
 
-    // Append after delta computation so the current snapshot doesn't compare
-    // against itself. Price trend uses the buffer including current.
+    // Append current snapshot to the persistent buffer, then compute
+    // priceTrend against the historical slice + current.
     buf.push({ strikes: gex.strikes, ts: now });
     snapshotBufferRef.current = buf;
 
     const spot = gex.strikes[0]?.price ?? 0;
-    setPriceTrend(computePriceTrend(spot, buf, now));
+    setPriceTrend(computePriceTrend(spot, [...history, { strikes: gex.strikes, ts: now }], now));
   }, [gex.strikes, gex.timestamp, gex.windowSnapshots]);
 
   // 5m wall-flow aggregates — avg Δ% across strikes above / below spot.
@@ -756,10 +809,11 @@ export function useFuturesGammaPlaybook(
         esPrice,
         levels,
         esGammaPin: derived.esGammaPin,
+        flowSignals,
       })
         .filter((t) => t.status === 'ACTIVE')
         .map((t) => t.id),
-    [regime, phase, esPrice, levels, derived.esGammaPin],
+    [regime, phase, esPrice, levels, derived.esGammaPin, flowSignals],
   );
 
   const bias: PlaybookBias = useMemo(

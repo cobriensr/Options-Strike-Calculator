@@ -446,6 +446,14 @@ export default async function handler(
     // which meant TRIGGER_FIRE edges could never fire — the regime_events
     // table got flow-events (approach/breach/regime/phase) but no
     // trigger-fire events, and the TodaysFiredStrip rendered empty.
+    //
+    // Server-side callers do NOT pass `flowSignals` — the cron has no
+    // per-strike snapshot buffer to compute priceTrend from. This means
+    // the cron may fire TRIGGER_FIRE pushes for fade/lift triggers the
+    // client UI has suppressed under drift-override. Follow-up: either
+    // compute priceTrend server-side from gex_strike_0dte history, or
+    // forward the client's priceTrend through `PlaybookBias` and store
+    // it alongside regime snapshots.
     const triggerStates = evaluateTriggers({
       regime,
       phase,

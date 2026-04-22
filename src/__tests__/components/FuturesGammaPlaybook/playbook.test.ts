@@ -113,7 +113,10 @@ describe('rulesForRegime', () => {
     esPutWall: 5780,
     esZeroGamma: 5800,
     esMaxPain: 5795,
-    esGammaPin: 5820, // call wall has larger |GEX| in test fixtures
+    // Distinct from call/put walls so charm-drift doesn't hit the
+    // coincidence guard; 5790 is between the walls, well inside the
+    // display window but not identical to either.
+    esGammaPin: 5790,
   };
   // Default price: far from every level so baseline rules are DISTANT.
   const FAR_PRICE = 5700;
@@ -167,7 +170,7 @@ describe('rulesForRegime', () => {
     const drift = rules.find((r) => r.id === 'pos-charm-drift')!;
     expect(drift.direction).toBe('EITHER');
     // Target is gamma-pin (highest |GEX| strike), NOT max-pain.
-    expect(drift.targetEs).toBe(5820);
+    expect(drift.targetEs).toBe(5790);
   });
 
   it('POSITIVE + POWER → charm-drift rule included', () => {
@@ -608,5 +611,71 @@ describe('rulesForRegime — drift-override', () => {
     const ids = rules.map((r) => r.id);
     expect(ids).toContain('neg-break-call-wall');
     expect(ids).toContain('neg-break-put-wall');
+  });
+
+  it('override fires at consistency === threshold (inclusive lower bound)', () => {
+    // Regression: previously the threshold was 0.6 while computePriceTrend
+    // emits a non-flat direction at 0.55. A drift at 0.56 was classified
+    // as drifting but the override refused to suppress — silent mismatch.
+    const rules = rulesForRegime(
+      'POSITIVE',
+      'MORNING',
+      levels,
+      FAR_PRICE,
+      flowWithDrift('up', DRIFT_OVERRIDE_CONSISTENCY_MIN),
+    );
+    expect(rules.map((r) => r.id)).not.toContain('pos-fade-call-wall');
+  });
+});
+
+describe('rulesForRegime — charm-drift coincidence guards', () => {
+  const baseLevels = {
+    esCallWall: 5820,
+    esPutWall: 5780,
+    esZeroGamma: 5800,
+    esMaxPain: 5795,
+    esGammaPin: 5820,
+  };
+
+  it('suppresses charm-drift when gamma pin coincides with call wall', () => {
+    // esGammaPin === esCallWall — fade-call already covers that level
+    // with a directional thesis; a second EITHER rule duplicates it.
+    const rules = rulesForRegime(
+      'POSITIVE',
+      'AFTERNOON',
+      baseLevels, // pin=5820 === callWall=5820
+      5700,
+    );
+    expect(rules.map((r) => r.id)).not.toContain('pos-charm-drift');
+  });
+
+  it('suppresses charm-drift when gamma pin coincides with put wall', () => {
+    const rules = rulesForRegime(
+      'POSITIVE',
+      'AFTERNOON',
+      { ...baseLevels, esGammaPin: 5780 }, // pin === putWall
+      5700,
+    );
+    expect(rules.map((r) => r.id)).not.toContain('pos-charm-drift');
+  });
+
+  it('suppresses charm-drift when gamma pin is within ACTIVE band of spot', () => {
+    const rules = rulesForRegime(
+      'POSITIVE',
+      'AFTERNOON',
+      { ...baseLevels, esGammaPin: 5801 }, // pin essentially at spot
+      5800,
+    );
+    expect(rules.map((r) => r.id)).not.toContain('pos-charm-drift');
+  });
+
+  it('emits charm-drift when pin is a distinct strike away from both walls and spot', () => {
+    const rules = rulesForRegime(
+      'POSITIVE',
+      'AFTERNOON',
+      { ...baseLevels, esGammaPin: 5810 }, // between walls, far from spot=5700
+      5700,
+    );
+    expect(rules.map((r) => r.id)).toContain('pos-charm-drift');
   });
 });

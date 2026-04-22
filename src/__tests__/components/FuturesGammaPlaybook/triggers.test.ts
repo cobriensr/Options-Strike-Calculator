@@ -15,6 +15,7 @@ import {
 import type {
   EsLevel,
   GexRegime,
+  PlaybookFlowSignals,
   SessionPhase,
 } from '../../../components/FuturesGammaPlaybook/types';
 
@@ -347,5 +348,89 @@ describe('evaluateTriggers', () => {
     // fade-call-wall and lift-put-wall are BLOCKED (wrong regime).
     expect(rowOf(states, 'fade-call-wall').distanceEsPoints).toBeNull();
     expect(rowOf(states, 'lift-put-wall').distanceEsPoints).toBeNull();
+  });
+
+  // ── Drift-override parity with rulesForRegime ────────────────────────
+
+  describe('drift-override parity', () => {
+    const upTrend = (consistency: number): PlaybookFlowSignals => ({
+      upsideTargetCls: null,
+      downsideTargetCls: null,
+      ceilingTrend5m: null,
+      floorTrend5m: null,
+      priceTrend: {
+        direction: 'up',
+        consistency,
+        changePct: 0.5,
+        changePts: 25,
+      },
+    });
+    const downTrend = (consistency: number): PlaybookFlowSignals => ({
+      upsideTargetCls: null,
+      downsideTargetCls: null,
+      ceilingTrend5m: null,
+      floorTrend5m: null,
+      priceTrend: {
+        direction: 'down',
+        consistency,
+        changePct: -0.5,
+        changePts: -25,
+      },
+    });
+
+    it('fade-call-wall BLOCKED when drifting up (POSITIVE regime)', () => {
+      // Without this, server cron would push TRIGGER_FIRE alerts for
+      // a trade the client UI has dropped from the rule table.
+      const states = evaluateTriggers({
+        regime: 'POSITIVE',
+        phase: 'MORNING',
+        esPrice: ES_PRICE,
+        levels: [makeLevel('CALL_WALL', 5822, 2)],
+        flowSignals: upTrend(0.8),
+      });
+      const row = rowOf(states, 'fade-call-wall');
+      expect(row.status).toBe('BLOCKED');
+      expect(row.blockedReason).toMatch(/drift/i);
+    });
+
+    it('lift-put-wall BLOCKED when drifting down (POSITIVE regime)', () => {
+      const states = evaluateTriggers({
+        regime: 'POSITIVE',
+        phase: 'MORNING',
+        esPrice: ES_PRICE,
+        levels: [makeLevel('PUT_WALL', 5817, -3)],
+        flowSignals: downTrend(0.8),
+      });
+      const row = rowOf(states, 'lift-put-wall');
+      expect(row.status).toBe('BLOCKED');
+      expect(row.blockedReason).toMatch(/drift/i);
+    });
+
+    it('drift below consistency threshold does not block (dead-band)', () => {
+      // 0.4 < DRIFT_OVERRIDE_CONSISTENCY_MIN (0.55).
+      const states = evaluateTriggers({
+        regime: 'POSITIVE',
+        phase: 'MORNING',
+        esPrice: ES_PRICE,
+        levels: [makeLevel('CALL_WALL', 5822, 2)],
+        flowSignals: upTrend(0.4),
+      });
+      expect(rowOf(states, 'fade-call-wall').status).not.toBe('BLOCKED');
+    });
+
+    it('omitting flowSignals preserves pre-drift-override behavior', () => {
+      const states = evaluateTriggers({
+        regime: 'POSITIVE',
+        phase: 'MORNING',
+        esPrice: ES_PRICE,
+        levels: [
+          makeLevel('CALL_WALL', 5822, 2),
+          makeLevel('PUT_WALL', 5817, -3),
+        ],
+      });
+      // Both fade-lift triggers should fire normally on proximity.
+      expect(rowOf(states, 'fade-call-wall').status).not.toBe('BLOCKED');
+      expect(rowOf(states, 'lift-put-wall').status).not.toBe('BLOCKED');
+    });
   });
 });

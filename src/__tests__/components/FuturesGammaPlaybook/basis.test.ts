@@ -89,4 +89,45 @@ describe('classifyLevelStatus', () => {
     expect(classifyLevelStatus(3, [3])).toBe('APPROACHING');
     expect(classifyLevelStatus(10, [10])).toBe('IDLE');
   });
+
+  // ── Wrong-side (taken-out) detection ─────────────────────────────────
+  //
+  // When the call wall is below price (negative distance) or the put wall
+  // is above price (positive distance), the wall has been structurally
+  // taken out — it's on the wrong side of price given its role. This
+  // fires WITHOUT any history so freshly-loaded sessions render the
+  // correct BROKEN status instead of IDLE.
+
+  it('CALL_WALL with negative distance beyond proximity → BROKEN (taken out)', () => {
+    // Price is 22 pts above a call wall at 7077.75. Distance = −22.
+    // Without kind-based detection this rendered as IDLE — the screenshot
+    // bug at 2:50 PM 2026-04-21.
+    expect(classifyLevelStatus(-22, undefined, 'CALL_WALL')).toBe('BROKEN');
+    expect(classifyLevelStatus(-22, [-20, -21, -22], 'CALL_WALL')).toBe(
+      'BROKEN',
+    );
+  });
+
+  it('PUT_WALL with positive distance beyond proximity → BROKEN (taken out)', () => {
+    expect(classifyLevelStatus(12, undefined, 'PUT_WALL')).toBe('BROKEN');
+  });
+
+  it('CALL_WALL within proximity is APPROACHING regardless of sign', () => {
+    expect(classifyLevelStatus(-3, undefined, 'CALL_WALL')).toBe('APPROACHING');
+    expect(classifyLevelStatus(3, undefined, 'CALL_WALL')).toBe('APPROACHING');
+  });
+
+  it('ZERO_GAMMA without sign-flip history falls through to IDLE', () => {
+    // ZG has no preferred side — kind-based taken-out check must not fire.
+    expect(classifyLevelStatus(-15, undefined, 'ZERO_GAMMA')).toBe('IDLE');
+  });
+
+  it('ZERO_GAMMA detects BROKEN via sign-flip history', () => {
+    expect(classifyLevelStatus(-3, [6, 4, 2, -1], 'ZERO_GAMMA')).toBe('BROKEN');
+  });
+
+  it('omitting kind preserves pre-fix behavior (history-only detection)', () => {
+    // Back-compat: callers that don't pass kind get the original semantics.
+    expect(classifyLevelStatus(-22, undefined)).toBe('IDLE');
+  });
 });

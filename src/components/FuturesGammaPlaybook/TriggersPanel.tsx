@@ -17,7 +17,12 @@
  */
 
 import { memo, useMemo } from 'react';
-import type { EsLevel, GexRegime, SessionPhase } from './types';
+import type {
+  EsLevel,
+  GexRegime,
+  PlaybookFlowSignals,
+  SessionPhase,
+} from './types';
 import {
   evaluateTriggers,
   type TriggerState,
@@ -33,6 +38,11 @@ export interface TriggersPanelProps {
   levels: EsLevel[];
   /** ES price of the highest-|GEX| strike — charm-drift magnet. */
   esGammaPin?: number | null;
+  /**
+   * Flow signals — when present, the evaluator suppresses fade/lift
+   * triggers during a drift-override to match `rulesForRegime`.
+   */
+  flowSignals?: PlaybookFlowSignals | null;
 }
 
 // ── Presentation metadata ────────────────────────────────────────────
@@ -117,13 +127,21 @@ export const TriggersPanel = memo(function TriggersPanel({
   esPrice,
   levels,
   esGammaPin,
+  flowSignals,
 }: TriggersPanelProps) {
   const triggers = useMemo(
     () =>
       prioritize(
-        evaluateTriggers({ regime, phase, esPrice, levels, esGammaPin }),
+        evaluateTriggers({
+          regime,
+          phase,
+          esPrice,
+          levels,
+          esGammaPin,
+          flowSignals,
+        }),
       ),
-    [regime, phase, esPrice, levels, esGammaPin],
+    [regime, phase, esPrice, levels, esGammaPin, flowSignals],
   );
 
   if (levels.length === 0) {

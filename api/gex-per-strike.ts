@@ -227,9 +227,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const latestTs = toIso(tsRows[0]?.latest_ts);
       if (!latestTs) {
         res.setHeader('Cache-Control', 'no-store');
-        return res
-          .status(200)
-          .json({ strikes: [], date, timestamp: null, timestamps });
+        // Empty-day response shape must include `windowSnapshots: []` so
+        // the frontend TypeScript type stays uniform across branches —
+        // otherwise the happy-path renders a `WindowSnapshot[]` and the
+        // empty-day branch renders `undefined`, forcing consumers to add
+        // defensive `?? []` everywhere.
+        return res.status(200).json({
+          strikes: [],
+          date,
+          timestamp: null,
+          timestamps,
+          windowSnapshots: [],
+        });
       }
 
       // Fetch all strikes at that timestamp

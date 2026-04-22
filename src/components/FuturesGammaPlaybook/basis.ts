@@ -51,14 +51,20 @@ export function distanceInEsPoints(esPrice: number, esLevel: number): number {
  *   - `APPROACHING` — |distance| ≤ LEVEL_PROXIMITY_ES_POINTS (5 pts).
  *   - `REJECTED`    — history shows price was inside the proximity band
  *                     recently but is now moving away (|distance| growing).
- *   - `BROKEN`      — history shows the sign of distance flipped (price
- *                     crossed the level at some point in the series).
+ *   - `BROKEN`      — price is on the structurally-wrong side of the
+ *                     level, regardless of history. CALL_WALL with
+ *                     negative distance (level below price) means the
+ *                     resistance has been taken out; PUT_WALL with
+ *                     positive distance means the support has been
+ *                     broken downward. Also detects in-window sign flips
+ *                     for ZERO_GAMMA (which has no preferred side).
  *   - `IDLE`        — none of the above; level is too far off to matter.
  *
  * `priorHistoryDistances` must be the distances series PRIOR to the
  * current value — do not include the current distance, or the "moving
  * away" comparison becomes self-vs-self. Optional; when absent or
- * shorter than two points the function falls back to proximity-only.
+ * shorter than two points the function falls back to proximity-only
+ * PLUS the kind-based wrong-side check.
  *
  * Only the last 5 prior points are considered — longer windows make the
  * status labels stick around too long after the move has completed.
@@ -66,19 +72,36 @@ export function distanceInEsPoints(esPrice: number, esLevel: number): number {
 export function classifyLevelStatus(
   distanceEsPoints: number,
   priorHistoryDistances: number[] | undefined,
+  kind?: EsLevel['kind'],
 ): EsLevel['status'] {
   const currentInside = Math.abs(distanceEsPoints) <= LEVEL_PROXIMITY_ES_POINTS;
 
-  // No history — fall back to proximity-only.
+  // Kind-based wrong-side check: the call wall is expected to sit ABOVE
+  // price (positive distance) and the put wall BELOW (negative distance).
+  // When that invariant is violated and the magnitude exceeds the
+  // proximity band, the level has been structurally taken out. This
+  // check fires WITHOUT history so a freshly-loaded session still labels
+  // a broken-out wall correctly instead of collapsing to IDLE. Seen in
+  // live trading at 2:50 PM 2026-04-21: call wall 7077.75 with price at
+  // 7099.75 rendered IDLE, misleading the trader into thinking the wall
+  // was still meaningful resistance.
+  if (!currentInside) {
+    if (kind === 'CALL_WALL' && distanceEsPoints < 0) return 'BROKEN';
+    if (kind === 'PUT_WALL' && distanceEsPoints > 0) return 'BROKEN';
+  }
+
+  // No history — fall back to proximity-only (kind-based check above
+  // already fired if applicable).
   if (!priorHistoryDistances || priorHistoryDistances.length < 2) {
     return currentInside ? 'APPROACHING' : 'IDLE';
   }
 
   const recent = priorHistoryDistances.slice(-5);
 
-  // BROKEN — the sign of distance has flipped relative to the oldest
-  // point in the window. A sign flip means price traveled through the
-  // level between then and now.
+  // BROKEN (history-based) — the sign of distance has flipped relative
+  // to the oldest point in the window. A sign flip means price traveled
+  // through the level between then and now. Applies to all level kinds
+  // including ZERO_GAMMA where the kind-based check above does not fire.
   const oldest = recent[0];
   if (
     oldest !== undefined &&

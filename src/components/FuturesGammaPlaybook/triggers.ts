@@ -25,8 +25,17 @@
  *                     the alerts system tracks recent fires.
  */
 
-import { LEVEL_PROXIMITY_ES_POINTS, RULE_ARMED_BAND_ES } from './playbook.js';
-import type { EsLevel, GexRegime, SessionPhase } from './types';
+import {
+  DRIFT_OVERRIDE_CONSISTENCY_MIN,
+  LEVEL_PROXIMITY_ES_POINTS,
+  RULE_ARMED_BAND_ES,
+} from './playbook.js';
+import type {
+  EsLevel,
+  GexRegime,
+  PlaybookFlowSignals,
+  SessionPhase,
+} from './types';
 
 // ── Public types ───────────────────────────────────────────────────────
 
@@ -79,6 +88,19 @@ export interface EvaluateTriggersInput {
    * by the charm-drift trigger as the pin magnet.
    */
   esGammaPin?: number | null;
+  /**
+   * Optional flow signals — when the priceTrend is drifting consistently
+   * in POSITIVE regime, `fade-call-wall` / `lift-put-wall` are BLOCKED
+   * with a drift-override reason, matching `rulesForRegime`'s suppression.
+   * Without this parity, the server cron can fire TRIGGER_FIRE push
+   * alerts for rules the UI has refused to display — a textbook
+   * user-facing divergence.
+   *
+   * Server-side callers (regime cron) that don't maintain a snapshot
+   * buffer can omit this field; they'll evaluate as if no drift is
+   * present (the original pre-drift-override behavior).
+   */
+  flowSignals?: PlaybookFlowSignals | null;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -121,11 +143,24 @@ function proximityStatus(
  * what's missing rather than just hiding the row.
  */
 export function evaluateTriggers(input: EvaluateTriggersInput): TriggerState[] {
-  const { regime, phase, esPrice, levels, esGammaPin } = input;
+  const { regime, phase, esPrice, levels, esGammaPin, flowSignals } = input;
 
   const callWall = findLevel(levels, 'CALL_WALL');
   const putWall = findLevel(levels, 'PUT_WALL');
   const gammaPin = esGammaPin ?? null;
+
+  // Drift-override parity with `rulesForRegime`: when price is grinding
+  // consistently in one direction inside a POSITIVE regime, the opposing
+  // mean-revert rule is structurally wrong and `rulesForRegime` drops it.
+  // Mirror that here so the trigger panel (and the push-alert cron that
+  // reads `ACTIVE` rows) can't fire for a trade the UI refuses to show.
+  const trend = flowSignals?.priceTrend;
+  const driftConsistent =
+    trend != null && trend.consistency >= DRIFT_OVERRIDE_CONSISTENCY_MIN;
+  const driftUp =
+    driftConsistent && trend != null && trend.direction === 'up';
+  const driftDown =
+    driftConsistent && trend != null && trend.direction === 'down';
 
   // ── fade-call-wall ────────────────────────────────────────────────
   let fadeCallWall: TriggerState;
@@ -140,6 +175,20 @@ export function evaluateTriggers(input: EvaluateTriggersInput): TriggerState[] {
       levelEsPrice: callWall?.esPrice ?? null,
       distanceEsPoints: null,
       blockedReason: 'Needs +GEX regime.',
+    };
+  } else if (driftUp) {
+    // Tape is drifting up through the call wall — fade is structurally
+    // wrong here. Matches `rulesForRegime` suppression.
+    fadeCallWall = {
+      id: 'fade-call-wall',
+      name: 'Fade call wall',
+      status: 'BLOCKED',
+      condition:
+        'Positive-gamma regime and ES within 5 pts of the call wall — structural fade.',
+      levelLabel: callWall ? 'Call wall' : null,
+      levelEsPrice: callWall?.esPrice ?? null,
+      distanceEsPoints: null,
+      blockedReason: 'Drifting up — fade suppressed by trend override.',
     };
   } else if (callWall === null) {
     fadeCallWall = {
@@ -181,6 +230,20 @@ export function evaluateTriggers(input: EvaluateTriggersInput): TriggerState[] {
       levelEsPrice: putWall?.esPrice ?? null,
       distanceEsPoints: null,
       blockedReason: 'Needs +GEX regime.',
+    };
+  } else if (driftDown) {
+    // Tape is drifting down through the put wall — lift is structurally
+    // wrong here. Matches `rulesForRegime` suppression.
+    liftPutWall = {
+      id: 'lift-put-wall',
+      name: 'Lift put wall',
+      status: 'BLOCKED',
+      condition:
+        'Positive-gamma regime and ES within 5 pts of the put wall — structural lift.',
+      levelLabel: putWall ? 'Put wall' : null,
+      levelEsPrice: putWall?.esPrice ?? null,
+      distanceEsPoints: null,
+      blockedReason: 'Drifting down — lift suppressed by trend override.',
     };
   } else if (putWall === null) {
     liftPutWall = {

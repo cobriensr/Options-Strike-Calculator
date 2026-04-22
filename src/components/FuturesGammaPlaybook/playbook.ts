@@ -253,8 +253,16 @@ export function convictionFromCls(
   return 'standard';
 }
 
-/** Minimum PriceTrend consistency (0-1) for the drift-override to suppress a rule. */
-export const DRIFT_OVERRIDE_CONSISTENCY_MIN = 0.6;
+/**
+ * Minimum PriceTrend consistency (0-1) for the drift-override to suppress a
+ * rule. Aligned with `DRIFT_CONSISTENCY_THRESHOLD` (0.55) in GexLandscape's
+ * `computePriceTrend`, which is the threshold for emitting a non-flat
+ * direction. The prior value (0.6) created a 0.55-0.60 dead-band where the
+ * tape was classified as drifting for display purposes but the override
+ * refused to suppress the fade/lift rule — a silent UI/logic mismatch.
+ * If either threshold is retuned, retune both.
+ */
+export const DRIFT_OVERRIDE_CONSISTENCY_MIN = 0.55;
 
 /**
  * Generate 1-3 concrete rules for the current (regime, phase) pair.
@@ -320,6 +328,9 @@ export function rulesForRegime(
     // the tape melts up is the classic +GEX trap.
     if (levels.esCallWall !== null && !driftUp) {
       const stop = esTickRound(levels.esCallWall + ES_TICK_SIZE);
+      // Strict less-than: when ZG === callWall exactly, the target would
+      // be AT the entry, making the trade's reward/risk undefined. Treat
+      // equality as "no valid target" and let the trader trail stops.
       const validTarget =
         levels.esZeroGamma !== null && levels.esZeroGamma < levels.esCallWall
           ? levels.esZeroGamma
@@ -389,9 +400,29 @@ export function rulesForRegime(
     // (which is a theoretical OI-payout minimum). They often converge but
     // when they diverge, gamma-pin is the mechanistic target because
     // dealer hedging flow follows gamma, not payout math.
+    //
+    // Skip the rule when:
+    //   - the gamma pin is within ACTIVE proximity of current price (the
+    //     pin IS spot — "drift to here" is a degenerate no-op trade), or
+    //   - the gamma pin coincides with either wall (the fade-call or
+    //     lift-put rule already covers that exact level with a directional
+    //     thesis — emitting a second EITHER rule duplicates the target
+    //     and confuses the trader).
+    const gammaPinCoincidesWithWall =
+      levels.esGammaPin !== null &&
+      ((levels.esCallWall !== null &&
+        Math.abs(levels.esGammaPin - levels.esCallWall) < ES_TICK_SIZE) ||
+        (levels.esPutWall !== null &&
+          Math.abs(levels.esGammaPin - levels.esPutWall) < ES_TICK_SIZE));
+    const gammaPinAtSpot =
+      levels.esGammaPin !== null &&
+      esPrice !== null &&
+      Math.abs(levels.esGammaPin - esPrice) < RULE_ACTIVE_BAND_ES;
     if (
       (phase === 'AFTERNOON' || phase === 'POWER') &&
-      levels.esGammaPin !== null
+      levels.esGammaPin !== null &&
+      !gammaPinCoincidesWithWall &&
+      !gammaPinAtSpot
     ) {
       rules.push(
         finalize(

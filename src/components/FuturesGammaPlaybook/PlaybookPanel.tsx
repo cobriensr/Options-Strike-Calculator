@@ -166,10 +166,19 @@ const GRID_COLS =
  * Detect when the priceTrend is strong enough to have suppressed one of
  * the fade/lift rules. Returns the displayed direction (for the banner
  * copy) or null when no override was applied.
+ *
+ * Regime gate: fade/lift rules only exist in POSITIVE regime (verdict
+ * === 'MEAN_REVERT'). If we're in NEGATIVE (TREND_FOLLOW) or
+ * TRANSITIONING (STAND_ASIDE), the banner must stay dark — there's no
+ * rule to suppress, so claiming suppression would be a user-facing
+ * lie. Seen at 2:50 PM CT 2026-04-21 when regime had just flipped to
+ * NEGATIVE but the banner still read "call-wall fade suppressed."
  */
 function driftOverrideCopy(
+  verdict: RegimeVerdict,
   flowSignals: PlaybookFlowSignals | undefined,
 ): { direction: 'up' | 'down'; suppressed: 'fade' | 'lift' } | null {
+  if (verdict !== 'MEAN_REVERT') return null;
   const trend = flowSignals?.priceTrend;
   if (!trend) return null;
   if (trend.consistency < DRIFT_OVERRIDE_CONSISTENCY_MIN) return null;
@@ -187,7 +196,7 @@ export const PlaybookPanel = memo(function PlaybookPanel({
   esZeroGammaKnown,
   flowSignals,
 }: PlaybookPanelProps) {
-  const override = driftOverrideCopy(flowSignals);
+  const override = driftOverrideCopy(verdict, flowSignals);
   if (rules.length === 0) {
     return (
       <div
@@ -225,8 +234,8 @@ export const PlaybookPanel = memo(function PlaybookPanel({
           aria-label="Drift override note"
         >
           {override.direction === 'up'
-            ? 'Drifting up — call-wall fade suppressed this session.'
-            : 'Drifting down — put-wall lift suppressed this session.'}
+            ? 'Drifting up — call-wall fade currently suppressed.'
+            : 'Drifting down — put-wall lift currently suppressed.'}
         </div>
       )}
 

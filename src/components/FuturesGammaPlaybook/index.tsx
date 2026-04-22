@@ -235,6 +235,7 @@ function FuturesGammaPlaybook({
         esPrice={playbook.esPrice}
         levels={playbook.levels}
         esGammaPin={playbook.esGammaPin}
+        flowSignals={playbook.flowSignals}
       />
 
       {/* Today's fired setups — focused post-hoc list of TRIGGER_FIRE
