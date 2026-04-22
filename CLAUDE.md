@@ -26,7 +26,7 @@ sidecar/          Databento futures data ingestion (Python, Railway, NOT Vercel)
                   Own requirements.txt, pyproject.toml, Dockerfile
                   Uses psycopg2 (not @neondatabase/serverless) for Neon Postgres
                   Sentry SDK for error tracking; VX deferred pending Databento availability
-                  vercel.json ignoreCommand skips deploys for sidecar/, ml/, scripts/ changes
+                  vercel.json ignoreCommand skips deploys for sidecar/, ml/, scripts/, pine/, docs/, *.md changes
 
 scripts/          Backfill scripts (backfill-etf-tide.mjs, backfill-greek-exposure.mjs, etc.)
 
@@ -226,7 +226,7 @@ see `docs/superpowers/specs/archive-volume-seed-2026-04-18.md`.
 ## Deployment
 
 - **Platform**: Vercel (Fluid Compute, Node 24)
-- **Config**: `vercel.json` — crons, security headers, CSP, bot protection rewrites, SPA fallback, `ignoreCommand` skips builds when only `sidecar/`, `ml/`, or `scripts/` change
+- **Config**: `vercel.json` — crons, security headers, CSP, bot protection rewrites, SPA fallback, `ignoreCommand` skips builds when only `sidecar/`, `ml/`, `scripts/`, `pine/`, `docs/`, or `*.md` files change
 - **Long-running functions**: `api/analyze.ts` (800s), `api/cron/curate-lessons.ts` (780s), `api/cron/build-features.ts` (300s)
 - **DB setup**: `POST /api/journal/init` creates all tables and runs all migrations
 - **Sidecar**: Python service deployed separately to Railway (own Dockerfile). Env vars (`DATABENTO_API_KEY`, `DATABASE_URL`, `SENTRY_DSN`, and optionally `THETA_EMAIL` / `THETA_PASSWORD` for the co-resident Theta Data Terminal jar) are in Railway, not Vercel.
