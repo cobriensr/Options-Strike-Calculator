@@ -2,36 +2,33 @@
 // =============================================================================
 // PAC Backtest Config B — STRATEGY version
 // =============================================================================
-// Strategy sibling of pac-bos.pine. TradingView Strategy Tester will compute
-// net profit, drawdown, profit factor, Sharpe, trade list, equity curve.
+// Strategy sibling of pac-bos.pine for TradingView's Strategy Tester.
 //
-// Run on MNQ1! 1m for results matching the Python backtest (tick_value $0.50).
-// NQ1! works too — P&L scales 10× but WR/PF/drawdown ratios are identical.
+// If the tester shows 0 trades:
+//   1. Turn ON "Disable ALL filters (diagnostic)" → runs bare BOS logic only.
+//      If THIS fires trades → one of the filters is blocking everything.
+//      If THIS doesn't fire → issue is chart/data/account, not the script.
+//   2. Turn ON "Show filter diagnostic plots" → plots raw longEntry/shortEntry
+//      triangles so you can see if the filter pipeline computes TRUE at all.
 //
-// Cost model matches the stressed Python backtest:
-//   initial_capital   = $25,000
-//   commission        = $1.50/order  (= $3.00 round-trip)
-//   slippage          = 1 tick/fill
-//
-// Config B defaults (best 5-variant exit sweep result):
-//   entry       BOS_BREAKOUT
-//   exit_trigger OPPOSITE_CHOCH  (toggleable to ATR_TARGET)
-//   stop         SWING_EXTREME with 2.25 ATR fallback
-//   z_vwap gate  1.0 signed-by-direction
-//   exit_after_n_bos 2
+// Run on MNQ1! 1m for results matching the Python backtest.
 // =============================================================================
 
-strategy(title="PAC BOS Config B — Strategy", shorttitle="PAC BOS B Strat", overlay=true, pyramiding=0, default_qty_type=strategy.fixed, default_qty_value=1, initial_capital=25000, commission_type=strategy.commission.cash_per_order, commission_value=1.50, slippage=1, calc_on_every_tick=false, process_orders_on_close=false, max_lines_count=500, max_labels_count=500)
+strategy(title="PAC BOS Config B — Strategy", shorttitle="PAC BOS B Strat", overlay=true, pyramiding=0, default_qty_type=strategy.fixed, default_qty_value=1, initial_capital=25000, commission_type=strategy.commission.cash_per_order, commission_value=1.50, slippage=1, max_lines_count=500, max_labels_count=500)
 
 // ============================ INPUTS ============================
 
+grp_diag = "Diagnostic"
+disableAllFilters = input.bool(false, "Disable ALL filters (diagnostic)", group=grp_diag, tooltip="When ON, strips every filter (RTH, event-day, z_vwap, CHoCH exit, BoS counter) and runs bare BOS entries with a 2.25 ATR stop + 4.0 ATR target. If this fires trades but default settings don't, one of the filters is blocking.")
+showDiagnostic = input.bool(false, "Show filter diagnostic plots", group=grp_diag, tooltip="Plots raw longEntry/shortEntry triangles before the state-gate check, so you can see if filters compute TRUE at all.")
+
 grp_core = "Core Strategy"
-exitMode = input.string("OPPOSITE_CHOCH", "Exit Mode", options=["OPPOSITE_CHOCH", "ATR_TARGET"], group=grp_core, tooltip="OPPOSITE_CHOCH = Config B. ATR_TARGET = Config A.")
+exitMode = input.string("OPPOSITE_CHOCH", "Exit Mode", options=["OPPOSITE_CHOCH", "ATR_TARGET"], group=grp_core)
 swingLen = input.int(5, "Swing Length", minval=2, maxval=20, group=grp_core)
 stopATRMult = input.float(2.25, "Stop × ATR(14)", step=0.25, group=grp_core)
 targetATRMult = input.float(2.0, "Target × ATR(14) (ATR_TARGET only)", step=0.25, group=grp_core)
-minZVWAP = input.float(1.0, "Min |z_close_vwap|", step=0.1, group=grp_core, tooltip="Set to 0 to disable the VWAP z-score filter (diagnostic).")
-exitAfterNBos = input.int(2, "Exit after N same-dir BOS", minval=0, maxval=10, group=grp_core, tooltip="Set to 0 to disable.")
+minZVWAP = input.float(1.0, "Min |z_close_vwap|", step=0.1, group=grp_core)
+exitAfterNBos = input.int(2, "Exit after N same-dir BOS", minval=0, maxval=10, group=grp_core)
 
 grp_filter = "Filters"
 useRTHOnly = input.bool(true, "Entries only in RTH (08:30–15:00 CT)", group=grp_filter)
@@ -40,15 +37,12 @@ skipEvents = input.bool(true, "Skip FOMC + OPEX days", group=grp_filter)
 grp_visual = "Visuals"
 showSwings = input.bool(true, "Show swing markers", group=grp_visual)
 showBOSLines = input.bool(true, "Show BOS break lines", group=grp_visual)
-showDiagnostic = input.bool(false, "Show filter diagnostic plots", group=grp_visual, tooltip="Plots zClose, inRTH, isEventDay on a separate pane so you can see why entries are/aren't firing.")
 
 // ============================ SESSION (timezone-explicit) ============================
-// Use hour(time, timezone) / minute(time, timezone) — these extract the CT-time
-// components regardless of the chart's display timezone. More robust than
-// relying on session strings which can silently mismatch.
 ctHour = hour(time, "America/Chicago")
 ctMin = minute(time, "America/Chicago")
-inRTH = not useRTHOnly or ((ctHour == 8 and ctMin >= 30) or (ctHour >= 9 and ctHour < 15))
+rawInRTH = (ctHour == 8 and ctMin >= 30) or (ctHour >= 9 and ctHour < 15)
+inRTH = disableAllFilters or not useRTHOnly or rawInRTH
 
 // ============================ EVENT DAYS ============================
 isOpex = dayofweek == dayofweek.friday and dayofmonth >= 15 and dayofmonth <= 21
@@ -59,7 +53,7 @@ isFOMC_2024 = (y == 2024) and ((m == 1 and d == 31) or (m == 3 and d == 20) or (
 isFOMC_2025 = (y == 2025) and ((m == 1 and d == 29) or (m == 3 and d == 19) or (m == 5 and d == 7) or (m == 6 and d == 18) or (m == 7 and d == 30) or (m == 9 and d == 17) or (m == 10 and d == 29) or (m == 12 and d == 10))
 isFOMC_2026 = (y == 2026) and ((m == 1 and d == 28) or (m == 3 and d == 18) or (m == 4 and d == 29) or (m == 6 and d == 17) or (m == 7 and d == 29) or (m == 9 and d == 16) or (m == 10 and d == 28) or (m == 12 and d == 9))
 isFOMC = isFOMC_2024 or isFOMC_2025 or isFOMC_2026
-isEventDay = skipEvents and (isOpex or isFOMC)
+isEventDay = not disableAllFilters and skipEvents and (isOpex or isFOMC)
 
 bgcolor(isEventDay ? color.new(color.orange, 92) : na, title="Event day skip")
 
@@ -71,6 +65,12 @@ vwapVal = ta.vwap
 tp = (high + low + close) / 3.0
 sessionStdProxy = ta.stdev(tp - vwapVal, 60)
 zClose = sessionStdProxy > 0 ? (close - vwapVal) / sessionStdProxy : 0.0
+
+// Effective minZVWAP applied to entries — 0 when diagnostic is on
+effMinZVWAP = disableAllFilters ? 0.0 : minZVWAP
+effExitMode = disableAllFilters ? "ATR_TARGET" : exitMode  // simpler exit when diagnosing
+effExitAfterNBos = disableAllFilters ? 0 : exitAfterNBos
+effTargetATR = disableAllFilters ? 4.0 : targetATRMult
 
 // ============================ SWING + BOS + CHoCH ============================
 pivH = ta.pivothigh(swingLen, swingLen)
@@ -102,28 +102,8 @@ chochBear = not na(pivL) and not na(prevSwingLowLevel) and pivL < prevSwingLowLe
 chochBull = not na(pivH) and not na(prevSwingHighLevel) and pivH > prevSwingHighLevel
 
 // ============================ ENTRY GATE ============================
-longEntry = bosBull and inRTH and not isEventDay and zClose > minZVWAP
-shortEntry = bosBear and inRTH and not isEventDay and zClose < -minZVWAP
-
-// ============================ STOP PLACEMENT ============================
-// Stops use a FIXED entry reference (strategy.position_avg_price) once in a
-// trade, so the stop doesn't drift bar-to-bar as in the prior version. This
-// matches the Python backtest which places the stop ONCE at entry.
-entryRefPrice = strategy.position_size != 0 and not na(strategy.position_avg_price) ? strategy.position_avg_price : close
-
-getLongStopFrom(p) =>
-    candidate = not na(lastSwingLowLevel) ? lastSwingLowLevel : na
-    if not na(candidate) and candidate < p
-        candidate
-    else
-        p - stopATRMult * atr14
-
-getShortStopFrom(p) =>
-    candidate = not na(lastSwingHighLevel) ? lastSwingHighLevel : na
-    if not na(candidate) and candidate > p
-        candidate
-    else
-        p + stopATRMult * atr14
+longEntry = bosBull and inRTH and not isEventDay and (zClose > effMinZVWAP)
+shortEntry = bosBear and inRTH and not isEventDay and (zClose < -effMinZVWAP)
 
 // ============================ VISUAL MARKERS ============================
 swingOffset = -swingLen
@@ -135,84 +115,71 @@ if showBOSLines and bosBull
 if showBOSLines and bosBear
     line.new(lastSwingLowBar, lastSwingLowLevel, bar_index, lastSwingLowLevel, color=color.new(color.blue, 30), width=2, style=line.style_solid)
 
-// ============================ TRADE-ENTRY BAR TRACKING ============================
-// Track the bar index of the current trade's entry via position-size transition.
-// Avoids calling strategy.opentrades.entry_bar_index() which can runtime-error
-// when there are no open trades.
-var int tradeEntryBar = na
-var int bosCountSinceEntry = 0
-
-flatNow = strategy.position_size == 0
-flatPrev = strategy.position_size[1] == 0
-justEntered = not flatNow and flatPrev
-
-if justEntered
-    tradeEntryBar := bar_index
-    bosCountSinceEntry := 0
-if flatNow
-    tradeEntryBar := na
-    bosCountSinceEntry := 0
-
-longPos = strategy.position_size > 0
-shortPos = strategy.position_size < 0
-
-// Count same-direction BOS events after the entry bar
-if longPos and bosBull and not na(tradeEntryBar) and bar_index > tradeEntryBar
-    bosCountSinceEntry := bosCountSinceEntry + 1
-if shortPos and bosBear and not na(tradeEntryBar) and bar_index > tradeEntryBar
-    bosCountSinceEntry := bosCountSinceEntry + 1
-
 // ============================ STRATEGY ORDERS ============================
-// ENTRY — fires when qualifying signal meets flat position. TV fills at next
-// bar's open (default), matching the Python backtest's fill convention.
-if longEntry and flatNow
-    strategy.entry("Long", strategy.long)
-if shortEntry and flatNow
-    strategy.entry("Short", strategy.short)
+// Entries — pass qty=1 explicitly to avoid any default_qty ambiguity.
+// `strategy.opentrades == 0` is the officially-recommended flat-check pattern.
+if longEntry and strategy.opentrades == 0
+    strategy.entry("Long", strategy.long, qty=1)
+if shortEntry and strategy.opentrades == 0
+    strategy.entry("Short", strategy.short, qty=1)
 
-// STOP + optional TARGET. Called every bar while in a trade; strategy.exit
-// modifies the resting order each bar. Stops are computed from the fixed
-// entry price (strategy.position_avg_price), so they don't drift.
-if longPos
-    longStopLvl = getLongStopFrom(entryRefPrice)
-    longTgtLvl = exitMode == "ATR_TARGET" ? entryRefPrice + targetATRMult * atr14 : na
-    strategy.exit("LongX", from_entry="Long", stop=longStopLvl, limit=longTgtLvl, comment_loss="STOP", comment_profit="TARGET")
-if shortPos
-    shortStopLvl = getShortStopFrom(entryRefPrice)
-    shortTgtLvl = exitMode == "ATR_TARGET" ? entryRefPrice - targetATRMult * atr14 : na
-    strategy.exit("ShortX", from_entry="Short", stop=shortStopLvl, limit=shortTgtLvl, comment_loss="STOP", comment_profit="TARGET")
+// Stops + optional target. Called UNCONDITIONALLY (no `if` guard) — Pine
+// handles it correctly: if no matching entry is open, strategy.exit is a
+// no-op. This matches the simple working examples in Pine v6 docs.
+longStopPrice = na
+longTargetPrice = na
+shortStopPrice = na
+shortTargetPrice = na
 
-// CHoCH market exit (OPPOSITE_CHOCH mode only)
-if exitMode == "OPPOSITE_CHOCH" and longPos and chochBear
+if strategy.opentrades > 0 and strategy.position_size > 0
+    entryPx = strategy.opentrades.entry_price(0)
+    // Long stop: most recent correct-side swing, or N_ATR fallback.
+    candidateLongStop = not na(lastSwingLowLevel) and lastSwingLowLevel < entryPx ? lastSwingLowLevel : entryPx - stopATRMult * atr14
+    longStopPrice := candidateLongStop
+    longTargetPrice := effExitMode == "ATR_TARGET" ? entryPx + effTargetATR * atr14 : na
+
+if strategy.opentrades > 0 and strategy.position_size < 0
+    entryPx = strategy.opentrades.entry_price(0)
+    candidateShortStop = not na(lastSwingHighLevel) and lastSwingHighLevel > entryPx ? lastSwingHighLevel : entryPx + stopATRMult * atr14
+    shortStopPrice := candidateShortStop
+    shortTargetPrice := effExitMode == "ATR_TARGET" ? entryPx - effTargetATR * atr14 : na
+
+strategy.exit("LongX", from_entry="Long", stop=longStopPrice, limit=longTargetPrice, comment_loss="STOP", comment_profit="TARGET")
+strategy.exit("ShortX", from_entry="Short", stop=shortStopPrice, limit=shortTargetPrice, comment_loss="STOP", comment_profit="TARGET")
+
+// CHoCH exit (OPPOSITE_CHOCH mode only)
+if effExitMode == "OPPOSITE_CHOCH" and strategy.position_size > 0 and chochBear
     strategy.close("Long", comment="CHOCH")
-if exitMode == "OPPOSITE_CHOCH" and shortPos and chochBull
+if effExitMode == "OPPOSITE_CHOCH" and strategy.position_size < 0 and chochBull
     strategy.close("Short", comment="CHOCH")
 
-// BoS counter exit
-if exitAfterNBos > 0 and longPos and bosCountSinceEntry >= exitAfterNBos
-    strategy.close("Long", comment="BOS" + str.tostring(exitAfterNBos))
-if exitAfterNBos > 0 and shortPos and bosCountSinceEntry >= exitAfterNBos
-    strategy.close("Short", comment="BOS" + str.tostring(exitAfterNBos))
+// BoS counter — count same-direction BOS events post-entry, exit after N
+var int bosCountSinceEntry = 0
+barsInTrade = strategy.opentrades > 0 ? bar_index - strategy.opentrades.entry_bar_index(0) : 0
+if barsInTrade == 0
+    bosCountSinceEntry := 0
+if strategy.position_size > 0 and bosBull and barsInTrade > 0
+    bosCountSinceEntry := bosCountSinceEntry + 1
+if strategy.position_size < 0 and bosBear and barsInTrade > 0
+    bosCountSinceEntry := bosCountSinceEntry + 1
 
-// Opposite-signal exit — uses raw bosBear/bosBull (no entry filters)
-if longPos and bosBear
+if effExitAfterNBos > 0 and strategy.position_size > 0 and bosCountSinceEntry >= effExitAfterNBos
+    strategy.close("Long", comment="BOS" + str.tostring(effExitAfterNBos))
+if effExitAfterNBos > 0 and strategy.position_size < 0 and bosCountSinceEntry >= effExitAfterNBos
+    strategy.close("Short", comment="BOS" + str.tostring(effExitAfterNBos))
+
+// Opposite-signal exit (raw bosBear / bosBull regardless of entry filters)
+if strategy.position_size > 0 and bosBear
     strategy.close("Long", comment="OPP")
-if shortPos and bosBull
+if strategy.position_size < 0 and bosBull
     strategy.close("Short", comment="OPP")
 
 // Session-end forced flat
-sessionEnded = not flatNow and inRTH[1] and not inRTH
+sessionEnded = strategy.position_size != 0 and inRTH[1] and not inRTH
 if sessionEnded
     strategy.close_all(comment="EOD")
 
-// ============================ DIAGNOSTIC PLOTS (opt-in) ============================
-// When `showDiagnostic` is on, plots key filter components so you can see
-// exactly what's gating entries. Useful when strategy tester shows 0 trades.
-//
-// Values plotted (scaled to fit on chart y-axis):
-//   - zClose (blue) — scaled by multiplying by ATR so it overlays near price
-//   - inRTH indicator (green dashes when in session)
-//   - longEntry / shortEntry trigger points (big triangles)
+// ============================ DIAGNOSTIC PLOTS ============================
 plotshape(showDiagnostic and longEntry, title="DIAG: longEntry", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.large, text="L-sig")
 plotshape(showDiagnostic and shortEntry, title="DIAG: shortEntry", style=shape.triangledown, location=location.abovebar, color=color.new(color.fuchsia, 0), size=size.large, text="S-sig")
 plotshape(showDiagnostic and inRTH and not inRTH[1], title="DIAG: RTH open", style=shape.arrowup, location=location.bottom, color=color.aqua, size=size.small, text="RTH")
