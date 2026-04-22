@@ -1,0 +1,218 @@
+//@version=6
+// =============================================================================
+// PAC Backtest Config B — STRATEGY version (TradingView Strategy Tester)
+// =============================================================================
+// Sibling to pac-bos.pine (the indicator). This is the strategy() version so
+// TradingView's Strategy Tester panel can compute:
+//   - Net profit / drawdown / profit factor / Sharpe
+//   - Trade list with entry/exit price + P&L per trade
+//   - Equity curve chart
+//   - Monthly/yearly breakdown
+//
+// Uses identical strategy logic to the indicator: Config B defaults
+// (BOS_BREAKOUT + OPPOSITE_CHOCH exit + SWING_EXTREME stop + 2.25 ATR fallback
+// + z_vwap >= 1.0 filter + RTH only + skip-events + exit_after_2_bos).
+//
+// IMPORTANT — run this on **MNQ1!** (micro E-mini Nasdaq futures) for results
+// that match the Python backtest's tick_value_dollars=0.50 assumption. If you
+// run it on NQ1! or another instrument, P&L numbers will scale but the
+// strategy's behavior (WR, # trades, duration) will match.
+//
+// Cost model matches the stressed backtest run that produced Config B's $109K
+// 3-year result:
+//   commission_per_rt = $3.00  (split as $1.50/side in TV)
+//   slippage_ticks    = 1.0     (1 tick per fill in TV; MNQ tick = 0.25 pt)
+//   initial_capital   = $25,000 (matches our DD-metric anchor)
+// =============================================================================
+
+strategy(title="PAC BOS Config B — Strategy", shorttitle="PAC BOS B Strat", overlay=true, pyramiding=0, default_qty_type=strategy.fixed, default_qty_value=1, initial_capital=25000, commission_type=strategy.commission.cash_per_order, commission_value=1.50, slippage=1, calc_on_every_tick=false, process_orders_on_close=false, max_lines_count=500, max_labels_count=500)
+
+// ============================ INPUTS ============================
+
+grp_core = "Core Strategy"
+exitMode = input.string("OPPOSITE_CHOCH", "Exit Mode", options=["OPPOSITE_CHOCH", "ATR_TARGET"], group=grp_core, tooltip="OPPOSITE_CHOCH = Config B (default, let winners run). ATR_TARGET = Config A (hard TP).")
+swingLen = input.int(5, "Swing Length (bars before/after)", minval=2, maxval=20, group=grp_core)
+stopATRMult = input.float(2.25, "Stop × ATR(14)", step=0.25, group=grp_core)
+targetATRMult = input.float(2.0, "Target × ATR(14) (ATR_TARGET mode only)", step=0.25, group=grp_core)
+minZVWAP = input.float(1.0, "Min |z_close_vwap|", step=0.1, group=grp_core)
+exitAfterNBos = input.int(2, "Exit after N same-direction BOS", minval=0, maxval=10, group=grp_core)
+
+grp_filter = "Filters"
+useRTHOnly = input.bool(true, "Entries only in RTH (08:30–15:00 CT)", group=grp_filter)
+skipEvents = input.bool(true, "Skip FOMC + OPEX days", group=grp_filter)
+
+grp_visual = "Visuals"
+showSwings = input.bool(true, "Show swing high/low markers", group=grp_visual)
+showBOSLines = input.bool(true, "Show BOS break-level lines", group=grp_visual)
+
+// ============================ SESSION ============================
+inRTH = not useRTHOnly or ((hour == 8 and minute >= 30) or (hour >= 9 and hour < 15))
+
+// ============================ EVENT DAYS ============================
+isOpex = dayofweek == dayofweek.friday and dayofmonth >= 15 and dayofmonth <= 21
+y = year
+m = month
+d = dayofmonth
+isFOMC_2024 = (y == 2024) and ((m == 1 and d == 31) or (m == 3 and d == 20) or (m == 5 and d == 1) or (m == 6 and d == 12) or (m == 7 and d == 31) or (m == 9 and d == 18) or (m == 11 and d == 7) or (m == 12 and d == 18))
+isFOMC_2025 = (y == 2025) and ((m == 1 and d == 29) or (m == 3 and d == 19) or (m == 5 and d == 7) or (m == 6 and d == 18) or (m == 7 and d == 30) or (m == 9 and d == 17) or (m == 10 and d == 29) or (m == 12 and d == 10))
+isFOMC_2026 = (y == 2026) and ((m == 1 and d == 28) or (m == 3 and d == 18) or (m == 4 and d == 29) or (m == 6 and d == 17) or (m == 7 and d == 29) or (m == 9 and d == 16) or (m == 10 and d == 28) or (m == 12 and d == 9))
+isFOMC = isFOMC_2024 or isFOMC_2025 or isFOMC_2026
+isEventDay = skipEvents and (isOpex or isFOMC)
+
+bgcolor(isEventDay ? color.new(color.orange, 92) : na, title="Event day skip")
+
+// ============================ INDICATORS ============================
+atr14 = ta.atr(14)
+[diplus, diminus, adx14] = ta.dmi(14, 14)
+
+vwapVal = ta.vwap
+tp = (high + low + close) / 3.0
+sessionStdProxy = ta.stdev(tp - vwapVal, 60)
+zClose = sessionStdProxy > 0 ? (close - vwapVal) / sessionStdProxy : 0.0
+
+// ============================ SWING + BOS + CHoCH ============================
+pivH = ta.pivothigh(swingLen, swingLen)
+pivL = ta.pivotlow(swingLen, swingLen)
+
+var float lastSwingHighLevel = na
+var float lastSwingLowLevel = na
+var int lastSwingHighBar = na
+var int lastSwingLowBar = na
+
+if not na(pivH)
+    lastSwingHighLevel := pivH
+    lastSwingHighBar := bar_index - swingLen
+if not na(pivL)
+    lastSwingLowLevel := pivL
+    lastSwingLowBar := bar_index - swingLen
+
+bosBull = not na(lastSwingHighLevel) and close > lastSwingHighLevel and close[1] <= lastSwingHighLevel
+bosBear = not na(lastSwingLowLevel) and close < lastSwingLowLevel and close[1] >= lastSwingLowLevel
+
+var float prevSwingLowLevel = na
+var float prevSwingHighLevel = na
+if not na(pivL)
+    prevSwingLowLevel := lastSwingLowLevel[1]
+if not na(pivH)
+    prevSwingHighLevel := lastSwingHighLevel[1]
+
+chochBear = not na(pivL) and not na(prevSwingLowLevel) and pivL < prevSwingLowLevel
+chochBull = not na(pivH) and not na(prevSwingHighLevel) and pivH > prevSwingHighLevel
+
+// ============================ ENTRY GATE ============================
+longEntry = bosBull and inRTH and not isEventDay and zClose > minZVWAP
+shortEntry = bosBear and inRTH and not isEventDay and zClose < -minZVWAP
+
+// ============================ STOP PLACEMENT ============================
+entryPrice = close
+
+getLongStop() =>
+    candidate = not na(lastSwingLowLevel) ? lastSwingLowLevel : na
+    if not na(candidate) and candidate < entryPrice
+        candidate
+    else
+        entryPrice - stopATRMult * atr14
+
+getShortStop() =>
+    candidate = not na(lastSwingHighLevel) ? lastSwingHighLevel : na
+    if not na(candidate) and candidate > entryPrice
+        candidate
+    else
+        entryPrice + stopATRMult * atr14
+
+// ============================ VISUAL MARKERS ============================
+swingOffset = -swingLen
+plotshape(showSwings and not na(pivH), title="Swing High", style=shape.circle, location=location.abovebar, color=color.new(color.red, 40), size=size.tiny, offset=swingOffset)
+plotshape(showSwings and not na(pivL), title="Swing Low", style=shape.circle, location=location.belowbar, color=color.new(color.green, 40), size=size.tiny, offset=swingOffset)
+
+if showBOSLines and bosBull
+    line.new(lastSwingHighBar, lastSwingHighLevel, bar_index, lastSwingHighLevel, color=color.new(color.blue, 30), width=2, style=line.style_solid)
+if showBOSLines and bosBear
+    line.new(lastSwingLowBar, lastSwingLowLevel, bar_index, lastSwingLowLevel, color=color.new(color.blue, 30), width=2, style=line.style_solid)
+
+// ============================ BoS COUNTER (for exit_after_n_bos) ============================
+// Tracks same-direction BOS events post-entry. `strategy.opentrades.entry_bar_index(0)`
+// gives the bar index of the current open trade's entry. Counter excludes the
+// entry bar itself (the BOS that triggered the entry doesn't count).
+var int bosCountSinceEntry = 0
+
+if strategy.position_size == 0
+    bosCountSinceEntry := 0
+
+longPos = strategy.position_size > 0
+shortPos = strategy.position_size < 0
+inTrade = strategy.position_size != 0
+entryBarIdx = inTrade ? strategy.opentrades.entry_bar_index(0) : na
+
+if longPos and bosBull and bar_index > entryBarIdx
+    bosCountSinceEntry := bosCountSinceEntry + 1
+if shortPos and bosBear and bar_index > entryBarIdx
+    bosCountSinceEntry := bosCountSinceEntry + 1
+
+// ============================ STRATEGY ORDERS ============================
+// ENTRY: open a new trade when a qualifying signal fires and we're flat.
+// strategy.entry fills at next bar's open by default, matching Python backtest.
+if longEntry and strategy.position_size == 0
+    strategy.entry("Long", strategy.long)
+if shortEntry and strategy.position_size == 0
+    strategy.entry("Short", strategy.short)
+
+// EXITS: multiple conditions in priority order. Pine evaluates them each bar;
+// the FIRST to fire wins because subsequent `strategy.close()` calls on an
+// already-flat position are no-ops.
+
+// 1. Intrabar stop (always active). strategy.exit places a resting stop order.
+//    The `limit` argument is used only in ATR_TARGET mode.
+if longPos
+    longStopLvl = getLongStop()
+    longTgtLvl = exitMode == "ATR_TARGET" ? strategy.position_avg_price + targetATRMult * atr14 : na
+    strategy.exit("LongExit", from_entry="Long", stop=longStopLvl, limit=longTgtLvl, comment_loss="STOP", comment_profit="TARGET")
+if shortPos
+    shortStopLvl = getShortStop()
+    shortTgtLvl = exitMode == "ATR_TARGET" ? strategy.position_avg_price - targetATRMult * atr14 : na
+    strategy.exit("ShortExit", from_entry="Short", stop=shortStopLvl, limit=shortTgtLvl, comment_loss="STOP", comment_profit="TARGET")
+
+// 2. CHoCH exit (OPPOSITE_CHOCH mode only) — close at close price
+if exitMode == "OPPOSITE_CHOCH" and longPos and chochBear
+    strategy.close("Long", comment="CHOCH")
+if exitMode == "OPPOSITE_CHOCH" and shortPos and chochBull
+    strategy.close("Short", comment="CHOCH")
+
+// 3. BoS counter exit
+if exitAfterNBos > 0 and longPos and bosCountSinceEntry >= exitAfterNBos
+    strategy.close("Long", comment="BOS" + str.tostring(exitAfterNBos))
+if exitAfterNBos > 0 and shortPos and bosCountSinceEntry >= exitAfterNBos
+    strategy.close("Short", comment="BOS" + str.tostring(exitAfterNBos))
+
+// 4. Opposite-signal exit (uses raw bosBear/bosBull, not filtered entries)
+if longPos and bosBear
+    strategy.close("Long", comment="OPP")
+if shortPos and bosBull
+    strategy.close("Short", comment="OPP")
+
+// 5. Session-end forced flat
+sessionEnded = inTrade and inRTH[1] and not inRTH
+if sessionEnded
+    strategy.close_all(comment="EOD")
+
+// ============================ NOTES ============================
+// What TradingView's Strategy Tester will show:
+//   Overview tab: Net profit, gross profit/loss, max drawdown, profit factor,
+//                 total closed trades, percent profitable, avg trade,
+//                 avg winning trade, avg losing trade, largest winning,
+//                 largest losing, trading period.
+//   Performance Summary: Same split by long vs short.
+//   List of Trades: Each trade with entry/exit/price/P&L.
+//   Properties: Capital, commission, slippage settings applied.
+//
+// Expected results (rough, depends on chart timeframe + date range):
+//   NQ1!/MNQ1! 1m, 3 years (2022-2024):
+//     Trades: ~1,800
+//     WR: ~88%
+//     Profit factor: ~8-10
+//     Max drawdown: < 5% of equity (14 stop-hits across 1,840 trades in Config B)
+//     Sharpe (annualized): 2-4 range
+//
+// These should line up with the Python backtest's numbers if the chart is
+// set to MNQ1! 1m. NQ1! would show ~10× larger $ figures (1 point = $20 vs $2)
+// but same WR and similar PF/drawdown ratios.

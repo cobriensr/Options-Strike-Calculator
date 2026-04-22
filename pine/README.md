@@ -1,8 +1,17 @@
-# PAC BOS — TradingView Charting Indicator (Config B default)
+# PAC BOS — TradingView Pine scripts (Config B default)
 
 **Status:** E1.5 deliverable from the [PAC backtester spec](../docs/superpowers/specs/pac-backtester-2026-04-18.md).
 
-This Pine v6 indicator ports the validated PAC strategy to TradingView for **visual eyeball-validation only**. It does NOT fire trade automation (alerts + webhooks are optional). That's Epic 2.
+Two Pine v6 scripts that port the validated PAC strategy to TradingView:
+
+| File | Type | What it's for |
+|---|---|---|
+| [`pac-bos.pine`](pac-bos.pine) | `indicator()` | **Live eyeball validation** — plots signals on your chart with alerts (webhook + sound). Use this to watch the strategy fire in real time. |
+| [`pac-bos-strategy.pine`](pac-bos-strategy.pine) | `strategy()` | **Historical backtesting in TradingView** — runs the Strategy Tester panel showing net profit, drawdown, profit factor, Sharpe, trade list, equity curve. Use this to verify numbers on your own data. |
+
+Both files use identical strategy logic (Config B defaults). The indicator is for live watch; the strategy is for TV's Strategy Tester numeric validation.
+
+**IMPORTANT:** run the strategy version on **MNQ1!** (micro E-mini Nasdaq) for results that match the Python backtest (`tick_value_dollars=0.50`). Running on NQ1! will show ~10× larger dollar figures but the same WR, PF, and drawdown ratios.
 
 ## Exit mode: Config B by default
 
