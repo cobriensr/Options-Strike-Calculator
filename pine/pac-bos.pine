@@ -217,6 +217,19 @@ if showBOSLines and bosBull
 if showBOSLines and bosBear
     line.new(lastSwingLowBar, lastSwingLowLevel, bar_index, lastSwingLowLevel, color=color.new(color.blue, 30), width=2, style=line.style_solid)
 
+// ============================ ACTIVE TRADE STATE DECLARATIONS ============================
+// Declared up here (before the visualization block) so `openDir` is in scope
+// for the willOpenLong/willOpenShort booleans below. The `var` keyword makes
+// these persist across bars with initial values applied only on the first bar.
+var int openDir = 0
+var float openEntry = na
+var float openStop = na
+var float openTarget = na
+var int openEntryBar = na
+var line openStopLine = na
+var line openTargetLine = na
+var int bosCountSinceEntry = 0
+
 // ============================ VISUALIZATION ============================
 // Split entry signals into "actual entries" (state machine will open a new
 // trade) vs "ignored signals" (strategy is already in a trade, so the
@@ -251,25 +264,17 @@ if showLabels and (willOpenLong or willOpenShort)
     label.new(bar_index, lblY, lblTxt, color=lblColor, textcolor=color.white, style=lblStyle, size=size.small)
 
 // ============================ ACTIVE TRADE STATE MACHINE ============================
-// Tracks the current open trade (if any) and dynamically extends stop/target
-// lines forward each bar. On exit, mark the exit bar with a labeled X.
+// All state vars declared up near the visualization block so willOpenLong/Short
+// could reference openDir. Here we just run the state transitions.
 //
-// State:
+// State (declared above):
 //   openDir      : 0=flat, 1=long, -1=short
 //   openEntry    : fill price at entry
 //   openStop     : protective stop level
 //   openTarget   : ATR target level
 //   openStopLine : line.id of the currently-drawn stop line (so we can extend it)
 //   openTargetLine : same for target
-
-var int openDir = 0
-var float openEntry = na
-var float openStop = na
-var float openTarget = na
-var int openEntryBar = na
-var line openStopLine = na
-var line openTargetLine = na
-var int bosCountSinceEntry = 0  // increments on same-dir BOS post-entry
+//   bosCountSinceEntry : counter for exit_after_n_bos rule
 
 // Open a new long when longEntry fires and we're flat.
 // Target line is only drawn in ATR_TARGET mode — in OPPOSITE_CHOCH mode there
