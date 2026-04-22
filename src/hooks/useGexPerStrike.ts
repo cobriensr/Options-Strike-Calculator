@@ -98,6 +98,34 @@ export interface GexStrikeLevel {
   netVannaVol: number;
 }
 
+/**
+ * One prior per-strike snapshot within the requested ?window=<N>m on the
+ * active date. Populated when `useGexPerStrike` is called with
+ * `includeWindow: true` — otherwise always empty. Consumers use these to
+ * seed their own rolling Δ% / flow-signal buffers on scrub, instead of
+ * waiting for a live stream to accumulate.
+ */
+export interface GexWindowSnapshot {
+  timestamp: string;
+  strikes: GexStrikeLevel[];
+}
+
+/** Options bag for `useGexPerStrike`. */
+export interface UseGexPerStrikeOptions {
+  /**
+   * Seed date — same contract as the historical positional argument. If
+   * provided, seeds `selectedDate` once at mount; after that, the returned
+   * `setSelectedDate` is the only way to change it.
+   */
+  initialDate?: string;
+  /**
+   * When `true`, request `?window=5m` alongside each fetch and expose the
+   * prior snapshots on the return as `windowSnapshots`. Default `false` so
+   * the analyze path and other consumers don't pay the extra query / bytes.
+   */
+  includeWindow?: boolean;
+}
+
 export interface UseGexPerStrikeReturn {
   strikes: GexStrikeLevel[];
   loading: boolean;
@@ -106,6 +134,12 @@ export interface UseGexPerStrikeReturn {
   timestamp: string | null;
   /** All snapshot timestamps for the active date, ascending */
   timestamps: string[];
+  /**
+   * Prior per-strike snapshots within the requested `?window=Nm` window
+   * preceding the currently displayed `timestamp`. Empty unless the caller
+   * opted in via `includeWindow: true`.
+   */
+  windowSnapshots: GexWindowSnapshot[];
   /** The date currently being viewed (YYYY-MM-DD in ET), panel-local state */
   selectedDate: string;
   /** Change the viewed date. Clears scrub state as a side effect. */
@@ -146,16 +180,30 @@ function getTodayET(): string {
   });
 }
 
+/**
+ * The second argument may be either the legacy `initialDate` string or
+ * a `UseGexPerStrikeOptions` bag. Both forms stay supported so existing
+ * call sites don't churn; new consumers pass the options object to opt
+ * into `includeWindow`.
+ */
 export function useGexPerStrike(
   marketOpen: boolean,
-  initialDate?: string,
+  initialDateOrOptions?: string | UseGexPerStrikeOptions,
 ): UseGexPerStrikeReturn {
+  const options: UseGexPerStrikeOptions =
+    typeof initialDateOrOptions === 'string'
+      ? { initialDate: initialDateOrOptions }
+      : (initialDateOrOptions ?? {});
+  const { initialDate, includeWindow = false } = options;
   const isOwner = useIsOwner();
   const [strikes, setStrikes] = useState<GexStrikeLevel[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [timestamp, setTimestamp] = useState<string | null>(null);
   const [timestamps, setTimestamps] = useState<string[]>([]);
+  const [windowSnapshots, setWindowSnapshots] = useState<GexWindowSnapshot[]>(
+    [],
+  );
   const [scrubTimestamp, setScrubTimestamp] = useState<string | null>(null);
   // Panel-local date state. `initialDate` only seeds this once at mount;
   // after that, `setSelectedDate` (exposed in the return) is the only way
@@ -187,6 +235,7 @@ export function useGexPerStrike(
         // The hook always has a concrete date in state (never undefined).
         qs.set('date', selectedDate);
         if (tsOverride) qs.set('ts', tsOverride);
+        if (includeWindow) qs.set('window', '5m');
         const params = qs.size > 0 ? `?${qs}` : '';
         // Combine the effect-cleanup signal with the original 5s timeout so
         // we still abort stale requests on date change AND cap request duration.
@@ -209,6 +258,7 @@ export function useGexPerStrike(
           strikes: GexStrikeLevel[];
           timestamp: string | null;
           timestamps?: string[];
+          windowSnapshots?: GexWindowSnapshot[];
         };
 
         if (!mountedRef.current) return;
@@ -216,6 +266,7 @@ export function useGexPerStrike(
         setStrikes(data.strikes);
         setTimestamp(data.timestamp);
         setTimestamps(data.timestamps ?? []);
+        setWindowSnapshots(data.windowSnapshots ?? []);
         setError(null);
       } catch (err) {
         // Intentional abort from effect cleanup — not an error worth surfacing.
@@ -225,7 +276,7 @@ export function useGexPerStrike(
         if (mountedRef.current) setLoading(false);
       }
     },
-    [selectedDate],
+    [selectedDate, includeWindow],
   );
 
   useEffect(() => {
@@ -392,6 +443,7 @@ export function useGexPerStrike(
     error,
     timestamp,
     timestamps,
+    windowSnapshots,
     selectedDate,
     setSelectedDate,
     isLive,

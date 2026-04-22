@@ -12,6 +12,10 @@
  *   ?ts=<ISO>         — return the exact snapshot at this timestamp (used by
  *                       the frontend scrub controls). Takes precedence over
  *                       `time` when both are provided.
+ *   ?window=<N>m      — additionally return every prior snapshot within the
+ *                       last N minutes (1-15) as `windowSnapshots`. Powers
+ *                       backtest-mode 5m Δ% computation in
+ *                       `useFuturesGammaPlaybook` when scrubbed.
  *
  * Returns the strikes for the resolved snapshot plus `timestamps` — every
  * snapshot timestamp recorded for `date`, ascending. The frontend uses this
@@ -26,6 +30,99 @@ import { getDb } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
 import { rejectIfNotOwner } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
+
+/** Clamp bounds for `?window=<N>m`. Matches spec futures-playbook-backtest-flow-2026-04-21.md. */
+const WINDOW_MIN_MINUTES = 1;
+const WINDOW_MAX_MINUTES = 15;
+
+const WINDOW_PARAM_PATTERN = /^(\d+)m$/;
+
+/**
+ * Parse and clamp the `window` query param. Accepts strings like "5m";
+ * returns the clamped integer minutes, or null when absent/malformed.
+ * Out-of-range values are clamped rather than rejected — a trader asking
+ * for 5h of history just gets WINDOW_MAX_MINUTES of history.
+ */
+function parseWindowMinutes(raw: unknown): number | null {
+  if (typeof raw !== 'string') return null;
+  const matched = WINDOW_PARAM_PATTERN.exec(raw);
+  if (!matched) return null;
+  const n = Number.parseInt(matched[1]!, 10);
+  if (!Number.isFinite(n)) return null;
+  return Math.min(WINDOW_MAX_MINUTES, Math.max(WINDOW_MIN_MINUTES, n));
+}
+
+/**
+ * Shape a single `gex_strike_0dte` row into the client-facing per-strike
+ * payload. Extracted so the primary-snapshot path and the optional
+ * window-snapshots path (`?window=Nm`) emit identical field shapes and
+ * stay in lockstep if the schema evolves.
+ */
+function mapRowToStrike(r: Record<string, unknown>) {
+  const num = (v: unknown) => Number(v) || 0;
+  const callGammaOi = num(r.call_gamma_oi);
+  const putGammaOi = num(r.put_gamma_oi);
+  const callGammaVol = num(r.call_gamma_vol);
+  const putGammaVol = num(r.put_gamma_vol);
+  const netGammaOi = callGammaOi + putGammaOi;
+  const netGammaVol = callGammaVol + putGammaVol;
+  const callCharmOi = num(r.call_charm_oi);
+  const putCharmOi = num(r.put_charm_oi);
+  const callCharmVol = num(r.call_charm_vol);
+  const putCharmVol = num(r.put_charm_vol);
+  const callVannaOi = num(r.call_vanna_oi);
+  const putVannaOi = num(r.put_vanna_oi);
+  const callVannaVol = num(r.call_vanna_vol);
+  const putVannaVol = num(r.put_vanna_vol);
+
+  // Vol vs OI reinforcement: same sign = today's flow supports the level
+  let volReinforcement: 'reinforcing' | 'opposing' | 'neutral' = 'neutral';
+  if (netGammaOi !== 0 && netGammaVol !== 0) {
+    const sameSign =
+      (netGammaOi > 0 && netGammaVol > 0) ||
+      (netGammaOi < 0 && netGammaVol < 0);
+    volReinforcement = sameSign ? 'reinforcing' : 'opposing';
+  }
+
+  return {
+    strike: Number(r.strike),
+    price: Number(r.price),
+    // Gamma — OI
+    callGammaOi,
+    putGammaOi,
+    netGamma: netGammaOi,
+    // Gamma — volume
+    callGammaVol,
+    putGammaVol,
+    netGammaVol,
+    volReinforcement,
+    // Gamma — directionalized (bid/ask)
+    callGammaAsk: num(r.call_gamma_ask),
+    callGammaBid: num(r.call_gamma_bid),
+    putGammaAsk: num(r.put_gamma_ask),
+    putGammaBid: num(r.put_gamma_bid),
+    // Charm — OI
+    callCharmOi,
+    putCharmOi,
+    netCharm: callCharmOi + putCharmOi,
+    // Charm — volume
+    callCharmVol,
+    putCharmVol,
+    netCharmVol: callCharmVol + putCharmVol,
+    // Delta (OI only — no vol variant from UW)
+    callDeltaOi: num(r.call_delta_oi),
+    putDeltaOi: num(r.put_delta_oi),
+    netDelta: num(r.call_delta_oi) + num(r.put_delta_oi),
+    // Vanna — OI
+    callVannaOi,
+    putVannaOi,
+    netVanna: callVannaOi + putVannaOi,
+    // Vanna — volume
+    callVannaVol,
+    putVannaVol,
+    netVannaVol: callVannaVol + putVannaVol,
+  };
+}
 
 /**
  * Normalize a Postgres TIMESTAMPTZ value to an ISO 8601 string.
@@ -153,78 +250,65 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ORDER BY strike ASC
       `;
 
-      const n = (v: unknown) => Number(v) || 0;
+      const strikes = rows.map(mapRowToStrike);
 
-      const strikes = rows.map((r) => {
-        const callGammaOi = n(r.call_gamma_oi);
-        const putGammaOi = n(r.put_gamma_oi);
-        const callGammaVol = n(r.call_gamma_vol);
-        const putGammaVol = n(r.put_gamma_vol);
-        const netGammaOi = callGammaOi + putGammaOi;
-        const netGammaVol = callGammaVol + putGammaVol;
-        const callCharmOi = n(r.call_charm_oi);
-        const putCharmOi = n(r.put_charm_oi);
-        const callCharmVol = n(r.call_charm_vol);
-        const putCharmVol = n(r.put_charm_vol);
-        const callVannaOi = n(r.call_vanna_oi);
-        const putVannaOi = n(r.put_vanna_oi);
-        const callVannaVol = n(r.call_vanna_vol);
-        const putVannaVol = n(r.put_vanna_vol);
-
-        // Vol vs OI reinforcement: same sign = today's flow supports the level
-        let volReinforcement: 'reinforcing' | 'opposing' | 'neutral' =
-          'neutral';
-        if (netGammaOi !== 0 && netGammaVol !== 0) {
-          const sameSign =
-            (netGammaOi > 0 && netGammaVol > 0) ||
-            (netGammaOi < 0 && netGammaVol < 0);
-          volReinforcement = sameSign ? 'reinforcing' : 'opposing';
+      // Optional `?window=Nm` — fetch every prior snapshot within the window
+      // before the target ts. Enables scrub-mode backtesting of per-strike
+      // Δ% signals without maintaining a client-side rolling buffer (the
+      // buffer is pruned on scrub by design; see the spec).
+      const windowMinutes = parseWindowMinutes(req.query.window);
+      let windowSnapshots: Array<{
+        timestamp: string;
+        strikes: ReturnType<typeof mapRowToStrike>[];
+      }> = [];
+      if (windowMinutes !== null) {
+        const lowerBoundMs =
+          new Date(latestTs).getTime() - windowMinutes * 60_000;
+        const lowerBound = new Date(lowerBoundMs).toISOString();
+        const windowRows = await sql`
+          SELECT strike, price,
+                 call_gamma_oi, put_gamma_oi,
+                 call_gamma_vol, put_gamma_vol,
+                 call_gamma_ask, call_gamma_bid,
+                 put_gamma_ask, put_gamma_bid,
+                 call_charm_oi, put_charm_oi,
+                 call_charm_vol, put_charm_vol,
+                 call_delta_oi, put_delta_oi,
+                 call_vanna_oi, put_vanna_oi,
+                 call_vanna_vol, put_vanna_vol,
+                 timestamp
+          FROM gex_strike_0dte
+          WHERE date = ${date}
+            AND timestamp >= ${lowerBound}
+            AND timestamp < ${latestTs}
+          ORDER BY timestamp ASC, strike ASC
+        `;
+        // Group by timestamp preserving chronological order.
+        const grouped = new Map<
+          string,
+          ReturnType<typeof mapRowToStrike>[]
+        >();
+        for (const r of windowRows) {
+          const tsIso = toIso(r.timestamp);
+          if (tsIso === null) continue;
+          const mapped = mapRowToStrike(r);
+          const existing = grouped.get(tsIso);
+          if (existing) existing.push(mapped);
+          else grouped.set(tsIso, [mapped]);
         }
-
-        return {
-          strike: Number(r.strike),
-          price: Number(r.price),
-          // Gamma — OI
-          callGammaOi,
-          putGammaOi,
-          netGamma: netGammaOi,
-          // Gamma — volume
-          callGammaVol,
-          putGammaVol,
-          netGammaVol,
-          volReinforcement,
-          // Gamma — directionalized (bid/ask)
-          callGammaAsk: n(r.call_gamma_ask),
-          callGammaBid: n(r.call_gamma_bid),
-          putGammaAsk: n(r.put_gamma_ask),
-          putGammaBid: n(r.put_gamma_bid),
-          // Charm — OI
-          callCharmOi,
-          putCharmOi,
-          netCharm: callCharmOi + putCharmOi,
-          // Charm — volume
-          callCharmVol,
-          putCharmVol,
-          netCharmVol: callCharmVol + putCharmVol,
-          // Delta (OI only — no vol variant from UW)
-          callDeltaOi: n(r.call_delta_oi),
-          putDeltaOi: n(r.put_delta_oi),
-          netDelta: n(r.call_delta_oi) + n(r.put_delta_oi),
-          // Vanna — OI
-          callVannaOi,
-          putVannaOi,
-          netVanna: callVannaOi + putVannaOi,
-          // Vanna — volume
-          callVannaVol,
-          putVannaVol,
-          netVannaVol: callVannaVol + putVannaVol,
-        };
-      });
+        windowSnapshots = Array.from(grouped.entries()).map(
+          ([timestamp, strikesAtTs]) => ({ timestamp, strikes: strikesAtTs }),
+        );
+      }
 
       res.setHeader('Cache-Control', 'no-store');
-      return res
-        .status(200)
-        .json({ strikes, date, timestamp: latestTs, timestamps });
+      return res.status(200).json({
+        strikes,
+        date,
+        timestamp: latestTs,
+        timestamps,
+        windowSnapshots,
+      });
     } catch (err) {
       Sentry.captureException(err);
       logger.error({ err }, 'gex-per-strike fetch error');

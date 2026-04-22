@@ -386,4 +386,185 @@ describe('GET /api/gex-per-strike', () => {
     // disabling the scrub buttons.
     expect(body.timestamps.indexOf(body.timestamp)).toBeGreaterThanOrEqual(0);
   });
+
+  // ── ?window=Nm param (backtest 5m Δ% support) ────────────────────
+
+  describe('?window=<N>m window snapshots', () => {
+    it('returns windowSnapshots when window=5m is passed', async () => {
+      // Primary snapshot resolution
+      mockSql.mockResolvedValueOnce([
+        { latest_ts: '2026-04-02T15:00:00Z' },
+      ]);
+      // Timestamps list
+      mockSql.mockResolvedValueOnce([
+        { timestamp: '2026-04-02T14:58:00Z' },
+        { timestamp: '2026-04-02T14:59:00Z' },
+        { timestamp: '2026-04-02T15:00:00Z' },
+      ]);
+      // Primary strikes fetch
+      mockSql.mockResolvedValueOnce([
+        makeDbRow({ timestamp: '2026-04-02T15:00:00Z' }),
+      ]);
+      // Window fetch — 2 prior snapshots in the window
+      mockSql.mockResolvedValueOnce([
+        makeDbRow({
+          strike: '5800',
+          timestamp: '2026-04-02T14:58:00Z',
+        }),
+        makeDbRow({
+          strike: '5810',
+          timestamp: '2026-04-02T14:58:00Z',
+        }),
+        makeDbRow({
+          strike: '5800',
+          timestamp: '2026-04-02T14:59:00Z',
+        }),
+      ]);
+
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'GET',
+          query: { date: '2026-04-02', ts: '2026-04-02T15:00:00Z', window: '5m' },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(200);
+      const body = res._json as {
+        windowSnapshots: Array<{ timestamp: string; strikes: unknown[] }>;
+      };
+      expect(body.windowSnapshots).toHaveLength(2);
+      expect(body.windowSnapshots[0]!.timestamp).toBe(
+        '2026-04-02T14:58:00.000Z',
+      );
+      expect(body.windowSnapshots[0]!.strikes).toHaveLength(2);
+      expect(body.windowSnapshots[1]!.timestamp).toBe(
+        '2026-04-02T14:59:00.000Z',
+      );
+      expect(body.windowSnapshots[1]!.strikes).toHaveLength(1);
+    });
+
+    it('returns empty windowSnapshots when no prior snapshots fall in the window', async () => {
+      mockSql.mockResolvedValueOnce([
+        { latest_ts: '2026-04-02T15:00:00Z' },
+      ]);
+      mockSql.mockResolvedValueOnce([
+        { timestamp: '2026-04-02T15:00:00Z' },
+      ]);
+      mockSql.mockResolvedValueOnce([
+        makeDbRow({ timestamp: '2026-04-02T15:00:00Z' }),
+      ]);
+      // Empty window fetch
+      mockSql.mockResolvedValueOnce([]);
+
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'GET',
+          query: { date: '2026-04-02', ts: '2026-04-02T15:00:00Z', window: '5m' },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(200);
+      const body = res._json as {
+        windowSnapshots: Array<{ timestamp: string; strikes: unknown[] }>;
+      };
+      expect(body.windowSnapshots).toEqual([]);
+    });
+
+    it('does NOT fetch windowSnapshots when window param is absent', async () => {
+      mockSql.mockResolvedValueOnce([
+        { latest_ts: '2026-04-02T15:00:00Z' },
+      ]);
+      mockSql.mockResolvedValueOnce([
+        { timestamp: '2026-04-02T15:00:00Z' },
+      ]);
+      mockSql.mockResolvedValueOnce([
+        makeDbRow({ timestamp: '2026-04-02T15:00:00Z' }),
+      ]);
+
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'GET',
+          query: { date: '2026-04-02', ts: '2026-04-02T15:00:00Z' },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(200);
+      const body = res._json as {
+        windowSnapshots: Array<{ timestamp: string; strikes: unknown[] }>;
+      };
+      expect(body.windowSnapshots).toEqual([]);
+      // Only 3 SQL calls — no window query.
+      expect(mockSql).toHaveBeenCalledTimes(3);
+    });
+
+    it('rejects malformed window values silently (returns empty)', async () => {
+      mockSql.mockResolvedValueOnce([
+        { latest_ts: '2026-04-02T15:00:00Z' },
+      ]);
+      mockSql.mockResolvedValueOnce([
+        { timestamp: '2026-04-02T15:00:00Z' },
+      ]);
+      mockSql.mockResolvedValueOnce([
+        makeDbRow({ timestamp: '2026-04-02T15:00:00Z' }),
+      ]);
+
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'GET',
+          query: {
+            date: '2026-04-02',
+            ts: '2026-04-02T15:00:00Z',
+            window: 'abc',
+          },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(200);
+      const body = res._json as {
+        windowSnapshots: Array<{ timestamp: string; strikes: unknown[] }>;
+      };
+      expect(body.windowSnapshots).toEqual([]);
+      // Only 3 SQL calls — the malformed param is treated as absent.
+      expect(mockSql).toHaveBeenCalledTimes(3);
+    });
+
+    it('clamps very large window values to the max bound (15m)', async () => {
+      mockSql.mockResolvedValueOnce([
+        { latest_ts: '2026-04-02T15:00:00Z' },
+      ]);
+      mockSql.mockResolvedValueOnce([
+        { timestamp: '2026-04-02T15:00:00Z' },
+      ]);
+      mockSql.mockResolvedValueOnce([
+        makeDbRow({ timestamp: '2026-04-02T15:00:00Z' }),
+      ]);
+      mockSql.mockResolvedValueOnce([]);
+
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'GET',
+          query: {
+            date: '2026-04-02',
+            ts: '2026-04-02T15:00:00Z',
+            window: '999m',
+          },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(200);
+      // Still fires the window fetch (clamped, not rejected).
+      expect(mockSql).toHaveBeenCalledTimes(4);
+    });
+  });
 });
+

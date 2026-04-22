@@ -3,10 +3,11 @@ import { describe, it, expect } from 'vitest';
 import { WallFlowStrip } from '../../../components/FuturesGammaPlaybook/WallFlowStrip';
 
 describe('WallFlowStrip', () => {
-  it('renders em-dashes when both trends are null', () => {
+  it('renders an awaiting-snapshots placeholder when both trends are null', () => {
     render(<WallFlowStrip ceilingTrend5m={null} floorTrend5m={null} />);
-    const pctLabels = screen.getAllByText('—');
-    expect(pctLabels.length).toBe(2);
+    expect(screen.getByText(/awaiting snapshots/i)).toBeTruthy();
+    // No em-dashes — the empty placeholder collapses both pct fields.
+    expect(screen.queryByText('—')).toBeNull();
   });
 
   it('labels ceiling as strengthening when Δ% ≥ threshold', () => {

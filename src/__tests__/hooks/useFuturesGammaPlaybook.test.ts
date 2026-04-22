@@ -84,6 +84,7 @@ function gexReturn(
     error: null,
     timestamp: null,
     timestamps: [],
+    windowSnapshots: [],
     selectedDate: '2026-04-20',
     setSelectedDate: vi.fn(),
     isLive: true,

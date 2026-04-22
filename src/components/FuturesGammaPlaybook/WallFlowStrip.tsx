@@ -95,17 +95,29 @@ export const WallFlowStrip = memo(function WallFlowStrip({
 }: WallFlowStripProps) {
   const ceilingTrend = classifyTrend(ceilingTrend5m);
   const floorTrend = classifyTrend(floorTrend5m);
+  const bothNull = ceilingTrend5m === null && floorTrend5m === null;
 
   return (
     <div
       className="border-edge bg-surface-alt flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border px-3 py-1.5"
       aria-label="Wall flow 5-minute trend"
     >
-      <Side label="Ceiling" pct={ceilingTrend5m} trend={ceilingTrend} />
-      <span aria-hidden="true" style={{ color: 'var(--color-tertiary)' }}>
-        ·
-      </span>
-      <Side label="Floor" pct={floorTrend5m} trend={floorTrend} />
+      {bothNull ? (
+        <span
+          className="font-mono text-[11px]"
+          style={{ color: 'var(--color-tertiary)' }}
+        >
+          Wall flow (5m): awaiting snapshots…
+        </span>
+      ) : (
+        <>
+          <Side label="Ceiling" pct={ceilingTrend5m} trend={ceilingTrend} />
+          <span aria-hidden="true" style={{ color: 'var(--color-tertiary)' }}>
+            ·
+          </span>
+          <Side label="Floor" pct={floorTrend5m} trend={floorTrend} />
+        </>
+      )}
     </div>
   );
 });

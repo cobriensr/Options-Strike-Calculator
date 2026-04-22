@@ -439,7 +439,14 @@ function computeSessionPhaseBoundaries(
 export function useFuturesGammaPlaybook(
   marketOpen: boolean,
 ): UseFuturesGammaPlaybookReturn {
-  const gex: UseGexPerStrikeReturn = useGexPerStrike(marketOpen);
+  // `includeWindow: true` asks the endpoint for a 5-min window of prior
+  // per-strike snapshots alongside each fetch. We seed our snapshot ring
+  // buffer with those on scrub so backtest mode emits the same flow
+  // signals the live path does, without needing to accumulate them by
+  // stepping through the scrub controls snapshot-by-snapshot.
+  const gex: UseGexPerStrikeReturn = useGexPerStrike(marketOpen, {
+    includeWindow: true,
+  });
   // When scrubbed, align ES data to the pinned GEX timestamp so distances
   // and basis are read from the same instant. Live → undefined → latest ES.
   const futuresAt = gex.isScrubbed && gex.timestamp ? gex.timestamp : undefined;
@@ -630,9 +637,35 @@ export function useFuturesGammaPlaybook(
     if (!Number.isFinite(now)) return;
     if (snapshotBufferRef.current.at(-1)?.ts === now) return;
 
-    // Prune entries older than the buffer horizon to cap memory.
+    // Seed the buffer with any server-returned windowSnapshots (each is a
+    // per-strike snapshot from within the last 5 min before `now`). Then
+    // prune anything older than the buffer horizon. In live mode this is
+    // additive — we already have a rolling buffer. In scrub mode the
+    // buffer was empty (or stale) and this is the only path that feeds it.
+    const windowEntries = gex.windowSnapshots
+      .map((snap): Snapshot | null => {
+        const ts = new Date(snap.timestamp).getTime();
+        return Number.isFinite(ts) ? { strikes: snap.strikes, ts } : null;
+      })
+      .filter((x): x is Snapshot => x !== null);
+
+    // Merge existing buffer with newly arrived window entries, de-duplicated
+    // by timestamp (retain the existing entry — it's authoritative). Then
+    // prune pre-horizon entries.
+    const existing = snapshotBufferRef.current;
+    const existingTs = new Set(existing.map((s) => s.ts));
+    const merged: Snapshot[] = [
+      ...existing,
+      ...windowEntries.filter((s) => !existingTs.has(s.ts)),
+    ];
     const cutoff = now - SNAPSHOT_BUFFER_MS;
-    const buf = snapshotBufferRef.current.filter((snap) => snap.ts >= cutoff);
+    // Prune around the `now` boundary on BOTH sides: pre-cutoff (too old)
+    // AND post-now (future snapshots left behind from a forward scrub to
+    // earlier timestamp). Without the upper bound, scrubbing backward
+    // keeps computing Δ% against future snapshots — wrong direction.
+    const buf = merged
+      .filter((snap) => snap.ts >= cutoff && snap.ts < now)
+      .sort((a, b) => a.ts - b.ts);
 
     const snap5m = findClosestSnapshot(
       buf,
@@ -650,7 +683,7 @@ export function useFuturesGammaPlaybook(
 
     const spot = gex.strikes[0]?.price ?? 0;
     setPriceTrend(computePriceTrend(spot, buf, now));
-  }, [gex.strikes, gex.timestamp]);
+  }, [gex.strikes, gex.timestamp, gex.windowSnapshots]);
 
   // 5m wall-flow aggregates — avg Δ% across strikes above / below spot.
   // Nullable: a non-empty `delta5mMap` but no above-spot strikes (or all
