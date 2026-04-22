@@ -30,6 +30,54 @@ export const spotGexHistoryQuerySchema = z.object({
 export type SpotGexHistoryQuery = z.infer<typeof spotGexHistoryQuerySchema>;
 
 // ============================================================
+// /api/options-flow/otm-heavy
+// ============================================================
+
+/**
+ * Query params for GET /api/options-flow/otm-heavy.
+ *
+ * Serves the OTM SPXW Flow Alerts dashboard widget — rolling-window view
+ * of far-OTM flow where premium is dominated by ask-lifts or bid-hits.
+ *
+ * - Both live and historical modes read from `flow_alerts` (no UW proxy —
+ *   the ingest cron keeps the table fresh).
+ * - `window_minutes` is a fixed set (UI slider options); refine rather
+ *   than enum to keep coercion from the string query value.
+ * - Thresholds mirror the component sliders: 0.50–0.95 for side ratios,
+ *   0.001–0.02 (= 0.1%–2%) for distance, $10K–$∞ for premium floor.
+ * - `as_of requires date` — historical mode is date-anchored; `as_of`
+ *   alone without a calendar context is rejected.
+ */
+export const otmHeavyQuerySchema = z
+  .object({
+    window_minutes: z.coerce
+      .number()
+      .int()
+      .refine((v) => [5, 15, 30, 60].includes(v), {
+        message: 'window_minutes must be 5, 15, 30, or 60',
+      })
+      .default(30),
+    min_ask_ratio: z.coerce.number().min(0.5).max(0.95).default(0.6),
+    min_bid_ratio: z.coerce.number().min(0.5).max(0.95).default(0.6),
+    min_distance_pct: z.coerce.number().min(0.001).max(0.02).default(0.005),
+    min_premium: z.coerce.number().int().min(10_000).default(50_000),
+    sides: z.enum(['ask', 'bid', 'both']).default('both'),
+    type: z.enum(['call', 'put', 'both']).default('both'),
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+      .optional(),
+    as_of: z.string().datetime({ offset: true }).optional(),
+    limit: z.coerce.number().int().min(1).max(200).default(100),
+  })
+  .refine((v) => !(v.as_of && !v.date), {
+    message: 'as_of requires date',
+    path: ['as_of'],
+  });
+
+export type OtmHeavyQuery = z.infer<typeof otmHeavyQuerySchema>;
+
+// ============================================================
 // /api/max-pain-current
 // ============================================================
 
@@ -119,9 +167,7 @@ export const PushRecentEventsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 
-export type PushRecentEventsQuery = z.infer<
-  typeof PushRecentEventsQuerySchema
->;
+export type PushRecentEventsQuery = z.infer<typeof PushRecentEventsQuerySchema>;
 
 // ============================================================
 // /api/positions (POST — thinkorswim CSV upload)

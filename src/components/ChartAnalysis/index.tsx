@@ -180,7 +180,7 @@ export default function ChartAnalysis({
         });
       }
     },
-    [results?.spot],
+    [results],
   );
 
   // ── Render ────────────────────────────────────────────────

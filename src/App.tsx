@@ -108,6 +108,9 @@ const FuturesGammaPlaybook = lazy(() =>
 const BWBCalculator = lazy(() =>
   import('./components/BWBCalculator').catch(handleStaleChunk),
 );
+const OtmFlowAlerts = lazy(() =>
+  import('./components/OtmFlowAlerts/OtmFlowAlerts').catch(handleStaleChunk),
+);
 
 function SchwabAuthLink({
   ariaLabel,
@@ -1167,6 +1170,15 @@ export default function StrikeCalculator() {
                     regime={regime}
                     gexByStrike={gexByStrikeForFlow}
                   />
+                </ErrorBoundary>
+
+                <span id="sec-otm-flow" className="block scroll-mt-28" />
+                <ErrorBoundary label="OTM Flow Alerts">
+                  <Suspense fallback={<SkeletonSection lines={5} />}>
+                    <OtmFlowAlerts
+                      marketOpen={market.data.quotes?.marketOpen ?? false}
+                    />
+                  </Suspense>
                 </ErrorBoundary>
               </>
             )}

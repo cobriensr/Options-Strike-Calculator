@@ -32,6 +32,11 @@ export default [
     rules: {
       ...reactHooks.configs.recommended.rules,
       'react-hooks/set-state-in-effect': 'off',
+      // React 19's react-hooks/refs is too strict for the latest-ref pattern
+      // used in long-lived hooks (e.g. useChartAnalysis's 10-min retry loop
+      // mirrors props into refs to avoid stale closures). Pattern is correct
+      // and widely used; matches the precedent of set-state-in-effect above.
+      'react-hooks/refs': 'off',
       'react-refresh/only-export-components': [
         'warn',
         { allowConstantExport: true },
