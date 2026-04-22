@@ -26,6 +26,7 @@ import { RegimeHeader } from './RegimeHeader';
 import { ActionDirective } from './ActionDirective';
 import { RegimeFlipStrip } from './RegimeFlipStrip';
 import { PlaybookPanel } from './PlaybookPanel';
+import { TradeBiasStrip } from './TradeBiasStrip';
 import { WallFlowStrip } from './WallFlowStrip';
 import { EsLevelsPanel } from './EsLevelsPanel';
 import { RegimeTimeline } from './RegimeTimeline';
@@ -187,10 +188,19 @@ function FuturesGammaPlaybook({
       {/* Panel 1: Regime header (full width) */}
       <RegimeHeader playbook={playbook} />
 
+      {/* Trade-bias strip — the single decisive LONG / SHORT / NEUTRAL
+          call, synthesizing regime + rules + conviction + drift +
+          wall-flow. Rendered immediately under the regime header so
+          it's the first thing the trader sees when deciding whether
+          to act. See docs/superpowers/specs/futures-playbook-trade-bias-2026-04-22.md. */}
+      <TradeBiasStrip bias={playbook.tradeBias} isLive={isLive} />
+
       {/* Regime flip strip — compact "is regime flickering?" dot row. */}
       <RegimeFlipStrip timeline={playbook.regimeTimeline} />
 
-      {/* Action directive — "what do I do right now?" banner. */}
+      {/* Action directive — "what do I do right now?" banner.
+          Complements the TradeBiasStrip above: bias = direction,
+          directive = mechanics (nearest ACTIVE/ARMED rule). */}
       <ActionDirective
         verdict={verdict}
         rules={rules}

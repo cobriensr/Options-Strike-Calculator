@@ -106,6 +106,12 @@ function hookReturn(
       floorTrend5m: null,
       priceTrend: null,
     },
+    tradeBias: {
+      direction: 'NEUTRAL',
+      conviction: 'neutral',
+      entryEs: null,
+      reason: 'all setups distant',
+    },
     regimeTimeline: [],
     sessionPhaseBoundaries: {
       open: '2026-04-20T09:30:00-04:00',

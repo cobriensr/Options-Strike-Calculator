@@ -37,7 +37,9 @@ import type {
   RegimeVerdict,
   SessionPhase,
   SessionPhaseBoundariesCt,
+  TradeBias,
 } from '../components/FuturesGammaPlaybook/types';
+import { deriveTradeBias } from '../components/FuturesGammaPlaybook/tradeBias';
 import {
   classifyLevelStatus,
   distanceInEsPoints,
@@ -112,6 +114,13 @@ export interface UseFuturesGammaPlaybookReturn {
    * can emit charm-aware conviction and drift-override suppression.
    */
   flowSignals: PlaybookFlowSignals;
+  /**
+   * Directional call (LONG / SHORT / NEUTRAL) synthesized from regime +
+   * rules + conviction + drift + wall-flow + level status. The
+   * `TradeBiasStrip` renders this at the top of the playbook so the
+   * trader sees one decisive direction instead of scanning six panels.
+   */
+  tradeBias: TradeBias;
   /**
    * Intraday regime timeseries for the active session, sourced from
    * `/api/spot-gex-history`. Each point carries `ts`, `netGex`, `spot`,
@@ -797,6 +806,11 @@ export function useFuturesGammaPlaybook(
     [regime, phase, derived, esPrice, flowSignals],
   );
 
+  const tradeBias: TradeBias = useMemo(
+    () => deriveTradeBias({ regime, rules, levels, flowSignals }),
+    [regime, rules, levels, flowSignals],
+  );
+
   // Named-setup trigger evaluation. Phase 1D.3 uses the same pure
   // evaluator the TriggersPanel renders, so the bias payload Claude sees
   // matches exactly what the trader sees on screen. Only ACTIVE rows
@@ -876,6 +890,7 @@ export function useFuturesGammaPlaybook(
     esPutWall: derived.esPutWall,
     esGammaPin: derived.esGammaPin,
     flowSignals,
+    tradeBias,
     regimeTimeline,
     sessionPhaseBoundaries,
     loading,

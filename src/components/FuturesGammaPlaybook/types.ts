@@ -41,6 +41,31 @@ export interface PlaybookFlowSignals {
  */
 export type RuleConviction = 'high' | 'standard' | 'low';
 
+/**
+ * Collapsed directional call synthesized from regime + rules +
+ * conviction + drift-override + wall-flow. Rendered as a prominent
+ * banner at the top of the playbook so the trader sees one decisive
+ * direction instead of scanning six panels for the synthesis.
+ *
+ * `direction === 'NEUTRAL'` means "no directional edge right now" —
+ * stand aside regardless of whether a rule technically exists.
+ * Examples: TRANSITIONING regime, both walls BROKEN, or a
+ * charm-drift-only ACTIVE rule (direction-agnostic by design).
+ *
+ * `conviction === 'strong'` implies multiple aligned signals
+ * (rule ACTIVE + wall-flow aligned + conviction=high). `mild` is the
+ * baseline "setup exists, take it if you like it". `neutral` is only
+ * emitted with `direction === 'NEUTRAL'`.
+ */
+export interface TradeBias {
+  direction: 'LONG' | 'SHORT' | 'NEUTRAL';
+  conviction: 'strong' | 'mild' | 'neutral';
+  /** Entry price (ES) when a specific rule is anchoring the bias; null otherwise. */
+  entryEs: number | null;
+  /** One-line justification (≤ 50 chars) surfaced under the badge. */
+  reason: string;
+}
+
 export type SessionPhase =
   | 'PRE_OPEN'
   | 'OPEN'
