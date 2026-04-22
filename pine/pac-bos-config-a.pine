@@ -51,6 +51,9 @@ grp_visual = "Visuals"
 showLines = input.bool(true, "Show stop + target lines", group=grp_visual)
 showLabels = input.bool(true, "Show entry info labels", group=grp_visual)
 showADX = input.bool(true, "Show ADX(14) in info label", group=grp_visual)
+showSwings = input.bool(true, "Show swing high/low markers", group=grp_visual)
+showBOSLines = input.bool(true, "Show BOS break-level lines", group=grp_visual)
+showExits = input.bool(true, "Show exit markers (TARGET/STOP/OPP/EOD)", group=grp_visual)
 
 grp_alerts = "Alerts"
 useAlerts = input.bool(true, "Fire JSON webhook + sound alerts", group=grp_alerts,
@@ -159,23 +162,25 @@ getShortStop() =>
     else
         entryPrice + stopATRMult * atr14
 
+// ============================ STRUCTURE MARKERS ============================
+// Swing highs/lows: plot at the confirmed swing bar. pivothigh(5,5) reports
+// the value at the bar that is 5 bars AFTER the swing — so offset=-5 moves
+// the marker back to the actual swing bar.
+plotshape(showSwings and not na(pivH), title="Swing High", style=shape.circle, location=location.abovebar, color=color.new(color.red, 40), size=size.tiny, offset=-5)
+plotshape(showSwings and not na(pivL), title="Swing Low", style=shape.circle, location=location.belowbar, color=color.new(color.green, 40), size=size.tiny, offset=-5)
+
+// BOS break-level lines: when a BOS fires, draw the broken swing level as a
+// horizontal blue line from the swing bar to the BOS bar. This is the key
+// structural event the strategy is trading off.
+if showBOSLines and bosBull
+    line.new(lastSwingHighBar, lastSwingHighLevel, bar_index, lastSwingHighLevel, color=color.new(color.blue, 30), width=2, style=line.style_solid)
+if showBOSLines and bosBear
+    line.new(lastSwingLowBar, lastSwingLowLevel, bar_index, lastSwingLowLevel, color=color.new(color.blue, 30), width=2, style=line.style_solid)
+
 // ============================ VISUALIZATION ============================
-// Signal arrows
+// Entry arrows
 plotshape(longEntry, title="Long BOS", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.small, text="L")
 plotshape(shortEntry, title="Short BOS", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small, text="S")
-
-// Stop + target lines per entry (held for 60 bars after entry or EOD)
-if showLines and longEntry
-    stopLvl = getLongStop()
-    tgtLvl = entryPrice + targetATRMult * atr14
-    line.new(bar_index, stopLvl, bar_index + 60, stopLvl, color=color.new(color.red, 30), width=1, style=line.style_dashed)
-    line.new(bar_index, tgtLvl, bar_index + 60, tgtLvl, color=color.new(color.green, 30), width=1, style=line.style_dashed)
-
-if showLines and shortEntry
-    stopLvl = getShortStop()
-    tgtLvl = entryPrice - targetATRMult * atr14
-    line.new(bar_index, stopLvl, bar_index + 60, stopLvl, color=color.new(color.red, 30), width=1, style=line.style_dashed)
-    line.new(bar_index, tgtLvl, bar_index + 60, tgtLvl, color=color.new(color.green, 30), width=1, style=line.style_dashed)
 
 // Entry info labels
 if showLabels and (longEntry or shortEntry)
@@ -186,6 +191,94 @@ if showLabels and (longEntry or shortEntry)
     lblColor = color.new(longEntry ? color.green : color.red, 80)
     lblStyle = longEntry ? label.style_label_up : label.style_label_down
     label.new(bar_index, lblY, lblTxt, color=lblColor, textcolor=color.white, style=lblStyle, size=size.small)
+
+// ============================ ACTIVE TRADE STATE MACHINE ============================
+// Tracks the current open trade (if any) and dynamically extends stop/target
+// lines forward each bar. On exit, mark the exit bar with a labeled X.
+//
+// State:
+//   openDir      : 0=flat, 1=long, -1=short
+//   openEntry    : fill price at entry
+//   openStop     : protective stop level
+//   openTarget   : ATR target level
+//   openStopLine : line.id of the currently-drawn stop line (so we can extend it)
+//   openTargetLine : same for target
+
+var int openDir = 0
+var float openEntry = na
+var float openStop = na
+var float openTarget = na
+var int openEntryBar = na
+var line openStopLine = na
+var line openTargetLine = na
+
+// Open a new long when longEntry fires and we're flat.
+if showLines and longEntry and openDir == 0
+    openDir := 1
+    openEntry := close
+    openStop := getLongStop()
+    openTarget := close + targetATRMult * atr14
+    openEntryBar := bar_index
+    openStopLine := line.new(bar_index, openStop, bar_index + 1, openStop, color=color.new(color.red, 20), width=2, style=line.style_dashed)
+    openTargetLine := line.new(bar_index, openTarget, bar_index + 1, openTarget, color=color.new(color.green, 20), width=2, style=line.style_dashed)
+
+// Open a new short when shortEntry fires and we're flat.
+if showLines and shortEntry and openDir == 0
+    openDir := -1
+    openEntry := close
+    openStop := getShortStop()
+    openTarget := close - targetATRMult * atr14
+    openEntryBar := bar_index
+    openStopLine := line.new(bar_index, openStop, bar_index + 1, openStop, color=color.new(color.red, 20), width=2, style=line.style_dashed)
+    openTargetLine := line.new(bar_index, openTarget, bar_index + 1, openTarget, color=color.new(color.green, 20), width=2, style=line.style_dashed)
+
+// Each bar while in a trade: extend the stop/target lines forward to keep
+// them visible as the trade develops.
+if openDir != 0 and not na(openStopLine)
+    line.set_x2(openStopLine, bar_index)
+    line.set_x2(openTargetLine, bar_index)
+
+// Exit detection: evaluate in priority order. Intrabar stop/target checks
+// use high/low (backtest uses same convention). Opposite-signal + session-end
+// checks at bar close, exit fills at close price.
+
+hitLongStop = openDir == 1 and low <= openStop
+hitLongTarget = openDir == 1 and high >= openTarget
+hitShortStop = openDir == -1 and high >= openStop
+hitShortTarget = openDir == -1 and low <= openTarget
+sessionEnded = openDir != 0 and inRTH[1] and not inRTH
+oppSignalLong = openDir == 1 and shortEntry
+oppSignalShort = openDir == -1 and longEntry
+
+exitReason = ""
+exitPrice = 0.0
+if hitLongStop or hitShortStop
+    exitReason := "STOP"
+    exitPrice := openStop
+if hitLongTarget or hitShortTarget
+    exitReason := "TARGET"
+    exitPrice := openTarget
+if oppSignalLong or oppSignalShort
+    exitReason := "OPP"
+    exitPrice := close
+if sessionEnded
+    exitReason := "EOD"
+    exitPrice := close
+
+// Draw exit marker + clear state
+if showExits and openDir != 0 and exitReason != ""
+    exitWasWin = (openDir == 1 and exitPrice > openEntry) or (openDir == -1 and exitPrice < openEntry)
+    markColor = exitWasWin ? color.new(color.green, 0) : color.new(color.red, 0)
+    markY = openDir == 1 ? high + atr14 * 0.5 : low - atr14 * 0.5
+    markTxt = exitReason + "\n$" + str.tostring((exitPrice - openEntry) * openDir, "#.##")
+    label.new(bar_index, markY, markTxt, color=color.new(color.black, 50), textcolor=markColor, style=label.style_label_center, size=size.small)
+    openDir := 0
+    openEntry := na
+    openStop := na
+    openTarget := na
+    openEntryBar := na
+    openStopLine := na
+    openTargetLine := na
 
 // ============================ ALERTS ============================
 // Two mechanisms, both fire when a LONG or SHORT BOS entry passes all filters:

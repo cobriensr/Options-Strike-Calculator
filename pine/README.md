@@ -6,10 +6,34 @@ This Pine v6 indicator ports the validated Config A strategy (2022–2024 NQ, 2,
 
 ## What it plots
 
-- **Entry arrows**: green up-triangle below bar for LONG BOS, red down-triangle above bar for SHORT BOS.
-- **Stop line** (red dashed): either the most recent correct-side swing extreme, or 2.25× ATR fallback.
-- **Target line** (green dashed): 2.0× ATR from entry.
+### Structural markers (always on the chart)
+
+- **Swing highs**: small red dots above bars where `pivothigh(5, 5)` confirmed a swing high. These are the levels the strategy watches for bearish breaks.
+- **Swing lows**: small green dots below bars where `pivotlow(5, 5)` confirmed a swing low. The levels the strategy watches for bullish breaks.
+- **BOS break lines**: when a BOS fires, a blue horizontal line is drawn from the swing bar to the break bar, showing exactly which level got broken. This is the event the strategy is trading.
+
+### Entry + active trade
+
+- **Entry arrow**: green up-triangle (LONG BOS) or red down-triangle (SHORT BOS) at the signal bar.
 - **Info label**: direction, z_vwap at entry, ADX, ATR.
+- **Stop line** (red dashed): either the most recent correct-side swing extreme, or 2.25× ATR fallback. Extends forward each bar until the trade exits.
+- **Target line** (green dashed): 2.0× ATR from entry. Extends forward each bar until the trade exits.
+
+### Exits
+
+When the active trade closes, a labeled marker prints at the exit bar showing **reason + dollar P&L per 1 contract**. Green text = win, red = loss. Reasons:
+
+| Label | Meaning |
+|---|---|
+| `TARGET` | Intrabar high/low crossed the 2.0× ATR target |
+| `STOP` | Intrabar high/low crossed the swing-extreme (or ATR-fallback) stop |
+| `OPP` | An opposite-direction BOS signal fired while in trade (EXIT_ONLY semantics) |
+| `EOD` | RTH session ended while in trade (force-flat at session close) |
+
+The stop/target lines stop extending once the exit marker prints. A new trade can open on the next qualifying entry.
+
+### Context
+
 - **Event-day tint**: faint orange background on FOMC + OPEX days where trades are suppressed.
 - **Status table** (top-right): live view of RTH state, event flag, z_vwap, ADX, ATR.
 
