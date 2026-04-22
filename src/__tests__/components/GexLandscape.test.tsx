@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import GexLandscape from '../../components/GexLandscape';
 import type { GexLandscapeProps } from '../../components/GexLandscape';
 import { CollapseAllContext } from '../../components/collapse-context';
@@ -221,6 +221,187 @@ describe('GexLandscape', () => {
       renderLandscape({ strikes: [...baseStrikes, farStrike] });
       // 6880 + 250 = 7130 — should not appear in the table
       expect(screen.queryByText('7,130')).toBeNull();
+    });
+  });
+
+  describe('view tabs', () => {
+    it('renders both tabs and defaults to All strikes', () => {
+      renderLandscape();
+      const allTab = screen.getByRole('tab', { name: 'All strikes' });
+      const topTab = screen.getByRole('tab', { name: 'Top 5 GEX' });
+      expect(allTab.getAttribute('aria-selected')).toBe('true');
+      expect(topTab.getAttribute('aria-selected')).toBe('false');
+    });
+
+    it('switches to the Top 5 panel when the Top 5 tab is clicked', () => {
+      renderLandscape();
+      const topTab = screen.getByRole('tab', { name: 'Top 5 GEX' });
+      fireEvent.click(topTab);
+      expect(topTab.getAttribute('aria-selected')).toBe('true');
+      expect(
+        screen
+          .getByRole('tab', { name: 'All strikes' })
+          .getAttribute('aria-selected'),
+      ).toBe('false');
+    });
+
+    it('ArrowRight on the active tab moves selection to the next tab', () => {
+      renderLandscape();
+      const allTab = screen.getByRole('tab', { name: 'All strikes' });
+      fireEvent.keyDown(allTab, { key: 'ArrowRight' });
+      expect(
+        screen
+          .getByRole('tab', { name: 'Top 5 GEX' })
+          .getAttribute('aria-selected'),
+      ).toBe('true');
+    });
+
+    it('ArrowDown behaves like ArrowRight (vertical alias)', () => {
+      renderLandscape();
+      fireEvent.keyDown(screen.getByRole('tab', { name: 'All strikes' }), {
+        key: 'ArrowDown',
+      });
+      expect(
+        screen
+          .getByRole('tab', { name: 'Top 5 GEX' })
+          .getAttribute('aria-selected'),
+      ).toBe('true');
+    });
+
+    it('ArrowLeft wraps from first tab to last tab', () => {
+      renderLandscape();
+      fireEvent.keyDown(screen.getByRole('tab', { name: 'All strikes' }), {
+        key: 'ArrowLeft',
+      });
+      // Wraps (idx -1 + 2) % 2 = 1 → Top 5 GEX
+      expect(
+        screen
+          .getByRole('tab', { name: 'Top 5 GEX' })
+          .getAttribute('aria-selected'),
+      ).toBe('true');
+    });
+
+    it('ArrowUp behaves like ArrowLeft (vertical alias)', () => {
+      renderLandscape();
+      fireEvent.click(screen.getByRole('tab', { name: 'Top 5 GEX' }));
+      fireEvent.keyDown(screen.getByRole('tab', { name: 'Top 5 GEX' }), {
+        key: 'ArrowUp',
+      });
+      expect(
+        screen
+          .getByRole('tab', { name: 'All strikes' })
+          .getAttribute('aria-selected'),
+      ).toBe('true');
+    });
+
+    it('Home selects the first tab', () => {
+      renderLandscape();
+      const topTab = screen.getByRole('tab', { name: 'Top 5 GEX' });
+      fireEvent.click(topTab);
+      fireEvent.keyDown(topTab, { key: 'Home' });
+      expect(
+        screen
+          .getByRole('tab', { name: 'All strikes' })
+          .getAttribute('aria-selected'),
+      ).toBe('true');
+    });
+
+    it('End selects the last tab', () => {
+      renderLandscape();
+      fireEvent.keyDown(screen.getByRole('tab', { name: 'All strikes' }), {
+        key: 'End',
+      });
+      expect(
+        screen
+          .getByRole('tab', { name: 'Top 5 GEX' })
+          .getAttribute('aria-selected'),
+      ).toBe('true');
+    });
+
+    it('ignores keys that do not map to a nav action', () => {
+      renderLandscape();
+      const allTab = screen.getByRole('tab', { name: 'All strikes' });
+      fireEvent.keyDown(allTab, { key: 'Enter' });
+      fireEvent.keyDown(allTab, { key: 'a' });
+      expect(allTab.getAttribute('aria-selected')).toBe('true');
+    });
+
+    it('is a no-op when Home is pressed on the already-first tab', () => {
+      renderLandscape();
+      const allTab = screen.getByRole('tab', { name: 'All strikes' });
+      fireEvent.keyDown(allTab, { key: 'Home' });
+      expect(allTab.getAttribute('aria-selected')).toBe('true');
+    });
+  });
+
+  describe('Top 5 GEX tab', () => {
+    // Mix of in-window and out-of-window strikes with deliberately spread
+    // magnitudes so the top-5 ordering is unambiguous regardless of spot/ATM.
+    const rankStrikes = [
+      makeStrike(PRICE, PRICE, 10_000_000, 1_000_000), // |1e7|  rank 6
+      makeStrike(PRICE + 10, PRICE, 900_000_000, 1_000_000), // |9e8| rank 1
+      makeStrike(PRICE - 20, PRICE, -800_000_000, 0), // |8e8| rank 2
+      makeStrike(PRICE + 30, PRICE, 700_000_000, 0), // |7e8| rank 3
+      makeStrike(PRICE + 250, PRICE, -600_000_000, 0), // |6e8| rank 4 (out of window)
+      makeStrike(PRICE - 40, PRICE, 500_000_000, 0), // |5e8| rank 5
+      makeStrike(PRICE + 5, PRICE, 40_000_000, 0), // |4e7| rank 7
+    ];
+
+    function openTop5(strikes = rankStrikes) {
+      renderLandscape({ strikes });
+      fireEvent.click(screen.getByRole('tab', { name: 'Top 5 GEX' }));
+      return screen.getByRole('tabpanel', { name: 'Top 5 GEX' });
+    }
+
+    it('shows exactly 5 rows ordered by absolute netGamma', () => {
+      const panel = openTop5();
+      const rows = within(panel).getAllByRole('listitem');
+      expect(rows).toHaveLength(5);
+      // Row 0 should contain the top strike (PRICE + 10 → 6890) and not the
+      // two lowest-magnitude strikes (PRICE and PRICE + 5).
+      expect(within(rows[0]!).getByText('6,890')).toBeDefined();
+      expect(within(panel).queryByText('6,880')).toBeNull(); // rank 6 excluded
+      expect(within(panel).queryByText('6,885')).toBeNull(); // rank 7 excluded
+    });
+
+    it('includes distant walls outside the ±50 pt price window', () => {
+      const panel = openTop5();
+      // PRICE + 250 = 7130 is outside PRICE_WINDOW but has big |netGamma|.
+      expect(within(panel).getByText('7,130')).toBeDefined();
+    });
+
+    it('renders a signed ATM offset for non-ATM top rows', () => {
+      const panel = openTop5();
+      // PRICE + 10 is +10 above spot; PRICE - 20 is 20 below spot.
+      expect(within(panel).getByText('+10 pts')).toBeDefined();
+      expect(within(panel).getByText('−20 pts')).toBeDefined();
+    });
+
+    it('renders the ATM label (not "+0 pts") when the ATM strike is in top 5', () => {
+      // ATM (PRICE) has the biggest |netGamma| so it ranks #1.
+      const strikes = [
+        makeStrike(PRICE, PRICE, 1_000_000_000, 0), // ATM — biggest wall
+        makeStrike(PRICE + 10, PRICE, 500_000_000, 0),
+        makeStrike(PRICE - 20, PRICE, 400_000_000, 0),
+      ];
+      renderLandscape({ strikes });
+      fireEvent.click(screen.getByRole('tab', { name: 'Top 5 GEX' }));
+      const panel = screen.getByRole('tabpanel', { name: 'Top 5 GEX' });
+      // Inside the top-5 panel, ATM row shows "ATM" badge and no "+0 pts" / "−0 pts".
+      expect(within(panel).getByText('ATM')).toBeDefined();
+      expect(within(panel).queryByText('+0 pts')).toBeNull();
+      expect(within(panel).queryByText('−0 pts')).toBeNull();
+    });
+
+    it('renders only the available rows when the chain has fewer than 5 strikes', () => {
+      const strikes = [
+        makeStrike(PRICE + 10, PRICE, 900_000_000, 0),
+        makeStrike(PRICE - 20, PRICE, 800_000_000, 0),
+      ];
+      renderLandscape({ strikes });
+      fireEvent.click(screen.getByRole('tab', { name: 'Top 5 GEX' }));
+      const panel = screen.getByRole('tabpanel', { name: 'Top 5 GEX' });
+      expect(within(panel).getAllByRole('listitem')).toHaveLength(2);
     });
   });
 });

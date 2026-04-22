@@ -28,6 +28,12 @@ export interface StrikeTableProps {
   gexDeltaMap: Map<number, number | null>;
   gexDelta5mMap: Map<number, number | null>;
   spotRowRef: Ref<HTMLDivElement>;
+  /**
+   * When true, non-ATM rows render a signed point offset from spot beneath
+   * the strike number (e.g. "+15 pts", "-30 pts"). Used by the Top 5 tab so
+   * distant walls show their distance without needing a separate column.
+   */
+  showAtmDistance?: boolean;
 }
 
 export function StrikeTable({
@@ -39,6 +45,7 @@ export function StrikeTable({
   gexDeltaMap,
   gexDelta5mMap,
   spotRowRef,
+  showAtmDistance = false,
 }: StrikeTableProps) {
   return (
     <div className="border-edge overflow-hidden rounded-lg border">
@@ -102,7 +109,7 @@ export function StrikeTable({
                       : meta.rowBg,
               ].join(' ')}
             >
-              {/* Strike + ATM label */}
+              {/* Strike + ATM label (or signed offset for the Top 5 view) */}
               <div className="flex flex-col items-end justify-center px-3 py-1">
                 <span
                   className={`font-mono text-[12px] font-semibold ${isSpot ? 'text-sky-300' : 'text-secondary'}`}
@@ -112,6 +119,20 @@ export function StrikeTable({
                 {isSpot && (
                   <span className="font-mono text-[9px] font-bold text-sky-400/80">
                     ATM
+                  </span>
+                )}
+                {!isSpot && showAtmDistance && (
+                  <span
+                    className="font-mono text-[9px] font-semibold"
+                    style={{
+                      color: isAboveSpot
+                        ? 'rgba(74,222,128,0.75)'
+                        : 'rgba(248,113,113,0.75)',
+                    }}
+                    title={`${Math.abs(s.strike - currentPrice).toLocaleString()} points ${isAboveSpot ? 'above' : 'below'} spot`}
+                  >
+                    {isAboveSpot ? '+' : '−'}
+                    {Math.abs(s.strike - currentPrice).toLocaleString()} pts
                   </span>
                 )}
               </div>

@@ -28,7 +28,15 @@
  *   index.tsx                — this file: state + effects + orchestration
  */
 
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from 'react';
 import { SectionBox } from '../ui';
 import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
 import { BiasPanel } from './BiasPanel';
@@ -45,6 +53,24 @@ import {
 } from './deltas';
 import { formatBiasForClaude } from './formatters';
 import type { PriceTrend, Snapshot } from './types';
+
+/** View mode for the table area: full ±50pt grid or top 5 by |netGamma|. */
+type LandscapeTab = 'all' | 'top5';
+
+/** Number of strikes shown in the "Top 5 GEX" tab. */
+const TOP_GEX_COUNT = 5;
+
+const TAB_ORDER: readonly LandscapeTab[] = ['all', 'top5'];
+
+const TAB_LABEL: Record<LandscapeTab, string> = {
+  all: 'All strikes',
+  top5: 'Top 5 GEX',
+};
+
+const TAB_TITLE: Record<LandscapeTab, string> = {
+  all: 'Strikes within ±50 pts of spot, sorted ceiling → floor',
+  top5: 'Top 5 strikes across the entire chain, ranked by absolute dollar gamma',
+};
 
 export interface GexLandscapeProps {
   strikes: GexStrikeLevel[];
@@ -104,6 +130,9 @@ const GexLandscape = memo(function GexLandscape({
   const [smoothedRows, setSmoothedRows] = useState<GexStrikeLevel[]>([]);
   // Price trend from the snapshot buffer — used to override rangebound verdict.
   const [priceTrend, setPriceTrend] = useState<PriceTrend | null>(null);
+  // Which view is showing in the table area — structural grid or top-5 walls.
+  const [activeTab, setActiveTab] = useState<LandscapeTab>('all');
+  const tablistRef = useRef<HTMLDivElement>(null);
 
   const currentPrice = strikes[0]?.price ?? 0;
 
@@ -115,6 +144,15 @@ const GexLandscape = memo(function GexLandscape({
         .sort((a, b) => b.strike - a.strike),
     [strikes, currentPrice],
   );
+
+  // Top 5 strikes by |netGamma| across the entire chain — ignores PRICE_WINDOW
+  // so distant institutional walls surface even when they're far from spot.
+  // Sorted descending so the biggest wall appears first.
+  const topFive = useMemo(() => {
+    return [...strikes]
+      .sort((a, b) => Math.abs(b.netGamma) - Math.abs(a.netGamma))
+      .slice(0, TOP_GEX_COUNT);
+  }, [strikes]);
 
   // Find the strike closest to spot for the ATM indicator.
   const spotStrike = useMemo(() => {
@@ -186,6 +224,36 @@ const GexLandscape = memo(function GexLandscape({
   useEffect(() => {
     onBiasChange?.(formatBiasForClaude(bias));
   }, [bias, onBiasChange]);
+
+  // Arrow/Home/End keyboard nav between tabs (WAI-ARIA APG "Tabs (automatic
+  // activation)" pattern). Focus follows the newly selected tab so the
+  // corresponding tabpanel is immediately reachable via Tab.
+  const handleTabKey = useCallback(
+    (e: ReactKeyboardEvent<HTMLButtonElement>) => {
+      const current = e.currentTarget.dataset.tab as LandscapeTab | undefined;
+      if (!current) return;
+      const idx = TAB_ORDER.indexOf(current);
+      let next: LandscapeTab | null = null;
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+        next = TAB_ORDER[(idx + 1) % TAB_ORDER.length] ?? null;
+      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+        next =
+          TAB_ORDER[(idx - 1 + TAB_ORDER.length) % TAB_ORDER.length] ?? null;
+      } else if (e.key === 'Home') {
+        next = TAB_ORDER[0] ?? null;
+      } else if (e.key === 'End') {
+        next = TAB_ORDER.at(-1) ?? null;
+      }
+      if (!next || next === current) return;
+      e.preventDefault();
+      setActiveTab(next);
+      const btn = tablistRef.current?.querySelector<HTMLButtonElement>(
+        `[data-tab="${next}"]`,
+      );
+      btn?.focus();
+    },
+    [],
+  );
 
   // When the viewed date changes, reset scroll and all Δ% tracking so the new
   // date's first snapshot gets a clean baseline instead of comparing against
@@ -308,16 +376,78 @@ const GexLandscape = memo(function GexLandscape({
         maxChanged1mStrike={maxChanged1mStrike}
         maxChanged5mStrike={maxChanged5mStrike}
       />
-      <StrikeTable
-        rows={rows}
-        currentPrice={currentPrice}
-        spotStrike={spotStrike}
-        maxChanged1mStrike={maxChanged1mStrike}
-        maxChanged5mStrike={maxChanged5mStrike}
-        gexDeltaMap={gexDeltaMap}
-        gexDelta5mMap={gexDelta5mMap}
-        spotRowRef={spotRowRef}
-      />
+      <div
+        ref={tablistRef}
+        role="tablist"
+        aria-label="GEX landscape view"
+        className="border-edge mt-2 mb-2 flex gap-1 border-b"
+      >
+        {TAB_ORDER.map((tab) => {
+          const selected = activeTab === tab;
+          return (
+            <button
+              key={tab}
+              type="button"
+              role="tab"
+              id={`gex-landscape-tab-${tab}`}
+              aria-controls={`gex-landscape-panel-${tab}`}
+              aria-selected={selected}
+              tabIndex={selected ? 0 : -1}
+              data-tab={tab}
+              onClick={() => setActiveTab(tab)}
+              onKeyDown={handleTabKey}
+              title={TAB_TITLE[tab]}
+              className={[
+                '-mb-px border-b-2 px-3 py-2 font-mono text-[11px] font-semibold tracking-wider uppercase transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/50',
+                selected
+                  ? 'border-sky-400/60 text-sky-300'
+                  : 'text-muted hover:text-secondary border-transparent',
+              ].join(' ')}
+            >
+              {TAB_LABEL[tab]}
+            </button>
+          );
+        })}
+      </div>
+      <div
+        role="tabpanel"
+        id="gex-landscape-panel-all"
+        aria-labelledby="gex-landscape-tab-all"
+        hidden={activeTab !== 'all'}
+      >
+        {activeTab === 'all' && (
+          <StrikeTable
+            rows={rows}
+            currentPrice={currentPrice}
+            spotStrike={spotStrike}
+            maxChanged1mStrike={maxChanged1mStrike}
+            maxChanged5mStrike={maxChanged5mStrike}
+            gexDeltaMap={gexDeltaMap}
+            gexDelta5mMap={gexDelta5mMap}
+            spotRowRef={spotRowRef}
+          />
+        )}
+      </div>
+      <div
+        role="tabpanel"
+        id="gex-landscape-panel-top5"
+        aria-labelledby="gex-landscape-tab-top5"
+        hidden={activeTab !== 'top5'}
+      >
+        {activeTab === 'top5' && (
+          <StrikeTable
+            rows={topFive}
+            currentPrice={currentPrice}
+            spotStrike={spotStrike}
+            maxChanged1mStrike={maxChanged1mStrike}
+            maxChanged5mStrike={maxChanged5mStrike}
+            gexDeltaMap={gexDeltaMap}
+            gexDelta5mMap={gexDelta5mMap}
+            spotRowRef={spotRowRef}
+            showAtmDistance
+          />
+        )}
+      </div>
       <ClassificationLegend />
     </SectionBox>
   );
