@@ -1,0 +1,88 @@
+# PAC BOS Config A — TradingView Charting Indicator
+
+**Status:** E1.5 deliverable from the [PAC backtester spec](../docs/superpowers/specs/pac-backtester-2026-04-18.md).
+
+This Pine v6 indicator ports the validated Config A strategy (2022–2024 NQ, 2,729 trades, 89.7% WR, $89K P&L, 36/36 positive months) to TradingView for **visual eyeball-validation only**. It does NOT fire alerts, webhooks, or trade automation. That's Epic 2.
+
+## What it plots
+
+- **Entry arrows**: green up-triangle below bar for LONG BOS, red down-triangle above bar for SHORT BOS.
+- **Stop line** (red dashed): either the most recent correct-side swing extreme, or 2.25× ATR fallback.
+- **Target line** (green dashed): 2.0× ATR from entry.
+- **Info label**: direction, z_vwap at entry, ADX, ATR.
+- **Event-day tint**: faint orange background on FOMC + OPEX days where trades are suppressed.
+- **Status table** (top-right): live view of RTH state, event flag, z_vwap, ADX, ATR.
+
+## Installation
+
+1. Open TradingView → load **NQ1!** (NQ continuous) or **MNQU2026** or whichever contract you trade.
+2. Set chart to **1-minute** bars.
+3. Set chart timezone to **America/Chicago** (right-click the time axis → change timezone).
+4. Open **Pine Editor** (bottom panel).
+5. Paste the contents of [pac-bos-config-a.pine](pac-bos-config-a.pine).
+6. Click **Save** → give it a name → click **Add to chart**.
+7. Verify the top-right status table appears showing live ADX / z_vwap / etc.
+
+## What to watch for (2-week validation protocol)
+
+Goal: see if signals fire with the frequency and quality the backtest predicts, **without trading any of them**.
+
+### Daily log (spreadsheet or journal)
+
+For each trading day, record:
+
+| Field | What to note |
+|---|---|
+| Date | |
+| # LONG signals fired | Backtest avg: ~4/day |
+| # SHORT signals fired | Backtest avg: ~3/day |
+| Event day? | Y/N (tint visible) |
+| Any obviously bad signals? | e.g., signal fires during a news spike, at the bottom of a doji range, etc. |
+| ADX at each entry | Top-tercile (31+) entries should feel like "clean trend" bars |
+| Entry structure | Did the bar actually look like a BOS breakout? |
+| Would-be outcome | Did price reach target, stop, or neither by session close? |
+
+After 2 weeks of logging (~10 trading days, ~60–80 signals):
+
+### Pass criteria
+
+1. **Signal frequency**: ~7/day avg across the window (range 3–15). If < 3 or > 20, something's miscalibrated.
+2. **Visual quality**: signals fire on bars that look like genuine breakouts, not noise. If > 20% look like "random bar in chop," the PAC primitives aren't capturing what your eye considers structure.
+3. **Would-be WR**: hand-track a sample of 20 signals and see roughly how many hit 2.0× ATR target before 2.25× ATR stop. If < 80% hit target, the backtest is miscalibrated for live conditions.
+4. **ADX distribution at entries**: most signals should have ADX > 20. If many signals fire with ADX < 15, the strategy is catching chop rather than trend.
+
+### Fail criteria (stop and investigate)
+
+- Signals fire continuously in chop — you don't see what the indicator is reacting to.
+- Stop lines frequently end up on the **wrong side of entry** — means the swing-extreme logic has an edge case live that the backtest didn't expose.
+- ATR / ADX values on the info table differ wildly from what TradingView's built-in indicators show — means the Pine math is off.
+
+## Parameters you can tune in the indicator settings
+
+| Input | Default | Tune when |
+|---|---|---|
+| Swing Length | 5 | Raise to 8 or 10 if too many micro-swings on your chart |
+| Stop × ATR | 2.25 | Lower if you want tighter risk per trade |
+| Target × ATR | 2.0 | Raise if you want to let winners run further |
+| Min z_close_vwap | 1.0 | Raise to 1.5 for fewer, stronger setups |
+| RTH-only | on | Off = overnight trading too (backtest didn't test this) |
+| Skip events | on | Off = show what would have fired on FOMC/OPEX days |
+
+## Known simplifications vs. the Python backtest
+
+1. **No trade management**: this is a charting indicator. `on_opposite_signal=EXIT_ONLY` and `exit_after_n_bos=2` from the backtest are NOT implemented here. You manually close trades when an opposite signal fires or after 2 same-direction BOS prints.
+2. **Session stdev approximation**: Pine's rolling 60-bar stdev of (price − VWAP) stands in for the backtest's cumulative session-reset stdev. The two track closely after ~30 min into the session; pre-10:00 CT z_vwap values may differ slightly. Not a fundamental issue — most trades fire mid/late-session anyway.
+3. **FOMC dates hardcoded through 2026** — update the `isFOMC_20XX` blocks in the Pine file when the Fed publishes future calendars.
+
+## After 2 weeks — decision gate
+
+- **Signals look real & right frequency** → proceed to E1.6 (manual-trade journal UI) and start paper-trading a handful of signals to generate a real P&L distribution.
+- **Signals look off** → investigate the divergence in the Python backtest first, update the Pine port, and re-run validation.
+- **Frequency wildly off** → input parameters may need tuning for your specific contract / timeframe. Revisit `swingLen` and `minZVWAP`.
+
+## Links
+
+- [Python backtest code](../ml/src/pac_backtest/)
+- [Engine](../ml/src/pac/engine.py)
+- [Spec](../docs/superpowers/specs/pac-backtester-2026-04-18.md)
+- [Search-space expansion spec](../docs/superpowers/specs/pac-search-space-expansion-2026-04-20.md)
