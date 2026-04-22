@@ -53,11 +53,11 @@ swingLen = input.int(5, "Swing Length (bars before/after)", minval=2, maxval=20,
 stopATRMult = input.float(2.25, "Stop × ATR(14)", step=0.25, group=grp_core)
 targetATRMult = input.float(2.0, "Target × ATR(14) (ATR_TARGET mode only)", step=0.25, group=grp_core)
 minZVWAP = input.float(1.0, "Min |z_close_vwap|", step=0.1, group=grp_core, tooltip="Long requires z > +1.0, short requires z < -1.0. Filters entries that aren't yet decisively on-side vs VWAP.")
+exitAfterNBos = input.int(2, "Exit after N same-direction BOS", minval=0, maxval=10, group=grp_core, tooltip="Config B uses 2 — exits when 2 same-direction BOS events print after entry (trend exhaustion). Set to 0 to disable.")
 
 grp_filter = "Filters"
 useRTHOnly = input.bool(true, "Entries only in RTH (08:30–15:00 CT)", group=grp_filter)
-skipEvents = input.bool(true, "Skip FOMC + OPEX days", group=grp_filter,
-                       tooltip="OPEX = 3rd Friday of each month. FOMC dates are 2024-2026 hardcoded.")
+skipEvents = input.bool(true, "Skip FOMC + OPEX days", group=grp_filter, tooltip="OPEX = 3rd Friday of each month. FOMC dates are 2024-2026 hardcoded.")
 
 grp_visual = "Visuals"
 showLines = input.bool(true, "Show stop + target lines", group=grp_visual)
@@ -65,12 +65,12 @@ showLabels = input.bool(true, "Show entry info labels", group=grp_visual)
 showADX = input.bool(true, "Show ADX(14) in info label", group=grp_visual)
 showSwings = input.bool(true, "Show swing high/low markers", group=grp_visual)
 showBOSLines = input.bool(true, "Show BOS break-level lines", group=grp_visual)
-showExits = input.bool(true, "Show exit markers (TARGET/STOP/OPP/EOD)", group=grp_visual)
+showExits = input.bool(true, "Show exit markers (CHOCH/TARGET/STOP/OPP/BOS2/EOD)", group=grp_visual)
+showIgnoredSignals = input.bool(false, "Show hollow arrows for ignored signals", group=grp_visual, tooltip="When a BOS entry signal fires but the strategy is already in a trade, show a faded triangle so you can see what was ignored. Off by default to keep the chart clean.")
 
 grp_alerts = "Alerts"
-useAlerts = input.bool(true, "Fire JSON webhook + sound alerts", group=grp_alerts,
-                      tooltip="Fires a single dynamic alert() per signal. Configure the delivery in the TradingView alert dialog: Webhook URL + Play sound.")
-alertStrategyId = input.string("pac_bos_config_a", "Strategy ID (in webhook JSON)", group=grp_alerts)
+useAlerts = input.bool(true, "Fire JSON webhook + sound alerts", group=grp_alerts, tooltip="Fires a single dynamic alert() per signal. Configure the delivery in the TradingView alert dialog: Webhook URL + Play sound.")
+alertStrategyId = input.string("pac_bos_config_b", "Strategy ID (in webhook JSON)", group=grp_alerts)
 
 // ============================ SESSION ============================
 // Chart timezone should be set to America/Chicago for this to match the
@@ -201,11 +201,13 @@ getShortStop() =>
         entryPrice + stopATRMult * atr14
 
 // ============================ STRUCTURE MARKERS ============================
-// Swing highs/lows: plot at the confirmed swing bar. pivothigh(5,5) reports
-// the value at the bar that is 5 bars AFTER the swing — so offset=-5 moves
-// the marker back to the actual swing bar.
-plotshape(showSwings and not na(pivH), title="Swing High", style=shape.circle, location=location.abovebar, color=color.new(color.red, 40), size=size.tiny, offset=-5)
-plotshape(showSwings and not na(pivL), title="Swing Low", style=shape.circle, location=location.belowbar, color=color.new(color.green, 40), size=size.tiny, offset=-5)
+// Swing highs/lows: plot at the confirmed swing bar. pivothigh(N, N) reports
+// the value at the bar that is N bars AFTER the swing — so offset=-swingLen
+// moves the marker back to the actual swing bar. Dynamic offset tracks the
+// swingLen input if the user changes it.
+swingOffset = -swingLen
+plotshape(showSwings and not na(pivH), title="Swing High", style=shape.circle, location=location.abovebar, color=color.new(color.red, 40), size=size.tiny, offset=swingOffset)
+plotshape(showSwings and not na(pivL), title="Swing Low", style=shape.circle, location=location.belowbar, color=color.new(color.green, 40), size=size.tiny, offset=swingOffset)
 
 // BOS break-level lines: when a BOS fires, draw the broken swing level as a
 // horizontal blue line from the swing bar to the BOS bar. This is the key
@@ -216,18 +218,36 @@ if showBOSLines and bosBear
     line.new(lastSwingLowBar, lastSwingLowLevel, bar_index, lastSwingLowLevel, color=color.new(color.blue, 30), width=2, style=line.style_solid)
 
 // ============================ VISUALIZATION ============================
-// Entry arrows
-plotshape(longEntry, title="Long BOS", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.small, text="L")
-plotshape(shortEntry, title="Short BOS", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small, text="S")
+// Split entry signals into "actual entries" (state machine will open a new
+// trade) vs "ignored signals" (strategy is already in a trade, so the
+// signal is recorded but not acted on). Solid triangles = taken trades.
+// Hollow triangles (optional) = signals the strategy chose to ignore.
+//
+// Reads openDir BEFORE the state machine block runs below, so it reflects
+// the previous bar's end-of-bar state. If we were flat → willOpen fires.
+// If we were already in a trade → signalIgnored fires instead.
 
-// Entry info labels
-if showLabels and (longEntry or shortEntry)
-    dirTxt = longEntry ? "LONG BOS" : "SHORT BOS"
+willOpenLong = longEntry and openDir == 0
+willOpenShort = shortEntry and openDir == 0
+signalIgnoredLong = longEntry and openDir != 0
+signalIgnoredShort = shortEntry and openDir != 0
+
+// Solid: actual entries the strategy takes
+plotshape(willOpenLong, title="Long Entry", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.small, text="L")
+plotshape(willOpenShort, title="Short Entry", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small, text="S")
+
+// Hollow: signals that fired but strategy was already in a trade
+plotshape(showIgnoredSignals and signalIgnoredLong, title="Long (ignored)", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 70), size=size.tiny)
+plotshape(showIgnoredSignals and signalIgnoredShort, title="Short (ignored)", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 70), size=size.tiny)
+
+// Entry info labels — only for ACTUAL entries (not ignored signals)
+if showLabels and (willOpenLong or willOpenShort)
+    dirTxt = willOpenLong ? "LONG BOS" : "SHORT BOS"
     adxPart = showADX ? "\nADX: " + str.tostring(adx14, "#.#") : ""
     lblTxt = dirTxt + "\nz_vwap: " + str.tostring(zClose, "#.##") + adxPart + "\nATR: " + str.tostring(atr14, "#.##")
-    lblY = longEntry ? low - atr14 * 0.3 : high + atr14 * 0.3
-    lblColor = color.new(longEntry ? color.green : color.red, 80)
-    lblStyle = longEntry ? label.style_label_up : label.style_label_down
+    lblY = willOpenLong ? low - atr14 * 0.3 : high + atr14 * 0.3
+    lblColor = color.new(willOpenLong ? color.green : color.red, 80)
+    lblStyle = willOpenLong ? label.style_label_up : label.style_label_down
     label.new(bar_index, lblY, lblTxt, color=lblColor, textcolor=color.white, style=lblStyle, size=size.small)
 
 // ============================ ACTIVE TRADE STATE MACHINE ============================
@@ -249,6 +269,7 @@ var float openTarget = na
 var int openEntryBar = na
 var line openStopLine = na
 var line openTargetLine = na
+var int bosCountSinceEntry = 0  // increments on same-dir BOS post-entry
 
 // Open a new long when longEntry fires and we're flat.
 // Target line is only drawn in ATR_TARGET mode — in OPPOSITE_CHOCH mode there
@@ -259,6 +280,7 @@ if showLines and longEntry and openDir == 0
     openStop := getLongStop()
     openTarget := close + targetATRMult * atr14
     openEntryBar := bar_index
+    bosCountSinceEntry := 0
     openStopLine := line.new(bar_index, openStop, bar_index + 1, openStop, color=color.new(color.red, 20), width=2, style=line.style_dashed)
     if exitMode == "ATR_TARGET"
         openTargetLine := line.new(bar_index, openTarget, bar_index + 1, openTarget, color=color.new(color.green, 20), width=2, style=line.style_dashed)
@@ -270,9 +292,19 @@ if showLines and shortEntry and openDir == 0
     openStop := getShortStop()
     openTarget := close - targetATRMult * atr14
     openEntryBar := bar_index
+    bosCountSinceEntry := 0
     openStopLine := line.new(bar_index, openStop, bar_index + 1, openStop, color=color.new(color.red, 20), width=2, style=line.style_dashed)
     if exitMode == "ATR_TARGET"
         openTargetLine := line.new(bar_index, openTarget, bar_index + 1, openTarget, color=color.new(color.green, 20), width=2, style=line.style_dashed)
+
+// Track same-direction BOS count post-entry (for exit_after_n_bos rule).
+// Matches the Python backtest's `bos_count_since_entry` tracker in loop.py.
+// `bar_index > openEntryBar` excludes the entry bar itself — the entry-bar
+// BOS is what OPENED the trade and shouldn't count against it.
+if openDir == 1 and bosBull and bar_index > openEntryBar
+    bosCountSinceEntry := bosCountSinceEntry + 1
+if openDir == -1 and bosBear and bar_index > openEntryBar
+    bosCountSinceEntry := bosCountSinceEntry + 1
 
 // Each bar while in a trade: extend stop line forward, and target line too
 // if it was drawn (ATR_TARGET mode).
@@ -292,31 +324,53 @@ if openDir != 0 and not na(openStopLine)
 
 useChochExit = exitMode == "OPPOSITE_CHOCH"
 
+// Stop + primary exit_trigger (CHoCH or ATR target)
 hitLongStop = openDir == 1 and low <= openStop
 hitShortStop = openDir == -1 and high >= openStop
 hitLongTarget = not useChochExit and openDir == 1 and high >= openTarget
 hitShortTarget = not useChochExit and openDir == -1 and low <= openTarget
 chochExitLong = useChochExit and openDir == 1 and chochBear
 chochExitShort = useChochExit and openDir == -1 and chochBull
+
+// BoS counter — exit when N same-direction BOS events have printed post-entry.
+// Matches Python backtest's `exit_after_n_bos` rule. Only checks if configured > 0.
+bosCountExit = exitAfterNBos > 0 and openDir != 0 and bosCountSinceEntry >= exitAfterNBos
+
+// Opposite-signal exit (EXIT_ONLY semantics). Uses RAW bosBear/bosBull rather
+// than the fully-filtered shortEntry/longEntry — matches Python's detect_entry()
+// which only checks the trigger, not session/z_vwap/event filters. This is the
+// same-bar structural reversal signal that fires 30% of Config B's exits.
+oppSignalLong = openDir == 1 and bosBear
+oppSignalShort = openDir == -1 and bosBull
+
+// Session-end forced flat
 sessionEnded = openDir != 0 and inRTH[1] and not inRTH
-oppSignalLong = openDir == 1 and shortEntry
-oppSignalShort = openDir == -1 and longEntry
+
+// Exit reason priority order matches Python loop.py:
+//   1. Intrabar stop (highest priority — stops are immediate)
+//   2. Primary exit_trigger (ATR_TARGET or OPPOSITE_CHOCH)
+//   3. BoS count exit (exit_after_n_bos rule)
+//   4. Opposite-signal exit (on_opposite_signal = EXIT_ONLY)
+//   5. Session end (lowest priority — only if nothing else exited)
 
 exitReason = ""
 exitPrice = 0.0
 if hitLongStop or hitShortStop
     exitReason := "STOP"
     exitPrice := openStop
-if hitLongTarget or hitShortTarget
+if exitReason == "" and (hitLongTarget or hitShortTarget)
     exitReason := "TARGET"
     exitPrice := openTarget
-if chochExitLong or chochExitShort
+if exitReason == "" and (chochExitLong or chochExitShort)
     exitReason := "CHOCH"
     exitPrice := close
-if oppSignalLong or oppSignalShort
+if exitReason == "" and bosCountExit
+    exitReason := "BOS" + str.tostring(exitAfterNBos)
+    exitPrice := close
+if exitReason == "" and (oppSignalLong or oppSignalShort)
     exitReason := "OPP"
     exitPrice := close
-if sessionEnded
+if exitReason == "" and sessionEnded
     exitReason := "EOD"
     exitPrice := close
 
@@ -334,6 +388,7 @@ if showExits and openDir != 0 and exitReason != ""
     openEntryBar := na
     openStopLine := na
     openTargetLine := na
+    bosCountSinceEntry := 0
 
 // ============================ ALERTS ============================
 // Two mechanisms, both fire when a LONG or SHORT BOS entry passes all filters:
@@ -361,15 +416,18 @@ makeWebhookJSON(action) =>
     p5 = ',"time":"{{time}}"}'
     p1 + p2 + p3 + p4 + p5
 
-if useAlerts and longEntry
+// Alerts fire only on ACTUAL entries (willOpenLong/willOpenShort), not on
+// every filtered signal. If a BOS fires during an active trade, no alert —
+// that's a signal the state machine would ignore anyway.
+if useAlerts and willOpenLong
     alert(makeWebhookJSON("long"), alert.freq_once_per_bar_close)
-if useAlerts and shortEntry
+if useAlerts and willOpenShort
     alert(makeWebhookJSON("short"), alert.freq_once_per_bar_close)
 
 // Static named templates — create these in the TV alert dialog by picking
-// "PAC BOS Config A" in the Condition dropdown, then the alert name below.
-alertcondition(longEntry, title="PAC BOS — LONG entry", message="PAC BOS LONG on {{ticker}} @ {{close}}")
-alertcondition(shortEntry, title="PAC BOS — SHORT entry", message="PAC BOS SHORT on {{ticker}} @ {{close}}")
+// "PAC BOS Config B" in the Condition dropdown, then the alert name below.
+alertcondition(willOpenLong, title="PAC BOS — LONG entry", message="PAC BOS LONG on {{ticker}} @ {{close}}")
+alertcondition(willOpenShort, title="PAC BOS — SHORT entry", message="PAC BOS SHORT on {{ticker}} @ {{close}}")
 
 // ============================ INFO TABLE ============================
 // Persistent top-right table showing current-bar filter state.
