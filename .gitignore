@@ -72,5 +72,12 @@ ml/src/pac/__pycache__
 ml/src/options_features/__pycache__
 ml/src/pac_backtest/__pycache__
 
+# PAC backtest sweep outputs — large JSON per run, commit only
+# summary.json manually when a run is worth preserving
+ml/experiments/sweeps/
+
+# TypeScript incremental build cache
+tsconfig.tsbuildinfo
+
 # Superpowers
 .superpowers/
