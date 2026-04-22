@@ -204,12 +204,20 @@ class TestTagChochPlusIntegration:
             )
 
     def test_choch_plus_only_fires_where_choch_fires(self, journal_day_enriched):
-        """CHoCH+ must be 0 on every bar where CHoCH is 0 or NaN."""
+        """CHoCH+ must be 0 or NaN on every bar where CHoCH is 0 or NaN.
+
+        Post 2026-04-21 causality fix: the engine shifts structure columns
+        forward by `swing_length` bars, so the first few rows carry NaN in
+        both CHOCH and CHOCHPlus. The invariant is still "CHoCH+ never
+        fires outside CHoCH" — just expressed tolerantly across NaN.
+        """
         enriched = journal_day_enriched
         no_choch = enriched[
             enriched["CHOCH"].isna() | (enriched["CHOCH"] == 0)
         ]
-        assert (no_choch["CHOCHPlus"] == 0).all(), (
+        # CHoCH+ on these rows must be 0 or NaN (never ±1)
+        cp = no_choch["CHOCHPlus"]
+        assert (cp.isna() | (cp == 0)).all(), (
             "CHoCH+ fired on a bar with no underlying CHoCH"
         )
 

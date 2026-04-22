@@ -160,9 +160,36 @@ class PACEngine:
         out["session_vwap"] = stats["session_vwap"].values
         out["session_std"] = stats["session_std"].values
 
+        # ── CAUSALITY FIX (2026-04-21) ──
+        # smc.swing_highs_lows uses `.shift(-swing_length)` internally to
+        # check if a bar is the extreme over its centered window, peeking
+        # `swing_length` bars INTO THE FUTURE. A swing at bar T is only
+        # confirmable at bar T + swing_length. bos_choch, ob, and our
+        # tag_choch_plus all consume this biased output. smc.fvg uses
+        # `.shift(-1)` so FVGs similarly need 1-bar confirmation.
+        #
+        # We shift every structure-detection column forward by the lookahead
+        # budget the upstream primitive required. Callers reading these
+        # columns at bar T now see only what was knowable at bar T — no
+        # future info leaks into backtest entry/exit decisions.
+        lag = self.params.swing_length
+        struct_cols = (
+            "HighLow", "Level_shl",
+            "BOS", "CHOCH", "Level_bc", "CHOCHPlus",
+            "OB", "OB_Top", "OB_Bottom", "OBVolume",
+            "OB_Percentage", "OB_MitigatedIndex",
+            "OB_mid", "OB_width",
+            "OB_z_top", "OB_z_bot", "OB_z_mid",
+        )
+        for col in struct_cols:
+            out[col] = out[col].shift(lag)
+        # FVG has a 1-bar lookahead, not swing_length.
+        for col in ("FVG", "FVG_Top", "FVG_Bottom", "FVG_MitigatedIndex"):
+            out[col] = out[col].shift(1)
+
         # E1.4d feature additions: session bucket, ATR/ADX, VWAP z, OB strength,
-        # event-day flags. Behavior of structure detection is unchanged — these
-        # only append columns the v4 sweep can filter on.
+        # event-day flags. These are computed from the shifted structure cols
+        # so derived features (ob_pct_atr, ob_volume_z_50) are also causal.
         out = add_all_features(out)
         return out
 
