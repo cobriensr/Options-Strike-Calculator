@@ -22,7 +22,10 @@
  */
 
 import { memo, useCallback, useId, useMemo } from 'react';
-import type { AlertConfig, UseAlertDispatcherReturn } from './useAlertDispatcher';
+import type {
+  AlertConfig,
+  UseAlertDispatcherReturn,
+} from './useAlertDispatcher';
 import type { AlertType } from './alerts';
 import { usePushSubscription } from '../../hooks/usePushSubscription';
 import type {
@@ -148,8 +151,14 @@ const PushSubscriptionSection = memo(function PushSubscriptionSection({
   push,
   showIosHint,
 }: PushSubscriptionSectionProps) {
-  const { permission, isSubscribed, isSubscribing, error, subscribe, unsubscribe } =
-    push;
+  const {
+    permission,
+    isSubscribed,
+    isSubscribing,
+    error,
+    subscribe,
+    unsubscribe,
+  } = push;
 
   const onSubscribe = useCallback(() => {
     void subscribe();
@@ -160,12 +169,15 @@ const PushSubscriptionSection = memo(function PushSubscriptionSection({
 
   const stateLabel = pushStateLabel(permission, isSubscribed);
   const showSubscribeButton =
-    !isSubscribed &&
-    (permission === 'default' || permission === 'granted');
+    !isSubscribed && (permission === 'default' || permission === 'granted');
   const showUnsubscribeButton = isSubscribed && permission !== 'unsupported';
 
   return (
-    <div className="border-edge mt-2 border-t pt-2" role="group" aria-label="Push notifications">
+    <div
+      className="border-edge mt-2 border-t pt-2"
+      role="group"
+      aria-label="Push notifications"
+    >
       <div
         className="mb-1 font-mono text-[9px] font-semibold tracking-wider uppercase"
         style={{ color: 'var(--color-tertiary)' }}
@@ -191,10 +203,7 @@ const PushSubscriptionSection = memo(function PushSubscriptionSection({
       ) : null}
 
       {error ? (
-        <p
-          role="alert"
-          className="text-danger mt-1 font-mono text-[10px]"
-        >
+        <p role="alert" className="text-danger mt-1 font-mono text-[10px]">
           {error}
         </p>
       ) : null}
@@ -264,7 +273,9 @@ export const AlertConfigPanel = memo(function AlertConfigPanel({
 
   const setTypeCooldown = useCallback(
     (type: AlertType, seconds: number) => {
-      const safe = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0;
+      const safe = Number.isFinite(seconds)
+        ? Math.max(0, Math.floor(seconds))
+        : 0;
       setConfig({
         ...config,
         cooldownSeconds: { ...config.cooldownSeconds, [type]: safe },
@@ -363,7 +374,7 @@ export const AlertConfigPanel = memo(function AlertConfigPanel({
             <button
               type="button"
               onClick={onRequestPermission}
-              className="border-edge text-primary hover:bg-white/5 mt-1 w-full rounded border px-2 py-1 font-mono text-[10px]"
+              className="border-edge text-primary mt-1 w-full rounded border px-2 py-1 font-mono text-[10px] hover:bg-white/5"
               aria-label="Request browser notification permission"
             >
               {permission === 'denied'

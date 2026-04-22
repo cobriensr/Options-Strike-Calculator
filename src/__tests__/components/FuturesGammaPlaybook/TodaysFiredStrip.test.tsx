@@ -52,15 +52,8 @@ describe('TodaysFiredStrip: empty state', () => {
       error: null,
       refresh: vi.fn(),
     });
-    render(
-      <TodaysFiredStrip
-        marketOpen={true}
-        selectedDate={SELECTED_DATE}
-      />,
-    );
-    expect(
-      screen.getByText(/no setups fired today yet/i),
-    ).toBeInTheDocument();
+    render(<TodaysFiredStrip marketOpen={true} selectedDate={SELECTED_DATE} />);
+    expect(screen.getByText(/no setups fired today yet/i)).toBeInTheDocument();
   });
 
   it('renders the empty message when only non-trigger events exist', () => {
@@ -89,17 +82,11 @@ describe('TodaysFiredStrip: empty state', () => {
       error: null,
       refresh: vi.fn(),
     });
-    render(
-      <TodaysFiredStrip
-        marketOpen={true}
-        selectedDate={SELECTED_DATE}
-      />,
-    );
+    render(<TodaysFiredStrip marketOpen={true} selectedDate={SELECTED_DATE} />);
+    expect(screen.getByText(/no setups fired today yet/i)).toBeInTheDocument();
     expect(
-      screen.getByText(/no setups fired today yet/i),
-    ).toBeInTheDocument();
-    expect(screen.queryByText('Regime flip: POSITIVE → NEGATIVE'))
-      .not.toBeInTheDocument();
+      screen.queryByText('Regime flip: POSITIVE → NEGATIVE'),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -118,15 +105,8 @@ describe('TodaysFiredStrip: date filtering', () => {
       error: null,
       refresh: vi.fn(),
     });
-    render(
-      <TodaysFiredStrip
-        marketOpen={true}
-        selectedDate={SELECTED_DATE}
-      />,
-    );
-    expect(
-      screen.getByText(/no setups fired today yet/i),
-    ).toBeInTheDocument();
+    render(<TodaysFiredStrip marketOpen={true} selectedDate={SELECTED_DATE} />);
+    expect(screen.getByText(/no setups fired today yet/i)).toBeInTheDocument();
     expect(screen.queryByText('Charm drift')).not.toBeInTheDocument();
   });
 });
@@ -160,12 +140,7 @@ describe('TodaysFiredStrip: chronological ordering', () => {
       error: null,
       refresh: vi.fn(),
     });
-    render(
-      <TodaysFiredStrip
-        marketOpen={true}
-        selectedDate={SELECTED_DATE}
-      />,
-    );
+    render(<TodaysFiredStrip marketOpen={true} selectedDate={SELECTED_DATE} />);
     const items = screen.getAllByRole('listitem');
     expect(items).toHaveLength(3);
     // Earliest row first (lift-put-wall at 11:00 CT).
@@ -203,12 +178,7 @@ describe('TodaysFiredStrip: scrub interaction', () => {
       error: null,
       refresh: vi.fn(),
     });
-    render(
-      <TodaysFiredStrip
-        marketOpen={true}
-        selectedDate={SELECTED_DATE}
-      />,
-    );
+    render(<TodaysFiredStrip marketOpen={true} selectedDate={SELECTED_DATE} />);
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 });
@@ -236,12 +206,7 @@ describe('TodaysFiredStrip: severity badges', () => {
       error: null,
       refresh: vi.fn(),
     });
-    render(
-      <TodaysFiredStrip
-        marketOpen={true}
-        selectedDate={SELECTED_DATE}
-      />,
-    );
+    render(<TodaysFiredStrip marketOpen={true} selectedDate={SELECTED_DATE} />);
     const urgentBadge = screen.getByLabelText('Severity urgent');
     const warnBadge = screen.getByLabelText('Severity warn');
     expect(urgentBadge.className).toContain('rose');

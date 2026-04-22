@@ -170,9 +170,7 @@ describe('usePushSubscription: subscribe()', () => {
     mockRequestPermission.mockResolvedValueOnce('granted');
 
     const { result } = renderHook(() => usePushSubscription());
-    await waitFor(() =>
-      expect(pushManager.getSubscription).toHaveBeenCalled(),
-    );
+    await waitFor(() => expect(pushManager.getSubscription).toHaveBeenCalled());
 
     await act(async () => {
       await result.current.subscribe();
@@ -228,9 +226,9 @@ describe('usePushSubscription: subscribe()', () => {
           ok: true,
           status: 200,
           json: async () => ({
-          publicKey:
-            'ZmFrZS12YXBpZC1wdWJsaWMta2V5LTY1LWJ5dGVzLWV4YWN0bHktbG9uZy0wMDAwMDAwMDAwMDAwMDAwMDAwMDAwMA',
-        }),
+            publicKey:
+              'ZmFrZS12YXBpZC1wdWJsaWMta2V5LTY1LWJ5dGVzLWV4YWN0bHktbG9uZy0wMDAwMDAwMDAwMDAwMDAwMDAwMDAwMA',
+          }),
         };
       }
       if (url === '/api/push/subscribe') {

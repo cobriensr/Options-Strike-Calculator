@@ -188,7 +188,8 @@ export function usePushSubscription(): UsePushSubscriptionReturn {
       //    matches the "must be user-initiated" constraint.
       let effectivePermission: PushPermission = nativePermission();
       if (effectivePermission === 'default') {
-        effectivePermission = (await Notification.requestPermission()) as PushPermission;
+        effectivePermission =
+          (await Notification.requestPermission()) as PushPermission;
         if (mountedRef.current) setPermission(effectivePermission);
       }
       if (effectivePermission !== 'granted') {
@@ -208,9 +209,7 @@ export function usePushSubscription(): UsePushSubscriptionReturn {
       });
       if (!keyRes.ok) {
         if (keyRes.status === 401) {
-          throw new Error(
-            'Log in first — push subscription is owner-only.',
-          );
+          throw new Error('Log in first — push subscription is owner-only.');
         }
         if (keyRes.status === 500) {
           throw new Error(
@@ -245,9 +244,7 @@ export function usePushSubscription(): UsePushSubscriptionReturn {
           // Best-effort cleanup — ignore.
         }
         if (subRes.status === 401) {
-          throw new Error(
-            'Log in first — push subscription is owner-only.',
-          );
+          throw new Error('Log in first — push subscription is owner-only.');
         }
         throw new Error(`Server refused subscription (${subRes.status})`);
       }

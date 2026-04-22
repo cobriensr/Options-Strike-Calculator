@@ -11,13 +11,13 @@ The v4 Optuna sweep selected `ATR_TARGET` with `target_atr_multiple=2.0` as the 
 
 Re-running 5 exit-trigger variants on the same fold 9 config with all post-fix plumbing:
 
-| Config | Exit rule | Trades | WR | Avg/trade | 3yr Total | Stop hits | Worst trade |
-|---|---|---|---|---|---|---|---|
-| A | ATR_TARGET 2.0 | 2,729 | 89.7% | $32.65 | $89,089 | 230 (8%) | −$306 |
-| **B** | **OPPOSITE_CHOCH** | 1,840 | 88.5% | **$59.45** | **$109,389** | **14 (0.8%)** | **−$87** |
-| C | OPPOSITE_BOS | 1,707 | 68.8% | $42.37 | $72,320 | 286 (17%) | −$285 |
-| D | ATR_TARGET 4.0 | 2,199 | 74.9% | $41.58 | $91,424 | 279 (13%) | −$237 |
-| E | SESSION_END only | 1,707 | 68.8% | $42.37 | $72,320 | 286 (17%) | −$285 |
+| Config | Exit rule          | Trades | WR    | Avg/trade  | 3yr Total    | Stop hits     | Worst trade |
+| ------ | ------------------ | ------ | ----- | ---------- | ------------ | ------------- | ----------- |
+| A      | ATR_TARGET 2.0     | 2,729  | 89.7% | $32.65     | $89,089      | 230 (8%)      | −$306       |
+| **B**  | **OPPOSITE_CHOCH** | 1,840  | 88.5% | **$59.45** | **$109,389** | **14 (0.8%)** | **−$87**    |
+| C      | OPPOSITE_BOS       | 1,707  | 68.8% | $42.37     | $72,320      | 286 (17%)     | −$285       |
+| D      | ATR_TARGET 4.0     | 2,199  | 74.9% | $41.58     | $91,424      | 279 (13%)     | −$237       |
+| E      | SESSION_END only   | 1,707  | 68.8% | $42.37     | $72,320      | 286 (17%)     | −$285       |
 
 **Config B wins by every metric except trade count.** +23% total P&L vs A, 93% fewer stop-outs, biggest avg trade, smallest worst trade, matching WR.
 

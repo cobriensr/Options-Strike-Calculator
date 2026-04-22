@@ -293,10 +293,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           ORDER BY timestamp ASC, strike ASC
         `;
         // Group by timestamp preserving chronological order.
-        const grouped = new Map<
-          string,
-          ReturnType<typeof mapRowToStrike>[]
-        >();
+        const grouped = new Map<string, ReturnType<typeof mapRowToStrike>[]>();
         for (const r of windowRows) {
           const tsIso = toIso(r.timestamp);
           if (tsIso === null) continue;

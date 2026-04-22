@@ -392,9 +392,7 @@ describe('GET /api/gex-per-strike', () => {
   describe('?window=<N>m window snapshots', () => {
     it('returns windowSnapshots when window=5m is passed', async () => {
       // Primary snapshot resolution
-      mockSql.mockResolvedValueOnce([
-        { latest_ts: '2026-04-02T15:00:00Z' },
-      ]);
+      mockSql.mockResolvedValueOnce([{ latest_ts: '2026-04-02T15:00:00Z' }]);
       // Timestamps list
       mockSql.mockResolvedValueOnce([
         { timestamp: '2026-04-02T14:58:00Z' },
@@ -425,7 +423,11 @@ describe('GET /api/gex-per-strike', () => {
       await handler(
         mockRequest({
           method: 'GET',
-          query: { date: '2026-04-02', ts: '2026-04-02T15:00:00Z', window: '5m' },
+          query: {
+            date: '2026-04-02',
+            ts: '2026-04-02T15:00:00Z',
+            window: '5m',
+          },
         }),
         res,
       );
@@ -446,12 +448,8 @@ describe('GET /api/gex-per-strike', () => {
     });
 
     it('returns empty windowSnapshots when no prior snapshots fall in the window', async () => {
-      mockSql.mockResolvedValueOnce([
-        { latest_ts: '2026-04-02T15:00:00Z' },
-      ]);
-      mockSql.mockResolvedValueOnce([
-        { timestamp: '2026-04-02T15:00:00Z' },
-      ]);
+      mockSql.mockResolvedValueOnce([{ latest_ts: '2026-04-02T15:00:00Z' }]);
+      mockSql.mockResolvedValueOnce([{ timestamp: '2026-04-02T15:00:00Z' }]);
       mockSql.mockResolvedValueOnce([
         makeDbRow({ timestamp: '2026-04-02T15:00:00Z' }),
       ]);
@@ -462,7 +460,11 @@ describe('GET /api/gex-per-strike', () => {
       await handler(
         mockRequest({
           method: 'GET',
-          query: { date: '2026-04-02', ts: '2026-04-02T15:00:00Z', window: '5m' },
+          query: {
+            date: '2026-04-02',
+            ts: '2026-04-02T15:00:00Z',
+            window: '5m',
+          },
         }),
         res,
       );
@@ -475,12 +477,8 @@ describe('GET /api/gex-per-strike', () => {
     });
 
     it('does NOT fetch windowSnapshots when window param is absent', async () => {
-      mockSql.mockResolvedValueOnce([
-        { latest_ts: '2026-04-02T15:00:00Z' },
-      ]);
-      mockSql.mockResolvedValueOnce([
-        { timestamp: '2026-04-02T15:00:00Z' },
-      ]);
+      mockSql.mockResolvedValueOnce([{ latest_ts: '2026-04-02T15:00:00Z' }]);
+      mockSql.mockResolvedValueOnce([{ timestamp: '2026-04-02T15:00:00Z' }]);
       mockSql.mockResolvedValueOnce([
         makeDbRow({ timestamp: '2026-04-02T15:00:00Z' }),
       ]);
@@ -504,12 +502,8 @@ describe('GET /api/gex-per-strike', () => {
     });
 
     it('rejects malformed window values silently (returns empty)', async () => {
-      mockSql.mockResolvedValueOnce([
-        { latest_ts: '2026-04-02T15:00:00Z' },
-      ]);
-      mockSql.mockResolvedValueOnce([
-        { timestamp: '2026-04-02T15:00:00Z' },
-      ]);
+      mockSql.mockResolvedValueOnce([{ latest_ts: '2026-04-02T15:00:00Z' }]);
+      mockSql.mockResolvedValueOnce([{ timestamp: '2026-04-02T15:00:00Z' }]);
       mockSql.mockResolvedValueOnce([
         makeDbRow({ timestamp: '2026-04-02T15:00:00Z' }),
       ]);
@@ -537,12 +531,8 @@ describe('GET /api/gex-per-strike', () => {
     });
 
     it('clamps very large window values to the max bound (15m)', async () => {
-      mockSql.mockResolvedValueOnce([
-        { latest_ts: '2026-04-02T15:00:00Z' },
-      ]);
-      mockSql.mockResolvedValueOnce([
-        { timestamp: '2026-04-02T15:00:00Z' },
-      ]);
+      mockSql.mockResolvedValueOnce([{ latest_ts: '2026-04-02T15:00:00Z' }]);
+      mockSql.mockResolvedValueOnce([{ timestamp: '2026-04-02T15:00:00Z' }]);
       mockSql.mockResolvedValueOnce([
         makeDbRow({ timestamp: '2026-04-02T15:00:00Z' }),
       ]);
@@ -567,4 +557,3 @@ describe('GET /api/gex-per-strike', () => {
     });
   });
 });
-

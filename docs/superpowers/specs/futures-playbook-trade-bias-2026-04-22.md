@@ -14,14 +14,14 @@ in one glance instead of synthesizing six panels.
 
 ## Why
 
-Current panels give the trader *all* the signals but make them do the
+Current panels give the trader _all_ the signals but make them do the
 synthesis. In conflicting-signal scenarios (e.g. POSITIVE regime with a
 drift-down and a low-conviction fade rule) the correct read requires
 scanning conviction badges, drift banner, wall-flow strip, and level
 status simultaneously. At 2:50 PM live, that's cognitive load at
-exactly the wrong moment. The user's own words: *"I just need a go
+exactly the wrong moment. The user's own words: _"I just need a go
 long or go short — it's a lot of information that doesn't give a
-decisive direction."*
+decisive direction."_
 
 ## Behavior spec
 
@@ -39,6 +39,7 @@ Plus an optional conviction label: `STRONG` (green/red badge), `MILD`
 **TRANSITIONING regime** → `NEUTRAL · regime ambiguous`.
 
 **POSITIVE regime (mean-revert template):**
+
 - Enumerate ACTIVE fade/lift rules (post drift-override).
 - If exactly one ACTIVE: direction is that rule's direction. Conviction
   defaults to MILD; upgrade to STRONG if rule conviction is `high` AND
@@ -51,6 +52,7 @@ Plus an optional conviction label: `STRONG` (green/red badge), `MILD`
 - If all DISTANT: NEUTRAL.
 
 **NEGATIVE regime (trend-follow template):**
+
 - If ACTIVE break-call-wall AND CALL_WALL status ≠ BROKEN → LONG
   (strong if wall-flow aligned: ceiling eroding + floor strengthening).
 - If ACTIVE break-put-wall AND PUT_WALL status ≠ BROKEN → SHORT (strong
@@ -71,6 +73,7 @@ remaining lift-put-wall benefits from the trend).
 ### Reason strings (≤ 50 chars)
 
 Examples (kept short enough to fit on a narrow screen):
+
 - `fade-call @ sticky-pin · wall strengthening`
 - `break-call continuation · trend intact`
 - `break fired early · wait pullback`
@@ -121,7 +124,7 @@ Examples (kept short enough to fit on a narrow screen):
   grey. Matches existing `DIRECTION_META` in PlaybookPanel.
 - **What about charm-drift rule (EITHER direction)?** When it's the
   only ACTIVE rule, the bias is NEUTRAL with reason `charm drift —
-  direction-agnostic`. The trader manually picks side based on price
+direction-agnostic`. The trader manually picks side based on price
   context. Don't force a direction that the rule itself doesn't pick.
 
 ## Non-goals
@@ -141,7 +144,7 @@ Examples (kept short enough to fit on a narrow screen):
 - [ ] All decision branches have unit test coverage in
       `tradeBias.test.ts`.
 - [ ] On yesterday's 10:24 AM scrub: bias reads `NEUTRAL · weakening
-      pin, drift down`.
+pin, drift down`.
 - [ ] On yesterday's 2:50 PM scrub: bias reads `LONG · break fired
-      early, wait pullback to 7077.75` (since call wall is BROKEN).
+early, wait pullback to 7077.75` (since call wall is BROKEN).
 - [ ] `npm run review` green.

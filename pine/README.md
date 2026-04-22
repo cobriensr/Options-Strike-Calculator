@@ -4,10 +4,10 @@
 
 Two Pine v6 scripts that port the validated PAC strategy to TradingView:
 
-| File | Type | What it's for |
-|---|---|---|
-| [`pac-bos.pine`](pac-bos.pine) | `indicator()` | **Live eyeball validation** — plots signals on your chart with alerts (webhook + sound). Use this to watch the strategy fire in real time. |
-| [`pac-bos-strategy.pine`](pac-bos-strategy.pine) | `strategy()` | **Historical backtesting in TradingView** — runs the Strategy Tester panel showing net profit, drawdown, profit factor, Sharpe, trade list, equity curve. Use this to verify numbers on your own data. |
+| File                                             | Type          | What it's for                                                                                                                                                                                          |
+| ------------------------------------------------ | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`pac-bos.pine`](pac-bos.pine)                   | `indicator()` | **Live eyeball validation** — plots signals on your chart with alerts (webhook + sound). Use this to watch the strategy fire in real time.                                                             |
+| [`pac-bos-strategy.pine`](pac-bos-strategy.pine) | `strategy()`  | **Historical backtesting in TradingView** — runs the Strategy Tester panel showing net profit, drawdown, profit factor, Sharpe, trade list, equity curve. Use this to verify numbers on your own data. |
 
 Both files use identical strategy logic (Config B defaults). The indicator is for live watch; the strategy is for TV's Strategy Tester numeric validation.
 
@@ -17,10 +17,10 @@ Both files use identical strategy logic (Config B defaults). The indicator is fo
 
 The `Exit Mode` dropdown in the indicator settings toggles between two exit rules, both backtested over 2022–2024 NQ with post-causality-fix + stressed cost model:
 
-| Config | Exit rule | Trades | WR | Avg | 3yr P&L | Stop hits |
-|---|---|---|---|---|---|---|
-| **B (default)** | `OPPOSITE_CHOCH` — structural reversal | 1,840 | 88.5% | **$59.45** | **$109,389** | **14** |
-| A (legacy) | `ATR_TARGET` — hard TP at 2.0 × ATR | 2,729 | 89.7% | $32.65 | $89,089 | 230 |
+| Config          | Exit rule                              | Trades | WR    | Avg        | 3yr P&L      | Stop hits |
+| --------------- | -------------------------------------- | ------ | ----- | ---------- | ------------ | --------- |
+| **B (default)** | `OPPOSITE_CHOCH` — structural reversal | 1,840  | 88.5% | **$59.45** | **$109,389** | **14**    |
+| A (legacy)      | `ATR_TARGET` — hard TP at 2.0 × ATR    | 2,729  | 89.7% | $32.65     | $89,089      | 230       |
 
 Config B wins +23% on total P&L with 93% fewer stop-outs by letting winners run until a structural reversal (new lower-low for longs / new higher-high for shorts) instead of cutting at a fixed 2 ATR target. See [exit-trigger finding spec](../docs/superpowers/specs/pac-exit-trigger-finding-2026-04-22.md) for the 5-variant sweep that established this.
 
@@ -43,13 +43,13 @@ Config B wins +23% on total P&L with 93% fewer stop-outs by letting winners run 
 
 When the active trade closes, a labeled marker prints at the exit bar showing **reason + dollar P&L per 1 contract**. Green text = win, red = loss. Reasons:
 
-| Label | Meaning |
-|---|---|
-| `CHOCH` | (Config B only) A structural reversal fired — new lower-low for longs, new higher-high for shorts |
-| `TARGET` | (Config A only) Intrabar high/low crossed the 2.0× ATR target |
-| `STOP` | Intrabar high/low crossed the swing-extreme (or ATR-fallback) stop |
-| `OPP` | An opposite-direction BOS signal fired while in trade (EXIT_ONLY semantics) |
-| `EOD` | RTH session ended while in trade (force-flat at session close) |
+| Label    | Meaning                                                                                           |
+| -------- | ------------------------------------------------------------------------------------------------- |
+| `CHOCH`  | (Config B only) A structural reversal fired — new lower-low for longs, new higher-high for shorts |
+| `TARGET` | (Config A only) Intrabar high/low crossed the 2.0× ATR target                                     |
+| `STOP`   | Intrabar high/low crossed the swing-extreme (or ATR-fallback) stop                                |
+| `OPP`    | An opposite-direction BOS signal fired while in trade (EXIT_ONLY semantics)                       |
+| `EOD`    | RTH session ended while in trade (force-flat at session close)                                    |
 
 The stop line stops extending once the exit marker prints. A new trade can open on the next qualifying entry.
 
@@ -94,12 +94,12 @@ When a signal fires, TradingView will:
   "strategy": "pac_bos_config_a",
   "symbol": "NQ1!",
   "action": "long",
-  "price": 21425.2500,
-  "stop": 21398.5000,
-  "target": 21445.7500,
+  "price": 21425.25,
+  "stop": 21398.5,
+  "target": 21445.75,
   "z_vwap": 1.42,
   "adx": 28.31,
-  "atr": 10.2500,
+  "atr": 10.25,
   "time": "2026-04-21T14:33:00Z"
 }
 ```
@@ -136,16 +136,16 @@ Goal: see if signals fire with the frequency and quality the backtest predicts, 
 
 For each trading day, record:
 
-| Field | What to note |
-|---|---|
-| Date | |
-| # LONG signals fired | Backtest avg: ~4/day |
-| # SHORT signals fired | Backtest avg: ~3/day |
-| Event day? | Y/N (tint visible) |
+| Field                      | What to note                                                                |
+| -------------------------- | --------------------------------------------------------------------------- |
+| Date                       |                                                                             |
+| # LONG signals fired       | Backtest avg: ~4/day                                                        |
+| # SHORT signals fired      | Backtest avg: ~3/day                                                        |
+| Event day?                 | Y/N (tint visible)                                                          |
 | Any obviously bad signals? | e.g., signal fires during a news spike, at the bottom of a doji range, etc. |
-| ADX at each entry | Top-tercile (31+) entries should feel like "clean trend" bars |
-| Entry structure | Did the bar actually look like a BOS breakout? |
-| Would-be outcome | Did price reach target, stop, or neither by session close? |
+| ADX at each entry          | Top-tercile (31+) entries should feel like "clean trend" bars               |
+| Entry structure            | Did the bar actually look like a BOS breakout?                              |
+| Would-be outcome           | Did price reach target, stop, or neither by session close?                  |
 
 After 2 weeks of logging (~10 trading days, ~60–80 signals):
 
@@ -164,14 +164,14 @@ After 2 weeks of logging (~10 trading days, ~60–80 signals):
 
 ## Parameters you can tune in the indicator settings
 
-| Input | Default | Tune when |
-|---|---|---|
-| Swing Length | 5 | Raise to 8 or 10 if too many micro-swings on your chart |
-| Stop × ATR | 2.25 | Lower if you want tighter risk per trade |
-| Target × ATR | 2.0 | Raise if you want to let winners run further |
-| Min z_close_vwap | 1.0 | Raise to 1.5 for fewer, stronger setups |
-| RTH-only | on | Off = overnight trading too (backtest didn't test this) |
-| Skip events | on | Off = show what would have fired on FOMC/OPEX days |
+| Input            | Default | Tune when                                               |
+| ---------------- | ------- | ------------------------------------------------------- |
+| Swing Length     | 5       | Raise to 8 or 10 if too many micro-swings on your chart |
+| Stop × ATR       | 2.25    | Lower if you want tighter risk per trade                |
+| Target × ATR     | 2.0     | Raise if you want to let winners run further            |
+| Min z_close_vwap | 1.0     | Raise to 1.5 for fewer, stronger setups                 |
+| RTH-only         | on      | Off = overnight trading too (backtest didn't test this) |
+| Skip events      | on      | Off = show what would have fired on FOMC/OPEX days      |
 
 ## Known simplifications vs. the Python backtest
 

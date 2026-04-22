@@ -458,7 +458,8 @@ export function rulesForRegime(
             entryEs: levels.esCallWall,
             targetEs: null,
             stopEs: stop,
-            sizingNote: 'Wider stops — negative gamma amplifies both directions.',
+            sizingNote:
+              'Wider stops — negative gamma amplifies both directions.',
           },
           esPrice,
           'breakout',
@@ -476,7 +477,8 @@ export function rulesForRegime(
             entryEs: levels.esPutWall,
             targetEs: null,
             stopEs: stop,
-            sizingNote: 'Wider stops — negative gamma amplifies both directions.',
+            sizingNote:
+              'Wider stops — negative gamma amplifies both directions.',
           },
           esPrice,
           'breakout',

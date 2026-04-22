@@ -112,9 +112,7 @@ export const Tooltip = memo(function Tooltip({
 
   const sideClass = SIDE_CLASS[side];
 
-  const classes = ['relative inline-flex', className]
-    .filter(Boolean)
-    .join(' ');
+  const classes = ['relative inline-flex', className].filter(Boolean).join(' ');
 
   return (
     <span

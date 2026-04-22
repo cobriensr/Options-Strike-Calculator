@@ -11,10 +11,17 @@ const NOW_MS = new Date('2026-04-21T19:30:00Z').getTime();
 const MIN = 60 * 1000;
 
 /** Build a series spanning the last `n` minutes with a linear slope. */
-function linearSeries(startPrice: number, slopePerMin: number, n: number): PricePoint[] {
+function linearSeries(
+  startPrice: number,
+  slopePerMin: number,
+  n: number,
+): PricePoint[] {
   const out: PricePoint[] = [];
   for (let i = n; i > 0; i--) {
-    out.push({ price: startPrice + slopePerMin * (n - i), ts: NOW_MS - i * MIN });
+    out.push({
+      price: startPrice + slopePerMin * (n - i),
+      ts: NOW_MS - i * MIN,
+    });
   }
   return out;
 }
@@ -28,7 +35,12 @@ describe('computePriceTrend', () => {
       ],
       NOW_MS,
     );
-    expect(result).toEqual({ direction: 'flat', changePct: 0, changePts: 0, consistency: 0 });
+    expect(result).toEqual({
+      direction: 'flat',
+      changePct: 0,
+      changePts: 0,
+      consistency: 0,
+    });
   });
 
   it('classifies an up-drift with strong consistency and sufficient magnitude', () => {
@@ -93,7 +105,13 @@ describe('computePriceTrend', () => {
 
   it('handles an unsorted input (sorts by ts internally)', () => {
     const sorted = linearSeries(5800, 1, 5);
-    const shuffled = [sorted[2]!, sorted[0]!, sorted[4]!, sorted[1]!, sorted[3]!];
+    const shuffled = [
+      sorted[2]!,
+      sorted[0]!,
+      sorted[4]!,
+      sorted[1]!,
+      sorted[3]!,
+    ];
     const result = computePriceTrend(shuffled, NOW_MS);
     expect(result.direction).toBe('up');
     expect(result.changePts).toBe(4);
@@ -114,7 +132,11 @@ describe('computePriceTrend', () => {
 
   it('respects a custom windowMs', () => {
     // +1/min for 10 minutes, but we pass windowMs = 2min.
-    const result = computePriceTrend(linearSeries(5800, 1, 10), NOW_MS, 2 * MIN);
+    const result = computePriceTrend(
+      linearSeries(5800, 1, 10),
+      NOW_MS,
+      2 * MIN,
+    );
     // Only the last ~2 minutes of points are in-window → likely still
     // below MIN_SNAPSHOTS of 3 → flat.
     expect(result.direction).toBe('flat');

@@ -744,7 +744,13 @@ export function useFuturesGammaPlaybook(
     snapshotBufferRef.current = buf;
 
     const spot = gex.strikes[0]?.price ?? 0;
-    setPriceTrend(computePriceTrend(spot, [...history, { strikes: gex.strikes, ts: now }], now));
+    setPriceTrend(
+      computePriceTrend(
+        spot,
+        [...history, { strikes: gex.strikes, ts: now }],
+        now,
+      ),
+    );
   }, [gex.strikes, gex.timestamp, gex.windowSnapshots]);
 
   // 5m wall-flow aggregates — avg Δ% across strikes above / below spot.
@@ -777,16 +783,10 @@ export function useFuturesGammaPlaybook(
   const flowSignals: PlaybookFlowSignals = useMemo(
     () => ({
       upsideTargetCls: spx.topUpsideRow
-        ? classifyGex(
-            spx.topUpsideRow.netGamma,
-            spx.topUpsideRow.netCharm,
-          )
+        ? classifyGex(spx.topUpsideRow.netGamma, spx.topUpsideRow.netCharm)
         : null,
       downsideTargetCls: spx.topDownsideRow
-        ? classifyGex(
-            spx.topDownsideRow.netGamma,
-            spx.topDownsideRow.netCharm,
-          )
+        ? classifyGex(spx.topDownsideRow.netGamma, spx.topDownsideRow.netCharm)
         : null,
       ceilingTrend5m,
       floorTrend5m,

@@ -53,19 +53,21 @@ Place the mount immediately after the existing `<GexLandscape>` block
 only appears for the owner with loaded data:
 
 ```tsx
-{isOwner && (market.hasData || !!historySnapshot) && (
-  <>
-    <span id="sec-futures-gamma-playbook" className="block scroll-mt-28" />
-    <ErrorBoundary label="Futures Gamma Playbook">
-      <Suspense fallback={<SkeletonSection lines={6} tall />}>
-        <FuturesGammaPlaybook
-          marketOpen={market.marketOpen}
-          onBiasChange={setPlaybookBiasContext}
-        />
-      </Suspense>
-    </ErrorBoundary>
-  </>
-)}
+{
+  isOwner && (market.hasData || !!historySnapshot) && (
+    <>
+      <span id="sec-futures-gamma-playbook" className="block scroll-mt-28" />
+      <ErrorBoundary label="Futures Gamma Playbook">
+        <Suspense fallback={<SkeletonSection lines={6} tall />}>
+          <FuturesGammaPlaybook
+            marketOpen={market.marketOpen}
+            onBiasChange={setPlaybookBiasContext}
+          />
+        </Suspense>
+      </ErrorBoundary>
+    </>
+  );
+}
 ```
 
 Note the widget sources its own data — no props for `strikes`, `timestamp`,

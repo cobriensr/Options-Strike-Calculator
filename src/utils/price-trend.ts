@@ -93,10 +93,7 @@ export function computePriceTrend(
 ): PriceTrend {
   const minTs = nowTs - windowMs;
   const recent = prices
-    .filter(
-      (p) =>
-        p.ts >= minTs && p.ts <= nowTs && Number.isFinite(p.price),
-    )
+    .filter((p) => p.ts >= minTs && p.ts <= nowTs && Number.isFinite(p.price))
     .sort((a, b) => a.ts - b.ts);
 
   if (recent.length < MIN_SNAPSHOTS) return flatResult();

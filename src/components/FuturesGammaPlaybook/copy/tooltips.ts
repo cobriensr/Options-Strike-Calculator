@@ -30,10 +30,8 @@ export const TOOLTIP = {
       'Spot sits inside the ±0.5% band around zero-gamma, or zero-gamma is unknown. Dealer positioning is ambiguous — sit out.',
   },
   sessionPhase: {
-    PRE_OPEN:
-      'Before 8:30 CT — futures trading, no SPX option hedging flow.',
-    OPEN:
-      '8:30–9:00 CT — first 30 minutes of regular trading. Highest dealer rebalancing activity.',
+    PRE_OPEN: 'Before 8:30 CT — futures trading, no SPX option hedging flow.',
+    OPEN: '8:30–9:00 CT — first 30 minutes of regular trading. Highest dealer rebalancing activity.',
     MORNING:
       '9:00–11:30 CT — morning session. Dealer hedging concentrated around the prior close.',
     LUNCH: '11:30 AM–1:00 PM CT — midday lull, thin volume.',
@@ -61,8 +59,7 @@ export const TOOLTIP = {
       'ES price is within 5 points of this level. Heightened alertness — fade or break is imminent.',
     REJECTED:
       'Price approached this level recently then moved away. Dealer defense held.',
-    BROKEN:
-      'Price has crossed this level. Regime dynamics may have shifted.',
+    BROKEN: 'Price has crossed this level. Regime dynamics may have shifted.',
     IDLE: 'Price is too far from this level for it to matter intraday.',
   },
   trigger: {
@@ -99,20 +96,17 @@ export const TOOLTIP = {
       'ES price where the setup becomes actionable — limit or market as conditions allow.',
     target:
       'Primary profit objective in ES points. Typically VWAP, the opposite wall, or zero-gamma.',
-    stop:
-      'Invalidation price. Beyond this the structural thesis has failed and the trade should be closed.',
+    stop: 'Invalidation price. Beyond this the structural thesis has failed and the trade should be closed.',
     sizing:
       'Position-sizing note — governs how much risk to take relative to the setup quality.',
-    condition:
-      'What needs to be true in the market for this rule to be live.',
+    condition: 'What needs to be true in the market for this rule to be live.',
   },
   numeric: {
     zeroGammaDistance:
       'Signed ES-points distance from the current price to the zero-gamma level. Positive = zero-gamma is above price (room to run up). Negative = price sits above zero-gamma.',
     basis:
       'ES futures price minus SPX cash index. Positive basis = futures premium (normal). Negative basis = futures discount (risk-off).',
-    esPrice:
-      'Current ES futures price (continuous front-month contract).',
+    esPrice: 'Current ES futures price (continuous front-month contract).',
     distance:
       'Signed ES distance + ticks from the current price to this level. Positive means the level is above the current price.',
   },

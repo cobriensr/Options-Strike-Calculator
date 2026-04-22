@@ -314,10 +314,7 @@ describe('ActionDirective', () => {
     );
     const status = screen.getByRole('status');
     expect(status).toHaveAttribute('aria-live', 'off');
-    expect(status).toHaveAttribute(
-      'aria-label',
-      'Action directive (backtest)',
-    );
+    expect(status).toHaveAttribute('aria-label', 'Action directive (backtest)');
     expect(screen.getByText('Backtest')).toBeInTheDocument();
   });
 

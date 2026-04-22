@@ -87,7 +87,7 @@ thresholds:
 # the effective count by clustering parameter-space points at the
 # correlation threshold below.
 effective_trial_estimation:
-  method: "param_cluster"
+  method: 'param_cluster'
   correlation_threshold: 0.7
   # Note: with the v5 broadened entry-trigger scope (CHoCH + BOS + 8
   # variants) and v1 options filters, naive trial count grows ~5x vs
@@ -113,7 +113,7 @@ sweep:
   # CPCV (Combinatorially Purged Cross-Validation) params — Lopez de
   # Prado, Advances in Financial Machine Learning (2018), Ch. 7.
   cpcv_n_groups: 6
-  cpcv_k_test_groups: 2  # 6 choose 2 = 15 OOS paths
+  cpcv_k_test_groups: 2 # 6 choose 2 = 15 OOS paths
 
   # Embargo: bars discarded on each side of a test window. Rule of thumb
   # is 2-3x max trade duration. At 1m bars with trades up to 60 min, 180
@@ -129,19 +129,19 @@ sweep:
   # study on the full history then walk-forward-testing the winner
   # is what causes the cluster overfit.
   optuna_trials_per_fold: 150
-  optuna_sampler: "TPE"
-  optuna_pruner: "MedianPruner"
+  optuna_sampler: 'TPE'
+  optuna_pruner: 'MedianPruner'
 
   # joblib parallelism. Each backtest run is embarrassingly parallel;
   # one CPU core per config. Numba is not used on Python 3.14 (it
   # crashes). Pure-Python loop + 10-way joblib = ~250 configs/min.
-  joblib_n_jobs: -1  # -1 = all CPU cores
+  joblib_n_jobs: -1 # -1 = all CPU cores
 
 # --- Bootstrap method for confidence intervals ---
 bootstrap:
   # Stationary bootstrap (Politis & Romano 1994). Block length is chosen
   # as geometric mean of trade durations in bars. Reuses the bar returns
   # series rather than the trade-level P&L (higher-resolution CI).
-  method: "stationary"
-  block_length_source: "auto"  # auto = geometric mean of trade durations
+  method: 'stationary'
+  block_length_source: 'auto' # auto = geometric mean of trade durations
   n_resamples: 1000

@@ -119,7 +119,11 @@ describe('monitor-regime-events handler', () => {
     mockSql
       .mockResolvedValueOnce([]) // loadPrevState
       .mockResolvedValueOnce([
-        { timestamp: '2026-04-21T19:25:00Z', price: '5800.50', gamma_oi: '50000000000' },
+        {
+          timestamp: '2026-04-21T19:25:00Z',
+          price: '5800.50',
+          gamma_oi: '50000000000',
+        },
       ]) // loadSpotExposure
       .mockResolvedValueOnce([]) // loadGexStrikes
       .mockResolvedValueOnce([]) // loadMaxPain
@@ -172,7 +176,11 @@ describe('monitor-regime-events handler', () => {
     mockSql
       .mockResolvedValueOnce([{ prev_state: prevState }]) // loadPrevState
       .mockResolvedValueOnce([
-        { timestamp: '2026-04-21T19:25:00Z', price: '5700.00', gamma_oi: '-50000000000' },
+        {
+          timestamp: '2026-04-21T19:25:00Z',
+          price: '5700.00',
+          gamma_oi: '-50000000000',
+        },
       ]) // loadSpotExposure
       .mockResolvedValueOnce([
         { strike: '5790', call_gamma_oi: '-1000000', put_gamma_oi: '0' },
@@ -228,7 +236,11 @@ describe('monitor-regime-events handler', () => {
     mockSql
       .mockResolvedValueOnce([{ prev_state: prevState }]) // loadPrevState
       .mockResolvedValueOnce([
-        { timestamp: '2026-04-21T19:25:00Z', price: '5800.50', gamma_oi: '-50000000000' },
+        {
+          timestamp: '2026-04-21T19:25:00Z',
+          price: '5800.50',
+          gamma_oi: '-50000000000',
+        },
       ]) // loadSpotExposure
       .mockResolvedValueOnce([
         { strike: '5790', call_gamma_oi: '-1000000', put_gamma_oi: '0' },
@@ -375,8 +387,7 @@ describe('monitor-regime-events handler', () => {
       // TRIGGER_FIRE events encode the trigger id in the `id` field as
       // `TRIGGER_FIRE:<triggerId>:<iso>` (see alerts.ts buildTriggerFireEvent).
       return (
-        event.type === 'TRIGGER_FIRE' &&
-        event.id.includes(':fade-call-wall:')
+        event.type === 'TRIGGER_FIRE' && event.id.includes(':fade-call-wall:')
       );
     });
     expect(fadeCallFires.length).toBe(0);
@@ -443,8 +454,7 @@ describe('monitor-regime-events handler', () => {
       // TRIGGER_FIRE events encode the trigger id in the `id` field as
       // `TRIGGER_FIRE:<triggerId>:<iso>` (see alerts.ts buildTriggerFireEvent).
       return (
-        event.type === 'TRIGGER_FIRE' &&
-        event.id.includes(':fade-call-wall:')
+        event.type === 'TRIGGER_FIRE' && event.id.includes(':fade-call-wall:')
       );
     });
     expect(fadeCallFires.length).toBe(1);

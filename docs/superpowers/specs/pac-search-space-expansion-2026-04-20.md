@@ -31,8 +31,8 @@ The output is a sweep result that says, for every CHoCH+/CHoCH/BOS event in 16 y
 
 ## Repos Touched
 
-| Repo | Role |
-| --- | --- |
+| Repo                | Role                                                   |
+| ------------------- | ------------------------------------------------------ |
 | `strike-calculator` | All work — pac engine + sweep + acceptance + new tests |
 
 ---
@@ -43,35 +43,35 @@ The output is a sweep result that says, for every CHoCH+/CHoCH/BOS event in 16 y
 
 Each filter has an explicit "off" option so Optuna can decide it doesn't matter. Defaults reflect "no filter applied" so existing baselines remain reproducible.
 
-| # | Param name | Type / values | Live-journal column it mirrors |
-| - | --- | --- | --- |
-| 1 | `session_bucket` | `pre_market` / `ny_open` / `am` / `lunch` / `pm` / `close` / `any` | `Session` |
-| 2 | `min_ob_volume_z` | None / 0.5 / 1.0 / 1.5 / 2.0 | `Z OB Volume` (derived from `OB Volume`) |
-| 3 | `min_ob_pct_atr` | None / 30 / 50 / 75 | `OB % ATR` |
-| 4 | `entry_vs_ob` | `any` / `above_ob_mid` / `inside_ob` / `below_ob_mid` | `Entry vs OB` |
-| 5 | `stop_placement` (extended) | adds `OB_BOUNDARY` to existing `N_ATR` / `SWING_EXTREME` | implicit in his stops sitting at OB top/bottom |
-| 6 | `min_z_entry_vwap` | None / 0.5 / 1.0 / 1.5 (signed by direction) | `Z Entry`, `VWAP ±1SD` |
-| 7 | `min_adx_14` | None / 15 / 20 / 25 / 30 | `ADX 14` |
-| 8 | `vix_term_filter` | None / `vix1d_under_vix` / `vix9d_under_vix` (continuous as a binary structural flag) | `VIX 1D / VIX`, `VIX 9D / VIX` |
+| #   | Param name                  | Type / values                                                                         | Live-journal column it mirrors                 |
+| --- | --------------------------- | ------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| 1   | `session_bucket`            | `pre_market` / `ny_open` / `am` / `lunch` / `pm` / `close` / `any`                    | `Session`                                      |
+| 2   | `min_ob_volume_z`           | None / 0.5 / 1.0 / 1.5 / 2.0                                                          | `Z OB Volume` (derived from `OB Volume`)       |
+| 3   | `min_ob_pct_atr`            | None / 30 / 50 / 75                                                                   | `OB % ATR`                                     |
+| 4   | `entry_vs_ob`               | `any` / `above_ob_mid` / `inside_ob` / `below_ob_mid`                                 | `Entry vs OB`                                  |
+| 5   | `stop_placement` (extended) | adds `OB_BOUNDARY` to existing `N_ATR` / `SWING_EXTREME`                              | implicit in his stops sitting at OB top/bottom |
+| 6   | `min_z_entry_vwap`          | None / 0.5 / 1.0 / 1.5 (signed by direction)                                          | `Z Entry`, `VWAP ±1SD`                         |
+| 7   | `min_adx_14`                | None / 15 / 20 / 25 / 30                                                              | `ADX 14`                                       |
+| 8   | `vix_term_filter`           | None / `vix1d_under_vix` / `vix9d_under_vix` (continuous as a binary structural flag) | `VIX 1D / VIX`, `VIX 9D / VIX`                 |
 
 ### B. Position-management dimension (new)
 
-| Param name | Values | What it does when an opposite signal fires while in a trade |
-| --- | --- | --- |
-| `on_opposite_signal` | `HOLD_AND_SKIP` | Ignore the new signal entirely. Current trade runs to its configured exit. |
-| | `EXIT_ONLY` | Close current trade at next-bar-open. Do not open new trade. |
-| | `EXIT_AND_FLIP` | Close current at next-bar-open AND open opposite at the same bar (with full slippage applied to both legs). |
-| | `HOLD_AND_TIGHTEN` | Keep position; move stop to breakeven on receipt of opposite signal. |
+| Param name           | Values             | What it does when an opposite signal fires while in a trade                                                 |
+| -------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `on_opposite_signal` | `HOLD_AND_SKIP`    | Ignore the new signal entirely. Current trade runs to its configured exit.                                  |
+|                      | `EXIT_ONLY`        | Close current trade at next-bar-open. Do not open new trade.                                                |
+|                      | `EXIT_AND_FLIP`    | Close current at next-bar-open AND open opposite at the same bar (with full slippage applied to both legs). |
+|                      | `HOLD_AND_TIGHTEN` | Keep position; move stop to breakeven on receipt of opposite signal.                                        |
 
 This is a **first-class** sweep dimension. We expect winners to differ by trigger family — reversal entries (CHoCH+) often want EXIT_AND_FLIP; continuation entries (BOS) often want HOLD_AND_SKIP because BoS confirms the trend and an opposite CHoCH may be noise.
 
 ### C. Exit logic additions
 
-| # | Param name | Type / values | Notes |
-| - | --- | --- | --- |
-| 9 | `exit_after_n_bos` | None / 2 / 3 / 4 | Exit when N same-direction BoS events have printed since entry. Direct test of the "exit after 2 BoS" hypothesis. |
-| 10 | `partial_exit_at_1r` | bool | Take half off at 1R; trail the remainder. |
-| 11 | `move_stop_to_be_at_1r` | bool | Move stop to entry once price reaches 1R MFE. |
+| #   | Param name              | Type / values    | Notes                                                                                                             |
+| --- | ----------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------- |
+| 9   | `exit_after_n_bos`      | None / 2 / 3 / 4 | Exit when N same-direction BoS events have printed since entry. Direct test of the "exit after 2 BoS" hypothesis. |
+| 10  | `partial_exit_at_1r`    | bool             | Take half off at 1R; trail the remainder.                                                                         |
+| 11  | `move_stop_to_be_at_1r` | bool             | Move stop to entry once price reaches 1R MFE.                                                                     |
 
 ### D. Per-trade context snapshot
 
@@ -181,16 +181,16 @@ Acceptance: sweep completes; `summary.json` has either ≥1 cross-market pass OR
 
 The whole point of pre-registration is that these don't change:
 
-| Threshold | Value |
-| --- | --- |
-| `pbo_max` | 0.3 |
-| `dsr_min_95ci` | 0.0 |
-| `oos_vs_is_sharpe_min` | 0.7 |
-| `min_trades_per_fold` | 200 |
-| `max_drawdown_pct` | 0.2 |
-| `profit_factor_min` | 1.4 |
-| `param_stability_max_drop` | 0.3 |
-| `cross_market_gate.require_pass_on_all_markets` | true |
+| Threshold                                       | Value |
+| ----------------------------------------------- | ----- |
+| `pbo_max`                                       | 0.3   |
+| `dsr_min_95ci`                                  | 0.0   |
+| `oos_vs_is_sharpe_min`                          | 0.7   |
+| `min_trades_per_fold`                           | 200   |
+| `max_drawdown_pct`                              | 0.2   |
+| `profit_factor_min`                             | 1.4   |
+| `param_stability_max_drop`                      | 0.3   |
+| `cross_market_gate.require_pass_on_all_markets` | true  |
 
 ## Files Created / Modified
 

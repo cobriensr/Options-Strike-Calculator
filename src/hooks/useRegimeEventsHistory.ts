@@ -105,10 +105,10 @@ export function useRegimeEventsHistory(
           AbortSignal.timeout(FETCH_TIMEOUT_MS),
         ]);
 
-        const res = await fetch(
-          `/api/push/recent-events?limit=${limit}`,
-          { credentials: 'same-origin', signal },
-        );
+        const res = await fetch(`/api/push/recent-events?limit=${limit}`, {
+          credentials: 'same-origin',
+          signal,
+        });
 
         if (!mountedRef.current) return;
 
@@ -120,9 +120,7 @@ export function useRegimeEventsHistory(
         }
 
         if (!res.ok) {
-          setError(
-            new Error(`Failed to load recent events (${res.status})`),
-          );
+          setError(new Error(`Failed to load recent events (${res.status})`));
           setLoading(false);
           return;
         }

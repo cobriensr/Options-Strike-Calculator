@@ -71,7 +71,7 @@ then normal Δ% / priceTrend math fires against real data. One
 ```ts
 // In api/gex-per-strike.ts
 const WINDOW_MIN_MINUTES = 1;
-const WINDOW_MAX_MINUTES = 15;   // hard cap so a pathological request can't pull ∞
+const WINDOW_MAX_MINUTES = 15; // hard cap so a pathological request can't pull ∞
 ```
 
 ## Data shape (new on the response)

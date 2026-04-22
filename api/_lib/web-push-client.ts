@@ -129,7 +129,10 @@ async function markDelivered(endpoint: string): Promise<void> {
   }
 }
 
-async function deleteSubscription(endpoint: string, reason: string): Promise<void> {
+async function deleteSubscription(
+  endpoint: string,
+  reason: string,
+): Promise<void> {
   try {
     const sql = getDb();
     await sql`DELETE FROM push_subscriptions WHERE endpoint = ${endpoint}`;
@@ -234,7 +237,9 @@ async function deliverOne(
  * failures are all caught internally so a bad row doesn't poison the
  * whole batch.
  */
-export async function sendPushToAll(event: AlertEvent): Promise<SendPushResult> {
+export async function sendPushToAll(
+  event: AlertEvent,
+): Promise<SendPushResult> {
   const vapid = loadVapidConfig();
   if (!vapid) {
     return { delivered: 0, errors: 0, deliveredEndpoints: [] };
@@ -245,10 +250,7 @@ export async function sendPushToAll(event: AlertEvent): Promise<SendPushResult> 
     rows = await listActiveSubscriptions();
   } catch (err) {
     Sentry.captureException(err);
-    logger.error(
-      { err },
-      'web-push-client: failed to list subscriptions',
-    );
+    logger.error({ err }, 'web-push-client: failed to list subscriptions');
     return { delivered: 0, errors: 0, deliveredEndpoints: [] };
   }
 

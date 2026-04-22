@@ -258,9 +258,13 @@ describe('AlertConfigPanel', () => {
       const pushGroup = screen.getByRole('group', {
         name: /push notifications/i,
       });
-      expect(within(pushGroup).getByText(/not subscribed/i)).toBeInTheDocument();
       expect(
-        within(pushGroup).getByRole('button', { name: /subscribe this device/i }),
+        within(pushGroup).getByText(/not subscribed/i),
+      ).toBeInTheDocument();
+      expect(
+        within(pushGroup).getByRole('button', {
+          name: /subscribe this device/i,
+        }),
       ).toBeInTheDocument();
     });
 

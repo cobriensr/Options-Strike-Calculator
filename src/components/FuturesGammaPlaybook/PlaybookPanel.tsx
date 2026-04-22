@@ -159,8 +159,7 @@ function standAsideReason(
 
 // ── Component ─────────────────────────────────────────────────────────
 
-const GRID_COLS =
-  'grid-cols-[68px_1fr_72px_72px_72px_80px_96px_1fr]';
+const GRID_COLS = 'grid-cols-[68px_1fr_72px_72px_72px_80px_96px_1fr]';
 
 /**
  * Detect when the priceTrend is strong enough to have suppressed one of

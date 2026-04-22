@@ -153,10 +153,7 @@ interface FiredRowProps {
   onScrubTo?: (ts: string) => void;
 }
 
-const FiredRow = memo(function FiredRow({
-  event,
-  onScrubTo,
-}: FiredRowProps) {
+const FiredRow = memo(function FiredRow({ event, onScrubTo }: FiredRowProps) {
   const triggerId = extractTriggerId(event);
   const label = triggerLabel(triggerId);
   const time = formatCtTime(event.ts);
@@ -188,7 +185,7 @@ const FiredRow = memo(function FiredRow({
         <button
           type="button"
           onClick={() => onScrubTo(event.ts)}
-          className="border-edge text-muted hover:bg-white/5 rounded border px-1.5 py-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
+          className="border-edge text-muted rounded border px-1.5 py-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase hover:bg-white/5"
           aria-label={`Jump scrubber to ${time}`}
         >
           <span aria-hidden="true">↪ </span>jump
@@ -215,8 +212,7 @@ export const TodaysFiredStrip = memo(function TodaysFiredStrip({
   const firedToday = useMemo(() => {
     return events
       .filter(
-        (e) =>
-          e.type === 'TRIGGER_FIRE' && etDateOf(e.ts) === selectedDate,
+        (e) => e.type === 'TRIGGER_FIRE' && etDateOf(e.ts) === selectedDate,
       )
       .sort((a, b) => a.ts.localeCompare(b.ts));
   }, [events, selectedDate]);
@@ -266,11 +262,7 @@ export const TodaysFiredStrip = memo(function TodaysFiredStrip({
       ) : (
         <ul className="max-h-32 space-y-0 overflow-y-auto" role="list">
           {firedToday.map((event) => (
-            <FiredRow
-              key={event.id}
-              event={event}
-              onScrubTo={onScrubTo}
-            />
+            <FiredRow key={event.id} event={event} onScrubTo={onScrubTo} />
           ))}
         </ul>
       )}

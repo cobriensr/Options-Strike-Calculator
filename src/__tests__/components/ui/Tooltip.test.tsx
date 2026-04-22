@@ -22,9 +22,7 @@ describe('Tooltip', () => {
       </Tooltip>,
     );
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
-    expect(screen.getByText('Trigger')).not.toHaveAttribute(
-      'aria-describedby',
-    );
+    expect(screen.getByText('Trigger')).not.toHaveAttribute('aria-describedby');
   });
 
   it('shows the popover on mouseenter and hides on mouseleave', () => {

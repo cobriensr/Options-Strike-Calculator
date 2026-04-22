@@ -74,9 +74,9 @@ function typeLabel(type: string): string {
 
 /** Resolve the tooltip copy for an event type, falling back to generic text. */
 function typeTooltip(type: string): string {
-  const copy = (
-    TOOLTIP.serverEvent as Record<string, string | undefined>
-  )[type];
+  const copy = (TOOLTIP.serverEvent as Record<string, string | undefined>)[
+    type
+  ];
   return copy ?? 'Server-detected edge for the playbook widget.';
 }
 
@@ -160,10 +160,7 @@ export const ServerEventsStrip = memo(function ServerEventsStrip({
       </header>
 
       {error ? (
-        <p
-          role="alert"
-          className="text-danger py-1 font-mono text-[11px]"
-        >
+        <p role="alert" className="text-danger py-1 font-mono text-[11px]">
           {error.message}
         </p>
       ) : events.length === 0 && !loading ? (

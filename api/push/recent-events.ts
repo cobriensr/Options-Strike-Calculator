@@ -71,10 +71,7 @@ function toIso(value: string | Date): string {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
 }
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/push/recent-events');
 

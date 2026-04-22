@@ -142,9 +142,7 @@ function writeConfigToStorage(config: AlertConfig): void {
 }
 
 /** Current permission, or 'unsupported' when the API doesn't exist. */
-function readNotificationPermission():
-  | NotificationPermission
-  | 'unsupported' {
+function readNotificationPermission(): NotificationPermission | 'unsupported' {
   if (typeof window === 'undefined') return 'unsupported';
   if (typeof Notification === 'undefined') return 'unsupported';
   return Notification.permission;

@@ -197,8 +197,7 @@ export const RegimeTimeline = memo(function RegimeTimeline({
     const snapX = toX(toMs(pt.ts));
     // If the snap sits in the LEFT half of the chart, card flushes to the
     // RIGHT of the crosshair (and vice versa) to avoid going off-viewport.
-    const cardSide =
-      snapX < CHART_PAD_X + CHART_INNER_W / 2 ? 'right' : 'left';
+    const cardSide = snapX < CHART_PAD_X + CHART_INNER_W / 2 ? 'right' : 'left';
     const snapPxX = (snapX / VIEW_W) * hoverState.svgWidthPx;
     const snapY =
       PRICE_BAND_Y +
@@ -479,7 +478,9 @@ export const RegimeTimeline = memo(function RegimeTimeline({
             // card's x with the SVG-internal snap position.
             ...(hoverSnap.cardSide === 'right'
               ? { left: `${8 + hoverSnap.snapPxX + 8}px` }
-              : { right: `${8 + (hoverSnap.svgWidthPx - hoverSnap.snapPxX) + 8}px` }),
+              : {
+                  right: `${8 + (hoverSnap.svgWidthPx - hoverSnap.snapPxX) + 8}px`,
+                }),
             top: '6px',
             maxWidth: '180px',
             color: 'var(--color-primary)',

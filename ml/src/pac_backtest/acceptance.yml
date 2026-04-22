@@ -2,10 +2,10 @@ version: 4
 committed_ts: 2026-04-20 18:48:00-05:00
 commit_hash_when_locked: b203622a57b2065548c887c6b20ae03a805a5791
 markets:
-- symbol: NQ
-  apply_thresholds: true
-- symbol: ES
-  apply_thresholds: true
+  - symbol: NQ
+    apply_thresholds: true
+  - symbol: ES
+    apply_thresholds: true
 cross_market_gate:
   require_pass_on_all_markets: true
 thresholds:
@@ -42,48 +42,48 @@ bootstrap:
 search_space_v4:
   added:
     session_bucket:
-    - any
-    - pre_market
-    - ny_open
-    - am
-    - lunch
-    - pm
-    - close
+      - any
+      - pre_market
+      - ny_open
+      - am
+      - lunch
+      - pm
+      - close
     min_ob_volume_z:
-    - null
-    - 1.0
-    - 2.0
+      - null
+      - 1.0
+      - 2.0
     min_ob_pct_atr:
-    - null
-    - 50.0
+      - null
+      - 50.0
     entry_vs_ob:
-    - any
-    - above_ob_mid
-    - inside_ob
-    - below_ob_mid
+      - any
+      - above_ob_mid
+      - inside_ob
+      - below_ob_mid
     min_z_entry_vwap:
-    - null
-    - 1.0
+      - null
+      - 1.0
     min_adx_14:
-    - null
-    - 20.0
-    - 30.0
+      - null
+      - 20.0
+      - 30.0
     on_opposite_signal:
-    - hold_and_skip
-    - exit_only
-    - exit_and_flip
-    - hold_and_tighten
+      - hold_and_skip
+      - exit_only
+      - exit_and_flip
+      - hold_and_tighten
     exit_after_n_bos:
-    - null
-    - 2
-    - 3
-    - 4
+      - null
+      - 2
+      - 3
+      - 4
     stop_placement_adds:
-    - ob_boundary
+      - ob_boundary
   deferred_to_v5:
-  - vix_term_filter
-  - partial_exit_at_1r
-  - move_stop_to_be_at_1r
-  - vol_scaled_position_sizing
-  - min_ob_volume_z_finer_grid
-  - min_adx_14_finer_grid
+    - vix_term_filter
+    - partial_exit_at_1r
+    - move_stop_to_be_at_1r
+    - vol_scaled_position_sizing
+    - min_ob_volume_z_finer_grid
+    - min_adx_14_finer_grid

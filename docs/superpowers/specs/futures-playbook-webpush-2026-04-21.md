@@ -73,13 +73,13 @@ tagging).
 
 - `api/_lib/db-migrations.ts` — add migration `N + 1` creating
   `push_subscriptions (endpoint TEXT PRIMARY KEY, p256dh TEXT NOT NULL,
-  auth TEXT NOT NULL, user_agent TEXT, failure_count INTEGER DEFAULT 0,
-  created_at TIMESTAMPTZ DEFAULT now(), last_delivered_at TIMESTAMPTZ)`.
+auth TEXT NOT NULL, user_agent TEXT, failure_count INTEGER DEFAULT 0,
+created_at TIMESTAMPTZ DEFAULT now(), last_delivered_at TIMESTAMPTZ)`.
 - `api/_lib/validation.ts` — Zod schemas for subscription payload.
 - `src/main.tsx` — add all three new endpoint paths to the `initBotId`
   protect list.
 - `api/__tests__/db.test.ts` — update migration mocks + expected output
-  + SQL call counts.
+  - SQL call counts.
 
 **Verify:** `POST /api/journal/init` applies the new migration. Each
 endpoint test mocks `getDb` and verifies owner gate + Zod reject +
@@ -116,11 +116,11 @@ subscription.
 
 - `api/_lib/db-migrations.ts` — add migration `N + 2` creating
   `regime_events (id SERIAL PRIMARY KEY, ts TIMESTAMPTZ NOT NULL,
-  type TEXT NOT NULL, severity TEXT NOT NULL, title TEXT NOT NULL,
-  body TEXT NOT NULL, payload JSONB, delivered_count INTEGER DEFAULT 0)`
+type TEXT NOT NULL, severity TEXT NOT NULL, title TEXT NOT NULL,
+body TEXT NOT NULL, payload JSONB, delivered_count INTEGER DEFAULT 0)`
   AND `regime_monitor_state (singleton_key TEXT PRIMARY KEY, prev_state
-  JSONB, last_run TIMESTAMPTZ)` (only one row ever — `singleton_key =
-  'current'`). Using a singleton row for prev-state is simpler than
+JSONB, last_run TIMESTAMPTZ)` (only one row ever — `singleton_key =
+'current'`). Using a singleton row for prev-state is simpler than
   inferring from `regime_events` itself and avoids race conditions if
   the cron misses a beat.
 - `vercel.json` — register the new cron. Schedule `* 13-21 * * 1-5`
@@ -145,7 +145,7 @@ Phase 1E panel as the host.
 - `src/hooks/usePushSubscription.ts` — hook managing the subscription
   lifecycle: checks current registration state, subscribes via
   `ServiceWorkerRegistration.pushManager.subscribe({ userVisibleOnly:
-  true, applicationServerKey: vapidPublicKey })`, POSTs to
+true, applicationServerKey: vapidPublicKey })`, POSTs to
   `/api/push/subscribe`, and mirrors state. Handles permission
   transitions gracefully (Notification API permission governs both
   Web Push and local notifications — shared concern).
@@ -173,13 +173,13 @@ tab closed.
 
 ## Phase split summary
 
-| Sub-phase | Files created | Files modified | Effort |
-|-----------|---------------|----------------|--------|
-| 2A.1 | 1 | 3 | 1.5 hrs |
-| 2A.2 | 3 endpoints + 3 tests = 6 | 4 | 1.5 hrs |
-| 2A.3 | 2 + 2 tests = 4 | 3 | 2 hrs |
-| 2A.4 | 2 hooks + 2 tests = 4 | 2 | 1.5 hrs |
-| **Total** | **~15 new** | **12 modified** | **~6.5 hrs** |
+| Sub-phase | Files created             | Files modified  | Effort       |
+| --------- | ------------------------- | --------------- | ------------ |
+| 2A.1      | 1                         | 3               | 1.5 hrs      |
+| 2A.2      | 3 endpoints + 3 tests = 6 | 4               | 1.5 hrs      |
+| 2A.3      | 2 + 2 tests = 4           | 3               | 2 hrs        |
+| 2A.4      | 2 hooks + 2 tests = 4     | 2               | 1.5 hrs      |
+| **Total** | **~15 new**               | **12 modified** | **~6.5 hrs** |
 
 ## Data dependencies
 
@@ -239,7 +239,7 @@ references sneak in).
 5. **Notification deep-link** — clicking a notification should open
    the app and focus the FuturesGammaPlaybook section. Default: deep
    link to `/#futures-gamma-playbook` (add `id="futures-gamma-
-   playbook"` to the SectionBox wrapper). `notificationclick` handler
+playbook"` to the SectionBox wrapper). `notificationclick` handler
    in `sw.ts` uses `clients.openWindow(url)`.
 6. **Multi-device cap** — single-owner app; but supporting phone +
    laptop subscription is necessary. Default: allow up to 5

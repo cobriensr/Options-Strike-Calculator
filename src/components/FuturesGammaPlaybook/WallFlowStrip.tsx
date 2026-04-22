@@ -70,13 +70,13 @@ function Side({ label, pct, trend }: SideProps) {
   const tm = trend ? TREND_META[trend] : null;
   return (
     <span className="inline-flex items-center gap-1 font-mono text-[11px]">
-      <span className="uppercase tracking-wider" style={{ color: 'var(--color-tertiary)' }}>
+      <span
+        className="tracking-wider uppercase"
+        style={{ color: 'var(--color-tertiary)' }}
+      >
         {label} (5m):
       </span>
-      <span
-        className="tabular-nums"
-        style={{ color: 'var(--color-primary)' }}
-      >
+      <span className="tabular-nums" style={{ color: 'var(--color-primary)' }}>
         {fmtPct(pct)}
       </span>
       {tm && (

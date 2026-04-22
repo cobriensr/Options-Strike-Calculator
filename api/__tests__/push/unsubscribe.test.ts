@@ -54,10 +54,7 @@ describe('POST /api/push/unsubscribe', () => {
   it('returns 403 when botid detects a bot', async () => {
     vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
     const res = mockResponse();
-    await handler(
-      mockRequest({ method: 'POST', body: VALID_BODY }),
-      res,
-    );
+    await handler(mockRequest({ method: 'POST', body: VALID_BODY }), res);
     expect(res._status).toBe(403);
     expect(mockSql).not.toHaveBeenCalled();
   });
@@ -68,10 +65,7 @@ describe('POST /api/push/unsubscribe', () => {
       return true;
     });
     const res = mockResponse();
-    await handler(
-      mockRequest({ method: 'POST', body: VALID_BODY }),
-      res,
-    );
+    await handler(mockRequest({ method: 'POST', body: VALID_BODY }), res);
     expect(res._status).toBe(401);
     expect(mockSql).not.toHaveBeenCalled();
   });
@@ -97,10 +91,7 @@ describe('POST /api/push/unsubscribe', () => {
   it('returns 200 and deletes the row on happy path', async () => {
     mockSql.mockResolvedValueOnce([]);
     const res = mockResponse();
-    await handler(
-      mockRequest({ method: 'POST', body: VALID_BODY }),
-      res,
-    );
+    await handler(mockRequest({ method: 'POST', body: VALID_BODY }), res);
     expect(res._status).toBe(200);
     expect(res._json).toEqual({ ok: true });
     expect(mockSql).toHaveBeenCalledTimes(1);
@@ -129,10 +120,7 @@ describe('POST /api/push/unsubscribe', () => {
     mockSql.mockRejectedValueOnce(dbError);
 
     const res = mockResponse();
-    await handler(
-      mockRequest({ method: 'POST', body: VALID_BODY }),
-      res,
-    );
+    await handler(mockRequest({ method: 'POST', body: VALID_BODY }), res);
 
     expect(res._status).toBe(500);
     expect(res._json).toEqual({ error: 'Internal error' });

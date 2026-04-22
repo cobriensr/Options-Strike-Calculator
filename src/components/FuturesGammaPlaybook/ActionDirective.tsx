@@ -25,10 +25,7 @@
  */
 
 import { memo, useMemo } from 'react';
-import {
-  REGIME_TRANSITION_BAND_PCT,
-  RULE_ACTIVE_BAND_ES,
-} from './playbook.js';
+import { REGIME_TRANSITION_BAND_PCT, RULE_ACTIVE_BAND_ES } from './playbook.js';
 import type { PlaybookRule, RegimeVerdict } from './types.js';
 
 export interface ActionDirectiveProps {
@@ -250,9 +247,7 @@ function deriveDirective(
       icon: '⏸',
       text: `WAIT: Nearest setup ${formatDirection(r.direction)} ${nameOf(
         r,
-      )} at ${fmtEntry(r.entryEs)} · ${fmtSignedPts(
-        r.distanceEsPoints,
-      )} away.`,
+      )} at ${fmtEntry(r.entryEs)} · ${fmtSignedPts(r.distanceEsPoints)} away.`,
     };
   }
 

@@ -5,10 +5,7 @@
   "acceptance_commit_snapshot": "/Users/charlesobrien/Documents/Workspace/strike-calculator/ml/src/pac_backtest/acceptance.yml",
   "start": "2026-03-25",
   "end": "2026-04-20",
-  "markets_run": [
-    "NQ",
-    "ES"
-  ],
+  "markets_run": ["NQ", "ES"],
   "gate_result": {
     "cross_market_pass_count": 0,
     "nq_only_count": 0,

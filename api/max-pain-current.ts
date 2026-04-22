@@ -117,10 +117,7 @@ async function computeHistoricalMaxPain(
     // Max-pain is advisory — never throw. Log + capture so the gap is
     // visible, but the hook still gets a well-shaped 200 response.
     Sentry.captureException(err);
-    logger.warn(
-      { err, date },
-      'max-pain-current: historical DB query failed',
-    );
+    logger.warn({ err, date }, 'max-pain-current: historical DB query failed');
     return { maxPain: null, source: 'historical' };
   }
 }
@@ -150,14 +147,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const asOf = new Date().toISOString();
     const today = getETDateStr(new Date());
-    const isHistorical =
-      requestedDate !== undefined && requestedDate !== today;
+    const isHistorical = requestedDate !== undefined && requestedDate !== today;
 
     try {
       if (isHistorical) {
-        const { maxPain, source } = await computeHistoricalMaxPain(
-          requestedDate,
-        );
+        const { maxPain, source } =
+          await computeHistoricalMaxPain(requestedDate);
         const response: MaxPainCurrentResponse = {
           ticker: TICKER,
           maxPain,

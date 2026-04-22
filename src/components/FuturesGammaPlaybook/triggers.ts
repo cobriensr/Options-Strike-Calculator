@@ -157,8 +157,7 @@ export function evaluateTriggers(input: EvaluateTriggersInput): TriggerState[] {
   const trend = flowSignals?.priceTrend;
   const driftConsistent =
     trend != null && trend.consistency >= DRIFT_OVERRIDE_CONSISTENCY_MIN;
-  const driftUp =
-    driftConsistent && trend != null && trend.direction === 'up';
+  const driftUp = driftConsistent && trend != null && trend.direction === 'up';
   const driftDown =
     driftConsistent && trend != null && trend.direction === 'down';
 

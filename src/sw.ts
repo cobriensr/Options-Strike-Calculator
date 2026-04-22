@@ -46,7 +46,11 @@ import {
   precacheAndRoute,
 } from 'workbox-precaching';
 import { NavigationRoute, registerRoute } from 'workbox-routing';
-import { CacheFirst, NetworkOnly, StaleWhileRevalidate } from 'workbox-strategies';
+import {
+  CacheFirst,
+  NetworkOnly,
+  StaleWhileRevalidate,
+} from 'workbox-strategies';
 import { CacheableResponsePlugin } from 'workbox-cacheable-response';
 import { ExpirationPlugin } from 'workbox-expiration';
 
@@ -135,7 +139,10 @@ self.addEventListener('push', (event) => {
       body: 'A new futures gamma playbook alert is available.',
       icon: '/icon-192.png',
       badge: '/icon-192.png',
-      data: { url: PLAYBOOK_URL, eventId: 'unknown' } satisfies PushNotificationData,
+      data: {
+        url: PLAYBOOK_URL,
+        eventId: 'unknown',
+      } satisfies PushNotificationData,
     });
 
   if (!event.data) {
@@ -204,11 +211,10 @@ self.addEventListener('pushsubscriptionchange', (event) => {
       if (!applicationServerKey) return;
 
       try {
-        const newSubscription =
-          await self.registration.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey,
-          });
+        const newSubscription = await self.registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey,
+        });
 
         try {
           await fetch('/api/push/subscribe', {

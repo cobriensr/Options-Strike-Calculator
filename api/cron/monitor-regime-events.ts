@@ -226,9 +226,7 @@ async function loadRecentSpotPrices(
   }
 }
 
-async function loadGexStrikes(
-  today: string,
-): Promise<{
+async function loadGexStrikes(today: string): Promise<{
   strikes: Array<{ strike: number; netGamma: number }>;
   callWall: number | null;
   putWall: number | null;
@@ -317,8 +315,7 @@ async function loadMaxPain(today: string): Promise<number | null> {
       strike: Number.parseFloat(String(r.strike)),
       callOi:
         r.call_oi == null ? 0 : Number.parseInt(String(r.call_oi), 10) || 0,
-      putOi:
-        r.put_oi == null ? 0 : Number.parseInt(String(r.put_oi), 10) || 0,
+      putOi: r.put_oi == null ? 0 : Number.parseInt(String(r.put_oi), 10) || 0,
     }));
     return computeMaxPain(input);
   } catch (err) {
@@ -373,10 +370,7 @@ function buildEsLevels(input: {
   if (esPrice === null || basis === null) return [];
   const levels: EsLevel[] = [];
 
-  const maybePush = (
-    kind: EsLevel['kind'],
-    spxStrike: number | null,
-  ): void => {
+  const maybePush = (kind: EsLevel['kind'], spxStrike: number | null): void => {
     if (spxStrike === null) return;
     const esLevelPrice = translateSpxToEs(spxStrike, basis);
     const distance = esLevelPrice - esPrice;
@@ -618,4 +612,3 @@ export default async function handler(
     res.status(500).json({ error: 'Internal error' });
   }
 }
-

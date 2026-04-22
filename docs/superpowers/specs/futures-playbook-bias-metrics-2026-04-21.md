@@ -32,7 +32,7 @@ carries. The `GexLandscape/bias.ts` module computes four extra signals
 off the same per-strike data:
 
 1. **Per-target `cls`** — `max-launchpad / fading-launchpad / sticky-pin
-   / weakening-pin`. A call wall at `sticky-pin` (charm builds into
+/ weakening-pin`. A call wall at `sticky-pin` (charm builds into
    close) is a different trade than one at `weakening-pin` (charm
    draining). The playbook today treats them identically.
 2. **`drifting-up/down` verdict** — when GEX says rangebound but the
@@ -88,7 +88,7 @@ values that mirror `GexLandscape`'s output.
   - Add these to the hook's return so the container can render them.
 - `src/components/FuturesGammaPlaybook/types.ts`:
   - Add `PlaybookFlowSignals` interface — `{ceilingTrend5m, floorTrend5m,
-    upsideTargetCls, downsideTargetCls, priceTrend}`.
+upsideTargetCls, downsideTargetCls, priceTrend}`.
 
 **Create:**
 
@@ -161,8 +161,8 @@ is missing.
     override.
 - `src/components/FuturesGammaPlaybook/PlaybookPanel.tsx`:
   - When the override suppresses a rule, show a one-line neutral note
-    at the top of the panel: *"Drifting up — call-wall fade suppressed
-    this session."*
+    at the top of the panel: _"Drifting up — call-wall fade suppressed
+    this session."_
 
 **Modify tests:**
 
@@ -235,9 +235,9 @@ on it.
 
 ```ts
 // In playbook.ts or a new constants file
-export const WALL_FLOW_STRENGTHENING_THRESHOLD_PCT = 2;  // +2% Δ% = strengthening
-export const WALL_FLOW_ERODING_THRESHOLD_PCT = -2;       // −2% Δ% = eroding
-export const DRIFT_OVERRIDE_CONSISTENCY_MIN = 0.6;        // PriceTrend.consistency gate
+export const WALL_FLOW_STRENGTHENING_THRESHOLD_PCT = 2; // +2% Δ% = strengthening
+export const WALL_FLOW_ERODING_THRESHOLD_PCT = -2; // −2% Δ% = eroding
+export const DRIFT_OVERRIDE_CONSISTENCY_MIN = 0.6; // PriceTrend.consistency gate
 ```
 
 ## Done when

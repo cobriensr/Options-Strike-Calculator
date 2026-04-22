@@ -58,10 +58,7 @@ describe('POST /api/push/subscribe', () => {
   it('returns 403 when botid detects a bot', async () => {
     vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
     const res = mockResponse();
-    await handler(
-      mockRequest({ method: 'POST', body: VALID_BODY }),
-      res,
-    );
+    await handler(mockRequest({ method: 'POST', body: VALID_BODY }), res);
     expect(res._status).toBe(403);
     expect(mockSql).not.toHaveBeenCalled();
   });
@@ -72,10 +69,7 @@ describe('POST /api/push/subscribe', () => {
       return true;
     });
     const res = mockResponse();
-    await handler(
-      mockRequest({ method: 'POST', body: VALID_BODY }),
-      res,
-    );
+    await handler(mockRequest({ method: 'POST', body: VALID_BODY }), res);
     expect(res._status).toBe(401);
     expect(mockSql).not.toHaveBeenCalled();
   });
@@ -126,10 +120,7 @@ describe('POST /api/push/subscribe', () => {
     mockSql.mockResolvedValueOnce([]);
 
     const res = mockResponse();
-    await handler(
-      mockRequest({ method: 'POST', body: VALID_BODY }),
-      res,
-    );
+    await handler(mockRequest({ method: 'POST', body: VALID_BODY }), res);
 
     expect(res._status).toBe(200);
     expect(res._json).toEqual({ ok: true });
@@ -145,10 +136,7 @@ describe('POST /api/push/subscribe', () => {
     mockSql.mockResolvedValueOnce([]);
 
     const res = mockResponse();
-    await handler(
-      mockRequest({ method: 'POST', body: VALID_BODY }),
-      res,
-    );
+    await handler(mockRequest({ method: 'POST', body: VALID_BODY }), res);
 
     expect(res._status).toBe(200);
     expect(res._json).toEqual({ ok: true });
@@ -167,10 +155,7 @@ describe('POST /api/push/subscribe', () => {
     mockSql.mockResolvedValueOnce([]);
 
     const res = mockResponse();
-    await handler(
-      mockRequest({ method: 'POST', body: VALID_BODY }),
-      res,
-    );
+    await handler(mockRequest({ method: 'POST', body: VALID_BODY }), res);
 
     expect(res._status).toBe(200);
     expect(res._json).toEqual({ ok: true });
@@ -184,10 +169,7 @@ describe('POST /api/push/subscribe', () => {
     mockSql.mockResolvedValueOnce([]);
 
     const res = mockResponse();
-    await handler(
-      mockRequest({ method: 'POST', body: VALID_BODY }),
-      res,
-    );
+    await handler(mockRequest({ method: 'POST', body: VALID_BODY }), res);
 
     expect(res._status).toBe(200);
     expect(res._json).toEqual({ ok: true });
@@ -199,10 +181,7 @@ describe('POST /api/push/subscribe', () => {
     mockSql.mockRejectedValueOnce(dbError);
 
     const res = mockResponse();
-    await handler(
-      mockRequest({ method: 'POST', body: VALID_BODY }),
-      res,
-    );
+    await handler(mockRequest({ method: 'POST', body: VALID_BODY }), res);
 
     expect(res._status).toBe(500);
     expect(res._json).toEqual({ error: 'Internal error' });

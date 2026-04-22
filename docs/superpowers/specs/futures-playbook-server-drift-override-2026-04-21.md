@@ -128,17 +128,20 @@ aligned in 2b98eb8.
 ## Phases
 
 ### Phase 1 — Extract primitive + tests (~30 min, 2 files)
+
 1. Create `src/utils/price-trend.ts` with the flat-series signature.
 2. Write 6+ test cases.
 3. Verify: `npm run test:run -- price-trend` passes.
 
 ### Phase 2 — Update client-side imports (~20 min, 3-4 files)
+
 1. Re-export types/constants from new location in `GexLandscape/*`.
 2. Rewrite `deltas.ts` `computePriceTrend` as adapter.
 3. Verify: `npm run test:run` — all existing tests still pass, no
    signature changes observed at call sites.
 
 ### Phase 3 — Wire server-side (~45 min, 2 files + 1 test file)
+
 1. Add `loadRecentSpotPrices` helper in the cron.
 2. Compute `flowSignals.priceTrend` and pass into `evaluateTriggers`.
 3. Remove the follow-up comment.
@@ -147,6 +150,7 @@ aligned in 2b98eb8.
 5. Verify: `npm run test:run -- monitor-regime-events` passes new case.
 
 ### Phase 4 — Verification (~15 min)
+
 1. `npm run review` clean (baseline 10 unrelated ESLint errors aside).
 2. Grep for any lingering references to the moved constants/types at
    old paths outside re-export files.
