@@ -30,14 +30,7 @@
 // Chart requirements: NQ 1-minute bars, RTH shown.
 // =============================================================================
 
-indicator(
-  title="PAC BOS Config A — Charting Only",
-  shorttitle="PAC BOS A",
-  overlay=true,
-  max_lines_count=500,
-  max_labels_count=500,
-  max_boxes_count=100
-)
+indicator(title="PAC BOS Config A — Charting Only", shorttitle="PAC BOS A", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=100)
 
 // ============================ INPUTS ============================
 
@@ -68,11 +61,8 @@ alertStrategyId = input.string("pac_bos_config_a", "Strategy ID (in webhook JSON
 // Chart timezone should be set to America/Chicago for this to match the
 // backtest cleanly. We compare in exchange time via `hour` / `minute`.
 
-inRTH = not useRTHOnly or (
-  // 08:30 <= CT time < 15:00
-  (hour == 8 and minute >= 30) or
-  (hour >= 9 and hour < 15)
-)
+// 08:30 <= CT time < 15:00
+inRTH = not useRTHOnly or ((hour == 8 and minute >= 30) or (hour >= 9 and hour < 15))
 
 // ============================ EVENT DAYS ============================
 // OPEX = 3rd Friday of the month (day-of-month between 15 and 21, Friday)
@@ -83,21 +73,9 @@ isOpex = dayofweek == dayofweek.friday and dayofmonth >= 15 and dayofmonth <= 21
 y = year
 m = month
 d = dayofmonth
-isFOMC_2024 = (y == 2024) and (
-  (m == 1 and d == 31) or (m == 3 and d == 20) or (m == 5 and d == 1) or
-  (m == 6 and d == 12) or (m == 7 and d == 31) or (m == 9 and d == 18) or
-  (m == 11 and d == 7)  or (m == 12 and d == 18)
-)
-isFOMC_2025 = (y == 2025) and (
-  (m == 1 and d == 29) or (m == 3 and d == 19) or (m == 5 and d == 7) or
-  (m == 6 and d == 18) or (m == 7 and d == 30) or (m == 9 and d == 17) or
-  (m == 10 and d == 29) or (m == 12 and d == 10)
-)
-isFOMC_2026 = (y == 2026) and (
-  (m == 1 and d == 28) or (m == 3 and d == 18) or (m == 4 and d == 29) or
-  (m == 6 and d == 17) or (m == 7 and d == 29) or (m == 9 and d == 16) or
-  (m == 10 and d == 28) or (m == 12 and d == 9)
-)
+isFOMC_2024 = (y == 2024) and ((m == 1 and d == 31) or (m == 3 and d == 20) or (m == 5 and d == 1) or (m == 6 and d == 12) or (m == 7 and d == 31) or (m == 9 and d == 18) or (m == 11 and d == 7) or (m == 12 and d == 18))
+isFOMC_2025 = (y == 2025) and ((m == 1 and d == 29) or (m == 3 and d == 19) or (m == 5 and d == 7) or (m == 6 and d == 18) or (m == 7 and d == 30) or (m == 9 and d == 17) or (m == 10 and d == 29) or (m == 12 and d == 10))
+isFOMC_2026 = (y == 2026) and ((m == 1 and d == 28) or (m == 3 and d == 18) or (m == 4 and d == 29) or (m == 6 and d == 17) or (m == 7 and d == 29) or (m == 9 and d == 16) or (m == 10 and d == 28) or (m == 12 and d == 9))
 isFOMC = isFOMC_2024 or isFOMC_2025 or isFOMC_2026
 isEventDay = skipEvents and (isOpex or isFOMC)
 
@@ -183,42 +161,31 @@ getShortStop() =>
 
 // ============================ VISUALIZATION ============================
 // Signal arrows
-plotshape(longEntry, title="Long BOS", style=shape.triangleup,
-          location=location.belowbar, color=color.new(color.green, 0),
-          size=size.small, text="L")
-plotshape(shortEntry, title="Short BOS", style=shape.triangledown,
-          location=location.abovebar, color=color.new(color.red, 0),
-          size=size.small, text="S")
+plotshape(longEntry, title="Long BOS", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.small, text="L")
+plotshape(shortEntry, title="Short BOS", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small, text="S")
 
 // Stop + target lines per entry (held for 60 bars after entry or EOD)
 if showLines and longEntry
     stopLvl = getLongStop()
     tgtLvl = entryPrice + targetATRMult * atr14
-    line.new(bar_index, stopLvl, bar_index + 60, stopLvl,
-             color=color.new(color.red, 30), width=1, style=line.style_dashed)
-    line.new(bar_index, tgtLvl, bar_index + 60, tgtLvl,
-             color=color.new(color.green, 30), width=1, style=line.style_dashed)
+    line.new(bar_index, stopLvl, bar_index + 60, stopLvl, color=color.new(color.red, 30), width=1, style=line.style_dashed)
+    line.new(bar_index, tgtLvl, bar_index + 60, tgtLvl, color=color.new(color.green, 30), width=1, style=line.style_dashed)
 
 if showLines and shortEntry
     stopLvl = getShortStop()
     tgtLvl = entryPrice - targetATRMult * atr14
-    line.new(bar_index, stopLvl, bar_index + 60, stopLvl,
-             color=color.new(color.red, 30), width=1, style=line.style_dashed)
-    line.new(bar_index, tgtLvl, bar_index + 60, tgtLvl,
-             color=color.new(color.green, 30), width=1, style=line.style_dashed)
+    line.new(bar_index, stopLvl, bar_index + 60, stopLvl, color=color.new(color.red, 30), width=1, style=line.style_dashed)
+    line.new(bar_index, tgtLvl, bar_index + 60, tgtLvl, color=color.new(color.green, 30), width=1, style=line.style_dashed)
 
 // Entry info labels
 if showLabels and (longEntry or shortEntry)
-    lblTxt = (longEntry ? "LONG BOS" : "SHORT BOS") +
-             "\nz_vwap: " + str.tostring(zClose, "#.##") +
-             (showADX ? "\nADX: " + str.tostring(adx14, "#.#") : "") +
-             "\nATR: " + str.tostring(atr14, "#.##")
-    label.new(bar_index, longEntry ? low - atr14 * 0.3 : high + atr14 * 0.3,
-              lblTxt,
-              color=color.new(longEntry ? color.green : color.red, 80),
-              textcolor=color.white,
-              style=longEntry ? label.style_label_up : label.style_label_down,
-              size=size.small)
+    dirTxt = longEntry ? "LONG BOS" : "SHORT BOS"
+    adxPart = showADX ? "\nADX: " + str.tostring(adx14, "#.#") : ""
+    lblTxt = dirTxt + "\nz_vwap: " + str.tostring(zClose, "#.##") + adxPart + "\nATR: " + str.tostring(atr14, "#.##")
+    lblY = longEntry ? low - atr14 * 0.3 : high + atr14 * 0.3
+    lblColor = color.new(longEntry ? color.green : color.red, 80)
+    lblStyle = longEntry ? label.style_label_up : label.style_label_down
+    label.new(bar_index, lblY, lblTxt, color=lblColor, textcolor=color.white, style=lblStyle, size=size.small)
 
 // ============================ ALERTS ============================
 // Two mechanisms, both fire when a LONG or SHORT BOS entry passes all filters:
@@ -238,21 +205,13 @@ if showLabels and (longEntry or shortEntry)
 // that TradingView substitutes in the delivered message body.
 makeWebhookJSON(action) =>
     stopLvl = action == "long" ? getLongStop() : getShortStop()
-    tgtLvl = action == "long" ?
-      entryPrice + targetATRMult * atr14 :
-      entryPrice - targetATRMult * atr14
-    '{' +
-      '"strategy":"' + alertStrategyId + '",' +
-      '"symbol":"{{ticker}}",' +
-      '"action":"' + action + '",' +
-      '"price":' + str.tostring(close, "#.####") + ',' +
-      '"stop":' + str.tostring(stopLvl, "#.####") + ',' +
-      '"target":' + str.tostring(tgtLvl, "#.####") + ',' +
-      '"z_vwap":' + str.tostring(zClose, "#.##") + ',' +
-      '"adx":' + str.tostring(adx14, "#.##") + ',' +
-      '"atr":' + str.tostring(atr14, "#.####") + ',' +
-      '"time":"{{time}}"' +
-    '}'
+    tgtLvl = action == "long" ? entryPrice + targetATRMult * atr14 : entryPrice - targetATRMult * atr14
+    p1 = '{"strategy":"' + alertStrategyId + '","symbol":"{{ticker}}","action":"' + action + '"'
+    p2 = ',"price":' + str.tostring(close, "#.####") + ',"stop":' + str.tostring(stopLvl, "#.####")
+    p3 = ',"target":' + str.tostring(tgtLvl, "#.####") + ',"z_vwap":' + str.tostring(zClose, "#.##")
+    p4 = ',"adx":' + str.tostring(adx14, "#.##") + ',"atr":' + str.tostring(atr14, "#.####")
+    p5 = ',"time":"{{time}}"}'
+    p1 + p2 + p3 + p4 + p5
 
 if useAlerts and longEntry
     alert(makeWebhookJSON("long"), alert.freq_once_per_bar_close)
@@ -261,30 +220,27 @@ if useAlerts and shortEntry
 
 // Static named templates — create these in the TV alert dialog by picking
 // "PAC BOS Config A" in the Condition dropdown, then the alert name below.
-alertcondition(longEntry,
-               title="PAC BOS — LONG entry",
-               message="PAC BOS LONG on {{ticker}} @ {{close}}")
-alertcondition(shortEntry,
-               title="PAC BOS — SHORT entry",
-               message="PAC BOS SHORT on {{ticker}} @ {{close}}")
+alertcondition(longEntry, title="PAC BOS — LONG entry", message="PAC BOS LONG on {{ticker}} @ {{close}}")
+alertcondition(shortEntry, title="PAC BOS — SHORT entry", message="PAC BOS SHORT on {{ticker}} @ {{close}}")
 
 // ============================ INFO TABLE ============================
 // Persistent top-right table showing current-bar filter state.
 
-var table t = table.new(position.top_right, 2, 5, bgcolor=color.new(color.black, 70),
-                        border_width=1, border_color=color.gray)
+var table t = table.new(position.top_right, 2, 5, bgcolor=color.new(color.black, 70), border_width=1, border_color=color.gray)
 if barstate.islast
-    table.cell(t, 0, 0, "In RTH",   text_color=color.white, text_size=size.small)
-    table.cell(t, 1, 0, inRTH ? "YES" : "NO", text_color=inRTH ? color.green : color.red, text_size=size.small)
+    zColor = math.abs(zClose) > minZVWAP ? color.green : color.gray
+    adxColor = adx14 > 25 ? color.green : color.gray
+    rthColor = inRTH ? color.green : color.red
+    evColor = isEventDay ? color.orange : color.green
+    table.cell(t, 0, 0, "In RTH", text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 0, inRTH ? "YES" : "NO", text_color=rthColor, text_size=size.small)
     table.cell(t, 0, 1, "Event Day", text_color=color.white, text_size=size.small)
-    table.cell(t, 1, 1, isEventDay ? "SKIP" : "OK", text_color=isEventDay ? color.orange : color.green, text_size=size.small)
-    table.cell(t, 0, 2, "z_vwap",   text_color=color.white, text_size=size.small)
-    table.cell(t, 1, 2, str.tostring(zClose, "#.##"),
-               text_color=math.abs(zClose) > minZVWAP ? color.green : color.gray,
-               text_size=size.small)
-    table.cell(t, 0, 3, "ADX(14)",  text_color=color.white, text_size=size.small)
-    table.cell(t, 1, 3, str.tostring(adx14, "#.#"), text_color=adx14 > 25 ? color.green : color.gray, text_size=size.small)
-    table.cell(t, 0, 4, "ATR(14)",  text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 1, isEventDay ? "SKIP" : "OK", text_color=evColor, text_size=size.small)
+    table.cell(t, 0, 2, "z_vwap", text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 2, str.tostring(zClose, "#.##"), text_color=zColor, text_size=size.small)
+    table.cell(t, 0, 3, "ADX(14)", text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 3, str.tostring(adx14, "#.#"), text_color=adxColor, text_size=size.small)
+    table.cell(t, 0, 4, "ATR(14)", text_color=color.white, text_size=size.small)
     table.cell(t, 1, 4, str.tostring(atr14, "#.##"), text_color=color.white, text_size=size.small)
 
 // ============================ NOTES ============================
