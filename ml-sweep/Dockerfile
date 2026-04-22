@@ -25,7 +25,13 @@ RUN addgroup --system --gid 1001 sweep && \
 WORKDIR /app
 
 COPY --from=builder /install /usr/local
-COPY --chown=sweep:sweep app.py runner.py ./
+COPY --chown=sweep:sweep app.py runner.py archive_seeder.py ./
+
+# Pre-create the archive mount point so chown can take effect before
+# Railway mounts the volume at runtime (the volume will overlay this dir,
+# but ensuring it exists prevents "No such file or directory" errors
+# if /data isn't mounted during local Docker runs).
+RUN mkdir -p /data/archive && chown -R sweep:sweep /data
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
