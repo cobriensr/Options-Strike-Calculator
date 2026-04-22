@@ -130,6 +130,12 @@ export interface UseOtmFlowAlertsResult {
   newlyArrived: OtmFlowAlert[];
   loading: boolean;
   error: string | null;
+  /**
+   * ISO timestamp of the last successful fetch (client clock), regardless of
+   * whether the response contained new alerts. Distinct from the newest
+   * alert's `created_at`, which is shown per-row. This is the liveness
+   * indicator for the "updated HH:MM" label.
+   */
   lastUpdated: string | null;
   /** Echo of the active mode from the last response (not just settings). */
   mode: 'live' | 'historical' | null;
@@ -187,7 +193,6 @@ export function useOtmFlowAlerts(
       }
       const data = (await res.json()) as {
         alerts?: OtmFlowAlert[];
-        last_updated?: string | null;
         mode?: 'live' | 'historical';
       };
       if (ctl.signal.aborted || abortRef.current !== ctl) return;
@@ -204,7 +209,10 @@ export function useOtmFlowAlerts(
 
       setAlerts(incoming);
       setNewlyArrived(fresh);
-      setLastUpdated(data.last_updated ?? null);
+      // Client-side fetch time — the label is a liveness indicator ("we
+      // talked to the server at HH:MM"), not a data-recency indicator
+      // ("newest matching alert is from HH:MM"). Row ages show the latter.
+      setLastUpdated(new Date().toISOString());
       setMode(data.mode ?? null);
       setError(null);
     } catch (e) {

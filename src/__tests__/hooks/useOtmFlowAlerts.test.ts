@@ -121,7 +121,11 @@ describe('useOtmFlowAlerts — live mode', () => {
 
     await waitFor(() => expect(result.current.alerts).toHaveLength(1));
     expect(result.current.alerts[0]!.strike).toBe(7100);
-    expect(result.current.lastUpdated).toBe('2026-04-22T15:00:00.000Z');
+    // lastUpdated is the client-side fetch time (liveness indicator), not
+    // the newest alert's created_at. Assert it's a valid recent ISO string.
+    expect(result.current.lastUpdated).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/,
+    );
     expect(result.current.mode).toBe('live');
     expect(result.current.error).toBeNull();
   });
