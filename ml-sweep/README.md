@@ -15,11 +15,45 @@ restarts don't lose job history.
 
 ### Whitelisted scripts
 
-| Name                     | Path in container                           | Accepts                                        |
-| ------------------------ | ------------------------------------------- | ---------------------------------------------- |
-| `pine_match_2026_window` | `/app/ml-scripts/pine_match_2026_window.py` | `timeframe` (1m\|5m), `start`, `end`, `symbol` |
+| Name                     | Path in container                           | Accepts                                                    |
+| ------------------------ | ------------------------------------------- | ---------------------------------------------------------- |
+| `pine_match_2026_window` | `/app/ml-scripts/pine_match_2026_window.py` | `timeframe` (1m\|5m), `start`, `end`, `symbol`             |
+| `full_cpcv_optuna_sweep` | `/app/ml-scripts/full_cpcv_optuna_sweep.py` | `timeframe`, `start`, `end`, `markets`, `n-trials`, `seed` |
 
-Phase 4 will add `full_cpcv_optuna_sweep`.
+### Running a full 3-year sweep
+
+```bash
+source ml-sweep/.env
+# 1m, NQ+ES, full 2022-2024 window, default 50 trials/fold — ~2h on Railway
+curl -sS -X POST "$ML_SWEEP_URL/run" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "script": "full_cpcv_optuna_sweep",
+    "args": {
+      "timeframe": "1m",
+      "markets": "NQ",
+      "start": "2022-01-01",
+      "end": "2024-12-31",
+      "n-trials": 50
+    }
+  }'
+```
+
+Then fire the 5m run after the 1m finishes (one-at-a-time lock):
+
+```bash
+curl -sS -X POST "$ML_SWEEP_URL/run" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"script":"full_cpcv_optuna_sweep","args":{"timeframe":"5m","markets":"NQ","start":"2022-01-01","end":"2024-12-31","n-trials":50}}'
+```
+
+**Smoke-test flag**: pass `n-trials: 5` and a narrow window (e.g.
+`start: 2022-01-01, end: 2022-02-01`) for a ~5-minute dry-run before
+committing to the full multi-hour sweep.
+
+Subprocess timeout is 6 hours. Most full sweeps complete in 2-4 hours.
 
 ### Running a sweep
 

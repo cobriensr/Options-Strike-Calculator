@@ -40,8 +40,7 @@ log = logging.getLogger(__name__)
 # inside the container (COPYd by the Dockerfile from ml/scripts).
 WHITELIST: dict[str, str] = {
     "pine_match_2026_window": "/app/ml-scripts/pine_match_2026_window.py",
-    # Phase 4 will add:
-    # "full_cpcv_optuna_sweep": "/app/ml-scripts/full_cpcv_optuna_sweep.py",
+    "full_cpcv_optuna_sweep": "/app/ml-scripts/full_cpcv_optuna_sweep.py",
 }
 
 # Jobs scratch directory lives alongside /data/archive (same mounted volume).
@@ -50,9 +49,12 @@ JOBS_ROOT = Path(
     os.environ.get("JOBS_ROOT") or str(Path("/data") / "jobs")
 )
 
-# Upper bound per subprocess. Full 3-year CPCV sweeps take ~90 min on the
-# user's laptop; 3h gives 2x headroom on Railway hardware.
-SUBPROCESS_TIMEOUT_S = 3 * 60 * 60
+# Upper bound per subprocess. Full 3-year CPCV sweep across NQ+ES 1m is
+# ~90 min on the dev laptop; Railway standard tier runs at similar speed.
+# 6h gives safe headroom for (a) worst-case symbol pathologies, (b) 1m+5m
+# batch jobs that compose multiple markets, (c) Optuna trial ramps that
+# exceed the default 50.
+SUBPROCESS_TIMEOUT_S = 6 * 60 * 60
 
 # Archive root (overridable via env). Passed down to the subprocess so
 # pac.archive_loader reads from the mounted volume.
