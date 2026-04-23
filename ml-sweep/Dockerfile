@@ -56,5 +56,18 @@ ENV PYTHONPATH=/app/ml-src
 # Railway injects $PORT. Bind 0.0.0.0.
 CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-8080}"]
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD curl -sf http://localhost:${PORT:-8080}/health || exit 1
+# INTENTIONALLY NO `HEALTHCHECK` DIRECTIVE.
+#
+# Railway runs a 5-sec curl probe to this container; if /health misses 3
+# consecutive probes, Railway restarts the container. Our dispatched
+# subprocess is in a SEPARATE process with its own GIL, so the parent
+# uvicorn process stays responsive during sweeps in theory. In practice,
+# the overnight 3-yr sweep and a second 5-min attempt both saw the
+# container get killed mid-subprocess with no Python traceback — the
+# classic signature of an external SIGKILL (OOM or health-probe trip).
+#
+# Since Railway provides its own port-liveness probe (less aggressive
+# than a Docker HEALTHCHECK), we don't add one here. Without our own
+# HEALTHCHECK the subprocess gets the full 6h runtime budget. If the
+# container still restarts mid-sweep, /logs/{job_id} on the volume will
+# show whatever the Python process printed before dying.

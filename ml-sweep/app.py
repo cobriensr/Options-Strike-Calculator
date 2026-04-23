@@ -245,6 +245,31 @@ def run_status(job_id: str, _auth: None = Depends(require_auth)) -> StatusRespon
     return StatusResponse(**filtered)
 
 
+@app.get("/logs/{job_id}")
+def job_logs(
+    job_id: str,
+    lines: int = 200,
+    _auth: None = Depends(require_auth),
+) -> dict[str, Any]:
+    """Tail the subprocess stdout+stderr for a given job.
+
+    Subprocesses write to /data/jobs/<job_id>/log.txt (runner.py wires
+    stdout + stderr through a single file handle). Default returns the
+    last 200 lines; pass ?lines=N for more. Returns
+      {"job_id": str, "lines": int, "text": str}
+    where `text` is newline-joined. If the file doesn't exist the
+    endpoint returns a sentinel message rather than 404 so callers can
+    still poll uniformly during the brief window before the subprocess
+    has written anything.
+    """
+    text = runner.tail_log(job_id, lines=lines)
+    return {
+        "job_id": job_id,
+        "lines": lines,
+        "text": text if text is not None else "(no log file found)",
+    }
+
+
 @app.post("/hydrate", response_model=HydrateResponse, status_code=status.HTTP_202_ACCEPTED)
 def hydrate(_auth: None = Depends(require_auth)) -> HydrateResponse:
     """Kick off a background archive hydration from Vercel Blob."""
