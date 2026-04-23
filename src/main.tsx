@@ -107,6 +107,7 @@ if (import.meta.env.PROD)
       { path: '/api/push/recent-events', method: 'GET' },
       { path: '/api/institutional-program', method: 'GET' },
       { path: '/api/institutional-program/strike-heatmap', method: 'GET' },
+      { path: '/api/iv-anomalies', method: 'GET' },
     ],
   });
 

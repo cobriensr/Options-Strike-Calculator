@@ -50,6 +50,65 @@ export const zeroGammaQuerySchema = z.object({
 export type ZeroGammaQuery = z.infer<typeof zeroGammaQuerySchema>;
 
 // ============================================================
+// /api/iv-anomalies
+// ============================================================
+
+/**
+ * Query params for GET /api/iv-anomalies.
+ *
+ * Two modes, distinguished by the presence of `strike`/`side`/`expiry`:
+ *
+ *  1. **List mode** (no strike): returns `{ latest, history }` grouped by
+ *     ticker. `ticker` narrows to a single ticker; omitting it returns
+ *     all three (SPX/SPY/QQQ). `limit` caps `history` length (default 100,
+ *     max 500) and serves as an upper bound across all tickers when no
+ *     ticker is supplied.
+ *
+ *  2. **Per-strike history mode** (strike + side + expiry present): returns
+ *     the per-strike IV time series from `strike_iv_snapshots` for the last
+ *     `limit` samples. Feeds the Phase 3 StrikeIVChart.
+ *
+ * `ticker` is gated to SPX/SPY/QQQ — the only tickers ingested by
+ * `fetch-strike-iv`. Anything else would guarantee an empty response
+ * and is rejected here to surface client bugs early.
+ *
+ * `expiry` is a YYYY-MM-DD calendar date; the column is `DATE` so we
+ * keep the string shape pinned rather than parsing into a Date.
+ *
+ * `side` is required whenever `strike` is present — a strike isn't
+ * addressable without call/put.
+ */
+export const ivAnomaliesQuerySchema = z
+  .object({
+    ticker: z.enum(['SPX', 'SPY', 'QQQ']).optional(),
+    limit: z.coerce.number().int().min(1).max(500).default(100),
+    strike: z.coerce.number().positive().finite().optional(),
+    side: z.enum(['call', 'put']).optional(),
+    expiry: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, 'expiry must be YYYY-MM-DD')
+      .optional(),
+  })
+  .refine(
+    (v) => {
+      // History mode requires all three: strike + side + expiry + ticker.
+      const historyFields = [v.strike, v.side, v.expiry];
+      const present = historyFields.filter((f) => f != null).length;
+      if (present === 0) return true;
+      if (present !== 3) return false;
+      // A strike without a ticker is ambiguous across indices.
+      return v.ticker != null;
+    },
+    {
+      message:
+        'strike+side+expiry+ticker must all be present for per-strike history',
+      path: ['strike'],
+    },
+  );
+
+export type IVAnomaliesQuery = z.infer<typeof ivAnomaliesQuerySchema>;
+
+// ============================================================
 // /api/options-flow/otm-heavy
 // ============================================================
 

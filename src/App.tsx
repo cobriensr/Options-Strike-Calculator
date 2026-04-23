@@ -116,6 +116,16 @@ const InstitutionalProgramSection = lazy(() =>
     .then((m) => ({ default: m.InstitutionalProgramSection }))
     .catch(handleStaleChunk),
 );
+const IVAnomaliesSection = lazy(() =>
+  import('./components/IVAnomalies/IVAnomaliesSection')
+    .then((m) => ({ default: m.IVAnomaliesSection }))
+    .catch(handleStaleChunk),
+);
+const AnomalyBanner = lazy(() =>
+  import('./components/IVAnomalies/AnomalyBanner')
+    .then((m) => ({ default: m.AnomalyBanner }))
+    .catch(handleStaleChunk),
+);
 
 function SchwabAuthLink({
   ariaLabel,
@@ -625,6 +635,9 @@ export default function StrikeCalculator() {
             { id: 'sec-market-flow', label: 'Flow' },
           ]
         : []),
+      ...(isOwner && hasMarketOrSnapshot
+        ? [{ id: 'sec-iv-anomalies', label: 'IV Anomalies' }]
+        : []),
       ...(isOwner
         ? [
             { id: 'sec-futures', label: 'Futures' },
@@ -891,6 +904,12 @@ export default function StrikeCalculator() {
             permission={alertState.notificationPermission}
             onRequest={alertState.requestPermission}
           />
+        )}
+
+        {isOwner && (
+          <Suspense fallback={null}>
+            <AnomalyBanner />
+          </Suspense>
         )}
 
         <div className="mx-auto max-w-[660px] px-5 pt-6 pb-12 lg:max-w-6xl">
@@ -1193,6 +1212,15 @@ export default function StrikeCalculator() {
                 <ErrorBoundary label="Institutional Program">
                   <Suspense fallback={<SkeletonSection lines={6} />}>
                     <InstitutionalProgramSection />
+                  </Suspense>
+                </ErrorBoundary>
+
+                <span id="sec-iv-anomalies" className="block scroll-mt-28" />
+                <ErrorBoundary label="Strike IV Anomalies">
+                  <Suspense fallback={<SkeletonSection lines={5} />}>
+                    <IVAnomaliesSection
+                      marketOpen={market.data.quotes?.marketOpen ?? false}
+                    />
                   </Suspense>
                 </ErrorBoundary>
               </>

@@ -1,0 +1,311 @@
+// @vitest-environment node
+
+/**
+ * HTTP-level tests for GET /api/iv-anomalies (Phase 3 read endpoint).
+ *
+ * Covers list mode (latest + history grouped by ticker), per-strike
+ * history mode (IV time series), and the standard guards: method,
+ * bot, owner, Zod validation, and DB error paths.
+ */
+
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mockRequest, mockResponse } from './helpers';
+
+// ── Mocks ────────────────────────────────────────────────
+
+vi.mock('../_lib/api-helpers.js', () => ({
+  rejectIfNotOwner: vi.fn(),
+  checkBot: vi.fn(async () => ({ isBot: false })),
+  isMarketOpen: vi.fn(() => false),
+  setCacheHeaders: vi.fn(
+    (res: { setHeader: (k: string, v: string) => unknown }) => {
+      res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=60');
+      res.setHeader('Vary', 'Cookie');
+    },
+  ),
+}));
+
+const mockSql = vi.fn();
+vi.mock('../_lib/db.js', () => ({
+  getDb: vi.fn(() => mockSql),
+}));
+
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: {
+    withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
+    captureException: vi.fn(),
+  },
+}));
+
+vi.mock('../_lib/logger.js', () => ({
+  default: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
+}));
+
+import handler from '../iv-anomalies.js';
+import { rejectIfNotOwner, checkBot } from '../_lib/api-helpers.js';
+import { Sentry } from '../_lib/sentry.js';
+import logger from '../_lib/logger.js';
+
+// ── Fixtures ─────────────────────────────────────────────
+
+function makeAnomalyRow(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    id: 123,
+    ticker: 'SPX',
+    strike: '7135.00',
+    side: 'put',
+    expiry: '2026-04-23',
+    spot_at_detect: '7140.5000',
+    iv_at_detect: '0.22500',
+    skew_delta: '2.1500',
+    z_score: '3.2100',
+    ask_mid_div: '0.6000',
+    flag_reasons: ['skew_delta', 'z_score'],
+    flow_phase: 'early',
+    context_snapshot: { vix_level: 18.2 },
+    resolution_outcome: null,
+    ts: '2026-04-23T15:30:00Z',
+    ...overrides,
+  };
+}
+
+function makeSampleRow(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    ts: '2026-04-23T15:30:00Z',
+    iv_mid: '0.22500',
+    iv_bid: '0.22000',
+    iv_ask: '0.23000',
+    mid_price: '12.50',
+    spot: '7140.5000',
+    ...overrides,
+  };
+}
+
+// ── Tests ─────────────────────────────────────────────────
+
+describe('GET /api/iv-anomalies', () => {
+  beforeEach(() => {
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(checkBot).mockResolvedValue({ isBot: false });
+    mockSql.mockReset();
+    vi.mocked(Sentry.captureException).mockClear();
+    vi.mocked(logger.error).mockClear();
+  });
+
+  it('returns 405 for POST', async () => {
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'POST' }), res);
+    expect(res._status).toBe(405);
+    expect(res._json).toEqual({ error: 'GET only' });
+  });
+
+  it('returns 403 when botid detects a bot', async () => {
+    vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+    expect(res._status).toBe(403);
+    expect(res._json).toEqual({ error: 'Access denied' });
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('returns 401 for non-owner (gate fires before DB read)', async () => {
+    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+      res.status(401).json({ error: 'Not authenticated' });
+      return true;
+    });
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+    expect(res._status).toBe(401);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid ticker with 400 (enum validation)', async () => {
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { ticker: 'TSLA' } }),
+      res,
+    );
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('rejects history mode without ticker (ambiguous strike)', async () => {
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { strike: '7135', side: 'put', expiry: '2026-04-23' },
+      }),
+      res,
+    );
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('rejects history mode with partial fields (strike without side)', async () => {
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { ticker: 'SPX', strike: '7135', expiry: '2026-04-23' },
+      }),
+      res,
+    );
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('rejects limit > 500', async () => {
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { limit: '1000' } }),
+      res,
+    );
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('returns empty-keyed list payload when no rows exist', async () => {
+    // List mode fires one query per ticker (SPX/SPY/QQQ) — all return [].
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+    expect(res._status).toBe(200);
+
+    const body = res._json as {
+      mode: string;
+      latest: Record<string, unknown>;
+      history: Record<string, unknown[]>;
+    };
+    expect(body.mode).toBe('list');
+    expect(body.latest.SPX).toBeNull();
+    expect(body.latest.SPY).toBeNull();
+    expect(body.latest.QQQ).toBeNull();
+    expect(body.history.SPX).toEqual([]);
+    expect(body.history.SPY).toEqual([]);
+    expect(body.history.QQQ).toEqual([]);
+  });
+
+  it('returns latest + history grouped by ticker on happy path', async () => {
+    mockSql
+      .mockResolvedValueOnce([
+        makeAnomalyRow({ id: 1, ticker: 'SPX', ts: '2026-04-23T15:30:00Z' }),
+        makeAnomalyRow({ id: 2, ticker: 'SPX', ts: '2026-04-23T15:25:00Z' }),
+      ])
+      .mockResolvedValueOnce([
+        makeAnomalyRow({
+          id: 3,
+          ticker: 'SPY',
+          strike: '705.00',
+          ts: '2026-04-23T15:28:00Z',
+        }),
+      ])
+      .mockResolvedValueOnce([]); // QQQ empty
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+    expect(res._status).toBe(200);
+
+    const body = res._json as {
+      mode: string;
+      latest: Record<
+        string,
+        { id: number; ticker: string; flagReasons: string[] } | null
+      >;
+      history: Record<string, unknown[]>;
+    };
+    expect(body.mode).toBe('list');
+    expect(body.latest.SPX?.id).toBe(1);
+    expect(body.latest.SPX?.flagReasons).toEqual(['skew_delta', 'z_score']);
+    expect(body.latest.SPY?.id).toBe(3);
+    expect(body.latest.QQQ).toBeNull();
+    expect(body.history.SPX).toHaveLength(2);
+    expect(body.history.SPY).toHaveLength(1);
+    expect(body.history.QQQ).toHaveLength(0);
+  });
+
+  it('narrows to a single ticker when query param is supplied', async () => {
+    mockSql.mockResolvedValueOnce([
+      makeAnomalyRow({ ticker: 'SPY', strike: '705.00' }),
+    ]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { ticker: 'SPY' } }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    // Only ONE SQL call (not three) when ticker is narrowed.
+    expect(mockSql).toHaveBeenCalledTimes(1);
+    const body = res._json as {
+      mode: string;
+      latest: Record<string, { ticker: string } | null>;
+      history: Record<string, unknown[]>;
+    };
+    expect(body.latest.SPY?.ticker).toBe('SPY');
+    expect(body.latest.SPX).toBeNull();
+    expect(body.latest.QQQ).toBeNull();
+  });
+
+  it('returns per-strike history samples in ASC time order', async () => {
+    // DB returns DESC by ts (matches SQL); handler reverses for chart UX.
+    mockSql.mockResolvedValueOnce([
+      makeSampleRow({ ts: '2026-04-23T15:30:00Z', iv_mid: '0.2300' }),
+      makeSampleRow({ ts: '2026-04-23T15:29:00Z', iv_mid: '0.2200' }),
+      makeSampleRow({ ts: '2026-04-23T15:28:00Z', iv_mid: '0.2100' }),
+    ]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: {
+          ticker: 'SPX',
+          strike: '7135',
+          side: 'put',
+          expiry: '2026-04-23',
+        },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      mode: string;
+      ticker: string;
+      samples: Array<{ ts: string; ivMid: number | null }>;
+    };
+    expect(body.mode).toBe('history');
+    expect(body.ticker).toBe('SPX');
+    expect(body.samples).toHaveLength(3);
+    // First sample should be the oldest (15:28).
+    expect(body.samples[0]?.ts).toBe('2026-04-23T15:28:00.000Z');
+    expect(body.samples[0]?.ivMid).toBe(0.21);
+    expect(body.samples[2]?.ts).toBe('2026-04-23T15:30:00.000Z');
+  });
+
+  it('returns 500 and captures exception on DB error', async () => {
+    const dbError = new Error('connection refused');
+    mockSql.mockRejectedValueOnce(dbError);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { ticker: 'SPX' } }),
+      res,
+    );
+
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ error: 'Internal error' });
+    expect(Sentry.captureException).toHaveBeenCalledWith(dbError);
+    expect(logger.error).toHaveBeenCalled();
+  });
+});
