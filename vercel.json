@@ -98,6 +98,10 @@
       "schedule": "4,9,14,19,24,29,34,39,44,49,54,59 13-21 * * 1-5"
     },
     {
+      "path": "/api/cron/fetch-strike-iv",
+      "schedule": "* 13-21 * * 1-5"
+    },
+    {
       "path": "/api/cron/embed-yesterday",
       "schedule": "0 7 * * 2-6"
     },

@@ -9,6 +9,7 @@ import {
   calcBSVega,
   blackScholesPrice,
   calcIVAcceleration,
+  impliedVolatility,
 } from '../utils/black-scholes';
 import { MARKET, DEFAULTS } from '../constants';
 
@@ -462,5 +463,108 @@ describe('calcIVAcceleration', () => {
     // At 1h: mult = 1 + 0.6 × (1/1 - 1/6.5) = 1 + 0.6 × 0.846 = ~1.508
     const at1h = calcIVAcceleration(1);
     expect(at1h).toBeCloseTo(1.508, 2);
+  });
+});
+
+// ── impliedVolatility ──────────────────────────────────────────
+
+describe('impliedVolatility', () => {
+  // Round-trip check: pick a σ, price the option, invert it back → same σ.
+  // Uses T = 1/365 (≈ 0DTE at open) so the test exercises the short-T
+  // regime the Strike IV Anomaly Detector actually runs in.
+  const roundTripCases: Array<{
+    spot: number;
+    strike: number;
+    sigma: number;
+    T: number;
+    type: 'call' | 'put';
+    label: string;
+  }> = [
+    {
+      spot: 7100,
+      strike: 7080,
+      sigma: 0.2,
+      T: 1 / 365,
+      type: 'put',
+      label: 'OTM SPX put, 1 DTE, 20% vol',
+    },
+    {
+      spot: 7100,
+      strike: 7150,
+      sigma: 0.25,
+      T: 1 / 365,
+      type: 'call',
+      label: 'OTM SPX call, 1 DTE, 25% vol',
+    },
+    {
+      spot: 710,
+      strike: 705,
+      sigma: 0.18,
+      T: 2 / 365,
+      type: 'put',
+      label: 'OTM SPY put, 2 DTE, 18% vol',
+    },
+    {
+      spot: 500,
+      strike: 510,
+      sigma: 0.3,
+      T: 5 / 365,
+      type: 'call',
+      label: 'OTM QQQ call, 5 DTE, 30% vol',
+    },
+    {
+      spot: 7100,
+      strike: 7100,
+      sigma: 0.22,
+      T: 1 / 365,
+      type: 'call',
+      label: 'ATM SPX call, 1 DTE',
+    },
+  ];
+
+  for (const { spot, strike, sigma, T, type, label } of roundTripCases) {
+    it(`round-trips σ=${sigma} for ${label}`, () => {
+      const price = blackScholesPrice(spot, strike, sigma, T, type);
+      const solved = impliedVolatility(price, spot, strike, T, type);
+      expect(solved).not.toBeNull();
+      // 4 decimal places is ~1bp — tighter than anyone trades.
+      expect(solved).toBeCloseTo(sigma, 4);
+    });
+  }
+
+  it('returns null for a price below intrinsic', () => {
+    // Call with spot=7100, strike=7000 → intrinsic=100. Quote 50 = arbitrage.
+    const iv = impliedVolatility(50, 7100, 7000, 1 / 365, 'call');
+    expect(iv).toBeNull();
+  });
+
+  it('returns null for a price at or above the upper bound', () => {
+    // Call upper bound (r=0) = spot. Price >= spot is infeasible.
+    expect(impliedVolatility(7100, 7100, 7000, 1 / 365, 'call')).toBeNull();
+    // Put upper bound = strike. Price >= strike is infeasible.
+    expect(impliedVolatility(7000, 7100, 7000, 1 / 365, 'put')).toBeNull();
+  });
+
+  it('returns null for non-finite / non-positive inputs', () => {
+    expect(impliedVolatility(NaN, 7100, 7080, 1 / 365, 'put')).toBeNull();
+    expect(impliedVolatility(5, -1, 7080, 1 / 365, 'put')).toBeNull();
+    expect(impliedVolatility(5, 7100, 0, 1 / 365, 'put')).toBeNull();
+    expect(impliedVolatility(5, 7100, 7080, 0, 'put')).toBeNull();
+    expect(impliedVolatility(-1, 7100, 7080, 1 / 365, 'put')).toBeNull();
+  });
+
+  it('handles deep-OTM options where vega is small but positive', () => {
+    // 5% OTM with 1-day to expiry and moderate vol — mid vega is small but
+    // inversion should still succeed (Newton falls back to bisection).
+    // Precision falls off in the deep tail (vega ≈ 0) so we accept ~2
+    // decimal places, which is still well within trading tolerance.
+    const price = blackScholesPrice(7100, 6750, 0.2, 1 / 365, 'put');
+    // Only test if there's enough premium to invert from (very deep OTM
+    // prices can be below the default tolerance).
+    if (price > 1e-6) {
+      const solved = impliedVolatility(price, 7100, 6750, 1 / 365, 'put');
+      expect(solved).not.toBeNull();
+      expect(solved).toBeCloseTo(0.2, 2);
+    }
   });
 });

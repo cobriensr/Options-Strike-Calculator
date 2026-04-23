@@ -24,3 +24,20 @@ export const MARKET_MINUTES = {
 
 /** Unusual Whales API base URL */
 export const UW_BASE = 'https://api.unusualwhales.com/api';
+
+// ============================================================
+// STRIKE IV ANOMALY DETECTOR (Phase 1)
+// ============================================================
+
+/**
+ * Per-strike IV snapshot filters for the fetch-strike-iv cron.
+ * OTM range: ±3% of spot covers 1% (today's 7100→7034 example) through tail hedges.
+ * Min OI gates out illiquid strikes whose mid prices are stale — different per
+ * ticker because SPX strikes are $5-wide (OI concentrates) vs SPY/QQQ $1-wide
+ * (OI disperses across a wider band of strikes).
+ */
+export const STRIKE_IV_OTM_RANGE_PCT = 0.03;
+export const STRIKE_IV_MIN_OI_SPX = 500;
+export const STRIKE_IV_MIN_OI_SPY_QQQ = 250;
+export const STRIKE_IV_TICKERS = ['SPX', 'SPY', 'QQQ'] as const;
+export type StrikeIVTicker = (typeof STRIKE_IV_TICKERS)[number];

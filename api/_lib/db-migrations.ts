@@ -2227,4 +2227,50 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 83,
+    description:
+      'Create strike_iv_snapshots table for per-strike OTM IV time series ' +
+      '(SPX/SPY/QQQ, ±3% of spot) — Phase 1 of the Strike IV Anomaly Detector',
+    statements: (sql) => [
+      // One row per ticker × strike × side × expiry × 1-min snapshot. Volume:
+      // ~30 strikes × 3 tickers × 3 expiries × 540 polls/day ≈ 145K rows/day.
+      // Numeric precision is sized for both SPX ($5 strikes, 4-digit prices)
+      // and SPY/QQQ ($1 strikes, 2-digit prices). Nullable IV columns handle
+      // the case where the Newton-Raphson solver can't invert a broken quote
+      // (price below intrinsic, vega-collapse tail); we still insert the row
+      // so the mid_price / OI / volume time series stays contiguous.
+      sql`
+        CREATE TABLE IF NOT EXISTS strike_iv_snapshots (
+          id          BIGSERIAL PRIMARY KEY,
+          ticker      TEXT NOT NULL,
+          strike      NUMERIC(10,2) NOT NULL,
+          side        TEXT NOT NULL,
+          expiry      DATE NOT NULL,
+          spot        NUMERIC(10,4) NOT NULL,
+          iv_mid      NUMERIC(8,5),
+          iv_bid      NUMERIC(8,5),
+          iv_ask      NUMERIC(8,5),
+          mid_price   NUMERIC(8,4),
+          oi          INTEGER,
+          volume      INTEGER,
+          ts          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `,
+      // Fast scan for "latest N snapshots per ticker" queries that Phase 2's
+      // detector + Phase 3's per-ticker tab view will drive. ts DESC keeps
+      // recent data on the leading index pages.
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_strike_iv_snapshots_ticker_ts
+          ON strike_iv_snapshots (ticker, ts DESC)
+      `,
+      // Composite for Phase 3's per-strike history chart: given (ticker,
+      // strike, side, expiry), return the last N samples in descending time
+      // order. Index-only scan since it covers every WHERE + ORDER BY column.
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_strike_iv_snapshots_lookup
+          ON strike_iv_snapshots (ticker, strike, side, expiry, ts DESC)
+      `,
+    ],
+  },
 ];

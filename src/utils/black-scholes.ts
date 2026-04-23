@@ -172,6 +172,113 @@ export function blackScholesPrice(
 }
 
 /**
+ * Invert a Black-Scholes European option price to the implied volatility σ
+ * that would reproduce it under the model.
+ *
+ * Uses Newton-Raphson on vega with a bisection fallback for safety. r is
+ * assumed 0 (consistent with the other functions in this module — valid for
+ * 0DTE and a reasonable approximation for the near-dated expiries the IV
+ * anomaly detector watches).
+ *
+ * Returns null when the price is outside the model's feasible range:
+ *   - below intrinsic value (arbitrage — quote is stale/broken)
+ *   - at or above the undiscounted upper bound (spot for a call, strike for a
+ *     put with r=0)
+ *   - iteration fails to converge (extreme cases, e.g. price very close to
+ *     intrinsic → vega → 0 → Newton explodes)
+ *
+ * Callers MUST null-check the return value and skip strikes that fail to
+ * invert — do not substitute a fallback IV, since that would pollute the
+ * time series the anomaly detector is reading.
+ */
+export function impliedVolatility(
+  price: number,
+  spot: number,
+  strike: number,
+  T: number,
+  type: 'call' | 'put',
+  opts: {
+    /** Convergence tolerance in price units. Default 1e-6. */
+    tol?: number;
+    /** Maximum Newton iterations before falling through to bisection. Default 50. */
+    maxIter?: number;
+    /** Lower bound of the bisection bracket. Default 1e-6 (0.0001%). */
+    sigmaMin?: number;
+    /** Upper bound of the bisection bracket. Default 5 (500% vol). */
+    sigmaMax?: number;
+  } = {},
+): number | null {
+  const { tol = 1e-6, maxIter = 50, sigmaMin = 1e-6, sigmaMax = 5 } = opts;
+
+  if (
+    !Number.isFinite(price) ||
+    !Number.isFinite(spot) ||
+    !Number.isFinite(strike) ||
+    !Number.isFinite(T) ||
+    spot <= 0 ||
+    strike <= 0 ||
+    T <= 0 ||
+    price <= 0
+  ) {
+    return null;
+  }
+
+  // Reject prices outside the feasible range. For r=0:
+  //   call:  intrinsic = max(spot - strike, 0), upper bound = spot
+  //   put:   intrinsic = max(strike - spot, 0), upper bound = strike
+  const intrinsic =
+    type === 'call' ? Math.max(spot - strike, 0) : Math.max(strike - spot, 0);
+  const upperBound = type === 'call' ? spot : strike;
+  if (price < intrinsic - tol) return null;
+  if (price >= upperBound - tol) return null;
+
+  // Newton-Raphson from a Manaster-Koehler-style initial guess.
+  // σ₀ ≈ √(2 / T) × |ln(S/K)| is a solid starting point for near-ATM strikes;
+  // for far-OTM we bump it to 0.5 to avoid vega ≈ 0 at σ ≈ 0.
+  const logMoneyness = Math.abs(Math.log(spot / strike));
+  let sigma = Math.max(Math.sqrt((2 * logMoneyness) / T), 0.3);
+  if (!Number.isFinite(sigma) || sigma <= 0) sigma = 0.5;
+
+  for (let i = 0; i < maxIter; i += 1) {
+    const modelPrice = blackScholesPrice(spot, strike, sigma, T, type);
+    const diff = modelPrice - price;
+    if (Math.abs(diff) < tol) {
+      if (sigma < sigmaMin || sigma > sigmaMax) break;
+      return sigma;
+    }
+    const vega = calcBSVega(spot, strike, sigma, T);
+    // If vega collapses we're at the tails of the model; fall through to
+    // bisection rather than taking huge Newton steps.
+    if (!Number.isFinite(vega) || vega < 1e-8) break;
+    const next = sigma - diff / vega;
+    // Clamp into the search bracket so Newton can't walk into negative-σ
+    // territory or diverge off to infinity.
+    if (!Number.isFinite(next) || next <= sigmaMin || next >= sigmaMax) break;
+    sigma = next;
+  }
+
+  // Bisection fallback. Guarantees convergence whenever the price is inside
+  // the feasible range, at the cost of ~40 iterations worst case.
+  let lo = sigmaMin;
+  let hi = sigmaMax;
+  const loPrice = blackScholesPrice(spot, strike, lo, T, type);
+  const hiPrice = blackScholesPrice(spot, strike, hi, T, type);
+  // Monotonic in σ: price(σ) strictly increases from intrinsic → upperBound.
+  if (price < loPrice || price > hiPrice) return null;
+
+  for (let i = 0; i < 80; i += 1) {
+    const mid = (lo + hi) / 2;
+    const midPrice = blackScholesPrice(spot, strike, mid, T, type);
+    if (Math.abs(midPrice - price) < tol) return mid;
+    if (midPrice < price) lo = mid;
+    else hi = mid;
+    if (hi - lo < tol) return (lo + hi) / 2;
+  }
+
+  return null;
+}
+
+/**
  * Computes the intraday IV acceleration multiplier.
  * As the 0DTE session progresses, gamma acceleration causes realized IV
  * to increase. This function returns a multiplier on σ that accounts for
