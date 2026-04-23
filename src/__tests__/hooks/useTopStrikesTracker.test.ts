@@ -105,6 +105,14 @@ function makeStrike(strike: number, netGamma = 1e9): GexStrikeLevel {
 
 const BASE = [7100, 7110, 7120, 7130, 7140].map((s) => makeStrike(s));
 
+// Stable empty array reference for the "empty topFive" test. Passing an
+// inline `[]` causes a new array reference on every render, which the
+// hook's useEffect dep-array treats as a change — the effect then calls
+// setJustEntered(new Set()), triggering a re-render, and the loop runs
+// away until V8 OOMs. Production is safe because GexLandscape wraps
+// topFive in useMemo. Use this module-scope constant in tests instead.
+const EMPTY_TOP_FIVE: GexStrikeLevel[] = [];
+
 // ── Lifecycle ─────────────────────────────────────────────
 
 beforeEach(() => {
@@ -322,7 +330,7 @@ describe('useTopStrikesTracker', () => {
   it('empty topFive does not crash', () => {
     const { result } = renderHook(() =>
       useTopStrikesTracker({
-        topFive: [],
+        topFive: EMPTY_TOP_FIVE,
         timestamp: '2026-04-22T18:00:00Z',
         isLive: true,
         muted: false,
