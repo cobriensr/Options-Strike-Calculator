@@ -28,6 +28,15 @@ sidecar/          Databento futures data ingestion (Python, Railway, NOT Vercel)
                   Sentry SDK for error tracking; VX deferred pending Databento availability
                   vercel.json ignoreCommand skips deploys for sidecar/, ml/, scripts/, pine/, docs/, *.md changes
 
+ml-sweep/         PAC backtest runner (Python, Railway, NOT Vercel — sibling to sidecar)
+                  FastAPI + bearer auth gating /run, /status/{id}, /logs/{id}, /hydrate, /hydrate/status
+                  Spawns whitelisted sweep scripts (pac_backtest CPCV + Optuna) as subprocesses
+                  5 GB volume at /data hydrated from Vercel Blob archive (parquet per year)
+                  Heartbeat (30s) + orphan recovery on container restart; uploads JSON to Blob
+                  Own Dockerfile, README.md, TEARDOWN.md — auto-deploys on ml-sweep/** or ml/** pushes
+                  Do NOT enable scale-to-zero (kills sweeps mid-flight — HTTP idle counter is
+                  blind to subprocess CPU)
+
 scripts/          Backfill scripts (backfill-etf-tide.mjs, backfill-greek-exposure.mjs, etc.)
 
 ml/               Python ML pipeline (clustering, EDA, classification, visualization)
@@ -215,6 +224,8 @@ Required env vars (pulled via `vercel env pull .env.local`):
 | `ARCHIVE_MANIFEST_URL`                     | Archive manifest (Railway only)    |
 | `ARCHIVE_SEED_TOKEN`                       | Gates seed POST (Railway only)     |
 | `ARCHIVE_ROOT`                             | Volume path; default /data/archive |
+| `AUTH_TOKEN`                               | ml-sweep bearer (Railway only)     |
+| `RAILWAY_RUN_UID`                          | `0` on Railway for volume write    |
 
 Never edit `.env*` files with Claude. Never commit secrets.
 
@@ -222,6 +233,12 @@ The `ARCHIVE_*` and `BLOB_READ_WRITE_TOKEN` vars wire up the persistent
 Databento archive on the Railway sidecar's `/data` volume.
 `POST /admin/seed-archive` is a one-shot, SHA-resumable pull from Blob —
 see `docs/superpowers/specs/archive-volume-seed-2026-04-18.md`.
+
+The `ml-sweep` service reuses `ARCHIVE_MANIFEST_URL`, `ARCHIVE_ROOT`,
+and `BLOB_READ_WRITE_TOKEN` to pull the archive onto its own separate
+volume, plus `AUTH_TOKEN` to gate `/run`, `/status/{id}`, `/logs/{id}`,
+and `/hydrate*`. See `ml-sweep/README.md` for the full operational
+playbook and `ml-sweep/TEARDOWN.md` for shutdown / cleanup.
 
 ## Deployment
 
