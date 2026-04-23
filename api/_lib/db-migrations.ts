@@ -2195,9 +2195,7 @@ export const MIGRATIONS: Migration[] = [
       `,
       sql`
         CREATE INDEX IF NOT EXISTS idx_instblocks_track_date
-          ON institutional_blocks (
-            program_track, CAST(executed_at AS DATE) DESC
-          )
+          ON institutional_blocks (program_track, executed_at DESC)
       `,
     ],
   },
