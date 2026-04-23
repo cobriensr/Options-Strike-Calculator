@@ -6,17 +6,49 @@ compute so the developer laptop doesn't have to.
 
 Full design: [pac-sweep-railway-service-2026-04-22.md](../docs/superpowers/specs/pac-sweep-railway-service-2026-04-22.md).
 
-## Current phase: 2 — hydration
+## Current phase: 3 — sweep runner
 
-`/health`, `/hydrate`, and `/hydrate/status` are live. `/run` still
-returns an echo stub — Phase 3 will wire the real sweep subprocess
-dispatcher + blob result upload.
+`/run` now spawns whitelisted scripts as subprocesses and uploads the
+final JSON result to Vercel Blob. `/status/{job_id}` reads live state
+from `/data/jobs/{job_id}/meta.json` on the volume, so container
+restarts don't lose job history.
+
+### Whitelisted scripts
+
+| Name                     | Path in container                           | Accepts                                        |
+| ------------------------ | ------------------------------------------- | ---------------------------------------------- |
+| `pine_match_2026_window` | `/app/ml-scripts/pine_match_2026_window.py` | `timeframe` (1m\|5m), `start`, `end`, `symbol` |
+
+Phase 4 will add `full_cpcv_optuna_sweep`.
+
+### Running a sweep
+
+```bash
+source ml-sweep/.env
+# Fire a 5m-timeframe run:
+curl -sS -X POST "$ML_SWEEP_URL/run" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"script":"pine_match_2026_window","args":{"timeframe":"5m"}}'
+# → 202 {"job_id":"...","status":"accepted","message":"Sweep started..."}
+
+# Poll:
+curl -sS "$ML_SWEEP_URL/status/<job_id>" \
+  -H "Authorization: Bearer $AUTH_TOKEN" | jq
+
+# When status=succeeded, download the result:
+curl -H "Authorization: Bearer $BLOB_READ_WRITE_TOKEN" \
+  <result_url> > /tmp/sweep_result.json
+```
+
+Only one sweep runs at a time. Second `/run` while one is in flight
+returns `429 Too Many Requests`.
 
 ## Endpoints
 
 | Method | Path               | Auth   | Purpose                                                                                                               |
 | ------ | ------------------ | ------ | --------------------------------------------------------------------------------------------------------------------- |
-| `GET`  | `/health`          | none   | Railway health probe; returns `{ok: true, phase: 2}`                                                                  |
+| `GET`  | `/health`          | none   | Railway health probe; returns `{ok: true, phase: 3}`                                                                  |
 | `POST` | `/hydrate`         | Bearer | Start downloading the Databento archive from Vercel Blob to `/data/archive`. Returns 202 immediately with a `job_id`. |
 | `GET`  | `/hydrate/status`  | Bearer | Poll hydration progress + on-disk file count.                                                                         |
 | `POST` | `/run`             | Bearer | Phase 3: queue a sweep job, return a `job_id`                                                                         |
@@ -30,10 +62,10 @@ env var on the Railway service.
 
 ## Required env vars on Railway
 
-| Variable                | Purpose                                                              |
-| ----------------------- | -------------------------------------------------------------------- |
-| `AUTH_TOKEN`            | Bearer token gate for `/run`, `/status/*`, `/hydrate*`               |
-| `ARCHIVE_ROOT`          | `/data/archive` — where parquets land                                |
+| Variable                | Purpose                                                                                              |
+| ----------------------- | ---------------------------------------------------------------------------------------------------- |
+| `AUTH_TOKEN`            | Bearer token gate for `/run`, `/status/*`, `/hydrate*`                                               |
+| `ARCHIVE_ROOT`          | `/data/archive` — where parquets land                                                                |
 | `ARCHIVE_MANIFEST_URL`  | Vercel Blob URL listing every archive file + SHA (copy from sidecar)                                 |
 | `BLOB_READ_WRITE_TOKEN` | Vercel Blob bearer for the manifest + each archive file (copy from sidecar). Phase 3 also uses this. |
 | `RAILWAY_RUN_UID`       | `0` — required so the container runs as root and can write the root-owned mounted volume             |

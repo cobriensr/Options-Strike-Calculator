@@ -2,45 +2,58 @@ FROM python:3.12-slim AS builder
 
 WORKDIR /app
 
-# Build deps for any wheels we need to compile (duckdb, psycopg2 in later
-# phases). Keep them in the builder stage so the final image stays small.
+# Build deps for wheels that compile from source (numpy, pandas on edge
+# versions, duckdb). gcc + libc-dev is enough; pandas/numpy ship most
+# arch wheels but smaller packages sometimes rebuild.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends gcc libc-dev && \
     rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+# Both requirements sets share the same pip install so Python wheels
+# cache cleanly across sweep + seeder deps.
+COPY ml-sweep/requirements.txt ./sweep-requirements.txt
+COPY ml/requirements.txt ./ml-requirements.txt
+RUN pip install --no-cache-dir --prefix=/install \
+    -r sweep-requirements.txt -r ml-requirements.txt
 
 
 FROM python:3.12-slim
 
-# Runtime deps: curl for the Railway health probe.
+# Runtime deps: curl for Railway health probe.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
 
+# Non-root user exists in the image for least-privilege defaults, BUT
+# Railway volumes mount as root so we set RAILWAY_RUN_UID=0 on the service
+# to actually run as root at runtime. The user is kept around anyway so
+# future refactors can add an entrypoint chown+gosu drop-priv dance.
 RUN addgroup --system --gid 1001 sweep && \
     adduser --system --uid 1001 --ingroup sweep sweep
 
 WORKDIR /app
 
 COPY --from=builder /install /usr/local
-COPY --chown=sweep:sweep app.py runner.py archive_seeder.py ./
 
-# Pre-create the archive mount point so chown can take effect before
-# Railway mounts the volume at runtime (the volume will overlay this dir,
-# but ensuring it exists prevents "No such file or directory" errors
-# if /data isn't mounted during local Docker runs).
-RUN mkdir -p /data/archive && chown -R sweep:sweep /data
+# Sweep service code
+COPY ml-sweep/app.py ml-sweep/runner.py ml-sweep/archive_seeder.py /app/
+
+# Python backtest library + sweep entry scripts. PYTHONPATH points at
+# ml-src so the subprocess spawned by runner.py can `import pac.archive_loader`
+# exactly like the developer's laptop does.
+COPY ml/src /app/ml-src
+COPY ml/scripts /app/ml-scripts
+
+# Pre-create the volume mount point so local Docker runs (without the
+# Railway volume overlay) still succeed. The volume overlay at runtime
+# masks this dir but keeps the path valid in CI/testing.
+RUN mkdir -p /data/archive /data/jobs
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONPATH=/app/ml-src
 
-USER sweep
-
-# Railway injects $PORT. Bind to 0.0.0.0 so it's reachable from outside.
-# uvicorn honours the env var via shell expansion — keep CMD as sh -c so
-# $PORT actually interpolates at runtime.
+# Railway injects $PORT. Bind 0.0.0.0.
 CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-8080}"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \

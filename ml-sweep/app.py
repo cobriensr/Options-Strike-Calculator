@@ -1,15 +1,13 @@
 """PAC sweep service — FastAPI entry point.
 
-Runs on Railway as a sibling to the sidecar. Accepts on-demand sweep
-requests via HTTP, dispatches them in a background subprocess, and uploads
-result JSONs to Vercel Blob when done. See
-docs/superpowers/specs/pac-sweep-railway-service-2026-04-22.md.
+Runs on Railway as a sibling to the sidecar. Three pillars:
+  - /health          : Railway probe, no auth
+  - /hydrate + /hydrate/status : Phase 2 — pull the Databento archive
+                                 from Vercel Blob to the mounted volume
+  - /run + /status/{id}        : Phase 3 — spawn a whitelisted sweep
+                                 subprocess, upload JSON result to blob
 
-Phase 2 (current):
-  - /hydrate + /hydrate/status endpoints wired. Downloads the Databento
-    archive from Vercel Blob to /data/archive on demand, matching the
-    sidecar's seeder semantics (SHA-resumable, single-flight).
-  - /run remains echo-only — Phase 3 wires the actual sweep subprocess.
+See docs/superpowers/specs/pac-sweep-railway-service-2026-04-22.md.
 """
 
 from __future__ import annotations
@@ -23,6 +21,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel
 
+import runner
 from archive_seeder import (
     SeedBusyError,
     SeedResult,
@@ -31,7 +30,6 @@ from archive_seeder import (
     seed_from_manifest,
 )
 
-# Configure module-level logging so uvicorn captures seed progress lines.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -40,7 +38,7 @@ log = logging.getLogger(__name__)
 
 app = FastAPI(
     title="PAC Sweep Service",
-    version="0.2.0-phase2",
+    version="0.3.0-phase3",
     description="On-demand CPCV/Optuna backtests. Single-owner, bearer-auth gated.",
 )
 
@@ -51,7 +49,6 @@ app = FastAPI(
 
 
 def require_auth(authorization: str = Header(default="")) -> None:
-    """Gate mutation endpoints with a bearer token."""
     expected = os.environ.get("AUTH_TOKEN")
     if not expected:
         raise HTTPException(status_code=500, detail="AUTH_TOKEN not configured")
@@ -63,26 +60,19 @@ def require_auth(authorization: str = Header(default="")) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Module-level hydrate job state
+# Hydrate state (Phase 2)
 # ---------------------------------------------------------------------------
-#
-# The hydrate run is long (~100 sec for 5 GB at ~50 MB/s on Railway's
-# network). We spawn it in a background thread and track the latest run's
-# state here. Only one hydrate can be in flight at a time — enforced by
-# archive_seeder's internal `_seed_lock`. The state here is for surfacing
-# progress via /hydrate/status; it doesn't replace the seeder's lock.
 
 _hydrate_state: dict[str, Any] = {
     "last_job_id": None,
-    "last_status": "never_run",  # never_run | running | succeeded | failed
+    "last_status": "never_run",
     "last_error": None,
-    "last_result": None,  # SeedResult.as_dict() when complete
+    "last_result": None,
 }
 _hydrate_state_lock = threading.Lock()
 
 
 def _run_hydrate(job_id: str, manifest_url: str, dest_root: str, token: str) -> None:
-    """Background worker: runs the seeder and writes outcome to state."""
     log.info("Hydrate job %s starting: manifest=%s dest=%s", job_id, manifest_url, dest_root)
     try:
         result: SeedResult = seed_from_manifest(manifest_url, dest_root, token)
@@ -92,7 +82,6 @@ def _run_hydrate(job_id: str, manifest_url: str, dest_root: str, token: str) -> 
             _hydrate_state["last_error"] = None
         log.info("Hydrate job %s succeeded: %s", job_id, result.as_dict())
     except SeedBusyError as exc:
-        # Another hydrate was already in flight — treat this job as noop.
         with _hydrate_state_lock:
             _hydrate_state["last_status"] = "failed"
             _hydrate_state["last_error"] = f"busy: {exc}"
@@ -122,9 +111,19 @@ class RunResponse(BaseModel):
 
 class StatusResponse(BaseModel):
     job_id: str
-    status: str
-    message: str
+    status: str  # queued | running | succeeded | failed | rejected | unknown
+    script: str | None = None
+    args: dict[str, Any] | None = None
+    queued_at: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    returncode: int | None = None
     result_url: str | None = None
+    download_url: str | None = None
+    result_bytes: int | None = None
+    blob_path: str | None = None
+    message: str | None = None
+    log_tail: str | None = None
 
 
 class HydrateResponse(BaseModel):
@@ -150,46 +149,71 @@ class HydrateStatusResponse(BaseModel):
 @app.get("/health")
 def health() -> dict[str, Any]:
     """Railway health-probe target. No auth."""
-    return {"ok": True, "version": app.version, "phase": 2}
+    return {"ok": True, "version": app.version, "phase": 3}
 
 
-@app.post("/run", response_model=RunResponse)
+@app.post("/run", response_model=RunResponse, status_code=status.HTTP_202_ACCEPTED)
 def run(req: RunRequest, _auth: None = Depends(require_auth)) -> RunResponse:
-    """Phase 2 still echoes — Phase 3 wires real subprocess execution."""
+    """Spawn a sweep subprocess in a daemon thread.
+
+    Returns 202 Accepted immediately with a job_id. Poll /status/{job_id}
+    for progress. Returns 429 if another job is already running (one job
+    at a time is enforced by runner._run_lock).
+    """
+    if req.script not in runner.WHITELIST:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Script {req.script!r} not whitelisted. "
+            f"Available: {list(runner.WHITELIST)}",
+        )
+
+    if runner.is_running():
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Another sweep is already running. Poll /status/{job_id} until it finishes.",
+        )
+
     job_id = str(uuid.uuid4())
+    runner.create_job_record(job_id, req.script, req.args)
+
+    threading.Thread(
+        target=runner.dispatch,
+        args=(job_id, req.script, req.args),
+        daemon=True,
+        name=f"sweep-{job_id[:8]}",
+    ).start()
+
     return RunResponse(
         job_id=job_id,
-        status="echo-only-phase2",
-        message=f"Received request to run {req.script!r}. "
-        "Not executed — Phase 3 will wire the sweep dispatcher.",
+        status="accepted",
+        message=f"Sweep started: script={req.script!r}, args={req.args}. "
+        "Poll /status/{job_id} for completion.",
     )
 
 
 @app.get("/status/{job_id}", response_model=StatusResponse)
 def run_status(job_id: str, _auth: None = Depends(require_auth)) -> StatusResponse:
-    """Phase 2 stub — Phase 3 will persist job records to blob + look up here."""
-    return StatusResponse(
-        job_id=job_id,
-        status="unknown",
-        message="Phase 3 will wire job persistence.",
-    )
+    """Read the job meta file from the volume + surface current state."""
+    meta = runner.read_meta(job_id)
+    if meta is None:
+        return StatusResponse(
+            job_id=job_id,
+            status="unknown",
+            message="No job record found. Either the job_id is invalid or the "
+            "record was purged.",
+        )
+    # StatusResponse auto-populates from meta keys that match; unknown keys are
+    # ignored. Pass only keys pydantic accepts to avoid 500s on schema drift.
+    known_keys = set(StatusResponse.model_fields.keys())
+    filtered = {k: v for k, v in meta.items() if k in known_keys}
+    filtered["job_id"] = job_id
+    return StatusResponse(**filtered)
 
 
 @app.post("/hydrate", response_model=HydrateResponse, status_code=status.HTTP_202_ACCEPTED)
 def hydrate(_auth: None = Depends(require_auth)) -> HydrateResponse:
-    """Kick off a background archive hydration from Vercel Blob.
-
-    Returns 202 Accepted immediately with a job_id. Poll /hydrate/status
-    to observe progress. Returns 423 Locked if a hydrate is already
-    running (the seeder's module-level lock enforces single-flight).
-    Returns 500 if required env vars (ARCHIVE_MANIFEST_URL, ARCHIVE_SEED_TOKEN,
-    ARCHIVE_ROOT) are missing.
-    """
+    """Kick off a background archive hydration from Vercel Blob."""
     manifest_url = os.environ.get("ARCHIVE_MANIFEST_URL", "").strip()
-    # BLOB_READ_WRITE_TOKEN auths downloads from Vercel private blob storage.
-    # The sidecar uses the same token for the same manifest (see
-    # sidecar/src/main.py:123). ARCHIVE_SEED_TOKEN gates the sidecar's own
-    # `/admin/seed-archive` endpoint and is NOT the blob-download credential.
     token = os.environ.get("BLOB_READ_WRITE_TOKEN", "").strip()
     dest_root = os.environ.get("ARCHIVE_ROOT", "").strip()
 
@@ -221,8 +245,6 @@ def hydrate(_auth: None = Depends(require_auth)) -> HydrateResponse:
         _hydrate_state["last_error"] = None
         _hydrate_state["last_result"] = None
 
-    # Spawn the seed in a daemon thread so it doesn't block uvicorn's
-    # request loop and is torn down on process exit.
     threading.Thread(
         target=_run_hydrate,
         args=(job_id, manifest_url, dest_root, token),
@@ -239,10 +261,9 @@ def hydrate(_auth: None = Depends(require_auth)) -> HydrateResponse:
 
 @app.get("/hydrate/status", response_model=HydrateStatusResponse)
 def hydrate_status(_auth: None = Depends(require_auth)) -> HydrateStatusResponse:
-    """Report the latest hydrate job state + on-disk archive summary."""
     dest_root = os.environ.get("ARCHIVE_ROOT", "/data/archive").strip() or "/data/archive"
     with _hydrate_state_lock:
-        state = dict(_hydrate_state)  # Snapshot while holding the lock.
+        state = dict(_hydrate_state)
     return HydrateStatusResponse(
         last_job_id=state["last_job_id"],
         last_status=state["last_status"],
