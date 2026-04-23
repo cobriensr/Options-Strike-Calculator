@@ -142,6 +142,11 @@ class StatusResponse(BaseModel):
     recovered_at: str | None = None  # set when startup recovery flipped it to failed
     returncode: int | None = None
     pid: int | None = None
+    parent_pid: int | None = None
+    rss_kb: int | None = None  # last sampled subprocess RSS (kilobytes)
+    parent_rss_kb: int | None = None  # uvicorn parent process RSS
+    peak_rss_kb: int | None = None  # max child RSS seen during the run
+    rss_history: list[dict[str, Any]] | None = None  # rolling 1h of (t, child_kb, parent_kb)
     result_url: str | None = None
     download_url: str | None = None
     result_bytes: int | None = None

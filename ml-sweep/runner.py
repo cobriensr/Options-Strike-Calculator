@@ -145,6 +145,34 @@ def tail_log(job_id: str, lines: int = 100) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Memory instrumentation (Linux /proc only — Railway is always Linux)
+# ---------------------------------------------------------------------------
+
+# Cap rss_history to 120 samples (= 1h at 30-sec tick cadence). Any more and
+# meta.json grows unbounded during multi-hour runs. Oldest samples fall off.
+RSS_HISTORY_CAP = 120
+
+
+def _read_rss_kb(pid: int) -> int | None:
+    """Read RSS (resident set size) in kilobytes for a given pid.
+
+    Returns None if /proc is unreachable (non-Linux hosts) or the pid has
+    already exited. The overhead is one open() + one readline() per call
+    — cheap enough to run every 30 sec alongside the heartbeat.
+    """
+    try:
+        with open(f"/proc/{pid}/status", "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    # Line format: "VmRSS:   123456 kB"
+                    parts = line.split()
+                    return int(parts[1]) if len(parts) >= 2 else None
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Orphaned-job recovery
 # ---------------------------------------------------------------------------
 
@@ -356,7 +384,10 @@ def dispatch(job_id: str, script: str, args: dict[str, Any]) -> None:
                 env=env,
             )
             meta["pid"] = proc.pid
+            meta["parent_pid"] = os.getpid()
             meta["heartbeat_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+            meta["rss_history"] = []  # list of {t, child_kb, parent_kb}
+            meta["peak_rss_kb"] = 0
             _write_meta(job_id, meta)
 
             while True:
@@ -368,7 +399,28 @@ def dispatch(job_id: str, script: str, args: dict[str, Any]) -> None:
                     proc.wait(timeout=10)
                     raise subprocess.TimeoutExpired(cmd, SUBPROCESS_TIMEOUT_S)
                 time.sleep(HEARTBEAT_INTERVAL_S)
-                meta["heartbeat_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+
+                # Capture RSS of BOTH the subprocess (where the sweep work
+                # happens) and the parent uvicorn (which Railway's platform
+                # metrics attribute the container to). Peak child RSS is
+                # the "did it OOM?" forensic signal.
+                now_iso = datetime.datetime.utcnow().isoformat() + "Z"
+                child_kb = _read_rss_kb(proc.pid)
+                parent_kb = _read_rss_kb(os.getpid())
+
+                if child_kb is not None and child_kb > meta["peak_rss_kb"]:
+                    meta["peak_rss_kb"] = child_kb
+                meta["rss_kb"] = child_kb
+                meta["parent_rss_kb"] = parent_kb
+
+                sample = {"t": now_iso, "child_kb": child_kb, "parent_kb": parent_kb}
+                history = meta["rss_history"]
+                history.append(sample)
+                if len(history) > RSS_HISTORY_CAP:
+                    # Drop oldest, keep newest — rolling 1h window at 30s ticks
+                    meta["rss_history"] = history[-RSS_HISTORY_CAP:]
+
+                meta["heartbeat_at"] = now_iso
                 _write_meta(job_id, meta)
         finally:
             log_fh.close()
