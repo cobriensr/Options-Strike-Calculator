@@ -138,9 +138,24 @@ def _upload_to_blob(local_path: Path, blob_path: str, token: str) -> dict[str, A
 
     Uses BLOB_READ_WRITE_TOKEN (starts with `vercel_blob_rw_...`) as Bearer.
     Returns the decoded JSON response containing `url`, `downloadUrl`, etc.
+
+    API shape reverse-engineered from @vercel/blob SDK source (put-helpers.ts
+    + api.ts):
+      - Endpoint: https://vercel.com/api/blob/?pathname=<urlencoded>
+        (the SDK's `getApiUrl` concatenates pathname onto that base; put.ts
+        uses the pathname as a query parameter on the root endpoint.)
+      - Method: PUT
+      - x-api-version: currently 12 (overridable via VERCEL_BLOB_API_VERSION_OVERRIDE)
+      - x-vercel-blob-access: "private" | "public"
+      - x-allow-overwrite: "1" | "0" (SDK defaults to 0; we want 1 so re-runs of
+        the same job_id's path overwrite instead of erroring)
+      - x-add-random-suffix: "0" keeps our job_id-scoped paths predictable
+      - x-content-type: MIME of the body
     """
+    import urllib.parse
+
     body = local_path.read_bytes()
-    url = f"https://blob.vercel-storage.com/{blob_path}"
+    url = f"https://vercel.com/api/blob?pathname={urllib.parse.quote(blob_path, safe='/')}"
     req = urllib.request.Request(
         url,
         method="PUT",
@@ -148,11 +163,11 @@ def _upload_to_blob(local_path: Path, blob_path: str, token: str) -> dict[str, A
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
-            # Don't have Vercel add a random suffix — we want predictable paths
+            "x-api-version": "12",
+            "x-vercel-blob-access": "private",
             "x-add-random-suffix": "0",
-            # Mark as private access (token-required to read)
-            "x-access": "private",
-            "x-api-version": "7",
+            "x-allow-overwrite": "1",
+            "x-content-type": "application/json",
         },
     )
     with urllib.request.urlopen(req, timeout=60) as resp:
