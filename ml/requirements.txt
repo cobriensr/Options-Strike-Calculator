@@ -27,7 +27,7 @@ scikit-learn==1.8.0
 sqlalchemy>=2.0
 scipy==1.17.1
 seaborn==0.13.2
-shap>=0.45
+shap>=0.51.0
 six==1.17.0
 statsmodels==0.14.6
 threadpoolctl==3.6.0
