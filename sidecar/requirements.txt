@@ -1,4 +1,4 @@
-databento>=0.45.0
+databento>=0.75.0
 psycopg2>=2.9.9
 twilio>=9.0.0
 sentry-sdk>=2.0.0
