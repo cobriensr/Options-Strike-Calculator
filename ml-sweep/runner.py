@@ -28,6 +28,7 @@ import logging
 import os
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -55,6 +56,19 @@ JOBS_ROOT = Path(
 # batch jobs that compose multiple markets, (c) Optuna trial ramps that
 # exceed the default 50.
 SUBPROCESS_TIMEOUT_S = 6 * 60 * 60
+
+# Heartbeat cadence while a subprocess is running. meta.heartbeat_at is
+# rewritten every HEARTBEAT_INTERVAL_S. Also doubles as the granularity
+# at which we detect subprocess timeout — we poll `proc.poll()` each tick
+# instead of blocking on proc.wait(), so a timeout trips within this
+# window of the real wall-clock deadline.
+HEARTBEAT_INTERVAL_S = 30
+
+# If a container restart orphans a running job, recover_orphaned_jobs()
+# flips its meta to status=failed. A meta whose heartbeat is older than
+# this cap is unambiguously orphaned (no healthy subprocess would let
+# heartbeats go stale this long).
+ORPHAN_HEARTBEAT_THRESHOLD_S = 5 * 60
 
 # Archive root (overridable via env). Passed down to the subprocess so
 # pac.archive_loader reads from the mounted volume.
@@ -128,6 +142,88 @@ def tail_log(job_id: str, lines: int = 100) -> str | None:
     raw = p.read_bytes()
     decoded = raw.decode("utf-8", errors="replace")
     return "\n".join(decoded.splitlines()[-lines:])
+
+
+# ---------------------------------------------------------------------------
+# Orphaned-job recovery
+# ---------------------------------------------------------------------------
+
+
+def recover_orphaned_jobs() -> list[str]:
+    """On app startup, flip any running-looking jobs to failed/orphaned.
+
+    Railway container restarts (OOM, maintenance, crash) kill every Python
+    thread including in-flight sweeps. The runner's finally block never
+    executes, so meta.json stays at `status=running` indefinitely — /status
+    returns ghost state forever. This function runs at app startup and on
+    every /status read; it converts unambiguously-orphaned jobs to `failed`.
+
+    Detection rule: a meta is orphaned iff
+        status == "running"
+      AND (
+        heartbeat_at is missing  — we must be looking at a pre-heartbeat
+                                   job (pre-deploy of this code) or a job
+                                   that died before its first heartbeat tick
+        OR now - heartbeat_at > ORPHAN_HEARTBEAT_THRESHOLD_S
+      )
+
+    Returns the list of recovered job_ids for logging / observability.
+    """
+    recovered: list[str] = []
+    if not JOBS_ROOT.exists():
+        return recovered
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    threshold = datetime.timedelta(seconds=ORPHAN_HEARTBEAT_THRESHOLD_S)
+
+    for meta_path in JOBS_ROOT.rglob("meta.json"):
+        try:
+            meta = json.loads(meta_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            log.warning("Skipping unreadable meta %s: %s", meta_path, exc)
+            continue
+
+        if meta.get("status") != "running":
+            continue
+
+        hb_raw = meta.get("heartbeat_at")
+        is_orphan = False
+        if not hb_raw:
+            # Dispatched before the heartbeat patch landed, or killed
+            # before the first heartbeat tick — either way, unambiguously
+            # orphaned once a new container comes up.
+            is_orphan = True
+        else:
+            try:
+                hb = datetime.datetime.fromisoformat(hb_raw.replace("Z", "+00:00"))
+                if now - hb > threshold:
+                    is_orphan = True
+            except ValueError:
+                # Malformed timestamp → treat as orphaned defensively.
+                is_orphan = True
+
+        if not is_orphan:
+            continue
+
+        job_id = meta.get("job_id", meta_path.parent.name)
+        prior_msg = str(meta.get("message") or "").strip()
+        suffix = "orphaned by container restart (heartbeat stale or missing)"
+        meta["status"] = "failed"
+        meta["message"] = (prior_msg + " | " + suffix).strip(" |") if prior_msg else suffix
+        meta["recovered_at"] = now.isoformat().replace("+00:00", "Z")
+        if not meta.get("finished_at"):
+            meta["finished_at"] = meta["recovered_at"]
+
+        try:
+            tmp = meta_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(meta, indent=2, default=str))
+            tmp.replace(meta_path)
+            recovered.append(job_id)
+            log.warning("Recovered orphaned job %s (%s)", job_id, meta_path)
+        except OSError as exc:
+            log.error("Failed to write recovered meta for %s: %s", job_id, exc)
+
+    return recovered
 
 
 # ---------------------------------------------------------------------------
@@ -243,15 +339,40 @@ def dispatch(job_id: str, script: str, args: dict[str, Any]) -> None:
         env["ARCHIVE_ROOT"] = ARCHIVE_ROOT
 
         _log_path(job_id).parent.mkdir(parents=True, exist_ok=True)
-        with _log_path(job_id).open("wb") as log_fh:
-            proc = subprocess.run(  # noqa: S603  — cmd is whitelisted
+        # Popen (non-blocking) instead of run() so we can tick a heartbeat
+        # while the subprocess runs. Without a heartbeat, if the container
+        # gets restarted mid-sweep (OOM, Railway maintenance, health-check
+        # failure), meta.json stays at `status=running` forever because the
+        # runner thread dies before its finally block executes. The startup
+        # recovery in recover_orphaned_jobs() then uses heartbeat age to
+        # detect those zombies.
+        deadline = time.monotonic() + SUBPROCESS_TIMEOUT_S
+        log_fh = _log_path(job_id).open("wb")
+        try:
+            proc = subprocess.Popen(  # noqa: S603  — cmd is whitelisted
                 cmd,
                 stdout=log_fh,
                 stderr=subprocess.STDOUT,
                 env=env,
-                timeout=SUBPROCESS_TIMEOUT_S,
-                check=False,
             )
+            meta["pid"] = proc.pid
+            meta["heartbeat_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+            _write_meta(job_id, meta)
+
+            while True:
+                rc = proc.poll()
+                if rc is not None:
+                    break
+                if time.monotonic() > deadline:
+                    proc.kill()
+                    proc.wait(timeout=10)
+                    raise subprocess.TimeoutExpired(cmd, SUBPROCESS_TIMEOUT_S)
+                time.sleep(HEARTBEAT_INTERVAL_S)
+                meta["heartbeat_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+                _write_meta(job_id, meta)
+        finally:
+            log_fh.close()
+
         meta["returncode"] = proc.returncode
 
         if proc.returncode != 0:

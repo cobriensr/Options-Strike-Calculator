@@ -38,9 +38,30 @@ log = logging.getLogger(__name__)
 
 app = FastAPI(
     title="PAC Sweep Service",
-    version="0.3.0-phase3",
+    version="0.4.0-phase4",
     description="On-demand CPCV/Optuna backtests. Single-owner, bearer-auth gated.",
 )
+
+
+@app.on_event("startup")
+def _recover_orphans_on_startup() -> None:
+    """On fresh container boot, mark any stale `running` jobs as failed.
+
+    Railway restarts (OOM, maintenance, crash) kill in-flight subprocesses
+    without giving the runner thread a chance to update meta.json. Without
+    this hook, /status returns ghost `running` state forever. See
+    runner.recover_orphaned_jobs for the detection rule.
+    """
+    try:
+        recovered = runner.recover_orphaned_jobs()
+        if recovered:
+            log.warning(
+                "Startup recovery flipped %d orphaned jobs to failed: %s",
+                len(recovered),
+                recovered,
+            )
+    except Exception as exc:  # noqa: BLE001 — must not kill startup
+        log.error("Startup recovery crashed: %s", exc, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -116,8 +137,11 @@ class StatusResponse(BaseModel):
     args: dict[str, Any] | None = None
     queued_at: str | None = None
     started_at: str | None = None
+    heartbeat_at: str | None = None  # last liveness tick from the runner's Popen loop
     finished_at: str | None = None
+    recovered_at: str | None = None  # set when startup recovery flipped it to failed
     returncode: int | None = None
+    pid: int | None = None
     result_url: str | None = None
     download_url: str | None = None
     result_bytes: int | None = None
@@ -149,7 +173,7 @@ class HydrateStatusResponse(BaseModel):
 @app.get("/health")
 def health() -> dict[str, Any]:
     """Railway health-probe target. No auth."""
-    return {"ok": True, "version": app.version, "phase": 3}
+    return {"ok": True, "version": app.version, "phase": 4}
 
 
 @app.post("/run", response_model=RunResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -193,7 +217,18 @@ def run(req: RunRequest, _auth: None = Depends(require_auth)) -> RunResponse:
 
 @app.get("/status/{job_id}", response_model=StatusResponse)
 def run_status(job_id: str, _auth: None = Depends(require_auth)) -> StatusResponse:
-    """Read the job meta file from the volume + surface current state."""
+    """Read the job meta file from the volume + surface current state.
+
+    Opportunistically runs recover_orphaned_jobs() before the read so a
+    stale `running` meta gets flipped to `failed` the next time any
+    client polls, even if the startup hook missed it (rare edge case
+    where a crash happened after startup recovery already ran).
+    """
+    try:
+        runner.recover_orphaned_jobs()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Opportunistic recovery during /status failed: %s", exc)
+
     meta = runner.read_meta(job_id)
     if meta is None:
         return StatusResponse(
