@@ -1,3 +1,4 @@
+import { useMemo, useState } from 'react';
 import type {
   DailyProgramSummary,
   InstitutionalBlock,
@@ -6,6 +7,28 @@ import type {
 interface Props {
   today: DailyProgramSummary | null;
   blocks: InstitutionalBlock[];
+}
+
+type SortKey = 'time' | 'strike' | 'type' | 'dte' | 'size' | 'premium' | 'side' | 'cond';
+type SortDir = 'asc' | 'desc';
+
+function formatPremium(premium: number): string {
+  if (premium >= 1_000_000) return `$${(premium / 1_000_000).toFixed(2)}M`;
+  if (premium >= 10_000) return `$${Math.round(premium / 1000)}k`;
+  return `$${(premium / 1000).toFixed(1)}k`;
+}
+
+function blockSortKey(b: InstitutionalBlock, k: SortKey): number | string {
+  switch (k) {
+    case 'time': return new Date(b.executed_at).getTime();
+    case 'strike': return b.strike;
+    case 'type': return b.option_type;
+    case 'dte': return b.dte;
+    case 'size': return b.size;
+    case 'premium': return b.premium;
+    case 'side': return b.side ?? '';
+    case 'cond': return b.condition;
+  }
 }
 
 /**
@@ -52,52 +75,102 @@ export function TodayProgramCard({ today, blocks }: Props) {
         tone="blue"
       />
       <details className="md:col-span-3">
-        <summary className="cursor-pointer text-sm text-slate-400">
+        <summary className="text-muted cursor-pointer text-sm">
           All ceiling blocks today ({ceilingBlocks.length})
         </summary>
-        <div className="mt-2 overflow-x-auto">
-          <table className="w-full text-xs text-slate-300">
-            <thead>
-              <tr className="border-b border-slate-800 text-slate-500">
-                <th className="p-1 text-left">Time (UTC)</th>
-                <th className="p-1 text-right">Strike</th>
-                <th className="p-1">Type</th>
-                <th className="p-1 text-right">DTE</th>
-                <th className="p-1 text-right">Size</th>
-                <th className="p-1 text-right">Premium</th>
-                <th className="p-1">Side</th>
-                <th className="p-1">Cond</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ceilingBlocks.map((b) => (
-                <tr
-                  key={b.executed_at + b.option_chain_id}
-                  className="border-b border-slate-900"
-                >
-                  <td className="p-1 font-mono">
-                    {new Date(b.executed_at)
-                      .toISOString()
-                      .slice(11, 19)}
-                  </td>
-                  <td className="p-1 text-right font-mono">{b.strike}</td>
-                  <td className="p-1">{b.option_type[0]!.toUpperCase()}</td>
-                  <td className="p-1 text-right">{b.dte}</td>
-                  <td className="p-1 text-right">
-                    {b.size.toLocaleString()}
-                  </td>
-                  <td className="p-1 text-right">
-                    ${(b.premium / 1000).toFixed(0)}k
-                  </td>
-                  <td className="p-1">{b.side ?? '—'}</td>
-                  <td className="p-1 text-slate-500">{b.condition}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <SortableBlockTable blocks={ceilingBlocks} />
       </details>
     </div>
+  );
+}
+
+function SortableBlockTable({ blocks }: { blocks: InstitutionalBlock[] }) {
+  const [sortKey, setSortKey] = useState<SortKey>('time');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
+
+  const sorted = useMemo(() => {
+    const arr = [...blocks];
+    arr.sort((a, b) => {
+      const av = blockSortKey(a, sortKey);
+      const bv = blockSortKey(b, sortKey);
+      if (av < bv) return sortDir === 'asc' ? -1 : 1;
+      if (av > bv) return sortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return arr;
+  }, [blocks, sortKey, sortDir]);
+
+  const handleSort = (k: SortKey) => {
+    if (sortKey === k) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(k);
+      setSortDir('desc');
+    }
+  };
+
+  return (
+    <div className="mt-2 overflow-x-auto">
+      <table className="text-text w-full text-xs">
+        <thead>
+          <tr className="border-edge text-muted border-b">
+            <SortTh label="Time (CT)" k="time" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="left" />
+            <SortTh label="Strike"    k="strike" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="right" />
+            <SortTh label="Type"      k="type" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+            <SortTh label="DTE"       k="dte" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="right" />
+            <SortTh label="Size"      k="size" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="right" />
+            <SortTh label="Premium"   k="premium" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="right" />
+            <SortTh label="Side"      k="side" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+            <SortTh label="Cond"      k="cond" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((b) => {
+            const ct = new Date(
+              new Date(b.executed_at).getTime() - 5 * 3600 * 1000,
+            );
+            return (
+              <tr
+                key={b.executed_at + b.option_chain_id + b.size}
+                className="border-edge border-b"
+              >
+                <td className="p-1 font-mono">{ct.toISOString().slice(11, 19)}</td>
+                <td className="p-1 text-right font-mono">{b.strike}</td>
+                <td className="p-1">{b.option_type[0]!.toUpperCase()}</td>
+                <td className="p-1 text-right">{b.dte}</td>
+                <td className="p-1 text-right">{b.size.toLocaleString()}</td>
+                <td className="p-1 text-right">{formatPremium(b.premium)}</td>
+                <td className="p-1">{b.side ?? '—'}</td>
+                <td className="text-muted p-1">{b.condition}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SortTh({
+  label, k, sortKey, sortDir, onSort, align = 'left',
+}: {
+  label: string;
+  k: SortKey;
+  sortKey: SortKey;
+  sortDir: SortDir;
+  onSort: (k: SortKey) => void;
+  align?: 'left' | 'right';
+}) {
+  const active = sortKey === k;
+  const arrow = active ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '';
+  return (
+    <th
+      className={`cursor-pointer p-1 select-none ${align === 'right' ? 'text-right' : 'text-left'} ${active ? 'text-text' : ''}`}
+      onClick={() => onSort(k)}
+      aria-sort={active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+    >
+      {label}<span className="text-muted">{arrow}</span>
+    </th>
   );
 }
 

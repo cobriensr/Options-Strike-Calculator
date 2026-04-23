@@ -68,7 +68,13 @@ OPEN_END_UTC_MIN = 14 * 60 + 30
 
 
 def classify_track(dte: int, mny: float, executed_at_iso: str) -> str:
-    """Must match the TypeScript classifyTrack() in fetch-spxw-blocks.ts."""
+    """Must match the TypeScript classifyTrack() in fetch-spxw-blocks.ts.
+
+    Parses executed_at via datetime.fromisoformat so the HH:MM read is
+    always in UTC regardless of whether the driver serialized with
+    'Z', '+00', local offset, or no offset. Without this, local-zone
+    serializations mis-classify afternoon trades as opening-window.
+    """
     abs_mny = abs(mny)
     if (
         CEILING_DTE_MIN <= dte <= CEILING_DTE_MAX
@@ -76,11 +82,19 @@ def classify_track(dte: int, mny: float, executed_at_iso: str) -> str:
     ):
         return "ceiling"
     try:
-        hh = int(executed_at_iso[11:13])
-        mm = int(executed_at_iso[14:16])
+        from datetime import timezone as _tz
+
+        iso = executed_at_iso.replace(" ", "T")
+        if iso.endswith("Z"):
+            iso = iso[:-1] + "+00:00"
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            utc_min = dt.hour * 60 + dt.minute
+        else:
+            utc_dt = dt.astimezone(_tz.utc)
+            utc_min = utc_dt.hour * 60 + utc_dt.minute
     except (ValueError, IndexError):
         return "other"
-    utc_min = hh * 60 + mm
     if (
         0 <= dte <= OPENING_DTE_MAX
         and abs_mny <= OPENING_MNY_MAX

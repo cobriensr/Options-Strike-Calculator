@@ -54,17 +54,44 @@ OPEN_END_UTC_MIN = 14 * 60 + 30
 
 
 def classify_track(dte: int, mny: float, executed_at_iso: str) -> str:
-    """Match the TypeScript classifyTrack() in fetch-spxw-blocks.ts."""
+    """Match the TypeScript classifyTrack() in fetch-spxw-blocks.ts.
+
+    IMPORTANT: executed_at_iso may come in any of these formats depending
+    on the SQL driver's TIMESTAMPTZ serialization:
+      '2026-04-22 19:28:24.000+00'   (Postgres default)
+      '2026-04-22T19:28:24Z'         (ISO-8601 UTC)
+      '2026-04-22 14:28:24-05'       (local-zone serialization)
+    Parse via datetime.fromisoformat to normalize to UTC before
+    extracting HH:MM, otherwise local-zone strings mis-classify
+    afternoon trades as opening-window.
+    """
     abs_mny = abs(mny)
-    if CEILING_DTE_MIN <= dte <= CEILING_DTE_MAX and CEILING_MNY_MIN <= abs_mny <= CEILING_MNY_MAX:
+    if (
+        CEILING_DTE_MIN <= dte <= CEILING_DTE_MAX
+        and CEILING_MNY_MIN <= abs_mny <= CEILING_MNY_MAX
+    ):
         return "ceiling"
-    # Parse YYYY-MM-DDTHH:MM:SS± as UTC time-of-day in minutes.
     try:
-        hh = int(executed_at_iso[11:13])
-        mm = int(executed_at_iso[14:16])
+        # Normalize: replace space separator with 'T', trim to fromisoformat-
+        # friendly precision. datetime.fromisoformat in Python 3.11+ handles
+        # timezone offsets natively.
+        iso = executed_at_iso.replace(" ", "T")
+        # fromisoformat can't parse trailing 'Z' on older versions; swap for +00:00.
+        if iso.endswith("Z"):
+            iso = iso[:-1] + "+00:00"
+        from datetime import datetime as _dt
+
+        dt = _dt.fromisoformat(iso)
+        if dt.tzinfo is None:
+            # No timezone info — assume already UTC.
+            utc_min = dt.hour * 60 + dt.minute
+        else:
+            from datetime import timezone as _tz
+
+            utc_dt = dt.astimezone(_tz.utc)
+            utc_min = utc_dt.hour * 60 + utc_dt.minute
     except (ValueError, IndexError):
         return "other"
-    utc_min = hh * 60 + mm
     if (
         0 <= dte <= OPENING_DTE_MAX
         and abs_mny <= OPENING_MNY_MAX
