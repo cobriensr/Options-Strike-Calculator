@@ -4,6 +4,7 @@
 **Date:** 2026-04-23
 **Revised:** 2026-04-23 post-audit — widened scope to cover all 3 mfsl implications
 **Purpose:** Track SPXW institutional floor-brokered block flow (`mfsl` / `cbmo` / `slft` conditions) across two complementary tracks:
+
 1. **Ceiling track** — the recurring 200-300 DTE call-spread program (regime indicator).
 2. **Opening-ATM track** — first-hour near-ATM blocks (institutional open-positioning signal).
 
@@ -29,11 +30,11 @@ From `docs/0dte-findings.md` Finding 1 + the subsequent deep dive:
 
 From `docs/unusual-whales-openapi.yaml`:
 
-| Endpoint | Returns | Use |
-|---|---|---|
-| `/api/stock/{ticker}/option-contracts` | All option contracts for a ticker (max 500 results) | Enumerate SPXW 200-300 DTE contracts daily |
-| `/api/option-contract/{id}/flow` | **Last 50 trades** for a contract, filter by `min_premium` and `side` | Fetch actual block trades with `upstream_condition_detail` (mfsl/cbmo/slft) |
-| `/api/option-trades/flow-alerts` | UW's pre-filtered "unusual" alerts | Already used by `fetch-flow-alerts.ts` for 0-1 DTE |
+| Endpoint                               | Returns                                                               | Use                                                                         |
+| -------------------------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `/api/stock/{ticker}/option-contracts` | All option contracts for a ticker (max 500 results)                   | Enumerate SPXW 200-300 DTE contracts daily                                  |
+| `/api/option-contract/{id}/flow`       | **Last 50 trades** for a contract, filter by `min_premium` and `side` | Fetch actual block trades with `upstream_condition_detail` (mfsl/cbmo/slft) |
+| `/api/option-trades/flow-alerts`       | UW's pre-filtered "unusual" alerts                                    | Already used by `fetch-flow-alerts.ts` for 0-1 DTE                          |
 
 **Key field:** The `Option Trade` schema (spec line 5845) returns `upstream_condition_detail` — that's where `mfsl` / `cbmo` / `slft` values live. This is how we identify institutional floor blocks.
 
@@ -76,7 +77,7 @@ From `docs/unusual-whales-openapi.yaml`:
 
 ## Database migration (id 81)
 
-Add to end of `MIGRATIONS` array in [api/_lib/db-migrations.ts](api/_lib/db-migrations.ts):
+Add to end of `MIGRATIONS` array in [api/\_lib/db-migrations.ts](api/_lib/db-migrations.ts):
 
 ```ts
 {
@@ -122,6 +123,7 @@ Add to end of `MIGRATIONS` array in [api/_lib/db-migrations.ts](api/_lib/db-migr
 ```
 
 **Also update** `api/__tests__/db.test.ts` per `CLAUDE.md` DB Migrations section:
+
 - Add `{ id: 81 }` to the applied-migrations mock
 - Add the migration to the expected-output list
 - Bump the SQL call count by 4 (1 CREATE TABLE + 2 CREATE INDEX + 1 schema_migrations insert)
@@ -280,8 +282,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const expiryDate = new Date(b.expiry + 'T00:00:00Z');
       const executedDate = new Date(b.executed_at);
       const dte = Math.floor(
-        (expiryDate.getTime() - executedDate.getTime()) /
-          (24 * 60 * 60 * 1000),
+        (expiryDate.getTime() - executedDate.getTime()) / (24 * 60 * 60 * 1000),
       );
 
       await sql`
@@ -293,8 +294,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           ${b.id}, ${b.executed_at}, ${b.option_chain_id}, ${strike},
           ${b.option_type}, ${b.expiry}, ${dte}, ${b.size},
           ${Number.parseFloat(b.price)}, ${Number.parseFloat(b.premium)},
-          ${b.tags?.find((t) => t === 'ask_side' || t === 'bid_side')
-            ?.replace('_side', '') ?? null},
+          ${
+            b.tags
+              ?.find((t) => t === 'ask_side' || t === 'bid_side')
+              ?.replace('_side', '') ?? null
+          },
           ${b.upstream_condition_detail!.toLowerCase()},
           ${b.exchange ?? null}, ${spot}, ${moneynessPct},
           ${b.open_interest ?? null},
@@ -612,7 +616,10 @@ export function InstitutionalProgramSection() {
       className="space-y-4 rounded-xl border border-slate-800 bg-slate-900/50 p-6"
     >
       <header className="flex items-baseline justify-between">
-        <h2 id="inst-program-heading" className="text-lg font-semibold text-slate-100">
+        <h2
+          id="inst-program-heading"
+          className="text-lg font-semibold text-slate-100"
+        >
           SPXW Institutional Program (regime tracker)
         </h2>
         <span className="text-xs text-slate-500">
@@ -638,8 +645,7 @@ interface Props {
 }
 
 export function CeilingChart({ days }: Props) {
-  if (!days.length)
-    return <div className="text-slate-500">No data yet</div>;
+  if (!days.length) return <div className="text-slate-500">No data yet</div>;
 
   const valid = days.filter((d) => d.ceiling_pct_above_spot != null);
   if (valid.length < 2)
@@ -658,8 +664,7 @@ export function CeilingChart({ days }: Props) {
   const padding = 32;
 
   const points = valid.map((d, i) => {
-    const x =
-      padding + (i / (valid.length - 1)) * (width - padding * 2);
+    const x = padding + (i / (valid.length - 1)) * (width - padding * 2);
     const y =
       padding +
       (1 - (d.ceiling_pct_above_spot - min) / range) * (height - padding * 2);
@@ -682,27 +687,11 @@ export function CeilingChart({ days }: Props) {
         role="img"
         aria-label="Ceiling percentage over time"
       >
-        <path
-          d={path}
-          fill="none"
-          stroke="#60a5fa"
-          strokeWidth={1.5}
-        />
+        <path d={path} fill="none" stroke="#60a5fa" strokeWidth={1.5} />
         {points.map((p, i) => (
-          <circle
-            key={i}
-            cx={p.x}
-            cy={p.y}
-            r={2.5}
-            fill="#60a5fa"
-          />
+          <circle key={i} cx={p.x} cy={p.y} r={2.5} fill="#60a5fa" />
         ))}
-        <text
-          x={padding}
-          y={padding - 8}
-          fill="#64748b"
-          fontSize={11}
-        >
+        <text x={padding} y={padding - 8} fill="#64748b" fontSize={11}>
           {(max * 100).toFixed(1)}%
         </text>
         <text
@@ -758,10 +747,7 @@ export function TodayProgramCard({ today, blocks }: Props) {
         label="Premium"
         value={`$${(total_premium / 1_000_000).toFixed(1)}M`}
       />
-      <Metric
-        label="Spot"
-        value={today.avg_spot.toFixed(2)}
-      />
+      <Metric label="Spot" value={today.avg_spot.toFixed(2)} />
       <Metric
         label="Ceiling above spot"
         value={`${(today.ceiling_pct_above_spot * 100).toFixed(1)}%`}
@@ -793,9 +779,7 @@ export function TodayProgramCard({ today, blocks }: Props) {
                 </td>
                 <td className="p-1 text-right">{b.strike}</td>
                 <td className="p-1">{b.option_type[0].toUpperCase()}</td>
-                <td className="p-1 text-right">
-                  {b.size.toLocaleString()}
-                </td>
+                <td className="p-1 text-right">{b.size.toLocaleString()}</td>
                 <td className="p-1 text-right">
                   ${(b.premium / 1000).toFixed(0)}k
                 </td>
@@ -828,7 +812,7 @@ function Metric({
   }[tone];
   return (
     <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
-      <div className="text-xs uppercase text-slate-500">{label}</div>
+      <div className="text-xs text-slate-500 uppercase">{label}</div>
       <div className={`text-lg font-semibold ${toneClass}`}>{value}</div>
     </div>
   );
@@ -883,8 +867,8 @@ export function RegimeBanner({ days }: Props) {
         directionFlip
           ? 'border-red-800 bg-red-950/30 text-red-200'
           : deltaPct > 0
-          ? 'border-green-800 bg-green-950/30 text-green-200'
-          : 'border-amber-800 bg-amber-950/30 text-amber-200'
+            ? 'border-green-800 bg-green-950/30 text-green-200'
+            : 'border-amber-800 bg-amber-950/30 text-amber-200'
       }`}
     >
       <strong>Regime signal: </strong>
@@ -934,7 +918,7 @@ Add the component into `App.tsx` (or wherever your dashboard composition lives):
 import { InstitutionalProgramSection } from './components/InstitutionalProgram/InstitutionalProgramSection.js';
 
 // ... somewhere in the main layout
-<InstitutionalProgramSection />
+<InstitutionalProgramSection />;
 ```
 
 ## Test scaffolding
@@ -1059,17 +1043,17 @@ The v1 spec above covers the ceiling track (Implication 1 & 2 partially). This s
 
 ## Summary of changes
 
-| Change | Reason |
-|---|---|
-| Add `program_track` column to `institutional_blocks` | Distinguish ceiling / opening_atm / other — query by track |
-| Widen DTE window: 200-280 → **180-300** | Safety margin for holidays, weekend-DTE shifts |
-| Add second enumeration pass for 0-7 DTE near-ATM | Capture opening-5-min institutional blocks (Implication 3) |
+| Change                                                          | Reason                                                                  |
+| --------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| Add `program_track` column to `institutional_blocks`            | Distinguish ceiling / opening_atm / other — query by track              |
+| Widen DTE window: 200-280 → **180-300**                         | Safety margin for holidays, weekend-DTE shifts                          |
+| Add second enumeration pass for 0-7 DTE near-ATM                | Capture opening-5-min institutional blocks (Implication 3)              |
 | Lower thresholds: `MIN_SIZE 1000 → 50`, `MIN_PREMIUM 50k → 25k` | The opening blocks are ~154 contracts; old thresholds filtered them out |
-| Add 8:45 CT poll (4 polls total instead of 3) | Capture opening blocks before they roll off 50-trade window |
-| New API: `/api/institutional-program/strike-heatmap?days=60` | Cumulative-notional-by-strike view (Implication 2 amplification) |
-| New component: `StrikeConcentrationChart` | Horizontal bar chart of strikes ranked by cumulative mfsl premium |
-| New component: `OpeningBlocksCard` | Today's first-hour near-ATM mfsl blocks (Implication 3) |
-| Replace hardcoded hex colors with CSS vars | Match `RegimeTimeline`, `StrikeMap`, `ThetaDecayChart` conventions |
+| Add 8:45 CT poll (4 polls total instead of 3)                   | Capture opening blocks before they roll off 50-trade window             |
+| New API: `/api/institutional-program/strike-heatmap?days=60`    | Cumulative-notional-by-strike view (Implication 2 amplification)        |
+| New component: `StrikeConcentrationChart`                       | Horizontal bar chart of strikes ranked by cumulative mfsl premium       |
+| New component: `OpeningBlocksCard`                              | Today's first-hour near-ATM mfsl blocks (Implication 3)                 |
+| Replace hardcoded hex colors with CSS vars                      | Match `RegimeTimeline`, `StrikeMap`, `ThetaDecayChart` conventions      |
 
 ## Migration 81 — add `program_track` column
 
@@ -1103,8 +1087,8 @@ const ENUMERATION_PASSES = [
     name: 'ceiling',
     min_dte: 180,
     max_dte: 300,
-    mny_min: 0.05,   // 5% OTM minimum — the program lives here
-    mny_max: 0.25,   // 25% OTM maximum (slack)
+    mny_min: 0.05, // 5% OTM minimum — the program lives here
+    mny_max: 0.25, // 25% OTM maximum (slack)
     option_types: ['call', 'put'] as const,
     max_contracts: 40,
   },
@@ -1113,7 +1097,7 @@ const ENUMERATION_PASSES = [
     min_dte: 0,
     max_dte: 7,
     mny_min: 0,
-    mny_max: 0.03,   // within 3% of spot — the opening-block setup
+    mny_max: 0.03, // within 3% of spot — the opening-block setup
     option_types: ['call', 'put'] as const,
     max_contracts: 20,
   },
@@ -1126,7 +1110,12 @@ function classifyTrack(
   executedAtUtc: string,
 ): 'ceiling' | 'opening_atm' | 'other' {
   // Long-dated, meaningfully OTM program strikes
-  if (dte >= 180 && dte <= 300 && Math.abs(moneynessPct) >= 0.05 && Math.abs(moneynessPct) <= 0.25) {
+  if (
+    dte >= 180 &&
+    dte <= 300 &&
+    Math.abs(moneynessPct) >= 0.05 &&
+    Math.abs(moneynessPct) <= 0.25
+  ) {
     return 'ceiling';
   }
   // Near-ATM short-dated opening-window block (first 60 min of RTH)
@@ -1135,7 +1124,7 @@ function classifyTrack(
   const minUtc = executedAt.getUTCMinutes();
   const utcMinutes = hourUtc * 60 + minUtc;
   const OPEN_START_UTC = 13 * 60 + 30; // 13:30 UTC = 08:30 CT
-  const OPEN_END_UTC = 14 * 60 + 30;   // 14:30 UTC = 09:30 CT
+  const OPEN_END_UTC = 14 * 60 + 30; // 14:30 UTC = 09:30 CT
   if (
     dte >= 0 &&
     dte <= 7 &&
@@ -1155,12 +1144,13 @@ In the main handler, loop over both passes:
 for (const pass of ENUMERATION_PASSES) {
   const targetContracts = allContracts
     .map(/* compute dte + moneyness */)
-    .filter((c) =>
-      c.dte >= pass.min_dte &&
-      c.dte <= pass.max_dte &&
-      Math.abs(c.moneyness_pct) >= pass.mny_min &&
-      Math.abs(c.moneyness_pct) <= pass.mny_max &&
-      pass.option_types.includes(c.option_type),
+    .filter(
+      (c) =>
+        c.dte >= pass.min_dte &&
+        c.dte <= pass.max_dte &&
+        Math.abs(c.moneyness_pct) >= pass.mny_min &&
+        Math.abs(c.moneyness_pct) <= pass.mny_max &&
+        pass.option_types.includes(c.option_type),
     )
     .sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0))
     .slice(0, pass.max_contracts);
@@ -1241,7 +1231,9 @@ export function StrikeConcentrationChart({
   const [cells, setCells] = useState<StrikeCell[]>([]);
 
   useEffect(() => {
-    fetch(`/api/institutional-program/strike-heatmap?days=${days}&track=${track}`)
+    fetch(
+      `/api/institutional-program/strike-heatmap?days=${days}&track=${track}`,
+    )
       .then((r) => r.json())
       .then((j) => setCells(j.rows ?? []));
   }, [days, track]);
@@ -1288,7 +1280,8 @@ export function StrikeConcentrationChart({
                 fill="var(--color-text, #cbd5e1)"
                 fontFamily="var(--font-mono)"
               >
-                {c.strike}{c.option_type[0].toUpperCase()}
+                {c.strike}
+                {c.option_type[0].toUpperCase()}
               </text>
               <rect
                 x={barStart}
@@ -1314,24 +1307,25 @@ export function StrikeConcentrationChart({
           );
         })}
         {/* Spot-level marker */}
-        {sorted.length > 0 && (() => {
-          const spotRowIdx = sorted.findIndex((c) => c.strike <= spot);
-          if (spotRowIdx < 0) return null;
-          const spotY = spotRowIdx * (rowH + gap) - 2;
-          return (
-            <line
-              x1={barStart}
-              y1={spotY}
-              x2={W - 10}
-              y2={spotY}
-              stroke="var(--color-accent, #60a5fa)"
-              strokeWidth="1"
-              strokeDasharray="4 2"
-            >
-              <title>SPX spot ≈ {spot.toFixed(0)}</title>
-            </line>
-          );
-        })()}
+        {sorted.length > 0 &&
+          (() => {
+            const spotRowIdx = sorted.findIndex((c) => c.strike <= spot);
+            if (spotRowIdx < 0) return null;
+            const spotY = spotRowIdx * (rowH + gap) - 2;
+            return (
+              <line
+                x1={barStart}
+                y1={spotY}
+                x2={W - 10}
+                y2={spotY}
+                stroke="var(--color-accent, #60a5fa)"
+                strokeWidth="1"
+                strokeDasharray="4 2"
+              >
+                <title>SPX spot ≈ {spot.toFixed(0)}</title>
+              </line>
+            );
+          })()}
       </svg>
     </figure>
   );
@@ -1342,7 +1336,7 @@ export function StrikeConcentrationChart({
 
 ```tsx
 interface Props {
-  blocks: InstitutionalBlock[];  // filtered to program_track='opening_atm'
+  blocks: InstitutionalBlock[]; // filtered to program_track='opening_atm'
 }
 
 export function OpeningBlocksCard({ blocks }: Props) {
@@ -1367,7 +1361,8 @@ export function OpeningBlocksCard({ blocks }: Props) {
           Today's opening institutional blocks
         </h3>
         <span className="text-xs text-slate-500">
-          {openingBlocks.length} block{openingBlocks.length !== 1 ? 's' : ''} · 08:30-09:30 CT
+          {openingBlocks.length} block{openingBlocks.length !== 1 ? 's' : ''} ·
+          08:30-09:30 CT
         </span>
       </div>
       <table className="w-full text-xs text-slate-300">
@@ -1388,14 +1383,14 @@ export function OpeningBlocksCard({ blocks }: Props) {
             const ct = new Date(t.getTime() - 5 * 3600 * 1000);
             return (
               <tr key={b.executed_at + b.option_chain_id}>
-                <td className="p-1">
-                  {ct.toISOString().slice(11, 19)}
-                </td>
+                <td className="p-1">{ct.toISOString().slice(11, 19)}</td>
                 <td className="p-1 text-right">{b.strike}</td>
                 <td className="p-1">{b.option_type[0].toUpperCase()}</td>
                 <td className="p-1 text-right">{b.dte}</td>
                 <td className="p-1 text-right">{b.size.toLocaleString()}</td>
-                <td className="p-1 text-right">${(b.premium / 1000).toFixed(0)}k</td>
+                <td className="p-1 text-right">
+                  ${(b.premium / 1000).toFixed(0)}k
+                </td>
                 <td className="p-1 text-slate-500">{b.condition}</td>
               </tr>
             );
@@ -1411,13 +1406,13 @@ export function OpeningBlocksCard({ blocks }: Props) {
 
 Replace hardcoded hex literals with CSS variables per codebase convention:
 
-| v1 | v2 |
-|---|---|
-| `#60a5fa` | `var(--color-accent)` |
-| `slate-100/400/500` text classes | keep (those are Tailwind, consistent with rest of codebase) |
-| `#22c55e` (green) | `var(--color-call, #22c55e)` with fallback |
-| `#ef4444` (red) | `var(--color-put, #ef4444)` with fallback |
-| `border-slate-800`, `bg-slate-950/50` | `border-edge`, `bg-surface-alt` (matches `StrikeMap.tsx`) |
+| v1                                    | v2                                                          |
+| ------------------------------------- | ----------------------------------------------------------- |
+| `#60a5fa`                             | `var(--color-accent)`                                       |
+| `slate-100/400/500` text classes      | keep (those are Tailwind, consistent with rest of codebase) |
+| `#22c55e` (green)                     | `var(--color-call, #22c55e)` with fallback                  |
+| `#ef4444` (red)                       | `var(--color-put, #ef4444)` with fallback                   |
+| `border-slate-800`, `bg-slate-950/50` | `border-edge`, `bg-surface-alt` (matches `StrikeMap.tsx`)   |
 
 ## Updated `InstitutionalProgramSection` composition
 
@@ -1440,11 +1435,11 @@ Replace hardcoded hex literals with CSS variables per codebase convention:
 
 Each mfsl implication now has a dedicated visible surface:
 
-| Implication | Where to see it |
-|---|---|
-| 1. Non-directional mfsl flow | All UI surfaces display pair-level direction only; individual leg sides never shown as directional signals |
-| 2. Smart-money positioning by strike | **StrikeConcentrationChart** (horizontal bar chart, 60-day cumulative premium per strike, top 40) |
-| 3. Opening institutional blocks | **OpeningBlocksCard** (table of 08:30-09:30 CT blocks for today) |
+| Implication                          | Where to see it                                                                                            |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| 1. Non-directional mfsl flow         | All UI surfaces display pair-level direction only; individual leg sides never shown as directional signals |
+| 2. Smart-money positioning by strike | **StrikeConcentrationChart** (horizontal bar chart, 60-day cumulative premium per strike, top 40)          |
+| 3. Opening institutional blocks      | **OpeningBlocksCard** (table of 08:30-09:30 CT blocks for today)                                           |
 
 ## Regenerated open questions
 

@@ -33,6 +33,7 @@ Every trading day in the sample, 20-30k contract blocks print at strikes **8000-
 **What this is:** A systematic call-spread selling program — probably an overwrite / covered-call / structured-product hedge. Institutional.
 
 **Why you care:**
+
 - The strike range (15-20% OTM on 9-month calls) is where institutions think the **SPX ceiling** is over the medium term. Track where this program's strikes sit relative to spot over time.
 - You won't trade against this directly (notional is $100s of millions). But its strike migration is a regime signal — if it shifts to PUT-side, a structural change is happening.
 - **Not a 0DTE magnet signal** — these blocks are 260 DTE and unrelated to your short-term setups.
@@ -41,17 +42,18 @@ Every trading day in the sample, 20-30k contract blocks print at strikes **8000-
 
 ## Finding 2: ~35% of 0DTE premium is multi-leg (spreads), not single prints
 
-| Condition | N prints (0DTE) | Premium ($M) | Avg size | % in signal band |
-|---|---|---|---|---|
-| `auto` (single-leg electronic) | 4.6M | 6,121 | 2.7 | 25% |
-| `mlet` (multi-leg electronic) | 2.1M | 5,054 | 3.6 | **39%** |
-| `slan` (single-leg) | 689k | 912 | 1.7 | 23% |
-| `mlat` (multi-leg late) | 456k | 523 | 1.6 | **37%** |
-| `isoi` (ISO sweep, aggressive) | 17k | 40 | 3.9 | 10% |
+| Condition                      | N prints (0DTE) | Premium ($M) | Avg size | % in signal band |
+| ------------------------------ | --------------- | ------------ | -------- | ---------------- |
+| `auto` (single-leg electronic) | 4.6M            | 6,121        | 2.7      | 25%              |
+| `mlet` (multi-leg electronic)  | 2.1M            | 5,054        | 3.6      | **39%**          |
+| `slan` (single-leg)            | 689k            | 912          | 1.7      | 23%              |
+| `mlat` (multi-leg late)        | 456k            | 523          | 1.6      | **37%**          |
+| `isoi` (ISO sweep, aggressive) | 17k             | 40           | 3.9      | 10%              |
 
 **What this means:** `mlet` and `mlat` carry $5.6B of 0DTE premium — those are **spread legs**, not directional bets. When you see a "big buy on the QQQ 647P" that's an `mlet` print, it's probably the long leg of a put spread where someone sold the 645P simultaneously. The "buy-side aggression" is a data artifact of how spreads are reported.
 
 **Why you care:**
+
 - **Our burst analysis was partially picking up spread legs** — 37-39% of multi-leg prints fall in the 0.3-1% signal band, vs 25% for singles.
 - **For a true directional-flow signal, filter to `auto`/`slan` conditions only.** This is a 1-line fix to the upstream filter in the alerting spec.
 
@@ -75,6 +77,7 @@ CT hour      Big blocks    % multi-leg
 **What this means:** Peak directional-block activity is 9-10 CT (the hour after open). By afternoon, block count drops 60%+, and what remains is disproportionately multi-leg (end-of-day structured-product hedging / pre-close adjustments).
 
 **Why you care:**
+
 - **Concentrate attention on 8:30-10:30 CT for alert value.** Your best-signal window overlaps with when directional blocks are densest.
 - Afternoon bursts (14-15 CT) are 67% multi-leg — much more likely to be spread legs than real directional bets. Consider raising the premium threshold on afternoon alerts.
 
@@ -85,13 +88,14 @@ CT hour      Big blocks    % multi-leg
 In the 8:30:00-8:35:00 CT opening window:
 
 | Condition | Avg prints/day | Premium/day | Avg size | % near-ATM |
-|---|---|---|---|---|
-| `auto` | ~6,900 | ~$6.7M | 2.8 | **96%** |
-| `mlet` | ~3,200 | ~$3.8M | 3.1 | 84% |
-| `slan` | ~920 | ~$0.9M | 1.7 | **99%** |
-| `mfsl` | ~3.5 | ~$1.2M | **154** | 71% |
+| --------- | -------------- | ----------- | -------- | ---------- |
+| `auto`    | ~6,900         | ~$6.7M      | 2.8      | **96%**    |
+| `mlet`    | ~3,200         | ~$3.8M      | 3.1      | 84%        |
+| `slan`    | ~920           | ~$0.9M      | 1.7      | **99%**    |
+| `mfsl`    | ~3.5           | ~$1.2M      | **154**  | 71%        |
 
 **What this means:**
+
 - 96% of retail-ish `auto` 0DTE prints in the first 5 minutes are ATM. That's the opening-auction positioning.
 - Meanwhile, `mfsl` floor blocks are tiny in count (28 across all 8 days × first 5 min = 3-4/day) but HUGE in size (avg 154 contracts) and 29% NOT-near-ATM.
 - **The big directional moves by institutions happen through `mfsl` in the very first minutes.** Everyone else is noise at ATM.
@@ -103,6 +107,7 @@ In the 8:30:00-8:35:00 CT opening window:
 ## Finding 5: 0DTE is systematically call-heavy
 
 P/C premium ratio intraday (first 2 hours):
+
 ```
 CT window     Call $M   Put $M   P/C ratio
 08:30-09:00     404      203       0.50
@@ -119,6 +124,7 @@ CT window     Call $M   Put $M   P/C ratio
 ## Finding 6: "Persistent strikes" aren't really a thing at SPXW 0DTE
 
 I looked for strikes that showed up in the daily top-10 premium ranking across multiple days. Only found **2 strikes persisted for 3+ days**:
+
 - SPXW 7100C — 3 days
 - SPXW 7120C — 3 days
 
@@ -133,6 +139,7 @@ Both right at spot. These aren't "structural levels" — they're just wherever A
 Repeatedly across days we see large blocks of strikes like 5000C, 6000C, 6300C with dollar premium $90k-$460k per single trade. At SPX ~7100, a 5000C is 30% ITM with ~$2100 of intrinsic value per contract. These are **not directional bets on 0DTE options** — they're **synthetic long-stock positions via deep ITM calls**, used for capital efficiency or tax purposes.
 
 **Why you care:**
+
 - These should be filtered out of ANY directional-flow analysis. They don't carry information about where SPX is going.
 - **Filter rule:** drop prints where `ABS(delta) > 0.90` (deep ITM) unless you're tracking structural positioning specifically.
 
@@ -141,6 +148,7 @@ Repeatedly across days we see large blocks of strikes like 5000C, 6000C, 6300C w
 ## Finding 8: IV nearly doubles between hour 1 and hour 2
 
 Median IV on signal-band 0DTE prints:
+
 - 08-09 CT: **23.1%**, p99 38.6%
 - 09-10 CT: **32.1%**, p99 **120.7%**
 

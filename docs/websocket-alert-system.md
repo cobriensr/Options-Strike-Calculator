@@ -30,28 +30,28 @@ Consume the Unusual Whales [`option_trades` WebSocket](https://api.unusualwhales
 
 The system's rules are derived directly from empirical analysis on 8 days of EOD flow data (2026-04-13 through 2026-04-22, 18.8M 0DTE prints on SPY/QQQ/SPXW). See `ml/findings.json` and `ml/plots/eod-flow-*/` for supporting numbers.
 
-| Finding | Source script | Design implication |
-|---|---|---|
-| **Signal lives only in 0.3-1% OTM band.** Touch rate drops to 0% at 1%+ OTM at any premium level. | `eod_flow_premium_threshold.py` | Hard filter at distance 0.3-1% in upstream WebSocket handler. |
-| **Touch rate monotonic with premium** at tight distances. Doubles from 23% (baseline) to 45% (QQQ 0.3-0.5% at $100k+). | `eod_flow_premium_threshold.py` | Premium threshold ≥$100k becomes core trigger criterion. |
-| **Mixed flow beats one-sided flow.** QQQ 0.3-0.5% calls: mixed=45%, buy-dom=35%, sell-dom=31%. | `eod_flow_decomp.py` | `buy_premium_pct` gate: `0.40 ≤ x ≤ 0.60`. |
-| **QQQ strongest, SPY/SPXW ~half the effect, NDXP too thin** | `eod_flow_premium_threshold.py` | Per-ticker rule config; NDXP not subscribed. |
-| **Gamma-weighted threshold is no better than dollar-weighted** in signal band. | `eod_flow_decomp.py` | Use `total_premium` (dollars), not gamma notional. |
-| **Effect decays past 30-60 min.** MFE and MAE peak within 60 min of bucket end. | `eod_flow_forward_returns.py` | Observation window in outcome tracking caps at 120 min; trade horizon guidance is 15-60 min. |
-| **MFE ≈ MAE on median.** Typical outcome is 17 bps toward vs 19 bps against. | `eod_flow_forward_returns.py` | Alert payload must include MAE so trader knows drawdown budget. |
-| **Leave-one-out stable** — 53% of signal cells robust (LOO range <5pp), 99% at least moderate. | `eod_flow_stability.py` | Signal not driven by 1-2 lucky days; safe to trade. |
+| Finding                                                                                                                | Source script                   | Design implication                                                                           |
+| ---------------------------------------------------------------------------------------------------------------------- | ------------------------------- | -------------------------------------------------------------------------------------------- |
+| **Signal lives only in 0.3-1% OTM band.** Touch rate drops to 0% at 1%+ OTM at any premium level.                      | `eod_flow_premium_threshold.py` | Hard filter at distance 0.3-1% in upstream WebSocket handler.                                |
+| **Touch rate monotonic with premium** at tight distances. Doubles from 23% (baseline) to 45% (QQQ 0.3-0.5% at $100k+). | `eod_flow_premium_threshold.py` | Premium threshold ≥$100k becomes core trigger criterion.                                     |
+| **Mixed flow beats one-sided flow.** QQQ 0.3-0.5% calls: mixed=45%, buy-dom=35%, sell-dom=31%.                         | `eod_flow_decomp.py`            | `buy_premium_pct` gate: `0.40 ≤ x ≤ 0.60`.                                                   |
+| **QQQ strongest, SPY/SPXW ~half the effect, NDXP too thin**                                                            | `eod_flow_premium_threshold.py` | Per-ticker rule config; NDXP not subscribed.                                                 |
+| **Gamma-weighted threshold is no better than dollar-weighted** in signal band.                                         | `eod_flow_decomp.py`            | Use `total_premium` (dollars), not gamma notional.                                           |
+| **Effect decays past 30-60 min.** MFE and MAE peak within 60 min of bucket end.                                        | `eod_flow_forward_returns.py`   | Observation window in outcome tracking caps at 120 min; trade horizon guidance is 15-60 min. |
+| **MFE ≈ MAE on median.** Typical outcome is 17 bps toward vs 19 bps against.                                           | `eod_flow_forward_returns.py`   | Alert payload must include MAE so trader knows drawdown budget.                              |
+| **Leave-one-out stable** — 53% of signal cells robust (LOO range <5pp), 99% at least moderate.                         | `eod_flow_stability.py`         | Signal not driven by 1-2 lucky days; safe to trade.                                          |
 
 ## Design principles
 
-| Principle | Why |
-|---|---|
-| **Filter aggressively upstream** | 85% of UW trades are not in our signal band. Don't buffer what you'll discard. |
-| **5-min bucket is the unit of decision** | Signal lives here. 1-min is too noisy for alerts. |
-| **Fire at `bucket_end`, not mid-bucket** | The signal is the fully-accumulated 5-min premium, not partial. |
-| **Dedup aggressively** | Same strike / adjacent time windows = same event. Don't spam. |
-| **Include historical context in every alert** | User needs expected touch rate / MFE / MAE to size the trade. |
-| **Persist everything to Neon** | Every alert becomes a labeled training example for the next data refresh. |
-| **Config > code for rules** | Thresholds evolve as more data arrives. Deploy rule changes without redeploying the service. |
+| Principle                                     | Why                                                                                          |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| **Filter aggressively upstream**              | 85% of UW trades are not in our signal band. Don't buffer what you'll discard.               |
+| **5-min bucket is the unit of decision**      | Signal lives here. 1-min is too noisy for alerts.                                            |
+| **Fire at `bucket_end`, not mid-bucket**      | The signal is the fully-accumulated 5-min premium, not partial.                              |
+| **Dedup aggressively**                        | Same strike / adjacent time windows = same event. Don't spam.                                |
+| **Include historical context in every alert** | User needs expected touch rate / MFE / MAE to size the trade.                                |
+| **Persist everything to Neon**                | Every alert becomes a labeled training example for the next data refresh.                    |
+| **Config > code for rules**                   | Thresholds evolve as more data arrives. Deploy rule changes without redeploying the service. |
 
 ## Architecture
 
@@ -364,15 +364,15 @@ alerts/                       # New top-level folder
 
 ### Env vars (new, alongside existing)
 
-| Variable | Source | Purpose |
-|---|---|---|
-| `UW_API_KEY` | existing | WebSocket auth |
-| `DATABASE_URL` | existing | Neon connection |
-| `SENTRY_DSN` | existing | Error tracking |
-| `ALERT_DISCORD_WEBHOOK_URL` | new | Alert channel |
-| `PUSHOVER_USER_KEY` | new | Push notifications |
-| `PUSHOVER_APP_TOKEN` | new | Push notifications |
-| `RULE_CONFIG_VERSION` | new | Which `rules/vN.yaml` to load (default: latest) |
+| Variable                    | Source   | Purpose                                         |
+| --------------------------- | -------- | ----------------------------------------------- |
+| `UW_API_KEY`                | existing | WebSocket auth                                  |
+| `DATABASE_URL`              | existing | Neon connection                                 |
+| `SENTRY_DSN`                | existing | Error tracking                                  |
+| `ALERT_DISCORD_WEBHOOK_URL` | new      | Alert channel                                   |
+| `PUSHOVER_USER_KEY`         | new      | Push notifications                              |
+| `PUSHOVER_APP_TOKEN`        | new      | Push notifications                              |
+| `RULE_CONFIG_VERSION`       | new      | Which `rules/vN.yaml` to load (default: latest) |
 
 ## Persistence schema
 
@@ -414,13 +414,13 @@ CREATE TABLE burst_alert_outcomes (
 
 ## Cost, latency, and observability
 
-| Metric | Target |
-|---|---|
-| Time from trade event to bucket state update | < 50 ms |
-| Time from bucket_end to alert dispatch | < 3 s |
-| Memory usage | < 256 MB (a few thousand active buckets at peak) |
-| Monthly compute cost | Railway $5-15 |
-| Additional data cost | UW Advanced plan (WebSocket access) |
+| Metric                                       | Target                                           |
+| -------------------------------------------- | ------------------------------------------------ |
+| Time from trade event to bucket state update | < 50 ms                                          |
+| Time from bucket_end to alert dispatch       | < 3 s                                            |
+| Memory usage                                 | < 256 MB (a few thousand active buckets at peak) |
+| Monthly compute cost                         | Railway $5-15                                    |
+| Additional data cost                         | UW Advanced plan (WebSocket access)              |
 
 Instrumentation:
 
@@ -518,6 +518,7 @@ rules:
 ## Build order
 
 **Phase 1 — Core loop (console only, no dispatch)**
+
 - WebSocket client with reconnect logic
 - Upstream filter
 - Bucket aggregator
@@ -526,24 +527,28 @@ rules:
 - **Goal**: validate by watching live triggers match the patterns from backtest. Running for 3-5 sessions should produce ~10-20 triggers across rules.
 
 **Phase 2 — Neon persistence**
+
 - Migration for `burst_alerts` + `burst_alert_outcomes`
 - Dedup / cooldown queries
 - Insert on every fire
 - **Goal**: build up a labeled dataset of real triggers for later analysis.
 
 **Phase 3 — Dispatch**
+
 - Discord webhook (easiest to eyeball; mobile-native with rich embeds)
 - Pushover push notifications (lock-screen alerts)
 - Error handling + Sentry
 - **Goal**: alerts land on your phone within 3 seconds of `bucket_end`.
 
 **Phase 4 — Outcome tracking**
+
 - `outcome_cron.py` scheduled to run ~15:30 CT daily
 - Populates `burst_alert_outcomes`
 - Daily summary message to Discord: "5 alerts fired, 2 touched (40% vs 45% expected)"
 - **Goal**: live feedback loop on rule performance; early warning of signal decay.
 
 **Phase 5 — Operational hardening**
+
 - Heartbeat monitoring
 - RTH gate
 - Deploy to Railway
@@ -551,22 +556,23 @@ rules:
 - **Goal**: unattended reliability during market hours.
 
 **Phase 6 — Tune**
+
 - After 2-3 weeks of live data, compare live hit rate vs expected.
 - Retire rules that systematically miss (live < 0.5 × expected over 20+ alerts).
 - Promote rules that outperform (tighten thresholds to reduce false positives).
 
 ## Known risks and mitigations
 
-| Risk | Mitigation |
-|---|---|
+| Risk                                                               | Mitigation                                                                                                                                                      |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **UW `tags` classification may not match our EOD `side` labeling** | Before going live, run 1-day side-by-side: UW live data → bucket pipeline vs same-day EOD CSV. Aggression splits per bucket should match within sampling noise. |
-| **Signal decay over time** | Outcome-tracking cron measures live hit rate. Kill-criterion: rule dropped to <50% of its expected touch rate over 20+ alerts → retire. |
-| **WebSocket drops near critical bursts** | Heartbeat monitoring + Sentry alerts on reconnect. Accept occasional misses; the signal isn't time-sensitive below 30s. |
-| **UW API rate limits during high-vol events** | Per-ticker streams have been reliable in practice. Monitor `ws_errors` metric; fall back to per-minute REST polling if streaming fails for >60s. |
-| **"Expected touch rate 45%" becomes psychological crutch** | Every alert shows the LOO range (±8 pp), not just the point estimate. Payload includes sample size in cell. |
-| **Thin liquidity on chosen strikes** | 0DTE SPXW 0.3-1% OTM is liquid enough for retail-scale sizing. Start small. Capacity drops fast past 50-100 contracts. |
-| **FOMC / earnings days flood all rules** | Add `vix_change_today > 3pts` suppression flag to rules. Also suppress for 30 min before and after scheduled macro events (wired to a calendar check). |
-| **Missed dedup under WebSocket message reordering** | Use both in-memory `fired` flag AND Neon cooldown query. Both must agree before firing. Accept slight over-suppression. |
+| **Signal decay over time**                                         | Outcome-tracking cron measures live hit rate. Kill-criterion: rule dropped to <50% of its expected touch rate over 20+ alerts → retire.                         |
+| **WebSocket drops near critical bursts**                           | Heartbeat monitoring + Sentry alerts on reconnect. Accept occasional misses; the signal isn't time-sensitive below 30s.                                         |
+| **UW API rate limits during high-vol events**                      | Per-ticker streams have been reliable in practice. Monitor `ws_errors` metric; fall back to per-minute REST polling if streaming fails for >60s.                |
+| **"Expected touch rate 45%" becomes psychological crutch**         | Every alert shows the LOO range (±8 pp), not just the point estimate. Payload includes sample size in cell.                                                     |
+| **Thin liquidity on chosen strikes**                               | 0DTE SPXW 0.3-1% OTM is liquid enough for retail-scale sizing. Start small. Capacity drops fast past 50-100 contracts.                                          |
+| **FOMC / earnings days flood all rules**                           | Add `vix_change_today > 3pts` suppression flag to rules. Also suppress for 30 min before and after scheduled macro events (wired to a calendar check).          |
+| **Missed dedup under WebSocket message reordering**                | Use both in-memory `fired` flag AND Neon cooldown query. Both must agree before firing. Accept slight over-suppression.                                         |
 
 ## Open design questions
 
