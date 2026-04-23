@@ -56,6 +56,17 @@ BATCH_SIZE = 500
 # databento_client.py.
 _PRICE_SCALE = Decimal(1_000_000_000)
 
+# Databento's sentinel for a missing price on a TBBO level (INT64_MAX).
+# Divided by _PRICE_SCALE it yields ~9.22e9 — which overflows the
+# NUMERIC(12,4) columns in futures_top_of_book / futures_trade_ticks
+# and raises Neon's "numeric field overflow" error. We treat
+# UNDEF_PRICE as equivalent to None and skip the row. Happens on empty
+# book sides (market open/close, halted instruments, auction crosses).
+try:
+    from databento_dbn import UNDEF_PRICE  # type: ignore[import-untyped]
+except ImportError:  # older databento-dbn, fall back to the documented value
+    UNDEF_PRICE = 9_223_372_036_854_775_807
+
 
 @dataclass
 class TopOfBookRow:
@@ -150,6 +161,8 @@ def _parse_top_of_book(symbol: str, record: Any) -> TopOfBookRow | None:
             or bid_sz is None
             or ask_sz is None
             or ts_ns is None
+            or bid_px == UNDEF_PRICE
+            or ask_px == UNDEF_PRICE
         ):
             return None
 
@@ -187,6 +200,9 @@ def _parse_trade_tick(symbol: str, record: Any) -> TradeTickRow | None:
             or ts_ns is None
             or bid_px is None
             or ask_px is None
+            or price_raw == UNDEF_PRICE
+            or bid_px == UNDEF_PRICE
+            or ask_px == UNDEF_PRICE
         ):
             return None
 

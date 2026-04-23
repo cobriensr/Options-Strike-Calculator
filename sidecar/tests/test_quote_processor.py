@@ -294,6 +294,27 @@ class TestProcessTbboDualWrite:
         mock_tob_insert.assert_not_called()
         mock_trade_insert.assert_not_called()
 
+    def test_undef_price_sentinel_skips_both(
+        self,
+        processor: QuoteProcessor,
+        mock_tob_insert: MagicMock,
+        mock_trade_insert: MagicMock,
+    ) -> None:
+        """Databento sends INT64_MAX (UNDEF_PRICE = 9_223_372_036_854_775_807)
+        for missing prices rather than None — our early check has to treat
+        that sentinel exactly like None, otherwise the Decimal(sentinel) /
+        1e9 = ~9.22e9 overflows NUMERIC(12,4) and Neon raises
+        NumericValueOutOfRange. Regression from quote_processor ingest
+        on 2026-04-23."""
+        from quote_processor import UNDEF_PRICE
+
+        rec = _tbbo_record()
+        rec.levels[0].ask_px = UNDEF_PRICE  # type: ignore[attr-defined]
+        processor.process_tbbo("ES", rec)
+        processor.flush()
+        mock_tob_insert.assert_not_called()
+        mock_trade_insert.assert_not_called()
+
     def test_malformed_price_skips_both(
         self,
         processor: QuoteProcessor,
