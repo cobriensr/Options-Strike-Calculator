@@ -12,20 +12,24 @@ interface Props {
 type SortKey = 'time' | 'strike' | 'type' | 'dte' | 'size' | 'premium' | 'side' | 'cond';
 type SortDir = 'asc' | 'desc';
 
-function formatPremium(premium: number): string {
-  if (premium >= 1_000_000) return `$${(premium / 1_000_000).toFixed(2)}M`;
-  if (premium >= 10_000) return `$${Math.round(premium / 1000)}k`;
-  return `$${(premium / 1000).toFixed(1)}k`;
+/** Neon DOUBLE PRECISION comes through as a string; cast for both
+ * display and sort to avoid lexical comparison bugs ('$896k' > '$1.9M'). */
+function formatPremium(premium: number | string): string {
+  const n = Number(premium);
+  if (!Number.isFinite(n)) return '—';
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 10_000) return `$${Math.round(n / 1000)}k`;
+  return `$${(n / 1000).toFixed(1)}k`;
 }
 
 function blockSortKey(b: InstitutionalBlock, k: SortKey): number | string {
   switch (k) {
     case 'time': return new Date(b.executed_at).getTime();
-    case 'strike': return b.strike;
+    case 'strike': return Number(b.strike);
     case 'type': return b.option_type;
-    case 'dte': return b.dte;
-    case 'size': return b.size;
-    case 'premium': return b.premium;
+    case 'dte': return Number(b.dte);
+    case 'size': return Number(b.size);
+    case 'premium': return Number(b.premium);
     case 'side': return b.side ?? '';
     case 'cond': return b.condition;
   }
@@ -53,9 +57,17 @@ export function TodayProgramCard({ today, blocks }: Props) {
   const spot = today.avg_spot ?? 0;
   const ceilingPct = today.ceiling_pct_above_spot ?? 0;
 
+  // Coerce — Neon returns DOUBLE PRECISION as string.
+  const totalSizeNum = Number(total_size);
+  const totalPremiumNum = Number(total_premium);
+  const lowStrikeNum = Number(low_strike);
+  const highStrikeNum = Number(high_strike);
+  const spotNum = Number(spot);
+  const ceilingPctNum = Number(ceilingPct);
+
   return (
     <div className="grid gap-3 md:grid-cols-3">
-      <Metric label="Spread" value={`${low_strike} / ${high_strike}`} />
+      <Metric label="Spread" value={`${lowStrikeNum} / ${highStrikeNum}`} />
       <Metric
         label="Direction"
         value={direction.toUpperCase()}
@@ -63,15 +75,15 @@ export function TodayProgramCard({ today, blocks }: Props) {
           direction === 'sell' ? 'green' : direction === 'buy' ? 'red' : 'gray'
         }
       />
-      <Metric label="Contracts" value={total_size.toLocaleString()} />
+      <Metric label="Contracts" value={totalSizeNum.toLocaleString()} />
       <Metric
         label="Premium"
-        value={`$${(total_premium / 1_000_000).toFixed(1)}M`}
+        value={formatPremium(totalPremiumNum)}
       />
-      <Metric label="Spot" value={spot.toFixed(2)} />
+      <Metric label="Spot" value={spotNum.toFixed(2)} />
       <Metric
         label="Ceiling above spot"
-        value={`${(ceilingPct * 100).toFixed(1)}%`}
+        value={`${(ceilingPctNum * 100).toFixed(1)}%`}
         tone="blue"
       />
       <details className="md:col-span-3">
@@ -125,20 +137,32 @@ function SortableBlockTable({ blocks }: { blocks: InstitutionalBlock[] }) {
           </tr>
         </thead>
         <tbody>
-          {sorted.map((b) => {
+          {sorted.map((b, i) => {
             const ct = new Date(
               new Date(b.executed_at).getTime() - 5 * 3600 * 1000,
             );
+            // HH:MM:SS.sss — sub-second precision disambiguates burst
+            // clusters of distinct trades that share identical size /
+            // price / premium but executed at different microseconds.
+            const timeDisplay = ct.toISOString().slice(11, 23);
             return (
               <tr
-                key={b.executed_at + b.option_chain_id + b.size}
+                key={
+                  b.executed_at +
+                  b.option_chain_id +
+                  String(b.size) +
+                  String(b.price) +
+                  String(i)
+                }
                 className="border-edge border-b"
               >
-                <td className="p-1 font-mono">{ct.toISOString().slice(11, 19)}</td>
+                <td className="p-1 font-mono">{timeDisplay}</td>
                 <td className="p-1 text-right font-mono">{b.strike}</td>
                 <td className="p-1">{b.option_type[0]!.toUpperCase()}</td>
                 <td className="p-1 text-right">{b.dte}</td>
-                <td className="p-1 text-right">{b.size.toLocaleString()}</td>
+                <td className="p-1 text-right">
+                  {Number(b.size).toLocaleString()}
+                </td>
                 <td className="p-1 text-right">{formatPremium(b.premium)}</td>
                 <td className="p-1">{b.side ?? '—'}</td>
                 <td className="text-muted p-1">{b.condition}</td>

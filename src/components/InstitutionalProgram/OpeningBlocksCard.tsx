@@ -18,15 +18,14 @@ type SortKey =
   | 'cond';
 type SortDir = 'asc' | 'desc';
 
-/** Format premium in $k for sub-$1M and $M for ≥$1M. */
-function formatPremium(premium: number): string {
-  if (premium >= 1_000_000) {
-    return `$${(premium / 1_000_000).toFixed(2)}M`;
-  }
-  if (premium >= 10_000) {
-    return `$${Math.round(premium / 1000)}k`;
-  }
-  return `$${(premium / 1000).toFixed(1)}k`;
+/** Format premium in $k for sub-$1M and $M for ≥$1M. Input may be a
+ * string when it comes straight from Neon DOUBLE PRECISION — coerce. */
+function formatPremium(premium: number | string): string {
+  const n = Number(premium);
+  if (!Number.isFinite(n)) return '—';
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 10_000) return `$${Math.round(n / 1000)}k`;
+  return `$${(n / 1000).toFixed(1)}k`;
 }
 
 /**
@@ -103,27 +102,34 @@ export function OpeningBlocksCard({ blocks, dateLabel = 'today' }: Props) {
             </tr>
           </thead>
           <tbody>
-            {sorted.map((b) => {
+            {sorted.map((b, i) => {
               const ct = new Date(
                 new Date(b.executed_at).getTime() - 5 * 3600 * 1000,
               );
+              // HH:MM:SS.sss gives enough precision to disambiguate
+              // sub-second burst clusters that look like duplicates.
+              const timeDisplay = ct.toISOString().slice(11, 23);
               return (
                 <tr
-                  key={b.executed_at + b.option_chain_id + b.size}
+                  key={
+                    b.executed_at +
+                    b.option_chain_id +
+                    String(b.size) +
+                    String(b.price) +
+                    String(i)
+                  }
                   className="border-edge border-b"
                 >
-                  <td className="p-1 font-mono">
-                    {ct.toISOString().slice(11, 19)}
-                  </td>
+                  <td className="p-1 font-mono">{timeDisplay}</td>
                   <td className="p-1 text-right font-mono">{b.strike}</td>
                   <td className="p-1">{b.option_type[0]!.toUpperCase()}</td>
                   <td className="p-1 text-right">{b.dte}</td>
                   <td className="p-1 text-right">
-                    {b.size.toLocaleString()}
+                    {Number(b.size).toLocaleString()}
                   </td>
                   <td className="p-1 text-right">{formatPremium(b.premium)}</td>
                   <td className="p-1 text-right">
-                    {(b.moneyness_pct * 100).toFixed(2)}%
+                    {(Number(b.moneyness_pct) * 100).toFixed(2)}%
                   </td>
                   <td className="text-muted p-1">{b.condition}</td>
                 </tr>
@@ -170,15 +176,18 @@ function Th({
 
 type KeyValues = Record<SortKey, number | string>;
 
+/** Neon-serverless returns DOUBLE PRECISION as a string to preserve
+ * precision. Numeric sort keys MUST be cast via Number() or the
+ * browser will string-compare ('$896k' > '$1.9M' lexically). */
 function keyFor(b: InstitutionalBlock): KeyValues {
   return {
     time: new Date(b.executed_at).getTime(),
-    strike: b.strike,
+    strike: Number(b.strike),
     type: b.option_type,
-    dte: b.dte,
-    size: b.size,
-    premium: b.premium,
-    mny: b.moneyness_pct,
+    dte: Number(b.dte),
+    size: Number(b.size),
+    premium: Number(b.premium),
+    mny: Number(b.moneyness_pct),
     cond: b.condition,
   };
 }
