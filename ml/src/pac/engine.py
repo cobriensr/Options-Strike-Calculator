@@ -169,22 +169,30 @@ class PACEngine:
         # confirmable at bar T + swing_length. We shifted every structure-detection
         # column forward by swing_length.
         #
-        # 2026-04-23 (second pass — bug surfaced by the A2 1m sweep): the first
-        # pass was incomplete. smc.bos_choch layers *additional* lookahead on
-        # top of swing_highs_lows:
+        # 2026-04-23 (second pass): BOS/CHOCH need more than a uniform shift.
+        # smc.bos_choch layers two additional lookahead sources on top of
+        # swing_highs_lows:
         #
-        #   * Labeling peek (3 * swing_length): bos_choch labels BOS/CHOCH at
-        #     `last_positions[-2]` — the 3rd-most-recent swing in the current
-        #     4-swing pattern. The 4th swing in that pattern is the CURRENT
-        #     iteration bar `i`, which itself needs swing_length more bars to
-        #     be confirmed by swing_highs_lows. So BOS at bar T needs data
-        #     through T + 3*swing_length, not T + swing_length.
+        #   * Labeling peek: bos_choch labels BOS at `last_positions[-2]` —
+        #     the 3rd-most-recent swing in the current 4-swing pattern. A
+        #     label at original position P0 is only placeable when swings
+        #     P1, P2, P3 (the three swings after P0) are all observed AND
+        #     P3 is itself confirmed. That means BOS[P0] becomes knowable
+        #     at bar max(P3 + swing_length) — where P3 varies per event
+        #     because swings are spaced irregularly. A uniform shift can't
+        #     capture this without leaking when swings are wider than the
+        #     shift or over-lagging when swings are packed.
         #
-        #   * Broken-filter peek (unbounded): bos_choch drops any BOS/CHOCH
-        #     event whose level was never broken later in the series (smc.py
-        #     lines 335-360). Events that appear in the output were filtered
-        #     using future data about whether they eventually broke. We mask
-        #     them out at each output row if the break bar is > that row.
+        #   * Broken-filter peek: bos_choch drops any BOS/CHOCH event
+        #     whose level was never broken later in the series (smc.py
+        #     lines 335-360). Events appear in the output because of a
+        #     future break. We need to hide them until that break occurs.
+        #
+        # The correct fix is per-event: for each surviving BOS/CHOCH at
+        # pre-shift position P0, compute knowable_at = max(P3+swing_length,
+        # broken[P0]), then place the event at that position in the output.
+        # Events whose knowable_at >= len(df) disappear entirely (they were
+        # only confirmed by data beyond our frame).
         #
         # smc.ob's detection is streaming/causal (np.searchsorted for
         # last_top_index < current_close_index), so it only inherits the
@@ -200,7 +208,6 @@ class PACEngine:
         #
         # smc.fvg uses `.shift(-1)` so FVGs need 1-bar confirmation.
         lag_swing = self.params.swing_length
-        lag_bos = 3 * self.params.swing_length
 
         # Columns driven only by swing_highs_lows (plus smc.ob's streaming
         # detection, which we established is causal beyond the swing input).
@@ -214,32 +221,26 @@ class PACEngine:
         for col in swing_only_cols:
             out[col] = out[col].shift(lag_swing)
 
-        # Broken-filter mask: build BEFORE we shift the bc columns. Event at
-        # row T in the raw bc output is only "knowable" at bar max(T + 3*lag,
-        # broken[T]). The 3*lag piece is handled by the shift below; the
-        # broken[T] piece needs an explicit mask.
-        broken_raw = bc["BrokenIndex"].to_numpy() if "BrokenIndex" in bc.columns else None
+        # Fail loud if upstream smc.bos_choch stops emitting BrokenIndex —
+        # the BOS/CHOCH causality fix is load-bearing on this column.
+        assert "BrokenIndex" in bc.columns, (
+            "smc.bos_choch no longer returns BrokenIndex — PAC causality "
+            "fix is broken. Upstream library change required attention."
+        )
 
-        bos_cols = ("BOS", "CHOCH", "Level_bc", "CHOCHPlus")
-        for col in bos_cols:
-            out[col] = out[col].shift(lag_bos)
-
-        if broken_raw is not None:
-            broken_shifted = pd.Series(broken_raw).shift(lag_bos).to_numpy()
-            current_bar = np.arange(len(out), dtype=np.float64)
-            # Raw BrokenIndex is NaN (not broken) or a float bar index. We mask
-            # out rows where the break bar is strictly greater than the
-            # current row index — i.e., the break hadn't happened yet.
-            unrealized_break = (
-                ~np.isnan(broken_shifted)
-            ) & (broken_shifted > current_bar)
-            for col in bos_cols:
-                col_arr = np.array(
-                    out[col].to_numpy(dtype=np.float64, na_value=np.nan),
-                    copy=True,
-                )
-                col_arr[unrealized_break] = np.nan
-                out[col] = col_arr
+        # Per-event relocation: compute each BOS/CHOCH's knowable_at bar
+        # and place the event's value there rather than at a uniform shift
+        # offset. Events with knowable_at >= N (confirmed only by data
+        # beyond our frame) are dropped. This single transform handles
+        # both the labeling peek AND the broken-filter peek — once an
+        # event lands at knowable_at[P0], by definition the live trader
+        # had all the info to see it.
+        out = _relocate_bos_events_causally(
+            out=out,
+            shl=shl,
+            bc=bc,
+            swing_length=lag_swing,
+        )
 
         # FVG has a 1-bar lookahead, not swing_length.
         for col in ("FVG", "FVG_Top", "FVG_Bottom", "FVG_MitigatedIndex"):
@@ -364,3 +365,74 @@ class PACEngine:
             active_obs=active_obs,
             active_fvgs=active_fvgs,
         )
+
+
+# Columns whose events are relocated by `_relocate_bos_events_causally`.
+# Anything touched by smc.bos_choch's 4-swing labeling + broken-filter
+# pipeline belongs here; columns derived purely from swing_highs_lows
+# (HighLow/Level_shl + the whole OB cluster) are shifted uniformly
+# upstream and do NOT go through this path.
+_BOS_COLS = ("BOS", "CHOCH", "Level_bc", "CHOCHPlus")
+
+
+def _relocate_bos_events_causally(
+    *,
+    out: pd.DataFrame,
+    shl: pd.DataFrame,
+    bc: pd.DataFrame,
+    swing_length: int,
+) -> pd.DataFrame:
+    """Move each BOS/CHOCH event from its raw smc-output position to the
+    bar at which a live trader could first see it confirmed.
+
+    For an event whose raw smc.bos_choch position is P0:
+
+    - The label was placed when smc iterated to the 3rd swing after P0
+      (call it P3). A live observer can only verify P3 is a swing at
+      bar ``P3 + swing_length`` (swing_highs_lows's centered-window
+      peek).
+    - The event only survives smc's own broken-filter if the level was
+      later broken at some bar ``j = broken[P0]``.
+
+    So the earliest bar at which the live chart could show BOS[P0] is
+    ``knowable_at = max(P3 + swing_length, broken[P0])``. We relocate
+    each event's value from row P0 to row knowable_at. Events whose
+    knowable_at >= len(out) are dropped — they were only confirmed by
+    data beyond the frame and wouldn't have been visible during the
+    window being backtested.
+
+    This single transform supersedes the older uniform-shift approach
+    and handles BOTH the labeling peek and the broken-filter peek in
+    one pass. Collisions (two P0s mapping to the same knowable_at) are
+    resolved by "last wins" — rare in practice.
+    """
+    n = len(out)
+    hl_raw = shl["HighLow"].to_numpy(dtype=np.float64, na_value=np.nan)
+    swing_positions = np.flatnonzero((~np.isnan(hl_raw)) & (hl_raw != 0))
+
+    broken = bc["BrokenIndex"].to_numpy(dtype=np.float64, na_value=np.nan)
+
+    src_values: dict[str, np.ndarray] = {
+        col: out[col].to_numpy(dtype=np.float64, na_value=np.nan)
+        for col in _BOS_COLS
+    }
+    new_cols: dict[str, np.ndarray] = {
+        col: np.full(n, np.nan, dtype=np.float64) for col in _BOS_COLS
+    }
+
+    event_positions = np.where(~np.isnan(broken))[0]
+    for p0 in event_positions:
+        after_idx = int(np.searchsorted(swing_positions, p0, side="right"))
+        swings_after = swing_positions[after_idx:]
+        if len(swings_after) < 3:
+            continue
+        p3 = int(swings_after[2])
+        knowable_at = max(p3 + swing_length, int(broken[p0]))
+        if knowable_at >= n:
+            continue
+        for col in _BOS_COLS:
+            new_cols[col][knowable_at] = src_values[col][p0]
+
+    for col in _BOS_COLS:
+        out[col] = new_cols[col]
+    return out

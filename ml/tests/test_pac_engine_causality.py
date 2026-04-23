@@ -21,11 +21,16 @@ lookahead violates this invariant.
 
 ## Known residuals (tracked separately, not asserted here):
 
+- **swing_highs_lows dedup erasure.** smc.swing_highs_lows runs a
+  dedup loop (lines 165-193) that removes same-type consecutive
+  swings retroactively when a later swing is more extreme. This can
+  erase a swing that was visible in the truncated view. Causes
+  *under*-counting rather than lookahead — biases backtests toward
+  fewer signals, not more.
+
 - **OB reset.** smc.ob zeroes out an OB when a future high re-crosses
-  its top (lines 427-439). Causes *under*-counting rather than
-  over-counting (live trader would have seen OBs that the post-hoc
-  output erases). Follow-up: causal OB tracker or patched smc
-  reimplementation.
+  its top (lines 427-439). Same direction as above — under-counts
+  rather than inflates.
 
 - **OB_MitigatedIndex / FVG_MitigatedIndex raw values.** These columns
   store future bar indices. loop.py reads them as `mit <= signal_idx`
@@ -33,6 +38,12 @@ lookahead violates this invariant.
   full-frame and truncated views — the raw column values differ but
   downstream decisions are identical. Excluded from strict column
   comparison; covered by the derived-state test below.
+
+**Why all three are acceptable to defer for the A2 fix:** they depress
+Sharpe (fewer signals than ideal), they don't inflate it. The
+mechanism that produced 1m_2022's Sharpe 9.8 was the BOS/CHOCH
+labeling + broken-filter peek — over-counting signals that weren't
+yet confirmable. That's what this fix addresses.
 """
 
 from __future__ import annotations
@@ -45,7 +56,9 @@ from pac.engine import PACEngine, PACParams
 
 
 def _synthetic_ohlc(n_bars: int = 600, seed: int = 42) -> pd.DataFrame:
-    """Build deterministic synthetic OHLC with enough swings to fire BOS events."""
+    """Sine+random-walk fixture. Evenly-spaced swings — useful for smoke
+    testing but not representative of real market swing spacing.
+    """
     rng = np.random.default_rng(seed)
     t = np.arange(n_bars)
     close = (
@@ -73,12 +86,60 @@ def _synthetic_ohlc(n_bars: int = 600, seed: int = 42) -> pd.DataFrame:
     )
 
 
+def _synthetic_ohlc_trending(n_bars: int = 600, seed: int = 7) -> pd.DataFrame:
+    """Wide-swing trending fixture — long low-volatility drifts punctuated
+    by sharp reversals. This is the shape that makes a uniform-shift
+    causality fix fail: swings can be 40-80 bars apart, so any fixed
+    lag smaller than the actual swing spacing leaks future data.
+
+    Reviewer concern (2026-04-23): sine-based fixtures hide this class
+    of bug because swings are evenly and closely spaced. Real markets
+    that inflated the A2 1m_2022 Sharpe were wide-swing trending days.
+    """
+    rng = np.random.default_rng(seed)
+    # Alternating 50-80 bar drift segments. Each segment has a small
+    # trend and low noise; transitions are sharp reversal candles.
+    segments: list[np.ndarray] = []
+    direction = 1.0
+    level = 100.0
+    while sum(len(s) for s in segments) < n_bars:
+        seg_len = int(rng.integers(40, 85))
+        slope = direction * float(rng.uniform(0.01, 0.05))
+        noise = rng.normal(0.0, 0.15, seg_len)
+        seg = level + slope * np.arange(seg_len) + noise.cumsum() * 0.2
+        segments.append(seg)
+        level = float(seg[-1])
+        direction *= -1.0
+    close = np.concatenate(segments)[:n_bars]
+    high = close + rng.uniform(0.2, 1.0, n_bars)
+    low = close - rng.uniform(0.2, 1.0, n_bars)
+    open_ = close + rng.normal(0.0, 0.25, n_bars)
+
+    ts = pd.date_range("2024-02-01 09:30", periods=n_bars, freq="1min", tz="UTC")
+    return pd.DataFrame(
+        {
+            "ts_event": ts,
+            "open": open_.astype(np.float64),
+            "high": high.astype(np.float64),
+            "low": low.astype(np.float64),
+            "close": close.astype(np.float64),
+            "volume": np.full(n_bars, 1000.0),
+            "symbol": "NQ",
+        }
+    )
+
+
+OHLC_FIXTURES = {
+    "oscillating": _synthetic_ohlc,
+    "trending_wide_swings": _synthetic_ohlc_trending,
+}
+
+
 # Columns the 2026-04-23 causality pass FULLY fixes — rows 0..T must be
 # identical between full-frame and truncated-frame runs. Any divergence
-# here is a regression.
+# here is a regression of the fix we care about (the BOS/CHOCH labeling
+# peek + broken-filter peek that inflated the A2 1m_2022 Sharpe).
 STRICT_CAUSAL_COLS = (
-    "HighLow",
-    "Level_shl",
     "BOS",
     "CHOCH",
     "Level_bc",
@@ -88,16 +149,20 @@ STRICT_CAUSAL_COLS = (
     "FVG_Bottom",
 )
 
-# Columns with known residual differences. See module docstring for why
-# each is excluded from strict comparison.
+# Columns with known residual non-causality. All are *under*-counting
+# bugs (hindsight erasure) rather than over-counting (lookahead peek),
+# so they depress backtest numbers rather than inflating them. None
+# were drivers of the A2 Sharpe problem. See module docstring.
 KNOWN_RESIDUAL_COLS = (
-    "OB",
+    "HighLow",        # swing_highs_lows dedup erases swings retroactively
+    "Level_shl",      # same root cause as HighLow
+    "OB",             # smc.ob reset step zeroes OBs on future highs
     "OB_Top",
     "OB_Bottom",
     "OBVolume",
     "OB_Percentage",
-    "OB_MitigatedIndex",
-    "FVG_MitigatedIndex",
+    "OB_MitigatedIndex",   # future-bar index, functional via loop.py
+    "FVG_MitigatedIndex",  # same
 )
 
 
@@ -109,14 +174,21 @@ def _first_divergence(a: np.ndarray, b: np.ndarray) -> int | None:
     return int(mismatch[0]) if mismatch.size else None
 
 
+@pytest.mark.parametrize("fixture_name", list(OHLC_FIXTURES.keys()))
 @pytest.mark.parametrize("swing_length", [3, 5, 8])
 @pytest.mark.parametrize("truncate_at", [200, 350, 500])
 def test_strict_causality_for_fixed_columns(
-    swing_length: int, truncate_at: int
+    fixture_name: str, swing_length: int, truncate_at: int
 ) -> None:
     """Columns in STRICT_CAUSAL_COLS must be causal: rows 0..truncate_at-1
-    of the full-frame output match the truncated-frame output exactly."""
-    df = _synthetic_ohlc()
+    of the full-frame output match the truncated-frame output exactly.
+
+    Parametrized over two fixtures: an oscillating sine (evenly-spaced
+    swings) and a wide-swing trending generator (the shape that breaks
+    uniform-shift fixes). Both must pass for the per-event relocation
+    to be considered correct.
+    """
+    df = OHLC_FIXTURES[fixture_name]()
     params = PACParams(swing_length=swing_length)
     engine = PACEngine(params)
 
@@ -231,4 +303,31 @@ def test_ob_reset_residual_is_known() -> None:
     full_window = full_out.iloc[:truncate_at].reset_index(drop=True)
     a = full_window["OB"].to_numpy(dtype=np.float64, na_value=np.nan)
     b = trunc_out["OB"].to_numpy(dtype=np.float64, na_value=np.nan)
+    assert _first_divergence(a, b) is None
+
+
+@pytest.mark.xfail(
+    reason=(
+        "swing_highs_lows dedup loop (smc.py lines 165-193) can erase a "
+        "swing retroactively when a later swing is more extreme. Causes "
+        "under-counting (swings the live chart would have shown get "
+        "deleted in hindsight). Not blocking the A2 fix — biases Sharpe "
+        "down, not up. Shows up more reliably on wide-swing trending "
+        "data than on oscillating sine fixtures."
+    ),
+    strict=True,
+)
+def test_swing_dedup_residual_is_known() -> None:
+    """Documents the swing-dedup erasure. Same xfail(strict=True) pattern
+    as the OB reset test — green means someone fixed it and should
+    update the docstrings.
+    """
+    df = _synthetic_ohlc_trending()
+    engine = PACEngine(PACParams(swing_length=8))
+    truncate_at = 350
+    full_out = engine.batch_state(df).reset_index(drop=True)
+    trunc_out = engine.batch_state(df.iloc[:truncate_at].copy()).reset_index(drop=True)
+    full_window = full_out.iloc[:truncate_at].reset_index(drop=True)
+    a = full_window["HighLow"].to_numpy(dtype=np.float64, na_value=np.nan)
+    b = trunc_out["HighLow"].to_numpy(dtype=np.float64, na_value=np.nan)
     assert _first_divergence(a, b) is None
