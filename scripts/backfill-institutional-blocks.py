@@ -80,10 +80,21 @@ def load_blocks(csv_glob: str) -> list[dict]:
     conn.execute("PRAGMA threads=4")
     # DuckDB-side filtering: drop everything that isn't a target block
     # before we materialize into Python. Only keeps ~1k rows per day.
+    # Raw CSVs have no trade_id column. Synthesize a stable, deterministic
+    # ID from the immutable trade fields so re-runs dedupe cleanly via the
+    # ON CONFLICT (trade_id) DO NOTHING in upsert(). Prefix with 'csv-'
+    # so it's visually distinguishable from UW-sourced UUIDs.
     rows = conn.execute(
         f"""
         SELECT
-            id::TEXT                               AS trade_id,
+            'csv-' || md5(
+                executed_at::TEXT
+                || '|' || option_chain_id
+                || '|' || COALESCE(side, '')
+                || '|' || size::TEXT
+                || '|' || price::TEXT
+                || '|' || premium::TEXT
+            )                                      AS trade_id,
             executed_at::TIMESTAMPTZ::TEXT         AS executed_at,
             option_chain_id,
             CAST(strike AS DOUBLE)                 AS strike,
