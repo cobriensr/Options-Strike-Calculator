@@ -2,20 +2,29 @@ import type { InstitutionalBlock } from '../../hooks/useInstitutionalProgram.js'
 
 interface Props {
   blocks: InstitutionalBlock[];
+  /** Human label for the date being shown — 'today' or a YYYY-MM-DD string. */
+  dateLabel?: string;
 }
 
 /**
- * Today's first-hour near-ATM institutional blocks (opening_atm track).
- * These are the rare but high-conviction mfsl/cbmo/slft prints that
- * hit at 08:30-09:30 CT — implication #3 of the mfsl deep-dive.
+ * First-hour near-ATM institutional blocks (opening_atm track) for the
+ * selected date. These are the rare but high-conviction mfsl/cbmo/slft
+ * prints that hit at 08:30-09:30 CT — implication #3 of the mfsl deep
+ * dive. When dateLabel != 'today', this is a backtest view of a prior
+ * day's opening-hour institutional positioning.
  */
-export function OpeningBlocksCard({ blocks }: Props) {
+export function OpeningBlocksCard({ blocks, dateLabel = 'today' }: Props) {
   const openingBlocks = blocks.filter((b) => b.program_track === 'opening_atm');
+  const headerLabel =
+    dateLabel === 'today'
+      ? "Today's opening institutional blocks"
+      : `Opening institutional blocks — ${dateLabel}`;
 
   if (!openingBlocks.length) {
     return (
-      <div className="border-edge bg-surface-alt rounded-lg border p-3 text-sm text-slate-500">
-        No opening-hour institutional blocks detected today (08:30-09:30 CT,
+      <div className="border-edge bg-surface-alt rounded-lg border p-3 text-muted text-sm">
+        No opening-hour institutional blocks detected for{' '}
+        {dateLabel === 'today' ? 'today' : dateLabel} (08:30-09:30 CT,
         near-ATM, mfsl/cbmo/slft).
       </div>
     );
@@ -24,10 +33,8 @@ export function OpeningBlocksCard({ blocks }: Props) {
   return (
     <div className="border-edge bg-surface-alt rounded-lg border p-3">
       <div className="mb-2 flex items-baseline justify-between">
-        <h3 className="text-sm font-semibold text-slate-100">
-          Today's opening institutional blocks
-        </h3>
-        <span className="text-xs text-slate-500">
+        <h3 className="text-text text-sm font-semibold">{headerLabel}</h3>
+        <span className="text-muted text-xs">
           {openingBlocks.length} block{openingBlocks.length === 1 ? '' : 's'}{' '}
           — 08:30-09:30 CT, near-ATM
         </span>

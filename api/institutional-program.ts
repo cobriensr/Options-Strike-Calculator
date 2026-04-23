@@ -66,13 +66,21 @@ export default async function handler(
   const daysRaw = Number.parseInt(String(req.query.days ?? '30'), 10);
   const days = Math.min(Math.max(Number.isFinite(daysRaw) ? daysRaw : 30, 1), 180);
 
+  // Optional date param for backtesting: which day's blocks to show in
+  // the "today" slot. Defaults to today; format YYYY-MM-DD.
+  const dateRaw = String(req.query.date ?? '');
+  const dateFilter = /^\d{4}-\d{2}-\d{2}$/.test(dateRaw) ? dateRaw : null;
+
   try {
     const sql = getDb();
 
     // Ceiling-track daily summary + dominant-pair detection.
-    // candidate_pairs: cluster by (date, type, minute) with ≥2 distinct
-    // strikes — that's the signature of a paired spread block.
-    // dominant_per_day: pick the largest pair by total_size per date.
+    // Restricted to option_type='call' for the ceiling metric: the
+    // program is predominantly a short call-spread sale, so mixing
+    // OTM calls (strike >> spot) with OTM puts (strike << spot) would
+    // pull avg_strike toward spot and destroy the "ceiling %" signal.
+    // Put-side activity is preserved in the raw table for future
+    // floor-metric analysis.
     const summaries = (await sql`
       WITH per_day AS (
         SELECT
@@ -83,7 +91,7 @@ export default async function handler(
             AS n_call_blocks,
           SUM(CASE WHEN option_type = 'put'  THEN 1 ELSE 0 END)::INTEGER
             AS n_put_blocks,
-          AVG(strike) AS avg_strike
+          AVG(strike) FILTER (WHERE option_type = 'call') AS avg_strike
         FROM institutional_blocks
         WHERE program_track = 'ceiling'
           AND executed_at >= NOW() - (${days}::TEXT || ' days')::INTERVAL
@@ -110,6 +118,7 @@ export default async function handler(
           END AS direction
         FROM institutional_blocks
         WHERE program_track = 'ceiling'
+          AND option_type = 'call'
           AND executed_at >= NOW() - (${days}::TEXT || ' days')::INTERVAL
         GROUP BY 1, 2, 3
         HAVING COUNT(DISTINCT strike) >= 2
@@ -146,32 +155,56 @@ export default async function handler(
       ORDER BY pd.date ASC
     `) as DailyProgramSummary[];
 
-    // Today's full block list (both tracks) for the expandable table.
-    const today = (await sql`
-      SELECT
-        executed_at::TEXT AS executed_at,
-        option_chain_id,
-        strike,
-        option_type,
-        dte,
-        size,
-        premium,
-        price,
-        side,
-        condition,
-        exchange,
-        underlying_price,
-        moneyness_pct,
-        program_track
-      FROM institutional_blocks
-      WHERE CAST(executed_at AS DATE) = CURRENT_DATE
-      ORDER BY executed_at DESC
-      LIMIT 200
-    `) as InstitutionalBlockRow[];
+    // Block list for the requested date (both tracks) for the
+    // expandable table. Defaults to today when no date is supplied;
+    // honors ?date=YYYY-MM-DD for historical backtesting.
+    const today = (dateFilter
+      ? await sql`
+          SELECT
+            executed_at::TEXT AS executed_at,
+            option_chain_id,
+            strike,
+            option_type,
+            dte,
+            size,
+            premium,
+            price,
+            side,
+            condition,
+            exchange,
+            underlying_price,
+            moneyness_pct,
+            program_track
+          FROM institutional_blocks
+          WHERE CAST(executed_at AS DATE) = ${dateFilter}::DATE
+          ORDER BY executed_at DESC
+          LIMIT 200
+        `
+      : await sql`
+          SELECT
+            executed_at::TEXT AS executed_at,
+            option_chain_id,
+            strike,
+            option_type,
+            dte,
+            size,
+            premium,
+            price,
+            side,
+            condition,
+            exchange,
+            underlying_price,
+            moneyness_pct,
+            program_track
+          FROM institutional_blocks
+          WHERE CAST(executed_at AS DATE) = CURRENT_DATE
+          ORDER BY executed_at DESC
+          LIMIT 200
+        `) as InstitutionalBlockRow[];
 
     res.status(200).json({
       days: summaries,
-      today: { blocks: today },
+      today: { blocks: today, date: dateFilter ?? 'today' },
     });
   } catch (err) {
     Sentry.captureException(err);

@@ -38,7 +38,7 @@ export interface InstitutionalBlock {
 
 interface InstitutionalProgramData {
   days: DailyProgramSummary[];
-  today: { blocks: InstitutionalBlock[] };
+  today: { blocks: InstitutionalBlock[]; date: string };
 }
 
 export interface StrikeCell {
@@ -59,7 +59,7 @@ export interface StrikeHeatmapData {
   rows: StrikeCell[];
 }
 
-export function useInstitutionalProgram(days = 60) {
+export function useInstitutionalProgram(days = 60, selectedDate?: string) {
   const [data, setData] = useState<InstitutionalProgramData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
@@ -67,7 +67,9 @@ export function useInstitutionalProgram(days = 60) {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetch(`/api/institutional-program?days=${days}`)
+    const params = new URLSearchParams({ days: String(days) });
+    if (selectedDate) params.set('date', selectedDate);
+    fetch(`/api/institutional-program?${params.toString()}`)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
@@ -87,7 +89,7 @@ export function useInstitutionalProgram(days = 60) {
     return () => {
       cancelled = true;
     };
-  }, [days]);
+  }, [days, selectedDate]);
 
   return { data, loading, error };
 }

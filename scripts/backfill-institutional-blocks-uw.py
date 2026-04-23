@@ -32,6 +32,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import sys
 import time
@@ -129,23 +130,63 @@ def uw_get(path: str, params: dict | None = None) -> dict:
     return r.json()
 
 
+def parse_occ_symbol(symbol: str) -> tuple[date | None, str | None, float | None]:
+    """Parse OCC symbol like 'SPXW261218C08150000' → (expiry, type, strike).
+
+    Format: <root><yymmdd><C|P><strike×1000 padded to 8 digits>
+    SPXW has a 4-char root.
+    """
+    if len(symbol) < 15:
+        return None, None, None
+    # Find the C/P type code — last 9 chars are yymmddC|P + 8 digits
+    try:
+        body = symbol[-15:]  # yymmdd + C/P + 8 digits
+        yymmdd = body[:6]
+        type_char = body[6]
+        strike_raw = body[7:]
+        exp = datetime.strptime(yymmdd, "%y%m%d").date()
+        opt_type = "call" if type_char == "C" else "put" if type_char == "P" else None
+        strike = int(strike_raw) / 1000.0
+        return exp, opt_type, strike
+    except (ValueError, IndexError):
+        return None, None, None
+
+
 def fetch_contracts(min_dte: int, max_dte: int) -> list[dict]:
-    """Enumerate current SPXW contracts in the given DTE window."""
-    body = uw_get("/stock/SPXW/option-contracts", {"limit": 500})
-    data = body.get("data") or []
+    """Enumerate current SPXW contracts in the given DTE window.
+
+    The endpoint returns top-500 by volume — 0DTE dominates — so we
+    paginate via option_type + exclude_zero_dte to surface long-dated
+    contracts. Two calls (calls + puts) gives up to 1000 non-0DTE
+    contracts covering the signal band.
+    """
     today = date.today()
     filtered: list[dict] = []
-    for c in data:
-        expiry_str = c.get("expiry")
-        if not expiry_str:
-            continue
-        try:
-            exp = datetime.strptime(expiry_str, "%Y-%m-%d").date()
-        except ValueError:
-            continue
-        dte = (exp - today).days
-        if min_dte <= dte <= max_dte:
-            filtered.append({**c, "dte_today": dte, "expiry_date": exp})
+    for opt_type in ("call", "put"):
+        body = uw_get(
+            "/stock/SPXW/option-contracts",
+            {
+                "limit": 500,
+                "exclude_zero_dte": "true",
+                "option_type": opt_type,
+            },
+        )
+        data = body.get("data") or []
+        for c in data:
+            symbol = c.get("option_symbol") or ""
+            exp, parsed_type, strike = parse_occ_symbol(symbol)
+            if exp is None or strike is None:
+                continue
+            dte = (exp - today).days
+            if min_dte <= dte <= max_dte:
+                filtered.append({
+                    **c,
+                    "dte_today": dte,
+                    "expiry_date": exp,
+                    "option_type": parsed_type,
+                    "strike_parsed": strike,
+                })
+        time.sleep(0.5)
     return filtered
 
 
@@ -193,8 +234,19 @@ def upsert_blocks(conn, trades: list[dict]) -> int:
         tags = t.get("tags") or []
         side = "ask" if "ask_side" in tags else ("bid" if "bid_side" in tags else None)
 
+        # Use the SAME synthetic-id scheme as scripts/backfill-
+        # institutional-blocks.py so CSV + UW backfills dedupe against
+        # each other on overlap days (ON CONFLICT DO NOTHING).
+        synthetic_key = (
+            f"{executed_at}|{t['option_chain_id']}|{side or ''}"
+            f"|{size}|{price}|{premium}"
+        )
+        trade_id = "csv-" + hashlib.md5(
+            synthetic_key.encode("utf-8")
+        ).hexdigest()
+
         rows.append((
-            t["id"],
+            trade_id,
             executed_at,
             t["option_chain_id"],
             strike,
