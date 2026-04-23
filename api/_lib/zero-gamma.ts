@@ -47,6 +47,19 @@ export interface ZeroGammaOptions {
 
 const DEFAULT_GRID_POINTS = 30;
 const DEFAULT_GRID_RANGE_PCT = 0.03;
+/**
+ * Fallback strike spacing when the input has <2 strikes. Chosen to match
+ * the characteristic 5-point SPX strike grid so the kernel's support is
+ * non-degenerate even on pathological inputs.
+ */
+const SPX_FALLBACK_SPACING = 5;
+/**
+ * Triangular-kernel half-width expressed in strike-spacing units. At 2×, a
+ * strike contributes to candidate spots within ±2 strikes of itself —
+ * wide enough to smooth isolated OI but narrow enough to preserve local
+ * structure. Smaller values sharpen the curve; larger values smooth it.
+ */
+const KERNEL_HALF_WIDTH_MULT = 2;
 
 /**
  * Median of the absolute differences between consecutive sorted strikes.
@@ -58,7 +71,7 @@ function medianStrikeSpacing(sortedStrikes: number[]): number {
   if (sortedStrikes.length < 2) {
     // No spacing observable from one strike — return a value large enough
     // that the lone strike contributes across the grid without blowing up.
-    return 5;
+    return SPX_FALLBACK_SPACING;
   }
   const diffs: number[] = [];
   for (let i = 1; i < sortedStrikes.length; i += 1) {
@@ -78,7 +91,8 @@ function medianStrikeSpacing(sortedStrikes: number[]): number {
 
 /**
  * Linear triangular kernel centered at 0 with the given half-width.
- * kernel(0) = 1, kernel(±halfWidth) = 0, zero outside. halfWidth must be > 0.
+ * kernel(0) = 1, kernel(±halfWidth) = 0, zero outside. Returns 0 when
+ * halfWidth ≤ 0 (defensive guard against pathological inputs).
  */
 function triangularKernel(delta: number, halfWidth: number): number {
   if (halfWidth <= 0) return 0;
@@ -104,7 +118,7 @@ export function computeZeroGammaLevel(
   const sorted = [...gexByStrike].sort((a, b) => a.strike - b.strike);
   const sortedStrikes = sorted.map((s) => s.strike);
   const spacing = medianStrikeSpacing(sortedStrikes);
-  const halfWidth = spacing * 2;
+  const halfWidth = spacing * KERNEL_HALF_WIDTH_MULT;
 
   // Build candidate grid. For gridPoints < 2 we degenerate to a single
   // sample at spot, which trivially cannot exhibit a sign change.

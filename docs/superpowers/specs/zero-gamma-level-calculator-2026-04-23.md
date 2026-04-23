@@ -2,11 +2,12 @@
 
 ## Goal
 
-Compute the zero-gamma level (spot price where summed dealer gamma across all
-strikes = 0) every minute during market hours for SPX, using existing GEX-by-
-strike data already ingested by `fetch-spot-gex`. Store results to Neon and
-expose via a read endpoint. Feeds downstream features (analyze context, IV
-anomaly detector context snapshot).
+Compute the zero-gamma level (spot price where summed dealer gamma across
+0DTE strikes = 0) every 5 min during market hours for SPX, using existing
+GEX-by-strike data already ingested by `fetch-strike-exposure` (the actual
+source — the spec originally said `spot_gex`, which doesn't exist here).
+Store results to Neon and expose via an owner-gated read endpoint. Feeds
+downstream features (analyze context, IV anomaly detector context snapshot).
 
 ## Motivation
 
@@ -57,9 +58,14 @@ For each minute during market hours:
 
 **Modify:**
 
-- `api/_lib/db-migrations.ts` — migration 72: `zero_gamma_levels` table
+- `api/_lib/db-migrations.ts` — migration **82** (next available; 72 was
+  taken by `futures_trade_ticks` when Task A shipped): `zero_gamma_levels`
+  table
 - `api/__tests__/db.test.ts` — mock sequence update
-- `vercel.json` — register `* 13-21 * * 1-5`
+- `vercel.json` — register `4,9,14,19,24,29,34,39,44,49,54,59 13-21 * * 1-5`
+  (+1 offset from `fetch-strike-exposure` at `3,8,13,...` — ensures the
+  source row is committed before we read it, repo convention for
+  derivative jobs)
 - `src/main.tsx` — add `/api/zero-gamma` to `initBotId({ protect: [...] })`
 
 ## Data
@@ -82,11 +88,18 @@ CREATE INDEX idx_zero_gamma_ticker_ts ON zero_gamma_levels (ticker, ts DESC);
 
 **Cron registration:**
 
-| Path                          | Schedule          |
-| ----------------------------- | ----------------- |
-| `/api/cron/compute-zero-gamma`| `* 13-21 * * 1-5` |
+| Path                           | Schedule                                          |
+| ------------------------------ | ------------------------------------------------- |
+| `/api/cron/compute-zero-gamma` | `4,9,14,19,24,29,34,39,44,49,54,59 13-21 * * 1-5` |
 
-**Volume estimate:** 540 rows/day × 1 ticker = 540/day (~140K/year). Trivial.
+Cadence: +1-minute offset from `fetch-strike-exposure` source (at
+`3,8,13,...`) — ensures the source row is committed before we try to read
+it, matching the repo's convention for derivative jobs (e.g.
+`fetch-zero-dte-flow` at `4,9,14,...` after `fetch-flow-alerts` at
+`0,5,10,...`). 5-min cadence also avoids writing 4-of-5 duplicate rows per
+real snapshot.
+
+**Volume estimate:** ~108 rows/day × 1 ticker = 108/day (~28K/year). Trivial.
 
 ## Thresholds / constants
 
@@ -95,16 +108,42 @@ CREATE INDEX idx_zero_gamma_ticker_ts ON zero_gamma_levels (ticker, ts DESC);
 - `CONFIDENCE_MIN` = 0.5 — below this, store `zero_gamma` as NULL with the
   low-confidence flag (prevents downstream features trusting a noisy read)
 
+## Decisions (locked 2026-04-23)
+
+- **Data source:** `strike_exposures` table (migration 8), populated every
+  5 min by `api/cron/fetch-strike-exposure.ts` from UW
+  `/spot-exposures/expiry-strike`. Signed dealer gamma = `call_gamma_oi +
+put_gamma_oi` (UW publishes signed per-side values; sum is signed per
+  repo convention — see `api/_lib/build-features-gex.ts:77`).
+- **Expiry scope:** 0DTE-only (`expiry = today`). Overrides spec's original
+  open-question default of "combined book across all expiries." Rationale:
+  this app is 0DTE-focused; 0DTE-only zero-gamma is most actionable for
+  intraday regime-flip detection. Can add a combined-book variant later
+  (e.g. `SPX-ALL` ticker) if needed for comparison.
+- **Cadence:** 5-min cron at `4,9,14,...` — +1-minute offset from the
+  `fetch-strike-exposure` source at `3,8,13,...`. Ensures the source row
+  is committed before we read it (repo convention for derivative jobs,
+  e.g. `fetch-zero-dte-flow`). Original spec said "every minute" but the
+  source only updates every 5 min — 1-min cron would produce 4-of-5
+  duplicate rows per real snapshot.
+- **Auth posture:** owner-gated via `rejectIfNotOwner` after `checkBot`,
+  matching sibling OPRA-derived endpoints (`spot-gex-history`,
+  `greek-exposure-strike`, `gex-per-strike`). The `gamma_curve` response
+  contains per-strike-derived aggregates from UW/OPRA data.
+- **Migration id:** 82 (next available; 72 was taken by `futures_trade_ticks`
+  when Task A shipped).
+- **net_gamma_at_spot derivation:** closest grid point from calculator curve
+  (approach A of three options). Grid step ~0.2% of spot is below
+  monitoring noise; more elaborate interpolation adds machinery without
+  meaningful precision gain.
+
 ## Open questions
 
 1. **Interpolation method** — linear between strikes, or curve-fit? Start
    linear for MVP; revisit if the calculator produces jittery output
-   minute-over-minute.
+   over consecutive 5-min snapshots.
 
-2. **Include 0DTE gamma in the sum, or only non-0DTE?** Dealer books include
-   both. Include both for MVP; flag comes from the combined book.
-
-3. **Ticker scope** — SPX only for MVP? The detector context uses SPX/SPY/QQQ;
+2. **Ticker scope** — SPX only for MVP? The detector context uses SPX/SPY/QQQ;
    Phase 1 is SPX only, expand later if SPY/QQQ zero-gamma turns out useful.
 
 ## Verification

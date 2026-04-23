@@ -25,10 +25,12 @@
  * regime-flip detection during the session. Revisit if intraday regime
  * flips look too jittery (add a combined-book ticker variant like "SPX-ALL").
  *
- * Cadence: 5-min, matched to fetch-strike-exposure source (avoids 4-of-5
- * duplicate rows per real snapshot).
+ * Cadence: 5-min at +1 offset from fetch-strike-exposure source — ensures the
+ * source row is committed before we read it (repo convention for derivative
+ * jobs, e.g. fetch-zero-dte-flow at minute+1 after fetch-flow-alerts). Also
+ * avoids writing 4-of-5 duplicate rows per real snapshot.
  *
- * Cron: 3,8,13,18,23,28,33,38,43,48,53,58 13-21 * * 1-5
+ * Cron: 4,9,14,19,24,29,34,39,44,49,54,59 13-21 * * 1-5
  *
  * Environment: CRON_SECRET (no UW API key required — purely derivative)
  */
