@@ -14,7 +14,17 @@
  * the GEX migration component (5-min Δ and 20-min trend per strike).
  * ON CONFLICT DO NOTHING protects against duplicate writes if UW returns
  * the same snapshot timestamp on consecutive fetches.
- * Total API calls per invocation: 1 (0DTE only)
+ *
+ * Total API calls per invocation: 2 (spot-price preflight + 0DTE strikes)
+ *
+ * UW workaround (2026-04-23, "spot greeks delayed thread"): the main
+ * /spot-exposures/expiry-strike endpoint serves stale cached data unless
+ * the request carries a narrow min_strike/max_strike window. The preflight
+ * fetches current spot from /spot-exposures/strike (always-live), and the
+ * main call bounds the request to ±ATM_RANGE to route through UW's live
+ * path. If the preflight fails we fall back to the unbounded call — that
+ * preserves old behavior if UW fixes the backend and makes the workaround
+ * redundant.
  *
  * Environment: UW_API_KEY, CRON_SECRET
  */
@@ -68,16 +78,51 @@ interface StrikeRow {
   put_vanna_vol: string;
 }
 
-// ── Fetch helper ────────────────────────────────────────────
+// ── Fetch helpers ───────────────────────────────────────────
+
+/**
+ * Preflight: fetch the current SPX spot price from UW's always-live
+ * /spot-exposures/strike endpoint so the main call can bound its
+ * min/max_strike window and bypass the frozen cache on
+ * /spot-exposures/expiry-strike. Returns null on any failure so the
+ * caller can fall back to the unbounded request (old behavior).
+ * Deliberately not wrapped in withRetry — the main call has its own
+ * retry and failure semantics; chaining both would double worst-case
+ * latency on transient errors.
+ */
+async function fetchSpotPrice(apiKey: string): Promise<number | null> {
+  try {
+    const rows = await uwFetch<{ price: string }>(
+      apiKey,
+      '/stock/SPX/spot-exposures/strike?limit=1',
+    );
+    const raw = rows[0]?.price;
+    if (raw === undefined) return null;
+    const price = Number.parseFloat(raw);
+    return Number.isFinite(price) ? price : null;
+  } catch (err) {
+    logger.warn({ err }, 'fetch-gex-0dte: spot preflight failed');
+    return null;
+  }
+}
 
 async function fetchStrike0dte(
   apiKey: string,
   expiry: string,
+  spotPrice: number | null,
 ): Promise<StrikeRow[]> {
   const params = new URLSearchParams({
     'expirations[]': expiry,
     limit: '500',
   });
+
+  // UW workaround: narrow min/max_strike routes this through their
+  // live path; omitting it returns a frozen pre-market cache. See the
+  // file-level JSDoc for the full story.
+  if (spotPrice !== null) {
+    params.set('min_strike', String(Math.floor(spotPrice - ATM_RANGE)));
+    params.set('max_strike', String(Math.ceil(spotPrice + ATM_RANGE)));
+  }
 
   return uwFetch<StrikeRow>(
     apiKey,
@@ -192,7 +237,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const startTime = Date.now();
 
   try {
-    const rows = await withRetry(() => fetchStrike0dte(apiKey, today));
+    const spotPrice = await fetchSpotPrice(apiKey);
+    const rows = await withRetry(() =>
+      fetchStrike0dte(apiKey, today, spotPrice),
+    );
 
     if (rows.length === 0) {
       await reportCronRun('fetch-gex-0dte', {

@@ -290,6 +290,78 @@ describe('fetch-gex-0dte handler', () => {
     });
   });
 
+  // ── UW stale-cache workaround (2026-04-23) ────────────────
+
+  it('runs spot preflight and bounds main call with min_strike/max_strike', async () => {
+    // UW's /spot-exposures/expiry-strike serves stale cached data unless
+    // the request carries a narrow strike window. The cron does a preflight
+    // to /spot-exposures/strike first, then passes ±ATM_RANGE around spot
+    // as min_strike/max_strike on the main call to hit UW's live path.
+    process.env.UW_API_KEY = 'uwkey';
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [makeStrikeRow()] }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    // Two fetches: preflight for spot, then main call for expiry-strike
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const preflightUrl = String(fetchMock.mock.calls[0]![0]);
+    const mainUrl = String(fetchMock.mock.calls[1]![0]);
+    expect(preflightUrl).toContain('/spot-exposures/strike');
+    expect(preflightUrl).not.toContain('expiry-strike');
+    expect(mainUrl).toContain('/spot-exposures/expiry-strike');
+    // price=5800.5, ATM_RANGE=200 → min=floor(5600.5)=5600, max=ceil(6000.5)=6001
+    expect(mainUrl).toContain('min_strike=5600');
+    expect(mainUrl).toContain('max_strike=6001');
+  });
+
+  it('falls back to unbounded main call when the preflight returns no price', async () => {
+    // Preflight failure mode: UW returns empty data on /spot-exposures/strike.
+    // We want the cron to still attempt the main fetch (without min/max) so
+    // it mirrors old behavior rather than hard-failing. If the workaround is
+    // ever redundant (UW fixes the backend), this path is what runs.
+    process.env.UW_API_KEY = 'uwkey';
+    const fetchMock = vi
+      .fn()
+      // Preflight: empty data, no price
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [] }) })
+      // Main call: normal strike row
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ data: [makeStrikeRow()] }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const mainUrl = String(fetchMock.mock.calls[1]![0]);
+    expect(mainUrl).toContain('/spot-exposures/expiry-strike');
+    expect(mainUrl).not.toContain('min_strike');
+    expect(mainUrl).not.toContain('max_strike');
+    // Main call still produces a stored row
+    expect(res._json).toMatchObject({ success: true, stored: 1 });
+  });
+
   // ── Error handling ────────────────────────────────────────
 
   it('returns 500 when UW API fails', async () => {
