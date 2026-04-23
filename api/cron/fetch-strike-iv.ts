@@ -435,10 +435,15 @@ async function runDetection(
   const flags = detectAnomalies(samples, historyByStrike, spot);
   if (flags.length === 0) return 0;
 
+  // All flags in this batch share the same (ticker, sampledAtIso) pair —
+  // gather the context snapshot ONCE instead of re-running ~30 queries
+  // per flag. Any per-flag micro-drift in detectTs is below the
+  // staleness windows the context queries use.
+  const detectTs = new Date(sampledAtIso);
+  const context = await gatherContextSnapshot(ticker, detectTs);
+
   let inserted = 0;
   for (const flag of flags) {
-    const detectTs = new Date(flag.ts);
-    const context = await gatherContextSnapshot(flag.ticker, detectTs);
     const flowPhase = classifyFlowPhase(flag, context);
 
     const result = await sql`

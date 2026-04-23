@@ -60,7 +60,13 @@ export interface AnomalyFlag {
   ask_mid_div: number | null;
   /** Non-empty; contains any combination of 'skew_delta', 'z_score'. */
   flag_reasons: string[];
-  flow_phase: 'early' | 'mid' | 'reactive';
+  /**
+   * Populated by `classifyFlowPhase` once a `ContextSnapshot` is
+   * available. Left `undefined` by `detectAnomalies` so a caller that
+   * skips the classification step gets a type-level reminder rather
+   * than a silent `'mid'` fallback.
+   */
+  flow_phase?: 'early' | 'mid' | 'reactive';
   /** Detection time (ISO UTC). */
   ts: string;
 }
@@ -189,10 +195,9 @@ function computeAskMidDiv(sample: StrikeSample): number | null {
  * MUST NOT include the target sample (the caller's SQL query
  * should WHERE ts < target.ts).
  *
- * The returned flags omit `flow_phase` (populated later by
- * `classifyFlowPhase` once the ContextSnapshot is assembled). A
- * placeholder value is set here so the type stays non-optional;
- * callers overwrite it before INSERT.
+ * The returned flags leave `flow_phase` undefined — callers must run
+ * `classifyFlowPhase(flag, context)` once a `ContextSnapshot` is
+ * assembled, then use that value for persistence.
  */
 export function detectAnomalies(
   latestSnapshot: StrikeSample[],
@@ -261,8 +266,7 @@ export function detectAnomalies(
       z_score: zScore,
       ask_mid_div: askMidDiv,
       flag_reasons: reasons,
-      // Placeholder — overwritten by classifyFlowPhase once context is ready.
-      flow_phase: 'mid',
+      // flow_phase intentionally omitted — see classifyFlowPhase.
       ts: target.ts,
     });
   }

@@ -632,5 +632,47 @@ describe('fetch-strike-iv handler', () => {
     expect(body.totalAnomalies).toBeGreaterThanOrEqual(1);
     const spx = body.results.find((r) => r.ticker === 'SPX');
     expect(spx?.anomaliesDetected).toBeGreaterThanOrEqual(1);
+
+    // Verify the INSERT payload for iv_anomalies — this is the
+    // end-to-end contract between the detector and the persistence
+    // layer. We scan all mockSql calls and pull out the anomaly INSERTs
+    // to assert their parameter values. Tagged-template call shape is
+    // [strings, ...values]; the handler's VALUES (...) order is:
+    //   0: ticker        4: spot_at_detect    8: ask_mid_div
+    //   1: strike        5: iv_at_detect      9: flag_reasons
+    //   2: side          6: skew_delta       10: flow_phase
+    //   3: expiry        7: z_score          11: context_snapshot (JSON)
+    //                                        12: ts
+    const insertCalls = vi.mocked(mockSql).mock.calls.filter((call) => {
+      const strings = call[0] as TemplateStringsArray | undefined;
+      const joined = Array.isArray(strings) ? strings.join(' ') : '';
+      return joined.includes('INSERT INTO iv_anomalies');
+    });
+    expect(insertCalls.length).toBeGreaterThanOrEqual(1);
+
+    // The target of the fixture is strike 7060 (wider bid/ask → elevated
+    // IV vs neighbors). Neighbors may also be flagged as the skew lands
+    // on them from the other side — assert the target is present
+    // regardless of ordering.
+    const targetCall = insertCalls.find(
+      (call) => (call as unknown[])[2] === 7060,
+    );
+    expect(targetCall).toBeDefined();
+    const insertArgs = (targetCall as unknown[]).slice(1);
+    expect(insertArgs[0]).toBe('SPX');
+    expect(insertArgs[1]).toBe(7060);
+    expect(insertArgs[9]).toEqual(expect.arrayContaining(['skew_delta']));
+    expect(['early', 'mid', 'reactive']).toContain(insertArgs[10]);
+    // context_snapshot is stringified JSON → parse it back and assert
+    // the shape is a non-null object (matches ContextSnapshot's fields).
+    const ctxStr = insertArgs[11] as string;
+    expect(typeof ctxStr).toBe('string');
+    const ctx = JSON.parse(ctxStr) as Record<string, unknown>;
+    expect(ctx).not.toBeNull();
+    expect(typeof ctx).toBe('object');
+    // Known ContextSnapshot keys must be present (even if null).
+    expect(ctx).toHaveProperty('spot_delta_15m');
+    expect(ctx).toHaveProperty('vix_level');
+    expect(ctx).toHaveProperty('spx_recent_dark_prints');
   });
 });

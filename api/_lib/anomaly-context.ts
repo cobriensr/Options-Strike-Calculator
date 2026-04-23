@@ -86,7 +86,15 @@ export interface ContextSnapshot {
   vix_delta_15m: number | null;
   vix_term_1d: number | null;
   vix_term_9d: number | null;
-  vix_term_30d: number | null;
+  /**
+   * Spot VIX itself (not a separate 30-day forward series). VIX is
+   * already a 30-day forward-looking implied-variance measure, so we
+   * expose it here for downstream ML consumers that want all three
+   * term-structure points in one place (VIX1D / VIX9D / VIX). Named
+   * `vix_30d_spot` to avoid implying a VIX3M / VIX30D index feed that
+   * doesn't exist in this repo.
+   */
+  vix_30d_spot: number | null;
 
   // Macro backdrop (futures proxies — see module doc)
   dxy_delta_15m: number | null;
@@ -96,7 +104,18 @@ export interface ContextSnapshot {
 
   // Flow context
   recent_flow_alerts: Array<{ ts: string; type: string; premium: number }>;
-  recent_dark_prints: Array<{ ts: string; price: number; size: number }>;
+  /**
+   * Recent dark-pool prints from `dark_pool_levels`. **SPX-only**: the
+   * underlying aggregation is SPX-scoped, so this field is always `[]`
+   * for SPY/QQQ anomalies to avoid mis-attributing SPX flow to a
+   * different ticker. `premium` holds the aggregated dollar premium,
+   * not a share/contract count.
+   */
+  spx_recent_dark_prints: Array<{
+    ts: string;
+    price: number;
+    premium: number;
+  }>;
 
   // Event proximity
   econ_release_t_minus: number | null;
@@ -350,10 +369,16 @@ async function getRecentFlowAlerts(
  * 15 min. The aggregation cron already drops average_price/derivative/
  * contingent trades upstream, so what lands here is already filtered
  * per feedback_darkpool_filters.md.
+ *
+ * **SPX-only**: `dark_pool_levels` is SPX-scoped in this repo. Callers
+ * must gate on ticker === 'SPX' to avoid returning SPX prints for SPY
+ * or QQQ anomalies. The output field maps `total_premium` (dollars) to
+ * `premium` — not `size` — so downstream consumers aren't misled into
+ * treating it as a share/contract count.
  */
 async function getRecentDarkPrints(
   at: Date,
-): Promise<Array<{ ts: string; price: number; size: number }>> {
+): Promise<Array<{ ts: string; price: number; premium: number }>> {
   const sql = getDb();
   const atIso = at.toISOString();
   const earliestIso = minusMinutes(at, 15);
@@ -375,7 +400,7 @@ async function getRecentDarkPrints(
     return {
       ts,
       price: toNum(r.spx_approx) ?? 0,
-      size: toNum(r.total_premium) ?? 0,
+      premium: toNum(r.total_premium) ?? 0,
     };
   });
 }
@@ -551,30 +576,38 @@ async function getPutPremium0dtePctile(at: Date): Promise<number | null> {
   const todayNpp = todayRows.length > 0 ? toNum(todayRows[0]!.npp) : null;
   if (todayNpp == null) return null;
 
-  // Historical same-time-of-day comparison: pick the closest-to-now
-  // sample for each of the last 30 days. The 5-min bucket width is
-  // sloppy but good enough for a "what percentile is today" read.
-  const hh = at.getUTCHours();
-  const mm = at.getUTCMinutes();
+  // Historical same-time-of-day comparison: pull all rows from the last
+  // 30 trading days and pick the one closest to the target wall-clock
+  // time in JS (avoids a fragile Postgres `date + time` construction
+  // that fails silently at query time).
+  const targetSeconds =
+    at.getUTCHours() * 3600 + at.getUTCMinutes() * 60 + at.getUTCSeconds();
   const historyRows = await sql`
-    SELECT MIN(ABS(EXTRACT(EPOCH FROM timestamp) - EXTRACT(EPOCH FROM CAST(date + (${`${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00`}) AS TIME) AT TIME ZONE 'UTC'))) AS lag_sec,
-           date, npp
+    SELECT date, timestamp, npp
     FROM flow_data
     WHERE source = 'spx_flow'
       AND date < ${today}
       AND timestamp >= ${thirtyDaysAgoIso}
-    GROUP BY date, npp, timestamp
-    ORDER BY date DESC
-    LIMIT 300
+    ORDER BY date DESC, timestamp ASC
+    LIMIT 5000
   `;
 
-  // Reduce to one npp per date (closest to target time).
+  // Reduce to one npp per date: the sample whose UTC time-of-day is
+  // closest to the target's. Rows come pre-sorted by (date, timestamp)
+  // so we just compute the per-row lag and keep the min per date.
   const nppByDate = new Map<string, { lag: number; npp: number }>();
   for (const r of historyRows) {
     const d = String(r.date);
-    const lag = toNum(r.lag_sec) ?? Number.POSITIVE_INFINITY;
     const n = toNum(r.npp);
     if (n == null) continue;
+    const rowTs =
+      r.timestamp instanceof Date ? r.timestamp : new Date(String(r.timestamp));
+    if (Number.isNaN(rowTs.getTime())) continue;
+    const rowSeconds =
+      rowTs.getUTCHours() * 3600 +
+      rowTs.getUTCMinutes() * 60 +
+      rowTs.getUTCSeconds();
+    const lag = Math.abs(rowSeconds - targetSeconds);
     const prev = nppByDate.get(d);
     if (!prev || lag < prev.lag) nppByDate.set(d, { lag, npp: n });
   }
@@ -582,12 +615,13 @@ async function getPutPremium0dtePctile(at: Date): Promise<number | null> {
   const samples = [...nppByDate.values()].map((v) => v.npp);
   if (samples.length < 5) return null;
 
-  // Percentile rank: what fraction of historical npp values are BELOW
-  // todayNpp? (npp is negative for put-heavy sessions, so lower-value
-  // is more-put-heavy — the percentile treats the low tail as "high
-  // put pressure" by inverting the rank.)
-  const countBelow = samples.filter((v) => v > todayNpp).length; // more-put-heavy today
-  return (countBelow / samples.length) * 100;
+  // Percentile rank: what fraction of historical npp values are strictly
+  // above todayNpp? npp is negative for put-heavy sessions, so a smaller
+  // (more-negative) todayNpp means MORE put pressure today — and more
+  // historical samples will be above it. The returned percentile is the
+  // "put-pressure rank" where 100 = most put-heavy observed.
+  const countAbove = samples.filter((v) => v > todayNpp).length;
+  return (countAbove / samples.length) * 100;
 }
 
 async function getZeroGammaLatest(at: Date): Promise<{
@@ -721,10 +755,16 @@ export async function gatherContextSnapshot(
     runSafe('vix9d', () => getVix9dLatest(), null),
   ]);
 
-  // Flow context.
+  // Flow context. Dark prints are SPX-only (dark_pool_levels is a
+  // SPX-aggregated feed) — for SPY/QQQ anomalies we return [] rather
+  // than mis-attributing SPX flow to a different ticker.
   const [flowAlerts, darkPrints] = await Promise.all([
     runSafe('flow-alerts', () => getRecentFlowAlerts(ticker, atNow), []),
-    runSafe('dark-prints', () => getRecentDarkPrints(atNow), []),
+    ticker === 'SPX'
+      ? runSafe('dark-prints', () => getRecentDarkPrints(atNow), [])
+      : Promise.resolve(
+          [] as Array<{ ts: string; price: number; premium: number }>,
+        ),
   ]);
 
   // Event proximity / institutional / options aggregates.
@@ -768,7 +808,7 @@ export async function gatherContextSnapshot(
     vix_delta_15m: absDelta(vix15m, vixNow),
     vix_term_1d: vix1d,
     vix_term_9d: vix9d,
-    vix_term_30d: vixNow,
+    vix_30d_spot: vixNow,
 
     dxy_delta_15m: pctDelta(futuresAt15m[6] ?? null, futuresAtNow[6] ?? null),
     tlt_delta_15m: pctDelta(futuresAt15m[3] ?? null, futuresAtNow[3] ?? null),
@@ -776,7 +816,7 @@ export async function gatherContextSnapshot(
     uso_delta_15m: pctDelta(futuresAt15m[4] ?? null, futuresAtNow[4] ?? null),
 
     recent_flow_alerts: flowAlerts,
-    recent_dark_prints: darkPrints,
+    spx_recent_dark_prints: darkPrints,
 
     econ_release_t_minus: econ.tMinus,
     econ_release_t_plus: econ.tPlus,

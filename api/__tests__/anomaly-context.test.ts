@@ -84,7 +84,7 @@ describe('gatherContextSnapshot', () => {
     expect(snap.uso_delta_15m).toBeNull();
     // Flow context empty arrays (not null)
     expect(snap.recent_flow_alerts).toEqual([]);
-    expect(snap.recent_dark_prints).toEqual([]);
+    expect(snap.spx_recent_dark_prints).toEqual([]);
     // Event proximity null
     expect(snap.econ_release_t_minus).toBeNull();
     expect(snap.econ_release_t_plus).toBeNull();
@@ -162,6 +162,103 @@ describe('gatherContextSnapshot', () => {
     expect(snap.nq_ofi_1h).toBeNull();
   });
 
+  it('computes put_premium_0dte_pctile from today + historical npp samples', async () => {
+    // Route queries by template text: the first `flow_data` query with
+    // source='spx_flow' AND timestamp <= / >= is the "today's npp" read
+    // (one-row result). The second is the "last 30 trading days"
+    // history pull. Everything else defaults to empty.
+    const todayIso = AT.toISOString().slice(0, 10);
+    // Build 10 historical samples from 10 distinct prior dates, each
+    // with an npp that's LESS put-heavy than today (higher / less
+    // negative). todayNpp = -50_000_000 (-50M). History = -10M..-5M,
+    // all > -50M → countAbove / samples = 10/10 = 100th percentile.
+    const historyRows = Array.from({ length: 10 }, (_, i) => ({
+      date: `2026-04-${String(10 + i).padStart(2, '0')}`,
+      timestamp: new Date(
+        `2026-04-${String(10 + i).padStart(2, '0')}T19:30:00.000Z`,
+      ),
+      npp: -10_000_000 + i * 500_000, // all strictly greater than -50M
+    }));
+
+    mockSql.mockImplementation((strings: TemplateStringsArray) => {
+      const joined = Array.isArray(strings) ? strings.join(' ') : '';
+      // Put-pctile "today" query: selects npp with source='spx_flow' and
+      // a date=${today} equality filter.
+      if (
+        joined.includes("source = 'spx_flow'") &&
+        joined.includes('SELECT npp')
+      ) {
+        return Promise.resolve([{ npp: -50_000_000 }]);
+      }
+      // Put-pctile history query: selects date, timestamp, npp for
+      // prior trading days.
+      if (
+        joined.includes("source = 'spx_flow'") &&
+        joined.includes('SELECT date, timestamp, npp')
+      ) {
+        return Promise.resolve(historyRows);
+      }
+      return Promise.resolve([]);
+    });
+    mockRedisGet.mockResolvedValue(null);
+    mockComputeMicrostructureSignals.mockResolvedValue(null);
+
+    const snap = await gatherContextSnapshot('SPX', AT);
+
+    // 10 of 10 historical samples are above todayNpp (-50M) → 100%.
+    expect(snap.put_premium_0dte_pctile).toBe(100);
+    // todayIso sanity — if this changes, the fixture must too.
+    expect(todayIso).toBe('2026-04-23');
+  });
+
+  it('returns [] for spx_recent_dark_prints on non-SPX tickers', async () => {
+    // Always return a non-empty dark-pool rowset — the orchestrator
+    // must NOT invoke the query for non-SPX tickers, so the output
+    // stays `[]` regardless of what the DB would have returned.
+    mockSql.mockResolvedValue([
+      {
+        latest_time: new Date('2026-04-23T19:25:00.000Z'),
+        spx_approx: 7100,
+        total_premium: 1_000_000,
+      },
+    ]);
+    mockRedisGet.mockResolvedValue(null);
+    mockComputeMicrostructureSignals.mockResolvedValue(null);
+
+    const spy = await gatherContextSnapshot('SPY', AT);
+    expect(spy.spx_recent_dark_prints).toEqual([]);
+
+    const qqq = await gatherContextSnapshot('QQQ', AT);
+    expect(qqq.spx_recent_dark_prints).toEqual([]);
+  });
+
+  it('returns dark prints for SPX tickers mapped to the `premium` field', async () => {
+    // Return one dark-pool row for every SQL call. The orchestrator
+    // will populate spx_recent_dark_prints from the SPX query.
+    mockSql.mockImplementation((strings: TemplateStringsArray) => {
+      const joined = Array.isArray(strings) ? strings.join(' ') : '';
+      if (joined.includes('FROM dark_pool_levels')) {
+        return Promise.resolve([
+          {
+            latest_time: new Date('2026-04-23T19:25:00.000Z'),
+            spx_approx: 7100,
+            total_premium: 2_500_000,
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+    mockRedisGet.mockResolvedValue(null);
+    mockComputeMicrostructureSignals.mockResolvedValue(null);
+
+    const snap = await gatherContextSnapshot('SPX', AT);
+    expect(snap.spx_recent_dark_prints).toHaveLength(1);
+    expect(snap.spx_recent_dark_prints[0]).toMatchObject({
+      price: 7100,
+      premium: 2_500_000,
+    });
+  });
+
   it('does not throw when a source query rejects — falls back to null', async () => {
     // Make every SQL call throw. The orchestrator must swallow these
     // via runSafe() and return a fully-shaped (all-null) snapshot.
@@ -175,7 +272,7 @@ describe('gatherContextSnapshot', () => {
 
     expect(snap.spot_delta_5m).toBeNull();
     expect(snap.recent_flow_alerts).toEqual([]);
-    expect(snap.recent_dark_prints).toEqual([]);
+    expect(snap.spx_recent_dark_prints).toEqual([]);
     expect(snap.nq_ofi_1h).toBeNull();
     expect(snap.vix_term_1d).toBeNull();
   });

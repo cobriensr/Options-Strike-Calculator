@@ -58,13 +58,13 @@ function makeContext(
     vix_delta_15m: null,
     vix_term_1d: null,
     vix_term_9d: null,
-    vix_term_30d: null,
+    vix_30d_spot: null,
     dxy_delta_15m: null,
     tlt_delta_15m: null,
     gld_delta_15m: null,
     uso_delta_15m: null,
     recent_flow_alerts: [],
-    recent_dark_prints: [],
+    spx_recent_dark_prints: [],
     econ_release_t_minus: null,
     econ_release_t_plus: null,
     econ_release_name: null,
@@ -229,15 +229,13 @@ describe('detectAnomalies', () => {
     const historyByStrike = new Map<string, StrikeSample[]>([[key, history]]);
 
     const flags = detectAnomalies(snapshot, historyByStrike, 7050);
-    // The target and its neighbors ALL shifted from 0.4 to 0.5 — so all 5
-    // strikes get z_score flags (since they share a strike-level baseline
-    // in this synthetic setup only strike=7000 has a mapped history; the
-    // others have empty history → null z, so only 7000 is flagged).
-    expect(flags.some((f) => f.strike === 7000)).toBe(true);
-    const target = flags.find((f) => f.strike === 7000)!;
-    expect(target.flag_reasons).toContain('z_score');
-    expect(target.skew_delta).toBeCloseTo(0, 6);
-    expect(target.z_score).not.toBeNull();
+    // Only strike=7000 has a mapped history; neighbors get empty history
+    // → null z → no flag. So exactly one z_score flag, on strike 7000.
+    const zFlags = flags.filter((f) => f.flag_reasons.includes('z_score'));
+    expect(zFlags).toHaveLength(1);
+    expect(zFlags[0]!.strike).toBe(7000);
+    expect(zFlags[0]!.skew_delta).toBeCloseTo(0, 6);
+    expect(zFlags[0]!.z_score).not.toBeNull();
   });
 
   it('returns empty array when no strike exceeds any threshold', () => {
