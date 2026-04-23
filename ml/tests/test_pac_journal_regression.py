@@ -64,7 +64,21 @@ JOURNAL_ENTRIES: list[tuple[str, int, str]] = [
     ("2026-04-17 19:32:00+00:00", +1, "CHoCH+"),
 ]
 
-LOOKBACK_MIN = 30
+# NB: widened and made bidirectional after the 2026-04-23 engine
+# causality fix. Events now appear 3*swing_length bars after the
+# underlying pattern (vs 1*swing_length under the earlier, lookahead-
+# biased shift). On 1m with swing_length=5, that's an extra 10 min of
+# confirmation lag.
+#
+# The `FORWARD_MIN` slack acknowledges a real asymmetry: LuxAlgo's live
+# indicator is known to repaint structure labels forward as new bars
+# arrive. A trader taking a trade at T based on a label that's visible
+# on LuxAlgo's live chart may be acting on a pattern our causally-
+# correct engine only confirms at T + k minutes. Without this slack the
+# test would fail every time LuxAlgo's repaint leads our engine by even
+# 1 bar. See test_pac_engine_causality.py for the underlying fix.
+LOOKBACK_MIN = 45
+FORWARD_MIN = 15
 
 
 @pytest.fixture(scope="module")
@@ -82,11 +96,19 @@ def _nearby_events(
     enriched: pd.DataFrame,
     entry_ts: pd.Timestamp,
     lookback_min: int,
+    forward_min: int = 0,
 ) -> list[tuple[pd.Timestamp, str]]:
-    """All structure events (CHoCH, BOS, OB) within the lookback window."""
+    """All structure events (CHoCH, BOS, OB) within `[entry - lookback_min, entry + forward_min]`.
+
+    `forward_min` exists to accommodate LuxAlgo's live-indicator repaint
+    behavior — the user may have seen a label appear on the chart
+    moments before our causally-correct engine marks it confirmed. See
+    LOOKBACK_MIN / FORWARD_MIN module-level docstrings.
+    """
     start = entry_ts - pd.Timedelta(minutes=lookback_min)
+    end = entry_ts + pd.Timedelta(minutes=forward_min)
     window = enriched[
-        (enriched["ts_event"] >= start) & (enriched["ts_event"] <= entry_ts)
+        (enriched["ts_event"] >= start) & (enriched["ts_event"] <= end)
     ]
     events: list[tuple[pd.Timestamp, str]] = []
     for _, r in window.iterrows():
@@ -116,7 +138,7 @@ def test_every_journal_entry_has_some_nearby_structure_event(enriched_2026_04_17
     missing: list[str] = []
     for entry_iso, _direction, _label in JOURNAL_ENTRIES:
         entry_ts = pd.Timestamp(entry_iso)
-        events = _nearby_events(enriched_2026_04_17, entry_ts, LOOKBACK_MIN)
+        events = _nearby_events(enriched_2026_04_17, entry_ts, LOOKBACK_MIN, FORWARD_MIN)
         if not events:
             missing.append(entry_iso)
     assert not missing, (
@@ -145,7 +167,7 @@ def test_journal_mapping_diagnostic_report(enriched_2026_04_17, capsys):
     any_match = 0
     for entry_iso, direction, journal_label in JOURNAL_ENTRIES:
         entry_ts = pd.Timestamp(entry_iso)
-        events = _nearby_events(enriched_2026_04_17, entry_ts, LOOKBACK_MIN)
+        events = _nearby_events(enriched_2026_04_17, entry_ts, LOOKBACK_MIN, FORWARD_MIN)
         # Display only the most recent 3 events for readability
         display = " ".join(
             f"{lbl}[-{int((entry_ts - ts).total_seconds() / 60)}m]"

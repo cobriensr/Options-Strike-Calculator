@@ -35,6 +35,7 @@ from typing import Any
 # Suppress upstream credit print BEFORE importing
 os.environ.setdefault("SMC_CREDIT", "0")
 
+import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from smartmoneyconcepts import smc  # noqa: E402
 
@@ -160,29 +161,86 @@ class PACEngine:
         out["session_vwap"] = stats["session_vwap"].values
         out["session_std"] = stats["session_std"].values
 
-        # ── CAUSALITY FIX (2026-04-21) ──
-        # smc.swing_highs_lows uses `.shift(-swing_length)` internally to
-        # check if a bar is the extreme over its centered window, peeking
-        # `swing_length` bars INTO THE FUTURE. A swing at bar T is only
-        # confirmable at bar T + swing_length. bos_choch, ob, and our
-        # tag_choch_plus all consume this biased output. smc.fvg uses
-        # `.shift(-1)` so FVGs similarly need 1-bar confirmation.
+        # ── CAUSALITY FIXES ──
         #
-        # We shift every structure-detection column forward by the lookahead
-        # budget the upstream primitive required. Callers reading these
-        # columns at bar T now see only what was knowable at bar T — no
-        # future info leaks into backtest entry/exit decisions.
-        lag = self.params.swing_length
-        struct_cols = (
+        # 2026-04-21 (first pass): smc.swing_highs_lows uses `.shift(-swing_length)`
+        # internally to check if a bar is the extreme over its centered window,
+        # peeking `swing_length` bars into the future. A swing at bar T is only
+        # confirmable at bar T + swing_length. We shifted every structure-detection
+        # column forward by swing_length.
+        #
+        # 2026-04-23 (second pass — bug surfaced by the A2 1m sweep): the first
+        # pass was incomplete. smc.bos_choch layers *additional* lookahead on
+        # top of swing_highs_lows:
+        #
+        #   * Labeling peek (3 * swing_length): bos_choch labels BOS/CHOCH at
+        #     `last_positions[-2]` — the 3rd-most-recent swing in the current
+        #     4-swing pattern. The 4th swing in that pattern is the CURRENT
+        #     iteration bar `i`, which itself needs swing_length more bars to
+        #     be confirmed by swing_highs_lows. So BOS at bar T needs data
+        #     through T + 3*swing_length, not T + swing_length.
+        #
+        #   * Broken-filter peek (unbounded): bos_choch drops any BOS/CHOCH
+        #     event whose level was never broken later in the series (smc.py
+        #     lines 335-360). Events that appear in the output were filtered
+        #     using future data about whether they eventually broke. We mask
+        #     them out at each output row if the break bar is > that row.
+        #
+        # smc.ob's detection is streaming/causal (np.searchsorted for
+        # last_top_index < current_close_index), so it only inherits the
+        # swing_length lookahead. Its MitigatedIndex column stores a future
+        # bar index but downstream consumers (pac_backtest/loop.py) read it
+        # as `mit <= current_bar` which is naturally causal.
+        #
+        # Known residual: smc.ob has a *reset* step (lines 427-439) that
+        # zeroes out an OB when a future high re-crosses its top. This
+        # causes under-counting (live trader would have seen OBs that the
+        # post-hoc output erases) rather than over-counting. Documented as
+        # a follow-up; deferred until we measure its impact on sweep numbers.
+        #
+        # smc.fvg uses `.shift(-1)` so FVGs need 1-bar confirmation.
+        lag_swing = self.params.swing_length
+        lag_bos = 3 * self.params.swing_length
+
+        # Columns driven only by swing_highs_lows (plus smc.ob's streaming
+        # detection, which we established is causal beyond the swing input).
+        swing_only_cols = (
             "HighLow", "Level_shl",
-            "BOS", "CHOCH", "Level_bc", "CHOCHPlus",
             "OB", "OB_Top", "OB_Bottom", "OBVolume",
             "OB_Percentage", "OB_MitigatedIndex",
             "OB_mid", "OB_width",
             "OB_z_top", "OB_z_bot", "OB_z_mid",
         )
-        for col in struct_cols:
-            out[col] = out[col].shift(lag)
+        for col in swing_only_cols:
+            out[col] = out[col].shift(lag_swing)
+
+        # Broken-filter mask: build BEFORE we shift the bc columns. Event at
+        # row T in the raw bc output is only "knowable" at bar max(T + 3*lag,
+        # broken[T]). The 3*lag piece is handled by the shift below; the
+        # broken[T] piece needs an explicit mask.
+        broken_raw = bc["BrokenIndex"].to_numpy() if "BrokenIndex" in bc.columns else None
+
+        bos_cols = ("BOS", "CHOCH", "Level_bc", "CHOCHPlus")
+        for col in bos_cols:
+            out[col] = out[col].shift(lag_bos)
+
+        if broken_raw is not None:
+            broken_shifted = pd.Series(broken_raw).shift(lag_bos).to_numpy()
+            current_bar = np.arange(len(out), dtype=np.float64)
+            # Raw BrokenIndex is NaN (not broken) or a float bar index. We mask
+            # out rows where the break bar is strictly greater than the
+            # current row index — i.e., the break hadn't happened yet.
+            unrealized_break = (
+                ~np.isnan(broken_shifted)
+            ) & (broken_shifted > current_bar)
+            for col in bos_cols:
+                col_arr = np.array(
+                    out[col].to_numpy(dtype=np.float64, na_value=np.nan),
+                    copy=True,
+                )
+                col_arr[unrealized_break] = np.nan
+                out[col] = col_arr
+
         # FVG has a 1-bar lookahead, not swing_length.
         for col in ("FVG", "FVG_Top", "FVG_Bottom", "FVG_MitigatedIndex"):
             out[col] = out[col].shift(1)
