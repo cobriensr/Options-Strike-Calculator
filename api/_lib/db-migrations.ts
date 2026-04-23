@@ -2147,4 +2147,58 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 81,
+    description:
+      'Create institutional_blocks table for SPXW mfsl/cbmo/slft floor ' +
+      'blocks (institutional regime indicator — 180-300 DTE ceiling ' +
+      'program + 0-7 DTE opening-ATM blocks)',
+    statements: (sql) => [
+      // Raw capture of SPXW institutional-tier block trades. One row
+      // per UW trade; trade_id PK dedupes across the 4 daily polls.
+      // The program_track column classifies each block as either the
+      // long-dated "ceiling" regime indicator, the near-ATM opening-
+      // hour "opening_atm" signal, or "other" — so downstream queries
+      // filter cleanly without re-classifying on the read path.
+      //
+      // Source: docs/0dte-findings.md Finding 1 + the full mfsl
+      // explanation in docs/institutional-program-tracker.md.
+      sql`
+        CREATE TABLE IF NOT EXISTS institutional_blocks (
+          trade_id         TEXT PRIMARY KEY,
+          executed_at      TIMESTAMPTZ NOT NULL,
+          option_chain_id  TEXT NOT NULL,
+          strike           DOUBLE PRECISION NOT NULL,
+          option_type      TEXT NOT NULL,
+          expiry           DATE NOT NULL,
+          dte              INTEGER NOT NULL,
+          size             INTEGER NOT NULL,
+          price            DOUBLE PRECISION NOT NULL,
+          premium          DOUBLE PRECISION NOT NULL,
+          side             TEXT,
+          condition        TEXT NOT NULL,
+          exchange         TEXT,
+          underlying_price DOUBLE PRECISION NOT NULL,
+          moneyness_pct    DOUBLE PRECISION NOT NULL,
+          open_interest    INTEGER,
+          delta            DOUBLE PRECISION,
+          gamma            DOUBLE PRECISION,
+          iv               DOUBLE PRECISION,
+          program_track    TEXT NOT NULL DEFAULT 'other'
+            CHECK (program_track IN ('ceiling', 'opening_atm', 'other')),
+          ingested_at      TIMESTAMPTZ DEFAULT NOW()
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_instblocks_executed_at
+          ON institutional_blocks (executed_at DESC)
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_instblocks_track_date
+          ON institutional_blocks (
+            program_track, CAST(executed_at AS DATE) DESC
+          )
+      `,
+    ],
+  },
 ];

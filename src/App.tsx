@@ -111,6 +111,11 @@ const BWBCalculator = lazy(() =>
 const OtmFlowAlerts = lazy(() =>
   import('./components/OtmFlowAlerts/OtmFlowAlerts').catch(handleStaleChunk),
 );
+const InstitutionalProgramSection = lazy(() =>
+  import('./components/InstitutionalProgram/InstitutionalProgramSection')
+    .then((m) => ({ default: m.InstitutionalProgramSection }))
+    .catch(handleStaleChunk),
+);
 
 function SchwabAuthLink({
   ariaLabel,
@@ -1178,6 +1183,16 @@ export default function StrikeCalculator() {
                     <OtmFlowAlerts
                       marketOpen={market.data.quotes?.marketOpen ?? false}
                     />
+                  </Suspense>
+                </ErrorBoundary>
+
+                <span
+                  id="sec-institutional-program"
+                  className="block scroll-mt-28"
+                />
+                <ErrorBoundary label="Institutional Program">
+                  <Suspense fallback={<SkeletonSection lines={6} />}>
+                    <InstitutionalProgramSection />
                   </Suspense>
                 </ErrorBoundary>
               </>

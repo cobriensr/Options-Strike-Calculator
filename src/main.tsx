@@ -104,6 +104,8 @@ if (import.meta.env.PROD)
       { path: '/api/push/subscribe', method: 'POST' },
       { path: '/api/push/unsubscribe', method: 'POST' },
       { path: '/api/push/recent-events', method: 'GET' },
+      { path: '/api/institutional-program', method: 'GET' },
+      { path: '/api/institutional-program/strike-heatmap', method: 'GET' },
     ],
   });
 
