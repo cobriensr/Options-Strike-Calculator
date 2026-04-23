@@ -1,16 +1,36 @@
 # Railway config for the ml-sweep service. Sibling to sidecar/railway.toml
 # in the same `Theta-Options` project.
 #
-# watchPatterns scopes deploys: only trigger when the ml-sweep/ tree or
-# the ml/ source (which the sweep imports) changes. Avoids wasteful
-# redeploys on every Vercel-app or sidecar commit.
+# watchPatterns is INTENTIONALLY NARROW. A broader pattern like
+# "ml-sweep/**" or "ml/**" will bounce in-flight sweeps when a docs or
+# data-only commit lands (README, TEARDOWN, ml/experiments/* result
+# JSONs, ml/plots/* figures, ml/docs/* specs). That happened once —
+# see the A2 1m_2024 retry at T+38min, killed by a README redeploy.
+#
+# Only list paths that actually influence the runtime image:
+#   * Service sources that Dockerfile COPYs into /app
+#   * ml/src and ml/scripts (COPYd as ml-src / ml-scripts)
+#   * Python dependency manifests
+#   * Dockerfile itself and this railway.toml
+# Everything else under ml/ or ml-sweep/ (markdown, JSON results,
+# plots, tests, venv) is docs/data and must NOT force a redeploy.
 
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "ml-sweep/Dockerfile"
 
 [deploy]
-watchPatterns = ["ml-sweep/**", "ml/**"]
+watchPatterns = [
+  "ml-sweep/app.py",
+  "ml-sweep/runner.py",
+  "ml-sweep/archive_seeder.py",
+  "ml-sweep/requirements.txt",
+  "ml-sweep/Dockerfile",
+  "ml-sweep/railway.toml",
+  "ml/src/**",
+  "ml/scripts/**",
+  "ml/requirements.txt",
+]
 # Railway's default start policy is "always" — for a sweep worker we
 # want to run on-demand only. See README for how to scale to 0 after
 # each sweep to avoid idle charges.
