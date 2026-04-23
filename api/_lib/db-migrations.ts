@@ -2199,4 +2199,32 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 82,
+    description:
+      'Create zero_gamma_levels table for per-minute derived zero-gamma ' +
+      'level (spot price where dealer net gamma = 0) — regime-flip signal ' +
+      'computed from existing spot_gex by-strike data',
+    statements: (sql) => [
+      // Volume: ~540 rows/day × 1 ticker (SPX, MVP scope). Nullable
+      // zero_gamma handles the "no sign change in ±3% range" case —
+      // downstream consumers must null-check before trusting it.
+      sql`
+        CREATE TABLE IF NOT EXISTS zero_gamma_levels (
+          id                BIGSERIAL PRIMARY KEY,
+          ticker            TEXT NOT NULL,
+          spot              NUMERIC(10,4) NOT NULL,
+          zero_gamma        NUMERIC(10,4),
+          confidence        NUMERIC(4,3),
+          net_gamma_at_spot NUMERIC(14,2),
+          gamma_curve       JSONB,
+          ts                TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_zero_gamma_ticker_ts
+          ON zero_gamma_levels (ticker, ts DESC)
+      `,
+    ],
+  },
 ];
