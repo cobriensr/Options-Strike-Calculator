@@ -8,23 +8,24 @@
 
 ## Cross-chunk table
 
-| Chunk | Folds | Configs | XMkt | NQ-only | Rejected | Med Sharpe | Med WR | Med PF | Med Trades | Total P&L | Train/Test Bars |
-| ----- | -----:| -------:| ----:| -------:| --------:| ---------:| ------:| ------:| ----------:| ---------:| ---------------:|
-| 1m_2022 | 15 | 15 | 0 | 1 | 14 | +9.81 | 69.6% | 7.05 | 6 | $27,383 | 235,837/118,036 |
-| 1m_2023 | 15 | 15 | 0 | 1 | 14 | +0.00 | 0.0% | 0.00 | 2 | $13,051 | 235,359/117,798 |
-| 1m_2024 | 15 | 15 | 0 | 0 | 15 | +4.40 | 41.2% | 1.75 | 4 | $10,406 | 235,556/117,898 |
-| 5m_2022 | 15 | 15 | 0 | 0 | 15 | +0.00 | 0.0% | 0.00 | 1 | $10,914 | 46,979/23,608 |
-| 5m_2023 | 15 | 15 | 0 | 0 | 15 | +0.00 | 0.0% | 0.00 | 1 | $2,322 | 46,887/23,562 |
-| 5m_2024 | 15 | 15 | 0 | 0 | 15 | +0.00 | 0.0% | 0.00 | 0 | $4,118 | 46,927/23,582 |
+| Chunk   | Folds | Configs | XMkt | NQ-only | Rejected | Med Sharpe | Med WR | Med PF | Med Trades | Total P&L | Train/Test Bars |
+| ------- | ----: | ------: | ---: | ------: | -------: | ---------: | -----: | -----: | ---------: | --------: | --------------: |
+| 1m_2022 |    15 |      15 |    0 |       1 |       14 |      +9.81 |  69.6% |   7.05 |          6 |   $27,383 | 235,837/118,036 |
+| 1m_2023 |    15 |      15 |    0 |       1 |       14 |      +0.00 |   0.0% |   0.00 |          2 |   $13,051 | 235,359/117,798 |
+| 1m_2024 |    15 |      15 |    0 |       0 |       15 |      +4.40 |  41.2% |   1.75 |          4 |   $10,406 | 235,556/117,898 |
+| 5m_2022 |    15 |      15 |    0 |       0 |       15 |      +0.00 |   0.0% |   0.00 |          1 |   $10,914 |   46,979/23,608 |
+| 5m_2023 |    15 |      15 |    0 |       0 |       15 |      +0.00 |   0.0% |   0.00 |          1 |    $2,322 |   46,887/23,562 |
+| 5m_2024 |    15 |      15 |    0 |       0 |       15 |      +0.00 |   0.0% |   0.00 |          0 |    $4,118 |   46,927/23,582 |
 
 **By timeframe (3-yr totals):**
 
 | Timeframe | Folds | Configs | XMkt | NQ-only | Rejected | Med Sharpe | Med WR | Med PF | Med Trades/fold | Total P&L |
-| --------- | -----:| -------:| ----:| -------:| --------:| ---------:| ------:| ------:| --------------:| ---------:|
-| **1m** | 45 | 45 | 0 | 2 | 43 | +4.40 | 41.2% | 1.75 | 4 | $50,841 |
-| **5m** | 45 | 45 | 0 | 0 | 45 | +0.00 | 0.0% | 0.00 | 1 | $17,355 |
+| --------- | ----: | ------: | ---: | ------: | -------: | ---------: | -----: | -----: | --------------: | --------: |
+| **1m**    |    45 |      45 |    0 |       2 |       43 |      +4.40 |  41.2% |   1.75 |               4 |   $50,841 |
+| **5m**    |    45 |      45 |    0 |       0 |       45 |      +0.00 |   0.0% |   0.00 |               1 |   $17,355 |
 
 Columns:
+
 - **XMkt / NQ-only / Rejected** are gate verdicts counted at the
   `gate_result.*_count` level. Cross-market gates are unreachable here
   because A2 fires NQ only — all promotions are single-market.
@@ -61,18 +62,22 @@ BOS at the H1 swing but requires H2 to validate — a one-bar lookahead.
 On 1m this bug biases entries toward the "right side" of small moves;
 on 5m the move needed to trigger the next swing is large enough that
 the one-bar lookahead is smaller relative to the signal distance,
-which is consistent with the 5m chunks all showing 0.
+which is consistent with 5m showing a median of 0 across folds.
 
 **2024's +4.4 Sharpe / 41% WR is the most credible 1m datapoint** —
 elevated volatility shrinks the lookahead's relative advantage.
 
 ### 4. 5m is not a viable standalone strategy here
 
-All 45 5m folds show median WR 0%. The positive total P&L
-($17,355 summed across 45 folds and 45 configs = ~$386/fold-config)
-is at the level of one good trade worth of noise. Any 5m evaluation
-needs longer per-year windows, multi-year folds, or a completely
-different entry rule before it's even measurable.
+Across all three 5m chunks the **median** fold has 1 trade and a 0%
+WR — meaning the typical fold has either no trade or a single losing
+trade. Individual folds do show non-zero Sharpes in both directions
+(the distribution isn't empty), but the median-fold collapse tells
+you the signal isn't showing up often enough to evaluate. The
+positive total P&L ($17,355 summed across 45 folds × 45 configs =
+~$386/fold-config) is at the level of one good trade worth of noise.
+Any 5m evaluation needs longer per-year windows, multi-year folds, or
+a completely different entry rule before it's even measurable.
 
 ## Operational notes from the campaign
 
@@ -94,11 +99,13 @@ different entry rule before it's even measurable.
 ## Follow-ups
 
 **Blocking before trusting any PAC number:**
+
 - Fix the `smc.bos_choch` lookahead bug. 1m_2022's Sharpe 9.8 is not
   actionable until this is resolved. Re-run just the 1m chunks after
   the fix — 5m can stay shelved.
 
 **Not blocking but valuable:**
+
 - Longer horizons (multi-year folds) for 5m — the 1-year window is too
   short to get out of the low-sample-size zone.
 - Cross-market (NQ+ES) sweep. A2 was NQ-only to isolate Databento
