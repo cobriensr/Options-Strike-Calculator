@@ -94,6 +94,10 @@
       "schedule": "35 13,14 * * 1-5"
     },
     {
+      "path": "/api/cron/compute-zero-gamma",
+      "schedule": "* 13-21 * * 1-5"
+    },
+    {
       "path": "/api/cron/embed-yesterday",
       "schedule": "0 7 * * 2-6"
     },

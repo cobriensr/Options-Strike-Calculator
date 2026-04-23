@@ -30,6 +30,26 @@ export const spotGexHistoryQuerySchema = z.object({
 export type SpotGexHistoryQuery = z.infer<typeof spotGexHistoryQuerySchema>;
 
 // ============================================================
+// /api/zero-gamma
+// ============================================================
+
+/**
+ * Query params for GET /api/zero-gamma.
+ *
+ * `ticker` is optional — defaults to 'SPX' (the MVP scope of the zero-gamma
+ * cron). Uppercase [A-Z] only, 1-5 chars, so an arbitrary string can't be
+ * used to probe the table for unexpected rows.
+ */
+export const zeroGammaQuerySchema = z.object({
+  ticker: z
+    .string()
+    .regex(/^[A-Z]{1,5}$/, 'ticker must be 1-5 uppercase letters')
+    .optional(),
+});
+
+export type ZeroGammaQuery = z.infer<typeof zeroGammaQuerySchema>;
+
+// ============================================================
 // /api/options-flow/otm-heavy
 // ============================================================
 
