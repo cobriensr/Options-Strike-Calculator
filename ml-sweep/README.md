@@ -34,10 +34,9 @@ env var on the Railway service.
 | ----------------------- | -------------------------------------------------------------------- |
 | `AUTH_TOKEN`            | Bearer token gate for `/run`, `/status/*`, `/hydrate*`               |
 | `ARCHIVE_ROOT`          | `/data/archive` — where parquets land                                |
-| `ARCHIVE_MANIFEST_URL`  | Vercel Blob URL listing every archive file + SHA (copy from sidecar) |
-| `ARCHIVE_SEED_TOKEN`    | Bearer token for the manifest + each blob file (copy from sidecar)   |
-| `RAILWAY_RUN_UID`       | `1001` — lets the non-root `sweep` user write to the mounted volume  |
-| `BLOB_READ_WRITE_TOKEN` | (Phase 3) Upload sweep results to Vercel Blob                        |
+| `ARCHIVE_MANIFEST_URL`  | Vercel Blob URL listing every archive file + SHA (copy from sidecar)                                 |
+| `BLOB_READ_WRITE_TOKEN` | Vercel Blob bearer for the manifest + each archive file (copy from sidecar). Phase 3 also uses this. |
+| `RAILWAY_RUN_UID`       | `0` — required so the container runs as root and can write the root-owned mounted volume             |
 
 ## First-time hydration
 

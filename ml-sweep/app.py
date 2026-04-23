@@ -186,14 +186,18 @@ def hydrate(_auth: None = Depends(require_auth)) -> HydrateResponse:
     ARCHIVE_ROOT) are missing.
     """
     manifest_url = os.environ.get("ARCHIVE_MANIFEST_URL", "").strip()
-    token = os.environ.get("ARCHIVE_SEED_TOKEN", "").strip()
+    # BLOB_READ_WRITE_TOKEN auths downloads from Vercel private blob storage.
+    # The sidecar uses the same token for the same manifest (see
+    # sidecar/src/main.py:123). ARCHIVE_SEED_TOKEN gates the sidecar's own
+    # `/admin/seed-archive` endpoint and is NOT the blob-download credential.
+    token = os.environ.get("BLOB_READ_WRITE_TOKEN", "").strip()
     dest_root = os.environ.get("ARCHIVE_ROOT", "").strip()
 
     missing = [
         name
         for name, value in (
             ("ARCHIVE_MANIFEST_URL", manifest_url),
-            ("ARCHIVE_SEED_TOKEN", token),
+            ("BLOB_READ_WRITE_TOKEN", token),
             ("ARCHIVE_ROOT", dest_root),
         )
         if not value
