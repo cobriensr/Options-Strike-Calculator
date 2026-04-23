@@ -23,10 +23,14 @@ import { TodayProgramCard } from './TodayProgramCard.js';
 export function InstitutionalProgramSection() {
   // Date picker for backtesting. Empty string = today. YYYY-MM-DD otherwise.
   const [backtestDate, setBacktestDate] = useState('');
-  const { data, loading, error } = useInstitutionalProgram(
-    60,
-    backtestDate || undefined,
-  );
+  // Intraday time-range filters. HH:MM in CT. Empty = no bound.
+  const [startTime, setStartTime] = useState('');
+  const [endTime, setEndTime] = useState('');
+  const { data, loading, error } = useInstitutionalProgram(60, {
+    selectedDate: backtestDate || undefined,
+    startTimeCt: startTime || undefined,
+    endTimeCt: endTime || undefined,
+  });
 
   const latestDate = useMemo(
     () => data?.days[data.days.length - 1]?.date ?? null,
@@ -39,8 +43,9 @@ export function InstitutionalProgramSection() {
     </span>
   ) : null;
 
-  const badge = backtestDate ? 'HISTORICAL' : null;
-  const badgeColor = backtestDate ? 'var(--color-amber-500)' : undefined;
+  const filtered = Boolean(backtestDate || startTime || endTime);
+  const badge = filtered ? 'HISTORICAL' : null;
+  const badgeColor = filtered ? 'var(--color-amber-500)' : undefined;
 
   let body;
   if (loading) {
@@ -56,25 +61,52 @@ export function InstitutionalProgramSection() {
     const today = data.days[data.days.length - 1] ?? null;
     body = (
       <div className="flex flex-col gap-4">
-        {/* Backtesting date picker — drives the today/blocks slot only.
+        {/* Backtesting controls — drive the today/blocks slot only.
             The ceiling chart and strike heatmap always show the rolling
             window; only the "today" card and opening-blocks feed change. */}
-        <div className="flex flex-wrap items-center gap-2">
-          <label className="text-muted text-xs">Opening-ATM date:</label>
-          <input
-            type="date"
-            value={backtestDate}
-            onChange={(e) => setBacktestDate(e.target.value)}
-            className="border-edge bg-surface text-text rounded border px-2 py-1 font-mono text-xs"
-            max={new Date().toISOString().slice(0, 10)}
-          />
-          {backtestDate && (
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2">
+            <label className="text-muted text-xs">Date:</label>
+            <input
+              type="date"
+              value={backtestDate}
+              onChange={(e) => setBacktestDate(e.target.value)}
+              className="border-edge bg-surface text-text rounded border px-2 py-1 font-mono text-xs"
+              max={new Date().toISOString().slice(0, 10)}
+              aria-label="Backtest date"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-muted text-xs">Time CT:</label>
+            <input
+              type="time"
+              value={startTime}
+              onChange={(e) => setStartTime(e.target.value)}
+              className="border-edge bg-surface text-text rounded border px-2 py-1 font-mono text-xs"
+              aria-label="Start time (CT)"
+              placeholder="from"
+            />
+            <span className="text-muted text-xs">–</span>
+            <input
+              type="time"
+              value={endTime}
+              onChange={(e) => setEndTime(e.target.value)}
+              className="border-edge bg-surface text-text rounded border px-2 py-1 font-mono text-xs"
+              aria-label="End time (CT)"
+              placeholder="to"
+            />
+          </div>
+          {filtered && (
             <button
               type="button"
-              onClick={() => setBacktestDate('')}
+              onClick={() => {
+                setBacktestDate('');
+                setStartTime('');
+                setEndTime('');
+              }}
               className="text-muted hover:text-text text-xs underline underline-offset-2"
             >
-              reset to today
+              reset
             </button>
           )}
         </div>

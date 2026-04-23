@@ -71,6 +71,19 @@ export default async function handler(
   const dateRaw = String(req.query.date ?? '');
   const dateFilter = /^\d{4}-\d{2}-\d{2}$/.test(dateRaw) ? dateRaw : null;
 
+  // Optional time-of-day filter (CT). HH:MM. Converted to minutes-
+  // since-midnight and applied via AT TIME ZONE 'America/Chicago'.
+  function parseHHMM(s: string): number | null {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(s);
+    if (!m) return null;
+    const hh = Number.parseInt(m[1]!, 10);
+    const mm = Number.parseInt(m[2]!, 10);
+    if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+    return hh * 60 + mm;
+  }
+  const startCtMin = parseHHMM(String(req.query.start_time_ct ?? ''));
+  const endCtMin = parseHHMM(String(req.query.end_time_ct ?? ''));
+
   try {
     const sql = getDb();
 
@@ -156,50 +169,49 @@ export default async function handler(
     `) as DailyProgramSummary[];
 
     // Block list for the requested date (both tracks) for the
-    // expandable table. Defaults to today when no date is supplied;
-    // honors ?date=YYYY-MM-DD for historical backtesting.
-    const today = (dateFilter
+    // expandable table. Defaults to today; honors ?date= for
+    // historical backtesting and ?start_time_ct / ?end_time_ct for
+    // intraday windowing. Limit raised to 500 so busy days (SPXW
+    // ceiling can hit 200+ rows on high-vol sessions) aren't
+    // silently truncated from the morning end.
+    //
+    // Time filter uses minutes-since-midnight in Chicago local time
+    // so DST shifts are handled by the database rather than the app.
+    const targetDate = dateFilter ?? null;
+    const minStart = startCtMin ?? 0;
+    const minEnd = endCtMin ?? 24 * 60 - 1;
+    const today = (targetDate
       ? await sql`
           SELECT
             executed_at::TEXT AS executed_at,
-            option_chain_id,
-            strike,
-            option_type,
-            dte,
-            size,
-            premium,
-            price,
-            side,
-            condition,
-            exchange,
-            underlying_price,
-            moneyness_pct,
-            program_track
+            option_chain_id, strike, option_type, dte, size, premium,
+            price, side, condition, exchange, underlying_price,
+            moneyness_pct, program_track
           FROM institutional_blocks
-          WHERE CAST(executed_at AS DATE) = ${dateFilter}::DATE
+          WHERE CAST(executed_at AT TIME ZONE 'America/Chicago' AS DATE)
+                = ${targetDate}::DATE
+            AND (
+              date_part('hour',   executed_at AT TIME ZONE 'America/Chicago') * 60
+              + date_part('minute', executed_at AT TIME ZONE 'America/Chicago')
+            ) BETWEEN ${minStart} AND ${minEnd}
           ORDER BY executed_at DESC
-          LIMIT 200
+          LIMIT 500
         `
       : await sql`
           SELECT
             executed_at::TEXT AS executed_at,
-            option_chain_id,
-            strike,
-            option_type,
-            dte,
-            size,
-            premium,
-            price,
-            side,
-            condition,
-            exchange,
-            underlying_price,
-            moneyness_pct,
-            program_track
+            option_chain_id, strike, option_type, dte, size, premium,
+            price, side, condition, exchange, underlying_price,
+            moneyness_pct, program_track
           FROM institutional_blocks
-          WHERE CAST(executed_at AS DATE) = CURRENT_DATE
+          WHERE CAST(executed_at AT TIME ZONE 'America/Chicago' AS DATE)
+                = (NOW() AT TIME ZONE 'America/Chicago')::DATE
+            AND (
+              date_part('hour',   executed_at AT TIME ZONE 'America/Chicago') * 60
+              + date_part('minute', executed_at AT TIME ZONE 'America/Chicago')
+            ) BETWEEN ${minStart} AND ${minEnd}
           ORDER BY executed_at DESC
-          LIMIT 200
+          LIMIT 500
         `) as InstitutionalBlockRow[];
 
     res.status(200).json({

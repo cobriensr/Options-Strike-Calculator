@@ -59,7 +59,20 @@ export interface StrikeHeatmapData {
   rows: StrikeCell[];
 }
 
-export function useInstitutionalProgram(days = 60, selectedDate?: string) {
+export interface InstitutionalProgramOptions {
+  /** YYYY-MM-DD — defaults to today when undefined. */
+  selectedDate?: string;
+  /** HH:MM CT — include blocks at or after this time. */
+  startTimeCt?: string;
+  /** HH:MM CT — include blocks at or before this time. */
+  endTimeCt?: string;
+}
+
+export function useInstitutionalProgram(
+  days = 60,
+  opts: InstitutionalProgramOptions = {},
+) {
+  const { selectedDate, startTimeCt, endTimeCt } = opts;
   const [data, setData] = useState<InstitutionalProgramData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
@@ -69,6 +82,8 @@ export function useInstitutionalProgram(days = 60, selectedDate?: string) {
     setLoading(true);
     const params = new URLSearchParams({ days: String(days) });
     if (selectedDate) params.set('date', selectedDate);
+    if (startTimeCt) params.set('start_time_ct', startTimeCt);
+    if (endTimeCt) params.set('end_time_ct', endTimeCt);
     fetch(`/api/institutional-program?${params.toString()}`)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -89,7 +104,7 @@ export function useInstitutionalProgram(days = 60, selectedDate?: string) {
     return () => {
       cancelled = true;
     };
-  }, [days, selectedDate]);
+  }, [days, selectedDate, startTimeCt, endTimeCt]);
 
   return { data, loading, error };
 }
