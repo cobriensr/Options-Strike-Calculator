@@ -1,11 +1,11 @@
 /**
  * GET /api/cron/compute-zero-gamma
  *
- * Computes the SPX zero-gamma level every minute during market hours.
- * Reads the latest per-strike intraday gamma snapshot from strike_exposures
- * (written by fetch-strike-exposure, which runs on a staggered 5-min cadence
- * via the UW expiry-strike endpoint), aggregates call + put OI gamma into a
- * signed per-strike dealer gamma profile, and hands it to the pure
+ * Computes the SPX zero-gamma level during market hours. Reads the latest
+ * per-strike intraday gamma snapshot from strike_exposures (written by
+ * fetch-strike-exposure on a staggered 5-min cadence via the UW
+ * expiry-strike endpoint), aggregates call + put OI gamma into a signed
+ * per-strike dealer gamma profile, and hands it to the pure
  * computeZeroGammaLevel() calculator in api/_lib/zero-gamma.
  *
  * Outputs land in zero_gamma_levels (migration 82):
@@ -19,7 +19,16 @@
  *   - If there is no fresh strike_exposures snapshot, the handler logs + exits
  *     without inserting (no-op).
  *
- * Cron: * 13-21 * * 1-5
+ * Expiry scope: 0DTE-only (expiry = today) — user decision 2026-04-23,
+ * overrides spec open question #2 ("combined book"). Rationale: the app is
+ * 0DTE-focused; 0DTE-only zero-gamma is most actionable for real-time
+ * regime-flip detection during the session. Revisit if intraday regime
+ * flips look too jittery (add a combined-book ticker variant like "SPX-ALL").
+ *
+ * Cadence: 5-min, matched to fetch-strike-exposure source (avoids 4-of-5
+ * duplicate rows per real snapshot).
+ *
+ * Cron: 3,8,13,18,23,28,33,38,43,48,53,58 13-21 * * 1-5
  *
  * Environment: CRON_SECRET (no UW API key required — purely derivative)
  */

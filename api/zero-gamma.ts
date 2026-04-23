@@ -1,12 +1,13 @@
 /**
  * GET /api/zero-gamma
  *
- * Public read endpoint for the derived zero-gamma level. Returns the latest
- * row for `ticker` (default 'SPX') plus the most recent 100 rows for
+ * Owner-gated read endpoint for the derived zero-gamma level. Returns the
+ * latest row for `ticker` (default 'SPX') plus the most recent 100 rows for
  * trend / chart consumption.
  *
- * Per project auth policy, data reads are public for guests — only Claude
- * API calls are owner-gated. checkBot protects against automated abuse.
+ * Owner-gated because `gamma_curve` exposes per-strike-derived aggregates
+ * from UW (OPRA-licensed) data — same category as /api/spot-gex-history,
+ * /api/greek-exposure-strike, and /api/gex-per-strike.
  *
  * Query params:
  *   ?ticker=SPX  — 1-5 uppercase letters; defaults to SPX
@@ -22,7 +23,12 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
 import logger from './_lib/logger.js';
-import { checkBot, setCacheHeaders, isMarketOpen } from './_lib/api-helpers.js';
+import {
+  checkBot,
+  isMarketOpen,
+  rejectIfNotOwner,
+  setCacheHeaders,
+} from './_lib/api-helpers.js';
 import { zeroGammaQuerySchema } from './_lib/validation.js';
 
 const DEFAULT_TICKER = 'SPX';
@@ -96,6 +102,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (botCheck.isBot) {
       return res.status(403).json({ error: 'Access denied' });
     }
+    if (rejectIfNotOwner(req, res)) return;
 
     const parsed = zeroGammaQuerySchema.safeParse(req.query);
     if (!parsed.success) {
@@ -124,9 +131,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const response: ZeroGammaResponse = { latest, history };
 
-      // Short edge cache during market hours (cron writes every minute).
-      // Longer cache off-hours to reduce load; no Vary: Cookie because
-      // this endpoint is public.
+      // Short edge cache during market hours (cron writes every 5 min,
+      // matched to fetch-strike-exposure). Longer cache off-hours to reduce
+      // load. setCacheHeaders adds Vary: Cookie so owner vs anon caches
+      // don't collide.
       setCacheHeaders(res, isMarketOpen() ? 30 : 300, 60);
       return res.status(200).json(response);
     } catch (err) {
