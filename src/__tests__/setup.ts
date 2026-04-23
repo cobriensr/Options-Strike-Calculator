@@ -1,4 +1,15 @@
 import '@testing-library/jest-dom/vitest';
+import { afterEach } from 'vitest';
+import { cleanup } from '@testing-library/react';
+
+// Vitest doesn't auto-run @testing-library's cleanup (unlike Jest). Without
+// this, every render()/renderHook() call leaves React roots + JSDOM mounts
+// allocated for the entire test run, accumulating into gigabytes across
+// ~7700 tests and eventually blowing past the Node heap ceiling in CI.
+// See the April 2026 CI OOM investigation.
+afterEach(() => {
+  cleanup();
+});
 
 // jsdom doesn't implement createImageBitmap / OffscreenCanvas — stub them for compressImage()
 if (typeof globalThis.createImageBitmap !== 'function') {
