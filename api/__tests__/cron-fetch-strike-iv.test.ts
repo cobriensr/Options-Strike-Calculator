@@ -30,6 +30,14 @@ vi.mock('../_lib/sentry.js', () => ({
   metrics: { increment: vi.fn() },
 }));
 
+// Redis is used by the Phase 2 context-snapshot collector (VIX1D). In
+// tests we don't have Upstash env vars, so the real client hangs with
+// retries. Stub it to a resolved-null so the detection path returns
+// quickly.
+vi.mock('../_lib/schwab.js', () => ({
+  redis: { get: vi.fn().mockResolvedValue(null) },
+}));
+
 vi.mock('../_lib/api-helpers.js', () => ({
   // Programmable Schwab fetch.
   schwabFetch: vi.fn(),
@@ -541,5 +549,88 @@ describe('fetch-strike-iv handler', () => {
     };
     // SPY + QQQ both got null chains → skipped with 'schwab_error'.
     expect(body.results.filter((r) => r.skipped)).toHaveLength(2);
+  });
+
+  // ── Phase 2 detection ────────────────────────────────────────
+
+  it('inserts iv_anomalies when a strike exceeds the skew_delta threshold', async () => {
+    // Build an SPX chain where one put's bid/ask is much wider than the
+    // neighbors — this makes iv_mid ~6 vol pts above peers, which is >
+    // the 1.5 vol pt SKEW_DELTA_THRESHOLD. SPY + QQQ chains are empty so
+    // only SPX runs detection.
+    //
+    // Calibration: bid=9 / ask=10 (mid=9.5) vs neighbors at bid=5 / ask=6
+    // (mid=5.5) on a 0DTE put with T ≈ 6h. The mid jump translates to a
+    // meaningful IV bump at the inverted mid, which clears 1.5 vol pts.
+    // Need 4 neighbors on each side of the target for skew_delta to
+    // evaluate (spec: 2 above + 2 below — 4 total). Build 5 puts so
+    // strike 7060 has two below + two above.
+    const spxChain = makeChain('$SPX', 7100, {
+      putStrikes: [7030, 7040, 7050, 7060, 7070, 7080],
+      callStrikes: [7140, 7160],
+      bid: 5,
+      ask: 6,
+    });
+    // Replace the 7060 put with a wider-IV contract — the target strike
+    // has iv_mid significantly above its neighbors.
+    spxChain.putExpDateMap['2026-04-24:0']!['7060'] = [
+      makeContract('PUT', 7060, { bid: 9, ask: 10, openInterest: 600 }),
+    ];
+
+    // SPY + QQQ empty so we only see SPX anomaly + history queries.
+    const spyChain = makeChain('SPY', 710, {});
+    const qqqChain = makeChain('QQQ', 500, {});
+
+    mockChainSequence([spxChain, spyChain, qqqChain]);
+
+    // Program mockSql:
+    //   1. SPX history query (SELECT … FROM strike_iv_snapshots) → empty
+    //   2. Context-snapshot queries (many in parallel) → empty rows
+    //   3. iv_anomalies INSERT RETURNING id → [{id: 1}]
+    // Default mockResolvedValue already returns []; we just need the
+    // INSERT to return a row so the "inserted" counter increments.
+    //
+    // Strategy: make EVERY mockSql call after the initial history load
+    // return an empty rowset, EXCEPT the last call (which is the INSERT
+    // INTO iv_anomalies). We use the mockResolvedValueOnce queue, letting
+    // N earlier queries resolve empty, and the final one returns [{id}].
+    //
+    // Simpler: let every call default to []. The cron's RETURNING id
+    // check uses `length > 0` to count. So we accept that this specific
+    // test observes the anomaly via the totalAnomalies counter being
+    // either 0 or 1 depending on how the detector handles no-history
+    // z-score (null, so skew_delta alone must carry it).
+    //
+    // We switch the mock so the iv_anomalies INSERT returns [{id:1}] by
+    // keying off the raw SQL template string. mockSql is a plain vi.fn
+    // and the tagged template receives (strings, ...values). The INSERT
+    // INTO iv_anomalies text appears verbatim in the template strings.
+    mockSql.mockImplementation((strings: TemplateStringsArray) => {
+      const joined = Array.isArray(strings) ? strings.join(' ') : '';
+      if (joined.includes('INSERT INTO iv_anomalies')) {
+        return Promise.resolve([{ id: 1 }]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      totalInserted: number;
+      totalAnomalies: number;
+      results: Array<{
+        ticker: string;
+        rowsInserted: number;
+        anomaliesDetected: number;
+      }>;
+    };
+    // SPX had 6 put + 2 call strikes → 8 rows ingested.
+    expect(body.totalInserted).toBe(8);
+    // At least one anomaly detected on SPX (strike 7060 with wider IV).
+    expect(body.totalAnomalies).toBeGreaterThanOrEqual(1);
+    const spx = body.results.find((r) => r.ticker === 'SPX');
+    expect(spx?.anomaliesDetected).toBeGreaterThanOrEqual(1);
   });
 });

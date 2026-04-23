@@ -510,6 +510,7 @@ describe('db.ts', () => {
         { id: 81 },
         { id: 82 },
         { id: 83 },
+        { id: 84 },
       ]);
 
       const applied = await migrateDb();
@@ -611,18 +612,19 @@ describe('db.ts', () => {
         '#81: Create institutional_blocks table for SPXW mfsl/cbmo/slft floor blocks (institutional regime indicator — 180-300 DTE ceiling program + 0-7 DTE opening-ATM blocks)',
         '#82: Create zero_gamma_levels table for per-minute derived zero-gamma level (spot price where dealer net gamma = 0) — regime-flip signal computed from existing spot_gex by-strike data',
         '#83: Create strike_iv_snapshots table for per-strike OTM IV time series (SPX/SPY/QQQ, ±3% of spot) — Phase 1 of the Strike IV Anomaly Detector',
+        '#84: Create iv_anomalies table for Strike IV Anomaly Detector (Phase 2) — flags + JSONB context_snapshot at detection time, plus resolution_outcome populated EOD by the Phase 4 resolve cron',
       ]);
       // Pyramid migrations #65/66/67 remain in the chain (migration history is
       // immutable — fresh DBs replay create → alter → alter → drop). TRACE
       // migrations #56/57 also remain — #69 drops the table they created.
-      // 134 (migrations #1-41) + 4 (#42) + 4 (#43) + 2 (#44) + 2 (#45) + 3 (#46) + 4 (#47: CREATE+2 INDEX+INSERT) + 2 (#48: ALTER+INSERT) + 4 (#49: CREATE+2 INDEX+INSERT) + 3 (#50: DELETE+CREATE UNIQUE INDEX+INSERT) + 5 (#51: CREATE+3 INDEX+INSERT) + 3 (#52: CREATE+1 INDEX+INSERT) + 4 (#53: CREATE+2 INDEX+INSERT) + 2 (#54: ALTER+INSERT) + 2 (#55: ALTER+INSERT) + 2 (#56: CREATE+INSERT) + 2 (#57: ALTER+INSERT) + 3 (#58: DROP INDEX+ALTER+INSERT) + 7 (#59: CREATE+5 INDEX+INSERT) + 2 (#60: CREATE+INSERT) + 2 (#61: ALTER+INSERT) + 7 (#62: CREATE+5 INDEX+INSERT) + 3 (#63: CREATE+1 INDEX+INSERT) + 2 (#64: ALTER+INSERT) + 6 (#65: CREATE chains+2 INDEX+CREATE legs+1 INDEX+INSERT) + 8 (#66: 7 ALTER+INSERT) + 5 (#67: DROP CONSTRAINT+ADD CONSTRAINT+2 ALTER+INSERT) + 3 (#68: 2 DROP+INSERT) + 3 (#69: DELETE+DROP+INSERT) + 4 (#70: CREATE+2 INDEX+INSERT) + 3 (#71: CREATE+1 INDEX+INSERT) + 3 (#72: CREATE+1 INDEX+INSERT) + 4 (#73: CREATE EXTENSION+CREATE TABLE+CREATE INDEX+INSERT) + 3 (#74: CREATE TABLE+CREATE INDEX+INSERT) + 3 (#75: CREATE TABLE+CREATE INDEX+INSERT) + 2 (#76: ALTER+INSERT) + 3 (#77: ALTER+INDEX+INSERT) + 3 (#78: CREATE TABLE+INDEX+INSERT) + 3 (#79: CREATE TABLE+INDEX+INSERT) + 2 (#80: CREATE TABLE+INSERT) + 4 (#81: CREATE TABLE+2 INDEX+INSERT) + 3 (#82: CREATE TABLE+1 INDEX+INSERT) + 4 (#83: CREATE TABLE+2 INDEX+INSERT) = 277
+      // 134 (migrations #1-41) + 4 (#42) + 4 (#43) + 2 (#44) + 2 (#45) + 3 (#46) + 4 (#47: CREATE+2 INDEX+INSERT) + 2 (#48: ALTER+INSERT) + 4 (#49: CREATE+2 INDEX+INSERT) + 3 (#50: DELETE+CREATE UNIQUE INDEX+INSERT) + 5 (#51: CREATE+3 INDEX+INSERT) + 3 (#52: CREATE+1 INDEX+INSERT) + 4 (#53: CREATE+2 INDEX+INSERT) + 2 (#54: ALTER+INSERT) + 2 (#55: ALTER+INSERT) + 2 (#56: CREATE+INSERT) + 2 (#57: ALTER+INSERT) + 3 (#58: DROP INDEX+ALTER+INSERT) + 7 (#59: CREATE+5 INDEX+INSERT) + 2 (#60: CREATE+INSERT) + 2 (#61: ALTER+INSERT) + 7 (#62: CREATE+5 INDEX+INSERT) + 3 (#63: CREATE+1 INDEX+INSERT) + 2 (#64: ALTER+INSERT) + 6 (#65: CREATE chains+2 INDEX+CREATE legs+1 INDEX+INSERT) + 8 (#66: 7 ALTER+INSERT) + 5 (#67: DROP CONSTRAINT+ADD CONSTRAINT+2 ALTER+INSERT) + 3 (#68: 2 DROP+INSERT) + 3 (#69: DELETE+DROP+INSERT) + 4 (#70: CREATE+2 INDEX+INSERT) + 3 (#71: CREATE+1 INDEX+INSERT) + 3 (#72: CREATE+1 INDEX+INSERT) + 4 (#73: CREATE EXTENSION+CREATE TABLE+CREATE INDEX+INSERT) + 3 (#74: CREATE TABLE+CREATE INDEX+INSERT) + 3 (#75: CREATE TABLE+CREATE INDEX+INSERT) + 2 (#76: ALTER+INSERT) + 3 (#77: ALTER+INDEX+INSERT) + 3 (#78: CREATE TABLE+INDEX+INSERT) + 3 (#79: CREATE TABLE+INDEX+INSERT) + 2 (#80: CREATE TABLE+INSERT) + 4 (#81: CREATE TABLE+2 INDEX+INSERT) + 3 (#82: CREATE TABLE+1 INDEX+INSERT) + 4 (#83: CREATE TABLE+2 INDEX+INSERT) + 4 (#84: CREATE TABLE+2 INDEX+INSERT) = 281
       // Migration #3 was converted from run: to statements: (BE-CRON-010);
       // its 4 calls (DROP INDEX + ALTER + CREATE INDEX + INSERT) still count
       // toward the total — the only delta is that they route through
       // sql.transaction() instead of sequential awaits.
-      expect(mockSql).toHaveBeenCalledTimes(277);
-      // Migrations #3 and #15-83 each call sql.transaction() once for atomic execution
-      expect(mockSql.transaction).toHaveBeenCalledTimes(70);
+      expect(mockSql).toHaveBeenCalledTimes(281);
+      // Migrations #3 and #15-84 each call sql.transaction() once for atomic execution
+      expect(mockSql.transaction).toHaveBeenCalledTimes(71);
     });
 
     it('propagates errors from migration SQL', async () => {

@@ -36,9 +36,17 @@ import {
   STRIKE_IV_MIN_OI_SPX,
   STRIKE_IV_MIN_OI_SPY_QQQ,
   STRIKE_IV_TICKERS,
+  Z_WINDOW_SIZE,
   type StrikeIVTicker,
 } from '../_lib/constants.js';
 import { impliedVolatility } from '../../src/utils/black-scholes.js';
+import {
+  detectAnomalies,
+  classifyFlowPhase,
+  strikeKey,
+  type StrikeSample,
+} from '../_lib/iv-anomaly.js';
+import { gatherContextSnapshot } from '../_lib/anomaly-context.js';
 
 // ── Schwab types (duplicated locally — api/chain.ts is an endpoint, not a
 //    reusable module, and extracting a shared helper is out of scope for
@@ -305,11 +313,160 @@ async function insertRows(
   return inserted;
 }
 
+// ── Detection (Phase 2) ──────────────────────────────────────
+
+/**
+ * Convert a freshly-ingested SnapshotRow (what we just INSERTed) into
+ * the detector's StrikeSample shape. The detection layer reads IV from
+ * iv_mid/iv_bid/iv_ask + ts + identity keys — it doesn't look at the
+ * mid_price / OI / volume columns.
+ */
+function toStrikeSample(row: SnapshotRow, ts: string): StrikeSample {
+  return {
+    ticker: row.ticker,
+    strike: row.strike,
+    side: row.side,
+    expiry: row.expiry,
+    iv_mid: row.ivMid,
+    iv_bid: row.ivBid,
+    iv_ask: row.ivAsk,
+    ts,
+  };
+}
+
+/**
+ * Load the last Z_WINDOW_SIZE iv_mid samples per (ticker, strike, side,
+ * expiry) tuple for this ticker, excluding the target sample itself
+ * (WHERE ts < now). Returns a map keyed by strikeKey() for O(1) lookup
+ * inside the detector.
+ *
+ * Composite index `idx_strike_iv_snapshots_lookup` covers every WHERE
+ * column + ORDER BY so this is an index-only scan per tuple.
+ */
+async function loadHistoryForTicker(
+  sql: ReturnType<typeof getDb>,
+  ticker: StrikeIVTicker,
+  sampledAt: string,
+): Promise<Map<string, StrikeSample[]>> {
+  // Row shape from the window-function query. Neon returns NUMERIC
+  // columns as strings and TIMESTAMPTZ as either string or Date — hence
+  // the string | number variants per column.
+  type NullableNumeric = string | number | null;
+  interface HistoryRow {
+    ticker: string;
+    strike: string | number;
+    side: string;
+    expiry: string | Date;
+    iv_mid: NullableNumeric;
+    iv_bid: NullableNumeric;
+    iv_ask: NullableNumeric;
+    ts: string | Date;
+  }
+
+  // Single query that pulls the last N samples per strike tuple using
+  // a window function. Much cheaper than issuing one query per strike.
+  const rows = (await sql`
+    SELECT ticker, strike, side, expiry, iv_mid, iv_bid, iv_ask, ts
+    FROM (
+      SELECT
+        ticker, strike, side, expiry, iv_mid, iv_bid, iv_ask, ts,
+        ROW_NUMBER() OVER (
+          PARTITION BY ticker, strike, side, expiry
+          ORDER BY ts DESC
+        ) AS rn
+      FROM strike_iv_snapshots
+      WHERE ticker = ${ticker}
+        AND ts < ${sampledAt}
+    ) sub
+    WHERE rn <= ${Z_WINDOW_SIZE}
+    ORDER BY ticker, strike, side, expiry, ts DESC
+  `) as HistoryRow[];
+
+  const result = new Map<string, StrikeSample[]>();
+  for (const r of rows) {
+    const strike = Number(r.strike);
+    const side = r.side as 'call' | 'put';
+    const expiry =
+      r.expiry instanceof Date
+        ? r.expiry.toISOString().slice(0, 10)
+        : String(r.expiry).slice(0, 10);
+    const ts = r.ts instanceof Date ? r.ts.toISOString() : String(r.ts);
+    const key = strikeKey(r.ticker, strike, side, expiry);
+    const bucket = result.get(key);
+    const sample: StrikeSample = {
+      ticker: r.ticker,
+      strike,
+      side,
+      expiry,
+      iv_mid: r.iv_mid == null ? null : Number(r.iv_mid),
+      iv_bid: r.iv_bid == null ? null : Number(r.iv_bid),
+      iv_ask: r.iv_ask == null ? null : Number(r.iv_ask),
+      ts,
+    };
+    if (bucket) bucket.push(sample);
+    else result.set(key, [sample]);
+  }
+  return result;
+}
+
+/**
+ * For every row we just inserted, check for anomalies against the
+ * trailing Z_WINDOW_SIZE history + the current cross-strike snapshot.
+ * Flags are enriched with a ContextSnapshot + flow_phase label and
+ * inserted into iv_anomalies.
+ *
+ * Returns the count of anomalies written. A detection failure logs
+ * + captures to Sentry but does NOT cause the ingestion cron to
+ * report failure — Phase 1 ingestion always takes precedence.
+ */
+async function runDetection(
+  sql: ReturnType<typeof getDb>,
+  ticker: StrikeIVTicker,
+  insertedRows: SnapshotRow[],
+  sampledAtIso: string,
+): Promise<number> {
+  if (insertedRows.length === 0) return 0;
+
+  const spot = insertedRows[0]!.spot;
+  const samples = insertedRows.map((r) => toStrikeSample(r, sampledAtIso));
+
+  const historyByStrike = await loadHistoryForTicker(sql, ticker, sampledAtIso);
+
+  const flags = detectAnomalies(samples, historyByStrike, spot);
+  if (flags.length === 0) return 0;
+
+  let inserted = 0;
+  for (const flag of flags) {
+    const detectTs = new Date(flag.ts);
+    const context = await gatherContextSnapshot(flag.ticker, detectTs);
+    const flowPhase = classifyFlowPhase(flag, context);
+
+    const result = await sql`
+      INSERT INTO iv_anomalies (
+        ticker, strike, side, expiry,
+        spot_at_detect, iv_at_detect,
+        skew_delta, z_score, ask_mid_div,
+        flag_reasons, flow_phase, context_snapshot, ts
+      ) VALUES (
+        ${flag.ticker}, ${flag.strike}, ${flag.side}, ${flag.expiry},
+        ${flag.spot_at_detect}, ${flag.iv_at_detect},
+        ${flag.skew_delta}, ${flag.z_score}, ${flag.ask_mid_div},
+        ${flag.flag_reasons}, ${flowPhase}, ${JSON.stringify(context)}::jsonb,
+        ${flag.ts}
+      )
+      RETURNING id
+    `;
+    if ((result as unknown[]).length > 0) inserted += 1;
+  }
+  return inserted;
+}
+
 // ── Per-ticker runner ────────────────────────────────────────
 
 interface TickerResult {
   ticker: StrikeIVTicker;
   rowsInserted: number;
+  anomaliesDetected: number;
   skipped: boolean;
   reason?: string;
 }
@@ -329,7 +486,13 @@ async function runTicker(
 
     const chain = await fetchChain(ticker, fromDate, toDate);
     if (chain == null) {
-      return { ticker, rowsInserted: 0, skipped: true, reason: 'schwab_error' };
+      return {
+        ticker,
+        rowsInserted: 0,
+        anomaliesDetected: 0,
+        skipped: true,
+        reason: 'schwab_error',
+      };
     }
 
     const rows = extractRows(chain, ticker, allowed, nowMs);
@@ -338,10 +501,41 @@ async function runTicker(
         { ticker, expiries, spot: chain.underlying?.last ?? null },
         'fetch-strike-iv: no rows after filter',
       );
-      return { ticker, rowsInserted: 0, skipped: true, reason: 'empty_chain' };
+      return {
+        ticker,
+        rowsInserted: 0,
+        anomaliesDetected: 0,
+        skipped: true,
+        reason: 'empty_chain',
+      };
     }
 
     const rowsInserted = await insertRows(sql, rows);
+
+    // ── Phase 2: anomaly detection ────────────────────────────
+    //
+    // Runs after ingestion so a detection failure cannot roll back
+    // the per-strike snapshot rows — Phase 1 data is strictly
+    // first-class. We use the cron's wall-clock start as the
+    // canonical ts so the window function that loads history can
+    // exclude the just-inserted samples cleanly (WHERE ts <
+    // sampledAtIso). The ingestion transaction stamps rows with
+    // NOW() which is slightly after nowMs, hence the < comparison
+    // is safe.
+    let anomaliesDetected = 0;
+    try {
+      const sampledAtIso = new Date(nowMs).toISOString();
+      anomaliesDetected = await runDetection(sql, ticker, rows, sampledAtIso);
+    } catch (err) {
+      Sentry.setTag('cron.job', 'fetch-strike-iv');
+      Sentry.setTag('strike_iv.ticker', ticker);
+      Sentry.setTag('strike_iv.phase', 'detection');
+      Sentry.captureException(err);
+      logger.error(
+        { err, ticker },
+        'fetch-strike-iv: detection failed — ingestion already persisted',
+      );
+    }
 
     logger.info(
       {
@@ -350,11 +544,12 @@ async function runTicker(
         expiries,
         rowsInserted,
         candidateRows: rows.length,
+        anomaliesDetected,
       },
       'strike_iv_snapshots written',
     );
 
-    return { ticker, rowsInserted, skipped: false };
+    return { ticker, rowsInserted, anomaliesDetected, skipped: false };
   } catch (err) {
     Sentry.setTag('cron.job', 'fetch-strike-iv');
     Sentry.setTag('strike_iv.ticker', ticker);
@@ -363,6 +558,7 @@ async function runTicker(
     return {
       ticker,
       rowsInserted: 0,
+      anomaliesDetected: 0,
       skipped: true,
       reason: 'exception',
     };
@@ -386,11 +582,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     const totalInserted = results.reduce((sum, r) => sum + r.rowsInserted, 0);
+    const totalAnomalies = results.reduce(
+      (sum, r) => sum + r.anomaliesDetected,
+      0,
+    );
     const durationMs = Date.now() - startTime;
 
     return res.status(200).json({
       job: 'fetch-strike-iv',
       totalInserted,
+      totalAnomalies,
       results,
       durationMs,
     });

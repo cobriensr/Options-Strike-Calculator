@@ -2273,4 +2273,48 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 84,
+    description:
+      'Create iv_anomalies table for Strike IV Anomaly Detector (Phase 2) — ' +
+      'flags + JSONB context_snapshot at detection time, plus ' +
+      'resolution_outcome populated EOD by the Phase 4 resolve cron',
+    statements: (sql) => [
+      // One row per detected anomaly. Volume is bounded: at the 2.0σ /
+      // 1.5-vol-pt thresholds we expect single-digit rows per session per
+      // ticker, so no partitioning or retention policy is needed. The
+      // flag_reasons TEXT[] lets the frontend and Phase 4 resolve cron
+      // filter by flag type without parsing a composite TEXT column.
+      sql`
+        CREATE TABLE IF NOT EXISTS iv_anomalies (
+          id                 BIGSERIAL PRIMARY KEY,
+          ticker             TEXT NOT NULL,
+          strike             NUMERIC(10,2) NOT NULL,
+          side               TEXT NOT NULL,
+          expiry             DATE NOT NULL,
+          spot_at_detect     NUMERIC(10,4) NOT NULL,
+          iv_at_detect       NUMERIC(8,5) NOT NULL,
+          skew_delta         NUMERIC(6,4),
+          z_score            NUMERIC(6,4),
+          ask_mid_div        NUMERIC(6,4),
+          flag_reasons       TEXT[] NOT NULL,
+          flow_phase         TEXT,
+          context_snapshot   JSONB,
+          resolution_outcome JSONB,
+          ts                 TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `,
+      // Per-ticker recency scan for the Phase 3 frontend list endpoint.
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_iv_anomalies_ticker_ts
+          ON iv_anomalies (ticker, ts DESC)
+      `,
+      // Partial index accelerates the Phase 4 EOD resolve cron's "what's
+      // still unscored?" query without bloating the base index.
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_iv_anomalies_unresolved
+          ON iv_anomalies (ts) WHERE resolution_outcome IS NULL
+      `,
+    ],
+  },
 ];
