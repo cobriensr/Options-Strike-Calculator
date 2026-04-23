@@ -55,16 +55,16 @@ interface InstitutionalBlockRow {
   program_track: 'ceiling' | 'opening_atm' | 'other';
 }
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!(await checkBot(req))) {
     return res.status(403).json({ error: 'bot check failed' });
   }
 
   const daysRaw = Number.parseInt(String(req.query.days ?? '30'), 10);
-  const days = Math.min(Math.max(Number.isFinite(daysRaw) ? daysRaw : 30, 1), 180);
+  const days = Math.min(
+    Math.max(Number.isFinite(daysRaw) ? daysRaw : 30, 1),
+    180,
+  );
 
   // Optional date param for backtesting: which day's blocks to show in
   // the "today" slot. Defaults to today; format YYYY-MM-DD.
@@ -180,8 +180,9 @@ export default async function handler(
     const targetDate = dateFilter ?? null;
     const minStart = startCtMin ?? 0;
     const minEnd = endCtMin ?? 24 * 60 - 1;
-    const today = (targetDate
-      ? await sql`
+    const today = (
+      targetDate
+        ? await sql`
           SELECT
             executed_at::TEXT AS executed_at,
             option_chain_id, strike, option_type, dte, size, premium,
@@ -197,7 +198,7 @@ export default async function handler(
           ORDER BY executed_at DESC
           LIMIT 500
         `
-      : await sql`
+        : await sql`
           SELECT
             executed_at::TEXT AS executed_at,
             option_chain_id, strike, option_type, dte, size, premium,
@@ -212,7 +213,8 @@ export default async function handler(
             ) BETWEEN ${minStart} AND ${minEnd}
           ORDER BY executed_at DESC
           LIMIT 500
-        `) as InstitutionalBlockRow[];
+        `
+    ) as InstitutionalBlockRow[];
 
     res.status(200).json({
       days: summaries,

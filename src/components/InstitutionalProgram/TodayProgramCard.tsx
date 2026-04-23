@@ -9,7 +9,15 @@ interface Props {
   blocks: InstitutionalBlock[];
 }
 
-type SortKey = 'time' | 'strike' | 'type' | 'dte' | 'size' | 'premium' | 'side' | 'cond';
+type SortKey =
+  | 'time'
+  | 'strike'
+  | 'type'
+  | 'dte'
+  | 'size'
+  | 'premium'
+  | 'side'
+  | 'cond';
 type SortDir = 'asc' | 'desc';
 
 /** Neon DOUBLE PRECISION comes through as a string; cast for both
@@ -24,14 +32,22 @@ function formatPremium(premium: number | string): string {
 
 function blockSortKey(b: InstitutionalBlock, k: SortKey): number | string {
   switch (k) {
-    case 'time': return new Date(b.executed_at).getTime();
-    case 'strike': return Number(b.strike);
-    case 'type': return b.option_type;
-    case 'dte': return Number(b.dte);
-    case 'size': return Number(b.size);
-    case 'premium': return Number(b.premium);
-    case 'side': return b.side ?? '';
-    case 'cond': return b.condition;
+    case 'time':
+      return new Date(b.executed_at).getTime();
+    case 'strike':
+      return Number(b.strike);
+    case 'type':
+      return b.option_type;
+    case 'dte':
+      return Number(b.dte);
+    case 'size':
+      return Number(b.size);
+    case 'premium':
+      return Number(b.premium);
+    case 'side':
+      return b.side ?? '';
+    case 'cond':
+      return b.condition;
   }
 }
 
@@ -76,10 +92,7 @@ export function TodayProgramCard({ today, blocks }: Props) {
         }
       />
       <Metric label="Contracts" value={totalSizeNum.toLocaleString()} />
-      <Metric
-        label="Premium"
-        value={formatPremium(totalPremiumNum)}
-      />
+      <Metric label="Premium" value={formatPremium(totalPremiumNum)} />
       <Metric label="Spot" value={spotNum.toFixed(2)} />
       <Metric
         label="Ceiling above spot"
@@ -126,14 +139,67 @@ function SortableBlockTable({ blocks }: { blocks: InstitutionalBlock[] }) {
       <table className="text-text w-full text-xs">
         <thead>
           <tr className="border-edge text-muted border-b">
-            <SortTh label="Time (CT)" k="time" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="left" />
-            <SortTh label="Strike"    k="strike" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="right" />
-            <SortTh label="Type"      k="type" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-            <SortTh label="DTE"       k="dte" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="right" />
-            <SortTh label="Size"      k="size" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="right" />
-            <SortTh label="Premium"   k="premium" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="right" />
-            <SortTh label="Side"      k="side" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-            <SortTh label="Cond"      k="cond" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+            <SortTh
+              label="Time (CT)"
+              k="time"
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onSort={handleSort}
+              align="left"
+            />
+            <SortTh
+              label="Strike"
+              k="strike"
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onSort={handleSort}
+              align="right"
+            />
+            <SortTh
+              label="Type"
+              k="type"
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onSort={handleSort}
+            />
+            <SortTh
+              label="DTE"
+              k="dte"
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onSort={handleSort}
+              align="right"
+            />
+            <SortTh
+              label="Size"
+              k="size"
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onSort={handleSort}
+              align="right"
+            />
+            <SortTh
+              label="Premium"
+              k="premium"
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onSort={handleSort}
+              align="right"
+            />
+            <SortTh
+              label="Side"
+              k="side"
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onSort={handleSort}
+            />
+            <SortTh
+              label="Cond"
+              k="cond"
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onSort={handleSort}
+            />
           </tr>
         </thead>
         <tbody>
@@ -176,7 +242,12 @@ function SortableBlockTable({ blocks }: { blocks: InstitutionalBlock[] }) {
 }
 
 function SortTh({
-  label, k, sortKey, sortDir, onSort, align = 'left',
+  label,
+  k,
+  sortKey,
+  sortDir,
+  onSort,
+  align = 'left',
 }: {
   label: string;
   k: SortKey;
@@ -191,9 +262,12 @@ function SortTh({
     <th
       className={`cursor-pointer p-1 select-none ${align === 'right' ? 'text-right' : 'text-left'} ${active ? 'text-text' : ''}`}
       onClick={() => onSort(k)}
-      aria-sort={active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+      aria-sort={
+        active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'
+      }
     >
-      {label}<span className="text-muted">{arrow}</span>
+      {label}
+      <span className="text-muted">{arrow}</span>
     </th>
   );
 }
@@ -216,7 +290,7 @@ function Metric({
   }[tone];
   return (
     <div className="border-edge bg-surface-alt rounded-lg border p-3">
-      <div className="text-xs uppercase text-slate-500">{label}</div>
+      <div className="text-xs text-slate-500 uppercase">{label}</div>
       <div className={`text-lg font-semibold ${toneClass}`}>{value}</div>
     </div>
   );

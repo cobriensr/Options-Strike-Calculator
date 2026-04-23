@@ -18,8 +18,8 @@ export function CeilingChart({ days }: Props) {
   if (valid.length < 2) {
     return (
       <div className="text-xs text-slate-500">
-        Ceiling chart unavailable — need at least 2 days of ceiling-track
-        blocks (have {valid.length}).
+        Ceiling chart unavailable — need at least 2 days of ceiling-track blocks
+        (have {valid.length}).
       </div>
     );
   }
@@ -38,10 +38,13 @@ export function CeilingChart({ days }: Props) {
 
   const toX = (i: number) =>
     padL + (i / Math.max(valid.length - 1, 1)) * (W - padL - padR);
-  const toY = (v: number) =>
-    padT + (1 - (v - min) / range) * (H - padT - padB);
+  const toY = (v: number) => padT + (1 - (v - min) / range) * (H - padT - padB);
 
-  const points = valid.map((d, i) => ({ x: toX(i), y: toY(d.ceiling_pct_above_spot), d }));
+  const points = valid.map((d, i) => ({
+    x: toX(i),
+    y: toY(d.ceiling_pct_above_spot),
+    d,
+  }));
   const path = points
     .map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`)
     .join(' ');
@@ -59,9 +62,12 @@ export function CeilingChart({ days }: Props) {
       className="border-edge bg-surface-alt rounded-lg border p-3"
       aria-labelledby="ceiling-chart-caption"
     >
-      <figcaption id="ceiling-chart-caption" className="mb-2 text-xs text-slate-400">
-        Ceiling % above spot (avg program strike ÷ spot − 1) — over {valid.length}{' '}
-        trading days
+      <figcaption
+        id="ceiling-chart-caption"
+        className="mb-2 text-xs text-slate-400"
+      >
+        Ceiling % above spot (avg program strike ÷ spot − 1) — over{' '}
+        {valid.length} trading days
       </figcaption>
       <svg
         viewBox={`0 0 ${W} ${H}`}

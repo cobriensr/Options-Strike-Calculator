@@ -33,21 +33,19 @@ interface StrikeCell {
   latest_expiry: string;
 }
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!(await checkBot(req))) {
     return res.status(403).json({ error: 'bot check failed' });
   }
 
   const daysRaw = Number.parseInt(String(req.query.days ?? '60'), 10);
-  const days = Math.min(Math.max(Number.isFinite(daysRaw) ? daysRaw : 60, 1), 180);
+  const days = Math.min(
+    Math.max(Number.isFinite(daysRaw) ? daysRaw : 60, 1),
+    180,
+  );
   const trackRaw = String(req.query.track ?? 'ceiling');
   const track =
-    trackRaw === 'opening_atm' || trackRaw === 'ceiling'
-      ? trackRaw
-      : 'ceiling';
+    trackRaw === 'opening_atm' || trackRaw === 'ceiling' ? trackRaw : 'ceiling';
 
   try {
     const sql = getDb();

@@ -93,7 +93,7 @@ describe('classifyTrack', () => {
 
   it('classifies negative moneyness correctly (OTM put)', () => {
     // 260 DTE put 10% below spot — should still be 'ceiling' (|mny| = 0.10)
-    expect(classifyTrack(260, -0.10, '2026-04-23T15:00:00Z')).toBe('ceiling');
+    expect(classifyTrack(260, -0.1, '2026-04-23T15:00:00Z')).toBe('ceiling');
   });
 });
 

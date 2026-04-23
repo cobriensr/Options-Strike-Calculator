@@ -63,8 +63,8 @@ export function OpeningBlocksCard({ blocks, dateLabel = 'today' }: Props) {
     return (
       <div className="border-edge bg-surface-alt text-muted rounded-lg border p-3 text-sm">
         No opening-hour institutional blocks detected for{' '}
-        {dateLabel === 'today' ? 'today' : dateLabel} (08:30-09:30 CT,
-        near-ATM, mfsl/cbmo/slft).
+        {dateLabel === 'today' ? 'today' : dateLabel} (08:30-09:30 CT, near-ATM,
+        mfsl/cbmo/slft).
       </div>
     );
   }
@@ -83,22 +83,76 @@ export function OpeningBlocksCard({ blocks, dateLabel = 'today' }: Props) {
       <div className="mb-2 flex items-baseline justify-between">
         <h3 className="text-text text-sm font-semibold">{headerLabel}</h3>
         <span className="text-muted text-xs">
-          {openingBlocks.length} block{openingBlocks.length === 1 ? '' : 's'}{' '}
-          — 08:30-09:30 CT, near-ATM
+          {openingBlocks.length} block{openingBlocks.length === 1 ? '' : 's'} —
+          08:30-09:30 CT, near-ATM
         </span>
       </div>
       <div className="overflow-x-auto">
         <table className="text-text w-full text-xs">
           <thead>
             <tr className="border-edge text-muted border-b">
-              <Th label="Time (CT)" k="time" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="left" />
-              <Th label="Strike"    k="strike" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="right" />
-              <Th label="Type"      k="type" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-              <Th label="DTE"       k="dte" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="right" />
-              <Th label="Size"      k="size" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="right" />
-              <Th label="Premium"   k="premium" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="right" />
-              <Th label="Mny"       k="mny" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} align="right" />
-              <Th label="Cond"      k="cond" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+              <Th
+                label="Time (CT)"
+                k="time"
+                sortKey={sortKey}
+                sortDir={sortDir}
+                onSort={handleSort}
+                align="left"
+              />
+              <Th
+                label="Strike"
+                k="strike"
+                sortKey={sortKey}
+                sortDir={sortDir}
+                onSort={handleSort}
+                align="right"
+              />
+              <Th
+                label="Type"
+                k="type"
+                sortKey={sortKey}
+                sortDir={sortDir}
+                onSort={handleSort}
+              />
+              <Th
+                label="DTE"
+                k="dte"
+                sortKey={sortKey}
+                sortDir={sortDir}
+                onSort={handleSort}
+                align="right"
+              />
+              <Th
+                label="Size"
+                k="size"
+                sortKey={sortKey}
+                sortDir={sortDir}
+                onSort={handleSort}
+                align="right"
+              />
+              <Th
+                label="Premium"
+                k="premium"
+                sortKey={sortKey}
+                sortDir={sortDir}
+                onSort={handleSort}
+                align="right"
+              />
+              <Th
+                label="Mny"
+                k="mny"
+                sortKey={sortKey}
+                sortDir={sortDir}
+                onSort={handleSort}
+                align="right"
+              />
+              <Th
+                label="Cond"
+                k="cond"
+                sortKey={sortKey}
+                sortDir={sortDir}
+                onSort={handleSort}
+              />
             </tr>
           </thead>
           <tbody>
@@ -166,7 +220,9 @@ function Th({
       className={`cursor-pointer p-1 select-none ${align === 'right' ? 'text-right' : 'text-left'} ${active ? 'text-text' : ''}`}
       onClick={() => onSort(k)}
       role="button"
-      aria-sort={active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+      aria-sort={
+        active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'
+      }
     >
       {label}
       <span className="text-muted">{arrow}</span>

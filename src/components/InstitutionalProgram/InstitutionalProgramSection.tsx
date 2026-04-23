@@ -49,12 +49,16 @@ export function InstitutionalProgramSection() {
 
   let body;
   if (loading) {
-    body = <div className="text-muted text-sm">Loading institutional program…</div>;
+    body = (
+      <div className="text-muted text-sm">Loading institutional program…</div>
+    );
   } else if (error || !data) {
     body = (
       <div className="text-sm text-red-400">
         Program tracker unavailable
-        {error ? <span className="text-red-500"> ({error.message})</span> : null}
+        {error ? (
+          <span className="text-red-500"> ({error.message})</span>
+        ) : null}
       </div>
     );
   } else {

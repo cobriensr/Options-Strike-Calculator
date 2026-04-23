@@ -154,10 +154,7 @@ async function fetchContractFlow(
 
 // ── Main handler ────────────────────────────────────────────
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   const guard = cronGuard(req, res);
   if (!guard) return;
   const { apiKey } = guard;
@@ -216,10 +213,7 @@ export default async function handler(
         // Enforce the pass's moneyness window now that we have spot.
         // Tolerate a bit of slack because the contract list is slightly
         // stale.
-        if (
-          Math.abs(mny) < pass.mnyMin ||
-          Math.abs(mny) > pass.mnyMax + 0.02
-        ) {
+        if (Math.abs(mny) < pass.mnyMin || Math.abs(mny) > pass.mnyMax + 0.02) {
           continue;
         }
 

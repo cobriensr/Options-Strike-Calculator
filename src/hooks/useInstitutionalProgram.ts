@@ -119,8 +119,12 @@ export function useStrikeHeatmap(
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetch(`/api/institutional-program/strike-heatmap?days=${days}&track=${track}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+    fetch(
+      `/api/institutional-program/strike-heatmap?days=${days}&track=${track}`,
+    )
+      .then((r) =>
+        r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)),
+      )
       .then((json) => {
         if (!cancelled) setData(json as StrikeHeatmapData);
       })
