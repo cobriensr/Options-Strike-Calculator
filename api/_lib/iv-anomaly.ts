@@ -31,6 +31,7 @@ import {
   RESOLVE_FAST_PEAK_MINS,
 } from './constants.js';
 import { blackScholesPrice } from '../../src/utils/black-scholes.js';
+import { getETCloseUtcIso } from '../../src/utils/timezone.js';
 import type { ContextSnapshot } from './anomaly-context.js';
 
 // ── Public types ──────────────────────────────────────────────
@@ -425,7 +426,12 @@ export function resolveAnomaly(
 
   // Time-to-expiry helper (years, 4pm ET close on expiry date as
   // settlement reference — matches fetch-strike-iv.ts convention).
-  const expiryMs = Date.parse(`${anomaly.expiry}T21:00:00Z`);
+  // getETCloseUtcIso is DST-aware; fall back to 21:00 UTC (EST) only if
+  // the expiry string is malformed, which would already be filtered
+  // upstream. The fallback never fires on valid ET calendar dates.
+  const expiryCloseIso =
+    getETCloseUtcIso(anomaly.expiry) ?? `${anomaly.expiry}T21:00:00Z`;
+  const expiryMs = Date.parse(expiryCloseIso);
   const YEAR_MS = 365 * 24 * 3600 * 1000;
   const tAt = (ms: number): number => Math.max(expiryMs - ms, 60_000) / YEAR_MS;
 

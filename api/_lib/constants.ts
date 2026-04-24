@@ -137,13 +137,3 @@ export const CATALYST_RANGE_BREAK_DAYS = 5;
  * Matches the `dark_pool_levels.total_premium` row shape (already dollar-denominated).
  */
 export const CATALYST_LARGE_DARK_NOTIONAL = 5_000_000;
-
-/**
- * Near-close anomaly cutoff (minutes from 4pm ET close).
- *
- * Anomalies detected within this window have too little follow-on data to score
- * reliably. The resolve cron still writes a resolution_outcome row for ML
- * completeness, but marks `outcome_class = 'flat'` when |notional_1c_pnl| can't
- * clear the flat threshold on the available tape.
- */
-export const RESOLVE_NEAR_CLOSE_MINS = 10;

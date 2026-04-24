@@ -96,20 +96,36 @@ export function useIVAnomalies(
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const consecutiveFailsRef = useRef(0);
+  // Fail streak is STATE (not a ref) so the polling effect re-runs when
+  // it crosses the backoff threshold. Mirrored on a ref so the captured
+  // `refresh` closure can mutate it without being re-created.
+  const [failStreak, setFailStreak] = useState(0);
+  const failStreakRef = useRef(0);
   const knownIdsRef = useRef<Set<number>>(new Set());
   const primedRef = useRef(false);
+  // Flipped on unmount so late-arriving fetch responses skip setState.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const refresh = useCallback(() => {
     if (!enabled) return;
     setLoading(true);
     setError(null);
     fetchAnomalies().then((result) => {
+      if (!mountedRef.current) return;
       if (result.networkError) {
-        consecutiveFailsRef.current += 1;
+        const next = failStreakRef.current + 1;
+        failStreakRef.current = next;
+        setFailStreak(next);
         setError(result.networkError);
-      } else {
-        consecutiveFailsRef.current = 0;
+      } else if (failStreakRef.current !== 0) {
+        failStreakRef.current = 0;
+        setFailStreak(0);
       }
 
       if (result.data) {
@@ -152,12 +168,14 @@ export function useIVAnomalies(
   }, [enabled, refresh]);
 
   // Poll on interval while the market is open. 2× backoff after 3+ fails.
+  // Depends on `failStreak` so the effect re-runs and the doubled
+  // interval actually takes effect when the threshold is crossed.
   useEffect(() => {
     if (!enabled || !marketOpen) return;
-    const backoff = consecutiveFailsRef.current >= 3 ? 2 : 1;
+    const backoff = failStreak >= 3 ? 2 : 1;
     const interval = setInterval(refresh, POLL_INTERVALS.CHAIN * backoff);
     return () => clearInterval(interval);
-  }, [enabled, marketOpen, refresh]);
+  }, [enabled, marketOpen, refresh, failStreak]);
 
   return { anomalies, loading, error, refresh };
 }

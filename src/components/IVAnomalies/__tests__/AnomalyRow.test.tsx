@@ -109,4 +109,65 @@ describe('AnomalyRow', () => {
     await user.click(screen.getByText(/Context snapshot/));
     expect(screen.getByText(/Dark prints omitted/)).toBeInTheDocument();
   });
+
+  it('hides the resolution section when resolutionOutcome is null', async () => {
+    const user = userEvent.setup();
+    render(<AnomalyRow anomaly={makeRow({ resolutionOutcome: null })} />);
+    await user.click(
+      screen.getByRole('button', {
+        name: /Toggle details for SPX 7135 put anomaly/,
+      }),
+    );
+    expect(screen.queryByLabelText('End-of-day resolution')).toBeNull();
+  });
+
+  it('renders the resolution section with outcome, P&L, and catalyst narrative', async () => {
+    const user = userEvent.setup();
+    render(
+      <AnomalyRow
+        anomaly={makeRow({
+          resolutionOutcome: {
+            outcome_class: 'winner_fast',
+            notional_1c_pnl: 142.5,
+            iv_at_detect: 0.225,
+            iv_at_close: 0.265,
+            mins_to_peak: 18,
+            spot_at_detect: 7140.5,
+            spot_min: 7130,
+            spot_max: 7145,
+            spot_at_close: 7132,
+            iv_peak: 0.28,
+            catalysts: {
+              likely_catalyst: 'NQ led SPX by 2 mins (ρ=0.48)',
+              leading_assets: [
+                { ticker: 'NQ', correlation: 0.48, lag_mins: 2 },
+                { ticker: 'ES', correlation: 0.42, lag_mins: 1 },
+                { ticker: 'RTY', correlation: -0.1, lag_mins: 5 },
+                { ticker: 'ZN', correlation: 0.05, lag_mins: 3 },
+              ],
+              large_dark_prints: [],
+              range_breaks: [],
+              flow_alerts_in_window: [],
+            },
+          },
+        })}
+      />,
+    );
+    await user.click(
+      screen.getByRole('button', {
+        name: /Toggle details for SPX 7135 put anomaly/,
+      }),
+    );
+    const section = screen.getByLabelText('End-of-day resolution');
+    expect(section).toBeInTheDocument();
+    expect(section.textContent).toContain('winner_fast');
+    expect(section.textContent).toContain('$143'); // rounded 142.5 → 143
+    expect(section.textContent).toContain('NQ led SPX by 2 mins');
+    // Top-3 leading assets by |correlation|: NQ (0.48), ES (0.42), RTY (-0.1)
+    expect(section.textContent).toContain('NQ');
+    expect(section.textContent).toContain('ES');
+    expect(section.textContent).toContain('RTY');
+    // ZN has the smallest |correlation| and should be excluded.
+    expect(section.textContent).not.toContain('ZN');
+  });
 });

@@ -41,7 +41,7 @@ import {
   type FlowAlertRow,
 } from '../_lib/anomaly-catalyst.js';
 import { CATALYST_WINDOW_MINS } from '../_lib/constants.js';
-import { getETDateStr } from '../../src/utils/timezone.js';
+import { getETDateStr, getETCloseUtcIso } from '../../src/utils/timezone.js';
 
 // ── Row shapes ──────────────────────────────────────────────
 
@@ -359,10 +359,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const sql = getDb();
   // Use ET-local date to match iv_anomalies.ts being stored with its
   // native TIMESTAMPTZ and to respect DST boundaries. 4pm ET = 21:00 UTC
-  // during EST, 20:00 UTC during EDT — resolve cron runs at 21:05 UTC so
-  // we're always ≥5 min past close regardless of DST.
+  // during EST, 20:00 UTC during EDT — getETCloseUtcIso resolves the
+  // actual UTC instant for the given ET date. Resolve cron runs at
+  // 21:05 UTC so we're always ≥5 min past close during EST and ≥1h5min
+  // past during EDT.
   const today = getETDateStr(new Date());
-  const closeIso = `${today}T21:00:00Z`;
+  const closeIso = getETCloseUtcIso(today);
+  if (!closeIso) {
+    logger.error({ today }, 'resolve-iv-anomalies: invalid ET date');
+    return res.status(500).json({
+      error: 'invalid_et_date',
+      today,
+    });
+  }
 
   try {
     const unresolved = await loadUnresolvedAnomalies(sql, today);

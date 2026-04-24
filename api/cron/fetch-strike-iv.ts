@@ -40,6 +40,7 @@ import {
   type StrikeIVTicker,
 } from '../_lib/constants.js';
 import { impliedVolatility } from '../../src/utils/black-scholes.js';
+import { getETCloseUtcIso } from '../../src/utils/timezone.js';
 import {
   detectAnomalies,
   classifyFlowPhase,
@@ -205,8 +206,8 @@ function extractRows(
       if (!allowedExpiries.has(expiry)) continue;
 
       const strikesMap = map[expKey]!;
-      for (const strikeKey of Object.keys(strikesMap)) {
-        const contracts = strikesMap[strikeKey]!;
+      for (const rawStrikeKey of Object.keys(strikesMap)) {
+        const contracts = strikesMap[rawStrikeKey]!;
         if (contracts.length === 0) continue;
         const c = contracts[0]!;
 
@@ -232,12 +233,15 @@ function extractRows(
         const mid = (bid + ask) / 2;
         if (mid <= 0) continue;
 
-        // Time-to-expiry in YEARS. Use end-of-day UTC on expiry as proxy for
-        // the 4:00 PM ET settlement — near enough for IV inversion at the
-        // ±3% OTM band where vega is well-behaved. (For a 0DTE snapshot
-        // at 10:00 ET this gives T ≈ 6h/8760h ≈ 0.00068 — the solver
-        // handles this regime cleanly down to its tail guards.)
-        const expiryMs = Date.parse(`${expiry}T21:00:00Z`);
+        // Time-to-expiry in YEARS. Use 4:00 PM ET settlement on the expiry
+        // date — this is DST-aware (20:00 UTC during EDT, 21:00 UTC during
+        // EST), matching the actual cash-session close. Near enough for
+        // IV inversion at the ±3% OTM band where vega is well-behaved.
+        // (For a 0DTE snapshot at 10:00 ET this gives T ≈ 6h/8760h ≈ 0.00068
+        // — the solver handles this regime cleanly down to its tail guards.)
+        const expiryCloseIso = getETCloseUtcIso(expiry);
+        if (!expiryCloseIso) continue;
+        const expiryMs = Date.parse(expiryCloseIso);
         if (!Number.isFinite(expiryMs)) continue;
         const T = Math.max(expiryMs - nowMs, 60_000) / (365 * 24 * 3600 * 1000);
 

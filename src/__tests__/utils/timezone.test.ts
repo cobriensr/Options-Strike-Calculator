@@ -9,6 +9,7 @@ import {
   getCTToETOffsetMinutes,
   convertCTToET,
   getETMarketOpenUtcIso,
+  getETCloseUtcIso,
 } from '../../utils/timezone';
 
 describe('timezone utilities', () => {
@@ -255,6 +256,38 @@ describe('timezone utilities', () => {
       expect(getETMarketOpenUtcIso('not-a-date')).toBeNull();
       expect(getETMarketOpenUtcIso('2026-13-01')).toBeNull();
       expect(getETMarketOpenUtcIso('')).toBeNull();
+    });
+  });
+
+  describe('getETCloseUtcIso', () => {
+    it('returns 20:00Z for an EDT date (summer)', () => {
+      // 2026-04-23 is after the 2026-03-08 spring-forward → EDT (UTC-4).
+      // 4:00 PM ET + 4h = 20:00 UTC.
+      expect(getETCloseUtcIso('2026-04-23')).toBe('2026-04-23T20:00:00.000Z');
+    });
+
+    it('returns 21:00Z for an EST date (winter)', () => {
+      // 2026-01-15 is between the 2025 fall-back and 2026 spring-forward
+      // → EST (UTC-5). 4:00 PM ET + 5h = 21:00 UTC.
+      expect(getETCloseUtcIso('2026-01-15')).toBe('2026-01-15T21:00:00.000Z');
+    });
+
+    it('handles the spring-forward boundary (second Sunday of March)', () => {
+      // 2026 DST starts 2026-03-08. The 7th is still EST; the 8th is EDT.
+      expect(getETCloseUtcIso('2026-03-07')).toBe('2026-03-07T21:00:00.000Z');
+      expect(getETCloseUtcIso('2026-03-08')).toBe('2026-03-08T20:00:00.000Z');
+    });
+
+    it('handles the fall-back boundary (first Sunday of November)', () => {
+      // 2026 DST ends 2026-11-01. Oct 31 is still EDT; Nov 1 is EST.
+      expect(getETCloseUtcIso('2026-10-31')).toBe('2026-10-31T20:00:00.000Z');
+      expect(getETCloseUtcIso('2026-11-01')).toBe('2026-11-01T21:00:00.000Z');
+    });
+
+    it('returns null for malformed input', () => {
+      expect(getETCloseUtcIso('not-a-date')).toBeNull();
+      expect(getETCloseUtcIso('2026-13-01')).toBeNull();
+      expect(getETCloseUtcIso('')).toBeNull();
     });
   });
 });

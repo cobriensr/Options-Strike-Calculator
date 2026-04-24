@@ -291,4 +291,68 @@ describe('useChainData', () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('does not setState after unmount when a fetch resolves late', async () => {
+    vi.useRealTimers();
+    let resolveFetch: (v: unknown) => void = () => {};
+    globalThis.fetch = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveFetch = (body: unknown) =>
+            resolve({
+              ok: true,
+              status: 200,
+              json: () => Promise.resolve(body),
+            });
+        }),
+    ) as unknown as typeof fetch;
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { unmount } = renderHook(() => useChainData(true, false));
+    unmount();
+    resolveFetch(mockChain);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const didWarn = warn.mock.calls.some((args) =>
+      String(args[0] ?? '').includes('unmounted'),
+    );
+    expect(didWarn).toBe(false);
+    warn.mockRestore();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  it('doubles the polling interval after 3 consecutive fails', async () => {
+    // All fetches fail → failStreak climbs past the 3-fail threshold.
+    globalThis.fetch = vi.fn(() =>
+      Promise.reject(new Error('always fail')),
+    ) as unknown as typeof fetch;
+    const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
+
+    renderHook(() => useChainData(true, true));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+
+    // After the 3rd fail failStreak === 3, so the polling effect re-runs
+    // with a 2× interval (120_000 ms). Advancing 60s should NOT fire
+    // another fetch; advancing the full 2× interval should.
+    const callsAfter3 = fetchMock.mock.calls.length;
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(fetchMock.mock.calls.length).toBe(callsAfter3);
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(callsAfter3),
+    );
+  });
 });

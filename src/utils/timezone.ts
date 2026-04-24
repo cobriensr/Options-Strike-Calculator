@@ -163,6 +163,34 @@ const ET_OFFSET_FORMATTER = new Intl.DateTimeFormat('en-US', {
 });
 
 export function getETMarketOpenUtcIso(dateStr: string): string | null {
+  return etWallClockToUtcIso(dateStr, 9 * 60 + 30);
+}
+
+/**
+ * Convert a YYYY-MM-DD ET calendar date into the UTC ISO timestamp for
+ * 4:00 PM ET (cash-session close) on that date. Handles both EDT and EST
+ * so callers don't have to hardcode "T21:00:00Z" (EST-only) — during EDT
+ * the actual close is 20:00 UTC.
+ *
+ * Example: '2026-04-23' (EDT) -> '2026-04-23T20:00:00.000Z'
+ *          '2026-01-15' (EST) -> '2026-01-15T21:00:00.000Z'
+ *
+ * Returns `null` when the input is malformed.
+ */
+export function getETCloseUtcIso(dateStr: string): string | null {
+  return etWallClockToUtcIso(dateStr, 16 * 60);
+}
+
+/**
+ * Shared helper: convert an ET wall-clock minute-of-day on a given ET
+ * calendar date into the corresponding UTC ISO string. Probes ET's UTC
+ * offset at noon via Intl.DateTimeFormat, so the result is correct across
+ * both DST phases and any future TZ rule changes.
+ */
+function etWallClockToUtcIso(
+  dateStr: string,
+  etMinutesPastMidnight: number,
+): string | null {
   const dateMatch = DATE_STR_RE.exec(dateStr);
   if (!dateMatch) return null;
   const year = Number(dateMatch[1]);
@@ -197,10 +225,9 @@ export function getETMarketOpenUtcIso(dateStr: string): string | null {
   // ET + 4 hours. 9:30 AM ET + 4h = 13:30 UTC.
   const signedOffsetMin =
     (offsetHours < 0 ? -1 : 1) * (Math.abs(offsetHours) * 60 + offsetMinutes);
-  // 9:30 AM ET = 9*60 + 30 = 570 minutes past ET-midnight.
   // UTC minutes past UTC-midnight = ET minutes - signedOffsetMin.
-  // (When offset is -4h = -240, UTC = 570 - (-240) = 810 = 13:30.)
-  const utcTotalMin = 570 - signedOffsetMin;
+  // (When offset is -4h = -240, 570 ET-min -> 570 - (-240) = 810 = 13:30 UTC.)
+  const utcTotalMin = etMinutesPastMidnight - signedOffsetMin;
   const utcHour = Math.floor(utcTotalMin / 60);
   const utcMinute = utcTotalMin % 60;
   // Construct the UTC ISO string directly (avoids Date's local-TZ trap).

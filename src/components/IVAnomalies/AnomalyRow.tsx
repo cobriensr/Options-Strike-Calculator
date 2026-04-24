@@ -88,6 +88,8 @@ export function AnomalyRow({
             isSpxScoped={isSpxScoped}
           />
 
+          <ResolutionOutcomeView outcome={anomaly.resolutionOutcome} />
+
           <div className="mt-4">
             <StrikeIVChart
               ticker={anomaly.ticker as 'SPX' | 'SPY' | 'QQQ'}
@@ -207,6 +209,199 @@ function ContextSnapshotView({
         {JSON.stringify(snapshot, null, 2)}
       </pre>
     </details>
+  );
+}
+
+type OutcomeClass = 'winner_fast' | 'winner_slow' | 'flat' | 'loser';
+
+interface ParsedResolution {
+  outcomeClass: OutcomeClass | null;
+  notional1cPnl: number | null;
+  ivAtDetect: number | null;
+  ivAtClose: number | null;
+  minsToPeak: number | null;
+  likelyCatalyst: string | null;
+  topLeadingAssets: Array<{
+    ticker: string;
+    correlation: number;
+    lagMins: number;
+  }>;
+}
+
+function isValidOutcomeClass(v: unknown): v is OutcomeClass {
+  return (
+    v === 'winner_fast' || v === 'winner_slow' || v === 'flat' || v === 'loser'
+  );
+}
+
+function parseResolution(raw: unknown): ParsedResolution | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+
+  const outcomeClass = isValidOutcomeClass(r.outcome_class)
+    ? r.outcome_class
+    : null;
+  const notional1cPnl =
+    typeof r.notional_1c_pnl === 'number' && Number.isFinite(r.notional_1c_pnl)
+      ? r.notional_1c_pnl
+      : null;
+  const ivAtDetect =
+    typeof r.iv_at_detect === 'number' && Number.isFinite(r.iv_at_detect)
+      ? r.iv_at_detect
+      : null;
+  const ivAtClose =
+    typeof r.iv_at_close === 'number' && Number.isFinite(r.iv_at_close)
+      ? r.iv_at_close
+      : null;
+  const minsToPeak =
+    typeof r.mins_to_peak === 'number' && Number.isFinite(r.mins_to_peak)
+      ? r.mins_to_peak
+      : null;
+
+  const catalysts =
+    r.catalysts && typeof r.catalysts === 'object'
+      ? (r.catalysts as Record<string, unknown>)
+      : null;
+  const likelyCatalyst =
+    typeof catalysts?.likely_catalyst === 'string'
+      ? catalysts.likely_catalyst
+      : null;
+
+  const leadingAssetsRaw = Array.isArray(catalysts?.leading_assets)
+    ? catalysts.leading_assets
+    : [];
+  const topLeadingAssets = leadingAssetsRaw
+    .filter((x): x is Record<string, unknown> => !!x && typeof x === 'object')
+    .map((x) => ({
+      ticker: typeof x.ticker === 'string' ? x.ticker : '',
+      correlation:
+        typeof x.correlation === 'number' && Number.isFinite(x.correlation)
+          ? x.correlation
+          : 0,
+      lagMins:
+        typeof x.lag_mins === 'number' && Number.isFinite(x.lag_mins)
+          ? x.lag_mins
+          : 0,
+    }))
+    .filter((x) => x.ticker !== '')
+    .sort((a, b) => Math.abs(b.correlation) - Math.abs(a.correlation))
+    .slice(0, 3);
+
+  // Treat an otherwise-empty resolution object (no outcome_class, no P&L,
+  // no catalyst narrative) as "not yet resolved" — render nothing.
+  if (outcomeClass == null && notional1cPnl == null && likelyCatalyst == null) {
+    return null;
+  }
+
+  return {
+    outcomeClass,
+    notional1cPnl,
+    ivAtDetect,
+    ivAtClose,
+    minsToPeak,
+    likelyCatalyst,
+    topLeadingAssets,
+  };
+}
+
+function OutcomePill({
+  outcomeClass,
+}: {
+  readonly outcomeClass: OutcomeClass;
+}) {
+  const classes: Record<OutcomeClass, string> = {
+    winner_fast: 'bg-green-500/20 text-green-300',
+    winner_slow: 'bg-emerald-500/20 text-emerald-300',
+    flat: 'bg-slate-500/20 text-slate-300',
+    loser: 'bg-rose-500/20 text-rose-300',
+  };
+  return (
+    <span
+      className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold ${classes[outcomeClass]}`}
+    >
+      {outcomeClass}
+    </span>
+  );
+}
+
+function formatPnl(v: number): string {
+  const sign = v >= 0 ? '+' : '−';
+  const abs = Math.abs(v);
+  return `${sign}$${abs.toFixed(0)}`;
+}
+
+function ResolutionOutcomeView({ outcome }: { readonly outcome: unknown }) {
+  const parsed = parseResolution(outcome);
+  // Not yet resolved (EOD cron hasn't scored this anomaly yet) → hide.
+  if (!parsed) return null;
+
+  const ivDelta =
+    parsed.ivAtDetect != null && parsed.ivAtClose != null
+      ? parsed.ivAtClose - parsed.ivAtDetect
+      : null;
+  const ivDeltaLabel =
+    ivDelta != null
+      ? ` (${ivDelta >= 0 ? '+' : ''}${(ivDelta * 100).toFixed(1)}pt)`
+      : '';
+  const ivDetectPct =
+    parsed.ivAtDetect != null ? (parsed.ivAtDetect * 100).toFixed(1) : '';
+  const ivClosePct =
+    parsed.ivAtClose != null ? (parsed.ivAtClose * 100).toFixed(1) : '';
+  const ivDetectToCloseLabel = `${ivDetectPct}% → ${ivClosePct}%${ivDeltaLabel}`;
+
+  return (
+    <section
+      aria-label="End-of-day resolution"
+      className="border-edge mt-4 border-t pt-3"
+    >
+      <div className="mb-2 flex items-center gap-2">
+        <span className="text-muted text-[11px] font-semibold tracking-wide uppercase">
+          Resolution (EOD)
+        </span>
+        {parsed.outcomeClass && (
+          <OutcomePill outcomeClass={parsed.outcomeClass} />
+        )}
+      </div>
+
+      <div className="mb-2 grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-[11px] sm:grid-cols-4">
+        {parsed.notional1cPnl != null && (
+          <Metric
+            label="1-contract P&L"
+            value={formatPnl(parsed.notional1cPnl)}
+          />
+        )}
+        {parsed.ivAtDetect != null && parsed.ivAtClose != null && (
+          <Metric label="IV detect → close" value={ivDetectToCloseLabel} />
+        )}
+        {parsed.minsToPeak != null && (
+          <Metric label="mins to peak" value={parsed.minsToPeak.toFixed(0)} />
+        )}
+      </div>
+
+      {parsed.likelyCatalyst && (
+        <p className="text-primary mb-2 text-[11px] italic">
+          {parsed.likelyCatalyst}
+        </p>
+      )}
+
+      {parsed.topLeadingAssets.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 text-[10px]">
+          <span className="text-muted font-mono uppercase">leading:</span>
+          {parsed.topLeadingAssets.map((a) => (
+            <span
+              key={a.ticker}
+              className="bg-surface border-edge rounded border px-1.5 py-0.5 font-mono"
+            >
+              <span className="text-primary">{a.ticker}</span>
+              <span className="text-muted">
+                {' '}
+                ρ={a.correlation.toFixed(2)} lag={a.lagMins}m
+              </span>
+            </span>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 

@@ -160,4 +160,79 @@ describe('useIVAnomalies — dedup + alert semantics', () => {
     await waitFor(() => expect(result.current.error).not.toBeNull());
     expect(result.current.error).toContain('boom');
   });
+
+  it('does not setState after unmount when a fetch resolves late', async () => {
+    // Resolve the fetch promise on a delay controlled by the test, so we
+    // can unmount the hook BEFORE the response arrives.
+    let resolveFetch: (r: Response) => void = () => {};
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveFetch = resolve;
+          }),
+      ),
+    );
+
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { unmount } = renderHook(() => useIVAnomalies(true, false));
+    unmount();
+    // Fetch resolves AFTER the hook unmounted; the hook must not touch
+    // state or React will warn about an update on an unmounted component.
+    resolveFetch(
+      new Response(JSON.stringify(makePayload([makeRow({ id: 99 })])), {
+        status: 200,
+      }),
+    );
+    // Give the microtask queue a moment to drain.
+    await new Promise((r) => setTimeout(r, 20));
+    // React's "update on unmounted" warning goes to console.error.
+    const didWarn = warn.mock.calls.some((args) =>
+      String(args[0] ?? '').includes('unmounted'),
+    );
+    expect(didWarn).toBe(false);
+    warn.mockRestore();
+  });
+
+  it('doubles the polling interval after 3 consecutive fails', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // Every fetch fails — keeps failStreak climbing so we can observe
+    // the interval double at the 3-fail threshold.
+    const fetchMock = vi
+      .fn<() => Promise<Response>>()
+      .mockRejectedValue(new Error('always fail'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useIVAnomalies(true, true));
+
+    // Wait for the initial fetch to fail.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+
+    // Third fail flips failStreak to 3 → polling effect re-runs with
+    // 2× interval (120_000 ms). One base-interval tick should NOT fire
+    // another fetch; two back-to-back base ticks (= one 2× tick) should.
+    const callsAfter3 = fetchMock.mock.calls.length;
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(fetchMock.mock.calls.length).toBe(callsAfter3);
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(callsAfter3),
+    );
+    expect(result.current.error).toBeTruthy();
+    vi.useRealTimers();
+  });
 });
