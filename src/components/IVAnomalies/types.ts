@@ -64,6 +64,40 @@ export const IV_ANOMALY_TICKERS: readonly IVAnomalyTicker[] = [
 ] as const;
 
 /**
+ * Anomaly phase — the state of a compound key on the active board.
+ *
+ *   - `active`       — entry detected, values updating in place.
+ *   - `cooling`      — IV regressing from peak OR ask-mid divergence collapsed
+ *                      after sustained accumulation. Holders relaxing / demand
+ *                      fading but still-displayed on the board.
+ *   - `distributing` — detector firing rate (volume proxy) accelerating while
+ *                      IV slope flat-or-negative. Holders actively exiting;
+ *                      stronger exit signal than plain cooling.
+ *
+ * Both cooling and distributing remain on the board — the whole point is to
+ * SHOW the user when exit signals fire. They evict through the normal silence
+ * path (ANOMALY_SILENCE_MS since `lastFiredTs`).
+ */
+export type IVAnomalyPhase = 'active' | 'cooling' | 'distributing';
+
+/** Why an exit transition fired — surfaces in the row subtitle + banner. */
+export type IVAnomalyExitReason =
+  | 'iv_regression'
+  | 'ask_mid_compression'
+  | 'volume_surge_flat_iv';
+
+export interface IVHistoryPoint {
+  ts: string;
+  ivMid: number | null;
+}
+
+export interface IVFiringPoint {
+  ts: string;
+  /** Cumulative firing count at this ts — used to derive firing-rate slope. */
+  firingCount: number;
+}
+
+/**
  * Aggregated anomaly view — one entry per active compound key
  * (`ticker:strike:side:expiry`). `useIVAnomalies` builds these from the
  * raw per-minute `IVAnomalyRow` stream so the display stays stable while
@@ -77,6 +111,22 @@ export const IV_ANOMALY_TICKERS: readonly IVAnomalyTicker[] = [
  *     re-fires, `firstSeenTs` resets to that new firing.
  *   - `firingCount` is the number of raw rows aggregated into this entry
  *     within its current active-span — it resets on re-banner.
+ *
+ * Exit-signal machinery (see useIVAnomalies reconcile):
+ *   - `phase`              — active | cooling | distributing.
+ *   - `entryIv`            — iv_mid from the row that opened this span.
+ *   - `peakIv` / `peakTs`  — highest iv_mid observed during this active span
+ *                            AND when it was seen. Reset on cooling→active
+ *                            recovery so the next cooling transition is
+ *                            measured against the new high.
+ *   - `entryAskMidDiv`     — iv_ask - iv_mid on the first row of the span.
+ *   - `askMidPeakTs`       — most recent ts where ask-mid div exceeded the
+ *                            accumulation threshold. Null until first crossing.
+ *   - `ivHistory`          — rolling (ts, iv_mid) samples, last 10 min.
+ *   - `firingHistory`      — rolling (ts, cumulative firingCount), last 10
+ *                            min. Used as the volume-rate proxy.
+ *   - `exitReason`         — why the current phase transition fired; `null`
+ *                            in the `active` phase.
  */
 export interface ActiveAnomaly {
   /** `${ticker}:${strike}:${side}:${expiry}` — stable across polls. */
@@ -93,6 +143,24 @@ export interface ActiveAnomaly {
   lastFiredTs: string;
   /** Count of raw rows seen in the current active-span. */
   firingCount: number;
+  /** Current phase on the board. */
+  phase: IVAnomalyPhase;
+  /** Reason the current non-active phase fired (null while active). */
+  exitReason: IVAnomalyExitReason | null;
+  /** iv_mid of the first row of this active span. */
+  entryIv: number;
+  /** Max iv_mid seen during this active span. Resets on cooling→active recovery. */
+  peakIv: number;
+  /** ISO ts when `peakIv` was recorded. */
+  peakTs: string;
+  /** iv_ask - iv_mid on the first row of the active span (or null if unknown). */
+  entryAskMidDiv: number | null;
+  /** Last ts where ask-mid div exceeded the accumulation threshold (null if never). */
+  askMidPeakTs: string | null;
+  /** Rolling iv_mid samples — last ~10 min. */
+  ivHistory: readonly IVHistoryPoint[];
+  /** Rolling firing-count samples — last ~10 min. */
+  firingHistory: readonly IVFiringPoint[];
 }
 
 /**

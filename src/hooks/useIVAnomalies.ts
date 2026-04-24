@@ -11,11 +11,27 @@
  *      DESC so the freshest entry is always at the top.
  *
  *   2. Alert — the banner store receives a push + the sound chime fires
- *      ONLY when a compound key transitions from "not active" to "active".
- *      If a strike is already active, subsequent firings update its
- *      metrics silently. If the strike has been silent for ≥
- *      ANOMALY_SILENCE_MS and then re-fires, that's treated as a NEW event
- *      and re-banners.
+ *      ONLY when a compound key transitions from "not active" to "active"
+ *      (entry banner) OR from active → cooling / distributing (exit banner).
+ *      If a strike is already active, subsequent firings update its metrics
+ *      silently. If the strike has been silent for ≥ ANOMALY_SILENCE_MS and
+ *      then re-fires, that's treated as a NEW event and re-banners.
+ *
+ * Phase transitions (exit detection, IV-proxy based):
+ *   We don't yet ingest per-minute bid-vs-ask volume split per strike, so the
+ *   "distribution" signal uses detector firing-rate (firings per minute within
+ *   a 10-min rolling window) as a volume proxy. This is directionally correct
+ *   but noisier than real tape-side volume. Future work: wire real tape-side
+ *   volume for higher fidelity. See docs/superpowers/specs for design context.
+ *
+ *   - IV regression   → cooling       (iv_mid drops ≥30% of peak-entry span)
+ *   - Ask-mid compression → cooling   (div <0.2vp after ≥5 min at >0.5vp)
+ *   - Volume surge + flat IV → distributing (firing-rate ≥2× avg, slope ≤0)
+ *
+ *   When both signals would fire on the same poll, distributing takes display
+ *   priority (stronger signal) but BOTH banners fire so the user sees both
+ *   reasons. Cooling → active recovery (IV climbs past old peak) is silent —
+ *   no banner, reset peak tracking.
  *
  * Other responsibilities preserved from the earlier row-level impl:
  *
@@ -24,20 +40,36 @@
  *   - Back off to 2× the base interval after 3 consecutive network fails.
  *   - First-poll priming: the first successful poll seeds the active map
  *     without firing banners (pre-existing anomalies from before page
- *     load are history, not new signals).
+ *     load are history, not new signals). Priming also suppresses exit
+ *     banners — a page-load state of "already cooling" is not a new event.
  *   - Eviction: each poll sweeps the active map for entries whose
  *     `lastFiredTs` is > ANOMALY_SILENCE_MS old (evaluated against
  *     `Date.now()`, which fake timers can control deterministically).
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ANOMALY_SILENCE_MS, POLL_INTERVALS } from '../constants';
+import {
+  ANOMALY_SILENCE_MS,
+  ASK_MID_ACCUMULATION_THRESHOLD,
+  ASK_MID_COMPRESSION_MIN_ACTIVE_MS,
+  ASK_MID_COMPRESSION_THRESHOLD,
+  DISTRIBUTION_IV_SLOPE_TOLERANCE,
+  DISTRIBUTION_IV_SLOPE_WINDOW_MS,
+  DISTRIBUTION_VOL_MULTIPLIER,
+  IV_REGRESSION_THRESHOLD,
+  IV_REGRESSION_WINDOW_MS,
+  POLL_INTERVALS,
+} from '../constants';
 import {
   anomalyCompoundKey,
   type ActiveAnomaly,
   type IVAnomaliesListResponse,
+  type IVAnomalyExitReason,
+  type IVAnomalyPhase,
   type IVAnomalyRow,
   type IVAnomalyTicker,
+  type IVFiringPoint,
+  type IVHistoryPoint,
 } from '../components/IVAnomalies/types';
 import { ivAnomalyBannerStore } from '../components/IVAnomalies/banner-store';
 import { playAnomalyChime } from '../utils/anomaly-sound';
@@ -109,10 +141,137 @@ function tsMs(iso: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+/**
+ * Trim a (ts-keyed) rolling history to the last `windowMs`. Keeps the most
+ * recent N-1 entries plus the newest so the series grows unbounded only if
+ * windowMs grows unbounded.
+ */
+function trimHistory<T extends { ts: string }>(
+  history: readonly T[],
+  nowMs: number,
+  windowMs: number,
+): T[] {
+  const cutoff = nowMs - windowMs;
+  return history.filter((h) => tsMs(h.ts, 0) >= cutoff);
+}
+
+export interface ExitTransition {
+  phase: 'cooling' | 'distributing';
+  reason: IVAnomalyExitReason;
+}
+
+/**
+ * Detect whether the current active-span should transition to cooling or
+ * distributing. Returns a list — a single poll can flag multiple reasons.
+ *
+ * Pure and stateless: all inputs come from the `ActiveAnomaly`, output is
+ * evaluated against thresholds. Ordered by reason so tests are stable.
+ */
+export function detectExitTransitions(
+  entry: ActiveAnomaly,
+  freshestRow: IVAnomalyRow,
+  nowMs: number,
+): ExitTransition[] {
+  const transitions: ExitTransition[] = [];
+
+  const currentIv = freshestRow.ivAtDetect;
+  const currentAskMidDiv = freshestRow.askMidDiv;
+
+  // 1. Volume surge + flat-or-negative IV slope → distributing.
+  //    Firing rate over the 5-min window vs the full active-span rate.
+  //    Need at least one earlier data point so slope is computable.
+  const slopeWindowStart = nowMs - DISTRIBUTION_IV_SLOPE_WINDOW_MS;
+  const recentFirings = entry.firingHistory.filter(
+    (p) => tsMs(p.ts, 0) >= slopeWindowStart,
+  );
+  const oldestFiring = entry.firingHistory[0];
+  if (oldestFiring && recentFirings.length >= 2) {
+    const windowHead = recentFirings[0];
+    const windowTail = recentFirings.at(-1);
+    if (windowHead && windowTail && windowTail !== windowHead) {
+      const windowSpanMs = tsMs(windowTail.ts, nowMs) - tsMs(windowHead.ts, 0);
+      const windowFirings = windowTail.firingCount - windowHead.firingCount;
+      const windowRatePerMin =
+        windowSpanMs > 0 ? windowFirings / (windowSpanMs / 60_000) : 0;
+
+      const spanMs = nowMs - tsMs(entry.firstSeenTs, nowMs);
+      const avgRatePerMin =
+        spanMs > 0 ? entry.firingCount / (spanMs / 60_000) : 0;
+
+      if (
+        avgRatePerMin > 0 &&
+        windowRatePerMin >= avgRatePerMin * DISTRIBUTION_VOL_MULTIPLIER
+      ) {
+        // IV slope: compare current iv_mid vs earliest in the slope window.
+        const slopeWindowSamples = entry.ivHistory.filter(
+          (h) => tsMs(h.ts, 0) >= slopeWindowStart,
+        );
+        const anchorSample = slopeWindowSamples[0];
+        if (anchorSample?.ivMid != null && currentIv != null) {
+          const slope = currentIv - anchorSample.ivMid;
+          if (slope <= DISTRIBUTION_IV_SLOPE_TOLERANCE) {
+            transitions.push({
+              phase: 'distributing',
+              reason: 'volume_surge_flat_iv',
+            });
+          }
+        }
+      }
+    }
+  }
+
+  // 2. IV regression → cooling. Drop from peak ≥30% of (peak - entry) range,
+  //    with peak recorded inside the 10-min rolling window.
+  const peakAge = nowMs - tsMs(entry.peakTs, nowMs);
+  if (peakAge <= IV_REGRESSION_WINDOW_MS && entry.peakIv > entry.entryIv) {
+    const peakToEntryRange = entry.peakIv - entry.entryIv;
+    const dropThreshold =
+      entry.peakIv - IV_REGRESSION_THRESHOLD * peakToEntryRange;
+    if (currentIv != null && currentIv < dropThreshold) {
+      transitions.push({ phase: 'cooling', reason: 'iv_regression' });
+    }
+  }
+
+  // 3. Ask-mid compression → cooling. Current div < 0.2vp AFTER having been
+  //    above accumulation threshold for ≥5 min. Requires a recorded peak ts.
+  if (
+    entry.askMidPeakTs != null &&
+    currentAskMidDiv != null &&
+    currentAskMidDiv < ASK_MID_COMPRESSION_THRESHOLD
+  ) {
+    const peakAgeAsk = tsMs(entry.askMidPeakTs, 0) - tsMs(entry.firstSeenTs, 0);
+    if (peakAgeAsk >= ASK_MID_COMPRESSION_MIN_ACTIVE_MS) {
+      transitions.push({ phase: 'cooling', reason: 'ask_mid_compression' });
+    }
+  }
+
+  return transitions;
+}
+
+/**
+ * When multiple exit transitions fire on the same poll, distributing wins
+ * the DISPLAYED phase. Cooling still emits its own banner so the user sees
+ * both reasons. Returns null if the list is empty.
+ */
+function pickDisplayedPhase(
+  transitions: readonly ExitTransition[],
+): ExitTransition | null {
+  if (transitions.length === 0) return null;
+  const distributing = transitions.find((t) => t.phase === 'distributing');
+  return distributing ?? transitions[0] ?? null;
+}
+
+/** Banner event emitted by reconcile — consumed by the caller to push + chime. */
+export interface BannerEvent {
+  row: IVAnomalyRow;
+  kind: 'entry' | 'exit';
+  exitReason?: IVAnomalyExitReason;
+}
+
 interface ReconcileResult {
   nextMap: ReadonlyMap<string, ActiveAnomaly>;
-  /** Rows that represent a "new event" — banner + chime consumers. */
-  rowsToBanner: IVAnomalyRow[];
+  /** Events to fan out to banner store + chime. */
+  bannerEvents: BannerEvent[];
   /** Updated set of already-processed detector row ids. */
   nextSeenIds: Set<number>;
 }
@@ -122,7 +281,7 @@ interface ReconcileResult {
  * about Strict Mode double-invocation or stale setState closures. Given
  * the existing map, the set of previously-processed row ids, and an
  * incoming batch of raw rows, produces the next map plus the list of
- * rows that should banner.
+ * events that should banner.
  *
  * The `seenIds` guard is load-bearing: the API returns a rolling history
  * window, so poll N+1 re-sends every row from poll N. Without the guard
@@ -130,11 +289,16 @@ interface ReconcileResult {
  *
  * Semantics (matches the spec):
  *   - Group rows by compound key (filtering rows we've already processed).
- *   - New compound key ⇒ add to map; banner UNLESS first poll (priming).
+ *   - New compound key ⇒ add to map in `active` phase; entry banner UNLESS
+ *     first poll (priming).
  *   - Existing compound key ⇒ update `latest` and `lastFiredTs`, bump
  *     `firingCount`. A silence gap of ≥ ANOMALY_SILENCE_MS between the
  *     existing `lastFiredTs` and the next row is treated as a NEW event
- *     (reset `firstSeenTs`, `firingCount = 1`, banner).
+ *     (reset active-span bookkeeping incl. phase, entry banner).
+ *   - Exit-phase detection runs after per-row metric updates. When a row
+ *     transitions active → cooling/distributing, emit an exit banner
+ *     (unless priming). Cooling → active recovery (IV climbs past old
+ *     peak) is silent and resets peak tracking.
  *   - Eviction: after ingestion, drop any entry whose `lastFiredTs` is
  *     > ANOMALY_SILENCE_MS older than `Date.now()`.
  */
@@ -146,12 +310,18 @@ function reconcile(
 ): ReconcileResult {
   const next = new Map(prev);
   const nowMs = Date.now();
-  const rowsToBanner: IVAnomalyRow[] = [];
+  const bannerEvents: BannerEvent[] = [];
   // Guard per-poll idempotence — if the same detector row id shows up in
-  // both the "new compound key" and the "re-banner after gap" paths
-  // (should be impossible but cheap insurance) we only push once.
-  const bannerIds = new Set<number>();
+  // multiple banner paths we still only push once per (id, kind) pair.
+  const bannerKeys = new Set<string>();
   const nextSeenIds = new Set(seenIds);
+
+  function pushBanner(event: BannerEvent): void {
+    const key = `${event.row.id}:${event.kind}`;
+    if (bannerKeys.has(key)) return;
+    bannerKeys.add(key);
+    bannerEvents.push(event);
+  }
 
   // 1. Group previously-unseen rows by compound key.
   const byKey = new Map<string, IVAnomalyRow[]>();
@@ -178,7 +348,41 @@ function reconcile(
       if (!freshest || !firstRow) continue;
       const ticker = freshest.ticker;
       if (!isKnownTicker(ticker)) continue;
-      next.set(key, {
+
+      // Seed tracking history from every row in the bucket so exit
+      // detection has a baseline from the start.
+      const ivHistory: IVHistoryPoint[] = sorted.map((r) => ({
+        ts: r.ts,
+        ivMid: r.ivAtDetect,
+      }));
+      const firingHistory: IVFiringPoint[] = sorted.map((r, i) => ({
+        ts: r.ts,
+        firingCount: i + 1,
+      }));
+
+      // peakIv = the max iv_mid seen in this seed batch.
+      let peakIv = firstRow.ivAtDetect;
+      let peakTs = firstRow.ts;
+      for (const r of sorted) {
+        if (r.ivAtDetect > peakIv) {
+          peakIv = r.ivAtDetect;
+          peakTs = r.ts;
+        }
+      }
+
+      // askMidPeakTs = last ts where the div crossed above the accumulation
+      // threshold in the seed batch (or null if never).
+      let askMidPeakTs: string | null = null;
+      for (const r of sorted) {
+        if (
+          r.askMidDiv != null &&
+          r.askMidDiv > ASK_MID_ACCUMULATION_THRESHOLD
+        ) {
+          askMidPeakTs = r.ts;
+        }
+      }
+
+      const seeded: ActiveAnomaly = {
         compoundKey: key,
         ticker,
         strike: freshest.strike,
@@ -188,10 +392,44 @@ function reconcile(
         firstSeenTs: firstRow.ts,
         lastFiredTs: freshest.ts,
         firingCount: sorted.length,
-      });
-      if (!isFirstPoll && !bannerIds.has(freshest.id)) {
-        rowsToBanner.push(freshest);
-        bannerIds.add(freshest.id);
+        phase: 'active',
+        exitReason: null,
+        entryIv: firstRow.ivAtDetect,
+        peakIv,
+        peakTs,
+        entryAskMidDiv: firstRow.askMidDiv,
+        askMidPeakTs,
+        ivHistory: trimHistory(ivHistory, nowMs, IV_REGRESSION_WINDOW_MS),
+        firingHistory: trimHistory(
+          firingHistory,
+          nowMs,
+          IV_REGRESSION_WINDOW_MS,
+        ),
+      };
+
+      // If the seed batch already has enough data to trip an exit
+      // transition on first observation, evaluate it. We'll still skip the
+      // banner on first-poll priming so existing cooling state on mount
+      // doesn't flood the board.
+      const seedTransitions = detectExitTransitions(seeded, freshest, nowMs);
+      const seedDisplayed = pickDisplayedPhase(seedTransitions);
+      if (seedDisplayed) {
+        seeded.phase = seedDisplayed.phase;
+        seeded.exitReason = seedDisplayed.reason;
+      }
+      next.set(key, seeded);
+
+      if (!isFirstPoll) {
+        pushBanner({ row: freshest, kind: 'entry' });
+        if (seedDisplayed) {
+          for (const t of seedTransitions) {
+            pushBanner({
+              row: freshest,
+              kind: 'exit',
+              exitReason: t.reason,
+            });
+          }
+        }
       }
       continue;
     }
@@ -201,36 +439,132 @@ function reconcile(
     let runFirstSeenIso = existing.firstSeenTs;
     let runFiringCount = existing.firingCount;
     let runLatest: IVAnomalyRow = existing.latest;
+    let runPhase: IVAnomalyPhase = existing.phase;
+    let runExitReason: IVAnomalyExitReason | null = existing.exitReason;
+    let runEntryIv = existing.entryIv;
+    let runPeakIv = existing.peakIv;
+    let runPeakTs = existing.peakTs;
+    let runEntryAskMidDiv = existing.entryAskMidDiv;
+    let runAskMidPeakTs = existing.askMidPeakTs;
+    let runIvHistory: IVHistoryPoint[] = [...existing.ivHistory];
+    let runFiringHistory: IVFiringPoint[] = [...existing.firingHistory];
     let rebannerRow: IVAnomalyRow | null = null;
 
     for (const row of sorted) {
       const rowMs = tsMs(row.ts, nowMs);
       if (rowMs - runLastFiredMs >= ANOMALY_SILENCE_MS) {
         // Silence gap long enough to treat this firing as a new event.
-        // Reset the active-span bookkeeping and remember the row so we
+        // Reset active-span + exit bookkeeping and remember the row so we
         // can banner it (unless priming).
         runFirstSeenIso = row.ts;
         runFiringCount = 1;
+        runPhase = 'active';
+        runExitReason = null;
+        runEntryIv = row.ivAtDetect;
+        runPeakIv = row.ivAtDetect;
+        runPeakTs = row.ts;
+        runEntryAskMidDiv = row.askMidDiv;
+        runAskMidPeakTs =
+          row.askMidDiv != null &&
+          row.askMidDiv > ASK_MID_ACCUMULATION_THRESHOLD
+            ? row.ts
+            : null;
+        runIvHistory = [{ ts: row.ts, ivMid: row.ivAtDetect }];
+        runFiringHistory = [{ ts: row.ts, firingCount: 1 }];
         rebannerRow = row;
       } else {
         runFiringCount += 1;
+        // New peak? Update peak — ivAtDetect is a real number per the
+        // server contract (never null on the row).
+        if (row.ivAtDetect > runPeakIv) {
+          runPeakIv = row.ivAtDetect;
+          runPeakTs = row.ts;
+          // If we were cooling and IV climbed BACK above the old peak, that
+          // is a recovery — return to active, reset exit reason. Peak is
+          // already updated to the new high above, so the NEXT cooling
+          // transition measures against this new high.
+          if (runPhase !== 'active') {
+            runPhase = 'active';
+            runExitReason = null;
+          }
+        }
+        // Ask-mid peak tracking.
+        if (
+          row.askMidDiv != null &&
+          row.askMidDiv > ASK_MID_ACCUMULATION_THRESHOLD
+        ) {
+          runAskMidPeakTs = row.ts;
+        }
+        runIvHistory.push({ ts: row.ts, ivMid: row.ivAtDetect });
+        runFiringHistory.push({ ts: row.ts, firingCount: runFiringCount });
       }
       runLatest = row;
       runLastFiredIso = row.ts;
       runLastFiredMs = rowMs;
     }
 
-    next.set(key, {
+    // Trim histories to the rolling window.
+    runIvHistory = trimHistory(runIvHistory, nowMs, IV_REGRESSION_WINDOW_MS);
+    runFiringHistory = trimHistory(
+      runFiringHistory,
+      nowMs,
+      IV_REGRESSION_WINDOW_MS,
+    );
+
+    // Candidate record for exit evaluation — use after all row updates.
+    const candidate: ActiveAnomaly = {
       ...existing,
       latest: runLatest,
       firstSeenTs: runFirstSeenIso,
       lastFiredTs: runLastFiredIso,
       firingCount: runFiringCount,
+      phase: runPhase,
+      exitReason: runExitReason,
+      entryIv: runEntryIv,
+      peakIv: runPeakIv,
+      peakTs: runPeakTs,
+      entryAskMidDiv: runEntryAskMidDiv,
+      askMidPeakTs: runAskMidPeakTs,
+      ivHistory: runIvHistory,
+      firingHistory: runFiringHistory,
+    };
+
+    let finalPhase: IVAnomalyPhase = runPhase;
+    let finalExitReason: IVAnomalyExitReason | null = runExitReason;
+
+    // Exit-phase evaluation — only if we're currently in `active` after all
+    // row updates. (A row that just triggered a re-event above resets to
+    // `active`; evaluating exits on the same poll would mis-fire — wait for
+    // the next batch before looking for exit signals.)
+    const wasActive = existing.phase === 'active' && !rebannerRow;
+    if (wasActive && runPhase === 'active') {
+      const transitions = detectExitTransitions(candidate, runLatest, nowMs);
+      const displayed = pickDisplayedPhase(transitions);
+      if (displayed) {
+        finalPhase = displayed.phase;
+        finalExitReason = displayed.reason;
+        if (!isFirstPoll) {
+          // Fire one banner per distinct transition reason — if cooling +
+          // distributing both fire, the user sees both reasons.
+          for (const t of transitions) {
+            pushBanner({
+              row: runLatest,
+              kind: 'exit',
+              exitReason: t.reason,
+            });
+          }
+        }
+      }
+    }
+
+    next.set(key, {
+      ...candidate,
+      phase: finalPhase,
+      exitReason: finalExitReason,
     });
 
-    if (rebannerRow && !isFirstPoll && !bannerIds.has(rebannerRow.id)) {
-      rowsToBanner.push(rebannerRow);
-      bannerIds.add(rebannerRow.id);
+    if (rebannerRow && !isFirstPoll) {
+      pushBanner({ row: rebannerRow, kind: 'entry' });
     }
   }
 
@@ -244,8 +578,10 @@ function reconcile(
     }
   }
 
-  return { nextMap: next, rowsToBanner, nextSeenIds };
+  return { nextMap: next, bannerEvents, nextSeenIds };
 }
+
+export { reconcile };
 
 export function useIVAnomalies(
   enabled: boolean,
@@ -306,7 +642,7 @@ export function useIVAnomalies(
         // Compute the next map + side-effect queue OUTSIDE setState so
         // Strict Mode double-invocation never double-pushes banners or
         // re-plays the chime. We use a ref to read the current map.
-        const { nextMap, rowsToBanner, nextSeenIds } = reconcile(
+        const { nextMap, bannerEvents, nextSeenIds } = reconcile(
           activeMapRef.current,
           seenIdsRef.current,
           rows,
@@ -317,14 +653,22 @@ export function useIVAnomalies(
         seenIdsRef.current = nextSeenIds;
         setActiveMap(nextMap);
 
-        if (rowsToBanner.length > 0) {
-          for (const row of rowsToBanner) {
-            ivAnomalyBannerStore.push(row);
+        if (bannerEvents.length > 0) {
+          let entryCount = 0;
+          let exitCount = 0;
+          for (const event of bannerEvents) {
+            ivAnomalyBannerStore.push(event.row, {
+              kind: event.kind,
+              exitReason: event.exitReason ?? null,
+            });
+            if (event.kind === 'entry') entryCount += 1;
+            else exitCount += 1;
           }
-          // One chime per poll no matter how many new events landed —
-          // the sound util also has a 3s throttle but this avoids
-          // calling it needlessly.
-          playAnomalyChime();
+          // One chime per poll per kind — entry at full volume, exit at
+          // lower volume (see anomaly-sound util). The sound util still
+          // throttles, so rapid bursts don't double-play.
+          if (entryCount > 0) playAnomalyChime('entry');
+          if (exitCount > 0) playAnomalyChime('exit');
         }
       }
       setLoading(false);

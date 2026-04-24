@@ -51,6 +51,15 @@ function makeActive(
     firstSeenTs: latest.ts,
     lastFiredTs: latest.ts,
     firingCount: 1,
+    phase: 'active',
+    exitReason: null,
+    entryIv: latest.ivAtDetect,
+    peakIv: latest.ivAtDetect,
+    peakTs: latest.ts,
+    entryAskMidDiv: latest.askMidDiv,
+    askMidPeakTs: null,
+    ivHistory: [{ ts: latest.ts, ivMid: latest.ivAtDetect }],
+    firingHistory: [{ ts: latest.ts, firingCount: 1 }],
   };
   return { ...base, ...aggOverrides };
 }
@@ -286,5 +295,68 @@ describe('AnomalyRow', () => {
       />,
     );
     expect(screen.getByText(/firings: 38/)).toBeInTheDocument();
+  });
+
+  // ─── Exit phase pill + subtitle ───
+
+  it('renders the `active` phase pill by default', () => {
+    render(<AnomalyRow anomaly={makeActive()} />);
+    expect(screen.getByTestId('anomaly-phase-active')).toBeInTheDocument();
+  });
+
+  it('renders the `cooling` phase pill and an IV-regression subtitle', () => {
+    render(
+      <AnomalyRow
+        anomaly={makeActive(
+          { ivAtDetect: 0.27 },
+          {
+            phase: 'cooling',
+            exitReason: 'iv_regression',
+            entryIv: 0.22,
+            peakIv: 0.3,
+            peakTs: '2026-04-23T15:29:00Z',
+          },
+        )}
+      />,
+    );
+    expect(screen.getByTestId('anomaly-phase-cooling')).toBeInTheDocument();
+    // Drop of (0.30 - 0.27) / (0.30 - 0.22) ≈ 37.5% — floating-point
+    // error rounds down to 37 ((0.029999…/0.079999…)*100 = 37.499…).
+    expect(
+      screen.getByText(/IV down 37% from peak \(30\.0vp → 27\.0vp\)/),
+    ).toBeInTheDocument();
+  });
+
+  it('renders the `distributing` phase pill + subtitle', () => {
+    render(
+      <AnomalyRow
+        anomaly={makeActive(
+          {},
+          {
+            phase: 'distributing',
+            exitReason: 'volume_surge_flat_iv',
+          },
+        )}
+      />,
+    );
+    expect(
+      screen.getByTestId('anomaly-phase-distributing'),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Volume surging on flat IV/)).toBeInTheDocument();
+  });
+
+  it('renders the ask-mid compression subtitle when cooling for that reason', () => {
+    render(
+      <AnomalyRow
+        anomaly={makeActive(
+          {},
+          {
+            phase: 'cooling',
+            exitReason: 'ask_mid_compression',
+          },
+        )}
+      />,
+    );
+    expect(screen.getByText(/Ask-mid spread compressing/)).toBeInTheDocument();
   });
 });

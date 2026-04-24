@@ -21,14 +21,33 @@
  * and unit-tested in isolation.
  */
 
-import type { IVAnomalyRow } from './types';
+import type { IVAnomalyExitReason, IVAnomalyRow } from './types';
 
 export const AUTO_DISMISS_MS = 10_000;
 const DEFAULT_MAX_VISIBLE = 3;
 
+export type BannerKind = 'entry' | 'exit';
+
+export interface BannerPushOptions {
+  /** Which banner variant to render (entry = new anomaly, exit = cooling/distributing). */
+  kind?: BannerKind;
+  /** Non-null only for exit banners — surfaces the specific exit signal reason. */
+  exitReason?: IVAnomalyExitReason | null;
+}
+
 export interface BannerEntry {
-  /** Stable id — matches `iv_anomalies.id` to dedup across polls. */
-  id: number;
+  /**
+   * Internal, stable id — combines the detector row id with the banner
+   * kind so an entry banner and an exit banner for the same underlying
+   * row can coexist in the stack without deduping each other.
+   */
+  id: string;
+  /** Original detector row id (for tests and external correlation). */
+  rowId: number;
+  /** Which banner variant to render. */
+  kind: BannerKind;
+  /** Specific reason for exit banners (null for entry). */
+  exitReason: IVAnomalyExitReason | null;
   anomaly: IVAnomalyRow;
   /** Epoch ms when the entry was pushed — used for UI ordering. */
   pushedAt: number;
@@ -46,7 +65,7 @@ type Listener = (snapshot: BannerSnapshot) => void;
 interface StoreState {
   entries: BannerEntry[];
   maxVisible: number;
-  timers: Map<number, ReturnType<typeof setTimeout>>;
+  timers: Map<string, ReturnType<typeof setTimeout>>;
   listeners: Set<Listener>;
 }
 
@@ -72,7 +91,7 @@ function notify(): void {
   for (const listener of state.listeners) listener(snap);
 }
 
-function clearTimer(id: number): void {
+function clearTimer(id: string): void {
   const timer = state.timers.get(id);
   if (timer != null) {
     clearTimeout(timer);
@@ -80,26 +99,38 @@ function clearTimer(id: number): void {
   }
 }
 
-function remove(id: number): void {
+function remove(id: string): void {
   const before = state.entries.length;
   state.entries = state.entries.filter((e) => e.id !== id);
   clearTimer(id);
   if (state.entries.length !== before) notify();
 }
 
-function push(anomaly: IVAnomalyRow): void {
-  if (state.entries.some((e) => e.id === anomaly.id)) return;
+function bannerId(rowId: number, kind: BannerKind): string {
+  return `${rowId}:${kind}`;
+}
+
+function push(anomaly: IVAnomalyRow, options: BannerPushOptions = {}): void {
+  const kind: BannerKind = options.kind ?? 'entry';
+  const id = bannerId(anomaly.id, kind);
+  // Idempotent per (rowId, kind) pair — an entry banner and an exit banner
+  // for the same anomaly row can coexist, but re-pushing the same kind
+  // for the same row is a no-op.
+  if (state.entries.some((e) => e.id === id)) return;
 
   const entry: BannerEntry = {
-    id: anomaly.id,
+    id,
+    rowId: anomaly.id,
+    kind,
+    exitReason: options.exitReason ?? null,
     anomaly,
     pushedAt: Date.now(),
   };
   // Newest first so the top slot holds the most recent anomaly.
   state.entries = [entry, ...state.entries];
 
-  const timer = setTimeout(() => remove(anomaly.id), AUTO_DISMISS_MS);
-  state.timers.set(anomaly.id, timer);
+  const timer = setTimeout(() => remove(id), AUTO_DISMISS_MS);
+  state.timers.set(id, timer);
 
   notify();
 }
@@ -118,7 +149,7 @@ function getSnapshot(): BannerSnapshot {
   return snapshot();
 }
 
-function dismiss(id: number): void {
+function dismiss(id: string): void {
   remove(id);
 }
 

@@ -1,5 +1,9 @@
 import { useEffect, useState } from 'react';
-import type { ActiveAnomaly, IVAnomalyFlowPhase } from './types';
+import type {
+  ActiveAnomaly,
+  IVAnomalyFlowPhase,
+  IVAnomalyPhase,
+} from './types';
 import { StrikeIVChart } from './StrikeIVChart';
 
 /**
@@ -40,6 +44,7 @@ export function AnomalyRow({ anomaly }: { readonly anomaly: ActiveAnomaly }) {
   const freshnessLabel = formatFreshness(
     nowMs - Date.parse(anomaly.lastFiredTs),
   );
+  const exitSubtitle = buildExitSubtitle(anomaly);
 
   return (
     <div className="border-edge bg-surface-alt rounded-md border">
@@ -48,33 +53,41 @@ export function AnomalyRow({ anomaly }: { readonly anomaly: ActiveAnomaly }) {
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
         aria-label={`Toggle details for ${anomaly.ticker} ${anomaly.strike} ${anomaly.side} anomaly`}
-        className="hover:bg-surface flex w-full items-center gap-3 px-3 py-2 text-left transition-colors"
+        className="hover:bg-surface flex w-full flex-col gap-1 px-3 py-2 text-left transition-colors"
       >
-        <span className="text-muted font-mono text-[10px]">
-          {expanded ? '▾' : '▸'}
-        </span>
-        <span className="text-primary font-mono text-xs font-semibold">
-          {anomaly.ticker} {formatStrike(anomaly.strike)}
-          {anomaly.side === 'put' ? 'P' : 'C'}
-        </span>
-        <span className="text-muted font-mono text-[10px]">
-          exp {anomaly.expiry}
-        </span>
-        <PhasePill phase={phase} />
-        <div className="ml-auto flex flex-wrap items-center gap-1">
-          {latest.flagReasons.map((reason) => (
-            <FlagBadge key={reason} reason={reason} />
-          ))}
-          <span className="text-muted ml-2 font-mono text-[10px]">
-            active {activeDurationLabel}
+        <div className="flex w-full items-center gap-3">
+          <span className="text-muted font-mono text-[10px]">
+            {expanded ? '▾' : '▸'}
+          </span>
+          <span className="text-primary font-mono text-xs font-semibold">
+            {anomaly.ticker} {formatStrike(anomaly.strike)}
+            {anomaly.side === 'put' ? 'P' : 'C'}
           </span>
           <span className="text-muted font-mono text-[10px]">
-            last fire {freshnessLabel}
+            exp {anomaly.expiry}
           </span>
-          <span className="text-muted font-mono text-[10px]">
-            firings: {anomaly.firingCount}
-          </span>
+          <AnomalyPhasePill phase={anomaly.phase} />
+          <FlowPhasePill phase={phase} />
+          <div className="ml-auto flex flex-wrap items-center gap-1">
+            {latest.flagReasons.map((reason) => (
+              <FlagBadge key={reason} reason={reason} />
+            ))}
+            <span className="text-muted ml-2 font-mono text-[10px]">
+              active {activeDurationLabel}
+            </span>
+            <span className="text-muted font-mono text-[10px]">
+              last fire {freshnessLabel}
+            </span>
+            <span className="text-muted font-mono text-[10px]">
+              firings: {anomaly.firingCount}
+            </span>
+          </div>
         </div>
+        {exitSubtitle && (
+          <div className="ml-5 text-[10px] text-amber-300/80 italic">
+            {exitSubtitle}
+          </div>
+        )}
       </button>
 
       {expanded && (
@@ -126,7 +139,29 @@ export function AnomalyRow({ anomaly }: { readonly anomaly: ActiveAnomaly }) {
 
 // ── Sub-components ──────────────────────────────────────────────
 
-function PhasePill({ phase }: { readonly phase: IVAnomalyFlowPhase | null }) {
+/** Display pill for the exit-signal phase (active | cooling | distributing). */
+function AnomalyPhasePill({ phase }: { readonly phase: IVAnomalyPhase }) {
+  const classes: Record<IVAnomalyPhase, string> = {
+    active: 'bg-rose-500/20 text-rose-300',
+    cooling: 'bg-amber-500/20 text-amber-300',
+    distributing: 'bg-orange-600/30 text-orange-300',
+  };
+  return (
+    <span
+      className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold ${classes[phase]}`}
+      data-testid={`anomaly-phase-${phase}`}
+    >
+      {phase}
+    </span>
+  );
+}
+
+/** Display pill for the detector's early/mid/reactive flow classification. */
+function FlowPhasePill({
+  phase,
+}: {
+  readonly phase: IVAnomalyFlowPhase | null;
+}) {
   if (!phase) {
     return (
       <span className="rounded-full bg-slate-700/40 px-2 py-0.5 font-mono text-[10px] font-semibold text-slate-300">
@@ -146,6 +181,34 @@ function PhasePill({ phase }: { readonly phase: IVAnomalyFlowPhase | null }) {
       {phase}
     </span>
   );
+}
+
+/**
+ * Build a human-readable "why" subtitle for cooling / distributing phases.
+ * Returns null while active — no subtitle shown in the default case.
+ */
+function buildExitSubtitle(anomaly: ActiveAnomaly): string | null {
+  if (anomaly.phase === 'active') return null;
+  if (anomaly.phase === 'distributing') {
+    return 'Volume surging on flat IV';
+  }
+  // Cooling — differentiate by reason.
+  if (anomaly.exitReason === 'iv_regression') {
+    const peakPct = (anomaly.peakIv * 100).toFixed(1);
+    const currPct = (anomaly.latest.ivAtDetect * 100).toFixed(1);
+    const range = anomaly.peakIv - anomaly.entryIv;
+    if (range > 0) {
+      const dropPct = Math.round(
+        ((anomaly.peakIv - anomaly.latest.ivAtDetect) / range) * 100,
+      );
+      return `IV down ${dropPct}% from peak (${peakPct}vp → ${currPct}vp)`;
+    }
+    return `IV down from peak (${peakPct}vp → ${currPct}vp)`;
+  }
+  if (anomaly.exitReason === 'ask_mid_compression') {
+    return 'Ask-mid spread compressing (MMs disengaging)';
+  }
+  return 'Exit signal active';
 }
 
 function FlagBadge({ reason }: { readonly reason: string }) {

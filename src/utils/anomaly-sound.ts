@@ -1,19 +1,23 @@
 /**
- * Anomaly chime utility — plays a short sound when a new IV anomaly surfaces.
+ * Anomaly chime utility — plays a short sound when a new IV anomaly surfaces
+ * or when an existing one transitions to cooling / distributing.
  *
  * Honors a `localStorage['anomalySoundEnabled']` flag (default: true) so the
  * owner can silence the chime without removing the banner. Throttled to at
  * most one play per {@link SOUND_THROTTLE_MS} so a burst of simultaneous
  * anomalies doesn't turn into an audio spam stream.
  *
+ * Two variants:
+ *
+ *   - `entry` — full volume (~0.4), uses the chime mp3 asset.
+ *   - `exit`  — distinct, softer cue. Plays the same asset at half volume
+ *               when available; if the mp3 asset is absent we fall back to
+ *               a short programmatic Web Audio beep (~400 Hz, ~0.2 s). That
+ *               way the exit cue is audibly different from the entry one.
+ *
  * All calls are try/caught — blocked autoplay, a missing sound file, and an
  * inaccessible `localStorage` are all silent no-ops. Alerting must never
  * break the render path.
- *
- * **Asset note**: the chime lives at `public/sounds/anomaly-chime.mp3`.
- * The binary is NOT yet committed — feature ships with a no-op sound until
- * a short (~0.5s) royalty-free chime is dropped into that path. Banner +
- * detection pipeline work regardless.
  */
 
 const STORAGE_KEY = 'anomalySoundEnabled';
@@ -21,6 +25,8 @@ const STORAGE_KEY = 'anomalySoundEnabled';
 export const SOUND_THROTTLE_MS = 3_000;
 /** Static path served from the Vite `public/` directory. */
 export const CHIME_URL = '/sounds/anomaly-chime.mp3';
+
+export type AnomalyChimeKind = 'entry' | 'exit';
 
 let lastPlayMs = 0;
 
@@ -58,6 +64,44 @@ export function setAnomalySoundEnabled(enabled: boolean): void {
   }
 }
 
+/** Resolve the AudioContext constructor. Returns null when unavailable. */
+function getAudioContextCtor(): (new () => AudioContext) | null {
+  const w = globalThis as typeof globalThis & {
+    AudioContext?: new () => AudioContext;
+    webkitAudioContext?: new () => AudioContext;
+  };
+  return w.AudioContext ?? w.webkitAudioContext ?? null;
+}
+
+/**
+ * Play a short programmatic beep via Web Audio. Used as the exit-kind
+ * fallback so the cue is audibly distinct from the entry chime even when
+ * the mp3 asset is missing. All failures are swallowed.
+ */
+function playProgrammaticBeep(): void {
+  try {
+    const Ctor = getAudioContextCtor();
+    if (!Ctor) return;
+    const ctx = new Ctor();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = 400;
+    gain.gain.value = 0.2;
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    const now = ctx.currentTime;
+    osc.start(now);
+    osc.stop(now + 0.2);
+    // Close the context after the beep so resources are released.
+    osc.addEventListener('ended', () => {
+      ctx.close().catch(() => {});
+    });
+  } catch {
+    // AudioContext creation can fail in test envs and locked-down browsers.
+  }
+}
+
 /**
  * Play the chime if enabled and not within the throttle window.
  *
@@ -67,7 +111,9 @@ export function setAnomalySoundEnabled(enabled: boolean): void {
  * return is purely observational for tests — callers should never branch
  * on it; alerting is best-effort by design.
  */
-export function playAnomalyChime(): 'played' | 'throttled' | 'disabled' {
+export function playAnomalyChime(
+  kind: AnomalyChimeKind = 'entry',
+): 'played' | 'throttled' | 'disabled' {
   if (!isAnomalySoundEnabled()) return 'disabled';
 
   const now = Date.now();
@@ -75,9 +121,15 @@ export function playAnomalyChime(): 'played' | 'throttled' | 'disabled' {
   lastPlayMs = now;
 
   try {
-    if (typeof Audio === 'undefined') return 'played';
+    if (typeof Audio === 'undefined') {
+      // No Audio constructor; exit chime tries the Web Audio fallback so
+      // the user still hears a distinct cue. Entry chime has no fallback.
+      if (kind === 'exit') playProgrammaticBeep();
+      return 'played';
+    }
     const audio = new Audio(CHIME_URL);
-    audio.volume = 0.4;
+    // Exit chime is quieter and shorter-feeling; entry chime is at full volume.
+    audio.volume = kind === 'exit' ? 0.2 : 0.4;
     const maybePromise = audio.play();
     if (maybePromise && typeof maybePromise.catch === 'function') {
       // Swallow autoplay rejections — some browsers disallow sound before

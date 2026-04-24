@@ -37,15 +37,37 @@ describe('ivAnomalyBannerStore', () => {
     ivAnomalyBannerStore.push(makeRow({ id: 1 }));
     const snap = ivAnomalyBannerStore.getSnapshot();
     expect(snap.visible).toHaveLength(1);
-    expect(snap.visible[0]?.id).toBe(1);
+    expect(snap.visible[0]?.rowId).toBe(1);
+    expect(snap.visible[0]?.kind).toBe('entry');
     expect(snap.overflowCount).toBe(0);
   });
 
-  it('is idempotent — re-pushing the same id is a no-op', () => {
+  it('is idempotent — re-pushing the same (id, kind) is a no-op', () => {
     ivAnomalyBannerStore.push(makeRow({ id: 1 }));
     ivAnomalyBannerStore.push(makeRow({ id: 1 }));
     ivAnomalyBannerStore.push(makeRow({ id: 1 }));
     expect(ivAnomalyBannerStore.getSnapshot().visible).toHaveLength(1);
+  });
+
+  it('allows entry and exit banners for the same row to coexist', () => {
+    ivAnomalyBannerStore.push(makeRow({ id: 1 }), { kind: 'entry' });
+    ivAnomalyBannerStore.push(makeRow({ id: 1 }), {
+      kind: 'exit',
+      exitReason: 'iv_regression',
+    });
+    const snap = ivAnomalyBannerStore.getSnapshot();
+    expect(snap.visible).toHaveLength(2);
+    expect(snap.visible.map((e) => e.kind).sort()).toEqual(['entry', 'exit']);
+  });
+
+  it('tags exit banners with the exitReason', () => {
+    ivAnomalyBannerStore.push(makeRow({ id: 1 }), {
+      kind: 'exit',
+      exitReason: 'volume_surge_flat_iv',
+    });
+    const entry = ivAnomalyBannerStore.getSnapshot().visible[0];
+    expect(entry?.kind).toBe('exit');
+    expect(entry?.exitReason).toBe('volume_surge_flat_iv');
   });
 
   it('stacks up to maxVisible and overflows the rest', () => {
@@ -66,7 +88,7 @@ describe('ivAnomalyBannerStore', () => {
 
   it('dismiss removes the entry immediately and clears its timer', () => {
     ivAnomalyBannerStore.push(makeRow({ id: 1 }));
-    ivAnomalyBannerStore.dismiss(1);
+    ivAnomalyBannerStore.dismiss('1:entry');
     expect(ivAnomalyBannerStore.getSnapshot().visible).toHaveLength(0);
     // Advancing timers should not re-fire a removed entry.
     vi.advanceTimersByTime(AUTO_DISMISS_MS + 10);
@@ -83,7 +105,7 @@ describe('ivAnomalyBannerStore', () => {
     ivAnomalyBannerStore.push(makeRow({ id: 1 }));
     expect(listener).toHaveBeenCalledTimes(1);
 
-    ivAnomalyBannerStore.dismiss(1);
+    ivAnomalyBannerStore.dismiss('1:entry');
     expect(listener).toHaveBeenCalledTimes(2);
 
     unsubscribe();

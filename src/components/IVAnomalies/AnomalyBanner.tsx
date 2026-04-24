@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react';
 import { ivAnomalyBannerStore, type BannerSnapshot } from './banner-store';
-import type { IVAnomalyFlowPhase, IVAnomalyRow } from './types';
+import type {
+  IVAnomalyExitReason,
+  IVAnomalyFlowPhase,
+  IVAnomalyRow,
+} from './types';
 
 /**
  * Fixed-position top banner stack for new IV anomalies.
@@ -10,6 +14,10 @@ import type { IVAnomalyFlowPhase, IVAnomalyRow } from './types';
  * timers managed inside the store; older entries collapse into a
  * `+N more` chip. Each card click dismisses the banner; the auto-dismiss
  * timer fires independently.
+ *
+ * Entry banners (kind='entry') use a rose border + "New IV anomaly" title.
+ * Exit banners (kind='exit') use an amber border + "Holders exiting" title
+ * with a subtitle naming the specific signal that fired.
  *
  * Positioned at `top-16` (below the existing AlertBanner's `top-0`) so
  * the two banner systems don't overlap. z-50 keeps it above GEX panels
@@ -36,6 +44,8 @@ export function AnomalyBanner() {
         <BannerCard
           key={entry.id}
           anomaly={entry.anomaly}
+          kind={entry.kind}
+          exitReason={entry.exitReason}
           onDismiss={() => ivAnomalyBannerStore.dismiss(entry.id)}
         />
       ))}
@@ -49,25 +59,58 @@ export function AnomalyBanner() {
   );
 }
 
+function exitReasonSubtitle(reason: IVAnomalyExitReason | null): string {
+  switch (reason) {
+    case 'iv_regression':
+      return 'IV regressing from peak';
+    case 'ask_mid_compression':
+      return 'Ask-mid spread compressing';
+    case 'volume_surge_flat_iv':
+      return 'Volume surging on flat IV';
+    default:
+      return 'Exit signal detected';
+  }
+}
+
 function BannerCard({
   anomaly,
+  kind,
+  exitReason,
   onDismiss,
 }: {
   readonly anomaly: IVAnomalyRow;
+  readonly kind: 'entry' | 'exit';
+  readonly exitReason: IVAnomalyExitReason | null;
   readonly onDismiss: () => void;
 }) {
   const phase = anomaly.flowPhase;
   const phaseColor = phaseAccent(phase);
 
+  const isExit = kind === 'exit';
+  const accentColor = isExit ? 'rgb(245, 158, 11)' : phaseColor; // amber-500 for exit
+  const headingLabel = isExit ? 'Holders exiting' : 'New IV anomaly';
+  const dismissLabel = `Dismiss ${anomaly.ticker} ${anomaly.strike} ${anomaly.side} ${isExit ? 'exit signal' : 'anomaly'}`;
+
   return (
     <button
       type="button"
       onClick={onDismiss}
-      aria-label={`Dismiss ${anomaly.ticker} ${anomaly.strike} ${anomaly.side} anomaly`}
-      className="border-edge bg-surface hover:bg-surface-alt animate-fade-in-up flex flex-col items-start gap-1 rounded-md border-[1.5px] px-3 py-2 text-left shadow-lg transition-colors"
-      style={{ borderLeftColor: phaseColor, borderLeftWidth: 3 }}
+      aria-label={dismissLabel}
+      data-testid={isExit ? 'banner-exit' : 'banner-entry'}
+      data-kind={kind}
+      className={`border-edge bg-surface hover:bg-surface-alt animate-fade-in-up flex flex-col items-start gap-1 rounded-md border-[1.5px] px-3 py-2 text-left shadow-lg transition-colors ${
+        isExit ? 'ring-1 ring-amber-500/40' : ''
+      }`}
+      style={{ borderLeftColor: accentColor, borderLeftWidth: 3 }}
     >
       <div className="flex w-full items-center gap-2">
+        <span
+          className={`font-mono text-[10px] font-semibold tracking-wide uppercase ${
+            isExit ? 'text-amber-300' : 'text-rose-300'
+          }`}
+        >
+          {headingLabel}
+        </span>
         <span className="text-primary font-mono text-xs font-semibold">
           {anomaly.ticker} {formatStrike(anomaly.strike)}
           {anomaly.side === 'put' ? 'P' : 'C'}
@@ -77,16 +120,22 @@ function BannerCard({
           {formatTs(anomaly.ts)}
         </span>
       </div>
-      <div className="flex flex-wrap gap-1">
-        {anomaly.flagReasons.map((reason) => (
-          <span
-            key={reason}
-            className="bg-accent-bg text-accent rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
-          >
-            {reason}
-          </span>
-        ))}
-      </div>
+      {isExit ? (
+        <div className="text-muted text-[11px] italic">
+          {exitReasonSubtitle(exitReason)}
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-1">
+          {anomaly.flagReasons.map((reason) => (
+            <span
+              key={reason}
+              className="bg-accent-bg text-accent rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
+            >
+              {reason}
+            </span>
+          ))}
+        </div>
+      )}
       <div className="text-muted text-[10px]">
         spot {anomaly.spotAtDetect.toFixed(2)} · IV{' '}
         {(anomaly.ivAtDetect * 100).toFixed(1)}%

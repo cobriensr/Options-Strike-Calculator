@@ -48,6 +48,38 @@ describe('AnomalyBanner', () => {
     expect(screen.getByText('skew_delta')).toBeInTheDocument();
     expect(screen.getByText('z_score')).toBeInTheDocument();
     expect(screen.getByText('early')).toBeInTheDocument();
+    // Entry banners show the "New IV anomaly" heading.
+    expect(screen.getByText(/New IV anomaly/)).toBeInTheDocument();
+  });
+
+  it('renders an exit banner with "Holders exiting" + reason subtitle', () => {
+    render(<AnomalyBanner />);
+    act(() => {
+      ivAnomalyBannerStore.push(makeRow({ id: 7 }), {
+        kind: 'exit',
+        exitReason: 'iv_regression',
+      });
+    });
+    expect(screen.getByText(/Holders exiting/)).toBeInTheDocument();
+    expect(screen.getByText(/IV regressing from peak/)).toBeInTheDocument();
+    // Exit banner uses the dedicated test-id.
+    expect(screen.getByTestId('banner-exit')).toBeInTheDocument();
+  });
+
+  it('differentiates exit vs entry via data-kind attr', () => {
+    render(<AnomalyBanner />);
+    act(() => {
+      ivAnomalyBannerStore.push(makeRow({ id: 1 }), { kind: 'entry' });
+      ivAnomalyBannerStore.push(makeRow({ id: 2 }), {
+        kind: 'exit',
+        exitReason: 'volume_surge_flat_iv',
+      });
+    });
+    const entryCard = screen.getByTestId('banner-entry');
+    const exitCard = screen.getByTestId('banner-exit');
+    expect(entryCard.getAttribute('data-kind')).toBe('entry');
+    expect(exitCard.getAttribute('data-kind')).toBe('exit');
+    expect(screen.getByText(/Volume surging on flat IV/)).toBeInTheDocument();
   });
 
   it('shows +N more when more than 3 anomalies pushed', () => {

@@ -278,6 +278,38 @@ export const IV_MODES = {
  */
 export const ANOMALY_SILENCE_MS = 15 * 60 * 1000;
 
+/**
+ * Strike IV exit-signal thresholds (phase transitions in useIVAnomalies).
+ *
+ * These are IV-proxy based signals — we don't yet ingest per-minute bid-vs-ask
+ * volume split per strike, so the "distribution" signal uses detector firing
+ * rate as a proxy. Future work: wire real tape-side volume for higher fidelity.
+ */
+
+/** 30% drop from peak IV relative to (peak - entry) triggers cooling phase. */
+export const IV_REGRESSION_THRESHOLD = 0.3;
+
+/** iv_ask - iv_mid crossing below 0.2 vol pts signals MMs disengaging. */
+export const ASK_MID_COMPRESSION_THRESHOLD = 0.002;
+
+/** Min active-span duration (ms) before compression signal considered valid. */
+export const ASK_MID_COMPRESSION_MIN_ACTIVE_MS = 5 * 60 * 1000;
+
+/** Rolling window for IV regression detection. */
+export const IV_REGRESSION_WINDOW_MS = 10 * 60 * 1000;
+
+/** Volume-delta multiplier over active-span avg to trigger distributing. */
+export const DISTRIBUTION_VOL_MULTIPLIER = 2;
+
+/** Rolling window for IV slope measurement in distribution signal. */
+export const DISTRIBUTION_IV_SLOPE_WINDOW_MS = 5 * 60 * 1000;
+
+/** Tolerance for "flat or negative" IV slope in distribution detection. */
+export const DISTRIBUTION_IV_SLOPE_TOLERANCE = 0.001;
+
+/** Ask-mid divergence threshold above which accumulation signature is active. */
+export const ASK_MID_ACCUMULATION_THRESHOLD = 0.005;
+
 /** Polling intervals for data fetching hooks (milliseconds) */
 export const POLL_INTERVALS = {
   /** Live quote refresh (useAutoFill, useMarketData) */

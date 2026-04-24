@@ -38,6 +38,49 @@ describe('anomaly-sound util', () => {
     expect(playAnomalyChime()).toBe('played');
   });
 
+  it('plays the exit variant at lower volume', () => {
+    const constructed: Array<{ volume: number }> = [];
+    vi.stubGlobal(
+      'Audio',
+      class FakeAudio {
+        public src: string;
+        public volume = 1;
+        constructor(src: string) {
+          this.src = src;
+          constructed.push(this);
+        }
+        play() {
+          return Promise.resolve();
+        }
+      },
+    );
+    expect(playAnomalyChime('exit')).toBe('played');
+    expect(constructed).toHaveLength(1);
+    // Exit chime is softer than the default (0.4) entry chime.
+    expect(constructed[0]?.volume).toBeLessThan(0.4);
+    expect(constructed[0]?.volume).toBeGreaterThan(0);
+  });
+
+  it('entry variant plays at higher volume than exit', () => {
+    const constructed: Array<{ volume: number }> = [];
+    vi.stubGlobal(
+      'Audio',
+      class FakeAudio {
+        public src: string;
+        public volume = 1;
+        constructor(src: string) {
+          this.src = src;
+          constructed.push(this);
+        }
+        play() {
+          return Promise.resolve();
+        }
+      },
+    );
+    expect(playAnomalyChime('entry')).toBe('played');
+    expect(constructed[0]?.volume).toBeGreaterThan(0.3);
+  });
+
   it('is disabled when the localStorage flag is false', () => {
     setAnomalySoundEnabled(false);
     expect(playAnomalyChime()).toBe('disabled');

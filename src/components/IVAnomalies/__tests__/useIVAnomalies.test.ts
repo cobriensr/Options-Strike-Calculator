@@ -428,6 +428,337 @@ describe('useIVAnomalies — aggregation + alert semantics', () => {
     warn.mockRestore();
   });
 
+  // ─── Exit-signal phase transitions ───────────────────────────────
+
+  it('stays active when IV keeps rising (no exit transition)', async () => {
+    setSessionNow('2026-04-23T15:30:30Z');
+    const fetchMock = vi.fn();
+    // Priming poll: entry IV 0.20.
+    fetchMock.mockResolvedValueOnce(
+      respondWith([makeRow({ id: 1, ivAtDetect: 0.2 })]),
+    );
+    // Next poll: IV rising 0.22 → 0.25 → 0.28 (no regression).
+    fetchMock.mockResolvedValueOnce(
+      respondWith([
+        makeRow({ id: 1, ivAtDetect: 0.2 }),
+        makeRow({
+          id: 2,
+          ivAtDetect: 0.22,
+          ts: '2026-04-23T15:31:00Z',
+        }),
+        makeRow({
+          id: 3,
+          ivAtDetect: 0.25,
+          ts: '2026-04-23T15:32:00Z',
+        }),
+        makeRow({
+          id: 4,
+          ivAtDetect: 0.28,
+          ts: '2026-04-23T15:33:00Z',
+        }),
+      ]),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useIVAnomalies(true, false));
+    await waitFor(() => expect(result.current.anomalies.length).toBe(1));
+
+    setSessionNow('2026-04-23T15:33:30Z');
+    await act(async () => result.current.refresh());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    const agg = result.current.anomalies;
+    expect(agg[0]?.phase).toBe('active');
+    expect(agg[0]?.peakIv).toBeCloseTo(0.28, 6);
+    // No exit banner.
+    const exits = ivAnomalyBannerStore
+      .getSnapshot()
+      .visible.filter((b) => b.kind === 'exit');
+    expect(exits).toHaveLength(0);
+  });
+
+  it('IV regression triggers cooling + exit banner once', async () => {
+    setSessionNow('2026-04-23T15:30:30Z');
+    const fetchMock = vi.fn();
+    // Priming poll at 15:30: IV=0.25 (entryIv).
+    fetchMock.mockResolvedValueOnce(
+      respondWith([
+        makeRow({ id: 1, ivAtDetect: 0.25, ts: '2026-04-23T15:30:00Z' }),
+      ]),
+    );
+    // Poll 2: IV climbs to 0.33 (peak).
+    fetchMock.mockResolvedValueOnce(
+      respondWith([
+        makeRow({ id: 1, ivAtDetect: 0.25, ts: '2026-04-23T15:30:00Z' }),
+        makeRow({ id: 2, ivAtDetect: 0.33, ts: '2026-04-23T15:33:00Z' }),
+      ]),
+    );
+    // Poll 3: IV drops to 0.30 → drop of (0.33 - 0.30) / (0.33 - 0.25) = 37.5%
+    // which exceeds the 30% threshold. Peak (15:33) is within the 10-min window.
+    fetchMock.mockResolvedValueOnce(
+      respondWith([
+        makeRow({ id: 1, ivAtDetect: 0.25, ts: '2026-04-23T15:30:00Z' }),
+        makeRow({ id: 2, ivAtDetect: 0.33, ts: '2026-04-23T15:33:00Z' }),
+        makeRow({ id: 3, ivAtDetect: 0.3, ts: '2026-04-23T15:36:00Z' }),
+      ]),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useIVAnomalies(true, false));
+    await waitFor(() => expect(result.current.anomalies.length).toBe(1));
+
+    setSessionNow('2026-04-23T15:33:30Z');
+    await act(async () => result.current.refresh());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(result.current.anomalies[0]?.phase).toBe('active');
+
+    setSessionNow('2026-04-23T15:36:30Z');
+    await act(async () => result.current.refresh());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+
+    const agg = result.current.anomalies[0];
+    expect(agg?.phase).toBe('cooling');
+    expect(agg?.exitReason).toBe('iv_regression');
+    const exits = ivAnomalyBannerStore
+      .getSnapshot()
+      .visible.filter((b) => b.kind === 'exit');
+    expect(exits).toHaveLength(1);
+    expect(exits[0]?.exitReason).toBe('iv_regression');
+  });
+
+  it('ask-mid compression after ≥5 min of accumulation triggers cooling', async () => {
+    setSessionNow('2026-04-23T15:30:30Z');
+    const fetchMock = vi.fn();
+    // Priming: lots of baseline firings so the avg firing rate is high enough
+    // that the single-row compression poll below doesn't also trip
+    // `distributing` (which would otherwise take display priority).
+    const baseline: IVAnomalyRow[] = [];
+    // 7 firings over 7 min at accumulation threshold — ~1/min baseline.
+    for (let i = 0; i < 7; i += 1) {
+      const mins = String(30 + i).padStart(2, '0');
+      baseline.push(
+        makeRow({
+          id: i + 1,
+          askMidDiv: 0.008,
+          ts: `2026-04-23T15:${mins}:00Z`,
+          ivAtDetect: 0.22,
+        }),
+      );
+    }
+    fetchMock.mockResolvedValueOnce(respondWith(baseline));
+    // Poll 2: one more compression row at 15:37 with collapsed div.
+    fetchMock.mockResolvedValueOnce(
+      respondWith([
+        ...baseline,
+        makeRow({
+          id: 99,
+          askMidDiv: 0.001,
+          ts: '2026-04-23T15:37:00Z',
+          ivAtDetect: 0.22,
+        }),
+      ]),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useIVAnomalies(true, false));
+    await waitFor(() => expect(result.current.anomalies.length).toBe(1));
+
+    setSessionNow('2026-04-23T15:37:30Z');
+    await act(async () => result.current.refresh());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    const agg = result.current.anomalies[0];
+    expect(agg?.phase).toBe('cooling');
+    expect(agg?.exitReason).toBe('ask_mid_compression');
+  });
+
+  it('volume surge with flat IV triggers distributing', async () => {
+    setSessionNow('2026-04-23T15:30:30Z');
+    const fetchMock = vi.fn();
+    // Priming (1 firing; entry span starts).
+    fetchMock.mockResolvedValueOnce(
+      respondWith([
+        makeRow({ id: 1, ivAtDetect: 0.25, ts: '2026-04-23T15:30:00Z' }),
+      ]),
+    );
+    // Poll 2 at 15:40 — still 1 firing, baseline span = 10 min, avg 0.1/min.
+    fetchMock.mockResolvedValueOnce(
+      respondWith([
+        makeRow({ id: 1, ivAtDetect: 0.25, ts: '2026-04-23T15:30:00Z' }),
+      ]),
+    );
+    // Poll 3 at 15:40:30 — suddenly 20 firings in ~1 min. IV flat at 0.25.
+    const burst: IVAnomalyRow[] = [
+      makeRow({ id: 1, ivAtDetect: 0.25, ts: '2026-04-23T15:30:00Z' }),
+    ];
+    for (let i = 0; i < 20; i += 1) {
+      const sec = String(10 + Math.floor(i * 2.5)).padStart(2, '0');
+      const mins = String(39 + Math.floor(i / 10)).padStart(2, '0');
+      burst.push(
+        makeRow({
+          id: 100 + i,
+          ivAtDetect: 0.25,
+          ts: `2026-04-23T15:${mins}:${sec}Z`,
+        }),
+      );
+    }
+    fetchMock.mockResolvedValueOnce(respondWith(burst));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useIVAnomalies(true, false));
+    await waitFor(() => expect(result.current.anomalies.length).toBe(1));
+
+    setSessionNow('2026-04-23T15:40:00Z');
+    await act(async () => result.current.refresh());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    setSessionNow('2026-04-23T15:40:30Z');
+    await act(async () => result.current.refresh());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+
+    const agg = result.current.anomalies[0];
+    expect(agg?.phase).toBe('distributing');
+    expect(agg?.exitReason).toBe('volume_surge_flat_iv');
+    const exits = ivAnomalyBannerStore
+      .getSnapshot()
+      .visible.filter((b) => b.kind === 'exit');
+    expect(exits.length).toBeGreaterThanOrEqual(1);
+    expect(exits.some((b) => b.exitReason === 'volume_surge_flat_iv')).toBe(
+      true,
+    );
+  });
+
+  it('cooling recovers to active when IV climbs past old peak — no re-banner', async () => {
+    setSessionNow('2026-04-23T15:30:30Z');
+    const fetchMock = vi.fn();
+    // Priming.
+    fetchMock.mockResolvedValueOnce(
+      respondWith([
+        makeRow({ id: 1, ivAtDetect: 0.25, ts: '2026-04-23T15:30:00Z' }),
+      ]),
+    );
+    // Rise to peak 0.33.
+    fetchMock.mockResolvedValueOnce(
+      respondWith([
+        makeRow({ id: 1, ivAtDetect: 0.25, ts: '2026-04-23T15:30:00Z' }),
+        makeRow({ id: 2, ivAtDetect: 0.33, ts: '2026-04-23T15:33:00Z' }),
+      ]),
+    );
+    // Drop to 0.30 → cooling.
+    fetchMock.mockResolvedValueOnce(
+      respondWith([
+        makeRow({ id: 1, ivAtDetect: 0.25, ts: '2026-04-23T15:30:00Z' }),
+        makeRow({ id: 2, ivAtDetect: 0.33, ts: '2026-04-23T15:33:00Z' }),
+        makeRow({ id: 3, ivAtDetect: 0.3, ts: '2026-04-23T15:36:00Z' }),
+      ]),
+    );
+    // Climb back up to 0.35 (NEW peak past 0.33) → should return to active.
+    fetchMock.mockResolvedValueOnce(
+      respondWith([
+        makeRow({ id: 1, ivAtDetect: 0.25, ts: '2026-04-23T15:30:00Z' }),
+        makeRow({ id: 2, ivAtDetect: 0.33, ts: '2026-04-23T15:33:00Z' }),
+        makeRow({ id: 3, ivAtDetect: 0.3, ts: '2026-04-23T15:36:00Z' }),
+        makeRow({ id: 4, ivAtDetect: 0.35, ts: '2026-04-23T15:39:00Z' }),
+      ]),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useIVAnomalies(true, false));
+    await waitFor(() => expect(result.current.anomalies.length).toBe(1));
+
+    setSessionNow('2026-04-23T15:33:30Z');
+    await act(async () => result.current.refresh());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    setSessionNow('2026-04-23T15:36:30Z');
+    await act(async () => result.current.refresh());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(result.current.anomalies[0]?.phase).toBe('cooling');
+
+    setSessionNow('2026-04-23T15:39:30Z');
+    await act(async () => result.current.refresh());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+
+    const agg = result.current.anomalies[0];
+    expect(agg?.phase).toBe('active');
+    expect(agg?.peakIv).toBeCloseTo(0.35, 6);
+    // There SHOULD be one entry banner from poll 2 and one exit banner
+    // from poll 3 — but NO new entry banner from poll 4 (recovery is silent).
+    const banners = ivAnomalyBannerStore.getSnapshot().visible;
+    const entries = banners.filter((b) => b.kind === 'entry');
+    // poll 2 was the one entry banner — id should be 2 (the new compound key
+    // path for an already-primed map doesn't happen; entry banner fires when
+    // the map first learns this strike outside priming — poll 2 here).
+    // NOTE: the aggregation primes from poll 1 so the compound key exists
+    // before poll 2; id=2 is same compound key, so no entry banner from
+    // poll 2 either. We ASSERT 0 entry banners.
+    expect(entries).toHaveLength(0);
+  });
+
+  it('exit banner carries kind=exit on the banner store push', async () => {
+    setSessionNow('2026-04-23T15:30:30Z');
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce(
+      respondWith([
+        makeRow({ id: 1, ivAtDetect: 0.25, ts: '2026-04-23T15:30:00Z' }),
+      ]),
+    );
+    fetchMock.mockResolvedValueOnce(
+      respondWith([
+        makeRow({ id: 1, ivAtDetect: 0.25, ts: '2026-04-23T15:30:00Z' }),
+        makeRow({ id: 2, ivAtDetect: 0.33, ts: '2026-04-23T15:33:00Z' }),
+      ]),
+    );
+    fetchMock.mockResolvedValueOnce(
+      respondWith([
+        makeRow({ id: 1, ivAtDetect: 0.25, ts: '2026-04-23T15:30:00Z' }),
+        makeRow({ id: 2, ivAtDetect: 0.33, ts: '2026-04-23T15:33:00Z' }),
+        makeRow({ id: 3, ivAtDetect: 0.3, ts: '2026-04-23T15:36:00Z' }),
+      ]),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useIVAnomalies(true, false));
+    await waitFor(() => expect(result.current.anomalies.length).toBe(1));
+    setSessionNow('2026-04-23T15:33:30Z');
+    await act(async () => result.current.refresh());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    setSessionNow('2026-04-23T15:36:30Z');
+    await act(async () => result.current.refresh());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+
+    const banners = ivAnomalyBannerStore.getSnapshot().visible;
+    const exitBanners = banners.filter((b) => b.kind === 'exit');
+    expect(exitBanners.length).toBeGreaterThanOrEqual(1);
+    const firstExit = exitBanners[0];
+    expect(firstExit?.exitReason).toBe('iv_regression');
+    expect(firstExit?.id).toContain(':exit');
+  });
+
+  it('first-poll priming does not fire an exit banner when existing row is already cooling', async () => {
+    setSessionNow('2026-04-23T15:36:30Z');
+    // Priming batch: 3 rows showing a clear rise-then-fall — if this were
+    // NOT the priming poll, the hook would fire an exit banner. We assert
+    // it stays silent.
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce(
+      respondWith([
+        makeRow({ id: 1, ivAtDetect: 0.25, ts: '2026-04-23T15:30:00Z' }),
+        makeRow({ id: 2, ivAtDetect: 0.33, ts: '2026-04-23T15:33:00Z' }),
+        makeRow({ id: 3, ivAtDetect: 0.3, ts: '2026-04-23T15:36:00Z' }),
+      ]),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useIVAnomalies(true, false));
+    await waitFor(() => expect(result.current.anomalies.length).toBe(1));
+    // Zero banners of any kind on the priming poll.
+    expect(ivAnomalyBannerStore.getSnapshot().visible).toHaveLength(0);
+    // But the internal phase correctly reflects the cooling state.
+    const agg = result.current.anomalies[0];
+    expect(agg?.phase).toBe('cooling');
+  });
+
   it('doubles the polling interval after 3 consecutive fails', async () => {
     // Every fetch fails — keeps failStreak climbing so we can observe
     // the interval double at the 3-fail threshold.
