@@ -23,22 +23,95 @@ The informed-flow signal is not "IV went up." It is:
 3. **Ask-mid IV divergence** — MMs marking up the ask faster than the mid is a
    leading indicator of aggressive one-sided flow.
 
-### Live validation (2026-04-23)
+### Live validation (2026-04-23) — gold-standard fixture
 
-Roughly 45–75 minutes after the SPY 704/705P + QQQ 649P ASK-skewed put buying
-surfaced (10:30–11:00 CT), SPX flushed ~25 points (7135 → 7110) at ~11:50 CT.
-The +894M positive-gamma shelf at 7115 failed to hold — flow overwhelmed
-dealer hedging capacity, which is the expected short-gamma acceleration
-signature when concentrated informed flow hits an under-hedged dealer book.
+SPX flushed 77 points (7147 → 7070) between ~11:50 and ~13:00 CT. The setup
+was visible in SPY and QQQ option flow ~60–85 minutes before spot cracked.
+**It was NOT visible in SPXW tape** — a structural insight documented below.
 
-This is the exact pattern the detector is designed to flag in real time.
-Had the detector existed at 10:45 CT, it would have flagged the 705P with
-`skew_delta` + `z_score` + `ask_mid_div` — giving ~60 minutes of lead time
-on the flush. This validation event motivates upgrading Phase 3 to include
-**in-app banner alert + sound chime** (below). A visible-list-only design
-wastes the signal unless the owner is actively watching the tab; the banner
-surfaces above other app content and the chime works when tab is backgrounded
-but app is focused.
+#### Observed tape (informed-flow staging)
+
+**SPY 705P 0DTE** — final total: 454K vol / 9.1K OI = **49.8× OI turnover**
+
+| Time (CT) | 5-min vol | % ask-side | Spot (SPY) |
+| --------- | --------- | ---------- | ---------- |
+| 10:05     | 1,601     | 92%        | 711.63     |
+| 10:30     | 13,237    | 83%        | 712.13     |
+| 10:45     | 5,076     | 78%        | 711.18     |
+| 11:35     | 30,862    | 97%        | 711.07     |
+| 12:00     | 14,714    | 44%        | 709.66     |
+
+Flush begins at the 12:00 CT row (ask-side % collapses as earlier buyers
+start scaling out; new participants are reactive, not informed).
+
+**SPY 704P 0DTE** — 242K vol / 4.8K OI = **50.2× OI turnover**
+
+| Time (CT) | 5-min vol | % ask-side | Spot (SPY) |
+| --------- | --------- | ---------- | ---------- |
+| 10:05     | 444       | 92%        | 711.62     |
+| 10:40     | 3,116     | 97%        | 711.75     |
+| 11:00     | 25,802    | 96%        | 710.87     |
+
+**QQQ 649P 0DTE** — 186K vol / 3.4K OI = **55× OI turnover**
+
+| Time (CT) | 5-min vol | % ask-side | Spot (QQQ) |
+| --------- | --------- | ---------- | ---------- |
+| 10:15     | 548       | 93%        | 656.14     |
+| 10:35     | 8,592     | 98%        | 656.30     |
+| 11:00     | 14,648    | 98%        | 655.24     |
+
+#### Four stacked tells (textbook informed-flow fingerprint)
+
+1. **Multi-ticker simultaneity.** At 11:00–11:01 CT, SPY 704P (25.8K × 96% ask)
+   + QQQ 649P (14.6K × 98% ask) hit inside the same minute. Same-desk, same
+   signal, across correlated tickers.
+2. **Extreme ask-side dominance (96–98%).** Hedge desks negotiate or leg in;
+   98% ask means "pay whatever, I need these now" — informed or mechanical.
+   At this size + timing it's not mechanical.
+3. **Volume/OI ≥ 50×.** 30–50 days of normal flow dumped in 2 hours. No
+   background-hedge story explains it.
+4. **Strike convergence.** All three contracts ~0.2–0.4% OTM at print time
+   (equivalent to SPX 7110 — where spot ended up). Tail hedges sit at 1.5%+;
+   this was a targeted downside bet.
+
+#### Structural lesson: SPX is the reaction surface, SPY/QQQ is the setup surface
+
+The signal was invisible on SPXW tape — 0 staging prints. That's because:
+
+- 1 SPXW contract = 100× SPX notional (~$710K notional at spot 7100)
+- 1 SPY contract = 100× SPY notional = ~1/10 of SPXW notional
+- A $20M notional short needs ~28 SPXW contracts (spot-able as a 28-lot
+  institutional block) OR ~280 SPY contracts smeared across many fills
+  (invisible in the background noise)
+
+**Informed flow that wants to stay hidden uses SPY/QQQ, not SPXW.** SPXW is
+where dealers hedge AFTER price moves; SPY/QQQ is where the setup is built.
+The detector's SPX channel should be treated as a **confirmation signal**
+(did the setup flow from SPY/QQQ carry over?), not the primary surface.
+
+#### Detector replay (gold-standard fixture for E2E test)
+
+Had the detector existed at 10:30 CT it would have fired an escalating
+sequence — this is the canonical fixture for any future backtest or E2E
+integration test:
+
+| CT time | Ticker/strike   | Expected flags                               | Expected `flow_phase` |
+| ------- | --------------- | -------------------------------------------- | --------------------- |
+| 10:30   | SPY 705P        | `skew_delta`, `ask_mid_div`                  | `early`               |
+| 10:35   | QQQ 649P        | `skew_delta`, `ask_mid_div`                  | `early`               |
+| 10:40   | SPY 704P        | `skew_delta`, `ask_mid_div`                  | `early`               |
+| 11:00   | SPY 704P        | `skew_delta`, `z_score`, `ask_mid_div`       | `mid`                 |
+| 11:00   | QQQ 649P        | `skew_delta`, `z_score`, `ask_mid_div`       | `mid`                 |
+| 11:35   | SPY 705P        | `skew_delta`, `z_score`, `ask_mid_div`       | `mid`                 |
+
+That's **~60–85 min of lead time** on the 11:50 CT flush. The 25.8K SPY 704P
+print at 11:00 (@ ~$0.08 fill) was worth ~$5–10M of paper at the 12:30 low —
+a 25–50× outlay-to-paper move that a detector-driven trader could have
+partially ridden (or at minimum stayed out of longs).
+
+This validation event also motivated the Phase 3 in-app banner + sound
+alerting: a visible-list-only design wastes the signal if the owner isn't
+actively watching the tab; the banner surfaces above other app content.
 
 ## Phases
 
