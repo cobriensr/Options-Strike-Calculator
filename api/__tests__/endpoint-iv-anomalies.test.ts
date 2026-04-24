@@ -185,8 +185,9 @@ describe('GET /api/iv-anomalies', () => {
 
   it('returns empty-keyed list payload when no rows exist', async () => {
     // List mode fires one query per ticker in STRIKE_IV_TICKERS
-    // (SPXW/NDXP/SPY/QQQ/IWM, 5 total) — all return [].
-    for (let i = 0; i < 5; i += 1) {
+    // (SPXW/NDXP/SPY/QQQ/IWM/NVDA/SNDK, 7 total after the 2026-04-24
+    // single-name expansion) — all return [].
+    for (let i = 0; i < 7; i += 1) {
       mockSql.mockResolvedValueOnce([]);
     }
 
@@ -200,14 +201,15 @@ describe('GET /api/iv-anomalies', () => {
       history: Record<string, unknown[]>;
     };
     expect(body.mode).toBe('list');
-    for (const t of ['SPXW', 'NDXP', 'SPY', 'QQQ', 'IWM']) {
+    for (const t of ['SPXW', 'NDXP', 'SPY', 'QQQ', 'IWM', 'NVDA', 'SNDK']) {
       expect(body.latest[t]).toBeNull();
       expect(body.history[t]).toEqual([]);
     }
   });
 
   it('returns latest + history grouped by ticker on happy path', async () => {
-    // Query order: STRIKE_IV_TICKERS = SPXW, NDXP, SPY, QQQ, IWM.
+    // Query order: STRIKE_IV_TICKERS = SPXW, NDXP, SPY, QQQ, IWM,
+    // NVDA, SNDK.
     mockSql
       .mockResolvedValueOnce([
         makeAnomalyRow({ id: 1, ticker: 'SPXW', ts: '2026-04-23T15:30:00Z' }),
@@ -223,7 +225,9 @@ describe('GET /api/iv-anomalies', () => {
         }),
       ])
       .mockResolvedValueOnce([]) // QQQ empty
-      .mockResolvedValueOnce([]); // IWM empty
+      .mockResolvedValueOnce([]) // IWM empty
+      .mockResolvedValueOnce([]) // NVDA empty
+      .mockResolvedValueOnce([]); // SNDK empty
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
@@ -251,7 +255,7 @@ describe('GET /api/iv-anomalies', () => {
     expect(body.history.SPXW).toHaveLength(2);
     expect(body.history.SPY).toHaveLength(1);
     expect(body.history.QQQ).toHaveLength(0);
-    for (const t of ['NDXP', 'IWM']) {
+    for (const t of ['NDXP', 'IWM', 'NVDA', 'SNDK']) {
       expect(body.latest[t]).toBeNull();
       expect(body.history[t]).toHaveLength(0);
     }
@@ -269,7 +273,7 @@ describe('GET /api/iv-anomalies', () => {
     );
 
     expect(res._status).toBe(200);
-    // Only ONE SQL call (not five) when ticker is narrowed.
+    // Only ONE SQL call (not seven) when ticker is narrowed.
     expect(mockSql).toHaveBeenCalledTimes(1);
     const body = res._json as {
       mode: string;

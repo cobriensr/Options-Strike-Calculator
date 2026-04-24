@@ -7,7 +7,14 @@
  * the server contract changes.
  */
 
-export type IVAnomalyTicker = 'SPXW' | 'NDXP' | 'SPY' | 'QQQ' | 'IWM';
+export type IVAnomalyTicker =
+  | 'SPXW'
+  | 'NDXP'
+  | 'SPY'
+  | 'QQQ'
+  | 'IWM'
+  | 'NVDA'
+  | 'SNDK';
 export type IVAnomalySide = 'call' | 'put';
 export type IVAnomalyFlowPhase = 'early' | 'mid' | 'reactive';
 /**
@@ -85,8 +92,8 @@ export type IVAnomaliesResponse =
 
 /**
  * Display order matches the server-side `STRIKE_IV_TICKERS` tuple
- * (weekly-index roots first, ETFs after). Kept in sync manually since
- * src/ cannot reach into api/ directly.
+ * (weekly-index roots first, ETFs after, single-name tech last). Kept in
+ * sync manually since src/ cannot reach into api/ directly.
  */
 export const IV_ANOMALY_TICKERS: readonly IVAnomalyTicker[] = [
   'SPXW',
@@ -94,6 +101,8 @@ export const IV_ANOMALY_TICKERS: readonly IVAnomalyTicker[] = [
   'SPY',
   'QQQ',
   'IWM',
+  'NVDA',
+  'SNDK',
 ] as const;
 
 /**

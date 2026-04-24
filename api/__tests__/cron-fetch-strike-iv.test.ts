@@ -209,11 +209,12 @@ function authedReq() {
 
 /**
  * Feed the schwabFetch mock a fresh chain for each ticker in
- * STRIKE_IV_TICKERS order (SPXW, NDXP, SPY, QQQ, IWM — 5 total).
- * Any ticker set to `null` simulates a fetch failure. Tests that only
- * care about a subset of the tickers should inline
- * `makeChain('$NDX', 22500, { contractRoot: 'NDXP' })` etc. for the
- * empty-chain tail rather than relying on undefined mocks.
+ * STRIKE_IV_TICKERS order (SPXW, NDXP, SPY, QQQ, IWM, NVDA, SNDK — 7
+ * total after the 2026-04-24 single-name expansion). Any ticker set to
+ * `null` simulates a fetch failure. Tests that only care about a subset
+ * of the tickers should inline `makeChain('$NDX', 22500, { contractRoot:
+ * 'NDXP' })` etc. for the empty-chain tail rather than relying on
+ * undefined mocks.
  */
 type ChainOrError =
   | ReturnType<typeof makeChain>
@@ -310,7 +311,7 @@ describe('fetch-strike-iv handler', () => {
 
   // ── Happy path: 3 index/ETF tickers all return valid chains ─
 
-  it('inserts per-strike IV rows for SPXW/SPY/QQQ and skips NDXP/IWM when chains are empty', async () => {
+  it('inserts per-strike IV rows for SPXW/SPY/QQQ and skips NDXP/IWM/NVDA/SNDK when chains are empty', async () => {
     // SPXW chain is fetched via `$SPX` and contains SPXW-rooted contracts.
     const spxwChain = makeChain('$SPX', 7100, {
       putStrikes: [7020, 7050, 7080],
@@ -332,15 +333,18 @@ describe('fetch-strike-iv handler', () => {
       ask: 0.8,
     });
 
-    // NDXP / IWM return empty chains — legitimate no-op on sessions
-    // without 0DTE listings for those roots. Order must match
-    // STRIKE_IV_TICKERS: SPXW, NDXP, SPY, QQQ, IWM.
+    // NDXP / IWM / NVDA / SNDK return empty chains — legitimate no-op
+    // on sessions without 0DTE listings for those roots, or (for
+    // NVDA/SNDK) when no weeklies are listed. Order must match
+    // STRIKE_IV_TICKERS: SPXW, NDXP, SPY, QQQ, IWM, NVDA, SNDK.
     mockChainSequence([
       spxwChain,
       makeChain('$NDX', 22500, { contractRoot: 'NDXP' }),
       spyChain,
       qqqChain,
       makeChain('IWM', 235, {}),
+      makeChain('NVDA', 210, {}),
+      makeChain('SNDK', 140, {}),
     ]);
 
     const res = mockResponse();
@@ -358,13 +362,13 @@ describe('fetch-strike-iv handler', () => {
     };
     // SPXW: 6 strikes; SPY: 4; QQQ: 4 → 14 total.
     expect(body.totalInserted).toBe(14);
-    // All 5 tickers reported.
-    expect(body.results).toHaveLength(5);
+    // All 7 tickers reported.
+    expect(body.results).toHaveLength(7);
     expect(body.results.find((r) => r.ticker === 'SPXW')?.rowsInserted).toBe(6);
     expect(body.results.find((r) => r.ticker === 'SPY')?.rowsInserted).toBe(4);
     expect(body.results.find((r) => r.ticker === 'QQQ')?.rowsInserted).toBe(4);
     // Quiet tickers skipped with empty_chain.
-    for (const t of ['NDXP', 'IWM']) {
+    for (const t of ['NDXP', 'IWM', 'NVDA', 'SNDK']) {
       expect(body.results.find((r) => r.ticker === t)).toMatchObject({
         rowsInserted: 0,
         skipped: true,
@@ -407,6 +411,8 @@ describe('fetch-strike-iv handler', () => {
       makeChain('SPY', 710, {}),
       makeChain('QQQ', 500, {}),
       makeChain('IWM', 235, {}),
+      makeChain('NVDA', 210, {}),
+      makeChain('SNDK', 140, {}),
     ]);
 
     const res = mockResponse();
@@ -446,6 +452,8 @@ describe('fetch-strike-iv handler', () => {
       spyChain,
       qqqChain,
       makeChain('IWM', 235, {}),
+      makeChain('NVDA', 210, {}),
+      makeChain('SNDK', 140, {}),
     ]);
 
     const res = mockResponse();
@@ -472,7 +480,8 @@ describe('fetch-strike-iv handler', () => {
     expect(spxw).toMatchObject({ rowsInserted: 4, skipped: false });
     const qqq = body.results.find((r) => r.ticker === 'QQQ');
     expect(qqq).toMatchObject({ rowsInserted: 2, skipped: false });
-    // Two transactions (SPXW + QQQ); SPY + NDXP + IWM didn't insert.
+    // Two transactions (SPXW + QQQ); SPY + NDXP + IWM + NVDA + SNDK
+    // didn't insert.
     expect(mockSql.transaction).toHaveBeenCalledTimes(2);
   });
 
@@ -501,6 +510,8 @@ describe('fetch-strike-iv handler', () => {
       { error: 'token expired', status: 401 },
       qqqChain,
       makeChain('IWM', 235, {}),
+      makeChain('NVDA', 210, {}),
+      makeChain('SNDK', 140, {}),
     ]);
 
     const res = mockResponse();
@@ -516,7 +527,8 @@ describe('fetch-strike-iv handler', () => {
         reason?: string;
       }>;
     };
-    // SPXW: 2 rows, SPY: 0 (error), QQQ: 2 rows, NDXP+IWM: 0 each.
+    // SPXW: 2 rows, SPY: 0 (error), QQQ: 2 rows, NDXP+IWM+NVDA+SNDK:
+    // 0 each.
     expect(body.totalInserted).toBe(4);
     const spy = body.results.find((r) => r.ticker === 'SPY');
     expect(spy).toMatchObject({
@@ -568,6 +580,8 @@ describe('fetch-strike-iv handler', () => {
       spyChain,
       qqqChain,
       makeChain('IWM', 235, {}),
+      makeChain('NVDA', 210, {}),
+      makeChain('SNDK', 140, {}),
     ]);
 
     const res = mockResponse();
@@ -587,7 +601,7 @@ describe('fetch-strike-iv handler', () => {
 
   // ── OI gate enforcement ──────────────────────────────────
 
-  it('enforces min-OI gate per ticker (SPXW/NDXP=500, SPY/QQQ=250, IWM=150)', async () => {
+  it('enforces min-OI gate per ticker (SPXW/NDXP=500, SPY/QQQ=250, IWM=150, NVDA=1000, SNDK=200)', async () => {
     // SPXW: one strike with OI=400 (below 500 gate — rejected), one with
     //       OI=600 (passes).
     const spxwChain = makeChain('$SPX', 7100, {
@@ -656,7 +670,34 @@ describe('fetch-strike-iv handler', () => {
       makeContract('CALL', 238, { openInterest: 200, bid: 0.5, ask: 0.7 }),
     ];
 
-    mockChainSequence([spxwChain, ndxpChain, spyChain, qqqChain, iwmChain]);
+    // NVDA: mega-cap, 1000-OI gate. OI=800 rejected, OI=1200 accepted.
+    const nvdaChain = makeChain('NVDA', 210, { bid: 0.5, ask: 0.7 });
+    nvdaChain.putExpDateMap['2026-04-24:0']!['205'] = [
+      makeContract('PUT', 205, { openInterest: 800, bid: 0.5, ask: 0.7 }),
+    ];
+    nvdaChain.callExpDateMap['2026-04-24:0']!['215'] = [
+      makeContract('CALL', 215, { openInterest: 1200, bid: 0.5, ask: 0.7 }),
+    ];
+
+    // SNDK: single-name mid-cap, 200-OI gate. OI=150 rejected, OI=300
+    // accepted. Strikes within ±3% of spot=140 (band = [135.8, 144.2]).
+    const sndkChain = makeChain('SNDK', 140, { bid: 0.5, ask: 0.7 });
+    sndkChain.putExpDateMap['2026-04-24:0']!['137'] = [
+      makeContract('PUT', 137, { openInterest: 150, bid: 0.5, ask: 0.7 }),
+    ];
+    sndkChain.callExpDateMap['2026-04-24:0']!['143'] = [
+      makeContract('CALL', 143, { openInterest: 300, bid: 0.5, ask: 0.7 }),
+    ];
+
+    mockChainSequence([
+      spxwChain,
+      ndxpChain,
+      spyChain,
+      qqqChain,
+      iwmChain,
+      nvdaChain,
+      sndkChain,
+    ]);
 
     const res = mockResponse();
     await handler(authedReq(), res);
@@ -670,6 +711,8 @@ describe('fetch-strike-iv handler', () => {
     expect(body.results.find((r) => r.ticker === 'NDXP')?.rowsInserted).toBe(1);
     expect(body.results.find((r) => r.ticker === 'SPY')?.rowsInserted).toBe(1);
     expect(body.results.find((r) => r.ticker === 'IWM')?.rowsInserted).toBe(1);
+    expect(body.results.find((r) => r.ticker === 'NVDA')?.rowsInserted).toBe(1);
+    expect(body.results.find((r) => r.ticker === 'SNDK')?.rowsInserted).toBe(1);
   });
 
   // ── Error handling (handler-level) ────────────────────────
@@ -684,7 +727,7 @@ describe('fetch-strike-iv handler', () => {
     });
     // Everything else gets null chains — only SPXW succeeds, matching
     // the fault-tolerance claim of the cron.
-    mockChainSequence([spxwChain, null, null, null, null]);
+    mockChainSequence([spxwChain, null, null, null, null, null, null]);
     const res = mockResponse();
     await handler(authedReq(), res);
     // Per-ticker fault tolerance means this request returns 200, not 500.
@@ -692,8 +735,87 @@ describe('fetch-strike-iv handler', () => {
     const body = res._json as {
       results: Array<{ ticker: string; skipped: boolean }>;
     };
-    // 4 non-SPXW tickers got null → 4 skipped with 'schwab_error'.
-    expect(body.results.filter((r) => r.skipped)).toHaveLength(4);
+    // 6 non-SPXW tickers got null → 6 skipped with 'schwab_error'.
+    expect(body.results.filter((r) => r.skipped)).toHaveLength(6);
+  });
+
+  // ── NVDA / SNDK single-name OI tiers (2026-04-24 expansion) ──
+
+  it('applies the 1000-OI tier to NVDA (rejects mid-liquidity strikes that would pass other single-name tier)', async () => {
+    // NVDA is a mega-cap with deep OI; the 1000 threshold is deliberately
+    // higher than the 200 SINGLE_NAME tier so only genuinely-deep strikes
+    // contribute. Verify the gate location.
+    const nvdaChain = makeChain('NVDA', 210, { bid: 0.5, ask: 0.7 });
+    // Boundary probes: OI=999 must be rejected, OI=1000 must pass, OI=500
+    // (would pass the SNDK tier) must be rejected.
+    nvdaChain.putExpDateMap['2026-04-24:0']!['205'] = [
+      makeContract('PUT', 205, { openInterest: 500, bid: 0.5, ask: 0.7 }),
+    ];
+    nvdaChain.putExpDateMap['2026-04-24:0']!['206'] = [
+      makeContract('PUT', 206, { openInterest: 999, bid: 0.5, ask: 0.7 }),
+    ];
+    nvdaChain.callExpDateMap['2026-04-24:0']!['214'] = [
+      makeContract('CALL', 214, { openInterest: 1000, bid: 0.5, ask: 0.7 }),
+    ];
+    nvdaChain.callExpDateMap['2026-04-24:0']!['215'] = [
+      makeContract('CALL', 215, { openInterest: 5000, bid: 0.5, ask: 0.7 }),
+    ];
+
+    // All other tickers empty to isolate the assertion.
+    mockChainSequence([
+      makeChain('$SPX', 7100, { contractRoot: 'SPXW' }),
+      makeChain('$NDX', 22500, { contractRoot: 'NDXP' }),
+      makeChain('SPY', 710, {}),
+      makeChain('QQQ', 500, {}),
+      makeChain('IWM', 235, {}),
+      nvdaChain,
+      makeChain('SNDK', 140, {}),
+    ]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    const body = res._json as {
+      results: Array<{ ticker: string; rowsInserted: number }>;
+    };
+    // Only 214C (OI=1000) and 215C (OI=5000) survive the 1000-OI gate.
+    expect(body.results.find((r) => r.ticker === 'NVDA')?.rowsInserted).toBe(2);
+  });
+
+  it('applies the 200-OI tier to SNDK (mid-cap single-name threshold)', async () => {
+    // SNDK uses the generic SINGLE_NAME tier (200), well below NVDA's
+    // 1000 threshold, reflecting its thinner chain. Boundary probes:
+    // OI=199 rejected, OI=200 passes. Strikes within ±3% of spot=140
+    // (band = [135.8, 144.2]).
+    const sndkChain = makeChain('SNDK', 140, { bid: 0.5, ask: 0.7 });
+    sndkChain.putExpDateMap['2026-04-24:0']!['137'] = [
+      makeContract('PUT', 137, { openInterest: 199, bid: 0.5, ask: 0.7 }),
+    ];
+    sndkChain.callExpDateMap['2026-04-24:0']!['143'] = [
+      makeContract('CALL', 143, { openInterest: 200, bid: 0.5, ask: 0.7 }),
+    ];
+    sndkChain.callExpDateMap['2026-04-24:0']!['144'] = [
+      makeContract('CALL', 144, { openInterest: 800, bid: 0.5, ask: 0.7 }),
+    ];
+
+    mockChainSequence([
+      makeChain('$SPX', 7100, { contractRoot: 'SPXW' }),
+      makeChain('$NDX', 22500, { contractRoot: 'NDXP' }),
+      makeChain('SPY', 710, {}),
+      makeChain('QQQ', 500, {}),
+      makeChain('IWM', 235, {}),
+      makeChain('NVDA', 210, {}),
+      sndkChain,
+    ]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    const body = res._json as {
+      results: Array<{ ticker: string; rowsInserted: number }>;
+    };
+    // Two calls pass (OI=200 + OI=800); the OI=199 put is rejected.
+    expect(body.results.find((r) => r.ticker === 'SNDK')?.rowsInserted).toBe(2);
   });
 
   // ── Phase 2 detection ────────────────────────────────────────
@@ -743,8 +865,18 @@ describe('fetch-strike-iv handler', () => {
     const spyChain = makeChain('SPY', 710, {});
     const qqqChain = makeChain('QQQ', 500, {});
     const iwmChain = makeChain('IWM', 235, {});
+    const nvdaChain = makeChain('NVDA', 210, {});
+    const sndkChain = makeChain('SNDK', 140, {});
 
-    mockChainSequence([spxwChain, ndxpChain, spyChain, qqqChain, iwmChain]);
+    mockChainSequence([
+      spxwChain,
+      ndxpChain,
+      spyChain,
+      qqqChain,
+      iwmChain,
+      nvdaChain,
+      sndkChain,
+    ]);
 
     // Program mockSql:
     //   1. SPX history query (SELECT … FROM strike_iv_snapshots) → empty

@@ -17,10 +17,11 @@
  *     60 minutes are a Z-score warm-up (required because `computeRollingZ`
  *     needs 60 prior samples). Detection replay starts at 10:00 CT.
  *
- *   - **Tickers** (post 2026-04-24 rescope): SPY (target), QQQ (target),
- *     plus SPXW / NDXP / IWM as quiet baselines. SPY/QQQ put-side targets
- *     produce the anomalies; the other three stay flat so any flag from
- *     them indicates a noise-generator regression or a stddev-floor bug.
+ *   - **Tickers** (post 2026-04-24 single-name expansion): SPY (target),
+ *     QQQ (target), plus SPXW / NDXP / IWM / NVDA / SNDK as quiet
+ *     baselines. SPY/QQQ put-side targets produce the anomalies; the
+ *     other five stay flat so any flag from them indicates a noise-
+ *     generator regression or a stddev-floor bug.
  *
  *   - **Target strikes**: SPY 704P + 705P, QQQ 649P. Anchor IVs are
  *     derived from the real-session ASK-side concentration — we don't
@@ -56,15 +57,18 @@ const EXPIRY = '2026-04-23';
 
 // Baseline IVs per ticker (flat for non-target strikes; starting point
 // for target strikes). Derived from typical 0DTE OTM put IV range. Quiet
-// tickers (SPXW / NDXP / IWM) ship purely flat — exact values are not
-// load-bearing for the regression, only that no flags emit when every
-// strike sits at a constant IV.
+// tickers (SPXW / NDXP / IWM / NVDA / SNDK) ship purely flat — exact
+// values are not load-bearing for the regression, only that no flags emit
+// when every strike sits at a constant IV. Single-name tech baselines
+// reflect their higher realized vol vs indices (NVDA ~0.45, SNDK ~0.55).
 const BASELINE_IV = {
   SPY: 0.24,
   QQQ: 0.28,
   SPXW: 0.22,
   NDXP: 0.25,
   IWM: 0.26,
+  NVDA: 0.45,
+  SNDK: 0.55,
 } as const;
 
 // Ticker spot at key times. Linear-interpolated minute-by-minute. These
@@ -100,6 +104,11 @@ const SPOT_ANCHORS = {
   // minute ≥ 0 so one entry is enough.
   NDXP: [{ min: 0, value: 22500 }],
   IWM: [{ min: 0, value: 235 }],
+  // NVDA and SNDK pinned at plausible 2026-04-24 spots — exact values
+  // aren't load-bearing since these strikes stay flat at baseline IV and
+  // never approach the vol/OI gate.
+  NVDA: [{ min: 0, value: 210 }],
+  SNDK: [{ min: 0, value: 140 }],
 } as const;
 
 // Target-strike IV anchors (minute-offset from window start, IV in decimal).
@@ -164,6 +173,13 @@ const NDXP_PUT_STRIKES = [22300, 22350, 22400, 22450];
 const NDXP_CALL_STRIKES = [22600, 22650, 22700, 22750];
 const IWM_PUT_STRIKES = [231, 232, 233, 234];
 const IWM_CALL_STRIKES = [236, 237, 238, 239];
+// NVDA is $2.5-wide near ATM (210 spot → 205/207.5/etc.). Fixture uses a
+// handful of OTM strikes on each side, all quiet.
+const NVDA_PUT_STRIKES = [205, 206, 207, 208];
+const NVDA_CALL_STRIKES = [212, 213, 214, 215];
+// SNDK is $5-wide (140 spot). Quiet baseline, well below vol/OI gate.
+const SNDK_PUT_STRIKES = [130, 132, 135, 137];
+const SNDK_CALL_STRIKES = [142, 145, 147, 150];
 
 // ── Target-strike volume ramps ───────────────────────────────
 //
@@ -433,6 +449,8 @@ const TICKER_STRIKE_GRIDS: ReadonlyArray<
   ['SPY', SPY_PUT_STRIKES, SPY_CALL_STRIKES],
   ['QQQ', QQQ_PUT_STRIKES, QQQ_CALL_STRIKES],
   ['IWM', IWM_PUT_STRIKES, IWM_CALL_STRIKES],
+  ['NVDA', NVDA_PUT_STRIKES, NVDA_CALL_STRIKES],
+  ['SNDK', SNDK_PUT_STRIKES, SNDK_CALL_STRIKES],
 ];
 
 function buildFixture(): Fixture {
@@ -575,8 +593,8 @@ function buildFixture(): Fixture {
         'SPX 77pt flush from informed SPY/QQQ 0DTE put flow. Gold-standard ' +
         'regression fixture — IV anchors + vol/OI ramps synthesized from ' +
         'the real-session tape table to produce the detector flags ' +
-        'listed in the spec. Quiet tickers (SPXW / NDXP / IWM) ship flat ' +
-        'so any flag from them indicates a regression.',
+        'listed in the spec. Quiet tickers (SPXW / NDXP / IWM / NVDA / ' +
+        'SNDK) ship flat so any flag from them indicates a regression.',
       windowStart: WINDOW_START_UTC,
       windowEnd: WINDOW_END_UTC,
       cadenceMinutes: CADENCE_MINUTES,

@@ -12,8 +12,8 @@ import { AnomalyRow } from './AnomalyRow';
  * Standalone section that surfaces active IV anomalies aggregated by
  * compound key. Per-ticker tabs keep each symbol visually separate —
  * the detectors run on every ticker in `IV_ANOMALY_TICKERS` (SPXW, NDXP,
- * SPY, QQQ, IWM as of the 2026-04-24 rescope) but an owner is typically
- * watching one at a time.
+ * SPY, QQQ, IWM + single-name tech NVDA / SNDK as of the 2026-04-24
+ * expansion) but an owner is typically watching one at a time.
  *
  * The list is one entry per active compound key (not one per raw detector
  * firing) so a strike that's firing every minute during a 90-min event
@@ -73,11 +73,11 @@ export function IVAnomaliesSection({
       <div className="flex flex-col gap-3">
         <div className="flex items-center gap-2">
           {/*
-            Horizontal-scroll rail: with 5 tickers the row generally fits
-            on desktop, but mobile / narrow widths still benefit from
-            overflow-scroll. Keeping the tabs on one line preserves the
-            scan order (weekly-index roots → ETFs) and matches the
-            constant order.
+            Horizontal-scroll rail: with 7 tickers (post 2026-04-24
+            NVDA/SNDK expansion) the row may overflow on narrower
+            desktops. overflow-scroll keeps tabs on one line and
+            preserves the scan order (weekly-index roots → ETFs →
+            single-name tech), matching the constant order.
           */}
           <div
             className="-mx-1 flex flex-1 gap-2 overflow-x-auto px-1 whitespace-nowrap"

@@ -500,11 +500,19 @@ async function getInstitutionalLatest(at: Date): Promise<{
  * Ticker-aware: uses spx_flow for SPX, spy_flow for SPY, qqq_flow for QQQ.
  * Returns the delta in (ncp + npp) — i.e. net options premium $ — over
  * the 5-min window.
+ *
+ * NVDA and SNDK (2026-04-24 single-name expansion) return `null` — we
+ * have no per-name flow feed for single-name equities. The context
+ * snapshot is still informative for other fields (VIX, cross-ticker
+ * deltas) when a single-name anomaly fires.
  */
 async function getNetFlow5m(ticker: string, at: Date): Promise<number | null> {
   // SPXW weeklies share the SPX cash feed (spx_flow covers both). IWM /
   // NDXP fall back to qqq_flow as the best-available index-option proxy
-  // until we ingest dedicated feeds for those roots.
+  // until we ingest dedicated feeds for those roots. Single-name tickers
+  // have no flow source in our ingestion — return null so callers render
+  // "no signal" rather than a misleading index proxy.
+  if (ticker === 'NVDA' || ticker === 'SNDK') return null;
   const source =
     ticker === 'SPX' || ticker === 'SPXW'
       ? 'spx_flow'

@@ -65,11 +65,13 @@ interface CollectedFlag extends AnomalyFlag {
   flow_phase: 'early' | 'mid' | 'reactive';
 }
 
-// Iterate every ticker carried by the post 2026-04-24 rescope fixture.
-// Order matches STRIKE_IV_TICKERS (SPXW, NDXP, SPY, QQQ, IWM) — the
-// quiet tickers (SPXW/NDXP/IWM) should produce zero flags in the
-// replay; SPY/QQQ are the only ones with target trajectories.
-const TICKERS = ['SPXW', 'NDXP', 'SPY', 'QQQ', 'IWM'] as const;
+// Iterate every ticker carried by the post 2026-04-24 single-name-
+// expansion fixture. Order matches STRIKE_IV_TICKERS (SPXW, NDXP, SPY,
+// QQQ, IWM, NVDA, SNDK) — the quiet tickers (SPXW / NDXP / IWM / NVDA /
+// SNDK) should produce zero flags in the replay; SPY/QQQ are the only
+// ones with target trajectories. Quiet-baseline data for NVDA/SNDK is
+// provided by the fixture builder (flat IV, sub-5× vol/OI).
+const TICKERS = ['SPXW', 'NDXP', 'SPY', 'QQQ', 'IWM', 'NVDA', 'SNDK'] as const;
 
 function replay(fixture: Fixture): CollectedFlag[] {
   const timestamps = Object.keys(fixture.strikeSnapshots).sort();
