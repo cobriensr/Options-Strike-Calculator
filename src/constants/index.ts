@@ -266,6 +266,18 @@ export const IV_MODES = {
   DIRECT: 'direct',
 } as const;
 
+/**
+ * Silence window for Strike IV anomaly aggregation.
+ *
+ * A compound-key anomaly (ticker:strike:side:expiry) that stops firing for
+ * this long is evicted from the active board. The NEXT firing for that key
+ * is treated as a brand-new event and re-triggers the banner + chime.
+ *
+ * 15 min balances "the event is genuinely over" against "same strike
+ * coming back after a brief pause is still the same event."
+ */
+export const ANOMALY_SILENCE_MS = 15 * 60 * 1000;
+
 /** Polling intervals for data fetching hooks (milliseconds) */
 export const POLL_INTERVALS = {
   /** Live quote refresh (useAutoFill, useMarketData) */

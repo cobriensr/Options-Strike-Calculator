@@ -1,41 +1,51 @@
 /**
- * useIVAnomalies — polls `/api/iv-anomalies` and emits new anomalies to the
- * global banner store.
+ * useIVAnomalies — polls `/api/iv-anomalies` and aggregates the raw
+ * per-minute anomaly stream into a stable per-compound-key view.
  *
- * Responsibilities:
+ * Two pipelines share one poll:
  *
- *   1. Fetch the list-mode payload on mount + every POLL_INTERVALS.CHAIN ms
- *      while the market is open. Gated on `marketOpen` — no polling off-hours
- *      (matches `useChainData`).
+ *   1. Display — raw rows are grouped by `${ticker}:${strike}:${side}:${expiry}`
+ *      (the "compound key"). While the detector keeps firing a given strike
+ *      the hook keeps ONE `ActiveAnomaly` entry on the board and updates
+ *      its metrics in place. The display list is sorted by `lastFiredTs`
+ *      DESC so the freshest entry is always at the top.
  *
- *   2. Back off to 2× the base interval after 3 consecutive network fails
- *      (same pattern as other polling hooks in this repo).
+ *   2. Alert — the banner store receives a push + the sound chime fires
+ *      ONLY when a compound key transitions from "not active" to "active".
+ *      If a strike is already active, subsequent firings update its
+ *      metrics silently. If the strike has been silent for ≥
+ *      ANOMALY_SILENCE_MS and then re-fires, that's treated as a NEW event
+ *      and re-banners.
  *
- *   3. Dedup across polls. Track a "known-set" of anomaly IDs; the first
- *      time a new ID appears, push it to `ivAnomalyBannerStore` AND fire
- *      the sound chime. Subsequent polls that still include the same ID
- *      are silent — this is what prevents banner spam on every 60s tick.
+ * Other responsibilities preserved from the earlier row-level impl:
  *
- *   4. Expose `{ anomalies, loading, error, refresh }` for the standalone
- *      `IVAnomaliesSection` to render the list view.
- *
- * Design note: the first poll populates the known-set without firing any
- * banners — we'd otherwise banner-spam every pre-existing anomaly on mount.
- * After that any new ID triggers the alert path.
+ *   - Fetch on mount + every POLL_INTERVALS.CHAIN ms while the market is
+ *     open. Gated on `marketOpen` (matches `useChainData`).
+ *   - Back off to 2× the base interval after 3 consecutive network fails.
+ *   - First-poll priming: the first successful poll seeds the active map
+ *     without firing banners (pre-existing anomalies from before page
+ *     load are history, not new signals).
+ *   - Eviction: each poll sweeps the active map for entries whose
+ *     `lastFiredTs` is > ANOMALY_SILENCE_MS old (evaluated against
+ *     `Date.now()`, which fake timers can control deterministically).
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { POLL_INTERVALS } from '../constants';
-import type {
-  IVAnomaliesListResponse,
-  IVAnomalyRow,
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ANOMALY_SILENCE_MS, POLL_INTERVALS } from '../constants';
+import {
+  anomalyCompoundKey,
+  type ActiveAnomaly,
+  type IVAnomaliesListResponse,
+  type IVAnomalyRow,
+  type IVAnomalyTicker,
 } from '../components/IVAnomalies/types';
 import { ivAnomalyBannerStore } from '../components/IVAnomalies/banner-store';
 import { playAnomalyChime } from '../utils/anomaly-sound';
 import { getErrorMessage } from '../utils/error';
 
 export interface UseIVAnomaliesReturn {
-  anomalies: IVAnomaliesListResponse | null;
+  /** Active compound keys, freshest first. */
+  anomalies: ActiveAnomaly[];
   loading: boolean;
   error: string | null;
   refresh: () => void;
@@ -86,13 +96,174 @@ function collectRows(
   ];
 }
 
+function isKnownTicker(t: string): t is IVAnomalyTicker {
+  return t === 'SPX' || t === 'SPY' || t === 'QQQ';
+}
+
+/**
+ * Parse an ISO timestamp to epoch ms. Returns `fallback` if parsing fails
+ * or yields NaN so downstream math never silently misbehaves.
+ */
+function tsMs(iso: string, fallback: number): number {
+  const parsed = Date.parse(iso);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+interface ReconcileResult {
+  nextMap: ReadonlyMap<string, ActiveAnomaly>;
+  /** Rows that represent a "new event" — banner + chime consumers. */
+  rowsToBanner: IVAnomalyRow[];
+  /** Updated set of already-processed detector row ids. */
+  nextSeenIds: Set<number>;
+}
+
+/**
+ * Core aggregation — pure function so it's safe to call without worrying
+ * about Strict Mode double-invocation or stale setState closures. Given
+ * the existing map, the set of previously-processed row ids, and an
+ * incoming batch of raw rows, produces the next map plus the list of
+ * rows that should banner.
+ *
+ * The `seenIds` guard is load-bearing: the API returns a rolling history
+ * window, so poll N+1 re-sends every row from poll N. Without the guard
+ * we'd re-count every row on every poll and inflate `firingCount`.
+ *
+ * Semantics (matches the spec):
+ *   - Group rows by compound key (filtering rows we've already processed).
+ *   - New compound key ⇒ add to map; banner UNLESS first poll (priming).
+ *   - Existing compound key ⇒ update `latest` and `lastFiredTs`, bump
+ *     `firingCount`. A silence gap of ≥ ANOMALY_SILENCE_MS between the
+ *     existing `lastFiredTs` and the next row is treated as a NEW event
+ *     (reset `firstSeenTs`, `firingCount = 1`, banner).
+ *   - Eviction: after ingestion, drop any entry whose `lastFiredTs` is
+ *     > ANOMALY_SILENCE_MS older than `Date.now()`.
+ */
+function reconcile(
+  prev: ReadonlyMap<string, ActiveAnomaly>,
+  seenIds: ReadonlySet<number>,
+  rows: readonly IVAnomalyRow[],
+  isFirstPoll: boolean,
+): ReconcileResult {
+  const next = new Map(prev);
+  const nowMs = Date.now();
+  const rowsToBanner: IVAnomalyRow[] = [];
+  // Guard per-poll idempotence — if the same detector row id shows up in
+  // both the "new compound key" and the "re-banner after gap" paths
+  // (should be impossible but cheap insurance) we only push once.
+  const bannerIds = new Set<number>();
+  const nextSeenIds = new Set(seenIds);
+
+  // 1. Group previously-unseen rows by compound key.
+  const byKey = new Map<string, IVAnomalyRow[]>();
+  for (const row of rows) {
+    if (!isKnownTicker(row.ticker)) continue;
+    if (seenIds.has(row.id)) continue;
+    nextSeenIds.add(row.id);
+    const key = anomalyCompoundKey(row);
+    const bucket = byKey.get(key);
+    if (bucket) bucket.push(row);
+    else byKey.set(key, [row]);
+  }
+
+  // 2. Ingest each bucket.
+  for (const [key, bucket] of byKey) {
+    // Oldest → newest by ts so `latest` ends up as the freshest row
+    // and firing bookkeeping matches chronological order.
+    const sorted = [...bucket].sort((a, b) => tsMs(a.ts, 0) - tsMs(b.ts, 0));
+    const existing = next.get(key);
+
+    if (!existing) {
+      const freshest = sorted.at(-1);
+      const firstRow = sorted[0];
+      if (!freshest || !firstRow) continue;
+      const ticker = freshest.ticker;
+      if (!isKnownTicker(ticker)) continue;
+      next.set(key, {
+        compoundKey: key,
+        ticker,
+        strike: freshest.strike,
+        side: freshest.side,
+        expiry: freshest.expiry,
+        latest: freshest,
+        firstSeenTs: firstRow.ts,
+        lastFiredTs: freshest.ts,
+        firingCount: sorted.length,
+      });
+      if (!isFirstPoll && !bannerIds.has(freshest.id)) {
+        rowsToBanner.push(freshest);
+        bannerIds.add(freshest.id);
+      }
+      continue;
+    }
+
+    let runLastFiredMs = tsMs(existing.lastFiredTs, nowMs);
+    let runLastFiredIso = existing.lastFiredTs;
+    let runFirstSeenIso = existing.firstSeenTs;
+    let runFiringCount = existing.firingCount;
+    let runLatest: IVAnomalyRow = existing.latest;
+    let rebannerRow: IVAnomalyRow | null = null;
+
+    for (const row of sorted) {
+      const rowMs = tsMs(row.ts, nowMs);
+      if (rowMs - runLastFiredMs >= ANOMALY_SILENCE_MS) {
+        // Silence gap long enough to treat this firing as a new event.
+        // Reset the active-span bookkeeping and remember the row so we
+        // can banner it (unless priming).
+        runFirstSeenIso = row.ts;
+        runFiringCount = 1;
+        rebannerRow = row;
+      } else {
+        runFiringCount += 1;
+      }
+      runLatest = row;
+      runLastFiredIso = row.ts;
+      runLastFiredMs = rowMs;
+    }
+
+    next.set(key, {
+      ...existing,
+      latest: runLatest,
+      firstSeenTs: runFirstSeenIso,
+      lastFiredTs: runLastFiredIso,
+      firingCount: runFiringCount,
+    });
+
+    if (rebannerRow && !isFirstPoll && !bannerIds.has(rebannerRow.id)) {
+      rowsToBanner.push(rebannerRow);
+      bannerIds.add(rebannerRow.id);
+    }
+  }
+
+  // 3. Eviction pass — drop anything that's been silent ≥ threshold.
+  //    Runs even on the first poll so pre-existing-but-stale entries
+  //    don't clutter the board on mount.
+  for (const [key, entry] of next) {
+    const lastMs = tsMs(entry.lastFiredTs, nowMs);
+    if (nowMs - lastMs >= ANOMALY_SILENCE_MS) {
+      next.delete(key);
+    }
+  }
+
+  return { nextMap: next, rowsToBanner, nextSeenIds };
+}
+
 export function useIVAnomalies(
   enabled: boolean,
   marketOpen: boolean,
 ): UseIVAnomaliesReturn {
-  const [anomalies, setAnomalies] = useState<IVAnomaliesListResponse | null>(
-    null,
-  );
+  // Aggregated active entries, keyed by compound key. We keep a map
+  // internally for O(1) upsert and convert to a sorted array for the
+  // return value. `activeMapRef` mirrors the React state so the async
+  // refresh callback can read the current map without racing Strict Mode
+  // double-invocation.
+  const [activeMap, setActiveMap] = useState<
+    ReadonlyMap<string, ActiveAnomaly>
+  >(() => new Map());
+  const activeMapRef = useRef<ReadonlyMap<string, ActiveAnomaly>>(new Map());
+  // Rolling set of detector row ids we've already folded into the map.
+  // The API re-sends recent rows across polls; without this guard we'd
+  // re-ingest them and inflate firingCount on every poll.
+  const seenIdsRef = useRef<Set<number>>(new Set());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -101,7 +272,6 @@ export function useIVAnomalies(
   // `refresh` closure can mutate it without being re-created.
   const [failStreak, setFailStreak] = useState(0);
   const failStreakRef = useRef(0);
-  const knownIdsRef = useRef<Set<number>>(new Set());
   const primedRef = useRef(false);
   // Flipped on unmount so late-arriving fetch responses skip setState.
   const mountedRef = useRef(true);
@@ -130,32 +300,32 @@ export function useIVAnomalies(
 
       if (result.data) {
         const rows = collectRows(result.data);
+        const isFirstPoll = !primedRef.current;
+        primedRef.current = true;
 
-        if (!primedRef.current) {
-          // First successful poll: seed the known-set without alerting.
-          // Anomalies that existed before the user opened the page are
-          // history, not new signals.
-          for (const row of rows) knownIdsRef.current.add(row.id);
-          primedRef.current = true;
-        } else {
-          // Every subsequent poll: anything not in the known-set is new.
-          // Push to banner + fire chime once per new ID.
-          let firedSound = false;
-          for (const row of rows) {
-            if (knownIdsRef.current.has(row.id)) continue;
-            knownIdsRef.current.add(row.id);
+        // Compute the next map + side-effect queue OUTSIDE setState so
+        // Strict Mode double-invocation never double-pushes banners or
+        // re-plays the chime. We use a ref to read the current map.
+        const { nextMap, rowsToBanner, nextSeenIds } = reconcile(
+          activeMapRef.current,
+          seenIdsRef.current,
+          rows,
+          isFirstPoll,
+        );
+
+        activeMapRef.current = nextMap;
+        seenIdsRef.current = nextSeenIds;
+        setActiveMap(nextMap);
+
+        if (rowsToBanner.length > 0) {
+          for (const row of rowsToBanner) {
             ivAnomalyBannerStore.push(row);
-            if (!firedSound) {
-              // Only trigger the chime once per poll — the sound util has
-              // its own 3s throttle but calling it repeatedly in one tick
-              // is wasteful.
-              playAnomalyChime();
-              firedSound = true;
-            }
           }
+          // One chime per poll no matter how many new events landed —
+          // the sound util also has a 3s throttle but this avoids
+          // calling it needlessly.
+          playAnomalyChime();
         }
-
-        setAnomalies(result.data);
       }
       setLoading(false);
     });
@@ -176,6 +346,14 @@ export function useIVAnomalies(
     const interval = setInterval(refresh, POLL_INTERVALS.CHAIN * backoff);
     return () => clearInterval(interval);
   }, [enabled, marketOpen, refresh, failStreak]);
+
+  // Freshest first: a user scanning the board cares about "what just fired"
+  // more than "what started at 10:05 and is still grinding".
+  const anomalies = useMemo<ActiveAnomaly[]>(() => {
+    const arr = [...activeMap.values()];
+    arr.sort((a, b) => tsMs(b.lastFiredTs, 0) - tsMs(a.lastFiredTs, 0));
+    return arr;
+  }, [activeMap]);
 
   return { anomalies, loading, error, refresh };
 }

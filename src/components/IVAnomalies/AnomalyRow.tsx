@@ -1,32 +1,45 @@
-import { useState } from 'react';
-import type {
-  IVAnomalyFlowPhase,
-  IVAnomalyRow as IVAnomalyRowData,
-} from './types';
+import { useEffect, useState } from 'react';
+import type { ActiveAnomaly, IVAnomalyFlowPhase } from './types';
 import { StrikeIVChart } from './StrikeIVChart';
 
 /**
- * Per-anomaly row. Compact by default; expands to a full detail drawer
- * with the `context_snapshot` fields + per-strike IV mini-chart when
- * clicked. Shows a flow-phase pill, the target strike, flag reasons, and
- * the detection metrics.
+ * Per-active-strike row. Each row represents ONE compound key
+ * (`ticker:strike:side:expiry`) that the detector is currently firing on.
+ * Metrics come from `anomaly.latest` and update in-place as new rows
+ * arrive from the hook's aggregation layer. Row also surfaces
+ * aggregation-level telemetry — active duration, firing count, and
+ * freshness — so the user can see intensity at a glance.
+ *
+ * Collapsed by default; expands to a full detail drawer with the
+ * `context_snapshot` fields + per-strike IV mini-chart when clicked.
  */
-export function AnomalyRow({
-  anomaly,
-}: {
-  readonly anomaly: IVAnomalyRowData;
-}) {
+export function AnomalyRow({ anomaly }: { readonly anomaly: ActiveAnomaly }) {
   const [expanded, setExpanded] = useState(false);
-  const phase = anomaly.flowPhase;
+  const latest = anomaly.latest;
+  const phase = latest.flowPhase;
 
-  // Format the detection timestamp in the user's local tz but drop seconds
-  // for density. `Intl.DateTimeFormat` handles an ISO string cleanly.
-  const tsLabel = formatTs(anomaly.ts);
+  // Track `now` as state so the "active 42m" / "last fire 2m ago" labels
+  // roll forward even when no new row has arrived. Refreshed every 30s;
+  // that's tight enough for at-a-glance reading without thrashing.
+  // Storing it as state (rather than calling Date.now() in render) keeps
+  // the component pure per react-hooks/purity.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, []);
 
   // SPX-only: the spec flagged that spx_recent_dark_prints is SPX-scoped.
   // Hide the "dark prints" sub-field for SPY / QQQ entirely so we never
   // mis-attribute an SPX print to a different underlying.
   const isSpxScoped = anomaly.ticker === 'SPX';
+
+  const activeDurationLabel = formatDuration(
+    nowMs - Date.parse(anomaly.firstSeenTs),
+  );
+  const freshnessLabel = formatFreshness(
+    nowMs - Date.parse(anomaly.lastFiredTs),
+  );
 
   return (
     <div className="border-edge bg-surface-alt rounded-md border">
@@ -49,11 +62,17 @@ export function AnomalyRow({
         </span>
         <PhasePill phase={phase} />
         <div className="ml-auto flex flex-wrap items-center gap-1">
-          {anomaly.flagReasons.map((reason) => (
+          {latest.flagReasons.map((reason) => (
             <FlagBadge key={reason} reason={reason} />
           ))}
           <span className="text-muted ml-2 font-mono text-[10px]">
-            {tsLabel}
+            active {activeDurationLabel}
+          </span>
+          <span className="text-muted font-mono text-[10px]">
+            last fire {freshnessLabel}
+          </span>
+          <span className="text-muted font-mono text-[10px]">
+            firings: {anomaly.firingCount}
           </span>
         </div>
       </button>
@@ -63,40 +82,40 @@ export function AnomalyRow({
           <div className="mb-3 grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-[11px] sm:grid-cols-4">
             <Metric
               label="spot @ detect"
-              value={anomaly.spotAtDetect.toFixed(2)}
+              value={latest.spotAtDetect.toFixed(2)}
             />
             <Metric
               label="IV @ detect"
-              value={`${(anomaly.ivAtDetect * 100).toFixed(1)}%`}
+              value={`${(latest.ivAtDetect * 100).toFixed(1)}%`}
             />
             <Metric
               label="skew Δ"
-              value={fmtOrDash(anomaly.skewDelta, (v) => v.toFixed(2))}
+              value={fmtOrDash(latest.skewDelta, (v) => v.toFixed(2))}
             />
             <Metric
               label="Z-score"
-              value={fmtOrDash(anomaly.zScore, (v) => v.toFixed(2))}
+              value={fmtOrDash(latest.zScore, (v) => v.toFixed(2))}
             />
             <Metric
               label="ask-mid Δ"
-              value={fmtOrDash(anomaly.askMidDiv, (v) => v.toFixed(3))}
+              value={fmtOrDash(latest.askMidDiv, (v) => v.toFixed(3))}
             />
           </div>
 
           <ContextSnapshotView
-            snapshot={anomaly.contextSnapshot}
+            snapshot={latest.contextSnapshot}
             isSpxScoped={isSpxScoped}
           />
 
-          <ResolutionOutcomeView outcome={anomaly.resolutionOutcome} />
+          <ResolutionOutcomeView outcome={latest.resolutionOutcome} />
 
           <div className="mt-4">
             <StrikeIVChart
-              ticker={anomaly.ticker as 'SPX' | 'SPY' | 'QQQ'}
+              ticker={anomaly.ticker}
               strike={anomaly.strike}
               side={anomaly.side}
               expiry={anomaly.expiry}
-              detectedAt={anomaly.ts}
+              detectedAt={latest.ts}
             />
           </div>
         </div>
@@ -429,14 +448,29 @@ function formatContextValue(v: unknown): string {
   return typeof v === 'object' ? '{…}' : String(v);
 }
 
-function formatTs(iso: string): string {
-  try {
-    return new Date(iso).toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      timeZone: 'America/Chicago',
-    });
-  } catch {
-    return iso;
-  }
+/**
+ * "42m active" / "2h 15m active" / "just started". The duration label
+ * intentionally reads like prose because it's glanced at, not parsed.
+ */
+function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return 'just started';
+  const totalMinutes = Math.floor(ms / 60_000);
+  if (totalMinutes < 1) return 'just started';
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours}h ${minutes}m`;
+}
+
+/**
+ * "just now" / "2m ago" / "14m ago". Used for the "last fire" label — a
+ * scan cue for whether the strike is still hot.
+ */
+function formatFreshness(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 60_000) return 'just now';
+  const totalMinutes = Math.floor(ms / 60_000);
+  if (totalMinutes < 60) return `${totalMinutes}m ago`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours}h ${minutes}m ago`;
 }

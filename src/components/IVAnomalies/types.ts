@@ -62,3 +62,45 @@ export const IV_ANOMALY_TICKERS: readonly IVAnomalyTicker[] = [
   'SPY',
   'QQQ',
 ] as const;
+
+/**
+ * Aggregated anomaly view — one entry per active compound key
+ * (`ticker:strike:side:expiry`). `useIVAnomalies` builds these from the
+ * raw per-minute `IVAnomalyRow` stream so the display stays stable while
+ * the detector keeps firing the same strike.
+ *
+ * Invariants:
+ *   - `latest` always holds the most recent row's full payload (the
+ *     displayed row updates its metrics in place).
+ *   - `firstSeenTs` is pinned at the first firing of the current
+ *     active-span; if the strike goes silent ≥ ANOMALY_SILENCE_MS and then
+ *     re-fires, `firstSeenTs` resets to that new firing.
+ *   - `firingCount` is the number of raw rows aggregated into this entry
+ *     within its current active-span — it resets on re-banner.
+ */
+export interface ActiveAnomaly {
+  /** `${ticker}:${strike}:${side}:${expiry}` — stable across polls. */
+  compoundKey: string;
+  ticker: IVAnomalyTicker;
+  strike: number;
+  side: IVAnomalySide;
+  expiry: string;
+  /** Most recent raw row — its values drive the displayed metrics. */
+  latest: IVAnomalyRow;
+  /** First firing in the current active-span (ISO). */
+  firstSeenTs: string;
+  /** Most recent firing (ISO). */
+  lastFiredTs: string;
+  /** Count of raw rows seen in the current active-span. */
+  firingCount: number;
+}
+
+/**
+ * Build the compound key for an anomaly row. Exported so tests (and any
+ * future consumers) agree on the grouping contract.
+ */
+export function anomalyCompoundKey(
+  row: Pick<IVAnomalyRow, 'ticker' | 'strike' | 'side' | 'expiry'>,
+): string {
+  return `${row.ticker}:${row.strike}:${row.side}:${row.expiry}`;
+}

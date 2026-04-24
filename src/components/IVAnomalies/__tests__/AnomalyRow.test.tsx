@@ -2,7 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { AnomalyRow } from '../AnomalyRow';
-import type { IVAnomalyRow } from '../types';
+import {
+  anomalyCompoundKey,
+  type ActiveAnomaly,
+  type IVAnomalyRow,
+} from '../types';
 
 function makeRow(overrides: Partial<IVAnomalyRow> = {}): IVAnomalyRow {
   return {
@@ -29,6 +33,28 @@ function makeRow(overrides: Partial<IVAnomalyRow> = {}): IVAnomalyRow {
   };
 }
 
+function makeActive(
+  rowOverrides: Partial<IVAnomalyRow> = {},
+  aggOverrides: Partial<ActiveAnomaly> = {},
+): ActiveAnomaly {
+  const latest = makeRow(rowOverrides);
+  const base: ActiveAnomaly = {
+    compoundKey: anomalyCompoundKey(latest),
+    ticker:
+      latest.ticker === 'SPY' || latest.ticker === 'QQQ'
+        ? latest.ticker
+        : 'SPX',
+    strike: latest.strike,
+    side: latest.side,
+    expiry: latest.expiry,
+    latest,
+    firstSeenTs: latest.ts,
+    lastFiredTs: latest.ts,
+    firingCount: 1,
+  };
+  return { ...base, ...aggOverrides };
+}
+
 // Mock the chart so these tests don't hit fetch.
 vi.mock('../StrikeIVChart', () => ({
   StrikeIVChart: () => <div data-testid="strike-iv-chart" />,
@@ -50,19 +76,20 @@ describe('AnomalyRow', () => {
   });
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   it('renders the collapsed header with strike/side/flags/phase', () => {
-    render(<AnomalyRow anomaly={makeRow()} />);
+    render(<AnomalyRow anomaly={makeActive()} />);
     expect(screen.getByText(/SPX 7135P/)).toBeInTheDocument();
     expect(screen.getByText('skew_delta')).toBeInTheDocument();
     expect(screen.getByText('z_score')).toBeInTheDocument();
     expect(screen.getByText('early')).toBeInTheDocument();
   });
 
-  it('expands on click and shows detailed metrics', async () => {
+  it('expands on click and shows detailed metrics from the latest row', async () => {
     const user = userEvent.setup();
-    render(<AnomalyRow anomaly={makeRow()} />);
+    render(<AnomalyRow anomaly={makeActive()} />);
     const toggle = screen.getByRole('button', {
       name: /Toggle details for SPX 7135 put anomaly/,
     });
@@ -77,7 +104,11 @@ describe('AnomalyRow', () => {
     const user = userEvent.setup();
     render(
       <AnomalyRow
-        anomaly={makeRow({ skewDelta: null, zScore: null, askMidDiv: null })}
+        anomaly={makeActive({
+          skewDelta: null,
+          zScore: null,
+          askMidDiv: null,
+        })}
       />,
     );
     const toggle = screen.getByRole('button', {
@@ -93,7 +124,7 @@ describe('AnomalyRow', () => {
     const user = userEvent.setup();
     render(
       <AnomalyRow
-        anomaly={makeRow({
+        anomaly={makeActive({
           ticker: 'SPY',
           strike: 705,
           contextSnapshot: { vix_level: 18 },
@@ -105,14 +136,13 @@ describe('AnomalyRow', () => {
         name: /Toggle details for SPY 705 put anomaly/,
       }),
     );
-    // Click the details summary to reveal the context pane.
     await user.click(screen.getByText(/Context snapshot/));
     expect(screen.getByText(/Dark prints omitted/)).toBeInTheDocument();
   });
 
   it('hides the resolution section when resolutionOutcome is null', async () => {
     const user = userEvent.setup();
-    render(<AnomalyRow anomaly={makeRow({ resolutionOutcome: null })} />);
+    render(<AnomalyRow anomaly={makeActive({ resolutionOutcome: null })} />);
     await user.click(
       screen.getByRole('button', {
         name: /Toggle details for SPX 7135 put anomaly/,
@@ -125,7 +155,7 @@ describe('AnomalyRow', () => {
     const user = userEvent.setup();
     render(
       <AnomalyRow
-        anomaly={makeRow({
+        anomaly={makeActive({
           resolutionOutcome: {
             outcome_class: 'winner_fast',
             notional_1c_pnl: 142.5,
@@ -163,11 +193,98 @@ describe('AnomalyRow', () => {
     expect(section.textContent).toContain('winner_fast');
     expect(section.textContent).toContain('$143'); // rounded 142.5 → 143
     expect(section.textContent).toContain('NQ led SPX by 2 mins');
-    // Top-3 leading assets by |correlation|: NQ (0.48), ES (0.42), RTY (-0.1)
     expect(section.textContent).toContain('NQ');
     expect(section.textContent).toContain('ES');
     expect(section.textContent).toContain('RTY');
-    // ZN has the smallest |correlation| and should be excluded.
     expect(section.textContent).not.toContain('ZN');
+  });
+
+  // ─── Aggregation telemetry (duration / freshness / firing count) ───
+
+  it('shows "active 42m" when the span is between 1 min and 1 hour', () => {
+    // Pin wall clock; firstSeenTs is 42 min before.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-23T16:12:00Z'));
+    render(
+      <AnomalyRow
+        anomaly={makeActive(
+          { ts: '2026-04-23T16:11:00Z' },
+          {
+            firstSeenTs: '2026-04-23T15:30:00Z',
+            lastFiredTs: '2026-04-23T16:11:00Z',
+            firingCount: 38,
+          },
+        )}
+      />,
+    );
+    expect(screen.getByText(/active 42m/)).toBeInTheDocument();
+  });
+
+  it('shows "active 2h 15m" when the span exceeds one hour', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-23T17:45:30Z'));
+    render(
+      <AnomalyRow
+        anomaly={makeActive(
+          { ts: '2026-04-23T17:45:00Z' },
+          {
+            firstSeenTs: '2026-04-23T15:30:00Z',
+            lastFiredTs: '2026-04-23T17:45:00Z',
+            firingCount: 120,
+          },
+        )}
+      />,
+    );
+    expect(screen.getByText(/active 2h 15m/)).toBeInTheDocument();
+  });
+
+  it('shows "last fire 2m ago" when the last firing was >=1m but <60m ago', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-23T15:32:00Z'));
+    render(
+      <AnomalyRow
+        anomaly={makeActive(
+          { ts: '2026-04-23T15:30:00Z' },
+          {
+            firstSeenTs: '2026-04-23T15:28:00Z',
+            lastFiredTs: '2026-04-23T15:30:00Z',
+            firingCount: 3,
+          },
+        )}
+      />,
+    );
+    expect(screen.getByText(/last fire 2m ago/)).toBeInTheDocument();
+  });
+
+  it('shows "last fire just now" when the last firing was <60s ago', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-23T15:30:15Z'));
+    render(
+      <AnomalyRow
+        anomaly={makeActive(
+          { ts: '2026-04-23T15:30:00Z' },
+          {
+            firstSeenTs: '2026-04-23T15:29:00Z',
+            lastFiredTs: '2026-04-23T15:30:00Z',
+            firingCount: 2,
+          },
+        )}
+      />,
+    );
+    expect(screen.getByText(/last fire just now/)).toBeInTheDocument();
+  });
+
+  it('displays the firing count label', () => {
+    render(
+      <AnomalyRow
+        anomaly={makeActive(
+          {},
+          {
+            firingCount: 38,
+          },
+        )}
+      />,
+    );
+    expect(screen.getByText(/firings: 38/)).toBeInTheDocument();
   });
 });
