@@ -7,6 +7,7 @@
  */
 
 import { z } from 'zod';
+import { STRIKE_IV_TICKERS } from './constants.js';
 
 // ============================================================
 // /api/spot-gex-history
@@ -60,15 +61,15 @@ export type ZeroGammaQuery = z.infer<typeof zeroGammaQuerySchema>;
  *
  *  1. **List mode** (no strike): returns `{ latest, history }` grouped by
  *     ticker. `ticker` narrows to a single ticker; omitting it returns
- *     all three (SPX/SPY/QQQ). `limit` caps `history` length (default 100,
- *     max 500) and serves as an upper bound across all tickers when no
- *     ticker is supplied.
+ *     every ticker in STRIKE_IV_TICKERS. `limit` caps `history` length
+ *     (default 100, max 500) and serves as an upper bound across all
+ *     tickers when no ticker is supplied.
  *
  *  2. **Per-strike history mode** (strike + side + expiry present): returns
  *     the per-strike IV time series from `strike_iv_snapshots` for the last
  *     `limit` samples. Feeds the Phase 3 StrikeIVChart.
  *
- * `ticker` is gated to SPX/SPY/QQQ — the only tickers ingested by
+ * `ticker` is gated to STRIKE_IV_TICKERS — the only tickers ingested by
  * `fetch-strike-iv`. Anything else would guarantee an empty response
  * and is rejected here to surface client bugs early.
  *
@@ -80,7 +81,7 @@ export type ZeroGammaQuery = z.infer<typeof zeroGammaQuerySchema>;
  */
 export const ivAnomaliesQuerySchema = z
   .object({
-    ticker: z.enum(['SPX', 'SPY', 'QQQ']).optional(),
+    ticker: z.enum(STRIKE_IV_TICKERS).optional(),
     limit: z.coerce.number().int().min(1).max(500).default(100),
     strike: z.coerce.number().positive().finite().optional(),
     side: z.enum(['call', 'put']).optional(),

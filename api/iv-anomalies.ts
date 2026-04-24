@@ -11,7 +11,7 @@
  *
  *   1. **List mode** (default): `{ latest, history }` per ticker. When the
  *      caller supplies `?ticker=SPX` only that key is populated; when it's
- *      omitted all three (SPX/SPY/QQQ) come back.
+ *      omitted every ticker in STRIKE_IV_TICKERS comes back.
  *
  *   2. **Per-strike history mode**: `?ticker=SPX&strike=7135&side=put&expiry=...`
  *      returns the minute-by-minute IV bid/mid/ask series from
@@ -29,9 +29,10 @@ import {
   setCacheHeaders,
 } from './_lib/api-helpers.js';
 import { ivAnomaliesQuerySchema } from './_lib/validation.js';
+import { STRIKE_IV_TICKERS, type StrikeIVTicker } from './_lib/constants.js';
 
-const TICKERS = ['SPX', 'SPY', 'QQQ'] as const;
-type Ticker = (typeof TICKERS)[number];
+const TICKERS = STRIKE_IV_TICKERS;
+type Ticker = StrikeIVTicker;
 
 export interface IVAnomalyRow {
   id: number;
@@ -260,19 +261,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }),
       );
 
-      // Always emit all three keys so the client never has to guess whether
-      // a missing key means "no data" or "not requested". When a specific
-      // ticker is requested, the other two keys are null / [].
-      const latest: Record<Ticker, IVAnomalyRow | null> = {
-        SPX: null,
-        SPY: null,
-        QQQ: null,
-      };
-      const history: Record<Ticker, IVAnomalyRow[]> = {
-        SPX: [],
-        SPY: [],
-        QQQ: [],
-      };
+      // Always emit every ticker key so the client never has to guess
+      // whether a missing key means "no data" or "not requested". When a
+      // specific ticker is requested, the other keys stay null / [].
+      const latest = Object.fromEntries(
+        TICKERS.map((t) => [t, null]),
+      ) as unknown as Record<Ticker, IVAnomalyRow | null>;
+      const history = Object.fromEntries(
+        TICKERS.map((t) => [t, [] as IVAnomalyRow[]]),
+      ) as unknown as Record<Ticker, IVAnomalyRow[]>;
 
       for (const { ticker: t, rows } of bundles) {
         history[t] = rows;

@@ -1,14 +1,16 @@
 /**
  * GET /api/cron/fetch-strike-iv
  *
- * 1-minute cron that snapshots per-strike implied volatility for SPX, SPY,
- * and QQQ into the `strike_iv_snapshots` table. Foundation for the Strike
- * IV Anomaly Detector (Phase 2 layers detection + context capture on top).
+ * 1-minute cron that snapshots per-strike implied volatility for the
+ * tickers in STRIKE_IV_TICKERS (indices SPX/SPY/QQQ/IWM + macro/sector
+ * ETFs TLT/XLF/XLE/XLK — 8 tickers total) into the `strike_iv_snapshots`
+ * table. Foundation for the Strike IV Anomaly Detector (Phase 2 layers
+ * detection + context capture on top).
  *
  * Per ticker, per run:
  *   1. Fetch the Schwab option chain for today → next 2 Fridays.
  *   2. Filter to OTM ±3% of spot.
- *   3. Filter to min OI (500 SPX, 250 SPY/QQQ).
+ *   3. Filter to per-ticker min OI (see minOiFor).
  *   4. Recompute IV from bid/ask/mid price via Black-Scholes — Schwab's
  *      quoted IV may use a different forward/model, and recomputing keeps
  *      the cross-ticker time series consistent.
@@ -16,12 +18,14 @@
  *      strike_iv_snapshots.
  *
  * Fault tolerance: a Schwab auth or fetch failure for one ticker must NOT
- * block the other two. Each ticker runs independently and its errors are
- * captured to Sentry but not rethrown to the handler.
+ * block the others. Each ticker runs independently and its errors are
+ * captured to Sentry but not rethrown to the handler. Sector ETFs +
+ * TLT may also legitimately have no 0DTE listed for the session —
+ * logged as `empty_chain`, not an error.
  *
  * Cron cadence: `* 13-21 * * 1-5` — every minute during market hours.
- * Volume budget: 3 tickers × 1 request/min = 180 Schwab requests/hour,
- * well under the per-app rate limit.
+ * Volume budget: 8 tickers × 1 request/min = 480 Schwab requests/hour,
+ * still under the per-app rate limit.
  *
  * Environment: CRON_SECRET (no UW API key — pure Schwab + Neon).
  */
@@ -35,6 +39,8 @@ import {
   STRIKE_IV_OTM_RANGE_PCT,
   STRIKE_IV_MIN_OI_SPX,
   STRIKE_IV_MIN_OI_SPY_QQQ,
+  STRIKE_IV_MIN_OI_IWM,
+  STRIKE_IV_MIN_OI_SECTOR_ETF,
   STRIKE_IV_TICKERS,
   Z_WINDOW_SIZE,
   type StrikeIVTicker,
@@ -141,15 +147,40 @@ function parseExpKey(key: string): string {
 // ── Schwab chain fetch ───────────────────────────────────────
 
 /**
- * Schwab uses a `$`-prefixed symbol for SPX options and bare symbols for
- * SPY/QQQ. See api/chain.ts for the established pattern.
+ * Schwab uses a `$`-prefixed symbol for SPX options (cash index) and bare
+ * symbols for ETFs (SPY/QQQ/IWM/TLT/XLF/XLE/XLK). See api/chain.ts for
+ * the established pattern — only cash indices like SPX take the `$` prefix.
  */
 function schwabSymbol(ticker: StrikeIVTicker): string {
   return ticker === 'SPX' ? '$SPX' : ticker;
 }
 
+/**
+ * Per-ticker minimum open interest. Four tiers reflect chain-wide strike
+ * density and liquidity depth; see constants for rationale.
+ *
+ * The exhaustiveness check means adding a new ticker to STRIKE_IV_TICKERS
+ * without a matching case here is a compile error — not a silent fallback.
+ */
 function minOiFor(ticker: StrikeIVTicker): number {
-  return ticker === 'SPX' ? STRIKE_IV_MIN_OI_SPX : STRIKE_IV_MIN_OI_SPY_QQQ;
+  switch (ticker) {
+    case 'SPX':
+      return STRIKE_IV_MIN_OI_SPX;
+    case 'SPY':
+    case 'QQQ':
+      return STRIKE_IV_MIN_OI_SPY_QQQ;
+    case 'IWM':
+      return STRIKE_IV_MIN_OI_IWM;
+    case 'TLT':
+    case 'XLF':
+    case 'XLE':
+    case 'XLK':
+      return STRIKE_IV_MIN_OI_SECTOR_ETF;
+    default: {
+      const _exhaustive: never = ticker;
+      throw new Error(`No OI threshold for ticker: ${String(_exhaustive)}`);
+    }
+  }
 }
 
 async function fetchChain(

@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { useIVAnomalies } from '../../../hooks/useIVAnomalies';
 import { ivAnomalyBannerStore } from '../banner-store';
-import type { IVAnomaliesListResponse, IVAnomalyRow } from '../types';
+import {
+  IV_ANOMALY_TICKERS,
+  type IVAnomaliesListResponse,
+  type IVAnomalyRow,
+  type IVAnomalyTicker,
+} from '../types';
 
 /**
  * These tests exercise the aggregation pipeline — one ActiveAnomaly per
@@ -37,24 +42,27 @@ function makeRow(overrides: Partial<IVAnomalyRow> = {}): IVAnomalyRow {
   };
 }
 
+function isKnownTicker(t: string): t is IVAnomalyTicker {
+  return (IV_ANOMALY_TICKERS as readonly string[]).includes(t);
+}
+
 function payloadFor(rows: IVAnomalyRow[]): IVAnomaliesListResponse {
-  const byTicker: Record<'SPX' | 'SPY' | 'QQQ', IVAnomalyRow[]> = {
-    SPX: [],
-    SPY: [],
-    QQQ: [],
-  };
+  // Seed every ticker key so the response shape matches the server's
+  // always-emit-every-ticker contract — the hook reads from all of them.
+  const byTicker = Object.fromEntries(
+    IV_ANOMALY_TICKERS.map((t) => [t, [] as IVAnomalyRow[]]),
+  ) as unknown as Record<IVAnomalyTicker, IVAnomalyRow[]>;
   for (const r of rows) {
-    if (r.ticker === 'SPX' || r.ticker === 'SPY' || r.ticker === 'QQQ') {
+    if (isKnownTicker(r.ticker)) {
       byTicker[r.ticker].push(r);
     }
   }
+  const latest = Object.fromEntries(
+    IV_ANOMALY_TICKERS.map((t) => [t, byTicker[t].at(-1) ?? null]),
+  ) as unknown as Record<IVAnomalyTicker, IVAnomalyRow | null>;
   return {
     mode: 'list',
-    latest: {
-      SPX: byTicker.SPX.at(-1) ?? null,
-      SPY: byTicker.SPY.at(-1) ?? null,
-      QQQ: byTicker.QQQ.at(-1) ?? null,
-    },
+    latest,
     history: byTicker,
   };
 }

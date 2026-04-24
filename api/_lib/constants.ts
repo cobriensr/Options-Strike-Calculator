@@ -32,14 +32,37 @@ export const UW_BASE = 'https://api.unusualwhales.com/api';
 /**
  * Per-strike IV snapshot filters for the fetch-strike-iv cron.
  * OTM range: ±3% of spot covers 1% (today's 7100→7034 example) through tail hedges.
- * Min OI gates out illiquid strikes whose mid prices are stale — different per
- * ticker because SPX strikes are $5-wide (OI concentrates) vs SPY/QQQ $1-wide
- * (OI disperses across a wider band of strikes).
+ * Min OI gates out illiquid strikes whose mid prices are stale — per-ticker
+ * because SPX strikes are $5-wide (OI concentrates) vs SPY/QQQ $1-wide
+ * (OI disperses across a wider band), and sector ETFs / IWM / TLT have
+ * thinner chains still. Numbers calibrated on the tightest strike-wide
+ * gate that still filters ghost liquidity.
+ *
+ * Ticker mix (2026-04-23 expansion):
+ *   - Indices (0DTE-dense): SPX, SPY, QQQ, IWM
+ *   - Macro risk-off: TLT (bonds bid = equities often flush)
+ *   - Sector rotation: XLF (financials), XLE (energy), XLK (tech)
+ * Strike density, OI patterns, and 0DTE availability DIFFER across these —
+ * expect TLT/XLF/XLE/XLK to return empty 0DTE chains on some sessions;
+ * that's logged as a no-op and is not an error.
  */
 export const STRIKE_IV_OTM_RANGE_PCT = 0.03;
 export const STRIKE_IV_MIN_OI_SPX = 500;
 export const STRIKE_IV_MIN_OI_SPY_QQQ = 250;
-export const STRIKE_IV_TICKERS = ['SPX', 'SPY', 'QQQ'] as const;
+/** IWM (Russell 2000) — smaller-cap liquidity sits below QQQ. */
+export const STRIKE_IV_MIN_OI_IWM = 150;
+/** TLT + sector ETFs (XLF/XLE/XLK) — thinnest chains in the set. */
+export const STRIKE_IV_MIN_OI_SECTOR_ETF = 100;
+export const STRIKE_IV_TICKERS = [
+  'SPX',
+  'SPY',
+  'QQQ',
+  'IWM',
+  'TLT',
+  'XLF',
+  'XLE',
+  'XLK',
+] as const;
 export type StrikeIVTicker = (typeof STRIKE_IV_TICKERS)[number];
 
 // ============================================================

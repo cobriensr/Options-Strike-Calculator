@@ -62,6 +62,7 @@ import {
 } from '../constants';
 import {
   anomalyCompoundKey,
+  IV_ANOMALY_TICKERS,
   type ActiveAnomaly,
   type IVAnomaliesListResponse,
   type IVAnomalyExitReason,
@@ -121,15 +122,19 @@ async function fetchAnomalies(): Promise<FetchResult> {
 function collectRows(
   payload: IVAnomaliesListResponse,
 ): readonly IVAnomalyRow[] {
-  return [
-    ...payload.history.SPX,
-    ...payload.history.SPY,
-    ...payload.history.QQQ,
-  ];
+  // Flatten every ticker the server returned. `IV_ANOMALY_TICKERS` is
+  // the source of truth for iteration order; tickers not present in the
+  // payload contribute an empty slice via the nullish default.
+  const out: IVAnomalyRow[] = [];
+  for (const t of IV_ANOMALY_TICKERS) {
+    const rows = payload.history[t];
+    if (rows) out.push(...rows);
+  }
+  return out;
 }
 
 function isKnownTicker(t: string): t is IVAnomalyTicker {
-  return t === 'SPX' || t === 'SPY' || t === 'QQQ';
+  return (IV_ANOMALY_TICKERS as readonly string[]).includes(t);
 }
 
 /**

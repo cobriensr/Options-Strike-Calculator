@@ -170,11 +170,11 @@ describe('GET /api/iv-anomalies', () => {
   });
 
   it('returns empty-keyed list payload when no rows exist', async () => {
-    // List mode fires one query per ticker (SPX/SPY/QQQ) — all return [].
-    mockSql
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    // List mode fires one query per ticker in STRIKE_IV_TICKERS
+    // (SPX/SPY/QQQ/IWM/TLT/XLF/XLE/XLK, 8 total) — all return [].
+    for (let i = 0; i < 8; i += 1) {
+      mockSql.mockResolvedValueOnce([]);
+    }
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
@@ -186,12 +186,10 @@ describe('GET /api/iv-anomalies', () => {
       history: Record<string, unknown[]>;
     };
     expect(body.mode).toBe('list');
-    expect(body.latest.SPX).toBeNull();
-    expect(body.latest.SPY).toBeNull();
-    expect(body.latest.QQQ).toBeNull();
-    expect(body.history.SPX).toEqual([]);
-    expect(body.history.SPY).toEqual([]);
-    expect(body.history.QQQ).toEqual([]);
+    for (const t of ['SPX', 'SPY', 'QQQ', 'IWM', 'TLT', 'XLF', 'XLE', 'XLK']) {
+      expect(body.latest[t]).toBeNull();
+      expect(body.history[t]).toEqual([]);
+    }
   });
 
   it('returns latest + history grouped by ticker on happy path', async () => {
@@ -209,6 +207,10 @@ describe('GET /api/iv-anomalies', () => {
         }),
       ])
       .mockResolvedValueOnce([]); // QQQ empty
+    // Remaining 5 tickers (IWM/TLT/XLF/XLE/XLK) — all empty.
+    for (let i = 0; i < 5; i += 1) {
+      mockSql.mockResolvedValueOnce([]);
+    }
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
@@ -230,6 +232,11 @@ describe('GET /api/iv-anomalies', () => {
     expect(body.history.SPX).toHaveLength(2);
     expect(body.history.SPY).toHaveLength(1);
     expect(body.history.QQQ).toHaveLength(0);
+    // Expansion tickers round-tripped as empty latest + history.
+    for (const t of ['IWM', 'TLT', 'XLF', 'XLE', 'XLK']) {
+      expect(body.latest[t]).toBeNull();
+      expect(body.history[t]).toHaveLength(0);
+    }
   });
 
   it('narrows to a single ticker when query param is supplied', async () => {

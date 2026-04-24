@@ -126,7 +126,7 @@ function makeChain(
     expiry?: string;
     putStrikes?: number[];
     callStrikes?: number[];
-    ticker?: 'SPX' | 'SPY' | 'QQQ';
+    ticker?: 'SPX' | 'SPY' | 'QQQ' | 'IWM' | 'TLT' | 'XLF' | 'XLE' | 'XLK';
     openInterest?: number;
     bid?: number;
     ask?: number;
@@ -169,6 +169,28 @@ function makeChain(
   };
 }
 
+/**
+ * Empty-chain stubs for the IWM / TLT / XLF / XLE / XLK tail of the
+ * STRIKE_IV_TICKERS tuple. Tests that only care about SPX / SPY / QQQ
+ * behavior spread this into their mock sequence so the expansion tickers
+ * consistently produce `empty_chain` results without the caller having
+ * to spell out every ticker.
+ *
+ * Note on spot values: the spot used here must be a value near which the
+ * OTM band is well-defined — we pick the approximate 2026-04 spot for
+ * each symbol. With no strikes supplied, `extractRows` returns an empty
+ * array and the cron records `skipped=true, reason=empty_chain`.
+ */
+function emptyEtfChains() {
+  return [
+    makeChain('IWM', 235, {}),
+    makeChain('TLT', 92, {}),
+    makeChain('XLF', 52, {}),
+    makeChain('XLE', 95, {}),
+    makeChain('XLK', 242, {}),
+  ];
+}
+
 function authedReq() {
   return mockRequest({
     method: 'GET',
@@ -177,9 +199,11 @@ function authedReq() {
 }
 
 /**
- * Feed the schwabFetch mock a fresh chain for each of the 3 tickers in
- * STRIKE_IV_TICKERS order (SPX, SPY, QQQ). Any ticker set to `null`
- * simulates a fetch failure.
+ * Feed the schwabFetch mock a fresh chain for each ticker in
+ * STRIKE_IV_TICKERS order (SPX, SPY, QQQ, IWM, TLT, XLF, XLE, XLK).
+ * Any ticker set to `null` simulates a fetch failure. Tests supplying
+ * fewer than 8 entries implicitly get `ok: false` (undefined mock) for
+ * the remainder — `emptyEtfChains()` exists to make that explicit.
  */
 type ChainOrError =
   | ReturnType<typeof makeChain>
@@ -276,7 +300,7 @@ describe('fetch-strike-iv handler', () => {
 
   // ── Happy path: 3 tickers all return valid chains ──────────
 
-  it('inserts per-strike IV rows for all 3 tickers', async () => {
+  it('inserts per-strike IV rows for the primary 3 tickers and skips the rest when chains are empty', async () => {
     const spxChain = makeChain('$SPX', 7100, {
       putStrikes: [7020, 7050, 7080], // all OTM puts within -3% of 7100
       callStrikes: [7120, 7150, 7180], // all OTM calls within +3%
@@ -296,7 +320,10 @@ describe('fetch-strike-iv handler', () => {
       ask: 0.8,
     });
 
-    mockChainSequence([spxChain, spyChain, qqqChain]);
+    // Expansion tickers return empty chains — mirrors the likely
+    // production behavior on sessions with no 0DTE listed for
+    // TLT/XLF/XLE/XLK (they're logged as no-op, not an error).
+    mockChainSequence([spxChain, spyChain, qqqChain, ...emptyEtfChains()]);
 
     const res = mockResponse();
     await handler(authedReq(), res);
@@ -308,18 +335,25 @@ describe('fetch-strike-iv handler', () => {
         ticker: string;
         rowsInserted: number;
         skipped: boolean;
+        reason?: string;
       }>;
     };
     // SPX: 6 strikes (3 puts + 3 calls); SPY: 4 (2+2); QQQ: 4 (2+2) = 14.
     expect(body.totalInserted).toBe(14);
-    expect(body.results).toHaveLength(3);
-    for (const r of body.results) {
-      expect(r.skipped).toBe(false);
-    }
+    // All 8 tickers reported.
+    expect(body.results).toHaveLength(8);
     expect(body.results.find((r) => r.ticker === 'SPX')?.rowsInserted).toBe(6);
     expect(body.results.find((r) => r.ticker === 'SPY')?.rowsInserted).toBe(4);
     expect(body.results.find((r) => r.ticker === 'QQQ')?.rowsInserted).toBe(4);
-    // One transaction per ticker with non-empty rows.
+    // Expansion tickers skipped with empty_chain.
+    for (const t of ['IWM', 'TLT', 'XLF', 'XLE', 'XLK']) {
+      expect(body.results.find((r) => r.ticker === t)).toMatchObject({
+        rowsInserted: 0,
+        skipped: true,
+        reason: 'empty_chain',
+      });
+    }
+    // Three transactions (the three tickers that had rows).
     expect(mockSql.transaction).toHaveBeenCalledTimes(3);
   });
 
@@ -344,7 +378,7 @@ describe('fetch-strike-iv handler', () => {
       ask: 0.8,
     });
 
-    mockChainSequence([spxChain, spyChain, qqqChain]);
+    mockChainSequence([spxChain, spyChain, qqqChain, ...emptyEtfChains()]);
 
     const res = mockResponse();
     await handler(authedReq(), res);
@@ -370,7 +404,7 @@ describe('fetch-strike-iv handler', () => {
     expect(spx).toMatchObject({ rowsInserted: 4, skipped: false });
     const qqq = body.results.find((r) => r.ticker === 'QQQ');
     expect(qqq).toMatchObject({ rowsInserted: 2, skipped: false });
-    // Two transactions (SPX + QQQ); SPY didn't insert.
+    // Two transactions (SPX + QQQ); SPY + expansion ETFs didn't insert.
     expect(mockSql.transaction).toHaveBeenCalledTimes(2);
   });
 
@@ -390,11 +424,13 @@ describe('fetch-strike-iv handler', () => {
       ask: 0.8,
     });
 
-    // SPY returns a 401 (expired token) — must not abort SPX or QQQ.
+    // SPY returns a 401 (expired token) — must not abort SPX or QQQ
+    // or the expansion tickers.
     mockChainSequence([
       spxChain,
       { error: 'token expired', status: 401 },
       qqqChain,
+      ...emptyEtfChains(),
     ]);
 
     const res = mockResponse();
@@ -410,7 +446,7 @@ describe('fetch-strike-iv handler', () => {
         reason?: string;
       }>;
     };
-    // SPX: 2 rows, SPY: 0 rows (error), QQQ: 2 rows.
+    // SPX: 2 rows, SPY: 0 rows (error), QQQ: 2 rows, ETFs: 0 rows.
     expect(body.totalInserted).toBe(4);
     const spy = body.results.find((r) => r.ticker === 'SPY');
     expect(spy).toMatchObject({
@@ -418,6 +454,7 @@ describe('fetch-strike-iv handler', () => {
       skipped: true,
       reason: 'schwab_error',
     });
+    // SPX + QQQ actually inserted rows; everything else skipped.
     expect(body.results.filter((r) => !r.skipped)).toHaveLength(2);
   });
 
@@ -466,7 +503,7 @@ describe('fetch-strike-iv handler', () => {
       ask: 0.8,
     });
 
-    mockChainSequence([spxChain, spyChain, qqqChain]);
+    mockChainSequence([spxChain, spyChain, qqqChain, ...emptyEtfChains()]);
 
     const res = mockResponse();
     await handler(authedReq(), res);
@@ -485,7 +522,7 @@ describe('fetch-strike-iv handler', () => {
 
   // ── OI gate enforcement ──────────────────────────────────
 
-  it('enforces min-OI gate per ticker (SPX=500, SPY/QQQ=250)', async () => {
+  it('enforces min-OI gate per ticker (SPX=500, SPY/QQQ=250, IWM=150, sector ETFs=100)', async () => {
     // SPX: one strike with OI=400 (below 500 gate — rejected), one with
     //      OI=600 (passes).
     const spxChain = makeChain('$SPX', 7100, { bid: 5, ask: 6 });
@@ -506,10 +543,44 @@ describe('fetch-strike-iv handler', () => {
       makeContract('CALL', 715, { openInterest: 300, bid: 0.8, ask: 1.0 }),
     ];
 
-    // QQQ: empty (not testing here, just letting the result be zero).
+    // QQQ: empty (not testing QQQ gate here).
     const qqqChain = makeChain('QQQ', 500, {});
 
-    mockChainSequence([spxChain, spyChain, qqqChain]);
+    // IWM: one strike with OI=100 (below 150 gate — rejected), one with
+    //      OI=200 (passes). Two strikes on each side simplifies the check.
+    const iwmChain = makeChain('IWM', 235, { bid: 0.5, ask: 0.7 });
+    iwmChain.putExpDateMap['2026-04-24:0']!['232'] = [
+      makeContract('PUT', 232, { openInterest: 100, bid: 0.5, ask: 0.7 }),
+    ];
+    iwmChain.callExpDateMap['2026-04-24:0']!['238'] = [
+      makeContract('CALL', 238, { openInterest: 200, bid: 0.5, ask: 0.7 }),
+    ];
+
+    // TLT (sector-ETF tier): OI=80 rejected (below 100), OI=120 accepted.
+    const tltChain = makeChain('TLT', 92, { bid: 0.3, ask: 0.5 });
+    tltChain.putExpDateMap['2026-04-24:0']!['91'] = [
+      makeContract('PUT', 91, { openInterest: 80, bid: 0.3, ask: 0.5 }),
+    ];
+    tltChain.callExpDateMap['2026-04-24:0']!['93'] = [
+      makeContract('CALL', 93, { openInterest: 120, bid: 0.3, ask: 0.5 }),
+    ];
+
+    // XLF / XLE / XLK empty — keep the sequence aligned without
+    // duplicating the TLT assertion for every sector ETF.
+    const xlfChain = makeChain('XLF', 52, {});
+    const xleChain = makeChain('XLE', 95, {});
+    const xlkChain = makeChain('XLK', 242, {});
+
+    mockChainSequence([
+      spxChain,
+      spyChain,
+      qqqChain,
+      iwmChain,
+      tltChain,
+      xlfChain,
+      xleChain,
+      xlkChain,
+    ]);
 
     const res = mockResponse();
     await handler(authedReq(), res);
@@ -518,8 +589,11 @@ describe('fetch-strike-iv handler', () => {
       results: Array<{ ticker: string; rowsInserted: number }>;
     };
     // SPX: only the 7150 call survives. SPY: only the 715 call survives.
+    // IWM: only 238 call survives. TLT: only 93 call survives.
     expect(body.results.find((r) => r.ticker === 'SPX')?.rowsInserted).toBe(1);
     expect(body.results.find((r) => r.ticker === 'SPY')?.rowsInserted).toBe(1);
+    expect(body.results.find((r) => r.ticker === 'IWM')?.rowsInserted).toBe(1);
+    expect(body.results.find((r) => r.ticker === 'TLT')?.rowsInserted).toBe(1);
   });
 
   // ── Error handling (handler-level) ────────────────────────
@@ -531,7 +605,9 @@ describe('fetch-strike-iv handler', () => {
       bid: 5,
       ask: 6,
     });
-    mockChainSequence([spxChain, null, null]);
+    // SPY + QQQ + all 5 expansion tickers get null chains → 7 skipped.
+    // Only SPX succeeds, matching the fault-tolerance claim of the cron.
+    mockChainSequence([spxChain, null, null, null, null, null, null, null]);
     // Note: per-ticker failures are caught inside runTicker() and do NOT
     // propagate. To trigger a handler-level 500 we break Promise.all itself
     // by rejecting the top-level getDb transaction *outside* any try/catch.
@@ -547,8 +623,8 @@ describe('fetch-strike-iv handler', () => {
     const body = res._json as {
       results: Array<{ ticker: string; skipped: boolean }>;
     };
-    // SPY + QQQ both got null chains → skipped with 'schwab_error'.
-    expect(body.results.filter((r) => r.skipped)).toHaveLength(2);
+    // Every ticker except SPX got null → 7 skipped with 'schwab_error'.
+    expect(body.results.filter((r) => r.skipped)).toHaveLength(7);
   });
 
   // ── Phase 2 detection ────────────────────────────────────────
@@ -577,11 +653,12 @@ describe('fetch-strike-iv handler', () => {
       makeContract('PUT', 7060, { bid: 9, ask: 10, openInterest: 600 }),
     ];
 
-    // SPY + QQQ empty so we only see SPX anomaly + history queries.
+    // SPY + QQQ + expansion ETFs all empty so we only see SPX
+    // anomaly + history queries.
     const spyChain = makeChain('SPY', 710, {});
     const qqqChain = makeChain('QQQ', 500, {});
 
-    mockChainSequence([spxChain, spyChain, qqqChain]);
+    mockChainSequence([spxChain, spyChain, qqqChain, ...emptyEtfChains()]);
 
     // Program mockSql:
     //   1. SPX history query (SELECT … FROM strike_iv_snapshots) → empty

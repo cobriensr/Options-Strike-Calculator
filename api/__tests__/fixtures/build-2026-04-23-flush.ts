@@ -18,8 +18,11 @@
  *     needs 60 prior samples). Detection replay starts at 10:00 CT.
  *
  *   - **Tickers**: SPY (target), QQQ (target), SPX (flat — confirms
- *     informed flow hides in ETF channels). Calls + puts both populated
- *     but only put-side targets produce anomalies.
+ *     informed flow hides in ETF channels), plus IWM / TLT / XLF / XLE /
+ *     XLK flat (added in the 2026-04-24 ticker-scope expansion to prove
+ *     the new tickers don't produce false positives on a quiet baseline).
+ *     Calls + puts both populated but only SPY/QQQ put-side targets
+ *     produce anomalies.
  *
  *   - **Target strikes**: SPY 704P + 705P, QQQ 649P. Anchor IVs are
  *     derived from the real-session ASK-side concentration — we don't
@@ -48,10 +51,18 @@ const EXPIRY = '2026-04-23';
 
 // Baseline IVs per ticker (flat for non-target strikes; starting point
 // for target strikes). Derived from typical 0DTE OTM put IV range.
+// New tickers (IWM / TLT / XLF / XLE / XLK) ship purely flat here —
+// their exact values are not load-bearing for the regression, only that
+// no flags emit when every strike sits at a constant IV.
 const BASELINE_IV = {
   SPY: 0.24,
   QQQ: 0.28,
   SPX: 0.22,
+  IWM: 0.26,
+  TLT: 0.17,
+  XLF: 0.2,
+  XLE: 0.23,
+  XLK: 0.25,
 } as const;
 
 // Ticker spot at key times. Linear-interpolated minute-by-minute. These
@@ -82,6 +93,14 @@ const SPOT_ANCHORS = {
     { min: 170, value: 7147 }, // 11:50 (pre-flush peak)
     { min: 180, value: 7135 }, // 12:00 (flush begins)
   ],
+  // Expansion tickers — flat spot, flat IV. Single anchor = constant
+  // across the window; `interpolate()` falls through to the last anchor
+  // for any minute >= 0 so one entry per ticker is enough.
+  IWM: [{ min: 0, value: 235 }],
+  TLT: [{ min: 0, value: 92 }],
+  XLF: [{ min: 0, value: 52 }],
+  XLE: [{ min: 0, value: 95 }],
+  XLK: [{ min: 0, value: 242 }],
 } as const;
 
 // Target-strike IV anchors (minute-offset from window start, IV in decimal).
@@ -138,6 +157,19 @@ const QQQ_PUT_STRIKES = [646, 647, 648, 649, 650, 651, 652];
 const QQQ_CALL_STRIKES = [660, 661, 662];
 const SPX_PUT_STRIKES = [7100, 7105, 7110, 7115, 7120];
 const SPX_CALL_STRIKES = [7150, 7155, 7160];
+// Expansion tickers: narrow flat grids bracketing each spot. Wide enough
+// to exercise the skew_delta neighbor math (4-strike window on each side),
+// narrow enough to stay inside ±3% OTM.
+const IWM_PUT_STRIKES = [231, 232, 233, 234];
+const IWM_CALL_STRIKES = [236, 237, 238, 239];
+const TLT_PUT_STRIKES = [89, 90, 91];
+const TLT_CALL_STRIKES = [93, 94, 95];
+const XLF_PUT_STRIKES = [49, 50, 51];
+const XLF_CALL_STRIKES = [53, 54, 55];
+const XLE_PUT_STRIKES = [92, 93, 94];
+const XLE_CALL_STRIKES = [96, 97, 98];
+const XLK_PUT_STRIKES = [238, 239, 240, 241];
+const XLK_CALL_STRIKES = [243, 244, 245, 246];
 
 // ── Neighbor-strike noise (currently zero by design) ─────────
 //
@@ -211,8 +243,10 @@ function makeSample(
   };
 }
 
+type FixtureTicker = keyof typeof BASELINE_IV;
+
 function ivForStrike(
-  ticker: 'SPY' | 'QQQ' | 'SPX',
+  ticker: FixtureTicker,
   strike: number,
   side: 'call' | 'put',
   minute: number,
@@ -237,7 +271,7 @@ function ivForStrike(
 
 // ── Spot interpolation ───────────────────────────────────────
 
-function spotFor(ticker: 'SPY' | 'QQQ' | 'SPX', minute: number): number {
+function spotFor(ticker: FixtureTicker, minute: number): number {
   return interpolate(SPOT_ANCHORS[ticker], minute);
 }
 
@@ -287,26 +321,42 @@ function minuteToIso(minute: number): string {
   return new Date(start + minute * 60_000).toISOString();
 }
 
+// Per-ticker strike-grid registry. Order matches production-side
+// STRIKE_IV_TICKERS (indices first, ETFs after). Non-anomaly tickers
+// are purely flat; their rows exist so the replayer exercises the same
+// per-ticker iteration the live cron does.
+const TICKER_STRIKE_GRIDS: ReadonlyArray<
+  readonly [FixtureTicker, readonly number[], readonly number[]]
+> = [
+  ['SPX', SPX_PUT_STRIKES, SPX_CALL_STRIKES],
+  ['SPY', SPY_PUT_STRIKES, SPY_CALL_STRIKES],
+  ['QQQ', QQQ_PUT_STRIKES, QQQ_CALL_STRIKES],
+  ['IWM', IWM_PUT_STRIKES, IWM_CALL_STRIKES],
+  ['TLT', TLT_PUT_STRIKES, TLT_CALL_STRIKES],
+  ['XLF', XLF_PUT_STRIKES, XLF_CALL_STRIKES],
+  ['XLE', XLE_PUT_STRIKES, XLE_CALL_STRIKES],
+  ['XLK', XLK_PUT_STRIKES, XLK_CALL_STRIKES],
+];
+
 function buildFixture(): Fixture {
   const totalMinutes =
     (Date.parse(WINDOW_END_UTC) - Date.parse(WINDOW_START_UTC)) / 60_000;
 
-  const spots: Fixture['spots'] = { SPY: [], QQQ: [], SPX: [] };
+  const spots: Fixture['spots'] = {};
+  for (const [ticker] of TICKER_STRIKE_GRIDS) {
+    spots[ticker] = [];
+  }
   const strikeSnapshots: Fixture['strikeSnapshots'] = {};
 
   for (let minute = 0; minute <= totalMinutes; minute += CADENCE_MINUTES) {
     const ts = minuteToIso(minute);
-    spots.SPY!.push({ ts, value: spotFor('SPY', minute) });
-    spots.QQQ!.push({ ts, value: spotFor('QQQ', minute) });
-    spots.SPX!.push({ ts, value: spotFor('SPX', minute) });
+    for (const [ticker] of TICKER_STRIKE_GRIDS) {
+      spots[ticker]!.push({ ts, value: spotFor(ticker, minute) });
+    }
 
     const bucket: Record<string, FixtureStrikeSample[]> = {};
 
-    for (const [ticker, putStrikes, callStrikes] of [
-      ['SPY', SPY_PUT_STRIKES, SPY_CALL_STRIKES] as const,
-      ['QQQ', QQQ_PUT_STRIKES, QQQ_CALL_STRIKES] as const,
-      ['SPX', SPX_PUT_STRIKES, SPX_CALL_STRIKES] as const,
-    ]) {
+    for (const [ticker, putStrikes, callStrikes] of TICKER_STRIKE_GRIDS) {
       const rows: FixtureStrikeSample[] = [];
       for (const strike of putStrikes) {
         const { iv, isTarget } = ivForStrike(ticker, strike, 'put', minute);

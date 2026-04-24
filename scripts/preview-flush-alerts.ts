@@ -65,6 +65,13 @@ interface CollectedFlag extends AnomalyFlag {
   flow_phase: 'early' | 'mid' | 'reactive';
 }
 
+// Keep the fixture scope narrow (SPY/QQQ/SPX only) even though
+// STRIKE_IV_TICKERS now includes IWM/TLT/XLF/XLE/XLK — the 2026-04-23
+// flush fixture does not include synthetic data for those tickers, so
+// iterating them here would just produce empty rows for every minute.
+// When the fixture grows to include ETF baselines (e.g. via Option A in
+// the 2026-04-24 expansion spec), revisit to widen this list or re-use
+// `Object.keys(fixture.strikeSnapshots[anyTs])` directly.
 const TICKERS = ['SPY', 'QQQ', 'SPX'] as const;
 
 function replay(fixture: Fixture): CollectedFlag[] {
@@ -165,7 +172,9 @@ console.log(
   `  ${signalAlerts.length} high-signal alerts (|skew_delta| ≥ ${(SIGNAL_MIN * 100).toFixed(1)} vol pts)\n`,
 );
 
-console.log('  HIGH-SIGNAL ALERTS (where the target strike actually diverges):');
+console.log(
+  '  HIGH-SIGNAL ALERTS (where the target strike actually diverges):',
+);
 console.log('');
 const header =
   ' CT    | Ticker Strike Side |  skew_Δ    z     ask-mid | flag_reasons                        | phase   ';
@@ -179,8 +188,14 @@ for (const f of signalAlerts) {
   const phase = (f.flow_phase || '-').padEnd(7);
   const tkr = `${f.ticker} ${String(f.strike).padStart(5)} ${(f.side[0] ?? '?').toUpperCase()}   `;
   // skew_delta is fractional (0.02 = 2 vol pts); display in vol pts
-  const skewVp = f.skew_delta == null ? '  -  ' : (f.skew_delta * 100).toFixed(2).padStart(6);
-  const askMidVp = f.ask_mid_div == null ? '  -  ' : (f.ask_mid_div * 100).toFixed(2).padStart(6);
+  const skewVp =
+    f.skew_delta == null
+      ? '  -  '
+      : (f.skew_delta * 100).toFixed(2).padStart(6);
+  const askMidVp =
+    f.ask_mid_div == null
+      ? '  -  '
+      : (f.ask_mid_div * 100).toFixed(2).padStart(6);
   console.log(
     ` ${toCt(f.ts)} | ${tkr} | ${skewVp}vp  ${fmt(f.z_score)}   ${askMidVp}vp | ${reasons} | ${phase}`,
   );
@@ -222,8 +237,11 @@ for (const e of fixture.expectedAlerts) {
     const missing = e.required_flag_reasons.filter(
       (r) => !best!.flag_reasons.includes(r),
     );
-    const ok = missing.length === 0 && !e.expected_flow_phase_not.includes(best.flow_phase);
-    const skewVp = best.skew_delta == null ? '-' : (best.skew_delta * 100).toFixed(2);
+    const ok =
+      missing.length === 0 &&
+      !e.expected_flow_phase_not.includes(best.flow_phase);
+    const skewVp =
+      best.skew_delta == null ? '-' : (best.skew_delta * 100).toFixed(2);
     const z = best.z_score == null ? '-' : best.z_score.toFixed(2);
     console.log(
       `${label.padEnd(20)} ${ok ? '✅' : '⚠️ '} at ${toCt(best.ts)}  skew=${skewVp}vp  z=${z}  phase=${best.flow_phase}  reasons=[${best.flag_reasons.join(',')}]`,

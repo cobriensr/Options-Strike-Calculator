@@ -10,9 +10,9 @@ import { AnomalyRow } from './AnomalyRow';
 
 /**
  * Standalone section that surfaces active IV anomalies aggregated by
- * compound key. Per-ticker tabs (SPX / SPY / QQQ) keep each index visually
- * separate — the detectors run on all three but an owner is typically
- * watching one at a time.
+ * compound key. Per-ticker tabs keep each symbol visually separate —
+ * the detectors run on every ticker in `IV_ANOMALY_TICKERS` (indices +
+ * macro/sector ETFs) but an owner is typically watching one at a time.
  *
  * The list is one entry per active compound key (not one per raw detector
  * firing) so a strike that's firing every minute during a 90-min event
@@ -70,32 +70,42 @@ export function IVAnomaliesSection({
   return (
     <SectionBox label="Strike IV Anomalies" collapsible>
       <div className="flex flex-col gap-3">
-        <div className="flex flex-wrap gap-2" role="tablist">
-          {tabCounts.map(({ ticker, count }) => {
-            const active = ticker === activeTicker;
-            return (
-              <button
-                key={ticker}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                onClick={() => setActiveTicker(ticker)}
-                className={
-                  'rounded-md px-3 py-1 font-mono text-xs transition-colors ' +
-                  (active
-                    ? 'bg-accent-bg text-accent border-accent border'
-                    : 'border-edge bg-surface-alt text-muted hover:text-primary border')
-                }
-              >
-                {ticker}
-                {count > 0 && (
-                  <span className="ml-2 font-semibold">{count}</span>
-                )}
-              </button>
-            );
-          })}
+        <div className="flex items-center gap-2">
+          {/*
+            Horizontal-scroll rail: with 8 tickers the tab row overflows
+            narrow viewports. Keeping the tabs on one line preserves the
+            scan order (indices → ETFs) and matches the constant order.
+          */}
+          <div
+            className="-mx-1 flex flex-1 gap-2 overflow-x-auto px-1 whitespace-nowrap"
+            role="tablist"
+          >
+            {tabCounts.map(({ ticker, count }) => {
+              const active = ticker === activeTicker;
+              return (
+                <button
+                  key={ticker}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setActiveTicker(ticker)}
+                  className={
+                    'shrink-0 rounded-md px-3 py-1 font-mono text-xs transition-colors ' +
+                    (active
+                      ? 'bg-accent-bg text-accent border-accent border'
+                      : 'border-edge bg-surface-alt text-muted hover:text-primary border')
+                  }
+                >
+                  {ticker}
+                  {count > 0 && (
+                    <span className="ml-2 font-semibold">{count}</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
           {error && anomalies.length > 0 && (
-            <span className="ml-auto text-[11px] text-amber-400">{error}</span>
+            <span className="shrink-0 text-[11px] text-amber-400">{error}</span>
           )}
         </div>
         {body}
@@ -107,11 +117,9 @@ export function IVAnomaliesSection({
 function groupByTicker(
   anomalies: readonly ActiveAnomaly[],
 ): Record<IVAnomalyTicker, ActiveAnomaly[]> {
-  const out: Record<IVAnomalyTicker, ActiveAnomaly[]> = {
-    SPX: [],
-    SPY: [],
-    QQQ: [],
-  };
+  const out = Object.fromEntries(
+    IV_ANOMALY_TICKERS.map((t) => [t, [] as ActiveAnomaly[]]),
+  ) as Record<IVAnomalyTicker, ActiveAnomaly[]>;
   for (const a of anomalies) {
     out[a.ticker].push(a);
   }
