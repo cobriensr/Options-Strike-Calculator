@@ -65,14 +65,11 @@ interface CollectedFlag extends AnomalyFlag {
   flow_phase: 'early' | 'mid' | 'reactive';
 }
 
-// Keep the fixture scope narrow (SPY/QQQ/SPX only) even though
-// STRIKE_IV_TICKERS now includes IWM/TLT/XLF/XLE/XLK — the 2026-04-23
-// flush fixture does not include synthetic data for those tickers, so
-// iterating them here would just produce empty rows for every minute.
-// When the fixture grows to include ETF baselines (e.g. via Option A in
-// the 2026-04-24 expansion spec), revisit to widen this list or re-use
-// `Object.keys(fixture.strikeSnapshots[anyTs])` directly.
-const TICKERS = ['SPY', 'QQQ', 'SPX'] as const;
+// Iterate every ticker carried by the post 2026-04-24 rescope fixture.
+// Order matches STRIKE_IV_TICKERS (SPXW, NDXP, SPY, QQQ, IWM) — the
+// quiet tickers (SPXW/NDXP/IWM) should produce zero flags in the
+// replay; SPY/QQQ are the only ones with target trajectories.
+const TICKERS = ['SPXW', 'NDXP', 'SPY', 'QQQ', 'IWM'] as const;
 
 function replay(fixture: Fixture): CollectedFlag[] {
   const timestamps = Object.keys(fixture.strikeSnapshots).sort();
@@ -98,6 +95,8 @@ function replay(fixture: Fixture): CollectedFlag[] {
         iv_mid: r.iv_mid,
         iv_bid: r.iv_bid,
         iv_ask: r.iv_ask,
+        volume: r.volume,
+        oi: r.oi,
         ts: r.ts,
       }));
       const historyByStrike = new Map<string, StrikeSample[]>();
@@ -116,6 +115,8 @@ function replay(fixture: Fixture): CollectedFlag[] {
             iv_mid: r.iv_mid,
             iv_bid: r.iv_bid,
             iv_ask: r.iv_ask,
+            volume: r.volume,
+            oi: r.oi,
             ts: r.ts,
           };
           const bucket = historyByStrike.get(key);

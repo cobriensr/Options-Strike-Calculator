@@ -11,8 +11,9 @@ import { AnomalyRow } from './AnomalyRow';
 /**
  * Standalone section that surfaces active IV anomalies aggregated by
  * compound key. Per-ticker tabs keep each symbol visually separate —
- * the detectors run on every ticker in `IV_ANOMALY_TICKERS` (indices +
- * macro/sector ETFs) but an owner is typically watching one at a time.
+ * the detectors run on every ticker in `IV_ANOMALY_TICKERS` (SPXW, NDXP,
+ * SPY, QQQ, IWM as of the 2026-04-24 rescope) but an owner is typically
+ * watching one at a time.
  *
  * The list is one entry per active compound key (not one per raw detector
  * firing) so a strike that's firing every minute during a 90-min event
@@ -29,7 +30,7 @@ export function IVAnomaliesSection({
 }: {
   readonly marketOpen: boolean;
 }) {
-  const [activeTicker, setActiveTicker] = useState<IVAnomalyTicker>('SPX');
+  const [activeTicker, setActiveTicker] = useState<IVAnomalyTicker>('SPXW');
   const { anomalies, loading, error } = useIVAnomalies(true, marketOpen);
 
   const rowsByTicker = groupByTicker(anomalies);
@@ -72,9 +73,11 @@ export function IVAnomaliesSection({
       <div className="flex flex-col gap-3">
         <div className="flex items-center gap-2">
           {/*
-            Horizontal-scroll rail: with 8 tickers the tab row overflows
-            narrow viewports. Keeping the tabs on one line preserves the
-            scan order (indices → ETFs) and matches the constant order.
+            Horizontal-scroll rail: with 5 tickers the row generally fits
+            on desktop, but mobile / narrow widths still benefit from
+            overflow-scroll. Keeping the tabs on one line preserves the
+            scan order (weekly-index roots → ETFs) and matches the
+            constant order.
           */}
           <div
             className="-mx-1 flex flex-1 gap-2 overflow-x-auto px-1 whitespace-nowrap"

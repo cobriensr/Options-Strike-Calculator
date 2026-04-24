@@ -45,6 +45,8 @@ export interface IVAnomalyRow {
   skewDelta: number | null;
   zScore: number | null;
   askMidDiv: number | null;
+  /** Intraday volume / start-of-day OI at detection (primary gate). */
+  volOiRatio: number | null;
   flagReasons: string[];
   flowPhase: 'early' | 'mid' | 'reactive' | null;
   contextSnapshot: unknown;
@@ -95,6 +97,7 @@ interface RawAnomalyRow {
   skew_delta: NumericFromDb;
   z_score: NumericFromDb;
   ask_mid_div: NumericFromDb;
+  vol_oi_ratio: NumericFromDb;
   flag_reasons: string[] | null;
   flow_phase: string | null;
   context_snapshot: unknown;
@@ -165,6 +168,7 @@ function mapAnomaly(r: RawAnomalyRow): IVAnomalyRow {
     skewDelta: parseNumOrNull(r.skew_delta),
     zScore: parseNumOrNull(r.z_score),
     askMidDiv: parseNumOrNull(r.ask_mid_div),
+    volOiRatio: parseNumOrNull(r.vol_oi_ratio),
     flagReasons: Array.isArray(r.flag_reasons) ? r.flag_reasons : [],
     flowPhase: parseFlowPhase(r.flow_phase),
     contextSnapshot: r.context_snapshot,
@@ -249,7 +253,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           const rows = (await sql`
             SELECT id, ticker, strike, side, expiry,
                    spot_at_detect, iv_at_detect,
-                   skew_delta, z_score, ask_mid_div,
+                   skew_delta, z_score, ask_mid_div, vol_oi_ratio,
                    flag_reasons, flow_phase,
                    context_snapshot, resolution_outcome, ts
             FROM iv_anomalies

@@ -53,7 +53,7 @@ function makeAnomalyRow(
 ): Record<string, unknown> {
   return {
     id: 123,
-    ticker: 'SPX',
+    ticker: 'SPXW',
     strike: '7135.00',
     side: 'put',
     expiry: '2026-04-23',
@@ -62,6 +62,7 @@ function makeAnomalyRow(
     skew_delta: '2.1500',
     z_score: '3.2100',
     ask_mid_div: '0.6000',
+    vol_oi_ratio: '48.50',
     flag_reasons: ['skew_delta', 'z_score'],
     flow_phase: 'early',
     context_snapshot: { vix_level: 18.2 },
@@ -133,6 +134,17 @@ describe('GET /api/iv-anomalies', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
+  it('rejects legacy SPX ticker after 2026-04-24 rescope', async () => {
+    // SPX was dropped in favor of SPXW — Zod enum should reject it.
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { ticker: 'SPX' } }),
+      res,
+    );
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
   it('rejects history mode without ticker (ambiguous strike)', async () => {
     const res = mockResponse();
     await handler(
@@ -151,7 +163,7 @@ describe('GET /api/iv-anomalies', () => {
     await handler(
       mockRequest({
         method: 'GET',
-        query: { ticker: 'SPX', strike: '7135', expiry: '2026-04-23' },
+        query: { ticker: 'SPXW', strike: '7135', expiry: '2026-04-23' },
       }),
       res,
     );
@@ -171,8 +183,8 @@ describe('GET /api/iv-anomalies', () => {
 
   it('returns empty-keyed list payload when no rows exist', async () => {
     // List mode fires one query per ticker in STRIKE_IV_TICKERS
-    // (SPX/SPY/QQQ/IWM/TLT/XLF/XLE/XLK, 8 total) — all return [].
-    for (let i = 0; i < 8; i += 1) {
+    // (SPXW/NDXP/SPY/QQQ/IWM, 5 total) — all return [].
+    for (let i = 0; i < 5; i += 1) {
       mockSql.mockResolvedValueOnce([]);
     }
 
@@ -186,18 +198,20 @@ describe('GET /api/iv-anomalies', () => {
       history: Record<string, unknown[]>;
     };
     expect(body.mode).toBe('list');
-    for (const t of ['SPX', 'SPY', 'QQQ', 'IWM', 'TLT', 'XLF', 'XLE', 'XLK']) {
+    for (const t of ['SPXW', 'NDXP', 'SPY', 'QQQ', 'IWM']) {
       expect(body.latest[t]).toBeNull();
       expect(body.history[t]).toEqual([]);
     }
   });
 
   it('returns latest + history grouped by ticker on happy path', async () => {
+    // Query order: STRIKE_IV_TICKERS = SPXW, NDXP, SPY, QQQ, IWM.
     mockSql
       .mockResolvedValueOnce([
-        makeAnomalyRow({ id: 1, ticker: 'SPX', ts: '2026-04-23T15:30:00Z' }),
-        makeAnomalyRow({ id: 2, ticker: 'SPX', ts: '2026-04-23T15:25:00Z' }),
+        makeAnomalyRow({ id: 1, ticker: 'SPXW', ts: '2026-04-23T15:30:00Z' }),
+        makeAnomalyRow({ id: 2, ticker: 'SPXW', ts: '2026-04-23T15:25:00Z' }),
       ])
+      .mockResolvedValueOnce([]) // NDXP empty
       .mockResolvedValueOnce([
         makeAnomalyRow({
           id: 3,
@@ -206,11 +220,8 @@ describe('GET /api/iv-anomalies', () => {
           ts: '2026-04-23T15:28:00Z',
         }),
       ])
-      .mockResolvedValueOnce([]); // QQQ empty
-    // Remaining 5 tickers (IWM/TLT/XLF/XLE/XLK) — all empty.
-    for (let i = 0; i < 5; i += 1) {
-      mockSql.mockResolvedValueOnce([]);
-    }
+      .mockResolvedValueOnce([]) // QQQ empty
+      .mockResolvedValueOnce([]); // IWM empty
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
@@ -220,20 +231,25 @@ describe('GET /api/iv-anomalies', () => {
       mode: string;
       latest: Record<
         string,
-        { id: number; ticker: string; flagReasons: string[] } | null
+        {
+          id: number;
+          ticker: string;
+          flagReasons: string[];
+          volOiRatio: number | null;
+        } | null
       >;
       history: Record<string, unknown[]>;
     };
     expect(body.mode).toBe('list');
-    expect(body.latest.SPX?.id).toBe(1);
-    expect(body.latest.SPX?.flagReasons).toEqual(['skew_delta', 'z_score']);
+    expect(body.latest.SPXW?.id).toBe(1);
+    expect(body.latest.SPXW?.flagReasons).toEqual(['skew_delta', 'z_score']);
+    expect(body.latest.SPXW?.volOiRatio).toBeCloseTo(48.5, 4);
     expect(body.latest.SPY?.id).toBe(3);
     expect(body.latest.QQQ).toBeNull();
-    expect(body.history.SPX).toHaveLength(2);
+    expect(body.history.SPXW).toHaveLength(2);
     expect(body.history.SPY).toHaveLength(1);
     expect(body.history.QQQ).toHaveLength(0);
-    // Expansion tickers round-tripped as empty latest + history.
-    for (const t of ['IWM', 'TLT', 'XLF', 'XLE', 'XLK']) {
+    for (const t of ['NDXP', 'IWM']) {
       expect(body.latest[t]).toBeNull();
       expect(body.history[t]).toHaveLength(0);
     }
@@ -251,7 +267,7 @@ describe('GET /api/iv-anomalies', () => {
     );
 
     expect(res._status).toBe(200);
-    // Only ONE SQL call (not three) when ticker is narrowed.
+    // Only ONE SQL call (not five) when ticker is narrowed.
     expect(mockSql).toHaveBeenCalledTimes(1);
     const body = res._json as {
       mode: string;
@@ -259,7 +275,7 @@ describe('GET /api/iv-anomalies', () => {
       history: Record<string, unknown[]>;
     };
     expect(body.latest.SPY?.ticker).toBe('SPY');
-    expect(body.latest.SPX).toBeNull();
+    expect(body.latest.SPXW).toBeNull();
     expect(body.latest.QQQ).toBeNull();
   });
 
@@ -276,7 +292,7 @@ describe('GET /api/iv-anomalies', () => {
       mockRequest({
         method: 'GET',
         query: {
-          ticker: 'SPX',
+          ticker: 'SPXW',
           strike: '7135',
           side: 'put',
           expiry: '2026-04-23',
@@ -292,7 +308,7 @@ describe('GET /api/iv-anomalies', () => {
       samples: Array<{ ts: string; ivMid: number | null }>;
     };
     expect(body.mode).toBe('history');
-    expect(body.ticker).toBe('SPX');
+    expect(body.ticker).toBe('SPXW');
     expect(body.samples).toHaveLength(3);
     // First sample should be the oldest (15:28).
     expect(body.samples[0]?.ts).toBe('2026-04-23T15:28:00.000Z');
@@ -306,7 +322,7 @@ describe('GET /api/iv-anomalies', () => {
 
     const res = mockResponse();
     await handler(
-      mockRequest({ method: 'GET', query: { ticker: 'SPX' } }),
+      mockRequest({ method: 'GET', query: { ticker: 'SPXW' } }),
       res,
     );
 

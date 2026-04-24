@@ -29,6 +29,7 @@ import {
   ASK_MID_DIV_THRESHOLD,
   RESOLVE_FLAT_PNL_THRESHOLD,
   RESOLVE_FAST_PEAK_MINS,
+  VOL_OI_RATIO_THRESHOLD,
 } from './constants.js';
 import { blackScholesPrice } from '../../src/utils/black-scholes.js';
 import { getETCloseUtcIso } from '../../src/utils/timezone.js';
@@ -45,6 +46,10 @@ export interface StrikeSample {
   iv_mid: number | null;
   iv_bid: number | null;
   iv_ask: number | null;
+  /** Cumulative intraday volume. Null when Schwab returns NaN/missing. */
+  volume: number | null;
+  /** Start-of-day open interest. Null when Schwab returns NaN/missing. */
+  oi: number | null;
   /** ISO timestamp (UTC). */
   ts: string;
 }
@@ -62,6 +67,13 @@ export interface AnomalyFlag {
   z_score: number | null;
   /** iv_ask − iv_mid. Null when bid/ask IV couldn't be inverted. */
   ask_mid_div: number | null;
+  /**
+   * Intraday volume / start-of-day OI at detection. Null only when the
+   * upstream Schwab row didn't surface both values (should never happen
+   * in practice — gate would have rejected the strike earlier). Included
+   * on every flag for observability in the UI and downstream ML slicing.
+   */
+  vol_oi_ratio: number | null;
   /** Non-empty; contains any combination of 'skew_delta', 'z_score'. */
   flag_reasons: string[];
   /**
@@ -228,6 +240,30 @@ export function detectAnomalies(
   for (const target of latestSnapshot) {
     if (target.iv_mid == null || !isFiniteNumber(target.iv_mid)) continue;
 
+    // PRIMARY GATE: vol/OI must be massively outsized.
+    //
+    // Applied BEFORE any IV signal check — the 2026-04-24 production run
+    // showed that low-vol/OI strikes generate noise even when the IV
+    // signals trip. Only strikes that traders are actively piling into
+    // (cumulative intraday volume ≥ 5× start-of-day OI) clear the gate.
+    //
+    // Guard against oi = 0 (rare but possible: newly-listed strike) —
+    // division by zero would produce Infinity and pass any >= test, which
+    // is the opposite of what we want. `null` or `0` OI → skip.
+    if (
+      target.volume == null ||
+      !isFiniteNumber(target.volume) ||
+      target.oi == null ||
+      !isFiniteNumber(target.oi) ||
+      target.oi === 0
+    ) {
+      continue;
+    }
+    const volOiRatio = target.volume / target.oi;
+    if (!Number.isFinite(volOiRatio) || volOiRatio < VOL_OI_RATIO_THRESHOLD) {
+      continue;
+    }
+
     const groupKey = `${target.ticker}:${target.side}:${target.expiry}`;
     const group = groups.get(groupKey) ?? [];
     const idx = group.findIndex(
@@ -269,6 +305,7 @@ export function detectAnomalies(
       skew_delta: skewDelta,
       z_score: zScore,
       ask_mid_div: askMidDiv,
+      vol_oi_ratio: volOiRatio,
       flag_reasons: reasons,
       // flow_phase intentionally omitted — see classifyFlowPhase.
       ts: target.ts,

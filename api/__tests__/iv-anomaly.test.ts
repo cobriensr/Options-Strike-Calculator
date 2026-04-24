@@ -20,6 +20,13 @@ import type { ContextSnapshot } from '../_lib/anomaly-context.js';
 const TS = '2026-04-23T15:30:00.000Z';
 const EXPIRY = '2026-04-23';
 
+/**
+ * Default vol/OI for test samples. `computeSkewDelta` / `computeRollingZ`
+ * don't look at these fields, but `detectAnomalies` does — so we ship a
+ * baseline ratio comfortably above the 5× gate (volume=10000, oi=1000 →
+ * 10×) on every sample. Individual tests that exercise the gate override
+ * these to test the boundary.
+ */
 function makeSample(
   strike: number,
   ivMid: number,
@@ -33,6 +40,8 @@ function makeSample(
     iv_mid: ivMid,
     iv_bid: ivMid - 0.01,
     iv_ask: ivMid + 0.01,
+    volume: 10000,
+    oi: 1000,
     ts: TS,
     ...overrides,
   };
@@ -276,6 +285,103 @@ describe('detectAnomalies', () => {
     const flags = detectAnomalies(snapshot, new Map(), 7050);
     expect(flags).toEqual([]);
   });
+
+  // ── Primary gate: vol/OI ≥ 5.0× ─────────────────────────────
+
+  it('gates out strikes below the 5.0× vol/OI threshold even when skew_delta would fire', () => {
+    // Target strike 7000 has iv_mid 0.45 vs neighbors at 0.40 → skew = 5
+    // vol pts, well above threshold. But vol/OI is 4.0× (below 5× gate),
+    // so no flag should emit.
+    const target: StrikeSample = {
+      ...makeSample(7000, 0.45),
+      volume: 4000,
+      oi: 1000, // 4.0× → below 5× gate
+    };
+    const snapshot: StrikeSample[] = [
+      makeSample(6990, 0.4),
+      makeSample(6995, 0.4),
+      target,
+      makeSample(7005, 0.4),
+      makeSample(7010, 0.4),
+    ];
+    expect(detectAnomalies(snapshot, new Map(), 7050)).toEqual([]);
+  });
+
+  it('fires when vol/OI >= 5.0× AND skew_delta exceeds threshold', () => {
+    const target: StrikeSample = {
+      ...makeSample(7000, 0.45),
+      volume: 5200,
+      oi: 1000, // 5.2× → above gate
+    };
+    const snapshot: StrikeSample[] = [
+      makeSample(6990, 0.4),
+      makeSample(6995, 0.4),
+      target,
+      makeSample(7005, 0.4),
+      makeSample(7010, 0.4),
+    ];
+    const flags = detectAnomalies(snapshot, new Map(), 7050);
+    expect(flags).toHaveLength(1);
+    expect(flags[0]!.strike).toBe(7000);
+    expect(flags[0]!.flag_reasons).toContain('skew_delta');
+  });
+
+  it('emits vol_oi_ratio on every flag for observability', () => {
+    const target: StrikeSample = {
+      ...makeSample(7000, 0.45),
+      volume: 48000,
+      oi: 1000, // 48× — mirrors real 2026-04-23 SPY 705P EOD ratio
+    };
+    const snapshot: StrikeSample[] = [
+      makeSample(6990, 0.4),
+      makeSample(6995, 0.4),
+      target,
+      makeSample(7005, 0.4),
+      makeSample(7010, 0.4),
+    ];
+    const flags = detectAnomalies(snapshot, new Map(), 7050);
+    expect(flags).toHaveLength(1);
+    expect(flags[0]!.vol_oi_ratio).toBeCloseTo(48, 4);
+  });
+
+  it('skips strikes with null volume or null OI (gate cannot evaluate)', () => {
+    const targetNullVol: StrikeSample = {
+      ...makeSample(7000, 0.45),
+      volume: null,
+    };
+    const targetNullOi: StrikeSample = {
+      ...makeSample(7000, 0.45),
+      oi: null,
+    };
+    for (const target of [targetNullVol, targetNullOi]) {
+      const snapshot: StrikeSample[] = [
+        makeSample(6990, 0.4),
+        makeSample(6995, 0.4),
+        target,
+        makeSample(7005, 0.4),
+        makeSample(7010, 0.4),
+      ];
+      expect(detectAnomalies(snapshot, new Map(), 7050)).toEqual([]);
+    }
+  });
+
+  it('skips strikes with OI=0 (avoids divide-by-zero → Infinity)', () => {
+    // A newly-listed strike has 0 OI on day 1; volume/0 would be Infinity
+    // and would silently pass any >= test without the explicit zero check.
+    const target: StrikeSample = {
+      ...makeSample(7000, 0.45),
+      volume: 10000,
+      oi: 0,
+    };
+    const snapshot: StrikeSample[] = [
+      makeSample(6990, 0.4),
+      makeSample(6995, 0.4),
+      target,
+      makeSample(7005, 0.4),
+      makeSample(7010, 0.4),
+    ];
+    expect(detectAnomalies(snapshot, new Map(), 7050)).toEqual([]);
+  });
 });
 
 // ── classifyFlowPhase ────────────────────────────────────────
@@ -291,6 +397,7 @@ describe('classifyFlowPhase', () => {
     skew_delta: 0.05,
     z_score: 3.0,
     ask_mid_div: 0.02,
+    vol_oi_ratio: 12.5,
     flag_reasons: ['skew_delta', 'z_score'],
     flow_phase: 'mid',
     ts: TS,

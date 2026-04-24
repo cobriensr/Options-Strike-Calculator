@@ -5,7 +5,7 @@ import type { IVAnomalyRow } from '../types';
 function makeRow(overrides: Partial<IVAnomalyRow> = {}): IVAnomalyRow {
   return {
     id: 1,
-    ticker: 'SPX',
+    ticker: 'SPXW',
     strike: 7135,
     side: 'put',
     expiry: '2026-04-23',
@@ -14,6 +14,7 @@ function makeRow(overrides: Partial<IVAnomalyRow> = {}): IVAnomalyRow {
     skewDelta: 2.1,
     zScore: 3.2,
     askMidDiv: 0.6,
+    volOiRatio: 48.5,
     flagReasons: ['skew_delta'],
     flowPhase: 'early',
     contextSnapshot: null,

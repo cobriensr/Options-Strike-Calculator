@@ -11,7 +11,7 @@ import {
 function makeRow(overrides: Partial<IVAnomalyRow> = {}): IVAnomalyRow {
   return {
     id: 1,
-    ticker: 'SPX',
+    ticker: 'SPXW',
     strike: 7135,
     side: 'put',
     expiry: '2026-04-23',
@@ -20,6 +20,7 @@ function makeRow(overrides: Partial<IVAnomalyRow> = {}): IVAnomalyRow {
     skewDelta: 2.1,
     zScore: 3.21,
     askMidDiv: 0.6,
+    volOiRatio: 48.5,
     flagReasons: ['skew_delta', 'z_score'],
     flowPhase: 'early',
     contextSnapshot: {
@@ -43,7 +44,7 @@ function makeActive(
     ticker:
       latest.ticker === 'SPY' || latest.ticker === 'QQQ'
         ? latest.ticker
-        : 'SPX',
+        : 'SPXW',
     strike: latest.strike,
     side: latest.side,
     expiry: latest.expiry,
@@ -90,7 +91,7 @@ describe('AnomalyRow', () => {
 
   it('renders the collapsed header with strike/side/flags/phase', () => {
     render(<AnomalyRow anomaly={makeActive()} />);
-    expect(screen.getByText(/SPX 7135P/)).toBeInTheDocument();
+    expect(screen.getByText(/SPXW 7135P/)).toBeInTheDocument();
     expect(screen.getByText('skew_delta')).toBeInTheDocument();
     expect(screen.getByText('z_score')).toBeInTheDocument();
     expect(screen.getByText('early')).toBeInTheDocument();
@@ -100,7 +101,7 @@ describe('AnomalyRow', () => {
     const user = userEvent.setup();
     render(<AnomalyRow anomaly={makeActive()} />);
     const toggle = screen.getByRole('button', {
-      name: /Toggle details for SPX 7135 put anomaly/,
+      name: /Toggle details for SPXW 7135 put anomaly/,
     });
     await user.click(toggle);
     expect(screen.getByText('spot @ detect')).toBeInTheDocument();
@@ -121,7 +122,7 @@ describe('AnomalyRow', () => {
       />,
     );
     const toggle = screen.getByRole('button', {
-      name: /Toggle details for SPX 7135 put anomaly/,
+      name: /Toggle details for SPXW 7135 put anomaly/,
     });
     await user.click(toggle);
     // 3 dashes for the 3 nullable metrics.
@@ -154,7 +155,7 @@ describe('AnomalyRow', () => {
     render(<AnomalyRow anomaly={makeActive({ resolutionOutcome: null })} />);
     await user.click(
       screen.getByRole('button', {
-        name: /Toggle details for SPX 7135 put anomaly/,
+        name: /Toggle details for SPXW 7135 put anomaly/,
       }),
     );
     expect(screen.queryByLabelText('End-of-day resolution')).toBeNull();
@@ -194,7 +195,7 @@ describe('AnomalyRow', () => {
     );
     await user.click(
       screen.getByRole('button', {
-        name: /Toggle details for SPX 7135 put anomaly/,
+        name: /Toggle details for SPXW 7135 put anomaly/,
       }),
     );
     const section = screen.getByLabelText('End-of-day resolution');

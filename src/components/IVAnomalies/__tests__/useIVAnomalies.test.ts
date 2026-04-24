@@ -24,7 +24,7 @@ const SILENCE_MS = 15 * 60 * 1000;
 function makeRow(overrides: Partial<IVAnomalyRow> = {}): IVAnomalyRow {
   return {
     id: 1,
-    ticker: 'SPX',
+    ticker: 'SPXW',
     strike: 7135,
     side: 'put',
     expiry: '2026-04-23',
@@ -33,6 +33,7 @@ function makeRow(overrides: Partial<IVAnomalyRow> = {}): IVAnomalyRow {
     skewDelta: 2.1,
     zScore: 3.2,
     askMidDiv: 0.6,
+    volOiRatio: 48.5,
     flagReasons: ['skew_delta'],
     flowPhase: 'early',
     contextSnapshot: null,
@@ -145,7 +146,7 @@ describe('useIVAnomalies — aggregation + alert semantics', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(result.current.anomalies.length).toBe(2));
 
-    // Banner for the NEW compound key only — the SPX 7135P was already
+    // Banner for the NEW compound key only — the SPXW 7135P was already
     // active from the priming poll and must NOT re-banner.
     const banners = ivAnomalyBannerStore.getSnapshot().visible;
     expect(banners).toHaveLength(1);
@@ -286,7 +287,7 @@ describe('useIVAnomalies — aggregation + alert semantics', () => {
       respondWith([
         makeRow({
           id: 1,
-          ticker: 'SPX',
+          ticker: 'SPXW',
           strike: 7135,
           ts: '2026-04-23T15:30:00Z',
         }),

@@ -502,8 +502,15 @@ async function getInstitutionalLatest(at: Date): Promise<{
  * the 5-min window.
  */
 async function getNetFlow5m(ticker: string, at: Date): Promise<number | null> {
+  // SPXW weeklies share the SPX cash feed (spx_flow covers both). IWM /
+  // NDXP fall back to qqq_flow as the best-available index-option proxy
+  // until we ingest dedicated feeds for those roots.
   const source =
-    ticker === 'SPX' ? 'spx_flow' : ticker === 'SPY' ? 'spy_flow' : 'qqq_flow';
+    ticker === 'SPX' || ticker === 'SPXW'
+      ? 'spx_flow'
+      : ticker === 'SPY'
+        ? 'spy_flow'
+        : 'qqq_flow';
   const sql = getDb();
   const atIso = at.toISOString();
   const priorIso = minusMinutes(at, 5);
@@ -755,12 +762,14 @@ export async function gatherContextSnapshot(
     runSafe('vix9d', () => getVix9dLatest(), null),
   ]);
 
-  // Flow context. Dark prints are SPX-only (dark_pool_levels is a
-  // SPX-aggregated feed) — for SPY/QQQ anomalies we return [] rather
-  // than mis-attributing SPX flow to a different ticker.
+  // Flow context. Dark prints are SPX-scoped (dark_pool_levels is a
+  // SPX-aggregated feed). For tickers that share the SPX cash feed
+  // (SPX monthlies, SPXW weeklies), attribute the prints; for
+  // SPY/QQQ/IWM/NDXP return [] rather than mis-attributing SPX flow.
+  const isSpxScoped = ticker === 'SPX' || ticker === 'SPXW';
   const [flowAlerts, darkPrints] = await Promise.all([
     runSafe('flow-alerts', () => getRecentFlowAlerts(ticker, atNow), []),
-    ticker === 'SPX'
+    isSpxScoped
       ? runSafe('dark-prints', () => getRecentDarkPrints(atNow), [])
       : Promise.resolve(
           [] as Array<{ ts: string; price: number; premium: number }>,

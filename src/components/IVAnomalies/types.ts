@@ -7,15 +7,7 @@
  * the server contract changes.
  */
 
-export type IVAnomalyTicker =
-  | 'SPX'
-  | 'SPY'
-  | 'QQQ'
-  | 'IWM'
-  | 'TLT'
-  | 'XLF'
-  | 'XLE'
-  | 'XLK';
+export type IVAnomalyTicker = 'SPXW' | 'NDXP' | 'SPY' | 'QQQ' | 'IWM';
 export type IVAnomalySide = 'call' | 'put';
 export type IVAnomalyFlowPhase = 'early' | 'mid' | 'reactive';
 
@@ -30,6 +22,12 @@ export interface IVAnomalyRow {
   skewDelta: number | null;
   zScore: number | null;
   askMidDiv: number | null;
+  /**
+   * Intraday volume / start-of-day OI at detection. PRIMARY signal for
+   * the user — displayed prominently on each row. Null on legacy rows
+   * ingested before the 2026-04-24 rescope (pre-vol/OI gate migration).
+   */
+  volOiRatio: number | null;
   flagReasons: string[];
   flowPhase: IVAnomalyFlowPhase | null;
   contextSnapshot: unknown;
@@ -67,18 +65,15 @@ export type IVAnomaliesResponse =
 
 /**
  * Display order matches the server-side `STRIKE_IV_TICKERS` tuple
- * (indices first, ETFs after). Kept in sync manually since src/ cannot
- * reach into api/ directly.
+ * (weekly-index roots first, ETFs after). Kept in sync manually since
+ * src/ cannot reach into api/ directly.
  */
 export const IV_ANOMALY_TICKERS: readonly IVAnomalyTicker[] = [
-  'SPX',
+  'SPXW',
+  'NDXP',
   'SPY',
   'QQQ',
   'IWM',
-  'TLT',
-  'XLF',
-  'XLE',
-  'XLK',
 ] as const;
 
 /**

@@ -33,37 +33,52 @@ export const UW_BASE = 'https://api.unusualwhales.com/api';
  * Per-strike IV snapshot filters for the fetch-strike-iv cron.
  * OTM range: ±3% of spot covers 1% (today's 7100→7034 example) through tail hedges.
  * Min OI gates out illiquid strikes whose mid prices are stale — per-ticker
- * because SPX strikes are $5-wide (OI concentrates) vs SPY/QQQ $1-wide
- * (OI disperses across a wider band), and sector ETFs / IWM / TLT have
- * thinner chains still. Numbers calibrated on the tightest strike-wide
+ * because index (SPXW/NDXP) strikes are $5-wide (OI concentrates) vs
+ * SPY/QQQ $1-wide (OI disperses across a wider band), and IWM has a
+ * thinner chain still. Numbers calibrated on the tightest strike-wide
  * gate that still filters ghost liquidity.
  *
- * Ticker mix (2026-04-23 expansion):
- *   - Indices (0DTE-dense): SPX, SPY, QQQ, IWM
- *   - Macro risk-off: TLT (bonds bid = equities often flush)
- *   - Sector rotation: XLF (financials), XLE (energy), XLK (tech)
- * Strike density, OI patterns, and 0DTE availability DIFFER across these —
- * expect TLT/XLF/XLE/XLK to return empty 0DTE chains on some sessions;
- * that's logged as a no-op and is not an error.
+ * Ticker mix (2026-04-24 rescope): 5 tickers, all 0DTE-capable.
+ *   - Cash-index weekly roots: SPXW (SPX weeklies), NDXP (NDX weeklies)
+ *   - ETFs: SPY, QQQ, IWM
+ *
+ * SPX monthlies (3rd-Friday expiry under the `SPX` root) are intentionally
+ * excluded — 0DTE lives on SPXW, and mixing SPX monthlies into the same
+ * bucket produced cross-root noise in the 2026-04-24 production run. Same
+ * for sector ETFs (TLT/XLF/XLE/XLK): chains were too thin and too noisy
+ * to contribute signal, so they were dropped in the rescope.
+ *
+ * SPXW / NDXP are not directly queryable on Schwab — the cron fetches
+ * `$SPX` / `$NDX` chains and filters contract symbols to the desired
+ * weekly root. See `fetch-strike-iv.ts` schwabSymbol / root-filter.
  */
 export const STRIKE_IV_OTM_RANGE_PCT = 0.03;
-export const STRIKE_IV_MIN_OI_SPX = 500;
+/** Cash-index weekly roots (SPXW, NDXP) — $5-wide strikes, OI concentrates. */
+export const STRIKE_IV_MIN_OI_INDEX = 500;
 export const STRIKE_IV_MIN_OI_SPY_QQQ = 250;
 /** IWM (Russell 2000) — smaller-cap liquidity sits below QQQ. */
 export const STRIKE_IV_MIN_OI_IWM = 150;
-/** TLT + sector ETFs (XLF/XLE/XLK) — thinnest chains in the set. */
-export const STRIKE_IV_MIN_OI_SECTOR_ETF = 100;
-export const STRIKE_IV_TICKERS = [
-  'SPX',
-  'SPY',
-  'QQQ',
-  'IWM',
-  'TLT',
-  'XLF',
-  'XLE',
-  'XLK',
-] as const;
+export const STRIKE_IV_TICKERS = ['SPXW', 'NDXP', 'SPY', 'QQQ', 'IWM'] as const;
 export type StrikeIVTicker = (typeof STRIKE_IV_TICKERS)[number];
+
+/**
+ * Primary gate for the anomaly detector: target strike's intraday volume
+ * divided by start-of-day OI. A strike must have `volume / oi >= 5.0` to
+ * even enter skew_delta / z_score / ask_mid_div evaluation.
+ *
+ * Rationale (from 2026-04-24 live validation):
+ *   - A SPXW put at 5.0×+ vol/OI on the morning of the 2026-04-23 flush
+ *     ran from $45 → ~$200 (4x) — the ratio was the single most reliable
+ *     filter for tradeable informed flow.
+ *   - Every noise anomaly from the 2026-04-24 production run had vol/OI
+ *     well under 2× at firing time. The 5.0× threshold cuts that noise
+ *     essentially completely.
+ *
+ * Ratio grows throughout the session since `volume` is cumulative
+ * intraday and `oi` is start-of-day. Early-morning alerts are sparse by
+ * design — user only wants to see "massively outsized" signals.
+ */
+export const VOL_OI_RATIO_THRESHOLD = 5.0;
 
 // ============================================================
 // STRIKE IV ANOMALY DETECTOR (Phase 2 — detection)

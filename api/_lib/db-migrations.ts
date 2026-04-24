@@ -2317,4 +2317,22 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 85,
+    description:
+      'Add vol_oi_ratio column to iv_anomalies for the primary volume/OI ' +
+      'gate (2026-04-24 rescope) — strike must have cumulative intraday ' +
+      'volume ≥ 5× start-of-day OI to fire. Surfaced prominently in the UI.',
+    statements: (sql) => [
+      // NUMERIC(8,2) fits ratios up to 999999.99× — effectively unbounded
+      // for our use case (anything above ~50× is already saturated signal).
+      // Nullable so historical rows (pre-rescope) stay valid without a
+      // backfill; the UI renders null as `—` and the detector will always
+      // populate it going forward.
+      sql`
+        ALTER TABLE iv_anomalies
+          ADD COLUMN IF NOT EXISTS vol_oi_ratio NUMERIC(8,2)
+      `,
+    ],
+  },
 ];

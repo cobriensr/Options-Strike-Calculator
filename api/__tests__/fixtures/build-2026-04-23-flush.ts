@@ -17,12 +17,10 @@
  *     60 minutes are a Z-score warm-up (required because `computeRollingZ`
  *     needs 60 prior samples). Detection replay starts at 10:00 CT.
  *
- *   - **Tickers**: SPY (target), QQQ (target), SPX (flat — confirms
- *     informed flow hides in ETF channels), plus IWM / TLT / XLF / XLE /
- *     XLK flat (added in the 2026-04-24 ticker-scope expansion to prove
- *     the new tickers don't produce false positives on a quiet baseline).
- *     Calls + puts both populated but only SPY/QQQ put-side targets
- *     produce anomalies.
+ *   - **Tickers** (post 2026-04-24 rescope): SPY (target), QQQ (target),
+ *     plus SPXW / NDXP / IWM as quiet baselines. SPY/QQQ put-side targets
+ *     produce the anomalies; the other three stay flat so any flag from
+ *     them indicates a noise-generator regression or a stddev-floor bug.
  *
  *   - **Target strikes**: SPY 704P + 705P, QQQ 649P. Anchor IVs are
  *     derived from the real-session ASK-side concentration — we don't
@@ -33,6 +31,13 @@
  *   - **Neighbor strikes**: ±3 strikes flat at the ticker's baseline IV
  *     with ZERO noise. See NEIGHBOR_NOISE comment below for the rationale
  *     (noise above the stddev floor produces spurious Z-score flags).
+ *
+ *   - **Volume / OI** (new 2026-04-24 field): the detector now gates on
+ *     vol/OI ≥ 5.0×. Target strikes ramp from ~1× early to ~50× by noon
+ *     (anchored to the real-session tape table: SPY 705P closed ~454K
+ *     volume on 9.1K OI, ≈ 50×). Non-target strikes stay at a flat 1.5×
+ *     baseline — well under the gate — so they never leak into anomaly
+ *     output regardless of IV trajectory.
  *
  *   - **Context snapshots**: only pre-populated at the 6 expected-alert
  *     timestamps. `classifyFlowPhase` only reads `vix_delta_15m` and
@@ -50,24 +55,21 @@ const CADENCE_MINUTES = 1;
 const EXPIRY = '2026-04-23';
 
 // Baseline IVs per ticker (flat for non-target strikes; starting point
-// for target strikes). Derived from typical 0DTE OTM put IV range.
-// New tickers (IWM / TLT / XLF / XLE / XLK) ship purely flat here —
-// their exact values are not load-bearing for the regression, only that
-// no flags emit when every strike sits at a constant IV.
+// for target strikes). Derived from typical 0DTE OTM put IV range. Quiet
+// tickers (SPXW / NDXP / IWM) ship purely flat — exact values are not
+// load-bearing for the regression, only that no flags emit when every
+// strike sits at a constant IV.
 const BASELINE_IV = {
   SPY: 0.24,
   QQQ: 0.28,
-  SPX: 0.22,
+  SPXW: 0.22,
+  NDXP: 0.25,
   IWM: 0.26,
-  TLT: 0.17,
-  XLF: 0.2,
-  XLE: 0.23,
-  XLK: 0.25,
 } as const;
 
 // Ticker spot at key times. Linear-interpolated minute-by-minute. These
-// match the spec's "Observed tape" table (SPY/QQQ spots; SPX derived
-// from the 77pt flush description: 7147 → 7070 between 11:50 and 13:00).
+// match the spec's "Observed tape" table (SPY/QQQ spots; SPXW derived
+// from the 77pt SPX flush: 7147 → 7070 between 11:50 and 13:00).
 const SPOT_ANCHORS = {
   SPY: [
     { min: 0, value: 711.6 }, // 09:00
@@ -86,21 +88,18 @@ const SPOT_ANCHORS = {
     { min: 120, value: 655.24 }, // 11:00
     { min: 180, value: 654.1 }, // 12:00
   ],
-  SPX: [
+  SPXW: [
     { min: 0, value: 7140 },
     { min: 60, value: 7142 }, // 10:00
     { min: 120, value: 7138 }, // 11:00
     { min: 170, value: 7147 }, // 11:50 (pre-flush peak)
     { min: 180, value: 7135 }, // 12:00 (flush begins)
   ],
-  // Expansion tickers — flat spot, flat IV. Single anchor = constant
-  // across the window; `interpolate()` falls through to the last anchor
-  // for any minute >= 0 so one entry per ticker is enough.
+  // Quiet-ticker baselines — single anchor = constant across the
+  // window; `interpolate()` falls through to the last anchor for any
+  // minute ≥ 0 so one entry is enough.
+  NDXP: [{ min: 0, value: 22500 }],
   IWM: [{ min: 0, value: 235 }],
-  TLT: [{ min: 0, value: 92 }],
-  XLF: [{ min: 0, value: 52 }],
-  XLE: [{ min: 0, value: 95 }],
-  XLK: [{ min: 0, value: 242 }],
 } as const;
 
 // Target-strike IV anchors (minute-offset from window start, IV in decimal).
@@ -147,29 +146,79 @@ const QQQ_649P_IV_ANCHORS: readonly { min: number; value: number }[] = [
   { min: 180, value: 0.3 },
 ];
 
-// Strike grids. SPY/QQQ are 1-wide; SPX is 5-wide. The target strikes
-// (SPY 704/705, QQQ 649) live INSIDE these grids — ivForStrike()
-// handles them specially via anchor lookups; everything else gets the
-// flat baseline so the skew-delta math has a stable comparison set.
+// Strike grids. SPY/QQQ are 1-wide; SPXW / NDXP are 5-wide (cash-index
+// weeklies). The target strikes (SPY 704/705, QQQ 649) live INSIDE these
+// grids — ivForStrike() handles them specially via anchor lookups;
+// everything else gets the flat baseline so the skew-delta math has a
+// stable comparison set.
 const SPY_PUT_STRIKES = [700, 701, 702, 703, 704, 705, 706, 707, 708];
 const SPY_CALL_STRIKES = [715, 716, 717, 718];
 const QQQ_PUT_STRIKES = [646, 647, 648, 649, 650, 651, 652];
 const QQQ_CALL_STRIKES = [660, 661, 662];
-const SPX_PUT_STRIKES = [7100, 7105, 7110, 7115, 7120];
-const SPX_CALL_STRIKES = [7150, 7155, 7160];
-// Expansion tickers: narrow flat grids bracketing each spot. Wide enough
-// to exercise the skew_delta neighbor math (4-strike window on each side),
-// narrow enough to stay inside ±3% OTM.
+// Quiet-ticker grids: wide enough to exercise the skew_delta neighbor
+// math (≥4-strike window on each side), narrow enough to stay inside
+// ±3% OTM.
+const SPXW_PUT_STRIKES = [7100, 7105, 7110, 7115, 7120];
+const SPXW_CALL_STRIKES = [7150, 7155, 7160];
+const NDXP_PUT_STRIKES = [22300, 22350, 22400, 22450];
+const NDXP_CALL_STRIKES = [22600, 22650, 22700, 22750];
 const IWM_PUT_STRIKES = [231, 232, 233, 234];
 const IWM_CALL_STRIKES = [236, 237, 238, 239];
-const TLT_PUT_STRIKES = [89, 90, 91];
-const TLT_CALL_STRIKES = [93, 94, 95];
-const XLF_PUT_STRIKES = [49, 50, 51];
-const XLF_CALL_STRIKES = [53, 54, 55];
-const XLE_PUT_STRIKES = [92, 93, 94];
-const XLE_CALL_STRIKES = [96, 97, 98];
-const XLK_PUT_STRIKES = [238, 239, 240, 241];
-const XLK_CALL_STRIKES = [243, 244, 245, 246];
+
+// ── Target-strike volume ramps ───────────────────────────────
+//
+// Real-session anchors from the 2026-04-23 SPY 705P tape: opened at ≈ 9.1K
+// OI, cumulative volume ramped from effectively 0 at 09:00 to ~454K by
+// 15:00 close (≈ 50× by EOD). The detector gate fires at 5×, which is
+// crossed around 10:30 CT when the informed ASK concentration shows up.
+// We anchor the volume curve so:
+//   * First spec alert (10:30) fires right at ~5.2× (barely clears gate)
+//   * Mid alerts (10:35–11:00) run 10-25×
+//   * Late alert (11:35) peaks near ~40× (closer to EOD)
+// OI stays constant at start-of-session value (strike_iv_snapshots stores
+// start-of-day OI).
+const SPY_705P_OI = 9100;
+const SPY_705P_VOLUME_ANCHORS: readonly { min: number; value: number }[] = [
+  { min: 0, value: 0 },
+  { min: 59, value: 9000 }, // 09:59 ≈ 1.0× (below gate)
+  { min: 60, value: 9500 }, // 10:00 ≈ 1.05× (still below gate)
+  { min: 85, value: 35000 }, // 10:25 ≈ 3.85× (pre-gate)
+  { min: 90, value: 48000 }, // 10:30 ≈ 5.27× (gate clears)
+  { min: 120, value: 150000 }, // 11:00 ≈ 16.5×
+  { min: 155, value: 330000 }, // 11:35 ≈ 36.3× (peak firing window)
+  { min: 180, value: 400000 }, // 12:00 ≈ 44×
+];
+
+const SPY_704P_OI = 7800;
+const SPY_704P_VOLUME_ANCHORS: readonly { min: number; value: number }[] = [
+  { min: 0, value: 0 },
+  { min: 59, value: 7500 }, // 09:59 ≈ 0.96×
+  { min: 60, value: 8000 }, // 10:00 ≈ 1.03×
+  { min: 95, value: 35000 }, // 10:35 ≈ 4.5× (still below gate)
+  { min: 100, value: 50000 }, // 10:40 ≈ 6.4× (gate clears)
+  { min: 119, value: 95000 }, // 10:59 ≈ 12.2×
+  { min: 120, value: 120000 }, // 11:00 ≈ 15.4×
+  { min: 180, value: 300000 }, // 12:00 ≈ 38.5×
+];
+
+const QQQ_649P_OI = 4200;
+const QQQ_649P_VOLUME_ANCHORS: readonly { min: number; value: number }[] = [
+  { min: 0, value: 0 },
+  { min: 59, value: 4100 }, // 09:59 ≈ 0.98×
+  { min: 60, value: 4500 }, // 10:00 ≈ 1.07×
+  { min: 90, value: 12000 }, // 10:30 ≈ 2.86×
+  { min: 95, value: 24000 }, // 10:35 ≈ 5.71× (gate clears)
+  { min: 119, value: 45000 }, // 10:59 ≈ 10.7×
+  { min: 120, value: 55000 }, // 11:00 ≈ 13.1×
+  { min: 180, value: 140000 }, // 12:00 ≈ 33×
+];
+
+// Quiet-strike volume anchor. All non-target strikes share this constant
+// ratio (~1.5× — well under the 5× gate) so they never clear the primary
+// filter regardless of any IV noise. Uses `OI = 1000` / `volume = 1500`
+// so the ratio math is trivially ~1.5 and obviously below threshold.
+const QUIET_OI = 1000;
+const QUIET_VOLUME = 1500;
 
 // ── Neighbor-strike noise (currently zero by design) ─────────
 //
@@ -179,7 +228,8 @@ const XLK_CALL_STRIKES = [243, 244, 245, 246];
 // returns null for non-target strikes (via the `stddev < 1e-6` guard),
 // and `computeSkewDelta` returns ~0 — so neighbors never trip either
 // gate. The only Z/skew flags in the replay come from the target strikes'
-// anchor-driven trajectories.
+// anchor-driven trajectories. The vol/OI gate adds a second belt-and-
+// suspenders: quiet strikes also sit at ~1.5× vol/OI, below the 5× cut.
 //
 // If we ever want to stress-test threshold sensitivity, add a seeded
 // LCG here (keyed by ticker:strike:side:minute) with amplitude ≥ 1e-5;
@@ -217,6 +267,10 @@ interface FixtureStrikeSample {
   iv_mid: number | null;
   iv_bid: number | null;
   iv_ask: number | null;
+  /** Cumulative intraday volume — primary-gate input. */
+  volume: number | null;
+  /** Start-of-day OI — primary-gate input (stable across the session). */
+  oi: number | null;
   ts: string;
 }
 
@@ -227,6 +281,8 @@ function makeSample(
   ivMid: number,
   ts: string,
   isTarget: boolean,
+  volume: number,
+  oi: number,
 ): FixtureStrikeSample {
   // Target strikes get a wider ask-mid divergence to simulate the
   // ASK-side concentration flagged in the tape. 1 vol pt = 0.01.
@@ -239,34 +295,72 @@ function makeSample(
     iv_mid: ivMid,
     iv_bid: Math.max(0.05, ivMid - askMidGap),
     iv_ask: ivMid + askMidGap,
+    volume,
+    oi,
     ts,
   };
 }
 
 type FixtureTicker = keyof typeof BASELINE_IV;
 
-function ivForStrike(
+interface TargetPayload {
+  iv: number;
+  volume: number;
+  oi: number;
+  isTarget: true;
+}
+
+interface QuietPayload {
+  iv: number;
+  volume: number;
+  oi: number;
+  isTarget: false;
+}
+
+type StrikePayload = TargetPayload | QuietPayload;
+
+function payloadForStrike(
   ticker: FixtureTicker,
   strike: number,
   side: 'call' | 'put',
   minute: number,
-): { iv: number; isTarget: boolean } {
+): StrikePayload {
   const baseline = BASELINE_IV[ticker];
 
   // Target anchor lookup — only put side matters for this fixture.
   if (side === 'put') {
     if (ticker === 'SPY' && strike === 705) {
-      return { iv: interpolate(SPY_705P_IV_ANCHORS, minute), isTarget: true };
+      return {
+        iv: interpolate(SPY_705P_IV_ANCHORS, minute),
+        volume: interpolate(SPY_705P_VOLUME_ANCHORS, minute),
+        oi: SPY_705P_OI,
+        isTarget: true,
+      };
     }
     if (ticker === 'SPY' && strike === 704) {
-      return { iv: interpolate(SPY_704P_IV_ANCHORS, minute), isTarget: true };
+      return {
+        iv: interpolate(SPY_704P_IV_ANCHORS, minute),
+        volume: interpolate(SPY_704P_VOLUME_ANCHORS, minute),
+        oi: SPY_704P_OI,
+        isTarget: true,
+      };
     }
     if (ticker === 'QQQ' && strike === 649) {
-      return { iv: interpolate(QQQ_649P_IV_ANCHORS, minute), isTarget: true };
+      return {
+        iv: interpolate(QQQ_649P_IV_ANCHORS, minute),
+        volume: interpolate(QQQ_649P_VOLUME_ANCHORS, minute),
+        oi: QQQ_649P_OI,
+        isTarget: true,
+      };
     }
   }
 
-  return { iv: baseline + NEIGHBOR_NOISE, isTarget: false };
+  return {
+    iv: baseline + NEIGHBOR_NOISE,
+    volume: QUIET_VOLUME,
+    oi: QUIET_OI,
+    isTarget: false,
+  };
 }
 
 // ── Spot interpolation ───────────────────────────────────────
@@ -322,20 +416,17 @@ function minuteToIso(minute: number): string {
 }
 
 // Per-ticker strike-grid registry. Order matches production-side
-// STRIKE_IV_TICKERS (indices first, ETFs after). Non-anomaly tickers
-// are purely flat; their rows exist so the replayer exercises the same
-// per-ticker iteration the live cron does.
+// STRIKE_IV_TICKERS (weekly-index roots first, ETFs after). Non-target
+// tickers are purely flat; their rows exist so the replayer exercises
+// the same per-ticker iteration the live cron does.
 const TICKER_STRIKE_GRIDS: ReadonlyArray<
   readonly [FixtureTicker, readonly number[], readonly number[]]
 > = [
-  ['SPX', SPX_PUT_STRIKES, SPX_CALL_STRIKES],
+  ['SPXW', SPXW_PUT_STRIKES, SPXW_CALL_STRIKES],
+  ['NDXP', NDXP_PUT_STRIKES, NDXP_CALL_STRIKES],
   ['SPY', SPY_PUT_STRIKES, SPY_CALL_STRIKES],
   ['QQQ', QQQ_PUT_STRIKES, QQQ_CALL_STRIKES],
   ['IWM', IWM_PUT_STRIKES, IWM_CALL_STRIKES],
-  ['TLT', TLT_PUT_STRIKES, TLT_CALL_STRIKES],
-  ['XLF', XLF_PUT_STRIKES, XLF_CALL_STRIKES],
-  ['XLE', XLE_PUT_STRIKES, XLE_CALL_STRIKES],
-  ['XLK', XLK_PUT_STRIKES, XLK_CALL_STRIKES],
 ];
 
 function buildFixture(): Fixture {
@@ -359,12 +450,34 @@ function buildFixture(): Fixture {
     for (const [ticker, putStrikes, callStrikes] of TICKER_STRIKE_GRIDS) {
       const rows: FixtureStrikeSample[] = [];
       for (const strike of putStrikes) {
-        const { iv, isTarget } = ivForStrike(ticker, strike, 'put', minute);
-        rows.push(makeSample(ticker, strike, 'put', iv, ts, isTarget));
+        const payload = payloadForStrike(ticker, strike, 'put', minute);
+        rows.push(
+          makeSample(
+            ticker,
+            strike,
+            'put',
+            payload.iv,
+            ts,
+            payload.isTarget,
+            payload.volume,
+            payload.oi,
+          ),
+        );
       }
       for (const strike of callStrikes) {
-        const { iv, isTarget } = ivForStrike(ticker, strike, 'call', minute);
-        rows.push(makeSample(ticker, strike, 'call', iv, ts, isTarget));
+        const payload = payloadForStrike(ticker, strike, 'call', minute);
+        rows.push(
+          makeSample(
+            ticker,
+            strike,
+            'call',
+            payload.iv,
+            ts,
+            payload.isTarget,
+            payload.volume,
+            payload.oi,
+          ),
+        );
       }
       bucket[ticker] = rows;
     }
@@ -454,8 +567,10 @@ function buildFixture(): Fixture {
       date: '2026-04-23',
       description:
         'SPX 77pt flush from informed SPY/QQQ 0DTE put flow. Gold-standard ' +
-        'regression fixture — IV anchors synthesized from the real-session ' +
-        'tape table to produce the detector flags listed in the spec.',
+        'regression fixture — IV anchors + vol/OI ramps synthesized from ' +
+        'the real-session tape table to produce the detector flags ' +
+        'listed in the spec. Quiet tickers (SPXW / NDXP / IWM) ship flat ' +
+        'so any flag from them indicates a regression.',
       windowStart: WINDOW_START_UTC,
       windowEnd: WINDOW_END_UTC,
       cadenceMinutes: CADENCE_MINUTES,

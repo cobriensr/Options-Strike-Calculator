@@ -33,10 +33,11 @@ export function AnomalyRow({ anomaly }: { readonly anomaly: ActiveAnomaly }) {
     return () => clearInterval(t);
   }, []);
 
-  // SPX-only: the spec flagged that spx_recent_dark_prints is SPX-scoped.
-  // Hide the "dark prints" sub-field for SPY / QQQ entirely so we never
-  // mis-attribute an SPX print to a different underlying.
-  const isSpxScoped = anomaly.ticker === 'SPX';
+  // SPX-scoped: `spx_recent_dark_prints` only populates for tickers that
+  // share the SPX cash feed — post 2026-04-24 rescope that's SPXW only.
+  // For SPY / QQQ / IWM / NDXP we never attribute SPX prints, so the
+  // sub-field stays hidden to avoid misread.
+  const isSpxScoped = anomaly.ticker === 'SPXW';
 
   const activeDurationLabel = formatDuration(
     nowMs - Date.parse(anomaly.firstSeenTs),
@@ -63,6 +64,7 @@ export function AnomalyRow({ anomaly }: { readonly anomaly: ActiveAnomaly }) {
             {anomaly.ticker} {formatStrike(anomaly.strike)}
             {anomaly.side === 'put' ? 'P' : 'C'}
           </span>
+          <VolOiPill ratio={latest.volOiRatio} />
           <span className="text-muted font-mono text-[10px]">
             exp {anomaly.expiry}
           </span>
@@ -102,6 +104,10 @@ export function AnomalyRow({ anomaly }: { readonly anomaly: ActiveAnomaly }) {
               value={`${(latest.ivAtDetect * 100).toFixed(1)}%`}
             />
             <Metric
+              label="vol/OI"
+              value={fmtOrDash(latest.volOiRatio, formatVolOi)}
+            />
+            <Metric
               label="skew Δ"
               value={fmtOrDash(latest.skewDelta, (v) => v.toFixed(2))}
             />
@@ -138,6 +144,45 @@ export function AnomalyRow({ anomaly }: { readonly anomaly: ActiveAnomaly }) {
 }
 
 // ── Sub-components ──────────────────────────────────────────────
+
+/**
+ * Prominent vol/OI pill. The user treats this as the PRIMARY signal —
+ * the 5× gate is what made the detector useful. Color intensifies at
+ * progressively more-saturated ratios so a glance tells you whether
+ * it's "just cleared" (5-10×) vs "massive" (50×+).
+ *
+ * Null ratio (legacy pre-migration row) renders nothing — the pill slot
+ * is optional, not a required header field.
+ */
+function VolOiPill({ ratio }: { readonly ratio: number | null }) {
+  if (ratio == null || !Number.isFinite(ratio)) return null;
+  let tier: string;
+  if (ratio >= 50) {
+    tier = 'bg-fuchsia-500/30 text-fuchsia-200';
+  } else if (ratio >= 20) {
+    tier = 'bg-rose-500/25 text-rose-200';
+  } else if (ratio >= 10) {
+    tier = 'bg-orange-500/25 text-orange-200';
+  } else {
+    tier = 'bg-amber-500/20 text-amber-200';
+  }
+  return (
+    <span
+      className={`rounded-md px-2 py-0.5 font-mono text-[11px] font-bold ${tier}`}
+      data-testid="vol-oi-pill"
+      title="cumulative intraday volume / start-of-day open interest"
+    >
+      vol/OI {formatVolOi(ratio)}
+    </span>
+  );
+}
+
+function formatVolOi(ratio: number): string {
+  // Truncate to a single decimal if < 10, else round to whole. 5.3× vs
+  // 52× are both what the user glances for; trailing zeros just add noise.
+  if (ratio < 10) return `${ratio.toFixed(1)}×`;
+  return `${Math.round(ratio)}×`;
+}
 
 /** Display pill for the exit-signal phase (active | cooling | distributing). */
 function AnomalyPhasePill({ phase }: { readonly phase: IVAnomalyPhase }) {

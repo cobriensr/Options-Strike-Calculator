@@ -107,19 +107,11 @@ interface CollectedFlag extends AnomalyFlag {
   flow_phase: 'early' | 'mid' | 'reactive';
 }
 
-// Replay every ticker the fixture carries (indices + ETFs). Keeping this
-// aligned with the fixture's grid registry — any ticker with samples in
-// `strikeSnapshots` must also get its spot series replayed here.
-const TICKERS = [
-  'SPX',
-  'SPY',
-  'QQQ',
-  'IWM',
-  'TLT',
-  'XLF',
-  'XLE',
-  'XLK',
-] as const;
+// Replay every ticker the fixture carries (weekly-index roots + ETFs).
+// Keeping this aligned with the fixture's grid registry — any ticker
+// with samples in `strikeSnapshots` must also get its spot series
+// replayed here. Order matches post-2026-04-24 STRIKE_IV_TICKERS.
+const TICKERS = ['SPXW', 'NDXP', 'SPY', 'QQQ', 'IWM'] as const;
 
 /**
  * Replay the fixture minute-by-minute and collect every flag produced
@@ -157,6 +149,8 @@ function replay(fixture: Fixture): CollectedFlag[] {
         iv_mid: r.iv_mid,
         iv_bid: r.iv_bid,
         iv_ask: r.iv_ask,
+        volume: r.volume,
+        oi: r.oi,
         ts: r.ts,
       }));
 
@@ -180,6 +174,8 @@ function replay(fixture: Fixture): CollectedFlag[] {
             iv_mid: r.iv_mid,
             iv_bid: r.iv_bid,
             iv_ask: r.iv_ask,
+            volume: r.volume,
+            oi: r.oi,
             ts: r.ts,
           };
           if (bucket) bucket.push(sample);
@@ -312,10 +308,11 @@ describe('E2E: 2026-04-23 informed-flow flush regression', () => {
 
   it('does not flag any ticker other than SPY/QQQ (flow hid in ETF channel per spec)', () => {
     // Structural lesson from the spec: informed flow that wanted to
-    // stay hidden used SPY/QQQ, NOT SPXW. The fixture keeps every other
-    // ticker (SPX + the 2026-04-24 expansion set IWM/TLT/XLF/XLE/XLK)
-    // perfectly flat so any flag from them would indicate an accidental
-    // signal leak (noise generator, stddev floor regression, etc.).
+    // stay hidden used SPY/QQQ, NOT SPXW. The fixture keeps the quiet
+    // tickers from the 2026-04-24 rescope (SPXW / NDXP / IWM) perfectly
+    // flat AND at a sub-5× vol/OI ratio, so any flag from them would
+    // indicate either an accidental signal leak (noise generator,
+    // stddev floor regression) or a vol/OI-gate bypass.
     const stray = collected.filter(
       (f) => f.ticker !== 'SPY' && f.ticker !== 'QQQ',
     );

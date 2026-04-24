@@ -89,7 +89,12 @@ const OFF_HOURS_TIME = new Date('2026-04-24T11:00:00.000Z');
 
 /**
  * Build a Schwab option contract. Price + strike are sized to invert
- * cleanly for an OTM put/call near a spot of 7100 (SPX) or 710 (SPY/QQQ).
+ * cleanly for an OTM put/call near a spot of 7100 (SPXW) or 710 (SPY/QQQ).
+ *
+ * `root` populates the OSI symbol prefix so the cron's root-filter can
+ * distinguish SPXW from SPX (and NDXP from NDX) inside a shared `$SPX` /
+ * `$NDX` chain response. Defaults to 'SPY' which the cron treats as a
+ * root-unique ETF (no filtering applied).
  */
 function makeContract(
   putCall: 'PUT' | 'CALL',
@@ -99,10 +104,15 @@ function makeContract(
     ask: number;
     totalVolume: number;
     openInterest: number;
+    root: string;
   }> = {},
 ) {
+  const root = overrides.root ?? 'SPY';
   return {
     putCall,
+    // OSI-ish symbol: `<root-padded> <YYMMDD><C|P><strike-pad>`. The
+    // cron splits on whitespace and compares the first token to ticker.
+    symbol: `${root.padEnd(6)}260424${putCall === 'PUT' ? 'P' : 'C'}${String(Math.round(strike * 1000)).padStart(8, '0')}`,
     bid: overrides.bid ?? 2.0,
     ask: overrides.ask ?? 2.5,
     mark: 2.25,
@@ -118,6 +128,11 @@ function makeContract(
  * Build a chain response with a handful of OTM puts + calls bracketing a
  * given spot for a single 0DTE expiry (today). `expiry` defaults to
  * 2026-04-24 which matches MARKET_TIME.
+ *
+ * `symbol` is the Schwab chain-endpoint symbol (e.g. `$SPX`, `$NDX`,
+ * `SPY`). `contractRoot` is the OSI root the cron's filter will match
+ * on — defaults to the symbol stripped of `$`. This keeps SPXW/NDXP
+ * chains producing contracts whose root is SPXW/NDXP (not SPX/NDX).
  */
 function makeChain(
   symbol: string,
@@ -126,14 +141,20 @@ function makeChain(
     expiry?: string;
     putStrikes?: number[];
     callStrikes?: number[];
-    ticker?: 'SPX' | 'SPY' | 'QQQ' | 'IWM' | 'TLT' | 'XLF' | 'XLE' | 'XLK';
+    contractRoot?: string;
     openInterest?: number;
     bid?: number;
     ask?: number;
+    totalVolume?: number;
   } = {},
 ) {
   const expiry = opts.expiry ?? '2026-04-24';
   const expKey = `${expiry}:0`;
+  // Default contract root strips the `$` prefix from the chain symbol
+  // (SPY→SPY, $SPX→SPX). Callers should pass explicit `contractRoot:
+  // 'SPXW'` or `'NDXP'` when building a mixed index chain response.
+  const defaultRoot = symbol.replace(/^\$/, '');
+  const root = opts.contractRoot ?? defaultRoot;
   const callExpDateMap: Record<
     string,
     Record<string, ReturnType<typeof makeContract>[]>
@@ -148,6 +169,8 @@ function makeChain(
         openInterest: opts.openInterest ?? 600,
         bid: opts.bid,
         ask: opts.ask,
+        totalVolume: opts.totalVolume,
+        root,
       }),
     ];
   }
@@ -157,6 +180,8 @@ function makeChain(
         openInterest: opts.openInterest ?? 600,
         bid: opts.bid,
         ask: opts.ask,
+        totalVolume: opts.totalVolume,
+        root,
       }),
     ];
   }
@@ -169,28 +194,6 @@ function makeChain(
   };
 }
 
-/**
- * Empty-chain stubs for the IWM / TLT / XLF / XLE / XLK tail of the
- * STRIKE_IV_TICKERS tuple. Tests that only care about SPX / SPY / QQQ
- * behavior spread this into their mock sequence so the expansion tickers
- * consistently produce `empty_chain` results without the caller having
- * to spell out every ticker.
- *
- * Note on spot values: the spot used here must be a value near which the
- * OTM band is well-defined — we pick the approximate 2026-04 spot for
- * each symbol. With no strikes supplied, `extractRows` returns an empty
- * array and the cron records `skipped=true, reason=empty_chain`.
- */
-function emptyEtfChains() {
-  return [
-    makeChain('IWM', 235, {}),
-    makeChain('TLT', 92, {}),
-    makeChain('XLF', 52, {}),
-    makeChain('XLE', 95, {}),
-    makeChain('XLK', 242, {}),
-  ];
-}
-
 function authedReq() {
   return mockRequest({
     method: 'GET',
@@ -200,10 +203,11 @@ function authedReq() {
 
 /**
  * Feed the schwabFetch mock a fresh chain for each ticker in
- * STRIKE_IV_TICKERS order (SPX, SPY, QQQ, IWM, TLT, XLF, XLE, XLK).
- * Any ticker set to `null` simulates a fetch failure. Tests supplying
- * fewer than 8 entries implicitly get `ok: false` (undefined mock) for
- * the remainder — `emptyEtfChains()` exists to make that explicit.
+ * STRIKE_IV_TICKERS order (SPXW, NDXP, SPY, QQQ, IWM — 5 total).
+ * Any ticker set to `null` simulates a fetch failure. Tests that only
+ * care about a subset of the tickers should inline
+ * `makeChain('$NDX', 22500, { contractRoot: 'NDXP' })` etc. for the
+ * empty-chain tail rather than relying on undefined mocks.
  */
 type ChainOrError =
   | ReturnType<typeof makeChain>
@@ -298,12 +302,14 @@ describe('fetch-strike-iv handler', () => {
     expect(mockSql.transaction).not.toHaveBeenCalled();
   });
 
-  // ── Happy path: 3 tickers all return valid chains ──────────
+  // ── Happy path: 3 index/ETF tickers all return valid chains ─
 
-  it('inserts per-strike IV rows for the primary 3 tickers and skips the rest when chains are empty', async () => {
-    const spxChain = makeChain('$SPX', 7100, {
-      putStrikes: [7020, 7050, 7080], // all OTM puts within -3% of 7100
-      callStrikes: [7120, 7150, 7180], // all OTM calls within +3%
+  it('inserts per-strike IV rows for SPXW/SPY/QQQ and skips NDXP/IWM when chains are empty', async () => {
+    // SPXW chain is fetched via `$SPX` and contains SPXW-rooted contracts.
+    const spxwChain = makeChain('$SPX', 7100, {
+      putStrikes: [7020, 7050, 7080],
+      callStrikes: [7120, 7150, 7180],
+      contractRoot: 'SPXW',
       bid: 5,
       ask: 6,
     });
@@ -320,117 +326,15 @@ describe('fetch-strike-iv handler', () => {
       ask: 0.8,
     });
 
-    // Expansion tickers return empty chains — mirrors the likely
-    // production behavior on sessions with no 0DTE listed for
-    // TLT/XLF/XLE/XLK (they're logged as no-op, not an error).
-    mockChainSequence([spxChain, spyChain, qqqChain, ...emptyEtfChains()]);
-
-    const res = mockResponse();
-    await handler(authedReq(), res);
-
-    expect(res._status).toBe(200);
-    const body = res._json as {
-      totalInserted: number;
-      results: Array<{
-        ticker: string;
-        rowsInserted: number;
-        skipped: boolean;
-        reason?: string;
-      }>;
-    };
-    // SPX: 6 strikes (3 puts + 3 calls); SPY: 4 (2+2); QQQ: 4 (2+2) = 14.
-    expect(body.totalInserted).toBe(14);
-    // All 8 tickers reported.
-    expect(body.results).toHaveLength(8);
-    expect(body.results.find((r) => r.ticker === 'SPX')?.rowsInserted).toBe(6);
-    expect(body.results.find((r) => r.ticker === 'SPY')?.rowsInserted).toBe(4);
-    expect(body.results.find((r) => r.ticker === 'QQQ')?.rowsInserted).toBe(4);
-    // Expansion tickers skipped with empty_chain.
-    for (const t of ['IWM', 'TLT', 'XLF', 'XLE', 'XLK']) {
-      expect(body.results.find((r) => r.ticker === t)).toMatchObject({
-        rowsInserted: 0,
-        skipped: true,
-        reason: 'empty_chain',
-      });
-    }
-    // Three transactions (the three tickers that had rows).
-    expect(mockSql.transaction).toHaveBeenCalledTimes(3);
-  });
-
-  // ── Empty chain for one ticker, others proceed ────────────
-
-  it('skips tickers with empty chains without blocking others', async () => {
-    const spxChain = makeChain('$SPX', 7100, {
-      putStrikes: [7050, 7080],
-      callStrikes: [7120, 7150],
-      bid: 5,
-      ask: 6,
-    });
-    // SPY chain has no strikes at all → 0 rows, skipped=true.
-    const spyChain = makeChain('SPY', 710, {
-      putStrikes: [],
-      callStrikes: [],
-    });
-    const qqqChain = makeChain('QQQ', 500, {
-      putStrikes: [495],
-      callStrikes: [505],
-      bid: 0.6,
-      ask: 0.8,
-    });
-
-    mockChainSequence([spxChain, spyChain, qqqChain, ...emptyEtfChains()]);
-
-    const res = mockResponse();
-    await handler(authedReq(), res);
-
-    expect(res._status).toBe(200);
-    const body = res._json as {
-      totalInserted: number;
-      results: Array<{
-        ticker: string;
-        rowsInserted: number;
-        skipped: boolean;
-        reason?: string;
-      }>;
-    };
-    expect(body.totalInserted).toBe(6); // 4 SPX + 0 SPY + 2 QQQ
-    const spy = body.results.find((r) => r.ticker === 'SPY');
-    expect(spy).toMatchObject({
-      rowsInserted: 0,
-      skipped: true,
-      reason: 'empty_chain',
-    });
-    const spx = body.results.find((r) => r.ticker === 'SPX');
-    expect(spx).toMatchObject({ rowsInserted: 4, skipped: false });
-    const qqq = body.results.find((r) => r.ticker === 'QQQ');
-    expect(qqq).toMatchObject({ rowsInserted: 2, skipped: false });
-    // Two transactions (SPX + QQQ); SPY + expansion ETFs didn't insert.
-    expect(mockSql.transaction).toHaveBeenCalledTimes(2);
-  });
-
-  // ── Schwab auth error for one ticker, others proceed ──────
-
-  it('logs and continues when one ticker Schwab fetch fails', async () => {
-    const spxChain = makeChain('$SPX', 7100, {
-      putStrikes: [7050],
-      callStrikes: [7150],
-      bid: 5,
-      ask: 6,
-    });
-    const qqqChain = makeChain('QQQ', 500, {
-      putStrikes: [495],
-      callStrikes: [505],
-      bid: 0.6,
-      ask: 0.8,
-    });
-
-    // SPY returns a 401 (expired token) — must not abort SPX or QQQ
-    // or the expansion tickers.
+    // NDXP / IWM return empty chains — legitimate no-op on sessions
+    // without 0DTE listings for those roots. Order must match
+    // STRIKE_IV_TICKERS: SPXW, NDXP, SPY, QQQ, IWM.
     mockChainSequence([
-      spxChain,
-      { error: 'token expired', status: 401 },
+      spxwChain,
+      makeChain('$NDX', 22500, { contractRoot: 'NDXP' }),
+      spyChain,
       qqqChain,
-      ...emptyEtfChains(),
+      makeChain('IWM', 235, {}),
     ]);
 
     const res = mockResponse();
@@ -446,7 +350,167 @@ describe('fetch-strike-iv handler', () => {
         reason?: string;
       }>;
     };
-    // SPX: 2 rows, SPY: 0 rows (error), QQQ: 2 rows, ETFs: 0 rows.
+    // SPXW: 6 strikes; SPY: 4; QQQ: 4 → 14 total.
+    expect(body.totalInserted).toBe(14);
+    // All 5 tickers reported.
+    expect(body.results).toHaveLength(5);
+    expect(body.results.find((r) => r.ticker === 'SPXW')?.rowsInserted).toBe(6);
+    expect(body.results.find((r) => r.ticker === 'SPY')?.rowsInserted).toBe(4);
+    expect(body.results.find((r) => r.ticker === 'QQQ')?.rowsInserted).toBe(4);
+    // Quiet tickers skipped with empty_chain.
+    for (const t of ['NDXP', 'IWM']) {
+      expect(body.results.find((r) => r.ticker === t)).toMatchObject({
+        rowsInserted: 0,
+        skipped: true,
+        reason: 'empty_chain',
+      });
+    }
+    // Three transactions (the three tickers that had rows).
+    expect(mockSql.transaction).toHaveBeenCalledTimes(3);
+  });
+
+  // ── SPXW root filter drops SPX monthlies under the `$SPX` chain ─
+
+  it('filters out SPX-rooted contracts when fetching SPXW (Schwab mixes both roots under $SPX)', async () => {
+    // Chain returned by `$SPX` contains BOTH SPXW weeklies AND SPX
+    // monthlies. The cron must keep only SPXW.
+    const mixedChain = makeChain('$SPX', 7100, {
+      contractRoot: 'SPXW', // baseline root
+      bid: 5,
+      ask: 6,
+    });
+    // Two SPXW weekly contracts (should be ingested).
+    mixedChain.putExpDateMap['2026-04-24:0']!['7050'] = [
+      makeContract('PUT', 7050, { root: 'SPXW', bid: 5, ask: 6 }),
+    ];
+    mixedChain.callExpDateMap['2026-04-24:0']!['7150'] = [
+      makeContract('CALL', 7150, { root: 'SPXW', bid: 5, ask: 6 }),
+    ];
+    // Two SPX monthly contracts under the SAME expiry key (edge case but
+    // possible on 3rd-Friday). They should NOT be ingested.
+    mixedChain.putExpDateMap['2026-04-24:0']!['7040'] = [
+      makeContract('PUT', 7040, { root: 'SPX', bid: 5, ask: 6 }),
+    ];
+    mixedChain.callExpDateMap['2026-04-24:0']!['7160'] = [
+      makeContract('CALL', 7160, { root: 'SPX', bid: 5, ask: 6 }),
+    ];
+
+    mockChainSequence([
+      mixedChain,
+      makeChain('$NDX', 22500, { contractRoot: 'NDXP' }),
+      makeChain('SPY', 710, {}),
+      makeChain('QQQ', 500, {}),
+      makeChain('IWM', 235, {}),
+    ]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    const body = res._json as {
+      totalInserted: number;
+      results: Array<{ ticker: string; rowsInserted: number }>;
+    };
+    // Only the 2 SPXW-rooted contracts (7050 put + 7150 call) survive.
+    expect(body.results.find((r) => r.ticker === 'SPXW')?.rowsInserted).toBe(2);
+    expect(body.totalInserted).toBe(2);
+  });
+
+  // ── Empty chain for one ticker, others proceed ────────────
+
+  it('skips tickers with empty chains without blocking others', async () => {
+    const spxwChain = makeChain('$SPX', 7100, {
+      putStrikes: [7050, 7080],
+      callStrikes: [7120, 7150],
+      contractRoot: 'SPXW',
+      bid: 5,
+      ask: 6,
+    });
+    // SPY chain has no strikes at all → 0 rows, skipped=true.
+    const spyChain = makeChain('SPY', 710, { putStrikes: [], callStrikes: [] });
+    const qqqChain = makeChain('QQQ', 500, {
+      putStrikes: [495],
+      callStrikes: [505],
+      bid: 0.6,
+      ask: 0.8,
+    });
+
+    mockChainSequence([
+      spxwChain,
+      makeChain('$NDX', 22500, { contractRoot: 'NDXP' }),
+      spyChain,
+      qqqChain,
+      makeChain('IWM', 235, {}),
+    ]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      totalInserted: number;
+      results: Array<{
+        ticker: string;
+        rowsInserted: number;
+        skipped: boolean;
+        reason?: string;
+      }>;
+    };
+    expect(body.totalInserted).toBe(6); // 4 SPXW + 0 SPY + 2 QQQ
+    const spy = body.results.find((r) => r.ticker === 'SPY');
+    expect(spy).toMatchObject({
+      rowsInserted: 0,
+      skipped: true,
+      reason: 'empty_chain',
+    });
+    const spxw = body.results.find((r) => r.ticker === 'SPXW');
+    expect(spxw).toMatchObject({ rowsInserted: 4, skipped: false });
+    const qqq = body.results.find((r) => r.ticker === 'QQQ');
+    expect(qqq).toMatchObject({ rowsInserted: 2, skipped: false });
+    // Two transactions (SPXW + QQQ); SPY + NDXP + IWM didn't insert.
+    expect(mockSql.transaction).toHaveBeenCalledTimes(2);
+  });
+
+  // ── Schwab auth error for one ticker, others proceed ──────
+
+  it('logs and continues when one ticker Schwab fetch fails', async () => {
+    const spxwChain = makeChain('$SPX', 7100, {
+      putStrikes: [7050],
+      callStrikes: [7150],
+      contractRoot: 'SPXW',
+      bid: 5,
+      ask: 6,
+    });
+    const qqqChain = makeChain('QQQ', 500, {
+      putStrikes: [495],
+      callStrikes: [505],
+      bid: 0.6,
+      ask: 0.8,
+    });
+
+    // SPY returns a 401 (expired token) — must not abort SPXW or QQQ
+    // or the other tickers.
+    mockChainSequence([
+      spxwChain,
+      makeChain('$NDX', 22500, { contractRoot: 'NDXP' }),
+      { error: 'token expired', status: 401 },
+      qqqChain,
+      makeChain('IWM', 235, {}),
+    ]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      totalInserted: number;
+      results: Array<{
+        ticker: string;
+        rowsInserted: number;
+        skipped: boolean;
+        reason?: string;
+      }>;
+    };
+    // SPXW: 2 rows, SPY: 0 (error), QQQ: 2 rows, NDXP+IWM: 0 each.
     expect(body.totalInserted).toBe(4);
     const spy = body.results.find((r) => r.ticker === 'SPY');
     expect(spy).toMatchObject({
@@ -454,39 +518,28 @@ describe('fetch-strike-iv handler', () => {
       skipped: true,
       reason: 'schwab_error',
     });
-    // SPX + QQQ actually inserted rows; everything else skipped.
+    // SPXW + QQQ actually inserted rows; everything else skipped.
     expect(body.results.filter((r) => !r.skipped)).toHaveLength(2);
   });
 
   // ── IV inversion fails → row skipped, cron continues ─────
 
   it('skips strikes whose mid-price is below intrinsic (IV inversion fails)', async () => {
-    // Put strike 7050 with spot 7100 → intrinsic = 0 (OTM). But if we
-    // quote a put with bid=0.0001/ask=0.0002, mid is effectively zero and
-    // inversion either fails or returns a pathologically small σ. More
-    // important: a PUT quote below intrinsic fails the feasibility check.
-    // Here we construct a put with negative "effective" intrinsic by
-    // setting a strike DEEP in the money (above spot) with a price BELOW
-    // the intrinsic value — since the cron filters to OTM, we instead use
-    // a zero-bid degenerate quote.
-    //
-    // Simpler: zero bid violates the `bid > 0` gate at row-extract time
-    // before IV even runs. So we add a strike with a legitimate-looking
-    // bid/ask but where the mid is so high it exceeds the upper bound
-    // (spot for call, strike for put) — that fails IV inversion cleanly.
-    const spxChain = makeChain('$SPX', 7100, {
+    const spxwChain = makeChain('$SPX', 7100, {
       putStrikes: [7050], // good row
       callStrikes: [7150], // good row
+      contractRoot: 'SPXW',
       bid: 5,
       ask: 6,
     });
     // Inject one bad row: a put whose ask > strike — impossible under
     // no-arb, so impliedVolatility() will reject it.
-    spxChain.putExpDateMap['2026-04-24:0']!['7080'] = [
+    spxwChain.putExpDateMap['2026-04-24:0']!['7080'] = [
       makeContract('PUT', 7080, {
         bid: 7100, // > strike → violates upper bound for puts
         ask: 7150,
         openInterest: 600,
+        root: 'SPXW',
       }),
     ];
 
@@ -503,7 +556,13 @@ describe('fetch-strike-iv handler', () => {
       ask: 0.8,
     });
 
-    mockChainSequence([spxChain, spyChain, qqqChain, ...emptyEtfChains()]);
+    mockChainSequence([
+      spxwChain,
+      makeChain('$NDX', 22500, { contractRoot: 'NDXP' }),
+      spyChain,
+      qqqChain,
+      makeChain('IWM', 235, {}),
+    ]);
 
     const res = mockResponse();
     await handler(authedReq(), res);
@@ -513,28 +572,64 @@ describe('fetch-strike-iv handler', () => {
       totalInserted: number;
       results: Array<{ ticker: string; rowsInserted: number }>;
     };
-    // SPX should have 2 good rows (7050 put + 7150 call) — the 7080 bad
-    // row is filtered out at IV-inversion time. Plus 2 SPY + 2 QQQ = 6.
+    // SPXW should have 2 good rows (7050 put + 7150 call); 7080 bad row
+    // filtered out at IV-inversion time. Plus 2 SPY + 2 QQQ = 6 total.
     expect(body.totalInserted).toBe(6);
-    const spx = body.results.find((r) => r.ticker === 'SPX');
-    expect(spx?.rowsInserted).toBe(2);
+    const spxw = body.results.find((r) => r.ticker === 'SPXW');
+    expect(spxw?.rowsInserted).toBe(2);
   });
 
   // ── OI gate enforcement ──────────────────────────────────
 
-  it('enforces min-OI gate per ticker (SPX=500, SPY/QQQ=250, IWM=150, sector ETFs=100)', async () => {
-    // SPX: one strike with OI=400 (below 500 gate — rejected), one with
-    //      OI=600 (passes).
-    const spxChain = makeChain('$SPX', 7100, { bid: 5, ask: 6 });
-    spxChain.putExpDateMap['2026-04-24:0']!['7050'] = [
-      makeContract('PUT', 7050, { openInterest: 400, bid: 5, ask: 6 }),
+  it('enforces min-OI gate per ticker (SPXW/NDXP=500, SPY/QQQ=250, IWM=150)', async () => {
+    // SPXW: one strike with OI=400 (below 500 gate — rejected), one with
+    //       OI=600 (passes).
+    const spxwChain = makeChain('$SPX', 7100, {
+      contractRoot: 'SPXW',
+      bid: 5,
+      ask: 6,
+    });
+    spxwChain.putExpDateMap['2026-04-24:0']!['7050'] = [
+      makeContract('PUT', 7050, {
+        openInterest: 400,
+        bid: 5,
+        ask: 6,
+        root: 'SPXW',
+      }),
     ];
-    spxChain.callExpDateMap['2026-04-24:0']!['7150'] = [
-      makeContract('CALL', 7150, { openInterest: 600, bid: 5, ask: 6 }),
+    spxwChain.callExpDateMap['2026-04-24:0']!['7150'] = [
+      makeContract('CALL', 7150, {
+        openInterest: 600,
+        bid: 5,
+        ask: 6,
+        root: 'SPXW',
+      }),
     ];
 
-    // SPY: one strike with OI=200 (below 250 gate — rejected), one with
-    //      OI=300 (passes).
+    // NDXP: OI=400 rejected, OI=600 accepted (same tier as SPXW).
+    const ndxpChain = makeChain('$NDX', 22500, {
+      contractRoot: 'NDXP',
+      bid: 5,
+      ask: 6,
+    });
+    ndxpChain.putExpDateMap['2026-04-24:0']!['22400'] = [
+      makeContract('PUT', 22400, {
+        openInterest: 400,
+        bid: 5,
+        ask: 6,
+        root: 'NDXP',
+      }),
+    ];
+    ndxpChain.callExpDateMap['2026-04-24:0']!['22600'] = [
+      makeContract('CALL', 22600, {
+        openInterest: 600,
+        bid: 5,
+        ask: 6,
+        root: 'NDXP',
+      }),
+    ];
+
+    // SPY: OI=200 rejected (below 250 gate), OI=300 passes.
     const spyChain = makeChain('SPY', 710, { bid: 0.8, ask: 1.0 });
     spyChain.putExpDateMap['2026-04-24:0']!['705'] = [
       makeContract('PUT', 705, { openInterest: 200, bid: 0.8, ask: 1.0 }),
@@ -546,8 +641,7 @@ describe('fetch-strike-iv handler', () => {
     // QQQ: empty (not testing QQQ gate here).
     const qqqChain = makeChain('QQQ', 500, {});
 
-    // IWM: one strike with OI=100 (below 150 gate — rejected), one with
-    //      OI=200 (passes). Two strikes on each side simplifies the check.
+    // IWM: OI=100 rejected (below 150 gate), OI=200 accepted.
     const iwmChain = makeChain('IWM', 235, { bid: 0.5, ask: 0.7 });
     iwmChain.putExpDateMap['2026-04-24:0']!['232'] = [
       makeContract('PUT', 232, { openInterest: 100, bid: 0.5, ask: 0.7 }),
@@ -556,31 +650,7 @@ describe('fetch-strike-iv handler', () => {
       makeContract('CALL', 238, { openInterest: 200, bid: 0.5, ask: 0.7 }),
     ];
 
-    // TLT (sector-ETF tier): OI=80 rejected (below 100), OI=120 accepted.
-    const tltChain = makeChain('TLT', 92, { bid: 0.3, ask: 0.5 });
-    tltChain.putExpDateMap['2026-04-24:0']!['91'] = [
-      makeContract('PUT', 91, { openInterest: 80, bid: 0.3, ask: 0.5 }),
-    ];
-    tltChain.callExpDateMap['2026-04-24:0']!['93'] = [
-      makeContract('CALL', 93, { openInterest: 120, bid: 0.3, ask: 0.5 }),
-    ];
-
-    // XLF / XLE / XLK empty — keep the sequence aligned without
-    // duplicating the TLT assertion for every sector ETF.
-    const xlfChain = makeChain('XLF', 52, {});
-    const xleChain = makeChain('XLE', 95, {});
-    const xlkChain = makeChain('XLK', 242, {});
-
-    mockChainSequence([
-      spxChain,
-      spyChain,
-      qqqChain,
-      iwmChain,
-      tltChain,
-      xlfChain,
-      xleChain,
-      xlkChain,
-    ]);
+    mockChainSequence([spxwChain, ndxpChain, spyChain, qqqChain, iwmChain]);
 
     const res = mockResponse();
     await handler(authedReq(), res);
@@ -588,34 +658,27 @@ describe('fetch-strike-iv handler', () => {
     const body = res._json as {
       results: Array<{ ticker: string; rowsInserted: number }>;
     };
-    // SPX: only the 7150 call survives. SPY: only the 715 call survives.
-    // IWM: only 238 call survives. TLT: only 93 call survives.
-    expect(body.results.find((r) => r.ticker === 'SPX')?.rowsInserted).toBe(1);
+    // Each ticker that had a gate test: only the above-threshold call
+    // strike survives.
+    expect(body.results.find((r) => r.ticker === 'SPXW')?.rowsInserted).toBe(1);
+    expect(body.results.find((r) => r.ticker === 'NDXP')?.rowsInserted).toBe(1);
     expect(body.results.find((r) => r.ticker === 'SPY')?.rowsInserted).toBe(1);
     expect(body.results.find((r) => r.ticker === 'IWM')?.rowsInserted).toBe(1);
-    expect(body.results.find((r) => r.ticker === 'TLT')?.rowsInserted).toBe(1);
   });
 
   // ── Error handling (handler-level) ────────────────────────
 
   it('returns 500 when the transaction throws unexpectedly', async () => {
-    const spxChain = makeChain('$SPX', 7100, {
+    const spxwChain = makeChain('$SPX', 7100, {
       putStrikes: [7050],
       callStrikes: [7150],
+      contractRoot: 'SPXW',
       bid: 5,
       ask: 6,
     });
-    // SPY + QQQ + all 5 expansion tickers get null chains → 7 skipped.
-    // Only SPX succeeds, matching the fault-tolerance claim of the cron.
-    mockChainSequence([spxChain, null, null, null, null, null, null, null]);
-    // Note: per-ticker failures are caught inside runTicker() and do NOT
-    // propagate. To trigger a handler-level 500 we break Promise.all itself
-    // by rejecting the top-level getDb transaction *outside* any try/catch.
-    // Easiest: make getDb throw synchronously from the fresh import path.
-    // In practice this is hard to reach because runTicker swallows errors,
-    // so we simulate by making the transaction throw AND the ticker's
-    // try/catch is bypassed. Since runTicker wraps everything, we instead
-    // assert that per-ticker faults don't 500 the handler.
+    // Everything else gets null chains — only SPXW succeeds, matching
+    // the fault-tolerance claim of the cron.
+    mockChainSequence([spxwChain, null, null, null, null]);
     const res = mockResponse();
     await handler(authedReq(), res);
     // Per-ticker fault tolerance means this request returns 200, not 500.
@@ -623,42 +686,56 @@ describe('fetch-strike-iv handler', () => {
     const body = res._json as {
       results: Array<{ ticker: string; skipped: boolean }>;
     };
-    // Every ticker except SPX got null → 7 skipped with 'schwab_error'.
-    expect(body.results.filter((r) => r.skipped)).toHaveLength(7);
+    // 4 non-SPXW tickers got null → 4 skipped with 'schwab_error'.
+    expect(body.results.filter((r) => r.skipped)).toHaveLength(4);
   });
 
   // ── Phase 2 detection ────────────────────────────────────────
 
-  it('inserts iv_anomalies when a strike exceeds the skew_delta threshold', async () => {
-    // Build an SPX chain where one put's bid/ask is much wider than the
+  it('inserts iv_anomalies when a strike exceeds the skew_delta threshold AND clears the vol/OI gate', async () => {
+    // Build an SPXW chain where one put's bid/ask is much wider than the
     // neighbors — this makes iv_mid ~6 vol pts above peers, which is >
-    // the 1.5 vol pt SKEW_DELTA_THRESHOLD. SPY + QQQ chains are empty so
-    // only SPX runs detection.
+    // the 1.5 vol pt SKEW_DELTA_THRESHOLD. SPY + QQQ + quiet chains are
+    // empty so only SPXW runs detection.
     //
     // Calibration: bid=9 / ask=10 (mid=9.5) vs neighbors at bid=5 / ask=6
     // (mid=5.5) on a 0DTE put with T ≈ 6h. The mid jump translates to a
     // meaningful IV bump at the inverted mid, which clears 1.5 vol pts.
     // Need 4 neighbors on each side of the target for skew_delta to
-    // evaluate (spec: 2 above + 2 below — 4 total). Build 5 puts so
-    // strike 7060 has two below + two above.
-    const spxChain = makeChain('$SPX', 7100, {
+    // evaluate — 2 above + 2 below. Build 6 puts so strike 7060 has
+    // that window.
+    //
+    // Post 2026-04-24: the target ALSO needs volume/OI ≥ 5× to even be
+    // evaluated by the detector. We set volume=6000/OI=600 = 10× on the
+    // target strike (well above the gate).
+    const spxwChain = makeChain('$SPX', 7100, {
       putStrikes: [7030, 7040, 7050, 7060, 7070, 7080],
       callStrikes: [7140, 7160],
+      contractRoot: 'SPXW',
       bid: 5,
       ask: 6,
     });
-    // Replace the 7060 put with a wider-IV contract — the target strike
-    // has iv_mid significantly above its neighbors.
-    spxChain.putExpDateMap['2026-04-24:0']!['7060'] = [
-      makeContract('PUT', 7060, { bid: 9, ask: 10, openInterest: 600 }),
+    // Replace the 7060 put with a wider-IV + high-volume contract — the
+    // target strike has iv_mid significantly above its neighbors AND
+    // volume/OI cleanly above the 5× gate.
+    spxwChain.putExpDateMap['2026-04-24:0']!['7060'] = [
+      makeContract('PUT', 7060, {
+        bid: 9,
+        ask: 10,
+        openInterest: 600,
+        totalVolume: 6000, // 6000/600 = 10× → clears gate
+        root: 'SPXW',
+      }),
     ];
 
-    // SPY + QQQ + expansion ETFs all empty so we only see SPX
-    // anomaly + history queries.
+    // Quiet tickers all empty so we only see SPXW anomaly + history
+    // queries.
+    const ndxpChain = makeChain('$NDX', 22500, { contractRoot: 'NDXP' });
     const spyChain = makeChain('SPY', 710, {});
     const qqqChain = makeChain('QQQ', 500, {});
+    const iwmChain = makeChain('IWM', 235, {});
 
-    mockChainSequence([spxChain, spyChain, qqqChain, ...emptyEtfChains()]);
+    mockChainSequence([spxwChain, ndxpChain, spyChain, qqqChain, iwmChain]);
 
     // Program mockSql:
     //   1. SPX history query (SELECT … FROM strike_iv_snapshots) → empty
@@ -703,23 +780,23 @@ describe('fetch-strike-iv handler', () => {
         anomaliesDetected: number;
       }>;
     };
-    // SPX had 6 put + 2 call strikes → 8 rows ingested.
+    // SPXW had 6 put + 2 call strikes → 8 rows ingested.
     expect(body.totalInserted).toBe(8);
-    // At least one anomaly detected on SPX (strike 7060 with wider IV).
+    // At least one anomaly detected on SPXW (strike 7060).
     expect(body.totalAnomalies).toBeGreaterThanOrEqual(1);
-    const spx = body.results.find((r) => r.ticker === 'SPX');
-    expect(spx?.anomaliesDetected).toBeGreaterThanOrEqual(1);
+    const spxw = body.results.find((r) => r.ticker === 'SPXW');
+    expect(spxw?.anomaliesDetected).toBeGreaterThanOrEqual(1);
 
     // Verify the INSERT payload for iv_anomalies — this is the
     // end-to-end contract between the detector and the persistence
     // layer. We scan all mockSql calls and pull out the anomaly INSERTs
     // to assert their parameter values. Tagged-template call shape is
     // [strings, ...values]; the handler's VALUES (...) order is:
-    //   0: ticker        4: spot_at_detect    8: ask_mid_div
-    //   1: strike        5: iv_at_detect      9: flag_reasons
-    //   2: side          6: skew_delta       10: flow_phase
-    //   3: expiry        7: z_score          11: context_snapshot (JSON)
-    //                                        12: ts
+    //   0: ticker        5: iv_at_detect      10: vol_oi_ratio
+    //   1: strike        6: skew_delta        11: flag_reasons
+    //   2: side          7: z_score           12: flow_phase
+    //   3: expiry        8: ask_mid_div       13: context_snapshot
+    //   4: spot_at_detect                     14: ts
     const insertCalls = vi.mocked(mockSql).mock.calls.filter((call) => {
       const strings = call[0] as TemplateStringsArray | undefined;
       const joined = Array.isArray(strings) ? strings.join(' ') : '';
@@ -727,22 +804,21 @@ describe('fetch-strike-iv handler', () => {
     });
     expect(insertCalls.length).toBeGreaterThanOrEqual(1);
 
-    // The target of the fixture is strike 7060 (wider bid/ask → elevated
-    // IV vs neighbors). Neighbors may also be flagged as the skew lands
-    // on them from the other side — assert the target is present
-    // regardless of ordering.
+    // The target of the fixture is strike 7060.
     const targetCall = insertCalls.find(
       (call) => (call as unknown[])[2] === 7060,
     );
     expect(targetCall).toBeDefined();
     const insertArgs = (targetCall as unknown[]).slice(1);
-    expect(insertArgs[0]).toBe('SPX');
+    expect(insertArgs[0]).toBe('SPXW');
     expect(insertArgs[1]).toBe(7060);
-    expect(insertArgs[9]).toEqual(expect.arrayContaining(['skew_delta']));
-    expect(['early', 'mid', 'reactive']).toContain(insertArgs[10]);
+    // vol_oi_ratio at position 9 (after ask_mid_div). 6000/600 = 10×.
+    expect(insertArgs[9]).toBeCloseTo(10, 4);
+    expect(insertArgs[10]).toEqual(expect.arrayContaining(['skew_delta']));
+    expect(['early', 'mid', 'reactive']).toContain(insertArgs[11]);
     // context_snapshot is stringified JSON → parse it back and assert
     // the shape is a non-null object (matches ContextSnapshot's fields).
-    const ctxStr = insertArgs[11] as string;
+    const ctxStr = insertArgs[12] as string;
     expect(typeof ctxStr).toBe('string');
     const ctx = JSON.parse(ctxStr) as Record<string, unknown>;
     expect(ctx).not.toBeNull();
@@ -751,5 +827,64 @@ describe('fetch-strike-iv handler', () => {
     expect(ctx).toHaveProperty('spot_delta_15m');
     expect(ctx).toHaveProperty('vix_level');
     expect(ctx).toHaveProperty('spx_recent_dark_prints');
+  });
+
+  it('does NOT fire when skew_delta exceeds threshold but vol/OI is below 5× gate', async () => {
+    // Same IV setup as the previous test but with default volume (100) /
+    // default OI (600) → ratio 0.17× → well below the 5× gate. The
+    // anomaly should NOT fire regardless of the skew_delta magnitude.
+    const spxwChain = makeChain('$SPX', 7100, {
+      putStrikes: [7030, 7040, 7050, 7060, 7070, 7080],
+      callStrikes: [7140, 7160],
+      contractRoot: 'SPXW',
+      bid: 5,
+      ask: 6,
+    });
+    // Target strike 7060 has elevated IV but LOW volume (default 100 /
+    // OI 600 = 0.17× — well under 5× gate).
+    spxwChain.putExpDateMap['2026-04-24:0']!['7060'] = [
+      makeContract('PUT', 7060, {
+        bid: 9,
+        ask: 10,
+        openInterest: 600,
+        totalVolume: 100, // 100/600 = 0.17× → below gate
+        root: 'SPXW',
+      }),
+    ];
+
+    const ndxpChain = makeChain('$NDX', 22500, { contractRoot: 'NDXP' });
+    const spyChain = makeChain('SPY', 710, {});
+    const qqqChain = makeChain('QQQ', 500, {});
+    const iwmChain = makeChain('IWM', 235, {});
+
+    mockChainSequence([spxwChain, ndxpChain, spyChain, qqqChain, iwmChain]);
+
+    mockSql.mockImplementation((strings: TemplateStringsArray) => {
+      const joined = Array.isArray(strings) ? strings.join(' ') : '';
+      if (joined.includes('INSERT INTO iv_anomalies')) {
+        return Promise.resolve([{ id: 1 }]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      totalInserted: number;
+      totalAnomalies: number;
+    };
+    // Rows still ingested — the gate is detection-side, not ingest-side.
+    expect(body.totalInserted).toBe(8);
+    // No anomalies — the target didn't clear the vol/OI gate.
+    expect(body.totalAnomalies).toBe(0);
+
+    const insertCalls = vi.mocked(mockSql).mock.calls.filter((call) => {
+      const strings = call[0] as TemplateStringsArray | undefined;
+      const joined = Array.isArray(strings) ? strings.join(' ') : '';
+      return joined.includes('INSERT INTO iv_anomalies');
+    });
+    expect(insertCalls).toHaveLength(0);
   });
 });

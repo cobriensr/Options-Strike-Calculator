@@ -8,7 +8,7 @@ import type { IVAnomalyRow } from '../types';
 function makeRow(overrides: Partial<IVAnomalyRow> = {}): IVAnomalyRow {
   return {
     id: 1,
-    ticker: 'SPX',
+    ticker: 'SPXW',
     strike: 7135,
     side: 'put',
     expiry: '2026-04-23',
@@ -17,6 +17,7 @@ function makeRow(overrides: Partial<IVAnomalyRow> = {}): IVAnomalyRow {
     skewDelta: 2.1,
     zScore: 3.2,
     askMidDiv: 0.6,
+    volOiRatio: 48.5,
     flagReasons: ['skew_delta', 'z_score'],
     flowPhase: 'early',
     contextSnapshot: null,
@@ -44,7 +45,7 @@ describe('AnomalyBanner', () => {
     act(() => {
       ivAnomalyBannerStore.push(makeRow({ id: 1 }));
     });
-    expect(screen.getByText(/SPX 7135P/)).toBeInTheDocument();
+    expect(screen.getByText(/SPXW 7135P/)).toBeInTheDocument();
     expect(screen.getByText('skew_delta')).toBeInTheDocument();
     expect(screen.getByText('z_score')).toBeInTheDocument();
     expect(screen.getByText('early')).toBeInTheDocument();
@@ -109,9 +110,9 @@ describe('AnomalyBanner', () => {
       ivAnomalyBannerStore.push(makeRow({ id: 42 }));
     });
     const button = screen.getByRole('button', {
-      name: /Dismiss SPX 7135 put anomaly/,
+      name: /Dismiss SPXW 7135 put anomaly/,
     });
     await user.click(button);
-    expect(screen.queryByText(/SPX 7135P/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/SPXW 7135P/)).not.toBeInTheDocument();
   });
 });

@@ -2,13 +2,16 @@
  * GET /api/cron/fetch-strike-iv
  *
  * 1-minute cron that snapshots per-strike implied volatility for the
- * tickers in STRIKE_IV_TICKERS (indices SPX/SPY/QQQ/IWM + macro/sector
- * ETFs TLT/XLF/XLE/XLK — 8 tickers total) into the `strike_iv_snapshots`
- * table. Foundation for the Strike IV Anomaly Detector (Phase 2 layers
+ * tickers in STRIKE_IV_TICKERS (SPXW, NDXP, SPY, QQQ, IWM — 5 tickers
+ * after the 2026-04-24 rescope) into the `strike_iv_snapshots` table.
+ * Foundation for the Strike IV Anomaly Detector (Phase 2 layers
  * detection + context capture on top).
  *
  * Per ticker, per run:
  *   1. Fetch the Schwab option chain for today → next 2 Fridays.
+ *      SPXW/NDXP are not separately queryable; the cron queries `$SPX`
+ *      and `$NDX` respectively and filters contract symbols to the
+ *      desired weekly root after the fetch.
  *   2. Filter to OTM ±3% of spot.
  *   3. Filter to per-ticker min OI (see minOiFor).
  *   4. Recompute IV from bid/ask/mid price via Black-Scholes — Schwab's
@@ -19,13 +22,13 @@
  *
  * Fault tolerance: a Schwab auth or fetch failure for one ticker must NOT
  * block the others. Each ticker runs independently and its errors are
- * captured to Sentry but not rethrown to the handler. Sector ETFs +
- * TLT may also legitimately have no 0DTE listed for the session —
- * logged as `empty_chain`, not an error.
+ * captured to Sentry but not rethrown to the handler. NDXP in particular
+ * may legitimately have no 0DTE listed on some sessions — logged as
+ * `empty_chain`, not an error.
  *
  * Cron cadence: `* 13-21 * * 1-5` — every minute during market hours.
- * Volume budget: 8 tickers × 1 request/min = 480 Schwab requests/hour,
- * still under the per-app rate limit.
+ * Volume budget: 5 tickers × 1 request/min = 300 Schwab requests/hour,
+ * well under the per-app rate limit.
  *
  * Environment: CRON_SECRET (no UW API key — pure Schwab + Neon).
  */
@@ -37,10 +40,9 @@ import logger from '../_lib/logger.js';
 import { cronGuard, schwabFetch } from '../_lib/api-helpers.js';
 import {
   STRIKE_IV_OTM_RANGE_PCT,
-  STRIKE_IV_MIN_OI_SPX,
+  STRIKE_IV_MIN_OI_INDEX,
   STRIKE_IV_MIN_OI_SPY_QQQ,
   STRIKE_IV_MIN_OI_IWM,
-  STRIKE_IV_MIN_OI_SECTOR_ETF,
   STRIKE_IV_TICKERS,
   Z_WINDOW_SIZE,
   type StrikeIVTicker,
@@ -62,6 +64,12 @@ import { gatherContextSnapshot } from '../_lib/anomaly-context.js';
 
 interface SchwabOptionContract {
   putCall: 'PUT' | 'CALL';
+  /**
+   * OSI-format symbol, e.g. "SPXW  260424P07030000". Used to filter
+   * SPXW vs SPX and NDXP vs NDX contracts from the shared `$SPX` /
+   * `$NDX` chain responses.
+   */
+  symbol: string;
   bid: number;
   ask: number;
   mark: number;
@@ -147,16 +155,36 @@ function parseExpKey(key: string): string {
 // ── Schwab chain fetch ───────────────────────────────────────
 
 /**
- * Schwab uses a `$`-prefixed symbol for SPX options (cash index) and bare
- * symbols for ETFs (SPY/QQQ/IWM/TLT/XLF/XLE/XLK). See api/chain.ts for
- * the established pattern — only cash indices like SPX take the `$` prefix.
+ * Schwab chain-endpoint symbol for each ticker.
+ *
+ *   - SPXW (weekly SPX) → `$SPX`: Schwab returns BOTH SPX monthlies and
+ *     SPXW weeklies in the same chain, so we filter by OSI root downstream.
+ *   - NDXP (weekly NDX) → `$NDX`: same pattern — NDX monthlies + NDXP
+ *     weeklies come back together, filtered by root after fetch.
+ *   - SPY / QQQ / IWM → bare symbol (ETF options are root-unique).
+ *
+ * The `$`-prefix convention matches api/chain.ts; cash indices take it,
+ * ETFs don't.
  */
 function schwabSymbol(ticker: StrikeIVTicker): string {
-  return ticker === 'SPX' ? '$SPX' : ticker;
+  switch (ticker) {
+    case 'SPXW':
+      return '$SPX';
+    case 'NDXP':
+      return '$NDX';
+    case 'SPY':
+    case 'QQQ':
+    case 'IWM':
+      return ticker;
+    default: {
+      const _exhaustive: never = ticker;
+      throw new Error(`No Schwab symbol for ticker: ${String(_exhaustive)}`);
+    }
+  }
 }
 
 /**
- * Per-ticker minimum open interest. Four tiers reflect chain-wide strike
+ * Per-ticker minimum open interest. Three tiers reflect chain-wide strike
  * density and liquidity depth; see constants for rationale.
  *
  * The exhaustiveness check means adding a new ticker to STRIKE_IV_TICKERS
@@ -164,23 +192,39 @@ function schwabSymbol(ticker: StrikeIVTicker): string {
  */
 function minOiFor(ticker: StrikeIVTicker): number {
   switch (ticker) {
-    case 'SPX':
-      return STRIKE_IV_MIN_OI_SPX;
+    case 'SPXW':
+    case 'NDXP':
+      return STRIKE_IV_MIN_OI_INDEX;
     case 'SPY':
     case 'QQQ':
       return STRIKE_IV_MIN_OI_SPY_QQQ;
     case 'IWM':
       return STRIKE_IV_MIN_OI_IWM;
-    case 'TLT':
-    case 'XLF':
-    case 'XLE':
-    case 'XLK':
-      return STRIKE_IV_MIN_OI_SECTOR_ETF;
     default: {
       const _exhaustive: never = ticker;
       throw new Error(`No OI threshold for ticker: ${String(_exhaustive)}`);
     }
   }
+}
+
+/**
+ * OSI-root filter. SPXW/NDXP chains come back under the parent `$SPX` /
+ * `$NDX` fetch mixed with the monthly (SPX / NDX) contracts; we only want
+ * the weekly root. A Schwab OSI symbol is `<ROOT-padded-to-6><YYMMDD><C|P><strike-pad>`,
+ * so the first token (whitespace-separated) is the root.
+ *
+ * For SPY/QQQ/IWM the fetch is already root-unique — returns `true`.
+ */
+function matchesRoot(
+  ticker: StrikeIVTicker,
+  contractSymbol: string | undefined,
+): boolean {
+  if (ticker === 'SPY' || ticker === 'QQQ' || ticker === 'IWM') return true;
+  if (!contractSymbol) return false;
+  // OSI root lives before the first whitespace block; fall back to the
+  // first non-digit/non-space run for exotic formatting.
+  const root = contractSymbol.split(/\s+/)[0] ?? '';
+  return root === ticker;
 }
 
 async function fetchChain(
@@ -240,7 +284,10 @@ function extractRows(
       for (const rawStrikeKey of Object.keys(strikesMap)) {
         const contracts = strikesMap[rawStrikeKey]!;
         if (contracts.length === 0) continue;
-        const c = contracts[0]!;
+        // OSI root filter — discards SPX monthlies returned alongside
+        // SPXW weeklies (same for NDX / NDXP). No-op for SPY/QQQ/IWM.
+        const c = contracts.find((cx) => matchesRoot(ticker, cx.symbol));
+        if (!c) continue;
 
         const strike = c.strikePrice;
         if (!Number.isFinite(strike)) continue;
@@ -352,9 +399,9 @@ async function insertRows(
 
 /**
  * Convert a freshly-ingested SnapshotRow (what we just INSERTed) into
- * the detector's StrikeSample shape. The detection layer reads IV from
- * iv_mid/iv_bid/iv_ask + ts + identity keys — it doesn't look at the
- * mid_price / OI / volume columns.
+ * the detector's StrikeSample shape. Volume/OI are included for the
+ * primary vol/OI gate in `detectAnomalies`; iv_mid/iv_bid/iv_ask + ts +
+ * identity keys are used for the signal checks.
  */
 function toStrikeSample(row: SnapshotRow, ts: string): StrikeSample {
   return {
@@ -365,6 +412,8 @@ function toStrikeSample(row: SnapshotRow, ts: string): StrikeSample {
     iv_mid: row.ivMid,
     iv_bid: row.ivBid,
     iv_ask: row.ivAsk,
+    volume: Number.isFinite(row.volume) ? row.volume : null,
+    oi: Number.isFinite(row.oi) ? row.oi : null,
     ts,
   };
 }
@@ -395,16 +444,22 @@ async function loadHistoryForTicker(
     iv_mid: NullableNumeric;
     iv_bid: NullableNumeric;
     iv_ask: NullableNumeric;
+    volume: NullableNumeric;
+    oi: NullableNumeric;
     ts: string | Date;
   }
 
   // Single query that pulls the last N samples per strike tuple using
   // a window function. Much cheaper than issuing one query per strike.
+  // Volume/OI are selected alongside IV so historical samples keep the
+  // same StrikeSample shape as the freshly-ingested target; the detector
+  // only consults vol/OI on the target sample, not on history, but
+  // keeping the shape uniform avoids future shape-drift surprises.
   const rows = (await sql`
-    SELECT ticker, strike, side, expiry, iv_mid, iv_bid, iv_ask, ts
+    SELECT ticker, strike, side, expiry, iv_mid, iv_bid, iv_ask, volume, oi, ts
     FROM (
       SELECT
-        ticker, strike, side, expiry, iv_mid, iv_bid, iv_ask, ts,
+        ticker, strike, side, expiry, iv_mid, iv_bid, iv_ask, volume, oi, ts,
         ROW_NUMBER() OVER (
           PARTITION BY ticker, strike, side, expiry
           ORDER BY ts DESC
@@ -436,6 +491,8 @@ async function loadHistoryForTicker(
       iv_mid: r.iv_mid == null ? null : Number(r.iv_mid),
       iv_bid: r.iv_bid == null ? null : Number(r.iv_bid),
       iv_ask: r.iv_ask == null ? null : Number(r.iv_ask),
+      volume: r.volume == null ? null : Number(r.volume),
+      oi: r.oi == null ? null : Number(r.oi),
       ts,
     };
     if (bucket) bucket.push(sample);
@@ -485,12 +542,12 @@ async function runDetection(
       INSERT INTO iv_anomalies (
         ticker, strike, side, expiry,
         spot_at_detect, iv_at_detect,
-        skew_delta, z_score, ask_mid_div,
+        skew_delta, z_score, ask_mid_div, vol_oi_ratio,
         flag_reasons, flow_phase, context_snapshot, ts
       ) VALUES (
         ${flag.ticker}, ${flag.strike}, ${flag.side}, ${flag.expiry},
         ${flag.spot_at_detect}, ${flag.iv_at_detect},
-        ${flag.skew_delta}, ${flag.z_score}, ${flag.ask_mid_div},
+        ${flag.skew_delta}, ${flag.z_score}, ${flag.ask_mid_div}, ${flag.vol_oi_ratio},
         ${flag.flag_reasons}, ${flowPhase}, ${JSON.stringify(context)}::jsonb,
         ${flag.ts}
       )
