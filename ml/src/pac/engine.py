@@ -39,6 +39,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from smartmoneyconcepts import smc  # noqa: E402
 
+from pac.causal_smc import causal_order_blocks  # noqa: E402
 from pac.features import add_all_features  # noqa: E402
 from pac.order_blocks import (  # noqa: E402
     enrich_ob_with_z,
@@ -116,10 +117,14 @@ class PACEngine:
         if len(df) == 0:
             return df.copy()
 
-        # smc primitives — take OHLC DataFrame, return event DataFrames
+        # smc primitives — take OHLC DataFrame, return event DataFrames.
+        # `ob` uses our causal reimplementation: detection matches smc.ob
+        # exactly but the retroactive reset step is removed so OBs that
+        # existed live aren't erased in hindsight. See
+        # docs/superpowers/specs/pac-residual-causality-fix-2026-04-24.md.
         shl = smc.swing_highs_lows(df, swing_length=self.params.swing_length)
         bc = smc.bos_choch(df, shl, close_break=self.params.close_mitigation)
-        ob = smc.ob(
+        ob = causal_order_blocks(
             df,
             shl,
             close_mitigation=self.params.close_mitigation,

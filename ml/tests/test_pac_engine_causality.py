@@ -135,10 +135,10 @@ OHLC_FIXTURES = {
 }
 
 
-# Columns the 2026-04-23 causality pass FULLY fixes — rows 0..T must be
-# identical between full-frame and truncated-frame runs. Any divergence
-# here is a regression of the fix we care about (the BOS/CHOCH labeling
-# peek + broken-filter peek that inflated the A2 1m_2022 Sharpe).
+# Columns the 2026-04-23 causality pass FULLY fixes — rows 0..T must
+# be identical between full-frame and truncated-frame runs. Any
+# divergence here is a regression of the BOS/CHOCH labeling peek +
+# broken-filter peek that inflated the A2 1m_2022 Sharpe.
 STRICT_CAUSAL_COLS = (
     "BOS",
     "CHOCH",
@@ -149,14 +149,19 @@ STRICT_CAUSAL_COLS = (
     "FVG_Bottom",
 )
 
-# Columns with known residual non-causality. All are *under*-counting
-# bugs (hindsight erasure) rather than over-counting (lookahead peek),
-# so they depress backtest numbers rather than inflating them. None
-# were drivers of the A2 Sharpe problem. See module docstring.
+# Columns with known residual non-causality.
 KNOWN_RESIDUAL_COLS = (
-    "HighLow",        # swing_highs_lows dedup erases swings retroactively
-    "Level_shl",      # same root cause as HighLow
-    "OB",             # smc.ob reset step zeroes OBs on future highs
+    # swing_highs_lows dedup + endpoint-fixup erase swings retroactively
+    # (Phase B of residual fix).
+    "HighLow",
+    "Level_shl",
+    # OB detection itself is now causal via causal_order_blocks (Phase A
+    # 2026-04-24). But causal_order_blocks consumes swing_highs_lows,
+    # which isn't yet causal, so near truncation boundaries on wide-swing
+    # data the OB output can differ between full and truncated views
+    # purely because the swing input differed. Once Phase B lands these
+    # promote to STRICT.
+    "OB",
     "OB_Top",
     "OB_Bottom",
     "OBVolume",
@@ -168,7 +173,7 @@ KNOWN_RESIDUAL_COLS = (
 
 def _first_divergence(a: np.ndarray, b: np.ndarray) -> int | None:
     """Return index of first (a, b) mismatch treating NaN == NaN, else None."""
-    mismatch = np.where(
+    mismatch = np.nonzero(
         ~((np.isnan(a) & np.isnan(b)) | (a == b))
     )[0]
     return int(mismatch[0]) if mismatch.size else None
@@ -281,19 +286,19 @@ def test_mitigated_index_semantics_match(swing_length: int) -> None:
                 )
 
 
-@pytest.mark.xfail(
-    reason=(
-        "smc.ob reset step (lines 427-439) zeroes OBs when a future high "
-        "re-crosses the top. Causes under-counting in full-frame runs "
-        "(live trader would have seen OBs the full-frame output erases). "
-        "Follow-up: causal OB tracker. Not blocking the A2 Sharpe fix."
-    ),
-    strict=True,
-)
-def test_ob_reset_residual_is_known() -> None:
-    """Documents the remaining OB causality issue. Flagged xfail(strict=True)
-    so if we ever fix it, the test will go green and alert us to update
-    the docstring.
+def test_ob_reset_no_longer_a_residual() -> None:
+    """Regression: the OB reset residual that was xfailed before
+    2026-04-24 is now fixed via causal_order_blocks (pac.causal_smc).
+
+    Previously smc.ob's reset step would zero an OB's detection row
+    when a future high re-crossed the top. causal_order_blocks keeps
+    the detection row intact, so the OB a live trader would have seen
+    between detection and mitigation now appears in both full-frame
+    and truncated-frame runs.
+
+    Note: MitigatedIndex is still allowed to differ (future bar index;
+    functional-equivalent via loop.py's `mit <= signal_idx` check),
+    so this test checks OB only.
     """
     df = _synthetic_ohlc()
     engine = PACEngine(PACParams(swing_length=3))
@@ -303,7 +308,11 @@ def test_ob_reset_residual_is_known() -> None:
     full_window = full_out.iloc[:truncate_at].reset_index(drop=True)
     a = full_window["OB"].to_numpy(dtype=np.float64, na_value=np.nan)
     b = trunc_out["OB"].to_numpy(dtype=np.float64, na_value=np.nan)
-    assert _first_divergence(a, b) is None
+    assert _first_divergence(a, b) is None, (
+        "OB column diverges between full and truncated views — either "
+        "causal_order_blocks regressed, or swing_highs_lows differences "
+        "are propagating into OB detection. Check which."
+    )
 
 
 @pytest.mark.xfail(
