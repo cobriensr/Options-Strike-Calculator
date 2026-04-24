@@ -75,3 +75,75 @@ export const Z_WINDOW_SIZE = 60;
  * signal for Claude's retrospective analysis in Phase 4.
  */
 export const ASK_MID_DIV_THRESHOLD = 0.5;
+
+// ============================================================
+// STRIKE IV ANOMALY DETECTOR (Phase 4 — EOD resolution)
+// ============================================================
+
+/**
+ * Outcome-class thresholds for `resolveAnomaly()`.
+ *
+ * `notional_1c_pnl` is in **dollars per contract** (SPX/SPY/QQQ — 100× multiplier
+ * baked into the P&L math). A $5 flat band keeps single-tick noise from tipping
+ * genuinely flat anomalies into winner/loser buckets — tune once we have a week
+ * of labeled data.
+ *
+ * Time cutoff for winner_fast vs winner_slow uses detection-to-IV-peak minutes,
+ * not spot move: the anomaly's predictive claim is on IV, and the trade a 0DTE
+ * operator takes is usually a vol-expansion play that's closed near the IV peak
+ * (not at 4pm close). 30 min separates "the detector leads by an hour or more"
+ * from "the detector confirms what's already happening."
+ */
+export const RESOLVE_FLAT_PNL_THRESHOLD = 5;
+export const RESOLVE_FAST_PEAK_MINS = 30;
+
+/**
+ * Retrospective catalyst analysis (`analyzeCatalysts`).
+ *
+ * T-60 → T+0 window: we scan a rolling 60-minute pre-detection window for
+ * leading-lag signals and concurrent events. 60 minutes matches the 2026-04-23
+ * validation event (TLT bid → SPX flush with ~60 min lead time).
+ */
+export const CATALYST_WINDOW_MINS = 60;
+
+/**
+ * Minimum |correlation| for a cross-asset to appear in `leading_assets`.
+ * Pearson on 1-min log-returns inside the T-60 window. 0.5 is the middle of
+ * the "moderate correlation" band — filters noise without demanding the tight
+ * lock-step that only appears during extreme sessions.
+ */
+export const CATALYST_CORR_THRESHOLD = 0.5;
+
+/**
+ * Minimum |correlation| + minimum lag to surface a `likely_catalyst` narrative
+ * tag. We only claim a cross-asset "led" the anomaly when it BOTH correlates
+ * strongly AND moved measurably ahead of the anomaly ticker. 5 minutes is
+ * large enough that tick-level noise can't fake it, small enough to still
+ * catch fast macro-tape handoffs (ZN futures → SPX).
+ */
+export const CATALYST_NARRATIVE_CORR_MIN = 0.6;
+export const CATALYST_NARRATIVE_LAG_MIN_MINS = 5;
+
+/**
+ * Range-break lookback in trading days. 5 gives us "broke the weekly range"
+ * without depending on any specific session boundary. Breaking a 5-day high
+ * or low inside the anomaly window is a classic ignition signal.
+ */
+export const CATALYST_RANGE_BREAK_DAYS = 5;
+
+/**
+ * Large dark print threshold (notional dollars). Dark prints inside the
+ * T-60 window above this notional are flagged as potential catalyst candidates.
+ * Matches the `dark_pool_levels.total_premium` row shape (already dollar-denominated).
+ */
+export const CATALYST_LARGE_DARK_NOTIONAL = 5_000_000;
+
+/**
+ * Near-close anomaly cutoff (minutes from 4pm ET close).
+ *
+ * Anomalies detected within this window have too little follow-on data to score
+ * reliably. The resolve cron still writes a resolution_outcome row for ML
+ * completeness, but marks `outcome_class = 'flat'` when |notional_1c_pnl| can't
+ * clear the flat threshold on the available tape.
+ */
+export const RESOLVE_NEAR_CLOSE_MINS = 10;

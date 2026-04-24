@@ -27,7 +27,10 @@ import {
   SKEW_DELTA_THRESHOLD,
   Z_SCORE_THRESHOLD,
   ASK_MID_DIV_THRESHOLD,
+  RESOLVE_FLAT_PNL_THRESHOLD,
+  RESOLVE_FAST_PEAK_MINS,
 } from './constants.js';
+import { blackScholesPrice } from '../../src/utils/black-scholes.js';
 import type { ContextSnapshot } from './anomaly-context.js';
 
 // ── Public types ──────────────────────────────────────────────
@@ -328,4 +331,193 @@ export function classifyFlowPhase(
   if (earlyScore > reactiveScore) return 'early';
   if (reactiveScore > earlyScore) return 'reactive';
   return 'mid';
+}
+
+// ── resolveAnomaly (Phase 4) ─────────────────────────────────
+
+/**
+ * Per-minute follow-on sample used by `resolveAnomaly`.
+ *
+ * `ts` must be ≥ the anomaly's detection time — callers should WHERE by
+ * `ts >= anomaly.ts` and `ts <= close_ts` when loading from the
+ * `strike_iv_snapshots` table.
+ */
+export interface FollowOnSample {
+  /** ISO timestamp (UTC). */
+  ts: string;
+  /** iv_mid at this sample. May be null when the solver couldn't invert. */
+  iv_mid: number | null;
+  /** Underlying spot at this sample. */
+  spot: number;
+}
+
+/**
+ * Minimal shape of an `iv_anomalies` row that `resolveAnomaly` needs to
+ * compute an outcome. The full DB row has more columns — the caller
+ * projects it down before calling this pure function.
+ */
+export interface AnomalyForResolve {
+  ticker: string;
+  strike: number;
+  side: 'call' | 'put';
+  /** ISO date (YYYY-MM-DD). */
+  expiry: string;
+  spot_at_detect: number;
+  iv_at_detect: number;
+  /** ISO timestamp (UTC). */
+  ts: string;
+}
+
+/** The `resolution_outcome` JSONB shape minus the `catalysts` sub-object. */
+export interface ResolveEconomics {
+  iv_at_detect: number;
+  iv_peak: number;
+  iv_at_close: number;
+  spot_at_detect: number;
+  spot_min: number;
+  spot_max: number;
+  spot_at_close: number;
+  notional_1c_pnl: number;
+  mins_to_peak: number;
+  outcome_class: 'winner_fast' | 'winner_slow' | 'flat' | 'loser';
+}
+
+/**
+ * Score an anomaly's trade economics over the rest of the session.
+ *
+ * Pure function — no DB / no logger. Given the detected anomaly and the
+ * per-minute follow-on samples between detection and close, computes:
+ *
+ *   - **iv_peak / iv_at_close**: max iv_mid in the window / iv_mid at the
+ *     last sample (or null-iv fallback → iv_at_detect).
+ *   - **spot_min / spot_max / spot_at_close**: trivial from the series.
+ *   - **notional_1c_pnl**: hypothetical 1-contract P&L. We use
+ *     Black-Scholes to price the strike at detection (spot_at_detect,
+ *     iv_at_detect, T_detect) and at close (spot_at_close, iv_at_close,
+ *     T_close), then take the dollar-denominated difference × 100 (the
+ *     standard SPX/SPY/QQQ contract multiplier). This is "trader would
+ *     have opened at mid and closed at mid" — no slippage adjustment
+ *     since the detector outputs are the labeling input, not a live
+ *     order-sizing tool.
+ *   - **mins_to_peak**: minutes from anomaly.ts to the sample with the
+ *     highest iv_mid.
+ *   - **outcome_class**: derived from |notional_1c_pnl| vs flat threshold
+ *     and mins_to_peak vs fast-peak cutoff (see constants).
+ *
+ * `closeTs` is the 4pm ET close for anomaly.ts's trading day; callers
+ * pass it explicitly rather than re-computing from the ts to avoid
+ * timezone drift inside this pure module.
+ *
+ * Edge cases:
+ *   - Empty `samples` array → returns detect-equals-close economics with
+ *     outcome 'flat' (anomaly near close / no follow-on data).
+ *   - All samples have null iv_mid → iv_peak / iv_at_close fall back
+ *     to iv_at_detect; the trade effectively didn't move, so the P&L
+ *     is computed from spot change alone.
+ */
+export function resolveAnomaly(
+  anomaly: AnomalyForResolve,
+  samples: FollowOnSample[],
+  closeTs: string,
+): ResolveEconomics {
+  const detectMs = Date.parse(anomaly.ts);
+  const closeMs = Date.parse(closeTs);
+
+  // Time-to-expiry helper (years, 4pm ET close on expiry date as
+  // settlement reference — matches fetch-strike-iv.ts convention).
+  const expiryMs = Date.parse(`${anomaly.expiry}T21:00:00Z`);
+  const YEAR_MS = 365 * 24 * 3600 * 1000;
+  const tAt = (ms: number): number => Math.max(expiryMs - ms, 60_000) / YEAR_MS;
+
+  // Defensive: drop samples outside (anomaly.ts, closeTs] and non-finite
+  // iv/spot rows. Preserve detection-time fallback when nothing valid remains.
+  const usable = samples.filter((s) => {
+    const ms = Date.parse(s.ts);
+    if (!Number.isFinite(ms)) return false;
+    if (ms <= detectMs) return false;
+    if (ms > closeMs) return false;
+    return Number.isFinite(s.spot) && s.spot > 0;
+  });
+
+  // iv_peak / mins_to_peak — anchor to detection so the degenerate case
+  // (no post-detection expansion) yields mins_to_peak = 0.
+  let ivPeak = anomaly.iv_at_detect;
+  let ivPeakMs = detectMs;
+  for (const s of usable) {
+    if (s.iv_mid == null) continue;
+    if (!Number.isFinite(s.iv_mid)) continue;
+    if (s.iv_mid > ivPeak) {
+      ivPeak = s.iv_mid;
+      ivPeakMs = Date.parse(s.ts);
+    }
+  }
+  const minsToPeak = Math.max(0, (ivPeakMs - detectMs) / 60_000);
+
+  // iv_at_close — latest usable iv_mid, or fall back to iv_at_detect if
+  // the whole tail is null (Schwab can return dead quotes into close).
+  let ivAtClose = anomaly.iv_at_detect;
+  for (let i = usable.length - 1; i >= 0; i -= 1) {
+    const s = usable[i]!;
+    if (s.iv_mid != null && Number.isFinite(s.iv_mid)) {
+      ivAtClose = s.iv_mid;
+      break;
+    }
+  }
+
+  // spot_min / spot_max / spot_at_close.
+  let spotMin = anomaly.spot_at_detect;
+  let spotMax = anomaly.spot_at_detect;
+  let spotAtClose = anomaly.spot_at_detect;
+  let latestMs = detectMs;
+  for (const s of usable) {
+    if (s.spot < spotMin) spotMin = s.spot;
+    if (s.spot > spotMax) spotMax = s.spot;
+    const sMs = Date.parse(s.ts);
+    if (sMs >= latestMs) {
+      latestMs = sMs;
+      spotAtClose = s.spot;
+    }
+  }
+
+  // Notional 1-contract P&L. Price at detect + price at close via BS,
+  // delta × 100 (SPX/SPY/QQQ all 100-multiplier).
+  const priceAtDetect = blackScholesPrice(
+    anomaly.spot_at_detect,
+    anomaly.strike,
+    anomaly.iv_at_detect,
+    tAt(detectMs),
+    anomaly.side,
+  );
+  const priceAtClose = blackScholesPrice(
+    spotAtClose,
+    anomaly.strike,
+    ivAtClose,
+    tAt(latestMs),
+    anomaly.side,
+  );
+  const notional1cPnl = (priceAtClose - priceAtDetect) * 100;
+
+  // Outcome class.
+  let outcomeClass: ResolveEconomics['outcome_class'];
+  if (notional1cPnl > RESOLVE_FLAT_PNL_THRESHOLD) {
+    outcomeClass =
+      minsToPeak < RESOLVE_FAST_PEAK_MINS ? 'winner_fast' : 'winner_slow';
+  } else if (notional1cPnl < -RESOLVE_FLAT_PNL_THRESHOLD) {
+    outcomeClass = 'loser';
+  } else {
+    outcomeClass = 'flat';
+  }
+
+  return {
+    iv_at_detect: anomaly.iv_at_detect,
+    iv_peak: ivPeak,
+    iv_at_close: ivAtClose,
+    spot_at_detect: anomaly.spot_at_detect,
+    spot_min: spotMin,
+    spot_max: spotMax,
+    spot_at_close: spotAtClose,
+    notional_1c_pnl: notional1cPnl,
+    mins_to_peak: minsToPeak,
+    outcome_class: outcomeClass,
+  };
 }

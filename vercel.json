@@ -102,6 +102,10 @@
       "schedule": "* 13-21 * * 1-5"
     },
     {
+      "path": "/api/cron/resolve-iv-anomalies",
+      "schedule": "5 21 * * 1-5"
+    },
+    {
       "path": "/api/cron/embed-yesterday",
       "schedule": "0 7 * * 2-6"
     },

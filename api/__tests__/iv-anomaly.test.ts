@@ -6,7 +6,10 @@ import {
   computeRollingZ,
   detectAnomalies,
   classifyFlowPhase,
+  resolveAnomaly,
   strikeKey,
+  type AnomalyForResolve,
+  type FollowOnSample,
   type StrikeSample,
   type AnomalyFlag,
 } from '../_lib/iv-anomaly.js';
@@ -319,5 +322,138 @@ describe('classifyFlowPhase', () => {
     const flag = { ...baseFlag, strike: 6900, ask_mid_div: 0.02 };
     const ctx = makeContext({ vix_delta_15m: null });
     expect(classifyFlowPhase(flag, ctx)).toBe('early');
+  });
+});
+
+// ── resolveAnomaly ───────────────────────────────────────────
+
+describe('resolveAnomaly', () => {
+  // Anomaly: SPX 7050 put detected at 10:30 AM ET = 14:30 UTC with
+  // iv=0.35, spot=7100. Expiry 2 days out so there's enough extrinsic
+  // value for IV expansion + directional moves to show up as meaningful
+  // P&L (a 0DTE put with T→0 at close reduces to intrinsic only, which
+  // washes out tiny vega + spot moves in these synthetic fixtures).
+  const baseAnomaly: AnomalyForResolve = {
+    ticker: 'SPX',
+    strike: 7050,
+    side: 'put',
+    expiry: '2026-04-25',
+    spot_at_detect: 7100,
+    iv_at_detect: 0.35,
+    ts: '2026-04-23T14:30:00.000Z',
+  };
+  const CLOSE_TS = '2026-04-23T21:00:00.000Z';
+
+  function makeFollowOn(
+    offsetMins: number,
+    ivMid: number | null,
+    spot: number,
+  ): FollowOnSample {
+    const ms = Date.parse(baseAnomaly.ts) + offsetMins * 60_000;
+    return {
+      ts: new Date(ms).toISOString(),
+      iv_mid: ivMid,
+      spot,
+    };
+  }
+
+  it('returns detect==close economics with outcome "flat" on empty follow-on', () => {
+    const out = resolveAnomaly(baseAnomaly, [], CLOSE_TS);
+    expect(out.iv_at_detect).toBe(0.35);
+    expect(out.iv_peak).toBe(0.35);
+    expect(out.iv_at_close).toBe(0.35);
+    expect(out.spot_at_detect).toBe(7100);
+    expect(out.spot_min).toBe(7100);
+    expect(out.spot_max).toBe(7100);
+    expect(out.spot_at_close).toBe(7100);
+    // spot didn't move and iv didn't move → pnl ≈ 0
+    expect(Math.abs(out.notional_1c_pnl)).toBeLessThan(5);
+    expect(out.outcome_class).toBe('flat');
+    expect(out.mins_to_peak).toBe(0);
+  });
+
+  it('classifies as "winner_fast" when spot drops fast and IV peaks within 30 min', () => {
+    // Put anomaly: spot drops 7100 → 7050 at +10 min, IV rises 0.35 → 0.45,
+    // then spot recovers to 7080 by close. Put gains value (both ITM-direction
+    // move AND vega expansion). Peak IV is at +10m → winner_fast.
+    const samples: FollowOnSample[] = [
+      makeFollowOn(5, 0.4, 7080),
+      makeFollowOn(10, 0.45, 7050), // IV peak here
+      makeFollowOn(60, 0.4, 7070),
+      makeFollowOn(300, 0.38, 7080), // close
+    ];
+    const out = resolveAnomaly(baseAnomaly, samples, CLOSE_TS);
+    expect(out.iv_peak).toBeCloseTo(0.45, 6);
+    expect(out.mins_to_peak).toBe(10);
+    expect(out.spot_min).toBe(7050);
+    expect(out.spot_at_close).toBe(7080);
+    expect(out.notional_1c_pnl).toBeGreaterThan(5);
+    expect(out.outcome_class).toBe('winner_fast');
+  });
+
+  it('classifies as "winner_slow" when IV peaks late even if notional pnl positive', () => {
+    // Slow grind: IV climbs steadily, peaking at +180 min (well past 30m cutoff).
+    const samples: FollowOnSample[] = [
+      makeFollowOn(30, 0.38, 7080),
+      makeFollowOn(90, 0.42, 7060),
+      makeFollowOn(180, 0.48, 7040), // IV peak
+      makeFollowOn(300, 0.43, 7050),
+    ];
+    const out = resolveAnomaly(baseAnomaly, samples, CLOSE_TS);
+    expect(out.iv_peak).toBeCloseTo(0.48, 6);
+    expect(out.mins_to_peak).toBe(180);
+    expect(out.notional_1c_pnl).toBeGreaterThan(5);
+    expect(out.outcome_class).toBe('winner_slow');
+  });
+
+  it('classifies as "loser" when spot rallies away from put strike', () => {
+    // Put at 7000 with spot at 7100 — spot rallies to 7150, IV crushes to 0.25.
+    // Both moves hurt the put → negative P&L.
+    const samples: FollowOnSample[] = [
+      makeFollowOn(30, 0.3, 7130),
+      makeFollowOn(120, 0.26, 7145),
+      makeFollowOn(300, 0.25, 7150),
+    ];
+    const out = resolveAnomaly(baseAnomaly, samples, CLOSE_TS);
+    expect(out.spot_at_close).toBe(7150);
+    expect(out.notional_1c_pnl).toBeLessThan(-5);
+    expect(out.outcome_class).toBe('loser');
+  });
+
+  it('drops samples outside (detect_ts, close_ts] window', () => {
+    // One sample before detection (should be dropped), one after close
+    // (should be dropped), leaving one valid in-window sample.
+    const samples: FollowOnSample[] = [
+      {
+        // before detect — dropped
+        ts: '2026-04-23T14:00:00.000Z',
+        iv_mid: 0.99,
+        spot: 6000,
+      },
+      makeFollowOn(30, 0.4, 7050), // in window — kept
+      {
+        // after close — dropped
+        ts: '2026-04-23T22:00:00.000Z',
+        iv_mid: 0.01,
+        spot: 9999,
+      },
+    ];
+    const out = resolveAnomaly(baseAnomaly, samples, CLOSE_TS);
+    expect(out.spot_min).toBe(7050); // the 6000 pre-detect sample didn't leak in
+    expect(out.spot_max).toBe(7100); // anchored to detect, 9999 post-close didn't leak
+    expect(out.iv_peak).toBeCloseTo(0.4, 6);
+  });
+
+  it('handles all-null iv_mid in follow-on by falling back to iv_at_detect', () => {
+    const samples: FollowOnSample[] = [
+      makeFollowOn(30, null, 7080),
+      makeFollowOn(120, null, 7060),
+    ];
+    const out = resolveAnomaly(baseAnomaly, samples, CLOSE_TS);
+    expect(out.iv_peak).toBe(0.35);
+    expect(out.iv_at_close).toBe(0.35);
+    expect(out.mins_to_peak).toBe(0);
+    // Spot did move for a put, so there IS a directional P&L even without IV change.
+    expect(Number.isFinite(out.notional_1c_pnl)).toBe(true);
   });
 });
