@@ -1,6 +1,11 @@
 # Railway config for the ml-sweep service. Sibling to sidecar/railway.toml
 # in the same `Theta-Options` project.
 #
+# 2026-04-24: `ml/src/**/*` watchPattern still doesn't reliably auto-
+# trigger deploys on pushes that only touch subdirectories of ml/src.
+# Workaround: when pushing PAC code, either push a separate railway.toml
+# change afterward to force a redeploy, or invoke `railway up` manually.
+#
 # watchPatterns is INTENTIONALLY NARROW. A broader pattern like
 # "ml-sweep/**" or "ml/**" will bounce in-flight sweeps when a docs or
 # data-only commit lands (README, TEARDOWN, ml/experiments/* result
