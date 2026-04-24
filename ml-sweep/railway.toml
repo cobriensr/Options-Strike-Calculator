@@ -20,6 +20,11 @@ builder = "DOCKERFILE"
 dockerfilePath = "ml-sweep/Dockerfile"
 
 [deploy]
+# NOTE (2026-04-23): `ml/src/**` in an earlier revision didn't trigger
+# deploys on ml/src/pac/engine.py changes. Railway's glob matcher
+# appears to need the explicit `/*` suffix to recurse into files (not
+# just direct children). Using `ml/src/**/*` which matches files at any
+# depth below ml/src/.
 watchPatterns = [
   "ml-sweep/app.py",
   "ml-sweep/runner.py",
@@ -27,8 +32,8 @@ watchPatterns = [
   "ml-sweep/requirements.txt",
   "ml-sweep/Dockerfile",
   "ml-sweep/railway.toml",
-  "ml/src/**",
-  "ml/scripts/**",
+  "ml/src/**/*",
+  "ml/scripts/**/*",
   "ml/requirements.txt",
 ]
 # Railway's default start policy is "always" — for a sweep worker we
