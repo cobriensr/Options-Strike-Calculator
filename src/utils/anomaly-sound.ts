@@ -1,32 +1,47 @@
 /**
- * Anomaly chime utility — plays a short sound when a new IV anomaly surfaces
- * or when an existing one transitions to cooling / distributing.
+ * Anomaly chime utility — plays a short programmatic tone when a new IV
+ * anomaly surfaces or when an existing one transitions to cooling /
+ * distributing. Uses the Web Audio API with no external audio assets.
  *
  * Honors a `localStorage['anomalySoundEnabled']` flag (default: true) so the
  * owner can silence the chime without removing the banner. Throttled to at
  * most one play per {@link SOUND_THROTTLE_MS} so a burst of simultaneous
  * anomalies doesn't turn into an audio spam stream.
  *
- * Two variants:
+ * Two variants with audibly distinct tones:
  *
- *   - `entry` — full volume (~0.4), uses the chime mp3 asset.
- *   - `exit`  — distinct, softer cue. Plays the same asset at half volume
- *               when available; if the mp3 asset is absent we fall back to
- *               a short programmatic Web Audio beep (~400 Hz, ~0.2 s). That
- *               way the exit cue is audibly different from the entry one.
+ *   - `entry` — 660 Hz, 250ms, volume 0.4. Brighter, more attention-grabbing
+ *               for a newly-detected anomaly worth looking at.
+ *   - `exit`  — 400 Hz, 200ms, volume 0.2. Lower, softer for the "holder
+ *               exiting" transition — present but non-intrusive.
  *
- * All calls are try/caught — blocked autoplay, a missing sound file, and an
- * inaccessible `localStorage` are all silent no-ops. Alerting must never
+ * A small attack + exponential-decay envelope shapes both tones so they
+ * don't "click" on/off (clicks are annoying even at low volume).
+ *
+ * All calls are try/caught — blocked autoplay, missing AudioContext support,
+ * and inaccessible localStorage are all silent no-ops. Alerting must never
  * break the render path.
  */
 
 const STORAGE_KEY = 'anomalySoundEnabled';
 /** Minimum ms between two consecutive plays. */
 export const SOUND_THROTTLE_MS = 3_000;
-/** Static path served from the Vite `public/` directory. */
-export const CHIME_URL = '/sounds/anomaly-chime.mp3';
 
 export type AnomalyChimeKind = 'entry' | 'exit';
+
+interface ChimeSpec {
+  /** Tone frequency in Hz. */
+  frequency: number;
+  /** Duration in seconds. */
+  duration: number;
+  /** Peak gain (0–1). */
+  volume: number;
+}
+
+const CHIME_SPECS: Record<AnomalyChimeKind, ChimeSpec> = {
+  entry: { frequency: 660, duration: 0.25, volume: 0.4 },
+  exit: { frequency: 400, duration: 0.2, volume: 0.2 },
+};
 
 let lastPlayMs = 0;
 
@@ -74,11 +89,11 @@ function getAudioContextCtor(): (new () => AudioContext) | null {
 }
 
 /**
- * Play a short programmatic beep via Web Audio. Used as the exit-kind
- * fallback so the cue is audibly distinct from the entry chime even when
- * the mp3 asset is missing. All failures are swallowed.
+ * Play a short sine-wave tone with attack + exponential-decay envelope.
+ * All failures are swallowed — AudioContext creation can fail in test envs
+ * and locked-down browsers, and autoplay policies may reject the start.
  */
-function playProgrammaticBeep(): void {
+function playTone(spec: ChimeSpec): void {
   try {
     const Ctor = getAudioContextCtor();
     if (!Ctor) return;
@@ -86,19 +101,28 @@ function playProgrammaticBeep(): void {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = 'sine';
-    osc.frequency.value = 400;
-    gain.gain.value = 0.2;
+    osc.frequency.value = spec.frequency;
+
+    // Envelope: 10ms attack, exponential decay to silence over duration.
+    // exponentialRampToValueAtTime requires a strictly positive target, so
+    // we decay toward 0.0001 (effectively silent) not 0.
+    const now = ctx.currentTime;
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(spec.volume, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + spec.duration);
+
     osc.connect(gain);
     gain.connect(ctx.destination);
-    const now = ctx.currentTime;
     osc.start(now);
-    osc.stop(now + 0.2);
-    // Close the context after the beep so resources are released.
+    osc.stop(now + spec.duration);
+    // Close the context after the tone so resources are released.
     osc.addEventListener('ended', () => {
-      ctx.close().catch(() => {});
+      ctx.close().catch(() => {
+        // Close can reject if the context is already closed — ignore.
+      });
     });
   } catch {
-    // AudioContext creation can fail in test envs and locked-down browsers.
+    // AudioContext creation / node wiring failed — ignore.
   }
 }
 
@@ -106,10 +130,11 @@ function playProgrammaticBeep(): void {
  * Play the chime if enabled and not within the throttle window.
  *
  * Returns `'played'` on success, `'throttled'` if the previous play was
- * too recent, `'disabled'` if the storage flag is off, and `'error'` for
- * any runtime exception (blocked autoplay, missing asset, etc.). The
- * return is purely observational for tests — callers should never branch
- * on it; alerting is best-effort by design.
+ * too recent, and `'disabled'` if the storage flag is off. Errors during
+ * audio setup are silently swallowed (still returns `'played'`) — the
+ * return is purely observational for tests. Alerting is best-effort by
+ * design; a missing AudioContext or blocked autoplay must never surface
+ * as a thrown error.
  */
 export function playAnomalyChime(
   kind: AnomalyChimeKind = 'entry',
@@ -120,25 +145,6 @@ export function playAnomalyChime(
   if (now - lastPlayMs < SOUND_THROTTLE_MS) return 'throttled';
   lastPlayMs = now;
 
-  try {
-    if (typeof Audio === 'undefined') {
-      // No Audio constructor; exit chime tries the Web Audio fallback so
-      // the user still hears a distinct cue. Entry chime has no fallback.
-      if (kind === 'exit') playProgrammaticBeep();
-      return 'played';
-    }
-    const audio = new Audio(CHIME_URL);
-    // Exit chime is quieter and shorter-feeling; entry chime is at full volume.
-    audio.volume = kind === 'exit' ? 0.2 : 0.4;
-    const maybePromise = audio.play();
-    if (maybePromise && typeof maybePromise.catch === 'function') {
-      // Swallow autoplay rejections — some browsers disallow sound before
-      // the user has interacted with the page. Not worth surfacing.
-      maybePromise.catch(() => {});
-    }
-  } catch {
-    // Construction failure (Audio constructor unavailable, network issue
-    // on asset fetch) — ignore.
-  }
+  playTone(CHIME_SPECS[kind]);
   return 'played';
 }
