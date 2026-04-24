@@ -284,16 +284,22 @@ function makeSample(
   volume: number,
   oi: number,
 ): FixtureStrikeSample {
-  // Target strikes get a wider ask-mid divergence to simulate the
-  // ASK-side concentration flagged in the tape. 1 vol pt = 0.01.
-  const askMidGap = isTarget ? 0.015 : 0.004;
+  // Target strikes get an asymmetric, ASK-dominant bid-ask spread to
+  // simulate the real-session 705P tape (97% ask during accumulation).
+  // ask_skew = (iv_ask - iv_mid) / (iv_ask - iv_bid)
+  //          = 0.020 / (0.020 + 0.005) = 0.80 → clears the 0.65 side-skew
+  // gate. Non-targets get a balanced narrow spread (ask_skew ≈ 0.5) which
+  // would FAIL the gate on its own — but they also fail the vol/OI gate
+  // upstream, so the side-skew gate never evaluates them.
+  const askMidGap = isTarget ? 0.02 : 0.004;
+  const midBidGap = isTarget ? 0.005 : 0.004;
   return {
     ticker,
     strike,
     side,
     expiry: EXPIRY,
     iv_mid: ivMid,
-    iv_bid: Math.max(0.05, ivMid - askMidGap),
+    iv_bid: Math.max(0.05, ivMid - midBidGap),
     iv_ask: ivMid + askMidGap,
     volume,
     oi,

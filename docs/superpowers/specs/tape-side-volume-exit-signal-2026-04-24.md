@@ -28,6 +28,36 @@ vol at 97% ask during accumulation, then ask-side % collapsed to 44% as
 holders scaled out around 12:00 CT. That collapse is directly observable
 from tape data, invisible from IV alone.
 
+### Interim proxy (shipped 2026-04-24)
+
+Until UW per-strike side-split volume is wired, the detector uses an
+**IV-spread skew proxy** as the secondary side-dominance gate (see
+`api/_lib/iv-anomaly.ts` `IV_SIDE_SKEW_THRESHOLD` and migration 86 columns
+`side_skew` + `side_dominant`):
+
+```text
+ask_skew = (iv_ask - iv_mid) / (iv_ask - iv_bid)
+bid_skew = (iv_mid - iv_bid) / (iv_ask - iv_bid)
+gate     = max(ask_skew, bid_skew) >= 0.65
+```
+
+The signal lives in Schwab's `mark` field — when MMs lean the displayed mid
+toward the bid (closer-to-bid mark → ask_skew up) or toward the ask
+(closer-to-ask mark → bid_skew up), the IV inversion at those three prices
+amplifies that asymmetry into a side-dominance score. The cron now uses
+`mark` instead of `(bid+ask)/2` for `iv_mid` whenever mark is in-band.
+
+This is directionally correct but lossy — it can't see actual tape side
+volume; it only sees the MM's displayed mark. It exists to filter out the
+2-sided unwinding noise (e.g., 0DTE strikes pin-trading at 50/50) that
+slipped through the vol/OI gate alone in the 2026-04-24 production run.
+
+**When this spec ships, the proxy is REPLACED, not augmented.** The
+`side_skew` / `side_dominant` columns become real `bid_pct` / `ask_pct`
+values from the UW tape stream, and the threshold is re-tuned against the
+new (much cleaner) signal. The constant name `IV_SIDE_SKEW_THRESHOLD` and
+the proxy code path can be deleted at that point.
+
 ## Phases
 
 ### Phase 0 — UW endpoint investigation (~30min)

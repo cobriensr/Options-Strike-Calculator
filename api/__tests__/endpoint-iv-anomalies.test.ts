@@ -63,6 +63,8 @@ function makeAnomalyRow(
     z_score: '3.2100',
     ask_mid_div: '0.6000',
     vol_oi_ratio: '48.50',
+    side_skew: '0.780',
+    side_dominant: 'ask',
     flag_reasons: ['skew_delta', 'z_score'],
     flow_phase: 'early',
     context_snapshot: { vix_level: 18.2 },

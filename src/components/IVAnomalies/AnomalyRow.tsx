@@ -3,6 +3,7 @@ import type {
   ActiveAnomaly,
   IVAnomalyFlowPhase,
   IVAnomalyPhase,
+  IVAnomalySideDominant,
 } from './types';
 import { StrikeIVChart } from './StrikeIVChart';
 
@@ -65,6 +66,10 @@ export function AnomalyRow({ anomaly }: { readonly anomaly: ActiveAnomaly }) {
             {anomaly.side === 'put' ? 'P' : 'C'}
           </span>
           <VolOiPill ratio={latest.volOiRatio} />
+          <SideSkewPill
+            sideDominant={latest.sideDominant}
+            sideSkew={latest.sideSkew}
+          />
           <span className="text-muted font-mono text-[10px]">
             exp {anomaly.expiry}
           </span>
@@ -182,6 +187,52 @@ function formatVolOi(ratio: number): string {
   // 52× are both what the user glances for; trailing zeros just add noise.
   if (ratio < 10) return `${ratio.toFixed(1)}×`;
   return `${Math.round(ratio)}×`;
+}
+
+/**
+ * Side-dominance pill — proxy for tape-side dominance derived from the
+ * IV-spread skew until real bid_pct/ask_pct tape data is wired (see
+ * docs/superpowers/specs/tape-side-volume-exit-signal-2026-04-24.md).
+ *
+ * Renders ASK 78% (bid_skew below threshold) or BID 71% (ask_skew below)
+ * based on whichever side dominates the spread. Mixed flow doesn't render
+ * a pill — and won't fire an alert anyway given the 0.65 gate.
+ *
+ * Legacy rows pre-migration 86 have null sideSkew / sideDominant; render
+ * nothing in that case (the column slot is optional).
+ */
+function SideSkewPill({
+  sideDominant,
+  sideSkew,
+}: {
+  readonly sideDominant: IVAnomalySideDominant | null;
+  readonly sideSkew: number | null;
+}) {
+  if (
+    sideDominant == null ||
+    sideDominant === 'mixed' ||
+    sideSkew == null ||
+    !Number.isFinite(sideSkew)
+  ) {
+    return null;
+  }
+  // Ask-dominant = MM marking up offer (accumulation signature) → amber.
+  // Bid-dominant = mid leaning to bid (distribution signature) → cyan.
+  const tier =
+    sideDominant === 'ask'
+      ? 'bg-amber-500/25 text-amber-200'
+      : 'bg-cyan-500/25 text-cyan-200';
+  const label = sideDominant.toUpperCase();
+  const pct = Math.round(sideSkew * 100);
+  return (
+    <span
+      className={`rounded-md px-2 py-0.5 font-mono text-[10px] font-bold ${tier}`}
+      data-testid="side-skew-pill"
+      title={`IV-spread skew (proxy for tape-side volume): ${label} side carries ${pct}% of the bid-ask IV spread`}
+    >
+      {label} {pct}%
+    </span>
+  );
 }
 
 /** Display pill for the exit-signal phase (active | cooling | distributing). */

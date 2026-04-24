@@ -47,6 +47,18 @@ export interface IVAnomalyRow {
   askMidDiv: number | null;
   /** Intraday volume / start-of-day OI at detection (primary gate). */
   volOiRatio: number | null;
+  /**
+   * `max(askSkew, bidSkew)` at detection — fraction of the bid-ask IV
+   * spread sitting on the dominant side (0.5 = balanced, 1.0 = fully
+   * one-sided). Null on legacy rows pre-migration 86.
+   */
+  sideSkew: number | null;
+  /**
+   * Which side dominated the IV spread at detection. Production rows
+   * are always 'ask' or 'bid' (the gate filters 'mixed' before insert);
+   * 'mixed' / null only appear on legacy rows pre-migration 86.
+   */
+  sideDominant: 'ask' | 'bid' | 'mixed' | null;
   flagReasons: string[];
   flowPhase: 'early' | 'mid' | 'reactive' | null;
   contextSnapshot: unknown;
@@ -98,6 +110,8 @@ interface RawAnomalyRow {
   z_score: NumericFromDb;
   ask_mid_div: NumericFromDb;
   vol_oi_ratio: NumericFromDb;
+  side_skew: NumericFromDb;
+  side_dominant: string | null;
   flag_reasons: string[] | null;
   flow_phase: string | null;
   context_snapshot: unknown;
@@ -156,6 +170,15 @@ function parseFlowPhase(
   return null;
 }
 
+function parseSideDominant(
+  value: string | null,
+): 'ask' | 'bid' | 'mixed' | null {
+  if (value === 'ask' || value === 'bid' || value === 'mixed') {
+    return value;
+  }
+  return null;
+}
+
 function mapAnomaly(r: RawAnomalyRow): IVAnomalyRow {
   return {
     id: typeof r.id === 'number' ? r.id : Number(r.id),
@@ -169,6 +192,8 @@ function mapAnomaly(r: RawAnomalyRow): IVAnomalyRow {
     zScore: parseNumOrNull(r.z_score),
     askMidDiv: parseNumOrNull(r.ask_mid_div),
     volOiRatio: parseNumOrNull(r.vol_oi_ratio),
+    sideSkew: parseNumOrNull(r.side_skew),
+    sideDominant: parseSideDominant(r.side_dominant),
     flagReasons: Array.isArray(r.flag_reasons) ? r.flag_reasons : [],
     flowPhase: parseFlowPhase(r.flow_phase),
     contextSnapshot: r.context_snapshot,
@@ -254,6 +279,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             SELECT id, ticker, strike, side, expiry,
                    spot_at_detect, iv_at_detect,
                    skew_delta, z_score, ask_mid_div, vol_oi_ratio,
+                   side_skew, side_dominant,
                    flag_reasons, flow_phase,
                    context_snapshot, resolution_outcome, ts
             FROM iv_anomalies

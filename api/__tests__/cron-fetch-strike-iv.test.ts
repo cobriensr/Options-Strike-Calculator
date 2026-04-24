@@ -102,20 +102,26 @@ function makeContract(
   overrides: Partial<{
     bid: number;
     ask: number;
+    mark: number;
     totalVolume: number;
     openInterest: number;
     root: string;
   }> = {},
 ) {
   const root = overrides.root ?? 'SPY';
+  const bid = overrides.bid ?? 2.0;
+  const ask = overrides.ask ?? 2.5;
+  // Default mark = midpoint. Tests that exercise the side-skew gate
+  // override `mark` to lean toward bid (ask-dominant) or ask (bid-dominant).
+  const mark = overrides.mark ?? (bid + ask) / 2;
   return {
     putCall,
     // OSI-ish symbol: `<root-padded> <YYMMDD><C|P><strike-pad>`. The
     // cron splits on whitespace and compares the first token to ticker.
     symbol: `${root.padEnd(6)}260424${putCall === 'PUT' ? 'P' : 'C'}${String(Math.round(strike * 1000)).padStart(8, '0')}`,
-    bid: overrides.bid ?? 2.0,
-    ask: overrides.ask ?? 2.5,
-    mark: 2.25,
+    bid,
+    ask,
+    mark,
     totalVolume: overrides.totalVolume ?? 100,
     openInterest: overrides.openInterest ?? 600,
     strikePrice: strike,
@@ -717,11 +723,14 @@ describe('fetch-strike-iv handler', () => {
     });
     // Replace the 7060 put with a wider-IV + high-volume contract — the
     // target strike has iv_mid significantly above its neighbors AND
-    // volume/OI cleanly above the 5× gate.
+    // volume/OI cleanly above the 5× gate. mark is leaned toward bid
+    // (9.1 vs midpoint 9.5) so the side-skew gate sees ASK dominance:
+    // ask_skew ≈ (iv_ask - iv_mark) / (iv_ask - iv_bid) ≫ 0.65.
     spxwChain.putExpDateMap['2026-04-24:0']!['7060'] = [
       makeContract('PUT', 7060, {
         bid: 9,
         ask: 10,
+        mark: 9.1, // mark close to bid → ASK-dominant proxy signal
         openInterest: 600,
         totalVolume: 6000, // 6000/600 = 10× → clears gate
         root: 'SPXW',
@@ -792,11 +801,12 @@ describe('fetch-strike-iv handler', () => {
     // layer. We scan all mockSql calls and pull out the anomaly INSERTs
     // to assert their parameter values. Tagged-template call shape is
     // [strings, ...values]; the handler's VALUES (...) order is:
-    //   0: ticker        5: iv_at_detect      10: vol_oi_ratio
-    //   1: strike        6: skew_delta        11: flag_reasons
-    //   2: side          7: z_score           12: flow_phase
-    //   3: expiry        8: ask_mid_div       13: context_snapshot
-    //   4: spot_at_detect                     14: ts
+    //   0: ticker        5: iv_at_detect      10: side_skew
+    //   1: strike        6: skew_delta        11: side_dominant
+    //   2: side          7: z_score           12: flag_reasons
+    //   3: expiry        8: ask_mid_div       13: flow_phase
+    //   4: spot_at_detect 9: vol_oi_ratio     14: context_snapshot
+    //                                         15: ts
     const insertCalls = vi.mocked(mockSql).mock.calls.filter((call) => {
       const strings = call[0] as TemplateStringsArray | undefined;
       const joined = Array.isArray(strings) ? strings.join(' ') : '';
@@ -814,11 +824,17 @@ describe('fetch-strike-iv handler', () => {
     expect(insertArgs[1]).toBe(7060);
     // vol_oi_ratio at position 9 (after ask_mid_div). 6000/600 = 10×.
     expect(insertArgs[9]).toBeCloseTo(10, 4);
-    expect(insertArgs[10]).toEqual(expect.arrayContaining(['skew_delta']));
-    expect(['early', 'mid', 'reactive']).toContain(insertArgs[11]);
+    // side_skew at position 10 — ask-dominant fixture (mark close to bid)
+    // produces ask_skew ≥ 0.65.
+    expect(insertArgs[10]).toBeGreaterThanOrEqual(0.65);
+    expect(insertArgs[10]).toBeLessThanOrEqual(1);
+    // side_dominant at position 11 — mark below midpoint → ASK dominance.
+    expect(insertArgs[11]).toBe('ask');
+    expect(insertArgs[12]).toEqual(expect.arrayContaining(['skew_delta']));
+    expect(['early', 'mid', 'reactive']).toContain(insertArgs[13]);
     // context_snapshot is stringified JSON → parse it back and assert
     // the shape is a non-null object (matches ContextSnapshot's fields).
-    const ctxStr = insertArgs[12] as string;
+    const ctxStr = insertArgs[14] as string;
     expect(typeof ctxStr).toBe('string');
     const ctx = JSON.parse(ctxStr) as Record<string, unknown>;
     expect(ctx).not.toBeNull();

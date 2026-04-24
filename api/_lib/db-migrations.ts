@@ -2335,4 +2335,31 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 86,
+    description:
+      'Add side_skew + side_dominant columns to iv_anomalies for the ' +
+      'secondary side-dominance gate (2026-04-24) — proxy for tape-side ' +
+      'volume dominance derived from iv_bid/iv_mid/iv_ask spread until ' +
+      'real UW per-strike side-split volume is wired (deferred spec ' +
+      'tape-side-volume-exit-signal-2026-04-24).',
+    statements: (sql) => [
+      // side_skew: max(ask_skew, bid_skew), 0..1 → NUMERIC(4,3) keeps full
+      // resolution at 0.001 granularity. Nullable for legacy rows + the
+      // edge case where the spread was non-positive at detect.
+      sql`
+        ALTER TABLE iv_anomalies
+          ADD COLUMN IF NOT EXISTS side_skew NUMERIC(4,3)
+      `,
+      // side_dominant: 'ask' | 'bid' | 'mixed' (text, no enum since we
+      // already use plain text for `side` and `flow_phase`). 'mixed' is
+      // present for type-completeness — the gate filters those rows out
+      // before insert, so this column will only see 'ask' or 'bid' in
+      // production rows. Nullable for legacy rows.
+      sql`
+        ALTER TABLE iv_anomalies
+          ADD COLUMN IF NOT EXISTS side_dominant TEXT
+      `,
+    ],
+  },
 ];

@@ -26,6 +26,11 @@ const EXPIRY = '2026-04-23';
  * baseline ratio comfortably above the 5× gate (volume=10000, oi=1000 →
  * 10×) on every sample. Individual tests that exercise the gate override
  * these to test the boundary.
+ *
+ * Default IV bid/ask is ask-dominant by design — `(iv_ask - iv_mid) /
+ * (iv_ask - iv_bid) = 0.020 / 0.025 = 0.80`, comfortably above the
+ * IV_SIDE_SKEW_THRESHOLD of 0.65. Tests that exercise the side-skew gate
+ * override `iv_bid` / `iv_ask` directly to test the boundary.
  */
 function makeSample(
   strike: number,
@@ -38,8 +43,8 @@ function makeSample(
     side: 'put',
     expiry: EXPIRY,
     iv_mid: ivMid,
-    iv_bid: ivMid - 0.01,
-    iv_ask: ivMid + 0.01,
+    iv_bid: ivMid - 0.005,
+    iv_ask: ivMid + 0.02,
     volume: 10000,
     oi: 1000,
     ts: TS,
@@ -382,6 +387,93 @@ describe('detectAnomalies', () => {
     ];
     expect(detectAnomalies(snapshot, new Map(), 7050)).toEqual([]);
   });
+
+  // ── Secondary gate: side-skew (proxy for tape-side dominance) ──
+
+  it('fires with side_dominant=ask when iv_ask is far above iv_mid (ask-dominant accumulation)', () => {
+    // ask_skew = (0.470 - 0.450) / (0.470 - 0.445) = 0.020 / 0.025 = 0.80
+    // → above the 0.65 IV_SIDE_SKEW_THRESHOLD.
+    const target: StrikeSample = {
+      ...makeSample(7000, 0.45),
+      iv_bid: 0.445,
+      iv_mid: 0.45,
+      iv_ask: 0.47,
+    };
+    const snapshot: StrikeSample[] = [
+      makeSample(6990, 0.4),
+      makeSample(6995, 0.4),
+      target,
+      makeSample(7005, 0.4),
+      makeSample(7010, 0.4),
+    ];
+    const flags = detectAnomalies(snapshot, new Map(), 7050);
+    expect(flags).toHaveLength(1);
+    expect(flags[0]!.strike).toBe(7000);
+    expect(flags[0]!.side_dominant).toBe('ask');
+    expect(flags[0]!.side_skew).toBeCloseTo(0.8, 4);
+    expect(flags[0]!.flag_reasons).toContain('skew_delta');
+  });
+
+  it('fires with side_dominant=bid when iv_bid is far below iv_mid (bid-dominant distribution)', () => {
+    // bid_skew = (0.450 - 0.430) / (0.455 - 0.430) = 0.020 / 0.025 = 0.80
+    // → above the 0.65 threshold; ask side has 0.20.
+    const target: StrikeSample = {
+      ...makeSample(7000, 0.45),
+      iv_bid: 0.43,
+      iv_mid: 0.45,
+      iv_ask: 0.455,
+    };
+    const snapshot: StrikeSample[] = [
+      makeSample(6990, 0.4),
+      makeSample(6995, 0.4),
+      target,
+      makeSample(7005, 0.4),
+      makeSample(7010, 0.4),
+    ];
+    const flags = detectAnomalies(snapshot, new Map(), 7050);
+    expect(flags).toHaveLength(1);
+    expect(flags[0]!.strike).toBe(7000);
+    expect(flags[0]!.side_dominant).toBe('bid');
+    expect(flags[0]!.side_skew).toBeCloseTo(0.8, 4);
+  });
+
+  it('does NOT fire when the IV spread is balanced (50/50 — 2-sided unwinding noise)', () => {
+    // ask_skew = (0.460 - 0.450) / (0.460 - 0.440) = 0.010 / 0.020 = 0.50
+    // → below the 0.65 threshold; perfectly balanced spread = pin trade.
+    const target: StrikeSample = {
+      ...makeSample(7000, 0.45),
+      iv_bid: 0.44,
+      iv_mid: 0.45,
+      iv_ask: 0.46,
+    };
+    const snapshot: StrikeSample[] = [
+      makeSample(6990, 0.4),
+      makeSample(6995, 0.4),
+      target,
+      makeSample(7005, 0.4),
+      makeSample(7010, 0.4),
+    ];
+    expect(detectAnomalies(snapshot, new Map(), 7050)).toEqual([]);
+  });
+
+  it('silently skips strikes with non-positive bid-ask spread (degenerate quote)', () => {
+    // iv_ask <= iv_bid — division would be NaN/negative; the gate must
+    // treat this as "no directional info" and skip without throwing.
+    const target: StrikeSample = {
+      ...makeSample(7000, 0.45),
+      iv_bid: 0.45,
+      iv_mid: 0.45,
+      iv_ask: 0.45, // spread = 0
+    };
+    const snapshot: StrikeSample[] = [
+      makeSample(6990, 0.4),
+      makeSample(6995, 0.4),
+      target,
+      makeSample(7005, 0.4),
+      makeSample(7010, 0.4),
+    ];
+    expect(detectAnomalies(snapshot, new Map(), 7050)).toEqual([]);
+  });
 });
 
 // ── classifyFlowPhase ────────────────────────────────────────
@@ -398,6 +490,8 @@ describe('classifyFlowPhase', () => {
     z_score: 3.0,
     ask_mid_div: 0.02,
     vol_oi_ratio: 12.5,
+    side_skew: 0.78,
+    side_dominant: 'ask',
     flag_reasons: ['skew_delta', 'z_score'],
     flow_phase: 'mid',
     ts: TS,

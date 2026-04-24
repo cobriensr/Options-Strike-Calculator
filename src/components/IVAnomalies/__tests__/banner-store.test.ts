@@ -15,6 +15,8 @@ function makeRow(overrides: Partial<IVAnomalyRow> = {}): IVAnomalyRow {
     zScore: 3.2,
     askMidDiv: 0.6,
     volOiRatio: 48.5,
+    sideSkew: 0.78,
+    sideDominant: 'ask',
     flagReasons: ['skew_delta'],
     flowPhase: 'early',
     contextSnapshot: null,

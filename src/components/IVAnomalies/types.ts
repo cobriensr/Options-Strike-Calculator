@@ -10,6 +10,14 @@
 export type IVAnomalyTicker = 'SPXW' | 'NDXP' | 'SPY' | 'QQQ' | 'IWM';
 export type IVAnomalySide = 'call' | 'put';
 export type IVAnomalyFlowPhase = 'early' | 'mid' | 'reactive';
+/**
+ * Which side dominated the IV spread at detection.
+ * - 'ask'   — MMs marking up the offer faster than mid (accumulation).
+ * - 'bid'   — Mid leaning toward the bid (distribution / hitting bid).
+ * - 'mixed' — Spread balanced ~50/50 (filtered out by the gate, only
+ *             present on legacy rows pre-migration 86).
+ */
+export type IVAnomalySideDominant = 'ask' | 'bid' | 'mixed';
 
 export interface IVAnomalyRow {
   id: number;
@@ -28,6 +36,18 @@ export interface IVAnomalyRow {
    * ingested before the 2026-04-24 rescope (pre-vol/OI gate migration).
    */
   volOiRatio: number | null;
+  /**
+   * `max(askSkew, bidSkew)` at detection — fraction of the bid-ask IV
+   * spread sitting on the dominant side (0.5 = balanced, 1.0 = fully
+   * one-sided). Null on legacy rows pre-migration 86 (side-skew gate).
+   */
+  sideSkew: number | null;
+  /**
+   * Which side dominated the IV spread at detection. Production rows
+   * are always 'ask' or 'bid' — the side-skew gate filters 'mixed'
+   * before insert. Null on legacy rows pre-migration 86.
+   */
+  sideDominant: IVAnomalySideDominant | null;
   flagReasons: string[];
   flowPhase: IVAnomalyFlowPhase | null;
   contextSnapshot: unknown;

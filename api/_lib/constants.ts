@@ -114,6 +114,31 @@ export const Z_WINDOW_SIZE = 60;
  */
 export const ASK_MID_DIV_THRESHOLD = 0.5;
 
+/**
+ * Secondary gate for the anomaly detector: minimum fraction of the bid-ask
+ * IV spread that must sit on a single side (above mid for ask-dominant,
+ * below for bid-dominant) before a strike enters the IV signal evaluation.
+ *
+ * `ask_skew = (iv_ask - iv_mid) / (iv_ask - iv_bid)` — fraction of the
+ * spread above mid. `bid_skew = 1 - ask_skew` (when spread > 0). A value
+ * of 0.65 means at least 65% of the spread is on one side.
+ *
+ * This is a PROXY for true tape-side volume dominance until UW per-strike
+ * bid-vs-ask volume is wired (see
+ * `docs/superpowers/specs/tape-side-volume-exit-signal-2026-04-24.md`).
+ * It uses fields the detector already reads (iv_bid / iv_mid / iv_ask)
+ * and is directionally correct — when MMs mark up the ask faster than the
+ * mid moves, that signature shows up here as ask_skew → 1. Two-sided
+ * unwinding flow (e.g., 2026-04-24 SPY 0DTE puts at 50/50 ask/bid)
+ * collapses to ask_skew ≈ 0.5 and is filtered out.
+ *
+ * Calibration: 0.65 matches the 65% side-dominance target from the live
+ * 2026-04-23 SPY 705P observation (97% ask during accumulation). When
+ * the full spec ships, real `bid_pct` / `ask_pct` REPLACE this proxy —
+ * they don't augment it.
+ */
+export const IV_SIDE_SKEW_THRESHOLD = 0.65;
+
 // ============================================================
 // STRIKE IV ANOMALY DETECTOR (Phase 4 — EOD resolution)
 // ============================================================

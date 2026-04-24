@@ -305,10 +305,22 @@ function extractRows(
         if (oi < minOi) continue;
 
         // Prices must form a valid bid ≤ mid ≤ ask with a positive mid.
+        //
+        // We prefer Schwab's `mark` field when it's a valid in-window
+        // value because it represents the broker's market mark — which
+        // can deviate from (bid+ask)/2 when MMs lean the displayed mid
+        // toward bid or ask in response to flow pressure. The
+        // side-skew gate (`detectAnomalies`) reads that asymmetry as a
+        // proxy for tape-side dominance: when mark sits closer to the
+        // bid, ask_skew rises; closer to ask, bid_skew rises. Falling
+        // back to (bid+ask)/2 keeps the cron working when mark is
+        // missing or out-of-band (NaN, ≤0, outside the bid/ask cone).
         const bid = Number.isFinite(c.bid) ? c.bid : 0;
         const ask = Number.isFinite(c.ask) ? c.ask : 0;
         if (bid <= 0 || ask <= 0 || ask < bid) continue;
-        const mid = (bid + ask) / 2;
+        const midpoint = (bid + ask) / 2;
+        const mark = Number.isFinite(c.mark) ? c.mark : 0;
+        const mid = mark > 0 && mark >= bid && mark <= ask ? mark : midpoint;
         if (mid <= 0) continue;
 
         // Time-to-expiry in YEARS. Use 4:00 PM ET settlement on the expiry
@@ -543,11 +555,13 @@ async function runDetection(
         ticker, strike, side, expiry,
         spot_at_detect, iv_at_detect,
         skew_delta, z_score, ask_mid_div, vol_oi_ratio,
+        side_skew, side_dominant,
         flag_reasons, flow_phase, context_snapshot, ts
       ) VALUES (
         ${flag.ticker}, ${flag.strike}, ${flag.side}, ${flag.expiry},
         ${flag.spot_at_detect}, ${flag.iv_at_detect},
         ${flag.skew_delta}, ${flag.z_score}, ${flag.ask_mid_div}, ${flag.vol_oi_ratio},
+        ${flag.side_skew}, ${flag.side_dominant},
         ${flag.flag_reasons}, ${flowPhase}, ${JSON.stringify(context)}::jsonb,
         ${flag.ts}
       )

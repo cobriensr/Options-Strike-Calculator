@@ -30,6 +30,7 @@ import {
   RESOLVE_FLAT_PNL_THRESHOLD,
   RESOLVE_FAST_PEAK_MINS,
   VOL_OI_RATIO_THRESHOLD,
+  IV_SIDE_SKEW_THRESHOLD,
 } from './constants.js';
 import { blackScholesPrice } from '../../src/utils/black-scholes.js';
 import { getETCloseUtcIso } from '../../src/utils/timezone.js';
@@ -74,6 +75,28 @@ export interface AnomalyFlag {
    * on every flag for observability in the UI and downstream ML slicing.
    */
   vol_oi_ratio: number | null;
+  /**
+   * `max(ask_skew, bid_skew)` at detection time, where
+   * `ask_skew = (iv_ask - iv_mid) / (iv_ask - iv_bid)` and
+   * `bid_skew = 1 - ask_skew`. 0.5 = perfectly mid (two-sided),
+   * 1.0 = entire bid-ask spread sits on one side. Null only when the
+   * spread was non-positive at detect (degenerate quote — shouldn't
+   * occur post-gate). Surfaced on every flag for ML labeling.
+   */
+  side_skew: number | null;
+  /**
+   * Which side dominates the IV spread at detection time:
+   *   - 'ask'   — `iv_ask - iv_mid` makes up ≥ IV_SIDE_SKEW_THRESHOLD of
+   *               the spread (MM marking up offer faster than mid).
+   *   - 'bid'   — `iv_mid - iv_bid` makes up ≥ threshold (mid leaning
+   *               toward the bid; flow hitting the bid).
+   *   - 'mixed' — neither side clears the gate (two-sided / pin trade).
+   *               Filtered out before reaching `flags`, so callers
+   *               should never see this on a returned flag — present
+   *               for type-completeness only.
+   *   - null    — spread non-positive (degenerate).
+   */
+  side_dominant: 'ask' | 'bid' | 'mixed' | null;
   /** Non-empty; contains any combination of 'skew_delta', 'z_score'. */
   flag_reasons: string[];
   /**
@@ -264,6 +287,35 @@ export function detectAnomalies(
       continue;
     }
 
+    // SECONDARY GATE: side-skew (proxy for tape-side dominance).
+    //
+    // Filters out 2-sided unwinding noise (e.g., 0DTE strikes pin-trading
+    // at 50/50 ask/bid) that the vol/OI gate alone can't see — those
+    // strikes can have outsized vol/OI when holders are ROLLING positions
+    // through the same strike, but their IV-spread skew sits at ~0.5
+    // because there's no directional MM lean. Real informed flow shows up
+    // as ask_skew → 1 (or bid_skew → 1 for distribution).
+    //
+    // Uses iv_bid / iv_mid / iv_ask as a proxy for true side-split volume
+    // (deferred to `tape-side-volume-exit-signal-2026-04-24.md`). When that
+    // spec ships the proxy will be REPLACED with real bid_pct/ask_pct, not
+    // augmented.
+    if (
+      target.iv_ask == null ||
+      target.iv_bid == null ||
+      !isFiniteNumber(target.iv_ask) ||
+      !isFiniteNumber(target.iv_bid)
+    ) {
+      continue;
+    }
+    const spread = target.iv_ask - target.iv_bid;
+    if (spread <= 0) continue; // Degenerate quote — no directional info.
+    const askSkew = (target.iv_ask - target.iv_mid) / spread;
+    const bidSkew = (target.iv_mid - target.iv_bid) / spread;
+    const sideSkew = Math.max(askSkew, bidSkew);
+    if (sideSkew < IV_SIDE_SKEW_THRESHOLD) continue;
+    const sideDominant: 'ask' | 'bid' = askSkew >= bidSkew ? 'ask' : 'bid';
+
     const groupKey = `${target.ticker}:${target.side}:${target.expiry}`;
     const group = groups.get(groupKey) ?? [];
     const idx = group.findIndex(
@@ -306,6 +358,8 @@ export function detectAnomalies(
       z_score: zScore,
       ask_mid_div: askMidDiv,
       vol_oi_ratio: volOiRatio,
+      side_skew: sideSkew,
+      side_dominant: sideDominant,
       flag_reasons: reasons,
       // flow_phase intentionally omitted — see classifyFlowPhase.
       ts: target.ts,
