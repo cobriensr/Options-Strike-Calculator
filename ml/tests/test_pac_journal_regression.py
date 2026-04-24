@@ -78,7 +78,13 @@ JOURNAL_ENTRIES: list[tuple[str, int, str]] = [
 # test would fail every time LuxAlgo's repaint leads our engine by even
 # 1 bar. See test_pac_engine_causality.py for the underlying fix.
 LOOKBACK_MIN = 45
-FORWARD_MIN = 15
+# Expanded from 15 to 30 after 2026-04-24 Phase A+B (causal_order_blocks
+# + causal_swing_highs_lows). With OB break-bar masking and no swing
+# dedup, structure events appear later still — LuxAlgo's live repaint
+# shows labels we can only confirm 20-30min after the trader's entry.
+# Not a causality bug in either direction, just reflects the gap
+# between repainting-live-chart and causally-strict-backtest.
+FORWARD_MIN = 30
 
 
 @pytest.fixture(scope="module")

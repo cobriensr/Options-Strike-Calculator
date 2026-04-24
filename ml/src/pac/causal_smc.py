@@ -20,6 +20,96 @@ import pandas as pd
 
 
 # ---------------------------------------------------------------------------
+# Causal swing_highs_lows
+# ---------------------------------------------------------------------------
+#
+# Upstream smc.swing_highs_lows has TWO retroactive transformations
+# (smc.py lines 165-205) that run AFTER the initial centered-window
+# detection:
+#
+#   1. Dedup loop (165-193): when two consecutive swings have the same
+#      type (HH→HH or LL→LL), remove the less-extreme one. Whether a
+#      swing is less extreme depends on a FUTURE same-type swing's
+#      level — that's retroactive.
+#   2. Endpoint fixup (197-205): force the first and last detected
+#      swings to alternate types. Uses the full-frame last swing to
+#      decide, which is also non-causal.
+#
+# Neither step creates a forward peek the backtest could trade, but
+# both erase swings that a live chart would have displayed.
+#
+# Q1 resolution (from the plan doc): does bos_choch still work when
+# we skip dedup and feed it the raw non-alternating sequence?
+#
+# Yes. bos_choch iterates every detected swing and only labels BOS
+# when the last 4 swings match an alternating pattern ([-1,1,-1,1] or
+# [1,-1,1,-1]). Non-alternating windows like [1,1,-1,1] simply don't
+# match either pattern and get skipped. The NEXT window that does
+# alternate produces a BOS at the correct `last_positions[-2]` bar,
+# which is the same bar dedup would have produced (because dedup
+# only removes non-last-4 swings). In the worst case, causal output
+# is a SUBSET of dedup's BOS labels — never a strict superset, never
+# a different label at the same bar. The parity test in
+# test_pac_causal_smc.py confirms this empirically.
+
+
+def causal_swing_highs_lows(
+    ohlc: pd.DataFrame,
+    swing_length: int = 50,
+) -> pd.DataFrame:
+    """Causal drop-in replacement for `smc.swing_highs_lows`.
+
+    The initial centered-window detection is identical to upstream:
+    a bar T is a swing-high if `high[T]` equals the max over the
+    centered window `[T - swing_length, T + swing_length]`. The
+    window's forward reach (swing_length bars) is compensated by the
+    engine's shift-by-swing_length on output columns — that part is
+    the same as upstream.
+
+    What's different: no dedup, no endpoint fixup. Every bar that
+    passes the initial centered-window test gets its HighLow set.
+    Consecutive same-type swings both survive.
+    """
+    n = len(ohlc)
+    high = ohlc["high"].values
+    low = ohlc["low"].values
+    half = swing_length
+
+    # Match upstream's effective window: smc doubles swing_length then
+    # uses .shift(-swing_length//2).rolling(swing_length). After the
+    # doubling that's a 2*swing_length rolling window shifted so it's
+    # centered on the current bar. Reproduce that window size exactly.
+    window = 2 * half
+    shift_amt = half
+
+    high_s = pd.Series(high)
+    low_s = pd.Series(low)
+    shifted_max = high_s.shift(-shift_amt).rolling(window).max().to_numpy()
+    shifted_min = low_s.shift(-shift_amt).rolling(window).min().to_numpy()
+
+    hl_out = np.full(n, np.nan, dtype=np.float32)
+    level_out = np.full(n, np.nan, dtype=np.float32)
+
+    for i in range(n):
+        if np.isnan(shifted_max[i]):
+            continue
+        if high[i] == shifted_max[i]:
+            hl_out[i] = 1.0
+            level_out[i] = float(high[i])
+        elif not np.isnan(shifted_min[i]) and low[i] == shifted_min[i]:
+            hl_out[i] = -1.0
+            level_out[i] = float(low[i])
+
+    return pd.concat(
+        [
+            pd.Series(hl_out.astype(np.float64), name="HighLow"),
+            pd.Series(level_out.astype(np.float64), name="Level"),
+        ],
+        axis=1,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Causal order-block tracker
 # ---------------------------------------------------------------------------
 #
@@ -39,17 +129,28 @@ def causal_order_blocks(
     ohlc: pd.DataFrame,
     swing_highs_lows: pd.DataFrame,
     close_mitigation: bool = False,
+    swing_length: int = 0,
 ) -> pd.DataFrame:
     """Causal drop-in replacement for `smc.ob`.
 
-    Detection semantics match upstream bar-for-bar. The only behavioral
-    difference: an OB's detection row is NEVER zeroed out by future price
-    action. The OB's raw column values (OB, Top, Bottom, OBVolume,
-    Percentage) are set once at detection time and remain. MitigatedIndex
-    is updated the bar mitigation occurs and then frozen.
+    Detection semantics match upstream bar-for-bar with two changes for
+    strict causality:
 
-    Parameters match smc.ob so this function can be swapped in with no
-    caller-side changes. See smc.py docstring for field semantics.
+    1. **No retroactive reset.** An OB's detection row is never zeroed
+       out by future price action. Detection values (OB, Top, Bottom,
+       OBVolume, Percentage) are set once and remain. MitigatedIndex
+       is updated the bar mitigation occurs and then frozen.
+
+    2. **Swing-confirmation gate.** A swing at position P is only
+       "live-knowable" at bar `P + swing_length` (centered-window
+       detection needs swing_length future bars). This function
+       refuses to use swings that haven't yet been confirmed as of
+       the current `close_index`. Pass `swing_length` explicitly to
+       enable this gate; default of 0 skips it (upstream-compatible
+       behavior).
+
+    Parameters match smc.ob plus an optional `swing_length`. See smc.py
+    docstring for field semantics.
     """
     n = len(ohlc)
     _open = ohlc["open"].values
@@ -69,6 +170,12 @@ def causal_order_blocks(
     percentage = np.zeros(n, dtype=np.float32)
     mitigated_index = np.zeros(n, dtype=np.int32)
     breaker = np.full(n, False, dtype=bool)
+    # Break bar per OB — the close_index that confirmed this OB by
+    # crossing its origination-swing. Used by the engine to mask OBs
+    # at output rows before they were causally knowable. Similar in
+    # spirit to smc.bos_choch's BrokenIndex, which we use for the
+    # BOS/CHOCH relocation.
+    broken_bar = np.zeros(n, dtype=np.int32)
 
     swing_high_indices = np.flatnonzero(swing_hl == 1)
     swing_low_indices = np.flatnonzero(swing_hl == -1)
@@ -96,8 +203,18 @@ def causal_order_blocks(
                 mitigated_index[idx] = close_index - 1
 
         # Detection: close breaks above last uncrossed swing high.
+        # Swing-confirmation gate: a swing at P is only live-knowable at
+        # bar P + swing_length. Walk backward through swing_high_indices
+        # to find the most recent swing that's already confirmed by
+        # bar close_index.
         pos = int(np.searchsorted(swing_high_indices, close_index))
-        last_top_index = int(swing_high_indices[pos - 1]) if pos > 0 else None
+        last_top_index: int | None = None
+        while pos > 0:
+            candidate = int(swing_high_indices[pos - 1])
+            if candidate + swing_length <= close_index:
+                last_top_index = candidate
+                break
+            pos -= 1
         if last_top_index is None or crossed[last_top_index]:
             continue
         if _close[close_index] <= _high[last_top_index]:
@@ -127,6 +244,7 @@ def causal_order_blocks(
         ob[obIndex] = 1
         top_arr[obIndex] = obTop
         bottom_arr[obIndex] = obBtm
+        broken_bar[obIndex] = close_index
         vol_cur = float(_volume[close_index])
         vol_prev1 = float(_volume[close_index - 1]) if close_index >= 1 else 0.0
         vol_prev2 = float(_volume[close_index - 2]) if close_index >= 2 else 0.0
@@ -159,8 +277,15 @@ def causal_order_blocks(
                 breaker[idx] = True
                 mitigated_index[idx] = close_index
 
+        # Same swing-confirmation gate as the bullish branch above.
         pos = int(np.searchsorted(swing_low_indices, close_index))
-        last_btm_index = int(swing_low_indices[pos - 1]) if pos > 0 else None
+        last_btm_index: int | None = None
+        while pos > 0:
+            candidate = int(swing_low_indices[pos - 1])
+            if candidate + swing_length <= close_index:
+                last_btm_index = candidate
+                break
+            pos -= 1
         if last_btm_index is None or crossed[last_btm_index]:
             continue
         if _close[close_index] >= _low[last_btm_index]:
@@ -188,6 +313,7 @@ def causal_order_blocks(
         ob[obIndex] = -1
         top_arr[obIndex] = obTop
         bottom_arr[obIndex] = obBtm
+        broken_bar[obIndex] = close_index
         vol_cur = float(_volume[close_index])
         vol_prev1 = float(_volume[close_index - 1]) if close_index >= 1 else 0.0
         vol_prev2 = float(_volume[close_index - 2]) if close_index >= 2 else 0.0
@@ -210,6 +336,10 @@ def causal_order_blocks(
     obVolume_out = np.where(mask, obVolume, np.nan).astype(np.float64)
     mitigated_out = np.where(mask, mitigated_index, np.nan).astype(np.float64)
     percentage_out = np.where(mask, percentage, np.nan).astype(np.float64)
+    # BrokenBar is an extension column vs upstream smc.ob. Stored as a
+    # float with NaN where no OB exists, so the engine can mask output
+    # rows whose OB isn't yet knowable at the output bar.
+    broken_out = np.where(mask, broken_bar, np.nan).astype(np.float64)
 
     return pd.concat(
         [
@@ -219,6 +349,7 @@ def causal_order_blocks(
             pd.Series(obVolume_out, name="OBVolume"),
             pd.Series(mitigated_out, name="MitigatedIndex"),
             pd.Series(percentage_out, name="Percentage"),
+            pd.Series(broken_out, name="BrokenBar"),
         ],
         axis=1,
     )

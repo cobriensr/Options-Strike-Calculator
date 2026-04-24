@@ -135,11 +135,15 @@ OHLC_FIXTURES = {
 }
 
 
-# Columns the 2026-04-23 causality pass FULLY fixes — rows 0..T must
-# be identical between full-frame and truncated-frame runs. Any
-# divergence here is a regression of the BOS/CHOCH labeling peek +
-# broken-filter peek that inflated the A2 1m_2022 Sharpe.
+# Columns the 2026-04 causality passes FULLY fix — rows 0..T must be
+# identical between full-frame and truncated-frame runs.
+# Regression-guards three landings:
+#   * 2026-04-23 BOS/CHOCH pass (labeling peek + broken-filter peek)
+#   * 2026-04-24 Phase A (causal_order_blocks replaces smc.ob)
+#   * 2026-04-24 Phase B (causal_swing_highs_lows replaces smc.swing_highs_lows)
 STRICT_CAUSAL_COLS = (
+    "HighLow",
+    "Level_shl",
     "BOS",
     "CHOCH",
     "Level_bc",
@@ -147,27 +151,22 @@ STRICT_CAUSAL_COLS = (
     "FVG",
     "FVG_Top",
     "FVG_Bottom",
-)
-
-# Columns with known residual non-causality.
-KNOWN_RESIDUAL_COLS = (
-    # swing_highs_lows dedup + endpoint-fixup erase swings retroactively
-    # (Phase B of residual fix).
-    "HighLow",
-    "Level_shl",
-    # OB detection itself is now causal via causal_order_blocks (Phase A
-    # 2026-04-24). But causal_order_blocks consumes swing_highs_lows,
-    # which isn't yet causal, so near truncation boundaries on wide-swing
-    # data the OB output can differ between full and truncated views
-    # purely because the swing input differed. Once Phase B lands these
-    # promote to STRICT.
     "OB",
     "OB_Top",
     "OB_Bottom",
     "OBVolume",
     "OB_Percentage",
-    "OB_MitigatedIndex",   # future-bar index, functional via loop.py
-    "FVG_MitigatedIndex",  # same
+)
+
+# Columns with known residual non-causality. Only mitigation-index fields
+# remain here — they store FUTURE bar indices by design, and the raw
+# values legitimately differ between views. loop.py consumes them as
+# `mit <= signal_idx` which derives the same active/mitigated state in
+# both full-frame and truncated-frame runs (see
+# test_mitigated_index_semantics_match).
+KNOWN_RESIDUAL_COLS = (
+    "OB_MitigatedIndex",
+    "FVG_MitigatedIndex",
 )
 
 
@@ -315,21 +314,20 @@ def test_ob_reset_no_longer_a_residual() -> None:
     )
 
 
-@pytest.mark.xfail(
-    reason=(
-        "swing_highs_lows dedup loop (smc.py lines 165-193) can erase a "
-        "swing retroactively when a later swing is more extreme. Causes "
-        "under-counting (swings the live chart would have shown get "
-        "deleted in hindsight). Not blocking the A2 fix — biases Sharpe "
-        "down, not up. Shows up more reliably on wide-swing trending "
-        "data than on oscillating sine fixtures."
-    ),
-    strict=True,
-)
-def test_swing_dedup_residual_is_known() -> None:
-    """Documents the swing-dedup erasure. Same xfail(strict=True) pattern
-    as the OB reset test — green means someone fixed it and should
-    update the docstrings.
+def test_swing_dedup_no_longer_a_residual() -> None:
+    """Regression: the swing-dedup residual that was xfailed before
+    2026-04-24 Phase B is now fixed via causal_swing_highs_lows
+    (pac.causal_smc).
+
+    Previously smc.swing_highs_lows' dedup loop (lines 165-193) would
+    erase a swing retroactively when a later swing was more extreme,
+    plus the endpoint fixup (197-205) would force the first/last
+    swings to alternate types. causal_swing_highs_lows does neither —
+    every bar that passes the centered-window test keeps its HighLow.
+
+    Covered by the strict parametrized test on both oscillating and
+    trending fixtures; this is an explicit single-case regression so
+    an inadvertent revert shows up with a clear name.
     """
     df = _synthetic_ohlc_trending()
     engine = PACEngine(PACParams(swing_length=8))
@@ -339,4 +337,8 @@ def test_swing_dedup_residual_is_known() -> None:
     full_window = full_out.iloc[:truncate_at].reset_index(drop=True)
     a = full_window["HighLow"].to_numpy(dtype=np.float64, na_value=np.nan)
     b = trunc_out["HighLow"].to_numpy(dtype=np.float64, na_value=np.nan)
-    assert _first_divergence(a, b) is None
+    assert _first_divergence(a, b) is None, (
+        "HighLow column diverges between full and truncated views — "
+        "causal_swing_highs_lows regressed. Check if dedup/endpoint-fixup "
+        "leaked back into the pipeline."
+    )

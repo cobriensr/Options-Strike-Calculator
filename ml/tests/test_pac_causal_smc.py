@@ -28,7 +28,7 @@ import pytest
 os.environ.setdefault("SMC_CREDIT", "0")
 from smartmoneyconcepts import smc  # noqa: E402
 
-from pac.causal_smc import causal_order_blocks  # noqa: E402
+from pac.causal_smc import causal_order_blocks, causal_swing_highs_lows  # noqa: E402
 
 
 def _synthetic_ohlc(n: int = 600, seed: int = 42) -> pd.DataFrame:
@@ -78,7 +78,11 @@ def test_parity_with_smc_ob_except_reset(
     causal_out = causal_order_blocks(df, shl, close_mitigation=close_mitigation)
 
     assert len(smc_out) == len(causal_out)
-    assert list(smc_out.columns) == list(causal_out.columns)
+    # causal_order_blocks adds a BrokenBar column (the break-bar per OB)
+    # that upstream smc.ob doesn't have. Every upstream column must be
+    # present in the causal output; BrokenBar is the only allowed extra.
+    assert set(smc_out.columns).issubset(set(causal_out.columns))
+    assert set(causal_out.columns) - set(smc_out.columns) == {"BrokenBar"}
 
     smc_ob = smc_out["OB"].to_numpy(dtype=np.float64, na_value=np.nan)
     causal_ob = causal_out["OB"].to_numpy(dtype=np.float64, na_value=np.nan)
@@ -118,6 +122,78 @@ def test_parity_with_smc_ob_except_reset(
             f"Test fixture failed to exercise the reset code path at "
             f"swing_length={swing_length}. Adjust _synthetic_ohlc or "
             f"the parametrization."
+        )
+
+
+@pytest.mark.parametrize("swing_length", [3, 5, 8])
+def test_causal_shl_detection_parity_pre_dedup(swing_length: int) -> None:
+    """causal_swing_highs_lows must detect a SUPERSET of upstream's
+    detected swings (upstream runs the same initial detection then
+    drops some via dedup + endpoint fixup). Every swing position
+    upstream reports must also be present in the causal output with
+    the same HighLow sign and Level.
+    """
+    df = _synthetic_ohlc()
+    up = smc.swing_highs_lows(df, swing_length=swing_length)
+    causal = causal_swing_highs_lows(df, swing_length=swing_length)
+
+    up_hl = up["HighLow"].to_numpy(dtype=np.float64, na_value=np.nan)
+    causal_hl = causal["HighLow"].to_numpy(dtype=np.float64, na_value=np.nan)
+
+    up_swings = np.nonzero(~np.isnan(up_hl))[0]
+    # Endpoint fixup in upstream can FORCE a swing at position 0 or n-1
+    # that wasn't present in raw detection — skip endpoints to avoid
+    # that spurious divergence.
+    up_swings_inner = up_swings[(up_swings != 0) & (up_swings != len(df) - 1)]
+
+    for idx in up_swings_inner:
+        assert not np.isnan(causal_hl[idx]), (
+            f"swing_length={swing_length}: upstream reports swing at "
+            f"position {idx} (HighLow={up_hl[idx]}) but causal didn't "
+            f"detect one — detection divergence, not dedup-related"
+        )
+        # Upstream's dedup may have flipped a type in rare cases; under
+        # our interpretation that'd be a real divergence. Assert types
+        # match where both see a swing.
+        assert causal_hl[idx] == up_hl[idx], (
+            f"swing_length={swing_length}: type disagreement at {idx} "
+            f"— upstream={up_hl[idx]}, causal={causal_hl[idx]}"
+        )
+
+
+@pytest.mark.parametrize("swing_length", [3, 5, 8])
+def test_bos_choch_labels_under_causal_shl_are_subset_of_upstream(
+    swing_length: int,
+) -> None:
+    """Q1 verification: running smc.bos_choch on a non-deduplicated
+    swing input must not produce BOS/CHOCH labels at bars that the
+    upstream dedup'd flow doesn't also label. i.e., causal output's
+    event positions ⊆ upstream's event positions.
+
+    If this fails, the non-alternating sequences are causing bos_choch
+    to label events that dedup would have prevented — meaning causal
+    shl is creating EXTRA signals rather than matching/subset.
+    """
+    df = _synthetic_ohlc()
+    up_shl = smc.swing_highs_lows(df, swing_length=swing_length)
+    causal_shl = causal_swing_highs_lows(df, swing_length=swing_length)
+
+    up_bc = smc.bos_choch(df, up_shl, close_break=True)
+    causal_bc = smc.bos_choch(df, causal_shl, close_break=True)
+
+    for col in ("BOS", "CHOCH"):
+        up_events = np.nonzero(
+            ~np.isnan(up_bc[col].to_numpy(dtype=np.float64, na_value=np.nan))
+        )[0]
+        causal_events = np.nonzero(
+            ~np.isnan(causal_bc[col].to_numpy(dtype=np.float64, na_value=np.nan))
+        )[0]
+        extra = np.setdiff1d(causal_events, up_events)
+        assert len(extra) == 0, (
+            f"swing_length={swing_length}, col={col}: causal shl feeds "
+            f"bos_choch extra events at bars {extra[:10].tolist()} that "
+            f"upstream dedup would have suppressed. Non-alternating "
+            f"sequence appears to let bad patterns through."
         )
 
 

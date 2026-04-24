@@ -39,7 +39,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from smartmoneyconcepts import smc  # noqa: E402
 
-from pac.causal_smc import causal_order_blocks  # noqa: E402
+from pac.causal_smc import causal_order_blocks, causal_swing_highs_lows  # noqa: E402
 from pac.features import add_all_features  # noqa: E402
 from pac.order_blocks import (  # noqa: E402
     enrich_ob_with_z,
@@ -118,16 +118,19 @@ class PACEngine:
             return df.copy()
 
         # smc primitives — take OHLC DataFrame, return event DataFrames.
-        # `ob` uses our causal reimplementation: detection matches smc.ob
-        # exactly but the retroactive reset step is removed so OBs that
-        # existed live aren't erased in hindsight. See
+        # `shl` and `ob` use our causal reimplementations: detection
+        # rules match smc exactly but the retroactive cleanup steps
+        # (swing_highs_lows dedup + endpoint fixup, smc.ob reset) are
+        # removed so signals that existed live aren't erased in
+        # hindsight. See
         # docs/superpowers/specs/pac-residual-causality-fix-2026-04-24.md.
-        shl = smc.swing_highs_lows(df, swing_length=self.params.swing_length)
+        shl = causal_swing_highs_lows(df, swing_length=self.params.swing_length)
         bc = smc.bos_choch(df, shl, close_break=self.params.close_mitigation)
         ob = causal_order_blocks(
             df,
             shl,
             close_mitigation=self.params.close_mitigation,
+            swing_length=self.params.swing_length,
         )
         fvg = smc.fvg(df)
 
@@ -225,6 +228,37 @@ class PACEngine:
         )
         for col in swing_only_cols:
             out[col] = out[col].shift(lag_swing)
+
+        # OB break-bar mask: causal_order_blocks tags each OB with the
+        # close_index that confirmed it via break. The shift above places
+        # raw_ob[R] at output position R + swing_length, but an OB's
+        # confirmation can lag arbitrarily far past R (break bar X >> R).
+        # Null OB output rows where the break hasn't happened yet.
+        ob_cols = (
+            "OB", "OB_Top", "OB_Bottom", "OBVolume",
+            "OB_Percentage", "OB_MitigatedIndex",
+            "OB_mid", "OB_width",
+            "OB_z_top", "OB_z_bot", "OB_z_mid",
+        )
+        broken_bar_raw = ob_enriched["BrokenBar"].to_numpy(
+            dtype=np.float64, na_value=np.nan
+        )
+        broken_bar_shifted = (
+            pd.Series(broken_bar_raw, index=out.index).shift(lag_swing).to_numpy()
+        )
+        current_bar = np.arange(len(out), dtype=np.float64)
+        ob_not_yet_broken = (
+            ~np.isnan(broken_bar_shifted)
+        ) & (broken_bar_shifted > current_bar)
+        if ob_not_yet_broken.any():
+            mask_idx = np.nonzero(ob_not_yet_broken)[0]
+            for col in ob_cols:
+                col_arr = np.array(
+                    out[col].to_numpy(dtype=np.float64, na_value=np.nan),
+                    copy=True,
+                )
+                col_arr[mask_idx] = np.nan
+                out[col] = col_arr
 
         # Fail loud if upstream smc.bos_choch stops emitting BrokenIndex —
         # the BOS/CHOCH causality fix is load-bearing on this column.
@@ -425,7 +459,7 @@ def _relocate_bos_events_causally(
         col: np.full(n, np.nan, dtype=np.float64) for col in _BOS_COLS
     }
 
-    event_positions = np.where(~np.isnan(broken))[0]
+    event_positions = np.nonzero(~np.isnan(broken))[0]
     for p0 in event_positions:
         after_idx = int(np.searchsorted(swing_positions, p0, side="right"))
         swings_after = swing_positions[after_idx:]
