@@ -57,7 +57,6 @@ describe('analyzeCatalysts', () => {
     expect(out.leading_assets).toEqual([]);
     expect(out.likely_catalyst).toBe('unknown');
     expect(out.large_dark_prints).toEqual([]);
-    expect(out.range_breaks).toEqual([]);
     expect(out.flow_alerts_in_window).toEqual([]);
   });
 
@@ -199,52 +198,6 @@ describe('analyzeCatalysts', () => {
     expect(out.flow_alerts_in_window.map((f) => f.premium)).toEqual([
       2_000_000, 3_000_000,
     ]);
-  });
-
-  it('reports range_breaks when a cross-asset breaks its prior N-day range', () => {
-    // Give ZN a prior-high of 111. The in-window samples push ZN to 112
-    // → breach recorded. Direction 'up' since the breach exceeded the high.
-    const znSpots = [110, 110.5, 111.5, 112, 112.2, 111.8, 111];
-    const crossAssets: CrossAssetSeries[] = [
-      {
-        ticker: 'ZN',
-        samples: minuteSeries(znSpots),
-        priorHigh: 111,
-        priorLow: 109,
-      },
-    ];
-    const out = analyzeCatalysts({
-      anomaly: baseAnomaly(),
-      anomalySeries: baseAnomalySeries([7100, 7098, 7096, 7094, 7092]),
-      crossAssets,
-      darkPrints: [],
-      flowAlerts: [],
-    });
-    expect(out.range_breaks).toHaveLength(1);
-    expect(out.range_breaks[0]!.ticker).toBe('ZN');
-    expect(out.range_breaks[0]!.direction).toBe('up');
-  });
-
-  it('marks range_breaks "down" when cross-asset breaches the prior low', () => {
-    const dxSpots = [98.5, 98.2, 97.9, 97.5, 97.3];
-    const crossAssets: CrossAssetSeries[] = [
-      {
-        ticker: 'DX',
-        samples: minuteSeries(dxSpots),
-        priorHigh: 99.0,
-        priorLow: 98.0,
-      },
-    ];
-    const out = analyzeCatalysts({
-      anomaly: baseAnomaly('call'),
-      anomalySeries: baseAnomalySeries([7100, 7105, 7110, 7115, 7120]),
-      crossAssets,
-      darkPrints: [],
-      flowAlerts: [],
-    });
-    expect(out.range_breaks).toHaveLength(1);
-    expect(out.range_breaks[0]!.ticker).toBe('DX');
-    expect(out.range_breaks[0]!.direction).toBe('down');
   });
 
   it('returns empty arrays and "unknown" on too-short anomaly series (no correlation possible)', () => {

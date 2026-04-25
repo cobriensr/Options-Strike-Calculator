@@ -191,7 +191,7 @@ async function loadCrossAssets(
   const series = await Promise.all(
     CROSS_ASSET_FUTURES.map(async (symbol) => {
       const samples = await loadFuturesSeries(sql, symbol, startIso, endIso);
-      return { ticker: symbol, samples, priorHigh: null, priorLow: null };
+      return { ticker: symbol, samples };
     }),
   );
   return series;

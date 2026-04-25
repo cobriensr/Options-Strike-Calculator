@@ -15,11 +15,6 @@
  *   - **large_dark_prints** — UW dark-pool prints inside the window
  *     above CATALYST_LARGE_DARK_NOTIONAL notional dollars.
  *
- *   - **range_breaks** — intraday high/low breaks on correlated
- *     cross-assets vs the last CATALYST_RANGE_BREAK_DAYS of daily
- *     OHLC. Caller can optionally pass prior-day highs/lows per
- *     ticker to enable this; absent, returns [].
- *
  *   - **flow_alerts_in_window** — UW flow alerts on the anomaly
  *     ticker inside the window.
  *
@@ -55,7 +50,6 @@ export interface Catalysts {
     correlation: number;
   }>;
   large_dark_prints: Array<{ ticker: string; ts: string; notional: number }>;
-  range_breaks: Array<{ ticker: string; ts: string; direction: string }>;
   flow_alerts_in_window: Array<{
     ts: string;
     ticker: string;
@@ -69,12 +63,6 @@ export interface CrossAssetSeries {
   ticker: string;
   /** DESC- or ASC-ordered samples by ts; the analyzer normalises. */
   samples: Array<{ ts: string; spot: number }>;
-  /**
-   * Optional prior N-day high/low for range-break detection. When null,
-   * range_breaks stays empty for this ticker.
-   */
-  priorHigh?: number | null;
-  priorLow?: number | null;
 }
 
 /**
@@ -373,38 +361,19 @@ export function analyzeCatalysts(inputs: CatalystInputs): Catalysts {
   // Leading-lag correlations.
   const anomalyWindow = trimToWindow(anomalySeries.samples, startMs, detectMs);
   const leadingAssets: Catalysts['leading_assets'] = [];
-  const rangeBreaks: Catalysts['range_breaks'] = [];
 
   for (const ca of crossAssets) {
     const caWindow = trimToWindow(ca.samples, startMs, detectMs);
     const aligned = alignReturns(caWindow, anomalyWindow);
-    if (aligned != null) {
-      // Cross-correlate cross-asset (lead candidate) → anomaly ticker.
-      const xc = crossCorrelate(aligned.aRet, aligned.bRet);
-      if (xc != null && Math.abs(xc.corr) >= CATALYST_CORR_THRESHOLD) {
-        leadingAssets.push({
-          ticker: ca.ticker,
-          lag_mins: xc.lag,
-          correlation: Number(xc.corr.toFixed(4)),
-        });
-      }
-    }
-
-    // Range breaks: any sample in the window that blew through the prior
-    // high/low. "Direction": 'up' for prior-high breach, 'down' for
-    // prior-low breach. Report the first breach per ticker to keep the
-    // array bounded.
-    if (ca.priorHigh != null || ca.priorLow != null) {
-      for (const s of caWindow) {
-        if (ca.priorHigh != null && s.spot > ca.priorHigh) {
-          rangeBreaks.push({ ticker: ca.ticker, ts: s.ts, direction: 'up' });
-          break;
-        }
-        if (ca.priorLow != null && s.spot < ca.priorLow) {
-          rangeBreaks.push({ ticker: ca.ticker, ts: s.ts, direction: 'down' });
-          break;
-        }
-      }
+    if (aligned == null) continue;
+    // Cross-correlate cross-asset (lead candidate) → anomaly ticker.
+    const xc = crossCorrelate(aligned.aRet, aligned.bRet);
+    if (xc != null && Math.abs(xc.corr) >= CATALYST_CORR_THRESHOLD) {
+      leadingAssets.push({
+        ticker: ca.ticker,
+        lag_mins: xc.lag,
+        correlation: Number(xc.corr.toFixed(4)),
+      });
     }
   }
 
@@ -430,7 +399,6 @@ export function analyzeCatalysts(inputs: CatalystInputs): Catalysts {
   return {
     leading_assets: leadingAssets,
     large_dark_prints: largeDarkPrints,
-    range_breaks: rangeBreaks,
     flow_alerts_in_window: flowInWindow,
     likely_catalyst: likelyCatalyst,
   };

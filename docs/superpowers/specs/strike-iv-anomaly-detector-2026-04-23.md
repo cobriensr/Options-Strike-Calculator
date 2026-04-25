@@ -408,7 +408,6 @@ interface ResolutionOutcome {
       correlation: number;
     }>;
     large_dark_prints: Array<{ ticker: string; ts: string; notional: number }>;
-    range_breaks: Array<{ ticker: string; ts: string; direction: string }>;
     flow_alerts_in_window: Array<{
       ts: string;
       ticker: string;

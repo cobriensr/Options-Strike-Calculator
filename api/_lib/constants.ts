@@ -265,13 +265,6 @@ export const CATALYST_NARRATIVE_CORR_MIN = 0.6;
 export const CATALYST_NARRATIVE_LAG_MIN_MINS = 5;
 
 /**
- * Range-break lookback in trading days. 5 gives us "broke the weekly range"
- * without depending on any specific session boundary. Breaking a 5-day high
- * or low inside the anomaly window is a classic ignition signal.
- */
-export const CATALYST_RANGE_BREAK_DAYS = 5;
-
-/**
  * Large dark print threshold (notional dollars). Dark prints inside the
  * T-60 window above this notional are flagged as potential catalyst candidates.
  * Matches the `dark_pool_levels.total_premium` row shape (already dollar-denominated).
