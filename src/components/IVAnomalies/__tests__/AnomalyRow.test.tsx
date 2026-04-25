@@ -348,7 +348,87 @@ describe('AnomalyRow', () => {
     expect(
       screen.getByTestId('anomaly-phase-distributing'),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Bid-side volume surge|Bid-side surge/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Bid-side volume surge|Bid-side surge/),
+    ).toBeInTheDocument();
+  });
+
+  // ─── Pattern pill (Phase D4 — flash / medium / persistent) ───
+
+  it('renders the `flash` pattern pill when duration <5min and firingCount <3', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-23T15:32:00Z'));
+    render(
+      <AnomalyRow
+        anomaly={makeActive(
+          { ts: '2026-04-23T15:32:00Z' },
+          {
+            firstSeenTs: '2026-04-23T15:30:00Z',
+            lastFiredTs: '2026-04-23T15:32:00Z',
+            firingCount: 2,
+          },
+        )}
+      />,
+    );
+    expect(screen.getByTestId('anomaly-pattern-flash')).toBeInTheDocument();
+  });
+
+  it('renders the `persistent` pattern pill when firingCount >=20', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-23T15:35:00Z'));
+    render(
+      <AnomalyRow
+        anomaly={makeActive(
+          { ts: '2026-04-23T15:34:00Z' },
+          {
+            firstSeenTs: '2026-04-23T15:30:00Z',
+            lastFiredTs: '2026-04-23T15:34:00Z',
+            firingCount: 25,
+          },
+        )}
+      />,
+    );
+    expect(
+      screen.getByTestId('anomaly-pattern-persistent'),
+    ).toBeInTheDocument();
+  });
+
+  it('renders the `persistent` pattern pill when duration >=60min', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-23T17:30:00Z'));
+    render(
+      <AnomalyRow
+        anomaly={makeActive(
+          { ts: '2026-04-23T17:30:00Z' },
+          {
+            firstSeenTs: '2026-04-23T16:00:00Z',
+            lastFiredTs: '2026-04-23T17:30:00Z',
+            firingCount: 5,
+          },
+        )}
+      />,
+    );
+    expect(
+      screen.getByTestId('anomaly-pattern-persistent'),
+    ).toBeInTheDocument();
+  });
+
+  it('renders the `medium` pattern pill in the default range', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-23T15:45:00Z'));
+    render(
+      <AnomalyRow
+        anomaly={makeActive(
+          { ts: '2026-04-23T15:45:00Z' },
+          {
+            firstSeenTs: '2026-04-23T15:30:00Z',
+            lastFiredTs: '2026-04-23T15:45:00Z',
+            firingCount: 8,
+          },
+        )}
+      />,
+    );
+    expect(screen.getByTestId('anomaly-pattern-medium')).toBeInTheDocument();
   });
 
   it('renders the ask-mid compression subtitle when cooling for that reason', () => {

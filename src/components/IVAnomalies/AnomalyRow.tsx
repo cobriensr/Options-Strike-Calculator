@@ -40,13 +40,13 @@ export function AnomalyRow({ anomaly }: { readonly anomaly: ActiveAnomaly }) {
   // sub-field stays hidden to avoid misread.
   const isSpxScoped = anomaly.ticker === 'SPXW';
 
-  const activeDurationLabel = formatDuration(
-    nowMs - Date.parse(anomaly.firstSeenTs),
-  );
+  const activeDurationMs = nowMs - Date.parse(anomaly.firstSeenTs);
+  const activeDurationLabel = formatDuration(activeDurationMs);
   const freshnessLabel = formatFreshness(
     nowMs - Date.parse(anomaly.lastFiredTs),
   );
   const exitSubtitle = buildExitSubtitle(anomaly);
+  const pattern = derivePattern(activeDurationMs, anomaly.firingCount);
 
   return (
     <div className="border-edge bg-surface-alt rounded-md border">
@@ -75,6 +75,7 @@ export function AnomalyRow({ anomaly }: { readonly anomaly: ActiveAnomaly }) {
           </span>
           <AnomalyPhasePill phase={anomaly.phase} />
           <FlowPhasePill phase={phase} />
+          <PatternPill pattern={pattern} />
           <div className="ml-auto flex flex-wrap items-center gap-1">
             {latest.flagReasons.map((reason) => (
               <FlagBadge key={reason} reason={reason} />
@@ -255,6 +256,47 @@ function AnomalyPhasePill({ phase }: { readonly phase: IVAnomalyPhase }) {
       data-testid={`anomaly-phase-${phase}`}
     >
       {phase}
+    </span>
+  );
+}
+
+/**
+ * Detector firing pattern — surfaces Phase D4 finding that flash alerts
+ * (single firing, <5 min duration) outperform persistent alerts (≥20
+ * firings or ≥60 min duration) by 2× on the call side. Pure visual cue;
+ * no entry/exit logic depends on it. The `medium` bucket is the default.
+ */
+type AnomalyPattern = 'flash' | 'medium' | 'persistent';
+
+export function derivePattern(
+  durationMs: number,
+  firingCount: number,
+): AnomalyPattern {
+  const minutes = Math.max(0, durationMs) / 60_000;
+  if (minutes < 5 && firingCount < 3) return 'flash';
+  if (minutes >= 60 || firingCount >= 20) return 'persistent';
+  return 'medium';
+}
+
+function PatternPill({ pattern }: { readonly pattern: AnomalyPattern }) {
+  const classes: Record<AnomalyPattern, string> = {
+    flash: 'bg-sky-500/20 text-sky-300',
+    medium: 'bg-slate-500/20 text-slate-300',
+    persistent: 'bg-zinc-500/20 text-zinc-400',
+  };
+  return (
+    <span
+      className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold ${classes[pattern]}`}
+      data-testid={`anomaly-pattern-${pattern}`}
+      title={
+        pattern === 'flash'
+          ? 'Flash: <5 min, <3 firings — empirically best win rate (Phase D4).'
+          : pattern === 'persistent'
+            ? 'Persistent: ≥60 min or ≥20 firings — empirically lower win rate.'
+            : 'Medium: between flash and persistent.'
+      }
+    >
+      {pattern}
     </span>
   );
 }
