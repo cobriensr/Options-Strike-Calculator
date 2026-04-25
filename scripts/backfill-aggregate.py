@@ -90,6 +90,18 @@ def aggregate_day(con: duckdb.DuckDBPyConnection, csv_path: Path, out_path: Path
           AND EXTRACT(HOUR FROM executed_at) * 60 + EXTRACT(MINUTE FROM executed_at)
               BETWEEN 13*60+30 AND 20*60
       ),
+      -- UW does not surface underlying_price for NDX/NDXP options.
+      -- Derive NDX spot from same-minute QQQ spot * NDX_QQQ_RATIO (~40.5).
+      -- This is good to ±1-2% on any given day, plenty accurate for the
+      -- ±12% OTM gate to bucket strikes.
+      qqq_minute_spot AS (
+        SELECT
+          date_trunc('minute', executed_at) AS minute,
+          LAST(underlying_price ORDER BY executed_at) AS qqq_spot
+        FROM filtered
+        WHERE ticker = 'QQQ' AND underlying_price IS NOT NULL
+        GROUP BY 1
+      ),
       minute_aggs AS (
         SELECT
           ticker,
@@ -113,24 +125,28 @@ def aggregate_day(con: duckdb.DuckDBPyConnection, csv_path: Path, out_path: Path
         GROUP BY ticker, strike, opt_side, expiry, minute
       )
       SELECT
-        ticker,
-        strike,
-        opt_side,
-        expiry,
-        ts,
-        iv_mid,
-        iv_ask,
-        iv_bid,
-        mid_price,
-        SUM(minute_size) OVER (
-          PARTITION BY ticker, strike, opt_side, expiry
-          ORDER BY ts
+        m.ticker,
+        m.strike,
+        m.opt_side,
+        m.expiry,
+        m.ts,
+        m.iv_mid,
+        m.iv_ask,
+        m.iv_bid,
+        m.mid_price,
+        SUM(m.minute_size) OVER (
+          PARTITION BY m.ticker, m.strike, m.opt_side, m.expiry
+          ORDER BY m.ts
           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         ) AS volume,
-        oi,
-        spot
-      FROM minute_aggs
-      ORDER BY ticker, ts, strike, opt_side, expiry
+        m.oi,
+        COALESCE(
+          m.spot,
+          CASE WHEN m.ticker IN ('NDXP', 'NDX') THEN q.qqq_spot * 40.5 END
+        ) AS spot
+      FROM minute_aggs m
+      LEFT JOIN qqq_minute_spot q ON q.minute::VARCHAR = m.ts
+      ORDER BY m.ticker, m.ts, m.strike, m.opt_side, m.expiry
     ) TO '{out_path}' (FORMAT 'JSON', ARRAY false)
     """
     con.execute(q)

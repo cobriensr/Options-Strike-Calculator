@@ -659,9 +659,9 @@ describe('fetch-strike-iv handler', () => {
 
   // ── OI gate enforcement ──────────────────────────────────
 
-  it('enforces min-OI gate per ticker (SPXW/NDXP=300, SPY/QQQ=150, IWM=75, SMH=100, NVDA/TSLA/META/MSFT=500, SNDK/MSTR/MU=100)', async () => {
-    // SPXW: one strike with OI=250 (below 300 gate — rejected), one with
-    //       OI=350 (passes).
+  it('enforces min-OI gate per ticker (SPXW/NDXP=50, SPY/QQQ=150, IWM=75, SMH=100, NVDA/TSLA/META/MSFT=500, SNDK/MSTR/MU=100)', async () => {
+    // SPXW: cash-index tier (50) — captures deep-OTM lottery tickets.
+    // OI=25 rejected, OI=75 passes.
     const spxwChain = makeChain('$SPX', 7100, {
       contractRoot: 'SPXW',
       bid: 5,
@@ -669,7 +669,7 @@ describe('fetch-strike-iv handler', () => {
     });
     spxwChain.putExpDateMap['2026-04-24:0']!['7050'] = [
       makeContract('PUT', 7050, {
-        openInterest: 250,
+        openInterest: 25,
         bid: 5,
         ask: 6,
         root: 'SPXW',
@@ -677,14 +677,14 @@ describe('fetch-strike-iv handler', () => {
     ];
     spxwChain.callExpDateMap['2026-04-24:0']!['7150'] = [
       makeContract('CALL', 7150, {
-        openInterest: 350,
+        openInterest: 75,
         bid: 5,
         ask: 6,
         root: 'SPXW',
       }),
     ];
 
-    // NDXP: OI=250 rejected, OI=350 accepted (same tier as SPXW).
+    // NDXP: OI=25 rejected, OI=75 accepted (same tier as SPXW).
     const ndxpChain = makeChain('$NDX', 22500, {
       contractRoot: 'NDXP',
       bid: 5,
@@ -692,7 +692,7 @@ describe('fetch-strike-iv handler', () => {
     });
     ndxpChain.putExpDateMap['2026-04-24:0']!['22400'] = [
       makeContract('PUT', 22400, {
-        openInterest: 250,
+        openInterest: 25,
         bid: 5,
         ask: 6,
         root: 'NDXP',
@@ -700,7 +700,7 @@ describe('fetch-strike-iv handler', () => {
     ];
     ndxpChain.callExpDateMap['2026-04-24:0']!['22600'] = [
       makeContract('CALL', 22600, {
-        openInterest: 350,
+        openInterest: 75,
         bid: 5,
         ask: 6,
         root: 'NDXP',

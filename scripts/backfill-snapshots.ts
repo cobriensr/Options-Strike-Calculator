@@ -29,13 +29,14 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  STRIKE_IV_MIN_OI_INDEX,
+  STRIKE_IV_MIN_OI_CASH_INDEX,
   STRIKE_IV_MIN_OI_SPY_QQQ,
   STRIKE_IV_MIN_OI_IWM,
   STRIKE_IV_MIN_OI_SECTOR_ETF,
   STRIKE_IV_MIN_OI_HIGH_LIQ,
   STRIKE_IV_MIN_OI_SINGLE_NAME,
-  STRIKE_IV_OTM_RANGE_PCT_INDEX,
+  STRIKE_IV_OTM_RANGE_PCT_CASH_INDEX,
+  STRIKE_IV_OTM_RANGE_PCT_BROAD_ETF,
   STRIKE_IV_OTM_RANGE_PCT_SINGLE_NAME,
   type StrikeIVTicker,
 } from '../api/_lib/constants.ts';
@@ -64,19 +65,14 @@ const BUCKETS_DIR = join(
 );
 const BATCH_SIZE = 1000;
 
-const INDEX_OR_BROAD_ETF = new Set<string>([
-  'SPXW',
-  'NDXP',
-  'SPY',
-  'QQQ',
-  'IWM',
-]);
+const CASH_INDEX = new Set<string>(['SPXW', 'NDXP']);
+const BROAD_ETF = new Set<string>(['SPY', 'QQQ', 'IWM']);
 
 function minOiFor(ticker: string): number {
   switch (ticker) {
     case 'SPXW':
     case 'NDXP':
-      return STRIKE_IV_MIN_OI_INDEX;
+      return STRIKE_IV_MIN_OI_CASH_INDEX;
     case 'SPY':
     case 'QQQ':
       return STRIKE_IV_MIN_OI_SPY_QQQ;
@@ -99,9 +95,9 @@ function minOiFor(ticker: string): number {
 }
 
 function otmRangePctFor(ticker: string): number {
-  return INDEX_OR_BROAD_ETF.has(ticker)
-    ? STRIKE_IV_OTM_RANGE_PCT_INDEX
-    : STRIKE_IV_OTM_RANGE_PCT_SINGLE_NAME;
+  if (CASH_INDEX.has(ticker)) return STRIKE_IV_OTM_RANGE_PCT_CASH_INDEX;
+  if (BROAD_ETF.has(ticker)) return STRIKE_IV_OTM_RANGE_PCT_BROAD_ETF;
+  return STRIKE_IV_OTM_RANGE_PCT_SINGLE_NAME;
 }
 
 interface AggBucket {

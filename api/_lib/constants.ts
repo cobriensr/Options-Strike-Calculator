@@ -73,28 +73,40 @@ export const UW_BASE = 'https://api.unusualwhales.com/api';
  * MSTR, MU) are root-unique — Schwab accepts the bare symbol.
  */
 /**
- * OTM range — ticker-tier bifurcated 2026-04-25 after the rescope study:
- * index/broad ETF flow concentrates within ±3% (the 0DTE reaction
- * surface) but single-name flow patterns spread out to ±5% (lottery-
- * ticket strikes are part of the informed-flow signature).
+ * OTM range — three-tier 2026-04-25 after the rescope + whale-print
+ * studies:
  *
- * Empirical: 75-90% of single-name rollup chains sit OUTSIDE ±3% (META
- * 75% loss, MSTR 90%) — the wider gate captures real signal that the
- * old uniform ±3% gate dropped.
+ *   - Cash-index weeklies (SPXW, NDXP): ±12%. These are the only roots
+ *     where institutional traders concentrate "lottery-ticket" 0DTE flow
+ *     at 8-12% OTM strikes. Empirical: NDXP 27300C at 11.4% OTM on
+ *     2026-04-24 ran $1.90 → $42.85 (+2,155%) on 51× vol/OI. Same
+ *     pattern visible on SPXW deep-OTM puts during flush days. The
+ *     ±3% gate filtered all of these out.
+ *   - Broad ETFs (SPY, QQQ, IWM): ±3%. Reaction surface — informed
+ *     flow stays close to ATM since dealer hedging response is what
+ *     moves SPY/QQQ.
+ *   - Sector ETFs + single names: ±5%. Single-name lottery tickets
+ *     sit at 4-5% OTM (verified in 10-day backfill funnel — 75-90%
+ *     of META/MSTR rollup chains were outside ±3%).
  */
-export const STRIKE_IV_OTM_RANGE_PCT_INDEX = 0.03;
+export const STRIKE_IV_OTM_RANGE_PCT_CASH_INDEX = 0.12;
+export const STRIKE_IV_OTM_RANGE_PCT_BROAD_ETF = 0.03;
 export const STRIKE_IV_OTM_RANGE_PCT_SINGLE_NAME = 0.05;
 /**
- * OI floors — looser-tier values 2026-04-25. Prior values (500/250/150/
- * 150/1000/200) were calibrated for index dominance and were over-
- * filtering single-name flow. The 10-day backfill funnel showed 60-89%
- * of single-name rollup chains being dropped by OI alone. New floors
- * keep the signal-to-noise ratio acceptable while widening the
- * detector's operating envelope.
+ * OI floors — looser-tier values 2026-04-25. Prior values were
+ * calibrated for index dominance + ATM strikes and were over-filtering
+ * both single-name flow AND deep-OTM cash-index whale prints. The
+ * 10-day backfill funnel showed 60-89% of single-name rollup chains
+ * being dropped by OI alone, and the NDXP 2,155% lottery tickets had
+ * OI in the 14-137 range (well below the prior 300-OI cash-index
+ * floor). New floors keep the signal-to-noise ratio acceptable while
+ * widening the detector's operating envelope.
  *
- * Cash-index weekly roots (SPXW, NDXP) — $5-wide strikes, OI concentrates.
+ * Cash-index weekly roots (SPXW, NDXP) — lowered to 50 to capture the
+ * deep-OTM lottery-ticket whale strikes that cluster at low OI but
+ * carry massive vol/OI ratios (51-256× on the 2026-04-24 NDXP whales).
  */
-export const STRIKE_IV_MIN_OI_INDEX = 300;
+export const STRIKE_IV_MIN_OI_CASH_INDEX = 50;
 export const STRIKE_IV_MIN_OI_SPY_QQQ = 150;
 /** IWM (Russell 2000) — smaller-cap liquidity sits below QQQ. */
 export const STRIKE_IV_MIN_OI_IWM = 75;

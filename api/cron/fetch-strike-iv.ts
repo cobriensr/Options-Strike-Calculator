@@ -40,9 +40,10 @@ import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { cronGuard, schwabFetch } from '../_lib/api-helpers.js';
 import {
-  STRIKE_IV_OTM_RANGE_PCT_INDEX,
+  STRIKE_IV_OTM_RANGE_PCT_CASH_INDEX,
+  STRIKE_IV_OTM_RANGE_PCT_BROAD_ETF,
   STRIKE_IV_OTM_RANGE_PCT_SINGLE_NAME,
-  STRIKE_IV_MIN_OI_INDEX,
+  STRIKE_IV_MIN_OI_CASH_INDEX,
   STRIKE_IV_MIN_OI_SPY_QQQ,
   STRIKE_IV_MIN_OI_IWM,
   STRIKE_IV_MIN_OI_SECTOR_ETF,
@@ -208,7 +209,7 @@ function minOiFor(ticker: StrikeIVTicker): number {
   switch (ticker) {
     case 'SPXW':
     case 'NDXP':
-      return STRIKE_IV_MIN_OI_INDEX;
+      return STRIKE_IV_MIN_OI_CASH_INDEX;
     case 'SPY':
     case 'QQQ':
       return STRIKE_IV_MIN_OI_SPY_QQQ;
@@ -233,21 +234,24 @@ function minOiFor(ticker: StrikeIVTicker): number {
 }
 
 /**
- * OTM range as a fraction of spot. Bifurcated 2026-04-25:
- *   - Index + broad ETFs (SPXW/NDXP/SPY/QQQ/IWM): ±3% — concentrated
- *     0DTE flow, ±3% covers the reaction surface.
+ * OTM range as a fraction of spot. Three-tier 2026-04-25:
+ *   - Cash-index weeklies (SPXW/NDXP): ±12% — captures lottery-ticket
+ *     whale prints at 8-12% OTM (e.g. NDXP 27300C +2,155% on
+ *     2026-04-24 was 11.4% OTM, invisible to a ±3% gate).
+ *   - Broad ETFs (SPY/QQQ/IWM): ±3% — reaction surface, flow
+ *     concentrates near ATM.
  *   - Sector ETF + single names: ±5% — single-name informed flow tends
- *     toward the 4-5% OTM lottery-ticket strikes, which the previous
- *     uniform ±3% gate filtered out.
+ *     toward the 4-5% OTM strikes.
  */
 function otmRangePctFor(ticker: StrikeIVTicker): number {
   switch (ticker) {
     case 'SPXW':
     case 'NDXP':
+      return STRIKE_IV_OTM_RANGE_PCT_CASH_INDEX;
     case 'SPY':
     case 'QQQ':
     case 'IWM':
-      return STRIKE_IV_OTM_RANGE_PCT_INDEX;
+      return STRIKE_IV_OTM_RANGE_PCT_BROAD_ETF;
     case 'SMH':
     case 'NVDA':
     case 'TSLA':

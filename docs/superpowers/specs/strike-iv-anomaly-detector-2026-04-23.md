@@ -613,14 +613,14 @@ addition.
 
 **OI floors lowered across the board:**
 
-| Tier | Old | New | Constant |
-| ---- | --- | --- | -------- |
-| Index (SPXW/NDXP) | 500 | **300** | `STRIKE_IV_MIN_OI_INDEX` |
-| SPY/QQQ | 250 | **150** | `STRIKE_IV_MIN_OI_SPY_QQQ` |
-| IWM | 150 | **75** | `STRIKE_IV_MIN_OI_IWM` |
-| Sector ETF (SMH) | 150 | **100** | `STRIKE_IV_MIN_OI_SECTOR_ETF` |
-| High-liq names (NVDA/TSLA/META/MSFT) | 1000 | **500** | `STRIKE_IV_MIN_OI_HIGH_LIQ` |
-| Mid-liq (SNDK/MSTR/MU) | 200 | **100** | `STRIKE_IV_MIN_OI_SINGLE_NAME` |
+| Tier                                 | Old  | New     | Constant                       |
+| ------------------------------------ | ---- | ------- | ------------------------------ |
+| Index (SPXW/NDXP)                    | 500  | **300** | `STRIKE_IV_MIN_OI_INDEX`       |
+| SPY/QQQ                              | 250  | **150** | `STRIKE_IV_MIN_OI_SPY_QQQ`     |
+| IWM                                  | 150  | **75**  | `STRIKE_IV_MIN_OI_IWM`         |
+| Sector ETF (SMH)                     | 150  | **100** | `STRIKE_IV_MIN_OI_SECTOR_ETF`  |
+| High-liq names (NVDA/TSLA/META/MSFT) | 1000 | **500** | `STRIKE_IV_MIN_OI_HIGH_LIQ`    |
+| Mid-liq (SNDK/MSTR/MU)               | 200  | **100** | `STRIKE_IV_MIN_OI_SINGLE_NAME` |
 
 **OTM range bifurcated** (was uniform `STRIKE_IV_OTM_RANGE_PCT = 0.03`):
 
@@ -633,18 +633,18 @@ Resolved by new `otmRangePctFor(ticker)` exhaustive switch in
 
 **Backfill impact (10-day replay):**
 
-| Ticker | Before | After | Δ |
-| ------ | ------ | ----- | -- |
-| SPXW | 47 | 125 | +166% |
-| SPY | 124 | 151 | +22% |
-| QQQ | 167 | 215 | +29% |
-| IWM | 68 | 89 | +31% |
-| SMH | 1 | 6 | +500% |
-| NVDA | 0 | **7** | +∞ |
-| TSLA | 2 | 3 | +50% |
-| MSFT | 4 | 5 | +25% |
-| MSTR | 3 | 10 | +233% |
-| MU | 3 | 7 | +133% |
+| Ticker    | Before  | After   | Δ        |
+| --------- | ------- | ------- | -------- |
+| SPXW      | 47      | 125     | +166%    |
+| SPY       | 124     | 151     | +22%     |
+| QQQ       | 167     | 215     | +29%     |
+| IWM       | 68      | 89      | +31%     |
+| SMH       | 1       | 6       | +500%    |
+| NVDA      | 0       | **7**   | +∞       |
+| TSLA      | 2       | 3       | +50%     |
+| MSFT      | 4       | 5       | +25%     |
+| MSTR      | 3       | 10      | +233%    |
+| MU        | 3       | 7       | +133%    |
 | **Total** | **419** | **618** | **+47%** |
 
 META and SNDK still 0 — likely structural (META 0DTE flow is balanced;
@@ -658,3 +658,50 @@ silence persists past 2 weeks.
 - `api/cron/fetch-strike-iv.ts` — added `otmRangePctFor()` resolver
 - `api/__tests__/cron-fetch-strike-iv.test.ts` — updated boundary probes
 - `scripts/backfill-iv-anomalies-from-csv.py` — mirror constants for replay parity
+
+## 2026-04-25 cash-index whale capture — three-tier OTM gate
+
+**Trigger:** 2026-04-24 NDXP flow review surfaced lottery-ticket whale
+prints at 11% OTM (e.g. 27300C 0DTE: $1.90 → $42.85, +2,155% on 51×
+vol/OI) that the prior ±3% index gate filtered out completely. Same
+pattern repeats across cash-index roots — institutional desks routinely
+buy 8-12% OTM 0DTE strikes for high-leverage directional bets.
+
+**Gate restructured into three tiers** (was two):
+
+| Tier | Tickers | OTM range | Constant |
+| ---- | ------- | --------- | -------- |
+| Cash-index weeklies | SPXW, NDXP | **±12%** | `STRIKE_IV_OTM_RANGE_PCT_CASH_INDEX` |
+| Broad ETFs | SPY, QQQ, IWM | ±3% | `STRIKE_IV_OTM_RANGE_PCT_BROAD_ETF` |
+| Sector ETF + single names | SMH, NVDA, TSLA, META, MSFT, SNDK, MSTR, MU | ±5% | `STRIKE_IV_OTM_RANGE_PCT_SINGLE_NAME` |
+
+**OI floor for cash-index dropped from 300 → 50** to capture deep-OTM
+whale strikes that cluster at low OI but carry massive vol/OI ratios
+(verified: NDXP 27300C had OI=70, vol=3592 = 51× ratio — all rejected
+by 300 floor). New constant: `STRIKE_IV_MIN_OI_CASH_INDEX = 50`,
+replacing the prior `STRIKE_IV_MIN_OI_INDEX`.
+
+**Implementation note — UW CSV missing NDX spot.** The UW EOD CSV does
+not include `underlying_price` for NDX/NDXP options across any of the
+10 days reviewed. The aggregator works around this by deriving NDX
+spot per minute from same-minute QQQ spot × 40.5 (the empirical
+NDX/QQQ ratio). Good to ±1-2% on any given day, plenty accurate for
+the ±12% OTM gate. Live cron is unaffected — Schwab returns NDX spot
+directly via the chain endpoint.
+
+**Backfill impact:**
+
+| Metric | Before | After | Δ |
+| ------ | ------ | ----- | -- |
+| iv_anomalies (backfill rows) | 15,741 | 15,886 | +145 |
+| strike_iv_snapshots (10 days) | 614,687 | 740,120 | +125,433 |
+| NDXP alerts (was 0) | 0 | **148** | new tier captured |
+| NDXP whale-strike captures (4/24, 11% OTM) | 0 | **14 unique strikes** | including 27300C, 27260C, 27250C, 27200C |
+
+**Files touched (this gate change):**
+
+- `api/_lib/constants.ts` — split index OTM into CASH_INDEX/BROAD_ETF, lowered cash-index OI floor 300 → 50
+- `api/cron/fetch-strike-iv.ts` — three-tier `otmRangePctFor()`, `minOiFor()` cash-index update
+- `api/__tests__/cron-fetch-strike-iv.test.ts` — updated boundary probes (250/350 → 25/75 for cash-index)
+- `scripts/backfill-aggregate.py` — JOIN to derive NDX spot from QQQ × 40.5 fallback
+- `scripts/backfill-snapshots.ts` — three-tier OTM lookup mirror
