@@ -189,6 +189,13 @@ function formatVolOi(ratio: number): string {
   return `${Math.round(ratio)}×`;
 }
 
+/** Compact volume formatter for tape-side surge subtitles: 6300 → "6.3K", 12500 → "12.5K". */
+function formatVolume(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(Math.round(n));
+}
+
 /**
  * Side-dominance pill — proxy for tape-side dominance derived from the
  * IV-spread skew until real bid_pct/ask_pct tape data is wired (see
@@ -286,7 +293,19 @@ function FlowPhasePill({
 function buildExitSubtitle(anomaly: ActiveAnomaly): string | null {
   if (anomaly.phase === 'active') return null;
   if (anomaly.phase === 'distributing') {
-    return 'Volume surging on flat IV';
+    // Show concrete bid-side vs ask-side numbers when tape data is present.
+    if (anomaly.accumulatedAskSideVol > 0) {
+      const windowStart = Date.now() - 15 * 60 * 1000;
+      let bidInWindow = 0;
+      for (const p of anomaly.tapeVolumeHistory) {
+        if (Date.parse(p.ts) >= windowStart) bidInWindow += p.bidSideVol;
+      }
+      const pct = Math.round(
+        (bidInWindow / anomaly.accumulatedAskSideVol) * 100,
+      );
+      return `Bid-side surge: ${formatVolume(bidInWindow)} in 15min vs ${formatVolume(anomaly.accumulatedAskSideVol)} ask-side accumulated (${pct}%)`;
+    }
+    return 'Bid-side volume surge — distribution';
   }
   // Cooling — differentiate by reason.
   if (anomaly.exitReason === 'iv_regression') {

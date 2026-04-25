@@ -348,7 +348,7 @@ describe('AnomalyRow', () => {
     expect(
       screen.getByTestId('anomaly-phase-distributing'),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Volume surging on flat IV/)).toBeInTheDocument();
+    expect(screen.getByText(/Bid-side volume surge|Bid-side surge/)).toBeInTheDocument();
   });
 
   it('renders the ask-mid compression subtitle when cooling for that reason', () => {
