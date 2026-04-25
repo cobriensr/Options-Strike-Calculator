@@ -1,6 +1,7 @@
 import { useState, type ReactElement } from 'react';
 import { SectionBox } from '../ui';
 import { useIVAnomalies } from '../../hooks/useIVAnomalies';
+import { useAnomalyCrossAsset } from '../../hooks/useAnomalyCrossAsset';
 import {
   IV_ANOMALY_TICKERS,
   type ActiveAnomaly,
@@ -33,6 +34,14 @@ export function IVAnomaliesSection({
   const [activeTicker, setActiveTicker] = useState<IVAnomalyTicker>('SPXW');
   const { anomalies, loading, error } = useIVAnomalies(true, marketOpen);
 
+  // Phase F: cross-asset confluence context per active key. Polled in
+  // parallel with the anomalies list; falls back to empty on error so the
+  // pills render gray rather than blocking the row. Strictly visual.
+  const { contexts: crossAssetContexts } = useAnomalyCrossAsset(
+    anomalies,
+    marketOpen,
+  );
+
   const rowsByTicker = groupByTicker(anomalies);
   const rows = rowsByTicker[activeTicker];
 
@@ -57,7 +66,11 @@ export function IVAnomaliesSection({
     body = (
       <div className="flex flex-col gap-2">
         {rows.map((anomaly) => (
-          <AnomalyRow key={anomaly.compoundKey} anomaly={anomaly} />
+          <AnomalyRow
+            key={anomaly.compoundKey}
+            anomaly={anomaly}
+            crossAsset={crossAssetContexts[anomaly.compoundKey]}
+          />
         ))}
       </div>
     );
