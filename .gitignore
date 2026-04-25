@@ -86,3 +86,7 @@ tsconfig.tsbuildinfo
 ml-sweep/__pycache__/
 ml-sweep/.env*
 ml-sweep/.venv/
+# Charm Pressure capture — never commit auth state or screenshots
+scripts/charm-pressure-capture/.trace-storage.json
+scripts/charm-pressure-capture/screenshots/
+scripts/eod-flow-analysis/output/backfill-buckets/
