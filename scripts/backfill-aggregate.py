@@ -72,6 +72,7 @@ def aggregate_day(con: duckdb.DuckDBPyConnection, csv_path: Path, out_path: Path
           option_type AS opt_side,
           expiry,
           implied_volatility AS iv,
+          price,
           size,
           side,
           open_interest,
@@ -101,6 +102,10 @@ def aggregate_day(con: duckdb.DuckDBPyConnection, csv_path: Path, out_path: Path
             / NULLIF(SUM(CASE WHEN side='ask' THEN size ELSE 0 END), 0) AS iv_ask,
           SUM(CASE WHEN side='bid' THEN iv * size ELSE 0 END)::DOUBLE
             / NULLIF(SUM(CASE WHEN side='bid' THEN size ELSE 0 END), 0) AS iv_bid,
+          -- Volume-weighted trade price = closest analog to production's
+          -- quote-midpoint mid_price field. Stored in strike_iv_snapshots
+          -- so the chart drilldown's hover-price label has historical data.
+          SUM(price * size)::DOUBLE / NULLIF(SUM(size), 0) AS mid_price,
           SUM(size)::BIGINT AS minute_size,
           ANY_VALUE(open_interest) AS oi,
           LAST(underlying_price ORDER BY executed_at) AS spot
@@ -116,6 +121,7 @@ def aggregate_day(con: duckdb.DuckDBPyConnection, csv_path: Path, out_path: Path
         iv_mid,
         iv_ask,
         iv_bid,
+        mid_price,
         SUM(minute_size) OVER (
           PARTITION BY ticker, strike, opt_side, expiry
           ORDER BY ts
