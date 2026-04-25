@@ -38,8 +38,12 @@ import os
 import sys
 from pathlib import Path
 
+import math
+
+import numpy as np
 import pandas as pd
 import psycopg2
+from scipy.stats import norm
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ENV_LOCAL = REPO_ROOT / ".env.local"
@@ -184,6 +188,82 @@ def fetch_anomaly_metadata(conn) -> pd.DataFrame:
     return pd.read_sql_query(sql, conn)
 
 
+RISK_FREE_RATE = 0.045
+
+
+def bs_price(spot: float, strike: float, t_years: float, sigma: float, side: str) -> float:
+    """Black-Scholes price. Returns NaN on degenerate inputs."""
+    if (
+        not np.isfinite(spot)
+        or not np.isfinite(strike)
+        or not np.isfinite(t_years)
+        or not np.isfinite(sigma)
+        or t_years <= 0
+        or sigma <= 0
+        or spot <= 0
+        or strike <= 0
+    ):
+        return float("nan")
+    sqrt_t = math.sqrt(t_years)
+    d1 = (math.log(spot / strike) + (RISK_FREE_RATE + 0.5 * sigma * sigma) * t_years) / (
+        sigma * sqrt_t
+    )
+    d2 = d1 - sigma * sqrt_t
+    if side == "call":
+        return spot * norm.cdf(d1) - strike * math.exp(-RISK_FREE_RATE * t_years) * norm.cdf(d2)
+    return strike * math.exp(-RISK_FREE_RATE * t_years) * norm.cdf(-d2) - spot * norm.cdf(-d1)
+
+
+def fill_entry_premium_via_bs(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Where the snapshot-derived entry_premium is missing (alert fired on
+    a strike that didn't pass the strike_iv_snapshots OTM/OI gate),
+    back-calculate via Black-Scholes from iv_at_detect + spot_at_detect.
+    Adds:
+        entry_premium_source: 'snapshot' | 'bs' | 'unavailable'
+        entry_premium (filled with BS where possible)
+    """
+    df = df.copy()
+    needs_bs = df["entry_premium"].isna() & df["iv_at_detect"].notna() & df[
+        "spot_at_detect"
+    ].notna()
+    df["entry_premium_source"] = np.where(
+        df["entry_premium"].notna(),
+        "snapshot",
+        np.where(needs_bs, "bs", "unavailable"),
+    )
+
+    # Compute T_years from alert_ts to expiry close (21:00 UTC on expiry date).
+    expiry_close = pd.to_datetime(df["expiry"], utc=True) + pd.Timedelta(hours=21)
+    alert_dt = pd.to_datetime(df["alert_ts"], utc=True)
+    df["t_years"] = (expiry_close - alert_dt).dt.total_seconds() / (365.25 * 86400)
+
+    bs_mask = needs_bs & (df["t_years"] > 0)
+    bs_subset = df.loc[bs_mask].copy()
+    if len(bs_subset) > 0:
+        bs_prices = bs_subset.apply(
+            lambda r: bs_price(
+                float(r["spot_at_detect"]),
+                float(r["strike"]),
+                float(r["t_years"]),
+                float(r["iv_at_detect"]),
+                str(r["side"]),
+            ),
+            axis=1,
+        )
+        df.loc[bs_mask, "entry_premium"] = bs_prices
+
+    # Sanity floor: a BS-derived entry below $0.05 for a tradeable option
+    # is below the actionable bid-ask granularity. PnL ratios computed
+    # against $0.0001 entries blow up — clip to NaN so the backtest
+    # treats them as untradeable rather than fake +1,000,000% wins.
+    too_thin = (df["entry_premium_source"] == "bs") & (df["entry_premium"] < 0.05)
+    df.loc[too_thin, "entry_premium"] = float("nan")
+    df.loc[too_thin, "entry_premium_source"] = "below_min_quote"
+
+    return df
+
+
 def derive_features(df: pd.DataFrame) -> pd.DataFrame:
     """Compute derived features that are easier in pandas than SQL."""
     decimal_cols = [
@@ -293,6 +373,13 @@ def main() -> None:
     )
     df = meta.merge(spot, on="anomaly_id", how="left").merge(
         premium, on="anomaly_id", how="left"
+    )
+
+    print("[derive] back-filling entry_premium via Black-Scholes for alerts without snapshots...", file=sys.stderr)
+    df = fill_entry_premium_via_bs(df)
+    print(
+        f"  entry_premium sources: {df['entry_premium_source'].value_counts().to_dict()}",
+        file=sys.stderr,
     )
 
     print("[derive] computing per-alert features...", file=sys.stderr)
