@@ -1,0 +1,159 @@
+{
+  "n_total": 15886,
+  "n_high_impact_events_in_window": 5,
+  "by_in_event_window": [
+    {
+      "in_event_window": false,
+      "side": "call",
+      "n": 5042,
+      "win_pct": 24.14,
+      "mean_pct": -0.01,
+      "mean_dollar": 9.69
+    },
+    {
+      "in_event_window": false,
+      "side": "put",
+      "n": 9364,
+      "win_pct": 2.64,
+      "mean_pct": -0.8,
+      "mean_dollar": -113.18
+    }
+  ],
+  "by_in_event_window_regime": [
+    {
+      "regime": "chop",
+      "in_event_window": false,
+      "side": "call",
+      "n": 2223,
+      "win_pct": 17.86,
+      "mean_pct": -0.3,
+      "mean_dollar": -0.62
+    },
+    {
+      "regime": "chop",
+      "in_event_window": false,
+      "side": "put",
+      "n": 3875,
+      "win_pct": 2.37,
+      "mean_pct": -0.85,
+      "mean_dollar": -92.04
+    },
+    {
+      "regime": "extreme_down",
+      "in_event_window": false,
+      "side": "call",
+      "n": 185,
+      "win_pct": 1.08,
+      "mean_pct": -0.8,
+      "mean_dollar": -87.4
+    },
+    {
+      "regime": "extreme_down",
+      "in_event_window": false,
+      "side": "put",
+      "n": 204,
+      "win_pct": 8.82,
+      "mean_pct": -0.73,
+      "mean_dollar": -109.66
+    },
+    {
+      "regime": "extreme_up",
+      "in_event_window": false,
+      "side": "call",
+      "n": 313,
+      "win_pct": 28.43,
+      "mean_pct": -0.03,
+      "mean_dollar": -16.81
+    },
+    {
+      "regime": "extreme_up",
+      "in_event_window": false,
+      "side": "put",
+      "n": 758,
+      "win_pct": 7.26,
+      "mean_pct": -0.77,
+      "mean_dollar": -39.59
+    },
+    {
+      "regime": "mild_trend_down",
+      "in_event_window": false,
+      "side": "call",
+      "n": 151,
+      "win_pct": 23.84,
+      "mean_pct": -0.56,
+      "mean_dollar": -72.44
+    },
+    {
+      "regime": "mild_trend_down",
+      "in_event_window": false,
+      "side": "put",
+      "n": 137,
+      "win_pct": 7.3,
+      "mean_pct": -0.6,
+      "mean_dollar": -120.33
+    },
+    {
+      "regime": "mild_trend_up",
+      "in_event_window": false,
+      "side": "call",
+      "n": 1604,
+      "win_pct": 33.67,
+      "mean_pct": 0.43,
+      "mean_dollar": -1.54
+    },
+    {
+      "regime": "mild_trend_up",
+      "in_event_window": false,
+      "side": "put",
+      "n": 3055,
+      "win_pct": 2.19,
+      "mean_pct": -0.72,
+      "mean_dollar": -124.76
+    },
+    {
+      "regime": "strong_trend_up",
+      "in_event_window": false,
+      "side": "call",
+      "n": 566,
+      "win_pct": 27.03,
+      "mean_pct": 0.34,
+      "mean_dollar": 150.31
+    },
+    {
+      "regime": "strong_trend_up",
+      "in_event_window": false,
+      "side": "put",
+      "n": 1335,
+      "win_pct": 0.37,
+      "mean_pct": -0.86,
+      "mean_dollar": -189.62
+    }
+  ],
+  "events_in_window": [
+    {
+      "event_time": "2026-04-14 12:30:00+00:00",
+      "name": "Core PPI year over year",
+      "type": "OTHER"
+    },
+    {
+      "event_time": "2026-04-14 12:30:00+00:00",
+      "name": "PPI year over year",
+      "type": "OTHER"
+    },
+    {
+      "event_time": "2026-04-14 12:30:00+00:00",
+      "name": "Core PPI",
+      "type": "OTHER"
+    },
+    {
+      "event_time": "2026-04-21 12:30:00+00:00",
+      "name": "Retail sales minus autos",
+      "type": "RETAIL"
+    },
+    {
+      "event_time": "2026-04-21 12:30:00+00:00",
+      "name": "U.S. retail sales",
+      "type": "RETAIL"
+    }
+  ]
+}
