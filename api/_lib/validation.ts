@@ -110,6 +110,38 @@ export const ivAnomaliesQuerySchema = z
 export type IVAnomaliesQuery = z.infer<typeof ivAnomaliesQuerySchema>;
 
 // ============================================================
+// /api/strike-trade-volume
+// ============================================================
+
+/**
+ * Query params for GET /api/strike-trade-volume.
+ *
+ * Serves the bid-side-surge exit signal in `useIVAnomalies`. Two modes:
+ *   - Bulk: ticker + since → all strikes' tape data since timestamp
+ *   - Single-key: ticker + strike + side + since → one compound key
+ */
+export const strikeTradeVolumeQuerySchema = z
+  .object({
+    ticker: z.enum(STRIKE_IV_TICKERS),
+    since: z.string().datetime({ offset: true }),
+    strike: z.coerce.number().positive().finite().optional(),
+    side: z.enum(['call', 'put']).optional(),
+  })
+  .refine(
+    (v) => {
+      // Single-key mode requires both strike + side; bulk mode requires neither.
+      const present = [v.strike, v.side].filter((f) => f != null).length;
+      return present === 0 || present === 2;
+    },
+    {
+      message: 'strike + side must both be present for single-key mode',
+      path: ['strike'],
+    },
+  );
+
+export type StrikeTradeVolumeQuery = z.infer<typeof strikeTradeVolumeQuerySchema>;
+
+// ============================================================
 // /api/options-flow/otm-heavy
 // ============================================================
 
