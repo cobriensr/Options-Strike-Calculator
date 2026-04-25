@@ -21,24 +21,18 @@
 
 | regime | dp_bucket | side | n | win% | mean% | mean $ |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
-| chop | none | call | 269 | 20.4% | -28.0% | $-55 |
-| chop | none | put | 257 | 2.3% | -68.0% | $-514 |
-| chop | 200to500M | put | 148 | 0.0% | -100.0% | $-166 |
-| chop | 500Mplus | put | 276 | 0.0% | -100.0% | $-103 |
-| mild_trend_down | none | call | 80 | 10.0% | -72.0% | $-151 |
-| mild_trend_down | 500Mplus | put | 54 | 0.0% | -96.0% | $-95 |
-| mild_trend_up | none | call | 208 | 2.4% | -85.0% | $-190 |
-| mild_trend_up | none | put | 159 | 6.9% | -72.0% | $-687 |
-| mild_trend_up | 200to500M | call | 35 | 0.0% | -100.0% | $-92 |
-| mild_trend_up | 200to500M | put | 34 | 17.6% | -30.0% | $-130 |
-| mild_trend_up | 500Mplus | call | 162 | 7.4% | -73.0% | $-319 |
-| mild_trend_up | 500Mplus | put | 412 | 8.7% | 45.0% | $-221 |
-| strong_trend_up | none | call | 177 | 43.5% | 140.0% | $62 |
-| strong_trend_up | none | put | 216 | 0.0% | -83.0% | $-631 |
-| strong_trend_up | 200to500M | call | 30 | 66.7% | 194.0% | $681 |
-| strong_trend_up | 200to500M | put | 64 | 0.0% | -99.0% | $-224 |
-| strong_trend_up | 500Mplus | call | 36 | 91.7% | 242.0% | $1,783 |
-| strong_trend_up | 500Mplus | put | 402 | 0.0% | -98.0% | $-167 |
+| chop | none | call | 598 | 9.0% | -73.0% | $-149 |
+| chop | none | put | 432 | 3.2% | -67.0% | $-654 |
+| chop | 200to500M | call | 43 | 0.0% | -89.0% | $-137 |
+| chop | 200to500M | put | 165 | 3.6% | -85.0% | $-171 |
+| chop | 500Mplus | call | 167 | 10.2% | -70.0% | $-303 |
+| chop | 500Mplus | put | 856 | 4.2% | -29.0% | $-173 |
+| mild_trend_up | none | call | 136 | 66.9% | 277.0% | $249 |
+| mild_trend_up | none | put | 221 | 1.8% | -86.0% | $-457 |
+| mild_trend_up | 200to500M | call | 42 | 71.4% | 153.0% | $673 |
+| mild_trend_up | 200to500M | put | 81 | 0.0% | -99.0% | $-187 |
+| mild_trend_up | 500Mplus | call | 36 | 91.7% | 242.0% | $1,783 |
+| mild_trend_up | 500Mplus | put | 288 | 0.0% | -99.0% | $-152 |
 
 ## Share of day's total DP premium at this strike
 

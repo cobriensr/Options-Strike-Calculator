@@ -29,6 +29,20 @@ import pandas as pd
 import psycopg2
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+sys.path.insert(0, str(REPO_ROOT / "ml"))
+
+from iv_anomaly_utils import (  # noqa: E402
+    aggregate_pnl,
+    apply_best_strategy,
+    attach_regime,
+    load_session_regime_labels,
+    pick_best_strategy_per_ticker_regime,
+    silence_pandas_psycopg2_warning,
+    to_jsonable,
+)
+
+silence_pandas_psycopg2_warning()
 ENV_LOCAL = REPO_ROOT / ".env.local"
 BACKTEST_PATH = REPO_ROOT / "ml" / "data" / "iv-anomaly-backtest-2026-04-25.parquet"
 OUT_FINDINGS = REPO_ROOT / "ml" / "findings" / "iv-anomaly-darkprint-2026-04-25.json"
@@ -52,20 +66,6 @@ def load_env() -> None:
             continue
         k, _, v = line.partition("=")
         os.environ.setdefault(k, v.strip().strip('"'))
-
-
-def regime_label(pct: float) -> str:
-    if pd.isna(pct):
-        return "unknown"
-    a = abs(pct)
-    if a < 0.25:
-        return "chop"
-    direction = "up" if pct > 0 else "down"
-    if a < 1.0:
-        return f"mild_trend_{direction}"
-    if a < 2.0:
-        return f"strong_trend_{direction}"
-    return f"extreme_{direction}"
 
 
 def fetch_dp_levels(conn) -> pd.DataFrame:
@@ -122,33 +122,11 @@ def compute_dp_features(alert_strike: float, alert_date, dp: pd.DataFrame) -> di
     }
 
 
-def attach_regime(df: pd.DataFrame) -> pd.DataFrame:
-    df["alert_ct"] = pd.to_datetime(df["alert_ts"], utc=True).dt.tz_convert("US/Central")
-    df["date"] = df["alert_ct"].dt.date
-    day = (
-        df.sort_values("alert_ct")
-        .groupby(["ticker", "date"])
-        .agg(first_spot=("spot_at_detect", "first"), last_spot=("close_spot", "last"))
-        .reset_index()
-    )
-    day["pct_change"] = (day["last_spot"] - day["first_spot"]) / day["first_spot"] * 100.0
-    day["regime"] = day["pct_change"].apply(regime_label)
-    return df.merge(day[["ticker", "date", "regime"]], on=["ticker", "date"], how="left")
+def _attach_session_regime(df: pd.DataFrame) -> pd.DataFrame:
+    """Use shared session-bounded regime labels (Phase A-E review fix)."""
+    return attach_regime(df, load_session_regime_labels())
 
 
-def pick_best_per_ticker_regime(df: pd.DataFrame) -> dict:
-    best = {}
-    ticker_level = {}
-    for ticker, sub in df.groupby("ticker"):
-        scores = {s: sub[s].dropna().mean() / sub[s].dropna().std() for s in NON_ORACLE if sub[s].dropna().std()}
-        ticker_level[ticker] = max(scores, key=scores.get) if scores else "pnl_eod"
-    for (ticker, regime), sub in df.groupby(["ticker", "regime"]):
-        if len(sub) >= 30:
-            scores = {s: sub[s].dropna().mean() / sub[s].dropna().std() for s in NON_ORACLE if sub[s].dropna().std()}
-            best[(ticker, regime)] = max(scores, key=scores.get) if scores else ticker_level[ticker]
-        else:
-            best[(ticker, regime)] = ticker_level[ticker]
-    return best
 
 
 def aggregate(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
@@ -176,7 +154,7 @@ def main() -> None:
     with psycopg2.connect(db_url) as conn:
         dp = fetch_dp_levels(conn)
 
-    df = attach_regime(df)
+    df = _attach_session_regime(df)
     print(f"Computing DP features for {len(df):,} SPXW alerts...", file=sys.stderr)
     feats = []
     for _, alert in df.iterrows():
@@ -184,17 +162,21 @@ def main() -> None:
     feat_df = pd.DataFrame(feats)
     df = pd.concat([df.reset_index(drop=True), feat_df.reset_index(drop=True)], axis=1)
 
-    best = pick_best_per_ticker_regime(df)
+    best = pick_best_strategy_per_ticker_regime(df)
     df["best_strategy"] = df.apply(lambda r: best.get((r["ticker"], r["regime"]), "pnl_eod"), axis=1)
     df["best_pnl_pct"] = df.apply(lambda r: r[r["best_strategy"]] if pd.notna(r[r["best_strategy"]]) else np.nan, axis=1)
     df["entry_dollars"] = df["entry_premium"].astype(float) * 100.0
     df["best_dollar"] = df["entry_dollars"] * df["best_pnl_pct"]
 
-    # Buckets
+    # Buckets — boundaries align with `DP_BUCKETS` in api/_lib/constants.ts
+    # so backfill labels match what the live endpoint shows. `right=False`
+    # means [50, 200) goes to 50to200M (open on the right), matching the
+    # TS endpoint's `< small / < medium / >= medium` logic.
     df["dp_prem_at_strike_bucket"] = pd.cut(
         df["dp_prem_at_strike"] / 1_000_000,
-        bins=[-0.01, 0.01, 50, 200, 500, np.inf],
+        bins=[-np.inf, 0, 50, 200, 500, np.inf],
         labels=["none", "lt50M", "50to200M", "200to500M", "500Mplus"],
+        right=True,
     )
     df["dp_strike_share_bucket"] = pd.cut(
         df["dp_strike_share_of_day"],
@@ -210,7 +192,7 @@ def main() -> None:
         "by_strike_share_bucket": aggregate(df, ["dp_strike_share_bucket", "side"]).reset_index().to_dict(orient="records"),
     }
     OUT_FINDINGS.parent.mkdir(parents=True, exist_ok=True)
-    OUT_FINDINGS.write_text(json.dumps(findings, indent=2, default=str))
+    OUT_FINDINGS.write_text(json.dumps(findings, indent=2, default=to_jsonable))
     print(f"Wrote {OUT_FINDINGS}")
 
     lines: list[str] = []

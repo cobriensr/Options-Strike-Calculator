@@ -11,10 +11,10 @@ Direct test of the user's question: alerts on tape that already agrees vs disagr
 
 | alignment | side | n | win% | mean% | mean $ |
 | --- | --- | ---: | ---: | ---: | ---: |
-| aligned | call | 3,034 | 24.1% | -3.0% | $-10 |
-| aligned | put | 2,718 | 2.5% | -85.0% | $-133 |
-| contradicted | call | 2,007 | 24.1% | 2.0% | $39 |
-| contradicted | put | 6,639 | 2.7% | -78.0% | $-104 |
+| aligned | call | 2,962 | 24.3% | -2.0% | $-8 |
+| aligned | put | 2,649 | 2.0% | -87.0% | $-135 |
+| contradicted | call | 1,987 | 24.6% | 2.0% | $40 |
+| contradicted | put | 6,517 | 2.6% | -78.0% | $-104 |
 | missing | call | 1 | 100.0% | 0.0% | $2 |
 | missing | put | 7 | 14.3% | -74.0% | $-711 |
 
@@ -24,10 +24,10 @@ All 5 of (SPX, NQ, ES, RTY, underlying) moved same direction over 15-min window.
 
 | direction_consistent | side | n | win% | mean% | mean $ |
 | --- | --- | ---: | ---: | ---: | ---: |
-| False | call | 1,938 | 21.7% | 2.0% | $-7 |
-| False | put | 3,267 | 2.9% | -76.0% | $-98 |
-| True | call | 3,104 | 25.7% | -2.0% | $20 |
-| True | put | 6,097 | 2.5% | -82.0% | $-121 |
+| False | call | 1,897 | 22.3% | 3.0% | $-5 |
+| False | put | 3,166 | 2.3% | -77.0% | $-99 |
+| True | call | 3,053 | 25.8% | -2.0% | $21 |
+| True | put | 6,007 | 2.5% | -82.0% | $-121 |
 
 ## Per-regime × alignment × side
 
@@ -35,42 +35,25 @@ Layered on top of D0's regime spine.
 
 | regime | alignment | side | n | win% | mean% | mean $ |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
-| chop | aligned | call | 1,315 | 13.7% | -49.0% | $-56 |
-| chop | aligned | put | 1,343 | 1.5% | -86.0% | $-102 |
-| chop | contradicted | call | 908 | 23.9% | -3.0% | $80 |
-| chop | contradicted | put | 2,531 | 2.8% | -85.0% | $-87 |
-| extreme_down | aligned | call | 73 | 1.4% | -86.0% | $-151 |
-| extreme_down | aligned | put | 114 | 9.7% | -76.0% | $-50 |
-| extreme_down | contradicted | call | 112 | 0.9% | -75.0% | $-46 |
-| extreme_down | contradicted | put | 90 | 7.8% | -70.0% | $-185 |
-| extreme_up | aligned | call | 214 | 31.8% | 8.0% | $-19 |
-| extreme_up | aligned | put | 159 | 1.3% | -85.0% | $-42 |
-| extreme_up | contradicted | call | 99 | 21.2% | -28.0% | $-12 |
-| extreme_up | contradicted | put | 599 | 8.8% | -74.0% | $-39 |
-| mild_trend_down | aligned | call | 67 | 16.4% | -62.0% | $-176 |
-| mild_trend_down | aligned | put | 74 | 10.8% | -57.0% | $-81 |
-| mild_trend_down | contradicted | call | 84 | 29.8% | -51.0% | $10 |
-| mild_trend_down | contradicted | put | 60 | 1.7% | -65.0% | $-168 |
-| mild_trend_up | aligned | call | 879 | 38.6% | 55.0% | $-1 |
-| mild_trend_up | aligned | put | 885 | 3.0% | -87.0% | $-182 |
-| mild_trend_up | contradicted | call | 725 | 27.7% | 30.0% | $-2 |
-| mild_trend_up | contradicted | put | 2,168 | 1.9% | -66.0% | $-100 |
-| strong_trend_up | aligned | call | 486 | 27.4% | 37.0% | $149 |
-| strong_trend_up | aligned | put | 143 | 0.7% | -87.0% | $-322 |
-| strong_trend_up | contradicted | call | 79 | 24.1% | 19.0% | $159 |
-| strong_trend_up | contradicted | put | 1,191 | 0.3% | -86.0% | $-173 |
+| chop | aligned | call | 1,730 | 13.1% | -40.0% | $-63 |
+| chop | aligned | put | 1,905 | 2.3% | -85.0% | $-158 |
+| chop | contradicted | call | 1,521 | 20.7% | -21.0% | $-3 |
+| chop | contradicted | put | 3,624 | 4.4% | -68.0% | $-100 |
+| mild_trend_up | aligned | call | 1,208 | 40.8% | 55.0% | $78 |
+| mild_trend_up | aligned | put | 713 | 1.1% | -92.0% | $-75 |
+| mild_trend_up | contradicted | call | 451 | 38.4% | 86.0% | $192 |
+| mild_trend_up | contradicted | put | 2,859 | 0.4% | -90.0% | $-105 |
 
 ## Per-ticker × alignment × side
 
 | ticker | alignment | side | n | win% | mean% | mean $ |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
-| IWM | aligned | call | 86 | 12.8% | -37.0% | $-7 |
-| IWM | aligned | put | 84 | 7.1% | -73.0% | $-26 |
-| IWM | contradicted | call | 65 | 46.1% | 244.0% | $1 |
-| IWM | contradicted | put | 180 | 4.4% | -70.0% | $-15 |
+| IWM | aligned | call | 91 | 20.9% | -27.0% | $-6 |
+| IWM | aligned | put | 85 | 7.1% | -73.0% | $-26 |
+| IWM | contradicted | call | 65 | 47.7% | 247.0% | $2 |
+| IWM | contradicted | put | 181 | 5.0% | -71.0% | $-15 |
 | META | aligned | call | 49 | 65.3% | 56.0% | $41 |
-| META | aligned | put | 35 | 34.3% | 30.0% | $-18 |
-| META | contradicted | put | 55 | 14.6% | -17.0% | $-9 |
+| META | contradicted | put | 51 | 13.7% | -20.0% | $-9 |
 | MSFT | aligned | call | 58 | 55.2% | 122.0% | $23 |
 | MSFT | aligned | put | 31 | 3.2% | -80.0% | $-37 |
 | MSFT | contradicted | call | 40 | 47.5% | 6.0% | $16 |
@@ -87,11 +70,11 @@ Layered on top of D0's regime spine.
 | SPXW | aligned | put | 564 | 3.4% | -80.0% | $-405 |
 | SPXW | contradicted | call | 471 | 14.4% | -43.0% | $-39 |
 | SPXW | contradicted | put | 1,512 | 2.6% | -54.0% | $-256 |
-| SPY | aligned | call | 957 | 17.6% | -28.0% | $-15 |
-| SPY | aligned | put | 815 | 1.4% | -87.0% | $-54 |
-| SPY | contradicted | call | 595 | 17.3% | -22.0% | $-1 |
-| SPY | contradicted | put | 2,155 | 4.9% | -82.0% | $-50 |
-| TSLA | aligned | call | 208 | 7.2% | -68.0% | $-47 |
-| TSLA | aligned | put | 194 | 7.2% | -78.0% | $-54 |
-| TSLA | contradicted | call | 204 | 3.4% | -75.0% | $-49 |
-| TSLA | contradicted | put | 327 | 3.7% | -76.0% | $-62 |
+| SPY | aligned | call | 882 | 16.9% | -28.0% | $-12 |
+| SPY | aligned | put | 775 | 1.4% | -87.0% | $-51 |
+| SPY | contradicted | call | 579 | 17.8% | -24.0% | $-1 |
+| SPY | contradicted | put | 2,056 | 5.2% | -83.0% | $-47 |
+| TSLA | aligned | call | 206 | 7.3% | -68.0% | $-46 |
+| TSLA | aligned | put | 171 | 2.3% | -86.0% | $-59 |
+| TSLA | contradicted | call | 200 | 5.0% | -75.0% | $-49 |
+| TSLA | contradicted | put | 307 | 1.9% | -79.0% | $-62 |

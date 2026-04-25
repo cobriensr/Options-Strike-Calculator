@@ -11,12 +11,27 @@ Outputs:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+sys.path.insert(0, str(REPO_ROOT / "ml"))
+
+from iv_anomaly_utils import (  # noqa: E402
+    aggregate_pnl,
+    apply_best_strategy,
+    attach_regime,
+    load_session_regime_labels,
+    pick_best_strategy_per_ticker_regime,
+    silence_pandas_psycopg2_warning,
+    to_jsonable,
+)
+
+silence_pandas_psycopg2_warning()
 BACKTEST_PATH = REPO_ROOT / "ml" / "data" / "iv-anomaly-backtest-2026-04-25.parquet"
 OUT_FINDINGS = REPO_ROOT / "ml" / "findings" / "iv-anomaly-detector-internals-2026-04-25.json"
 OUT_REPORT = REPO_ROOT / "ml" / "reports" / "iv-anomaly-detector-internals-2026-04-25.md"
@@ -24,51 +39,11 @@ OUT_REPORT = REPO_ROOT / "ml" / "reports" / "iv-anomaly-detector-internals-2026-
 NON_ORACLE = ["pnl_itm_touch", "pnl_eod"]
 
 
-def regime_label(pct: float) -> str:
-    if pd.isna(pct):
-        return "unknown"
-    a = abs(pct)
-    if a < 0.25:
-        return "chop"
-    direction = "up" if pct > 0 else "down"
-    if a < 1.0:
-        return f"mild_trend_{direction}"
-    if a < 2.0:
-        return f"strong_trend_{direction}"
-    return f"extreme_{direction}"
-
-
 def load_label_and_pick() -> pd.DataFrame:
     df = pd.read_parquet(BACKTEST_PATH)
-    df["alert_ct"] = pd.to_datetime(df["alert_ts"], utc=True).dt.tz_convert("US/Central")
-    df["date"] = df["alert_ct"].dt.date
-
-    day = (
-        df.sort_values("alert_ct")
-        .groupby(["ticker", "date"])
-        .agg(first_spot=("spot_at_detect", "first"), last_spot=("close_spot", "last"))
-        .reset_index()
-    )
-    day["pct_change"] = (day["last_spot"] - day["first_spot"]) / day["first_spot"] * 100.0
-    day["regime"] = day["pct_change"].apply(regime_label)
-    df = df.merge(day[["ticker", "date", "regime"]], on=["ticker", "date"], how="left")
-
-    best = {}
-    ticker_level = {}
-    for ticker, sub in df.groupby("ticker"):
-        scores = {s: sub[s].dropna().mean() / sub[s].dropna().std() for s in NON_ORACLE if sub[s].dropna().std()}
-        ticker_level[ticker] = max(scores, key=scores.get) if scores else "pnl_eod"
-    for (ticker, regime), sub in df.groupby(["ticker", "regime"]):
-        if len(sub) >= 30:
-            scores = {s: sub[s].dropna().mean() / sub[s].dropna().std() for s in NON_ORACLE if sub[s].dropna().std()}
-            best[(ticker, regime)] = max(scores, key=scores.get) if scores else ticker_level[ticker]
-        else:
-            best[(ticker, regime)] = ticker_level[ticker]
-
-    df["best_strategy"] = df.apply(lambda r: best.get((r["ticker"], r["regime"]), "pnl_eod"), axis=1)
-    df["best_pnl_pct"] = df.apply(lambda r: r[r["best_strategy"]] if pd.notna(r[r["best_strategy"]]) else np.nan, axis=1)
-    df["entry_dollars"] = df["entry_premium"].astype(float) * 100.0
-    df["best_dollar"] = df["entry_dollars"] * df["best_pnl_pct"]
+    df = attach_regime(df, load_session_regime_labels())
+    best = pick_best_strategy_per_ticker_regime(df)
+    df = apply_best_strategy(df, best)
 
     df["compound_key"] = df["ticker"] + "|" + df["strike"].astype(str) + "|" + df["side"] + "|" + df["expiry"].astype(str)
     return df
@@ -138,7 +113,7 @@ def main() -> None:
         "by_time_to_first_regime": aggregate_by(df, ["regime", "ttf_bucket", "side"]).reset_index().to_dict(orient="records"),
     }
     OUT_FINDINGS.parent.mkdir(parents=True, exist_ok=True)
-    OUT_FINDINGS.write_text(json.dumps(findings, indent=2, default=str))
+    OUT_FINDINGS.write_text(json.dumps(findings, indent=2, default=to_jsonable))
     print(f"Wrote {OUT_FINDINGS}")
 
     # ──────── Markdown ────────

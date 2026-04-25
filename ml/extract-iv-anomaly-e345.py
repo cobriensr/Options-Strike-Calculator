@@ -30,6 +30,20 @@ import pandas as pd
 import psycopg2
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+sys.path.insert(0, str(REPO_ROOT / "ml"))
+
+from iv_anomaly_utils import (  # noqa: E402
+    aggregate_pnl,
+    apply_best_strategy,
+    attach_regime,
+    load_session_regime_labels,
+    pick_best_strategy_per_ticker_regime,
+    silence_pandas_psycopg2_warning,
+    to_jsonable,
+)
+
+silence_pandas_psycopg2_warning()
 ENV_LOCAL = REPO_ROOT / ".env.local"
 BACKTEST_PATH = REPO_ROOT / "ml" / "data" / "iv-anomaly-backtest-2026-04-25.parquet"
 NON_ORACLE = ["pnl_itm_touch", "pnl_eod"]
@@ -46,47 +60,11 @@ def load_env() -> None:
         os.environ.setdefault(k, v.strip().strip('"'))
 
 
-def regime_label(pct: float) -> str:
-    if pd.isna(pct):
-        return "unknown"
-    a = abs(pct)
-    if a < 0.25:
-        return "chop"
-    direction = "up" if pct > 0 else "down"
-    if a < 1.0:
-        return f"mild_trend_{direction}"
-    if a < 2.0:
-        return f"strong_trend_{direction}"
-    return f"extreme_{direction}"
+def _attach_session_regime(df: pd.DataFrame) -> pd.DataFrame:
+    """Use shared session-bounded regime labels (Phase A-E review fix)."""
+    return attach_regime(df, load_session_regime_labels())
 
 
-def attach_regime(df: pd.DataFrame) -> pd.DataFrame:
-    df["alert_ct"] = pd.to_datetime(df["alert_ts"], utc=True).dt.tz_convert("US/Central")
-    df["date"] = df["alert_ct"].dt.date
-    day = (
-        df.sort_values("alert_ct")
-        .groupby(["ticker", "date"])
-        .agg(first_spot=("spot_at_detect", "first"), last_spot=("close_spot", "last"))
-        .reset_index()
-    )
-    day["pct_change"] = (day["last_spot"] - day["first_spot"]) / day["first_spot"] * 100.0
-    day["regime"] = day["pct_change"].apply(regime_label)
-    return df.merge(day[["ticker", "date", "regime"]], on=["ticker", "date"], how="left")
-
-
-def pick_best(df: pd.DataFrame) -> dict:
-    best = {}
-    ticker_level = {}
-    for ticker, sub in df.groupby("ticker"):
-        scores = {s: sub[s].dropna().mean() / sub[s].dropna().std() for s in NON_ORACLE if sub[s].dropna().std()}
-        ticker_level[ticker] = max(scores, key=scores.get) if scores else "pnl_eod"
-    for (ticker, regime), sub in df.groupby(["ticker", "regime"]):
-        if len(sub) >= 30:
-            scores = {s: sub[s].dropna().mean() / sub[s].dropna().std() for s in NON_ORACLE if sub[s].dropna().std()}
-            best[(ticker, regime)] = max(scores, key=scores.get) if scores else ticker_level[ticker]
-        else:
-            best[(ticker, regime)] = ticker_level[ticker]
-    return best
 
 
 def aggregate(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
@@ -150,17 +128,34 @@ def run_e3(df: pd.DataFrame, conn) -> None:
     snaps["vix"] = snaps["vix"].astype(float)
     print(f"[E3] {len(snaps):,} usable VIX snapshots after cleanup", file=sys.stderr)
 
-    # For each alert, find latest snap at or before alert_ts and 30min-before snap
+    # For each alert, find latest snap at or before alert_ts and the snap
+    # closest to (alert_ts - 30min). Phase A-E review fix #7: the prior
+    # implementation took the EARLIEST snap in the [alert_ts - 40min,
+    # alert_ts] window, which collapsed to a 1-min change when there were
+    # only 2 close-in snaps. Now we compute the change against the snap
+    # nearest the 30-min anchor regardless of how many fall in between.
     feats = []
     for _, alert in df.iterrows():
         alert_ts = alert["alert_ts"]
         prior_30 = alert_ts - pd.Timedelta(minutes=30)
-        recent = snaps[(snaps["snap_ts"] <= alert_ts) & (snaps["snap_ts"] >= prior_30 - pd.Timedelta(minutes=10))]
+        recent = snaps[(snaps["snap_ts"] <= alert_ts)]
         if len(recent) < 2:
             feats.append({"vix_at_alert": np.nan, "vix_change_30m": np.nan, "vix_regime": "unknown"})
             continue
-        vix_now = float(recent.iloc[-1]["vix"])
-        vix_then = float(recent.iloc[0]["vix"])
+        # vix_now: closest snap to alert_ts (already filtered to <= alert_ts).
+        vix_now_row = recent.iloc[-1]
+        # vix_then: snap closest to prior_30 in absolute distance.
+        recent_with_prior = recent.copy()
+        recent_with_prior["dist_to_prior"] = (recent_with_prior["snap_ts"] - prior_30).abs()
+        vix_then_row = recent_with_prior.sort_values("dist_to_prior").iloc[0]
+        # Sanity: require at least 20-min separation between the two anchors;
+        # otherwise the "30-min change" would be a few-minute change.
+        sep_min = (vix_now_row["snap_ts"] - vix_then_row["snap_ts"]).total_seconds() / 60.0
+        if sep_min < 20:
+            feats.append({"vix_at_alert": np.nan, "vix_change_30m": np.nan, "vix_regime": "unknown"})
+            continue
+        vix_now = float(vix_now_row["vix"])
+        vix_then = float(vix_then_row["vix"])
         delta = vix_now - vix_then
         if delta > 0.2:
             r = "rising"
@@ -180,7 +175,7 @@ def run_e3(df: pd.DataFrame, conn) -> None:
         "by_vix_regime_outer_regime": aggregate(df, ["regime", "vix_regime", "side"]).reset_index().to_dict(orient="records"),
     }
     out_findings = REPO_ROOT / "ml" / "findings" / "iv-anomaly-vix-direction-2026-04-25.json"
-    out_findings.write_text(json.dumps(findings, indent=2, default=str))
+    out_findings.write_text(json.dumps(findings, indent=2, default=to_jsonable))
     print(f"[E3] wrote {out_findings}")
 
     lines: list[str] = []
@@ -271,7 +266,7 @@ def run_e4(df: pd.DataFrame, conn) -> None:
         "by_gex_position_regime": aggregate(spx_family, ["regime", "gex_above_or_below", "side"]).reset_index().to_dict(orient="records"),
     }
     out_findings = REPO_ROOT / "ml" / "findings" / "iv-anomaly-gex-position-2026-04-25.json"
-    out_findings.write_text(json.dumps(findings, indent=2, default=str))
+    out_findings.write_text(json.dumps(findings, indent=2, default=to_jsonable))
     print(f"[E4] wrote {out_findings}")
 
     lines: list[str] = []
@@ -336,7 +331,7 @@ def run_e5(df: pd.DataFrame, conn) -> None:
         ],
     }
     out_findings = REPO_ROOT / "ml" / "findings" / "iv-anomaly-macro-events-2026-04-25.json"
-    out_findings.write_text(json.dumps(findings, indent=2, default=str))
+    out_findings.write_text(json.dumps(findings, indent=2, default=to_jsonable))
     print(f"[E5] wrote {out_findings}")
 
     lines: list[str] = []
@@ -370,8 +365,8 @@ def main() -> None:
 
     df = pd.read_parquet(BACKTEST_PATH)
     df["alert_ts"] = pd.to_datetime(df["alert_ts"], utc=True)
-    df = attach_regime(df)
-    best = pick_best(df)
+    df = _attach_session_regime(df)
+    best = pick_best_strategy_per_ticker_regime(df)
     df["best_strategy"] = df.apply(lambda r: best.get((r["ticker"], r["regime"]), "pnl_eod"), axis=1)
     df["best_pnl_pct"] = df.apply(lambda r: r[r["best_strategy"]] if pd.notna(r[r["best_strategy"]]) else np.nan, axis=1)
     df["entry_dollars"] = df["entry_premium"].astype(float) * 100.0

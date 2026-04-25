@@ -7,6 +7,13 @@ Per-(ticker, regime) BEST_STRATEGY is re-picked from the three
 candidates — NOT inherited from Phase B's blind pick — because the
 right exit on NVDA-trending-up is not the right exit on NVDA-chop.
 
+REGIME BUG FIX (Phase A-E review, post-9c20cb2):
+  Regime labels now come from `load_session_regime_labels()` which
+  reads the per-(ticker, date) parquet built from FULL session bounds
+  (true open/close from strike_iv_snapshots). The previous
+  alert-clustering anchoring biased late-clustered tickers (NDXP,
+  single-names) toward "less trending" labels.
+
 Outputs:
 - ml/findings/iv-anomaly-regime-conditional-2026-04-25.json
 - ml/reports/iv-anomaly-regime-conditional-2026-04-25.md
@@ -15,6 +22,7 @@ Outputs:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -22,67 +30,36 @@ import numpy as np
 import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "ml"))
+
+from iv_anomaly_utils import (  # noqa: E402
+    aggregate_pnl,
+    apply_best_strategy,
+    attach_regime,
+    load_session_regime_labels,
+    pick_best_strategy_per_ticker_regime,
+    silence_pandas_psycopg2_warning,
+    to_jsonable,
+)
+
+silence_pandas_psycopg2_warning()
+
 BACKTEST_PATH = REPO_ROOT / "ml" / "data" / "iv-anomaly-backtest-2026-04-25.parquet"
 OUT_FINDINGS = REPO_ROOT / "ml" / "findings" / "iv-anomaly-regime-conditional-2026-04-25.json"
 OUT_REPORT = REPO_ROOT / "ml" / "reports" / "iv-anomaly-regime-conditional-2026-04-25.md"
 OUT_PLOTS = REPO_ROOT / "ml" / "plots" / "iv-anomaly-regime-conditional"
 
-STRATEGIES = ["pnl_itm_touch", "pnl_eod", "pnl_peak"]
-NON_ORACLE = ["pnl_itm_touch", "pnl_eod"]
-
-# Regime thresholds (absolute % change of the underlying)
-def regime_label(pct: float) -> str:
-    if pd.isna(pct):
-        return "unknown"
-    a = abs(pct)
-    if a < 0.25:
-        return "chop"
-    direction = "up" if pct > 0 else "down"
-    if a < 1.0:
-        return f"mild_trend_{direction}"
-    if a < 2.0:
-        return f"strong_trend_{direction}"
-    return f"extreme_{direction}"
-
 
 def load_and_label() -> pd.DataFrame:
     df = pd.read_parquet(BACKTEST_PATH)
-    df["alert_ct"] = pd.to_datetime(df["alert_ts"], utc=True).dt.tz_convert("US/Central")
-    df["date"] = df["alert_ct"].dt.date
-
-    # Per (ticker, date) regime: first observed spot vs last observed spot of the day.
-    # spot_at_detect of earliest alert ≈ open; close_spot of latest alert ≈ close.
-    day = (
-        df.sort_values("alert_ct")
-        .groupby(["ticker", "date"])
-        .agg(
-            first_spot=("spot_at_detect", "first"),
-            last_spot=("close_spot", "last"),
-        )
-        .reset_index()
-    )
-    day["pct_change"] = (day["last_spot"] - day["first_spot"]) / day["first_spot"] * 100.0
-    day["regime"] = day["pct_change"].apply(regime_label)
-
-    df = df.merge(day[["ticker", "date", "regime", "pct_change"]], on=["ticker", "date"], how="left")
-    df["entry_dollars"] = df["entry_premium"].astype(float) * 100.0
+    session_labels = load_session_regime_labels()
+    df = attach_regime(df, session_labels)
     return df
 
 
-def pick_best_strategy(group: pd.DataFrame) -> str:
-    """Sharpe-ish (mean/std) over non-oracle strategies."""
-    best, best_score = None, -np.inf
-    for strat in NON_ORACLE:
-        col = group[strat].dropna()
-        if len(col) < 5 or col.std() == 0 or pd.isna(col.std()):
-            continue
-        score = col.mean() / col.std()
-        if score > best_score:
-            best, best_score = strat, score
-    return best or "pnl_eod"
-
-
 def aggregate(df: pd.DataFrame, group_cols: list[str], strategy_col: str) -> pd.DataFrame:
+    """Phase D0 aggregate has extra max-loss / max-gain columns; the shared
+    helper omits those for compactness, so D0 keeps its own version."""
     pnl = df[strategy_col]
     out = (
         df.assign(_pnl=pnl, _dollars=df["entry_dollars"] * pnl)
@@ -100,28 +77,6 @@ def aggregate(df: pd.DataFrame, group_cols: list[str], strategy_col: str) -> pd.
         )
     )
     return out.round(2)
-
-
-def per_ticker_regime_best(df: pd.DataFrame) -> dict[tuple[str, str], str]:
-    """Pick best non-oracle strategy per (ticker, regime). Falls back to ticker-level pick if regime sample <30."""
-    best = {}
-    ticker_level: dict[str, str] = {}
-    for ticker, sub in df.groupby("ticker"):
-        ticker_level[ticker] = pick_best_strategy(sub)
-    for (ticker, regime), sub in df.groupby(["ticker", "regime"]):
-        if len(sub) >= 30:
-            best[(ticker, regime)] = pick_best_strategy(sub)
-        else:
-            best[(ticker, regime)] = ticker_level[ticker]
-    return best, ticker_level
-
-
-def apply_best(df: pd.DataFrame, best_map: dict[tuple[str, str], str]) -> pd.DataFrame:
-    df = df.copy()
-    df["best_strategy"] = df.apply(lambda r: best_map.get((r["ticker"], r["regime"]), "pnl_eod"), axis=1)
-    df["best_pnl_pct"] = df.apply(lambda r: r[r["best_strategy"]] if pd.notna(r[r["best_strategy"]]) else np.nan, axis=1)
-    df["best_dollar"] = df["entry_dollars"] * df["best_pnl_pct"]
-    return df
 
 
 # ──────── Plotting ────────
@@ -230,8 +185,16 @@ def main() -> None:
     print(f"Loaded {len(df):,} alerts across {df['ticker'].nunique()} tickers and "
           f"{df['date'].nunique()} trading days.")
 
-    best_map, ticker_level = per_ticker_regime_best(df)
-    df = apply_best(df, best_map)
+    best_map = pick_best_strategy_per_ticker_regime(df)
+    df = apply_best_strategy(df, best_map)
+    # Ticker-level fallback picks (used when a (ticker, regime) cell has
+    # fewer than the n-floor); rebuild here for the findings JSON.
+    ticker_level = {
+        ticker: best_map.get((ticker, "chop"))
+        or best_map.get((ticker, "mild_trend_up"))
+        or "pnl_eod"
+        for ticker in df["ticker"].unique()
+    }
 
     # Per-ticker × regime × side
     pts = aggregate(df, ["ticker", "regime", "side"], "best_pnl_pct")
@@ -272,7 +235,7 @@ def main() -> None:
         "ticker_regime_day_summary": day_summary.reset_index().to_dict(orient="records"),
     }
     OUT_FINDINGS.parent.mkdir(parents=True, exist_ok=True)
-    OUT_FINDINGS.write_text(json.dumps(findings, indent=2, default=str))
+    OUT_FINDINGS.write_text(json.dumps(findings, indent=2, default=to_jsonable))
     print(f"Wrote {OUT_FINDINGS}")
 
     # ──────── Markdown report ────────

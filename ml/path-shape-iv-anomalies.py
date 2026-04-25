@@ -34,6 +34,20 @@ import pandas as pd
 import psycopg2
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+sys.path.insert(0, str(REPO_ROOT / "ml"))
+
+from iv_anomaly_utils import (  # noqa: E402
+    aggregate_pnl,
+    apply_best_strategy,
+    attach_regime,
+    load_session_regime_labels,
+    pick_best_strategy_per_ticker_regime,
+    silence_pandas_psycopg2_warning,
+    to_jsonable,
+)
+
+silence_pandas_psycopg2_warning()
 ENV_LOCAL = REPO_ROOT / ".env.local"
 OUT_DATA = REPO_ROOT / "ml" / "data" / "iv-anomaly-path-shape.parquet"
 OUT_FINDINGS = REPO_ROOT / "ml" / "findings" / "iv-anomaly-path-shape-2026-04-25.json"
@@ -50,20 +64,6 @@ def load_env() -> None:
             continue
         k, _, v = line.partition("=")
         os.environ.setdefault(k, v.strip().strip('"'))
-
-
-def regime_label(pct: float) -> str:
-    if pd.isna(pct):
-        return "unknown"
-    a = abs(pct)
-    if a < 0.25:
-        return "chop"
-    direction = "up" if pct > 0 else "down"
-    if a < 1.0:
-        return f"mild_trend_{direction}"
-    if a < 2.0:
-        return f"strong_trend_{direction}"
-    return f"extreme_{direction}"
 
 
 def fetch_premium_trajectory(conn) -> pd.DataFrame:
@@ -134,9 +134,18 @@ def compute_path_features(
             peak_idx = int(np.argmax(prices))
             peak_ts = ts_seq[peak_idx]
 
-            # MAE to peak: min from start to peak (inclusive)
-            min_to_peak = float(prices[: peak_idx + 1].min()) if peak_idx >= 0 else np.nan
-            mae_to_peak_pct = (min_to_peak - entry) / entry if entry > 0 else np.nan
+            # MAE to peak: min from entry to peak.
+            # Phase A-E review fix #2: when peak_idx == 0 (entry IS the
+            # peak), `prices[:1].min()` collapses to the entry itself, so
+            # `mae_to_peak_pct = 0` regardless. That conflates "no
+            # drawdown to peak" with "no data to compute" — set NaN
+            # instead, and let the multi-sample case populate normally.
+            if peak_idx == 0:
+                min_to_peak = np.nan
+                mae_to_peak_pct = np.nan
+            else:
+                min_to_peak = float(prices[: peak_idx + 1].min())
+                mae_to_peak_pct = (min_to_peak - entry) / entry if entry > 0 else np.nan
 
             # MAE to close (last trajectory point, which truncates at ITM crossing or EOD)
             min_to_close = float(prices.min())
@@ -204,24 +213,19 @@ def compute_path_features(
     return pd.DataFrame(rows)
 
 
-def attach_regime(outcomes: pd.DataFrame, path: pd.DataFrame) -> pd.DataFrame:
-    """Re-derive per-(ticker, day) regime from outcomes parquet (same logic as D0)."""
+def _attach_path_regime(outcomes: pd.DataFrame, path: pd.DataFrame) -> pd.DataFrame:
+    """Attach session-bounded regime labels onto path-shape rows.
+
+    Joins per-anomaly date from outcomes onto path rows, then merges
+    the shared regime-labels parquet via `attach_regime`. Replaces the
+    Phase D1 inline alert-clustering computation.
+    """
     o = outcomes.copy()
     o["alert_ct"] = pd.to_datetime(o["alert_ts"], utc=True).dt.tz_convert("US/Central")
     o["date"] = o["alert_ct"].dt.date
-    day = (
-        o.sort_values("alert_ct")
-        .groupby(["ticker", "date"])
-        .agg(first_spot=("spot_at_detect", "first"), last_spot=("close_spot", "last"))
-        .reset_index()
-    )
-    day["pct_change"] = (day["last_spot"] - day["first_spot"]) / day["first_spot"] * 100.0
-    day["regime"] = day["pct_change"].apply(regime_label)
-
-    o = o[["anomaly_id", "date"]]
-    p = path.merge(o, on="anomaly_id", how="left")
-    p = p.merge(day[["ticker", "date", "regime", "pct_change"]], on=["ticker", "date"], how="left")
-    return p
+    o_slim = o[["anomaly_id", "date"]]
+    p = path.merge(o_slim, on="anomaly_id", how="left")
+    return attach_regime(p, load_session_regime_labels())
 
 
 # ──────── Aggregation ────────
@@ -237,7 +241,11 @@ def aggregate_path_shape(df: pd.DataFrame) -> pd.DataFrame:
         median_peak_pct=("peak_premium_pct", "median"),
         median_time_in_itm=("time_in_itm_pct", "median"),
         median_n_itm_reentries=("n_itm_re_entries", "median"),
-        pct_peak_before_itm=("peak_before_itm", lambda x: float(x.fillna(False).mean() * 100)),
+        # Phase A-E review fix #14: dropna() before computing the rate so
+        # alerts that never touched ITM (peak_before_itm = None) don't get
+        # silently lumped in as "peak NOT before ITM". Now this metric is
+        # truly conditional on touched_itm = 1.
+        pct_peak_before_itm=("peak_before_itm", lambda x: float(x.dropna().mean() * 100) if x.dropna().size > 0 else float("nan")),
         touched_itm_pct=("touched_itm", lambda x: float(x.mean() * 100)),
     )
     return g.round(3)
@@ -270,7 +278,14 @@ def plot_mae_to_peak_distribution(df: pd.DataFrame, out_dir: Path) -> None:
             continue
         fig, ax = plt.subplots(figsize=(10, 4.5))
         regimes_present = ["chop", "mild_trend_up", "strong_trend_up", "mild_trend_down", "strong_trend_down", "extreme_up", "extreme_down"]
-        regimes_present = [r for r in regimes_present if r in tsub["regime"].unique()]
+        # Only keep regimes that ACTUALLY have rows after the
+        # MAE/peak_pct dropna and the new single-sample exclusion (Phase
+        # A-E review fix #3) — otherwise zero-length data lists trip
+        # matplotlib's boxplot label-length check.
+        regimes_present = [r for r in regimes_present if len(tsub[tsub["regime"] == r]) > 0]
+        if not regimes_present:
+            plt.close(fig)
+            continue
         data = [tsub[tsub["regime"] == r]["mae_to_peak_pct"].values * 100 for r in regimes_present]
         labels = [f"{r}\n(n={len(d)})" for r, d in zip(regimes_present, data)]
         ax.boxplot(data, tick_labels=labels, showmeans=True)
@@ -287,6 +302,11 @@ def plot_mae_to_peak_distribution(df: pd.DataFrame, out_dir: Path) -> None:
 def plot_aggregate_winner_loser_mae(df: pd.DataFrame, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     sub = df.dropna(subset=["mae_to_peak_pct", "peak_premium_pct"]).copy()
+    # Phase A-E review fix #3: alerts with only 1 premium sample have
+    # `peak_premium_pct == 0` mechanically (peak == entry), and would
+    # land in the `loser (<0%)` bucket below — but they're "no path
+    # data," not real losers. Exclude them.
+    sub = sub[sub["n_premium_samples"] > 1]
     sub["category"] = pd.cut(
         sub["peak_premium_pct"],
         bins=[-np.inf, 0, 0.30, 1.0, np.inf],
@@ -295,10 +315,18 @@ def plot_aggregate_winner_loser_mae(df: pd.DataFrame, out_dir: Path) -> None:
     by_cat = sub.groupby("category", observed=True)["mae_to_peak_pct"].agg(["count", "median"]).round(3)
     fig, ax = plt.subplots(figsize=(10, 4.5))
     cats = ["loser (<0%)", "small_win (0-30%)", "decent_win (30-100%)", "big_win (>100%)"]
-    cats = [c for c in cats if c in sub["category"].cat.categories]
+    # Keep only categories that have BOTH a series with samples AND a row
+    # in by_cat — otherwise data/labels lengths mismatch and boxplot raises.
+    cats = [
+        c for c in cats
+        if c in sub["category"].cat.categories
+        and c in by_cat.index
+        and len(sub[sub["category"] == c]) > 0
+    ]
     data = [sub[sub["category"] == c]["mae_to_peak_pct"].values * 100 for c in cats]
-    labels = [f"{c}\n(n={by_cat.loc[c, 'count']:,})" for c in cats if c in by_cat.index]
-    ax.boxplot(data, tick_labels=labels, showmeans=True, showfliers=False)
+    labels = [f"{c}\n(n={by_cat.loc[c, 'count']:,})" for c in cats]
+    if data:
+        ax.boxplot(data, tick_labels=labels, showmeans=True, showfliers=False)
     ax.set_ylabel("MAE before peak (%)")
     ax.set_title("Drawdown before peak by eventual outcome (all tickers, all regimes)")
     ax.axhline(-50, color="r", linestyle="--", alpha=0.5, label="-50% threshold")
@@ -330,7 +358,7 @@ def main() -> None:
     path = compute_path_features(outcomes, prem, spot)
 
     print("Attaching regime labels...", file=sys.stderr)
-    path = attach_regime(outcomes, path)
+    path = _attach_path_regime(outcomes, path)
 
     OUT_DATA.parent.mkdir(parents=True, exist_ok=True)
     path.to_parquet(OUT_DATA, index=False)
@@ -349,7 +377,7 @@ def main() -> None:
         "winners_vs_losers_mae": g_winloss.reset_index().to_dict(orient="records"),
     }
     OUT_FINDINGS.parent.mkdir(parents=True, exist_ok=True)
-    OUT_FINDINGS.write_text(json.dumps(findings, indent=2, default=str))
+    OUT_FINDINGS.write_text(json.dumps(findings, indent=2, default=to_jsonable))
     print(f"Wrote {OUT_FINDINGS}")
 
     # ──────── Markdown report ────────
