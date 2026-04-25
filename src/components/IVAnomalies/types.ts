@@ -271,6 +271,40 @@ export function anomalyCompoundKey(
  */
 export type AnomalyPattern = 'flash' | 'medium' | 'persistent';
 
+// ──────────────────────────────────────────────────────────────
+// Cross-asset confluence (Phase F)
+// ──────────────────────────────────────────────────────────────
+
+export type AnomalyRegime =
+  | 'chop'
+  | 'mild_trend_up'
+  | 'mild_trend_down'
+  | 'strong_trend_up'
+  | 'strong_trend_down'
+  | 'extreme_up'
+  | 'extreme_down'
+  | 'unknown';
+
+export type TapeAlignment = 'aligned' | 'contradicted' | 'neutral' | 'missing';
+export type DPCluster = 'none' | 'small' | 'medium' | 'large' | 'na';
+export type GEXZone = 'above_spot' | 'below_spot' | 'at_spot' | 'na';
+export type VIXDirection = 'rising' | 'flat' | 'falling' | 'unknown';
+
+/**
+ * One row of cross-asset context per active compound key. Returned by
+ * `/api/iv-anomalies-cross-asset` and consumed by `useAnomalyCrossAsset`.
+ *
+ * Strictly visual — none of the existing entry/exit logic depends on
+ * these values. They drive the Phase F pills in `AnomalyRow` only.
+ */
+export interface AnomalyCrossAssetContext {
+  regime: AnomalyRegime;
+  tapeAlignment: TapeAlignment;
+  dpCluster: DPCluster;
+  gexZone: GEXZone;
+  vixDirection: VIXDirection;
+}
+
 export function derivePattern(
   durationMs: number,
   firingCount: number,

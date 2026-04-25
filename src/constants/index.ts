@@ -344,6 +344,8 @@ export const POLL_INTERVALS = {
   NOPE: 60_000,
   /** Market internals refresh ($TICK/$ADD/$VOLD/$TRIN) — matches 1-min cron */
   MARKET_INTERNALS: 60_000,
+  /** Cross-asset confluence context (useAnomalyCrossAsset) — Phase F UI */
+  ANOMALY_CROSS_ASSET: 30_000,
 } as const;
 
 /** Progress messages shown during chart analysis */
