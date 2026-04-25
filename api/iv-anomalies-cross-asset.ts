@@ -23,6 +23,13 @@ import {
   setCacheHeaders,
 } from './_lib/api-helpers.js';
 import { ivAnomaliesCrossAssetBodySchema } from './_lib/validation.js';
+import {
+  REGIME_THRESHOLDS,
+  TAPE_WINDOW_MIN,
+  VIX_WINDOW_MIN,
+  DP_BUCKETS,
+  DP_AT_STRIKE_BAND_PTS,
+} from './_lib/constants.js';
 
 export type AnomalyRegime =
   | 'chop'
@@ -51,11 +58,9 @@ export interface IVAnomaliesCrossAssetResponse {
   contexts: Record<string, AnomalyCrossAssetContext>;
 }
 
-const REGIME_THRESHOLDS = { chop: 0.25, mild: 1.0, strong: 2.0 } as const;
-const TAPE_WINDOW_MIN = 15;
-const VIX_WINDOW_MIN = 30;
-const DP_AT_STRIKE_BAND_PTS = 5;
-const DP_BUCKETS = { small: 50_000_000, medium: 200_000_000 } as const;
+// Regime thresholds, tape/VIX windows, and DP bucket cutoffs live in
+// api/_lib/constants.ts so the ML scripts that compute these for backfill
+// and this live endpoint use identical values.
 const SPX_FAMILY = new Set(['SPXW', 'SPY', 'QQQ', 'NDXP', 'IWM']);
 const DP_TICKERS = new Set(['SPXW']);
 
@@ -104,6 +109,28 @@ function isoTs(v: string | Date | null | undefined): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
+/**
+ * Resolve the UTC offset (in minutes, as a positive number) that
+ * America/Chicago has on the given calendar date. Handles DST
+ * transitions correctly: April–November returns 300 (CDT, UTC-5),
+ * November–March returns 360 (CST, UTC-6).
+ */
+function chicagoOffsetMinutes(ymdDate: string): number {
+  // Probe at noon UTC on that date — enough buffer to land on the
+  // correct calendar day in Chicago regardless of DST.
+  const probe = new Date(`${ymdDate}T12:00:00Z`);
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago',
+    timeZoneName: 'shortOffset',
+  });
+  const parts = fmt.formatToParts(probe);
+  const tz = parts.find((p) => p.type === 'timeZoneName')?.value ?? 'GMT-6';
+  const m = /GMT([+-]\d+)/.exec(tz);
+  if (!m || !m[1]) return 360; // Fall back to CST if Intl returns something weird
+  const hours = Number.parseInt(m[1], 10);
+  return -hours * 60;
+}
+
 function parseEntryTimeUtc(ymdDate: string, entryTime: string): number | null {
   // Strip optional " CT" suffix, then match a strict HH:MM AM|PM shape.
   // Anchored regex with no nested quantifiers — not catastrophic-backtrack-prone.
@@ -115,9 +142,9 @@ function parseEntryTimeUtc(ymdDate: string, entryTime: string): number | null {
   const ampm = m[3].toUpperCase();
   if (ampm === 'PM' && hh !== 12) hh += 12;
   if (ampm === 'AM' && hh === 12) hh = 0;
-  const utcHour = hh + 5;
+  const offsetMin = chicagoOffsetMinutes(ymdDate);
   const local = new Date(`${ymdDate}T00:00:00Z`);
-  local.setUTCHours(utcHour, mm, 0, 0);
+  local.setUTCHours(hh, mm + offsetMin, 0, 0);
   return local.getTime();
 }
 
@@ -138,8 +165,6 @@ interface SpotPair {
   date: string;
   firstSpot: number;
   lastSpot: number;
-  first_spot?: string;
-  last_spot?: string;
 }
 interface FuturesBar {
   symbol: string;
@@ -166,11 +191,10 @@ interface VIXSnap {
   entry_time: string;
   vix: string | number;
 }
-interface UnderlyingSpot {
-  ticker: string;
-  ts: string | Date;
-  spot: string | number;
-}
+// Raw-row shape from the bulk strike_iv_snapshots query that drives
+// `spotPairs`. We pluck `first_spot` / `last_spot` off it directly via
+// `num()` — no need to spell the whole shape out as a TS interface
+// since each query result is read once and discarded.
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
@@ -214,7 +238,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE ticker = ANY(${tickers})
           AND TO_CHAR((ts AT TIME ZONE 'America/Chicago')::date, 'YYYY-MM-DD') = ANY(${dates})
         GROUP BY ticker, (ts AT TIME ZONE 'America/Chicago')::date
-      `) as SpotPair[];
+      `) as Array<{
+        ticker: string;
+        date: string;
+        first_spot: string | number | null;
+        last_spot: string | number | null;
+      }>;
       const spotPairMap = new Map<string, SpotPair>();
       for (const r of spotPairs) {
         spotPairMap.set(`${r.ticker}|${r.date}`, {
@@ -373,14 +402,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           const gexKey = `${date}|${k.expiry}`;
           const top3 = gexTop3.get(gexKey);
           const spot = sp?.lastSpot;
-          const head = top3?.[0];
-          if (head && Number.isFinite(spot)) {
-            let nearestStrike = head.strike;
-            let bestDist = Math.abs(head.strike - k.strike);
-            for (const r of top3 as Array<{
-              strike: number;
-              abs_gex: number;
-            }>) {
+          // Of the top-3 strikes by abs_gex on this (date, expiry), pick
+          // the one closest to the alert strike, then check its position
+          // vs current spot. Matches the ML script's E4 logic exactly so
+          // backfill labels and live labels stay in sync.
+          if (top3 && top3.length > 0 && Number.isFinite(spot)) {
+            let nearestStrike = top3[0]!.strike;
+            let bestDist = Math.abs(top3[0]!.strike - k.strike);
+            for (const r of top3) {
               const d = Math.abs(r.strike - k.strike);
               if (d < bestDist) {
                 nearestStrike = r.strike;
@@ -429,6 +458,3 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
   });
 }
-
-// Suppress unused-vars warning for type-only imports.
-export type { UnderlyingSpot };

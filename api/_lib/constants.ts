@@ -270,3 +270,49 @@ export const CATALYST_NARRATIVE_LAG_MIN_MINS = 5;
  * Matches the `dark_pool_levels.total_premium` row shape (already dollar-denominated).
  */
 export const CATALYST_LARGE_DARK_NOTIONAL = 5_000_000;
+
+// ============================================================
+// Phase F — IV-anomaly cross-asset confluence pills
+// ============================================================
+//
+// Hoisted from the cross-asset endpoint so the Python ML scripts
+// that compute these features for the backfill (ml/regime-conditional-,
+// extract-iv-anomaly-darkprint.py, extract-iv-anomaly-e345.py) and the
+// live TS endpoint stay in lockstep. If you tune the thresholds here,
+// re-run the corresponding ML script so the historical labels match.
+
+/**
+ * Per-(ticker, day) regime classifier from D0. Day's % change of the
+ * underlying's spot is bucketed into chop / mild / strong / extreme
+ * with direction (up/down) appended for non-chop. Live UI uses
+ * intraday spot delta; backfill used full-day close.
+ */
+export const REGIME_THRESHOLDS = {
+  /** |%Δ| < 0.25% → chop */
+  chop: 0.25,
+  /** 0.25–1.0% → mild_trend_(up|down) */
+  mild: 1.0,
+  /** 1.0–2.0% → strong_trend_(up|down); above → extreme_(up|down) */
+  strong: 2.0,
+} as const;
+
+/** Tape-alignment window: NQ/ES/RTY/SPX direction over last N minutes vs alert side. */
+export const TAPE_WINDOW_MIN = 15;
+
+/** VIX 30-min change window for direction labeling (rising / flat / falling). */
+export const VIX_WINDOW_MIN = 30;
+
+/**
+ * Dark-pool premium proximity buckets at the alert strike (SPXW only).
+ * `large` is the 91.7%-win regime from E2 — UI tooltips flag it as
+ * tentative because n=36.
+ */
+export const DP_BUCKETS = {
+  /** $50M cutoff between small and medium */
+  small: 50_000_000,
+  /** $200M cutoff between medium and large */
+  medium: 200_000_000,
+} as const;
+
+/** SPX 5-pt strike grid: alert strike "at" a DP level if within ±5pts. */
+export const DP_AT_STRIKE_BAND_PTS = 5;

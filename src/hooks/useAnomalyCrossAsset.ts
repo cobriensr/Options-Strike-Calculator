@@ -104,6 +104,13 @@ export function useAnomalyCrossAsset(
       return;
     }
 
+    // Per-effect AbortController kills any in-flight fetch when the key set
+    // changes (effect re-runs on `fp`) or the component unmounts. Without
+    // this, a slow response keyed on the OLD set could overwrite state
+    // already populated for the NEW set — race surfaced by code review.
+    const ctrl = new AbortController();
+    const effectFp = fp;
+
     const fetchContexts = async () => {
       const currentKeys = keysRef.current;
       if (currentKeys.length === 0) return;
@@ -113,10 +120,10 @@ export function useAnomalyCrossAsset(
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ keys: currentKeys }),
-          signal: AbortSignal.timeout(5_000),
+          signal: AbortSignal.any([ctrl.signal, AbortSignal.timeout(5_000)]),
         });
 
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || ctrl.signal.aborted) return;
 
         if (!res.ok) {
           // 401 (not owner) is expected for guests; don't surface as error.
@@ -125,13 +132,24 @@ export function useAnomalyCrossAsset(
         }
 
         const data = (await res.json()) as CrossAssetResponse;
-        if (!mountedRef.current) return;
+        // Drop the response if the key set changed while we were waiting
+        // OR the component unmounted. Belt-and-suspenders alongside the
+        // AbortController above (network may complete before abort fires).
+        if (
+          !mountedRef.current ||
+          ctrl.signal.aborted ||
+          effectFp !== fingerprint(keysRef.current)
+        ) {
+          return;
+        }
         setContexts(data.contexts ?? {});
         setError(null);
       } catch (err) {
+        // Aborted fetches throw; that's expected on key-change/unmount.
+        if (ctrl.signal.aborted) return;
         if (mountedRef.current) setError(getErrorMessage(err));
       } finally {
-        if (mountedRef.current) setLoading(false);
+        if (mountedRef.current && !ctrl.signal.aborted) setLoading(false);
       }
     };
 
@@ -141,7 +159,10 @@ export function useAnomalyCrossAsset(
       () => void fetchContexts(),
       POLL_INTERVALS.ANOMALY_CROSS_ASSET,
     );
-    return () => clearInterval(id);
+    return () => {
+      clearInterval(id);
+      ctrl.abort();
+    };
   }, [isOwner, marketOpen, fp]);
 
   return { contexts, loading, error };

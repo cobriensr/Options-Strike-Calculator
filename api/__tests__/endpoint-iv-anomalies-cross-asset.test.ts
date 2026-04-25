@@ -54,6 +54,23 @@ function setupSqlSequence(rows: unknown[][]): void {
   }
 }
 
+interface CrossAssetCtxLite {
+  regime?: string;
+  tapeAlignment?: string;
+  dpCluster?: string;
+  gexZone?: string;
+  vixDirection?: string;
+}
+
+/** Read the `contexts[key]` entry off a mock response without ceremony. */
+function getCtx(
+  res: { _json: unknown },
+  key = 'SPXW:7100:call:2026-04-23',
+): CrossAssetCtxLite | undefined {
+  const body = res._json as { contexts?: Record<string, CrossAssetCtxLite> };
+  return body.contexts?.[key];
+}
+
 describe('POST /api/iv-anomalies-cross-asset', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -151,10 +168,7 @@ describe('POST /api/iv-anomalies-cross-asset', () => {
       res,
     );
     expect(res._status).toBe(200);
-    const body = res._json as { contexts: Record<string, { regime: string }> };
-    const ctx = (body as { contexts: Record<string, Record<string, string>> })
-      .contexts['SPXW:7100:call:2026-04-23'];
-    expect(ctx?.regime).toBe('mild_trend_up');
+    expect(getCtx(res)?.regime).toBe('mild_trend_up');
   });
 
   it('classifies chop regime under |0.25%|', async () => {
@@ -179,12 +193,7 @@ describe('POST /api/iv-anomalies-cross-asset', () => {
       mockRequest({ method: 'POST', body: { keys: [SPXW_KEY] } }),
       res,
     );
-    const body = res._json as { contexts: Record<string, { regime: string }> };
-    expect(
-      (body as { contexts: Record<string, Record<string, string>> }).contexts[
-        'SPXW:7100:call:2026-04-23'
-      ]?.regime,
-    ).toBe('chop');
+    expect(getCtx(res, 'SPXW:7100:call:2026-04-23')?.regime).toBe('chop');
   });
 
   it('marks aligned tape when SPX, NQ, ES, RTY all moved up over the prior 15min and side=call', async () => {
@@ -221,14 +230,9 @@ describe('POST /api/iv-anomalies-cross-asset', () => {
       mockRequest({ method: 'POST', body: { keys: [SPXW_KEY] } }),
       res,
     );
-    const body = res._json as {
-      contexts: Record<string, { tapeAlignment: string }>;
-    };
-    expect(
-      (body as { contexts: Record<string, Record<string, string>> }).contexts[
-        'SPXW:7100:call:2026-04-23'
-      ]?.tapeAlignment,
-    ).toBe('aligned');
+    expect(getCtx(res, 'SPXW:7100:call:2026-04-23')?.tapeAlignment).toBe(
+      'aligned',
+    );
   });
 
   it('marks contradicted tape when SPX, NQ, ES all moved DOWN and side=call', async () => {
@@ -265,14 +269,9 @@ describe('POST /api/iv-anomalies-cross-asset', () => {
       mockRequest({ method: 'POST', body: { keys: [SPXW_KEY] } }),
       res,
     );
-    const body = res._json as {
-      contexts: Record<string, { tapeAlignment: string }>;
-    };
-    expect(
-      (body as { contexts: Record<string, Record<string, string>> }).contexts[
-        'SPXW:7100:call:2026-04-23'
-      ]?.tapeAlignment,
-    ).toBe('contradicted');
+    expect(getCtx(res, 'SPXW:7100:call:2026-04-23')?.tapeAlignment).toBe(
+      'contradicted',
+    );
   });
 
   it('classifies DP cluster as large when SPXW has $250M+ at strike', async () => {
@@ -297,14 +296,7 @@ describe('POST /api/iv-anomalies-cross-asset', () => {
       mockRequest({ method: 'POST', body: { keys: [SPXW_KEY] } }),
       res,
     );
-    const body = res._json as {
-      contexts: Record<string, { dpCluster: string }>;
-    };
-    expect(
-      (body as { contexts: Record<string, Record<string, string>> }).contexts[
-        'SPXW:7100:call:2026-04-23'
-      ]?.dpCluster,
-    ).toBe('large');
+    expect(getCtx(res, 'SPXW:7100:call:2026-04-23')?.dpCluster).toBe('large');
   });
 
   it('returns na DP cluster for non-SPXW tickers', async () => {
@@ -334,14 +326,7 @@ describe('POST /api/iv-anomalies-cross-asset', () => {
       }),
       res,
     );
-    const body = res._json as {
-      contexts: Record<string, { dpCluster: string }>;
-    };
-    expect(
-      (body as { contexts: Record<string, Record<string, string>> }).contexts[
-        'NVDA:200:call:2026-04-23'
-      ]?.dpCluster,
-    ).toBe('na');
+    expect(getCtx(res, 'NVDA:200:call:2026-04-23')?.dpCluster).toBe('na');
   });
 
   it('classifies GEX zone as below_spot when nearest top-3 GEX strike < spot', async () => {
@@ -373,12 +358,9 @@ describe('POST /api/iv-anomalies-cross-asset', () => {
       mockRequest({ method: 'POST', body: { keys: [SPXW_KEY] } }),
       res,
     );
-    const body = res._json as { contexts: Record<string, { gexZone: string }> };
-    expect(
-      (body as { contexts: Record<string, Record<string, string>> }).contexts[
-        'SPXW:7100:call:2026-04-23'
-      ]?.gexZone,
-    ).toBe('below_spot');
+    expect(getCtx(res, 'SPXW:7100:call:2026-04-23')?.gexZone).toBe(
+      'below_spot',
+    );
   });
 
   it('marks vix_direction as falling when 30-min change is below -0.2', async () => {
@@ -409,14 +391,9 @@ describe('POST /api/iv-anomalies-cross-asset', () => {
       }),
       res,
     );
-    const body = res._json as {
-      contexts: Record<string, { vixDirection: string }>;
-    };
-    expect(
-      (body as { contexts: Record<string, Record<string, string>> }).contexts[
-        'SPXW:7100:call:2026-04-23'
-      ]?.vixDirection,
-    ).toBe('falling');
+    expect(getCtx(res, 'SPXW:7100:call:2026-04-23')?.vixDirection).toBe(
+      'falling',
+    );
   });
 
   it('returns unknown regime when no spot data exists', async () => {
@@ -426,12 +403,7 @@ describe('POST /api/iv-anomalies-cross-asset', () => {
       mockRequest({ method: 'POST', body: { keys: [SPXW_KEY] } }),
       res,
     );
-    const body = res._json as { contexts: Record<string, { regime: string }> };
-    expect(
-      (body as { contexts: Record<string, Record<string, string>> }).contexts[
-        'SPXW:7100:call:2026-04-23'
-      ]?.regime,
-    ).toBe('unknown');
+    expect(getCtx(res, 'SPXW:7100:call:2026-04-23')?.regime).toBe('unknown');
   });
 
   it('returns 500 with logged error on db failure', async () => {
