@@ -63,8 +63,8 @@ start scaling out; new participants are reactive, not informed).
 #### Four stacked tells (textbook informed-flow fingerprint)
 
 1. **Multi-ticker simultaneity.** At 11:00–11:01 CT, SPY 704P (25.8K × 96% ask)
-   + QQQ 649P (14.6K × 98% ask) hit inside the same minute. Same-desk, same
-   signal, across correlated tickers.
+   - QQQ 649P (14.6K × 98% ask) hit inside the same minute. Same-desk, same
+     signal, across correlated tickers.
 2. **Extreme ask-side dominance (96–98%).** Hedge desks negotiate or leg in;
    98% ask means "pay whatever, I need these now" — informed or mechanical.
    At this size + timing it's not mechanical.
@@ -95,14 +95,14 @@ Had the detector existed at 10:30 CT it would have fired an escalating
 sequence — this is the canonical fixture for any future backtest or E2E
 integration test:
 
-| CT time | Ticker/strike   | Expected flags                               | Expected `flow_phase` |
-| ------- | --------------- | -------------------------------------------- | --------------------- |
-| 10:30   | SPY 705P        | `skew_delta`, `ask_mid_div`                  | `early`               |
-| 10:35   | QQQ 649P        | `skew_delta`, `ask_mid_div`                  | `early`               |
-| 10:40   | SPY 704P        | `skew_delta`, `ask_mid_div`                  | `early`               |
-| 11:00   | SPY 704P        | `skew_delta`, `z_score`, `ask_mid_div`       | `mid`                 |
-| 11:00   | QQQ 649P        | `skew_delta`, `z_score`, `ask_mid_div`       | `mid`                 |
-| 11:35   | SPY 705P        | `skew_delta`, `z_score`, `ask_mid_div`       | `mid`                 |
+| CT time | Ticker/strike | Expected flags                         | Expected `flow_phase` |
+| ------- | ------------- | -------------------------------------- | --------------------- |
+| 10:30   | SPY 705P      | `skew_delta`, `ask_mid_div`            | `early`               |
+| 10:35   | QQQ 649P      | `skew_delta`, `ask_mid_div`            | `early`               |
+| 10:40   | SPY 704P      | `skew_delta`, `ask_mid_div`            | `early`               |
+| 11:00   | SPY 704P      | `skew_delta`, `z_score`, `ask_mid_div` | `mid`                 |
+| 11:00   | QQQ 649P      | `skew_delta`, `z_score`, `ask_mid_div` | `mid`                 |
+| 11:35   | SPY 705P      | `skew_delta`, `z_score`, `ask_mid_div` | `mid`                 |
 
 That's **~60–85 min of lead time** on the 11:50 CT flush. The 25.8K SPY 704P
 print at 11:00 (@ ~$0.08 fill) was worth ~$5–10M of paper at the 12:30 low —
@@ -313,11 +313,11 @@ All fields below are joined from EXISTING data streams — no new ingestion.
 ```ts
 interface ContextSnapshot {
   // Own-ticker dynamics
-  spot_delta_5m: number;        // % change over last 5 min
+  spot_delta_5m: number; // % change over last 5 min
   spot_delta_15m: number;
   spot_delta_60m: number;
-  vwap_distance: number;         // % above/below session VWAP
-  volume_percentile: number;     // intraday-volume rank vs 30-day at same time
+  vwap_distance: number; // % above/below session VWAP
+  volume_percentile: number; // intraday-volume rank vs 30-day at same time
 
   // Cross-ticker (macro tape check)
   spx_delta_15m: number;
@@ -330,15 +330,15 @@ interface ContextSnapshot {
   nq_delta_15m: number;
   ym_delta_15m: number;
   rty_delta_15m: number;
-  nq_ofi_1h: number | null;      // validated microstructure signal (ρ=0.31)
+  nq_ofi_1h: number | null; // validated microstructure signal (ρ=0.31)
 
   // Vol regime
   vix_level: number;
   vix_delta_5m: number;
   vix_delta_15m: number;
-  vix_term_1d: number | null;    // VIX1D
-  vix_term_9d: number | null;    // VIX9D
-  vix_term_30d: number;          // standard VIX
+  vix_term_1d: number | null; // VIX1D
+  vix_term_9d: number | null; // VIX9D
+  vix_term_30d: number; // standard VIX
 
   // Macro backdrop
   dxy_delta_15m: number | null;
@@ -349,13 +349,13 @@ interface ContextSnapshot {
   // Flow context (last 15 min, same ticker)
   recent_flow_alerts: Array<{ ts: string; type: string; premium: number }>;
   recent_dark_prints: Array<{ ts: string; price: number; size: number }>;
-    // dark_prints FILTERED per feedback_darkpool_filters.md:
-    //   drop average_price_trade + derivative_price_trade + contingent_trade
-    //   restrict to 08:30-15:00 CT, exclude extended_hours_trade
+  // dark_prints FILTERED per feedback_darkpool_filters.md:
+  //   drop average_price_trade + derivative_price_trade + contingent_trade
+  //   restrict to 08:30-15:00 CT, exclude extended_hours_trade
 
   // Event proximity
-  econ_release_t_minus: number | null;  // mins since last release (null if none in last 60m)
-  econ_release_t_plus: number | null;   // mins until next release (null if none in next 60m)
+  econ_release_t_minus: number | null; // mins since last release (null if none in last 60m)
+  econ_release_t_plus: number | null; // mins until next release (null if none in next 60m)
   econ_release_name: string | null;
 
   // Institutional context
@@ -368,19 +368,19 @@ interface ContextSnapshot {
   // Options aggregates (added 2026-04-23 — post-mortem revealed these
   // were the missing cross-sectional signals that would have caught today's
   // flush independently of the per-strike IV anomaly)
-  net_flow_5m: number | null;         // net options flow $ (call prem - put prem) last 5 min
-  nope_current: number | null;        // Net Options Pricing Effect, latest
+  net_flow_5m: number | null; // net options flow $ (call prem - put prem) last 5 min
+  nope_current: number | null; // Net Options Pricing Effect, latest
   put_premium_0dte_pctile: number | null;
-    // total 0DTE put premium $ today vs trailing-30d same-time-of-day distribution
-    // value 99 = top 1% flow intensity, 50 = median
+  // total 0DTE put premium $ today vs trailing-30d same-time-of-day distribution
+  // value 99 = top 1% flow intensity, 50 = median
 
   // Gamma structure (added 2026-04-23 — derived from the Zero-Gamma Level
   // Calculator spec, which runs on every `fetch-spot-gex` tick)
-  zero_gamma_level: number | null;    // spot price where net dealer gamma = 0
+  zero_gamma_level: number | null; // spot price where net dealer gamma = 0
   zero_gamma_distance_pct: number | null;
-    // signed: (spot - zero_gamma) / spot * 100
-    // negative = spot below zero-gamma = dealers short gamma = destabilizing
-    // positive = spot above zero-gamma = dealers long gamma = stabilizing
+  // signed: (spot - zero_gamma) / spot * 100
+  // negative = spot below zero-gamma = dealers short gamma = destabilizing
+  // positive = spot above zero-gamma = dealers long gamma = stabilizing
 }
 ```
 
@@ -393,24 +393,28 @@ interface ResolutionOutcome {
   iv_peak: number;
   iv_at_close: number;
   spot_at_detect: number;
-  spot_min: number;              // for puts: best case
-  spot_max: number;              // for calls: best case
+  spot_min: number; // for puts: best case
+  spot_max: number; // for calls: best case
   spot_at_close: number;
-  notional_1c_pnl: number;       // hypothetical 1-contract P&L by close
-  mins_to_peak: number;          // time from detection to IV peak
-  outcome_class: string;         // 'winner_fast' | 'winner_slow' | 'flat' | 'loser'
+  notional_1c_pnl: number; // hypothetical 1-contract P&L by close
+  mins_to_peak: number; // time from detection to IV peak
+  outcome_class: string; // 'winner_fast' | 'winner_slow' | 'flat' | 'loser'
 
   // Catalyst analysis (backward scan T-60 → T+0)
   catalysts: {
     leading_assets: Array<{
       ticker: string;
-      lag_mins: number;          // positive = this asset moved FIRST
+      lag_mins: number; // positive = this asset moved FIRST
       correlation: number;
     }>;
     large_dark_prints: Array<{ ticker: string; ts: string; notional: number }>;
     range_breaks: Array<{ ticker: string; ts: string; direction: string }>;
-    flow_alerts_in_window: Array<{ ts: string; ticker: string; premium: number }>;
-    likely_catalyst: string;     // narrative tag, e.g. 'TLT bid → SPX flush'
+    flow_alerts_in_window: Array<{
+      ts: string;
+      ticker: string;
+      premium: number;
+    }>;
+    likely_catalyst: string; // narrative tag, e.g. 'TLT bid → SPX flush'
   };
 }
 ```
@@ -427,10 +431,10 @@ interface ResolutionOutcome {
 
 **Cron registrations:**
 
-| Path                              | Schedule             | Phase |
-| --------------------------------- | -------------------- | ----- |
-| `/api/cron/fetch-strike-iv`       | `* 13-21 * * 1-5`    | 1     |
-| `/api/cron/resolve-iv-anomalies`  | `5 21 * * 1-5`       | 4     |
+| Path                             | Schedule          | Phase |
+| -------------------------------- | ----------------- | ----- |
+| `/api/cron/fetch-strike-iv`      | `* 13-21 * * 1-5` | 1     |
+| `/api/cron/resolve-iv-anomalies` | `5 21 * * 1-5`    | 4     |
 
 **Snapshot volume estimate:**
 
@@ -541,4 +545,58 @@ pass, then commit to main (per project's direct-to-main convention).
 - Backtesting framework (labeled data enables this later)
 - Claude analyze context integration (add after we trust the signal, likely
   after 2 weeks of labeled data)
+
+## 2026-04-25 expansion — multi-theme broadening (TSLA, META, MSFT, MSTR, MU, SMH)
+
+**Trigger:** 10-day EOD option-flow rollup across all 0DTE-capable tickers
+revealed substantial informed-flow surface outside the 7-ticker watchlist
+(SPXW, NDXP, SPY, QQQ, IWM, NVDA, SNDK):
+
+| Ticker | 10d premium | Avg vol/OI | Peak vol/OI | ASK win rate  | Notes                                          |
+| ------ | ----------- | ---------- | ----------- | ------------- | ---------------------------------------------- |
+| TSLA   | $439M       | 190×       | 29907×      | 55% (17W/14L) | Single biggest non-index outsized premium      |
+| META   | $184M       | 54.8×      | 2922×       | 83% (5W/1L)   | AI capex play; highest win-rate of the set     |
+| MSTR   | $178M       | 26.1×      | 158×        | 75% (3W/1L)   | Bitcoin proxy — non-correlated to tech complex |
+| MSFT   | $205M       | 19.9×      | 224×        | 67% (2W/1L)   | AI/cloud leader, sustained activity            |
+| MU     | $258M       | 17.4×      | 222×        | 50% (2W/2L)   | Memory peer to SNDK for pair-trade context     |
+| SMH    | $182M       | 62.1×      | 2605×       | 100% (1W/0L)  | AI-silicon ETF; small ASK sample but clean     |
+
+**Explicitly excluded:** AMD (267 chains, 85 ASK-dominant, 1W/7L = 12% win
+rate — textbook dumb-money fingerprint). Adding it would generate false
+alerts.
+
+**Watchlist after expansion (13 tickers):**
+
+```text
+SPXW, NDXP, SPY, QQQ, IWM, SMH, NVDA, TSLA, META, MSFT, SNDK, MSTR, MU
+```
+
+**OI tier reorganization:**
+
+- `STRIKE_IV_MIN_OI_NVDA` (1000) renamed to `STRIKE_IV_MIN_OI_HIGH_LIQ` —
+  now applies to NVDA + TSLA + META + MSFT (all share deep ATM 0DTE OI).
+- New `STRIKE_IV_MIN_OI_SECTOR_ETF` (150) for SMH.
+- Existing `STRIKE_IV_MIN_OI_SINGLE_NAME` (200) extends to MSTR + MU
+  alongside SNDK.
+
+**Schwab API budget impact:** 13 chains/min × 60 min × 8 hr = 6,240 chain
+fetches per market day, up from ~3,360. Still well under per-app rate
+limit.
+
+**Strategy intentionally NOT baked in.** The expansion captures entry
+signals across a broader informed-flow surface; trading-strategy
+decisions (sizing, exit logic, hold horizon) are downstream of detection
+and intentionally separate from the detector. Per-ticker signal vs price
+movement will be analyzed via ML once enough labeled data accumulates.
+
+**Files touched (this expansion only):**
+
+- `api/_lib/constants.ts` — STRIKE_IV_TICKERS array, OI tier rename + new SECTOR_ETF tier
+- `api/cron/fetch-strike-iv.ts` — schwabSymbol/minOiFor/matchesRoot exhaustive switches
+- `api/__tests__/cron-fetch-strike-iv.test.ts` — mockChainSequence calls extended to 13 entries
+- `api/__tests__/endpoint-iv-anomalies.test.ts` — list-mode mock counts 7 → 13
+- `api/__tests__/fixtures/build-2026-04-23-flush.ts` — quiet baselines + strike grids for 6 new tickers
+- `api/__tests__/e2e-2026-04-23-flush.test.ts` — TICKERS replay array
+- `scripts/preview-flush-alerts.ts` — TICKERS replay array
+- `src/components/IVAnomalies/types.ts` — IVAnomalyTicker union + IV_ANOMALY_TICKERS array
 - Mobile push notifications (Discord acts as the mobile channel for now)

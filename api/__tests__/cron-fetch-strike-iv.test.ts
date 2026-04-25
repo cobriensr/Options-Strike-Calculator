@@ -209,13 +209,26 @@ function authedReq() {
 
 /**
  * Feed the schwabFetch mock a fresh chain for each ticker in
- * STRIKE_IV_TICKERS order (SPXW, NDXP, SPY, QQQ, IWM, NVDA, SNDK — 7
- * total after the 2026-04-24 single-name expansion). Any ticker set to
- * `null` simulates a fetch failure. Tests that only care about a subset
- * of the tickers should inline `makeChain('$NDX', 22500, { contractRoot:
- * 'NDXP' })` etc. for the empty-chain tail rather than relying on
- * undefined mocks.
+ * STRIKE_IV_TICKERS order (SPXW, NDXP, SPY, QQQ, IWM, SMH, NVDA, TSLA,
+ * META, MSFT, SNDK, MSTR, MU — 13 total after the 2026-04-25 multi-
+ * theme expansion). Any ticker set to `null` simulates a fetch failure.
+ * Tests that only care about a subset of the tickers should inline the
+ * appropriate quiet `makeChain('SMH', 320, {})` etc. for the empty-chain
+ * tail rather than relying on undefined mocks.
  */
+function quietExpansionChains() {
+  // The 6 expansion-tickers (SMH after IWM; TSLA/META/MSFT after NVDA;
+  // MSTR/MU after SNDK) as empty chains. Helper used by tests that
+  // primarily assert on the original 7 tickers' behavior.
+  return {
+    smh: makeChain('SMH', 320, {}),
+    tsla: makeChain('TSLA', 280, {}),
+    meta: makeChain('META', 720, {}),
+    msft: makeChain('MSFT', 470, {}),
+    mstr: makeChain('MSTR', 380, {}),
+    mu: makeChain('MU', 180, {}),
+  };
+}
 type ChainOrError =
   | ReturnType<typeof makeChain>
   | { error: string; status: number };
@@ -311,7 +324,7 @@ describe('fetch-strike-iv handler', () => {
 
   // ── Happy path: 3 index/ETF tickers all return valid chains ─
 
-  it('inserts per-strike IV rows for SPXW/SPY/QQQ and skips NDXP/IWM/NVDA/SNDK when chains are empty', async () => {
+  it('inserts per-strike IV rows for SPXW/SPY/QQQ and skips other tickers when chains are empty', async () => {
     // SPXW chain is fetched via `$SPX` and contains SPXW-rooted contracts.
     const spxwChain = makeChain('$SPX', 7100, {
       putStrikes: [7020, 7050, 7080],
@@ -333,18 +346,25 @@ describe('fetch-strike-iv handler', () => {
       ask: 0.8,
     });
 
-    // NDXP / IWM / NVDA / SNDK return empty chains — legitimate no-op
-    // on sessions without 0DTE listings for those roots, or (for
-    // NVDA/SNDK) when no weeklies are listed. Order must match
-    // STRIKE_IV_TICKERS: SPXW, NDXP, SPY, QQQ, IWM, NVDA, SNDK.
+    // Every other ticker returns an empty chain — legitimate no-op on
+    // sessions without 0DTE listings for those roots. Order must match
+    // STRIKE_IV_TICKERS: SPXW, NDXP, SPY, QQQ, IWM, SMH, NVDA, TSLA,
+    // META, MSFT, SNDK, MSTR, MU.
+    const q = quietExpansionChains();
     mockChainSequence([
       spxwChain,
       makeChain('$NDX', 22500, { contractRoot: 'NDXP' }),
       spyChain,
       qqqChain,
       makeChain('IWM', 235, {}),
+      q.smh,
       makeChain('NVDA', 210, {}),
+      q.tsla,
+      q.meta,
+      q.msft,
       makeChain('SNDK', 140, {}),
+      q.mstr,
+      q.mu,
     ]);
 
     const res = mockResponse();
@@ -362,13 +382,24 @@ describe('fetch-strike-iv handler', () => {
     };
     // SPXW: 6 strikes; SPY: 4; QQQ: 4 → 14 total.
     expect(body.totalInserted).toBe(14);
-    // All 7 tickers reported.
-    expect(body.results).toHaveLength(7);
+    // All 13 tickers reported.
+    expect(body.results).toHaveLength(13);
     expect(body.results.find((r) => r.ticker === 'SPXW')?.rowsInserted).toBe(6);
     expect(body.results.find((r) => r.ticker === 'SPY')?.rowsInserted).toBe(4);
     expect(body.results.find((r) => r.ticker === 'QQQ')?.rowsInserted).toBe(4);
     // Quiet tickers skipped with empty_chain.
-    for (const t of ['NDXP', 'IWM', 'NVDA', 'SNDK']) {
+    for (const t of [
+      'NDXP',
+      'IWM',
+      'SMH',
+      'NVDA',
+      'TSLA',
+      'META',
+      'MSFT',
+      'SNDK',
+      'MSTR',
+      'MU',
+    ]) {
       expect(body.results.find((r) => r.ticker === t)).toMatchObject({
         rowsInserted: 0,
         skipped: true,
@@ -405,14 +436,21 @@ describe('fetch-strike-iv handler', () => {
       makeContract('CALL', 7160, { root: 'SPX', bid: 5, ask: 6 }),
     ];
 
+    const q1 = quietExpansionChains();
     mockChainSequence([
       mixedChain,
       makeChain('$NDX', 22500, { contractRoot: 'NDXP' }),
       makeChain('SPY', 710, {}),
       makeChain('QQQ', 500, {}),
       makeChain('IWM', 235, {}),
+      q1.smh,
       makeChain('NVDA', 210, {}),
+      q1.tsla,
+      q1.meta,
+      q1.msft,
       makeChain('SNDK', 140, {}),
+      q1.mstr,
+      q1.mu,
     ]);
 
     const res = mockResponse();
@@ -446,14 +484,21 @@ describe('fetch-strike-iv handler', () => {
       ask: 0.8,
     });
 
+    const q2 = quietExpansionChains();
     mockChainSequence([
       spxwChain,
       makeChain('$NDX', 22500, { contractRoot: 'NDXP' }),
       spyChain,
       qqqChain,
       makeChain('IWM', 235, {}),
+      q2.smh,
       makeChain('NVDA', 210, {}),
+      q2.tsla,
+      q2.meta,
+      q2.msft,
       makeChain('SNDK', 140, {}),
+      q2.mstr,
+      q2.mu,
     ]);
 
     const res = mockResponse();
@@ -480,8 +525,8 @@ describe('fetch-strike-iv handler', () => {
     expect(spxw).toMatchObject({ rowsInserted: 4, skipped: false });
     const qqq = body.results.find((r) => r.ticker === 'QQQ');
     expect(qqq).toMatchObject({ rowsInserted: 2, skipped: false });
-    // Two transactions (SPXW + QQQ); SPY + NDXP + IWM + NVDA + SNDK
-    // didn't insert.
+    // Two transactions (SPXW + QQQ); everything else returned empty
+    // chains.
     expect(mockSql.transaction).toHaveBeenCalledTimes(2);
   });
 
@@ -504,14 +549,21 @@ describe('fetch-strike-iv handler', () => {
 
     // SPY returns a 401 (expired token) — must not abort SPXW or QQQ
     // or the other tickers.
+    const q3 = quietExpansionChains();
     mockChainSequence([
       spxwChain,
       makeChain('$NDX', 22500, { contractRoot: 'NDXP' }),
       { error: 'token expired', status: 401 },
       qqqChain,
       makeChain('IWM', 235, {}),
+      q3.smh,
       makeChain('NVDA', 210, {}),
+      q3.tsla,
+      q3.meta,
+      q3.msft,
       makeChain('SNDK', 140, {}),
+      q3.mstr,
+      q3.mu,
     ]);
 
     const res = mockResponse();
@@ -527,8 +579,7 @@ describe('fetch-strike-iv handler', () => {
         reason?: string;
       }>;
     };
-    // SPXW: 2 rows, SPY: 0 (error), QQQ: 2 rows, NDXP+IWM+NVDA+SNDK:
-    // 0 each.
+    // SPXW: 2 rows, SPY: 0 (error), QQQ: 2 rows, everything else 0.
     expect(body.totalInserted).toBe(4);
     const spy = body.results.find((r) => r.ticker === 'SPY');
     expect(spy).toMatchObject({
@@ -574,14 +625,21 @@ describe('fetch-strike-iv handler', () => {
       ask: 0.8,
     });
 
+    const q4 = quietExpansionChains();
     mockChainSequence([
       spxwChain,
       makeChain('$NDX', 22500, { contractRoot: 'NDXP' }),
       spyChain,
       qqqChain,
       makeChain('IWM', 235, {}),
+      q4.smh,
       makeChain('NVDA', 210, {}),
+      q4.tsla,
+      q4.meta,
+      q4.msft,
       makeChain('SNDK', 140, {}),
+      q4.mstr,
+      q4.mu,
     ]);
 
     const res = mockResponse();
@@ -601,7 +659,7 @@ describe('fetch-strike-iv handler', () => {
 
   // ── OI gate enforcement ──────────────────────────────────
 
-  it('enforces min-OI gate per ticker (SPXW/NDXP=500, SPY/QQQ=250, IWM=150, NVDA=1000, SNDK=200)', async () => {
+  it('enforces min-OI gate per ticker (SPXW/NDXP=500, SPY/QQQ=250, IWM=150, SMH=150, NVDA/TSLA/META/MSFT=1000, SNDK/MSTR/MU=200)', async () => {
     // SPXW: one strike with OI=400 (below 500 gate — rejected), one with
     //       OI=600 (passes).
     const spxwChain = makeChain('$SPX', 7100, {
@@ -689,14 +747,21 @@ describe('fetch-strike-iv handler', () => {
       makeContract('CALL', 143, { openInterest: 300, bid: 0.5, ask: 0.7 }),
     ];
 
+    const q5 = quietExpansionChains();
     mockChainSequence([
       spxwChain,
       ndxpChain,
       spyChain,
       qqqChain,
       iwmChain,
+      q5.smh,
       nvdaChain,
+      q5.tsla,
+      q5.meta,
+      q5.msft,
       sndkChain,
+      q5.mstr,
+      q5.mu,
     ]);
 
     const res = mockResponse();
@@ -727,7 +792,21 @@ describe('fetch-strike-iv handler', () => {
     });
     // Everything else gets null chains — only SPXW succeeds, matching
     // the fault-tolerance claim of the cron.
-    mockChainSequence([spxwChain, null, null, null, null, null, null]);
+    mockChainSequence([
+      spxwChain,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    ]);
     const res = mockResponse();
     await handler(authedReq(), res);
     // Per-ticker fault tolerance means this request returns 200, not 500.
@@ -735,8 +814,8 @@ describe('fetch-strike-iv handler', () => {
     const body = res._json as {
       results: Array<{ ticker: string; skipped: boolean }>;
     };
-    // 6 non-SPXW tickers got null → 6 skipped with 'schwab_error'.
-    expect(body.results.filter((r) => r.skipped)).toHaveLength(6);
+    // 12 non-SPXW tickers got null → 12 skipped with 'schwab_error'.
+    expect(body.results.filter((r) => r.skipped)).toHaveLength(12);
   });
 
   // ── NVDA / SNDK single-name OI tiers (2026-04-24 expansion) ──
@@ -762,14 +841,21 @@ describe('fetch-strike-iv handler', () => {
     ];
 
     // All other tickers empty to isolate the assertion.
+    const q6 = quietExpansionChains();
     mockChainSequence([
       makeChain('$SPX', 7100, { contractRoot: 'SPXW' }),
       makeChain('$NDX', 22500, { contractRoot: 'NDXP' }),
       makeChain('SPY', 710, {}),
       makeChain('QQQ', 500, {}),
       makeChain('IWM', 235, {}),
+      q6.smh,
       nvdaChain,
+      q6.tsla,
+      q6.meta,
+      q6.msft,
       makeChain('SNDK', 140, {}),
+      q6.mstr,
+      q6.mu,
     ]);
 
     const res = mockResponse();
@@ -798,14 +884,21 @@ describe('fetch-strike-iv handler', () => {
       makeContract('CALL', 144, { openInterest: 800, bid: 0.5, ask: 0.7 }),
     ];
 
+    const q7 = quietExpansionChains();
     mockChainSequence([
       makeChain('$SPX', 7100, { contractRoot: 'SPXW' }),
       makeChain('$NDX', 22500, { contractRoot: 'NDXP' }),
       makeChain('SPY', 710, {}),
       makeChain('QQQ', 500, {}),
       makeChain('IWM', 235, {}),
+      q7.smh,
       makeChain('NVDA', 210, {}),
+      q7.tsla,
+      q7.meta,
+      q7.msft,
       sndkChain,
+      q7.mstr,
+      q7.mu,
     ]);
 
     const res = mockResponse();
@@ -867,6 +960,7 @@ describe('fetch-strike-iv handler', () => {
     const iwmChain = makeChain('IWM', 235, {});
     const nvdaChain = makeChain('NVDA', 210, {});
     const sndkChain = makeChain('SNDK', 140, {});
+    const q8 = quietExpansionChains();
 
     mockChainSequence([
       spxwChain,
@@ -874,8 +968,14 @@ describe('fetch-strike-iv handler', () => {
       spyChain,
       qqqChain,
       iwmChain,
+      q8.smh,
       nvdaChain,
+      q8.tsla,
+      q8.meta,
+      q8.msft,
       sndkChain,
+      q8.mstr,
+      q8.mu,
     ]);
 
     // Program mockSql:
@@ -1004,8 +1104,23 @@ describe('fetch-strike-iv handler', () => {
     const spyChain = makeChain('SPY', 710, {});
     const qqqChain = makeChain('QQQ', 500, {});
     const iwmChain = makeChain('IWM', 235, {});
+    const q9 = quietExpansionChains();
 
-    mockChainSequence([spxwChain, ndxpChain, spyChain, qqqChain, iwmChain]);
+    mockChainSequence([
+      spxwChain,
+      ndxpChain,
+      spyChain,
+      qqqChain,
+      iwmChain,
+      q9.smh,
+      makeChain('NVDA', 210, {}),
+      q9.tsla,
+      q9.meta,
+      q9.msft,
+      makeChain('SNDK', 140, {}),
+      q9.mstr,
+      q9.mu,
+    ]);
 
     mockSql.mockImplementation((strings: TemplateStringsArray) => {
       const joined = Array.isArray(strings) ? strings.join(' ') : '';

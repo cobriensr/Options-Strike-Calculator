@@ -17,11 +17,12 @@
  *     60 minutes are a Z-score warm-up (required because `computeRollingZ`
  *     needs 60 prior samples). Detection replay starts at 10:00 CT.
  *
- *   - **Tickers** (post 2026-04-24 single-name expansion): SPY (target),
- *     QQQ (target), plus SPXW / NDXP / IWM / NVDA / SNDK as quiet
- *     baselines. SPY/QQQ put-side targets produce the anomalies; the
- *     other five stay flat so any flag from them indicates a noise-
- *     generator regression or a stddev-floor bug.
+ *   - **Tickers** (post 2026-04-25 multi-theme expansion): SPY (target),
+ *     QQQ (target), plus SPXW / NDXP / IWM / SMH / NVDA / TSLA / META /
+ *     MSFT / SNDK / MSTR / MU as quiet baselines. SPY/QQQ put-side
+ *     targets produce the anomalies; the other 11 stay flat so any flag
+ *     from them indicates a noise-generator regression or a stddev-floor
+ *     bug.
  *
  *   - **Target strikes**: SPY 704P + 705P, QQQ 649P. Anchor IVs are
  *     derived from the real-session ASK-side concentration — we don't
@@ -57,18 +58,24 @@ const EXPIRY = '2026-04-23';
 
 // Baseline IVs per ticker (flat for non-target strikes; starting point
 // for target strikes). Derived from typical 0DTE OTM put IV range. Quiet
-// tickers (SPXW / NDXP / IWM / NVDA / SNDK) ship purely flat — exact
-// values are not load-bearing for the regression, only that no flags emit
-// when every strike sits at a constant IV. Single-name tech baselines
-// reflect their higher realized vol vs indices (NVDA ~0.45, SNDK ~0.55).
+// tickers ship purely flat — exact values are not load-bearing for the
+// regression, only that no flags emit when every strike sits at a
+// constant IV. Single-name tech baselines reflect their higher realized
+// vol vs indices.
 const BASELINE_IV = {
   SPY: 0.24,
   QQQ: 0.28,
   SPXW: 0.22,
   NDXP: 0.25,
   IWM: 0.26,
+  SMH: 0.32,
   NVDA: 0.45,
+  TSLA: 0.55,
+  META: 0.36,
+  MSFT: 0.3,
   SNDK: 0.55,
+  MSTR: 0.7,
+  MU: 0.5,
 } as const;
 
 // Ticker spot at key times. Linear-interpolated minute-by-minute. These
@@ -104,11 +111,17 @@ const SPOT_ANCHORS = {
   // minute ≥ 0 so one entry is enough.
   NDXP: [{ min: 0, value: 22500 }],
   IWM: [{ min: 0, value: 235 }],
-  // NVDA and SNDK pinned at plausible 2026-04-24 spots — exact values
-  // aren't load-bearing since these strikes stay flat at baseline IV and
-  // never approach the vol/OI gate.
+  SMH: [{ min: 0, value: 320 }],
+  // Single-name spots pinned at plausible 2026-04-25 values — exact
+  // numbers aren't load-bearing since these strikes stay flat at baseline
+  // IV and never approach the vol/OI gate.
   NVDA: [{ min: 0, value: 210 }],
+  TSLA: [{ min: 0, value: 280 }],
+  META: [{ min: 0, value: 720 }],
+  MSFT: [{ min: 0, value: 470 }],
   SNDK: [{ min: 0, value: 140 }],
+  MSTR: [{ min: 0, value: 380 }],
+  MU: [{ min: 0, value: 180 }],
 } as const;
 
 // Target-strike IV anchors (minute-offset from window start, IV in decimal).
@@ -180,6 +193,24 @@ const NVDA_CALL_STRIKES = [212, 213, 214, 215];
 // SNDK is $5-wide (140 spot). Quiet baseline, well below vol/OI gate.
 const SNDK_PUT_STRIKES = [130, 132, 135, 137];
 const SNDK_CALL_STRIKES = [142, 145, 147, 150];
+// SMH is $1-wide near ATM. Sector ETF, quiet.
+const SMH_PUT_STRIKES = [314, 315, 316, 318];
+const SMH_CALL_STRIKES = [322, 323, 324, 325];
+// TSLA is $2.5-wide near ATM. Quiet.
+const TSLA_PUT_STRIKES = [272, 274, 276, 278];
+const TSLA_CALL_STRIKES = [282, 284, 286, 288];
+// META is $5-wide near ATM. Quiet.
+const META_PUT_STRIKES = [705, 710, 712, 715];
+const META_CALL_STRIKES = [725, 730, 735, 740];
+// MSFT is $2.5-wide near ATM. Quiet.
+const MSFT_PUT_STRIKES = [462, 465, 467, 468];
+const MSFT_CALL_STRIKES = [472, 475, 478, 480];
+// MSTR is $5-wide near ATM (heavy IV name). Quiet.
+const MSTR_PUT_STRIKES = [370, 372, 375, 377];
+const MSTR_CALL_STRIKES = [382, 385, 387, 390];
+// MU is $1-wide near ATM. Quiet.
+const MU_PUT_STRIKES = [175, 176, 177, 178];
+const MU_CALL_STRIKES = [182, 183, 184, 185];
 
 // ── Target-strike volume ramps ───────────────────────────────
 //
@@ -449,8 +480,14 @@ const TICKER_STRIKE_GRIDS: ReadonlyArray<
   ['SPY', SPY_PUT_STRIKES, SPY_CALL_STRIKES],
   ['QQQ', QQQ_PUT_STRIKES, QQQ_CALL_STRIKES],
   ['IWM', IWM_PUT_STRIKES, IWM_CALL_STRIKES],
+  ['SMH', SMH_PUT_STRIKES, SMH_CALL_STRIKES],
   ['NVDA', NVDA_PUT_STRIKES, NVDA_CALL_STRIKES],
+  ['TSLA', TSLA_PUT_STRIKES, TSLA_CALL_STRIKES],
+  ['META', META_PUT_STRIKES, META_CALL_STRIKES],
+  ['MSFT', MSFT_PUT_STRIKES, MSFT_CALL_STRIKES],
   ['SNDK', SNDK_PUT_STRIKES, SNDK_CALL_STRIKES],
+  ['MSTR', MSTR_PUT_STRIKES, MSTR_CALL_STRIKES],
+  ['MU', MU_PUT_STRIKES, MU_CALL_STRIKES],
 ];
 
 function buildFixture(): Fixture {

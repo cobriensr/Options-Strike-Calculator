@@ -110,9 +110,23 @@ interface CollectedFlag extends AnomalyFlag {
 // Replay every ticker the fixture carries (weekly-index roots + ETFs +
 // single-name tech). Keeping this aligned with the fixture's grid
 // registry — any ticker with samples in `strikeSnapshots` must also get
-// its spot series replayed here. Order matches post-2026-04-24
-// STRIKE_IV_TICKERS (7 tickers after the NVDA/SNDK expansion).
-const TICKERS = ['SPXW', 'NDXP', 'SPY', 'QQQ', 'IWM', 'NVDA', 'SNDK'] as const;
+// its spot series replayed here. Order matches post-2026-04-25
+// STRIKE_IV_TICKERS (13 tickers after the multi-theme expansion).
+const TICKERS = [
+  'SPXW',
+  'NDXP',
+  'SPY',
+  'QQQ',
+  'IWM',
+  'SMH',
+  'NVDA',
+  'TSLA',
+  'META',
+  'MSFT',
+  'SNDK',
+  'MSTR',
+  'MU',
+] as const;
 
 /**
  * Replay the fixture minute-by-minute and collect every flag produced

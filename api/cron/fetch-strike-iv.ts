@@ -2,10 +2,11 @@
  * GET /api/cron/fetch-strike-iv
  *
  * 1-minute cron that snapshots per-strike implied volatility for the
- * tickers in STRIKE_IV_TICKERS (SPXW, NDXP, SPY, QQQ, IWM, NVDA, SNDK —
- * 7 tickers after the 2026-04-24 single-name expansion) into the
- * `strike_iv_snapshots` table. Foundation for the Strike IV Anomaly
- * Detector (Phase 2 layers detection + context capture on top).
+ * tickers in STRIKE_IV_TICKERS (SPXW, NDXP, SPY, QQQ, IWM, SMH, NVDA,
+ * TSLA, META, MSFT, SNDK, MSTR, MU — 13 tickers after the 2026-04-25
+ * multi-theme expansion) into the `strike_iv_snapshots` table.
+ * Foundation for the Strike IV Anomaly Detector (Phase 2 layers
+ * detection + context capture on top).
  *
  * Per ticker, per run:
  *   1. Fetch the Schwab option chain for today → next 2 Fridays.
@@ -27,8 +28,8 @@
  * `empty_chain`, not an error.
  *
  * Cron cadence: `* 13-21 * * 1-5` — every minute during market hours.
- * Volume budget: 7 tickers × 1 request/min = 420 Schwab requests/hour,
- * well under the per-app rate limit.
+ * Volume budget: 13 tickers × 1 request/min = 780 Schwab requests/hour,
+ * still well under the per-app rate limit.
  *
  * Environment: CRON_SECRET (no UW API key — pure Schwab + Neon).
  */
@@ -43,7 +44,8 @@ import {
   STRIKE_IV_MIN_OI_INDEX,
   STRIKE_IV_MIN_OI_SPY_QQQ,
   STRIKE_IV_MIN_OI_IWM,
-  STRIKE_IV_MIN_OI_NVDA,
+  STRIKE_IV_MIN_OI_SECTOR_ETF,
+  STRIKE_IV_MIN_OI_HIGH_LIQ,
   STRIKE_IV_MIN_OI_SINGLE_NAME,
   STRIKE_IV_TICKERS,
   Z_WINDOW_SIZE,
@@ -163,9 +165,8 @@ function parseExpKey(key: string): string {
  *     SPXW weeklies in the same chain, so we filter by OSI root downstream.
  *   - NDXP (weekly NDX) → `$NDX`: same pattern — NDX monthlies + NDXP
  *     weeklies come back together, filtered by root after fetch.
- *   - SPY / QQQ / IWM → bare symbol (ETF options are root-unique).
- *   - NVDA / SNDK → bare symbol (equity options are root-unique, same
- *     shape as ETFs).
+ *   - All other tickers (SPY/QQQ/IWM/SMH/NVDA/TSLA/META/MSFT/SNDK/MSTR/MU)
+ *     → bare symbol (ETF + equity option roots are root-unique).
  *
  * The `$`-prefix convention matches api/chain.ts; cash indices take it,
  * ETFs and single-name equities don't.
@@ -179,8 +180,14 @@ function schwabSymbol(ticker: StrikeIVTicker): string {
     case 'SPY':
     case 'QQQ':
     case 'IWM':
+    case 'SMH':
     case 'NVDA':
+    case 'TSLA':
+    case 'META':
+    case 'MSFT':
     case 'SNDK':
+    case 'MSTR':
+    case 'MU':
       return ticker;
     default: {
       const _exhaustive: never = ticker;
@@ -190,7 +197,7 @@ function schwabSymbol(ticker: StrikeIVTicker): string {
 }
 
 /**
- * Per-ticker minimum open interest. Five tiers reflect chain-wide strike
+ * Per-ticker minimum open interest. Six tiers reflect chain-wide strike
  * density and liquidity depth; see constants for rationale.
  *
  * The exhaustiveness check means adding a new ticker to STRIKE_IV_TICKERS
@@ -206,9 +213,16 @@ function minOiFor(ticker: StrikeIVTicker): number {
       return STRIKE_IV_MIN_OI_SPY_QQQ;
     case 'IWM':
       return STRIKE_IV_MIN_OI_IWM;
+    case 'SMH':
+      return STRIKE_IV_MIN_OI_SECTOR_ETF;
     case 'NVDA':
-      return STRIKE_IV_MIN_OI_NVDA;
+    case 'TSLA':
+    case 'META':
+    case 'MSFT':
+      return STRIKE_IV_MIN_OI_HIGH_LIQ;
     case 'SNDK':
+    case 'MSTR':
+    case 'MU':
       return STRIKE_IV_MIN_OI_SINGLE_NAME;
     default: {
       const _exhaustive: never = ticker;
@@ -223,23 +237,15 @@ function minOiFor(ticker: StrikeIVTicker): number {
  * the weekly root. A Schwab OSI symbol is `<ROOT-padded-to-6><YYMMDD><C|P><strike-pad>`,
  * so the first token (whitespace-separated) is the root.
  *
- * For SPY/QQQ/IWM/NVDA/SNDK the fetch is already root-unique — returns
- * `true`. Equity roots don't have parallel weekly-vs-monthly namespaces
- * like SPX/SPXW do.
+ * For everything else the fetch is already root-unique — returns `true`.
+ * ETF and single-name equity roots don't have parallel weekly-vs-monthly
+ * namespaces like SPX/SPXW and NDX/NDXP do.
  */
 function matchesRoot(
   ticker: StrikeIVTicker,
   contractSymbol: string | undefined,
 ): boolean {
-  if (
-    ticker === 'SPY' ||
-    ticker === 'QQQ' ||
-    ticker === 'IWM' ||
-    ticker === 'NVDA' ||
-    ticker === 'SNDK'
-  ) {
-    return true;
-  }
+  if (ticker !== 'SPXW' && ticker !== 'NDXP') return true;
   if (!contractSymbol) return false;
   // OSI root lives before the first whitespace block; fall back to the
   // first non-digit/non-space run for exotic formatting.

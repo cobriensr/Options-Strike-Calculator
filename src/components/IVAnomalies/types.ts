@@ -13,8 +13,14 @@ export type IVAnomalyTicker =
   | 'SPY'
   | 'QQQ'
   | 'IWM'
+  | 'SMH'
   | 'NVDA'
-  | 'SNDK';
+  | 'TSLA'
+  | 'META'
+  | 'MSFT'
+  | 'SNDK'
+  | 'MSTR'
+  | 'MU';
 export type IVAnomalySide = 'call' | 'put';
 export type IVAnomalyFlowPhase = 'early' | 'mid' | 'reactive';
 /**
@@ -101,8 +107,14 @@ export const IV_ANOMALY_TICKERS: readonly IVAnomalyTicker[] = [
   'SPY',
   'QQQ',
   'IWM',
+  'SMH',
   'NVDA',
+  'TSLA',
+  'META',
+  'MSFT',
   'SNDK',
+  'MSTR',
+  'MU',
 ] as const;
 
 /**

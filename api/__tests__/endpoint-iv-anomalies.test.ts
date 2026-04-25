@@ -127,9 +127,11 @@ describe('GET /api/iv-anomalies', () => {
   });
 
   it('rejects invalid ticker with 400 (enum validation)', async () => {
+    // AMD is intentionally NOT in STRIKE_IV_TICKERS (excluded as a
+    // confirmed dumb-money fingerprint in the 2026-04-25 rollup study).
     const res = mockResponse();
     await handler(
-      mockRequest({ method: 'GET', query: { ticker: 'TSLA' } }),
+      mockRequest({ method: 'GET', query: { ticker: 'AMD' } }),
       res,
     );
     expect(res._status).toBe(400);
@@ -184,10 +186,9 @@ describe('GET /api/iv-anomalies', () => {
   });
 
   it('returns empty-keyed list payload when no rows exist', async () => {
-    // List mode fires one query per ticker in STRIKE_IV_TICKERS
-    // (SPXW/NDXP/SPY/QQQ/IWM/NVDA/SNDK, 7 total after the 2026-04-24
-    // single-name expansion) — all return [].
-    for (let i = 0; i < 7; i += 1) {
+    // List mode fires one query per ticker in STRIKE_IV_TICKERS (13 total
+    // after the 2026-04-25 multi-theme expansion) — all return [].
+    for (let i = 0; i < 13; i += 1) {
       mockSql.mockResolvedValueOnce([]);
     }
 
@@ -201,15 +202,29 @@ describe('GET /api/iv-anomalies', () => {
       history: Record<string, unknown[]>;
     };
     expect(body.mode).toBe('list');
-    for (const t of ['SPXW', 'NDXP', 'SPY', 'QQQ', 'IWM', 'NVDA', 'SNDK']) {
+    for (const t of [
+      'SPXW',
+      'NDXP',
+      'SPY',
+      'QQQ',
+      'IWM',
+      'SMH',
+      'NVDA',
+      'TSLA',
+      'META',
+      'MSFT',
+      'SNDK',
+      'MSTR',
+      'MU',
+    ]) {
       expect(body.latest[t]).toBeNull();
       expect(body.history[t]).toEqual([]);
     }
   });
 
   it('returns latest + history grouped by ticker on happy path', async () => {
-    // Query order: STRIKE_IV_TICKERS = SPXW, NDXP, SPY, QQQ, IWM,
-    // NVDA, SNDK.
+    // Query order: STRIKE_IV_TICKERS = SPXW, NDXP, SPY, QQQ, IWM, SMH,
+    // NVDA, TSLA, META, MSFT, SNDK, MSTR, MU.
     mockSql
       .mockResolvedValueOnce([
         makeAnomalyRow({ id: 1, ticker: 'SPXW', ts: '2026-04-23T15:30:00Z' }),
@@ -226,8 +241,14 @@ describe('GET /api/iv-anomalies', () => {
       ])
       .mockResolvedValueOnce([]) // QQQ empty
       .mockResolvedValueOnce([]) // IWM empty
+      .mockResolvedValueOnce([]) // SMH empty
       .mockResolvedValueOnce([]) // NVDA empty
-      .mockResolvedValueOnce([]); // SNDK empty
+      .mockResolvedValueOnce([]) // TSLA empty
+      .mockResolvedValueOnce([]) // META empty
+      .mockResolvedValueOnce([]) // MSFT empty
+      .mockResolvedValueOnce([]) // SNDK empty
+      .mockResolvedValueOnce([]) // MSTR empty
+      .mockResolvedValueOnce([]); // MU empty
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
@@ -255,7 +276,18 @@ describe('GET /api/iv-anomalies', () => {
     expect(body.history.SPXW).toHaveLength(2);
     expect(body.history.SPY).toHaveLength(1);
     expect(body.history.QQQ).toHaveLength(0);
-    for (const t of ['NDXP', 'IWM', 'NVDA', 'SNDK']) {
+    for (const t of [
+      'NDXP',
+      'IWM',
+      'SMH',
+      'NVDA',
+      'TSLA',
+      'META',
+      'MSFT',
+      'SNDK',
+      'MSTR',
+      'MU',
+    ]) {
       expect(body.latest[t]).toBeNull();
       expect(body.history[t]).toHaveLength(0);
     }

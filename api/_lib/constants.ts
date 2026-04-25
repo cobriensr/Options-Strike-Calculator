@@ -38,29 +38,39 @@ export const UW_BASE = 'https://api.unusualwhales.com/api';
  * thinner chain still. Numbers calibrated on the tightest strike-wide
  * gate that still filters ghost liquidity.
  *
- * Ticker mix (2026-04-24 single-name expansion): 7 tickers, all 0DTE-capable
+ * Ticker mix (2026-04-25 multi-theme expansion): 13 tickers, all 0DTE-capable
  * (or weekly at worst).
  *   - Cash-index weekly roots: SPXW (SPX weeklies), NDXP (NDX weeklies)
- *   - ETFs: SPY, QQQ, IWM
- *   - Single-name tech: NVDA (mega-cap, AI/data-center), SNDK (memory)
+ *   - Broad ETFs: SPY, QQQ, IWM
+ *   - Sector ETFs: SMH (semis)
+ *   - High-liquidity single-name tech: NVDA, TSLA, META, MSFT (AI capex /
+ *     hyperscaler complex; deep 0DTE OI)
+ *   - Mid-liquidity single names: SNDK (memory), MSTR (BTC proxy), MU
+ *     (memory peer to SNDK)
  *
  * SPX monthlies (3rd-Friday expiry under the `SPX` root) are intentionally
  * excluded — 0DTE lives on SPXW, and mixing SPX monthlies into the same
  * bucket produced cross-root noise in the 2026-04-24 production run. Same
- * for sector ETFs (TLT/XLF/XLE/XLK): chains were too thin and too noisy
- * to contribute signal, so they were dropped in the rescope.
+ * for sector ETFs (TLT/XLF/XLE/XLK) tested earlier: chains were too thin and
+ * too noisy to contribute signal, so they were dropped in the original
+ * rescope. SMH re-enters in the 2026-04-25 expansion as the dedicated AI-
+ * silicon ETF analog (10-day rollup: 136 chains, $182M premium, 100% small-
+ * sample ASK win rate — clean signal vs the dropped sector ETFs).
  *
- * NVDA + SNDK were added 2026-04-24 after an EOD flow review where NVDA
- * produced the highest-conviction informed-call flow of the day (multi-
- * strike accumulation, 83% avg ask, $94M premium) and SNDK surfaced a
- * $131M outlier print (975C 5/08, 2462× vol/OI). The AI/data-center
- * memory regime has made single-name tech a primary informed-flow surface.
+ * The 2026-04-25 expansion (TSLA, META, MSTR, MSFT, MU, SMH) was driven by
+ * a 10-day EOD flow study: TSLA carried the largest non-index outsized
+ * premium ($439M / 344 chains, 55% ASK-side win rate); META/MSFT/MSTR all
+ * cleared the 65%+ ASK win-rate bar. AMD was explicitly excluded — its
+ * 1W/7L (12% ASK win rate) is a textbook dumb-money fingerprint. The
+ * intent is to capture entry signals across the full informed-flow surface
+ * and let downstream ML separate signal from noise per-ticker rather than
+ * pre-narrow the watchlist by trader preference.
  *
  * SPXW / NDXP are not directly queryable on Schwab — the cron fetches
  * `$SPX` / `$NDX` chains and filters contract symbols to the desired
  * weekly root. See `fetch-strike-iv.ts` schwabSymbol / root-filter.
- * NVDA and SNDK are equity tickers — Schwab accepts the bare symbol, same
- * shape as ETFs.
+ * Equity / ETF tickers (SPY, QQQ, IWM, SMH, NVDA, TSLA, META, MSFT, SNDK,
+ * MSTR, MU) are root-unique — Schwab accepts the bare symbol.
  */
 export const STRIKE_IV_OTM_RANGE_PCT = 0.03;
 /** Cash-index weekly roots (SPXW, NDXP) — $5-wide strikes, OI concentrates. */
@@ -68,9 +78,15 @@ export const STRIKE_IV_MIN_OI_INDEX = 500;
 export const STRIKE_IV_MIN_OI_SPY_QQQ = 250;
 /** IWM (Russell 2000) — smaller-cap liquidity sits below QQQ. */
 export const STRIKE_IV_MIN_OI_IWM = 150;
-/** Single-name large-cap (NVDA) — deep OI on most strikes near ATM. */
-export const STRIKE_IV_MIN_OI_NVDA = 1000;
-/** Single-name mid-cap-to-large-cap (SNDK and similar) — thinner ladder. */
+/** Sector ETFs (SMH and similar) — narrower 0DTE chain than SPY/QQQ. */
+export const STRIKE_IV_MIN_OI_SECTOR_ETF = 150;
+/**
+ * High-liquidity single-name tech (NVDA, TSLA, META, MSFT) — deep OI on
+ * most strikes near ATM, so the floor is set high to filter retail-noise
+ * flow that doesn't reflect institutional positioning.
+ */
+export const STRIKE_IV_MIN_OI_HIGH_LIQ = 1000;
+/** Mid-liquidity single names (SNDK, MSTR, MU) — thinner ladder. */
 export const STRIKE_IV_MIN_OI_SINGLE_NAME = 200;
 export const STRIKE_IV_TICKERS = [
   'SPXW',
@@ -78,8 +94,14 @@ export const STRIKE_IV_TICKERS = [
   'SPY',
   'QQQ',
   'IWM',
+  'SMH',
   'NVDA',
+  'TSLA',
+  'META',
+  'MSFT',
   'SNDK',
+  'MSTR',
+  'MU',
 ] as const;
 export type StrikeIVTicker = (typeof STRIKE_IV_TICKERS)[number];
 
