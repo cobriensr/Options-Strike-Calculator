@@ -106,8 +106,10 @@ function makeEmptyContext(): ContextSnapshot {
 function bucketToSample(b: AggBucket): StrikeSample {
   // DuckDB outputs `YYYY-MM-DD HH:mm:ss±HH` (space-sep, ±HH offset with
   // no minutes). JS Date.parse needs `±HH:MM`, so we normalize to that.
+  // The NDX/NDXP spot override happens at the call-site (per-minute,
+  // applied to detectAnomalies' spot argument) — StrikeSample doesn't
+  // carry spot, so no override needed inside this mapper.
   let normalized = b.ts.replace(' ', 'T');
-  // Match a trailing ±HH that's NOT already ±HH:MM
   normalized = normalized.replace(/([+-])(\d{2})$/, '$1$2:00');
   const tsIso = new Date(normalized).toISOString();
   return {
@@ -124,10 +126,32 @@ function bucketToSample(b: AggBucket): StrikeSample {
   };
 }
 
+async function loadNqByMinute(date: string): Promise<Map<string, number>> {
+  // Load all NQ minute closes for the trading day (UTC). Map keys are
+  // ISO timestamps so they match the bucketToSample tsIso.
+  const rows = (await sql`
+    SELECT ts, close
+    FROM futures_bars
+    WHERE symbol = 'NQ'
+      AND ts >= ${date + 'T00:00:00Z'}::timestamptz
+      AND ts <  ${date + 'T23:59:59Z'}::timestamptz
+  `) as Array<{ ts: string | Date; close: string | number }>;
+  const map = new Map<string, number>();
+  for (const r of rows) {
+    const tsIso = r.ts instanceof Date ? r.ts.toISOString() : new Date(r.ts).toISOString();
+    map.set(tsIso, Number(r.close));
+  }
+  return map;
+}
+
 async function processFile(filename: string): Promise<number> {
   const filepath = join(BUCKETS_DIR, filename);
   const content = readFileSync(filepath, 'utf8').trim();
   if (!content) return 0;
+
+  // Date is "2026-04-13" from "2026-04-13-buckets.jsonl"
+  const date = filename.replace('-buckets.jsonl', '');
+  const nqByMinute = await loadNqByMinute(date);
 
   const buckets: AggBucket[] = content
     .split('\n')
@@ -162,7 +186,14 @@ async function processFile(filename: string): Promise<number> {
 
     const minuteBucket = byTickerMinute.get(key)!;
     const samples = minuteBucket.map(bucketToSample);
-    const spot = minuteBucket[0]!.spot;
+    // NDX/NDXP spot override: prefer NQ futures (Databento) over the
+    // JSONL's QQQ-derived spot. NQ tracks NDX within ~0.3% (vs ~1% for
+    // QQQ × 40.5). Lookup keyed on samples[0].ts (already in UTC ISO).
+    const fallbackSpot = minuteBucket[0]!.spot;
+    const spot =
+      ticker === 'NDXP' || ticker === 'NDX'
+        ? (nqByMinute.get(samples[0]!.ts) ?? fallbackSpot)
+        : fallbackSpot;
 
     let history = historyByTicker.get(ticker);
     if (!history) {

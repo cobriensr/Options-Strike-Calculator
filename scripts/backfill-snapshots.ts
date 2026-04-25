@@ -136,16 +136,44 @@ function normalizeTs(ts: string): string {
   return new Date(normalized).toISOString();
 }
 
-function passesGates(b: AggBucket): boolean {
+async function loadNqByMinute(date: string): Promise<Map<string, number>> {
+  const rows = (await sql`
+    SELECT ts, close
+    FROM futures_bars
+    WHERE symbol = 'NQ'
+      AND ts >= ${date + 'T00:00:00Z'}::timestamptz
+      AND ts <  ${date + 'T23:59:59Z'}::timestamptz
+  `) as Array<{ ts: string | Date; close: string | number }>;
+  const map = new Map<string, number>();
+  for (const r of rows) {
+    const tsIso =
+      r.ts instanceof Date ? r.ts.toISOString() : new Date(r.ts).toISOString();
+    map.set(tsIso, Number(r.close));
+  }
+  return map;
+}
+
+function effectiveSpot(b: AggBucket, nqByMinute: Map<string, number>, tsIso: string): number {
+  // NDX/NDXP: prefer NQ futures (Databento) over the QQQ-derived spot
+  // baked into the JSONL. NQ tracks NDX with ~0.3% basis vs QQQ × 40.5
+  // which is ~1% off — meaningful for chart/spot accuracy.
+  if (b.ticker === 'NDXP' || b.ticker === 'NDX') {
+    const nq = nqByMinute.get(tsIso);
+    if (nq != null) return nq;
+  }
+  return b.spot;
+}
+
+function passesGates(b: AggBucket, spot: number): boolean {
   if (b.iv_mid == null || !Number.isFinite(b.iv_mid) || b.iv_mid <= 0) {
     return false;
   }
   if (b.oi < minOiFor(b.ticker)) return false;
   const range = otmRangePctFor(b.ticker);
-  const lower = b.spot * (1 - range);
-  const upper = b.spot * (1 + range);
-  if (b.opt_side === 'call' && b.strike <= b.spot) return false;
-  if (b.opt_side === 'put' && b.strike >= b.spot) return false;
+  const lower = spot * (1 - range);
+  const upper = spot * (1 + range);
+  if (b.opt_side === 'call' && b.strike <= spot) return false;
+  if (b.opt_side === 'put' && b.strike >= spot) return false;
   if (b.strike < lower || b.strike > upper) return false;
   return true;
 }
@@ -200,26 +228,31 @@ async function processFile(filename: string): Promise<number> {
   const content = readFileSync(filepath, 'utf8').trim();
   if (!content) return 0;
 
+  const date = filename.replace('-buckets.jsonl', '');
+  const nqByMinute = await loadNqByMinute(date);
+
   const lines = content.split('\n');
   let kept = 0;
   let batch: SnapshotRow[] = [];
 
   for (const line of lines) {
     const b = JSON.parse(line) as AggBucket;
-    if (!passesGates(b)) continue;
+    const tsIso = normalizeTs(b.ts);
+    const spot = effectiveSpot(b, nqByMinute, tsIso);
+    if (!passesGates(b, spot)) continue;
     batch.push({
       ticker: b.ticker as StrikeIVTicker,
       strike: b.strike,
       side: b.opt_side,
       expiry: b.expiry,
-      spot: b.spot,
+      spot,
       iv_mid: b.iv_mid as number, // gated above
       iv_bid: b.iv_bid,
       iv_ask: b.iv_ask,
       mid_price: b.mid_price,
       oi: b.oi,
       volume: Math.round(b.volume),
-      ts: normalizeTs(b.ts),
+      ts: tsIso,
     });
     if (batch.length >= BATCH_SIZE) {
       await insertBatch(batch);
