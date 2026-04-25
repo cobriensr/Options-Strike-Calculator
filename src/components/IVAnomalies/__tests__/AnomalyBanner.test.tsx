@@ -75,14 +75,14 @@ describe('AnomalyBanner', () => {
       ivAnomalyBannerStore.push(makeRow({ id: 1 }), { kind: 'entry' });
       ivAnomalyBannerStore.push(makeRow({ id: 2 }), {
         kind: 'exit',
-        exitReason: 'volume_surge_flat_iv',
+        exitReason: 'bid_side_surge',
       });
     });
     const entryCard = screen.getByTestId('banner-entry');
     const exitCard = screen.getByTestId('banner-exit');
     expect(entryCard.getAttribute('data-kind')).toBe('entry');
     expect(exitCard.getAttribute('data-kind')).toBe('exit');
-    expect(screen.getByText(/Volume surging on flat IV/)).toBeInTheDocument();
+    expect(screen.getByText(/Bid-side volume surge/)).toBeInTheDocument();
   });
 
   it('shows +N more when more than 3 anomalies pushed', () => {

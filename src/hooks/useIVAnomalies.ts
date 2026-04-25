@@ -17,16 +17,17 @@
  *      silently. If the strike has been silent for ≥ ANOMALY_SILENCE_MS and
  *      then re-fires, that's treated as a NEW event and re-banners.
  *
- * Phase transitions (exit detection, IV-proxy based):
- *   We don't yet ingest per-minute bid-vs-ask volume split per strike, so the
- *   "distribution" signal uses detector firing-rate (firings per minute within
- *   a 10-min rolling window) as a volume proxy. This is directionally correct
- *   but noisier than real tape-side volume. Future work: wire real tape-side
- *   volume for higher fidelity. See docs/superpowers/specs for design context.
- *
+ * Phase transitions (exit detection):
  *   - IV regression   → cooling       (iv_mid drops ≥30% of peak-entry span)
  *   - Ask-mid compression → cooling   (div <0.2vp after ≥5 min at >0.5vp)
- *   - Volume surge + flat IV → distributing (firing-rate ≥2× avg, slope ≤0)
+ *   - Bid-side surge  → distributing  (bid-side vol in 15-min window ≥
+ *                                      BID_SIDE_SURGE_RATIO × cumulative
+ *                                      ask-side vol of the active span,
+ *                                      AND ≥ BID_SIDE_MIN_VOL absolute)
+ *
+ * The bid-side-surge signal uses real tape data from the secondary
+ * `/api/strike-trade-volume` poll (Phase 3 of tape-side spec). Replaced
+ * the prior firing-rate-surge proxy on 2026-04-25.
  *
  *   When both signals would fire on the same poll, distributing takes display
  *   priority (stronger signal) but BOTH banners fire so the user sees both
@@ -53,9 +54,9 @@ import {
   ASK_MID_ACCUMULATION_THRESHOLD,
   ASK_MID_COMPRESSION_MIN_ACTIVE_MS,
   ASK_MID_COMPRESSION_THRESHOLD,
-  DISTRIBUTION_IV_SLOPE_TOLERANCE,
-  DISTRIBUTION_IV_SLOPE_WINDOW_MS,
-  DISTRIBUTION_VOL_MULTIPLIER,
+  BID_SIDE_MIN_VOL,
+  BID_SIDE_SURGE_RATIO,
+  BID_SIDE_SURGE_WINDOW_MS,
   IV_REGRESSION_THRESHOLD,
   IV_REGRESSION_WINDOW_MS,
   POLL_INTERVALS,
@@ -71,6 +72,7 @@ import {
   type IVAnomalyTicker,
   type IVFiringPoint,
   type IVHistoryPoint,
+  type TapeVolumePoint,
 } from '../components/IVAnomalies/types';
 import { ivAnomalyBannerStore } from '../components/IVAnomalies/banner-store';
 import { playAnomalyChime } from '../utils/anomaly-sound';
@@ -117,6 +119,148 @@ async function fetchAnomalies(): Promise<FetchResult> {
       networkError: getErrorMessage(err),
     };
   }
+}
+
+interface TapeVolumeSeries {
+  ticker: IVAnomalyTicker;
+  strike: number;
+  side: 'call' | 'put';
+  data: TapeVolumePoint[];
+}
+
+interface TapeVolumeFetchResult {
+  series: TapeVolumeSeries[];
+}
+
+/**
+ * Pull tape-side volume for one ticker since `sinceIso`. The endpoint
+ * returns rows for ALL strikes of the ticker — the merge step filters
+ * to active anomaly keys.
+ *
+ * Errors fail soft: returns empty series so the bid_side_surge signal
+ * simply doesn't fire instead of blocking the whole hook.
+ */
+async function fetchTapeVolume(
+  ticker: IVAnomalyTicker,
+  sinceIso: string,
+): Promise<TapeVolumeSeries[]> {
+  try {
+    const params = new URLSearchParams({ ticker, since: sinceIso });
+    const res = await fetch(`/api/strike-trade-volume?${params}`, {
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return [];
+    const payload = (await res.json()) as Partial<TapeVolumeFetchResult>;
+    return payload.series ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * After mergeTapeVolume updates an active entry's tape state, this
+ * re-runs detectExitTransitions on each active entry. Reconcile only
+ * evaluates exits when new rows arrive; tape data evolves on its own
+ * cadence, so a strike whose detector firings have stopped but whose
+ * tape now shows a bid-side surge would never transition without this
+ * pass.
+ *
+ * Returns the updated map plus any new banner events. `prevMap` is the
+ * pre-merge map (post-reconcile) so we can detect actual transitions
+ * (entry was active before, now distributing/cooling).
+ */
+function reEvaluateExitsAfterTape(
+  merged: ReadonlyMap<string, ActiveAnomaly>,
+  prevMap: ReadonlyMap<string, ActiveAnomaly>,
+  isFirstPoll: boolean,
+  nowMs: number,
+): {
+  nextMap: Map<string, ActiveAnomaly>;
+  bannerEvents: BannerEvent[];
+} {
+  const next = new Map(merged);
+  const bannerEvents: BannerEvent[] = [];
+  for (const [key, entry] of merged) {
+    if (entry.phase !== 'active') continue;
+    const transitions = detectExitTransitions(entry, entry.latest, nowMs);
+    const displayed = pickDisplayedPhase(transitions);
+    if (!displayed) continue;
+    const prev = prevMap.get(key);
+    if (prev && prev.phase !== 'active') continue;
+    next.set(key, {
+      ...entry,
+      phase: displayed.phase,
+      exitReason: displayed.reason,
+    });
+    if (!isFirstPoll) {
+      for (const t of transitions) {
+        bannerEvents.push({
+          row: entry.latest,
+          kind: 'exit',
+          exitReason: t.reason,
+        });
+      }
+    }
+  }
+  return { nextMap: next, bannerEvents };
+}
+
+/**
+ * Merge fresh tape-volume series into the post-reconcile active map.
+ * Updates each ActiveAnomaly's tapeVolumeHistory and accumulators in
+ * place — non-mutating (returns a new map).
+ *
+ * Trim policy: keep only samples within BID_SIDE_SURGE_WINDOW_MS of
+ * `nowMs` so the rolling-window math in detectExitTransitions stays
+ * cheap. Accumulators sum EVERY sample seen during the active span,
+ * not just the rolling window.
+ */
+function mergeTapeVolume(
+  active: ReadonlyMap<string, ActiveAnomaly>,
+  series: readonly TapeVolumeSeries[],
+  nowMs: number,
+): Map<string, ActiveAnomaly> {
+  const next = new Map<string, ActiveAnomaly>(active);
+  // Index incoming series by (ticker:strike:side) for O(1) lookup.
+  const byKey = new Map<string, TapeVolumeSeries>();
+  for (const s of series) {
+    byKey.set(`${s.ticker}:${s.strike}:${s.side}`, s);
+  }
+
+  const surgeWindowStart = nowMs - BID_SIDE_SURGE_WINDOW_MS;
+  for (const [key, entry] of active) {
+    const tapeKey = `${entry.ticker}:${entry.strike}:${entry.side}`;
+    const fresh = byKey.get(tapeKey);
+    if (!fresh) continue;
+
+    // Filter incoming samples to >= firstSeenTs (strictly within active span).
+    const spanStartMs = tsMs(entry.firstSeenTs, 0);
+    const spanSamples = fresh.data.filter(
+      (p) => tsMs(p.ts, 0) >= spanStartMs,
+    );
+
+    // Recompute accumulators from scratch over the active span — this
+    // is idempotent across repeated tape polls (the endpoint returns
+    // ALL minutes since `since`).
+    let accAsk = 0;
+    let accBid = 0;
+    for (const p of spanSamples) {
+      accAsk += p.askSideVol;
+      accBid += p.bidSideVol;
+    }
+    // Trim history to the surge window so detectExitTransitions runs cheap.
+    const windowSamples = spanSamples.filter(
+      (p) => tsMs(p.ts, 0) >= surgeWindowStart,
+    );
+
+    next.set(key, {
+      ...entry,
+      tapeVolumeHistory: windowSamples,
+      accumulatedAskSideVol: accAsk,
+      accumulatedBidSideVol: accBid,
+    });
+  }
+  return next;
 }
 
 function collectRows(
@@ -182,46 +326,28 @@ export function detectExitTransitions(
   const currentIv = freshestRow.ivAtDetect;
   const currentAskMidDiv = freshestRow.askMidDiv;
 
-  // 1. Volume surge + flat-or-negative IV slope → distributing.
-  //    Firing rate over the 5-min window vs the full active-span rate.
-  //    Need at least one earlier data point so slope is computable.
-  const slopeWindowStart = nowMs - DISTRIBUTION_IV_SLOPE_WINDOW_MS;
-  const recentFirings = entry.firingHistory.filter(
-    (p) => tsMs(p.ts, 0) >= slopeWindowStart,
-  );
-  const oldestFiring = entry.firingHistory[0];
-  if (oldestFiring && recentFirings.length >= 2) {
-    const windowHead = recentFirings[0];
-    const windowTail = recentFirings.at(-1);
-    if (windowHead && windowTail && windowTail !== windowHead) {
-      const windowSpanMs = tsMs(windowTail.ts, nowMs) - tsMs(windowHead.ts, 0);
-      const windowFirings = windowTail.firingCount - windowHead.firingCount;
-      const windowRatePerMin =
-        windowSpanMs > 0 ? windowFirings / (windowSpanMs / 60_000) : 0;
-
-      const spanMs = nowMs - tsMs(entry.firstSeenTs, nowMs);
-      const avgRatePerMin =
-        spanMs > 0 ? entry.firingCount / (spanMs / 60_000) : 0;
-
-      if (
-        avgRatePerMin > 0 &&
-        windowRatePerMin >= avgRatePerMin * DISTRIBUTION_VOL_MULTIPLIER
-      ) {
-        // IV slope: compare current iv_mid vs earliest in the slope window.
-        const slopeWindowSamples = entry.ivHistory.filter(
-          (h) => tsMs(h.ts, 0) >= slopeWindowStart,
-        );
-        const anchorSample = slopeWindowSamples[0];
-        if (anchorSample?.ivMid != null && currentIv != null) {
-          const slope = currentIv - anchorSample.ivMid;
-          if (slope <= DISTRIBUTION_IV_SLOPE_TOLERANCE) {
-            transitions.push({
-              phase: 'distributing',
-              reason: 'volume_surge_flat_iv',
-            });
-          }
-        }
+  // 1. Bid-side surge → distributing.
+  //    Real tape signal: bid-side volume in the last BID_SIDE_SURGE_WINDOW_MS
+  //    must reach BID_SIDE_SURGE_RATIO × accumulated ask-side AND clear the
+  //    BID_SIDE_MIN_VOL noise floor. Replaces the firing-rate-surge proxy
+  //    that ran 2026-04-23 → 2026-04-25.
+  if (
+    entry.accumulatedAskSideVol > 0 &&
+    entry.tapeVolumeHistory.length > 0
+  ) {
+    const surgeWindowStart = nowMs - BID_SIDE_SURGE_WINDOW_MS;
+    let bidSideInWindow = 0;
+    for (const p of entry.tapeVolumeHistory) {
+      if (tsMs(p.ts, 0) >= surgeWindowStart) {
+        bidSideInWindow += p.bidSideVol;
       }
+    }
+    const ratio = bidSideInWindow / entry.accumulatedAskSideVol;
+    if (
+      bidSideInWindow >= BID_SIDE_MIN_VOL &&
+      ratio >= BID_SIDE_SURGE_RATIO
+    ) {
+      transitions.push({ phase: 'distributing', reason: 'bid_side_surge' });
     }
   }
 
@@ -410,6 +536,12 @@ function reconcile(
           nowMs,
           IV_REGRESSION_WINDOW_MS,
         ),
+        // Tape volume populated by mergeTapeVolume() after reconcile —
+        // defaults are empty here so a freshly-seeded entry doesn't fire
+        // bid_side_surge before any tape data has arrived.
+        tapeVolumeHistory: [],
+        accumulatedAskSideVol: 0,
+        accumulatedBidSideVol: 0,
       };
 
       // If the seed batch already has enough data to trip an exit
@@ -453,6 +585,11 @@ function reconcile(
     let runAskMidPeakTs = existing.askMidPeakTs;
     let runIvHistory: IVHistoryPoint[] = [...existing.ivHistory];
     let runFiringHistory: IVFiringPoint[] = [...existing.firingHistory];
+    let runTapeVolumeHistory: TapeVolumePoint[] = [
+      ...existing.tapeVolumeHistory,
+    ];
+    let runAccumulatedAskSideVol = existing.accumulatedAskSideVol;
+    let runAccumulatedBidSideVol = existing.accumulatedBidSideVol;
     let rebannerRow: IVAnomalyRow | null = null;
 
     for (const row of sorted) {
@@ -476,6 +613,9 @@ function reconcile(
             : null;
         runIvHistory = [{ ts: row.ts, ivMid: row.ivAtDetect }];
         runFiringHistory = [{ ts: row.ts, firingCount: 1 }];
+        runTapeVolumeHistory = [];
+        runAccumulatedAskSideVol = 0;
+        runAccumulatedBidSideVol = 0;
         rebannerRow = row;
       } else {
         runFiringCount += 1;
@@ -532,6 +672,9 @@ function reconcile(
       askMidPeakTs: runAskMidPeakTs,
       ivHistory: runIvHistory,
       firingHistory: runFiringHistory,
+      tapeVolumeHistory: runTapeVolumeHistory,
+      accumulatedAskSideVol: runAccumulatedAskSideVol,
+      accumulatedBidSideVol: runAccumulatedBidSideVol,
     };
 
     let finalPhase: IVAnomalyPhase = runPhase;
@@ -627,7 +770,7 @@ export function useIVAnomalies(
     if (!enabled) return;
     setLoading(true);
     setError(null);
-    fetchAnomalies().then((result) => {
+    fetchAnomalies().then(async (result) => {
       if (!mountedRef.current) return;
       if (result.networkError) {
         const next = failStreakRef.current + 1;
@@ -654,14 +797,52 @@ export function useIVAnomalies(
           isFirstPoll,
         );
 
-        activeMapRef.current = nextMap;
-        seenIdsRef.current = nextSeenIds;
-        setActiveMap(nextMap);
+        // Pull tape-side volume for active tickers and merge into the
+        // map. Single-poll latency on bid_side_surge: tape fetched here
+        // becomes visible to detectExitTransitions on the NEXT poll.
+        // 15-min surge window makes 1-min latency acceptable.
+        const tickersWithActive = new Set<IVAnomalyTicker>();
+        for (const a of nextMap.values()) tickersWithActive.add(a.ticker);
+        let earliestFirstSeenMs = Number.POSITIVE_INFINITY;
+        for (const a of nextMap.values()) {
+          const ms = tsMs(a.firstSeenTs, 0);
+          if (ms < earliestFirstSeenMs) earliestFirstSeenMs = ms;
+        }
+        let mergedMap: ReadonlyMap<string, ActiveAnomaly> = nextMap;
+        const allBannerEvents = [...bannerEvents];
+        if (
+          tickersWithActive.size > 0 &&
+          Number.isFinite(earliestFirstSeenMs)
+        ) {
+          const sinceIso = new Date(earliestFirstSeenMs).toISOString();
+          const tapeResults = await Promise.all(
+            [...tickersWithActive].map((t) => fetchTapeVolume(t, sinceIso)),
+          );
+          if (!mountedRef.current) return;
+          const allSeries = tapeResults.flat();
+          const tapeNowMs = Date.now();
+          const merged = mergeTapeVolume(nextMap, allSeries, tapeNowMs);
+          // Tape can fire bid_side_surge even without new detector rows —
+          // re-evaluate exits on the merged map so a strike whose firings
+          // stopped but whose tape just turned still transitions.
+          const reEval = reEvaluateExitsAfterTape(
+            merged,
+            nextMap,
+            isFirstPoll,
+            tapeNowMs,
+          );
+          mergedMap = reEval.nextMap;
+          allBannerEvents.push(...reEval.bannerEvents);
+        }
 
-        if (bannerEvents.length > 0) {
+        activeMapRef.current = mergedMap;
+        seenIdsRef.current = nextSeenIds;
+        setActiveMap(mergedMap);
+
+        if (allBannerEvents.length > 0) {
           let entryCount = 0;
           let exitCount = 0;
-          for (const event of bannerEvents) {
+          for (const event of allBannerEvents) {
             ivAnomalyBannerStore.push(event.row, {
               kind: event.kind,
               exitReason: event.exitReason ?? null,

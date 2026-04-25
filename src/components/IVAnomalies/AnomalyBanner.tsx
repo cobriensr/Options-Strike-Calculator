@@ -65,8 +65,8 @@ function exitReasonSubtitle(reason: IVAnomalyExitReason | null): string {
       return 'IV regressing from peak';
     case 'ask_mid_compression':
       return 'Ask-mid spread compressing';
-    case 'volume_surge_flat_iv':
-      return 'Volume surging on flat IV';
+    case 'bid_side_surge':
+      return 'Bid-side volume surge — distribution';
     default:
       return 'Exit signal detected';
   }

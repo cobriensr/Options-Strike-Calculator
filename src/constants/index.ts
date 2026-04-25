@@ -281,9 +281,10 @@ export const ANOMALY_SILENCE_MS = 15 * 60 * 1000;
 /**
  * Strike IV exit-signal thresholds (phase transitions in useIVAnomalies).
  *
- * These are IV-proxy based signals — we don't yet ingest per-minute bid-vs-ask
- * volume split per strike, so the "distribution" signal uses detector firing
- * rate as a proxy. Future work: wire real tape-side volume for higher fidelity.
+ * As of 2026-04-25 (Phase 3 of tape-side spec) the distribution signal
+ * uses real per-minute bid-side vs ask-side tape volume from
+ * `strike_trade_volume` (UW flow-per-strike-intraday). The prior
+ * firing-rate proxy is deprecated.
  */
 
 /** 30% drop from peak IV relative to (peak - entry) triggers cooling phase. */
@@ -298,17 +299,26 @@ export const ASK_MID_COMPRESSION_MIN_ACTIVE_MS = 5 * 60 * 1000;
 /** Rolling window for IV regression detection. */
 export const IV_REGRESSION_WINDOW_MS = 10 * 60 * 1000;
 
-/** Volume-delta multiplier over active-span avg to trigger distributing. */
-export const DISTRIBUTION_VOL_MULTIPLIER = 2;
-
-/** Rolling window for IV slope measurement in distribution signal. */
-export const DISTRIBUTION_IV_SLOPE_WINDOW_MS = 5 * 60 * 1000;
-
-/** Tolerance for "flat or negative" IV slope in distribution detection. */
-export const DISTRIBUTION_IV_SLOPE_TOLERANCE = 0.001;
-
 /** Ask-mid divergence threshold above which accumulation signature is active. */
 export const ASK_MID_ACCUMULATION_THRESHOLD = 0.005;
+
+/**
+ * Bid-side surge threshold — the primary distribution signal as of 2026-04-25.
+ * When `bidSideVolInLast15Min ≥ accumulatedAskSideVol × BID_SIDE_SURGE_RATIO`
+ * AND `bidSideVolInLast15Min ≥ BID_SIDE_MIN_VOL`, the active anomaly
+ * transitions to `distributing` with reason `bid_side_surge`.
+ *
+ * 50% comes from the 2026-04-23 fixture: SPY 705P accumulated ~454K
+ * vol at 97% ask during entry; the 12:00 CT distribution print was a
+ * 14.7K bid-side surge, ~3% of accumulated — too tight. After holders
+ * scaled out across 12:00–13:00, bid-side cumulative reached ~50% of
+ * the entry-window ask-side total. 50% in a 15-min rolling window is
+ * the cleanest "scaling out" signature.
+ */
+export const BID_SIDE_SURGE_RATIO = 0.5;
+export const BID_SIDE_SURGE_WINDOW_MS = 15 * 60 * 1000;
+/** Noise floor — below this absolute volume, ignore the surge. */
+export const BID_SIDE_MIN_VOL = 1000;
 
 /** Polling intervals for data fetching hooks (milliseconds) */
 export const POLL_INTERVALS = {

@@ -66,11 +66,11 @@ describe('ivAnomalyBannerStore', () => {
   it('tags exit banners with the exitReason', () => {
     ivAnomalyBannerStore.push(makeRow({ id: 1 }), {
       kind: 'exit',
-      exitReason: 'volume_surge_flat_iv',
+      exitReason: 'bid_side_surge',
     });
     const entry = ivAnomalyBannerStore.getSnapshot().visible[0];
     expect(entry?.kind).toBe('exit');
-    expect(entry?.exitReason).toBe('volume_surge_flat_iv');
+    expect(entry?.exitReason).toBe('bid_side_surge');
   });
 
   it('stacks up to maxVisible and overflows the rest', () => {

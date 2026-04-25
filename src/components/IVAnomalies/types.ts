@@ -134,11 +134,19 @@ export const IV_ANOMALY_TICKERS: readonly IVAnomalyTicker[] = [
  */
 export type IVAnomalyPhase = 'active' | 'cooling' | 'distributing';
 
-/** Why an exit transition fired — surfaces in the row subtitle + banner. */
+/**
+ * Why an exit transition fired — surfaces in the row subtitle + banner.
+ *
+ * `bid_side_surge` (2026-04-25, Phase 3 of tape-side spec) replaces
+ * `volume_surge_flat_iv` as the primary distribution signal. It detects
+ * when bid-side volume in a 15-min rolling window exceeds the
+ * BID_SIDE_SURGE_RATIO of the active span's accumulated ask-side volume —
+ * the textbook distribution signature on tape data, no longer a proxy.
+ */
 export type IVAnomalyExitReason =
   | 'iv_regression'
   | 'ask_mid_compression'
-  | 'volume_surge_flat_iv';
+  | 'bid_side_surge';
 
 export interface IVHistoryPoint {
   ts: string;
@@ -149,6 +157,13 @@ export interface IVFiringPoint {
   ts: string;
   /** Cumulative firing count at this ts — used to derive firing-rate slope. */
   firingCount: number;
+}
+
+/** Per-minute tape-side volume sample for an active strike-side. */
+export interface TapeVolumePoint {
+  ts: string;
+  bidSideVol: number;
+  askSideVol: number;
 }
 
 /**
@@ -215,6 +230,25 @@ export interface ActiveAnomaly {
   ivHistory: readonly IVHistoryPoint[];
   /** Rolling firing-count samples — last ~10 min. */
   firingHistory: readonly IVFiringPoint[];
+  /**
+   * Rolling tape-side volume samples for this (ticker, strike, side) —
+   * last ~15 min. Populated by the secondary /api/strike-trade-volume
+   * fetch in useIVAnomalies. Empty when no UW tape data has arrived
+   * yet for this active span.
+   */
+  tapeVolumeHistory: readonly TapeVolumePoint[];
+  /**
+   * Cumulative ask-side volume across the active span (entry → now).
+   * Reset to 0 on re-banner. Used as the denominator for the bid-side-
+   * surge ratio.
+   */
+  accumulatedAskSideVol: number;
+  /**
+   * Cumulative bid-side volume across the active span. Tracked for
+   * symmetry / debug display; the surge detection uses the rolling
+   * 15-min window not the cumulative.
+   */
+  accumulatedBidSideVol: number;
 }
 
 /**

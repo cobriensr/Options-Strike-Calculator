@@ -75,6 +75,28 @@ function respondWith(rows: IVAnomalyRow[]): Response {
 }
 
 /**
+ * Wrap a per-test fetch mock so /api/strike-trade-volume requests resolve
+ * to an empty series by default. Existing tests built around the
+ * /api/iv-anomalies mock queue stay unchanged; tests that specifically
+ * exercise bid_side_surge can override `tapeOverride`.
+ */
+function wrapWithTape(
+  ivMock: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
+  tapeOverride?: (url: string) => Response,
+): typeof globalThis.fetch {
+  return ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input.toString();
+    if (url.includes('/api/strike-trade-volume')) {
+      const r = tapeOverride
+        ? tapeOverride(url)
+        : new Response(JSON.stringify({ series: [] }), { status: 200 });
+      return Promise.resolve(r);
+    }
+    return ivMock(input, init);
+  }) as typeof globalThis.fetch;
+}
+
+/**
  * Pin both `Date.now()` (via fake timers) and the row's `ts` to the same
  * wall clock so silence-gap math compares row-time to "now" cleanly.
  */
@@ -136,7 +158,7 @@ describe('useIVAnomalies — aggregation + alert semantics', () => {
       .fn()
       .mockResolvedValueOnce(respondWith(poll1))
       .mockResolvedValueOnce(respondWith(poll2));
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', wrapWithTape(fetchMock));
 
     const { result } = renderHook(() => useIVAnomalies(true, false));
     await waitFor(() => expect(result.current.anomalies.length).toBe(1));
@@ -179,7 +201,7 @@ describe('useIVAnomalies — aggregation + alert semantics', () => {
       .fn()
       .mockResolvedValueOnce(respondWith(poll1))
       .mockResolvedValueOnce(respondWith(poll2));
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', wrapWithTape(fetchMock));
 
     const { result } = renderHook(() => useIVAnomalies(true, false));
     await waitFor(() => expect(result.current.anomalies.length).toBe(1));
@@ -215,7 +237,7 @@ describe('useIVAnomalies — aggregation + alert semantics', () => {
     fetchMock.mockResolvedValueOnce(
       respondWith([makeRow({ id: 2, ts: '2026-04-23T15:50:00Z' })]),
     );
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', wrapWithTape(fetchMock));
 
     const { result } = renderHook(() => useIVAnomalies(true, false));
     await waitFor(() => expect(result.current.anomalies.length).toBe(1));
@@ -253,7 +275,7 @@ describe('useIVAnomalies — aggregation + alert semantics', () => {
     fetchMock.mockResolvedValueOnce(
       respondWith([makeRow({ id: 99, ts: '2026-04-23T15:50:00Z' })]),
     );
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', wrapWithTape(fetchMock));
 
     const { result } = renderHook(() => useIVAnomalies(true, false));
     await waitFor(() => expect(result.current.anomalies.length).toBe(1));
@@ -313,7 +335,7 @@ describe('useIVAnomalies — aggregation + alert semantics', () => {
         }),
       ]),
     );
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', wrapWithTape(fetchMock));
 
     const { result } = renderHook(() => useIVAnomalies(true, false));
     await waitFor(() => expect(result.current.anomalies.length).toBe(1));
@@ -360,7 +382,7 @@ describe('useIVAnomalies — aggregation + alert semantics', () => {
       .mockResolvedValueOnce(respondWith(poll1Rows))
       .mockResolvedValueOnce(respondWith(poll2Rows))
       .mockResolvedValueOnce(respondWith(poll3Rows));
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', wrapWithTape(fetchMock));
 
     const { result } = renderHook(() => useIVAnomalies(true, false));
     await waitFor(() => expect(result.current.anomalies.length).toBe(1));
@@ -469,7 +491,7 @@ describe('useIVAnomalies — aggregation + alert semantics', () => {
         }),
       ]),
     );
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', wrapWithTape(fetchMock));
 
     const { result } = renderHook(() => useIVAnomalies(true, false));
     await waitFor(() => expect(result.current.anomalies.length).toBe(1));
@@ -513,7 +535,7 @@ describe('useIVAnomalies — aggregation + alert semantics', () => {
         makeRow({ id: 3, ivAtDetect: 0.3, ts: '2026-04-23T15:36:00Z' }),
       ]),
     );
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', wrapWithTape(fetchMock));
 
     const { result } = renderHook(() => useIVAnomalies(true, false));
     await waitFor(() => expect(result.current.anomalies.length).toBe(1));
@@ -569,7 +591,7 @@ describe('useIVAnomalies — aggregation + alert semantics', () => {
         }),
       ]),
     );
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', wrapWithTape(fetchMock));
 
     const { result } = renderHook(() => useIVAnomalies(true, false));
     await waitFor(() => expect(result.current.anomalies.length).toBe(1));
@@ -583,58 +605,86 @@ describe('useIVAnomalies — aggregation + alert semantics', () => {
     expect(agg?.exitReason).toBe('ask_mid_compression');
   });
 
-  it('volume surge with flat IV triggers distributing', async () => {
+  it('bid-side surge triggers distributing once tape data is merged', async () => {
     setSessionNow('2026-04-23T15:30:30Z');
     const fetchMock = vi.fn();
-    // Priming (1 firing; entry span starts).
+    // Priming (1 firing; entry span starts at 15:30).
     fetchMock.mockResolvedValueOnce(
       respondWith([
         makeRow({ id: 1, ivAtDetect: 0.25, ts: '2026-04-23T15:30:00Z' }),
       ]),
     );
-    // Poll 2 at 15:40 — still 1 firing, baseline span = 10 min, avg 0.1/min.
+    // Poll 2 at 15:40 — same firing. Tape on this poll seeds the active
+    // map with heavy ask-side accumulation + a bid-side surge.
     fetchMock.mockResolvedValueOnce(
       respondWith([
         makeRow({ id: 1, ivAtDetect: 0.25, ts: '2026-04-23T15:30:00Z' }),
       ]),
     );
-    // Poll 3 at 15:40:30 — suddenly 20 firings in ~1 min. IV flat at 0.25.
-    const burst: IVAnomalyRow[] = [
-      makeRow({ id: 1, ivAtDetect: 0.25, ts: '2026-04-23T15:30:00Z' }),
-    ];
-    for (let i = 0; i < 20; i += 1) {
-      const sec = String(10 + Math.floor(i * 2.5)).padStart(2, '0');
-      const mins = String(39 + Math.floor(i / 10)).padStart(2, '0');
-      burst.push(
-        makeRow({
-          id: 100 + i,
-          ivAtDetect: 0.25,
-          ts: `2026-04-23T15:${mins}:${sec}Z`,
+    // Poll 3 at 15:40:30 — same firing. detectExitTransitions sees the
+    // tape state merged on poll 2, fires bid_side_surge.
+    fetchMock.mockResolvedValueOnce(
+      respondWith([
+        makeRow({ id: 1, ivAtDetect: 0.25, ts: '2026-04-23T15:30:00Z' }),
+      ]),
+    );
+
+    // Tape responses: empty on poll 1 (no active yet), then a series
+    // with 10K accumulated ask + 6K bid surge in the last 15 min.
+    let tapePollCount = 0;
+    const surgeTape = (): Response => {
+      tapePollCount += 1;
+      if (tapePollCount === 1) {
+        return new Response(JSON.stringify({ series: [] }), { status: 200 });
+      }
+      // Poll 2+: full active-span tape, bid-side surge in the recent window.
+      return new Response(
+        JSON.stringify({
+          series: [
+            {
+              ticker: 'SPXW',
+              strike: 7135,
+              side: 'put',
+              data: [
+                // 15:30-15:38: heavy ask accumulation (10K total ask)
+                { ts: '2026-04-23T15:30:00Z', bidSideVol: 0, askSideVol: 2000, midVol: 0, totalVol: 2000 },
+                { ts: '2026-04-23T15:32:00Z', bidSideVol: 100, askSideVol: 3000, midVol: 0, totalVol: 3100 },
+                { ts: '2026-04-23T15:35:00Z', bidSideVol: 50, askSideVol: 3000, midVol: 0, totalVol: 3050 },
+                { ts: '2026-04-23T15:38:00Z', bidSideVol: 50, askSideVol: 2000, midVol: 0, totalVol: 2050 },
+                // 15:39-15:40: bid-side surge (6K bid in 1 min, 60% of accumulated ask)
+                { ts: '2026-04-23T15:39:00Z', bidSideVol: 3000, askSideVol: 100, midVol: 0, totalVol: 3100 },
+                { ts: '2026-04-23T15:40:00Z', bidSideVol: 3000, askSideVol: 100, midVol: 0, totalVol: 3100 },
+              ],
+            },
+          ],
         }),
+        { status: 200 },
       );
-    }
-    fetchMock.mockResolvedValueOnce(respondWith(burst));
-    vi.stubGlobal('fetch', fetchMock);
+    };
+    vi.stubGlobal('fetch', wrapWithTape(fetchMock, surgeTape));
 
     const { result } = renderHook(() => useIVAnomalies(true, false));
     await waitFor(() => expect(result.current.anomalies.length).toBe(1));
 
+    // Poll 2: tape seeded with surge data. Reconcile uses poll 1's
+    // empty tape so no surge fires this poll.
     setSessionNow('2026-04-23T15:40:00Z');
     await act(async () => result.current.refresh());
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
 
+    // Poll 3: reconcile sees poll 2's merged tape → bid_side_surge fires.
     setSessionNow('2026-04-23T15:40:30Z');
     await act(async () => result.current.refresh());
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
 
     const agg = result.current.anomalies[0];
     expect(agg?.phase).toBe('distributing');
-    expect(agg?.exitReason).toBe('volume_surge_flat_iv');
+    expect(agg?.exitReason).toBe('bid_side_surge');
     const exits = ivAnomalyBannerStore
       .getSnapshot()
       .visible.filter((b) => b.kind === 'exit');
     expect(exits.length).toBeGreaterThanOrEqual(1);
-    expect(exits.some((b) => b.exitReason === 'volume_surge_flat_iv')).toBe(
+    expect(exits.some((b) => b.exitReason === 'bid_side_surge')).toBe(
       true,
     );
   });
@@ -672,7 +722,7 @@ describe('useIVAnomalies — aggregation + alert semantics', () => {
         makeRow({ id: 4, ivAtDetect: 0.35, ts: '2026-04-23T15:39:00Z' }),
       ]),
     );
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', wrapWithTape(fetchMock));
 
     const { result } = renderHook(() => useIVAnomalies(true, false));
     await waitFor(() => expect(result.current.anomalies.length).toBe(1));
@@ -727,7 +777,7 @@ describe('useIVAnomalies — aggregation + alert semantics', () => {
         makeRow({ id: 3, ivAtDetect: 0.3, ts: '2026-04-23T15:36:00Z' }),
       ]),
     );
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', wrapWithTape(fetchMock));
 
     const { result } = renderHook(() => useIVAnomalies(true, false));
     await waitFor(() => expect(result.current.anomalies.length).toBe(1));
@@ -759,7 +809,7 @@ describe('useIVAnomalies — aggregation + alert semantics', () => {
         makeRow({ id: 3, ivAtDetect: 0.3, ts: '2026-04-23T15:36:00Z' }),
       ]),
     );
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', wrapWithTape(fetchMock));
 
     const { result } = renderHook(() => useIVAnomalies(true, false));
     await waitFor(() => expect(result.current.anomalies.length).toBe(1));
@@ -776,7 +826,7 @@ describe('useIVAnomalies — aggregation + alert semantics', () => {
     const fetchMock = vi
       .fn<() => Promise<Response>>()
       .mockRejectedValue(new Error('always fail'));
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', wrapWithTape(fetchMock));
 
     const { result } = renderHook(() => useIVAnomalies(true, true));
 

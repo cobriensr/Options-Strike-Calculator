@@ -63,6 +63,9 @@ function makeActive(
     askMidPeakTs: null,
     ivHistory: [{ ts: latest.ts, ivMid: latest.ivAtDetect }],
     firingHistory: [{ ts: latest.ts, firingCount: 1 }],
+    tapeVolumeHistory: [],
+    accumulatedAskSideVol: 0,
+    accumulatedBidSideVol: 0,
   };
   return { ...base, ...aggOverrides };
 }
@@ -337,7 +340,7 @@ describe('AnomalyRow', () => {
           {},
           {
             phase: 'distributing',
-            exitReason: 'volume_surge_flat_iv',
+            exitReason: 'bid_side_surge',
           },
         )}
       />,
