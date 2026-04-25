@@ -600,3 +600,61 @@ movement will be analyzed via ML once enough labeled data accumulates.
 - `scripts/preview-flush-alerts.ts` — TICKERS replay array
 - `src/components/IVAnomalies/types.ts` — IVAnomalyTicker union + IV_ANOMALY_TICKERS array
 - Mobile push notifications (Discord acts as the mobile channel for now)
+
+## 2026-04-25 gate loosening — single-name capture rebalance
+
+**Trigger:** the multi-theme expansion alone wasn't enough. 10-day
+backfill replay against the original gates (vol/OI ≥ 5×, OI floor 1000
+on high-liq tier, OTM ±3%) showed that 60-89% of single-name rollup
+chains were dropped by the OI floor alone, and another 75-90% were
+dropped by the narrow OTM gate. Net result: only 13 alerts captured
+across all six new tickers in 10 days — too thin to justify their
+addition.
+
+**OI floors lowered across the board:**
+
+| Tier | Old | New | Constant |
+| ---- | --- | --- | -------- |
+| Index (SPXW/NDXP) | 500 | **300** | `STRIKE_IV_MIN_OI_INDEX` |
+| SPY/QQQ | 250 | **150** | `STRIKE_IV_MIN_OI_SPY_QQQ` |
+| IWM | 150 | **75** | `STRIKE_IV_MIN_OI_IWM` |
+| Sector ETF (SMH) | 150 | **100** | `STRIKE_IV_MIN_OI_SECTOR_ETF` |
+| High-liq names (NVDA/TSLA/META/MSFT) | 1000 | **500** | `STRIKE_IV_MIN_OI_HIGH_LIQ` |
+| Mid-liq (SNDK/MSTR/MU) | 200 | **100** | `STRIKE_IV_MIN_OI_SINGLE_NAME` |
+
+**OTM range bifurcated** (was uniform `STRIKE_IV_OTM_RANGE_PCT = 0.03`):
+
+- `STRIKE_IV_OTM_RANGE_PCT_INDEX = 0.03` — SPXW, NDXP, SPY, QQQ, IWM
+- `STRIKE_IV_OTM_RANGE_PCT_SINGLE_NAME = 0.05` — SMH, NVDA, TSLA, META,
+  MSFT, SNDK, MSTR, MU
+
+Resolved by new `otmRangePctFor(ticker)` exhaustive switch in
+`fetch-strike-iv.ts`, mirroring `minOiFor()`.
+
+**Backfill impact (10-day replay):**
+
+| Ticker | Before | After | Δ |
+| ------ | ------ | ----- | -- |
+| SPXW | 47 | 125 | +166% |
+| SPY | 124 | 151 | +22% |
+| QQQ | 167 | 215 | +29% |
+| IWM | 68 | 89 | +31% |
+| SMH | 1 | 6 | +500% |
+| NVDA | 0 | **7** | +∞ |
+| TSLA | 2 | 3 | +50% |
+| MSFT | 4 | 5 | +25% |
+| MSTR | 3 | 10 | +233% |
+| MU | 3 | 7 | +133% |
+| **Total** | **419** | **618** | **+47%** |
+
+META and SNDK still 0 — likely structural (META 0DTE flow is balanced;
+SNDK directional flow concentrates in long-dated 2028 strikes outside
+even the widened ±5% OTM gate). To be revisited if their detector
+silence persists past 2 weeks.
+
+**Files touched (this gate change):**
+
+- `api/_lib/constants.ts` — OI floors + bifurcated OTM constants
+- `api/cron/fetch-strike-iv.ts` — added `otmRangePctFor()` resolver
+- `api/__tests__/cron-fetch-strike-iv.test.ts` — updated boundary probes
+- `scripts/backfill-iv-anomalies-from-csv.py` — mirror constants for replay parity

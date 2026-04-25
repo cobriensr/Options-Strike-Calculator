@@ -40,7 +40,8 @@ import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { cronGuard, schwabFetch } from '../_lib/api-helpers.js';
 import {
-  STRIKE_IV_OTM_RANGE_PCT,
+  STRIKE_IV_OTM_RANGE_PCT_INDEX,
+  STRIKE_IV_OTM_RANGE_PCT_SINGLE_NAME,
   STRIKE_IV_MIN_OI_INDEX,
   STRIKE_IV_MIN_OI_SPY_QQQ,
   STRIKE_IV_MIN_OI_IWM,
@@ -232,6 +233,38 @@ function minOiFor(ticker: StrikeIVTicker): number {
 }
 
 /**
+ * OTM range as a fraction of spot. Bifurcated 2026-04-25:
+ *   - Index + broad ETFs (SPXW/NDXP/SPY/QQQ/IWM): ±3% — concentrated
+ *     0DTE flow, ±3% covers the reaction surface.
+ *   - Sector ETF + single names: ±5% — single-name informed flow tends
+ *     toward the 4-5% OTM lottery-ticket strikes, which the previous
+ *     uniform ±3% gate filtered out.
+ */
+function otmRangePctFor(ticker: StrikeIVTicker): number {
+  switch (ticker) {
+    case 'SPXW':
+    case 'NDXP':
+    case 'SPY':
+    case 'QQQ':
+    case 'IWM':
+      return STRIKE_IV_OTM_RANGE_PCT_INDEX;
+    case 'SMH':
+    case 'NVDA':
+    case 'TSLA':
+    case 'META':
+    case 'MSFT':
+    case 'SNDK':
+    case 'MSTR':
+    case 'MU':
+      return STRIKE_IV_OTM_RANGE_PCT_SINGLE_NAME;
+    default: {
+      const _exhaustive: never = ticker;
+      throw new Error(`No OTM range for ticker: ${String(_exhaustive)}`);
+    }
+  }
+}
+
+/**
  * OSI-root filter. SPXW/NDXP chains come back under the parent `$SPX` /
  * `$NDX` fetch mixed with the monthly (SPX / NDX) contracts; we only want
  * the weekly root. A Schwab OSI symbol is `<ROOT-padded-to-6><YYMMDD><C|P><strike-pad>`,
@@ -293,8 +326,9 @@ function extractRows(
   const spot = chain.underlying?.last;
   if (!Number.isFinite(spot) || spot <= 0) return [];
 
-  const lowerBound = spot * (1 - STRIKE_IV_OTM_RANGE_PCT);
-  const upperBound = spot * (1 + STRIKE_IV_OTM_RANGE_PCT);
+  const otmRangePct = otmRangePctFor(ticker);
+  const lowerBound = spot * (1 - otmRangePct);
+  const upperBound = spot * (1 + otmRangePct);
   const minOi = minOiFor(ticker);
   const rows: SnapshotRow[] = [];
 

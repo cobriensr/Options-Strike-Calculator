@@ -54,16 +54,21 @@ WATCHLIST = (
 )
 VOL_OI_THRESHOLD = 5.0
 SIDE_DOMINANCE_THRESHOLD = 0.65
-OTM_RANGE_PCT = 0.03
 SILENCE_MIN = 15
 
-# Per-ticker min OI tiers (mirrors STRIKE_IV_MIN_OI_*).
+# OTM range, bifurcated 2026-04-25: index/broad ETFs ±3%, single names + sector ETF ±5%.
+OTM_RANGE_PCT_INDEX = 0.03
+OTM_RANGE_PCT_SINGLE_NAME = 0.05
+INDEX_TICKERS = {"SPXW", "NDXP", "SPY", "QQQ", "IWM"}
+
+# Per-ticker min OI tiers (mirrors STRIKE_IV_MIN_OI_*) — loosened 2026-04-25
+# after the rescope study showed 60-89% single-name flow being dropped by OI.
 MIN_OI = {
-    "SPXW": 500, "NDXP": 500,
-    "SPY": 250, "QQQ": 250,
-    "IWM": 150, "SMH": 150,
-    "NVDA": 1000, "TSLA": 1000, "META": 1000, "MSFT": 1000,
-    "SNDK": 200, "MSTR": 200, "MU": 200,
+    "SPXW": 300, "NDXP": 300,
+    "SPY": 150, "QQQ": 150,
+    "IWM": 75, "SMH": 100,
+    "NVDA": 500, "TSLA": 500, "META": 500, "MSFT": 500,
+    "SNDK": 100, "MSTR": 100, "MU": 100,
 }
 
 
@@ -72,6 +77,10 @@ def replay_day(con: duckdb.DuckDBPyConnection, csv_path: Path) -> list[dict[str,
     watchlist_sql = "(" + ", ".join(f"'{t}'" for t in WATCHLIST) + ")"
     min_oi_cases = "\n            ".join(
         f"WHEN '{t}' THEN {oi}" for t, oi in MIN_OI.items()
+    )
+    otm_range_cases = "\n            ".join(
+        f"WHEN '{t}' THEN {OTM_RANGE_PCT_INDEX if t in INDEX_TICKERS else OTM_RANGE_PCT_SINGLE_NAME}"
+        for t in WATCHLIST
     )
 
     q = f"""
@@ -140,7 +149,11 @@ def replay_day(con: duckdb.DuckDBPyConnection, csv_path: Path) -> list[dict[str,
         CASE ticker
             {min_oi_cases}
             ELSE 9999999
-        END AS min_oi_floor
+        END AS min_oi_floor,
+        CASE ticker
+            {otm_range_cases}
+            ELSE 0
+        END AS otm_range_pct
       FROM cumulative
       WHERE oi > 0
     )
@@ -166,9 +179,9 @@ def replay_day(con: duckdb.DuckDBPyConnection, csv_path: Path) -> list[dict[str,
       AND CASE WHEN ask_pct >= bid_pct THEN ask_pct ELSE bid_pct END
           >= {SIDE_DOMINANCE_THRESHOLD}
       AND (
-        (opt_side = 'call' AND strike >  spot AND strike <= spot * (1 + {OTM_RANGE_PCT}))
+        (opt_side = 'call' AND strike >  spot AND strike <= spot * (1 + otm_range_pct))
         OR
-        (opt_side = 'put'  AND strike <  spot AND strike >= spot * (1 - {OTM_RANGE_PCT}))
+        (opt_side = 'put'  AND strike <  spot AND strike >= spot * (1 - otm_range_pct))
       )
     ORDER BY minute, ticker, strike
     """

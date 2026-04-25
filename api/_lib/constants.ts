@@ -72,22 +72,43 @@ export const UW_BASE = 'https://api.unusualwhales.com/api';
  * Equity / ETF tickers (SPY, QQQ, IWM, SMH, NVDA, TSLA, META, MSFT, SNDK,
  * MSTR, MU) are root-unique — Schwab accepts the bare symbol.
  */
-export const STRIKE_IV_OTM_RANGE_PCT = 0.03;
-/** Cash-index weekly roots (SPXW, NDXP) — $5-wide strikes, OI concentrates. */
-export const STRIKE_IV_MIN_OI_INDEX = 500;
-export const STRIKE_IV_MIN_OI_SPY_QQQ = 250;
+/**
+ * OTM range — ticker-tier bifurcated 2026-04-25 after the rescope study:
+ * index/broad ETF flow concentrates within ±3% (the 0DTE reaction
+ * surface) but single-name flow patterns spread out to ±5% (lottery-
+ * ticket strikes are part of the informed-flow signature).
+ *
+ * Empirical: 75-90% of single-name rollup chains sit OUTSIDE ±3% (META
+ * 75% loss, MSTR 90%) — the wider gate captures real signal that the
+ * old uniform ±3% gate dropped.
+ */
+export const STRIKE_IV_OTM_RANGE_PCT_INDEX = 0.03;
+export const STRIKE_IV_OTM_RANGE_PCT_SINGLE_NAME = 0.05;
+/**
+ * OI floors — looser-tier values 2026-04-25. Prior values (500/250/150/
+ * 150/1000/200) were calibrated for index dominance and were over-
+ * filtering single-name flow. The 10-day backfill funnel showed 60-89%
+ * of single-name rollup chains being dropped by OI alone. New floors
+ * keep the signal-to-noise ratio acceptable while widening the
+ * detector's operating envelope.
+ *
+ * Cash-index weekly roots (SPXW, NDXP) — $5-wide strikes, OI concentrates.
+ */
+export const STRIKE_IV_MIN_OI_INDEX = 300;
+export const STRIKE_IV_MIN_OI_SPY_QQQ = 150;
 /** IWM (Russell 2000) — smaller-cap liquidity sits below QQQ. */
-export const STRIKE_IV_MIN_OI_IWM = 150;
+export const STRIKE_IV_MIN_OI_IWM = 75;
 /** Sector ETFs (SMH and similar) — narrower 0DTE chain than SPY/QQQ. */
-export const STRIKE_IV_MIN_OI_SECTOR_ETF = 150;
+export const STRIKE_IV_MIN_OI_SECTOR_ETF = 100;
 /**
  * High-liquidity single-name tech (NVDA, TSLA, META, MSFT) — deep OI on
- * most strikes near ATM, so the floor is set high to filter retail-noise
- * flow that doesn't reflect institutional positioning.
+ * most strikes near ATM, but lower than the original 1000 to capture
+ * institutional flow on $1-strike-spaced near-ATM contracts that
+ * concentrate ~500 OI rather than 1000+.
  */
-export const STRIKE_IV_MIN_OI_HIGH_LIQ = 1000;
+export const STRIKE_IV_MIN_OI_HIGH_LIQ = 500;
 /** Mid-liquidity single names (SNDK, MSTR, MU) — thinner ladder. */
-export const STRIKE_IV_MIN_OI_SINGLE_NAME = 200;
+export const STRIKE_IV_MIN_OI_SINGLE_NAME = 100;
 export const STRIKE_IV_TICKERS = [
   'SPXW',
   'NDXP',

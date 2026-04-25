@@ -659,9 +659,9 @@ describe('fetch-strike-iv handler', () => {
 
   // ── OI gate enforcement ──────────────────────────────────
 
-  it('enforces min-OI gate per ticker (SPXW/NDXP=500, SPY/QQQ=250, IWM=150, SMH=150, NVDA/TSLA/META/MSFT=1000, SNDK/MSTR/MU=200)', async () => {
-    // SPXW: one strike with OI=400 (below 500 gate — rejected), one with
-    //       OI=600 (passes).
+  it('enforces min-OI gate per ticker (SPXW/NDXP=300, SPY/QQQ=150, IWM=75, SMH=100, NVDA/TSLA/META/MSFT=500, SNDK/MSTR/MU=100)', async () => {
+    // SPXW: one strike with OI=250 (below 300 gate — rejected), one with
+    //       OI=350 (passes).
     const spxwChain = makeChain('$SPX', 7100, {
       contractRoot: 'SPXW',
       bid: 5,
@@ -669,7 +669,7 @@ describe('fetch-strike-iv handler', () => {
     });
     spxwChain.putExpDateMap['2026-04-24:0']!['7050'] = [
       makeContract('PUT', 7050, {
-        openInterest: 400,
+        openInterest: 250,
         bid: 5,
         ask: 6,
         root: 'SPXW',
@@ -677,14 +677,14 @@ describe('fetch-strike-iv handler', () => {
     ];
     spxwChain.callExpDateMap['2026-04-24:0']!['7150'] = [
       makeContract('CALL', 7150, {
-        openInterest: 600,
+        openInterest: 350,
         bid: 5,
         ask: 6,
         root: 'SPXW',
       }),
     ];
 
-    // NDXP: OI=400 rejected, OI=600 accepted (same tier as SPXW).
+    // NDXP: OI=250 rejected, OI=350 accepted (same tier as SPXW).
     const ndxpChain = makeChain('$NDX', 22500, {
       contractRoot: 'NDXP',
       bid: 5,
@@ -692,7 +692,7 @@ describe('fetch-strike-iv handler', () => {
     });
     ndxpChain.putExpDateMap['2026-04-24:0']!['22400'] = [
       makeContract('PUT', 22400, {
-        openInterest: 400,
+        openInterest: 250,
         bid: 5,
         ask: 6,
         root: 'NDXP',
@@ -700,51 +700,51 @@ describe('fetch-strike-iv handler', () => {
     ];
     ndxpChain.callExpDateMap['2026-04-24:0']!['22600'] = [
       makeContract('CALL', 22600, {
-        openInterest: 600,
+        openInterest: 350,
         bid: 5,
         ask: 6,
         root: 'NDXP',
       }),
     ];
 
-    // SPY: OI=200 rejected (below 250 gate), OI=300 passes.
+    // SPY: OI=100 rejected (below 150 gate), OI=200 passes.
     const spyChain = makeChain('SPY', 710, { bid: 0.8, ask: 1.0 });
     spyChain.putExpDateMap['2026-04-24:0']!['705'] = [
-      makeContract('PUT', 705, { openInterest: 200, bid: 0.8, ask: 1.0 }),
+      makeContract('PUT', 705, { openInterest: 100, bid: 0.8, ask: 1.0 }),
     ];
     spyChain.callExpDateMap['2026-04-24:0']!['715'] = [
-      makeContract('CALL', 715, { openInterest: 300, bid: 0.8, ask: 1.0 }),
+      makeContract('CALL', 715, { openInterest: 200, bid: 0.8, ask: 1.0 }),
     ];
 
     // QQQ: empty (not testing QQQ gate here).
     const qqqChain = makeChain('QQQ', 500, {});
 
-    // IWM: OI=100 rejected (below 150 gate), OI=200 accepted.
+    // IWM: OI=50 rejected (below 75 gate), OI=100 accepted.
     const iwmChain = makeChain('IWM', 235, { bid: 0.5, ask: 0.7 });
     iwmChain.putExpDateMap['2026-04-24:0']!['232'] = [
-      makeContract('PUT', 232, { openInterest: 100, bid: 0.5, ask: 0.7 }),
+      makeContract('PUT', 232, { openInterest: 50, bid: 0.5, ask: 0.7 }),
     ];
     iwmChain.callExpDateMap['2026-04-24:0']!['238'] = [
-      makeContract('CALL', 238, { openInterest: 200, bid: 0.5, ask: 0.7 }),
+      makeContract('CALL', 238, { openInterest: 100, bid: 0.5, ask: 0.7 }),
     ];
 
-    // NVDA: mega-cap, 1000-OI gate. OI=800 rejected, OI=1200 accepted.
+    // NVDA: high-liq tier, 500-OI gate. OI=400 rejected, OI=600 accepted.
     const nvdaChain = makeChain('NVDA', 210, { bid: 0.5, ask: 0.7 });
     nvdaChain.putExpDateMap['2026-04-24:0']!['205'] = [
-      makeContract('PUT', 205, { openInterest: 800, bid: 0.5, ask: 0.7 }),
+      makeContract('PUT', 205, { openInterest: 400, bid: 0.5, ask: 0.7 }),
     ];
     nvdaChain.callExpDateMap['2026-04-24:0']!['215'] = [
-      makeContract('CALL', 215, { openInterest: 1200, bid: 0.5, ask: 0.7 }),
+      makeContract('CALL', 215, { openInterest: 600, bid: 0.5, ask: 0.7 }),
     ];
 
-    // SNDK: single-name mid-cap, 200-OI gate. OI=150 rejected, OI=300
-    // accepted. Strikes within ±3% of spot=140 (band = [135.8, 144.2]).
+    // SNDK: single-name mid-tier, 100-OI gate. OI=50 rejected, OI=150
+    // accepted. Strikes within ±5% of spot=140 (band = [133, 147]).
     const sndkChain = makeChain('SNDK', 140, { bid: 0.5, ask: 0.7 });
     sndkChain.putExpDateMap['2026-04-24:0']!['137'] = [
-      makeContract('PUT', 137, { openInterest: 150, bid: 0.5, ask: 0.7 }),
+      makeContract('PUT', 137, { openInterest: 50, bid: 0.5, ask: 0.7 }),
     ];
     sndkChain.callExpDateMap['2026-04-24:0']!['143'] = [
-      makeContract('CALL', 143, { openInterest: 300, bid: 0.5, ask: 0.7 }),
+      makeContract('CALL', 143, { openInterest: 150, bid: 0.5, ask: 0.7 }),
     ];
 
     const q5 = quietExpansionChains();
@@ -820,21 +820,21 @@ describe('fetch-strike-iv handler', () => {
 
   // ── NVDA / SNDK single-name OI tiers (2026-04-24 expansion) ──
 
-  it('applies the 1000-OI tier to NVDA (rejects mid-liquidity strikes that would pass other single-name tier)', async () => {
-    // NVDA is a mega-cap with deep OI; the 1000 threshold is deliberately
-    // higher than the 200 SINGLE_NAME tier so only genuinely-deep strikes
+  it('applies the 500-OI tier to NVDA (rejects mid-liquidity strikes that would pass single-name tier)', async () => {
+    // NVDA is high-liq tier (NVDA/TSLA/META/MSFT share); 500 threshold is
+    // higher than the 100 SINGLE_NAME tier so only genuinely-deep strikes
     // contribute. Verify the gate location.
     const nvdaChain = makeChain('NVDA', 210, { bid: 0.5, ask: 0.7 });
-    // Boundary probes: OI=999 must be rejected, OI=1000 must pass, OI=500
+    // Boundary probes: OI=499 must be rejected, OI=500 must pass, OI=200
     // (would pass the SNDK tier) must be rejected.
     nvdaChain.putExpDateMap['2026-04-24:0']!['205'] = [
-      makeContract('PUT', 205, { openInterest: 500, bid: 0.5, ask: 0.7 }),
+      makeContract('PUT', 205, { openInterest: 200, bid: 0.5, ask: 0.7 }),
     ];
     nvdaChain.putExpDateMap['2026-04-24:0']!['206'] = [
-      makeContract('PUT', 206, { openInterest: 999, bid: 0.5, ask: 0.7 }),
+      makeContract('PUT', 206, { openInterest: 499, bid: 0.5, ask: 0.7 }),
     ];
     nvdaChain.callExpDateMap['2026-04-24:0']!['214'] = [
-      makeContract('CALL', 214, { openInterest: 1000, bid: 0.5, ask: 0.7 }),
+      makeContract('CALL', 214, { openInterest: 500, bid: 0.5, ask: 0.7 }),
     ];
     nvdaChain.callExpDateMap['2026-04-24:0']!['215'] = [
       makeContract('CALL', 215, { openInterest: 5000, bid: 0.5, ask: 0.7 }),
@@ -864,21 +864,21 @@ describe('fetch-strike-iv handler', () => {
     const body = res._json as {
       results: Array<{ ticker: string; rowsInserted: number }>;
     };
-    // Only 214C (OI=1000) and 215C (OI=5000) survive the 1000-OI gate.
+    // Only 214C (OI=500) and 215C (OI=5000) survive the 500-OI gate.
     expect(body.results.find((r) => r.ticker === 'NVDA')?.rowsInserted).toBe(2);
   });
 
-  it('applies the 200-OI tier to SNDK (mid-cap single-name threshold)', async () => {
-    // SNDK uses the generic SINGLE_NAME tier (200), well below NVDA's
-    // 1000 threshold, reflecting its thinner chain. Boundary probes:
-    // OI=199 rejected, OI=200 passes. Strikes within ±3% of spot=140
-    // (band = [135.8, 144.2]).
+  it('applies the 100-OI tier to SNDK (mid-cap single-name threshold)', async () => {
+    // SNDK uses the generic SINGLE_NAME tier (100), well below NVDA's
+    // 500 threshold, reflecting its thinner chain. Boundary probes:
+    // OI=99 rejected, OI=100 passes. Strikes within ±5% of spot=140
+    // (band = [133, 147]).
     const sndkChain = makeChain('SNDK', 140, { bid: 0.5, ask: 0.7 });
     sndkChain.putExpDateMap['2026-04-24:0']!['137'] = [
-      makeContract('PUT', 137, { openInterest: 199, bid: 0.5, ask: 0.7 }),
+      makeContract('PUT', 137, { openInterest: 99, bid: 0.5, ask: 0.7 }),
     ];
     sndkChain.callExpDateMap['2026-04-24:0']!['143'] = [
-      makeContract('CALL', 143, { openInterest: 200, bid: 0.5, ask: 0.7 }),
+      makeContract('CALL', 143, { openInterest: 100, bid: 0.5, ask: 0.7 }),
     ];
     sndkChain.callExpDateMap['2026-04-24:0']!['144'] = [
       makeContract('CALL', 144, { openInterest: 800, bid: 0.5, ask: 0.7 }),
