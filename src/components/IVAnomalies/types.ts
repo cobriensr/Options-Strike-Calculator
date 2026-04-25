@@ -260,3 +260,23 @@ export function anomalyCompoundKey(
 ): string {
   return `${row.ticker}:${row.strike}:${row.side}:${row.expiry}`;
 }
+
+/**
+ * Detector firing pattern — Phase D4 finding: flash alerts (single
+ * firing, <5 min duration) outperform persistent alerts (≥20 firings
+ * or ≥60 min duration) by ~2× on the call side.
+ *
+ * Lives in types.ts (not AnomalyRow.tsx) so the row component file
+ * only exports components — required for react-refresh hot reload.
+ */
+export type AnomalyPattern = 'flash' | 'medium' | 'persistent';
+
+export function derivePattern(
+  durationMs: number,
+  firingCount: number,
+): AnomalyPattern {
+  const minutes = Math.max(0, durationMs) / 60_000;
+  if (minutes < 5 && firingCount < 3) return 'flash';
+  if (minutes >= 60 || firingCount >= 20) return 'persistent';
+  return 'medium';
+}

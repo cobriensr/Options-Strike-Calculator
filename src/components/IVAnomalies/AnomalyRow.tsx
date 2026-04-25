@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import type {
   ActiveAnomaly,
+  AnomalyPattern,
   IVAnomalyFlowPhase,
   IVAnomalyPhase,
   IVAnomalySideDominant,
 } from './types';
+import { derivePattern } from './types';
 import { StrikeIVChart } from './StrikeIVChart';
 
 /**
@@ -261,23 +263,12 @@ function AnomalyPhasePill({ phase }: { readonly phase: IVAnomalyPhase }) {
 }
 
 /**
- * Detector firing pattern — surfaces Phase D4 finding that flash alerts
- * (single firing, <5 min duration) outperform persistent alerts (≥20
- * firings or ≥60 min duration) by 2× on the call side. Pure visual cue;
- * no entry/exit logic depends on it. The `medium` bucket is the default.
+ * Detector firing pattern pill — surfaces Phase D4 finding that flash
+ * alerts (single firing, <5 min duration) outperform persistent alerts
+ * (≥20 firings or ≥60 min duration) by 2× on the call side. Pure visual
+ * cue; no entry/exit logic depends on it. `derivePattern` lives in
+ * types.ts so this file only exports components.
  */
-type AnomalyPattern = 'flash' | 'medium' | 'persistent';
-
-export function derivePattern(
-  durationMs: number,
-  firingCount: number,
-): AnomalyPattern {
-  const minutes = Math.max(0, durationMs) / 60_000;
-  if (minutes < 5 && firingCount < 3) return 'flash';
-  if (minutes >= 60 || firingCount >= 20) return 'persistent';
-  return 'medium';
-}
-
 function PatternPill({ pattern }: { readonly pattern: AnomalyPattern }) {
   const classes: Record<AnomalyPattern, string> = {
     flash: 'bg-sky-500/20 text-sky-300',

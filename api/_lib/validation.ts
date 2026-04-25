@@ -139,7 +139,45 @@ export const strikeTradeVolumeQuerySchema = z
     },
   );
 
-export type StrikeTradeVolumeQuery = z.infer<typeof strikeTradeVolumeQuerySchema>;
+export type StrikeTradeVolumeQuery = z.infer<
+  typeof strikeTradeVolumeQuerySchema
+>;
+
+// ============================================================
+// /api/iv-anomalies/cross-asset
+// ============================================================
+
+/**
+ * POST body for /api/iv-anomalies/cross-asset.
+ *
+ * Bulk endpoint — takes a list of compound keys + alert timestamps,
+ * returns the cross-asset confluence context per key. Used by
+ * `useAnomalyCrossAsset` to drive the regime / tape-align / DP-cluster /
+ * GEX-zone / VIX-direction pills introduced in Phase F.
+ *
+ * Bulk shape avoids the N+1 fan-out that would otherwise hit our
+ * Neon connection pool on a busy day.
+ */
+export const ivAnomaliesCrossAssetBodySchema = z.object({
+  keys: z
+    .array(
+      z.object({
+        ticker: z.enum(STRIKE_IV_TICKERS),
+        strike: z.number().positive().finite(),
+        side: z.enum(['call', 'put']),
+        expiry: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/, 'expiry must be YYYY-MM-DD'),
+        alertTs: z.string().datetime({ offset: true }),
+      }),
+    )
+    .min(1)
+    .max(200),
+});
+
+export type IVAnomaliesCrossAssetBody = z.infer<
+  typeof ivAnomaliesCrossAssetBodySchema
+>;
 
 // ============================================================
 // /api/options-flow/otm-heavy
