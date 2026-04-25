@@ -27,7 +27,6 @@ from pathlib import Path
 
 import pandas as pd
 
-from pac_classifier.cross_asset import CrossAssetBars
 from pac_classifier.events import extract_events
 from pac_classifier.features import build_features
 from pac_classifier.labels import (
@@ -44,16 +43,11 @@ def build_dataset(
     stop_atr_mult: float = DEFAULT_STOP_ATR_MULT,
     target_r_mult: float = DEFAULT_TARGET_R_MULT,
     tick_value_dollars: float = 5.0,
-    cross_assets: CrossAssetBars | None = None,
 ) -> pd.DataFrame:
     """Run events → labels → features and return the joined dataset.
 
     `enriched` must be the output of `PACEngine.batch_state` for the
     target window (typically one calendar year on the 5m timeframe).
-
-    `cross_assets` (optional) supplies SPY/QQQ/VIX bars for Phase 1b
-    cross-asset enrichment. When None the dataset still builds — the
-    cross-asset columns just emit NaN, leaving the schema stable.
     """
     events = extract_events(enriched)
     if len(events) == 0:
@@ -67,7 +61,7 @@ def build_dataset(
         target_r_mult=target_r_mult,
         tick_value_dollars=tick_value_dollars,
     )
-    features = build_features(enriched, events, cross_assets=cross_assets)
+    features = build_features(enriched, events)
 
     # Join strategy:
     # extract_events returns rows sorted by bar_idx; label_events and
