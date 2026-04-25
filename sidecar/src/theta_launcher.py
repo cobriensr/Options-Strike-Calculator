@@ -95,6 +95,7 @@ def start() -> bool:
         _write_creds(email, password)
         _spawn_subprocess()
     except Exception as exc:
+        _cleanup_creds_file()
         capture_exception(
             exc,
             context={"phase": "theta_launch"},
@@ -103,6 +104,7 @@ def start() -> bool:
         return False
 
     if not _wait_for_ready():
+        _cleanup_creds_file()
         with _state_lock:
             stderr_tail = list(_state["stderr_tail"])
         capture_message(
@@ -121,6 +123,7 @@ def start() -> bool:
     return True
 
 
+    _cleanup_creds_file()
 def is_running() -> bool:
     """True if the subprocess is currently alive."""
     with _state_lock:
@@ -156,11 +159,25 @@ def shutdown() -> None:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+    _cleanup_creds_file()
 
 
 # ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
+
+
+def _cleanup_creds_file() -> None:
+    """Remove creds.txt to minimize cleartext secret persistence on disk."""
+    creds = _THETA_HOME / "creds.txt"
+    try:
+        creds.unlink(missing_ok=True)
+    except Exception as exc:
+        capture_exception(
+            exc,
+            context={"phase": "theta_creds_cleanup", "path": str(creds)},
+            tags={"component": "theta"},
+        )
 
 
 def _write_creds(email: str, password: str) -> None:
