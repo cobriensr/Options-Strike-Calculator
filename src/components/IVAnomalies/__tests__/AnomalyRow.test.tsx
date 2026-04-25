@@ -431,6 +431,143 @@ describe('AnomalyRow', () => {
     expect(screen.getByTestId('anomaly-pattern-medium')).toBeInTheDocument();
   });
 
+  // ─── Cross-asset confluence pills (Phase F) ───
+
+  it('renders all 5 cross-asset pills with default fallbacks when crossAsset is undefined', () => {
+    render(<AnomalyRow anomaly={makeActive()} />);
+    expect(screen.getByTestId('anomaly-regime-unknown')).toBeInTheDocument();
+    expect(screen.getByTestId('anomaly-tape-missing')).toBeInTheDocument();
+    expect(screen.getByTestId('anomaly-dp-na')).toBeInTheDocument();
+    expect(screen.getByTestId('anomaly-gex-na')).toBeInTheDocument();
+    expect(screen.getByTestId('anomaly-vix-unknown')).toBeInTheDocument();
+  });
+
+  it('renders mild_trend_up regime + aligned tape + DP large + below_spot GEX + falling VIX', () => {
+    render(
+      <AnomalyRow
+        anomaly={makeActive()}
+        crossAsset={{
+          regime: 'mild_trend_up',
+          tapeAlignment: 'aligned',
+          dpCluster: 'large',
+          gexZone: 'below_spot',
+          vixDirection: 'falling',
+        }}
+      />,
+    );
+    expect(
+      screen.getByTestId('anomaly-regime-mild_trend_up'),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('anomaly-tape-aligned')).toBeInTheDocument();
+    expect(screen.getByTestId('anomaly-dp-large')).toBeInTheDocument();
+    expect(screen.getByTestId('anomaly-gex-below_spot')).toBeInTheDocument();
+    expect(screen.getByTestId('anomaly-vix-falling')).toBeInTheDocument();
+  });
+
+  it('GEX zone pill swaps green/red based on side: call+below_spot is green', () => {
+    const { container } = render(
+      <AnomalyRow
+        anomaly={makeActive({ side: 'call' })}
+        crossAsset={{
+          regime: 'unknown',
+          tapeAlignment: 'missing',
+          dpCluster: 'na',
+          gexZone: 'below_spot',
+          vixDirection: 'unknown',
+        }}
+      />,
+    );
+    const pill = container.querySelector(
+      '[data-testid="anomaly-gex-below_spot"]',
+    );
+    expect(pill?.className).toContain('emerald');
+  });
+
+  it('GEX zone pill swaps green/red based on side: put+below_spot is red', () => {
+    const { container } = render(
+      <AnomalyRow
+        anomaly={makeActive({ side: 'put' })}
+        crossAsset={{
+          regime: 'unknown',
+          tapeAlignment: 'missing',
+          dpCluster: 'na',
+          gexZone: 'below_spot',
+          vixDirection: 'unknown',
+        }}
+      />,
+    );
+    const pill = container.querySelector(
+      '[data-testid="anomaly-gex-below_spot"]',
+    );
+    expect(pill?.className).toContain('rose');
+  });
+
+  it('regime pill colors green when alert side aligns with regime direction', () => {
+    const { container } = render(
+      <AnomalyRow
+        anomaly={makeActive({ side: 'call' })}
+        crossAsset={{
+          regime: 'mild_trend_up',
+          tapeAlignment: 'missing',
+          dpCluster: 'na',
+          gexZone: 'na',
+          vixDirection: 'unknown',
+        }}
+      />,
+    );
+    const pill = container.querySelector(
+      '[data-testid="anomaly-regime-mild_trend_up"]',
+    );
+    expect(pill?.className).toContain('emerald');
+  });
+
+  it('regime pill colors red when alert side opposes regime direction', () => {
+    const { container } = render(
+      <AnomalyRow
+        anomaly={makeActive({ side: 'put' })}
+        crossAsset={{
+          regime: 'mild_trend_up',
+          tapeAlignment: 'missing',
+          dpCluster: 'na',
+          gexZone: 'na',
+          vixDirection: 'unknown',
+        }}
+      />,
+    );
+    const pill = container.querySelector(
+      '[data-testid="anomaly-regime-mild_trend_up"]',
+    );
+    expect(pill?.className).toContain('rose');
+  });
+
+  it('regime pill colors gray on chop regardless of side', () => {
+    const { container } = render(
+      <AnomalyRow
+        anomaly={makeActive({ side: 'call' })}
+        crossAsset={{
+          regime: 'chop',
+          tapeAlignment: 'missing',
+          dpCluster: 'na',
+          gexZone: 'na',
+          vixDirection: 'unknown',
+        }}
+      />,
+    );
+    const pill = container.querySelector('[data-testid="anomaly-regime-chop"]');
+    expect(pill?.className).toContain('slate');
+  });
+
+  it('flag badges render below the pill row, not inline with telemetry', () => {
+    render(
+      <AnomalyRow
+        anomaly={makeActive({ flagReasons: ['skew_delta', 'z_score'] })}
+      />,
+    );
+    // Both badges still present
+    expect(screen.getByText('skew_delta')).toBeInTheDocument();
+    expect(screen.getByText('z_score')).toBeInTheDocument();
+  });
+
   it('renders the ask-mid compression subtitle when cooling for that reason', () => {
     render(
       <AnomalyRow

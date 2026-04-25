@@ -1,10 +1,17 @@
 import { useEffect, useState } from 'react';
 import type {
   ActiveAnomaly,
+  AnomalyCrossAssetContext,
   AnomalyPattern,
+  AnomalyRegime,
+  DPCluster,
+  GEXZone,
   IVAnomalyFlowPhase,
   IVAnomalyPhase,
+  IVAnomalySide,
   IVAnomalySideDominant,
+  TapeAlignment,
+  VIXDirection,
 } from './types';
 import { derivePattern } from './types';
 import { StrikeIVChart } from './StrikeIVChart';
@@ -20,7 +27,13 @@ import { StrikeIVChart } from './StrikeIVChart';
  * Collapsed by default; expands to a full detail drawer with the
  * `context_snapshot` fields + per-strike IV mini-chart when clicked.
  */
-export function AnomalyRow({ anomaly }: { readonly anomaly: ActiveAnomaly }) {
+export function AnomalyRow({
+  anomaly,
+  crossAsset,
+}: {
+  readonly anomaly: ActiveAnomaly;
+  readonly crossAsset?: AnomalyCrossAssetContext;
+}) {
   const [expanded, setExpanded] = useState(false);
   const latest = anomaly.latest;
   const phase = latest.flowPhase;
@@ -78,10 +91,15 @@ export function AnomalyRow({ anomaly }: { readonly anomaly: ActiveAnomaly }) {
           <AnomalyPhasePill phase={anomaly.phase} />
           <FlowPhasePill phase={phase} />
           <PatternPill pattern={pattern} />
+          <RegimePill
+            regime={crossAsset?.regime ?? 'unknown'}
+            side={anomaly.side}
+          />
+          <TapeAlignPill alignment={crossAsset?.tapeAlignment ?? 'missing'} />
+          <DPClusterPill cluster={crossAsset?.dpCluster ?? 'na'} />
+          <GEXZonePill zone={crossAsset?.gexZone ?? 'na'} side={anomaly.side} />
+          <VIXDirPill direction={crossAsset?.vixDirection ?? 'unknown'} />
           <div className="ml-auto flex flex-wrap items-center gap-1">
-            {latest.flagReasons.map((reason) => (
-              <FlagBadge key={reason} reason={reason} />
-            ))}
             <span className="text-muted ml-2 font-mono text-[10px]">
               active {activeDurationLabel}
             </span>
@@ -93,6 +111,15 @@ export function AnomalyRow({ anomaly }: { readonly anomaly: ActiveAnomaly }) {
             </span>
           </div>
         </div>
+        {/* Flag badges live on a second row below so the new cross-asset pills
+            don't push them off-screen on narrow viewports (per Phase F UI spec). */}
+        {latest.flagReasons.length > 0 && (
+          <div className="ml-5 flex flex-wrap items-center gap-1">
+            {latest.flagReasons.map((reason) => (
+              <FlagBadge key={reason} reason={reason} />
+            ))}
+          </div>
+        )}
         {exitSubtitle && (
           <div className="ml-5 text-[10px] text-amber-300/80 italic">
             {exitSubtitle}
@@ -288,6 +315,141 @@ function PatternPill({ pattern }: { readonly pattern: AnomalyPattern }) {
       }
     >
       {pattern}
+    </span>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Cross-asset confluence pills (Phase F)
+//
+// Five pills surfacing Phase D + Phase E findings as visual cues only.
+// Strictly visual — none of these gates entry/exit. The trader reads
+// them and makes their own call. Side-aware coloring (RegimePill,
+// GEXZonePill) mirrors the alert direction so a green pill always
+// means "confluent with this alert," not "the market is up."
+// ────────────────────────────────────────────────────────────────────────
+
+const PILL_BASE =
+  'rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold';
+const PILL_GREEN = 'bg-emerald-500/20 text-emerald-300';
+const PILL_RED = 'bg-rose-500/20 text-rose-300';
+const PILL_GRAY = 'bg-slate-500/20 text-slate-300';
+const PILL_SKY = 'bg-sky-500/20 text-sky-300';
+const PILL_DIM = 'bg-zinc-500/15 text-zinc-500';
+
+function regimeColor(regime: AnomalyRegime, side: IVAnomalySide): string {
+  if (regime === 'unknown') return PILL_DIM;
+  if (regime === 'chop') return PILL_GRAY;
+  const isUp = regime.endsWith('_up');
+  const wantUp = side === 'call';
+  return isUp === wantUp ? PILL_GREEN : PILL_RED;
+}
+
+function RegimePill({
+  regime,
+  side,
+}: {
+  readonly regime: AnomalyRegime;
+  readonly side: IVAnomalySide;
+}) {
+  return (
+    <span
+      className={`${PILL_BASE} ${regimeColor(regime, side)}`}
+      data-testid={`anomaly-regime-${regime}`}
+      title="Underlying's same-day % change vs alert direction (Phase D0 regime spine). Green = trend supports the alert side; red = trend against."
+    >
+      {regime}
+    </span>
+  );
+}
+
+function tapeColor(alignment: TapeAlignment): string {
+  if (alignment === 'aligned') return PILL_GREEN;
+  if (alignment === 'contradicted') return PILL_RED;
+  return PILL_GRAY;
+}
+
+function TapeAlignPill({ alignment }: { readonly alignment: TapeAlignment }) {
+  return (
+    <span
+      className={`${PILL_BASE} ${tapeColor(alignment)}`}
+      data-testid={`anomaly-tape-${alignment}`}
+      title="NQ/ES/RTY/SPX direction over last 15 min vs alert side (Phase E1). Aligned = +5–11pt win-rate edge on trending days; contradicted = call-side fade."
+    >
+      tape: {alignment}
+    </span>
+  );
+}
+
+function dpColor(cluster: DPCluster): string {
+  if (cluster === 'large') return PILL_SKY;
+  if (cluster === 'medium') return PILL_SKY;
+  return PILL_DIM;
+}
+
+function DPClusterPill({ cluster }: { readonly cluster: DPCluster }) {
+  const tooltip =
+    cluster === 'large'
+      ? 'Dark-pool premium >$200M at this strike (Phase E2). On strong-trend-up days SPXW calls with DP confluence won 91.7% (n=36, tentative).'
+      : cluster === 'medium'
+        ? 'Dark-pool premium $50-200M at this strike. Phase E2 saw 66.7% win rate on strong-trend-up SPXW calls (n=30).'
+        : cluster === 'small'
+          ? 'Small dark-pool premium (<$50M) at strike. No directional edge.'
+          : cluster === 'na'
+            ? 'Dark-pool data only attributed for SPXW alerts in this dataset.'
+            : 'No dark-pool premium clustered at this strike.';
+  return (
+    <span
+      className={`${PILL_BASE} ${dpColor(cluster)}`}
+      data-testid={`anomaly-dp-${cluster}`}
+      title={tooltip}
+    >
+      DP: {cluster}
+    </span>
+  );
+}
+
+function gexColor(zone: GEXZone, side: IVAnomalySide): string {
+  if (zone === 'na' || zone === 'at_spot') return PILL_GRAY;
+  // E4: calls do better when nearest top-3 GEX is BELOW spot (support
+  // zone, room to run). Puts mirror.
+  const wantBelow = side === 'call';
+  const isBelow = zone === 'below_spot';
+  return isBelow === wantBelow ? PILL_GREEN : PILL_RED;
+}
+
+function GEXZonePill({
+  zone,
+  side,
+}: {
+  readonly zone: GEXZone;
+  readonly side: IVAnomalySide;
+}) {
+  return (
+    <span
+      className={`${PILL_BASE} ${gexColor(zone, side)}`}
+      data-testid={`anomaly-gex-${zone}`}
+      title="Nearest top-3 abs_gex strike vs current spot (Phase E4). Calls win 40.2% with GEX below spot vs 20.5% above; puts mirror."
+    >
+      GEX: {zone}
+    </span>
+  );
+}
+
+function vixColor(direction: VIXDirection): string {
+  if (direction === 'falling') return PILL_GREEN;
+  if (direction === 'rising') return PILL_RED;
+  return PILL_GRAY;
+}
+
+function VIXDirPill({ direction }: { readonly direction: VIXDirection }) {
+  return (
+    <span
+      className={`${PILL_BASE} ${vixColor(direction)}`}
+      data-testid={`anomaly-vix-${direction}`}
+      title="VIX 30-min change at alert (Phase E3). Falling VIX is the only regime where puts have demonstrated edge (18.5% win, n=324)."
+    >
+      VIX: {direction}
     </span>
   );
 }
