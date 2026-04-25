@@ -8,13 +8,12 @@ and the right values for the same bar_idx.
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pytest
 
+from pac_classifier.cross_asset import CrossAssetBars
 from pac_classifier.dataset import build_dataset, write_dataset
 
 
@@ -94,7 +93,7 @@ def test_dataset_label_a_values_finite_or_nan() -> None:
     enriched = _enriched_with_events(100)
     out = build_dataset(enriched)
     for v in out["label_a"]:
-        assert v == 0.0 or v == 1.0 or np.isnan(v)
+        assert np.isnan(v) or np.isclose(v, 0.0) or np.isclose(v, 1.0)
 
 
 def test_dataset_round_trips_through_parquet(tmp_path: Path) -> None:
@@ -152,3 +151,35 @@ def test_dataset_signal_type_uniqueness_per_bar_idx() -> None:
     # Distinct directions
     directions = sorted(rows_at_50["signal_direction"].tolist())
     assert directions == ["dn", "up"]
+
+
+def test_dataset_cross_asset_columns_present_and_nan_when_omitted() -> None:
+    """Without `cross_assets`, dataset still has SPY/QQQ/VIX columns
+    (all NaN) so the schema is stable across NQ-only and enriched runs."""
+    enriched = _enriched_with_events(100)
+    out = build_dataset(enriched)
+    for col in ("SPY_close", "QQQ_close", "VIX_close", "SPY_ret_5b", "QQQ_ret_30b"):
+        assert col in out.columns
+        assert out[col].isna().all()
+
+
+def test_dataset_cross_asset_columns_populated_when_supplied() -> None:
+    """With a CrossAssetBars instance, cross-asset columns survive the
+    events × features merge in build_dataset."""
+    enriched = _enriched_with_events(100)
+    spy = pd.DataFrame(
+        {
+            "ts_event": pd.date_range(
+                "2024-01-02 09:00", periods=300, freq="1min", tz="UTC"
+            ),
+            "close": 470.0 + np.arange(300, dtype=float) * 0.01,
+        }
+    )
+    cross = CrossAssetBars.from_mapping({"SPY": spy})
+    out = build_dataset(enriched, cross_assets=cross)
+    # Both events (BOS at bar 30, CHoCH at bar 60) get SPY snapshots.
+    assert out["SPY_close"].notna().all()
+    assert out["SPY_ret_30b"].notna().all()
+    # QQQ + VIX still NaN since not supplied
+    assert out["QQQ_close"].isna().all()
+    assert out["VIX_ret_5b"].isna().all()

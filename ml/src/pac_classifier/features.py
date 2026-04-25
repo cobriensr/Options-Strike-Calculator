@@ -10,9 +10,12 @@ timestamp ≤ T. The PAC engine's columns are already strictly causal
 added here use trailing windows (`bars[..i]`) only. We never reach
 forward.
 
-Phase 1a is NQ-only. Cross-asset features (SPY/QQQ/VIX) are deferred
-to Phase 1b — the schema here is designed to accept them as
-additional columns later without restructuring.
+Phase 1a was NQ-only. Phase 1b enriches every event with cross-asset
+state (SPY/QQQ/VIX) via `pac_classifier.cross_asset` — when supplied
+with a `CrossAssetBars` instance, `build_features` snaps each event
+to the most recent cross-asset bar via causal `merge_asof`. When the
+arg is omitted/None, cross-asset columns are emitted as NaN so the
+NQ-only pipeline is unchanged.
 
 Feature taxonomy emitted (target: 25-35 cols):
 
@@ -37,6 +40,12 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from pac_classifier.cross_asset import (
+    CROSS_ASSET_RETURN_LOOKBACKS,
+    CROSS_ASSET_SYMBOLS,
+    CrossAssetBars,
+    snapshot_cross_asset_features,
+)
 
 _ENGINE_PASSTHROUGH_COLS = (
     "atr_14",
@@ -71,12 +80,18 @@ def build_features(
     return_lookbacks: tuple[int, ...] = DEFAULT_RETURN_LOOKBACKS,
     rv_window: int = DEFAULT_RV_WINDOW,
     bos_density_window: int = DEFAULT_BOS_DENSITY_WINDOW,
+    cross_assets: CrossAssetBars | None = None,
 ) -> pd.DataFrame:
     """Snapshot features at every event row.
 
     `enriched` is the output of `PACEngine.batch_state` — must contain
     the structure event columns + engine features. `events` is the
     output of `pac_classifier.events.extract_events`.
+
+    `cross_assets` (optional) holds SPY/QQQ/VIX bar frames; when
+    provided, each event row is enriched with `<symbol>_close` +
+    `<symbol>_ret_<N>b` columns via causal `merge_asof`. Omit/None to
+    skip cross-asset enrichment (columns emit NaN, schema unchanged).
 
     Returns a DataFrame indexed positionally with `events`, with
     `bar_idx` as the join key + one column per feature.
@@ -124,6 +139,8 @@ def build_features(
     session_bucket = enriched["session_bucket"].to_numpy(dtype=object)
 
     rows: list[dict] = []
+    kept_event_ts: list[pd.Timestamp] = []
+    enriched_ts = pd.to_datetime(enriched["ts_event"], utc=True).to_numpy()
     for _, evt in events.iterrows():
         idx = int(evt["bar_idx"])
         if idx >= len(enriched):
@@ -154,8 +171,18 @@ def build_features(
             v = ret_arr[idx]
             row[f"ret_{n_bars}b"] = float(v) if np.isfinite(v) else np.nan
         rows.append(row)
+        kept_event_ts.append(enriched_ts[idx])
 
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    # Cross-asset enrichment — `merge_asof(direction="backward")` is
+    # the causality primitive: at event_ts T we get only bars with
+    # ts <= T. When `cross_assets` is None, every column NaN-fills.
+    cross_features = snapshot_cross_asset_features(
+        cross_assets,
+        pd.Series(kept_event_ts),
+    )
+    cross_features.index = out.index
+    return pd.concat([out, cross_features], axis=1)
 
 
 def _empty_features_frame() -> pd.DataFrame:
@@ -174,4 +201,8 @@ def _empty_features_frame() -> pd.DataFrame:
         cols[col] = pd.Series([], dtype=bool)
     for n_bars in DEFAULT_RETURN_LOOKBACKS:
         cols[f"ret_{n_bars}b"] = pd.Series([], dtype=np.float64)
+    for symbol in CROSS_ASSET_SYMBOLS:
+        cols[f"{symbol}_close"] = pd.Series([], dtype=np.float64)
+        for n_bars in CROSS_ASSET_RETURN_LOOKBACKS:
+            cols[f"{symbol}_ret_{n_bars}b"] = pd.Series([], dtype=np.float64)
     return pd.DataFrame(cols)

@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from pac_classifier.cross_asset import CrossAssetBars
 from pac_classifier.features import build_features
 
 
@@ -200,6 +201,93 @@ def test_signal_type_and_direction_passed_through() -> None:
     out = build_features(enriched, events)
     assert out["signal_type"].tolist() == ["BOS", "CHOCH", "CHOCHPLUS"]
     assert out["signal_direction"].tolist() == ["up", "dn", "up"]
+
+
+def test_cross_asset_columns_nan_when_no_data_supplied() -> None:
+    """Default call (no `cross_assets` arg) emits NaN cross-asset columns
+    so the schema is stable across NQ-only and enriched runs."""
+    enriched = _enriched(50)
+    events = pd.DataFrame(
+        {
+            "bar_idx": [10, 20],
+            "signal_type": ["BOS"] * 2,
+            "signal_direction": ["up"] * 2,
+            "atr_14": [0.5] * 2,
+        }
+    )
+    out = build_features(enriched, events)
+    for col in ("SPY_close", "QQQ_close", "VIX_close"):
+        assert col in out.columns
+        assert out[col].isna().all()
+    for col in ("SPY_ret_5b", "QQQ_ret_30b", "VIX_ret_5b"):
+        assert out[col].isna().all()
+
+
+def test_cross_asset_columns_populated_when_data_supplied() -> None:
+    """With a `CrossAssetBars` instance, SPY/QQQ/VIX columns get the
+    causally-snapped close + trailing log returns."""
+    enriched = _enriched(100)
+    # Cross-asset bars on a tighter 1-min grid that overlaps enriched.
+    n_asset = 200
+    spy = pd.DataFrame(
+        {
+            "ts_event": pd.date_range(
+                "2024-01-02 09:00", periods=n_asset, freq="1min", tz="UTC"
+            ),
+            "close": 470.0 + np.arange(n_asset, dtype=float) * 0.01,
+        }
+    )
+    cross = CrossAssetBars.from_mapping({"SPY": spy})
+    events = pd.DataFrame(
+        {
+            "bar_idx": [50],
+            "signal_type": ["BOS"],
+            "signal_direction": ["up"],
+            "atr_14": [0.5],
+        }
+    )
+    out = build_features(enriched, events, cross_assets=cross)
+    assert np.isfinite(out.iloc[0]["SPY_close"])
+    assert np.isfinite(out.iloc[0]["SPY_ret_5b"])
+    # QQQ + VIX absent → NaN
+    assert np.isnan(out.iloc[0]["QQQ_close"])
+    assert np.isnan(out.iloc[0]["VIX_ret_30b"])
+
+
+def test_cross_asset_alignment_is_causal() -> None:
+    """Asset has a bar with extreme close at a future timestamp; event
+    must NOT see it (uses last bar with ts <= event_ts)."""
+    # enriched event at bar 50 → ts = "2024-01-02 09:30" + 50*5min = "2024-01-02 13:40"
+    enriched = _enriched(100)
+    event_ts_at_50 = enriched["ts_event"].iloc[50]
+    spy_pre = pd.DataFrame(
+        {
+            "ts_event": pd.date_range(
+                "2024-01-02 09:00", periods=300, freq="1min", tz="UTC"
+            ),
+            "close": np.full(300, 500.0),  # constant 500 before + during event
+        }
+    )
+    # Splice in a future bar with extreme value AFTER the event
+    future_bar = pd.DataFrame(
+        {
+            "ts_event": [event_ts_at_50 + pd.Timedelta(minutes=10)],
+            "close": [9999.0],
+        }
+    )
+    spy = pd.concat([spy_pre, future_bar], ignore_index=True)
+    cross = CrossAssetBars.from_mapping({"SPY": spy})
+    events = pd.DataFrame(
+        {
+            "bar_idx": [50],
+            "signal_type": ["BOS"],
+            "signal_direction": ["up"],
+            "atr_14": [0.5],
+        }
+    )
+    out = build_features(enriched, events, cross_assets=cross)
+    # SPY_close MUST be 500.0 (pre-event constant), NOT 9999.0 (future)
+    assert out.iloc[0]["SPY_close"] == pytest.approx(500.0)
 
 
 def test_missing_engine_column_emits_nan_not_keyerror() -> None:
