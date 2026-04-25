@@ -2362,4 +2362,38 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 87,
+    description:
+      'Create strike_trade_volume table for tape-side volume exit-signal ' +
+      'detection (2026-04-25). Replaces the firing-rate-surge proxy in ' +
+      'useIVAnomalies with real bid-side vs ask-side per-minute volume ' +
+      'from UW /api/stock/{ticker}/flow-per-strike-intraday. Note: that ' +
+      'endpoint aggregates across expiries — table is keyed on (ticker, ' +
+      'strike, side, ts), no expiry column.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS strike_trade_volume (
+          id            BIGSERIAL PRIMARY KEY,
+          ticker        TEXT NOT NULL,
+          strike        NUMERIC(10,2) NOT NULL,
+          side          TEXT NOT NULL,                 -- 'call' | 'put'
+          ts            TIMESTAMPTZ NOT NULL,
+          bid_side_vol  INTEGER NOT NULL DEFAULT 0,
+          ask_side_vol  INTEGER NOT NULL DEFAULT 0,
+          mid_vol       INTEGER NOT NULL DEFAULT 0,
+          total_vol     INTEGER NOT NULL DEFAULT 0,
+          ingested_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_strike_trade_volume_lookup
+          ON strike_trade_volume (ticker, strike, side, ts DESC)
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_strike_trade_volume_ticker_ts
+          ON strike_trade_volume (ticker, ts DESC)
+      `,
+    ],
+  },
 ];
