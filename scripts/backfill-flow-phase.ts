@@ -53,7 +53,10 @@ interface VixPoint {
   vix: number;
 }
 
-async function loadVixSeries(startDate: string, endDate: string): Promise<VixPoint[]> {
+async function loadVixSeries(
+  startDate: string,
+  endDate: string,
+): Promise<VixPoint[]> {
   const rows = (await sql`
     SELECT created_at AS ts, vix
     FROM market_snapshots
@@ -167,10 +170,12 @@ async function main(): Promise<void> {
   let withVix = 0;
 
   for (const row of rows) {
-    const tsMs = row.ts instanceof Date ? row.ts.getTime() : Date.parse(String(row.ts));
+    const tsMs =
+      row.ts instanceof Date ? row.ts.getTime() : Date.parse(String(row.ts));
     const vixNow = vixAt(vixSeries, tsMs);
     const vixPrev = vixAt(vixSeries, tsMs - 15 * 60 * 1000);
-    const vixDelta = vixNow != null && vixPrev != null ? vixNow - vixPrev : null;
+    const vixDelta =
+      vixNow != null && vixPrev != null ? vixNow - vixPrev : null;
     if (vixNow != null) withVix += 1;
 
     const ctx = buildContext(vixNow, vixDelta);
@@ -214,7 +219,9 @@ async function main(): Promise<void> {
   }
 
   console.log(`\nProcessed ${rows.length} rows`);
-  console.log(`  ${withVix} had VIX data within ${VIX_STALENESS_MS / 60000}min staleness`);
+  console.log(
+    `  ${withVix} had VIX data within ${VIX_STALENESS_MS / 60000}min staleness`,
+  );
   console.log(`  ${updated} flow_phase reclassifications written`);
   console.log(`  ${kept} unchanged`);
 

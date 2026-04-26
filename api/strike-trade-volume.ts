@@ -110,8 +110,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     try {
       const sql = getDb();
-      const rows = (q.strike != null && q.side != null
-        ? await sql`
+      const rows = (
+        q.strike != null && q.side != null
+          ? await sql`
             SELECT ticker, strike, side, ts,
                    bid_side_vol, ask_side_vol, mid_vol, total_vol
             FROM strike_trade_volume
@@ -121,14 +122,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               AND ts >= ${q.since}
             ORDER BY ts ASC
           `
-        : await sql`
+          : await sql`
             SELECT ticker, strike, side, ts,
                    bid_side_vol, ask_side_vol, mid_vol, total_vol
             FROM strike_trade_volume
             WHERE ticker = ${q.ticker}
               AND ts >= ${q.since}
             ORDER BY strike ASC, side ASC, ts ASC
-          `) as RawVolumeRow[];
+          `
+      ) as RawVolumeRow[];
 
       // Group by (strike, side) → series
       const byKey = new Map<string, StrikeTradeVolumeSeries>();

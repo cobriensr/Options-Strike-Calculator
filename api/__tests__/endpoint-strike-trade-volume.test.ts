@@ -161,9 +161,7 @@ describe('GET /api/strike-trade-volume', () => {
   });
 
   it('returns single-key mode when strike + side supplied', async () => {
-    mockSql.mockResolvedValueOnce([
-      makeRow({ strike: '705', side: 'put' }),
-    ]);
+    mockSql.mockResolvedValueOnce([makeRow({ strike: '705', side: 'put' })]);
     const res = mockResponse();
     await handler(
       mockRequest({

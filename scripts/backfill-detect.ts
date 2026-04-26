@@ -138,7 +138,8 @@ async function loadNqByMinute(date: string): Promise<Map<string, number>> {
   `) as Array<{ ts: string | Date; close: string | number }>;
   const map = new Map<string, number>();
   for (const r of rows) {
-    const tsIso = r.ts instanceof Date ? r.ts.toISOString() : new Date(r.ts).toISOString();
+    const tsIso =
+      r.ts instanceof Date ? r.ts.toISOString() : new Date(r.ts).toISOString();
     map.set(tsIso, Number(r.close));
   }
   return map;

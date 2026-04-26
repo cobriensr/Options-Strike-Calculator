@@ -31,10 +31,7 @@ import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { cronGuard, uwFetch, withRetry } from '../_lib/api-helpers.js';
-import {
-  STRIKE_IV_TICKERS,
-  type StrikeIVTicker,
-} from '../_lib/constants.js';
+import { STRIKE_IV_TICKERS, type StrikeIVTicker } from '../_lib/constants.js';
 
 // ── UW response types ────────────────────────────────────────
 
@@ -214,7 +211,12 @@ async function runTicker(
     const extracted = extractRows(ticker, rows);
     const rowsInserted = await insertRows(sql, extracted);
     logger.info(
-      { ticker, totalRows: rows.length, candidateRows: extracted.length, rowsInserted },
+      {
+        ticker,
+        totalRows: rows.length,
+        candidateRows: extracted.length,
+        rowsInserted,
+      },
       'strike_trade_volume written',
     );
     return { ticker, rowsInserted, skipped: false };

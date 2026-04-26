@@ -153,7 +153,11 @@ async function loadNqByMinute(date: string): Promise<Map<string, number>> {
   return map;
 }
 
-function effectiveSpot(b: AggBucket, nqByMinute: Map<string, number>, tsIso: string): number {
+function effectiveSpot(
+  b: AggBucket,
+  nqByMinute: Map<string, number>,
+  tsIso: string,
+): number {
   // NDX/NDXP: prefer NQ futures (Databento) over the QQQ-derived spot
   // baked into the JSONL. NQ tracks NDX with ~0.3% basis vs QQQ × 40.5
   // which is ~1% off — meaningful for chart/spot accuracy.
