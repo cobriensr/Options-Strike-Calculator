@@ -7,6 +7,11 @@
  *
  * Output schema is enforced via Anthropic's `output_config.format` so we get
  * a guaranteed valid JSON object back instead of free-text we have to parse.
+ *
+ * NOTE: Frontend mirrors these types in `src/components/TRACELive/types.ts`
+ * (intentionally duplicated to keep zod out of the browser bundle). When
+ * adding fields to the schemas below, update the frontend types in lock-step
+ * — there is no compile-time link between the two files.
  */
 
 import { z } from 'zod';

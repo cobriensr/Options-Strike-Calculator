@@ -9,49 +9,21 @@
  *   - capturedAt has actually changed from the previous render (prevents
  *     re-firing on unrelated re-renders).
  *
- * Implementation note: we don't bundle an audio file — we synthesize a
- * 0.5s tone via WebAudio so there's no asset pipeline to manage. The
- * user requested "a quick chime, real short, just maybe a half second."
+ * The actual WebAudio synthesis lives in `./chime-audio.ts` so tests
+ * can `vi.spyOn` the named import to verify the hook fires it correctly
+ * without depending on JSDOM's effect-flush + WebAudio availability.
+ *
+ * Silent-first-capture is intentional: when the page first loads with
+ * an existing latest capture, `previousCapturedAtRef === null` is set
+ * to that capture and we DO NOT chime — the user is seeing data that
+ * was already there, not a freshly arrived tick. The next REAL new
+ * capture will then fire the chime as intended.
  */
 
 import { useEffect, useRef } from 'react';
+import { playChime } from './chime-audio.js';
 
 const DEBOUNCE_MS = 1000;
-const TONE_HZ = 880; // A5 — bright, distinct from system sounds
-const TONE_DURATION_S = 0.5;
-
-function playChime(): void {
-  // AudioContext requires a user gesture in some browsers; we let it
-  // throw if denied — the chime is best-effort.
-  try {
-    const AudioContextCtor =
-      globalThis.AudioContext ??
-      (globalThis as unknown as { webkitAudioContext?: typeof AudioContext })
-        .webkitAudioContext;
-    if (!AudioContextCtor) return;
-    const ctx = new AudioContextCtor();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.value = TONE_HZ;
-    gain.gain.setValueAtTime(0.18, ctx.currentTime);
-    // Quick exponential fade so the tail isn't abrupt.
-    gain.gain.exponentialRampToValueAtTime(
-      0.001,
-      ctx.currentTime + TONE_DURATION_S,
-    );
-    osc.connect(gain).connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + TONE_DURATION_S);
-    osc.onended = () => {
-      ctx.close().catch(() => {
-        /* close() can reject during teardown — ignore */
-      });
-    };
-  } catch {
-    /* autoplay denied / WebAudio unavailable — silent */
-  }
-}
 
 export function useTraceLiveChime(
   capturedAt: string | null,
@@ -63,7 +35,7 @@ export function useTraceLiveChime(
   useEffect(() => {
     if (!enabled) return;
     if (!capturedAt) return;
-    // Skip first render — don't chime on initial load.
+    // Skip first observation — don't chime on existing-data load.
     if (previousCapturedAtRef.current === null) {
       previousCapturedAtRef.current = capturedAt;
       return;

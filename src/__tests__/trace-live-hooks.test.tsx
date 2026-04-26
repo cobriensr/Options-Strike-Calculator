@@ -15,6 +15,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { useTraceLiveCountdown } from '../components/TRACELive/hooks/useTraceLiveCountdown';
 import { useTraceLiveChime } from '../components/TRACELive/hooks/useTraceLiveChime';
 import { useTraceLiveData } from '../components/TRACELive/hooks/useTraceLiveData';
+import * as chimeAudio from '../components/TRACELive/hooks/chime-audio';
 
 // Mock useIsOwner globally for the data hook tests.
 vi.mock('../hooks/useIsOwner', () => ({
@@ -90,83 +91,62 @@ describe('useTraceLiveCountdown', () => {
 // useTraceLiveChime
 // ============================================================
 
-interface MockOsc {
-  type: string;
-  frequency: { value: number };
-  start: ReturnType<typeof vi.fn>;
-  stop: ReturnType<typeof vi.fn>;
-  connect: ReturnType<typeof vi.fn>;
-  onended: (() => void) | null;
-}
-
-interface MockGain {
-  gain: {
-    setValueAtTime: ReturnType<typeof vi.fn>;
-    exponentialRampToValueAtTime: ReturnType<typeof vi.fn>;
-  };
-  connect: ReturnType<typeof vi.fn>;
-}
-
 describe('useTraceLiveChime', () => {
-  let audioCtxCtor: ReturnType<typeof vi.fn>;
-  let oscMock: MockOsc;
-  let gainMock: MockGain;
+  let playChimeSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    // Real timers — fake timers introduced effect-flushing flakes here
-    // and the debounce only needs ms-resolution, which Date.now() provides
-    // even on real timers.
-    oscMock = {
-      type: '',
-      frequency: { value: 0 },
-      start: vi.fn(),
-      stop: vi.fn(),
-      connect: vi.fn(() => gainMock),
-      onended: null,
-    };
-    gainMock = {
-      gain: {
-        setValueAtTime: vi.fn(),
-        exponentialRampToValueAtTime: vi.fn(),
-      },
-      connect: vi.fn(),
-    };
-    audioCtxCtor = vi.fn(() => ({
-      currentTime: 0,
-      createOscillator: () => oscMock,
-      createGain: () => gainMock,
-      destination: {},
-      close: vi.fn(),
-    }));
-    Object.defineProperty(globalThis, 'AudioContext', {
-      value: audioCtxCtor,
-      writable: true,
-      configurable: true,
+    // Spy on the named export — vi.spyOn intercepts the binding the hook
+    // resolves at module-import time, so we don't depend on JSDOM's effect-
+    // flushing semantics or the WebAudio API being available.
+    playChimeSpy = vi.spyOn(chimeAudio, 'playChime').mockImplementation(() => {
+      /* no-op */
     });
   });
 
-  it('does not invoke AudioContext on first render (initial mount)', () => {
+  afterEach(() => {
+    playChimeSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('does not invoke playChime on first observation (existing-data load)', () => {
     renderHook(() =>
       useTraceLiveChime('2026-04-26T18:00:00Z', /* enabled */ true),
     );
-    expect(audioCtxCtor).not.toHaveBeenCalled();
+    expect(playChimeSpy).not.toHaveBeenCalled();
   });
 
-  // Note: the "AudioContext fires on capturedAt change" path is verified
-  // in the browser, not here. JSDOM's effect-flushing semantics + WebAudio
-  // make it hard to test deterministically without mocking the React
-  // scheduler. The negative cases below catch the meaningful failure modes
-  // (chime must NOT fire on mount, must NOT fire when disabled).
+  it('invokes playChime when capturedAt changes after the first observation', async () => {
+    const { rerender } = renderHook(
+      ({ ts }: { ts: string | null }) => useTraceLiveChime(ts, true),
+      { initialProps: { ts: '2026-04-26T18:00:00Z' } },
+    );
+    expect(playChimeSpy).not.toHaveBeenCalled();
+    rerender({ ts: '2026-04-26T18:05:00Z' });
+    expect(playChimeSpy).toHaveBeenCalledTimes(1);
+  });
 
-  it('does not chime when enabled is false', async () => {
+  it('does not chime when enabled is false', () => {
     const { rerender } = renderHook(
       ({ ts }: { ts: string | null }) => useTraceLiveChime(ts, false),
       { initialProps: { ts: '2026-04-26T18:00:00Z' } },
     );
-    await act(async () => {
-      rerender({ ts: '2026-04-26T18:05:00Z' });
-    });
-    expect(audioCtxCtor).not.toHaveBeenCalled();
+    rerender({ ts: '2026-04-26T18:05:00Z' });
+    expect(playChimeSpy).not.toHaveBeenCalled();
+  });
+
+  it('debounces a second change arriving within 1s', () => {
+    vi.useFakeTimers();
+    const t0 = new Date('2026-04-26T18:05:00Z').getTime();
+    vi.setSystemTime(t0);
+    const { rerender } = renderHook(
+      ({ ts }: { ts: string | null }) => useTraceLiveChime(ts, true),
+      { initialProps: { ts: '2026-04-26T18:00:00Z' } },
+    );
+    rerender({ ts: '2026-04-26T18:05:00Z' });
+    vi.setSystemTime(t0 + 500); // 500ms later — under DEBOUNCE_MS
+    rerender({ ts: '2026-04-26T18:05:01Z' });
+    expect(playChimeSpy).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
   });
 });
 
@@ -178,6 +158,12 @@ const fetchMock = vi.fn();
 beforeEach(() => {
   fetchMock.mockReset();
   globalThis.fetch = fetchMock as unknown as typeof fetch;
+});
+
+afterEach(() => {
+  // Restore real timers in case any test forgot — prevents 15s timeouts
+  // bleeding across blocks.
+  vi.useRealTimers();
 });
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -242,5 +228,21 @@ describe('useTraceLiveData', () => {
     });
     const lastCall = fetchMock.mock.calls.at(-1)![0] as string;
     expect(lastCall).toContain('date=2026-04-20');
+  });
+
+  it('polls again after POLL_INTERVALS.TRACE_LIVE in live mode', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    fetchMock.mockResolvedValue(
+      jsonResponse({ date: '', count: 0, analyses: [] }),
+    );
+    renderHook(() => useTraceLiveData(/* marketOpen */ true));
+    // Initial fetch fires immediately.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    // Advance through one full poll cycle.
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    vi.useRealTimers();
   });
 });

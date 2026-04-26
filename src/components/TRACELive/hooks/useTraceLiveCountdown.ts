@@ -32,9 +32,13 @@ export function useTraceLiveCountdown(
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
+    // Gate the timer on having an anchor — when latestCapturedAt is null
+    // (cold start, no captures yet, non-owner) the hook returns early
+    // without using `now`, so 60 wakeups/min is wasted re-render work.
+    if (!latestCapturedAt) return;
     const id = setInterval(() => setNow(Date.now()), 1_000);
     return () => clearInterval(id);
-  }, []);
+  }, [latestCapturedAt]);
 
   if (!latestCapturedAt) {
     return {
