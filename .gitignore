@@ -59,22 +59,23 @@ ml/*.csv
 ml/data/
 ml/trace/results/
 ml/trace/images/
-ml/__pycache__/
-ml/src/__pycache__/
-ml/tests/__pycache__/
-ml/trace/__pycache__/
 ml/.pytest_cache/
 ml/.ruff_cache/
 ml/htmlcov/
 ml/.coverage
-ml/src/features/__pycache__
-ml/src/pac/__pycache__
-ml/src/options_features/__pycache__
-ml/src/pac_backtest/__pycache__
 
-# PAC backtest sweep outputs — large JSON per run, commit only
-# summary.json manually when a run is worth preserving
+# Python bytecode caches — single pattern covers all current + future subdirs
+**/__pycache__/
+
+# Experimental ML run outputs — regenerable from ml/scripts/.
+# Findings + reports markdown docs are the durable summaries.
 ml/experiments/sweeps/
+ml/experiments/pac_a2/
+ml/experiments/pac_replay/
+ml/experiments/pac_classifier/
+ml/experiments/ichimoku_classifier/
+ml/experiments/sweep_run_*.log
+ml/experiments/phase2_early_*.json
 
 # TypeScript incremental build cache
 tsconfig.tsbuildinfo
@@ -83,10 +84,22 @@ tsconfig.tsbuildinfo
 .superpowers/
 
 # ml-sweep Railway service
-ml-sweep/__pycache__/
 ml-sweep/.env*
 ml-sweep/.venv/
-# Charm Pressure capture — never commit auth state or screenshots
+
+# Capture-study scratch dirs — track code (.py / .ts / .mjs / .md) only;
+# ignore data outputs (CSVs, screenshots, study artifacts, auth state).
 scripts/charm-pressure-capture/.trace-storage.json
 scripts/charm-pressure-capture/screenshots/
+scripts/charm-pressure-capture/*.csv
+scripts/charm-pressure-capture/*.csv.bak
+scripts/charm-pressure-capture/findings/
+scripts/charm-pressure-capture/plots/
+scripts/charm-pressure-capture/scoring/
+scripts/delta-pressure-capture/screenshots/
+scripts/delta-pressure-capture/*.csv
+scripts/delta-pressure-capture/*.csv.bak
+scripts/gamma-capture/screenshots/
+scripts/gamma-capture/*.csv
+scripts/gamma-capture/*.csv.bak
 scripts/eod-flow-analysis/output/backfill-buckets/
