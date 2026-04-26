@@ -32,7 +32,21 @@ export function IVAnomaliesSection({
   readonly marketOpen: boolean;
 }) {
   const [activeTicker, setActiveTicker] = useState<IVAnomalyTicker>('SPXW');
-  const { anomalies, loading, error } = useIVAnomalies(true, marketOpen);
+  const {
+    anomalies,
+    loading,
+    error,
+    selectedDate,
+    setSelectedDate,
+    scrubTime,
+    isLive,
+    isScrubbed,
+    canScrubPrev,
+    canScrubNext,
+    scrubPrev,
+    scrubNext,
+    scrubLive,
+  } = useIVAnomalies(true, marketOpen);
 
   // Phase F: cross-asset confluence context per active key. Polled in
   // parallel with the anomalies list; falls back to empty on error so the
@@ -55,11 +69,16 @@ export function IVAnomaliesSection({
       </div>
     );
   } else if (rows.length === 0) {
-    body = (
+    body = isLive ? (
       <div className="text-muted text-xs">
         No active IV anomalies for {activeTicker} right now. The detector runs
         every minute during market hours; entries drop off after 15 min of
         silence.
+      </div>
+    ) : (
+      <div className="text-muted text-xs">
+        No active IV anomalies for {activeTicker} at {scrubTime ?? '15:00'} CT
+        on {selectedDate}. Try a different time slot or jump back to live.
       </div>
     );
   } else {
@@ -84,6 +103,77 @@ export function IVAnomaliesSection({
   return (
     <SectionBox label="Strike IV Anomalies" collapsible>
       <div className="flex flex-col gap-3">
+        {/*
+          Replay scrubber (Phase 3). Date input + 5-min time scrubber
+          mirroring the dark-pool levels widget so the trader has one
+          mental model across sections. Live mode (today + no scrubTime)
+          shows a "scrubbing not active" affordance via the Live
+          button being inert; scrubbed mode shows the active timestamp
+          and a Live escape hatch.
+        */}
+        <div
+          className="flex flex-wrap items-center gap-2 text-[11px]"
+          role="toolbar"
+          aria-label="Replay date and time controls"
+        >
+          <label className="text-muted flex items-center gap-1.5 font-mono">
+            date
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={(e) => setSelectedDate(e.target.value)}
+              className="border-edge bg-surface-alt text-primary rounded-md border px-2 py-0.5 font-mono text-[11px]"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={scrubPrev}
+            disabled={!canScrubPrev}
+            className="border-edge bg-surface-alt text-muted hover:text-primary rounded-md border px-2 py-0.5 font-mono disabled:cursor-not-allowed disabled:opacity-50"
+            aria-label="Step scrubber back 5 minutes"
+          >
+            ◀
+          </button>
+          <span
+            className={`min-w-[60px] text-center font-mono ${
+              isScrubbed ? 'text-amber-300' : 'text-muted'
+            }`}
+          >
+            {scrubTime ?? (isLive ? 'live' : 'close')}
+          </span>
+          <button
+            type="button"
+            onClick={scrubNext}
+            disabled={!canScrubNext}
+            className="border-edge bg-surface-alt text-muted hover:text-primary rounded-md border px-2 py-0.5 font-mono disabled:cursor-not-allowed disabled:opacity-50"
+            aria-label="Step scrubber forward 5 minutes"
+          >
+            ▶
+          </button>
+          <button
+            type="button"
+            onClick={scrubLive}
+            disabled={isLive}
+            className={`rounded-md border px-2 py-0.5 font-mono transition-colors ${
+              isLive
+                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300/80'
+                : 'border-edge bg-surface-alt text-muted hover:text-primary'
+            }`}
+            aria-label="Return to live"
+          >
+            Live
+          </button>
+          {isScrubbed && (
+            <span className="text-muted ml-1 italic">
+              showing alerts active at {scrubTime} CT on {selectedDate}
+            </span>
+          )}
+          {!isLive && !isScrubbed && (
+            <span className="text-muted ml-1 italic">
+              showing alerts active at session close ({selectedDate})
+            </span>
+          )}
+        </div>
         <div className="flex items-center gap-2">
           {/*
             Horizontal-scroll rail: with 7 tickers (post 2026-04-24
