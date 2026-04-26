@@ -23,6 +23,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getTraceLiveCalibrationBlock } from './trace-live-calibration.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SKILLS_DIR = join(__dirname, '..', '..', '.claude', 'skills');
@@ -168,10 +169,21 @@ Warnings should call out anything that would change a trader's sizing decision. 
 /**
  * The full stable system text — concatenated, byte-stable across ticks.
  * Cached at the last block via `cache_control: { type: 'ephemeral', ttl: '1h' }`.
+ *
+ * Order is deliberate:
+ *   PART1 (role + hierarchy + overrides)
+ *   PART2 (skills inlined)
+ *   calibration block (empty for now; mirrors analyze-calibration.ts's slot)
+ *   PART3 (output schema + sizing matrix)
+ *
+ * Calibration sits between the skills and the output schema so the model
+ * sees rules → skills → worked examples → expected output structure.
  */
 export const TRACE_LIVE_STABLE_SYSTEM_TEXT =
   TRACE_LIVE_SYSTEM_PROMPT_PART1 +
   '\n\n' +
   TRACE_LIVE_SYSTEM_PROMPT_PART2 +
+  '\n\n' +
+  getTraceLiveCalibrationBlock() +
   '\n\n' +
   TRACE_LIVE_SYSTEM_PROMPT_PART3;

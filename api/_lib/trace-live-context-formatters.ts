@@ -48,7 +48,9 @@ export function computeDominantNode(
   const top = sorted[0]!;
   const next = sorted[1];
   const ratio =
-    next && next.dollarGamma > 0 ? top.dollarGamma / next.dollarGamma : Infinity;
+    next && next.dollarGamma > 0
+      ? top.dollarGamma / next.dollarGamma
+      : Infinity;
   return { strike: top.strike, magnitude: top.dollarGamma, ratio };
 }
 
@@ -147,10 +149,13 @@ export function formatSessionContext(args: {
 }): string {
   const lines: string[] = [];
   lines.push('=== SESSION CONTEXT ===');
-  lines.push(`Capture time: ${args.capturedAt}${args.etTimeLabel ? ` (${args.etTimeLabel})` : ''}`);
+  const etSuffix = args.etTimeLabel ? ` (${args.etTimeLabel})` : '';
+  lines.push(`Capture time: ${args.capturedAt}${etSuffix}`);
   lines.push(`SPX spot: ${args.spot.toFixed(2)}`);
-  lines.push(
-    `Stability%: ${args.stabilityPct == null ? 'not visible / pre-2025-Q2 capture' : `${args.stabilityPct.toFixed(1)}%`}`,
-  );
+  const stabilityStr =
+    args.stabilityPct == null
+      ? 'not visible / pre-2025-Q2 capture'
+      : `${args.stabilityPct.toFixed(1)}%`;
+  lines.push(`Stability%: ${stabilityStr}`);
   return lines.join('\n');
 }

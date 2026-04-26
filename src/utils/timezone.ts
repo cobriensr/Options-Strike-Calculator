@@ -187,7 +187,7 @@ export function getETCloseUtcIso(dateStr: string): string | null {
  * offset at noon via Intl.DateTimeFormat, so the result is correct across
  * both DST phases and any future TZ rule changes.
  */
-function etWallClockToUtcIso(
+export function etWallClockToUtcIso(
   dateStr: string,
   etMinutesPastMidnight: number,
 ): string | null {

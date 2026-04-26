@@ -2396,4 +2396,46 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 88,
+    description:
+      'Create trace_live_analyses table for the periodic TRACE chart ' +
+      'analyses (charm + gamma + delta) — JSONB full response + ' +
+      'vector(2000) embedding for retrieval of analogous past ticks. ' +
+      'Keyed on captured_at (single-owner, ticks are unique per timestamp). ' +
+      'See spec: docs/superpowers/specs/trace-live-2026-04-25 (pending).',
+    statements: (sql) => [
+      sql`CREATE EXTENSION IF NOT EXISTS vector`,
+      sql`
+        CREATE TABLE IF NOT EXISTS trace_live_analyses (
+          id                 BIGSERIAL PRIMARY KEY,
+          captured_at        TIMESTAMPTZ NOT NULL,
+          spot               NUMERIC(10,2) NOT NULL,
+          stability_pct      NUMERIC(5,2),
+          regime             TEXT,
+          predicted_close    NUMERIC(10,2),
+          confidence         TEXT,
+          override_applied   BOOLEAN,
+          headline           TEXT,
+          full_response      JSONB NOT NULL,
+          analysis_embedding vector(2000),
+          model              TEXT NOT NULL,
+          input_tokens       INTEGER,
+          output_tokens      INTEGER,
+          cache_read_tokens  INTEGER,
+          cache_write_tokens INTEGER,
+          duration_ms        INTEGER,
+          created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_trace_live_captured_at
+          ON trace_live_analyses (captured_at DESC)
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_trace_live_embedding_hnsw
+          ON trace_live_analyses USING hnsw (analysis_embedding vector_cosine_ops)
+      `,
+    ],
+  },
 ];

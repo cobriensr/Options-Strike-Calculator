@@ -73,6 +73,7 @@ if (import.meta.env.PROD)
       { path: '/api/analyses', method: 'GET' },
       { path: '/api/snapshot', method: 'POST' },
       { path: '/api/analyze', method: 'POST' },
+      { path: '/api/trace-live-analyze', method: 'POST' },
       { path: '/api/positions', method: 'GET' },
       { path: '/api/positions', method: 'POST' },
       { path: '/api/vix-ohlc', method: 'GET' },

@@ -186,7 +186,12 @@ export const traceAnalysisSchema = z.object({
     /** Conviction level — drives sizing */
     confidence: z.enum(['high', 'medium', 'low', 'no_trade']),
     /** Did all three charts agree on direction and level? */
-    crossChartAgreement: z.enum(['all_agree', 'mostly_agree', 'split', 'no_call']),
+    crossChartAgreement: z.enum([
+      'all_agree',
+      'mostly_agree',
+      'split',
+      'no_call',
+    ]),
     /** Did the gamma override rule fire? */
     overrideApplied: z.boolean(),
     trade: traceTradeRecommendationSchema,
