@@ -668,11 +668,11 @@ buy 8-12% OTM 0DTE strikes for high-leverage directional bets.
 
 **Gate restructured into three tiers** (was two):
 
-| Tier | Tickers | OTM range | Constant |
-| ---- | ------- | --------- | -------- |
-| Cash-index weeklies | SPXW, NDXP | **±12%** | `STRIKE_IV_OTM_RANGE_PCT_CASH_INDEX` |
-| Broad ETFs | SPY, QQQ, IWM | ±3% | `STRIKE_IV_OTM_RANGE_PCT_BROAD_ETF` |
-| Sector ETF + single names | SMH, NVDA, TSLA, META, MSFT, SNDK, MSTR, MU | ±5% | `STRIKE_IV_OTM_RANGE_PCT_SINGLE_NAME` |
+| Tier                      | Tickers                                     | OTM range | Constant                              |
+| ------------------------- | ------------------------------------------- | --------- | ------------------------------------- |
+| Cash-index weeklies       | SPXW, NDXP                                  | **±12%**  | `STRIKE_IV_OTM_RANGE_PCT_CASH_INDEX`  |
+| Broad ETFs                | SPY, QQQ, IWM                               | ±3%       | `STRIKE_IV_OTM_RANGE_PCT_BROAD_ETF`   |
+| Sector ETF + single names | SMH, NVDA, TSLA, META, MSFT, SNDK, MSTR, MU | ±5%       | `STRIKE_IV_OTM_RANGE_PCT_SINGLE_NAME` |
 
 **OI floor for cash-index dropped from 300 → 50** to capture deep-OTM
 whale strikes that cluster at low OI but carry massive vol/OI ratios
@@ -690,12 +690,12 @@ directly via the chain endpoint.
 
 **Backfill impact:**
 
-| Metric | Before | After | Δ |
-| ------ | ------ | ----- | -- |
-| iv_anomalies (backfill rows) | 15,741 | 15,886 | +145 |
-| strike_iv_snapshots (10 days) | 614,687 | 740,120 | +125,433 |
-| NDXP alerts (was 0) | 0 | **148** | new tier captured |
-| NDXP whale-strike captures (4/24, 11% OTM) | 0 | **14 unique strikes** | including 27300C, 27260C, 27250C, 27200C |
+| Metric                                     | Before  | After                 | Δ                                        |
+| ------------------------------------------ | ------- | --------------------- | ---------------------------------------- |
+| iv_anomalies (backfill rows)               | 15,741  | 15,886                | +145                                     |
+| strike_iv_snapshots (10 days)              | 614,687 | 740,120               | +125,433                                 |
+| NDXP alerts (was 0)                        | 0       | **148**               | new tier captured                        |
+| NDXP whale-strike captures (4/24, 11% OTM) | 0       | **14 unique strikes** | including 27300C, 27260C, 27250C, 27200C |
 
 **Files touched (this gate change):**
 

@@ -23,24 +23,24 @@ The v3 addendum called this branch "add regime filters." Having read
 `ml/src/pac_backtest/sweep.py`, I can report that Optuna ALREADY searches 15
 dimensions including every filter a trader would naturally reach for:
 
-| Existing dimension        | Cardinality | Covers |
-| ------------------------- | ----------: | ------ |
-| `entry_trigger`           |           5 | BOS/CHoCH variants |
-| `exit_trigger`            |           4 | OPPOSITE_CHOCH, ATR_TARGET, etc. |
-| `stop_placement`          |           3 | ATR, SWING_EXTREME, OB_BOUNDARY |
-| `session`                 |           4 | RTH, RTH_EX_LUNCH, etc. |
-| `session_bucket`          |           4 | open / lunch / close / any |
-| `iv_tercile_filter`       |           4 | low / mid / high / any |
-| `event_day_filter`        |           3 | skip / events_only / any |
-| `min_ob_volume_z`         |           3 | None / 1.0 / 2.0 |
-| `min_ob_pct_atr`          |           2 | None / 50.0 |
-| `entry_vs_ob`             |           4 | above / below / any |
-| `min_z_entry_vwap`        |           2 | None / 1.0 |
-| `min_adx_14`              |           3 | None / 20 / 30 |
-| `on_opposite_signal`      |           3 | HOLD_AND_SKIP / etc. |
-| `exit_after_n_bos`        |           4 | None / 2 / 3 / 4 |
-| `stop_atr_multiple`       |          11 | 0.5..3.0 step 0.25 |
-| `target_atr_multiple`     |          13 | 1.0..4.0 step 0.25 |
+| Existing dimension    | Cardinality | Covers                           |
+| --------------------- | ----------: | -------------------------------- |
+| `entry_trigger`       |           5 | BOS/CHoCH variants               |
+| `exit_trigger`        |           4 | OPPOSITE_CHOCH, ATR_TARGET, etc. |
+| `stop_placement`      |           3 | ATR, SWING_EXTREME, OB_BOUNDARY  |
+| `session`             |           4 | RTH, RTH_EX_LUNCH, etc.          |
+| `session_bucket`      |           4 | open / lunch / close / any       |
+| `iv_tercile_filter`   |           4 | low / mid / high / any           |
+| `event_day_filter`    |           3 | skip / events_only / any         |
+| `min_ob_volume_z`     |           3 | None / 1.0 / 2.0                 |
+| `min_ob_pct_atr`      |           2 | None / 50.0                      |
+| `entry_vs_ob`         |           4 | above / below / any              |
+| `min_z_entry_vwap`    |           2 | None / 1.0                       |
+| `min_adx_14`          |           3 | None / 20 / 30                   |
+| `on_opposite_signal`  |           3 | HOLD_AND_SKIP / etc.             |
+| `exit_after_n_bos`    |           4 | None / 2 / 3 / 4                 |
+| `stop_atr_multiple`   |          11 | 0.5..3.0 step 0.25               |
+| `target_atr_multiple` |          13 | 1.0..4.0 step 0.25               |
 
 Total combinatorial space ≈ 2.7M configs. Current Optuna budget is **30
 trials per fold × 15 folds = 450 trials** against that 2.7M space. We're
@@ -132,8 +132,8 @@ genuinely worth paper-trading. If not, the pattern match was spurious.
 ## Done-when
 
 - **Go path:** A config passes acceptance gate on ≥2 years with Sharpe
-  >1.0 and survives Phase 3 stress tests. Move to live paper-trading
-  design.
+  > 1.0 and survives Phase 3 stress tests. Move to live paper-trading
+  > design.
 - **No-go path:** All of Phase 1 + Phase 2 + Phase 3 produce no
   consistent passing config. Pure-PAC-as-systematic-entry is
   definitively dead; move to branch (3) PAC-as-context or pivot.

@@ -41,7 +41,7 @@ actionability:
 1. **Per-ticker peak-return distribution.** TSLA's 1015 alerts vs
    META's 286 — same density per-key or different?
 2. **Signal-stack stratification.** Does `skew_delta + z_score +
-   ask_mid_div` outperform `skew_delta` only? Does multi-signal predict
+ask_mid_div` outperform `skew_delta` only? Does multi-signal predict
    higher peak return?
 3. **Time-of-day effect.** Open auction (8:30-9:30 CT) vs institutional
    window (9:30-12:00) vs afternoon (12:00-15:00)?
@@ -69,21 +69,21 @@ For each backfill anomaly, compute (joining `strike_iv_snapshots` where
 `(ticker, strike, side, expiry)` matches and `ts >= alert.ts <= expiry
 close + buffer`):
 
-| Outcome feature | Definition |
-| --------------- | ---------- |
-| `entry_premium` | `mid_price` at the first snapshot at/after `alert.ts` |
-| `entry_spot_actual` | `spot` at that same snapshot (vs alert's `spot_at_detect`) |
-| `peak_premium` | `max(mid_price)` between alert and EOD/expiry close |
-| `peak_premium_pct` | `(peak - entry) / entry` |
-| `time_to_peak_min` | Minute index where peak occurred |
-| `first_itm_ts` | First minute where spot crossed strike (call: spot ≥ strike, put: spot ≤ strike). NULL if never. |
-| `first_itm_premium` | `mid_price` at `first_itm_ts` (NULL if never ITM) |
-| `time_to_itm_min` | Minute index where first ITM hit (NULL if never) |
-| `close_premium` | `mid_price` at last sample (≥ session close or nearest available) |
-| `close_pnl_pct` | `(close - entry) / entry` |
-| `finished_itm` | Boolean — was spot ITM at last sample |
-| `intrinsic_at_close` | For 0DTE: `max(spot - strike, 0)` (calls) or `max(strike - spot, 0)` (puts) |
-| `sample_count` | How many snapshots were available (data-quality flag) |
+| Outcome feature      | Definition                                                                                       |
+| -------------------- | ------------------------------------------------------------------------------------------------ |
+| `entry_premium`      | `mid_price` at the first snapshot at/after `alert.ts`                                            |
+| `entry_spot_actual`  | `spot` at that same snapshot (vs alert's `spot_at_detect`)                                       |
+| `peak_premium`       | `max(mid_price)` between alert and EOD/expiry close                                              |
+| `peak_premium_pct`   | `(peak - entry) / entry`                                                                         |
+| `time_to_peak_min`   | Minute index where peak occurred                                                                 |
+| `first_itm_ts`       | First minute where spot crossed strike (call: spot ≥ strike, put: spot ≤ strike). NULL if never. |
+| `first_itm_premium`  | `mid_price` at `first_itm_ts` (NULL if never ITM)                                                |
+| `time_to_itm_min`    | Minute index where first ITM hit (NULL if never)                                                 |
+| `close_premium`      | `mid_price` at last sample (≥ session close or nearest available)                                |
+| `close_pnl_pct`      | `(close - entry) / entry`                                                                        |
+| `finished_itm`       | Boolean — was spot ITM at last sample                                                            |
+| `intrinsic_at_close` | For 0DTE: `max(spot - strike, 0)` (calls) or `max(strike - spot, 0)` (puts)                      |
+| `sample_count`       | How many snapshots were available (data-quality flag)                                            |
 
 Output: `ml/data/iv-anomaly-outcomes.parquet` (~16K rows).
 
@@ -94,11 +94,11 @@ per-DTE.
 
 **Script:** `ml/backtest-iv-anomalies.py`
 
-| Strategy | Exit rule | PnL = |
-| -------- | --------- | ----- |
+| Strategy              | Exit rule                                | PnL =                                                                                                                  |
+| --------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | **Sell-on-ITM-touch** | Sell at first minute spot crosses strike | `first_itm_premium` (or `entry_premium` if never ITM and held to EOD where it expired worthless = 0DTE-only edge case) |
-| **Sell-at-peak** | Cheating oracle (best-case ceiling) | `peak_premium` |
-| **Hold-to-EOD** | Hold until 15:00 CT (or expiry close) | `close_premium` for non-0DTE; `intrinsic_at_close` for 0DTE (worthless if OTM, intrinsic if ITM) |
+| **Sell-at-peak**      | Cheating oracle (best-case ceiling)      | `peak_premium`                                                                                                         |
+| **Hold-to-EOD**       | Hold until 15:00 CT (or expiry close)    | `close_premium` for non-0DTE; `intrinsic_at_close` for 0DTE (worthless if OTM, intrinsic if ITM)                       |
 
 **Per-ticker / per-DTE-bucket aggregates:**
 
@@ -114,6 +114,7 @@ per-DTE.
 **DTE buckets:** 0DTE / 1-7DTE / 8-14DTE — different playbooks apply.
 
 **Outputs:**
+
 - `ml/data/iv-anomaly-backtest-2026-04-25.parquet` — per-alert backtest
   outcomes
 - `ml/reports/iv-anomaly-backtest-2026-04-25.md` — human-readable per-
@@ -136,6 +137,7 @@ the gates that produced them.
 
 For each of the 8 questions, slice the backtest output by that gate
 dimension and compute:
+
 - n alerts in each bucket
 - win rate per bucket (using best-playbook PnL)
 - mean PnL per bucket

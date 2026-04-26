@@ -1,12 +1,9 @@
 {
-  "generated_at": "2026-04-23T05:26:01+00:00",
+  "generated_at": "2026-04-25T20:52:56+00:00",
   "dataset": {
     "total_days": 73,
     "labeled_days": 42,
-    "date_range": [
-      "2026-01-02",
-      "2026-04-16"
-    ],
+    "date_range": ["2026-01-02", "2026-04-16"],
     "overall_accuracy": 0.929
   },
   "structure_accuracy": {
@@ -192,7 +189,7 @@
     "status": "PASS",
     "warnings": [],
     "failures": [],
-    "run_time": "2026-04-20 12:47:30"
+    "run_time": "2026-04-25 15:52:36"
   },
   "pipeline_sections": [
     "health",
@@ -769,7 +766,7 @@
             "n": 183
           },
           "RepeatedHitsAscendingFill|call": {
-            "mean_ret_fwd_15": 8.628813557788363e-05,
+            "mean_ret_fwd_15": 8.628813557788363e-5,
             "n": 48
           },
           "RepeatedHitsAscendingFill|put": {
@@ -1002,17 +999,8 @@
     }
   },
   "eod_flow_forward_returns": {
-    "horizons_min": [
-      1,
-      5,
-      15,
-      30,
-      60
-    ],
-    "bucket_sizes": [
-      1,
-      5
-    ],
+    "horizons_min": [1, 5, 15, 30, 60],
+    "bucket_sizes": [1, 5],
     "summaries": {
       "1": [
         {
@@ -1172,10 +1160,7 @@
     "note": "See decomp_summary_*.csv and gamma_sweep_*.csv for details."
   },
   "eod_flow_singles_only": {
-    "single_leg_conds": [
-      "auto",
-      "slan"
-    ],
+    "single_leg_conds": ["auto", "slan"],
     "rows_all_cond": 22267,
     "rows_singles": 15184
   }

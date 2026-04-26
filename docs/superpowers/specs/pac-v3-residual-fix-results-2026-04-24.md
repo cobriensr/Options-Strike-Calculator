@@ -22,7 +22,7 @@ as tested are definitively dead.
 The original A2 sweep used an engine with two lookahead peeks that
 inflated the apparent edge. The 2026-04-23 fix (v2 = `a8eeb00` +
 `f2989fa`) closed those, showing the $50K "edge" was 100% artifact.
-But two residuals remained — both biasing *down*, so capable of
+But two residuals remained — both biasing _down_, so capable of
 hiding (not inflating) real edge:
 
 1. **`smc.ob` reset step** (closed in `a81f229`): zeroed OBs
@@ -57,20 +57,20 @@ Results from `ml/experiments/pac_a2/1m_{year}_v3.json`. See
 for the script and [pac-a2-sweep-results-2026-04-23.md](./pac-a2-sweep-results-2026-04-23.md)
 for the acceptance-gate column legend.
 
-| Year | Ver | promo NQ | Med Sharpe | Med WR | Med PF | Med Trades/fold | Total Trades | Total P&L |
-| ---- | --- | -------: | ---------: | -----: | -----: | --------------: | -----------: | --------: |
-| 2022 | OLD |        1 |     +9.814 |  69.6% |   7.05 |               6 |          402 |  +$27,383 |
-| 2022 |  v2 |        0 |      0.000 |  50.0% |   2.05 |               2 |          184 |      −$31 |
-| 2022 |  **v3** |    0 |      0.000 |  25.8% |   0.33 |               3 |          179 |    −$656  |
-| 2023 | OLD |        1 |      0.000 |   0.0% |   0.00 |               2 |          586 |  +$13,051 |
-| 2023 |  v2 |        0 |      0.000 |  28.6% |   0.65 |               6 |          165 |     +$200 |
-| 2023 |  **v3** |    0 |      0.000 |   0.0% |   0.00 |               1 |           31 |    −$126  |
-| 2024 | OLD |        0 |     +4.397 |  41.2% |   1.75 |               4 |          393 |  +$10,406 |
-| 2024 |  v2 |        0 |      0.000 |   0.0% |   0.00 |               1 |           90 |     +$878 |
-| 2024 |  **v3** |    0 |      0.000 |  33.3% |   0.47 |               4 |          148 |    +$818  |
-| **3yr** | **OLD** |  **2** |    — |     — |     — |             — |    **1,381** | **+$50,841** |
-| **3yr** |  **v2** |  **0** |    — |     — |     — |             — |      **439** |  **+$1,047** |
-| **3yr** |  **v3** |  **0** |    — |     — |     — |             — |      **358** |     **+$37** |
+| Year    | Ver     | promo NQ | Med Sharpe | Med WR | Med PF | Med Trades/fold | Total Trades |    Total P&L |
+| ------- | ------- | -------: | ---------: | -----: | -----: | --------------: | -----------: | -----------: |
+| 2022    | OLD     |        1 |     +9.814 |  69.6% |   7.05 |               6 |          402 |     +$27,383 |
+| 2022    | v2      |        0 |      0.000 |  50.0% |   2.05 |               2 |          184 |         −$31 |
+| 2022    | **v3**  |        0 |      0.000 |  25.8% |   0.33 |               3 |          179 |        −$656 |
+| 2023    | OLD     |        1 |      0.000 |   0.0% |   0.00 |               2 |          586 |     +$13,051 |
+| 2023    | v2      |        0 |      0.000 |  28.6% |   0.65 |               6 |          165 |        +$200 |
+| 2023    | **v3**  |        0 |      0.000 |   0.0% |   0.00 |               1 |           31 |        −$126 |
+| 2024    | OLD     |        0 |     +4.397 |  41.2% |   1.75 |               4 |          393 |     +$10,406 |
+| 2024    | v2      |        0 |      0.000 |   0.0% |   0.00 |               1 |           90 |        +$878 |
+| 2024    | **v3**  |        0 |      0.000 |  33.3% |   0.47 |               4 |          148 |        +$818 |
+| **3yr** | **OLD** |    **2** |          — |      — |      — |               — |    **1,381** | **+$50,841** |
+| **3yr** | **v2**  |    **0** |          — |      — |      — |               — |      **439** |  **+$1,047** |
+| **3yr** | **v3**  |    **0** |          — |      — |      — |               — |      **358** |     **+$37** |
 
 ## What v3 revealed
 

@@ -32,7 +32,6 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-
 # Defaults align with the spec's canonical numbers. Override per-call
 # only when running ablation studies — otherwise downstream features
 # will get inconsistent labels.

@@ -42,18 +42,18 @@ min_ob_pct_atr:       50.0
 exit_after_n_bos:     4
 ```
 
-**5m_2024 winner** — selected from 5m_2024_t150's highest-OOS-Sharpe
-fold (raw config preserved in `ml/experiments/pac_replay/5m_2024cfg_*.json`).
+**5m_2024 winner** — selected from 5m*2024_t150's highest-OOS-Sharpe
+fold (raw config preserved in `ml/experiments/pac_replay/5m_2024cfg*\*.json`).
 
 ## Results
 
-| Config (source year) | Replay year | Trades | WR    | P&L      | PF   |
-|----------------------|-------------|-------:|------:|---------:|-----:|
-| 5m_2022              | 2022 (IS)   | 11     | 90.9% |   +$886  | 13.1 |
-| **5m_2022**          | **2023 OOS**| 14     | 50.0% | **−$476**| 0.58 |
-| **5m_2022**          | **2024 OOS**| 17     | 76.5% |**+$1,112**| 3.17 |
-| **5m_2024**          | **2022 OOS**| 4      | 25.0% |**−$1,039**| 0.10 |
-| **5m_2024**          | **2023 OOS**| 4      | 50.0% |  **−$170**| 0.52 |
+| Config (source year) | Replay year  | Trades |    WR |         P&L |   PF |
+| -------------------- | ------------ | -----: | ----: | ----------: | ---: |
+| 5m_2022              | 2022 (IS)    |     11 | 90.9% |       +$886 | 13.1 |
+| **5m_2022**          | **2023 OOS** |     14 | 50.0% |   **−$476** | 0.58 |
+| **5m_2022**          | **2024 OOS** |     17 | 76.5% | **+$1,112** | 3.17 |
+| **5m_2024**          | **2022 OOS** |      4 | 25.0% | **−$1,039** | 0.10 |
+| **5m_2024**          | **2023 OOS** |      4 | 50.0% |   **−$170** | 0.52 |
 
 ## Verdict
 

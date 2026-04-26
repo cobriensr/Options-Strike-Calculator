@@ -84,11 +84,11 @@ NQ 1m bars (3 years)             SPY/QQQ 1m + VIX            UW flow data (if ar
   the engine emits is a row.
 - **Cross-asset** — included from day 1 (SPY, QQQ, VIX as concurrent
   features at the event timestamp).
-- **Edge bar** — Model A passes if **AUC > 0.55 AND Expected R/trade
+- **Edge bar** — Model A passes if \*\*AUC > 0.55 AND Expected R/trade
   > 0.10** at the model's chosen confidence threshold. Model B passes
-  if **directional sign accuracy > 0.55 AND Sharpe of model-weighted
-  signed returns > 0.5**. Both required per model — discrimination AND
-  dollar profitability.
+  > if **directional sign accuracy > 0.55 AND Sharpe of model-weighted
+  > signed returns > 0.5\*\*. Both required per model — discrimination AND
+  > dollar profitability.
 
 ## Phases
 
@@ -170,7 +170,7 @@ otherwise Model A's predictions won't transfer to backtest behavior.
 - `ml/scripts/train_pac_classifier.py`
 - `ml/tests/test_pac_classifier_events.py`
 - `ml/tests/test_pac_classifier_features.py`
-- `ml/tests/test_pac_classifier_labels.py`  ← **HIGHEST priority test**
+- `ml/tests/test_pac_classifier_labels.py` ← **HIGHEST priority test**
 - `ml/tests/test_pac_classifier_model.py`
 - `ml/experiments/pac_classifier/` (output dir for parquet datasets,
   XGBoost JSON model artifacts, eval json, SHAP plots)
@@ -242,7 +242,7 @@ otherwise Model A's predictions won't transfer to backtest behavior.
   call** that PAC events don't have systematic edge as a directly
   tradable signal in the data we have. The natural next move is to
   pivot toward (3) PAC-as-context for discretionary use, or (4) PAC
-  + flow composite — both are tools rather than systematic strategies.
+  - flow composite — both are tools rather than systematic strategies.
 
 ## Non-goals
 

@@ -26,16 +26,16 @@ Fix: narrowed patterns to `ml/src/**/*` and `ml/scripts/**/*` (commit [`f2989fa`
 
 ### 3-year OLD vs NEW
 
-| Year | Version | Promotions (XMkt / NQ-only / Rej) | Med Sharpe | Med WR | Med PF | Med Trades/fold | Total Trades | Total P&L |
-|---|---|---|---:|---:|---:|---:|---:|---:|
-| 2022 | OLD | 0 / **1** / 14 | **+9.81** | **69.6%** | **7.05** | 6 | 402 | **+$27,383** |
-| 2022 | **NEW** | 0 / **0** / 15 | **+0.00** | **50.0%** | **2.05** | 2 | 184 | **−$31** |
-| 2023 | OLD | 0 / **1** / 14 | 0.00 | 0.0% | 0.00 | 2 | 586 | **+$13,051** |
-| 2023 | **NEW** | 0 / **0** / 15 | 0.00 | 28.6% | 0.65 | 6 | 165 | **+$200** |
-| 2024 | OLD | 0 / 0 / 15 | **+4.40** | **41.2%** | **1.75** | 4 | 393 | **+$10,406** |
-| 2024 | **NEW** | 0 / 0 / 15 | **+0.00** | 0.0% | 0.00 | 1 | 90 | **+$878** |
-| **3yr** | **OLD** | **0 / 2 / —** | — | — | — | — | **1,381** | **+$50,841** |
-| **3yr** | **NEW** | **0 / 0 / —** | — | — | — | — | **439** | **+$1,047** |
+| Year    | Version | Promotions (XMkt / NQ-only / Rej) | Med Sharpe |    Med WR |   Med PF | Med Trades/fold | Total Trades |    Total P&L |
+| ------- | ------- | --------------------------------- | ---------: | --------: | -------: | --------------: | -----------: | -----------: |
+| 2022    | OLD     | 0 / **1** / 14                    |  **+9.81** | **69.6%** | **7.05** |               6 |          402 | **+$27,383** |
+| 2022    | **NEW** | 0 / **0** / 15                    |  **+0.00** | **50.0%** | **2.05** |               2 |          184 |     **−$31** |
+| 2023    | OLD     | 0 / **1** / 14                    |       0.00 |      0.0% |     0.00 |               2 |          586 | **+$13,051** |
+| 2023    | **NEW** | 0 / **0** / 15                    |       0.00 |     28.6% |     0.65 |               6 |          165 |    **+$200** |
+| 2024    | OLD     | 0 / 0 / 15                        |  **+4.40** | **41.2%** | **1.75** |               4 |          393 | **+$10,406** |
+| 2024    | **NEW** | 0 / 0 / 15                        |  **+0.00** |      0.0% |     0.00 |               1 |           90 |    **+$878** |
+| **3yr** | **OLD** | **0 / 2 / —**                     |          — |         — |        — |               — |    **1,381** | **+$50,841** |
+| **3yr** | **NEW** | **0 / 0 / —**                     |          — |         — |        — |               — |      **439** |  **+$1,047** |
 
 ### What changed
 
@@ -51,7 +51,7 @@ Two smc library issues remain, both documented as xfail in the causality test:
 1. **`swing_highs_lows` dedup.** A swing at bar T can be erased retroactively if a later same-type swing is more extreme.
 2. **`smc.ob` reset.** An OB at bar T is zeroed out if a future high re-crosses its top.
 
-Both cause *under-counting* (live trader would have seen signals the post-hoc output erases), not over-counting. If we fixed them the NEW Sharpe numbers could tick up slightly — but the OLD-vs-NEW direction wouldn't change. None of these residuals can manufacture the +9.8 Sharpe the OLD engine produced.
+Both cause _under-counting_ (live trader would have seen signals the post-hoc output erases), not over-counting. If we fixed them the NEW Sharpe numbers could tick up slightly — but the OLD-vs-NEW direction wouldn't change. None of these residuals can manufacture the +9.8 Sharpe the OLD engine produced.
 
 ## What this means for the PAC thesis
 

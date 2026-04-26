@@ -13,21 +13,21 @@ Edge bar (from the original plan):
 
 **Both windows failed both gates.**
 
-| Window | AUC (Model A) | Expected R @ p0.50 | Verdict |
-|---|---|---|---|
-| W1 (train=2022, test=2023) | **0.501** | **−0.030** | FAIL |
-| W2 (train=2022+2023, test=2024) | **0.509** | **+0.090** | FAIL (AUC; Expected R just below 0.10) |
+| Window                          | AUC (Model A) | Expected R @ p0.50 | Verdict                                |
+| ------------------------------- | ------------- | ------------------ | -------------------------------------- |
+| W1 (train=2022, test=2023)      | **0.501**     | **−0.030**         | FAIL                                   |
+| W2 (train=2022+2023, test=2024) | **0.509**     | **+0.090**         | FAIL (AUC; Expected R just below 0.10) |
 
 ## Sample sizes
 
 5,819 events across 3 years (NQ 5m, all event types: BOS + CHOCH + CHOCHPLUS).
 ~95% resolved, ~5% timeout. No data scarcity.
 
-| Year | Events | Resolved | Timeout |
-|---|---|---|---|
-| 2022 | 1,978 | 1,901 | 77 (3.9%) |
-| 2023 | 1,896 | 1,811 | 85 (4.5%) |
-| 2024 | 1,945 | 1,848 | 97 (5.0%) |
+| Year | Events | Resolved | Timeout   |
+| ---- | ------ | -------- | --------- |
+| 2022 | 1,978  | 1,901    | 77 (3.9%) |
+| 2023 | 1,896  | 1,811    | 85 (4.5%) |
+| 2024 | 1,945  | 1,848    | 97 (5.0%) |
 
 ## Model A — binary target/stop classifier
 
@@ -38,14 +38,14 @@ XGBoost (n=300, depth=4, lr=0.05, min_child_weight=5, subsample=0.8). Default se
 
 Threshold sweeps tell the same story:
 
-| Window | Threshold | Expected R/trade | Take rate | Notes |
-|---|---|---|---|---|
-| W1 | p ≥ 0.50 | −0.030 | 29% | losing pocket |
-| W1 | p ≥ 0.55 | −0.009 | 19% | flat |
-| W1 | p ≥ 0.60 | −0.026 | 12% | losing |
-| W2 | p ≥ 0.50 | +0.090 | 12% | just below gate |
-| W2 | p ≥ 0.55 | **+0.203** | 6% | **n≈117 — unstable** |
-| W2 | p ≥ 0.60 | −0.141 | 2.4% | collapses |
+| Window | Threshold | Expected R/trade | Take rate | Notes                |
+| ------ | --------- | ---------------- | --------- | -------------------- |
+| W1     | p ≥ 0.50  | −0.030           | 29%       | losing pocket        |
+| W1     | p ≥ 0.55  | −0.009           | 19%       | flat                 |
+| W1     | p ≥ 0.60  | −0.026           | 12%       | losing               |
+| W2     | p ≥ 0.50  | +0.090           | 12%       | just below gate      |
+| W2     | p ≥ 0.55  | **+0.203**       | 6%        | **n≈117 — unstable** |
+| W2     | p ≥ 0.60  | −0.141           | 2.4%      | collapses            |
 
 W2's **p≥0.55** pocket looks tempting (+0.20R on 6% of events) but the sample is ~117 trades and tightening to p≥0.60 flips the sign. Not a stable edge — looks like noise that happened to align with the top decile in 2024.
 
@@ -75,6 +75,7 @@ Compare: a real-edge model would show one or two features dominating at 0.15+ an
 Combined with the Phase 3 winner inspection results (config-search PAC sweeps showed marginal 5m_2022 edge but failed OOS on 2024 configs), this confirms: **there is no broad PAC edge on NQ 5m that an event-level classifier can capture against fixed +1.5R/-1R targets over 2022–2024.**
 
 The prior findings:
+
 - 1m: definitively null in CPCV (`pac-v3-residual-fix-results-2026-04-24.md`)
 - 5m: mixed regime-conditional, doesn't transfer (`pac-phase3-winner-inspection-2026-04-25.md`)
 - Event classifier: null on both labels, no feature carries signal

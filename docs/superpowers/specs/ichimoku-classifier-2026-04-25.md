@@ -13,19 +13,19 @@ After PAC came up null on NQ 5m, the question was: **is the null a PAC problem o
 
 Same gates as PAC (AUC > 0.55 AND Expected R/trade > 0.10 in every walk-forward window).
 
-| Timeframe | Window | n_train | n_test | AUC | Expected R @ p0.50 | Verdict |
-|---|---|---|---|---|---|---|
-| **5m** | W1 (2022→2023) | 6,913 | 7,020 | **0.502** | +0.025 | FAIL |
-| **5m** | W2 (2022+2023→2024) | 13,933 | 6,945 | **0.511** | +0.001 | FAIL |
-| **1m** | W1 (2022→2023) | 33,962 | 34,117 | **0.501** | −0.019 | FAIL |
-| **1m** | W2 (2022+2023→2024) | 68,079 | 34,892 | **0.512** | +0.115 | FAIL (AUC) |
+| Timeframe | Window              | n_train | n_test | AUC       | Expected R @ p0.50 | Verdict    |
+| --------- | ------------------- | ------- | ------ | --------- | ------------------ | ---------- |
+| **5m**    | W1 (2022→2023)      | 6,913   | 7,020  | **0.502** | +0.025             | FAIL       |
+| **5m**    | W2 (2022+2023→2024) | 13,933  | 6,945  | **0.511** | +0.001             | FAIL       |
+| **1m**    | W1 (2022→2023)      | 33,962  | 34,117 | **0.501** | −0.019             | FAIL       |
+| **1m**    | W2 (2022+2023→2024) | 68,079  | 34,892 | **0.512** | +0.115             | FAIL (AUC) |
 
 For comparison, PAC re-run after a small bug fix (see Methodology Note below):
 
-| Timeframe | Window | AUC | Expected R @ p0.50 |
-|---|---|---|---|
-| PAC 5m | W1 | 0.508 | −0.013 |
-| PAC 5m | W2 | 0.510 | +0.219 (12.8% take rate; collapses at p0.60) |
+| Timeframe | Window | AUC   | Expected R @ p0.50                           |
+| --------- | ------ | ----- | -------------------------------------------- |
+| PAC 5m    | W1     | 0.508 | −0.013                                       |
+| PAC 5m    | W2     | 0.510 | +0.219 (12.8% take rate; collapses at p0.60) |
 
 **Three independent signal-extractors, same null fingerprint.**
 
@@ -34,16 +34,17 @@ For comparison, PAC re-run after a small bug fix (see Methodology Note below):
 Ichimoku produces **3.5× more events** at 5m and **17× more events** at 1m than PAC, because TK crosses + cloud breaks fire whenever the indicators cross — no swing-confirmation gating like PAC requires.
 
 | Year | Ichimoku 5m | Ichimoku 1m | PAC 5m |
-|---|---|---|---|
-| 2022 | 6,913 | 33,962 | 1,978 |
-| 2023 | 7,020 | 34,117 | 1,896 |
-| 2024 | 6,945 | 34,892 | 1,945 |
+| ---- | ----------- | ----------- | ------ |
+| 2022 | 6,913       | 33,962      | 1,978  |
+| 2023 | 7,020       | 34,117      | 1,896  |
+| 2024 | 6,945       | 34,892      | 1,945  |
 
 So data scarcity is **definitively not** the reason for null. With 100K+ Ichimoku 1m events, any real edge would emerge.
 
 ## Threshold sweeps tell the same story
 
 Tempting "high-confidence" pockets appear at p≥0.55 for several configurations, but they're:
+
 1. Small (often <2% take rate, hundreds of trades/year)
 2. **Threshold-unstable** — sign flips between p0.55 and p0.60
 
