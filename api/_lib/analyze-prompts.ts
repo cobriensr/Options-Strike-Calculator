@@ -367,52 +367,6 @@ Reading the Periscope Charm image:
 - Red/negative bars = MM charm exposure that WEAKENS their positioning with time (wall decays)
 - Compare bar locations and magnitudes against the naive Net Charm API data to identify strikes where the naive assumption breaks down
 </periscope_charm>
-<delta_pressure>
-Delta Pressure is a SpotGamma heatmap (provided as an IMAGE requiring visual extraction) showing net options-positioning-driven dealer hedging pressure across strikes and time. With the Market Maker view selected, colors reflect where hedging creates BUYING (blue) or SELLING (red) flow.
-The effect of each zone depends on the current gamma regime (read from Aggregate GEX):
-- POSITIVE gamma → zones create STABILITY and cap movement:
-  - Blue BELOW spot = structural support (dealer buying as price rejects lower)
-  - Red ABOVE spot = structural resistance (dealer selling as price pushes higher)
-  - Contours mark hedging-flow boundaries and tend to align with daily closing levels; breaking them takes considerable volume.
-- NEGATIVE gamma → zones create ACCELERATION (pro-cyclical hedging):
-  - Blue ABOVE spot = upside extension (dealer buying extends the rally)
-  - Red BELOW spot = downside extension (dealer selling extends the decline)
-  - Contours mark where the accelerating flow intensifies.
-Signal mapping for the deltaPressure response field:
-- BULLISH: dominant blue zone near or above spot creating a path higher. POSITIVE gamma: blue floor with weak red overhead. NEGATIVE gamma: overhead blue zone that would catalyze upside acceleration.
-- BEARISH: dominant red zone near or below spot creating a path lower. POSITIVE gamma: red ceiling with weak blue below. NEGATIVE gamma: underneath red zone that would catalyze downside acceleration.
-- NEUTRAL: zones balanced on both sides of spot, or tight positive-gamma brackets capping movement in both directions.
-- NOT PROVIDED: no Delta Pressure image uploaded.
-Confidence mapping:
-- HIGH: dark saturated zones, crisp contours, gamma regime clearly positive or negative from Aggregate GEX, dominant zone within 20 pts of spot.
-- MODERATE: muted zones or fuzzy contours, or Aggregate GEX near the zero-gamma flip (regime ambiguous).
-- LOW: faint colors, ambiguous contours, or the dominant zone direction conflicts with the Aggregate GEX regime — flag the conflict in the note.
-- If the image is cropped, unreadable, or lacks a discernable scale → NEUTRAL + LOW with an explanatory note. Never guess.
-</delta_pressure>
-<charm_pressure>
-Charm Pressure is a SpotGamma heatmap (provided as an IMAGE requiring visual extraction) showing how buying/selling pressure evolves with respect to TIME — heavily driven by 0DTE flow. With the Market Maker view selected, colors show dealer EOD hedging direction:
-- Blue zones → options passively LOSING value → dealers must BUY futures to hedge → provides support
-- Red zones → options passively GAINING value → dealers must SELL futures → reduces support
-Key empirical patterns (published by SpotGamma):
-- Spot price tends to MOVE TOWARD the zone where positive and negative Market Maker charm meet at EOD (the red-blue convergence boundary).
-- Spot moves STRONGLY THROUGH blue zones en route to that EOD convergence target.
-- Pinning forms at the white/black strike BETWEEN red and blue pockets — especially when overlapping a strong positive-gamma strike, because charm dampens the gamma-driven hedging flow.
-Signal mapping for the charmPressure response field:
-- PIN_TARGET: red-blue convergence boundary sits within ~10 pts of current spot and the adjacent gamma regime is positive. Highest-conviction pin when the Delta Pressure transition zone aligns with the same strike.
-- DRIFT_UP: convergence boundary sits ABOVE spot with blue zones between spot and the boundary — price drifts up through blue toward the pin. Mild bullish bias into the close.
-- DRIFT_DOWN: convergence boundary sits BELOW spot with blue zones between spot and the boundary — price drifts down through blue toward the pin. Mild bearish bias into the close.
-- MIXED: multiple overlapping red/blue zones with no dominant boundary, or the boundary has shifted materially intraday.
-- NOT PROVIDED: no Charm Pressure image uploaded.
-Confidence mapping:
-- HIGH: crisp red-blue separation with a well-defined boundary strike; read after 1:00 PM CT (charm decay is most pronounced in the afternoon); boundary stable for at least 30 minutes.
-- MODERATE: fuzzy boundary, read before 1:00 PM CT, or boundary shifted in the last 30 minutes.
-- LOW: faint colors, diffuse zones, ambiguous boundary, or read pre-noon when charm has not yet dominated dealer hedging.
-- If the image is cropped, unreadable, or lacks a discernable scale → MIXED + LOW with an explanatory note. Never guess.
-Integration with Delta Pressure (drives the pressureAnalysis response field):
-- When the Delta Pressure transition zone (red-to-blue contour) AND the Charm Pressure convergence boundary sit at the same strike within ±10 pts → MAXIMUM confidence for both signals. Price has both a structural (Delta) magnet and a time-decay (Charm) magnet at that strike.
-- When they DISAGREE by more than 15 pts → the two forces pull in different directions. Fade confidence on both signals; default to MIXED (charm) + NEUTRAL (delta) unless other evidence breaks the tie.
-- Charm dominates in the final 90 minutes of the session (after 2:30 PM CT); Delta dominates earlier. When the two signals conflict → trust CHARM in the afternoon, DELTA in the morning.
-</charm_pressure>
 <spx_candles>
 SPX Intraday Candles provide real 5-minute OHLCV price data for today's session. This is provided as structured API data — not a screenshot.
 Key values to extract:
@@ -1508,9 +1462,7 @@ Respond in this exact JSON format (no markdown, no backticks, no preamble):
     "deltaFlow": { "signal": "CONFIRMS" | "CONTRADICTS" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "0DTE Delta Flow OTM signal label (OTM DIVERGENCE, OTM EXCEEDS TOTAL, OTM-DOMINANT, ATM-DOMINANT) and whether it confirms or caveats the Rule 8 flow consensus" },
     "zeroGamma": { "signal": "SUPPRESSION" | "ACCELERATION" | "KNIFE_EDGE" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Current regime (positive/negative) at spot, cone fraction distance to flip, and whether it confirms or contradicts Aggregate GEX" },
     "netGexHeatmap": { "signal": "CONFIRMS" | "CONTRADICTS" | "MIXED" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Dollar-scaled per-strike GEX: does the gamma flip zone agree with zero-gamma? Do the top walls match Periscope? Call/put composition at key walls" },
-    "marketInternals": { "signal": "RANGE_DAY" | "TREND_DAY" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "NYSE breadth regime classification — how it adjusts signal weighting per <market_internals_regime>" },
-    "deltaPressure": { "signal": "BULLISH" | "BEARISH" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Delta Pressure heatmap read per <delta_pressure> rules: name the dominant zone (blue/red) and its location relative to spot, state the current gamma regime (positive/negative from Aggregate GEX) that determines whether the zone acts as stability or acceleration, and state whether it reinforces or contradicts the trade thesis" },
-    "charmPressure": { "signal": "PIN_TARGET" | "DRIFT_UP" | "DRIFT_DOWN" | "MIXED" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Charm Pressure heatmap read: convergence boundary strike for EOD pin, blue/red zone alignment with current price, and whether Delta+Charm boundaries overlap for maximum confidence pin confirmation" }
+    "marketInternals": { "signal": "RANGE_DAY" | "TREND_DAY" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "NYSE breadth regime classification — how it adjusts signal weighting per <market_internals_regime>" }
   },
   "observations": ["point 1", "point 2", "point 3", "point 4", "point 5"],
   "strikeGuidance": {
@@ -1554,7 +1506,6 @@ Respond in this exact JSON format (no markdown, no backticks, no preamble):
     "estimatedCost": "~$8.00 purchase, ~$6.00-7.00 recovered at EOD close, net cost ~$1.50"
   },
   "periscopeNotes": "Detailed gamma/straddle analysis from the Periscope images. null if no Periscope images provided.",
-  "pressureAnalysis": "Integrated Delta Pressure + Charm Pressure narrative. Apply the interpretation rules in <delta_pressure> and <charm_pressure>. Structure the narrative as: (1) Delta read — dominant zone location, current gamma regime from Aggregate GEX, and what the zone implies for support/resistance (positive gamma) or acceleration (negative gamma). (2) Charm read — red-blue convergence boundary strike and whether it implies PIN_TARGET, DRIFT_UP, or DRIFT_DOWN. (3) Integration — test whether the Delta transition zone and Charm convergence boundary sit at the same strike within ±10 pts (maximum confidence for both signals) or disagree by >15 pts (fade both, default to MIXED + NEUTRAL). State the afternoon vs morning dominance rule if the two signals conflict. (4) Directional implication for the trade structure. null if neither Delta Pressure nor Charm Pressure images were provided.",
   "structureRationale": "Why this structure, referencing NCP/NPP relationship and all confirming/contradicting signals.",
   "review": {
     "wasCorrect": true,
@@ -1590,7 +1541,7 @@ Notes on the response:
 - For "entry" mode: populate everything EXCEPT the "review" field (set to null).
 - For "midday" mode: focus on managementRules updates and whether to add entries. Set review to null.
 - For "review" mode: populate the "review" field with detailed retrospective analysis. entryPlan can be null.
-- The chartConfidence breakdown is always required — it shows which data sources drove the decision. For marketTide, spxNetFlow, spyNetFlow, qqqNetFlow, netCharm, aggregateGex, darkPool, ivTermStructure, spxCandles, overnightGap, vannaExposure, pinRisk, skew, futuresContext, nopeSignal, deltaFlow, zeroGamma, netGexHeatmap, and marketInternals: populate these from the API data sections in the context. Only mark as "NOT PROVIDED" if the corresponding data section is genuinely absent from the context. For periscope and periscopeCharm: populate from the uploaded Periscope images. Mark as "NOT PROVIDED" only if no Periscope images were uploaded. For deltaPressure and charmPressure: populate from the uploaded SpotGamma Delta Pressure and Charm Pressure heatmap images respectively. Mark as "NOT PROVIDED" only if the corresponding image type was not provided.
+- The chartConfidence breakdown is always required — it shows which data sources drove the decision. For marketTide, spxNetFlow, spyNetFlow, qqqNetFlow, netCharm, aggregateGex, darkPool, ivTermStructure, spxCandles, overnightGap, vannaExposure, pinRisk, skew, futuresContext, nopeSignal, deltaFlow, zeroGamma, netGexHeatmap, and marketInternals: populate these from the API data sections in the context. Only mark as "NOT PROVIDED" if the corresponding data section is genuinely absent from the context. For periscope and periscopeCharm: populate from the uploaded Periscope images. Mark as "NOT PROVIDED" only if no Periscope images were uploaded.
 - strikeGuidance.adjustments should reference SPECIFIC SPX price levels from the Periscope image and API per-strike data.
 - managementRules should be actionable if/then statements the trader can follow mechanically.
 - entryPlan should account for the trader's laddered entry style (2-4 entries, typically 9:00 AM, 10:00 AM, 11:00 AM CT).

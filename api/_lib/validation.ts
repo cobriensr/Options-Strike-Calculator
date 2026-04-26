@@ -363,7 +363,7 @@ export const analyzeBodySchema = z.object({
   images: z
     .array(analyzeImageSchema)
     .min(1, 'At least one image is required')
-    .max(4, 'Maximum 4 images allowed'),
+    .max(2, 'Maximum 2 images allowed'),
   context: z.record(z.string(), z.unknown()),
 });
 
@@ -532,8 +532,8 @@ export const analysisResponseSchema = z.object({
     zeroGamma: chartConfidenceEntry,
     netGexHeatmap: chartConfidenceEntry,
     marketInternals: chartConfidenceEntry,
-    deltaPressure: chartConfidenceEntry,
-    charmPressure: chartConfidenceEntry,
+    deltaPressure: chartConfidenceEntry.optional(),
+    charmPressure: chartConfidenceEntry.optional(),
   }),
   observations: z.array(z.string()),
   strikeGuidance: z

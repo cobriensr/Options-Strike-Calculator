@@ -315,8 +315,8 @@ describe('POST /api/analyze', () => {
     expect(res._json).toEqual({ error: 'At least one image is required' });
   });
 
-  it('returns 400 when more than 4 images', async () => {
-    const images = Array.from({ length: 5 }, () => ({
+  it('returns 400 when more than 2 images', async () => {
+    const images = Array.from({ length: 3 }, () => ({
       data: 'base64',
       mediaType: 'image/png',
     }));
@@ -325,7 +325,7 @@ describe('POST /api/analyze', () => {
     await handler(req, res);
 
     expect(res._status).toBe(400);
-    expect(res._json).toEqual({ error: 'Maximum 4 images allowed' });
+    expect(res._json).toEqual({ error: 'Maximum 2 images allowed' });
   });
 
   it('returns parsed analysis on success', async () => {
