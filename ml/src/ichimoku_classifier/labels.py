@@ -127,6 +127,22 @@ class StrategySpec:
     timeout_bars: int = DEFAULT_TIMEOUT_BARS_5M
     skip_if_stop_on_wrong_side: bool = True
 
+    # ---- Variant knobs (added 2026-04-25 to push Strategy C profitability) ----
+
+    # Ratchet the stop with the Kijun line in the trade's favor (only).
+    # Long: stop_price = max(current_stop, kijun[i]) when kijun > stop.
+    # Short: stop_price = min(current_stop, kijun[i]) when kijun < stop.
+    # Never moves against the trade. Lets winners run while still
+    # protecting accumulated profit. Only applies when stop_mode="kijun".
+    use_trailing_stop: bool = False
+
+    # Win threshold in R units. Default 0.0 = "any positive realized_R
+    # is a win" (the original Strategy C behavior). Setting > 0 raises
+    # the bar — e.g. 0.5 means label_a=1 only if realized_R > +0.5R.
+    # Stop hits and timeouts are unaffected (stop = always 0, timeout =
+    # always NaN).
+    win_threshold_r: float = 0.0
+
 
 # Canonical preset strategies — the three "passes" the user asked for.
 STRATEGY_KIJUN_STOP_2R = StrategySpec(
@@ -152,11 +168,57 @@ STRATEGY_TK_REVERSAL_EXIT = StrategySpec(
     timeout_bars=DEFAULT_TIMEOUT_BARS_5M * 2,  # let trends play out longer
 )
 
+# ---- Strategy C variants — push profitability ----
+
+# Variant 1: Trailing Kijun stop. Lets winners run further by ratcheting
+# the stop forward. Same exit triggers, same labeling rule.
+STRATEGY_TK_REV_TRAILING = StrategySpec(
+    name="tk_rev_trailing",
+    stop_mode="kijun",
+    target_mode="none",
+    exit_on_tk_reversal=True,
+    exit_on_kijun_recross=True,
+    timeout_bars=DEFAULT_TIMEOUT_BARS_5M * 2,
+    use_trailing_stop=True,
+)
+
+# Variant 2: Higher win threshold. Same static stop, same exit triggers,
+# but label_a=1 only when realized_R > +0.5R. Forces the model to learn
+# "predict big winners" specifically.
+STRATEGY_TK_REV_THRESH_05 = StrategySpec(
+    name="tk_rev_thresh_05",
+    stop_mode="kijun",
+    target_mode="none",
+    exit_on_tk_reversal=True,
+    exit_on_kijun_recross=True,
+    timeout_bars=DEFAULT_TIMEOUT_BARS_5M * 2,
+    win_threshold_r=0.5,
+)
+
+# Variant 3: Combined — trailing stop + 0.5R win threshold. Best of both.
+STRATEGY_TK_REV_COMBINED = StrategySpec(
+    name="tk_rev_combined",
+    stop_mode="kijun",
+    target_mode="none",
+    exit_on_tk_reversal=True,
+    exit_on_kijun_recross=True,
+    timeout_bars=DEFAULT_TIMEOUT_BARS_5M * 2,
+    use_trailing_stop=True,
+    win_threshold_r=0.5,
+)
+
 
 # Map name → spec for CLI lookup.
 PRESET_STRATEGIES: dict[str, StrategySpec] = {
     s.name: s
-    for s in (STRATEGY_KIJUN_STOP_2R, STRATEGY_CLOUD_STOP_2R, STRATEGY_TK_REVERSAL_EXIT)
+    for s in (
+        STRATEGY_KIJUN_STOP_2R,
+        STRATEGY_CLOUD_STOP_2R,
+        STRATEGY_TK_REVERSAL_EXIT,
+        STRATEGY_TK_REV_TRAILING,
+        STRATEGY_TK_REV_THRESH_05,
+        STRATEGY_TK_REV_COMBINED,
+    )
 }
 
 
@@ -271,6 +333,9 @@ def label_ichimoku_event(
     bars_to_exit = end_walk - (event_bar_idx + 1)
     realized_r = float("nan")
 
+    win_threshold = spec.win_threshold_r
+    use_trailing = spec.use_trailing_stop and spec.stop_mode == "kijun"
+
     for i in range(event_bar_idx + 1, end_walk):
         bar_high = highs[i]
         bar_low = lows[i]
@@ -284,7 +349,16 @@ def label_ichimoku_event(
             label_a = 0.0
             exit_reason = "stop"
             bars_to_exit = i - event_bar_idx
-            realized_r = -1.0
+            # Trailing stops can lock in profit before reversing — if the
+            # stop has ratcheted past entry, exit value is the (now
+            # favorable) stop level, not entry. Otherwise it's a -1R loss.
+            if use_trailing:
+                signed_pnl = (stop_price - entry_price) * entry_dir_sign
+                realized_r = signed_pnl / stop_distance
+                # Reclassify per win threshold
+                label_a = 1.0 if realized_r > win_threshold else 0.0
+            else:
+                realized_r = -1.0
             break
 
         # 2. Target hit (only if target_price defined)
@@ -294,10 +368,10 @@ def label_ichimoku_event(
             else:
                 target_hit = bar_low <= target_price
             if target_hit:
-                label_a = 1.0
                 exit_reason = "target"
                 bars_to_exit = i - event_bar_idx
                 realized_r = spec.target_r_mult
+                label_a = 1.0 if realized_r > win_threshold else 0.0
                 break
 
         # 3. TK-reversal exit (Strategy C)
@@ -307,7 +381,7 @@ def label_ichimoku_event(
                 exit_close = closes[i]
                 signed_pnl = (exit_close - entry_price) * entry_dir_sign
                 realized_r = signed_pnl / stop_distance
-                label_a = 1.0 if realized_r > 0 else 0.0
+                label_a = 1.0 if realized_r > win_threshold else 0.0
                 exit_reason = "tk_reversal"
                 bars_to_exit = i - event_bar_idx
                 break
@@ -321,10 +395,19 @@ def label_ichimoku_event(
             if wrong_side:
                 signed_pnl = (close_i - entry_price) * entry_dir_sign
                 realized_r = signed_pnl / stop_distance
-                label_a = 1.0 if realized_r > 0 else 0.0
+                label_a = 1.0 if realized_r > win_threshold else 0.0
                 exit_reason = "kijun_recross"
                 bars_to_exit = i - event_bar_idx
                 break
+
+        # 5. Ratchet trailing stop — only AFTER all exit checks fired,
+        # so the stop check at bar i used the prior bar's value. Update
+        # only if Kijun has moved favorably since.
+        if use_trailing and np.isfinite(kijun[i]):
+            if direction == "up" and kijun[i] > stop_price:
+                stop_price = float(kijun[i])
+            elif direction == "dn" and kijun[i] < stop_price:
+                stop_price = float(kijun[i])
 
     # Timeout: emit signed forward fraction of R, label_a = NaN.
     if exit_reason == "timeout" and end_walk > event_bar_idx + 1:

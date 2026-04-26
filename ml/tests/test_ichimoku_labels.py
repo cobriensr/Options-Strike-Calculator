@@ -24,6 +24,9 @@ import pytest
 from ichimoku_classifier.labels import (
     STRATEGY_CLOUD_STOP_2R,
     STRATEGY_KIJUN_STOP_2R,
+    STRATEGY_TK_REV_COMBINED,
+    STRATEGY_TK_REV_THRESH_05,
+    STRATEGY_TK_REV_TRAILING,
     STRATEGY_TK_REVERSAL_EXIT,
     StrategySpec,
     _resolve_stop_price,
@@ -358,3 +361,157 @@ def test_label_ichimoku_events_empty_input() -> None:
     out = label_ichimoku_events(df, events, STRATEGY_KIJUN_STOP_2R, timeframe="5m")
     assert len(out) == 0
     assert "label_a" in out.columns
+
+
+# ---------------------------------------------------------------------------
+# Trailing Kijun stop (Strategy C variant)
+# ---------------------------------------------------------------------------
+
+
+def test_trailing_stop_ratchets_with_kijun() -> None:
+    """Long, entry=105, initial Kijun=100 (stop_distance=5). Kijun
+    rises bar by bar; by end of bar 4 the trailing stop has ratcheted
+    to kijun[4]=106 (causally — using prior bar's kijun for current
+    bar's check). At bar 5 price drops, low=105.5 ≤ 106 → stop fires
+    at the trailed level of 106. Realized_R = (106-105)/5 = +0.2 →
+    profitable stop hit, label_a=1 (default threshold 0).
+    """
+    closes = [105.0, 106.0, 107.0, 108.0, 109.0, 105.5]
+    n = len(closes)
+    kijun = [100.0, 101.5, 103.0, 104.5, 106.0, 107.0]
+    df = pd.DataFrame(
+        {
+            "ts_event": pd.date_range("2024-01-02 13:30", periods=n, freq="5min", tz="UTC"),
+            "open": closes,
+            "high": [c + 0.2 for c in closes],
+            "low": [c - 0.2 for c in closes],
+            "close": closes,
+            "volume": [1000.0] * n,
+            "kijun_26": kijun,
+            "cloud_top": [np.nan] * n,
+            "cloud_bottom": [np.nan] * n,
+            "BOS": [np.nan] * n,
+        }
+    )
+    # Bar 5 explicitly low enough to hit the trailing stop at 106 (kijun[4])
+    df.loc[5, "low"] = 105.5
+    r = label_ichimoku_event(df, 0, "up", STRATEGY_TK_REV_TRAILING)
+    assert r.exit_reason == "stop"
+    # Trailing stop at 106 (kijun ratcheted through bar 4). +0.2R locked.
+    assert r.realized_R == pytest.approx(0.2)
+    assert r.label_a == pytest.approx(1.0)  # threshold 0.0 → 0.2 is a win
+
+
+def test_trailing_stop_does_not_ratchet_against_trade() -> None:
+    """Long with kijun ABOVE entry briefly — stop must NOT move down to
+    track the unfavorable kijun. Stop price stays at the original level."""
+    # Entry=105, initial Kijun=100. Bar 1: Kijun=98 (dropped, unfavorable).
+    # Bar 2: price drops to 99.5 → stop SHOULD fire at the original 100,
+    # NOT at the lower 98.
+    closes = [105.0, 104.0, 99.5]
+    df = pd.DataFrame(
+        {
+            "ts_event": pd.date_range("2024-01-02 13:30", periods=3, freq="5min", tz="UTC"),
+            "open": closes,
+            "high": [105.5, 104.5, 100.0],
+            "low": [104.5, 103.5, 99.5],
+            "close": closes,
+            "volume": [1000.0] * 3,
+            "kijun_26": [100.0, 98.0, 98.0],  # drops then stays
+            "cloud_top": [np.nan] * 3,
+            "cloud_bottom": [np.nan] * 3,
+            "BOS": [np.nan] * 3,
+        }
+    )
+    r = label_ichimoku_event(df, 0, "up", STRATEGY_TK_REV_TRAILING)
+    assert r.exit_reason == "stop"
+    # Stop fires at the original 100 (because trailing only ratchets up,
+    # never down). Realized_R = (100 - 105) / 5 = -1.0 → label_a = 0
+    assert r.realized_R == pytest.approx(-1.0)
+    assert r.label_a == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Win threshold (Strategy C variants)
+# ---------------------------------------------------------------------------
+
+
+def test_win_threshold_demotes_marginal_wins_to_loss() -> None:
+    """Strategy C with default threshold=0 vs threshold=0.5: a TK
+    reversal exit at +0.3R → label_a=1 under default, label_a=0 under
+    threshold=0.5.
+    """
+    # Entry=105, kijun=100 (stop_distance=5). Price drifts to 106.5,
+    # then opposite TK cross at bar 3 → exit at 106.5. realized_R = 1.5/5 = 0.3
+    closes = [105.0, 105.5, 106.0, 106.5]
+    df = pd.DataFrame(
+        {
+            "ts_event": pd.date_range("2024-01-02 13:30", periods=4, freq="5min", tz="UTC"),
+            "open": closes,
+            "high": [c + 0.1 for c in closes],
+            "low": [c - 0.1 for c in closes],
+            "close": closes,
+            "volume": [1000.0] * 4,
+            "kijun_26": [100.0] * 4,
+            "cloud_top": [np.nan] * 4,
+            "cloud_bottom": [np.nan] * 4,
+            "BOS": [np.nan, np.nan, np.nan, -1.0],
+        }
+    )
+    # Default threshold=0
+    r_default = label_ichimoku_event(df, 0, "up", STRATEGY_TK_REVERSAL_EXIT)
+    assert r_default.exit_reason == "tk_reversal"
+    assert r_default.realized_R == pytest.approx(0.3)
+    assert r_default.label_a == pytest.approx(1.0)  # 0.3 > 0
+
+    # With threshold 0.5 → 0.3 is no longer a win
+    r_thresh = label_ichimoku_event(df, 0, "up", STRATEGY_TK_REV_THRESH_05)
+    assert r_thresh.exit_reason == "tk_reversal"
+    assert r_thresh.realized_R == pytest.approx(0.3)
+    assert r_thresh.label_a == pytest.approx(0.0)  # 0.3 NOT > 0.5
+
+
+def test_win_threshold_keeps_big_wins_as_wins() -> None:
+    """A reversal exit at +0.8R should still be label_a=1 under threshold=0.5."""
+    # Entry=105, kijun=100. Price drifts to 109 (R = 4/5 = 0.8).
+    closes = [105.0, 106.5, 108.0, 109.0]
+    df = pd.DataFrame(
+        {
+            "ts_event": pd.date_range("2024-01-02 13:30", periods=4, freq="5min", tz="UTC"),
+            "open": closes,
+            "high": [c + 0.1 for c in closes],
+            "low": [c - 0.1 for c in closes],
+            "close": closes,
+            "volume": [1000.0] * 4,
+            "kijun_26": [100.0] * 4,
+            "cloud_top": [np.nan] * 4,
+            "cloud_bottom": [np.nan] * 4,
+            "BOS": [np.nan, np.nan, np.nan, -1.0],
+        }
+    )
+    r = label_ichimoku_event(df, 0, "up", STRATEGY_TK_REV_THRESH_05)
+    assert r.exit_reason == "tk_reversal"
+    assert r.realized_R == pytest.approx(0.8)
+    assert r.label_a == pytest.approx(1.0)
+
+
+def test_combined_variant_uses_both_knobs() -> None:
+    """Combined strategy = trailing stop + 0.5 threshold. Both behaviors fire."""
+    spec = STRATEGY_TK_REV_COMBINED
+    assert spec.use_trailing_stop is True
+    assert spec.win_threshold_r == pytest.approx(0.5)
+    assert spec.exit_on_tk_reversal is True
+    assert spec.exit_on_kijun_recross is True
+
+
+def test_custom_strategy_spec_validates_knobs() -> None:
+    """Spec accepts the new fields with sensible defaults."""
+    spec = StrategySpec(
+        name="custom",
+        stop_mode="kijun",
+        target_mode="none",
+        use_trailing_stop=True,
+        win_threshold_r=0.25,
+    )
+    assert spec.use_trailing_stop is True
+    assert spec.win_threshold_r == pytest.approx(0.25)

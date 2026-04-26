@@ -1,0 +1,202 @@
+{
+  "schema_version": 1,
+  "timeframe": "5m",
+  "symbol": "NQ",
+  "data_dir": "ml/data/ichimoku_classifier/tk_rev_trailing",
+  "feature_columns": [
+    "signal_type",
+    "signal_direction",
+    "session_bucket",
+    "day_of_week",
+    "rv_30b",
+    "bos_density_60b",
+    "atr_14",
+    "adx_14",
+    "di_plus_14",
+    "di_minus_14",
+    "z_close_vwap",
+    "ob_pct_atr",
+    "ob_volume_z_50",
+    "minutes_from_rth_open",
+    "minutes_to_rth_close",
+    "is_fomc",
+    "is_opex",
+    "is_event_day",
+    "ret_5b",
+    "ret_30b",
+    "ret_60b",
+    "ret_240b"
+  ],
+  "windows": [
+    {
+      "name": "W1: train=2022 test=2023",
+      "train_years": [
+        2022
+      ],
+      "test_year": 2023,
+      "n_train": 6913,
+      "n_test": 7020,
+      "n_train_resolved": 5553,
+      "n_test_resolved": 5613,
+      "timeout_rate_test": 0.20042735042735044,
+      "auc_a": 0.560272883699415,
+      "expected_r_at_threshold": {
+        "p0.50": -0.09350225040084721,
+        "p0.55": 0.11439209312343883,
+        "p0.60": 0.6524280958344157
+      },
+      "take_rate_at_threshold": {
+        "p0.50": 0.015242165242165243,
+        "p0.55": 0.00698005698005698,
+        "p0.60": 0.0014245014245014246
+      },
+      "feature_importance_a": {
+        "z_close_vwap": 0.0917549580335617,
+        "ret_240b": 0.08153843879699707,
+        "atr_14": 0.0803530141711235,
+        "minutes_to_rth_close": 0.07909869402647018,
+        "minutes_from_rth_open": 0.07897176593542099,
+        "ret_30b": 0.07801230996847153,
+        "ret_60b": 0.07642502337694168,
+        "ret_5b": 0.0763418972492218,
+        "day_of_week": 0.07574627548456192,
+        "rv_30b": 0.0753515362739563,
+        "signal_direction": 0.07317221909761429,
+        "bos_density_60b": 0.07160857319831848,
+        "signal_type": 0.06162519380450249,
+        "session_bucket": 0.0,
+        "adx_14": 0.0,
+        "di_plus_14": 0.0,
+        "di_minus_14": 0.0,
+        "ob_pct_atr": 0.0,
+        "ob_volume_z_50": 0.0,
+        "is_fomc": 0.0,
+        "is_opex": 0.0,
+        "is_event_day": 0.0
+      },
+      "r2_b": -0.03602963094982403,
+      "spearman_b": -0.013186947339464492,
+      "feature_importance_b": {
+        "ret_60b": 0.09058941900730133,
+        "bos_density_60b": 0.09007266908884048,
+        "minutes_to_rth_close": 0.08585027605295181,
+        "minutes_from_rth_open": 0.08315868675708771,
+        "ret_30b": 0.08267927914857864,
+        "ret_240b": 0.08202339708805084,
+        "atr_14": 0.07855238765478134,
+        "rv_30b": 0.07762666046619415,
+        "z_close_vwap": 0.07547832280397415,
+        "signal_direction": 0.07371723651885986,
+        "ret_5b": 0.06927631795406342,
+        "day_of_week": 0.06372398138046265,
+        "signal_type": 0.04725141450762749,
+        "session_bucket": 0.0,
+        "adx_14": 0.0,
+        "di_plus_14": 0.0,
+        "di_minus_14": 0.0,
+        "ob_pct_atr": 0.0,
+        "ob_volume_z_50": 0.0,
+        "is_fomc": 0.0,
+        "is_opex": 0.0,
+        "is_event_day": 0.0
+      }
+    },
+    {
+      "name": "W2: train=2022,2023 test=2024",
+      "train_years": [
+        2022,
+        2023
+      ],
+      "test_year": 2024,
+      "n_train": 13933,
+      "n_test": 6945,
+      "n_train_resolved": 11166,
+      "n_test_resolved": 5553,
+      "timeout_rate_test": 0.2004319654427646,
+      "auc_a": 0.5672322906933844,
+      "expected_r_at_threshold": {
+        "p0.50": 0.31119389912776124,
+        "p0.55": 0.022016414789947463,
+        "p0.60": -0.728513030148186
+      },
+      "take_rate_at_threshold": {
+        "p0.50": 0.005759539236861051,
+        "p0.55": 0.0018718502519798417,
+        "p0.60": 0.0005759539236861051
+      },
+      "feature_importance_a": {
+        "z_close_vwap": 0.10081376880407333,
+        "signal_direction": 0.08437374234199524,
+        "minutes_to_rth_close": 0.08218762278556824,
+        "minutes_from_rth_open": 0.08140967041254044,
+        "day_of_week": 0.07795403152704239,
+        "rv_30b": 0.0776771679520607,
+        "ret_240b": 0.07738901674747467,
+        "ret_60b": 0.07568832486867905,
+        "atr_14": 0.07535725086927414,
+        "ret_30b": 0.07372524589300156,
+        "ret_5b": 0.0722990334033966,
+        "bos_density_60b": 0.06946456432342529,
+        "signal_type": 0.05166062340140343,
+        "session_bucket": 0.0,
+        "adx_14": 0.0,
+        "di_plus_14": 0.0,
+        "di_minus_14": 0.0,
+        "ob_pct_atr": 0.0,
+        "ob_volume_z_50": 0.0,
+        "is_fomc": 0.0,
+        "is_opex": 0.0,
+        "is_event_day": 0.0
+      },
+      "r2_b": -0.059889052354342276,
+      "spearman_b": -0.014681506164292377,
+      "feature_importance_b": {
+        "bos_density_60b": 0.11038026958703995,
+        "minutes_to_rth_close": 0.09041251987218857,
+        "ret_60b": 0.0889049619436264,
+        "minutes_from_rth_open": 0.08532402664422989,
+        "z_close_vwap": 0.07729864865541458,
+        "ret_240b": 0.07609443366527557,
+        "ret_30b": 0.07505659013986588,
+        "signal_direction": 0.0744992047548294,
+        "atr_14": 0.07233602553606033,
+        "rv_30b": 0.07166296988725662,
+        "ret_5b": 0.06357814371585846,
+        "day_of_week": 0.06050017848610878,
+        "signal_type": 0.053951989859342575,
+        "session_bucket": 0.0,
+        "adx_14": 0.0,
+        "di_plus_14": 0.0,
+        "di_minus_14": 0.0,
+        "ob_pct_atr": 0.0,
+        "ob_volume_z_50": 0.0,
+        "is_fomc": 0.0,
+        "is_opex": 0.0,
+        "is_event_day": 0.0
+      }
+    }
+  ],
+  "verdict": {
+    "edge_auc_threshold": 0.55,
+    "edge_expected_r_threshold": 0.1,
+    "all_windows_pass": false,
+    "per_window": [
+      {
+        "window": "W1: train=2022 test=2023",
+        "auc_a": 0.560272883699415,
+        "auc_pass": true,
+        "expected_r_p0.50": -0.09350225040084721,
+        "expected_r_pass": false,
+        "passed": false
+      },
+      {
+        "window": "W2: train=2022,2023 test=2024",
+        "auc_a": 0.5672322906933844,
+        "auc_pass": true,
+        "expected_r_p0.50": 0.31119389912776124,
+        "expected_r_pass": true,
+        "passed": true
+      }
+    ]
+  }
+}

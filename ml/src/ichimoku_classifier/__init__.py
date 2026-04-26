@@ -17,6 +17,9 @@ the label-generation step differs.
 from ichimoku_classifier.labels import (
     STRATEGY_CLOUD_STOP_2R,
     STRATEGY_KIJUN_STOP_2R,
+    STRATEGY_TK_REV_COMBINED,
+    STRATEGY_TK_REV_THRESH_05,
+    STRATEGY_TK_REV_TRAILING,
     STRATEGY_TK_REVERSAL_EXIT,
     StrategySpec,
     label_ichimoku_event,
@@ -28,6 +31,9 @@ __all__ = [
     "STRATEGY_KIJUN_STOP_2R",
     "STRATEGY_CLOUD_STOP_2R",
     "STRATEGY_TK_REVERSAL_EXIT",
+    "STRATEGY_TK_REV_TRAILING",
+    "STRATEGY_TK_REV_THRESH_05",
+    "STRATEGY_TK_REV_COMBINED",
     "label_ichimoku_event",
     "label_ichimoku_events",
 ]
