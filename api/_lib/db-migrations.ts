@@ -2438,4 +2438,20 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 89,
+    description:
+      'Add image_urls column to trace_live_analyses for Vercel Blob ' +
+      'storage of the gamma/charm/delta heatmap PNGs. Shape: ' +
+      '{ gamma?: string, charm?: string, delta?: string } — all keys ' +
+      'optional because Blob upload is best-effort (failure is logged but ' +
+      "doesn't block the analysis save). Frontend renders <img src={url}> " +
+      'for historical browsing.',
+    statements: (sql) => [
+      sql`
+        ALTER TABLE trace_live_analyses
+          ADD COLUMN IF NOT EXISTS image_urls JSONB
+      `,
+    ],
+  },
 ];

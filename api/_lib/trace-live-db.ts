@@ -21,6 +21,7 @@ import { getDb } from './db.js';
 import logger from './logger.js';
 import { metrics, Sentry } from './sentry.js';
 import type { TraceAnalysis } from './trace-live-types.js';
+import type { TraceLiveImageUrls } from './trace-live-blob.js';
 
 // ============================================================
 // SUMMARY BUILDER (for embedding text)
@@ -104,6 +105,8 @@ export interface SaveTraceLiveAnalysisInput {
   stabilityPct: number | null;
   analysis: TraceAnalysis;
   embedding: number[] | null;
+  /** Sparse map of {chart: blobUrl}. Empty / partial / null all valid. */
+  imageUrls?: TraceLiveImageUrls;
   model: string;
   inputTokens: number | null;
   outputTokens: number | null;
@@ -126,6 +129,7 @@ export async function saveTraceLiveAnalysis(
     stabilityPct,
     analysis,
     embedding,
+    imageUrls,
     model,
     inputTokens,
     outputTokens,
@@ -141,6 +145,13 @@ export async function saveTraceLiveAnalysis(
   const vectorLiteral =
     embedding && embedding.length > 0 ? `[${embedding.join(',')}]` : null;
 
+  // image_urls is jsonb. Empty / undefined / null all coalesce to NULL in the
+  // column, which the read endpoints handle by returning {} to the frontend.
+  const imageUrlsJson =
+    imageUrls && Object.keys(imageUrls).length > 0
+      ? JSON.stringify(imageUrls)
+      : null;
+
   try {
     const rows = await sql`
       INSERT INTO trace_live_analyses (
@@ -154,6 +165,7 @@ export async function saveTraceLiveAnalysis(
         headline,
         full_response,
         analysis_embedding,
+        image_urls,
         model,
         input_tokens,
         output_tokens,
@@ -171,6 +183,7 @@ export async function saveTraceLiveAnalysis(
         ${analysis.synthesis.headline},
         ${JSON.stringify(analysis)}::jsonb,
         ${vectorLiteral}::vector,
+        ${imageUrlsJson}::jsonb,
         ${model},
         ${inputTokens},
         ${outputTokens},
