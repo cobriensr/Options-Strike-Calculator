@@ -374,7 +374,7 @@ function TapeAlignPill({ alignment }: { readonly alignment: TapeAlignment }) {
     <span
       className={`${PILL_BASE} ${tapeColor(alignment)}`}
       data-testid={`anomaly-tape-${alignment}`}
-      title="NQ/ES/RTY/SPX direction over last 15 min vs alert side (Phase E1). Aligned = +5–11pt win-rate edge on trending days; contradicted = call-side fade."
+      title="NQ/ES/RTY/SPX direction over last 15 min vs alert side (Phase E1). Edge is small post-correction: +2pt on mild_trend_up days, but inverts −8pt on chop days (contradicted outperforms aligned)."
     >
       tape: {alignment}
     </span>
@@ -390,9 +390,9 @@ function dpColor(cluster: DPCluster): string {
 function DPClusterPill({ cluster }: { readonly cluster: DPCluster }) {
   const tooltip =
     cluster === 'large'
-      ? 'Dark-pool premium >$200M at this strike (Phase E2). On strong-trend-up days SPXW calls with DP confluence won 91.7% (n=36, tentative).'
+      ? 'Dark-pool premium >$200M at this strike (Phase E2). On mild-trend-up days SPXW calls with DP confluence won 91.7% (n=36, tentative — sample-period bias possible).'
       : cluster === 'medium'
-        ? 'Dark-pool premium $50-200M at this strike. Phase E2 saw 66.7% win rate on strong-trend-up SPXW calls (n=30).'
+        ? 'Dark-pool premium $50-200M at this strike. Phase E2 saw 71.4% win rate on mild-trend-up SPXW calls (n=42).'
         : cluster === 'small'
           ? 'Small dark-pool premium (<$50M) at strike. No directional edge.'
           : cluster === 'na'
@@ -429,7 +429,7 @@ function GEXZonePill({
     <span
       className={`${PILL_BASE} ${gexColor(zone, side)}`}
       data-testid={`anomaly-gex-${zone}`}
-      title="Nearest top-3 abs_gex strike vs current spot (Phase E4). Calls win 40.2% with GEX below spot vs 20.5% above; puts mirror."
+      title="Nearest top-3 abs_gex strike vs current spot (Phase E4). On mild_trend_up days, calls win 68.7% with GEX below spot (n=195) vs 39.7% above (n=827); puts mirror."
     >
       GEX: {zone}
     </span>
@@ -447,7 +447,7 @@ function VIXDirPill({ direction }: { readonly direction: VIXDirection }) {
     <span
       className={`${PILL_BASE} ${vixColor(direction)}`}
       data-testid={`anomaly-vix-${direction}`}
-      title="VIX 30-min change at alert (Phase E3). Falling VIX is the only regime where puts have demonstrated edge (18.5% win, n=324)."
+      title="VIX 30-min change at alert (Phase E3). Chop + falling VIX + put is the only put-side cell with positive mean dollar (27.7% win, +$66 mean, n=137)."
     >
       VIX: {direction}
     </span>
