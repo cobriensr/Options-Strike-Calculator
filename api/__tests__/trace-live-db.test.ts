@@ -249,4 +249,58 @@ describe('saveTraceLiveAnalysis', () => {
       'range_bound_positive_gamma',
     );
   });
+
+  // ── image_urls column tests (positional index 10 in the values array,
+  // i.e. 11th column in the INSERT after captured_at/spot/stability_pct/
+  // regime/predicted_close/confidence/override_applied/headline/full_response/
+  // analysis_embedding). Hardcoded index makes these assertions immune to
+  // unrelated nulls elsewhere in the row. ──────────────────────────────────
+  const IMAGE_URLS_INDEX = 10;
+
+  it('serializes a non-empty imageUrls map to a JSON string at index 10', async () => {
+    mockSql.mockResolvedValueOnce([{ id: 50 }]);
+    const imageUrls = {
+      gamma: 'https://blob/g-Az3.png',
+      charm: 'https://blob/c-Bx4.png',
+      delta: 'https://blob/d-Cy5.png',
+    };
+    await saveTraceLiveAnalysis({
+      ...baseInput,
+      embedding: null,
+      imageUrls,
+    });
+    const values = mockSql.mock.calls[0]!.slice(1);
+    const imageUrlsValue = values[IMAGE_URLS_INDEX];
+    expect(typeof imageUrlsValue).toBe('string');
+    expect(JSON.parse(imageUrlsValue as string)).toEqual(imageUrls);
+  });
+
+  it('passes null at index 10 when imageUrls is undefined (caller did not opt in)', async () => {
+    mockSql.mockResolvedValueOnce([{ id: 51 }]);
+    await saveTraceLiveAnalysis({ ...baseInput, embedding: null });
+    const values = mockSql.mock.calls[0]!.slice(1);
+    expect(values[IMAGE_URLS_INDEX]).toBeNull();
+  });
+
+  it('passes null at index 10 when imageUrls is an empty object (all uploads failed)', async () => {
+    mockSql.mockResolvedValueOnce([{ id: 52 }]);
+    await saveTraceLiveAnalysis({
+      ...baseInput,
+      embedding: null,
+      imageUrls: {},
+    });
+    const values = mockSql.mock.calls[0]!.slice(1);
+    expect(values[IMAGE_URLS_INDEX]).toBeNull();
+  });
+
+  it('serializes a partial imageUrls map at index 10 (1 chart succeeded, 2 failed)', async () => {
+    mockSql.mockResolvedValueOnce([{ id: 53 }]);
+    await saveTraceLiveAnalysis({
+      ...baseInput,
+      embedding: null,
+      imageUrls: { gamma: 'https://blob/g.png' },
+    });
+    const values = mockSql.mock.calls[0]!.slice(1);
+    expect(values[IMAGE_URLS_INDEX]).toBe('{"gamma":"https://blob/g.png"}');
+  });
 });

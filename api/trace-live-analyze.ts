@@ -52,6 +52,7 @@ import {
 } from './_lib/trace-live-db.js';
 import { parseAndValidateTraceAnalysis } from './_lib/trace-live-parse.js';
 import { generateEmbedding } from './_lib/embeddings.js';
+import { uploadTraceLiveImages } from './_lib/trace-live-blob.js';
 
 // 780s ceiling matches /api/analyze. A 3-image structured-output call on
 // Sonnet 4.6 with adaptive thinking typically lands in 30–90s, but the
@@ -81,6 +82,27 @@ interface CallResult {
   };
   stopReason: string | null;
   model: string;
+}
+
+/**
+ * Generate the embedding for a tick's analysis. Best-effort — returns null
+ * on any failure so the row save still proceeds (we'd rather have a row
+ * without an embedding than no row at all). Logged + Sentry-captured.
+ */
+async function buildEmbeddingBestEffort(args: {
+  capturedAt: string;
+  spot: number;
+  stabilityPct: number | null;
+  analysis: Parameters<typeof buildTraceLiveSummary>[0]['analysis'];
+}): Promise<number[] | null> {
+  try {
+    const summary = buildTraceLiveSummary(args);
+    return await generateEmbedding(summary);
+  } catch (err) {
+    logger.error({ err }, 'TRACE-live embedding generation failed');
+    Sentry.captureException(err);
+    return null;
+  }
 }
 
 async function callModel(
@@ -208,20 +230,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    // Embed + save (best-effort — failure here doesn't block the response).
-    // Embedding is awaited so it lands before Vercel kills the runtime.
-    let embedding: number[] | null = null;
-    try {
-      const summary = buildTraceLiveSummary({
+    // Embed + upload images + save (all best-effort — failure here doesn't
+    // block the response). Embedding and Blob upload run in parallel because
+    // they're independent — saves ~1s vs sequential. Both are awaited so
+    // they land before Vercel kills the runtime.
+    const [embedding, imageUrls] = await Promise.all([
+      buildEmbeddingBestEffort({
         capturedAt: body.capturedAt,
         spot: body.spot,
         stabilityPct: body.stabilityPct ?? null,
         analysis,
-      });
-      embedding = await generateEmbedding(summary);
-    } catch (err) {
-      logger.error({ err }, 'TRACE-live embedding generation failed');
-    }
+      }),
+      uploadTraceLiveImages({
+        capturedAt: body.capturedAt,
+        images: body.images.map((img) => ({
+          chart: img.chart,
+          base64: img.data,
+        })),
+      }),
+    ]);
 
     await saveTraceLiveAnalysis({
       capturedAt: body.capturedAt,
@@ -229,6 +256,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       stabilityPct: body.stabilityPct ?? null,
       analysis,
       embedding,
+      imageUrls,
       model: result.model,
       inputTokens: result.usage.input,
       outputTokens: result.usage.output,
