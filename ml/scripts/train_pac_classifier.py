@@ -63,6 +63,9 @@ sys.path.insert(0, str(_REPO_ROOT / "ml" / "src"))
 _CATEGORICAL_COLS = ("signal_type", "signal_direction", "session_bucket")
 
 # Columns that are NOT features (labels, identifiers, etc).
+# `__year` is the window-tracking column added internally by
+# `run_walk_forward`; excluding it here prevents the trainer from
+# splitting on calendar year (which doesn't generalize to unseen years).
 _NON_FEATURE_COLS = (
     "bar_idx",
     "ts_event",
@@ -72,6 +75,7 @@ _NON_FEATURE_COLS = (
     "bars_to_exit",
     "realized_R",
     "forward_return_dollars",
+    "__year",
 )
 
 # Edge bar gates from the original Phase 1 plan doc.
