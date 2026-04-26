@@ -201,6 +201,36 @@ class IchimokuEngine:
             if flag not in out.columns:
                 out[flag] = False
 
+        # --- Confluence features (added 2026-04-25) ------------------------
+        # These are the standard things experienced Ichimoku traders use
+        # to filter TK crosses: volume confirmation, ADX/DMI for trend
+        # strength, and HTF (daily) Ichimoku state for bigger-picture
+        # context.
+        if "volume" in out.columns:
+            volume = out["volume"].to_numpy(dtype=np.float64)
+            out["volume_z_30b"] = _rolling_zscore(volume, window=30)
+            out["volume_ratio_60b"] = _rolling_ratio_to_mean(volume, window=60)
+        else:
+            out["volume_z_30b"] = np.nan
+            out["volume_ratio_60b"] = np.nan
+
+        # ADX/DMI — Wilder's standard, period 14. Mirrors PAC engine math
+        # so the trainer sees identical-named columns either way.
+        adx, di_plus, di_minus = _adx_dmi(high, low, close, n=14)
+        out["adx_14"] = adx
+        out["di_plus_14"] = di_plus
+        out["di_minus_14"] = di_minus
+
+        # HTF (daily) Ichimoku context. Resamples bars to UTC daily, runs
+        # Ichimoku on the daily series, then snaps daily values onto each
+        # event timestamp via causal merge_asof — at event time T we use
+        # the most recent COMPLETED daily bar (yesterday's close), never
+        # the in-progress current day.
+        htf = _htf_daily_ichimoku_features(out, params=self.params, atr_period=ATR_PERIOD)
+        out["daily_kijun_position_atr"] = htf["daily_kijun_position_atr"]
+        out["daily_cloud_color"] = htf["daily_cloud_color"]
+        out["daily_distance_from_cloud_atr"] = htf["daily_distance_from_cloud_atr"]
+
         return out
 
 
@@ -360,3 +390,218 @@ def _minutes_to_rth(ts: pd.Series) -> tuple[np.ndarray, np.ndarray]:
     minutes_from = (minute_of_day - rth_open).to_numpy(dtype=np.float64)
     minutes_to = (rth_close - minute_of_day).to_numpy(dtype=np.float64)
     return minutes_from, minutes_to
+
+
+# ---------------------------------------------------------------------------
+# Confluence helpers — volume z-score, ADX/DMI, HTF daily Ichimoku.
+# ---------------------------------------------------------------------------
+
+
+def _rolling_ratio_to_mean(arr: np.ndarray, *, window: int) -> np.ndarray:
+    """Rolling ratio of value to its trailing-window SMA. NaN before window."""
+    series = pd.Series(arr)
+    mean = series.rolling(window, min_periods=window).mean()
+    ratio = series / mean
+    return ratio.to_numpy(dtype=np.float64)
+
+
+def _adx_dmi(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    *,
+    n: int = 14,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Wilder's ADX, +DI, -DI over period n. Returns (adx, di_plus, di_minus).
+
+    Standard formulas:
+        +DM = max(high - prev_high, 0) when (high - prev_high) > (prev_low - low) else 0
+        -DM = max(prev_low - low, 0)   when (prev_low - low)   > (high - prev_high) else 0
+        TR  = max(high-low, |high-prev_close|, |low-prev_close|)
+        Wilder smoothing: x_smooth[t] = x_smooth[t-1] * (n-1)/n + x[t]/n
+        +DI = 100 * +DM_smooth / TR_smooth
+        -DI = 100 * -DM_smooth / TR_smooth
+        DX  = 100 * |+DI - -DI| / (+DI + -DI)
+        ADX = Wilder smooth of DX
+    """
+    n_bars = len(high)
+    if n_bars < 2:
+        nan = np.full(n_bars, np.nan, dtype=np.float64)
+        return nan, nan.copy(), nan.copy()
+
+    prev_high = np.r_[high[0], high[:-1]]
+    prev_low = np.r_[low[0], low[:-1]]
+    prev_close = np.r_[close[0], close[:-1]]
+    up_move = high - prev_high
+    down_move = prev_low - low
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+    tr = np.maximum.reduce(
+        [high - low, np.abs(high - prev_close), np.abs(low - prev_close)]
+    )
+
+    # Wilder smoothing — initialize with simple average over first n bars,
+    # then recurrence x[t] = x[t-1]*(n-1)/n + x_t/n. Same convention as ATR.
+    def _wilder(x: np.ndarray) -> np.ndarray:
+        out = np.full(len(x), np.nan, dtype=np.float64)
+        if len(x) < n:
+            return out
+        out[n - 1] = float(np.sum(x[:n]))  # accumulator form
+        for i in range(n, len(x)):
+            out[i] = out[i - 1] - out[i - 1] / n + x[i]
+        return out
+
+    tr_smooth = _wilder(tr)
+    plus_smooth = _wilder(plus_dm)
+    minus_smooth = _wilder(minus_dm)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        di_plus = 100.0 * plus_smooth / tr_smooth
+        di_minus = 100.0 * minus_smooth / tr_smooth
+        dx = 100.0 * np.abs(di_plus - di_minus) / (di_plus + di_minus)
+
+    # ADX = Wilder smooth of DX, with the same n-period smoothing.
+    adx = np.full(n_bars, np.nan, dtype=np.float64)
+    valid_dx_idx = np.nonzero(np.isfinite(dx))[0]
+    if len(valid_dx_idx) >= n:
+        first = valid_dx_idx[0]
+        # Average first n DX values to seed; then Wilder recurrence
+        if first + n <= n_bars:
+            adx[first + n - 1] = float(np.mean(dx[first : first + n]))
+            for i in range(first + n, n_bars):
+                if np.isfinite(dx[i]):
+                    adx[i] = (adx[i - 1] * (n - 1) + dx[i]) / n
+                else:
+                    adx[i] = adx[i - 1]
+    return adx, di_plus, di_minus
+
+
+def _htf_daily_ichimoku_features(
+    bar_df: pd.DataFrame,
+    *,
+    params: IchimokuParams,
+    atr_period: int,
+) -> pd.DataFrame:
+    """Compute daily-timeframe Ichimoku state and snap to per-bar event ts.
+
+    Returns a DataFrame indexed positionally with `bar_df` containing:
+
+        daily_kijun_position_atr      — (close - daily_kijun) / daily_atr
+        daily_cloud_color             — +1 if daily_senkou_a > b, -1 if <, 0 if equal/NaN
+        daily_distance_from_cloud_atr — signed distance from daily cloud / daily ATR
+
+    Causality contract: at intraday event time T, we look up the most
+    recent COMPLETED daily bar via merge_asof(direction="backward") on
+    a daily-shifted timestamp. The shift ensures we never use the
+    in-progress current day's incomplete OHLC.
+    """
+    n = len(bar_df)
+    empty_cols = {
+        "daily_kijun_position_atr": np.full(n, np.nan, dtype=np.float64),
+        "daily_cloud_color": np.full(n, np.nan, dtype=np.float64),
+        "daily_distance_from_cloud_atr": np.full(n, np.nan, dtype=np.float64),
+    }
+    if n == 0 or "ts_event" not in bar_df.columns:
+        return pd.DataFrame(empty_cols, index=range(n))
+
+    ts = pd.to_datetime(bar_df["ts_event"], utc=True)
+    if not isinstance(ts.dtype, pd.DatetimeTZDtype):
+        return pd.DataFrame(empty_cols, index=range(n))
+
+    # Resample to UTC daily OHLC.
+    daily = (
+        bar_df.assign(_ts=ts)
+        .set_index("_ts")
+        .resample("1D", label="left", closed="left")
+        .agg({"open": "first", "high": "max", "low": "min", "close": "last"})
+        .dropna()
+    )
+    if len(daily) < params.senkou_b + params.displacement + 1:
+        return pd.DataFrame(empty_cols, index=range(n))
+
+    d_high = daily["high"].to_numpy(dtype=np.float64)
+    d_low = daily["low"].to_numpy(dtype=np.float64)
+    d_close = daily["close"].to_numpy(dtype=np.float64)
+
+    d_tenkan = _midpoint_rolling(d_high, d_low, params.tenkan)
+    d_kijun = _midpoint_rolling(d_high, d_low, params.kijun)
+    d_senkou_a_raw = (d_tenkan + d_kijun) / 2.0
+    d_senkou_b_raw = _midpoint_rolling(d_high, d_low, params.senkou_b)
+    d_senkou_a = _shift_forward(d_senkou_a_raw, params.displacement)
+    d_senkou_b = _shift_forward(d_senkou_b_raw, params.displacement)
+    d_cloud_top = np.fmax(d_senkou_a, d_senkou_b)
+    d_cloud_bottom = np.fmin(d_senkou_a, d_senkou_b)
+    d_thickness = d_senkou_a - d_senkou_b
+    d_color = np.where(d_thickness > 0, 1.0, np.where(d_thickness < 0, -1.0, 0.0))
+    d_atr = _atr(d_high, d_low, d_close, atr_period)
+
+    daily_features = pd.DataFrame(
+        {
+            "daily_close_at_close": d_close,
+            "daily_kijun": d_kijun,
+            "daily_cloud_top": d_cloud_top,
+            "daily_cloud_bottom": d_cloud_bottom,
+            "daily_color": d_color,
+            "daily_atr": d_atr,
+        },
+        index=daily.index,
+    )
+    # Each row's timestamp is the START of the daily bar; the bar's data
+    # is COMPLETE only after the END of the day (start + 1d). Shift by
+    # +1 day so the resulting "as_of" timestamp marks when the bar's
+    # state becomes safely usable.
+    daily_features = daily_features.reset_index()
+    daily_features["ts_complete"] = daily_features["_ts"] + pd.Timedelta(days=1)
+    daily_features = daily_features.sort_values("ts_complete").reset_index(drop=True)
+
+    # Build merge_asof input — preserve original event order.
+    events = pd.DataFrame({"ts_event": ts.to_numpy()})
+    events_sorted = events.sort_values("ts_event").reset_index()
+    snapped = pd.merge_asof(
+        events_sorted,
+        daily_features[
+            ["ts_complete", "daily_close_at_close", "daily_kijun",
+             "daily_cloud_top", "daily_cloud_bottom", "daily_color", "daily_atr"]
+        ],
+        left_on="ts_event",
+        right_on="ts_complete",
+        direction="backward",
+    )
+    snapped = snapped.sort_values("index").reset_index(drop=True)
+
+    intraday_close = bar_df["close"].to_numpy(dtype=np.float64)
+    d_close_snapped = snapped["daily_close_at_close"].to_numpy(dtype=np.float64)
+    d_kijun_snapped = snapped["daily_kijun"].to_numpy(dtype=np.float64)
+    d_top_snapped = snapped["daily_cloud_top"].to_numpy(dtype=np.float64)
+    d_bot_snapped = snapped["daily_cloud_bottom"].to_numpy(dtype=np.float64)
+    d_color_snapped = snapped["daily_color"].to_numpy(dtype=np.float64)
+    d_atr_snapped = snapped["daily_atr"].to_numpy(dtype=np.float64)
+
+    # daily_kijun_position_atr: how far the LAST daily close was from its
+    # daily Kijun, in daily-ATR units. Uses daily close (not intraday) to
+    # match the indicator's actual chart-display values.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        kijun_pos = (d_close_snapped - d_kijun_snapped) / d_atr_snapped
+        # Distance from daily cloud — same convention as intraday version.
+        dist = np.full(n, np.nan, dtype=np.float64)
+        valid = (
+            np.isfinite(d_top_snapped)
+            & np.isfinite(d_bot_snapped)
+            & np.isfinite(d_atr_snapped)
+            & (d_atr_snapped > 0)
+        )
+        above = valid & (intraday_close > d_top_snapped)
+        below = valid & (intraday_close < d_bot_snapped)
+        inside = valid & ~above & ~below
+        dist[above] = (intraday_close[above] - d_top_snapped[above]) / d_atr_snapped[above]
+        dist[below] = (intraday_close[below] - d_bot_snapped[below]) / d_atr_snapped[below]
+        dist[inside] = 0.0
+
+    return pd.DataFrame(
+        {
+            "daily_kijun_position_atr": kijun_pos,
+            "daily_cloud_color": d_color_snapped,
+            "daily_distance_from_cloud_atr": dist,
+        },
+        index=range(n),
+    )

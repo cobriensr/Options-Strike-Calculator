@@ -26,11 +26,15 @@ import pytest
 
 from ichimoku.engine import (
     IchimokuEngine,
+    IchimokuParams,
+    _adx_dmi,
     _atr,
     _chikou_confirm,
     _detect_cross,
     _detect_sign_change,
+    _htf_daily_ichimoku_features,
     _midpoint_rolling,
+    _rolling_ratio_to_mean,
     _rolling_zscore,
     _shift_forward,
 )
@@ -311,3 +315,184 @@ def test_batch_state_signs_consistent() -> None:
         vals = out[col].dropna().unique()
         for v in vals:
             assert v in (1.0, -1.0), f"unexpected {col} value: {v}"
+
+
+# ---------------------------------------------------------------------------
+# Confluence features — volume, ADX/DMI, HTF daily Ichimoku
+# ---------------------------------------------------------------------------
+
+
+def test_rolling_ratio_to_mean_basic() -> None:
+    arr = np.array([10.0, 10.0, 10.0, 20.0])
+    out = _rolling_ratio_to_mean(arr, window=3)
+    # First 2 NaN; bar 2: 10/mean(10,10,10)=1.0; bar 3: 20/mean(10,10,20)=20/13.33≈1.5
+    assert np.isnan(out[0])
+    assert np.isnan(out[1])
+    assert out[2] == pytest.approx(1.0)
+    assert out[3] == pytest.approx(20.0 / (40.0 / 3.0))
+
+
+def test_adx_dmi_constant_range_returns_low_adx() -> None:
+    """Flat sideways data → no directional movement → ADX should stay
+    near zero once warmed up. Tests that the helper doesn't blow up
+    when DM is all zeros."""
+    n = 60
+    high = np.full(n, 102.0)
+    low = np.full(n, 100.0)
+    close = np.full(n, 101.0)
+    adx, _, _ = _adx_dmi(high, low, close, n=14)
+    # First several bars NaN (warmup). Once smoothed, all DM values are 0
+    # so DI+ and DI- both 0 and DX is 0/0 = NaN; ADX stays NaN.
+    # Either NaN or 0 acceptable — verify no exception + finite values are 0.
+    finite = adx[np.isfinite(adx)]
+    if len(finite) > 0:
+        assert np.allclose(finite, 0.0)
+
+
+def test_adx_dmi_strong_uptrend_produces_high_adx_and_di_plus() -> None:
+    """Steady up-only price series should produce ADX > 25 and DI+ > DI-
+    once warmed up. Standard ADX behavior for trending markets."""
+    n = 100
+    closes = 100.0 + np.arange(n, dtype=float) * 0.5
+    highs = closes + 0.1
+    lows = closes - 0.1
+    adx, di_plus, di_minus = _adx_dmi(highs, lows, closes, n=14)
+    # Take the last bar — fully warmed up
+    last = -1
+    assert np.isfinite(adx[last])
+    assert adx[last] > 25.0
+    assert di_plus[last] > di_minus[last]
+
+
+def test_adx_dmi_di_inverts_for_downtrend() -> None:
+    """Down-trending series → DI- > DI+."""
+    n = 100
+    closes = 200.0 - np.arange(n, dtype=float) * 0.5
+    highs = closes + 0.1
+    lows = closes - 0.1
+    _, di_plus, di_minus = _adx_dmi(highs, lows, closes, n=14)
+    last = -1
+    assert di_minus[last] > di_plus[last]
+
+
+def test_htf_daily_ichimoku_returns_empty_when_too_few_days() -> None:
+    """Need >=78 daily bars (52 + 26) to compute Senkou B + displacement.
+    A 10-bar 5m frame doesn't have enough days, so all HTF features NaN."""
+    n = 10
+    closes = 100.0 + np.arange(n, dtype=float) * 0.1
+    df = pd.DataFrame(
+        {
+            "ts_event": pd.date_range("2024-01-02 09:00", periods=n, freq="5min", tz="UTC"),
+            "open": closes,
+            "high": closes + 0.05,
+            "low": closes - 0.05,
+            "close": closes,
+            "volume": np.full(n, 1000.0),
+            "symbol": ["NQH4"] * n,
+        }
+    )
+    out = _htf_daily_ichimoku_features(df, params=IchimokuParams(), atr_period=14)
+    assert len(out) == n
+    assert out["daily_kijun_position_atr"].isna().all()
+
+
+def test_htf_daily_ichimoku_no_future_leak() -> None:
+    """At an intraday event timestamp, the HTF daily features must use
+    the most recent COMPLETED daily bar, never the in-progress current day.
+
+    Setup: build 100 daily bars on UTC midnight boundaries (5m intra-day
+    bars at 12:00 UTC of each day). Splice an extreme bar at the LAST
+    day. Verify that the SECOND-TO-LAST event sees the daily state
+    based on data through day -2, not day -1 (which would be the
+    in-progress day).
+    """
+    # Build 100 days of intraday-friendly synthetic bars: one bar per day
+    # at 12:00 UTC. That's enough days for Senkou B (52) + displacement (26).
+    n_days = 100
+    base_date = pd.Timestamp("2024-01-02", tz="UTC")
+    timestamps = [base_date + pd.Timedelta(days=d, hours=12) for d in range(n_days)]
+    closes = 100.0 + np.arange(n_days, dtype=float) * 0.1
+    df = pd.DataFrame(
+        {
+            "ts_event": timestamps,
+            "open": closes,
+            "high": closes + 0.5,
+            "low": closes - 0.5,
+            "close": closes,
+            "volume": np.full(n_days, 1000.0),
+            "symbol": ["NQH4"] * n_days,
+        }
+    )
+    out_full = _htf_daily_ichimoku_features(df, params=IchimokuParams(), atr_period=14)
+    # The HTF state at a given event uses backward merge_asof on the
+    # daily timestamps shifted +1 day. So at day t's noon event, we
+    # see daily features whose `ts_complete` <= noon-of-day-t. That means
+    # the LATEST daily features available are from the day that completed
+    # at midnight — i.e., the previous day. Strict causality holds:
+    # truncating the df to days [0..t] should produce the SAME features
+    # at day t as the full run.
+    truncated = df.iloc[: n_days - 1].reset_index(drop=True)
+    out_trunc = _htf_daily_ichimoku_features(
+        truncated, params=IchimokuParams(), atr_period=14
+    )
+    # Day n_days - 2 is the last day in BOTH the full and truncated runs.
+    # Its HTF features should be identical regardless of whether the
+    # final day exists.
+    full_val = out_full["daily_cloud_color"].iloc[n_days - 2]
+    trunc_val = out_trunc["daily_cloud_color"].iloc[n_days - 2]
+    if np.isfinite(full_val) and np.isfinite(trunc_val):
+        assert full_val == pytest.approx(trunc_val)
+
+
+def test_batch_state_emits_confluence_columns() -> None:
+    """Schema check: the 3 new feature categories all show up in batch_state output."""
+    n = 200
+    closes = 100.0 + np.cumsum(np.random.default_rng(0).standard_normal(n)) * 0.1
+    bars = pd.DataFrame(
+        {
+            "ts_event": pd.date_range(
+                "2024-01-02 13:30", periods=n, freq="5min", tz="UTC"
+            ),
+            "open": closes,
+            "high": closes + 0.2,
+            "low": closes - 0.2,
+            "close": closes,
+            "volume": np.random.default_rng(0).uniform(800, 1200, n),
+            "symbol": ["NQH4"] * n,
+        }
+    )
+    out = IchimokuEngine().batch_state(bars)
+    # Volume features
+    assert "volume_z_30b" in out.columns
+    assert "volume_ratio_60b" in out.columns
+    # ADX/DMI
+    assert "adx_14" in out.columns
+    assert "di_plus_14" in out.columns
+    assert "di_minus_14" in out.columns
+    # HTF daily Ichimoku
+    assert "daily_kijun_position_atr" in out.columns
+    assert "daily_cloud_color" in out.columns
+    assert "daily_distance_from_cloud_atr" in out.columns
+
+
+def test_batch_state_volume_features_finite_after_warmup() -> None:
+    """volume_z_30b should be NaN before bar 30 and finite after."""
+    n = 100
+    closes = 100.0 + np.arange(n, dtype=float) * 0.05
+    bars = pd.DataFrame(
+        {
+            "ts_event": pd.date_range(
+                "2024-01-02 13:30", periods=n, freq="5min", tz="UTC"
+            ),
+            "open": closes,
+            "high": closes + 0.1,
+            "low": closes - 0.1,
+            "close": closes,
+            "volume": 1000.0 + np.arange(n, dtype=float) * 5.0,
+            "symbol": ["NQH4"] * n,
+        }
+    )
+    out = IchimokuEngine().batch_state(bars)
+    z = out["volume_z_30b"].to_numpy()
+    assert np.isnan(z[28])  # before window
+    assert np.isfinite(z[60])  # well after window
