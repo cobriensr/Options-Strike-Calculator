@@ -25,7 +25,8 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { cronGuard } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
-import { Sentry } from '../_lib/sentry.js';
+import { fetchDayOhlcFromPostgres } from '../_lib/postgres-day-summary.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import { reportCronRun } from '../_lib/axiom.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
 
@@ -81,41 +82,81 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       throw new Error(`sidecar ${sidecarRes.status}`);
     }
     const body = (await sidecarRes.json()) as { rows?: SummaryRow[] };
-    const rows = body.rows ?? [];
+    const sidecarRow = body.rows?.[0];
 
-    if (rows.length === 0) {
-      logger.info(
-        { targetDate },
-        'fetch-day-ohlc: no rows from sidecar (holiday/weekend/halt)',
-      );
-      return res.status(200).json({
-        job: 'fetch-day-ohlc',
-        targetDate,
-        skipped: true,
-        reason: 'no rows from sidecar',
-      });
+    interface ResolvedOhlc {
+      open: number;
+      high: number;
+      low: number;
+      close: number;
+      range: number;
+      upExc: number;
+      downExc: number;
     }
 
-    const row = rows[0]!;
+    let ohlc: ResolvedOhlc;
+    let source: 'sidecar' | 'postgres';
+
     if (
-      typeof row.open !== 'number' ||
-      typeof row.high !== 'number' ||
-      typeof row.low !== 'number' ||
-      typeof row.close !== 'number'
+      sidecarRow &&
+      typeof sidecarRow.open === 'number' &&
+      typeof sidecarRow.high === 'number' &&
+      typeof sidecarRow.low === 'number' &&
+      typeof sidecarRow.close === 'number'
     ) {
-      throw new Error('sidecar returned row without structured OHLC');
+      ohlc = {
+        open: sidecarRow.open,
+        high: sidecarRow.high,
+        low: sidecarRow.low,
+        close: sidecarRow.close,
+        range: sidecarRow.range ?? sidecarRow.high - sidecarRow.low,
+        upExc: sidecarRow.up_excursion ?? sidecarRow.high - sidecarRow.open,
+        downExc: sidecarRow.down_excursion ?? sidecarRow.open - sidecarRow.low,
+      };
+      source = 'sidecar';
+    } else {
+      // Sidecar archive doesn't have structured OHLC for this date —
+      // most often because the parquet hasn't been refreshed since the
+      // last Databento batch. Fall back to spx_candles_1m which the
+      // streaming feed populates in real-time. When the parquet catches
+      // up, a future cron run will overwrite these values.
+      const pg = await fetchDayOhlcFromPostgres(targetDate);
+      if (!pg) {
+        logger.info(
+          { targetDate },
+          'fetch-day-ohlc: no rows from sidecar or Postgres (holiday/weekend/halt)',
+        );
+        return res.status(200).json({
+          job: 'fetch-day-ohlc',
+          targetDate,
+          skipped: true,
+          reason: 'no rows from sidecar',
+        });
+      }
+      ohlc = {
+        open: pg.open,
+        high: pg.high,
+        low: pg.low,
+        close: pg.close,
+        range: pg.range,
+        upExc: pg.up_excursion,
+        downExc: pg.down_excursion,
+      };
+      source = 'postgres';
+      metrics.increment('fetch_day_ohlc.postgres_fallback');
+      logger.info({ targetDate }, 'fetch-day-ohlc: using Postgres fallback');
     }
 
     const sql = getDb();
     const result = await sql`
       UPDATE day_embeddings SET
-        day_open  = ${row.open},
-        day_high  = ${row.high},
-        day_low   = ${row.low},
-        day_close = ${row.close},
-        range_pt  = ${row.range ?? row.high - row.low},
-        up_exc    = ${row.up_excursion ?? row.high - row.open},
-        down_exc  = ${row.down_excursion ?? row.open - row.low}
+        day_open  = ${ohlc.open},
+        day_high  = ${ohlc.high},
+        day_low   = ${ohlc.low},
+        day_close = ${ohlc.close},
+        range_pt  = ${ohlc.range},
+        up_exc    = ${ohlc.upExc},
+        down_exc  = ${ohlc.downExc}
       WHERE date = ${targetDate}::date
       RETURNING date
     `;
@@ -135,13 +176,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       logger.info(
         {
           targetDate,
-          open: row.open,
-          high: row.high,
-          low: row.low,
-          close: row.close,
-          range: row.range,
-          upExc: row.up_excursion,
-          downExc: row.down_excursion,
+          source,
+          open: ohlc.open,
+          high: ohlc.high,
+          low: ohlc.low,
+          close: ohlc.close,
+          range: ohlc.range,
+          upExc: ohlc.upExc,
+          downExc: ohlc.downExc,
           durationMs,
         },
         'fetch-day-ohlc: updated',
@@ -158,6 +200,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({
       job: 'fetch-day-ohlc',
       targetDate,
+      source,
       updated,
       durationMs,
     });

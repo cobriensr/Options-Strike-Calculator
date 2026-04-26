@@ -28,6 +28,7 @@ import {
 } from '../_lib/day-embeddings.js';
 import { generateEmbedding } from '../_lib/embeddings.js';
 import logger from '../_lib/logger.js';
+import { fetchDaySummaryFromPostgres } from '../_lib/postgres-day-summary.js';
 import { metrics, Sentry } from '../_lib/sentry.js';
 
 export const config = { maxDuration: 60 };
@@ -54,16 +55,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   logger.info({ date, invokedOn: today }, 'embed-yesterday start');
 
   try {
-    const summary = await fetchDaySummary(date);
+    let summary = await fetchDaySummary(date);
+    let source: 'sidecar' | 'postgres' = 'sidecar';
     if (!summary) {
-      // 404 from sidecar (market holiday, archive missing that date, or
-      // SIDECAR_URL unset). Recorded as skipped, not a failure — a
-      // holiday triggering this shouldn't page anyone.
-      logger.info({ date }, 'embed-yesterday: no summary for date');
-      metrics.increment('embed_yesterday.no_summary');
-      return res
-        .status(200)
-        .json({ date, skipped: true, reason: 'no_summary' });
+      // Sidecar archive doesn't have this date — usually because the
+      // parquet archive lags the streaming feed by a few days (parquet
+      // gets refreshed manually after a fresh Databento batch is
+      // converted and uploaded). Try the Postgres-fed fallback before
+      // giving up: spx_candles_1m is populated by Schwab streaming in
+      // real-time, so most "missing in sidecar" dates are present here.
+      summary = await fetchDaySummaryFromPostgres(date);
+      if (!summary) {
+        // True empty: holiday, weekend (already filtered above), or
+        // streaming feed didn't run that day. Recorded as skipped, not
+        // a failure — shouldn't page anyone.
+        logger.info({ date }, 'embed-yesterday: no summary for date');
+        metrics.increment('embed_yesterday.no_summary');
+        return res
+          .status(200)
+          .json({ date, skipped: true, reason: 'no_summary' });
+      }
+      source = 'postgres';
+      metrics.increment('embed_yesterday.postgres_fallback');
+      logger.info({ date }, 'embed-yesterday: using Postgres fallback');
     }
 
     const embedding = await generateEmbedding(summary);
@@ -89,8 +103,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const elapsed = Date.now() - startTime;
     metrics.increment('embed_yesterday.success');
-    logger.info({ date, symbol, elapsed }, 'embed-yesterday complete');
-    return res.status(200).json({ date, symbol, elapsed });
+    logger.info({ date, symbol, source, elapsed }, 'embed-yesterday complete');
+    return res.status(200).json({ date, symbol, source, elapsed });
   } catch (err) {
     Sentry.setTag('cron.job', 'embed-yesterday');
     Sentry.captureException(err);

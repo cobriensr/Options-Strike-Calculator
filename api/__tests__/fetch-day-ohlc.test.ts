@@ -15,6 +15,13 @@ vi.mock('../_lib/sentry.js', () => ({
     setTag: vi.fn(),
     captureException: vi.fn(),
   },
+  metrics: {
+    increment: vi.fn(),
+  },
+}));
+
+vi.mock('../_lib/postgres-day-summary.js', () => ({
+  fetchDayOhlcFromPostgres: vi.fn(),
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -38,7 +45,10 @@ vi.stubGlobal('fetch', mockFetch);
 
 import handler from '../cron/fetch-day-ohlc.js';
 import { cronGuard } from '../_lib/api-helpers.js';
+import { fetchDayOhlcFromPostgres } from '../_lib/postgres-day-summary.js';
 import { Sentry } from '../_lib/sentry.js';
+
+const mockedFetchOhlcPg = vi.mocked(fetchDayOhlcFromPostgres);
 
 function makeCronReq() {
   return mockRequest({
@@ -88,11 +98,13 @@ describe('fetch-day-ohlc handler', () => {
     });
   });
 
-  it('skips gracefully when sidecar returns no rows (holiday/weekend)', async () => {
+  it('skips when both sidecar and Postgres are empty (holiday/weekend)', async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: async () => ({ rows: [] }),
     });
+    mockedFetchOhlcPg.mockResolvedValueOnce(null);
+
     const res = mockResponse();
     await handler(makeCronReq(), res);
     expect(res._status).toBe(200);
@@ -101,6 +113,34 @@ describe('fetch-day-ohlc handler', () => {
       reason: 'no rows from sidecar',
     });
     expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('falls back to Postgres OHLC when sidecar returns no rows', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ rows: [] }),
+    });
+    mockedFetchOhlcPg.mockResolvedValueOnce({
+      open: 5300,
+      high: 5320,
+      low: 5285,
+      close: 5310,
+      range: 35,
+      up_excursion: 20,
+      down_excursion: 15,
+    });
+    mockSql.mockResolvedValueOnce([{ date: '2026-04-19' }]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(mockedFetchOhlcPg).toHaveBeenCalledWith('2026-04-19');
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      job: 'fetch-day-ohlc',
+      source: 'postgres',
+      updated: 1,
+    });
   });
 
   it('updates day_embeddings row with structured OHLC', async () => {

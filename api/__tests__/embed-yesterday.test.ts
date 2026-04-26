@@ -7,6 +7,9 @@ import { mockRequest, mockResponse } from './helpers';
 vi.mock('../_lib/archive-sidecar.js', () => ({
   fetchDaySummary: vi.fn(),
 }));
+vi.mock('../_lib/postgres-day-summary.js', () => ({
+  fetchDaySummaryFromPostgres: vi.fn(),
+}));
 vi.mock('../_lib/day-embeddings.js', () => ({
   DAY_EMBEDDING_DIMS: 2000,
   upsertDayEmbedding: vi.fn(),
@@ -30,9 +33,11 @@ import handler from '../cron/embed-yesterday.js';
 import { fetchDaySummary } from '../_lib/archive-sidecar.js';
 import { upsertDayEmbedding } from '../_lib/day-embeddings.js';
 import { generateEmbedding } from '../_lib/embeddings.js';
+import { fetchDaySummaryFromPostgres } from '../_lib/postgres-day-summary.js';
 import { Sentry } from '../_lib/sentry.js';
 
 const mockedFetchSummary = vi.mocked(fetchDaySummary);
+const mockedFetchSummaryPg = vi.mocked(fetchDaySummaryFromPostgres);
 const mockedEmbed = vi.mocked(generateEmbedding);
 const mockedUpsert = vi.mocked(upsertDayEmbedding);
 
@@ -113,8 +118,36 @@ describe('embed-yesterday handler', () => {
     expect(mockedFetchSummary).toHaveBeenCalledWith('2026-04-17');
   });
 
-  it('returns 200 + skipped:true when sidecar has no summary (holiday)', async () => {
+  it('falls back to Postgres when sidecar has no summary', async () => {
+    const PG_SUMMARY = '2026-04-21 SPX | open 5700.00 | ...';
     mockedFetchSummary.mockResolvedValueOnce(null);
+    mockedFetchSummaryPg.mockResolvedValueOnce(PG_SUMMARY);
+    mockedEmbed.mockResolvedValueOnce(VALID_EMBED);
+    mockedUpsert.mockResolvedValueOnce(true);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(mockedFetchSummaryPg).toHaveBeenCalledWith('2026-04-21');
+    expect(mockedEmbed).toHaveBeenCalledWith(PG_SUMMARY);
+    expect(mockedUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        date: '2026-04-21',
+        symbol: 'SPX',
+        summary: PG_SUMMARY,
+      }),
+    );
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ source: 'postgres' });
+  });
+
+  it('returns 200 + skipped:true when both sidecar and Postgres are empty', async () => {
+    mockedFetchSummary.mockResolvedValueOnce(null);
+    mockedFetchSummaryPg.mockResolvedValueOnce(null);
 
     const req = mockRequest({
       method: 'GET',
