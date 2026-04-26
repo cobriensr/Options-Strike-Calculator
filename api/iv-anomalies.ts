@@ -237,8 +237,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    const { ticker, strike, side, expiry, limit } = parsed.data;
+    const { ticker, strike, side, expiry, limit, at } = parsed.data;
     const sql = getDb();
+    // Replay window: when `at` is provided, look back 24h. That's wide
+    // enough that any compound key whose silence eviction (default
+    // 15-min) hadn't expired at `at` still has at least one firing in
+    // the window for the hook's reconcile to rebuild from.
+    const REPLAY_WINDOW_MS = 24 * 60 * 60 * 1000;
+    const atDate = at ? new Date(at) : null;
+    const atFloor = atDate
+      ? new Date(atDate.getTime() - REPLAY_WINDOW_MS)
+      : null;
 
     try {
       if (strike != null && side != null && expiry != null && ticker != null) {
@@ -275,18 +284,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const bundles = await Promise.all(
         requested.map(async (t) => {
-          const rows = (await sql`
-            SELECT id, ticker, strike, side, expiry,
-                   spot_at_detect, iv_at_detect,
-                   skew_delta, z_score, ask_mid_div, vol_oi_ratio,
-                   side_skew, side_dominant,
-                   flag_reasons, flow_phase,
-                   context_snapshot, resolution_outcome, ts
-            FROM iv_anomalies
-            WHERE ticker = ${t}
-            ORDER BY ts DESC
-            LIMIT ${limit}
-          `) as RawAnomalyRow[];
+          const rows = (
+            atDate && atFloor
+              ? await sql`
+              SELECT id, ticker, strike, side, expiry,
+                     spot_at_detect, iv_at_detect,
+                     skew_delta, z_score, ask_mid_div, vol_oi_ratio,
+                     side_skew, side_dominant,
+                     flag_reasons, flow_phase,
+                     context_snapshot, resolution_outcome, ts
+              FROM iv_anomalies
+              WHERE ticker = ${t}
+                AND ts <= ${atDate.toISOString()}
+                AND ts >= ${atFloor.toISOString()}
+              ORDER BY ts DESC
+              LIMIT ${limit}
+            `
+              : await sql`
+              SELECT id, ticker, strike, side, expiry,
+                     spot_at_detect, iv_at_detect,
+                     skew_delta, z_score, ask_mid_div, vol_oi_ratio,
+                     side_skew, side_dominant,
+                     flag_reasons, flow_phase,
+                     context_snapshot, resolution_outcome, ts
+              FROM iv_anomalies
+              WHERE ticker = ${t}
+              ORDER BY ts DESC
+              LIMIT ${limit}
+            `
+          ) as RawAnomalyRow[];
           return { ticker: t, rows: rows.map(mapAnomaly) };
         }),
       );
@@ -312,7 +338,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         history,
       };
 
-      setCacheHeaders(res, isMarketOpen() ? 30 : 300, 60);
+      // Replay (?at= in the past) is immutable — historical rows don't
+      // change — so cache aggressively. Live mode keeps the existing
+      // 30s/300s split.
+      const replayCache = atDate && atDate.getTime() < Date.now() - 60_000;
+      setCacheHeaders(res, replayCache ? 600 : isMarketOpen() ? 30 : 300, 60);
       return res.status(200).json(listResponse);
     } catch (err) {
       Sentry.captureException(err);

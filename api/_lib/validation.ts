@@ -89,6 +89,16 @@ export const ivAnomaliesQuerySchema = z
       .string()
       .regex(/^\d{4}-\d{2}-\d{2}$/, 'expiry must be YYYY-MM-DD')
       .optional(),
+    /**
+     * Replay anchor. When present, the endpoint filters list-mode
+     * results to rows where `ts <= at AND ts >= at - 24h`. The hook
+     * then re-runs aggregation against this timestamp instead of
+     * `Date.now()` so the silence-eviction logic produces the exact
+     * active-set the user would have seen at T.
+     *
+     * Spec: docs/superpowers/specs/iv-anomaly-replay-2026-04-25.md
+     */
+    at: z.string().datetime({ offset: true }).optional(),
   })
   .refine(
     (v) => {
