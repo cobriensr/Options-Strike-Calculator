@@ -96,3 +96,46 @@ W1 (test=2023) has marginally negative ER at p≥0.50, so the consistency across
 Either is a reasonable afternoon's work. My read: option 1 first, because the IV-anomaly features have already been shown to carry edge independently — combining a near-passing price-action signal with an independent edge source is the most likely path to a clean joint-gate pass.
 
 If neither path moves the needle, the price-action-on-NQ-5m hypothesis is exhausted and pivoting to the IV-anomaly work makes sense.
+
+---
+
+## Update — 1m timeframe disconfirms W2 pop
+
+After the initial 5m run, we re-ran Variant 1 on **1m** with the same trailing-stop logic. The 1m archive has ~5× more events than 5m for the same calendar window, so it provides a much tighter statistical test of whether the W2 5m ER=+0.31 was real signal or noise.
+
+### Results
+
+| Timeframe | Window | AUC | ER @p0.50 | n trades | ER @p0.60 (n) |
+|---|---|---|---|---|---|
+| **5m** | W1 | 0.560 | −0.09 | 107 | +0.65 (n=10) |
+| **5m** | W2 | 0.567 | **+0.31** | 40 | −0.73 (n=3) |
+| **1m** | W1 | 0.552 | **−0.08** | 243 | −0.33 (n=40) |
+| **1m** | W2 | **0.577** | **−0.07** | 26 | +0.10 (n=4) |
+
+### Verdict — 5m W2 was noise
+
+With 5× more events, the trailing variant on 1m has:
+
+- **Same AUC pop** (0.55–0.58) → ranking signal IS real and timeframe-stable.
+- **Expected R is negative or near-zero** in both 1m windows at p≥0.50, including W1 with n=243 (a sample size where ±0.10 around zero is well within the SE band).
+- **`z_close_vwap` importance jumped from 0.10 → 0.16** on 1m → less uniform feature distribution, model finds signal more confidently when it has more data, but the signal still doesn't translate to profitable trade selection.
+
+The 5m W2 ER=+0.31 on n=40 sat within ±0.32 of zero (the SE band noted above as a caveat). The 1m run with much tighter CIs disconfirms it. **This is exactly the noise outcome the original caveats warned about.**
+
+### Honest interpretation
+
+The trailing-stop trick **does** convert −1R full stops into smaller losses or partial-profit exits, and it **does** preserve the AUC > 0.55 ranking signal. But the AUC signal isn't strong enough to overcome the win/loss-magnitude asymmetry that breaks confidence-based trade selection. In other words, the model can rank events better than random, but the rank doesn't predict whether the eventual exit will be a tradable winner.
+
+This corroborates the diagnosis from the original Strategy C findings: the AUC-vs-ER disconnect is a real pathology of this labeling regime, not a noise artifact. Adding the trailing stop didn't fix the asymmetry; it just shifted some losses smaller without enabling the model to systematically pick the bigger winners.
+
+### Updated recommendation
+
+The two paths in the recommendation above (conditional non-price features, HTF context) are still the right next moves IF you want to keep pushing on price-action edge. But the 1m disconfirmation pushes my read meaningfully toward **option 3: pivot to IV-anomaly work**.
+
+Reasoning:
+
+- Three signal extractors (PAC v3, Ichimoku 5m, Ichimoku 1m) and four exit regimes (PAC bracket, Ichimoku Kijun-stop+2R, cloud-stop+2R, TK-reversal, trailing) have all produced AUC at or near random AND/OR Expected R that doesn't survive timeframe scaling.
+- The IV-anomaly stack already has cross-asset findings showing actual signal (`ml/findings/iv-anomaly-*`).
+- Continuing to interrogate price-action setups is increasingly low-EV at this point.
+
+If you still want option 1 (Variant 1 + UW flow features), it's a reasonable last test before declaring price-action dead in this stack. But the 1m result should adjust expectations downward — Variant 1 isn't a "near pass" anymore; it's a clean null with consistent AUC signal that doesn't translate.
