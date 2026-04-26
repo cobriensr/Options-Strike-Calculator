@@ -30,9 +30,7 @@
   "windows": [
     {
       "name": "W1: train=2022 test=2023",
-      "train_years": [
-        2022
-      ],
+      "train_years": [2022],
       "test_year": 2023,
       "n_train": 6913,
       "n_test": 7020,
@@ -103,10 +101,7 @@
     },
     {
       "name": "W2: train=2022,2023 test=2024",
-      "train_years": [
-        2022,
-        2023
-      ],
+      "train_years": [2022, 2023],
       "test_year": 2024,
       "n_train": 13933,
       "n_test": 6945,
