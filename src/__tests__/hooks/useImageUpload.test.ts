@@ -65,16 +65,16 @@ describe('useImageUpload', () => {
     expect(result.current.images[1]!.label).toBe('Periscope Charm (SPX)');
   });
 
-  it('respects the 4 image limit', () => {
+  it('respects the 2 image limit', () => {
     const { result } = renderHook(() => useImageUpload());
 
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 4; i++) {
       act(() => {
         result.current.addImage(makeFile(`img${i}.png`));
       });
     }
 
-    expect(result.current.images).toHaveLength(4);
+    expect(result.current.images).toHaveLength(2);
   });
 
   // ── removeImage ──

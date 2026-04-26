@@ -35,7 +35,7 @@ export function useImageUpload(): UseImageUploadReturn {
 
   const addImage = useCallback(
     (file: File) => {
-      if (images.length >= 4) return;
+      if (images.length >= CHART_LABELS.length) return;
       const id = `img-${crypto.randomUUID()}`;
       const preview = URL.createObjectURL(file);
       setImages((prev) => {
@@ -105,7 +105,8 @@ export function useImageUpload(): UseImageUploadReturn {
       const files = Array.from(e.dataTransfer.files).filter((f) =>
         f.type.startsWith('image/'),
       );
-      for (const f of files.slice(0, 4 - images.length)) addImage(f);
+      for (const f of files.slice(0, CHART_LABELS.length - images.length))
+        addImage(f);
     },
     [addImage, images.length],
   );
@@ -113,7 +114,8 @@ export function useImageUpload(): UseImageUploadReturn {
   const handleFileSelect = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = Array.from(e.target.files ?? []);
-      for (const f of files.slice(0, 4 - images.length)) addImage(f);
+      for (const f of files.slice(0, CHART_LABELS.length - images.length))
+        addImage(f);
       if (fileInputRef.current) fileInputRef.current.value = '';
     },
     [addImage, images.length],

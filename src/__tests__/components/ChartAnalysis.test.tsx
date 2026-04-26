@@ -186,7 +186,7 @@ describe('ChartAnalysis', () => {
         <ChartAnalysis results={null} context={makeContext()} />,
       );
       await addImageViaInput(container);
-      expect(screen.getByText(/1\/4 images/)).toBeInTheDocument();
+      expect(screen.getByText(/1\/2 images/)).toBeInTheDocument();
     });
 
     it('shows analyze button after adding an image', async () => {
@@ -241,13 +241,13 @@ describe('ChartAnalysis', () => {
       expect((select as HTMLSelectElement).value).toBe('Periscope Charm (SPX)');
     });
 
-    it('limits to 4 images', async () => {
+    it('limits to 2 images', async () => {
       const { container } = render(
         <ChartAnalysis results={null} context={makeContext()} />,
       );
-      for (let i = 0; i < 6; i++)
+      for (let i = 0; i < 4; i++)
         await addImageViaInput(container, createImageFile(`chart${i}.png`));
-      expect(screen.getByText(/4\/4 images/)).toBeInTheDocument();
+      expect(screen.getByText(/2\/2 images/)).toBeInTheDocument();
     });
 
     it('handles drag and drop', async () => {
@@ -262,7 +262,7 @@ describe('ChartAnalysis', () => {
           types: ['Files'],
         },
       });
-      expect(screen.getByText(/1\/4 images/)).toBeInTheDocument();
+      expect(screen.getByText(/1\/2 images/)).toBeInTheDocument();
     });
   });
 
@@ -832,7 +832,7 @@ describe('ChartAnalysis', () => {
       fireEvent.change(inputs[1]!, {
         target: { files: [createImageFile('new.png')] },
       });
-      expect(screen.getByText(/1\/4 images/)).toBeInTheDocument();
+      expect(screen.getByText(/1\/2 images/)).toBeInTheDocument();
     });
   });
 
@@ -849,7 +849,7 @@ describe('ChartAnalysis', () => {
       await act(() => {
         document.dispatchEvent(evt);
       });
-      expect(screen.getByText(/1\/4 images/)).toBeInTheDocument();
+      expect(screen.getByText(/1\/2 images/)).toBeInTheDocument();
     });
 
     it('ignores non-image paste', () => {
@@ -1480,7 +1480,7 @@ describe('ChartAnalysis', () => {
       });
 
       // Should still have 1 image (replaced, not added)
-      expect(screen.getByText(/1\/4 images/)).toBeInTheDocument();
+      expect(screen.getByText(/1\/2 images/)).toBeInTheDocument();
     });
 
     it('handleReplaceFile does nothing with out-of-bounds index', async () => {
@@ -1497,7 +1497,7 @@ describe('ChartAnalysis', () => {
       });
 
       // Still 1 image, nothing changed
-      expect(screen.getByText(/1\/4 images/)).toBeInTheDocument();
+      expect(screen.getByText(/1\/2 images/)).toBeInTheDocument();
     });
   });
 

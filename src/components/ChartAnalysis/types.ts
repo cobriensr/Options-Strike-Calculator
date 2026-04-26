@@ -224,8 +224,6 @@ export type ModeFilter = 'all' | 'entry' | 'midday' | 'review';
 export const CHART_LABELS = [
   'Periscope (Gamma)',
   'Periscope Charm (SPX)',
-  'Delta Pressure',
-  'Charm Pressure',
 ] as const;
 
 export const MODE_LABELS: Record<
