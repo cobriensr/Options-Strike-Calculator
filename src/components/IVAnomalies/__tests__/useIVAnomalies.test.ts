@@ -647,13 +647,49 @@ describe('useIVAnomalies — aggregation + alert semantics', () => {
               side: 'put',
               data: [
                 // 15:30-15:38: heavy ask accumulation (10K total ask)
-                { ts: '2026-04-23T15:30:00Z', bidSideVol: 0, askSideVol: 2000, midVol: 0, totalVol: 2000 },
-                { ts: '2026-04-23T15:32:00Z', bidSideVol: 100, askSideVol: 3000, midVol: 0, totalVol: 3100 },
-                { ts: '2026-04-23T15:35:00Z', bidSideVol: 50, askSideVol: 3000, midVol: 0, totalVol: 3050 },
-                { ts: '2026-04-23T15:38:00Z', bidSideVol: 50, askSideVol: 2000, midVol: 0, totalVol: 2050 },
+                {
+                  ts: '2026-04-23T15:30:00Z',
+                  bidSideVol: 0,
+                  askSideVol: 2000,
+                  midVol: 0,
+                  totalVol: 2000,
+                },
+                {
+                  ts: '2026-04-23T15:32:00Z',
+                  bidSideVol: 100,
+                  askSideVol: 3000,
+                  midVol: 0,
+                  totalVol: 3100,
+                },
+                {
+                  ts: '2026-04-23T15:35:00Z',
+                  bidSideVol: 50,
+                  askSideVol: 3000,
+                  midVol: 0,
+                  totalVol: 3050,
+                },
+                {
+                  ts: '2026-04-23T15:38:00Z',
+                  bidSideVol: 50,
+                  askSideVol: 2000,
+                  midVol: 0,
+                  totalVol: 2050,
+                },
                 // 15:39-15:40: bid-side surge (6K bid in 1 min, 60% of accumulated ask)
-                { ts: '2026-04-23T15:39:00Z', bidSideVol: 3000, askSideVol: 100, midVol: 0, totalVol: 3100 },
-                { ts: '2026-04-23T15:40:00Z', bidSideVol: 3000, askSideVol: 100, midVol: 0, totalVol: 3100 },
+                {
+                  ts: '2026-04-23T15:39:00Z',
+                  bidSideVol: 3000,
+                  askSideVol: 100,
+                  midVol: 0,
+                  totalVol: 3100,
+                },
+                {
+                  ts: '2026-04-23T15:40:00Z',
+                  bidSideVol: 3000,
+                  askSideVol: 100,
+                  midVol: 0,
+                  totalVol: 3100,
+                },
               ],
             },
           ],
@@ -684,9 +720,7 @@ describe('useIVAnomalies — aggregation + alert semantics', () => {
       .getSnapshot()
       .visible.filter((b) => b.kind === 'exit');
     expect(exits.length).toBeGreaterThanOrEqual(1);
-    expect(exits.some((b) => b.exitReason === 'bid_side_surge')).toBe(
-      true,
-    );
+    expect(exits.some((b) => b.exitReason === 'bid_side_surge')).toBe(true);
   });
 
   it('cooling recovers to active when IV climbs past old peak — no re-banner', async () => {
@@ -818,6 +852,103 @@ describe('useIVAnomalies — aggregation + alert semantics', () => {
     // But the internal phase correctly reflects the cooling state.
     const agg = result.current.anomalies[0];
     expect(agg?.phase).toBe('cooling');
+  });
+
+  // ─── Replay scrubber (Phase 2 of replay spec) ───
+
+  it('exposes scrubber API: defaults to live (today, no scrub)', async () => {
+    setSessionNow('2026-04-23T15:30:30Z');
+    const fetchMock = vi
+      .fn<() => Promise<Response>>()
+      .mockResolvedValue(respondWith([]));
+    vi.stubGlobal('fetch', wrapWithTape(fetchMock));
+
+    const { result } = renderHook(() => useIVAnomalies(true, true));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    expect(result.current.isLive).toBe(true);
+    expect(result.current.isScrubbed).toBe(false);
+    expect(result.current.scrubTime).toBeNull();
+    expect(result.current.timeGrid.length).toBeGreaterThan(0);
+    // First slot is 08:30, last is 15:00 — matches darkpool grid.
+    expect(result.current.timeGrid[0]).toBe('08:30');
+    expect(result.current.timeGrid.at(-1)).toBe('15:00');
+  });
+
+  it('scrub mode appends ?at= to the iv-anomalies fetch URL', async () => {
+    setSessionNow('2026-04-23T15:30:30Z');
+    const fetchMock = vi
+      .fn<() => Promise<Response>>()
+      .mockResolvedValue(respondWith([]));
+    vi.stubGlobal('fetch', wrapWithTape(fetchMock));
+
+    const { result } = renderHook(() => useIVAnomalies(true, true));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    // Enter scrub mode at 11:00 CT.
+    await act(async () => {
+      result.current.scrubTo('11:00');
+    });
+
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls;
+      const lastCall = calls.at(-1) as unknown[] | undefined;
+      const lastUrl = String(lastCall?.[0] ?? '');
+      expect(lastUrl).toContain('/api/iv-anomalies?at=');
+    });
+    expect(result.current.isScrubbed).toBe(true);
+    expect(result.current.scrubTime).toBe('11:00');
+  });
+
+  it('scrubLive() returns to live mode and drops ?at=', async () => {
+    setSessionNow('2026-04-23T15:30:30Z');
+    const fetchMock = vi
+      .fn<() => Promise<Response>>()
+      .mockResolvedValue(respondWith([]));
+    vi.stubGlobal('fetch', wrapWithTape(fetchMock));
+
+    const { result } = renderHook(() => useIVAnomalies(true, true));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    await act(async () => {
+      result.current.scrubTo('11:00');
+    });
+    await waitFor(() => expect(result.current.isScrubbed).toBe(true));
+
+    await act(async () => {
+      result.current.scrubLive();
+    });
+    expect(result.current.isLive).toBe(true);
+    expect(result.current.scrubTime).toBeNull();
+  });
+
+  it('replay mode does not fire chimes or push banners', async () => {
+    setSessionNow('2026-04-23T15:30:30Z');
+    const fetchMock = vi.fn<() => Promise<Response>>().mockResolvedValue(
+      respondWith([
+        makeRow({ id: 1, ts: '2026-04-23T11:00:00Z' }),
+        makeRow({
+          id: 2,
+          strike: 7100,
+          ts: '2026-04-23T11:01:00Z',
+        }),
+      ]),
+    );
+    vi.stubGlobal('fetch', wrapWithTape(fetchMock));
+
+    const { result } = renderHook(() => useIVAnomalies(true, true));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    // Drain banners pushed by the live priming pass.
+    ivAnomalyBannerStore.__resetForTests();
+
+    // Scrub to a past time — even though new compound keys appear,
+    // banners should not fire in replay mode.
+    await act(async () => {
+      result.current.scrubTo('11:00');
+    });
+    await waitFor(() => expect(result.current.isScrubbed).toBe(true));
+
+    expect(ivAnomalyBannerStore.getSnapshot().visible).toHaveLength(0);
   });
 
   it('doubles the polling interval after 3 consecutive fails', async () => {

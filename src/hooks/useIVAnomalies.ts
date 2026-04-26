@@ -84,6 +84,80 @@ export interface UseIVAnomaliesReturn {
   loading: boolean;
   error: string | null;
   refresh: () => void;
+  // Replay scrubber (Phase 2 of replay spec) — mirrors useDarkPoolLevels.
+  selectedDate: string;
+  setSelectedDate: (d: string) => void;
+  scrubTime: string | null;
+  isLive: boolean;
+  isScrubbed: boolean;
+  canScrubPrev: boolean;
+  canScrubNext: boolean;
+  scrubPrev: () => void;
+  scrubNext: () => void;
+  /** Jump directly to a specific HH:MM time slot. */
+  scrubTo: (time: string) => void;
+  /** All available HH:MM time slots for the trading session. */
+  timeGrid: readonly string[];
+  scrubLive: () => void;
+}
+
+// 5-minute grid from 08:30 to 15:00 CT — matches useDarkPoolLevels.
+const TIME_GRID: readonly string[] = (() => {
+  const grid: string[] = [];
+  for (let min = 8 * 60 + 30; min <= 15 * 60; min += 5) {
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    grid.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
+  }
+  return grid;
+})();
+
+function etToday(): string {
+  return new Date().toLocaleDateString('en-CA', {
+    timeZone: 'America/New_York',
+  });
+}
+
+function lastGridTimeBeforeNow(): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date());
+  const h = Number(parts.find((p) => p.type === 'hour')?.value ?? '0');
+  const m = Number(parts.find((p) => p.type === 'minute')?.value ?? '0');
+  const nowMin = (h >= 24 ? 0 : h) * 60 + m;
+  for (let i = TIME_GRID.length - 1; i >= 0; i--) {
+    const slot = TIME_GRID[i]!;
+    const [sh, sm] = slot.split(':').map(Number);
+    if (sh! * 60 + sm! <= nowMin) return slot;
+  }
+  return TIME_GRID[0]!;
+}
+
+/**
+ * Convert a calendar date + HH:MM (CT) into a UTC ISO timestamp suitable
+ * for the `?at=` query param AND for `nowMsOverride` in reconcile.
+ *
+ * Uses Intl to compute the correct CDT/CST offset for the given calendar
+ * date — handles spring-forward and fall-back without hardcoded math.
+ */
+function ctClockToUtcIso(ymdDate: string, hhmm: string): string {
+  const probe = new Date(`${ymdDate}T12:00:00Z`);
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago',
+    timeZoneName: 'shortOffset',
+  });
+  const parts = fmt.formatToParts(probe);
+  const tz = parts.find((p) => p.type === 'timeZoneName')?.value ?? 'GMT-6';
+  const offsetMatch = tz.match(/GMT([+-]\d+)/);
+  const offsetHours =
+    offsetMatch && offsetMatch[1] ? Number.parseInt(offsetMatch[1], 10) : -6;
+  const [hh, mm] = hhmm.split(':').map((v) => Number.parseInt(v, 10));
+  const local = new Date(`${ymdDate}T00:00:00Z`);
+  local.setUTCHours(hh! - offsetHours, mm!, 0, 0);
+  return local.toISOString();
 }
 
 interface FetchResult {
@@ -91,9 +165,12 @@ interface FetchResult {
   networkError?: string;
 }
 
-async function fetchAnomalies(): Promise<FetchResult> {
+async function fetchAnomalies(atIso?: string): Promise<FetchResult> {
   try {
-    const res = await fetch('/api/iv-anomalies', {
+    const url = atIso
+      ? `/api/iv-anomalies?at=${encodeURIComponent(atIso)}`
+      : '/api/iv-anomalies';
+    const res = await fetch(url, {
       signal: AbortSignal.timeout(10_000),
     });
     // Non-owner → 401. Treat as empty (feature is owner-gated).
@@ -235,9 +312,7 @@ function mergeTapeVolume(
 
     // Filter incoming samples to >= firstSeenTs (strictly within active span).
     const spanStartMs = tsMs(entry.firstSeenTs, 0);
-    const spanSamples = fresh.data.filter(
-      (p) => tsMs(p.ts, 0) >= spanStartMs,
-    );
+    const spanSamples = fresh.data.filter((p) => tsMs(p.ts, 0) >= spanStartMs);
 
     // Recompute accumulators from scratch over the active span — this
     // is idempotent across repeated tape polls (the endpoint returns
@@ -331,10 +406,7 @@ export function detectExitTransitions(
   //    must reach BID_SIDE_SURGE_RATIO × accumulated ask-side AND clear the
   //    BID_SIDE_MIN_VOL noise floor. Replaces the firing-rate-surge proxy
   //    that ran 2026-04-23 → 2026-04-25.
-  if (
-    entry.accumulatedAskSideVol > 0 &&
-    entry.tapeVolumeHistory.length > 0
-  ) {
+  if (entry.accumulatedAskSideVol > 0 && entry.tapeVolumeHistory.length > 0) {
     const surgeWindowStart = nowMs - BID_SIDE_SURGE_WINDOW_MS;
     let bidSideInWindow = 0;
     for (const p of entry.tapeVolumeHistory) {
@@ -343,10 +415,7 @@ export function detectExitTransitions(
       }
     }
     const ratio = bidSideInWindow / entry.accumulatedAskSideVol;
-    if (
-      bidSideInWindow >= BID_SIDE_MIN_VOL &&
-      ratio >= BID_SIDE_SURGE_RATIO
-    ) {
+    if (bidSideInWindow >= BID_SIDE_MIN_VOL && ratio >= BID_SIDE_SURGE_RATIO) {
       transitions.push({ phase: 'distributing', reason: 'bid_side_surge' });
     }
   }
@@ -438,9 +507,14 @@ function reconcile(
   seenIds: ReadonlySet<number>,
   rows: readonly IVAnomalyRow[],
   isFirstPoll: boolean,
+  nowMsOverride?: number,
 ): ReconcileResult {
   const next = new Map(prev);
-  const nowMs = Date.now();
+  // Replay support (Phase 2 of replay spec): when scrubbed to a past
+  // timestamp, the caller passes that timestamp so silence eviction
+  // and exit-signal detection compare against T instead of wall-clock
+  // now. Defaults to Date.now() in live mode (zero behavior change).
+  const nowMs = nowMsOverride ?? Date.now();
   const bannerEvents: BannerEvent[] = [];
   // Guard per-poll idempotence — if the same detector row id shows up in
   // multiple banner paths we still only push once per (id, kind) pair.
@@ -751,6 +825,29 @@ export function useIVAnomalies(
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Replay scrub state (Phase 2 of replay spec).
+  const [selectedDate, setSelectedDate] = useState(etToday);
+  const [scrubTime, setScrubTime] = useState<string | null>(null);
+  const isToday = selectedDate === etToday();
+  const isLive = isToday && scrubTime === null;
+  const isScrubbed = scrubTime !== null;
+
+  // Reset scrub time when date changes — matches useDarkPoolLevels.
+  useEffect(() => {
+    setScrubTime(null);
+  }, [selectedDate]);
+
+  // Replay anchor: the UTC ISO `at` to send to the API and the
+  // `nowMsOverride` for reconcile. Live mode uses neither.
+  const replayIso: string | null = isLive
+    ? null
+    : isScrubbed
+      ? ctClockToUtcIso(selectedDate, scrubTime!)
+      : ctClockToUtcIso(selectedDate, '15:00'); // past-day default = close
+  const replayAnchorMs: number | null = replayIso
+    ? Date.parse(replayIso)
+    : null;
+
   // Fail streak is STATE (not a ref) so the polling effect re-runs when
   // it crosses the backoff threshold. Mirrored on a ref so the captured
   // `refresh` closure can mutate it without being re-created.
@@ -770,7 +867,16 @@ export function useIVAnomalies(
     if (!enabled) return;
     setLoading(true);
     setError(null);
-    fetchAnomalies().then(async (result) => {
+    // In replay mode we wipe the active map + seenIds at the start of
+    // each refresh so the reconcile pass rebuilds the active set
+    // cleanly from the new row window. Without this, active entries
+    // from the previous time anchor would leak into the next.
+    if (replayIso !== null) {
+      activeMapRef.current = new Map();
+      seenIdsRef.current = new Set();
+      primedRef.current = false; // also suppress banner pushes for replay
+    }
+    fetchAnomalies(replayIso ?? undefined).then(async (result) => {
       if (!mountedRef.current) return;
       if (result.networkError) {
         const next = failStreakRef.current + 1;
@@ -795,6 +901,7 @@ export function useIVAnomalies(
           seenIdsRef.current,
           rows,
           isFirstPoll,
+          replayAnchorMs ?? undefined,
         );
 
         // Pull tape-side volume for active tickers and merge into the
@@ -810,7 +917,13 @@ export function useIVAnomalies(
         }
         let mergedMap: ReadonlyMap<string, ActiveAnomaly> = nextMap;
         const allBannerEvents = [...bannerEvents];
+        // Replay skips the tape-volume merge: the bid_side_surge re-eval
+        // depends on a 15-min ROLLING window anchored on Date.now(),
+        // and recomputing it for an arbitrary past timestamp would
+        // require backfilled tape data we don't currently snapshot.
+        // Live behavior preserved.
         if (
+          replayIso === null &&
           tickersWithActive.size > 0 &&
           Number.isFinite(earliestFirstSeenMs)
         ) {
@@ -839,7 +952,9 @@ export function useIVAnomalies(
         seenIdsRef.current = nextSeenIds;
         setActiveMap(mergedMap);
 
-        if (allBannerEvents.length > 0) {
+        // Replay never fires banners or chimes — review of past alerts
+        // shouldn't masquerade as live signals.
+        if (replayIso === null && allBannerEvents.length > 0) {
           let entryCount = 0;
           let exitCount = 0;
           for (const event of allBannerEvents) {
@@ -850,32 +965,63 @@ export function useIVAnomalies(
             if (event.kind === 'entry') entryCount += 1;
             else exitCount += 1;
           }
-          // One chime per poll per kind — entry at full volume, exit at
-          // lower volume (see anomaly-sound util). The sound util still
-          // throttles, so rapid bursts don't double-play.
           if (entryCount > 0) playAnomalyChime('entry');
           if (exitCount > 0) playAnomalyChime('exit');
         }
       }
       setLoading(false);
     });
-  }, [enabled]);
+  }, [enabled, replayIso, replayAnchorMs]);
 
-  // Fetch once on mount when enabled.
+  // Fetch once on mount AND whenever replay anchor changes (date or
+  // scrub time). One-shot in replay; polling effect below handles live.
   useEffect(() => {
     if (!enabled) return;
     refresh();
   }, [enabled, refresh]);
 
-  // Poll on interval while the market is open. 2× backoff after 3+ fails.
-  // Depends on `failStreak` so the effect re-runs and the doubled
-  // interval actually takes effect when the threshold is crossed.
+  // Poll on interval ONLY in live mode. Past dates and scrubbed
+  // timestamps are immutable — one-shot fetch is sufficient.
   useEffect(() => {
-    if (!enabled || !marketOpen) return;
+    if (!enabled || !marketOpen || !isLive) return;
     const backoff = failStreak >= 3 ? 2 : 1;
     const interval = setInterval(refresh, POLL_INTERVALS.CHAIN * backoff);
     return () => clearInterval(interval);
-  }, [enabled, marketOpen, refresh, failStreak]);
+  }, [enabled, marketOpen, refresh, failStreak, isLive]);
+
+  // ── Scrubber actions ─────────────────────────────────────────
+  const scrubTimeIdx = scrubTime !== null ? TIME_GRID.indexOf(scrubTime) : null;
+  const canScrubPrev = scrubTimeIdx === null ? true : scrubTimeIdx > 0;
+  const canScrubNext =
+    scrubTimeIdx !== null && scrubTimeIdx < TIME_GRID.length - 1;
+
+  const scrubPrev = useCallback(() => {
+    setScrubTime((cur) => {
+      if (cur === null) return lastGridTimeBeforeNow();
+      const idx = TIME_GRID.indexOf(cur);
+      return idx > 0 ? (TIME_GRID[idx - 1] ?? cur) : cur;
+    });
+  }, []);
+
+  const scrubNext = useCallback(() => {
+    setScrubTime((cur) => {
+      if (cur === null) return cur;
+      const idx = TIME_GRID.indexOf(cur);
+      return idx < TIME_GRID.length - 1 ? (TIME_GRID[idx + 1] ?? cur) : cur;
+    });
+  }, []);
+
+  const scrubTo = useCallback((time: string) => {
+    if (time === TIME_GRID.at(-1)) {
+      setScrubTime(null);
+    } else if (TIME_GRID.includes(time)) {
+      setScrubTime(time);
+    }
+  }, []);
+
+  const scrubLive = useCallback(() => {
+    setScrubTime(null);
+  }, []);
 
   // Freshest first: a user scanning the board cares about "what just fired"
   // more than "what started at 10:05 and is still grinding".
@@ -885,5 +1031,22 @@ export function useIVAnomalies(
     return arr;
   }, [activeMap]);
 
-  return { anomalies, loading, error, refresh };
+  return {
+    anomalies,
+    loading,
+    error,
+    refresh,
+    selectedDate,
+    setSelectedDate,
+    scrubTime,
+    isLive,
+    isScrubbed,
+    canScrubPrev,
+    canScrubNext,
+    scrubPrev,
+    scrubNext,
+    scrubTo,
+    scrubLive,
+    timeGrid: TIME_GRID,
+  };
 }
