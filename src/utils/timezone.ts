@@ -28,6 +28,13 @@ const etDateFormatter = new Intl.DateTimeFormat('en-CA', {
   day: '2-digit',
 });
 
+const ctDateFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Chicago',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
 function extractParts(
   formatter: Intl.DateTimeFormat,
   date: Date,
@@ -60,6 +67,11 @@ export function getCTTime(date: Date): { hour: number; minute: number } {
 /** Get the current ET date as YYYY-MM-DD. */
 export function getETDateStr(date: Date): string {
   return etDateFormatter.format(date);
+}
+
+/** Get the current CT date as YYYY-MM-DD. */
+export function getCTDateStr(date: Date): string {
+  return ctDateFormatter.format(date);
 }
 
 /** Get the day of week (0=Sun, 6=Sat) in Eastern Time. */
@@ -162,6 +174,12 @@ const ET_OFFSET_FORMATTER = new Intl.DateTimeFormat('en-US', {
   year: 'numeric',
 });
 
+const CT_OFFSET_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/Chicago',
+  timeZoneName: 'shortOffset',
+  year: 'numeric',
+});
+
 export function getETMarketOpenUtcIso(dateStr: string): string | null {
   return etWallClockToUtcIso(dateStr, 9 * 60 + 30);
 }
@@ -231,6 +249,61 @@ export function etWallClockToUtcIso(
   const utcHour = Math.floor(utcTotalMin / 60);
   const utcMinute = utcTotalMin % 60;
   // Construct the UTC ISO string directly (avoids Date's local-TZ trap).
+  return new Date(
+    Date.UTC(year, month - 1, day, utcHour, utcMinute, 0, 0),
+  ).toISOString();
+}
+
+/**
+ * Convert a CT wall-clock minute-of-day on a given CT calendar date into
+ * the corresponding UTC ISO string. DST-safe — probes CT's UTC offset at
+ * noon via Intl.DateTimeFormat.
+ *
+ * Use this when accepting CT-anchored input (e.g. an `<input type="time">`
+ * or `datetime-local` whose value the UI labels as Central Time) and
+ * needing to send a UTC timestamp to the backend. Do NOT pass the value
+ * through `new Date(localString).toISOString()` — that interprets the
+ * string in the browser's local timezone, which produces wrong UTC for
+ * any user outside CT.
+ *
+ * Example: '2026-04-17' (CDT) + 9*60+30 -> '2026-04-17T14:30:00.000Z'
+ *          '2026-01-15' (CST) + 9*60+30 -> '2026-01-15T15:30:00.000Z'
+ *
+ * Returns `null` when the input is malformed.
+ */
+export function ctWallClockToUtcIso(
+  dateStr: string,
+  ctMinutesPastMidnight: number,
+): string | null {
+  const dateMatch = DATE_STR_RE.exec(dateStr);
+  if (!dateMatch) return null;
+  const year = Number(dateMatch[1]);
+  const month = Number(dateMatch[2]);
+  const day = Number(dateMatch[3]);
+
+  const probe = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+  if (Number.isNaN(probe.getTime())) return null;
+  if (
+    probe.getUTCFullYear() !== year ||
+    probe.getUTCMonth() !== month - 1 ||
+    probe.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  const parts = extractParts(CT_OFFSET_FORMATTER, probe);
+  const tzName = parts.timeZoneName ?? '';
+  const offsetParsed = /GMT([+-]\d+)(?::(\d+))?/.exec(tzName);
+  if (!offsetParsed) return null;
+  const offsetHours = Number.parseInt(offsetParsed[1]!, 10);
+  const offsetMinutes = offsetParsed[2]
+    ? Number.parseInt(offsetParsed[2], 10)
+    : 0;
+  const signedOffsetMin =
+    (offsetHours < 0 ? -1 : 1) * (Math.abs(offsetHours) * 60 + offsetMinutes);
+  const utcTotalMin = ctMinutesPastMidnight - signedOffsetMin;
+  const utcHour = Math.floor(utcTotalMin / 60);
+  const utcMinute = utcTotalMin % 60;
   return new Date(
     Date.UTC(year, month - 1, day, utcHour, utcMinute, 0, 0),
   ).toISOString();

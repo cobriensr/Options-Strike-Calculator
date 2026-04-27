@@ -3,6 +3,7 @@ import {
   getETTime,
   getCTTime,
   getETDateStr,
+  getCTDateStr,
   getETDayOfWeek,
   getETDayOfWeekFromDateStr,
   getETTotalMinutes,
@@ -10,6 +11,7 @@ import {
   convertCTToET,
   getETMarketOpenUtcIso,
   getETCloseUtcIso,
+  ctWallClockToUtcIso,
 } from '../../utils/timezone';
 
 describe('timezone utilities', () => {
@@ -288,6 +290,59 @@ describe('timezone utilities', () => {
       expect(getETCloseUtcIso('not-a-date')).toBeNull();
       expect(getETCloseUtcIso('2026-13-01')).toBeNull();
       expect(getETCloseUtcIso('')).toBeNull();
+    });
+  });
+
+  describe('getCTDateStr', () => {
+    it('returns the CT calendar date for a UTC midnight that is still the prior day in CT', () => {
+      // 2026-04-17 00:00 UTC -> 2026-04-16 19:00 CDT
+      expect(getCTDateStr(new Date('2026-04-17T00:00:00Z'))).toBe('2026-04-16');
+    });
+
+    it('returns the CT calendar date for a UTC noon', () => {
+      expect(getCTDateStr(new Date('2026-04-17T17:00:00Z'))).toBe('2026-04-17');
+    });
+  });
+
+  describe('ctWallClockToUtcIso', () => {
+    it('returns 14:30Z for 09:30 CT on a CDT date (summer)', () => {
+      // 2026-04-17 is during CDT (UTC-5). 9:30 + 5h = 14:30 UTC.
+      expect(ctWallClockToUtcIso('2026-04-17', 9 * 60 + 30)).toBe(
+        '2026-04-17T14:30:00.000Z',
+      );
+    });
+
+    it('returns 15:30Z for 09:30 CT on a CST date (winter)', () => {
+      // 2026-01-15 is during CST (UTC-6). 9:30 + 6h = 15:30 UTC.
+      expect(ctWallClockToUtcIso('2026-01-15', 9 * 60 + 30)).toBe(
+        '2026-01-15T15:30:00.000Z',
+      );
+    });
+
+    it('handles the spring-forward boundary (CT DST start)', () => {
+      // 2026 DST starts 2026-03-08. The 7th is CST; the 8th is CDT.
+      expect(ctWallClockToUtcIso('2026-03-07', 16 * 60)).toBe(
+        '2026-03-07T22:00:00.000Z',
+      );
+      expect(ctWallClockToUtcIso('2026-03-08', 16 * 60)).toBe(
+        '2026-03-08T21:00:00.000Z',
+      );
+    });
+
+    it('handles the fall-back boundary (CT DST end)', () => {
+      // 2026 DST ends 2026-11-01. Oct 31 is CDT; Nov 1 is CST.
+      expect(ctWallClockToUtcIso('2026-10-31', 16 * 60)).toBe(
+        '2026-10-31T21:00:00.000Z',
+      );
+      expect(ctWallClockToUtcIso('2026-11-01', 16 * 60)).toBe(
+        '2026-11-01T22:00:00.000Z',
+      );
+    });
+
+    it('returns null for malformed input', () => {
+      expect(ctWallClockToUtcIso('not-a-date', 0)).toBeNull();
+      expect(ctWallClockToUtcIso('2026-13-01', 0)).toBeNull();
+      expect(ctWallClockToUtcIso('', 0)).toBeNull();
     });
   });
 });

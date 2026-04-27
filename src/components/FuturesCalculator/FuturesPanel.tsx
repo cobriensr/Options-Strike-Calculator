@@ -14,6 +14,11 @@ import { useMemo, useState } from 'react';
 import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
 import { useFuturesData } from '../../hooks/useFuturesData';
+import {
+  ctWallClockToUtcIso,
+  getCTDateStr,
+  getCTTime,
+} from '../../utils/timezone';
 import { SectionBox, StatusBadge } from '../ui';
 import FuturesGrid from './FuturesGrid';
 import VixTermStructure from './VixTermStructure';
@@ -33,47 +38,60 @@ function formatUpdatedAt(iso: string | null): string | null {
   }
 }
 
+const DATETIME_LOCAL_RE = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})$/;
+
 /**
  * Format an ISO string as a `datetime-local` input value (YYYY-MM-DDTHH:mm)
- * in the browser's local timezone. Returns null on invalid input.
+ * anchored to **Central Time** (matching the rest of the app's TZ
+ * convention). Returns null on invalid input.
  */
-function isoToLocalInputValue(iso: string | null): string | null {
+function isoToCtInputValue(iso: string | null): string | null {
   if (!iso) return null;
-  try {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return null;
-    // Build local-tz components manually — toISOString() would convert to UTC.
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const yyyy = d.getFullYear();
-    const mm = pad(d.getMonth() + 1);
-    const dd = pad(d.getDate());
-    const hh = pad(d.getHours());
-    const mi = pad(d.getMinutes());
-    return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
-  } catch {
-    return null;
-  }
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const dateStr = getCTDateStr(d);
+  const { hour, minute } = getCTTime(d);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${dateStr}T${pad(hour)}:${pad(minute)}`;
 }
 
 /**
- * Convert a `datetime-local` input value (local-tz, no offset) to a UTC ISO
- * string suitable for the `?at=` query param. Returns null for empty input.
+ * Convert a `datetime-local` input value into a UTC ISO string, treating
+ * the value as **Central Time** wall-clock. Required because the native
+ * `datetime-local` input has no timezone metadata, and the rest of this
+ * app labels and reasons about times in CT regardless of host TZ.
+ *
+ * Returns null for empty or malformed input.
  */
-function localInputToIso(value: string): string | null {
+function ctInputToIso(value: string): string | null {
   if (!value) return null;
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toISOString();
+  const match = value.match(DATETIME_LOCAL_RE);
+  if (!match) return null;
+  const dateStr = match[1]!;
+  const hour = Number(match[2]);
+  const minute = Number(match[3]);
+  if (
+    !Number.isFinite(hour) ||
+    !Number.isFinite(minute) ||
+    hour < 0 ||
+    hour > 23 ||
+    minute < 0 ||
+    minute > 59
+  ) {
+    return null;
+  }
+  return ctWallClockToUtcIso(dateStr, hour * 60 + minute);
 }
 
 export default function FuturesPanel() {
-  // Raw `datetime-local` input value (local tz, no offset). Empty = live.
+  // Raw `datetime-local` input value, interpreted as Central Time.
+  // Empty = live.
   const [pickerValue, setPickerValue] = useState('');
 
   // Derived UTC ISO that gets passed to the hook. Memoized so a render
   // that doesn't change `pickerValue` doesn't re-trigger the hook's effect.
   const at = useMemo(
-    () => localInputToIso(pickerValue) ?? undefined,
+    () => ctInputToIso(pickerValue) ?? undefined,
     [pickerValue],
   );
 
@@ -95,9 +113,10 @@ export default function FuturesPanel() {
   // `max` = now. Computed each render (not memoized) so a dashboard left
   // open for hours / across midnight doesn't freeze the upper bound at
   // mount time. `new Date()` is cheap and React diffs primitive DOM props,
-  // so this is effectively free.
-  const maxLocal = isoToLocalInputValue(new Date().toISOString());
-  const minLocal = useMemo(() => isoToLocalInputValue(oldestTs), [oldestTs]);
+  // so this is effectively free. Both bounds are anchored to CT so they
+  // line up with the picker's CT-labeled value space.
+  const maxLocal = isoToCtInputValue(new Date().toISOString());
+  const minLocal = useMemo(() => isoToCtInputValue(oldestTs), [oldestTs]);
 
   return (
     <SectionBox

@@ -61,7 +61,7 @@ describe('FuturesPanel: historical picker', () => {
     expect(screen.queryByText('VIEWING HISTORICAL')).not.toBeInTheDocument();
   });
 
-  it('passes UTC-converted ISO to the hook when a datetime is typed', () => {
+  it('passes CT-anchored UTC ISO to the hook when a datetime is typed', () => {
     mockState();
     render(<FuturesPanel />);
 
@@ -74,15 +74,26 @@ describe('FuturesPanel: historical picker', () => {
     // flaky for datetime-local inputs in jsdom, so we use fireEvent here.
     fireEvent.change(picker, { target: { value: '2026-04-17T09:30' } });
 
-    // Latest call to the hook should have an at that round-trips through
-    // Date -> toISOString(). We can't assert an exact ISO because jsdom
-    // runs in the host's local tz, but we can assert it's a Z-suffixed
-    // ISO string.
-    const latestAt = atHistory.at(-1);
-    expect(latestAt).toBeDefined();
-    expect(latestAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
-    // And it must match what Date(localInput).toISOString() produces.
-    expect(latestAt).toBe(new Date('2026-04-17T09:30').toISOString());
+    // The picker value is CT wall-clock, and 2026-04-17 is during CDT
+    // (UTC-5), so 09:30 CDT == 14:30 UTC. This must be true regardless
+    // of the host's timezone — the prior implementation used
+    // `new Date(localValue).toISOString()`, which silently produced a
+    // host-tz-dependent result.
+    expect(atHistory.at(-1)).toBe('2026-04-17T14:30:00.000Z');
+  });
+
+  it('passes CT-anchored UTC ISO during CST (winter)', () => {
+    mockState();
+    render(<FuturesPanel />);
+
+    const picker = screen.getByLabelText(
+      'Historical futures timestamp',
+    ) as HTMLInputElement;
+
+    // 2026-01-15 is during CST (UTC-6), so 09:30 CST == 15:30 UTC.
+    fireEvent.change(picker, { target: { value: '2026-01-15T09:30' } });
+
+    expect(atHistory.at(-1)).toBe('2026-01-15T15:30:00.000Z');
   });
 
   it('shows the VIEWING HISTORICAL pill when at is set', () => {
