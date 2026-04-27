@@ -795,6 +795,13 @@ export default function StrikeCalculator() {
                   text="Sign in"
                 />
               )}
+              {/* Access-key entry point for non-desktop viewports. The
+                  sidebar bottomSlot is the canonical mount on lg+, so
+                  this header instance is hidden there to avoid duplicate
+                  controls. */}
+              <span className="lg:hidden">
+                <AccessKeyButton compact />
+              </span>
               {market.needsAuth && isOwner && (
                 <SchwabAuthLink
                   ariaLabel="Re-authenticate with Schwab"

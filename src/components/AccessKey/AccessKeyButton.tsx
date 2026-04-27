@@ -1,16 +1,25 @@
 /**
- * AccessKeyButton — small key icon mounted in the sidebar bottom slot.
+ * AccessKeyButton — key icon affordance in two flavors:
  *
- * Always visible (per scoping decision) so the owner sees the same chrome
- * a guest sees. The button is just a one-symbol affordance; clicking it
- * opens AccessKeyModal which renders the right state for the current mode.
+ *   default — full-width, icon + label. Mounted in the SectionNav vertical
+ *             sidebar's bottomSlot at lg+.
+ *   compact — icon-only square button matching the other header chips
+ *             (Sign-in, Collapse, etc.). Mounted in the App header bar at
+ *             <lg so phone/tablet users have a way to authenticate too.
+ *
+ * Visible to everyone (owner + guest + public) — single component, single
+ * modal, just two visual treatments.
  */
 
 import { useState } from 'react';
 import { useAccessSession } from '../../hooks/useAccessSession';
 import AccessKeyModal from './AccessKeyModal';
 
-export default function AccessKeyButton() {
+interface Props {
+  compact?: boolean;
+}
+
+export default function AccessKeyButton({ compact = false }: Props) {
   const { mode, refresh, logout } = useAccessSession();
   const [open, setOpen] = useState(false);
 
@@ -22,6 +31,14 @@ export default function AccessKeyButton() {
         ? 'Owner mode active — open access menu'
         : 'Enter access key';
 
+  const buttonClass = compact
+    ? `border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200 ${
+        filled ? 'text-accent' : 'text-primary'
+      }`
+    : `hover:bg-surface-alt flex w-full items-center gap-2 rounded-md px-3 py-2 font-sans text-[12px] font-semibold transition-colors ${
+        filled ? 'text-accent' : 'text-tertiary hover:text-primary'
+      }`;
+
   return (
     <>
       <button
@@ -29,9 +46,7 @@ export default function AccessKeyButton() {
         onClick={() => setOpen(true)}
         aria-label={ariaLabel}
         title={ariaLabel}
-        className={`hover:bg-surface-alt flex w-full items-center gap-2 rounded-md px-3 py-2 font-sans text-[12px] font-semibold transition-colors ${
-          filled ? 'text-accent' : 'text-tertiary hover:text-primary'
-        }`}
+        className={buttonClass}
       >
         <svg
           width="14"
@@ -52,7 +67,11 @@ export default function AccessKeyButton() {
           <path d="M11 6.5l1.5 1.5" strokeLinecap="round" />
           <path d="M13 4.5l1.5 1.5" strokeLinecap="round" />
         </svg>
-        <span className="text-[11px] tracking-wide">
+        <span
+          className={
+            compact ? 'text-[11px] font-semibold' : 'text-[11px] tracking-wide'
+          }
+        >
           {mode === 'guest' ? 'Guest' : mode === 'owner' ? 'Owner' : 'Access'}
         </span>
       </button>
