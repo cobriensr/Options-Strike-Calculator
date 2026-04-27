@@ -900,22 +900,26 @@ export default function StrikeCalculator() {
                   </span>
                 </button>
               )}
-              <input
-                ref={vixFileInputRef}
-                type="file"
-                accept=".csv"
-                onChange={vixHandleFileUpload}
-                className="hidden"
-                aria-label="Upload VIX OHLC CSV file"
-              />
-              <button
-                onClick={handleVixCsvClick}
-                className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
-              >
-                <span className="text-[11px] font-semibold">
-                  {vix.vixDataLoaded ? vix.vixDataSource : 'Upload VIX CSV'}
-                </span>
-              </button>
+              {isOwner && (
+                <>
+                  <input
+                    ref={vixFileInputRef}
+                    type="file"
+                    accept=".csv"
+                    onChange={vixHandleFileUpload}
+                    className="hidden"
+                    aria-label="Upload VIX OHLC CSV file"
+                  />
+                  <button
+                    onClick={handleVixCsvClick}
+                    className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
+                  >
+                    <span className="text-[11px] font-semibold">
+                      {vix.vixDataLoaded ? vix.vixDataSource : 'Upload VIX CSV'}
+                    </span>
+                  </button>
+                </>
+              )}
               <button
                 onClick={handleDarkModeToggle}
                 aria-label={
