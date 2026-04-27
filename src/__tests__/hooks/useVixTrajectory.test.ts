@@ -7,11 +7,11 @@ import {
 } from '../../hooks/useVixTrajectory';
 import { POLL_INTERVALS } from '../../constants';
 
-vi.mock('../../hooks/useIsOwner', () => ({
-  useIsOwner: vi.fn(() => true),
+vi.mock('../../utils/auth', () => ({
+  checkIsOwner: vi.fn(() => true),
 }));
 
-import { useIsOwner } from '../../hooks/useIsOwner';
+import { checkIsOwner } from '../../utils/auth';
 
 function snap(overrides: Partial<VixSnapshot>): VixSnapshot {
   return {
@@ -128,7 +128,7 @@ describe('useVixTrajectory hook', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     fetchMock = vi.fn();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    vi.mocked(useIsOwner).mockReturnValue(true);
+    vi.mocked(checkIsOwner).mockReturnValue(true);
   });
 
   afterEach(() => {
@@ -137,7 +137,7 @@ describe('useVixTrajectory hook', () => {
   });
 
   it('does not fetch when not owner', async () => {
-    vi.mocked(useIsOwner).mockReturnValue(false);
+    vi.mocked(checkIsOwner).mockReturnValue(false);
     const { result } = renderHook(() => useVixTrajectory(true));
     await act(async () => {});
     expect(fetchMock).not.toHaveBeenCalled();

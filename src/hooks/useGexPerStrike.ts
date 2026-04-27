@@ -42,7 +42,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
-import { useIsOwner } from './useIsOwner';
+import { checkIsOwner } from '../utils/auth';
 
 /**
  * A snapshot is considered "live" only if its timestamp is within this many
@@ -195,7 +195,7 @@ export function useGexPerStrike(
       ? { initialDate: initialDateOrOptions }
       : (initialDateOrOptions ?? {});
   const { initialDate, includeWindow = false } = options;
-  const isOwner = useIsOwner();
+  const isOwner = checkIsOwner();
   const [strikes, setStrikes] = useState<GexStrikeLevel[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

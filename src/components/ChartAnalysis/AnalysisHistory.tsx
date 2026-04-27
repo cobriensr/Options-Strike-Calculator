@@ -13,7 +13,7 @@ import type {
   ModeFilter,
 } from './types';
 import { SectionBox } from '../ui';
-import { useIsOwner } from '../../hooks/useIsOwner';
+import { checkIsOwner } from '../../utils/auth';
 import AnalysisHistoryPicker from './AnalysisHistoryPicker';
 
 // ── Component ──────────────────────────────────────────────
@@ -207,7 +207,7 @@ export default function AnalysisHistory({ refreshKey }: Props) {
 
   // Owner gating — only render for authenticated owner (or local dev)
   // Placed after hooks to satisfy Rules of Hooks
-  const isOwner = useIsOwner();
+  const isOwner = checkIsOwner();
   if (!isOwner) return null;
 
   // ── Render ─────────────────────────────────────────────

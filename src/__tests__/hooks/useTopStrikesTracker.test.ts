@@ -3,7 +3,7 @@ import { renderHook } from '@testing-library/react';
 import { useTopStrikesTracker } from '../../hooks/useTopStrikesTracker';
 
 // Inline the only subset of GexStrikeLevel we need so this test file has
-// no dependency on the fetch-hook module that brings in useIsOwner etc.
+// no dependency on the fetch-hook module that brings in checkIsOwner etc.
 interface GexStrikeLevel {
   strike: number;
   price: number;

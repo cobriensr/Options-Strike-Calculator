@@ -6,11 +6,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
 
-vi.mock('../../hooks/useIsOwner', () => ({
-  useIsOwner: vi.fn(() => true),
+vi.mock('../../utils/auth', () => ({
+  checkIsOwner: vi.fn(() => true),
 }));
 
-import { useIsOwner } from '../../hooks/useIsOwner';
+import { checkIsOwner } from '../../utils/auth';
 import { useRegimeEventsHistory } from '../../hooks/useRegimeEventsHistory';
 
 // ── Fixtures ──────────────────────────────────────────────────
@@ -51,7 +51,7 @@ beforeEach(() => {
     json: async () => SAMPLE_RESPONSE,
   });
   vi.stubGlobal('fetch', mockFetch);
-  vi.mocked(useIsOwner).mockReturnValue(true);
+  vi.mocked(checkIsOwner).mockReturnValue(true);
 });
 
 afterEach(() => {
@@ -134,7 +134,7 @@ describe('useRegimeEventsHistory: lifecycle', () => {
   });
 
   it('does not fetch when not the owner', async () => {
-    vi.mocked(useIsOwner).mockReturnValue(false);
+    vi.mocked(checkIsOwner).mockReturnValue(false);
 
     const { result } = renderHook(() => useRegimeEventsHistory(true));
     await act(async () => {});

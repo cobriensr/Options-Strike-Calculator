@@ -24,7 +24,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { POLL_INTERVALS } from '../../../constants';
 import { getErrorMessage } from '../../../utils/error';
-import { useIsOwner } from '../../../hooks/useIsOwner';
+import { checkIsOwner } from '../../../utils/auth';
 import type { TraceLiveDetail, TraceLiveSummary } from '../types';
 
 function etToday(): string {
@@ -55,7 +55,7 @@ export interface UseTraceLiveDataReturn {
 }
 
 export function useTraceLiveData(marketOpen: boolean): UseTraceLiveDataReturn {
-  const isOwner = useIsOwner();
+  const isOwner = checkIsOwner();
   const [list, setList] = useState<TraceLiveSummary[]>([]);
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);

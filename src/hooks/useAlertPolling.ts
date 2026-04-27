@@ -12,7 +12,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
-import { useIsOwner } from './useIsOwner';
+import { checkIsOwner } from '../utils/auth';
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -131,7 +131,7 @@ function showBrowserNotification(alert: MarketAlert): void {
 // ── Hook ───────────────────────────────────────────────────
 
 export function useAlertPolling(marketOpen: boolean): AlertPollingState {
-  const isOwner = useIsOwner();
+  const isOwner = checkIsOwner();
   const [alerts, setAlerts] = useState<MarketAlert[]>([]);
   const lastSeenRef = useRef<string | null>(null);
   const seenIdsRef = useRef<Set<number>>(new Set());

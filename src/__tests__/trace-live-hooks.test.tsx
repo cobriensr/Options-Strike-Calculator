@@ -17,9 +17,9 @@ import { useTraceLiveChime } from '../components/TRACELive/hooks/useTraceLiveChi
 import { useTraceLiveData } from '../components/TRACELive/hooks/useTraceLiveData';
 import * as chimeAudio from '../components/TRACELive/hooks/chime-audio';
 
-// Mock useIsOwner globally for the data hook tests.
-vi.mock('../hooks/useIsOwner', () => ({
-  useIsOwner: vi.fn(() => true),
+// Mock checkIsOwner globally for the data hook tests.
+vi.mock('../utils/auth', () => ({
+  checkIsOwner: vi.fn(() => true),
 }));
 
 // ============================================================

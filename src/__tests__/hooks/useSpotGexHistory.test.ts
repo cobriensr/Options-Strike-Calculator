@@ -3,11 +3,11 @@ import { renderHook, act, waitFor } from '@testing-library/react';
 
 // ── Mocks ─────────────────────────────────────────────────────
 
-vi.mock('../../hooks/useIsOwner', () => ({
-  useIsOwner: vi.fn(() => true),
+vi.mock('../../utils/auth', () => ({
+  checkIsOwner: vi.fn(() => true),
 }));
 
-import { useIsOwner } from '../../hooks/useIsOwner';
+import { checkIsOwner } from '../../utils/auth';
 import { useSpotGexHistory } from '../../hooks/useSpotGexHistory';
 
 // ── Fixtures ──────────────────────────────────────────────────
@@ -35,7 +35,7 @@ beforeEach(() => {
     json: async () => SAMPLE_RESPONSE,
   });
   vi.stubGlobal('fetch', mockFetch);
-  vi.mocked(useIsOwner).mockReturnValue(true);
+  vi.mocked(checkIsOwner).mockReturnValue(true);
 });
 
 afterEach(() => {
@@ -149,7 +149,7 @@ describe('useSpotGexHistory: lifecycle', () => {
   });
 
   it('does not fetch when not the owner', async () => {
-    vi.mocked(useIsOwner).mockReturnValue(false);
+    vi.mocked(checkIsOwner).mockReturnValue(false);
 
     const { result } = renderHook(() => useSpotGexHistory('2026-04-20', true));
 

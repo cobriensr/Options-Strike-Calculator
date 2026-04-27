@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { POLL_INTERVALS } from '../constants';
-import { useIsOwner } from './useIsOwner';
+import { checkIsOwner } from '../utils/auth';
 
 export interface VixSnapshot {
   entryTime: string;
@@ -121,7 +121,7 @@ export function deriveTrajectory(
 }
 
 export function useVixTrajectory(marketOpen: boolean): VixTrajectoryState {
-  const isOwner = useIsOwner();
+  const isOwner = checkIsOwner();
   const [state, setState] = useState<VixTrajectoryState>(EMPTY);
   const mountedRef = useRef(true);
 

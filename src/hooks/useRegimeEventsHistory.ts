@@ -25,7 +25,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useIsOwner } from './useIsOwner';
+import { checkIsOwner } from '../utils/auth';
 import { getErrorMessage } from '../utils/error';
 
 const POLL_INTERVAL_LIVE_MS = 60_000;
@@ -77,7 +77,7 @@ export function useRegimeEventsHistory(
   marketOpen: boolean,
   limit: number = DEFAULT_LIMIT,
 ): UseRegimeEventsHistoryReturn {
-  const isOwner = useIsOwner();
+  const isOwner = checkIsOwner();
   const [events, setEvents] = useState<RegimeEventRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);

@@ -18,8 +18,8 @@ vi.mock('../../hooks/useFuturesData', () => ({
 vi.mock('../../hooks/useSpotGexHistory', () => ({
   useSpotGexHistory: vi.fn(),
 }));
-vi.mock('../../hooks/useIsOwner', () => ({
-  useIsOwner: vi.fn(() => true),
+vi.mock('../../utils/auth', () => ({
+  checkIsOwner: vi.fn(() => true),
 }));
 
 import { useGexPerStrike } from '../../hooks/useGexPerStrike';

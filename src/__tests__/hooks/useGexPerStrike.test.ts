@@ -6,11 +6,11 @@ import { POLL_INTERVALS } from '../../constants';
 
 // ── Mocks ─────────────────────────────────────────────────
 
-vi.mock('../../hooks/useIsOwner', () => ({
-  useIsOwner: vi.fn(() => true),
+vi.mock('../../utils/auth', () => ({
+  checkIsOwner: vi.fn(() => true),
 }));
 
-import { useIsOwner } from '../../hooks/useIsOwner';
+import { checkIsOwner } from '../../utils/auth';
 
 const mockFetch = vi.fn().mockResolvedValue({
   ok: true,
@@ -70,7 +70,7 @@ beforeEach(() => {
     ok: true,
     json: async () => ({ strikes: [], timestamp: null }),
   });
-  vi.mocked(useIsOwner).mockReturnValue(true);
+  vi.mocked(checkIsOwner).mockReturnValue(true);
 });
 
 afterEach(() => {
@@ -200,7 +200,7 @@ describe('useGexPerStrike: polling', () => {
 
 describe('useGexPerStrike: gating', () => {
   it('does not fetch when not owner', async () => {
-    vi.mocked(useIsOwner).mockReturnValue(false);
+    vi.mocked(checkIsOwner).mockReturnValue(false);
 
     renderHook(() => useGexPerStrike(true));
 
@@ -224,7 +224,7 @@ describe('useGexPerStrike: gating', () => {
   });
 
   it('sets loading to false when not owner', async () => {
-    vi.mocked(useIsOwner).mockReturnValue(false);
+    vi.mocked(checkIsOwner).mockReturnValue(false);
 
     const { result } = renderHook(() => useGexPerStrike(true));
 
@@ -368,7 +368,7 @@ describe('useGexPerStrike: backtest mode', () => {
   });
 
   it('does not fetch in backtest mode when not owner', async () => {
-    vi.mocked(useIsOwner).mockReturnValue(false);
+    vi.mocked(checkIsOwner).mockReturnValue(false);
 
     renderHook(() => useGexPerStrike(false, '2026-03-28'));
 

@@ -14,7 +14,7 @@
 
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { POLL_INTERVALS } from '../constants';
-import { useIsOwner } from './useIsOwner';
+import { checkIsOwner } from '../utils/auth';
 import { getErrorMessage } from '../utils/error';
 import type {
   ActiveAnomaly,
@@ -71,7 +71,7 @@ export function useAnomalyCrossAsset(
   anomalies: readonly ActiveAnomaly[],
   marketOpen: boolean,
 ): UseAnomalyCrossAssetReturn {
-  const isOwner = useIsOwner();
+  const isOwner = checkIsOwner();
   const [contexts, setContexts] = useState<
     Record<string, AnomalyCrossAssetContext>
   >({});

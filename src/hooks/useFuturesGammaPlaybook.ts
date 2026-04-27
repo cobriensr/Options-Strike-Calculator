@@ -26,7 +26,7 @@ import { useGexPerStrike } from './useGexPerStrike';
 import { useFuturesData } from './useFuturesData';
 import type { FuturesDataState } from './useFuturesData';
 import { useSpotGexHistory } from './useSpotGexHistory';
-import { useIsOwner } from './useIsOwner';
+import { checkIsOwner } from '../utils/auth';
 import type {
   EsLevel,
   GexRegime,
@@ -517,7 +517,7 @@ export function useFuturesGammaPlaybook(
   // the prior live-only fetch that forced scrub mode to resolve to null.
   const [spxMaxPain, setSpxMaxPain] = useState<number | null>(null);
   const [maxPainLoading, setMaxPainLoading] = useState(false);
-  const isOwner = useIsOwner();
+  const isOwner = checkIsOwner();
   // One fetch per (selectedDate, isOwner) combination. The key guards the
   // effect from infinite re-fetching when the setter below triggers a
   // re-render but the identity of the fetch scope hasn't actually changed.

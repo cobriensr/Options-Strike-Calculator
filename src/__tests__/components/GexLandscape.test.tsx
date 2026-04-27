@@ -7,7 +7,7 @@ import type { CollapseSignal } from '../../components/collapse-context';
 
 // ── Mocks ──────────────────────────────────────────────────────────────────────
 
-vi.mock('../../hooks/useIsOwner', () => ({ useIsOwner: () => true }));
+vi.mock('../../utils/auth', () => ({ checkIsOwner: () => true }));
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 

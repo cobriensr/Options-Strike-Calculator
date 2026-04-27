@@ -220,7 +220,7 @@ All 8 phases complete. Final shape:
   that the original audit missed; included in the same commit.
 - **Phase 3** — `8c6fc2d4 refactor(audio): extract shared getAudioContextCtor`.
 - **Phase 4** — Audit-found false positive. Both `useAnomalyCrossAsset` and
-  `useDarkPoolLevels` already early-return on `!marketOpen` *before* creating
+  `useDarkPoolLevels` already early-return on `!marketOpen` _before_ creating
   any interval, and both already have explicit "does not fetch when market
   closed" tests. No code change.
 - **Phase 5** — `3caf37c5 feat(ui): TimeInputCT primitive`. Migrated

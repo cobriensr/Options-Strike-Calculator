@@ -15,7 +15,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
-import { useIsOwner } from './useIsOwner';
+import { checkIsOwner } from '../utils/auth';
 
 export interface NopePoint {
   /** ISO 8601 UTC timestamp at minute resolution. */
@@ -53,7 +53,7 @@ const EMPTY_POINTS: NopePoint[] = [];
 export function useNopeIntraday({
   marketOpen,
 }: UseNopeIntradayOptions): UseNopeIntradayReturn {
-  const isOwner = useIsOwner();
+  const isOwner = checkIsOwner();
   const [points, setPoints] = useState<NopePoint[]>(EMPTY_POINTS);
   const [date, setDate] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);

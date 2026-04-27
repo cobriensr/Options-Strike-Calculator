@@ -6,11 +6,11 @@ import { POLL_INTERVALS } from '../../constants';
 
 // ── Mocks ─────────────────────────────────────────────────
 
-vi.mock('../../hooks/useIsOwner', () => ({
-  useIsOwner: vi.fn(() => true),
+vi.mock('../../utils/auth', () => ({
+  checkIsOwner: vi.fn(() => true),
 }));
 
-import { useIsOwner } from '../../hooks/useIsOwner';
+import { checkIsOwner } from '../../utils/auth';
 
 const mockFetch = vi.fn().mockResolvedValue({
   ok: true,
@@ -80,7 +80,7 @@ beforeEach(() => {
     ok: true,
     json: async () => ({ alerts: [] }),
   });
-  vi.mocked(useIsOwner).mockReturnValue(true);
+  vi.mocked(checkIsOwner).mockReturnValue(true);
 });
 
 afterEach(() => {
@@ -128,7 +128,7 @@ describe('useAlertPolling: polling gating', () => {
   });
 
   it('does NOT poll when isOwner is false', async () => {
-    vi.mocked(useIsOwner).mockReturnValue(false);
+    vi.mocked(checkIsOwner).mockReturnValue(false);
 
     renderHook(() => useAlertPolling(true));
 
@@ -138,7 +138,7 @@ describe('useAlertPolling: polling gating', () => {
   });
 
   it('does NOT poll when both marketOpen and isOwner are false', async () => {
-    vi.mocked(useIsOwner).mockReturnValue(false);
+    vi.mocked(checkIsOwner).mockReturnValue(false);
 
     renderHook(() => useAlertPolling(false));
 

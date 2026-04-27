@@ -3,11 +3,11 @@ import { renderHook, act, waitFor } from '@testing-library/react';
 import { useNopeIntraday } from '../../hooks/useNopeIntraday';
 import { POLL_INTERVALS } from '../../constants';
 
-vi.mock('../../hooks/useIsOwner', () => ({
-  useIsOwner: vi.fn(() => true),
+vi.mock('../../utils/auth', () => ({
+  checkIsOwner: vi.fn(() => true),
 }));
 
-import { useIsOwner } from '../../hooks/useIsOwner';
+import { checkIsOwner } from '../../utils/auth';
 
 const SAMPLE_RESPONSE = {
   ticker: 'SPY',
@@ -36,7 +36,7 @@ beforeEach(() => {
     ok: true,
     json: async () => SAMPLE_RESPONSE,
   });
-  vi.mocked(useIsOwner).mockReturnValue(true);
+  vi.mocked(checkIsOwner).mockReturnValue(true);
 });
 
 afterEach(() => {
@@ -75,7 +75,7 @@ describe('useNopeIntraday: fetching', () => {
   });
 
   it('skips fetch when not owner', async () => {
-    vi.mocked(useIsOwner).mockReturnValue(false);
+    vi.mocked(checkIsOwner).mockReturnValue(false);
     renderHook(() => useNopeIntraday({ marketOpen: true }));
     await act(async () => {});
     expect(mockFetch).not.toHaveBeenCalled();
@@ -190,7 +190,7 @@ describe('useNopeIntraday: unmount guards', () => {
   });
 
   it('flips ownership after mount to non-owner does not trigger fetch from fetchPoints', async () => {
-    // Start as owner, then switch useIsOwner to false. Effect will re-run
+    // Start as owner, then switch checkIsOwner to false. Effect will re-run
     // and early return, verifying the ownership gate in the polling path.
     const { rerender } = renderHook(() =>
       useNopeIntraday({ marketOpen: true }),
@@ -198,7 +198,7 @@ describe('useNopeIntraday: unmount guards', () => {
     await act(async () => {});
     expect(mockFetch).toHaveBeenCalledTimes(1);
 
-    vi.mocked(useIsOwner).mockReturnValue(false);
+    vi.mocked(checkIsOwner).mockReturnValue(false);
     rerender();
     await act(async () => {
       vi.advanceTimersByTime(POLL_INTERVALS.NOPE * 3);

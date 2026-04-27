@@ -23,7 +23,7 @@ import { AnomalyRow } from './AnomalyRow';
  *
  * Owner-only: the wrapping `useIVAnomalies` hook returns empty for public
  * visitors (401 from the endpoint). The caller is responsible for only
- * mounting this section behind `useIsOwner()` + marketOpen gating, but
+ * mounting this section behind `checkIsOwner()` + marketOpen gating, but
  * this component also degrades gracefully if called prematurely.
  */
 export function IVAnomaliesSection({

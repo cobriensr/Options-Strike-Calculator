@@ -45,7 +45,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
-import { useIsOwner } from './useIsOwner';
+import { checkIsOwner } from '../utils/auth';
 import type { TargetScore } from '../utils/gex-target';
 
 /**
@@ -240,7 +240,7 @@ export function useGexTarget(
   marketOpen: boolean,
   initialDate?: string,
 ): UseGexTargetReturn {
-  const isOwner = useIsOwner();
+  const isOwner = checkIsOwner();
 
   // -- Per-snapshot data
   const [oi, setOi] = useState<TargetScore | null>(null);

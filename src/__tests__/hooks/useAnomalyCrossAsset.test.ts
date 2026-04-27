@@ -7,11 +7,11 @@ import type {
 } from '../../components/IVAnomalies/types';
 import { POLL_INTERVALS } from '../../constants';
 
-vi.mock('../../hooks/useIsOwner', () => ({
-  useIsOwner: vi.fn(() => true),
+vi.mock('../../utils/auth', () => ({
+  checkIsOwner: vi.fn(() => true),
 }));
 
-import { useIsOwner } from '../../hooks/useIsOwner';
+import { checkIsOwner } from '../../utils/auth';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
@@ -79,7 +79,7 @@ function okResponse(contexts: Record<string, unknown>) {
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   mockFetch.mockReset();
-  vi.mocked(useIsOwner).mockReturnValue(true);
+  vi.mocked(checkIsOwner).mockReturnValue(true);
 });
 
 afterEach(() => {
@@ -104,7 +104,7 @@ describe('useAnomalyCrossAsset', () => {
   });
 
   it('does not fetch when not owner', async () => {
-    vi.mocked(useIsOwner).mockReturnValue(false);
+    vi.mocked(checkIsOwner).mockReturnValue(false);
     renderHook(() => useAnomalyCrossAsset([makeAnomaly()], true));
     await act(async () => {});
     expect(mockFetch).not.toHaveBeenCalled();

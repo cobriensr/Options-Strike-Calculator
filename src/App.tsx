@@ -27,7 +27,7 @@ import { classifyRegime } from './utils/market-regime';
 import { useDarkPoolLevels } from './hooks/useDarkPoolLevels';
 import { useGexPerStrike } from './hooks/useGexPerStrike';
 import { useGexTarget } from './hooks/useGexTarget';
-import { useIsOwner } from './hooks/useIsOwner';
+import { checkIsOwner } from './utils/auth';
 import { useAnalysisContext } from './hooks/useAnalysisContext';
 import { getEarlyCloseHourET } from './data/marketHours';
 import { toETTime } from './utils/time';
@@ -178,7 +178,7 @@ function SchwabAuthLink({
 export default function StrikeCalculator() {
   // Consolidated UI state (inputs, debounced values, derived ratio)
   const toast = useToast();
-  const isOwner = useIsOwner();
+  const isOwner = checkIsOwner();
   const state = useAppState();
   const {
     darkMode,

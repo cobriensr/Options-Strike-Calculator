@@ -22,7 +22,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useIsOwner } from './useIsOwner';
+import { checkIsOwner } from '../utils/auth';
 import { getErrorMessage } from '../utils/error';
 
 /**
@@ -69,7 +69,7 @@ export function useSpotGexHistory(
   date: string | null,
   marketOpen: boolean,
 ): UseSpotGexHistoryReturn {
-  const isOwner = useIsOwner();
+  const isOwner = checkIsOwner();
   const [series, setSeries] = useState<SpotGexHistoryPoint[]>([]);
   const [availableDates, setAvailableDates] = useState<string[]>([]);
   const [timestamp, setTimestamp] = useState<string | null>(null);

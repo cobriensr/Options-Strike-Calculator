@@ -20,7 +20,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
-import { useIsOwner } from './useIsOwner';
+import { checkIsOwner } from '../utils/auth';
 
 export interface DarkPoolLevel {
   spxLevel: number;
@@ -102,7 +102,7 @@ function lastGridTimeBeforeNow(): string {
 export function useDarkPoolLevels(
   marketOpen: boolean,
 ): UseDarkPoolLevelsReturn {
-  const isOwner = useIsOwner();
+  const isOwner = checkIsOwner();
   const [levels, setLevels] = useState<DarkPoolLevel[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
