@@ -38,8 +38,23 @@ __snapshots__/
 .DS_Store
 *.pem
 
-# Claude
-.claude/
+# Claude — ignore everything by default, but un-ignore the three SKILL.md
+# files that api/trace-live-analyze.ts loads at module init. They're project
+# IP (analytical lens for charm/delta/gamma pressure) and must ship in the
+# Vercel function bundle. Vercel's bundler skips gitignored files even when
+# matched by includeFiles, so they have to be tracked.
+.claude/*
+!.claude/skills
+.claude/skills/*
+!.claude/skills/charm-pressure
+!.claude/skills/delta-pressure
+!.claude/skills/gamma
+.claude/skills/charm-pressure/*
+.claude/skills/delta-pressure/*
+.claude/skills/gamma/*
+!.claude/skills/charm-pressure/SKILL.md
+!.claude/skills/delta-pressure/SKILL.md
+!.claude/skills/gamma/SKILL.md
 .vercel
 .env*.local
 .clone/
