@@ -24,6 +24,11 @@
  * Usage: `npx tsx scripts/capture-trace-live.ts` — set HEADLESS=0 to debug.
  */
 
+// Use @playwright/test's chromium (root-level devDep) — has the same API
+// as playwright-core's but ships pre-bundled with the project's other
+// e2e specs and the historical capture-trace.ts. The daemon shells back
+// to the root node_modules via cwd; do not change to playwright-core
+// without also bumping the daemon's resolution path.
 import {
   chromium,
   type Browser,
@@ -195,8 +200,29 @@ async function captureChartImage(page: Page): Promise<string> {
   // Element screenshot of the chart canvas — pixel-faithful and fast.
   // The historical capture script uses a download-event flow, but that
   // saves to disk; for the daemon we want raw bytes in-process.
-  const target = page.locator('canvas, [role="figure"], main').first();
-  const buffer = await target.screenshot({ type: 'png' });
+  //
+  // Selector preference order: canvas (the actual heatmap) → role=figure
+  // → main as last-resort fallback. We try them in order and fall through
+  // on miss so the byte count tells us which path matched at runtime.
+  // If `main` ever fires, the screenshot includes header chrome and the
+  // resulting PNG will be noticeably larger (>500KB) — the daemon logs
+  // bytes per chart, so drift is visible immediately.
+  const candidates: Locator[] = [
+    page.locator('canvas').first(),
+    page.locator('[role="figure"]').first(),
+    page.locator('main').first(),
+  ];
+  for (const c of candidates) {
+    try {
+      await c.waitFor({ state: 'visible', timeout: 1500 });
+      const buffer = await c.screenshot({ type: 'png' });
+      return buffer.toString('base64');
+    } catch {
+      /* try next candidate */
+    }
+  }
+  // Last resort: full viewport. Fail loud — the model will see chrome.
+  const buffer = await page.screenshot({ type: 'png' });
   return buffer.toString('base64');
 }
 

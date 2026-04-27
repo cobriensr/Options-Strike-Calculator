@@ -245,7 +245,10 @@ export async function fetchGexLandscape(args: {
     .slice(0, 2)
     .map((s) => s.strike);
 
-  // ATM strike — nearest strike to spot.
+  // ATM strike — nearest strike to spot. Strict `<` keeps the first
+  // candidate on tie (descending strike order from the SQL ORDER BY),
+  // matching the higher strike — consistent with how the frontend
+  // GexLandscape picks ATM when two strikes are equidistant.
   let atmStrike = strikes[0]!.strike;
   let atmDist = Math.abs(atmStrike - snapshotSpot);
   for (const s of strikes) {

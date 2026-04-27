@@ -122,15 +122,25 @@ async function bootstrap(): Promise<void> {
 
   // Process-level safety nets — these should never fire if the per-tick
   // try/catch is doing its job, but if they do we want a clean Sentry trail.
+  // Use Sentry.close() for proper drain (matches the graceful-shutdown path).
+  const fatalExit = (): void => {
+    void Sentry.close(2000).finally(() => process.exit(1));
+  };
   process.on('uncaughtException', (err) => {
     logger.fatal({ err }, 'uncaughtException');
     Sentry.captureException(err);
-    setTimeout(() => process.exit(1), 1500);
+    fatalExit();
   });
   process.on('unhandledRejection', (reason) => {
     logger.fatal({ reason }, 'unhandledRejection');
-    Sentry.captureException(reason);
-    setTimeout(() => process.exit(1), 1500);
+    // unhandledRejection's reason can be any value — wrap non-Errors so
+    // Sentry gets a usable stack trace + fingerprint.
+    Sentry.captureException(
+      reason instanceof Error
+        ? reason
+        : new Error(`unhandledRejection: ${String(reason)}`),
+    );
+    fatalExit();
   });
 }
 
