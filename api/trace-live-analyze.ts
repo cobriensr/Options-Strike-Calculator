@@ -113,7 +113,16 @@ async function callModel(
   model: string,
   userContent: ReturnType<typeof buildTraceLiveUserContent>,
 ): Promise<CallResult> {
-  const response = await anthropic.messages.create({
+  // Streaming, not messages.create(). At effort:'high' on a 3-image
+  // structured-output call, the model spends 3-9 minutes generating —
+  // a non-streaming POST holds the function→Anthropic TCP connection
+  // idle that whole time, and Vercel's egress NAT (or AWS-side
+  // networking) closes idle connections at ~5 min, killing the call
+  // mid-flight with a 499 client_disconnected on Anthropic's side.
+  // Streaming forwards tokens as they're produced, so the connection
+  // never goes idle. .finalMessage() returns the same Message shape
+  // we'd get from .create() once the stream completes.
+  const stream = anthropic.messages.stream({
     model,
     max_tokens: 64_000,
     thinking: { type: 'adaptive' },
@@ -133,6 +142,8 @@ async function callModel(
     ],
     messages: [{ role: 'user', content: userContent }],
   });
+
+  const response = await stream.finalMessage();
 
   const text = response.content
     .filter((c) => c.type === 'text')
