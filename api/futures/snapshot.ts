@@ -17,7 +17,7 @@
  * the SPX reference is pulled from `market_snapshots` on the picked
  * trade date; if none exists, `esSpxBasis = null`.
  *
- * Owner-gated: Yes (matches ML Insights pattern).
+ * Owner-or-guest: Yes (matches ML Insights pattern).
  * Cache: private, s-maxage=60 (data updates every 5 min).
  */
 
@@ -25,7 +25,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { z } from 'zod';
 import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
-import { rejectIfNotOwner, checkBot } from '../_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest, checkBot } from '../_lib/api-helpers.js';
 import logger from '../_lib/logger.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
 import {
@@ -134,7 +134,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (botCheck.isBot) {
     return res.status(403).json({ error: 'Access denied' });
   }
-  if (rejectIfNotOwner(req, res)) return;
+  if (rejectIfNotOwnerOrGuest(req, res)) return;
 
   const parsed = querySchema.safeParse(req.query);
   if (!parsed.success) {

@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn(),
+  rejectIfNotOwnerOrGuest: vi.fn(),
 }));
 
 vi.mock('../_lib/db.js', () => ({
@@ -23,14 +23,14 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 import handler from '../vix-snapshots-recent.js';
-import { rejectIfNotOwner } from '../_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest } from '../_lib/api-helpers.js';
 import { getRecentVixSnapshots } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 
 describe('GET /api/vix-snapshots-recent', () => {
   beforeEach(() => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     vi.mocked(getRecentVixSnapshots).mockReset();
   });
 
@@ -42,7 +42,7 @@ describe('GET /api/vix-snapshots-recent', () => {
   });
 
   it('returns 401 for non-owner', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
       res.status(401).json({ error: 'Not authenticated' });
       return true;
     });

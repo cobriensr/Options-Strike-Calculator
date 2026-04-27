@@ -9,13 +9,13 @@
  *   ?date=YYYY-MM-DD  — return levels for a specific date
  *   (default: today in ET)
  *
- * Owner-gated — dark pool data derives from UW API (OPRA compliance).
+ * Owner-or-guest — dark pool data derives from UW API (OPRA compliance).
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
-import { rejectIfNotOwner } from './_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -27,7 +27,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(405).json({ error: 'GET only' });
       }
 
-      if (rejectIfNotOwner(req, res)) return;
+      if (rejectIfNotOwnerOrGuest(req, res)) return;
 
       const sql = getDb();
 

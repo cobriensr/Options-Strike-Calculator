@@ -6,7 +6,7 @@
  * implied move percentages and 1y percentile rankings.
  *
  * Called on-demand at analysis time — not a cron job.
- * Owner-gated (uses Schwab session cookie).
+ * Owner-or-guest (uses Schwab session cookie).
  *
  * Environment: UW_API_KEY
  */
@@ -14,7 +14,7 @@
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
-  rejectIfNotOwner,
+  rejectIfNotOwnerOrGuest,
   rejectIfRateLimited,
   checkBot,
 } from './_lib/api-helpers.js';
@@ -131,7 +131,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(403).json({ error: 'Access denied' });
       }
 
-      const ownerCheck = rejectIfNotOwner(req, res);
+      const ownerCheck = rejectIfNotOwnerOrGuest(req, res);
       if (ownerCheck) return;
 
       const rateLimitCheck = await rejectIfRateLimited(

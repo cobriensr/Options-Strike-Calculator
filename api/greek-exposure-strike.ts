@@ -9,13 +9,13 @@
  *   ?date=YYYY-MM-DD    — trading date (default: today ET)
  *   ?expiry=YYYY-MM-DD  — expiry date (default: date value, since 0DTE date=expiry)
  *
- * Owner-gated — Greek exposure derives from UW API (OPRA compliance).
+ * Owner-or-guest — Greek exposure derives from UW API (OPRA compliance).
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
-import { rejectIfNotOwner, checkBot } from './_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest, checkBot } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
 
 // ── Types ───────────────────────────────────────────────────
@@ -77,7 +77,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(403).json({ error: 'Access denied' });
       }
 
-      if (rejectIfNotOwner(req, res)) return;
+      if (rejectIfNotOwnerOrGuest(req, res)) return;
 
       const sql = getDb();
 

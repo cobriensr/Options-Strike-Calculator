@@ -13,14 +13,17 @@
  * trace_live_analyses.image_urls are now only resolvable with the
  * blob-store auth token. This endpoint is the authenticated reader.
  *
- * Authorization: owner cookie + BotID via guardOwnerEndpoint. Rate
+ * Authorization: owner cookie + BotID via guardOwnerOrGuestEndpoint. Rate
  * limited to 240/min — three images per analysis row × multiple rows
  * during normal browsing × revisits add up. Strong browser caching
  * (immutable, 1d) keeps the practical hit rate low.
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { guardOwnerEndpoint, rejectIfRateLimited } from './_lib/api-helpers.js';
+import {
+  guardOwnerOrGuestEndpoint,
+  rejectIfRateLimited,
+} from './_lib/api-helpers.js';
 import { getDb } from './_lib/db.js';
 import logger from './_lib/logger.js';
 import { Sentry, metrics } from './_lib/sentry.js';
@@ -48,7 +51,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'GET only' });
   }
 
-  if (await guardOwnerEndpoint(req, res, done)) return;
+  if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
   const rateLimited = await rejectIfRateLimited(
     req,

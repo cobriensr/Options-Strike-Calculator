@@ -12,13 +12,16 @@
  * <=> operator over the HNSW-indexed vector column, projecting the
  * cosine distance back as `distance` for downstream display.
  *
- * Authorization: owner cookie + BotID via guardOwnerEndpoint. Rate limited
+ * Authorization: owner cookie + BotID via guardOwnerOrGuestEndpoint. Rate limited
  * to 60/min; the embedding is stable so we can cache aggressively
  * (Cache-Control: private, max-age=300 — five minutes).
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { guardOwnerEndpoint, rejectIfRateLimited } from './_lib/api-helpers.js';
+import {
+  guardOwnerOrGuestEndpoint,
+  rejectIfRateLimited,
+} from './_lib/api-helpers.js';
 import { getDb } from './_lib/db.js';
 import logger from './_lib/logger.js';
 import { Sentry, metrics } from './_lib/sentry.js';
@@ -68,7 +71,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'GET only' });
   }
 
-  if (await guardOwnerEndpoint(req, res, done)) return;
+  if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
   const rateLimited = await rejectIfRateLimited(
     req,

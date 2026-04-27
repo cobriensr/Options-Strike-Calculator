@@ -26,13 +26,13 @@
  * plan. The frontend uses this to render the historical UX (date picker
  * gating, "no data yet" placeholders, etc.) without a separate round-trip.
  *
- * Owner-gated — Greek exposure derives from UW API (OPRA compliance).
+ * Owner-or-guest — Greek exposure derives from UW API (OPRA compliance).
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
-import { rejectIfNotOwner, checkBot } from './_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest, checkBot } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
 import { fetchSPXCandles, type SPXCandle } from './_lib/spx-candles.js';
 import type {
@@ -409,7 +409,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (botCheck.isBot) {
       return res.status(403).json({ error: 'Access denied' });
     }
-    if (rejectIfNotOwner(req, res)) return;
+    if (rejectIfNotOwnerOrGuest(req, res)) return;
 
     // Validate the optional `date` param up front. An obviously
     // malformed value is a 400 — silently swapping in today would

@@ -38,7 +38,7 @@ import {
   schwabFetch,
   setCacheHeaders,
   isMarketOpen,
-  rejectIfNotOwner,
+  rejectIfNotOwnerOrGuest,
   checkBot,
 } from './_lib/api-helpers.js';
 
@@ -224,7 +224,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(403).json({ error: 'Access denied' });
       }
 
-      const ownerCheck = rejectIfNotOwner(req, res);
+      const ownerCheck = rejectIfNotOwnerOrGuest(req, res);
       if (ownerCheck) {
         done({ status: 401 });
         return ownerCheck;

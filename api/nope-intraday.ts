@@ -8,14 +8,14 @@
  *   - `GET /api/nope-intraday`               → latest date with rows in nope_ticks
  *   - `GET /api/nope-intraday?date=YYYY-MM-DD` → that specific ET date
  *
- * Owner-gated. SPY-only (the cron only fetches SPY because SPX has no
+ * Owner-or-guest. SPY-only (the cron only fetches SPY because SPX has no
  * tradeable underlying — the NOPE denominator would be undefined).
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
-import { rejectIfNotOwner, checkBot } from './_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest, checkBot } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
 
 const TICKER = 'SPY';
@@ -61,7 +61,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (botCheck.isBot) {
       return res.status(403).json({ error: 'Access denied' });
     }
-    if (rejectIfNotOwner(req, res)) return;
+    if (rejectIfNotOwnerOrGuest(req, res)) return;
 
     const dateParam = req.query.date as string | undefined;
     if (dateParam !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {

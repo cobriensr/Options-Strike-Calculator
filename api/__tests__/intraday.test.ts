@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn(),
+  rejectIfNotOwnerOrGuest: vi.fn(),
   schwabFetch: vi.fn(),
   setCacheHeaders: vi.fn(),
   isMarketOpen: vi.fn(),
@@ -13,7 +13,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 
 import handler from '../intraday.js';
 import {
-  rejectIfNotOwner,
+  rejectIfNotOwnerOrGuest,
   schwabFetch,
   isMarketOpen,
   checkBot,
@@ -57,7 +57,7 @@ describe('GET /api/intraday', () => {
   });
 
   it('returns 401 for non-owner', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
       res.status(401).json({ error: 'Not authenticated' });
       return true;
     });
@@ -67,7 +67,7 @@ describe('GET /api/intraday', () => {
   });
 
   it('forwards schwabFetch errors', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
       ok: false,
       error: 'API down',
@@ -82,7 +82,7 @@ describe('GET /api/intraday', () => {
   });
 
   it('returns today OHLC and opening range from candles', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
 
     // 7 candles covering 9:30-10:05 — first 6 form the opening range
@@ -121,7 +121,7 @@ describe('GET /api/intraday', () => {
   });
 
   it('returns 403 when bot detected', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
 
     const res = mockResponse();
@@ -131,7 +131,7 @@ describe('GET /api/intraday', () => {
   });
 
   it('returns 500 when handler throws unexpected error', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     vi.mocked(schwabFetch).mockImplementation(() => {
       throw new Error('Crash');
     });
@@ -143,7 +143,7 @@ describe('GET /api/intraday', () => {
   });
 
   it('handles empty candle data', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
       ok: true,
@@ -167,7 +167,7 @@ describe('GET /api/intraday', () => {
   });
 
   it('filters to most recent trading day when candles span multiple days', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
 
     const yesterday = new Date(Date.now() - 86400000).toLocaleDateString(
@@ -207,7 +207,7 @@ describe('GET /api/intraday', () => {
   });
 
   it('returns prior session data on holidays/weekends', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(false);
 
     // Simulate a holiday: candles are from 2 days ago, none from today

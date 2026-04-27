@@ -11,14 +11,14 @@
  * keeps direction unambiguous and lets the client pick any window it
  * wants (5m, 15m, 30m) without endpoint changes.
  *
- * Owner-gated — snapshot history is part of the owner's workflow,
+ * Owner-or-guest — snapshot history is part of the owner's workflow,
  * not guest-facing data.
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getRecentVixSnapshots } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
-import { rejectIfNotOwner } from './_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -30,7 +30,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(405).json({ error: 'GET only' });
       }
 
-      if (rejectIfNotOwner(req, res)) return;
+      if (rejectIfNotOwnerOrGuest(req, res)) return;
 
       const today = new Date().toLocaleDateString('en-CA', {
         timeZone: 'America/New_York',

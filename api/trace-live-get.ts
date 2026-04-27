@@ -4,7 +4,7 @@
  * Fetch a single TRACE Live analysis row including the full TraceAnalysis
  * JSON and the Vercel Blob image_urls for rendering historical heatmaps.
  *
- * Authorization: owner cookie + BotID via guardOwnerEndpoint. Rate limited
+ * Authorization: owner cookie + BotID via guardOwnerOrGuestEndpoint. Rate limited
  * to 120/min — historical browsing can fire several requests as the user
  * clicks through the timestamp dropdown, and the frontend caches the
  * response client-side so the practical hit rate is much lower.
@@ -12,7 +12,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
-  guardOwnerEndpoint,
+  guardOwnerOrGuestEndpoint,
   rejectIfRateLimited,
   setCacheHeaders,
 } from './_lib/api-helpers.js';
@@ -93,7 +93,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'GET only' });
   }
 
-  if (await guardOwnerEndpoint(req, res, done)) return;
+  if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
   const rateLimited = await rejectIfRateLimited(
     req,

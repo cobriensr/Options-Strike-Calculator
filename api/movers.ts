@@ -5,7 +5,7 @@
  * Shows which index components are driving the move — helps assess whether
  * SPX movement is broad-based or concentrated in a few mega-caps.
  *
- * Owner-gated (uses Schwab credentials).
+ * Owner-or-guest (uses Schwab credentials).
  *
  * Cache:
  *   Market hours: 120s edge cache + 60s SWR
@@ -18,7 +18,7 @@ import {
   schwabFetch,
   setCacheHeaders,
   isMarketOpen,
-  rejectIfNotOwner,
+  rejectIfNotOwnerOrGuest,
   checkBot,
 } from './_lib/api-helpers.js';
 
@@ -56,7 +56,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     scope.setTransactionName('GET /api/movers');
     const done = metrics.request('/api/movers');
     try {
-      if (rejectIfNotOwner(req, res)) {
+      if (rejectIfNotOwnerOrGuest(req, res)) {
         done({ status: 401 });
         return;
       }

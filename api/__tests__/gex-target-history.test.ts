@@ -16,7 +16,7 @@ import { mockRequest, mockResponse } from './helpers';
 // ── Mocks ────────────────────────────────────────────────
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn(),
+  rejectIfNotOwnerOrGuest: vi.fn(),
   checkBot: vi.fn(),
 }));
 
@@ -41,7 +41,7 @@ vi.mock('../_lib/spx-candles.js', () => ({
 }));
 
 import handler from '../gex-target-history.js';
-import { rejectIfNotOwner, checkBot } from '../_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest, checkBot } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { fetchSPXCandles } from '../_lib/spx-candles.js';
@@ -209,7 +209,7 @@ interface ResponseShape {
 describe('GET /api/gex-target-history', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     vi.mocked(checkBot).mockResolvedValue({ isBot: false });
     vi.mocked(fetchSPXCandles).mockResolvedValue({
       candles: [],
@@ -236,7 +236,7 @@ describe('GET /api/gex-target-history', () => {
   });
 
   it('returns 401 for non-owner (matches gex-per-strike policy)', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
       res.status(401).json({ error: 'Not authenticated' });
       return true;
     });

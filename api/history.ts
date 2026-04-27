@@ -7,7 +7,7 @@
  *
  * All five symbols are fetched in parallel from Schwab's priceHistory API.
  *
- * Owner-gated (uses Schwab credentials).
+ * Owner-or-guest (uses Schwab credentials).
  *
  * Cache strategy:
  *   - Past dates: cached in Redis for 90 days (data never changes)
@@ -19,7 +19,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   schwabFetch,
   setCacheHeaders,
-  rejectIfNotOwner,
+  rejectIfNotOwnerOrGuest,
   checkBot,
 } from './_lib/api-helpers.js';
 import { redis } from './_lib/schwab.js';
@@ -224,7 +224,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return;
       }
 
-      if (rejectIfNotOwner(req, res)) {
+      if (rejectIfNotOwnerOrGuest(req, res)) {
         done({ status: 401 });
         return;
       }

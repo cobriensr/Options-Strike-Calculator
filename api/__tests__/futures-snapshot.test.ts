@@ -22,7 +22,7 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn().mockReturnValue(false),
+  rejectIfNotOwnerOrGuest: vi.fn().mockReturnValue(false),
   checkBot: vi.fn().mockResolvedValue({ isBot: false }),
 }));
 
@@ -31,7 +31,7 @@ vi.mock('../../src/utils/timezone.js', () => ({
 }));
 
 import handler from '../futures/snapshot.js';
-import { rejectIfNotOwner, checkBot } from '../_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest, checkBot } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
 
 /**
@@ -63,7 +63,7 @@ describe('GET /api/futures/snapshot', () => {
     mockSql.mockResolvedValue([]);
     process.env = { ...originalEnv };
 
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     vi.mocked(checkBot).mockResolvedValue({ isBot: false });
   });
 
@@ -98,7 +98,7 @@ describe('GET /api/futures/snapshot', () => {
   });
 
   it('returns 401 when not owner', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
       res.status(401).json({ error: 'Not authenticated' });
       return true;
     });

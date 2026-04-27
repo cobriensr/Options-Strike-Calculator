@@ -1,7 +1,7 @@
 /**
  * GET /api/strike-trade-volume
  *
- * Owner-gated read endpoint backing the bid-side-surge exit signal in
+ * Owner-or-guest read endpoint backing the bid-side-surge exit signal in
  * `useIVAnomalies` (Phase 3 of the tape-side spec).
  *
  * Two modes:
@@ -25,7 +25,7 @@ import { Sentry } from './_lib/sentry.js';
 import logger from './_lib/logger.js';
 import {
   checkBot,
-  rejectIfNotOwner,
+  rejectIfNotOwnerOrGuest,
   setCacheHeaders,
 } from './_lib/api-helpers.js';
 import { strikeTradeVolumeQuerySchema } from './_lib/validation.js';
@@ -98,7 +98,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    if (rejectIfNotOwner(req, res)) return;
+    if (rejectIfNotOwnerOrGuest(req, res)) return;
 
     const parseResult = strikeTradeVolumeQuerySchema.safeParse(req.query);
     if (!parseResult.success) {

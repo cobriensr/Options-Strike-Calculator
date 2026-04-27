@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn(),
+  rejectIfNotOwnerOrGuest: vi.fn(),
   schwabFetch: vi.fn(),
   setCacheHeaders: vi.fn(),
   isMarketOpen: vi.fn(),
@@ -13,7 +13,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 
 import handler from '../yesterday.js';
 import {
-  rejectIfNotOwner,
+  rejectIfNotOwnerOrGuest,
   schwabFetch,
   isMarketOpen,
   checkBot,
@@ -43,7 +43,7 @@ describe('GET /api/yesterday', () => {
   });
 
   it('returns 401 for non-owner', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
       res.status(401).json({ error: 'Not authenticated' });
       return true;
     });
@@ -53,7 +53,7 @@ describe('GET /api/yesterday', () => {
   });
 
   it('forwards schwabFetch errors', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
       ok: false,
       error: 'Token expired',
@@ -68,7 +68,7 @@ describe('GET /api/yesterday', () => {
   });
 
   it('returns null when no candles', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
       ok: true,
       data: { symbol: '$SPX', empty: true, candles: [] },
@@ -84,7 +84,7 @@ describe('GET /api/yesterday', () => {
   });
 
   it('returns yesterday and twoDaysAgo summaries', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
 
     const candles = [
@@ -114,7 +114,7 @@ describe('GET /api/yesterday', () => {
   });
 
   it('returns 403 when bot detected', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
 
     const res = mockResponse();
@@ -124,7 +124,7 @@ describe('GET /api/yesterday', () => {
   });
 
   it('returns 500 when handler throws unexpected error', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     vi.mocked(schwabFetch).mockImplementation(() => {
       throw new Error('Crash');
     });
@@ -136,7 +136,7 @@ describe('GET /api/yesterday', () => {
   });
 
   it('returns only yesterday when single candle', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(false);
 
     vi.mocked(schwabFetch).mockResolvedValue({

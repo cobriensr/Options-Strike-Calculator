@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn(),
+  rejectIfNotOwnerOrGuest: vi.fn(),
   checkBot: vi.fn(async () => ({ isBot: false })),
   setCacheHeaders: vi.fn(
     (res: { setHeader: (k: string, v: string) => unknown }) => {
@@ -39,7 +39,7 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 import handler from '../strike-trade-volume.js';
-import { rejectIfNotOwner, checkBot } from '../_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest, checkBot } from '../_lib/api-helpers.js';
 
 function makeRow(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -58,7 +58,7 @@ function makeRow(over: Record<string, unknown> = {}): Record<string, unknown> {
 describe('GET /api/strike-trade-volume', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     vi.mocked(checkBot).mockResolvedValue({ isBot: false });
   });
 
@@ -76,7 +76,7 @@ describe('GET /api/strike-trade-volume', () => {
   });
 
   it('returns 401 when not owner', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
       res.status(401).json({ error: 'Owner only' });
       return true;
     });

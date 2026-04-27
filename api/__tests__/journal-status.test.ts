@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn(),
+  rejectIfNotOwnerOrGuest: vi.fn(),
   checkBot: vi.fn().mockResolvedValue({ isBot: false }),
 }));
 
@@ -13,7 +13,7 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 import handler from '../journal/status.js';
-import { rejectIfNotOwner } from '../_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
 
 describe('GET /api/journal/status', () => {
@@ -36,7 +36,7 @@ describe('GET /api/journal/status', () => {
   });
 
   it('returns 401 for non-owner', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
       res.status(401).json({ error: 'Not authenticated' });
       return true;
     });
@@ -46,7 +46,7 @@ describe('GET /api/journal/status', () => {
   });
 
   it('returns connection status and table counts', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     process.env.DATABASE_URL = 'postgres://test';
 
     const now = new Date().toISOString();
@@ -80,7 +80,7 @@ describe('GET /api/journal/status', () => {
   });
 
   it('reports which env vars are set', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     process.env.DATABASE_URL = 'x';
     process.env.NEON_DATABASE_URL = 'y';
     delete process.env.POSTGRES_URL;
@@ -104,7 +104,7 @@ describe('GET /api/journal/status', () => {
   });
 
   it('returns 500 with error on database failure', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     process.env.DATABASE_URL = 'postgres://test';
 
     vi.mocked(getDb).mockImplementation(() => {
@@ -121,7 +121,7 @@ describe('GET /api/journal/status', () => {
   });
 
   it('returns generic error for non-Error throws', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
 
     vi.mocked(getDb).mockImplementation(() => {
       throw 'weird error'; // NOSONAR -- intentionally testing non-Error throw

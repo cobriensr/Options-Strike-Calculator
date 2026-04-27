@@ -14,7 +14,7 @@ import { mockRequest, mockResponse } from './helpers';
 // ── Mocks ────────────────────────────────────────────────
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn(),
+  rejectIfNotOwnerOrGuest: vi.fn(),
   checkBot: vi.fn(async () => ({ isBot: false })),
   isMarketOpen: vi.fn(() => false),
   setCacheHeaders: vi.fn(
@@ -42,7 +42,7 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 import handler from '../zero-gamma.js';
-import { rejectIfNotOwner, checkBot } from '../_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest, checkBot } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 
@@ -50,7 +50,7 @@ import logger from '../_lib/logger.js';
 
 describe('GET /api/zero-gamma', () => {
   beforeEach(() => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     vi.mocked(checkBot).mockResolvedValue({ isBot: false });
     mockSql.mockReset();
     vi.mocked(Sentry.captureException).mockClear();
@@ -74,7 +74,7 @@ describe('GET /api/zero-gamma', () => {
   });
 
   it('returns 401 for non-owner', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
       res.status(401).json({ error: 'Not authenticated' });
       return true;
     });

@@ -28,7 +28,7 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn().mockReturnValue(false),
+  rejectIfNotOwnerOrGuest: vi.fn().mockReturnValue(false),
   checkBot: vi.fn().mockResolvedValue({ isBot: false }),
 }));
 
@@ -42,7 +42,7 @@ vi.mock('../../src/utils/timezone.js', async () => {
 });
 
 import handler from '../futures/snapshot.js';
-import { rejectIfNotOwner, checkBot } from '../_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest, checkBot } from '../_lib/api-helpers.js';
 
 // Historical bar timestamp fixture (1 min before picked `at`)
 const PICKED_AT = '2026-04-17T19:30:00.000Z';
@@ -177,7 +177,7 @@ describe('GET /api/futures/snapshot?at=<ISO>', () => {
     vi.resetAllMocks();
     mockSql.mockResolvedValue([]);
     process.env = { ...originalEnv };
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     vi.mocked(checkBot).mockResolvedValue({ isBot: false });
     vi.setSystemTime(FAKE_NOW);
   });
@@ -373,7 +373,7 @@ describe('GET /api/futures/snapshot?at=<ISO>', () => {
   });
 
   it('returns 401 for non-owners even with valid `at`', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
       res.status(401).json({ error: 'Not authenticated' });
       return true;
     });

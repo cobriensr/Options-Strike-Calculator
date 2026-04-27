@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn(),
+  rejectIfNotOwnerOrGuest: vi.fn(),
   checkBot: vi.fn().mockResolvedValue({ isBot: false }),
 }));
 
@@ -14,12 +14,12 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 import handler from '../ml/export.js';
-import { rejectIfNotOwner } from '../_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest } from '../_lib/api-helpers.js';
 
 describe('GET /api/ml/export', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     mockSql.mockReset();
   });
 
@@ -30,8 +30,8 @@ describe('GET /api/ml/export', () => {
     expect(res._json).toEqual({ error: 'GET only' });
   });
 
-  it('returns 401 when rejectIfNotOwner returns true', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+  it('returns 401 when rejectIfNotOwnerOrGuest returns true', async () => {
+    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
       res.status(401).json({ error: 'Unauthorized' });
       return true;
     });

@@ -23,7 +23,7 @@
  * failures (UW outage, DB error, missing rows) degrade to `maxPain: null`
  * with status 200 rather than 500. Failures are still logged to Sentry.
  *
- * Owner-gated — max_pain derives from UW API data (OPRA compliance).
+ * Owner-or-guest — max_pain derives from UW API data (OPRA compliance).
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
@@ -31,7 +31,7 @@ import { Sentry } from './_lib/sentry.js';
 import {
   checkBot,
   isMarketOpen,
-  rejectIfNotOwner,
+  rejectIfNotOwnerOrGuest,
   setCacheHeaders,
 } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
@@ -134,7 +134,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (botCheck.isBot) {
       return res.status(403).json({ error: 'Access denied' });
     }
-    if (rejectIfNotOwner(req, res)) return;
+    if (rejectIfNotOwnerOrGuest(req, res)) return;
 
     const parsed = maxPainCurrentQuerySchema.safeParse(req.query);
     if (!parsed.success) {

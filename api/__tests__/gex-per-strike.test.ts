@@ -6,7 +6,7 @@ import { mockRequest, mockResponse } from './helpers';
 // ── Mocks ────────────────────────────────────────────────
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn(),
+  rejectIfNotOwnerOrGuest: vi.fn(),
 }));
 
 const mockSql = vi.fn();
@@ -26,7 +26,7 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 import handler from '../gex-per-strike.js';
-import { rejectIfNotOwner } from '../_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 
@@ -64,7 +64,7 @@ function makeDbRow(overrides = {}) {
 describe('GET /api/gex-per-strike', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     mockSql.mockReset();
   });
 
@@ -76,7 +76,7 @@ describe('GET /api/gex-per-strike', () => {
   });
 
   it('returns 401 for non-owner', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
       res.status(401).json({ error: 'Not authenticated' });
       return true;
     });

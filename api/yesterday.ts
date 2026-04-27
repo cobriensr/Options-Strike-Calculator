@@ -24,7 +24,7 @@ import {
   schwabFetch,
   setCacheHeaders,
   isMarketOpen,
-  rejectIfNotOwner,
+  rejectIfNotOwnerOrGuest,
   checkBot,
 } from './_lib/api-helpers.js';
 import { getETDateStr } from '../src/utils/timezone.js';
@@ -102,7 +102,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const done = metrics.request('/api/yesterday');
     try {
       // Owner-only: public visitors get 401, frontend falls back to manual input
-      if (rejectIfNotOwner(req, res)) {
+      if (rejectIfNotOwnerOrGuest(req, res)) {
         done({ status: 401 });
         return;
       }

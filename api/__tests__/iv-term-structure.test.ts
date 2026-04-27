@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn(),
+  rejectIfNotOwnerOrGuest: vi.fn(),
   rejectIfRateLimited: vi.fn(),
   checkBot: vi.fn().mockResolvedValue({ isBot: false }),
 }));
@@ -32,7 +32,7 @@ import handler, {
   type IvTermRow,
 } from '../iv-term-structure.js';
 import {
-  rejectIfNotOwner,
+  rejectIfNotOwnerOrGuest,
   rejectIfRateLimited,
   checkBot,
 } from '../_lib/api-helpers.js';
@@ -89,7 +89,7 @@ describe('GET /api/iv-term-structure', () => {
     vi.clearAllMocks();
     process.env = { ...originalEnv };
     process.env.UW_API_KEY = 'test-uw-key';
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
     vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
     vi.mocked(checkBot).mockResolvedValue({ isBot: false });
   });
@@ -112,7 +112,7 @@ describe('GET /api/iv-term-structure', () => {
   // ── Auth guard ─────────────────────────────────────────────
 
   it('returns 401 for non-owner', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
       res.status(401).json({ error: 'Not authenticated' });
       return true;
     });

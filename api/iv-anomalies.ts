@@ -1,9 +1,9 @@
 /**
  * GET /api/iv-anomalies
  *
- * Owner-gated read endpoint backing the Phase 3 Strike IV Anomaly Detector UI.
+ * Owner-or-guest read endpoint backing the Phase 3 Strike IV Anomaly Detector UI.
  *
- * Owner-gated because per-strike IV (Phase 1) + detection flags (Phase 2) are
+ * Owner-or-guest because per-strike IV (Phase 1) + detection flags (Phase 2) are
  * derived from OPRA-licensed option chain data — same owner-only category as
  * /api/zero-gamma, /api/spot-gex-history, and /api/gex-per-strike.
  *
@@ -25,7 +25,7 @@ import logger from './_lib/logger.js';
 import {
   checkBot,
   isMarketOpen,
-  rejectIfNotOwner,
+  rejectIfNotOwnerOrGuest,
   setCacheHeaders,
 } from './_lib/api-helpers.js';
 import { ivAnomaliesQuerySchema } from './_lib/validation.js';
@@ -227,7 +227,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (botCheck.isBot) {
       return res.status(403).json({ error: 'Access denied' });
     }
-    if (rejectIfNotOwner(req, res)) return;
+    if (rejectIfNotOwnerOrGuest(req, res)) return;
 
     const parsed = ivAnomaliesQuerySchema.safeParse(req.query);
     if (!parsed.success) {

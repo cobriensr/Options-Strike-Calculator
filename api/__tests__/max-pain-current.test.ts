@@ -6,7 +6,7 @@ import { mockRequest, mockResponse } from './helpers';
 // ── Mocks ────────────────────────────────────────────────
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn(),
+  rejectIfNotOwnerOrGuest: vi.fn(),
   checkBot: vi.fn(async () => ({ isBot: false })),
   isMarketOpen: vi.fn(() => false),
   setCacheHeaders: vi.fn(
@@ -41,7 +41,7 @@ vi.mock('../_lib/logger.js', () => ({
 const FROZEN_NOW = new Date('2026-04-20T15:30:00Z');
 
 import handler from '../max-pain-current.js';
-import { rejectIfNotOwner, checkBot } from '../_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest, checkBot } from '../_lib/api-helpers.js';
 import { fetchMaxPain } from '../_lib/max-pain.js';
 import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
@@ -57,7 +57,7 @@ const TODAY_ET = FROZEN_NOW.toLocaleDateString('en-CA', {
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(FROZEN_NOW);
-  vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+  vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
   vi.mocked(checkBot).mockResolvedValue({ isBot: false });
   vi.mocked(fetchMaxPain).mockReset();
   vi.mocked(getDb).mockReset();
@@ -75,7 +75,7 @@ describe('GET /api/max-pain-current', () => {
   });
 
   it('returns 401 for non-owner', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
       res.status(401).json({ error: 'Not authenticated' });
       return true;
     });

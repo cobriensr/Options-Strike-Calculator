@@ -9,7 +9,7 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
+  guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
   rejectIfRateLimited: vi.fn().mockResolvedValue(false),
   setCacheHeaders: vi.fn(),
 }));

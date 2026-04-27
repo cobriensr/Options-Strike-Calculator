@@ -25,7 +25,7 @@ import {
   schwabFetch,
   setCacheHeaders,
   isMarketOpen,
-  rejectIfNotOwner,
+  rejectIfNotOwnerOrGuest,
   checkBot,
 } from './_lib/api-helpers.js';
 
@@ -92,7 +92,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       // Owner-only: public visitors get 401, frontend falls back to manual input
-      if (rejectIfNotOwner(req, res)) return done({ status: 401 });
+      if (rejectIfNotOwnerOrGuest(req, res)) return done({ status: 401 });
       const result = await schwabFetch<SchwabQuotesResponse>(
         `/quotes?symbols=${encodeURIComponent(SYMBOLS)}&fields=quote`,
       );

@@ -8,14 +8,14 @@
  * Query params:
  *   date — Specific date to look up (YYYY-MM-DD). Defaults to today.
  *
- * Owner-gated — predictions derive from licensed market data.
+ * Owner-or-guest — predictions derive from licensed market data.
  *
  * Environment: DATABASE_URL, OWNER_SECRET
  */
 
 import { Sentry, metrics } from '../_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { rejectIfNotOwner, checkBot } from '../_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest, checkBot } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 
@@ -33,7 +33,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(403).json({ error: 'Access denied' });
   }
 
-  if (rejectIfNotOwner(req, res)) {
+  if (rejectIfNotOwnerOrGuest(req, res)) {
     done({ status: 401 });
     return;
   }

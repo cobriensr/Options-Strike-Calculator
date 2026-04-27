@@ -5,7 +5,7 @@
  * given timestamp. Polled by the frontend every 10 seconds during
  * market hours to drive browser push notifications.
  *
- * Owner-gated — alert data derives from UW flow data (OPRA compliance).
+ * Owner-or-guest — alert data derives from UW flow data (OPRA compliance).
  *
  * Query params:
  *   ?since=ISO8601  — return alerts created after this timestamp
@@ -15,7 +15,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
-import { rejectIfNotOwner } from './_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -27,7 +27,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(405).json({ error: 'GET only' });
       }
 
-      if (rejectIfNotOwner(req, res)) return;
+      if (rejectIfNotOwnerOrGuest(req, res)) return;
 
       const sql = getDb();
       const since = req.query.since as string | undefined;

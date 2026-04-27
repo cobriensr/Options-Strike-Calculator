@@ -12,14 +12,14 @@
  *                             date picker's enabled-date set)
  *
  * Authorization: owner cookie (single-owner app). BotID gate also runs
- * via guardOwnerEndpoint. Rate limited to 60/min — frontend polls every
+ * via guardOwnerOrGuestEndpoint. Rate limited to 60/min — frontend polls every
  * 60s in live mode and may scrub between dates rapidly in historical
  * mode, so headroom matters.
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
-  guardOwnerEndpoint,
+  guardOwnerOrGuestEndpoint,
   rejectIfRateLimited,
   setCacheHeaders,
 } from './_lib/api-helpers.js';
@@ -68,7 +68,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'GET only' });
   }
 
-  if (await guardOwnerEndpoint(req, res, done)) return;
+  if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
   const rateLimited = await rejectIfRateLimited(
     req,

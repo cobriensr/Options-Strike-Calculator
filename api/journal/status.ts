@@ -2,12 +2,12 @@
  * GET /api/journal/status
  *
  * Diagnostic endpoint: tests DB connection and reports table row counts.
- * Owner-gated.
+ * Owner-or-guest.
  */
 
 import { Sentry, metrics } from '../_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { rejectIfNotOwner, checkBot } from '../_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest, checkBot } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -24,7 +24,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(403).json({ error: 'Access denied' });
   }
 
-  const ownerCheck = rejectIfNotOwner(req, res);
+  const ownerCheck = rejectIfNotOwnerOrGuest(req, res);
   if (ownerCheck) {
     done({ status: 401 });
     return ownerCheck;

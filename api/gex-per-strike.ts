@@ -22,13 +22,13 @@
  * list to step backwards/forwards through snapshots without round-tripping
  * for a directory listing.
  *
- * Owner-gated — Greek exposure derives from UW API (OPRA compliance).
+ * Owner-or-guest — Greek exposure derives from UW API (OPRA compliance).
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
-import { rejectIfNotOwner } from './_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
 
 /** Clamp bounds for `?window=<N>m`. Matches spec futures-playbook-backtest-flow-2026-04-21.md. */
@@ -152,7 +152,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(405).json({ error: 'GET only' });
       }
 
-      if (rejectIfNotOwner(req, res)) return;
+      if (rejectIfNotOwnerOrGuest(req, res)) return;
 
       const sql = getDb();
 

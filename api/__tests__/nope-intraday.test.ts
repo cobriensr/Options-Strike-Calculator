@@ -30,7 +30,7 @@ const { mockCheckBot, mockRejectIfNotOwner } = vi.hoisted(() => ({
 
 vi.mock('../_lib/api-helpers.js', () => ({
   checkBot: mockCheckBot,
-  rejectIfNotOwner: mockRejectIfNotOwner,
+  rejectIfNotOwnerOrGuest: mockRejectIfNotOwner,
 }));
 
 import handler from '../nope-intraday';
@@ -57,7 +57,7 @@ describe('GET /api/nope-intraday', () => {
     expect(res._status).toBe(403);
   });
 
-  it('rejects non-owner via rejectIfNotOwner', async () => {
+  it('rejects non-owner via rejectIfNotOwnerOrGuest', async () => {
     mockRejectIfNotOwner.mockImplementationOnce((_req, res) => {
       res.status(401).json({ error: 'Not owner' });
       return true;

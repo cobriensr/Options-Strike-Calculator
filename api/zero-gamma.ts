@@ -1,11 +1,11 @@
 /**
  * GET /api/zero-gamma
  *
- * Owner-gated read endpoint for the derived zero-gamma level. Returns the
+ * Owner-or-guest read endpoint for the derived zero-gamma level. Returns the
  * latest row for `ticker` (default 'SPX') plus the most recent 100 rows for
  * trend / chart consumption.
  *
- * Owner-gated because `gamma_curve` exposes per-strike-derived aggregates
+ * Owner-or-guest because `gamma_curve` exposes per-strike-derived aggregates
  * from UW (OPRA-licensed) data — same category as /api/spot-gex-history,
  * /api/greek-exposure-strike, and /api/gex-per-strike.
  *
@@ -26,7 +26,7 @@ import logger from './_lib/logger.js';
 import {
   checkBot,
   isMarketOpen,
-  rejectIfNotOwner,
+  rejectIfNotOwnerOrGuest,
   setCacheHeaders,
 } from './_lib/api-helpers.js';
 import { zeroGammaQuerySchema } from './_lib/validation.js';
@@ -102,7 +102,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (botCheck.isBot) {
       return res.status(403).json({ error: 'Access denied' });
     }
-    if (rejectIfNotOwner(req, res)) return;
+    if (rejectIfNotOwnerOrGuest(req, res)) return;
 
     const parsed = zeroGammaQuerySchema.safeParse(req.query);
     if (!parsed.success) {
