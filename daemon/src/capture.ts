@@ -46,6 +46,10 @@ export interface RunCaptureOptions {
   logger: Logger;
   /** Hard timeout for the full capture cycle (ms). Defaults to 90_000. */
   timeoutMs?: number;
+  /** Backfill: ET trading day (YYYY-MM-DD). Live mode if omitted. */
+  date?: string;
+  /** Backfill: CT wall-clock time (HH:MM). Live mode if omitted. */
+  time?: string;
 }
 
 /**
@@ -58,7 +62,7 @@ export interface RunCaptureOptions {
 export async function runCapture(
   opts: RunCaptureOptions,
 ): Promise<CaptureResult> {
-  const { logger, timeoutMs = 90_000 } = opts;
+  const { logger, timeoutMs = 90_000, date, time } = opts;
 
   if (!existsSync(CAPTURE_SCRIPT_PATH)) {
     throw new Error(
@@ -76,7 +80,13 @@ export async function runCapture(
     // `npx tsx scripts/...` work, but `npx` is what the project's other
     // scripts use, so we match that. spawn (NOT shell) keeps the args
     // strictly typed and avoids quoting pitfalls.
-    const child = spawn('npx', ['tsx', CAPTURE_SCRIPT_PATH], {
+    //
+    // Backfill mode: pass --date / --time flags through. Live mode: no
+    // extra args, the script captures current data.
+    const args = ['tsx', CAPTURE_SCRIPT_PATH];
+    if (date) args.push('--date', date);
+    if (time) args.push('--time', time);
+    const child = spawn('npx', args, {
       cwd: join(__dirname, '..', '..'),
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
