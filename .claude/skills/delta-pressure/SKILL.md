@@ -12,30 +12,30 @@ version: 1
 The chart is **SpotGamma TRACE** — the platform. **Delta Pressure** is one mode in the chart-type dropdown (alongside Charm Pressure and Gamma). When the user references "the delta heatmap" or "Delta Pressure" they almost always mean this view in MM (Market Maker) mode. Three on-screen elements matter and they read differently:
 
 1. **Center pane — the heatmap itself.** Blue and red here carry the delta-hedging semantics below. This is the surface to color-extract.
-2. **Left pane — GEX by Strike bar chart.** Bars are colored **purple (positive GEX)** and **pink (negative GEX)**. These colors are *not* the heatmap colors and must not be conflated with delta zones during image processing. **For Delta Pressure, the GEX sidebar is also load-bearing for interpretation** — the sign of net dealer gamma at spot determines whether the delta zones are mean-reverting or trend-amplifying.
+2. **Left pane — GEX by Strike bar chart.** Bars are colored **purple (positive GEX)** and **pink (negative GEX)**. These colors are _not_ the heatmap colors and must not be conflated with delta zones during image processing. **For Delta Pressure, the GEX sidebar is also load-bearing for interpretation** — the sign of net dealer gamma at spot determines whether the delta zones are mean-reverting or trend-amplifying.
 3. **Top-center — `Stability %` gauge.** Per SpotGamma's tooltip, a proprietary forward-looking metric measuring **the likelihood of low realized volatility over the next 10 minutes**. Higher = more stable (less likely to see significant price movement). Applicable only between **9:30 AM and 3:30 PM ET**; outside that window the value is stale or undefined. Treat as a first-class predicted feature — not a "trust the chart" gate.
 
-A `Time Cutoff` toggle (top-right) controls whether pixels to the right of "now" are forward-projected or hidden — see the *Time Cutoff handling* section.
+A `Time Cutoff` toggle (top-right) controls whether pixels to the right of "now" are forward-projected or hidden — see the _Time Cutoff handling_ section.
 
 ## What Delta Pressure is
 
-The Delta Pressure lens displays the **net change in market-maker delta positioning across all prices and time frames**. Where Charm Pressure visualizes the *time-decay* component of dealer hedging, Delta Pressure visualizes the *price-move* component: as SPX moves up or down, dealers must trade futures or stock to stay delta-neutral on their existing book. The heatmap shows where that hedging is concentrated.
+The Delta Pressure lens displays the **net change in market-maker delta positioning across all prices and time frames**. Where Charm Pressure visualizes the _time-decay_ component of dealer hedging, Delta Pressure visualizes the _price-move_ component: as SPX moves up or down, dealers must trade futures or stock to stay delta-neutral on their existing book. The heatmap shows where that hedging is concentrated.
 
-The default Market Maker view shows where dealer buying and selling will *kick in* as SPX traverses different price levels. Delta Pressure is best understood as a **support / resistance topology** for the current session.
+The default Market Maker view shows where dealer buying and selling will _kick in_ as SPX traverses different price levels. Delta Pressure is best understood as a **support / resistance topology** for the current session.
 
 ## Color semantics — gamma-environment conditional
 
-The colors are **the same** in both gamma environments, but their *behavioral implication* flips. This is the most important thing to get right about Delta Pressure and the easiest thing to get wrong.
+The colors are **the same** in both gamma environments, but their _behavioral implication_ flips. This is the most important thing to get right about Delta Pressure and the easiest thing to get wrong.
 
 - **Blue zones** — Dealers must **buy** futures/stock to hedge (passive value loss to their position requires upward hedging).
 - **Red zones** — Dealers must **sell** futures/stock to hedge (passive value gain requires downward hedging).
 - **Contours** — Lines mark zone borders; price often pivots / closes near these borders.
 
-But what those flows *do* to spot depends on the sign of net dealer gamma:
+But what those flows _do_ to spot depends on the sign of net dealer gamma:
 
 ### Positive gamma environment — zones are SUPPORT / RESISTANCE (mean-reverting)
 
-Dealers are net long gamma; their hedging is *contrarian*. Zones cap movement.
+Dealers are net long gamma; their hedging is _contrarian_. Zones cap movement.
 
 - **Overhead red zone** = dealers selling as SPX rises → resistance, breakout requires absorbing dealer flow.
 - **Underhead blue zone** = dealers buying as SPX falls → support, breakdown requires absorbing dealer flow.
@@ -44,7 +44,7 @@ Dealers are net long gamma; their hedging is *contrarian*. Zones cap movement.
 
 ### Negative gamma environment — zones are ACCELERATION (trend-amplifying)
 
-Dealers are net short gamma; their hedging is *procyclical*. Zones amplify moves through them.
+Dealers are net short gamma; their hedging is _procyclical_. Zones amplify moves through them.
 
 - **Overhead blue zone** = dealers buying as SPX rises → fuel for the up-move (NOT support), can extend rallies.
 - **Underhead red zone** = dealers selling as SPX falls → fuel for the down-move (NOT resistance), can extend declines.
@@ -62,7 +62,7 @@ Dealers are net short gamma; their hedging is *procyclical*. Zones amplify moves
 
 1. **Gamma sign first, color second.** Read the GEX-by-Strike sidebar (or your separate GEX feed) before interpreting any zone. The same picture is two opposite trade theses depending on sign. If you don't know the gamma sign, you can't use the chart.
 2. **Zone borders are the actionable feature, not zone centers.** Contour lines are where price pivots. Center-of-zone is irrelevant; nearest-border-distance from spot is the load-bearing measurement.
-3. **Strength / weakness sign**: in any gamma environment, blue tends to coincide with strength and red with weakness — but the *path* to that strength/weakness differs by gamma sign (mean-reverting vs trend-amplifying).
+3. **Strength / weakness sign**: in any gamma environment, blue tends to coincide with strength and red with weakness — but the _path_ to that strength/weakness differs by gamma sign (mean-reverting vs trend-amplifying).
 4. **Time-of-day** — Delta Pressure is read-anytime, unlike Charm Pressure which is EoD-dominant. It's most useful in the 9:30–3:30 ET window where Stability% is also valid.
 5. **Stability% as a regime co-signal** — high Stability + positive gamma + clean blue-below/red-above topology is the textbook range-bound day. Low Stability + negative gamma + acceleration zones overhead is the textbook trend day.
 6. **Volume confirms breaks** — a Delta Pressure zone-border break "needs volume" because breaking it requires absorbing the dealer hedging flow concentrated at that level. Price-action without volume through a +gamma red overhead zone usually fails.
@@ -88,7 +88,7 @@ Same as Charm Pressure: capture with `Time Cutoff` ON for forecasting, mask the 
 
 ### Color extraction (HSV, region-restricted)
 
-Crop to the heatmap pane only. The Delta Pressure heatmap uses the same blue/red palette as Charm Pressure but the *meaning* differs — the HSV thresholds are unchanged but the downstream features are different. Suggested HSV ranges:
+Crop to the heatmap pane only. The Delta Pressure heatmap uses the same blue/red palette as Charm Pressure but the _meaning_ differs — the HSV thresholds are unchanged but the downstream features are different. Suggested HSV ranges:
 
 - **Blue zone** — `H ∈ [200, 240]`, `S > 0.35`, `V > 0.30`
 - **Red zone** — `H ∈ [0, 15] ∪ [345, 360]`, `S > 0.35`, `V > 0.30`
@@ -137,11 +137,11 @@ When training, **interact every Delta Pressure feature with `gamma_sign_at_spot`
 ### Leakage traps specific to this study
 
 - **You are modeling SpotGamma's renderer, not the market.** Same as Charm Pressure — if a clean signal emerges, suspect the colormap before alpha. Validate that the same setup with a different day's spot still shows the predicted zone topology.
-- **Gamma-sign confound.** Most apparent edge from "blue below = support" tests will turn out to be the +γ regime label doing the work, not the chart. Always evaluate features *conditional on `gamma_sign_at_spot`*.
+- **Gamma-sign confound.** Most apparent edge from "blue below = support" tests will turn out to be the +γ regime label doing the work, not the chart. Always evaluate features _conditional on `gamma_sign_at_spot`_.
 - **Right outcome / wrong reason.** A spot that closes near a predicted zone border on a trending day is not a "respect" — it's the trend reaching that level by external force. Pair zone-respect outcomes with realized regime labels and only count respects on days where the realized vol path is consistent with the predicted regime.
 - **Selection bias on capture days** — same as charm: automate or commit to capturing every session.
 - **Lookahead via metadata** — never include EoD close, or anything derived from after capture time, as a feature.
-- **Conflating prediction with realization** — with `Time Cutoff` ON, the right side of the heatmap is *projected*. Mask the projected region for forecasting; compare projected-vs-realized as a secondary diagnostic.
+- **Conflating prediction with realization** — with `Time Cutoff` ON, the right side of the heatmap is _projected_. Mask the projected region for forecasting; compare projected-vs-realized as a secondary diagnostic.
 
 ### Sample-size guidance
 

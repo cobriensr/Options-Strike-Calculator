@@ -11,7 +11,11 @@
  * Listens on the PORT env var Railway injects (defaults to 8080 locally).
  */
 
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from 'node:http';
 import type { Logger } from 'pino';
 import type { Scheduler } from './scheduler.js';
 

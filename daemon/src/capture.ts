@@ -85,9 +85,9 @@ export async function runCapture(
   // Backfill mode (date+time both supplied) routes to the older
   // scripts/capture-trace-live.ts which has the time-slider scrubbing
   // logic. Live mode uses the daemon-bundled auto-login script.
-  const scriptPath =
-    date && time ? BACKFILL_SCRIPT_PATH : CAPTURE_SCRIPT_PATH;
-  const cwd = date && time ? join(__dirname, '..', '..') : join(__dirname, '..');
+  const scriptPath = date && time ? BACKFILL_SCRIPT_PATH : CAPTURE_SCRIPT_PATH;
+  const cwd =
+    date && time ? join(__dirname, '..', '..') : join(__dirname, '..');
 
   if (!existsSync(scriptPath)) {
     throw new Error(`capture script not found at ${scriptPath}`);

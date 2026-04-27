@@ -232,13 +232,14 @@ async function ensureChartType(page: Page, type: ChartType): Promise<void> {
       });
     // Also dump any visible top-level UI hints — buttons, dialogs, etc.
     const visibleHints = await page
-      .locator('button:visible, [role="dialog"]:visible, h1:visible, h2:visible')
-      .evaluateAll(
-        (els): string[] =>
-          (els as unknown as Array<{ textContent: string | null }>)
-            .map((el) => (el.textContent ?? '').trim().slice(0, 80))
-            .filter((s): s is string => s.length > 0)
-            .slice(0, 20),
+      .locator(
+        'button:visible, [role="dialog"]:visible, h1:visible, h2:visible',
+      )
+      .evaluateAll((els): string[] =>
+        (els as unknown as Array<{ textContent: string | null }>)
+          .map((el) => (el.textContent ?? '').trim().slice(0, 80))
+          .filter((s): s is string => s.length > 0)
+          .slice(0, 20),
       )
       .catch(() => [] as string[]);
     throw new Error(

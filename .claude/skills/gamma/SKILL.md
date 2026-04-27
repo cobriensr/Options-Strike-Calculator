@@ -15,7 +15,7 @@ The chart is **SpotGamma TRACE** — the platform. **Gamma** is one mode in the 
 2. **Left pane — GEX by Strike bar chart.** Bars are colored **purple (positive GEX)** and **pink (negative GEX)**. Note: the GEX sidebar shows gamma magnitudes per strike at a single y-slice (cross-section), while the heatmap shows the same information across the full price × time grid. They're consistent views of the same underlying gamma surface — useful for cross-checking.
 3. **Top-center — `Stability %` gauge.** Per SpotGamma's tooltip, a proprietary forward-looking metric measuring **the likelihood of low realized volatility over the next 10 minutes**. Higher = more stable. Applicable only between **9:30 AM and 3:30 PM ET**; outside that window the value is stale or undefined. **Stability% and the Gamma chart are the two most-correlated TRACE features** — Stability% essentially derives from the gamma topology around spot.
 
-A `Time Cutoff` toggle (top-right) controls whether pixels to the right of "now" are forward-projected or hidden. The Gamma chart also exposes a **multi-day forward projection** via the calendar dropdown (typically 5 days ahead) — see *Multi-day projection* below.
+A `Time Cutoff` toggle (top-right) controls whether pixels to the right of "now" are forward-projected or hidden. The Gamma chart also exposes a **multi-day forward projection** via the calendar dropdown (typically 5 days ahead) — see _Multi-day projection_ below.
 
 ## What the Gamma chart is
 
@@ -23,18 +23,18 @@ The Gamma lens shows **the sign and magnitude of net market-maker gamma exposure
 
 This chart is the **underlying state** that the other two TRACE views describe in motion:
 
-- **Charm Pressure** shows how dealer hedging will *flow* through that gamma topology as time decays.
-- **Delta Pressure** shows how dealer hedging will *flow* through that gamma topology as price moves.
+- **Charm Pressure** shows how dealer hedging will _flow_ through that gamma topology as time decays.
+- **Delta Pressure** shows how dealer hedging will _flow_ through that gamma topology as price moves.
 - **Gamma** shows the topology itself.
 
 Read Gamma first. The other two charts mean different things in different gamma regions; you cannot interpret them without knowing the gamma sign at spot.
 
 ## Color semantics — direct, not conditional
 
-Unlike Delta Pressure (where the same color flips meaning across +γ/−γ environments), the Gamma chart's colors *are* the gamma sign. There's no conditional re-interpretation.
+Unlike Delta Pressure (where the same color flips meaning across +γ/−γ environments), the Gamma chart's colors _are_ the gamma sign. There's no conditional re-interpretation.
 
 - **Blue zones** — Net positive market-maker gamma → **lower expected volatility**. Dealers are long gamma here; their hedging is mean-reverting; price tends to find support / resistance in these regions.
-- **Red zones** — Net negative market-maker gamma → **higher expected volatility**. Dealers are short gamma here; their hedging is procyclical; price tends to *travel swiftly* through these regions.
+- **Red zones** — Net negative market-maker gamma → **higher expected volatility**. Dealers are short gamma here; their hedging is procyclical; price tends to _travel swiftly_ through these regions.
 - **White zones (light theme)** — Transition / neutral zones. Little dealer hedging activity; no strong directional bias.
 - **Black zones (dark theme)** — Same as white in light mode: transition / neutral. Pick a theme and stick to it across captures.
 
@@ -48,7 +48,7 @@ Unlike Delta Pressure (where the same color flips meaning across +γ/−γ envir
 4. **Price moves swiftly through neutral / negative gamma**, and **finds support or resistance at strong positive gamma**. Use this as a directional path expectation: a blue island above spot acts as a magnet (support drawing price up); a red ravine adjacent to spot acts as a corridor of acceleration.
 5. **Color depth matters more than color sign at the boundary.** A faint blue band gives no real stability; only deep-blue zones impose meaningful pinning behavior. Likewise, faint red gives little vol bump.
 6. **Multi-day forward projection** (5-day calendar dropdown) is for swing traders only — gamma topology far out is highly speculative because it depends on dealer positioning that hasn't been put on yet. Do not use 3+ days forward as a precise feature; treat it as a coarse regime indicator.
-7. **Time gate is loose** — Gamma topology is informative throughout the session, not just at the EoD like Charm Pressure. Stability%'s 9:30–3:30 ET window still bounds the *intraday metric*, but the underlying gamma chart is interpretable any time the market is open.
+7. **Time gate is loose** — Gamma topology is informative throughout the session, not just at the EoD like Charm Pressure. Stability%'s 9:30–3:30 ET window still bounds the _intraday metric_, but the underlying gamma chart is interpretable any time the market is open.
 
 ## Override rules — when gamma beats charm for level prediction
 
@@ -59,12 +59,12 @@ Gamma is the **senior signal for level prediction**. Charm gives direction; gamm
 When **a single +γ node within ±$30 of spot is ≥10× the magnitude of the next-nearest +γ node**, that strike is the pin level — regardless of where charm's red/blue junction sits.
 
 - The 10× ratio is read off the **GEX-by-Strike sidebar's labeled magnitudes** (e.g. 3.4B vs 324M = 10.5× ratio).
-- A clear visual proxy: the dominant node will have the deepest blue color in the heatmap *and* a visibly outsized purple bar in the sidebar.
+- A clear visual proxy: the dominant node will have the deepest blue color in the heatmap _and_ a visibly outsized purple bar in the sidebar.
 - Calibration example: 2025-04-24 had +3.4B at 5475 with 324M next nearest (10.5× ratio). Charm said pin at 5475–5480 upper junction; gamma said 5475 specifically. Actual close 5,484.77 — landed at the gamma node, not the charm junction.
 
 ### 2. +γ floor/ceiling override
 
-Even without a single dominant node, **a deep-blue +γ band acts as a hard support (below spot) or resistance (above spot) for that day's price action**. When charm predicts price will travel *past* a deep-blue band, gamma usually wins — price stops at the band edge.
+Even without a single dominant node, **a deep-blue +γ band acts as a hard support (below spot) or resistance (above spot) for that day's price action**. When charm predicts price will travel _past_ a deep-blue band, gamma usually wins — price stops at the band edge.
 
 - Visually: a contiguous deep-blue zone of any width near spot is a level boundary, not a bar in the GEX sidebar.
 - The pin lands at the **edge of the +γ band closest to spot**, not at the band center or at the charm-predicted level past the band.
@@ -72,7 +72,7 @@ Even without a single dominant node, **a deep-blue +γ band acts as a hard suppo
 
 ### 3. Dueling-nodes pattern — read both signs
 
-When the chart shows a large −γ node *and* a large +γ node near spot:
+When the chart shows a large −γ node _and_ a large +γ node near spot:
 
 - **Price travels swiftly through the −γ zone** (acceleration) — don't expect resistance there.
 - **Price pins at the +γ node** even if charm says the pin is elsewhere.
@@ -83,7 +83,7 @@ When the chart shows a large −γ node *and* a large +γ node near spot:
 Positioning crystallizes substantially in the last 30 minutes of the session. A +γ node that reads as 1.7B at the **close capture (14:30 CT / 15:30 ET)** can grow to 3.4B by the **eod capture (15:00 CT / 16:00 ET)** as MOC orders and settlement flows are absorbed into dealer books.
 
 - For magnitude reads relevant to the override rule, **always use the eod capture**, not the close capture.
-- The close capture is still useful for direction and topology — but the magnitude scale read there will *under-state* the dominance ratio.
+- The close capture is still useful for direction and topology — but the magnitude scale read there will _under-state_ the dominance ratio.
 - Calibration: 2025-04-24 read as ~1.7B-largest at 14:30 CT, then 3.4B-largest by 14:40 CT. The 10× ratio was only visible after the magnitude grew.
 
 ### Combined trading rule (charm + gamma)
@@ -101,7 +101,7 @@ Use these conventions consistently. Inconsistency between screenshots is the fir
 
 - **Cadence** — same protocol as Charm Pressure and Delta Pressure: a quartet at **08:30 / 12:00 / 14:30 / 15:00 CT** (= 09:30 / 13:00 / 15:30 / 16:00 ET). The first three are inside the Stability% valid window; the 15:00 CT capture is post-close — Stability% is invalid there but the visual confirms where SPX actually settled vs the predicted gamma topology.
 - **Frame** — same chart settings each capture: same x-axis time window (intraday), same y-axis strike range (centered on spot ± a fixed dollar band, e.g. ±$50 SPX), same Market Maker view, same theme, **same `Time Cutoff` setting** (recommend ON).
-- **Multi-day projection** — if you want to study swing-scale features, capture a *separate* daily screenshot at the open with the calendar dropdown set to "+5 days." Tag those captures with `is_multiday_projection=true` so they don't pollute intraday analyses.
+- **Multi-day projection** — if you want to study swing-scale features, capture a _separate_ daily screenshot at the open with the calendar dropdown set to "+5 days." Tag those captures with `is_multiday_projection=true` so they don't pollute intraday analyses.
 - **Metadata sidecar** — for every screenshot, record: date, capture time, SPX spot at capture, EoD close (later), nearest 25-pt strike, day-type (FOMC / CPI / OpEx / quiet), realized regime (trending / range-bound, post-hoc), `stability_pct`, **`gamma_sign_at_spot`** (read from the heatmap pixel at the spot strike, not the GEX sidebar), and **`gamma_strength_at_spot`** (color depth, 0–1).
 
 ### Stability % handling
@@ -156,7 +156,7 @@ Hand-engineered features dominate at small n. For the Gamma chart:
 - `nearest_deep_red_strike` and `nearest_deep_red_distance` — same for red.
 - `blue_mass_above`, `blue_mass_below` — pixel-area of blue zones above/below spot.
 - `red_mass_above`, `red_mass_below` — same for red.
-- `gamma_corridor_width` — distance from nearest deep-blue *below* to nearest deep-blue *above* (the +γ stability band around spot).
+- `gamma_corridor_width` — distance from nearest deep-blue _below_ to nearest deep-blue _above_ (the +γ stability band around spot).
 - `red_zone_traversal_distance` — how far into a red zone you have to move to escape into the next blue zone (proxy for "how much vol once we enter this zone").
 - `pale_to_deep_ratio` — within ±$30 of spot, ratio of pale (weak) to deep (strong) gamma pixels. High pale ratio = soft regime; high deep ratio = crystallized regime.
 - `stability_pct` — direct read off the gauge.
@@ -173,7 +173,7 @@ When training, **always include both `gamma_sign_at_spot` and `gamma_strength_at
 - **Multi-day forward projections are speculative** — including 5-day-out gamma features as predictors of intraday outcomes is a leakage pattern in disguise (the 5-day projection moves substantially day-to-day because positioning hasn't been fully put on yet). Either keep multi-day captures in a strictly separated study, or include a `projection_days_out` feature so the model can downweight far-out projections.
 - **Selection bias on capture days** — same as the other TRACE skills: automate or commit to capturing every session.
 - **Lookahead via metadata** — never include EoD close, or anything derived from after capture time, as a feature.
-- **Conflating prediction with realization** — with `Time Cutoff` ON, the right side of the heatmap is *projected*. Mask the projected region for forecasting; compare projected-vs-realized as a secondary diagnostic.
+- **Conflating prediction with realization** — with `Time Cutoff` ON, the right side of the heatmap is _projected_. Mask the projected region for forecasting; compare projected-vs-realized as a secondary diagnostic.
 
 ### Sample-size guidance
 
@@ -188,6 +188,6 @@ When the user asks about Gamma in any of these contexts, lean on this material:
 - **"Where will SPX find support or resistance?"** — The deepest-blue strikes within ±$30 of spot are the strongest candidates. Confirm with Delta Pressure for the directional flow, with Charm Pressure for the EoD pin specifically.
 - **Discussing a screenshot** — Read colors with the correct sign (blue = +γ = stable, red = −γ = volatile), and weight by depth. Point out whether spot is in a deep zone (high regime conviction) or a pale / transition zone (soft regime).
 - **Designing the study** — Push for the capture protocol, the heatmap-pixel-based gamma features, the cross-chart consistency outcome, and the deep/pale distinction in HSV thresholds. Discourage pure CNN approaches at n=100.
-- **Cross-chart EDA** — Use Gamma as the *conditioning* variable for both Charm Pressure (pin signals concentrate in deep-blue regimes) and Delta Pressure (zone-respect happens in +γ, acceleration in −γ). Always stratify the other two charts' analyses by gamma regime read from this chart.
+- **Cross-chart EDA** — Use Gamma as the _conditioning_ variable for both Charm Pressure (pin signals concentrate in deep-blue regimes) and Delta Pressure (zone-respect happens in +γ, acceleration in −γ). Always stratify the other two charts' analyses by gamma regime read from this chart.
 
-If the user is reasoning about a specific intraday move, the Gamma chart tells you *whether* a move is likely to be smooth or accelerated, but not *which direction* — pair it with Delta Pressure for direction-of-move and Charm Pressure for the EoD destination.
+If the user is reasoning about a specific intraday move, the Gamma chart tells you _whether_ a move is likely to be smooth or accelerated, but not _which direction_ — pair it with Delta Pressure for direction-of-move and Charm Pressure for the EoD destination.
