@@ -18,7 +18,7 @@ Build a live SpotGamma TRACE analysis dashboard that captures gamma + charm + de
 
 Each phase is independently shippable through the Get It Right loop (verify → reviewer subagent → commit + push direct to main). Phases 1–2 are usable with `scripts/smoke-trace-live.ts` as the only data source; the daemon (Phase 3) turns on real-time data; Phase 4 fills history.
 
-### Phase 1 — Read endpoints + image storage  *(~5 files)*
+### Phase 1 — Read endpoints + image storage _(~5 files)_
 
 Adds the read-side of the API and persists chart images to Vercel Blob.
 
@@ -30,7 +30,7 @@ Adds the read-side of the API and persists chart images to Vercel Blob.
 
 **Verify**: `npm run review` green; `curl -H "Cookie: sc-owner=…" /api/trace-live-list?date=2026-04-23` returns the smoke-test row from yesterday's run.
 
-### Phase 2 — Frontend dashboard  *(~10 files)*
+### Phase 2 — Frontend dashboard _(~10 files)_
 
 `<TRACELiveDashboard />` collapsible section using the existing `SectionBox`, `Collapsible`, `SummaryCard`, `BulletList` primitives — no new design vocabulary.
 
@@ -52,6 +52,7 @@ src/components/TRACELive/
 ```
 
 **Styling rules** (from existing `ChartAnalysis`):
+
 - All section titles: `font-sans text-[10px] font-bold tracking-wider uppercase` — color from theme constants (`theme.accent`, `theme.green`, `theme.red`, `theme.caution`).
 - Status pills: `rounded-full px-2 py-0.5 font-mono text-[10px]` with `tint(color, '18')` background.
 - Badges/numbers: `font-mono`. Headlines: `font-sans`. Body copy: theme.textSecondary.
@@ -59,7 +60,7 @@ src/components/TRACELive/
 
 **Verify**: visit local dev, expand TRACE Live section, see yesterday's smoke-test data render correctly across all 3 tabs. Toggle to Historical mode, pick the date, confirm the dropdown is populated.
 
-### Phase 3 — Capture daemon  *(new top-level `daemon/` package)*
+### Phase 3 — Capture daemon _(new top-level `daemon/` package)_
 
 Long-running TypeScript service deployed to **Railway** (eventually) — local-first for the first week of debugging.
 
@@ -88,7 +89,7 @@ daemon/
 
 **Verify**: run `npm --prefix daemon start` during market hours (or simulate by overriding the time-gate), confirm 3 captures land in `trace_live_analyses` per 5-min cycle with non-null `image_urls`.
 
-### Phase 4 — Backfill mode  *(extends daemon)*
+### Phase 4 — Backfill mode _(extends daemon)_
 
 Adds `--date YYYY-MM-DD --backfill` flag to the daemon entry point.
 
@@ -99,7 +100,7 @@ Adds `--date YYYY-MM-DD --backfill` flag to the daemon entry point.
 
 **Verify**: run `npm --prefix daemon start -- --date 2026-04-22 --backfill`, confirm 78 rows land for that date with correct historical `capturedAt` values, all `image_urls` populated, browse via Phase 2 UI.
 
-### Phase 5 — Polish *(nice-to-have; ship after 4 if time allows)*
+### Phase 5 — Polish _(nice-to-have; ship after 4 if time allows)_
 
 - `/api/trace-live-similar` — pgvector cosine search: "what historical setup is most like the latest reading?" Powers a future "5 most-similar past tape" widget.
 - Daemon heartbeat table + missed-capture alert via Sentry.
@@ -108,13 +109,13 @@ Adds `--date YYYY-MM-DD --backfill` flag to the daemon entry point.
 
 ## Files (cumulative)
 
-| Phase | New files | Modified files | Migrations |
-|---|---|---|---|
-| 1 | 2 endpoints + 3 tests | `db-migrations.ts`, `trace-live-analyze.ts`, `db.test.ts` | #89 |
-| 2 | 10 frontend files + tests | `App.tsx` (mount the section), `src/main.tsx` (botid protect for new endpoints) | — |
-| 3 | full `daemon/` package | `.env.local` (BROWSERLESS_TOKEN) | — |
-| 4 | none (extends daemon) | `daemon/src/index.ts`, `daemon/src/scheduler.ts` | — |
-| 5 | 1 endpoint + frontend widget | — | optional #90 (heartbeat table) |
+| Phase | New files                    | Modified files                                                                  | Migrations                     |
+| ----- | ---------------------------- | ------------------------------------------------------------------------------- | ------------------------------ |
+| 1     | 2 endpoints + 3 tests        | `db-migrations.ts`, `trace-live-analyze.ts`, `db.test.ts`                       | #89                            |
+| 2     | 10 frontend files + tests    | `App.tsx` (mount the section), `src/main.tsx` (botid protect for new endpoints) | —                              |
+| 3     | full `daemon/` package       | `.env.local` (BROWSERLESS_TOKEN)                                                | —                              |
+| 4     | none (extends daemon)        | `daemon/src/index.ts`, `daemon/src/scheduler.ts`                                | —                              |
+| 5     | 1 endpoint + frontend widget | —                                                                               | optional #90 (heartbeat table) |
 
 ## Data dependencies
 
@@ -127,23 +128,24 @@ Adds `--date YYYY-MM-DD --backfill` flag to the daemon entry point.
 ## Open questions
 
 None blocking. Possible deferred decisions:
+
 - Move `BROWSERLESS_TOKEN` from `.vscode/mcp.json` to Vercel + Railway env when Phase 3 deploys.
 - Decide whether sound chime is on every capture (current spec) or muted by default with a UI toggle (probably needed once you've heard it 50 times in one session).
 
 ## Thresholds / constants
 
-| Constant | Value | Where it lives |
-|---|---|---|
-| Cadence | 5 min | `daemon/src/config.ts` |
-| Skip-if-running guard | enabled | daemon scheduler |
-| Session timeout (browserless) | 13 min | daemon page lifecycle |
-| Market-hours window | 08:35 – 14:55 CT | daemon scheduler (uses `src/data/market-hours.ts`) |
-| Frontend poll cadence (live mode) | 60 s | `useTraceLiveData.ts` |
-| Sound chime length | 0.5 s | `useTraceLiveChime.ts` |
-| Sound debounce | 1 s | `useTraceLiveChime.ts` |
-| API rate limit | 6 / min | already enforced in `trace-live-analyze.ts` |
-| Initial backfill scope | last 10 trading days | one-time |
-| predictedClose drift threshold (sound trigger if/when diff engine added) | 10 SPX pts | deferred (current spec: chime every capture) |
+| Constant                                                                 | Value                | Where it lives                                     |
+| ------------------------------------------------------------------------ | -------------------- | -------------------------------------------------- |
+| Cadence                                                                  | 5 min                | `daemon/src/config.ts`                             |
+| Skip-if-running guard                                                    | enabled              | daemon scheduler                                   |
+| Session timeout (browserless)                                            | 13 min               | daemon page lifecycle                              |
+| Market-hours window                                                      | 08:35 – 14:55 CT     | daemon scheduler (uses `src/data/market-hours.ts`) |
+| Frontend poll cadence (live mode)                                        | 60 s                 | `useTraceLiveData.ts`                              |
+| Sound chime length                                                       | 0.5 s                | `useTraceLiveChime.ts`                             |
+| Sound debounce                                                           | 1 s                  | `useTraceLiveChime.ts`                             |
+| API rate limit                                                           | 6 / min              | already enforced in `trace-live-analyze.ts`        |
+| Initial backfill scope                                                   | last 10 trading days | one-time                                           |
+| predictedClose drift threshold (sound trigger if/when diff engine added) | 10 SPX pts           | deferred (current spec: chime every capture)       |
 
 ## Done when
 
