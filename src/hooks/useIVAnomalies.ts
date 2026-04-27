@@ -77,6 +77,7 @@ import {
 import { ivAnomalyBannerStore } from '../components/IVAnomalies/banner-store';
 import { playAnomalyChime } from '../utils/anomaly-sound';
 import { getErrorMessage } from '../utils/error';
+import { useTimeGridScrubber } from './useTimeGridScrubber';
 
 export interface UseIVAnomaliesReturn {
   /** Active compound keys, freshest first. */
@@ -101,39 +102,10 @@ export interface UseIVAnomaliesReturn {
   scrubLive: () => void;
 }
 
-// 5-minute grid from 08:30 to 15:00 CT — matches useDarkPoolLevels.
-const TIME_GRID: readonly string[] = (() => {
-  const grid: string[] = [];
-  for (let min = 8 * 60 + 30; min <= 15 * 60; min += 5) {
-    const h = Math.floor(min / 60);
-    const m = min % 60;
-    grid.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
-  }
-  return grid;
-})();
-
 function etToday(): string {
   return new Date().toLocaleDateString('en-CA', {
     timeZone: 'America/New_York',
   });
-}
-
-function lastGridTimeBeforeNow(): string {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Chicago',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(new Date());
-  const h = Number(parts.find((p) => p.type === 'hour')?.value ?? '0');
-  const m = Number(parts.find((p) => p.type === 'minute')?.value ?? '0');
-  const nowMin = (h >= 24 ? 0 : h) * 60 + m;
-  for (let i = TIME_GRID.length - 1; i >= 0; i--) {
-    const slot = TIME_GRID[i]!;
-    const [sh, sm] = slot.split(':').map(Number);
-    if (sh! * 60 + sm! <= nowMin) return slot;
-  }
-  return TIME_GRID[0]!;
 }
 
 /**
@@ -827,15 +799,15 @@ export function useIVAnomalies(
 
   // Replay scrub state (Phase 2 of replay spec).
   const [selectedDate, setSelectedDate] = useState(etToday);
-  const [scrubTime, setScrubTime] = useState<string | null>(null);
+  const scrubber = useTimeGridScrubber();
+  const { scrubTime, isScrubbed, scrubLive } = scrubber;
   const isToday = selectedDate === etToday();
   const isLive = isToday && scrubTime === null;
-  const isScrubbed = scrubTime !== null;
 
   // Reset scrub time when date changes — matches useDarkPoolLevels.
   useEffect(() => {
-    setScrubTime(null);
-  }, [selectedDate]);
+    scrubLive();
+  }, [selectedDate, scrubLive]);
 
   // Replay anchor: the UTC ISO `at` to send to the API and the
   // `nowMsOverride` for reconcile. Live mode uses neither.
@@ -989,39 +961,10 @@ export function useIVAnomalies(
     return () => clearInterval(interval);
   }, [enabled, marketOpen, refresh, failStreak, isLive]);
 
-  // ── Scrubber actions ─────────────────────────────────────────
-  const scrubTimeIdx = scrubTime !== null ? TIME_GRID.indexOf(scrubTime) : null;
-  const canScrubPrev = scrubTimeIdx === null ? true : scrubTimeIdx > 0;
-  const canScrubNext =
-    scrubTimeIdx !== null && scrubTimeIdx < TIME_GRID.length - 1;
-
-  const scrubPrev = useCallback(() => {
-    setScrubTime((cur) => {
-      if (cur === null) return lastGridTimeBeforeNow();
-      const idx = TIME_GRID.indexOf(cur);
-      return idx > 0 ? (TIME_GRID[idx - 1] ?? cur) : cur;
-    });
-  }, []);
-
-  const scrubNext = useCallback(() => {
-    setScrubTime((cur) => {
-      if (cur === null) return cur;
-      const idx = TIME_GRID.indexOf(cur);
-      return idx < TIME_GRID.length - 1 ? (TIME_GRID[idx + 1] ?? cur) : cur;
-    });
-  }, []);
-
-  const scrubTo = useCallback((time: string) => {
-    if (time === TIME_GRID.at(-1)) {
-      setScrubTime(null);
-    } else if (TIME_GRID.includes(time)) {
-      setScrubTime(time);
-    }
-  }, []);
-
-  const scrubLive = useCallback(() => {
-    setScrubTime(null);
-  }, []);
+  // ── Scrubber actions are provided by `useTimeGridScrubber` (see top
+  // of hook). The shared hook owns canScrubPrev/Next + scrubPrev/Next/To
+  // navigation; per-feature `isLive` (above) stays here because it
+  // depends on `isToday`.
 
   // Freshest first: a user scanning the board cares about "what just fired"
   // more than "what started at 10:05 and is still grinding".
@@ -1041,12 +984,12 @@ export function useIVAnomalies(
     scrubTime,
     isLive,
     isScrubbed,
-    canScrubPrev,
-    canScrubNext,
-    scrubPrev,
-    scrubNext,
-    scrubTo,
+    canScrubPrev: scrubber.canScrubPrev,
+    canScrubNext: scrubber.canScrubNext,
+    scrubPrev: scrubber.scrubPrev,
+    scrubNext: scrubber.scrubNext,
+    scrubTo: scrubber.scrubTo,
     scrubLive,
-    timeGrid: TIME_GRID,
+    timeGrid: scrubber.timeGrid,
   };
 }

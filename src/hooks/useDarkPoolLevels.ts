@@ -21,6 +21,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
 import { checkIsOwner } from '../utils/auth';
+import { useTimeGridScrubber } from './useTimeGridScrubber';
 
 export interface DarkPoolLevel {
   spxLevel: number;
@@ -54,47 +55,11 @@ export interface UseDarkPoolLevelsReturn {
   scrubLive: () => void;
 }
 
-// ── Time grid ──────────────────────────────────────────────────────
-// 5-minute slots from 08:30 to 15:00 CT (79 values).
-// Used for prev/next scrubbing within a trading session.
-const TIME_GRID: readonly string[] = (() => {
-  const grid: string[] = [];
-  for (let min = 8 * 60 + 30; min <= 15 * 60; min += 5) {
-    const h = Math.floor(min / 60);
-    const m = min % 60;
-    grid.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
-  }
-  return grid;
-})();
-
 /** Today in ET as YYYY-MM-DD (same convention as the existing `isToday` logic). */
 function etToday(): string {
   return new Date().toLocaleDateString('en-CA', {
     timeZone: 'America/New_York',
   });
-}
-
-/**
- * Last TIME_GRID slot at or before the current CT time.
- * Used when the user first clicks "prev" in live mode to anchor the scrubber.
- */
-function lastGridTimeBeforeNow(): string {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Chicago',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(new Date());
-  const h = Number(parts.find((p) => p.type === 'hour')?.value ?? '0');
-  const m = Number(parts.find((p) => p.type === 'minute')?.value ?? '0');
-  const nowMin = (h >= 24 ? 0 : h) * 60 + m;
-  // Walk backwards through the grid to find the last slot <= nowMin
-  for (let i = TIME_GRID.length - 1; i >= 0; i--) {
-    const slot = TIME_GRID[i]!;
-    const [sh, sm] = slot.split(':').map(Number);
-    if (sh! * 60 + sm! <= nowMin) return slot;
-  }
-  return TIME_GRID[0]!;
 }
 
 // ── Hook ────────────────────────────────────────────────────────────
@@ -113,14 +78,16 @@ export function useDarkPoolLevels(
   // browsing dark pool history doesn't re-anchor the Black-Scholes math.
   const [selectedDate, setSelectedDate] = useState(etToday);
 
-  // Time scrubber state: null = live (no ?time= param), HH:MM = scrubbed.
-  const [scrubTime, setScrubTime] = useState<string | null>(null);
+  // Time scrubber: null = live (no ?time= param), HH:MM = scrubbed.
+  // The shared `useTimeGridScrubber` owns navigation; per-feature `isLive`
+  // policy stays here because it depends on `isToday`.
+  const scrubber = useTimeGridScrubber();
+  const { scrubTime, isScrubbed, scrubLive } = scrubber;
 
   // Recompute each render so the today-vs-past branch flips at midnight ET.
   const isToday = selectedDate === etToday();
 
   const isLive = isToday && scrubTime === null;
-  const isScrubbed = scrubTime !== null;
 
   const fetchLevels = useCallback(async () => {
     try {
@@ -171,8 +138,8 @@ export function useDarkPoolLevels(
 
   // Reset scrub time when the date changes so the new date always starts live.
   useEffect(() => {
-    setScrubTime(null);
-  }, [selectedDate]);
+    scrubLive();
+  }, [selectedDate, scrubLive]);
 
   useEffect(() => {
     if (!isOwner) {
@@ -200,51 +167,6 @@ export function useDarkPoolLevels(
     return () => clearInterval(id);
   }, [isOwner, marketOpen, isToday, isScrubbed, fetchLevels]);
 
-  // ── Scrubber navigation ──────────────────────────────────────────
-
-  const scrubTimeIdx = scrubTime !== null ? TIME_GRID.indexOf(scrubTime) : null;
-
-  const canScrubPrev =
-    scrubTimeIdx === null
-      ? true // can always enter scrub mode from live
-      : scrubTimeIdx > 0;
-
-  const canScrubNext =
-    scrubTimeIdx !== null && scrubTimeIdx < TIME_GRID.length - 1;
-
-  const scrubPrev = useCallback(() => {
-    setScrubTime((cur) => {
-      if (cur === null) {
-        // Entering scrub from live: jump to the last slot at or before now
-        // (or last grid slot for past dates).
-        return lastGridTimeBeforeNow();
-      }
-      const idx = TIME_GRID.indexOf(cur);
-      return idx > 0 ? (TIME_GRID[idx - 1] ?? cur) : cur;
-    });
-  }, []);
-
-  const scrubNext = useCallback(() => {
-    setScrubTime((cur) => {
-      if (cur === null) return cur;
-      const idx = TIME_GRID.indexOf(cur);
-      return idx < TIME_GRID.length - 1 ? (TIME_GRID[idx + 1] ?? cur) : cur;
-    });
-  }, []);
-
-  const scrubTo = useCallback((time: string) => {
-    // Jumping to the last grid slot resumes live mode.
-    if (time === TIME_GRID.at(-1)) {
-      setScrubTime(null);
-    } else if (TIME_GRID.includes(time)) {
-      setScrubTime(time);
-    }
-  }, []);
-
-  const scrubLive = useCallback(() => {
-    setScrubTime(null);
-  }, []);
-
   // ── Explicit refresh ─────────────────────────────────────────────
 
   const refresh = useCallback(() => {
@@ -263,12 +185,12 @@ export function useDarkPoolLevels(
     scrubTime,
     isLive,
     isScrubbed,
-    canScrubPrev,
-    canScrubNext,
-    scrubPrev,
-    scrubNext,
-    scrubTo,
-    timeGrid: TIME_GRID,
+    canScrubPrev: scrubber.canScrubPrev,
+    canScrubNext: scrubber.canScrubNext,
+    scrubPrev: scrubber.scrubPrev,
+    scrubNext: scrubber.scrubNext,
+    scrubTo: scrubber.scrubTo,
+    timeGrid: scrubber.timeGrid,
     scrubLive,
   };
 }
