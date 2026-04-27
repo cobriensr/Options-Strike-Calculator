@@ -13,7 +13,12 @@
 
 import { useEffect, useState } from 'react';
 
-const CADENCE_MS = 5 * 60 * 1000; // matches daemon's 5-min cadence
+// Matches daemon's CADENCE_SECONDS default (daemon/src/config.ts).
+// Bumped from 5 → 10 min in commit 811cd38; this constant must move
+// in lockstep or the countdown reports a phantom "overdue" between
+// minutes 5 and 10 of every cycle. There's no compile-time link
+// between the two — keep them in sync by hand.
+const CADENCE_MS = 10 * 60 * 1000;
 
 export interface UseTraceLiveCountdownReturn {
   /** Seconds until next capture is expected. Negative when overdue. */
