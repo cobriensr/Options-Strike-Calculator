@@ -21,6 +21,7 @@ import { createScheduler } from './scheduler.js';
 import { runCapture } from './capture.js';
 import { fetchGexLandscape } from './gex.js';
 import { postTraceLiveAnalyze } from './api-client.js';
+import { startHealthServer } from './health-server.js';
 
 async function bootstrap(): Promise<void> {
   const config = loadConfig();
@@ -108,13 +109,20 @@ async function bootstrap(): Promise<void> {
 
   scheduler.start();
 
+  // Health endpoint — Railway public URL serves /health for liveness
+  // checks and ad-hoc "is the daemon alive?" curls. Listens on PORT
+  // (Railway injects this; defaults to 8080 locally).
+  const health = startHealthServer({ scheduler, logger });
+
   // Graceful shutdown on SIGTERM / SIGINT — Railway sends SIGTERM with
   // a grace period before SIGKILL.
   const shutdown = (signal: string): void => {
     logger.info({ signal }, 'Received shutdown signal');
     scheduler.stop();
-    void Sentry.close(2000).then(() => {
-      process.exit(0);
+    void health.close().finally(() => {
+      void Sentry.close(2000).then(() => {
+        process.exit(0);
+      });
     });
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));

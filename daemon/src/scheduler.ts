@@ -175,9 +175,37 @@ export interface SchedulerOptions {
   onTick: () => Promise<void>;
 }
 
+export interface SchedulerState {
+  status: 'idle' | 'running' | 'stopped';
+  /** True while a tick's onTick is mid-flight. */
+  inFlight: boolean;
+  /** ISO of the last tick attempt (any outcome). */
+  lastTickAt: string | null;
+  /** ISO of the last successful cycle. */
+  lastSuccessAt: string | null;
+  /** ISO of the last failed cycle. */
+  lastFailAt: string | null;
+  /** Last error message, if the most recent tick failed. */
+  lastError: string | null;
+  /** Wall-clock duration of the last tick (success or fail). */
+  lastDurationMs: number | null;
+  /** ET market-hours status at the most recent tick. */
+  marketHours: MarketHoursStatus;
+  /** ISO of when the scheduler was started. */
+  startedAt: string | null;
+  /** Cumulative tick counters. */
+  totals: {
+    succeeded: number;
+    failed: number;
+    skippedInFlight: number;
+    skippedOutOfWindow: number;
+  };
+}
+
 export interface Scheduler {
   start: () => void;
   stop: () => void;
+  getState: () => SchedulerState;
 }
 
 /**
@@ -187,19 +215,40 @@ export interface Scheduler {
 export function createScheduler(opts: SchedulerOptions): Scheduler {
   const { cadenceMs, bypassMarketHoursGate, logger, onTick } = opts;
   let timer: NodeJS.Timeout | null = null;
-  let inFlight = false;
   let consecutiveSkips = 0;
 
+  // Live state — read by health-server.ts via getState().
+  const state: SchedulerState = {
+    status: 'idle',
+    inFlight: false,
+    lastTickAt: null,
+    lastSuccessAt: null,
+    lastFailAt: null,
+    lastError: null,
+    lastDurationMs: null,
+    marketHours: checkMarketHours(),
+    startedAt: null,
+    totals: {
+      succeeded: 0,
+      failed: 0,
+      skippedInFlight: 0,
+      skippedOutOfWindow: 0,
+    },
+  };
+
   async function tick(): Promise<void> {
-    const status = checkMarketHours();
-    if (!bypassMarketHoursGate && !status.inWindow) {
+    state.marketHours = checkMarketHours();
+    state.lastTickAt = new Date().toISOString();
+
+    if (!bypassMarketHoursGate && !state.marketHours.inWindow) {
+      state.totals.skippedOutOfWindow++;
       // Quiet outside window — log every 12th skip (~hourly at 5-min cadence).
       if (consecutiveSkips % 12 === 0) {
         logger.info(
           {
-            etDate: status.etDate,
-            etMinutes: status.etMinutes,
-            reason: status.reason,
+            etDate: state.marketHours.etDate,
+            etMinutes: state.marketHours.etMinutes,
+            reason: state.marketHours.reason,
           },
           'Outside daemon window — sleeping',
         );
@@ -209,28 +258,33 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     }
     consecutiveSkips = 0;
 
-    if (inFlight) {
+    if (state.inFlight) {
+      state.totals.skippedInFlight++;
       logger.warn(
         'Previous capture still running — skipping this tick (skip-if-running guard)',
       );
       return;
     }
 
-    inFlight = true;
+    state.inFlight = true;
     const startedAt = Date.now();
     try {
       await onTick();
-      logger.info(
-        { durationMs: Date.now() - startedAt },
-        'Capture cycle complete',
-      );
+      const durationMs = Date.now() - startedAt;
+      state.lastSuccessAt = new Date().toISOString();
+      state.lastError = null;
+      state.lastDurationMs = durationMs;
+      state.totals.succeeded++;
+      logger.info({ durationMs }, 'Capture cycle complete');
     } catch (err) {
-      logger.error(
-        { err, durationMs: Date.now() - startedAt },
-        'Capture cycle failed',
-      );
+      const durationMs = Date.now() - startedAt;
+      state.lastFailAt = new Date().toISOString();
+      state.lastError = err instanceof Error ? err.message : String(err);
+      state.lastDurationMs = durationMs;
+      state.totals.failed++;
+      logger.error({ err, durationMs }, 'Capture cycle failed');
     } finally {
-      inFlight = false;
+      state.inFlight = false;
     }
   }
 
@@ -243,6 +297,8 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       },
       'Scheduler starting',
     );
+    state.status = 'running';
+    state.startedAt = new Date().toISOString();
     void tick();
     timer = setInterval(() => void tick(), cadenceMs);
   }
@@ -252,8 +308,15 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       clearInterval(timer);
       timer = null;
     }
+    state.status = 'stopped';
     logger.info('Scheduler stopped');
   }
 
-  return { start, stop };
+  function getState(): SchedulerState {
+    // Recompute marketHours fresh on each read so health checks reflect
+    // current ET clock, not the last tick's timestamp.
+    return { ...state, marketHours: checkMarketHours() };
+  }
+
+  return { start, stop, getState };
 }
