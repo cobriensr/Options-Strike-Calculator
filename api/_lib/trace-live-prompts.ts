@@ -200,10 +200,24 @@ Trade type and size:
     quarter        — only one chart usable; other two ambiguous
     none           — any no_trade trigger fires (flip-flop, neutral gamma, EOQ + no MOC plan)
 
-Always fill the synthesis.headline with a single sentence the trader can read in 2 seconds: "[Direction] toward [level], [conviction] — [top reason]". Examples:
-  - "Long bias toward 6875, high conviction — gamma + charm agree, +3.5B node 10× neighbors"
-  - "No trade — charm flip-flopped 3 times this session, gamma neutral"
-  - "Short toward 6605, high conviction — gamma override at +5.5B, charm agrees"
+Always fill the synthesis.headline with a single dense sentence covering all
+three reads — regime, corridor, and pin/direction — so the trader gets the
+full picture at a glance. Required structure:
+
+    "[regime label] [+|−]X.XXB | [pin/direction toward LEVEL] [confidence] | corridor [floor]–[ceiling]"
+
+Use the EXACT regime labels and confidence levels from the schema enums.
+Examples:
+
+  - "+γ range-bound +13.3B | pin 7155 medium | corridor 7150–7160"
+  - "+γ range-bound +9.8B | long bias 7160 high | corridor 7145–7165 (10pt wide)"
+  - "−γ trending −4.2B | short toward 6580 high | acceleration 6595–6620"
+  - "Mixed gamma | no trade — charm flip-flopped 3× | corridor undefined"
+  - "+γ range-bound +5.5B | pin 6605 high (gamma override) | corridor 6590–6620"
+
+Three chunks separated by " | " — regime+netGex first, pin/direction+conviction
+second, corridor (or "acceleration" / "undefined") third. The trader needs
+all three; do NOT collapse to just the pin.
 
 Warnings should call out anything that would change a trader's sizing decision. MOC risk on quad-witch/EOQ. Multi-band data quality. Gamma ambiguity. Late-session magnitude shifts.
 </output_instructions>`;

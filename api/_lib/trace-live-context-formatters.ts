@@ -140,7 +140,17 @@ export function formatImageLabel(img: TraceImage, spot: number): string {
   return `[${chartName} — slot=${img.slot}, captured ${img.capturedAt}, spot=${spot.toFixed(2)}]`;
 }
 
-/** Render a session/timing summary for the user message. */
+/** Render a session/timing summary for the user message.
+ *
+ * The model is bad at converting a UTC ISO string to ET clock time
+ * (it tends to read the HH:MM portion as already-ET, ignoring the Z
+ * suffix). Always emit the ET clock and minutes-to-close as
+ * pre-computed labels so it has no math to do.
+ *
+ * Reference: capture at 11:32 ET on 2026-04-27 was being narrated as
+ * "15:32 ET, 28 minutes to close" — model read the UTC time portion
+ * as ET. Fixed by passing both formats explicitly.
+ */
 export function formatSessionContext(args: {
   capturedAt: string;
   etTimeLabel?: string;
@@ -149,8 +159,66 @@ export function formatSessionContext(args: {
 }): string {
   const lines: string[] = [];
   lines.push('=== SESSION CONTEXT ===');
-  const etSuffix = args.etTimeLabel ? ` (${args.etTimeLabel})` : '';
-  lines.push(`Capture time: ${args.capturedAt}${etSuffix}`);
+
+  // Convert UTC ISO to ET clock + minutes-to-close so the model
+  // doesn't need to do the conversion itself.
+  const captured = new Date(args.capturedAt);
+  if (Number.isFinite(captured.getTime())) {
+    const etTime = captured.toLocaleString('en-US', {
+      timeZone: 'America/New_York',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+    const etDate = captured.toLocaleString('en-US', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    // Cash close at 16:00 ET. Compute minutes remaining for THIS day.
+    const closeEt = new Date(args.capturedAt);
+    // Get ET hour/minute via Intl, then build a same-day 16:00 ET
+    // anchor in UTC and subtract.
+    const etHourStr = captured.toLocaleString('en-US', {
+      timeZone: 'America/New_York',
+      hour: '2-digit',
+      hour12: false,
+    });
+    const etMinStr = captured.toLocaleString('en-US', {
+      timeZone: 'America/New_York',
+      minute: '2-digit',
+    });
+    const etHour = Number.parseInt(etHourStr, 10);
+    const etMin = Number.parseInt(etMinStr, 10);
+    const minutesIntoDay = etHour * 60 + etMin;
+    const minutesToClose = 16 * 60 - minutesIntoDay;
+    closeEt.setTime(captured.getTime()); // unused; kept for clarity
+    const phaseLabel =
+      etHour < 10
+        ? 'OPEN (early session)'
+        : etHour < 12
+          ? 'MORNING SESSION'
+          : etHour < 14
+            ? 'MIDDAY'
+            : etHour < 15
+              ? 'LATE-MORNING / EARLY-AFTERNOON'
+              : etHour < 16
+                ? 'LATE SESSION (last hour)'
+                : 'POST-CLOSE';
+    lines.push(`Capture date (ET): ${etDate}`);
+    lines.push(`Capture time (ET clock): ${etTime}  [${phaseLabel}]`);
+    lines.push(
+      `Minutes to 4:00 PM ET cash close: ${minutesToClose >= 0 ? minutesToClose : 0}`,
+    );
+    lines.push(`(Raw UTC for reference only: ${args.capturedAt})`);
+  } else {
+    // Fallback for malformed timestamps — preserve old behavior so
+    // we don't lose the field entirely.
+    const etSuffix = args.etTimeLabel ? ` (${args.etTimeLabel})` : '';
+    lines.push(`Capture time: ${args.capturedAt}${etSuffix}`);
+  }
+
   lines.push(`SPX spot: ${args.spot.toFixed(2)}`);
   const stabilityStr =
     args.stabilityPct == null

@@ -42,15 +42,15 @@ describe('useTraceLiveCountdown', () => {
     expect(result.current.isOverdue).toBe(false);
   });
 
-  it('counts down 5 minutes from the latest capture', () => {
+  it('counts down to next-row-visible from the latest capture', () => {
+    // Anchor = capturedAt + 10min cadence + 9min processing-p95 = 19 min.
     const t0 = new Date('2026-04-26T18:00:00Z').getTime();
     vi.setSystemTime(t0);
     const { result } = renderHook(() =>
       useTraceLiveCountdown('2026-04-26T18:00:00Z'),
     );
-    // Right now, next capture is 5:00 away.
-    expect(result.current.secondsRemaining).toBe(300);
-    expect(result.current.label).toBe('5:00');
+    expect(result.current.secondsRemaining).toBe(19 * 60);
+    expect(result.current.label).toBe('19:00');
     expect(result.current.isOverdue).toBe(false);
   });
 
@@ -60,21 +60,22 @@ describe('useTraceLiveCountdown', () => {
     const { result } = renderHook(() =>
       useTraceLiveCountdown('2026-04-26T18:00:00Z'),
     );
-    expect(result.current.label).toBe('5:00');
+    expect(result.current.label).toBe('19:00');
     act(() => {
       vi.advanceTimersByTime(7_000);
     });
-    expect(result.current.label).toBe('4:53');
+    expect(result.current.label).toBe('18:53');
   });
 
   it('flips isOverdue when the deadline passes', () => {
+    // 19-min anchor + 1 min late = overdue by 1:00.
     const t0 = new Date('2026-04-26T18:00:00Z').getTime();
     vi.setSystemTime(t0);
     const { result } = renderHook(() =>
       useTraceLiveCountdown('2026-04-26T18:00:00Z'),
     );
     act(() => {
-      vi.advanceTimersByTime(6 * 60 * 1000); // 6 min later
+      vi.advanceTimersByTime(20 * 60 * 1000); // 20 min after capture
     });
     expect(result.current.isOverdue).toBe(true);
     expect(result.current.secondsRemaining).toBe(-60);
