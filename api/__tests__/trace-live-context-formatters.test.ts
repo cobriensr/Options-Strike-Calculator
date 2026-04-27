@@ -189,34 +189,53 @@ describe('formatImageLabel', () => {
 });
 
 describe('formatSessionContext', () => {
-  it('includes ET label suffix when provided', () => {
+  it('emits ET clock + minutes-to-close + phase label for a valid UTC ISO', () => {
+    // 19:30 UTC on 2026-04-23 (DST) = 15:30 ET → late session, 30 min to close.
     const text = formatSessionContext({
       capturedAt: '2026-04-23T19:30:00Z',
       etTimeLabel: '15:30 ET',
       spot: 6005.5,
       stabilityPct: 67.3,
     });
-    expect(text).toContain('Capture time: 2026-04-23T19:30:00Z (15:30 ET)');
+    expect(text).toContain('Capture date (ET): 04/23/2026');
+    expect(text).toContain('Capture time (ET clock): 15:30');
+    expect(text).toContain('LATE SESSION (last hour)');
+    expect(text).toContain('Minutes to 4:00 PM ET cash close: 30');
+    expect(text).toContain(
+      '(Raw UTC for reference only: 2026-04-23T19:30:00Z)',
+    );
     expect(text).toContain('SPX spot: 6005.50');
     expect(text).toContain('Stability%: 67.3%');
   });
 
+  it('classifies an early-morning capture as MORNING SESSION', () => {
+    // 14:30 UTC on 2026-04-23 (DST) = 10:30 ET → morning session.
+    const text = formatSessionContext({
+      capturedAt: '2026-04-23T14:30:00Z',
+      spot: 6000,
+      stabilityPct: 35,
+    });
+    expect(text).toContain('Capture time (ET clock): 10:30');
+    expect(text).toContain('MORNING SESSION');
+    expect(text).toContain('Minutes to 4:00 PM ET cash close: 330');
+  });
+
   it('emits the placeholder when stability is null', () => {
     const text = formatSessionContext({
-      capturedAt: 'now',
+      capturedAt: '2026-04-23T19:30:00Z',
       spot: 6000,
       stabilityPct: null,
     });
     expect(text).toContain('not visible / pre-2025-Q2 capture');
   });
 
-  it('omits ET suffix when label is absent', () => {
+  it('falls back to raw capturedAt when the timestamp is malformed', () => {
     const text = formatSessionContext({
-      capturedAt: '2026-04-23T19:30:00Z',
+      capturedAt: 'not-a-date',
       spot: 6000,
       stabilityPct: undefined,
     });
-    expect(text).toContain('Capture time: 2026-04-23T19:30:00Z\n');
-    expect(text).not.toContain('(');
+    expect(text).toContain('Capture time: not-a-date');
+    expect(text).not.toContain('Capture time (ET clock)');
   });
 });
