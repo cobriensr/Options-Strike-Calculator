@@ -208,3 +208,43 @@ After each phase: run `npm run review` (tsc + eslint + prettier + vitest +
 coverage), then dispatch the code-reviewer subagent per the project's Get
 It Right loop, then commit on green review. Direct-to-main per project
 convention.
+
+## As-Built Notes (2026-04-27)
+
+All 8 phases complete. Final shape:
+
+- **Phase 1** — `87f9b1b6 fix(futures): interpret datetime-local picker as CT`.
+  Real bug shipped; CDT/CST boundary tests added.
+- **Phase 2** — `abee1ba3 refactor(formatters): consolidate duplicated …`.
+  Subagent review caught a 4th `formatTime` copy in `GexPerStrike/formatters.ts`
+  that the original audit missed; included in the same commit.
+- **Phase 3** — `8c6fc2d4 refactor(audio): extract shared getAudioContextCtor`.
+- **Phase 4** — Audit-found false positive. Both `useAnomalyCrossAsset` and
+  `useDarkPoolLevels` already early-return on `!marketOpen` *before* creating
+  any interval, and both already have explicit "does not fetch when market
+  closed" tests. No code change.
+- **Phase 5** — `3caf37c5 feat(ui): TimeInputCT primitive`. Migrated
+  `OtmFlowControls` and `InstitutionalProgramSection`. `DateTimeSection`'s
+  12h+AM/PM+TZ-toggle picker stays as-is (intentional UX).
+- **Phase 6** — Re-scoped from "migrate 5 collapsibles to SectionBox" to
+  "document the implicit hierarchy rule on `SectionBox`". The audit's
+  "5 manual implementations" were actually three categories with intentional
+  styling distinctions: top-level primary (`ResultsSection` — heavier
+  styling), top-level secondary (most use `SectionBox`), and sub-sections
+  (`IronCondorSection`, `BWBSection` — intentionally smaller chrome inside
+  Results). Migrating sub-sections to `SectionBox` would inflate the visual
+  hierarchy. Documented the default-collapse rule on `SectionBox` instead.
+- **Phase 7** — `01e61a8f feat(nav): vertical sidebar at lg+ breakpoint`.
+  Adds `orientation: 'horizontal' | 'vertical'` to `SectionNav`, mounts
+  both variants in `App.tsx` with Tailwind responsive classes. The 777-line
+  `git diff --stat` is misleading: ~770 of those lines are pure indentation
+  shifts from wrapping the content block in `<div className="lg:flex">`.
+- **Phase 8** — Audit-found false positive. A rigorous Python-based scan
+  of all 129 `<button>` elements in `src/components/` found zero icon-only
+  buttons missing accessible names. Every flagged button either has an
+  explicit `aria-label` or a JSX expression body that resolves to text
+  (`{label}`, `{saving ? 'Saving…' : 'Save'}`).
+
+Two of the eight phases turned out to be no-ops because the audit
+subagent flagged false positives. Re-verifying audit findings before
+implementation saved ~3 unnecessary commits.
