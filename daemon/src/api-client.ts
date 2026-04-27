@@ -91,12 +91,25 @@ async function postOnce(
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), POST_TIMEOUT_MS);
   try {
+    // Vercel BotID's edge enforcement (deepCheck mode) blocks all
+    // automated traffic to ALL routes — even paths absent from the
+    // initBotId({ protect }) array. Per Vercel's docs, the proper
+    // mechanism is a Vercel Firewall (WAF) bypass rule that matches
+    // a specific header value. The daemon sends the header here; the
+    // WAF rule (configured in the Vercel dashboard) lets matching
+    // traffic through. Without this token, requests get the
+    // "Vercel Security Checkpoint" 429 in ~300ms at the edge.
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Cookie: `sc-owner=${cookie}`,
+    };
+    const bypass = process.env.TRACE_LIVE_BYPASS_TOKEN;
+    if (bypass) {
+      headers['x-trace-live-bypass'] = bypass;
+    }
     const res = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Cookie: `sc-owner=${cookie}`,
-      },
+      headers,
       body: JSON.stringify(body),
       signal: ctrl.signal,
     });
