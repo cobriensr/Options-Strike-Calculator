@@ -12,6 +12,7 @@ import type { AnalysisMode, UploadedImage } from './types';
 import type { RetryPrompt } from '../../hooks/useChartAnalysis';
 import { CHART_LABELS, MODE_LABELS } from './types';
 import { tint } from '../../utils/ui-utils';
+import { useAccessSession } from '../../hooks/useAccessSession';
 import {
   ConfirmationBar,
   LoadingIndicator,
@@ -105,6 +106,13 @@ export default function ChartControls({
   useEffect(() => {
     if (!retryPrompt) setUpdatingForRetry(false);
   }, [retryPrompt]);
+
+  // Guest mode: read-only access. The analyze submit button gates the only
+  // expensive backend call (Anthropic) so a leaked guest key can't drain the
+  // API budget. Server-side, /api/analyze keeps its rejectIfNotOwner check —
+  // this is the matching UI affordance.
+  const { mode: accessMode } = useAccessSession();
+  const isGuest = accessMode === 'guest';
 
   return (
     <>
@@ -293,11 +301,19 @@ export default function ChartControls({
       {images.length > 0 && !loading && !confirming && !retryPrompt && (
         <button
           type="button"
-          onClick={onConfirmStart}
-          className="mb-3 w-full cursor-pointer rounded-lg px-4 py-2.5 font-sans text-[12px] font-bold tracking-wider uppercase transition-opacity"
+          onClick={isGuest ? undefined : onConfirmStart}
+          disabled={isGuest}
+          title={
+            isGuest ? 'Owner only \u2014 guest mode is read-only' : undefined
+          }
+          className={`mb-3 w-full rounded-lg px-4 py-2.5 font-sans text-[12px] font-bold tracking-wider uppercase transition-opacity ${
+            isGuest ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'
+          }`}
           style={{ backgroundColor: theme.accent, color: '#fff' }}
         >
-          {`Analyze ${images.length} chart${images.length > 1 ? 's' : ''} \u2014 ${MODE_LABELS[mode].label}`}
+          {isGuest
+            ? 'Owner only \u2014 submit disabled in guest mode'
+            : `Analyze ${images.length} chart${images.length > 1 ? 's' : ''} \u2014 ${MODE_LABELS[mode].label}`}
         </button>
       )}
 

@@ -27,7 +27,8 @@ import { classifyRegime } from './utils/market-regime';
 import { useDarkPoolLevels } from './hooks/useDarkPoolLevels';
 import { useGexPerStrike } from './hooks/useGexPerStrike';
 import { useGexTarget } from './hooks/useGexTarget';
-import { checkIsOwner } from './utils/auth';
+import { useAccessSession } from './hooks/useAccessSession';
+import AccessKeyButton from './components/AccessKey/AccessKeyButton';
 import { useAnalysisContext } from './hooks/useAnalysisContext';
 import { getEarlyCloseHourET } from './data/marketHours';
 import { toETTime } from './utils/time';
@@ -198,7 +199,13 @@ interface RunMigrationsResponse {
 export default function StrikeCalculator() {
   // Consolidated UI state (inputs, debounced values, derived ratio)
   const toast = useToast();
-  const isOwner = checkIsOwner();
+  const { mode: accessMode } = useAccessSession();
+  // `isOwner` is the strict check — admin buttons (Migrate / Backfill / Re-auth)
+  // and the public Sign-in CTA only key off this. `isAuthenticated` is the
+  // visibility gate for owner-or-guest sections; a guest in read-only mode
+  // sees the gated UI but can't trigger admin actions.
+  const isOwner = accessMode === 'owner';
+  const isAuthenticated = accessMode !== 'public';
   const state = useAppState();
   const {
     darkMode,
@@ -639,7 +646,7 @@ export default function StrikeCalculator() {
       { id: 'sec-settings', label: 'Settings' },
       { id: 'sec-risk', label: 'Risk Calculator' },
       { id: 'sec-regime', label: 'Market Regime' },
-      ...(isOwner && hasMarketOrSnapshot
+      ...(isAuthenticated && hasMarketOrSnapshot
         ? [
             { id: 'sec-darkpool', label: 'Dark Pool Levels' },
             { id: 'sec-trace-live', label: 'TRACE Live' },
@@ -657,17 +664,21 @@ export default function StrikeCalculator() {
             { id: 'sec-iv-anomalies', label: 'IV Anomalies' },
           ]
         : []),
-      ...(isOwner ? [{ id: 'sec-futures', label: 'Futures Calculator' }] : []),
+      ...(isAuthenticated
+        ? [{ id: 'sec-futures', label: 'Futures Calculator' }]
+        : []),
       ...(hasMarketOrSnapshot
         ? [{ id: 'sec-charts', label: 'Chart Analysis' }]
         : []),
       { id: 'sec-history', label: 'Analysis History' },
-      ...(isOwner ? [{ id: 'sec-ml-insights', label: 'ML Insights' }] : []),
+      ...(isAuthenticated
+        ? [{ id: 'sec-ml-insights', label: 'ML Insights' }]
+        : []),
       { id: 'sec-positions', label: 'Position Monitor' },
-      ...(isOwner ? [{ id: 'sec-bwb', label: 'BWB Calculator' }] : []),
+      ...(isAuthenticated ? [{ id: 'sec-bwb', label: 'BWB Calculator' }] : []),
       { id: 'results', label: 'Results' },
     ];
-  }, [isOwner, market.hasData, historySnapshot]);
+  }, [isAuthenticated, market.hasData, historySnapshot]);
 
   const analysisContext = useAnalysisContext({
     selectedDate: vix.selectedDate,
@@ -777,7 +788,7 @@ export default function StrikeCalculator() {
                   }
                 />
               )}
-              {!isOwner && (
+              {accessMode === 'public' && (
                 <SchwabAuthLink
                   ariaLabel="Authenticate with Schwab"
                   text="Sign in"
@@ -914,7 +925,11 @@ export default function StrikeCalculator() {
         </header>
 
         <div className="lg:flex lg:items-start">
-          <SectionNav sections={navSections} orientation="vertical" />
+          <SectionNav
+            sections={navSections}
+            orientation="vertical"
+            bottomSlot={<AccessKeyButton />}
+          />
 
           <div className="lg:min-w-0 lg:flex-1">
             <SectionNav sections={navSections} orientation="horizontal" />
@@ -926,7 +941,7 @@ export default function StrikeCalculator() {
               />
             )}
 
-            {isOwner && (
+            {isAuthenticated && (
               <Suspense fallback={null}>
                 <AnomalyBanner />
               </Suspense>
@@ -1082,7 +1097,7 @@ export default function StrikeCalculator() {
                   />
                 </ErrorBoundary>
 
-                {isOwner && (market.hasData || !!historySnapshot) && (
+                {isAuthenticated && (market.hasData || !!historySnapshot) && (
                   <>
                     <span id="sec-darkpool" className="block scroll-mt-28" />
                     <ErrorBoundary label="Dark Pool Levels">
@@ -1117,7 +1132,7 @@ export default function StrikeCalculator() {
                   </>
                 )}
 
-                {isOwner && (market.hasData || !!historySnapshot) && (
+                {isAuthenticated && (market.hasData || !!historySnapshot) && (
                   <>
                     <span id="sec-gex" className="block scroll-mt-28" />
                     <ErrorBoundary label="0DTE GEX Per Strike">
@@ -1146,7 +1161,7 @@ export default function StrikeCalculator() {
                   </>
                 )}
 
-                {isOwner && (market.hasData || !!historySnapshot) && (
+                {isAuthenticated && (market.hasData || !!historySnapshot) && (
                   <>
                     <span id="sec-gex-target" className="block scroll-mt-28" />
                     <ErrorBoundary label="GEX Target">
@@ -1160,7 +1175,7 @@ export default function StrikeCalculator() {
                   </>
                 )}
 
-                {isOwner && (market.hasData || !!historySnapshot) && (
+                {isAuthenticated && (market.hasData || !!historySnapshot) && (
                   <>
                     <span
                       id="sec-gex-landscape"
@@ -1192,7 +1207,7 @@ export default function StrikeCalculator() {
                   </>
                 )}
 
-                {isOwner && (market.hasData || !!historySnapshot) && (
+                {isAuthenticated && (market.hasData || !!historySnapshot) && (
                   <>
                     <span
                       id="sec-futures-gamma-playbook"
@@ -1209,7 +1224,7 @@ export default function StrikeCalculator() {
                   </>
                 )}
 
-                {isOwner && (market.hasData || !!historySnapshot) && (
+                {isAuthenticated && (market.hasData || !!historySnapshot) && (
                   <>
                     <span
                       id="sec-market-internals"
@@ -1267,7 +1282,7 @@ export default function StrikeCalculator() {
                   </>
                 )}
 
-                {isOwner && (
+                {isAuthenticated && (
                   <>
                     <span id="sec-futures" className="block scroll-mt-28" />
                     <ErrorBoundary label="Futures">
@@ -1300,7 +1315,7 @@ export default function StrikeCalculator() {
                   <AnalysisHistory refreshKey={historyRefreshKey} />
                 </ErrorBoundary>
 
-                {isOwner && (
+                {isAuthenticated && (
                   <>
                     <span id="sec-ml-insights" className="block scroll-mt-28" />
                     <ErrorBoundary label="ML Insights">
@@ -1323,7 +1338,7 @@ export default function StrikeCalculator() {
                   </Suspense>
                 </ErrorBoundary>
 
-                {isOwner && (
+                {isAuthenticated && (
                   <>
                     <span id="sec-bwb" className="block scroll-mt-28" />
                     <ErrorBoundary label="BWB Calculator">
