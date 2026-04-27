@@ -36,6 +36,10 @@ function severityStyles(severity: MarketAlert['severity']) {
         borderColor: theme.red,
         color: theme.text,
       };
+    default: {
+      const _exhaustive: never = severity;
+      return _exhaustive;
+    }
   }
 }
 
@@ -49,6 +53,10 @@ function directionStyles(direction: MarketAlert['direction']) {
       return { backgroundColor: theme.green, color: theme.bg };
     case 'NEUTRAL':
       return { backgroundColor: theme.textMuted, color: theme.bg };
+    default: {
+      const _exhaustive: never = direction;
+      return _exhaustive;
+    }
   }
 }
 

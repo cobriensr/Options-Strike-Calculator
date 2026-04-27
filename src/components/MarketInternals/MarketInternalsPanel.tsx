@@ -36,6 +36,10 @@ function regimePillClass(regime: RegimeType, muted: boolean): string {
       return 'bg-violet-900/40 text-violet-300 border-violet-500/40';
     case 'neutral':
       return 'bg-neutral-800/50 text-neutral-400 border-neutral-700/40';
+    default: {
+      const _exhaustive: never = regime;
+      return _exhaustive;
+    }
   }
 }
 
@@ -47,6 +51,10 @@ function regimeLabel(regime: RegimeType): string {
       return 'TREND DAY';
     case 'neutral':
       return 'NEUTRAL';
+    default: {
+      const _exhaustive: never = regime;
+      return _exhaustive;
+    }
   }
 }
 

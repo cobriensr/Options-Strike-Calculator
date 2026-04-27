@@ -47,6 +47,10 @@ export function computeCallGex(row: GexStrikeRow, mode: Mode): number {
       return row.callGammaVol;
     case 'dir':
       return row.callGammaAsk + row.callGammaBid;
+    default: {
+      const _exhaustive: never = mode;
+      return _exhaustive;
+    }
   }
 }
 
@@ -59,6 +63,10 @@ export function computePutGex(row: GexStrikeRow, mode: Mode): number {
       return row.putGammaVol;
     case 'dir':
       return row.putGammaAsk + row.putGammaBid;
+    default: {
+      const _exhaustive: never = mode;
+      return _exhaustive;
+    }
   }
 }
 

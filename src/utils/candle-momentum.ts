@@ -236,6 +236,10 @@ export function signalLabel(signal: MomentumSignal): string {
       return 'DRIFT \u25BC';
     case 'surge-down':
       return 'SURGE \u25BC';
+    default: {
+      const _exhaustive: never = signal;
+      return _exhaustive;
+    }
   }
 }
 
@@ -252,5 +256,9 @@ export function signalColor(signal: MomentumSignal): string {
       return '#ff8a80';
     case 'surge-down':
       return '#ff5252';
+    default: {
+      const _exhaustive: never = signal;
+      return _exhaustive;
+    }
   }
 }
