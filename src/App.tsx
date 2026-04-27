@@ -697,7 +697,7 @@ export default function StrikeCalculator() {
       />
       <div
         id="app-shell"
-        className="text-primary min-h-screen font-serif transition-[background-color,color] duration-[250ms]"
+        className="text-primary min-h-dvh font-serif transition-[background-color,color] duration-[250ms]"
       >
         <a
           href="#results"

@@ -76,7 +76,10 @@ const SectionNav = memo(function SectionNav({
         aria-label="Page sections"
         className={
           className ??
-          'border-edge sticky top-[57px] hidden h-[calc(100vh-57px)] w-56 shrink-0 overflow-y-auto border-r px-3 py-4 lg:block'
+          // Use 100dvh so the sidebar accounts for iOS Safari's address
+          // bar and doesn't clip the bottom links. 100vh would crop on
+          // iPad portrait.
+          'border-edge sticky top-[57px] hidden h-[calc(100dvh-57px)] w-56 shrink-0 overflow-y-auto border-r px-3 py-4 lg:block'
         }
       >
         <div className="flex flex-col gap-0.5">
@@ -84,7 +87,7 @@ const SectionNav = memo(function SectionNav({
             <a
               key={s.id}
               href={`#${s.id}`}
-              className={`rounded-md px-3 py-1.5 font-sans text-[12px] font-semibold tracking-[0.04em] transition-colors duration-100 ${
+              className={`inline-flex min-h-[44px] items-center rounded-md px-3 py-2 font-sans text-[12px] font-semibold tracking-[0.04em] transition-colors duration-100 ${
                 activeId === s.id
                   ? 'bg-accent-bg text-accent'
                   : 'text-tertiary hover:text-primary hover:bg-surface-alt'
@@ -105,6 +108,9 @@ const SectionNav = memo(function SectionNav({
   return (
     <nav
       aria-label="Page sections"
+      // Shown at <lg only. `sticky` already establishes a positioning
+      // context, so the right-edge fade gradient (an absolutely-positioned
+      // child below) anchors here without needing `relative`.
       className={
         className ??
         'border-edge sticky top-[57px] z-40 border-b backdrop-blur-md lg:hidden'
@@ -119,7 +125,7 @@ const SectionNav = memo(function SectionNav({
           <a
             key={s.id}
             href={`#${s.id}`}
-            className={`shrink-0 rounded-full px-2.5 py-1 font-sans text-[11px] font-semibold tracking-[0.06em] transition-colors duration-100 ${
+            className={`inline-flex min-h-[40px] shrink-0 items-center rounded-full px-3 py-1.5 font-sans text-[11px] font-semibold tracking-[0.06em] transition-colors duration-100 ${
               activeId === s.id
                 ? 'bg-accent-bg text-accent'
                 : 'text-tertiary hover:text-primary hover:bg-surface-alt'
@@ -130,6 +136,17 @@ const SectionNav = memo(function SectionNav({
           </a>
         ))}
       </div>
+      {/* Scroll-hint gradient: fades the right edge so the user knows
+          there are more chips off-screen. Pure decorative; pointer-
+          events-none so taps pass through to underlying chips. */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-y-0 right-0 w-8"
+        style={{
+          background:
+            'linear-gradient(to left, var(--color-page) 0%, transparent 100%)',
+        }}
+      />
     </nav>
   );
 });
