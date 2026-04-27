@@ -1,19 +1,22 @@
 /**
  * useTraceLiveData — manages the TRACE Live dashboard's data flow.
  *
- * One hook owns the date + active-id state, list fetch + 60s polling
- * during live mode, and detail fetch when an id is selected. Mirrors the
- * useDarkPoolLevels live/historical pattern from this codebase.
+ * Two independent concerns govern behavior:
+ *   1. Polling — runs while the user is on today's date during market
+ *      hours, regardless of which capture is currently displayed. This
+ *      keeps the dropdown current so newly-arrived captures show up
+ *      without a manual refresh.
+ *   2. Auto-follow — when on, the displayed capture advances to the
+ *      most-recent row whenever the polled list updates. Default ON;
+ *      flips OFF the moment the user picks a specific capture from the
+ *      dropdown; flips back ON if the user picks "Latest" (id === null)
+ *      or navigates back to today's date from a different one.
  *
- * Live mode (today + selectedId === null):
- *   - Polls /api/trace-live-list?date=today every POLL_INTERVALS.TRACE_LIVE.
- *   - Auto-selects the most recent row's id when the list updates.
- *   - When selected id changes, fetches detail.
- *
- * Historical mode (date in past OR selectedId !== null):
- *   - Single fetch of the list for the chosen date.
- *   - Detail fetched on each id change.
- *   - No polling.
+ * Earlier shape conflated these two — `isLive` (= polling + follow) was
+ * computed as `isToday && selectedId === null`, so the auto-follow's own
+ * setSelectedId(latest.id) flipped isLive false on the first tick and
+ * stopped polling entirely. The fix is to give "follow" its own state
+ * and have polling depend on `isToday && marketOpen` only.
  *
  * Owner-gated — non-owners see empty state with no fetches.
  */
@@ -60,11 +63,24 @@ export function useTraceLiveData(marketOpen: boolean): UseTraceLiveDataReturn {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState(etToday);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedId, setSelectedIdInternal] = useState<number | null>(null);
+  const [followLatest, setFollowLatest] = useState(true);
   const mountedRef = useRef(true);
 
   const isToday = selectedDate === etToday();
-  const isLive = isToday && selectedId === null;
+  // Poll while on today's date during market hours — independent of
+  // whether auto-follow is active, so the dropdown stays current even
+  // when the user is reviewing a specific older capture from today.
+  const shouldPoll = isToday && marketOpen;
+  // "Live" = polling AND auto-following — what the UI's Live badge means.
+  const isLive = shouldPoll && followLatest;
+
+  // User-driven setSelectedId — picking a specific id turns off
+  // auto-follow; picking null (Latest) turns it back on.
+  const setSelectedId = useCallback((id: number | null) => {
+    setSelectedIdInternal(id);
+    setFollowLatest(id === null);
+  }, []);
 
   // ── List fetch ───────────────────────────────────────────────────
   const fetchList = useCallback(async () => {
@@ -132,38 +148,44 @@ export function useTraceLiveData(marketOpen: boolean): UseTraceLiveDataReturn {
     };
   }, []);
 
-  // ── Reset selectedId on date change ──────────────────────────────
+  // ── Reset selection on date change ───────────────────────────────
+  // Going to a new date resets to "follow latest" — for today this means
+  // resume live behavior; for historical days the auto-follow effect just
+  // pins to that day's last capture once the list loads, which is fine.
   useEffect(() => {
-    setSelectedId(null);
+    setSelectedIdInternal(null);
+    setFollowLatest(true);
   }, [selectedDate]);
 
   // ── List polling ─────────────────────────────────────────────────
+  // Polls while on today's date during market hours, regardless of
+  // whether the user is auto-following or has picked a specific id.
   useEffect(() => {
     if (!isOwner) {
       setListLoading(false);
       return;
     }
-    if (!isLive || !marketOpen) {
+    if (!shouldPoll) {
       // Historical or market-closed: single fetch.
       setListLoading(true);
       void fetchList();
       return;
     }
-    // Live: poll.
     void fetchList();
     const id = setInterval(() => void fetchList(), POLL_INTERVALS.TRACE_LIVE);
     return () => clearInterval(id);
-  }, [isOwner, isLive, marketOpen, fetchList]);
+  }, [isOwner, shouldPoll, fetchList]);
 
-  // ── Auto-follow latest in live mode ──────────────────────────────
-  // When the polled list returns a new "most recent" row, update the
-  // active id so the detail view follows. In historical mode, the user
-  // explicitly sets selectedId; we don't override it here.
+  // ── Auto-follow latest while followLatest is on ──────────────────
+  // When list updates, advance selectedId to the most-recent row.
+  // followLatest stays true unless the user explicitly picks a specific
+  // capture (handled by the wrapped setSelectedId), so the displayed
+  // analysis tracks new arrivals automatically.
   useEffect(() => {
-    if (!isLive || list.length === 0) return;
+    if (!followLatest || list.length === 0) return;
     const latest = list[list.length - 1]!;
-    setSelectedId((prev) => (prev === latest.id ? prev : latest.id));
-  }, [isLive, list]);
+    setSelectedIdInternal((prev) => (prev === latest.id ? prev : latest.id));
+  }, [followLatest, list]);
 
   // ── Detail fetch on id change ────────────────────────────────────
   useEffect(() => {
