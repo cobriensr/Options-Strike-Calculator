@@ -66,10 +66,10 @@ export function loadConfig(): DaemonConfig {
   const cadenceSecondsRaw = optionalEnv('CADENCE_SECONDS');
   const cadenceSeconds = cadenceSecondsRaw
     ? Number.parseInt(cadenceSecondsRaw, 10)
-    : 5 * 60;
+    : 10 * 60;
   if (!Number.isFinite(cadenceSeconds) || cadenceSeconds < 10) {
     throw new Error(
-      `CADENCE_SECONDS must be a positive integer ≥10 (got ${cadenceSecondsRaw}). The 5-min default is 300; lower values blow through the browserless 20k-units-per-month budget on the Prototyping tier.`,
+      `CADENCE_SECONDS must be a positive integer ≥10 (got ${cadenceSecondsRaw}). The 10-min default is 600; lower values blow through the browserless 20k-units-per-month budget on the Prototyping tier.`,
     );
   }
 

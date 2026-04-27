@@ -113,11 +113,13 @@ async function callModel(
     model,
     max_tokens: 64_000,
     thinking: { type: 'adaptive' },
-    // 'medium' is the right setting for a tick-call read that fires every
-    // 5 min during the session — the schema is now spelled out enum-by-enum,
-    // so the model doesn't need 'high' to converge. 'high' was driving 9-min
-    // calls; 'medium' should land in 60-120s.
-    output_config: { effort: 'medium' },
+    // 'high' for the tick-call. Empirically, dropping to 'medium' degraded
+    // gamma.signAtSpot reads (called pale where the chart was clearly deep
+    // blue / positive_strong) — gamma sign is the load-bearing field for
+    // every downstream trade decision, so the latency cost of 'high' is
+    // worth the perception accuracy. 10-min cadence (vs 5-min) absorbs the
+    // longer per-call duration without backing up.
+    output_config: { effort: 'high' },
     system: [
       {
         type: 'text',
