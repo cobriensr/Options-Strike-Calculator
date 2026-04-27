@@ -124,7 +124,7 @@ Everything else gets the full loop.
 
 ### Backend (api/)
 
-- **Auth is single-owner** — one Schwab OAuth session via httpOnly cookie. Plaintext cookie is intentional. No multi-user auth.
+- **Auth is single-owner + optional guest keys** — one Schwab OAuth session via httpOnly cookie. Plaintext cookie is intentional. The owner can hand out comma-separated guest keys via `GUEST_ACCESS_KEYS`; guests get read-only access to owner-gated data endpoints (dark pool, GEX, TRACE Live, etc.) but **not** to the Anthropic-backed `api/analyze.ts`. See `api/_lib/guest-auth.ts` (`rejectIfNotOwnerOrGuest`, `guardOwnerOrGuestEndpoint`) and `src/utils/auth.ts` (`getAccessMode`).
 - **Neon Postgres** — `@neondatabase/serverless`, lazy singleton via `getDb()`. 40+ tables managed by numbered migrations in `migrateDb()` (tracked in `schema_migrations`).
 - **Upstash Redis** — stores Schwab OAuth tokens (access + refresh). Env vars: `KV_REST_API_URL` / `UPSTASH_REDIS_REST_URL`.
 - **Input validation** — Zod schemas in `api/_lib/validation.ts` validate at system boundaries before data reaches Anthropic or Postgres.
@@ -219,6 +219,7 @@ Required env vars (pulled via `vercel env pull .env.local`):
 | `SENTRY_DSN`, `SENTRY_AUTH_TOKEN`          | Sentry                             |
 | `CRON_SECRET`                              | Vercel (cron job auth)             |
 | `UW_API_KEY`                               | Unusual Whales                     |
+| `GUEST_ACCESS_KEYS`                        | Comma-separated guest keys (opt.)  |
 | `THETA_EMAIL`, `THETA_PASSWORD`            | Theta Data (Railway sidecar only)  |
 | `BLOB_READ_WRITE_TOKEN`                    | Vercel Blob (also on Railway)      |
 | `ARCHIVE_MANIFEST_URL`                     | Archive manifest (Railway only)    |
