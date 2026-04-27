@@ -515,8 +515,22 @@ async function main(): Promise<void> {
       stabilityPct,
       capturedAt,
     };
-    process.stdout.write(JSON.stringify(out));
-    process.exit(0);
+    // Stdout is a pipe to the parent process. macOS pipe buffer = 64KB;
+    // our payload is ~1MB. We MUST wait for the kernel to acknowledge the
+    // write before the process exits, otherwise process.exit() leaves
+    // bytes in flight and the parent gets truncated JSON. Use the
+    // callback form of write() — fires after the data is fully drained.
+    const json = JSON.stringify(out);
+    await new Promise<void>((resolve, reject) => {
+      process.stdout.write(json, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    // Successful return — let the finally block close the browser, then
+    // Node's natural exit drains stdout one more time. No process.exit(0):
+    // exit() is synchronous and would race with stdout drain on the rare
+    // case the callback above didn't yet flush the kernel buffer.
   } finally {
     await browser.close().catch(() => {
       /* swallow teardown errors */
