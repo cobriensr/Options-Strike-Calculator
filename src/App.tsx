@@ -46,6 +46,7 @@ import BacktestDiag from './components/BacktestDiag';
 import ErrorBoundary from './components/ErrorBoundary';
 import AlertBanner from './components/AlertBanner';
 import DarkPoolLevels from './components/DarkPoolLevels';
+import TRACELiveDashboard from './components/TRACELive';
 import { MarketInternalsPanel } from './components/MarketInternals/MarketInternalsPanel';
 import NotificationPermission from './components/NotificationPermission';
 import { StatusBadge } from './components/ui';
@@ -1082,6 +1083,13 @@ export default function StrikeCalculator() {
                     onScrubTo={darkPool.scrubTo}
                     timeGrid={darkPool.timeGrid}
                     onScrubLive={darkPool.scrubLive}
+                  />
+                </ErrorBoundary>
+
+                <span id="sec-trace-live" className="block scroll-mt-28" />
+                <ErrorBoundary label="TRACE Live">
+                  <TRACELiveDashboard
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
                   />
                 </ErrorBoundary>
               </>
