@@ -1,22 +1,42 @@
 /**
- * Owner-session predicates.
+ * Access-mode predicates.
  *
- * Single-owner app — see CLAUDE.md "Auth is single-owner". The Schwab
- * OAuth callback sets the `sc-hint` cookie to mark the session as the
- * site owner; everyone else is a guest. Local dev is treated as owner
- * for ergonomic reasons.
+ * Single-owner app — see CLAUDE.md "Auth is single-owner". Three modes:
  *
- * `checkIsOwner` is a plain function, not a React hook. The previous
- * `useIsOwner` hook had no React internals (no useState/useEffect) and
- * was named with the `use` prefix only by mistake. Plain function lets
- * callers invoke it conditionally, inside callbacks, or inside loops
- * without tripping the Rules of Hooks linter.
+ *   - 'owner'  — running in local dev, or carrying the `sc-hint` cookie
+ *                set by the Schwab OAuth callback.
+ *   - 'guest'  — carrying the `sc-guest-hint` cookie set by a successful
+ *                POST to /api/auth/guest-key. Read-only access; the
+ *                Chart Analysis submit button is disabled in this mode.
+ *   - 'public' — neither cookie present. Calculator + free data only.
+ *
+ * These are plain functions, not React hooks. The previous `useIsOwner`
+ * hook had no React internals — naming it with `use` only confused the
+ * Rules of Hooks linter. Plain functions can be called inside callbacks,
+ * conditionals, or loops without ceremony.
  */
 
+export type AccessMode = 'owner' | 'guest' | 'public';
+
 /**
- * Returns true when the current browser session is the site owner —
- * i.e. running in local dev or carrying the `sc-hint` marker cookie.
+ * Returns the current browser session's access mode.
+ *
+ * Owner wins over guest: a developer who happens to have both the dev
+ * env AND a guest hint cookie still gets full owner access.
+ */
+export function getAccessMode(): AccessMode {
+  if (import.meta.env.DEV) return 'owner';
+  if (document.cookie.includes('sc-hint=')) return 'owner';
+  if (document.cookie.includes('sc-guest-hint=')) return 'guest';
+  return 'public';
+}
+
+/**
+ * Returns true when the current browser session is the site owner.
+ * Kept as a thin wrapper over `getAccessMode` so callers that only
+ * care about the binary owner/non-owner split don't have to compare
+ * to a string literal.
  */
 export function checkIsOwner(): boolean {
-  return import.meta.env.DEV || document.cookie.includes('sc-hint=');
+  return getAccessMode() === 'owner';
 }

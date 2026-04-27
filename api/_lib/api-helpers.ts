@@ -81,8 +81,10 @@ export const OWNER_COOKIE_MAX_AGE = 7 * 24 * 60 * 60;
 /**
  * Parse cookies from the request header.
  * Vercel's VercelRequest doesn't always parse cookies automatically.
+ *
+ * Exported so guest-auth.ts can reuse it without duplicating the parser.
  */
-function parseCookies(req: VercelRequest): Record<string, string> {
+export function parseCookies(req: VercelRequest): Record<string, string> {
   const header = req.headers.cookie || '';
   const cookies: Record<string, string> = {};
   for (const pair of header.split(';')) {
@@ -656,6 +658,21 @@ export function cronGuard(
   const today = getETDateStr(new Date());
   return { apiKey, today };
 }
+
+// ============================================================
+// GUEST AUTH RE-EXPORTS
+// ============================================================
+
+// Endpoints that accept either owner sessions OR valid guest keys import
+// these helpers via api-helpers (next to their existing rejectIfNotOwner
+// imports) so the rename is a one-symbol swap. Logic lives in guest-auth.ts.
+
+export {
+  rejectIfNotOwnerOrGuest,
+  guardOwnerOrGuestEndpoint,
+  isOwnerOrGuest,
+  isGuest,
+} from './guest-auth.js';
 
 // ============================================================
 // DATA QUALITY CHECKS

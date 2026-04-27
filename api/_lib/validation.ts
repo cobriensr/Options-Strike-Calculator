@@ -10,6 +10,24 @@ import { z } from 'zod';
 import { STRIKE_IV_TICKERS } from './constants.js';
 
 // ============================================================
+// /api/auth/guest-key
+// ============================================================
+
+/**
+ * POST /api/auth/guest-key body.
+ *
+ * `key` is the shared access key generated locally (e.g. via
+ * `openssl rand -base64 24`) and stored comma-separated in the
+ * `GUEST_ACCESS_KEYS` env var. Min 8 / max 128 chars to discourage
+ * trivial brute-force and bound the request payload.
+ */
+export const guestKeySchema = z.object({
+  key: z.string().min(8).max(128),
+});
+
+export type GuestKeyBody = z.infer<typeof guestKeySchema>;
+
+// ============================================================
 // /api/spot-gex-history
 // ============================================================
 

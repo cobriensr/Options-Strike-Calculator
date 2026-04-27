@@ -119,6 +119,8 @@ if (import.meta.env.PROD)
       { path: '/api/iv-anomalies', method: 'GET' },
       { path: '/api/iv-anomalies-cross-asset', method: 'POST' },
       { path: '/api/strike-trade-volume', method: 'GET' },
+      { path: '/api/auth/guest-key', method: 'POST' },
+      { path: '/api/auth/guest-logout', method: 'POST' },
     ],
   });
 
