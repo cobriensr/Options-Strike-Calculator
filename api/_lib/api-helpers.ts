@@ -24,6 +24,7 @@ import { getAccessToken, redis } from './schwab.js';
 import { MARKET_MINUTES, TIMEOUTS, UW_BASE } from './constants.js';
 import logger from './logger.js';
 import { metrics, Sentry } from './sentry.js';
+import { acquireUWSlot } from './uw-rate-limit.js';
 import { getMarketCloseHourET } from '../../src/data/marketHours.js';
 import {
   getETTime,
@@ -518,6 +519,7 @@ export async function uwFetch<T>(
   path: string,
   extract?: (body: Record<string, unknown>) => T[],
 ): Promise<T[]> {
+  await acquireUWSlot();
   const url = path.startsWith('http') ? path : `${UW_BASE}${path}`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${apiKey}` },
