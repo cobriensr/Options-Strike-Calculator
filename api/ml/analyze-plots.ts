@@ -129,6 +129,15 @@ function getPlotFindings(
     nope_flips_vs_range: ['nope_eda', 'dataset'],
     nope_cumdelta_vs_move: ['nope_eda', 'dataset'],
     nope_magnitude_vs_move: ['nope_eda', 'dataset'],
+    // TRACE Live calibration plots (Phase 3 of the trace-live ML pipeline).
+    // Calibration script merges its summary into ml/findings.json under
+    // the `calibration` key; `dataset` is also included so Claude has
+    // basic dataset-shape context.
+    'calibration-by-regime': ['calibration', 'dataset'],
+    'calibration-by-confidence': ['calibration', 'dataset'],
+    'calibration-by-stability': ['calibration', 'dataset'],
+    'calibration-curve': ['calibration', 'dataset'],
+    'calibration-error-distribution': ['calibration', 'dataset'],
   };
 
   const sections = sectionMap[plotName] ?? ['dataset'];

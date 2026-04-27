@@ -395,6 +395,37 @@ def save_summary(summary: dict, findings_dir: Path) -> Path:
     return out
 
 
+def merge_into_main_findings(summary: dict, ml_root: Path) -> Path | None:
+    """Merge the calibration summary into ml/findings.json under a `calibration`
+    key so /api/ml/analyze-plots can pick it up when prompting Claude about
+    the calibration plots. Calibration is the last target in `make all`, so
+    every other findings section is already in place by the time we run.
+
+    If findings.json doesn't exist yet (fresh checkout, partial pipeline run),
+    create it with just the calibration key. Returns the path written, or
+    None if writing failed (best-effort — don't let the merge break the
+    rest of the pipeline)."""
+    findings_path = ml_root / "findings.json"
+    try:
+        existing: dict = {}
+        if findings_path.exists():
+            try:
+                existing = json.loads(findings_path.read_text())
+                if not isinstance(existing, dict):
+                    existing = {}
+            except json.JSONDecodeError:
+                # Corrupted findings file — overwrite with a fresh dict
+                # rather than fail the whole calibration run.
+                existing = {}
+        existing["calibration"] = summary
+        findings_path.write_text(json.dumps(existing, indent=2, default=str))
+        print(f"[findings] merged calibration into {findings_path}", file=sys.stderr)
+        return findings_path
+    except OSError as exc:
+        print(f"[findings] WARN: could not merge into findings.json: {exc}", file=sys.stderr)
+        return None
+
+
 def print_summary(summary: dict) -> None:
     print("\n=== Calibration Summary ===")
     print(f"Total rows: {summary['total_rows']}")
@@ -504,6 +535,9 @@ def main() -> None:
     # ── Summary ────────────────────────────────────────────────────────────────
     summary = build_summary(df, by_regime, by_confidence, by_stability, calibration_score)
     save_summary(summary, FINDINGS_DIR)
+    # Merge into the main ml/findings.json so /api/ml/analyze-plots can include
+    # the calibration slice when prompting Claude about the calibration plots.
+    merge_into_main_findings(summary, REPO_ROOT / "ml")
     print_summary(summary)
 
 
