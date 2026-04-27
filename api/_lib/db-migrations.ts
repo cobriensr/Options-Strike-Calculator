@@ -2493,4 +2493,38 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 92,
+    description:
+      'Create vega_flow_etf table for SPY/QQQ minute-bar greek flow ' +
+      '(dir/total/OTM variants of vega + delta) from UW /api/stock/{ticker}/greek-flow. ' +
+      'Phase 1 of the Dir Vega Spike Monitor — backing data for spike detection ' +
+      'and forward-return EDA. Keyed (ticker, timestamp) for idempotent ingest.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS vega_flow_etf (
+          id                    BIGSERIAL PRIMARY KEY,
+          ticker                TEXT NOT NULL,
+          date                  DATE NOT NULL,
+          timestamp             TIMESTAMPTZ NOT NULL,
+          dir_vega_flow         NUMERIC NOT NULL,
+          otm_dir_vega_flow     NUMERIC NOT NULL,
+          total_vega_flow       NUMERIC NOT NULL,
+          otm_total_vega_flow   NUMERIC NOT NULL,
+          dir_delta_flow        NUMERIC NOT NULL,
+          otm_dir_delta_flow    NUMERIC NOT NULL,
+          total_delta_flow      NUMERIC NOT NULL,
+          otm_total_delta_flow  NUMERIC NOT NULL,
+          transactions          INTEGER NOT NULL,
+          volume                INTEGER NOT NULL,
+          inserted_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+          UNIQUE (ticker, timestamp)
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_vega_flow_etf_ticker_date
+          ON vega_flow_etf (ticker, date)
+      `,
+    ],
+  },
 ];

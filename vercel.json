@@ -50,6 +50,10 @@
       "schedule": "3,8,13,18,23,28,33,38,43,48,53,58 13-21 * * 1-5"
     },
     {
+      "path": "/api/cron/fetch-greek-flow-etf",
+      "schedule": "* 13-21 * * 1-5"
+    },
+    {
       "path": "/api/cron/fetch-gex-0dte",
       "schedule": "* 13-21 * * 1-5"
     },
