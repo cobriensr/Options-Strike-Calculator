@@ -189,7 +189,7 @@
     "api/cron/backfill-futures-gaps.ts": { "maxDuration": 800 },
     "api/trace-live-analyze.ts": {
       "maxDuration": 780,
-      "includeFiles": ".claude/skills/{charm-pressure,delta-pressure,gamma}/SKILL.md"
+      "includeFiles": ".claude/skills/**/SKILL.md"
     }
   },
   "installCommand": "npm install --loglevel=error --no-audit --no-fund",
