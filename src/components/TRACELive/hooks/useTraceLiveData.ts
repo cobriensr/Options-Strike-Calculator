@@ -25,13 +25,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { POLL_INTERVALS } from '../../../constants';
 import { getErrorMessage } from '../../../utils/error';
 import { checkIsOwner } from '../../../utils/auth';
+import { getETToday } from '../../../utils/timezone';
 import type { TraceLiveDetail, TraceLiveSummary } from '../types';
-
-function etToday(): string {
-  return new Date().toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
-}
 
 export interface UseTraceLiveDataReturn {
   /** Compact summaries for the active date — drives the dropdown. */
@@ -62,12 +57,12 @@ export function useTraceLiveData(marketOpen: boolean): UseTraceLiveDataReturn {
   const [detail, setDetail] = useState<TraceLiveDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [selectedDate, setSelectedDate] = useState(etToday);
+  const [selectedDate, setSelectedDate] = useState(getETToday);
   const [selectedId, setSelectedIdInternal] = useState<number | null>(null);
   const [followLatest, setFollowLatest] = useState(true);
   const mountedRef = useRef(true);
 
-  const isToday = selectedDate === etToday();
+  const isToday = selectedDate === getETToday();
   // Poll while on today's date during market hours — independent of
   // whether auto-follow is active, so the dropdown stays current even
   // when the user is reviewing a specific older capture from today.

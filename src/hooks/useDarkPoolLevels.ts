@@ -22,6 +22,7 @@ import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
 import { checkIsOwner } from '../utils/auth';
 import { useTimeGridScrubber } from './useTimeGridScrubber';
+import { getETToday } from '../utils/timezone';
 
 export interface DarkPoolLevel {
   spxLevel: number;
@@ -55,13 +56,6 @@ export interface UseDarkPoolLevelsReturn {
   scrubLive: () => void;
 }
 
-/** Today in ET as YYYY-MM-DD (same convention as the existing `isToday` logic). */
-function etToday(): string {
-  return new Date().toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
-}
-
 // ── Hook ────────────────────────────────────────────────────────────
 
 export function useDarkPoolLevels(
@@ -76,7 +70,7 @@ export function useDarkPoolLevels(
 
   // Own date state — decoupled from the app's vix.selectedDate so that
   // browsing dark pool history doesn't re-anchor the Black-Scholes math.
-  const [selectedDate, setSelectedDate] = useState(etToday);
+  const [selectedDate, setSelectedDate] = useState(getETToday);
 
   // Time scrubber: null = live (no ?time= param), HH:MM = scrubbed.
   // The shared `useTimeGridScrubber` owns navigation; per-feature `isLive`
@@ -85,7 +79,7 @@ export function useDarkPoolLevels(
   const { scrubTime, isScrubbed, scrubLive } = scrubber;
 
   // Recompute each render so the today-vs-past branch flips at midnight ET.
-  const isToday = selectedDate === etToday();
+  const isToday = selectedDate === getETToday();
 
   const isLive = isToday && scrubTime === null;
 

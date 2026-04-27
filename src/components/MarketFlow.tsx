@@ -19,6 +19,7 @@ import { useWhalePositioning } from '../hooks/useWhalePositioning';
 import { FlowDirectionalRollup } from './OptionsFlow/FlowDirectionalRollup';
 import { FlowConfluencePanel } from './OptionsFlow/FlowConfluencePanel';
 import { OptionsFlowTable } from './OptionsFlow/OptionsFlowTable';
+import { getETToday } from '../utils/timezone';
 import { WhalePositioningTable } from './OptionsFlow/WhalePositioningTable';
 import { findConfluences } from '../utils/flow-confluence';
 import { classifyAggression } from '../utils/flow-aggression';
@@ -37,15 +38,6 @@ export interface MarketFlowProps {
 }
 
 // ============================================================
-// HELPERS
-// ============================================================
-
-/** Compute today's ET date as YYYY-MM-DD. */
-function getTodayET(): string {
-  return new Date().toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
-}
 
 /** Format an ISO timestamp to 24h "HH:MM CT" for the meta row. */
 function formatFlowTime(iso: string | null | undefined): string | null {
@@ -186,10 +178,10 @@ const MarketFlow = memo(function MarketFlow({
   gexByStrike,
 }: MarketFlowProps) {
   // ---------- date / scrub state ----------
-  const [selectedDate, setSelectedDate] = useState(getTodayET);
+  const [selectedDate, setSelectedDate] = useState(getETToday);
   const [scrubTimestamp, setScrubTimestamp] = useState<string | null>(null);
 
-  const todayET = getTodayET();
+  const todayET = getETToday();
   const isToday = selectedDate === todayET;
   const isScrubbed = scrubTimestamp != null;
 
@@ -282,7 +274,7 @@ const MarketFlow = memo(function MarketFlow({
 
   const scrubLive = useCallback(() => {
     setScrubTimestamp(null);
-    setSelectedDate(getTodayET());
+    setSelectedDate(getETToday());
   }, []);
 
   const handleDateChange = useCallback((date: string) => {

@@ -78,6 +78,7 @@ import { ivAnomalyBannerStore } from '../components/IVAnomalies/banner-store';
 import { playAnomalyChime } from '../utils/anomaly-sound';
 import { getErrorMessage } from '../utils/error';
 import { useTimeGridScrubber } from './useTimeGridScrubber';
+import { getETToday } from '../utils/timezone';
 
 export interface UseIVAnomaliesReturn {
   /** Active compound keys, freshest first. */
@@ -100,12 +101,6 @@ export interface UseIVAnomaliesReturn {
   /** All available HH:MM time slots for the trading session. */
   timeGrid: readonly string[];
   scrubLive: () => void;
-}
-
-function etToday(): string {
-  return new Date().toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
 }
 
 /**
@@ -798,10 +793,10 @@ export function useIVAnomalies(
   const [error, setError] = useState<string | null>(null);
 
   // Replay scrub state (Phase 2 of replay spec).
-  const [selectedDate, setSelectedDate] = useState(etToday);
+  const [selectedDate, setSelectedDate] = useState(getETToday);
   const scrubber = useTimeGridScrubber();
   const { scrubTime, isScrubbed, scrubLive } = scrubber;
-  const isToday = selectedDate === etToday();
+  const isToday = selectedDate === getETToday();
   const isLive = isToday && scrubTime === null;
 
   // Reset scrub time when date changes — matches useDarkPoolLevels.

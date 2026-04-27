@@ -43,6 +43,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
 import { checkIsOwner } from '../utils/auth';
+import { getETToday } from '../utils/timezone';
 
 /**
  * A snapshot is considered "live" only if its timestamp is within this many
@@ -173,13 +174,6 @@ export interface UseGexPerStrikeReturn {
   refresh: () => void;
 }
 
-/** Compute today's ET date as YYYY-MM-DD. */
-function getTodayET(): string {
-  return new Date().toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
-}
-
 /**
  * The second argument may be either the legacy `initialDate` string or
  * a `UseGexPerStrikeOptions` bag. Both forms stay supported so existing
@@ -211,7 +205,7 @@ export function useGexPerStrike(
   // default to today. Tests pass a fixed date to exercise the branches
   // deterministically.
   const [selectedDate, setSelectedDate] = useState<string>(
-    () => initialDate ?? getTodayET(),
+    () => initialDate ?? getETToday(),
   );
   // Wall-clock state — refreshed every WALL_CLOCK_TICK_MS by a separate
   // effect. The freshness check below reads `nowMs` rather than calling
@@ -223,7 +217,7 @@ export function useGexPerStrike(
   // `todayET` recomputes each render so the panel flips from LIVE → BACKTEST
   // at the midnight-ET session boundary without needing an explicit state
   // update. The `isToday` comparison then drives the dispatch ladder.
-  const todayET = getTodayET();
+  const todayET = getETToday();
   const isToday = selectedDate === todayET;
   const isScrubbed = scrubTimestamp != null;
 
@@ -427,7 +421,7 @@ export function useGexPerStrike(
     // (state equality).
     setScrubTimestamp(null);
     setSelectedDate((cur) => {
-      const today = getTodayET();
+      const today = getETToday();
       return cur === today ? cur : today;
     });
   }, []);

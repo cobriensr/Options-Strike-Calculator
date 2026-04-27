@@ -46,6 +46,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
 import { checkIsOwner } from '../utils/auth';
+import { getETToday } from '../utils/timezone';
 import type { TargetScore } from '../utils/gex-target';
 
 /**
@@ -204,13 +205,6 @@ export interface UseGexTargetReturn {
   refresh: () => void;
 }
 
-/** Compute today's ET date as YYYY-MM-DD. */
-function getTodayET(): string {
-  return new Date().toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
-}
-
 /**
  * Filter candles to the regular SPX session: 8:30 AM – 3:00 PM CT.
  *
@@ -265,7 +259,7 @@ export function useGexTarget(
   // default to today. Tests pass a fixed date to exercise the branches
   // deterministically.
   const [selectedDate, setSelectedDate] = useState<string>(
-    () => initialDate ?? getTodayET(),
+    () => initialDate ?? getETToday(),
   );
 
   // Wall-clock state -- refreshed every WALL_CLOCK_TICK_MS by a separate
@@ -284,7 +278,7 @@ export function useGexTarget(
   // `todayET` recomputes each render so the panel flips from LIVE -> BACKTEST
   // at the midnight-ET session boundary without needing an explicit state
   // update. The `isToday` comparison then drives the dispatch ladder.
-  const todayET = getTodayET();
+  const todayET = getETToday();
   const isToday = selectedDate === todayET;
   const isScrubbed = scrubTimestamp != null;
 
@@ -588,7 +582,7 @@ export function useGexTarget(
     // (state equality).
     setScrubTimestamp(null);
     setSelectedDate((cur) => {
-      const today = getTodayET();
+      const today = getETToday();
       return cur === today ? cur : today;
     });
   }, []);

@@ -69,6 +69,15 @@ export function getETDateStr(date: Date): string {
   return etDateFormatter.format(date);
 }
 
+/**
+ * Today's ET calendar date as YYYY-MM-DD (the trading-day convention).
+ * Convenience wrapper around `getETDateStr(new Date())` so callers don't
+ * have to repeat the `new Date()` and don't roll their own `etToday()`.
+ */
+export function getETToday(): string {
+  return etDateFormatter.format(new Date());
+}
+
 /** Get the current CT date as YYYY-MM-DD. */
 export function getCTDateStr(date: Date): string {
   return ctDateFormatter.format(date);

@@ -22,6 +22,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RankedStrike, DirectionalRollup } from '../types/flow';
+import { getETToday } from '../utils/timezone';
 
 // Re-export so existing consumers that imported these types from the hook
 // module keep working (e.g. OptionsFlowTable, FlowDirectionalRollup, tests).
@@ -87,13 +88,6 @@ const DEFAULT_POLL_INTERVAL_MS = 60_000;
 // HOOK
 // ============================================================
 
-/** Compute today's ET date as YYYY-MM-DD. */
-function getTodayET(): string {
-  return new Date().toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
-}
-
 export function useOptionsFlow(
   options: UseOptionsFlowOptions,
 ): UseOptionsFlowResult {
@@ -120,7 +114,7 @@ export function useOptionsFlow(
   const [refreshToken, setRefreshToken] = useState(0);
 
   // Derive dispatch-ladder booleans.
-  const todayET = getTodayET();
+  const todayET = getETToday();
   const isScrubMode = typeof asOf === 'string';
   const isPastDate = selectedDate != null && selectedDate !== todayET;
 
