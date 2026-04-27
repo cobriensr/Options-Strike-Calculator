@@ -100,18 +100,26 @@ async function loginIfNeeded(
     return;
   }
 
+  // SpotGamma uses MUI form with id="login-username" (note: type="text",
+  // NOT type="email") + id="login-password". MUI wires
+  // `<label for="login-username">Email *</label>`, so getByLabel works
+  // as a robust fallback if the IDs ever change.
   const emailField = page
-    .locator(
-      'input[type="email"], input[name="email"], input[id="email"], input[autocomplete="username"]',
-    )
+    .locator('#login-username')
+    .or(page.getByLabel('Email').first())
     .first();
-  const passwordField = page.locator('input[type="password"]').first();
+  const passwordField = page
+    .locator('#login-password')
+    .or(page.getByLabel('Password').first())
+    .first();
 
   await emailField.waitFor({ state: 'visible', timeout: 8000 });
   await emailField.fill(email);
   await passwordField.fill(password);
 
+  // SpotGamma's submit button literally reads "Login" (case-sensitive).
   const submitCandidates: Locator[] = [
+    page.getByRole('button', { name: 'Login', exact: true }),
     page.locator('button[type="submit"]').first(),
     page.getByRole('button', { name: /sign\s*in|log\s*in|login/i }).first(),
   ];
