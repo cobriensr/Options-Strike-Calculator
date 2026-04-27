@@ -446,15 +446,19 @@ async function setupChartPage(
 ): Promise<{ page: Page; sliderCal: SliderCal | null }> {
   const ctx = await browser.newContext({ storageState: STORAGE_PATH });
   const page = await ctx.newPage();
-  await page.goto(TRACE_URL, { waitUntil: 'networkidle', timeout: 30_000 });
-  // TRACE does substantial post-load JS rendering — networkidle alone
-  // doesn't guarantee the chart-type combobox is interactive yet.
-  // Matches the historical capture-trace.ts 2s settle.
+  // Match capture-trace.ts EXACTLY — that script captured 100 days
+  // flawlessly, so the goto+wait+ensure* sequence below is the
+  // canonical incantation. Critically: NO `{ waitUntil: 'networkidle' }`
+  // — TRACE has live polling/WebSocket connections so networkidle never
+  // fires; the goto would time out at 30s and proceed against a half-
+  // loaded page where the chart-type combobox isn't interactive.
+  // Default `load` waits for DOMContentLoaded + load event, which is
+  // all TRACE actually needs.
+  await page.goto(TRACE_URL);
   await page.waitForTimeout(2000);
   await ensureChartType(page, CHART_TYPES[chart]);
   await ensureGexToggleOn(page);
   await ensureStrikeZoom(page, 8);
-  await page.waitForTimeout(1500);
 
   let sliderCal: SliderCal | null = null;
   if (args.date) {
@@ -524,11 +528,17 @@ async function main(): Promise<void> {
 
   try {
     const charts: ChartKey[] = ['gamma', 'charm', 'delta'];
-    const setups = await Promise.all(
-      charts.map((c) => setupChartPage(browser, c, args)),
-    );
+    // Sequential init — matches capture-trace.ts's pattern. Three
+    // simultaneous TRACE loads from the same auth session can cause
+    // server-side rate limiting or partial renders. Parallel was a
+    // premature optimization; what actually needs same-instant timing
+    // is the SCREENSHOT step at the bottom, not the setup. Setup adds
+    // ~30s total wall-clock vs ~10s parallel, but reliable.
     const pageMap = new Map<ChartKey, Page>();
-    setups.forEach((s, i) => pageMap.set(charts[i]!, s.page));
+    for (const c of charts) {
+      const setup = await setupChartPage(browser, c, args);
+      pageMap.set(c, setup.page);
+    }
 
     const gammaPage = pageMap.get('gamma')!;
     const [spot, stabilityPct] = await Promise.all([
