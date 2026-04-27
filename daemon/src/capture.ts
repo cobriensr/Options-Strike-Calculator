@@ -18,11 +18,29 @@ import type { Logger } from 'pino';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /**
- * Path to the capture script. Lives inside daemon/src/ so it's bundled
- * into the Railway container without dragging in scripts/. The script
- * does its own SpotGamma auto-login each invocation (no shared state).
+ * Path to the capture script for LIVE mode (Railway-hosted ticks).
+ * Auto-logs into SpotGamma each invocation. Lives inside daemon/src/
+ * so it's bundled into the Railway container.
  */
 const CAPTURE_SCRIPT_PATH = join(__dirname, 'capture-script.ts');
+
+/**
+ * Path to the capture script for BACKFILL mode (local one-shot runs).
+ * Uses storageState from .trace-storage.json (refreshed locally via
+ * scripts/charm-pressure-capture/save-storage.ts) instead of auto-login,
+ * AND supports --date / --time CLI flags for time-slider scrubbing.
+ *
+ * The two scripts diverged because backfill needs DOM-level slider
+ * scrubbing for historical times — a substantial chunk of code that
+ * isn't needed in live mode. Eventual unification is a future task.
+ */
+const BACKFILL_SCRIPT_PATH = join(
+  __dirname,
+  '..',
+  '..',
+  'scripts',
+  'capture-trace-live.ts',
+);
 
 export interface CaptureResult {
   images: {
@@ -64,10 +82,15 @@ export async function runCapture(
 ): Promise<CaptureResult> {
   const { logger, timeoutMs = 180_000, date, time } = opts;
 
-  if (!existsSync(CAPTURE_SCRIPT_PATH)) {
-    throw new Error(
-      `capture-trace-live.ts not found at ${CAPTURE_SCRIPT_PATH}`,
-    );
+  // Backfill mode (date+time both supplied) routes to the older
+  // scripts/capture-trace-live.ts which has the time-slider scrubbing
+  // logic. Live mode uses the daemon-bundled auto-login script.
+  const scriptPath =
+    date && time ? BACKFILL_SCRIPT_PATH : CAPTURE_SCRIPT_PATH;
+  const cwd = date && time ? join(__dirname, '..', '..') : join(__dirname, '..');
+
+  if (!existsSync(scriptPath)) {
+    throw new Error(`capture script not found at ${scriptPath}`);
   }
 
   return await new Promise<CaptureResult>((resolve, reject) => {
@@ -83,13 +106,15 @@ export async function runCapture(
     //
     // Backfill mode: pass --date / --time flags through. Live mode: no
     // extra args, the script captures current data.
-    // Run from daemon/ root so npx resolves daemon's own node_modules
-    // (where @playwright/test + tsx live in the Railway container).
-    const args = ['tsx', CAPTURE_SCRIPT_PATH];
+    // Run from the right cwd so npx resolves the right node_modules:
+    // - Live: daemon/ (bundled in Railway container)
+    // - Backfill: repo root (uses root project's @playwright/test +
+    //   the gitignored .trace-storage.json from the historical study).
+    const args = ['tsx', scriptPath];
     if (date) args.push('--date', date);
     if (time) args.push('--time', time);
     const child = spawn('npx', args, {
-      cwd: join(__dirname, '..'),
+      cwd,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
