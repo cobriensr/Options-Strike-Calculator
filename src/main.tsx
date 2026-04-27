@@ -73,7 +73,11 @@ if (import.meta.env.PROD)
       { path: '/api/analyses', method: 'GET' },
       { path: '/api/snapshot', method: 'POST' },
       { path: '/api/analyze', method: 'POST' },
-      { path: '/api/trace-live-analyze', method: 'POST' },
+      // /api/trace-live-analyze intentionally NOT in the protect list:
+      // the daemon (our automation) POSTs to it and can't carry a Kasada
+      // JS-challenge token. Owner cookie + 6/min rate limit + payload
+      // validation (3 PNGs + structured GEX) keep it secure on their own
+      // — BotID at the edge would block legitimate daemon traffic.
       { path: '/api/trace-live-list', method: 'GET' },
       { path: '/api/trace-live-get', method: 'GET' },
       { path: '/api/positions', method: 'GET' },
