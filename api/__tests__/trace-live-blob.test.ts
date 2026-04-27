@@ -71,14 +71,14 @@ describe('uploadTraceLiveImages', () => {
     expect(path).toBe('trace-live/2026-04-23/0305/gamma.png');
   });
 
-  it('passes correct put() options (public, image/png, addRandomSuffix:true)', async () => {
+  it('passes correct put() options (private, image/png, addRandomSuffix:true)', async () => {
     putMock.mockResolvedValueOnce({ url: 'u1' });
     await uploadTraceLiveImages({
       capturedAt: '2026-04-23T19:30:00Z',
       images: [{ chart: 'gamma', base64: tinyPng }],
     });
     const opts = putMock.mock.calls[0]![2];
-    expect(opts.access).toBe('public');
+    expect(opts.access).toBe('private');
     expect(opts.contentType).toBe('image/png');
     // addRandomSuffix: true is load-bearing — without it, @vercel/blob@2.x
     // produces deterministic guessable URLs and throws on retry for the

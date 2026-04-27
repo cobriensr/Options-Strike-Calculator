@@ -173,7 +173,11 @@ export async function postTraceLiveAnalyze(
         'POST /api/trace-live-analyze response',
       );
 
-      if (result.status === 200) return result.body;
+      // 202 Accepted is the new success path: the function takes the
+      // request, returns immediately, and processes in background via
+      // waitUntil(). 200 is preserved for backward compatibility if a
+      // future change brings back a sync response shape.
+      if (result.status === 200 || result.status === 202) return result.body;
 
       if (!shouldRetry(result.status)) {
         // Non-retryable — bail with the body so the caller can log details.

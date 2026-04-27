@@ -35,6 +35,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import Anthropic from '@anthropic-ai/sdk';
+import { waitUntil } from '@vercel/functions';
 import { Sentry, metrics } from './_lib/sentry.js';
 import {
   guardOwnerEndpoint,
@@ -43,7 +44,10 @@ import {
 } from './_lib/api-helpers.js';
 import { requireEnv } from './_lib/env.js';
 import logger from './_lib/logger.js';
-import { traceLiveAnalyzeBodySchema } from './_lib/trace-live-types.js';
+import {
+  traceLiveAnalyzeBodySchema,
+  type TraceLiveAnalyzeBody,
+} from './_lib/trace-live-types.js';
 import { TRACE_LIVE_STABLE_SYSTEM_TEXT } from './_lib/trace-live-prompts.js';
 import { buildTraceLiveUserContent } from './_lib/trace-live-context.js';
 import {
@@ -148,54 +152,31 @@ async function callModel(
   };
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const done = metrics.request('/api/trace-live-analyze');
-  if (req.method !== 'POST') {
-    done({ status: 405 });
-    return res.status(405).json({ error: 'POST only' });
-  }
-
-  const rejected = await guardOwnerEndpoint(req, res, done);
-  if (rejected) return;
-
-  // Rate limit: 6/min — covers a normal 5-min cadence with manual-retry
-  // headroom. Higher than /api/analyze (3/min) since this call is cheaper.
-  const rateLimited = await rejectIfRateLimited(
-    req,
-    res,
-    'trace-live-analyze',
-    6,
-  );
-  if (rateLimited) {
-    done({ status: 429 });
-    return;
-  }
-
-  try {
-    requireEnv('ANTHROPIC_API_KEY');
-  } catch {
-    done({ status: 500, error: 'missing_api_key' });
-    return res.status(500).json({ error: 'Server configuration error' });
-  }
-
-  const parsed = traceLiveAnalyzeBodySchema.safeParse(req.body);
-  if (respondIfInvalid(parsed, res, done)) return;
-  const body = parsed.data;
-
+/**
+ * Heavy lifter — runs after the 202 response is sent. Uses Vercel's
+ * waitUntil() so the function instance stays alive until this finishes,
+ * but no upstream connection is held open: the daemon got its 202 in <1s
+ * and disconnected, sidestepping Railway/Vercel proxy idle timeouts that
+ * killed earlier sync calls at the 5-min mark.
+ *
+ * All errors are logged + Sentry'd here, not propagated — by the time
+ * this runs the response is already sent. Observability is via:
+ *   - logger.info('trace-live-analyze persisted', ...) on success
+ *   - logger.error(...) + Sentry on every failure mode
+ *   - presence of a row in trace_live_analyses (downstream consumers
+ *     watch this for health checks)
+ */
+async function processAnalysis(body: TraceLiveAnalyzeBody): Promise<void> {
   const userContent = buildTraceLiveUserContent(body);
   const startTs = Date.now();
 
   try {
-    // No model fallback: Sonnet 4.6 is the primary cost-effective choice,
-    // and the dashboard re-fires every 5–10 min, so a transient overload
-    // just means the next tick succeeds. Surface the error to the operator
-    // and move on.
     const result = await callModel(PRIMARY_MODEL, userContent);
-
     const durationMs = Date.now() - startTs;
 
     logger.info(
       {
+        capturedAt: body.capturedAt,
         model: result.model,
         input: result.usage.input,
         output: result.usage.output,
@@ -209,34 +190,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (result.usage.cacheRead === 0 && result.usage.cacheWrite > 0) {
       logger.warn(
-        { model: result.model },
+        { model: result.model, capturedAt: body.capturedAt },
         'Cache miss on TRACE-live system prompt — prefix may have changed',
       );
     }
 
     if (result.stopReason === 'refusal') {
-      logger.warn({ model: result.model }, 'Claude refused TRACE-live request');
-      done({ status: 422 });
-      return res
-        .status(422)
-        .json({ error: 'Analysis was refused by the model.' });
+      logger.warn(
+        { model: result.model, capturedAt: body.capturedAt },
+        'Claude refused TRACE-live request',
+      );
+      return;
     }
 
     const analysis = parseAndValidateTraceAnalysis(result.text);
     if (!analysis) {
       metrics.increment('trace_live.parse_failure');
-      done({ status: 502 });
-      return res.status(502).json({
-        error: 'Model output failed schema validation',
-        raw: result.text.slice(0, 4000),
-        model: result.model,
-      });
+      logger.error(
+        {
+          capturedAt: body.capturedAt,
+          model: result.model,
+          rawText: result.text.slice(0, 4000),
+        },
+        'Model output failed schema validation',
+      );
+      return;
     }
 
-    // Embed + upload images + save (all best-effort — failure here doesn't
-    // block the response). Embedding and Blob upload run in parallel because
-    // they're independent — saves ~1s vs sequential. Both are awaited so
-    // they land before Vercel kills the runtime.
     const [embedding, imageUrls] = await Promise.all([
       buildEmbeddingBestEffort({
         capturedAt: body.capturedAt,
@@ -268,25 +248,82 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       durationMs,
     });
 
-    done({ status: 200 });
-    return res.status(200).json({
-      analysis,
-      model: result.model,
-      durationMs,
-      usage: result.usage,
-    });
+    logger.info(
+      { capturedAt: body.capturedAt, durationMs, model: result.model },
+      'trace-live-analyze persisted',
+    );
   } catch (err) {
-    done({ status: 500, error: 'unhandled' });
     Sentry.captureException(err);
-    logger.error({ err }, 'trace-live-analyze unhandled error');
-    let errorMsg = err instanceof Error ? err.message : 'Analysis failed';
-    if (err instanceof Anthropic.RateLimitError) {
-      errorMsg = 'Anthropic rate limit exceeded. Try again shortly.';
-    } else if (err instanceof Anthropic.AuthenticationError) {
-      errorMsg = 'Anthropic API authentication error. Check API key.';
-    } else if (err instanceof Anthropic.APIError) {
-      errorMsg = `Analysis service error (${err.status}). Please retry.`;
-    }
-    return res.status(500).json({ error: errorMsg });
+    logger.error(
+      { err, capturedAt: body.capturedAt },
+      'trace-live-analyze background error',
+    );
   }
+}
+
+/**
+ * Async fire-and-forget pattern. The daemon (Railway) and the backfill
+ * loop (local) used to wait synchronously for the analysis JSON, but any
+ * intermediate proxy in the request path with a 5-min idle TCP timeout
+ * (Railway's outbound NAT, certain CDNs) silently kills connections
+ * while the function is mid-Anthropic-call. Effort:'high' on a 3-image
+ * structured-output call lands in 3-9 minutes — well over the 5-min
+ * idle threshold.
+ *
+ * Fix: validate the payload, return 202 in <1s, run the heavy work in
+ * waitUntil() so Vercel keeps the function alive until it finishes
+ * (bounded by maxDuration: 780s) without holding any upstream
+ * connection open.
+ *
+ * Trade-off: the daemon no longer sees the analysis JSON in the response.
+ * It writes the captured payload, gets 202, and moves on. Operators
+ * verify success by polling for a new row in trace_live_analyses or by
+ * watching the Vercel function logs for 'trace-live-analyze persisted'.
+ */
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const done = metrics.request('/api/trace-live-analyze');
+  if (req.method !== 'POST') {
+    done({ status: 405 });
+    return res.status(405).json({ error: 'POST only' });
+  }
+
+  const rejected = await guardOwnerEndpoint(req, res, done);
+  if (rejected) return;
+
+  // Rate limit: 6/min — covers a normal 10-min cadence with manual-retry
+  // headroom. Higher than /api/analyze (3/min) since this call is cheaper.
+  const rateLimited = await rejectIfRateLimited(
+    req,
+    res,
+    'trace-live-analyze',
+    6,
+  );
+  if (rateLimited) {
+    done({ status: 429 });
+    return;
+  }
+
+  try {
+    requireEnv('ANTHROPIC_API_KEY');
+  } catch {
+    done({ status: 500, error: 'missing_api_key' });
+    return res.status(500).json({ error: 'Server configuration error' });
+  }
+
+  const parsed = traceLiveAnalyzeBodySchema.safeParse(req.body);
+  if (respondIfInvalid(parsed, res, done)) return;
+  const body = parsed.data;
+
+  // Hand off to background work. waitUntil keeps the function instance
+  // alive until processAnalysis resolves (or maxDuration: 780s fires).
+  // The 202 below returns immediately so the daemon's connection closes
+  // cleanly before any intermediate proxy can idle-timeout it.
+  waitUntil(processAnalysis(body));
+
+  done({ status: 202 });
+  res.status(202).json({
+    status: 'accepted',
+    capturedAt: body.capturedAt,
+    spot: body.spot,
+  });
 }
