@@ -2,10 +2,12 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import * as Sentry from '@sentry/react';
 import { initBotId } from 'botid/client/core';
+import { registerSW } from 'virtual:pwa-register';
 import './index.css';
 import StrikeCalculator from './App';
 import ErrorBoundary from './components/ErrorBoundary';
 import { ToastProvider } from './components/Toast';
+import { markNeedsRefresh, setUpdateFn } from './lib/sw-update';
 
 if (import.meta.env.DEV) {
   import('@vercel/toolbar/vite').then(({ mountVercelToolbar }) =>
@@ -32,7 +34,9 @@ Sentry.init({
 });
 
 // Reload when the service worker takes over a new deployment so the page picks
-// up the new JS bundle (and fresh BotID tokens) automatically.
+// up the new JS bundle (and fresh BotID tokens) automatically. The
+// SKIP_WAITING -> activate -> controllerchange chain is initiated by the
+// "Reload" button in UpdateAvailableBanner (see src/lib/sw-update.ts).
 if ('serviceWorker' in navigator) {
   let refreshing = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
@@ -41,6 +45,17 @@ if ('serviceWorker' in navigator) {
     window.location.reload();
   });
 }
+
+// Register the service worker in prompt mode. When a new SW reaches the
+// waiting state, vite-plugin-pwa fires `onNeedRefresh` — we surface this
+// to React via the sw-update bridge so UpdateAvailableBanner can render
+// a "New version available" toast with a Reload button.
+const updateSW = registerSW({
+  onNeedRefresh() {
+    markNeedsRefresh();
+  },
+});
+setUpdateFn(updateSW);
 
 // Suppress Kasada SDK "already configured" noise — race condition in botid SDK
 globalThis.addEventListener('unhandledrejection', (e) => {

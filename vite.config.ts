@@ -31,7 +31,13 @@ export default defineConfig({
       // Push alerts (FuturesGammaPlaybook). All previous Workbox runtime
       // caching behavior is preserved in `src/sw.ts` — see that file's
       // header comment for the 1:1 mapping of each former rule.
-      registerType: 'autoUpdate',
+      //
+      // `registerType: 'prompt'` (was 'autoUpdate') so a new deployment
+      // does not auto-replace the running SW behind the user's back. The
+      // app entry calls `registerSW({ onNeedRefresh })` to surface a
+      // "Reload" banner; clicking it triggers `updateSW(true)` which
+      // posts SKIP_WAITING to the new SW. See src/lib/sw-update.ts.
+      registerType: 'prompt',
       strategies: 'injectManifest',
       srcDir: 'src',
       filename: 'sw.ts',

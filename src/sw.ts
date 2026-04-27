@@ -113,9 +113,18 @@ registerRoute(
   }),
 );
 
-// ── Lifecycle (matches old workbox.skipWaiting + clientsClaim) ──────
-self.addEventListener('install', () => {
-  self.skipWaiting();
+// ── Lifecycle ───────────────────────────────────────────────────────
+// Switched from auto-skipWaiting (old `registerType: 'autoUpdate'`) to
+// prompt-on-demand. A new SW now installs and stays in the `waiting`
+// state until the page calls `updateSW(true)` (which posts SKIP_WAITING
+// here). That gives the user a chance to finish what they were doing
+// before the bundle reload yanks them out of context. clients.claim()
+// stays so the new SW takes control of any open tabs immediately on
+// activate, which fires the page's existing controllerchange listener.
+self.addEventListener('message', (event) => {
+  if ((event.data as { type?: string } | null)?.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener('activate', (event) => {

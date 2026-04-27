@@ -60,6 +60,7 @@ import SectionNav from './components/SectionNav';
 import type { NavSection } from './components/SectionNav';
 import BackToTop from './components/BackToTop';
 import SkeletonSection from './components/SkeletonSection';
+import UpdateAvailableBanner from './components/UpdateAvailable/UpdateAvailableBanner';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 
@@ -1374,6 +1375,7 @@ export default function StrikeCalculator() {
         </div>
       </div>
       <BackToTop />
+      <UpdateAvailableBanner />
       <BacktestDiag
         snapshot={historySnapshot}
         history={historyData}
