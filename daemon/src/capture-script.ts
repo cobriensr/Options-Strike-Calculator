@@ -160,7 +160,41 @@ async function loginIfNeeded(
 
 async function ensureChartType(page: Page, type: ChartType): Promise<void> {
   const dropdown = SEL.chartTypeDropdown(page);
-  await dropdown.waitFor({ state: 'visible', timeout: 8000 });
+  try {
+    await dropdown.waitFor({ state: 'visible', timeout: 8000 });
+  } catch (waitErr) {
+    // Combobox never appeared. We're probably on /trace but the page
+    // is in some unexpected state — modal, welcome banner, subscription
+    // gate, or different render path on browserless. Dump the URL +
+    // title + a full-page screenshot so the user can SEE what landed.
+    const finalUrl = page.url();
+    const title = await page.title().catch(() => 'unknown');
+    const screenshotPath = `/tmp/trace-no-combobox-${type.replace(/\s+/g, '-')}-${Date.now()}.png`;
+    await page
+      .screenshot({ path: screenshotPath, fullPage: true })
+      .catch(() => {
+        /* ignore */
+      });
+    // Also dump any visible top-level UI hints — buttons, dialogs, etc.
+    const visibleHints = await page
+      .locator('button:visible, [role="dialog"]:visible, h1:visible, h2:visible')
+      .evaluateAll(
+        (els): string[] =>
+          (els as unknown as Array<{ textContent: string | null }>)
+            .map((el) => (el.textContent ?? '').trim().slice(0, 80))
+            .filter((s): s is string => s.length > 0)
+            .slice(0, 20),
+      )
+      .catch(() => [] as string[]);
+    throw new Error(
+      `chart-type combobox not visible after 8s. ` +
+        `URL: ${finalUrl} ` +
+        `Title: "${title}" ` +
+        `Visible UI: ${JSON.stringify(visibleHints)} ` +
+        `Screenshot: ${screenshotPath} ` +
+        `(originalErr: ${waitErr instanceof Error ? waitErr.message : String(waitErr)})`,
+    );
+  }
   const current = (await dropdown.textContent())?.trim();
   if (current === type) return;
 
