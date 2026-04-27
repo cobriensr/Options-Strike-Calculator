@@ -14,6 +14,7 @@
 import { memo, useMemo, useState, useCallback } from 'react';
 import { theme } from '../themes';
 import { formatTimeCT } from '../utils/component-formatters';
+import { tint } from '../utils/ui-utils';
 import { SectionBox } from './ui';
 import { StatusBadge } from './ui';
 import type { DarkPoolLevel } from '../hooks/useDarkPoolLevels';
@@ -157,7 +158,11 @@ export default memo(function DarkPoolLevels({
   const badge = totalLevels > 0 ? `${filtered.length} of ${totalLevels}` : null;
 
   const badgeLabel = isLive ? '● LIVE' : isScrubbed ? 'SCRUBBED' : 'BACKTEST';
-  const badgeColor = isLive ? '#00e676' : isScrubbed ? '#ffb300' : '#ff9800';
+  const badgeColor = isLive
+    ? theme.statusLive
+    : isScrubbed
+      ? theme.statusScrubbed
+      : theme.statusStale;
 
   const headerRight = (
     <div className="flex flex-wrap items-center gap-2">
@@ -179,7 +184,11 @@ export default memo(function DarkPoolLevels({
             aria-label="Jump to snapshot time"
             className="border-edge min-w-[60px] cursor-pointer rounded border bg-transparent px-1 py-0.5 text-center font-mono text-[10px] outline-none"
             style={{
-              color: isLive ? '#00e676' : isScrubbed ? '#ffb300' : '#ff9800',
+              color: isLive
+                ? theme.statusLive
+                : isScrubbed
+                  ? theme.statusScrubbed
+                  : theme.statusStale,
             }}
           >
             {timeGrid.map((t) => (
@@ -192,7 +201,11 @@ export default memo(function DarkPoolLevels({
           <span
             className="min-w-[44px] text-center font-mono text-[10px]"
             style={{
-              color: isLive ? '#00e676' : isScrubbed ? '#ffb300' : '#ff9800',
+              color: isLive
+                ? theme.statusLive
+                : isScrubbed
+                  ? theme.statusScrubbed
+                  : theme.statusStale,
             }}
           >
             {scrubTime ?? (updatedAt ? formatTimeCT(updatedAt) : '')}
@@ -217,9 +230,9 @@ export default memo(function DarkPoolLevels({
           aria-label="Resume live"
           className="cursor-pointer rounded px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider transition-colors"
           style={{
-            color: '#00e676',
-            background: 'rgba(0,230,118,0.08)',
-            border: '1px solid rgba(0,230,118,0.25)',
+            color: theme.statusLive,
+            background: tint(theme.statusLive, '14'),
+            border: `1px solid ${tint(theme.statusLive, '40')}`,
           }}
         >
           LIVE

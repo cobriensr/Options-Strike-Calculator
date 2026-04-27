@@ -29,6 +29,14 @@
   --color-backtest: #7c3aed;
   --color-badge: #15803d;
 
+  /* Data-freshness status pills (LIVE / SCRUBBED / STALE).
+     Distinct from --color-success / --color-caution / --color-backtest
+     above because they communicate polling state (data freshness),
+     not market-direction or user-shifted-time semantics. */
+  --color-status-live: #15803d;
+  --color-status-scrubbed: #946a00;
+  --color-status-stale: #c2410c;
+
   /* Borders */
   --color-edge: #ddd8ce;
   --color-edge-strong: #c8c3b8;
@@ -109,6 +117,9 @@
   --color-caution: #f0b429;
   --color-backtest: #b49bff;
   --color-badge: #5ce896;
+  --color-status-live: #00e676;
+  --color-status-scrubbed: #ffb300;
+  --color-status-stale: #ff9800;
   --color-edge: #383848;
   --color-edge-strong: #484858;
   --color-edge-heavy: #d8d8e0;

@@ -25,6 +25,10 @@ export const theme = {
   caution: 'var(--color-caution)',
   backtest: 'var(--color-backtest)',
   badgeColor: 'var(--color-badge)',
+  /** Data-freshness status pills — LIVE polling, vs SCRUBBED-back, vs STALE/historical. */
+  statusLive: 'var(--color-status-live)',
+  statusScrubbed: 'var(--color-status-scrubbed)',
+  statusStale: 'var(--color-status-stale)',
   tooltipBg: 'var(--color-tooltip-bg)',
   tooltipText: 'var(--color-tooltip-text)',
   tooltipCodeBg: 'var(--color-tooltip-code-bg)',

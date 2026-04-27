@@ -6,6 +6,9 @@
  * historical snapshot browsing can reuse the same controls.
  */
 
+import { theme } from '../themes';
+import { tint } from '../utils/ui-utils';
+
 export interface ScrubControlsProps {
   timestamp: string | null;
   timestamps: string[];
@@ -72,7 +75,7 @@ export function ScrubControls({
   const timestampColor = isLive
     ? isStale
       ? '#ffd740'
-      : '#00e676'
+      : theme.statusLive
     : isScrubbed
       ? '#ffd740'
       : 'var(--color-secondary)';
@@ -125,7 +128,7 @@ export function ScrubControls({
           <button
             onClick={onScrubLive}
             className="font-mono text-[10px] font-bold transition-opacity hover:opacity-80"
-            style={{ color: '#00e676' }}
+            style={{ color: theme.statusLive }}
             aria-label="Resume live"
           >
             LIVE
@@ -146,7 +149,10 @@ export function ScrubControls({
       {isLive && !isStale && (
         <span
           className="rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold"
-          style={{ background: 'rgba(0,230,118,0.15)', color: '#00e676' }}
+          style={{
+            background: tint(theme.statusLive, '26'),
+            color: theme.statusLive,
+          }}
         >
           LIVE
         </span>

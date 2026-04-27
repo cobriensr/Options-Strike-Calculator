@@ -11,6 +11,8 @@
 
 import { memo, useState, useCallback, useMemo } from 'react';
 import type { ReactNode } from 'react';
+import { theme } from '../../themes';
+import { tint } from '../../utils/ui-utils';
 import { SectionBox, Chip, StatusBadge } from '../ui';
 import type { UseGexTargetReturn, SPXCandle } from '../../hooks/useGexTarget';
 import { useNopeIntraday } from '../../hooks/useNopeIntraday';
@@ -256,7 +258,11 @@ export const GexTarget = memo(function GexTarget({
       : !isToday
         ? 'BACKTEST'
         : null;
-  const badgeColor = isLive ? '#00e676' : isScrubbed ? '#ffb300' : '#ff9800';
+  const badgeColor = isLive
+    ? theme.statusLive
+    : isScrubbed
+      ? theme.statusScrubbed
+      : theme.statusStale;
 
   // ── Data availability check ──────────────────────────────
 
@@ -299,11 +305,11 @@ export const GexTarget = memo(function GexTarget({
             className="border-edge min-w-[60px] cursor-pointer rounded border bg-transparent px-1 py-0.5 text-center font-mono text-[10px] outline-none"
             style={{
               color: isLive
-                ? '#00e676'
+                ? theme.statusLive
                 : isScrubbed
-                  ? '#ffb300'
+                  ? theme.statusScrubbed
                   : !isToday
-                    ? '#ff9800'
+                    ? theme.statusStale
                     : 'var(--color-secondary)',
             }}
           >
@@ -319,11 +325,11 @@ export const GexTarget = memo(function GexTarget({
               className="min-w-[44px] text-center font-mono text-[10px]"
               style={{
                 color: isLive
-                  ? '#00e676'
+                  ? theme.statusLive
                   : isScrubbed
-                    ? '#ffb300'
+                    ? theme.statusScrubbed
                     : !isToday
-                      ? '#ff9800'
+                      ? theme.statusStale
                       : undefined,
               }}
             >
@@ -350,9 +356,9 @@ export const GexTarget = memo(function GexTarget({
           aria-label="Resume live"
           className="cursor-pointer rounded px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider transition-colors"
           style={{
-            color: '#00e676',
-            background: 'rgba(0,230,118,0.08)',
-            border: '1px solid rgba(0,230,118,0.25)',
+            color: theme.statusLive,
+            background: tint(theme.statusLive, '14'),
+            border: `1px solid ${tint(theme.statusLive, '40')}`,
           }}
         >
           LIVE
