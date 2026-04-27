@@ -130,7 +130,16 @@ function getNotes(
 }
 
 function TRACELiveTabPanel({ chart, detail, loading, error }: Readonly<Props>) {
-  const url = detail?.imageUrls[chart] ?? null;
+  // The blob URLs in detail.imageUrls are private-store URLs the browser
+  // can't fetch directly (no auth token). Route through the server-side
+  // proxy at /api/trace-live-image, which authenticates with the
+  // BLOB_READ_WRITE_TOKEN and streams the bytes back. Fall back to null
+  // (showing the empty state) only when no image is stored at all.
+  const hasImage = !!detail?.imageUrls[chart];
+  const url =
+    hasImage && detail
+      ? `/api/trace-live-image?id=${detail.id}&chart=${chart}`
+      : null;
   const notes = getNotes(chart, detail);
 
   return (
