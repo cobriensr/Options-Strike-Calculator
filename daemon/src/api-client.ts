@@ -152,8 +152,21 @@ export async function postTraceLiveAnalyze(
       const startedAt = Date.now();
       const result = await postOnce(endpoint, ownerSecret, body);
       const durationMs = Date.now() - startedAt;
+      // Log response body on non-200 so we can SEE what's wrong.
+      // 200 path doesn't need it (just the analysis JSON).
+      const bodySnippet =
+        result.status === 200
+          ? undefined
+          : typeof result.body === 'string'
+            ? result.body.slice(0, 600)
+            : JSON.stringify(result.body).slice(0, 600);
       logger.info(
-        { attempt, status: result.status, durationMs },
+        {
+          attempt,
+          status: result.status,
+          durationMs,
+          ...(bodySnippet ? { body: bodySnippet } : {}),
+        },
         'POST /api/trace-live-analyze response',
       );
 
