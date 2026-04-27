@@ -18,6 +18,7 @@
  *   - half-day close handled via the same 12:55 ET cutoff as the daemon.
  */
 
+import { neon } from '@neondatabase/serverless';
 import { loadConfig } from './config.js';
 import { makeLogger } from './logger.js';
 import { runCapture } from './capture.js';
@@ -87,6 +88,59 @@ async function sleep(ms: number): Promise<void> {
   return await new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * Compute the exact `capturedAt` ISO the capture script will produce
+ * for a given (date, CT time). Mirrors capture-trace-live.ts's TZ-probe
+ * logic so the existence check below queries the right value.
+ *
+ * If the script's logic ever changes, this must change too — keep them
+ * in lock-step.
+ */
+function computeCapturedAtIso(
+  date: string,
+  hourCt: number,
+  minuteCt: number,
+): string {
+  const isoLocal = `${date}T${String(hourCt + 1).padStart(2, '0')}:${String(minuteCt).padStart(2, '0')}:00`;
+  const probe = new Date(`${date}T12:00:00Z`);
+  const etDateFmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    timeZoneName: 'shortOffset',
+  });
+  const offsetParts = etDateFmt.formatToParts(probe);
+  const tz = offsetParts.find((p) => p.type === 'timeZoneName')?.value ?? '';
+  const offsetMatch = /GMT([+-]\d+)/.exec(tz);
+  const offsetHours = offsetMatch ? Number.parseInt(offsetMatch[1]!, 10) : -5;
+  const sign = offsetHours < 0 ? '-' : '+';
+  const offsetStr = `${sign}${String(Math.abs(offsetHours)).padStart(2, '0')}:00`;
+  return new Date(`${isoLocal}${offsetStr}`).toISOString();
+}
+
+/**
+ * Check whether a trace_live_analyses row already exists for the given
+ * captured_at. Used to skip slots previous runs already completed —
+ * avoids the per-slot Anthropic cost, browserless usage, and blob
+ * writes when re-running a backfill that partially succeeded.
+ *
+ * Match window is ±60s to absorb any nanosecond-level rounding between
+ * runs of the TZ probe; in practice timestamps should be identical.
+ */
+async function hasExistingRow(
+  databaseUrl: string,
+  capturedAt: string,
+): Promise<boolean> {
+  const sql = neon(databaseUrl);
+  const rows = (await sql`
+    SELECT 1
+    FROM trace_live_analyses
+    WHERE captured_at BETWEEN
+      (${capturedAt}::timestamptz - INTERVAL '60 seconds')
+      AND (${capturedAt}::timestamptz + INTERVAL '60 seconds')
+    LIMIT 1
+  `) as Array<unknown>;
+  return rows.length > 0;
+}
+
 async function main(): Promise<void> {
   const args = parseArgs();
   const config = loadConfig();
@@ -114,6 +168,7 @@ async function main(): Promise<void> {
 
   let succeeded = 0;
   let skipped = 0;
+  let alreadyDone = 0;
   let failed = 0;
 
   for (let i = 0; i < slots.length; i++) {
@@ -124,6 +179,29 @@ async function main(): Promise<void> {
     });
 
     try {
+      // Idempotency check: if a previous run already wrote this slot's
+      // row, skip the entire capture+gex+post chain. Saves ~$0.04 per
+      // slot in Anthropic cost + browserless units + blob writes when
+      // re-running a backfill that partially succeeded earlier.
+      const targetCapturedAt = computeCapturedAtIso(
+        args.date,
+        slot.hourCt,
+        slot.minuteCt,
+      );
+      const existed = await hasExistingRow(
+        config.databaseUrl,
+        targetCapturedAt,
+      );
+      if (existed) {
+        slotLogger.info(
+          { capturedAt: targetCapturedAt },
+          'Slot already in DB — skipping (idempotent)',
+        );
+        alreadyDone++;
+        // No rate-limit gap needed for a no-op.
+        continue;
+      }
+
       slotLogger.info('Slot start');
 
       const capture = await runCapture({
@@ -178,12 +256,13 @@ async function main(): Promise<void> {
       date: args.date,
       total: slots.length,
       succeeded,
+      alreadyDone,
       skipped,
       failed,
     },
     'Backfill complete',
   );
-  process.exit(failed > 0 && succeeded === 0 ? 1 : 0);
+  process.exit(failed > 0 && succeeded === 0 && alreadyDone === 0 ? 1 : 0);
 }
 
 main().catch((err: unknown) => {
