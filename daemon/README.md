@@ -2,180 +2,117 @@
 
 Long-running TS service that captures gamma + charm + delta heatmaps from SpotGamma TRACE every 5 minutes during market hours, queries the GEX landscape from Neon at the same instant, and POSTs the batch to `/api/trace-live-analyze` for Sonnet-4.6 analysis. Captures persist to Postgres + Vercel Blob and surface in the **TRACE Live** dashboard component.
 
-## Architecture
+## Architecture (fully hosted, nothing on user's machine)
 
 ```text
-                                                                       POST
-   ┌──────────────────┐    spawns    ┌────────────────────┐    wss://     ┌─────────────────┐
-   │   daemon (tsx)   │ ───────────► │ capture-trace-     │ ─────────────►│  browserless.io │
-   │   src/index.ts   │              │ live.ts            │               │  (production-   │
-   │   ─ scheduler    │              │                    │               │   sfo, $35/mo)  │
-   │   ─ tick orches- │              │  Reads .trace-     │               └─────────────────┘
-   │     trator      │              │  storage.json for  │
-   └──────────────────┘              │  SpotGamma auth    │     POST       ┌────────────────┐
-            │                        │  (passed via       │ ─────────────► │ /api/trace-    │
-            │                        │  storageState)     │                │  live-analyze  │
-            │                        └────────────────────┘                │  (Vercel)      │
-            │                                                              └────────────────┘
-            │                                                                     │
-            ├─ neon() ─────► gex_strike_0dte snapshot ──────────────────────────► ▼
-            │                                                              Neon Postgres
-            ▼                                                              + Vercel Blob
+   ┌──────────────────┐        spawns        ┌────────────────────┐
+   │ Railway daemon   │ ───────────────────► │ capture-script.ts  │
+   │ (Node 22, Docker)│                      │  ─ Auto-login       │ wss://
+   │  ─ scheduler     │                      │    (TRACE_EMAIL +   │ ──────► browserless.io
+   │  ─ market-hours  │                      │     TRACE_PASSWORD) │ ($35/mo Prototyping)
+   │    gate          │                      │  ─ 3 chart pages    │
+   │  ─ tick orches-  │                      │  ─ Parallel SS      │
+   │    trator        │                      │  ─ JSON to stdout   │
+   └──────────────────┘                      └────────────────────┘
+            │                                          │
+            │                              POST        │
+            │                                          ▼
+            │                              ┌────────────────────┐
+            │                              │ /api/trace-live-   │
+            │                              │  analyze (Vercel)  │
+            │                              │  ─ Sonnet 4.6      │
+            │                              │  ─ Save to Neon    │
+            ├─ neon() ─► gex_strike_0dte    │  ─ Upload to Blob  │
+            │                              └────────────────────┘
+            ▼
         pino + Sentry
 ```
 
-The daemon runs on **your MacBook** — TRACE auth lives in the gitignored `scripts/charm-pressure-capture/.trace-storage.json` from the historical study, and the cookies are passed to the remote browserless context via `newContext({ storageState })`. The daemon shells out to `scripts/capture-trace-live.ts`, which connects to browserless's production-sfo cluster via the WebSocket native-Playwright protocol.
+The daemon runs as a containerized service on **Railway**. The capture script does fresh SpotGamma auto-login on every tick (~5s overhead) — no persistent storage state, no stale-cookie debugging, no manual intervention. Entry container restart? Re-logs in automatically. Cookie expires mid-day? The next tick re-logs in.
 
 ## Prerequisites
 
-1. **TRACE auth** — refresh the storage file at least once a week:
+1. **Browserless.io account** — Prototyping tier ($35/mo) for the headless Chromium pool. Token from the dashboard.
+2. **SpotGamma TRACE login** — your email + password (no MFA per the user's account).
+3. **Railway project** (optional but recommended) — same place as your sidecar/ml-sweep services.
 
-   ```bash
-   npx tsx scripts/charm-pressure-capture/save-storage.ts
-   ```
+## Env vars
 
-   This opens a browser, prompts you to log in to SpotGamma manually, and saves cookies to `scripts/charm-pressure-capture/.trace-storage.json` (gitignored). The daemon and capture script both read from this file.
+Set on Railway (via the service's **Variables** tab):
 
-2. **Daemon deps**:
+| Variable | Required | Notes |
+|---|---|---|
+| `BROWSERLESS_TOKEN` | yes | Browserless.io API token |
+| `TRACE_EMAIL` | yes | SpotGamma login email |
+| `TRACE_PASSWORD` | yes | SpotGamma login password |
+| `TRACE_LIVE_ANALYZE_ENDPOINT` | yes | `https://theta-options.com/api/trace-live-analyze` |
+| `OWNER_SECRET` | yes | Same value as in your Vercel env |
+| `DATABASE_URL` | yes | Same Neon connection string as Vercel |
+| `SENTRY_DSN` | optional | Error capture |
+| `LOG_LEVEL` | optional | `info` (default) |
+| `CADENCE_SECONDS` | optional | `300` (= 5 min, default) |
+| `BYPASS_MARKET_HOURS_GATE` | optional | `1` for testing outside market hours |
 
-   ```bash
-   cd daemon && npm install
-   ```
+## Deploying to Railway
 
-3. **Env file** — create `daemon/.env` from the template below.
+1. **Create the service** — Railway dashboard → New Service → "Deploy from GitHub repo" → select this repo
+2. **Set the root directory** to `daemon` (Settings → Root Directory)
+3. **Set the Dockerfile path** to `Dockerfile` (Settings → Dockerfile path; Railway picks it up by default)
+4. **Add env vars** from the table above (Variables tab)
+5. **Deploy** — Railway builds the image and starts the daemon
 
-## Env template
+The daemon's logs (Railway dashboard → Logs tab) will show:
 
-Copy this into `daemon/.env` and fill in:
-
-```bash
-# Browserless API token — your Prototyping-tier ($35/mo) token from
-# the dashboard. Used for the WebSocket connection that runs the headless
-# Chromium remotely.
-BROWSERLESS_TOKEN=
-
-# Where the daemon POSTs captures.
-# Production:  https://theta-options.com/api/trace-live-analyze
-# Local dev:   http://localhost:3000/api/trace-live-analyze
-TRACE_LIVE_ANALYZE_ENDPOINT=https://theta-options.com/api/trace-live-analyze
-
-# Owner cookie value — pull from your root .env.local OWNER_SECRET line.
-OWNER_SECRET=
-
-# Neon Postgres — daemon reads gex_strike_0dte directly. Same connection
-# string as the root project's DATABASE_URL.
-DATABASE_URL=
-
-# ── Reserved for future first-run auto-login (not used in v1; auth comes
-#    from the existing storageState file).
-TRACE_EMAIL=unused-in-v1
-TRACE_PASSWORD=unused-in-v1
-
-# ── Optional ──
-SENTRY_DSN=
-LOG_LEVEL=info
-CADENCE_SECONDS=300
-BYPASS_MARKET_HOURS_GATE=
+```
+TRACE Live daemon starting endpoint=... cadenceSec=300 bypassMarketHoursGate=false
+Scheduler starting
+Outside daemon window — sleeping  ← when market is closed
 ```
 
-## Running
+When market opens at 8:35 CT (= 9:35 ET), each tick logs:
 
-**During market hours** (8:35 AM – 2:55 PM CT, weekdays):
-
-```bash
-cd daemon
-npx tsx --env-file=.env src/index.ts
+```
+Cycle start
+Capture script returned successfully durationMs=... spot=... gammaBytes=... charmBytes=... deltaBytes=...
+POST /api/trace-live-analyze response status=200 durationMs=...
+Cycle complete durationMs=...
 ```
 
-**Outside market hours** (testing / dry-run a single cycle):
+## Local backfill (one-time)
 
-```bash
-cd daemon
-BYPASS_MARKET_HOURS_GATE=1 CADENCE_SECONDS=10 npx tsx --env-file=.env src/index.ts
-```
+For backfilling historical data, you still run scripts locally — but only as a one-shot, not a long-running process. See `scripts/capture-trace-live.ts` and `daemon/src/backfill.ts` (which currently runs locally with `npx tsx --env-file=.env src/backfill.ts --date YYYY-MM-DD`).
 
-**Watch the browser** is not possible with browserless (the headless Chromium runs remotely). To debug DOM issues, run the local capture script instead:
-
-```bash
-HEADLESS=0 npx tsx scripts/capture-trace.ts
-```
-
-(That uses local Chromium; selectors are the same as `capture-trace-live.ts`, so what works there will work here.)
-
-## Backfill mode
-
-One-shot: capture every 5-min slot for a single ET trading day and post each batch with the historical `capturedAt`. Runs ~35 min per day; costs ~$3 per day in Anthropic + OpenAI calls.
-
-```bash
-cd daemon
-npx tsx --env-file=.env src/backfill.ts --date 2026-04-22
-```
-
-The backfill rate-limits to 6/min (10s gap between cycle starts) to respect the API's rate-limit guard. To backfill the last 10 trading days:
-
-```bash
-cd daemon
-for d in 2026-04-14 2026-04-15 2026-04-16 2026-04-17 2026-04-18 \
-         2026-04-21 2026-04-22 2026-04-23 2026-04-24 2026-04-25; do
-  npx tsx --env-file=.env src/backfill.ts --date "$d"
-done
-```
-
-Slots that can't find a `gex_strike_0dte` snapshot for that date+time are skipped (logged but not failed); slots whose POST returns 4xx fail the slot but don't abort the run. End-of-run summary shows `succeeded / skipped / failed`.
-
-## Verifying it works
-
-1. **Start the daemon** with `BYPASS_MARKET_HOURS_GATE=1 CADENCE_SECONDS=15` to fire a tick every 15s outside market hours.
-2. **Watch the logs**: you should see
-   - `Capture script returned successfully` (with byte counts for each chart)
-   - `POST /api/trace-live-analyze response` with `status: 200`
-   - `Cycle complete` with the duration
-3. **Check the dashboard**: open <https://theta-options.com>, expand the **TRACE Live** section. The new capture's headline + image should appear within 60s.
-4. **Check the DB**:
-
-   ```sql
-   SELECT id, captured_at, regime, headline
-   FROM trace_live_analyses
-   ORDER BY captured_at DESC LIMIT 5;
-   ```
-
-## Logs
-
-- Local dev: pino-pretty colored output to stdout.
-- Future Railway: structured JSON to stdout, picked up by the platform's log viewer.
-- Sentry: errors only (`Sentry.captureException`). No tracing — daemon is a single long-running process.
+The backfill needs a refreshed `.trace-storage.json` (gitignored, generated by `scripts/charm-pressure-capture/save-storage.ts`). After the one-time backfill completes, you don't need to refresh it again — the daemon's auto-login handles ongoing captures.
 
 ## Cost estimate
 
-| Source                                                                        | Cost / capture | Cycles / day | Daily cost |
-| ----------------------------------------------------------------------------- | -------------- | ------------ | ---------- |
-| Anthropic (Sonnet 4.6, ~14.7K cached + adaptive thinking + structured output) | ~$0.04         | 76           | ~$3.00     |
-| OpenAI (text-embedding-3-large @ 2000 dim)                                    | ~$0.0001       | 76           | ~$0.01     |
-| Vercel Blob (3 PNGs × ~250 KB each)                                           | ~$0.000017     | 76           | ~$0.001    |
-| Neon Postgres (one INSERT + jsonb + vector)                                   | ~$0            | 76           | $0         |
-| **Daily total**                                                               |                |              | **~$3**    |
-| **Monthly (20 trading days)**                                                 |                |              | **~$60**   |
-
-If you promote `PRIMARY_MODEL` to `claude-opus-4-7` later, multiply Anthropic by ~5× → ~$15/day, $300/month.
+| Source | Per capture | Cycles / day | Daily cost |
+|---|---|---|---|
+| Anthropic (Sonnet 4.6, ~14.7K cached + adaptive thinking) | ~$0.04 | 76 | ~$3.00 |
+| OpenAI (text-embedding-3-large @ 2000 dim) | ~$0.0001 | 76 | ~$0.01 |
+| Vercel Blob (3 PNGs × ~250 KB) | ~$0.000017 | 76 | ~$0.001 |
+| Neon Postgres | ~$0 | 76 | $0 |
+| Browserless.io (3 contexts, ~120s/cycle) | ~$0 (within $35/mo unit budget) | 76 | $0 |
+| Railway (small container, ~2GB-hr/day) | ~$0.30 | — | ~$0.30 |
+| **Daily** | | | **~$3.30** |
+| **Monthly (20 trading days)** | | | **~$66** |
 
 ## Troubleshooting
 
-| Symptom                                               | Likely cause                                    | Fix                                                                                                              |
-| ----------------------------------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `FATAL: BROWSERLESS_TOKEN env var required`           | Missing token in `daemon/.env`                  | Copy from your browserless.io dashboard                                                                          |
-| `FATAL: TRACE auth not found at .trace-storage.json`  | Auth file missing or older than 7 days          | Run `npx tsx scripts/charm-pressure-capture/save-storage.ts`                                                     |
-| Browserless WebSocket connect timeout                 | Token invalid / quota exhausted / region down   | Check the browserless dashboard for active sessions + remaining units; rotate the token if it shows 401          |
-| `Concurrent session limit reached`                    | 5+ sessions open simultaneously                 | Daemon uses 3 contexts per cycle; the 5-cap should be enough but a stuck previous cycle could hit it. Restart it |
-| `could not select chart type "Gamma"`                 | TRACE DOM changed                               | Run `HEADLESS=0 npx tsx scripts/capture-trace.ts` against local Chromium to inspect; update selectors            |
-| `POST returned 429`                                   | Rate limit on `/api/trace-live-analyze` (6/min) | Auto-retried after 30s; lower CADENCE_SECONDS only if intentional                                                |
-| `POST returned 401`                                   | OWNER_SECRET stale                              | Refresh from root `.env.local` (which is `vercel env pull`-able)                                                 |
-| `No gex_strike_0dte snapshot at-or-before capturedAt` | 1-min cron paused or behind                     | Daemon skips this cycle; check `/api/cron/fetch-gex` health                                                      |
-| `capture timed out after 90000ms`                     | TRACE page slow / browserless region blip       | Auto-skipped; next cycle should recover                                                                          |
-| Wrong chart on the dashboard                          | Chart-type dropdown drifted                     | Run `HEADLESS=0 npx tsx scripts/capture-trace.ts` to inspect the dropdown's actual DOM                           |
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `FATAL: BROWSERLESS_TOKEN env var required` | Missing env var | Set in Railway Variables tab |
+| `FATAL: TRACE_EMAIL and TRACE_PASSWORD env vars required` | Same | Same |
+| `Login did not redirect to /trace within 30s` | SpotGamma changed login form OR added bot detection / CAPTCHA | Open the screenshot path printed in the error (Railway logs let you read /tmp/* via the shell tab); inspect what state the page reached |
+| `could not click option "Charm Pressure"` | TRACE chart-type DOM changed | Same — check the screenshot dumped to /tmp |
+| `POST returned 429` | API rate limit (6/min) | Auto-retried 30s later; lower CADENCE_SECONDS only if intentional |
+| `POST returned 401` | OWNER_SECRET stale | Refresh from your Vercel env |
+| `No gex_strike_0dte snapshot within ±5min` | GEX cron paused or behind | Daemon skips the cycle; check `/api/cron/fetch-gex-by-strike` health |
+| `capture timed out after 180000ms` | Browserless region slow / TRACE login hung | Auto-skipped; next cycle should recover |
+| Browserless shows `Concurrent session limit reached` | A previous session didn't tear down (browserless 5-cap on Prototyping) | Restart the daemon (Railway Settings → Restart) — clears stale sessions |
 
-## Future work (not v1)
+## Future work
 
-- **Move to Railway** — daemon process itself moves to a hosted runtime so it survives sleep/laptop close. Auth state would need to be uploaded to Vercel Blob and downloaded on startup since `.trace-storage.json` is gitignored. Browserless connection works the same regardless of where the daemon runs.
-- **Auto-refresh `.trace-storage.json`** — script that detects expired cookies and re-runs `save-storage.ts` interactively. Currently you have to refresh it manually each week.
-- **Heartbeat row** — write a `daemon_heartbeat (cycle_started_at, cycle_ended_at, status)` table so the dashboard can render a "daemon last seen N min ago" status pill.
-- **First-run interactive auth** — when `.trace-storage.json` is missing, fall back to opening a Playwright window via `TRACE_EMAIL` + `TRACE_PASSWORD` env vars (currently placeholders). Eliminates the manual `save-storage.ts` step.
+- **Heartbeat row in DB** — daemon writes (cycle_start_at, cycle_end_at, status) so the dashboard can render "daemon last seen N min ago"
+- **Selector drift detector** — compare byte counts across cycles; alert if dramatic shifts (chrome got captured instead of chart)
+- **Backfill on Railway** — one-shot worker job that processes a backfill request asynchronously (instead of running locally)

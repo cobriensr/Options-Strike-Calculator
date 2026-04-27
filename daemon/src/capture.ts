@@ -18,18 +18,11 @@ import type { Logger } from 'pino';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /**
- * Path to the capture script. The daemon lives at <repo>/daemon/src/,
- * the script lives at <repo>/scripts/. From the daemon's CWD we resolve
- * via __dirname (../../scripts/capture-trace-live.ts) so the same path
- * works in dev (tsx) and a future bundle.
+ * Path to the capture script. Lives inside daemon/src/ so it's bundled
+ * into the Railway container without dragging in scripts/. The script
+ * does its own SpotGamma auto-login each invocation (no shared state).
  */
-const CAPTURE_SCRIPT_PATH = join(
-  __dirname,
-  '..',
-  '..',
-  'scripts',
-  'capture-trace-live.ts',
-);
+const CAPTURE_SCRIPT_PATH = join(__dirname, 'capture-script.ts');
 
 export interface CaptureResult {
   images: {
@@ -90,11 +83,13 @@ export async function runCapture(
     //
     // Backfill mode: pass --date / --time flags through. Live mode: no
     // extra args, the script captures current data.
+    // Run from daemon/ root so npx resolves daemon's own node_modules
+    // (where @playwright/test + tsx live in the Railway container).
     const args = ['tsx', CAPTURE_SCRIPT_PATH];
     if (date) args.push('--date', date);
     if (time) args.push('--time', time);
     const child = spawn('npx', args, {
-      cwd: join(__dirname, '..', '..'),
+      cwd: join(__dirname, '..'),
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
