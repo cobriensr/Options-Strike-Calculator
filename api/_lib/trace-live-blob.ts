@@ -14,10 +14,13 @@
  * Path shape: `trace-live/{YYYY-MM-DD}/{HHmm}/{chart}.png` (UTC throughout
  * — capturedAt is ISO/UTC, and the dashboard converts to ET at display
  * time). We pass `addRandomSuffix: true` to `put()` so Vercel Blob appends
- * a random hash to the stored key — that gives owner-only-data privacy via
- * unguessable URLs (we use `access: 'public'` so the dashboard can render
- * via a plain `<img>` without signing roundtrips) AND makes retries for
- * the same minute idempotent (no "blob already exists" error on replay).
+ * a random hash to the stored key, which makes retries for the same minute
+ * idempotent (no "blob already exists" error on replay).
+ *
+ * Access mode: `'private'`. The strike-backups store is configured
+ * private at the store level; mismatching access modes per-blob throws
+ * BlobError. Dashboard rendering will need authenticated/signed-URL reads
+ * via the existing list/get endpoints rather than direct `<img>` tags.
  *
  * Note: as of @vercel/blob@2.x, `put()` defaults `addRandomSuffix` to
  * false — the inverse of `putUploadStream` and other helpers in the same
@@ -70,7 +73,7 @@ export async function uploadTraceLiveImages(args: {
       const path = `${prefix}/${img.chart}.png`;
       const buffer = Buffer.from(img.base64, 'base64');
       const result = await put(path, buffer, {
-        access: 'public',
+        access: 'private',
         contentType: 'image/png',
         addRandomSuffix: true,
       });
