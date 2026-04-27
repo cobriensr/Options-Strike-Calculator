@@ -6,16 +6,19 @@
  * error means the payload is wrong, not the network — re-running won't
  * fix it). 429 (rate limited) gets a single retry after a 30s wait.
  *
- * The endpoint can take 30–90s server-side (Sonnet 4.6 + adaptive
- * thinking + structured output validation). We use a 120s fetch timeout
- * to give it headroom — the daemon's own scheduler-level timeout
- * (in capture.ts) governs the overall tick budget.
+ * The endpoint can take 60s–9min server-side (Sonnet 4.6 + adaptive
+ * thinking + effort:'high' on a 3-image structured-output call). The
+ * fetch timeout matches the Vercel function ceiling (780s / 13min) so
+ * we wait for the function to either complete or get killed by Vercel
+ * — there's no value in the daemon disconnecting earlier; that just
+ * orphans completed work (the function keeps running server-side and
+ * persists the row, but the daemon never sees the response).
  */
 
 import type { Logger } from 'pino';
 import type { DaemonGexLandscape } from './gex.js';
 
-const POST_TIMEOUT_MS = 120_000;
+const POST_TIMEOUT_MS = 780_000;
 const MAX_RETRIES = 2;
 const BASE_BACKOFF_MS = 2_000;
 
