@@ -12,7 +12,7 @@
  * source of truth stays in one place.
  */
 
-import { memo, useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
 
 export interface NavSection {
   id: string;
@@ -24,12 +24,18 @@ interface Props {
   orientation?: 'horizontal' | 'vertical';
   /** Tailwind class overrides for the outer <nav>. */
   className?: string;
+  /**
+   * Optional content rendered at the foot of the vertical sidebar (e.g. an
+   * access-key button). Ignored in horizontal orientation.
+   */
+  bottomSlot?: ReactNode;
 }
 
 const SectionNav = memo(function SectionNav({
   sections,
   orientation = 'horizontal',
   className,
+  bottomSlot,
 }: Props) {
   const [activeId, setActiveId] = useState<string>('');
   const observerRef = useRef<IntersectionObserver | null>(null);
@@ -89,6 +95,9 @@ const SectionNav = memo(function SectionNav({
             </a>
           ))}
         </div>
+        {bottomSlot && (
+          <div className="border-edge mt-4 border-t pt-3">{bottomSlot}</div>
+        )}
       </nav>
     );
   }

@@ -635,33 +635,36 @@ export default function StrikeCalculator() {
     const hasMarketOrSnapshot = market.hasData || !!historySnapshot;
     return [
       { id: 'sec-inputs', label: 'Inputs' },
-      { id: 'sec-trading-schedule', label: 'Schedule' },
+      { id: 'sec-trading-schedule', label: 'Trading Schedule' },
       { id: 'sec-settings', label: 'Settings' },
-      { id: 'sec-risk', label: 'Risk' },
-      { id: 'sec-regime', label: 'Regime' },
+      { id: 'sec-risk', label: 'Risk Calculator' },
+      { id: 'sec-regime', label: 'Market Regime' },
       ...(isOwner && hasMarketOrSnapshot
         ? [
-            { id: 'sec-darkpool', label: 'Dark Pool' },
-            { id: 'sec-gex', label: 'GEX' },
+            { id: 'sec-darkpool', label: 'Dark Pool Levels' },
+            { id: 'sec-trace-live', label: 'TRACE Live' },
+            { id: 'sec-gex', label: 'GEX Per Strike' },
             { id: 'sec-gex-target', label: 'GEX Target' },
-            { id: 'sec-gex-landscape', label: 'GEX Map' },
-            { id: 'sec-market-flow', label: 'Flow' },
+            { id: 'sec-gex-landscape', label: 'GEX Landscape' },
+            {
+              id: 'sec-futures-gamma-playbook',
+              label: 'Futures Gamma Playbook',
+            },
+            { id: 'sec-market-internals', label: 'Market Internals' },
+            { id: 'sec-market-flow', label: 'Market Flow' },
+            { id: 'sec-otm-flow', label: 'OTM Flow Alerts' },
+            { id: 'sec-institutional-program', label: 'Institutional Program' },
+            { id: 'sec-iv-anomalies', label: 'IV Anomalies' },
           ]
         : []),
-      ...(isOwner && hasMarketOrSnapshot
-        ? [{ id: 'sec-iv-anomalies', label: 'IV Anomalies' }]
+      ...(isOwner ? [{ id: 'sec-futures', label: 'Futures Calculator' }] : []),
+      ...(hasMarketOrSnapshot
+        ? [{ id: 'sec-charts', label: 'Chart Analysis' }]
         : []),
-      ...(isOwner
-        ? [
-            { id: 'sec-futures', label: 'Futures' },
-            { id: 'sec-futures-calc', label: 'Futures Calc' },
-          ]
-        : []),
-      ...(hasMarketOrSnapshot ? [{ id: 'sec-charts', label: 'Charts' }] : []),
-      { id: 'sec-history', label: 'History' },
+      { id: 'sec-history', label: 'Analysis History' },
       ...(isOwner ? [{ id: 'sec-ml-insights', label: 'ML Insights' }] : []),
-      { id: 'sec-positions', label: 'Positions' },
-      ...(isOwner ? [{ id: 'sec-bwb', label: 'Settlement Pin' }] : []),
+      { id: 'sec-positions', label: 'Position Monitor' },
+      ...(isOwner ? [{ id: 'sec-bwb', label: 'BWB Calculator' }] : []),
       { id: 'results', label: 'Results' },
     ];
   }, [isOwner, market.hasData, historySnapshot]);
@@ -1208,7 +1211,10 @@ export default function StrikeCalculator() {
 
                 {isOwner && (market.hasData || !!historySnapshot) && (
                   <>
-                    <span id="sec-market-flow" className="block scroll-mt-28" />
+                    <span
+                      id="sec-market-internals"
+                      className="block scroll-mt-28"
+                    />
 
                     <ErrorBoundary label="Market Internals">
                       <MarketInternalsPanel
@@ -1217,6 +1223,8 @@ export default function StrikeCalculator() {
                         regime={regime}
                       />
                     </ErrorBoundary>
+
+                    <span id="sec-market-flow" className="block scroll-mt-28" />
 
                     <ErrorBoundary label="Market Flow">
                       <MarketFlow
