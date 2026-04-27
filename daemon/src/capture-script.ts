@@ -29,6 +29,9 @@ import {
 const TRACE_URL =
   process.env.TRACE_URL ?? 'https://dashboard.spotgamma.com/trace';
 
+const LOGIN_URL =
+  process.env.TRACE_LOGIN_URL ?? 'https://dashboard.spotgamma.com/login';
+
 const BROWSERLESS_WS =
   process.env.BROWSERLESS_WS ??
   'wss://production-sfo.browserless.io/chromium/playwright';
@@ -82,22 +85,41 @@ async function loginIfNeeded(
   email: string,
   password: string,
 ): Promise<void> {
+  // First check if /trace is already authenticated (e.g., a stale cookie
+  // from a prior tick still works — rare in our spawn-per-tick model
+  // but possible if browserless reuses connection state).
   await page.goto(TRACE_URL);
   await page.waitForTimeout(2000);
 
-  // Detect login state by URL after redirect, OR by presence of a
-  // password field. Either signal means we're not yet authenticated.
-  const url = page.url();
-  const onLogin =
-    /\/login|\/sign[-_]?in|\/auth/i.test(url) ||
-    (await page
-      .locator('input[type="password"]')
-      .first()
-      .isVisible({ timeout: 1500 })
-      .catch(() => false));
-
-  if (!onLogin) {
+  const dashboardVisible = await SEL.chartTypeDropdown(page)
+    .isVisible({ timeout: 3000 })
+    .catch(() => false);
+  if (dashboardVisible) {
     return;
+  }
+
+  // Not authenticated — navigate directly to the login page. Going to
+  // the explicit /login URL is more reliable than clicking through
+  // SpotGamma's anonymous /trace preview ("Subscribe Now" / "Login"
+  // buttons), which is layout-fragile.
+  await page.goto(LOGIN_URL);
+  await page.waitForTimeout(2000);
+
+  const formVisible = await page
+    .locator('#login-password, input[type="password"]')
+    .first()
+    .isVisible({ timeout: 8000 })
+    .catch(() => false);
+
+  if (!formVisible) {
+    const finalUrl = page.url();
+    const screenshotPath = `/tmp/trace-no-loginform-${Date.now()}.png`;
+    await page
+      .screenshot({ path: screenshotPath, fullPage: true })
+      .catch(() => {});
+    throw new Error(
+      `Could not load login form at ${LOGIN_URL}. Final URL: ${finalUrl}. Screenshot: ${screenshotPath}`,
+    );
   }
 
   // SpotGamma uses MUI form with id="login-username" (note: type="text",
