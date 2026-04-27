@@ -26,8 +26,13 @@ import {
   type Page,
 } from '@playwright/test';
 
+// Query params are LOAD-BEARING. Without `traceSym=SPX` SpotGamma may
+// render a symbol-selection prompt (or fall back to anonymous preview)
+// instead of the chart. `mktActor=mm` selects Market Maker mode which
+// is what the historical capture-trace.ts study used.
 const TRACE_URL =
-  process.env.TRACE_URL ?? 'https://dashboard.spotgamma.com/trace';
+  process.env.TRACE_URL ??
+  'https://dashboard.spotgamma.com/trace?mktActor=mm&traceSym=SPX';
 
 const LOGIN_URL =
   process.env.TRACE_LOGIN_URL ?? 'https://dashboard.spotgamma.com/login';
