@@ -54,7 +54,7 @@ function TRACELiveDashboard({ marketOpen }: Props) {
   useTraceLiveChime(latestCapturedAt, isLive);
 
   return (
-    <SectionBox label="TRACE Live" collapsible defaultCollapsed>
+    <SectionBox label="TRACE Live" collapsible>
       <TRACELiveHeader
         detail={detail}
         isLive={isLive}

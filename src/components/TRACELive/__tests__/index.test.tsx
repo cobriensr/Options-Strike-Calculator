@@ -55,13 +55,10 @@ describe('<TRACELiveDashboard>', () => {
     expect(mockHook).toHaveBeenCalledWith(false);
   });
 
-  it('switches the active tab when a tab is clicked (after expanding the section)', async () => {
+  it('switches the active tab when a tab is clicked', async () => {
     const user = userEvent.setup();
     render(<TRACELiveDashboard marketOpen={false} />);
-    // SectionBox is collapsible + defaultCollapsed; expand it first.
-    await user.click(
-      screen.getByRole('button', { name: /Toggle TRACE Live/i }),
-    );
+    // TRACE Live mounts expanded by default (primary live-data panel).
 
     // Default active tab is gamma — its aria-selected should be true.
     const gammaTab = screen.getByRole('tab', { name: /Gamma/ });
