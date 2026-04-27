@@ -17,6 +17,7 @@ export default [
       '.claude/worktrees',
       '.clone',
       'sidecar',
+      'daemon',
       'playwright-report',
       '.scannerwork',
     ],
