@@ -1,16 +1,11 @@
 import { memo, useMemo } from 'react';
 import { theme } from '../../themes';
+import { formatDeltaPct } from '../../utils/component-formatters';
 import { SectionBox } from '../ui';
 import type { StrikeScore } from '../../utils/gex-target';
 
 export interface UrgencyPanelProps {
   leaderboard: StrikeScore[];
-}
-
-function formatDeltaPct(val: number | null): string {
-  if (val === null) return '—';
-  const sign = val >= 0 ? '+' : '';
-  return `${sign}${(val * 100).toFixed(1)}%`;
 }
 
 export const UrgencyPanel = memo(function UrgencyPanel({

@@ -9,7 +9,7 @@
  */
 
 import { theme } from '../../themes';
-import { formatTime } from './formatters';
+import { formatTimeCT } from '../../utils/component-formatters';
 
 interface Props {
   /** Current displayed snapshot timestamp (ISO). */
@@ -93,7 +93,7 @@ export function Header({
           >
             {timestamps.map((ts) => (
               <option key={ts} value={ts}>
-                {formatTime(ts)}
+                {formatTimeCT(ts)}
               </option>
             ))}
           </select>
@@ -103,7 +103,7 @@ export function Header({
               className="min-w-[44px] text-center font-mono text-[10px]"
               style={{ color: timestampColor }}
             >
-              {formatTime(timestamp)}
+              {formatTimeCT(timestamp)}
             </span>
           )
         )}

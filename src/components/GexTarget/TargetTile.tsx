@@ -1,16 +1,11 @@
 import { memo } from 'react';
 import { theme } from '../../themes';
+import { formatDeltaPct } from '../../utils/component-formatters';
 import { SectionBox, StatusBadge } from '../ui';
 import type { TargetScore, StrikeScore } from '../../utils/gex-target';
 
 export interface TargetTileProps {
   score: TargetScore | null;
-}
-
-function formatDeltaPct(val: number | null): string {
-  if (val === null) return '—';
-  const sign = val >= 0 ? '+' : '';
-  return `${sign}${(val * 100).toFixed(1)}%`;
 }
 
 function WallLabel({ target }: Readonly<{ target: StrikeScore }>) {

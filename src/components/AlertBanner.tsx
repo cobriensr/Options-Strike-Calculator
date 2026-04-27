@@ -8,6 +8,7 @@
 
 import type { MarketAlert } from '../hooks/useAlertPolling';
 import { theme } from '../themes';
+import { formatTimeCT } from '../utils/component-formatters';
 import { tintedSurface } from '../utils/ui-utils';
 
 interface AlertBannerProps {
@@ -51,18 +52,6 @@ function directionStyles(direction: MarketAlert['direction']) {
   }
 }
 
-function formatTime(iso: string): string {
-  try {
-    return new Date(iso).toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      timeZone: 'America/Chicago',
-    });
-  } catch {
-    return '';
-  }
-}
-
 export default function AlertBanner({
   alerts,
   onAcknowledge,
@@ -95,7 +84,7 @@ export default function AlertBanner({
                   {alert.title}
                 </span>
                 <span className="ml-auto font-sans text-[10px] opacity-60">
-                  {formatTime(alert.created_at)}
+                  {formatTimeCT(alert.created_at)}
                 </span>
               </div>
               <p className="font-sans text-xs leading-relaxed">{alert.body}</p>

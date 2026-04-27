@@ -9,7 +9,6 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  formatDeltaPct,
   formatDist,
   formatGex,
   formatNet,
@@ -44,23 +43,8 @@ describe('formatGex', () => {
   });
 });
 
-describe('formatDeltaPct', () => {
-  it('returns an em-dash for null', () => {
-    expect(formatDeltaPct(null)).toBe('\u2014');
-  });
-
-  it('formats positive fractions with a leading + and one decimal', () => {
-    expect(formatDeltaPct(0.123)).toBe('+12.3%');
-  });
-
-  it('formats negative fractions with a native minus sign and one decimal', () => {
-    expect(formatDeltaPct(-0.075)).toBe('-7.5%');
-  });
-
-  it('formats zero with a leading +', () => {
-    expect(formatDeltaPct(0)).toBe('+0.0%');
-  });
-});
+// formatDeltaPct moved to src/utils/component-formatters.ts and is
+// covered by component-formatters.test.ts.
 
 describe('formatDist', () => {
   it('appends a p suffix and signs the value', () => {

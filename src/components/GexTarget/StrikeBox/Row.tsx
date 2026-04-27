@@ -19,7 +19,8 @@ import type { StrikeScore } from '../../../utils/gex-target';
 import { BAR_H, BAR_MAX_W, type BarStats } from './bars';
 import { GreekBar } from './GreekBar';
 import { RankArrow, type RankChangeInfo } from './RankArrow';
-import { formatDeltaPct, formatDist, formatGex, formatNet } from './formatters';
+import { formatDeltaPct } from '../../../utils/component-formatters';
+import { formatDist, formatGex, formatNet } from './formatters';
 import {
   CHEX_TOOLTIPS,
   CP_TOOLTIPS,

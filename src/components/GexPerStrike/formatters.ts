@@ -4,6 +4,9 @@
  * Number compaction uses K/M/B/T suffixes; flow pressure switches from
  * percent to multiplier once the ratio exceeds 100% to keep the readout
  * intelligible when standing OI gamma nets to near zero.
+ *
+ * CT-anchored time formatting lives in `src/utils/component-formatters.ts`
+ * (`formatTimeCT`) — import from there rather than defining a local copy.
  */
 
 export function formatNum(n: number): string {
@@ -31,17 +34,4 @@ export function formatNum(n: number): string {
 export function formatFlowPressure(pct: number): string {
   if (pct <= 100) return `${pct.toFixed(0)}%`;
   return `${(pct / 100).toFixed(1)}\u00D7`;
-}
-
-export function formatTime(iso: string | null): string {
-  if (!iso) return '';
-  try {
-    return new Date(iso).toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      timeZone: 'America/Chicago',
-    });
-  } catch {
-    return '';
-  }
 }

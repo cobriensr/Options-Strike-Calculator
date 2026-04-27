@@ -13,6 +13,7 @@
 
 import { memo, useMemo, useState, useCallback } from 'react';
 import { theme } from '../themes';
+import { formatTimeCT } from '../utils/component-formatters';
 import { SectionBox } from './ui';
 import { StatusBadge } from './ui';
 import type { DarkPoolLevel } from '../hooks/useDarkPoolLevels';
@@ -53,19 +54,6 @@ function formatPremium(value: number): string {
   if (abs >= 1_000_000) return `$${(abs / 1_000_000).toFixed(0)}M`;
   if (abs >= 1_000) return `$${(abs / 1_000).toFixed(0)}K`;
   return `$${abs.toFixed(0)}`;
-}
-
-function formatTime(iso: string | null): string {
-  if (!iso) return '';
-  try {
-    return new Date(iso).toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      timeZone: 'America/Chicago',
-    });
-  } catch {
-    return '';
-  }
 }
 
 function formatDist(level: number, price: number): string {
@@ -207,7 +195,7 @@ export default memo(function DarkPoolLevels({
               color: isLive ? '#00e676' : isScrubbed ? '#ffb300' : '#ff9800',
             }}
           >
-            {scrubTime ?? (updatedAt ? formatTime(updatedAt) : '')}
+            {scrubTime ?? (updatedAt ? formatTimeCT(updatedAt) : '')}
           </span>
         )}
         <button
@@ -448,7 +436,7 @@ function LevelRow({
 
       {/* Latest trade time */}
       <td className="text-muted w-[52px] shrink-0 text-right font-mono text-[10px]">
-        {formatTime(level.latestTime)}
+        {formatTimeCT(level.latestTime)}
       </td>
     </tr>
   );

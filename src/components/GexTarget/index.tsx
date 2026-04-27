@@ -21,6 +21,7 @@ import { StrikeBox } from './StrikeBox';
 import { PriceChart } from './PriceChart';
 import type { CandleInterval } from './PriceChart';
 import { computeMomentum } from '../../utils/candle-momentum';
+import { formatTimeCT } from '../../utils/component-formatters';
 import {
   computeAttractingMomentum,
   flowConfluence,
@@ -51,21 +52,6 @@ export interface GexTargetProps {
 }
 
 type Mode = 'oi' | 'vol' | 'dir';
-
-// ── Helpers ───────────────────────────────────────────────
-
-function formatTime(iso: string | null): string {
-  if (!iso) return '';
-  try {
-    return new Date(iso).toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      timeZone: 'America/Chicago',
-    });
-  } catch {
-    return '';
-  }
-}
 
 // ── Price context ──────────────────────────────────────────
 // Derives a PriceMovementContext from the visible 1-min SPX candles so that
@@ -323,7 +309,7 @@ export const GexTarget = memo(function GexTarget({
           >
             {timestamps.map((ts) => (
               <option key={ts} value={ts}>
-                {formatTime(ts)}
+                {formatTimeCT(ts)}
               </option>
             ))}
           </select>
@@ -341,7 +327,7 @@ export const GexTarget = memo(function GexTarget({
                       : undefined,
               }}
             >
-              {formatTime(timestamp)}
+              {formatTimeCT(timestamp)}
             </span>
           )
         )}
