@@ -121,25 +121,50 @@ ${DELTA_SKILL}
 // ============================================================
 
 export const TRACE_LIVE_SYSTEM_PROMPT_PART3 = `<output_instructions>
-Return a single JSON object matching the TraceAnalysis schema (the SDK validates this via output_config.format). Required fields:
+Return a single JSON object matching the TraceAnalysis schema. The server
+validates with Zod and rejects on enum mismatch — use the EXACT string
+literals listed below; do not paraphrase, abbreviate, or substitute Greek
+characters. Required fields:
 
   - timestamp: echo the input capture timestamp (ET label preferred)
   - spot: echo the input spot price
   - stabilityPct: echo input stability or null
-  - regime: classify as range_bound_+γ / trending_+γ / range_bound_−γ / trending_−γ / mixed based on the gamma read AND the realized intraday range visible in the candles
-  - charm: { predominantColor, direction, junctionStrike, flipFlopDetected, rejectionWicksAtRed, notes (≤2 sentences) }
-  - gamma: { signAtSpot, dominantNodeStrike, dominantNodeMagnitudeB, dominantNodeRatio, floorStrike, ceilingStrike, overrideFires, notes (≤2 sentences) }
-  - delta: { blueBelowStrike, redAboveStrike, corridorWidth, zoneBehavior, notes (≤2 sentences) }
+  - regime: one of "range_bound_positive_gamma" | "trending_positive_gamma" | "range_bound_negative_gamma" | "trending_negative_gamma" | "mixed". Classify based on the gamma read AND the realized intraday range visible in the candles.
+  - charm: {
+      predominantColor: "red" | "blue" | "mixed" | "multi_band"
+      direction: "long" | "short" | "flip" | "unstable" | "no_call"
+      junctionStrike: number | null
+      flipFlopDetected: boolean
+      rejectionWicksAtRed: boolean
+      notes: string ≤ 2 sentences
+    }
+  - gamma: {
+      signAtSpot: "positive_strong" | "positive_pale" | "neutral" | "negative_pale" | "negative_strong"
+      dominantNodeStrike: number | null
+      dominantNodeMagnitudeB: number | null
+      dominantNodeRatio: number | null
+      floorStrike: number | null
+      ceilingStrike: number | null
+      overrideFires: boolean
+      notes: string ≤ 2 sentences
+    }
+  - delta: {
+      blueBelowStrike: number | null
+      redAboveStrike: number | null
+      corridorWidth: number | null
+      zoneBehavior: "support_resistance" | "acceleration" | "unclear"
+      notes: string ≤ 2 sentences
+    }
   - synthesis: {
       predictedClose: number — the predicted SPX close, applying the override hierarchy
-      confidence: high | medium | low | no_trade
-      crossChartAgreement: all_agree | mostly_agree | split | no_call
-      overrideApplied: bool — did the gamma override fire?
+      confidence: "high" | "medium" | "low" | "no_trade"
+      crossChartAgreement: "all_agree" | "mostly_agree" | "split" | "no_call"
+      overrideApplied: boolean — did the gamma override fire?
       trade: { type, centerStrike, wingWidth, size }
-      headline: ≤280 chars — what the user sees at top of dashboard
+      headline: string ≤ 280 chars — what the user sees at top of dashboard
       warnings: array of ≤8 short strings — events, MOC risk, multi-band charts, etc.
     }
-  - reasoningSummary: optional ≤2000-char audit-trail summary of the reads (debug-friendly)
+  - reasoningSummary: optional string ≤ 2000 chars — audit-trail summary of the reads (debug-friendly)
 
 Trade type and size:
 

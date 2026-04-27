@@ -113,10 +113,11 @@ async function callModel(
     model,
     max_tokens: 64_000,
     thinking: { type: 'adaptive' },
-    // `effort: 'high'` is the sweet spot for an intelligence-sensitive read
-    // that still needs to be tick-fast. 'xhigh'/'max' would burn tokens for
-    // marginal gain on a 3-image structured-output call.
-    output_config: { effort: 'high' },
+    // 'medium' is the right setting for a tick-call read that fires every
+    // 5 min during the session — the schema is now spelled out enum-by-enum,
+    // so the model doesn't need 'high' to converge. 'high' was driving 9-min
+    // calls; 'medium' should land in 60-120s.
+    output_config: { effort: 'medium' },
     system: [
       {
         type: 'text',
