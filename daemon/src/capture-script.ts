@@ -159,19 +159,23 @@ async function loginIfNeeded(
     await passwordField.press('Enter');
   }
 
-  // Wait for redirect to /trace. CRITICAL: use a pathname predicate, NOT
-  // a substring regex — the URL `dashboard.spotgamma.com/login` contains
-  // `/dashboard` (as host substring), which would falsely satisfy a regex
-  // like /\/trace|\/dashboard/ INSTANTLY (before submit even processes),
-  // making the function "succeed" while we're still on the login page.
-  // Then setupChartPage hits /trace, gets redirected to /login (no
-  // cookie), and times out waiting for the combobox.
+  // Wait for ANY authenticated path. Observed: SpotGamma redirects to
+  // /home (e.g. /home?eh-model=legacy) after a successful login, NOT
+  // /trace. Accept either, then we'll navigate to /trace explicitly.
+  // Important: pathname predicate (not substring regex) — the URL
+  // `dashboard.spotgamma.com/login` contains `/dashboard` as host
+  // substring, which would falsely satisfy a regex like /\/dashboard/
+  // INSTANTLY before submit processes.
   await page
     .waitForURL(
       (urlObj) => {
         try {
           const path = new URL(urlObj.toString()).pathname;
-          return path.startsWith('/trace');
+          return (
+            path.startsWith('/trace') ||
+            path.startsWith('/home') ||
+            path.startsWith('/dashboard')
+          );
         } catch {
           return false;
         }
@@ -187,10 +191,17 @@ async function loginIfNeeded(
           /* ignore */
         });
       throw new Error(
-        `Login did not redirect to /trace within 30s. Final URL: ${finalUrl}. Screenshot: ${screenshotPath}`,
+        `Login did not redirect to authenticated path within 30s. Final URL: ${finalUrl}. Screenshot: ${screenshotPath}`,
       );
     });
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(1000);
+
+  // Navigate explicitly to /trace. Whether SpotGamma redirected us to
+  // /home, /dashboard, or /trace, the chart-type combobox lives at /trace.
+  if (!new URL(page.url()).pathname.startsWith('/trace')) {
+    await page.goto(TRACE_URL);
+    await page.waitForTimeout(2000);
+  }
 }
 
 // ============================================================
