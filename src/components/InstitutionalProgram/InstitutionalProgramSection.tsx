@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useInstitutionalProgram } from '../../hooks/useInstitutionalProgram.js';
 import { SectionBox } from '../ui';
+import { TimeInputCT } from '../ui/TimeInputCT.js';
 import { CeilingChart } from './CeilingChart.js';
 import { OpeningBlocksCard } from './OpeningBlocksCard.js';
 import { RegimeBanner } from './RegimeBanner.js';
@@ -81,23 +82,23 @@ export function InstitutionalProgramSection() {
             />
           </div>
           <div className="flex items-center gap-2">
-            <label className="text-muted text-xs">Time CT:</label>
-            <input
-              type="time"
+            <span className="text-muted text-xs">Time CT:</span>
+            <TimeInputCT
+              label="Start time"
               value={startTime}
-              onChange={(e) => setStartTime(e.target.value)}
-              className="border-edge bg-surface text-text rounded border px-2 py-1 font-mono text-xs"
-              aria-label="Start time (CT)"
+              onChange={setStartTime}
               placeholder="from"
+              labelVisible={false}
+              className="border-edge bg-surface text-text rounded border px-2 py-1 font-mono text-xs"
             />
             <span className="text-muted text-xs">–</span>
-            <input
-              type="time"
+            <TimeInputCT
+              label="End time"
               value={endTime}
-              onChange={(e) => setEndTime(e.target.value)}
-              className="border-edge bg-surface text-text rounded border px-2 py-1 font-mono text-xs"
-              aria-label="End time (CT)"
+              onChange={setEndTime}
               placeholder="to"
+              labelVisible={false}
+              className="border-edge bg-surface text-text rounded border px-2 py-1 font-mono text-xs"
             />
           </div>
           {filtered && (

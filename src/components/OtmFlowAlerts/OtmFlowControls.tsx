@@ -15,6 +15,7 @@ import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useDebounced } from '../../hooks/useDebounced';
 import type { OtmFlowSettings } from '../../types/otm-flow';
 import { Chip } from '../ui';
+import { TimeInputCT } from '../ui/TimeInputCT';
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -152,18 +153,16 @@ export const OtmFlowControls = memo(function OtmFlowControls({
                 aria-label="Historical date"
               />
             </label>
-            <label className="flex items-center gap-1.5 font-mono text-[12px]">
+            <span className="flex items-center gap-1.5 font-mono text-[12px]">
               <span className="text-muted">Time CT</span>
-              <input
-                type="time"
+              <TimeInputCT
+                label="Historical time"
                 value={settings.historicalTime}
-                onChange={(e) =>
-                  updateSettings({ historicalTime: e.target.value })
-                }
+                onChange={(t) => updateSettings({ historicalTime: t })}
+                labelVisible={false}
                 className="border-edge bg-surface-alt rounded border px-1.5 py-0.5"
-                aria-label="Historical time (Central Time)"
               />
-            </label>
+            </span>
           </>
         )}
 
