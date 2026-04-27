@@ -45,6 +45,32 @@ function agreementLabel(a: string): string {
   return a.replace(/_/g, ' ');
 }
 
+/**
+ * Split the model's reasoningSummary on "STEP 1", "STEP 2", "STEP 3"
+ * markers so we can render each step as its own collapsible section.
+ * The tail after STEP 3 (OVERRIDE HIERARCHY / CONFIDENCE / SIZE / TRADE)
+ * stays attached to step 3 — it's the synthesis decision that follows
+ * from the delta read.
+ *
+ * Returns null when the markers aren't all present (older rows or
+ * model variations) so the caller can fall back to single-block render.
+ */
+function parseReasoningSteps(
+  summary: string,
+): { step1: string; step2: string; step3: string } | null {
+  const i1 = summary.indexOf('STEP 1');
+  const i2 = summary.indexOf('STEP 2');
+  const i3 = summary.indexOf('STEP 3');
+  if (i1 === -1 || i2 === -1 || i3 === -1 || !(i1 < i2 && i2 < i3)) {
+    return null;
+  }
+  return {
+    step1: summary.slice(i1, i2).trim(),
+    step2: summary.slice(i2, i3).trim(),
+    step3: summary.slice(i3).trim(),
+  };
+}
+
 function TRACELiveSynthesisPanel({ detail }: Readonly<Props>) {
   const synth = detail?.analysis?.synthesis;
   if (!synth) return null;
@@ -113,14 +139,46 @@ function TRACELiveSynthesisPanel({ detail }: Readonly<Props>) {
         </Collapsible>
       )}
 
-      {/* Reasoning summary — debug-friendly, collapsed by default */}
-      {detail.analysis?.reasoningSummary && (
-        <Collapsible title="Reasoning Summary" color={theme.textMuted}>
-          <div className="text-secondary text-[11px] leading-relaxed whitespace-pre-wrap">
-            {detail.analysis.reasoningSummary}
-          </div>
-        </Collapsible>
-      )}
+      {/* Reasoning summary — split per step. Falls back to single block
+          when the STEP markers aren't present (older rows). Each step is
+          its own collapsible so the user can drill into one chart's
+          read without skimming a wall of text. */}
+      {detail.analysis?.reasoningSummary &&
+        (() => {
+          const summary = detail.analysis.reasoningSummary;
+          const parsed = parseReasoningSteps(summary);
+          if (!parsed) {
+            return (
+              <Collapsible title="Reasoning Summary" color={theme.textMuted}>
+                <div className="text-secondary text-[11px] leading-relaxed whitespace-pre-wrap">
+                  {summary}
+                </div>
+              </Collapsible>
+            );
+          }
+          return (
+            <>
+              <Collapsible title="Step 1 — Gamma" color={theme.textMuted}>
+                <div className="text-secondary text-[11px] leading-relaxed whitespace-pre-wrap">
+                  {parsed.step1}
+                </div>
+              </Collapsible>
+              <Collapsible title="Step 2 — Charm" color={theme.textMuted}>
+                <div className="text-secondary text-[11px] leading-relaxed whitespace-pre-wrap">
+                  {parsed.step2}
+                </div>
+              </Collapsible>
+              <Collapsible
+                title="Step 3 — Delta + Synthesis"
+                color={theme.textMuted}
+              >
+                <div className="text-secondary text-[11px] leading-relaxed whitespace-pre-wrap">
+                  {parsed.step3}
+                </div>
+              </Collapsible>
+            </>
+          );
+        })()}
     </div>
   );
 }
