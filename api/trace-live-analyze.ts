@@ -35,7 +35,6 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import Anthropic from '@anthropic-ai/sdk';
-import { waitUntil } from '@vercel/functions';
 import { Sentry, metrics } from './_lib/sentry.js';
 import {
   guardOwnerEndpoint,
@@ -44,10 +43,7 @@ import {
 } from './_lib/api-helpers.js';
 import { requireEnv } from './_lib/env.js';
 import logger from './_lib/logger.js';
-import {
-  traceLiveAnalyzeBodySchema,
-  type TraceLiveAnalyzeBody,
-} from './_lib/trace-live-types.js';
+import { traceLiveAnalyzeBodySchema } from './_lib/trace-live-types.js';
 import { TRACE_LIVE_STABLE_SYSTEM_TEXT } from './_lib/trace-live-prompts.js';
 import { buildTraceLiveUserContent } from './_lib/trace-live-context.js';
 import {
@@ -164,20 +160,73 @@ async function callModel(
 }
 
 /**
- * Heavy lifter — runs after the 202 response is sent. Uses Vercel's
- * waitUntil() so the function instance stays alive until this finishes,
- * but no upstream connection is held open: the daemon got its 202 in <1s
- * and disconnected, sidestepping Railway/Vercel proxy idle timeouts that
- * killed earlier sync calls at the 5-min mark.
+ * Sync NDJSON-streaming pattern — mirrors /api/analyze.ts. The daemon
+ * holds the connection open for the full call duration (3-9 min); we
+ * write a `{"ping":true}\n` keepalive every 30s so no intermediate
+ * proxy ever sees the connection idle long enough to kill it. When the
+ * analysis is ready, we write a single final NDJSON line with the
+ * persisted result.
  *
- * All errors are logged + Sentry'd here, not propagated — by the time
- * this runs the response is already sent. Observability is via:
- *   - logger.info('trace-live-analyze persisted', ...) on success
- *   - logger.error(...) + Sentry on every failure mode
- *   - presence of a row in trace_live_analyses (downstream consumers
- *     watch this for health checks)
+ * Why not waitUntil(): tried it (commit 6f048a3) and the background
+ * work was killed at exactly 300s — the function process apparently
+ * gets reaped before maxDuration: 780s when there's no active response.
+ * /api/analyze has been running 5-10 min calls reliably with this same
+ * keepalive pattern, so we mirror it here.
+ *
+ * Daemon protocol: the response is `application/x-ndjson`. Every line
+ * is a JSON object. Lines with `{"ping":true}` are heartbeats — skip.
+ * The final line is the analysis result envelope:
+ *   { ok: true, analysis, model, durationMs, usage } on success
+ *   { ok: false, error: "..." } on any failure
  */
-async function processAnalysis(body: TraceLiveAnalyzeBody): Promise<void> {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const done = metrics.request('/api/trace-live-analyze');
+  if (req.method !== 'POST') {
+    done({ status: 405 });
+    return res.status(405).json({ error: 'POST only' });
+  }
+
+  const rejected = await guardOwnerEndpoint(req, res, done);
+  if (rejected) return;
+
+  // Rate limit: 6/min — covers a normal 10-min cadence with manual-retry
+  // headroom. Higher than /api/analyze (3/min) since this call is cheaper.
+  const rateLimited = await rejectIfRateLimited(
+    req,
+    res,
+    'trace-live-analyze',
+    6,
+  );
+  if (rateLimited) {
+    done({ status: 429 });
+    return;
+  }
+
+  try {
+    requireEnv('ANTHROPIC_API_KEY');
+  } catch {
+    done({ status: 500, error: 'missing_api_key' });
+    return res.status(500).json({ error: 'Server configuration error' });
+  }
+
+  const parsed = traceLiveAnalyzeBodySchema.safeParse(req.body);
+  if (respondIfInvalid(parsed, res, done)) return;
+  const body = parsed.data;
+
+  // NDJSON streaming response — the keepalive pings are what keep the
+  // connection alive across every intermediate proxy in the Railway →
+  // Vercel → AWS path during the 3-9 min Anthropic call.
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('X-Accel-Buffering', 'no'); // disable nginx-style buffering
+  const keepalive = setInterval(() => {
+    try {
+      res.write(JSON.stringify({ ping: true }) + '\n');
+    } catch {
+      /* response already closed — clearInterval in finally */
+    }
+  }, 30_000);
+
   const userContent = buildTraceLiveUserContent(body);
   const startTs = Date.now();
 
@@ -211,6 +260,8 @@ async function processAnalysis(body: TraceLiveAnalyzeBody): Promise<void> {
         { model: result.model, capturedAt: body.capturedAt },
         'Claude refused TRACE-live request',
       );
+      done({ status: 422 });
+      res.write(JSON.stringify({ ok: false, error: 'refusal' }) + '\n');
       return;
     }
 
@@ -224,6 +275,10 @@ async function processAnalysis(body: TraceLiveAnalyzeBody): Promise<void> {
           rawText: result.text.slice(0, 4000),
         },
         'Model output failed schema validation',
+      );
+      done({ status: 502 });
+      res.write(
+        JSON.stringify({ ok: false, error: 'schema_validation' }) + '\n',
       );
       return;
     }
@@ -263,78 +318,35 @@ async function processAnalysis(body: TraceLiveAnalyzeBody): Promise<void> {
       { capturedAt: body.capturedAt, durationMs, model: result.model },
       'trace-live-analyze persisted',
     );
+
+    done({ status: 200 });
+    res.write(
+      JSON.stringify({
+        ok: true,
+        analysis,
+        model: result.model,
+        durationMs,
+        usage: result.usage,
+      }) + '\n',
+    );
   } catch (err) {
     Sentry.captureException(err);
     logger.error(
       { err, capturedAt: body.capturedAt },
-      'trace-live-analyze background error',
+      'trace-live-analyze unhandled error',
     );
+    done({ status: 500, error: 'unhandled' });
+    let errorMsg = err instanceof Error ? err.message : 'Analysis failed';
+    if (err instanceof Anthropic.RateLimitError) {
+      errorMsg = 'Anthropic rate limit exceeded. Try again shortly.';
+    } else if (err instanceof Anthropic.AuthenticationError) {
+      errorMsg = 'Anthropic API authentication error. Check API key.';
+    } else if (err instanceof Anthropic.APIError) {
+      errorMsg = `Analysis service error (${err.status}). Please retry.`;
+    }
+    res.write(JSON.stringify({ ok: false, error: errorMsg }) + '\n');
+  } finally {
+    clearInterval(keepalive);
+    res.end();
   }
-}
-
-/**
- * Async fire-and-forget pattern. The daemon (Railway) and the backfill
- * loop (local) used to wait synchronously for the analysis JSON, but any
- * intermediate proxy in the request path with a 5-min idle TCP timeout
- * (Railway's outbound NAT, certain CDNs) silently kills connections
- * while the function is mid-Anthropic-call. Effort:'high' on a 3-image
- * structured-output call lands in 3-9 minutes — well over the 5-min
- * idle threshold.
- *
- * Fix: validate the payload, return 202 in <1s, run the heavy work in
- * waitUntil() so Vercel keeps the function alive until it finishes
- * (bounded by maxDuration: 780s) without holding any upstream
- * connection open.
- *
- * Trade-off: the daemon no longer sees the analysis JSON in the response.
- * It writes the captured payload, gets 202, and moves on. Operators
- * verify success by polling for a new row in trace_live_analyses or by
- * watching the Vercel function logs for 'trace-live-analyze persisted'.
- */
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const done = metrics.request('/api/trace-live-analyze');
-  if (req.method !== 'POST') {
-    done({ status: 405 });
-    return res.status(405).json({ error: 'POST only' });
-  }
-
-  const rejected = await guardOwnerEndpoint(req, res, done);
-  if (rejected) return;
-
-  // Rate limit: 6/min — covers a normal 10-min cadence with manual-retry
-  // headroom. Higher than /api/analyze (3/min) since this call is cheaper.
-  const rateLimited = await rejectIfRateLimited(
-    req,
-    res,
-    'trace-live-analyze',
-    6,
-  );
-  if (rateLimited) {
-    done({ status: 429 });
-    return;
-  }
-
-  try {
-    requireEnv('ANTHROPIC_API_KEY');
-  } catch {
-    done({ status: 500, error: 'missing_api_key' });
-    return res.status(500).json({ error: 'Server configuration error' });
-  }
-
-  const parsed = traceLiveAnalyzeBodySchema.safeParse(req.body);
-  if (respondIfInvalid(parsed, res, done)) return;
-  const body = parsed.data;
-
-  // Hand off to background work. waitUntil keeps the function instance
-  // alive until processAnalysis resolves (or maxDuration: 780s fires).
-  // The 202 below returns immediately so the daemon's connection closes
-  // cleanly before any intermediate proxy can idle-timeout it.
-  waitUntil(processAnalysis(body));
-
-  done({ status: 202 });
-  res.status(202).json({
-    status: 'accepted',
-    capturedAt: body.capturedAt,
-    spot: body.spot,
-  });
 }

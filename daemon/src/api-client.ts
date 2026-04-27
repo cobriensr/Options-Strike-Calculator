@@ -116,12 +116,46 @@ async function postOnce(
       body: JSON.stringify(body),
       signal: ctrl.signal,
     });
+
+    // The endpoint streams NDJSON: 30s `{"ping":true}` heartbeats
+    // followed by a single final result envelope. We accumulate the
+    // body text, split on newlines, drop pings, and return the last
+    // non-ping line as the parsed body. Non-200 responses can still
+    // be plain JSON (auth/rate-limit errors), so we fall back to
+    // JSON.parse on the whole body when no NDJSON lines are present.
+    const text = await res.text();
+    const lines = text
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+
     let parsed: unknown = null;
-    try {
-      parsed = await res.json();
-    } catch {
-      /* response not JSON — leave parsed=null */
+    if (lines.length === 0) {
+      parsed = null;
+    } else {
+      // Find the last non-ping line; that's the result envelope.
+      for (let i = lines.length - 1; i >= 0; i--) {
+        try {
+          const obj = JSON.parse(lines[i]!) as { ping?: unknown };
+          if (obj.ping === true) continue; // heartbeat — skip
+          parsed = obj;
+          break;
+        } catch {
+          /* malformed line — keep looking */
+        }
+      }
+      // Fallback: if every line was a ping (or unparseable), try the
+      // whole body as a single JSON document — this catches non-200
+      // responses that aren't NDJSON-shaped (e.g. 401, 429).
+      if (parsed === null) {
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          /* leave parsed=null */
+        }
+      }
     }
+
     return { status: res.status, body: parsed };
   } finally {
     clearTimeout(timer);
@@ -173,11 +207,12 @@ export async function postTraceLiveAnalyze(
         'POST /api/trace-live-analyze response',
       );
 
-      // 202 Accepted is the new success path: the function takes the
-      // request, returns immediately, and processes in background via
-      // waitUntil(). 200 is preserved for backward compatibility if a
-      // future change brings back a sync response shape.
-      if (result.status === 200 || result.status === 202) return result.body;
+      // The handler streams NDJSON keepalives during the 3-9 min
+      // Anthropic call, then sends a final result envelope. Status 200
+      // means the body line is { ok: true, analysis, ... }; non-200
+      // means the body has the error shape. The body parser already
+      // skipped ping lines.
+      if (result.status === 200) return result.body;
 
       if (!shouldRetry(result.status)) {
         // Non-retryable — bail with the body so the caller can log details.
