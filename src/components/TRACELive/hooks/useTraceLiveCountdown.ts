@@ -1,24 +1,37 @@
 /**
  * useTraceLiveCountdown — derives a 1-second-ticking countdown to the
- * next expected TRACE capture given the timestamp of the latest one.
+ * next expected TRACE row visibility given the latest captured row's
+ * timestamp.
  *
- * The capture daemon fires every CADENCE_MS (5 minutes). The countdown =
- * (latestCapturedAt + CADENCE_MS) - now. When that goes negative, the
- * UI should show "expected at HH:MM, waiting…" — that's a daemon-down
- * signal worth surfacing visually.
+ * Why two intervals: the daemon CAPTURES every CADENCE_MS, but each
+ * captured payload also has to go through the Vercel function's
+ * Anthropic call (5-9 min for effort:'high' on a 3-image structured
+ * call) before the row lands in the DB and the dashboard sees it. The
+ * countdown anchors to row-visibility time so it doesn't yell
+ * "Overdue" during the normal processing window.
  *
- * Returns null label when there's no latestCapturedAt yet (cold start /
- * empty list).
+ * next-row-visible ≈ latestCapturedAt + CADENCE_MS + PROCESSING_MS_P95
+ *
+ * "Overdue" therefore fires only when the GAP exceeds typical
+ * processing — a real signal worth surfacing.
+ *
+ * Returns null label when there's no latestCapturedAt yet.
  */
 
 import { useEffect, useState } from 'react';
 
 // Matches daemon's CADENCE_SECONDS default (daemon/src/config.ts).
-// Bumped from 5 → 10 min in commit 811cd38; this constant must move
-// in lockstep or the countdown reports a phantom "overdue" between
-// minutes 5 and 10 of every cycle. There's no compile-time link
-// between the two — keep them in sync by hand.
+// Bumped from 5 → 10 min in commit 811cd38. There's no compile-time
+// link between the two; keep them in sync by hand.
 const CADENCE_MS = 10 * 60 * 1000;
+
+// p95 of recent function durations for /api/trace-live-analyze on
+// Sonnet 4.6 + effort:'high' + 3 images. The next row appears in
+// the DB at captured_at + CADENCE + ~processing — anchoring the
+// countdown there means "Overdue" only fires when the system is
+// genuinely behind, not during normal Anthropic processing time.
+const PROCESSING_MS_P95 = 9 * 60 * 1000;
+const NEXT_VISIBLE_OFFSET_MS = CADENCE_MS + PROCESSING_MS_P95;
 
 export interface UseTraceLiveCountdownReturn {
   /** Seconds until next capture is expected. Negative when overdue. */
@@ -64,7 +77,7 @@ export function useTraceLiveCountdown(
     };
   }
 
-  const nextMs = anchor + CADENCE_MS;
+  const nextMs = anchor + NEXT_VISIBLE_OFFSET_MS;
   const remainingSec = Math.round((nextMs - now) / 1000);
   const isOverdue = remainingSec < 0;
   const absSec = Math.abs(remainingSec);
