@@ -91,8 +91,13 @@ export default function PositionTable({
 
   return (
     <ScrollHint>
+      {/* min-w forces horizontal scroll on mobile (ScrollHint wraps in
+          overflow-x-auto and shows a right-edge fade). 11 columns × ~65px
+          = ~720px minimum legible width; below this, columns crush
+          unreadably. Card-flip per position type is a future redesign;
+          horizontal scroll is the pragmatic mobile fallback. */}
       <table
-        className="w-full font-mono text-sm"
+        className="w-full min-w-[720px] font-mono text-sm"
         role="table"
         aria-label="Open positions"
       >

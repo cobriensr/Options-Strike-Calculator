@@ -167,7 +167,10 @@ export const Chip = memo(function Chip({
 });
 
 /** Wrapper that shows a right-edge fade when content overflows horizontally */
-export function ScrollHint({ children }: Readonly<{ children: ReactNode }>) {
+export function ScrollHint({
+  children,
+  className,
+}: Readonly<{ children: ReactNode; className?: string }>) {
   const ref = useRef<HTMLDivElement>(null);
   const [canScroll, setCanScroll] = useState(false);
 
@@ -186,7 +189,7 @@ export function ScrollHint({ children }: Readonly<{ children: ReactNode }>) {
   }, [check]);
 
   return (
-    <div className="relative">
+    <div className={className ? `relative ${className}` : 'relative'}>
       <div ref={ref} onScroll={check} className="overflow-x-auto">
         {children}
       </div>

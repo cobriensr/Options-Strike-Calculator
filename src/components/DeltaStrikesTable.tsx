@@ -18,7 +18,73 @@ export default function DeltaStrikesTable({
     firstRow && !('error' in firstRow) ? firstRow.ivAccelMult : 1;
   return (
     <>
-      <ScrollHint>
+      {/* Mobile (<md): card-flip layout. Each row becomes a card with
+          delta as header and put/call as a 2-column grid. Snap/SPY/Γ
+          are dropped on mobile — primary trade-decision data
+          (strike + premium + Δ) stays. Rotate to landscape or use the
+          desktop view to see the full table. */}
+      <div className="space-y-2 md:hidden" aria-label="Delta strikes">
+        {allDeltas.map((row, i) => {
+          if ('error' in row) return null;
+          const r = row;
+          const width = r.callStrike - r.putStrike;
+          const widthPct = ((width / spot) * 100).toFixed(1);
+          return (
+            <div
+              key={r.delta}
+              className={`border-edge rounded-lg border p-3 ${
+                i % 2 === 1 ? 'bg-table-alt' : 'bg-surface'
+              }`}
+            >
+              <div className="mb-2 flex items-baseline justify-between">
+                <span className="text-accent font-mono text-base font-bold">
+                  {r.delta}
+                  {'Δ'}
+                </span>
+                <span className="text-secondary font-mono text-[11px]">
+                  Width {width}{' '}
+                  <span className="text-muted">({widthPct}%)</span>
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <div className="text-danger mb-0.5 font-sans text-[10px] font-bold tracking-wider uppercase">
+                    {'▾'} Put
+                  </div>
+                  <div className="text-danger font-mono text-sm font-medium">
+                    {r.putStrike}
+                  </div>
+                  <div className="text-danger font-mono text-xs font-semibold">
+                    ${r.putPremium.toFixed(2)}
+                  </div>
+                  <div className="text-danger font-mono text-[11px] opacity-70">
+                    {(r.putActualDelta * 100).toFixed(1)}
+                    {'Δ'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-success mb-0.5 font-sans text-[10px] font-bold tracking-wider uppercase">
+                    {'▴'} Call
+                  </div>
+                  <div className="text-success font-mono text-sm font-medium">
+                    {r.callStrike}
+                  </div>
+                  <div className="text-success font-mono text-xs font-semibold">
+                    ${r.callPremium.toFixed(2)}
+                  </div>
+                  <div className="text-success font-mono text-[11px] opacity-70">
+                    {(r.callActualDelta * 100).toFixed(1)}
+                    {'Δ'}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Desktop (md+): full 14-col table. */}
+      <ScrollHint className="hidden md:block">
         <section
           className="border-edge rounded-[10px] border"
           aria-label="Delta strikes"

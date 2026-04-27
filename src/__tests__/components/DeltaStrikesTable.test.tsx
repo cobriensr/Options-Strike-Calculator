@@ -61,7 +61,10 @@ describe('DeltaStrikesTable', () => {
 
   it('renders delta label with delta symbol', () => {
     render(<DeltaStrikesTable allDeltas={[makeDeltaRow(10)]} spot={5700} />);
-    expect(screen.getByText(/10\u0394/)).toBeInTheDocument();
+    // Both the mobile card and desktop table render in JSDOM (no real
+    // CSS to honor `md:hidden` / `hidden md:block`), so the label
+    // appears twice \u2014 once per render path.
+    expect(screen.getAllByText(/10\u0394/).length).toBeGreaterThanOrEqual(1);
   });
 
   it('renders premium values', () => {
@@ -83,9 +86,9 @@ describe('DeltaStrikesTable', () => {
         spot={5700}
       />,
     );
-    // Should only render the valid row
-    expect(screen.getByText(/10\u0394/)).toBeInTheDocument();
-    expect(screen.queryByText(/5\u0394/)).not.toBeInTheDocument();
+    // Should only render the valid row (mobile card + desktop row each).
+    expect(screen.getAllByText(/10\u0394/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryAllByText(/^5\u0394$/)).toHaveLength(0);
   });
 
   it('renders multiple rows', () => {
@@ -95,9 +98,10 @@ describe('DeltaStrikesTable', () => {
         spot={5700}
       />,
     );
-    expect(screen.getByText(/^5\u0394$/)).toBeInTheDocument();
-    expect(screen.getByText(/^10\u0394$/)).toBeInTheDocument();
-    expect(screen.getByText(/^15\u0394$/)).toBeInTheDocument();
+    // Mobile cards + desktop table both render in JSDOM.
+    expect(screen.getAllByText(/^5\u0394$/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/^10\u0394$/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/^15\u0394$/).length).toBeGreaterThanOrEqual(1);
   });
 
   it('renders empty table when no deltas', () => {
