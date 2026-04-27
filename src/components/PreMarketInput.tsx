@@ -69,7 +69,7 @@ export default function PreMarketInput({
           if (d.straddleConeLower != null)
             setConeLower(String(d.straddleConeLower));
           if (d.savedAt) setSaved(true);
-          if ((json.data as Record<string, unknown>).autoFilled === true) {
+          if (d.autoFilled === true) {
             setAutoFilled(true);
           }
         }

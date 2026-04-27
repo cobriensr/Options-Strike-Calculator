@@ -173,6 +173,26 @@ function SchwabAuthLink({
 }
 
 // ============================================================
+// ADMIN ENDPOINT RESPONSE SHAPES
+// ============================================================
+// Inline types for owner-only admin POSTs invoked from this file. Both
+// endpoints return either a success-shaped body or `{ error: string }`
+// — `error` is the only field that's always meaningful on a !res.ok
+// response.
+
+interface BackfillFeaturesResponse {
+  dates?: number;
+  featuresBuilt?: number;
+  errors?: number;
+  error?: string;
+}
+
+interface RunMigrationsResponse {
+  migrated?: string[];
+  error?: string;
+}
+
+// ============================================================
 // MAIN COMPONENT
 // ============================================================
 export default function StrikeCalculator() {
@@ -547,12 +567,7 @@ export default function StrikeCalculator() {
       const res = await fetch('/api/journal/backfill-features', {
         method: 'POST',
       });
-      const body = (await res.json()) as {
-        dates?: number;
-        featuresBuilt?: number;
-        errors?: number;
-        error?: string;
-      };
+      const body: BackfillFeaturesResponse = await res.json();
       if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
       toast.show(
         `Built features for ${body.featuresBuilt ?? 0} of ${body.dates ?? 0} dates` +
@@ -573,10 +588,7 @@ export default function StrikeCalculator() {
     setMigrateRunning(true);
     try {
       const res = await fetch('/api/journal/init', { method: 'POST' });
-      const body = (await res.json()) as {
-        migrated?: string[];
-        error?: string;
-      };
+      const body: RunMigrationsResponse = await res.json();
       if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
       const count = body.migrated?.length ?? 0;
       toast.show(

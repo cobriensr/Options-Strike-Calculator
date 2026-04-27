@@ -206,6 +206,12 @@ export interface PreMarketData {
   straddleConeUpper: number | null;
   straddleConeLower: number | null;
   savedAt: string | null;
+  /**
+   * Server-set when the row was populated automatically from upstream
+   * pre-market data (e.g. CME settlement) instead of user input. Used
+   * to badge the panel as "Auto-filled" rather than "Saved".
+   */
+  autoFilled?: boolean;
 }
 
 // ============================================================
