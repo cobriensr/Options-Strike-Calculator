@@ -21,6 +21,7 @@ import { useContext, useEffect, useMemo, useState } from 'react';
 import { ToastContext } from '../../hooks/useToast';
 import { useOtmFlowAlerts } from '../../hooks/useOtmFlowAlerts';
 import type { OtmFlowAlert } from '../../types/otm-flow';
+import { getAudioContextCtor } from '../../utils/audio-utils';
 import { SectionBox } from '../ui';
 import { OtmFlowControls } from './OtmFlowControls';
 import { OtmFlowRow } from './OtmFlowRow';
@@ -42,14 +43,7 @@ import { useOtmFlowSettings } from './useOtmFlowSettings';
  */
 function playOtmFlowChime(): void {
   try {
-    // globalThis covers both browser (window) and test runners that stub
-    // via `vi.stubGlobal('AudioContext', ...)` — the latter sets the
-    // global binding directly, not window.AudioContext.
-    const AudioCtx =
-      (globalThis as unknown as { AudioContext?: typeof AudioContext })
-        .AudioContext ??
-      (globalThis as unknown as { webkitAudioContext?: typeof AudioContext })
-        .webkitAudioContext;
+    const AudioCtx = getAudioContextCtor();
     if (!AudioCtx) return;
 
     const ctx = new AudioCtx();

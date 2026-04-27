@@ -43,6 +43,7 @@
 
 import { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { ToastContext } from '../../hooks/useToast';
+import { getAudioContextCtor } from '../../utils/audio-utils';
 import type { AlertEvent, AlertState, AlertType } from './alerts';
 import { detectAlertEdges } from './alerts';
 
@@ -156,11 +157,7 @@ function readNotificationPermission(): NotificationPermission | 'unsupported' {
 function playAlertTone(severity: AlertEvent['severity']): void {
   try {
     if (typeof window === 'undefined') return;
-    type AudioCtor = typeof AudioContext;
-    const AC: AudioCtor | undefined =
-      (window as unknown as { AudioContext?: AudioCtor }).AudioContext ??
-      (window as unknown as { webkitAudioContext?: AudioCtor })
-        .webkitAudioContext;
+    const AC = getAudioContextCtor();
     if (!AC) return;
     const ctx = new AC();
     const osc = ctx.createOscillator();

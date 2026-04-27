@@ -11,15 +11,14 @@
  * swallowed — a missed chime is not a real failure mode.
  */
 
+import { getAudioContextCtor } from '../../../utils/audio-utils';
+
 const TONE_HZ = 880; // A5 — bright, distinct from system sounds
 const TONE_DURATION_S = 0.5;
 
 export function playChime(): void {
   try {
-    const AudioContextCtor =
-      globalThis.AudioContext ??
-      (globalThis as unknown as { webkitAudioContext?: typeof AudioContext })
-        .webkitAudioContext;
+    const AudioContextCtor = getAudioContextCtor();
     if (!AudioContextCtor) return;
     const ctx = new AudioContextCtor();
     const osc = ctx.createOscillator();
