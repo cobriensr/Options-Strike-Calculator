@@ -1,8 +1,15 @@
 /**
- * SectionNav — sticky horizontal navigation below the header.
+ * SectionNav — IntersectionObserver-driven page navigation.
  *
- * Highlights the currently visible section via IntersectionObserver.
- * Renders anchor links that smooth-scroll to each section.
+ * Renders either as a sticky horizontal chip bar (mobile / narrow
+ * viewports) or as a vertical sidebar list (desktop), based on the
+ * `orientation` prop. The active section is detected via the same
+ * IntersectionObserver logic regardless of orientation.
+ *
+ * App.tsx mounts two instances — one horizontal (visible at < lg) and
+ * one vertical (visible at lg+) — and lets responsive display classes
+ * pick the right one. Both share the same `sections` array, so the
+ * source of truth stays in one place.
  */
 
 import { memo, useEffect, useRef, useState } from 'react';
@@ -14,9 +21,16 @@ export interface NavSection {
 
 interface Props {
   sections: NavSection[];
+  orientation?: 'horizontal' | 'vertical';
+  /** Tailwind class overrides for the outer <nav>. */
+  className?: string;
 }
 
-const SectionNav = memo(function SectionNav({ sections }: Props) {
+const SectionNav = memo(function SectionNav({
+  sections,
+  orientation = 'horizontal',
+  className,
+}: Props) {
   const [activeId, setActiveId] = useState<string>('');
   const observerRef = useRef<IntersectionObserver | null>(null);
 
@@ -50,10 +64,42 @@ const SectionNav = memo(function SectionNav({ sections }: Props) {
     return () => observer.disconnect();
   }, [sections]);
 
+  if (orientation === 'vertical') {
+    return (
+      <nav
+        aria-label="Page sections"
+        className={
+          className ??
+          'border-edge sticky top-[57px] hidden h-[calc(100vh-57px)] w-56 shrink-0 overflow-y-auto border-r px-3 py-4 lg:block'
+        }
+      >
+        <div className="flex flex-col gap-0.5">
+          {sections.map((s) => (
+            <a
+              key={s.id}
+              href={`#${s.id}`}
+              className={`rounded-md px-3 py-1.5 font-sans text-[12px] font-semibold tracking-[0.04em] transition-colors duration-100 ${
+                activeId === s.id
+                  ? 'bg-accent-bg text-accent'
+                  : 'text-tertiary hover:text-primary hover:bg-surface-alt'
+              }`}
+              aria-current={activeId === s.id ? 'location' : undefined}
+            >
+              {s.label}
+            </a>
+          ))}
+        </div>
+      </nav>
+    );
+  }
+
   return (
     <nav
       aria-label="Page sections"
-      className="border-edge sticky top-[57px] z-40 border-b backdrop-blur-md"
+      className={
+        className ??
+        'border-edge sticky top-[57px] z-40 border-b backdrop-blur-md lg:hidden'
+      }
       style={{
         backgroundColor:
           'color-mix(in srgb, var(--color-page) 85%, transparent)',
@@ -69,6 +115,7 @@ const SectionNav = memo(function SectionNav({ sections }: Props) {
                 ? 'bg-accent-bg text-accent'
                 : 'text-tertiary hover:text-primary hover:bg-surface-alt'
             }`}
+            aria-current={activeId === s.id ? 'location' : undefined}
           >
             {s.label}
           </a>

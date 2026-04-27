@@ -15,14 +15,12 @@ describe('getAudioContextCtor', () => {
 
   afterEach(() => {
     if (originalAudioContext === undefined) {
-      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
       delete (globalThis as { AudioContext?: unknown }).AudioContext;
     } else {
       (globalThis as { AudioContext?: unknown }).AudioContext =
         originalAudioContext;
     }
     if (originalWebkitAudioContext === undefined) {
-      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
       delete (globalThis as { webkitAudioContext?: unknown })
         .webkitAudioContext;
     } else {
@@ -39,7 +37,6 @@ describe('getAudioContextCtor', () => {
   });
 
   it('falls back to webkitAudioContext when AudioContext is missing', () => {
-    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
     delete (globalThis as { AudioContext?: unknown }).AudioContext;
     const webkit = vi.fn();
     (globalThis as { webkitAudioContext?: unknown }).webkitAudioContext =
@@ -58,9 +55,7 @@ describe('getAudioContextCtor', () => {
   });
 
   it('returns undefined when neither is available', () => {
-    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
     delete (globalThis as { AudioContext?: unknown }).AudioContext;
-    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
     delete (globalThis as { webkitAudioContext?: unknown }).webkitAudioContext;
     expect(getAudioContextCtor()).toBeUndefined();
   });

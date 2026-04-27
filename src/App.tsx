@@ -898,429 +898,444 @@ export default function StrikeCalculator() {
           </div>
         </header>
 
-        <SectionNav sections={navSections} />
+        <div className="lg:flex lg:items-start">
+          <SectionNav sections={navSections} orientation="vertical" />
 
-        {market.hasData && (
-          <NotificationPermission
-            permission={alertState.notificationPermission}
-            onRequest={alertState.requestPermission}
-          />
-        )}
-
-        {isOwner && (
-          <Suspense fallback={null}>
-            <AnomalyBanner />
-          </Suspense>
-        )}
-
-        <div className="mx-auto max-w-[660px] px-5 pt-6 pb-12 lg:max-w-6xl">
-          {/* Subtitle — below sticky header */}
-          <p className="text-secondary mb-1 text-[15px] leading-normal">
-            Black-Scholes approximation for delta-based strike placement
-          </p>
-          <p className="text-tertiary mb-8 text-xs italic">
-            Per Unusual Whales data policy, no market data, raw or derived, is
-            publicly available on this site.
-          </p>
-
-          <main>
-            <div
-              id="sec-inputs"
-              className="grid scroll-mt-28 grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0"
-            >
-              <DateTimeSection
-                chevronUrl={chevronUrl}
-                selectedDate={vix.selectedDate}
-                onDateChange={handleDateChange}
-                vixDataLoaded={vix.vixDataLoaded}
-                timeHour={timeHour}
-                onHourChange={handleTimeHourChange}
-                timeMinute={timeMinute}
-                onMinuteChange={handleTimeMinuteChange}
-                timeAmPm={timeAmPm}
-                onAmPmChange={handleTimeAmPmChange}
-                timezone={timezone}
-                onTimezoneChange={handleTimezoneChange}
-                timeEdited={timeEditedForDisplay}
-                onResumeLive={handleResumeLive}
-                errors={errors}
-              />
-
-              <SpotPriceSection
-                spotPrice={spotPrice}
-                onSpotChange={handleSpotChange}
-                spxDirect={spxDirect}
-                onSpxDirectChange={handleSpxChange}
-                spxRatio={spxRatio}
-                onSpxRatioChange={setSpxRatio}
-                dSpot={dSpot}
-                effectiveRatio={effectiveRatio}
-                spxDirectActive={spxDirectActive}
-                derivedRatio={spxDirectActive ? spxVal / spyVal : spxRatio}
-                errors={errors}
-              />
-            </div>
-
-            <span id="sec-trading-schedule" className="block scroll-mt-28" />
-            <TradingScheduleSection
-              selectedDate={vix.selectedDate}
-              timeHour={timeHour}
-              timeMinute={timeMinute}
-              timeAmPm={timeAmPm}
-              timezone={timezone}
-            />
-
-            <EventDayWarning
-              selectedDate={vix.selectedDate}
-              liveEvents={market.data.events?.events}
-            />
+          <div className="lg:min-w-0 lg:flex-1">
+            <SectionNav sections={navSections} orientation="horizontal" />
 
             {market.hasData && (
-              <PreMarketInput
-                date={vix.selectedDate}
-                spxPrice={results?.spot}
-                prevClose={market.data.yesterday?.yesterday?.close}
+              <NotificationPermission
+                permission={alertState.notificationPermission}
+                onRequest={alertState.requestPermission}
               />
             )}
 
-            <div
-              id="sec-settings"
-              className="mt-6 grid scroll-mt-28 grid-cols-1 items-stretch gap-4 [&>*]:mt-0"
-            >
-              <AdvancedSection
-                skewPct={skewPct}
-                onSkewChange={setSkewPct}
-                showIC={showIC}
-                onToggleIC={handleToggleIC}
-                wingWidth={wingWidth}
-                onWingWidthChange={setWingWidth}
-                contracts={contracts}
-                onContractsChange={setContracts}
-                showBWB={showBWB}
-                onToggleBWB={handleToggleBWB}
-                bwbNarrowWidth={bwbNarrowWidth}
-                onBwbNarrowWidthChange={setBwbNarrowWidth}
-                bwbWideMultiplier={bwbWideMultiplier}
-                onBwbWideMultiplierChange={setBwbWideMultiplier}
-                results={results}
-                vixOHLC={vix.vixOHLC}
-                vixOHLCField={vix.vixOHLCField}
-                onOHLCFieldChange={vix.setVixOHLCField}
-                vixDataLoaded={vix.vixDataLoaded}
-                selectedDate={vix.selectedDate}
-              />
-
-              <IVInputSection
-                ivMode={ivMode}
-                onIvModeChange={setIvMode}
-                vixInput={vixInput}
-                onVixChange={handleVixChange}
-                multiplier={multiplier}
-                onMultiplierChange={setMultiplier}
-                directIVInput={directIVInput}
-                onDirectIVChange={setDirectIVInput}
-                dVix={dVix}
-                results={results}
-                errors={errors}
-                market={market}
-                historySnapshot={historySnapshot}
-                onUseVix1dAsSigma={handleUseVix1dAsSigma}
-                termShape={signals.vixTermShape}
-                termShapeAdvice={signals.vixTermShapeAdvice}
-              />
-            </div>
-
-            <span id="sec-risk" className="block scroll-mt-28" />
-            <ErrorBoundary label="Risk Calculator">
-              <Suspense fallback={<SkeletonSection lines={5} />}>
-                <RiskCalculator />
+            {isOwner && (
+              <Suspense fallback={null}>
+                <AnomalyBanner />
               </Suspense>
-            </ErrorBoundary>
+            )}
 
-            <span id="sec-regime" className="block scroll-mt-28" />
-            <ErrorBoundary label="Market Regime">
-              <MarketRegimeSection
-                dVix={dVix}
-                results={results}
-                errors={errors}
-                skewPct={skewPct}
-                selectedDate={vix.selectedDate}
-                market={market}
-                onClusterMultChange={setClusterMult}
-                clusterMult={clusterMult}
-                historySnapshot={historySnapshot}
-                historyCandles={historyData.history?.spx.candles}
-                entryTimeLabel={
-                  historySnapshot
-                    ? `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`
-                    : undefined
-                }
-                signals={signals}
-                chain={chainData.chain}
-              />
-            </ErrorBoundary>
+            <div className="mx-auto max-w-[660px] px-5 pt-6 pb-12 lg:max-w-6xl">
+              {/* Subtitle — below sticky header */}
+              <p className="text-secondary mb-1 text-[15px] leading-normal">
+                Black-Scholes approximation for delta-based strike placement
+              </p>
+              <p className="text-tertiary mb-8 text-xs italic">
+                Per Unusual Whales data policy, no market data, raw or derived,
+                is publicly available on this site.
+              </p>
 
-            {isOwner && (market.hasData || !!historySnapshot) && (
-              <>
-                <span id="sec-darkpool" className="block scroll-mt-28" />
-                <ErrorBoundary label="Dark Pool Levels">
-                  <DarkPoolLevels
-                    levels={darkPool.levels}
-                    loading={darkPool.loading}
-                    error={darkPool.error}
-                    updatedAt={darkPool.updatedAt}
-                    spxPrice={results?.spot ?? spxVal ?? null}
-                    onRefresh={darkPool.refresh}
-                    selectedDate={darkPool.selectedDate}
-                    onDateChange={darkPool.setSelectedDate}
-                    scrubTime={darkPool.scrubTime}
-                    isLive={darkPool.isLive}
-                    isScrubbed={darkPool.isScrubbed}
-                    canScrubPrev={darkPool.canScrubPrev}
-                    canScrubNext={darkPool.canScrubNext}
-                    onScrubPrev={darkPool.scrubPrev}
-                    onScrubNext={darkPool.scrubNext}
-                    onScrubTo={darkPool.scrubTo}
-                    timeGrid={darkPool.timeGrid}
-                    onScrubLive={darkPool.scrubLive}
+              <main>
+                <div
+                  id="sec-inputs"
+                  className="grid scroll-mt-28 grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0"
+                >
+                  <DateTimeSection
+                    chevronUrl={chevronUrl}
+                    selectedDate={vix.selectedDate}
+                    onDateChange={handleDateChange}
+                    vixDataLoaded={vix.vixDataLoaded}
+                    timeHour={timeHour}
+                    onHourChange={handleTimeHourChange}
+                    timeMinute={timeMinute}
+                    onMinuteChange={handleTimeMinuteChange}
+                    timeAmPm={timeAmPm}
+                    onAmPmChange={handleTimeAmPmChange}
+                    timezone={timezone}
+                    onTimezoneChange={handleTimezoneChange}
+                    timeEdited={timeEditedForDisplay}
+                    onResumeLive={handleResumeLive}
+                    errors={errors}
                   />
-                </ErrorBoundary>
 
-                <span id="sec-trace-live" className="block scroll-mt-28" />
-                <ErrorBoundary label="TRACE Live">
-                  <TRACELiveDashboard
-                    marketOpen={market.data.quotes?.marketOpen ?? false}
+                  <SpotPriceSection
+                    spotPrice={spotPrice}
+                    onSpotChange={handleSpotChange}
+                    spxDirect={spxDirect}
+                    onSpxDirectChange={handleSpxChange}
+                    spxRatio={spxRatio}
+                    onSpxRatioChange={setSpxRatio}
+                    dSpot={dSpot}
+                    effectiveRatio={effectiveRatio}
+                    spxDirectActive={spxDirectActive}
+                    derivedRatio={spxDirectActive ? spxVal / spyVal : spxRatio}
+                    errors={errors}
                   />
-                </ErrorBoundary>
-              </>
-            )}
-
-            {isOwner && (market.hasData || !!historySnapshot) && (
-              <>
-                <span id="sec-gex" className="block scroll-mt-28" />
-                <ErrorBoundary label="0DTE GEX Per Strike">
-                  <Suspense fallback={<SkeletonSection lines={6} tall />}>
-                    <GexPerStrike
-                      strikes={gexStrike.strikes}
-                      loading={gexStrike.loading}
-                      error={gexStrike.error}
-                      timestamp={gexStrike.timestamp}
-                      timestamps={gexStrike.timestamps}
-                      onRefresh={gexStrike.refresh}
-                      selectedDate={gexStrike.selectedDate}
-                      onDateChange={gexStrike.setSelectedDate}
-                      isLive={gexStrike.isLive}
-                      isToday={gexStrike.isToday}
-                      isScrubbed={gexStrike.isScrubbed}
-                      canScrubPrev={gexStrike.canScrubPrev}
-                      canScrubNext={gexStrike.canScrubNext}
-                      onScrubPrev={gexStrike.scrubPrev}
-                      onScrubNext={gexStrike.scrubNext}
-                      onScrubTo={gexStrike.scrubTo}
-                      onScrubLive={gexStrike.scrubLive}
-                    />
-                  </Suspense>
-                </ErrorBoundary>
-              </>
-            )}
-
-            {isOwner && (market.hasData || !!historySnapshot) && (
-              <>
-                <span id="sec-gex-target" className="block scroll-mt-28" />
-                <ErrorBoundary label="GEX Target">
-                  <Suspense fallback={<SkeletonSection lines={6} tall />}>
-                    <GexTarget
-                      marketOpen={market.data.quotes?.marketOpen ?? false}
-                      gexTarget={gexTarget}
-                    />
-                  </Suspense>
-                </ErrorBoundary>
-              </>
-            )}
-
-            {isOwner && (market.hasData || !!historySnapshot) && (
-              <>
-                <span id="sec-gex-landscape" className="block scroll-mt-28" />
-                <ErrorBoundary label="GEX Landscape">
-                  <Suspense fallback={<SkeletonSection lines={6} tall />}>
-                    <GexLandscape
-                      strikes={gexStrike.strikes}
-                      loading={gexStrike.loading}
-                      error={gexStrike.error}
-                      timestamp={gexStrike.timestamp}
-                      timestamps={gexStrike.timestamps}
-                      onRefresh={gexStrike.refresh}
-                      selectedDate={gexStrike.selectedDate}
-                      onDateChange={gexStrike.setSelectedDate}
-                      isLive={gexStrike.isLive}
-                      isScrubbed={gexStrike.isScrubbed}
-                      canScrubPrev={gexStrike.canScrubPrev}
-                      canScrubNext={gexStrike.canScrubNext}
-                      onScrubPrev={gexStrike.scrubPrev}
-                      onScrubNext={gexStrike.scrubNext}
-                      onScrubTo={gexStrike.scrubTo}
-                      onScrubLive={gexStrike.scrubLive}
-                      onBiasChange={setGexBiasContext}
-                    />
-                  </Suspense>
-                </ErrorBoundary>
-              </>
-            )}
-
-            {isOwner && (market.hasData || !!historySnapshot) && (
-              <>
-                <span
-                  id="sec-futures-gamma-playbook"
-                  className="block scroll-mt-28"
-                />
-                <ErrorBoundary label="Futures Gamma Playbook">
-                  <Suspense fallback={<SkeletonSection lines={6} tall />}>
-                    <FuturesGammaPlaybook
-                      marketOpen={market.data.quotes?.marketOpen ?? false}
-                      onBiasChange={setPlaybookBiasContext}
-                    />
-                  </Suspense>
-                </ErrorBoundary>
-              </>
-            )}
-
-            {isOwner && (market.hasData || !!historySnapshot) && (
-              <>
-                <span id="sec-market-flow" className="block scroll-mt-28" />
-
-                <ErrorBoundary label="Market Internals">
-                  <MarketInternalsPanel
-                    {...internals}
-                    marketOpen={market.data.quotes?.marketOpen ?? false}
-                    regime={regime}
-                  />
-                </ErrorBoundary>
-
-                <ErrorBoundary label="Market Flow">
-                  <MarketFlow
-                    marketOpen={market.data.quotes?.marketOpen ?? false}
-                    regime={regime}
-                    gexByStrike={gexByStrikeForFlow}
-                  />
-                </ErrorBoundary>
-
-                <span id="sec-otm-flow" className="block scroll-mt-28" />
-                <ErrorBoundary label="OTM Flow Alerts">
-                  <Suspense fallback={<SkeletonSection lines={5} />}>
-                    <OtmFlowAlerts
-                      marketOpen={market.data.quotes?.marketOpen ?? false}
-                    />
-                  </Suspense>
-                </ErrorBoundary>
+                </div>
 
                 <span
-                  id="sec-institutional-program"
+                  id="sec-trading-schedule"
                   className="block scroll-mt-28"
                 />
-                <ErrorBoundary label="Institutional Program">
-                  <Suspense fallback={<SkeletonSection lines={6} />}>
-                    <InstitutionalProgramSection />
-                  </Suspense>
-                </ErrorBoundary>
-
-                <span id="sec-iv-anomalies" className="block scroll-mt-28" />
-                <ErrorBoundary label="Strike IV Anomalies">
-                  <Suspense fallback={<SkeletonSection lines={5} />}>
-                    <IVAnomaliesSection
-                      marketOpen={market.data.quotes?.marketOpen ?? false}
-                    />
-                  </Suspense>
-                </ErrorBoundary>
-              </>
-            )}
-
-            {isOwner && (
-              <>
-                <span id="sec-futures" className="block scroll-mt-28" />
-                <ErrorBoundary label="Futures">
-                  <Suspense fallback={<SkeletonSection lines={5} />}>
-                    <FuturesPanel />
-                  </Suspense>
-                </ErrorBoundary>
-              </>
-            )}
-
-            {/* Chart Analysis — requires auth session or backtest with results */}
-            {(market.hasData || !!historySnapshot) && (
-              <>
-                <span id="sec-charts" className="block scroll-mt-28" />
-                <ErrorBoundary label="Chart Analysis">
-                  <Suspense fallback={<SkeletonSection lines={6} tall />}>
-                    <ChartAnalysis
-                      results={results}
-                      onAnalysisSaved={handleAnalysisSaved}
-                      context={analysisContext}
-                      csvPositionSummary={csvPositionSummary}
-                    />
-                  </Suspense>
-                </ErrorBoundary>
-              </>
-            )}
-
-            <span id="sec-history" className="block scroll-mt-28" />
-            <ErrorBoundary label="Analysis History">
-              <AnalysisHistory refreshKey={historyRefreshKey} />
-            </ErrorBoundary>
-
-            {isOwner && (
-              <>
-                <span id="sec-ml-insights" className="block scroll-mt-28" />
-                <ErrorBoundary label="ML Insights">
-                  <Suspense fallback={<SkeletonSection lines={6} tall />}>
-                    <MLInsights />
-                  </Suspense>
-                </ErrorBoundary>
-              </>
-            )}
-
-            {/* Paper Dashboard — lazy-loaded */}
-            <span id="sec-positions" className="block scroll-mt-28" />
-            <ErrorBoundary label="Paper Dashboard">
-              <Suspense fallback={<SkeletonSection lines={5} tall />}>
-                <PositionMonitor
-                  spotPrice={results?.spot ?? spxVal ?? 0}
-                  onPositionSummaryChange={setCsvPositionSummary}
-                  portfolioRiskThresholdPct={portfolioRiskThresholdPct}
+                <TradingScheduleSection
+                  selectedDate={vix.selectedDate}
+                  timeHour={timeHour}
+                  timeMinute={timeMinute}
+                  timeAmPm={timeAmPm}
+                  timezone={timezone}
                 />
-              </Suspense>
-            </ErrorBoundary>
 
-            {isOwner && (
-              <>
-                <span id="sec-bwb" className="block scroll-mt-28" />
-                <ErrorBoundary label="BWB Calculator">
+                <EventDayWarning
+                  selectedDate={vix.selectedDate}
+                  liveEvents={market.data.events?.events}
+                />
+
+                {market.hasData && (
+                  <PreMarketInput
+                    date={vix.selectedDate}
+                    spxPrice={results?.spot}
+                    prevClose={market.data.yesterday?.yesterday?.close}
+                  />
+                )}
+
+                <div
+                  id="sec-settings"
+                  className="mt-6 grid scroll-mt-28 grid-cols-1 items-stretch gap-4 [&>*]:mt-0"
+                >
+                  <AdvancedSection
+                    skewPct={skewPct}
+                    onSkewChange={setSkewPct}
+                    showIC={showIC}
+                    onToggleIC={handleToggleIC}
+                    wingWidth={wingWidth}
+                    onWingWidthChange={setWingWidth}
+                    contracts={contracts}
+                    onContractsChange={setContracts}
+                    showBWB={showBWB}
+                    onToggleBWB={handleToggleBWB}
+                    bwbNarrowWidth={bwbNarrowWidth}
+                    onBwbNarrowWidthChange={setBwbNarrowWidth}
+                    bwbWideMultiplier={bwbWideMultiplier}
+                    onBwbWideMultiplierChange={setBwbWideMultiplier}
+                    results={results}
+                    vixOHLC={vix.vixOHLC}
+                    vixOHLCField={vix.vixOHLCField}
+                    onOHLCFieldChange={vix.setVixOHLCField}
+                    vixDataLoaded={vix.vixDataLoaded}
+                    selectedDate={vix.selectedDate}
+                  />
+
+                  <IVInputSection
+                    ivMode={ivMode}
+                    onIvModeChange={setIvMode}
+                    vixInput={vixInput}
+                    onVixChange={handleVixChange}
+                    multiplier={multiplier}
+                    onMultiplierChange={setMultiplier}
+                    directIVInput={directIVInput}
+                    onDirectIVChange={setDirectIVInput}
+                    dVix={dVix}
+                    results={results}
+                    errors={errors}
+                    market={market}
+                    historySnapshot={historySnapshot}
+                    onUseVix1dAsSigma={handleUseVix1dAsSigma}
+                    termShape={signals.vixTermShape}
+                    termShapeAdvice={signals.vixTermShapeAdvice}
+                  />
+                </div>
+
+                <span id="sec-risk" className="block scroll-mt-28" />
+                <ErrorBoundary label="Risk Calculator">
+                  <Suspense fallback={<SkeletonSection lines={5} />}>
+                    <RiskCalculator />
+                  </Suspense>
+                </ErrorBoundary>
+
+                <span id="sec-regime" className="block scroll-mt-28" />
+                <ErrorBoundary label="Market Regime">
+                  <MarketRegimeSection
+                    dVix={dVix}
+                    results={results}
+                    errors={errors}
+                    skewPct={skewPct}
+                    selectedDate={vix.selectedDate}
+                    market={market}
+                    onClusterMultChange={setClusterMult}
+                    clusterMult={clusterMult}
+                    historySnapshot={historySnapshot}
+                    historyCandles={historyData.history?.spx.candles}
+                    entryTimeLabel={
+                      historySnapshot
+                        ? `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`
+                        : undefined
+                    }
+                    signals={signals}
+                    chain={chainData.chain}
+                  />
+                </ErrorBoundary>
+
+                {isOwner && (market.hasData || !!historySnapshot) && (
+                  <>
+                    <span id="sec-darkpool" className="block scroll-mt-28" />
+                    <ErrorBoundary label="Dark Pool Levels">
+                      <DarkPoolLevels
+                        levels={darkPool.levels}
+                        loading={darkPool.loading}
+                        error={darkPool.error}
+                        updatedAt={darkPool.updatedAt}
+                        spxPrice={results?.spot ?? spxVal ?? null}
+                        onRefresh={darkPool.refresh}
+                        selectedDate={darkPool.selectedDate}
+                        onDateChange={darkPool.setSelectedDate}
+                        scrubTime={darkPool.scrubTime}
+                        isLive={darkPool.isLive}
+                        isScrubbed={darkPool.isScrubbed}
+                        canScrubPrev={darkPool.canScrubPrev}
+                        canScrubNext={darkPool.canScrubNext}
+                        onScrubPrev={darkPool.scrubPrev}
+                        onScrubNext={darkPool.scrubNext}
+                        onScrubTo={darkPool.scrubTo}
+                        timeGrid={darkPool.timeGrid}
+                        onScrubLive={darkPool.scrubLive}
+                      />
+                    </ErrorBoundary>
+
+                    <span id="sec-trace-live" className="block scroll-mt-28" />
+                    <ErrorBoundary label="TRACE Live">
+                      <TRACELiveDashboard
+                        marketOpen={market.data.quotes?.marketOpen ?? false}
+                      />
+                    </ErrorBoundary>
+                  </>
+                )}
+
+                {isOwner && (market.hasData || !!historySnapshot) && (
+                  <>
+                    <span id="sec-gex" className="block scroll-mt-28" />
+                    <ErrorBoundary label="0DTE GEX Per Strike">
+                      <Suspense fallback={<SkeletonSection lines={6} tall />}>
+                        <GexPerStrike
+                          strikes={gexStrike.strikes}
+                          loading={gexStrike.loading}
+                          error={gexStrike.error}
+                          timestamp={gexStrike.timestamp}
+                          timestamps={gexStrike.timestamps}
+                          onRefresh={gexStrike.refresh}
+                          selectedDate={gexStrike.selectedDate}
+                          onDateChange={gexStrike.setSelectedDate}
+                          isLive={gexStrike.isLive}
+                          isToday={gexStrike.isToday}
+                          isScrubbed={gexStrike.isScrubbed}
+                          canScrubPrev={gexStrike.canScrubPrev}
+                          canScrubNext={gexStrike.canScrubNext}
+                          onScrubPrev={gexStrike.scrubPrev}
+                          onScrubNext={gexStrike.scrubNext}
+                          onScrubTo={gexStrike.scrubTo}
+                          onScrubLive={gexStrike.scrubLive}
+                        />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </>
+                )}
+
+                {isOwner && (market.hasData || !!historySnapshot) && (
+                  <>
+                    <span id="sec-gex-target" className="block scroll-mt-28" />
+                    <ErrorBoundary label="GEX Target">
+                      <Suspense fallback={<SkeletonSection lines={6} tall />}>
+                        <GexTarget
+                          marketOpen={market.data.quotes?.marketOpen ?? false}
+                          gexTarget={gexTarget}
+                        />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </>
+                )}
+
+                {isOwner && (market.hasData || !!historySnapshot) && (
+                  <>
+                    <span
+                      id="sec-gex-landscape"
+                      className="block scroll-mt-28"
+                    />
+                    <ErrorBoundary label="GEX Landscape">
+                      <Suspense fallback={<SkeletonSection lines={6} tall />}>
+                        <GexLandscape
+                          strikes={gexStrike.strikes}
+                          loading={gexStrike.loading}
+                          error={gexStrike.error}
+                          timestamp={gexStrike.timestamp}
+                          timestamps={gexStrike.timestamps}
+                          onRefresh={gexStrike.refresh}
+                          selectedDate={gexStrike.selectedDate}
+                          onDateChange={gexStrike.setSelectedDate}
+                          isLive={gexStrike.isLive}
+                          isScrubbed={gexStrike.isScrubbed}
+                          canScrubPrev={gexStrike.canScrubPrev}
+                          canScrubNext={gexStrike.canScrubNext}
+                          onScrubPrev={gexStrike.scrubPrev}
+                          onScrubNext={gexStrike.scrubNext}
+                          onScrubTo={gexStrike.scrubTo}
+                          onScrubLive={gexStrike.scrubLive}
+                          onBiasChange={setGexBiasContext}
+                        />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </>
+                )}
+
+                {isOwner && (market.hasData || !!historySnapshot) && (
+                  <>
+                    <span
+                      id="sec-futures-gamma-playbook"
+                      className="block scroll-mt-28"
+                    />
+                    <ErrorBoundary label="Futures Gamma Playbook">
+                      <Suspense fallback={<SkeletonSection lines={6} tall />}>
+                        <FuturesGammaPlaybook
+                          marketOpen={market.data.quotes?.marketOpen ?? false}
+                          onBiasChange={setPlaybookBiasContext}
+                        />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </>
+                )}
+
+                {isOwner && (market.hasData || !!historySnapshot) && (
+                  <>
+                    <span id="sec-market-flow" className="block scroll-mt-28" />
+
+                    <ErrorBoundary label="Market Internals">
+                      <MarketInternalsPanel
+                        {...internals}
+                        marketOpen={market.data.quotes?.marketOpen ?? false}
+                        regime={regime}
+                      />
+                    </ErrorBoundary>
+
+                    <ErrorBoundary label="Market Flow">
+                      <MarketFlow
+                        marketOpen={market.data.quotes?.marketOpen ?? false}
+                        regime={regime}
+                        gexByStrike={gexByStrikeForFlow}
+                      />
+                    </ErrorBoundary>
+
+                    <span id="sec-otm-flow" className="block scroll-mt-28" />
+                    <ErrorBoundary label="OTM Flow Alerts">
+                      <Suspense fallback={<SkeletonSection lines={5} />}>
+                        <OtmFlowAlerts
+                          marketOpen={market.data.quotes?.marketOpen ?? false}
+                        />
+                      </Suspense>
+                    </ErrorBoundary>
+
+                    <span
+                      id="sec-institutional-program"
+                      className="block scroll-mt-28"
+                    />
+                    <ErrorBoundary label="Institutional Program">
+                      <Suspense fallback={<SkeletonSection lines={6} />}>
+                        <InstitutionalProgramSection />
+                      </Suspense>
+                    </ErrorBoundary>
+
+                    <span
+                      id="sec-iv-anomalies"
+                      className="block scroll-mt-28"
+                    />
+                    <ErrorBoundary label="Strike IV Anomalies">
+                      <Suspense fallback={<SkeletonSection lines={5} />}>
+                        <IVAnomaliesSection
+                          marketOpen={market.data.quotes?.marketOpen ?? false}
+                        />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </>
+                )}
+
+                {isOwner && (
+                  <>
+                    <span id="sec-futures" className="block scroll-mt-28" />
+                    <ErrorBoundary label="Futures">
+                      <Suspense fallback={<SkeletonSection lines={5} />}>
+                        <FuturesPanel />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </>
+                )}
+
+                {/* Chart Analysis — requires auth session or backtest with results */}
+                {(market.hasData || !!historySnapshot) && (
+                  <>
+                    <span id="sec-charts" className="block scroll-mt-28" />
+                    <ErrorBoundary label="Chart Analysis">
+                      <Suspense fallback={<SkeletonSection lines={6} tall />}>
+                        <ChartAnalysis
+                          results={results}
+                          onAnalysisSaved={handleAnalysisSaved}
+                          context={analysisContext}
+                          csvPositionSummary={csvPositionSummary}
+                        />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </>
+                )}
+
+                <span id="sec-history" className="block scroll-mt-28" />
+                <ErrorBoundary label="Analysis History">
+                  <AnalysisHistory refreshKey={historyRefreshKey} />
+                </ErrorBoundary>
+
+                {isOwner && (
+                  <>
+                    <span id="sec-ml-insights" className="block scroll-mt-28" />
+                    <ErrorBoundary label="ML Insights">
+                      <Suspense fallback={<SkeletonSection lines={6} tall />}>
+                        <MLInsights />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </>
+                )}
+
+                {/* Paper Dashboard — lazy-loaded */}
+                <span id="sec-positions" className="block scroll-mt-28" />
+                <ErrorBoundary label="Paper Dashboard">
                   <Suspense fallback={<SkeletonSection lines={5} tall />}>
-                    <BWBCalculator
-                      selectedDate={vix.selectedDate}
-                      vix={vixInput}
+                    <PositionMonitor
+                      spotPrice={results?.spot ?? spxVal ?? 0}
+                      onPositionSummaryChange={setCsvPositionSummary}
+                      portfolioRiskThresholdPct={portfolioRiskThresholdPct}
                     />
                   </Suspense>
                 </ErrorBoundary>
-              </>
-            )}
 
-            <ErrorBoundary label="Results">
-              <ResultsSection
-                results={results}
-                effectiveRatio={effectiveRatio}
-                spxDirectActive={spxDirectActive}
-                showIC={showIC}
-                wingWidth={wingWidth}
-                contracts={contracts}
-                skewPct={skewPct}
-                breakevenTarget={breakevenTarget}
-                setBreakevenTarget={setBreakevenTarget}
-                showBWB={showBWB}
-                bwbNarrowWidth={bwbNarrowWidth}
-                bwbWideMultiplier={bwbWideMultiplier}
-              />
-            </ErrorBoundary>
-          </main>
+                {isOwner && (
+                  <>
+                    <span id="sec-bwb" className="block scroll-mt-28" />
+                    <ErrorBoundary label="BWB Calculator">
+                      <Suspense fallback={<SkeletonSection lines={5} tall />}>
+                        <BWBCalculator
+                          selectedDate={vix.selectedDate}
+                          vix={vixInput}
+                        />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </>
+                )}
+
+                <ErrorBoundary label="Results">
+                  <ResultsSection
+                    results={results}
+                    effectiveRatio={effectiveRatio}
+                    spxDirectActive={spxDirectActive}
+                    showIC={showIC}
+                    wingWidth={wingWidth}
+                    contracts={contracts}
+                    skewPct={skewPct}
+                    breakevenTarget={breakevenTarget}
+                    setBreakevenTarget={setBreakevenTarget}
+                    showBWB={showBWB}
+                    bwbNarrowWidth={bwbNarrowWidth}
+                    bwbWideMultiplier={bwbWideMultiplier}
+                  />
+                </ErrorBoundary>
+              </main>
+            </div>
+          </div>
         </div>
       </div>
       <BackToTop />

@@ -45,7 +45,24 @@ function SectionTitle({
   );
 }
 
-/** Reusable section wrapper with label and optional badge */
+/**
+ * Reusable section wrapper with label and optional badge.
+ *
+ * Default-collapse rule for the codebase (apply when adding new
+ * collapsible UI):
+ *   - **Core / primary panels** (Results, Risk, Regime, Futures, etc.):
+ *     `defaultCollapsed=false` — they answer the user's primary question
+ *     and should be visible on load.
+ *   - **Drill-down / per-row detail** (IVAnomalies row, PositionMonitor
+ *     row, ChartAnalysis sub-tabs): start collapsed — secondary content
+ *     that the user opts into per-row.
+ *   - **Optional/uploaded data** (PositionMonitor parent panel): start
+ *     collapsed — content is empty until the user provides input.
+ *
+ * Sub-sections nested inside a `SectionBox` (e.g. IronCondor inside
+ * Results) typically use a smaller inline header rather than a nested
+ * `SectionBox`; nesting full SectionBoxes inflates the visual hierarchy.
+ */
 export const SectionBox = memo(function SectionBox({
   label,
   badge,
