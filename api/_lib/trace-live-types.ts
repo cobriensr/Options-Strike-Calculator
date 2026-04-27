@@ -112,7 +112,7 @@ export const traceCharmReadSchema = z.object({
   /** Are rejection wicks visible at a red ceiling (dynamic-red rejection pattern)? */
   rejectionWicksAtRed: z.boolean(),
   /** Free-text observation, max 2 sentences */
-  notes: z.string().max(400),
+  notes: z.string(),
 });
 
 export const traceGammaReadSchema = z.object({
@@ -136,7 +136,7 @@ export const traceGammaReadSchema = z.object({
   ceilingStrike: z.number().nullable(),
   /** Does the override rule fire? (dominant node ≥10× OR clear +γ floor/ceiling at non-charm-junction level) */
   overrideFires: z.boolean(),
-  notes: z.string().max(400),
+  notes: z.string(),
 });
 
 export const traceDeltaReadSchema = z.object({
@@ -148,7 +148,7 @@ export const traceDeltaReadSchema = z.object({
   corridorWidth: z.number().nullable(),
   /** In +γ regime zones are S/R; in −γ they're acceleration. Set per gamma sign. */
   zoneBehavior: z.enum(['support_resistance', 'acceleration', 'unclear']),
-  notes: z.string().max(400),
+  notes: z.string(),
 });
 
 export const traceTradeRecommendationSchema = z.object({
@@ -201,11 +201,11 @@ export const traceAnalysisSchema = z.object({
     overrideApplied: z.boolean(),
     trade: traceTradeRecommendationSchema,
     /** Brief synthesis sentence the user sees at top of dashboard */
-    headline: z.string().max(280),
+    headline: z.string(),
     /** Specific risk factors / warnings (events, MOC risk, multi-band charts) */
-    warnings: z.array(z.string().max(280)).max(8),
+    warnings: z.array(z.string()),
   }),
   /** Optional log of contextual notes for the audit trail (debug-friendly) */
-  reasoningSummary: z.string().max(2000).optional(),
+  reasoningSummary: z.string().optional(),
 });
 export type TraceAnalysis = z.infer<typeof traceAnalysisSchema>;

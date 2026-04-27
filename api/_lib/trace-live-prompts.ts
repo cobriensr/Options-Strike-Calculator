@@ -136,7 +136,7 @@ characters. Required fields:
       junctionStrike: number | null
       flipFlopDetected: boolean
       rejectionWicksAtRed: boolean
-      notes: string ≤ 2 sentences
+      notes: string — write what you need, no length cap.
     }
   - gamma: {
       signAtSpot: "positive_strong" | "positive_pale" | "neutral" | "negative_pale" | "negative_strong"
@@ -146,14 +146,14 @@ characters. Required fields:
       floorStrike: number | null
       ceilingStrike: number | null
       overrideFires: boolean
-      notes: string ≤ 2 sentences
+      notes: string — write what you need, no length cap.
     }
   - delta: {
       blueBelowStrike: number | null
       redAboveStrike: number | null
       corridorWidth: number | null
       zoneBehavior: "support_resistance" | "acceleration" | "unclear"
-      notes: string ≤ 2 sentences
+      notes: string — write what you need, no length cap.
     }
   - synthesis: {
       predictedClose: number — the predicted SPX close, applying the override hierarchy
@@ -161,10 +161,10 @@ characters. Required fields:
       crossChartAgreement: "all_agree" | "mostly_agree" | "split" | "no_call"
       overrideApplied: boolean — did the gamma override fire?
       trade: { type, centerStrike, wingWidth, size }
-      headline: string ≤ 280 chars — what the user sees at top of dashboard
-      warnings: array of ≤8 short strings — events, MOC risk, multi-band charts, etc.
+      headline: string — what the user sees at top of dashboard. Keep it tight enough to read in two seconds, but no hard cap.
+      warnings: array of strings — events, MOC risk, multi-band charts, etc. List as many as you need.
     }
-  - reasoningSummary: optional string ≤ 2000 chars — audit-trail summary of the reads (debug-friendly)
+  - reasoningSummary: optional string — audit-trail summary of the reads (debug-friendly), no length cap.
 
 Trade type and size:
 
