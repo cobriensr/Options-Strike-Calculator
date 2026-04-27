@@ -293,6 +293,93 @@ describe('fetch-outcomes handler', () => {
     });
   });
 
+  it('populates trace_live_analyses with actual_close + actual_path per matched row', async () => {
+    // Phase 1 outcomes-join: after the settlement upsert, fetch-outcomes
+    // SELECTs trace_live_analyses rows captured today (ET-cast) and runs
+    // a per-row UPDATE setting actual_close (= settlement) and actual_path
+    // (= candle suffix from captured_at → close as a JSONB array).
+    mockedSchwabFetch.mockResolvedValueOnce(makeIntradayResponse());
+    mockedSchwabFetch.mockResolvedValueOnce(makeQuotesResponse(20, 16));
+    mockSaveOutcome.mockResolvedValueOnce(undefined);
+
+    // Two SELECTs run synchronously before the first await in the main
+    // handler: enrichAnalysisEmbeddings (fire-and-forget) hits `analyses`
+    // first; populateTraceLiveOutcomes (awaited) hits trace_live_analyses
+    // second. Mock both in order; remaining UPDATEs and the QC check fall
+    // through to the catch-all `mockResolvedValue([{settlement: 5700}])`.
+    mockSql.mockResolvedValueOnce([]); // enrichAnalysisEmbeddings: no analyses today
+    mockSql.mockResolvedValueOnce([
+      { id: 101, captured_at: '2026-03-24T13:35:00.000Z' }, // 9:35 ET
+      { id: 102, captured_at: '2026-03-24T19:00:00.000Z' }, // 3:00 ET
+    ]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: {},
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+
+    // Find the SELECT call against trace_live_analyses (first SQL call after
+    // the date-cast condition is built into the template strings).
+    const selectCall = mockSql.mock.calls.find((call) => {
+      const strings = call[0] as TemplateStringsArray | undefined;
+      const joined = strings?.join('?') ?? '';
+      return (
+        joined.includes('FROM trace_live_analyses') &&
+        joined.includes("AT TIME ZONE 'America/New_York'")
+      );
+    });
+    expect(selectCall).toBeDefined();
+
+    // Find the per-row UPDATE calls (one per row returned from SELECT).
+    const updateCalls = mockSql.mock.calls.filter((call) => {
+      const strings = call[0] as TemplateStringsArray | undefined;
+      const joined = strings?.join('?') ?? '';
+      return joined.includes('UPDATE trace_live_analyses');
+    });
+    expect(updateCalls).toHaveLength(2);
+
+    // Each UPDATE must bind settlement (5730) + a JSON-string path. The
+    // path for the early row should be longer than the path for the late
+    // row because it covers more of the session.
+    const earlyUpdateValues = updateCalls[0]!.slice(1);
+    const lateUpdateValues = updateCalls[1]!.slice(1);
+
+    expect(earlyUpdateValues).toContain(5730); // settlement
+    expect(lateUpdateValues).toContain(5730);
+
+    const earlyPathStr = earlyUpdateValues.find(
+      (v): v is string => typeof v === 'string' && v.startsWith('['),
+    );
+    const latePathStr = lateUpdateValues.find(
+      (v): v is string => typeof v === 'string' && v.startsWith('['),
+    );
+    expect(earlyPathStr).toBeDefined();
+    expect(latePathStr).toBeDefined();
+
+    const earlyPath = JSON.parse(earlyPathStr!) as Array<{
+      ts: string;
+      price: number;
+    }>;
+    const latePath = JSON.parse(latePathStr!) as Array<{
+      ts: string;
+      price: number;
+    }>;
+    // Path entries must shape as { ts: ISO, price: number } and the early
+    // capture's path is strictly longer than the late capture's because
+    // the candle suffix from 9:35 ET → close covers more bars than the
+    // suffix from 3:00 ET → close.
+    expect(earlyPath.length).toBeGreaterThan(latePath.length);
+    expect(earlyPath[0]).toMatchObject({
+      ts: expect.any(String),
+      price: expect.any(Number),
+    });
+  });
+
   // ── Error scenarios ───────────────────────────────────────
 
   it('returns 502 when intraday schwabFetch fails', async () => {

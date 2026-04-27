@@ -34,6 +34,8 @@ interface TraceLiveDetailRow {
   headline: string | null;
   imageUrls: TraceLiveImageUrls;
   analysis: TraceAnalysis | null;
+  noveltyScore: number | null;
+  actualClose: number | null;
   model: string | null;
   inputTokens: number | null;
   outputTokens: number | null;
@@ -69,6 +71,8 @@ function parseDetailRow(r: Record<string, unknown>): TraceLiveDetailRow {
     headline: (r.headline as string | null) ?? null,
     imageUrls: parseJsonbField<TraceLiveImageUrls>(r.image_urls) ?? {},
     analysis: parseJsonbField<TraceAnalysis>(r.full_response),
+    noveltyScore: r.novelty_score == null ? null : Number(r.novelty_score),
+    actualClose: r.actual_close == null ? null : Number(r.actual_close),
     model: (r.model as string | null) ?? null,
     inputTokens: r.input_tokens == null ? null : Number(r.input_tokens),
     outputTokens: r.output_tokens == null ? null : Number(r.output_tokens),
@@ -117,8 +121,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const rows = await sql`
       SELECT id, captured_at, spot, stability_pct, regime, predicted_close,
              confidence, override_applied, headline, image_urls,
-             full_response, model, input_tokens, output_tokens,
-             cache_read_tokens, cache_write_tokens, duration_ms, created_at
+             full_response, novelty_score, actual_close, model, input_tokens,
+             output_tokens, cache_read_tokens, cache_write_tokens, duration_ms,
+             created_at
       FROM trace_live_analyses
       WHERE id = ${idStr}
       LIMIT 1

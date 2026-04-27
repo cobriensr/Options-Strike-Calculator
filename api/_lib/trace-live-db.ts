@@ -96,6 +96,63 @@ export function buildTraceLiveSummary(args: {
 }
 
 // ============================================================
+// NOVELTY SCORE
+// ============================================================
+
+/**
+ * Number of nearest historical embeddings to look at when computing the
+ * novelty score. The score is the cosine distance to the k-th nearest
+ * neighbor — k=20 means "is this setup further than 20 historical
+ * setups have ever been?"
+ *
+ * Higher k reduces noise (a single weird neighbor doesn't dominate);
+ * too high a k requires more history before the score is meaningful.
+ * 20 is a balance: meaningful after ~100 captures, noise-resistant
+ * once the corpus grows.
+ */
+const NOVELTY_K = 20;
+
+/**
+ * Compute the novelty score for a new tick by querying the k-th nearest
+ * neighbor's cosine distance against the historical embedding corpus.
+ *
+ * Returns null when:
+ *   - The new embedding itself is null (embedding generation failed)
+ *   - Fewer than NOVELTY_K historical rows exist (insufficient corpus)
+ *   - The query throws (treated as best-effort — don't block the save)
+ *
+ * Higher score = more novel. Cosine distance ranges 0 (identical) to
+ * 2 (opposite); typical TRACE-live embeddings cluster in [0.05, 0.4]
+ * for similar-regime captures. A novelty > 0.5 against the 20th
+ * neighbor is genuinely "we've never seen this" terrain.
+ */
+async function computeNoveltyScore(
+  embedding: number[] | null,
+): Promise<number | null> {
+  if (!embedding || embedding.length === 0) return null;
+  const sql = getDb();
+  const vectorLiteral = `[${embedding.join(',')}]`;
+  try {
+    // OFFSET k-1 LIMIT 1 returns the k-th-nearest neighbor's distance.
+    // The HNSW index serves this efficiently — pgvector pushes the limit
+    // through the ORDER BY when the operator class matches the index.
+    const rows = await sql`
+      SELECT (analysis_embedding <=> ${vectorLiteral}::vector)::float8 AS distance
+      FROM trace_live_analyses
+      WHERE analysis_embedding IS NOT NULL
+      ORDER BY analysis_embedding <=> ${vectorLiteral}::vector
+      LIMIT 1 OFFSET ${NOVELTY_K - 1}
+    `;
+    if (rows.length === 0) return null; // Fewer than NOVELTY_K historical rows.
+    return Number(rows[0]!.distance);
+  } catch (err) {
+    logger.warn({ err }, 'computeNoveltyScore failed; saving without score');
+    Sentry.captureException(err);
+    return null;
+  }
+}
+
+// ============================================================
 // SAVE
 // ============================================================
 
@@ -152,6 +209,12 @@ export async function saveTraceLiveAnalysis(
       ? JSON.stringify(imageUrls)
       : null;
 
+  // Compute novelty BEFORE the insert so the new row's own embedding doesn't
+  // count against itself. Best-effort: a failure here returns null and the
+  // row still saves — drift detection is a defense-in-depth signal, not
+  // load-bearing for the analysis itself.
+  const noveltyScore = await computeNoveltyScore(embedding);
+
   try {
     const rows = await sql`
       INSERT INTO trace_live_analyses (
@@ -166,6 +229,7 @@ export async function saveTraceLiveAnalysis(
         full_response,
         analysis_embedding,
         image_urls,
+        novelty_score,
         model,
         input_tokens,
         output_tokens,
@@ -184,6 +248,7 @@ export async function saveTraceLiveAnalysis(
         ${JSON.stringify(analysis)}::jsonb,
         ${vectorLiteral}::vector,
         ${imageUrlsJson}::jsonb,
+        ${noveltyScore},
         ${model},
         ${inputTokens},
         ${outputTokens},

@@ -114,6 +114,32 @@ export interface TraceLiveSummary {
   hasImages: boolean;
 }
 
+/**
+ * Single analog returned by /api/trace-live-analogs?id=N&k=K. Each entry is
+ * a historical capture whose embedding is closest to the seed row's, paired
+ * with its post-close outcome where known.
+ */
+export interface TraceLiveAnalog {
+  id: number;
+  capturedAt: string;
+  spot: number;
+  regime: string | null;
+  predictedClose: number | null;
+  actualClose: number | null;
+  confidence: string | null;
+  headline: string | null;
+  distance: number;
+  /** actualClose - predictedClose, or null if either side is missing. */
+  error: number | null;
+}
+
+/** Response shape from /api/trace-live-analogs. */
+export interface TraceLiveAnalogsResponse {
+  id: number;
+  k: number;
+  analogs: TraceLiveAnalog[];
+}
+
 /** Detail row returned by /api/trace-live-get?id=N. */
 export interface TraceLiveDetail {
   id: number;
@@ -127,6 +153,13 @@ export interface TraceLiveDetail {
   headline: string | null;
   imageUrls: TraceLiveImageUrls;
   analysis: TraceAnalysis | null;
+  /** Cosine distance to k-th nearest historical embedding (k=20). Null
+   *  when fewer than k historical rows exist or when computation failed.
+   *  Higher = more novel setup. */
+  noveltyScore: number | null;
+  /** SPX cash close on the trading day of capture, populated post-close
+   *  by fetch-outcomes. Null for today's pre-close rows. */
+  actualClose: number | null;
   model: string | null;
   inputTokens: number | null;
   outputTokens: number | null;

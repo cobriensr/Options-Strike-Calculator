@@ -3,9 +3,9 @@
 
 PYTHON ?= .venv/bin/python
 
-.PHONY: all eda cluster visualize health milestone backtest early pin nope flow lint format test test-cov test-html review clean help
+.PHONY: all eda cluster visualize health milestone backtest early pin nope flow calibration lint format test test-cov test-html review clean help
 
-all: health eda cluster visualize early backtest pin nope flow ## Run full analysis pipeline
+all: health eda cluster visualize early backtest pin nope flow calibration ## Run full analysis pipeline
 
 eda: ## Run exploratory data analysis
 	$(PYTHON) src/eda.py
@@ -39,6 +39,9 @@ nope: ## Run NOPE EDA (directional, agreement, regime plots)
 
 flow: ## Run flow EDA (distributions, time-of-day, directional, returns)
 	$(PYTHON) src/flow_eda.py
+
+calibration: ## Run TRACE Live calibration dashboard (confidence vs actual hit-rate)
+	$(PYTHON) src/calibration.py
 
 lint: ## Check and auto-fix code quality (ruff lint + format)
 	$(PYTHON) -m ruff check --fix src/ tests/

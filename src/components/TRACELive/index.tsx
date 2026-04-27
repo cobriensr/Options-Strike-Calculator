@@ -24,6 +24,7 @@ import TRACELiveControls from './TRACELiveControls';
 import TRACELiveTabs from './TRACELiveTabs';
 import TRACELiveTabPanel from './TRACELiveTabPanel';
 import TRACELiveSynthesisPanel from './TRACELiveSynthesisPanel';
+import TRACELiveAnalogsPanel from './TRACELiveAnalogsPanel';
 import type { TraceChart } from './types';
 
 interface Props {
@@ -83,6 +84,8 @@ function TRACELiveDashboard({ marketOpen }: Props) {
       />
 
       <TRACELiveSynthesisPanel detail={detail} />
+
+      <TRACELiveAnalogsPanel detail={detail} />
     </SectionBox>
   );
 }

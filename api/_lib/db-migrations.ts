@@ -2454,4 +2454,43 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 90,
+    description:
+      'Add actual_close + actual_path columns to trace_live_analyses for ' +
+      'outcomes-join analysis. actual_close is the SPX cash settlement on ' +
+      'the trading day of capture; actual_path is a JSONB array of ' +
+      '{ts, price} entries from capture-time → close (5-min spacing) ' +
+      'enabling realized-vs-predicted analysis, calibration curves, and ' +
+      "historical-analog outcome lookups. Populated by fetch-outcomes' " +
+      'post-settlement update step.',
+    statements: (sql) => [
+      sql`
+        ALTER TABLE trace_live_analyses
+          ADD COLUMN IF NOT EXISTS actual_close NUMERIC(10, 2),
+          ADD COLUMN IF NOT EXISTS actual_path JSONB
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_trace_live_actual_close_filter
+          ON trace_live_analyses (captured_at DESC)
+          WHERE actual_close IS NOT NULL
+      `,
+    ],
+  },
+  {
+    id: 91,
+    description:
+      'Add novelty_score column to trace_live_analyses for drift detection. ' +
+      'Stored as NUMERIC(8,6) — cosine distance to the k-th nearest historical ' +
+      'embedding (default k=20). Computed pre-insert in saveTraceLiveAnalysis. ' +
+      'High score = current setup is far from any historical pattern → ' +
+      "model's calibration may not apply, surface as UI flag. NULL when " +
+      'fewer than k historical rows exist (early days / insufficient data).',
+    statements: (sql) => [
+      sql`
+        ALTER TABLE trace_live_analyses
+          ADD COLUMN IF NOT EXISTS novelty_score NUMERIC(8, 6)
+      `,
+    ],
+  },
 ];

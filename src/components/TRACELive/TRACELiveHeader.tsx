@@ -101,6 +101,24 @@ function TRACELiveHeader({
           </span>
         )}
 
+        {/* Novelty flag — fires when this setup is far from any of the
+            20 closest historical embeddings. Threshold (0.45) is a
+            conservative starting point against typical TRACE-live cosine
+            distances of 0.05-0.40 for similar-regime captures; tune
+            after a few weeks of data + the calibration ML pipeline. */}
+        {detail?.noveltyScore != null && detail.noveltyScore > 0.45 && (
+          <span
+            className="rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
+            style={{
+              backgroundColor: tint(theme.red, '18'),
+              color: theme.red,
+            }}
+            title={`Novelty score ${detail.noveltyScore.toFixed(3)} — this setup is far from any of the 20 closest historical patterns. Model calibration may not apply; consider reduced sizing.`}
+          >
+            ⚠ NOVEL
+          </span>
+        )}
+
         {isLive ? (
           <span
             className="rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"

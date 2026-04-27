@@ -182,18 +182,21 @@ describe('saveTraceLiveAnalysis', () => {
   };
 
   it('inserts and returns the new row id with a non-null embedding', async () => {
-    mockSql.mockResolvedValueOnce([{ id: 42 }]);
+    // Phase 4 added a novelty-score SELECT that runs BEFORE the INSERT for
+    // every non-null embedding. Mock both calls in order: empty result for
+    // the novelty query (treated as "fewer than k historical rows") then
+    // the INSERT row.
+    mockSql.mockResolvedValueOnce([]); // novelty SELECT
+    mockSql.mockResolvedValueOnce([{ id: 42 }]); // INSERT
     const id = await saveTraceLiveAnalysis({
       ...baseInput,
       embedding: [0.1, 0.2, 0.3],
     });
     expect(id).toBe(42);
-    // Verify the SQL call shape — the parameters arg is the second slot
-    // of a tagged template call (mockSql receives strings + values).
-    expect(mockSql).toHaveBeenCalledTimes(1);
-    const callArgs = mockSql.mock.calls[0]!;
-    // Tagged-template call shape: [TemplateStringsArray, ...values]
-    const values = callArgs.slice(1);
+    // Two calls: novelty SELECT + INSERT.
+    expect(mockSql).toHaveBeenCalledTimes(2);
+    const insertCall = mockSql.mock.calls[1]!;
+    const values = insertCall.slice(1);
     // The vector literal is one of the parameters, formatted as "[v1,v2,...]"
     expect(values).toContain('[0.1,0.2,0.3]');
   });
@@ -219,7 +222,11 @@ describe('saveTraceLiveAnalysis', () => {
   });
 
   it('returns null on DB error and does not throw', async () => {
-    mockSql.mockRejectedValueOnce(new Error('connection lost'));
+    // Phase 4 — the novelty SELECT runs first (catches its own errors and
+    // returns null silently), so the test exercises the INSERT failure path
+    // by resolving the SELECT and rejecting the INSERT.
+    mockSql.mockResolvedValueOnce([]); // novelty SELECT
+    mockSql.mockRejectedValueOnce(new Error('connection lost')); // INSERT
     const id = await saveTraceLiveAnalysis({
       ...baseInput,
       embedding: [0.1, 0.2],

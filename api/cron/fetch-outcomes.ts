@@ -196,6 +196,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // making future retrieval richer when this day appears as a historical analog.
     void enrichAnalysisEmbeddings(dateStr, settlement);
 
+    // Populate actual_close + actual_path on every trace_live_analyses row
+    // captured today so downstream ML (analogs, calibration, drift) has
+    // realized outcomes paired with each prediction. Awaited so the cron's
+    // success signal includes whether the join succeeded — fire-and-forget
+    // here would mean ML scripts run before the data they depend on lands.
+    await populateTraceLiveOutcomes(dateStr, settlement, candles);
+
     // Data quality check: alert if settlement is null
     const qcRows = await getDb()`
       SELECT settlement FROM outcomes WHERE date = ${dateStr}
@@ -253,6 +260,105 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     logger.error({ err }, 'fetch-outcomes error');
     return res.status(500).json({ error: 'Internal error' });
   }
+}
+
+// ── Trace-live outcomes join ───────────────────────────────
+
+interface PathPoint {
+  ts: string; // ISO UTC
+  price: number;
+}
+
+/**
+ * For every `trace_live_analyses` row captured on `dateStr`, populate:
+ *   - `actual_close` = the day's settlement (same value across all rows)
+ *   - `actual_path` = JSONB array of {ts, price} from capture-time → close
+ *
+ * The path is built from the same 5-min `candles` array we already fetched
+ * for the outcomes upsert — no extra API calls. Each row gets the SUFFIX of
+ * the candle stream starting at the candle whose datetime is at-or-after
+ * the row's `captured_at`. That gives a per-capture realized trajectory the
+ * ML pipeline can use to compute hit rate at multiple horizons (1-hour
+ * forward, EOD), drawdown from prediction, etc.
+ */
+async function populateTraceLiveOutcomes(
+  dateStr: string,
+  settlement: number,
+  candles: PriceCandle[],
+): Promise<void> {
+  const sql = getDb();
+
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await withRetry(
+      () => sql`
+        SELECT id, captured_at
+        FROM trace_live_analyses
+        WHERE (captured_at AT TIME ZONE 'America/New_York')::date = ${dateStr}::date
+      `,
+    );
+  } catch (error_) {
+    logger.error(
+      { err: error_, date: dateStr },
+      'fetch-outcomes: trace_live_analyses SELECT failed',
+    );
+    metrics.increment('fetch_outcomes.trace_live_join_error');
+    Sentry.captureException(error_);
+    return;
+  }
+
+  if (rows.length === 0) {
+    logger.info(
+      { date: dateStr },
+      'fetch-outcomes: no trace_live_analyses rows to enrich',
+    );
+    return;
+  }
+
+  // Sort candles ascending so suffix-from-capture-time slicing is correct.
+  // (Schwab returns ascending already, but don't trust without sorting.)
+  const orderedCandles = [...candles].sort((a, b) => a.datetime - b.datetime);
+
+  let updated = 0;
+  let rowErrors = 0;
+
+  for (const row of rows) {
+    try {
+      const capturedAt = new Date(row.captured_at as string).getTime();
+      // Suffix of the candle stream at-or-after captured_at. Each row gets
+      // its own slice — early-session captures get a long path; late-session
+      // captures get a short one.
+      const path: PathPoint[] = orderedCandles
+        .filter((c) => c.datetime >= capturedAt)
+        .map((c) => ({
+          ts: new Date(c.datetime).toISOString(),
+          price: c.close,
+        }));
+
+      await withRetry(
+        () => sql`
+          UPDATE trace_live_analyses
+          SET actual_close = ${settlement},
+              actual_path = ${JSON.stringify(path)}::jsonb
+          WHERE id = ${row.id as number}
+        `,
+      );
+      updated++;
+    } catch (error_) {
+      rowErrors++;
+      logger.error(
+        { err: error_, date: dateStr, traceLiveId: row.id },
+        'fetch-outcomes: trace_live_analyses row update failed',
+      );
+      metrics.increment('fetch_outcomes.trace_live_join_error');
+      Sentry.captureException(error_);
+    }
+  }
+
+  logger.info(
+    { date: dateStr, count: rows.length, updated, rowErrors },
+    'fetch-outcomes: enriched trace_live_analyses with actual_close + actual_path',
+  );
 }
 
 // ── Outcome enrichment ─────────────────────────────────────

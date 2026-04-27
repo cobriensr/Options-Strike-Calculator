@@ -20,10 +20,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import {
-  guardOwnerEndpoint,
-  rejectIfRateLimited,
-} from './_lib/api-helpers.js';
+import { guardOwnerEndpoint, rejectIfRateLimited } from './_lib/api-helpers.js';
 import { getDb } from './_lib/db.js';
 import logger from './_lib/logger.js';
 import { Sentry, metrics } from './_lib/sentry.js';
