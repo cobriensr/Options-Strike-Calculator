@@ -19,11 +19,11 @@ All three use the same `IchimokuEngine.batch_state` events (TK cross + cloud bre
 
 Edge bar: AUC > 0.55 AND Expected R/trade > 0.10 in EVERY walk-forward window.
 
-| Strategy | W1 AUC | W2 AUC | W1 ER@p0.50 | W2 ER@p0.50 | Joint gate |
-|---|---|---|---|---|---|
-| A — Kijun + 2R | 0.506 | 0.501 | −0.043 | +0.162 (n=48) | **FAIL** |
-| B — Cloud + 2R | **0.495** | **0.484** | −0.049 | −0.406 | **FAIL** (worse than random) |
-| C — Kijun + TK reversal | **0.582** | **0.583** | −0.123 | −0.013 | **FAIL** (AUC passes, ER fails) |
+| Strategy                | W1 AUC    | W2 AUC    | W1 ER@p0.50 | W2 ER@p0.50   | Joint gate                      |
+| ----------------------- | --------- | --------- | ----------- | ------------- | ------------------------------- |
+| A — Kijun + 2R          | 0.506     | 0.501     | −0.043      | +0.162 (n=48) | **FAIL**                        |
+| B — Cloud + 2R          | **0.495** | **0.484** | −0.049      | −0.406        | **FAIL** (worse than random)    |
+| C — Kijun + TK reversal | **0.582** | **0.583** | −0.123      | −0.013        | **FAIL** (AUC passes, ER fails) |
 
 ## Strategy A — Kijun stop + 2R target
 
@@ -57,11 +57,11 @@ That's a **much weaker labeling task** than "predict whether 2R target hits befo
 
 Look at W2:
 
-| Threshold | n | ER |
-|---|---|---|
-| p ≥ 0.50 | 47 | −0.013 |
-| p ≥ 0.55 | 19 | −0.123 |
-| p ≥ 0.60 | 6 | −0.674 |
+| Threshold | n   | ER     |
+| --------- | --- | ------ |
+| p ≥ 0.50  | 47  | −0.013 |
+| p ≥ 0.55  | 19  | −0.123 |
+| p ≥ 0.60  | 6   | −0.674 |
 
 The high-confidence trades **lose money** even though the AUC is 0.583. Tells the same story: model ranking is correct on average (AUC > 0.55) but the highest-confidence pocket happens to land in noisy regions where realized_R is dominated by occasional large losses. This is **AUC-vs-ER disconnect** — a known pathology in classifier-driven trading where ranking ability doesn't translate to profitability.
 

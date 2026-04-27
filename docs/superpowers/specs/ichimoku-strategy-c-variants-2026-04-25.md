@@ -16,12 +16,12 @@ This sweep tests each lever individually + combined.
 
 ## Results
 
-| Variant | Description | W1 AUC | W2 AUC | W1 ER @p0.50 | W2 ER @p0.50 | Joint gate |
-|---|---|---|---|---|---|---|
-| Baseline C | Static stop, threshold=0 | 0.582 | 0.583 | −0.12 (n=129) | −0.01 (n=47) | AUC ✓, ER ✗ |
-| **Variant 1: Trailing** | **Trailing Kijun stop, threshold=0** | **0.560** | **0.567** | −0.09 (n=107) | **+0.31 (n=40)** | **AUC ✓ ✓, W2 ER ✓** |
-| Variant 2: Threshold 0.5R | Static stop, threshold=0.5 | 0.544 | 0.536 | +1.56 (n=52) | +1.11 (n=11) | AUC borderline, ER huge but small samples |
-| Variant 3: Combined | Trailing + threshold=0.5 | 0.517 | 0.532 | +0.09 (n=20) | +3.05 (n=5) | AUC tanks, samples too small |
+| Variant                   | Description                          | W1 AUC    | W2 AUC    | W1 ER @p0.50  | W2 ER @p0.50     | Joint gate                                |
+| ------------------------- | ------------------------------------ | --------- | --------- | ------------- | ---------------- | ----------------------------------------- |
+| Baseline C                | Static stop, threshold=0             | 0.582     | 0.583     | −0.12 (n=129) | −0.01 (n=47)     | AUC ✓, ER ✗                               |
+| **Variant 1: Trailing**   | **Trailing Kijun stop, threshold=0** | **0.560** | **0.567** | −0.09 (n=107) | **+0.31 (n=40)** | **AUC ✓ ✓, W2 ER ✓**                      |
+| Variant 2: Threshold 0.5R | Static stop, threshold=0.5           | 0.544     | 0.536     | +1.56 (n=52)  | +1.11 (n=11)     | AUC borderline, ER huge but small samples |
+| Variant 3: Combined       | Trailing + threshold=0.5             | 0.517     | 0.532     | +0.09 (n=20)  | +3.05 (n=5)      | AUC tanks, samples too small              |
 
 ## Variant 1 — Trailing Kijun stop is the winner
 
@@ -105,12 +105,12 @@ After the initial 5m run, we re-ran Variant 1 on **1m** with the same trailing-s
 
 ### Results
 
-| Timeframe | Window | AUC | ER @p0.50 | n trades | ER @p0.60 (n) |
-|---|---|---|---|---|---|
-| **5m** | W1 | 0.560 | −0.09 | 107 | +0.65 (n=10) |
-| **5m** | W2 | 0.567 | **+0.31** | 40 | −0.73 (n=3) |
-| **1m** | W1 | 0.552 | **−0.08** | 243 | −0.33 (n=40) |
-| **1m** | W2 | **0.577** | **−0.07** | 26 | +0.10 (n=4) |
+| Timeframe | Window | AUC       | ER @p0.50 | n trades | ER @p0.60 (n) |
+| --------- | ------ | --------- | --------- | -------- | ------------- |
+| **5m**    | W1     | 0.560     | −0.09     | 107      | +0.65 (n=10)  |
+| **5m**    | W2     | 0.567     | **+0.31** | 40       | −0.73 (n=3)   |
+| **1m**    | W1     | 0.552     | **−0.08** | 243      | −0.33 (n=40)  |
+| **1m**    | W2     | **0.577** | **−0.07** | 26       | +0.10 (n=4)   |
 
 ### Verdict — 5m W2 was noise
 

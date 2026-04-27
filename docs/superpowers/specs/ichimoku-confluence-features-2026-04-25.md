@@ -34,16 +34,16 @@ daily_distance_from_cloud_atr  — signed distance from daily cloud / daily ATR
 
 Joint gate: AUC > 0.55 AND Expected R > 0.10 in EVERY walk-forward window.
 
-| Run | W1 AUC | W2 AUC | W1 ER@p0.50 (n) | W2 ER@p0.50 (n) | Joint gate |
-|---|---|---|---|---|---|
-| 5m no-confluence | 0.560 | **0.567** | −0.09 (n=107) | **+0.31 (n=40)** | W2 only ✗ |
-| **5m WITH confluence** | 0.555 | 0.563 | −0.02 (n=95) | **−0.22 (n=49)** | **FAIL both windows** |
-| 1m no-confluence | 0.552 | 0.577 | −0.08 (n=243) | −0.07 (n=26) | FAIL |
-| **1m WITH confluence** | 0.556 | 0.579 | −0.23 (n=174) | −0.10 (n=50) | FAIL |
+| Run                    | W1 AUC | W2 AUC    | W1 ER@p0.50 (n) | W2 ER@p0.50 (n)  | Joint gate            |
+| ---------------------- | ------ | --------- | --------------- | ---------------- | --------------------- |
+| 5m no-confluence       | 0.560  | **0.567** | −0.09 (n=107)   | **+0.31 (n=40)** | W2 only ✗             |
+| **5m WITH confluence** | 0.555  | 0.563     | −0.02 (n=95)    | **−0.22 (n=49)** | **FAIL both windows** |
+| 1m no-confluence       | 0.552  | 0.577     | −0.08 (n=243)   | −0.07 (n=26)     | FAIL                  |
+| **1m WITH confluence** | 0.556  | 0.579     | −0.23 (n=174)   | −0.10 (n=50)     | FAIL                  |
 
 ### Two key observations
 
-1. **The 5m W2 ER=+0.31 from the prior run collapsed to −0.22 with confluence features.** AUC is unchanged (0.567 → 0.563). If the +0.31 had been real signal, adding informative features should have *preserved or improved* the ER. The sign flip with feature additions is **strong evidence that the original +0.31 was statistical noise** on n=40 trades — exactly what the original ±0.32 SE-band caveat warned about. Combined with the prior 1m disconfirmation, the +0.31 is now triply-disconfirmed.
+1. **The 5m W2 ER=+0.31 from the prior run collapsed to −0.22 with confluence features.** AUC is unchanged (0.567 → 0.563). If the +0.31 had been real signal, adding informative features should have _preserved or improved_ the ER. The sign flip with feature additions is **strong evidence that the original +0.31 was statistical noise** on n=40 trades — exactly what the original ±0.32 SE-band caveat warned about. Combined with the prior 1m disconfirmation, the +0.31 is now triply-disconfirmed.
 
 2. **The features ARE being used.** Top-5 importances now include `adx_14`, `di_plus_14`, `signal_direction` alongside the usual `z_close_vwap` and time-of-day features. The model is splitting on confluence inputs — they're just not informative enough to push the ER above zero.
 
