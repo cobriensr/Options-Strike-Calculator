@@ -44,7 +44,14 @@ export interface CaptureResult {
 
 export interface RunCaptureOptions {
   logger: Logger;
-  /** Hard timeout for the full capture cycle (ms). Defaults to 90_000. */
+  /**
+   * Hard timeout for the full capture cycle (ms). Defaults to 180_000.
+   * Sequential init of 3 chart pages on browserless RTT is ~30s each,
+   * plus 3 parallel screenshots and JSON write. Slot 1 of the first
+   * test backfill ran 89.6s — right at the old 90s edge. 180s gives
+   * comfortable headroom; slots are 5 min apart so it doesn't compete
+   * with the next tick.
+   */
   timeoutMs?: number;
   /** Backfill: ET trading day (YYYY-MM-DD). Live mode if omitted. */
   date?: string;
@@ -62,7 +69,7 @@ export interface RunCaptureOptions {
 export async function runCapture(
   opts: RunCaptureOptions,
 ): Promise<CaptureResult> {
-  const { logger, timeoutMs = 90_000, date, time } = opts;
+  const { logger, timeoutMs = 180_000, date, time } = opts;
 
   if (!existsSync(CAPTURE_SCRIPT_PATH)) {
     throw new Error(

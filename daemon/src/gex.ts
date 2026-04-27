@@ -135,19 +135,27 @@ export async function fetchGexLandscape(args: {
     return null;
   }
 
-  // Find the closest snapshot at-or-before capturedAt.
+  // Find the closest snapshot within ±5 min of capturedAt. Strict
+  // at-or-before missed slot 1 of backfill: the first GEX cron row of
+  // the day is timestamped a few seconds after the slot boundary
+  // (e.g., 13:35:32Z when we ask for 13:35:00Z), which strict ≤ misses.
+  // ±5 min covers the cron drift without crossing into adjacent slots.
   const tsRows = (await sql`
-    SELECT timestamp::text AS ts
+    SELECT timestamp::text AS ts,
+           ABS(EXTRACT(EPOCH FROM (timestamp - ${capturedAt}::timestamptz))) AS diff_sec
     FROM gex_strike_0dte
-    WHERE date = ${etDate} AND timestamp <= ${capturedAt}
-    ORDER BY timestamp DESC
+    WHERE date = ${etDate}
+      AND timestamp BETWEEN
+        (${capturedAt}::timestamptz - INTERVAL '5 minutes')
+        AND (${capturedAt}::timestamptz + INTERVAL '5 minutes')
+    ORDER BY diff_sec ASC
     LIMIT 1
   `) as Array<{ ts: string }>;
   const snapshotTs = tsRows[0]?.ts;
   if (!snapshotTs) {
     logger.warn(
       { etDate, capturedAt },
-      'No gex_strike_0dte snapshot at-or-before capturedAt — skipping',
+      'No gex_strike_0dte snapshot within ±5min of capturedAt — skipping',
     );
     return null;
   }
