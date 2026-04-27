@@ -10,7 +10,7 @@ import { SectionBox, Chip, ErrorMsg } from './ui';
 import ThetaDecayChart from './ThetaDecayChart';
 
 const TOGGLE_CHIP_BASE =
-  'cursor-pointer rounded-md border-[1.5px] p-[5px_12px] font-sans text-xs font-semibold transition-colors duration-100';
+  'cursor-pointer rounded-md border-[1.5px] p-[5px_12px] font-sans text-xs font-semibold transition-colors duration-100 inline-flex min-h-[44px] items-center lg:min-h-0';
 const TOGGLE_CHIP_ACTIVE =
   'border-chip-active-border bg-chip-active-bg text-chip-active-text';
 const TOGGLE_CHIP_INACTIVE =
@@ -170,7 +170,7 @@ export default function AdvancedSection({
                   type="button"
                   onClick={() => onContractsChange(Math.max(1, contracts - 1))}
                   aria-label="Decrease contracts"
-                  className="border-edge-strong bg-chip-bg text-primary flex h-8 w-8 cursor-pointer items-center justify-center rounded-l-md border-[1.5px] border-r-0 font-mono text-base font-bold"
+                  className="border-edge-strong bg-chip-bg text-primary flex h-11 w-11 cursor-pointer items-center justify-center rounded-l-md border-[1.5px] border-r-0 font-mono text-base font-bold lg:h-8 lg:w-8"
                 >
                   {'\u2212'}
                 </button>
@@ -185,7 +185,7 @@ export default function AdvancedSection({
                       onContractsChange(v);
                     else if (e.target.value === '') onContractsChange(1);
                   }}
-                  className="border-edge-strong bg-input text-primary h-8 w-[52px] border-[1.5px] text-center font-mono text-[15px] font-semibold outline-none"
+                  className="border-edge-strong bg-input text-primary h-11 w-[52px] border-[1.5px] text-center font-mono text-[15px] font-semibold outline-none lg:h-8"
                   aria-label="Number of contracts"
                 />
                 <button
@@ -194,7 +194,7 @@ export default function AdvancedSection({
                     onContractsChange(Math.min(999, contracts + 1))
                   }
                   aria-label="Increase contracts"
-                  className="border-edge-strong bg-chip-bg text-primary flex h-8 w-8 cursor-pointer items-center justify-center rounded-r-md border-[1.5px] border-l-0 font-mono text-base font-bold"
+                  className="border-edge-strong bg-chip-bg text-primary flex h-11 w-11 cursor-pointer items-center justify-center rounded-r-md border-[1.5px] border-l-0 font-mono text-base font-bold lg:h-8 lg:w-8"
                 >
                   +
                 </button>

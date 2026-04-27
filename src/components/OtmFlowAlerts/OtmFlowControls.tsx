@@ -179,7 +179,7 @@ export const OtmFlowControls = memo(function OtmFlowControls({
             aria-pressed={settings.notificationsOn}
             aria-label={notifyLabel}
             className={
-              'rounded-full border-[1.5px] px-3.5 py-1.5 font-mono text-[13px] font-medium transition-all duration-100 ' +
+              'inline-flex min-h-[44px] items-center rounded-full border-[1.5px] px-3.5 py-1.5 font-mono text-[13px] font-medium transition-all duration-100 lg:min-h-0 ' +
               (notifyDisabled
                 ? 'border-edge bg-surface text-muted cursor-not-allowed opacity-50'
                 : settings.notificationsOn
@@ -193,7 +193,7 @@ export const OtmFlowControls = memo(function OtmFlowControls({
             type="button"
             onClick={resetSettings}
             aria-label="Reset OTM flow settings to defaults"
-            className="text-muted hover:text-foreground cursor-pointer font-mono text-[12px] underline-offset-2 hover:underline"
+            className="text-muted hover:text-foreground inline-flex min-h-[44px] cursor-pointer items-center font-mono text-[12px] underline-offset-2 hover:underline lg:min-h-0"
           >
             reset
           </button>

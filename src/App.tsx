@@ -140,7 +140,7 @@ function SchwabAuthLink({
   return (
     <a
       href="/api/auth/init"
-      className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy flex cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base no-underline transition-all duration-200"
+      className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base no-underline transition-all duration-200"
       style={color ? { color } : undefined}
       aria-label={ariaLabel}
     >
@@ -802,7 +802,7 @@ export default function StrikeCalculator() {
                     ? 'Expand all sections'
                     : 'Collapse all sections'
                 }
-                className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
+                className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
               >
                 <span className="text-[11px] font-semibold">
                   {collapseSignal.collapsed ? '⊞ Expand' : '⊟ Collapse'}
@@ -814,7 +814,7 @@ export default function StrikeCalculator() {
                   disabled={migrateRunning}
                   aria-label="Run database migrations"
                   title="Run DB migrations"
-                  className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200 disabled:cursor-wait disabled:opacity-50"
+                  className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200 disabled:cursor-wait disabled:opacity-50"
                 >
                   <svg
                     width="13"
@@ -853,7 +853,7 @@ export default function StrikeCalculator() {
                   disabled={backfillRunning}
                   aria-label="Recompute training_features for all dates"
                   title="Backfill training_features (rebuilds NOPE + flow + GEX feature columns for every date)"
-                  className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200 disabled:cursor-wait disabled:opacity-50"
+                  className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200 disabled:cursor-wait disabled:opacity-50"
                 >
                   <svg
                     width="13"
@@ -891,7 +891,7 @@ export default function StrikeCalculator() {
               />
               <button
                 onClick={handleVixCsvClick}
-                className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
+                className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
               >
                 <span className="text-[11px] font-semibold">
                   {vix.vixDataLoaded ? vix.vixDataSource : 'Upload VIX CSV'}
@@ -902,7 +902,7 @@ export default function StrikeCalculator() {
                 aria-label={
                   darkMode ? 'Switch to light mode' : 'Switch to dark mode'
                 }
-                className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
+                className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
               >
                 {darkMode ? '\u2600\uFE0F' : '\uD83C\uDF19'}
                 <span className="text-[11px] font-semibold">

@@ -155,7 +155,7 @@ export const Chip = memo(function Chip({
       aria-pressed={active}
       aria-label={label}
       className={
-        'cursor-pointer rounded-full border-[1.5px] px-3.5 py-1.5 font-mono text-[13px] font-medium transition-all duration-100 ' +
+        'inline-flex min-h-[44px] cursor-pointer items-center rounded-full border-[1.5px] px-3.5 py-1.5 font-mono text-[13px] font-medium transition-all duration-100 lg:min-h-0 ' +
         (active
           ? 'border-chip-active-border bg-chip-active-bg text-chip-active-text'
           : 'border-chip-border bg-chip-bg text-chip-text hover:border-edge-heavy hover:bg-surface-alt')

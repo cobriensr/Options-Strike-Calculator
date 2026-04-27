@@ -173,7 +173,7 @@ export default function DateTimeSection({
             <button
               type="button"
               onClick={onResumeLive}
-              className="text-accent hover:bg-accent-bg border-edge cursor-pointer rounded-full border px-2.5 py-1 font-mono text-[11px] font-medium transition-colors"
+              className="text-accent hover:bg-accent-bg border-edge inline-flex min-h-[44px] cursor-pointer items-center rounded-full border px-3 py-2 font-mono text-[11px] font-medium transition-colors lg:min-h-0 lg:px-2.5 lg:py-1"
             >
               ↻ Now
             </button>

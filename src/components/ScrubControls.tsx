@@ -87,7 +87,7 @@ export function ScrubControls({
         <button
           onClick={onScrubPrev}
           disabled={!canScrubPrev}
-          className="border-edge text-secondary hover:text-primary disabled:text-muted rounded border px-1.5 py-0.5 font-mono text-[11px] transition-colors disabled:cursor-default"
+          className="border-edge text-secondary hover:text-primary disabled:text-muted inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded border px-1.5 py-0.5 font-mono text-[11px] transition-colors disabled:cursor-default lg:min-h-0 lg:min-w-0"
           aria-label="Previous snapshot"
         >
           ‹
@@ -119,7 +119,7 @@ export function ScrubControls({
         <button
           onClick={onScrubNext}
           disabled={!canScrubNext}
-          className="border-edge text-secondary hover:text-primary disabled:text-muted rounded border px-1.5 py-0.5 font-mono text-[11px] transition-colors disabled:cursor-default"
+          className="border-edge text-secondary hover:text-primary disabled:text-muted inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded border px-1.5 py-0.5 font-mono text-[11px] transition-colors disabled:cursor-default lg:min-h-0 lg:min-w-0"
           aria-label="Next snapshot"
         >
           ›
@@ -127,7 +127,7 @@ export function ScrubControls({
         {isScrubbed && (
           <button
             onClick={onScrubLive}
-            className="font-mono text-[10px] font-bold transition-opacity hover:opacity-80"
+            className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center px-2 font-mono text-[10px] font-bold transition-opacity hover:opacity-80 lg:min-h-0 lg:min-w-0 lg:px-0"
             style={{ color: theme.statusLive }}
             aria-label="Resume live"
           >
@@ -141,7 +141,7 @@ export function ScrubControls({
         type="date"
         value={selectedDate}
         onChange={(e) => onDateChange(e.target.value)}
-        className="border-edge bg-surface text-secondary rounded border px-1.5 py-0.5 font-mono text-[11px]"
+        className="border-edge bg-surface text-secondary min-h-[44px] rounded border px-1.5 py-0.5 font-mono text-[11px] lg:min-h-0"
         aria-label="Select date"
       />
 
@@ -175,7 +175,7 @@ export function ScrubControls({
       <button
         onClick={onRefresh}
         disabled={loading}
-        className={`text-secondary hover:text-primary disabled:text-muted text-base transition-colors disabled:cursor-default ${loading ? 'animate-spin' : ''}`}
+        className={`text-secondary hover:text-primary disabled:text-muted inline-flex min-h-[44px] min-w-[44px] items-center justify-center text-base transition-colors disabled:cursor-default lg:min-h-0 lg:min-w-0 ${loading ? 'animate-spin' : ''}`}
         title="Refresh"
         aria-label={`Refresh ${sectionLabel}`}
       >
