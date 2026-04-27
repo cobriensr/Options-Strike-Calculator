@@ -126,32 +126,67 @@ const ctTimeFormatter = new Intl.DateTimeFormat('en-US', {
   hour12: false,
 });
 
-const chartOptions: DeepPartial<ChartOptions> = {
-  layout: {
-    background: { color: 'transparent' },
-    textColor: 'rgba(255,255,255,0.65)',
-  },
-  grid: {
-    vertLines: { color: 'rgba(255,255,255,0.05)' },
-    horzLines: { color: 'rgba(255,255,255,0.05)' },
-  },
-  rightPriceScale: { borderColor: 'rgba(255,255,255,0.1)' },
-  timeScale: {
-    borderColor: 'rgba(255,255,255,0.1)',
-    timeVisible: true,
-    secondsVisible: false,
-    // tickMarkFormatter controls axis labels (localization.timeFormatter is crosshair only)
-    tickMarkFormatter: (utcSeconds: number) =>
-      ctTimeFormatter.format(new Date(utcSeconds * 1000)),
-  },
-  localization: {
-    timeFormatter: (utcSeconds: number) =>
-      ctTimeFormatter.format(new Date(utcSeconds * 1000)),
-  },
-  crosshair: { mode: CrosshairMode.Normal },
-  handleScroll: { mouseWheel: true, pressedMouseMove: true },
-  handleScale: { mouseWheel: true, pinch: true },
-};
+/**
+ * Resolve a CSS custom property to its current literal value.
+ *
+ * lightweight-charts paints to a `<canvas>`, which can't read `var(...)`
+ * references — so we read the resolved value off `<html>`'s computed
+ * style at chart-creation time. The chart created on mount is built
+ * with the active theme's colors; toggling theme later won't recolor
+ * the chart until the panel is remounted (acceptable trade-off).
+ */
+function resolveThemeColor(varName: string, fallback: string): string {
+  if (typeof document === 'undefined') return fallback;
+  const value = getComputedStyle(document.documentElement)
+    .getPropertyValue(varName)
+    .trim();
+  return value || fallback;
+}
+
+function buildChartOptions(): DeepPartial<ChartOptions> {
+  // Read theme-aware colors from CSS vars. Fallbacks are the prior
+  // dark-mode literals so behavior degrades gracefully if a var is
+  // missing.
+  const textColor = resolveThemeColor(
+    '--color-chart-text',
+    'rgba(255,255,255,0.65)',
+  );
+  const gridColor = resolveThemeColor(
+    '--color-chart-grid',
+    'rgba(255,255,255,0.05)',
+  );
+  const axisColor = resolveThemeColor(
+    '--color-chart-axis',
+    'rgba(255,255,255,0.1)',
+  );
+
+  return {
+    layout: {
+      background: { color: 'transparent' },
+      textColor,
+    },
+    grid: {
+      vertLines: { color: gridColor },
+      horzLines: { color: gridColor },
+    },
+    rightPriceScale: { borderColor: axisColor },
+    timeScale: {
+      borderColor: axisColor,
+      timeVisible: true,
+      secondsVisible: false,
+      // tickMarkFormatter controls axis labels (localization.timeFormatter is crosshair only)
+      tickMarkFormatter: (utcSeconds: number) =>
+        ctTimeFormatter.format(new Date(utcSeconds * 1000)),
+    },
+    localization: {
+      timeFormatter: (utcSeconds: number) =>
+        ctTimeFormatter.format(new Date(utcSeconds * 1000)),
+    },
+    crosshair: { mode: CrosshairMode.Normal },
+    handleScroll: { mouseWheel: true, pressedMouseMove: true },
+    handleScale: { mouseWheel: true, pinch: true },
+  };
+}
 
 const GEX_COLORS = [
   '#00e676',
@@ -193,7 +228,7 @@ export const PriceChart = memo(function PriceChart({
     if (!containerRef.current) return;
 
     const chart = createChart(containerRef.current, {
-      ...chartOptions,
+      ...buildChartOptions(),
       width: containerRef.current.clientWidth,
       height: containerRef.current.clientHeight || 320,
     });

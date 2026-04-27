@@ -305,8 +305,20 @@ export default memo(function DarkPoolLevels({
         collapsible
         headerRight={headerRight}
       >
-        <div className="text-muted animate-pulse text-center font-sans text-xs">
-          Loading dark pool data...
+        {/* Shimmer bars roughly matching the strike-row shape so layout
+            stays stable when data arrives. Width cycle gives the column
+            visual variety without being random. */}
+        <div aria-busy="true" className="flex flex-col gap-2">
+          {Array.from({ length: 8 }, (_, i) => (
+            <div
+              key={i}
+              className="bg-surface-alt h-3 animate-pulse rounded"
+              style={{
+                width: ['100%', '92%', '78%', '88%'][i % 4],
+                animationDelay: `${i * 60}ms`,
+              }}
+            />
+          ))}
         </div>
       </SectionBox>
     );

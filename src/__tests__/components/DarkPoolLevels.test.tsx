@@ -35,7 +35,10 @@ describe('DarkPoolLevels: loading state', () => {
         onRefresh={noop}
       />,
     );
-    expect(screen.getByText(/loading dark pool/i)).toBeInTheDocument();
+    // The loading state renders shimmer bars wrapped in an aria-busy
+    // container; the user-visible affordance is the busy state, not text.
+    const busy = screen.getByRole('region', { name: /dark pool levels/i });
+    expect(busy.querySelector('[aria-busy="true"]')).toBeTruthy();
   });
 
   it('renders inside a SectionBox with label', () => {
