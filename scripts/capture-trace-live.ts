@@ -156,7 +156,10 @@ async function ensureChartType(page: Page, type: ChartType): Promise<void> {
   if (current === type) return;
 
   await dropdown.click();
-  await page.waitForTimeout(800);
+  // Animations + portal mount take a beat — give the menu time before
+  // hunting for options. Bumped from 800ms to match the historical
+  // capture-trace.ts; remote browserless adds RTT to every step.
+  await page.waitForTimeout(1200);
 
   const exactNameRe = new RegExp(`^\\s*${type}\\s*$`);
   const candidates: Locator[] = [
@@ -173,16 +176,46 @@ async function ensureChartType(page: Page, type: ChartType): Promise<void> {
   let clicked = false;
   for (const c of candidates) {
     try {
-      await c.click({ timeout: 2000 });
+      await c.click({ timeout: 3000 });
       clicked = true;
       break;
     } catch {
       /* try next */
     }
   }
+
   if (!clicked) {
-    throw new Error(`could not select chart type "${type}"`);
+    // Diagnostic dump — print everything that looks like a menu option
+    // so the next iteration knows the real DOM shape. Same approach as
+    // capture-trace.ts. Also save a screenshot to /tmp for visual debug.
+    const dump = await page
+      .locator('[role="option"], [role="menuitem"], li')
+      .evaluateAll((els) =>
+        els
+          .map((el) => {
+            const role = el.getAttribute('role') ?? el.tagName.toLowerCase();
+            const text = (el.textContent ?? '').trim().slice(0, 60);
+            return text ? `${role}="${text}"` : null;
+          })
+          .filter(Boolean)
+          .slice(0, 30),
+      )
+      .catch(() => [] as Array<string | null>);
+
+    const screenshotPath = `/tmp/trace-live-fail-${type.replace(/\s+/g, '-')}-${Date.now()}.png`;
+    await page
+      .screenshot({ path: screenshotPath, fullPage: true })
+      .catch(() => {
+        /* don't fail the error path on a failed screenshot */
+      });
+
+    throw new Error(
+      `could not click option "${type}". ` +
+        `Visible after dropdown click: ${JSON.stringify(dump)}. ` +
+        `Screenshot saved to ${screenshotPath}`,
+    );
   }
+
   await page.waitForTimeout(1500);
   const after = (await dropdown.textContent())?.trim();
   if (after !== type) {
@@ -414,6 +447,10 @@ async function setupChartPage(
   const ctx = await browser.newContext({ storageState: STORAGE_PATH });
   const page = await ctx.newPage();
   await page.goto(TRACE_URL, { waitUntil: 'networkidle', timeout: 30_000 });
+  // TRACE does substantial post-load JS rendering — networkidle alone
+  // doesn't guarantee the chart-type combobox is interactive yet.
+  // Matches the historical capture-trace.ts 2s settle.
+  await page.waitForTimeout(2000);
   await ensureChartType(page, CHART_TYPES[chart]);
   await ensureGexToggleOn(page);
   await ensureStrikeZoom(page, 8);
