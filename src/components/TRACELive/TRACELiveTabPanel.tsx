@@ -14,6 +14,7 @@
 import { memo } from 'react';
 import { theme } from '../../themes';
 import Collapsible from '../ChartAnalysis/Collapsible';
+import BulletedText from './BulletedText';
 import type { TraceChart, TraceLiveDetail } from './types';
 
 interface Props {
@@ -198,9 +199,7 @@ function TRACELiveTabPanel({ chart, detail, loading, error }: Readonly<Props>) {
       {notes && (
         <div className="mt-2">
           <Collapsible title="Notes" color={theme.textMuted}>
-            <div className="text-secondary text-[11px] leading-relaxed">
-              {notes}
-            </div>
+            <BulletedText text={notes} />
           </Collapsible>
         </div>
       )}

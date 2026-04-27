@@ -14,6 +14,7 @@ import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
 import Collapsible from '../ChartAnalysis/Collapsible';
 import BulletList from '../ChartAnalysis/BulletList';
+import BulletedText from './BulletedText';
 import type { TraceLiveDetail } from './types';
 
 interface Props {
@@ -150,31 +151,23 @@ function TRACELiveSynthesisPanel({ detail }: Readonly<Props>) {
           if (!parsed) {
             return (
               <Collapsible title="Reasoning Summary" color={theme.textMuted}>
-                <div className="text-secondary text-[11px] leading-relaxed whitespace-pre-wrap">
-                  {summary}
-                </div>
+                <BulletedText text={summary} />
               </Collapsible>
             );
           }
           return (
             <>
               <Collapsible title="Step 1 — Gamma" color={theme.textMuted}>
-                <div className="text-secondary text-[11px] leading-relaxed whitespace-pre-wrap">
-                  {parsed.step1}
-                </div>
+                <BulletedText text={parsed.step1} />
               </Collapsible>
               <Collapsible title="Step 2 — Charm" color={theme.textMuted}>
-                <div className="text-secondary text-[11px] leading-relaxed whitespace-pre-wrap">
-                  {parsed.step2}
-                </div>
+                <BulletedText text={parsed.step2} />
               </Collapsible>
               <Collapsible
                 title="Step 3 — Delta + Synthesis"
                 color={theme.textMuted}
               >
-                <div className="text-secondary text-[11px] leading-relaxed whitespace-pre-wrap">
-                  {parsed.step3}
-                </div>
+                <BulletedText text={parsed.step3} />
               </Collapsible>
             </>
           );

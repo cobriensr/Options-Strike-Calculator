@@ -136,7 +136,7 @@ characters. Required fields:
       junctionStrike: number | null
       flipFlopDetected: boolean
       rejectionWicksAtRed: boolean
-      notes: string — write what you need, no length cap.
+      notes: string — format as bullet points using "- " prefix, one observation per bullet, separated by newlines. No length cap. Example: "- Net GEX +11B, +γ regime confirmed\n- Spot 7156 sits between sticky-pin 7155 and weak-pin 7170\n- Below 7140 gamma turns negative — hard regime boundary"
     }
   - gamma: {
       signAtSpot: "positive_strong" | "positive_pale" | "neutral" | "negative_pale" | "negative_strong"
@@ -146,14 +146,14 @@ characters. Required fields:
       floorStrike: number | null
       ceilingStrike: number | null
       overrideFires: boolean
-      notes: string — write what you need, no length cap.
+      notes: string — format as bullet points using "- " prefix, one observation per bullet, separated by newlines. No length cap. Example: "- Net GEX +11B, +γ regime confirmed\n- Spot 7156 sits between sticky-pin 7155 and weak-pin 7170\n- Below 7140 gamma turns negative — hard regime boundary"
     }
   - delta: {
       blueBelowStrike: number | null
       redAboveStrike: number | null
       corridorWidth: number | null
       zoneBehavior: "support_resistance" | "acceleration" | "unclear"
-      notes: string — write what you need, no length cap.
+      notes: string — format as bullet points using "- " prefix, one observation per bullet, separated by newlines. No length cap. Example: "- Net GEX +11B, +γ regime confirmed\n- Spot 7156 sits between sticky-pin 7155 and weak-pin 7170\n- Below 7140 gamma turns negative — hard regime boundary"
     }
   - synthesis: {
       predictedClose: number — the predicted SPX close, applying the override hierarchy
@@ -164,7 +164,24 @@ characters. Required fields:
       headline: string — what the user sees at top of dashboard. Keep it tight enough to read in two seconds, but no hard cap.
       warnings: array of strings — events, MOC risk, multi-band charts, etc. List as many as you need.
     }
-  - reasoningSummary: optional string — audit-trail summary of the reads (debug-friendly), no length cap.
+  - reasoningSummary: optional string — audit trail of the read. Structure as three step blocks, each with a header line followed by bullet points using "- " prefix (one observation per bullet, separated by newlines). No length cap. Example shape:
+
+      STEP 1 — GAMMA (regime + level)
+      - Net GEX +11.73B confirms positive gamma regime
+      - Spot 7156.90 straddles ATM 7160 (+2.42B Weak Pin) and sticky-pin floor 7155
+      - Dominant-node ratio 1.0× — far below 10× override threshold
+      - Below 7140 gamma turns negative, defining hard regime boundary
+      STEP 2 — CHARM (direction + flow stability)
+      - Stable single-flip structure: blue 7145–7160 (support), red 7163–7165+ (resistance)
+      - Spot in blue zone at boundary → direction = long (weak)
+      - Stability% 12.4% < 20% gate → charm EoD signal degraded
+      STEP 3 — DELTA + SYNTHESIS
+      - Red 7158–7160 upward = dealer-selling resistance; blue below 7150 = dealer-buying support
+      - Corridor ~10pt wide (7150–7160), classic +γ mean-reverting setup
+      - Override resolution: dominant-node off (1.0×); +γ floor/ceiling fires (7155 ≠ 7160 charm junction)
+      - PIN_LEVEL = 7155, overrideApplied = true
+      - Sizing: override → three_quarter base, Stability% < 20% → half final
+      - Trade: iron_fly center 7155, wings ±15, size half
 
 Trade type and size:
 
