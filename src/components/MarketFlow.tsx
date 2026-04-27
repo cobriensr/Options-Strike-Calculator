@@ -11,7 +11,7 @@
  * refresh) live in the container's SectionBox headerRight slot.
  */
 
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { SectionBox } from './ui';
 import { ScrubControls } from './ScrubControls';
 import { useOptionsFlow } from '../hooks/useOptionsFlow';
@@ -298,6 +298,23 @@ const MarketFlow = memo(function MarketFlow({
   const isLoading = optionsFlow.isLoading || whale.isLoading;
   const isLive = !isScrubbed && isToday && marketOpen;
 
+  // ---------- staleness clock ----------
+  // Re-render every 30s in live mode so the "DELAYED Nm" pill stays
+  // accurate between polls. Skipped when scrubbed or market closed.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!isLive) return;
+    const id = setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, [isLive]);
+
+  const lastDataAgeMs = useMemo(() => {
+    if (!isLive || !displayTimestamp) return null;
+    const t = new Date(displayTimestamp).getTime();
+    if (Number.isNaN(t)) return null;
+    return Math.max(0, nowMs - t);
+  }, [isLive, displayTimestamp, nowMs]);
+
   // ---------- derived data ----------
   const aggressionBadge = flowAggressionBadge(optionsFlow.data?.strikes);
 
@@ -326,6 +343,7 @@ const MarketFlow = memo(function MarketFlow({
       onRefresh={handleRefresh}
       loading={isLoading}
       sectionLabel="Market Flow"
+      lastDataAgeMs={lastDataAgeMs}
     />
   );
 
@@ -343,7 +361,7 @@ const MarketFlow = memo(function MarketFlow({
 
       <ErrorBoundary label="Flow Confluence">
         <SubSection
-          label="Retail \u00d7 Whale Confluence"
+          label="Retail × Whale Confluence"
           badge={
             confluenceMatchCount > 0
               ? `${confluenceMatchCount} ${confluenceMatchCount === 1 ? 'match' : 'matches'}`
@@ -361,7 +379,7 @@ const MarketFlow = memo(function MarketFlow({
       <ErrorBoundary label="Options Flow">
         <SubSection
           label="Options Flow"
-          badge="0-1 DTE \u00b7 15m"
+          badge="0-1 DTE · 15m"
           headerRight={
             <MetaRow
               spot={optionsFlow.data?.spot}
@@ -383,7 +401,7 @@ const MarketFlow = memo(function MarketFlow({
       <ErrorBoundary label="Whale Positioning">
         <SubSection
           label="Whale Positioning"
-          badge="0-7 DTE \u00b7 \u2265$1M"
+          badge="0-7 DTE · ≥$1M"
           headerRight={
             <MetaRow
               spot={whale.data?.spot}

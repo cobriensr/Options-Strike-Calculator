@@ -23,7 +23,18 @@ export interface ScrubControlsProps {
   loading: boolean;
   /** Used in the refresh button's aria-label, e.g. "Refresh GEX landscape" */
   sectionLabel: string;
+  /**
+   * Age of the latest data point in milliseconds. When provided and the
+   * panel is in live mode, the LIVE pill flips to a "DELAYED Nm" indicator
+   * once data is older than `staleThresholdMs` (default 5 min). This makes
+   * data freshness honest when an upstream feed goes quiet.
+   */
+  lastDataAgeMs?: number | null;
+  /** Threshold above which live data is considered stale. Default 5 min. */
+  staleThresholdMs?: number;
 }
+
+const DEFAULT_STALE_THRESHOLD_MS = 5 * 60_000;
 
 /** Format an ISO timestamp to "HH:MM AM/PM CT" in Central Time. */
 function fmtTimeCT(iso: string): string {
@@ -50,7 +61,22 @@ export function ScrubControls({
   onRefresh,
   loading,
   sectionLabel,
+  lastDataAgeMs,
+  staleThresholdMs = DEFAULT_STALE_THRESHOLD_MS,
 }: ScrubControlsProps) {
+  const isStale =
+    isLive && lastDataAgeMs != null && lastDataAgeMs >= staleThresholdMs;
+  const staleMinutes =
+    isStale && lastDataAgeMs != null ? Math.floor(lastDataAgeMs / 60_000) : 0;
+
+  const timestampColor = isLive
+    ? isStale
+      ? '#ffd740'
+      : '#00e676'
+    : isScrubbed
+      ? '#ffd740'
+      : 'var(--color-secondary)';
+
   return (
     <div className="flex items-center gap-2">
       {/* Scrubber */}
@@ -69,13 +95,7 @@ export function ScrubControls({
             onChange={(e) => onScrubTo(e.target.value)}
             aria-label="Jump to snapshot time"
             className="border-edge min-w-[72px] cursor-pointer rounded border bg-transparent px-1 py-0.5 text-center font-mono text-[11px] outline-none"
-            style={{
-              color: isLive
-                ? '#00e676'
-                : isScrubbed
-                  ? '#ffd740'
-                  : 'var(--color-secondary)',
-            }}
+            style={{ color: timestampColor }}
           >
             {timestamps.map((ts) => (
               <option key={ts} value={ts}>
@@ -87,13 +107,7 @@ export function ScrubControls({
           timestamp && (
             <span
               className="font-mono text-[11px]"
-              style={{
-                color: isLive
-                  ? '#00e676'
-                  : isScrubbed
-                    ? '#ffd740'
-                    : 'var(--color-secondary)',
-              }}
+              style={{ color: timestampColor }}
             >
               {fmtTimeCT(timestamp)} CT
             </span>
@@ -129,12 +143,20 @@ export function ScrubControls({
       />
 
       {/* Status badge */}
-      {isLive && (
+      {isLive && !isStale && (
         <span
           className="rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold"
           style={{ background: 'rgba(0,230,118,0.15)', color: '#00e676' }}
         >
           LIVE
+        </span>
+      )}
+      {isLive && isStale && (
+        <span
+          className="rounded bg-amber-500/20 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-amber-400"
+          title={`Latest data is ${staleMinutes}m old — upstream feed has not emitted new alerts`}
+        >
+          DELAYED {staleMinutes}m
         </span>
       )}
       {isScrubbed && (
@@ -147,7 +169,7 @@ export function ScrubControls({
       <button
         onClick={onRefresh}
         disabled={loading}
-        className={`text-secondary hover:text-primary disabled:text-muted text-base transition-colors disabled:cursor-default${loading ? 'animate-spin' : ''}`}
+        className={`text-secondary hover:text-primary disabled:text-muted text-base transition-colors disabled:cursor-default ${loading ? 'animate-spin' : ''}`}
         title="Refresh"
         aria-label={`Refresh ${sectionLabel}`}
       >

@@ -212,9 +212,16 @@ describe('MarketFlow', () => {
 
     expect(screen.getByText('Market Flow')).toBeInTheDocument();
     expect(screen.getByText('Flow Aggression')).toBeInTheDocument();
-    expect(screen.getByText(/Retail.*Whale Confluence/i)).toBeInTheDocument();
+    // Use exact match (no regex) so a regression to literal `×`
+    // would fail. The previous regex `/Retail.*Whale Confluence/i`
+    // happily matched the broken-escape rendering.
+    expect(screen.getByText('Retail × Whale Confluence')).toBeInTheDocument();
     expect(screen.getByText('Options Flow')).toBeInTheDocument();
     expect(screen.getByText('Whale Positioning')).toBeInTheDocument();
+    // Sub-section badges contain unicode separators that JSX does NOT
+    // process if written as `\uXXXX` in attribute strings.
+    expect(screen.getByText('0-1 DTE · 15m')).toBeInTheDocument();
+    expect(screen.getByText('0-7 DTE · ≥$1M')).toBeInTheDocument();
 
     // Each sub-section body is mounted
     expect(screen.getByTestId('flow-rollup')).toBeInTheDocument();
@@ -472,11 +479,25 @@ describe('MarketFlow', () => {
     expect(screen.getByText(/SCRUBBED/)).toBeInTheDocument();
   });
 
+  it('shows a DELAYED pill instead of LIVE when latest data is older than 5 min', () => {
+    // System time is 16:00:00 UTC; latest timestamp is 13 min behind →
+    // staleness exceeds the 5-min threshold so the pill flips amber.
+    const timestamps = ['2026-04-15T15:47:00.000Z'];
+    mockUseOptionsFlow.mockReturnValue(makeOptionsFlow({ timestamps }));
+
+    renderDefault({ marketOpen: true });
+
+    expect(screen.queryByText(/^LIVE$/)).toBeNull();
+    expect(screen.getByText(/^DELAYED 13m$/)).toBeInTheDocument();
+  });
+
   it('resume-live button clears scrub state and returns to LIVE', () => {
+    // System time is 16:00:00 UTC; pick timestamps within the 5-min
+    // freshness window so the LIVE pill shows (not DELAYED).
     const timestamps = [
-      '2026-04-15T14:30:00.000Z',
-      '2026-04-15T14:31:00.000Z',
-      '2026-04-15T14:32:00.000Z',
+      '2026-04-15T15:58:00.000Z',
+      '2026-04-15T15:59:00.000Z',
+      '2026-04-15T16:00:00.000Z',
     ];
     mockUseOptionsFlow.mockReturnValue(makeOptionsFlow({ timestamps }));
 
