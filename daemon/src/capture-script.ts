@@ -137,8 +137,25 @@ async function loginIfNeeded(
     await passwordField.press('Enter');
   }
 
+  // Wait for redirect to /trace. CRITICAL: use a pathname predicate, NOT
+  // a substring regex — the URL `dashboard.spotgamma.com/login` contains
+  // `/dashboard` (as host substring), which would falsely satisfy a regex
+  // like /\/trace|\/dashboard/ INSTANTLY (before submit even processes),
+  // making the function "succeed" while we're still on the login page.
+  // Then setupChartPage hits /trace, gets redirected to /login (no
+  // cookie), and times out waiting for the combobox.
   await page
-    .waitForURL(/\/trace|\/dashboard/, { timeout: 30_000 })
+    .waitForURL(
+      (urlObj) => {
+        try {
+          const path = new URL(urlObj.toString()).pathname;
+          return path.startsWith('/trace');
+        } catch {
+          return false;
+        }
+      },
+      { timeout: 30_000 },
+    )
     .catch(async () => {
       const finalUrl = page.url();
       const screenshotPath = `/tmp/trace-login-fail-${Date.now()}.png`;
