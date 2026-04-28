@@ -79,13 +79,30 @@ function getNextTradingDay(dateStr) {
   return d.toISOString().slice(0, 10);
 }
 
-/** NDX: today on Mon/Wed/Fri, else +1 (Wed/Fri respectively). */
+/** Third Friday of (year, month) — NDX monthly expiration day. */
+function thirdFridayOf(year, month) {
+  const first = new Date(Date.UTC(year, month, 1));
+  const firstDow = first.getUTCDay();
+  const offsetToFirstFri = (5 - firstDow + 7) % 7;
+  const dayOfThirdFri = 1 + offsetToFirstFri + 14;
+  return new Date(Date.UTC(year, month, dayOfThirdFri))
+    .toISOString()
+    .slice(0, 10);
+}
+
+/**
+ * NDX: front monthly (3rd Friday on or after `dateStr`). UW only carries
+ * NDX monthlies in spot-exposures — verified 2026-04-28.
+ */
 function getFrontNdxExpiry(dateStr) {
   const d = new Date(`${dateStr}T12:00:00Z`);
-  const dow = d.getDay();
-  if (dow === 1 || dow === 3 || dow === 5) return dateStr;
-  d.setDate(d.getDate() + 1);
-  return d.toISOString().slice(0, 10);
+  const year = d.getUTCFullYear();
+  const month = d.getUTCMonth();
+  const thisMonthThirdFri = thirdFridayOf(year, month);
+  if (dateStr < thisMonthThirdFri) return thisMonthThirdFri;
+  const nextMonth = (month + 1) % 12;
+  const nextYear = month === 11 ? year + 1 : year;
+  return thirdFridayOf(nextYear, nextMonth);
 }
 
 /** Per-ticker expiry list for a given trading date. */
@@ -204,17 +221,16 @@ async function main() {
       }
     }
 
-    // Sleep briefly between dates to be polite to UW.
-    await new Promise((r) => setTimeout(r, 400));
-
-    // Fetch all (ticker, expiry) for this date in parallel.
-    const fetched = await Promise.all(
-      tasks.map(async ({ ticker, expiry }) => ({
-        ticker,
-        expiry,
-        rows: await fetchStrikeExposure(ticker, date, expiry),
-      })),
-    );
+    // Fetch tasks sequentially with a small inter-call sleep — UW's plan
+    // caps concurrent requests at 3, and parallel fan-out across 5 tasks
+    // here trips 429s. Sequential keeps us well under the limit and the
+    // wall-clock cost is fine for a one-shot backfill.
+    const fetched = [];
+    for (const { ticker, expiry } of tasks) {
+      await new Promise((r) => setTimeout(r, 200));
+      const rows = await fetchStrikeExposure(ticker, date, expiry);
+      fetched.push({ ticker, expiry, rows });
+    }
 
     const dailySummary = [];
     for (const { ticker, expiry, rows } of fetched) {

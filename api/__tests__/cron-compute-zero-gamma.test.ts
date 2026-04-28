@@ -20,7 +20,8 @@ vi.mock('../_lib/sentry.js', () => ({
 
 import handler from '../cron/compute-zero-gamma.js';
 
-// 2026-03-24 = Tuesday. Front NDX expiry on a Tuesday is Wed 2026-03-25.
+// 2026-03-24 is past March's 3rd Friday (March 20) so NDX front monthly
+// rolls to April's 3rd Friday (2026-04-17).
 const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
 const OFF_HOURS_TIME = new Date('2026-03-24T11:00:00.000Z');
 const WEEKEND_TIME = new Date('2026-03-28T14:00:00.000Z');
@@ -208,7 +209,7 @@ describe('compute-zero-gamma handler', () => {
     expect(mockSql).toHaveBeenCalledTimes(12);
   });
 
-  it('uses Wed 2026-03-25 as the NDX primary expiry on a Tuesday', async () => {
+  it('uses April 3rd-Friday 2026-04-17 as NDX primary expiry on 2026-03-24', async () => {
     queueAllTickersHappyPath();
 
     const res = mockResponse();
@@ -227,7 +228,7 @@ describe('compute-zero-gamma handler', () => {
     });
     expect(ndxLatestTsCall).toBeDefined();
     const ndxValues = ndxLatestTsCall!.slice(1) as unknown[];
-    expect(ndxValues).toContain('2026-03-25');
+    expect(ndxValues).toContain('2026-04-17');
 
     // SPX should query at today (the cron's `today`) — confirm symmetry.
     const spxLatestTsCall = calls.find((c) => {

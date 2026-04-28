@@ -25,7 +25,8 @@ import handler from '../cron/fetch-strike-exposure.js';
 import logger from '../_lib/logger.js';
 
 // Fixed market-hours time: Tuesday 10:00 AM ET (2026-03-24).
-// Tuesday matters: NDX has no Tue expiration, so front expiry should be Wed.
+// 2026-03-24 is past March's 3rd Friday (March 20) so NDX rolls to
+// April's 3rd Friday (2026-04-17).
 const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
 const OFF_HOURS_TIME = new Date('2026-03-24T11:00:00.000Z');
 const WEEKEND_TIME = new Date('2026-03-28T14:00:00.000Z');
@@ -258,7 +259,7 @@ describe('fetch-strike-exposure handler', () => {
     );
   });
 
-  it('uses Wed 2026-03-25 as the NDX front expiry on a Tuesday', async () => {
+  it('uses April 3rd-Friday 2026-04-17 as NDX front monthly on 2026-03-24', async () => {
     process.env.UW_API_KEY = 'uwkey';
     const fetchSpy = vi.fn().mockResolvedValue({
       ok: true,
@@ -277,7 +278,7 @@ describe('fetch-strike-exposure handler', () => {
       String(c[0]).includes('/stock/NDX/spot-exposures'),
     );
     expect(ndxCall).toBeDefined();
-    expect(String(ndxCall![0])).toContain('2026-03-25');
+    expect(String(ndxCall![0])).toContain('2026-04-17');
   });
 
   it('returns success with zero rows when API returns empty data', async () => {
