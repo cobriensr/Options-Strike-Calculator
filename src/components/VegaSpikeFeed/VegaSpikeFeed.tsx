@@ -16,6 +16,7 @@
 import { memo } from 'react';
 import { useVegaSpikes } from '../../hooks/useVegaSpikes';
 import type { VegaSpike, VegaSpikeRange } from '../../hooks/useVegaSpikes';
+import { SectionBox } from '../ui';
 
 // ── Formatters ────────────────────────────────────────────────
 
@@ -224,31 +225,20 @@ export default function VegaSpikeFeed({
   const showInitialSpinner = loading && spikes.length === 0;
 
   return (
-    <section
-      className="border-edge bg-surface overflow-hidden rounded-lg border"
-      role="region"
-      aria-label="Dir Vega Spikes"
+    <SectionBox
+      label="Dir Vega Spikes"
+      badge={`n=${spikes.length} events`}
+      headerRight={<RangeToggle value={range} onChange={setRange} />}
+      collapsible
     >
-      {/* Header */}
-      <div className="border-edge flex flex-wrap items-center gap-2 border-b px-3 py-2">
-        <h2 className="text-tertiary font-sans text-[12px] font-bold tracking-[0.12em] uppercase">
-          Dir Vega Spikes
-        </h2>
-        <span
-          className="text-muted font-mono text-[10px]"
-          data-testid="vega-spike-count"
-        >
-          n={spikes.length} events
-        </span>
-        <div className="ml-auto">
-          <RangeToggle value={range} onChange={setRange} />
-        </div>
-      </div>
+      <span className="hidden" data-testid="vega-spike-count">
+        n={spikes.length} events
+      </span>
 
       {/* Error banner — never replaces the table, just sits above. */}
       {error && (
         <div
-          className="border-edge bg-danger/5 text-danger border-b px-3 py-1.5 font-sans text-[11px]"
+          className="border-edge bg-danger/5 text-danger -mx-[18px] border-y px-3 py-1.5 font-sans text-[11px]"
           role="status"
           data-testid="vega-spike-error"
         >
@@ -276,7 +266,7 @@ export default function VegaSpikeFeed({
           No spikes detected for this range
         </div>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="-mx-[18px] overflow-x-auto">
           <table className="w-full text-left">
             <thead>
               <tr className="text-muted font-sans text-[10px] tracking-wider uppercase">
@@ -332,6 +322,6 @@ export default function VegaSpikeFeed({
           </table>
         </div>
       )}
-    </section>
+    </SectionBox>
   );
 }

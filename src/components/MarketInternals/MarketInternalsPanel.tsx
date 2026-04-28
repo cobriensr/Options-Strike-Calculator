@@ -20,6 +20,7 @@ import type {
 } from '../../types/market-internals';
 import type { UseMarketInternalsResult } from '../../hooks/useMarketInternals';
 import { MarketInternalsBadge } from './MarketInternalsBadge';
+import { SectionBox } from '../ui';
 
 // ============================================================
 // PRESENTATION HELPERS
@@ -190,29 +191,30 @@ export const MarketInternalsPanel: FC<MarketInternalsPanelProps> = ({
   }, [bars, regime.regime]);
 
   return (
-    <div
-      className="border-edge bg-surface overflow-hidden rounded-lg border"
-      aria-label="Market internals panel"
-    >
-      {/* Top: regime badge + raw values */}
-      <div className="flex flex-wrap items-start gap-3 px-3 pt-3 pb-2">
-        <RegimePill result={regime} />
+    <SectionBox
+      label="Breadth & TICK"
+      headerRight={
         <MarketInternalsBadge
           latestBySymbol={latestBySymbol}
           loading={loading}
           error={error}
           asOf={asOf}
           marketOpen={marketOpen}
-          className="ml-auto"
         />
+      }
+      collapsible
+    >
+      {/* Top: regime badge */}
+      <div className="flex flex-wrap items-start gap-3 pb-2">
+        <RegimePill result={regime} />
       </div>
 
-      {/* Divider */}
-      <div className="border-edge mx-3 border-t" />
+      {/* Divider — extends to SectionBox edges */}
+      <div className="border-edge -mx-[18px] border-t" />
 
       {/* Bottom: event log */}
       <div
-        className="max-h-[150px] overflow-y-auto py-1.5"
+        className="-mx-[18px] max-h-[150px] overflow-y-auto py-1.5"
         aria-label="Extreme events log"
         role="log"
       >
@@ -227,6 +229,6 @@ export const MarketInternalsPanel: FC<MarketInternalsPanelProps> = ({
           events.map((ev, i) => <EventRow key={`${ev.ts}-${i}`} event={ev} />)
         )}
       </div>
-    </div>
+    </SectionBox>
   );
 };

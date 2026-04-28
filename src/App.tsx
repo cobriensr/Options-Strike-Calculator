@@ -659,7 +659,8 @@ export default function StrikeCalculator() {
               id: 'sec-futures-gamma-playbook',
               label: 'Futures Gamma Playbook',
             },
-            { id: 'sec-market-internals', label: 'Market Internals' },
+            { id: 'sec-market-internals', label: 'Breadth & TICK' },
+            { id: 'sec-vega-spikes', label: 'Dir Vega Spikes' },
             { id: 'sec-market-flow', label: 'Market Flow' },
             { id: 'sec-otm-flow', label: 'OTM Flow Alerts' },
             { id: 'sec-institutional-program', label: 'Institutional Program' },
@@ -1243,23 +1244,29 @@ export default function StrikeCalculator() {
                       id="sec-market-internals"
                       className="block scroll-mt-28"
                     />
-
-                    <ErrorBoundary label="Market Internals">
+                    <ErrorBoundary label="Breadth & TICK">
                       <MarketInternalsPanel
                         {...internals}
                         marketOpen={market.data.quotes?.marketOpen ?? false}
                         regime={regime}
                       />
                     </ErrorBoundary>
+                  </>
+                )}
 
+                {isAuthenticated && (market.hasData || !!historySnapshot) && (
+                  <>
                     <span id="sec-vega-spikes" className="block scroll-mt-28" />
-
-                    <ErrorBoundary label="Vega Spike Feed">
+                    <ErrorBoundary label="Dir Vega Spikes">
                       <VegaSpikeFeed
                         marketOpen={market.data.quotes?.marketOpen ?? false}
                       />
                     </ErrorBoundary>
+                  </>
+                )}
 
+                {isAuthenticated && (market.hasData || !!historySnapshot) && (
+                  <>
                     <span id="sec-market-flow" className="block scroll-mt-28" />
 
                     <ErrorBoundary label="Market Flow">
