@@ -62,6 +62,10 @@
       "schedule": "* 13-21 * * 1-5"
     },
     {
+      "path": "/api/cron/enrich-vega-spike-returns",
+      "schedule": "*/5 13-21 * * 1-5"
+    },
+    {
       "path": "/api/cron/fetch-gex-0dte",
       "schedule": "* 13-21 * * 1-5"
     },
