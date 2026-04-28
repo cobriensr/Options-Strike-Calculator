@@ -350,6 +350,8 @@ export const POLL_INTERVALS = {
    *  capture daemon's 5-min cadence with 12× safety margin so the UI
    *  never misses a fresh row by more than 60s. */
   TRACE_LIVE: 60_000,
+  /** Vega spike feed refresh (useVegaSpikes) — matches monitor-vega-spike cron cadence. */
+  VEGA_SPIKES: 60_000,
 } as const;
 
 /** Progress messages shown during chart analysis */

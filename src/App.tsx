@@ -49,6 +49,7 @@ import AlertBanner from './components/AlertBanner';
 import DarkPoolLevels from './components/DarkPoolLevels';
 import TRACELiveDashboard from './components/TRACELive';
 import { MarketInternalsPanel } from './components/MarketInternals/MarketInternalsPanel';
+import VegaSpikeFeed from './components/VegaSpikeFeed/VegaSpikeFeed';
 import NotificationPermission from './components/NotificationPermission';
 import { StatusBadge } from './components/ui';
 import { CollapseAllContext } from './components/collapse-context';
@@ -1248,6 +1249,14 @@ export default function StrikeCalculator() {
                         {...internals}
                         marketOpen={market.data.quotes?.marketOpen ?? false}
                         regime={regime}
+                      />
+                    </ErrorBoundary>
+
+                    <span id="sec-vega-spikes" className="block scroll-mt-28" />
+
+                    <ErrorBoundary label="Vega Spike Feed">
+                      <VegaSpikeFeed
+                        marketOpen={market.data.quotes?.marketOpen ?? false}
                       />
                     </ErrorBoundary>
 
