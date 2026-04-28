@@ -44,8 +44,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } catch (err) {
     done({ status: 500, error: 'unhandled' });
     Sentry.captureException(err);
-    return res.status(500).json({
-      error: err instanceof Error ? err.message : 'Migration failed',
-    });
+    return res.status(500).json({ error: 'Internal error' });
   }
 }

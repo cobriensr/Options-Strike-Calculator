@@ -25,6 +25,10 @@ vi.mock('../_lib/api-helpers.js', () => ({
   cronGuard: vi.fn(),
 }));
 
+vi.mock('../_lib/axiom.js', () => ({
+  reportCronRun: vi.fn(),
+}));
+
 vi.mock('../../src/utils/timezone.js', () => ({
   getETDateStr: vi.fn(() => '2026-04-03'),
 }));
@@ -32,6 +36,7 @@ vi.mock('../../src/utils/timezone.js', () => ({
 import handler from '../cron/auto-prefill-premarket.js';
 import { cronGuard } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 function makeCronReq() {
   return mockRequest({
@@ -95,6 +100,13 @@ describe('auto-prefill-premarket handler', () => {
     });
     // Only 1 SQL call (the SELECT from futures_bars)
     expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'auto-prefill-premarket',
+      expect.objectContaining({
+        status: 'skipped',
+        reason: 'No overnight bars',
+      }),
+    );
   });
 
   // ── Happy path: existing snapshot ─────────────────────────
@@ -260,6 +272,13 @@ describe('auto-prefill-premarket handler', () => {
       'auto-prefill-premarket',
     );
     expect(Sentry.captureException).toHaveBeenCalledWith(dbError);
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'auto-prefill-premarket',
+      expect.objectContaining({
+        status: 'error',
+        error: 'connection refused',
+      }),
+    );
   });
 
   // ── DB error: update fails ────────────────────────────────

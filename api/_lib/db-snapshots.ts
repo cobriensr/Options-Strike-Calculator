@@ -1,10 +1,12 @@
 /**
  * Snapshot-related database operations.
  *
- * Handles saving and querying market_snapshots, plus VIX OHLC derivation.
+ * Handles saving and querying market_snapshots, plus VIX OHLC derivation
+ * and dark pool snapshot persistence captured at analysis time.
  */
 
 import { getDb } from './db.js';
+import type { DarkPoolCluster } from './darkpool.js';
 
 // ============================================================
 // TYPES
@@ -340,4 +342,39 @@ export async function getVixOhlcFromSnapshots(date: string): Promise<{
     low: Math.min(...viixes),
     count: sorted.length,
   };
+}
+
+// ============================================================
+// DARK POOL SNAPSHOT
+// ============================================================
+
+export interface DarkPoolSnapshotInput {
+  date: string;
+  timestamp: string;
+  snapshotId: number | null;
+  spxPrice: number | null;
+  clusters: DarkPoolCluster[];
+}
+
+export async function saveDarkPoolSnapshot(
+  input: DarkPoolSnapshotInput,
+): Promise<number | null> {
+  const sql = getDb();
+  const rows = await sql`
+    INSERT INTO dark_pool_snapshots (
+      date, timestamp, snapshot_id, spx_price, clusters
+    ) VALUES (
+      ${input.date},
+      ${input.timestamp},
+      ${input.snapshotId},
+      ${input.spxPrice},
+      ${JSON.stringify(input.clusters)}
+    )
+    ON CONFLICT (date, timestamp) DO UPDATE SET
+      snapshot_id = EXCLUDED.snapshot_id,
+      spx_price = EXCLUDED.spx_price,
+      clusters = EXCLUDED.clusters
+    RETURNING id
+  `;
+  return rows.length > 0 ? (rows[0]!.id as number) : null;
 }

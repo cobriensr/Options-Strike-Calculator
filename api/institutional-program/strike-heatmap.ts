@@ -91,6 +91,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   } catch (err) {
     Sentry.captureException(err);
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: 'Internal error' });
   }
 }

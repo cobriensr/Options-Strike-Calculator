@@ -486,9 +486,8 @@ describe('GET /api/options-flow/top-strikes', () => {
     await handler(req, res);
 
     expect(res._status).toBe(500);
-    const body = res._json as { error: string; message: string };
-    expect(body.error).toBe('DB error');
-    expect(body.message).toBe('connection reset');
+    const body = res._json as { error: string };
+    expect(body.error).toBe('Internal error');
   });
 
   it('returns 500 when timestamps query throws (after rows succeed)', async () => {
@@ -500,7 +499,7 @@ describe('GET /api/options-flow/top-strikes', () => {
     await handler(req, res);
 
     expect(res._status).toBe(500);
-    expect((res._json as { error: string }).error).toBe('DB error');
+    expect((res._json as { error: string }).error).toBe('Internal error');
   });
 
   // ── Numeric column parsing ────────────────────────────────

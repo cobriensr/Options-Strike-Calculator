@@ -77,7 +77,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const url =
       `${sidecarUrl}/archive/day-summary-batch` +
       `?from=${encodeURIComponent(targetDate)}&to=${encodeURIComponent(targetDate)}`;
-    const sidecarRes = await fetch(url);
+    const sidecarRes = await fetch(url, {
+      signal: AbortSignal.timeout(15_000),
+    });
     if (!sidecarRes.ok) {
       throw new Error(`sidecar ${sidecarRes.status}`);
     }

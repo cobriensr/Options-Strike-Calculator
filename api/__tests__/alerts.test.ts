@@ -6,6 +6,7 @@ import { mockRequest, mockResponse } from './helpers';
 // ── Mocks ─────────────────────────────────────────────────────
 vi.mock('../_lib/api-helpers.js', () => ({
   rejectIfNotOwnerOrGuest: vi.fn(),
+  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
 }));
 
 const mockSql = vi.fn();
@@ -25,7 +26,7 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 import handler from '../alerts.js';
-import { rejectIfNotOwnerOrGuest } from '../_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest, checkBot } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 
@@ -49,6 +50,15 @@ describe('GET /api/alerts', () => {
     await handler(mockRequest({ method: 'PUT' }), res);
     expect(res._status).toBe(405);
     expect(res._json).toEqual({ error: 'GET only' });
+  });
+
+  it('returns 403 when bot detected', async () => {
+    vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+    expect(res._status).toBe(403);
+    expect(res._json).toEqual({ error: 'Access denied' });
+    expect(mockSql).not.toHaveBeenCalled();
   });
 
   it('returns 401 for non-owner', async () => {

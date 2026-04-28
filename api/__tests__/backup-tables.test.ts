@@ -38,8 +38,13 @@ vi.mock('@vercel/blob', () => ({
   del: mockDel,
 }));
 
+vi.mock('../_lib/axiom.js', () => ({
+  reportCronRun: vi.fn(),
+}));
+
 import handler from '../cron/backup-tables.js';
 import { Sentry } from '../_lib/sentry.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // Fixed date: Sunday 5 AM UTC (typical cron run)
 const BACKUP_TIME = new Date('2026-03-29T05:00:00.000Z');
@@ -249,6 +254,12 @@ describe('backup-tables handler', () => {
     expect(mockPut).toHaveBeenCalledTimes(16);
     const firstCall = mockPut.mock.calls[0]!;
     expect(firstCall[1]).toBe('');
+
+    // Happy path with no errors → status 'ok'
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'backup-tables',
+      expect.objectContaining({ status: 'ok', errors: 0 }),
+    );
   });
 
   // ── Individual table failure ──────────────────────────────
@@ -291,6 +302,12 @@ describe('backup-tables handler', () => {
 
     // put() should only be called 15 times (not for the failed table)
     expect(mockPut).toHaveBeenCalledTimes(15);
+
+    // Partial-failure → status 'partial' so the dashboard reflects reality
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'backup-tables',
+      expect.objectContaining({ status: 'partial', errors: 1 }),
+    );
   });
 
   it('continues when put() fails for a table', async () => {
@@ -321,6 +338,11 @@ describe('backup-tables handler', () => {
     const errors = json.errors as string[];
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain('Blob upload failed');
+
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'backup-tables',
+      expect.objectContaining({ status: 'partial', errors: 1 }),
+    );
   });
 
   it('handles non-Error throws in table export', async () => {

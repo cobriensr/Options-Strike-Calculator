@@ -28,7 +28,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
-import { rejectIfNotOwnerOrGuest } from './_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest, checkBot } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
 
 /** Clamp bounds for `?window=<N>m`. Matches spec futures-playbook-backtest-flow-2026-04-21.md. */
@@ -150,6 +150,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     try {
       if (req.method !== 'GET') {
         return res.status(405).json({ error: 'GET only' });
+      }
+
+      const botCheck = await checkBot(req);
+      if (botCheck.isBot) {
+        return res.status(403).json({ error: 'Access denied' });
       }
 
       if (rejectIfNotOwnerOrGuest(req, res)) return;

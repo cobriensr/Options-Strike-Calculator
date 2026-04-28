@@ -208,7 +208,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     await reportCronRun('enrich-vega-spike-returns', {
-      status: 'ok',
+      status: failed > 0 ? 'partial' : 'ok',
       pending: pending.length,
       enriched,
       skippedNoCandles,

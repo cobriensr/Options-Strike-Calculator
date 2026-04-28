@@ -32,6 +32,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 
 import handler from '../cron/enrich-vega-spike-returns.js';
 import { metrics } from '../_lib/sentry.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Fixtures ──────────────────────────────────────────────────
 
@@ -360,6 +361,10 @@ describe('enrich-vega-spike-returns handler', () => {
       skippedNoCandles: 0,
     });
     expect(metrics.increment).toHaveBeenCalledWith('vega_spike.enrich_failure');
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'enrich-vega-spike-returns',
+      expect.objectContaining({ status: 'partial', failed: 1 }),
+    );
   });
 
   it('fires vega_spike.enriched metric per row enriched', async () => {

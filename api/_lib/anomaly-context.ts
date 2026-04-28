@@ -321,7 +321,7 @@ async function getVix1dLatest(): Promise<number | null> {
     if (!entry) {
       // Fall back to the most recent entry (last weekday's close).
       const keys = Object.keys(parsed).sort();
-      const lastKey = keys[keys.length - 1];
+      const lastKey = keys.at(-1);
       if (!lastKey) return null;
       return toNum(parsed[lastKey]!.c);
     }

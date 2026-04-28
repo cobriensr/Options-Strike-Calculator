@@ -10,7 +10,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
-import { rejectIfNotOwner } from './_lib/api-helpers.js';
+import { rejectIfNotOwner, checkBot } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
 import { alertAckSchema } from './_lib/validation.js';
 
@@ -21,6 +21,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     try {
       if (req.method !== 'POST') {
         return res.status(405).json({ error: 'POST only' });
+      }
+
+      const botCheck = await checkBot(req);
+      if (botCheck.isBot) {
+        return res.status(403).json({ error: 'Access denied' });
       }
 
       if (rejectIfNotOwner(req, res)) return;

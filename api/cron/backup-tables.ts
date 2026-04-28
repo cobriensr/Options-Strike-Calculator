@@ -155,7 +155,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   );
 
   await reportCronRun('backup-tables', {
-    status: 'ok',
+    status: errors.length > 0 ? 'partial' : 'ok',
     date: today,
     tables: Object.keys(results).length,
     totalRows,

@@ -58,7 +58,7 @@ describe('POST /api/journal/init', () => {
     expect(migrateDb).toHaveBeenCalled();
   });
 
-  it('returns 500 with error message on failure', async () => {
+  it('returns 500 with generic error on failure (no leaked details)', async () => {
     vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(initDb).mockRejectedValue(new Error('Connection refused'));
 
@@ -66,7 +66,7 @@ describe('POST /api/journal/init', () => {
     await handler(mockRequest({ method: 'POST' }), res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toEqual({ error: 'Connection refused' });
+    expect(res._json).toEqual({ error: 'Internal error' });
   });
 
   it('returns generic error for non-Error throws', async () => {
@@ -77,6 +77,6 @@ describe('POST /api/journal/init', () => {
     await handler(mockRequest({ method: 'POST' }), res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toEqual({ error: 'Failed to init database' });
+    expect(res._json).toEqual({ error: 'Internal error' });
   });
 });

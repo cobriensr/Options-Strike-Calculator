@@ -78,6 +78,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (!bars[0]?.globex_high) {
       logger.info({ tradeDate }, 'No overnight ES bars found for pre-fill');
+      await reportCronRun('auto-prefill-premarket', {
+        status: 'skipped',
+        tradeDate,
+        reason: 'No overnight bars',
+        durationMs: Date.now() - startTime,
+      });
       return res
         .status(200)
         .json({ skipped: true, reason: 'No overnight bars' });
@@ -159,6 +165,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     Sentry.setTag('cron.job', 'auto-prefill-premarket');
     Sentry.captureException(err);
     logger.error({ err }, 'auto-prefill-premarket failed');
+    await reportCronRun('auto-prefill-premarket', {
+      status: 'error',
+      tradeDate,
+      error: err instanceof Error ? err.message : 'Unknown',
+      durationMs: Date.now() - startTime,
+    });
     return res.status(500).json({ error: 'Internal error' });
   }
 }

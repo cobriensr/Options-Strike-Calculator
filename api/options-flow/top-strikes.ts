@@ -353,10 +353,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     } catch (err) {
       Sentry.captureException(err);
       logger.error({ err }, 'top-strikes query error');
-      return res.status(500).json({
-        error: 'DB error',
-        message: err instanceof Error ? err.message : String(err),
-      });
+      return res.status(500).json({ error: 'Internal error' });
     }
   });
 }

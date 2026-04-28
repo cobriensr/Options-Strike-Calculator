@@ -109,7 +109,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!guard) return;
 
     try {
-      const response = await fetch(CBOE_URL);
+      const response = await fetch(CBOE_URL, {
+        signal: AbortSignal.timeout(15_000),
+      });
       if (!response.ok) {
         const msg = `CBOE fetch failed: HTTP ${response.status}`;
         logger.error({ status: response.status }, msg);

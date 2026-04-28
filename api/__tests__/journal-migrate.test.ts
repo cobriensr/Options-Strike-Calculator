@@ -69,7 +69,7 @@ describe('POST /api/journal/migrate', () => {
     await handler(mockRequest({ method: 'POST' }), res);
 
     expect(res._status).toBe(500);
-    expect((res._json as { error: string }).error).toBe('DB unreachable');
+    expect((res._json as { error: string }).error).toBe('Internal error');
   });
 
   it('returns 403 when bot detected', async () => {
