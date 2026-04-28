@@ -252,6 +252,7 @@ async function handleHistorical(atIso: string, res: VercelResponse) {
   );
 
   const derived: SnapshotRow[] = [];
+  let anyRejected = false;
   for (const result of results) {
     if (result.status === 'fulfilled' && result.value) {
       derived.push(result.value);
@@ -260,12 +261,19 @@ async function handleHistorical(atIso: string, res: VercelResponse) {
         { err: result.reason },
         'historical computeSnapshot failed for one symbol',
       );
+      Sentry.captureException(result.reason);
+      anyRejected = true;
     }
   }
 
   const oldestTs = await fetchOldestTs();
 
   if (derived.length === 0) {
+    if (anyRejected) {
+      Sentry.captureMessage('futures snapshot: all symbols failed', {
+        level: 'error',
+      });
+    }
     res.setHeader(
       'Cache-Control',
       'private, s-maxage=60, stale-while-revalidate=30',

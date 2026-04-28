@@ -62,6 +62,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             : 'Unknown error';
         errors.push(`${symbol}: ${msg}`);
         logger.warn({ symbol, err: result.reason }, 'Snapshot failed');
+        Sentry.captureException(result.reason);
       }
     }
 

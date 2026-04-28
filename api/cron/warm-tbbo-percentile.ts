@@ -23,6 +23,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { cronGuard } from '../_lib/api-helpers.js';
 import { fetchTbboOfiPercentile } from '../_lib/archive-sidecar.js';
 import logger from '../_lib/logger.js';
+import { Sentry } from '../_lib/sentry.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const guard = cronGuard(req, res, {
@@ -37,6 +38,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     fetchTbboOfiPercentile('ES', 0, '1h'),
     fetchTbboOfiPercentile('NQ', 0, '1h'),
   ]);
+
+  if (esResult.status === 'rejected') {
+    logger.warn(
+      { err: esResult.reason },
+      'warm-tbbo-percentile: ES fetch failed',
+    );
+    Sentry.captureException(esResult.reason);
+  }
+  if (nqResult.status === 'rejected') {
+    logger.warn(
+      { err: nqResult.reason },
+      'warm-tbbo-percentile: NQ fetch failed',
+    );
+    Sentry.captureException(nqResult.reason);
+  }
 
   const esOk = esResult.status === 'fulfilled' && esResult.value !== null;
   const nqOk = nqResult.status === 'fulfilled' && nqResult.value !== null;

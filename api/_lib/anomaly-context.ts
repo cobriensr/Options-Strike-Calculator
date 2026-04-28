@@ -56,6 +56,7 @@ import { redis } from './schwab.js';
 import { computeMicrostructureSignals } from './microstructure-signals.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
 import logger from './logger.js';
+import { Sentry } from './sentry.js';
 
 // ── Public type ──────────────────────────────────────────────
 
@@ -180,6 +181,7 @@ async function runSafe<T>(
       { err, label },
       'anomaly-context: source failed, using fallback',
     );
+    Sentry.captureException(err);
     return fallback;
   }
 }

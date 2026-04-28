@@ -51,7 +51,7 @@ import {
 import { fetchMaxPain, formatMaxPainForClaude } from './max-pain.js';
 import { formatOvernightForClaude } from './overnight-gap.js';
 import { fetchSPXCandles, formatSPXCandlesForClaude } from './spx-candles.js';
-import { metrics } from './sentry.js';
+import { Sentry, metrics } from './sentry.js';
 import { schwabFetch, uwFetch } from './api-helpers.js';
 import {
   computeCrossAssetRegime,
@@ -293,6 +293,7 @@ export async function fetchMainData(
   } catch (error_) {
     logger.error({ err: error_ }, 'Failed to fetch flow data for analysis');
     metrics.increment('analyze_context.parallel_fetch_error');
+    Sentry.captureException(error_);
     return empty;
   }
 }
@@ -316,6 +317,7 @@ export async function fetchIvTermContext(
   } catch (error_) {
     logger.warn({ err: error_ }, 'Failed to fetch IV term structure');
     metrics.increment('analyze_context.iv_term_fetch_error');
+    Sentry.captureException(error_);
     return null;
   }
 }
@@ -372,6 +374,7 @@ export async function fetchVolRealizedContext(
   } catch (error_) {
     logger.error({ err: error_ }, 'Failed to fetch vol realized data');
     metrics.increment('analyze_context.vol_realized_db_error');
+    Sentry.captureException(error_);
     return null;
   }
 }
@@ -426,6 +429,7 @@ export async function fetchPreMarketContext(
     }
   } catch (error_) {
     logger.error({ err: error_ }, 'Failed to fetch pre-market data');
+    Sentry.captureException(error_);
   }
 
   return {
@@ -478,6 +482,7 @@ export async function fetchSpxCandlesContext(
     return { spxCandlesContext: null, previousClose: null };
   } catch (error_) {
     logger.error({ err: error_ }, 'Failed to fetch SPX candles');
+    Sentry.captureException(error_);
     return { spxCandlesContext: null, previousClose: null };
   }
 }
@@ -523,6 +528,7 @@ export async function fetchDarkPoolContext(
     };
   } catch (error_) {
     logger.error({ err: error_ }, 'Failed to fetch dark pool data');
+    Sentry.captureException(error_);
     return { darkPoolContext: null, darkPoolClusters: null };
   }
 }
@@ -548,6 +554,7 @@ export async function fetchMaxPainContext(
     return formatMaxPainForClaude(outcome.data, analysisDate, currentSpx);
   } catch (error_) {
     logger.error({ err: error_ }, 'Failed to fetch max pain data');
+    Sentry.captureException(error_);
     return null;
   }
 }
@@ -565,6 +572,7 @@ export async function fetchOiChangeContext(
     return formatOiChangeForClaude(oiChangeRows, currentSpx ?? undefined);
   } catch (error_) {
     logger.error({ err: error_ }, 'Failed to fetch OI change data');
+    Sentry.captureException(error_);
     return null;
   }
 }
@@ -589,6 +597,7 @@ export async function fetchMlCalibrationContext(): Promise<string | null> {
       { err: error_ },
       'ML findings fetch failed — using static prompt values',
     );
+    Sentry.captureException(error_);
     return null;
   }
 }
@@ -605,6 +614,7 @@ export async function fetchFuturesContext(
     return await formatFuturesForClaude(sql, analysisDate, currentSpx);
   } catch (error_) {
     logger.debug({ err: error_ }, 'Futures context fetch failed — skipping');
+    Sentry.captureException(error_);
     return null;
   }
 }
@@ -620,6 +630,7 @@ export async function fetchPriorDayFlowContext(
   } catch (error_) {
     logger.error({ err: error_ }, 'Failed to fetch prior-day flow data');
     metrics.increment('analyze_context.prior_flow_error');
+    Sentry.captureException(error_);
     return null;
   }
 }
@@ -643,6 +654,7 @@ export async function fetchEconomicCalendarContext(
   } catch (error_) {
     logger.error({ err: error_ }, 'Failed to fetch economic calendar from DB');
     metrics.increment('analyze_context.economic_calendar_error');
+    Sentry.captureException(error_);
     return null;
   }
 }
@@ -746,6 +758,7 @@ export async function fetchDirectionalChainContext(
       { err: error_ },
       'Failed to fetch 14 DTE chain for directional opportunity',
     );
+    Sentry.captureException(error_);
     return null;
   }
 }
@@ -759,6 +772,7 @@ export async function fetchCrossAssetRegimeBlock(): Promise<string | null> {
   } catch (err) {
     logger.error({ err }, 'cross-asset regime fetch failed');
     metrics.increment('analyze_context.cross_asset_regime_error');
+    Sentry.captureException(err);
     return null;
   }
 }
@@ -775,6 +789,7 @@ export async function fetchVolumeProfileBlock(
   } catch (err) {
     logger.error({ err }, 'volume profile fetch failed');
     metrics.increment('analyze_context.volume_profile_error');
+    Sentry.captureException(err);
     return null;
   }
 }
@@ -788,6 +803,7 @@ export async function fetchVixDivergenceBlock(): Promise<string | null> {
   } catch (err) {
     logger.error({ err }, 'VIX/SPX divergence fetch failed');
     metrics.increment('analyze_context.vix_divergence_error');
+    Sentry.captureException(err);
     return null;
   }
 }
@@ -808,6 +824,7 @@ export async function fetchMicrostructureBlock(): Promise<string | null> {
   } catch (err) {
     logger.error({ err }, 'microstructure signals fetch failed');
     metrics.increment('analyze_context.microstructure_error');
+    Sentry.captureException(err);
     return null;
   }
 }
@@ -880,6 +897,7 @@ export async function fetchUwDeltasBlock(): Promise<string | null> {
   } catch (err) {
     logger.error({ err }, 'UW deltas fetch failed');
     metrics.increment('analyze_context.uw_deltas_error');
+    Sentry.captureException(err);
     return null;
   }
 }
@@ -967,6 +985,7 @@ export async function fetchSimilarDaysContext(
   } catch (err) {
     logger.warn({ err, backend }, 'similar-days context fetch failed');
     metrics.increment('analyze_context.similar_days_error');
+    Sentry.captureException(err);
     return null;
   }
 }
@@ -1008,6 +1027,7 @@ export async function fetchRangeForecastContext(
   } catch (err) {
     logger.warn({ err }, 'range-forecast context fetch failed');
     metrics.increment('analyze_context.range_forecast_error');
+    Sentry.captureException(err);
     return null;
   }
 }

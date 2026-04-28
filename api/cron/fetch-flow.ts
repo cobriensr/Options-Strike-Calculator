@@ -108,9 +108,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         { err: allInFetch.reason },
         'fetch-flow: all-in fetch failed',
       );
+      Sentry.captureException(allInFetch.reason);
     }
     if (otmFetch.status === 'rejected') {
       logger.warn({ err: otmFetch.reason }, 'fetch-flow: OTM fetch failed');
+      Sentry.captureException(otmFetch.reason);
     }
 
     // Store whichever fetches succeeded
@@ -132,9 +134,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         { err: allInStore.reason },
         'fetch-flow: all-in store failed',
       );
+      Sentry.captureException(allInStore.reason);
     }
     if (otmStore.status === 'rejected') {
       logger.warn({ err: otmStore.reason }, 'fetch-flow: OTM store failed');
+      Sentry.captureException(otmStore.reason);
     }
 
     const allInResult =

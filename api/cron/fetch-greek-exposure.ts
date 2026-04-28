@@ -150,12 +150,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         { err: aggFetch.reason },
         'fetch-greek-exposure: aggregate fetch failed',
       );
+      Sentry.captureException(aggFetch.reason);
     }
     if (expiryFetch.status === 'rejected') {
       logger.warn(
         { err: expiryFetch.reason },
         'fetch-greek-exposure: expiry fetch failed',
       );
+      Sentry.captureException(expiryFetch.reason);
     }
 
     const aggRows = aggFetch.status === 'fulfilled' ? aggFetch.value : null;

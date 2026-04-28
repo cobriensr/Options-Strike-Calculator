@@ -19,7 +19,7 @@ import { randomBytes } from 'node:crypto';
 
 import { Redis } from '@upstash/redis';
 import logger from './logger.js';
-import { metrics } from './sentry.js';
+import { Sentry, metrics } from './sentry.js';
 import { requireEnvGroup } from './env.js';
 
 // ============================================================
@@ -127,6 +127,9 @@ async function storeTokens(tokens: SchwabTokens): Promise<void> {
     }
   }
   logger.error('storeTokens: all attempts exhausted, tokens NOT persisted');
+  Sentry.captureException(
+    new Error('storeTokens: all attempts exhausted, tokens NOT persisted'),
+  );
 }
 
 // ============================================================
@@ -390,6 +393,8 @@ export async function getAccessToken(): Promise<
     );
     return { token: newTokens.accessToken };
   } catch (err) {
+    logger.error({ err }, 'getAccessToken: token refresh failed');
+    Sentry.captureException(err);
     return {
       error: {
         type: 'token_error',
