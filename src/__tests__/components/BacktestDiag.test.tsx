@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import BacktestDiag from '../../components/BacktestDiag';
 import type {
@@ -82,6 +82,10 @@ const timeProps = {
 // ---------------------------------------------------------------------------
 
 describe('BacktestDiag', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
   it('renders nothing when snapshot is null', () => {
     const { container } = render(
       <BacktestDiag snapshot={null} history={makeHistory()} {...timeProps} />,
@@ -288,6 +292,52 @@ describe('BacktestDiag', () => {
     );
     const noDataCell = screen.getAllByText('no data')[0]!;
     expect(noDataCell).toHaveStyle({ color: 'var(--color-danger)' });
+  });
+
+  it('renders a drag handle button with an accessible label', () => {
+    render(
+      <BacktestDiag
+        snapshot={makeSnapshot()}
+        history={makeHistory()}
+        {...timeProps}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: 'Drag panel' }),
+    ).toBeInTheDocument();
+  });
+
+  it('restores a saved position from localStorage on mount', () => {
+    localStorage.setItem(
+      'backtestDiag.position',
+      JSON.stringify({ x: 40, y: 80 }),
+    );
+    render(
+      <BacktestDiag
+        snapshot={makeSnapshot()}
+        history={makeHistory()}
+        {...timeProps}
+      />,
+    );
+    const panel = screen
+      .getByText('Backtest Diagnostic')
+      .closest('div[style*="position"]') as HTMLElement | null;
+    expect(panel).not.toBeNull();
+    expect(panel!.style.top).toBe('80px');
+    expect(panel!.style.left).toBe('40px');
+  });
+
+  it('ignores malformed localStorage entries and falls back to default position', () => {
+    localStorage.setItem('backtestDiag.position', 'not-json');
+    render(
+      <BacktestDiag
+        snapshot={makeSnapshot()}
+        history={makeHistory()}
+        {...timeProps}
+      />,
+    );
+    // Should still render without throwing
+    expect(screen.getByText('Backtest Diagnostic')).toBeInTheDocument();
   });
 
   it('collapses and expands when header is clicked', () => {
