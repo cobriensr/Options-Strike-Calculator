@@ -23,6 +23,13 @@ vi.mock('../_lib/sentry.js', () => ({
 vi.mock('../_lib/api-helpers.js', () => ({
   uwFetch: vi.fn(),
   withRetry: vi.fn((fn: () => Promise<unknown>) => fn()),
+  mapWithConcurrency: vi.fn(
+    async <T, R>(
+      items: readonly T[],
+      _limit: number,
+      worker: (item: T, idx: number) => Promise<R>,
+    ) => Promise.all(items.map((it, i) => worker(it, i))),
+  ),
   cronGuard: vi.fn((req, res) => {
     if (req.method !== 'GET') {
       res.status(405).json({ error: 'GET only' });

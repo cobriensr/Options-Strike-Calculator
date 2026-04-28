@@ -30,7 +30,12 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
-import { cronGuard, uwFetch, withRetry } from '../_lib/api-helpers.js';
+import {
+  cronGuard,
+  mapWithConcurrency,
+  uwFetch,
+  withRetry,
+} from '../_lib/api-helpers.js';
 import { STRIKE_IV_TICKERS, type StrikeIVTicker } from '../_lib/constants.js';
 
 // ── UW response types ────────────────────────────────────────
@@ -246,8 +251,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const sql = getDb();
 
   try {
-    const results = await Promise.all(
-      STRIKE_IV_TICKERS.map((t) => runTicker(t, apiKey, sql, today)),
+    // UW plan caps concurrent in-flight requests at 3. Firing all 14 tickers
+    // via `Promise.all` reliably 429s the last 11. A 3-wide worker pool keeps
+    // the cron under that ceiling; total wall-clock is ~5 sequential rounds
+    // (≈ 1.5–2 s at typical UW latency), well under function timeout.
+    const results = await mapWithConcurrency(STRIKE_IV_TICKERS, 3, (t) =>
+      runTicker(t, apiKey, sql, today),
     );
     const totalInserted = results.reduce((sum, r) => sum + r.rowsInserted, 0);
     const durationMs = Date.now() - startTime;

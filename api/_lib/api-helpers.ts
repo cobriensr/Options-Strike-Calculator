@@ -489,8 +489,11 @@ export async function withRetry<T>(
     } catch (err) {
       const isLast = attempt === retries;
       const msg = err instanceof Error ? err.message : '';
+      // 429 included so cron handlers can recover when a sibling cron has
+      // briefly saturated the UW concurrent-request budget — short backoff
+      // (1s, 2s) reliably finds an open slot once the burst clears.
       const isTransient =
-        /timeout|ECONNREFUSED|ECONNRESET|fetch failed|socket hang up|50[234]/i.test(
+        /timeout|ECONNREFUSED|ECONNRESET|fetch failed|socket hang up|429|50[234]/i.test(
           msg,
         );
       if (isLast || !isTransient) throw err;
@@ -498,6 +501,45 @@ export async function withRetry<T>(
     }
   }
   throw new Error('unreachable');
+}
+
+// ============================================================
+// CONCURRENCY LIMITER (for fan-out crons)
+// ============================================================
+
+/**
+ * Map an array of items through `worker` with at most `limit` calls
+ * in flight at once. Output order matches input order regardless of
+ * resolution order.
+ *
+ * Use this whenever a cron fans out to >3 UW requests in parallel —
+ * the UW plan caps concurrent in-flight requests at 3, so a naked
+ * `Promise.all` over a 13-ticker list 429s the last 10. The shared
+ * `acquireUWSlot()` is a *rate* limiter (per-second / per-minute
+ * INCR), not a concurrency cap, so it can't catch this.
+ *
+ * Workers pull from a shared cursor, so they invoke `worker` in
+ * input-index order (0, 1, 2 first, then 3, 4, 5 as each slot frees).
+ * That preserves call order for tests that rely on `mockResolvedValueOnce`.
+ */
+export async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T, idx: number) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const runner = async (): Promise<void> => {
+    while (cursor < items.length) {
+      const idx = cursor;
+      cursor += 1;
+      results[idx] = await worker(items[idx]!, idx);
+    }
+  };
+  const runnerCount = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(Array.from({ length: runnerCount }, runner));
+  return results;
 }
 
 // ============================================================
