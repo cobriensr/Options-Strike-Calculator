@@ -9,7 +9,7 @@
  * all three modes so switching modes is a pure UI change with no refetch.
  */
 
-import { memo, useState, useCallback, useMemo } from 'react';
+import { memo, useState, useCallback, useMemo, useDeferredValue } from 'react';
 import type { ReactNode } from 'react';
 import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
@@ -87,6 +87,13 @@ export const GexTarget = memo(function GexTarget({
   gexTarget,
 }: GexTargetProps) {
   const [mode, setMode] = useState<Mode>('oi');
+  // Defer the mode value used by the heavy `activeScore` useMemo below so
+  // mode-toggle clicks feel instant on slow devices: the selected Chip
+  // updates synchronously (uses `mode`), while the leaderboard recompute
+  // can run in React's idle slice (uses `deferredMode`). React keeps
+  // showing the previous frame's leaderboard until the new computation
+  // finishes — visible as a brief "stale" frame, not a janky click.
+  const deferredMode = useDeferredValue(mode);
   const [candleInterval, setCandleInterval] = useState<CandleInterval>('5m');
 
   const {
@@ -149,7 +156,7 @@ export const GexTarget = memo(function GexTarget({
   // already in the hook), giving the same calculation the cron would produce
   // for the same timestamp.
   const activeScore: TargetScore | null = useMemo(() => {
-    const raw = mode === 'oi' ? oi : mode === 'vol' ? vol : dir;
+    const raw = deferredMode === 'oi' ? oi : deferredMode === 'vol' ? vol : dir;
     if (!raw) return null;
 
     // Spread-copy every entry so we don't mutate shared API response objects.
@@ -212,7 +219,7 @@ export const GexTarget = memo(function GexTarget({
     if (topTarget) topTarget.isTarget = true;
 
     return { target: topTarget ?? null, leaderboard };
-  }, [mode, oi, vol, dir, visibleCandles]);
+  }, [deferredMode, oi, vol, dir, visibleCandles]);
 
   const activeLeaderboard: StrikeScore[] = useMemo(
     () => activeScore?.leaderboard ?? [],

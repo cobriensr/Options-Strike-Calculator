@@ -5,7 +5,7 @@
  * purely a layout shell.
  */
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useDeferredValue, useMemo, useState } from 'react';
 import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
 import { getNetCharm, getNetGamma, getNetVanna, type ViewMode } from './mode';
 import type { GexSummary } from './SummaryCards';
@@ -50,6 +50,12 @@ export interface GexViewState {
 export function useGexViewState(strikes: GexStrikeLevel[]): GexViewState {
   const [visibleCount, setVisibleCount] = useState(DEFAULT_VISIBLE);
   const [viewMode, setViewMode] = useState<ViewMode>('oi');
+  // Defer the viewMode used by the heavy `maxGex/Charm/Vanna` and
+  // `summary` memos so OI/VOL/DIR toggle clicks feel instant on slow
+  // devices: the selected chip in the parent updates synchronously
+  // (uses `viewMode`), while the bar-scaling and summary recompute
+  // are eligible to lag a frame (use `deferredViewMode`).
+  const deferredViewMode = useDeferredValue(viewMode);
   const [showCharm, setShowCharm] = useState(true);
   const [showVanna, setShowVanna] = useState(true);
   const [showDex, setShowDex] = useState(true);
@@ -74,29 +80,32 @@ export function useGexViewState(strikes: GexStrikeLevel[]): GexViewState {
       return { maxGex: 1, maxCharm: 1, maxVanna: 1, maxDelta: 1 };
     return {
       maxGex: Math.max(
-        ...filtered.map((d) => Math.abs(getNetGamma(d, viewMode))),
+        ...filtered.map((d) => Math.abs(getNetGamma(d, deferredViewMode))),
         1,
       ),
       maxCharm: Math.max(
-        ...filtered.map((d) => Math.abs(getNetCharm(d, viewMode))),
+        ...filtered.map((d) => Math.abs(getNetCharm(d, deferredViewMode))),
         1,
       ),
       maxDelta: Math.max(...filtered.map((d) => Math.abs(d.netDelta)), 1),
       maxVanna: Math.max(
-        ...filtered.map((d) => Math.abs(getNetVanna(d, viewMode))),
+        ...filtered.map((d) => Math.abs(getNetVanna(d, deferredViewMode))),
         1,
       ),
     };
-  }, [filtered, viewMode]);
+  }, [filtered, deferredViewMode]);
 
   const summary = useMemo<GexSummary>(() => {
-    const totalGex = filtered.reduce((s, d) => s + getNetGamma(d, viewMode), 0);
+    const totalGex = filtered.reduce(
+      (s, d) => s + getNetGamma(d, deferredViewMode),
+      0,
+    );
     const totalCharm = filtered.reduce(
-      (s, d) => s + getNetCharm(d, viewMode),
+      (s, d) => s + getNetCharm(d, deferredViewMode),
       0,
     );
     const totalVanna = filtered.reduce(
-      (s, d) => s + getNetVanna(d, viewMode),
+      (s, d) => s + getNetVanna(d, deferredViewMode),
       0,
     );
 
@@ -120,8 +129,8 @@ export function useGexViewState(strikes: GexStrikeLevel[]): GexViewState {
     let flipStrike = '—';
     let closestDist = Infinity;
     for (let i = 1; i < strikes.length; i++) {
-      const prev = getNetGamma(strikes[i - 1]!, viewMode);
-      const curr = getNetGamma(strikes[i]!, viewMode);
+      const prev = getNetGamma(strikes[i - 1]!, deferredViewMode);
+      const curr = getNetGamma(strikes[i]!, deferredViewMode);
       if (prev === 0 || curr === 0) continue;
       if (Math.sign(prev) !== Math.sign(curr)) {
         const dist = Math.abs(strikes[i]!.strike - price);
@@ -141,7 +150,7 @@ export function useGexViewState(strikes: GexStrikeLevel[]): GexViewState {
       flowSign,
       charmBurnRate,
     };
-  }, [filtered, strikes, viewMode, price]);
+  }, [filtered, strikes, deferredViewMode, price]);
 
   const handleLess = useCallback(
     () => setVisibleCount((v) => Math.max(v - STEP, MIN_VISIBLE)),
