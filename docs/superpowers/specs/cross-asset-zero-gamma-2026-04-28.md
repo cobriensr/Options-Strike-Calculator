@@ -159,6 +159,45 @@ min — line moves with the new compute cron output.
 
 ---
 
+### Phase 2.5 — Historical backfill (~1 hr, ships with Phase 2)
+
+Two scripts that hydrate `strike_exposures` and `zero_gamma_levels` for
+the last N trading days so the user can scrub back through history and
+see how price reacted around past zero-gamma levels.
+
+UW's `/spot-exposures/expiry-strike?date=YYYY-MM-DD` returns the
+**most recent** snapshot for that date — so historical backfill yields
+**one zero-gamma data point per (ticker, date)**, not a 5-min time series.
+Going-forward intraday granularity starts when Phase 2 went live.
+
+**Files added:**
+
+- `scripts/backfill-strike-exposure.mjs` — generalized from SPX-only to
+  loop all 4 tickers with the same per-ticker primary-expiry policy as
+  the live cron. Run first.
+- `scripts/backfill-zero-gamma.ts` — TypeScript so it can import the
+  shared `computeZeroGammaLevel` calculator. Reads `strike_exposures`
+  per (ticker, date), computes the level, writes to `zero_gamma_levels`
+  with the snapshot's `timestamp` as `ts`. Idempotent via
+  delete-by-range before insert.
+
+**Usage:**
+
+```bash
+# Step 1: pull historical strike data for all 4 tickers
+UW_API_KEY=... DATABASE_URL=... node scripts/backfill-strike-exposure.mjs 30
+
+# Step 2: derive zero-gamma rows from the strike data
+DATABASE_URL=... npx tsx scripts/backfill-zero-gamma.ts 30
+```
+
+**Verification:** Query
+`SELECT ticker, MIN(ts), MAX(ts), COUNT(*) FROM zero_gamma_levels
+GROUP BY ticker ORDER BY ticker;` — expect 4 tickers each with ~30 rows
+spanning the requested window.
+
+---
+
 ### Phase 4 — Confidence audit (~30 min, deferrable)
 
 After Phases 1-3 ship and 2-3 sessions of data accumulate, run a SQL audit

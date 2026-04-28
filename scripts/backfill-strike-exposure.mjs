@@ -1,15 +1,30 @@
 #!/usr/bin/env node
 
 /**
- * Local backfill script for per-strike Greek exposure (SPX 0DTE + 1DTE).
- * Fetches per-strike gamma, charm, delta, vanna for 0DTE and 1DTE expirations.
- * Stores strikes within ±200 pts of ATM.
+ * Local backfill script for per-strike Greek exposure for the four
+ * cross-asset zero-gamma tickers (SPX, NDX, SPY, QQQ).
+ *
+ * Per-ticker policy:
+ *   - SPX: 0DTE + 1DTE (preserves Periscope + build-features-gex 1DTE column)
+ *   - SPY/QQQ: 0DTE only (daily expirations available)
+ *   - NDX: front Mon/Wed/Fri only (no daily NDX expirations)
+ *
+ * UW's `/spot-exposures/expiry-strike` endpoint returns the *most recent*
+ * snapshot for the given (ticker, expiry, date) — so each backfilled date
+ * yields one timestamp's worth of strikes per ticker, not a 5-min time
+ * series. Per-day granularity is still actionable for "what was the
+ * gamma profile at EOD on date X?" reads.
+ *
+ * Stores strikes within the per-ticker ATM window (mirroring the live
+ * fetch-strike-exposure cron's ATM_RANGE_BY_TICKER constants).
  *
  * Usage:
- *   UW_API_KEY=your_key DATABASE_URL="postgresql://..." node scripts/backfill-strike-exposure.mjs
+ *   UW_API_KEY=... DATABASE_URL="postgresql://..." node scripts/backfill-strike-exposure.mjs
  *
  * Options:
  *   node scripts/backfill-strike-exposure.mjs 5    # 5 days instead of 30
+ *
+ * Idempotent: ON CONFLICT (date, timestamp, ticker, strike, expiry) DO NOTHING.
  */
 
 import { neon } from '@neondatabase/serverless';
@@ -28,17 +43,18 @@ if (!DATABASE_URL) {
 
 const sql = neon(DATABASE_URL);
 const UW_BASE = 'https://api.unusualwhales.com/api';
-const ATM_RANGE = 200;
+
+const TICKERS = ['SPX', 'NDX', 'SPY', 'QQQ'];
+const ATM_RANGE_BY_TICKER = { SPX: 200, NDX: 500, SPY: 20, QQQ: 20 };
 
 const days = Number.parseInt(process.argv[2] ?? '30', 10);
 
-// ── Generate last N trading days ────────────────────────────
+// ── Trading-day + expiry helpers ────────────────────────────
 
 function getTradingDays(count) {
   const dates = [];
   const d = new Date();
 
-  // Include today if it's a weekday
   const today = d.getDay();
   if (today !== 0 && today !== 6) {
     dates.push(d.toISOString().slice(0, 10));
@@ -54,10 +70,8 @@ function getTradingDays(count) {
   return dates.reverse();
 }
 
-// ── Get next trading day (skip weekends) ───────────────────
-
 function getNextTradingDay(dateStr) {
-  const d = new Date(dateStr + 'T12:00:00Z');
+  const d = new Date(`${dateStr}T12:00:00Z`);
   d.setDate(d.getDate() + 1);
   while (d.getDay() === 0 || d.getDay() === 6) {
     d.setDate(d.getDate() + 1);
@@ -65,9 +79,25 @@ function getNextTradingDay(dateStr) {
   return d.toISOString().slice(0, 10);
 }
 
-// ── Fetch per-strike data for one date ──────────────────────
+/** NDX: today on Mon/Wed/Fri, else +1 (Wed/Fri respectively). */
+function getFrontNdxExpiry(dateStr) {
+  const d = new Date(`${dateStr}T12:00:00Z`);
+  const dow = d.getDay();
+  if (dow === 1 || dow === 3 || dow === 5) return dateStr;
+  d.setDate(d.getDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
 
-async function fetchStrikeExposure(date, expiry) {
+/** Per-ticker expiry list for a given trading date. */
+function getExpiriesToFetch(ticker, date) {
+  if (ticker === 'SPX') return [date, getNextTradingDay(date)];
+  if (ticker === 'NDX') return [getFrontNdxExpiry(date)];
+  return [date]; // SPY, QQQ
+}
+
+// ── UW fetch ────────────────────────────────────────────────
+
+async function fetchStrikeExposure(ticker, date, expiry) {
   const params = new URLSearchParams({
     'expirations[]': expiry,
     date,
@@ -75,13 +105,15 @@ async function fetchStrikeExposure(date, expiry) {
   });
 
   const res = await fetch(
-    `${UW_BASE}/stock/SPX/spot-exposures/expiry-strike?${params}`,
+    `${UW_BASE}/stock/${ticker}/spot-exposures/expiry-strike?${params}`,
     { headers: { Authorization: `Bearer ${UW_API_KEY}` } },
   );
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    console.warn(`  UW API ${res.status} for ${date}: ${text.slice(0, 100)}`);
+    console.warn(
+      `  UW API ${res.status} for ${ticker} ${date} expiry ${expiry}: ${text.slice(0, 100)}`,
+    );
     return [];
   }
 
@@ -89,21 +121,22 @@ async function fetchStrikeExposure(date, expiry) {
   return body.data ?? [];
 }
 
-// ── Store strikes ───────────────────────────────────────────
+// ── Store ───────────────────────────────────────────────────
 
-async function storeStrikes(rows, date, expiry) {
+async function storeStrikes(rows, date, ticker, expiry) {
   if (rows.length === 0) return { stored: 0, price: null, filtered: 0 };
 
+  const atmRange = ATM_RANGE_BY_TICKER[ticker];
   const price = Number.parseFloat(rows[0].price);
-  const minStrike = price - ATM_RANGE;
-  const maxStrike = price + ATM_RANGE;
+  const minStrike = price - atmRange;
+  const maxStrike = price + atmRange;
 
   const filtered = rows.filter((r) => {
     const s = Number.parseFloat(r.strike);
     return s >= minStrike && s <= maxStrike;
   });
 
-  // Use the timestamp from the data, rounded to 5-min
+  // Use the timestamp from the data, rounded to 5-min.
   const dataTime = new Date(rows[0].time);
   const minutes = dataTime.getMinutes();
   dataTime.setMinutes(minutes - (minutes % 5), 0, 0);
@@ -124,7 +157,7 @@ async function storeStrikes(rows, date, expiry) {
           call_vanna_oi, put_vanna_oi
         )
         VALUES (
-          ${date}, ${timestamp}, 'SPX', ${expiry}, ${row.strike}, ${row.price},
+          ${date}, ${timestamp}, ${ticker}, ${expiry}, ${row.strike}, ${row.price},
           ${row.call_gamma_oi}, ${row.put_gamma_oi},
           ${row.call_gamma_ask}, ${row.call_gamma_bid},
           ${row.put_gamma_ask}, ${row.put_gamma_bid},
@@ -139,24 +172,13 @@ async function storeStrikes(rows, date, expiry) {
       `;
       if (result.length > 0) stored++;
     } catch (err) {
-      console.warn(`  Insert error at strike ${row.strike}: ${err.message}`);
+      console.warn(
+        `  Insert error ${ticker} ${date} strike ${row.strike}: ${err.message}`,
+      );
     }
   }
 
   return { stored, price, filtered: filtered.length };
-}
-
-// ── Format value for display ────────────────────────────────
-
-function fmt(val) {
-  const n = Number.parseFloat(val);
-  if (Number.isNaN(n) || n === 0) return '0';
-  const abs = Math.abs(n);
-  const sign = n >= 0 ? '+' : '-';
-  if (abs >= 1e9) return `${sign}${(abs / 1e9).toFixed(1)}B`;
-  if (abs >= 1e6) return `${sign}${(abs / 1e6).toFixed(1)}M`;
-  if (abs >= 1e3) return `${sign}${(abs / 1e3).toFixed(1)}K`;
-  return `${sign}${abs.toFixed(0)}`;
 }
 
 // ── Main ────────────────────────────────────────────────────
@@ -164,53 +186,54 @@ function fmt(val) {
 async function main() {
   const tradingDays = getTradingDays(days);
 
-  console.log(`Backfilling SPX 0DTE + 1DTE Per-Strike Greek Exposure`);
+  console.log(
+    `Backfilling per-strike Greek exposure for ${TICKERS.join(', ')}`,
+  );
   console.log(
     `Days: ${tradingDays.length} (${tradingDays[0]} to ${tradingDays.at(-1)})\n`,
   );
 
-  let totalStored = 0;
+  const totals = Object.fromEntries(TICKERS.map((t) => [t, 0]));
 
   for (const date of tradingDays) {
-    await new Promise((r) => setTimeout(r, 400));
-
-    const nextDay = getNextTradingDay(date);
-    const [rows0dte, rows1dte] = await Promise.all([
-      fetchStrikeExposure(date, date),
-      fetchStrikeExposure(date, nextDay),
-    ]);
-    const result0dte = await storeStrikes(rows0dte, date, date);
-    const result1dte = await storeStrikes(rows1dte, date, nextDay);
-
-    totalStored += result0dte.stored + result1dte.stored;
-
-    // Find peak positive and negative gamma/charm for logging (0DTE)
-    let peakGamma = { strike: 0, val: 0 };
-    let troughGamma = { strike: 0, val: 0 };
-    let peakCharm = { strike: 0, val: 0 };
-
-    const price = result0dte.price ?? 0;
-    for (const row of rows0dte) {
-      const s = Number.parseFloat(row.strike);
-      if (Math.abs(s - price) > ATM_RANGE) continue;
-      const netG =
-        Number.parseFloat(row.call_gamma_oi) +
-        Number.parseFloat(row.put_gamma_oi);
-      const netC =
-        Number.parseFloat(row.call_charm_oi) +
-        Number.parseFloat(row.put_charm_oi);
-      if (netG > peakGamma.val) peakGamma = { strike: s, val: netG };
-      if (netG < troughGamma.val) troughGamma = { strike: s, val: netG };
-      if (netC > peakCharm.val) peakCharm = { strike: s, val: netC };
+    // Build (ticker, expiry) tasks for this date.
+    const tasks = [];
+    for (const ticker of TICKERS) {
+      for (const expiry of getExpiriesToFetch(ticker, date)) {
+        tasks.push({ ticker, expiry });
+      }
     }
 
-    console.log(
-      `  ${date}: 0DTE ${rows0dte.length} total → ${result0dte.filtered} filtered (${result0dte.stored} new) | 1DTE (${nextDay}) ${rows1dte.length} total → ${result1dte.filtered} filtered (${result1dte.stored} new) | SPX: ${result0dte.price ?? 'N/A'} | Peak γ: ${peakGamma.strike} (${fmt(peakGamma.val)}) | Trough γ: ${troughGamma.strike} (${fmt(troughGamma.val)}) | Peak charm: ${peakCharm.strike} (${fmt(peakCharm.val)})`,
+    // Sleep briefly between dates to be polite to UW.
+    await new Promise((r) => setTimeout(r, 400));
+
+    // Fetch all (ticker, expiry) for this date in parallel.
+    const fetched = await Promise.all(
+      tasks.map(async ({ ticker, expiry }) => ({
+        ticker,
+        expiry,
+        rows: await fetchStrikeExposure(ticker, date, expiry),
+      })),
     );
+
+    const dailySummary = [];
+    for (const { ticker, expiry, rows } of fetched) {
+      const result = await storeStrikes(rows, date, ticker, expiry);
+      totals[ticker] += result.stored;
+      const tag = ticker === 'SPX' && expiry !== date ? '1DTE' : 'primary';
+      const priceTag = result.price ? `, ${result.price.toFixed(2)}` : '';
+      dailySummary.push(
+        `${ticker}/${tag}: ${rows.length}→${result.filtered} (${result.stored} new${priceTag})`,
+      );
+    }
+
+    console.log(`  ${date}: ${dailySummary.join(' | ')}`);
   }
 
   console.log(`\nDone!`);
-  console.log(`  Total strike rows stored (0DTE + 1DTE): ${totalStored}`);
+  for (const ticker of TICKERS) {
+    console.log(`  ${ticker}: ${totals[ticker]} new rows`);
+  }
 }
 
 try {
