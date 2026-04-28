@@ -4,9 +4,7 @@ import TRACELiveHeader from '../components/TRACELive/TRACELiveHeader';
 import type { TraceLiveDetail } from '../components/TRACELive/types';
 import type { UseTraceLiveCountdownReturn } from '../components/TRACELive/hooks/useTraceLiveCountdown';
 
-function makeDetail(
-  overrides: Partial<TraceLiveDetail> = {},
-): TraceLiveDetail {
+function makeDetail(overrides: Partial<TraceLiveDetail> = {}): TraceLiveDetail {
   return {
     id: 1,
     capturedAt: '2026-04-27T18:00:00Z',

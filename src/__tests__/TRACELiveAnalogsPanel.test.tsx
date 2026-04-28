@@ -86,7 +86,9 @@ describe('TRACELiveAnalogsPanel', () => {
     );
     render(<TRACELiveAnalogsPanel detail={makeDetail(7)} />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    expect(fetchMock.mock.calls[0]![0]).toBe('/api/trace-live-analogs?id=7&k=10');
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      '/api/trace-live-analogs?id=7&k=10',
+    );
   });
 
   it('renders the loading state while the fetch is in flight', () => {
@@ -109,9 +111,7 @@ describe('TRACELiveAnalogsPanel', () => {
     );
     render(<TRACELiveAnalogsPanel detail={makeDetail(7)} />);
     fireEvent.click(screen.getByText('Historical Analogs'));
-    await waitFor(() =>
-      expect(screen.getByText('0.0500')).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText('0.0500')).toBeInTheDocument());
     expect(screen.getByText('0.1200')).toBeInTheDocument();
   });
 
@@ -145,7 +145,9 @@ describe('TRACELiveAnalogsPanel', () => {
     fireEvent.click(screen.getByText('Historical Analogs'));
     // Wait for the fetch to settle.
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    expect(screen.queryByText(/Failed to load analogs/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Failed to load analogs/),
+    ).not.toBeInTheDocument();
   });
 
   it('renders an error message for other non-OK statuses', async () => {
@@ -199,9 +201,7 @@ describe('TRACELiveAnalogsPanel', () => {
   });
 
   it('refetches when detail.id changes', async () => {
-    fetchMock.mockResolvedValue(
-      jsonResponse({ id: 7, k: 10, analogs: [] }),
-    );
+    fetchMock.mockResolvedValue(jsonResponse({ id: 7, k: 10, analogs: [] }));
     const { rerender } = render(
       <TRACELiveAnalogsPanel detail={makeDetail(7)} />,
     );

@@ -55,9 +55,7 @@ function makeAnalysis(overrides: Partial<TraceAnalysis> = {}): TraceAnalysis {
   };
 }
 
-function makeDetail(
-  overrides: Partial<TraceLiveDetail> = {},
-): TraceLiveDetail {
+function makeDetail(overrides: Partial<TraceLiveDetail> = {}): TraceLiveDetail {
   return {
     id: 1,
     capturedAt: '2026-04-27T18:00:00Z',
@@ -95,7 +93,9 @@ describe('TRACELiveTabPanel', () => {
     );
     expect(screen.getByText(/Gamma Heatmap/)).toBeInTheDocument();
     const img = screen.getByRole('img');
-    expect(img.getAttribute('src')).toBe('/api/trace-live-image?id=1&chart=gamma');
+    expect(img.getAttribute('src')).toBe(
+      '/api/trace-live-image?id=1&chart=gamma',
+    );
   });
 
   it('renders the charm chart title for chart=charm', () => {
@@ -124,12 +124,7 @@ describe('TRACELiveTabPanel', () => {
 
   it('renders the loading placeholder when no image is stored AND loading is true', () => {
     render(
-      <TRACELiveTabPanel
-        chart="gamma"
-        detail={null}
-        loading
-        error={null}
-      />,
+      <TRACELiveTabPanel chart="gamma" detail={null} loading error={null} />,
     );
     expect(screen.getByText('Loading capture…')).toBeInTheDocument();
   });

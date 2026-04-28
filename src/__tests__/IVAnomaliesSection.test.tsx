@@ -38,7 +38,9 @@ const mockedAnomalies = useIVAnomalies as unknown as Mock;
 // ── Factories ──────────────────────────────────────────────
 
 function makeAnomaly(
-  overrides: Partial<Pick<ActiveAnomaly, 'ticker' | 'strike' | 'side' | 'expiry'>> = {},
+  overrides: Partial<
+    Pick<ActiveAnomaly, 'ticker' | 'strike' | 'side' | 'expiry'>
+  > = {},
 ): ActiveAnomaly {
   const base = {
     ticker: 'SPXW' as const,
@@ -182,9 +184,7 @@ describe('IVAnomaliesSection', () => {
   });
 
   it('disables the prev scrub button when canScrubPrev is false', () => {
-    mockedAnomalies.mockReturnValue(
-      defaultHookReturn({ canScrubPrev: false }),
-    );
+    mockedAnomalies.mockReturnValue(defaultHookReturn({ canScrubPrev: false }));
     render(<IVAnomaliesSection marketOpen />);
     expect(
       screen.getByRole('button', { name: 'Step scrubber back 5 minutes' }),

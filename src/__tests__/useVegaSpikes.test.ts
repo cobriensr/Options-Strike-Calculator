@@ -64,9 +64,7 @@ describe('useVegaSpikes', () => {
   });
 
   it('clears loading and stores validated spikes on success', async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse({ spikes: [makeRawSpike()] }),
-    );
+    fetchMock.mockResolvedValueOnce(jsonResponse({ spikes: [makeRawSpike()] }));
     const { result } = renderHook(() => useVegaSpikes(false));
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.spikes).toHaveLength(1);
@@ -144,9 +142,7 @@ describe('useVegaSpikes', () => {
   it('does NOT poll for historical ranges (7d/30d)', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ spikes: [] }));
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    const { result } = renderHook(() =>
-      useVegaSpikes(/* marketOpen */ true),
-    );
+    const { result } = renderHook(() => useVegaSpikes(/* marketOpen */ true));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
 
     act(() => {
@@ -224,9 +220,7 @@ describe('useVegaSpikes', () => {
     );
     const { result, unmount } = renderHook(() => useVegaSpikes(false));
     unmount();
-    rejectFn(
-      Object.assign(new Error('aborted'), { name: 'AbortError' }),
-    );
+    rejectFn(Object.assign(new Error('aborted'), { name: 'AbortError' }));
     // Yield two microtasks for the catch chain to settle.
     await act(async () => {
       await Promise.resolve();

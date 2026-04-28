@@ -145,9 +145,7 @@ describe('StrikeIVChart', () => {
       />,
     );
     await waitFor(() =>
-      expect(
-        screen.getByText(/Insufficient IV history/),
-      ).toBeInTheDocument(),
+      expect(screen.getByText(/Insufficient IV history/)).toBeInTheDocument(),
     );
   });
 
@@ -252,8 +250,18 @@ describe('StrikeIVChart', () => {
         side: 'call',
         expiry: '2026-04-30',
         samples: [
-          makeSample({ ts: '2026-04-27T14:00:00Z', ivMid: 0.2, ivBid: 0.18, ivAsk: 0.22 }),
-          makeSample({ ts: '2026-04-27T14:05:00Z', ivMid: 0.3, ivBid: 0.28, ivAsk: 0.32 }),
+          makeSample({
+            ts: '2026-04-27T14:00:00Z',
+            ivMid: 0.2,
+            ivBid: 0.18,
+            ivAsk: 0.22,
+          }),
+          makeSample({
+            ts: '2026-04-27T14:05:00Z',
+            ivMid: 0.3,
+            ivBid: 0.28,
+            ivAsk: 0.32,
+          }),
         ],
       }),
     );
