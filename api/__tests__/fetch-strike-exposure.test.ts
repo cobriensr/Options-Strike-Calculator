@@ -24,12 +24,15 @@ vi.mock('../_lib/logger.js', () => ({
 import handler from '../cron/fetch-strike-exposure.js';
 import logger from '../_lib/logger.js';
 
-// Fixed "market hours" date: Tuesday 10:00 AM ET
+// Fixed market-hours time: Tuesday 10:00 AM ET (2026-03-24).
+// Tuesday matters: NDX has no Tue expiration, so front expiry should be Wed.
 const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
-// Fixed "outside hours" date: Tuesday 6:00 AM ET
 const OFF_HOURS_TIME = new Date('2026-03-24T11:00:00.000Z');
-// Fixed weekend date: Saturday
 const WEEKEND_TIME = new Date('2026-03-28T14:00:00.000Z');
+
+// 5 (ticker, expiry) tasks per cron invocation:
+//   SPX × 2 (today + tomorrow), NDX × 1 (front Mon/Wed/Fri), SPY × 1, QQQ × 1
+const EXPECTED_TASKS = 5;
 
 function makeStrikeRow(overrides = {}) {
   return {
@@ -58,7 +61,7 @@ function makeStrikeRow(overrides = {}) {
   };
 }
 
-/** Stub fetch to return the same strike exposure data for all calls */
+/** Stub fetch to return the same strike data for every call. */
 function stubFetch(data: unknown[] = []) {
   vi.stubGlobal(
     'fetch',
@@ -69,29 +72,13 @@ function stubFetch(data: unknown[] = []) {
   );
 }
 
-/**
- * Stub fetch to return different data per sequential call.
- * Each entry maps to one fetch invocation in order.
- */
-function stubFetchSequential(responses: unknown[][]) {
-  const mockFetch = vi.fn();
-  for (const data of responses) {
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ data }),
-    });
-  }
-  vi.stubGlobal('fetch', mockFetch);
-}
-
 describe('fetch-strike-exposure handler', () => {
   const originalEnv = process.env;
 
   beforeEach(() => {
     vi.resetAllMocks();
-    // Re-attach transaction after resetAllMocks clears mock state
     mockSql.transaction = mockTransaction;
-    // Default: all rows inserted (returns [{id:1}] per query)
+    // Default: every queued INSERT returns [{id:1}] (one stored row each).
     mockTransaction.mockImplementation(
       async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
         const txnFn = () => ({});
@@ -213,7 +200,7 @@ describe('fetch-strike-exposure handler', () => {
 
   // ── Happy path ────────────────────────────────────────────
 
-  it('fetches strikes, filters to ATM range, stores, and returns 200', async () => {
+  it('fetches all 4 tickers, stores per-ticker rows, and returns 200', async () => {
     process.env.UW_API_KEY = 'uwkey';
     stubFetch([makeStrikeRow()]);
 
@@ -227,17 +214,73 @@ describe('fetch-strike-exposure handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       success: true,
-      price: 5800.5,
-      totalStored: 2,
+      totalStored: EXPECTED_TASKS,
       totalSkipped: 0,
-      dte0: { stored: 1, skipped: 0 },
-      dte1: { stored: 1, skipped: 0 },
     });
-    // 2 transactions: one for 0DTE, one for 1DTE
-    expect(mockTransaction).toHaveBeenCalledTimes(2);
+    // 5 transactions: SPX × 2, NDX × 1, SPY × 1, QQQ × 1
+    expect(mockTransaction).toHaveBeenCalledTimes(EXPECTED_TASKS);
+
+    // Per-ticker bucket sanity
+    const json = res._json as { perTicker: Record<string, unknown> };
+    expect(json.perTicker.SPX).toMatchObject({ totalStored: 2 });
+    expect(json.perTicker.NDX).toMatchObject({ totalStored: 1 });
+    expect(json.perTicker.SPY).toMatchObject({ totalStored: 1 });
+    expect(json.perTicker.QQQ).toMatchObject({ totalStored: 1 });
   });
 
-  it('returns correct response for empty API data', async () => {
+  it('fans out to per-ticker UW URLs', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [makeStrikeRow()] }),
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const urls = (fetchSpy.mock.calls as unknown[][]).map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes('/stock/SPX/spot-exposures'))).toBe(
+      true,
+    );
+    expect(urls.some((u) => u.includes('/stock/NDX/spot-exposures'))).toBe(
+      true,
+    );
+    expect(urls.some((u) => u.includes('/stock/SPY/spot-exposures'))).toBe(
+      true,
+    );
+    expect(urls.some((u) => u.includes('/stock/QQQ/spot-exposures'))).toBe(
+      true,
+    );
+  });
+
+  it('uses Wed 2026-03-25 as the NDX front expiry on a Tuesday', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [makeStrikeRow()] }),
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const ndxCall = (fetchSpy.mock.calls as unknown[][]).find((c) =>
+      String(c[0]).includes('/stock/NDX/spot-exposures'),
+    );
+    expect(ndxCall).toBeDefined();
+    expect(String(ndxCall![0])).toContain('2026-03-25');
+  });
+
+  it('returns success with zero rows when API returns empty data', async () => {
     process.env.UW_API_KEY = 'uwkey';
     stubFetch([]);
 
@@ -250,25 +293,24 @@ describe('fetch-strike-exposure handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
-      stored: false,
-      reason: 'No strike data',
+      success: true,
+      totalStored: 0,
+      totalSkipped: 0,
     });
+    // No transactions (empty rows short-circuit before storeStrikes hits the txn)
     expect(mockTransaction).not.toHaveBeenCalled();
   });
 
-  it('counts skipped duplicates correctly', async () => {
+  it('counts skipped duplicates correctly across all tasks', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    // Override: all rows conflict (DO NOTHING returns empty) for both 0DTE and 1DTE
-    const conflictImpl = async (
-      fn: (txn: (...args: unknown[]) => unknown) => unknown[],
-    ) => {
-      const txnFn = () => ({});
-      const queries = fn(txnFn);
-      return queries.map(() => []);
-    };
-    mockTransaction
-      .mockImplementationOnce(conflictImpl)
-      .mockImplementationOnce(conflictImpl);
+    // All 5 transactions return empty arrays (ON CONFLICT DO NOTHING fired).
+    mockTransaction.mockImplementation(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const txnFn = () => ({});
+        const queries = fn(txnFn);
+        return queries.map(() => []);
+      },
+    );
     stubFetch([makeStrikeRow()]);
 
     const req = mockRequest({
@@ -281,14 +323,21 @@ describe('fetch-strike-exposure handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       totalStored: 0,
-      totalSkipped: 2,
+      totalSkipped: EXPECTED_TASKS,
     });
   });
 
-  it('handles 1DTE returning empty data gracefully', async () => {
+  it('isolates per-task failures — surviving tasks still complete', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    // 0DTE has data, 1DTE returns empty
-    stubFetchSequential([[makeStrikeRow()], []]);
+    // First fetch (SPX 0DTE) rejects; remaining 4 succeed.
+    const fetchSpy = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('SPX 0DTE network blip'))
+      .mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [makeStrikeRow()] }),
+      });
+    vi.stubGlobal('fetch', fetchSpy);
 
     const req = mockRequest({
       method: 'GET',
@@ -300,18 +349,21 @@ describe('fetch-strike-exposure handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       success: true,
-      dte0: { stored: 1, skipped: 0 },
-      dte1: { stored: 0, skipped: 0 },
-      totalStored: 1,
-      totalSkipped: 0,
+      totalStored: EXPECTED_TASKS - 1,
     });
-    // Only 1 transaction: 0DTE only
-    expect(mockTransaction).toHaveBeenCalledTimes(1);
   });
 
-  it('handles 0DTE empty but 1DTE has data', async () => {
+  it('respects per-ticker ATM windows', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    stubFetchSequential([[], [makeStrikeRow()]]);
+    // Strike 5810 is within ALL ticker windows when price=5800.5
+    // (SPX ±200, NDX ±500, SPY ±20, QQQ ±20). Strike 5900 is in SPX/NDX
+    // but out of SPY/QQQ. Strike 6100 is only in NDX (out of SPX ±200).
+    const rows = [
+      makeStrikeRow({ strike: '5810', price: '5800.5' }),
+      makeStrikeRow({ strike: '5900', price: '5800.5' }),
+      makeStrikeRow({ strike: '6100', price: '5800.5' }),
+    ];
+    stubFetch(rows);
 
     const req = mockRequest({
       method: 'GET',
@@ -320,44 +372,22 @@ describe('fetch-strike-exposure handler', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      success: true,
-      dte0: { stored: 0, skipped: 0 },
-      dte1: { stored: 1, skipped: 0 },
-      totalStored: 1,
-      totalSkipped: 0,
-    });
-    expect(mockTransaction).toHaveBeenCalledTimes(1);
-  });
-
-  it('filters out strikes beyond ±200 pts from ATM', async () => {
-    process.env.UW_API_KEY = 'uwkey';
-    const nearStrike = makeStrikeRow({ strike: '5800', price: '5800.5' });
-    const farStrike = makeStrikeRow({ strike: '6100', price: '5800.5' });
-    stubFetch([nearStrike, farStrike]);
-
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
-
-    expect(res._status).toBe(200);
-    // Only the near strike (5800) should be stored; 6100 is >200 pts away
-    expect(res._json).toMatchObject({
-      success: true,
-      totalStored: 2,
-      totalSkipped: 0,
-    });
-    // 2 transactions: one per expiry
-    expect(mockTransaction).toHaveBeenCalledTimes(2);
+    const json = res._json as {
+      perTicker: Record<string, { totalStored: number }>;
+    };
+    // SPX × 2 expiries × 2 strikes (5810, 5900) = 4
+    expect(json.perTicker.SPX!.totalStored).toBe(4);
+    // NDX × 1 expiry × 3 strikes = 3
+    expect(json.perTicker.NDX!.totalStored).toBe(3);
+    // SPY × 1 expiry × 1 strike (only 5810) = 1
+    expect(json.perTicker.SPY!.totalStored).toBe(1);
+    // QQQ × 1 expiry × 1 strike = 1
+    expect(json.perTicker.QQQ!.totalStored).toBe(1);
   });
 
   // ── Error handling ────────────────────────────────────────
 
-  it('returns 500 when UW API fails (non-ok response)', async () => {
+  it('returns 500 when ALL ticker fetches fail', async () => {
     process.env.UW_API_KEY = 'uwkey';
     vi.stubGlobal(
       'fetch',
@@ -376,33 +406,14 @@ describe('fetch-strike-exposure handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'Internal error' });
-  });
-
-  it('returns 500 when fetch throws (network error)', async () => {
-    process.env.UW_API_KEY = 'uwkey';
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockRejectedValue(new Error('Network error')),
-    );
-
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
-
-    expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'Internal error' });
+    expect(res._json).toMatchObject({ error: 'All ticker fetches failed' });
   });
 
   it('handles batch insert errors gracefully and logs warning', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    // Both 0DTE and 1DTE transactions fail
-    mockTransaction
-      .mockRejectedValueOnce(new Error('DB batch insert failed'))
-      .mockRejectedValueOnce(new Error('DB batch insert failed'));
+    // Every transaction fails — handler should still respond 200 with 0 stored
+    // and warn-level log on each failure.
+    mockTransaction.mockRejectedValue(new Error('DB batch insert failed'));
     stubFetch([makeStrikeRow()]);
 
     const req = mockRequest({
@@ -416,7 +427,7 @@ describe('fetch-strike-exposure handler', () => {
     expect(res._json).toMatchObject({
       success: true,
       totalStored: 0,
-      totalSkipped: 2,
+      totalSkipped: EXPECTED_TASKS,
     });
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ err: expect.any(Error) }),
