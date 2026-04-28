@@ -16,6 +16,7 @@ import logger from './logger.js';
 import { metrics, Sentry } from './sentry.js';
 import { getCTTime, getETDateStr } from '../../src/utils/timezone.js';
 import type { UwFetchOutcome } from './uw-result.js';
+import { uwFetch, parseUwHttpStatus } from './api-helpers.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
 
@@ -101,28 +102,27 @@ export async function fetchDarkPoolBlocks(
     });
     if (date) params.set('date', date);
 
-    const res = await fetch(`${UW_BASE}/darkpool/SPY?${params}`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(15_000),
-    });
-
-    if (!res.ok) {
-      const text = await res
-        .text()
-        .catch((e) => `[parse error: ${(e as Error).message}]`);
-      logger.warn(
-        { status: res.status, body: text.slice(0, 200) },
-        'Dark pool API returned non-OK',
-      );
-      Sentry.captureMessage('Dark pool API non-OK', {
-        level: 'warning',
-        extra: { status: res.status, body: text.slice(0, 200) },
-      });
-      return { kind: 'error', reason: `HTTP ${res.status}` };
+    let trades: DarkPoolTrade[];
+    try {
+      trades = await uwFetch<DarkPoolTrade>(apiKey, `/darkpool/SPY?${params}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'network error';
+      // uwFetch throws "UW API <status>: <body>" for non-OK; bubble
+      // network errors up to the outer catch so they reach logger.error.
+      const status = parseUwHttpStatus(msg);
+      if (status != null) {
+        logger.warn(
+          { status, body: msg.slice(0, 200) },
+          'Dark pool API returned non-OK',
+        );
+        Sentry.captureMessage('Dark pool API non-OK', {
+          level: 'warning',
+          extra: { status, body: msg.slice(0, 200) },
+        });
+        return { kind: 'error', reason: `HTTP ${status}` };
+      }
+      throw err;
     }
-
-    const body = await res.json();
-    const trades: DarkPoolTrade[] = body.data ?? [];
 
     // Filter out canceled trades, extended-hours-only trades, and
     // uncertain-price trades. Average-price and derivative-priced

@@ -16,11 +16,10 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   guardOwnerOrGuestEndpoint,
   rejectIfRateLimited,
+  uwFetch,
 } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
 import { getETDateStr } from '../src/utils/timezone.js';
-
-const UW_BASE = 'https://api.unusualwhales.com/api';
 
 export interface IvTermRow {
   date: string;
@@ -30,28 +29,11 @@ export interface IvTermRow {
   volatility: string;
 }
 
-interface UwIvResponse {
-  data: IvTermRow[];
-}
-
-async function fetchInterpolatedIv(
+function fetchInterpolatedIv(
   apiKey: string,
   date: string,
 ): Promise<IvTermRow[]> {
-  const res = await fetch(`${UW_BASE}/stock/SPX/interpolated-iv?date=${date}`, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(30_000),
-  });
-
-  if (!res.ok) {
-    const text = await res
-      .text()
-      .catch((e) => `[parse error: ${(e as Error).message}]`);
-    throw new Error(`UW API ${res.status}: ${text.slice(0, 200)}`);
-  }
-
-  const body: UwIvResponse = await res.json();
-  return body.data ?? [];
+  return uwFetch<IvTermRow>(apiKey, `/stock/SPX/interpolated-iv?date=${date}`);
 }
 
 /**

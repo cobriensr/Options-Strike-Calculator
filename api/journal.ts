@@ -42,6 +42,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { date, from, to, structure, confidence, mode, limit } = req.query;
     const lim = Math.min(Number(limit) || 50, 200);
 
+    // Filters are mutually exclusive — supplying multiple at once previously
+    // let the first matching `else if` branch win silently, so a request
+    // like `?date=X&structure=Y` ignored `structure`. Reject combinations
+    // explicitly so callers know the filter they sent isn't being applied.
+    const filterGroups = [
+      date ? 'date' : null,
+      from && to ? 'from/to' : null,
+      structure ? 'structure' : null,
+      confidence ? 'confidence' : null,
+      mode ? 'mode' : null,
+    ].filter((g): g is string => g !== null);
+    if (filterGroups.length > 1) {
+      done({ status: 400 });
+      return res.status(400).json({
+        error: 'Filters are mutually exclusive',
+        conflicting: filterGroups,
+      });
+    }
+
     // Build dynamic query — Neon's tagged template doesn't support dynamic WHERE
     // so we fetch with broad filters and let Postgres handle it
     let rows;

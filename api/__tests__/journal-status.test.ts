@@ -85,6 +85,39 @@ describe('GET /api/journal/status', () => {
     expect((json.envVarsFound as string[]).includes('DATABASE_URL')).toBe(true);
   });
 
+  it('filters pg_stat rows to the diagnostic allowlist', async () => {
+    process.env.DATABASE_URL = 'postgres://test';
+    const now = new Date().toISOString();
+    const mockSql = vi
+      .fn()
+      .mockResolvedValueOnce([{ now }])
+      .mockResolvedValueOnce([
+        { name: 'analyses', count: 5 },
+        // Pretend Postgres also has internal tables a guest shouldn't see
+        { name: 'pg_internal_secret_table', count: 999 },
+        { name: 'futures_trade_ticks', count: 12345 }, // not on allowlist
+        { name: 'spx_candles_1m', count: 80 },
+      ])
+      .mockResolvedValueOnce([{ latest: 18 }]);
+    vi.mocked(getDb).mockReturnValue(mockSql as never);
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as Record<string, unknown>;
+    // Allowlisted rows present
+    expect((json.tables as Record<string, number>).analyses).toBe(5);
+    expect((json.tables as Record<string, number>).spx_candles_1m).toBe(80);
+    // Non-allowlisted rows must NOT appear
+    expect(
+      (json.tables as Record<string, unknown>).pg_internal_secret_table,
+    ).toBeUndefined();
+    expect(
+      (json.tables as Record<string, unknown>).futures_trade_ticks,
+    ).toBeUndefined();
+  });
+
   it('reports which env vars are set', async () => {
     process.env.DATABASE_URL = 'x';
     process.env.NEON_DATABASE_URL = 'y';

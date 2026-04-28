@@ -6,6 +6,7 @@ import { mockRequest, mockResponse } from './helpers';
 vi.mock('../_lib/api-helpers.js', () => ({
   guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
   rejectIfRateLimited: vi.fn(),
+  uwFetch: vi.fn(),
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
@@ -33,6 +34,7 @@ import handler, {
 import {
   guardOwnerOrGuestEndpoint,
   rejectIfRateLimited,
+  uwFetch,
 } from '../_lib/api-helpers.js';
 
 const SAMPLE_ROWS: IvTermRow[] = [
@@ -60,24 +62,11 @@ const SAMPLE_ROWS: IvTermRow[] = [
 ];
 
 function stubFetch(data: IvTermRow[] = SAMPLE_ROWS) {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ data }),
-    }),
-  );
+  vi.mocked(uwFetch).mockResolvedValue(data);
 }
 
 function stubFetchError(status = 500) {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn().mockResolvedValue({
-      ok: false,
-      status,
-      text: async () => 'Server Error',
-    }),
-  );
+  vi.mocked(uwFetch).mockRejectedValue(new Error(`UW API ${status}`));
 }
 
 describe('GET /api/iv-term-structure', () => {
@@ -158,17 +147,15 @@ describe('GET /api/iv-term-structure', () => {
     expect(json.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
-  it('passes correct URL and auth header to UW API', async () => {
+  it('passes correct path and api key to uwFetch', async () => {
     stubFetch();
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
-    const fetchCall = vi.mocked(fetch).mock.calls[0]!;
-    expect(fetchCall[0]).toContain(
-      'https://api.unusualwhales.com/api/stock/SPX/interpolated-iv?date=',
+    const fetchCall = vi.mocked(uwFetch).mock.calls[0]!;
+    expect(fetchCall[0]).toBe('test-uw-key');
+    expect(fetchCall[1]).toMatch(
+      /^\/stock\/SPX\/interpolated-iv\?date=\d{4}-\d{2}-\d{2}$/,
     );
-    expect(fetchCall[1]).toMatchObject({
-      headers: { Authorization: 'Bearer test-uw-key' },
-    });
   });
 
   it('sets cache headers', async () => {
@@ -199,11 +186,8 @@ describe('GET /api/iv-term-structure', () => {
     expect(res._json).toMatchObject({ error: 'Internal server error' });
   });
 
-  it('returns 500 when fetch throws', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockRejectedValue(new Error('Network error')),
-    );
+  it('returns 500 when uwFetch throws', async () => {
+    vi.mocked(uwFetch).mockRejectedValue(new Error('Network error'));
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(500);

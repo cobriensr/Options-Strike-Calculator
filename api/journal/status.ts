@@ -10,6 +10,53 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
 
+// Public diagnostic surface — list every table whose row count is safe
+// to expose to a guest cookie. Anything not on this list gets dropped
+// from the response so the endpoint can't be used to enumerate the full
+// schema (per the api/ folder review MED-9 finding).
+const DIAGNOSTIC_TABLE_ALLOWLIST = new Set<string>([
+  'analyses',
+  'current_day_snapshot',
+  'dark_pool_levels',
+  'day_embeddings',
+  'day_features',
+  'economic_events',
+  'etf_candles_1m',
+  'flow_alerts',
+  'futures_bars',
+  'gex_strike_0dte',
+  'gex_target_features',
+  'greek_exposure',
+  'greek_exposure_strike',
+  'institutional_blocks',
+  'iv_anomalies',
+  'iv_monitor',
+  'lesson_reports',
+  'lessons',
+  'market_alerts',
+  'market_snapshots',
+  'ml_findings',
+  'ml_plot_analyses',
+  'oi_changes',
+  'outcomes',
+  'positions',
+  'predictions',
+  'push_subscriptions',
+  'regime_events',
+  'schema_migrations',
+  'spot_exposures',
+  'spx_candles_1m',
+  'strike_iv_snapshots',
+  'theta_option_eod',
+  'trace_live_analyses',
+  'trace_predictions',
+  'training_features',
+  'vega_spike_events',
+  'vol_term_structure',
+  'whale_alerts',
+  'zero_gamma_levels',
+]);
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const done = metrics.request('/api/journal/status');
 
@@ -36,7 +83,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     `;
     const tables: Record<string, number> = {};
     for (const row of tableRows) {
-      tables[row.name as string] = row.count as number;
+      const name = row.name as string;
+      if (DIAGNOSTIC_TABLE_ALLOWLIST.has(name)) {
+        tables[name] = row.count as number;
+      }
     }
 
     // Latest applied migration

@@ -569,6 +569,26 @@ export async function uwFetch<T>(
 }
 
 /**
+ * Extract the HTTP status from a `uwFetch`-thrown error message.
+ * `uwFetch` throws `new Error("UW API <status>: <body>")` on non-OK
+ * responses; this helper reverses that format so callers can distinguish
+ * HTTP-level failures from network/timeout/abort errors when translating
+ * the throw into a discriminated-union return shape.
+ *
+ * Returns `null` for messages that don't match the prefix (network errors,
+ * timeouts, etc.) so the caller can fall through to its default error path.
+ */
+export function parseUwHttpStatus(message: string): number | null {
+  const prefix = 'UW API ';
+  if (!message.startsWith(prefix)) return null;
+  const tail = message.slice(prefix.length);
+  const colonIdx = tail.indexOf(':');
+  if (colonIdx === -1) return null;
+  const n = Number.parseInt(tail.slice(0, colonIdx), 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
  * Round a Date to the nearest 5-minute boundary (floor).
  *
  * Used by all flow/GEX crons to sample intraday ticks at consistent

@@ -1667,7 +1667,7 @@ describe('buildAnalysisContext: API-gated paths', () => {
     expect(textBlock).toBeDefined();
   });
 
-  it('logs warn when IV term API returns non-OK status', async () => {
+  it('logs warn when IV term fetch fails', async () => {
     process.env.UW_API_KEY = 'test-uw-key';
     vi.stubGlobal(
       'fetch',
@@ -1684,8 +1684,8 @@ describe('buildAnalysisContext: API-gated paths', () => {
     });
 
     expect(mockLogger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 503 }),
-      expect.stringContaining('IV term structure API returned non-OK'),
+      expect.objectContaining({ err: expect.any(Error) }),
+      expect.stringContaining('Failed to fetch IV term structure'),
     );
   });
 

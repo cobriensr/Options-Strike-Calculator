@@ -36,8 +36,7 @@
 import { getDb } from './db.js';
 import logger from './logger.js';
 import { metrics, Sentry } from './sentry.js';
-
-const UW_BASE = 'https://api.unusualwhales.com/api';
+import { uwFetch } from './api-helpers.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -52,10 +51,6 @@ interface UWCandle {
   start_time: string; // ISO timestamp: "2026-03-27T13:30:00Z"
   end_time: string;
   market_time: 'pr' | 'r' | 'po'; // premarket, regular, postmarket
-}
-
-interface UWOHLCResponse {
-  data: UWCandle[];
 }
 
 /** Normalized candle used by the formatter */
@@ -217,39 +212,18 @@ async function fetchSPXCandlesLive(
 
     const qs = params.toString();
     const suffix = qs ? '?' + qs : '';
-    const url = `${UW_BASE}/stock/SPY/ohlc/5m${suffix}`;
 
-    const res = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        Accept: 'application/json',
-      },
-      signal: AbortSignal.timeout(10_000),
-    });
+    const candles = await uwFetch<UWCandle>(
+      apiKey,
+      `/stock/SPY/ohlc/5m${suffix}`,
+    );
 
-    if (!res.ok) {
-      const body = await res
-        .text()
-        .catch((e) => `[parse error: ${(e as Error).message}]`);
-      logger.warn(
-        { status: res.status, body: body.slice(0, 200) },
-        'UW candles API returned non-OK',
-      );
-      Sentry.captureMessage('UW candles API non-OK', {
-        level: 'warning',
-        extra: { status: res.status, body: body.slice(0, 200) },
-      });
-      return { candles: [], previousClose: null };
-    }
-
-    const data: UWOHLCResponse = await res.json();
-
-    if (!data.data?.length) {
+    if (!candles.length) {
       return { candles: [], previousClose: null };
     }
 
     // Filter to regular session only, normalize, and translate to SPX
-    const regularCandles = data.data
+    const regularCandles = candles
       .filter((c) => c.market_time === 'r')
       .map(
         (c): SPXCandle => ({
@@ -273,7 +247,7 @@ async function fetchSPXCandlesLive(
     // Derive previous close from the first premarket candle's open,
     // translated to SPX via ratio
     let previousClose: number | null = null;
-    const prCandles = data.data.filter((c) => c.market_time === 'pr');
+    const prCandles = candles.filter((c) => c.market_time === 'pr');
     if (prCandles.length > 0) {
       const firstPr = Number.parseFloat(prCandles[0]!.open);
       if (!Number.isNaN(firstPr)) previousClose = firstPr * spyToSpxRatio;

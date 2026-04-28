@@ -9,6 +9,7 @@
 import type { NeonQueryFunction } from '@neondatabase/serverless';
 import type { FeatureRow } from './build-features-types.js';
 import { fetchMaxPain } from './max-pain.js';
+import { uwFetch } from './api-helpers.js';
 import logger from './logger.js';
 
 /**
@@ -324,79 +325,69 @@ export async function engineerPhase2Features(
         'Options volume: skipping UW fetch (outside 30-trading-day rolling window)',
       );
     } else if (apiKey) {
-      const ovRes = await fetch(
-        `https://api.unusualwhales.com/api/stock/SPX/options-volume?limit=1&date=${dateStr}`,
-        {
-          headers: { Authorization: `Bearer ${apiKey}` },
-          signal: AbortSignal.timeout(10_000),
-        },
+      const ovData = await uwFetch<Record<string, unknown>>(
+        apiKey,
+        `/stock/SPX/options-volume?limit=1&date=${dateStr}`,
       );
-      if (ovRes.ok) {
-        const ovBody = await ovRes.json();
-        const ovData = ovBody.data;
-        if (Array.isArray(ovData) && ovData.length > 0) {
-          const ov = ovData[0]!;
+      if (ovData.length > 0) {
+        const ov = ovData[0]!;
 
-          const callVol = Number.parseInt(String(ov.call_volume ?? '0'), 10);
-          const putVol = Number.parseInt(String(ov.put_volume ?? '0'), 10);
-          const callOI = Number.parseInt(
-            String(ov.call_open_interest ?? '0'),
-            10,
-          );
-          const putOI = Number.parseInt(
-            String(ov.put_open_interest ?? '0'),
-            10,
-          );
+        const callVol = Number.parseInt(String(ov.call_volume ?? '0'), 10);
+        const putVol = Number.parseInt(String(ov.put_volume ?? '0'), 10);
+        const callOI = Number.parseInt(
+          String(ov.call_open_interest ?? '0'),
+          10,
+        );
+        const putOI = Number.parseInt(String(ov.put_open_interest ?? '0'), 10);
 
-          features.opt_call_volume = callVol || null;
-          features.opt_put_volume = putVol || null;
-          features.opt_call_oi = callOI || null;
-          features.opt_put_oi = putOI || null;
+        features.opt_call_volume = callVol || null;
+        features.opt_put_volume = putVol || null;
+        features.opt_call_oi = callOI || null;
+        features.opt_put_oi = putOI || null;
 
-          const callPrem = Number.parseFloat(String(ov.call_premium ?? '0'));
-          const putPrem = Number.parseFloat(String(ov.put_premium ?? '0'));
-          const bullPrem = Number.parseFloat(String(ov.bullish_premium ?? '0'));
-          const bearPrem = Number.parseFloat(String(ov.bearish_premium ?? '0'));
-          features.opt_call_premium = callPrem || null;
-          features.opt_put_premium = putPrem || null;
-          features.opt_bullish_premium = bullPrem || null;
-          features.opt_bearish_premium = bearPrem || null;
+        const callPrem = Number.parseFloat(String(ov.call_premium ?? '0'));
+        const putPrem = Number.parseFloat(String(ov.put_premium ?? '0'));
+        const bullPrem = Number.parseFloat(String(ov.bullish_premium ?? '0'));
+        const bearPrem = Number.parseFloat(String(ov.bearish_premium ?? '0'));
+        features.opt_call_premium = callPrem || null;
+        features.opt_put_premium = putPrem || null;
+        features.opt_bullish_premium = bullPrem || null;
+        features.opt_bearish_premium = bearPrem || null;
 
-          const callAsk = Number.parseInt(
-            String(ov.call_volume_ask_side ?? '0'),
-            10,
-          );
-          const putBid = Number.parseInt(
-            String(ov.put_volume_bid_side ?? '0'),
-            10,
-          );
-          features.opt_call_vol_ask = callAsk || null;
-          features.opt_put_vol_bid = putBid || null;
+        const callAsk = Number.parseInt(
+          String(ov.call_volume_ask_side ?? '0'),
+          10,
+        );
+        const putBid = Number.parseInt(
+          String(ov.put_volume_bid_side ?? '0'),
+          10,
+        );
+        features.opt_call_vol_ask = callAsk || null;
+        features.opt_put_vol_bid = putBid || null;
 
-          if (callVol > 0) {
-            features.opt_vol_pcr = putVol / callVol;
-          }
-          if (callOI > 0) {
-            features.opt_oi_pcr = putOI / callOI;
-          }
-          if (bullPrem + bearPrem > 0) {
-            features.opt_premium_ratio = bullPrem / (bullPrem + bearPrem);
-          }
+        if (callVol > 0) {
+          features.opt_vol_pcr = putVol / callVol;
+        }
+        if (callOI > 0) {
+          features.opt_oi_pcr = putOI / callOI;
+        }
+        if (bullPrem + bearPrem > 0) {
+          features.opt_premium_ratio = bullPrem / (bullPrem + bearPrem);
+        }
 
-          const avg30Call = Number.parseInt(
-            String(ov.avg_30_day_call_volume ?? '0'),
-            10,
-          );
-          const avg30Put = Number.parseInt(
-            String(ov.avg_30_day_put_volume ?? '0'),
-            10,
-          );
-          if (avg30Call > 0) {
-            features.opt_call_vol_vs_avg30 = callVol / avg30Call;
-          }
-          if (avg30Put > 0) {
-            features.opt_put_vol_vs_avg30 = putVol / avg30Put;
-          }
+        const avg30Call = Number.parseInt(
+          String(ov.avg_30_day_call_volume ?? '0'),
+          10,
+        );
+        const avg30Put = Number.parseInt(
+          String(ov.avg_30_day_put_volume ?? '0'),
+          10,
+        );
+        if (avg30Call > 0) {
+          features.opt_call_vol_vs_avg30 = callVol / avg30Call;
+        }
+        if (avg30Put > 0) {
+          features.opt_put_vol_vs_avg30 = putVol / avg30Put;
         }
       }
     }

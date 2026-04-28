@@ -52,7 +52,7 @@ import { fetchMaxPain, formatMaxPainForClaude } from './max-pain.js';
 import { formatOvernightForClaude } from './overnight-gap.js';
 import { fetchSPXCandles, formatSPXCandlesForClaude } from './spx-candles.js';
 import { metrics } from './sentry.js';
-import { schwabFetch } from './api-helpers.js';
+import { schwabFetch, uwFetch } from './api-helpers.js';
 import {
   computeCrossAssetRegime,
   formatCrossAssetRegimeForClaude,
@@ -308,25 +308,13 @@ export async function fetchIvTermContext(
 
   try {
     const ivDate = analysisDate ?? getETDateStr(new Date());
-    const ivRes = await fetch(
-      `https://api.unusualwhales.com/api/stock/SPX/interpolated-iv?date=${ivDate}`,
-      {
-        headers: { Authorization: `Bearer ${uwKey}` },
-        signal: AbortSignal.timeout(15_000),
-      },
+    const rows = await uwFetch<IvTermRow>(
+      uwKey,
+      `/stock/SPX/interpolated-iv?date=${ivDate}`,
     );
-    if (!ivRes.ok) {
-      logger.warn(
-        { status: ivRes.status },
-        'IV term structure API returned non-OK',
-      );
-      metrics.increment('analyze_context.iv_term_api_error');
-      return null;
-    }
-    const ivBody: { data: IvTermRow[] } = await ivRes.json();
-    return formatIvTermStructureForClaude(ivBody.data ?? [], sigma);
+    return formatIvTermStructureForClaude(rows, sigma);
   } catch (error_) {
-    logger.error({ err: error_ }, 'Failed to fetch IV term structure');
+    logger.warn({ err: error_ }, 'Failed to fetch IV term structure');
     metrics.increment('analyze_context.iv_term_fetch_error');
     return null;
   }

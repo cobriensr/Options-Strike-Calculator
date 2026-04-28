@@ -86,7 +86,10 @@ describe('fetchMaxPain', () => {
     const result = await fetchMaxPain(API_KEY);
 
     expect(result).toEqual({ kind: 'error', reason: 'HTTP 403' });
-    expect(logger.warn).toHaveBeenCalledOnce();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 403 }),
+      expect.stringContaining('non-OK'),
+    );
   });
 
   it('returns error outcome on network failure', async () => {

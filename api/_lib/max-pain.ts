@@ -15,19 +15,13 @@
 import logger from './logger.js';
 import { metrics, Sentry } from './sentry.js';
 import type { UwFetchOutcome } from './uw-result.js';
-
-const UW_BASE = 'https://api.unusualwhales.com/api';
+import { uwFetch, parseUwHttpStatus } from './api-helpers.js';
 
 // ── Types ───────────────────────────────────────────────────
 
 export interface MaxPainEntry {
   expiry: string;
   max_pain: string;
-}
-
-interface MaxPainResponse {
-  data: MaxPainEntry[];
-  date: string;
 }
 
 // ── Fetch ────────────────────────────────────────────────────
@@ -47,43 +41,33 @@ export async function fetchMaxPain(
   try {
     const params = new URLSearchParams();
     if (date) params.set('date', date);
-
     const qs = params.toString();
     const suffix = qs ? `?${qs}` : '';
-    const url = `${UW_BASE}/stock/SPX/max-pain${suffix}`;
 
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(10_000),
-    });
-
-    if (!res.ok) {
-      const text = await res
-        .text()
-        .catch((e) => `[parse error: ${(e as Error).message}]`);
-      logger.warn(
-        { status: res.status, body: text.slice(0, 200) },
-        'Max pain API returned non-OK',
-      );
-      metrics.increment('max_pain.fetch_error');
-      Sentry.captureException(
-        new Error(
-          `Max pain API returned non-OK: ${res.status} ${text.slice(0, 200)}`,
-        ),
-      );
-      return { kind: 'error', reason: `HTTP ${res.status}` };
-    }
-
-    const body: MaxPainResponse = await res.json();
-    const entries = body.data ?? [];
+    const entries = await uwFetch<MaxPainEntry>(
+      apiKey,
+      `/stock/SPX/max-pain${suffix}`,
+    );
     if (entries.length === 0) return { kind: 'empty' };
     return { kind: 'ok', data: entries };
   } catch (err) {
+    const msg = err instanceof Error ? err.message : 'network error';
+    // uwFetch throws "UW API <status>: <body>" for non-OK responses.
+    // Anything else is a network/timeout/abort.
+    const status = parseUwHttpStatus(msg);
+    if (status != null) {
+      logger.warn(
+        { status, body: msg.slice(0, 200) },
+        'Max pain API returned non-OK',
+      );
+      metrics.increment('max_pain.fetch_error');
+      Sentry.captureException(err);
+      return { kind: 'error', reason: `HTTP ${status}` };
+    }
     logger.error({ err }, 'Failed to fetch max pain data');
     metrics.increment('max_pain.fetch_error');
     Sentry.captureException(err);
-    const reason = err instanceof Error ? err.message : 'network error';
-    return { kind: 'error', reason };
+    return { kind: 'error', reason: msg };
   }
 }
 

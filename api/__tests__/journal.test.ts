@@ -168,6 +168,59 @@ describe('GET /api/journal', () => {
     expect(res._status).toBe(200);
   });
 
+  it('returns 400 when multiple filter groups are combined', async () => {
+    const mockSql = vi.fn();
+    vi.mocked(getDb).mockReturnValue(mockSql as never);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { date: '2026-04-01', structure: 'IRON CONDOR' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(400);
+    const body = res._json as { error: string; conflicting: string[] };
+    expect(body.error).toContain('mutually exclusive');
+    expect(body.conflicting).toEqual(['date', 'structure']);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 when from/to combined with date', async () => {
+    const mockSql = vi.fn();
+    vi.mocked(getDb).mockReturnValue(mockSql as never);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { from: '2026-04-01', to: '2026-04-15', date: '2026-04-10' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('treats from without to as no filter (falls through)', async () => {
+    // `from` alone doesn't constitute a filter group — only `from && to`
+    // does. So this should fall through to the unfiltered query, not 400.
+    const mockSql = vi.fn().mockResolvedValue([]);
+    vi.mocked(getDb).mockReturnValue(mockSql as never);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { from: '2026-04-01' } }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(mockSql).toHaveBeenCalledOnce();
+  });
+
   it('returns 500 on database error', async () => {
     const mockSql = vi.fn().mockRejectedValue(new Error('DB down'));
     vi.mocked(getDb).mockReturnValue(mockSql as never);
