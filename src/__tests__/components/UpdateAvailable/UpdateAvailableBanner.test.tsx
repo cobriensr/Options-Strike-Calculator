@@ -50,4 +50,24 @@ describe('UpdateAvailableBanner', () => {
     });
     expect(screen.getAllByRole('status')).toHaveLength(1);
   });
+
+  it('uses bottom-4 by default', () => {
+    render(<UpdateAvailableBanner />);
+    act(() => {
+      markNeedsRefresh();
+    });
+    const banner = screen.getByRole('status', { name: /new version/i });
+    expect(banner.className).toContain('bottom-4');
+    expect(banner.className).not.toContain('bottom-20');
+  });
+
+  it('shifts to bottom-20 when pushedUp is true (BacktestDiag visible)', () => {
+    render(<UpdateAvailableBanner pushedUp />);
+    act(() => {
+      markNeedsRefresh();
+    });
+    const banner = screen.getByRole('status', { name: /new version/i });
+    expect(banner.className).toContain('bottom-20');
+    expect(banner.className).not.toContain('bottom-4');
+  });
 });

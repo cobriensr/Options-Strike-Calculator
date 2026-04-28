@@ -1402,7 +1402,7 @@ export default function StrikeCalculator() {
         </div>
       </div>
       <BackToTop />
-      <UpdateAvailableBanner />
+      <UpdateAvailableBanner pushedUp={historySnapshot != null} />
       <BacktestDiag
         snapshot={historySnapshot}
         history={historyData}

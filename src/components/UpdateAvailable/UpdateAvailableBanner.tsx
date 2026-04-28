@@ -9,11 +9,18 @@
  * main.tsx reloads the page.
  *
  * Visible to everyone (owner + guest + public) — universal chrome.
+ *
+ * `pushedUp` shifts the bottom anchor above the BacktestDiag panel,
+ * which shares the same bottom-right corner during backtest mode.
  */
 
 import { useUpdateAvailable } from '../../hooks/useUpdateAvailable';
 
-export default function UpdateAvailableBanner() {
+interface Props {
+  pushedUp?: boolean;
+}
+
+export default function UpdateAvailableBanner({ pushedUp = false }: Props) {
   const { available, applyUpdate } = useUpdateAvailable();
   if (!available) return null;
 
@@ -22,7 +29,7 @@ export default function UpdateAvailableBanner() {
       role="status"
       aria-label="New version available"
       aria-live="polite"
-      className="bg-surface border-edge-strong fixed right-4 bottom-4 z-[300] flex max-w-sm items-center gap-3 rounded-xl border p-3 shadow-2xl"
+      className={`bg-surface border-edge-strong fixed right-4 z-[300] flex max-w-sm items-center gap-3 rounded-xl border p-3 shadow-2xl ${pushedUp ? 'bottom-20' : 'bottom-4'}`}
     >
       <span aria-hidden="true" className="text-accent text-lg">
         ✦

@@ -15,6 +15,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { getAccessMode, type AccessMode } from '../utils/auth';
+import { AUTH_CLEARED_EVENT } from '../utils/authInterceptor';
 
 const subscribers = new Set<() => void>();
 
@@ -34,8 +35,13 @@ export function useAccessSession(): AccessSession {
   useEffect(() => {
     const update = (): void => setMode(getAccessMode());
     subscribers.add(update);
+    // The auth interceptor clears stale hint cookies after a 401 and
+    // dispatches AUTH_CLEARED_EVENT. Re-evaluate mode so the Sign-in CTA
+    // appears the moment the server tells us the session is gone.
+    window.addEventListener(AUTH_CLEARED_EVENT, update);
     return (): void => {
       subscribers.delete(update);
+      window.removeEventListener(AUTH_CLEARED_EVENT, update);
     };
   }, []);
 

@@ -8,12 +8,19 @@ import StrikeCalculator from './App';
 import ErrorBoundary from './components/ErrorBoundary';
 import { ToastProvider } from './components/Toast';
 import { markNeedsRefresh, setUpdateFn } from './lib/sw-update';
+import { installAuthInterceptor } from './utils/authInterceptor';
 
 if (import.meta.env.DEV) {
   import('@vercel/toolbar/vite').then(({ mountVercelToolbar }) =>
     mountVercelToolbar(),
   );
 }
+
+// Self-healing 401 handler: when the server reports the session is gone
+// but a stale JS-visible hint cookie still tells the UI we're owner/guest,
+// the user gets stuck with no Sign-in CTA. The interceptor wipes the hint
+// and notifies useAccessSession so the public-mode UI surfaces immediately.
+installAuthInterceptor();
 
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN || undefined,
