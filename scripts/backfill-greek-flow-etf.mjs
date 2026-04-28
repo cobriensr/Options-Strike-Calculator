@@ -36,21 +36,35 @@ const days = Number.parseInt(process.argv[2] ?? '30', 10);
 
 // ── Generate last N trading days ────────────────────────────
 
+const WEEKDAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/**
+ * Compute the calendar date AND day-of-week in US/Eastern (the market
+ * timezone) so the two are internally consistent. The naive impl using
+ * d.toISOString() + d.getDay() drifts by 1 day after ~7 PM CT because
+ * toISOString() returns UTC while getDay() returns local — so a Friday
+ * evening run produces date strings labeled Saturday and shifts the
+ * whole window. Use ET for both halves.
+ */
+function getETDayInfo(d) {
+  const date = d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  const weekday = d.toLocaleDateString('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+  });
+  return { date, weekdayIdx: WEEKDAY_NAMES.indexOf(weekday) };
+}
+
 function getTradingDays(count) {
   const dates = [];
   const d = new Date();
 
-  // Include today if it's a weekday
-  const today = d.getDay();
-  if (today !== 0 && today !== 6) {
-    dates.push(d.toISOString().slice(0, 10));
-  }
-
   while (dates.length < count) {
-    d.setDate(d.getDate() - 1);
-    const day = d.getDay();
-    if (day === 0 || day === 6) continue;
-    dates.push(d.toISOString().slice(0, 10));
+    const { date, weekdayIdx } = getETDayInfo(d);
+    if (weekdayIdx !== 0 && weekdayIdx !== 6) {
+      dates.push(date);
+    }
+    d.setUTCDate(d.getUTCDate() - 1);
   }
 
   return dates.reverse();
