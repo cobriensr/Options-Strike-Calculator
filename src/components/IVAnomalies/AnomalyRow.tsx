@@ -63,23 +63,52 @@ export function AnomalyRow({
   const exitSubtitle = buildExitSubtitle(anomaly);
   const pattern = derivePattern(activeDurationMs, anomaly.firingCount);
 
+  const occSymbol = buildOccSymbol(
+    anomaly.ticker,
+    anomaly.expiry,
+    anomaly.side,
+    anomaly.strike,
+  );
+  const contractLabel = `${anomaly.ticker} ${formatStrike(anomaly.strike)}${anomaly.side === 'put' ? 'P' : 'C'}`;
+  const toggle = () => setExpanded((v) => !v);
+
   return (
     <div className="border-edge bg-surface-alt rounded-md border">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={toggle}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            toggle();
+          }
+        }}
         aria-expanded={expanded}
         aria-label={`Toggle details for ${anomaly.ticker} ${anomaly.strike} ${anomaly.side} anomaly`}
-        className="hover:bg-surface flex w-full flex-col gap-1 px-3 py-2 text-left transition-colors"
+        className="hover:bg-surface flex w-full cursor-pointer flex-col gap-1 px-3 py-2 text-left transition-colors"
       >
         <div className="flex w-full items-center gap-3">
           <span className="text-muted font-mono text-[10px]">
             {expanded ? '▾' : '▸'}
           </span>
-          <span className="text-primary font-mono text-xs font-semibold">
-            {anomaly.ticker} {formatStrike(anomaly.strike)}
-            {anomaly.side === 'put' ? 'P' : 'C'}
-          </span>
+          {occSymbol ? (
+            <a
+              href={`https://unusualwhales.com/option-chain/${encodeURIComponent(occSymbol)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="text-primary font-mono text-xs font-semibold hover:underline"
+              title={`View ${occSymbol} on Unusual Whales`}
+              aria-label={`Open ${contractLabel} on Unusual Whales (opens in new tab)`}
+            >
+              {contractLabel}
+            </a>
+          ) : (
+            <span className="text-primary font-mono text-xs font-semibold">
+              {contractLabel}
+            </span>
+          )}
           <VolOiPill ratio={latest.volOiRatio} />
           <SideSkewPill
             sideDominant={latest.sideDominant}
@@ -128,7 +157,7 @@ export function AnomalyRow({
             {exitSubtitle}
           </div>
         )}
-      </button>
+      </div>
 
       {expanded && (
         <div className="border-edge border-t px-3 py-3">
@@ -832,6 +861,33 @@ function formatStrike(n: number): string {
   // zeros for SPX to keep the row compact.
   if (Number.isInteger(n)) return String(n);
   return n.toFixed(2);
+}
+
+/**
+ * Build an OCC option symbol so the contract ID can deep-link into the
+ * Unusual Whales option-chain page (`unusualwhales.com/option-chain/{OCC}`).
+ *
+ * Format: ROOT + YYMMDD + (C|P) + STRIKE×1000 zero-padded to 8 digits.
+ * Strike is in *mills*, not dollars, so SPY 712 → "00712000".
+ *
+ * Returns null on a malformed expiry so the caller can fall back to plain
+ * text rather than render a broken URL.
+ */
+function buildOccSymbol(
+  ticker: string,
+  expiry: string,
+  side: IVAnomalySide,
+  strike: number,
+): string | null {
+  const m = expiry.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const yy = m[1]!.slice(2);
+  const mm = m[2]!;
+  const dd = m[3]!;
+  const sideChar = side === 'call' ? 'C' : 'P';
+  const strikeMills = Math.round(strike * 1000);
+  if (!Number.isFinite(strikeMills) || strikeMills <= 0) return null;
+  return `${ticker}${yy}${mm}${dd}${sideChar}${strikeMills.toString().padStart(8, '0')}`;
 }
 
 function fmtOrDash(value: number | null, fmt: (v: number) => string): string {

@@ -106,6 +106,50 @@ describe('AnomalyRow', () => {
     expect(screen.getByText('early')).toBeInTheDocument();
   });
 
+  it('renders the contract id as an Unusual Whales deep-link', () => {
+    render(<AnomalyRow anomaly={makeActive()} />);
+    const link = screen.getByRole('link', {
+      name: /Open SPXW 7135P on Unusual Whales/,
+    });
+    expect(link).toHaveAttribute(
+      'href',
+      'https://unusualwhales.com/option-chain/SPXW260423P07135000',
+    );
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
+  it('builds an OCC symbol with mills-padded strike for SPY (fractional ETF strikes)', () => {
+    render(
+      <AnomalyRow
+        anomaly={makeActive({
+          ticker: 'SPY',
+          strike: 712,
+          side: 'call',
+          expiry: '2026-05-08',
+        })}
+      />,
+    );
+    const link = screen.getByRole('link', {
+      name: /Open SPY 712C on Unusual Whales/,
+    });
+    expect(link).toHaveAttribute(
+      'href',
+      'https://unusualwhales.com/option-chain/SPY260508C00712000',
+    );
+  });
+
+  it('does not toggle the row when the contract link is clicked', async () => {
+    const user = userEvent.setup();
+    render(<AnomalyRow anomaly={makeActive()} />);
+    const link = screen.getByRole('link', {
+      name: /Open SPXW 7135P on Unusual Whales/,
+    });
+    await user.click(link);
+    // Detail metrics only render when expanded — they must NOT appear here.
+    expect(screen.queryByText('spot @ detect')).toBeNull();
+  });
+
   it('expands on click and shows detailed metrics from the latest row', async () => {
     const user = userEvent.setup();
     render(<AnomalyRow anomaly={makeActive()} />);
