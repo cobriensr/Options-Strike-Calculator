@@ -39,11 +39,15 @@ import {
   withRetry,
 } from '../_lib/api-helpers.js';
 import { reportCronRun } from '../_lib/axiom.js';
+import {
+  ZERO_GAMMA_TICKERS,
+  getPrimaryExpiry,
+  type ZeroGammaTicker,
+} from '../_lib/zero-gamma-tickers.js';
 
 // ── Ticker config ───────────────────────────────────────────
 
-const TICKERS = ['SPX', 'NDX', 'SPY', 'QQQ'] as const;
-type Ticker = (typeof TICKERS)[number];
+type Ticker = ZeroGammaTicker;
 
 const ATM_RANGE_BY_TICKER: Record<Ticker, number> = {
   SPX: 200,
@@ -65,35 +69,15 @@ function getNextTradingDay(today: string): string {
 }
 
 /**
- * NDX expirations are Mon/Wed/Fri only (no daily expirations as of 2026-04).
- * Cron only fires Mon-Fri, so input dates are always weekdays.
- *   Mon (1), Wed (3), Fri (5) → today
- *   Tue (2), Thu (4)          → tomorrow (Wed/Fri)
+ * Per-ticker expiry list. SPX keeps the dual-expiry (0DTE + 1DTE) pull
+ * because Periscope and build-features-gex still depend on the 1DTE rows.
+ * Other tickers fetch only their primary (zero-gamma) expiry.
  */
-function getFrontNdxExpiry(today: string): string {
-  const d = new Date(`${today}T12:00:00`);
-  const dow = d.getDay();
-  if (dow === 1 || dow === 3 || dow === 5) return today;
-  d.setDate(d.getDate() + 1);
-  return d.toISOString().slice(0, 10);
-}
-
-/** Per-ticker expiry list. Order matters only for logging. */
 function getExpiriesToFetch(ticker: Ticker, today: string): string[] {
-  switch (ticker) {
-    case 'SPX':
-      return [today, getNextTradingDay(today)];
-    case 'SPY':
-    case 'QQQ':
-      return [today];
-    case 'NDX':
-      return [getFrontNdxExpiry(today)];
+  if (ticker === 'SPX') {
+    return [today, getNextTradingDay(today)];
   }
-}
-
-/** The "primary" expiry per ticker — the one zero-gamma is computed against. */
-function getPrimaryExpiry(ticker: Ticker, today: string): string {
-  return getExpiriesToFetch(ticker, today)[0]!;
+  return [getPrimaryExpiry(ticker, today)];
 }
 
 // ── Types ───────────────────────────────────────────────────
@@ -255,7 +239,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // Build the (ticker, expiry) task list
   const tasks: Array<{ ticker: Ticker; expiry: string }> = [];
-  for (const ticker of TICKERS) {
+  for (const ticker of ZERO_GAMMA_TICKERS) {
     for (const expiry of getExpiriesToFetch(ticker, today)) {
       tasks.push({ ticker, expiry });
     }
@@ -279,7 +263,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     > = {};
 
-    for (const ticker of TICKERS) {
+    for (const ticker of ZERO_GAMMA_TICKERS) {
       perTicker[ticker] = {
         price: null,
         expiries: {},
@@ -318,7 +302,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Data quality check on the primary expiry per ticker (skip if no rows
     // were stored — avoids spurious "all-zero" alerts on first run of day).
-    for (const ticker of TICKERS) {
+    for (const ticker of ZERO_GAMMA_TICKERS) {
       const primary = getPrimaryExpiry(ticker, today);
       const stored = perTicker[ticker]!.expiries[primary]?.stored ?? 0;
       if (stored < 10) continue;

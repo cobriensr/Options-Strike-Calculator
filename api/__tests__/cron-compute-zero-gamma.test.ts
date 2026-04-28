@@ -20,13 +20,12 @@ vi.mock('../_lib/sentry.js', () => ({
 
 import handler from '../cron/compute-zero-gamma.js';
 
-// Fixed times (2026-03-24 is a Tuesday):
-//   14:00 UTC = 10:00 AM ET → inside market hours
-//   11:00 UTC = 07:00 AM ET → before market hours
-//   Saturday 2026-03-28 → weekend
+// 2026-03-24 = Tuesday. Front NDX expiry on a Tuesday is Wed 2026-03-25.
 const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
 const OFF_HOURS_TIME = new Date('2026-03-24T11:00:00.000Z');
 const WEEKEND_TIME = new Date('2026-03-28T14:00:00.000Z');
+
+const TICKERS = ['SPX', 'NDX', 'SPY', 'QQQ'] as const;
 
 /**
  * Build a strike_exposures row. `timestamp` is shared across all rows in a
@@ -47,6 +46,31 @@ function makeStrikeRow(
     put_gamma_oi: String(putGamma),
     timestamp,
   };
+}
+
+/** A balanced put-vs-call chain that produces a confident crossing near 7105. */
+function balancedChain() {
+  return [
+    makeStrikeRow(7095, 0, 1_000_000_000),
+    makeStrikeRow(7100, 0, 1_500_000_000),
+    makeStrikeRow(7105, 0, 0),
+    makeStrikeRow(7110, -1_500_000_000, 0),
+    makeStrikeRow(7115, -1_000_000_000, 0),
+  ];
+}
+
+/**
+ * Queue per-ticker mock responses. Each ticker contributes 3 SQL calls
+ * (latest_ts SELECT, rows SELECT, INSERT) when a snapshot exists, or 1
+ * (latest_ts SELECT) when the snapshot is empty.
+ */
+function queueAllTickersHappyPath() {
+  for (let i = 0; i < TICKERS.length; i += 1) {
+    mockSql
+      .mockResolvedValueOnce([{ latest_ts: '2026-03-24T13:55:00.000Z' }])
+      .mockResolvedValueOnce(balancedChain())
+      .mockResolvedValueOnce([]); // INSERT
+  }
 }
 
 function authedReq() {
@@ -128,177 +152,183 @@ describe('compute-zero-gamma handler', () => {
     expect(res._json).toMatchObject({ skipped: true });
   });
 
-  // ── No snapshot available ────────────────────────────────
+  // ── No snapshot available (per-ticker) ───────────────────
 
-  it('gracefully no-ops when no strike_exposures snapshot exists', async () => {
-    // latest_ts query returns null
-    mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
-
-    const res = mockResponse();
-    await handler(authedReq(), res);
-
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      skipped: true,
-      reason: 'No strike_exposures snapshot',
-    });
-    // Only the latest_ts SELECT ran — no INSERT.
-    expect(mockSql).toHaveBeenCalledTimes(1);
-  });
-
-  it('no-ops when latest timestamp exists but returns no strike rows', async () => {
-    mockSql
-      .mockResolvedValueOnce([{ latest_ts: '2026-03-24T13:55:00.000Z' }])
-      .mockResolvedValueOnce([]);
-
-    const res = mockResponse();
-    await handler(authedReq(), res);
-
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({ skipped: true });
-    // 2 SELECTs, no INSERT
-    expect(mockSql).toHaveBeenCalledTimes(2);
-  });
-
-  // ── Happy path: inserts gated level ──────────────────────
-
-  it('inserts a gated zero_gamma row for a balanced put-vs-call chain', async () => {
-    // Balanced chain around 7105 — the calculator's 9-test suite covers
-    // this exact shape. We only need to check the handler wires the
-    // result into the INSERT correctly.
-    const strikes = [
-      makeStrikeRow(7095, 0, 1_000_000_000),
-      makeStrikeRow(7100, 0, 1_500_000_000),
-      makeStrikeRow(7105, 0, 0),
-      makeStrikeRow(7110, -1_500_000_000, 0),
-      makeStrikeRow(7115, -1_000_000_000, 0),
-    ];
-
-    mockSql
-      .mockResolvedValueOnce([{ latest_ts: '2026-03-24T13:55:00.000Z' }])
-      .mockResolvedValueOnce(strikes)
-      .mockResolvedValueOnce([]); // INSERT
+  it('records "no snapshot" per ticker without inserting when latest_ts is null', async () => {
+    // 4 latest_ts SELECTs (one per ticker), all returning null.
+    for (let i = 0; i < TICKERS.length; i += 1) {
+      mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+    }
 
     const res = mockResponse();
     await handler(authedReq(), res);
 
     expect(res._status).toBe(200);
     const body = res._json as {
-      stored: boolean;
-      ticker: string;
-      spot: number;
-      zeroGamma: number | null;
-      confidence: number;
+      perTicker: Record<string, { stored: boolean; reason?: string }>;
     };
-    expect(body.stored).toBe(true);
-    expect(body.ticker).toBe('SPX');
-    expect(body.spot).toBe(7105);
-    expect(body.confidence).toBeGreaterThan(0.5);
-    expect(body.zeroGamma).not.toBeNull();
-    // 3 SQL calls: latest_ts, strikes, INSERT
-    expect(mockSql).toHaveBeenCalledTimes(3);
+    for (const ticker of TICKERS) {
+      expect(body.perTicker[ticker]).toMatchObject({
+        stored: false,
+        reason: 'No strike_exposures snapshot',
+      });
+    }
+    // 4 SELECTs total, no INSERTs.
+    expect(mockSql).toHaveBeenCalledTimes(4);
+  });
+
+  // ── Happy path: 4 tickers, 4 INSERTs ─────────────────────
+
+  it('inserts a gated zero_gamma row for every ticker', async () => {
+    queueAllTickersHappyPath();
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      perTicker: Record<
+        string,
+        {
+          stored: boolean;
+          ticker?: string;
+          spot?: number;
+          zeroGamma?: number | null;
+        }
+      >;
+    };
+    for (const ticker of TICKERS) {
+      const entry = body.perTicker[ticker];
+      expect(entry).toBeDefined();
+      expect(entry!.stored).toBe(true);
+      expect(entry!.spot).toBe(7105);
+      expect(entry!.zeroGamma).not.toBeNull();
+    }
+    // 4 tickers × 3 SQL calls = 12
+    expect(mockSql).toHaveBeenCalledTimes(12);
+  });
+
+  it('uses Wed 2026-03-25 as the NDX primary expiry on a Tuesday', async () => {
+    queueAllTickersHappyPath();
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+    expect(res._status).toBe(200);
+
+    // The latest_ts SELECT for each ticker carries the primary expiry as an
+    // interpolated value. Find the call that targets ticker='NDX' and verify
+    // the expiry value is the Wed front date, not the Tue today.
+    type SqlCall = unknown[];
+    const calls = mockSql.mock.calls as SqlCall[];
+    const ndxLatestTsCall = calls.find((c) => {
+      const values = c.slice(1) as unknown[];
+      // The latest_ts SELECT interpolates (date, ticker, expiry).
+      return values.includes('NDX');
+    });
+    expect(ndxLatestTsCall).toBeDefined();
+    const ndxValues = ndxLatestTsCall!.slice(1) as unknown[];
+    expect(ndxValues).toContain('2026-03-25');
+
+    // SPX should query at today (the cron's `today`) — confirm symmetry.
+    const spxLatestTsCall = calls.find((c) => {
+      const values = c.slice(1) as unknown[];
+      return values.includes('SPX');
+    });
+    expect(spxLatestTsCall).toBeDefined();
+    const spxValues = spxLatestTsCall!.slice(1) as unknown[];
+    expect(spxValues).toContain('2026-03-24');
   });
 
   // ── Low confidence: level stored as null, row still inserted ─
 
   it('stores zero_gamma as null when confidence < 0.5 but preserves diagnostics', async () => {
-    // All-positive gamma chain: the calculator returns { level: null,
-    // confidence: 0 } with a fully positive curve. The handler should
-    // still insert the row (for diagnostic history) with zero_gamma null.
-    const strikes = [
+    // All-positive gamma chain → calculator returns level: null. The handler
+    // should still insert (for diagnostic history) with zero_gamma null.
+    const lowConfChain = [
       makeStrikeRow(7095, 500_000_000, 200_000_000),
       makeStrikeRow(7100, 800_000_000, 300_000_000),
       makeStrikeRow(7110, 600_000_000, 400_000_000),
     ];
 
+    // SPX has the low-confidence chain; the rest skip via null latest_ts.
     mockSql
       .mockResolvedValueOnce([{ latest_ts: '2026-03-24T13:55:00.000Z' }])
-      .mockResolvedValueOnce(strikes)
-      .mockResolvedValueOnce([]);
+      .mockResolvedValueOnce(lowConfChain)
+      .mockResolvedValueOnce([]); // SPX INSERT
+    for (let i = 0; i < TICKERS.length - 1; i += 1) {
+      mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+    }
 
     const res = mockResponse();
     await handler(authedReq(), res);
 
     expect(res._status).toBe(200);
     const body = res._json as {
-      stored: boolean;
-      zeroGamma: number | null;
-      confidence: number;
+      perTicker: Record<
+        string,
+        { stored: boolean; zeroGamma?: number | null; confidence?: number }
+      >;
     };
-    expect(body.stored).toBe(true);
-    expect(body.zeroGamma).toBeNull();
-    expect(body.confidence).toBe(0);
-    // INSERT still ran — diagnostics preserved
-    expect(mockSql).toHaveBeenCalledTimes(3);
+    expect(body.perTicker.SPX!.stored).toBe(true);
+    expect(body.perTicker.SPX!.zeroGamma).toBeNull();
+    expect(body.perTicker.SPX!.confidence).toBe(0);
   });
 
   // ── Insert wiring: verify exact arguments reach SQL ──────
 
   it('passes ticker, spot, confidence, and curve JSON to the INSERT', async () => {
-    const strikes = [
-      makeStrikeRow(7095, 0, 1_000_000_000),
-      makeStrikeRow(7100, 0, 1_500_000_000),
-      makeStrikeRow(7110, -1_500_000_000, 0),
-      makeStrikeRow(7115, -1_000_000_000, 0),
-    ];
+    queueAllTickersHappyPath();
 
-    mockSql
-      .mockResolvedValueOnce([{ latest_ts: '2026-03-24T13:55:00.000Z' }])
-      .mockResolvedValueOnce(strikes)
-      .mockResolvedValueOnce([]);
+    const res = mockResponse();
+    await handler(authedReq(), res);
+    expect(res._status).toBe(200);
+
+    // INSERT for each ticker is the 3rd SQL call within that ticker's
+    // 3-call group. Indices: SPX=2, NDX=5, SPY=8, QQQ=11.
+    type SqlCall = unknown[];
+    const calls = mockSql.mock.calls as SqlCall[];
+    const insertIndices = [2, 5, 8, 11];
+    insertIndices.forEach((idx, tickerIdx) => {
+      const insertCall = calls[idx];
+      expect(insertCall).toBeDefined();
+      const values = insertCall!.slice(1) as unknown[];
+      // Source order: ticker, spot, zeroGamma, confidence, netGamma, curveJson
+      const [ticker, spot, , confidence, netGamma, curveJson] = values;
+      expect(ticker).toBe(TICKERS[tickerIdx]);
+      expect(spot).toBe(7105);
+      expect(typeof confidence).toBe('number');
+      expect(typeof netGamma).toBe('number');
+      expect(typeof curveJson).toBe('string');
+      const parsed = JSON.parse(curveJson as string);
+      expect(Array.isArray(parsed)).toBe(true);
+      expect(parsed[0]).toHaveProperty('spot');
+      expect(parsed[0]).toHaveProperty('netGamma');
+    });
+  });
+
+  // ── Per-ticker fault isolation ───────────────────────────
+
+  it('isolates per-ticker DB failures — surviving tickers still complete', async () => {
+    // SPX: SELECT throws. NDX/SPY/QQQ: full happy path.
+    mockSql.mockRejectedValueOnce(new Error('SPX latest_ts query failed'));
+    for (let i = 0; i < TICKERS.length - 1; i += 1) {
+      mockSql
+        .mockResolvedValueOnce([{ latest_ts: '2026-03-24T13:55:00.000Z' }])
+        .mockResolvedValueOnce(balancedChain())
+        .mockResolvedValueOnce([]);
+    }
 
     const res = mockResponse();
     await handler(authedReq(), res);
 
     expect(res._status).toBe(200);
-    // Third SQL call is the INSERT; neon tagged template arguments are the
-    // interpolated values in the order they appear in the template.
-    const insertCall = mockSql.mock.calls[2];
-    expect(insertCall).toBeDefined();
-    // tagged-template args: (strings, ...values) — values start at index 1
-    const values = insertCall!.slice(1) as unknown[];
-    // Values, in source order: ticker, spot, zeroGamma, confidence,
-    //   netGamma, curveJson
-    const [ticker, spot, zeroGamma, confidence, netGamma, curveJson] = values;
-    expect(ticker).toBe('SPX');
-    expect(spot).toBe(7105);
-    expect(typeof confidence).toBe('number');
-    expect(typeof netGamma).toBe('number');
-    expect(zeroGamma).not.toBeNull();
-    expect(typeof curveJson).toBe('string');
-    // curve is a JSON-encoded array of {spot, netGamma}
-    const parsed = JSON.parse(curveJson as string);
-    expect(Array.isArray(parsed)).toBe(true);
-    expect(parsed[0]).toHaveProperty('spot');
-    expect(parsed[0]).toHaveProperty('netGamma');
-  });
-
-  // ── Error handling ──────────────────────────────────────
-
-  it('returns 500 when the SELECT throws', async () => {
-    mockSql.mockRejectedValueOnce(new Error('DB connection lost'));
-
-    const res = mockResponse();
-    await handler(authedReq(), res);
-
-    expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'Internal error' });
-  });
-
-  it('returns 500 when the INSERT throws', async () => {
-    const strikes = [
-      makeStrikeRow(7095, 0, 1_000_000_000),
-      makeStrikeRow(7110, -1_500_000_000, 0),
-    ];
-    mockSql
-      .mockResolvedValueOnce([{ latest_ts: '2026-03-24T13:55:00.000Z' }])
-      .mockResolvedValueOnce(strikes)
-      .mockRejectedValueOnce(new Error('insert failed'));
-
-    const res = mockResponse();
-    await handler(authedReq(), res);
-
-    expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'Internal error' });
+    const body = res._json as {
+      perTicker: Record<string, { stored: boolean; error?: string }>;
+    };
+    expect(body.perTicker.SPX).toMatchObject({ stored: false });
+    expect(body.perTicker.SPX!.error).toBeDefined();
+    expect(body.perTicker.NDX).toMatchObject({ stored: true });
+    expect(body.perTicker.SPY).toMatchObject({ stored: true });
+    expect(body.perTicker.QQQ).toMatchObject({ stored: true });
   });
 });
