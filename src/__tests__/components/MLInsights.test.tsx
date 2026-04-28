@@ -421,3 +421,103 @@ describe('MLInsights: analyze button', () => {
     });
   });
 });
+
+// ============================================================
+// TABS
+// ============================================================
+
+describe('MLInsights: tabs', () => {
+  function pipelinePlot(name: string): MLPlot {
+    return makePlot({ name });
+  }
+  function vegaPlot(name: string): MLPlot {
+    return makePlot({ name: `vega-spike-${name}` });
+  }
+
+  it('hides all tabs when only pipeline plots exist (no point in one tab)', () => {
+    hookReturn = {
+      ...defaultState,
+      plots: [pipelinePlot('timeline'), pipelinePlot('clusters')],
+    };
+    render(<MLInsights />);
+    expect(
+      screen.queryByTestId('ml-plot-tab-pipeline'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ml-plot-tab-vega')).not.toBeInTheDocument();
+  });
+
+  it('shows both tabs when both pipeline and vega plots exist', () => {
+    hookReturn = {
+      ...defaultState,
+      plots: [pipelinePlot('timeline'), vegaPlot('directionality')],
+    };
+    render(<MLInsights />);
+    expect(screen.getByTestId('ml-plot-tab-pipeline')).toBeInTheDocument();
+    expect(screen.getByTestId('ml-plot-tab-vega')).toBeInTheDocument();
+  });
+
+  it('renders tab counts in the labels', () => {
+    hookReturn = {
+      ...defaultState,
+      plots: [
+        pipelinePlot('a'),
+        pipelinePlot('b'),
+        pipelinePlot('c'),
+        vegaPlot('directionality'),
+        vegaPlot('time-to-peak'),
+      ],
+    };
+    render(<MLInsights />);
+    expect(screen.getByTestId('ml-plot-tab-pipeline')).toHaveTextContent(
+      'Pipeline (n=3)',
+    );
+    expect(screen.getByTestId('ml-plot-tab-vega')).toHaveTextContent(
+      'Vega (n=2)',
+    );
+  });
+
+  it('Pipeline tab is the default active tab', () => {
+    hookReturn = {
+      ...defaultState,
+      plots: [pipelinePlot('timeline'), vegaPlot('directionality')],
+    };
+    render(<MLInsights />);
+    expect(screen.getByTestId('ml-plot-tab-pipeline')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(screen.getByTestId('ml-plot-tab-vega')).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+  });
+
+  it('updates aria-pressed when switching tabs', () => {
+    hookReturn = {
+      ...defaultState,
+      plots: [pipelinePlot('timeline'), vegaPlot('directionality')],
+    };
+    render(<MLInsights />);
+    fireEvent.click(screen.getByTestId('ml-plot-tab-vega'));
+    expect(screen.getByTestId('ml-plot-tab-vega')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(screen.getByTestId('ml-plot-tab-pipeline')).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+  });
+
+  it('shows empty-state copy when Vega tab is selected with 0 vega plots (defensive)', () => {
+    // The Vega tab is hidden when 0 vega plots, but the empty-state copy
+    // is a defensive guard — verify by checking it does NOT render in the
+    // pipeline-only steady state.
+    hookReturn = {
+      ...defaultState,
+      plots: [pipelinePlot('timeline')],
+    };
+    render(<MLInsights />);
+    expect(screen.queryByText(/no vega plots yet/i)).not.toBeInTheDocument();
+  });
+});

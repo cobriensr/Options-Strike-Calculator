@@ -9,10 +9,67 @@
 import React from 'react';
 import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
-import { useMLInsights } from '../../hooks/useMLInsights';
+import { useMLInsights, type MLPlot } from '../../hooks/useMLInsights';
 import { SectionBox } from '../ui';
 import FindingsSummary from './FindingsSummary';
 import PlotCarousel from './PlotCarousel';
+
+const VEGA_PREFIX = 'vega-spike-';
+type PlotTab = 'pipeline' | 'vega';
+
+function isVegaPlot(p: MLPlot): boolean {
+  return p.name.startsWith(VEGA_PREFIX);
+}
+
+interface PlotTabsProps {
+  active: PlotTab;
+  onChange: (next: PlotTab) => void;
+  pipelineCount: number;
+  vegaCount: number;
+}
+
+function PlotTabs({
+  active,
+  onChange,
+  pipelineCount,
+  vegaCount,
+}: PlotTabsProps) {
+  const tabs: Array<{ value: PlotTab; label: string }> = [
+    { value: 'pipeline', label: `Pipeline (n=${pipelineCount})` },
+  ];
+  if (vegaCount > 0) {
+    tabs.push({ value: 'vega', label: `Vega (n=${vegaCount})` });
+  }
+  if (tabs.length === 1) return null;
+  return (
+    <div
+      className="border-edge inline-flex items-center gap-0.5 rounded-md border p-0.5"
+      role="group"
+      aria-label="ML plot category"
+    >
+      {tabs.map((opt) => {
+        const isActive = opt.value === active;
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            onClick={() => onChange(opt.value)}
+            aria-pressed={isActive}
+            data-testid={`ml-plot-tab-${opt.value}`}
+            className={[
+              'focus-visible:ring-accent cursor-pointer rounded-sm px-2.5 py-1 font-sans text-[10px] font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:outline-none',
+              isActive
+                ? 'bg-accent-bg text-accent'
+                : 'text-tertiary hover:text-primary',
+            ].join(' ')}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 export default function MLInsights() {
   const { plots, findings, pipelineDate, loading, error, refetch } =
@@ -20,8 +77,18 @@ export default function MLInsights() {
   const [analyzeState, setAnalyzeState] = React.useState<
     'idle' | 'running' | 'done' | 'error'
   >('idle');
+  const [activeTab, setActiveTab] = React.useState<PlotTab>('pipeline');
 
   const analyzedCount = plots.filter((p) => p.analysis != null).length;
+  const pipelinePlots = React.useMemo(
+    () => plots.filter((p) => !isVegaPlot(p)),
+    [plots],
+  );
+  const vegaPlots = React.useMemo(
+    () => plots.filter((p) => isVegaPlot(p)),
+    [plots],
+  );
+  const visiblePlots = activeTab === 'vega' ? vegaPlots : pipelinePlots;
 
   async function triggerAnalyze() {
     setAnalyzeState('running');
@@ -131,7 +198,19 @@ export default function MLInsights() {
               plotCount={plots.length}
               analyzedCount={analyzedCount}
             />
-            <PlotCarousel plots={plots} />
+            <PlotTabs
+              active={activeTab}
+              onChange={setActiveTab}
+              pipelineCount={pipelinePlots.length}
+              vegaCount={vegaPlots.length}
+            />
+            {activeTab === 'vega' && vegaPlots.length === 0 ? (
+              <div className="text-muted px-3 py-6 text-center font-sans text-[11px] italic">
+                No vega plots yet — runs nightly via the ML pipeline.
+              </div>
+            ) : (
+              <PlotCarousel plots={visiblePlots} />
+            )}
           </div>
         )}
       </div>
