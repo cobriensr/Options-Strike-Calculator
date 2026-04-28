@@ -84,6 +84,9 @@ export function AnomalyRow({
           <SideSkewPill
             sideDominant={latest.sideDominant}
             sideSkew={latest.sideSkew}
+            bidPct={latest.bidPct}
+            askPct={latest.askPct}
+            totalVolAtDetect={latest.totalVolAtDetect}
           />
           <span className="text-muted font-mono text-[10px]">
             exp {anomaly.expiry}
@@ -227,23 +230,32 @@ function formatVolume(n: number): string {
 }
 
 /**
- * Side-dominance pill — proxy for tape-side dominance derived from the
- * IV-spread skew until real bid_pct/ask_pct tape data is wired (see
- * docs/superpowers/specs/tape-side-volume-exit-signal-2026-04-24.md).
+ * Side-dominance pill — fraction of the strike's cumulative-since-open
+ * tape volume that printed on the dominant side. Real bid/ask volume from
+ * `strike_trade_volume` (UW flow-per-strike-intraday) on post-migration-95
+ * rows; falls back to the legacy IV-spread proxy on pre-migration-95 rows
+ * via `sideSkew` / `sideDominant`.
  *
- * Renders ASK 78% (bid_skew below threshold) or BID 71% (ask_skew below)
- * based on whichever side dominates the spread. Mixed flow doesn't render
- * a pill — and won't fire an alert anyway given the 0.65 gate.
+ * Renders `ASK 88%` (buyers lifting offer) or `BID 71%` (sellers hitting
+ * bid) on a colored chip. Tooltip shows exact volume + total trades.
+ * Mixed flow (neither side ≥ 65%) doesn't render — those rows don't fire
+ * anyway given the gate.
  *
- * Legacy rows pre-migration 86 have null sideSkew / sideDominant; render
- * nothing in that case (the column slot is optional).
+ * Legacy rows pre-migration 86 have null `sideSkew` / `sideDominant`;
+ * render nothing in that case.
  */
 function SideSkewPill({
   sideDominant,
   sideSkew,
+  bidPct,
+  askPct,
+  totalVolAtDetect,
 }: {
   readonly sideDominant: IVAnomalySideDominant | null;
   readonly sideSkew: number | null;
+  readonly bidPct: number | null;
+  readonly askPct: number | null;
+  readonly totalVolAtDetect: number | null;
 }) {
   if (
     sideDominant == null ||
@@ -253,19 +265,35 @@ function SideSkewPill({
   ) {
     return null;
   }
-  // Ask-dominant = MM marking up offer (accumulation signature) → amber.
-  // Bid-dominant = mid leaning to bid (distribution signature) → cyan.
+  // Ask-dominant = buyers lifting the offer (accumulation) → amber.
+  // Bid-dominant = sellers hitting the bid (distribution) → cyan.
   const tier =
     sideDominant === 'ask'
       ? 'bg-amber-500/25 text-amber-200'
       : 'bg-cyan-500/25 text-cyan-200';
   const label = sideDominant.toUpperCase();
-  const pct = Math.round(sideSkew * 100);
+  // Prefer the explicit per-side pct when available (real tape, post-migration 95);
+  // fall back to sideSkew (legacy proxy or rounded max) for older rows.
+  const explicitPct =
+    sideDominant === 'ask' ? askPct : sideDominant === 'bid' ? bidPct : null;
+  const pctSource =
+    explicitPct != null && Number.isFinite(explicitPct)
+      ? explicitPct
+      : sideSkew;
+  const pct = Math.round(pctSource * 100);
+  const hasRealTape =
+    explicitPct != null &&
+    Number.isFinite(explicitPct) &&
+    totalVolAtDetect != null &&
+    Number.isFinite(totalVolAtDetect);
+  const title = hasRealTape
+    ? `${pct}% of ${formatVolume(totalVolAtDetect!)} cumulative volume printed at the ${sideDominant} today`
+    : `Legacy IV-spread proxy: ${label} side carries ${pct}% of the bid-ask IV spread`;
   return (
     <span
       className={`rounded-md px-2 py-0.5 font-mono text-[10px] font-bold ${tier}`}
       data-testid="side-skew-pill"
-      title={`IV-spread skew (proxy for tape-side volume): ${label} side carries ${pct}% of the bid-ask IV spread`}
+      title={title}
     >
       {label} {pct}%
     </span>

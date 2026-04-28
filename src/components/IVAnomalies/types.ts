@@ -18,6 +18,7 @@ export type IVAnomalyTicker =
   | 'TSLA'
   | 'META'
   | 'MSFT'
+  | 'GOOGL'
   | 'SNDK'
   | 'MSTR'
   | 'MU';
@@ -50,17 +51,31 @@ export interface IVAnomalyRow {
    */
   volOiRatio: number | null;
   /**
-   * `max(askSkew, bidSkew)` at detection — fraction of the bid-ask IV
-   * spread sitting on the dominant side (0.5 = balanced, 1.0 = fully
-   * one-sided). Null on legacy rows pre-migration 86 (side-skew gate).
+   * `max(askPct, bidPct)` at detection — fraction of cumulative tape
+   * volume on the dominant side (0.5 = balanced, 1.0 = fully one-sided).
+   * Post-migration-95 rows source from real bid/ask volume; pre-migration-95
+   * rows fall back to the legacy IV-spread proxy. Null on legacy rows
+   * pre-migration 86 (side-skew gate hadn't shipped).
    */
   sideSkew: number | null;
   /**
-   * Which side dominated the IV spread at detection. Production rows
-   * are always 'ask' or 'bid' — the side-skew gate filters 'mixed'
-   * before insert. Null on legacy rows pre-migration 86.
+   * Which side dominated cumulative tape volume at detection. Production
+   * rows are always 'ask' or 'bid' — the gate filters 'mixed' before
+   * insert. Null on legacy rows pre-migration 86.
    */
   sideDominant: IVAnomalySideDominant | null;
+  /**
+   * Fraction of cumulative tape volume that printed at the bid (0..1).
+   * Null on legacy rows pre-migration 95 (real-tape gate replaced the
+   * IV-spread proxy on 2026-04-28).
+   */
+  bidPct: number | null;
+  /** Fraction at the ask (0..1). See `bidPct`. */
+  askPct: number | null;
+  /** Fraction in the middle / no side determined (0..1). See `bidPct`. */
+  midPct: number | null;
+  /** Total tape volume on this strike today up to detection ts. */
+  totalVolAtDetect: number | null;
   flagReasons: string[];
   flowPhase: IVAnomalyFlowPhase | null;
   contextSnapshot: unknown;
@@ -112,6 +127,7 @@ export const IV_ANOMALY_TICKERS: readonly IVAnomalyTicker[] = [
   'TSLA',
   'META',
   'MSFT',
+  'GOOGL',
   'SNDK',
   'MSTR',
   'MU',

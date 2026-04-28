@@ -193,8 +193,8 @@ describe('GET /api/iv-anomalies', () => {
 
   it('returns empty-keyed list payload when no rows exist', async () => {
     // List mode fires one query per ticker in STRIKE_IV_TICKERS (13 total
-    // after the 2026-04-25 multi-theme expansion) — all return [].
-    for (let i = 0; i < 13; i += 1) {
+    // after the 2026-04-28 GOOGL addition: 14 tickers) — all return [].
+    for (let i = 0; i < 14; i += 1) {
       mockSql.mockResolvedValueOnce([]);
     }
 
@@ -219,6 +219,7 @@ describe('GET /api/iv-anomalies', () => {
       'TSLA',
       'META',
       'MSFT',
+      'GOOGL',
       'SNDK',
       'MSTR',
       'MU',
@@ -252,6 +253,7 @@ describe('GET /api/iv-anomalies', () => {
       .mockResolvedValueOnce([]) // TSLA empty
       .mockResolvedValueOnce([]) // META empty
       .mockResolvedValueOnce([]) // MSFT empty
+      .mockResolvedValueOnce([]) // GOOGL empty
       .mockResolvedValueOnce([]) // SNDK empty
       .mockResolvedValueOnce([]) // MSTR empty
       .mockResolvedValueOnce([]); // MU empty
@@ -290,6 +292,7 @@ describe('GET /api/iv-anomalies', () => {
       'TSLA',
       'META',
       'MSFT',
+      'GOOGL',
       'SNDK',
       'MSTR',
       'MU',
@@ -375,7 +378,7 @@ describe('GET /api/iv-anomalies', () => {
     // Just confirm the endpoint accepts the param and returns 200; we
     // don't black-box assert the exact SQL clause but we DO verify mockSql
     // was called per ticker and the response is shaped correctly.
-    for (let i = 0; i < 13; i += 1) {
+    for (let i = 0; i < 14; i += 1) {
       mockSql.mockResolvedValueOnce([
         makeAnomalyRow({ ticker: 'SPXW', ts: '2026-04-21T14:30:00Z' }),
       ]);
@@ -391,13 +394,13 @@ describe('GET /api/iv-anomalies', () => {
     expect(res._status).toBe(200);
     const body = res._json as { mode: string; latest: Record<string, unknown> };
     expect(body.mode).toBe('list');
-    // mockSql is called once per ticker (13 in STRIKE_IV_TICKERS).
-    expect(mockSql).toHaveBeenCalledTimes(13);
+    // mockSql is called once per ticker (14 in STRIKE_IV_TICKERS).
+    expect(mockSql).toHaveBeenCalledTimes(14);
   });
 
   it('replay mode for a past timestamp uses long cache (10 min)', async () => {
     // Returns empty per-ticker, 13 calls.
-    for (let i = 0; i < 13; i += 1) mockSql.mockResolvedValueOnce([]);
+    for (let i = 0; i < 14; i += 1) mockSql.mockResolvedValueOnce([]);
     const res = mockResponse();
     await handler(
       mockRequest({

@@ -47,8 +47,10 @@ import {
   detectAnomalies,
   classifyFlowPhase,
   strikeKey,
+  tapeKey,
   type StrikeSample,
   type AnomalyFlag,
+  type TapeStats,
 } from '../_lib/iv-anomaly.js';
 import { Z_WINDOW_SIZE } from '../_lib/constants.js';
 import type { ContextSnapshot } from '../_lib/anomaly-context.js';
@@ -201,7 +203,29 @@ function replay(fixture: Fixture): CollectedFlag[] {
       const spot = spotByTickerTs.get(`${ticker}:${ts}`);
       if (spot == null) continue;
 
-      const flags = detectAnomalies(latestSnapshot, historyByStrike, spot);
+      // The 2026-04-23 fixture predates the real-tape gate (migration 95,
+      // 2026-04-28). It carries IV samples but no UW tape volume — and
+      // backfilling 1.7MB of historical tape for one regression replay
+      // isn't worth the maintenance cost. Stub each strike's tape to
+      // ask-dominant 80% so the gate passes; the test's purpose is to
+      // verify the IV-signal logic (skew_delta + z_score) still catches
+      // the textbook flush events, not to re-test the side-skew gate.
+      const tapeByKey = new Map<string, TapeStats>();
+      for (const r of latestSnapshot) {
+        tapeByKey.set(tapeKey(r.ticker, r.strike, r.side), {
+          bid_pct: 0.15,
+          ask_pct: 0.8,
+          mid_pct: 0.05,
+          total_vol: 5000,
+        });
+      }
+
+      const flags = detectAnomalies(
+        latestSnapshot,
+        historyByStrike,
+        tapeByKey,
+        spot,
+      );
       if (flags.length === 0) continue;
 
       const ctxStub = fixture.contextAtAnomalyPoints[ts];

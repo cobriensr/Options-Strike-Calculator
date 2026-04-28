@@ -10,8 +10,10 @@ import {
   detectAnomalies,
   classifyFlowPhase,
   strikeKey,
+  tapeKey,
   type StrikeSample,
   type AnomalyFlag,
+  type TapeStats,
 } from '../api/_lib/iv-anomaly.ts';
 import { Z_WINDOW_SIZE } from '../api/_lib/constants.ts';
 import type { ContextSnapshot } from '../api/_lib/anomaly-context.ts';
@@ -142,7 +144,19 @@ function replay(fixture: Fixture): CollectedFlag[] {
       }
       const spot = spotByTickerTs.get(`${ticker}:${ts}`);
       if (spot == null) continue;
-      const flags = detectAnomalies(latest, historyByStrike, spot);
+      // Stub the real-tape gate satisfied for every replayed strike — see
+      // e2e-2026-04-23-flush.test.ts for rationale (the 2026-04-23 fixture
+      // predates the strike_trade_volume table).
+      const tapeByKey = new Map<string, TapeStats>();
+      for (const r of latest) {
+        tapeByKey.set(tapeKey(r.ticker, r.strike, r.side), {
+          bid_pct: 0.15,
+          ask_pct: 0.8,
+          mid_pct: 0.05,
+          total_vol: 5000,
+        });
+      }
+      const flags = detectAnomalies(latest, historyByStrike, tapeByKey, spot);
       if (flags.length === 0) continue;
       const context = makeContext(fixture.contextAtAnomalyPoints[ts]);
       for (const flag of flags) {

@@ -47,17 +47,29 @@ export interface IVAnomalyRow {
   /** Intraday volume / start-of-day OI at detection (primary gate). */
   volOiRatio: number | null;
   /**
-   * `max(askSkew, bidSkew)` at detection — fraction of the bid-ask IV
-   * spread sitting on the dominant side (0.5 = balanced, 1.0 = fully
-   * one-sided). Null on legacy rows pre-migration 86.
+   * `max(askPct, bidPct)` at detection — fraction of cumulative tape
+   * volume on the dominant side (0.5 = balanced, 1.0 = fully one-sided).
+   * On post-migration-95 rows this comes from real bid/ask volume; on
+   * pre-migration-95 rows it's the legacy IV-spread proxy.
    */
   sideSkew: number | null;
   /**
-   * Which side dominated the IV spread at detection. Production rows
-   * are always 'ask' or 'bid' (the gate filters 'mixed' before insert);
+   * Which side dominated cumulative tape volume at detection. Production
+   * rows are always 'ask' or 'bid' (the gate filters 'mixed' before insert);
    * 'mixed' / null only appear on legacy rows pre-migration 86.
    */
   sideDominant: 'ask' | 'bid' | 'mixed' | null;
+  /**
+   * Fraction of cumulative tape volume that printed at the bid (0..1).
+   * Null on legacy rows pre-migration 95 (real-tape replaced IV-spread proxy).
+   */
+  bidPct: number | null;
+  /** Fraction at the ask (0..1). See `bidPct`. */
+  askPct: number | null;
+  /** Fraction in the middle / no side determined (0..1). See `bidPct`. */
+  midPct: number | null;
+  /** Total tape volume on this strike today up to detection ts. */
+  totalVolAtDetect: number | null;
   flagReasons: string[];
   flowPhase: 'early' | 'mid' | 'reactive' | null;
   contextSnapshot: unknown;
@@ -111,6 +123,10 @@ interface RawAnomalyRow {
   vol_oi_ratio: NumericFromDb;
   side_skew: NumericFromDb;
   side_dominant: string | null;
+  bid_pct: NumericFromDb;
+  ask_pct: NumericFromDb;
+  mid_pct: NumericFromDb;
+  total_vol_at_detect: NumericFromDb;
   flag_reasons: string[] | null;
   flow_phase: string | null;
   context_snapshot: unknown;
@@ -193,6 +209,10 @@ function mapAnomaly(r: RawAnomalyRow): IVAnomalyRow {
     volOiRatio: parseNumOrNull(r.vol_oi_ratio),
     sideSkew: parseNumOrNull(r.side_skew),
     sideDominant: parseSideDominant(r.side_dominant),
+    bidPct: parseNumOrNull(r.bid_pct),
+    askPct: parseNumOrNull(r.ask_pct),
+    midPct: parseNumOrNull(r.mid_pct),
+    totalVolAtDetect: parseNumOrNull(r.total_vol_at_detect),
     flagReasons: Array.isArray(r.flag_reasons) ? r.flag_reasons : [],
     flowPhase: parseFlowPhase(r.flow_phase),
     contextSnapshot: r.context_snapshot,
@@ -290,6 +310,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                      spot_at_detect, iv_at_detect,
                      skew_delta, z_score, ask_mid_div, vol_oi_ratio,
                      side_skew, side_dominant,
+                     bid_pct, ask_pct, mid_pct, total_vol_at_detect,
                      flag_reasons, flow_phase,
                      context_snapshot, resolution_outcome, ts
               FROM iv_anomalies
@@ -304,6 +325,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                      spot_at_detect, iv_at_detect,
                      skew_delta, z_score, ask_mid_div, vol_oi_ratio,
                      side_skew, side_dominant,
+                     bid_pct, ask_pct, mid_pct, total_vol_at_detect,
                      flag_reasons, flow_phase,
                      context_snapshot, resolution_outcome, ts
               FROM iv_anomalies

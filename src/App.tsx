@@ -125,6 +125,11 @@ const IVAnomaliesSection = lazy(() =>
     .then((m) => ({ default: m.IVAnomaliesSection }))
     .catch(handleStaleChunk),
 );
+const GammaSqueezeFeed = lazy(() =>
+  import('./components/GammaSqueezes/GammaSqueezeFeed')
+    .then((m) => ({ default: m.GammaSqueezeFeed }))
+    .catch(handleStaleChunk),
+);
 const AnomalyBanner = lazy(() =>
   import('./components/IVAnomalies/AnomalyBanner')
     .then((m) => ({ default: m.AnomalyBanner }))
@@ -1303,6 +1308,18 @@ export default function StrikeCalculator() {
                     <ErrorBoundary label="Strike IV Anomalies">
                       <Suspense fallback={<SkeletonSection lines={5} />}>
                         <IVAnomaliesSection
+                          marketOpen={market.data.quotes?.marketOpen ?? false}
+                        />
+                      </Suspense>
+                    </ErrorBoundary>
+
+                    <span
+                      id="sec-gamma-squeezes"
+                      className="block scroll-mt-28"
+                    />
+                    <ErrorBoundary label="Gamma Squeezes">
+                      <Suspense fallback={<SkeletonSection lines={5} />}>
+                        <GammaSqueezeFeed
                           marketOpen={market.data.quotes?.marketOpen ?? false}
                         />
                       </Suspense>

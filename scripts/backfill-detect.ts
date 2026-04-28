@@ -28,7 +28,9 @@ import {
   detectAnomalies,
   classifyFlowPhase,
   strikeKey,
+  tapeKey,
   type StrikeSample,
+  type TapeStats,
 } from '../api/_lib/iv-anomaly.ts';
 import { Z_WINDOW_SIZE } from '../api/_lib/constants.ts';
 import type { ContextSnapshot } from '../api/_lib/anomaly-context.ts';
@@ -202,7 +204,23 @@ async function processFile(filename: string): Promise<number> {
       historyByTicker.set(ticker, history);
     }
 
-    const flags = detectAnomalies(samples, history, spot);
+    // Backfill predates the real-tape gate (migration 95, 2026-04-28).
+    // Historical strike_trade_volume rows aren't available before
+    // migration 87 (2026-04-25) and even then are sparse on backfill
+    // dates. Stub tape to ask-dominant 80% so the IV-signal logic
+    // (skew_delta + z_score) still gets exercised; flag_reasons gets a
+    // 'backfill' marker so production rows stay distinguishable.
+    const tapeByKey = new Map<string, TapeStats>();
+    for (const s of samples) {
+      tapeByKey.set(tapeKey(s.ticker, s.strike, s.side), {
+        bid_pct: 0.15,
+        ask_pct: 0.8,
+        mid_pct: 0.05,
+        total_vol: 5000,
+      });
+    }
+
+    const flags = detectAnomalies(samples, history, tapeByKey, spot);
 
     if (flags.length > 0) {
       const ctx = makeEmptyContext();

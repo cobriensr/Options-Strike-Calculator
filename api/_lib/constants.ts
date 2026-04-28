@@ -93,6 +93,15 @@ export const STRIKE_IV_OTM_RANGE_PCT_CASH_INDEX = 0.12;
 export const STRIKE_IV_OTM_RANGE_PCT_BROAD_ETF = 0.03;
 export const STRIKE_IV_OTM_RANGE_PCT_SINGLE_NAME = 0.05;
 /**
+ * High-liquidity single-name tech (NVDA, TSLA, META, MSFT, GOOGL) —
+ * widened to ±12% on 2026-04-28 to match the cash-index band. Deep-OTM
+ * lottery-ticket whales on these names sit 8-12% OTM (e.g., TSLA 400C
+ * 2026-05-01 @ 11.4% OTM was profitable on 2026-04-27 but invisible to
+ * the prior ±5% gate). Liquidity supports the wider window — these
+ * names have $1-spaced strikes through ~15% OTM with tradeable OI.
+ */
+export const STRIKE_IV_OTM_RANGE_PCT_HIGH_LIQ_NAME = 0.12;
+/**
  * OI floors — looser-tier values 2026-04-25. Prior values were
  * calibrated for index dominance + ATM strikes and were over-filtering
  * both single-name flow AND deep-OTM cash-index whale prints. The
@@ -132,6 +141,7 @@ export const STRIKE_IV_TICKERS = [
   'TSLA',
   'META',
   'MSFT',
+  'GOOGL',
   'SNDK',
   'MSTR',
   'MU',

@@ -1,0 +1,75 @@
+/**
+ * Shared types for the Gamma Squeeze frontend.
+ *
+ * Mirrors `api/gamma-squeezes.ts` response shapes. src/ cannot reach
+ * into api/ directly (Vite only bundles browser code), so we duplicate
+ * here. Keep in sync when the server contract changes.
+ *
+ * See spec: docs/superpowers/specs/gamma-squeeze-velocity-detector-2026-04-28.md.
+ */
+
+import type { IVAnomalyTicker } from '../IVAnomalies/types';
+
+export type GammaSqueezeTicker = IVAnomalyTicker;
+export type GammaSqueezeSide = 'call' | 'put';
+export type GammaSqueezePhase = 'forming' | 'active' | 'exhausted';
+export type NetGammaSign = 'short' | 'long' | 'unknown';
+
+export interface GammaSqueezeRow {
+  id: number;
+  ticker: string;
+  strike: number;
+  side: GammaSqueezeSide;
+  expiry: string;
+  ts: string;
+  spotAtDetect: number;
+  pctFromStrike: number;
+  spotTrend5m: number;
+  volOi15m: number;
+  volOi15mPrior: number;
+  volOiAcceleration: number;
+  volOiTotal: number;
+  netGammaSign: NetGammaSign;
+  squeezePhase: GammaSqueezePhase;
+  contextSnapshot: unknown;
+  reachedStrike: boolean | null;
+  spotAtClose: number | null;
+  maxCallPnlPct: number | null;
+}
+
+export interface GammaSqueezesResponse {
+  mode: 'list';
+  latest: Record<GammaSqueezeTicker, GammaSqueezeRow | null>;
+  history: Record<GammaSqueezeTicker, GammaSqueezeRow[]>;
+}
+
+/**
+ * Build the compound key for a squeeze row. Includes expiry because
+ * different expiries on the same strike are distinct setups.
+ */
+export function squeezeCompoundKey(
+  row: Pick<GammaSqueezeRow, 'ticker' | 'strike' | 'side' | 'expiry'>,
+): string {
+  return `${row.ticker}:${row.strike}:${row.side}:${row.expiry}`;
+}
+
+/**
+ * Aggregated active squeeze view — one entry per compound key. The hook
+ * builds these from the raw row stream so the board stays stable while
+ * the cron keeps firing the same compound key.
+ */
+export interface ActiveSqueeze {
+  compoundKey: string;
+  ticker: GammaSqueezeTicker;
+  strike: number;
+  side: GammaSqueezeSide;
+  expiry: string;
+  /** Most recent raw row — drives the displayed metrics. */
+  latest: GammaSqueezeRow;
+  /** First firing timestamp in the active span (ISO). */
+  firstSeenTs: string;
+  /** Most recent firing (ISO). */
+  lastFiredTs: string;
+  /** Count of raw rows seen in the active span. */
+  firingCount: number;
+}

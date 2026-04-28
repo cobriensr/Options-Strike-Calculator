@@ -1,6 +1,7 @@
 # Vega Spike EDA Findings
 
 **Sample**: 38 total spike events.
+
 - 28 with computable 15m forward return (for reference).
 - 28 with computable EOD forward return (primary horizon — requires a close bar at 16:00 ET on the spike's date).
 - 27/28 EOD-computable spikes have a per-hour value (one near-close spike excluded by the <1 min guard).
@@ -8,6 +9,7 @@
 > **Primary horizon**: EOD (end-of-day / 16:00 ET close). Captures the full directional arc.
 
 > **Metrics — two versions reported**:
+>
 > - `fwd_return_eod`: raw % return from spike bar to 16:00 ET close.
 > - `fwd_return_per_hour`: `fwd_return_eod / hours_to_close` — time-normalized return rate (%/hour).
 >
@@ -20,7 +22,7 @@
 >
 > **Bottom line on the per-hour result**: removing the time confound does not produce signal — the
 > Mann-Whitney comparison vs control remains a clean null (see Section 1). Per-hour is the cleaner
-> *null* result, not a path to detecting an effect that wasn't there at the absolute scale.
+> _null_ result, not a path to detecting an effect that wasn't there at the absolute scale.
 
 > NOTE: sample is small (~38 events). All p-values and CIs are directional indicators only.
 
@@ -34,8 +36,8 @@
 
 Overall hit rate: **15/28 = 53.6%**, 95% Wilson CI [35.8%, 70.5%], binomial p=0.8506 vs 50% null. Hit rate > 50% means spikes correctly predict the EOD price direction (whether the close is higher/lower than the spike bar). A CI entirely above 50% would be a tradeable directional signal.
 
-  - SPY: 8/17 = 47.1%, CI [26.2%, 69.0%], p=1.000
-  - QQQ: 7/11 = 63.6%, CI [35.4%, 84.8%], p=0.549
+- SPY: 8/17 = 47.1%, CI [26.2%, 69.0%], p=1.000
+- QQQ: 7/11 = 63.6%, CI [35.4%, 84.8%], p=0.549
 
 ## 3. Time-to-peak (arc across 5m / 15m / 30m / 60m / EOD)
 
@@ -55,7 +57,7 @@ Theil-Sen slope: **-0.0000014** per unit z-score (95% CI [-0.0000088, 0.0000029]
 
 Per-hour normalization makes cross-stratum comparison valid: AM spikes had 4-6h to close, PM spikes had <1.5h. A higher per-hour rate in PM would indicate late-session spikes are more efficient (faster-moving), not simply that they had less time to regress. A flat or declining per-hour rate across AM → PM would suggest early-session spikes have better velocity-adjusted impact.
 
-**Headline reframing vs absolute EOD**: under absolute EOD, the PM stratum looked muted because PM spikes have <1.5h to close — small absolute returns by construction. Under per-hour, PM negative spikes emerge as the *fastest-moving* stratum on a velocity basis. This reversal is exactly the kind of finding the time-confound was hiding; whether it's signal or sample variance (n=2 in PM positive, n=2 in PM negative) needs more events to resolve.
+**Headline reframing vs absolute EOD**: under absolute EOD, the PM stratum looked muted because PM spikes have <1.5h to close — small absolute returns by construction. Under per-hour, PM negative spikes emerge as the _fastest-moving_ stratum on a velocity basis. This reversal is exactly the kind of finding the time-confound was hiding; whether it's signal or sample variance (n=2 in PM positive, n=2 in PM negative) needs more events to resolve.
 
 Note: positive-spike count here may be 1 lower than the directionality count in Section 2, because one positive spike fired within 1 minute of close and is excluded from per-hour analysis. It still contributes to the directionality test (which uses sign of EOD return).
 

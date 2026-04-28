@@ -287,9 +287,7 @@ describe('HedgeRows', () => {
 
 describe('NakedRows', () => {
   it('renders one row per naked position with UNDEFINED max loss', () => {
-    renderInTable(
-      <NakedRows naked={[makeNaked()]} startIndex={0} />,
-    );
+    renderInTable(<NakedRows naked={[makeNaked()]} startIndex={0} />);
     expect(screen.getByText('NAKED')).toBeInTheDocument();
     expect(screen.getByText('UNDEFINED')).toBeInTheDocument();
     expect(screen.getByText(/5800 PUT/)).toBeInTheDocument();
@@ -329,9 +327,7 @@ describe('ButterflyRow', () => {
   });
 
   it('renders the strike triple with the option type letter (P for PUT)', () => {
-    renderInTable(
-      <ButterflyRow butterfly={makeButterfly()} rowIndex={0} />,
-    );
+    renderInTable(<ButterflyRow butterfly={makeButterfly()} rowIndex={0} />);
     expect(screen.getByText(/5780\/5800\/5820 P/)).toBeInTheDocument();
   });
 
@@ -368,10 +364,7 @@ describe('ButterflyRow', () => {
 
   it('renders "—" R:R when maxProfit is zero (avoids divide-by-zero)', () => {
     renderInTable(
-      <ButterflyRow
-        butterfly={makeButterfly({ maxProfit: 0 })}
-        rowIndex={0}
-      />,
+      <ButterflyRow butterfly={makeButterfly({ maxProfit: 0 })} rowIndex={0} />,
     );
     expect(screen.getAllByText('—').length).toBeGreaterThan(0);
   });
@@ -396,9 +389,7 @@ describe('IronCondorCard', () => {
   it('expands the wing details on click', () => {
     render(<IronCondorCard ic={makeIronCondor()} spotPrice={5800} />);
     expect(screen.queryByText(/PUT wing/)).not.toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole('button', { name: /Iron Condor/ }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: /Iron Condor/ }));
     expect(screen.getByText(/PUT wing/)).toBeInTheDocument();
     expect(screen.getByText(/CALL wing/)).toBeInTheDocument();
   });
@@ -454,9 +445,7 @@ describe('SpreadCard', () => {
   });
 
   it('shows credit, max loss, R:R, breakeven, and contract count', () => {
-    render(
-      <SpreadCard spread={makeSpread()} spotPrice={5800} />,
-    );
+    render(<SpreadCard spread={makeSpread()} spotPrice={5800} />);
     expect(screen.getByText('$200.00')).toBeInTheDocument(); // credit
     expect(screen.getByText('$800.00')).toBeInTheDocument(); // max loss
     expect(screen.getByText('4.0:1')).toBeInTheDocument(); // R:R
@@ -487,9 +476,7 @@ describe('ButterflyCard', () => {
   });
 
   it('renders BWB label when isBrokenWing is true', () => {
-    render(
-      <ButterflyCard butterfly={makeButterfly({ isBrokenWing: true })} />,
-    );
+    render(<ButterflyCard butterfly={makeButterfly({ isBrokenWing: true })} />);
     expect(screen.getByText('BWB')).toBeInTheDocument();
   });
 
@@ -511,9 +498,7 @@ describe('ButterflyCard', () => {
   });
 
   it('renders R:R as "—" when maxProfit is zero', () => {
-    render(
-      <ButterflyCard butterfly={makeButterfly({ maxProfit: 0 })} />,
-    );
+    render(<ButterflyCard butterfly={makeButterfly({ maxProfit: 0 })} />);
     expect(screen.getAllByText('—').length).toBeGreaterThan(0);
   });
 
@@ -537,45 +522,33 @@ describe('HedgeCards', () => {
 
   it('renders +N contracts for LONG direction', () => {
     render(
-      <HedgeCards
-        hedges={[makeHedge({ direction: 'LONG', contracts: 3 })]}
-      />,
+      <HedgeCards hedges={[makeHedge({ direction: 'LONG', contracts: 3 })]} />,
     );
     expect(screen.getByText('+3')).toBeInTheDocument();
   });
 
   it('renders -N contracts for SHORT direction', () => {
     render(
-      <HedgeCards
-        hedges={[makeHedge({ direction: 'SHORT', contracts: 4 })]}
-      />,
+      <HedgeCards hedges={[makeHedge({ direction: 'SHORT', contracts: 4 })]} />,
     );
     expect(screen.getByText('-4')).toBeInTheDocument();
   });
 
   it('renders entry cost and pnl', () => {
     render(
-      <HedgeCards
-        hedges={[makeHedge({ entryCost: 240, openPnl: -60 })]}
-      />,
+      <HedgeCards hedges={[makeHedge({ entryCost: 240, openPnl: -60 })]} />,
     );
     expect(screen.getByText('$240.00')).toBeInTheDocument();
     expect(screen.getByText('($60.00)')).toBeInTheDocument();
   });
 
   it('renders "—" for openPnl when null', () => {
-    render(
-      <HedgeCards hedges={[makeHedge({ openPnl: null })]} />,
-    );
+    render(<HedgeCards hedges={[makeHedge({ openPnl: null })]} />);
     expect(screen.getAllByText('—').length).toBeGreaterThan(0);
   });
 
   it('renders the protection-side caption text', () => {
-    render(
-      <HedgeCards
-        hedges={[makeHedge({ protectionSide: 'CALL' })]}
-      />,
-    );
+    render(<HedgeCards hedges={[makeHedge({ protectionSide: 'CALL' })]} />);
     expect(screen.getByText(/CALL side protection/)).toBeInTheDocument();
   });
 });

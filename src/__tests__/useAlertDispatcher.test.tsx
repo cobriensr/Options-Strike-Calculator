@@ -8,23 +8,15 @@
  * independently via spies on the global Notification class and
  * audio-utils.getAudioContextCtor.
  */
-import {
-  describe,
-  it,
-  expect,
-  vi,
-  beforeEach,
-  afterEach,
-} from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import type { Mock } from 'vitest';
 
 vi.mock('../utils/futures-gamma/alerts', async () => {
-  const actual =
-    await vi.importActual<typeof import('../utils/futures-gamma/alerts')>(
-      '../utils/futures-gamma/alerts',
-    );
+  const actual = await vi.importActual<
+    typeof import('../utils/futures-gamma/alerts')
+  >('../utils/futures-gamma/alerts');
   return { ...actual, detectAlertEdges: vi.fn() };
 });
 
@@ -36,14 +28,8 @@ import { useAlertDispatcher } from '../components/FuturesGammaPlaybook/useAlertD
 import type { UseAlertDispatcherInput } from '../components/FuturesGammaPlaybook/useAlertDispatcher';
 import { detectAlertEdges } from '../utils/futures-gamma/alerts';
 import { getAudioContextCtor } from '../utils/audio-utils';
-import {
-  ToastContext,
-  type ToastContextValue,
-} from '../hooks/useToast';
-import type {
-  AlertEvent,
-  AlertState,
-} from '../utils/futures-gamma/alerts';
+import { ToastContext, type ToastContextValue } from '../hooks/useToast';
+import type { AlertEvent, AlertState } from '../utils/futures-gamma/alerts';
 
 const mockedDetect = detectAlertEdges as unknown as Mock;
 const mockedGetAudioCtor = getAudioContextCtor as unknown as Mock;
@@ -54,9 +40,7 @@ const mockedGetAudioCtor = getAudioContextCtor as unknown as Mock;
 
 const LS_KEY = 'futures-playbook-alerts-v1';
 
-function makeState(
-  overrides: Partial<AlertState> = {},
-): AlertState {
+function makeState(overrides: Partial<AlertState> = {}): AlertState {
   return {
     regime: 'POSITIVE',
     phase: 'MORNING',
@@ -272,9 +256,7 @@ describe('useAlertDispatcher — toast delivery', () => {
   });
 
   it('shows an error toast for urgent severity', () => {
-    mockedDetect.mockReturnValueOnce([
-      makeEvent({ severity: 'urgent' }),
-    ]);
+    mockedDetect.mockReturnValueOnce([makeEvent({ severity: 'urgent' })]);
     const toast = vi.fn();
     renderHook(() => useAlertDispatcher(makeInput()), {
       wrapper: ToastWrapper(toast),
@@ -290,10 +272,7 @@ describe('useAlertDispatcher — toast delivery', () => {
   });
 
   it('skips toast delivery when config.toast is false', () => {
-    window.localStorage.setItem(
-      LS_KEY,
-      JSON.stringify({ toast: false }),
-    );
+    window.localStorage.setItem(LS_KEY, JSON.stringify({ toast: false }));
     mockedDetect.mockReturnValueOnce([makeEvent()]);
     const toast = vi.fn();
     renderHook(() => useAlertDispatcher(makeInput()), {
@@ -322,10 +301,7 @@ describe('useAlertDispatcher — Notification delivery', () => {
       writable: true,
       value: NotificationMock,
     });
-    window.localStorage.setItem(
-      LS_KEY,
-      JSON.stringify({ notification: true }),
-    );
+    window.localStorage.setItem(LS_KEY, JSON.stringify({ notification: true }));
     mockedDetect.mockReturnValueOnce([makeEvent()]);
     renderHook(() => useAlertDispatcher(makeInput()));
     expect(NotificationMock).toHaveBeenCalledOnce();
@@ -341,10 +317,7 @@ describe('useAlertDispatcher — Notification delivery', () => {
       writable: true,
       value: NotificationMock,
     });
-    window.localStorage.setItem(
-      LS_KEY,
-      JSON.stringify({ notification: true }),
-    );
+    window.localStorage.setItem(LS_KEY, JSON.stringify({ notification: true }));
     mockedDetect.mockReturnValueOnce([makeEvent()]);
     renderHook(() => useAlertDispatcher(makeInput()));
     expect(NotificationMock).not.toHaveBeenCalled();
@@ -482,10 +455,7 @@ describe('useAlertDispatcher — cooldowns', () => {
 
 describe('useAlertDispatcher — config gates', () => {
   it('skips delivery when config.enabled is false', () => {
-    window.localStorage.setItem(
-      LS_KEY,
-      JSON.stringify({ enabled: false }),
-    );
+    window.localStorage.setItem(LS_KEY, JSON.stringify({ enabled: false }));
     mockedDetect.mockReturnValueOnce([makeEvent()]);
     const toast = vi.fn();
     renderHook(() => useAlertDispatcher(makeInput()), {
@@ -565,9 +535,7 @@ describe('useAlertDispatcher — backtest mode', () => {
     }
     expect(result.current.backtestAlerts).toHaveLength(100);
     // First event should have been evicted; last one is still present.
-    expect(result.current.backtestAlerts[0]?.id).toBe(
-      'LEVEL_APPROACH:K1:t',
-    );
+    expect(result.current.backtestAlerts[0]?.id).toBe('LEVEL_APPROACH:K1:t');
     expect(result.current.backtestAlerts.at(-1)?.id).toBe(
       'LEVEL_APPROACH:K100:t',
     );
@@ -577,16 +545,12 @@ describe('useAlertDispatcher — backtest mode', () => {
     // First call (backtest) → suppresses a second call within window.
     mockedDetect
       .mockReturnValueOnce([makeEvent()])
-      .mockReturnValueOnce([
-        makeEvent({ ts: '2026-04-27T14:30:30Z' }),
-      ]);
+      .mockReturnValueOnce([makeEvent({ ts: '2026-04-27T14:30:30Z' })]);
     const { result, rerender } = renderHook(
       (input: UseAlertDispatcherInput) => useAlertDispatcher(input),
       { initialProps: makeInput({ isLive: false }) },
     );
-    rerender(
-      makeInput({ isLive: false, state: makeState({ esPrice: 5801 }) }),
-    );
+    rerender(makeInput({ isLive: false, state: makeState({ esPrice: 5801 }) }));
     // Two raw events but cooldown deduped → 1 logged.
     expect(result.current.backtestAlerts).toHaveLength(1);
   });

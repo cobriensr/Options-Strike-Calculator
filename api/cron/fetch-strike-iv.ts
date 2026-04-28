@@ -43,6 +43,7 @@ import {
   STRIKE_IV_OTM_RANGE_PCT_CASH_INDEX,
   STRIKE_IV_OTM_RANGE_PCT_BROAD_ETF,
   STRIKE_IV_OTM_RANGE_PCT_SINGLE_NAME,
+  STRIKE_IV_OTM_RANGE_PCT_HIGH_LIQ_NAME,
   STRIKE_IV_MIN_OI_CASH_INDEX,
   STRIKE_IV_MIN_OI_SPY_QQQ,
   STRIKE_IV_MIN_OI_IWM,
@@ -59,8 +60,16 @@ import {
   detectAnomalies,
   classifyFlowPhase,
   strikeKey,
+  tapeKey,
   type StrikeSample,
+  type TapeStats,
 } from '../_lib/iv-anomaly.js';
+import {
+  detectGammaSqueezes,
+  squeezeKey,
+  type SqueezeFlag,
+  type SqueezeWindowSample,
+} from '../_lib/gamma-squeeze.js';
 import { gatherContextSnapshot } from '../_lib/anomaly-context.js';
 
 // ── Schwab types (duplicated locally — api/chain.ts is an endpoint, not a
@@ -187,6 +196,7 @@ function schwabSymbol(ticker: StrikeIVTicker): string {
     case 'TSLA':
     case 'META':
     case 'MSFT':
+    case 'GOOGL':
     case 'SNDK':
     case 'MSTR':
     case 'MU':
@@ -221,6 +231,7 @@ function minOiFor(ticker: StrikeIVTicker): number {
     case 'TSLA':
     case 'META':
     case 'MSFT':
+    case 'GOOGL':
       return STRIKE_IV_MIN_OI_HIGH_LIQ;
     case 'SNDK':
     case 'MSTR':
@@ -234,14 +245,19 @@ function minOiFor(ticker: StrikeIVTicker): number {
 }
 
 /**
- * OTM range as a fraction of spot. Three-tier 2026-04-25:
+ * OTM range as a fraction of spot. Four-tier 2026-04-28:
  *   - Cash-index weeklies (SPXW/NDXP): ±12% — captures lottery-ticket
  *     whale prints at 8-12% OTM (e.g. NDXP 27300C +2,155% on
  *     2026-04-24 was 11.4% OTM, invisible to a ±3% gate).
  *   - Broad ETFs (SPY/QQQ/IWM): ±3% — reaction surface, flow
  *     concentrates near ATM.
- *   - Sector ETF + single names: ±5% — single-name informed flow tends
- *     toward the 4-5% OTM strikes.
+ *   - High-liq single names (NVDA/TSLA/META/MSFT/GOOGL): ±12% —
+ *     widened from ±5% to catch deep-OTM whales (TSLA 400C @ 11.4% OTM
+ *     was profitable on 2026-04-27 but invisible to the prior ±5% gate).
+ *     Liquidity supports it: $1-spaced strikes through ~15% OTM with
+ *     tradeable OI on these names.
+ *   - Sector ETF + mid-liq single names (SMH/SNDK/MSTR/MU): ±5% —
+ *     thinner ladders, informed flow concentrates 4-5% OTM.
  */
 function otmRangePctFor(ticker: StrikeIVTicker): number {
   switch (ticker) {
@@ -252,11 +268,13 @@ function otmRangePctFor(ticker: StrikeIVTicker): number {
     case 'QQQ':
     case 'IWM':
       return STRIKE_IV_OTM_RANGE_PCT_BROAD_ETF;
-    case 'SMH':
     case 'NVDA':
     case 'TSLA':
     case 'META':
     case 'MSFT':
+    case 'GOOGL':
+      return STRIKE_IV_OTM_RANGE_PCT_HIGH_LIQ_NAME;
+    case 'SMH':
     case 'SNDK':
     case 'MSTR':
     case 'MU':
@@ -578,6 +596,215 @@ async function loadHistoryForTicker(
 }
 
 /**
+ * Load cumulative-since-open bid/ask volume splits from `strike_trade_volume`
+ * for every (ticker, strike, side) tuple that traded today up to `sampledAt`.
+ *
+ * The tape table is populated by the per-minute `fetch-strike-trade-volume`
+ * cron from UW's flow-per-strike-intraday endpoint. It aggregates ACROSS
+ * expiries by design — there's no expiry column. A strike with 0 rows in
+ * the day gets dropped from the map, and `detectAnomalies` skips that
+ * strike (the gate cannot judge directionality without prints).
+ *
+ * Single SUM-by-group query per ticker — index `idx_strike_trade_volume_ticker_ts`
+ * covers the WHERE clause cleanly.
+ */
+async function loadTapeStatsForTicker(
+  sql: ReturnType<typeof getDb>,
+  ticker: StrikeIVTicker,
+  sampledAtIso: string,
+): Promise<Map<string, TapeStats>> {
+  type AggRow = {
+    strike: string | number;
+    side: string;
+    bid_total: string | number | null;
+    ask_total: string | number | null;
+    mid_total: string | number | null;
+    vol_total: string | number | null;
+  };
+  const rows = (await sql`
+    SELECT strike,
+           side,
+           SUM(bid_side_vol) AS bid_total,
+           SUM(ask_side_vol) AS ask_total,
+           SUM(mid_vol)      AS mid_total,
+           SUM(total_vol)    AS vol_total
+    FROM strike_trade_volume
+    WHERE ticker = ${ticker}
+      AND ts::date = (${sampledAtIso}::timestamptz AT TIME ZONE 'America/New_York')::date
+      AND ts <= ${sampledAtIso}
+    GROUP BY strike, side
+  `) as AggRow[];
+
+  const out = new Map<string, TapeStats>();
+  for (const r of rows) {
+    const total = Number(r.vol_total ?? 0);
+    if (!Number.isFinite(total) || total <= 0) continue;
+    const bid = Number(r.bid_total ?? 0);
+    const ask = Number(r.ask_total ?? 0);
+    const mid = Number(r.mid_total ?? 0);
+    const strike = Number(r.strike);
+    const side = r.side === 'call' ? 'call' : 'put';
+    out.set(tapeKey(ticker, strike, side), {
+      bid_pct: bid / total,
+      ask_pct: ask / total,
+      mid_pct: mid / total,
+      total_vol: total,
+    });
+  }
+  return out;
+}
+
+/**
+ * Load the trailing 45-min window of `strike_iv_snapshots` for the gamma
+ * squeeze detector. Same source as `loadHistoryForTicker` but with a
+ * different shape: keyed by squeezeKey(strike, side, expiry) and
+ * including spot per sample.
+ *
+ * 45 min covers the detector's deepest lookback (30-min for prior
+ * velocity baseline) plus 15 min of the current velocity window.
+ */
+async function loadSqueezeWindowForTicker(
+  sql: ReturnType<typeof getDb>,
+  ticker: StrikeIVTicker,
+  sampledAtIso: string,
+): Promise<Map<string, SqueezeWindowSample[]>> {
+  type WindowRow = {
+    strike: string | number;
+    side: string;
+    expiry: string | Date;
+    ts: string | Date;
+    volume: string | number | null;
+    oi: string | number | null;
+    spot: string | number | null;
+  };
+  const rows = (await sql`
+    SELECT strike, side, expiry, ts, volume, oi, spot
+    FROM strike_iv_snapshots
+    WHERE ticker = ${ticker}
+      AND ts >= (${sampledAtIso}::timestamptz - INTERVAL '45 minutes')
+      AND ts <= ${sampledAtIso}
+      AND volume IS NOT NULL
+      AND oi IS NOT NULL
+      AND oi > 0
+    ORDER BY strike, side, expiry, ts
+  `) as WindowRow[];
+
+  const out = new Map<string, SqueezeWindowSample[]>();
+  for (const r of rows) {
+    const strike = Number(r.strike);
+    const side = r.side === 'call' ? 'call' : 'put';
+    const expiry =
+      r.expiry instanceof Date
+        ? r.expiry.toISOString().slice(0, 10)
+        : String(r.expiry).slice(0, 10);
+    const ts = r.ts instanceof Date ? r.ts.toISOString() : String(r.ts);
+    const volume = Number(r.volume ?? 0);
+    const oi = Number(r.oi ?? 0);
+    const spot = Number(r.spot ?? 0);
+    if (!Number.isFinite(strike) || !Number.isFinite(volume)) continue;
+    if (!Number.isFinite(oi) || oi <= 0) continue;
+    if (!Number.isFinite(spot) || spot <= 0) continue;
+    const key = squeezeKey(strike, side, expiry);
+    const sample: SqueezeWindowSample = {
+      strike,
+      side,
+      expiry,
+      ts,
+      volume,
+      oi,
+      spot,
+    };
+    const bucket = out.get(key);
+    if (bucket) bucket.push(sample);
+    else out.set(key, [sample]);
+  }
+  return out;
+}
+
+/**
+ * Load net dealer gamma per strike from `strike_exposures` for tickers
+ * where we have it (SPX/SPY/QQQ as of 2026-04-28). For others, returns
+ * an empty Map and the squeeze detector emits `net_gamma_sign:'unknown'`.
+ *
+ * Convention: NDG > 0 means dealers are net LONG gamma (their hedging
+ * dampens moves) and the squeeze gate filters those strikes out. NDG < 0
+ * means dealers short gamma (hedging amplifies moves — squeeze is real).
+ */
+async function loadNetDealerGammaForTicker(
+  sql: ReturnType<typeof getDb>,
+  ticker: StrikeIVTicker,
+  sampledAtIso: string,
+): Promise<Map<number, number>> {
+  // Only SPXW/SPY/QQQ have populated strike_exposures rows. For the
+  // others (NDXP / IWM / SMH / single-names), we skip the lookup
+  // entirely and return an empty Map. The detector treats unknown NDG
+  // as 'pass' on Gate 6.
+  const NDG_TICKERS: ReadonlySet<string> = new Set(['SPXW', 'SPY', 'QQQ']);
+  if (!NDG_TICKERS.has(ticker)) return new Map();
+
+  type ExposureRow = {
+    strike: string | number;
+    net_gamma: string | number | null;
+  };
+  // Most-recent snapshot per strike for today. The strike_exposures
+  // table is updated by the GEX cron each minute during market hours
+  // for SPXW (and by sibling crons for SPY/QQQ); we just want the
+  // freshest row per strike at the detection ts.
+  const rows = (await sql`
+    SELECT DISTINCT ON (strike)
+           strike, net_gamma
+    FROM strike_exposures
+    WHERE ticker = ${ticker}
+      AND captured_at <= ${sampledAtIso}
+      AND captured_at >= (${sampledAtIso}::timestamptz - INTERVAL '1 hour')
+    ORDER BY strike, captured_at DESC
+  `) as ExposureRow[];
+
+  const out = new Map<number, number>();
+  for (const r of rows) {
+    const strike = Number(r.strike);
+    const ndg = Number(r.net_gamma ?? 0);
+    if (!Number.isFinite(strike) || !Number.isFinite(ndg)) continue;
+    out.set(strike, ndg);
+  }
+  return out;
+}
+
+/**
+ * Persist gamma squeeze flags emitted in this run. Mirrors
+ * `runIvAnomalyDetection` shape but for the new
+ * `gamma_squeeze_events` table. A failure here is logged + captured to
+ * Sentry but does NOT roll back the IV anomaly path or the snapshot
+ * ingestion — squeeze detection is the lowest-priority signal.
+ */
+async function persistSqueezeFlags(
+  sql: ReturnType<typeof getDb>,
+  flags: SqueezeFlag[],
+  contextJson: string,
+): Promise<number> {
+  if (flags.length === 0) return 0;
+  let inserted = 0;
+  for (const f of flags) {
+    const result = await sql`
+      INSERT INTO gamma_squeeze_events (
+        ticker, strike, side, expiry, ts,
+        spot_at_detect, pct_from_strike, spot_trend_5m,
+        vol_oi_15m, vol_oi_15m_prior, vol_oi_acceleration, vol_oi_total,
+        net_gamma_sign, squeeze_phase, context_snapshot
+      ) VALUES (
+        ${f.ticker}, ${f.strike}, ${f.side}, ${f.expiry}, ${f.ts},
+        ${f.spot_at_detect}, ${f.pct_from_strike}, ${f.spot_trend_5m},
+        ${f.vol_oi_15m}, ${f.vol_oi_15m_prior}, ${f.vol_oi_acceleration}, ${f.vol_oi_total},
+        ${f.net_gamma_sign}, ${f.squeeze_phase}, ${contextJson}::jsonb
+      )
+      RETURNING id
+    `;
+    if ((result as unknown[]).length > 0) inserted += 1;
+  }
+  return inserted;
+}
+
+/**
  * For every row we just inserted, check for anomalies against the
  * trailing Z_WINDOW_SIZE history + the current cross-strike snapshot.
  * Flags are enriched with a ContextSnapshot + flow_phase label and
@@ -598,10 +825,26 @@ async function runDetection(
   const spot = insertedRows[0]!.spot;
   const samples = insertedRows.map((r) => toStrikeSample(r, sampledAtIso));
 
-  const historyByStrike = await loadHistoryForTicker(sql, ticker, sampledAtIso);
+  const [historyByStrike, tapeByKey, squeezeWindow, ndgByStrike] =
+    await Promise.all([
+      loadHistoryForTicker(sql, ticker, sampledAtIso),
+      loadTapeStatsForTicker(sql, ticker, sampledAtIso),
+      loadSqueezeWindowForTicker(sql, ticker, sampledAtIso),
+      loadNetDealerGammaForTicker(sql, ticker, sampledAtIso),
+    ]);
 
-  const flags = detectAnomalies(samples, historyByStrike, spot);
-  if (flags.length === 0) return 0;
+  const flags = detectAnomalies(samples, historyByStrike, tapeByKey, spot);
+  // Run gamma-squeeze detection in parallel to IV-anomaly detection.
+  // It uses different gates (velocity vs side concentration), so the two
+  // signals can both fire on the same compound key without contradiction.
+  const squeezeFlags = detectGammaSqueezes(
+    squeezeWindow,
+    ticker,
+    sampledAtIso,
+    ndgByStrike,
+  );
+
+  if (flags.length === 0 && squeezeFlags.length === 0) return 0;
 
   // All flags in this batch share the same (ticker, sampledAtIso) pair —
   // gather the context snapshot ONCE instead of re-running ~30 queries
@@ -609,6 +852,24 @@ async function runDetection(
   // staleness windows the context queries use.
   const detectTs = new Date(sampledAtIso);
   const context = await gatherContextSnapshot(ticker, detectTs);
+  const contextJson = JSON.stringify(context);
+
+  // Persist squeeze flags first (they don't depend on IV-anomaly output
+  // and are best-effort — failure won't block the IV-anomaly path).
+  try {
+    await persistSqueezeFlags(sql, squeezeFlags, contextJson);
+  } catch (err) {
+    Sentry.setTag('cron.job', 'fetch-strike-iv');
+    Sentry.setTag('strike_iv.ticker', ticker);
+    Sentry.setTag('strike_iv.phase', 'gamma_squeeze_persist');
+    Sentry.captureException(err);
+    logger.error(
+      { err, ticker, count: squeezeFlags.length },
+      'fetch-strike-iv: gamma squeeze persist failed — IV anomaly path continues',
+    );
+  }
+
+  if (flags.length === 0) return 0;
 
   let inserted = 0;
   for (const flag of flags) {
@@ -620,13 +881,15 @@ async function runDetection(
         spot_at_detect, iv_at_detect,
         skew_delta, z_score, ask_mid_div, vol_oi_ratio,
         side_skew, side_dominant,
+        bid_pct, ask_pct, mid_pct, total_vol_at_detect,
         flag_reasons, flow_phase, context_snapshot, ts
       ) VALUES (
         ${flag.ticker}, ${flag.strike}, ${flag.side}, ${flag.expiry},
         ${flag.spot_at_detect}, ${flag.iv_at_detect},
         ${flag.skew_delta}, ${flag.z_score}, ${flag.ask_mid_div}, ${flag.vol_oi_ratio},
         ${flag.side_skew}, ${flag.side_dominant},
-        ${flag.flag_reasons}, ${flowPhase}, ${JSON.stringify(context)}::jsonb,
+        ${flag.bid_pct}, ${flag.ask_pct}, ${flag.mid_pct}, ${flag.total_vol_at_detect},
+        ${flag.flag_reasons}, ${flowPhase}, ${contextJson}::jsonb,
         ${flag.ts}
       )
       RETURNING id

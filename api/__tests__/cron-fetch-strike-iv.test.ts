@@ -210,21 +210,22 @@ function authedReq() {
 /**
  * Feed the schwabFetch mock a fresh chain for each ticker in
  * STRIKE_IV_TICKERS order (SPXW, NDXP, SPY, QQQ, IWM, SMH, NVDA, TSLA,
- * META, MSFT, SNDK, MSTR, MU — 13 total after the 2026-04-25 multi-
- * theme expansion). Any ticker set to `null` simulates a fetch failure.
+ * META, MSFT, GOOGL, SNDK, MSTR, MU — 14 total after the 2026-04-28
+ * GOOGL addition). Any ticker set to `null` simulates a fetch failure.
  * Tests that only care about a subset of the tickers should inline the
  * appropriate quiet `makeChain('SMH', 320, {})` etc. for the empty-chain
  * tail rather than relying on undefined mocks.
  */
 function quietExpansionChains() {
-  // The 6 expansion-tickers (SMH after IWM; TSLA/META/MSFT after NVDA;
-  // MSTR/MU after SNDK) as empty chains. Helper used by tests that
+  // The 7 expansion-tickers (SMH after IWM; TSLA/META/MSFT/GOOGL after
+  // NVDA; MSTR/MU after SNDK) as empty chains. Helper used by tests that
   // primarily assert on the original 7 tickers' behavior.
   return {
     smh: makeChain('SMH', 320, {}),
     tsla: makeChain('TSLA', 280, {}),
     meta: makeChain('META', 720, {}),
     msft: makeChain('MSFT', 470, {}),
+    googl: makeChain('GOOGL', 180, {}),
     mstr: makeChain('MSTR', 380, {}),
     mu: makeChain('MU', 180, {}),
   };
@@ -362,6 +363,7 @@ describe('fetch-strike-iv handler', () => {
       q.tsla,
       q.meta,
       q.msft,
+      q.googl,
       makeChain('SNDK', 140, {}),
       q.mstr,
       q.mu,
@@ -382,8 +384,8 @@ describe('fetch-strike-iv handler', () => {
     };
     // SPXW: 6 strikes; SPY: 4; QQQ: 4 → 14 total.
     expect(body.totalInserted).toBe(14);
-    // All 13 tickers reported.
-    expect(body.results).toHaveLength(13);
+    // All 14 tickers reported.
+    expect(body.results).toHaveLength(14);
     expect(body.results.find((r) => r.ticker === 'SPXW')?.rowsInserted).toBe(6);
     expect(body.results.find((r) => r.ticker === 'SPY')?.rowsInserted).toBe(4);
     expect(body.results.find((r) => r.ticker === 'QQQ')?.rowsInserted).toBe(4);
@@ -396,6 +398,7 @@ describe('fetch-strike-iv handler', () => {
       'TSLA',
       'META',
       'MSFT',
+      'GOOGL',
       'SNDK',
       'MSTR',
       'MU',
@@ -448,6 +451,7 @@ describe('fetch-strike-iv handler', () => {
       q1.tsla,
       q1.meta,
       q1.msft,
+      q1.googl,
       makeChain('SNDK', 140, {}),
       q1.mstr,
       q1.mu,
@@ -496,6 +500,7 @@ describe('fetch-strike-iv handler', () => {
       q2.tsla,
       q2.meta,
       q2.msft,
+      q2.googl,
       makeChain('SNDK', 140, {}),
       q2.mstr,
       q2.mu,
@@ -561,6 +566,7 @@ describe('fetch-strike-iv handler', () => {
       q3.tsla,
       q3.meta,
       q3.msft,
+      q3.googl,
       makeChain('SNDK', 140, {}),
       q3.mstr,
       q3.mu,
@@ -637,6 +643,7 @@ describe('fetch-strike-iv handler', () => {
       q4.tsla,
       q4.meta,
       q4.msft,
+      q4.googl,
       makeChain('SNDK', 140, {}),
       q4.mstr,
       q4.mu,
@@ -759,6 +766,7 @@ describe('fetch-strike-iv handler', () => {
       q5.tsla,
       q5.meta,
       q5.msft,
+      q5.googl,
       sndkChain,
       q5.mstr,
       q5.mu,
@@ -806,6 +814,7 @@ describe('fetch-strike-iv handler', () => {
       null,
       null,
       null,
+      null,
     ]);
     const res = mockResponse();
     await handler(authedReq(), res);
@@ -814,8 +823,8 @@ describe('fetch-strike-iv handler', () => {
     const body = res._json as {
       results: Array<{ ticker: string; skipped: boolean }>;
     };
-    // 12 non-SPXW tickers got null → 12 skipped with 'schwab_error'.
-    expect(body.results.filter((r) => r.skipped)).toHaveLength(12);
+    // 13 non-SPXW tickers got null → 13 skipped with 'schwab_error'.
+    expect(body.results.filter((r) => r.skipped)).toHaveLength(13);
   });
 
   // ── NVDA / SNDK single-name OI tiers (2026-04-24 expansion) ──
@@ -853,6 +862,7 @@ describe('fetch-strike-iv handler', () => {
       q6.tsla,
       q6.meta,
       q6.msft,
+      q6.googl,
       makeChain('SNDK', 140, {}),
       q6.mstr,
       q6.mu,
@@ -896,6 +906,7 @@ describe('fetch-strike-iv handler', () => {
       q7.tsla,
       q7.meta,
       q7.msft,
+      q7.googl,
       sndkChain,
       q7.mstr,
       q7.mu,
@@ -973,37 +984,36 @@ describe('fetch-strike-iv handler', () => {
       q8.tsla,
       q8.meta,
       q8.msft,
+      q8.googl,
       sndkChain,
       q8.mstr,
       q8.mu,
     ]);
 
-    // Program mockSql:
-    //   1. SPX history query (SELECT … FROM strike_iv_snapshots) → empty
-    //   2. Context-snapshot queries (many in parallel) → empty rows
-    //   3. iv_anomalies INSERT RETURNING id → [{id: 1}]
-    // Default mockResolvedValue already returns []; we just need the
-    // INSERT to return a row so the "inserted" counter increments.
-    //
-    // Strategy: make EVERY mockSql call after the initial history load
-    // return an empty rowset, EXCEPT the last call (which is the INSERT
-    // INTO iv_anomalies). We use the mockResolvedValueOnce queue, letting
-    // N earlier queries resolve empty, and the final one returns [{id}].
-    //
-    // Simpler: let every call default to []. The cron's RETURNING id
-    // check uses `length > 0` to count. So we accept that this specific
-    // test observes the anomaly via the totalAnomalies counter being
-    // either 0 or 1 depending on how the detector handles no-history
-    // z-score (null, so skew_delta alone must carry it).
-    //
-    // We switch the mock so the iv_anomalies INSERT returns [{id:1}] by
-    // keying off the raw SQL template string. mockSql is a plain vi.fn
-    // and the tagged template receives (strings, ...values). The INSERT
-    // INTO iv_anomalies text appears verbatim in the template strings.
+    // Program mockSql by template-string sniffing:
+    //   - INSERT INTO iv_anomalies → [{id: 1}]
+    //   - SELECT … FROM strike_trade_volume → ask-dominant tape stub for
+    //     the target strike 7060 so the new real-tape gate (migration 95,
+    //     2026-04-28) passes. Other tickers/strikes get nothing — they
+    //     either have no anomaly to evaluate or fail the vol/OI gate
+    //     above the tape gate.
+    //   - everything else → []
     mockSql.mockImplementation((strings: TemplateStringsArray) => {
       const joined = Array.isArray(strings) ? strings.join(' ') : '';
       if (joined.includes('INSERT INTO iv_anomalies')) {
         return Promise.resolve([{ id: 1 }]);
+      }
+      if (joined.includes('FROM strike_trade_volume')) {
+        return Promise.resolve([
+          {
+            strike: 7060,
+            side: 'put',
+            bid_total: 800,
+            ask_total: 4000,
+            mid_total: 200,
+            vol_total: 5000,
+          },
+        ]);
       }
       return Promise.resolve([]);
     });
@@ -1032,13 +1042,18 @@ describe('fetch-strike-iv handler', () => {
     // end-to-end contract between the detector and the persistence
     // layer. We scan all mockSql calls and pull out the anomaly INSERTs
     // to assert their parameter values. Tagged-template call shape is
-    // [strings, ...values]; the handler's VALUES (...) order is:
-    //   0: ticker        5: iv_at_detect      10: side_skew
-    //   1: strike        6: skew_delta        11: side_dominant
-    //   2: side          7: z_score           12: flag_reasons
-    //   3: expiry        8: ask_mid_div       13: flow_phase
-    //   4: spot_at_detect 9: vol_oi_ratio     14: context_snapshot
-    //                                         15: ts
+    // [strings, ...values]; the handler's VALUES (...) order (post-
+    // migration 95, 2026-04-28) is:
+    //   0: ticker         5: iv_at_detect       10: side_skew
+    //   1: strike         6: skew_delta         11: side_dominant
+    //   2: side           7: z_score            12: bid_pct
+    //   3: expiry         8: ask_mid_div        13: ask_pct
+    //   4: spot_at_detect 9: vol_oi_ratio       14: mid_pct
+    //                                           15: total_vol_at_detect
+    //                                           16: flag_reasons
+    //                                           17: flow_phase
+    //                                           18: context_snapshot
+    //                                           19: ts
     const insertCalls = vi.mocked(mockSql).mock.calls.filter((call) => {
       const strings = call[0] as TemplateStringsArray | undefined;
       const joined = Array.isArray(strings) ? strings.join(' ') : '';
@@ -1056,17 +1071,22 @@ describe('fetch-strike-iv handler', () => {
     expect(insertArgs[1]).toBe(7060);
     // vol_oi_ratio at position 9 (after ask_mid_div). 6000/600 = 10×.
     expect(insertArgs[9]).toBeCloseTo(10, 4);
-    // side_skew at position 10 — ask-dominant fixture (mark close to bid)
-    // produces ask_skew ≥ 0.65.
-    expect(insertArgs[10]).toBeGreaterThanOrEqual(0.65);
-    expect(insertArgs[10]).toBeLessThanOrEqual(1);
-    // side_dominant at position 11 — mark below midpoint → ASK dominance.
+    // side_skew at position 10 — real-tape ask-dominant fixture
+    // (4000 ask / 5000 total = 0.80) ≥ 0.65 gate.
+    expect(insertArgs[10]).toBeCloseTo(0.8, 2);
+    // side_dominant at position 11 — ask volume > bid volume in tape mock.
     expect(insertArgs[11]).toBe('ask');
-    expect(insertArgs[12]).toEqual(expect.arrayContaining(['skew_delta']));
-    expect(['early', 'mid', 'reactive']).toContain(insertArgs[13]);
+    // bid_pct, ask_pct, mid_pct — straight from the tape mock totals.
+    expect(insertArgs[12]).toBeCloseTo(0.16, 2);
+    expect(insertArgs[13]).toBeCloseTo(0.8, 2);
+    expect(insertArgs[14]).toBeCloseTo(0.04, 2);
+    // total_vol_at_detect at position 15.
+    expect(insertArgs[15]).toBe(5000);
+    expect(insertArgs[16]).toEqual(expect.arrayContaining(['skew_delta']));
+    expect(['early', 'mid', 'reactive']).toContain(insertArgs[17]);
     // context_snapshot is stringified JSON → parse it back and assert
     // the shape is a non-null object (matches ContextSnapshot's fields).
-    const ctxStr = insertArgs[14] as string;
+    const ctxStr = insertArgs[18] as string;
     expect(typeof ctxStr).toBe('string');
     const ctx = JSON.parse(ctxStr) as Record<string, unknown>;
     expect(ctx).not.toBeNull();
@@ -1117,6 +1137,7 @@ describe('fetch-strike-iv handler', () => {
       q9.tsla,
       q9.meta,
       q9.msft,
+      q9.googl,
       makeChain('SNDK', 140, {}),
       q9.mstr,
       q9.mu,

@@ -8,10 +8,12 @@ import {
   classifyFlowPhase,
   resolveAnomaly,
   strikeKey,
+  tapeKey,
   type AnomalyForResolve,
   type FollowOnSample,
   type StrikeSample,
   type AnomalyFlag,
+  type TapeStats,
 } from '../_lib/iv-anomaly.js';
 import type { ContextSnapshot } from '../_lib/anomaly-context.js';
 
@@ -50,6 +52,37 @@ function makeSample(
     ts: TS,
     ...overrides,
   };
+}
+
+/**
+ * Build a TapeStats. Defaults to ask-dominant 80/15/5 — comfortably above
+ * the 0.65 IV_SIDE_SKEW_THRESHOLD on the ask side. Tests exercising the
+ * gate boundary override these directly.
+ */
+function makeTape(overrides: Partial<TapeStats> = {}): TapeStats {
+  return {
+    bid_pct: 0.15,
+    ask_pct: 0.8,
+    mid_pct: 0.05,
+    total_vol: 5000,
+    ...overrides,
+  };
+}
+
+/**
+ * Build a tape Map satisfying the gate for every (ticker, strike, side)
+ * tuple in `samples`. Use when the test isn't exercising the side-skew
+ * gate — the default ask_pct=0.80 just keeps the gate from filtering.
+ */
+function tapeMapFor(
+  samples: StrikeSample[],
+  override?: TapeStats,
+): Map<string, TapeStats> {
+  const m = new Map<string, TapeStats>();
+  for (const s of samples) {
+    m.set(tapeKey(s.ticker, s.strike, s.side), override ?? makeTape());
+  }
+  return m;
 }
 
 function makeContext(
@@ -219,7 +252,12 @@ describe('detectAnomalies', () => {
     const historyByStrike = new Map<string, StrikeSample[]>();
     const spot = 7050; // puts are OTM (strike < spot)
 
-    const flags = detectAnomalies(snapshot, historyByStrike, spot);
+    const flags = detectAnomalies(
+      snapshot,
+      historyByStrike,
+      tapeMapFor(snapshot),
+      spot,
+    );
     expect(flags).toHaveLength(1);
     expect(flags[0]!.strike).toBe(7000);
     expect(flags[0]!.flag_reasons).toContain('skew_delta');
@@ -245,7 +283,12 @@ describe('detectAnomalies', () => {
     const key = strikeKey('SPX', 7000, 'put', EXPIRY);
     const historyByStrike = new Map<string, StrikeSample[]>([[key, history]]);
 
-    const flags = detectAnomalies(snapshot, historyByStrike, 7050);
+    const flags = detectAnomalies(
+      snapshot,
+      historyByStrike,
+      tapeMapFor(snapshot),
+      7050,
+    );
     // Only strike=7000 has a mapped history; neighbors get empty history
     // → null z → no flag. So exactly one z_score flag, on strike 7000.
     const zFlags = flags.filter((f) => f.flag_reasons.includes('z_score'));
@@ -263,7 +306,12 @@ describe('detectAnomalies', () => {
       makeSample(7005, 0.4),
       makeSample(7010, 0.4),
     ];
-    const flags = detectAnomalies(snapshot, new Map(), 7050);
+    const flags = detectAnomalies(
+      snapshot,
+      new Map(),
+      tapeMapFor(snapshot),
+      7050,
+    );
     expect(flags).toEqual([]);
   });
 
@@ -275,8 +323,12 @@ describe('detectAnomalies', () => {
       makeSample(7005, 0.4),
       makeSample(7010, 0.4),
     ];
-    expect(detectAnomalies(snapshot, new Map(), 0)).toEqual([]);
-    expect(detectAnomalies(snapshot, new Map(), Number.NaN)).toEqual([]);
+    expect(
+      detectAnomalies(snapshot, new Map(), tapeMapFor(snapshot), 0),
+    ).toEqual([]);
+    expect(
+      detectAnomalies(snapshot, new Map(), tapeMapFor(snapshot), Number.NaN),
+    ).toEqual([]);
   });
 
   it('skips strikes with null iv_mid', () => {
@@ -287,7 +339,12 @@ describe('detectAnomalies', () => {
       makeSample(7005, 0.4),
       makeSample(7010, 0.4),
     ];
-    const flags = detectAnomalies(snapshot, new Map(), 7050);
+    const flags = detectAnomalies(
+      snapshot,
+      new Map(),
+      tapeMapFor(snapshot),
+      7050,
+    );
     expect(flags).toEqual([]);
   });
 
@@ -309,7 +366,9 @@ describe('detectAnomalies', () => {
       makeSample(7005, 0.4),
       makeSample(7010, 0.4),
     ];
-    expect(detectAnomalies(snapshot, new Map(), 7050)).toEqual([]);
+    expect(
+      detectAnomalies(snapshot, new Map(), tapeMapFor(snapshot), 7050),
+    ).toEqual([]);
   });
 
   it('fires when vol/OI >= 5.0× AND skew_delta exceeds threshold', () => {
@@ -325,7 +384,12 @@ describe('detectAnomalies', () => {
       makeSample(7005, 0.4),
       makeSample(7010, 0.4),
     ];
-    const flags = detectAnomalies(snapshot, new Map(), 7050);
+    const flags = detectAnomalies(
+      snapshot,
+      new Map(),
+      tapeMapFor(snapshot),
+      7050,
+    );
     expect(flags).toHaveLength(1);
     expect(flags[0]!.strike).toBe(7000);
     expect(flags[0]!.flag_reasons).toContain('skew_delta');
@@ -344,7 +408,12 @@ describe('detectAnomalies', () => {
       makeSample(7005, 0.4),
       makeSample(7010, 0.4),
     ];
-    const flags = detectAnomalies(snapshot, new Map(), 7050);
+    const flags = detectAnomalies(
+      snapshot,
+      new Map(),
+      tapeMapFor(snapshot),
+      7050,
+    );
     expect(flags).toHaveLength(1);
     expect(flags[0]!.vol_oi_ratio).toBeCloseTo(48, 4);
   });
@@ -366,7 +435,9 @@ describe('detectAnomalies', () => {
         makeSample(7005, 0.4),
         makeSample(7010, 0.4),
       ];
-      expect(detectAnomalies(snapshot, new Map(), 7050)).toEqual([]);
+      expect(
+        detectAnomalies(snapshot, new Map(), tapeMapFor(snapshot), 7050),
+      ).toEqual([]);
     }
   });
 
@@ -385,94 +456,107 @@ describe('detectAnomalies', () => {
       makeSample(7005, 0.4),
       makeSample(7010, 0.4),
     ];
-    expect(detectAnomalies(snapshot, new Map(), 7050)).toEqual([]);
+    expect(
+      detectAnomalies(snapshot, new Map(), tapeMapFor(snapshot), 7050),
+    ).toEqual([]);
   });
 
-  // ── Secondary gate: side-skew (proxy for tape-side dominance) ──
+  // ── Secondary gate: real-tape side dominance ──────────────────
 
-  it('fires with side_dominant=ask when iv_ask is far above iv_mid (ask-dominant accumulation)', () => {
-    // ask_skew = (0.470 - 0.450) / (0.470 - 0.445) = 0.020 / 0.025 = 0.80
-    // → above the 0.65 IV_SIDE_SKEW_THRESHOLD.
-    const target: StrikeSample = {
-      ...makeSample(7000, 0.45),
-      iv_bid: 0.445,
-      iv_mid: 0.45,
-      iv_ask: 0.47,
-    };
+  it('fires with side_dominant=ask when cumulative tape is ≥ 65% ask-side (accumulation)', () => {
     const snapshot: StrikeSample[] = [
       makeSample(6990, 0.4),
       makeSample(6995, 0.4),
-      target,
+      makeSample(7000, 0.45),
       makeSample(7005, 0.4),
       makeSample(7010, 0.4),
     ];
-    const flags = detectAnomalies(snapshot, new Map(), 7050);
+    const tape = new Map<string, TapeStats>([
+      [
+        tapeKey('SPX', 7000, 'put'),
+        { bid_pct: 0.15, ask_pct: 0.8, mid_pct: 0.05, total_vol: 4000 },
+      ],
+    ]);
+    const flags = detectAnomalies(snapshot, new Map(), tape, 7050);
     expect(flags).toHaveLength(1);
     expect(flags[0]!.strike).toBe(7000);
     expect(flags[0]!.side_dominant).toBe('ask');
     expect(flags[0]!.side_skew).toBeCloseTo(0.8, 4);
+    expect(flags[0]!.ask_pct).toBeCloseTo(0.8, 4);
+    expect(flags[0]!.bid_pct).toBeCloseTo(0.15, 4);
+    expect(flags[0]!.mid_pct).toBeCloseTo(0.05, 4);
+    expect(flags[0]!.total_vol_at_detect).toBe(4000);
     expect(flags[0]!.flag_reasons).toContain('skew_delta');
   });
 
-  it('fires with side_dominant=bid when iv_bid is far below iv_mid (bid-dominant distribution)', () => {
-    // bid_skew = (0.450 - 0.430) / (0.455 - 0.430) = 0.020 / 0.025 = 0.80
-    // → above the 0.65 threshold; ask side has 0.20.
-    const target: StrikeSample = {
-      ...makeSample(7000, 0.45),
-      iv_bid: 0.43,
-      iv_mid: 0.45,
-      iv_ask: 0.455,
-    };
+  it('fires with side_dominant=bid when cumulative tape is ≥ 65% bid-side (distribution)', () => {
     const snapshot: StrikeSample[] = [
       makeSample(6990, 0.4),
       makeSample(6995, 0.4),
-      target,
+      makeSample(7000, 0.45),
       makeSample(7005, 0.4),
       makeSample(7010, 0.4),
     ];
-    const flags = detectAnomalies(snapshot, new Map(), 7050);
+    const tape = new Map<string, TapeStats>([
+      [
+        tapeKey('SPX', 7000, 'put'),
+        { bid_pct: 0.78, ask_pct: 0.18, mid_pct: 0.04, total_vol: 9000 },
+      ],
+    ]);
+    const flags = detectAnomalies(snapshot, new Map(), tape, 7050);
     expect(flags).toHaveLength(1);
     expect(flags[0]!.strike).toBe(7000);
     expect(flags[0]!.side_dominant).toBe('bid');
-    expect(flags[0]!.side_skew).toBeCloseTo(0.8, 4);
+    expect(flags[0]!.side_skew).toBeCloseTo(0.78, 4);
+    expect(flags[0]!.bid_pct).toBeCloseTo(0.78, 4);
   });
 
-  it('does NOT fire when the IV spread is balanced (50/50 — 2-sided unwinding noise)', () => {
-    // ask_skew = (0.460 - 0.450) / (0.460 - 0.440) = 0.010 / 0.020 = 0.50
-    // → below the 0.65 threshold; perfectly balanced spread = pin trade.
-    const target: StrikeSample = {
-      ...makeSample(7000, 0.45),
-      iv_bid: 0.44,
-      iv_mid: 0.45,
-      iv_ask: 0.46,
-    };
+  it('does NOT fire when cumulative tape is balanced (50/50 — 2-sided rolling noise)', () => {
     const snapshot: StrikeSample[] = [
       makeSample(6990, 0.4),
       makeSample(6995, 0.4),
-      target,
+      makeSample(7000, 0.45),
       makeSample(7005, 0.4),
       makeSample(7010, 0.4),
     ];
-    expect(detectAnomalies(snapshot, new Map(), 7050)).toEqual([]);
+    const balanced = new Map<string, TapeStats>([
+      [
+        tapeKey('SPX', 7000, 'put'),
+        { bid_pct: 0.5, ask_pct: 0.5, mid_pct: 0, total_vol: 6000 },
+      ],
+    ]);
+    expect(detectAnomalies(snapshot, new Map(), balanced, 7050)).toEqual([]);
   });
 
-  it('silently skips strikes with non-positive bid-ask spread (degenerate quote)', () => {
-    // iv_ask <= iv_bid — division would be NaN/negative; the gate must
-    // treat this as "no directional info" and skip without throwing.
-    const target: StrikeSample = {
-      ...makeSample(7000, 0.45),
-      iv_bid: 0.45,
-      iv_mid: 0.45,
-      iv_ask: 0.45, // spread = 0
-    };
+  it('skips strikes with no tape rows (no UW prints today on this strike)', () => {
+    // Strike has Schwab volume + IV signal but UW tape is missing — could
+    // be a sub-minute lag from the tape cron, or a strike that hasn't
+    // traded yet today. Either way, the gate cannot judge directionality.
     const snapshot: StrikeSample[] = [
       makeSample(6990, 0.4),
       makeSample(6995, 0.4),
-      target,
+      makeSample(7000, 0.45),
       makeSample(7005, 0.4),
       makeSample(7010, 0.4),
     ];
-    expect(detectAnomalies(snapshot, new Map(), 7050)).toEqual([]);
+    expect(detectAnomalies(snapshot, new Map(), new Map(), 7050)).toEqual([]);
+  });
+
+  it('skips strikes with zero total tape volume (defensive — should be filtered upstream)', () => {
+    const snapshot: StrikeSample[] = [
+      makeSample(6990, 0.4),
+      makeSample(6995, 0.4),
+      makeSample(7000, 0.45),
+      makeSample(7005, 0.4),
+      makeSample(7010, 0.4),
+    ];
+    const empty = new Map<string, TapeStats>([
+      [
+        tapeKey('SPX', 7000, 'put'),
+        { bid_pct: 0, ask_pct: 0, mid_pct: 0, total_vol: 0 },
+      ],
+    ]);
+    expect(detectAnomalies(snapshot, new Map(), empty, 7050)).toEqual([]);
   });
 });
 
@@ -492,6 +576,10 @@ describe('classifyFlowPhase', () => {
     vol_oi_ratio: 12.5,
     side_skew: 0.78,
     side_dominant: 'ask',
+    bid_pct: 0.18,
+    ask_pct: 0.78,
+    mid_pct: 0.04,
+    total_vol_at_detect: 8000,
     flag_reasons: ['skew_delta', 'z_score'],
     flow_phase: 'mid',
     ts: TS,

@@ -81,6 +81,7 @@ function uwSymbol(ticker: StrikeIVTicker): string {
     case 'TSLA':
     case 'META':
     case 'MSFT':
+    case 'GOOGL':
     case 'SNDK':
     case 'MSTR':
     case 'MU':

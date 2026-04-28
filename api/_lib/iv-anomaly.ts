@@ -18,8 +18,16 @@
  *      "Tracked separately, not a gate"). It serves as a supporting
  *      signal when the other two fire.
  *
- * The module is side-effect-free: it takes samples + history in, and
- * emits a list of `AnomalyFlag` rows the caller persists into the
+ * Side-skew gate (replaces the IV-spread proxy as of 2026-04-28): uses
+ * cumulative-since-open bid/ask volume from `strike_trade_volume`. Old
+ * proxy was systematically inverted on penny-priced ETF options because
+ * Schwab's `mark` snaps to `ask` on those, pinning iv_mid at iv_ask.
+ * Caller passes `tapeByKey` keyed on `${ticker}:${strike}:${side}` (NO
+ * expiry — UW's flow-per-strike-intraday aggregates across expiries).
+ * See: docs/superpowers/specs/iv-anomaly-real-tape-bidask-2026-04-28.md.
+ *
+ * The module is side-effect-free: it takes samples + history + tape in
+ * and emits a list of `AnomalyFlag` rows the caller persists into the
  * `iv_anomalies` table. Context capture lives in `anomaly-context.ts`.
  */
 
@@ -55,6 +63,32 @@ export interface StrikeSample {
   ts: string;
 }
 
+/**
+ * Cumulative-since-open tape volume splits for one (ticker, strike, side).
+ * `bid_pct + ask_pct + mid_pct` should sum to ~1.0 (rounding). Caller
+ * aggregates `SUM(*)` from `strike_trade_volume` for the trading day up
+ * to the detection ts, then divides each side by `total_vol`.
+ */
+export interface TapeStats {
+  bid_pct: number;
+  ask_pct: number;
+  mid_pct: number;
+  total_vol: number;
+}
+
+/**
+ * Tape lookup key — `${ticker}:${strike}:${side}`. Note: NO expiry.
+ * `strike_trade_volume` aggregates across expiries by design (UW's
+ * flow-per-strike-intraday endpoint reports per-strike, expiry-agnostic).
+ */
+export function tapeKey(
+  ticker: string,
+  strike: number,
+  side: 'call' | 'put',
+): string {
+  return `${ticker}:${strike}:${side}`;
+}
+
 export interface AnomalyFlag {
   ticker: string;
   strike: number;
@@ -76,27 +110,43 @@ export interface AnomalyFlag {
    */
   vol_oi_ratio: number | null;
   /**
-   * `max(ask_skew, bid_skew)` at detection time, where
-   * `ask_skew = (iv_ask - iv_mid) / (iv_ask - iv_bid)` and
-   * `bid_skew = 1 - ask_skew`. 0.5 = perfectly mid (two-sided),
-   * 1.0 = entire bid-ask spread sits on one side. Null only when the
-   * spread was non-positive at detect (degenerate quote — shouldn't
-   * occur post-gate). Surfaced on every flag for ML labeling.
+   * `max(ask_pct, bid_pct)` at detection time — fraction of the day's
+   * cumulative volume on this strike that printed on the dominant side.
+   * 0.5 = balanced two-sided flow, 1.0 = every print was on the same
+   * side. Same numeric range as the legacy IV-spread proxy so existing
+   * UI/threshold code keeps working; semantics are now real volume.
    */
   side_skew: number | null;
   /**
-   * Which side dominates the IV spread at detection time:
-   *   - 'ask'   — `iv_ask - iv_mid` makes up ≥ IV_SIDE_SKEW_THRESHOLD of
-   *               the spread (MM marking up offer faster than mid).
-   *   - 'bid'   — `iv_mid - iv_bid` makes up ≥ threshold (mid leaning
-   *               toward the bid; flow hitting the bid).
+   * Which side dominated cumulative volume at detection time:
+   *   - 'ask'   — buyers lifting the offer (≥ IV_SIDE_SKEW_THRESHOLD of
+   *               total tape volume printed at the ask).
+   *   - 'bid'   — sellers hitting the bid (≥ threshold printed at the bid).
    *   - 'mixed' — neither side clears the gate (two-sided / pin trade).
-   *               Filtered out before reaching `flags`, so callers
-   *               should never see this on a returned flag — present
-   *               for type-completeness only.
-   *   - null    — spread non-positive (degenerate).
+   *               Filtered out before reaching `flags`; present for
+   *               type-completeness only.
+   *   - null    — no tape rows for this strike yet today (also filtered).
    */
   side_dominant: 'ask' | 'bid' | 'mixed' | null;
+  /**
+   * Fraction of cumulative tape volume that printed at the bid. 0..1.
+   * Null on legacy rows pre-migration 95 (real-tape gate replaced the
+   * IV-spread proxy on 2026-04-28).
+   */
+  bid_pct: number | null;
+  /** Fraction at the ask. 0..1. See `bid_pct`. */
+  ask_pct: number | null;
+  /**
+   * Fraction in the middle (neither at bid nor ask). 0..1. UW's
+   * flow-per-strike-intraday classifies these as "no side determined" —
+   * pin trades, mid-market crosses, etc.
+   */
+  mid_pct: number | null;
+  /**
+   * Total tape volume on this strike today up to detection ts.
+   * Denominator for `bid_pct/ask_pct/mid_pct`. Null pre-migration 95.
+   */
+  total_vol_at_detect: number | null;
   /** Non-empty; contains any combination of 'skew_delta', 'z_score'. */
   flag_reasons: string[];
   /**
@@ -237,10 +287,16 @@ function computeAskMidDiv(sample: StrikeSample): number | null {
  * The returned flags leave `flow_phase` undefined — callers must run
  * `classifyFlowPhase(flag, context)` once a `ContextSnapshot` is
  * assembled, then use that value for persistence.
+ *
+ * `tapeByKey` keys are `tapeKey(ticker, strike, side)` — no expiry. The
+ * caller aggregates `strike_trade_volume` for today up to the detection
+ * ts. Strikes with no tape row are dropped (the gate cannot judge
+ * directionality without prints).
  */
 export function detectAnomalies(
   latestSnapshot: StrikeSample[],
   historyByStrike: Map<string, StrikeSample[]>,
+  tapeByKey: Map<string, TapeStats>,
   spot: number,
 ): AnomalyFlag[] {
   if (!isFiniteNumber(spot) || spot <= 0) return [];
@@ -287,34 +343,27 @@ export function detectAnomalies(
       continue;
     }
 
-    // SECONDARY GATE: side-skew (proxy for tape-side dominance).
+    // SECONDARY GATE: real tape-side dominance.
     //
     // Filters out 2-sided unwinding noise (e.g., 0DTE strikes pin-trading
     // at 50/50 ask/bid) that the vol/OI gate alone can't see — those
     // strikes can have outsized vol/OI when holders are ROLLING positions
-    // through the same strike, but their IV-spread skew sits at ~0.5
-    // because there's no directional MM lean. Real informed flow shows up
-    // as ask_skew → 1 (or bid_skew → 1 for distribution).
+    // through the same strike. Real informed flow shows up as bid_pct → 1
+    // (distribution) or ask_pct → 1 (accumulation).
     //
-    // Uses iv_bid / iv_mid / iv_ask as a proxy for true side-split volume
-    // (deferred to `tape-side-volume-exit-signal-2026-04-24.md`). When that
-    // spec ships the proxy will be REPLACED with real bid_pct/ask_pct, not
-    // augmented.
-    if (
-      target.iv_ask == null ||
-      target.iv_bid == null ||
-      !isFiniteNumber(target.iv_ask) ||
-      !isFiniteNumber(target.iv_bid)
-    ) {
-      continue;
-    }
-    const spread = target.iv_ask - target.iv_bid;
-    if (spread <= 0) continue; // Degenerate quote — no directional info.
-    const askSkew = (target.iv_ask - target.iv_mid) / spread;
-    const bidSkew = (target.iv_mid - target.iv_bid) / spread;
-    const sideSkew = Math.max(askSkew, bidSkew);
+    // Uses cumulative-since-open bid/ask volume from strike_trade_volume.
+    // No tape rows = strike hasn't traded today (or sub-minute lag from
+    // the tape cron) — skip rather than emit a degraded flag. The vol/OI
+    // gate above already required meaningful Schwab volume, so a strike
+    // with zero UW tape is a real anomaly worth dropping.
+    const tapeStats = tapeByKey.get(
+      tapeKey(target.ticker, target.strike, target.side),
+    );
+    if (!tapeStats || tapeStats.total_vol <= 0) continue;
+    const sideSkew = Math.max(tapeStats.ask_pct, tapeStats.bid_pct);
     if (sideSkew < IV_SIDE_SKEW_THRESHOLD) continue;
-    const sideDominant: 'ask' | 'bid' = askSkew >= bidSkew ? 'ask' : 'bid';
+    const sideDominant: 'ask' | 'bid' =
+      tapeStats.ask_pct >= tapeStats.bid_pct ? 'ask' : 'bid';
 
     const groupKey = `${target.ticker}:${target.side}:${target.expiry}`;
     const group = groups.get(groupKey) ?? [];
@@ -360,6 +409,10 @@ export function detectAnomalies(
       vol_oi_ratio: volOiRatio,
       side_skew: sideSkew,
       side_dominant: sideDominant,
+      bid_pct: tapeStats.bid_pct,
+      ask_pct: tapeStats.ask_pct,
+      mid_pct: tapeStats.mid_pct,
+      total_vol_at_detect: tapeStats.total_vol,
       flag_reasons: reasons,
       // flow_phase intentionally omitted — see classifyFlowPhase.
       ts: target.ts,

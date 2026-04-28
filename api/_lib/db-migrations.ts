@@ -2598,17 +2598,84 @@ export const MIGRATIONS: Migration[] = [
     ],
   },
   {
+    id: 95,
+    description:
+      'Add real-tape bid/ask volume columns to iv_anomalies (2026-04-28). ' +
+      'Replaces the IV-spread-position proxy in side_skew/side_dominant ' +
+      'with cumulative-since-open volume splits from strike_trade_volume. ' +
+      'The proxy was systematically inverted on penny-priced ETF options ' +
+      '(Schwab `mark` snaps to `ask`, pinning iv_mid at iv_ask). Old rows ' +
+      'keep proxy-derived side_skew/side_dominant; new rows additionally ' +
+      'populate bid_pct/ask_pct/mid_pct/total_vol_at_detect from the real ' +
+      'tape and recompute side_skew/side_dominant from those. See spec: ' +
+      'docs/superpowers/specs/iv-anomaly-real-tape-bidask-2026-04-28.md.',
+    statements: (sql) => [
+      sql`ALTER TABLE iv_anomalies ADD COLUMN IF NOT EXISTS bid_pct NUMERIC(4,3)`,
+      sql`ALTER TABLE iv_anomalies ADD COLUMN IF NOT EXISTS ask_pct NUMERIC(4,3)`,
+      sql`ALTER TABLE iv_anomalies ADD COLUMN IF NOT EXISTS mid_pct NUMERIC(4,3)`,
+      sql`ALTER TABLE iv_anomalies ADD COLUMN IF NOT EXISTS total_vol_at_detect INTEGER`,
+    ],
+  },
+  {
     id: 96,
     description:
       'Add fwd_return_eod column to vega_spike_events for end-of-day ' +
       'forward-return measurement on each spike. Lets the dashboard ' +
       'compare hold-to-close P&L against the existing 5/15/30-min ' +
       'returns. Populated by the same enrich-vega-spike-returns cron ' +
-      'using the last 1-min candle of the spike\'s ET trading day in ' +
+      "using the last 1-min candle of the spike's ET trading day in " +
       'etf_candles_1m. NULL until the cron picks up the row; nullable ' +
       'forever for spikes whose anchor candle is missing.',
     statements: (sql) => [
       sql`ALTER TABLE vega_spike_events ADD COLUMN IF NOT EXISTS fwd_return_eod NUMERIC`,
+    ],
+  },
+  {
+    id: 97,
+    description:
+      'Create gamma_squeeze_events table for the velocity-based gamma squeeze ' +
+      'detector (2026-04-28). Sibling of the IV anomaly detector — different ' +
+      'signal (vol/OI velocity instead of side concentration), different ' +
+      'table, different alert path. Catches the TSLA 375C / NVDA 212.5C ' +
+      'archetype: balanced-tape near-ATM 0DTE calls that win via dealer ' +
+      'hedging reflexivity rather than informed flow. Velocity = vol/OI ' +
+      'added in last 15 min; acceleration = velocity vs prior 15 min; ' +
+      'proximity = spot vs strike on the OTM side; trend = 5-min spot ' +
+      'direction. NDG sign joined from strike_exposures (SPX/SPY/QQQ only). ' +
+      'See spec: docs/superpowers/specs/gamma-squeeze-velocity-detector-2026-04-28.md.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS gamma_squeeze_events (
+          id                    BIGSERIAL PRIMARY KEY,
+          ticker                TEXT NOT NULL,
+          strike                NUMERIC(10,2) NOT NULL,
+          side                  TEXT NOT NULL,
+          expiry                DATE NOT NULL,
+          ts                    TIMESTAMPTZ NOT NULL,
+          spot_at_detect        NUMERIC NOT NULL,
+          pct_from_strike       NUMERIC NOT NULL,
+          spot_trend_5m         NUMERIC NOT NULL,
+          vol_oi_15m            NUMERIC NOT NULL,
+          vol_oi_15m_prior      NUMERIC NOT NULL,
+          vol_oi_acceleration   NUMERIC NOT NULL,
+          vol_oi_total          NUMERIC NOT NULL,
+          net_gamma_sign        TEXT NOT NULL,
+          squeeze_phase         TEXT NOT NULL,
+          context_snapshot      JSONB,
+          spot_at_close         NUMERIC,
+          reached_strike        BOOLEAN,
+          max_call_pnl_pct      NUMERIC,
+          inserted_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_gamma_squeeze_ticker_ts
+          ON gamma_squeeze_events (ticker, ts DESC)
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_gamma_squeeze_compound_key
+          ON gamma_squeeze_events (ticker, strike, side, expiry, ts DESC)
+      `,
     ],
   },
 ];

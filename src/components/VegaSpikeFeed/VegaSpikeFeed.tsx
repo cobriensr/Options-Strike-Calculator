@@ -303,10 +303,7 @@ export default function VegaSpikeFeed({
       badge={`n=${filteredSpikes.length} events`}
       headerRight={
         <div className="flex items-center gap-2">
-          <TickerFilterToggle
-            value={tickerFilter}
-            onChange={setTickerFilter}
-          />
+          <TickerFilterToggle value={tickerFilter} onChange={setTickerFilter} />
           <RangeToggle value={range} onChange={setRange} />
         </div>
       }
