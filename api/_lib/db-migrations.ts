@@ -2567,4 +2567,34 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 94,
+    description:
+      'Create etf_candles_1m table for raw SPY/QQQ 1-minute OHLC candles. ' +
+      'Phase 5 of the Dir Vega Spike Monitor — backing data for the ' +
+      'enrich-vega-spike-returns cron that computes 5/15/30-min forward ' +
+      'returns on each spike event. Distinct from fetch-spx-candles-1m ' +
+      'which fetches SPY but stores SPX-derived (×ratio) prices, not raw. ' +
+      'Unique (ticker, timestamp) for idempotent ingest.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS etf_candles_1m (
+          id          BIGSERIAL PRIMARY KEY,
+          ticker      TEXT NOT NULL,
+          timestamp   TIMESTAMPTZ NOT NULL,
+          open        NUMERIC NOT NULL,
+          high        NUMERIC NOT NULL,
+          low         NUMERIC NOT NULL,
+          close       NUMERIC NOT NULL,
+          volume      BIGINT,
+          inserted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          UNIQUE (ticker, timestamp)
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_etf_candles_1m_ticker_ts
+          ON etf_candles_1m (ticker, timestamp DESC)
+      `,
+    ],
+  },
 ];

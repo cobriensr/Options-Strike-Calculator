@@ -58,6 +58,10 @@
       "schedule": "* 13-21 * * 1-5"
     },
     {
+      "path": "/api/cron/fetch-etf-candles-1m",
+      "schedule": "* 13-21 * * 1-5"
+    },
+    {
       "path": "/api/cron/fetch-gex-0dte",
       "schedule": "* 13-21 * * 1-5"
     },
