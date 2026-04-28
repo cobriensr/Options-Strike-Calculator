@@ -144,4 +144,34 @@ describe('OpeningBlocksCard', () => {
     render(<OpeningBlocksCard blocks={[makeBlock()]} />);
     expect(screen.getByText(/1 block —/)).toBeInTheDocument();
   });
+
+  it('renders timestamps in Central Time during CDT (UTC-5)', () => {
+    // 2026-04-27 is in CDT — 14:30 UTC = 09:30 CT.
+    render(
+      <OpeningBlocksCard
+        blocks={[makeBlock({ executed_at: '2026-04-27T14:30:00.000Z' })]}
+      />,
+    );
+    expect(screen.getByText('09:30:00.000')).toBeInTheDocument();
+  });
+
+  it('renders timestamps correctly in CST (UTC-6) — DST regression guard', () => {
+    // 2026-01-15 is in CST. 14:30 UTC = 08:30 CT (NOT 09:30 — that would
+    // be the old hardcoded -5h offset bug).
+    render(
+      <OpeningBlocksCard
+        blocks={[makeBlock({ executed_at: '2026-01-15T14:30:00.000Z' })]}
+      />,
+    );
+    expect(screen.getByText('08:30:00.000')).toBeInTheDocument();
+  });
+
+  it('preserves sub-second precision in the time display', () => {
+    render(
+      <OpeningBlocksCard
+        blocks={[makeBlock({ executed_at: '2026-04-27T14:30:42.137Z' })]}
+      />,
+    );
+    expect(screen.getByText('09:30:42.137')).toBeInTheDocument();
+  });
 });

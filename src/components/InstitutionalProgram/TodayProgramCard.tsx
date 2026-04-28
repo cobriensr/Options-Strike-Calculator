@@ -3,6 +3,7 @@ import type {
   DailyProgramSummary,
   InstitutionalBlock,
 } from '../../hooks/useInstitutionalProgram.js';
+import { getCTTime } from '../../utils/timezone.js';
 
 interface Props {
   today: DailyProgramSummary | null;
@@ -19,6 +20,20 @@ type SortKey =
   | 'side'
   | 'cond';
 type SortDir = 'asc' | 'desc';
+
+/** Format an executed_at UTC timestamp as `HH:MM:SS.sss` in Central Time.
+ * Uses `getCTTime` (Intl-backed, DST-safe) for hour/minute. Replaces an
+ * earlier hardcoded `-5h` offset that was correct during CDT but ran 1
+ * hour late during CST. */
+function formatCTTimestamp(iso: string): string {
+  const ts = new Date(iso);
+  const { hour, minute } = getCTTime(ts);
+  const hh = String(hour).padStart(2, '0');
+  const mm = String(minute).padStart(2, '0');
+  const ss = String(ts.getUTCSeconds()).padStart(2, '0');
+  const ms = String(ts.getUTCMilliseconds()).padStart(3, '0');
+  return `${hh}:${mm}:${ss}.${ms}`;
+}
 
 /** Neon DOUBLE PRECISION comes through as a string; cast for both
  * display and sort to avoid lexical comparison bugs ('$896k' > '$1.9M'). */
@@ -204,13 +219,10 @@ function SortableBlockTable({ blocks }: { blocks: InstitutionalBlock[] }) {
         </thead>
         <tbody>
           {sorted.map((b, i) => {
-            const ct = new Date(
-              new Date(b.executed_at).getTime() - 5 * 3600 * 1000,
-            );
             // HH:MM:SS.sss — sub-second precision disambiguates burst
             // clusters of distinct trades that share identical size /
             // price / premium but executed at different microseconds.
-            const timeDisplay = ct.toISOString().slice(11, 23);
+            const timeDisplay = formatCTTimestamp(b.executed_at);
             return (
               <tr
                 key={

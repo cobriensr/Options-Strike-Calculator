@@ -20,6 +20,21 @@ interface Props {
 
 function BulletedText({ text }: Readonly<Props>) {
   const lines = text.split('\n');
+
+  // Legacy paragraph-form text — no "- " bullet markers anywhere — gets
+  // rendered whole with newlines preserved. Without this guard, the
+  // line-by-line loop below would route every non-bullet line into the
+  // header <p> branch, fragmenting paragraphs and stripping their
+  // intra-paragraph whitespace. Matches the file-level contract.
+  const hasBulletMarker = lines.some((l) => l.trim().startsWith('- '));
+  if (!hasBulletMarker) {
+    return (
+      <p className="text-secondary text-[11px] leading-relaxed whitespace-pre-wrap">
+        {text}
+      </p>
+    );
+  }
+
   const elements: ReactNode[] = [];
   let bulletGroup: string[] = [];
   let groupKey = 0;
@@ -62,16 +77,6 @@ function BulletedText({ text }: Readonly<Props>) {
     );
   }
   flushBullets();
-
-  // No bullets and no header lines means a legacy paragraph blob.
-  // Render it whole, preserving any embedded newlines.
-  if (elements.length === 0) {
-    return (
-      <p className="text-secondary text-[11px] leading-relaxed whitespace-pre-wrap">
-        {text}
-      </p>
-    );
-  }
 
   return (
     <>

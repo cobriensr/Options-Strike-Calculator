@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { InstitutionalBlock } from '../../hooks/useInstitutionalProgram.js';
+import { getCTTime } from '../../utils/timezone.js';
 
 interface Props {
   blocks: InstitutionalBlock[];
@@ -17,6 +18,21 @@ type SortKey =
   | 'mny'
   | 'cond';
 type SortDir = 'asc' | 'desc';
+
+/** Format an executed_at UTC timestamp as `HH:MM:SS.sss` in Central Time.
+ * Uses `getCTTime` (Intl-backed, DST-safe) for hour/minute, then takes
+ * seconds + millis from the UTC components since they are timezone-
+ * invariant. Replaces an earlier hardcoded `-5h` offset that was correct
+ * during CDT but ran 1 hour late during CST. */
+function formatCTTimestamp(iso: string): string {
+  const ts = new Date(iso);
+  const { hour, minute } = getCTTime(ts);
+  const hh = String(hour).padStart(2, '0');
+  const mm = String(minute).padStart(2, '0');
+  const ss = String(ts.getUTCSeconds()).padStart(2, '0');
+  const ms = String(ts.getUTCMilliseconds()).padStart(3, '0');
+  return `${hh}:${mm}:${ss}.${ms}`;
+}
 
 /** Format premium in $k for sub-$1M and $M for ≥$1M. Input may be a
  * string when it comes straight from Neon DOUBLE PRECISION — coerce. */
@@ -157,12 +173,9 @@ export function OpeningBlocksCard({ blocks, dateLabel = 'today' }: Props) {
           </thead>
           <tbody>
             {sorted.map((b, i) => {
-              const ct = new Date(
-                new Date(b.executed_at).getTime() - 5 * 3600 * 1000,
-              );
               // HH:MM:SS.sss gives enough precision to disambiguate
               // sub-second burst clusters that look like duplicates.
-              const timeDisplay = ct.toISOString().slice(11, 23);
+              const timeDisplay = formatCTTimestamp(b.executed_at);
               return (
                 <tr
                   key={

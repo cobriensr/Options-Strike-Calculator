@@ -36,12 +36,7 @@ describe('BulletedText', () => {
     expect(container.querySelectorAll('ul')).toHaveLength(2);
   });
 
-  it('triggers the legacy whitespace-pre-wrap fallback when input has no bullets and no header lines (empty string)', () => {
-    // Legacy fallback (`elements.length === 0`) is only reachable when no
-    // line emits an element — i.e. empty string or pure-whitespace input.
-    // See known-bug note in src/components/TRACELive/BulletedText.tsx:
-    // the fallback's intent ("render legacy paragraph text whole") is
-    // unreachable for any non-blank input under the current control flow.
+  it('renders the empty string as a single empty whitespace-pre-wrap paragraph', () => {
     const { container } = render(<BulletedText text="" />);
     const ps = container.querySelectorAll('p');
     expect(ps).toHaveLength(1);
@@ -49,21 +44,24 @@ describe('BulletedText', () => {
     expect(ps[0]?.textContent).toBe('');
   });
 
-  it('renders non-bullet, non-blank lines as separate header <p> elements (current behavior)', () => {
-    // Documents current behavior — each non-bullet line becomes its own
-    // styled header paragraph, even when the caller passed legacy
-    // paragraph-form prose. Newlines are NOT preserved, contrary to the
-    // file-level comment.
-    const { container } = render(
+  it('renders legacy paragraph-form text (no bullet markers) as a single paragraph with newlines preserved', () => {
+    // Contract from the file-level docstring: input with no "- " bullet
+    // markers anywhere is treated as legacy prose and rendered whole via
+    // whitespace-pre-wrap. Earlier versions of the component fragmented
+    // every non-bullet line into a styled header <p>; this test locks in
+    // the fix.
+    render(
       <BulletedText
         text={'This is a legacy analysis with\nembedded newlines.'}
       />,
     );
-    const ps = container.querySelectorAll('p');
-    expect(ps).toHaveLength(2);
-    expect(ps[0]).toHaveClass('font-semibold');
-    expect(ps[0]?.textContent).toBe('This is a legacy analysis with');
-    expect(ps[1]?.textContent).toBe('embedded newlines.');
+    const p = screen.getByText(/legacy analysis/);
+    expect(p.tagName).toBe('P');
+    expect(p).toHaveClass('whitespace-pre-wrap');
+    // Text node preserves the embedded newline (whitespace-pre-wrap renders it).
+    expect(p.textContent).toBe(
+      'This is a legacy analysis with\nembedded newlines.',
+    );
   });
 
   it('strips the leading "- " marker from each bullet', () => {
