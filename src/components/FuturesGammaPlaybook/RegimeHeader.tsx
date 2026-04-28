@@ -17,7 +17,11 @@
 
 import { memo } from 'react';
 import type { UseFuturesGammaPlaybookReturn } from '../../hooks/useFuturesGammaPlaybook';
-import type { GexRegime, RegimeVerdict, SessionPhase } from './types';
+import type {
+  GexRegime,
+  RegimeVerdict,
+  SessionPhase,
+} from '../../utils/futures-gamma/types';
 import { Tooltip } from '../ui/Tooltip';
 import { TOOLTIP } from './copy/tooltips';
 

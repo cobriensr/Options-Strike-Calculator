@@ -35,8 +35,8 @@ import { AlertConfigPanel } from './AlertConfig';
 import { ServerEventsStrip } from './ServerEventsStrip';
 import { TodaysFiredStrip } from './TodaysFiredStrip';
 import { useAlertDispatcher } from './useAlertDispatcher';
-import type { AlertState } from './alerts';
-import type { PlaybookBias } from './types';
+import type { AlertState } from '../../utils/futures-gamma/alerts';
+import type { PlaybookBias } from '../../utils/futures-gamma/types';
 
 export interface FuturesGammaPlaybookProps {
   marketOpen: boolean;

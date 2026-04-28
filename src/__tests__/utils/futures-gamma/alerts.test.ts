@@ -11,8 +11,8 @@ import { describe, it, expect } from 'vitest';
 import {
   detectAlertEdges,
   type AlertState,
-} from '../../../components/FuturesGammaPlaybook/alerts';
-import type { EsLevel } from '../../../components/FuturesGammaPlaybook/types';
+} from '../../../utils/futures-gamma/alerts';
+import type { EsLevel } from '../../../utils/futures-gamma/types';
 
 // ── Fixtures ─────────────────────────────────────────────────────────
 

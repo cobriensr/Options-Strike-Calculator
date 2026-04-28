@@ -29,7 +29,7 @@ import { useRegimeEventsHistory } from '../../hooks/useRegimeEventsHistory.js';
 import type { RegimeEventRow } from '../../hooks/useRegimeEventsHistory.js';
 import { Tooltip } from '../ui/Tooltip.js';
 import { getCTTime } from '../../utils/timezone.js';
-import type { TriggerId } from './triggers.js';
+import type { TriggerId } from '../../utils/futures-gamma/triggers.js';
 
 export interface TodaysFiredStripProps {
   marketOpen: boolean;

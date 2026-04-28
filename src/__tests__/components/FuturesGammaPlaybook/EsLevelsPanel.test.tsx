@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { EsLevelsPanel } from '../../../components/FuturesGammaPlaybook/EsLevelsPanel';
-import type { EsLevel } from '../../../components/FuturesGammaPlaybook/types';
+import type { EsLevel } from '../../../utils/futures-gamma/types';
 
 function makeLevel(overrides: Partial<EsLevel> = {}): EsLevel {
   return {

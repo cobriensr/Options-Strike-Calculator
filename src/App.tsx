@@ -55,7 +55,7 @@ import { StatusBadge } from './components/ui';
 import { CollapseAllContext } from './components/collapse-context';
 import type { AmPm, Timezone } from './types';
 import type { CollapseSignal } from './components/collapse-context';
-import type { PlaybookBias } from './components/FuturesGammaPlaybook/types';
+import type { PlaybookBias } from './utils/futures-gamma/types';
 import { useToast } from './hooks/useToast';
 import SectionNav from './components/SectionNav';
 import type { NavSection } from './components/SectionNav';

@@ -13,8 +13,8 @@
  */
 
 import { memo } from 'react';
-import type { EsLevel } from './types';
-import { ES_TICK_SIZE } from './playbook';
+import type { EsLevel } from '../../utils/futures-gamma/types';
+import { ES_TICK_SIZE } from '../../utils/futures-gamma/playbook';
 import { Tooltip } from '../ui/Tooltip';
 import { TOOLTIP } from './copy/tooltips';
 

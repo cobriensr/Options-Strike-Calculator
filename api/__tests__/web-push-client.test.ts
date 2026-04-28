@@ -37,7 +37,7 @@ import {
   sendPushToAll,
   SUBSCRIPTION_FAILURE_LIMIT,
 } from '../_lib/web-push-client.js';
-import type { AlertEvent } from '../../src/components/FuturesGammaPlaybook/alerts.js';
+import type { AlertEvent } from '../../src/utils/futures-gamma/alerts.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 

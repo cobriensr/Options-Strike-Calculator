@@ -54,7 +54,7 @@ import {
 import { CacheableResponsePlugin } from 'workbox-cacheable-response';
 import { ExpirationPlugin } from 'workbox-expiration';
 
-import type { AlertEvent } from './components/FuturesGammaPlaybook/alerts';
+import type { AlertEvent } from './utils/futures-gamma/alerts';
 
 declare const self: ServiceWorkerGlobalScope;
 

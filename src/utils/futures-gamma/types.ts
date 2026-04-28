@@ -1,6 +1,9 @@
 /** Shared types for the FuturesGammaPlaybook module. */
 
-import type { GexClassification, PriceTrend } from '../GexLandscape/types';
+import type {
+  GexClassification,
+  PriceTrend,
+} from '../../components/GexLandscape/types';
 
 export type RegimeVerdict = 'MEAN_REVERT' | 'TREND_FOLLOW' | 'STAND_ASIDE';
 

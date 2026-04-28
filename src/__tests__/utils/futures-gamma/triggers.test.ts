@@ -11,13 +11,13 @@ import {
   evaluateTriggers,
   type TriggerId,
   type TriggerState,
-} from '../../../components/FuturesGammaPlaybook/triggers';
+} from '../../../utils/futures-gamma/triggers';
 import type {
   EsLevel,
   GexRegime,
   PlaybookFlowSignals,
   SessionPhase,
-} from '../../../components/FuturesGammaPlaybook/types';
+} from '../../../utils/futures-gamma/types';
 
 // ── Fixtures ──────────────────────────────────────────────────────────
 

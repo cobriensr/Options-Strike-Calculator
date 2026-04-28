@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { deriveTradeBias } from '../../../components/FuturesGammaPlaybook/tradeBias';
+import { deriveTradeBias } from '../../../utils/futures-gamma/tradeBias';
 import type {
   EsLevel,
   PlaybookFlowSignals,
   PlaybookRule,
-} from '../../../components/FuturesGammaPlaybook/types';
+} from '../../../utils/futures-gamma/types';
 
 // ── Fixtures ─────────────────────────────────────────────────────────
 

@@ -19,7 +19,7 @@
  *     rather than "fade into the call wall".
  */
 
-import { getCTTime } from '../../utils/timezone.js';
+import { getCTTime } from '../timezone.js';
 import { esTickRound } from './basis.js';
 import type {
   GexRegime,

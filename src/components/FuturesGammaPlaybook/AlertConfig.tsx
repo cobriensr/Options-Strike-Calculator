@@ -26,7 +26,7 @@ import type {
   AlertConfig,
   UseAlertDispatcherReturn,
 } from './useAlertDispatcher';
-import type { AlertType } from './alerts';
+import type { AlertType } from '../../utils/futures-gamma/alerts';
 import { usePushSubscription } from '../../hooks/usePushSubscription';
 import type {
   PushPermission,

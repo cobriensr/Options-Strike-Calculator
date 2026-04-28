@@ -25,8 +25,14 @@
  */
 
 import { memo, useMemo } from 'react';
-import { REGIME_TRANSITION_BAND_PCT, RULE_ACTIVE_BAND_ES } from './playbook.js';
-import type { PlaybookRule, RegimeVerdict } from './types.js';
+import {
+  REGIME_TRANSITION_BAND_PCT,
+  RULE_ACTIVE_BAND_ES,
+} from '../../utils/futures-gamma/playbook.js';
+import type {
+  PlaybookRule,
+  RegimeVerdict,
+} from '../../utils/futures-gamma/types.js';
 
 export interface ActionDirectiveProps {
   verdict: RegimeVerdict;

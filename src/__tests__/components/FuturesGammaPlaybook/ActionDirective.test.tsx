@@ -12,7 +12,7 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { ActionDirective } from '../../../components/FuturesGammaPlaybook/ActionDirective';
-import type { PlaybookRule } from '../../../components/FuturesGammaPlaybook/types';
+import type { PlaybookRule } from '../../../utils/futures-gamma/types';
 
 function makeRule(overrides: Partial<PlaybookRule> = {}): PlaybookRule {
   return {

@@ -24,7 +24,10 @@
 import { memo, useMemo, useState, type MouseEvent } from 'react';
 import { fmtGex } from '../GexLandscape/formatters';
 import { getCTTime } from '../../utils/timezone';
-import type { RegimeTimelinePoint, SessionPhaseBoundariesCt } from './types';
+import type {
+  RegimeTimelinePoint,
+  SessionPhaseBoundariesCt,
+} from '../../utils/futures-gamma/types';
 
 export interface RegimeTimelineProps {
   timeline: RegimeTimelinePoint[];

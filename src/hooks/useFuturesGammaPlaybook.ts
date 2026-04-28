@@ -38,20 +38,20 @@ import type {
   SessionPhase,
   SessionPhaseBoundariesCt,
   TradeBias,
-} from '../components/FuturesGammaPlaybook/types';
-import { deriveTradeBias } from '../components/FuturesGammaPlaybook/tradeBias';
+} from '../utils/futures-gamma/types';
+import { deriveTradeBias } from '../utils/futures-gamma/tradeBias';
 import {
   classifyLevelStatus,
   distanceInEsPoints,
   translateSpxToEs,
-} from '../components/FuturesGammaPlaybook/basis';
+} from '../utils/futures-gamma/basis';
 import {
   classifyRegime,
   classifySessionPhase,
   rulesForRegime,
   verdictForRegime,
-} from '../components/FuturesGammaPlaybook/playbook';
-import { evaluateTriggers } from '../components/FuturesGammaPlaybook/triggers';
+} from '../utils/futures-gamma/playbook';
+import { evaluateTriggers } from '../utils/futures-gamma/triggers';
 import { classify as classifyGex } from '../components/GexLandscape/classify';
 import {
   computeDeltaMap,

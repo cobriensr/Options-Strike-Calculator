@@ -12,7 +12,7 @@ import { RegimeTimeline } from '../../../components/FuturesGammaPlaybook/RegimeT
 import type {
   RegimeTimelinePoint,
   SessionPhaseBoundariesCt,
-} from '../../../components/FuturesGammaPlaybook/types';
+} from '../../../utils/futures-gamma/types';
 
 const BOUNDARIES: SessionPhaseBoundariesCt = {
   open: '2026-04-20T09:30:00-04:00',

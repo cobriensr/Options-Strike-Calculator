@@ -5,7 +5,7 @@
  *
  * Runs every minute during RTH CT. Reads the latest GEX + OI + futures
  * snapshot, reconstructs the `AlertState` shape consumed by the shared
- * pure engine in `src/components/FuturesGammaPlaybook/alerts.ts`, and
+ * pure engine in `src/utils/futures-gamma/alerts.ts`, and
  * calls `detectAlertEdges(prev, next, nowIso)`.
  *
  * Every edge is:
@@ -37,19 +37,19 @@ import { sendPushToAll } from '../_lib/web-push-client.js';
 import type {
   AlertEvent,
   AlertState,
-} from '../../src/components/FuturesGammaPlaybook/alerts.js';
-import { detectAlertEdges } from '../../src/components/FuturesGammaPlaybook/alerts.js';
+} from '../../src/utils/futures-gamma/alerts.js';
+import { detectAlertEdges } from '../../src/utils/futures-gamma/alerts.js';
 import type {
   EsLevel,
   GexRegime,
   SessionPhase,
-} from '../../src/components/FuturesGammaPlaybook/types.js';
+} from '../../src/utils/futures-gamma/types.js';
 import {
   classifyRegime,
   classifySessionPhase,
-} from '../../src/components/FuturesGammaPlaybook/playbook.js';
-import { evaluateTriggers } from '../../src/components/FuturesGammaPlaybook/triggers.js';
-import { translateSpxToEs } from '../../src/components/FuturesGammaPlaybook/basis.js';
+} from '../../src/utils/futures-gamma/playbook.js';
+import { evaluateTriggers } from '../../src/utils/futures-gamma/triggers.js';
+import { translateSpxToEs } from '../../src/utils/futures-gamma/basis.js';
 import { computeZeroGammaStrike } from '../../src/utils/zero-gamma.js';
 import { computeMaxPain } from '../../src/utils/max-pain.js';
 import {

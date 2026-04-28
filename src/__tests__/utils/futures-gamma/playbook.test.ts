@@ -11,8 +11,8 @@ import {
   REGIME_TRANSITION_BAND_PCT,
   RULE_ACTIVE_BAND_ES,
   RULE_ARMED_BAND_ES,
-} from '../../../components/FuturesGammaPlaybook/playbook';
-import type { PlaybookFlowSignals } from '../../../components/FuturesGammaPlaybook/types';
+} from '../../../utils/futures-gamma/playbook';
+import type { PlaybookFlowSignals } from '../../../utils/futures-gamma/types';
 
 // Anchor the suite at a known CT wall-clock so timezone conversions are
 // deterministic. 14:00 UTC = 09:00 CT on this date (CDT in effect).

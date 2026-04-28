@@ -9,8 +9,8 @@
  * avoid multi-paragraph explainers — tooltips are glance-level UI.
  */
 
-import type { TriggerId } from '../triggers';
-import type { AlertType } from '../alerts';
+import type { TriggerId } from '../../../utils/futures-gamma/triggers';
+import type { AlertType } from '../../../utils/futures-gamma/alerts';
 
 export const TOOLTIP = {
   verdict: {

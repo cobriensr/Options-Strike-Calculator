@@ -22,12 +22,12 @@ import type {
   GexRegime,
   PlaybookFlowSignals,
   SessionPhase,
-} from './types';
+} from '../../utils/futures-gamma/types';
 import {
   evaluateTriggers,
   type TriggerState,
   type TriggerStatus,
-} from './triggers';
+} from '../../utils/futures-gamma/triggers';
 import { Tooltip } from '../ui/Tooltip';
 import { TOOLTIP } from './copy/tooltips';
 

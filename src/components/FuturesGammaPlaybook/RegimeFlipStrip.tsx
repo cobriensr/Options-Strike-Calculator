@@ -23,7 +23,7 @@
 import { memo, useMemo } from 'react';
 import { Tooltip } from '../ui/Tooltip.js';
 import { getCTTime } from '../../utils/timezone.js';
-import type { RegimeTimelinePoint } from './types.js';
+import type { RegimeTimelinePoint } from '../../utils/futures-gamma/types.js';
 
 export interface RegimeFlipStripProps {
   /**

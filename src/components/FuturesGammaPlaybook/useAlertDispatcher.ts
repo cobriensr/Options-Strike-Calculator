@@ -44,8 +44,12 @@
 import { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { ToastContext } from '../../hooks/useToast';
 import { getAudioContextCtor } from '../../utils/audio-utils';
-import type { AlertEvent, AlertState, AlertType } from './alerts';
-import { detectAlertEdges } from './alerts';
+import type {
+  AlertEvent,
+  AlertState,
+  AlertType,
+} from '../../utils/futures-gamma/alerts';
+import { detectAlertEdges } from '../../utils/futures-gamma/alerts';
 
 // ── Public types ─────────────────────────────────────────────────────
 

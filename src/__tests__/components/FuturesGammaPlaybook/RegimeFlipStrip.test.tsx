@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { RegimeFlipStrip } from '../../../components/FuturesGammaPlaybook/RegimeFlipStrip';
-import type { RegimeTimelinePoint } from '../../../components/FuturesGammaPlaybook/types';
+import type { RegimeTimelinePoint } from '../../../utils/futures-gamma/types';
 
 function makePoint(
   ts: string,

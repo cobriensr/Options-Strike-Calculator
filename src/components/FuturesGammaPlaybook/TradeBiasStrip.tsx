@@ -17,7 +17,7 @@
  */
 
 import { memo } from 'react';
-import type { TradeBias } from './types';
+import type { TradeBias } from '../../utils/futures-gamma/types';
 
 export interface TradeBiasStripProps {
   bias: TradeBias;

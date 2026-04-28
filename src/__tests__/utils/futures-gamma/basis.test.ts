@@ -4,7 +4,7 @@ import {
   distanceInEsPoints,
   esTickRound,
   translateSpxToEs,
-} from '../../../components/FuturesGammaPlaybook/basis';
+} from '../../../utils/futures-gamma/basis';
 
 describe('esTickRound', () => {
   // Nearest-tick rounding on a 0.25 grid. Boundary convention: Math.round

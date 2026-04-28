@@ -15,7 +15,7 @@ import type { UseFuturesGammaPlaybookReturn } from '../../../hooks/useFuturesGam
 import type {
   PlaybookBias,
   PlaybookRule,
-} from '../../../components/FuturesGammaPlaybook/types';
+} from '../../../utils/futures-gamma/types';
 
 // ── Mocks ────────────────────────────────────────────────────
 

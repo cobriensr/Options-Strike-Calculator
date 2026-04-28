@@ -38,7 +38,7 @@
  */
 
 import webpush from 'web-push';
-import type { AlertEvent } from '../../src/components/FuturesGammaPlaybook/alerts.js';
+import type { AlertEvent } from '../../src/utils/futures-gamma/alerts.js';
 import { getDb } from './db.js';
 import logger from './logger.js';
 import { Sentry } from './sentry.js';

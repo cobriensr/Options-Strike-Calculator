@@ -21,10 +21,10 @@ import type {
   RuleConviction,
   RuleStatus,
   SessionPhase,
-} from './types';
+} from '../../utils/futures-gamma/types';
 import { Tooltip } from '../ui/Tooltip';
 import { TOOLTIP } from './copy/tooltips';
-import { DRIFT_OVERRIDE_CONSISTENCY_MIN } from './playbook';
+import { DRIFT_OVERRIDE_CONSISTENCY_MIN } from '../../utils/futures-gamma/playbook';
 
 export interface PlaybookPanelProps {
   rules: PlaybookRule[];
