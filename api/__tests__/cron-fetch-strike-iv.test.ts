@@ -1171,4 +1171,175 @@ describe('fetch-strike-iv handler', () => {
     });
     expect(insertCalls).toHaveLength(0);
   });
+
+  // ── Phase 6: gamma squeeze detection ─────────────────────────
+
+  it('queries strike_exposures with the real column names (timestamp, call/put_gamma_oi) when SPXW fires', async () => {
+    // Regression: 7f31eb18 originally queried `captured_at` and `net_gamma`
+    // — neither exists on strike_exposures. The Promise.all in
+    // runDetection rejected on every SPXW tick. This test pins the SQL
+    // shape so the column-rename class of bug is caught in CI.
+    const spxwChain = makeChain('$SPX', 7100, {
+      putStrikes: [7050],
+      callStrikes: [7150],
+      contractRoot: 'SPXW',
+      bid: 5,
+      ask: 6,
+    });
+    const q10 = quietExpansionChains();
+    mockChainSequence([
+      spxwChain,
+      makeChain('$NDX', 22500, { contractRoot: 'NDXP' }),
+      makeChain('SPY', 710, {}),
+      makeChain('QQQ', 500, {}),
+      makeChain('IWM', 235, {}),
+      q10.smh,
+      makeChain('NVDA', 210, {}),
+      q10.tsla,
+      q10.meta,
+      q10.msft,
+      q10.googl,
+      makeChain('SNDK', 140, {}),
+      q10.mstr,
+      q10.mu,
+    ]);
+
+    mockSql.mockImplementation(() => Promise.resolve([]));
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+    expect(res._status).toBe(200);
+
+    // Inspect every SQL call for the SPXW NDG query — it must reference
+    // `timestamp` (not `captured_at`) and `call_gamma_oi + put_gamma_oi`
+    // (not the non-existent `net_gamma` column).
+    const exposureCalls = vi.mocked(mockSql).mock.calls.filter((call) => {
+      const strings = call[0] as TemplateStringsArray | undefined;
+      const joined = Array.isArray(strings) ? strings.join(' ') : '';
+      return joined.includes('FROM strike_exposures');
+    });
+    expect(exposureCalls.length).toBeGreaterThanOrEqual(1);
+    for (const call of exposureCalls) {
+      const strings = call[0] as TemplateStringsArray;
+      const joined = strings.join(' ');
+      // Real column on strike_exposures (migration 8) — NOT the
+      // non-existent `captured_at` we shipped with originally.
+      expect(joined).toContain('timestamp');
+      expect(joined).not.toContain('captured_at');
+      // Net gamma must be COMPUTED from the two real columns, not
+      // selected as if it were a column on the table.
+      expect(joined).toContain('call_gamma_oi');
+      expect(joined).toContain('put_gamma_oi');
+      // Ticker filter must use the literal 'SPX' (the table is populated
+      // exclusively under that ticker by fetch-strike-exposure.ts).
+      expect(joined).toContain("ticker = 'SPX'");
+    }
+
+    // Non-SPXW tickers must NOT issue a strike_exposures query — they
+    // skip the loader and inherit unknown NDG.
+    expect(exposureCalls.length).toBeLessThanOrEqual(1);
+  });
+
+  it('inserts gamma_squeeze_events when velocity + acceleration + proximity + trend all clear', async () => {
+    // Build NVDA chain with a strike whose 45-min trailing window will
+    // produce vol/OI = 6× in the last 15 min, 2× in the prior 15 min,
+    // spot trending up by 0.1% in last 5, and spot just below strike.
+    const nvdaChain = makeChain('NVDA', 210, {
+      putStrikes: [205, 207],
+      callStrikes: [212, 215],
+      bid: 0.5,
+      ask: 0.7,
+      openInterest: 1000,
+    });
+    const q11 = quietExpansionChains();
+    mockChainSequence([
+      makeChain('$SPX', 7100, { contractRoot: 'SPXW' }),
+      makeChain('$NDX', 22500, { contractRoot: 'NDXP' }),
+      makeChain('SPY', 710, {}),
+      makeChain('QQQ', 500, {}),
+      makeChain('IWM', 235, {}),
+      q11.smh,
+      nvdaChain,
+      q11.tsla,
+      q11.meta,
+      q11.msft,
+      q11.googl,
+      makeChain('SNDK', 140, {}),
+      q11.mstr,
+      q11.mu,
+    ]);
+
+    // Build the squeeze window: NVDA 212C with 35 minutely samples,
+    // ramp velocity up. spot starts 209.5 → 210 (1% below 212 → just-
+    // below-strike). volume rises 100/min for first 20 min, then
+    // 700/min for last 15 → last-15 = 10500/1000 = 10.5×, prior = 2×.
+    interface SqueezeWindowFixtureRow {
+      strike: string;
+      side: 'call' | 'put';
+      expiry: string;
+      ts: string;
+      volume: number;
+      oi: number;
+      spot: number;
+    }
+    const NOW_MS = MARKET_TIME.getTime();
+    const squeezeWindowRows: SqueezeWindowFixtureRow[] = [];
+    let cum = 0;
+    for (let i = 0; i < 35; i += 1) {
+      cum += i < 20 ? 100 : 700;
+      squeezeWindowRows.push({
+        strike: '212.00',
+        side: 'call',
+        expiry: '2026-04-25',
+        ts: new Date(NOW_MS - (34 - i) * 60_000).toISOString(),
+        volume: cum,
+        oi: 1000,
+        spot: 209.5 + (i / 34) * 1.0,
+      });
+    }
+
+    mockSql.mockImplementation((strings: TemplateStringsArray) => {
+      const joined = Array.isArray(strings) ? strings.join(' ') : '';
+      if (joined.includes('INSERT INTO gamma_squeeze_events')) {
+        return Promise.resolve([{ id: 1 }]);
+      }
+      // Squeeze window loader: SELECT ... FROM strike_iv_snapshots
+      // WHERE ts >= (...INTERVAL '45 minutes')
+      if (
+        joined.includes('FROM strike_iv_snapshots') &&
+        joined.includes("INTERVAL '45 minutes'")
+      ) {
+        return Promise.resolve(squeezeWindowRows);
+      }
+      return Promise.resolve([]);
+    });
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+    expect(res._status).toBe(200);
+
+    const squeezeInserts = vi.mocked(mockSql).mock.calls.filter((call) => {
+      const strings = call[0] as TemplateStringsArray | undefined;
+      const joined = Array.isArray(strings) ? strings.join(' ') : '';
+      return joined.includes('INSERT INTO gamma_squeeze_events');
+    });
+    // At least one squeeze insert (NVDA 212C). Other tickers' chains are
+    // empty, so their squeeze windows are too — they don't fire.
+    expect(squeezeInserts.length).toBeGreaterThanOrEqual(1);
+    const args = (squeezeInserts[0] as unknown[]).slice(1);
+    // INSERT positional args: ticker, strike, side, expiry, ts,
+    //   spot_at_detect, pct_from_strike, spot_trend_5m,
+    //   vol_oi_15m, vol_oi_15m_prior, vol_oi_acceleration, vol_oi_total,
+    //   net_gamma_sign, squeeze_phase, context_snapshot
+    expect(args[0]).toBe('NVDA');
+    expect(args[1]).toBe(212);
+    expect(args[2]).toBe('call');
+    // velocity should be ≥ 5× (we built ~10.5×).
+    expect(args[8]).toBeGreaterThanOrEqual(5);
+    // acceleration > 0 (current > prior).
+    expect(args[10]).toBeGreaterThan(0);
+    // NVDA isn't in NDG_TICKERS (only SPXW is) → 'unknown'.
+    expect(args[12]).toBe('unknown');
+    expect(['forming', 'active']).toContain(args[13]);
+  });
 });

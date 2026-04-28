@@ -249,15 +249,24 @@ export function detectGammaSqueezes(
     const t30 = findSampleAtOrBefore(samples, latestMs, 30);
     if (!t5 || !t15 || !t30) continue;
 
-    // Gate 1: velocity. vol/OI added in last 15 min.
+    // Gate 1: velocity. vol/OI added in last 15 min. Cumulative volume
+    // is monotonic in production but Schwab can return regressive snapshots
+    // during a session reset or stale cache — guard against negative
+    // velocity here so it can't masquerade as a "rising" signal in Gate 2.
     const velocity = (latest.volume - t15.volume) / latest.oi;
     if (!Number.isFinite(velocity) || velocity < VEL_THRESHOLD) continue;
 
     // Gate 2: acceleration. Current 15-min velocity must be ≥ ACCEL_RATIO
-    // × prior 15-min. Special case: prior velocity ≤ 0 (no prints in
-    // that window) → ratio is infinite → pass automatically (means
-    // velocity just turned on).
-    const priorVelocity = (t15.volume - t30.volume) / latest.oi;
+    // × prior 15-min. Two special cases:
+    //   - prior velocity ≤ 0 (no prints in that window OR regressive
+    //     cumulative volume) → ratio comparison is meaningless. Treat
+    //     prior as 0 (squeeze just turned on) and pass.
+    //   - prior velocity > 0 → require the ratio.
+    const priorVelocityRaw = (t15.volume - t30.volume) / latest.oi;
+    const priorVelocity =
+      Number.isFinite(priorVelocityRaw) && priorVelocityRaw > 0
+        ? priorVelocityRaw
+        : 0;
     if (priorVelocity > 0 && velocity < priorVelocity * ACCEL_RATIO) continue;
 
     // Gate 3: proximity. Spot within ±PROX_PCT of strike, on the OTM

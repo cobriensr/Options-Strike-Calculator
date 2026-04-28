@@ -543,6 +543,86 @@ describe('detectGammaSqueezes', () => {
     expect(flags).toHaveLength(1);
     expect(flags[0]!.strike).toBe(100);
   });
+
+  // ── Pathological inputs ────────────────────────────────────
+
+  it('skips the strike when latest spot is NaN (defensive — Schwab can return NaN on stale rows)', () => {
+    const volumes: number[] = [];
+    let cum = 0;
+    for (let i = 0; i < 35; i += 1) {
+      cum += i < 20 ? 100 : 600;
+      volumes.push(cum);
+    }
+    const spots = Array.from({ length: 35 }, () => 99.5);
+    spots[34] = Number.NaN;
+    const samples = makeWindow({
+      strike: 100,
+      side: 'call',
+      volumes,
+      oi: 1000,
+      spots,
+    });
+    expect(
+      detectGammaSqueezes(singletonMap(samples), 'NVDA', NOW, new Map()),
+    ).toEqual([]);
+  });
+
+  it('does NOT fire when cumulative volume regresses (last < t15) — guards against negative velocity', () => {
+    // Negative velocity in last 15 min must NOT pass Gate 1, even when
+    // a previous burst would have made priorVelocity look fine. This is
+    // the regression guard added 2026-04-28.
+    const volumes: number[] = [];
+    let cum = 0;
+    for (let i = 0; i < 35; i += 1) {
+      cum += i < 20 ? 600 : 0;
+      volumes.push(cum);
+    }
+    // Force regression on the latest sample.
+    volumes[34] = volumes[33]! - 5000;
+    const samples = makeWindow({
+      strike: 100,
+      side: 'call',
+      volumes,
+      oi: 1000,
+      spots: Array.from({ length: 35 }, (_, i) => 99.0 + (i / 34) * 0.5),
+    });
+    expect(
+      detectGammaSqueezes(singletonMap(samples), 'NVDA', NOW, new Map()),
+    ).toEqual([]);
+  });
+
+  it('treats negative priorVelocity as zero (squeeze-just-turned-on path stays open)', () => {
+    // Cumulative volume regresses in the prior 15 min but rises sharply
+    // in the last 15 → priorVelocity < 0, current velocity well above
+    // VEL_THRESHOLD. The detector must treat priorVelocity=0 here so
+    // Gate 2 short-circuits to "pass" instead of comparing against a
+    // negative baseline that would silently let anything through.
+    const volumes: number[] = new Array(35).fill(0);
+    // First 20 samples decline from 5000 → 1000 (regressive).
+    for (let i = 0; i < 20; i += 1) {
+      volumes[i] = 5000 - i * 200;
+    }
+    // Then 15 samples ramp 1000 → 9000 (last-15 velocity = 8000/1000 = 8×).
+    for (let i = 20; i < 35; i += 1) {
+      volumes[i] = 1000 + (i - 20) * 533;
+    }
+    const samples = makeWindow({
+      strike: 100,
+      side: 'call',
+      volumes,
+      oi: 1000,
+      spots: Array.from({ length: 35 }, (_, i) => 99.0 + (i / 34) * 0.5),
+    });
+    const flags = detectGammaSqueezes(
+      singletonMap(samples),
+      'NVDA',
+      NOW,
+      new Map(),
+    );
+    expect(flags).toHaveLength(1);
+    // priorVelocity is normalized to 0 in the emitted flag.
+    expect(flags[0]!.vol_oi_15m_prior).toBe(0);
+  });
 });
 
 // ── Constants sanity ─────────────────────────────────────────

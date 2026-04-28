@@ -722,42 +722,47 @@ async function loadSqueezeWindowForTicker(
 }
 
 /**
- * Load net dealer gamma per strike from `strike_exposures` for tickers
- * where we have it (SPX/SPY/QQQ as of 2026-04-28). For others, returns
- * an empty Map and the squeeze detector emits `net_gamma_sign:'unknown'`.
+ * Load net dealer gamma per strike from `strike_exposures` for SPXW.
  *
- * Convention: NDG > 0 means dealers are net LONG gamma (their hedging
- * dampens moves) and the squeeze gate filters those strikes out. NDG < 0
- * means dealers short gamma (hedging amplifies moves — squeeze is real).
+ * Schema reality (2026-04-28): the `strike_exposures` table is populated
+ * exclusively by the SPX GEX cron with `ticker = 'SPX'` (literal). SPY,
+ * QQQ, and single names have no rows here. So this loader normalizes
+ * SPXW → 'SPX' for the lookup and returns an empty Map for every other
+ * ticker. The squeeze detector treats unknown NDG as 'pass' on Gate 6,
+ * so non-SPXW tickers run on Gates 1-5 only.
+ *
+ * Net gamma is computed as `call_gamma_oi + put_gamma_oi` matching the
+ * convention in `gex-per-strike.ts`. Sign convention: NDG > 0 = dealers
+ * net LONG gamma (their hedging dampens moves) → squeeze gate filters
+ * those strikes out. NDG < 0 = dealers SHORT gamma (hedging amplifies
+ * moves — squeeze is real).
  */
 async function loadNetDealerGammaForTicker(
   sql: ReturnType<typeof getDb>,
   ticker: StrikeIVTicker,
   sampledAtIso: string,
 ): Promise<Map<number, number>> {
-  // Only SPXW/SPY/QQQ have populated strike_exposures rows. For the
-  // others (NDXP / IWM / SMH / single-names), we skip the lookup
-  // entirely and return an empty Map. The detector treats unknown NDG
-  // as 'pass' on Gate 6.
-  const NDG_TICKERS: ReadonlySet<string> = new Set(['SPXW', 'SPY', 'QQQ']);
-  if (!NDG_TICKERS.has(ticker)) return new Map();
+  // Only SPXW has a corresponding row set in strike_exposures (under
+  // ticker 'SPX'). NDXP / SPY / QQQ / IWM / SMH / single-names all skip
+  // this query and inherit 'unknown' NDG from the detector.
+  if (ticker !== 'SPXW') return new Map();
 
   type ExposureRow = {
     strike: string | number;
     net_gamma: string | number | null;
   };
-  // Most-recent snapshot per strike for today. The strike_exposures
-  // table is updated by the GEX cron each minute during market hours
-  // for SPXW (and by sibling crons for SPY/QQQ); we just want the
-  // freshest row per strike at the detection ts.
+  // Most-recent snapshot per strike, looking back 1 hour from the detect
+  // ts. The GEX cron writes 5-min-rounded timestamps so a 1-hour window
+  // comfortably covers the freshest snapshot even after a cron skip.
   const rows = (await sql`
     SELECT DISTINCT ON (strike)
-           strike, net_gamma
+           strike,
+           (COALESCE(call_gamma_oi, 0) + COALESCE(put_gamma_oi, 0)) AS net_gamma
     FROM strike_exposures
-    WHERE ticker = ${ticker}
-      AND captured_at <= ${sampledAtIso}
-      AND captured_at >= (${sampledAtIso}::timestamptz - INTERVAL '1 hour')
-    ORDER BY strike, captured_at DESC
+    WHERE ticker = 'SPX'
+      AND timestamp <= ${sampledAtIso}
+      AND timestamp >= (${sampledAtIso}::timestamptz - INTERVAL '1 hour')
+    ORDER BY strike, timestamp DESC
   `) as ExposureRow[];
 
   const out = new Map<number, number>();
