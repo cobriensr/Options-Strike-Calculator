@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import UpdateAvailableBanner from '../UpdateAvailableBanner';
+import UpdateAvailableBanner from '../../../components/UpdateAvailable/UpdateAvailableBanner';
 import {
   markNeedsRefresh,
   resetUpdateState,

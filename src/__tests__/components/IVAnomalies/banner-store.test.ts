@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { ivAnomalyBannerStore, AUTO_DISMISS_MS } from '../banner-store';
-import type { IVAnomalyRow } from '../types';
+import {
+  ivAnomalyBannerStore,
+  AUTO_DISMISS_MS,
+} from '../../../components/IVAnomalies/banner-store';
+import type { IVAnomalyRow } from '../../../components/IVAnomalies/types';
 
 function makeRow(overrides: Partial<IVAnomalyRow> = {}): IVAnomalyRow {
   return {

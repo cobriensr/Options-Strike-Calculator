@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import AccessKeyModal from '../AccessKeyModal';
+import AccessKeyModal from '../../../components/AccessKey/AccessKeyModal';
 
 const fetchMock = vi.fn();
 

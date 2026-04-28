@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { AnomalyRow } from '../AnomalyRow';
+import { AnomalyRow } from '../../../components/IVAnomalies/AnomalyRow';
 import {
   anomalyCompoundKey,
   type ActiveAnomaly,
   type IVAnomalyRow,
-} from '../types';
+} from '../../../components/IVAnomalies/types';
 
 function makeRow(overrides: Partial<IVAnomalyRow> = {}): IVAnomalyRow {
   return {
@@ -71,7 +71,7 @@ function makeActive(
 }
 
 // Mock the chart so these tests don't hit fetch.
-vi.mock('../StrikeIVChart', () => ({
+vi.mock('../../../components/IVAnomalies/StrikeIVChart', () => ({
   StrikeIVChart: () => <div data-testid="strike-iv-chart" />,
 }));
 

@@ -4,7 +4,7 @@ import {
   setAnomalySoundEnabled,
   SOUND_THROTTLE_MS,
   __resetAnomalySoundForTests,
-} from '../../../utils/anomaly-sound';
+} from '../../utils/anomaly-sound';
 
 /**
  * Build a minimal AudioContext stub that captures oscillator frequency +

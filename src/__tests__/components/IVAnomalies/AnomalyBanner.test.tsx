@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { AnomalyBanner } from '../AnomalyBanner';
-import { ivAnomalyBannerStore } from '../banner-store';
-import type { IVAnomalyRow } from '../types';
+import { AnomalyBanner } from '../../../components/IVAnomalies/AnomalyBanner';
+import { ivAnomalyBannerStore } from '../../../components/IVAnomalies/banner-store';
+import type { IVAnomalyRow } from '../../../components/IVAnomalies/types';
 
 function makeRow(overrides: Partial<IVAnomalyRow> = {}): IVAnomalyRow {
   return {

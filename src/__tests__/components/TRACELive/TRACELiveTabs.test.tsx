@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import TRACELiveTabs from '../TRACELiveTabs';
+import TRACELiveTabs from '../../../components/TRACELive/TRACELiveTabs';
 
 describe('TRACELiveTabs', () => {
   it('renders three tab buttons in canonical order: Gamma, Charm, Delta', () => {

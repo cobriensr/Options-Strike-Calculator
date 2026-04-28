@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
-import { useIVAnomalies } from '../../../hooks/useIVAnomalies';
-import { ivAnomalyBannerStore } from '../banner-store';
+import { useIVAnomalies } from '../../hooks/useIVAnomalies';
+import { ivAnomalyBannerStore } from '../../components/IVAnomalies/banner-store';
 import {
   IV_ANOMALY_TICKERS,
   type IVAnomaliesListResponse,
   type IVAnomalyRow,
   type IVAnomalyTicker,
-} from '../types';
+} from '../../components/IVAnomalies/types';
 
 /**
  * These tests exercise the aggregation pipeline — one ActiveAnomaly per

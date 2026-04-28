@@ -1,10 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import TRACELiveDashboard from '../index';
+import TRACELiveDashboard from '../../../components/TRACELive';
 
 // Mock the data hook so we can drive component behavior without a server.
-vi.mock('../hooks/useTraceLiveData', () => ({
+vi.mock('../../../components/TRACELive/hooks/useTraceLiveData', () => ({
   useTraceLiveData: vi.fn(() => ({
     list: [],
     listLoading: false,
@@ -21,7 +21,7 @@ vi.mock('../hooks/useTraceLiveData', () => ({
   })),
 }));
 
-vi.mock('../hooks/useTraceLiveCountdown', () => ({
+vi.mock('../../../components/TRACELive/hooks/useTraceLiveCountdown', () => ({
   useTraceLiveCountdown: vi.fn(() => ({
     secondsRemaining: null,
     label: null,
@@ -30,12 +30,12 @@ vi.mock('../hooks/useTraceLiveCountdown', () => ({
   })),
 }));
 
-vi.mock('../hooks/useTraceLiveChime', () => ({
+vi.mock('../../../components/TRACELive/hooks/useTraceLiveChime', () => ({
   useTraceLiveChime: vi.fn(),
 }));
 
 // Pull the mocked hook reference for assertions.
-import { useTraceLiveData } from '../hooks/useTraceLiveData';
+import { useTraceLiveData } from '../../../components/TRACELive/hooks/useTraceLiveData';
 
 describe('<TRACELiveDashboard>', () => {
   it('renders the SectionBox with the TRACE Live label', () => {
