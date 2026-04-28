@@ -58,11 +58,20 @@ export type SpotGexHistoryQuery = z.infer<typeof spotGexHistoryQuerySchema>;
  * `ticker` is optional — defaults to 'SPX' (the MVP scope of the zero-gamma
  * cron). Uppercase [A-Z] only, 1-5 chars, so an arbitrary string can't be
  * used to probe the table for unexpected rows.
+ *
+ * `date` is optional — when provided, the endpoint returns only the rows
+ * whose `ts` (after conversion to America/New_York) matches the requested
+ * ET calendar date. When omitted, returns the most recent 100 rows.
+ * Used by the frontend ZeroGammaPanel to scrub historical days.
  */
 export const zeroGammaQuerySchema = z.object({
   ticker: z
     .string()
     .regex(/^[A-Z]{1,5}$/, 'ticker must be 1-5 uppercase letters')
+    .optional(),
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
     .optional(),
 });
 

@@ -137,4 +137,39 @@ describe('useZeroGamma', () => {
     });
     expect(mockFetch).not.toHaveBeenCalled();
   });
+
+  it('appends ?date=YYYY-MM-DD when scrubbed to a past date', async () => {
+    renderHook(() => useZeroGamma('SPX', true, '2026-04-22'));
+    await act(async () => {});
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/zero-gamma?ticker=SPX&date=2026-04-22',
+      expect.any(Object),
+    );
+  });
+
+  it('does not poll when scrubbed to a date — past data is static', async () => {
+    renderHook(() => useZeroGamma('SPX', true, '2026-04-22'));
+    await act(async () => {});
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    mockFetch.mockClear();
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.ZERO_GAMMA * 3);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('refetches when the date prop changes', async () => {
+    const { rerender } = renderHook(
+      ({ d }: { d: string | null }) => useZeroGamma('SPX', true, d),
+      { initialProps: { d: '2026-04-22' as string | null } },
+    );
+    await act(async () => {});
+    mockFetch.mockClear();
+    rerender({ d: '2026-04-23' });
+    await act(async () => {});
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/zero-gamma?ticker=SPX&date=2026-04-23',
+      expect.any(Object),
+    );
+  });
 });

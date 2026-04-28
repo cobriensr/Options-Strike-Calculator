@@ -167,6 +167,98 @@ describe('GET /api/zero-gamma', () => {
     expect(body.history).toHaveLength(2);
   });
 
+  it('rejects malformed date with 400', async () => {
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { date: '04/22/2026' } }),
+      res,
+    );
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('filters by ET calendar date — boundary row that rolls over to next UTC day', async () => {
+    // 2026-04-23T01:00:00Z = 2026-04-22 21:00 ET (a Tuesday afternoon
+    // write). The query must match `date=2026-04-22` against the ET date,
+    // not the UTC date. Mock returns the row as if the SQL filter accepted
+    // it; the assertion is that the handler's query template uses the
+    // AT TIME ZONE conversion (a no-op at this layer, but the row coming
+    // back without throwing means the handler accepted the date param).
+    mockSql.mockResolvedValueOnce([
+      {
+        ticker: 'SPX',
+        spot: '7100.0',
+        zero_gamma: '7095.0',
+        confidence: '0.6',
+        net_gamma_at_spot: '0',
+        gamma_curve: [],
+        ts: '2026-04-23T01:00:00Z',
+      },
+    ]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { date: '2026-04-22' } }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      latest: { ts: string };
+      history: unknown[];
+    };
+    expect(body.latest.ts).toBe('2026-04-23T01:00:00.000Z');
+    expect(body.history).toHaveLength(1);
+
+    // Verify the handler used the ET-converted comparison in its query
+    // template. The first arg to the tagged-template `mockSql` call is the
+    // strings array; we look for the AT TIME ZONE clause.
+    const sqlStrings = (mockSql.mock.calls[0]?.[0] ?? []) as string[];
+    const fullSql = sqlStrings.join('?');
+    expect(fullSql).toMatch(/AT TIME ZONE 'America\/New_York'/);
+  });
+
+  it('uses ASC order and last-of-day as latest when date is provided', async () => {
+    // For a date query the handler issues an ASC-ordered SELECT and treats
+    // the LAST row as `latest`. Mock returns rows in chronological order.
+    mockSql.mockResolvedValueOnce([
+      {
+        ticker: 'SPX',
+        spot: '7100.0',
+        zero_gamma: '7095.0',
+        confidence: '0.6',
+        net_gamma_at_spot: '0',
+        gamma_curve: [],
+        ts: '2026-04-22T13:30:00Z',
+      },
+      {
+        ticker: 'SPX',
+        spot: '7115.0',
+        zero_gamma: '7102.0',
+        confidence: '0.7',
+        net_gamma_at_spot: '0',
+        gamma_curve: [],
+        ts: '2026-04-22T20:55:00Z',
+      },
+    ]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { date: '2026-04-22' } }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      latest: { spot: number; ts: string };
+      history: unknown[];
+    };
+    // Last of the day = highest ts in the mocked ASC array.
+    expect(body.latest.spot).toBe(7115.0);
+    expect(body.latest.ts).toBe('2026-04-22T20:55:00.000Z');
+    expect(body.history).toHaveLength(2);
+  });
+
   it('returns 500 and captures exception on DB error', async () => {
     const dbError = new Error('connection refused');
     mockSql.mockRejectedValueOnce(dbError);

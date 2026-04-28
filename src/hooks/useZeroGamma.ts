@@ -1,16 +1,18 @@
 /**
- * useZeroGamma — polls /api/zero-gamma?ticker=X every 60 seconds during
- * market hours. Returns the latest zero-gamma snapshot plus the most recent
- * 100 history rows for trend display.
+ * useZeroGamma — fetches zero-gamma data for one ticker, optionally
+ * scoped to a specific calendar date for historical scrubbing.
+ *
+ * Live mode (no date arg): polls /api/zero-gamma?ticker=X every
+ * POLL_INTERVALS.ZERO_GAMMA during market hours. Returns the latest
+ * snapshot plus the most recent 100 rows.
+ *
+ * Date mode (date='YYYY-MM-DD'): one-shot fetch of all snapshots for
+ * that calendar day (no polling — the past doesn't change). `latest`
+ * is the last snapshot of the day.
  *
  * Owner-or-guest: matches the API endpoint's auth tier
- * (guardOwnerOrGuestEndpoint). Public visitors get 401 and the hook stays
- * idle.
- *
- * Effect dispatch:
- *   - Public            → no fetch
- *   - Market open       → fetch + poll every POLL_INTERVALS.ZERO_GAMMA
- *   - Market closed     → one-shot fetch (last value of the day)
+ * (guardOwnerOrGuestEndpoint). Public visitors get 401 and the hook
+ * stays idle.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -44,6 +46,7 @@ interface ApiResponse {
 export function useZeroGamma(
   ticker: string,
   marketOpen: boolean,
+  date: string | null = null,
 ): UseZeroGammaReturn {
   const accessMode = getAccessMode();
   const [latest, setLatest] = useState<ZeroGammaRow | null>(null);
@@ -54,7 +57,9 @@ export function useZeroGamma(
 
   const fetchData = useCallback(async () => {
     try {
-      const res = await fetch(`/api/zero-gamma?ticker=${ticker}`, {
+      const qs = new URLSearchParams({ ticker });
+      if (date) qs.set('date', date);
+      const res = await fetch(`/api/zero-gamma?${qs}`, {
         credentials: 'same-origin',
         signal: AbortSignal.timeout(5_000),
       });
@@ -78,7 +83,7 @@ export function useZeroGamma(
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-  }, [ticker]);
+  }, [ticker, date]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -95,11 +100,12 @@ export function useZeroGamma(
 
     void fetchData();
 
-    if (!marketOpen) return;
+    // Date-scrubbed view is static (the past doesn't change) — no polling.
+    if (!marketOpen || date) return;
 
     const id = setInterval(() => void fetchData(), POLL_INTERVALS.ZERO_GAMMA);
     return () => clearInterval(id);
-  }, [accessMode, marketOpen, fetchData]);
+  }, [accessMode, marketOpen, date, fetchData]);
 
   const refresh = useCallback(() => {
     setLoading(true);

@@ -111,21 +111,41 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const ticker = parsed.data.ticker ?? DEFAULT_TICKER;
+    const date = parsed.data.date ?? null;
 
     try {
       const sql = getDb();
 
-      const rows = (await sql`
-        SELECT ticker, spot, zero_gamma, confidence,
-               net_gamma_at_spot, gamma_curve, ts
-        FROM zero_gamma_levels
-        WHERE ticker = ${ticker}
-        ORDER BY ts DESC
-        LIMIT ${HISTORY_LIMIT}
-      `) as RawRow[];
+      // When `date` is provided, return all snapshots for that ET calendar
+      // day. `ts` is TIMESTAMPTZ (UTC) and the live cron writes NOW() which
+      // is UTC — but the UI sources the date from `getETToday()` (ET), so
+      // we have to convert per-row to ET before comparing. Without the
+      // AT TIME ZONE conversion, late-session writes whose UTC date rolls
+      // over (e.g. 21:00 ET = 01:00 UTC next day) would silently land on
+      // the wrong calendar bucket.
+      const rows = date
+        ? ((await sql`
+            SELECT ticker, spot, zero_gamma, confidence,
+                   net_gamma_at_spot, gamma_curve, ts
+            FROM zero_gamma_levels
+            WHERE ticker = ${ticker}
+              AND (ts AT TIME ZONE 'America/New_York')::date = ${date}::date
+            ORDER BY ts ASC
+            LIMIT ${HISTORY_LIMIT}
+          `) as RawRow[])
+        : ((await sql`
+            SELECT ticker, spot, zero_gamma, confidence,
+                   net_gamma_at_spot, gamma_curve, ts
+            FROM zero_gamma_levels
+            WHERE ticker = ${ticker}
+            ORDER BY ts DESC
+            LIMIT ${HISTORY_LIMIT}
+          `) as RawRow[]);
 
       const history = rows.map(mapRow);
-      const latest = history[0] ?? null;
+      // For the date query (ASC order) `latest` is the last row of the day;
+      // for the no-date query (DESC order) it's the most recent overall.
+      const latest = date ? (history.at(-1) ?? null) : (history[0] ?? null);
 
       const response: ZeroGammaResponse = { latest, history };
 
