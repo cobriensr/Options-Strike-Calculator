@@ -109,6 +109,11 @@ const GexLandscape = lazy(() =>
 const FuturesGammaPlaybook = lazy(() =>
   import('./components/FuturesGammaPlaybook').catch(handleStaleChunk),
 );
+const ZeroGammaPanel = lazy(() =>
+  import('./components/ZeroGammaPanel')
+    .then((m) => ({ default: m.ZeroGammaPanel }))
+    .catch(handleStaleChunk),
+);
 const BWBCalculator = lazy(() =>
   import('./components/BWBCalculator').catch(handleStaleChunk),
 );
@@ -664,6 +669,7 @@ export default function StrikeCalculator() {
               id: 'sec-futures-gamma-playbook',
               label: 'Futures Gamma Playbook',
             },
+            { id: 'sec-zero-gamma', label: 'Zero Gamma' },
             { id: 'sec-market-internals', label: 'Breadth & TICK' },
             { id: 'sec-vega-spikes', label: 'Dir Vega Spikes' },
             { id: 'sec-market-flow', label: 'Market Flow' },
@@ -1237,6 +1243,19 @@ export default function StrikeCalculator() {
                         <FuturesGammaPlaybook
                           marketOpen={market.data.quotes?.marketOpen ?? false}
                           onBiasChange={setPlaybookBiasContext}
+                        />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </>
+                )}
+
+                {isAuthenticated && (market.hasData || !!historySnapshot) && (
+                  <>
+                    <span id="sec-zero-gamma" className="block scroll-mt-28" />
+                    <ErrorBoundary label="Zero Gamma">
+                      <Suspense fallback={<SkeletonSection lines={4} />}>
+                        <ZeroGammaPanel
+                          marketOpen={market.data.quotes?.marketOpen ?? false}
                         />
                       </Suspense>
                     </ErrorBoundary>

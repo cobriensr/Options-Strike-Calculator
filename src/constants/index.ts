@@ -336,6 +336,8 @@ export const POLL_INTERVALS = {
   OTM_FLOW: 30_000,
   /** Dark pool levels refresh (useDarkPoolLevels) */
   DARK_POOL: 60_000,
+  /** Zero-gamma per-ticker refresh (useZeroGamma) — matches the 5-min compute cron */
+  ZERO_GAMMA: 60_000,
   /** GEX per strike refresh (useGexPerStrike) */
   GEX_STRIKE: 60_000,
   /** GexTarget history refresh (useGexTarget) — matches the 1-min cron cadence */
