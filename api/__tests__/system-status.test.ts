@@ -17,16 +17,15 @@ vi.mock('../_lib/schwab.js', () => ({
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+  guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
 }));
 
-vi.mock('../_lib/guest-auth.js', () => ({
-  rejectIfNotOwnerOrGuest: vi.fn(() => false),
+vi.mock('../_lib/sentry.js', () => ({
+  metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
 import handler from '../system-status.js';
-import { checkBot } from '../_lib/api-helpers.js';
-import { rejectIfNotOwnerOrGuest } from '../_lib/guest-auth.js';
+import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -61,12 +60,16 @@ describe('GET /api/system-status', () => {
     mockDbFn.mockReset();
     mockPing.mockReset();
     mockGetAccessToken.mockReset();
-    vi.mocked(checkBot).mockResolvedValue({ isBot: false });
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
   });
 
   it('returns 403 when bot check flags the request', async () => {
-    vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementationOnce(
+      async (_req, res) => {
+        res.status(403).json({ error: 'Access denied' });
+        return true;
+      },
+    );
     const req = mockRequest({ method: 'GET' });
     const res = mockResponse();
     await handler(req, res);
@@ -77,10 +80,12 @@ describe('GET /api/system-status', () => {
   });
 
   it('returns 401 when caller is neither owner nor guest', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementationOnce((_req, res) => {
-      res.status(401).json({ error: 'Not authenticated' });
-      return true;
-    });
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementationOnce(
+      async (_req, res) => {
+        res.status(401).json({ error: 'Not authenticated' });
+        return true;
+      },
+    );
     const req = mockRequest({ method: 'GET' });
     const res = mockResponse();
     await handler(req, res);

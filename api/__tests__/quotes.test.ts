@@ -4,19 +4,25 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwnerOrGuest: vi.fn(),
+  guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
   schwabFetch: vi.fn(),
   setCacheHeaders: vi.fn(),
   isMarketOpen: vi.fn(),
-  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+}));
+
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: {
+    withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
+    captureException: vi.fn(),
+  },
+  metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
 import handler from '../quotes.js';
 import {
-  rejectIfNotOwnerOrGuest,
+  guardOwnerOrGuestEndpoint,
   schwabFetch,
   isMarketOpen,
-  checkBot,
 } from '../_lib/api-helpers.js';
 
 function makeSchwabQuote(overrides: Partial<Record<string, number>> = {}) {
@@ -39,18 +45,20 @@ describe('GET /api/quotes', () => {
     vi.restoreAllMocks();
   });
 
-  it('returns 401 for non-owner', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
-      res.status(401).json({ error: 'Not authenticated' });
-      return true;
-    });
+  it('returns 401 for non-owner (via guard)', async () => {
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(401).json({ error: 'Not authenticated' });
+        return true;
+      },
+    );
     const res = mockResponse();
     await handler(mockRequest(), res);
     expect(res._status).toBe(401);
   });
 
   it('returns quote data for all symbols', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
     vi.mocked(schwabFetch).mockResolvedValue({
       ok: true,
@@ -80,7 +88,7 @@ describe('GET /api/quotes', () => {
   });
 
   it('returns null for missing symbols', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
       ok: true,
@@ -100,9 +108,13 @@ describe('GET /api/quotes', () => {
     expect(json.vix).toBeNull();
   });
 
-  it('returns 403 when bot detected', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
-    vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
+  it('returns 403 when bot detected (via guard)', async () => {
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(403).json({ error: 'Access denied' });
+        return true;
+      },
+    );
 
     const res = mockResponse();
     await handler(mockRequest(), res);
@@ -111,7 +123,7 @@ describe('GET /api/quotes', () => {
   });
 
   it('returns 500 when handler throws unexpected error', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(schwabFetch).mockImplementation(() => {
       throw new Error('Crash');
     });
@@ -123,7 +135,7 @@ describe('GET /api/quotes', () => {
   });
 
   it('forwards error from schwabFetch', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
       ok: false,
       error: 'Token expired',

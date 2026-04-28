@@ -3,17 +3,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const { mockCheckBot, mockSql } = vi.hoisted(() => ({
-  mockCheckBot: vi.fn(),
+const { mockGuard, mockSql } = vi.hoisted(() => ({
+  mockGuard: vi.fn(),
   mockSql: vi.fn(),
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  checkBot: mockCheckBot,
-}));
-
-vi.mock('../_lib/guest-auth.js', () => ({
-  rejectIfNotOwnerOrGuest: vi.fn(() => false),
+  guardOwnerOrGuestEndpoint: mockGuard,
 }));
 
 vi.mock('../_lib/db.js', () => ({
@@ -29,6 +25,7 @@ vi.mock('../_lib/sentry.js', () => ({
       ) => cb({ setTransactionName: vi.fn() }),
     ),
   },
+  metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -92,7 +89,7 @@ function makeRow(overrides: Partial<Row> = {}): Row {
 describe('GET /api/options-flow/otm-heavy', () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    mockCheckBot.mockResolvedValue({ isBot: false });
+    mockGuard.mockResolvedValue(false);
     vi.useFakeTimers();
     // Freeze to 2026-04-22 15:00 UTC = 10:00 CT (mid-session)
     vi.setSystemTime(new Date('2026-04-22T15:00:00.000Z'));
@@ -114,8 +111,11 @@ describe('GET /api/options-flow/otm-heavy', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
-  it('returns 403 when checkBot flags request as bot', async () => {
-    mockCheckBot.mockResolvedValueOnce({ isBot: true });
+  it('returns 403 when checkBot flags request as bot (via guard)', async () => {
+    mockGuard.mockImplementationOnce(async (_req, res) => {
+      res.status(403).json({ error: 'Access denied' });
+      return true;
+    });
 
     const req = mockRequest({ method: 'GET' });
     const res = mockResponse();

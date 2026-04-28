@@ -4,9 +4,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn().mockReturnValue(false),
+  guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
   rejectIfRateLimited: vi.fn().mockResolvedValue(false),
-  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
   setCacheHeaders: vi.fn(),
   respondIfInvalid: vi
     .fn()
@@ -26,6 +25,11 @@ vi.mock('../_lib/api-helpers.js', () => ({
     ),
 }));
 
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: { captureException: vi.fn() },
+  metrics: { request: vi.fn(() => vi.fn()) },
+}));
+
 const mockDbFn = vi.fn();
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockDbFn),
@@ -33,18 +37,16 @@ vi.mock('../_lib/db.js', () => ({
 
 import handler from '../pre-market.js';
 import {
-  rejectIfNotOwner,
+  guardOwnerEndpoint,
   rejectIfRateLimited,
-  checkBot,
 } from '../_lib/api-helpers.js';
 
 describe('GET /api/pre-market', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     mockDbFn.mockReset();
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
     vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
-    vi.mocked(checkBot).mockResolvedValue({ isBot: false });
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
@@ -67,8 +69,11 @@ describe('GET /api/pre-market', () => {
 
   // ── Auth guards ───────────────────────────────────────────
 
-  it('returns 403 when bot detected', async () => {
-    vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
+  it('returns 403 when bot detected (via guard)', async () => {
+    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
+      res.status(403).json({ error: 'Access denied' });
+      return true;
+    });
     const req = mockRequest({ method: 'GET' });
     const res = mockResponse();
     await handler(req, res);
@@ -76,8 +81,8 @@ describe('GET /api/pre-market', () => {
     expect(res._json).toEqual({ error: 'Access denied' });
   });
 
-  it('returns 401 when not owner', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+  it('returns 401 when not owner (via guard)', async () => {
+    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
       res.status(401).json({ error: 'Not authenticated' });
       return true;
     });
@@ -181,9 +186,8 @@ describe('POST /api/pre-market', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     mockDbFn.mockReset();
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
     vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
-    vi.mocked(checkBot).mockResolvedValue({ isBot: false });
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 

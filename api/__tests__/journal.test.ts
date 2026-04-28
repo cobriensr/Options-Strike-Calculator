@@ -4,9 +4,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn(),
+  guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
   rejectIfRateLimited: vi.fn(),
-  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+}));
+
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: { captureException: vi.fn() },
+  metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
 vi.mock('../_lib/db.js', () => ({
@@ -14,12 +18,16 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 import handler from '../journal.js';
-import { rejectIfNotOwner, rejectIfRateLimited } from '../_lib/api-helpers.js';
+import {
+  guardOwnerEndpoint,
+  rejectIfRateLimited,
+} from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
 
 describe('GET /api/journal', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
     vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
   });
 
@@ -31,7 +39,7 @@ describe('GET /api/journal', () => {
   });
 
   it('returns 401 for non-owner', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
       res.status(401).json({ error: 'Not authenticated' });
       return true;
     });
@@ -41,7 +49,6 @@ describe('GET /api/journal', () => {
   });
 
   it('returns early when rate limited', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(rejectIfRateLimited).mockImplementation(async (_req, res) => {
       res.status(429).json({ error: 'Rate limited' });
       return true;
@@ -52,7 +59,6 @@ describe('GET /api/journal', () => {
   });
 
   it('queries all analyses when no filters provided', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     const mockRows = [{ id: 1, date: '2026-03-10' }];
     Object.defineProperty(mockRows, 'length', { value: 1 });
     const mockSql = vi.fn().mockResolvedValue(mockRows);
@@ -68,7 +74,6 @@ describe('GET /api/journal', () => {
   });
 
   it('queries by date when date param provided', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     const mockRows = [{ id: 1, date: '2026-03-10' }];
     Object.defineProperty(mockRows, 'length', { value: 1 });
     const mockSql = vi.fn().mockResolvedValue(mockRows);
@@ -85,7 +90,6 @@ describe('GET /api/journal', () => {
   });
 
   it('queries by date range when from/to provided', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     const mockRows: unknown[] = [];
     Object.defineProperty(mockRows, 'length', { value: 0 });
     const mockSql = vi.fn().mockResolvedValue(mockRows);
@@ -105,7 +109,6 @@ describe('GET /api/journal', () => {
   });
 
   it('queries by structure', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     const mockRows: unknown[] = [];
     Object.defineProperty(mockRows, 'length', { value: 0 });
     const mockSql = vi.fn().mockResolvedValue(mockRows);
@@ -124,7 +127,6 @@ describe('GET /api/journal', () => {
   });
 
   it('queries by confidence', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     const mockRows: unknown[] = [];
     Object.defineProperty(mockRows, 'length', { value: 0 });
     const mockSql = vi.fn().mockResolvedValue(mockRows);
@@ -140,7 +142,6 @@ describe('GET /api/journal', () => {
   });
 
   it('queries by mode', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     const mockRows: unknown[] = [];
     Object.defineProperty(mockRows, 'length', { value: 0 });
     const mockSql = vi.fn().mockResolvedValue(mockRows);
@@ -156,7 +157,6 @@ describe('GET /api/journal', () => {
   });
 
   it('caps limit at 200', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     const mockRows: unknown[] = [];
     Object.defineProperty(mockRows, 'length', { value: 0 });
     const mockSql = vi.fn().mockResolvedValue(mockRows);
@@ -169,7 +169,6 @@ describe('GET /api/journal', () => {
   });
 
   it('returns 500 on database error', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     const mockSql = vi.fn().mockRejectedValue(new Error('DB down'));
     vi.mocked(getDb).mockReturnValue(mockSql as never);
 

@@ -15,10 +15,9 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { checkBot } from './_lib/api-helpers.js';
-import { rejectIfNotOwnerOrGuest } from './_lib/guest-auth.js';
+import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import { getDb } from './_lib/db.js';
-import { Sentry } from './_lib/sentry.js';
+import { Sentry, metrics } from './_lib/sentry.js';
 
 interface DominantPair {
   low_strike: number;
@@ -57,11 +56,9 @@ interface InstitutionalBlockRow {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const botCheck = await checkBot(req);
-  if (botCheck.isBot) {
-    return res.status(403).json({ error: 'Access denied' });
-  }
-  if (rejectIfNotOwnerOrGuest(req, res)) return;
+  const done = metrics.request('/api/institutional-program');
+
+  if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
   const daysRaw = Number.parseInt(String(req.query.days ?? '30'), 10);
   const days = Math.min(
@@ -219,11 +216,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         `
     ) as InstitutionalBlockRow[];
 
+    done({ status: 200 });
     res.status(200).json({
       days: summaries,
       today: { blocks: today, date: dateFilter ?? 'today' },
     });
   } catch (err) {
+    done({ status: 500 });
     Sentry.captureException(err);
     res.status(500).json({ error: 'Internal error' });
   }

@@ -4,8 +4,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn(),
-  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+  guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
+}));
+
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: { captureException: vi.fn() },
+  metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
 vi.mock('../_lib/db.js', () => ({
@@ -14,12 +18,13 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 import handler from '../journal/init.js';
-import { rejectIfNotOwner } from '../_lib/api-helpers.js';
+import { guardOwnerEndpoint } from '../_lib/api-helpers.js';
 import { initDb, migrateDb } from '../_lib/db.js';
 
 describe('POST /api/journal/init', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
   });
 
   it('returns 405 for non-POST methods', async () => {
@@ -29,8 +34,8 @@ describe('POST /api/journal/init', () => {
     expect(res._json).toEqual({ error: 'POST only' });
   });
 
-  it('returns 401 for non-owner', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+  it('returns 401 for non-owner (via guard)', async () => {
+    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
       res.status(401).json({ error: 'Not authenticated' });
       return true;
     });
@@ -40,7 +45,6 @@ describe('POST /api/journal/init', () => {
   });
 
   it('creates tables and returns success', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(initDb).mockResolvedValue(undefined);
     vi.mocked(migrateDb).mockResolvedValue(['vix_term_shape', 'rv_iv_ratio']);
 
@@ -59,7 +63,6 @@ describe('POST /api/journal/init', () => {
   });
 
   it('returns 500 with generic error on failure (no leaked details)', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(initDb).mockRejectedValue(new Error('Connection refused'));
 
     const res = mockResponse();
@@ -70,7 +73,6 @@ describe('POST /api/journal/init', () => {
   });
 
   it('returns generic error for non-Error throws', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(initDb).mockRejectedValue('string error');
 
     const res = mockResponse();

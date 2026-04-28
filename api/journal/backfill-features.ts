@@ -15,7 +15,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { checkBot, rejectIfNotOwner } from '../_lib/api-helpers.js';
+import { guardOwnerEndpoint } from '../_lib/api-helpers.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import buildFeaturesHandler from '../cron/build-features.js';
 
@@ -29,17 +29,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'POST only' });
   }
 
-  const botCheck = await checkBot(req);
-  if (botCheck.isBot) {
-    done({ status: 403 });
-    return res.status(403).json({ error: 'Access denied' });
-  }
-
-  const ownerCheck = rejectIfNotOwner(req, res);
-  if (ownerCheck) {
-    done({ status: 401 });
-    return ownerCheck;
-  }
+  if (await guardOwnerEndpoint(req, res, done)) return;
 
   const cronSecret = process.env.CRON_SECRET;
   if (!cronSecret) {

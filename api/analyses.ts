@@ -15,9 +15,8 @@
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
-  rejectIfNotOwnerOrGuest,
+  guardOwnerOrGuestEndpoint,
   rejectIfRateLimited,
-  checkBot,
   setCacheHeaders,
 } from './_lib/api-helpers.js';
 import { getDb } from './_lib/db.js';
@@ -52,16 +51,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'GET only' });
   }
 
-  const botCheck = await checkBot(req);
-  if (botCheck.isBot) {
-    done({ status: 403 });
-    return res.status(403).json({ error: 'Access denied' });
-  }
-
-  if (rejectIfNotOwnerOrGuest(req, res)) {
-    done({ status: 401 });
-    return;
-  }
+  if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
   const rateLimited = await rejectIfRateLimited(req, res, 'analyses', 30);
   if (rateLimited) {

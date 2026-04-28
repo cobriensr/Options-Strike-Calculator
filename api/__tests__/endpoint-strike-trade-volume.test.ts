@@ -9,8 +9,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwnerOrGuest: vi.fn(),
-  checkBot: vi.fn(async () => ({ isBot: false })),
+  guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
   setCacheHeaders: vi.fn(
     (res: { setHeader: (k: string, v: string) => unknown }) => {
       res.setHeader('Cache-Control', 's-maxage=30, stale-while-revalidate=60');
@@ -32,6 +31,7 @@ vi.mock('../_lib/sentry.js', () => ({
     ),
     captureException: vi.fn(),
   },
+  metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -39,7 +39,7 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 import handler from '../strike-trade-volume.js';
-import { rejectIfNotOwnerOrGuest, checkBot } from '../_lib/api-helpers.js';
+import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 
 function makeRow(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -58,8 +58,7 @@ function makeRow(over: Record<string, unknown> = {}): Record<string, unknown> {
 describe('GET /api/strike-trade-volume', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
-    vi.mocked(checkBot).mockResolvedValue({ isBot: false });
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
   });
 
   it('returns 405 for non-GET', async () => {
@@ -69,17 +68,24 @@ describe('GET /api/strike-trade-volume', () => {
   });
 
   it('returns 403 when bot detected', async () => {
-    vi.mocked(checkBot).mockResolvedValue({ isBot: true });
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(403).json({ error: 'Access denied' });
+        return true;
+      },
+    );
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(403);
   });
 
   it('returns 401 when not owner', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
-      res.status(401).json({ error: 'Owner only' });
-      return true;
-    });
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(401).json({ error: 'Owner only' });
+        return true;
+      },
+    );
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(401);

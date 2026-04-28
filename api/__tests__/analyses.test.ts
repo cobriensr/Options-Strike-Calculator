@@ -4,9 +4,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwnerOrGuest: vi.fn(),
+  guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
   rejectIfRateLimited: vi.fn(),
-  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
   setCacheHeaders: vi.fn(),
 }));
 
@@ -15,20 +14,25 @@ vi.mock('../_lib/db.js', () => ({
   getDb: () => mockSql,
 }));
 
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: { captureException: vi.fn() },
+  metrics: { request: vi.fn(() => vi.fn()) },
+}));
+
 vi.mock('../_lib/logger.js', () => ({
   default: { error: vi.fn() },
 }));
 
 import handler from '../analyses.js';
 import {
-  rejectIfNotOwnerOrGuest,
+  guardOwnerOrGuestEndpoint,
   rejectIfRateLimited,
 } from '../_lib/api-helpers.js';
 
 describe('GET /api/analyses', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
     mockSql.mockReset();
   });
@@ -41,10 +45,12 @@ describe('GET /api/analyses', () => {
   });
 
   it('returns 401 when not owner', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
-      res.status(401).json({ error: 'Not authenticated' });
-      return true;
-    });
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(401).json({ error: 'Not authenticated' });
+        return true;
+      },
+    );
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(401);

@@ -14,9 +14,8 @@
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
-  rejectIfNotOwnerOrGuest,
+  guardOwnerOrGuestEndpoint,
   rejectIfRateLimited,
-  checkBot,
 } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
 
@@ -125,14 +124,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const done = metrics.request('/api/iv-term-structure');
 
     try {
-      const botCheck = await checkBot(req);
-      if (botCheck.isBot) {
-        done({ status: 403 });
-        return res.status(403).json({ error: 'Access denied' });
-      }
-
-      const ownerCheck = rejectIfNotOwnerOrGuest(req, res);
-      if (ownerCheck) return;
+      if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
       const rateLimitCheck = await rejectIfRateLimited(
         req,

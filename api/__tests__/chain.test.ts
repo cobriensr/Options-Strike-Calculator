@@ -4,16 +4,23 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwnerOrGuest: vi.fn(),
+  guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
   schwabFetch: vi.fn(),
   setCacheHeaders: vi.fn(),
   isMarketOpen: vi.fn(),
-  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+}));
+
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: {
+    withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
+    captureException: vi.fn(),
+  },
+  metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
 import handler from '../chain.js';
 import {
-  rejectIfNotOwnerOrGuest,
+  guardOwnerOrGuestEndpoint,
   schwabFetch,
   isMarketOpen,
 } from '../_lib/api-helpers.js';
@@ -104,17 +111,19 @@ describe('GET /api/chain', () => {
   });
 
   it('returns 401 for non-owner', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
-      res.status(401).json({ error: 'Not authenticated' });
-      return true;
-    });
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(401).json({ error: 'Not authenticated' });
+        return true;
+      },
+    );
     const res = mockResponse();
     await handler(mockRequest(), res);
     expect(res._status).toBe(401);
   });
 
   it('forwards error from schwabFetch', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
       ok: false,
       error: 'Token expired',
@@ -129,7 +138,7 @@ describe('GET /api/chain', () => {
   });
 
   it('returns empty chain when no contracts found', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
       ok: true,
       data: {
@@ -155,7 +164,7 @@ describe('GET /api/chain', () => {
   });
 
   it('returns puts, calls, and target deltas from chain data', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
 
     const puts = [
@@ -263,7 +272,7 @@ describe('GET /api/chain', () => {
   });
 
   it('computes icCredit and width in targetDeltas', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
 
     const puts = [
@@ -297,7 +306,7 @@ describe('GET /api/chain', () => {
   });
 
   it('passes strikeCount query param to schwabFetch', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
     vi.mocked(schwabFetch).mockResolvedValue({
       ok: true,
@@ -318,7 +327,7 @@ describe('GET /api/chain', () => {
   });
 
   it('skips ITM puts (delta >= 0) when matching target deltas', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
 
     const puts = [
@@ -344,7 +353,7 @@ describe('GET /api/chain', () => {
   });
 
   it('skips ITM calls (delta <= 0) when matching target deltas', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
 
     const puts = [makeContract('PUT', 5600, { delta: -0.05 })];
@@ -369,7 +378,7 @@ describe('GET /api/chain', () => {
   });
 
   it('handles empty contract list within a strike key', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
 
     // Build chain with an empty contract array for one strike
@@ -407,7 +416,7 @@ describe('GET /api/chain', () => {
   });
 
   it('returns null underlying when chain has no underlying', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
       ok: true,
       data: {
@@ -430,7 +439,7 @@ describe('GET /api/chain', () => {
   });
 
   it('falls back to nullish defaults when underlying fields are missing in buildResponse', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
 
     const dateKey = '2026-03-14:0';
@@ -468,7 +477,7 @@ describe('GET /api/chain', () => {
   });
 
   it('handles missing putExpDateMap/callExpDateMap (nullish coalescing)', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
       ok: true,
       data: {
@@ -493,7 +502,7 @@ describe('GET /api/chain', () => {
   });
 
   it('sets shorter cache headers when market is closed', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
       ok: true,
@@ -512,7 +521,7 @@ describe('GET /api/chain', () => {
   });
 
   it('defaults strikeCount to 80', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
     vi.mocked(schwabFetch).mockResolvedValue({
       ok: true,

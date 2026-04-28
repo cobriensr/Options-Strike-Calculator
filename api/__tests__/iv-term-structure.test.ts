@@ -4,9 +4,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwnerOrGuest: vi.fn(),
+  guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
   rejectIfRateLimited: vi.fn(),
-  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
@@ -32,9 +31,8 @@ import handler, {
   type IvTermRow,
 } from '../iv-term-structure.js';
 import {
-  rejectIfNotOwnerOrGuest,
+  guardOwnerOrGuestEndpoint,
   rejectIfRateLimited,
-  checkBot,
 } from '../_lib/api-helpers.js';
 
 const SAMPLE_ROWS: IvTermRow[] = [
@@ -89,9 +87,8 @@ describe('GET /api/iv-term-structure', () => {
     vi.clearAllMocks();
     process.env = { ...originalEnv };
     process.env.UW_API_KEY = 'test-uw-key';
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
-    vi.mocked(checkBot).mockResolvedValue({ isBot: false });
   });
 
   afterEach(() => {
@@ -101,8 +98,13 @@ describe('GET /api/iv-term-structure', () => {
 
   // ── Bot check ──────────────────────────────────────────────
 
-  it('returns 403 for bots', async () => {
-    vi.mocked(checkBot).mockResolvedValue({ isBot: true });
+  it('returns 403 for bots (via guard)', async () => {
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(403).json({ error: 'Access denied' });
+        return true;
+      },
+    );
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(403);
@@ -111,11 +113,13 @@ describe('GET /api/iv-term-structure', () => {
 
   // ── Auth guard ─────────────────────────────────────────────
 
-  it('returns 401 for non-owner', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
-      res.status(401).json({ error: 'Not authenticated' });
-      return true;
-    });
+  it('returns 401 for non-owner (via guard)', async () => {
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(401).json({ error: 'Not authenticated' });
+        return true;
+      },
+    );
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(401);

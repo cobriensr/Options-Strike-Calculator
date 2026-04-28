@@ -33,9 +33,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { z } from 'zod';
 import { getDb } from '../_lib/db.js';
-import { Sentry } from '../_lib/sentry.js';
-import { checkBot } from '../_lib/api-helpers.js';
-import { rejectIfNotOwnerOrGuest } from '../_lib/guest-auth.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
+import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import logger from '../_lib/logger.js';
 import {
   rankStrikes,
@@ -244,19 +243,18 @@ function sessionBounds(dateStr: string): { start: string; end: string } {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/options-flow/top-strikes');
+    const done = metrics.request('/api/options-flow/top-strikes');
 
     if (req.method !== 'GET') {
+      done({ status: 405 });
       return res.status(405).json({ error: 'GET only' });
     }
 
-    const botCheck = await checkBot(req);
-    if (botCheck.isBot) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-    if (rejectIfNotOwnerOrGuest(req, res)) return;
+    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
     const parsed = querySchema.safeParse(req.query);
     if (!parsed.success) {
+      done({ status: 400 });
       return res.status(400).json({
         error: 'Invalid query',
         details: parsed.error.flatten(),
@@ -315,6 +313,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       res.setHeader('Cache-Control', 'no-store');
 
       if (rows.length === 0) {
+        done({ status: 200 });
         return res.status(200).json({
           strikes: [],
           rollup: EMPTY_ROLLUP,
@@ -341,6 +340,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // By design — the "lean" should reflect what's strongest, not every minor cluster.
       const rollup = computeDirectionalRollup(strikes, spot);
 
+      done({ status: 200 });
       return res.status(200).json({
         strikes,
         rollup,
@@ -351,6 +351,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         timestamps,
       });
     } catch (err) {
+      done({ status: 500 });
       Sentry.captureException(err);
       logger.error({ err }, 'top-strikes query error');
       return res.status(500).json({ error: 'Internal error' });

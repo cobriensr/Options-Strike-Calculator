@@ -20,12 +20,11 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from './_lib/db.js';
-import { Sentry } from './_lib/sentry.js';
+import { Sentry, metrics } from './_lib/sentry.js';
 import logger from './_lib/logger.js';
 import {
-  checkBot,
+  guardOwnerOrGuestEndpoint,
   isMarketOpen,
-  rejectIfNotOwnerOrGuest,
   setCacheHeaders,
 } from './_lib/api-helpers.js';
 import { ivAnomaliesQuerySchema } from './_lib/validation.js';
@@ -218,20 +217,19 @@ function mapSample(r: RawSampleRow): StrikeIVSample {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/iv-anomalies');
+    const done = metrics.request('/api/iv-anomalies');
 
     if (req.method !== 'GET') {
+      done({ status: 405 });
       return res.status(405).json({ error: 'GET only' });
     }
 
-    const botCheck = await checkBot(req);
-    if (botCheck.isBot) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-    if (rejectIfNotOwnerOrGuest(req, res)) return;
+    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
     const parsed = ivAnomaliesQuerySchema.safeParse(req.query);
     if (!parsed.success) {
       res.setHeader('Cache-Control', 'no-store');
+      done({ status: 400 });
       return res.status(400).json({
         error: parsed.error.issues[0]?.message ?? 'Invalid query',
       });
@@ -276,6 +274,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         };
 
         setCacheHeaders(res, isMarketOpen() ? 30 : 300, 60);
+        done({ status: 200 });
         return res.status(200).json(historyResponse);
       }
 
@@ -343,8 +342,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // 30s/300s split.
       const replayCache = atDate && atDate.getTime() < Date.now() - 60_000;
       setCacheHeaders(res, replayCache ? 600 : isMarketOpen() ? 30 : 300, 60);
+      done({ status: 200 });
       return res.status(200).json(listResponse);
     } catch (err) {
+      done({ status: 500 });
       Sentry.captureException(err);
       logger.error({ err, ticker, strike }, 'iv-anomalies fetch error');
       return res.status(500).json({ error: 'Internal error' });

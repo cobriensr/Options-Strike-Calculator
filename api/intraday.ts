@@ -27,8 +27,7 @@ import {
   schwabFetch,
   setCacheHeaders,
   isMarketOpen,
-  rejectIfNotOwnerOrGuest,
-  checkBot,
+  guardOwnerOrGuestEndpoint,
 } from './_lib/api-helpers.js';
 import { getETTotalMinutes } from '../src/utils/timezone.js';
 
@@ -123,18 +122,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     scope.setTransactionName('GET /api/intraday');
     const done = metrics.request('/api/intraday');
     try {
-      // Owner-only: public visitors get 401, frontend falls back to manual input
-      if (rejectIfNotOwnerOrGuest(req, res)) {
-        done({ status: 401 });
-        return;
-      }
-
-      const botCheck = await checkBot(req);
-      if (botCheck.isBot) {
-        done({ status: 403 });
-        res.status(403).json({ error: 'Access denied' });
-        return;
-      }
+      if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
       // Fetch recent candles and filter to the most recent trading session.
       // A 24h lookback fails on holidays/weekends because Schwab snaps

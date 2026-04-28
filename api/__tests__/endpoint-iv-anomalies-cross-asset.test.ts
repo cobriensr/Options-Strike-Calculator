@@ -10,8 +10,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn(),
-  checkBot: vi.fn(async () => ({ isBot: false })),
+  guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
   setCacheHeaders: vi.fn(),
 }));
 
@@ -28,6 +27,7 @@ vi.mock('../_lib/sentry.js', () => ({
     ),
     captureException: vi.fn(),
   },
+  metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -35,7 +35,7 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 import handler from '../iv-anomalies-cross-asset.js';
-import { rejectIfNotOwner, checkBot } from '../_lib/api-helpers.js';
+import { guardOwnerEndpoint } from '../_lib/api-helpers.js';
 
 const ALERT_TS = '2026-04-23T15:30:00Z';
 const ALERT_DATE = '2026-04-23';
@@ -74,8 +74,7 @@ function getCtx(
 describe('POST /api/iv-anomalies-cross-asset', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-    vi.mocked(checkBot).mockResolvedValue({ isBot: false });
+    vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
   });
 
   it('returns 405 for non-POST', async () => {
@@ -87,8 +86,11 @@ describe('POST /api/iv-anomalies-cross-asset', () => {
     expect(res._status).toBe(405);
   });
 
-  it('returns 403 when bot detected', async () => {
-    vi.mocked(checkBot).mockResolvedValue({ isBot: true });
+  it('returns 403 when bot detected (via guard)', async () => {
+    vi.mocked(guardOwnerEndpoint).mockImplementationOnce(async (_req, res) => {
+      res.status(403).json({ error: 'Access denied' });
+      return true;
+    });
     const res = mockResponse();
     await handler(
       mockRequest({ method: 'POST', body: { keys: [SPXW_KEY] } }),
@@ -97,8 +99,8 @@ describe('POST /api/iv-anomalies-cross-asset', () => {
     expect(res._status).toBe(403);
   });
 
-  it('returns 401 when not owner', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+  it('returns 401 when not owner (via guard)', async () => {
+    vi.mocked(guardOwnerEndpoint).mockImplementationOnce(async (_req, res) => {
       res.status(401).json({ error: 'Owner only' });
       return true;
     });

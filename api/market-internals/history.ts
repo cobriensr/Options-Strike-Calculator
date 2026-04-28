@@ -126,7 +126,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         marketOpen,
       });
     } catch (err) {
-      done({ status: 500, error: 'unhandled' });
+      done({ status: 500 });
       Sentry.captureException(err);
       logger.error({ err }, 'market-internals/history error');
       return res.status(500).json({ error: 'Internal server error' });

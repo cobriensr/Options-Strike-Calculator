@@ -38,8 +38,7 @@ import {
   schwabFetch,
   setCacheHeaders,
   isMarketOpen,
-  rejectIfNotOwnerOrGuest,
-  checkBot,
+  guardOwnerOrGuestEndpoint,
 } from './_lib/api-helpers.js';
 
 // ============================================================
@@ -218,17 +217,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     scope.setTransactionName('GET /api/chain');
     const done = metrics.request('/api/chain');
     try {
-      const botCheck = await checkBot(req);
-      if (botCheck.isBot) {
-        done({ status: 403 });
-        return res.status(403).json({ error: 'Access denied' });
-      }
-
-      const ownerCheck = rejectIfNotOwnerOrGuest(req, res);
-      if (ownerCheck) {
-        done({ status: 401 });
-        return ownerCheck;
-      }
+      if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
       const today = getTodayET();
       const strikeCount = Number(req.query.strikeCount) || 80;

@@ -8,16 +8,13 @@ vi.mock('../_lib/sentry.js', () => ({
   metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
-const { mockCheckBot, mockRejectIfNotOwner, mockBuildFeaturesHandler } =
-  vi.hoisted(() => ({
-    mockCheckBot: vi.fn(),
-    mockRejectIfNotOwner: vi.fn(),
-    mockBuildFeaturesHandler: vi.fn(),
-  }));
+const { mockGuardOwnerEndpoint, mockBuildFeaturesHandler } = vi.hoisted(() => ({
+  mockGuardOwnerEndpoint: vi.fn(),
+  mockBuildFeaturesHandler: vi.fn(),
+}));
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  checkBot: mockCheckBot,
-  rejectIfNotOwner: mockRejectIfNotOwner,
+  guardOwnerEndpoint: mockGuardOwnerEndpoint,
 }));
 
 vi.mock('../cron/build-features.js', () => ({
@@ -32,8 +29,7 @@ describe('POST /api/journal/backfill-features', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     process.env = { ...originalEnv, CRON_SECRET: 'test-secret' };
-    mockCheckBot.mockResolvedValue({ isBot: false });
-    mockRejectIfNotOwner.mockReturnValue(false);
+    mockGuardOwnerEndpoint.mockResolvedValue(false);
     mockBuildFeaturesHandler.mockImplementation(async (_req, res) => {
       res.status(200).json({ dates: 5, featuresBuilt: 5, errors: 0 });
     });
@@ -46,8 +42,11 @@ describe('POST /api/journal/backfill-features', () => {
     expect(res._status).toBe(405);
   });
 
-  it('rejects bots with 403', async () => {
-    mockCheckBot.mockResolvedValueOnce({ isBot: true });
+  it('rejects bots with 403 (via guard)', async () => {
+    mockGuardOwnerEndpoint.mockImplementationOnce(async (_req, res) => {
+      res.status(403).json({ error: 'Access denied' });
+      return true;
+    });
     const req = mockRequest({ method: 'POST' });
     const res = mockResponse();
     await handler(req, res);
@@ -55,8 +54,8 @@ describe('POST /api/journal/backfill-features', () => {
     expect(mockBuildFeaturesHandler).not.toHaveBeenCalled();
   });
 
-  it('rejects non-owner with 401 (via rejectIfNotOwner)', async () => {
-    mockRejectIfNotOwner.mockImplementationOnce((_req, res) => {
+  it('rejects non-owner with 401 (via guard)', async () => {
+    mockGuardOwnerEndpoint.mockImplementationOnce(async (_req, res) => {
       res.status(401).json({ error: 'Not owner' });
       return true;
     });

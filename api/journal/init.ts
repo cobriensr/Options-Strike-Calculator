@@ -13,7 +13,7 @@
 
 import { Sentry, metrics } from '../_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { rejectIfNotOwner, checkBot } from '../_lib/api-helpers.js';
+import { guardOwnerEndpoint } from '../_lib/api-helpers.js';
 import { initDb, migrateDb } from '../_lib/db.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -24,17 +24,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'POST only' });
   }
 
-  const botCheck = await checkBot(req);
-  if (botCheck.isBot) {
-    done({ status: 403 });
-    return res.status(403).json({ error: 'Access denied' });
-  }
-
-  const ownerCheck = rejectIfNotOwner(req, res);
-  if (ownerCheck) {
-    done({ status: 401 });
-    return ownerCheck;
-  }
+  if (await guardOwnerEndpoint(req, res, done)) return;
 
   try {
     await initDb();

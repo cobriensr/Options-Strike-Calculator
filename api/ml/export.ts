@@ -18,7 +18,7 @@
 
 import { Sentry, metrics } from '../_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { rejectIfNotOwnerOrGuest, checkBot } from '../_lib/api-helpers.js';
+import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 
@@ -44,16 +44,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'GET only' });
   }
 
-  const botCheck = await checkBot(req);
-  if (botCheck.isBot) {
-    done({ status: 403 });
-    return res.status(403).json({ error: 'Access denied' });
-  }
-
-  if (rejectIfNotOwnerOrGuest(req, res)) {
-    done({ status: 401 });
-    return;
-  }
+  if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
   const after = (req.query.after as string) || null;
   const before = (req.query.before as string) || null;
@@ -64,9 +55,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Validate date params if provided
   const dateRe = /^\d{4}-\d{2}-\d{2}$/;
   if (after && !dateRe.test(after)) {
+    done({ status: 400 });
     return res.status(400).json({ error: 'after must be YYYY-MM-DD' });
   }
   if (before && !dateRe.test(before)) {
+    done({ status: 400 });
     return res.status(400).json({ error: 'before must be YYYY-MM-DD' });
   }
 

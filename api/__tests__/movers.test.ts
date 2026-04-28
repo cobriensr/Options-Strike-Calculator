@@ -4,19 +4,25 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwnerOrGuest: vi.fn(),
+  guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
   schwabFetch: vi.fn(),
   setCacheHeaders: vi.fn(),
   isMarketOpen: vi.fn(),
-  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+}));
+
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: {
+    withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
+    captureException: vi.fn(),
+  },
+  metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
 import handler from '../movers.js';
 import {
-  rejectIfNotOwnerOrGuest,
+  guardOwnerOrGuestEndpoint,
   schwabFetch,
   isMarketOpen,
-  checkBot,
 } from '../_lib/api-helpers.js';
 
 function makeMover(
@@ -41,17 +47,19 @@ describe('GET /api/movers', () => {
   });
 
   it('returns 401 for non-owner', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
-      res.status(401).json({ error: 'Not authenticated' });
-      return true;
-    });
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(401).json({ error: 'Not authenticated' });
+        return true;
+      },
+    );
     const res = mockResponse();
     await handler(mockRequest(), res);
     expect(res._status).toBe(401);
   });
 
   it('returns movers with concentration analysis', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
 
     // Up movers include mega-caps
@@ -98,7 +106,7 @@ describe('GET /api/movers', () => {
   });
 
   it('handles schwabFetch errors gracefully (empty arrays)', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(false);
 
     // Both return errors
@@ -116,7 +124,7 @@ describe('GET /api/movers', () => {
   });
 
   it('detects bullish bias when top up change is much larger', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
 
     vi.mocked(schwabFetch)
@@ -137,7 +145,7 @@ describe('GET /api/movers', () => {
   });
 
   it('detects bearish bias when top down change is much larger', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
 
     vi.mocked(schwabFetch)
@@ -157,9 +165,13 @@ describe('GET /api/movers', () => {
     expect(json.analysis.bias).toBe('bearish');
   });
 
-  it('returns 403 when bot detected', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
-    vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
+  it('returns 403 when bot detected (via guard)', async () => {
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(403).json({ error: 'Access denied' });
+        return true;
+      },
+    );
 
     const res = mockResponse();
     await handler(mockRequest(), res);
@@ -168,7 +180,7 @@ describe('GET /api/movers', () => {
   });
 
   it('returns 500 when handler throws unexpected error', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(schwabFetch).mockImplementation(() => {
       throw new Error('Crash');
     });
@@ -180,7 +192,7 @@ describe('GET /api/movers', () => {
   });
 
   it('detects mixed bias when moves are similar', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
 
     vi.mocked(schwabFetch)

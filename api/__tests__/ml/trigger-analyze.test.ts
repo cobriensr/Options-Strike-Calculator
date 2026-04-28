@@ -6,8 +6,12 @@ import { mockRequest, mockResponse } from '../helpers';
 // ── Mocks ─────────────────────────────────────────────────────
 
 vi.mock('../../_lib/api-helpers.js', () => ({
-  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
-  rejectIfNotOwner: vi.fn(() => false),
+  guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
+}));
+
+vi.mock('../../_lib/sentry.js', () => ({
+  Sentry: { captureException: vi.fn() },
+  metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
 vi.mock('../../_lib/logger.js', () => ({
@@ -15,7 +19,7 @@ vi.mock('../../_lib/logger.js', () => ({
 }));
 
 import handler from '../../ml/trigger-analyze.js';
-import { checkBot, rejectIfNotOwner } from '../../_lib/api-helpers.js';
+import { guardOwnerEndpoint } from '../../_lib/api-helpers.js';
 import logger from '../../_lib/logger.js';
 
 // ── Tests ─────────────────────────────────────────────────────
@@ -26,8 +30,7 @@ describe('POST /api/ml/trigger-analyze', () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
     vi.resetAllMocks();
-    vi.mocked(checkBot).mockResolvedValue({ isBot: false });
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
+    vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
   });
 
   afterEach(() => {
@@ -49,22 +52,25 @@ describe('POST /api/ml/trigger-analyze', () => {
     expect(res._json).toEqual({ error: 'Method not allowed' });
   });
 
-  it('does not call checkBot when method is not POST', async () => {
+  it('does not call guard when method is not POST', async () => {
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
-    expect(checkBot).not.toHaveBeenCalled();
+    expect(guardOwnerEndpoint).not.toHaveBeenCalled();
   });
 
-  it('returns 403 when checkBot identifies a bot', async () => {
-    vi.mocked(checkBot).mockResolvedValue({ isBot: true });
+  it('returns 403 when guard identifies a bot', async () => {
+    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
+      res.status(403).json({ error: 'Access denied' });
+      return true;
+    });
     const res = mockResponse();
     await handler(mockRequest({ method: 'POST' }), res);
     expect(res._status).toBe(403);
     expect(res._json).toEqual({ error: 'Access denied' });
   });
 
-  it('returns 401 when caller is not the owner', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementationOnce((_req, res) => {
+  it('returns 401 when caller is not the owner (via guard)', async () => {
+    vi.mocked(guardOwnerEndpoint).mockImplementationOnce(async (_req, res) => {
       res.status(401).json({ error: 'Not authenticated' });
       return true;
     });

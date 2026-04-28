@@ -14,8 +14,8 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from './_lib/db.js';
-import { Sentry } from './_lib/sentry.js';
-import { rejectIfNotOwnerOrGuest, checkBot } from './_lib/api-helpers.js';
+import { Sentry, metrics } from './_lib/sentry.js';
+import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
 
 const TICKER = 'SPY';
@@ -52,20 +52,19 @@ function toDateString(value: unknown): string | null {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/nope-intraday');
+    const done = metrics.request('/api/nope-intraday');
 
     if (req.method !== 'GET') {
+      done({ status: 405 });
       return res.status(405).json({ error: 'GET only' });
     }
 
-    const botCheck = await checkBot(req);
-    if (botCheck.isBot) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-    if (rejectIfNotOwnerOrGuest(req, res)) return;
+    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
     const dateParam = req.query.date as string | undefined;
     if (dateParam !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
       res.setHeader('Cache-Control', 'no-store');
+      done({ status: 400 });
       return res.status(400).json({ error: 'Invalid date' });
     }
 
@@ -93,6 +92,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           points: [],
         };
         res.setHeader('Cache-Control', 'no-store');
+        done({ status: 200 });
         return res.status(200).json(empty);
       }
 
@@ -129,8 +129,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         points,
       };
       res.setHeader('Cache-Control', 'no-store');
+      done({ status: 200 });
       return res.status(200).json(response);
     } catch (err) {
+      done({ status: 500 });
       Sentry.captureException(err);
       logger.error({ err }, 'nope-intraday fetch error');
       return res.status(500).json({ error: 'Internal error' });

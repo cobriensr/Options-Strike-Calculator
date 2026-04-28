@@ -18,8 +18,7 @@ import {
   schwabFetch,
   setCacheHeaders,
   isMarketOpen,
-  rejectIfNotOwnerOrGuest,
-  checkBot,
+  guardOwnerOrGuestEndpoint,
 } from './_lib/api-helpers.js';
 
 // ============================================================
@@ -56,17 +55,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     scope.setTransactionName('GET /api/movers');
     const done = metrics.request('/api/movers');
     try {
-      if (rejectIfNotOwnerOrGuest(req, res)) {
-        done({ status: 401 });
-        return;
-      }
-
-      const botCheck = await checkBot(req);
-      if (botCheck.isBot) {
-        done({ status: 403 });
-        res.status(403).json({ error: 'Access denied' });
-        return;
-      }
+      if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
       // Fetch both up and down movers in parallel
       const [upResult, downResult] = await Promise.all([

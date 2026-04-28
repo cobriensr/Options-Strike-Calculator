@@ -15,13 +15,9 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from './_lib/db.js';
-import { Sentry } from './_lib/sentry.js';
+import { Sentry, metrics } from './_lib/sentry.js';
 import logger from './_lib/logger.js';
-import {
-  checkBot,
-  rejectIfNotOwner,
-  setCacheHeaders,
-} from './_lib/api-helpers.js';
+import { guardOwnerEndpoint, setCacheHeaders } from './_lib/api-helpers.js';
 import { ivAnomaliesCrossAssetBodySchema } from './_lib/validation.js';
 import {
   REGIME_THRESHOLDS,
@@ -199,16 +195,18 @@ interface VIXSnap {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTag('endpoint', '/api/iv-anomalies-cross-asset');
+    const done = metrics.request('/api/iv-anomalies-cross-asset');
 
     if (req.method !== 'POST') {
+      done({ status: 405 });
       return res.status(405).json({ error: 'POST only' });
     }
-    const botCheck = await checkBot(req);
-    if (botCheck.isBot) return res.status(403).json({ error: 'Access denied' });
-    if (rejectIfNotOwner(req, res)) return;
+
+    if (await guardOwnerEndpoint(req, res, done)) return;
 
     const parseResult = ivAnomaliesCrossAssetBodySchema.safeParse(req.body);
     if (!parseResult.success) {
+      done({ status: 400 });
       return res
         .status(400)
         .json({ error: 'Invalid body', issues: parseResult.error.issues });
@@ -450,8 +448,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const response: IVAnomaliesCrossAssetResponse = { contexts };
       setCacheHeaders(res, 30);
+      done({ status: 200 });
       return res.status(200).json(response);
     } catch (err) {
+      done({ status: 500 });
       logger.error({ err }, 'iv-anomalies-cross-asset failed');
       Sentry.captureException(err);
       return res.status(500).json({ error: 'Internal error' });

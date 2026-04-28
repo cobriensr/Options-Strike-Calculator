@@ -17,11 +17,7 @@
 
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import {
-  rejectIfNotOwner,
-  rejectIfRateLimited,
-  checkBot,
-} from './_lib/api-helpers.js';
+import { guardOwnerEndpoint, rejectIfRateLimited } from './_lib/api-helpers.js';
 import { getDb } from './_lib/db.js';
 import logger from './_lib/logger.js';
 
@@ -33,17 +29,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'GET only' });
   }
 
-  const botCheck = await checkBot(req);
-  if (botCheck.isBot) {
-    done({ status: 403 });
-    return res.status(403).json({ error: 'Access denied' });
-  }
-
-  const ownerCheck = rejectIfNotOwner(req, res);
-  if (ownerCheck) {
-    done({ status: 401 });
-    return ownerCheck;
-  }
+  if (await guardOwnerEndpoint(req, res, done)) return;
 
   const rateLimited = await rejectIfRateLimited(req, res, 'journal', 20);
   if (rateLimited) {

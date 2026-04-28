@@ -18,22 +18,19 @@ vi.mock('../_lib/sentry.js', () => ({
       ) => cb({ setTransactionName: vi.fn() }),
     ),
   },
+  metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-const { mockCheckBot } = vi.hoisted(() => ({
-  mockCheckBot: vi.fn(),
+const { mockGuard } = vi.hoisted(() => ({
+  mockGuard: vi.fn(),
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  checkBot: mockCheckBot,
-}));
-
-vi.mock('../_lib/guest-auth.js', () => ({
-  rejectIfNotOwnerOrGuest: vi.fn(() => false),
+  guardOwnerOrGuestEndpoint: mockGuard,
 }));
 
 import handler from '../options-flow/top-strikes.js';
@@ -81,7 +78,7 @@ function makeRow(overrides: Partial<Row> = {}): Row {
 describe('GET /api/options-flow/top-strikes', () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    mockCheckBot.mockResolvedValue({ isBot: false });
+    mockGuard.mockResolvedValue(false);
     mockSql.mockResolvedValue([]);
   });
 
@@ -98,8 +95,11 @@ describe('GET /api/options-flow/top-strikes', () => {
 
   // ── Bot gate ───────────────────────────────────────────────
 
-  it('returns 403 when checkBot flags request as bot', async () => {
-    mockCheckBot.mockResolvedValueOnce({ isBot: true });
+  it('returns 403 when checkBot flags request as bot (via guard)', async () => {
+    mockGuard.mockImplementationOnce(async (_req, res) => {
+      res.status(403).json({ error: 'Access denied' });
+      return true;
+    });
 
     const req = mockRequest({ method: 'GET' });
     const res = mockResponse();

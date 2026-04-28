@@ -16,8 +16,8 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { Sentry } from '../_lib/sentry.js';
-import { checkBot, rejectIfNotOwner } from '../_lib/api-helpers.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
+import { guardOwnerEndpoint } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { PushSubscribeBodySchema } from '../_lib/validation.js';
@@ -27,20 +27,19 @@ const MAX_SUBSCRIPTIONS_PER_USER = 5;
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('POST /api/push/subscribe');
+    const done = metrics.request('/api/push/subscribe');
 
     if (req.method !== 'POST') {
+      done({ status: 405 });
       return res.status(405).json({ error: 'POST only' });
     }
 
-    const botCheck = await checkBot(req);
-    if (botCheck.isBot) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-    if (rejectIfNotOwner(req, res)) return;
+    if (await guardOwnerEndpoint(req, res, done)) return;
 
     const parsed = PushSubscribeBodySchema.safeParse(req.body);
     if (!parsed.success) {
       res.setHeader('Cache-Control', 'no-store');
+      done({ status: 400 });
       return res.status(400).json({ error: 'Invalid request body' });
     }
     const { endpoint, keys } = parsed.data;
@@ -102,8 +101,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `;
 
       res.setHeader('Cache-Control', 'no-store');
+      done({ status: 200 });
       return res.status(200).json({ ok: true });
     } catch (err) {
+      done({ status: 500 });
       Sentry.captureException(err);
       logger.error({ err }, 'push/subscribe error');
       return res.status(500).json({ error: 'Internal error' });

@@ -4,8 +4,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn(),
-  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+  guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
+}));
+
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: { captureException: vi.fn() },
+  metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
 vi.mock('../_lib/db.js', () => ({
@@ -13,12 +17,13 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 import handler from '../journal/migrate.js';
-import { rejectIfNotOwner, checkBot } from '../_lib/api-helpers.js';
+import { guardOwnerEndpoint } from '../_lib/api-helpers.js';
 import { migrateDb } from '../_lib/db.js';
 
 describe('POST /api/journal/migrate', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
   });
 
   it('rejects non-POST methods', async () => {
@@ -27,15 +32,18 @@ describe('POST /api/journal/migrate', () => {
     expect(res._status).toBe(405);
   });
 
-  it('rejects non-owner requests', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(true as never);
+  it('rejects non-owner requests (via guard)', async () => {
+    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
+      res.status(401).json({ error: 'Not authenticated' });
+      return true;
+    });
     const res = mockResponse();
     await handler(mockRequest({ method: 'POST' }), res);
-    expect(rejectIfNotOwner).toHaveBeenCalled();
+    expect(res._status).toBe(401);
+    expect(guardOwnerEndpoint).toHaveBeenCalled();
   });
 
   it('runs migrations and returns applied columns', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(migrateDb).mockResolvedValue([
       'vix_term_shape',
       'cluster_put_mult',
@@ -62,7 +70,6 @@ describe('POST /api/journal/migrate', () => {
   });
 
   it('returns 500 on migration failure', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(migrateDb).mockRejectedValue(new Error('DB unreachable'));
 
     const res = mockResponse();
@@ -72,8 +79,11 @@ describe('POST /api/journal/migrate', () => {
     expect((res._json as { error: string }).error).toBe('Internal error');
   });
 
-  it('returns 403 when bot detected', async () => {
-    vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
+  it('returns 403 when bot detected (via guard)', async () => {
+    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
+      res.status(403).json({ error: 'Access denied' });
+      return true;
+    });
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'POST' }), res);
@@ -82,7 +92,6 @@ describe('POST /api/journal/migrate', () => {
   });
 
   it('is idempotent (safe to call multiple times)', async () => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
     vi.mocked(migrateDb).mockResolvedValue(['vix_term_shape', 'rv_iv_ratio']);
 
     const res1 = mockResponse();

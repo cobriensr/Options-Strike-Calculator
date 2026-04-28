@@ -18,8 +18,8 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { Sentry } from '../_lib/sentry.js';
-import { checkBot, rejectIfNotOwner } from '../_lib/api-helpers.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
+import { guardOwnerEndpoint } from '../_lib/api-helpers.js';
 import logger from '../_lib/logger.js';
 
 export interface VapidPublicKeyResponse {
@@ -29,28 +29,29 @@ export interface VapidPublicKeyResponse {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/push/vapid-public-key');
+    const done = metrics.request('/api/push/vapid-public-key');
 
     if (req.method !== 'GET') {
+      done({ status: 405 });
       return res.status(405).json({ error: 'GET only' });
     }
 
-    const botCheck = await checkBot(req);
-    if (botCheck.isBot) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-    if (rejectIfNotOwner(req, res)) return;
+    if (await guardOwnerEndpoint(req, res, done)) return;
 
     try {
       const publicKey = process.env.VAPID_PUBLIC_KEY;
       if (!publicKey) {
+        done({ status: 500 });
         logger.error('VAPID_PUBLIC_KEY is not configured');
         return res.status(500).json({ error: 'Push not configured' });
       }
 
       const response: VapidPublicKeyResponse = { publicKey };
       res.setHeader('Cache-Control', 'no-store');
+      done({ status: 200 });
       return res.status(200).json(response);
     } catch (err) {
+      done({ status: 500 });
       Sentry.captureException(err);
       logger.error({ err }, 'vapid-public-key error');
       return res.status(500).json({ error: 'Internal error' });

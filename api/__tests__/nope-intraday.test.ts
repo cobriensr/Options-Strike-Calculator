@@ -17,20 +17,19 @@ vi.mock('../_lib/sentry.js', () => ({
     ),
     captureException: vi.fn(),
   },
+  metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-const { mockCheckBot, mockRejectIfNotOwner } = vi.hoisted(() => ({
-  mockCheckBot: vi.fn(),
-  mockRejectIfNotOwner: vi.fn(),
+const { mockGuardOwnerOrGuest } = vi.hoisted(() => ({
+  mockGuardOwnerOrGuest: vi.fn(),
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  checkBot: mockCheckBot,
-  rejectIfNotOwnerOrGuest: mockRejectIfNotOwner,
+  guardOwnerOrGuestEndpoint: mockGuardOwnerOrGuest,
 }));
 
 import handler from '../nope-intraday';
@@ -38,8 +37,7 @@ import handler from '../nope-intraday';
 describe('GET /api/nope-intraday', () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    mockCheckBot.mockResolvedValue({ isBot: false });
-    mockRejectIfNotOwner.mockReturnValue(false);
+    mockGuardOwnerOrGuest.mockResolvedValue(false);
   });
 
   it('rejects non-GET methods with 405', async () => {
@@ -50,15 +48,18 @@ describe('GET /api/nope-intraday', () => {
   });
 
   it('rejects bots with 403', async () => {
-    mockCheckBot.mockResolvedValueOnce({ isBot: true });
+    mockGuardOwnerOrGuest.mockImplementationOnce(async (_req, res) => {
+      res.status(403).json({ error: 'Access denied' });
+      return true;
+    });
     const req = mockRequest({ method: 'GET' });
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(403);
   });
 
-  it('rejects non-owner via rejectIfNotOwnerOrGuest', async () => {
-    mockRejectIfNotOwner.mockImplementationOnce((_req, res) => {
+  it('rejects non-owner via guardOwnerOrGuestEndpoint', async () => {
+    mockGuardOwnerOrGuest.mockImplementationOnce(async (_req, res) => {
       res.status(401).json({ error: 'Not owner' });
       return true;
     });

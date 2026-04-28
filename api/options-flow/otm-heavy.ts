@@ -42,12 +42,11 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { checkBot } from '../_lib/api-helpers.js';
-import { rejectIfNotOwnerOrGuest } from '../_lib/guest-auth.js';
+import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
 import { getCtParts } from '../_lib/flow-alert-derive.js';
 import logger from '../_lib/logger.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import { otmHeavyQuerySchema } from '../_lib/validation.js';
 
 // ============================================================
@@ -195,19 +194,18 @@ function dbRowToAlert(row: OtmFlowAlertRow): OtmFlowAlert | null {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/options-flow/otm-heavy');
+    const done = metrics.request('/api/options-flow/otm-heavy');
 
     if (req.method !== 'GET') {
+      done({ status: 405 });
       return res.status(405).json({ error: 'GET only' });
     }
 
-    const botCheck = await checkBot(req);
-    if (botCheck.isBot) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-    if (rejectIfNotOwnerOrGuest(req, res)) return;
+    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
     const parsed = otmHeavyQuerySchema.safeParse(req.query);
     if (!parsed.success) {
+      done({ status: 400 });
       return res.status(400).json({
         error: 'Invalid query',
         details: parsed.error.flatten(),
@@ -303,6 +301,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           : 'max-age=3600, stale-while-revalidate=86400',
       );
 
+      done({ status: 200 });
       return res.status(200).json({
         alerts,
         alert_count: alerts.length,
@@ -318,6 +317,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         },
       });
     } catch (err) {
+      done({ status: 500 });
       Sentry.captureException(err);
       logger.error({ err, mode, date, as_of }, 'otm-heavy query error');
       return res.status(500).json({ error: 'OTM flow query failed' });

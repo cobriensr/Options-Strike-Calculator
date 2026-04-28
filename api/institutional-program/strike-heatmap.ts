@@ -18,10 +18,9 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { checkBot } from '../_lib/api-helpers.js';
-import { rejectIfNotOwnerOrGuest } from '../_lib/guest-auth.js';
+import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 
 interface StrikeCell {
   strike: number;
@@ -35,11 +34,9 @@ interface StrikeCell {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const botCheck = await checkBot(req);
-  if (botCheck.isBot) {
-    return res.status(403).json({ error: 'Access denied' });
-  }
-  if (rejectIfNotOwnerOrGuest(req, res)) return;
+  const done = metrics.request('/api/institutional-program/strike-heatmap');
+
+  if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
   const daysRaw = Number.parseInt(String(req.query.days ?? '60'), 10);
   const days = Math.min(
@@ -83,6 +80,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     `) as Array<{ spot: number | null }>;
     const spotRow = spotRows[0];
 
+    done({ status: 200 });
     res.status(200).json({
       spot: spotRow?.spot ?? null,
       days,
@@ -90,6 +88,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       rows,
     });
   } catch (err) {
+    done({ status: 500 });
     Sentry.captureException(err);
     res.status(500).json({ error: 'Internal error' });
   }

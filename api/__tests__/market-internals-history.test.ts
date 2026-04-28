@@ -218,6 +218,7 @@ describe('GET /api/market-internals/history', () => {
     await handler(mockRequest({ method: 'GET' }), res);
 
     expect(res._status).toBe(403);
+    expect(res._json).toEqual({ error: 'Access denied' });
     expect(mockSql).not.toHaveBeenCalled();
   });
 

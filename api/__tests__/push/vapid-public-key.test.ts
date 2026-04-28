@@ -6,8 +6,7 @@ import { mockRequest, mockResponse } from '../helpers';
 // ── Mocks ────────────────────────────────────────────────
 
 vi.mock('../../_lib/api-helpers.js', () => ({
-  rejectIfNotOwner: vi.fn(),
-  checkBot: vi.fn(async () => ({ isBot: false })),
+  guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
   setCacheHeaders: vi.fn(
     (res: { setHeader: (k: string, v: string) => unknown }) => {
       res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=60');
@@ -21,6 +20,7 @@ vi.mock('../../_lib/sentry.js', () => ({
     withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
     captureException: vi.fn(),
   },
+  metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
 vi.mock('../../_lib/logger.js', () => ({
@@ -28,15 +28,14 @@ vi.mock('../../_lib/logger.js', () => ({
 }));
 
 import handler from '../../push/vapid-public-key.js';
-import { rejectIfNotOwner, checkBot } from '../../_lib/api-helpers.js';
+import { guardOwnerEndpoint } from '../../_lib/api-helpers.js';
 import logger from '../../_lib/logger.js';
 
 describe('GET /api/push/vapid-public-key', () => {
   const originalPublicKey = process.env.VAPID_PUBLIC_KEY;
 
   beforeEach(() => {
-    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
-    vi.mocked(checkBot).mockResolvedValue({ isBot: false });
+    vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
     vi.mocked(logger.error).mockClear();
     process.env.VAPID_PUBLIC_KEY = 'test-public-key-abc123';
   });
@@ -56,16 +55,19 @@ describe('GET /api/push/vapid-public-key', () => {
     expect(res._json).toEqual({ error: 'GET only' });
   });
 
-  it('returns 403 when botid detects a bot', async () => {
-    vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
+  it('returns 403 when guard detects a bot', async () => {
+    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
+      res.status(403).json({ error: 'Access denied' });
+      return true;
+    });
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(403);
     expect(res._json).toEqual({ error: 'Access denied' });
   });
 
-  it('returns 401 for non-owner', async () => {
-    vi.mocked(rejectIfNotOwner).mockImplementation((_req, res) => {
+  it('returns 401 for non-owner (via guard)', async () => {
+    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
       res.status(401).json({ error: 'Not authenticated' });
       return true;
     });

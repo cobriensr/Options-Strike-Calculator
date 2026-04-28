@@ -4,19 +4,25 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwnerOrGuest: vi.fn(),
+  guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
   schwabFetch: vi.fn(),
   setCacheHeaders: vi.fn(),
   isMarketOpen: vi.fn(),
-  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+}));
+
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: {
+    withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
+    captureException: vi.fn(),
+  },
+  metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
 import handler from '../intraday.js';
 import {
-  rejectIfNotOwnerOrGuest,
+  guardOwnerOrGuestEndpoint,
   schwabFetch,
   isMarketOpen,
-  checkBot,
 } from '../_lib/api-helpers.js';
 
 /**
@@ -57,17 +63,19 @@ describe('GET /api/intraday', () => {
   });
 
   it('returns 401 for non-owner', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
-      res.status(401).json({ error: 'Not authenticated' });
-      return true;
-    });
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(401).json({ error: 'Not authenticated' });
+        return true;
+      },
+    );
     const res = mockResponse();
     await handler(mockRequest(), res);
     expect(res._status).toBe(401);
   });
 
   it('forwards schwabFetch errors', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
       ok: false,
       error: 'API down',
@@ -82,7 +90,7 @@ describe('GET /api/intraday', () => {
   });
 
   it('returns today OHLC and opening range from candles', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
 
     // 7 candles covering 9:30-10:05 — first 6 form the opening range
@@ -120,9 +128,13 @@ describe('GET /api/intraday', () => {
     expect(json).toHaveProperty('candleCount');
   });
 
-  it('returns 403 when bot detected', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
-    vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
+  it('returns 403 when bot detected (via guard)', async () => {
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(403).json({ error: 'Access denied' });
+        return true;
+      },
+    );
 
     const res = mockResponse();
     await handler(mockRequest(), res);
@@ -131,7 +143,7 @@ describe('GET /api/intraday', () => {
   });
 
   it('returns 500 when handler throws unexpected error', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(schwabFetch).mockImplementation(() => {
       throw new Error('Crash');
     });
@@ -143,7 +155,7 @@ describe('GET /api/intraday', () => {
   });
 
   it('handles empty candle data', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
       ok: true,
@@ -167,7 +179,7 @@ describe('GET /api/intraday', () => {
   });
 
   it('filters to most recent trading day when candles span multiple days', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
 
     const yesterday = new Date(Date.now() - 86400000).toLocaleDateString(
@@ -207,7 +219,7 @@ describe('GET /api/intraday', () => {
   });
 
   it('returns prior session data on holidays/weekends', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(false);
 
     // Simulate a holiday: candles are from 2 days ago, none from today

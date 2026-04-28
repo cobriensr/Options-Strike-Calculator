@@ -4,8 +4,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwnerOrGuest: vi.fn(),
-  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+  guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
+}));
+
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: { captureException: vi.fn() },
+  metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
 const mockSql = vi.fn();
@@ -14,12 +18,12 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 import handler from '../ml/export.js';
-import { rejectIfNotOwnerOrGuest } from '../_lib/api-helpers.js';
+import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 
 describe('GET /api/ml/export', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     mockSql.mockReset();
   });
 
@@ -30,11 +34,13 @@ describe('GET /api/ml/export', () => {
     expect(res._json).toEqual({ error: 'GET only' });
   });
 
-  it('returns 401 when rejectIfNotOwnerOrGuest returns true', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
-      res.status(401).json({ error: 'Unauthorized' });
-      return true;
-    });
+  it('returns 401 when guardOwnerOrGuestEndpoint rejects', async () => {
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(401).json({ error: 'Unauthorized' });
+        return true;
+      },
+    );
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(401);

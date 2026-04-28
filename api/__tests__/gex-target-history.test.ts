@@ -16,8 +16,7 @@ import { mockRequest, mockResponse } from './helpers';
 // ── Mocks ────────────────────────────────────────────────
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwnerOrGuest: vi.fn(),
-  checkBot: vi.fn(),
+  guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
 }));
 
 const mockSql = vi.fn();
@@ -30,6 +29,7 @@ vi.mock('../_lib/sentry.js', () => ({
     withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
     captureException: vi.fn(),
   },
+  metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -41,7 +41,7 @@ vi.mock('../_lib/spx-candles.js', () => ({
 }));
 
 import handler from '../gex-target-history.js';
-import { rejectIfNotOwnerOrGuest, checkBot } from '../_lib/api-helpers.js';
+import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { fetchSPXCandles } from '../_lib/spx-candles.js';
@@ -209,8 +209,7 @@ interface ResponseShape {
 describe('GET /api/gex-target-history', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
-    vi.mocked(checkBot).mockResolvedValue({ isBot: false });
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(fetchSPXCandles).mockResolvedValue({
       candles: [],
       previousClose: null,
@@ -227,7 +226,12 @@ describe('GET /api/gex-target-history', () => {
   });
 
   it('returns 403 when checkBot flags the request as a bot', async () => {
-    vi.mocked(checkBot).mockResolvedValue({ isBot: true });
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(403).json({ error: 'Access denied' });
+        return true;
+      },
+    );
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(403);
@@ -236,10 +240,12 @@ describe('GET /api/gex-target-history', () => {
   });
 
   it('returns 401 for non-owner (matches gex-per-strike policy)', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
-      res.status(401).json({ error: 'Not authenticated' });
-      return true;
-    });
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(401).json({ error: 'Not authenticated' });
+        return true;
+      },
+    );
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(401);

@@ -23,11 +23,10 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import {
-  checkBot,
+  guardOwnerEndpoint,
   isMarketOpen,
-  rejectIfNotOwner,
   setCacheHeaders,
 } from '../_lib/api-helpers.js';
 import logger from '../_lib/logger.js';
@@ -74,19 +73,18 @@ function toIso(value: string | Date): string {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/push/recent-events');
+    const done = metrics.request('/api/push/recent-events');
 
     if (req.method !== 'GET') {
+      done({ status: 405 });
       return res.status(405).json({ error: 'GET only' });
     }
 
-    const botCheck = await checkBot(req);
-    if (botCheck.isBot) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-    if (rejectIfNotOwner(req, res)) return;
+    if (await guardOwnerEndpoint(req, res, done)) return;
 
     const parsed = PushRecentEventsQuerySchema.safeParse(req.query);
     if (!parsed.success) {
+      done({ status: 400 });
       res.setHeader('Cache-Control', 'no-store');
       return res.status(400).json({
         error: parsed.error.issues[0]?.message ?? 'Invalid query',
@@ -120,8 +118,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const response: RecentEventsResponse = { events };
       setCacheHeaders(res, isMarketOpen() ? 30 : 300, 60);
+      done({ status: 200 });
       return res.status(200).json(response);
     } catch (err) {
+      done({ status: 500 });
       Sentry.captureException(err);
       logger.error({ err }, 'push/recent-events error');
       return res.status(500).json({ error: 'Internal error' });

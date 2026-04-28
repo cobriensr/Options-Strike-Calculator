@@ -13,12 +13,12 @@
  */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
-  rejectIfNotOwner,
+  guardOwnerEndpoint,
   rejectIfRateLimited,
-  checkBot,
   setCacheHeaders,
   respondIfInvalid,
 } from './_lib/api-helpers.js';
+import { metrics } from './_lib/sentry.js';
 import { getDb } from './_lib/db.js';
 import logger from './_lib/logger.js';
 import { preMarketBodySchema } from './_lib/validation.js';
@@ -26,15 +26,18 @@ import { preMarketBodySchema } from './_lib/validation.js';
 export type { PreMarketData } from '../src/types/api.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const done = metrics.request('/api/pre-market');
+
   if (req.method !== 'GET' && req.method !== 'POST') {
+    done({ status: 405 });
     return res.status(405).json({ error: 'GET or POST only' });
   }
-  const botCheck = await checkBot(req);
-  if (botCheck.isBot) return res.status(403).json({ error: 'Access denied' });
-  const ownerCheck = rejectIfNotOwner(req, res);
-  if (ownerCheck) return ownerCheck;
+  if (await guardOwnerEndpoint(req, res, done)) return;
   const rateLimited = await rejectIfRateLimited(req, res, 'pre-market', 20);
-  if (rateLimited) return;
+  if (rateLimited) {
+    done({ status: 429 });
+    return;
+  }
 
   const db = getDb();
 
@@ -48,10 +51,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `;
       setCacheHeaders(res, 120, 60);
       if (rows.length > 0 && rows[0]?.pre_market_data) {
+        done({ status: 200 });
         return res.status(200).json({ data: rows[0].pre_market_data });
       }
+      done({ status: 200 });
       return res.status(200).json({ data: null });
     } catch (err) {
+      done({ status: 500 });
       logger.error({ err }, 'Failed to fetch pre-market data');
       return res.status(500).json({ error: 'Failed to fetch' });
     }
@@ -60,10 +66,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // POST
   try {
     const parsed = preMarketBodySchema.safeParse(req.body);
-    if (respondIfInvalid(parsed, res)) return;
+    if (respondIfInvalid(parsed, res, done)) return;
     const { date, ...data } = parsed.data;
 
     if (data.globexHigh >= data.globexLow === false) {
+      done({ status: 400 });
       return res.status(400).json({ error: 'globexHigh must be >= globexLow' });
     }
 
@@ -97,8 +104,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `;
     }
 
+    done({ status: 200 });
     return res.status(200).json({ saved: true });
   } catch (err) {
+    done({ status: 500 });
     logger.error({ err }, 'Failed to save pre-market data');
     return res.status(500).json({ error: 'Failed to save' });
   }

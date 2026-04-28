@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { checkBot, rejectIfNotOwner } from '../_lib/api-helpers.js';
+import { guardOwnerEndpoint } from '../_lib/api-helpers.js';
+import { metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 
 /**
@@ -14,20 +15,19 @@ export default async function handler(
   req: VercelRequest,
   res: VercelResponse,
 ): Promise<void> {
+  const done = metrics.request('/api/ml/trigger-analyze');
+
   if (req.method !== 'POST') {
+    done({ status: 405 });
     res.status(405).json({ error: 'Method not allowed' });
     return;
   }
 
-  const botCheck = await checkBot(req);
-  if (botCheck.isBot) {
-    res.status(403).json({ error: 'Access denied' });
-    return;
-  }
-  if (rejectIfNotOwner(req, res)) return;
+  if (await guardOwnerEndpoint(req, res, done)) return;
 
   const secret = process.env.CRON_SECRET;
   if (!secret) {
+    done({ status: 500 });
     res.status(500).json({ error: 'Server misconfigured' });
     return;
   }
@@ -45,5 +45,6 @@ export default async function handler(
     logger.error({ err }, 'trigger-analyze: background call failed');
   });
 
+  done({ status: 202 });
   res.status(202).json({ message: 'Analysis started' });
 }

@@ -6,8 +6,7 @@ import { mockRequest, mockResponse } from './helpers';
 // ── Mocks ────────────────────────────────────────────────────────────
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwnerOrGuest: vi.fn(),
-  checkBot: vi.fn(),
+  guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
 }));
 
 const mockSql = vi.fn();
@@ -20,6 +19,7 @@ vi.mock('../_lib/sentry.js', () => ({
     withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
     captureException: vi.fn(),
   },
+  metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -27,7 +27,7 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 import handler from '../greek-exposure-strike.js';
-import { rejectIfNotOwnerOrGuest, checkBot } from '../_lib/api-helpers.js';
+import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 
@@ -60,8 +60,7 @@ function makeDbRow(overrides: Record<string, unknown> = {}) {
 describe('GET /api/greek-exposure-strike', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
-    vi.mocked(checkBot).mockResolvedValue({ isBot: false });
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     mockSql.mockReset();
   });
 
@@ -78,7 +77,12 @@ describe('GET /api/greek-exposure-strike', () => {
   // ── Bot check ─────────────────────────────────────────────────────
 
   it('returns 403 when checkBot identifies a bot', async () => {
-    vi.mocked(checkBot).mockResolvedValue({ isBot: true });
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(403).json({ error: 'Access denied' });
+        return true;
+      },
+    );
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(403);
@@ -89,10 +93,12 @@ describe('GET /api/greek-exposure-strike', () => {
   // ── Auth guard ────────────────────────────────────────────────────
 
   it('returns 401 for non-owner', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
-      res.status(401).json({ error: 'Not authenticated' });
-      return true;
-    });
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(401).json({ error: 'Not authenticated' });
+        return true;
+      },
+    );
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(401);

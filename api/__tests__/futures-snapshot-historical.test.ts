@@ -17,6 +17,7 @@ vi.mock('../_lib/db.js', () => ({
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: { captureException: vi.fn() },
+  metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -28,8 +29,7 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwnerOrGuest: vi.fn().mockReturnValue(false),
-  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+  guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
 }));
 
 // Pass-through (real impl) is fine for the historical tests — the
@@ -42,7 +42,7 @@ vi.mock('../../src/utils/timezone.js', async () => {
 });
 
 import handler from '../futures/snapshot.js';
-import { rejectIfNotOwnerOrGuest, checkBot } from '../_lib/api-helpers.js';
+import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 
 // Historical bar timestamp fixture (1 min before picked `at`)
 const PICKED_AT = '2026-04-17T19:30:00.000Z';
@@ -177,8 +177,7 @@ describe('GET /api/futures/snapshot?at=<ISO>', () => {
     vi.resetAllMocks();
     mockSql.mockResolvedValue([]);
     process.env = { ...originalEnv };
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
-    vi.mocked(checkBot).mockResolvedValue({ isBot: false });
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.setSystemTime(FAKE_NOW);
   });
 
@@ -362,8 +361,13 @@ describe('GET /api/futures/snapshot?at=<ISO>', () => {
 
   // ── Auth guards still fire on historical path ─────────────
 
-  it('returns 403 for bots even with valid `at`', async () => {
-    vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
+  it('returns 403 for bots even with valid `at` (via guard)', async () => {
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementationOnce(
+      async (_req, res) => {
+        res.status(403).json({ error: 'Access denied' });
+        return true;
+      },
+    );
     const res = mockResponse();
     await handler(
       mockRequest({ method: 'GET', query: { at: PICKED_AT } }),
@@ -372,11 +376,13 @@ describe('GET /api/futures/snapshot?at=<ISO>', () => {
     expect(res._status).toBe(403);
   });
 
-  it('returns 401 for non-owners even with valid `at`', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
-      res.status(401).json({ error: 'Not authenticated' });
-      return true;
-    });
+  it('returns 401 for non-owners even with valid `at` (via guard)', async () => {
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementationOnce(
+      async (_req, res) => {
+        res.status(401).json({ error: 'Not authenticated' });
+        return true;
+      },
+    );
     const res = mockResponse();
     await handler(
       mockRequest({ method: 'GET', query: { at: PICKED_AT } }),

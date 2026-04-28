@@ -3,19 +3,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const { mockUwFetch, mockCheckBot, mockSql } = vi.hoisted(() => ({
+const { mockUwFetch, mockGuard, mockSql } = vi.hoisted(() => ({
   mockUwFetch: vi.fn(),
-  mockCheckBot: vi.fn(),
+  mockGuard: vi.fn(),
   mockSql: vi.fn(),
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
   uwFetch: mockUwFetch,
-  checkBot: mockCheckBot,
-}));
-
-vi.mock('../_lib/guest-auth.js', () => ({
-  rejectIfNotOwnerOrGuest: vi.fn(() => false),
+  guardOwnerOrGuestEndpoint: mockGuard,
 }));
 
 vi.mock('../_lib/db.js', () => ({
@@ -31,6 +27,7 @@ vi.mock('../_lib/sentry.js', () => ({
       ) => cb({ setTransactionName: vi.fn() }),
     ),
   },
+  metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -114,7 +111,7 @@ function makeAlertWithPremium(
 describe('GET /api/options-flow/whale-positioning', () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    mockCheckBot.mockResolvedValue({ isBot: false });
+    mockGuard.mockResolvedValue(false);
     mockUwFetch.mockResolvedValue([]);
     process.env.UW_API_KEY = 'test-key';
     // Freeze to 2026-04-15 14:45:00 UTC = 09:45 CT (mid-session, post-open)
@@ -140,8 +137,11 @@ describe('GET /api/options-flow/whale-positioning', () => {
 
   // ── Bot gate ───────────────────────────────────────────────
 
-  it('returns 403 when checkBot flags request as bot', async () => {
-    mockCheckBot.mockResolvedValueOnce({ isBot: true });
+  it('returns 403 when checkBot flags request as bot (via guard)', async () => {
+    mockGuard.mockImplementationOnce(async (_req, res) => {
+      res.status(403).json({ error: 'Access denied' });
+      return true;
+    });
 
     const req = mockRequest({ method: 'GET' });
     const res = mockResponse();
@@ -617,7 +617,7 @@ describe('GET /api/options-flow/whale-positioning — historical mode', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
-    mockCheckBot.mockResolvedValue({ isBot: false });
+    mockGuard.mockResolvedValue(false);
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-04-15T18:00:00.000Z'));
   });

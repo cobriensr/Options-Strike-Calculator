@@ -48,9 +48,8 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { z } from 'zod';
-import { Sentry } from '../_lib/sentry.js';
-import { checkBot, uwFetch } from '../_lib/api-helpers.js';
-import { rejectIfNotOwnerOrGuest } from '../_lib/guest-auth.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
+import { guardOwnerOrGuestEndpoint, uwFetch } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import {
@@ -457,19 +456,18 @@ function buildResponse(
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/options-flow/whale-positioning');
+    const done = metrics.request('/api/options-flow/whale-positioning');
 
     if (req.method !== 'GET') {
+      done({ status: 405 });
       return res.status(405).json({ error: 'GET only' });
     }
 
-    const botCheck = await checkBot(req);
-    if (botCheck.isBot) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-    if (rejectIfNotOwnerOrGuest(req, res)) return;
+    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
     const parsed = querySchema.safeParse(req.query);
     if (!parsed.success) {
+      done({ status: 400 });
       return res.status(400).json({
         error: 'Invalid query',
         details: parsed.error.flatten(),
@@ -512,6 +510,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           'max-age=3600, stale-while-revalidate=86400',
         );
 
+        done({ status: 200 });
         return res
           .status(200)
           .json(
@@ -524,6 +523,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ),
           );
       } catch (err) {
+        done({ status: 500 });
         Sentry.captureException(err);
         logger.error(
           { err, date, as_of },
@@ -536,6 +536,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // ── Live mode (no date) ──────────────────────────────────
     const apiKey = process.env.UW_API_KEY ?? '';
     if (!apiKey) {
+      done({ status: 500 });
       logger.error('UW_API_KEY not configured');
       return res.status(500).json({ error: 'Upstream flow data unavailable' });
     }
@@ -580,6 +581,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       res.setHeader('Cache-Control', 'max-age=30, stale-while-revalidate=30');
 
+      done({ status: 200 });
       return res.status(200).json(
         buildResponse(
           sliced,
@@ -590,6 +592,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ),
       );
     } catch (err) {
+      done({ status: 502 });
       Sentry.captureException(err);
       logger.error({ err }, 'whale-positioning UW fetch error');
       return res.status(502).json({ error: 'Upstream flow data unavailable' });
