@@ -138,12 +138,22 @@ const GexLandscape = memo(function GexLandscape({
   const spotRowRef = useRef<HTMLDivElement>(null);
   // Scroll to ATM row only once on initial data arrival; never on scrub.
   const hasScrolledRef = useRef(false);
-  // Rolling buffer of recent snapshots for Δ% computations (1m and 5m).
+  // Rolling buffer of recent snapshots for Δ% computations
+  // (1m, 5m, 10m, 15m, 30m).
   const snapshotBufferRef = useRef<Snapshot[]>([]);
   const [gexDeltaMap, setGexDeltaMap] = useState<Map<number, number | null>>(
     new Map(),
   );
   const [gexDelta5mMap, setGexDelta5mMap] = useState<
+    Map<number, number | null>
+  >(new Map());
+  const [gexDelta10mMap, setGexDelta10mMap] = useState<
+    Map<number, number | null>
+  >(new Map());
+  const [gexDelta15mMap, setGexDelta15mMap] = useState<
+    Map<number, number | null>
+  >(new Map());
+  const [gexDelta30mMap, setGexDelta30mMap] = useState<
     Map<number, number | null>
   >(new Map());
   // 5-minute smoothed strikes — updated in the snapshot effect so the ref read
@@ -307,6 +317,9 @@ const GexLandscape = memo(function GexLandscape({
     snapshotBufferRef.current = [];
     setGexDeltaMap(new Map());
     setGexDelta5mMap(new Map());
+    setGexDelta10mMap(new Map());
+    setGexDelta15mMap(new Map());
+    setGexDelta30mMap(new Map());
     setSmoothedRows([]);
     setPriceTrend(null);
   }, [selectedDate]);
@@ -323,7 +336,7 @@ const GexLandscape = memo(function GexLandscape({
     }
   }, [loading, rows.length]);
 
-  // Compute 1m and 5m GEX Δ% on each new snapshot.
+  // Compute 1m, 5m, 10m, 15m, and 30m GEX Δ% on each new snapshot.
   // Uses a rolling buffer keyed by snapshot timestamp to avoid duplicate
   // processing and to support arbitrary lookback windows.
   useEffect(() => {
@@ -333,8 +346,10 @@ const GexLandscape = memo(function GexLandscape({
     // Guard: don't process the same snapshot twice (e.g. re-render with same data).
     if (snapshotBufferRef.current.at(-1)?.ts === now) return;
 
-    // Prune entries older than 10 minutes to keep the buffer bounded.
-    const cutoff = now - 10 * 60 * 1000;
+    // Prune entries older than 31 minutes to keep the buffer bounded while
+    // still covering the 30m lookback (extra minute absorbs the
+    // findClosestSnapshot tolerance window).
+    const cutoff = now - 31 * 60 * 1000;
     const buf = snapshotBufferRef.current.filter((snap) => snap.ts >= cutoff);
 
     // 1m delta — compare against the most recent buffered snapshot.
@@ -343,10 +358,24 @@ const GexLandscape = memo(function GexLandscape({
       prev1m ? computeDeltaMap(strikes, prev1m.strikes) : new Map(),
     );
 
-    // 5m delta — find the snapshot closest to 5 minutes ago.
+    // 5/10/15/30m deltas — find closest snapshot for each lookback target.
+    // Each map stays empty until the buffer holds a snapshot near that age,
+    // so the table renders an em-dash until enough history accumulates.
     const snap5m = findClosestSnapshot(buf, now - 5 * 60 * 1000);
     setGexDelta5mMap(
       snap5m ? computeDeltaMap(strikes, snap5m.strikes) : new Map(),
+    );
+    const snap10m = findClosestSnapshot(buf, now - 10 * 60 * 1000);
+    setGexDelta10mMap(
+      snap10m ? computeDeltaMap(strikes, snap10m.strikes) : new Map(),
+    );
+    const snap15m = findClosestSnapshot(buf, now - 15 * 60 * 1000);
+    setGexDelta15mMap(
+      snap15m ? computeDeltaMap(strikes, snap15m.strikes) : new Map(),
+    );
+    const snap30m = findClosestSnapshot(buf, now - 30 * 60 * 1000);
+    setGexDelta30mMap(
+      snap30m ? computeDeltaMap(strikes, snap30m.strikes) : new Map(),
     );
 
     // Push current snapshot and persist the updated buffer.
@@ -491,6 +520,9 @@ const GexLandscape = memo(function GexLandscape({
             maxChanged5mStrike={maxChanged5mStrike}
             gexDeltaMap={gexDeltaMap}
             gexDelta5mMap={gexDelta5mMap}
+            gexDelta10mMap={gexDelta10mMap}
+            gexDelta15mMap={gexDelta15mMap}
+            gexDelta30mMap={gexDelta30mMap}
             spotRowRef={spotRowRef}
           />
         )}
@@ -510,6 +542,9 @@ const GexLandscape = memo(function GexLandscape({
             maxChanged5mStrike={maxChanged5mStrike}
             gexDeltaMap={gexDeltaMap}
             gexDelta5mMap={gexDelta5mMap}
+            gexDelta10mMap={gexDelta10mMap}
+            gexDelta15mMap={gexDelta15mMap}
+            gexDelta30mMap={gexDelta30mMap}
             spotRowRef={spotRowRef}
             showAtmDistance
             justEntered={justEntered}

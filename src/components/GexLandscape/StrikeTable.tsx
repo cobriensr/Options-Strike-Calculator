@@ -1,8 +1,8 @@
 /**
  * StrikeTable — sticky-header + scrollable grid of strikes within the
- * display window, with per-strike classification, signal, GEX, 1m/5m Δ%,
- * charm, and vol reinforcement cells. The ATM row is ref-tagged so the
- * parent can scroll it into view on initial load.
+ * display window, with per-strike classification, signal, GEX, multi-window
+ * Δ% (1m/5m/10m/15m/30m), charm, and vol reinforcement cells. The ATM row is
+ * ref-tagged so the parent can scroll it into view on initial load.
  */
 
 import type { Ref } from 'react';
@@ -16,8 +16,12 @@ import {
 } from './classify';
 import { fmtGex, fmtPct } from './formatters';
 
-/** Strike | Classification | Signal | Net GEX | 1m Δ% | 5m Δ% | Charm | Vol */
-const COLS = 'grid-cols-[76px_130px_1fr_88px_68px_68px_76px_56px]';
+/**
+ * Strike | Classification | Signal | Net GEX
+ *   | 1m Δ% | 5m Δ% | 10m Δ% | 15m Δ% | 30m Δ% | Charm | Vol
+ */
+const COLS =
+  'grid-cols-[76px_130px_1fr_88px_64px_64px_64px_64px_64px_76px_56px]';
 
 export interface StrikeTableProps {
   rows: GexStrikeLevel[];
@@ -27,6 +31,9 @@ export interface StrikeTableProps {
   maxChanged5mStrike: number | null;
   gexDeltaMap: Map<number, number | null>;
   gexDelta5mMap: Map<number, number | null>;
+  gexDelta10mMap: Map<number, number | null>;
+  gexDelta15mMap: Map<number, number | null>;
+  gexDelta30mMap: Map<number, number | null>;
   spotRowRef: Ref<HTMLDivElement>;
   /**
    * When true, non-ATM rows render a signed point offset from spot beneath
@@ -48,6 +55,9 @@ export function StrikeTable({
   maxChanged5mStrike,
   gexDeltaMap,
   gexDelta5mMap,
+  gexDelta10mMap,
+  gexDelta15mMap,
+  gexDelta30mMap,
   spotRowRef,
   showAtmDistance = false,
   justEntered,
@@ -71,6 +81,24 @@ export function StrikeTable({
         </div>
         <div className="px-3 py-2 text-right">1m Δ%</div>
         <div className="px-3 py-2 text-right">5m Δ%</div>
+        <div
+          className="cursor-help px-3 py-2 text-right"
+          title="GEX Δ% over 10 minutes — empty until 10+ min of buffered snapshots accumulate this session."
+        >
+          10m Δ%
+        </div>
+        <div
+          className="cursor-help px-3 py-2 text-right"
+          title="GEX Δ% over 15 minutes — empty until 15+ min of buffered snapshots accumulate this session."
+        >
+          15m Δ%
+        </div>
+        <div
+          className="cursor-help px-3 py-2 text-right"
+          title="GEX Δ% over 30 minutes — empty until 30+ min of buffered snapshots accumulate this session."
+        >
+          30m Δ%
+        </div>
         <div className="px-3 py-2 text-right">Charm</div>
         <div className="px-3 py-2 text-center">Vol</div>
       </div>
@@ -94,6 +122,9 @@ export function StrikeTable({
           const meta = CLASS_META[cls];
           const pct1m = gexDeltaMap.get(s.strike) ?? null;
           const pct5m = gexDelta5mMap.get(s.strike) ?? null;
+          const pct10m = gexDelta10mMap.get(s.strike) ?? null;
+          const pct15m = gexDelta15mMap.get(s.strike) ?? null;
+          const pct30m = gexDelta30mMap.get(s.strike) ?? null;
           const isNew = justEntered?.has(s.strike) ?? false;
           const isAnchor = oldestStrike !== null && s.strike === oldestStrike;
 
@@ -237,6 +268,57 @@ export function StrikeTable({
                   }}
                 >
                   {fmtPct(pct5m)}
+                </span>
+              </div>
+
+              {/* 10m GEX Δ% */}
+              <div className="flex items-center justify-end px-3 py-1.5">
+                <span
+                  className="font-mono text-[11px]"
+                  style={{
+                    color:
+                      pct10m === null
+                        ? 'var(--color-muted)'
+                        : pct10m >= 0
+                          ? 'rgba(74,222,128,0.85)'
+                          : 'rgba(248,113,113,0.85)',
+                  }}
+                >
+                  {fmtPct(pct10m)}
+                </span>
+              </div>
+
+              {/* 15m GEX Δ% */}
+              <div className="flex items-center justify-end px-3 py-1.5">
+                <span
+                  className="font-mono text-[11px]"
+                  style={{
+                    color:
+                      pct15m === null
+                        ? 'var(--color-muted)'
+                        : pct15m >= 0
+                          ? 'rgba(74,222,128,0.85)'
+                          : 'rgba(248,113,113,0.85)',
+                  }}
+                >
+                  {fmtPct(pct15m)}
+                </span>
+              </div>
+
+              {/* 30m GEX Δ% */}
+              <div className="flex items-center justify-end px-3 py-1.5">
+                <span
+                  className="font-mono text-[11px]"
+                  style={{
+                    color:
+                      pct30m === null
+                        ? 'var(--color-muted)'
+                        : pct30m >= 0
+                          ? 'rgba(74,222,128,0.85)'
+                          : 'rgba(248,113,113,0.85)',
+                  }}
+                >
+                  {fmtPct(pct30m)}
                 </span>
               </div>
 
