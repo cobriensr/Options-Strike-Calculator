@@ -11,8 +11,9 @@
  *   - SPX/SPY/QQQ → primary expiry = the snapshot's `date`
  *   - NDX → primary expiry = front Mon/Wed/Fri (handled by getPrimaryExpiry)
  *
- * Confidence gating identical to the live cron: zero_gamma is stored NULL
- * when confidence < 0.5; the row + curve are still preserved for diagnostics.
+ * No confidence gating: stores whatever the calculator returned. zero_gamma
+ * is NULL only when the calculator found no sign change in ±3% of spot.
+ * Matches the live cron's behavior.
  *
  * Idempotency: deletes existing `zero_gamma_levels` rows in the date range
  * for each ticker before re-inserting. Safe to re-run with the same window.
@@ -46,7 +47,6 @@ if (!DATABASE_URL) {
 }
 
 const sql = neon(DATABASE_URL);
-const CONFIDENCE_MIN = 0.5;
 
 const days = Number.parseInt(process.argv[2] ?? '30', 10);
 
@@ -198,10 +198,10 @@ async function main() {
 
   const totals: Record<
     string,
-    { snapshots: number; stored: number; lowConf: number }
+    { snapshots: number; stored: number; nullLevels: number }
   > = {};
   for (const ticker of ZERO_GAMMA_TICKERS) {
-    totals[ticker] = { snapshots: 0, stored: 0, lowConf: 0 };
+    totals[ticker] = { snapshots: 0, stored: 0, nullLevels: 0 };
   }
 
   for (const date of tradingDays) {
@@ -216,17 +216,14 @@ async function main() {
       }
 
       let storedHere = 0;
-      let lowConfHere = 0;
+      let nullHere = 0;
       let lastLevel: number | null = null;
       let lastSpot: number | null = null;
 
       for (const snap of snapshots) {
         const result = computeZeroGammaLevel(snap.strikes, snap.spot);
-        const zeroGamma =
-          result.level != null && result.confidence >= CONFIDENCE_MIN
-            ? result.level
-            : null;
-        if (zeroGamma == null) lowConfHere += 1;
+        const zeroGamma = result.level;
+        if (zeroGamma == null) nullHere += 1;
         const netGamma = netGammaAtSpot(result.curve, snap.spot);
 
         await sql`
@@ -238,6 +235,12 @@ async function main() {
             ${ticker}, ${snap.spot}, ${zeroGamma}, ${result.confidence},
             ${netGamma}, ${JSON.stringify(result.curve)}::jsonb, ${snap.ts}
           )
+          ON CONFLICT (ticker, ts) DO UPDATE SET
+            spot              = EXCLUDED.spot,
+            zero_gamma        = EXCLUDED.zero_gamma,
+            confidence        = EXCLUDED.confidence,
+            net_gamma_at_spot = EXCLUDED.net_gamma_at_spot,
+            gamma_curve       = EXCLUDED.gamma_curve
         `;
         storedHere += 1;
         lastLevel = zeroGamma;
@@ -246,7 +249,7 @@ async function main() {
 
       totals[ticker]!.snapshots += snapshots.length;
       totals[ticker]!.stored += storedHere;
-      totals[ticker]!.lowConf += lowConfHere;
+      totals[ticker]!.nullLevels += nullHere;
 
       const levelDisplay =
         lastLevel != null
@@ -262,9 +265,9 @@ async function main() {
   console.log('\nDone!');
   for (const ticker of ZERO_GAMMA_TICKERS) {
     const t = totals[ticker]!;
-    const pct = t.stored > 0 ? Math.round((t.lowConf / t.stored) * 100) : 0;
+    const pct = t.stored > 0 ? Math.round((t.nullLevels / t.stored) * 100) : 0;
     console.log(
-      `  ${ticker}: ${t.stored} rows stored (${t.lowConf} low-confidence = ${pct}%)`,
+      `  ${ticker}: ${t.stored} rows stored (${t.nullLevels} null-level = ${pct}% — no sign change in ±3% grid)`,
     );
   }
 }

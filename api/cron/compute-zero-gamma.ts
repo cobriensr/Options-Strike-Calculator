@@ -16,12 +16,14 @@
  *   - SPX/SPY/QQQ → primary expiry = today (0DTE).
  *   - NDX → primary expiry = front Mon/Wed/Fri (handled by getPrimaryExpiry).
  *
- * Gating (applied per ticker):
- *   - confidence < 0.5 → zero_gamma column is stored as NULL. The confidence
- *     and curve are preserved for diagnostics so downstream consumers can
- *     see the low-confidence read without trusting the level itself.
- *   - If a ticker has no fresh strike_exposures snapshot, the per-ticker
- *     branch logs + skips without inserting. Other tickers still run.
+ * No confidence gating: zero-gamma is a regime indicator (the spot price
+ * where dealer net gamma crosses sign), not a trade trigger. The level is
+ * stored whenever the calculator can find a sign change in ±3% of spot.
+ * `confidence` is recorded alongside for UI styling / filtering.
+ *
+ * `zero_gamma` is NULL only when:
+ *   - the gamma profile has no sign change in the ±3% grid, OR
+ *   - the ticker has no fresh strike_exposures snapshot (we log + skip).
  *
  * Cadence: 5-min at +1 offset from fetch-strike-exposure source — ensures
  * the source rows are committed before we read them. Cron line:
@@ -46,8 +48,6 @@ import {
   getPrimaryExpiry,
   type ZeroGammaTicker,
 } from '../_lib/zero-gamma-tickers.js';
-
-const CONFIDENCE_MIN = 0.5;
 
 // ── Row shape from strike_exposures ──────────────────────────
 
@@ -192,13 +192,11 @@ async function processTicker(
 
   const result = computeZeroGammaLevel(snapshot.strikes, snapshot.spot);
 
-  // Confidence gating: noisy crossings still record a row (for diagnostics)
-  // but zero_gamma itself is stored NULL to prevent downstream features
-  // trusting a shallow read.
-  const zeroGamma =
-    result.level != null && result.confidence >= CONFIDENCE_MIN
-      ? result.level
-      : null;
+  // No confidence gate: zero-gamma is a regime indicator, not a trade
+  // trigger — we want to see the level whenever the calculator can find
+  // a sign change in ±3% of spot. `confidence` is stored alongside so
+  // consumers can dim/style low-confidence reads in the UI.
+  const zeroGamma = result.level;
 
   const netGamma = netGammaAtSpot(result.curve, snapshot.spot);
   const gammaCurveJson = JSON.stringify(result.curve);

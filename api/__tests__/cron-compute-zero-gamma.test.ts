@@ -240,21 +240,22 @@ describe('compute-zero-gamma handler', () => {
     expect(spxValues).toContain('2026-03-24');
   });
 
-  // ── Low confidence: level stored as null, row still inserted ─
+  // ── No sign change in ±3% grid: zeroGamma null, row still inserted ─
 
-  it('stores zero_gamma as null when confidence < 0.5 but preserves diagnostics', async () => {
-    // All-positive gamma chain → calculator returns level: null. The handler
-    // should still insert (for diagnostic history) with zero_gamma null.
-    const lowConfChain = [
+  it('stores zero_gamma as null when the gamma profile has no sign change', async () => {
+    // All-positive gamma chain → calculator returns level: null because no
+    // sign flip exists in the ±3% grid. The handler still inserts the row
+    // for diagnostic history (full curve and confidence preserved).
+    const noFlipChain = [
       makeStrikeRow(7095, 500_000_000, 200_000_000),
       makeStrikeRow(7100, 800_000_000, 300_000_000),
       makeStrikeRow(7110, 600_000_000, 400_000_000),
     ];
 
-    // SPX has the low-confidence chain; the rest skip via null latest_ts.
+    // SPX has the no-flip chain; the rest skip via null latest_ts.
     mockSql
       .mockResolvedValueOnce([{ latest_ts: '2026-03-24T13:55:00.000Z' }])
-      .mockResolvedValueOnce(lowConfChain)
+      .mockResolvedValueOnce(noFlipChain)
       .mockResolvedValueOnce([]); // SPX INSERT
     for (let i = 0; i < TICKERS.length - 1; i += 1) {
       mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
