@@ -1,47 +1,61 @@
 # Vega Spike EDA Findings
 
-**Sample**: 38 total spike events; 28 with computable forward returns (fwd_return columns were NULL in DB — computed here from etf_candles_1m).
+**Sample**: 38 total spike events.
+- 28 with computable 15m forward return (for reference).
+- 28 with computable EOD forward return (primary horizon — requires a close bar at 16:00 ET on the spike's date).
+
+> **Primary horizon changed to EOD (end-of-day / 16:00 ET close)** from the prior 15-minute horizon.
+> This captures the full directional arc rather than just the first 15 minutes of follow-through.
+
+> **Variable time window caveat**: The EOD horizon is NOT a fixed-duration return.
+> A spike at 09:35 ET has ~6h 25min to close; a spike at 15:30 ET has only 30 min.
+> Median time-to-close for EOD-computable spikes: **258 minutes** (4.3h).
+> Interpret EOD returns as 'how did the day end given this spike' rather than 'X-minute momentum'.
+> A future analysis stratified by time-to-close would more cleanly isolate the effect.
 
 > NOTE: 38 events is exploratory, not conclusive. All p-values and CIs should be treated as directional indicators only. The sample is too small for reliable inference.
 
-## 1. Distribution Comparison (spike vs control)
+## 1. Distribution Comparison (spike vs control, EOD horizon)
 
-Spike fwd_return_15m median: **0.041%**, Control median: **0.015%**. Mann-Whitney U=8795, p=0.2766 (two-sided). n_spike=28, n_control=560. A p-value below 0.05 would indicate the spike return distribution is meaningfully different from random same-ticker, same-time-of-day baseline minutes.
+Spike fwd_return_eod median: **-0.014%**, Control median: **0.043%**. Mann-Whitney U=7428, p=0.6390 (two-sided). n_spike=28, n_control=560. A p-value below 0.05 would indicate the spike EOD return distribution is meaningfully different from random same-ticker, same-time-of-day baseline minutes.
 
-## 2. Directionality
+## 2. Directionality (EOD horizon)
 
-Overall hit rate: **11/28 = 39.3%**, 95% Wilson CI [23.6%, 57.6%], binomial p=0.3449 vs 50% null. Hit rate > 50% means spikes correctly predict the 15-min price direction; a CI entirely above 50% would be a tradeable directional signal.
+Overall hit rate: **15/28 = 53.6%**, 95% Wilson CI [35.8%, 70.5%], binomial p=0.8506 vs 50% null. Hit rate > 50% means spikes correctly predict the EOD price direction (whether the close is higher/lower than the spike bar). A CI entirely above 50% would be a tradeable directional signal.
 
-- SPY: 5/17 = 29.4%, CI [13.3%, 53.1%], p=0.143
-- QQQ: 6/11 = 54.5%, CI [28.0%, 78.7%], p=1.000
+  - SPY: 8/17 = 47.1%, CI [26.2%, 69.0%], p=1.000
+  - QQQ: 7/11 = 63.6%, CI [35.4%, 84.8%], p=0.549
 
-## 3. Time-to-peak
+## 3. Time-to-peak (arc across 5m / 15m / 30m / 60m / EOD)
 
-**Positive spikes** (n=10): median fwd_5m=-0.011%, fwd_15m=0.020%, fwd_30m=0.050%.
-**Negative spikes** (n=18): median fwd_5m=0.008%, fwd_15m=0.055%, fwd_30m=0.121%.
+**Positive spikes** (n=10, n_eod=10): median fwd_5m=-0.011%, fwd_15m=0.020%, fwd_30m=0.050%, fwd_60m=0.067%, fwd_eod=0.009%.
+**Negative spikes** (n=18, n_eod=18): median fwd_5m=0.008%, fwd_15m=0.055%, fwd_30m=0.121%, fwd_60m=0.122%, fwd_eod=-0.087%.
 
-If returns compound monotonically (5m < 15m < 30m in absolute terms), the spike effect persists beyond 15 minutes. If 15m > 30m, there is mean reversion.
+If returns compound monotonically (5m → EOD growing in absolute terms), the spike effect persists and strengthens through the session. If EOD < 30m in absolute terms, there is intraday mean reversion.
 
-## 4. Magnitude Effect (z_score vs |fwd_return_15m|)
+## 4. Magnitude Effect (z_score vs |fwd_return_eod|)
 
-Theil-Sen slope: **0.0000015** per unit z-score (95% CI [-0.0000041, 0.0000049]), n=28. A positive slope means larger z-scores are associated with larger absolute forward returns; a CI excluding 0 would confirm the relationship is robust.
+Theil-Sen slope: **-0.0000044** per unit z-score (95% CI [-0.0000308, 0.0000116]), n=28. A positive slope means larger z-scores are associated with larger absolute EOD forward returns; a CI excluding 0 would confirm the relationship is robust.
 
-## 5. Time-of-Day Stratification
+## 5. Time-of-Day Stratification (EOD horizon)
 
-**Positive spikes**: AM n=2, median=0.054%; midday n=4, median=-0.107%; PM n=4, median=0.037%.
-**Negative spikes**: AM n=11, median=0.045%; midday n=5, median=0.105%; PM n=2, median=-0.037%.
+**Positive spikes**: AM n=2, median=0.538%; midday n=4, median=-0.106%; PM n=4, median=0.072%.
+**Negative spikes**: AM n=11, median=-0.339%; midday n=5, median=0.021%; PM n=2, median=-0.133%.
 
-AM spikes (before 11:30 ET) may have more price impact due to lower liquidity and wider bid-ask spreads. PM spikes near close may be affected by MOC order flow.
+AM spikes (9:30-11:30 ET) have the most time remaining to EOD — their EOD return captures the full day's resolution. PM spikes (after 13:30 ET) have at most 2.5 hours to close and may show muted EOD magnitude. Time-to-close differences between strata complicate direct comparison.
 
-## 6. Confluence vs Solo
+## 6. Confluence vs Solo (EOD horizon)
 
-Confluence events: n=2. Solo events: n=26. Confluence median 15m return: -0.037%. Solo median 15m return: 0.055%. With only 2 confluence events, statistical testing is not meaningful — treat as an observation for future data collection.
+Confluence events: n=2. Solo events: n=26. Confluence median EOD return: -0.799%. Solo median EOD return: 0.009%. With only 2 confluence events, statistical testing is not meaningful — treat as an observation for future data collection.
 
 ## Caveats
 
-- Total spike events: 38. Events with computable fwd returns: 28. Some spikes may lack fwd returns because they occurred after the last candle ingested (etf_candles_1m goes to 2026-04-24; spikes on 2026-04-27 are excluded).
+- Total spike events: 38.
+- Events with computable 15m fwd return: 28 (reference only).
+- Events with computable EOD fwd return: 28 (primary horizon).
+  Spikes on dates where etf_candles_1m has no bar at or before 20:00 UTC are excluded.
 - The QQQ spike on 2026-03-17 predates candle coverage (candles start 2026-03-18) and produces NaN — correctly excluded.
-- Spikes near the end of the session (after ~15:45 ET) lack 30-min forward return candles; they still contribute to 5m and 15m analyses where candles are available.
+- EOD horizon is VARIABLE: a spike at 09:35 ET has ~390 min to close; a spike at 15:55 ET has only ~5 min. This heterogeneity is inherent to the EOD measure.
 - This analysis is exploratory. The 4-gate algorithm was calibrated on this same data; independent out-of-sample validation is required before drawing trading conclusions.
 - All forward returns are computed from 1-minute close prices. Slippage and bid-ask spread are not modelled.
 
