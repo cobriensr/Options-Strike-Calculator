@@ -11,6 +11,7 @@
  */
 
 import { useState, useCallback, useEffect, memo } from 'react';
+import { createPortal } from 'react-dom';
 import type { MLPlot } from '../../hooks/useMLInsights';
 import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
@@ -280,31 +281,36 @@ const PlotCarousel = memo(function PlotCarousel({ plots }: Props) {
         Use {'\u2190'} {'\u2192'} arrow keys to navigate plots
       </div>
 
-      {/* Full-screen lightbox overlay */}
-      {lightboxOpen && activePlot && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/85">
-          {/* Backdrop dismiss button (covers full area) */}
-          <button
-            type="button"
-            onClick={() => setLightboxOpen(false)}
-            className="absolute inset-0 cursor-pointer"
-            aria-label="Close lightbox"
-          />
-          <button
-            type="button"
-            onClick={() => setLightboxOpen(false)}
-            className="absolute top-4 right-4 z-[201] cursor-pointer rounded-full bg-white/10 px-3 py-1.5 font-sans text-[12px] font-semibold text-white transition-opacity hover:bg-white/20"
-            aria-label="Close full-size view"
-          >
-            {'\u00D7'} Close
-          </button>
-          <img
-            src={activePlot.imageUrl}
-            alt={`Full-size ML pipeline plot: ${formatPlotName(activePlot.name)}`}
-            className="relative z-[200] max-h-[90vh] max-w-[95vw] rounded-lg object-contain"
-          />
-        </div>
-      )}
+      {/* Full-screen lightbox overlay — portaled to body so `fixed`
+          escapes any sticky/transform ancestor that would otherwise
+          trap it inside a sibling stacking context. */}
+      {lightboxOpen &&
+        activePlot &&
+        createPortal(
+          <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/85">
+            {/* Backdrop dismiss button (covers full area) */}
+            <button
+              type="button"
+              onClick={() => setLightboxOpen(false)}
+              className="absolute inset-0 cursor-pointer"
+              aria-label="Close lightbox"
+            />
+            <button
+              type="button"
+              onClick={() => setLightboxOpen(false)}
+              className="absolute top-4 right-4 z-[201] cursor-pointer rounded-full bg-white/10 px-3 py-1.5 font-sans text-[12px] font-semibold text-white transition-opacity hover:bg-white/20"
+              aria-label="Close full-size view"
+            >
+              {'\u00D7'} Close
+            </button>
+            <img
+              src={activePlot.imageUrl}
+              alt={`Full-size ML pipeline plot: ${formatPlotName(activePlot.name)}`}
+              className="relative z-[200] max-h-[90vh] max-w-[95vw] rounded-lg object-contain"
+            />
+          </div>,
+          document.body,
+        )}
     </div>
   );
 });

@@ -17,6 +17,7 @@ import {
   useState,
   type FormEvent,
 } from 'react';
+import { createPortal } from 'react-dom';
 import type { AccessMode } from '../../utils/auth';
 
 interface Props {
@@ -78,7 +79,7 @@ export default function AccessKeyModal({
     [keyInput, submitting, onLoginSuccess],
   );
 
-  return (
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
@@ -208,6 +209,7 @@ export default function AccessKeyModal({
           </>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
