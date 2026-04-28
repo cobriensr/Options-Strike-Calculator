@@ -49,6 +49,7 @@ const stringRow = {
   fwd_return_5m: null,
   fwd_return_15m: null,
   fwd_return_30m: null,
+  fwd_return_eod: null,
   inserted_at: '2026-04-27T17:00:18.412Z',
 };
 
@@ -182,6 +183,7 @@ describe('GET /api/vega-spikes', () => {
     expect(spike.fwdReturn5m).toBeNull();
     expect(spike.fwdReturn15m).toBeNull();
     expect(spike.fwdReturn30m).toBeNull();
+    expect(spike.fwdReturnEoD).toBeNull();
   });
 
   it('coerces non-null forward-return values to numbers', async () => {
@@ -190,6 +192,7 @@ describe('GET /api/vega-spikes', () => {
       fwd_return_5m: '0.0042',
       fwd_return_15m: '-0.0011',
       fwd_return_30m: '0',
+      fwd_return_eod: '0.0083',
     };
     mockSql.mockResolvedValue([enrichedRow]);
     const res = mockResponse();
@@ -201,6 +204,7 @@ describe('GET /api/vega-spikes', () => {
     expect(spike.fwdReturn5m).toBe(0.0042);
     expect(spike.fwdReturn15m).toBe(-0.0011);
     expect(spike.fwdReturn30m).toBe(0);
+    expect(spike.fwdReturnEoD).toBe(0.0083);
   });
 
   it('transforms snake_case DB columns to camelCase response keys', async () => {
@@ -226,6 +230,7 @@ describe('GET /api/vega-spikes', () => {
         'fwdReturn5m',
         'fwdReturn15m',
         'fwdReturn30m',
+        'fwdReturnEoD',
         'insertedAt',
       ].sort(),
     );

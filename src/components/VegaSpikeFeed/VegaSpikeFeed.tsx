@@ -13,10 +13,62 @@
  * Polling cadence + view-range logic live in `useVegaSpikes`. This
  * component is purely presentational beyond the range toggle.
  */
-import { memo } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { useVegaSpikes } from '../../hooks/useVegaSpikes';
 import type { VegaSpike, VegaSpikeRange } from '../../hooks/useVegaSpikes';
 import { SectionBox } from '../ui';
+
+// ── Ticker filter ────────────────────────────────────────────
+
+type TickerFilter = 'all' | 'SPY' | 'QQQ';
+
+const TICKER_FILTER_OPTIONS: ReadonlyArray<{
+  value: TickerFilter;
+  label: string;
+}> = [
+  { value: 'all', label: 'All' },
+  { value: 'SPY', label: 'SPY' },
+  { value: 'QQQ', label: 'QQQ' },
+];
+
+interface TickerFilterToggleProps {
+  value: TickerFilter;
+  onChange: (next: TickerFilter) => void;
+}
+
+function TickerFilterToggle({
+  value,
+  onChange,
+}: Readonly<TickerFilterToggleProps>) {
+  return (
+    <div
+      className="border-edge inline-flex overflow-hidden rounded-md border"
+      role="group"
+      aria-label="Vega spike ticker filter"
+    >
+      {TICKER_FILTER_OPTIONS.map((opt) => {
+        const active = opt.value === value;
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            onClick={() => onChange(opt.value)}
+            aria-pressed={active}
+            className={[
+              'focus-visible:ring-accent cursor-pointer rounded-sm px-2.5 py-1 font-sans text-[11px] font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:outline-none',
+              active
+                ? 'bg-accent-bg text-accent'
+                : 'text-tertiary hover:text-primary',
+            ].join(' ')}
+            data-testid={`vega-ticker-${opt.value}`}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 // ── Formatters ────────────────────────────────────────────────
 
@@ -208,6 +260,14 @@ const VegaSpikeRow = memo(function VegaSpikeRow({
       >
         {formatReturn(spike.fwdReturn30m)}
       </td>
+      <td
+        className={[
+          'hidden px-2 py-1.5 text-right tabular-nums md:table-cell',
+          signTextClass(spike.fwdReturnEoD),
+        ].join(' ')}
+      >
+        {formatReturn(spike.fwdReturnEoD)}
+      </td>
     </tr>
   );
 });
@@ -222,17 +282,38 @@ export default function VegaSpikeFeed({
   marketOpen,
 }: Readonly<VegaSpikeFeedProps>) {
   const { spikes, loading, error, range, setRange } = useVegaSpikes(marketOpen);
+  const [tickerFilter, setTickerFilter] = useState<TickerFilter>('all');
+
+  // Client-side ticker filter — the endpoint already returns both
+  // tickers' qualifying rows, so we filter in-memory instead of
+  // multiplying server-side range/ticker URL combinations.
+  const filteredSpikes = useMemo(
+    () =>
+      tickerFilter === 'all'
+        ? spikes
+        : spikes.filter((s) => s.ticker === tickerFilter),
+    [spikes, tickerFilter],
+  );
+
   const showInitialSpinner = loading && spikes.length === 0;
 
   return (
     <SectionBox
       label="Dir Vega Spikes"
-      badge={`n=${spikes.length} events`}
-      headerRight={<RangeToggle value={range} onChange={setRange} />}
+      badge={`n=${filteredSpikes.length} events`}
+      headerRight={
+        <div className="flex items-center gap-2">
+          <TickerFilterToggle
+            value={tickerFilter}
+            onChange={setTickerFilter}
+          />
+          <RangeToggle value={range} onChange={setRange} />
+        </div>
+      }
       collapsible
     >
       <span className="hidden" data-testid="vega-spike-count">
-        n={spikes.length} events
+        n={filteredSpikes.length} events
       </span>
 
       {/* Error banner — never replaces the table, just sits above. */}
@@ -256,14 +337,16 @@ export default function VegaSpikeFeed({
         >
           Loading vega spike events…
         </div>
-      ) : spikes.length === 0 ? (
+      ) : filteredSpikes.length === 0 ? (
         <div
           className="text-muted px-3 py-6 text-center font-sans text-[11px] italic"
           data-testid="vega-spike-empty"
           role="status"
           aria-live="polite"
         >
-          No spikes detected for this range
+          {spikes.length === 0
+            ? 'No spikes detected for this range'
+            : `No ${tickerFilter} spikes in this range`}
         </div>
       ) : (
         <div className="-mx-[18px] overflow-x-auto">
@@ -312,10 +395,16 @@ export default function VegaSpikeFeed({
                 >
                   +30m
                 </th>
+                <th
+                  scope="col"
+                  className="hidden px-2 py-1.5 text-right font-semibold md:table-cell"
+                >
+                  +EoD
+                </th>
               </tr>
             </thead>
             <tbody>
-              {spikes.map((spike) => (
+              {filteredSpikes.map((spike) => (
                 <VegaSpikeRow key={spike.id} spike={spike} range={range} />
               ))}
             </tbody>

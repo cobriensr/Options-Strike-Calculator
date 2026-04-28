@@ -44,6 +44,7 @@ function makeSpike(overrides: Partial<VegaSpike> = {}): VegaSpike {
     fwdReturn5m: 0.0018,
     fwdReturn15m: 0.0041,
     fwdReturn30m: 0.0062,
+    fwdReturnEoD: 0.0085,
     insertedAt: '2026-04-27T17:00:18.412Z',
     ...overrides,
   };
@@ -183,12 +184,13 @@ describe('VegaSpikeFeed: rows', () => {
           fwdReturn5m: null,
           fwdReturn15m: null,
           fwdReturn30m: null,
+          fwdReturnEoD: null,
         }),
       ],
     });
     render(<VegaSpikeFeed marketOpen={true} />);
     const dashes = screen.getAllByText('—');
-    expect(dashes.length).toBeGreaterThanOrEqual(3);
+    expect(dashes.length).toBeGreaterThanOrEqual(4);
     expect(screen.queryByText('null')).not.toBeInTheDocument();
   });
 
@@ -265,8 +267,8 @@ describe('VegaSpikeFeed: accessibility', () => {
     setHookState({ spikes: [makeSpike()] });
     render(<VegaSpikeFeed marketOpen={true} />);
     const headers = screen.getAllByRole('columnheader');
-    // 8 columns: Time, Tkr, Dir Vega, z, vs prior max, +5m, +15m, +30m.
-    expect(headers).toHaveLength(8);
+    // 9 columns: Time, Tkr, Dir Vega, z, vs prior max, +5m, +15m, +30m, +EoD.
+    expect(headers).toHaveLength(9);
     for (const h of headers) {
       expect(h.getAttribute('scope')).toBe('col');
     }
@@ -278,5 +280,66 @@ describe('VegaSpikeFeed: accessibility', () => {
     expect(
       screen.getByRole('group', { name: 'Vega spike range' }),
     ).toBeInTheDocument();
+  });
+
+  it('ticker filter toggle is grouped with role="group" and aria-label', () => {
+    setHookState({});
+    render(<VegaSpikeFeed marketOpen={true} />);
+    expect(
+      screen.getByRole('group', { name: 'Vega spike ticker filter' }),
+    ).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// TICKER FILTER
+// ============================================================
+
+describe('VegaSpikeFeed: ticker filter', () => {
+  it('defaults to "All" — both SPY and QQQ rows render', () => {
+    setHookState({
+      spikes: [
+        makeSpike({ id: 1, ticker: 'SPY' }),
+        makeSpike({ id: 2, ticker: 'QQQ' }),
+      ],
+    });
+    render(<VegaSpikeFeed marketOpen={true} />);
+    expect(screen.getAllByTestId('vega-spike-row')).toHaveLength(2);
+    expect(
+      screen.getByTestId('vega-ticker-all').getAttribute('aria-pressed'),
+    ).toBe('true');
+  });
+
+  it('filters to SPY only when SPY toggle is clicked', async () => {
+    const user = userEvent.setup();
+    setHookState({
+      spikes: [
+        makeSpike({ id: 1, ticker: 'SPY' }),
+        makeSpike({ id: 2, ticker: 'QQQ' }),
+        makeSpike({ id: 3, ticker: 'SPY' }),
+      ],
+    });
+    render(<VegaSpikeFeed marketOpen={true} />);
+    await user.click(screen.getByTestId('vega-ticker-SPY'));
+
+    const rows = screen.getAllByTestId('vega-spike-row');
+    expect(rows).toHaveLength(2);
+    // Count badge tracks the filtered count.
+    expect(screen.getByTestId('vega-spike-count')).toHaveTextContent(
+      'n=2 events',
+    );
+  });
+
+  it('shows ticker-aware empty state when filter excludes all rows', async () => {
+    const user = userEvent.setup();
+    setHookState({
+      spikes: [makeSpike({ id: 1, ticker: 'SPY' })],
+    });
+    render(<VegaSpikeFeed marketOpen={true} />);
+    await user.click(screen.getByTestId('vega-ticker-QQQ'));
+
+    expect(screen.getByTestId('vega-spike-empty')).toHaveTextContent(
+      'No QQQ spikes in this range',
+    );
   });
 });

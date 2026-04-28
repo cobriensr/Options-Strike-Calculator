@@ -34,6 +34,7 @@ export interface VegaSpike {
   fwdReturn5m: number | null;
   fwdReturn15m: number | null;
   fwdReturn30m: number | null;
+  fwdReturnEoD: number | null;
   insertedAt: string;
 }
 
@@ -80,6 +81,7 @@ function validateSpike(raw: unknown): VegaSpike | null {
     !isNullableFiniteNumber(r.fwdReturn5m) ||
     !isNullableFiniteNumber(r.fwdReturn15m) ||
     !isNullableFiniteNumber(r.fwdReturn30m) ||
+    !isNullableFiniteNumber(r.fwdReturnEoD) ||
     typeof r.insertedAt !== 'string'
   ) {
     return null;
@@ -99,6 +101,7 @@ function validateSpike(raw: unknown): VegaSpike | null {
     fwdReturn5m: r.fwdReturn5m,
     fwdReturn15m: r.fwdReturn15m,
     fwdReturn30m: r.fwdReturn30m,
+    fwdReturnEoD: r.fwdReturnEoD,
     insertedAt: r.insertedAt,
   };
 }

@@ -130,15 +130,35 @@ async function enrichRow(row: PendingRow): Promise<EnrichOutcome> {
   const close15 = byIso.get(t15) ?? null;
   const close30 = byIso.get(t30) ?? null;
 
+  // EoD lookup: the last 1-min candle of the spike's trading day for
+  // this ticker. The 7-hour ceiling covers a full regular session
+  // (9:30 → 16:00 ET) plus margin, while staying within the
+  // (ticker, timestamp DESC) index range — etf_candles_1m has no
+  // afterhours/futures bars so this can't bleed into the next day.
+  const eodCandles = (await sql`
+    SELECT close
+    FROM etf_candles_1m
+    WHERE ticker = ${row.ticker}
+      AND timestamp >= ${anchorIso}
+      AND timestamp <= ${anchorIso}::timestamptz + INTERVAL '7 hours'
+    ORDER BY timestamp DESC
+    LIMIT 1
+  `) as Array<{ close: string | number }>;
+  const eodCloseRaw = eodCandles[0]?.close;
+  const eodClose =
+    eodCloseRaw != null ? Number.parseFloat(String(eodCloseRaw)) : null;
+
   const r5 = forwardReturn(anchorClose, close5);
   const r15 = forwardReturn(anchorClose, close15);
   const r30 = forwardReturn(anchorClose, close30);
+  const rEod = forwardReturn(anchorClose, eodClose);
 
   await sql`
     UPDATE vega_spike_events
     SET fwd_return_5m = ${r5},
         fwd_return_15m = ${r15},
-        fwd_return_30m = ${r30}
+        fwd_return_30m = ${r30},
+        fwd_return_eod = ${rEod}
     WHERE id = ${row.id}
   `;
 

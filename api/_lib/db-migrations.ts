@@ -2597,4 +2597,18 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 96,
+    description:
+      'Add fwd_return_eod column to vega_spike_events for end-of-day ' +
+      'forward-return measurement on each spike. Lets the dashboard ' +
+      'compare hold-to-close P&L against the existing 5/15/30-min ' +
+      'returns. Populated by the same enrich-vega-spike-returns cron ' +
+      'using the last 1-min candle of the spike\'s ET trading day in ' +
+      'etf_candles_1m. NULL until the cron picks up the row; nullable ' +
+      'forever for spikes whose anchor candle is missing.',
+    statements: (sql) => [
+      sql`ALTER TABLE vega_spike_events ADD COLUMN IF NOT EXISTS fwd_return_eod NUMERIC`,
+    ],
+  },
 ];

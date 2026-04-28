@@ -50,6 +50,7 @@ interface VegaSpikeRow {
   fwd_return_5m: NullableNumeric;
   fwd_return_15m: NullableNumeric;
   fwd_return_30m: NullableNumeric;
+  fwd_return_eod: NullableNumeric;
   inserted_at: string;
 }
 
@@ -98,7 +99,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             dir_vega_flow, z_score, vs_prior_max,
             prior_max, baseline_mad, bars_elapsed,
             confluence,
-            fwd_return_5m, fwd_return_15m, fwd_return_30m,
+            fwd_return_5m, fwd_return_15m, fwd_return_30m, fwd_return_eod,
             inserted_at
           FROM vega_spike_events
           WHERE date = ${today}
@@ -112,7 +113,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             dir_vega_flow, z_score, vs_prior_max,
             prior_max, baseline_mad, bars_elapsed,
             confluence,
-            fwd_return_5m, fwd_return_15m, fwd_return_30m,
+            fwd_return_5m, fwd_return_15m, fwd_return_30m, fwd_return_eod,
             inserted_at
           FROM vega_spike_events
           WHERE date >= CURRENT_DATE - INTERVAL '7 days'
@@ -126,7 +127,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             dir_vega_flow, z_score, vs_prior_max,
             prior_max, baseline_mad, bars_elapsed,
             confluence,
-            fwd_return_5m, fwd_return_15m, fwd_return_30m,
+            fwd_return_5m, fwd_return_15m, fwd_return_30m, fwd_return_eod,
             inserted_at
           FROM vega_spike_events
           WHERE date >= CURRENT_DATE - INTERVAL '30 days'
@@ -150,6 +151,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         fwdReturn5m: toNullableNumber(row.fwd_return_5m),
         fwdReturn15m: toNullableNumber(row.fwd_return_15m),
         fwdReturn30m: toNullableNumber(row.fwd_return_30m),
+        fwdReturnEoD: toNullableNumber(row.fwd_return_eod),
         insertedAt: row.inserted_at,
       }));
 

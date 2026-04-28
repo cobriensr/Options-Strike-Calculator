@@ -46,6 +46,7 @@ function makeRawSpike(overrides: Partial<VegaSpike> = {}): VegaSpike {
     fwdReturn5m: 0.0012,
     fwdReturn15m: 0.0034,
     fwdReturn30m: null,
+    fwdReturnEoD: 0.0091,
     insertedAt: '2026-04-27T14:30:05Z',
     ...overrides,
   };
@@ -96,6 +97,7 @@ describe('useVegaSpikes', () => {
             fwdReturn5m: null,
             fwdReturn15m: null,
             fwdReturn30m: null,
+            fwdReturnEoD: null,
           }),
         ],
       }),
@@ -104,6 +106,7 @@ describe('useVegaSpikes', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.spikes).toHaveLength(1);
     expect(result.current.spikes[0]?.fwdReturn5m).toBeNull();
+    expect(result.current.spikes[0]?.fwdReturnEoD).toBeNull();
   });
 
   it('rejects non-finite numbers (NaN/Infinity) on numeric fields', async () => {

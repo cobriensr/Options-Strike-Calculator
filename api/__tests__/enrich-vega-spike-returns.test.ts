@@ -74,6 +74,15 @@ function candleRow(timestamp: string, close: number) {
   return { timestamp, close: String(close) };
 }
 
+/**
+ * Helper: build the single-row result of the EoD-candle SELECT
+ * (the cron's second SELECT per pending row — last candle of the
+ * spike's trading day for the same ticker).
+ */
+function eodCandleResult(close: number | null) {
+  return close == null ? [] : [{ close: String(close) }];
+}
+
 describe('enrich-vega-spike-returns handler', () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -181,7 +190,9 @@ describe('enrich-vega-spike-returns handler', () => {
         candleRow('2026-04-27T16:15:00.000Z', 528.5),
         candleRow('2026-04-27T16:30:00.000Z', 529.0),
       ])
-      // 3) UPDATE
+      // 3) EoD candle SELECT
+      .mockResolvedValueOnce(eodCandleResult(530.5))
+      // 4) UPDATE
       .mockResolvedValueOnce([]);
 
     const req = AUTHORIZED_REQ();
@@ -195,13 +206,14 @@ describe('enrich-vega-spike-returns handler', () => {
       skippedNoCandles: 0,
     });
 
-    // Inspect the UPDATE call (3rd SQL invocation: pending → SELECT → UPDATE).
-    const updateCall = mockSql.mock.calls[2]!;
+    // Inspect the UPDATE call (4th SQL invocation: pending → SELECT → EoD → UPDATE).
+    const updateCall = mockSql.mock.calls[3]!;
     const updateText = sqlText(updateCall);
     expect(updateText).toContain('UPDATE vega_spike_events');
     expect(updateText).toContain('fwd_return_5m');
     expect(updateText).toContain('fwd_return_15m');
     expect(updateText).toContain('fwd_return_30m');
+    expect(updateText).toContain('fwd_return_eod');
 
     // Forward returns must be present and correctly signed/computed.
     // anchor=527.5, t+5=528.0 → r5 = (528.0-527.5)/527.5 ≈ 0.000947867
@@ -210,9 +222,11 @@ describe('enrich-vega-spike-returns handler', () => {
     const r5 = updateValues[0] as number;
     const r15 = updateValues[1] as number;
     const r30 = updateValues[2] as number;
+    const rEod = updateValues[3] as number;
     expect(r5).toBeCloseTo((528.0 - 527.5) / 527.5, 8);
     expect(r15).toBeCloseTo((528.5 - 527.5) / 527.5, 8);
     expect(r30).toBeCloseTo((529.0 - 527.5) / 527.5, 8);
+    expect(rEod).toBeCloseTo((530.5 - 527.5) / 527.5, 8);
   });
 
   it('computes return correctly: anchor=100, t+5=100.5 → r5 = 0.005', async () => {
@@ -225,11 +239,12 @@ describe('enrich-vega-spike-returns handler', () => {
         candleRow('2026-04-27T16:15:00.000Z', 100.5),
         candleRow('2026-04-27T16:30:00.000Z', 100.5),
       ])
+      .mockResolvedValueOnce(eodCandleResult(101))
       .mockResolvedValueOnce([]);
 
     await handler(AUTHORIZED_REQ(), mockResponse());
 
-    const updateCall = mockSql.mock.calls[2]!;
+    const updateCall = mockSql.mock.calls[3]!;
     const [, ...values] = updateCall as [unknown, ...unknown[]];
     const r5 = values[0] as number;
     expect(r5).toBeCloseTo(0.005, 10);
@@ -245,11 +260,12 @@ describe('enrich-vega-spike-returns handler', () => {
         candleRow('2026-04-27T16:15:00.000Z', 99.8),
         candleRow('2026-04-27T16:30:00.000Z', 99.8),
       ])
+      .mockResolvedValueOnce(eodCandleResult(99.5))
       .mockResolvedValueOnce([]);
 
     await handler(AUTHORIZED_REQ(), mockResponse());
 
-    const updateCall = mockSql.mock.calls[2]!;
+    const updateCall = mockSql.mock.calls[3]!;
     const [, ...values] = updateCall as [unknown, ...unknown[]];
     const r5 = values[0] as number;
     expect(r5).toBeCloseTo(-0.002, 10);
@@ -294,6 +310,8 @@ describe('enrich-vega-spike-returns handler', () => {
         candleRow('2026-04-27T16:00:00.000Z', 100),
         candleRow('2026-04-27T16:05:00.000Z', 100.5),
       ])
+      // EoD lookup also empty (spike near close, no later candles)
+      .mockResolvedValueOnce(eodCandleResult(null))
       .mockResolvedValueOnce([]);
 
     const req = AUTHORIZED_REQ();
@@ -307,16 +325,38 @@ describe('enrich-vega-spike-returns handler', () => {
       skippedNoCandles: 0,
     });
 
-    // UPDATE should have r5 populated, r15/r30 = null.
-    const updateCall = mockSql.mock.calls[2]!;
+    // UPDATE should have r5 populated, r15/r30/rEod = null.
+    const updateCall = mockSql.mock.calls[3]!;
     const [, ...values] = updateCall as [unknown, ...unknown[]];
     const r5 = values[0] as number | null;
     const r15 = values[1] as number | null;
     const r30 = values[2] as number | null;
+    const rEod = values[3] as number | null;
 
     expect(r5).toBeCloseTo(0.005, 10);
     expect(r15).toBeNull();
     expect(r30).toBeNull();
+    expect(rEod).toBeNull();
+  });
+
+  it('writes fwd_return_eod when EoD candle is present but no t+5/t+15/t+30', async () => {
+    const row = pendingRow();
+    mockSql
+      .mockResolvedValueOnce([row])
+      // only anchor present
+      .mockResolvedValueOnce([candleRow('2026-04-27T16:00:00.000Z', 100)])
+      // EoD candle later in the day
+      .mockResolvedValueOnce(eodCandleResult(101.5))
+      .mockResolvedValueOnce([]);
+
+    await handler(AUTHORIZED_REQ(), mockResponse());
+
+    const updateCall = mockSql.mock.calls[3]!;
+    const [, ...values] = updateCall as [unknown, ...unknown[]];
+    const r5 = values[0] as number | null;
+    const rEod = values[3] as number | null;
+    expect(r5).toBeNull();
+    expect(rEod).toBeCloseTo(0.015, 10);
   });
 
   // ── 7-day cutoff ───────────────────────────────────────────
@@ -348,6 +388,7 @@ describe('enrich-vega-spike-returns handler', () => {
         candleRow('2026-04-27T16:15:00.000Z', 100.5),
         candleRow('2026-04-27T16:30:00.000Z', 100.5),
       ])
+      .mockResolvedValueOnce(eodCandleResult(101))
       .mockRejectedValueOnce(new Error('DB UPDATE failed'));
 
     const req = AUTHORIZED_REQ();
@@ -377,6 +418,7 @@ describe('enrich-vega-spike-returns handler', () => {
         candleRow('2026-04-27T16:15:00.000Z', 100.5),
         candleRow('2026-04-27T16:30:00.000Z', 100.5),
       ])
+      .mockResolvedValueOnce(eodCandleResult(101))
       .mockResolvedValueOnce([]);
 
     await handler(AUTHORIZED_REQ(), mockResponse());

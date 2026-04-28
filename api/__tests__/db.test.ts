@@ -521,6 +521,7 @@ describe('db.ts', () => {
         { id: 92 },
         { id: 93 },
         { id: 94 },
+        { id: 96 },
       ]);
 
       const applied = await migrateDb();
@@ -633,18 +634,19 @@ describe('db.ts', () => {
         '#92: Create vega_flow_etf table for SPY/QQQ minute-bar greek flow (dir/total/OTM variants of vega + delta) from UW /api/stock/{ticker}/greek-flow. Phase 1 of the Dir Vega Spike Monitor — backing data for spike detection and forward-return EDA. Keyed (ticker, timestamp) for idempotent ingest.',
         '#93: Create vega_spike_events table for the Dir Vega Spike Monitor (Phase 3). One row per qualifying spike — bars where |dir_vega_flow| passes all four gates (FLOOR + 2x prior intraday max + 6x robust z-score + 30+ bars elapsed). Forward-return columns nullable until Phase 5 enrichment cron populates them. Unique (ticker, timestamp) so monitor cron is idempotent on retry.',
         '#94: Create etf_candles_1m table for raw SPY/QQQ 1-minute OHLC candles. Phase 5 of the Dir Vega Spike Monitor — backing data for the enrich-vega-spike-returns cron that computes 5/15/30-min forward returns on each spike event. Distinct from fetch-spx-candles-1m which fetches SPY but stores SPX-derived (×ratio) prices, not raw. Unique (ticker, timestamp) for idempotent ingest.',
+        "#96: Add fwd_return_eod column to vega_spike_events for end-of-day forward-return measurement on each spike. Lets the dashboard compare hold-to-close P&L against the existing 5/15/30-min returns. Populated by the same enrich-vega-spike-returns cron using the last 1-min candle of the spike's ET trading day in etf_candles_1m. NULL until the cron picks up the row; nullable forever for spikes whose anchor candle is missing.",
       ]);
       // Pyramid migrations #65/66/67 remain in the chain (migration history is
       // immutable — fresh DBs replay create → alter → alter → drop). TRACE
       // migrations #56/57 also remain — #69 drops the table they created.
-      // 134 (migrations #1-41) + 4 (#42) + 4 (#43) + 2 (#44) + 2 (#45) + 3 (#46) + 4 (#47: CREATE+2 INDEX+INSERT) + 2 (#48: ALTER+INSERT) + 4 (#49: CREATE+2 INDEX+INSERT) + 3 (#50: DELETE+CREATE UNIQUE INDEX+INSERT) + 5 (#51: CREATE+3 INDEX+INSERT) + 3 (#52: CREATE+1 INDEX+INSERT) + 4 (#53: CREATE+2 INDEX+INSERT) + 2 (#54: ALTER+INSERT) + 2 (#55: ALTER+INSERT) + 2 (#56: CREATE+INSERT) + 2 (#57: ALTER+INSERT) + 3 (#58: DROP INDEX+ALTER+INSERT) + 7 (#59: CREATE+5 INDEX+INSERT) + 2 (#60: CREATE+INSERT) + 2 (#61: ALTER+INSERT) + 7 (#62: CREATE+5 INDEX+INSERT) + 3 (#63: CREATE+1 INDEX+INSERT) + 2 (#64: ALTER+INSERT) + 6 (#65: CREATE chains+2 INDEX+CREATE legs+1 INDEX+INSERT) + 8 (#66: 7 ALTER+INSERT) + 5 (#67: DROP CONSTRAINT+ADD CONSTRAINT+2 ALTER+INSERT) + 3 (#68: 2 DROP+INSERT) + 3 (#69: DELETE+DROP+INSERT) + 4 (#70: CREATE+2 INDEX+INSERT) + 3 (#71: CREATE+1 INDEX+INSERT) + 3 (#72: CREATE+1 INDEX+INSERT) + 4 (#73: CREATE EXTENSION+CREATE TABLE+CREATE INDEX+INSERT) + 3 (#74: CREATE TABLE+CREATE INDEX+INSERT) + 3 (#75: CREATE TABLE+CREATE INDEX+INSERT) + 2 (#76: ALTER+INSERT) + 3 (#77: ALTER+INDEX+INSERT) + 3 (#78: CREATE TABLE+INDEX+INSERT) + 3 (#79: CREATE TABLE+INDEX+INSERT) + 2 (#80: CREATE TABLE+INSERT) + 4 (#81: CREATE TABLE+2 INDEX+INSERT) + 3 (#82: CREATE TABLE+1 INDEX+INSERT) + 4 (#83: CREATE TABLE+2 INDEX+INSERT) + 4 (#84: CREATE TABLE+2 INDEX+INSERT) + 2 (#85: ALTER+INSERT) + 3 (#86: 2 ALTER+INSERT) + 4 (#87: CREATE TABLE+2 INDEX+INSERT) + 5 (#88: CREATE EXTENSION+CREATE TABLE+2 INDEX+INSERT) + 2 (#89: ALTER+INSERT) + 3 (#90: ALTER+INDEX+INSERT) + 2 (#91: ALTER+INSERT) + 3 (#92: CREATE TABLE+1 INDEX+INSERT) + 4 (#93: CREATE TABLE+2 INDEX+INSERT) + 3 (#94: CREATE TABLE+1 INDEX+INSERT) = 312
+      // 134 (migrations #1-41) + 4 (#42) + 4 (#43) + 2 (#44) + 2 (#45) + 3 (#46) + 4 (#47: CREATE+2 INDEX+INSERT) + 2 (#48: ALTER+INSERT) + 4 (#49: CREATE+2 INDEX+INSERT) + 3 (#50: DELETE+CREATE UNIQUE INDEX+INSERT) + 5 (#51: CREATE+3 INDEX+INSERT) + 3 (#52: CREATE+1 INDEX+INSERT) + 4 (#53: CREATE+2 INDEX+INSERT) + 2 (#54: ALTER+INSERT) + 2 (#55: ALTER+INSERT) + 2 (#56: CREATE+INSERT) + 2 (#57: ALTER+INSERT) + 3 (#58: DROP INDEX+ALTER+INSERT) + 7 (#59: CREATE+5 INDEX+INSERT) + 2 (#60: CREATE+INSERT) + 2 (#61: ALTER+INSERT) + 7 (#62: CREATE+5 INDEX+INSERT) + 3 (#63: CREATE+1 INDEX+INSERT) + 2 (#64: ALTER+INSERT) + 6 (#65: CREATE chains+2 INDEX+CREATE legs+1 INDEX+INSERT) + 8 (#66: 7 ALTER+INSERT) + 5 (#67: DROP CONSTRAINT+ADD CONSTRAINT+2 ALTER+INSERT) + 3 (#68: 2 DROP+INSERT) + 3 (#69: DELETE+DROP+INSERT) + 4 (#70: CREATE+2 INDEX+INSERT) + 3 (#71: CREATE+1 INDEX+INSERT) + 3 (#72: CREATE+1 INDEX+INSERT) + 4 (#73: CREATE EXTENSION+CREATE TABLE+CREATE INDEX+INSERT) + 3 (#74: CREATE TABLE+CREATE INDEX+INSERT) + 3 (#75: CREATE TABLE+CREATE INDEX+INSERT) + 2 (#76: ALTER+INSERT) + 3 (#77: ALTER+INDEX+INSERT) + 3 (#78: CREATE TABLE+INDEX+INSERT) + 3 (#79: CREATE TABLE+INDEX+INSERT) + 2 (#80: CREATE TABLE+INSERT) + 4 (#81: CREATE TABLE+2 INDEX+INSERT) + 3 (#82: CREATE TABLE+1 INDEX+INSERT) + 4 (#83: CREATE TABLE+2 INDEX+INSERT) + 4 (#84: CREATE TABLE+2 INDEX+INSERT) + 2 (#85: ALTER+INSERT) + 3 (#86: 2 ALTER+INSERT) + 4 (#87: CREATE TABLE+2 INDEX+INSERT) + 5 (#88: CREATE EXTENSION+CREATE TABLE+2 INDEX+INSERT) + 2 (#89: ALTER+INSERT) + 3 (#90: ALTER+INDEX+INSERT) + 2 (#91: ALTER+INSERT) + 3 (#92: CREATE TABLE+1 INDEX+INSERT) + 4 (#93: CREATE TABLE+2 INDEX+INSERT) + 3 (#94: CREATE TABLE+1 INDEX+INSERT) + 2 (#96: ALTER+INSERT) = 314
       // Migration #3 was converted from run: to statements: (BE-CRON-010);
       // its 4 calls (DROP INDEX + ALTER + CREATE INDEX + INSERT) still count
       // toward the total — the only delta is that they route through
       // sql.transaction() instead of sequential awaits.
-      expect(mockSql).toHaveBeenCalledTimes(312);
-      // Migrations #3 and #15-94 each call sql.transaction() once for atomic execution
-      expect(mockSql.transaction).toHaveBeenCalledTimes(81);
+      expect(mockSql).toHaveBeenCalledTimes(314);
+      // Migrations #3 and #15-94 + #96 each call sql.transaction() once for atomic execution
+      expect(mockSql.transaction).toHaveBeenCalledTimes(82);
     });
 
     it('propagates errors from migration SQL', async () => {
