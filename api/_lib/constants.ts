@@ -316,3 +316,32 @@ export const DP_BUCKETS = {
 
 /** SPX 5-pt strike grid: alert strike "at" a DP level if within ±5pts. */
 export const DP_AT_STRIKE_BAND_PTS = 5;
+
+// ============================================================
+// DIR VEGA SPIKE MONITOR (Phase 3)
+// See docs/superpowers/specs/dir-vega-spike-monitor-2026-04-27.md
+// ============================================================
+
+/**
+ * Magnitude floor per ticker — alert only fires if |dir_vega_flow| is at
+ * least this large. Empirical p99 of |dir_vega_flow| from a 30-day backfill,
+ * rounded UP to the nearest 10K. Chose p99 over p99.5 to catch moderate
+ * spikes (e.g. 450K QQQ events) that would silently miss at the tighter
+ * cut. Expected alert load: ~0.82 SPY/day + ~0.54 QQQ/day = ~1.4/day total.
+ */
+export const VEGA_SPIKE_FLOORS: Record<string, number> = {
+  SPY: 490000, // p99 = 482.1K (n=11753)
+  QQQ: 330000, // p99 = 320.2K (n=11760)
+};
+
+/** Robust z-score gate. score = |dir_vega| / MAD(|dir_vega|, prior bars same day). */
+export const VEGA_SPIKE_Z_SCORE_THRESHOLD = 6.0;
+
+/** Magnitude must exceed this multiple of the day's prior max |dir_vega_flow|. */
+export const VEGA_SPIKE_VS_PRIOR_MAX_RATIO = 2.0;
+
+/** Minimum bars elapsed in the session before any alert can fire (avoids 9:30 first-bar artifact and stabilizes MAD). */
+export const VEGA_SPIKE_MIN_BARS_ELAPSED = 30;
+
+/** Window (seconds) within which concurrent SPY+QQQ alerts get the confluence flag. */
+export const VEGA_SPIKE_CONFLUENCE_WINDOW_SEC = 60;

@@ -2527,4 +2527,44 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 93,
+    description:
+      'Create vega_spike_events table for the Dir Vega Spike Monitor (Phase 3). ' +
+      'One row per qualifying spike — bars where |dir_vega_flow| passes all four ' +
+      'gates (FLOOR + 2x prior intraday max + 6x robust z-score + 30+ bars elapsed). ' +
+      'Forward-return columns nullable until Phase 5 enrichment cron populates them. ' +
+      'Unique (ticker, timestamp) so monitor cron is idempotent on retry.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS vega_spike_events (
+          id              BIGSERIAL PRIMARY KEY,
+          ticker          TEXT NOT NULL,
+          date            DATE NOT NULL,
+          timestamp       TIMESTAMPTZ NOT NULL,
+          dir_vega_flow   NUMERIC NOT NULL,
+          z_score         NUMERIC NOT NULL,
+          vs_prior_max    NUMERIC NOT NULL,
+          prior_max       NUMERIC NOT NULL,
+          baseline_mad    NUMERIC NOT NULL,
+          bars_elapsed    INTEGER NOT NULL,
+          confluence      BOOLEAN NOT NULL DEFAULT false,
+          fwd_return_5m   NUMERIC,
+          fwd_return_15m  NUMERIC,
+          fwd_return_30m  NUMERIC,
+          inserted_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+          UNIQUE (ticker, timestamp)
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_vega_spike_events_date_ticker
+          ON vega_spike_events (date DESC, ticker)
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_vega_spike_events_pending_returns
+          ON vega_spike_events (timestamp)
+          WHERE fwd_return_30m IS NULL
+      `,
+    ],
+  },
 ];
