@@ -27,8 +27,8 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from './_lib/db.js';
-import { Sentry } from './_lib/sentry.js';
-import { rejectIfNotOwnerOrGuest, checkBot } from './_lib/api-helpers.js';
+import { Sentry, metrics } from './_lib/sentry.js';
+import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
 
 /** Clamp bounds for `?window=<N>m`. Matches spec futures-playbook-backtest-flow-2026-04-21.md. */
@@ -146,18 +146,15 @@ function toIso(value: unknown): string | null {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/gex-per-strike');
+    const done = metrics.request('/api/gex-per-strike');
 
     try {
       if (req.method !== 'GET') {
+        done({ status: 405 });
         return res.status(405).json({ error: 'GET only' });
       }
 
-      const botCheck = await checkBot(req);
-      if (botCheck.isBot) {
-        return res.status(403).json({ error: 'Access denied' });
-      }
-
-      if (rejectIfNotOwnerOrGuest(req, res)) return;
+      if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
       const sql = getDb();
 
@@ -232,6 +229,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const latestTs = toIso(tsRows[0]?.latest_ts);
       if (!latestTs) {
         res.setHeader('Cache-Control', 'no-store');
+        done({ status: 200 });
         // Empty-day response shape must include `windowSnapshots: []` so
         // the frontend TypeScript type stays uniform across branches —
         // otherwise the happy-path renders a `WindowSnapshot[]` and the
@@ -313,6 +311,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       res.setHeader('Cache-Control', 'no-store');
+      done({ status: 200 });
       return res.status(200).json({
         strikes,
         date,
@@ -321,6 +320,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         windowSnapshots,
       });
     } catch (err) {
+      done({ status: 500 });
       Sentry.captureException(err);
       logger.error({ err }, 'gex-per-strike fetch error');
       return res.status(500).json({ error: 'Internal error' });

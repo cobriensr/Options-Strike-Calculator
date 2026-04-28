@@ -14,25 +14,22 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from './_lib/db.js';
-import { Sentry } from './_lib/sentry.js';
-import { rejectIfNotOwnerOrGuest, checkBot } from './_lib/api-helpers.js';
+import { Sentry, metrics } from './_lib/sentry.js';
+import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/darkpool-levels');
+    const done = metrics.request('/api/darkpool-levels');
 
     try {
       if (req.method !== 'GET') {
+        done({ status: 405 });
         return res.status(405).json({ error: 'GET only' });
       }
 
-      const botCheck = await checkBot(req);
-      if (botCheck.isBot) {
-        return res.status(403).json({ error: 'Access denied' });
-      }
-
-      if (rejectIfNotOwnerOrGuest(req, res)) return;
+      if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
       const sql = getDb();
 
@@ -85,8 +82,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const lastUpdated = rows[0]?.max_updated_at ?? null;
 
       res.setHeader('Cache-Control', 'no-store');
+      done({ status: 200 });
       return res.status(200).json({ levels, date, meta: { lastUpdated } });
     } catch (err) {
+      done({ status: 500 });
       Sentry.captureException(err);
       logger.error({ err }, 'darkpool-levels fetch error');
       return res.status(500).json({ error: 'Internal error' });
