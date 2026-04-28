@@ -325,9 +325,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           const db = getDb();
           const date =
             (context.selectedDate as string | undefined) ??
-            new Date().toLocaleDateString('en-CA', {
-              timeZone: 'America/New_York',
-            });
+            getETDateStr(new Date());
           const entryTime =
             (context.entryTime as string | undefined) ?? 'unknown';
           const rows = await db`

@@ -22,6 +22,7 @@ import { metrics } from './_lib/sentry.js';
 import { getDb } from './_lib/db.js';
 import logger from './_lib/logger.js';
 import { preMarketBodySchema } from './_lib/validation.js';
+import { getETDateStr } from '../src/utils/timezone.js';
 
 export type { PreMarketData } from '../src/types/api.js';
 
@@ -114,7 +115,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 }
 
 function getTodayET(): string {
-  return new Date().toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
+  return getETDateStr(new Date());
 }

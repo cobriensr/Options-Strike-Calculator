@@ -24,6 +24,7 @@ import { getDb } from '../_lib/db.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { PLOT_ANALYSIS_SYSTEM_PROMPT } from '../_lib/plot-analysis-prompts.js';
+import { getETDateStr } from '../../src/utils/timezone.js';
 
 export const config = { maxDuration: 780 };
 
@@ -328,9 +329,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // then fire the remaining N-1. They'll read the cache the first one wrote."
     // We await the full first response (simpler) since the cache is definitely
     // written by then — remaining 20 fire concurrently and all hit cache reads.
-    const pipelineDate = new Date().toLocaleDateString('en-CA', {
-      timeZone: 'America/New_York',
-    });
+    const pipelineDate = getETDateStr(new Date());
     const failed: string[] = [];
     let analyzed = 0;
 

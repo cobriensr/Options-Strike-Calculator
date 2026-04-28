@@ -657,7 +657,7 @@ async function runTicker(
     const allowed = new Set(expiries);
     // Inclusive bounds for the Schwab call.
     const fromDate = expiries[0]!;
-    const toDate = expiries[expiries.length - 1]!;
+    const toDate = expiries.at(-1)!;
 
     const chain = await fetchChain(ticker, fromDate, toDate);
     if (chain == null) {

@@ -40,6 +40,7 @@ import {
   isMarketOpen,
   guardOwnerOrGuestEndpoint,
 } from './_lib/api-helpers.js';
+import { getETDateStr } from '../src/utils/timezone.js';
 
 // ============================================================
 // SCHWAB CHAIN RESPONSE TYPES
@@ -124,9 +125,7 @@ interface TargetDeltaMatch {
 // ============================================================
 
 function getTodayET(): string {
-  return new Date().toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
+  return getETDateStr(new Date());
 }
 
 function flattenMap(

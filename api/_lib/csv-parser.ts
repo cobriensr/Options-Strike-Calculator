@@ -104,10 +104,11 @@ export function parseTosExpiration(raw: string): string {
   const parts = raw.trim().split(/\s+/);
   if (parts.length !== 3) return raw;
   const [day, month, year] = parts;
-  const mm = MONTH_MAP[month!.toUpperCase()];
+  if (!day || !month || !year) return raw;
+  const mm = MONTH_MAP[month.toUpperCase()];
   if (!mm) return raw;
-  const yyyy = year!.length === 2 ? `20${year}` : year!;
-  return `${yyyy}-${mm}-${day!.padStart(2, '0')}`;
+  const yyyy = year.length === 2 ? `20${year}` : year;
+  return `${yyyy}-${mm}-${day.padStart(2, '0')}`;
 }
 
 /** Parse "$450.00" → 450, "($1,050.00)" → -1050 */
@@ -183,14 +184,15 @@ function parseOptionsSection(lines: string[]): PositionLeg[] {
       fields;
 
     if (symbol !== 'SPX') continue;
+    if (!exp || !strikeStr || !type || !qtyStr || !tradePrice) continue;
 
-    const putCall = type!.toUpperCase() as 'PUT' | 'CALL';
+    const putCall = type.toUpperCase() as 'PUT' | 'CALL';
     if (putCall !== 'PUT' && putCall !== 'CALL') continue;
 
-    const strike = Number.parseFloat(strikeStr!);
-    const quantity = Number.parseInt(qtyStr!.replace('+', ''), 10);
-    const avgPrice = Number.parseFloat(tradePrice!);
-    const expiration = parseTosExpiration(exp!);
+    const strike = Number.parseFloat(strikeStr);
+    const quantity = Number.parseInt(qtyStr.replace('+', ''), 10);
+    const avgPrice = Number.parseFloat(tradePrice);
+    const expiration = parseTosExpiration(exp);
 
     if (Number.isNaN(strike) || Number.isNaN(quantity)) continue;
 

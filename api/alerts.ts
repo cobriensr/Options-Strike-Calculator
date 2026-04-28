@@ -17,6 +17,7 @@ import { getDb } from './_lib/db.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
+import { getETDateStr } from '../src/utils/timezone.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
@@ -34,9 +35,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const sql = getDb();
       const since = req.query.since as string | undefined;
 
-      const today = new Date().toLocaleDateString('en-CA', {
-        timeZone: 'America/New_York',
-      });
+      const today = getETDateStr(new Date());
 
       const alerts = since
         ? await sql`

@@ -29,6 +29,7 @@ import { savePositions, getDb, type PositionLeg } from './_lib/db.js';
 import logger from './_lib/logger.js';
 import { parseFullCSV, buildFullSummary } from './_lib/csv-parser.js';
 import { positionCsvSchema } from './_lib/validation.js';
+import { getETDateStr } from '../src/utils/timezone.js';
 
 // Re-export for any external consumers
 export { parseTosExpiration } from './_lib/csv-parser.js';
@@ -76,9 +77,7 @@ interface SchwabAccount {
 // ============================================================
 /** Get today's date in ET as YYYY-MM-DD */
 function getTodayET(): string {
-  return new Date().toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
+  return getETDateStr(new Date());
 }
 
 /** Get current time in CT as HH:MM */

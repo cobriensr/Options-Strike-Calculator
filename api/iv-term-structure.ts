@@ -18,6 +18,7 @@ import {
   rejectIfRateLimited,
 } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
+import { getETDateStr } from '../src/utils/timezone.js';
 
 const UW_BASE = 'https://api.unusualwhales.com/api';
 
@@ -141,9 +142,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       // Always use today's date (ET)
-      const today = new Date().toLocaleDateString('en-CA', {
-        timeZone: 'America/New_York',
-      });
+      const today = getETDateStr(new Date());
 
       const rows = await fetchInterpolatedIv(apiKey, today);
 

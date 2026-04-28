@@ -22,7 +22,7 @@ import {
   guardOwnerOrGuestEndpoint,
 } from './_lib/api-helpers.js';
 import { redis } from './_lib/schwab.js';
-import { getETTotalMinutes } from '../src/utils/timezone.js';
+import { getETTotalMinutes, getETDateStr } from '../src/utils/timezone.js';
 import logger from './_lib/logger.js';
 
 // ============================================================
@@ -97,9 +97,7 @@ function formatTimeET(ms: number): string {
 }
 
 function getETDate(ms: number): string {
-  return new Date(ms).toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
+  return getETDateStr(new Date(ms));
 }
 
 function isRegularHours(ms: number): boolean {
@@ -228,9 +226,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       const now = new Date();
-      const todayET = now.toLocaleDateString('en-CA', {
-        timeZone: 'America/New_York',
-      });
+      const todayET = getETDateStr(now);
       const isToday = dateParam === todayET;
 
       if (dateParam > todayET) {

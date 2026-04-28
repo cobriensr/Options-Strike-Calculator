@@ -686,12 +686,8 @@ export async function fetchDirectionalChainContext(
     from.setDate(from.getDate() + 12);
     const to = new Date(now);
     to.setDate(to.getDate() + 16);
-    const fromStr = from.toLocaleDateString('en-CA', {
-      timeZone: 'America/New_York',
-    });
-    const toStr = to.toLocaleDateString('en-CA', {
-      timeZone: 'America/New_York',
-    });
+    const fromStr = getETDateStr(from);
+    const toStr = getETDateStr(to);
 
     const chainResult = await schwabFetch<SchwabChainData>(
       `/chains?symbol=$SPX&contractType=${contractType}` +
@@ -715,7 +711,7 @@ export async function fetchDirectionalChainContext(
     let bestExpKey: string | null = null;
     let bestDteDiff = Infinity;
     for (const key of Object.keys(expMap)) {
-      const dte = Number.parseInt(key.split(':')[1] ?? '0');
+      const dte = Number.parseInt(key.split(':')[1] ?? '0', 10);
       const diff = Math.abs(dte - 14);
       if (diff < bestDteDiff) {
         bestDteDiff = diff;

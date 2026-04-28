@@ -38,14 +38,15 @@ export function parseEntryTimeAsUtc(
   if (!match) return undefined;
 
   const [, hourStr, minuteStr, ampm, tz] = match;
+  if (!ampm || !tz) return undefined;
   let hour = Number(hourStr);
   const minute = Number(minuteStr);
 
-  if (ampm!.toUpperCase() === 'PM' && hour !== 12) hour += 12;
-  if (ampm!.toUpperCase() === 'AM' && hour === 12) hour = 0;
+  if (ampm.toUpperCase() === 'PM' && hour !== 12) hour += 12;
+  if (ampm.toUpperCase() === 'AM' && hour === 12) hour = 0;
 
   const ianaZone =
-    tz!.toUpperCase() === 'CT' ? 'America/Chicago' : 'America/New_York';
+    tz.toUpperCase() === 'CT' ? 'America/Chicago' : 'America/New_York';
 
   // Build a wall-clock date-time string and find the UTC equivalent by
   // iterating the Intl offset correction (converges in up to 2 passes).

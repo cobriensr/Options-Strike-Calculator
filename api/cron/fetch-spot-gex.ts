@@ -33,6 +33,7 @@ import {
   withRetry,
 } from '../_lib/api-helpers.js';
 import { reportCronRun } from '../_lib/axiom.js';
+import { getETDateStr } from '../../src/utils/timezone.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -95,10 +96,7 @@ async function storeNewRows(
   if (toInsert.length === 0) return { stored: 0 };
 
   for (const { row, tsIso } of toInsert) {
-    const rowDate = new Date(row.start_time ?? row.time).toLocaleDateString(
-      'en-CA',
-      { timeZone: 'America/New_York' },
-    );
+    const rowDate = getETDateStr(new Date(row.start_time ?? row.time));
     await sql`
       INSERT INTO spot_exposures (
         date, timestamp, ticker, price,

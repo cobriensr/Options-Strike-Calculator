@@ -29,7 +29,7 @@ import {
   isMarketOpen,
   guardOwnerOrGuestEndpoint,
 } from './_lib/api-helpers.js';
-import { getETTotalMinutes } from '../src/utils/timezone.js';
+import { getETTotalMinutes, getETDateStr } from '../src/utils/timezone.js';
 
 // ============================================================
 // TYPES
@@ -160,9 +160,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // and weekends this will be the last trading day, not today.
       let latestETDate = '';
       for (const c of result.data.candles) {
-        const etDate = new Date(c.datetime).toLocaleDateString('en-CA', {
-          timeZone: 'America/New_York',
-        });
+        const etDate = getETDateStr(new Date(c.datetime));
         if (etDate > latestETDate) latestETDate = etDate;
       }
 
@@ -172,9 +170,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // match the actual regular session open shown on TradingView/brokers.
       const todayCandles = result.data.candles.filter((c) => {
         const d = new Date(c.datetime);
-        const etDate = d.toLocaleDateString('en-CA', {
-          timeZone: 'America/New_York',
-        });
+        const etDate = getETDateStr(d);
         if (etDate !== latestETDate) return false;
 
         // Only keep candles from 9:30 AM onward

@@ -17,6 +17,7 @@ import { getDb } from './_lib/db.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
+import { getETDateStr } from '../src/utils/timezone.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
@@ -37,9 +38,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const date =
         dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam)
           ? dateParam
-          : new Date().toLocaleDateString('en-CA', {
-              timeZone: 'America/New_York',
-            });
+          : getETDateStr(new Date());
 
       // Optional time filter: "HH:MM" in CT → only show levels with trades by that time
       const timeParam = req.query.time as string | undefined;

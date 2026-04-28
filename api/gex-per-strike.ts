@@ -30,6 +30,7 @@ import { getDb } from './_lib/db.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
+import { getETDateStr } from '../src/utils/timezone.js';
 
 /** Clamp bounds for `?window=<N>m`. Matches spec futures-playbook-backtest-flow-2026-04-21.md. */
 const WINDOW_MIN_MINUTES = 1;
@@ -162,9 +163,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const date =
         dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam)
           ? dateParam
-          : new Date().toLocaleDateString('en-CA', {
-              timeZone: 'America/New_York',
-            });
+          : getETDateStr(new Date());
 
       // Optional exact-snapshot lookup (frontend scrub controls). ISO 8601
       // timestamps only — anything else is rejected so we never feed arbitrary
