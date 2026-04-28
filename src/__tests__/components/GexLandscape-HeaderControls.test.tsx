@@ -98,7 +98,7 @@ describe('ScrubControls', () => {
   it('forwards the typed date to onDateChange', () => {
     const onDateChange = vi.fn();
     render(<ScrubControls {...defaultProps({ onDateChange })} />);
-    fireEvent.change(screen.getByLabelText('Select date'), {
+    fireEvent.change(screen.getByLabelText(/Select date/i), {
       target: { value: '2026-04-13' },
     });
     expect(onDateChange).toHaveBeenCalledWith('2026-04-13');

@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react';
 import { useInstitutionalProgram } from '../../hooks/useInstitutionalProgram.js';
 import { SectionBox } from '../ui';
 import { TimeInputCT } from '../ui/TimeInputCT.js';
+import { DateInputET } from '../ui/DateInputET.js';
+import { getETToday } from '../../utils/timezone.js';
 import { CeilingChart } from './CeilingChart.js';
 import { OpeningBlocksCard } from './OpeningBlocksCard.js';
 import { RegimeBanner } from './RegimeBanner.js';
@@ -71,14 +73,14 @@ export function InstitutionalProgramSection() {
             window; only the "today" card and opening-blocks feed change. */}
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2">
-            <label className="text-muted text-xs">Date:</label>
-            <input
-              type="date"
+            <span className="text-muted text-xs">Date:</span>
+            <DateInputET
+              label="Backtest date"
+              labelVisible={false}
               value={backtestDate}
-              onChange={(e) => setBacktestDate(e.target.value)}
+              onChange={setBacktestDate}
+              max={getETToday()}
               className="border-edge bg-surface text-text rounded border px-2 py-1 font-mono text-xs"
-              max={new Date().toISOString().slice(0, 10)}
-              aria-label="Backtest date"
             />
           </div>
           <div className="flex items-center gap-2">

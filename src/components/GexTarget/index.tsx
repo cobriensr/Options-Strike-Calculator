@@ -14,6 +14,7 @@ import type { ReactNode } from 'react';
 import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
 import { SectionBox, Chip, StatusBadge } from '../ui';
+import { DateInputET } from '../ui/DateInputET';
 import type { UseGexTargetReturn, SPXCandle } from '../../hooks/useGexTarget';
 import { useNopeIntraday } from '../../hooks/useNopeIntraday';
 import { TargetTile } from './TargetTile';
@@ -366,11 +367,11 @@ export const GexTarget = memo(function GexTarget({
       )}
 
       {/* Date picker */}
-      <input
-        type="date"
+      <DateInputET
         value={selectedDate}
-        onChange={(e) => setSelectedDate(e.target.value)}
-        aria-label="Select date"
+        onChange={setSelectedDate}
+        label="Select date"
+        labelVisible={false}
         list={datalistId}
         min={minDate}
         max={maxDate}

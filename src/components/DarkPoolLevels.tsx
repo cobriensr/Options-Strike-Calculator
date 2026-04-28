@@ -15,6 +15,7 @@ import { memo, useMemo, useState, useCallback } from 'react';
 import { theme } from '../themes';
 import { formatTimeCT } from '../utils/component-formatters';
 import { tint } from '../utils/ui-utils';
+import { DateInputET } from './ui/DateInputET';
 import { SectionBox } from './ui';
 import { StatusBadge } from './ui';
 import type { DarkPoolLevel } from '../hooks/useDarkPoolLevels';
@@ -240,11 +241,11 @@ export default memo(function DarkPoolLevels({
       )}
 
       {/* Date picker */}
-      <input
-        type="date"
-        value={selectedDate}
-        onChange={(e) => onDateChange?.(e.target.value)}
-        aria-label="Select date"
+      <DateInputET
+        value={selectedDate ?? ''}
+        onChange={onDateChange ?? (() => {})}
+        label="Select date"
+        labelVisible={false}
         className="text-secondary border-edge rounded border bg-transparent px-1.5 py-0.5 font-mono text-[10px]"
       />
 

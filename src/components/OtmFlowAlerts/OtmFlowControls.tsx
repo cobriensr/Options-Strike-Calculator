@@ -16,6 +16,7 @@ import { useDebounced } from '../../hooks/useDebounced';
 import type { OtmFlowSettings } from '../../types/otm-flow';
 import { Chip } from '../ui';
 import { TimeInputCT } from '../ui/TimeInputCT';
+import { DateInputET } from '../ui/DateInputET';
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -135,24 +136,19 @@ export const OtmFlowControls = memo(function OtmFlowControls({
 
         {settings.mode === 'historical' && (
           <>
-            <label className="flex items-center gap-1.5 font-mono text-[12px]">
+            {/* Native date inputs fire `change` only on a complete valid date
+                (Chromium/Safari/Firefox all delay until validity), so the
+                callback can commit directly without debouncing. */}
+            <span className="flex items-center gap-1.5 font-mono text-[12px]">
               <span className="text-muted">Date</span>
-              <input
-                type="date"
+              <DateInputET
+                label="Historical date"
                 value={settings.historicalDate}
-                // Native <input type="date"> fires `change` on a *complete*
-                // valid date, not character-by-character. Chromium/Safari
-                // delay until validity; Firefox similarly. Safe to commit
-                // directly without debounce. If mobile Safari ever starts
-                // emitting per-spinner-step events, route through local
-                // state + debounced push like the sliders do.
-                onChange={(e) =>
-                  updateSettings({ historicalDate: e.target.value })
-                }
+                onChange={(d) => updateSettings({ historicalDate: d })}
+                labelVisible={false}
                 className="border-edge bg-surface-alt rounded border px-1.5 py-0.5"
-                aria-label="Historical date"
               />
-            </label>
+            </span>
             <span className="flex items-center gap-1.5 font-mono text-[12px]">
               <span className="text-muted">Time CT</span>
               <TimeInputCT

@@ -247,7 +247,7 @@ describe('FuturesGammaPlaybook', () => {
     expect(
       screen.getByRole('button', { name: 'Next snapshot' }),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText('Select date')).toBeInTheDocument();
+    expect(screen.getByLabelText(/Select date/i)).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: /Refresh Futures Gamma Playbook/i }),
     ).toBeInTheDocument();

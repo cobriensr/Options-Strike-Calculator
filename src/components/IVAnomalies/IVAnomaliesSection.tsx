@@ -1,5 +1,6 @@
 import { useState, type ReactElement } from 'react';
 import { SectionBox } from '../ui';
+import { DateInputET } from '../ui/DateInputET';
 import { useIVAnomalies } from '../../hooks/useIVAnomalies';
 import { useAnomalyCrossAsset } from '../../hooks/useAnomalyCrossAsset';
 import {
@@ -116,15 +117,16 @@ export function IVAnomaliesSection({
           role="toolbar"
           aria-label="Replay date and time controls"
         >
-          <label className="text-muted flex items-center gap-1.5 font-mono">
+          <span className="text-muted flex items-center gap-1.5 font-mono">
             date
-            <input
-              type="date"
+            <DateInputET
+              label="Replay date"
+              labelVisible={false}
               value={selectedDate}
-              onChange={(e) => setSelectedDate(e.target.value)}
+              onChange={setSelectedDate}
               className="border-edge bg-surface-alt text-primary rounded-md border px-2 py-0.5 font-mono text-[11px]"
             />
-          </label>
+          </span>
           <button
             type="button"
             onClick={scrubPrev}

@@ -9,6 +9,7 @@
 
 import { memo, useMemo } from 'react';
 import { theme } from '../../themes';
+import { DateInputET } from '../ui/DateInputET';
 import type { TraceLiveSummary } from './types';
 
 interface Props {
@@ -54,16 +55,16 @@ function TRACELiveControls({
 
   return (
     <div className="border-edge mt-3 flex flex-wrap items-center gap-3 border-t pt-3">
-      <label className="text-muted flex items-center gap-2 text-[11px]">
+      <span className="text-muted flex items-center gap-2 text-[11px]">
         <span>Date:</span>
-        <input
-          type="date"
-          className="bg-surface-alt border-edge text-primary rounded border px-2 py-1 font-mono text-[11px]"
+        <DateInputET
+          label="Trading day"
+          labelVisible={false}
           value={selectedDate}
-          onChange={(e) => onDateChange(e.target.value)}
-          aria-label="Select trading day"
+          onChange={onDateChange}
+          className="bg-surface-alt border-edge text-primary rounded border px-2 py-1 font-mono text-[11px]"
         />
-      </label>
+      </span>
 
       <label className="text-muted flex items-center gap-2 text-[11px]">
         <span>Capture:</span>

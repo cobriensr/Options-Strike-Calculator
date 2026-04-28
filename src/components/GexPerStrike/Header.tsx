@@ -10,6 +10,7 @@
 
 import { theme } from '../../themes';
 import { formatTimeCT } from '../../utils/component-formatters';
+import { DateInputET } from '../ui/DateInputET';
 
 interface Props {
   /** Current displayed snapshot timestamp (ISO). */
@@ -67,11 +68,11 @@ export function Header({
 
   return (
     <div className="flex items-center gap-2">
-      <input
-        type="date"
+      <DateInputET
         value={selectedDate}
-        onChange={(e) => onDateChange(e.target.value)}
-        aria-label="GEX per strike date"
+        onChange={onDateChange}
+        label="GEX per strike date"
+        labelVisible={false}
         className="text-secondary border-edge rounded border bg-transparent px-1.5 py-0.5 font-mono text-[10px]"
       />
       <div className="border-edge flex items-center gap-0.5 rounded border">

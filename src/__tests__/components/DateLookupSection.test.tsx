@@ -32,13 +32,13 @@ describe('DateLookupSection', () => {
 
   it('renders date picker', () => {
     renderSection();
-    expect(screen.getByLabelText('Select date')).toBeInTheDocument();
+    expect(screen.getByLabelText(/Select date/i)).toBeInTheDocument();
   });
 
   it('calls onDateChange when date changes', () => {
     const onDateChange = vi.fn();
     renderSection({ onDateChange });
-    fireEvent.change(screen.getByLabelText('Select date'), {
+    fireEvent.change(screen.getByLabelText(/Select date/i), {
       target: { value: '2026-03-13' },
     });
     expect(onDateChange).toHaveBeenCalledWith('2026-03-13');

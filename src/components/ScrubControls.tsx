@@ -8,6 +8,7 @@
 
 import { theme } from '../themes';
 import { tint } from '../utils/ui-utils';
+import { DateInputET } from './ui/DateInputET';
 
 export interface ScrubControlsProps {
   timestamp: string | null;
@@ -137,12 +138,12 @@ export function ScrubControls({
       </div>
 
       {/* Date picker */}
-      <input
-        type="date"
+      <DateInputET
         value={selectedDate}
-        onChange={(e) => onDateChange(e.target.value)}
+        onChange={onDateChange}
+        label="Select date"
+        labelVisible={false}
         className="border-edge bg-surface text-secondary min-h-[44px] rounded border px-1.5 py-0.5 font-mono text-[11px] lg:min-h-0"
-        aria-label="Select date"
       />
 
       {/* Status badge */}
