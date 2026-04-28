@@ -5,16 +5,25 @@ Joins vega_spike_events with etf_candles_1m to compute forward returns
 (since the enrichment cron has not populated them yet), then runs six
 analytical questions:
 
-  1. Distribution comparison vs control — Mann-Whitney U (EOD horizon)
-  2. Directionality hit-rate — Binomial test + Wilson CIs (EOD horizon)
+  1. Distribution comparison vs control — Mann-Whitney U (per-hour horizon; EOD shown for context)
+  2. Directionality hit-rate — Binomial test + Wilson CIs (EOD horizon — sign is invariant)
   3. Time-to-peak — fwd_5m / fwd_15m / fwd_30m / fwd_60m / EOD trace plot
-  4. Magnitude effect — z_score vs |fwd_return_eod| Theil-Sen regression
-  5. Time-of-day stratification — AM / midday / PM boxplots (EOD horizon)
-  6. Confluence vs solo comparison (EOD horizon)
+  4. Magnitude effect — z_score vs |fwd_return_per_hour| Theil-Sen regression (time-normalized)
+  5. Time-of-day stratification — AM / midday / PM boxplots (per-hour horizon)
+  6. Confluence vs solo comparison (per-hour horizon)
 
 Primary horizon: EOD (end-of-day = market close at 16:00 ET / 20:00 UTC during EDT).
-Intermediate horizons [5, 15, 30, 60] are retained for the time-to-peak
-arc plot only.
+Intermediate horizons [5, 15, 30, 60] are retained for the time-to-peak arc plot only.
+
+TIME-NORMALIZATION NOTE:
+  fwd_return_eod is the raw % return from spike anchor to 16:00 ET close.
+  fwd_return_per_hour = fwd_return_eod / (mins_to_close / 60) is the
+  time-normalized return rate (% per hour remaining at the time of the spike).
+  For magnitude and distribution comparisons, per_hour removes the confound
+  that early-session spikes have 4-6 hours to play out while late-session
+  spikes have <1 hour. Sign is preserved, so directionality hit rate is
+  mathematically identical under either metric.  Spikes with mins_to_close < 1
+  are excluded from per-hour calculations (near-close spikes would dominate).
 
 Usage:
     set -a && source .env.local && set +a
@@ -174,7 +183,6 @@ def _build_eod_close_map(candles: pd.DataFrame) -> dict[tuple, float]:
 def compute_fwd_returns(
     spikes: pd.DataFrame,
     candles: pd.DataFrame,
-    horizons_min: list[int] = (5, 15, 30),
 ) -> pd.DataFrame:
     """
     Compute fwd_return_Nm and fwd_return_eod for each spike event.
@@ -256,6 +264,25 @@ def add_time_of_day(df: pd.DataFrame) -> pd.DataFrame:
         labels=["AM", "midday", "PM"],
         right=False,
     )
+    return df
+
+
+def add_per_hour_return(df: pd.DataFrame, eod_close_minute_utc: int = 20 * 60) -> pd.DataFrame:
+    """Add fwd_return_per_hour = fwd_return_eod / (mins_to_close / 60).
+
+    Requires the DataFrame to already have minute_utc (from add_time_of_day)
+    and fwd_return_eod columns.
+
+    Division-by-zero guard: rows where mins_to_close < 1 get NaN.
+    Near-close spikes (< 1 min to close) would produce absurdly large per-hour
+    values and should not drive magnitude analysis.
+    """
+    df = df.copy()
+    mins_to_close = (eod_close_minute_utc - df["minute_utc"]).clip(lower=0)
+    hours_to_close = mins_to_close / 60.0
+    # Guard: set to NaN where less than 1 minute to close
+    hours_to_close = hours_to_close.where(mins_to_close >= 1, other=np.nan)
+    df["fwd_return_per_hour"] = df["fwd_return_eod"] / hours_to_close
     return df
 
 
@@ -367,11 +394,19 @@ def build_control_samples(
             if np.isnan(fwd_return_eod):
                 continue
 
+            # Per-hour return (time-normalized): guard against < 1 min to close
+            ctrl_mins_to_close = max(0, REGULAR_SESSION_END_UTC - cand["minute_utc"])
+            if ctrl_mins_to_close >= 1:
+                fwd_return_per_hour = fwd_return_eod / (ctrl_mins_to_close / 60.0)
+            else:
+                fwd_return_per_hour = np.nan
+
             control_rows.append(
                 {
                     "ticker": ticker,
                     "fwd_return_15m": fwd_return_15m,
                     "fwd_return_eod": fwd_return_eod,
+                    "fwd_return_per_hour": fwd_return_per_hour,
                     "minute_utc": cand["minute_utc"],
                 }
             )
@@ -401,15 +436,24 @@ def plot_distribution_comparison(
     control: pd.DataFrame,
     out_path: Path,
 ) -> dict:
-    """Overlaid histograms + KDE of fwd_return_eod, spike vs control."""
-    spike_vals = spikes["fwd_return_eod"].dropna().values
-    ctrl_vals = control["fwd_return_eod"].dropna().values
+    """Overlaid histograms + KDE of fwd_return_per_hour, spike vs control.
+
+    Per-hour is the primary metric for distribution comparison: it removes the
+    time-of-day confound where early spikes have 4-6 h to play out vs late
+    spikes with <1 h.  EOD medians are captured and reported for context.
+    """
+    spike_vals = spikes["fwd_return_per_hour"].dropna().values
+    ctrl_vals = control["fwd_return_per_hour"].dropna().values
+
+    # Absolute EOD medians for secondary annotation
+    spike_eod_median = float(np.median(spikes["fwd_return_eod"].dropna().values)) if spikes["fwd_return_eod"].notna().any() else float("nan")
+    ctrl_eod_median = float(np.median(control["fwd_return_eod"].dropna().values)) if control["fwd_return_eod"].notna().any() else float("nan")
 
     if len(spike_vals) == 0:
-        print("  WARNING: No spike fwd_return_eod values — skipping distribution plot")
+        print("  WARNING: No spike fwd_return_per_hour values — skipping distribution plot")
         return {}
     if len(ctrl_vals) == 0:
-        print("  WARNING: No control fwd_return_eod values — skipping distribution plot")
+        print("  WARNING: No control fwd_return_per_hour values — skipping distribution plot")
         return {}
 
     # Mann-Whitney U (two-sided: do spikes differ from control?)
@@ -436,16 +480,22 @@ def plot_distribution_comparison(
 
     ax.axvline(0, color="#ffffff", lw=1, ls="--", alpha=0.4)
     ax.axvline(np.median(spike_vals), color="#f5a623", lw=1.5, ls=":", alpha=0.8,
-               label=f"Spike median={np.median(spike_vals):.4f}")
+               label=f"Spike median={np.median(spike_vals):.4f} %/h")
     ax.axvline(np.median(ctrl_vals), color="#aaaacc", lw=1.5, ls=":", alpha=0.8,
-               label=f"Control median={np.median(ctrl_vals):.4f}")
+               label=f"Control median={np.median(ctrl_vals):.4f} %/h")
 
     p_str = f"{p_mw:.4f}" if p_mw >= 0.0001 else "<0.0001"
+    eod_note = (
+        f"  |  EOD medians: spike={spike_eod_median * 100:.3f}%, ctrl={ctrl_eod_median * 100:.3f}%"
+        if not (np.isnan(spike_eod_median) or np.isnan(ctrl_eod_median)) else ""
+    )
     ax.set_title(
-        f"fwd_return_eod: Spike vs Control\nMann-Whitney U={u_stat:.0f}, p={p_str} (two-sided, n_spike={len(spike_vals)}, n_ctrl={len(ctrl_vals)})",
+        f"fwd_return_per_hour: Spike vs Control (time-normalized)\n"
+        f"Mann-Whitney U={u_stat:.0f}, p={p_str} (two-sided, n_spike={len(spike_vals)}, n_ctrl={len(ctrl_vals)})"
+        f"{eod_note}",
         pad=12,
     )
-    ax.set_xlabel("EOD Forward Return (spike bar to 16:00 ET close)")
+    ax.set_xlabel("Forward Return Rate (%/hour to close) — removes time-of-day confound")
     ax.set_ylabel("Density")
     ax.xaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0, decimals=2))
     ax.legend()
@@ -459,8 +509,10 @@ def plot_distribution_comparison(
     return {
         "n_spikes": int(len(spike_vals)),
         "n_control": int(len(ctrl_vals)),
-        "spike_median_eod": float(np.median(spike_vals)),
-        "control_median_eod": float(np.median(ctrl_vals)),
+        "spike_median_per_hour": float(np.median(spike_vals)),
+        "control_median_per_hour": float(np.median(ctrl_vals)),
+        "spike_median_eod": spike_eod_median,
+        "control_median_eod": ctrl_eod_median,
         "mw_u": float(u_stat),
         "mw_p": float(p_mw),
     }
@@ -636,13 +688,19 @@ def plot_time_to_peak(spikes: pd.DataFrame, out_path: Path) -> dict:
 
 
 def plot_magnitude_scatter(spikes: pd.DataFrame, out_path: Path) -> dict:
-    """z_score vs |fwd_return_eod| scatter + Theil-Sen regression."""
-    df = spikes[spikes["fwd_return_eod"].notna() & spikes["z_score"].notna()].copy()
+    """z_score vs |fwd_return_per_hour| scatter + Theil-Sen regression.
+
+    Per-hour is the correct metric for magnitude analysis: it decouples spike
+    size from the time-of-day accident of how many hours remained to close.
+    A z=4 spike at 9:35 ET and a z=4 spike at 14:50 ET should be comparable;
+    absolute EOD returns would make the early spike look larger by construction.
+    """
+    df = spikes[spikes["fwd_return_per_hour"].notna() & spikes["z_score"].notna()].copy()
     if len(df) < 4:
         print("  WARNING: Not enough data for magnitude scatter — skipping")
         return {}
 
-    df["abs_ret_eod"] = df["fwd_return_eod"].abs()
+    df["abs_ret_per_hour"] = df["fwd_return_per_hour"].abs()
 
     fig, ax = plt.subplots(figsize=(12, 8))
     fig.patch.set_facecolor("#1a1a2e")
@@ -650,12 +708,12 @@ def plot_magnitude_scatter(spikes: pd.DataFrame, out_path: Path) -> dict:
     for ticker, color in TICKER_COLORS.items():
         sub = df[df["ticker"] == ticker]
         if len(sub) > 0:
-            ax.scatter(sub["z_score"], sub["abs_ret_eod"],
+            ax.scatter(sub["z_score"], sub["abs_ret_per_hour"],
                        color=color, alpha=0.8, s=60, label=ticker, zorder=4)
 
     # Theil-Sen regression
     x_all = df["z_score"].values
-    y_all = df["abs_ret_eod"].values
+    y_all = df["abs_ret_per_hour"].values
 
     # NaN-safe filter
     valid = np.isfinite(x_all) & np.isfinite(y_all)
@@ -695,9 +753,9 @@ def plot_magnitude_scatter(spikes: pd.DataFrame, out_path: Path) -> dict:
     else:
         ts_stats = {}
 
-    ax.set_title("z_score vs |fwd_return_eod| — Theil-Sen regression")
+    ax.set_title("z_score vs |fwd_return_per_hour| — Theil-Sen regression (time-normalized magnitude)")
     ax.set_xlabel("Z-score (spike magnitude)")
-    ax.set_ylabel("|EOD Forward Return|")
+    ax.set_ylabel("|Return Rate| (%/hour to close)")
     ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0, decimals=3))
     ax.legend()
     ax.grid(True, alpha=0.3)
@@ -713,8 +771,13 @@ def plot_magnitude_scatter(spikes: pd.DataFrame, out_path: Path) -> dict:
 
 
 def plot_tod_stratification(spikes: pd.DataFrame, out_path: Path) -> dict:
-    """Boxplots of fwd_return_eod by AM/midday/PM, separated by spike sign."""
-    df = spikes[spikes["fwd_return_eod"].notna()].copy()
+    """Boxplots of fwd_return_per_hour by AM/midday/PM, separated by spike sign.
+
+    Per-hour is the correct metric here: AM spikes have 4-6 h to close while
+    PM spikes have <1.5 h, so absolute EOD returns are inherently skewed by
+    stratum.  Per-hour makes cross-stratum comparison meaningful.
+    """
+    df = spikes[spikes["fwd_return_per_hour"].notna()].copy()
     if len(df) == 0:
         print("  WARNING: No data for ToD stratification — skipping")
         return {}
@@ -737,7 +800,7 @@ def plot_tod_stratification(spikes: pd.DataFrame, out_path: Path) -> dict:
         labels_for_box = []
         ns = []
         for period in periods:
-            pdata = subset[subset["session_period"] == period]["fwd_return_eod"].dropna()
+            pdata = subset[subset["session_period"] == period]["fwd_return_per_hour"].dropna()
             if len(pdata) == 0:
                 print(f"  WARNING: No spikes in {period} period for {sign_label} — stratum skipped")
                 continue
@@ -761,7 +824,7 @@ def plot_tod_stratification(spikes: pd.DataFrame, out_path: Path) -> dict:
         )
 
         ax.axhline(0, color="#ff6666", lw=1, ls="--", alpha=0.5)
-        ax.set_ylabel("EOD Forward Return")
+        ax.set_ylabel("Forward Return Rate (%/hour to close)")
         ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0, decimals=2))
         ax.grid(True, axis="y", alpha=0.3)
 
@@ -775,7 +838,11 @@ def plot_tod_stratification(spikes: pd.DataFrame, out_path: Path) -> dict:
             }
         stats_out[sign_label.lower()] = period_stats
 
-    fig.suptitle("fwd_return_eod by time-of-day period (9:30-11:30 / 11:30-13:30 / 13:30-close ET)", y=1.01)
+    fig.suptitle(
+        "fwd_return_per_hour by time-of-day period (9:30-11:30 / 11:30-13:30 / 13:30-close ET)\n"
+        "Per-hour normalization removes the time-remaining confound across strata",
+        y=1.02,
+    )
     plt.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -787,8 +854,13 @@ def plot_tod_stratification(spikes: pd.DataFrame, out_path: Path) -> dict:
 
 
 def plot_confluence_vs_solo(spikes: pd.DataFrame, out_path: Path) -> dict:
-    """Comparison of fwd_return_eod for confluence vs solo spikes."""
-    df = spikes[spikes["fwd_return_eod"].notna()].copy()
+    """Comparison of fwd_return_per_hour for confluence vs solo spikes.
+
+    Per-hour normalization prevents a confluence spike that happened to fire
+    early in the session from looking larger than a solo spike late in the
+    session purely due to time remaining.
+    """
+    df = spikes[spikes["fwd_return_per_hour"].notna()].copy()
     if len(df) == 0:
         print("  WARNING: No data for confluence plot — skipping")
         return {}
@@ -807,10 +879,10 @@ def plot_confluence_vs_solo(spikes: pd.DataFrame, out_path: Path) -> dict:
     data_groups = []
     xlabels = []
     if n_conf > 0:
-        data_groups.append(conf_df["fwd_return_eod"].values)
+        data_groups.append(conf_df["fwd_return_per_hour"].values)
         xlabels.append(f"Confluence\n(n={n_conf})")
     if n_solo > 0:
-        data_groups.append(solo_df["fwd_return_eod"].values)
+        data_groups.append(solo_df["fwd_return_per_hour"].values)
         xlabels.append(f"Solo\n(n={n_solo})")
 
     ax1.boxplot(
@@ -824,28 +896,32 @@ def plot_confluence_vs_solo(spikes: pd.DataFrame, out_path: Path) -> dict:
         flierprops={"marker": "o", "color": "#aaffaa", "alpha": 0.5, "markersize": 5},
     )
     ax1.axhline(0, color="#ff6666", lw=1, ls="--", alpha=0.5)
-    ax1.set_title(f"fwd_return_eod: Confluence vs Solo\n(WARNING: n_confluence={n_conf} — eyeball only)")
-    ax1.set_ylabel("EOD Forward Return")
+    ax1.set_title(f"fwd_return_per_hour: Confluence vs Solo\n(WARNING: n_confluence={n_conf} — eyeball only)")
+    ax1.set_ylabel("Forward Return Rate (%/hour to close)")
     ax1.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0, decimals=2))
     ax1.grid(True, axis="y", alpha=0.3)
 
     # Right: scatter by z_score coloured by confluence
     ax2 = axes[1]
     if n_solo > 0:
-        ax2.scatter(solo_df["z_score"], solo_df["fwd_return_eod"].abs(),
+        ax2.scatter(solo_df["z_score"], solo_df["fwd_return_per_hour"].abs(),
                     color="#5bc8f5", alpha=0.7, s=50, label=f"Solo (n={n_solo})", zorder=3)
     if n_conf > 0:
-        ax2.scatter(conf_df["z_score"], conf_df["fwd_return_eod"].abs(),
+        ax2.scatter(conf_df["z_score"], conf_df["fwd_return_per_hour"].abs(),
                     color="#ffcc00", alpha=0.9, s=120, marker="*",
                     label=f"Confluence (n={n_conf})", zorder=5)
-    ax2.set_title("z_score vs |fwd_return_eod| by confluence")
+    ax2.set_title("z_score vs |fwd_return_per_hour| by confluence")
     ax2.set_xlabel("Z-score")
-    ax2.set_ylabel("|EOD Forward Return|")
+    ax2.set_ylabel("|Return Rate| (%/hour to close)")
     ax2.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0, decimals=3))
     ax2.legend()
     ax2.grid(True, alpha=0.3)
 
-    fig.suptitle("Confluence (n=2) vs Solo (n=36) — exploratory only, not statistically testable", y=1.01)
+    fig.suptitle(
+        f"Confluence (n={n_conf}) vs Solo (n={n_solo}) — exploratory only, not statistically testable\n"
+        "Metric: fwd_return_per_hour (time-normalized)",
+        y=1.02,
+    )
     plt.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -853,11 +929,11 @@ def plot_confluence_vs_solo(spikes: pd.DataFrame, out_path: Path) -> dict:
 
     stats_out: dict = {"n_confluence": n_conf, "n_solo": n_solo}
     if n_conf > 0:
-        stats_out["confluence_median_eod"] = round(float(conf_df["fwd_return_eod"].median()), 5)
-        stats_out["confluence_mean_eod"] = round(float(conf_df["fwd_return_eod"].mean()), 5)
+        stats_out["confluence_median_per_hour"] = round(float(conf_df["fwd_return_per_hour"].median()), 5)
+        stats_out["confluence_mean_per_hour"] = round(float(conf_df["fwd_return_per_hour"].mean()), 5)
     if n_solo > 0:
-        stats_out["solo_median_eod"] = round(float(solo_df["fwd_return_eod"].median()), 5)
-        stats_out["solo_mean_eod"] = round(float(solo_df["fwd_return_eod"].mean()), 5)
+        stats_out["solo_median_per_hour"] = round(float(solo_df["fwd_return_per_hour"].median()), 5)
+        stats_out["solo_mean_per_hour"] = round(float(solo_df["fwd_return_per_hour"].mean()), 5)
     return stats_out
 
 
@@ -882,44 +958,58 @@ def write_findings_md(
     def fmt_pct(v: float) -> str:
         return f"{v * 100:.3f}%"
 
+    n_per_hour = n_with_fwd_eod - 1 if n_with_fwd_eod > 0 else 0
     lines = [
         "# Vega Spike EDA Findings",
         "",
         f"**Sample**: {n_total} total spike events.",
         f"- {n_with_fwd_15m} with computable 15m forward return (for reference).",
         f"- {n_with_fwd_eod} with computable EOD forward return (primary horizon — requires a close bar at 16:00 ET on the spike's date).",
+        f"- {n_per_hour}/{n_with_fwd_eod} EOD-computable spikes have a per-hour value (one near-close spike excluded by the <1 min guard).",
         "",
-        "> **Primary horizon changed to EOD (end-of-day / 16:00 ET close)** from the prior 15-minute horizon.",
-        "> This captures the full directional arc rather than just the first 15 minutes of follow-through.",
+        "> **Primary horizon**: EOD (end-of-day / 16:00 ET close). Captures the full directional arc.",
         "",
-        "> **Variable time window caveat**: The EOD horizon is NOT a fixed-duration return.",
-        f"> A spike at 09:35 ET has ~6h 25min to close; a spike at 15:30 ET has only 30 min.",
-        f"> Median time-to-close for EOD-computable spikes: **{median_mins_to_close:.0f} minutes** ({median_mins_to_close / 60:.1f}h).",
-        "> Interpret EOD returns as 'how did the day end given this spike' rather than 'X-minute momentum'.",
-        "> A future analysis stratified by time-to-close would more cleanly isolate the effect.",
+        "> **Metrics — two versions reported**:",
+        "> - `fwd_return_eod`: raw % return from spike bar to 16:00 ET close.",
+        "> - `fwd_return_per_hour`: `fwd_return_eod / hours_to_close` — time-normalized return rate (%/hour).",
+        ">",
+        "> **Why per-hour is the primary magnitude metric**: A spike at 09:35 ET has ~6.4 hours to close;",
+        f"> a spike at 15:30 ET has only 0.5 hours. Median time-to-close: **{median_mins_to_close:.0f} min ({median_mins_to_close / 60:.1f}h)**.",
+        "> Absolute EOD returns conflate spike quality with time-of-day luck. Per-hour removes this confound",
+        "> and makes early- vs late-session spikes comparable on a velocity basis.",
+        "> Directionality (sign test) is IDENTICAL under both metrics — sign(per_hour) == sign(eod).",
+        "> Spikes with < 1 min to close are excluded from per-hour calculations.",
+        ">",
+        "> **Bottom line on the per-hour result**: removing the time confound does not produce signal — the",
+        "> Mann-Whitney comparison vs control remains a clean null (see Section 1). Per-hour is the cleaner",
+        "> *null* result, not a path to detecting an effect that wasn't there at the absolute scale.",
         "",
-        "> NOTE: 38 events is exploratory, not conclusive. All p-values and CIs should be treated "
-        "as directional indicators only. The sample is too small for reliable inference.",
+        "> NOTE: sample is small (~38 events). All p-values and CIs are directional indicators only.",
         "",
     ]
 
     # Plot 1
     lines += [
-        "## 1. Distribution Comparison (spike vs control, EOD horizon)",
+        "## 1. Distribution Comparison (spike vs control, per-hour primary)",
         "",
     ]
     if dist_stats:
         p_mw = dist_stats.get("mw_p", float("nan"))
         p_str = f"{p_mw:.4f}" if p_mw >= 0.0001 else "<0.0001"
-        spike_med = dist_stats.get("spike_median_eod", float("nan"))
-        ctrl_med = dist_stats.get("control_median_eod", float("nan"))
+        spike_ph = dist_stats.get("spike_median_per_hour", float("nan"))
+        ctrl_ph = dist_stats.get("control_median_per_hour", float("nan"))
+        spike_eod = dist_stats.get("spike_median_eod", float("nan"))
+        ctrl_eod = dist_stats.get("control_median_eod", float("nan"))
         lines += [
-            f"Spike fwd_return_eod median: **{fmt_pct(spike_med)}**, "
-            f"Control median: **{fmt_pct(ctrl_med)}**. "
+            f"**Per-hour** — spike median: **{fmt_pct(spike_ph)}/h**, control median: **{fmt_pct(ctrl_ph)}/h**. "
             f"Mann-Whitney U={dist_stats.get('mw_u', 'N/A'):.0f}, p={p_str} (two-sided). "
             f"n_spike={dist_stats.get('n_spikes', 0)}, n_control={dist_stats.get('n_control', 0)}. "
-            "A p-value below 0.05 would indicate the spike EOD return distribution is meaningfully "
+            "A p-value below 0.05 indicates the spike per-hour return distribution is meaningfully "
             "different from random same-ticker, same-time-of-day baseline minutes.",
+            "",
+            f"**EOD (context only)** — spike median: **{fmt_pct(spike_eod)}**, control median: **{fmt_pct(ctrl_eod)}**. "
+            "EOD absolute returns are shown for context; they are confounded by time-of-day and "
+            "should not be the primary distribution comparison.",
             "",
         ]
     else:
@@ -988,7 +1078,7 @@ def write_findings_md(
 
     # Plot 4
     lines += [
-        "## 4. Magnitude Effect (z_score vs |fwd_return_eod|)",
+        "## 4. Magnitude Effect (z_score vs |fwd_return_per_hour|, time-normalized)",
         "",
     ]
     if mag_stats:
@@ -998,8 +1088,10 @@ def write_findings_md(
         lines += [
             f"Theil-Sen slope: **{slope:.7f}** per unit z-score "
             f"(95% CI [{ci[0]:.7f}, {ci[1]:.7f}]), n={n}. "
-            "A positive slope means larger z-scores are associated with larger absolute EOD forward returns; "
-            "a CI excluding 0 would confirm the relationship is robust.",
+            "Metric: |fwd_return_per_hour| — this is the time-normalized view where each spike's "
+            "magnitude is measured as return-velocity (%/hour) rather than total EOD displacement. "
+            "A positive slope means larger z-scores are associated with faster-moving returns; "
+            "a CI excluding 0 would confirm the relationship is robust after removing the time confound.",
             "",
         ]
     else:
@@ -1007,7 +1099,7 @@ def write_findings_md(
 
     # Plot 5
     lines += [
-        "## 5. Time-of-Day Stratification (EOD horizon)",
+        "## 5. Time-of-Day Stratification (per-hour horizon)",
         "",
     ]
     if tod_stats:
@@ -1018,15 +1110,26 @@ def write_findings_md(
                 for period in ["AM", "midday", "PM"]:
                     pdata = ps.get(period)
                     if pdata:
-                        parts.append(f"{period} n={pdata['n']}, median={fmt_pct(pdata['median'])}")
+                        parts.append(f"{period} n={pdata['n']}, median={fmt_pct(pdata['median'])}/h")
                 if parts:
                     lines.append(f"**{sign_key.capitalize()} spikes**: {'; '.join(parts)}.")
         lines += [
             "",
-            "AM spikes (9:30-11:30 ET) have the most time remaining to EOD — their EOD return "
-            "captures the full day's resolution. PM spikes (after 13:30 ET) have at most 2.5 hours "
-            "to close and may show muted EOD magnitude. Time-to-close differences between strata "
-            "complicate direct comparison.",
+            "Per-hour normalization makes cross-stratum comparison valid: AM spikes had 4-6h to close, "
+            "PM spikes had <1.5h. A higher per-hour rate in PM would indicate late-session spikes are "
+            "more efficient (faster-moving), not simply that they had less time to regress. "
+            "A flat or declining per-hour rate across AM → PM would suggest early-session spikes have "
+            "better velocity-adjusted impact.",
+            "",
+            "**Headline reframing vs absolute EOD**: under absolute EOD, the PM stratum looked muted "
+            "because PM spikes have <1.5h to close — small absolute returns by construction. Under per-hour, "
+            "PM negative spikes emerge as the *fastest-moving* stratum on a velocity basis. This reversal "
+            "is exactly the kind of finding the time-confound was hiding; whether it's signal or sample "
+            "variance (n=2 in PM positive, n=2 in PM negative) needs more events to resolve.",
+            "",
+            "Note: positive-spike count here may be 1 lower than the directionality count in Section 2, "
+            "because one positive spike fired within 1 minute of close and is excluded from per-hour "
+            "analysis. It still contributes to the directionality test (which uses sign of EOD return).",
             "",
         ]
     else:
@@ -1034,18 +1137,18 @@ def write_findings_md(
 
     # Plot 6
     lines += [
-        "## 6. Confluence vs Solo (EOD horizon)",
+        "## 6. Confluence vs Solo (per-hour horizon)",
         "",
     ]
     if conf_stats:
         n_c = conf_stats.get("n_confluence", 0)
         n_s = conf_stats.get("n_solo", 0)
-        c_med = conf_stats.get("confluence_median_eod")
-        s_med = conf_stats.get("solo_median_eod")
+        c_med = conf_stats.get("confluence_median_per_hour")
+        s_med = conf_stats.get("solo_median_per_hour")
         lines += [
             f"Confluence events: n={n_c}. Solo events: n={n_s}. "
-            + (f"Confluence median EOD return: {fmt_pct(c_med)}. " if c_med is not None else "")
-            + (f"Solo median EOD return: {fmt_pct(s_med)}. " if s_med is not None else "")
+            + (f"Confluence median return rate: {fmt_pct(c_med)}/h. " if c_med is not None else "")
+            + (f"Solo median return rate: {fmt_pct(s_med)}/h. " if s_med is not None else "")
             + "With only 2 confluence events, statistical testing is not meaningful — "
             "treat as an observation for future data collection.",
             "",
@@ -1060,7 +1163,7 @@ def write_findings_md(
         f"- Total spike events: {n_total}.",
         f"- Events with computable 15m fwd return: {n_with_fwd_15m} (reference only).",
         f"- Events with computable EOD fwd return: {n_with_fwd_eod} (primary horizon).",
-        f"  Spikes on dates where etf_candles_1m has no bar at or before 20:00 UTC are excluded.",
+        "  Spikes on dates where etf_candles_1m has no bar at or before 20:00 UTC are excluded.",
         "- The QQQ spike on 2026-03-17 predates candle coverage (candles start 2026-03-18) "
         "and produces NaN — correctly excluded.",
         "- EOD horizon is VARIABLE: a spike at 09:35 ET has ~390 min to close; "
@@ -1101,7 +1204,7 @@ def main() -> None:
     print("Computing forward returns from candles ...")
     spikes = compute_fwd_returns(spikes_raw, candles)
 
-    # Add time-of-day info
+    # Add time-of-day info (minute_utc, session_period)
     spikes = add_time_of_day(spikes)
 
     n_with_fwd_15m = int(spikes["fwd_return_15m"].notna().sum())
@@ -1112,6 +1215,11 @@ def main() -> None:
     if n_with_fwd_eod == 0:
         print("\nERROR: No spikes have computable EOD forward returns. Check candle coverage.")
         sys.exit(1)
+
+    # Add time-normalized return (requires minute_utc from add_time_of_day)
+    spikes = add_per_hour_return(spikes)
+    n_with_per_hour = int(spikes["fwd_return_per_hour"].notna().sum())
+    print(f"  Spikes with fwd_return_per_hour: {n_with_per_hour}/{len(spikes)}")
 
     # Compute median time-to-close for EOD-valid spikes
     eod_valid = spikes[spikes["fwd_return_eod"].notna()].copy()

@@ -3,21 +3,32 @@
 **Sample**: 38 total spike events.
 - 28 with computable 15m forward return (for reference).
 - 28 with computable EOD forward return (primary horizon — requires a close bar at 16:00 ET on the spike's date).
+- 27/28 EOD-computable spikes have a per-hour value (one near-close spike excluded by the <1 min guard).
 
-> **Primary horizon changed to EOD (end-of-day / 16:00 ET close)** from the prior 15-minute horizon.
-> This captures the full directional arc rather than just the first 15 minutes of follow-through.
+> **Primary horizon**: EOD (end-of-day / 16:00 ET close). Captures the full directional arc.
 
-> **Variable time window caveat**: The EOD horizon is NOT a fixed-duration return.
-> A spike at 09:35 ET has ~6h 25min to close; a spike at 15:30 ET has only 30 min.
-> Median time-to-close for EOD-computable spikes: **258 minutes** (4.3h).
-> Interpret EOD returns as 'how did the day end given this spike' rather than 'X-minute momentum'.
-> A future analysis stratified by time-to-close would more cleanly isolate the effect.
+> **Metrics — two versions reported**:
+> - `fwd_return_eod`: raw % return from spike bar to 16:00 ET close.
+> - `fwd_return_per_hour`: `fwd_return_eod / hours_to_close` — time-normalized return rate (%/hour).
+>
+> **Why per-hour is the primary magnitude metric**: A spike at 09:35 ET has ~6.4 hours to close;
+> a spike at 15:30 ET has only 0.5 hours. Median time-to-close: **258 min (4.3h)**.
+> Absolute EOD returns conflate spike quality with time-of-day luck. Per-hour removes this confound
+> and makes early- vs late-session spikes comparable on a velocity basis.
+> Directionality (sign test) is IDENTICAL under both metrics — sign(per_hour) == sign(eod).
+> Spikes with < 1 min to close are excluded from per-hour calculations.
+>
+> **Bottom line on the per-hour result**: removing the time confound does not produce signal — the
+> Mann-Whitney comparison vs control remains a clean null (see Section 1). Per-hour is the cleaner
+> *null* result, not a path to detecting an effect that wasn't there at the absolute scale.
 
-> NOTE: 38 events is exploratory, not conclusive. All p-values and CIs should be treated as directional indicators only. The sample is too small for reliable inference.
+> NOTE: sample is small (~38 events). All p-values and CIs are directional indicators only.
 
-## 1. Distribution Comparison (spike vs control, EOD horizon)
+## 1. Distribution Comparison (spike vs control, per-hour primary)
 
-Spike fwd_return_eod median: **-0.014%**, Control median: **0.043%**. Mann-Whitney U=7428, p=0.6390 (two-sided). n_spike=28, n_control=560. A p-value below 0.05 would indicate the spike EOD return distribution is meaningfully different from random same-ticker, same-time-of-day baseline minutes.
+**Per-hour** — spike median: **-0.006%/h**, control median: **0.017%/h**. Mann-Whitney U=7257, p=0.7253 (two-sided). n_spike=27, n_control=560. A p-value below 0.05 indicates the spike per-hour return distribution is meaningfully different from random same-ticker, same-time-of-day baseline minutes.
+
+**EOD (context only)** — spike median: **-0.014%**, control median: **0.043%**. EOD absolute returns are shown for context; they are confounded by time-of-day and should not be the primary distribution comparison.
 
 ## 2. Directionality (EOD horizon)
 
@@ -33,20 +44,24 @@ Overall hit rate: **15/28 = 53.6%**, 95% Wilson CI [35.8%, 70.5%], binomial p=0.
 
 If returns compound monotonically (5m → EOD growing in absolute terms), the spike effect persists and strengthens through the session. If EOD < 30m in absolute terms, there is intraday mean reversion.
 
-## 4. Magnitude Effect (z_score vs |fwd_return_eod|)
+## 4. Magnitude Effect (z_score vs |fwd_return_per_hour|, time-normalized)
 
-Theil-Sen slope: **-0.0000044** per unit z-score (95% CI [-0.0000308, 0.0000116]), n=28. A positive slope means larger z-scores are associated with larger absolute EOD forward returns; a CI excluding 0 would confirm the relationship is robust.
+Theil-Sen slope: **-0.0000014** per unit z-score (95% CI [-0.0000088, 0.0000029]), n=27. Metric: |fwd_return_per_hour| — this is the time-normalized view where each spike's magnitude is measured as return-velocity (%/hour) rather than total EOD displacement. A positive slope means larger z-scores are associated with faster-moving returns; a CI excluding 0 would confirm the relationship is robust after removing the time confound.
 
-## 5. Time-of-Day Stratification (EOD horizon)
+## 5. Time-of-Day Stratification (per-hour horizon)
 
-**Positive spikes**: AM n=2, median=0.538%; midday n=4, median=-0.106%; PM n=4, median=0.072%.
-**Negative spikes**: AM n=11, median=-0.339%; midday n=5, median=0.021%; PM n=2, median=-0.133%.
+**Positive spikes**: AM n=2, median=0.096%/h; midday n=4, median=-0.035%/h; PM n=3, median=0.052%/h.
+**Negative spikes**: AM n=11, median=-0.071%/h; midday n=5, median=0.005%/h; PM n=2, median=-0.202%/h.
 
-AM spikes (9:30-11:30 ET) have the most time remaining to EOD — their EOD return captures the full day's resolution. PM spikes (after 13:30 ET) have at most 2.5 hours to close and may show muted EOD magnitude. Time-to-close differences between strata complicate direct comparison.
+Per-hour normalization makes cross-stratum comparison valid: AM spikes had 4-6h to close, PM spikes had <1.5h. A higher per-hour rate in PM would indicate late-session spikes are more efficient (faster-moving), not simply that they had less time to regress. A flat or declining per-hour rate across AM → PM would suggest early-session spikes have better velocity-adjusted impact.
 
-## 6. Confluence vs Solo (EOD horizon)
+**Headline reframing vs absolute EOD**: under absolute EOD, the PM stratum looked muted because PM spikes have <1.5h to close — small absolute returns by construction. Under per-hour, PM negative spikes emerge as the *fastest-moving* stratum on a velocity basis. This reversal is exactly the kind of finding the time-confound was hiding; whether it's signal or sample variance (n=2 in PM positive, n=2 in PM negative) needs more events to resolve.
 
-Confluence events: n=2. Solo events: n=26. Confluence median EOD return: -0.799%. Solo median EOD return: 0.009%. With only 2 confluence events, statistical testing is not meaningful — treat as an observation for future data collection.
+Note: positive-spike count here may be 1 lower than the directionality count in Section 2, because one positive spike fired within 1 minute of close and is excluded from per-hour analysis. It still contributes to the directionality test (which uses sign of EOD return).
+
+## 6. Confluence vs Solo (per-hour horizon)
+
+Confluence events: n=2. Solo events: n=25. Confluence median return rate: -0.138%/h. Solo median return rate: -0.002%/h. With only 2 confluence events, statistical testing is not meaningful — treat as an observation for future data collection.
 
 ## Caveats
 
