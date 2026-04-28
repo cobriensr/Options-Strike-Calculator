@@ -624,6 +624,10 @@ interface CronGuardResult {
  * time window, and API key. Returns `{ apiKey, today }` on success,
  * or sends an error response and returns `null`.
  *
+ * Manual one-shot runs can pass `?force=1` to skip the time-window
+ * check (CRON_SECRET is still required). Useful for backfilling state
+ * after a late deploy without waiting for the next scheduled fire.
+ *
  * Usage:
  * ```ts
  * const guard = cronGuard(req, res);
@@ -661,9 +665,13 @@ export function cronGuard(
     return null;
   }
 
-  // Time window check
+  // Time window check. `?force=1` bypasses the time gate for one-shot
+  // manual runs (e.g. backfilling forward returns after a late deploy).
+  // The auth check above still gates everything — `force` only relaxes
+  // the schedule, never CRON_SECRET.
+  const force = req.query?.force === '1';
   const customCheck = timeCheck ?? (checkMarket ? isMarketHours : null);
-  if (customCheck && !customCheck()) {
+  if (!force && customCheck && !customCheck()) {
     res.status(200).json({ skipped: true, reason: 'Outside time window' });
     return null;
   }

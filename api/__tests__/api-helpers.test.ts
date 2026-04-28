@@ -747,6 +747,52 @@ describe('api-helpers', () => {
       });
       expect(result).not.toBeNull();
     });
+
+    it('bypasses the time-window check when ?force=1', () => {
+      process.env.CRON_SECRET = 'secret';
+      process.env.UW_API_KEY = 'uw_key';
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer secret' },
+        query: { force: '1' },
+      });
+      const res = mockResponse();
+      const result = cronGuard(req, res, {
+        timeCheck: () => false,
+      });
+      expect(result).not.toBeNull();
+      expect(result!.apiKey).toBe('uw_key');
+    });
+
+    it('?force=1 does NOT bypass CRON_SECRET (still 401 on bad auth)', () => {
+      process.env.CRON_SECRET = 'correct';
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer wrong' },
+        query: { force: '1' },
+      });
+      const res = mockResponse();
+      expect(cronGuard(req, res, { timeCheck: () => false })).toBeNull();
+      expect(res._status).toBe(401);
+    });
+
+    it('?force values other than "1" do NOT bypass the time gate', () => {
+      process.env.CRON_SECRET = 'secret';
+      process.env.UW_API_KEY = 'uw_key';
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer secret' },
+        query: { force: 'true' },
+      });
+      const res = mockResponse();
+      const result = cronGuard(req, res, { timeCheck: () => false });
+      expect(result).toBeNull();
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({
+        skipped: true,
+        reason: 'Outside time window',
+      });
+    });
   });
 
   // ============================================================
