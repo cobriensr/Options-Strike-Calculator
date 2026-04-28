@@ -6,6 +6,7 @@
  */
 
 import { ScrollHint } from '../ui';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import type {
   ButterflyPosition,
   HedgePosition,
@@ -19,6 +20,11 @@ import {
   ButterflyRow,
   HedgeRows,
   NakedRows,
+  IronCondorCard,
+  SpreadCard,
+  ButterflyCard,
+  HedgeCards,
+  NakedCards,
 } from './PositionRow';
 import { cushionPct } from './position-helpers';
 
@@ -73,6 +79,7 @@ export default function PositionTable({
   nakedPositions,
   spotPrice,
 }: Readonly<PositionTableProps>) {
+  const isMobile = useIsMobile();
   const sorted = sortedSpreads(spreads, spotPrice);
   const hasPositions =
     ironCondors.length > 0 ||
@@ -89,15 +96,41 @@ export default function PositionTable({
     );
   }
 
-  return (
+  // Render either cards (<md) or table (md+) — exclusively, based on
+  // matchMedia. Tailwind's `hidden md:block` would render BOTH branches
+  // in JSDOM and break the existing 49 `getByText` assertions. With
+  // useIsMobile, JSDOM's default no-match returns false → table always
+  // renders in tests, no test updates needed.
+  return isMobile ? (
+    <div
+      className="space-y-2"
+      role="list"
+      aria-label="Open positions (mobile cards)"
+    >
+      {ironCondors.map((ic) => (
+        <IronCondorCard
+          key={`${ic.putSpread.shortLeg.optionCode}/${ic.callSpread.shortLeg.optionCode}`}
+          ic={ic}
+          spotPrice={spotPrice}
+        />
+      ))}
+      {sorted.map((s) => (
+        <SpreadCard
+          key={s.shortLeg.optionCode}
+          spread={s}
+          spotPrice={spotPrice}
+        />
+      ))}
+      {butterflies.map((bfly) => (
+        <ButterflyCard key={bfly.middleLeg.optionCode} butterfly={bfly} />
+      ))}
+      {hedges.length > 0 && <HedgeCards hedges={hedges} />}
+      {nakedPositions.length > 0 && <NakedCards naked={nakedPositions} />}
+    </div>
+  ) : (
     <ScrollHint>
-      {/* min-w forces horizontal scroll on mobile (ScrollHint wraps in
-          overflow-x-auto and shows a right-edge fade). 11 columns × ~65px
-          = ~720px minimum legible width; below this, columns crush
-          unreadably. Card-flip per position type is a future redesign;
-          horizontal scroll is the pragmatic mobile fallback. */}
       <table
-        className="w-full min-w-[720px] font-mono text-sm"
+        className="w-full font-mono text-sm"
         role="table"
         aria-label="Open positions"
       >

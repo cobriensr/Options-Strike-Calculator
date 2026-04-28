@@ -166,13 +166,25 @@ def shutdown() -> None:
 def _write_creds(email: str, password: str) -> None:
     """Write creds.txt where the jar looks for it, with 0600 perms.
 
-    The password is NEVER logged — only the path and email. Railway's
-    env var panel is the canonical secret store; this file is an
-    ephemeral container-local artifact that the jar reads once at boot.
+    Plaintext-on-disk is unavoidable: the third-party Theta Terminal jar
+    reads `creds.txt` from disk at boot (no stdin / keystore alternative
+    exists in v3). The mitigations are:
+      - File mode 0600 (only the container's own uid can read).
+      - Parent dir mode 0700 (no traversal via parent listing).
+      - Lives on the container's writable layer only — not the mounted
+        /data volume — so it dies with the container.
+      - Password is NEVER logged; only the path and email are.
+      - Railway env var panel is the canonical secret store; this file
+        is a derived artifact, not a source of truth.
+
+    CodeQL will flag this as clear-text storage of sensitive data. The
+    finding is acknowledged and intentional — the constraint is the
+    upstream jar, not this code path.
     """
     _THETA_HOME.mkdir(parents=True, exist_ok=True)
+    _THETA_HOME.chmod(0o700)
     creds = _THETA_HOME / "creds.txt"
-    creds.write_text(f"{email}\n{password}\n")
+    creds.write_text(f"{email}\n{password}\n")  # noqa: S105
     creds.chmod(0o600)
     log.info("Wrote Theta creds.txt at %s (user=%s)", creds, email)
 

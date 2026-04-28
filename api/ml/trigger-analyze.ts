@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { checkBot } from '../_lib/api-helpers.js';
+import { checkBot, rejectIfNotOwner } from '../_lib/api-helpers.js';
 import logger from '../_lib/logger.js';
 
 /**
@@ -24,6 +24,7 @@ export default async function handler(
     res.status(403).json({ error: 'Access denied' });
     return;
   }
+  if (rejectIfNotOwner(req, res)) return;
 
   const secret = process.env.CRON_SECRET;
   if (!secret) {

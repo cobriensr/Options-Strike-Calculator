@@ -8,7 +8,9 @@
  * Data freshness is informational (stale data doesn't cause 503).
  */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { checkBot } from './_lib/api-helpers.js';
 import { getDb } from './_lib/db.js';
+import { rejectIfNotOwnerOrGuest } from './_lib/guest-auth.js';
 import { redis, getAccessToken } from './_lib/schwab.js';
 
 interface ServiceCheck {
@@ -67,10 +69,14 @@ function computeFreshness(
   };
 }
 
-export default async function handler(
-  _req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const botCheck = await checkBot(req);
+  if (botCheck.isBot) {
+    res.status(403).json({ error: 'Access denied' });
+    return;
+  }
+  if (rejectIfNotOwnerOrGuest(req, res)) return;
+
   const sql = getDb();
 
   // Service connectivity (parallel)

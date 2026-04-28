@@ -7,6 +7,7 @@ import { mockRequest, mockResponse } from '../helpers';
 
 vi.mock('../../_lib/api-helpers.js', () => ({
   checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+  rejectIfNotOwner: vi.fn(() => false),
 }));
 
 vi.mock('../../_lib/logger.js', () => ({
@@ -14,7 +15,7 @@ vi.mock('../../_lib/logger.js', () => ({
 }));
 
 import handler from '../../ml/trigger-analyze.js';
-import { checkBot } from '../../_lib/api-helpers.js';
+import { checkBot, rejectIfNotOwner } from '../../_lib/api-helpers.js';
 import logger from '../../_lib/logger.js';
 
 // ── Tests ─────────────────────────────────────────────────────
@@ -26,6 +27,7 @@ describe('POST /api/ml/trigger-analyze', () => {
     process.env = { ...originalEnv };
     vi.resetAllMocks();
     vi.mocked(checkBot).mockResolvedValue({ isBot: false });
+    vi.mocked(rejectIfNotOwner).mockReturnValue(false);
   });
 
   afterEach(() => {
@@ -59,6 +61,21 @@ describe('POST /api/ml/trigger-analyze', () => {
     await handler(mockRequest({ method: 'POST' }), res);
     expect(res._status).toBe(403);
     expect(res._json).toEqual({ error: 'Access denied' });
+  });
+
+  it('returns 401 when caller is not the owner', async () => {
+    vi.mocked(rejectIfNotOwner).mockImplementationOnce((_req, res) => {
+      res.status(401).json({ error: 'Not authenticated' });
+      return true;
+    });
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'POST' }), res);
+
+    expect(res._status).toBe(401);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('returns 500 when CRON_SECRET is not set', async () => {

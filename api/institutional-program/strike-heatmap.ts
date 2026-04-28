@@ -19,6 +19,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { checkBot } from '../_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest } from '../_lib/guest-auth.js';
 import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 
@@ -34,9 +35,11 @@ interface StrikeCell {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (!(await checkBot(req))) {
-    return res.status(403).json({ error: 'bot check failed' });
+  const botCheck = await checkBot(req);
+  if (botCheck.isBot) {
+    return res.status(403).json({ error: 'Access denied' });
   }
+  if (rejectIfNotOwnerOrGuest(req, res)) return;
 
   const daysRaw = Number.parseInt(String(req.query.days ?? '60'), 10);
   const days = Math.min(

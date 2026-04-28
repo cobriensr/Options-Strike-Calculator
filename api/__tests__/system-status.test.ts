@@ -16,7 +16,17 @@ vi.mock('../_lib/schwab.js', () => ({
   getAccessToken: (...args: unknown[]) => mockGetAccessToken(...args),
 }));
 
+vi.mock('../_lib/api-helpers.js', () => ({
+  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+}));
+
+vi.mock('../_lib/guest-auth.js', () => ({
+  rejectIfNotOwnerOrGuest: vi.fn(() => false),
+}));
+
 import handler from '../system-status.js';
+import { checkBot } from '../_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest } from '../_lib/guest-auth.js';
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -51,6 +61,32 @@ describe('GET /api/system-status', () => {
     mockDbFn.mockReset();
     mockPing.mockReset();
     mockGetAccessToken.mockReset();
+    vi.mocked(checkBot).mockResolvedValue({ isBot: false });
+    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+  });
+
+  it('returns 403 when bot check flags the request', async () => {
+    vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(403);
+    expect(res._json).toEqual({ error: 'Access denied' });
+    expect(mockDbFn).not.toHaveBeenCalled();
+  });
+
+  it('returns 401 when caller is neither owner nor guest', async () => {
+    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementationOnce((_req, res) => {
+      res.status(401).json({ error: 'Not authenticated' });
+      return true;
+    });
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(401);
+    expect(mockDbFn).not.toHaveBeenCalled();
   });
 
   it('returns 200 healthy with fresh data when all services are up', async () => {

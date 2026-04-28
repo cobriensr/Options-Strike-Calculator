@@ -32,6 +32,10 @@ vi.mock('../_lib/api-helpers.js', () => ({
   checkBot: mockCheckBot,
 }));
 
+vi.mock('../_lib/guest-auth.js', () => ({
+  rejectIfNotOwnerOrGuest: vi.fn(() => false),
+}));
+
 import handler from '../options-flow/top-strikes.js';
 
 // ── Fixtures ────────────────────────────────────────────────

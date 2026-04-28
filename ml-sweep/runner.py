@@ -26,6 +26,7 @@ import datetime
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -33,6 +34,16 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+# job_ids are server-generated UUID4 strings (see app.py /run handler).
+# Reject anything else at the path-construction boundary to prevent
+# `../`-style traversal through user-supplied /status/{job_id} or
+# /logs/{job_id} path params from reading arbitrary files on /data.
+_JOB_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def _is_valid_job_id(job_id: str) -> bool:
+    return bool(_JOB_ID_RE.match(job_id))
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +108,8 @@ def is_running() -> bool:
 
 
 def _job_dir(job_id: str) -> Path:
+    if not _is_valid_job_id(job_id):
+        raise ValueError(f"invalid job_id: {job_id!r}")
     return JOBS_ROOT / job_id
 
 
@@ -114,6 +127,8 @@ def _result_path(job_id: str) -> Path:
 
 def read_meta(job_id: str) -> dict[str, Any] | None:
     """Load the on-disk meta record for `job_id`, or None if missing."""
+    if not _is_valid_job_id(job_id):
+        return None
     p = _meta_path(job_id)
     if not p.is_file():
         return None
@@ -135,6 +150,8 @@ def _write_meta(job_id: str, meta: dict[str, Any]) -> None:
 
 def tail_log(job_id: str, lines: int = 100) -> str | None:
     """Return the last `lines` lines of the job's log file."""
+    if not _is_valid_job_id(job_id):
+        return None
     p = _log_path(job_id)
     if not p.is_file():
         return None

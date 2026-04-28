@@ -35,6 +35,7 @@ import { z } from 'zod';
 import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import { checkBot } from '../_lib/api-helpers.js';
+import { rejectIfNotOwnerOrGuest } from '../_lib/guest-auth.js';
 import logger from '../_lib/logger.js';
 import {
   rankStrikes,
@@ -252,6 +253,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (botCheck.isBot) {
       return res.status(403).json({ error: 'Access denied' });
     }
+    if (rejectIfNotOwnerOrGuest(req, res)) return;
 
     const parsed = querySchema.safeParse(req.query);
     if (!parsed.success) {
