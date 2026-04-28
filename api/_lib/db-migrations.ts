@@ -2678,4 +2678,77 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 98,
+    description:
+      'Add unique indexes + dedupe to 5 high-volume tables for cron ' +
+      'idempotency (2026-04-28 backend audit Phase 3). Vercel function ' +
+      'retries and `?force=1` re-runs were INSERTing without ON CONFLICT, ' +
+      'producing duplicate rows that corrupt downstream detectors. Each ' +
+      'table is deduped on the natural key (keeping MIN(id) per group) ' +
+      'before the unique index is created — duplicates would otherwise ' +
+      'block CREATE UNIQUE INDEX. Tables: strike_iv_snapshots, ' +
+      'gamma_squeeze_events, iv_anomalies (key: ticker, strike, side, ' +
+      'expiry, ts); strike_trade_volume (key: ticker, strike, side, ts); ' +
+      'zero_gamma_levels (key: ticker, ts). Pairs with ON CONFLICT DO ' +
+      'NOTHING clauses on the 5 cron handler INSERTs. See spec: ' +
+      'docs/superpowers/specs/backend-audit-fixes-2026-04-28.md.',
+    statements: (sql) => [
+      sql`
+        DELETE FROM strike_iv_snapshots
+        WHERE id NOT IN (
+          SELECT MIN(id) FROM strike_iv_snapshots
+          GROUP BY ticker, strike, side, expiry, ts
+        )
+      `,
+      sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS uniq_strike_iv_snapshots_key
+          ON strike_iv_snapshots (ticker, strike, side, expiry, ts)
+      `,
+      sql`
+        DELETE FROM gamma_squeeze_events
+        WHERE id NOT IN (
+          SELECT MIN(id) FROM gamma_squeeze_events
+          GROUP BY ticker, strike, side, expiry, ts
+        )
+      `,
+      sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS uniq_gamma_squeeze_events_key
+          ON gamma_squeeze_events (ticker, strike, side, expiry, ts)
+      `,
+      sql`
+        DELETE FROM iv_anomalies
+        WHERE id NOT IN (
+          SELECT MIN(id) FROM iv_anomalies
+          GROUP BY ticker, strike, side, expiry, ts
+        )
+      `,
+      sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS uniq_iv_anomalies_key
+          ON iv_anomalies (ticker, strike, side, expiry, ts)
+      `,
+      sql`
+        DELETE FROM strike_trade_volume
+        WHERE id NOT IN (
+          SELECT MIN(id) FROM strike_trade_volume
+          GROUP BY ticker, strike, side, ts
+        )
+      `,
+      sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS uniq_strike_trade_volume_key
+          ON strike_trade_volume (ticker, strike, side, ts)
+      `,
+      sql`
+        DELETE FROM zero_gamma_levels
+        WHERE id NOT IN (
+          SELECT MIN(id) FROM zero_gamma_levels
+          GROUP BY ticker, ts
+        )
+      `,
+      sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS uniq_zero_gamma_levels_key
+          ON zero_gamma_levels (ticker, ts)
+      `,
+    ],
+  },
 ];

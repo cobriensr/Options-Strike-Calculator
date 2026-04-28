@@ -212,6 +212,7 @@ async function processTicker(
       ${ticker}, ${snapshot.spot}, ${zeroGamma}, ${result.confidence},
       ${netGamma}, ${gammaCurveJson}::jsonb
     )
+    ON CONFLICT (ticker, ts) DO NOTHING
   `;
 
   logger.info(

@@ -477,6 +477,7 @@ async function insertRows(
           ${row.ivMid}, ${row.ivBid}, ${row.ivAsk},
           ${row.midPrice}, ${row.oi}, ${row.volume}
         )
+        ON CONFLICT (ticker, strike, side, expiry, ts) DO NOTHING
         RETURNING id
       `,
     ),
@@ -802,6 +803,7 @@ async function persistSqueezeFlags(
         ${f.vol_oi_15m}, ${f.vol_oi_15m_prior}, ${f.vol_oi_acceleration}, ${f.vol_oi_total},
         ${f.net_gamma_sign}, ${f.squeeze_phase}, ${contextJson}::jsonb
       )
+      ON CONFLICT (ticker, strike, side, expiry, ts) DO NOTHING
       RETURNING id
     `;
     if ((result as unknown[]).length > 0) inserted += 1;
@@ -897,6 +899,7 @@ async function runDetection(
         ${flag.flag_reasons}, ${flowPhase}, ${contextJson}::jsonb,
         ${flag.ts}
       )
+      ON CONFLICT (ticker, strike, side, expiry, ts) DO NOTHING
       RETURNING id
     `;
     if ((result as unknown[]).length > 0) inserted += 1;

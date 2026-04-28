@@ -179,6 +179,7 @@ async function insertRows(
           ${row.ticker}, ${row.strike}, ${row.side}, ${row.ts},
           ${row.bidSideVol}, ${row.askSideVol}, ${row.midVol}, ${row.totalVol}
         )
+        ON CONFLICT (ticker, strike, side, ts) DO NOTHING
         RETURNING id
       `,
     ),
