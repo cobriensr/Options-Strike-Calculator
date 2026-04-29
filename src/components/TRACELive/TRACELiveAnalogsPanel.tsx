@@ -18,20 +18,66 @@ import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
 import Collapsible from '../ChartAnalysis/Collapsible';
 import { getErrorMessage } from '../../utils/error';
+import { Tooltip } from '../ui';
 import type {
   TraceLiveAnalog,
   TraceLiveAnalogsResponse,
   TraceLiveDetail,
 } from './types';
 
+const HEADER_TIPS = {
+  time: (
+    <>
+      <strong>Historical match timestamp.</strong> The matching engine looks for
+      past moments with similar gamma/charm/spot conditions to right now. Times
+      are CT.
+    </>
+  ),
+  spot: <strong>SPX spot at the matched moment.</strong>,
+  regime: (
+    <>
+      <strong>Gamma regime label at the matched moment.</strong> &quot;Trending
+      negative gamma&quot; = dealers short gamma + spot trending = move
+      acceleration.
+    </>
+  ),
+  predClose: (
+    <>
+      <strong>
+        Naive close prediction = spot at matched time + recent drift.
+      </strong>{' '}
+      Baseline for comparing to actual.
+    </>
+  ),
+  actual: (
+    <>
+      <strong>The actual session close on the matched day.</strong> Compare to
+      Pred close to see how the day resolved.
+    </>
+  ),
+  delta: (
+    <>
+      <strong>Actual minus Pred close, in points.</strong> Green = market closed
+      higher than the naive forecast; red = lower. Magnitude tells you how much
+      the late-session moved against the matched setup.
+    </>
+  ),
+  distance: (
+    <>
+      <strong>Feature-space distance to the current setup.</strong> Lower =
+      closer match. Below 0.04 is tight; above 0.10 starts being a stretch.
+    </>
+  ),
+};
+
 interface Props {
   readonly detail: TraceLiveDetail | null;
 }
 
-function formatEtTime(iso: string): string {
+function formatCtTime(iso: string): string {
   try {
     return new Date(iso).toLocaleString('en-US', {
-      timeZone: 'America/New_York',
+      timeZone: 'America/Chicago',
       month: 'short',
       day: '2-digit',
       hour: 'numeric',
@@ -75,13 +121,41 @@ function AnalogsTable({ analogs }: Readonly<{ analogs: TraceLiveAnalog[] }>) {
       <table className="w-full font-mono text-[11px]">
         <thead>
           <tr className="text-muted border-edge border-b text-left">
-            <th className="px-2 py-1 font-semibold">Time (ET)</th>
-            <th className="px-2 py-1 text-right font-semibold">Spot</th>
-            <th className="px-2 py-1 font-semibold">Regime</th>
-            <th className="px-2 py-1 text-right font-semibold">Pred close</th>
-            <th className="px-2 py-1 text-right font-semibold">Actual</th>
-            <th className="px-2 py-1 text-right font-semibold">Δ</th>
-            <th className="px-2 py-1 text-right font-semibold">Distance</th>
+            <th className="px-2 py-1 font-semibold">
+              <Tooltip content={HEADER_TIPS.time}>
+                <span className="cursor-help">Time (CT)</span>
+              </Tooltip>
+            </th>
+            <th className="px-2 py-1 text-right font-semibold">
+              <Tooltip content={HEADER_TIPS.spot}>
+                <span className="cursor-help">Spot</span>
+              </Tooltip>
+            </th>
+            <th className="px-2 py-1 font-semibold">
+              <Tooltip content={HEADER_TIPS.regime}>
+                <span className="cursor-help">Regime</span>
+              </Tooltip>
+            </th>
+            <th className="px-2 py-1 text-right font-semibold">
+              <Tooltip content={HEADER_TIPS.predClose}>
+                <span className="cursor-help">Pred close</span>
+              </Tooltip>
+            </th>
+            <th className="px-2 py-1 text-right font-semibold">
+              <Tooltip content={HEADER_TIPS.actual}>
+                <span className="cursor-help">Actual</span>
+              </Tooltip>
+            </th>
+            <th className="px-2 py-1 text-right font-semibold">
+              <Tooltip content={HEADER_TIPS.delta}>
+                <span className="cursor-help">Δ</span>
+              </Tooltip>
+            </th>
+            <th className="px-2 py-1 text-right font-semibold">
+              <Tooltip content={HEADER_TIPS.distance}>
+                <span className="cursor-help">Distance</span>
+              </Tooltip>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -90,7 +164,7 @@ function AnalogsTable({ analogs }: Readonly<{ analogs: TraceLiveAnalog[] }>) {
             return (
               <tr key={a.id} className="border-edge/60 border-b last:border-0">
                 <td className="text-secondary px-2 py-1 whitespace-nowrap">
-                  {formatEtTime(a.capturedAt)}
+                  {formatCtTime(a.capturedAt)}
                 </td>
                 <td className="text-tertiary px-2 py-1 text-right">
                   {formatNum(a.spot)}

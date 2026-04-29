@@ -27,9 +27,24 @@
 import { memo, useState } from 'react';
 import { useZeroGamma } from '../../hooks/useZeroGamma';
 import { TickerCard } from './TickerCard';
-import { SectionBox } from '../ui';
+import { SectionBox, Tooltip } from '../ui';
 import { DateInput } from '../ui/DateInput';
 import { getETToday } from '../../utils/timezone';
+
+const ZG_DATE_TIP = (
+  <>
+    <strong>Replay any past trading day.</strong> Picking a past date freezes
+    polling and shows that day's zero-gamma snapshot history for all four
+    tickers.
+  </>
+);
+
+const ZG_LIVE_TIP = (
+  <>
+    <strong>Resume real-time polling.</strong> Snaps the date back to today and
+    re-enables the per-ticker polling lifecycle.
+  </>
+);
 
 const TICKERS = ['SPX', 'NDX', 'SPY', 'QQQ'] as const;
 
@@ -50,21 +65,27 @@ function ZeroGammaPanelInner({ marketOpen }: ZeroGammaPanelProps) {
   const headerRight = (
     <div className="flex items-center gap-2">
       {!isLive && (
-        <button
-          type="button"
-          onClick={() => setSelectedDate(today)}
-          className="text-secondary hover:text-primary border-edge cursor-pointer rounded border bg-transparent px-2 py-0.5 font-mono text-[10px]"
-        >
-          LIVE
-        </button>
+        <Tooltip content={ZG_LIVE_TIP}>
+          <button
+            type="button"
+            onClick={() => setSelectedDate(today)}
+            className="text-secondary hover:text-primary border-edge cursor-pointer rounded border bg-transparent px-2 py-0.5 font-mono text-[10px]"
+          >
+            LIVE
+          </button>
+        </Tooltip>
       )}
-      <DateInput
-        value={selectedDate}
-        onChange={setSelectedDate}
-        label="Zero gamma date"
-        labelVisible={false}
-        className="text-secondary border-edge rounded border bg-transparent px-1.5 py-0.5 font-mono text-[10px]"
-      />
+      <Tooltip content={ZG_DATE_TIP}>
+        <span className="inline-flex">
+          <DateInput
+            value={selectedDate}
+            onChange={setSelectedDate}
+            label="Zero gamma date"
+            labelVisible={false}
+            className="text-secondary border-edge rounded border bg-transparent px-1.5 py-0.5 font-mono text-[10px]"
+          />
+        </span>
+      </Tooltip>
     </div>
   );
 

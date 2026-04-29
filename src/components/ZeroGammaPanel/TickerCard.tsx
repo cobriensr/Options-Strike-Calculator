@@ -10,9 +10,58 @@
  * doesn't hide the level (per the no-gating decision) — it just dims it.
  */
 
-import { memo } from 'react';
+import { memo, type ReactNode } from 'react';
 import type { ZeroGammaRow } from '../../hooks/useZeroGamma';
 import { Sparkline } from './Sparkline';
+import { Tooltip } from '../ui';
+
+const SPOT_TIP = <strong>Current index level.</strong>;
+
+const ZG_TIP = (
+  <>
+    <strong>Zero-gamma — the strike where dealer net gamma flips sign.</strong>{' '}
+    Above ZG: dealers are long gamma → they suppress moves (mean-reverting).
+    Below ZG: dealers are short gamma → they amplify moves (trending).
+  </>
+);
+
+const DISTANCE_TIP = (
+  <>
+    <strong>Spot's distance from zero-gamma in points and percent.</strong>{' '}
+    Larger magnitude = more room before regime flips. Regime changes near ZG are
+    typically loud.
+  </>
+);
+
+const REGIME_TIPS: Record<
+  'SUPPRESSION' | 'ACCELERATION' | 'KNIFE EDGE' | 'NO FLIP',
+  ReactNode
+> = {
+  SUPPRESSION: (
+    <>
+      <strong>Spot is above zero-gamma.</strong> Expect mean-reverting price
+      action, tighter ranges, pin-toward-strikes behavior.
+    </>
+  ),
+  ACCELERATION: (
+    <>
+      <strong>Spot is below zero-gamma.</strong> Expect trending moves;
+      volatility events compound rather than fade.
+    </>
+  ),
+  'KNIFE EDGE': (
+    <>
+      <strong>Spot is within ±0.3% of zero-gamma.</strong> Regime can flip
+      rapidly — &quot;the eye of the storm.&quot;
+    </>
+  ),
+  'NO FLIP': (
+    <>
+      <strong>Net dealer gamma doesn't cross zero in this strike range.</strong>{' '}
+      No regime label applicable today.
+    </>
+  ),
+};
 
 interface TickerCardProps {
   ticker: string;
@@ -132,17 +181,21 @@ function TickerCardInner({
 
       <div className="grid grid-cols-2 gap-2">
         <div>
-          <div className="text-secondary font-sans text-[10px] tracking-wide uppercase">
-            Spot
-          </div>
+          <Tooltip content={SPOT_TIP}>
+            <span className="text-secondary cursor-help font-sans text-[10px] tracking-wide uppercase">
+              Spot
+            </span>
+          </Tooltip>
           <div className="text-primary font-mono text-base">
             {fmtNumber(spot, priceDigits)}
           </div>
         </div>
         <div>
-          <div className="text-secondary font-sans text-[10px] tracking-wide uppercase">
-            Zero Gamma
-          </div>
+          <Tooltip content={ZG_TIP}>
+            <span className="text-secondary cursor-help font-sans text-[10px] tracking-wide uppercase">
+              Zero Gamma
+            </span>
+          </Tooltip>
           <div
             className="text-primary font-mono text-base"
             style={
@@ -157,16 +210,20 @@ function TickerCardInner({
       </div>
 
       <div className="flex items-baseline justify-between">
-        <span
-          className={`font-sans text-xs font-semibold ${regime.colorClass}`}
-        >
-          {regime.label}
-        </span>
-        <span className="text-secondary font-mono text-[11px]">
-          {distance == null
-            ? '—'
-            : `${distance.pts >= 0 ? '+' : ''}${fmtNumber(distance.pts, priceDigits)} (${distance.pct >= 0 ? '+' : ''}${distance.pct.toFixed(2)}%)`}
-        </span>
+        <Tooltip content={REGIME_TIPS[regime.label]}>
+          <span
+            className={`cursor-help font-sans text-xs font-semibold ${regime.colorClass}`}
+          >
+            {regime.label}
+          </span>
+        </Tooltip>
+        <Tooltip content={DISTANCE_TIP}>
+          <span className="text-secondary cursor-help font-mono text-[11px]">
+            {distance == null
+              ? '—'
+              : `${distance.pts >= 0 ? '+' : ''}${fmtNumber(distance.pts, priceDigits)} (${distance.pct >= 0 ? '+' : ''}${distance.pct.toFixed(2)}%)`}
+          </span>
+        </Tooltip>
       </div>
 
       <Sparkline history={sortedHistory} priceDigits={priceDigits} />
