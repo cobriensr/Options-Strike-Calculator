@@ -175,12 +175,12 @@ For SPX/SPY/QQQ/NDX/NDXP this is dense (every minute populated). For thinner tic
 
 A 0DTE buyer wins if the underlying touches the strike in their favor at any point during the session. A 0DTE seller wins if the underlying never touches the strike against them.
 
-| Trade type (option_type, side) | Win condition |
-| --- | --- |
-| call, ask (aggressive **buy**) | `max(underlying_price between print_time and 15:00 CT) >= strike` |
-| put, ask (aggressive **buy**) | `min(underlying_price between print_time and 15:00 CT) <= strike` |
-| call, bid (aggressive **sell**) | `max(underlying_price between print_time and 15:00 CT) < strike` |
-| put, bid (aggressive **sell**) | `min(underlying_price between print_time and 15:00 CT) > strike` |
+| Trade type (option_type, side)  | Win condition                                                     |
+| ------------------------------- | ----------------------------------------------------------------- |
+| call, ask (aggressive **buy**)  | `max(underlying_price between print_time and 15:00 CT) >= strike` |
+| put, ask (aggressive **buy**)   | `min(underlying_price between print_time and 15:00 CT) <= strike` |
+| call, bid (aggressive **sell**) | `max(underlying_price between print_time and 15:00 CT) < strike`  |
+| put, bid (aggressive **sell**)  | `min(underlying_price between print_time and 15:00 CT) > strike`  |
 
 A trade that touches ITM at 14:55 is just as much a win as one that touches at 09:31 — the 0DTE buyer could have liquidated in either case.
 
@@ -318,14 +318,14 @@ Each adds a dimension that may improve detection precision but isn't free to wir
 
 A print earns 1 point per criterion satisfied. Default `min_score=4` for `find_outliers`. Weights are tunable; this is the v1 scheme.
 
-| Criterion | Test | Captures |
-| --- | --- | --- |
-| Premium ≥ $1M | `premium >= 1_000_000` | Capital committed |
-| Premium ≥ $5M | `premium >= 5_000_000` | Whale-level conviction |
-| 0DTE | `expiry == executed_at::date` | High-conviction timing |
-| Aggressive sweep | `report_flags` contains `intermarket_sweep` | Time-sensitive urgency |
-| Outside NBBO | `price > nbbo_ask OR price < nbbo_bid` | Paid through the spread |
-| Volume spike | `size >= 5σ` vs that contract's prior-bar baseline | Statistical anomaly |
+| Criterion                 | Test                                                 | Captures                    |
+| ------------------------- | ---------------------------------------------------- | --------------------------- |
+| Premium ≥ $1M             | `premium >= 1_000_000`                               | Capital committed           |
+| Premium ≥ $5M             | `premium >= 5_000_000`                               | Whale-level conviction      |
+| 0DTE                      | `expiry == executed_at::date`                        | High-conviction timing      |
+| Aggressive sweep          | `report_flags` contains `intermarket_sweep`          | Time-sensitive urgency      |
+| Outside NBBO              | `price > nbbo_ask OR price < nbbo_bid`               | Paid through the spread     |
+| Volume spike              | `size >= 5σ` vs that contract's prior-bar baseline   | Statistical anomaly         |
 | Delta-weighted size large | `abs(size × delta × 100 × underlying_price) >= $10M` | Mechanical hedging pressure |
 
 **Forward-return windows (Phase 4):** 5, 15, 30, 60 minutes (and EOD).
