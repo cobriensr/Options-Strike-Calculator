@@ -2,7 +2,7 @@
  * POST /api/trace-live-analyze
  *
  * Live, intra-session TRACE chart analysis. The frontend (TRACE Live
- * dashboard, fired every 5–10 minutes) sends the latest gamma + charm +
+ * dashboard, fired every 15 minutes) sends the latest gamma + charm +
  * delta heatmap captures plus the structured GEX landscape from the
  * existing 1-min cron pipeline. Claude returns a TraceAnalysis JSON
  * object with regime, override read, predicted close, confidence, and
@@ -68,8 +68,9 @@ const anthropic = new Anthropic({
 });
 
 // Sonnet 4.6 keeps per-tick cost in check — the dashboard fires every
-// 5–10 min during the session (~30–60× per day). Promote to
-// 'claude-opus-4-7' here when we want the upgrade and can absorb the cost.
+// 15 min during the session (~25× per day, ~$15/day at current spend).
+// Promote to 'claude-opus-4-7' here when we want the upgrade and can
+// absorb the cost.
 const PRIMARY_MODEL = 'claude-sonnet-4-6';
 
 interface CallResult {
@@ -126,8 +127,10 @@ async function callModel(
     // gamma.signAtSpot reads (called pale where the chart was clearly deep
     // blue / positive_strong) — gamma sign is the load-bearing field for
     // every downstream trade decision, so the latency cost of 'high' is
-    // worth the perception accuracy. 10-min cadence (vs 5-min) absorbs the
-    // longer per-call duration without backing up.
+    // worth the perception accuracy. 15-min cadence (raised from 10-min on
+    // 2026-04-28) absorbs the long-tail duration — average longest response
+    // is ~520s, so 10-min ticks were skipping ~19% of the time via the
+    // daemon's in-flight guard, producing visible 20–30 min UI gaps.
     output_config: { effort: 'high' },
     system: [
       {
@@ -189,8 +192,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const rejected = await guardOwnerEndpoint(req, res, done);
   if (rejected) return;
 
-  // Rate limit: 6/min — covers a normal 10-min cadence with manual-retry
-  // headroom. Higher than /api/analyze (3/min) since this call is cheaper.
+  // Rate limit: 6/min — wildly above the 15-min cadence baseline; the
+  // headroom is for manual retries and ad-hoc reruns. Higher than
+  // /api/analyze (3/min) since this call is cheaper.
   const rateLimited = await rejectIfRateLimited(
     req,
     res,

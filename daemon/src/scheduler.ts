@@ -242,8 +242,8 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
 
     if (!bypassMarketHoursGate && !state.marketHours.inWindow) {
       state.totals.skippedOutOfWindow++;
-      // Quiet outside window — log every 12th skip (~hourly at 5-min cadence).
-      if (consecutiveSkips % 12 === 0) {
+      // Quiet outside window — log every 4th skip (~hourly at 15-min cadence).
+      if (consecutiveSkips % 4 === 0) {
         logger.info(
           {
             etDate: state.marketHours.etDate,

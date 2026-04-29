@@ -19,7 +19,7 @@
 // Optional env vars:
 //   SENTRY_DSN                 — error capture
 //   LOG_LEVEL                  — pino level, default 'info'
-//   CADENCE_SECONDS            — override 5-min default (testing only; ≥10s)
+//   CADENCE_SECONDS            — override 15-min default (testing only; ≥10s)
 //   BYPASS_MARKET_HOURS_GATE   — '1' to fire regardless of weekday/holiday/window
 
 type RequiredKey =
@@ -66,10 +66,10 @@ export function loadConfig(): DaemonConfig {
   const cadenceSecondsRaw = optionalEnv('CADENCE_SECONDS');
   const cadenceSeconds = cadenceSecondsRaw
     ? Number.parseInt(cadenceSecondsRaw, 10)
-    : 10 * 60;
+    : 15 * 60;
   if (!Number.isFinite(cadenceSeconds) || cadenceSeconds < 10) {
     throw new Error(
-      `CADENCE_SECONDS must be a positive integer ≥10 (got ${cadenceSecondsRaw}). The 10-min default is 600; lower values blow through the browserless 20k-units-per-month budget on the Prototyping tier.`,
+      `CADENCE_SECONDS must be a positive integer ≥10 (got ${cadenceSecondsRaw}). The 15-min default is 900; raised from 10 min on 2026-04-28 because effort:'high' Sonnet 4.6 calls average ~520s and a 10-min cadence skipped ~19% of ticks via the in-flight guard.`,
     );
   }
 
