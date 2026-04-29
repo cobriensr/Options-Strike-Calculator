@@ -1098,13 +1098,13 @@ describe('formatPriorDayFlowForClaude', () => {
 
   // Helpers to build realistic flow rows with created_at timestamps
   const row = (
-    ticker: string,
+    source: string,
     ncp: number,
     npp: number,
     date: string,
     utcHour: number,
   ) => ({
-    ticker,
+    source,
     ncp,
     npp,
     date,
@@ -1236,7 +1236,7 @@ describe('formatPriorDayFlowForClaude', () => {
     ];
     const secRows = [
       {
-        ticker: 'spx_flow',
+        source: 'spx_flow',
         ncp: -220000000,
         npp: -80000000,
         date: '2026-04-09',
@@ -1325,7 +1325,7 @@ describe('formatPriorDayFlowForClaude', () => {
     ];
     const secRows = [
       {
-        ticker: 'spx_flow',
+        source: 'spx_flow',
         ncp: -500000000, // bullish (ncp < npp)
         npp: -100000000,
         date: '2026-04-09',

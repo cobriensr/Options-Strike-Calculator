@@ -55,7 +55,7 @@ const MIDDAY_UTC_HOUR = 17;
 interface FlowRow {
   ncp: number;
   npp: number;
-  ticker: string;
+  source: string;
   date: string;
   created_at: string | Date;
 }
@@ -395,7 +395,7 @@ export async function formatPriorDayFlowForClaude(
   const dateRows = await sql`
     SELECT DISTINCT date
     FROM flow_data
-    WHERE ticker = 'market_tide'
+    WHERE source = 'market_tide'
       AND date < ${currentDate}
     ORDER BY date DESC
     LIMIT 2
@@ -408,10 +408,10 @@ export async function formatPriorDayFlowForClaude(
   const dayData: DayFlowData[] = await Promise.all(
     priorDates.map(async (date) => {
       const tideRows = (await sql`
-        SELECT ncp, npp, ticker, date, created_at
+        SELECT ncp, npp, source, date, created_at
         FROM flow_data
         WHERE date = ${date}
-          AND ticker = 'market_tide'
+          AND source = 'market_tide'
         ORDER BY created_at ASC
       `) as FlowRow[];
 
@@ -424,20 +424,20 @@ export async function formatPriorDayFlowForClaude(
       }
 
       const secRows = (await sql`
-        SELECT DISTINCT ON (ticker) ticker, ncp, npp, date, created_at
+        SELECT DISTINCT ON (source) source, ncp, npp, date, created_at
         FROM flow_data
         WHERE date = ${date}
-          AND ticker = ANY(${SECONDARY_FLOW_SOURCES as unknown as string[]})
-        ORDER BY ticker, created_at DESC
+          AND source = ANY(${SECONDARY_FLOW_SOURCES as unknown as string[]})
+        ORDER BY source, created_at DESC
       `) as FlowRow[];
 
       const secondarySources: Partial<Record<SecondaryFlowSource, FlowRow>> =
         {};
       for (const row of secRows) {
         if (
-          SECONDARY_FLOW_SOURCES.includes(row.ticker as SecondaryFlowSource)
+          SECONDARY_FLOW_SOURCES.includes(row.source as SecondaryFlowSource)
         ) {
-          secondarySources[row.ticker as SecondaryFlowSource] = row;
+          secondarySources[row.source as SecondaryFlowSource] = row;
         }
       }
 
