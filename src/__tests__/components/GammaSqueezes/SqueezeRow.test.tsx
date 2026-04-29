@@ -89,4 +89,30 @@ describe('SqueezeRow', () => {
       expect.stringContaining('Dealers net SHORT gamma'),
     );
   });
+
+  it('deep-links the contract label to the Unusual Whales option-chain page', () => {
+    render(
+      <SqueezeRow
+        squeeze={makeActive({
+          ticker: 'NVDA',
+          strike: 212.5,
+          side: 'call',
+          expiry: '2026-04-28',
+        })}
+      />,
+    );
+    const link = screen.getByRole('link', { name: /Open NVDA 212\.5C/ });
+    expect(link).toHaveAttribute(
+      'href',
+      'https://unusualwhales.com/option-chain/NVDA260428C00212500',
+    );
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
+  it('falls back to plain-text label when the expiry is malformed', () => {
+    render(<SqueezeRow squeeze={makeActive({ expiry: 'not-a-date' })} />);
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+    expect(screen.getByText(/NVDA 212\.5C/)).toBeInTheDocument();
+  });
 });

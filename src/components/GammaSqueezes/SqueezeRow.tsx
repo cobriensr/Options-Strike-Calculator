@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import type { ActiveSqueeze } from './types';
+import type { ActiveSqueeze, GammaSqueezeSide } from './types';
 
 function fmtSignedPct(x: number, digits = 2): string {
   if (!Number.isFinite(x)) return '—';
@@ -61,6 +61,14 @@ export function SqueezeRow({ squeeze }: { readonly squeeze: ActiveSqueeze }) {
       : 'bg-zinc-500/20 text-zinc-400';
 
   const directionArrow = isCall ? '↑' : '↓';
+  const sideChar = isCall ? 'C' : 'P';
+  const contractLabel = `${squeeze.ticker} ${latest.strike}${sideChar}`;
+  const occSymbol = buildOccSymbol(
+    squeeze.ticker,
+    squeeze.expiry,
+    latest.side,
+    latest.strike,
+  );
 
   return (
     <div
@@ -69,8 +77,21 @@ export function SqueezeRow({ squeeze }: { readonly squeeze: ActiveSqueeze }) {
       data-stale={isStale ? 'true' : undefined}
     >
       <span className="text-primary font-mono text-xs font-semibold">
-        {directionArrow} {squeeze.ticker} {latest.strike}
-        {isCall ? 'C' : 'P'}
+        {directionArrow}{' '}
+        {occSymbol ? (
+          <a
+            href={`https://unusualwhales.com/option-chain/${encodeURIComponent(occSymbol)}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hover:underline"
+            title={`View ${occSymbol} on Unusual Whales`}
+            aria-label={`Open ${contractLabel} on Unusual Whales (opens in new tab)`}
+          >
+            {contractLabel}
+          </a>
+        ) : (
+          contractLabel
+        )}
       </span>
 
       <span className="text-muted font-mono text-[10px]">{squeeze.expiry}</span>
@@ -152,4 +173,27 @@ export function SqueezeRow({ squeeze }: { readonly squeeze: ActiveSqueeze }) {
       </span>
     </div>
   );
+}
+
+/**
+ * OCC option symbol for deep-linking the contract row into the
+ * Unusual Whales option-chain page. Returns null on a malformed
+ * expiry so the caller falls back to plain text rather than render
+ * a broken URL. Mirrors the helper in IVAnomalies/AnomalyRow.tsx.
+ */
+function buildOccSymbol(
+  ticker: string,
+  expiry: string,
+  side: GammaSqueezeSide,
+  strike: number,
+): string | null {
+  const m = expiry.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const yy = m[1]!.slice(2);
+  const mm = m[2]!;
+  const dd = m[3]!;
+  const sideChar = side === 'call' ? 'C' : 'P';
+  const strikeMills = Math.round(strike * 1000);
+  if (!Number.isFinite(strikeMills) || strikeMills <= 0) return null;
+  return `${ticker}${yy}${mm}${dd}${sideChar}${strikeMills.toString().padStart(8, '0')}`;
 }
