@@ -79,6 +79,8 @@ function uwSymbol(ticker: StrikeIVTicker): string {
       return 'SPX';
     case 'NDXP':
       return 'NDX';
+    case 'RUTW':
+      return 'RUT';
     case 'SPY':
     case 'QQQ':
     case 'IWM':
@@ -88,6 +90,8 @@ function uwSymbol(ticker: StrikeIVTicker): string {
     case 'META':
     case 'MSFT':
     case 'GOOGL':
+    case 'NFLX':
+    case 'TSM':
     case 'SNDK':
     case 'MSTR':
     case 'MU':

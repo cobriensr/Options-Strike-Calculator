@@ -16,6 +16,7 @@ import {
 } from './_lib/api-helpers.js';
 import { gammaSqueezesQuerySchema } from './_lib/validation.js';
 import { STRIKE_IV_TICKERS, type StrikeIVTicker } from './_lib/constants.js';
+import { computePathShape, getLatestSpotsByTicker } from './_lib/path-shape.js';
 
 const TICKERS = STRIKE_IV_TICKERS;
 type Ticker = StrikeIVTicker;
@@ -40,6 +41,23 @@ export interface GammaSqueezeRow {
   reachedStrike: boolean | null;
   spotAtClose: number | null;
   maxCallPnlPct: number | null;
+  /**
+   * Path-shape diagnostic — minutes since detection. Live = now − ts;
+   * replay (`?at=`) = at − ts. Always ≥ 0.
+   */
+  freshnessMin: number;
+  /**
+   * Signed progress from `spotAtDetect` toward `strike` in trade direction.
+   * 0 = no movement, 1 = reached strike. Null when current spot is unknown
+   * or strike == spotAtDetect.
+   */
+  progressPct: number | null;
+  /**
+   * True when freshness > 30 min AND |progressPct| < 0.25. Suppresses
+   * lottery-ticket alerts that haven't moved toward target. Computed
+   * each request — read-only.
+   */
+  isStale: boolean;
 }
 
 export interface GammaSqueezesResponse {
@@ -130,7 +148,40 @@ function mapSqueeze(r: RawSqueezeRow): GammaSqueezeRow {
     spotAtClose: parseNumOrNull(r.spot_at_close),
     reachedStrike: r.reached_strike,
     maxCallPnlPct: parseNumOrNull(r.max_call_pnl_pct),
+    // Filled in by attachPathShape after rows load.
+    freshnessMin: 0,
+    progressPct: null,
+    isStale: false,
   };
+}
+
+async function attachPathShape(
+  rowsByTicker: Map<string, GammaSqueezeRow[]>,
+  at: Date | null,
+): Promise<void> {
+  const tickers = [...rowsByTicker.keys()].filter(
+    (t) => (rowsByTicker.get(t)?.length ?? 0) > 0,
+  );
+  if (tickers.length === 0) return;
+  const spots = await getLatestSpotsByTicker(tickers, at);
+  const nowMs = at ? at.getTime() : Date.now();
+  for (const [ticker, rows] of rowsByTicker) {
+    const currentSpot = spots.get(ticker) ?? null;
+    for (const r of rows) {
+      const tsMs = Date.parse(r.ts);
+      if (!Number.isFinite(tsMs)) continue;
+      const ps = computePathShape(
+        tsMs,
+        r.spotAtDetect,
+        r.strike,
+        currentSpot,
+        nowMs,
+      );
+      r.freshnessMin = ps.freshnessMin;
+      r.progressPct = ps.progressPct;
+      r.isStale = ps.isStale;
+    }
+  }
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -210,9 +261,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         TICKERS.map((t) => [t, [] as GammaSqueezeRow[]]),
       ) as unknown as Record<Ticker, GammaSqueezeRow[]>;
 
+      const rowsByTicker = new Map<string, GammaSqueezeRow[]>();
       for (const { ticker: t, rows } of bundles) {
         history[t] = rows;
         latest[t] = rows[0] ?? null;
+        rowsByTicker.set(t, rows);
+      }
+
+      // One DB query (lateral-joined), mutates rows in place.
+      // Failure here MUST NOT 500: enrichment, not core data.
+      try {
+        await attachPathShape(rowsByTicker, atDate);
+      } catch (err) {
+        Sentry.captureException(err);
+        logger.warn({ err }, 'gamma-squeezes: path-shape attachment failed');
       }
 
       const response: GammaSqueezesResponse = { mode: 'list', latest, history };

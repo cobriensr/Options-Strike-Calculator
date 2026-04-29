@@ -193,10 +193,12 @@ describe('GET /api/iv-anomalies', () => {
 
   it('returns empty-keyed list payload when no rows exist', async () => {
     // List mode fires one query per ticker in STRIKE_IV_TICKERS (13 total
-    // after the 2026-04-28 GOOGL addition: 14 tickers) — all return [].
-    for (let i = 0; i < 14; i += 1) {
+    // (after 2026-04-29 outlier-driven additions: 17 tickers) — all return [].
+    // Plus one extra mock for the path-shape spot lookup at the end.
+    for (let i = 0; i < 17; i += 1) {
       mockSql.mockResolvedValueOnce([]);
     }
+    mockSql.mockResolvedValueOnce([]); // path-shape spot lookup (no rows → no spots)
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
@@ -209,9 +211,10 @@ describe('GET /api/iv-anomalies', () => {
     };
     expect(body.mode).toBe('list');
     for (const t of [
+      'SPY',
       'SPXW',
       'NDXP',
-      'SPY',
+      'RUTW',
       'QQQ',
       'IWM',
       'SMH',
@@ -220,6 +223,8 @@ describe('GET /api/iv-anomalies', () => {
       'META',
       'MSFT',
       'GOOGL',
+      'NFLX',
+      'TSM',
       'SNDK',
       'MSTR',
       'MU',
@@ -230,14 +235,10 @@ describe('GET /api/iv-anomalies', () => {
   });
 
   it('returns latest + history grouped by ticker on happy path', async () => {
-    // Query order: STRIKE_IV_TICKERS = SPXW, NDXP, SPY, QQQ, IWM, SMH,
-    // NVDA, TSLA, META, MSFT, SNDK, MSTR, MU.
+    // Query order: STRIKE_IV_TICKERS (17 tickers) — SPY first per
+    // 2026-04-29 outlier study, then SPXW NDXP RUTW QQQ IWM SMH …
+    // Plus one path-shape spot lookup at the end.
     mockSql
-      .mockResolvedValueOnce([
-        makeAnomalyRow({ id: 1, ticker: 'SPXW', ts: '2026-04-23T15:30:00Z' }),
-        makeAnomalyRow({ id: 2, ticker: 'SPXW', ts: '2026-04-23T15:25:00Z' }),
-      ])
-      .mockResolvedValueOnce([]) // NDXP empty
       .mockResolvedValueOnce([
         makeAnomalyRow({
           id: 3,
@@ -246,17 +247,32 @@ describe('GET /api/iv-anomalies', () => {
           ts: '2026-04-23T15:28:00Z',
         }),
       ])
-      .mockResolvedValueOnce([]) // QQQ empty
-      .mockResolvedValueOnce([]) // IWM empty
-      .mockResolvedValueOnce([]) // SMH empty
-      .mockResolvedValueOnce([]) // NVDA empty
-      .mockResolvedValueOnce([]) // TSLA empty
-      .mockResolvedValueOnce([]) // META empty
-      .mockResolvedValueOnce([]) // MSFT empty
-      .mockResolvedValueOnce([]) // GOOGL empty
-      .mockResolvedValueOnce([]) // SNDK empty
-      .mockResolvedValueOnce([]) // MSTR empty
-      .mockResolvedValueOnce([]); // MU empty
+      .mockResolvedValueOnce([
+        makeAnomalyRow({ id: 1, ticker: 'SPXW', ts: '2026-04-23T15:30:00Z' }),
+        makeAnomalyRow({ id: 2, ticker: 'SPXW', ts: '2026-04-23T15:25:00Z' }),
+      ])
+      .mockResolvedValueOnce([]) // NDXP
+      .mockResolvedValueOnce([]) // RUTW
+      .mockResolvedValueOnce([]) // QQQ
+      .mockResolvedValueOnce([]) // IWM
+      .mockResolvedValueOnce([]) // SMH
+      .mockResolvedValueOnce([]) // NVDA
+      .mockResolvedValueOnce([]) // TSLA
+      .mockResolvedValueOnce([]) // META
+      .mockResolvedValueOnce([]) // MSFT
+      .mockResolvedValueOnce([]) // GOOGL
+      .mockResolvedValueOnce([]) // NFLX
+      .mockResolvedValueOnce([]) // TSM
+      .mockResolvedValueOnce([]) // SNDK
+      .mockResolvedValueOnce([]) // MSTR
+      .mockResolvedValueOnce([]) // MU
+      // path-shape spot lookup — return spots for SPXW + SPY (the tickers
+      // that had rows). The freshness/progress fields will populate on
+      // the response based on these.
+      .mockResolvedValueOnce([
+        { ticker: 'SPXW', spot: '7142.00' },
+        { ticker: 'SPY', spot: '706.50' },
+      ]);
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
@@ -286,6 +302,7 @@ describe('GET /api/iv-anomalies', () => {
     expect(body.history.QQQ).toHaveLength(0);
     for (const t of [
       'NDXP',
+      'RUTW',
       'IWM',
       'SMH',
       'NVDA',
@@ -293,6 +310,8 @@ describe('GET /api/iv-anomalies', () => {
       'META',
       'MSFT',
       'GOOGL',
+      'NFLX',
+      'TSM',
       'SNDK',
       'MSTR',
       'MU',
@@ -303,9 +322,12 @@ describe('GET /api/iv-anomalies', () => {
   });
 
   it('narrows to a single ticker when query param is supplied', async () => {
-    mockSql.mockResolvedValueOnce([
-      makeAnomalyRow({ ticker: 'SPY', strike: '705.00' }),
-    ]);
+    mockSql
+      .mockResolvedValueOnce([
+        makeAnomalyRow({ ticker: 'SPY', strike: '705.00' }),
+      ])
+      // Path-shape spot lookup — single ticker now.
+      .mockResolvedValueOnce([{ ticker: 'SPY', spot: '706.00' }]);
 
     const res = mockResponse();
     await handler(
@@ -314,8 +336,8 @@ describe('GET /api/iv-anomalies', () => {
     );
 
     expect(res._status).toBe(200);
-    // Only ONE SQL call (not seven) when ticker is narrowed.
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    // Two SQL calls: one for the SPY anomaly, one for the path-shape lookup.
+    expect(mockSql).toHaveBeenCalledTimes(2);
     const body = res._json as {
       mode: string;
       latest: Record<string, { ticker: string } | null>;
@@ -378,11 +400,13 @@ describe('GET /api/iv-anomalies', () => {
     // Just confirm the endpoint accepts the param and returns 200; we
     // don't black-box assert the exact SQL clause but we DO verify mockSql
     // was called per ticker and the response is shaped correctly.
-    for (let i = 0; i < 14; i += 1) {
+    for (let i = 0; i < 17; i += 1) {
       mockSql.mockResolvedValueOnce([
         makeAnomalyRow({ ticker: 'SPXW', ts: '2026-04-21T14:30:00Z' }),
       ]);
     }
+    // Path-shape spot lookup at the end (replay mode → at-or-before `at`).
+    mockSql.mockResolvedValueOnce([{ ticker: 'SPXW', spot: '7140.00' }]);
     const res = mockResponse();
     await handler(
       mockRequest({
@@ -394,13 +418,15 @@ describe('GET /api/iv-anomalies', () => {
     expect(res._status).toBe(200);
     const body = res._json as { mode: string; latest: Record<string, unknown> };
     expect(body.mode).toBe('list');
-    // mockSql is called once per ticker (14 in STRIKE_IV_TICKERS).
-    expect(mockSql).toHaveBeenCalledTimes(14);
+    // mockSql is called once per ticker (17 in STRIKE_IV_TICKERS) plus one
+    // more for the path-shape spot lookup = 18.
+    expect(mockSql).toHaveBeenCalledTimes(18);
   });
 
   it('replay mode for a past timestamp uses long cache (10 min)', async () => {
-    // Returns empty per-ticker, 13 calls.
-    for (let i = 0; i < 14; i += 1) mockSql.mockResolvedValueOnce([]);
+    // Returns empty per-ticker, then the path-shape lookup (also empty).
+    for (let i = 0; i < 17; i += 1) mockSql.mockResolvedValueOnce([]);
+    mockSql.mockResolvedValueOnce([]); // path-shape
     const res = mockResponse();
     await handler(
       mockRequest({

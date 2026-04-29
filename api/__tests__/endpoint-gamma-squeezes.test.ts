@@ -108,7 +108,9 @@ describe('GET /api/gamma-squeezes', () => {
   });
 
   it('returns empty-keyed list when no rows exist', async () => {
-    for (let i = 0; i < 14; i += 1) mockSql.mockResolvedValueOnce([]);
+    // 17 ticker queries + 1 path-shape spot lookup.
+    for (let i = 0; i < 17; i += 1) mockSql.mockResolvedValueOnce([]);
+    mockSql.mockResolvedValueOnce([]); // path-shape (no spots → no enrichment)
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(200);
@@ -119,9 +121,10 @@ describe('GET /api/gamma-squeezes', () => {
     };
     expect(body.mode).toBe('list');
     for (const t of [
+      'SPY',
       'SPXW',
       'NDXP',
-      'SPY',
+      'RUTW',
       'QQQ',
       'IWM',
       'SMH',
@@ -130,6 +133,8 @@ describe('GET /api/gamma-squeezes', () => {
       'META',
       'MSFT',
       'GOOGL',
+      'NFLX',
+      'TSM',
       'SNDK',
       'MSTR',
       'MU',
@@ -140,8 +145,10 @@ describe('GET /api/gamma-squeezes', () => {
   });
 
   it('returns latest + history grouped by ticker on happy path', async () => {
-    // SPXW first (in STRIKE_IV_TICKERS order). Give SPXW two rows, NVDA one.
+    // STRIKE_IV_TICKERS order: SPY first, then SPXW NDXP RUTW QQQ IWM SMH
+    // NVDA TSLA META MSFT GOOGL NFLX TSM SNDK MSTR MU. 17 total + path-shape.
     mockSql
+      .mockResolvedValueOnce([]) // SPY
       .mockResolvedValueOnce([
         makeRow({
           id: 1,
@@ -157,7 +164,7 @@ describe('GET /api/gamma-squeezes', () => {
         }),
       ])
       .mockResolvedValueOnce([]) // NDXP
-      .mockResolvedValueOnce([]) // SPY
+      .mockResolvedValueOnce([]) // RUTW
       .mockResolvedValueOnce([]) // QQQ
       .mockResolvedValueOnce([]) // IWM
       .mockResolvedValueOnce([]) // SMH
@@ -168,9 +175,16 @@ describe('GET /api/gamma-squeezes', () => {
       .mockResolvedValueOnce([]) // META
       .mockResolvedValueOnce([]) // MSFT
       .mockResolvedValueOnce([]) // GOOGL
+      .mockResolvedValueOnce([]) // NFLX
+      .mockResolvedValueOnce([]) // TSM
       .mockResolvedValueOnce([]) // SNDK
       .mockResolvedValueOnce([]) // MSTR
-      .mockResolvedValueOnce([]); // MU
+      .mockResolvedValueOnce([]) // MU
+      // Path-shape spot lookup — return spots for the tickers with rows.
+      .mockResolvedValueOnce([
+        { ticker: 'SPXW', spot: '7205.00' },
+        { ticker: 'NVDA', spot: '125.50' },
+      ]);
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
@@ -193,7 +207,10 @@ describe('GET /api/gamma-squeezes', () => {
   });
 
   it('narrows to a single ticker when query param is supplied', async () => {
-    mockSql.mockResolvedValueOnce([makeRow({ id: 7, ticker: 'TSLA' })]);
+    mockSql
+      .mockResolvedValueOnce([makeRow({ id: 7, ticker: 'TSLA' })])
+      // Path-shape lookup for TSLA.
+      .mockResolvedValueOnce([{ ticker: 'TSLA', spot: '300.00' }]);
     const res = mockResponse();
     await handler(
       mockRequest({ method: 'GET', query: { ticker: 'TSLA' } }),
@@ -205,7 +222,8 @@ describe('GET /api/gamma-squeezes', () => {
     };
     expect(body.latest.TSLA?.id).toBe(7);
     expect(body.latest.SPY).toBeNull();
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    // 2 calls: TSLA history + path-shape spot lookup.
+    expect(mockSql).toHaveBeenCalledTimes(2);
   });
 
   it('returns 500 and captures to Sentry on DB error', async () => {

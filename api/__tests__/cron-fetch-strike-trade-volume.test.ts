@@ -155,7 +155,8 @@ describe('fetch-strike-trade-volume handler', () => {
   it('inserts split call/put rows for the latest minute per strike', async () => {
     const mocked = vi.mocked(uwFetch);
     mocked.mockReset();
-    // 14 tickers — first one (SPXW → SPX) gets a real response, the rest empty
+    // 17 tickers — first one (SPY, post-2026-04-29 reorder) gets a real
+    // response, the rest empty.
     mocked.mockResolvedValueOnce([
       makeRow({ strike: '7100', timestamp: '2026-04-24T14:29:00Z' }),
       makeRow({
@@ -169,7 +170,7 @@ describe('fetch-strike-trade-volume handler', () => {
         put_volume_bid_side: '0',
       }),
     ]);
-    for (let i = 0; i < 13; i += 1) mocked.mockResolvedValueOnce([]);
+    for (let i = 0; i < 16; i += 1) mocked.mockResolvedValueOnce([]);
 
     const res = mockResponse();
     await handler(authedReq(), res);
@@ -180,32 +181,33 @@ describe('fetch-strike-trade-volume handler', () => {
     };
     // Latest minute for strike 7100 has call_volume=200, put_volume=0 → 1 call row
     expect(body.totalInserted).toBe(1);
-    const spxw = body.results.find((r) => r.ticker === 'SPXW');
-    expect(spxw?.rowsInserted).toBe(1);
+    const spy = body.results.find((r) => r.ticker === 'SPY');
+    expect(spy?.rowsInserted).toBe(1);
   });
 
   it('continues when one ticker errors', async () => {
     const mocked = vi.mocked(uwFetch);
     mocked.mockReset();
     mocked.mockRejectedValueOnce(new Error('UW timeout'));
-    for (let i = 0; i < 13; i += 1) mocked.mockResolvedValueOnce([]);
+    for (let i = 0; i < 16; i += 1) mocked.mockResolvedValueOnce([]);
     const res = mockResponse();
     await handler(authedReq(), res);
     expect(res._status).toBe(200);
     const body = res._json as {
       results: Array<{ ticker: string; skipped: boolean; reason?: string }>;
     };
-    const spxw = body.results.find((r) => r.ticker === 'SPXW');
-    expect(spxw).toMatchObject({ skipped: true, reason: 'exception' });
-    // Other 13 tickers got empty arrays → empty_flow skip
+    // STRIKE_IV_TICKERS[0] = 'SPY' (post-2026-04-29 reorder); SPY rejects.
+    const spy = body.results.find((r) => r.ticker === 'SPY');
+    expect(spy).toMatchObject({ skipped: true, reason: 'exception' });
+    // Other 16 tickers got empty arrays → empty_flow skip; total 17 skipped.
     const skipped = body.results.filter((r) => r.skipped);
-    expect(skipped).toHaveLength(14);
+    expect(skipped).toHaveLength(17);
   });
 
   it('returns empty-flow when UW returns []', async () => {
     const mocked = vi.mocked(uwFetch);
     mocked.mockReset();
-    for (let i = 0; i < 14; i += 1) mocked.mockResolvedValueOnce([]);
+    for (let i = 0; i < 17; i += 1) mocked.mockResolvedValueOnce([]);
     const res = mockResponse();
     await handler(authedReq(), res);
     expect(res._status).toBe(200);
@@ -231,7 +233,7 @@ describe('fetch-strike-trade-volume handler', () => {
         put_volume_bid_side: '0',
       }),
     ]);
-    for (let i = 0; i < 13; i += 1) mocked.mockResolvedValueOnce([]);
+    for (let i = 0; i < 16; i += 1) mocked.mockResolvedValueOnce([]);
     const res = mockResponse();
     await handler(authedReq(), res);
     const body = res._json as { totalInserted: number };
@@ -244,7 +246,7 @@ describe('fetch-strike-trade-volume handler', () => {
     mocked.mockResolvedValueOnce([
       makeRow({ strike: '7100' }), // both call_volume=100 and put_volume=50
     ]);
-    for (let i = 0; i < 13; i += 1) mocked.mockResolvedValueOnce([]);
+    for (let i = 0; i < 16; i += 1) mocked.mockResolvedValueOnce([]);
     const res = mockResponse();
     await handler(authedReq(), res);
     const body = res._json as { totalInserted: number };

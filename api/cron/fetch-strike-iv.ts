@@ -188,6 +188,8 @@ function schwabSymbol(ticker: StrikeIVTicker): string {
       return '$SPX';
     case 'NDXP':
       return '$NDX';
+    case 'RUTW':
+      return '$RUT';
     case 'SPY':
     case 'QQQ':
     case 'IWM':
@@ -197,6 +199,8 @@ function schwabSymbol(ticker: StrikeIVTicker): string {
     case 'META':
     case 'MSFT':
     case 'GOOGL':
+    case 'NFLX':
+    case 'TSM':
     case 'SNDK':
     case 'MSTR':
     case 'MU':
@@ -219,6 +223,7 @@ function minOiFor(ticker: StrikeIVTicker): number {
   switch (ticker) {
     case 'SPXW':
     case 'NDXP':
+    case 'RUTW':
       return STRIKE_IV_MIN_OI_CASH_INDEX;
     case 'SPY':
     case 'QQQ':
@@ -232,6 +237,8 @@ function minOiFor(ticker: StrikeIVTicker): number {
     case 'META':
     case 'MSFT':
     case 'GOOGL':
+    case 'NFLX':
+    case 'TSM':
       return STRIKE_IV_MIN_OI_HIGH_LIQ;
     case 'SNDK':
     case 'MSTR':
@@ -263,6 +270,7 @@ function otmRangePctFor(ticker: StrikeIVTicker): number {
   switch (ticker) {
     case 'SPXW':
     case 'NDXP':
+    case 'RUTW':
       return STRIKE_IV_OTM_RANGE_PCT_CASH_INDEX;
     case 'SPY':
     case 'QQQ':
@@ -273,6 +281,8 @@ function otmRangePctFor(ticker: StrikeIVTicker): number {
     case 'META':
     case 'MSFT':
     case 'GOOGL':
+    case 'NFLX':
+    case 'TSM':
       return STRIKE_IV_OTM_RANGE_PCT_HIGH_LIQ_NAME;
     case 'SMH':
     case 'SNDK':
@@ -300,7 +310,10 @@ function matchesRoot(
   ticker: StrikeIVTicker,
   contractSymbol: string | undefined,
 ): boolean {
-  if (ticker !== 'SPXW' && ticker !== 'NDXP') return true;
+  // SPXW/NDXP/RUTW share their parent symbol's chain ($SPX/$NDX/$RUT) and
+  // need OSI-root filtering to drop monthlies (which would conflict with
+  // weeklies on third-Friday expiries via the unique key).
+  if (ticker !== 'SPXW' && ticker !== 'NDXP' && ticker !== 'RUTW') return true;
   if (!contractSymbol) return false;
   // OSI root lives before the first whitespace block; fall back to the
   // first non-digit/non-space run for exotic formatting.

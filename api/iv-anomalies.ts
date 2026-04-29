@@ -29,6 +29,7 @@ import {
 } from './_lib/api-helpers.js';
 import { ivAnomaliesQuerySchema } from './_lib/validation.js';
 import { STRIKE_IV_TICKERS, type StrikeIVTicker } from './_lib/constants.js';
+import { computePathShape, getLatestSpotsByTicker } from './_lib/path-shape.js';
 
 const TICKERS = STRIKE_IV_TICKERS;
 type Ticker = StrikeIVTicker;
@@ -75,6 +76,25 @@ export interface IVAnomalyRow {
   contextSnapshot: unknown;
   resolutionOutcome: unknown;
   ts: string;
+  /**
+   * Path-shape diagnostic — minutes since detection. Live-mode = now − ts;
+   * replay mode (`?at=`) = at − ts. Always ≥ 0.
+   */
+  freshnessMin: number;
+  /**
+   * Signed progress from `spotAtDetect` toward `strike` in trade direction
+   * (calls: positive when underlying rises; puts: positive when underlying
+   * falls). 0 = no movement, 1 = reached strike. Null when current spot
+   * is unknown or strike == spotAtDetect.
+   */
+  progressPct: number | null;
+  /**
+   * True when freshness > 30 min AND |progressPct| < 0.25. Per the
+   * 2026-04-29 outlier study, slow-ITM wins round-trip 56% of the time —
+   * UI should de-emphasize stale alerts. Read-only flag, computed each
+   * request.
+   */
+  isStale: boolean;
 }
 
 export interface StrikeIVSample {
@@ -218,7 +238,47 @@ function mapAnomaly(r: RawAnomalyRow): IVAnomalyRow {
     contextSnapshot: r.context_snapshot,
     resolutionOutcome: r.resolution_outcome,
     ts: toIso(r.ts),
+    // Path-shape fields are filled in by attachPathShape after rows are loaded.
+    freshnessMin: 0,
+    progressPct: null,
+    isStale: false,
   };
+}
+
+/**
+ * Mutate `rows` in place to fill `freshnessMin`, `progressPct`, `isStale`.
+ * One DB query for the whole set (lateral-join in path-shape lib) regardless
+ * of how many rows came back.
+ */
+async function attachPathShape(
+  rowsByTicker: Map<string, IVAnomalyRow[]>,
+  at: Date | null,
+): Promise<void> {
+  const tickers = [...rowsByTicker.keys()].filter(
+    (t) => (rowsByTicker.get(t)?.length ?? 0) > 0,
+  );
+  if (tickers.length === 0) return;
+
+  const spots = await getLatestSpotsByTicker(tickers, at);
+  const nowMs = at ? at.getTime() : Date.now();
+
+  for (const [ticker, rows] of rowsByTicker) {
+    const currentSpot = spots.get(ticker) ?? null;
+    for (const r of rows) {
+      const tsMs = Date.parse(r.ts);
+      if (!Number.isFinite(tsMs)) continue;
+      const ps = computePathShape(
+        tsMs,
+        r.spotAtDetect,
+        r.strike,
+        currentSpot,
+        nowMs,
+      );
+      r.freshnessMin = ps.freshnessMin;
+      r.progressPct = ps.progressPct;
+      r.isStale = ps.isStale;
+    }
+  }
 }
 
 function mapSample(r: RawSampleRow): StrikeIVSample {
@@ -348,9 +408,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         TICKERS.map((t) => [t, [] as IVAnomalyRow[]]),
       ) as unknown as Record<Ticker, IVAnomalyRow[]>;
 
+      const rowsByTicker = new Map<string, IVAnomalyRow[]>();
       for (const { ticker: t, rows } of bundles) {
         history[t] = rows;
         latest[t] = rows[0] ?? null;
+        rowsByTicker.set(t, rows);
+      }
+
+      // Attach freshnessMin / progressPct / isStale on every row in place.
+      // One DB query for the whole batch — see api/_lib/path-shape.ts.
+      // Failure here MUST NOT 500 the endpoint: callers depend on the alert
+      // list itself; path-shape is enrichment. Log and ship with defaults.
+      try {
+        await attachPathShape(rowsByTicker, atDate);
+      } catch (err) {
+        Sentry.captureException(err);
+        logger.warn({ err }, 'iv-anomalies: path-shape attachment failed');
       }
 
       const listResponse: IVAnomaliesListResponse = {

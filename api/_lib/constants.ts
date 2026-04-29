@@ -130,10 +130,25 @@ export const STRIKE_IV_MIN_OI_SECTOR_ETF = 100;
 export const STRIKE_IV_MIN_OI_HIGH_LIQ = 500;
 /** Mid-liquidity single names (SNDK, MSTR, MU) — thinner ladder. */
 export const STRIKE_IV_MIN_OI_SINGLE_NAME = 100;
+/**
+ * Order matters — both the cron iteration AND the UI ticker-pill row use
+ * this list directly. SPY first per 2026-04-29 outlier study: SPY's win
+ * rate (63% on n=138) materially beats SPXW (53%), QQQ (54%), and SPX (46%)
+ * because the biggest SPX whale prints are mostly portfolio rebalancing
+ * (~$8M median premium, directionally uninformative) while SPY's smaller
+ * $50K-median prints are real directional positioning. See
+ * `ml/findings/outlier-detection-2026-04-28.md` for the full breakdown.
+ *
+ * TSM, NFLX, RUTW added 2026-04-29 — all three appeared in the high-edge
+ * outlier buckets at 100% win rate, small n. TSM and NFLX slot into
+ * HIGH_LIQ_NAME tier; RUTW gets cash-index treatment via `$RUT` chain
+ * fetch + strict OSI-root filter (mirrors SPXW handling).
+ */
 export const STRIKE_IV_TICKERS = [
+  'SPY',
   'SPXW',
   'NDXP',
-  'SPY',
+  'RUTW',
   'QQQ',
   'IWM',
   'SMH',
@@ -142,6 +157,8 @@ export const STRIKE_IV_TICKERS = [
   'META',
   'MSFT',
   'GOOGL',
+  'NFLX',
+  'TSM',
   'SNDK',
   'MSTR',
   'MU',
