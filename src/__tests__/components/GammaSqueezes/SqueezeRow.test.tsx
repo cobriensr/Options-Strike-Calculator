@@ -27,6 +27,9 @@ function makeRow(over: Partial<GammaSqueezeRow> = {}): GammaSqueezeRow {
     spotAtClose: null,
     reachedStrike: null,
     maxCallPnlPct: null,
+    freshnessMin: 0,
+    progressPct: null,
+    isStale: false,
     ...over,
   };
 }

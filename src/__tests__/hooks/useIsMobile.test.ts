@@ -16,12 +16,12 @@ function createMatchMediaStub(initialMatches: boolean) {
 
   const addEventListener = vi.fn(
     (event: string, cb: EventListenerOrEventListenerObject) => {
-      if (event === 'change') listeners.add(cb as Listener);
+      if (event === 'change') listeners.add(cb as unknown as Listener);
     },
   );
   const removeEventListener = vi.fn(
     (event: string, cb: EventListenerOrEventListenerObject) => {
-      if (event === 'change') listeners.delete(cb as Listener);
+      if (event === 'change') listeners.delete(cb as unknown as Listener);
     },
   );
 

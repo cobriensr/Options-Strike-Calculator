@@ -70,6 +70,9 @@ function makeSqueeze(
     spotAtClose: null,
     reachedStrike: null,
     maxCallPnlPct: null,
+    freshnessMin: 0,
+    progressPct: null,
+    isStale: false,
   };
   return {
     compoundKey: squeezeCompoundKey(base),

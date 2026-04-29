@@ -8,9 +8,10 @@
  */
 
 export type IVAnomalyTicker =
+  | 'SPY'
   | 'SPXW'
   | 'NDXP'
-  | 'SPY'
+  | 'RUTW'
   | 'QQQ'
   | 'IWM'
   | 'SMH'
@@ -19,6 +20,8 @@ export type IVAnomalyTicker =
   | 'META'
   | 'MSFT'
   | 'GOOGL'
+  | 'NFLX'
+  | 'TSM'
   | 'SNDK'
   | 'MSTR'
   | 'MU';
@@ -81,6 +84,25 @@ export interface IVAnomalyRow {
   contextSnapshot: unknown;
   resolutionOutcome: unknown;
   ts: string;
+  /**
+   * Path-shape diagnostic from the read endpoint (2026-04-29 outlier
+   * suppressor). Minutes since detection — live mode = now − ts; replay
+   * mode (?at=) = at − ts. Always ≥ 0.
+   */
+  freshnessMin: number;
+  /**
+   * Signed progress from `spotAtDetect` toward `strike` in trade direction
+   * (calls: positive when underlying rises; puts: positive when underlying
+   * falls). 0 = no movement, 1 = reached strike, >1 = past strike.
+   * Null when current spot is unknown or strike == spotAtDetect.
+   */
+  progressPct: number | null;
+  /**
+   * True when freshness > 30 min AND |progressPct| < 0.25. Per the
+   * 2026-04-29 outlier study, slow-ITM wins round-trip 56% at close.
+   * UI should de-emphasize stale alerts.
+   */
+  isStale: boolean;
 }
 
 export interface StrikeIVSample {
@@ -117,9 +139,10 @@ export type IVAnomaliesResponse =
  * sync manually since src/ cannot reach into api/ directly.
  */
 export const IV_ANOMALY_TICKERS: readonly IVAnomalyTicker[] = [
+  'SPY',
   'SPXW',
   'NDXP',
-  'SPY',
+  'RUTW',
   'QQQ',
   'IWM',
   'SMH',
@@ -128,6 +151,8 @@ export const IV_ANOMALY_TICKERS: readonly IVAnomalyTicker[] = [
   'META',
   'MSFT',
   'GOOGL',
+  'NFLX',
+  'TSM',
   'SNDK',
   'MSTR',
   'MU',

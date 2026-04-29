@@ -252,7 +252,7 @@ describe('useTraceLiveData', () => {
   // drives the auto-follow effect (line 182), which in turn triggers the
   // detail fetch (line 191).
   function routedFetch(
-    listBody: { analyses: Array<{ id: number }> },
+    listBody: { analyses: Array<{ id: number; [key: string]: unknown }> },
     detailBody: Record<string, unknown>,
     detailStatus = 200,
   ) {

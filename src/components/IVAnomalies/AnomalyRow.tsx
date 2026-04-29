@@ -89,10 +89,18 @@ export function AnomalyRow({
     anomaly.strike,
   );
   const contractLabel = `${anomaly.ticker} ${formatStrike(anomaly.strike)}${anomaly.side === 'put' ? 'P' : 'C'}`;
+  // Path-shape suppressor flag from the read endpoint. >30 min old AND
+  // <25% progress toward strike. Render dimmed with a 'stale' pill so
+  // users can see-but-de-prioritize per the 2026-04-29 outlier study
+  // (slow-ITM wins round-trip 56% at close vs 9% for fast-ITM wins).
+  const isStale = latest.isStale === true;
   const toggle = () => setExpanded((v) => !v);
 
   return (
-    <div className="border-edge bg-surface-alt rounded-md border">
+    <div
+      className={`border-edge bg-surface-alt rounded-md border ${isStale ? 'opacity-60' : ''}`}
+      data-stale={isStale ? 'true' : undefined}
+    >
       <div
         role="button"
         tabIndex={0}
@@ -142,6 +150,22 @@ export function AnomalyRow({
             </span>
           </Tooltip>
           <AnomalyPhasePill phase={anomaly.phase} />
+          {isStale ? (
+            <span
+              className="rounded-md bg-zinc-500/20 px-2 py-0.5 font-mono text-[10px] font-semibold text-zinc-300"
+              data-testid="anomaly-stale-badge"
+              title={
+                `Stale: ${Math.round(latest.freshnessMin)} min since detection, ` +
+                `${
+                  latest.progressPct == null
+                    ? 'unknown progress'
+                    : `${(latest.progressPct * 100).toFixed(0)}% progress toward strike`
+                }. Slow-ITM wins round-trip 56% at close per the 2026-04-29 outlier study — de-prioritize.`
+              }
+            >
+              stale
+            </span>
+          ) : null}
           <FlowPhasePill phase={phase} />
           <PatternPill pattern={pattern} />
           <RegimePill

@@ -36,6 +36,9 @@ function makeRow(overrides: Partial<IVAnomalyRow> = {}): IVAnomalyRow {
     },
     resolutionOutcome: null,
     ts: '2026-04-23T15:30:00Z',
+    freshnessMin: 0,
+    progressPct: null,
+    isStale: false,
     ...overrides,
   };
 }

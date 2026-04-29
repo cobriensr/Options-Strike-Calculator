@@ -35,6 +35,23 @@ export interface GammaSqueezeRow {
   reachedStrike: boolean | null;
   spotAtClose: number | null;
   maxCallPnlPct: number | null;
+  /**
+   * Path-shape diagnostic — minutes since detection. Live mode = now − ts;
+   * replay mode (?at=) = at − ts. Always ≥ 0.
+   */
+  freshnessMin: number;
+  /**
+   * Signed progress from `spotAtDetect` toward `strike`. 0 = no movement,
+   * 1 = reached strike, >1 = past strike. Null when current spot is
+   * unknown or strike == spotAtDetect.
+   */
+  progressPct: number | null;
+  /**
+   * True when freshness > 30 min AND |progressPct| < 0.25. Per the
+   * 2026-04-29 outlier study, slow-ITM wins round-trip 56% at close.
+   * UI should visually de-emphasize stale alerts.
+   */
+  isStale: boolean;
 }
 
 export interface GammaSqueezesResponse {

@@ -41,6 +41,10 @@ export function SqueezeRow({ squeeze }: { readonly squeeze: ActiveSqueeze }) {
   const freshnessMs = nowMs - Date.parse(latest.ts);
 
   const isCall = latest.side === 'call';
+  // Path-shape staleness flag from the read endpoint (2026-04-29 outlier
+  // suppressor): >30 min old AND <25% progress toward strike. Render with
+  // a dimmed row + a 'stale' pill so the user can see-but-de-prioritize.
+  const isStale = latest.isStale === true;
   // Phase color tier.
   const phaseClass =
     latest.squeezePhase === 'active'
@@ -60,8 +64,9 @@ export function SqueezeRow({ squeeze }: { readonly squeeze: ActiveSqueeze }) {
 
   return (
     <div
-      className="border-edge bg-surface-alt flex flex-wrap items-center gap-2 rounded-md border px-3 py-2"
+      className={`border-edge bg-surface-alt flex flex-wrap items-center gap-2 rounded-md border px-3 py-2 ${isStale ? 'opacity-60' : ''}`}
       data-testid={`squeeze-row-${squeeze.compoundKey}`}
+      data-stale={isStale ? 'true' : undefined}
     >
       <span className="text-primary font-mono text-xs font-semibold">
         {directionArrow} {squeeze.ticker} {latest.strike}
@@ -69,6 +74,23 @@ export function SqueezeRow({ squeeze }: { readonly squeeze: ActiveSqueeze }) {
       </span>
 
       <span className="text-muted font-mono text-[10px]">{squeeze.expiry}</span>
+
+      {isStale ? (
+        <span
+          className="rounded-md bg-zinc-500/20 px-2 py-0.5 font-mono text-[10px] font-semibold text-zinc-300"
+          data-testid="squeeze-stale-badge"
+          title={
+            `Stale: ${Math.round(latest.freshnessMin)} min since detection, ` +
+            `${
+              latest.progressPct == null
+                ? 'unknown progress'
+                : `${(latest.progressPct * 100).toFixed(0)}% progress toward strike`
+            }. Outlier study found wins like this round-trip 56% at close — de-prioritize.`
+          }
+        >
+          stale
+        </span>
+      ) : null}
 
       <span
         className={`rounded-md px-2 py-0.5 font-mono text-[10px] font-bold ${phaseClass}`}
