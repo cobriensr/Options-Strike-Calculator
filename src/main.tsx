@@ -102,6 +102,7 @@ if (import.meta.env.PROD)
       // — BotID at the edge would block legitimate daemon traffic.
       { path: '/api/trace-live-list', method: 'GET' },
       { path: '/api/trace-live-get', method: 'GET' },
+      { path: '/api/greek-flow', method: 'GET' },
       { path: '/api/trace-live-image', method: 'GET' },
       { path: '/api/trace-live-analogs', method: 'GET' },
       { path: '/api/positions', method: 'GET' },

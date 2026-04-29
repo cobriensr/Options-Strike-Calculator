@@ -78,6 +78,27 @@ export const zeroGammaQuerySchema = z.object({
 export type ZeroGammaQuery = z.infer<typeof zeroGammaQuerySchema>;
 
 // ============================================================
+// /api/greek-flow
+// ============================================================
+
+/**
+ * Query params for GET /api/greek-flow.
+ *
+ * Returns the SPY+QQQ session of UW Greek flow with Postgres-computed
+ * cumulative columns plus derived metrics (slope / flip / cliff /
+ * divergence). `date` defaults to the latest ET trading date present
+ * in `vega_flow_etf` when omitted.
+ */
+export const greekFlowQuerySchema = z.object({
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+    .optional(),
+});
+
+export type GreekFlowQuery = z.infer<typeof greekFlowQuerySchema>;
+
+// ============================================================
 // /api/iv-anomalies
 // ============================================================
 
