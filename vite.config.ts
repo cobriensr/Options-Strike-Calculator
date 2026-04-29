@@ -130,12 +130,23 @@ export default defineConfig({
         'src/themes.ts',
         'src/main.tsx',
         'src/App.tsx',
+        // Pure type-only modules — no executable statements; v8 reports
+        // 0/0 which renders as 0% in the coverage table.
         'src/components/SettlementCheck/types.ts',
         'src/components/DeltaRegimeGuide/types.ts',
         'src/components/ChartAnalysis/types.ts',
         'src/components/PositionMonitor/types.ts',
-        'src/utils/calculator.ts', // barrel re-export only
-        'src/utils/export/index.ts', // barrel re-export only
+        'src/components/IVAnomalies/types.ts',
+        'src/components/TRACELive/types.ts',
+        'src/components/GammaSqueezes/types.ts',
+        'src/components/GexLandscape/types.ts',
+        'src/utils/futures-gamma/types.ts',
+        'src/utils/gex-target/types.ts',
+        'api/_lib/uw-result.ts',
+        // Barrel re-export only.
+        'src/utils/calculator.ts',
+        'src/utils/export/index.ts',
+        'src/utils/gex-target/index.ts',
         'api/bwb-anchor.ts', // integration-tested via API
       ],
     },
