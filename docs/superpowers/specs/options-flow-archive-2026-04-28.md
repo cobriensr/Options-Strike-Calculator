@@ -141,40 +141,117 @@ The bridge from "data is in Blob" to "I can query it from Python." Lazy local ca
 The mechanical part of "find the prints that drive price." Multi-criteria scoring rather than a single threshold — a print scores points for each axis it's extreme on, and high-score prints are the ones to look at.
 
 - [ ] `ml/src/flow_outliers.py`:
-  - `score_prints(df: pl.DataFrame) -> pl.DataFrame` — adds a `significance_score` integer column plus a `score_breakdown` struct showing which criteria contributed. Pure function; no I/O.
-  - `find_outliers(date_or_range, *, min_score=4, tickers=None) -> pl.DataFrame` — convenience: `load_flow` → `score_prints` → filter by score. Returns scored prints sorted descending by score.
-  - `add_forward_returns(outliers, candles_df, *, intervals=(5, 15, 30, 60)) -> pl.DataFrame` — for each outlier, join the underlying's price at `executed_at + N min` and compute log returns. SPX bars come from your existing `spx_candles_1m` cron table; helper accepts a `pl.DataFrame` of candles to keep this layer storage-agnostic.
-  - `summarize_outlier_outcomes(outliers_with_returns) -> pl.DataFrame` — group by criteria-bucket (signed side × DTE × time-of-day × score-band), compute hit rate / mean return / Sharpe per bucket. The output of this table is what tells you which kind of outlier actually pays.
-- [ ] `ml/tests/test_flow_outliers.py` — synthetic flow with known outliers (one $6M 0DTE put-sell, one $200K deep-ITM call that should NOT score, one sweep block) and assert the scoring tags them correctly. Test forward-return joining against synthetic candles. Test summary aggregation math.
+  - `enrich_print_features(df) -> pl.DataFrame` — adds **v1 print-time derived features** (no leakage, no external joins):
+    - `spread_width_pct = (nbbo_ask - nbbo_bid) / ((nbbo_ask + nbbo_bid) / 2)` — spread as % of mid; wide spread = noisy signal
+    - `nbbo_position = (price - mid) / half_spread` — −1 = bid hit, +1 = ask paid, 0 = mid; richer than UW's binary `side`
+    - `distance_from_spot_pct = abs(strike - underlying_price) / underlying_price` — bucket later (ATM/near-OTM/far-OTM)
+    - `distance_from_spot_pts` — same in absolute points
+    - `repeat_print_count_today` — for this `(underlying_symbol, option_chain_id)` pair, count of prior prints today with premium ≥ $500K (within-day self-join, partition by chain_id, order by executed_at, cumulative count of prior big prints)
+  - `score_prints(df: pl.DataFrame) -> pl.DataFrame` — adds a `significance_score` integer column plus a `score_breakdown` struct showing which criteria contributed. Pure function; no I/O. Uses the criteria from the **Constants & locked decisions** section.
+  - `find_outliers(date_or_range, *, min_score=4, tickers=None) -> pl.DataFrame` — convenience: `load_flow` → `enrich_print_features` → `score_prints` → filter by score. Returns scored prints sorted descending by score.
+  - `summarize_outlier_outcomes(outliers_with_outcomes) -> pl.DataFrame` — group by buckets (signed side × DTE × time-of-day × ticker family), compute touch-ITM hit rate / close-ITM rate / mean MFE per bucket. The Phase 5 outcomes are what feeds into this — Phase 4 just defines the aggregation.
+- [ ] `ml/tests/test_flow_outliers.py` — synthetic flow with known outliers (one $6M 0DTE put-sell, one $200K deep-ITM call that should NOT score, one sweep block, one wide-spread print) and assert: scoring tags them correctly, derived features compute correctly, repeat_print_count partitions by chain_id properly.
 
 ### Phase 5 — Exploration & validation (the part where we find out if this works)
 
-This is the research step that decides whether the scoring framework actually identifies tradeable signal. Not "build a model" — instead, walk through historical detections one by one with eyes on, then look at aggregate statistics.
+This is the research step that decides whether the scoring framework actually identifies tradeable signal. **Metrics-driven** — no human-in-loop tagging. The user looks at aggregate stats and trusts the auto-computed touch-ITM rule as truth.
 
-The notebook is what produces evidence; the spec is what describes the evidence we'd need to see.
+#### Per-ticker minute bars (synthesized from the archive)
 
-- [ ] `ml/notebooks/outlier-discovery.py` (plain script, not `.ipynb` — easier to diff and re-run):
-  1. **Inventory** — `list_archive_dates()` and report what we have (12+ days as of 2026-04-28)
-  2. **Detection sweep** — `find_outliers(all_dates, min_score=4)` — print count + per-day breakdown
-  3. **Top-by-day review** — for each archive day, dump the top 5 outliers with full context (executed_at, ticker, strike, type, side, premium, DTE, score breakdown). User reads through manually and tags each as: real-signal / noise / unsure.
-  4. **Forward-return analysis** — join SPX 1-min candles (from existing Postgres `spx_candles_1m` table, hydrated to Parquet for offline use) and compute realized 5/15/30/60-min returns conditional on signed direction implied by the print
-  5. **Stratified hit-rate table** — break the universe down by:
-     - Signed direction (bullish put-sell, bullish call-buy, bearish put-buy, bearish call-sell)
-     - Time of day bucket (open/morning/midday/afternoon/close)
-     - DTE (0DTE / 1DTE / 2-7DTE / longer)
-     - Ticker family (SPX-complex / index ETFs / single names)
-  6. **Concentration check** — applying the `feedback_uniform_lift_is_leakage` rule: if hit rate is uniformly elevated across all buckets, kill the signal. If it concentrates in 1-2 buckets, that's real edge worth productizing.
+No external data source. For each `(underlying_symbol, minute_bin)` between 13:30–20:00 UTC on a given day, take the last `underlying_price` value:
+
+```python
+minute_bars = (
+    flow.select(["executed_at", "underlying_symbol", "underlying_price"])
+        .with_columns(minute = pl.col("executed_at").dt.truncate("1m"))
+        .group_by(["underlying_symbol", "minute"])
+        .agg(close = pl.col("underlying_price").last())
+)
+```
+
+For SPX/SPY/QQQ/NDX/NDXP this is dense (every minute populated). For thinner tickers, forward-fill within the session.
+
+#### Win rule — touch-ITM (not EoD-close)
+
+A 0DTE buyer wins if the underlying touches the strike in their favor at any point during the session. A 0DTE seller wins if the underlying never touches the strike against them.
+
+| Trade type (option_type, side) | Win condition |
+| --- | --- |
+| call, ask (aggressive **buy**) | `max(underlying_price between print_time and 15:00 CT) >= strike` |
+| put, ask (aggressive **buy**) | `min(underlying_price between print_time and 15:00 CT) <= strike` |
+| call, bid (aggressive **sell**) | `max(underlying_price between print_time and 15:00 CT) < strike` |
+| put, bid (aggressive **sell**) | `min(underlying_price between print_time and 15:00 CT) > strike` |
+
+A trade that touches ITM at 14:55 is just as much a win as one that touches at 09:31 — the 0DTE buyer could have liquidated in either case.
+
+#### Outcome metrics computed for each detected outlier
+
+`compute_outcomes(outliers, minute_bars) -> pl.DataFrame` adds the following columns. Same minute-bar source for all tickers; pure DataFrame join, no I/O.
+
+**Primary (touch-ITM):**
+
+- `won` — boolean per the table above
+- `close_won` — same logic but using `underlying_price at 15:00 CT close` instead of session max/min (stricter version)
+
+**Path diagnostics for buyer wins:**
+
+- `time_to_itm_min` — minutes from print to first ITM touch (null if never)
+- `time_in_itm_min` — total minutes spent ITM during the session
+- `mfe_pts` — max favorable excursion in underlying points (signed by direction)
+
+**Path diagnostics for seller wins/losses:**
+
+- `time_to_first_breach_min` — minutes from print to first ITM touch against the seller (null if never breached = seller's win)
+- `mae_pts` — closest the underlying came to the strike (negative = breached, positive = comfortable)
+- `close_distance_from_strike_pts` — underlying close minus strike, signed in seller's favor
+
+**v1 outcome feature (signal corroboration, in-archive only):**
+
+- `followon_volume_15min` — total volume on the same `option_chain_id` between print_time + 1 min and print_time + 15 min. Confirms whether the print was followed by sustained interest or was a one-off.
+
+#### Notebook flow — `ml/notebooks/outlier-discovery.py`
+
+Plain script, not `.ipynb` — easier to diff and re-run.
+
+1. **Inventory** — `list_archive_dates()` and report what we have (12+ days as of 2026-04-28)
+2. **Detection sweep** — `find_outliers(all_dates, min_score=4)` — print count + per-day breakdown
+3. **Build minute bars** — `synthesize_minute_bars(load_flow(all_dates))` for the tickers that appear in outliers
+4. **Compute outcomes** — `compute_outcomes(outliers, minute_bars)` — add win flag + path diagnostics
+5. **Stratified win-rate table** — break the universe down by:
+   - Signed direction (bullish put-sell, bullish call-buy, bearish put-buy, bearish call-sell)
+   - Time of day bucket (open / morning / midday / afternoon / close)
+   - DTE (0DTE / 1DTE / 2-7DTE / longer)
+   - Ticker family (SPX-complex / index ETFs / single names)
+6. **Concentration check** — apply the `feedback_uniform_lift_is_leakage` rule: if win rate is uniformly elevated across all buckets, kill the signal. If it concentrates in 1-2 buckets, that's real edge worth productizing.
+7. **Path-shape splits** — within wins, split by `time_to_itm_min` quartile and `mfe_pts` magnitude. Distinguishes "obvious early-conviction" from "lottery ticket that round-tripped." Different setups, possibly different edge profiles.
+
+**Decision gates:**
+
+- Touch-ITM rate is **>60% in some bucket** → that bucket's an exploitable edge; build a live alert
+- Touch-ITM rate is **45–55% across all buckets** → no edge in this scoring scheme; revisit the criteria weights or look at different axes
+- **<10 candidates per day** → loosen `min_score` and re-run; **>500 per day** → tighten
+
 - [ ] `ml/findings/outlier-detection-2026-04-28.md` — written-up findings: what scored, what worked, what didn't, what threshold to use going forward, what features to add to the user's existing 2 intraday detectors
 
-**Decision gates from the notebook output:**
+### Phase 6 — Deferred (post-MVP enhancements)
 
-- If hit rate (signed direction matches forward-return sign at 30 min) is **>60% in some bucket** → that bucket's an exploitable edge; build a live alert
-- If hit rate is **45–55% across all buckets** → no edge in this scoring scheme; revisit the criteria weights or look at different axes
-- If we get **<10 candidates per day** → loosen `min_score` and re-run; if **>500 per day** → tighten
+Items here are conceptually valuable but either (a) require cross-source joins that complicate v1, (b) need rolling baselines that need more historical data, or (c) are workflow polish. Revisit after Phase 5 produces a verdict on whether the v1 signal works.
 
-### Phase 6 — Nightly automation (deferred — manual for now)
+#### 6a — Deferred analytical features
 
-- [ ] Once daily ingest is reliable (currently is — 12/12 days have processed cleanly), add a launchd plist (macOS) that watches `~/Downloads/EOD-OptionFlow/` and runs `ingest-flow.py` when a new file lands. Optional — not part of MVP.
+Each adds a dimension that may improve detection precision but isn't free to wire up:
+
+- [ ] **OI delta vs prior day** — compare `open_interest` at print time to the prior-day value for the same `option_chain_id` (within-archive self-join across consecutive days). Distinguishes opening-position prints (BTO/STO) from rebalance-of-existing-position prints. Add as a scoring criterion: bonus point when the print's premium is >50% of prior-day OI's notional.
+- [ ] **Strike-clustering / same-second sweep detection** — within a 1-second window, count how many distinct `option_chain_id` strikes saw large prints (>$500K) on the same underlying. A "lone whale" with 9 siblings across the skew is a coordinated multi-leg sweep, much stronger than a solo print.
+- [ ] **Volume-vs-baseline z-score** — rolling 10-day median volume per `option_chain_id` for the same minute-of-day, compute z-score for the print's bar volume. Surfaces contracts that _suddenly_ became important. Needs ≥10 days of historical data per contract — not great for fresh strikes but most actively-traded chains roll daily.
+- [ ] **Strike-vs-zero-gamma proximity** — pull from the existing `zero_gamma_levels` Postgres table; compute distance from this print's strike to the day's zero-gamma flip for the underlying. Prints near the gamma-flip strike have outsize hedging consequences.
+- [ ] **IV change at strike post-print** — outcome diagnostic: did implied vol on this strike expand after the print? Indicates the market repriced risk in response. Needs a per-strike IV time series.
+- [ ] **Cross-asset confirmation** — outcome diagnostic: was there coincident dark-pool flow (existing `darkpool_*` tables) and/or NQ futures OFI tick (existing microstructure pipeline) in the same minute? If yes, the print is corroborated by other informed channels.
+- [ ] **MM hedging proxy** — outcome diagnostic: in the 5–15 minutes after the print, did underlying realized volatility spike beyond baseline? Confirms the mechanical hedging channel is active.
+
+#### 6b — Nightly ingest automation
+
+- [ ] Once daily ingest is reliable (currently is — 12/12 days have processed cleanly), add a launchd plist (macOS) that watches `~/Downloads/EOD-OptionFlow/` and runs `ingest-flow.py` when a new file lands. Optional polish — not part of MVP.
 
 ### Phase 7 — Verification (rolling)
 
