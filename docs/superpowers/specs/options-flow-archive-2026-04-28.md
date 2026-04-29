@@ -21,45 +21,45 @@ Not started. This spec defines the schema first; implementation follows in phase
 
 CSV order is preserved. Polars `dtype` is the wire-level type used by `scan_csv(schema=...)` and `sink_parquet`. Postgres column is what we'd use **only if** we later push aggregates — not at archive time.
 
-| # | CSV column | Polars dtype | Notes |
-|---|---|---|---|
-| 1 | `executed_at` | `Datetime("us", "UTC")` | UW gives `2026-04-24 13:30:00.002365+00` — microsecond precision in UTC. |
-| 2 | `underlying_symbol` | `Categorical` | ~5K unique tickers. Dictionary encoding is huge here. |
-| 3 | `option_chain_id` | `Utf8` | OCC-style: `SPY260515P00650000`. High cardinality, no dict benefit. |
-| 4 | `side` | `Enum(["ask", "bid", "mid", "no_side"])` | Closed set verified from sample. UW classification of who hit the print. |
-| 5 | `strike` | `Float64` | Some products have non-integer strikes; safe over Int. |
-| 6 | `option_type` | `Enum(["put", "call"])` | Closed set. |
-| 7 | `expiry` | `Date` | No time component. |
-| 8 | `underlying_price` | `Float64` | Spot at print time. |
-| 9 | `nbbo_bid` | `Float64` | |
-| 10 | `nbbo_ask` | `Float64` | |
-| 11 | `ewma_nbbo_bid` | `Float64` | UW's smoothed NBBO. Useful for less-noisy aggressor detection. |
-| 12 | `ewma_nbbo_ask` | `Float64` | |
-| 13 | `price` | `Float64` | Execution price. |
-| 14 | `size` | `Int32` | Contract count for this print. Max observed ~100K. |
-| 15 | `premium` | `Float64` | size × price × 100. SPX whale prints can hit $50M+. |
-| 16 | `volume` | `Int32` | Running daily volume on this contract. |
-| 17 | `open_interest` | `Int32` | OI as of prior close. |
-| 18 | `implied_volatility` | `Float64` | |
-| 19 | `delta` | `Float64` | Per-contract Greek at print time. |
-| 20 | `theta` | `Float64` | |
-| 21 | `gamma` | `Float64` | |
-| 22 | `vega` | `Float64` | |
-| 23 | `rho` | `Float64` | Keep — costs ~80 MB/yr, useful for rate-sensitive products. |
-| 24 | `theo` | `Float64` | UW's theoretical fair value. |
-| 25 | `sector` | `Categorical` | GICS sector; null for ETF/Index. |
-| 26 | `exchange` | `Categorical` | Exchange code (XPHO, XCBO, etc.). ~20 unique. |
-| 27 | `report_flags` | `Utf8` | Postgres-array literal like `{}` or `{stopped_stock,intermarket_sweep}`. Keep raw at archive time; parse on read. |
-| 28 | `canceled` | `Boolean` | UW gives `f`/`t` — cast at ingest. |
-| 29 | `upstream_condition_detail` | `Categorical` | "auto" dominates; small closed-ish set. |
-| 30 | `equity_type` | `Enum(["ADR", "Common Stock", "ETF", "Index", "Other", "Unit"])` | Closed set verified from sample. |
+| #   | CSV column                  | Polars dtype                                                     | Notes                                                                                                             |
+| --- | --------------------------- | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| 1   | `executed_at`               | `Datetime("us", "UTC")`                                          | UW gives `2026-04-24 13:30:00.002365+00` — microsecond precision in UTC.                                          |
+| 2   | `underlying_symbol`         | `Categorical`                                                    | ~5K unique tickers. Dictionary encoding is huge here.                                                             |
+| 3   | `option_chain_id`           | `Utf8`                                                           | OCC-style: `SPY260515P00650000`. High cardinality, no dict benefit.                                               |
+| 4   | `side`                      | `Enum(["ask", "bid", "mid", "no_side"])`                         | Closed set verified from sample. UW classification of who hit the print.                                          |
+| 5   | `strike`                    | `Float64`                                                        | Some products have non-integer strikes; safe over Int.                                                            |
+| 6   | `option_type`               | `Enum(["put", "call"])`                                          | Closed set.                                                                                                       |
+| 7   | `expiry`                    | `Date`                                                           | No time component.                                                                                                |
+| 8   | `underlying_price`          | `Float64`                                                        | Spot at print time.                                                                                               |
+| 9   | `nbbo_bid`                  | `Float64`                                                        |                                                                                                                   |
+| 10  | `nbbo_ask`                  | `Float64`                                                        |                                                                                                                   |
+| 11  | `ewma_nbbo_bid`             | `Float64`                                                        | UW's smoothed NBBO. Useful for less-noisy aggressor detection.                                                    |
+| 12  | `ewma_nbbo_ask`             | `Float64`                                                        |                                                                                                                   |
+| 13  | `price`                     | `Float64`                                                        | Execution price.                                                                                                  |
+| 14  | `size`                      | `Int32`                                                          | Contract count for this print. Max observed ~100K.                                                                |
+| 15  | `premium`                   | `Float64`                                                        | size × price × 100. SPX whale prints can hit $50M+.                                                               |
+| 16  | `volume`                    | `Int32`                                                          | Running daily volume on this contract.                                                                            |
+| 17  | `open_interest`             | `Int32`                                                          | OI as of prior close.                                                                                             |
+| 18  | `implied_volatility`        | `Float64`                                                        |                                                                                                                   |
+| 19  | `delta`                     | `Float64`                                                        | Per-contract Greek at print time.                                                                                 |
+| 20  | `theta`                     | `Float64`                                                        |                                                                                                                   |
+| 21  | `gamma`                     | `Float64`                                                        |                                                                                                                   |
+| 22  | `vega`                      | `Float64`                                                        |                                                                                                                   |
+| 23  | `rho`                       | `Float64`                                                        | Keep — costs ~80 MB/yr, useful for rate-sensitive products.                                                       |
+| 24  | `theo`                      | `Float64`                                                        | UW's theoretical fair value.                                                                                      |
+| 25  | `sector`                    | `Categorical`                                                    | GICS sector; null for ETF/Index.                                                                                  |
+| 26  | `exchange`                  | `Categorical`                                                    | Exchange code (XPHO, XCBO, etc.). ~20 unique.                                                                     |
+| 27  | `report_flags`              | `Utf8`                                                           | Postgres-array literal like `{}` or `{stopped_stock,intermarket_sweep}`. Keep raw at archive time; parse on read. |
+| 28  | `canceled`                  | `Boolean`                                                        | UW gives `f`/`t` — cast at ingest.                                                                                |
+| 29  | `upstream_condition_detail` | `Categorical`                                                    | "auto" dominates; small closed-ish set.                                                                           |
+| 30  | `equity_type`               | `Enum(["ADR", "Common Stock", "ETF", "Index", "Other", "Unit"])` | Closed set verified from sample.                                                                                  |
 
 **Added at write time (not in CSV):**
 
-| Column | Type | Source |
-|---|---|---|
-| `date` | `Date` | Extracted from filename via regex `bot-eod-report-(\d{4}-\d{2}-\d{2})\.csv`. Used as Hive partition key. |
-| `ingested_at` | `Datetime("us", "UTC")` | Wall-clock time of conversion. Audit trail. |
+| Column        | Type                    | Source                                                                                                   |
+| ------------- | ----------------------- | -------------------------------------------------------------------------------------------------------- |
+| `date`        | `Date`                  | Extracted from filename via regex `bot-eod-report-(\d{4}-\d{2}-\d{2})\.csv`. Used as Hive partition key. |
+| `ingested_at` | `Datetime("us", "UTC")` | Wall-clock time of conversion. Audit trail.                                                              |
 
 ## Storage layout (Vercel Blob)
 
@@ -86,31 +86,26 @@ These run inside the ingest script and abort with a clear error before any Blob 
 3. **Type cast failure** — Polars `strict=True` on `scan_csv`. Any row that won't cast aborts with line number.
 4. **Empty file** — abort if row count == 0.
 5. **Sanity floor** — warn if row count < 1M (a normal day is ~10M; <1M means the file is truncated or it's a half-session like Black Friday).
-6. **Closed-enum drift** — if `side`, `option_type`, or `equity_type` produce a value outside the declared Enum, abort. (UW *adding* a category is rare but it's load-bearing for ML; we want the script to break loudly so we can update the enum deliberately.)
+6. **Closed-enum drift** — if `side`, `option_type`, or `equity_type` produce a value outside the declared Enum, abort. (UW _adding_ a category is rare but it's load-bearing for ML; we want the script to break loudly so we can update the enum deliberately.)
 
 ## Phases
 
-### Phase 1 — Ingest script
+### Phase 1 — Ingest script (single Python file, no Node helper)
 
-- [ ] `scripts/ingest-flow.py` — CLI: `python scripts/ingest-flow.py <YYYY-MM-DD> [--input-dir ~/Downloads/EOD-OptionFlow] [--dry-run] [--keep-csv]`
-- [ ] Reads CSV via `pl.scan_csv(schema=FLOW_SCHEMA, ...)` — streaming, no full RAM load
-- [ ] Validates per rules above; aborts on any failure
-- [ ] **Filters to regular cash session: 13:30–20:00 UTC (08:30–15:00 CT) inclusive of 08:30, exclusive of 15:00.** Implemented as `executed_at.dt.time().is_between(time(13,30), time(20,0), closed="left")`.
-- [ ] Drops rows where `report_flags` contains `extended_hours_trade` (defense in depth — UW occasionally tags ETH prints inside the time window).
-- [ ] Sorts by `(underlying_symbol, executed_at)`
-- [ ] Writes local Parquet to `~/.flow-archive/year=YYYY/month=MM/day=DD/data.parquet`
-- [ ] Uploads to Vercel Blob at the same path under `flow/` via signed-URL PUT (see Phase 1b)
-- [ ] **Verifies upload** — HEAD request to the Blob URL returns expected `Content-Length` matching local file size
-- [ ] **Deletes source CSV** from `--input-dir` only after upload verification passes (skip if `--keep-csv`)
-- [ ] **Deletes local Parquet** from `~/.flow-archive/` after successful upload (Blob is the single source of truth — local cache is rebuilt on demand by Phase 3 read helpers)
-- [ ] Idempotent: if Blob path exists and matches CSV row count, skip upload unless `--force`
-- [ ] Prints summary: row count (raw → after filter), file size, compression ratio, top-10 underlyings by row count
-
-### Phase 1b — Signed-URL helper endpoint
-
-- [ ] `api/_lib/blob-upload-url.ts` — generates a short-lived PUT signed URL for `flow/year=YYYY/month=MM/day=DD/data.parquet`
-- [ ] `api/blob-upload-url.ts` — owner-only endpoint (`rejectIfNotOwner`) that returns the signed URL given a `{ date }` body. Bot-protect via `botid` and add to `protect` array in `src/main.tsx`.
-- [ ] Python script calls this endpoint with the owner cookie (one-time export to env or stdin) before uploading.
+- [x] `scripts/ingest-flow.py` — CLI: `ml/.venv/bin/python scripts/ingest-flow.py <YYYY-MM-DD> [--input-dir ~/Downloads/EOD-OptionFlow] [--dry-run] [--keep-csv]`
+- [x] Reads CSV via `pl.scan_csv(schema=FLOW_SCHEMA, ...)` — streaming, no full RAM load
+- [x] Validates header column-by-column (hard fail on missing or extra columns vs the 30-column spec)
+- [x] **Filters to regular cash session: 13:30–20:00 UTC (08:30–15:00 CT) inclusive of 08:30, exclusive of 15:00.**
+- [x] Drops rows where `report_flags` contains `extended_hours_trade` (defense in depth)
+- [x] Sorts by `(underlying_symbol, executed_at)`
+- [x] Validates closed enums (`side`, `option_type`, `equity_type`) — hard fail if UW adds a category
+- [x] Writes local Parquet to `~/.flow-archive/year=YYYY/month=MM/day=DD/data.parquet` with zstd level 3, 1M row groups
+- [x] Uploads directly to Vercel Blob via REST API (`PUT https://vercel.com/api/blob/?pathname=...`, headers verified against `@vercel/blob` 2.3.3 SDK source). Reads `BLOB_READ_WRITE_TOKEN` from env (`source .env.local` first).
+- [x] Verifies upload by checking the response `pathname` matches what was sent
+- [x] **Deletes source CSV** from `--input-dir` after upload (skip if `--keep-csv`)
+- [x] **Deletes local Parquet** after upload (Blob is the single source of truth — local cache is rebuilt on demand by Phase 3 read helpers)
+- [x] Prints summary: row count (raw → after filter), file size, compression ratio, top-10 underlyings by row count
+- [x] Tests: `ml/tests/test_flow_ingest.py` — exercises `transform`, `validate_categoricals`, `validate_header`, `blob_pathname` with synthetic LazyFrames and tmp_path CSV fixtures.
 
 ### Phase 2 — Backfill
 
@@ -140,19 +135,20 @@ These run inside the ingest script and abort with a clear error before any Blob 
 
 **Created:**
 
-- `scripts/ingest-flow.py` — main ingest CLI
-- `scripts/backfill-flow.sh` — wrapper for existing files
-- `ml/src/flow_archive.py` — read helpers
-- `ml/tests/test_flow_archive.py` — unit tests for load/cache logic (mock Blob)
-- `docs/flow-archive-recipes.md` — DuckDB / Polars query examples
+- `scripts/ingest-flow.py` — main ingest CLI (single Python file, all logic incl. Blob upload)
+- `ml/tests/test_flow_ingest.py` — unit tests for transform, header validation, enum validation
+- `scripts/backfill-flow.sh` — wrapper for existing files (Phase 2)
+- `ml/src/flow_archive.py` — read helpers (Phase 3)
+- `ml/tests/test_flow_archive.py` — unit tests for load/cache logic (Phase 3)
+- `docs/flow-archive-recipes.md` — DuckDB / Polars query examples (Phase 3)
 
 **Modified:**
 
-- `pyproject.toml` (or wherever project deps live) — add `polars`, `pyarrow`. Blob upload uses raw HTTPS PUT against a signed URL (no Python Blob SDK required).
-- `src/main.tsx` — add `/api/blob-upload-url` to the `protect` array in `initBotId()`.
+- `ml/requirements.txt` — adds `polars>=1.20` (pyarrow + requests already present, used for Blob REST PUT)
 
 **Not modified:**
 
+- No Vercel Function changes — script reads `BLOB_READ_WRITE_TOKEN` directly from local env after `source .env.local`. No signed-URL endpoint needed for an owner-only single-machine workflow.
 - No Neon migration
 - No frontend UI changes
 
@@ -172,8 +168,8 @@ These run inside the ingest script and abort with a clear error before any Blob 
 
 - **Tickers:** archive ALL tickers UW exports — no underlying filter (~10.6M rows/day)
 - **Time filter:** PRE-filter to regular cash session 13:30–20:00 UTC (08:30–15:00 CT) at ingest. Drop `extended_hours_trade` flagged rows.
-- **Blob upload:** raw HTTPS PUT against signed URL from owner-only `/api/blob-upload-url` endpoint
-- **CSV cleanup:** DELETE source CSV from `--input-dir` after upload verification passes (HEAD request matches local Content-Length). Override with `--keep-csv` flag for paranoia.
+- **Blob upload:** direct PUT from Python `requests` to `https://vercel.com/api/blob/?pathname=...` with `BLOB_READ_WRITE_TOKEN` from local env. Headers (`x-api-version: 12`, `x-vercel-blob-access: private`, etc.) verified against `@vercel/blob` 2.3.3 SDK source.
+- **CSV cleanup:** DELETE source CSV from `--input-dir` after upload verification (response pathname matches sent pathname). Override with `--keep-csv` flag for paranoia.
 
 ## Open questions
 
