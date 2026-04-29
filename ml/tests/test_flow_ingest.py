@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
@@ -162,6 +163,108 @@ def test_validate_header_fails_on_missing_column(tmp_path: Path) -> None:
     csv.write_text(",".join(cols) + "\n")
     with pytest.raises(ValueError, match="rho"):
         ingest_flow.validate_header(csv)
+
+
+def test_upload_dispatches_singleshot_for_small_files(tmp_path: Path) -> None:
+    """Files under MULTIPART_THRESHOLD should go through _upload_singleshot."""
+    small = tmp_path / "small.parquet"
+    small.write_bytes(b"x" * (ingest_flow.MULTIPART_THRESHOLD - 1))
+    with (
+        patch.object(
+            ingest_flow, "_upload_singleshot", return_value={"url": "single"}
+        ) as ss,
+        patch.object(ingest_flow, "_upload_multipart") as mp,
+    ):
+        result = ingest_flow.upload_to_blob(small, "flow/x.parquet", "tok")
+    assert result == {"url": "single"}
+    ss.assert_called_once()
+    mp.assert_not_called()
+
+
+def test_upload_dispatches_multipart_for_large_files(tmp_path: Path) -> None:
+    """Files >= MULTIPART_THRESHOLD should go through _upload_multipart."""
+    large = tmp_path / "large.parquet"
+    large.write_bytes(b"x" * ingest_flow.MULTIPART_THRESHOLD)
+    with (
+        patch.object(ingest_flow, "_upload_singleshot") as ss,
+        patch.object(
+            ingest_flow, "_upload_multipart", return_value={"url": "multi"}
+        ) as mp,
+    ):
+        result = ingest_flow.upload_to_blob(large, "flow/x.parquet", "tok")
+    assert result == {"url": "multi"}
+    ss.assert_not_called()
+    mp.assert_called_once()
+
+
+def test_multipart_chunks_and_completes_in_order(tmp_path: Path) -> None:
+    """_upload_multipart should chunk by PART_SIZE, number parts 1..N, and call
+    create→upload×N→complete in that order with the right etags."""
+    # 2.5 parts worth of bytes — last chunk is smaller
+    parquet = tmp_path / "mid.parquet"
+    parquet.write_bytes(b"a" * int(ingest_flow.MULTIPART_PART_SIZE * 2.5))
+
+    create_resp = MagicMock(
+        ok=True, json=MagicMock(return_value={"key": "K", "uploadId": "U"})
+    )
+    part_responses = [
+        MagicMock(ok=True, json=MagicMock(return_value={"etag": f"E{i}"}))
+        for i in (1, 2, 3)
+    ]
+    complete_resp = MagicMock(
+        ok=True,
+        headers={"content-type": "application/json"},
+        json=MagicMock(return_value={"url": "https://blob/x", "pathname": "p"}),
+    )
+    # Sequence: create, part1, part2, part3, complete
+    with patch.object(
+        ingest_flow.requests,
+        "post",
+        side_effect=[create_resp, *part_responses, complete_resp],
+    ) as post:
+        result = ingest_flow._upload_multipart(parquet, "flow/x.parquet", "tok")
+
+    assert result == {"url": "https://blob/x", "pathname": "p"}
+    assert post.call_count == 5  # create + 3 parts + complete
+
+    # Verify x-mpu-action sequence
+    actions = [c.kwargs["headers"]["x-mpu-action"] for c in post.call_args_list]
+    assert actions == ["create", "upload", "upload", "upload", "complete"]
+
+    # Verify part numbers are 1, 2, 3 in order
+    part_numbers = [
+        c.kwargs["headers"]["x-mpu-part-number"]
+        for c in post.call_args_list
+        if c.kwargs["headers"]["x-mpu-action"] == "upload"
+    ]
+    assert part_numbers == ["1", "2", "3"]
+
+    # Verify complete payload carries all 3 etags with their part numbers
+    complete_body = post.call_args_list[-1].kwargs["json"]
+    assert complete_body == [
+        {"partNumber": 1, "etag": "E1"},
+        {"partNumber": 2, "etag": "E2"},
+        {"partNumber": 3, "etag": "E3"},
+    ]
+
+
+def test_multipart_propagates_part_failure(tmp_path: Path) -> None:
+    """If a single part upload fails, the whole multipart raises and the
+    caller (main) won't delete the source CSV."""
+    parquet = tmp_path / "mid.parquet"
+    parquet.write_bytes(b"a" * int(ingest_flow.MULTIPART_PART_SIZE * 1.5))
+
+    create_resp = MagicMock(
+        ok=True, json=MagicMock(return_value={"key": "K", "uploadId": "U"})
+    )
+    bad_part = MagicMock(ok=False, status_code=500, text="server boom")
+    with (
+        patch.object(
+            ingest_flow.requests, "post", side_effect=[create_resp, bad_part]
+        ),
+        pytest.raises(RuntimeError, match="mpu part 1 failed"),
+    ):
+        ingest_flow._upload_multipart(parquet, "flow/x.parquet", "tok")
 
 
 def test_full_pipeline_through_real_csv_shape(tmp_path: Path) -> None:

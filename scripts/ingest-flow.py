@@ -73,7 +73,13 @@ SANITY_FLOOR_ROWS = 1_000_000
 # (node_modules/@vercel/blob/dist/chunk-WLMB4XQD.js).
 BLOB_API_BASE = "https://vercel.com/api/blob"
 BLOB_API_VERSION = "12"
-BLOB_UPLOAD_TIMEOUT_S = 600  # 10 min ceiling for ~500 MB upload on slow links
+BLOB_UPLOAD_TIMEOUT_S = 600  # 10 min ceiling per request
+
+# Vercel Blob single-shot PUT 413's somewhere ~500 MB (observed: 493 MB worked,
+# 538 MB failed). Anything past this threshold goes through the /mpu multipart
+# protocol, which mirrors what the Node SDK does when `multipart: true`.
+MULTIPART_THRESHOLD = 100 * 1024 * 1024  # 100 MB
+MULTIPART_PART_SIZE = 50 * 1024 * 1024  # 50 MB per part — 11 parts for 550 MB
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INPUT_DIR = Path.home() / "Downloads" / "EOD-OptionFlow"
@@ -154,34 +160,35 @@ def validate_categoricals(df: pl.DataFrame) -> None:
             )
 
 
-def upload_to_blob(parquet_path: Path, pathname: str, token: str) -> dict:
-    """Single-shot PUT to Vercel Blob, mirroring @vercel/blob put() with
-    access='private', allowOverwrite=true, addRandomSuffix=false.
-
-    Returns the parsed JSON response: {url, downloadUrl, pathname, etag, ...}.
-    Raises RuntimeError on non-2xx OR on a 2xx that doesn't return JSON
-    (silent-failure guard — caller deletes source CSV based on success).
-    """
-    size = parquet_path.stat().st_size
-    qs = urllib.parse.urlencode({"pathname": pathname})
-    url = f"{BLOB_API_BASE}/?{qs}"
-    # Note: `content-length` (HTTP std) and `x-content-length` (SDK var) are both
-    # sent for parity with the Node SDK — the API accepts either. Don't drop
-    # one without testing; SDK varies which it sends per env (chunk-WLMB4XQD.js:584).
-    headers = {
+def _put_option_headers(token: str) -> dict[str, str]:
+    """Headers that map to put() options: auth, version, access, overwrite, type."""
+    return {
         "authorization": f"Bearer {token}",
         "x-api-version": BLOB_API_VERSION,
         "x-content-type": "application/vnd.apache.parquet",
-        "x-content-length": str(size),
         "x-vercel-blob-access": "private",
         "x-add-random-suffix": "0",
         "x-allow-overwrite": "1",
+    }
+
+
+def _upload_singleshot(parquet_path: Path, pathname: str, token: str) -> dict:
+    """Single-shot PUT for files under MULTIPART_THRESHOLD."""
+    size = parquet_path.stat().st_size
+    qs = urllib.parse.urlencode({"pathname": pathname})
+    headers = {
+        **_put_option_headers(token),
+        "x-content-length": str(size),
         "content-length": str(size),
         "content-type": "application/vnd.apache.parquet",
     }
     with parquet_path.open("rb") as f:
-        resp = requests.put(url, headers=headers, data=f, timeout=BLOB_UPLOAD_TIMEOUT_S)
-
+        resp = requests.put(
+            f"{BLOB_API_BASE}/?{qs}",
+            headers=headers,
+            data=f,
+            timeout=BLOB_UPLOAD_TIMEOUT_S,
+        )
     if not resp.ok:
         raise RuntimeError(
             f"Blob upload failed ({resp.status_code}): {resp.text[:500]}"
@@ -194,6 +201,136 @@ def upload_to_blob(parquet_path: Path, pathname: str, token: str) -> dict:
             f"(content-type={resp.headers.get('content-type')!r}, "
             f"body_preview={resp.text[:200]!r})"
         ) from exc
+
+
+def _mpu_create(pathname: str, token: str) -> dict:
+    """Initiate multipart upload — returns {key, uploadId}."""
+    qs = urllib.parse.urlencode({"pathname": pathname})
+    headers = {**_put_option_headers(token), "x-mpu-action": "create"}
+    resp = requests.post(
+        f"{BLOB_API_BASE}/mpu?{qs}", headers=headers, timeout=60
+    )
+    if not resp.ok:
+        raise RuntimeError(
+            f"mpu create failed ({resp.status_code}): {resp.text[:500]}"
+        )
+    return resp.json()
+
+
+def _mpu_upload_part(
+    pathname: str,
+    key: str,
+    upload_id: str,
+    part_number: int,
+    body: bytes,
+    token: str,
+) -> dict:
+    """Upload one part — returns {etag, partNumber}."""
+    qs = urllib.parse.urlencode({"pathname": pathname})
+    headers = {
+        **_put_option_headers(token),
+        "x-mpu-action": "upload",
+        "x-mpu-key": urllib.parse.quote(key, safe=""),
+        "x-mpu-upload-id": upload_id,
+        "x-mpu-part-number": str(part_number),
+        "content-length": str(len(body)),
+    }
+    resp = requests.post(
+        f"{BLOB_API_BASE}/mpu?{qs}",
+        headers=headers,
+        data=body,
+        timeout=BLOB_UPLOAD_TIMEOUT_S,
+    )
+    if not resp.ok:
+        raise RuntimeError(
+            f"mpu part {part_number} failed ({resp.status_code}): {resp.text[:500]}"
+        )
+    return resp.json()
+
+
+def _mpu_complete(
+    pathname: str,
+    key: str,
+    upload_id: str,
+    parts: list[dict],
+    token: str,
+) -> dict:
+    """Finalize multipart — returns final blob result {url, pathname, etag, ...}."""
+    qs = urllib.parse.urlencode({"pathname": pathname})
+    headers = {
+        **_put_option_headers(token),
+        "x-mpu-action": "complete",
+        "x-mpu-key": urllib.parse.quote(key, safe=""),
+        "x-mpu-upload-id": upload_id,
+        "content-type": "application/json",
+    }
+    resp = requests.post(
+        f"{BLOB_API_BASE}/mpu?{qs}", headers=headers, json=parts, timeout=60
+    )
+    if not resp.ok:
+        raise RuntimeError(
+            f"mpu complete failed ({resp.status_code}): {resp.text[:500]}"
+        )
+    try:
+        return resp.json()
+    except ValueError as exc:
+        raise RuntimeError(
+            f"mpu complete returned 2xx but body wasn't JSON "
+            f"(content-type={resp.headers.get('content-type')!r})"
+        ) from exc
+
+
+def _upload_multipart(parquet_path: Path, pathname: str, token: str) -> dict:
+    """Multipart upload via /mpu — required for files past the single-shot 413
+    cliff. Three-phase protocol (create → upload-parts → complete) mirroring
+    @vercel/blob put() with multipart=true.
+
+    Caveat: a failure between create and complete leaves an orphaned upload
+    session on Vercel's side. The SDK and its type definitions expose NO
+    server-side abort method — only a client-side AbortSignal for cancelling
+    in-flight fetches. Verified by greping `node_modules/@vercel/blob/dist/`.
+    Vercel will GC stale multipart sessions server-side (standard pattern;
+    S3 lifecycle equivalent). Reruns are safe because allowOverwrite=1.
+    """
+    size = parquet_path.stat().st_size
+    expected_parts = (size + MULTIPART_PART_SIZE - 1) // MULTIPART_PART_SIZE
+    print(
+        f"  multipart: {size / 1024**2:.1f} MB in ~{expected_parts} part(s) "
+        f"of {MULTIPART_PART_SIZE / 1024**2:.0f} MB"
+    )
+    create = _mpu_create(pathname, token)
+    key, upload_id = create["key"], create["uploadId"]
+
+    parts: list[dict] = []
+    part_number = 1
+    with parquet_path.open("rb") as f:
+        while True:
+            chunk = f.read(MULTIPART_PART_SIZE)
+            if not chunk:
+                break
+            print(
+                f"  part {part_number}/{expected_parts} ({len(chunk) / 1024**2:.1f} MB)"
+            )
+            result = _mpu_upload_part(
+                pathname, key, upload_id, part_number, chunk, token
+            )
+            parts.append({"partNumber": part_number, "etag": result["etag"]})
+            part_number += 1
+
+    return _mpu_complete(pathname, key, upload_id, parts, token)
+
+
+def upload_to_blob(parquet_path: Path, pathname: str, token: str) -> dict:
+    """Upload to Vercel Blob, dispatching single-shot vs multipart by size.
+
+    Returns the parsed JSON response: {url, downloadUrl, pathname, etag, ...}.
+    Raises RuntimeError on any failure — caller deletes source CSV only on
+    a clean return.
+    """
+    size = parquet_path.stat().st_size
+    if size >= MULTIPART_THRESHOLD:
+        return _upload_multipart(parquet_path, pathname, token)
+    return _upload_singleshot(parquet_path, pathname, token)
 
 
 def cleanup_empty_parents(path: Path, stop_at: Path) -> None:
