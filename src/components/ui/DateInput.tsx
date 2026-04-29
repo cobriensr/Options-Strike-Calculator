@@ -1,16 +1,14 @@
 /**
- * DateInputET — canonical date input anchored to **Eastern Time**
- * (the trading-day convention).
+ * DateInput — canonical styled date input for this app.
  *
  * Wraps the native `<input type="date">` (YYYY-MM-DD) with consistent
- * styling and the documented invariant that the value represents an
- * Eastern Time calendar date — matching the rest of this app's
- * trading-day convention.
+ * styling. The input itself is timezone-naive — it just edits a
+ * YYYY-MM-DD string.
  *
- * The native input is timezone-naive (it just edits a YYYY-MM-DD
- * string), so the ET anchoring is by convention only. Callers comparing
- * the value against "today" should use `getETToday()` from
- * `src/utils/timezone.ts` rather than rolling their own date helper.
+ * Trading-day convention: callers compare the value against "today"
+ * using `getETToday()` from `src/utils/timezone.ts` (the trading
+ * calendar is anchored to Eastern Time). The component does not
+ * enforce or surface this convention; it is owned by callers.
  *
  * Sister primitive to `TimeInputCT` — they're typically composed
  * together by sections that pick a trading-day calendar date plus an
@@ -19,17 +17,17 @@
 
 import { useId } from 'react';
 
-export interface DateInputETProps {
+export interface DateInputProps {
   /** YYYY-MM-DD string or empty. */
   value: string;
   onChange: (next: string) => void;
-  /** Visible label. The TZ suffix " (Eastern Time)" is appended automatically. */
+  /** Visible label. Also used as the accessible name. */
   label: string;
   /** Optional explicit id; one is generated if omitted. */
   id?: string;
-  /** Earliest accepted date as YYYY-MM-DD (ET). Inclusive. */
+  /** Earliest accepted date as YYYY-MM-DD. Inclusive. */
   min?: string;
-  /** Latest accepted date as YYYY-MM-DD (ET). Inclusive. */
+  /** Latest accepted date as YYYY-MM-DD. Inclusive. */
   max?: string;
   /** Render the label visually (default) or hide it accessibly. */
   labelVisible?: boolean;
@@ -42,7 +40,7 @@ export interface DateInputETProps {
 const DEFAULT_INPUT_CLASS =
   'border-edge bg-surface-alt text-text rounded border px-1.5 py-0.5 font-mono text-xs';
 
-export function DateInputET({
+export function DateInput({
   value,
   onChange,
   label,
@@ -52,10 +50,9 @@ export function DateInputET({
   labelVisible = true,
   list,
   className,
-}: Readonly<DateInputETProps>) {
+}: Readonly<DateInputProps>) {
   const generatedId = useId();
   const inputId = id ?? generatedId;
-  const ariaLabel = `${label} (Eastern Time)`;
 
   return (
     <span className="inline-flex items-center gap-1.5">
@@ -65,7 +62,7 @@ export function DateInputET({
         </label>
       ) : (
         <label htmlFor={inputId} className="sr-only">
-          {ariaLabel}
+          {label}
         </label>
       )}
       <input
@@ -76,7 +73,7 @@ export function DateInputET({
         min={min}
         max={max}
         list={list}
-        aria-label={ariaLabel}
+        aria-label={label}
         className={className ?? DEFAULT_INPUT_CLASS}
       />
     </span>

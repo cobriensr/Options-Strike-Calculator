@@ -9,7 +9,7 @@
 
 import { memo, useMemo } from 'react';
 import { theme } from '../../themes';
-import { DateInputET } from '../ui/DateInputET';
+import { DateInput } from '../ui/DateInput';
 import type { TraceLiveSummary } from './types';
 
 interface Props {
@@ -57,7 +57,7 @@ function TRACELiveControls({
     <div className="border-edge mt-3 flex flex-wrap items-center gap-3 border-t pt-3">
       <span className="text-muted flex items-center gap-2 text-[11px]">
         <span>Date:</span>
-        <DateInputET
+        <DateInput
           label="Trading day"
           labelVisible={false}
           value={selectedDate}

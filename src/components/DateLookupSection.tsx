@@ -1,6 +1,6 @@
 import type { VIXDayData, OHLCField } from '../types';
 import { SectionBox, Chip, ErrorMsg } from './ui';
-import { DateInputET } from './ui/DateInputET';
+import { DateInput } from './ui/DateInput';
 import { inputCls } from '../utils/ui-utils';
 import EventDayWarning from './EventDayWarning';
 import type { EventItem } from '../types/api';
@@ -24,7 +24,7 @@ export default function DateLookupSection({
 }: Readonly<Props>) {
   return (
     <SectionBox label="Date Lookup" collapsible>
-      <DateInputET
+      <DateInput
         id="lookup-date-picker"
         label="Select date"
         labelVisible={false}

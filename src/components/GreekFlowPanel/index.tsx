@@ -27,7 +27,7 @@ import {
 import { FlowChart } from './FlowChart';
 import { MetricsBar } from './MetricsBar';
 import { SectionBox } from '../ui';
-import { DateInputET } from '../ui/DateInputET';
+import { DateInput } from '../ui/DateInput';
 import { getETToday } from '../../utils/timezone';
 
 interface GreekFlowPanelProps {
@@ -101,7 +101,7 @@ function GreekFlowPanelInner({ marketOpen }: GreekFlowPanelProps) {
           LIVE
         </button>
       )}
-      <DateInputET
+      <DateInput
         value={selectedDate}
         onChange={setSelectedDate}
         label="Greek flow date"

@@ -10,7 +10,7 @@
 
 import { theme } from '../../themes';
 import { formatTimeCT } from '../../utils/component-formatters';
-import { DateInputET } from '../ui/DateInputET';
+import { DateInput } from '../ui/DateInput';
 
 interface Props {
   /** Current displayed snapshot timestamp (ISO). */
@@ -68,7 +68,7 @@ export function Header({
 
   return (
     <div className="flex items-center gap-2">
-      <DateInputET
+      <DateInput
         value={selectedDate}
         onChange={onDateChange}
         label="GEX per strike date"

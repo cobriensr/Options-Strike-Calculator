@@ -35,9 +35,7 @@ describe('TRACELiveControls', () => {
         isLive={false}
       />,
     );
-    expect(screen.getByLabelText('Trading day (Eastern Time)')).toHaveValue(
-      '2026-04-25',
-    );
+    expect(screen.getByLabelText('Trading day')).toHaveValue('2026-04-25');
   });
 
   it('disables the timestamp dropdown when the list is empty', () => {

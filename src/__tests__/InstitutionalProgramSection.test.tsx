@@ -149,7 +149,7 @@ describe('InstitutionalProgramSection', () => {
       error: null,
     });
     render(<InstitutionalProgramSection />);
-    const dateInput = screen.getByLabelText('Backtest date (Eastern Time)');
+    const dateInput = screen.getByLabelText('Backtest date');
     fireEvent.change(dateInput, { target: { value: '2026-04-20' } });
     expect(screen.getByText('HISTORICAL')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'reset' })).toBeInTheDocument();
@@ -177,7 +177,7 @@ describe('InstitutionalProgramSection', () => {
       error: null,
     });
     render(<InstitutionalProgramSection />);
-    fireEvent.change(screen.getByLabelText('Backtest date (Eastern Time)'), {
+    fireEvent.change(screen.getByLabelText('Backtest date'), {
       target: { value: '2026-04-20' },
     });
     fireEvent.change(screen.getByLabelText('Start time (Central Time)'), {

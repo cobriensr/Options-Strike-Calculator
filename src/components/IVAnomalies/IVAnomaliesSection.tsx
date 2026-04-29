@@ -1,6 +1,6 @@
 import { useState, type ReactElement } from 'react';
 import { SectionBox } from '../ui';
-import { DateInputET } from '../ui/DateInputET';
+import { DateInput } from '../ui/DateInput';
 import { useIVAnomalies } from '../../hooks/useIVAnomalies';
 import { useAnomalyCrossAsset } from '../../hooks/useAnomalyCrossAsset';
 import {
@@ -119,7 +119,7 @@ export function IVAnomaliesSection({
         >
           <span className="text-muted flex items-center gap-1.5 font-mono">
             date
-            <DateInputET
+            <DateInput
               label="Replay date"
               labelVisible={false}
               value={selectedDate}

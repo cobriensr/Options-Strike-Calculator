@@ -4,5 +4,5 @@ export { ScrollHint } from './ScrollHint';
 export { StatusBadge } from './StatusBadge';
 export { ErrorMsg } from './ErrorMsg';
 export { Tooltip } from './Tooltip';
-export { DateInputET } from './DateInputET';
+export { DateInput } from './DateInput';
 export { TimeInputCT } from './TimeInputCT';

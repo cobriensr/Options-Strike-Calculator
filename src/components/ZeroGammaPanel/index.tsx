@@ -28,7 +28,7 @@ import { memo, useState } from 'react';
 import { useZeroGamma } from '../../hooks/useZeroGamma';
 import { TickerCard } from './TickerCard';
 import { SectionBox } from '../ui';
-import { DateInputET } from '../ui/DateInputET';
+import { DateInput } from '../ui/DateInput';
 import { getETToday } from '../../utils/timezone';
 
 const TICKERS = ['SPX', 'NDX', 'SPY', 'QQQ'] as const;
@@ -58,7 +58,7 @@ function ZeroGammaPanelInner({ marketOpen }: ZeroGammaPanelProps) {
           LIVE
         </button>
       )}
-      <DateInputET
+      <DateInput
         value={selectedDate}
         onChange={setSelectedDate}
         label="Zero gamma date"

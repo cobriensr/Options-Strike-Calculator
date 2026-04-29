@@ -15,7 +15,7 @@ import { memo, useMemo, useState, useCallback } from 'react';
 import { theme } from '../themes';
 import { formatTimeCT } from '../utils/component-formatters';
 import { tint } from '../utils/ui-utils';
-import { DateInputET } from './ui/DateInputET';
+import { DateInput } from './ui/DateInput';
 import { SectionBox } from './ui';
 import { StatusBadge } from './ui';
 import type { DarkPoolLevel } from '../hooks/useDarkPoolLevels';
@@ -241,7 +241,7 @@ export default memo(function DarkPoolLevels({
       )}
 
       {/* Date picker */}
-      <DateInputET
+      <DateInput
         value={selectedDate ?? ''}
         onChange={onDateChange ?? (() => {})}
         label="Select date"

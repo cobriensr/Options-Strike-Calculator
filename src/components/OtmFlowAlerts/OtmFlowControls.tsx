@@ -16,7 +16,7 @@ import { useDebounced } from '../../hooks/useDebounced';
 import type { OtmFlowSettings } from '../../types/otm-flow';
 import { Chip } from '../ui';
 import { TimeInputCT } from '../ui/TimeInputCT';
-import { DateInputET } from '../ui/DateInputET';
+import { DateInput } from '../ui/DateInput';
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -141,7 +141,7 @@ export const OtmFlowControls = memo(function OtmFlowControls({
                 callback can commit directly without debouncing. */}
             <span className="flex items-center gap-1.5 font-mono text-[12px]">
               <span className="text-muted">Date</span>
-              <DateInputET
+              <DateInput
                 label="Historical date"
                 value={settings.historicalDate}
                 onChange={(d) => updateSettings({ historicalDate: d })}
