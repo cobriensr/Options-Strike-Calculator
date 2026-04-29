@@ -431,18 +431,23 @@ describe('useGexTarget: gating', () => {
     expect(result.current.loading).toBe(false);
   });
 
-  it('does not fetch and does not poll when market is closed for today', async () => {
-    // Today + market closed (weekend, pre-market, or post-session): no
-    // snapshots exist or are being written, so skip the bulk load entirely.
-    // Backtest browsing via setSelectedDate still works — isToday becomes
-    // false for any past date and the guard is bypassed.
+  it('bulk-loads once but does not poll when market is closed for today', async () => {
+    // Today + market closed (weekend, pre-market, post-session): post-session
+    // still has the day's snapshots that the user can scrub through, so the
+    // bulk load fires on mount. Live polling stays gated separately on
+    // marketOpen and never starts ticking. Pre-market / weekend dates return
+    // empty snapshot lists from the server and degrade gracefully.
     renderHook(() => useGexTarget(false));
+
+    await act(async () => {});
+    const callsAfterMount = mockFetch.mock.calls.length;
+    expect(callsAfterMount).toBeGreaterThan(0);
 
     await act(async () => {
       vi.advanceTimersByTime(POLL_INTERVALS.GEX_TARGET * 5);
     });
 
-    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockFetch.mock.calls.length).toBe(callsAfterMount);
   });
 
   it('sets loading to false when market closed', async () => {

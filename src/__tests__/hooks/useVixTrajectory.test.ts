@@ -144,10 +144,22 @@ describe('useVixTrajectory hook', () => {
     expect(result.current.hasData).toBe(false);
   });
 
-  it('does not fetch when market is closed', async () => {
+  it('fetches once but does not poll when market is closed', async () => {
+    // Post-session and weekends still need to show today's last snapshots,
+    // so the initial fetch is unconditional. Live polling stays gated on
+    // marketOpen so we don't hammer the API outside market hours.
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ snapshots: [] }),
+    });
     renderHook(() => useVixTrajectory(false));
-    await act(async () => {});
-    expect(fetchMock).not.toHaveBeenCalled();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.MARKET_DATA * 5);
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('fetches once on mount and updates state when owner + market open', async () => {

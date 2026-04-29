@@ -428,22 +428,17 @@ export function useGexTarget(
   }, [selectedDate]);
 
   // Effect 1 -- Bulk load (fires on date change or market-open transition).
-  // Clears the stale cache and fetches all snapshots for the new date in one
-  // request. This sets the initial state from the latest snapshot and
-  // pre-populates the cache for instant scrubbing.
-  //
-  // Skips the fetch when viewing today but the market is not open: weekends
-  // and pre/post-session times have no live snapshots, so hitting the server
-  // only produces noise. `marketOpen` is in the dep array so the effect
-  // re-fires automatically when the session starts (e.g. user had the page
-  // open before 9:30 AM ET). Historical-date browsing is always allowed
-  // because `isToday` is false for any past date.
+  // Clears the stale cache and fetches all snapshots for the current date in
+  // one request, sets initial state from the latest snapshot, and pre-populates
+  // the cache for instant scrubbing. Always loads when the user is the owner:
+  // post-session today still has the day's snapshots to scrub through, and
+  // pre-session / weekend dates degrade gracefully to an empty list. Live
+  // polling stays gated on `marketOpen` in Effect 2 below; this effect just
+  // ensures the static day-of data is available as soon as the panel mounts.
+  // `marketOpen` stays in the dep array so the effect re-fires when the
+  // session starts (e.g. page was open before 9:30 AM ET).
   useEffect(() => {
     if (!isOwner) {
-      setLoading(false);
-      return;
-    }
-    if (isToday && !marketOpen) {
       setLoading(false);
       return;
     }

@@ -147,9 +147,16 @@ export function useVixTrajectory(marketOpen: boolean): VixTrajectoryState {
     };
   }, []);
 
+  // Initial fetch when ownership resolves -- runs regardless of marketOpen so
+  // the panel still shows today's most recent VIX snapshots after the close.
+  // The poll loop below is the live-data path and stays gated on marketOpen.
+  useEffect(() => {
+    if (!isOwner) return;
+    void fetchSnapshots();
+  }, [isOwner, fetchSnapshots]);
+
   useEffect(() => {
     if (!isOwner || !marketOpen) return;
-    fetchSnapshots();
     const id = setInterval(fetchSnapshots, POLL_INTERVALS.MARKET_DATA);
     return () => clearInterval(id);
   }, [isOwner, marketOpen, fetchSnapshots]);
