@@ -27,6 +27,7 @@
 import { memo, useState } from 'react';
 import { useZeroGamma } from '../../hooks/useZeroGamma';
 import { TickerCard } from './TickerCard';
+import { SectionBox } from '../ui';
 import { DateInputET } from '../ui/DateInputET';
 import { getETToday } from '../../utils/timezone';
 
@@ -46,44 +47,33 @@ function ZeroGammaPanelInner({ marketOpen }: ZeroGammaPanelProps) {
   // Pass `null` for live (omits ?date=...), the chosen date otherwise.
   const dateArg = isLive ? null : selectedDate;
 
-  return (
-    <section
-      className="border-edge bg-surface-alt rounded-lg border p-4"
-      aria-labelledby="zero-gamma-heading"
-    >
-      <header className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-        <div>
-          <h2
-            id="zero-gamma-heading"
-            className="text-primary font-sans text-lg font-semibold"
-          >
-            Zero Gamma
-          </h2>
-          <p className="text-secondary mt-1 font-sans text-xs">
-            Regime boundary across SPX / NDX / SPY / QQQ. Spot above ZG =
-            suppression; spot below = acceleration.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {!isLive && (
-            <button
-              type="button"
-              onClick={() => setSelectedDate(today)}
-              className="text-secondary hover:text-primary border-edge cursor-pointer rounded border bg-transparent px-2 py-0.5 font-mono text-[10px]"
-            >
-              LIVE
-            </button>
-          )}
-          <DateInputET
-            value={selectedDate}
-            onChange={setSelectedDate}
-            label="Zero gamma date"
-            labelVisible={false}
-            className="text-secondary border-edge rounded border bg-transparent px-1.5 py-0.5 font-mono text-[10px]"
-          />
-        </div>
-      </header>
+  const headerRight = (
+    <div className="flex items-center gap-2">
+      {!isLive && (
+        <button
+          type="button"
+          onClick={() => setSelectedDate(today)}
+          className="text-secondary hover:text-primary border-edge cursor-pointer rounded border bg-transparent px-2 py-0.5 font-mono text-[10px]"
+        >
+          LIVE
+        </button>
+      )}
+      <DateInputET
+        value={selectedDate}
+        onChange={setSelectedDate}
+        label="Zero gamma date"
+        labelVisible={false}
+        className="text-secondary border-edge rounded border bg-transparent px-1.5 py-0.5 font-mono text-[10px]"
+      />
+    </div>
+  );
 
+  return (
+    <SectionBox label="Zero Gamma" headerRight={headerRight} collapsible>
+      <p className="text-secondary mb-3 font-sans text-xs">
+        Regime boundary across SPX / NDX / SPY / QQQ. Spot above ZG =
+        suppression; spot below = acceleration.
+      </p>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
         {TICKERS.map((ticker) => (
           <TickerCardContainer
@@ -94,7 +84,7 @@ function ZeroGammaPanelInner({ marketOpen }: ZeroGammaPanelProps) {
           />
         ))}
       </div>
-    </section>
+    </SectionBox>
   );
 }
 

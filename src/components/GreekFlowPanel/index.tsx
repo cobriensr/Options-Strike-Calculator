@@ -26,6 +26,7 @@ import {
 } from '../../hooks/useGreekFlow';
 import { FlowChart } from './FlowChart';
 import { MetricsBar } from './MetricsBar';
+import { SectionBox } from '../ui';
 import { DateInputET } from '../ui/DateInputET';
 import { getETToday } from '../../utils/timezone';
 
@@ -88,53 +89,42 @@ function GreekFlowPanelInner({ marketOpen }: GreekFlowPanelProps) {
 
   const { data, loading, error } = useGreekFlow(effectiveMarketOpen, dateArg);
 
-  return (
-    <section
-      className="border-edge bg-surface-alt rounded-lg border p-4"
-      aria-labelledby="greek-flow-heading"
-    >
-      <header className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-        <div>
-          <h2
-            id="greek-flow-heading"
-            className="text-primary font-sans text-lg font-semibold"
-          >
-            Greek Flow
-          </h2>
-          <p className="text-secondary mt-1 font-sans text-xs">
-            Cumulative directional Δ &amp; V flow for SPY / QQQ. Slope =
-            momentum; flip = sign change in last 30m; cliff = abnormal 10-min Δ
-            in 14:00–15:00 CT; div = SPY/QQQ sign disagreement.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <TickerTabs active={activeTicker} onChange={setActiveTicker} />
-          {!isLive && (
-            <button
-              type="button"
-              onClick={() => setSelectedDate(today)}
-              className="text-secondary hover:text-primary border-edge cursor-pointer rounded border bg-transparent px-2 py-0.5 font-mono text-[10px]"
-            >
-              LIVE
-            </button>
-          )}
-          <DateInputET
-            value={selectedDate}
-            onChange={setSelectedDate}
-            label="Greek flow date"
-            labelVisible={false}
-            className="text-secondary border-edge rounded border bg-transparent px-1.5 py-0.5 font-mono text-[10px]"
-          />
-        </div>
-      </header>
+  const headerRight = (
+    <div className="flex items-center gap-2">
+      <TickerTabs active={activeTicker} onChange={setActiveTicker} />
+      {!isLive && (
+        <button
+          type="button"
+          onClick={() => setSelectedDate(today)}
+          className="text-secondary hover:text-primary border-edge cursor-pointer rounded border bg-transparent px-2 py-0.5 font-mono text-[10px]"
+        >
+          LIVE
+        </button>
+      )}
+      <DateInputET
+        value={selectedDate}
+        onChange={setSelectedDate}
+        label="Greek flow date"
+        labelVisible={false}
+        className="text-secondary border-edge rounded border bg-transparent px-1.5 py-0.5 font-mono text-[10px]"
+      />
+    </div>
+  );
 
+  return (
+    <SectionBox label="Greek Flow" headerRight={headerRight} collapsible>
+      <p className="text-secondary mb-3 font-sans text-xs">
+        Cumulative directional Δ &amp; V flow for SPY / QQQ. Slope = momentum;
+        flip = sign change in last 30m; cliff = abnormal 10-min Δ in 14:00–15:00
+        CT; div = SPY/QQQ sign disagreement.
+      </p>
       <Body
         data={data}
         loading={loading}
         error={error}
         activeTicker={activeTicker}
       />
-    </section>
+    </SectionBox>
   );
 }
 
