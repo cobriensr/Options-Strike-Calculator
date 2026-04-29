@@ -154,26 +154,51 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    const { ticker, limit } = parsed.data;
+    const { ticker, limit, at } = parsed.data;
     const sql = getDb();
+
+    // Replay window: when `at` is provided, return squeezes in the 24h
+    // window ending at that timestamp. Mirrors the IV anomalies replay
+    // shape so the scrubber UX is identical across the two panels.
+    const REPLAY_WINDOW_MS = 24 * 60 * 60 * 1000;
+    const atDate = at ? new Date(at) : null;
+    const atFloor = atDate
+      ? new Date(atDate.getTime() - REPLAY_WINDOW_MS)
+      : null;
 
     try {
       const requested: Ticker[] = ticker ? [ticker] : [...TICKERS];
 
       const bundles = await Promise.all(
         requested.map(async (t) => {
-          const rows = (await sql`
-            SELECT id, ticker, strike, side, expiry, ts,
-                   spot_at_detect, pct_from_strike, spot_trend_5m,
-                   vol_oi_15m, vol_oi_15m_prior, vol_oi_acceleration, vol_oi_total,
-                   net_gamma_sign, squeeze_phase, context_snapshot,
-                   spot_at_close, reached_strike, max_call_pnl_pct
-            FROM gamma_squeeze_events
-            WHERE ticker = ${t}
-              AND ts >= NOW() - INTERVAL '24 hours'
-            ORDER BY ts DESC
-            LIMIT ${limit}
-          `) as RawSqueezeRow[];
+          const rows = (
+            atDate && atFloor
+              ? await sql`
+              SELECT id, ticker, strike, side, expiry, ts,
+                     spot_at_detect, pct_from_strike, spot_trend_5m,
+                     vol_oi_15m, vol_oi_15m_prior, vol_oi_acceleration, vol_oi_total,
+                     net_gamma_sign, squeeze_phase, context_snapshot,
+                     spot_at_close, reached_strike, max_call_pnl_pct
+              FROM gamma_squeeze_events
+              WHERE ticker = ${t}
+                AND ts <= ${atDate.toISOString()}
+                AND ts >= ${atFloor.toISOString()}
+              ORDER BY ts DESC
+              LIMIT ${limit}
+            `
+              : await sql`
+              SELECT id, ticker, strike, side, expiry, ts,
+                     spot_at_detect, pct_from_strike, spot_trend_5m,
+                     vol_oi_15m, vol_oi_15m_prior, vol_oi_acceleration, vol_oi_total,
+                     net_gamma_sign, squeeze_phase, context_snapshot,
+                     spot_at_close, reached_strike, max_call_pnl_pct
+              FROM gamma_squeeze_events
+              WHERE ticker = ${t}
+                AND ts >= NOW() - INTERVAL '24 hours'
+              ORDER BY ts DESC
+              LIMIT ${limit}
+            `
+          ) as RawSqueezeRow[];
           return { ticker: t, rows: rows.map(mapSqueeze) };
         }),
       );
