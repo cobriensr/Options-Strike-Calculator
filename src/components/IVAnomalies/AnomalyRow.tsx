@@ -15,6 +15,25 @@ import type {
 } from './types';
 import { derivePattern } from './types';
 import { StrikeIVChart } from './StrikeIVChart';
+import { Tooltip } from '../ui';
+import {
+  ACTIVE_DURATION_TIP,
+  ANOMALY_PHASE_TIPS,
+  EXP_TIP,
+  FIRINGS_TIP,
+  FLAG_REASON_TIP,
+  FLOW_PHASE_TIPS,
+  FLOW_PHASE_UNCLASSIFIED_TIP,
+  GEX_ZONE_TIP,
+  LAST_FIRE_TIP,
+  PATTERN_TIPS,
+  REGIME_TIP,
+  TAPE_ALIGN_TIP,
+  VIX_DIR_TIP,
+  VOL_OI_TIP,
+  dpClusterTip,
+  sideSkewTip,
+} from './tooltips';
 
 /**
  * Per-active-strike row. Each row represents ONE compound key
@@ -117,9 +136,11 @@ export function AnomalyRow({
             askPct={latest.askPct}
             totalVolAtDetect={latest.totalVolAtDetect}
           />
-          <span className="text-muted font-mono text-[10px]">
-            exp {anomaly.expiry}
-          </span>
+          <Tooltip content={EXP_TIP}>
+            <span className="text-muted cursor-help font-mono text-[10px]">
+              exp {anomaly.expiry}
+            </span>
+          </Tooltip>
           <AnomalyPhasePill phase={anomaly.phase} />
           <FlowPhasePill phase={phase} />
           <PatternPill pattern={pattern} />
@@ -132,15 +153,21 @@ export function AnomalyRow({
           <GEXZonePill zone={crossAsset?.gexZone ?? 'na'} side={anomaly.side} />
           <VIXDirPill direction={crossAsset?.vixDirection ?? 'unknown'} />
           <div className="ml-auto flex flex-wrap items-center gap-1">
-            <span className="text-muted ml-2 font-mono text-[10px]">
-              active {activeDurationLabel}
-            </span>
-            <span className="text-muted font-mono text-[10px]">
-              last fire {freshnessLabel}
-            </span>
-            <span className="text-muted font-mono text-[10px]">
-              firings: {anomaly.firingCount}
-            </span>
+            <Tooltip content={ACTIVE_DURATION_TIP}>
+              <span className="text-muted ml-2 cursor-help font-mono text-[10px]">
+                active {activeDurationLabel}
+              </span>
+            </Tooltip>
+            <Tooltip content={LAST_FIRE_TIP}>
+              <span className="text-muted cursor-help font-mono text-[10px]">
+                last fire {freshnessLabel}
+              </span>
+            </Tooltip>
+            <Tooltip content={FIRINGS_TIP}>
+              <span className="text-muted cursor-help font-mono text-[10px]">
+                firings: {anomaly.firingCount}
+              </span>
+            </Tooltip>
           </div>
         </div>
         {/* Flag badges live on a second row below so the new cross-asset pills
@@ -234,13 +261,14 @@ function VolOiPill({ ratio }: { readonly ratio: number | null }) {
     tier = 'bg-amber-500/20 text-amber-200';
   }
   return (
-    <span
-      className={`rounded-md px-2 py-0.5 font-mono text-[11px] font-bold ${tier}`}
-      data-testid="vol-oi-pill"
-      title="cumulative intraday volume / start-of-day open interest"
-    >
-      vol/OI {formatVolOi(ratio)}
-    </span>
+    <Tooltip content={VOL_OI_TIP}>
+      <span
+        className={`cursor-help rounded-md px-2 py-0.5 font-mono text-[11px] font-bold ${tier}`}
+        data-testid="vol-oi-pill"
+      >
+        vol/OI {formatVolOi(ratio)}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -315,17 +343,23 @@ function SideSkewPill({
     Number.isFinite(explicitPct) &&
     totalVolAtDetect != null &&
     Number.isFinite(totalVolAtDetect);
-  const title = hasRealTape
-    ? `${pct}% of ${formatVolume(totalVolAtDetect!)} cumulative volume printed at the ${sideDominant} today`
-    : `Legacy IV-spread proxy: ${label} side carries ${pct}% of the bid-ask IV spread`;
   return (
-    <span
-      className={`rounded-md px-2 py-0.5 font-mono text-[10px] font-bold ${tier}`}
-      data-testid="side-skew-pill"
-      title={title}
+    <Tooltip
+      content={sideSkewTip({
+        sideDominant,
+        pct,
+        hasRealTape,
+        totalVol: totalVolAtDetect,
+        formatVolume,
+      })}
     >
-      {label} {pct}%
-    </span>
+      <span
+        className={`cursor-help rounded-md px-2 py-0.5 font-mono text-[10px] font-bold ${tier}`}
+        data-testid="side-skew-pill"
+      >
+        {label} {pct}%
+      </span>
+    </Tooltip>
   );
 }
 
@@ -337,12 +371,14 @@ function AnomalyPhasePill({ phase }: { readonly phase: IVAnomalyPhase }) {
     distributing: 'bg-orange-600/30 text-orange-300',
   };
   return (
-    <span
-      className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold ${classes[phase]}`}
-      data-testid={`anomaly-phase-${phase}`}
-    >
-      {phase}
-    </span>
+    <Tooltip content={ANOMALY_PHASE_TIPS[phase]}>
+      <span
+        className={`cursor-help rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold ${classes[phase]}`}
+        data-testid={`anomaly-phase-${phase}`}
+      >
+        {phase}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -360,19 +396,14 @@ function PatternPill({ pattern }: { readonly pattern: AnomalyPattern }) {
     persistent: 'bg-zinc-500/20 text-zinc-400',
   };
   return (
-    <span
-      className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold ${classes[pattern]}`}
-      data-testid={`anomaly-pattern-${pattern}`}
-      title={
-        pattern === 'flash'
-          ? 'Flash: <5 min, <3 firings — empirically best win rate (Phase D4).'
-          : pattern === 'persistent'
-            ? 'Persistent: ≥60 min or ≥20 firings — empirically lower win rate.'
-            : 'Medium: between flash and persistent.'
-      }
-    >
-      {pattern}
-    </span>
+    <Tooltip content={PATTERN_TIPS[pattern]}>
+      <span
+        className={`cursor-help rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold ${classes[pattern]}`}
+        data-testid={`anomaly-pattern-${pattern}`}
+      >
+        {pattern}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -410,13 +441,14 @@ function RegimePill({
   readonly side: IVAnomalySide;
 }) {
   return (
-    <span
-      className={`${PILL_BASE} ${regimeColor(regime, side)}`}
-      data-testid={`anomaly-regime-${regime}`}
-      title="Underlying's same-day % change vs alert direction (Phase D0 regime spine). Green = trend supports the alert side; red = trend against."
-    >
-      {regime}
-    </span>
+    <Tooltip content={REGIME_TIP}>
+      <span
+        className={`cursor-help ${PILL_BASE} ${regimeColor(regime, side)}`}
+        data-testid={`anomaly-regime-${regime}`}
+      >
+        {regime}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -428,13 +460,14 @@ function tapeColor(alignment: TapeAlignment): string {
 
 function TapeAlignPill({ alignment }: { readonly alignment: TapeAlignment }) {
   return (
-    <span
-      className={`${PILL_BASE} ${tapeColor(alignment)}`}
-      data-testid={`anomaly-tape-${alignment}`}
-      title="NQ/ES/RTY/SPX direction over last 15 min vs alert side (Phase E1). Edge is small post-correction: +2pt on mild_trend_up days, but inverts −8pt on chop days (contradicted outperforms aligned)."
-    >
-      tape: {alignment}
-    </span>
+    <Tooltip content={TAPE_ALIGN_TIP}>
+      <span
+        className={`cursor-help ${PILL_BASE} ${tapeColor(alignment)}`}
+        data-testid={`anomaly-tape-${alignment}`}
+      >
+        tape: {alignment}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -445,24 +478,15 @@ function dpColor(cluster: DPCluster): string {
 }
 
 function DPClusterPill({ cluster }: { readonly cluster: DPCluster }) {
-  const tooltip =
-    cluster === 'large'
-      ? 'Dark-pool premium >$200M at this strike (Phase E2). On mild-trend-up days SPXW calls with DP confluence won 91.7% (n=36, tentative — sample-period bias possible).'
-      : cluster === 'medium'
-        ? 'Dark-pool premium $50-200M at this strike. Phase E2 saw 71.4% win rate on mild-trend-up SPXW calls (n=42).'
-        : cluster === 'small'
-          ? 'Small dark-pool premium (<$50M) at strike. No directional edge.'
-          : cluster === 'na'
-            ? 'Dark-pool data only attributed for SPXW alerts in this dataset.'
-            : 'No dark-pool premium clustered at this strike.';
   return (
-    <span
-      className={`${PILL_BASE} ${dpColor(cluster)}`}
-      data-testid={`anomaly-dp-${cluster}`}
-      title={tooltip}
-    >
-      DP: {cluster}
-    </span>
+    <Tooltip content={dpClusterTip(cluster)}>
+      <span
+        className={`cursor-help ${PILL_BASE} ${dpColor(cluster)}`}
+        data-testid={`anomaly-dp-${cluster}`}
+      >
+        DP: {cluster}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -483,13 +507,14 @@ function GEXZonePill({
   readonly side: IVAnomalySide;
 }) {
   return (
-    <span
-      className={`${PILL_BASE} ${gexColor(zone, side)}`}
-      data-testid={`anomaly-gex-${zone}`}
-      title="Nearest top-3 abs_gex strike vs current spot (Phase E4). On mild_trend_up days, calls win 68.7% with GEX below spot (n=195) vs 39.7% above (n=827); puts mirror."
-    >
-      GEX: {zone}
-    </span>
+    <Tooltip content={GEX_ZONE_TIP}>
+      <span
+        className={`cursor-help ${PILL_BASE} ${gexColor(zone, side)}`}
+        data-testid={`anomaly-gex-${zone}`}
+      >
+        GEX: {zone}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -501,13 +526,14 @@ function vixColor(direction: VIXDirection): string {
 
 function VIXDirPill({ direction }: { readonly direction: VIXDirection }) {
   return (
-    <span
-      className={`${PILL_BASE} ${vixColor(direction)}`}
-      data-testid={`anomaly-vix-${direction}`}
-      title="VIX 30-min change at alert (Phase E3). Chop + falling VIX + put is the only put-side cell with positive mean dollar (27.7% win, +$66 mean, n=137)."
-    >
-      VIX: {direction}
-    </span>
+    <Tooltip content={VIX_DIR_TIP}>
+      <span
+        className={`cursor-help ${PILL_BASE} ${vixColor(direction)}`}
+        data-testid={`anomaly-vix-${direction}`}
+      >
+        VIX: {direction}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -519,9 +545,11 @@ function FlowPhasePill({
 }) {
   if (!phase) {
     return (
-      <span className="rounded-full bg-slate-700/40 px-2 py-0.5 font-mono text-[10px] font-semibold text-slate-300">
-        unclassified
-      </span>
+      <Tooltip content={FLOW_PHASE_UNCLASSIFIED_TIP}>
+        <span className="cursor-help rounded-full bg-slate-700/40 px-2 py-0.5 font-mono text-[10px] font-semibold text-slate-300">
+          unclassified
+        </span>
+      </Tooltip>
     );
   }
   const classes: Record<IVAnomalyFlowPhase, string> = {
@@ -530,11 +558,13 @@ function FlowPhasePill({
     reactive: 'bg-rose-500/20 text-rose-300',
   };
   return (
-    <span
-      className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold ${classes[phase]}`}
-    >
-      {phase}
-    </span>
+    <Tooltip content={FLOW_PHASE_TIPS[phase]}>
+      <span
+        className={`cursor-help rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold ${classes[phase]}`}
+      >
+        {phase}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -580,9 +610,11 @@ function buildExitSubtitle(anomaly: ActiveAnomaly): string | null {
 
 function FlagBadge({ reason }: { readonly reason: string }) {
   return (
-    <span className="bg-accent-bg text-accent rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold">
-      {reason}
-    </span>
+    <Tooltip content={FLAG_REASON_TIP}>
+      <span className="bg-accent-bg text-accent cursor-help rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold">
+        {reason}
+      </span>
+    </Tooltip>
   );
 }
 
