@@ -338,6 +338,8 @@ export const POLL_INTERVALS = {
   DARK_POOL: 60_000,
   /** Zero-gamma per-ticker refresh (useZeroGamma) — matches the 5-min compute cron */
   ZERO_GAMMA: 60_000,
+  /** Greek flow refresh (useGreekFlow) — matches the every-minute fetch-greek-flow-etf cron */
+  GREEK_FLOW: 60_000,
   /** GEX per strike refresh (useGexPerStrike) */
   GEX_STRIKE: 60_000,
   /** GexTarget history refresh (useGexTarget) — matches the 1-min cron cadence */

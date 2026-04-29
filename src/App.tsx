@@ -114,6 +114,11 @@ const ZeroGammaPanel = lazy(() =>
     .then((m) => ({ default: m.ZeroGammaPanel }))
     .catch(handleStaleChunk),
 );
+const GreekFlowPanel = lazy(() =>
+  import('./components/GreekFlowPanel')
+    .then((m) => ({ default: m.GreekFlowPanel }))
+    .catch(handleStaleChunk),
+);
 const BWBCalculator = lazy(() =>
   import('./components/BWBCalculator').catch(handleStaleChunk),
 );
@@ -672,6 +677,7 @@ export default function StrikeCalculator() {
             { id: 'sec-zero-gamma', label: 'Zero Gamma' },
             { id: 'sec-market-internals', label: 'Breadth & TICK' },
             { id: 'sec-vega-spikes', label: 'Dir Vega Spikes' },
+            { id: 'sec-greek-flow', label: 'Greek Flow' },
             { id: 'sec-market-flow', label: 'Market Flow' },
             { id: 'sec-otm-flow', label: 'OTM Flow Alerts' },
             { id: 'sec-institutional-program', label: 'Institutional Program' },
@@ -1285,6 +1291,19 @@ export default function StrikeCalculator() {
                       <VegaSpikeFeed
                         marketOpen={market.data.quotes?.marketOpen ?? false}
                       />
+                    </ErrorBoundary>
+                  </>
+                )}
+
+                {isAuthenticated && (market.hasData || !!historySnapshot) && (
+                  <>
+                    <span id="sec-greek-flow" className="block scroll-mt-28" />
+                    <ErrorBoundary label="Greek Flow">
+                      <Suspense fallback={<SkeletonSection lines={5} />}>
+                        <GreekFlowPanel
+                          marketOpen={market.data.quotes?.marketOpen ?? false}
+                        />
+                      </Suspense>
                     </ErrorBoundary>
                   </>
                 )}
