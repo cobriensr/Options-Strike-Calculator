@@ -9,6 +9,12 @@
  * Active-span eviction: a compound key drops off the board after
  * `SQUEEZE_SILENCE_MS` of no fresh firings. Matches the IV anomaly
  * silence convention.
+ *
+ * Replay scrubber: composes `useTimeGridScrubber` (same shared hook as
+ * IV Anomalies). When scrubbed, polling halts and the fetch carries
+ * `?at=<utc-iso>` so the backend rebuilds the active board from the
+ * 24h window ending at that moment. Returning to live (`scrubLive()`)
+ * restarts the 30s poll loop.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -19,9 +25,17 @@ import type {
   GammaSqueezesResponse,
 } from '../components/GammaSqueezes/types';
 import { squeezeCompoundKey } from '../components/GammaSqueezes/types';
+import { useTimeGridScrubber } from './useTimeGridScrubber';
+import { ctWallClockToUtcIso, getETToday } from '../utils/timezone';
 
 const POLL_MS = 30_000;
 const SQUEEZE_SILENCE_MS = 8 * 60 * 1000; // 8 min — matches gamma-window cadence
+
+/** Convert HH:MM (24h) into minutes-past-midnight. */
+function hhmmToMin(hhmm: string): number {
+  const [h, m] = hhmm.split(':').map((v) => Number.parseInt(v, 10));
+  return (h ?? 0) * 60 + (m ?? 0);
+}
 
 interface UseGammaSqueezesArgs {
   readonly enabled?: boolean;
@@ -33,6 +47,19 @@ interface UseGammaSqueezesResult {
   readonly loading: boolean;
   readonly error: string | null;
   readonly refresh: () => void;
+  // Replay scrubber — mirrors useIVAnomalies surface.
+  readonly selectedDate: string;
+  readonly setSelectedDate: (d: string) => void;
+  readonly scrubTime: string | null;
+  readonly isLive: boolean;
+  readonly isScrubbed: boolean;
+  readonly canScrubPrev: boolean;
+  readonly canScrubNext: boolean;
+  readonly scrubPrev: () => void;
+  readonly scrubNext: () => void;
+  readonly scrubTo: (time: string) => void;
+  readonly scrubLive: () => void;
+  readonly timeGrid: readonly string[];
 }
 
 export function useGammaSqueezes({
@@ -46,11 +73,36 @@ export function useGammaSqueezes({
   const [error, setError] = useState<string | null>(null);
   const fetchSeq = useRef(0);
 
-  const refresh = useCallback(async () => {
+  // Replay scrubber: same shape as useIVAnomalies.
+  const scrubber = useTimeGridScrubber();
+  const { scrubTime, isScrubbed, scrubLive } = scrubber;
+  const [selectedDate, setSelectedDate] = useState<string>(getETToday);
+  const isToday = selectedDate === getETToday();
+  const isLive = isToday && scrubTime === null;
+
+  // Switching dates always reverts to live within that day.
+  useEffect(() => {
+    scrubLive();
+  }, [selectedDate, scrubLive]);
+
+  // Compose the `?at=` value sent to the backend. Live mode → omit param.
+  // Scrubbed → ctWallClockToUtcIso(selectedDate, scrubTime). Past-day no-scrub
+  // defaults to 15:00 CT (session close) so the user sees that day's
+  // end-of-day board on first selection.
+  const replayIso: string | null = isLive
+    ? null
+    : isScrubbed
+      ? ctWallClockToUtcIso(selectedDate, hhmmToMin(scrubTime!))
+      : ctWallClockToUtcIso(selectedDate, 15 * 60);
+
+  const refresh = useCallback(async (atIso?: string | null) => {
     const seq = ++fetchSeq.current;
     setLoading(true);
     try {
-      const r = await fetch('/api/gamma-squeezes', {
+      const url = atIso
+        ? `/api/gamma-squeezes?at=${encodeURIComponent(atIso)}`
+        : '/api/gamma-squeezes';
+      const r = await fetch(url, {
         credentials: 'include',
       });
       if (!r.ok) {
@@ -116,17 +168,24 @@ export function useGammaSqueezes({
     }
   }, []);
 
-  // Initial + polling.
+  // Initial fetch + re-fetch whenever replayIso changes (date pick, prev/next).
+  // Replays clear the prior active map so old keys from another timestamp
+  // don't linger across a scrub.
   useEffect(() => {
     if (!enabled) return;
-    void refresh();
-  }, [enabled, refresh]);
+    if (replayIso !== null) {
+      setActiveMap(new Map());
+    }
+    void refresh(replayIso);
+  }, [enabled, replayIso, refresh]);
 
+  // Live polling — only when actually live (today + no scrub) and market is
+  // open. Scrubbed snapshots are static so polling them would just thrash.
   useEffect(() => {
-    if (!enabled || !marketOpen) return;
+    if (!enabled || !marketOpen || !isLive) return;
     const id = setInterval(() => void refresh(), POLL_MS);
     return () => clearInterval(id);
-  }, [enabled, marketOpen, refresh]);
+  }, [enabled, marketOpen, isLive, refresh]);
 
   const active = useMemo(() => {
     const list = [...activeMap.values()];
@@ -146,5 +205,22 @@ export function useGammaSqueezes({
     return list;
   }, [activeMap]);
 
-  return { active, loading, error, refresh };
+  return {
+    active,
+    loading,
+    error,
+    refresh: () => void refresh(replayIso),
+    selectedDate,
+    setSelectedDate,
+    scrubTime,
+    isLive,
+    isScrubbed,
+    canScrubPrev: scrubber.canScrubPrev,
+    canScrubNext: scrubber.canScrubNext,
+    scrubPrev: scrubber.scrubPrev,
+    scrubNext: scrubber.scrubNext,
+    scrubTo: scrubber.scrubTo,
+    scrubLive,
+    timeGrid: scrubber.timeGrid,
+  };
 }
