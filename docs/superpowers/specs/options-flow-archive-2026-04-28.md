@@ -15,7 +15,14 @@ Convert the nightly Unusual Whales `bot-eod-report-{date}.csv` exports (~3 GB / 
 
 ## Status
 
-Not started. This spec defines the schema first; implementation follows in phases.
+- ✅ Phase 1 (ingest script) — shipped 2026-04-28, commit `08ba1f41`
+- ✅ Multipart upload fix — shipped 2026-04-28, commit `2cba2d3e`
+- ✅ Phase 2 (backfill) — shipped 2026-04-28, commit `ccb9a971`. Archive populated with 12 days × ~10M rows.
+- ⏳ Phase 3 (read helpers) — next
+- ⏳ Phase 4 (outlier detection) — depends on Phase 3
+- ⏳ Phase 5 (exploration & validation) — research notebook + findings doc
+- ⏸ Phase 6 (nightly automation) — deferred
+- 🔁 Phase 7 (verification) — rolling, updated as each phase ships
 
 ## Schema (frozen — pin explicitly in Polars)
 
@@ -107,40 +114,99 @@ These run inside the ingest script and abort with a clear error before any Blob 
 - [x] Prints summary: row count (raw → after filter), file size, compression ratio, top-10 underlyings by row count
 - [x] Tests: `ml/tests/test_flow_ingest.py` — exercises `transform`, `validate_categoricals`, `validate_header`, `blob_pathname` with synthetic LazyFrames and tmp_path CSV fixtures.
 
-### Phase 2 — Backfill
+### Phase 2 — Backfill (DONE)
 
-- [ ] `scripts/backfill-flow.sh` — wraps Phase 1 over the existing `~/Downloads/EOD-OptionFlow/*.csv` files (sequential — each takes ~2-3 min so 30 days = ~90 min)
-- [ ] Skips already-uploaded dates (idempotent)
+- [x] `scripts/backfill-flow.sh` — bash 3.2-compatible loop over `~/Downloads/EOD-OptionFlow/*.csv`, sequential, stops on first failure, pre-flight token check
+- [x] Idempotent via the ingest script's delete-after-upload behavior (CSV gone = uploaded)
+- [x] Backfill executed 2026-04-28: 12 days × ~10M rows ingested in ~8 min total (multipart added mid-run for >100 MB Parquets)
 
 ### Phase 3 — Read helpers
 
-- [ ] `ml/src/flow_archive.py` — convenience module:
-  - `load_flow(date | date_range, tickers=None, columns=None)` — returns Polars LazyFrame from Blob via signed URL or local cache
-  - `local_cache_dir()` — `~/.flow-archive/`
-  - `ensure_local(date)` — pulls from Blob if missing locally
-- [ ] DuckDB recipe doc: how to query directly from Blob with `httpfs` extension
+The bridge from "data is in Blob" to "I can query it from Python." Lazy local cache (`~/.flow-archive-cache/`) so first read pays the download once and every subsequent query is local-disk-fast.
 
-### Phase 4 — Nightly automation (deferred — manual for now)
+- [ ] `ml/src/flow_archive.py`:
+  - `list_archive_dates() -> list[date]` — call Vercel Blob `list` API with `prefix=flow/`, parse pathnames into `date` objects, return sorted
+  - `ensure_local(date) -> Path` — check `~/.flow-archive-cache/year=YYYY/month=MM/day=DD/data.parquet`; if missing, download from Blob; return the local Path. Idempotent.
+  - `load_flow(date_or_range, tickers=None, columns=None) -> pl.LazyFrame` — accepts a single `date`, a `(start, end)` tuple, or a list of dates; returns a Polars LazyFrame backed by `pl.scan_parquet(paths)` with optional pushdown filters/projections applied lazily
+  - `clear_cache(before: date | None = None)` — utility for disk-space management
+  - `_download_blob(blob_path: str, local_path: Path)` — internal; uses `BLOB_READ_WRITE_TOKEN` from env, single-shot GET (Blob serves Parquet just fine over plain HTTPS once authed)
+- [ ] `ml/tests/test_flow_archive.py` — mock `requests.get`/`requests.request` to verify cache hit/miss behavior, list-API parsing, lazy frame composition, and pushdown pass-through. Use `tmp_path` for cache dir override.
+- [ ] `docs/flow-archive-recipes.md` — short reference for end users:
+  - "Get the last 5 days for SPY only, just the columns you care about"
+  - "Find the top-100 premium prints across the whole archive"
+  - "Stream a date range without exploding RAM"
 
-- [ ] Once user is comfortable with the manual flow, add a launchd plist (macOS) that watches `~/Downloads/EOD-OptionFlow/` and runs `ingest-flow.py` when a new file lands. Optional — not part of MVP.
+### Phase 4 — Outlier detection (the "needles in the haystack" layer)
 
-### Phase 5 — Verification
+The mechanical part of "find the prints that drive price." Multi-criteria scoring rather than a single threshold — a print scores points for each axis it's extreme on, and high-score prints are the ones to look at.
 
-- [ ] `npm run review` passes (lint Python via ruff if it's wired; otherwise just verify TS/JS still green)
-- [ ] Spot-check: load 2026-04-24 via `load_flow`, verify row count matches CSV `wc -l - 1`
-- [ ] Compression check: 2.9 GB CSV → expect 250-450 MB Parquet
-- [ ] Code-reviewer subagent verdict: pass
+- [ ] `ml/src/flow_outliers.py`:
+  - `score_prints(df: pl.DataFrame) -> pl.DataFrame` — adds a `significance_score` integer column plus a `score_breakdown` struct showing which criteria contributed. Pure function; no I/O.
+  - `find_outliers(date_or_range, *, min_score=4, tickers=None) -> pl.DataFrame` — convenience: `load_flow` → `score_prints` → filter by score. Returns scored prints sorted descending by score.
+  - `add_forward_returns(outliers, candles_df, *, intervals=(5, 15, 30, 60)) -> pl.DataFrame` — for each outlier, join the underlying's price at `executed_at + N min` and compute log returns. SPX bars come from your existing `spx_candles_1m` cron table; helper accepts a `pl.DataFrame` of candles to keep this layer storage-agnostic.
+  - `summarize_outlier_outcomes(outliers_with_returns) -> pl.DataFrame` — group by criteria-bucket (signed side × DTE × time-of-day × score-band), compute hit rate / mean return / Sharpe per bucket. The output of this table is what tells you which kind of outlier actually pays.
+- [ ] `ml/tests/test_flow_outliers.py` — synthetic flow with known outliers (one $6M 0DTE put-sell, one $200K deep-ITM call that should NOT score, one sweep block) and assert the scoring tags them correctly. Test forward-return joining against synthetic candles. Test summary aggregation math.
+
+### Phase 5 — Exploration & validation (the part where we find out if this works)
+
+This is the research step that decides whether the scoring framework actually identifies tradeable signal. Not "build a model" — instead, walk through historical detections one by one with eyes on, then look at aggregate statistics.
+
+The notebook is what produces evidence; the spec is what describes the evidence we'd need to see.
+
+- [ ] `ml/notebooks/outlier-discovery.py` (plain script, not `.ipynb` — easier to diff and re-run):
+  1. **Inventory** — `list_archive_dates()` and report what we have (12+ days as of 2026-04-28)
+  2. **Detection sweep** — `find_outliers(all_dates, min_score=4)` — print count + per-day breakdown
+  3. **Top-by-day review** — for each archive day, dump the top 5 outliers with full context (executed_at, ticker, strike, type, side, premium, DTE, score breakdown). User reads through manually and tags each as: real-signal / noise / unsure.
+  4. **Forward-return analysis** — join SPX 1-min candles (from existing Postgres `spx_candles_1m` table, hydrated to Parquet for offline use) and compute realized 5/15/30/60-min returns conditional on signed direction implied by the print
+  5. **Stratified hit-rate table** — break the universe down by:
+     - Signed direction (bullish put-sell, bullish call-buy, bearish put-buy, bearish call-sell)
+     - Time of day bucket (open/morning/midday/afternoon/close)
+     - DTE (0DTE / 1DTE / 2-7DTE / longer)
+     - Ticker family (SPX-complex / index ETFs / single names)
+  6. **Concentration check** — applying the `feedback_uniform_lift_is_leakage` rule: if hit rate is uniformly elevated across all buckets, kill the signal. If it concentrates in 1-2 buckets, that's real edge worth productizing.
+- [ ] `ml/findings/outlier-detection-2026-04-28.md` — written-up findings: what scored, what worked, what didn't, what threshold to use going forward, what features to add to the user's existing 2 intraday detectors
+
+**Decision gates from the notebook output:**
+
+- If hit rate (signed direction matches forward-return sign at 30 min) is **>60% in some bucket** → that bucket's an exploitable edge; build a live alert
+- If hit rate is **45–55% across all buckets** → no edge in this scoring scheme; revisit the criteria weights or look at different axes
+- If we get **<10 candidates per day** → loosen `min_score` and re-run; if **>500 per day** → tighten
+
+### Phase 6 — Nightly automation (deferred — manual for now)
+
+- [ ] Once daily ingest is reliable (currently is — 12/12 days have processed cleanly), add a launchd plist (macOS) that watches `~/Downloads/EOD-OptionFlow/` and runs `ingest-flow.py` when a new file lands. Optional — not part of MVP.
+
+### Phase 7 — Verification (rolling)
+
+- [x] Phase 1 verification: 17 unit tests, real CSV header validates, live Blob upload tested
+- [x] Phase 2 verification: 12-day backfill executed end-to-end
+- [ ] Phase 3 verification: load `2026-04-22` via `load_flow`, row count matches the live-test summary (9,155,800)
+- [ ] Phase 4 verification: synthetic-fixture tests + spot-check the NDXP 27000P 2026-04-28 print scores ≥4
+- [ ] Phase 5 verification: notebook runs end-to-end on the archive without errors, produces a hit-rate table, findings doc written
 
 ## Files
 
-**Created:**
+**Created (Phases 1-2 — DONE):**
 
-- `scripts/ingest-flow.py` — main ingest CLI (single Python file, all logic incl. Blob upload)
-- `ml/tests/test_flow_ingest.py` — unit tests for transform, header validation, enum validation
-- `scripts/backfill-flow.sh` — wrapper for existing files (Phase 2)
-- `ml/src/flow_archive.py` — read helpers (Phase 3)
-- `ml/tests/test_flow_archive.py` — unit tests for load/cache logic (Phase 3)
-- `docs/flow-archive-recipes.md` — DuckDB / Polars query examples (Phase 3)
+- `scripts/ingest-flow.py` — main ingest CLI, single Python file, all logic incl. multipart Blob upload
+- `ml/tests/test_flow_ingest.py` — 17 unit tests covering transform, header validation, enum validation, dispatch threshold, multipart chunking
+- `scripts/backfill-flow.sh` — bash 3.2 orchestrator over local CSVs
+
+**To create (Phase 3 — read helpers):**
+
+- `ml/src/flow_archive.py` — `list_archive_dates`, `ensure_local`, `load_flow`, `clear_cache`, internal `_download_blob`
+- `ml/tests/test_flow_archive.py` — mock-based tests for cache hit/miss + lazy frame composition
+- `docs/flow-archive-recipes.md` — short query reference
+
+**To create (Phase 4 — outlier detection):**
+
+- `ml/src/flow_outliers.py` — `score_prints`, `find_outliers`, `add_forward_returns`, `summarize_outlier_outcomes`
+- `ml/tests/test_flow_outliers.py` — synthetic-fixture tests with known outliers + known noise
+
+**To create (Phase 5 — exploration):**
+
+- `ml/notebooks/outlier-discovery.py` — research script that runs the full pipeline end-to-end on the archive
+- `ml/findings/outlier-detection-2026-04-28.md` — findings writeup (what worked, what didn't, thresholds to use)
 
 **Modified:**
 
@@ -170,6 +236,23 @@ These run inside the ingest script and abort with a clear error before any Blob 
 - **Time filter:** PRE-filter to regular cash session 13:30–20:00 UTC (08:30–15:00 CT) at ingest. Drop `extended_hours_trade` flagged rows.
 - **Blob upload:** direct PUT from Python `requests` to `https://vercel.com/api/blob/?pathname=...` with `BLOB_READ_WRITE_TOKEN` from local env. Headers (`x-api-version: 12`, `x-vercel-blob-access: private`, etc.) verified against `@vercel/blob` 2.3.3 SDK source.
 - **CSV cleanup:** DELETE source CSV from `--input-dir` after upload verification (response pathname matches sent pathname). Override with `--keep-csv` flag for paranoia.
+
+**Outlier scoring criteria (Phase 4 — initial weights, tune in Phase 5):**
+
+A print earns 1 point per criterion satisfied. Default `min_score=4` for `find_outliers`. Weights are tunable; this is the v1 scheme.
+
+| Criterion | Test | Captures |
+| --- | --- | --- |
+| Premium ≥ $1M | `premium >= 1_000_000` | Capital committed |
+| Premium ≥ $5M | `premium >= 5_000_000` | Whale-level conviction |
+| 0DTE | `expiry == executed_at::date` | High-conviction timing |
+| Aggressive sweep | `report_flags` contains `intermarket_sweep` | Time-sensitive urgency |
+| Outside NBBO | `price > nbbo_ask OR price < nbbo_bid` | Paid through the spread |
+| Volume spike | `size >= 5σ` vs that contract's prior-bar baseline | Statistical anomaly |
+| Delta-weighted size large | `abs(size × delta × 100 × underlying_price) >= $10M` | Mechanical hedging pressure |
+
+**Forward-return windows (Phase 4):** 5, 15, 30, 60 minutes (and EOD).
+**Hit-rate threshold for "edge" (Phase 5 decision gate):** ≥60% sign-match in some bucket.
 
 ## Open questions
 
