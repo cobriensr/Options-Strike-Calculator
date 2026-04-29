@@ -1,7 +1,20 @@
 // @vitest-environment node
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mockRequest } from './helpers';
+import { mockRequest, mockResponse } from './helpers';
+
+// Mock the underlying botid/server entrypoint that api-helpers.ts wraps.
+// Keeping this at module level (not the api-helpers re-export) means the
+// real parseCookies + isOwner stay intact for the pure-function tests below.
+// Use vi.hoisted so the mock var lives above the hoisted vi.mock call.
+const { checkBotIdMock } = vi.hoisted(() => ({
+  checkBotIdMock: vi.fn<() => Promise<{ isBot: boolean }>>(async () => ({
+    isBot: false,
+  })),
+}));
+vi.mock('botid/server', () => ({
+  checkBotId: checkBotIdMock,
+}));
 
 import {
   GUEST_COOKIE,
@@ -9,9 +22,11 @@ import {
   buildGuestClearCookies,
   buildGuestSetCookies,
   getConfiguredGuestKeys,
+  guardOwnerOrGuestEndpoint,
   isGuest,
   isOwnerOrGuest,
   isValidGuestKey,
+  rejectIfNotOwnerOrGuest,
 } from '../_lib/guest-auth.js';
 
 const ORIGINAL_ENV = { ...process.env };
@@ -143,5 +158,119 @@ describe('buildGuestClearCookies', () => {
     expect(auth).toContain(`${GUEST_COOKIE}=`);
     expect(hint).toContain('Max-Age=0');
     expect(hint).toContain(`${GUEST_HINT_COOKIE}=`);
+  });
+
+  it('emits Secure on prod for both cookies', () => {
+    const [auth, hint] = buildGuestClearCookies(false);
+    expect(auth).toContain('Secure');
+    expect(hint).toContain('Secure');
+  });
+});
+
+describe('rejectIfNotOwnerOrGuest', () => {
+  it('returns false (does not reject) for an owner cookie', () => {
+    process.env.OWNER_SECRET = 'owner-secret';
+    const res = mockResponse();
+    const rejected = rejectIfNotOwnerOrGuest(
+      mockRequest({ headers: { cookie: 'sc-owner=owner-secret' } }),
+      res,
+    );
+    expect(rejected).toBe(false);
+    expect(res._status).toBe(200); // untouched
+    expect(res._json).toBeNull();
+  });
+
+  it('returns false for a valid guest cookie', () => {
+    process.env.GUEST_ACCESS_KEYS = 'guest-key-abc';
+    const res = mockResponse();
+    const rejected = rejectIfNotOwnerOrGuest(
+      mockRequest({ headers: { cookie: 'sc-guest=guest-key-abc' } }),
+      res,
+    );
+    expect(rejected).toBe(false);
+    expect(res._status).toBe(200);
+  });
+
+  it('rejects with 401 + no-store when neither cookie matches', () => {
+    process.env.OWNER_SECRET = 'owner-secret';
+    process.env.GUEST_ACCESS_KEYS = 'guest-key-abc';
+    const res = mockResponse();
+    const rejected = rejectIfNotOwnerOrGuest(
+      mockRequest({ headers: { cookie: 'sc-guest=wrong-key' } }),
+      res,
+    );
+    expect(rejected).toBe(true);
+    expect(res._status).toBe(401);
+    expect(res._json).toEqual({ error: 'Not authenticated' });
+    expect(res._headers['Cache-Control']).toBe('no-store');
+  });
+});
+
+describe('guardOwnerOrGuestEndpoint', () => {
+  beforeEach(() => {
+    checkBotIdMock.mockReset().mockResolvedValue({ isBot: false });
+  });
+
+  it('returns false and lets the handler run for a valid owner cookie', async () => {
+    process.env.OWNER_SECRET = 'owner-secret';
+    const res = mockResponse();
+    const done = vi.fn();
+    const rejected = await guardOwnerOrGuestEndpoint(
+      mockRequest({ headers: { cookie: 'sc-owner=owner-secret' } }),
+      res,
+      done,
+    );
+    expect(rejected).toBe(false);
+    expect(done).not.toHaveBeenCalled();
+    expect(res._status).toBe(200);
+  });
+
+  it('returns false for a valid guest cookie', async () => {
+    process.env.GUEST_ACCESS_KEYS = 'guest-key-abc';
+    const res = mockResponse();
+    const done = vi.fn();
+    const rejected = await guardOwnerOrGuestEndpoint(
+      mockRequest({ headers: { cookie: 'sc-guest=guest-key-abc' } }),
+      res,
+      done,
+    );
+    expect(rejected).toBe(false);
+    expect(done).not.toHaveBeenCalled();
+  });
+
+  it('returns 403 + done({status:403}) when botid flags the request', async () => {
+    // Real checkBot short-circuits on !VERCEL or isOwner, so we need both:
+    // VERCEL=1 (run the real botid path) + a non-owner request.
+    process.env.VERCEL = '1';
+    process.env.GUEST_ACCESS_KEYS = 'guest-key-abc';
+    checkBotIdMock.mockResolvedValueOnce({ isBot: true });
+    const res = mockResponse();
+    const done = vi.fn();
+    const rejected = await guardOwnerOrGuestEndpoint(
+      mockRequest({ headers: { cookie: 'sc-guest=guest-key-abc' } }),
+      res,
+      done,
+    );
+    expect(rejected).toBe(true);
+    expect(res._status).toBe(403);
+    expect(res._json).toEqual({ error: 'Access denied' });
+    expect(done).toHaveBeenCalledWith({ status: 403 });
+  });
+
+  it('returns 401 + done({status:401}) when neither cookie is valid', async () => {
+    process.env.OWNER_SECRET = 'owner-secret';
+    process.env.GUEST_ACCESS_KEYS = 'guest-key-abc';
+    const res = mockResponse();
+    const done = vi.fn();
+    const rejected = await guardOwnerOrGuestEndpoint(
+      mockRequest({ headers: {} }),
+      res,
+      done,
+    );
+    expect(rejected).toBe(true);
+    expect(res._status).toBe(401);
+    expect(res._json).toEqual({ error: 'Not authenticated' });
+    expect(res._headers['Cache-Control']).toBe('no-store');
+    expect(done).toHaveBeenCalledWith({ status: 401 });
   });
 });

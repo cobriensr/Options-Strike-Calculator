@@ -234,7 +234,9 @@ describe('GammaSqueezeFeed', () => {
     );
     render(<GammaSqueezeFeed marketOpen />);
     expect(
-      screen.getByText(/showing squeezes active at session close \(2026-04-25\)/),
+      screen.getByText(
+        /showing squeezes active at session close \(2026-04-25\)/,
+      ),
     ).toBeInTheDocument();
   });
 });

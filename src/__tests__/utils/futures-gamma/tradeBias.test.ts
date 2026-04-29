@@ -427,10 +427,7 @@ describe('deriveTradeBias — NEGATIVE', () => {
           entryEs: 5780,
         }),
       ],
-      levels: [
-        level('CALL_WALL', 'IDLE'),
-        level('PUT_WALL', 'IDLE'),
-      ],
+      levels: [level('CALL_WALL', 'IDLE'), level('PUT_WALL', 'IDLE')],
       flowSignals: emptyFlow,
     });
     expect(bias.direction).toBe('NEUTRAL');

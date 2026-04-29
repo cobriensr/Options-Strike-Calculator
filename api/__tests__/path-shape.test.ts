@@ -83,12 +83,24 @@ describe('computePathShape', () => {
 
   it('uses the documented 0.25 progress threshold for stale check', () => {
     // 35 min old, exactly at threshold → NOT stale (strict <)
-    const atThreshold = computePathShape(T0, 6500, 6510, 6500 + 10 * STALE_PROGRESS_PCT, NOW_STALE);
+    const atThreshold = computePathShape(
+      T0,
+      6500,
+      6510,
+      6500 + 10 * STALE_PROGRESS_PCT,
+      NOW_STALE,
+    );
     expect(atThreshold.progressPct).toBeCloseTo(STALE_PROGRESS_PCT, 5);
     expect(atThreshold.isStale).toBe(false);
 
     // Just under threshold → stale
-    const justUnder = computePathShape(T0, 6500, 6510, 6500 + 10 * (STALE_PROGRESS_PCT - 0.01), NOW_STALE);
+    const justUnder = computePathShape(
+      T0,
+      6500,
+      6510,
+      6500 + 10 * (STALE_PROGRESS_PCT - 0.01),
+      NOW_STALE,
+    );
     expect(justUnder.isStale).toBe(true);
   });
 });

@@ -20,10 +20,9 @@ vi.mock('../../../hooks/useZeroGamma', () => ({
 // regardless of when the test runs. The panel reads getETToday() once on
 // mount and compares the date input value to it to decide isLive.
 vi.mock('../../../utils/timezone', async () => {
-  const actual =
-    await vi.importActual<typeof import('../../../utils/timezone')>(
-      '../../../utils/timezone',
-    );
+  const actual = await vi.importActual<
+    typeof import('../../../utils/timezone')
+  >('../../../utils/timezone');
   return {
     ...actual,
     getETToday: () => '2026-04-28',

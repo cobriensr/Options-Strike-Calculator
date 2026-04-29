@@ -25,12 +25,14 @@ const noFlip: FlipResult = {
 const noCliff: CliffResult = { magnitude: 0, atTimestamp: null };
 const noDiv: DivergenceResult = { spySign: 0, qqqSign: 0, diverging: false };
 
-function renderBar(overrides: {
-  slope?: SlopeResult;
-  flip?: FlipResult;
-  cliff?: CliffResult;
-  divergence?: DivergenceResult;
-} = {}) {
+function renderBar(
+  overrides: {
+    slope?: SlopeResult;
+    flip?: FlipResult;
+    cliff?: CliffResult;
+    divergence?: DivergenceResult;
+  } = {},
+) {
   return render(
     <MetricsBar
       slope={overrides.slope ?? { slope: null, points: 0 }}

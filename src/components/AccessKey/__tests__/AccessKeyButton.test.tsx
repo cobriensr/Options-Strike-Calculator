@@ -23,7 +23,7 @@ vi.mock('../AccessKeyModal', () => ({
       <button
         type="button"
         onClick={() => {
-          void props.onLogout();
+          props.onLogout().catch(() => {});
         }}
       >
         mock-logout
