@@ -63,13 +63,13 @@ the per-min cap is a far-from-hot safety net, not the primary control.
 
 ### Constants
 
-| Name                | Value | Rationale                                                                                        |
-| ------------------- | ----- | ------------------------------------------------------------------------------------------------ |
-| `UW_PER_SECOND_CAP` | `8`   | UW per-sec smoothing is undocumented; 8 leaves ~30% headroom under presumed ~10–12/sec. Tunable. |
-| `UW_PER_MINUTE_CAP` | `100` | 17% headroom under documented 120/min. Currently nowhere near this.                              |
-| `MAX_WAIT_ATTEMPTS` | `30`  | 30 × ~150ms = ~4.5s max wall-clock per call. Safe under all UW timeouts.                         |
-| `WAIT_BASE_MS`      | `100` | Base backoff.                                                                                    |
-| `WAIT_JITTER_MS`    | `100` | Random jitter on top of base, prevents thundering-herd retry sync.                               |
+| Name                | Value | Rationale                                                                                                      |
+| ------------------- | ----- | -------------------------------------------------------------------------------------------------------------- |
+| `UW_PER_SECOND_CAP` | `3`   | Account's actual concurrency cap (lowered from 8 on 2026-04-28 — see Follow-up). 0 headroom; jitter de-bursts. |
+| `UW_PER_MINUTE_CAP` | `100` | 17% headroom under documented 120/min. Currently nowhere near this.                                            |
+| `MAX_WAIT_ATTEMPTS` | `60`  | 60 × ~250ms avg = ~15s max wall-clock per call, well under 60s cron timeout.                                   |
+| `WAIT_BASE_MS`      | `150` | Base backoff (raised from 100ms on 2026-04-28 to space retries across more seconds).                           |
+| `WAIT_JITTER_MS`    | `100` | Random jitter on top of base, prevents thundering-herd retry sync.                                             |
 
 ### Failure modes
 
@@ -90,7 +90,7 @@ These let us monitor the limiter's effectiveness without a flood of warning even
 
 - Under cap → resolves immediately, single INCR pair, no sleep
 - Per-second cap exceeded once → waits, second attempt succeeds
-- Per-second cap exceeded MAX_WAIT_ATTEMPTS times → throws after ~4.5s
+- Per-second cap exceeded MAX_WAIT_ATTEMPTS times → throws after ~15s
 - Per-minute cap exceeded → throws immediately, no retry
 - Redis throws → fail-open path resolves
 
@@ -107,7 +107,7 @@ matching the pattern in `api-helpers.test.ts`.
 
 ## Open questions
 
-- **`UW_PER_SECOND_CAP = 8` is a guess.** UW's per-second smoothing is not documented. Start at 8; if 429s persist, lower to 5–6. If they vanish and crons start waiting frequently, raise to 10.
+- **`UW_PER_SECOND_CAP = 8` is a guess.** RESOLVED 2026-04-28: actual cap is 3. Lowered. See Follow-up.
 - Should we DECR the per-minute counter when we throw on per-minute cap hit? No — TTL handles cleanup, and we don't want to give the caller a "free" retry that bypasses the cap.
 
 ## Verification
@@ -116,3 +116,35 @@ Run `npm run review` (tsc + eslint + prettier + vitest). Then watch
 Sentry for ~10 minutes: the `UW 429 on /stock/.../flow-per-strike-intraday`
 warnings should stop appearing, and the new `uw.rate_limit.wait` metric
 should show a low (single-digit per minute) waiting rate during top-of-minute bursts.
+
+## Follow-up — 2026-04-28
+
+The original spec went live with `UW_PER_SECOND_CAP = 8`. Production
+Sentry continued to report 429 cascades during market hours. Owner
+clarified the account's actual concurrency limit is **3 in-flight calls
+per second**. Two changes followed:
+
+1. **Tightened limiter constants** in `api/_lib/uw-rate-limit.ts`:
+   - `UW_PER_SECOND_CAP`: 8 → 3
+   - `MAX_WAIT_ATTEMPTS`: 30 → 60 (drain budget for 16-handler bursts)
+   - `WAIT_BASE_MS`: 100 → 150 (smoother retry spacing)
+
+2. **Added `cronJitter()` helper** in `api/_lib/api-helpers.ts` and wired
+   it into every UW cron handler scheduled `* 13-21 * * 1-5`:
+   - `fetch-darkpool`, `fetch-spot-gex`, `fetch-greek-flow-etf`,
+     `fetch-etf-candles-1m`, `fetch-gex-0dte`, `fetch-spx-candles-1m`,
+     `fetch-vol-0dte`, `fetch-strike-trade-volume`, `monitor-iv`,
+     `monitor-flow-ratio`, `fetch-flow-alerts`, `fetch-nope`
+
+   The original spec deliberately kept rate-limit logic centralized in
+   `uwFetch`. With the cap lowered to 3, ~13 handlers all racing to
+   acquire 3 slots at second :00 of every minute would queue 10+ deep
+   in Redis, burning function CPU on the wait loop. `cronJitter()`
+   sleeps 0–8s at handler entry so the 13 handlers spread across the
+   window naturally — the limiter then rarely needs to queue.
+
+   The helper is a no-op when `process.env.VITEST` is set so handler
+   tests stay fast and deterministic.
+
+Belt-and-suspenders: jitter spreads the burst, the limiter caps what
+slips through.

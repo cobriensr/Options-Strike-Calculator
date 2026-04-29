@@ -37,6 +37,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
   schwabFetch: vi.fn(),
   withRetry: vi.fn(),
   cronGuard: vi.fn(),
+  cronJitter: vi.fn(() => Promise.resolve()),
   checkDataQuality: vi.fn(),
 }));
 

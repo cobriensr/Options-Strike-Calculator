@@ -22,7 +22,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { metrics, Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
-import { cronGuard, withRetry } from '../_lib/api-helpers.js';
+import { cronGuard, cronJitter, withRetry } from '../_lib/api-helpers.js';
 import {
   fetchAllDarkPoolTrades,
   aggregateDarkPoolLevels,
@@ -33,6 +33,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const guard = cronGuard(req, res);
   if (!guard) return;
   const { apiKey, today } = guard;
+
+  await cronJitter();
 
   const startTime = Date.now();
 

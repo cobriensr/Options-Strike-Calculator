@@ -32,6 +32,7 @@ import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
   cronGuard,
+  cronJitter,
   mapWithConcurrency,
   uwFetch,
   withRetry,
@@ -247,6 +248,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const guard = cronGuard(req, res);
   if (!guard) return;
   const { apiKey, today } = guard;
+
+  await cronJitter();
 
   const startTime = Date.now();
   const sql = getDb();

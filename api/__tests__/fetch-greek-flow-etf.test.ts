@@ -31,6 +31,7 @@ const { mockUwFetch, mockCronGuard, mockWithRetry } = vi.hoisted(() => ({
 vi.mock('../_lib/api-helpers.js', () => ({
   uwFetch: mockUwFetch,
   cronGuard: mockCronGuard,
+  cronJitter: vi.fn(() => Promise.resolve()),
   withRetry: mockWithRetry,
 }));
 

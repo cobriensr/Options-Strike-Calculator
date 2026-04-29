@@ -36,6 +36,7 @@ import logger from '../_lib/logger.js';
 import {
   uwFetch,
   cronGuard,
+  cronJitter,
   checkDataQuality,
   withRetry,
 } from '../_lib/api-helpers.js';
@@ -233,6 +234,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const guard = cronGuard(req, res);
   if (!guard) return;
   const { apiKey, today } = guard;
+
+  await cronJitter();
 
   const startTime = Date.now();
 

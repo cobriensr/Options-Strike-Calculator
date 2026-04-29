@@ -42,17 +42,30 @@ function isRedisConfigured(): boolean {
 
 // ── Tuning ────────────────────────────────────────────────────
 
-/** Max concurrent UW requests in any 1-second window. */
-export const UW_PER_SECOND_CAP = 8;
+/**
+ * Max concurrent UW requests in any 1-second window.
+ *
+ * Set to 3 to match the account's actual concurrency limit (confirmed by
+ * Sentry 429 alerts during market hours). The original spec started at 8
+ * as a guess; lowering to 3 was the resolution to the open question in
+ * `docs/superpowers/specs/uw-rate-limiter-2026-04-27.md`.
+ */
+export const UW_PER_SECOND_CAP = 3;
 
 /** Max UW requests in any 60-second window. Headroom under UW's 120/min. */
 export const UW_PER_MINUTE_CAP = 100;
 
-/** Max retry attempts when per-second cap is hit. */
-export const MAX_WAIT_ATTEMPTS = 30;
+/**
+ * Max retry attempts when per-second cap is hit.
+ *
+ * 60 × ~250ms avg = ~15s max wall-clock per call, well under the 60s
+ * Vercel cron timeout. Sized to drain a 16-handler burst at 3/sec
+ * (~6s) with margin even if Tier-2 jitter (`cronJitter()`) is bypassed.
+ */
+export const MAX_WAIT_ATTEMPTS = 60;
 
 /** Base sleep before retry on per-second cap hit (ms). */
-export const WAIT_BASE_MS = 100;
+export const WAIT_BASE_MS = 150;
 
 /** Random jitter added to base sleep (ms). */
 export const WAIT_JITTER_MS = 100;

@@ -29,6 +29,7 @@ vi.mock('../_lib/alerts.js', () => ({
 
 vi.mock('../_lib/api-helpers.js', () => ({
   cronGuard: vi.fn(),
+  cronJitter: vi.fn(() => Promise.resolve()),
   uwFetch: vi.fn(),
   withRetry: vi.fn((fn: () => unknown) => fn()),
 }));

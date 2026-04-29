@@ -22,6 +22,7 @@ vi.mock('../_lib/sentry.js', () => ({
 
 vi.mock('../_lib/api-helpers.js', () => ({
   uwFetch: vi.fn(),
+  cronJitter: vi.fn(() => Promise.resolve()),
   withRetry: vi.fn((fn: () => Promise<unknown>) => fn()),
   mapWithConcurrency: vi.fn(
     async <T, R>(

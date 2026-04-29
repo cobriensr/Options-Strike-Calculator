@@ -79,13 +79,27 @@ describe('uw-rate-limit', () => {
 
   it('throws after MAX_WAIT_ATTEMPTS when per-second cap is persistently exceeded', async () => {
     // Every attempt sees per-sec over cap. Limiter should bail after MAX_WAIT_ATTEMPTS.
+    // Fake timers so MAX_WAIT_ATTEMPTS × ~250ms doesn't blow the test budget.
+    vi.useFakeTimers();
     for (let i = 0; i < MAX_WAIT_ATTEMPTS; i++) {
       mockPipeline.exec.mockResolvedValueOnce([UW_PER_SECOND_CAP + 5, 1]);
     }
 
-    await expect(acquireUWSlot()).rejects.toThrow(/per-second cap blocked/);
+    const promise = acquireUWSlot();
+    // Mark the rejection handled now so Node doesn't flag the gap between
+    // throw and the awaited expect below as an unhandled rejection. The
+    // original promise is still awaited for the assertion.
+    promise.catch(() => {});
+    // Drain the sleep loop — each retry awaits Redis (resolved) then sleeps.
+    // advanceTimersByTimeAsync also flushes microtasks, so the next mocked
+    // INCR resolves and the loop progresses.
+    for (let i = 0; i < MAX_WAIT_ATTEMPTS; i++) {
+      await vi.advanceTimersByTimeAsync(300);
+    }
+
+    await expect(promise).rejects.toThrow(/per-second cap blocked/);
     expect(mockIncrement).toHaveBeenCalledWith('uw.rate_limit.throw.second');
-  }, 10_000);
+  });
 
   it('throws immediately when per-minute cap is exceeded', async () => {
     // per-second under cap, per-minute over cap → throw, no retry.

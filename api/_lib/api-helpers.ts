@@ -729,6 +729,28 @@ export function cronGuard(
   return { apiKey, today };
 }
 
+/**
+ * Sleep a randomized 0–maxMs to spread top-of-minute cron bursts.
+ *
+ * Vercel cron schedules fire at second :00 of the scheduled minute, so
+ * every cron with `* 13-21 * * 1-5` collides at the same instant. With
+ * 12+ such handlers all calling UW, the per-second concurrency cap (3
+ * — see `uw-rate-limit.ts`) is overrun and the rest 429.
+ *
+ * Calling this right after `cronGuard()` spreads the burst across the
+ * window so the rate limiter rarely needs to queue. Pair with
+ * `acquireUWSlot()` for belt-and-suspenders concurrency control.
+ *
+ * No-op under Vitest so handler tests stay fast and deterministic.
+ *
+ * @param maxMs - Upper bound of the random delay. Default 8000ms.
+ */
+export function cronJitter(maxMs: number = 8000): Promise<void> {
+  if (process.env.VITEST) return Promise.resolve();
+  const delay = Math.floor(Math.random() * maxMs);
+  return new Promise((resolve) => setTimeout(resolve, delay));
+}
+
 // ============================================================
 // GUEST AUTH RE-EXPORTS
 // ============================================================

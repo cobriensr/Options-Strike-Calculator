@@ -38,7 +38,12 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { cronGuard, uwFetch, withRetry } from '../_lib/api-helpers.js';
+import {
+  cronGuard,
+  cronJitter,
+  uwFetch,
+  withRetry,
+} from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
 import { computeDerived, type UwFlowAlert } from '../_lib/flow-alert-derive.js';
 import logger from '../_lib/logger.js';
@@ -108,6 +113,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const guard = cronGuard(req, res);
   if (!guard) return;
   const { apiKey } = guard;
+
+  await cronJitter();
+
   const startedAt = Date.now();
 
   try {
