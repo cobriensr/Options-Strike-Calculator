@@ -567,4 +567,109 @@ describe('impliedVolatility', () => {
       expect(solved).toBeCloseTo(0.2, 2);
     }
   });
+
+  // ── Bisection fallback path (lines 262-278) ────────────────────
+  // These exercise the safety-net path that runs whenever Newton
+  // breaks out (vega collapse, step out of bracket, or maxIter
+  // exhausted). The bisection guarantees convergence whenever the
+  // true σ lies inside [sigmaMin, sigmaMax], and returns null when
+  // the bracket cannot contain the price.
+
+  it('bisection-only path converges to the true σ when Newton is skipped', () => {
+    // maxIter=0 forces the loop to no-op, so the entire result comes
+    // from the bisection block. Confirms the bisection logic itself
+    // is correct (within the ~1e-6 tolerance / 80 iter budget).
+    const trueSigma = 0.2;
+    const price = blackScholesPrice(7100, 7080, trueSigma, 1 / 365, 'put');
+    const solved = impliedVolatility(price, 7100, 7080, 1 / 365, 'put', {
+      maxIter: 0,
+    });
+    expect(solved).not.toBeNull();
+    expect(solved).toBeCloseTo(trueSigma, 5);
+  });
+
+  it('bisection returns null when the price is below the bracket lower bound', () => {
+    // True σ=0.2 but bracket = [0.5, 0.6]. price(0.5) > price(0.2),
+    // so price < loPrice and the feasibility check rejects.
+    const price = blackScholesPrice(7100, 7080, 0.2, 1 / 365, 'put');
+    const iv = impliedVolatility(price, 7100, 7080, 1 / 365, 'put', {
+      sigmaMin: 0.5,
+      sigmaMax: 0.6,
+      maxIter: 0,
+    });
+    expect(iv).toBeNull();
+  });
+
+  it('bisection returns null when the price is above the bracket upper bound', () => {
+    // True σ=0.2 but bracket = [0.01, 0.05]. price(0.05) < price(0.2),
+    // so price > hiPrice and the feasibility check rejects.
+    const price = blackScholesPrice(7100, 7080, 0.2, 1 / 365, 'put');
+    const iv = impliedVolatility(price, 7100, 7080, 1 / 365, 'put', {
+      sigmaMin: 0.01,
+      sigmaMax: 0.05,
+      maxIter: 0,
+    });
+    expect(iv).toBeNull();
+  });
+
+  it('bisection exits early via the hi-lo<tol shortcut on a loose tolerance', () => {
+    // tol=1 (one full vol point) is wider than any halving step from the
+    // default bracket [1e-6, 5], so the `hi - lo < tol` shortcut on
+    // line 275 fires before midPrice can converge. With trueSigma=0.2 the
+    // bracket halves down to (1e-6, 0.625) on the third iteration; that's
+    // when hi-lo first drops below 1 and the loop returns (lo+hi)/2 =
+    // exactly 0.3125 (plus the lo/2 contribution from 1e-6).
+    const targetPrice = blackScholesPrice(7100, 7080, 0.2, 1 / 365, 'put');
+    const iv = impliedVolatility(targetPrice, 7100, 7080, 1 / 365, 'put', {
+      tol: 1,
+      maxIter: 0,
+    });
+    expect(iv).not.toBeNull();
+    expect(iv).toBeCloseTo(0.3125, 5);
+  });
+
+  it('falls through to bisection when Newton steps outside the bracket', () => {
+    // Cap sigmaMax below the true σ. Newton's first step will cross
+    // sigmaMax and break (line 256), then bisection runs and rejects
+    // because the price exceeds price(sigmaMax).
+    const price = blackScholesPrice(7100, 7080, 0.2, 1 / 365, 'put');
+    const iv = impliedVolatility(price, 7100, 7080, 1 / 365, 'put', {
+      sigmaMax: 0.15,
+    });
+    expect(iv).toBeNull();
+  });
+
+  it('rejects when Newton converges but final σ is below sigmaMin', () => {
+    // Newton converges on σ=0.2; sigmaMin=0.5 trips the post-convergence
+    // bound check (line 246), then bisection rejects since price < loPrice.
+    const price = blackScholesPrice(7100, 7080, 0.2, 1 / 365, 'put');
+    const iv = impliedVolatility(price, 7100, 7080, 1 / 365, 'put', {
+      sigmaMin: 0.5,
+    });
+    expect(iv).toBeNull();
+  });
+
+  // ── Extreme-input boundary tests ───────────────────────────────
+
+  it('round-trips a very high IV (200%) round number', () => {
+    // VIX-blowoff regime: 1 DTE 200% vol. Confirms the inverter
+    // doesn't choke on large σ inside the default [1e-6, 5] bracket.
+    const trueSigma = 2.0;
+    const price = blackScholesPrice(7100, 7100, trueSigma, 1 / 365, 'call');
+    const iv = impliedVolatility(price, 7100, 7100, 1 / 365, 'call');
+    expect(iv).not.toBeNull();
+    expect(iv).toBeCloseTo(trueSigma, 4);
+  });
+
+  it('round-trips a low-vol ATM option (5% vol)', () => {
+    // Quiet-tape regime: ATM SPX 0DTE with 5% vol. ATM keeps vega
+    // meaningful so the small-σ side of the bracket is invertible
+    // without precision loss (deep-ITM at 1% vol collapses time value
+    // below float epsilon — caller-side concern, not a bug).
+    const trueSigma = 0.05;
+    const price = blackScholesPrice(7100, 7100, trueSigma, 1 / 365, 'call');
+    const iv = impliedVolatility(price, 7100, 7100, 1 / 365, 'call');
+    expect(iv).not.toBeNull();
+    expect(iv).toBeCloseTo(trueSigma, 4);
+  });
 });

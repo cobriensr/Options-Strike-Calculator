@@ -246,4 +246,122 @@ describe('useTraceLiveData', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     vi.useRealTimers();
   });
+
+  // ── Routing helper: list endpoint vs detail endpoint return distinct
+  // payloads so a single fetchMock can serve both. The list response also
+  // drives the auto-follow effect (line 182), which in turn triggers the
+  // detail fetch (line 191).
+  function routedFetch(
+    listBody: { analyses: Array<{ id: number }> },
+    detailBody: Record<string, unknown>,
+    detailStatus = 200,
+  ) {
+    return (input: string) => {
+      if (typeof input === 'string' && input.startsWith('/api/trace-live-list'))
+        return Promise.resolve(jsonResponse(listBody));
+      if (typeof input === 'string' && input.startsWith('/api/trace-live-get'))
+        return Promise.resolve(jsonResponse(detailBody, detailStatus));
+      return Promise.resolve(jsonResponse({}, 404));
+    };
+  }
+
+  it('auto-follows latest row and triggers detail fetch when list arrives', async () => {
+    // Covers line 182 (auto-follow setSelectedIdInternal) AND line 191
+    // (fetchDetail on selectedId change). The list returns rows; the hook
+    // should pick the LAST row (latest) and then GET /api/trace-live-get.
+    fetchMock.mockImplementation(
+      routedFetch(
+        {
+          analyses: [
+            { id: 11, capturedAt: '2026-04-26T18:00:00Z' },
+            { id: 22, capturedAt: '2026-04-26T18:10:00Z' },
+          ],
+        },
+        { id: 22, headline: 'latest detail' },
+      ),
+    );
+    const { result } = renderHook(() => useTraceLiveData(false));
+    await waitFor(() => expect(result.current.selectedId).toBe(22));
+    await waitFor(() => expect(result.current.detail).not.toBeNull());
+    expect(result.current.detail).toMatchObject({ id: 22 });
+    // Confirm the detail endpoint was actually hit with the latest id.
+    const detailUrls = fetchMock.mock.calls
+      .map((c) => c[0] as string)
+      .filter((u) => u.startsWith('/api/trace-live-get'));
+    expect(detailUrls.at(-1)).toBe('/api/trace-live-get?id=22');
+  });
+
+  it('refresh() re-fetches the list and the active detail', async () => {
+    // Covers lines 195-197 (refresh callback body). Sequence:
+    //  1. Initial render: list arrives, auto-follow picks id, detail fetches.
+    //  2. Call refresh() — must fire one more list fetch + one more detail
+    //     fetch since selectedId is non-null.
+    fetchMock.mockImplementation(
+      routedFetch(
+        { analyses: [{ id: 7, capturedAt: '2026-04-26T18:00:00Z' }] },
+        { id: 7, headline: 'detail-7' },
+      ),
+    );
+    const { result } = renderHook(() => useTraceLiveData(false));
+    await waitFor(() => expect(result.current.selectedId).toBe(7));
+    await waitFor(() => expect(result.current.detail).not.toBeNull());
+
+    const beforeListCount = fetchMock.mock.calls.filter((c) =>
+      (c[0] as string).startsWith('/api/trace-live-list'),
+    ).length;
+    const beforeDetailCount = fetchMock.mock.calls.filter((c) =>
+      (c[0] as string).startsWith('/api/trace-live-get'),
+    ).length;
+
+    act(() => {
+      result.current.refresh();
+    });
+
+    await waitFor(() => {
+      const afterList = fetchMock.mock.calls.filter((c) =>
+        (c[0] as string).startsWith('/api/trace-live-list'),
+      ).length;
+      const afterDetail = fetchMock.mock.calls.filter((c) =>
+        (c[0] as string).startsWith('/api/trace-live-get'),
+      ).length;
+      expect(afterList).toBeGreaterThan(beforeListCount);
+      expect(afterDetail).toBeGreaterThan(beforeDetailCount);
+    });
+    await waitFor(() => expect(result.current.listLoading).toBe(false));
+  });
+
+  it('surfaces detailError on 404 from the detail endpoint', async () => {
+    // Branch coverage for the 404 arm of the detail fetch.
+    fetchMock.mockImplementation(
+      routedFetch(
+        { analyses: [{ id: 99, capturedAt: '2026-04-26T18:00:00Z' }] },
+        {},
+        404,
+      ),
+    );
+    const { result } = renderHook(() => useTraceLiveData(false));
+    await waitFor(() =>
+      expect(result.current.detailError).toBe('Capture not found'),
+    );
+  });
+
+  it('clears the polling interval on unmount (no leaked fetch)', async () => {
+    // Polling-hook hygiene per CLAUDE.md: interval must not survive unmount.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    fetchMock.mockResolvedValue(
+      jsonResponse({ date: '', count: 0, analyses: [] }),
+    );
+    const { unmount } = renderHook(() =>
+      useTraceLiveData(/* marketOpen */ true),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    unmount();
+    const callsAtUnmount = fetchMock.mock.calls.length;
+    // Three full poll cycles after unmount — no new fetches should fire.
+    await act(async () => {
+      vi.advanceTimersByTime(3 * 60_000);
+    });
+    expect(fetchMock.mock.calls.length).toBe(callsAtUnmount);
+    vi.useRealTimers();
+  });
 });

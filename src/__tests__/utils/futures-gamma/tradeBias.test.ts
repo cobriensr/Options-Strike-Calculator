@@ -346,4 +346,136 @@ describe('deriveTradeBias — NEGATIVE', () => {
     });
     expect(bias.direction).toBe('NEUTRAL');
   });
+
+  // ── Lines 276-279: PUT_WALL BROKEN, CALL_WALL not broken ───────────
+  it('PUT_WALL already BROKEN + break-put rule DISTANT → SHORT mild with wait-pullback reason', () => {
+    // Mirror of the call-wall broken case: price has overshot below the
+    // put wall, trader missed the clean break entry.
+    const bias = deriveTradeBias({
+      regime: 'NEGATIVE',
+      rules: [
+        rule({
+          id: 'neg-break-put-wall',
+          direction: 'SHORT',
+          status: 'DISTANT',
+          distanceEsPoints: 22, // overshot below
+          entryEs: 5780,
+        }),
+      ],
+      levels: [level('PUT_WALL', 'BROKEN')],
+      flowSignals: emptyFlow,
+    });
+    expect(bias.direction).toBe('SHORT');
+    expect(bias.conviction).toBe('mild');
+    expect(bias.entryEs).toBe(5780);
+    expect(bias.reason).toMatch(/break fired early.*pullback/i);
+  });
+
+  it('PUT_WALL BROKEN + break-put rule + aligned wall-flow → SHORT strong', () => {
+    // Ceiling strengthening corroborates the down-trend continuation.
+    const bias = deriveTradeBias({
+      regime: 'NEGATIVE',
+      rules: [
+        rule({
+          id: 'neg-break-put-wall',
+          direction: 'SHORT',
+          status: 'DISTANT',
+          distanceEsPoints: 22,
+          entryEs: 5780,
+        }),
+      ],
+      levels: [level('PUT_WALL', 'BROKEN')],
+      flowSignals: { ...emptyFlow, ceilingTrend5m: 10 },
+    });
+    expect(bias.direction).toBe('SHORT');
+    expect(bias.conviction).toBe('strong');
+    expect(bias.reason).toMatch(/pullback/i);
+  });
+
+  it('PUT_WALL BROKEN but no break-put rule in set → falls through to default NEUTRAL', () => {
+    // Edge case: BROKEN level present but rule list is missing the
+    // break-put-wall id, so the early-fire branch can't fire.
+    const bias = deriveTradeBias({
+      regime: 'NEGATIVE',
+      rules: [],
+      levels: [level('PUT_WALL', 'BROKEN')],
+      flowSignals: emptyFlow,
+    });
+    expect(bias.direction).toBe('NEUTRAL');
+  });
+
+  // ── Line 310 (sort comparator) + line 316 (nearest-setup neutral) ──
+  it('no ACTIVE/ARMED/BROKEN, nearest directional DISTANT rule within 4×band → NEUTRAL with pts-off reason', () => {
+    // RULE_ACTIVE_BAND_ES = 5, so 4× = 20. A DISTANT rule 12 pts off
+    // should surface the "nearest setup N pts off" message. Two rules
+    // exercise the .sort() comparator on line 310.
+    const bias = deriveTradeBias({
+      regime: 'NEGATIVE',
+      rules: [
+        rule({
+          id: 'neg-break-call-wall',
+          direction: 'LONG',
+          status: 'DISTANT',
+          distanceEsPoints: 18,
+          entryEs: 5840,
+        }),
+        rule({
+          id: 'neg-break-put-wall',
+          direction: 'SHORT',
+          status: 'DISTANT',
+          distanceEsPoints: -12, // closer in absolute terms
+          entryEs: 5780,
+        }),
+      ],
+      levels: [
+        level('CALL_WALL', 'IDLE'),
+        level('PUT_WALL', 'IDLE'),
+      ],
+      flowSignals: emptyFlow,
+    });
+    expect(bias.direction).toBe('NEUTRAL');
+    // The closer rule (|-12| = 12) wins; reason preserves the signed value.
+    expect(bias.reason).toMatch(/nearest setup -12 pts off/);
+  });
+
+  it('nearest directional rule beyond 4×band → falls through to all-setups-distant', () => {
+    // Distance 25 > 20 (4 × RULE_ACTIVE_BAND_ES), so the pts-off branch
+    // is skipped and the final NEUTRAL fires.
+    const bias = deriveTradeBias({
+      regime: 'NEGATIVE',
+      rules: [
+        rule({
+          id: 'neg-break-call-wall',
+          direction: 'LONG',
+          status: 'DISTANT',
+          distanceEsPoints: 25,
+          entryEs: 5860,
+        }),
+      ],
+      levels: [level('CALL_WALL', 'IDLE')],
+      flowSignals: emptyFlow,
+    });
+    expect(bias.direction).toBe('NEUTRAL');
+    expect(bias.reason).toMatch(/all setups distant/);
+  });
+
+  it('nearest directional rule exactly at 4×band threshold (20 pts) → NEUTRAL with pts-off reason', () => {
+    // Boundary: distance == 20, predicate is `<=`, so it matches.
+    const bias = deriveTradeBias({
+      regime: 'NEGATIVE',
+      rules: [
+        rule({
+          id: 'neg-break-call-wall',
+          direction: 'LONG',
+          status: 'DISTANT',
+          distanceEsPoints: 20,
+          entryEs: 5840,
+        }),
+      ],
+      levels: [level('CALL_WALL', 'IDLE')],
+      flowSignals: emptyFlow,
+    });
+    expect(bias.direction).toBe('NEUTRAL');
+    expect(bias.reason).toMatch(/nearest setup 20 pts off/);
+  });
 });
