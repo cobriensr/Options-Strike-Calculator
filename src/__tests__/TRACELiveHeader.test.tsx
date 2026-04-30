@@ -169,6 +169,49 @@ describe('TRACELiveHeader', () => {
     expect(screen.getByText(/Updated/)).toBeInTheDocument();
   });
 
+  it('de-emphasizes predicted close when confidence is low (rounded int + ~ prefix)', () => {
+    render(
+      <TRACELiveHeader
+        detail={makeDetail({
+          confidence: 'low',
+          spot: 7120.12,
+          predictedClose: 7125.18,
+        })}
+        isLive
+        countdown={idleCountdown}
+        loading={false}
+        onRefresh={vi.fn()}
+      />,
+    );
+    // Rounded to int + ~ prefix.
+    expect(screen.getByText('~7125')).toBeInTheDocument();
+    // Full-precision number from high-confidence rendering MUST NOT appear.
+    expect(screen.queryByText('7125.18')).not.toBeInTheDocument();
+    // Tooltip explains the de-emphasis. The tooltip lives on the
+    // outer span — verify by querying the element with the title attribute.
+    expect(
+      document.querySelector('[title*="Confidence is LOW"]'),
+    ).not.toBeNull();
+  });
+
+  it('also de-emphasizes predicted close when confidence is no_trade', () => {
+    render(
+      <TRACELiveHeader
+        detail={makeDetail({
+          confidence: 'no_trade',
+          spot: 7120,
+          predictedClose: 7150,
+        })}
+        isLive
+        countdown={idleCountdown}
+        loading={false}
+        onRefresh={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('~7150')).toBeInTheDocument();
+    expect(screen.queryByText('7150.00')).not.toBeInTheDocument();
+  });
+
   it('renders the next-capture countdown when isLive AND countdown.label is set', () => {
     render(
       <TRACELiveHeader
