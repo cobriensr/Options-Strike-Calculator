@@ -9,16 +9,24 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { captureException: vi.fn(), setTag: vi.fn() },
+  Sentry: { captureException: vi.fn() },
+  metrics: {
+    request: vi.fn(() => vi.fn()),
+    increment: vi.fn(),
+  },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-const { mockGuard } = vi.hoisted(() => ({ mockGuard: vi.fn() }));
+const { mockGuard, mockRateLimit } = vi.hoisted(() => ({
+  mockGuard: vi.fn(),
+  mockRateLimit: vi.fn(),
+}));
 vi.mock('../_lib/api-helpers.js', () => ({
   guardOwnerOrGuestEndpoint: mockGuard,
+  rejectIfRateLimited: mockRateLimit,
   setCacheHeaders: vi.fn(),
 }));
 
@@ -28,6 +36,7 @@ describe('trace-live-calibration endpoint', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mockGuard.mockResolvedValue(false);
+    mockRateLimit.mockResolvedValue(false);
   });
 
   it('returns rows + scatter as JSON', async () => {
@@ -83,5 +92,26 @@ describe('trace-live-calibration endpoint', () => {
     const res = mockResponse();
     await handler(req, res);
     expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-GET methods with 405', async () => {
+    const req = mockRequest({ method: 'POST' });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(405);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('returns sanitized error on db failure (no internals leaked)', async () => {
+    mockSql.mockRejectedValueOnce(
+      new Error('connection to neon-db-prod-xyz123 timed out'),
+    );
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(500);
+    const body = res._json as { error: string };
+    expect(body.error).toBe('Internal error');
+    expect(body.error).not.toContain('neon-db-prod-xyz123');
   });
 });

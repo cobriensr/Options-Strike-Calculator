@@ -14,7 +14,7 @@
  * + the cron writes once per day, so a session-level fetch is ample.
  */
 
-import { memo, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { theme } from '../../themes';
 import Collapsible from '../ChartAnalysis/Collapsible';
 
@@ -66,11 +66,15 @@ function MiniScatter({ scatter }: { scatter: ScatterPoint[] }) {
       </div>
     );
   }
-  // Compute axis bounds with a small margin.
+  // Compute axis bounds with a small margin. Both axes share the same
+  // [lo, hi] range so the diagonal y=x remains a valid "perfect prediction"
+  // reference — do not split sx/sy ranges without revisiting the diagonal.
   const xs = scatter.flatMap((p) => [p.predicted, p.actual]);
   const minV = Math.min(...xs);
   const maxV = Math.max(...xs);
-  const margin = (maxV - minV) * 0.05 || 1;
+  // Single-point scatter degenerates to a 0-width range; pad with 10pts of
+  // SPX so the dot is centered in a visible plot rather than on the axis.
+  const margin = maxV > minV ? (maxV - minV) * 0.05 : 10;
   const lo = minV - margin;
   const hi = maxV + margin;
   const w = 320;
@@ -83,13 +87,17 @@ function MiniScatter({ scatter }: { scatter: ScatterPoint[] }) {
   const plotH = h - padT - padB;
   const sx = (v: number) => padL + ((v - lo) / (hi - lo)) * plotW;
   const sy = (v: number) => padT + (1 - (v - lo) / (hi - lo)) * plotH;
+  const residuals = scatter.map((p) => p.actual - p.predicted);
+  const minRes = Math.min(...residuals);
+  const maxRes = Math.max(...residuals);
   return (
-    <svg
-      width={w}
-      height={h}
-      role="img"
-      aria-label="Predicted vs actual close scatter"
-    >
+    <svg width={w} height={h} role="img" aria-labelledby="cal-title cal-desc">
+      <title id="cal-title">Predicted vs actual close scatter</title>
+      <desc id="cal-desc">
+        {scatter.length} resolved capture{scatter.length === 1 ? '' : 's'};
+        residuals range from {minRes.toFixed(1)} to {maxRes.toFixed(1)} points.
+        Diagonal indicates perfect prediction; points colored by regime.
+      </desc>
       {/* Plot box */}
       <rect
         x={padL}
@@ -97,7 +105,7 @@ function MiniScatter({ scatter }: { scatter: ScatterPoint[] }) {
         width={plotW}
         height={plotH}
         fill="none"
-        stroke="#404040"
+        stroke={theme.border}
         strokeWidth={0.5}
       />
       {/* Diagonal y=x (perfect prediction) */}
@@ -106,7 +114,7 @@ function MiniScatter({ scatter }: { scatter: ScatterPoint[] }) {
         y1={sy(lo)}
         x2={sx(hi)}
         y2={sy(hi)}
-        stroke="#737373"
+        stroke={theme.textTertiary}
         strokeDasharray="3 3"
         strokeWidth={0.75}
       />
@@ -116,7 +124,7 @@ function MiniScatter({ scatter }: { scatter: ScatterPoint[] }) {
         y={h - 4}
         textAnchor="middle"
         fontSize="9"
-        fill="#a3a3a3"
+        fill={theme.textMuted}
       >
         predicted close
       </text>
@@ -125,7 +133,7 @@ function MiniScatter({ scatter }: { scatter: ScatterPoint[] }) {
         y={padT + plotH / 2}
         textAnchor="middle"
         fontSize="9"
-        fill="#a3a3a3"
+        fill={theme.textMuted}
         transform={`rotate(-90 10 ${padT + plotH / 2})`}
       >
         actual close
@@ -137,7 +145,7 @@ function MiniScatter({ scatter }: { scatter: ScatterPoint[] }) {
           cx={sx(p.predicted)}
           cy={sy(p.actual)}
           r={2.5}
-          fill={REGIME_COLORS[p.regime] ?? '#737373'}
+          fill={REGIME_COLORS[p.regime] ?? theme.textTertiary}
           opacity={0.8}
         />
       ))}
@@ -264,4 +272,4 @@ function TRACELiveCalibrationPanel() {
   );
 }
 
-export default memo(TRACELiveCalibrationPanel);
+export default TRACELiveCalibrationPanel;

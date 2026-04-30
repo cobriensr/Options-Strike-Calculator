@@ -149,66 +149,67 @@ function TRACELiveHeader({
             </span>
           </span>
         )}
-        {detail?.predictedClose != null && (() => {
-          // Three-tier rendering:
-          //   1. predictedCloseRange present → show p25–p75 band as primary
-          //      (model has meaningful uncertainty about the close)
-          //   2. confidence ∈ {low, no_trade} but no range → muted "~int"
-          //      (model is uncertain but didn't quantify the band)
-          //   3. high/medium confidence and no range → full-precision point
-          const conf = detail.confidence;
-          const range = detail.analysis?.synthesis?.predictedCloseRange;
-          const isLowConf = conf === 'low' || conf === 'no_trade';
+        {detail?.predictedClose != null &&
+          (() => {
+            // Three-tier rendering:
+            //   1. predictedCloseRange present → show p25–p75 band as primary
+            //      (model has meaningful uncertainty about the close)
+            //   2. confidence ∈ {low, no_trade} but no range → muted "~int"
+            //      (model is uncertain but didn't quantify the band)
+            //   3. high/medium confidence and no range → full-precision point
+            const conf = detail.confidence;
+            const range = detail.analysis?.synthesis?.predictedCloseRange;
+            const isLowConf = conf === 'low' || conf === 'no_trade';
 
-          // Validate the range before rendering. A model regression that
-          // emits p25 > p75 or non-finite values would produce confusing
-          // output ("7150–7115"). Fall through to the lower tiers on
-          // malformed data — the point estimate is still trustworthy.
-          const rangeIsValid =
-            range != null &&
-            Number.isFinite(range.p25) &&
-            Number.isFinite(range.p50) &&
-            Number.isFinite(range.p75) &&
-            range.p25 <= range.p50 &&
-            range.p50 <= range.p75;
-          if (rangeIsValid && range) {
+            // Validate the range before rendering. A model regression that
+            // emits p25 > p75 or non-finite values would produce confusing
+            // output ("7150–7115"). Fall through to the lower tiers on
+            // malformed data — the point estimate is still trustworthy.
+            const rangeIsValid =
+              range != null &&
+              Number.isFinite(range.p25) &&
+              Number.isFinite(range.p50) &&
+              Number.isFinite(range.p75) &&
+              range.p25 <= range.p50 &&
+              range.p50 <= range.p75;
+            if (rangeIsValid && range) {
+              return (
+                <span
+                  className="text-secondary"
+                  title="Predicted close range from p25 to p75. Width reflects model uncertainty — a $20+ band on a trending day means the path matters, not the level."
+                >
+                  Predicted{' '}
+                  <span className="text-tertiary font-semibold">
+                    {Math.round(range.p25)}–{Math.round(range.p75)}
+                  </span>
+                  <span className="text-muted ml-1 font-mono text-[10px]">
+                    (p50 {Math.round(range.p50)})
+                  </span>
+                </span>
+              );
+            }
+            if (isLowConf) {
+              return (
+                <span
+                  className="text-muted"
+                  title="Confidence is LOW or NO_TRADE — predicted close is shown for reference only and should not drive sizing. See warnings + reasoning summary below."
+                >
+                  Predicted{' '}
+                  <span className="font-semibold opacity-70">
+                    ~{detail.predictedClose.toFixed(0)}
+                  </span>
+                </span>
+              );
+            }
             return (
-              <span
-                className="text-secondary"
-                title="Predicted close range from p25 to p75. Width reflects model uncertainty — a $20+ band on a trending day means the path matters, not the level."
-              >
+              <span>
                 Predicted{' '}
                 <span className="text-tertiary font-semibold">
-                  {Math.round(range.p25)}–{Math.round(range.p75)}
-                </span>
-                <span className="text-muted ml-1 font-mono text-[10px]">
-                  (p50 {Math.round(range.p50)})
+                  {detail.predictedClose.toFixed(2)}
                 </span>
               </span>
             );
-          }
-          if (isLowConf) {
-            return (
-              <span
-                className="text-muted"
-                title="Confidence is LOW or NO_TRADE — predicted close is shown for reference only and should not drive sizing. See warnings + reasoning summary below."
-              >
-                Predicted{' '}
-                <span className="font-semibold opacity-70">
-                  ~{detail.predictedClose.toFixed(0)}
-                </span>
-              </span>
-            );
-          }
-          return (
-            <span>
-              Predicted{' '}
-              <span className="text-tertiary font-semibold">
-                {detail.predictedClose.toFixed(2)}
-              </span>
-            </span>
-          );
-        })()}
+          })()}
         {detail?.capturedAt && (
           <span>
             Updated{' '}

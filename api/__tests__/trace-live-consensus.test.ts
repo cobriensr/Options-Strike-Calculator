@@ -150,9 +150,21 @@ describe('computeSessionConsensus', () => {
 
   it('returns 0 stdev when all source ticks agree exactly', () => {
     const ticks: ConsensusInput[] = [
-      tick({ id: 1, capturedAt: new Date('2026-04-29T19:00:00Z'), predictedClose: 7150 }),
-      tick({ id: 2, capturedAt: new Date('2026-04-29T19:30:00Z'), predictedClose: 7150 }),
-      tick({ id: 3, capturedAt: new Date('2026-04-29T19:52:00Z'), predictedClose: 7150 }),
+      tick({
+        id: 1,
+        capturedAt: new Date('2026-04-29T19:00:00Z'),
+        predictedClose: 7150,
+      }),
+      tick({
+        id: 2,
+        capturedAt: new Date('2026-04-29T19:30:00Z'),
+        predictedClose: 7150,
+      }),
+      tick({
+        id: 3,
+        capturedAt: new Date('2026-04-29T19:52:00Z'),
+        predictedClose: 7150,
+      }),
     ];
     const out = computeSessionConsensus(ticks);
     expect(out?.stdev).toBe(0);

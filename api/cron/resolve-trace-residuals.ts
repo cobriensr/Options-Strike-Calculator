@@ -24,7 +24,10 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { cronGuard } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
-import { _resetCalibrationCache, ttcBucketFor } from '../_lib/trace-live-residuals.js';
+import {
+  _resetCalibrationCache,
+  ttcBucketFor,
+} from '../_lib/trace-live-residuals.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 
@@ -192,7 +195,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     _resetCalibrationCache();
 
     logger.info(
-      { rows: rows.length, buckets: upserted, durationMs: Date.now() - startedAt },
+      {
+        rows: rows.length,
+        buckets: upserted,
+        durationMs: Date.now() - startedAt,
+      },
       'resolve-trace-residuals completed',
     );
 

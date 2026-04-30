@@ -60,7 +60,9 @@ describe('WhaleBanner', () => {
   it('renders a banner when a whale is pushed', () => {
     render(<WhaleBanner />);
     act(() => {
-      whaleBannerStore.push(makeWhale({ id: 9001, ticker: 'SPXW', strike: 7150 }));
+      whaleBannerStore.push(
+        makeWhale({ id: 9001, ticker: 'SPXW', strike: 7150 }),
+      );
     });
     expect(screen.getByTestId('whale-banner-9001')).toBeInTheDocument();
     expect(screen.getByText(/SPXW 7150P/)).toBeInTheDocument();

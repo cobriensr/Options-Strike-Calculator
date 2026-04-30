@@ -6,8 +6,11 @@
  *   - rows  : every per-bucket residual stat from trace_live_calibration
  *   - scatter : the underlying (predicted, actual, regime, captured_at)
  *               points so the dashboard can plot them on a scatter and
- *               render a residual histogram. Capped at 500 rows so a
- *               long history doesn't bloat the payload.
+ *               render a residual histogram. Bounded to the last 30 ET
+ *               days so the table (lifetime aggregate) and the scatter
+ *               (recent points) refer to overlapping samples — using
+ *               LIMIT N alone would have produced the table referencing
+ *               buckets whose contributing points weren't on the chart.
  *
  * Read-only. Cached 5 min on the edge — the upstream table updates
  * once per day from the resolve-trace-residuals cron.
@@ -15,10 +18,11 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from './_lib/db.js';
-import { Sentry } from './_lib/sentry.js';
+import { Sentry, metrics } from './_lib/sentry.js';
 import logger from './_lib/logger.js';
 import {
   guardOwnerOrGuestEndpoint,
+  rejectIfRateLimited,
   setCacheHeaders,
 } from './_lib/api-helpers.js';
 
@@ -43,8 +47,25 @@ interface ScatterPoint {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guarded = await guardOwnerOrGuestEndpoint(req, res, () => undefined);
-  if (guarded) return;
+  const done = metrics.request('/api/trace-live-calibration');
+
+  if (req.method !== 'GET') {
+    done({ status: 405 });
+    return res.status(405).json({ error: 'GET only' });
+  }
+
+  if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
+
+  const rateLimited = await rejectIfRateLimited(
+    req,
+    res,
+    'trace-live-calibration',
+    60,
+  );
+  if (rateLimited) {
+    done({ status: 429 });
+    return;
+  }
 
   try {
     const db = getDb();
@@ -73,8 +94,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE actual_close IS NOT NULL
           AND full_response->>'regime' IS NOT NULL
           AND jsonb_typeof(full_response->'synthesis'->'predictedClose') = 'number'
+          AND captured_at >= NOW() - INTERVAL '30 days'
         ORDER BY captured_at DESC
-        LIMIT 500
       `,
     ])) as [
       Array<{
@@ -120,12 +141,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }));
 
     setCacheHeaders(res, 300, 60);
-    res.status(200).json({ rows, scatter });
+    done({ status: 200 });
+    return res.status(200).json({ rows, scatter });
   } catch (err) {
+    done({ status: 500, error: 'unhandled' });
     Sentry.captureException(err);
     logger.error({ err }, 'trace-live-calibration error');
-    res.status(500).json({
-      error: err instanceof Error ? err.message : String(err),
-    });
+    return res.status(500).json({ error: 'Internal error' });
   }
 }
