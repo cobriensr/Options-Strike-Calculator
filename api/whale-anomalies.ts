@@ -65,7 +65,7 @@ interface WhaleAnomalyRow {
   source: DbSource;
   resolved_at: DbNullableTimestamp;
   hit_target: boolean | null;
-  pct_to_target: DbNullableNumeric;
+  pct_close_vs_strike: DbNullableNumeric;
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -103,7 +103,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         side, ask_pct, total_premium, trade_count, vol_oi_ratio,
         underlying_price, moneyness, dte,
         whale_type, direction, pairing_status, source,
-        resolved_at, hit_target, pct_to_target
+        resolved_at, hit_target, pct_close_vs_strike
       FROM whale_anomalies
       WHERE DATE(first_ts AT TIME ZONE 'UTC') = ${date}
         AND first_ts <= ${upperBound}
@@ -139,7 +139,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       source: r.source,
       resolved_at: r.resolved_at != null ? toIso(r.resolved_at) : null,
       hit_target: r.hit_target,
-      pct_to_target: r.pct_to_target != null ? Number(r.pct_to_target) : null,
+      pct_close_vs_strike:
+        r.pct_close_vs_strike != null ? Number(r.pct_close_vs_strike) : null,
     }));
 
     setCacheHeaders(res, 60, 60);

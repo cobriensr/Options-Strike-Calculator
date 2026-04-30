@@ -11,7 +11,7 @@ export function WhaleBanner() {
 
   return (
     <div
-      className="fixed right-4 top-20 z-50 flex w-80 flex-col gap-2"
+      className="fixed top-20 right-4 z-50 flex w-80 flex-col gap-2"
       role="alert"
       aria-live="polite"
     >

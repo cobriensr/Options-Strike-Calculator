@@ -27,7 +27,7 @@ function makeWhale(over: Partial<WhaleAnomaly> = {}): WhaleAnomaly {
     source: 'live',
     resolved_at: null,
     hit_target: null,
-    pct_to_target: null,
+    pct_close_vs_strike: null,
     ...over,
   };
 }
@@ -90,5 +90,19 @@ describe('whaleBannerStore', () => {
     );
     unsub();
     whaleBannerStore.dismiss(400);
+  });
+
+  it('markSeen suppresses subsequent push without firing a banner', () => {
+    const listener = vi.fn();
+    const unsub = whaleBannerStore.subscribe(listener);
+    listener.mockClear();
+    whaleBannerStore.markSeen(500);
+    // markSeen should NOT emit (banner stayed empty).
+    expect(listener).not.toHaveBeenCalled();
+
+    // A subsequent push for the same id is a no-op (already deduped).
+    whaleBannerStore.push(makeWhale({ id: 500 }));
+    expect(listener).not.toHaveBeenCalled();
+    unsub();
   });
 });

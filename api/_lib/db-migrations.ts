@@ -2797,4 +2797,12 @@ export const MIGRATIONS: Migration[] = [
       'Drop iv_anomalies table — Strike IV Anomaly Detector retired in favor of Whale Anomalies (see docs/superpowers/specs/whale-anomalies-2026-04-29.md, Phase 7). The fetch-strike-iv cron stopped writing to this table in the same release; no consumer reads from it anymore. strike_iv_snapshots is kept (used by gamma-squeeze detector and analyze-context).',
     statements: (sql) => [sql`DROP TABLE IF EXISTS iv_anomalies CASCADE`],
   },
+  {
+    id: 101,
+    description:
+      'Rename whale_anomalies.pct_to_target → pct_close_vs_strike. The column stores (last_close - strike) / strike (signed by Type) which is "% close vs strike" rather than "% from spot to target". Code-reviewer flagged the misleading name; renaming keeps semantics intact and makes the dashboard label match what the value actually is.',
+    statements: (sql) => [
+      sql`ALTER TABLE whale_anomalies RENAME COLUMN pct_to_target TO pct_close_vs_strike`,
+    ],
+  },
 ];

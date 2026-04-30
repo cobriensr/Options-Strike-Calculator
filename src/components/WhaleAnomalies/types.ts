@@ -45,7 +45,7 @@ export interface WhaleAnomaly {
   source: WhaleSource;
   resolved_at: string | null;
   hit_target: boolean | null;
-  pct_to_target: number | null;
+  pct_close_vs_strike: number | null;
 }
 
 export interface WhaleAnomaliesResponse {

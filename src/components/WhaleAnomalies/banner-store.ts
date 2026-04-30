@@ -20,8 +20,8 @@ type Listener = (entries: WhaleBannerEntry[]) => void;
 
 class WhaleBannerStore {
   private entries: WhaleBannerEntry[] = [];
-  private listeners = new Set<Listener>();
-  private seen = new Set<number>();
+  private readonly listeners = new Set<Listener>();
+  private readonly seen = new Set<number>();
 
   push(whale: WhaleAnomaly) {
     if (this.seen.has(whale.id)) return;
@@ -34,6 +34,16 @@ class WhaleBannerStore {
     this.entries = [...this.entries, entry];
     this.emit();
     setTimeout(() => this.dismiss(whale.id), BANNER_TTL_MS);
+  }
+
+  /**
+   * Mark a whale id as already seen WITHOUT firing a banner. Used by the
+   * hook on its first poll to seed the dedupe set with existing whales —
+   * subsequent push() calls for those ids become no-ops, so reload doesn't
+   * toast everything that's already on screen.
+   */
+  markSeen(id: number) {
+    this.seen.add(id);
   }
 
   dismiss(id: number) {

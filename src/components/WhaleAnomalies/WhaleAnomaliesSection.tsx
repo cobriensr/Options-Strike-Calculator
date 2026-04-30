@@ -106,13 +106,20 @@ export function WhaleAnomaliesSection({
                 min={Date.parse(scrubBounds.min)}
                 max={Date.parse(scrubBounds.max)}
                 step={60_000}
-                value={
-                  scrubAt
-                    ? Date.parse(scrubAt)
-                    : Date.parse(scrubBounds.max)
-                }
+                value={(() => {
+                  // Defensive clamp: a date-input change followed by a
+                  // pending scrubAt from the prior day can otherwise leave
+                  // the slider value briefly outside the new bounds before
+                  // the next render reconciles state.
+                  const lo = Date.parse(scrubBounds.min);
+                  const hi = Date.parse(scrubBounds.max);
+                  const raw = scrubAt ? Date.parse(scrubAt) : hi;
+                  return Math.max(lo, Math.min(hi, raw));
+                })()}
                 onChange={(e) =>
-                  handleScrubChange(new Date(Number(e.target.value)).toISOString())
+                  handleScrubChange(
+                    new Date(Number(e.target.value)).toISOString(),
+                  )
                 }
                 className="w-48"
                 aria-label="Time scrubber"

@@ -1,7 +1,7 @@
 /**
  * GET /api/cron/resolve-whales
  *
- * Resolves outcome columns (resolved_at, hit_target, pct_to_target) for
+ * Resolves outcome columns (resolved_at, hit_target, pct_close_vs_strike) for
  * unresolved whale_anomalies rows by checking how the underlying behaved
  * after the print fired.
  *
@@ -57,25 +57,25 @@ function determineHit(
   hi: number,
   lo: number,
   last: number,
-): { hit: boolean; pctToTarget: number } {
+): { hit: boolean; pctCloseVsStrike: number } {
   // Boundary semantics: price touching the strike exactly counts as a hit.
-  // pctToTarget is the close vs strike percentage in the favorable
+  // pctCloseVsStrike is the close vs strike percentage in the favorable
   // direction — positive when the trade played out as expected.
   switch (whaleType) {
     case 1:
       // Floor declared: hit if low ≥ strike (price stayed at or above strike).
-      return { hit: lo >= strike, pctToTarget: (last - strike) / strike };
+      return { hit: lo >= strike, pctCloseVsStrike: (last - strike) / strike };
     case 2:
       // Ceiling declared: hit if high ≤ strike (price stayed at or below).
-      return { hit: hi <= strike, pctToTarget: (strike - last) / strike };
+      return { hit: hi <= strike, pctCloseVsStrike: (strike - last) / strike };
     case 3:
       // Floor break expected: hit if low ≤ strike (price touched or broke).
-      return { hit: lo <= strike, pctToTarget: (strike - last) / strike };
+      return { hit: lo <= strike, pctCloseVsStrike: (strike - last) / strike };
     case 4:
       // Ceiling break expected: hit if high ≥ strike (price touched or broke).
-      return { hit: hi >= strike, pctToTarget: (last - strike) / strike };
+      return { hit: hi >= strike, pctCloseVsStrike: (last - strike) / strike };
     default:
-      return { hit: false, pctToTarget: 0 };
+      return { hit: false, pctCloseVsStrike: 0 };
   }
 }
 
@@ -153,7 +153,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const hi = Number(r.hi);
       const lo = Number(r.lo);
       const last = Number(r.last);
-      const { hit, pctToTarget } = determineHit(
+      const { hit, pctCloseVsStrike } = determineHit(
         Number(w.whale_type),
         strike,
         hi,
@@ -165,7 +165,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         UPDATE whale_anomalies
         SET resolved_at = now(),
             hit_target = ${hit},
-            pct_to_target = ${pctToTarget}
+            pct_close_vs_strike = ${pctCloseVsStrike}
         WHERE id = ${w.id}
       `;
       resolved++;

@@ -79,7 +79,7 @@ export const WhaleRow = memo(function WhaleRow({ whale }: WhaleRowProps) {
         </span>
 
         <span
-          className={`rounded border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${sideClasses(whale.side)}`}
+          className={`rounded border px-1.5 py-0.5 text-[10px] font-bold tracking-wide uppercase ${sideClasses(whale.side)}`}
           title={`Ask side ${formatPct(whale.ask_pct)}`}
         >
           {whale.side}
@@ -156,16 +156,16 @@ export const WhaleRow = memo(function WhaleRow({ whale }: WhaleRowProps) {
           >
             {resolutionLabel}
           </span>
-          {whale.pct_to_target != null && (
+          {whale.pct_close_vs_strike != null && (
             <span className="font-mono text-[10px] text-neutral-300">
-              {(whale.pct_to_target * 100).toFixed(2)}%
+              {(whale.pct_close_vs_strike * 100).toFixed(2)}%
             </span>
           )}
         </div>
       </div>
 
       <div
-        className="mt-1 text-[10px] italic text-neutral-500"
+        className="mt-1 text-[10px] text-neutral-500 italic"
         title={WHALE_TYPE_DESCRIPTIONS[whale.whale_type]}
       >
         {WHALE_TYPE_DESCRIPTIONS[whale.whale_type]}

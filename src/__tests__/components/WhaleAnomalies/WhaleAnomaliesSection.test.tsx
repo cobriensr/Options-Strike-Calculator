@@ -37,7 +37,7 @@ function makeWhale(over: Partial<WhaleAnomaly> = {}): WhaleAnomaly {
     source: 'eod_backfill',
     resolved_at: null,
     hit_target: null,
-    pct_to_target: null,
+    pct_close_vs_strike: null,
     ...over,
   };
 }
@@ -99,10 +99,18 @@ describe('WhaleAnomaliesSection', () => {
     });
     render(<WhaleAnomaliesSection marketOpen={false} />);
     // "All" + 7 ticker tabs
-    expect(screen.getByRole('button', { name: /^All\s*3/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^SPXW\s*2/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^NDXP\s*1/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^QQQ\s*0/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /^All\s*3/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /^SPXW\s*2/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /^NDXP\s*1/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /^QQQ\s*0/i }),
+    ).toBeInTheDocument();
   });
 
   it('switches tickerFilter when a ticker tab is clicked', () => {
@@ -137,7 +145,7 @@ describe('WhaleAnomaliesSection', () => {
     expect(screen.getByText(/Loading whales…/i)).toBeInTheDocument();
   });
 
-  it('renders the Live button when on today\'s date', () => {
+  it("renders the Live button when on today's date", () => {
     mockUseWhaleAnomalies.mockReturnValue(baseHookState);
     render(<WhaleAnomaliesSection marketOpen={true} />);
     expect(

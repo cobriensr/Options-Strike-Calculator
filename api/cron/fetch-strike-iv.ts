@@ -494,7 +494,6 @@ async function insertRows(
   return inserted;
 }
 
-
 /**
  * Load the trailing 45-min window of `strike_iv_snapshots` for the gamma
  * squeeze detector. Same source as `loadHistoryForTicker` but with a

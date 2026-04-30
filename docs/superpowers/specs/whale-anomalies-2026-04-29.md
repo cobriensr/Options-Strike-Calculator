@@ -22,14 +22,14 @@ that signal, not a generic z-score outlier.
 
 ## Existing infrastructure (re-used)
 
-| Component                                | Status                       |
-| ---------------------------------------- | ---------------------------- |
-| `flow_alerts` table                      | Live, all rule types, 1-min cron, **SPXW-only** |
-| `whale_alerts` table                     | Live, ≥$500K, 0-7 DTE, 5-min cron, **SPXW-only** |
-| `api/_lib/flow-alert-derive.ts`          | Pure derivations (moneyness, ask/bid ratio, DTE, etc.) |
-| `api/_lib/api-helpers.ts` (`uwFetch`)    | UW client with retry/timeout |
-| EOD parquet archive (`scripts/eod-flow-analysis/output/by-day/`) | 11 days backfilled, growing nightly |
-| Whale checklist module                   | `docs/whale-detection-checklist.md` |
+| Component                                                        | Status                                                 |
+| ---------------------------------------------------------------- | ------------------------------------------------------ |
+| `flow_alerts` table                                              | Live, all rule types, 1-min cron, **SPXW-only**        |
+| `whale_alerts` table                                             | Live, ≥$500K, 0-7 DTE, 5-min cron, **SPXW-only**       |
+| `api/_lib/flow-alert-derive.ts`                                  | Pure derivations (moneyness, ask/bid ratio, DTE, etc.) |
+| `api/_lib/api-helpers.ts` (`uwFetch`)                            | UW client with retry/timeout                           |
+| EOD parquet archive (`scripts/eod-flow-analysis/output/by-day/`) | 11 days backfilled, growing nightly                    |
+| Whale checklist module                                           | `docs/whale-detection-checklist.md`                    |
 
 The biggest unblock: **the live data pipeline is half-built.** We're not
 starting from scratch — we're adding the whale-detection layer on top of an
@@ -51,6 +51,7 @@ then user review before next phase.
 `ticker_symbol` parameterized.
 
 **Files:**
+
 - modify `api/cron/fetch-whale-alerts.ts` — loop over WHALE_TICKERS array,
   fetch per-ticker, dedupe per-ticker pagination
 - modify `api/__tests__/cron/fetch-whale-alerts.test.ts` — add multi-ticker
@@ -64,8 +65,9 @@ then user review before next phase.
 cron run. Well under UW limits.
 
 **Verification:**
+
 - After deploy, query `SELECT ticker, COUNT(*) FROM whale_alerts WHERE
-  created_at > NOW() - INTERVAL '1 hour' GROUP BY ticker;` — expect rows
+created_at > NOW() - INTERVAL '1 hour' GROUP BY ticker;` — expect rows
   for at least 4 of 7 tickers during active hours.
 
 ### Phase 2 — `whale_anomalies` table + detection lib (~5 files, ~3 hours)
@@ -124,6 +126,7 @@ CREATE INDEX idx_whale_anomalies_type ON whale_anomalies (whale_type);
 ```
 
 **Files:**
+
 - modify `api/_lib/db-migrations.ts` — add migration #70 (whale_anomalies)
 - new `api/_lib/whale-detector.ts` — exports:
   - `WHALE_TICKERS` array
@@ -139,13 +142,13 @@ CREATE INDEX idx_whale_anomalies_type ON whale_anomalies (whale_type);
 
 ```ts
 export const WHALE_THRESHOLDS = {
-  SPX:  80_772_337,
-  SPXW:  6_844_350,
-  NDX:  26_039_632,
-  NDXP:  2_615_032,
-  QQQ:   5_661_186,
-  SPY:   6_272_830,
-  IWm:   9_328_335,
+  SPX: 80_772_337,
+  SPXW: 6_844_350,
+  NDX: 26_039_632,
+  NDXP: 2_615_032,
+  QQQ: 5_661_186,
+  SPY: 6_272_830,
+  IWm: 9_328_335,
 };
 ```
 
@@ -159,6 +162,7 @@ whales from the EOD parquet archive so the new component has data to
 display from day 1.
 
 **Files:**
+
 - new `scripts/backfill-whale-anomalies.py` — reads
   `scripts/eod-flow-analysis/output/by-day/*-chains.parquet`, applies
   checklist via the same logic as `whale-detector.ts` (mirrored), inserts
@@ -167,6 +171,7 @@ display from day 1.
 - new `Makefile` target `backfill-whales` (one-shot)
 
 **Verification:**
+
 - `SELECT COUNT(*) FROM whale_anomalies WHERE source = 'eod_backfill';`
   → expect 28 (matching the manual analysis count)
 - `SELECT trade_date, ticker, COUNT(*) FROM whale_anomalies GROUP BY 1, 2;`
@@ -179,6 +184,7 @@ display from day 1.
 qualifying ones into `whale_anomalies`.
 
 **Files:**
+
 - new `api/cron/detect-whales.ts` — handler:
   1. Read `MAX(detected_at)` from `whale_anomalies` WHERE source='live'
   2. Read all `whale_alerts` rows since that timestamp
@@ -198,6 +204,7 @@ cheap (DB-only, no external API calls), so 1-min cadence is fine.
 optional time-window scoping for the scrubber.
 
 **Files:**
+
 - new `api/whale-anomalies.ts`:
   - Query params: `date` (YYYY-MM-DD, required), `at` (ISO timestamp, optional — return only whales with `first_ts <= at`)
   - Returns: `{ whales: WhaleAnomaly[], asOf: string }`
@@ -209,11 +216,12 @@ optional time-window scoping for the scrubber.
 **Goal:** Replace `IVAnomalies` component tree with `WhaleAnomalies`.
 
 **New files:**
+
 - `src/components/WhaleAnomalies/WhaleAnomaliesSection.tsx` — main section
   (date picker + scrubber + ticker tabs + row list)
 - `src/components/WhaleAnomalies/WhaleRow.tsx` — single whale row
   (mirrors AnomalyRow visual but with whale-specific fields:
-   premium, side, type 1-4 badge, pairing status, target distance)
+  premium, side, type 1-4 badge, pairing status, target distance)
 - `src/components/WhaleAnomalies/WhaleBanner.tsx` — alert banner for new
   live whales (preserves existing AnomalyBanner UX)
 - `src/components/WhaleAnomalies/banner-store.ts` — banner state, mirror
@@ -223,10 +231,12 @@ optional time-window scoping for the scrubber.
   `src/__tests__/hooks/useWhaleAnomalies.test.ts`
 
 **Modified files:**
+
 - `src/App.tsx` — swap `IVAnomaliesSection` import for `WhaleAnomaliesSection`
 - `src/main.tsx` — add `/api/whale-anomalies` to botid `protect` array
 
 **UI shape (preserved from existing):**
+
 - Same layout: date picker on left, ticker tabs across the top, row list below
 - Each row shows: ticker + strike, vol/OI, side (ASK/BID), exp, type badge
   (Floor/Ceiling/Floor break/Ceiling break), tape (active/early/etc.),
@@ -238,6 +248,7 @@ optional time-window scoping for the scrubber.
 **Goal:** Remove the deprecated IV anomaly stack now that whales replace it.
 
 **Delete:**
+
 - `src/components/IVAnomalies/` (entire directory)
 - `src/hooks/useIVAnomalies.ts`, `src/hooks/useAnomalyCrossAsset.ts`
 - `src/__tests__/components/IVAnomalies/` (entire directory)
@@ -254,19 +265,20 @@ optional time-window scoping for the scrubber.
 **Migration:** add #71 — `DROP TABLE iv_anomalies; DROP TABLE strike_iv_snapshots;`
 
 **Modify:**
+
 - `vercel.json` — remove the 3 IV-anomaly cron entries
 - `src/main.tsx` — remove `/api/iv-anomalies*` from botid protect array
 - Anywhere else that imports from removed files (let `npm run lint` find them)
 
 ## Data dependencies
 
-| Dependency        | Source             | Phase introduced |
-| ----------------- | ------------------ | ---------------- |
-| `whale_alerts`    | UW `/option-trades/flow-alerts` | Pre-existing (Phase 1 expands) |
-| `flow_alerts`     | UW (1-min cron)   | Pre-existing |
-| EOD parquets      | bot CSV → parquet | Pre-existing |
-| `whale_anomalies` | new table          | Phase 2 |
-| `WHALE_THRESHOLDS` | hardcoded constants | Phase 2; recompute every 30 trading days |
+| Dependency         | Source                          | Phase introduced                         |
+| ------------------ | ------------------------------- | ---------------------------------------- |
+| `whale_alerts`     | UW `/option-trades/flow-alerts` | Pre-existing (Phase 1 expands)           |
+| `flow_alerts`      | UW (1-min cron)                 | Pre-existing                             |
+| EOD parquets       | bot CSV → parquet               | Pre-existing                             |
+| `whale_anomalies`  | new table                       | Phase 2                                  |
+| `WHALE_THRESHOLDS` | hardcoded constants             | Phase 2; recompute every 30 trading days |
 
 ## Decisions (locked 2026-04-29)
 
@@ -284,21 +296,21 @@ optional time-window scoping for the scrubber.
 
 ## Thresholds and constants (codified)
 
-| Constant            | Value                                       | Source                          |
-| ------------------- | ------------------------------------------- | ------------------------------- |
-| `WHALE_THRESHOLDS.SPX`  | $80,772,337                             | p95 of 11-day archive           |
-| `WHALE_THRESHOLDS.SPXW` | $6,844,350                              | p95 of 11-day archive           |
-| `WHALE_THRESHOLDS.NDX`  | $26,039,632                             | p95 of 11-day archive           |
-| `WHALE_THRESHOLDS.NDXP` | $2,615,032                              | p95 of 11-day archive           |
-| `WHALE_THRESHOLDS.QQQ`  | $5,661,186                              | p95 of 11-day archive           |
-| `WHALE_THRESHOLDS.SPY`  | $6,272,830                              | p95 of 11-day archive           |
-| `WHALE_THRESHOLDS.IWM`  | $9,328,335                              | p95 of 11-day archive           |
-| `MIN_TRADE_COUNT`       | 5                                       | checklist                       |
-| `MAX_DTE`               | 14                                      | checklist                       |
-| `MAX_MONEYNESS`         | 0.05 (i.e. ±5%)                         | checklist                       |
-| `MIN_ONE_SIDED`         | 0.85                                    | checklist                       |
-| `PAIRING_OVERLAP_SEC`   | 60 (window > 60s = simultaneous)        | from prior synthetic detector   |
-| Cron `detect-whales`    | `* 13-21 * * 1-5` (every minute, market hours) | matches flow-alerts cadence |
+| Constant                | Value                                          | Source                        |
+| ----------------------- | ---------------------------------------------- | ----------------------------- |
+| `WHALE_THRESHOLDS.SPX`  | $80,772,337                                    | p95 of 11-day archive         |
+| `WHALE_THRESHOLDS.SPXW` | $6,844,350                                     | p95 of 11-day archive         |
+| `WHALE_THRESHOLDS.NDX`  | $26,039,632                                    | p95 of 11-day archive         |
+| `WHALE_THRESHOLDS.NDXP` | $2,615,032                                     | p95 of 11-day archive         |
+| `WHALE_THRESHOLDS.QQQ`  | $5,661,186                                     | p95 of 11-day archive         |
+| `WHALE_THRESHOLDS.SPY`  | $6,272,830                                     | p95 of 11-day archive         |
+| `WHALE_THRESHOLDS.IWM`  | $9,328,335                                     | p95 of 11-day archive         |
+| `MIN_TRADE_COUNT`       | 5                                              | checklist                     |
+| `MAX_DTE`               | 14                                             | checklist                     |
+| `MAX_MONEYNESS`         | 0.05 (i.e. ±5%)                                | checklist                     |
+| `MIN_ONE_SIDED`         | 0.85                                           | checklist                     |
+| `PAIRING_OVERLAP_SEC`   | 60 (window > 60s = simultaneous)               | from prior synthetic detector |
+| Cron `detect-whales`    | `* 13-21 * * 1-5` (every minute, market hours) | matches flow-alerts cadence   |
 
 ## Success criteria
 

@@ -49,7 +49,7 @@ const ROW = {
   source: 'eod_backfill',
   resolved_at: null,
   hit_target: null,
-  pct_to_target: null,
+  pct_close_vs_strike: null,
 };
 
 describe('whale-anomalies endpoint', () => {

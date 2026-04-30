@@ -45,7 +45,6 @@ export function useWhaleAnomalies({
   ticker = null,
 }: UseWhaleAnomaliesArgs): State & { refetch: () => void } {
   const [state, setState] = useState<State>(INITIAL_STATE);
-  const seenRef = useRef<Set<number>>(new Set());
   const primingRef = useRef(true);
 
   const fetchOnce = useCallback(async () => {
@@ -61,18 +60,16 @@ export function useWhaleAnomalies({
       }
       const json = (await res.json()) as WhaleAnomaliesResponse;
 
-      // Push new live whales to the banner store (skip on the first fetch
-      // so existing whales don't all toast at once).
-      if (!primingRef.current) {
-        for (const w of json.whales) {
-          if (w.source === 'live' && !seenRef.current.has(w.id)) {
-            whaleBannerStore.push(w);
-          }
-          seenRef.current.add(w.id);
-        }
-      } else {
-        for (const w of json.whales) seenRef.current.add(w.id);
+      // First fetch: seed the store's dedupe set so subsequent pushes for
+      // already-rendered whales become no-ops. Subsequent fetches: push
+      // every live whale; the store's seen Set handles dedupe centrally.
+      if (primingRef.current) {
+        for (const w of json.whales) whaleBannerStore.markSeen(w.id);
         primingRef.current = false;
+      } else {
+        for (const w of json.whales) {
+          if (w.source === 'live') whaleBannerStore.push(w);
+        }
       }
 
       setState({
@@ -92,9 +89,10 @@ export function useWhaleAnomalies({
   }, [date, at, ticker]);
 
   // Reset priming when date changes (back-scrubbing to a prior day).
+  // The store's seen Set is intentionally module-scoped and never reset —
+  // dismissed banners stay dismissed across date changes.
   useEffect(() => {
     primingRef.current = true;
-    seenRef.current = new Set();
     setState(INITIAL_STATE);
   }, [date]);
 

@@ -23,7 +23,9 @@ const okResponse = (json: WhaleAnomaliesResponse) =>
     json: async () => json,
   }) as unknown as Response;
 
-const sampleResp = (override?: Partial<WhaleAnomaliesResponse>): WhaleAnomaliesResponse => ({
+const sampleResp = (
+  override?: Partial<WhaleAnomaliesResponse>,
+): WhaleAnomaliesResponse => ({
   date: '2026-04-29',
   asOf: null,
   whales: [
@@ -51,7 +53,7 @@ const sampleResp = (override?: Partial<WhaleAnomaliesResponse>): WhaleAnomaliesR
       source: 'eod_backfill',
       resolved_at: null,
       hit_target: null,
-      pct_to_target: null,
+      pct_close_vs_strike: null,
     },
   ],
   ...override,
@@ -82,7 +84,9 @@ describe('useWhaleAnomalies', () => {
   });
 
   it('includes the at param when scrubbing', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse(sampleResp({ asOf: '2026-04-29T17:00:00Z' })));
+    fetchMock.mockResolvedValueOnce(
+      okResponse(sampleResp({ asOf: '2026-04-29T17:00:00Z' })),
+    );
     renderHook(() =>
       useWhaleAnomalies({
         date: '2026-04-29',

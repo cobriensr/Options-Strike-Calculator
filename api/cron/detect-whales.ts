@@ -30,8 +30,18 @@ import {
   type WhaleCandidate,
   type PairingPeer,
 } from '../_lib/whale-detector.js';
+import { getSpotPrice } from '../_lib/spot-price.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
+
+/**
+ * Tickers that frequently arrive from UW with `underlying_price = null`
+ * (cash index tickers — observed empirically against the EOD parquet
+ * archive). For these, detect-whales fetches spot via /stock/{ticker}/ohlc/1m
+ * before classification so the moneyness gate runs on real values rather
+ * than the permissive null-fallback path.
+ */
+const NULL_UNDERLYING_TICKERS = new Set(['NDX', 'NDXP', 'SPX', 'SPXW']);
 
 type DbId = number | string;
 type DbNumeric = string | number;
@@ -64,8 +74,10 @@ interface PeerRow {
 
 function rowToCandidate(row: WhaleAlertRow): WhaleCandidate {
   const created = new Date(row.created_at);
-  const askPrem = row.total_ask_side_prem != null ? Number(row.total_ask_side_prem) : 0;
-  const bidPrem = row.total_bid_side_prem != null ? Number(row.total_bid_side_prem) : 0;
+  const askPrem =
+    row.total_ask_side_prem != null ? Number(row.total_ask_side_prem) : 0;
+  const bidPrem =
+    row.total_bid_side_prem != null ? Number(row.total_bid_side_prem) : 0;
   const underlying =
     row.underlying_price != null ? Number(row.underlying_price) : null;
   const volOi =
@@ -89,8 +101,14 @@ function rowToCandidate(row: WhaleAlertRow): WhaleCandidate {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res, { requireApiKey: false });
+  // requireApiKey: true — used for the spot-price fallback on cash index
+  // tickers when whale_alerts.underlying_price is null. The classifier
+  // tolerates null spot (permissive moneyness), so a missing UW key
+  // wouldn't break correctness, just degrade NDX/NDXP precision. Better
+  // to fail fast in CI/dev than silently downgrade.
+  const guard = cronGuard(req, res, { requireApiKey: true });
   if (!guard) return;
+  const { apiKey } = guard;
   const startedAt = Date.now();
 
   try {
@@ -131,9 +149,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let inserted = 0;
     let classifiedCount = 0;
     let simultaneousFiltered = 0;
+    let spotFetchedCount = 0;
 
     for (const row of candidates) {
       const candidate = rowToCandidate(row);
+
+      // Cash index tickers occasionally come back from UW with a null
+      // underlying_price. The classifier handles null permissively
+      // (assumes near-ATM), but that loses the moneyness gate's filtering
+      // power. Fall back to /stock/{ticker}/ohlc/1m for a real spot.
+      if (
+        candidate.underlying_price == null &&
+        NULL_UNDERLYING_TICKERS.has(candidate.ticker)
+      ) {
+        const spot = await getSpotPrice(candidate.ticker, apiKey);
+        if (spot != null) {
+          candidate.underlying_price = spot;
+          spotFetchedCount++;
+        }
+      }
+
       const classification = classifyWhale(candidate);
       if (!classification) continue;
       classifiedCount++;
@@ -212,6 +247,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         candidates: candidates.length,
         classified: classifiedCount,
         simultaneousFiltered,
+        spotFetchedCount,
         inserted,
       },
       'detect-whales completed',
@@ -222,6 +258,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       candidates: candidates.length,
       classified: classifiedCount,
       simultaneousFiltered,
+      spotFetchedCount,
       inserted,
       durationMs: Date.now() - startedAt,
     });

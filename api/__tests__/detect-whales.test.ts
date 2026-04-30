@@ -25,9 +25,16 @@ vi.mock('../_lib/api-helpers.js', () => ({
   cronGuard: mockCronGuard,
 }));
 
+const { mockGetSpotPrice } = vi.hoisted(() => ({
+  mockGetSpotPrice: vi.fn(),
+}));
+vi.mock('../_lib/spot-price.js', () => ({
+  getSpotPrice: mockGetSpotPrice,
+}));
+
 import handler from '../cron/detect-whales.js';
 
-const GUARD = { apiKey: '', today: '2026-04-29' };
+const GUARD = { apiKey: 'test-uw-key', today: '2026-04-29' };
 
 const SPXW_FLOOR_ROW = {
   id: 100,
@@ -68,6 +75,7 @@ describe('detect-whales handler', () => {
     vi.resetAllMocks();
     mockCronGuard.mockReturnValue(GUARD);
     mockSql.mockResolvedValue([]);
+    mockGetSpotPrice.mockResolvedValue(null);
   });
 
   it('returns 200 with 0 inserts when no new candidates', async () => {
@@ -214,5 +222,89 @@ describe('detect-whales handler', () => {
     await handler(req, res);
 
     expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('fetches spot via UW when an NDX/NDXP candidate has null underlying_price', async () => {
+    const NDXP_NULL_UNDERLYING = {
+      id: 300,
+      ticker: 'NDXP',
+      option_chain: 'NDXP260505C24500000',
+      strike: 24500,
+      option_type: 'call',
+      expiry: '2026-05-05',
+      created_at: '2026-04-29T13:40:00Z',
+      total_premium: 4_200_000,
+      total_ask_side_prem: 4_200_000,
+      total_bid_side_prem: 0,
+      trade_count: 14,
+      underlying_price: null,
+      volume_oi_ratio: null,
+      dte_at_alert: 5,
+    };
+    mockSql
+      .mockResolvedValueOnce([NDXP_NULL_UNDERLYING])
+      .mockResolvedValueOnce([]) // peers
+      .mockResolvedValueOnce([{ id: 9 }]); // insert
+    mockGetSpotPrice.mockResolvedValueOnce(24500);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(mockGetSpotPrice).toHaveBeenCalledWith('NDXP', 'test-uw-key');
+    expect(res._json).toMatchObject({
+      candidates: 1,
+      classified: 1,
+      spotFetchedCount: 1,
+    });
+  });
+
+  it('does NOT call getSpotPrice when underlying_price is already populated', async () => {
+    mockSql
+      .mockResolvedValueOnce([SPXW_FLOOR_ROW])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 11 }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(mockGetSpotPrice).not.toHaveBeenCalled();
+    expect(res._json).toMatchObject({ spotFetchedCount: 0 });
+  });
+
+  it('does NOT call getSpotPrice for non-cash-index tickers (e.g. SPY)', async () => {
+    const SPY_NULL_UNDERLYING = {
+      id: 400,
+      ticker: 'SPY',
+      option_chain: 'SPY260429P00700000',
+      strike: 700,
+      option_type: 'put',
+      expiry: '2026-04-29',
+      created_at: '2026-04-29T15:00:00Z',
+      total_premium: 7_000_000,
+      total_ask_side_prem: 6_650_000,
+      total_bid_side_prem: 350_000,
+      trade_count: 10,
+      underlying_price: null,
+      volume_oi_ratio: 5,
+      dte_at_alert: 0,
+    };
+    mockSql.mockResolvedValueOnce([SPY_NULL_UNDERLYING]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(mockGetSpotPrice).not.toHaveBeenCalled();
   });
 });

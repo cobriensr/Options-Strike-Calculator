@@ -28,7 +28,7 @@ function makeWhale(over: Partial<WhaleAnomaly> = {}): WhaleAnomaly {
     source: 'eod_backfill',
     resolved_at: null,
     hit_target: null,
-    pct_to_target: null,
+    pct_close_vs_strike: null,
     ...over,
   };
 }
@@ -51,14 +51,20 @@ describe('WhaleRow', () => {
   });
 
   it('renders the Type label and bullish arrow for Type 1', () => {
-    render(<WhaleRow whale={makeWhale({ whale_type: 1, direction: 'bullish' })} />);
+    render(
+      <WhaleRow whale={makeWhale({ whale_type: 1, direction: 'bullish' })} />,
+    );
     expect(screen.getByText(/▲ Type 1 — Floor/)).toBeInTheDocument();
   });
 
   it('renders the Type label and bearish arrow for Type 2', () => {
     render(
       <WhaleRow
-        whale={makeWhale({ whale_type: 2, direction: 'bearish', option_type: 'call' })}
+        whale={makeWhale({
+          whale_type: 2,
+          direction: 'bearish',
+          option_type: 'call',
+        })}
       />,
     );
     expect(screen.getByText(/▼ Type 2 — Ceiling$/)).toBeInTheDocument();
@@ -100,7 +106,9 @@ describe('WhaleRow', () => {
   });
 
   it('renders pending resolution by default', () => {
-    render(<WhaleRow whale={makeWhale({ resolved_at: null, hit_target: null })} />);
+    render(
+      <WhaleRow whale={makeWhale({ resolved_at: null, hit_target: null })} />,
+    );
     expect(screen.getByText('pending')).toBeInTheDocument();
   });
 
@@ -110,7 +118,7 @@ describe('WhaleRow', () => {
         whale={makeWhale({
           resolved_at: '2026-04-29T20:00:00Z',
           hit_target: true,
-          pct_to_target: 0.0042,
+          pct_close_vs_strike: 0.0042,
         })}
       />,
     );
@@ -123,7 +131,7 @@ describe('WhaleRow', () => {
         whale={makeWhale({
           resolved_at: '2026-04-29T20:00:00Z',
           hit_target: false,
-          pct_to_target: -0.012,
+          pct_close_vs_strike: -0.012,
         })}
       />,
     );
