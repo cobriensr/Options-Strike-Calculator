@@ -142,6 +142,7 @@ if (import.meta.env.PROD)
       { path: '/api/institutional-program/strike-heatmap', method: 'GET' },
       { path: '/api/iv-anomalies', method: 'GET' },
       { path: '/api/iv-anomalies-cross-asset', method: 'POST' },
+      { path: '/api/whale-anomalies', method: 'GET' },
       { path: '/api/gamma-squeezes', method: 'GET' },
       { path: '/api/strike-trade-volume', method: 'GET' },
       { path: '/api/system-status', method: 'GET' },
