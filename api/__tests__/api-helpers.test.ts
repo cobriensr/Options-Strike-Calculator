@@ -437,6 +437,63 @@ describe('api-helpers', () => {
       await expect(withRetry(fn, 2)).rejects.toBe('string error');
       expect(fn).toHaveBeenCalledTimes(1);
     });
+
+    // ── 429 reason differentiation ────────────────────────────
+    // UW's "3 concurrent" 429 clears in ~1s as in-flight drains, so a
+    // short 250–500ms backoff is right. The "120 in 60 seconds" 429
+    // needs to wait for the minute window to roll, so 5–10s is right.
+    // The exponential 1s/2s default is wrong for both extremes; these
+    // tests pin the correct backoff envelope per reason.
+
+    it('uses short backoff (<600ms) for "3 concurrent" 429 body', async () => {
+      vi.useFakeTimers();
+      try {
+        const fn = vi
+          .fn()
+          .mockRejectedValueOnce(
+            new Error(
+              'UW API 429: {"error":"You have exceeded 3 concurrent requests"}',
+            ),
+          )
+          .mockResolvedValue('ok');
+
+        const promise = withRetry(fn, 1);
+        promise.catch(() => {});
+        // Advance 600ms — covers the upper bound of the concurrency backoff.
+        await vi.advanceTimersByTimeAsync(600);
+        await expect(promise).resolves.toBe('ok');
+        expect(fn).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('uses long backoff (>=5s) for per-minute 429 body', async () => {
+      vi.useFakeTimers();
+      try {
+        const fn = vi
+          .fn()
+          .mockRejectedValueOnce(
+            new Error(
+              'UW API 429: {"error":"You have hit the rate limit of 120 in 60 seconds"}',
+            ),
+          )
+          .mockResolvedValue('ok');
+
+        const promise = withRetry(fn, 1);
+        promise.catch(() => {});
+        // 4s is below the lower bound (5s) — must NOT have retried yet.
+        await vi.advanceTimersByTimeAsync(4000);
+        expect(fn).toHaveBeenCalledTimes(1);
+        // Advance to 11s total — covers the upper bound (10s) of the
+        // per-minute backoff window.
+        await vi.advanceTimersByTimeAsync(7000);
+        await expect(promise).resolves.toBe('ok');
+        expect(fn).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   // ============================================================

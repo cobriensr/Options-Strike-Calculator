@@ -483,6 +483,48 @@ export function isMarketOpen(): boolean {
  * Designed for cron jobs where a single missed invocation creates data gaps.
  * Interactive endpoints should NOT use this — users want fast failure.
  */
+/**
+ * Classify a thrown error message and return the backoff in ms before
+ * the next retry, or `null` if the error is not retryable.
+ *
+ * UW returns two distinct 429 sub-types whose right-sized backoffs
+ * differ by ~20×:
+ *
+ *   - `concurrent` 429 — UW's concurrency cap (≤3 in-flight). Clears
+ *     in ~1 s as in-flight requests drain. Short jittered backoff.
+ *   - per-minute 429 (`120 in 60 seconds`) — minute window has to roll
+ *     before any retry can succeed. Needs 5–10 s.
+ *
+ * Treating both with the same 1s/2s exponential is why per-minute
+ * 429s exhausted all retries before the spec-compliant fix shipped.
+ *
+ * Network errors and 5xx upstream failures keep the existing
+ * exponential `1000 × (attempt + 1)`.
+ */
+function classifyRetryDelay(msg: string, attempt: number): number | null {
+  // 429 — distinguish concurrency vs per-minute window
+  if (/UW API 429|\b429\b/.test(msg)) {
+    if (/concurrent/i.test(msg)) {
+      return 250 + Math.random() * 250; // 250–500 ms jittered
+    }
+    if (/in 60 seconds|per minute|rate limit of/i.test(msg)) {
+      return 5000 + Math.random() * 5000; // 5–10 s
+    }
+    // Generic 429 — fall through to default exponential
+    return 1000 * (attempt + 1);
+  }
+
+  if (/50[234]/.test(msg)) {
+    return 1000 * (attempt + 1);
+  }
+
+  if (/timeout|ECONNREFUSED|ECONNRESET|fetch failed|socket hang up/i.test(msg)) {
+    return 1000 * (attempt + 1);
+  }
+
+  return null; // not retryable
+}
+
 export async function withRetry<T>(
   fn: () => Promise<T>,
   retries: number = 2,
@@ -493,15 +535,9 @@ export async function withRetry<T>(
     } catch (err) {
       const isLast = attempt === retries;
       const msg = err instanceof Error ? err.message : '';
-      // 429 included so cron handlers can recover when a sibling cron has
-      // briefly saturated the UW concurrent-request budget — short backoff
-      // (1s, 2s) reliably finds an open slot once the burst clears.
-      const isTransient =
-        /timeout|ECONNREFUSED|ECONNRESET|fetch failed|socket hang up|429|50[234]/i.test(
-          msg,
-        );
-      if (isLast || !isTransient) throw err;
-      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+      const delayMs = classifyRetryDelay(msg, attempt);
+      if (isLast || delayMs === null) throw err;
+      await new Promise((r) => setTimeout(r, delayMs));
     }
   }
   throw new Error('unreachable');

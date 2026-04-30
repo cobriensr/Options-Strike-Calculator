@@ -1,5 +1,19 @@
 # Shared UW outbound rate limiter (2026-04-27)
 
+> **Superseded for the per-second concurrency concern by
+> [`uw-concurrency-semaphore-2026-04-30.md`](./uw-concurrency-semaphore-2026-04-30.md).**
+>
+> The per-second cap described below was the wrong shape — a fixed
+> 1-second rate limiter cannot enforce UW's actual concurrency cap
+> (≤3 in-flight at any instant), because at second boundaries up to
+> 6 requests can be in flight while the limiter sees ≤3 in each
+> bucket. The corrective design (`uw-concurrency.ts`) uses a Redis
+> ZSET counting semaphore with lease-based crash recovery.
+>
+> The per-MINUTE cap from this spec is retained as a budget guardrail
+> in the slimmed-down `uw-rate-limit.ts`. Everything below is preserved
+> as the historical decision context.
+
 ## Goal
 
 Eliminate UW 429 warnings by gating every `uwFetch()` call through an
