@@ -954,7 +954,12 @@ describe('fetch-strike-iv handler', () => {
 
   // ── Phase 2 detection ────────────────────────────────────────
 
-  it('inserts iv_anomalies when a strike exceeds the skew_delta threshold AND clears the vol/OI gate', async () => {
+  // Skipped: iv_anomalies persistence retired in the Whale Anomalies
+  // migration (see docs/superpowers/specs/whale-anomalies-2026-04-29.md,
+  // Phase 7). detectAnomalies still runs so the loaders stay warm, but
+  // the resulting flags are not persisted. The next test below
+  // confirms no INSERT INTO iv_anomalies fires.
+  it.skip('inserts iv_anomalies when a strike exceeds the skew_delta threshold AND clears the vol/OI gate', async () => {
     // Build an SPXW chain where one put's bid/ask is much wider than the
     // neighbors — this makes iv_mid ~6 vol pts above peers, which is >
     // the 1.5 vol pt SKEW_DELTA_THRESHOLD. SPY + QQQ + quiet chains are

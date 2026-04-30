@@ -29,7 +29,6 @@ const DIAGNOSTIC_TABLE_ALLOWLIST = new Set<string>([
   'greek_exposure',
   'greek_exposure_strike',
   'institutional_blocks',
-  'iv_anomalies',
   'iv_monitor',
   'lesson_reports',
   'lessons',

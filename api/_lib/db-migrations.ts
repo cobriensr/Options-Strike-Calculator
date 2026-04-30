@@ -2791,4 +2791,10 @@ export const MIGRATIONS: Migration[] = [
       sql`CREATE INDEX IF NOT EXISTS idx_whale_anomalies_type ON whale_anomalies (whale_type)`,
     ],
   },
+  {
+    id: 100,
+    description:
+      'Drop iv_anomalies table — Strike IV Anomaly Detector retired in favor of Whale Anomalies (see docs/superpowers/specs/whale-anomalies-2026-04-29.md, Phase 7). The fetch-strike-iv cron stopped writing to this table in the same release; no consumer reads from it anymore. strike_iv_snapshots is kept (used by gamma-squeeze detector and analyze-context).',
+    statements: (sql) => [sql`DROP TABLE IF EXISTS iv_anomalies CASCADE`],
+  },
 ];

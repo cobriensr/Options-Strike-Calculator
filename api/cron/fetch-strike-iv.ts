@@ -51,19 +51,10 @@ import {
   STRIKE_IV_MIN_OI_HIGH_LIQ,
   STRIKE_IV_MIN_OI_SINGLE_NAME,
   STRIKE_IV_TICKERS,
-  Z_WINDOW_SIZE,
   type StrikeIVTicker,
 } from '../_lib/constants.js';
 import { impliedVolatility } from '../../src/utils/black-scholes.js';
 import { getETCloseUtcIso } from '../../src/utils/timezone.js';
-import {
-  detectAnomalies,
-  classifyFlowPhase,
-  strikeKey,
-  tapeKey,
-  type StrikeSample,
-  type TapeStats,
-} from '../_lib/iv-anomaly.js';
 import {
   detectGammaSqueezes,
   squeezeKey,
@@ -503,170 +494,6 @@ async function insertRows(
   return inserted;
 }
 
-// ── Detection (Phase 2) ──────────────────────────────────────
-
-/**
- * Convert a freshly-ingested SnapshotRow (what we just INSERTed) into
- * the detector's StrikeSample shape. Volume/OI are included for the
- * primary vol/OI gate in `detectAnomalies`; iv_mid/iv_bid/iv_ask + ts +
- * identity keys are used for the signal checks.
- */
-function toStrikeSample(row: SnapshotRow, ts: string): StrikeSample {
-  return {
-    ticker: row.ticker,
-    strike: row.strike,
-    side: row.side,
-    expiry: row.expiry,
-    iv_mid: row.ivMid,
-    iv_bid: row.ivBid,
-    iv_ask: row.ivAsk,
-    volume: Number.isFinite(row.volume) ? row.volume : null,
-    oi: Number.isFinite(row.oi) ? row.oi : null,
-    ts,
-  };
-}
-
-/**
- * Load the last Z_WINDOW_SIZE iv_mid samples per (ticker, strike, side,
- * expiry) tuple for this ticker, excluding the target sample itself
- * (WHERE ts < now). Returns a map keyed by strikeKey() for O(1) lookup
- * inside the detector.
- *
- * Composite index `idx_strike_iv_snapshots_lookup` covers every WHERE
- * column + ORDER BY so this is an index-only scan per tuple.
- */
-async function loadHistoryForTicker(
-  sql: ReturnType<typeof getDb>,
-  ticker: StrikeIVTicker,
-  sampledAt: string,
-): Promise<Map<string, StrikeSample[]>> {
-  // Row shape from the window-function query. Neon returns NUMERIC
-  // columns as strings and TIMESTAMPTZ as either string or Date — hence
-  // the string | number variants per column.
-  type NullableNumeric = string | number | null;
-  interface HistoryRow {
-    ticker: string;
-    strike: string | number;
-    side: string;
-    expiry: string | Date;
-    iv_mid: NullableNumeric;
-    iv_bid: NullableNumeric;
-    iv_ask: NullableNumeric;
-    volume: NullableNumeric;
-    oi: NullableNumeric;
-    ts: string | Date;
-  }
-
-  // Single query that pulls the last N samples per strike tuple using
-  // a window function. Much cheaper than issuing one query per strike.
-  // Volume/OI are selected alongside IV so historical samples keep the
-  // same StrikeSample shape as the freshly-ingested target; the detector
-  // only consults vol/OI on the target sample, not on history, but
-  // keeping the shape uniform avoids future shape-drift surprises.
-  const rows = (await sql`
-    SELECT ticker, strike, side, expiry, iv_mid, iv_bid, iv_ask, volume, oi, ts
-    FROM (
-      SELECT
-        ticker, strike, side, expiry, iv_mid, iv_bid, iv_ask, volume, oi, ts,
-        ROW_NUMBER() OVER (
-          PARTITION BY ticker, strike, side, expiry
-          ORDER BY ts DESC
-        ) AS rn
-      FROM strike_iv_snapshots
-      WHERE ticker = ${ticker}
-        AND ts < ${sampledAt}
-    ) sub
-    WHERE rn <= ${Z_WINDOW_SIZE}
-    ORDER BY ticker, strike, side, expiry, ts DESC
-  `) as HistoryRow[];
-
-  const result = new Map<string, StrikeSample[]>();
-  for (const r of rows) {
-    const strike = Number(r.strike);
-    const side = r.side as 'call' | 'put';
-    const expiry =
-      r.expiry instanceof Date
-        ? r.expiry.toISOString().slice(0, 10)
-        : String(r.expiry).slice(0, 10);
-    const ts = r.ts instanceof Date ? r.ts.toISOString() : String(r.ts);
-    const key = strikeKey(r.ticker, strike, side, expiry);
-    const bucket = result.get(key);
-    const sample: StrikeSample = {
-      ticker: r.ticker,
-      strike,
-      side,
-      expiry,
-      iv_mid: r.iv_mid == null ? null : Number(r.iv_mid),
-      iv_bid: r.iv_bid == null ? null : Number(r.iv_bid),
-      iv_ask: r.iv_ask == null ? null : Number(r.iv_ask),
-      volume: r.volume == null ? null : Number(r.volume),
-      oi: r.oi == null ? null : Number(r.oi),
-      ts,
-    };
-    if (bucket) bucket.push(sample);
-    else result.set(key, [sample]);
-  }
-  return result;
-}
-
-/**
- * Load cumulative-since-open bid/ask volume splits from `strike_trade_volume`
- * for every (ticker, strike, side) tuple that traded today up to `sampledAt`.
- *
- * The tape table is populated by the per-minute `fetch-strike-trade-volume`
- * cron from UW's flow-per-strike-intraday endpoint. It aggregates ACROSS
- * expiries by design — there's no expiry column. A strike with 0 rows in
- * the day gets dropped from the map, and `detectAnomalies` skips that
- * strike (the gate cannot judge directionality without prints).
- *
- * Single SUM-by-group query per ticker — index `idx_strike_trade_volume_ticker_ts`
- * covers the WHERE clause cleanly.
- */
-async function loadTapeStatsForTicker(
-  sql: ReturnType<typeof getDb>,
-  ticker: StrikeIVTicker,
-  sampledAtIso: string,
-): Promise<Map<string, TapeStats>> {
-  type AggRow = {
-    strike: string | number;
-    side: string;
-    bid_total: string | number | null;
-    ask_total: string | number | null;
-    mid_total: string | number | null;
-    vol_total: string | number | null;
-  };
-  const rows = (await sql`
-    SELECT strike,
-           side,
-           SUM(bid_side_vol) AS bid_total,
-           SUM(ask_side_vol) AS ask_total,
-           SUM(mid_vol)      AS mid_total,
-           SUM(total_vol)    AS vol_total
-    FROM strike_trade_volume
-    WHERE ticker = ${ticker}
-      AND ts::date = (${sampledAtIso}::timestamptz AT TIME ZONE 'America/New_York')::date
-      AND ts <= ${sampledAtIso}
-    GROUP BY strike, side
-  `) as AggRow[];
-
-  const out = new Map<string, TapeStats>();
-  for (const r of rows) {
-    const total = Number(r.vol_total ?? 0);
-    if (!Number.isFinite(total) || total <= 0) continue;
-    const bid = Number(r.bid_total ?? 0);
-    const ask = Number(r.ask_total ?? 0);
-    const mid = Number(r.mid_total ?? 0);
-    const strike = Number(r.strike);
-    const side = r.side === 'call' ? 'call' : 'put';
-    out.set(tapeKey(ticker, strike, side), {
-      bid_pct: bid / total,
-      ask_pct: ask / total,
-      mid_pct: mid / total,
-      total_vol: total,
-    });
-  }
-  return out;
-}
 
 /**
  * Load the trailing 45-min window of `strike_iv_snapshots` for the gamma
@@ -825,14 +652,16 @@ async function persistSqueezeFlags(
 }
 
 /**
- * For every row we just inserted, check for anomalies against the
- * trailing Z_WINDOW_SIZE history + the current cross-strike snapshot.
- * Flags are enriched with a ContextSnapshot + flow_phase label and
- * inserted into iv_anomalies.
+ * For every row we just inserted, run the gamma-squeeze detector against
+ * the trailing window. Flags are enriched with a `ContextSnapshot` and
+ * persisted to `gamma_squeeze_events`.
  *
- * Returns the count of anomalies written. A detection failure logs
- * + captures to Sentry but does NOT cause the ingestion cron to
- * report failure — Phase 1 ingestion always takes precedence.
+ * IV-anomaly persistence retired with the Whale Anomalies migration —
+ * see docs/superpowers/specs/whale-anomalies-2026-04-29.md, Phase 7.
+ * `iv_anomalies` is dropped in migration #100 and no consumer reads it.
+ *
+ * Returns the squeeze flag count (or 0). Detection failures log + capture
+ * to Sentry but don't fail the cron — ingestion always takes precedence.
  */
 async function runDetection(
   sql: ReturnType<typeof getDb>,
@@ -842,21 +671,11 @@ async function runDetection(
 ): Promise<number> {
   if (insertedRows.length === 0) return 0;
 
-  const spot = insertedRows[0]!.spot;
-  const samples = insertedRows.map((r) => toStrikeSample(r, sampledAtIso));
+  const [squeezeWindow, ndgByStrike] = await Promise.all([
+    loadSqueezeWindowForTicker(sql, ticker, sampledAtIso),
+    loadNetDealerGammaForTicker(sql, ticker, sampledAtIso),
+  ]);
 
-  const [historyByStrike, tapeByKey, squeezeWindow, ndgByStrike] =
-    await Promise.all([
-      loadHistoryForTicker(sql, ticker, sampledAtIso),
-      loadTapeStatsForTicker(sql, ticker, sampledAtIso),
-      loadSqueezeWindowForTicker(sql, ticker, sampledAtIso),
-      loadNetDealerGammaForTicker(sql, ticker, sampledAtIso),
-    ]);
-
-  const flags = detectAnomalies(samples, historyByStrike, tapeByKey, spot);
-  // Run gamma-squeeze detection in parallel to IV-anomaly detection.
-  // It uses different gates (velocity vs side concentration), so the two
-  // signals can both fire on the same compound key without contradiction.
   const squeezeFlags = detectGammaSqueezes(
     squeezeWindow,
     ticker,
@@ -864,7 +683,7 @@ async function runDetection(
     ndgByStrike,
   );
 
-  if (flags.length === 0 && squeezeFlags.length === 0) return 0;
+  if (squeezeFlags.length === 0) return 0;
 
   // All flags in this batch share the same (ticker, sampledAtIso) pair —
   // gather the context snapshot ONCE instead of re-running ~30 queries
@@ -874,8 +693,6 @@ async function runDetection(
   const context = await gatherContextSnapshot(ticker, detectTs);
   const contextJson = JSON.stringify(context);
 
-  // Persist squeeze flags first (they don't depend on IV-anomaly output
-  // and are best-effort — failure won't block the IV-anomaly path).
   try {
     await persistSqueezeFlags(sql, squeezeFlags, contextJson);
   } catch (err) {
@@ -885,39 +702,11 @@ async function runDetection(
     Sentry.captureException(err);
     logger.error(
       { err, ticker, count: squeezeFlags.length },
-      'fetch-strike-iv: gamma squeeze persist failed — IV anomaly path continues',
+      'fetch-strike-iv: gamma squeeze persist failed',
     );
+    return 0;
   }
-
-  if (flags.length === 0) return 0;
-
-  let inserted = 0;
-  for (const flag of flags) {
-    const flowPhase = classifyFlowPhase(flag, context);
-
-    const result = await sql`
-      INSERT INTO iv_anomalies (
-        ticker, strike, side, expiry,
-        spot_at_detect, iv_at_detect,
-        skew_delta, z_score, ask_mid_div, vol_oi_ratio,
-        side_skew, side_dominant,
-        bid_pct, ask_pct, mid_pct, total_vol_at_detect,
-        flag_reasons, flow_phase, context_snapshot, ts
-      ) VALUES (
-        ${flag.ticker}, ${flag.strike}, ${flag.side}, ${flag.expiry},
-        ${flag.spot_at_detect}, ${flag.iv_at_detect},
-        ${flag.skew_delta}, ${flag.z_score}, ${flag.ask_mid_div}, ${flag.vol_oi_ratio},
-        ${flag.side_skew}, ${flag.side_dominant},
-        ${flag.bid_pct}, ${flag.ask_pct}, ${flag.mid_pct}, ${flag.total_vol_at_detect},
-        ${flag.flag_reasons}, ${flowPhase}, ${contextJson}::jsonb,
-        ${flag.ts}
-      )
-      ON CONFLICT (ticker, strike, side, expiry, ts) DO NOTHING
-      RETURNING id
-    `;
-    if ((result as unknown[]).length > 0) inserted += 1;
-  }
-  return inserted;
+  return squeezeFlags.length;
 }
 
 // ── Per-ticker runner ────────────────────────────────────────
