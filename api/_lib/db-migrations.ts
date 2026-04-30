@@ -2751,4 +2751,44 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 99,
+    description:
+      'Create whale_anomalies table for the Whale Anomalies component (replaces Strike IV Anomalies). Surfaces option-flow prints matching the hand-derived whale-detection checklist (per-ticker p95 premium, ≥85% one-sided, ≥5 trades, ≤14 DTE, ≤5% moneyness, no simultaneous paired leg). Populated by detect-whales cron during market hours and by a one-shot historical backfill from the EOD parquet archive. See spec: docs/superpowers/specs/whale-anomalies-2026-04-29.md.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS whale_anomalies (
+          id                BIGSERIAL PRIMARY KEY,
+          source_alert_id   BIGINT,
+          source            TEXT NOT NULL CHECK (source IN ('live', 'eod_backfill')),
+          ticker            TEXT NOT NULL,
+          option_chain      TEXT NOT NULL,
+          strike            NUMERIC NOT NULL,
+          option_type       TEXT NOT NULL CHECK (option_type IN ('call', 'put')),
+          expiry            DATE NOT NULL,
+          first_ts          TIMESTAMPTZ NOT NULL,
+          last_ts           TIMESTAMPTZ NOT NULL,
+          detected_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+          side              TEXT NOT NULL CHECK (side IN ('ASK', 'BID')),
+          ask_pct           NUMERIC(4,3),
+          total_premium     NUMERIC NOT NULL,
+          trade_count       INTEGER NOT NULL,
+          vol_oi_ratio      NUMERIC,
+          underlying_price  NUMERIC,
+          moneyness         NUMERIC(6,4),
+          dte               INTEGER NOT NULL,
+          whale_type        SMALLINT NOT NULL CHECK (whale_type BETWEEN 1 AND 4),
+          direction         TEXT NOT NULL CHECK (direction IN ('bullish', 'bearish')),
+          pairing_status    TEXT NOT NULL CHECK (pairing_status IN ('alone', 'sequential')),
+          resolved_at       TIMESTAMPTZ,
+          hit_target        BOOLEAN,
+          pct_to_target     NUMERIC,
+          CONSTRAINT uniq_whale_anomalies UNIQUE (option_chain, first_ts)
+        )
+      `,
+      sql`CREATE INDEX IF NOT EXISTS idx_whale_anomalies_ticker_ts ON whale_anomalies (ticker, first_ts DESC)`,
+      sql`CREATE INDEX IF NOT EXISTS idx_whale_anomalies_unresolved ON whale_anomalies (first_ts) WHERE resolved_at IS NULL`,
+      sql`CREATE INDEX IF NOT EXISTS idx_whale_anomalies_type ON whale_anomalies (whale_type)`,
+    ],
+  },
 ];
