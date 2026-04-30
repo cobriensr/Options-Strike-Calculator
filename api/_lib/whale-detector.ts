@@ -221,12 +221,25 @@ export function detectPairing(
   const matching = peers.filter((p) => p.option_type === oppositeType);
   if (matching.length === 0) return 'alone';
 
+  const graceMs = PAIRING_OVERLAP_SEC * 1000;
+
   for (const peer of matching) {
+    // (a) Standard overlap. Works for EOD multi-trade chains where both
+    //     legs have real time ranges.
     const overlapMs =
       Math.min(candidate.last_ts.getTime(), peer.last_ts.getTime()) -
       Math.max(candidate.first_ts.getTime(), peer.first_ts.getTime());
-    const overlapSec = overlapMs / 1000;
-    if (overlapSec > PAIRING_OVERLAP_SEC) {
+    if (overlapMs / 1000 > PAIRING_OVERLAP_SEC) {
+      return 'simultaneous_filtered';
+    }
+    // (b) Containedness. Live whale_alerts rows are single instants
+    //     (first_ts == last_ts), so case (a) yields overlap=0 even when
+    //     the peer leg is clearly active around the alert. Treat the peer
+    //     as simultaneous if its active window spans the candidate with
+    //     comfortable grace on both sides.
+    const beforeMs = candidate.first_ts.getTime() - peer.first_ts.getTime();
+    const afterMs = peer.last_ts.getTime() - candidate.last_ts.getTime();
+    if (beforeMs > graceMs && afterMs > graceMs) {
       return 'simultaneous_filtered';
     }
   }

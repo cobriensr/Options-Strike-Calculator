@@ -166,6 +166,14 @@
       "schedule": "*/5 13-21 * * 1-5"
     },
     {
+      "path": "/api/cron/detect-whales",
+      "schedule": "* 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/resolve-whales",
+      "schedule": "* 13-21 * * 1-5"
+    },
+    {
       "path": "/api/cron/fetch-nope",
       "schedule": "* 13-21 * * 1-5"
     },
