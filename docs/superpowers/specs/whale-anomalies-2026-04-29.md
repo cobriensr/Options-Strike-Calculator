@@ -268,21 +268,19 @@ optional time-window scoping for the scrubber.
 | `whale_anomalies` | new table          | Phase 2 |
 | `WHALE_THRESHOLDS` | hardcoded constants | Phase 2; recompute every 30 trading days |
 
-## Open questions (with default picks)
+## Decisions (locked 2026-04-29)
 
-1. **Cross-asset tab — keep or drop?** Existing IVAnomalies has a separate
-   "cross asset" view. Whale anomalies are inherently cross-asset (7 tickers
-   already). **Default: drop. Single component, ticker tabs are enough.**
-2. **Banner notifications for live whales?** The existing AnomalyBanner
-   pops on new IV alerts. Whales are rarer (~3/day) — banner is more useful.
-   **Default: keep banner; show one toast per new live whale.**
-3. **What happens to old `iv_anomalies` data?** The DB has months of IV
-   anomaly data. **Default: drop on Phase 7 — confirmed unused per user
-   feedback ("basically useless").** If you want to archive it first, dump
-   to Vercel Blob in Phase 7.
-4. **Resolution outcomes — track them automatically?** A separate cron
-   could resolve whether the strike was hit. **Default: skip for v1; add a
-   `resolve-whales` cron in a follow-up.**
+1. **Cross-asset tab:** **DROPPED.** One unified dashboard. All 7 tickers
+   visible by tabs in a single component. Each row has a clickable
+   contract link (deep-link to UW) and surfaces all applicable whale info.
+2. **Banner notifications for live whales:** **KEPT.** New live whales
+   trigger a banner toast.
+3. **Old `iv_anomalies` data:** **DROPPED.** Phase 7 includes
+   `DROP TABLE iv_anomalies; DROP TABLE strike_iv_snapshots;`. No archive.
+4. **Resolution outcomes:** **IN SCOPE for v1.** New Phase 4.5 added —
+   `api/cron/resolve-whales.ts` runs after market close, fills
+   `resolved_at`, `hit_target`, `pct_to_target` for unresolved rows by
+   comparing the day's intraday range vs the strike.
 
 ## Thresholds and constants (codified)
 

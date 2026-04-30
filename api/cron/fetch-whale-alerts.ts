@@ -1,27 +1,25 @@
 /**
  * GET /api/cron/fetch-whale-alerts
  *
- * Fetches UW whale-sized options flow alerts (≥ $500K premium) for 0-7 DTE
- * SPXW contracts across ALL rule types. Scheduled every 5 minutes during
- * market hours. Upserts into whale_alerts.
+ * Fetches UW whale-sized options flow alerts (≥ $500K premium) for 0-14 DTE
+ * across all 7 whale tickers — SPX, SPXW, NDX, NDXP (Index) and QQQ, SPY,
+ * IWM (ETF). Scheduled every 5 minutes during market hours. Upserts into
+ * whale_alerts. The downstream `detect-whales` cron then classifies these
+ * rows against the whale-detection checklist.
  *
  * Strategy:
- *   1. Read MAX(created_at) from whale_alerts to scope the request.
- *   2. Call UW with ticker_symbol=SPXW, issue_types[]=Index, min_dte=0,
- *      max_dte=7, min_premium=500000, limit=200 (NO rule_name filter —
- *      whale flow spans multiple rule types).
- *   3. If the DB already has rows, pass `newer_than=<max(created_at)>`.
- *      Otherwise omit — first-run backfill.
- *   4. If the response has exactly 200 rows, paginate using `older_than`
- *      until we see <200 or hit a 1000-row safety cap.
- *   5. Compute 11 denormalized derived fields via `computeDerived` plus the
- *      `age_minutes_at_ingest` delta, then upsert. ON CONFLICT
- *      (option_chain, created_at) DO NOTHING dedupes across overlapping
- *      cron windows and against the companion /api/options-flow/whale-positioning
- *      live-query endpoint.
+ *   1. Read MAX(created_at) per ticker from whale_alerts to scope each
+ *      request independently (a ticker with sparse activity should not be
+ *      held back by a more active one's last-seen cursor).
+ *   2. For each ticker, call UW with min_premium=500000, min_dte=0,
+ *      max_dte=14, limit=200, plus a per-ticker `newer_than` if known.
+ *   3. Paginate per-ticker via `older_than` until <200 rows or the
+ *      per-ticker safety cap.
+ *   4. Combine results, compute derived fields, upsert into whale_alerts
+ *      with ON CONFLICT (option_chain, created_at) DO NOTHING.
  *
- * The live-query endpoint stays the source of truth for the UI; this cron
- * runs alongside purely for DB persistence / future ML training.
+ * Rate budget: 7 tickers × ~1 page typical = ~7 calls per cron run, well
+ * under UW limits. Spike days may double this if any ticker fully fills.
  *
  * Environment: UW_API_KEY, CRON_SECRET
  */
@@ -39,19 +37,38 @@ export { computeDerived, type UwFlowAlert };
 // ── Constants ────────────────────────────────────────────────
 
 const PAGE_SIZE = 200;
-const SAFETY_CAP = 1000;
+const SAFETY_CAP_PER_TICKER = 1000;
 const MIN_PREMIUM = 500_000;
-const MAX_DTE = 7;
+const MAX_DTE = 14; // Whale checklist DTE cap.
 const WHALE_ALERTS_PATH = '/option-trades/flow-alerts';
+
+/**
+ * Ticker → UW issue_type mapping for the 7 whale-checklist tickers.
+ * Index tickers are SPX/SPXW/NDX/NDXP; ETFs are QQQ/SPY/IWM.
+ * Order chosen so the heaviest tickers (SPXW, SPY, QQQ) fetch first —
+ * if we ever bump into the safety cap mid-run, the most-trafficked names
+ * still get refreshed.
+ */
+export const WHALE_TICKERS = [
+  { ticker: 'SPXW', issueType: 'Index' },
+  { ticker: 'SPY', issueType: 'ETF' },
+  { ticker: 'QQQ', issueType: 'ETF' },
+  { ticker: 'NDXP', issueType: 'Index' },
+  { ticker: 'IWM', issueType: 'ETF' },
+  { ticker: 'SPX', issueType: 'Index' },
+  { ticker: 'NDX', issueType: 'Index' },
+] as const;
 
 // ── UW fetch + pagination ────────────────────────────────────
 
 function buildWhaleAlertsPath(
+  ticker: string,
+  issueType: string,
   params: Record<string, string | undefined>,
 ): string {
   const qs = new URLSearchParams();
-  qs.append('ticker_symbol', 'SPXW');
-  qs.append('issue_types[]', 'Index');
+  qs.append('ticker_symbol', ticker);
+  qs.append('issue_types[]', issueType);
   // Intentionally NO rule_name[] filter — whale flow spans all rule types.
   qs.append('min_dte', '0');
   qs.append('max_dte', String(MAX_DTE));
@@ -62,15 +79,17 @@ function buildWhaleAlertsPath(
   return `${WHALE_ALERTS_PATH}?${qs.toString()}`;
 }
 
-async function fetchAllNewAlerts(
+async function fetchAllNewAlertsForTicker(
   apiKey: string,
+  ticker: string,
+  issueType: string,
   newerThan: string | null,
 ): Promise<UwFlowAlert[]> {
   const collected: UwFlowAlert[] = [];
   let olderThan: string | undefined;
 
-  while (collected.length < SAFETY_CAP) {
-    const path = buildWhaleAlertsPath({
+  while (collected.length < SAFETY_CAP_PER_TICKER) {
+    const path = buildWhaleAlertsPath(ticker, issueType, {
       newer_than: newerThan ?? undefined,
       older_than: olderThan,
     });
@@ -91,7 +110,7 @@ async function fetchAllNewAlerts(
     olderThan = oldestTs.toISOString();
   }
 
-  return collected.slice(0, SAFETY_CAP);
+  return collected.slice(0, SAFETY_CAP_PER_TICKER);
 }
 
 // ── Handler ──────────────────────────────────────────────────
@@ -105,32 +124,51 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const db = getDb();
 
-    // 1. Scope to records newer than our last-seen timestamp.
-    const rows = await db`
-      SELECT MAX(created_at) AS max_created_at FROM whale_alerts
-    `;
-    const maxCreatedAt =
-      (rows[0]?.max_created_at as string | Date | null | undefined) ?? null;
-    const newerThan =
-      maxCreatedAt instanceof Date
-        ? maxCreatedAt.toISOString()
-        : (maxCreatedAt ?? null);
+    // 1. Per-ticker MAX(created_at) so each ticker's cursor is independent.
+    const cursorRows = (await db`
+      SELECT ticker, MAX(created_at) AS max_created_at
+      FROM whale_alerts
+      WHERE ticker = ANY(${WHALE_TICKERS.map((t) => t.ticker)})
+      GROUP BY ticker
+    `) as { ticker: string; max_created_at: string | Date | null }[];
 
-    // 2. Fetch (with pagination + safety cap).
-    const alerts = await fetchAllNewAlerts(apiKey, newerThan);
+    const cursorByTicker = new Map<string, string | null>();
+    for (const row of cursorRows) {
+      const ts =
+        row.max_created_at instanceof Date
+          ? row.max_created_at.toISOString()
+          : (row.max_created_at ?? null);
+      cursorByTicker.set(row.ticker, ts);
+    }
 
-    if (alerts.length === 0) {
+    // 2. Fetch each ticker independently.
+    const allAlerts: UwFlowAlert[] = [];
+    const fetchedByTicker: Record<string, number> = {};
+    for (const { ticker, issueType } of WHALE_TICKERS) {
+      const newerThan = cursorByTicker.get(ticker) ?? null;
+      const alerts = await fetchAllNewAlertsForTicker(
+        apiKey,
+        ticker,
+        issueType,
+        newerThan,
+      );
+      allAlerts.push(...alerts);
+      fetchedByTicker[ticker] = alerts.length;
+    }
+
+    if (allAlerts.length === 0) {
       return res.status(200).json({
         job: 'fetch-whale-alerts',
         fetched: 0,
         inserted: 0,
+        fetchedByTicker,
         durationMs: Date.now() - startedAt,
       });
     }
 
     // 3. Upsert each row.
     let inserted = 0;
-    for (const a of alerts) {
+    for (const a of allAlerts) {
       const d = computeDerived(a);
       const ageMinutesAtIngest = Math.floor(
         (Date.now() - new Date(a.created_at).getTime()) / 60_000,
@@ -164,14 +202,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     logger.info(
-      { fetched: alerts.length, inserted },
+      { fetched: allAlerts.length, inserted, fetchedByTicker },
       'fetch-whale-alerts completed',
     );
 
     return res.status(200).json({
       job: 'fetch-whale-alerts',
-      fetched: alerts.length,
+      fetched: allAlerts.length,
       inserted,
+      fetchedByTicker,
       durationMs: Date.now() - startedAt,
     });
   } catch (err) {
