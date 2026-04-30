@@ -8,9 +8,10 @@
  * See spec: docs/superpowers/specs/gamma-squeeze-velocity-detector-2026-04-28.md.
  */
 
-import type { IVAnomalyTicker } from '../IVAnomalies/types';
-
-export type GammaSqueezeTicker = IVAnomalyTicker;
+// Tickers eligible for gamma-squeeze detection. Plain string —
+// gamma-squeeze flags can fire on any ticker the detector emits, so we
+// don't enumerate at the type level.
+export type GammaSqueezeTicker = string;
 export type GammaSqueezeSide = 'call' | 'put';
 export type GammaSqueezePhase = 'forming' | 'active' | 'exhausted';
 export type NetGammaSign = 'short' | 'long' | 'unknown';
