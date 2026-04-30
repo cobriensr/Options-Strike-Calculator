@@ -150,13 +150,32 @@ function TRACELiveHeader({
           </span>
         )}
         {detail?.predictedClose != null && (() => {
-          // Confidence-aware rendering. The model is intentionally permitted
-          // to emit `low` / `no_trade` and still pick a number. Showing that
-          // number in the same visual weight as a high-confidence read
-          // overstates conviction, so de-emphasise it (muted, leading "~")
-          // and surface the reason on hover.
+          // Three-tier rendering:
+          //   1. predictedCloseRange present → show p25–p75 band as primary
+          //      (model has meaningful uncertainty about the close)
+          //   2. confidence ∈ {low, no_trade} but no range → muted "~int"
+          //      (model is uncertain but didn't quantify the band)
+          //   3. high/medium confidence and no range → full-precision point
           const conf = detail.confidence;
+          const range = detail.analysis?.synthesis?.predictedCloseRange;
           const isLowConf = conf === 'low' || conf === 'no_trade';
+
+          if (range) {
+            return (
+              <span
+                className="text-secondary"
+                title="Predicted close range from p25 to p75. Width reflects model uncertainty — a $20+ band on a trending day means the path matters, not the level."
+              >
+                Predicted{' '}
+                <span className="text-tertiary font-semibold">
+                  {Math.round(range.p25)}–{Math.round(range.p75)}
+                </span>
+                <span className="text-muted ml-1 font-mono text-[10px]">
+                  (p50 {Math.round(range.p50)})
+                </span>
+              </span>
+            );
+          }
           if (isLowConf) {
             return (
               <span

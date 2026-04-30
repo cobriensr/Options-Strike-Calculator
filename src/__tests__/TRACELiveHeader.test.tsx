@@ -212,6 +212,76 @@ describe('TRACELiveHeader', () => {
     expect(screen.queryByText('7150.00')).not.toBeInTheDocument();
   });
 
+  it('renders the p25–p75 band when predictedCloseRange is present', () => {
+    // A range overrides both the high-precision point AND the low-conf "~int".
+    const detail: TraceLiveDetail = {
+      ...makeDetail({
+        confidence: 'low',
+        spot: 7130.65,
+        predictedClose: 7131,
+      }),
+      analysis: {
+        timestamp: '14:52 CT',
+        spot: 7130.65,
+        stabilityPct: 23.83,
+        regime: 'trending_negative_gamma',
+        charm: {
+          predominantColor: 'red',
+          direction: 'short',
+          junctionStrike: 7140,
+          flipFlopDetected: false,
+          rejectionWicksAtRed: true,
+          notes: '',
+        },
+        gamma: {
+          signAtSpot: 'negative_strong',
+          dominantNodeStrike: 7140,
+          dominantNodeMagnitudeB: 0.6,
+          dominantNodeRatio: 3.4,
+          floorStrike: null,
+          ceilingStrike: 7140,
+          overrideFires: false,
+          notes: '',
+        },
+        delta: {
+          blueBelowStrike: null,
+          redAboveStrike: null,
+          corridorWidth: null,
+          zoneBehavior: 'acceleration',
+          notes: '',
+        },
+        synthesis: {
+          predictedClose: 7131,
+          predictedCloseRange: { p25: 7115, p50: 7131, p75: 7150 },
+          confidence: 'low',
+          crossChartAgreement: 'mostly_agree',
+          overrideApplied: false,
+          trade: {
+            type: 'flat',
+            centerStrike: null,
+            wingWidth: null,
+            size: 'none',
+          },
+          headline: '−γ trending −2.76B',
+          warnings: [],
+        },
+      },
+    };
+    render(
+      <TRACELiveHeader
+        detail={detail}
+        isLive
+        countdown={idleCountdown}
+        loading={false}
+        onRefresh={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('7115–7150')).toBeInTheDocument();
+    expect(screen.getByText(/p50 7131/)).toBeInTheDocument();
+    // Low-confidence "~" rendering is replaced by the range — verify it's gone.
+    expect(screen.queryByText('~7131')).not.toBeInTheDocument();
+  });
+
   it('renders the next-capture countdown when isLive AND countdown.label is set', () => {
     render(
       <TRACELiveHeader

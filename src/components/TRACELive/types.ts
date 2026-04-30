@@ -75,8 +75,20 @@ export interface TraceTradeRecommendation {
   size: TraceSize;
 }
 
+export interface TracePredictedCloseRange {
+  p25: number;
+  p50: number;
+  p75: number;
+}
+
 export interface TraceSynthesis {
   predictedClose: number;
+  /**
+   * Optional p25/p50/p75 close-price range. When present, the UI shows
+   * the band; when null/undefined the UI falls back to `predictedClose`.
+   * See api/_lib/trace-live-types.ts for the population rules.
+   */
+  predictedCloseRange?: TracePredictedCloseRange | null;
   confidence: TraceConfidence;
   crossChartAgreement: TraceCrossChartAgreement;
   overrideApplied: boolean;

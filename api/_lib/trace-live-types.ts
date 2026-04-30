@@ -188,6 +188,25 @@ export const traceAnalysisSchema = z.object({
   synthesis: z.object({
     /** Predicted SPX close based on the chart hierarchy (gamma > charm for level) */
     predictedClose: z.number(),
+    /**
+     * Optional p25/p50/p75 close-price range. Populated when the model
+     * has a meaningful uncertainty band — typically:
+     *   - trending regimes (no pin → wide band centered on spot)
+     *   - confidence ≤ medium (single-number prediction overstates conviction)
+     *   - novel setups (analog-derived)
+     * Omitted when there's a clean pin at high confidence (the range
+     * collapses to predictedClose ± a few points and adds noise to the UI).
+     * The UI renders this as the headline number when present and falls
+     * back to predictedClose otherwise.
+     */
+    predictedCloseRange: z
+      .object({
+        p25: z.number(),
+        p50: z.number(),
+        p75: z.number(),
+      })
+      .nullable()
+      .optional(),
     /** Conviction level — drives sizing */
     confidence: z.enum(['high', 'medium', 'low', 'no_trade']),
     /** Did all three charts agree on direction and level? */

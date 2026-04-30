@@ -173,6 +173,12 @@ characters. Required fields:
     }
   - synthesis: {
       predictedClose: number — the predicted SPX close, applying the override hierarchy. May equal spot when the trending-regime branch fires (modal close in a directional regime is along the path, not at a structural level).
+      predictedCloseRange: { p25, p50, p75 } | null — OPTIONAL close-price range derived from the realized uncertainty of the read. Populate when:
+        (a) regime is trending (no pin → wide band centered on spot, e.g. spot ± 0.5σ × hours_to_close)
+        (b) confidence is low or no_trade (single-number prediction overstates conviction)
+        (c) novelty is high (analog distance > 0.4 — model has weak priors)
+        OMIT (set to null) when there's a clean pin override at high confidence and the band would collapse to predictedClose ± 2 points (the range adds UI noise without information).
+        p50 should equal predictedClose. p25/p75 should reflect the actual uncertainty — for a trending −γ day with 8 min to close, a $20–30 range is typical; for a clean +γ pin, $5 or omit the range entirely.
       confidence: "high" | "medium" | "low" | "no_trade"
       crossChartAgreement: "all_agree" | "mostly_agree" | "split" | "no_call"
       overrideApplied: boolean — did the gamma override fire?
