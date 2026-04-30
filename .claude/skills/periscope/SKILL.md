@@ -75,6 +75,35 @@ When the user pastes a chart from a past timeframe and asks you to read it as if
 
 The discipline matters because it prevents lookahead bias. A back-read that quietly references where price ended up isn't analysis — it's hindsight rationalization.
 
+## No-cheat read protocol — produce the open read FIRST, debrief separately
+
+**This is a hard rule, not a suggestion.** The user is using back-reads to *learn how to trade these charts in real time*. A read that benefits from hindsight teaches the wrong thing — it builds confidence in pattern-matching to known outcomes instead of building discipline around waiting for pre-defined triggers.
+
+The chart is a **map**, not a compass. It tells you LEVELS, not DIRECTION. Direction is confirmed only by price action *after* the open. So a real-time-tradeable read must produce:
+
+1. **Levels** — dominant +γ above and below spot, −γ acceleration zones, cone bounds, dominant Position cluster, magnets, soft floors.
+2. **Long trigger** — a specific price level above spot whose break confirms upside conviction (typically reclaim of a small −γ sliver, break above a soft pivot).
+3. **Short trigger** — a specific price level below spot whose break confirms downside conviction (typically loss of nearest +γ floor, break below a soft pivot).
+4. **Stops + targets pre-defined for both triggers.**
+5. **No-trade zone** — the range between triggers where the chart says "wait."
+6. **Regime label** — pin / drift-and-cap / gap-and-rip / trap / cone-breach / etc.
+
+**Forbidden inside the open read:**
+- "The day delivered exactly what the chart said."
+- "The chart called every layer ✓."
+- "Price found support at X and rallied to Y" (in the read body).
+- Any narrative or check-mark that compares the prediction to where price actually ended up.
+- Constructing trade theses around the known outcome ("long the gap-down" — if framed as a directional bet at the open without a trigger, this is hindsight).
+
+**Allowed only AFTER the open read is complete, in a clearly-labeled separate section:**
+- A `## Debrief — what triggered and when` block (or similar) describing factually which trigger fired (if any), at what time, and the R:R that actually played out.
+- Honest scoring: which triggers fired, which didn't, whether stops/targets were hit. NO "the chart was right ✓" framing — just facts.
+- If neither trigger fired and the day chopped, say so. That's information, not failure.
+
+The debrief is a learning tool *for the user*. Its only job is to score the open read against reality. It must NOT retroactively justify the read.
+
+**Why this matters:** the value of these charts is *training the discipline of waiting for triggers*. If reads always look like "the chart predicted everything," the user never builds tolerance for the chop / no-trigger days that are the majority of trading. Honest reads teach patience; cheating reads teach overconfidence.
+
 ## The hedge primitive — gamma sign × price direction
 
 This is the engine behind every read. The FAQ's worked examples reduce to one 4-case table:
