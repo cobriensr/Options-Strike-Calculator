@@ -1137,7 +1137,14 @@ export default function StrikeCalculator() {
                         loading={darkPool.loading}
                         error={darkPool.error}
                         updatedAt={darkPool.updatedAt}
-                        spxPrice={results?.spot ?? spxVal ?? null}
+                        spxPrice={
+                          darkPool.isLive
+                            ? (market.data.quotes?.spx?.price ??
+                              results?.spot ??
+                              spxVal ??
+                              null)
+                            : (results?.spot ?? spxVal ?? null)
+                        }
                         onRefresh={darkPool.refresh}
                         selectedDate={darkPool.selectedDate}
                         onDateChange={darkPool.setSelectedDate}
