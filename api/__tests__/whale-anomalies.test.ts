@@ -123,7 +123,7 @@ describe('whale-anomalies endpoint', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(res._json.asOf).toBe(at);
+    expect((res._json as { asOf: string }).asOf).toBe(at);
     const args = mockSql.mock.calls[0]!.slice(1);
     expect(args).toContain(at);
   });
@@ -152,7 +152,7 @@ describe('whale-anomalies endpoint', () => {
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(200);
-    expect(res._json.whales).toEqual([]);
+    expect((res._json as { whales: unknown[] }).whales).toEqual([]);
   });
 
   it('returns 401-equivalent when guard rejects', async () => {

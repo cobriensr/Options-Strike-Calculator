@@ -130,9 +130,9 @@ const InstitutionalProgramSection = lazy(() =>
     .then((m) => ({ default: m.InstitutionalProgramSection }))
     .catch(handleStaleChunk),
 );
-const IVAnomaliesSection = lazy(() =>
-  import('./components/IVAnomalies/IVAnomaliesSection')
-    .then((m) => ({ default: m.IVAnomaliesSection }))
+const WhaleAnomaliesSection = lazy(() =>
+  import('./components/WhaleAnomalies/WhaleAnomaliesSection')
+    .then((m) => ({ default: m.WhaleAnomaliesSection }))
     .catch(handleStaleChunk),
 );
 const GammaSqueezeFeed = lazy(() =>
@@ -140,9 +140,9 @@ const GammaSqueezeFeed = lazy(() =>
     .then((m) => ({ default: m.GammaSqueezeFeed }))
     .catch(handleStaleChunk),
 );
-const AnomalyBanner = lazy(() =>
-  import('./components/IVAnomalies/AnomalyBanner')
-    .then((m) => ({ default: m.AnomalyBanner }))
+const WhaleBanner = lazy(() =>
+  import('./components/WhaleAnomalies/WhaleBanner')
+    .then((m) => ({ default: m.WhaleBanner }))
     .catch(handleStaleChunk),
 );
 
@@ -681,7 +681,7 @@ export default function StrikeCalculator() {
             { id: 'sec-market-flow', label: 'Market Flow' },
             { id: 'sec-otm-flow', label: 'OTM Flow Alerts' },
             { id: 'sec-institutional-program', label: 'Institutional Program' },
-            { id: 'sec-iv-anomalies', label: 'IV Anomalies' },
+            { id: 'sec-whale-anomalies', label: 'Whale Anomalies' },
           ]
         : []),
       ...(isAuthenticated
@@ -974,7 +974,7 @@ export default function StrikeCalculator() {
 
             {isAuthenticated && (
               <Suspense fallback={null}>
-                <AnomalyBanner />
+                <WhaleBanner />
               </Suspense>
             )}
 
@@ -1340,12 +1340,12 @@ export default function StrikeCalculator() {
                     </ErrorBoundary>
 
                     <span
-                      id="sec-iv-anomalies"
+                      id="sec-whale-anomalies"
                       className="block scroll-mt-28"
                     />
-                    <ErrorBoundary label="Strike IV Anomalies">
+                    <ErrorBoundary label="Whale Anomalies">
                       <Suspense fallback={<SkeletonSection lines={5} />}>
-                        <IVAnomaliesSection
+                        <WhaleAnomaliesSection
                           marketOpen={market.data.quotes?.marketOpen ?? false}
                         />
                       </Suspense>

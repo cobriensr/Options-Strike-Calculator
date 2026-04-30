@@ -100,24 +100,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ORDER BY first_ts ASC
     `) as WhaleAnomalyRow[];
 
+    const toIso = (v: string | Date): string =>
+      typeof v === 'string' ? v : v.toISOString();
+
     const whales = rows.map((r) => ({
       id: Number(r.id),
       ticker: r.ticker,
       option_chain: r.option_chain,
       strike: Number(r.strike),
       option_type: r.option_type,
-      expiry:
-        r.expiry instanceof Date
-          ? r.expiry.toISOString().slice(0, 10)
-          : String(r.expiry).slice(0, 10),
-      first_ts:
-        r.first_ts instanceof Date ? r.first_ts.toISOString() : r.first_ts,
-      last_ts:
-        r.last_ts instanceof Date ? r.last_ts.toISOString() : r.last_ts,
-      detected_at:
-        r.detected_at instanceof Date
-          ? r.detected_at.toISOString()
-          : r.detected_at,
+      expiry: toIso(r.expiry).slice(0, 10),
+      first_ts: toIso(r.first_ts),
+      last_ts: toIso(r.last_ts),
+      detected_at: toIso(r.detected_at),
       side: r.side,
       ask_pct: r.ask_pct != null ? Number(r.ask_pct) : null,
       total_premium: Number(r.total_premium),
@@ -131,11 +126,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       direction: r.direction,
       pairing_status: r.pairing_status,
       source: r.source,
-      resolved_at: r.resolved_at
-        ? r.resolved_at instanceof Date
-          ? r.resolved_at.toISOString()
-          : r.resolved_at
-        : null,
+      resolved_at: r.resolved_at != null ? toIso(r.resolved_at) : null,
       hit_target: r.hit_target,
       pct_to_target: r.pct_to_target != null ? Number(r.pct_to_target) : null,
     }));
