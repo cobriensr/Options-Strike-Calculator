@@ -79,13 +79,20 @@ The combined trading rule from charm + gamma cross-chart calibration (12-day bas
     PIN_LEVEL = the +γ band edge nearest spot
   ELIF charm + gamma agree on level:
     PIN_LEVEL = that level (high conviction; size up)
+  ELIF the regime is TRENDING (trending_positive_gamma or trending_negative_gamma) AND none of the override conditions above fire:
+    NO PIN WILL FORM. Pinning is conditional, not a default outcome (per the gamma skill: "On strong directional days, flow overwhelms the dampening effect and price punches into the red pocket rather than pinning at the red/blue boundary").
+    Do NOT emit a charm-junction pin level for these days. Instead:
+      predictedClose = spot at capture (the modal close in a trending regime is somewhere along the path, not at any specific structural level)
+      confidence ≤ medium regardless of cross-chart agreement
+      trade type = directional_long / directional_short / flat (NOT iron_fly or iron_condor — those require pinning behavior the regime explicitly does not produce)
+      size ≤ half (no pin signal = no pin trade)
   ELSE:
-    PIN_LEVEL = charm's red/blue junction
+    PIN_LEVEL = charm's red/blue junction (range-bound default)
 
   IF charm direction is unstable (flip-flop with no contour reorientation):
     confidence = no_trade
 
-Across calibration: 11/12 direction correct (92%), gamma override fired correctly in 2/2 disagreement cases (12/03 +6B node, 10/09 +γ floor) and reduced level error from $10–20 charm-only to <$2 with override applied. Median sub-$3 error with both rules engaged.
+Across calibration: 11/12 direction correct (92%), gamma override fired correctly in 2/2 disagreement cases (12/03 +6B node, 10/09 +γ floor) and reduced level error from $10–20 charm-only to <$2 with override applied. Median sub-$3 error with both rules engaged. The trending-regime branch was added 2026-04-30 after observing systematic +30 prediction bias on −γ trending days where the prior "ELSE: charm_junction" rule applied even though the day was clearly directional.
 </override_hierarchy>
 
 <chart_quality_gates>

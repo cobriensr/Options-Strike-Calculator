@@ -149,14 +149,36 @@ function TRACELiveHeader({
             </span>
           </span>
         )}
-        {detail?.predictedClose != null && (
-          <span>
-            Predicted{' '}
-            <span className="text-tertiary font-semibold">
-              {detail.predictedClose.toFixed(2)}
+        {detail?.predictedClose != null && (() => {
+          // Confidence-aware rendering. The model is intentionally permitted
+          // to emit `low` / `no_trade` and still pick a number. Showing that
+          // number in the same visual weight as a high-confidence read
+          // overstates conviction, so de-emphasise it (muted, leading "~")
+          // and surface the reason on hover.
+          const conf = detail.confidence;
+          const isLowConf = conf === 'low' || conf === 'no_trade';
+          if (isLowConf) {
+            return (
+              <span
+                className="text-muted"
+                title="Confidence is LOW or NO_TRADE — predicted close is shown for reference only and should not drive sizing. See warnings + reasoning summary below."
+              >
+                Predicted{' '}
+                <span className="font-semibold opacity-70">
+                  ~{detail.predictedClose.toFixed(0)}
+                </span>
+              </span>
+            );
+          }
+          return (
+            <span>
+              Predicted{' '}
+              <span className="text-tertiary font-semibold">
+                {detail.predictedClose.toFixed(2)}
+              </span>
             </span>
-          </span>
-        )}
+          );
+        })()}
         {detail?.capturedAt && (
           <span>
             Updated{' '}
