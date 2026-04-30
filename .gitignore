@@ -49,12 +49,15 @@ __snapshots__/
 !.claude/skills/charm-pressure
 !.claude/skills/delta-pressure
 !.claude/skills/gamma
+!.claude/skills/periscope
 .claude/skills/charm-pressure/*
 .claude/skills/delta-pressure/*
 .claude/skills/gamma/*
+.claude/skills/periscope/*
 !.claude/skills/charm-pressure/SKILL.md
 !.claude/skills/delta-pressure/SKILL.md
 !.claude/skills/gamma/SKILL.md
+!.claude/skills/periscope/SKILL.md
 .vercel
 .env*.local
 .clone/
