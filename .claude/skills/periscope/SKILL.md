@@ -332,10 +332,26 @@ Same protocol as the TRACE skills:
 - `vanna_exposure_above`, `vanna_exposure_below` — sum of |Vanna| above/below spot (when 4-panel view is in use).
 - `dot_to_bar_delta` — change between current bar and prior-slice dot, per panel; momentum in dealer positioning.
 
+## Expiry check — the user trades 0DTE only
+
+**Before any read, check the Expiry field in the top control bar against the chart's Date.** If the expiry is later than the chart's date, the chart is showing N-DTE positioning (1DTE, 2DTE, etc.), not 0DTE. The user only trades 0DTE — STOP and tell them to switch the expiry to today's date before continuing.
+
+How to spot the mismatch:
+- **0DTE:** Expiry date == chart date (e.g. Date: Fri Apr 24 / Expiry: 2026-04-24).
+- **N-DTE:** Expiry date > chart date (e.g. Date: Fri Apr 24 / Expiry: 2026-04-30 = 6DTE).
+
+Why it matters:
+- **Charm bar magnitude scales radically with DTE.** 0DTE charm runs ±60K–120K (or larger). 6DTE charm runs ±30K-50K. A 6DTE chart's charm bars look small and miss the day's actual flow — you'd under-call mechanical /ES drift.
+- **Cone width changes too.** 0DTE cones are tight (40–70 pts on calm days); multi-DTE cones widen with the longer-dated straddle premium.
+- **Dominant strikes shift.** Different expiries have different MM positioning concentrations — the 0DTE magnet is often at a different strike than the 6DTE magnet. Reading the wrong expiry's structure leads to the wrong target.
+
+A correct 0DTE chart for the user will have a same-day expiry; anything else is a misconfigured view and the read will be wrong even if mechanically applied.
+
 ## How to apply this skill
 
 When the user pastes a Periscope chart or asks about exits / stops / direction with one in view:
 
+0. **Verify expiry == chart date (0DTE).** If not, flag it before reading anything else.
 1. **Identify spot** from the SPX price label and dashed level lines.
 2. **Identify the dominant +γ strikes** (largest green Gamma bars) within ±$30 of spot — those are stop and target candidates.
 3. **Tally charm flow** across visible strikes — sum the signed magnitudes to get the day's net mechanical drift direction.
