@@ -82,7 +82,7 @@ def print_table(stats: dict[str, dict[str, float]]) -> None:
 
 def print_typescript_block(stats: dict[str, dict[str, float]]) -> None:
     print(
-        "\n# Paste the following into api/_lib/whale-detector.ts "
+        "\n// Paste the following into api/_lib/whale-detector.ts "
         "(WHALE_THRESHOLDS):\n"
     )
     print("export const WHALE_THRESHOLDS: Record<WhaleTicker, number> = {")

@@ -96,20 +96,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const db = getDb();
 
-    // 1. Last-seen cursor.
-    const cursorRows = (await db`
-      SELECT MAX(detected_at) AS max_detected_at
-      FROM whale_anomalies
-      WHERE source = 'live'
-    `) as { max_detected_at: Date | string | null }[];
-    const sinceRaw = cursorRows[0]?.max_detected_at ?? null;
-    const since =
-      sinceRaw instanceof Date ? sinceRaw.toISOString() : (sinceRaw ?? null);
-
-    // 2. Pull new whale_alerts. We use ingested_at (when we logged the row
-    //    locally) rather than created_at so we don't miss late-arriving
-    //    out-of-order alerts. Sentinel epoch on first run (no prior cycles).
-    const sinceTs = since ?? '1970-01-01T00:00:00Z';
+    // Pull recent whale_alerts. Trailing-window approach: process every
+    // alert ingested in the last 15 minutes on each cron run. ON CONFLICT
+    // (option_chain, first_ts) DO NOTHING dedupes against prior runs that
+    // already classified the same row. The window is wide enough to
+    // tolerate a 1-min cron firing alongside a 5-min fetch-whale-alerts
+    // cron with several minutes of slack on either side. A previous
+    // approach used MAX(detected_at) FROM whale_anomalies as a cursor —
+    // that broke because detected_at and whale_alerts.ingested_at are
+    // independent wall clocks: the cursor advanced past unprocessed
+    // alerts that were ingested between the prior detection batch's
+    // SELECT and INSERT.
     const candidates = (await db`
       SELECT
         id, ticker, option_chain, strike, type AS option_type, expiry,
@@ -117,7 +114,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         trade_count, underlying_price, volume_oi_ratio, dte_at_alert
       FROM whale_alerts
       WHERE ticker = ANY(${[...WHALE_TICKERS]})
-        AND ingested_at > ${sinceTs}
+        AND ingested_at > now() - INTERVAL '15 minutes'
       ORDER BY created_at ASC
       LIMIT 500
     `) as WhaleAlertRow[];

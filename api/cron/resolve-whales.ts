@@ -58,18 +58,21 @@ function determineHit(
   lo: number,
   last: number,
 ): { hit: boolean; pctToTarget: number } {
+  // Boundary semantics: price touching the strike exactly counts as a hit.
+  // pctToTarget is the close vs strike percentage in the favorable
+  // direction — positive when the trade played out as expected.
   switch (whaleType) {
     case 1:
-      // Floor declared: hit if price stayed above strike (low > strike).
+      // Floor declared: hit if low ≥ strike (price stayed at or above strike).
       return { hit: lo >= strike, pctToTarget: (last - strike) / strike };
     case 2:
-      // Ceiling declared: hit if price stayed below strike (high < strike).
+      // Ceiling declared: hit if high ≤ strike (price stayed at or below).
       return { hit: hi <= strike, pctToTarget: (strike - last) / strike };
     case 3:
-      // Floor break expected: hit if price went below strike (low touched).
+      // Floor break expected: hit if low ≤ strike (price touched or broke).
       return { hit: lo <= strike, pctToTarget: (strike - last) / strike };
     case 4:
-      // Ceiling break expected: hit if price went above strike (high touched).
+      // Ceiling break expected: hit if high ≥ strike (price touched or broke).
       return { hit: hi >= strike, pctToTarget: (last - strike) / strike };
     default:
       return { hit: false, pctToTarget: 0 };

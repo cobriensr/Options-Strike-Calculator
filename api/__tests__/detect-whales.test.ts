@@ -71,9 +71,7 @@ describe('detect-whales handler', () => {
   });
 
   it('returns 200 with 0 inserts when no new candidates', async () => {
-    mockSql
-      .mockResolvedValueOnce([{ max_detected_at: null }]) // cursor
-      .mockResolvedValueOnce([]); // candidates SELECT
+    mockSql.mockResolvedValueOnce([]); // candidates SELECT (trailing 15-min window)
 
     const req = mockRequest({
       method: 'GET',
@@ -92,7 +90,6 @@ describe('detect-whales handler', () => {
 
   it('classifies and inserts a Type 1 floor whale (no paired leg)', async () => {
     mockSql
-      .mockResolvedValueOnce([{ max_detected_at: null }]) // cursor
       .mockResolvedValueOnce([SPXW_FLOOR_ROW]) // candidates
       .mockResolvedValueOnce([]) // peers (none)
       .mockResolvedValueOnce([{ id: 5 }]); // insert
@@ -114,9 +111,7 @@ describe('detect-whales handler', () => {
   });
 
   it('skips candidates that fail the checklist (premium below threshold)', async () => {
-    mockSql
-      .mockResolvedValueOnce([{ max_detected_at: null }])
-      .mockResolvedValueOnce([SMALL_NON_WHALE_ROW]);
+    mockSql.mockResolvedValueOnce([SMALL_NON_WHALE_ROW]);
 
     const req = mockRequest({
       method: 'GET',
@@ -141,7 +136,6 @@ describe('detect-whales handler', () => {
       last_ts: '2026-04-29T17:30:00Z',
     };
     mockSql
-      .mockResolvedValueOnce([{ max_detected_at: null }])
       .mockResolvedValueOnce([SPXW_FLOOR_ROW])
       .mockResolvedValueOnce([overlappingPeer]);
 
@@ -170,7 +164,6 @@ describe('detect-whales handler', () => {
       last_ts: '2026-04-29T16:56:52Z',
     };
     mockSql
-      .mockResolvedValueOnce([{ max_detected_at: null }])
       .mockResolvedValueOnce([SPXW_FLOOR_ROW])
       .mockResolvedValueOnce([sequentialPeer])
       .mockResolvedValueOnce([{ id: 7 }]);
@@ -191,11 +184,8 @@ describe('detect-whales handler', () => {
     });
   });
 
-  it('passes the cursor timestamp into the candidates SELECT when prior runs exist', async () => {
-    const lastSeen = new Date('2026-04-29T16:00:00Z');
-    mockSql
-      .mockResolvedValueOnce([{ max_detected_at: lastSeen }])
-      .mockResolvedValueOnce([]);
+  it('uses a trailing-window SELECT (no separate cursor query)', async () => {
+    mockSql.mockResolvedValueOnce([]);
 
     const req = mockRequest({
       method: 'GET',
@@ -205,27 +195,12 @@ describe('detect-whales handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // The 2nd db call is the candidates SELECT. Its bound parameters should
-    // include the cursor's ISO string.
-    const candidatesCallArgs = mockSql.mock.calls[1]!.slice(1);
-    expect(candidatesCallArgs).toContain(lastSeen.toISOString());
-  });
-
-  it('uses the epoch sentinel when no prior runs exist', async () => {
-    mockSql
-      .mockResolvedValueOnce([{ max_detected_at: null }])
-      .mockResolvedValueOnce([]);
-
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
-
-    expect(res._status).toBe(200);
-    const candidatesCallArgs = mockSql.mock.calls[1]!.slice(1);
-    expect(candidatesCallArgs).toContain('1970-01-01T00:00:00Z');
+    // Only ONE SQL call should fire when no candidates exist — the
+    // candidates SELECT itself. There is no cursor pre-query anymore.
+    expect(mockSql).toHaveBeenCalledTimes(1);
+    const sqlText = (mockSql.mock.calls[0]![0] as readonly string[]).join(' ');
+    expect(sqlText).toContain('FROM whale_alerts');
+    expect(sqlText).toContain("INTERVAL '15 minutes'");
   });
 
   it('bails when cronGuard returns null', async () => {
