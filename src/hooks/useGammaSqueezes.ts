@@ -6,9 +6,12 @@
  * of `useIVAnomalies` but simpler: no per-strike chart, no banner store,
  * no exit-signal phase machine. Just "what's currently firing."
  *
- * Active-span eviction: a compound key drops off the board after
- * `SQUEEZE_SILENCE_MS` of no fresh firings. Matches the IV anomaly
- * silence convention.
+ * Active-span demotion: a compound key whose latest firing is older
+ * than `SQUEEZE_SILENCE_MS` is reclassified to `squeezePhase:
+ * 'exhausted'` rather than removed. The user reads the panel as a
+ * throughout-the-day history — still-firing setups float to the top,
+ * exhausted ones sink to the bottom with a muted grey pill (see
+ * SqueezeRow), and the 24h backend window naturally bounds visibility.
  *
  * Replay scrubber: composes `useTimeGridScrubber` (same shared hook as
  * IV Anomalies). When scrubbed, polling halts and the fetch carries
@@ -28,7 +31,11 @@ import { useTimeGridScrubber } from './useTimeGridScrubber';
 import { ctWallClockToUtcIso, getETToday } from '../utils/timezone';
 
 const POLL_MS = 30_000;
-const SQUEEZE_SILENCE_MS = 8 * 60 * 1000; // 8 min — matches gamma-window cadence
+// Threshold past which a still-listed squeeze is demoted to "exhausted"
+// in the UI. 8 min mirrors the gamma-window cadence — within one window
+// without a fresh firing, the setup is no longer "currently squeezing"
+// even if its row is still in the 24h backend response.
+const SQUEEZE_SILENCE_MS = 8 * 60 * 1000;
 
 /** Convert HH:MM (24h) into minutes-past-midnight. */
 function hhmmToMin(hhmm: string): number {
@@ -131,8 +138,17 @@ export function useGammaSqueezes({
           const latest = group[0]!;
           const lastMs = Date.parse(latest.ts);
           if (!Number.isFinite(lastMs)) continue;
-          // Silence eviction.
-          if (now - lastMs > SQUEEZE_SILENCE_MS) continue;
+          // Silence DEMOTION (not eviction). When the most recent firing is
+          // older than the silence window, surface the compound key as
+          // 'exhausted' so the throughout-day history stays visible — sorted
+          // beneath active/forming and rendered with the muted grey pill in
+          // SqueezeRow. Cloning the object instead of mutating since `latest`
+          // is a row from the API response that other code paths may also
+          // hold a reference to.
+          const isStale = now - lastMs > SQUEEZE_SILENCE_MS;
+          const displayLatest = isStale
+            ? { ...latest, squeezePhase: 'exhausted' as const }
+            : latest;
           // First-seen = earliest ts in the active span. Walk back from
           // newest until we hit a gap > SQUEEZE_SILENCE_MS.
           let firstSeen = latest;
@@ -150,7 +166,7 @@ export function useGammaSqueezes({
             strike: latest.strike,
             side: latest.side,
             expiry: latest.expiry,
-            latest,
+            latest: displayLatest,
             firstSeenTs: firstSeen.ts,
             lastFiredTs: latest.ts,
             firingCount: group.length,

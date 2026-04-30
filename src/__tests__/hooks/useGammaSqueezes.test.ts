@@ -129,15 +129,18 @@ describe('useGammaSqueezes', () => {
     expect(Date.now() - firstSeenMs).toBeGreaterThan(4 * 60_000);
   });
 
-  it('evicts compound keys that have been silent > 8 minutes', async () => {
+  it('demotes silent (>8min) compound keys to "exhausted" instead of evicting', async () => {
     const resp = emptyResponse();
-    resp.history.NVDA = [makeRow(11)]; // 11 min ago — past 8-min eviction
+    // 11 min ago, originally tagged 'active' — should be demoted to
+    // 'exhausted' so the trader still sees the throughout-day history.
+    resp.history.NVDA = [makeRow(11, { squeezePhase: 'active' })];
     mockFetch.mockResolvedValue({ ok: true, json: async () => resp });
 
     const { result } = renderHook(() => useGammaSqueezes({ marketOpen: true }));
 
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.active).toHaveLength(0);
+    expect(result.current.active).toHaveLength(1);
+    expect(result.current.active[0]!.latest.squeezePhase).toBe('exhausted');
   });
 
   it('sorts active phase before forming phase', async () => {
