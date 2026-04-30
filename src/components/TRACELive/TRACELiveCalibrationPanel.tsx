@@ -144,6 +144,169 @@ function SummaryBanner({ scatter }: { scatter: ScatterPoint[] }) {
   );
 }
 
+interface RegimeStat {
+  regime: string;
+  n: number;
+  median: number;
+  mae: number;
+  within5: number;
+  status: 'good' | 'biased' | 'broken' | 'thin';
+}
+
+/**
+ * Status thresholds. The cron's MIN_SAMPLES_FOR_CALIBRATION is 5; we use
+ * the same gate for "trustworthy" stats. Below that the regime stat is
+ * shown but flagged as thin (n < 5).
+ */
+function classifyRegime(n: number, med: number): RegimeStat['status'] {
+  if (n < 5) return 'thin';
+  const abs = Math.abs(med);
+  if (abs <= 3) return 'good';
+  if (abs <= 10) return 'biased';
+  return 'broken';
+}
+
+const STATUS_COPY: Record<RegimeStat['status'], string> = {
+  good: 'well-calibrated',
+  biased: 'slight bias',
+  broken: 'significant bias — discount predictions',
+  thin: 'thin sample (n<5)',
+};
+
+const STATUS_GLYPH: Record<RegimeStat['status'], string> = {
+  good: '✓',
+  biased: '~',
+  broken: '✗',
+  thin: '·',
+};
+
+function statusColor(status: RegimeStat['status']): string {
+  switch (status) {
+    case 'good':
+      return theme.green;
+    case 'biased':
+      return theme.caution;
+    case 'broken':
+      return theme.red;
+    case 'thin':
+      return theme.textMuted;
+  }
+}
+
+function RegimeAnalysis({ scatter }: { scatter: ScatterPoint[] }) {
+  const stats = useMemo<RegimeStat[]>(() => {
+    const groups = new Map<string, ScatterPoint[]>();
+    for (const p of scatter) {
+      const arr = groups.get(p.regime);
+      if (arr) arr.push(p);
+      else groups.set(p.regime, [p]);
+    }
+    return [...groups.entries()]
+      .map(([regime, points]): RegimeStat => {
+        const residuals = points.map((p) => p.actual - p.predicted);
+        const n = residuals.length;
+        const med = median(residuals);
+        const mae = residuals.reduce((s, r) => s + Math.abs(r), 0) / n;
+        const within5 =
+          residuals.filter((r) => Math.abs(r) <= 5).length / n;
+        return {
+          regime,
+          n,
+          median: med,
+          mae,
+          within5,
+          status: classifyRegime(n, med),
+        };
+      })
+      .sort((a, b) => Math.abs(b.median) - Math.abs(a.median));
+  }, [scatter]);
+
+  // Headline: the worst trustworthy bias (if any), else the calmest read.
+  const headline = useMemo(() => {
+    const trustworthy = stats.filter((s) => s.status !== 'thin');
+    if (trustworthy.length === 0) {
+      return {
+        text: `Only thin per-regime samples so far (max n = ${
+          stats[0]?.n ?? 0
+        }). Need ≥5 per regime for a calibrated verdict.`,
+        tone: 'thin' as const,
+      };
+    }
+    const worst = trustworthy[0];
+    if (!worst) return null;
+    if (worst.status === 'good') {
+      return {
+        text: `Model is well-calibrated across all regimes with ≥5 samples (worst median bias ${fmtNum(
+          worst.median,
+          1,
+        )}pt on ${fmtRegime(worst.regime)}).`,
+        tone: 'good' as const,
+      };
+    }
+    if (worst.status === 'biased') {
+      return {
+        text: `Mostly calibrated. Worst regime: ${fmtRegime(
+          worst.regime,
+        )} biased ${fmtNum(worst.median, 1)}pt — within tolerance but worth noting.`,
+        tone: 'biased' as const,
+      };
+    }
+    // broken
+    const direction = worst.median > 0 ? 'under-predicting' : 'over-predicting';
+    return {
+      text: `Model is ${direction} on ${fmtRegime(
+        worst.regime,
+      )} by ${fmtNum(worst.median, 1)}pt (n=${
+        worst.n
+      }). Discount predictions on these setups until the calibration cron applies the residual shift.`,
+      tone: 'broken' as const,
+    };
+  }, [stats]);
+
+  if (stats.length === 0 || !headline) return null;
+
+  return (
+    <div className="border-edge space-y-2 rounded border p-3">
+      <div className="text-muted text-[10px] tracking-wider uppercase">
+        Analysis
+      </div>
+      <div
+        className="text-[12px] leading-snug font-medium"
+        style={{ color: statusColor(headline.tone) }}
+      >
+        {headline.text}
+      </div>
+      <ul className="space-y-1 font-mono text-[11px]">
+        {stats.map((s) => (
+          <li key={s.regime} className="flex items-baseline gap-2">
+            <span
+              className="w-3 text-center font-semibold"
+              style={{ color: statusColor(s.status) }}
+              aria-label={STATUS_COPY[s.status]}
+            >
+              {STATUS_GLYPH[s.status]}
+            </span>
+            <span className="text-secondary min-w-[12rem]">
+              {fmtRegime(s.regime)}
+            </span>
+            <span className="text-muted">n={s.n}</span>
+            <span
+              className="font-semibold"
+              style={{ color: statusColor(s.status) }}
+            >
+              bias {fmtNum(s.median, 1)}
+            </span>
+            <span className="text-muted">
+              MAE {s.mae.toFixed(1)} · within±5 {(s.within5 * 100).toFixed(0)}%
+            </span>
+            <span className="text-muted italic">— {STATUS_COPY[s.status]}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function RegimeLegend({ scatter }: { scatter: ScatterPoint[] }) {
   const counts = useMemo(() => {
     const map = new Map<string, number>();
@@ -430,6 +593,8 @@ function TRACELiveCalibrationPanel() {
           )}
 
           {hasScatter && <SummaryBanner scatter={data!.scatter} />}
+
+          {hasScatter && <RegimeAnalysis scatter={data!.scatter} />}
 
           {hasRows && <ResidualTable rows={data!.rows} />}
 
