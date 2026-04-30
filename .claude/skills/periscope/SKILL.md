@@ -42,15 +42,38 @@ Each bar has a dot showing **the panel's value 10 minutes ago**. This is the sec
 
 Use the dots to detect intraday momentum in dealer positioning. A growing green Gamma bar near spot means +γ defense is *strengthening* into the close; a shrinking one means it's bleeding.
 
-### The straddle breakeven lines
+### The straddle breakeven lines — identify these FIRST
 
 At 9:31 AM ET, Periscope computes the theoretical 0DTE straddle (nearest ATM call + put) and exposes its breakevens via a dropdown:
 
 - **None** — no lines.
-- **Cone** — diagonal lines from open price to close-time breakeven. Tightens through the day as theta decays. Price exceeding the cone is a strong vol-extension signal.
-- **Breakeven** — horizontal lines at the breakeven prices. Stays fixed all day.
+- **Cone** — yellow **diagonal dashed lines** on the price pane. Start wide at the 9:31 ET calculation point, converge toward the breakeven prices at the close. Tightens through the day as theta decays.
+- **Breakeven** — yellow horizontal dashed lines at the breakeven prices. Stays fixed all day.
 
-Why care: when SPX exceeds the breakeven cone intraday, short-straddle sellers must buy back their short options to limit convex losses, and that buying *reflexively extends the move*. UW's empirical observation — confirmed by their first-minute volume data — is that breakouts beyond the cone tend to expand, not mean-revert. Treat a cone breach as a vol-acceleration setup, not a fade.
+**Visual identification matters.** The Cone diagonals look superficially like a TA triangle pattern — they aren't. They're the market's priced-in expected move bounds. Identify the cone before reading anything else, because the bounds frame every other interpretation on the chart. If you see two diagonal yellow dashed lines tapering toward the right, that's the Cone — not a triangle, not a wedge, not a TA pattern.
+
+**Cone width = market's expected daily move.** Half-width (distance from cone midpoint to one bound) ≈ ATM straddle premium. A 71-pt-wide cone on SPX prices in a ±35 pt expected move; a 30-pt-wide cone prices in tight chop.
+
+**Cone asymmetry reflects put/call skew.** When the cone is roughly symmetric around its calculation-time spot, vol is balanced. When the lower bound is farther from spot than the upper bound (more downside room), the market is paying more for puts than calls — already pricing in downside skew. Trade thesis should respect that: long-side reward is capped at the upper cone, downside risk extends to the lower cone.
+
+**Why the cone matters for trading:** when SPX exceeds the breakeven cone intraday, short-straddle sellers must buy back their short options to limit convex losses, and that buying *reflexively extends the move*. UW's empirical observation — confirmed by their first-minute volume data — is that breakouts beyond the cone tend to expand, not mean-revert. Treat a cone breach as a vol-acceleration setup, not a fade.
+
+**Trade-thesis framing with the cone:**
+
+- **Inside-cone targets** (e.g. a +γ magnet at +$15 from spot when cone is ±$35) = high-probability but low-reward. The market already expects the move; the trade is paying you for vol you could have collected by selling the straddle.
+- **Outside-cone targets** = low-probability but high-reward (vol extension). The trade pays when the market under-priced vol.
+- **Asymmetric cone** (e.g. lower bound twice as far from spot as upper) = setup is structurally favoring the side with more room. Don't fight the skew — if puts are priced richer, the path of least resistance has a downside skew.
+
+### Reading historical / replay charts — discipline
+
+When the user pastes a chart from a past timeframe and asks you to read it as if at that moment (post-mortem analysis, "what did the open say"), apply these rules:
+
+1. **Ignore the red dotted spot price line.** That marker is *always live* — it shows the chart's current spot at the moment of capture, which is usually after the timeframe being analyzed. For a back-read, it's future data; pretend it's not there.
+2. **Read candles only up to the timeframe slice being analyzed.** The price pane shows the entire trading day; mentally crop it at the right edge of the slice. Anything to the right is what you're trying to *predict*, not input.
+3. **The dots on the bars represent the prior 10-min slice from the captured timeframe.** They're "historical" in the captured frame's reference, so they're valid input for the back-read.
+4. **The yellow dashed cone is anchored at the 9:31 ET calculation point** (= 8:31 CT). For any timeframe at or after the calc point, the cone is valid input. For earlier timeframes (e.g. an 8:20–8:30 CT pre-calc slice), the cone shown was drawn 1 minute later — treat it as "imminent" input.
+
+The discipline matters because it prevents lookahead bias. A back-read that quietly references where price ended up isn't analysis — it's hindsight rationalization.
 
 ## The hedge primitive — gamma sign × price direction
 
@@ -238,6 +261,56 @@ Day rallied 7,140 → high ~7,220–7,225 → settled **7,209.01** (+1.01%). The
 - Settled inside the +γ cluster ✓
 
 This is the kind of read the skill should produce on a clean +γ-overhead day from the morning chart alone.
+
+## Worked example — 2026-04-29 morning open (trap-day pattern)
+
+Yesterday's chart, read as a counterpoint to the clean 4/30 setup. Same chart family, very different trade thesis.
+
+**Setup at the open (08:20–08:30 CT slice):**
+- Date: Wed 2026-04-29, viewing 4/30 expiry (1DTE).
+- Spot ~7,140 at the leftmost open candle (back-read discipline: ignore the red dotted 7,136.18 line — that's the eventual close, future data).
+- Cone (yellow diagonals): **upper 7,163.69, lower 7,092.49** — calculated at 9:31 ET (8:31 CT, one minute after the slice ends).
+- Cone width ~71 pts, midpoint 7,128 (the ATM strike at calc time). Roughly symmetric around the calc-time spot.
+
+**What the chart showed:**
+
+- **7150** — biggest green Gamma bar (~+850), large red Charm bar (~−110K, charm-driven /ES buy under the OTM-call decoder), green Positions cluster (~2000). Magnet *and* cap. Only ~$10 above spot — well inside the upper cone bound at 7163.
+- **7165–7200** — secondary +γ layered up to and past the upper cone.
+- **7115–7140 (spot zone)** — **empty of structural defense**. Tiny red −γ bars only. No green +γ floor in the band 7115–7140.
+- **7100** — meaningful red −γ → acceleration zone, not a floor.
+- **7080–7060** — more red Gamma + red Positions → MM short below.
+- **7060** — small green +γ; the first hint of a real floor.
+- **7020** — huge red Positions bar (the biggest red on the chart).
+
+**The trade thesis the chart supported at the open:**
+
+This was a **trap setup**, not a clean directional opportunity. Two reads:
+
+1. **Inside-cone magnet:** 7150 is reachable (~$10 above spot, well inside upper cone at 7163). High-probability target but low-reward — only 10 pts of upside.
+2. **Asymmetric reward/risk:** 10 pts up to the magnet vs. 30–60 pts down to any meaningful defense. The cone gives ±35 pts of expected move; the structure says any downside drift accelerates with no floor until ~7060, brushing the lower cone bound at 7092.
+
+**The right framing at the open:**
+
+> Cone-bounded chop day with downside fragility. Reward/risk on a long is poor (10 up / 40+ down). Don't trade inside the no-mans-land 7115–7140. Conditional setups: long ONLY if SPX reclaims 7150 with stop at 7140 (vol breakout); short ONLY if SPX breaks 7115 with target at the lower cone 7092 and stop at 7140. Anything in between is a chop trap.
+
+**What actually happened:**
+
+- Open ~7140 → early drop to 7115–7120.
+- Chop range 7115–7140 through midday.
+- ~12–1 PM CT: flush to ~7100 (the low of day, deep into the −γ zone, brushing the lower cone).
+- Afternoon recovery to close 7,136.18 (−0.04%, basically flat).
+
+The day delivered exactly what the cone + bar-features implied: chop with a fragile-floor flush nearly to the lower cone, then a recovery as the +γ at 7150 dragged price back. **The chart was screaming "no-trade or asymmetric vol-extension setup" at the open.**
+
+**Common ways this kicks a trader's ass:**
+
+1. **Long anywhere 7115–7135 expecting the 7150 magnet** — got flushed in the midday drop because there was no +γ floor to defend.
+2. **Short the early drop holding for acceleration** — covered too high or held into the recovery; either way the +γ at 7150 dragged price back.
+3. **Iron condor inside the cone** — looks like a clean range, but the cone tells you the market is pricing significant vol; the midday flush threatens the lower wing, late-day recovery threatens the upper wing. Range structures need a +γ floor *and* ceiling; this had only the ceiling.
+
+**The diagnostic the skill should produce on a chart like this:**
+
+> No-trade or vol-extension day. Cone bounds 7092–7163 are the actionable vol-extension levels; chop inside the cone has no edge given the fragile downside (no +γ floor between spot and ~7060). Long entries require a +γ floor confirmation that doesn't exist here, OR a reclaim of 7150 with the cap then becoming the stop. Short entries require a confirmed break of 7115 targeting the lower cone. Wait for confirmation; don't trade the middle.
 
 ## Capture conventions (if user is studying / building features)
 
