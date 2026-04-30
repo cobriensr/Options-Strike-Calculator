@@ -18,6 +18,39 @@ A small candle chart on the left shows SPX intraday price; horizontal dashed lin
 
 **Periscope is the actionable trading chart; SpotGamma TRACE is informational context.** Periscope's huge per-strike $-labeled bars *are* the levels that move price — a 10K-contract green Positions bar at 7240 isn't a region of "support," it's a single strike where dealer flow concentrates and price gets capped or attracted. TRACE smooths that into colormap intensity and you lose the strike specificity required to set stops and targets.
 
+## Numeric heat maps as a precision overlay
+
+When the user provides them, use the **Net GEX Heat Map** and **Net Charm Heat Map** views alongside the Periscope chart. These show the same per-strike data on a 5-pt grid with **exact $-magnitudes**, removing the visual estimation error that comes from eyeballing histogram bars.
+
+**What heat maps add:**
+
+- **Exact magnitudes.** A bar that visually reads "+700" on the Periscope can actually be +1,894 — visual estimation routinely under-calls peaks by 2–3x.
+- **Easier rank-by-magnitude** of the dominant strikes near spot.
+- **Sign clarity on small bars.** Tiny green vs. tiny red is hard to distinguish visually; heat maps give a signed number.
+- **Twin-strike cluster recognition.** Adjacent strikes with combined magnitude (e.g. 7,090 + 7,100 both with strong +γ) read as one robust 2-strike floor rather than two separate "soft" floors.
+
+**What the Periscope still provides that heat maps don't:**
+
+- **Dots** (prior 10-min slice values) — the momentum read is invisible on heat maps.
+- **Orange / purple bar highlights** — regime-flip and threshold-breach signals.
+- **Yellow dashed cone** overlay.
+- **Price candles** for the back-read.
+- **Wider strike range.** Heat maps typically show a central ~100-pt range; the Periscope often shows further out where additional structure (deep magnets, far-strike Position clusters) lives.
+
+**Heat map back-read discipline:**
+
+- The header `Underlying: ($XXXX)` shows the **live spot at capture** (usually EOD close). **Ignore for back-reads**, same rule as the Periscope's red dotted spot line.
+- The heat map values themselves are computed for the timeframe slice shown in the top control bar — valid input for the captured frame.
+
+**Workflow when both are available:**
+
+1. Build the structural map using **heat-map values** for exact $-magnitudes per strike.
+2. Cross-reference with the **Periscope visual** for dots (momentum), cone bounds, orange/purple highlights, and far-from-spot structure outside the heat-map range.
+3. Quote numeric magnitudes in the read (e.g. "7,130 = +1,894 γ") instead of vague "huge +γ" framing.
+4. Use the precise magnitudes for trigger placement and R:R sizing.
+
+When only the Periscope is provided, fall back to visual estimation but flag that heat maps would improve precision for any close-call magnitude reads.
+
 ## Bar semantics — straight from the official FAQ
 
 This is the part to get exactly right. The color and shape of every bar carry distinct meanings.
