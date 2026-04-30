@@ -24,6 +24,22 @@ vi.mock('../_lib/schwab.js', () => ({
   getAccessToken: vi.fn(),
 }));
 
+// uwFetch wraps the request in acquire/release of a concurrency slot.
+// Mock the semaphore module so we don't need a Redis stub for it; we
+// also assert release-on-error in dedicated tests below.
+// `vi.hoisted` is required because vi.mock factories run before any
+// other top-level statement, so these vars must exist before the mock.
+const { mockAcquireConcurrencySlot, mockReleaseConcurrencySlot } = vi.hoisted(
+  () => ({
+    mockAcquireConcurrencySlot: vi.fn().mockResolvedValue('test-slot'),
+    mockReleaseConcurrencySlot: vi.fn().mockResolvedValue(undefined),
+  }),
+);
+vi.mock('../_lib/uw-concurrency.js', () => ({
+  acquireConcurrencySlot: mockAcquireConcurrencySlot,
+  releaseConcurrencySlot: mockReleaseConcurrencySlot,
+}));
+
 vi.mock('../_lib/sentry.js', () => ({
   metrics: {
     rateLimited: vi.fn(),
@@ -578,6 +594,46 @@ describe('api-helpers', () => {
 
       await expect(uwFetch('key123', '/path')).rejects.toThrow('UW API 500');
       expect(mockedMetrics.uwRateLimit).not.toHaveBeenCalled();
+    });
+
+    // ── Concurrency semaphore: must release on every code path ────
+    // A leaked slot is the most dangerous failure for this design, so
+    // pin both the success and error release paths explicitly.
+
+    it('releases the concurrency slot after a successful fetch', async () => {
+      mockAcquireConcurrencySlot.mockClear();
+      mockReleaseConcurrencySlot.mockClear();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () => Promise.resolve({ data: [1] }),
+        }),
+      );
+
+      await uwFetch('key123', '/path');
+
+      expect(mockAcquireConcurrencySlot).toHaveBeenCalledTimes(1);
+      expect(mockReleaseConcurrencySlot).toHaveBeenCalledWith('test-slot');
+    });
+
+    it('releases the concurrency slot when the fetch throws', async () => {
+      mockAcquireConcurrencySlot.mockClear();
+      mockReleaseConcurrencySlot.mockClear();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: false,
+          status: 503,
+          headers: { get: () => null },
+          text: () => Promise.resolve('upstream'),
+        }),
+      );
+
+      await expect(uwFetch('key123', '/path')).rejects.toThrow('UW API 503');
+
+      expect(mockAcquireConcurrencySlot).toHaveBeenCalledTimes(1);
+      expect(mockReleaseConcurrencySlot).toHaveBeenCalledWith('test-slot');
     });
   });
 

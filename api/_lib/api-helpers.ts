@@ -25,6 +25,10 @@ import { MARKET_MINUTES, TIMEOUTS, UW_BASE } from './constants.js';
 import logger from './logger.js';
 import { metrics, Sentry } from './sentry.js';
 import { acquireUWSlot } from './uw-rate-limit.js';
+import {
+  acquireConcurrencySlot,
+  releaseConcurrencySlot,
+} from './uw-concurrency.js';
 import { getMarketCloseHourET } from '../../src/data/marketHours.js';
 import {
   getETTime,
@@ -563,51 +567,61 @@ export async function uwFetch<T>(
   path: string,
   extract?: (body: Record<string, unknown>) => T[],
 ): Promise<T[]> {
+  // Two-stage gating:
+  //   acquireUWSlot()        → per-minute budget (cumulative quota guard)
+  //   acquireConcurrencySlot → in-flight concurrency cap (UW's actual cap)
+  // The semaphore must release on BOTH success and failure paths so a
+  // throwing fetch doesn't permanently consume a slot.
   await acquireUWSlot();
-  const url = path.startsWith('http') ? path : `${UW_BASE}${path}`;
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(TIMEOUTS.UW_API),
-  });
+  const slotId = await acquireConcurrencySlot();
+  try {
+    const url = path.startsWith('http') ? path : `${UW_BASE}${path}`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(TIMEOUTS.UW_API),
+    });
 
-  if (!res.ok) {
-    const text = await res
-      .text()
-      .catch((e) => `[parse error: ${(e as Error).message}]`);
+    if (!res.ok) {
+      const text = await res
+        .text()
+        .catch((e) => `[parse error: ${(e as Error).message}]`);
 
-    // BE-CRON-002 follow-up: surface UW rate-limit hits to Sentry as a
-    // metric + scoped warning so we see budget pressure the moment it
-    // starts, instead of waiting for data to silently thin out. Endpoint
-    // is extracted with the query string stripped so identical routes
-    // group together in the metric.
-    if (res.status === 429) {
-      const endpoint = path.startsWith('http')
-        ? (() => {
-            try {
-              return new URL(path).pathname;
-            } catch {
-              return path;
-            }
-          })()
-        : (path.split('?')[0] ?? path);
-      const retryAfter = res.headers?.get?.('retry-after') ?? null;
-      metrics.uwRateLimit(endpoint, retryAfter);
+      // BE-CRON-002 follow-up: surface UW rate-limit hits to Sentry as a
+      // metric + scoped warning so we see budget pressure the moment it
+      // starts, instead of waiting for data to silently thin out. Endpoint
+      // is extracted with the query string stripped so identical routes
+      // group together in the metric.
+      if (res.status === 429) {
+        const endpoint = path.startsWith('http')
+          ? (() => {
+              try {
+                return new URL(path).pathname;
+              } catch {
+                return path;
+              }
+            })()
+          : (path.split('?')[0] ?? path);
+        const retryAfter = res.headers?.get?.('retry-after') ?? null;
+        metrics.uwRateLimit(endpoint, retryAfter);
+      }
+
+      throw new Error(`UW API ${res.status}: ${text.slice(0, 200)}`);
     }
 
-    throw new Error(`UW API ${res.status}: ${text.slice(0, 200)}`);
+    const body = await res.json();
+    if (extract) return extract(body);
+    if (body.data === undefined) {
+      logger.warn(
+        { keys: Object.keys(body as Record<string, unknown>) },
+        'uwFetch: response.data missing',
+      );
+      Sentry.captureMessage('uwFetch: response.data missing', 'warning');
+      return [];
+    }
+    return body.data ?? [];
+  } finally {
+    await releaseConcurrencySlot(slotId);
   }
-
-  const body = await res.json();
-  if (extract) return extract(body);
-  if (body.data === undefined) {
-    logger.warn(
-      { keys: Object.keys(body as Record<string, unknown>) },
-      'uwFetch: response.data missing',
-    );
-    Sentry.captureMessage('uwFetch: response.data missing', 'warning');
-    return [];
-  }
-  return body.data ?? [];
 }
 
 /**
