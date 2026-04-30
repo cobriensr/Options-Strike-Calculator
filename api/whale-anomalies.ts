@@ -30,31 +30,42 @@ import {
 } from './_lib/api-helpers.js';
 import { WHALE_TICKERS } from './_lib/whale-detector.js';
 
+type DbId = number | string;
+type DbNumeric = string | number;
+type DbNullableNumeric = DbNumeric | null;
+type DbTimestamp = string | Date;
+type DbNullableTimestamp = DbTimestamp | null;
+type DbOptionType = 'call' | 'put';
+type DbWhaleSide = 'ASK' | 'BID';
+type DbDirection = 'bullish' | 'bearish';
+type DbPairingStatus = 'alone' | 'sequential';
+type DbSource = 'live' | 'eod_backfill';
+
 interface WhaleAnomalyRow {
-  id: number | string;
+  id: DbId;
   ticker: string;
   option_chain: string;
-  strike: string | number;
-  option_type: 'call' | 'put';
+  strike: DbNumeric;
+  option_type: DbOptionType;
   expiry: string;
-  first_ts: string | Date;
-  last_ts: string | Date;
-  detected_at: string | Date;
-  side: 'ASK' | 'BID';
-  ask_pct: string | number | null;
-  total_premium: string | number;
+  first_ts: DbTimestamp;
+  last_ts: DbTimestamp;
+  detected_at: DbTimestamp;
+  side: DbWhaleSide;
+  ask_pct: DbNullableNumeric;
+  total_premium: DbNumeric;
   trade_count: number;
-  vol_oi_ratio: string | number | null;
-  underlying_price: string | number | null;
-  moneyness: string | number | null;
+  vol_oi_ratio: DbNullableNumeric;
+  underlying_price: DbNullableNumeric;
+  moneyness: DbNullableNumeric;
   dte: number;
   whale_type: number;
-  direction: 'bullish' | 'bearish';
-  pairing_status: 'alone' | 'sequential';
-  source: 'live' | 'eod_backfill';
-  resolved_at: string | Date | null;
+  direction: DbDirection;
+  pairing_status: DbPairingStatus;
+  source: DbSource;
+  resolved_at: DbNullableTimestamp;
   hit_target: boolean | null;
-  pct_to_target: string | number | null;
+  pct_to_target: DbNullableNumeric;
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -100,7 +111,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ORDER BY first_ts ASC
     `) as WhaleAnomalyRow[];
 
-    const toIso = (v: string | Date): string =>
+    const toIso = (v: DbTimestamp): string =>
       typeof v === 'string' ? v : v.toISOString();
 
     const whales = rows.map((r) => ({

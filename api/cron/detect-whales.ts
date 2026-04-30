@@ -33,27 +33,33 @@ import {
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 
+type DbId = number | string;
+type DbNumeric = string | number;
+type DbNullableNumeric = DbNumeric | null;
+type DbTimestamp = string | Date;
+type DbOptionType = 'call' | 'put';
+
 interface WhaleAlertRow {
-  id: number | string;
+  id: DbId;
   ticker: string;
   option_chain: string;
-  strike: string | number;
-  option_type: 'call' | 'put';
+  strike: DbNumeric;
+  option_type: DbOptionType;
   expiry: string;
-  created_at: string | Date;
-  total_premium: string | number;
-  total_ask_side_prem: string | number | null;
-  total_bid_side_prem: string | number | null;
+  created_at: DbTimestamp;
+  total_premium: DbNumeric;
+  total_ask_side_prem: DbNullableNumeric;
+  total_bid_side_prem: DbNullableNumeric;
   trade_count: number;
-  underlying_price: string | number | null;
-  volume_oi_ratio: string | number | null;
+  underlying_price: DbNullableNumeric;
+  volume_oi_ratio: DbNullableNumeric;
   dte_at_alert: number | null;
 }
 
 interface PeerRow {
-  option_type: 'call' | 'put';
-  first_ts: string | Date;
-  last_ts: string | Date;
+  option_type: DbOptionType;
+  first_ts: DbTimestamp;
+  last_ts: DbTimestamp;
 }
 
 function rowToCandidate(row: WhaleAlertRow): WhaleCandidate {

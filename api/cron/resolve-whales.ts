@@ -29,20 +29,25 @@ import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 
+type DbId = number | string;
+type DbNumeric = string | number;
+type DbNullableNumeric = DbNumeric | null;
+type DbTimestamp = Date | string;
+
 interface UnresolvedRow {
-  id: number | string;
+  id: DbId;
   ticker: string;
-  strike: string | number;
+  strike: DbNumeric;
   whale_type: number;
-  underlying_price: string | number | null;
-  first_ts: Date | string;
+  underlying_price: DbNullableNumeric;
+  first_ts: DbTimestamp;
   trade_date: string;
 }
 
 interface RangeRow {
-  hi: string | number | null;
-  lo: string | number | null;
-  last: string | number | null;
+  hi: DbNullableNumeric;
+  lo: DbNullableNumeric;
+  last: DbNullableNumeric;
   n: number;
 }
 

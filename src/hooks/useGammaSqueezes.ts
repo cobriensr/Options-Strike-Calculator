@@ -21,7 +21,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ActiveSqueeze,
   GammaSqueezeRow,
-  GammaSqueezeTicker,
   GammaSqueezesResponse,
 } from '../components/GammaSqueezes/types';
 import { squeezeCompoundKey } from '../components/GammaSqueezes/types';
@@ -117,7 +116,7 @@ export function useGammaSqueezes({
       const now = Date.now();
       // Walk through every ticker's history and aggregate.
       for (const [tickerKey, rows] of Object.entries(data.history) as Array<
-        [GammaSqueezeTicker, GammaSqueezeRow[]]
+        [string, GammaSqueezeRow[]]
       >) {
         if (rows.length === 0) continue;
         // Group by compound key. Rows are DESC by ts.

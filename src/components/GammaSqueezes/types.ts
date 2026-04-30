@@ -8,10 +8,9 @@
  * See spec: docs/superpowers/specs/gamma-squeeze-velocity-detector-2026-04-28.md.
  */
 
-// Tickers eligible for gamma-squeeze detection. Plain string —
-// gamma-squeeze flags can fire on any ticker the detector emits, so we
-// don't enumerate at the type level.
-export type GammaSqueezeTicker = string;
+// Tickers eligible for gamma-squeeze detection. Plain string is used
+// inline below — gamma-squeeze flags can fire on any ticker the detector
+// emits, so we don't enumerate at the type level.
 export type GammaSqueezeSide = 'call' | 'put';
 export type GammaSqueezePhase = 'forming' | 'active' | 'exhausted';
 export type NetGammaSign = 'short' | 'long' | 'unknown';
@@ -57,8 +56,8 @@ export interface GammaSqueezeRow {
 
 export interface GammaSqueezesResponse {
   mode: 'list';
-  latest: Record<GammaSqueezeTicker, GammaSqueezeRow | null>;
-  history: Record<GammaSqueezeTicker, GammaSqueezeRow[]>;
+  latest: Record<string, GammaSqueezeRow | null>;
+  history: Record<string, GammaSqueezeRow[]>;
 }
 
 /**
@@ -78,7 +77,7 @@ export function squeezeCompoundKey(
  */
 export interface ActiveSqueeze {
   compoundKey: string;
-  ticker: GammaSqueezeTicker;
+  ticker: string;
   strike: number;
   side: GammaSqueezeSide;
   expiry: string;
