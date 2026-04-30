@@ -21,12 +21,32 @@ worth acting on. If any single filter fails, the print is noise.
 | Filter             | Threshold                                                                     | Rationale                                              |
 | ------------------ | ----------------------------------------------------------------------------- | ------------------------------------------------------ |
 | **Underlying**     | SPX, SPXW, SPY, QQQ, NDX, NDXP, IWM                                           | Index/ETF flow only — single-name flow is too noisy   |
-| **Premium**        | ≥ $5M total                                                                   | Smaller sizes are retail / dispersion noise            |
+| **Premium**        | ≥ ticker-specific p95 (see "Per-ticker thresholds" below)                     | Calibrated to each ticker's premium distribution       |
 | **One-sidedness**  | ≥ 85% on bid side OR ≥ 85% on ask side                                        | Concentrated direction = real conviction               |
 | **Trade count**    | ≥ 5 prints in the same chain                                                  | Single blocks (count = 1) are usually structural       |
 | **Moneyness**      | Strike within ±5% of spot                                                     | Far OTM = hedges; far ITM = financing                  |
 | **DTE**            | ≤ 14 days                                                                     | Long-dated = positioning, not directional              |
 | **No simultaneous paired leg** | If a same-strike same-expiry opposite-side print exists, its trade window must NOT overlap with this leg's window. Sequential rolls (one leg closes as the other opens) are OK — see "Position rolls" in Step 2 | Eliminates pure conversions / reversals while preserving directional rolls |
+
+### Per-ticker premium thresholds
+
+A flat $5M threshold doesn't scale across tickers — SPX and NDX trade at much
+larger dollar sizes than QQQ, SPY, or IWM. The threshold below is the **95th
+percentile of premium per ticker** across the 11-day outsized-chain universe.
+Recompute these every ~30 trading days as the parquet archive grows.
+
+| Ticker     | p50 (typical) | **p95 whale threshold** | p99    | Max     |
+| ---------- | ------------- | ----------------------- | ------ | ------- |
+| **SPX**    | $2.6M         | **$80.8M**              | $150M  | $1.68B  |
+| **SPXW**   | $517K         | **$6.8M**               | $22.1M | $426M   |
+| **NDX**    | $2.5M         | **$26.0M**              | $114M  | $128M   |
+| **NDXP**   | $251K         | **$2.6M**               | $6.7M  | $10.7M  |
+| **QQQ**    | $375K         | **$5.7M**               | $14.5M | $25.5M  |
+| **SPY**    | $356K         | **$6.3M**               | $19.2M | $63.6M  |
+| **IWM**    | $338K         | **$9.3M**               | $21.2M | $30.4M  |
+
+**Practical floor:** if you're scanning live and don't have these numbers
+handy, use **≥ p95 OR ≥ $5M, whichever is lower** as a fast approximation.
 
 ---
 
@@ -107,7 +127,7 @@ intraday — different filter, different action.
 
 | Filter        | Value                                                                |
 | ------------- | -------------------------------------------------------------------- |
-| Premium       | **$5–10M only** (NOT $10M+ — those are usually structural at this DTE) |
+| Premium       | **Between p90 and p99 of the ticker's distribution** (above p99 is usually structural at this DTE; for SPXW that's roughly $5–10M, for QQQ ~$3–8M, for NDXP ~$1.3–4M) |
 | Side          | ASK (paid premium)                                                  |
 | DTE           | 8–14 days                                                           |
 | Moneyness     | 1.5–3% OTM                                                          |
