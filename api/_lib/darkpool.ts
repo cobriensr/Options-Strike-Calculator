@@ -185,11 +185,18 @@ export async function fetchDarkPoolBlocks(
  *               page returned non-OK; partial data is still useful for
  *               the incremental cron)
  *   - `empty` — every page succeeded but no trades remain after filtering
- *   - `error` — the very first page failed (non-OK response)
  *
- * Network throws still propagate as `throw` for the cron's outer
- * `catch`/Sentry handler to pick up and retry — pagination errors
- * that happen mid-stream without any data collected become `error`.
+ * Failure modes that throw (so the cron's `withRetry` wrapper can catch
+ * and re-attempt with exponential backoff):
+ *   - Network errors (timeout, ECONNREFUSED, etc.)
+ *   - First-page non-OK responses with no data collected. The thrown
+ *     message includes the HTTP status (e.g. `UW API 503: ...`) so
+ *     `withRetry`'s 429/50[234] regex re-fires the call. UW's edge
+ *     occasionally returns 503/Envoy errors that clear within seconds.
+ *
+ * Mid-pagination non-OKs (after at least one page succeeded) keep the
+ * partial data and return `ok` — the next cron tick picks up via the
+ * cursor, so we don't want to lose trades we already collected.
  */
 export async function fetchAllDarkPoolTrades(
   apiKey: string,
@@ -277,12 +284,14 @@ export async function fetchAllDarkPoolTrades(
     throw err;
   }
 
-  // If the very first page failed and we collected nothing, surface
-  // the failure so the caller can distinguish "quiet" from "broken".
+  // If the very first page failed and we collected nothing, throw so
+  // the cron's `withRetry` wrapper can re-attempt — UW's 429/503 hits
+  // are usually transient and clear within seconds. The thrown message
+  // embeds the HTTP status so `withRetry`'s regex matches.
   // If we got any data at all, partial progress is still useful for the
   // cron's aggregation — return it as `ok`.
   if (paginationError != null && all.length === 0) {
-    return { kind: 'error', reason: paginationError };
+    throw new Error(`UW dark pool fetch failed: ${paginationError}`);
   }
 
   // Apply the same quality filters, plus a hard ET-date guard.

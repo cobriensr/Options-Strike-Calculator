@@ -184,6 +184,34 @@ describe('fetchAllDarkPoolTrades', () => {
     vi.unstubAllGlobals();
   });
 
+  it('throws on first-page non-OK so withRetry can re-attempt', async () => {
+    // Regression: previously returned { kind: 'error' } which bypassed the
+    // cron's withRetry. Now throws with HTTP status in the message so
+    // withRetry's 429/50[234] regex matches and re-fires the call.
+    mockSentry.captureMessage.mockClear();
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      text: () => Promise.resolve('upstream connect error'),
+    });
+
+    vi.stubGlobal('fetch', mockFetch);
+
+    await expect(fetchAllDarkPoolTrades('key')).rejects.toThrow(/503/);
+
+    // The Sentry warning still fires (one per failed page attempt) so
+    // we see the underlying UW response in the issue stream.
+    expect(mockSentry.captureMessage).toHaveBeenCalledWith(
+      'Dark pool paginated fetch non-OK',
+      expect.objectContaining({
+        level: 'warning',
+        extra: expect.objectContaining({ status: 503, page: 0, fetched: 0 }),
+      }),
+    );
+
+    vi.unstubAllGlobals();
+  });
+
   it('stops on non-OK response', async () => {
     const mockFetch = vi
       .fn()
