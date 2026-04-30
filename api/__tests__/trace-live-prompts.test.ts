@@ -95,7 +95,33 @@ describe('TRACE_LIVE_STABLE_SYSTEM_TEXT assembly', () => {
 });
 
 describe('getTraceLiveCalibrationBlock', () => {
-  it('returns an empty string by default — examples not yet populated', () => {
-    expect(getTraceLiveCalibrationBlock()).toBe('');
+  it('returns three calibration examples wrapped in a <calibration> tag', () => {
+    const block = getTraceLiveCalibrationBlock();
+    expect(block).toContain('<calibration>');
+    expect(block).toContain('</calibration>');
+    // Three named scenarios, each in its own example block.
+    expect(block.match(/<calibration_example>/g)?.length).toBe(3);
+  });
+
+  it('covers gamma override, trending regime, and stability gate scenarios', () => {
+    const block = getTraceLiveCalibrationBlock();
+    expect(block).toMatch(/gamma override fires/i);
+    expect(block).toMatch(/Trending −γ regime/);
+    expect(block).toMatch(/Stability%? gate/i);
+  });
+
+  it('demonstrates the trending-regime branch with predictedClose = spot', () => {
+    const block = getTraceLiveCalibrationBlock();
+    // Example 2: spot 7130.65 → predictedClose 7131 (rounded), NOT 7125 / 7100 drift extreme.
+    expect(block).toContain('"predictedClose": 7131');
+    // The rationale calls out that the realised outcome confirms the new branch.
+    expect(block).toMatch(/Realised outcome: 7137\.56/);
+  });
+
+  it('demonstrates the stability gate forcing no_trade regardless of agreement', () => {
+    const block = getTraceLiveCalibrationBlock();
+    // Example 3: low Stability% should force confidence=no_trade even when agreement is all_agree.
+    expect(block).toContain('"confidence": "no_trade"');
+    expect(block).toContain('"crossChartAgreement": "all_agree"');
   });
 });
