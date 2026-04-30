@@ -166,6 +166,10 @@
       "schedule": "* 13-21 * * 1-5"
     },
     {
+      "path": "/api/cron/resolve-trace-residuals",
+      "schedule": "0 2 * * 1-5"
+    },
+    {
       "path": "/api/cron/fetch-nope",
       "schedule": "* 13-21 * * 1-5"
     },

@@ -2805,4 +2805,24 @@ export const MIGRATIONS: Migration[] = [
       sql`ALTER TABLE whale_anomalies RENAME COLUMN pct_to_target TO pct_close_vs_strike`,
     ],
   },
+  {
+    id: 102,
+    description:
+      'Create trace_live_calibration table for stratified residual statistics derived from trace_live_analyses.actual_close. Computed daily by the resolve-trace-residuals cron after fetch-outcomes populates actual_close. Keyed (regime, ttc_bucket) where ttc_bucket = "0-15min" | "15-60min" | "60-180min" | ">180min". Stores mean/median residual + sample count + p25/p75 for the predictedCloseRange band. Applied at inference time in trace-live-analyze to bias-correct the model output.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS trace_live_calibration (
+          regime          TEXT NOT NULL,
+          ttc_bucket      TEXT NOT NULL CHECK (ttc_bucket IN ('0-15min','15-60min','60-180min','>180min')),
+          n               INTEGER NOT NULL CHECK (n >= 0),
+          residual_mean   NUMERIC,
+          residual_median NUMERIC,
+          residual_p25    NUMERIC,
+          residual_p75    NUMERIC,
+          updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+          PRIMARY KEY (regime, ttc_bucket)
+        )
+      `,
+    ],
+  },
 ];
