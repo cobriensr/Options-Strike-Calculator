@@ -58,13 +58,46 @@ function mean(xs: number[]): number {
 
 /**
  * Minutes from a captured_at timestamp to the ET equity close at 16:00
- * (= 21:00 UTC). Returns 0 if capture is at or after close.
+ * America/New_York. Returns 0 if capture is at or after close.
+ *
+ * DST-aware: SPX cash close is 21:00 UTC during EDT (Mar–Nov) and 22:00
+ * UTC during EST (Nov–Mar). The earlier hard-coded `setUTCHours(21, 0)`
+ * silently bucketed every winter capture 60 min short. We derive the
+ * UTC close instant by reading the ET-shifted date components and
+ * rebuilding the timestamp through Intl, which respects the active
+ * tz offset for that calendar day.
  */
 function minutesToClose(capturedAt: Date): number {
-  const captured = capturedAt.getTime();
-  const closeUtc = new Date(capturedAt);
-  closeUtc.setUTCHours(21, 0, 0, 0);
-  return Math.max(0, (closeUtc.getTime() - captured) / 60_000);
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+    timeZoneName: 'short',
+  });
+  const parts = fmt.formatToParts(capturedAt);
+  const tzName = parts.find((p) => p.type === 'timeZoneName')?.value;
+  // tzName is "EDT" (UTC-4) or "EST" (UTC-5).
+  const closeOffsetHours = tzName === 'EDT' ? 4 : 5;
+  // Build the UTC instant for 16:00 ET on the same calendar date as
+  // the capture (relative to ET).
+  const yyyy = parts.find((p) => p.type === 'year')!.value;
+  const mm = parts.find((p) => p.type === 'month')!.value;
+  const dd = parts.find((p) => p.type === 'day')!.value;
+  const closeUtcMs = Date.UTC(
+    Number(yyyy),
+    Number(mm) - 1,
+    Number(dd),
+    16 + closeOffsetHours,
+    0,
+    0,
+    0,
+  );
+  return Math.max(0, (closeUtcMs - capturedAt.getTime()) / 60_000);
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -77,16 +110,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const db = getDb();
+    // jsonb_typeof guard: hardens against stray model output where
+    // predictedClose was emitted as a string ("7125") rather than a
+    // number. The earlier `::numeric` cast would throw on the first
+    // bad row and abort the cron; filtering at the WHERE level skips
+    // them silently and lets the rest of the day's data through.
     const rows = (await db`
       SELECT
         captured_at,
         actual_close,
-        (full_response->'synthesis'->>'predictedClose')::numeric AS predicted_close,
+        full_response->'synthesis'->>'predictedClose' AS predicted_close,
         full_response->>'regime' AS regime
       FROM trace_live_analyses
       WHERE actual_close IS NOT NULL
         AND full_response->>'regime' IS NOT NULL
-        AND full_response->'synthesis'->>'predictedClose' IS NOT NULL
+        AND jsonb_typeof(full_response->'synthesis'->'predictedClose') = 'number'
     `) as ResolvedRow[];
 
     if (rows.length === 0) {

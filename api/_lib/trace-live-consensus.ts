@@ -44,12 +44,41 @@ export interface ConsensusResult {
 export const MIN_TICKS_FOR_CONSENSUS = 3;
 export const WINDOW_MINUTES = 240;
 
-function stdev(xs: number[]): number {
+/**
+ * Weighted standard deviation around a weighted mean. Same linear-decay
+ * weights as the consensus computation — keeps "consensus is wide → low
+ * confidence" semantics consistent: an old stale outlier should not
+ * inflate the dispersion as much as a fresh tick that disagrees.
+ */
+function weightedStdev(xs: number[], weights: number[], mean: number): number {
   if (xs.length < 2) return 0;
-  const mean = xs.reduce((a, b) => a + b, 0) / xs.length;
-  const variance =
-    xs.reduce((acc, x) => acc + (x - mean) ** 2, 0) / (xs.length - 1);
-  return Math.sqrt(variance);
+  let sumW = 0;
+  let sumWVar = 0;
+  for (let i = 0; i < xs.length; i++) {
+    const w = weights[i] ?? 0;
+    sumW += w;
+    sumWVar += w * (xs[i]! - mean) ** 2;
+  }
+  if (sumW === 0) return 0;
+  // Bias-corrected variance for weighted samples is non-trivial; use the
+  // simple weighted-variance estimator. For our case (3-30 samples) the
+  // bias is small and the metric is consumed as a relative dispersion.
+  return Math.sqrt(sumWVar / sumW);
+}
+
+/**
+ * Date string in ET (America/New_York) of the form YYYY-MM-DD. Used to
+ * decide whether two captures are in the same trading session — UTC
+ * midnight is not an ET trading-day boundary.
+ */
+function etDateString(d: Date): string {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  return fmt.format(d);
 }
 
 /**
@@ -68,9 +97,9 @@ export function computeSessionConsensus(
   );
   const seed = sorted[0]!;
 
-  const seedDateUtc = seed.capturedAt.toISOString().slice(0, 10);
+  const seedDate = etDateString(seed.capturedAt);
   const inSameSession = sorted.filter(
-    (t) => t.capturedAt.toISOString().slice(0, 10) === seedDateUtc,
+    (t) => etDateString(t.capturedAt) === seedDate,
   );
 
   // Filter to same regime AND within the window.
@@ -85,17 +114,24 @@ export function computeSessionConsensus(
 
   // Compute the linear-decay weights (1 = seed itself, 0 = exactly at the
   // window edge). The seed's weight is 1.0; older ticks decay linearly.
-  let weightedSum = 0;
-  let weightTotal = 0;
-  for (const t of candidates) {
+  const weights = candidates.map((t) => {
     const ageMin =
       (seed.capturedAt.getTime() - t.capturedAt.getTime()) / 60_000;
-    const weight = Math.max(0, 1 - ageMin / WINDOW_MINUTES);
-    weightedSum += t.predictedClose * weight;
-    weightTotal += weight;
+    return Math.max(0, 1 - ageMin / WINDOW_MINUTES);
+  });
+
+  let weightedSum = 0;
+  let weightTotal = 0;
+  for (let i = 0; i < candidates.length; i++) {
+    weightedSum += candidates[i]!.predictedClose * weights[i]!;
+    weightTotal += weights[i]!;
   }
   const consensusClose = weightedSum / weightTotal;
-  const sd = stdev(candidates.map((t) => t.predictedClose));
+  const sd = weightedStdev(
+    candidates.map((t) => t.predictedClose),
+    weights,
+    consensusClose,
+  );
 
   return {
     consensusClose,

@@ -2809,6 +2809,13 @@ export const MIGRATIONS: Migration[] = [
     id: 102,
     description:
       'Create trace_live_calibration table for stratified residual statistics derived from trace_live_analyses.actual_close. Computed daily by the resolve-trace-residuals cron after fetch-outcomes populates actual_close. Keyed (regime, ttc_bucket) where ttc_bucket = "0-15min" | "15-60min" | "60-180min" | ">180min". Stores mean/median residual + sample count + p25/p75 for the predictedCloseRange band. Applied at inference time in trace-live-analyze to bias-correct the model output.',
+    // NOTE: ttc_bucket uses an inline CHECK constraint over a fixed enum.
+    // Adding a new bucket requires a follow-up migration:
+    //   ALTER TABLE trace_live_calibration DROP CONSTRAINT trace_live_calibration_ttc_bucket_check;
+    //   ALTER TABLE trace_live_calibration ADD CONSTRAINT trace_live_calibration_ttc_bucket_check CHECK (ttc_bucket IN (...new list...));
+    // Keeping the CHECK rather than promoting to a Postgres ENUM type because
+    // ENUMs are harder to mutate (need ALTER TYPE ... ADD VALUE) and the bucket
+    // set is small + unlikely to grow frequently.
     statements: (sql) => [
       sql`
         CREATE TABLE IF NOT EXISTS trace_live_calibration (

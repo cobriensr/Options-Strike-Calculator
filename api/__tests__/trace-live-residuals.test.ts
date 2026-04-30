@@ -159,6 +159,27 @@ describe('applyResidualCorrection', () => {
     });
     expect(out).toBeNull();
   });
+
+  it('returns null when residual_median is null even with sufficient n', async () => {
+    mockSql.mockResolvedValueOnce([
+      {
+        regime: 'trending_negative_gamma',
+        ttc_bucket: '0-15min',
+        n: 30,
+        residual_median: null, // computation failed for this bucket
+        residual_mean: 12.0,
+        residual_p25: 5,
+        residual_p75: 20,
+        updated_at: '2026-04-30T02:00:00Z',
+      },
+    ]);
+    const out = await applyResidualCorrection({
+      regime: 'trending_negative_gamma',
+      predictedClose: 7125,
+      minutesToClose: 8,
+    });
+    expect(out).toBeNull();
+  });
 });
 
 describe('listCalibrationRows', () => {

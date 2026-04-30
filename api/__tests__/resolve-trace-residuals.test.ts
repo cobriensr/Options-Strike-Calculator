@@ -111,4 +111,62 @@ describe('resolve-trace-residuals handler', () => {
     await handler(req, res);
     expect(mockSql).not.toHaveBeenCalled();
   });
+
+  it('routes rows of different regimes to different bucket UPSERTs', async () => {
+    mockSql.mockResolvedValueOnce([
+      // 3 rows in trending_negative_gamma + 0-15min
+      {
+        regime: 'trending_negative_gamma',
+        predicted_close: 7125,
+        captured_at: new Date('2026-04-29T20:50:00Z'),
+        actual_close: 7137,
+      },
+      {
+        regime: 'trending_negative_gamma',
+        predicted_close: 7120,
+        captured_at: new Date('2026-04-29T20:45:00Z'),
+        actual_close: 7137,
+      },
+      {
+        regime: 'trending_negative_gamma',
+        predicted_close: 7100,
+        captured_at: new Date('2026-04-29T20:55:00Z'),
+        actual_close: 7137,
+      },
+      // 3 rows in range_bound_positive_gamma + 0-15min — different regime,
+      // different bucket key.
+      {
+        regime: 'range_bound_positive_gamma',
+        predicted_close: 7175,
+        captured_at: new Date('2026-04-27T20:55:00Z'),
+        actual_close: 7174,
+      },
+      {
+        regime: 'range_bound_positive_gamma',
+        predicted_close: 7175,
+        captured_at: new Date('2026-04-27T20:50:00Z'),
+        actual_close: 7174,
+      },
+      {
+        regime: 'range_bound_positive_gamma',
+        predicted_close: 7175,
+        captured_at: new Date('2026-04-27T20:45:00Z'),
+        actual_close: 7174,
+      },
+    ]);
+    mockSql.mockResolvedValue([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      rows: 6,
+      buckets: 2,
+    });
+  });
 });
