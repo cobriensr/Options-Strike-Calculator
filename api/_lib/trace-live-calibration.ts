@@ -92,6 +92,7 @@ const EXAMPLE_1_OVERRIDE_PIN = `
   },
   "synthesis": {
     "predictedClose": 7175,
+    "predictedCloseRange": null,
     "confidence": "high",
     "crossChartAgreement": "all_agree",
     "overrideApplied": true,
@@ -154,6 +155,7 @@ const EXAMPLE_2_TRENDING_NO_OVERRIDE = `
   },
   "synthesis": {
     "predictedClose": 7131,
+    "predictedCloseRange": { "p25": 7115, "p50": 7131, "p75": 7150 },
     "confidence": "low",
     "crossChartAgreement": "mostly_agree",
     "overrideApplied": false,
@@ -215,6 +217,7 @@ const EXAMPLE_3_STABILITY_GATE = `
   },
   "synthesis": {
     "predictedClose": 7141,
+    "predictedCloseRange": { "p25": 7120, "p50": 7141, "p75": 7160 },
     "confidence": "no_trade",
     "crossChartAgreement": "all_agree",
     "overrideApplied": false,

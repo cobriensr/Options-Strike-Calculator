@@ -107,4 +107,54 @@ describe('parseAndValidateTraceAnalysis', () => {
     };
     expect(parseAndValidateTraceAnalysis(JSON.stringify(bad))).toBeNull();
   });
+
+  // ── predictedCloseRange (Phase 3) — 3 valid shapes + 1 malformed ──
+
+  it('accepts output with predictedCloseRange omitted entirely (legacy + +γ pin path)', () => {
+    // The fixture's `minimal` constant intentionally has no
+    // predictedCloseRange. Verifies backwards-compat with old DB rows
+    // and the "OMIT for clean pin override" branch of the new prompt.
+    const parsed = parseAndValidateTraceAnalysis(JSON.stringify(minimal));
+    expect(parsed).not.toBeNull();
+    expect(parsed?.synthesis.predictedCloseRange).toBeUndefined();
+  });
+
+  it('accepts output with predictedCloseRange = null (explicit OMIT)', () => {
+    const withNull = {
+      ...minimal,
+      synthesis: { ...minimal.synthesis, predictedCloseRange: null },
+    };
+    const parsed = parseAndValidateTraceAnalysis(JSON.stringify(withNull));
+    expect(parsed).not.toBeNull();
+    expect(parsed?.synthesis.predictedCloseRange).toBeNull();
+  });
+
+  it('accepts output with a fully populated predictedCloseRange object', () => {
+    const withRange = {
+      ...minimal,
+      synthesis: {
+        ...minimal.synthesis,
+        predictedCloseRange: { p25: 7115, p50: 7131, p75: 7150 },
+      },
+    };
+    const parsed = parseAndValidateTraceAnalysis(JSON.stringify(withRange));
+    expect(parsed).not.toBeNull();
+    expect(parsed?.synthesis.predictedCloseRange).toEqual({
+      p25: 7115,
+      p50: 7131,
+      p75: 7150,
+    });
+  });
+
+  it('rejects malformed predictedCloseRange (missing p50)', () => {
+    const broken = {
+      ...minimal,
+      synthesis: {
+        ...minimal.synthesis,
+        // p50 omitted — Zod sub-object requires all three.
+        predictedCloseRange: { p25: 7115, p75: 7150 },
+      },
+    };
+    expect(parseAndValidateTraceAnalysis(JSON.stringify(broken))).toBeNull();
+  });
 });

@@ -160,7 +160,18 @@ function TRACELiveHeader({
           const range = detail.analysis?.synthesis?.predictedCloseRange;
           const isLowConf = conf === 'low' || conf === 'no_trade';
 
-          if (range) {
+          // Validate the range before rendering. A model regression that
+          // emits p25 > p75 or non-finite values would produce confusing
+          // output ("7150–7115"). Fall through to the lower tiers on
+          // malformed data — the point estimate is still trustworthy.
+          const rangeIsValid =
+            range != null &&
+            Number.isFinite(range.p25) &&
+            Number.isFinite(range.p50) &&
+            Number.isFinite(range.p75) &&
+            range.p25 <= range.p50 &&
+            range.p50 <= range.p75;
+          if (rangeIsValid && range) {
             return (
               <span
                 className="text-secondary"
