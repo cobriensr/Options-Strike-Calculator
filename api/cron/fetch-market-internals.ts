@@ -36,17 +36,18 @@
  * Environment: CRON_SECRET (Schwab token managed internally)
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
   schwabFetch,
-  cronGuard,
   checkDataQuality,
   withRetry,
 } from '../_lib/api-helpers.js';
-import { reportCronRun } from '../_lib/axiom.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 import { getETTotalMinutes } from '../../src/utils/timezone.js';
 // INTERNAL_SYMBOLS is used by other modules; the cron now splits into
 // PRICEHISTORY_SYMBOLS and QUOTES_ONLY_SYMBOLS defined below.
@@ -234,7 +235,6 @@ async function processSymbol(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.warn({ err, symbol }, 'fetch-market-internals: per-symbol failure');
-    Sentry.setTag('cron.job', 'fetch-market-internals');
     Sentry.setTag('cron.symbol', symbol);
     Sentry.captureException(err);
     return {
@@ -352,14 +352,11 @@ async function processQuoteSymbols(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res, { requireApiKey: false });
-  if (!guard) return;
-  const { today } = guard;
+export default withCronInstrumentation(
+  'fetch-market-internals',
+  async (ctx): Promise<CronResult> => {
+    const { today } = ctx;
 
-  const startTime = Date.now();
-
-  try {
     const endMs = Date.now();
     const startMs = endMs - 90 * 60 * 1000; // last 90 minutes
 
@@ -388,7 +385,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const failures = results.filter((r) => r.error);
     const successes = results.filter((r) => !r.error);
 
-    logger.info(
+    ctx.logger.info(
       {
         date: today,
         ...totals,
@@ -423,27 +420,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    await reportCronRun('fetch-market-internals', {
-      status: failures.length === 0 ? 'ok' : 'partial',
-      ...totals,
-      successCount: successes.length,
-      failureCount: failures.length,
-      durationMs: Date.now() - startTime,
-    });
-
-    return res.status(200).json({
-      job: 'fetch-market-internals',
-      success: true,
-      ...totals,
-      successCount: successes.length,
-      failureCount: failures.length,
-      results,
-      durationMs: Date.now() - startTime,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-market-internals');
-    Sentry.captureException(err);
-    logger.error({ err }, 'fetch-market-internals error');
-    return res.status(500).json({ error: 'Internal error' });
-  }
-}
+    return {
+      status: failures.length === 0 ? 'success' : 'partial',
+      metadata: {
+        success: true,
+        ...totals,
+        successCount: successes.length,
+        failureCount: failures.length,
+        results,
+      },
+    };
+  },
+  { requireApiKey: false },
+);

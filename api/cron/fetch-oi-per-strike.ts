@@ -12,17 +12,18 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { Sentry, metrics } from '../_lib/sentry.js';
+import { metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
   uwFetch,
-  cronGuard,
   checkDataQuality,
   withRetry,
 } from '../_lib/api-helpers.js';
-import { reportCronRun } from '../_lib/axiom.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -83,14 +84,11 @@ async function storeStrikes(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res);
-  if (!guard) return;
-  const { apiKey, today } = guard;
+export default withCronInstrumentation(
+  'fetch-oi-per-strike',
+  async (ctx): Promise<CronResult> => {
+    const { apiKey, today } = ctx;
 
-  const startTime = Date.now();
-
-  try {
     // Skip if data already exists for today
     const sql = getDb();
     const existing = await sql`
@@ -98,15 +96,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     `;
     const existingCount = (existing[0]?.cnt as number) ?? 0;
     if (existingCount > 0) {
-      await reportCronRun('fetch-oi-per-strike', {
+      return {
         status: 'skipped',
-        reason: 'data already exists for today',
-        durationMs: Date.now() - startTime,
-      });
-      return res.status(200).json({
-        skipped: true,
-        reason: `Data already exists for ${today} (${existingCount} strikes)`,
-      });
+        message: 'data already exists for today',
+        metadata: {
+          skipped: true,
+          reason: `Data already exists for ${today} (${existingCount} strikes)`,
+        },
+      };
     }
 
     const rows = await withRetry(() => fetchOiPerStrike(apiKey, today));
@@ -130,30 +127,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    logger.info(
+    ctx.logger.info(
       { date: today, ...result, total: rows.length },
       'fetch-oi-per-strike completed',
     );
 
-    await reportCronRun('fetch-oi-per-strike', {
-      status: 'ok',
-      date: today,
-      total: rows.length,
-      stored: result.stored,
-      skipped: result.skipped,
-      durationMs: Date.now() - startTime,
-    });
-    return res.status(200).json({
-      job: 'fetch-oi-per-strike',
-      date: today,
-      total: rows.length,
-      ...result,
-      durationMs: Date.now() - startTime,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-oi-per-strike');
-    Sentry.captureException(err);
-    logger.error({ err }, 'fetch-oi-per-strike error');
-    return res.status(500).json({ error: 'Internal error' });
-  }
-}
+    return {
+      status: 'success',
+      metadata: {
+        date: today,
+        total: rows.length,
+        ...result,
+      },
+    };
+  },
+);

@@ -26,18 +26,19 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { Sentry, metrics } from '../_lib/sentry.js';
+import { metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
-  cronGuard,
   uwFetch,
   roundTo5Min,
   withRetry,
   checkDataQuality,
 } from '../_lib/api-helpers.js';
-import { reportCronRun } from '../_lib/axiom.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 
 const SOURCE = 'zero_dte_greek_flow';
 
@@ -121,19 +122,16 @@ async function storeLatest(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res);
-  if (!guard) return;
-  const { apiKey, today } = guard;
+export default withCronInstrumentation(
+  'fetch-greek-flow',
+  async (ctx): Promise<CronResult> => {
+    const { apiKey, today } = ctx;
 
-  const startTime = Date.now();
-
-  try {
     const ticks = await withRetry(() => fetchGreekFlow(apiKey, today));
     const result = await withRetry(() => storeLatest(ticks, today));
 
     const latest = ticks.at(-1);
-    logger.info(
+    ctx.logger.info(
       {
         totalTicks: ticks.length,
         ...result,
@@ -164,25 +162,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    const durationMs = Date.now() - startTime;
-    await reportCronRun('fetch-greek-flow', {
-      status: 'ok',
-      ticks: ticks.length,
-      stored: result.stored,
-      skipped: result.skipped,
-      durationMs,
-    });
-
-    return res.status(200).json({
-      job: 'fetch-greek-flow',
-      ticks: ticks.length,
-      ...result,
-      durationMs,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-greek-flow');
-    Sentry.captureException(err);
-    logger.error({ err }, 'fetch-greek-flow error');
-    return res.status(500).json({ error: 'Internal error' });
-  }
-}
+    return {
+      status: 'success',
+      metadata: {
+        ticks: ticks.length,
+        ...result,
+      },
+    };
+  },
+);

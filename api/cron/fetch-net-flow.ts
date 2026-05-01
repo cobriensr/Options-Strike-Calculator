@@ -16,18 +16,18 @@
  * Environment: UW_API_KEY, CRON_SECRET (for Vercel cron auth)
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
-  cronGuard,
   uwFetch,
   roundTo5Min,
   withRetry,
   checkDataQuality,
 } from '../_lib/api-helpers.js';
-import { reportCronRun } from '../_lib/axiom.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 
 const TICKERS: Array<{ ticker: string; source: string }> = [
   { ticker: 'SPX', source: 'spx_flow' },
@@ -158,14 +158,11 @@ async function storeAllCandles(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res);
-  if (!guard) return;
-  const { apiKey, today } = guard;
+export default withCronInstrumentation(
+  'fetch-net-flow',
+  async (ctx): Promise<CronResult> => {
+    const { apiKey, today } = ctx;
 
-  const startTime = Date.now();
-
-  try {
     const results: Record<
       string,
       { stored: number; skipped: number; candles: number }
@@ -202,24 +199,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    logger.info({ results }, 'fetch-net-flow completed');
+    ctx.logger.info({ results }, 'fetch-net-flow completed');
 
-    await reportCronRun('fetch-net-flow', {
-      status: 'ok',
-      ...results,
-      durationMs: Date.now() - startTime,
-    });
-
-    return res.status(200).json({
-      job: 'fetch-net-flow',
-      stored: true,
-      results,
-      durationMs: Date.now() - startTime,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-net-flow');
-    Sentry.captureException(err);
-    logger.error({ err }, 'fetch-net-flow error');
-    return res.status(500).json({ error: 'Internal error' });
-  }
-}
+    return {
+      status: 'success',
+      metadata: {
+        stored: true,
+        results,
+      },
+    };
+  },
+);

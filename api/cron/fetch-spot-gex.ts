@@ -22,18 +22,17 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { Sentry } from '../_lib/sentry.js';
-import logger from '../_lib/logger.js';
 import {
   uwFetch,
-  cronGuard,
   cronJitter,
   checkDataQuality,
   withRetry,
 } from '../_lib/api-helpers.js';
-import { reportCronRun } from '../_lib/axiom.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
 
 // ── Types ───────────────────────────────────────────────────
@@ -126,16 +125,12 @@ async function storeNewRows(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res);
-  if (!guard) return;
-  const { apiKey, today } = guard;
+export default withCronInstrumentation(
+  'fetch-spot-gex',
+  async (ctx): Promise<CronResult> => {
+    const { apiKey, today } = ctx;
+    await cronJitter();
 
-  await cronJitter();
-
-  const startTime = Date.now();
-
-  try {
     const rows = await withRetry(() => fetchSpotExposures(apiKey));
     const result = await withRetry(() => storeNewRows(rows, today));
 
@@ -155,27 +150,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       nonzero: Number(nonzero),
     });
 
-    logger.info({ ticks: rows.length, ...result }, 'fetch-spot-gex completed');
+    ctx.logger.info(
+      { ticks: rows.length, ...result },
+      'fetch-spot-gex completed',
+    );
 
-    await reportCronRun('fetch-spot-gex', {
-      status: 'ok',
-      ticks: rows.length,
-      stored: result.stored,
-      totalRows: Number(total),
-      nonzeroRows: Number(nonzero),
-      durationMs: Date.now() - startTime,
-    });
-
-    return res.status(200).json({
-      job: 'fetch-spot-gex',
-      ticks: rows.length,
-      ...result,
-      durationMs: Date.now() - startTime,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-spot-gex');
-    Sentry.captureException(err);
-    logger.error({ err }, 'fetch-spot-gex error');
-    return res.status(500).json({ error: 'Internal error' });
-  }
-}
+    return {
+      status: 'success',
+      metadata: {
+        ticks: rows.length,
+        ...result,
+      },
+    };
+  },
+);
