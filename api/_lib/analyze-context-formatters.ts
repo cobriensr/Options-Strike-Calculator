@@ -28,6 +28,14 @@ export interface EconomicEventRow {
   reported_period: string | null;
 }
 
+export interface VolRealizedRow {
+  iv_30d: string | number | null;
+  rv_30d: string | number | null;
+  iv_rv_spread: string | number | null;
+  iv_overpricing_pct: string | number | null;
+  iv_rank: string | number | null;
+}
+
 const HIGH_SEVERITY_TYPES = new Set(['FOMC', 'CPI', 'PCE', 'JOBS', 'GDP']);
 
 const FLOW_SOURCE_LABELS: Record<string, string> = {
@@ -532,4 +540,48 @@ export function formatSimilarDaysForClaude(
     "These are structurally similar setups; their eventual day closes (the last field of each row) are your historical priors for what often follows a setup like today's. Use them to pressure-test your base-rate expectations — a cohort that mostly closed green argues against a bearish call, and vice versa. Do not treat as deterministic.",
   );
   return lines.join('\n');
+}
+
+// ── Vol realized + IV rank ────────────────────────────────────────────
+
+/**
+ * Format the vol_realized row into a Claude-readable block. Mirrors the
+ * inline prose previously baked into fetchVolRealizedContext (Phase 5g).
+ *
+ * Returns null when neither the IV/RV pair nor the IV rank yields a
+ * usable line — keeps "no data" outcomes identical to the pre-split
+ * fetcher (callers compare with === null and drop the section).
+ */
+export function formatVolRealizedForClaude(rv: VolRealizedRow): string | null {
+  const iv30 = rv.iv_30d != null ? (Number(rv.iv_30d) * 100).toFixed(1) : null;
+  const rv30 = rv.rv_30d != null ? (Number(rv.rv_30d) * 100).toFixed(1) : null;
+  const spread =
+    rv.iv_rv_spread != null
+      ? (Number(rv.iv_rv_spread) * 100).toFixed(1)
+      : null;
+  const overpricing =
+    rv.iv_overpricing_pct != null
+      ? Number(rv.iv_overpricing_pct).toFixed(1)
+      : null;
+  const rank = rv.iv_rank != null ? Number(rv.iv_rank).toFixed(0) : null;
+
+  const lines: string[] = [];
+  if (iv30 && rv30) {
+    lines.push(`30D Implied Vol: ${iv30}% | 30D Realized Vol: ${rv30}%`);
+    if (spread) {
+      const label = Number(spread) > 0 ? 'IV OVERPRICING' : 'IV UNDERPRICING';
+      lines.push(`IV-RV Spread: ${spread} vol pts (${label})`);
+    }
+    if (overpricing) {
+      lines.push(
+        `Overpricing: ${overpricing}% — ${Number(overpricing) > 10 ? 'premium is rich, favorable for selling' : Number(overpricing) < -10 ? 'premium is cheap, caution selling' : 'fairly priced'}`,
+      );
+    }
+  }
+  if (rank) {
+    lines.push(
+      `IV Rank (1-year): ${rank}th percentile — ${Number(rank) > 70 ? 'elevated, rich premium' : Number(rank) < 30 ? 'low, cheap premium' : 'mid-range'}`,
+    );
+  }
+  return lines.length > 0 ? lines.join('\n  ') : null;
 }

@@ -72,13 +72,21 @@ import {
 
 // ── Re-exports for backwards compatibility ────────────────────────────
 
+import {
+  formatEconomicCalendarForClaude,
+  formatMarketInternalsForClaude,
+  formatPriorDayFlowForClaude,
+  formatVolRealizedForClaude,
+} from './analyze-context-formatters.js';
+
 export { numOrUndef, parseEntryTimeAsUtc };
 export type { AnalysisContentBlock };
 export {
   formatEconomicCalendarForClaude,
   formatMarketInternalsForClaude,
   formatPriorDayFlowForClaude,
-} from './analyze-context-formatters.js';
+  formatVolRealizedForClaude,
+};
 
 /** Result of buildAnalysisContext — everything the handler needs. */
 export interface AnalysisContextResult {
@@ -192,7 +200,10 @@ export async function buildAnalysisContext(
   );
 
   // Realized vol + IV rank — single DB row
-  const volRealizedContext = await fetchVolRealizedContext(analysisDate);
+  const volRealizedRow = await fetchVolRealizedContext(analysisDate);
+  const volRealizedContext = volRealizedRow
+    ? formatVolRealizedForClaude(volRealizedRow)
+    : null;
 
   // Pre-market + overnight gap (updates cone boundaries if present)
   const preMarket = await fetchPreMarketContext(

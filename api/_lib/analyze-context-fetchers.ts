@@ -85,7 +85,9 @@ import {
   formatMarketInternalsForClaude,
   formatMlFindingsForClaude,
   formatPriorDayFlowForClaude,
+  formatVolRealizedForClaude,
   type EconomicEventRow,
+  type VolRealizedRow,
 } from './analyze-context-formatters.js';
 import { numOrUndef } from './analyze-context-helpers.js';
 
@@ -326,7 +328,7 @@ export async function fetchIvTermContext(
 
 export async function fetchVolRealizedContext(
   analysisDate: string,
-): Promise<string | null> {
+): Promise<VolRealizedRow | null> {
   try {
     const sql = getDb();
     const rvRows = await sql`
@@ -336,47 +338,35 @@ export async function fetchVolRealizedContext(
       LIMIT 1
     `;
     if (rvRows.length === 0) return null;
-
     const rv = rvRows[0]!;
-    const iv30 =
-      rv.iv_30d != null ? (Number(rv.iv_30d) * 100).toFixed(1) : null;
-    const rv30 =
-      rv.rv_30d != null ? (Number(rv.rv_30d) * 100).toFixed(1) : null;
-    const spread =
-      rv.iv_rv_spread != null
-        ? (Number(rv.iv_rv_spread) * 100).toFixed(1)
-        : null;
-    const overpricing =
-      rv.iv_overpricing_pct != null
-        ? Number(rv.iv_overpricing_pct).toFixed(1)
-        : null;
-    const rank = rv.iv_rank != null ? Number(rv.iv_rank).toFixed(0) : null;
-
-    const lines: string[] = [];
-    if (iv30 && rv30) {
-      lines.push(`30D Implied Vol: ${iv30}% | 30D Realized Vol: ${rv30}%`);
-      if (spread) {
-        const label = Number(spread) > 0 ? 'IV OVERPRICING' : 'IV UNDERPRICING';
-        lines.push(`IV-RV Spread: ${spread} vol pts (${label})`);
-      }
-      if (overpricing) {
-        lines.push(
-          `Overpricing: ${overpricing}% — ${Number(overpricing) > 10 ? 'premium is rich, favorable for selling' : Number(overpricing) < -10 ? 'premium is cheap, caution selling' : 'fairly priced'}`,
-        );
-      }
-    }
-    if (rank) {
-      lines.push(
-        `IV Rank (1-year): ${rank}th percentile — ${Number(rank) > 70 ? 'elevated, rich premium' : Number(rank) < 30 ? 'low, cheap premium' : 'mid-range'}`,
-      );
-    }
-    return lines.length > 0 ? lines.join('\n  ') : null;
+    return {
+      iv_30d: rv.iv_30d as string | number | null,
+      rv_30d: rv.rv_30d as string | number | null,
+      iv_rv_spread: rv.iv_rv_spread as string | number | null,
+      iv_overpricing_pct: rv.iv_overpricing_pct as string | number | null,
+      iv_rank: rv.iv_rank as string | number | null,
+    };
   } catch (error_) {
     logger.error({ err: error_ }, 'Failed to fetch vol realized data');
     metrics.increment('analyze_context.vol_realized_db_error');
     Sentry.captureException(error_);
     return null;
   }
+}
+
+/**
+ * Convenience wrapper that fetches + formats in one call. Preserves
+ * the original `Promise<string | null>` shape of the fetcher for any
+ * caller that doesn't need the raw row. The orchestrator should call
+ * fetchVolRealizedContext + formatVolRealizedForClaude directly when
+ * threading the row into multiple consumers.
+ */
+export async function fetchAndFormatVolRealizedContext(
+  analysisDate: string,
+): Promise<string | null> {
+  const row = await fetchVolRealizedContext(analysisDate);
+  if (!row) return null;
+  return formatVolRealizedForClaude(row);
 }
 
 // ── Pre-market + overnight gap ────────────────────────────────────────
