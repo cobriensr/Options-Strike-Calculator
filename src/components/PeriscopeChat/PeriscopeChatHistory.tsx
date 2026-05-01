@@ -1,39 +1,47 @@
 /**
- * History list panel for past Periscope reads + debriefs.
+ * History panel for past Periscope reads + debriefs.
  *
- * Fetches /api/periscope-chat-list (paginated by id-desc cursor),
- * renders compact rows, lets the user open one for full detail
- * inline, and supports clicking parent breadcrumbs (debrief →
- * underlying read).
+ * Mirrors the orchestrator pattern in
+ * src/components/ChartAnalysis/AnalysisHistory.tsx:
  *
- * Pagination: load-more button uses the `nextBefore` cursor returned
- * by the list endpoint. No infinite scroll for now — explicit click
- * keeps pagination predictable on a manual-capture cadence (the user
- * will rarely have hundreds of rows).
+ *   1. Mode filter tabs at the top (All / Reads / Debriefs)
+ *   2. Date dropdown — driven by /api/periscope-chat-list?dates=true
+ *      (distinct trading_dates with per-mode counts)
+ *   3. List of rows for the selected (date, mode) pair, fetched via
+ *      /api/periscope-chat-list?date=YYYY-MM-DD
+ *   4. Click a row to expand its full detail inline
+ *
+ * State is kept in this component; the row card is an inline render
+ * in this file (small enough that splitting would cost more than it
+ * saves). All annotation updates from the detail view (stars / regime)
+ * flow back through onAnnotated so the row reflects new state without
+ * a refetch.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { SectionBox } from '../ui/SectionBox';
 import PeriscopeChatDetail from './PeriscopeChatDetail.js';
 import { PERISCOPE_DEBRIEF_EVENT } from './PeriscopeChat.js';
 import { fmtTradingDate } from './format-utils.js';
 
 /**
- * Dispatch a window event the chat panel listens for. We use a
- * window event rather than prop drilling / context because the two
- * panels are siblings lazy-loaded under separate Suspense boundaries
- * — lifting state to App.tsx would couple their lazy chunks.
+ * Dispatch a window event the chat panel listens for. Window event
+ * (rather than prop drilling / context) because the two panels are
+ * sibling lazy-loaded sections — lifting state to App.tsx would
+ * couple their lazy chunks.
  */
 function emitStartDebrief(parentId: number) {
   window.dispatchEvent(
     new CustomEvent(PERISCOPE_DEBRIEF_EVENT, { detail: { parentId } }),
   );
-  // Scroll the chat panel into view so the user sees the prefilled
-  // form. Best-effort — silently no-ops if the anchor isn't in DOM.
   document
     .getElementById('sec-periscope-chat')
     ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
+
+// ============================================================
+// Types
+// ============================================================
 
 interface PeriscopeChatSummary {
   id: number;
@@ -50,12 +58,18 @@ interface PeriscopeChatSummary {
   duration_ms: number | null;
 }
 
-interface ListResponse {
-  items: PeriscopeChatSummary[];
-  nextBefore: number | null;
+interface DateEntry {
+  date: string; // YYYY-MM-DD
+  total: number;
+  reads: number;
+  debriefs: number;
 }
 
-const PAGE_SIZE = 20;
+type ModeFilter = 'all' | 'read' | 'debrief';
+
+// ============================================================
+// Formatters & style maps
+// ============================================================
 
 function fmtNum(n: number | null): string {
   return n == null
@@ -63,7 +77,7 @@ function fmtNum(n: number | null): string {
     : n.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
-/** "3h ago" / "5m ago" / "just now" — relative time of capture. */
+/** "3h ago" / "5m ago" — relative capture time, falls back to mm-dd. */
 function fmtRelative(iso: string): string {
   try {
     const t = new Date(iso).getTime();
@@ -84,7 +98,6 @@ function fmtRelative(iso: string): string {
   }
 }
 
-/** Format duration_ms as "12s" / "2m 30s" — used to show analysis cost. */
 function fmtDuration(ms: number | null): string | null {
   if (ms == null || ms <= 0) return null;
   const s = Math.round(ms / 1000);
@@ -92,13 +105,23 @@ function fmtDuration(ms: number | null): string | null {
   return `${Math.floor(s / 60)}m ${s % 60}s`;
 }
 
-/**
- * Tailwind classes for each regime tag — chosen to evoke the trade
- * thesis quickly. Pin = blue (suppressive equilibrium), drift-and-cap
- * = emerald (mechanical drift), gap-and-rip = amber (vol expansion up),
- * trap = red (failed move), cone-breach = purple (vol extension),
- * chop = slate (no thesis), other = neutral.
- */
+/** "Thu, Apr 30, 2026" — full label for the date dropdown options. */
+function fmtDateOption(iso: string): string {
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return d.toLocaleDateString(undefined, {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      timeZone: 'UTC',
+    });
+  } catch {
+    return iso;
+  }
+}
+
 const REGIME_STYLES: Record<string, string> = {
   pin: 'bg-blue-900/40 text-blue-300',
   'drift-and-cap': 'bg-emerald-900/40 text-emerald-300',
@@ -114,26 +137,44 @@ function regimeStyle(tag: string | null): string {
   return REGIME_STYLES[tag] ?? 'bg-slate-800/60 text-slate-300';
 }
 
-/**
- * Subtle mode-tinted background applied to the row card. Mirrors the
- * pattern in src/components/ChartAnalysis/AnalysisHistoryItem.tsx —
- * gives the row immediate visual identity without shouting.
- */
 function modeTint(mode: 'read' | 'debrief'): string {
   return mode === 'debrief'
     ? 'border-purple-900/40 bg-purple-950/10'
     : 'border-emerald-900/30 bg-emerald-950/10';
 }
 
+const MODE_TABS: Array<{ key: ModeFilter; label: string }> = [
+  { key: 'all', label: 'All' },
+  { key: 'read', label: 'Reads' },
+  { key: 'debrief', label: 'Debriefs' },
+];
+
+function modeTabStyle(active: boolean, mode: ModeFilter): string {
+  if (!active) {
+    return 'border-edge text-muted hover:text-primary border bg-transparent';
+  }
+  if (mode === 'read') {
+    return 'border-emerald-700/60 bg-emerald-900/30 text-emerald-200 border';
+  }
+  if (mode === 'debrief') {
+    return 'border-purple-700/60 bg-purple-900/30 text-purple-200 border';
+  }
+  return 'border-edge bg-surface text-primary border';
+}
+
+// ============================================================
+// Component
+// ============================================================
+
 export default function PeriscopeChatHistory() {
+  const [dates, setDates] = useState<DateEntry[]>([]);
+  const [datesError, setDatesError] = useState<string | null>(null);
+  const [modeFilter, setModeFilter] = useState<ModeFilter>('all');
+  const [selectedDate, setSelectedDate] = useState<string>('');
   const [items, setItems] = useState<PeriscopeChatSummary[]>([]);
-  const [nextBefore, setNextBefore] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openRowId, setOpenRowId] = useState<number | null>(null);
-  // Local override for annotations after a server-side update — the
-  // detail view reports the persisted values back here so the list
-  // row reflects new stars / regime without a refetch.
   const [annotationOverrides, setAnnotationOverrides] = useState<
     Record<
       number,
@@ -141,16 +182,50 @@ export default function PeriscopeChatHistory() {
     >
   >({});
 
-  const fetchPage = useCallback(
-    async (before: number | null, signal?: AbortSignal) => {
-      setLoading(true);
-      setError(null);
+  // Fetch the date list once on mount. The picker dropdown shows every
+  // distinct trading_date with counts per mode.
+  useEffect(() => {
+    const ac = new AbortController();
+    (async () => {
       try {
-        const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
-        if (before != null) params.set('before', String(before));
+        const res = await fetch('/api/periscope-chat-list?dates=true', {
+          signal: ac.signal,
+        });
+        if (!res.ok) {
+          if (!ac.signal.aborted) setDatesError('Failed to load dates');
+          return;
+        }
+        const data = (await res.json()) as { dates: DateEntry[] };
+        if (ac.signal.aborted) return;
+        setDates(data.dates);
+        // Default to the most recent date so the panel isn't empty
+        // for users with existing history.
+        if (data.dates.length > 0 && !selectedDate) {
+          setSelectedDate(data.dates[0]!.date);
+        }
+      } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') return;
+        setDatesError('Failed to load dates');
+      }
+    })();
+    return () => ac.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only
+  }, []);
+
+  // Fetch rows for the selected date.
+  useEffect(() => {
+    if (!selectedDate) {
+      setItems([]);
+      return;
+    }
+    const ac = new AbortController();
+    setLoading(true);
+    setError(null);
+    (async () => {
+      try {
         const res = await fetch(
-          `/api/periscope-chat-list?${params.toString()}`,
-          { signal },
+          `/api/periscope-chat-list?date=${selectedDate}&limit=100`,
+          { signal: ac.signal },
         );
         if (!res.ok) {
           const body = (await res.json().catch(() => ({}))) as {
@@ -158,26 +233,18 @@ export default function PeriscopeChatHistory() {
           };
           throw new Error(body.error ?? `HTTP ${res.status}`);
         }
-        const data = (await res.json()) as ListResponse;
-        setItems((prev) =>
-          before == null ? data.items : [...prev, ...data.items],
-        );
-        setNextBefore(data.nextBefore);
+        const data = (await res.json()) as { items: PeriscopeChatSummary[] };
+        if (ac.signal.aborted) return;
+        setItems(data.items);
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') return;
         setError(err instanceof Error ? err.message : 'Failed to load');
       } finally {
-        setLoading(false);
+        if (!ac.signal.aborted) setLoading(false);
       }
-    },
-    [],
-  );
-
-  useEffect(() => {
-    const ac = new AbortController();
-    void fetchPage(null, ac.signal);
+    })();
     return () => ac.abort();
-  }, [fetchPage]);
+  }, [selectedDate]);
 
   const handleAnnotated = useCallback(
     (
@@ -189,19 +256,104 @@ export default function PeriscopeChatHistory() {
     [],
   );
 
-  const merged = items.map((item) => {
-    const override = annotationOverrides[item.id];
-    return override ? { ...item, ...override } : item;
-  });
+  // Apply mode filter + annotation overrides to the fetched rows.
+  const filtered = useMemo(() => {
+    return items
+      .filter((it) => modeFilter === 'all' || it.mode === modeFilter)
+      .map((it) => {
+        const o = annotationOverrides[it.id];
+        return o ? { ...it, ...o } : it;
+      });
+  }, [items, modeFilter, annotationOverrides]);
+
+  const filteredCount = filtered.length;
+  const totalCount = items.length;
 
   return (
     <SectionBox
       label="Periscope History"
-      badge={items.length > 0 ? `${items.length} loaded` : null}
+      badge={dates.length > 0 ? `${dates.length} days` : null}
       collapsible
       defaultCollapsed={true}
     >
       <div className="flex flex-col gap-3">
+        {/* Mode filter tabs */}
+        <div className="flex flex-wrap gap-1.5">
+          {MODE_TABS.map(({ key, label }) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setModeFilter(key)}
+              className={`cursor-pointer rounded-full px-3 py-1 font-mono text-[10px] font-semibold tracking-wide uppercase transition ${modeTabStyle(modeFilter === key, key)}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {datesError && (
+          <div
+            role="alert"
+            className="rounded-md border border-red-700/60 bg-red-950/30 p-2 text-xs text-red-300"
+          >
+            {datesError}
+          </div>
+        )}
+
+        {/* Date dropdown */}
+        {dates.length > 0 && (
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="min-w-[200px] flex-1">
+              <label
+                htmlFor="periscope-date-picker"
+                className="text-muted mb-1 block font-sans text-[9px] font-bold tracking-wider uppercase"
+              >
+                Trading day
+              </label>
+              <select
+                id="periscope-date-picker"
+                value={selectedDate}
+                onChange={(e) => {
+                  setSelectedDate(e.target.value);
+                  setOpenRowId(null);
+                }}
+                className="bg-surface text-primary border-edge w-full cursor-pointer appearance-none rounded-md border px-3 py-1.5 font-mono text-xs transition focus:border-[var(--color-accent)] focus:outline-none"
+              >
+                {dates.map((d) => {
+                  const count =
+                    modeFilter === 'read'
+                      ? d.reads
+                      : modeFilter === 'debrief'
+                        ? d.debriefs
+                        : d.total;
+                  return (
+                    <option key={d.date} value={d.date}>
+                      {fmtDateOption(d.date)} ({count})
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+            <div className="text-muted text-[10px]">
+              {totalCount > 0 && filteredCount !== totalCount ? (
+                <span>
+                  showing {filteredCount} of {totalCount}
+                </span>
+              ) : (
+                <span>{totalCount} rows</span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Empty state — no history at all */}
+        {dates.length === 0 && !datesError && (
+          <p className="text-muted text-xs">
+            No saved analyses yet. Submit a read or debrief above to start
+            building history.
+          </p>
+        )}
+
         {error && (
           <div
             role="alert"
@@ -211,15 +363,29 @@ export default function PeriscopeChatHistory() {
           </div>
         )}
 
-        {merged.length === 0 && !loading && !error && (
-          <p className="text-muted text-xs">
-            No saved analyses yet. Submit a read or debrief above to start
-            building history.
-          </p>
+        {loading && (
+          <p className="text-muted text-xs">Loading…</p>
         )}
 
+        {/* Empty state — selected date has no rows for the active filter */}
+        {!loading &&
+          selectedDate &&
+          dates.length > 0 &&
+          filtered.length === 0 && (
+            <p className="text-muted text-xs">
+              No{' '}
+              {modeFilter === 'all'
+                ? 'rows'
+                : modeFilter === 'read'
+                  ? 'reads'
+                  : 'debriefs'}{' '}
+              for {fmtTradingDate(selectedDate)}.
+            </p>
+          )}
+
+        {/* Row list */}
         <ul className="flex flex-col gap-2">
-          {merged.map((item) => (
+          {filtered.map((item) => (
             <li
               key={item.id}
               className={`overflow-hidden rounded-lg border ${modeTint(item.mode)}`}
@@ -335,34 +501,6 @@ export default function PeriscopeChatHistory() {
             </li>
           ))}
         </ul>
-
-        <div className="flex items-center justify-between text-xs">
-          {nextBefore != null ? (
-            <button
-              type="button"
-              onClick={() => void fetchPage(nextBefore)}
-              disabled={loading}
-              className="border-edge text-secondary hover:text-primary rounded-md border px-3 py-1 transition disabled:opacity-50"
-            >
-              {loading ? 'Loading…' : 'Load more'}
-            </button>
-          ) : (
-            <span className="text-muted">{loading ? 'Loading…' : ''}</span>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              setItems([]);
-              setNextBefore(null);
-              setAnnotationOverrides({});
-              void fetchPage(null);
-            }}
-            disabled={loading}
-            className="text-muted hover:text-primary disabled:opacity-50"
-          >
-            Refresh
-          </button>
-        </div>
       </div>
     </SectionBox>
   );

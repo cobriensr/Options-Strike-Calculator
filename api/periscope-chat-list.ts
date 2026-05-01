@@ -7,9 +7,13 @@
  * prose response live behind /api/periscope-chat-detail?id=N.
  *
  * Query params:
- *   ?limit=N        — max rows returned (1-100, default 20)
+ *   ?dates=true     — return distinct trading_dates with per-mode counts.
+ *                     Mirrors /api/analyses?dates=true; used by the
+ *                     history picker's date dropdown.
+ *   ?limit=N        — max rows returned (1-100, default 20). Ignored
+ *                     when `dates=true`.
  *   ?before=N       — return rows with id < this BIGSERIAL value
- *                     (cursor-style pagination from the most recent)
+ *                     (cursor-style pagination from the most recent).
  *
  * Authorization: owner-only (`guardOwnerEndpoint`). The chat data is
  * Anthropic-API-backed and personal — guests don't see it. Mirrors
@@ -42,25 +46,27 @@ import { periscopeChatListQuerySchema } from './_lib/validation.js';
  * scoped tightly to avoid catastrophic backtracking.
  */
 export function stripMarkdownForExcerpt(text: string): string {
-  return text
-    .replace(/^#{1,6}\s+/gm, '') // ATX headings
-    // Marker-only deletes for bold + inline code. Walking with literal
-    // patterns (not quantified groups) is ReDoS-immune and still
-    // produces a clean excerpt — text between the markers is preserved
-    // as-is, only the * / _ / ` syntax glyphs go.
-    .replaceAll('**', '')
-    .replaceAll('__', '')
-    .replaceAll('`', '')
-    // Bounded leading whitespace ({0,8}) + bounded digit count keep the
-    // list-marker patterns linear under sonar's slow-regex check.
-    .replace(/^[ \t]{0,8}[-*+][ \t]+/gm, '') // list bullets
-    .replace(/^[ \t]{0,8}\d{1,4}\.[ \t]+/gm, '') // ordered-list markers
-    // [text](url) → text. Bounded class + bounded quantifier keep
-    // matching linear; sonar accepts this shape.
-    .replace(/\[([^\]\n]{1,200})\]\([^)\n]{1,500}\)/g, '$1')
-    .replace(/```[a-z]*\n?/gi, '') // code fences
-    .replace(/\s+/g, ' ') // collapse all whitespace
-    .trim();
+  return (
+    text
+      .replace(/^#{1,6}\s+/gm, '') // ATX headings
+      // Marker-only deletes for bold + inline code. Walking with literal
+      // patterns (not quantified groups) is ReDoS-immune and still
+      // produces a clean excerpt — text between the markers is preserved
+      // as-is, only the * / _ / ` syntax glyphs go.
+      .replaceAll('**', '')
+      .replaceAll('__', '')
+      .replaceAll('`', '')
+      // Bounded leading whitespace ({0,8}) + bounded digit count keep the
+      // list-marker patterns linear under sonar's slow-regex check.
+      .replace(/^[ \t]{0,8}[-*+][ \t]+/gm, '') // list bullets
+      .replace(/^[ \t]{0,8}\d{1,4}\.[ \t]+/gm, '') // ordered-list markers
+      // [text](url) → text. Bounded class + bounded quantifier keep
+      // matching linear; sonar accepts this shape.
+      .replace(/\[([^\]\n]{1,200})\]\([^)\n]{1,500}\)/g, '$1')
+      .replace(/```[a-z]*\n?/gi, '') // code fences
+      .replace(/\s+/g, ' ') // collapse all whitespace
+      .trim()
+  );
 }
 
 interface PeriscopeChatSummary {
@@ -121,19 +127,66 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
+  // ?dates=true short-circuits the cursor query and returns the
+  // distinct-date aggregation used by the history picker dropdown.
+  // Mirrors /api/analyses?dates=true.
+  if (req.query.dates === 'true') {
+    try {
+      const sql = getDb();
+      setCacheHeaders(res, 30, 60);
+      const rows = await sql`
+        SELECT
+          TO_CHAR(trading_date, 'YYYY-MM-DD') AS date,
+          COUNT(*) AS total,
+          COUNT(*) FILTER (WHERE mode = 'read') AS reads,
+          COUNT(*) FILTER (WHERE mode = 'debrief') AS debriefs
+        FROM periscope_analyses
+        GROUP BY trading_date
+        ORDER BY trading_date DESC
+      `;
+      done({ status: 200 });
+      return res.status(200).json({
+        dates: rows.map((r) => ({
+          date: r.date as string,
+          total: Number(r.total),
+          reads: Number(r.reads),
+          debriefs: Number(r.debriefs),
+        })),
+      });
+    } catch (err) {
+      done({ status: 500, error: 'unhandled' });
+      Sentry.captureException(err);
+      logger.error({ err }, 'periscope-chat-list dates aggregation error');
+      return res.status(500).json({ error: 'Internal error' });
+    }
+  }
+
   const parsed = periscopeChatListQuerySchema.safeParse(req.query);
   if (respondIfInvalid(parsed, res, done)) return;
-  const { limit, before } = parsed.data;
+  const { limit, before, date } = parsed.data;
 
   try {
     const sql = getDb();
     setCacheHeaders(res, 30, 60);
 
-    // Cursor pagination on id (BIGSERIAL, monotonic) — newer rows have
-    // larger ids regardless of trading_date / captured_at, so this is
-    // the cheapest stable cursor.
-    const rows = before
+    // Three query shapes:
+    //   `?date=YYYY-MM-DD` — filter to that trading_date, no cursor
+    //   `?before=N`        — cursor pagination
+    //   neither            — most recent `limit` rows
+    // BIGSERIAL id is the cheapest stable cursor — newer rows always
+    // have larger ids regardless of trading_date / captured_at.
+    const rows = date
       ? await sql`
+          SELECT id, trading_date, captured_at, mode, parent_id,
+                 spot, long_trigger, short_trigger, regime_tag,
+                 calibration_quality, prose_text, duration_ms
+          FROM periscope_analyses
+          WHERE trading_date = ${date}
+          ORDER BY id DESC
+          LIMIT ${limit}
+        `
+      : before
+        ? await sql`
           SELECT id, trading_date, captured_at, mode, parent_id,
                  spot, long_trigger, short_trigger, regime_tag,
                  calibration_quality, prose_text, duration_ms
@@ -142,7 +195,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           ORDER BY id DESC
           LIMIT ${limit}
         `
-      : await sql`
+        : await sql`
           SELECT id, trading_date, captured_at, mode, parent_id,
                  spot, long_trigger, short_trigger, regime_tag,
                  calibration_quality, prose_text, duration_ms

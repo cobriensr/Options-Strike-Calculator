@@ -42,18 +42,20 @@ const MAX_TOKENS = 2048;
 // Stable, cacheable system prompt for extraction. Cache hit on repeat
 // submissions saves the system-prompt input cost on the extraction
 // path — small absolute saving, but free.
-const EXTRACTION_SYSTEM_PROMPT = `You are a vision-extraction assistant for a 0DTE SPX trading tool. Your only job is to read three numerical values from a Periscope chart screenshot:
+const EXTRACTION_SYSTEM_PROMPT = `You are a vision-extraction assistant for a 0DTE SPX trading tool. Your only job is to read four values from a Periscope chart screenshot:
 
+- chart_date: the trading date the chart is FOR, in ISO YYYY-MM-DD form. Periscope chart headers display this as a labelled date (e.g. "Thu, Apr 30" + a year, or a short "4/30/2026" label, often near the chart title or top toolbar). Read whatever the chart actually shows, then normalize to YYYY-MM-DD. If the year is implied but ambiguous, use the most recent year that makes the date a real trading day.
 - spot: the current price (typically a white or highlighted horizontal line near the middle of the chart)
 - cone_lower: the lower yellow dashed line bounding price (the 0DTE straddle Cone lower bound)
 - cone_upper: the upper yellow dashed line bounding price (the 0DTE straddle Cone upper bound)
 
-You do NOT analyze, predict, recommend, or comment on the chart. You only extract numbers visible on the chart axes.
+You do NOT analyze, predict, recommend, or comment on the chart. You only extract these values from the chart.
 
 Return ONLY a single fenced JSON code block at the end of your response and nothing else:
 
 \`\`\`json
 {
+  "chart_date": "YYYY-MM-DD" or null,
   "spot": <number or null>,
   "cone_lower": <number or null>,
   "cone_upper": <number or null>
@@ -63,7 +65,7 @@ Return ONLY a single fenced JSON code block at the end of your response and noth
 Rules:
 - If a value is not clearly visible, use null. Do not guess.
 - Use the actual numeric price level (e.g. 5710.5), not a description.
-- When all three are visible, cone_lower < spot < cone_upper.
+- When all three numerics are visible, cone_lower < spot < cone_upper.
 - No prose before or after the JSON block.`;
 
 interface ExtractionInput {
@@ -82,13 +84,25 @@ const anthropic = new Anthropic({
 });
 
 /**
- * Run the vision-only extraction. Returns a `PeriscopeStructuredFields`
- * with spot/cone fields populated and triggers/regime null on success.
- * Returns null on any failure (timeout, parse error, refusal, network).
+ * Result of a successful extraction. Carries the structured field shape
+ * the main analysis pipeline expects, plus the chart's actual trading
+ * date pulled from its date label — used to stamp `trading_date` so
+ * back-reads aren't mis-tagged with the capture time's date.
+ */
+export interface PeriscopeExtractionResult {
+  structured: PeriscopeStructuredFields;
+  /** ISO YYYY-MM-DD if read off the chart; null if not visible. */
+  chartDate: string | null;
+}
+
+/**
+ * Run the vision-only extraction. Returns a result with structured
+ * fields + chart_date on success. Returns null on any failure (timeout,
+ * parse error, refusal, network).
  */
 export async function extractChartStructure(
   input: ExtractionInput,
-): Promise<PeriscopeStructuredFields | null> {
+): Promise<PeriscopeExtractionResult | null> {
   // Only the chart screenshot has spot + cone. Heat maps are useful for
   // the main analysis but irrelevant for structural extraction. Prefer
   // an image labeled 'chart'; fall back to the first image when no
@@ -142,15 +156,18 @@ export async function extractChartStructure(
   return parseExtraction(text);
 }
 
+/** Loose ISO-date matcher used to validate the model's date string. */
+const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
 /**
  * Parse the LAST fenced ```json...``` block from the response into
- * structured fields. Returns null on any parse failure (no block,
+ * the extraction result. Returns null on any parse failure (no block,
  * malformed JSON, missing/non-numeric fields).
  *
  * Uses lastIndexOf walks rather than a regex so the parse is O(n) and
  * immune to ReDoS backtracking — same approach as periscope-chat.ts.
  */
-function parseExtraction(text: string): PeriscopeStructuredFields | null {
+function parseExtraction(text: string): PeriscopeExtractionResult | null {
   const OPEN_FENCE = '```json';
   const CLOSE_FENCE = '```';
 
@@ -193,12 +210,23 @@ function parseExtraction(text: string): PeriscopeStructuredFields | null {
   const coneUpper = num(parsed.cone_upper);
   if (spot == null && coneLower == null && coneUpper == null) return null;
 
+  // chart_date is best-effort. Validate as ISO YYYY-MM-DD so we never
+  // pass a malformed date downstream into the DB. A null here means the
+  // caller falls back to capture-day-as-trading-day.
+  const rawDate =
+    typeof parsed.chart_date === 'string' ? parsed.chart_date : null;
+  const chartDate =
+    rawDate != null && ISO_DATE_PATTERN.test(rawDate) ? rawDate : null;
+
   return {
-    spot,
-    cone_lower: coneLower,
-    cone_upper: coneUpper,
-    long_trigger: null,
-    short_trigger: null,
-    regime_tag: null,
+    structured: {
+      spot,
+      cone_lower: coneLower,
+      cone_upper: coneUpper,
+      long_trigger: null,
+      short_trigger: null,
+      regime_tag: null,
+    },
+    chartDate,
   };
 }

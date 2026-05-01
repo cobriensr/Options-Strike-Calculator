@@ -127,42 +127,62 @@ afterEach(() => {
 // PeriscopeChatHistory
 // ============================================================
 
+/**
+ * Routes the orchestrator hits on mount + when the date selection
+ * changes. The dates endpoint is the picker's source of truth; the
+ * date-filtered endpoint returns the rows for the selected day.
+ */
+function setStandardRoutes(args: {
+  dates: Array<{ date: string; total: number; reads: number; debriefs: number }>;
+  rowsByDate: Record<string, ListItem[]>;
+}) {
+  setRoutes({
+    '/api/periscope-chat-list?dates=true': {
+      body: { dates: args.dates },
+    },
+    '/api/periscope-chat-list?date=': () => {
+      const urlString = String(
+        (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
+          .at(-1)?.[0] ?? '',
+      );
+      const match = /date=(\d{4}-\d{2}-\d{2})/.exec(urlString);
+      const date = match?.[1] ?? '';
+      return { body: { items: args.rowsByDate[date] ?? [] } };
+    },
+  });
+}
+
 describe('<PeriscopeChatHistory />', () => {
-  it('fetches and renders rows on mount', async () => {
-    setRoutes({
-      '/api/periscope-chat-list': {
-        body: {
-          items: [
-            makeListItem({ id: 5, prose_excerpt: 'First read of the day.' }),
-            makeListItem({
-              id: 4,
-              mode: 'debrief',
-              parent_id: 3,
-              prose_excerpt: 'Long fired at 11:15 AM.',
-            }),
-          ],
-          nextBefore: null,
-        },
+  it('fetches dates on mount + rows for the most recent date', async () => {
+    setStandardRoutes({
+      dates: [
+        { date: '2026-04-30', total: 2, reads: 1, debriefs: 1 },
+        { date: '2026-04-29', total: 1, reads: 1, debriefs: 0 },
+      ],
+      rowsByDate: {
+        '2026-04-30': [
+          makeListItem({ id: 5, prose_excerpt: 'First read of the day.' }),
+          makeListItem({
+            id: 4,
+            mode: 'debrief',
+            parent_id: 3,
+            prose_excerpt: 'Long fired at 11:15 AM.',
+          }),
+        ],
       },
     });
 
     render(<PeriscopeChatHistory />);
 
     await waitFor(() => {
-      expect(screen.getByText('#5')).toBeInTheDocument();
-      expect(screen.getByText('#4')).toBeInTheDocument();
+      expect(screen.getByText('First read of the day.')).toBeInTheDocument();
     });
-    expect(screen.getByText('First read of the day.')).toBeInTheDocument();
     expect(screen.getByText('Long fired at 11:15 AM.')).toBeInTheDocument();
-    expect(globalThis.fetch).toHaveBeenCalledOnce();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
   });
 
-  it('shows empty state when there are no rows', async () => {
-    setRoutes({
-      '/api/periscope-chat-list': {
-        body: { items: [], nextBefore: null },
-      },
-    });
+  it('shows empty state when no dates exist', async () => {
+    setStandardRoutes({ dates: [], rowsByDate: {} });
 
     render(<PeriscopeChatHistory />);
 
@@ -171,9 +191,9 @@ describe('<PeriscopeChatHistory />', () => {
     });
   });
 
-  it('surfaces an error when the list endpoint fails', async () => {
+  it('surfaces an error when the dates endpoint fails', async () => {
     setRoutes({
-      '/api/periscope-chat-list': {
+      '/api/periscope-chat-list?dates=true': {
         status: 500,
         body: { error: 'Internal error' },
       },
@@ -182,20 +202,23 @@ describe('<PeriscopeChatHistory />', () => {
     render(<PeriscopeChatHistory />);
 
     await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent(/internal error/i);
+      expect(screen.getByRole('alert')).toHaveTextContent(/failed to load/i);
     });
   });
 
   it('dispatches a window event with parentId when Debrief is clicked on a read row', async () => {
-    setRoutes({
-      '/api/periscope-chat-list': {
-        body: {
-          items: [
-            makeListItem({ id: 5, mode: 'read' }),
-            makeListItem({ id: 4, mode: 'debrief', parent_id: 5 }),
-          ],
-          nextBefore: null,
-        },
+    setStandardRoutes({
+      dates: [{ date: '2026-04-30', total: 2, reads: 1, debriefs: 1 }],
+      rowsByDate: {
+        '2026-04-30': [
+          makeListItem({ id: 5, mode: 'read', prose_excerpt: 'Read 5 prose.' }),
+          makeListItem({
+            id: 4,
+            mode: 'debrief',
+            parent_id: 5,
+            prose_excerpt: 'Debrief 4 prose.',
+          }),
+        ],
       },
     });
     const user = userEvent.setup();
@@ -204,7 +227,7 @@ describe('<PeriscopeChatHistory />', () => {
 
     render(<PeriscopeChatHistory />);
     await waitFor(() => {
-      expect(screen.getByText('#5')).toBeInTheDocument();
+      expect(screen.getByText('Read 5 prose.')).toBeInTheDocument();
     });
 
     // Read rows have a Debrief button; debrief rows do not.
@@ -223,43 +246,33 @@ describe('<PeriscopeChatHistory />', () => {
     window.removeEventListener('periscope:start-debrief', listener);
   });
 
-  it('uses the cursor when Load more is clicked', async () => {
-    const user = userEvent.setup();
-    let call = 0;
-    setRoutes({
-      '/api/periscope-chat-list': () => {
-        call += 1;
-        if (call === 1) {
-          return {
-            body: {
-              items: [makeListItem({ id: 100 })],
-              nextBefore: 99,
-            },
-          };
-        }
-        return {
-          body: {
-            items: [makeListItem({ id: 99 })],
-            nextBefore: null,
-          },
-        };
+  it('filters rows when a mode tab is clicked', async () => {
+    setStandardRoutes({
+      dates: [{ date: '2026-04-30', total: 2, reads: 1, debriefs: 1 }],
+      rowsByDate: {
+        '2026-04-30': [
+          makeListItem({ id: 5, mode: 'read', prose_excerpt: 'Read row.' }),
+          makeListItem({
+            id: 4,
+            mode: 'debrief',
+            parent_id: 5,
+            prose_excerpt: 'Debrief row.',
+          }),
+        ],
       },
     });
+    const user = userEvent.setup();
 
     render(<PeriscopeChatHistory />);
-
     await waitFor(() => {
-      expect(screen.getByText('#100')).toBeInTheDocument();
+      expect(screen.getByText('Read row.')).toBeInTheDocument();
     });
-    await user.click(screen.getByRole('button', { name: /load more/i }));
-    await waitFor(() => {
-      expect(screen.getByText('#99')).toBeInTheDocument();
-    });
+    expect(screen.getByText('Debrief row.')).toBeInTheDocument();
 
-    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const secondCallUrl = String(fetchMock.mock.calls[1]![0]);
-    expect(secondCallUrl).toContain('before=99');
+    // Click the Reads tab — only the read row should remain.
+    await user.click(screen.getByRole('button', { name: /^reads$/i }));
+    expect(screen.getByText('Read row.')).toBeInTheDocument();
+    expect(screen.queryByText('Debrief row.')).not.toBeInTheDocument();
   });
 });
 

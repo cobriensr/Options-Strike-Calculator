@@ -486,14 +486,22 @@ export type PeriscopeChatBody = z.infer<typeof periscopeChatBodySchema>;
 // ============================================================
 
 /**
- * GET /api/periscope-chat-list?limit=N&before=ID. Cursor pagination on
- * BIGSERIAL id (descending). `limit` defaults to 20 and is capped at
- * 100 so an unbounded request can't lock the connection. `before` is
- * optional — when omitted, the most recent N rows.
+ * GET /api/periscope-chat-list?limit=N&before=ID&date=YYYY-MM-DD.
+ *
+ * Cursor pagination on BIGSERIAL id (descending). `limit` defaults to
+ * 20 and is capped at 100 so an unbounded request can't lock the
+ * connection. `before` is optional — when omitted, the most recent N
+ * rows. `date` is optional — when set, returns ALL rows for that
+ * trading_date (still capped by `limit`), used by the history picker
+ * to populate per-date time/run subpickers.
  */
 export const periscopeChatListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   before: z.coerce.number().int().positive().finite().optional(),
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+    .optional(),
 });
 
 export type PeriscopeChatListQuery = z.infer<

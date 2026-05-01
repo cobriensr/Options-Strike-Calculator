@@ -581,12 +581,15 @@ describe('POST /api/periscope-chat', () => {
 
   it('passes extracted structural summary as the retrieval query when extraction succeeds', async () => {
     mockExtractChartStructure.mockResolvedValueOnce({
-      spot: 7120,
-      cone_lower: 7095,
-      cone_upper: 7150,
-      long_trigger: null,
-      short_trigger: null,
-      regime_tag: null,
+      structured: {
+        spot: 7120,
+        cone_lower: 7095,
+        cone_upper: 7150,
+        long_trigger: null,
+        short_trigger: null,
+        regime_tag: null,
+      },
+      chartDate: '2026-04-30',
     });
     mockFinalMessage.mockResolvedValue(makeSDKResponse({ prose: 'Read.' }));
 

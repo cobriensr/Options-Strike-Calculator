@@ -428,7 +428,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }, 30_000);
 
   const capturedAt = new Date().toISOString();
-  const tradingDate = capturedAt.slice(0, 10);
+  // Default trading_date to the capture day. If extraction succeeds and
+  // returns a valid chart_date, we override below with the date the
+  // chart was actually FOR — back-reads of yesterday's chart shouldn't
+  // be tagged with today's date.
+  let tradingDate = capturedAt.slice(0, 10);
   const userContent = buildUserContent({
     mode: body.mode,
     parentId: body.parentId ?? null,
@@ -449,10 +453,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // work). Retrieval depends on extraction output, so it's sequential
     // afterward. When extraction fails, we fall back to embedding the
     // user's prose context note (the legacy Phase 8 path).
-    const [extractedStructure, calibrationBlock] = await Promise.all([
+    const [extraction, calibrationBlock] = await Promise.all([
       extractChartStructure({ images: body.images }),
       buildCalibrationBlock(body.mode),
     ]);
+
+    // Override trading_date with the chart's actual date when extraction
+    // pulled it. This makes back-reads correctly tagged: if the user
+    // submits a 4/30 chart on 5/1, trading_date = 4/30 (chart date),
+    // captured_at = 5/1 (request time). The two columns intentionally
+    // diverge for back-reads.
+    if (extraction?.chartDate) {
+      tradingDate = extraction.chartDate;
+    }
 
     // Build the retrieval query text. When extraction succeeded, use the
     // structural summary so the query embedding has the same shape as
@@ -468,12 +481,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // similar spot / cone levels. Cheap, no migration required.
     //
     // If extraction failed, retrieval is skipped entirely.
-    const retrievalQueryText: string | null = extractedStructure
+    const retrievalQueryText: string | null = extraction
       ? buildPeriscopeSummary({
           mode: body.mode,
           tradingDate,
-          structured: extractedStructure,
-          proseText: synthesizeStructuralProse(extractedStructure),
+          structured: extraction.structured,
+          proseText: synthesizeStructuralProse(extraction.structured),
         })
       : null;
 
@@ -482,13 +495,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       queryText: retrievalQueryText,
     });
 
-    if (extractedStructure) {
+    if (extraction) {
       logger.info(
         {
           mode: body.mode,
-          spot: extractedStructure.spot,
-          cone_lower: extractedStructure.cone_lower,
-          cone_upper: extractedStructure.cone_upper,
+          spot: extraction.structured.spot,
+          cone_lower: extraction.structured.cone_lower,
+          cone_upper: extraction.structured.cone_upper,
+          chart_date: extraction.chartDate,
         },
         'periscope-chat extraction succeeded',
       );

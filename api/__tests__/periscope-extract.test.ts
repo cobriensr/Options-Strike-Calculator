@@ -48,15 +48,16 @@ describe('extractChartStructure', () => {
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
-  it('parses spot + cone from a clean JSON block', async () => {
+  it('parses structured fields + chart_date from a clean JSON block', async () => {
     mockCreate.mockResolvedValueOnce(
       makeExtractionResponse(
-        '```json\n{"spot": 7120, "cone_lower": 7095, "cone_upper": 7150}\n```',
+        '```json\n{"chart_date": "2026-04-30", "spot": 7120, "cone_lower": 7095, "cone_upper": 7150}\n```',
       ),
     );
     const result = await extractChartStructure({ images: [validImage] });
     expect(result).not.toBeNull();
-    expect(result).toEqual({
+    expect(result?.chartDate).toBe('2026-04-30');
+    expect(result?.structured).toEqual({
       spot: 7120,
       cone_lower: 7095,
       cone_upper: 7150,
@@ -72,13 +73,14 @@ describe('extractChartStructure', () => {
         'Some preamble text.\n\n' +
           '```json\n{"spot": 9999, "cone_lower": 0, "cone_upper": 0}\n```\n\n' +
           'Continuing prose.\n\n' +
-          '```json\n{"spot": 7100, "cone_lower": 7080, "cone_upper": 7120}\n```',
+          '```json\n{"chart_date": "2026-05-01", "spot": 7100, "cone_lower": 7080, "cone_upper": 7120}\n```',
       ),
     );
     const result = await extractChartStructure({ images: [validImage] });
-    expect(result?.spot).toBe(7100);
-    expect(result?.cone_lower).toBe(7080);
-    expect(result?.cone_upper).toBe(7120);
+    expect(result?.structured.spot).toBe(7100);
+    expect(result?.structured.cone_lower).toBe(7080);
+    expect(result?.structured.cone_upper).toBe(7120);
+    expect(result?.chartDate).toBe('2026-05-01');
   });
 
   it('coerces non-numeric fields to null', async () => {
@@ -88,8 +90,19 @@ describe('extractChartStructure', () => {
       ),
     );
     const result = await extractChartStructure({ images: [validImage] });
-    expect(result?.spot).toBeNull();
-    expect(result?.cone_lower).toBe(7095);
+    expect(result?.structured.spot).toBeNull();
+    expect(result?.structured.cone_lower).toBe(7095);
+  });
+
+  it('rejects malformed chart_date but keeps the structured fields', async () => {
+    mockCreate.mockResolvedValueOnce(
+      makeExtractionResponse(
+        '```json\n{"chart_date": "April 30 2026", "spot": 7120, "cone_lower": 7095, "cone_upper": 7150}\n```',
+      ),
+    );
+    const result = await extractChartStructure({ images: [validImage] });
+    expect(result?.chartDate).toBeNull();
+    expect(result?.structured.spot).toBe(7120);
   });
 
   it('returns null when all three fields are null (full failure)', async () => {
