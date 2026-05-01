@@ -47,6 +47,8 @@ import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
 import { checkIsOwner } from '../utils/auth';
 import { getETToday } from '../utils/timezone';
+import { useScrubController } from './useScrubController';
+import { useWallClockFreshness } from './useWallClockFreshness';
 import type { TargetScore } from '../utils/gex-target';
 
 /**
@@ -251,8 +253,7 @@ export function useGexTarget(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // -- Scrub / date state
-  const [scrubTimestamp, setScrubTimestamp] = useState<string | null>(null);
+  // -- Date state
   // Panel-local date state. `initialDate` only seeds this once at mount;
   // after that, `setSelectedDate` (exposed in the return) is the only way
   // to change it. Production does not pass `initialDate` and lets the hook
@@ -262,11 +263,6 @@ export function useGexTarget(
     () => initialDate ?? getETToday(),
   );
 
-  // Wall-clock state -- refreshed every WALL_CLOCK_TICK_MS by a separate
-  // effect. The freshness check below reads `nowMs` rather than calling
-  // `Date.now()` inline so the re-render dependency is explicit and testable
-  // under fake timers.
-  const [nowMs, setNowMs] = useState(() => Date.now());
   const mountedRef = useRef(true);
   /** Cache of every snapshot loaded for the current date (keyed by timestamp). */
   const allSnapshotsRef = useRef<Map<string, BulkSnapshot>>(new Map());
@@ -275,12 +271,16 @@ export function useGexTarget(
   );
   const [openingPutStrike, setOpeningPutStrike] = useState<number | null>(null);
 
+  // Scrub state machine -- extracted to `useScrubController`. Owns the
+  // pinned `scrubTimestamp` plus prev/next/to/live transitions.
+  const scrub = useScrubController(timestamps);
+  const { scrubTimestamp, isScrubbed } = scrub;
+
   // `todayET` recomputes each render so the panel flips from LIVE -> BACKTEST
   // at the midnight-ET session boundary without needing an explicit state
   // update. The `isToday` comparison then drives the dispatch ladder.
   const todayET = getETToday();
   const isToday = selectedDate === todayET;
-  const isScrubbed = scrubTimestamp != null;
 
   const fetchData = useCallback(
     async (tsOverride?: string | null) => {
@@ -423,9 +423,13 @@ export function useGexTarget(
 
   // Reset scrub state whenever the active date changes -- the previous date's
   // scrub timestamp is meaningless against a different day's snapshot list.
+  // (`useScrubController` also defensively clears the pin if it disappears
+  // from the timestamps array, but we want the clear to fire eagerly on date
+  // change even when fixtures or caches happen to share the same ts string.)
+  const clearScrub = scrub.scrubLive;
   useEffect(() => {
-    setScrubTimestamp(null);
-  }, [selectedDate]);
+    clearScrub();
+  }, [selectedDate, clearScrub]);
 
   // Effect 1 -- Bulk load (fires on date change or market-open transition).
   // Clears the stale cache and fetches all snapshots for the current date in
@@ -494,80 +498,31 @@ export function useGexTarget(
     }
   }, [isScrubbed, scrubTimestamp, fetchData, timestamps]);
 
-  // Wall-clock ticker -- only runs when freshness could plausibly flip. In
-  // BACKTEST or scrubbed states the badge is permanently labeled, so we'd
-  // just be re-rendering for nothing. The ticker re-snaps `nowMs` so the
-  // freshness comparison below picks up the new wall-clock value without
-  // calling `Date.now()` inline (which sonarjs flags and which makes the
-  // re-render dependency invisible).
+  // Wall-clock freshness -- extracted to `useWallClockFreshness`. The ticker
+  // only runs while every gate is truthy: BACKTEST or scrubbed states have a
+  // permanently-labeled badge, so re-rendering would be wasted work.
   //
-  // Timing caveat: between mount and the first tick, `nowMs` is whatever
-  // `Date.now()` returned at mount. So a snapshot that's exactly at the
-  // freshness boundary at mount can briefly read as fresh for up to
-  // WALL_CLOCK_TICK_MS past its actual staleness -- total worst-case
+  // Timing caveat (preserved from the original): between mount and the first
+  // tick, `nowMs` is whatever `Date.now()` returned at mount. So a snapshot
+  // exactly at the freshness boundary at mount can briefly read as fresh for
+  // up to WALL_CLOCK_TICK_MS past its actual staleness -- total worst-case
   // "fresh badge on stale data" is STALE_THRESHOLD_MS + WALL_CLOCK_TICK_MS
   // (currently 2m30s). Acceptable because the threshold is already 2x the
   // poll interval.
-  useEffect(() => {
-    if (!isToday || !marketOpen || isScrubbed) return;
-    const id = setInterval(() => setNowMs(Date.now()), WALL_CLOCK_TICK_MS);
-    return () => clearInterval(id);
-  }, [isToday, marketOpen, isScrubbed]);
+  const { isFresh } = useWallClockFreshness(
+    timestamp != null ? new Date(timestamp).getTime() : null,
+    STALE_THRESHOLD_MS,
+    { gates: [isToday, marketOpen, !isScrubbed], tickMs: WALL_CLOCK_TICK_MS },
+  );
 
   // The displayed snapshot is "live" only when (1) we're in a state where
   // polling is active AND (2) the snapshot itself is recent. The second
   // clause catches the dial-back case: polling keeps firing, but each poll
   // returns the same stale snapshot, so the wall-clock comparison flips the
   // badge to BACKTEST while leaving the polling machinery alone.
-  const isFresh =
-    timestamp != null &&
-    nowMs - new Date(timestamp).getTime() < STALE_THRESHOLD_MS;
   const isLive = !isScrubbed && marketOpen && isToday && isFresh;
 
-  // The "current" timestamp for nav math is whatever is on screen. When not
-  // scrubbed that's the latest in the list (`timestamp` from the server).
-  // When scrubbed it's the scrub ts.
-  const activeTs = scrubTimestamp ?? timestamp;
-  const activeIdx = activeTs ? timestamps.indexOf(activeTs) : -1;
-  const canScrubPrev = activeIdx > 0;
-  const canScrubNext = isScrubbed && timestamps.length > 0;
-
-  const scrubPrev = useCallback(() => {
-    setScrubTimestamp((current) => {
-      // If currently live, "previous" means one step back from the latest.
-      if (current == null) {
-        if (timestamps.length < 2) return current;
-        return timestamps.at(-2) ?? current;
-      }
-      const idx = timestamps.indexOf(current);
-      if (idx <= 0) return current;
-      return timestamps[idx - 1] ?? current;
-    });
-  }, [timestamps]);
-
-  const scrubNext = useCallback(() => {
-    setScrubTimestamp((current) => {
-      if (current == null) return null;
-      const idx = timestamps.indexOf(current);
-      // Unknown ts, or the next step would land on (or past) the latest ->
-      // resume live so polling restarts. We never let scrubTimestamp pin to
-      // the newest value; that's what `null` (live) means.
-      if (idx < 0 || idx >= timestamps.length - 2) return null;
-      return timestamps[idx + 1] ?? null;
-    });
-  }, [timestamps]);
-
-  const scrubTo = useCallback(
-    (ts: string) => {
-      // Jumping to the latest timestamp resumes live mode.
-      if (ts === timestamps.at(-1)) {
-        setScrubTimestamp(null);
-      } else if (timestamps.includes(ts)) {
-        setScrubTimestamp(ts);
-      }
-    },
-    [timestamps],
-  );
+  const { canScrubPrev, canScrubNext, scrubPrev, scrubNext, scrubTo } = scrub;
 
   const scrubLive = useCallback(() => {
     // Reset to live mode on both axes: clear scrub AND snap date back to
@@ -575,12 +530,12 @@ export function useGexTarget(
     // ladder into live polling via the `isToday` check. If they were
     // already on today with just scrub active, the date setter is a no-op
     // (state equality).
-    setScrubTimestamp(null);
+    scrub.scrubLive();
     setSelectedDate((cur) => {
       const today = getETToday();
       return cur === today ? cur : today;
     });
-  }, []);
+  }, [scrub]);
 
   const refresh = useCallback(() => {
     allSnapshotsRef.current = new Map();
