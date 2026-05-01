@@ -19,6 +19,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { theme } from '../../themes';
 import Collapsible from '../ChartAnalysis/Collapsible';
+import {
+  classifyRegime,
+  median,
+  type RegimeStatus,
+} from '../../utils/calibration-stats';
+import { Scatter, type ScatterPoint } from './Scatter';
 
 interface CalibrationRow {
   regime: string;
@@ -29,15 +35,6 @@ interface CalibrationRow {
   residual_p25: number | null;
   residual_p75: number | null;
   updated_at: string;
-}
-
-interface ScatterPoint {
-  id: number;
-  capturedAt: string;
-  regime: string;
-  predicted: number;
-  actual: number;
-  residual: number;
 }
 
 interface CalibrationResponse {
@@ -69,38 +66,6 @@ function fmtNum(n: number | null, digits = 1): string {
 
 function fmtRegime(r: string): string {
   return r.replace(/_/g, ' ');
-}
-
-/**
- * Pick "nice" numeric tick values across [lo, hi]. Step size is rounded
- * to 1/2/5 × 10^k so the labels read cleanly (7100, 7150, 7200) instead
- * of arbitrary fractions. Returns 3–7 ticks depending on the range.
- */
-function niceTicks(lo: number, hi: number, target: number): number[] {
-  const range = hi - lo;
-  if (range <= 0) return [lo];
-  const rawStep = range / (target - 1);
-  const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
-  const frac = rawStep / mag;
-  let step: number;
-  if (frac < 1.5) step = mag;
-  else if (frac < 3) step = 2 * mag;
-  else if (frac < 7) step = 5 * mag;
-  else step = 10 * mag;
-  const start = Math.ceil(lo / step) * step;
-  const ticks: number[] = [];
-  for (let v = start; v <= hi + 1e-9; v += step) ticks.push(v);
-  return ticks;
-}
-
-function median(values: number[]): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  if (sorted.length % 2 === 0) {
-    return ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2;
-  }
-  return sorted[mid] ?? 0;
 }
 
 function SummaryBanner({ scatter }: { scatter: ScatterPoint[] }) {
@@ -149,37 +114,24 @@ interface RegimeStat {
   median: number;
   mae: number;
   within5: number;
-  status: 'good' | 'biased' | 'broken' | 'thin';
+  status: RegimeStatus;
 }
 
-/**
- * Status thresholds. The cron's MIN_SAMPLES_FOR_CALIBRATION is 5; we use
- * the same gate for "trustworthy" stats. Below that the regime stat is
- * shown but flagged as thin (n < 5).
- */
-function classifyRegime(n: number, med: number): RegimeStat['status'] {
-  if (n < 5) return 'thin';
-  const abs = Math.abs(med);
-  if (abs <= 3) return 'good';
-  if (abs <= 10) return 'biased';
-  return 'broken';
-}
-
-const STATUS_COPY: Record<RegimeStat['status'], string> = {
+const STATUS_COPY: Record<RegimeStatus, string> = {
   good: 'well-calibrated',
   biased: 'slight bias',
   broken: 'significant bias — discount predictions',
   thin: 'thin sample (n<5)',
 };
 
-const STATUS_GLYPH: Record<RegimeStat['status'], string> = {
+const STATUS_GLYPH: Record<RegimeStatus, string> = {
   good: '✓',
   biased: '~',
   broken: '✗',
   thin: '·',
 };
 
-function statusColor(status: RegimeStat['status']): string {
+function statusColor(status: RegimeStatus): string {
   switch (status) {
     case 'good':
       return theme.green;
@@ -328,157 +280,6 @@ function RegimeLegend({ scatter }: { scatter: ScatterPoint[] }) {
   );
 }
 
-function Scatter({ scatter }: { scatter: ScatterPoint[] }) {
-  // Both axes share the same [lo, hi] range so the diagonal y=x remains a
-  // valid "perfect prediction" reference — do not split sx/sy ranges
-  // without revisiting the diagonal.
-  const xs = scatter.flatMap((p) => [p.predicted, p.actual]);
-  const minV = Math.min(...xs);
-  const maxV = Math.max(...xs);
-  const margin = maxV > minV ? (maxV - minV) * 0.05 : 10;
-  const lo = minV - margin;
-  const hi = maxV + margin;
-  const w = 800;
-  const h = 360;
-  const padL = 56;
-  const padB = 36;
-  const padT = 12;
-  const padR = 16;
-  const plotW = w - padL - padR;
-  const plotH = h - padT - padB;
-  const sx = (v: number) => padL + ((v - lo) / (hi - lo)) * plotW;
-  const sy = (v: number) => padT + (1 - (v - lo) / (hi - lo)) * plotH;
-  const ticks = niceTicks(lo, hi, 6);
-  const residuals = scatter.map((p) => p.actual - p.predicted);
-  const minRes = Math.min(...residuals);
-  const maxRes = Math.max(...residuals);
-  return (
-    <svg
-      viewBox={`0 0 ${w} ${h}`}
-      width="100%"
-      preserveAspectRatio="xMidYMid meet"
-      role="img"
-      aria-labelledby="cal-title cal-desc"
-    >
-      <title id="cal-title">Predicted vs actual close scatter</title>
-      <desc id="cal-desc">
-        {scatter.length} resolved capture{scatter.length === 1 ? '' : 's'};
-        residuals range from {minRes.toFixed(1)} to {maxRes.toFixed(1)} points.
-        Diagonal indicates perfect prediction; points colored by regime.
-      </desc>
-      {/* Gridlines at tick positions */}
-      {ticks.map((t) => (
-        <g key={`grid-${t}`}>
-          <line
-            x1={sx(t)}
-            y1={padT}
-            x2={sx(t)}
-            y2={padT + plotH}
-            stroke={theme.border}
-            strokeWidth={0.5}
-            opacity={0.4}
-          />
-          <line
-            x1={padL}
-            y1={sy(t)}
-            x2={padL + plotW}
-            y2={sy(t)}
-            stroke={theme.border}
-            strokeWidth={0.5}
-            opacity={0.4}
-          />
-        </g>
-      ))}
-      {/* Plot box */}
-      <rect
-        x={padL}
-        y={padT}
-        width={plotW}
-        height={plotH}
-        fill="none"
-        stroke={theme.border}
-        strokeWidth={0.75}
-      />
-      {/* Diagonal y=x (perfect prediction) */}
-      <line
-        x1={sx(lo)}
-        y1={sy(lo)}
-        x2={sx(hi)}
-        y2={sy(hi)}
-        stroke={theme.textTertiary}
-        strokeDasharray="4 4"
-        strokeWidth={1}
-      />
-      {/* X-axis tick labels */}
-      {ticks.map((t) => (
-        <text
-          key={`xt-${t}`}
-          x={sx(t)}
-          y={padT + plotH + 14}
-          textAnchor="middle"
-          fontSize="10"
-          fill={theme.textMuted}
-          fontFamily="ui-monospace, monospace"
-        >
-          {Math.round(t)}
-        </text>
-      ))}
-      {/* Y-axis tick labels */}
-      {ticks.map((t) => (
-        <text
-          key={`yt-${t}`}
-          x={padL - 6}
-          y={sy(t) + 3}
-          textAnchor="end"
-          fontSize="10"
-          fill={theme.textMuted}
-          fontFamily="ui-monospace, monospace"
-        >
-          {Math.round(t)}
-        </text>
-      ))}
-      {/* Axis titles */}
-      <text
-        x={padL + plotW / 2}
-        y={h - 6}
-        textAnchor="middle"
-        fontSize="11"
-        fill={theme.textMuted}
-      >
-        predicted close
-      </text>
-      <text
-        x={14}
-        y={padT + plotH / 2}
-        textAnchor="middle"
-        fontSize="11"
-        fill={theme.textMuted}
-        transform={`rotate(-90 14 ${padT + plotH / 2})`}
-      >
-        actual close
-      </text>
-      {/* Data points */}
-      {scatter.map((p) => (
-        <circle
-          key={p.id}
-          cx={sx(p.predicted)}
-          cy={sy(p.actual)}
-          r={3.5}
-          fill={REGIME_COLORS[p.regime] ?? theme.textTertiary}
-          opacity={0.85}
-          stroke={theme.bg}
-          strokeWidth={0.5}
-        >
-          <title>
-            {fmtRegime(p.regime)} — predicted {p.predicted.toFixed(2)}, actual{' '}
-            {p.actual.toFixed(2)} (residual {fmtNum(p.actual - p.predicted, 2)})
-          </title>
-        </circle>
-      ))}
-    </svg>
-  );
-}
-
 function ResidualTable({ rows }: { rows: CalibrationRow[] }) {
   return (
     <div className="overflow-x-auto">
@@ -608,7 +409,12 @@ function TRACELiveCalibrationPanel() {
               <div className="text-muted text-[10px] uppercase">
                 Predicted vs Actual ({data!.scatter.length} pts)
               </div>
-              <Scatter scatter={data!.scatter} />
+              <Scatter
+                scatter={data!.scatter}
+                regimeColors={REGIME_COLORS}
+                formatRegime={fmtRegime}
+                formatNum={fmtNum}
+              />
               <RegimeLegend scatter={data!.scatter} />
             </div>
           )}
