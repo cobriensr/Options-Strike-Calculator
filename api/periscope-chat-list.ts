@@ -31,6 +31,38 @@ import logger from './_lib/logger.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import { periscopeChatListQuerySchema } from './_lib/validation.js';
 
+/**
+ * Strip markdown syntax from prose for the list excerpt. The full
+ * markdown is preserved in `prose_text` for the detail-view renderer;
+ * the list shows a flat one-line preview, so headings, bold/italic,
+ * bullets, links, and inline code markers collapse to plain text.
+ *
+ * Not a full CommonMark parser — just enough cleanup so the excerpt
+ * doesn't leak `# ** -` glyphs as visible characters. Each rule is
+ * scoped tightly to avoid catastrophic backtracking.
+ */
+export function stripMarkdownForExcerpt(text: string): string {
+  return text
+    .replace(/^#{1,6}\s+/gm, '') // ATX headings
+    // Marker-only deletes for bold + inline code. Walking with literal
+    // patterns (not quantified groups) is ReDoS-immune and still
+    // produces a clean excerpt — text between the markers is preserved
+    // as-is, only the * / _ / ` syntax glyphs go.
+    .replaceAll('**', '')
+    .replaceAll('__', '')
+    .replaceAll('`', '')
+    // Bounded leading whitespace ({0,8}) + bounded digit count keep the
+    // list-marker patterns linear under sonar's slow-regex check.
+    .replace(/^[ \t]{0,8}[-*+][ \t]+/gm, '') // list bullets
+    .replace(/^[ \t]{0,8}\d{1,4}\.[ \t]+/gm, '') // ordered-list markers
+    // [text](url) → text. Bounded class + bounded quantifier keep
+    // matching linear; sonar accepts this shape.
+    .replace(/\[([^\]\n]{1,200})\]\([^)\n]{1,500}\)/g, '$1')
+    .replace(/```[a-z]*\n?/gi, '') // code fences
+    .replace(/\s+/g, ' ') // collapse all whitespace
+    .trim();
+}
+
 interface PeriscopeChatSummary {
   id: number;
   trading_date: string;
@@ -60,9 +92,10 @@ function parseSummaryRow(r: Record<string, unknown>): PeriscopeChatSummary {
     regime_tag: (r.regime_tag as string | null) ?? null,
     calibration_quality:
       r.calibration_quality == null ? null : Number(r.calibration_quality),
-    // First 240 chars — enough for a one-line preview without dragging
-    // the full response (some prose runs to 4-6KB).
-    prose_excerpt: proseText.slice(0, 240),
+    // 240 chars of plain-text excerpt — markdown stripped, whitespace
+    // collapsed. Full prose lives behind /periscope-chat-detail and is
+    // rendered with proper typography there.
+    prose_excerpt: stripMarkdownForExcerpt(proseText).slice(0, 240),
     duration_ms: r.duration_ms == null ? null : Number(r.duration_ms),
   };
 }

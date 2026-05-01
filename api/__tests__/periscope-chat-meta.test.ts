@@ -2,6 +2,35 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
+import { stripMarkdownForExcerpt } from '../periscope-chat-list.js';
+
+describe('stripMarkdownForExcerpt', () => {
+  it('removes ATX heading hashes, bold/italic markers, list bullets', () => {
+    const input =
+      '# 2026-04-30 open read — 0DTE\n\n**Setup at slice end:**\n\n- SPX entered the slice ~7,140\n- Wicked down ~7,115';
+    expect(stripMarkdownForExcerpt(input)).toBe(
+      '2026-04-30 open read — 0DTE Setup at slice end: SPX entered the slice ~7,140 Wicked down ~7,115',
+    );
+  });
+
+  it('preserves arrow / unicode / numbers and collapses whitespace', () => {
+    expect(
+      stripMarkdownForExcerpt('Date Thu Apr 30  ==  Expiry  →  0DTE ✓'),
+    ).toBe('Date Thu Apr 30 == Expiry → 0DTE ✓');
+  });
+
+  it('extracts link text only', () => {
+    expect(stripMarkdownForExcerpt('See [the docs](https://x.com)')).toBe(
+      'See the docs',
+    );
+  });
+
+  it('strips inline code backticks but keeps the inner text', () => {
+    expect(stripMarkdownForExcerpt('Use the `mode` flag')).toBe(
+      'Use the mode flag',
+    );
+  });
+});
 
 const mockSql = vi.fn();
 vi.mock('../_lib/db.js', () => ({
