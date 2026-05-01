@@ -64,3 +64,5 @@ export {
   scoreMode,
   scoreStrike,
 } from './pipeline.js';
+
+export { selectTarget } from './select-target.js';

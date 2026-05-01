@@ -26,16 +26,7 @@ import type { CandleInterval } from './PriceChart';
 import { computeMomentum } from '../../utils/candle-momentum';
 import { formatTimeCT } from '../../utils/component-formatters';
 import {
-  computeAttractingMomentum,
-  flowConfluence,
-  charmScore,
-  dominance,
-  clarity,
-  proximity,
-  priceConfirm,
-  assignTier,
-  assignWallSide,
-  GEX_TARGET_CONFIG,
+  selectTarget,
   type TargetScore,
   type StrikeScore,
   type PriceMovementContext,
@@ -154,71 +145,13 @@ export const GexTarget = memo(function GexTarget({
   // tier, and wallSide always reflect the current algorithm, not stale DB
   // values. priceConfirm is derived from visibleCandles (1-min SPX bars
   // already in the hook), giving the same calculation the cron would produce
-  // for the same timestamp.
+  // for the same timestamp. The decision rule itself lives in `selectTarget`
+  // so it can be unit-tested in isolation from the React panel.
   const activeScore: TargetScore | null = useMemo(() => {
     const raw = deferredMode === 'oi' ? oi : deferredMode === 'vol' ? vol : dir;
     if (!raw) return null;
-
-    // Spread-copy every entry so we don't mutate shared API response objects.
-    const leaderboard: StrikeScore[] = raw.leaderboard.map((s) => ({
-      ...s,
-      isTarget: false,
-    }));
-
-    // Build the peer momentum array once for the full universe so dominance
-    // is computed relative to every strike, not just surviving candidates.
-    const peerMomenta = leaderboard.map((s) =>
-      computeAttractingMomentum(s.features),
-    );
-
-    const { weights } = GEX_TARGET_CONFIG;
     const priceCtx = priceCtxFromCandles(visibleCandles);
-
-    for (const s of leaderboard) {
-      const dom = dominance(s.features, peerMomenta);
-      const fc = flowConfluence(s.features);
-      const pc = priceConfirm(s.features, priceCtx);
-      const charm = charmScore(s.features);
-      const clar = clarity(s.features);
-      const prox = proximity(s.features);
-      const freshScore =
-        weights.flowConfluence * fc * dom * prox +
-        weights.priceConfirm * pc * dom * prox +
-        weights.charmScore * charm * prox +
-        weights.clarity * (clar - 0.5);
-      s.finalScore = freshScore;
-      s.tier = assignTier(freshScore);
-      s.wallSide = assignWallSide(s.tier, s.features.gexDollars);
-    }
-
-    // Sort by fresh score desc and find the highest-scoring eligible target.
-    // Primary gates:
-    //   1. Non-NONE tier
-    //   2. Growing wall (attractingMomentum > 0)
-    //   3. In the direction price is moving (priceConfirm >= 0)
-    //   4. At least one strike away from spot (|distFromSpot| >= 5) so we
-    //      recommend a forward-looking level instead of a strike price is
-    //      already pinned on. At-spot strikes have priceConfirm = 0 by
-    //      construction, so they always slip past the direction gate alone.
-    // Fallback: drop the direction + at-spot gates in flat/ambiguous markets
-    // where no strike passes all four conditions.
-    const byScore = leaderboard
-      .slice()
-      .sort((a, b) => Math.abs(b.finalScore) - Math.abs(a.finalScore));
-    const topTarget =
-      byScore.find(
-        (s) =>
-          s.tier !== 'NONE' &&
-          computeAttractingMomentum(s.features) > 0 &&
-          priceConfirm(s.features, priceCtx) >= 0 &&
-          Math.abs(s.features.distFromSpot) >= 5,
-      ) ??
-      byScore.find(
-        (s) => s.tier !== 'NONE' && computeAttractingMomentum(s.features) > 0,
-      );
-    if (topTarget) topTarget.isTarget = true;
-
-    return { target: topTarget ?? null, leaderboard };
+    return selectTarget(raw.leaderboard, priceCtx);
   }, [deferredMode, oi, vol, dir, visibleCandles]);
 
   const activeLeaderboard: StrikeScore[] = useMemo(
