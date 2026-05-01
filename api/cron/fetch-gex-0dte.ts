@@ -29,13 +29,11 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
   uwFetch,
-  cronGuard,
   cronJitter,
   checkDataQuality,
   withRetry,
@@ -45,7 +43,10 @@ import {
   writeFeatureRows,
   type WriteFeatureRowsResult,
 } from '../_lib/gex-target-features.js';
-import { reportCronRun } from '../_lib/axiom.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 
 // Snapshot window required for multi-horizon feature extraction: the
 // 60-minute horizon needs 60 prior snapshots plus the current one.
@@ -230,30 +231,23 @@ async function storeStrikes(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res);
-  if (!guard) return;
-  const { apiKey, today } = guard;
+export default withCronInstrumentation(
+  'fetch-gex-0dte',
+  async (ctx): Promise<CronResult> => {
+    const { apiKey, today, startTimeMs } = ctx;
+    await cronJitter();
 
-  await cronJitter();
-
-  const startTime = Date.now();
-
-  try {
     const spotPrice = await fetchSpotPrice(apiKey);
     const rows = await withRetry(() =>
       fetchStrike0dte(apiKey, today, spotPrice),
     );
 
     if (rows.length === 0) {
-      await reportCronRun('fetch-gex-0dte', {
+      return {
         status: 'skipped',
-        reason: 'No 0DTE strike data',
-        durationMs: Date.now() - startTime,
-      });
-      return res
-        .status(200)
-        .json({ stored: false, reason: 'No 0DTE strike data' });
+        message: 'No 0DTE strike data',
+        metadata: { stored: false, reason: 'No 0DTE strike data' },
+      };
     }
 
     const price = Number.parseFloat(rows[0]!.price);
@@ -334,7 +328,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
       } catch (featureErr) {
         featureStatus = { error: true };
-        Sentry.setTag('cron.job', 'fetch-gex-0dte');
         Sentry.setTag('feature.phase', 'write');
         Sentry.captureException(featureErr);
         logger.error(
@@ -355,26 +348,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               modes: featureStatus.modes,
             };
 
-    await reportCronRun('fetch-gex-0dte', {
-      status: 'ok',
-      price,
-      stored: result.stored,
-      skipped: result.skipped,
-      durationMs: Date.now() - startTime,
-    });
-    return res.status(200).json({
-      job: 'fetch-gex-0dte',
-      success: true,
-      price,
-      stored: result.stored,
-      skipped: result.skipped,
-      features: featureJson,
-      durationMs: Date.now() - startTime,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-gex-0dte');
-    Sentry.captureException(err);
-    logger.error({ err }, 'fetch-gex-0dte error');
-    return res.status(500).json({ error: 'Internal error' });
-  }
-}
+    return {
+      status: 'success',
+      metadata: {
+        success: true,
+        price,
+        stored: result.stored,
+        skipped: result.skipped,
+        features: featureJson,
+        durationMs: Date.now() - startTimeMs,
+      },
+    };
+  },
+);

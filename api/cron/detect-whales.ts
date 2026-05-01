@@ -20,8 +20,6 @@
  * Environment: CRON_SECRET (no UW_API_KEY needed — DB-only).
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { cronGuard } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
 import {
   classifyWhale,
@@ -31,8 +29,10 @@ import {
   type PairingPeer,
 } from '../_lib/whale-detector.js';
 import { getSpotPrice } from '../_lib/spot-price.js';
-import logger from '../_lib/logger.js';
-import { Sentry } from '../_lib/sentry.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 
 /**
  * Tickers that frequently arrive from UW with `underlying_price = null`
@@ -100,18 +100,15 @@ function rowToCandidate(row: WhaleAlertRow): WhaleCandidate {
   };
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // requireApiKey: true — used for the spot-price fallback on cash index
-  // tickers when whale_alerts.underlying_price is null. The classifier
-  // tolerates null spot (permissive moneyness), so a missing UW key
-  // wouldn't break correctness, just degrade NDX/NDXP precision. Better
-  // to fail fast in CI/dev than silently downgrade.
-  const guard = cronGuard(req, res, { requireApiKey: true });
-  if (!guard) return;
-  const { apiKey } = guard;
-  const startedAt = Date.now();
-
-  try {
+// requireApiKey: true — used for the spot-price fallback on cash index
+// tickers when whale_alerts.underlying_price is null. The classifier
+// tolerates null spot (permissive moneyness), so a missing UW key
+// wouldn't break correctness, just degrade NDX/NDXP precision. Better
+// to fail fast in CI/dev than silently downgrade.
+export default withCronInstrumentation(
+  'detect-whales',
+  async (ctx): Promise<CronResult> => {
+    const { apiKey } = ctx;
     const db = getDb();
 
     // Pull recent whale_alerts. Trailing-window approach: process every
@@ -138,12 +135,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     `) as WhaleAlertRow[];
 
     if (candidates.length === 0) {
-      return res.status(200).json({
-        job: 'detect-whales',
-        candidates: 0,
-        inserted: 0,
-        durationMs: Date.now() - startedAt,
-      });
+      return {
+        status: 'success',
+        metadata: {
+          candidates: 0,
+          inserted: 0,
+        },
+      };
     }
 
     let inserted = 0;
@@ -242,7 +240,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (result.length > 0) inserted++;
     }
 
-    logger.info(
+    ctx.logger.info(
       {
         candidates: candidates.length,
         classified: classifiedCount,
@@ -253,22 +251,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'detect-whales completed',
     );
 
-    return res.status(200).json({
-      job: 'detect-whales',
-      candidates: candidates.length,
-      classified: classifiedCount,
-      simultaneousFiltered,
-      spotFetchedCount,
-      inserted,
-      durationMs: Date.now() - startedAt,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'detect-whales');
-    Sentry.captureException(err);
-    logger.error({ err }, 'detect-whales error');
-    return res.status(500).json({
-      job: 'detect-whales',
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
+    return {
+      status: 'success',
+      metadata: {
+        candidates: candidates.length,
+        classified: classifiedCount,
+        simultaneousFiltered,
+        spotFetchedCount,
+        inserted,
+      },
+    };
+  },
+  { requireApiKey: true },
+);

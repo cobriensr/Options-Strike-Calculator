@@ -37,17 +37,17 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
-  cronGuard,
   cronJitter,
   uwFetch,
   withRetry,
 } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
 import { computeDerived, type UwFlowAlert } from '../_lib/flow-alert-derive.js';
-import logger from '../_lib/logger.js';
-import { Sentry } from '../_lib/sentry.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 
 // Re-export so existing test imports from this module keep working.
 export { computeDerived, type UwFlowAlert };
@@ -109,16 +109,12 @@ async function fetchAllNewAlerts(
 
 // ── Handler ──────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res);
-  if (!guard) return;
-  const { apiKey } = guard;
+export default withCronInstrumentation(
+  'fetch-flow-alerts',
+  async (ctx): Promise<CronResult> => {
+    const { apiKey, logger } = ctx;
+    await cronJitter();
 
-  await cronJitter();
-
-  const startedAt = Date.now();
-
-  try {
     const db = getDb();
 
     // 1. Scope to records newer than our last-seen timestamp.
@@ -136,12 +132,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const alerts = await fetchAllNewAlerts(apiKey, newerThan);
 
     if (alerts.length === 0) {
-      return res.status(200).json({
-        job: 'fetch-flow-alerts',
-        fetched: 0,
-        inserted: 0,
-        durationMs: Date.now() - startedAt,
-      });
+      return {
+        status: 'success',
+        metadata: {
+          fetched: 0,
+          inserted: 0,
+        },
+      };
     }
 
     // 3. Upsert each row.
@@ -181,19 +178,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'fetch-flow-alerts completed',
     );
 
-    return res.status(200).json({
-      job: 'fetch-flow-alerts',
-      fetched: alerts.length,
-      inserted,
-      durationMs: Date.now() - startedAt,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-flow-alerts');
-    Sentry.captureException(err);
-    logger.error({ err }, 'fetch-flow-alerts error');
-    return res.status(500).json({
-      job: 'fetch-flow-alerts',
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
+    return {
+      status: 'success',
+      metadata: {
+        fetched: alerts.length,
+        inserted,
+      },
+    };
+  },
+);

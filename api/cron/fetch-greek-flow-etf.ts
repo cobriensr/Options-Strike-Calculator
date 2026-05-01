@@ -27,17 +27,18 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { Sentry, metrics } from '../_lib/sentry.js';
+import { metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
-  cronGuard,
   cronJitter,
   uwFetch,
   withRetry,
 } from '../_lib/api-helpers.js';
-import { reportCronRun } from '../_lib/axiom.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -104,16 +105,12 @@ async function storeTicks(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res);
-  if (!guard) return;
-  const { apiKey, today } = guard;
+export default withCronInstrumentation(
+  'fetch-greek-flow-etf',
+  async (ctx): Promise<CronResult> => {
+    const { apiKey, today } = ctx;
+    await cronJitter();
 
-  await cronJitter();
-
-  const startTime = Date.now();
-
-  try {
     const [spyTicks, qqqTicks] = await Promise.all([
       withRetry(() =>
         uwFetch<GreekFlowTick>(apiKey, `/stock/SPY/greek-flow?date=${today}`),
@@ -128,7 +125,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       storeTicks('QQQ', qqqTicks, today),
     ]);
 
-    logger.info(
+    ctx.logger.info(
       {
         spy: { ticks: spyTicks.length, ...spyResult },
         qqq: { ticks: qqqTicks.length, ...qqqResult },
@@ -136,30 +133,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'fetch-greek-flow-etf completed',
     );
 
-    const durationMs = Date.now() - startTime;
-    await reportCronRun('fetch-greek-flow-etf', {
-      status: 'ok',
-      spy_ticks: spyTicks.length,
-      spy_stored: spyResult.stored,
-      spy_skipped: spyResult.skipped,
-      qqq_ticks: qqqTicks.length,
-      qqq_stored: qqqResult.stored,
-      qqq_skipped: qqqResult.skipped,
-      durationMs,
-    });
-
-    return res.status(200).json({
-      job: 'fetch-greek-flow-etf',
-      tickers: {
-        SPY: { ticks: spyTicks.length, ...spyResult },
-        QQQ: { ticks: qqqTicks.length, ...qqqResult },
+    return {
+      status: 'success',
+      metadata: {
+        tickers: {
+          SPY: { ticks: spyTicks.length, ...spyResult },
+          QQQ: { ticks: qqqTicks.length, ...qqqResult },
+        },
       },
-      durationMs,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-greek-flow-etf');
-    Sentry.captureException(err);
-    logger.error({ err }, 'fetch-greek-flow-etf error');
-    return res.status(500).json({ error: 'Internal error' });
-  }
-}
+    };
+  },
+);

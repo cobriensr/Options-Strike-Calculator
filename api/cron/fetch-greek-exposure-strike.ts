@@ -27,17 +27,17 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
   uwFetch,
-  cronGuard,
   checkDataQuality,
   withRetry,
 } from '../_lib/api-helpers.js';
-import { reportCronRun } from '../_lib/axiom.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -141,13 +141,11 @@ async function storeStrikeRows(
 
 // ── Handler ──────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res);
-  if (!guard) return;
-  const { apiKey, today } = guard;
-  const startTime = Date.now();
+export default withCronInstrumentation(
+  'fetch-greek-exposure-strike',
+  async (ctx): Promise<CronResult> => {
+    const { apiKey, today } = ctx;
 
-  try {
     const path = `/stock/SPX/greek-exposure/strike-expiry?date=${today}&expiry=${today}`;
     const allRows = await withRetry(() =>
       uwFetch<StrikeRow>(apiKey, path, (body) => body.data as StrikeRow[]),
@@ -160,7 +158,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const skippedZero = allRows.length - rows.length;
 
-    logger.info(
+    ctx.logger.info(
       { fetched: allRows.length, afterFilter: rows.length, skippedZero },
       'fetch-greek-exposure-strike: rows fetched',
     );
@@ -179,13 +177,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return a > b ? r : best;
       }, rows[0]!);
       const { netGex } = computeColumns(largest);
-      logger.info(
+      ctx.logger.info(
         { strike: largest.strike, netGex: Math.round(netGex) },
         'Largest-magnitude strike net GEX',
       );
     }
 
-    logger.info(
+    ctx.logger.info(
       { fetched: allRows.length, stored, skipped },
       'fetch-greek-exposure-strike completed',
     );
@@ -209,23 +207,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       minRows: 10,
     });
 
-    await reportCronRun('fetch-greek-exposure-strike', {
-      status: 'ok',
-      fetched: allRows.length,
-      stored,
-      skipped,
-      durationMs: Date.now() - startTime,
-    });
-
-    return res.status(200).json({
-      fetched: allRows.length,
-      stored,
-      skipped,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-greek-exposure-strike');
-    Sentry.captureException(err);
-    logger.error({ err }, 'fetch-greek-exposure-strike error');
-    return res.status(500).json({ error: 'Internal error' });
-  }
-}
+    return {
+      status: 'success',
+      metadata: {
+        fetched: allRows.length,
+        stored,
+        skipped,
+      },
+    };
+  },
+);
