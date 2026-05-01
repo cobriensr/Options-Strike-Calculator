@@ -26,10 +26,7 @@ import {
   computePriceTrend,
   findClosestSnapshot,
 } from '../components/GexLandscape/deltas';
-import type {
-  PriceTrend,
-  Snapshot,
-} from '../components/GexLandscape/types';
+import type { PriceTrend, Snapshot } from '../components/GexLandscape/types';
 import type { GexStrikeLevel } from './useGexPerStrike';
 
 /** Snapshot ring-buffer horizon for Δ% and smoothing windows. */

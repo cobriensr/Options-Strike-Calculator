@@ -42,10 +42,7 @@
  * evaluator body.
  */
 
-import {
-  LEVEL_PROXIMITY_ES_POINTS,
-  RULE_ARMED_BAND_ES,
-} from './playbook.js';
+import { LEVEL_PROXIMITY_ES_POINTS, RULE_ARMED_BAND_ES } from './playbook.js';
 import { evaluateDriftOverride } from './flow-signals.js';
 import type {
   EsLevel,

@@ -21,10 +21,7 @@
  */
 
 import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
-import type {
-  EsLevel,
-  SessionPhaseBoundariesCt,
-} from './types';
+import type { EsLevel, SessionPhaseBoundariesCt } from './types';
 import {
   classifyLevelStatus,
   distanceInEsPoints,

@@ -235,13 +235,7 @@ describe('buildEsLevels', () => {
   });
 
   it('signed distance: positive when level is above price, negative when below', () => {
-    const { levels } = buildEsLevels(
-      SPX_FIXTURE,
-      0,
-      5800,
-      EMPTY_HISTORY,
-      null,
-    );
+    const { levels } = buildEsLevels(SPX_FIXTURE, 0, 5800, EMPTY_HISTORY, null);
     const callWall = levels.find((l) => l.kind === 'CALL_WALL');
     const putWall = levels.find((l) => l.kind === 'PUT_WALL');
     expect(callWall?.distanceEsPoints).toBeGreaterThan(0); // 5810 above 5800

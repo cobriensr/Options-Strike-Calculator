@@ -335,7 +335,9 @@ export default function AppHeader({
           )}
           <button
             onClick={onDarkModeToggle}
-            aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+            aria-label={
+              darkMode ? 'Switch to light mode' : 'Switch to dark mode'
+            }
             className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
           >
             {darkMode ? '☀️' : '🌙'}
