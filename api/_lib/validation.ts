@@ -441,6 +441,51 @@ export const analyzeBodySchema = z.object({
 export type AnalyzeBody = z.infer<typeof analyzeBodySchema>;
 
 // ============================================================
+// /api/periscope-chat
+// ============================================================
+
+// Periscope images can be larger than analyze images because the heat
+// maps capture wider strike ranges and the screenshots aren't always
+// aggressively compressed. Per spec: 10MB per image, 30MB combined.
+const MAX_PERISCOPE_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB in base64 chars
+const MAX_PERISCOPE_TOTAL_SIZE = 30 * 1024 * 1024; // 30MB combined
+
+export const periscopeImageSchema = z.object({
+  kind: z.enum(['chart', 'gex', 'charm']),
+  data: z
+    .string()
+    .min(1, 'Image data is required')
+    .max(MAX_PERISCOPE_IMAGE_SIZE, 'Image too large. Maximum 10MB per image.'),
+  mediaType: z.enum(['image/jpeg', 'image/png', 'image/gif', 'image/webp']),
+});
+
+export const periscopeChatBodySchema = z
+  .object({
+    mode: z.enum(['read', 'debrief']),
+    images: z
+      .array(periscopeImageSchema)
+      .min(1, 'At least one image is required')
+      .max(
+        3,
+        'Maximum 3 images allowed (chart + GEX heat map + charm heat map)',
+      ),
+    context: z
+      .string()
+      .max(4000, 'Context too long (max 4000 chars)')
+      .optional(),
+    parentId: z.number().int().positive().finite().nullable().optional(),
+  })
+  .refine(
+    (body) => {
+      const total = body.images.reduce((sum, img) => sum + img.data.length, 0);
+      return total <= MAX_PERISCOPE_TOTAL_SIZE;
+    },
+    { message: 'Combined image size exceeds 30MB' },
+  );
+
+export type PeriscopeChatBody = z.infer<typeof periscopeChatBodySchema>;
+
+// ============================================================
 // /api/pre-market
 // ============================================================
 

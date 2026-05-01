@@ -2832,4 +2832,65 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 103,
+    description:
+      'Create periscope_analyses table for the manual Periscope chat ' +
+      'feature — user uploads 1-3 chart screenshots, Claude produces a ' +
+      'structured read (open setup) or debrief (post-hoc scoring), and ' +
+      'the response + vector(2000) embedding are persisted for retrieval ' +
+      'and calibration. Mirrors trace_live_analyses shape with periscope ' +
+      'extras: mode (read|debrief), optional parent_id (debriefs link to ' +
+      'their open read), structured trigger/cone fields parsed from a ' +
+      "JSON block at the end of Claude's response, and user-editable " +
+      'calibration_quality + regime_tag for curating gold examples. ' +
+      'See spec: docs/superpowers/specs/periscope-chat-2026-04-30.md.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS periscope_analyses (
+          id                  BIGSERIAL PRIMARY KEY,
+          trading_date        DATE NOT NULL,
+          captured_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          mode                TEXT NOT NULL CHECK (mode IN ('read', 'debrief')),
+          parent_id           BIGINT REFERENCES periscope_analyses(id),
+          user_context        TEXT,
+          image_urls          JSONB NOT NULL DEFAULT '[]'::jsonb,
+          prose_text          TEXT NOT NULL,
+          full_response       JSONB NOT NULL,
+          analysis_embedding  vector(2000),
+          spot                NUMERIC(10,2),
+          cone_lower          NUMERIC(10,2),
+          cone_upper          NUMERIC(10,2),
+          long_trigger        NUMERIC(10,2),
+          short_trigger       NUMERIC(10,2),
+          regime_tag          TEXT,
+          calibration_quality SMALLINT CHECK (calibration_quality BETWEEN 1 AND 5),
+          model               TEXT NOT NULL,
+          input_tokens        INTEGER,
+          output_tokens       INTEGER,
+          cache_read_tokens   INTEGER,
+          cache_write_tokens  INTEGER,
+          duration_ms         INTEGER,
+          created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_periscope_analyses_trading_date
+          ON periscope_analyses (trading_date DESC)
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_periscope_analyses_parent_id
+          ON periscope_analyses (parent_id) WHERE parent_id IS NOT NULL
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_periscope_analyses_calibration_quality
+          ON periscope_analyses (calibration_quality DESC) WHERE calibration_quality IS NOT NULL
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_periscope_analyses_embedding_hnsw
+          ON periscope_analyses USING hnsw (analysis_embedding vector_cosine_ops)
+          WHERE analysis_embedding IS NOT NULL
+      `,
+    ],
+  },
 ];
