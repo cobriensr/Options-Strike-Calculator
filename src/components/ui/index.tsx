@@ -7,3 +7,4 @@ export { Tooltip } from './Tooltip';
 export { DateInput } from './DateInput';
 export { TimeInputCT } from './TimeInputCT';
 export { SortableHeader } from './SortableHeader';
+export { ScrubControlsCompact } from './ScrubControlsCompact';

@@ -12,9 +12,9 @@
 import { memo, useState, useCallback, useMemo, useDeferredValue } from 'react';
 import type { ReactNode } from 'react';
 import { theme } from '../../themes';
-import { tint } from '../../utils/ui-utils';
 import { SectionBox, Chip, StatusBadge } from '../ui';
 import { DateInput } from '../ui/DateInput';
+import { ScrubControlsCompact } from '../ui/ScrubControlsCompact';
 import type { UseGexTargetReturn, SPXCandle } from '../../hooks/useGexTarget';
 import { useNopeIntraday } from '../../hooks/useNopeIntraday';
 import { TargetTile } from './TargetTile';
@@ -205,6 +205,17 @@ export const GexTarget = memo(function GexTarget({
       ? theme.statusScrubbed
       : theme.statusStale;
 
+  // Color for the scrub <select> / fallback span. Today + not-live + not-
+  // scrubbed (i.e. mid-session refresh moment) drops to secondary so the
+  // text reads as "current" without a status tint.
+  const scrubColor = isLive
+    ? theme.statusLive
+    : isScrubbed
+      ? theme.statusScrubbed
+      : !isToday
+        ? theme.statusStale
+        : 'var(--color-secondary)';
+
   // ── Data availability check ──────────────────────────────
 
   const dateInAvailable =
@@ -227,84 +238,20 @@ export const GexTarget = memo(function GexTarget({
         <Chip active={mode === 'dir'} onClick={setDir} label="DIR" />
       </div>
 
-      {/* Scrubber */}
-      <div className="border-edge flex items-center gap-0.5 rounded border">
-        <button
-          type="button"
-          onClick={scrubPrev}
-          disabled={!canScrubPrev}
-          aria-label="Previous snapshot"
-          className="text-secondary hover:text-primary disabled:text-muted cursor-pointer px-1.5 py-0.5 font-mono text-xs font-bold disabled:cursor-default"
-        >
-          &#x25C0;
-        </button>
-        {timestamps.length > 1 && timestamp ? (
-          <select
-            value={timestamp ?? ''}
-            onChange={(e) => scrubTo(e.target.value)}
-            aria-label="Jump to snapshot time"
-            className="border-edge min-w-[60px] cursor-pointer rounded border bg-transparent px-1 py-0.5 text-center font-mono text-[10px] outline-none"
-            style={{
-              color: isLive
-                ? theme.statusLive
-                : isScrubbed
-                  ? theme.statusScrubbed
-                  : !isToday
-                    ? theme.statusStale
-                    : 'var(--color-secondary)',
-            }}
-          >
-            {timestamps.map((ts) => (
-              <option key={ts} value={ts}>
-                {formatTimeCT(ts)}
-              </option>
-            ))}
-          </select>
-        ) : (
-          timestamp && (
-            <span
-              className="min-w-[44px] text-center font-mono text-[10px]"
-              style={{
-                color: isLive
-                  ? theme.statusLive
-                  : isScrubbed
-                    ? theme.statusScrubbed
-                    : !isToday
-                      ? theme.statusStale
-                      : undefined,
-              }}
-            >
-              {formatTimeCT(timestamp)}
-            </span>
-          )
-        )}
-        <button
-          type="button"
-          onClick={scrubNext}
-          disabled={!canScrubNext}
-          aria-label="Next snapshot"
-          className="text-secondary hover:text-primary disabled:text-muted cursor-pointer px-1.5 py-0.5 font-mono text-xs font-bold disabled:cursor-default"
-        >
-          &#x25B6;
-        </button>
-      </div>
-
-      {/* LIVE button — shown when scrubbed or viewing a past date */}
-      {(isScrubbed || !isToday) && (
-        <button
-          type="button"
-          onClick={scrubLive}
-          aria-label="Resume live"
-          className="cursor-pointer rounded px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider transition-colors"
-          style={{
-            color: theme.statusLive,
-            background: tint(theme.statusLive, '14'),
-            border: `1px solid ${tint(theme.statusLive, '40')}`,
-          }}
-        >
-          LIVE
-        </button>
-      )}
+      {/* Scrubber + LIVE button */}
+      <ScrubControlsCompact
+        timestamps={timestamps}
+        currentTimestamp={timestamp}
+        formatLabel={formatTimeCT}
+        displayColor={scrubColor}
+        canScrubPrev={canScrubPrev}
+        canScrubNext={canScrubNext}
+        onScrubPrev={scrubPrev}
+        onScrubNext={scrubNext}
+        onScrubTo={scrubTo}
+        showLiveButton={isScrubbed || !isToday}
+        onScrubLive={scrubLive}
+      />
 
       {/* Date picker */}
       <DateInput

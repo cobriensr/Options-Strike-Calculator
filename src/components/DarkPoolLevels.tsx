@@ -14,10 +14,10 @@
 import { memo, useMemo, useState, useCallback } from 'react';
 import { theme } from '../themes';
 import { formatTimeCT } from '../utils/component-formatters';
-import { tint } from '../utils/ui-utils';
 import { DateInput } from './ui/DateInput';
 import { SectionBox } from './ui';
 import { StatusBadge } from './ui';
+import { ScrubControlsCompact } from './ui/ScrubControlsCompact';
 import type { DarkPoolLevel } from '../hooks/useDarkPoolLevels';
 
 const DEFAULT_VISIBLE = 15;
@@ -165,80 +165,31 @@ export default memo(function DarkPoolLevels({
       ? theme.statusScrubbed
       : theme.statusStale;
 
+  const scrubColor = isLive
+    ? theme.statusLive
+    : isScrubbed
+      ? theme.statusScrubbed
+      : theme.statusStale;
+
   const headerRight = (
     <div className="flex flex-wrap items-center gap-2">
-      {/* Time scrubber */}
-      <div className="border-edge flex items-center gap-0.5 rounded border">
-        <button
-          type="button"
-          onClick={onScrubPrev}
-          disabled={!canScrubPrev}
-          aria-label="Earlier snapshot"
-          className="text-secondary hover:text-primary disabled:text-muted cursor-pointer px-1.5 py-0.5 font-mono text-xs font-bold disabled:cursor-default"
-        >
-          &#x25C0;
-        </button>
-        {timeGrid.length > 1 && onScrubTo ? (
-          <select
-            value={scrubTime ?? timeGrid.at(-1) ?? ''}
-            onChange={(e) => onScrubTo(e.target.value)}
-            aria-label="Jump to snapshot time"
-            className="border-edge min-w-[60px] cursor-pointer rounded border bg-transparent px-1 py-0.5 text-center font-mono text-[10px] outline-none"
-            style={{
-              color: isLive
-                ? theme.statusLive
-                : isScrubbed
-                  ? theme.statusScrubbed
-                  : theme.statusStale,
-            }}
-          >
-            {timeGrid.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <span
-            className="min-w-[44px] text-center font-mono text-[10px]"
-            style={{
-              color: isLive
-                ? theme.statusLive
-                : isScrubbed
-                  ? theme.statusScrubbed
-                  : theme.statusStale,
-            }}
-          >
-            {scrubTime ?? (updatedAt ? formatTimeCT(updatedAt) : '')}
-          </span>
-        )}
-        <button
-          type="button"
-          onClick={onScrubNext}
-          disabled={!canScrubNext}
-          aria-label="Later snapshot"
-          className="text-secondary hover:text-primary disabled:text-muted cursor-pointer px-1.5 py-0.5 font-mono text-xs font-bold disabled:cursor-default"
-        >
-          &#x25B6;
-        </button>
-      </div>
-
-      {/* LIVE button — only shown when scrubbed */}
-      {(isScrubbed || !isLive) && (
-        <button
-          type="button"
-          onClick={onScrubLive}
-          aria-label="Resume live"
-          className="cursor-pointer rounded px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider transition-colors"
-          style={{
-            color: theme.statusLive,
-            background: tint(theme.statusLive, '14'),
-            border: `1px solid ${tint(theme.statusLive, '40')}`,
-          }}
-        >
-          LIVE
-        </button>
-      )}
+      {/* Time scrubber + LIVE button */}
+      <ScrubControlsCompact
+        timestamps={timeGrid}
+        currentTimestamp={scrubTime}
+        formatLabel={(t) => t}
+        displayColor={scrubColor}
+        canScrubPrev={canScrubPrev}
+        canScrubNext={canScrubNext}
+        onScrubPrev={onScrubPrev ?? (() => {})}
+        onScrubNext={onScrubNext ?? (() => {})}
+        onScrubTo={onScrubTo}
+        showLiveButton={isScrubbed || !isLive}
+        onScrubLive={onScrubLive}
+        fallbackText={updatedAt ? formatTimeCT(updatedAt) : ''}
+        prevAriaLabel="Earlier snapshot"
+        nextAriaLabel="Later snapshot"
+      />
 
       {/* Date picker */}
       <DateInput
