@@ -35,13 +35,15 @@ import { Sentry, metrics } from './_lib/sentry.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
 import { fetchSPXCandles, type SPXCandle } from './_lib/spx-candles.js';
-import type {
-  StrikeScore,
-  TargetScore,
-  Tier,
-  WallSide,
-  Mode,
-} from '../src/utils/gex-target/index.js';
+import {
+  loadStrikeScoreHistory,
+  groupRowsByMode,
+  toIso,
+  toDateString,
+  num,
+} from './_lib/gex-target-features.js';
+import type { GexTargetFeatureRow } from './_lib/gex-target-features.js';
+import type { TargetScore } from '../src/utils/gex-target/index.js';
 
 // ── Response shape ─────────────────────────────────────────────
 
@@ -136,243 +138,13 @@ export interface GexTargetHistoryResponse {
   previousClose: number | null;
 }
 
-// ── Row shape from gex_target_features ────────────────────────
-
-/**
- * Numeric column as returned by the Neon driver — NUMERIC arrives as a
- * string to preserve precision, but tests / older driver paths can also
- * surface a JS number, so we accept either.
- */
-type Numeric = string | number;
-
-/** Same as `Numeric`, but explicitly nullable for nullable columns. */
-type NumericOrNull = Numeric | null;
-
-/**
- * Raw row shape returned by `SELECT * FROM gex_target_features`. Numeric
- * columns arrive as strings from the Neon serverless driver — every
- * read is funneled through `Number(...)` in `rowToStrikeScore` so the
- * `StrikeScore` type contract is preserved.
- *
- * The four `nearest_*_wall_*` columns exist on the row but are
- * intentionally NOT mapped into `StrikeScore` — they're stored for the
- * Appendix B futures-validation experiments and aren't part of the
- * Phase 1 `MagnetFeatures` contract.
- */
-interface GexTargetFeatureRow {
-  date: string | Date;
-  timestamp: string | Date;
-  mode: string;
-  math_version: string;
-  strike: Numeric;
-
-  /** Raw net GEX from the JOIN — replaces the stale stored value. */
-  gex_dollars: Numeric;
-  /** Call-side GEX from the JOIN (display only). */
-  call_gex_dollars: Numeric;
-  /** Put-side GEX from the JOIN (display only). */
-  put_gex_dollars: Numeric;
-  /** Call delta exposure from greek_exposure_strike JOIN (display only). */
-  call_delta: NumericOrNull;
-  /** Put delta exposure from greek_exposure_strike JOIN (display only). */
-  put_delta: NumericOrNull;
-
-  delta_gex_1m: NumericOrNull;
-  delta_gex_5m: NumericOrNull;
-  delta_gex_20m: NumericOrNull;
-  delta_gex_60m: NumericOrNull;
-
-  prev_gex_dollars_1m: NumericOrNull;
-  prev_gex_dollars_5m: NumericOrNull;
-  prev_gex_dollars_10m: NumericOrNull;
-  prev_gex_dollars_15m: NumericOrNull;
-  prev_gex_dollars_20m: NumericOrNull;
-  prev_gex_dollars_60m: NumericOrNull;
-
-  delta_pct_1m: NumericOrNull;
-  delta_pct_5m: NumericOrNull;
-  delta_pct_20m: NumericOrNull;
-  delta_pct_60m: NumericOrNull;
-
-  call_ratio: Numeric;
-  charm_net: Numeric;
-  delta_net: Numeric;
-  vanna_net: Numeric;
-  dist_from_spot: Numeric;
-  spot_price: Numeric;
-  minutes_after_noon_ct: Numeric;
-}
-
 // ── Helpers ────────────────────────────────────────────────────
 
-/**
- * Normalize a Postgres TIMESTAMPTZ / DATE value to its canonical string.
- *
- * The Neon serverless driver returns these columns as JavaScript Date
- * objects when using the SQL template tag and as strings via the older
- * `query()` path. The two forms must serialize identically across the
- * response so the frontend can compare `timestamp` against entries in
- * `timestamps[]` for scrub navigation.
- */
-function toIso(value: unknown): string | null {
-  if (value == null) return null;
-  if (value instanceof Date) return value.toISOString();
-  const str = String(value);
-  const parsed = new Date(str);
-  return Number.isNaN(parsed.getTime()) ? str : parsed.toISOString();
-}
-
-/**
- * Normalize a Postgres DATE value to a YYYY-MM-DD string.
- *
- * The Neon driver returns DATE columns as JavaScript Date objects (in
- * UTC midnight). `toISOString().slice(0, 10)` gives back the same
- * YYYY-MM-DD that was originally inserted.
- */
-function toDateString(value: unknown): string | null {
-  if (value == null) return null;
-  if (value instanceof Date) return value.toISOString().slice(0, 10);
-  const str = String(value);
-  // If the driver already gave us "YYYY-MM-DD" or a longer ISO string,
-  // slicing is safe and avoids a Date round-trip that could shift the
-  // day across timezones.
-  if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.slice(0, 10);
-  const parsed = new Date(str);
-  return Number.isNaN(parsed.getTime())
-    ? null
-    : parsed.toISOString().slice(0, 10);
-}
-
-/**
- * Coerce a numeric DB column to a JS number. The Neon driver returns
- * NUMERIC columns as strings to preserve precision; the StrikeScore
- * contract expects numbers, so every numeric column goes through this.
- */
-function num(value: Numeric): number {
-  return typeof value === 'number' ? value : Number(value);
-}
-
-/**
- * Same as `num`, but preserves null. Used for the per-horizon delta /
- * prev / pct columns which are explicitly nullable in the schema.
- */
-function numOrNull(value: NumericOrNull): number | null {
-  if (value === null || value === undefined) return null;
-  return typeof value === 'number' ? value : Number(value);
-}
-
-/**
- * Reconstruct a `StrikeScore` from one `gex_target_features` row.
- *
- * This is the inverse of `pushRowParams` in `api/_lib/gex-target-features.ts`.
- * The two functions must stay in sync. The Phase 1.5 awareness here is
- * that `MagnetFeatures` does NOT have a singular `prevGexDollars` field
- * anymore — only the four per-horizon variants. Don't accidentally
- * reintroduce the old field name.
- *
- * Derived scoring fields (ranking, components, finalScore, tier, wallSide)
- * were dropped from the DB in migration #58. The `StrikeScore` type still
- * requires them, so we fill them with sentinel defaults — the browser
- * recomputes every derived field from the raw features before display.
- */
-function rowToStrikeScore(row: GexTargetFeatureRow): StrikeScore {
-  const strike = num(row.strike);
-  return {
-    strike,
-    features: {
-      strike,
-      spot: num(row.spot_price),
-      distFromSpot: num(row.dist_from_spot),
-      gexDollars: num(row.gex_dollars),
-      callGexDollars: num(row.call_gex_dollars),
-      putGexDollars: num(row.put_gex_dollars),
-      callDelta: numOrNull(row.call_delta),
-      putDelta: numOrNull(row.put_delta),
-      deltaGex_1m: numOrNull(row.delta_gex_1m),
-      deltaGex_5m: numOrNull(row.delta_gex_5m),
-      deltaGex_20m: numOrNull(row.delta_gex_20m),
-      deltaGex_60m: numOrNull(row.delta_gex_60m),
-      prevGexDollars_1m: numOrNull(row.prev_gex_dollars_1m),
-      prevGexDollars_5m: numOrNull(row.prev_gex_dollars_5m),
-      prevGexDollars_10m: numOrNull(row.prev_gex_dollars_10m),
-      prevGexDollars_15m: numOrNull(row.prev_gex_dollars_15m),
-      prevGexDollars_20m: numOrNull(row.prev_gex_dollars_20m),
-      prevGexDollars_60m: numOrNull(row.prev_gex_dollars_60m),
-      deltaPct_1m: numOrNull(row.delta_pct_1m),
-      deltaPct_5m: numOrNull(row.delta_pct_5m),
-      deltaPct_20m: numOrNull(row.delta_pct_20m),
-      deltaPct_60m: numOrNull(row.delta_pct_60m),
-      callRatio: num(row.call_ratio),
-      charmNet: num(row.charm_net),
-      deltaNet: num(row.delta_net),
-      vannaNet: num(row.vanna_net),
-      minutesAfterNoonCT: num(row.minutes_after_noon_ct),
-    },
-    components: {
-      flowConfluence: 0,
-      priceConfirm: 0,
-      charmScore: 0,
-      dominance: 0,
-      clarity: 0,
-      proximity: 0,
-    },
-    finalScore: 0,
-    tier: 'NONE' as Tier,
-    wallSide: 'NEUTRAL' as WallSide,
-    rankByScore: 0,
-    rankBySize: 0,
-    isTarget: false,
-  };
-}
-
-/**
- * Group rows for one snapshot into the three per-mode `TargetScore`
- * objects the frontend consumes. Returns null for any mode that has no
- * rows in the snapshot.
- *
- * Migration #58 dropped the `rank_in_mode` and `is_target` columns, so
- * leaderboard ordering is no longer stored. We sort by `|gex_dollars|`
- * descending as a deterministic ordering fallback — the browser
- * recomputes its own ranking before display so the exact order here
- * doesn't affect the UI, it just needs to be stable.
- *
- * `target` is always null from the server: the browser computes the
- * target itself from the raw features in each `StrikeScore`.
- */
-function groupRowsByMode(rows: GexTargetFeatureRow[]): {
-  oi: TargetScore | null;
-  vol: TargetScore | null;
-  dir: TargetScore | null;
-} {
-  const buckets: Record<Mode, GexTargetFeatureRow[]> = {
-    oi: [],
-    vol: [],
-    dir: [],
-  };
-
-  for (const row of rows) {
-    if (row.mode === 'oi' || row.mode === 'vol' || row.mode === 'dir') {
-      buckets[row.mode].push(row);
-    }
-  }
-
-  const buildScore = (modeRows: GexTargetFeatureRow[]): TargetScore | null => {
-    if (modeRows.length === 0) return null;
-    // Deterministic fallback ordering — by |gex_dollars| desc. The
-    // browser re-ranks before display, so this only needs to be stable.
-    const sorted = [...modeRows].sort(
-      (a, b) => Math.abs(num(b.gex_dollars)) - Math.abs(num(a.gex_dollars)),
-    );
-    const leaderboard = sorted.map(rowToStrikeScore);
-    return { target: null, leaderboard };
-  };
-
-  return {
-    oi: buildScore(buckets.oi),
-    vol: buildScore(buckets.vol),
-    dir: buildScore(buckets.dir),
-  };
-}
+// `GexTargetFeatureRow`, `toIso`, `toDateString`, `num`, `rowToStrikeScore`,
+// and `groupRowsByMode` now live in `_lib/gex-target-features.ts`. The
+// rest of this module imports them — see the top-level `import { ... }`
+// block above. The duplicated SELECT they backed is also extracted to
+// `loadStrikeScoreHistory()` in the same module.
 
 /**
  * Best-effort SPX candle fetch. Wrapping the call in its own try/catch
@@ -524,51 +296,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // path and returns early so the single-snapshot path below is
       // completely unchanged.
       if (req.query.all === 'true') {
-        const allRows = (await sql`
-          SELECT
-            gtf.date, gtf.timestamp, gtf.mode, gtf.math_version, gtf.strike,
-            CASE gtf.mode
-              -- OI mode: use greek_exposure_strike × spot × 0.01 to convert raw
-              -- gamma exposure (gamma × OI × 100) to dealer dollar hedging
-              -- exposure per 1% SPX move — matching SOFBOT's M/K display scale.
-              WHEN 'oi'  THEN COALESCE(ges.net_gex * gtf.spot_price::numeric * 0.01, gtf.gex_dollars)
-              WHEN 'vol' THEN COALESCE(gso.call_gamma_vol::numeric + gso.put_gamma_vol::numeric, gtf.gex_dollars)
-              WHEN 'dir' THEN COALESCE(gso.call_gamma_ask::numeric + gso.call_gamma_bid::numeric + gso.put_gamma_ask::numeric + gso.put_gamma_bid::numeric, gtf.gex_dollars)
-              ELSE gtf.gex_dollars
-            END AS gex_dollars,
-            CASE gtf.mode
-              WHEN 'oi'  THEN COALESCE(ges.call_gex::numeric * gtf.spot_price::numeric * 0.01, 0)
-              WHEN 'vol' THEN COALESCE(gso.call_gamma_vol::numeric, 0)
-              WHEN 'dir' THEN COALESCE(gso.call_gamma_ask::numeric + gso.call_gamma_bid::numeric, 0)
-              ELSE 0
-            END AS call_gex_dollars,
-            CASE gtf.mode
-              WHEN 'oi'  THEN COALESCE(ges.put_gex::numeric * gtf.spot_price::numeric * 0.01, 0)
-              WHEN 'vol' THEN COALESCE(gso.put_gamma_vol::numeric, 0)
-              WHEN 'dir' THEN COALESCE(gso.put_gamma_ask::numeric + gso.put_gamma_bid::numeric, 0)
-              ELSE 0
-            END AS put_gex_dollars,
-            ges.call_delta,
-            ges.put_delta,
-            gtf.delta_gex_1m, gtf.delta_gex_5m, gtf.delta_gex_20m, gtf.delta_gex_60m,
-            gtf.prev_gex_dollars_1m, gtf.prev_gex_dollars_5m,
-            gtf.prev_gex_dollars_10m, gtf.prev_gex_dollars_15m,
-            gtf.prev_gex_dollars_20m, gtf.prev_gex_dollars_60m,
-            gtf.delta_pct_1m, gtf.delta_pct_5m, gtf.delta_pct_20m, gtf.delta_pct_60m,
-            gtf.call_ratio, gtf.charm_net, gtf.delta_net, gtf.vanna_net,
-            gtf.dist_from_spot, gtf.spot_price, gtf.minutes_after_noon_ct
-          FROM gex_target_features gtf
-          LEFT JOIN gex_strike_0dte gso
-            ON  gso.date      = gtf.date
-            AND gso.timestamp = gtf.timestamp
-            AND gso.strike::numeric = gtf.strike::numeric
-          LEFT JOIN greek_exposure_strike ges
-            ON  ges.date   = gtf.date
-            AND ges.expiry = gtf.date
-            AND ges.strike::numeric = gtf.strike::numeric
-          WHERE gtf.date = ${date}
-          ORDER BY gtf.timestamp ASC, gtf.mode ASC, gtf.strike ASC
-        `) as GexTargetFeatureRow[];
+        const allRows = await loadStrikeScoreHistory({ sql, date });
 
         // Group rows by their normalized timestamp key.
         const byTimestamp = new Map<string, GexTargetFeatureRow[]>();
@@ -609,51 +337,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       // ── 5. Fetch the 30 feature rows for this snapshot ────────────
-      const featureRows = (await sql`
-        SELECT
-          gtf.date, gtf.timestamp, gtf.mode, gtf.math_version, gtf.strike,
-          CASE gtf.mode
-            -- OI mode: use greek_exposure_strike × spot × 0.01 to convert raw
-            -- gamma exposure (gamma × OI × 100) to dealer dollar hedging
-            -- exposure per 1% SPX move — matching SOFBOT's M/K display scale.
-            WHEN 'oi'  THEN COALESCE(ges.net_gex * gtf.spot_price::numeric * 0.01, gtf.gex_dollars)
-            WHEN 'vol' THEN COALESCE(gso.call_gamma_vol::numeric + gso.put_gamma_vol::numeric, gtf.gex_dollars)
-            WHEN 'dir' THEN COALESCE(gso.call_gamma_ask::numeric + gso.call_gamma_bid::numeric + gso.put_gamma_ask::numeric + gso.put_gamma_bid::numeric, gtf.gex_dollars)
-            ELSE gtf.gex_dollars
-          END AS gex_dollars,
-          CASE gtf.mode
-            WHEN 'oi'  THEN COALESCE(ges.call_gex::numeric * gtf.spot_price::numeric * 0.01, 0)
-            WHEN 'vol' THEN COALESCE(gso.call_gamma_vol::numeric, 0)
-            WHEN 'dir' THEN COALESCE(gso.call_gamma_ask::numeric + gso.call_gamma_bid::numeric, 0)
-            ELSE 0
-          END AS call_gex_dollars,
-          CASE gtf.mode
-            WHEN 'oi'  THEN COALESCE(ges.put_gex::numeric * gtf.spot_price::numeric * 0.01, 0)
-            WHEN 'vol' THEN COALESCE(gso.put_gamma_vol::numeric, 0)
-            WHEN 'dir' THEN COALESCE(gso.put_gamma_ask::numeric + gso.put_gamma_bid::numeric, 0)
-            ELSE 0
-          END AS put_gex_dollars,
-          ges.call_delta,
-          ges.put_delta,
-          gtf.delta_gex_1m, gtf.delta_gex_5m, gtf.delta_gex_20m, gtf.delta_gex_60m,
-          gtf.prev_gex_dollars_1m, gtf.prev_gex_dollars_5m,
-          gtf.prev_gex_dollars_10m, gtf.prev_gex_dollars_15m,
-          gtf.prev_gex_dollars_20m, gtf.prev_gex_dollars_60m,
-          gtf.delta_pct_1m, gtf.delta_pct_5m, gtf.delta_pct_20m, gtf.delta_pct_60m,
-          gtf.call_ratio, gtf.charm_net, gtf.delta_net, gtf.vanna_net,
-          gtf.dist_from_spot, gtf.spot_price, gtf.minutes_after_noon_ct
-        FROM gex_target_features gtf
-        LEFT JOIN gex_strike_0dte gso
-          ON  gso.date      = gtf.date
-          AND gso.timestamp = gtf.timestamp
-          AND gso.strike::numeric = gtf.strike::numeric
-        LEFT JOIN greek_exposure_strike ges
-          ON  ges.date   = gtf.date
-          AND ges.expiry = gtf.date
-          AND ges.strike::numeric = gtf.strike::numeric
-        WHERE gtf.date = ${date} AND gtf.timestamp = ${timestamp}
-        ORDER BY gtf.mode ASC, gtf.strike ASC
-      `) as GexTargetFeatureRow[];
+      const featureRows = await loadStrikeScoreHistory({
+        sql,
+        date,
+        timestamp,
+      });
 
       // ── 6. Reconstruct the three per-mode TargetScore objects ─────
       const grouped = groupRowsByMode(featureRows);
