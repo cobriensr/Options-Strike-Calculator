@@ -3,7 +3,7 @@
 ## Goal
 
 Reduce duplication and decompose oversized files in `api/` (cron jobs,
-endpoints, _lib utilities) without changing public behavior. Pulled from
+endpoints, \_lib utilities) without changing public behavior. Pulled from
 a parallel-agent assessment of the 30 largest TS files in `api/`. Mirrors
 the structure of the [src-refactor-2026-04-30](src-refactor-2026-04-30.md)
 plan: shared primitives first, then file-by-file consumers, then
@@ -145,7 +145,7 @@ modification yet.
 - Create `withRequestScope(method, path, handler)` HOF wrapping
   `Sentry.withIsolationScope` + `metrics.request` + 405 method check.
 - Create `runCachedAnthropicCall({ system, messages, primaryModel, fallbackModel, onUsage })` consolidating the streaming + cache-blocks
-  + Opus→Sonnet fallback + usage logging pattern.
+  - Opus→Sonnet fallback + usage logging pattern.
 - Tests for both.
 - **Do not adopt yet.** `withRequestScope` adoption is Phase 5j;
   `runCachedAnthropicCall` adoption is Phase 5i.
@@ -232,12 +232,12 @@ Targets: `fetch-strike-iv` (13 tickers), `fetch-strike-exposure`,
 
 - Replace 7 hardcoded symbol blocks with a `SYMBOL_RENDERERS: Record<symbol, (sym, derived) => string[]>` table; orchestrator iterates symbols.
 
-**5d. Adopt `format-helpers.ts` in 4-5 _lib files** (≤5 files)
+**5d. Adopt `format-helpers.ts` in 4-5 \_lib files** (≤5 files)
 
 - Replace inline formatters in `futures-context.ts`, `uw-deltas.ts`,
   `microstructure-signals.ts`, `darkpool.ts`. Verify output parity.
 
-**5e. Adopt `numeric-coercion.ts` in 5 _lib files** (≤5 files)
+**5e. Adopt `numeric-coercion.ts` in 5 \_lib files** (≤5 files)
 
 - Replace inline `toNum`/`num`/`toNumber` reimplementations.
 

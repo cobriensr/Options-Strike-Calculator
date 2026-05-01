@@ -26,6 +26,7 @@ t=14:28:51.200  → request F dispatched, second-bucket=51, count=3  ✓ (limite
 At `t=14:28:51.200`, requests A–F are all in flight (typical UW latency 800–1500 ms). UW sees 6 concurrent → 429 on the 4th–6th.
 
 Confirmed by Sentry breadcrumbs on issue triggered 2026-04-30 14:28:51.245 CDT:
+
 - 3 Upstash POSTs at `.193 / .199 / .200` (limiter granted slot)
 - UW request at `.242` returned 429 with body `"3 concurrent requests, the maximum..."`
 
@@ -53,6 +54,7 @@ Steps 1–3 wrapped in a Lua script for atomicity. Lease TTL handles function cr
 ### Why ZSET instead of INCR/DECR counter
 
 INCR/DECR counters have two failure modes:
+
 1. **Crash leak** — function dies between INCR and DECR, counter stays inflated forever, eventual deadlock.
 2. **TTL mass-reset** — putting TTL on the counter wipes ALL slots simultaneously when it expires, instead of expiring per-lease.
 
@@ -75,6 +77,7 @@ uwFetch:
 ### withRetry — 429 reason differentiation
 
 Today `withRetry` treats all 429s with 1s/2s exponential backoff. UW returns two distinct 429s:
+
 - `"3 concurrent requests"` — clears in ~1 s as in-flight requests drain. Short jittered backoff (250–500 ms) is correct.
 - `"120 in 60 seconds"` — minute window has to roll. 1s/2s is way too short. Honor `Retry-After` if present, else 5–30 s.
 
@@ -82,23 +85,23 @@ Parse the error message; pick a backoff function accordingly.
 
 ### Telemetry
 
-| Metric | Type | Sampled at | Purpose |
-|---|---|---|---|
-| `uw.concurrency.in_use` | gauge | every acquire | how close to cap on average |
-| `uw.concurrency.wait_ms` | histogram | acquire-to-grant | saturation pressure |
-| `uw.concurrency.timeout` | counter | acquire failure | hard-saturation events |
+| Metric                   | Type      | Sampled at       | Purpose                     |
+| ------------------------ | --------- | ---------------- | --------------------------- |
+| `uw.concurrency.in_use`  | gauge     | every acquire    | how close to cap on average |
+| `uw.concurrency.wait_ms` | histogram | acquire-to-grant | saturation pressure         |
+| `uw.concurrency.timeout` | counter   | acquire failure  | hard-saturation events      |
 
 If `wait_ms` p95 > 5 s sustained, the cap is too low for the cron load — drop tickers or raise the UW plan tier.
 
 ## Constants
 
-| Name | Value | Rationale |
-|---|---|---|
-| `UW_CONCURRENCY_CAP` | `3` | Matches UW account limit (confirmed by 429 body) |
-| `LEASE_MS` | `30_000` | Longer than any single UW request (typical 0.8–1.5 s, p99 ~5 s) |
-| `MAX_ACQUIRE_ATTEMPTS` | `60` | 60 × ~250 ms ≈ 15 s wall-clock max, well under Vercel cron timeout |
-| `WAIT_BASE_MS` | `250` | Average UW request duration order-of-magnitude |
-| `WAIT_JITTER_MS` | `250` | Prevents thundering herd on slot release |
+| Name                   | Value    | Rationale                                                          |
+| ---------------------- | -------- | ------------------------------------------------------------------ |
+| `UW_CONCURRENCY_CAP`   | `3`      | Matches UW account limit (confirmed by 429 body)                   |
+| `LEASE_MS`             | `30_000` | Longer than any single UW request (typical 0.8–1.5 s, p99 ~5 s)    |
+| `MAX_ACQUIRE_ATTEMPTS` | `60`     | 60 × ~250 ms ≈ 15 s wall-clock max, well under Vercel cron timeout |
+| `WAIT_BASE_MS`         | `250`    | Average UW request duration order-of-magnitude                     |
+| `WAIT_JITTER_MS`       | `250`    | Prevents thundering herd on slot release                           |
 
 ## Phases
 
@@ -107,10 +110,12 @@ Each phase is independently shippable. Run `npm run review` after each.
 ### Phase 1 — Build the semaphore library (no wiring)
 
 **Files**
+
 - CREATE `api/_lib/uw-concurrency.ts` (~80 LOC)
 - CREATE `api/__tests__/uw-concurrency.test.ts` (~150 LOC, 5 tests)
 
 **Tests**
+
 1. `acquireConcurrencySlot()` returns a UUID and registers a member in the ZSET
 2. Acquire blocks (waits) when at cap, succeeds after a slot frees
 3. Expired leases are auto-reclaimed on the next acquire (set lease past, verify count drops)
@@ -122,6 +127,7 @@ Each phase is independently shippable. Run `npm run review` after each.
 ### Phase 2 — Wire into `uwFetch`
 
 **Files**
+
 - MODIFY `api/_lib/api-helpers.ts` — import the new module, wrap `uwFetch` body in try/finally with acquire/release. Add the three telemetry metrics.
 - MODIFY `api/__tests__/api-helpers.test.ts` — existing `uwFetch` tests need `vi.mock` for the semaphore module so they don't try to hit Redis. Add 1–2 cases verifying release happens on both success and error paths.
 
@@ -130,6 +136,7 @@ Each phase is independently shippable. Run `npm run review` after each.
 ### Phase 3 — withRetry 429 differentiation
 
 **Files**
+
 - MODIFY `api/_lib/api-helpers.ts` — add a `classify429(msg)` helper, branch backoff strategy.
 - MODIFY `api/__tests__/api-helpers.test.ts` — 2 new tests:
   - 429 with `"3 concurrent"` body → backoff is < 600 ms before retry
@@ -140,6 +147,7 @@ Each phase is independently shippable. Run `npm run review` after each.
 ### Phase 4 — Update prior spec + memorialize
 
 **Files**
+
 - MODIFY `docs/superpowers/specs/uw-rate-limiter-2026-04-27.md` — add a header note linking to this doc as the corrective design. Don't rewrite the original; preserve the historical decision context.
 
 **Verify** — link renders correctly when previewed.
@@ -171,15 +179,15 @@ Lua via `EVAL` requires Upstash to support scripting. Open question — see belo
 
 ## Files touched (summary)
 
-| File | Action | Phase |
-|---|---|---|
-| `api/_lib/uw-concurrency.ts` | CREATE | 1 |
-| `api/__tests__/uw-concurrency.test.ts` | CREATE | 1 |
-| `api/_lib/api-helpers.ts` | MODIFY | 2, 3 |
-| `api/__tests__/api-helpers.test.ts` | MODIFY | 2, 3 |
-| `api/_lib/uw-rate-limit.ts` | MODIFY (drop per-second cap) | 2 |
-| `api/__tests__/uw-rate-limit.test.ts` | MODIFY (drop per-second tests) | 2 |
-| `docs/superpowers/specs/uw-rate-limiter-2026-04-27.md` | MODIFY (link forward) | 4 |
+| File                                                   | Action                         | Phase |
+| ------------------------------------------------------ | ------------------------------ | ----- |
+| `api/_lib/uw-concurrency.ts`                           | CREATE                         | 1     |
+| `api/__tests__/uw-concurrency.test.ts`                 | CREATE                         | 1     |
+| `api/_lib/api-helpers.ts`                              | MODIFY                         | 2, 3  |
+| `api/__tests__/api-helpers.test.ts`                    | MODIFY                         | 2, 3  |
+| `api/_lib/uw-rate-limit.ts`                            | MODIFY (drop per-second cap)   | 2     |
+| `api/__tests__/uw-rate-limit.test.ts`                  | MODIFY (drop per-second tests) | 2     |
+| `docs/superpowers/specs/uw-rate-limiter-2026-04-27.md` | MODIFY (link forward)          | 4     |
 
 Phase 2 expanded slightly from initial scoping — dropping the now-redundant per-second cap from `acquireUWSlot` is a correctness win and keeps the design clean.
 
