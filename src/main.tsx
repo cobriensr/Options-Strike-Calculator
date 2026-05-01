@@ -96,6 +96,8 @@ if (import.meta.env.PROD)
       { path: '/api/snapshot', method: 'POST' },
       { path: '/api/analyze', method: 'POST' },
       { path: '/api/periscope-chat', method: 'POST' },
+      { path: '/api/periscope-chat-list', method: 'GET' },
+      { path: '/api/periscope-chat-detail', method: 'GET' },
       // /api/trace-live-analyze intentionally NOT in the protect list:
       // the daemon (our automation) POSTs to it and can't carry a Kasada
       // JS-challenge token. Owner cookie + 6/min rate limit + payload

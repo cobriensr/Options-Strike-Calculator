@@ -486,6 +486,37 @@ export const periscopeChatBodySchema = z
 export type PeriscopeChatBody = z.infer<typeof periscopeChatBodySchema>;
 
 // ============================================================
+// /api/periscope-chat-list
+// ============================================================
+
+/**
+ * GET /api/periscope-chat-list?limit=N&before=ID. Cursor pagination on
+ * BIGSERIAL id (descending). `limit` defaults to 20 and is capped at
+ * 100 so an unbounded request can't lock the connection. `before` is
+ * optional — when omitted, the most recent N rows.
+ */
+export const periscopeChatListQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  before: z.coerce.number().int().positive().finite().optional(),
+});
+
+export type PeriscopeChatListQuery = z.infer<
+  typeof periscopeChatListQuerySchema
+>;
+
+// ============================================================
+// /api/periscope-chat-detail
+// ============================================================
+
+export const periscopeChatDetailQuerySchema = z.object({
+  id: z.coerce.number().int().positive().finite(),
+});
+
+export type PeriscopeChatDetailQuery = z.infer<
+  typeof periscopeChatDetailQuerySchema
+>;
+
+// ============================================================
 // /api/pre-market
 // ============================================================
 
