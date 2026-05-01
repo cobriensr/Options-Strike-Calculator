@@ -142,7 +142,7 @@ export async function buildRetrievalBlock(args: {
   const trimmed = userContext.trim();
   if (trimmed.length === 0) return null;
 
-  let queryEmbedding: number[] | null = null;
+  let queryEmbedding: number[] | null;
   try {
     queryEmbedding = await generateEmbedding(trimmed);
   } catch (err) {

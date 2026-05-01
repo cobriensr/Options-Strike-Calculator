@@ -451,7 +451,7 @@ async function getEconProximity(at: Date): Promise<{
 
   // Return the closest overall for the `name` field. The spec has
   // both t_minus and t_plus nullable individually.
-  let name: string | null = null;
+  let name: string | null;
   if (closestPast && closestFuture) {
     name =
       closestPast.mins < closestFuture.mins

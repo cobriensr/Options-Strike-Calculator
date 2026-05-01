@@ -424,13 +424,13 @@ ${(() => {
       }
     | undefined;
   if (!skew) return '';
-  let signal = '';
+  let signal: string;
   if (skew.putSkew25d > 8)
     signal =
       'STEEP — institutions pricing significant downside risk. PCS premium is rich but tail risk elevated.';
   else if (skew.putSkew25d > 4) signal = 'NORMAL — standard risk premium.';
   else signal = 'FLAT — unusually low hedging demand. Supports IC.';
-  let ratioSignal = '';
+  let ratioSignal: string;
   if (skew.skewRatio > 2)
     ratioSignal =
       'Strong put-over-call risk premium — market expects any large move to the downside.';

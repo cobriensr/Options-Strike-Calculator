@@ -167,7 +167,7 @@ export function formatWinRateForClaude(
   if (conditions.structure) condParts.push(conditions.structure);
   if (conditions.dayOfWeek) condParts.push(conditions.dayOfWeek);
 
-  let signal = '';
+  let signal: string;
   if (result.winRate >= 75)
     signal = 'Supports upgrading confidence by one level.';
   else if (result.winRate >= 50)
