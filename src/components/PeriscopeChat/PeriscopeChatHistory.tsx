@@ -15,6 +15,24 @@
 import { useCallback, useEffect, useState } from 'react';
 import { SectionBox } from '../ui/SectionBox';
 import PeriscopeChatDetail from './PeriscopeChatDetail.js';
+import { PERISCOPE_DEBRIEF_EVENT } from './PeriscopeChat.js';
+
+/**
+ * Dispatch a window event the chat panel listens for. We use a
+ * window event rather than prop drilling / context because the two
+ * panels are siblings lazy-loaded under separate Suspense boundaries
+ * — lifting state to App.tsx would couple their lazy chunks.
+ */
+function emitStartDebrief(parentId: number) {
+  window.dispatchEvent(
+    new CustomEvent(PERISCOPE_DEBRIEF_EVENT, { detail: { parentId } }),
+  );
+  // Scroll the chat panel into view so the user sees the prefilled
+  // form. Best-effort — silently no-ops if the anchor isn't in DOM.
+  document
+    .getElementById('sec-periscope-chat')
+    ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
 
 interface PeriscopeChatSummary {
   id: number;
@@ -151,49 +169,61 @@ export default function PeriscopeChatHistory() {
               key={item.id}
               className="border-edge bg-surface/40 rounded-md border"
             >
-              <button
-                type="button"
-                onClick={() =>
-                  setOpenRowId((prev) => (prev === item.id ? null : item.id))
-                }
-                aria-expanded={openRowId === item.id}
-                className="hover:bg-surface/60 flex w-full flex-col gap-0.5 p-2 text-left transition focus:ring-1 focus:ring-[var(--color-accent)] focus:outline-none"
-              >
-                <div className="flex flex-wrap items-baseline gap-x-3 text-xs">
-                  <span className="text-primary font-mono">#{item.id}</span>
-                  <span
-                    className={`rounded px-1.5 py-0 text-[10px] tracking-wide uppercase ${
-                      item.mode === 'debrief'
-                        ? 'bg-purple-900/40 text-purple-300'
-                        : 'bg-emerald-900/40 text-emerald-300'
-                    }`}
+              <div className="flex items-stretch">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setOpenRowId((prev) => (prev === item.id ? null : item.id))
+                  }
+                  aria-expanded={openRowId === item.id}
+                  className="hover:bg-surface/60 flex flex-1 flex-col gap-0.5 p-2 text-left transition focus:ring-1 focus:ring-[var(--color-accent)] focus:outline-none"
+                >
+                  <div className="flex flex-wrap items-baseline gap-x-3 text-xs">
+                    <span className="text-primary font-mono">#{item.id}</span>
+                    <span
+                      className={`rounded px-1.5 py-0 text-[10px] tracking-wide uppercase ${
+                        item.mode === 'debrief'
+                          ? 'bg-purple-900/40 text-purple-300'
+                          : 'bg-emerald-900/40 text-emerald-300'
+                      }`}
+                    >
+                      {item.mode}
+                    </span>
+                    <span className="text-muted">
+                      {fmtTime(item.captured_at)}
+                    </span>
+                    {item.regime_tag && (
+                      <span className="text-secondary font-mono">
+                        {item.regime_tag}
+                      </span>
+                    )}
+                    {item.calibration_quality != null && (
+                      <span className="text-yellow-400">
+                        {'★'.repeat(item.calibration_quality)}
+                        {'☆'.repeat(5 - item.calibration_quality)}
+                      </span>
+                    )}
+                    <span className="text-muted ml-auto font-mono">
+                      spot {fmtNum(item.spot)}
+                    </span>
+                  </div>
+                  {item.prose_excerpt && (
+                    <p className="text-muted line-clamp-2 text-xs">
+                      {item.prose_excerpt}
+                    </p>
+                  )}
+                </button>
+                {item.mode === 'read' && (
+                  <button
+                    type="button"
+                    onClick={() => emitStartDebrief(item.id)}
+                    className="border-edge text-secondary hover:bg-surface/60 hover:text-primary flex shrink-0 items-center border-l px-3 text-xs transition focus:ring-1 focus:ring-[var(--color-accent)] focus:outline-none"
+                    title={`Start a debrief linked to read #${item.id}`}
                   >
-                    {item.mode}
-                  </span>
-                  <span className="text-muted">
-                    {fmtTime(item.captured_at)}
-                  </span>
-                  {item.regime_tag && (
-                    <span className="text-secondary font-mono">
-                      {item.regime_tag}
-                    </span>
-                  )}
-                  {item.calibration_quality != null && (
-                    <span className="text-yellow-400">
-                      {'★'.repeat(item.calibration_quality)}
-                      {'☆'.repeat(5 - item.calibration_quality)}
-                    </span>
-                  )}
-                  <span className="text-muted ml-auto font-mono">
-                    spot {fmtNum(item.spot)}
-                  </span>
-                </div>
-                {item.prose_excerpt && (
-                  <p className="text-muted line-clamp-2 text-xs">
-                    {item.prose_excerpt}
-                  </p>
+                    Debrief →
+                  </button>
                 )}
-              </button>
+              </div>
 
               {openRowId === item.id && (
                 <div className="border-edge border-t p-2">

@@ -185,6 +185,43 @@ describe('<PeriscopeChatHistory />', () => {
     });
   });
 
+  it('dispatches a window event with parentId when Debrief is clicked on a read row', async () => {
+    setRoutes({
+      '/api/periscope-chat-list': {
+        body: {
+          items: [
+            makeListItem({ id: 5, mode: 'read' }),
+            makeListItem({ id: 4, mode: 'debrief', parent_id: 5 }),
+          ],
+          nextBefore: null,
+        },
+      },
+    });
+    const user = userEvent.setup();
+    const listener = vi.fn();
+    window.addEventListener('periscope:start-debrief', listener);
+
+    render(<PeriscopeChatHistory />);
+    await waitFor(() => {
+      expect(screen.getByText('#5')).toBeInTheDocument();
+    });
+
+    // Read rows have a Debrief button; debrief rows do not.
+    const debriefButtons = screen.queryAllByRole('button', {
+      name: /^debrief →$/i,
+    });
+    expect(debriefButtons).toHaveLength(1); // only on the read row
+    await user.click(debriefButtons[0]!);
+
+    expect(listener).toHaveBeenCalledOnce();
+    const event = listener.mock.calls[0]![0] as CustomEvent<{
+      parentId: number;
+    }>;
+    expect(event.detail.parentId).toBe(5);
+
+    window.removeEventListener('periscope:start-debrief', listener);
+  });
+
   it('uses the cursor when Load more is clicked', async () => {
     const user = userEvent.setup();
     let call = 0;
