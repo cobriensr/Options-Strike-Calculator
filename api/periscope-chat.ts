@@ -57,6 +57,7 @@ import {
   type PeriscopeMode,
 } from './_lib/periscope-db.js';
 import { buildCalibrationBlock } from './_lib/periscope-calibration.js';
+import { buildRetrievalBlock } from './_lib/periscope-retrieval.js';
 
 // 780s ceiling matches /api/analyze and /api/trace-live-analyze. Opus
 // 4.7 with adaptive-thinking high-effort + 3 images can take 5-9 min on
@@ -156,6 +157,7 @@ function buildUserContent(args: {
 async function callModel(
   userContent: Anthropic.Messages.ContentBlockParam[],
   calibrationBlock: string | null,
+  retrievalBlock: string | null,
 ): Promise<CallResult> {
   // Streaming for the same reason as /api/trace-live-analyze: at high
   // effort on a 3-image call the model can spend 5-9 min generating, and
@@ -168,6 +170,11 @@ async function callModel(
   //   2. Calibration block (cached, optional) — changes when user
   //      stars/unstars or re-tags a starred read; daily-stable in
   //      practice. Skipped entirely when no gold examples exist.
+  //   3. Retrieval block (cached, optional) — top-K past reads with
+  //      embedding similarity to the user's context note. Skipped
+  //      when no context or no above-floor matches. Cache hit rate
+  //      depends on the user repeating the same context phrasing,
+  //      which they often do ("morning open", "midday flush", etc.)
   const systemBlocks: Anthropic.Messages.TextBlockParam[] = [
     {
       type: 'text',
@@ -179,6 +186,13 @@ async function callModel(
     systemBlocks.push({
       type: 'text',
       text: calibrationBlock,
+      cache_control: { type: 'ephemeral', ttl: '1h' },
+    });
+  }
+  if (retrievalBlock != null) {
+    systemBlocks.push({
+      type: 'text',
+      text: retrievalBlock,
       cache_control: { type: 'ephemeral', ttl: '1h' },
     });
   }
@@ -375,12 +389,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const startTs = Date.now();
 
   try {
-    // Calibration block fetch is best-effort (returns null on any DB
-    // error). Run before the Anthropic call so cache_control on the
-    // block is stable across the request; we don't need to wait for
-    // images to upload first.
-    const calibrationBlock = await buildCalibrationBlock(body.mode);
-    const result = await callModel(userContent, calibrationBlock);
+    // Calibration + retrieval blocks fetched in parallel. Both are
+    // best-effort (return null on any DB / embedding error). Calibration
+    // is from gold-starred rows; retrieval is from embedding similarity
+    // to the user context note. Skipped entirely when prerequisites
+    // aren't met, so an empty calibration library or empty context
+    // doesn't slow anything down.
+    const [calibrationBlock, retrievalBlock] = await Promise.all([
+      buildCalibrationBlock(body.mode),
+      buildRetrievalBlock({
+        mode: body.mode,
+        userContext: body.context ?? null,
+      }),
+    ]);
+    const result = await callModel(
+      userContent,
+      calibrationBlock,
+      retrievalBlock,
+    );
     const durationMs = Date.now() - startTs;
 
     logger.info(

@@ -46,6 +46,10 @@ vi.mock('../_lib/periscope-calibration.js', () => ({
   buildCalibrationBlock: vi.fn().mockResolvedValue(null),
 }));
 
+vi.mock('../_lib/periscope-retrieval.js', () => ({
+  buildRetrievalBlock: vi.fn().mockResolvedValue(null),
+}));
+
 // Mock the Anthropic SDK — capture stream call. handler uses
 // `anthropic.messages.stream(params).finalMessage()`.
 const mockFinalMessage = vi.fn();
@@ -402,6 +406,58 @@ describe('POST /api/periscope-chat', () => {
       type: 'ephemeral',
       ttl: '1h',
     });
+  });
+
+  it('injects the retrieval block as a third cached system block when present', async () => {
+    const { buildRetrievalBlock } = await import(
+      '../_lib/periscope-retrieval.js'
+    );
+    vi.mocked(buildRetrievalBlock).mockResolvedValueOnce(
+      '## Analogous past reads\nSimilar prior pin day.',
+    );
+    mockFinalMessage.mockResolvedValue(makeSDKResponse({ prose: 'Read.' }));
+    const req = mockRequest({
+      method: 'POST',
+      body: makeBody({ context: 'morning open, gap-down day' }),
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const params = mockStream.mock.calls[0]![0];
+    expect(params.system).toHaveLength(2); // skill + retrieval (no calibration)
+    expect(params.system[1].text).toContain('Analogous past reads');
+    expect(params.system[1].cache_control).toEqual({
+      type: 'ephemeral',
+      ttl: '1h',
+    });
+  });
+
+  it('injects all three blocks (skill + calibration + retrieval) when both helpers return content', async () => {
+    const { buildCalibrationBlock } = await import(
+      '../_lib/periscope-calibration.js'
+    );
+    const { buildRetrievalBlock } = await import(
+      '../_lib/periscope-retrieval.js'
+    );
+    vi.mocked(buildCalibrationBlock).mockResolvedValueOnce(
+      '## Calibration examples\n...',
+    );
+    vi.mocked(buildRetrievalBlock).mockResolvedValueOnce(
+      '## Analogous past reads\n...',
+    );
+    mockFinalMessage.mockResolvedValue(makeSDKResponse({ prose: 'Read.' }));
+    const req = mockRequest({
+      method: 'POST',
+      body: makeBody({ context: 'morning open' }),
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const params = mockStream.mock.calls[0]![0];
+    expect(params.system).toHaveLength(3);
+    // Order: skill, then calibration, then retrieval
+    expect(params.system[1].text).toContain('Calibration examples');
+    expect(params.system[2].text).toContain('Analogous past reads');
   });
 
   it('uses Opus 4.7 with adaptive thinking + high effort + cached system prompt', async () => {
