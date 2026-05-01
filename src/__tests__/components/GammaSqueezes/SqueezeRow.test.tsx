@@ -124,9 +124,26 @@ describe('SqueezeRow', () => {
   });
 
   describe('tape-side pill', () => {
-    it('renders nothing when tapeSide is null', () => {
+    it('renders a dim "no tape" placeholder when tapeSide is null', () => {
       render(<SqueezeRow squeeze={makeActive({ tapeSide: null })} />);
-      expect(screen.queryByTestId('squeeze-tape-side')).not.toBeInTheDocument();
+      const pill = screen.getByTestId('squeeze-tape-side');
+      expect(pill).toHaveTextContent(/no tape/);
+      expect(pill).toHaveAttribute('data-dominant', 'none');
+      expect(pill).toHaveClass('bg-zinc-700/30');
+      expect(pill).toHaveClass('text-zinc-500');
+    });
+
+    it('renders the dim placeholder when ask + bid sum to zero (mid-only volume)', () => {
+      render(
+        <SqueezeRow
+          squeeze={makeActive({
+            tapeSide: { askVol: 0, bidVol: 0, midVol: 200 },
+          })}
+        />,
+      );
+      const pill = screen.getByTestId('squeeze-tape-side');
+      expect(pill).toHaveAttribute('data-dominant', 'none');
+      expect(pill).toHaveTextContent(/no tape/);
     });
 
     it('renders ask% in lime for an ask-dominant CALL alert (bullish underlying)', () => {

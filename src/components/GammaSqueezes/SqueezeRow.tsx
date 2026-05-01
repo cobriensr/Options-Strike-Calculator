@@ -347,7 +347,35 @@ export function SqueezeRow({ squeeze }: { readonly squeeze: ActiveSqueeze }) {
         const view = latest.tapeSide
           ? computeTapeSideView(latest.tapeSide)
           : null;
-        if (!view) return null;
+        if (!view) {
+          // Distinguish "UW didn't carry this strike" from "feature broken"
+          // by always rendering a placeholder. UW's flow-per-strike-intraday
+          // is selective on less-liquid tickers (e.g. only emits round-
+          // number / peak-OI strikes for MU/IWM/TSM), so a missing pill is
+          // a real coverage gap, not a bug. Click-through to UW for the
+          // contract page when this shows.
+          return (
+            <span
+              className="rounded-md bg-zinc-700/30 px-2 py-0.5 font-mono text-[10px] text-zinc-500"
+              data-testid="squeeze-tape-side"
+              data-dominant="none"
+              title={
+                'No tape-side data: UW flow-per-strike-intraday did not ' +
+                "carry this strike in the last 15 min.\n" +
+                '\n' +
+                'UW only emits per-minute side-classified prints for a ' +
+                'subset of strikes per ticker (typically round numbers / ' +
+                'peak-OI). The squeeze velocity gate uses Schwab data, ' +
+                "which has wider strike coverage — so the alert is real " +
+                "even when the tape pill is empty. Click the contract " +
+                'label to see the side breakdown directly on Unusual ' +
+                'Whales.'
+              }
+            >
+              no tape
+            </span>
+          );
+        }
         const isAsk = view.dominant === 'ask';
         const isBid = view.dominant === 'bid';
         const label = isAsk
