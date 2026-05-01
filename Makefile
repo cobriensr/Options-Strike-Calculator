@@ -6,8 +6,10 @@
 #
 # That runs:
 #   1. analyze.py   — produces per-day parquet aggregate at scripts/eod-flow-analysis/output/by-day/
-#   2. ingest-flow  — converts CSV to compressed parquet, uploads to Vercel Blob,
-#                     and deletes the source CSV on success
+#   2. ingest-flow  — writes a full unfiltered archive parquet to
+#                     ~/Desktop/Bot-Eod-parquet/, then writes a filtered
+#                     parquet, uploads to Vercel Blob, and deletes the
+#                     source CSV only after both writes + upload succeed
 #   3. whale_plots  — regenerates all 13 visualizations under ml/plots/whale-detection/
 #
 # Override the date with DATE=YYYY-MM-DD if needed:
@@ -83,7 +85,7 @@ analyze: check
 ingest: check
 	@echo ""
 	@echo "════════════════════════════════════════════════════════════════"
-	@echo "  STEP 2/3 — ingest-flow.py (CSV → Parquet → Blob → delete CSV)"
+	@echo "  STEP 2/3 — ingest-flow.py (CSV → Archive → Parquet → Blob → delete CSV)"
 	@echo "════════════════════════════════════════════════════════════════"
 	set -a && source $(ENV_FILE) && set +a && \
 	  $(PYTHON) scripts/ingest-flow.py $(DATE)
@@ -96,18 +98,10 @@ plots:
 	$(PYTHON) ml/src/whale_plots.py
 
 nightly: analyze ingest plots
-	@echo ""
-	@echo "════════════════════════════════════════════════════════════════"
-	@echo "  ✅ Nightly pipeline complete for $(DATE)"
-	@echo "════════════════════════════════════════════════════════════════"
-	@echo ""
-	@echo "Outputs:"
-	@echo "  • EOD aggregate:  scripts/eod-flow-analysis/output/by-day/$(DATE)-chains.parquet"
-	@echo "  • Cumulative:     scripts/eod-flow-analysis/output/cumulative-headlines.txt"
-	@echo "  • Vercel Blob:    flow/year=$(shell echo $(DATE) | cut -d- -f1)/month=$(shell echo $(DATE) | cut -d- -f2)/day=$(shell echo $(DATE) | cut -d- -f3)/data.parquet"
-	@echo "  • Plots:          ml/plots/whale-detection/*.png"
-	@echo ""
-	@echo "Next: review cumulative-headlines.txt, scan plots, commit per-day artifacts."
+	@# Final summary is printed by ml/src/whale_plots.py (the `plots` step) so
+	@# the date is sourced from the loaded data, not from `$(DATE)` — which
+	@# resolves to empty here because `?= $(shell ls ...)` re-runs after the
+	@# CSV has been deleted by `ingest`.
 
 dry-run: check
 	@echo ""

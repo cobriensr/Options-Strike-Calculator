@@ -679,7 +679,48 @@ def main() -> int:
     plot_13_strike_magnet(qual, OUTPUT_DIR)
 
     print(f"\n✅ All plots written to {OUTPUT_DIR}")
+    print_pipeline_summary(df["trade_date"].max())
     return 0
+
+
+def print_pipeline_summary(latest_date) -> None:
+    """Print the nightly pipeline output summary using the date from the loaded
+    data — owned here (not the Makefile) because Make expands
+    `DATE ?= $(shell ls ...)` lazily, so the date silently goes empty after
+    ingest-flow.py deletes the source CSV.
+    """
+    iso = (
+        latest_date.isoformat()
+        if hasattr(latest_date, "isoformat")
+        else str(latest_date)
+    )
+    y, m, d = iso.split("-")
+    bar = "═" * 64
+    print()
+    print(bar)
+    print(f"  ✅ Nightly pipeline complete for {iso}")
+    print(bar)
+    print()
+    print("Outputs:")
+    print(
+        "  • EOD aggregate:  "
+        f"scripts/eod-flow-analysis/output/by-day/{iso}-chains.parquet"
+    )
+    print(
+        "  • Cumulative:     "
+        "scripts/eod-flow-analysis/output/cumulative-headlines.txt"
+    )
+    print(
+        "  • Vercel Blob:    "
+        f"flow/year={y}/month={m}/day={d}/data.parquet"
+    )
+    print(f"  • Archive:        ~/Desktop/Bot-Eod-parquet/{iso}-trades.parquet")
+    print("  • Plots:          ml/plots/whale-detection/*.png")
+    print()
+    print(
+        "Next: review cumulative-headlines.txt, scan plots, "
+        "commit per-day artifacts."
+    )
 
 
 if __name__ == "__main__":

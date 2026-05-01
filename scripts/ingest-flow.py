@@ -84,6 +84,10 @@ MULTIPART_PART_SIZE = 50 * 1024 * 1024  # 50 MB per part — 11 parts for 550 MB
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INPUT_DIR = Path.home() / "Downloads" / "EOD-OptionFlow"
 LOCAL_PARQUET_ROOT = Path.home() / ".flow-archive"
+# Full unfiltered archive of the source CSV. Written BEFORE any filtering so
+# the CSV is recoverable to its original row count even if the filter step
+# changes. The CSV is deleted only after this archive plus the upload succeed.
+ARCHIVE_PARQUET_DIR = Path.home() / "Desktop" / "Bot-Eod-parquet"
 
 
 def expected_csv_path(date: str, input_dir: Path) -> Path:
@@ -93,6 +97,27 @@ def expected_csv_path(date: str, input_dir: Path) -> Path:
 def parquet_local_path(date: str) -> Path:
     y, m, d = date.split("-")
     return LOCAL_PARQUET_ROOT / f"year={y}" / f"month={m}" / f"day={d}" / "data.parquet"
+
+
+def archive_parquet_path(date: str) -> Path:
+    return ARCHIVE_PARQUET_DIR / f"{date}-trades.parquet"
+
+
+def write_full_archive(lf: pl.LazyFrame, archive_path: Path) -> None:
+    """Stream the full unfiltered LazyFrame to disk as Parquet.
+
+    Uses `sink_parquet` so the 11M-row, 3 GB CSV is never fully materialized in
+    memory. No filtering, no added columns — this is the recovery copy of the
+    raw CSV. zstd-3 matches the upload parquet's compression profile.
+    """
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    lf.sink_parquet(
+        archive_path,
+        compression="zstd",
+        compression_level=3,
+        row_group_size=1_048_576,
+        statistics=True,
+    )
 
 
 def blob_pathname(date: str) -> str:
@@ -350,6 +375,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--input-dir", type=Path, default=DEFAULT_INPUT_DIR)
     p.add_argument("--keep-csv", action="store_true", help="Don't delete source CSV")
     p.add_argument("--dry-run", action="store_true", help="Skip upload + cleanup")
+    p.add_argument(
+        "--skip-archive",
+        action="store_true",
+        help=(
+            "Skip writing the full unfiltered archive parquet to "
+            f"{ARCHIVE_PARQUET_DIR}. Without --skip-archive the CSV is only "
+            "deleted after the archive write AND the upload both succeed."
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -390,6 +424,24 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"WARN: row count below sanity floor ({SANITY_FLOOR_ROWS:,}); continuing"
         )
+
+    if not args.skip_archive:
+        archive_path = archive_parquet_path(args.date)
+        if archive_path.exists():
+            print(
+                f"→ Archive already exists, skipping: {archive_path} "
+                f"({archive_path.stat().st_size / 1024**2:.1f} MB)"
+            )
+        else:
+            print(f"→ Writing full archive Parquet: {archive_path}")
+            archive_lf = pl.scan_csv(
+                csv_path, schema=FLOW_SCHEMA, infer_schema_length=0
+            )
+            write_full_archive(archive_lf, archive_path)
+            print(
+                f"  archive  {archive_path.stat().st_size / 1024**2:.1f} MB "
+                f"({raw_count:,} rows, unfiltered)"
+            )
 
     print("→ Filtering + sorting")
     df = transform(lf, args.date).collect(engine="streaming")
