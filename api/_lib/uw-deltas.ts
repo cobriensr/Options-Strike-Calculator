@@ -104,6 +104,7 @@
  */
 
 import { getDb } from './db.js';
+import { fmtPct, formatDollarAbbrev, formatSigned } from './format-helpers.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
 
 // ── Configuration ─────────────────────────────────────────────
@@ -660,29 +661,6 @@ export async function computeUwDeltas(now: Date): Promise<UwDeltas | null> {
 
 // ── Formatter ─────────────────────────────────────────────────
 
-function formatSigned(v: number | null, digits: number): string {
-  if (v == null) return 'N/A';
-  const sign = v >= 0 ? '+' : '';
-  return `${sign}${v.toFixed(digits)}`;
-}
-
-function formatDollarAbbrev(v: number | null): string {
-  if (v == null) return 'N/A';
-  const abs = Math.abs(v);
-  const sign = v < 0 ? '-' : '';
-  if (abs >= 1_000_000_000)
-    return `${sign}$${(abs / 1_000_000_000).toFixed(2)}B`;
-  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(0)}K`;
-  return `${sign}$${abs.toFixed(0)}`;
-}
-
-function formatPct(v: number | null): string {
-  if (v == null) return 'N/A';
-  const sign = v >= 0 ? '+' : '';
-  return `${sign}${(v * 100).toFixed(1)}%`;
-}
-
 function renderDarkPoolBlock(d: DarkPoolVelocity | null): string {
   if (d == null) {
     return [
@@ -697,7 +675,7 @@ function renderDarkPoolBlock(d: DarkPoolVelocity | null): string {
     '  Dark pool velocity:',
     `    Strikes active (last 5m): ${d.count5m}`,
     `    Baseline mean (12 × 5m): ${d.baselineMean.toFixed(2)}`,
-    `    Z-score: ${formatSigned(d.zscore, 2)}`,
+    `    Z-score: ${formatSigned(d.zscore, { digits: 2 })}`,
     `    Classification: ${d.classification}`,
   ].join('\n');
 }
@@ -714,9 +692,9 @@ function renderGexBlock(g: GexIntradayDelta | null): string {
   }
   return [
     '  GEX intraday delta:',
-    `    GEX at open: ${formatSigned(g.gexOpen, 0)}`,
-    `    GEX now: ${formatSigned(g.gexNow, 0)}`,
-    `    Delta %: ${formatPct(g.deltaPct)}`,
+    `    GEX at open: ${formatSigned(g.gexOpen, { digits: 0 })}`,
+    `    GEX now: ${formatSigned(g.gexNow, { digits: 0 })}`,
+    `    Delta %: ${fmtPct(g.deltaPct, { fromDecimal: true, digits: 1 })}`,
     `    Classification: ${g.classification}`,
   ].join('\n');
 }
@@ -737,7 +715,7 @@ function renderWhaleBlock(w: WhaleFlowPositioning | null): string {
     `    Call premium (cumulative): ${formatDollarAbbrev(w.callPremium)}`,
     `    Put premium (cumulative): ${formatDollarAbbrev(w.putPremium)}`,
     `    Net premium: ${formatDollarAbbrev(w.netPremium)}`,
-    `    Net ratio: ${formatSigned(w.netRatio, 2)}`,
+    `    Net ratio: ${formatSigned(w.netRatio, { digits: 2 })}`,
     `    Classification: ${w.classification}`,
   ].join('\n');
 }

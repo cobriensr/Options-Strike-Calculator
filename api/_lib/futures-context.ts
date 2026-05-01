@@ -8,6 +8,7 @@
 
 import type { NeonQueryFunction } from '@neondatabase/serverless';
 import { z } from 'zod';
+import { fmtOI, fmtPct, fmtPrice } from './format-helpers.js';
 import logger from './logger.js';
 import { metrics, Sentry } from './sentry.js';
 
@@ -52,20 +53,6 @@ function num(val: string | null | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function fmtPct(val: number | null): string {
-  if (val == null) return 'N/A';
-  const sign = val >= 0 ? '+' : '';
-  return `${sign}${val.toFixed(2)}%`;
-}
-
-function fmtPrice(val: number | null, decimals = 2): string {
-  if (val == null) return 'N/A';
-  return val.toLocaleString('en-US', {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  });
-}
-
 function fmtVolRatio(val: number | null): string {
   if (val == null) return 'N/A';
   const label =
@@ -77,12 +64,6 @@ function fmtVolRatio(val: number | null): string {
           ? 'NORMAL'
           : 'LOW';
   return `${val.toFixed(1)}× 20-day avg — ${label}`;
-}
-
-function fmtOI(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
-  return String(n);
 }
 
 // ── Per-symbol renderers ──────────────────────────────────

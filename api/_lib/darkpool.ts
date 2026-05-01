@@ -21,6 +21,7 @@ import {
   passesDarkPoolQualityFilter,
   DARK_POOL_FILTER_VERSION,
 } from './dark-pool-filter.js';
+import { fmtDp } from './format-helpers.js';
 
 // Re-export so adoption sites (and tests) can pick up the constant from
 // the conventional darkpool import path. The canonical home is
@@ -561,15 +562,4 @@ export function formatDarkPoolForClaude(
   }
 
   return lines.join('\n');
-}
-
-/**
- * Format a premium value for display.
- */
-function fmtDp(value: number): string {
-  const abs = Math.abs(value);
-  if (abs >= 1_000_000_000) return `${(abs / 1_000_000_000).toFixed(1)}B`;
-  if (abs >= 1_000_000) return `${(abs / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000) return `${(abs / 1_000).toFixed(0)}K`;
-  return abs.toFixed(0);
 }

@@ -51,6 +51,7 @@
  */
 
 import { getDb } from './db.js';
+import { formatSigned } from './format-helpers.js';
 
 // ── Configuration ─────────────────────────────────────────────
 
@@ -441,12 +442,6 @@ export async function computeAllSymbolSignals(
 
 // ── Formatter ─────────────────────────────────────────────────
 
-function formatSigned(v: number | null, digits: number): string {
-  if (v == null) return 'N/A';
-  const sign = v >= 0 ? '+' : '';
-  return `${sign}${v.toFixed(digits)}`;
-}
-
 function formatRatio(v: number | null): string {
   if (v == null) return 'N/A';
   return `${v.toFixed(2)}x`;
@@ -480,11 +475,11 @@ export function formatMicrostructureForClaude(
   if (!s) return null;
 
   const lines: string[] = [];
-  lines.push(`OFI 1m: ${formatSigned(s.ofi1m, 2)}`);
-  lines.push(`OFI 5m: ${formatSigned(s.ofi5m, 2)}`);
-  lines.push(`OFI 1h: ${formatSigned(s.ofi1h, 2)}`);
+  lines.push(`OFI 1m: ${formatSigned(s.ofi1m, { digits: 2 })}`);
+  lines.push(`OFI 5m: ${formatSigned(s.ofi5m, { digits: 2 })}`);
+  lines.push(`OFI 1h: ${formatSigned(s.ofi1h, { digits: 2 })}`);
   lines.push(
-    `Spread z-score (30m baseline): ${formatSigned(s.spreadZscore, 2)}`,
+    `Spread z-score (30m baseline): ${formatSigned(s.spreadZscore, { digits: 2 })}`,
   );
   lines.push(`TOB pressure (bid/ask size): ${formatRatio(s.tobPressure)}`);
   lines.push(`Composite: ${s.composite ?? 'N/A'}`);
@@ -591,7 +586,7 @@ function formatSymbolBlock(
   const classification = classifyOfi1h(s.ofi1h);
   const lines = [
     `  ${symbol} (latest front-month):`,
-    `    OFI 1h: ${formatSigned(s.ofi1h, 2)} → ${classification}`,
+    `    OFI 1h: ${formatSigned(s.ofi1h, { digits: 2 })} → ${classification}`,
   ];
   // Insert the Historical rank line directly under OFI 1h so Claude
   // reads the percentile in context of the live value. Skip cleanly
@@ -605,9 +600,9 @@ function formatSymbolBlock(
     );
   }
   lines.push(
-    `    OFI 5m: ${formatSigned(s.ofi5m, 2)}`,
-    `    OFI 1m: ${formatSigned(s.ofi1m, 2)}`,
-    `    Spread z-score (30m): ${formatSigned(s.spreadZscore, 2)}`,
+    `    OFI 5m: ${formatSigned(s.ofi5m, { digits: 2 })}`,
+    `    OFI 1m: ${formatSigned(s.ofi1m, { digits: 2 })}`,
+    `    Spread z-score (30m): ${formatSigned(s.spreadZscore, { digits: 2 })}`,
     `    TOB pressure (bid/ask): ${formatRatio(s.tobPressure)}`,
     `    Composite (short-horizon): ${s.composite ?? 'N/A'}`,
   );
