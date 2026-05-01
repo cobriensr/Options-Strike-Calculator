@@ -245,7 +245,7 @@ interface WallProximityArgs {
   regime: GexRegime;
   esPrice: number | null;
   wall: EsLevel | null;
-  walLabel: 'Call wall' | 'Put wall';
+  wallLabel: 'Call wall' | 'Put wall';
   driftAgainst: boolean;
   driftDirectionLabel: 'up' | 'down';
   fadeOrLift: 'fade' | 'lift';
@@ -267,7 +267,7 @@ function evaluateWallProximity(args: WallProximityArgs): TriggerState {
       // The wall label/price still display when present so the trader sees
       // *which* level the BLOCKED row corresponds to. When the wall itself
       // is missing, both fields are null.
-      levelLabel: args.wall ? args.walLabel : null,
+      levelLabel: args.wall ? args.wallLabel : null,
       levelEsPrice: args.wall?.esPrice ?? null,
       distanceEsPoints: null,
       blockedReason,
@@ -281,7 +281,7 @@ function evaluateWallProximity(args: WallProximityArgs): TriggerState {
   return buildTriggerState({
     id: args.id,
     status,
-    levelLabel: args.walLabel,
+    levelLabel: args.wallLabel,
     levelEsPrice: wall.esPrice,
     distanceEsPoints: distance,
     blockedReason: null,
@@ -437,7 +437,7 @@ export function evaluateTriggers(input: EvaluateTriggersInput): TriggerState[] {
       regime,
       esPrice,
       wall: callWall,
-      walLabel: 'Call wall',
+      wallLabel: 'Call wall',
       driftAgainst: drift.up,
       driftDirectionLabel: 'up',
       fadeOrLift: 'fade',
@@ -447,7 +447,7 @@ export function evaluateTriggers(input: EvaluateTriggersInput): TriggerState[] {
       regime,
       esPrice,
       wall: putWall,
-      walLabel: 'Put wall',
+      wallLabel: 'Put wall',
       driftAgainst: drift.down,
       driftDirectionLabel: 'down',
       fadeOrLift: 'lift',
