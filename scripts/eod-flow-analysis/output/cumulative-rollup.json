@@ -20,7 +20,9 @@
       "total_premium": 1407573690.0,
       "bullish_call_prem": 215676103.0,
       "bearish_put_prem": 248086503.0,
-      "avg_und_return": 0.001482941879223469
+      "spx_open": 6793.1,
+      "spx_close": 6886.24,
+      "spx_return": 0.013710971426888962
     },
     {
       "trade_date": "2026-04-14",
@@ -28,7 +30,9 @@
       "total_premium": 2810806516.0,
       "bullish_call_prem": 543674226.0,
       "bearish_put_prem": 300467054.0,
-      "avg_und_return": 0.0009567305060561885
+      "spx_open": 6908.2,
+      "spx_close": 6967.38,
+      "spx_return": 0.008566630960308082
     },
     {
       "trade_date": "2026-04-15",
@@ -36,7 +40,9 @@
       "total_premium": 2974761622.1,
       "bullish_call_prem": 420589767.0,
       "bearish_put_prem": 286733679.0,
-      "avg_und_return": 0.0007371121110705147
+      "spx_open": 6980.09,
+      "spx_close": 7022.95,
+      "spx_return": 0.006140321972925803
     },
     {
       "trade_date": "2026-04-16",
@@ -44,7 +50,9 @@
       "total_premium": 2143747503.5,
       "bullish_call_prem": 327376478.0,
       "bearish_put_prem": 342948557.5,
-      "avg_und_return": 0.0007639746196470734
+      "spx_open": 7030.05,
+      "spx_close": 7041.28,
+      "spx_return": 0.0015974281832987765
     },
     {
       "trade_date": "2026-04-17",
@@ -52,7 +60,9 @@
       "total_premium": 4926468054.0,
       "bullish_call_prem": 434414426.0,
       "bearish_put_prem": 447066272.0,
-      "avg_und_return": 8.775325507741797e-05
+      "spx_open": 7084.96,
+      "spx_close": 7126.06,
+      "spx_return": 0.0058010207538222325
     },
     {
       "trade_date": "2026-04-20",
@@ -60,7 +70,9 @@
       "total_premium": 1358775486.5,
       "bullish_call_prem": 337332539.0,
       "bearish_put_prem": 161288316.5,
-      "avg_und_return": 0.0005786371667208778
+      "spx_open": 7120.67,
+      "spx_close": 7109.14,
+      "spx_return": -0.0016192296511423428
     },
     {
       "trade_date": "2026-04-21",
@@ -68,7 +80,9 @@
       "total_premium": 2219832963.0,
       "bullish_call_prem": 303591726.0,
       "bearish_put_prem": 306779576.0,
-      "avg_und_return": 0.00011347575643744932
+      "spx_open": 7116.91,
+      "spx_close": 7064.01,
+      "spx_return": -0.007433001119867982
     },
     {
       "trade_date": "2026-04-22",
@@ -76,7 +90,9 @@
       "total_premium": 1372885011.0,
       "bullish_call_prem": 226708255.0,
       "bearish_put_prem": 223340295.0,
-      "avg_und_return": -0.001668529464651645
+      "spx_open": 7117.08,
+      "spx_close": 7137.91,
+      "spx_return": 0.0029267620990630887
     },
     {
       "trade_date": "2026-04-23",
@@ -84,7 +100,9 @@
       "total_premium": 1462643746.0,
       "bullish_call_prem": 249425252.0,
       "bearish_put_prem": 303215461.0,
-      "avg_und_return": -0.0015996034427586839
+      "spx_open": 7129.21,
+      "spx_close": 7108.4,
+      "spx_return": -0.0029189769974513865
     },
     {
       "trade_date": "2026-04-24",
@@ -92,7 +110,9 @@
       "total_premium": 2652935783.2,
       "bullish_call_prem": 408984899.0,
       "bearish_put_prem": 221720659.2,
-      "avg_und_return": 0.0005855822536478579
+      "spx_open": 7136.59,
+      "spx_close": 7165.01,
+      "spx_return": 0.0039822940648124765
     },
     {
       "trade_date": "2026-04-29",
@@ -100,7 +120,9 @@
       "total_premium": 1348248214.0,
       "bullish_call_prem": 281740525.0,
       "bearish_put_prem": 201114083.0,
-      "avg_und_return": 0.00044630606108486047
+      "spx_open": 7125.1,
+      "spx_close": 7135.95,
+      "spx_return": 0.001522785645113676
     },
     {
       "trade_date": "2026-04-30",
@@ -108,7 +130,9 @@
       "total_premium": 3165536139.4,
       "bullish_call_prem": 339339948.0,
       "bearish_put_prem": 270081113.4,
-      "avg_und_return": 0.0009607422864257946
+      "spx_open": 7167.92,
+      "spx_close": 7209.03,
+      "spx_return": 0.005735276063348876
     }
   ],
   "tickers": [
@@ -2216,7 +2240,7 @@
       "total_premium": 2416042.0,
       "ask_pct": 0.838195254764683,
       "opt_return": -0.6730523627075351,
-      "und_return": -8.868929886183603e-05,
+      "und_return": -8.868929886183603e-5,
       "first_ts": "2026-04-23 12:12:29.132516-05:00"
     },
     {
@@ -2307,7 +2331,7 @@
       "total_premium": 2850324.0,
       "ask_pct": 0.9084278768233387,
       "opt_return": -0.5689981096408318,
-      "und_return": -8.868929886183603e-05,
+      "und_return": -8.868929886183603e-5,
       "first_ts": "2026-04-23 12:12:29.132516-05:00"
     },
     {

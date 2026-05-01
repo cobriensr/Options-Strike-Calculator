@@ -195,6 +195,10 @@ def rollup() -> dict:
     repeat_strikes = [dict(zip(cols, r)) for r in repeat_rows]
 
     # ── Per-day stats ──
+    # Session open/close use SPX/SPXW chains as benchmark — first_underlying is
+    # per-chain (the underlying price at THAT chain's first trade), so mixing
+    # tickers (e.g. SNDK at $35 with SPXW at $7160) breaks arg_min/arg_max.
+    # SPXW gives the densest 8:30-15:00 CT timestamp coverage.
     daily_rows = con.execute(
         """
         SELECT
@@ -204,8 +208,20 @@ def rollup() -> dict:
             -- Bullish-call ratio (sign of macro tape)
             SUM(CASE WHEN option_type='call' AND ask_pct >= 0.65 THEN total_premium ELSE 0 END) AS bullish_call_prem,
             SUM(CASE WHEN option_type='put'  AND ask_pct >= 0.65 THEN total_premium ELSE 0 END) AS bearish_put_prem,
-            -- Average underlying return on chains that day (proxy for spot direction)
-            AVG(und_return) AS avg_und_return
+            -- SPX session open→close from SPX/SPXW chains only (consistent underlying)
+            arg_min(CASE WHEN ticker IN ('SPXW','SPX') THEN first_underlying END,
+                    CASE WHEN ticker IN ('SPXW','SPX') THEN first_ts END) AS spx_open,
+            arg_max(CASE WHEN ticker IN ('SPXW','SPX') THEN last_underlying END,
+                    CASE WHEN ticker IN ('SPXW','SPX') THEN last_ts END) AS spx_close,
+            CASE WHEN arg_min(CASE WHEN ticker IN ('SPXW','SPX') THEN first_underlying END,
+                              CASE WHEN ticker IN ('SPXW','SPX') THEN first_ts END) > 0 THEN
+                (arg_max(CASE WHEN ticker IN ('SPXW','SPX') THEN last_underlying END,
+                         CASE WHEN ticker IN ('SPXW','SPX') THEN last_ts END)
+                 - arg_min(CASE WHEN ticker IN ('SPXW','SPX') THEN first_underlying END,
+                           CASE WHEN ticker IN ('SPXW','SPX') THEN first_ts END))
+                / arg_min(CASE WHEN ticker IN ('SPXW','SPX') THEN first_underlying END,
+                          CASE WHEN ticker IN ('SPXW','SPX') THEN first_ts END)
+            END AS spx_return
         FROM chains
         GROUP BY trade_date
         ORDER BY trade_date
@@ -327,17 +343,23 @@ def write_headlines(rollup: dict) -> str:
     lines.append(f"  Date range: {days[0] if days else '?'} → {days[-1] if days else '?'}")
     lines.append("")
 
-    # Daily stats
+    # Daily stats — SPX session open→close from SPXW chains
     lines.append("## Per-day summary")
-    lines.append(f"  {'Date':<12} {'Chains':>7} {'Premium':>14} {'Bullish $':>14} {'Bearish $':>14} {'AvgUnd':>7}")
+    lines.append(
+        f"  {'Date':<12} {'Chains':>7} {'Premium':>14} {'Bullish $':>14} {'Bearish $':>14} "
+        f"{'SpxOpen':>9} {'SpxClose':>9} {'SpxRet':>7}"
+    )
     for d in rollup.get("daily_stats", []):
         prem = d.get("total_premium") or 0
         bcp = d.get("bullish_call_prem") or 0
         bpp = d.get("bearish_put_prem") or 0
-        und = d.get("avg_und_return") or 0
+        spx_open = d.get("spx_open") or 0
+        spx_close = d.get("spx_close") or 0
+        spx_ret = d.get("spx_return") or 0
         lines.append(
             f"  {str(d['trade_date']):<12} {d['chains']:>7} ${prem:>12,.0f} "
-            f"${bcp:>12,.0f} ${bpp:>12,.0f} {und*100:>+6.2f}%"
+            f"${bcp:>12,.0f} ${bpp:>12,.0f} {spx_open:>9.2f} {spx_close:>9.2f} "
+            f"{spx_ret*100:>+6.2f}%"
         )
 
     # Top tickers
