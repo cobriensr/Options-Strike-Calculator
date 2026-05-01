@@ -16,6 +16,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { SectionBox } from '../ui/SectionBox';
 import PeriscopeChatDetail from './PeriscopeChatDetail.js';
 import { PERISCOPE_DEBRIEF_EVENT } from './PeriscopeChat.js';
+import { fmtTradingDate } from './format-utils.js';
 
 /**
  * Dispatch a window event the chat panel listens for. We use a
@@ -60,16 +61,6 @@ function fmtNum(n: number | null): string {
   return n == null
     ? '—'
     : n.toLocaleString(undefined, { maximumFractionDigits: 2 });
-}
-
-/** YYYY-MM-DD → "Apr 30" (terse; the year is implied by context). */
-function fmtTradingDate(iso: string): string {
-  try {
-    const d = new Date(`${iso}T12:00:00Z`);
-    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  } catch {
-    return iso;
-  }
 }
 
 /** "3h ago" / "5m ago" / "just now" — relative time of capture. */

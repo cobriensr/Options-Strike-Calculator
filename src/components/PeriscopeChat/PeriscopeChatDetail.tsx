@@ -14,6 +14,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import PeriscopeChatAnnotations from './PeriscopeChatAnnotations.js';
+import { ProseView } from './PeriscopeProse.js';
+import { fmtTradingDate } from './format-utils.js';
 
 interface PeriscopeImageEntry {
   kind: string;
@@ -181,7 +183,9 @@ export default function PeriscopeChatDetail({
           #{row.id} · {row.mode === 'debrief' ? 'Debrief' : 'Read'}
         </span>
         <span className="text-muted">{fmtTime(row.captured_at)}</span>
-        <span className="text-muted">trading day {row.trading_date}</span>
+        <span className="text-muted">
+          trading day {fmtTradingDate(row.trading_date)}
+        </span>
         {parentId != null && (
           <button
             type="button"
@@ -220,10 +224,8 @@ export default function PeriscopeChatDetail({
         </div>
       )}
 
-      {/* Prose */}
-      <div className="text-primary border-edge bg-surface/40 rounded-md border p-3 text-sm whitespace-pre-wrap">
-        {row.prose_text}
-      </div>
+      {/* Prose — rendered as markdown for proper headings, lists, tables */}
+      <ProseView prose={row.prose_text} />
 
       {/* Image gallery */}
       {row.image_urls.length > 0 && (
