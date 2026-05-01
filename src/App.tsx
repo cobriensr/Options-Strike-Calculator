@@ -92,6 +92,11 @@ const PositionMonitor = lazy(() =>
 const MLInsights = lazy(() =>
   import('./components/MLInsights').catch(handleStaleChunk),
 );
+const PeriscopeChat = lazy(() =>
+  import('./components/PeriscopeChat/PeriscopeChat.tsx').catch(
+    handleStaleChunk,
+  ),
+);
 const FuturesPanel = lazy(() =>
   import('./components/FuturesCalculator/FuturesPanel').catch(handleStaleChunk),
 );
@@ -693,6 +698,9 @@ export default function StrikeCalculator() {
       { id: 'sec-history', label: 'Analysis History' },
       ...(isAuthenticated
         ? [{ id: 'sec-ml-insights', label: 'ML Insights' }]
+        : []),
+      ...(isAuthenticated
+        ? [{ id: 'sec-periscope-chat', label: 'Periscope Chat' }]
         : []),
       { id: 'sec-positions', label: 'Position Monitor' },
       ...(isAuthenticated ? [{ id: 'sec-bwb', label: 'BWB Calculator' }] : []),
@@ -1411,6 +1419,20 @@ export default function StrikeCalculator() {
                     <ErrorBoundary label="ML Insights">
                       <Suspense fallback={<SkeletonSection lines={6} tall />}>
                         <MLInsights />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </>
+                )}
+
+                {isAuthenticated && (
+                  <>
+                    <span
+                      id="sec-periscope-chat"
+                      className="block scroll-mt-28"
+                    />
+                    <ErrorBoundary label="Periscope Chat">
+                      <Suspense fallback={<SkeletonSection lines={4} tall />}>
+                        <PeriscopeChat />
                       </Suspense>
                     </ErrorBoundary>
                   </>
