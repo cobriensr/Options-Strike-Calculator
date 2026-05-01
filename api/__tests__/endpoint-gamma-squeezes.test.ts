@@ -222,10 +222,74 @@ describe('GET /api/gamma-squeezes', () => {
     };
     expect(body.latest.TSLA?.id).toBe(7);
     expect(body.latest.SPY).toBeNull();
-    // 4 calls: TSLA history + path-shape spot lookup +
+    // 5 calls: TSLA history + path-shape spot lookup +
     // market_tide flow + market_tide_otm flow (TSLA has no per-ticker
-    // flow source and no ETF tide source, so those are skipped).
-    expect(mockSql).toHaveBeenCalledTimes(4);
+    // flow source and no ETF tide source, so those are skipped) +
+    // tape-side rollup against strike_trade_volume for the one row.
+    expect(mockSql).toHaveBeenCalledTimes(5);
+  });
+
+  it('attaches tape-side ask/bid/mid rollup from strike_trade_volume', async () => {
+    // For TSLA there are 4 SQL calls before tape-side: history,
+    // path-shape, then two tape-agreement queries (market_tide +
+    // market_tide_otm; tickerFlowSource and etfTideSource both return
+    // null for TSLA, skipping those queries). Mock them in that order
+    // followed by the tape-side aggregate row.
+    mockSql
+      .mockResolvedValueOnce([makeRow({ id: 9, ticker: 'TSLA' })]) // history
+      .mockResolvedValueOnce([{ ticker: 'TSLA', spot: '300.00' }]) // path-shape
+      .mockResolvedValueOnce([]) // market_tide
+      .mockResolvedValueOnce([]) // market_tide_otm
+      .mockResolvedValueOnce([
+        // tape-side rollup: bid-dominant on a call alert ⇒ bearish underlying.
+        { ask_vol: '420', bid_vol: '1280', mid_vol: '105' },
+      ]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { ticker: 'TSLA' } }),
+      res,
+    );
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      latest: Record<
+        string,
+        {
+          id: number;
+          tapeSide: {
+            askVol: number;
+            bidVol: number;
+            midVol: number;
+          } | null;
+        } | null
+      >;
+    };
+    expect(body.latest.TSLA?.id).toBe(9);
+    expect(body.latest.TSLA?.tapeSide).toEqual({
+      askVol: 420,
+      bidVol: 1280,
+      midVol: 105,
+    });
+  });
+
+  it('stamps tapeSide=null when the strike has no directional volume', async () => {
+    mockSql
+      .mockResolvedValueOnce([makeRow({ id: 10, ticker: 'NVDA' })]) // history
+      .mockResolvedValueOnce([{ ticker: 'NVDA', spot: '125.00' }]) // path-shape
+      .mockResolvedValueOnce([]) // market_tide
+      .mockResolvedValueOnce([]) // market_tide_otm
+      .mockResolvedValueOnce([{ ask_vol: '0', bid_vol: '0', mid_vol: '0' }]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { ticker: 'NVDA' } }),
+      res,
+    );
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      latest: Record<string, { tapeSide: unknown } | null>;
+    };
+    expect(body.latest.NVDA?.tapeSide).toBeNull();
   });
 
   it('returns 500 and captures to Sentry on DB error', async () => {

@@ -8,7 +8,77 @@
  */
 
 import { useEffect, useState } from 'react';
-import type { ActiveSqueeze, GammaSqueezeSide, TapeAgreement } from './types';
+import type {
+  ActiveSqueeze,
+  GammaSqueezeSide,
+  GammaSqueezeTapeSide,
+  TapeAgreement,
+} from './types';
+
+/**
+ * Mixed-band threshold for the tape-side pill. Below 55% of directional
+ * volume on either side, we render `mixed` in zinc — at the dealer-hedged
+ * squeeze scale even small leans matter, but anything inside ±5% of 50
+ * is noise.
+ */
+const TAPE_SIDE_DOMINANT_THRESHOLD = 0.55;
+
+type TapeSideDominant = 'ask' | 'bid' | 'mixed';
+
+interface TapeSideView {
+  dominant: TapeSideDominant;
+  askPct: number;
+  bidPct: number;
+  askVol: number;
+  bidVol: number;
+  midVol: number;
+}
+
+function computeTapeSideView(t: GammaSqueezeTapeSide): TapeSideView | null {
+  const directional = t.askVol + t.bidVol;
+  if (directional <= 0) return null;
+  const askPct = t.askVol / directional;
+  const bidPct = t.bidVol / directional;
+  let dominant: TapeSideDominant;
+  if (askPct >= TAPE_SIDE_DOMINANT_THRESHOLD) dominant = 'ask';
+  else if (bidPct >= TAPE_SIDE_DOMINANT_THRESHOLD) dominant = 'bid';
+  else dominant = 'mixed';
+  return {
+    dominant,
+    askPct,
+    bidPct,
+    askVol: t.askVol,
+    bidVol: t.bidVol,
+    midVol: t.midVol,
+  };
+}
+
+/**
+ * Color rule: lime when the dominant side implies bullish-on-underlying
+ * pressure (calls@ask OR puts@bid), rose when bearish-on-underlying
+ * (calls@bid OR puts@ask), zinc when mixed. Same lime/rose semantics
+ * across both sides so the user can scan the whole feed and read the
+ * underlying direction directly without translating per-row.
+ */
+function tapeSideClass(
+  side: GammaSqueezeSide,
+  dominant: TapeSideDominant,
+): string {
+  if (dominant === 'mixed') return 'bg-zinc-500/20 text-zinc-400';
+  const bullish =
+    (side === 'call' && dominant === 'ask') ||
+    (side === 'put' && dominant === 'bid');
+  return bullish
+    ? 'bg-lime-500/20 text-lime-300'
+    : 'bg-rose-500/15 text-rose-300';
+}
+
+function fmtCount(x: number): string {
+  if (!Number.isFinite(x)) return '—';
+  if (x >= 1e6) return `${(x / 1e6).toFixed(1)}M`;
+  if (x >= 1e3) return `${(x / 1e3).toFixed(1)}K`;
+  return `${Math.round(x)}`;
+}
 
 function fmtPremium(x: number | null): string {
   if (x == null || !Number.isFinite(x)) return '—';
@@ -272,6 +342,55 @@ export function SqueezeRow({ squeeze }: { readonly squeeze: ActiveSqueeze }) {
           tape {latest.tapeAgreement.agreeCount}/{latest.tapeAgreement.total}
         </span>
       ) : null}
+
+      {(() => {
+        const view = latest.tapeSide
+          ? computeTapeSideView(latest.tapeSide)
+          : null;
+        if (!view) return null;
+        const isAsk = view.dominant === 'ask';
+        const isBid = view.dominant === 'bid';
+        const label = isAsk
+          ? `ask ${(view.askPct * 100).toFixed(0)}%`
+          : isBid
+            ? `bid ${(view.bidPct * 100).toFixed(0)}%`
+            : `mixed ${(Math.max(view.askPct, view.bidPct) * 100).toFixed(0)}%`;
+        const tapeBullish =
+          (latest.side === 'call' && isAsk) || (latest.side === 'put' && isBid);
+        const tapeBearish =
+          (latest.side === 'call' && isBid) || (latest.side === 'put' && isAsk);
+        const verdict = tapeBullish
+          ? 'BULLISH on underlying — squeeze direction confirmed by tape'
+          : tapeBearish
+            ? 'BEARISH on underlying — squeeze losing momentum (holders unwinding)'
+            : 'MIXED — no clear tape lean';
+        const title =
+          `Per-strike tape side over the last 15 min ` +
+          `(matches the velocity window):\n` +
+          `  ask-side vol: ${fmtCount(view.askVol)} (${(view.askPct * 100).toFixed(0)}%)\n` +
+          `  bid-side vol: ${fmtCount(view.bidVol)} (${(view.bidPct * 100).toFixed(0)}%)\n` +
+          `  mid vol: ${fmtCount(view.midVol)}\n` +
+          `\n` +
+          `${verdict}.\n` +
+          `\n` +
+          `Color rule: lime when calls hit at ask OR puts hit at bid ` +
+          `(both bullish for spot); rose when calls hit at bid OR puts ` +
+          `hit at ask (both bearish for spot); zinc when mixed.\n` +
+          `\n` +
+          `Note: UW flow-per-strike-intraday aggregates across expiries ` +
+          `at this strike — usually 0DTE-dominated near the money, but ` +
+          `round-number strikes can include 1DTE+ noise.`;
+        return (
+          <span
+            className={`${tapeSideClass(latest.side, view.dominant)} rounded-md px-2 py-0.5 font-mono text-[10px] font-semibold`}
+            data-testid="squeeze-tape-side"
+            data-dominant={view.dominant}
+            title={title}
+          >
+            {label}
+          </span>
+        );
+      })()}
 
       <span
         className="text-muted ml-auto font-mono text-[10px]"

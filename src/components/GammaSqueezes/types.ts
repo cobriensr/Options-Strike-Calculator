@@ -76,6 +76,23 @@ export interface GammaSqueezeRow {
    * UI surfaces the count as a `tape K/N` badge with a tooltip.
    */
   tapeAgreement: TapeAgreement;
+  /**
+   * Per-strike tape-side rollup over the same 15-min window the velocity
+   * gate uses. Sums per-minute ask/bid/mid volume from the UW
+   * flow-per-strike-intraday feed so the row can show whether prints are
+   * hitting the ask (buyers) or the bid (sellers) without clicking
+   * through to the contract page. Aggregates across expiries — for
+   * 0DTE-dominant near-money strikes this is mostly the right thing,
+   * but on round-number strikes 1DTE+ can dilute. Null when no
+   * directional volume exists in the window.
+   */
+  tapeSide: GammaSqueezeTapeSide | null;
+}
+
+export interface GammaSqueezeTapeSide {
+  askVol: number;
+  bidVol: number;
+  midVol: number;
 }
 
 export interface TapeSignalResult {

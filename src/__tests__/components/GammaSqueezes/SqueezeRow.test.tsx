@@ -34,6 +34,7 @@ function makeRow(over: Partial<GammaSqueezeRow> = {}): GammaSqueezeRow {
     ivMorningVolCorr: null,
     precisionStackPass: false,
     tapeAgreement: { signals: [], agreeCount: 0, total: 0 },
+    tapeSide: null,
     ...over,
   };
 }
@@ -120,5 +121,86 @@ describe('SqueezeRow', () => {
     render(<SqueezeRow squeeze={makeActive({ expiry: 'not-a-date' })} />);
     expect(screen.queryByRole('link')).not.toBeInTheDocument();
     expect(screen.getByText(/NVDA 212\.5C/)).toBeInTheDocument();
+  });
+
+  describe('tape-side pill', () => {
+    it('renders nothing when tapeSide is null', () => {
+      render(<SqueezeRow squeeze={makeActive({ tapeSide: null })} />);
+      expect(screen.queryByTestId('squeeze-tape-side')).not.toBeInTheDocument();
+    });
+
+    it('renders ask% in lime for an ask-dominant CALL alert (bullish underlying)', () => {
+      render(
+        <SqueezeRow
+          squeeze={makeActive({
+            side: 'call',
+            tapeSide: { askVol: 800, bidVol: 200, midVol: 50 },
+          })}
+        />,
+      );
+      const pill = screen.getByTestId('squeeze-tape-side');
+      expect(pill).toHaveTextContent(/ask 80%/);
+      expect(pill).toHaveAttribute('data-dominant', 'ask');
+      expect(pill).toHaveClass('bg-lime-500/20');
+    });
+
+    it('renders bid% in rose for a bid-dominant CALL alert (bearish underlying)', () => {
+      render(
+        <SqueezeRow
+          squeeze={makeActive({
+            side: 'call',
+            tapeSide: { askVol: 200, bidVol: 800, midVol: 0 },
+          })}
+        />,
+      );
+      const pill = screen.getByTestId('squeeze-tape-side');
+      expect(pill).toHaveTextContent(/bid 80%/);
+      expect(pill).toHaveClass('bg-rose-500/15');
+    });
+
+    it('renders bid% in lime for a bid-dominant PUT alert (bullish underlying)', () => {
+      render(
+        <SqueezeRow
+          squeeze={makeActive({
+            side: 'put',
+            strike: 100,
+            tapeSide: { askVol: 200, bidVol: 800, midVol: 0 },
+          })}
+        />,
+      );
+      const pill = screen.getByTestId('squeeze-tape-side');
+      expect(pill).toHaveTextContent(/bid 80%/);
+      expect(pill).toHaveClass('bg-lime-500/20');
+    });
+
+    it('renders ask% in rose for an ask-dominant PUT alert (bearish underlying)', () => {
+      render(
+        <SqueezeRow
+          squeeze={makeActive({
+            side: 'put',
+            strike: 100,
+            tapeSide: { askVol: 800, bidVol: 200, midVol: 0 },
+          })}
+        />,
+      );
+      const pill = screen.getByTestId('squeeze-tape-side');
+      expect(pill).toHaveTextContent(/ask 80%/);
+      expect(pill).toHaveClass('bg-rose-500/15');
+    });
+
+    it('renders mixed in zinc when neither side reaches the dominant threshold', () => {
+      render(
+        <SqueezeRow
+          squeeze={makeActive({
+            side: 'call',
+            tapeSide: { askVol: 510, bidVol: 490, midVol: 0 },
+          })}
+        />,
+      );
+      const pill = screen.getByTestId('squeeze-tape-side');
+      expect(pill).toHaveTextContent(/mixed/);
+      expect(pill).toHaveAttribute('data-dominant', 'mixed');
+      expect(pill).toHaveClass('bg-zinc-500/20');
+    });
   });
 });

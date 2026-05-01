@@ -42,6 +42,7 @@ function makeRow(
     ivMorningVolCorr: null,
     precisionStackPass: false,
     tapeAgreement: { signals: [], agreeCount: 0, total: 0 },
+    tapeSide: null,
     ...overrides,
   };
 }

@@ -77,6 +77,7 @@ function makeSqueeze(
     ivMorningVolCorr: null,
     precisionStackPass: false,
     tapeAgreement: { signals: [], agreeCount: 0, total: 0 },
+    tapeSide: null,
   };
   return {
     compoundKey: squeezeCompoundKey(base),

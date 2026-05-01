@@ -36,6 +36,32 @@ import { getFlowData } from './_lib/db-flow.js';
 const TICKERS = STRIKE_IV_TICKERS;
 type Ticker = StrikeIVTicker;
 
+/**
+ * Per-strike tape-side rollup over the same 15-min window the velocity
+ * gate uses. Sums per-minute `ask_side_vol` / `bid_side_vol` / `mid_vol`
+ * from `strike_trade_volume` so the row can show whether prints are
+ * landing at the ask (buyers lifting offers) or the bid (sellers hitting
+ * the bid) — the question the user otherwise has to click into the
+ * Unusual Whales contract page to answer.
+ *
+ * Caveat: `strike_trade_volume` aggregates across expiries (UW
+ * `flow-per-strike-intraday` shape). For 0DTE-dominant near-money
+ * strikes this is mostly the right thing, but on round-number strikes
+ * with material 1DTE+ presence it can dilute the signal.
+ *
+ * Null when no directional volume exists in the window (zero ask + zero
+ * bid). Pure mid-only volume returns null because mid trades carry no
+ * directional signal.
+ */
+export interface GammaSqueezeTapeSide {
+  /** Sum of ask-side per-minute volume over [ts - 15min, ts]. */
+  askVol: number;
+  /** Sum of bid-side per-minute volume over [ts - 15min, ts]. */
+  bidVol: number;
+  /** Sum of between-the-spread per-minute volume over the window. */
+  midVol: number;
+}
+
 export interface GammaSqueezeRow {
   id: number;
   ticker: string;
@@ -99,6 +125,13 @@ export interface GammaSqueezeRow {
    * NOT part of the precision-stack pass gate.
    */
   tapeAgreement: TapeAgreement;
+  /**
+   * Per-strike tape-side rollup over the velocity window. Null when
+   * `strike_trade_volume` had no directional volume for this
+   * (ticker, strike, side) in the trailing 15 min. See
+   * `GammaSqueezeTapeSide` doc for the cross-expiry caveat.
+   */
+  tapeSide: GammaSqueezeTapeSide | null;
 }
 
 export interface GammaSqueezesResponse {
@@ -193,12 +226,14 @@ function mapSqueeze(r: RawSqueezeRow): GammaSqueezeRow {
     maxCallPnlPct: parseNumOrNull(r.max_call_pnl_pct),
     hhiNeighborhood: parseNumOrNull(r.hhi_neighborhood),
     ivMorningVolCorr: parseNumOrNull(r.iv_morning_vol_corr),
-    // Filled in by attachPathShape, attachPrecisionPass, attachTapeAgreement after rows load.
+    // Filled in by attachPathShape, attachPrecisionPass, attachTapeAgreement,
+    // attachTapeSide after rows load.
     freshnessMin: 0,
     progressPct: null,
     isStale: false,
     precisionStackPass: false,
     tapeAgreement: { signals: [], agreeCount: 0, total: 0 },
+    tapeSide: null,
   };
 }
 
@@ -349,6 +384,74 @@ function attachPrecisionPass(
   }
 }
 
+/**
+ * Attach per-strike tape-side rollup to each row. For each squeeze row,
+ * sums `strike_trade_volume.{ask,bid,mid}_side_vol` over
+ * `[row.ts - 15min, row.ts]` — the same window as the velocity gate, so
+ * the rollup reflects the tape side of the volume that drove the alert.
+ *
+ * Fans out one query per row in parallel. Per-row failures stamp null
+ * rather than poisoning the whole batch.
+ */
+async function attachTapeSide(
+  rowsByTicker: Map<string, GammaSqueezeRow[]>,
+): Promise<void> {
+  const allRows: GammaSqueezeRow[] = [];
+  for (const rows of rowsByTicker.values()) {
+    for (const r of rows) allRows.push(r);
+  }
+  if (allRows.length === 0) return;
+
+  const sql = getDb();
+
+  type AggRow = {
+    ask_vol: NumericFromDb;
+    bid_vol: NumericFromDb;
+    mid_vol: NumericFromDb;
+  };
+
+  await Promise.all(
+    allRows.map(async (r) => {
+      try {
+        const result = (await sql`
+          SELECT
+            COALESCE(SUM(ask_side_vol), 0) AS ask_vol,
+            COALESCE(SUM(bid_side_vol), 0) AS bid_vol,
+            COALESCE(SUM(mid_vol),     0) AS mid_vol
+          FROM strike_trade_volume
+          WHERE ticker = ${r.ticker}
+            AND strike = ${r.strike}
+            AND side   = ${r.side}
+            AND ts >= (${r.ts}::timestamptz - INTERVAL '15 minutes')
+            AND ts <= ${r.ts}::timestamptz
+        `) as AggRow[];
+        const row = result[0];
+        if (!row) {
+          r.tapeSide = null;
+          return;
+        }
+        const askVol = parseNumOrNull(row.ask_vol) ?? 0;
+        const bidVol = parseNumOrNull(row.bid_vol) ?? 0;
+        const midVol = parseNumOrNull(row.mid_vol) ?? 0;
+        // No directional volume → no signal. Pure mid-only also returns
+        // null because mid trades don't tell side.
+        if (askVol + bidVol <= 0) {
+          r.tapeSide = null;
+          return;
+        }
+        r.tapeSide = { askVol, bidVol, midVol };
+      } catch (err) {
+        Sentry.captureException(err);
+        logger.warn(
+          { err, ticker: r.ticker, strike: r.strike },
+          'gamma-squeezes: tape-side rollup failed',
+        );
+        r.tapeSide = null;
+      }
+    }),
+  );
+}
+
 async function attachPathShape(
   rowsByTicker: Map<string, GammaSqueezeRow[]>,
   at: Date | null,
@@ -486,6 +589,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       } catch (err) {
         Sentry.captureException(err);
         logger.warn({ err }, 'gamma-squeezes: tape-agreement attach failed');
+      }
+
+      // Per-strike tape-side rollup — sums ask/bid/mid side per-minute
+      // volume from `strike_trade_volume` over the velocity window so
+      // the row UI can show whether prints are landing on the bid or
+      // ask without making the user click through to UW. Per-row
+      // failures stamp null and log to Sentry.
+      try {
+        await attachTapeSide(rowsByTicker);
+      } catch (err) {
+        Sentry.captureException(err);
+        logger.warn({ err }, 'gamma-squeezes: tape-side attach failed');
       }
 
       const response: GammaSqueezesResponse = { mode: 'list', latest, history };

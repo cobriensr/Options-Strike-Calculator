@@ -170,8 +170,9 @@ describe('GET /api/gamma-squeezes', () => {
     };
     expect(body.mode).toBe('list');
     // SPY query path: 1 (history) + 1 (path-shape lateral spot) +
-    // 4 (tape: market_tide, market_tide_otm, spy_flow, spy_etf_tide) = 6.
-    expect(mockSql).toHaveBeenCalledTimes(6);
+    // 4 (tape: market_tide, market_tide_otm, spy_flow, spy_etf_tide) +
+    // 2 (tape-side rollup, one per row over the 15-min velocity window) = 8.
+    expect(mockSql).toHaveBeenCalledTimes(8);
     expect(body.latest.SPY).toMatchObject({ id: 1 });
     expect(body.history.SPY).toHaveLength(2);
   });
