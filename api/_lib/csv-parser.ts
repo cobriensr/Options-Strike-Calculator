@@ -896,6 +896,98 @@ function buildOpenSpreadsFromTrades(
   return [...spreadLines, ...bflyLines];
 }
 
+// ── Helper: pair shorts with their nearest unused long ───────
+//
+// Both `pairForDisplay` and `computeSideMaxRisk` previously inlined the
+// same matching loop verbatim: filter to shorts/longs (qty < 0 vs > 0),
+// sort by strike, then for each short walk the long array picking the
+// closest unused strike within MAX_RECOGNIZED_SPREAD_WIDTH. The shape
+// is small but identical, and any future change to the pairing rule
+// (FIFO instead of nearest, multi-strike legging out, etc.) needs to
+// land in both call sites or the two consumers diverge silently.
+//
+// Greedy pairing — same shape as the previous inline loops, just
+// extracted. Results come back in short-strike-ascending order so
+// `pairForDisplay` can interleave paired vs unpaired output the way
+// the original loop did. `computeSideMaxRisk` filters to entries with
+// a `long` (open-ended naked-short risk doesn't roll into a defined
+// max-loss number).
+
+/**
+ * One short, optionally with the long it was paired against. `long`
+ * is `null` only for shorts the matcher couldn't find an in-window
+ * partner for; in that case `width` is also `null`.
+ */
+export type ShortPairResult =
+  | { short: PositionLeg; long: PositionLeg; width: number }
+  | { short: PositionLeg; long: null; width: null };
+
+/**
+ * Greedy short-to-long pairing for a single side (calls OR puts) of a
+ * defined-risk vertical spread book. Sorts both queues by strike, then
+ * for each short picks the closest unused long whose distance is within
+ * `maxWidth` (default `MAX_RECOGNIZED_SPREAD_WIDTH`).
+ *
+ * Returns `results` in short-strike-ascending order — one entry per
+ * short, paired or not — plus a `hasShorts` boolean so callers can
+ * skip the section header when there's nothing to render.
+ *
+ * Behaviour:
+ *   - Empty `legs`            → `{ results: [], hasShorts: false }`.
+ *   - Only shorts, no longs   → every entry has `long: null`.
+ *   - Only longs, no shorts   → no entries; longs are silently dropped
+ *                               (callers don't track unpaired longs).
+ *   - Width cap exceeded      → the short stays unmatched, longs remain
+ *                               available for closer-strike shorts.
+ *   - Multiple shorts, one
+ *     long within range       → first short by strike-asc wins; later
+ *                               shorts get `long: null` if no other
+ *                               in-window long remains.
+ */
+export function pairShortsWithLongs(
+  legs: PositionLeg[],
+  options: { maxWidth?: number } = {},
+): { results: ShortPairResult[]; hasShorts: boolean } {
+  const maxWidth = options.maxWidth ?? MAX_RECOGNIZED_SPREAD_WIDTH;
+
+  const shorts = legs
+    .filter((l) => l.quantity < 0)
+    .sort((a, b) => a.strike - b.strike);
+  const longs = legs
+    .filter((l) => l.quantity > 0)
+    .sort((a, b) => a.strike - b.strike);
+
+  const results: ShortPairResult[] = [];
+  const usedLongs = new Set<number>();
+
+  for (const short of shorts) {
+    let bestIdx = -1;
+    let bestDist = Infinity;
+    for (let i = 0; i < longs.length; i++) {
+      if (usedLongs.has(i)) continue;
+      const dist = Math.abs(longs[i]!.strike - short.strike);
+      if (dist < bestDist && dist <= maxWidth) {
+        bestDist = dist;
+        bestIdx = i;
+      }
+    }
+
+    if (bestIdx >= 0) {
+      usedLongs.add(bestIdx);
+      const long = longs[bestIdx]!;
+      results.push({
+        short,
+        long,
+        width: Math.abs(long.strike - short.strike),
+      });
+    } else {
+      results.push({ short, long: null, width: null });
+    }
+  }
+
+  return { results, hasShorts: shorts.length > 0 };
+}
+
 // ── Helper: pair legs into spread display lines ─────────────
 
 function pairForDisplay(
@@ -906,34 +998,15 @@ function pairForDisplay(
   const lines: string[] = [];
 
   function formatGroup(group: PositionLeg[], label: string): void {
-    const shorts = group
-      .filter((l) => l.quantity < 0)
-      .sort((a, b) => a.strike - b.strike);
-    const longs = group
-      .filter((l) => l.quantity > 0)
-      .sort((a, b) => a.strike - b.strike);
+    const { results, hasShorts } = pairShortsWithLongs(group);
 
-    if (shorts.length === 0) return;
+    if (!hasShorts) return;
 
     lines.push(`${label}:`);
-    const usedLongs = new Set<number>();
 
-    for (const short of shorts) {
-      let bestIdx = -1;
-      let bestDist = Infinity;
-      for (let i = 0; i < longs.length; i++) {
-        if (usedLongs.has(i)) continue;
-        const dist = Math.abs(longs[i]!.strike - short.strike);
-        if (dist < bestDist && dist <= MAX_RECOGNIZED_SPREAD_WIDTH) {
-          bestDist = dist;
-          bestIdx = i;
-        }
-      }
-
-      if (bestIdx >= 0) {
-        usedLongs.add(bestIdx);
-        const long = longs[bestIdx]!;
-        const width = Math.abs(long.strike - short.strike);
+    for (const r of results) {
+      if (r.long) {
+        const { short, long, width } = r;
         const credit =
           Math.abs(short.averagePrice) - Math.abs(long.averagePrice);
         const cushion =
@@ -953,7 +1026,7 @@ function pairForDisplay(
         );
       } else {
         lines.push(
-          `  Short ${short.strike}${short.putCall[0]} (unpaired) | ${Math.abs(short.quantity)} contracts`,
+          `  Short ${r.short.strike}${r.short.putCall[0]} (unpaired) | ${Math.abs(r.short.quantity)} contracts`,
         );
       }
     }
@@ -968,36 +1041,15 @@ function pairForDisplay(
 // ── Helper: compute max risk for one side of positions ───────
 
 function computeSideMaxRisk(legs: PositionLeg[]): number {
-  const shorts = legs
-    .filter((l) => l.quantity < 0)
-    .sort((a, b) => a.strike - b.strike);
-  const longs = legs
-    .filter((l) => l.quantity > 0)
-    .sort((a, b) => a.strike - b.strike);
+  const { results } = pairShortsWithLongs(legs);
 
   let totalRisk = 0;
-  const usedLongs = new Set<number>();
-
-  for (const short of shorts) {
-    let bestIdx = -1;
-    let bestDist = Infinity;
-    for (let i = 0; i < longs.length; i++) {
-      if (usedLongs.has(i)) continue;
-      const dist = Math.abs(longs[i]!.strike - short.strike);
-      if (dist < bestDist && dist <= MAX_RECOGNIZED_SPREAD_WIDTH) {
-        bestDist = dist;
-        bestIdx = i;
-      }
-    }
-
-    if (bestIdx >= 0) {
-      usedLongs.add(bestIdx);
-      const long = longs[bestIdx]!;
-      const width = Math.abs(long.strike - short.strike);
-      const credit = Math.abs(short.averagePrice) - Math.abs(long.averagePrice);
-      const maxLoss = (width - credit) * 100 * Math.abs(short.quantity);
-      totalRisk += Math.max(0, maxLoss);
-    }
+  for (const r of results) {
+    if (r.long == null) continue;
+    const { short, long, width } = r;
+    const credit = Math.abs(short.averagePrice) - Math.abs(long.averagePrice);
+    const maxLoss = (width - credit) * 100 * Math.abs(short.quantity);
+    totalRisk += Math.max(0, maxLoss);
   }
 
   return Math.round(totalRisk);

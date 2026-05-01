@@ -19,7 +19,9 @@ import {
   parseTosExpiration,
   parseCSVLine,
   buildFullSummary,
+  pairShortsWithLongs,
 } from '../_lib/csv-parser.js';
+import type { PositionLeg } from '../_lib/db.js';
 
 // ── CSV-002: wide-spread recognition ────────────────────────
 
@@ -670,5 +672,108 @@ SPX,.SPXW260407P6430,7 APR 26,6430,PUT,+10,0.50,0.20
     const parsed = parseFullCSV(csv);
     const summary = buildFullSummary(parsed);
     expect(summary).toContain('CCS closed');
+  });
+});
+
+// ── pairShortsWithLongs (extracted helper) ──────────────────
+
+describe('pairShortsWithLongs', () => {
+  // Build a minimal PositionLeg fixture — only the fields the matcher
+  // actually reads (quantity sign for short/long classification, strike
+  // for the distance gate). All other PositionLeg fields are filler so
+  // the test focuses on the matching algorithm.
+  function leg(
+    quantity: number,
+    strike: number,
+    putCall: 'PUT' | 'CALL' = 'CALL',
+  ): PositionLeg {
+    return {
+      putCall,
+      symbol: `SPX_${strike}${putCall[0]}`,
+      strike,
+      expiration: '2026-04-07',
+      quantity,
+      averagePrice: 1.0,
+      marketValue: 0,
+      delta: undefined,
+      theta: undefined,
+      gamma: undefined,
+    };
+  }
+
+  it('returns no entries when there are no shorts', () => {
+    const out = pairShortsWithLongs([leg(+1, 6500), leg(+2, 6400)]);
+    expect(out.results).toEqual([]);
+    expect(out.hasShorts).toBe(false);
+  });
+
+  it('returns unmatched entries when there are no longs', () => {
+    const shorts = [leg(-1, 6500), leg(-1, 6510)];
+    const out = pairShortsWithLongs(shorts);
+    expect(out.hasShorts).toBe(true);
+    expect(out.results).toHaveLength(2);
+    expect(out.results[0]?.long).toBeNull();
+    expect(out.results[1]?.long).toBeNull();
+  });
+
+  it('pairs each short with its nearest unused long (perfect pairing)', () => {
+    // Two PCS at different strikes — each short pairs with its own long
+    // 50pt away.
+    const legs = [
+      leg(-1, 6500, 'PUT'),
+      leg(+1, 6450, 'PUT'),
+      leg(-1, 6300, 'PUT'),
+      leg(+1, 6250, 'PUT'),
+    ];
+    const out = pairShortsWithLongs(legs);
+    expect(out.hasShorts).toBe(true);
+    expect(out.results).toHaveLength(2);
+    // Sorted ascending by short strike: 6300 first, then 6500.
+    const r0 = out.results[0];
+    if (!r0?.long) throw new Error('expected r0 paired');
+    expect(r0.short.strike).toBe(6300);
+    expect(r0.long.strike).toBe(6250);
+    expect(r0.width).toBe(50);
+    const r1 = out.results[1];
+    if (!r1?.long) throw new Error('expected r1 paired');
+    expect(r1.short.strike).toBe(6500);
+    expect(r1.long.strike).toBe(6450);
+  });
+
+  it('leaves a short unpaired when no long is within the width cap', () => {
+    // Width cap default = 200. 6500 short / 6000 long is 500 wide → reject.
+    const legs = [leg(-1, 6500, 'PUT'), leg(+1, 6000, 'PUT')];
+    const out = pairShortsWithLongs(legs);
+    expect(out.hasShorts).toBe(true);
+    expect(out.results).toHaveLength(1);
+    expect(out.results[0]?.long).toBeNull();
+  });
+
+  it('honors a custom maxWidth override', () => {
+    // Same fixture as above, but pass maxWidth: 1000 to widen the cap so
+    // the 500-pt gap pairs cleanly.
+    const legs = [leg(-1, 6500, 'PUT'), leg(+1, 6000, 'PUT')];
+    const out = pairShortsWithLongs(legs, { maxWidth: 1000 });
+    expect(out.results[0]?.long?.strike).toBe(6000);
+    expect(out.results[0]?.width).toBe(500);
+  });
+
+  it('greedy: first short by strike-asc grabs the only in-range long, second short stays unpaired', () => {
+    // Two shorts at 6500 and 6510, one long at 6450.
+    // Sort: short 6500 first → grabs long 6450 (50pt).
+    // Short 6510 has no remaining long → unpaired.
+    const legs = [
+      leg(-1, 6500, 'PUT'),
+      leg(-1, 6510, 'PUT'),
+      leg(+1, 6450, 'PUT'),
+    ];
+    const out = pairShortsWithLongs(legs);
+    expect(out.results).toHaveLength(2);
+    const first = out.results[0];
+    if (!first?.long) throw new Error('expected first paired');
+    expect(first.short.strike).toBe(6500);
+    expect(first.long.strike).toBe(6450);
+    expect(out.results[1]?.long).toBeNull();
+    expect(out.results[1]?.short.strike).toBe(6510);
   });
 });
