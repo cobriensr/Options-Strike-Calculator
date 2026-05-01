@@ -230,9 +230,7 @@ export async function fetchAllDarkPoolTrades(
       if (oldestEtDate < date) break;
     }
 
-    const oldestTs = Math.floor(
-      new Date(oldest.executed_at).getTime() / 1000,
-    );
+    const oldestTs = Math.floor(new Date(oldest.executed_at).getTime() / 1000);
     // If cursor didn't advance, we're stuck — stop
     if (olderThan != null && oldestTs >= olderThan) break;
     olderThan = oldestTs;
@@ -259,9 +257,7 @@ export async function fetchAllDarkPoolTrades(
   // Quality filter — see passesDarkPoolQualityFilter for the full
   // rationale on each disqualifying condition. Centralized so the two
   // pagination call sites can't drift apart again.
-  const filtered = all.filter((t) =>
-    passesDarkPoolQualityFilter(t, { date }),
-  );
+  const filtered = all.filter((t) => passesDarkPoolQualityFilter(t, { date }));
 
   if (filtered.length === 0) return { kind: 'empty' };
   return { kind: 'ok', data: filtered };

@@ -23,10 +23,7 @@ import { metrics, Sentry } from './sentry.js';
  * rejections from validation), and the wrapper also calls it on the
  * synthetic 405 path.
  */
-export type RequestDone = (opts?: {
-  status?: number;
-  error?: string;
-}) => void;
+export type RequestDone = (opts?: { status?: number; error?: string }) => void;
 
 /**
  * Inner handler signature. Receives the standard req/res plus a `done`

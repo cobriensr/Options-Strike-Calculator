@@ -47,9 +47,7 @@ describe('passesDarkPoolQualityFilter', () => {
 
   it('drops trades with non-null ext_hour_sold_codes', () => {
     expect(
-      passesDarkPoolQualityFilter(
-        makeTrade({ ext_hour_sold_codes: 'FORM_T' }),
-      ),
+      passesDarkPoolQualityFilter(makeTrade({ ext_hour_sold_codes: 'FORM_T' })),
     ).toBe(false);
   });
 

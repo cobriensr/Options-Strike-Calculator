@@ -104,10 +104,7 @@ export function passesDarkPoolQualityFilter(
   if (trade.sale_cond_codes === 'contingent_trade') return false;
   if (trade.trade_code === 'derivative_priced') return false;
   if (!isIntradayCT(trade.executed_at)) return false;
-  if (
-    opts.date &&
-    getETDateStr(new Date(trade.executed_at)) !== opts.date
-  ) {
+  if (opts.date && getETDateStr(new Date(trade.executed_at)) !== opts.date) {
     return false;
   }
   return true;

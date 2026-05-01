@@ -95,7 +95,9 @@ function describe(value: unknown): string {
   if (value === null) return 'null';
   if (value === undefined) return 'undefined';
   if (typeof value === 'string') {
-    return value.length > 40 ? JSON.stringify(value.slice(0, 40) + '…') : JSON.stringify(value);
+    return value.length > 40
+      ? JSON.stringify(value.slice(0, 40) + '…')
+      : JSON.stringify(value);
   }
   if (typeof value === 'bigint') return `${value}n`;
   if (typeof value === 'number') return String(value);

@@ -149,9 +149,15 @@ export async function runCachedAnthropicCall(
   };
 
   let modelUsed = primaryModel;
-  let response: Awaited<ReturnType<ReturnType<typeof buildStream>['finalMessage']>>;
+  let response: Awaited<
+    ReturnType<ReturnType<typeof buildStream>['finalMessage']>
+  >;
   try {
-    response = await buildStream(primaryModel, maxTokens, effort).finalMessage();
+    response = await buildStream(
+      primaryModel,
+      maxTokens,
+      effort,
+    ).finalMessage();
   } catch (err) {
     if (!fallbackModel || isClientErrorThatWontRetry(err)) {
       throw err;
