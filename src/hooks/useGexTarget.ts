@@ -49,6 +49,7 @@ import { checkIsOwner } from '../utils/auth';
 import { getETToday } from '../utils/timezone';
 import { useScrubController } from './useScrubController';
 import { useWallClockFreshness } from './useWallClockFreshness';
+import { usePolling } from './usePolling';
 import type { TargetScore } from '../utils/gex-target';
 
 /**
@@ -454,12 +455,15 @@ export function useGexTarget(
   // Effect 2 -- Live polling (fires when live conditions change).
   // No immediate fetchData() call here -- the bulk load already set state
   // from the latest snapshot. The interval refreshes state after one poll
-  // interval elapses.
-  useEffect(() => {
-    if (!isOwner || !isToday || !marketOpen || isScrubbed) return;
-    const id = setInterval(() => void fetchData(), POLL_INTERVALS.GEX_TARGET);
-    return () => clearInterval(id);
-  }, [isOwner, isToday, marketOpen, isScrubbed, fetchData]);
+  // interval elapses. Extracted to `usePolling`; gates collapse the prior
+  // four-condition guard `if (!isOwner || !isToday || !marketOpen || isScrubbed) return;`
+  // into the conjunction `[isOwner, isToday, marketOpen, !isScrubbed]`.
+  usePolling(() => void fetchData(), POLL_INTERVALS.GEX_TARGET, [
+    isOwner,
+    isToday,
+    marketOpen,
+    !isScrubbed,
+  ]);
 
   // Effect 3 -- Scrub (instant from cache, fallback to fetch on cache miss).
   // Also handles exiting scrub mode: restores the latest cached snapshot so

@@ -46,6 +46,7 @@ import { checkIsOwner } from '../utils/auth';
 import { getETToday } from '../utils/timezone';
 import { useScrubController } from './useScrubController';
 import { useWallClockFreshness } from './useWallClockFreshness';
+import { usePolling } from './usePolling';
 
 /**
  * A snapshot is considered "live" only if its timestamp is within this many
@@ -290,18 +291,27 @@ export function useGexPerStrike(
     clearScrub();
   }, [selectedDate, clearScrub]);
 
+  // Eager dispatch effect — owns one-shot fetches and the AbortController
+  // that aborts in-flight requests on dep change. The recurring interval has
+  // been extracted to `usePolling` below; this effect stops at the eager
+  // fetch for the live-polling branch and lets `usePolling` carry the
+  // recurring tick. Both share the same controller via `pollAbortRef` so
+  // that gate flips abort interval-fired fetches just like the legacy code
+  // (race-prevention for stale responses overwriting fresh state).
+  const pollAbortRef = useRef<AbortController | null>(null);
   useEffect(() => {
     if (!isOwner) {
       setLoading(false);
       return;
     }
 
-    // Each effect invocation owns its own AbortController. When this effect
-    // cleans up (date change, scrub, marketOpen flip), controller.abort()
-    // cancels any in-flight fetch so stale responses never overwrite fresh
-    // state — the classic "last fetch wins" race condition.
     const controller = new AbortController();
     const { signal } = controller;
+    // Live-polling branch shares this controller with `usePolling` so an
+    // interval-fired fetch in flight is aborted on the same dep flip that
+    // tears down the eager-fetch path. Other branches don't poll, so the
+    // ref is cleared after the eager fetch.
+    pollAbortRef.current = controller;
 
     // Scrubbing: fetch the exact pinned snapshot, no polling. The user is
     // explicitly inspecting one moment in time.
@@ -327,20 +337,26 @@ export function useGexPerStrike(
       return () => controller.abort();
     }
 
-    // Today, market open, not scrubbed → live polling. Each poll fetches
-    // the latest snapshot for the day (no `?time=` param), so the displayed
-    // timestamp actually advances as the cron writes new snapshots. Users
-    // who want to inspect a past moment use the scrub controls below.
+    // Today, market open, not scrubbed → eager fetch now; `usePolling` below
+    // handles the recurring tick. Each poll fetches the latest snapshot for
+    // the day (no `?time=` param), so the displayed timestamp advances as
+    // the cron writes new snapshots.
     fetchData(undefined, signal);
-    const id = setInterval(
-      () => fetchData(undefined, signal),
-      POLL_INTERVALS.GEX_STRIKE,
-    );
-    return () => {
-      controller.abort();
-      clearInterval(id);
-    };
+    return () => controller.abort();
   }, [isOwner, marketOpen, isToday, scrubTimestamp, fetchData]);
+
+  // Live-polling tick. Gate matches the original guard
+  // `!isOwner || !isToday || !marketOpen || isScrubbed → return` collapsed
+  // into the conjunction `[isOwner, isToday, marketOpen, !isScrubbed]`.
+  // Reuses the eager-fetch effect's AbortController via `pollAbortRef` so
+  // that an interval-fired fetch in flight is aborted on the same dep flip
+  // that tears down the eager fetch path — preserving the race protection
+  // the legacy `setInterval`-inside-the-effect form provided for free.
+  usePolling(
+    () => fetchData(undefined, pollAbortRef.current?.signal),
+    POLL_INTERVALS.GEX_STRIKE,
+    [isOwner, isToday, marketOpen, !isScrubbed],
+  );
 
   // Wall-clock freshness — extracted to `useWallClockFreshness`. The ticker
   // only runs while every gate is truthy: BACKTEST or scrubbed states have a

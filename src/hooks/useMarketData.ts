@@ -24,6 +24,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { checkIsOwner } from '../utils/auth';
+import { usePolling } from './usePolling';
 import { isTradingDay, isHalfDay } from '../data/marketHours';
 import type { QuotesResponse, IntradayResponse } from '../types/api';
 import {
@@ -272,7 +273,6 @@ export function useMarketData(): MarketDataState {
   // Track if the owner cookie is present (any endpoint returned 200,
   // or the sc-hint cookie exists from a prior auth session).
   const isOwnerRef = useRef(checkIsOwner());
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const consecutiveFailsRef = useRef(0);
 
   const fetchAll = useCallback(async () => {
@@ -331,62 +331,55 @@ export function useMarketData(): MarketDataState {
   //     on `!openingRangeComplete` so we stop fetching it once the 30-min
   //     window has closed.
   //
-  // Effect dependency is the primitive `session` string so cheap equality
-  // keeps re-runs minimal (rerender-dependencies).
+  // Extracted to `usePolling` — the gate `[isOwnerRef.current, session !== 'closed']`
+  // matches the original `if (isOwnerRef.current && session !== 'closed')`
+  // guard. Backoff (interval doubling on 3+ consecutive failures) is
+  // expressed via the `intervalMs` argument; ref reads happen at render
+  // time, just as the original effect read them once per run.
   const openingRangeComplete = data.intraday?.openingRange?.complete ?? false;
+  const backoff = consecutiveFailsRef.current >= 3 ? 2 : 1;
 
-  useEffect(() => {
-    // Gate: session !== 'closed' — poll underlier whenever it can have
-    // meaningful prints (pre-market / regular / after-hours).
-    if (isOwnerRef.current && session !== 'closed') {
-      const backoff = consecutiveFailsRef.current >= 3 ? 2 : 1;
-      const interval = REFRESH_INTERVAL_MS * backoff;
-      intervalRef.current = setInterval(() => {
-        // Track whether the quotes fetch specifically succeeded so we can
-        // update `quotesLastUpdated` independently of `lastUpdated`.
-        let quotesSucceeded = false;
-        const fetches: Promise<void>[] = [
-          fetchJson<QuotesResponse>('/api/quotes').then((result) => {
+  usePolling(
+    () => {
+      // Track whether the quotes fetch specifically succeeded so we can
+      // update `quotesLastUpdated` independently of `lastUpdated`.
+      let quotesSucceeded = false;
+      const fetches: Promise<void>[] = [
+        fetchJson<QuotesResponse>('/api/quotes').then((result) => {
+          if ('data' in result) {
+            quotesSucceeded = true;
+            setData((prev) => ({ ...prev, quotes: result.data }));
+          }
+        }),
+      ];
+
+      // Opening-range refresh: RTH-only. The 30-min opening range is a
+      // strictly 09:30-10:00 ET concept — fetching it in pre-market or
+      // after-hours would return stale or empty data and waste quota.
+      if (session === 'regular' && !openingRangeComplete) {
+        fetches.push(
+          fetchJson<IntradayResponse>('/api/intraday').then((result) => {
             if ('data' in result) {
-              quotesSucceeded = true;
-              setData((prev) => ({ ...prev, quotes: result.data }));
+              setData((prev) => ({
+                ...prev,
+                intraday: result.data,
+              }));
             }
           }),
-        ];
-
-        // Opening-range refresh: RTH-only. The 30-min opening range is a
-        // strictly 09:30-10:00 ET concept — fetching it in pre-market or
-        // after-hours would return stale or empty data and waste quota.
-        if (session === 'regular' && !openingRangeComplete) {
-          fetches.push(
-            fetchJson<IntradayResponse>('/api/intraday').then((result) => {
-              if ('data' in result) {
-                setData((prev) => ({
-                  ...prev,
-                  intraday: result.data,
-                }));
-              }
-            }),
-          );
-        }
-
-        Promise.all(fetches).then(() => {
-          const now = new Date().toISOString();
-          setLastUpdated(now);
-          if (quotesSucceeded) {
-            setQuotesLastUpdated(now);
-          }
-        });
-      }, interval);
-    }
-
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
+        );
       }
-    };
-  }, [session, openingRangeComplete]);
+
+      Promise.all(fetches).then(() => {
+        const now = new Date().toISOString();
+        setLastUpdated(now);
+        if (quotesSucceeded) {
+          setQuotesLastUpdated(now);
+        }
+      });
+    },
+    REFRESH_INTERVAL_MS * backoff,
+    [isOwnerRef.current, session !== 'closed'],
+  );
 
   // FE-STATE-002: wall-clock tick that advances `session` across phase
   // boundaries. Runs unconditionally — we need `closed` → `pre-market`
