@@ -98,6 +98,7 @@ if (import.meta.env.PROD)
       { path: '/api/periscope-chat', method: 'POST' },
       { path: '/api/periscope-chat-list', method: 'GET' },
       { path: '/api/periscope-chat-detail', method: 'GET' },
+      { path: '/api/periscope-chat-image', method: 'GET' },
       { path: '/api/periscope-chat-update', method: 'PATCH' },
       { path: '/api/periscope-chat-update', method: 'POST' },
       // /api/trace-live-analyze intentionally NOT in the protect list:

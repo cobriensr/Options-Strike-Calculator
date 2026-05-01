@@ -245,9 +245,13 @@ describe('GET /api/periscope-chat-detail', () => {
     expect(body.cone_upper).toBe(7150);
     expect(body.image_urls).toHaveLength(1);
     expect(body.image_urls[0]!.kind).toBe('chart');
+    // image_urls are rewritten to the proxy endpoint, not raw Blob URLs
+    expect(body.image_urls[0]!.url).toBe(
+      '/api/periscope-chat-image?id=42&kind=chart',
+    );
   });
 
-  it('parses image_urls when stored as a JSON string (driver mode fallback)', async () => {
+  it('rewrites image_urls when stored as a JSON string (driver mode fallback)', async () => {
     mockSql.mockResolvedValueOnce([
       {
         ...sampleRow,
@@ -262,7 +266,150 @@ describe('GET /api/periscope-chat-detail', () => {
       image_urls: Array<{ kind: string; url: string }>;
     };
     expect(body.image_urls).toHaveLength(1);
-    expect(body.image_urls[0]!.url).toBe('https://b/c.png');
+    // Rewritten to the proxy URL — raw Blob URL is no longer surfaced
+    expect(body.image_urls[0]!.url).toBe(
+      '/api/periscope-chat-image?id=42&kind=chart',
+    );
+  });
+});
+
+// ============================================================
+// /api/periscope-chat-image
+// ============================================================
+
+import imageHandler from '../periscope-chat-image.js';
+
+describe('GET /api/periscope-chat-image', () => {
+  beforeEach(() => {
+    process.env.BLOB_READ_WRITE_TOKEN = 'test-blob-token';
+  });
+
+  it('returns 405 for non-GET methods', async () => {
+    const req = mockRequest({
+      method: 'POST',
+      query: { id: '1', kind: 'chart' },
+    });
+    const res = mockResponse();
+    await imageHandler(req, res);
+    expect(res._status).toBe(405);
+  });
+
+  it('returns 401 when not owner', async () => {
+    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
+      res.status(401).json({ error: 'Not authenticated' });
+      return true;
+    });
+    const req = mockRequest({
+      method: 'GET',
+      query: { id: '1', kind: 'chart' },
+    });
+    const res = mockResponse();
+    await imageHandler(req, res);
+    expect(res._status).toBe(401);
+  });
+
+  it('returns 400 when id is missing or non-numeric', async () => {
+    const req = mockRequest({ method: 'GET', query: { kind: 'chart' } });
+    const res = mockResponse();
+    await imageHandler(req, res);
+    expect(res._status).toBe(400);
+  });
+
+  it('returns 400 when kind is unknown', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { id: '1', kind: 'wrong' },
+    });
+    const res = mockResponse();
+    await imageHandler(req, res);
+    expect(res._status).toBe(400);
+  });
+
+  it('returns 500 when BLOB_READ_WRITE_TOKEN is missing', async () => {
+    delete process.env.BLOB_READ_WRITE_TOKEN;
+    const req = mockRequest({
+      method: 'GET',
+      query: { id: '1', kind: 'chart' },
+    });
+    const res = mockResponse();
+    await imageHandler(req, res);
+    expect(res._status).toBe(500);
+  });
+
+  it('returns 404 when row does not exist', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    const req = mockRequest({
+      method: 'GET',
+      query: { id: '999', kind: 'chart' },
+    });
+    const res = mockResponse();
+    await imageHandler(req, res);
+    expect(res._status).toBe(404);
+  });
+
+  it('returns 404 when the row exists but the requested kind is not stored', async () => {
+    mockSql.mockResolvedValueOnce([
+      { image_urls: [{ kind: 'gex', url: 'https://b/g.png' }] },
+    ]);
+    const req = mockRequest({
+      method: 'GET',
+      query: { id: '1', kind: 'chart' }, // chart not present
+    });
+    const res = mockResponse();
+    await imageHandler(req, res);
+    expect(res._status).toBe(404);
+  });
+
+  it('proxies the blob bytes back as image/png', async () => {
+    mockSql.mockResolvedValueOnce([
+      { image_urls: [{ kind: 'chart', url: 'https://blob.example/c.png' }] },
+    ]);
+    const fakeBytes = new Uint8Array([137, 80, 78, 71]); // PNG magic bytes
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: {} as ReadableStream<Uint8Array>,
+      headers: new Headers({ 'content-length': '4' }),
+      arrayBuffer: () => Promise.resolve(fakeBytes.buffer),
+    } as unknown as Response);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { id: '1', kind: 'chart' },
+    });
+    const res = mockResponse();
+    await imageHandler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._headers['Content-Type']).toBe('image/png');
+    expect(res._headers['Cache-Control']).toBe(
+      'private, max-age=86400, immutable',
+    );
+    // Verify the blob fetch carried the auth header
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://blob.example/c.png');
+    expect((init as RequestInit).headers).toEqual({
+      Authorization: 'Bearer test-blob-token',
+    });
+  });
+
+  it('returns 502 when the upstream blob fetch fails', async () => {
+    mockSql.mockResolvedValueOnce([
+      { image_urls: [{ kind: 'chart', url: 'https://blob.example/c.png' }] },
+    ]);
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+    } as unknown as Response);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { id: '1', kind: 'chart' },
+    });
+    const res = mockResponse();
+    await imageHandler(req, res);
+    expect(res._status).toBe(502);
   });
 });
 

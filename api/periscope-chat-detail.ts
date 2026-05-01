@@ -73,8 +73,19 @@ function parseJsonbField<T>(v: unknown): T | null {
 }
 
 function parseDetailRow(r: Record<string, unknown>): PeriscopeChatDetailRow {
+  const id = Number(r.id);
+  // Stored URLs in image_urls JSONB are the raw private Vercel Blob
+  // URLs, which the browser can't fetch directly. Rewrite each entry
+  // to point at /api/periscope-chat-image, which proxies the bytes
+  // with the server-side BLOB_READ_WRITE_TOKEN. Frontend just renders
+  // <img src={image.url}> against the proxy URL.
+  const rawImages = parseJsonbField<PeriscopeImageEntry[]>(r.image_urls) ?? [];
+  const proxiedImages = rawImages.map((img) => ({
+    kind: img.kind,
+    url: `/api/periscope-chat-image?id=${id}&kind=${encodeURIComponent(img.kind)}`,
+  }));
   return {
-    id: Number(r.id),
+    id,
     trading_date: r.trading_date as string,
     captured_at: r.captured_at as string,
     mode: r.mode as 'read' | 'debrief',
@@ -89,7 +100,7 @@ function parseDetailRow(r: Record<string, unknown>): PeriscopeChatDetailRow {
     regime_tag: (r.regime_tag as string | null) ?? null,
     calibration_quality:
       r.calibration_quality == null ? null : Number(r.calibration_quality),
-    image_urls: parseJsonbField<PeriscopeImageEntry[]>(r.image_urls) ?? [],
+    image_urls: proxiedImages,
     model: (r.model as string) ?? 'unknown',
     input_tokens: r.input_tokens == null ? null : Number(r.input_tokens),
     output_tokens: r.output_tokens == null ? null : Number(r.output_tokens),
