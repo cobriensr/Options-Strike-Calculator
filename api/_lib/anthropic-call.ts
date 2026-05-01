@@ -76,6 +76,21 @@ export interface AnthropicCallOptions {
    * to `true` — every adoption site uses it today.
    */
   thinking?: boolean;
+  /**
+   * Sentry metric name incremented when the primary model errors and
+   * the fallback runs. Defaults to `'anthropic.fallback'` for greenfield
+   * callers.
+   *
+   * Phase 5k adopters: existing handlers track distinct dashboards keyed
+   * on bespoke labels — pass them through here to preserve continuity:
+   *   - `analyze.ts`            → `'analyze.opus_fallback'`
+   *   - `trace-live-analyze.ts` → `'trace_live.opus_fallback'`
+   *   - `periscope-chat.ts`     → `'periscope_chat.opus_fallback'`
+   *
+   * Without this option, every adoption silently re-buckets the metric
+   * to the default name and existing Sentry dashboards stop ticking.
+   */
+  fallbackMetric?: string;
   /** Optional usage hook — fires once per successful call (any model). */
   onUsage?: (usage: AnthropicCallUsage, modelUsed: string) => void;
 }
@@ -127,6 +142,7 @@ export async function runCachedAnthropicCall(
     effort,
     fallbackEffort,
     thinking = true,
+    fallbackMetric = 'anthropic.fallback',
     onUsage,
   } = opts;
 
@@ -166,7 +182,7 @@ export async function runCachedAnthropicCall(
       { err, primaryModel, fallbackModel },
       'Anthropic primary unavailable, falling back',
     );
-    metrics.increment('anthropic.fallback');
+    metrics.increment(fallbackMetric);
     modelUsed = fallbackModel;
     response = await buildStream(
       fallbackModel,
