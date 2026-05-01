@@ -34,11 +34,9 @@
  * Environment: CRON_SECRET (no UW API key — pure Schwab + Neon).
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
-import { cronGuard, schwabFetch } from '../_lib/api-helpers.js';
+import { schwabFetch } from '../_lib/api-helpers.js';
 import {
   STRIKE_IV_OTM_RANGE_PCT_CASH_INDEX,
   STRIKE_IV_OTM_RANGE_PCT_BROAD_ETF,
@@ -56,20 +54,15 @@ import {
 import { impliedVolatility } from '../../src/utils/black-scholes.js';
 import { getETCloseUtcIso } from '../../src/utils/timezone.js';
 import {
-  detectGammaSqueezes,
-  squeezeKey,
-  type SqueezeFlag,
-  type SqueezeWindowSample,
-} from '../_lib/gamma-squeeze.js';
-import { gatherContextSnapshot } from '../_lib/anomaly-context.js';
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 import {
-  computeHhi,
-  computeIvMorningVolCorr,
-  IV_MORNING_CUTOFF_HOUR_CT,
-  PROXIMITY_BAND_PCT,
-  type BandStrikeSample,
-  type IvVolSample,
-} from '../_lib/precision-stack.js';
+  captureTickerException,
+  runDetection,
+  type SnapshotRow,
+  type SqlClient,
+} from '../_lib/strike-iv-detection.js';
 
 // ── Schwab types (duplicated locally — api/chain.ts is an endpoint, not a
 //    reusable module, and extracting a shared helper is out of scope for
@@ -104,22 +97,6 @@ interface SchwabChainResponse {
   };
   putExpDateMap: Record<string, Record<string, SchwabOptionContract[]>>;
   callExpDateMap: Record<string, Record<string, SchwabOptionContract[]>>;
-}
-
-// ── Row payload for a single insert ──────────────────────────
-
-interface SnapshotRow {
-  ticker: StrikeIVTicker;
-  strike: number;
-  side: 'call' | 'put';
-  expiry: string; // YYYY-MM-DD
-  spot: number;
-  ivMid: number | null;
-  ivBid: number | null;
-  ivAsk: number | null;
-  midPrice: number;
-  oi: number;
-  volume: number;
 }
 
 // ── Date / expiry helpers ────────────────────────────────────
@@ -468,7 +445,7 @@ function extractRows(
 // ── DB insert ────────────────────────────────────────────────
 
 async function insertRows(
-  sql: ReturnType<typeof getDb>,
+  sql: SqlClient,
   rows: SnapshotRow[],
 ): Promise<number> {
   if (rows.length === 0) return 0;
@@ -502,344 +479,6 @@ async function insertRows(
   return inserted;
 }
 
-/**
- * Load the trailing 45-min window of `strike_iv_snapshots` for the gamma
- * squeeze detector. Same source as `loadHistoryForTicker` but with a
- * different shape: keyed by squeezeKey(strike, side, expiry) and
- * including spot per sample.
- *
- * 45 min covers the detector's deepest lookback (30-min for prior
- * velocity baseline) plus 15 min of the current velocity window.
- */
-async function loadSqueezeWindowForTicker(
-  sql: ReturnType<typeof getDb>,
-  ticker: StrikeIVTicker,
-  sampledAtIso: string,
-): Promise<Map<string, SqueezeWindowSample[]>> {
-  type WindowRow = {
-    strike: string | number;
-    side: string;
-    expiry: string | Date;
-    ts: string | Date;
-    volume: string | number | null;
-    oi: string | number | null;
-    spot: string | number | null;
-  };
-  const rows = (await sql`
-    SELECT strike, side, expiry, ts, volume, oi, spot
-    FROM strike_iv_snapshots
-    WHERE ticker = ${ticker}
-      AND ts >= (${sampledAtIso}::timestamptz - INTERVAL '45 minutes')
-      AND ts <= ${sampledAtIso}
-      AND volume IS NOT NULL
-      AND oi IS NOT NULL
-      AND oi > 0
-    ORDER BY strike, side, expiry, ts
-  `) as WindowRow[];
-
-  const out = new Map<string, SqueezeWindowSample[]>();
-  for (const r of rows) {
-    const strike = Number(r.strike);
-    const side = r.side === 'call' ? 'call' : 'put';
-    const expiry =
-      r.expiry instanceof Date
-        ? r.expiry.toISOString().slice(0, 10)
-        : String(r.expiry).slice(0, 10);
-    const ts = r.ts instanceof Date ? r.ts.toISOString() : String(r.ts);
-    const volume = Number(r.volume ?? 0);
-    const oi = Number(r.oi ?? 0);
-    const spot = Number(r.spot ?? 0);
-    if (!Number.isFinite(strike) || !Number.isFinite(volume)) continue;
-    if (!Number.isFinite(oi) || oi <= 0) continue;
-    if (!Number.isFinite(spot) || spot <= 0) continue;
-    const key = squeezeKey(strike, side, expiry);
-    const sample: SqueezeWindowSample = {
-      strike,
-      side,
-      expiry,
-      ts,
-      volume,
-      oi,
-      spot,
-    };
-    const bucket = out.get(key);
-    if (bucket) bucket.push(sample);
-    else out.set(key, [sample]);
-  }
-  return out;
-}
-
-/**
- * Load net dealer gamma per strike from `strike_exposures` for SPXW.
- *
- * Schema reality (2026-04-28): the `strike_exposures` table is populated
- * exclusively by the SPX GEX cron with `ticker = 'SPX'` (literal). SPY,
- * QQQ, and single names have no rows here. So this loader normalizes
- * SPXW → 'SPX' for the lookup and returns an empty Map for every other
- * ticker. The squeeze detector treats unknown NDG as 'pass' on Gate 6,
- * so non-SPXW tickers run on Gates 1-5 only.
- *
- * Net gamma is computed as `call_gamma_oi + put_gamma_oi` matching the
- * convention in `gex-per-strike.ts`. Sign convention: NDG > 0 = dealers
- * net LONG gamma (their hedging dampens moves) → squeeze gate filters
- * those strikes out. NDG < 0 = dealers SHORT gamma (hedging amplifies
- * moves — squeeze is real).
- */
-async function loadNetDealerGammaForTicker(
-  sql: ReturnType<typeof getDb>,
-  ticker: StrikeIVTicker,
-  sampledAtIso: string,
-): Promise<Map<number, number>> {
-  // Only SPXW has a corresponding row set in strike_exposures (under
-  // ticker 'SPX'). NDXP / SPY / QQQ / IWM / SMH / single-names all skip
-  // this query and inherit 'unknown' NDG from the detector.
-  if (ticker !== 'SPXW') return new Map();
-
-  type ExposureRow = {
-    strike: string | number;
-    net_gamma: string | number | null;
-  };
-  // Most-recent snapshot per strike, looking back 1 hour from the detect
-  // ts. The GEX cron writes 5-min-rounded timestamps so a 1-hour window
-  // comfortably covers the freshest snapshot even after a cron skip.
-  const rows = (await sql`
-    SELECT DISTINCT ON (strike)
-           strike,
-           (COALESCE(call_gamma_oi, 0) + COALESCE(put_gamma_oi, 0)) AS net_gamma
-    FROM strike_exposures
-    WHERE ticker = 'SPX'
-      AND timestamp <= ${sampledAtIso}
-      AND timestamp >= (${sampledAtIso}::timestamptz - INTERVAL '1 hour')
-    ORDER BY strike, timestamp DESC
-  `) as ExposureRow[];
-
-  const out = new Map<number, number>();
-  for (const r of rows) {
-    const strike = Number(r.strike);
-    const ndg = Number(r.net_gamma ?? 0);
-    if (!Number.isFinite(strike) || !Number.isFinite(ndg)) continue;
-    out.set(strike, ndg);
-  }
-  return out;
-}
-
-/**
- * Persist gamma squeeze flags emitted in this run. Mirrors
- * `runIvAnomalyDetection` shape but for the new
- * `gamma_squeeze_events` table. A failure here is logged + captured to
- * Sentry but does NOT roll back the IV anomaly path or the snapshot
- * ingestion — squeeze detection is the lowest-priority signal.
- */
-/**
- * Stamp HHI and morning IV-vol correlation on every squeeze flag in place.
- * Two queries per flag — one for the band's per-strike notional (within
- * ±0.5% of spot, same side), one for the strike's pre-11:00 CT IV
- * trajectory. Both run in parallel across all flags via Promise.all so
- * a 10-flag batch issues 20 concurrent queries instead of 20 sequential.
- * Per-flag failures are caught individually so one bad fire can't poison
- * the rest of the batch — failed enrichment stamps null (columns are
- * nullable; the read endpoint treats null as "not eligible for pass").
- */
-type NumericFromDb = string | number | null;
-interface BandRow {
-  strike: string | number;
-  volume: NumericFromDb;
-  mid_price: NumericFromDb;
-}
-interface IvRow {
-  minute_ct: string | Date;
-  iv: NumericFromDb;
-  cum_volume: NumericFromDb;
-}
-
-async function enrichSingleFlag(
-  sql: ReturnType<typeof getDb>,
-  f: SqueezeFlag,
-): Promise<void> {
-  try {
-    const bandLow = f.spot_at_detect * (1 - PROXIMITY_BAND_PCT);
-    const bandHigh = f.spot_at_detect * (1 + PROXIMITY_BAND_PCT);
-
-    // Fire both queries in parallel — they're independent.
-    const [bandRows, ivRows] = (await Promise.all([
-      sql`
-        SELECT DISTINCT ON (strike)
-               strike, volume, mid_price
-        FROM strike_iv_snapshots
-        WHERE ticker = ${f.ticker}
-          AND side = ${f.side}
-          AND expiry = ${f.expiry}
-          AND ts <= ${f.ts}
-          AND ts >= (${f.ts}::timestamptz - INTERVAL '15 minutes')
-          AND strike BETWEEN ${bandLow} AND ${bandHigh}
-        ORDER BY strike, ts DESC
-      `,
-      sql`
-        SELECT date_trunc('minute', ts AT TIME ZONE 'America/Chicago') AS minute_ct,
-               AVG(iv_mid) AS iv,
-               MAX(volume) AS cum_volume
-        FROM strike_iv_snapshots
-        WHERE ticker = ${f.ticker}
-          AND strike = ${f.strike}
-          AND side = ${f.side}
-          AND expiry = ${f.expiry}
-          -- Sargable lower bound on raw \`ts\`: morning data lives within
-          -- the 12 hours preceding any market-hours fire, so this both
-          -- enables the (ticker, strike, side, expiry, ts) index AND
-          -- keeps the per-tz filter narrow.
-          AND ts >= (${f.ts}::timestamptz - INTERVAL '12 hours')
-          AND ts <= ${f.ts}::timestamptz
-          AND DATE(ts AT TIME ZONE 'America/Chicago') = DATE(${f.ts}::timestamptz AT TIME ZONE 'America/Chicago')
-          AND EXTRACT(HOUR FROM ts AT TIME ZONE 'America/Chicago') < ${IV_MORNING_CUTOFF_HOUR_CT}
-          AND iv_mid IS NOT NULL
-          AND iv_mid > 0
-          AND iv_mid < 5
-        GROUP BY 1
-        ORDER BY minute_ct
-      `,
-    ])) as [BandRow[], IvRow[]];
-
-    const bandSamples: BandStrikeSample[] = [];
-    for (const r of bandRows) {
-      const strike = Number(r.strike);
-      const volume = r.volume == null ? NaN : Number(r.volume);
-      const midPrice = r.mid_price == null ? NaN : Number(r.mid_price);
-      if (
-        Number.isFinite(strike) &&
-        Number.isFinite(volume) &&
-        Number.isFinite(midPrice)
-      ) {
-        bandSamples.push({ strike, volume, midPrice });
-      }
-    }
-    f.hhi_neighborhood = computeHhi(bandSamples);
-
-    const ivSamples: IvVolSample[] = [];
-    for (const r of ivRows) {
-      const ts =
-        r.minute_ct instanceof Date
-          ? r.minute_ct.toISOString()
-          : String(r.minute_ct);
-      const iv = r.iv == null ? NaN : Number(r.iv);
-      const volume = r.cum_volume == null ? NaN : Number(r.cum_volume);
-      if (Number.isFinite(iv) && Number.isFinite(volume)) {
-        ivSamples.push({ ts, iv, volume });
-      }
-    }
-    f.iv_morning_vol_corr = computeIvMorningVolCorr(ivSamples);
-  } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-strike-iv');
-    Sentry.setTag('strike_iv.phase', 'precision_stack_enrichment');
-    Sentry.captureException(err);
-    logger.warn(
-      { err, ticker: f.ticker, strike: f.strike },
-      'fetch-strike-iv: precision-stack enrichment failed (non-fatal)',
-    );
-    f.hhi_neighborhood = null;
-    f.iv_morning_vol_corr = null;
-  }
-}
-
-async function enrichWithPrecisionStack(
-  sql: ReturnType<typeof getDb>,
-  flags: SqueezeFlag[],
-): Promise<void> {
-  // Fan out across flags — each enrichSingleFlag handles its own errors.
-  await Promise.all(flags.map((f) => enrichSingleFlag(sql, f)));
-}
-
-async function persistSqueezeFlags(
-  sql: ReturnType<typeof getDb>,
-  flags: SqueezeFlag[],
-  contextJson: string,
-): Promise<number> {
-  if (flags.length === 0) return 0;
-  let inserted = 0;
-  for (const f of flags) {
-    const result = await sql`
-      INSERT INTO gamma_squeeze_events (
-        ticker, strike, side, expiry, ts,
-        spot_at_detect, pct_from_strike, spot_trend_5m,
-        vol_oi_15m, vol_oi_15m_prior, vol_oi_acceleration, vol_oi_total,
-        net_gamma_sign, squeeze_phase, context_snapshot,
-        hhi_neighborhood, iv_morning_vol_corr
-      ) VALUES (
-        ${f.ticker}, ${f.strike}, ${f.side}, ${f.expiry}, ${f.ts},
-        ${f.spot_at_detect}, ${f.pct_from_strike}, ${f.spot_trend_5m},
-        ${f.vol_oi_15m}, ${f.vol_oi_15m_prior}, ${f.vol_oi_acceleration}, ${f.vol_oi_total},
-        ${f.net_gamma_sign}, ${f.squeeze_phase}, ${contextJson}::jsonb,
-        ${f.hhi_neighborhood ?? null}, ${f.iv_morning_vol_corr ?? null}
-      )
-      ON CONFLICT (ticker, strike, side, expiry, ts) DO NOTHING
-      RETURNING id
-    `;
-    if ((result as unknown[]).length > 0) inserted += 1;
-  }
-  return inserted;
-}
-
-/**
- * For every row we just inserted, run the gamma-squeeze detector against
- * the trailing window. Flags are enriched with a `ContextSnapshot` and
- * persisted to `gamma_squeeze_events`.
- *
- * IV-anomaly persistence retired with the Whale Anomalies migration —
- * see docs/superpowers/specs/whale-anomalies-2026-04-29.md, Phase 7.
- * `iv_anomalies` is dropped in migration #100 and no consumer reads it.
- *
- * Returns the squeeze flag count (or 0). Detection failures log + capture
- * to Sentry but don't fail the cron — ingestion always takes precedence.
- */
-async function runDetection(
-  sql: ReturnType<typeof getDb>,
-  ticker: StrikeIVTicker,
-  insertedRows: SnapshotRow[],
-  sampledAtIso: string,
-): Promise<number> {
-  if (insertedRows.length === 0) return 0;
-
-  const [squeezeWindow, ndgByStrike] = await Promise.all([
-    loadSqueezeWindowForTicker(sql, ticker, sampledAtIso),
-    loadNetDealerGammaForTicker(sql, ticker, sampledAtIso),
-  ]);
-
-  const squeezeFlags = detectGammaSqueezes(
-    squeezeWindow,
-    ticker,
-    sampledAtIso,
-    ndgByStrike,
-  );
-
-  if (squeezeFlags.length === 0) return 0;
-
-  // All flags in this batch share the same (ticker, sampledAtIso) pair —
-  // gather the context snapshot ONCE instead of re-running ~30 queries
-  // per flag. Any per-flag micro-drift in detectTs is below the
-  // staleness windows the context queries use.
-  const detectTs = new Date(sampledAtIso);
-  const context = await gatherContextSnapshot(ticker, detectTs);
-  const contextJson = JSON.stringify(context);
-
-  // Stamp HHI + iv_morning_vol_corr on every flag before persisting. Pure
-  // enrichment — failures are caught per-flag and stamp NULL columns.
-  await enrichWithPrecisionStack(sql, squeezeFlags);
-
-  try {
-    await persistSqueezeFlags(sql, squeezeFlags, contextJson);
-  } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-strike-iv');
-    Sentry.setTag('strike_iv.ticker', ticker);
-    Sentry.setTag('strike_iv.phase', 'gamma_squeeze_persist');
-    Sentry.captureException(err);
-    logger.error(
-      { err, ticker, count: squeezeFlags.length },
-      'fetch-strike-iv: gamma squeeze persist failed',
-    );
-    return 0;
-  }
-  return squeezeFlags.length;
-}
-
 // ── Per-ticker runner ────────────────────────────────────────
 
 interface TickerResult {
@@ -852,7 +491,7 @@ interface TickerResult {
 
 async function runTicker(
   ticker: StrikeIVTicker,
-  sql: ReturnType<typeof getDb>,
+  sql: SqlClient,
   today: string,
   nowMs: number,
 ): Promise<TickerResult> {
@@ -906,10 +545,7 @@ async function runTicker(
       const sampledAtIso = new Date(nowMs).toISOString();
       anomaliesDetected = await runDetection(sql, ticker, rows, sampledAtIso);
     } catch (err) {
-      Sentry.setTag('cron.job', 'fetch-strike-iv');
-      Sentry.setTag('strike_iv.ticker', ticker);
-      Sentry.setTag('strike_iv.phase', 'detection');
-      Sentry.captureException(err);
+      captureTickerException(ticker, err, 'detection');
       logger.error(
         { err, ticker },
         'fetch-strike-iv: detection failed — ingestion already persisted',
@@ -930,9 +566,7 @@ async function runTicker(
 
     return { ticker, rowsInserted, anomaliesDetected, skipped: false };
   } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-strike-iv');
-    Sentry.setTag('strike_iv.ticker', ticker);
-    Sentry.captureException(err);
+    captureTickerException(ticker, err);
     logger.error({ err, ticker }, 'fetch-strike-iv: ticker failed');
     return {
       ticker,
@@ -946,18 +580,15 @@ async function runTicker(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res, { requireApiKey: false });
-  if (!guard) return;
-  const { today } = guard;
+export default withCronInstrumentation(
+  'fetch-strike-iv',
+  async (ctx): Promise<CronResult> => {
+    const { today, startTimeMs } = ctx;
+    const sql = getDb();
 
-  const startTime = Date.now();
-  const sql = getDb();
-
-  try {
     // Run tickers in parallel — they're independent and fault-isolated.
     const results = await Promise.all(
-      STRIKE_IV_TICKERS.map((t) => runTicker(t, sql, today, startTime)),
+      STRIKE_IV_TICKERS.map((t) => runTicker(t, sql, today, startTimeMs)),
     );
 
     const totalInserted = results.reduce((sum, r) => sum + r.rowsInserted, 0);
@@ -965,19 +596,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       (sum, r) => sum + r.anomaliesDetected,
       0,
     );
-    const durationMs = Date.now() - startTime;
 
-    return res.status(200).json({
-      job: 'fetch-strike-iv',
-      totalInserted,
-      totalAnomalies,
-      results,
-      durationMs,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-strike-iv');
-    Sentry.captureException(err);
-    logger.error({ err }, 'fetch-strike-iv error');
-    return res.status(500).json({ error: 'Internal error' });
-  }
-}
+    return {
+      status: 'success',
+      metadata: {
+        totalInserted,
+        totalAnomalies,
+        results,
+      },
+    };
+  },
+  { requireApiKey: false },
+);
