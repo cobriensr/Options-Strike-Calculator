@@ -29,28 +29,7 @@ import {
   spreadStrikeLabel,
   spreadTypeLabel,
 } from './position-helpers';
-
-// ── % Max Progress Bar ───────────────────────────────────────
-
-function PctMaxBar({ pct }: Readonly<{ pct: number | null }>) {
-  if (pct === null) return <span className="text-muted">{'—'}</span>;
-
-  const clamped = Math.min(Math.max(pct, 0), 100);
-  const barColor =
-    pct >= 80 ? 'bg-success' : pct >= 50 ? 'bg-accent' : 'bg-caution';
-
-  return (
-    <div className="flex items-center gap-1.5">
-      <div className="bg-edge h-2 w-12 overflow-hidden rounded-full">
-        <div
-          className={`h-full rounded-full ${barColor}`}
-          style={{ width: `${clamped}%` }}
-        />
-      </div>
-      <span className="text-xs">{pct.toFixed(0)}%</span>
-    </div>
-  );
-}
+import { PctMaxBar } from './PctMaxBar';
 
 // ── Wing Row (IC sub-row) ────────────────────────────────────
 
