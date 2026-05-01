@@ -1,10 +1,11 @@
 /**
  * Similarity-based retrieval for /api/periscope-chat.
  *
- * When the user submits with a context note ("morning open, gap-down
- * day, post-FOMC"), we embed that note and pull the top-K most
- * structurally-similar past reads via pgvector cosine distance. Those
- * past analogous patterns are formatted as a third cached system
+ * The endpoint passes a query string built from the extracted chart
+ * fingerprint (Phase 9: `buildPeriscopeSummary` over spot + cone bounds
+ * pulled by a vision-only Opus call). We embed that string and pull
+ * the top-K most structurally-similar past reads via pgvector cosine
+ * distance. Those analogs are formatted as a third cached system
  * block — separate from the gold-starred calibration examples.
  *
  * Calibration block (Phase 4) and retrieval block (this phase) serve
@@ -13,19 +14,12 @@
  *     this format and depth." Shown on every submission with a gold
  *     library.
  *   - Retrieval: top-K similar past reads (any quality) by cosine
- *     similarity to the user's context note → "here's how similar
- *     setups played out." Shown only when the user provided context.
+ *     similarity to the chart fingerprint → "here's how similar
+ *     setups played out." Skipped when extraction failed.
  *
  * We deliberately exclude already-gold-starred rows from retrieval
  * results — those are already in the calibration block. No need to
  * pay for the same prefix twice.
- *
- * Limitation: this approximates structural similarity using the
- * user's *prose context*, not the actual chart fingerprint. A richer
- * approach would do a Haiku vision extraction of the screenshots
- * pre-analysis to get spot + cone + dominant strikes, embed THAT,
- * and retrieve. Worth doing if the context-based retrieval proves
- * useful enough; for now we ship the cheap version.
  */
 
 import { getDb } from './db.js';
@@ -126,20 +120,25 @@ ${sections.join('\n\n---\n\n')}`;
 }
 
 /**
- * Convenience wrapper: embed the user context, fetch similar rows,
- * format the block. Returns null when no context, no embedding, or
- * no rows above the similarity floor.
+ * Convenience wrapper: embed the query text, fetch similar rows,
+ * format the block. Returns null when the query is empty, embedding
+ * fails, or no rows clear the similarity floor.
  *
- * Cost: one OpenAI embedding call (~$0.0001) per submission with
- * non-empty context. Skipped entirely when context is empty / null.
+ * Caller passes the structural summary built from the extracted
+ * chart fingerprint (see `buildPeriscopeSummary` in periscope-db.ts).
+ * The wrapper is intentionally agnostic about what the text means —
+ * any string in the same embedding space as stored rows works.
+ *
+ * Cost: one OpenAI embedding call (~$0.0001) per non-empty query.
+ * Skipped entirely when the input is empty / null.
  */
 export async function buildRetrievalBlock(args: {
   mode: 'read' | 'debrief';
-  userContext: string | null | undefined;
+  queryText: string | null | undefined;
 }): Promise<string | null> {
-  const { mode, userContext } = args;
-  if (userContext == null) return null;
-  const trimmed = userContext.trim();
+  const { mode, queryText } = args;
+  if (queryText == null) return null;
+  const trimmed = queryText.trim();
   if (trimmed.length === 0) return null;
 
   let queryEmbedding: number[] | null;

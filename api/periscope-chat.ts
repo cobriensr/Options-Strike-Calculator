@@ -459,7 +459,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const retrievalBlock = await buildRetrievalBlock({
       mode: body.mode,
-      userContext: retrievalQueryText,
+      queryText: retrievalQueryText,
     });
 
     if (extractedStructure) {

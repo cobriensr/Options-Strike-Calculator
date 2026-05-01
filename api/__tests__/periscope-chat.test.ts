@@ -599,8 +599,8 @@ describe('POST /api/periscope-chat', () => {
     expect(args.mode).toBe('read');
     // The retrieval query is the extracted structural summary —
     // the chart fingerprint, not free-form text.
-    expect(args.userContext).toContain('spot=7120');
-    expect(args.userContext).toContain('cone=7095-7150');
+    expect(args.queryText).toContain('spot=7120');
+    expect(args.queryText).toContain('cone=7095-7150');
   });
 
   it('passes null retrieval query when extraction returns null (retrieval skipped)', async () => {
@@ -612,7 +612,7 @@ describe('POST /api/periscope-chat', () => {
     await handler(req, res);
 
     const args = mockBuildRetrievalBlock.mock.calls[0]![0];
-    expect(args.userContext).toBeNull();
+    expect(args.queryText).toBeNull();
   });
 
   it('still completes the main analysis when extraction returns null (best-effort)', async () => {

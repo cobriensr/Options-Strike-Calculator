@@ -133,7 +133,7 @@ describe('buildRetrievalBlock', () => {
   it('returns null when context is null', async () => {
     const result = await buildRetrievalBlock({
       mode: 'read',
-      userContext: null,
+      queryText: null,
     });
     expect(result).toBeNull();
     expect(mockGenerateEmbedding).not.toHaveBeenCalled();
@@ -142,7 +142,7 @@ describe('buildRetrievalBlock', () => {
   it('returns null when context is empty / whitespace', async () => {
     const result = await buildRetrievalBlock({
       mode: 'read',
-      userContext: '   ',
+      queryText: '   ',
     });
     expect(result).toBeNull();
     expect(mockGenerateEmbedding).not.toHaveBeenCalled();
@@ -152,7 +152,7 @@ describe('buildRetrievalBlock', () => {
     mockGenerateEmbedding.mockResolvedValueOnce(null);
     const result = await buildRetrievalBlock({
       mode: 'read',
-      userContext: 'morning open',
+      queryText: 'morning open',
     });
     expect(result).toBeNull();
   });
@@ -171,7 +171,7 @@ describe('buildRetrievalBlock', () => {
     ]);
     const result = await buildRetrievalBlock({
       mode: 'read',
-      userContext: 'morning open',
+      queryText: 'morning open',
     });
     expect(result).toBeNull();
   });
@@ -190,7 +190,7 @@ describe('buildRetrievalBlock', () => {
     ]);
     const result = await buildRetrievalBlock({
       mode: 'read',
-      userContext: 'morning open, gap-down day',
+      queryText: 'morning open, gap-down day',
     });
     expect(result).not.toBeNull();
     expect(result).toContain('Past pin day at 7120.');
