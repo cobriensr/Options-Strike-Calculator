@@ -19,6 +19,14 @@
 
 import { useMemo, useState } from 'react';
 import type { WhaleAlert } from '../../types/flow';
+import {
+  formatAskPct,
+  formatPct,
+  formatPremium,
+  formatSignedInt,
+} from '../../utils/flow-formatters';
+import { useTableSort, type KeyExtractors } from '../../hooks/useTableSort';
+import { SortableHeader } from '../ui/SortableHeader';
 
 // ============================================================
 // TYPES
@@ -34,8 +42,6 @@ type SortColumn =
   | 'total_size'
   | 'volume_oi_ratio'
   | 'age_minutes';
-
-type SortDirection = 'asc' | 'desc';
 
 export interface WhalePositioningTableProps {
   alerts: WhaleAlert[];
@@ -72,43 +78,14 @@ function formatSliderPremium(n: number): string {
 }
 
 // ============================================================
-// FORMATTERS
+// LOCAL FORMATTERS — only the ones unique to this table.
+// Shared currency / percent / signed-int formatters live in
+// `src/utils/flow-formatters.ts`.
 // ============================================================
-
-/**
- * Compact dollar premium: `$206.5M`, `$1.4M`, `$850K`, `$0`. Matches the
- * conversational shorthand the flow desk uses so the biggest numbers read
- * at a glance without mental math.
- */
-function formatPremium(n: number): string {
-  if (!Number.isFinite(n) || n <= 0) return '$0';
-  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `$${(n / 1_000).toFixed(0)}K`;
-  return `$${Math.round(n)}`;
-}
-
-function formatAskPct(ratio: number | null): string {
-  if (ratio == null || !Number.isFinite(ratio)) return '—';
-  return `${(ratio * 100).toFixed(1)}%`;
-}
 
 function formatVolOi(ratio: number): string {
   if (!Number.isFinite(ratio)) return '—';
   return `${ratio.toFixed(1)}×`;
-}
-
-function formatSignedInt(n: number): string {
-  if (!Number.isFinite(n)) return '—';
-  const rounded = Math.round(n);
-  if (rounded === 0) return '0';
-  return rounded > 0 ? `+${rounded}` : `${rounded}`;
-}
-
-function formatPctSigned(frac: number): string {
-  if (!Number.isFinite(frac)) return '—';
-  const pct = frac * 100;
-  const sign = pct > 0 ? '+' : '';
-  return `${sign}${pct.toFixed(1)}%`;
 }
 
 /**
@@ -168,130 +145,127 @@ function shortRule(rule: string): string {
 }
 
 // ============================================================
-// SORT HELPERS
+// SORT KEY EXTRACTORS
 // ============================================================
 
 /**
- * Numeric sort key for a non-nullable column. `ask_side_ratio` is handled
- * separately in `sortAlerts` because the server returns null for alerts
- * with zero / non-finite total_premium — a null can't be meaningfully
- * compared against a signed ratio in either direction.
+ * Map every sort column to a row → comparable-or-null extractor for the
+ * generic `useTableSort` hook. Returning null for a column opts the row
+ * into the null-tail (always sorted last regardless of direction) — used
+ * here for `ask_side_ratio` which can be null when total_premium is 0
+ * or non-finite.
  */
-function getSortValue(
-  row: WhaleAlert,
-  col: Exclude<SortColumn, 'ask_side_ratio'>,
-): number {
-  switch (col) {
-    case 'strike':
-      return row.strike;
-    case 'type':
-      return row.type === 'call' ? 1 : 0;
-    case 'dte_at_alert':
-      return row.dte_at_alert;
-    case 'distance_from_spot':
-      return row.distance_from_spot;
-    case 'total_premium':
-      return row.total_premium;
-    case 'total_size':
-      return row.total_size;
-    case 'volume_oi_ratio':
-      return row.volume_oi_ratio;
-    case 'age_minutes':
-      return row.age_minutes;
-  }
-}
-
-function sortAlerts(
-  rows: WhaleAlert[],
-  col: SortColumn,
-  dir: SortDirection,
-): WhaleAlert[] {
-  if (col === 'ask_side_ratio') {
-    // Null ask_side_ratio rows always sink to the bottom regardless of
-    // direction — mirrors the Net GEX null-partition in OptionsFlowTable.
-    // Partition first, sort the present values per direction, then append
-    // the null tail unchanged.
-    const withRatio: { row: WhaleAlert; ratio: number }[] = [];
-    const withoutRatio: WhaleAlert[] = [];
-    for (const row of rows) {
-      if (row.ask_side_ratio == null) {
-        withoutRatio.push(row);
-      } else {
-        withRatio.push({ row, ratio: row.ask_side_ratio });
-      }
-    }
-    withRatio.sort((a, b) => {
-      if (a.ratio === b.ratio) return 0;
-      return a.ratio < b.ratio ? -1 : 1;
-    });
-    const ordered = dir === 'desc' ? withRatio.reverse() : withRatio;
-    return [...ordered.map((x) => x.row), ...withoutRatio];
-  }
-
-  const sorted = [...rows].sort((a, b) => {
-    const av = getSortValue(a, col);
-    const bv = getSortValue(b, col);
-    if (av === bv) return 0;
-    return av < bv ? -1 : 1;
-  });
-  return dir === 'desc' ? sorted.reverse() : sorted;
-}
+const KEY_EXTRACTORS: KeyExtractors<WhaleAlert, SortColumn> = {
+  strike: (row) => row.strike,
+  // Sort puts (0) before calls (1) ascending; calls first descending.
+  // Numeric encoding — same convention as OptionsFlowTable.
+  type: (row) => (row.type === 'call' ? 1 : 0),
+  dte_at_alert: (row) => row.dte_at_alert,
+  distance_from_spot: (row) => row.distance_from_spot,
+  total_premium: (row) => row.total_premium,
+  // Null when server reports `null` (total_premium = 0 / non-finite). The
+  // hook partitions null-extractor rows to the tail so direction toggles
+  // never mix them with finite ratios.
+  ask_side_ratio: (row) => row.ask_side_ratio,
+  total_size: (row) => row.total_size,
+  volume_oi_ratio: (row) => row.volume_oi_ratio,
+  age_minutes: (row) => row.age_minutes,
+};
 
 // ============================================================
 // SUB-COMPONENTS
 // ============================================================
 
-function SortableHeader({
-  label,
-  column,
-  currentColumn,
-  currentDirection,
-  onSort,
-  align = 'right',
-  title,
-}: {
-  label: string;
-  column: SortColumn;
-  currentColumn: SortColumn;
-  currentDirection: SortDirection;
-  onSort: (col: SortColumn) => void;
-  align?: 'left' | 'right' | 'center';
-  title?: string;
-}) {
-  const active = column === currentColumn;
-  const ariaSort: 'ascending' | 'descending' | 'none' = active
-    ? currentDirection === 'asc'
-      ? 'ascending'
-      : 'descending'
-    : 'none';
-  const alignClass =
-    align === 'left'
-      ? 'text-left'
-      : align === 'center'
-        ? 'text-center'
-        : 'text-right';
+/**
+ * One whale-alert row. Extracted from the table body so the per-row
+ * branch logic (delta color, side color/label) reads as a self-contained
+ * unit and the table render loop stays a one-line `.map`.
+ */
+function WhaleAlertRow({ alert }: { alert: WhaleAlert }) {
+  const a = alert;
+  const deltaColor =
+    a.distance_from_spot > 0
+      ? 'text-emerald-400'
+      : a.distance_from_spot < 0
+        ? 'text-rose-400'
+        : 'text-slate-400';
+  const sideColor = a.type === 'call' ? 'text-emerald-400' : 'text-rose-400';
+  const sideLabel = a.type === 'call' ? 'C' : 'P';
   return (
-    <th
-      scope="col"
-      aria-sort={ariaSort}
-      className={`bg-surface-alt border-edge-heavy sticky top-0 border-b px-2 py-2 font-sans text-[10px] font-semibold tracking-wider uppercase ${alignClass}`}
-      style={{ color: 'var(--color-tertiary)' }}
-    >
-      <button
-        type="button"
-        onClick={() => onSort(column)}
-        title={title}
-        className="inline-flex cursor-pointer items-center gap-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/60"
-      >
-        <span>{label}</span>
+    <tr className="border-edge/30 hover:bg-surface-alt/60 border-b transition-colors">
+      <td className="text-secondary px-2 py-1.5 text-right font-semibold">
+        {Math.round(a.strike).toLocaleString()}
+      </td>
+      <td className="px-2 py-1.5 text-center">
         <span
-          aria-hidden="true"
-          className={`font-mono text-[9px] ${active ? 'text-secondary' : 'text-muted/40'}`}
+          className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold ${sideColor} bg-current/10`}
+          aria-label={a.type === 'call' ? 'Call' : 'Put'}
         >
-          {active ? (currentDirection === 'asc' ? '▲' : '▼') : '▲'}
+          {sideLabel}
         </span>
-      </button>
-    </th>
+      </td>
+      <td className="text-secondary px-2 py-1.5 text-left">
+        {formatExpiry(a.expiry, a.dte_at_alert)}
+      </td>
+      <td className={`px-2 py-1.5 text-right ${deltaColor}`}>
+        {formatSignedInt(a.distance_from_spot)}{' '}
+        <span className="text-muted text-[10px]">
+          ({formatPct(a.distance_pct, { signed: true, digits: 1 })})
+        </span>
+      </td>
+      <td className="px-2 py-1.5 text-right">
+        <span className="text-secondary text-[12px] font-bold">
+          {formatPremium(a.total_premium, { kDigits: 0 })}
+        </span>
+      </td>
+      <td className="text-secondary px-2 py-1.5 text-right">
+        {formatAskPct(a.ask_side_ratio)}
+      </td>
+      <td className="text-secondary px-2 py-1.5 text-right">
+        {Math.round(a.total_size).toLocaleString()}
+      </td>
+      <td className="text-secondary px-2 py-1.5 text-right">
+        {formatVolOi(a.volume_oi_ratio)}
+      </td>
+      <td className="px-2 py-1.5">
+        <div className="flex flex-wrap gap-1">
+          <span
+            aria-label={`Rule ${a.alert_rule}`}
+            title={a.alert_rule}
+            className="text-muted border-edge inline-block rounded-full border bg-slate-500/10 px-1.5 py-0.5 font-mono text-[9px] font-semibold whitespace-nowrap"
+          >
+            {shortRule(a.alert_rule)}
+          </span>
+          {a.has_multileg && (
+            <span
+              aria-label="Multileg"
+              className="inline-block rounded-full border border-indigo-500/30 bg-indigo-500/15 px-1.5 py-0.5 font-mono text-[9px] font-semibold whitespace-nowrap text-indigo-300"
+            >
+              ML
+            </span>
+          )}
+          {a.has_sweep && (
+            <span
+              aria-label="Sweep"
+              className="inline-block rounded-full border border-sky-500/30 bg-sky-500/15 px-1.5 py-0.5 font-mono text-[9px] font-semibold whitespace-nowrap text-sky-300"
+            >
+              SWP
+            </span>
+          )}
+          {a.has_floor && (
+            <span
+              aria-label="Floor"
+              className="inline-block rounded-full border border-amber-500/30 bg-amber-500/15 px-1.5 py-0.5 font-mono text-[9px] font-semibold whitespace-nowrap text-amber-300"
+            >
+              FLR
+            </span>
+          )}
+        </div>
+      </td>
+      <td className="text-muted px-2 py-1.5 text-right">
+        {formatAge(a.age_minutes)}
+      </td>
+    </tr>
   );
 }
 
@@ -307,18 +281,7 @@ export function WhalePositioningTable({
   error,
   className,
 }: WhalePositioningTableProps) {
-  const [sortColumn, setSortColumn] = useState<SortColumn>('total_premium');
-  const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [sliderPremium, setSliderPremium] = useState<number>(SLIDER_DEFAULT);
-
-  const handleSort = (col: SortColumn) => {
-    if (col === sortColumn) {
-      setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'));
-    } else {
-      setSortColumn(col);
-      setSortDirection('desc');
-    }
-  };
 
   // Apply the slider filter before sorting so the visible count + sort
   // both reflect the filtered subset. At slider floor this is a no-op.
@@ -327,10 +290,17 @@ export function WhalePositioningTable({
     [alerts, sliderPremium],
   );
 
-  const sortedAlerts = useMemo(
-    () => sortAlerts(filteredAlerts, sortColumn, sortDirection),
-    [filteredAlerts, sortColumn, sortDirection],
-  );
+  const {
+    sortedRows: sortedAlerts,
+    sortKey,
+    sortDir,
+    setSort,
+  } = useTableSort<WhaleAlert, SortColumn>({
+    rows: filteredAlerts,
+    keyExtractors: KEY_EXTRACTORS,
+    defaultKey: 'total_premium',
+    defaultDir: 'desc',
+  });
 
   const visibleCount = filteredAlerts.length;
   const totalCount = alerts.length;
@@ -392,7 +362,7 @@ export function WhalePositioningTable({
           <span className="text-secondary font-mono text-[10px]">
             Σ{' '}
             <span className="text-amber-300">
-              {formatPremium(totalPremium)}
+              {formatPremium(totalPremium, { kDigits: 0 })}
             </span>
           </span>
         )}
@@ -444,75 +414,75 @@ export function WhalePositioningTable({
           >
             <thead>
               <tr>
-                <SortableHeader
+                <SortableHeader<SortColumn>
                   label="Strike"
-                  column="strike"
-                  currentColumn={sortColumn}
-                  currentDirection={sortDirection}
-                  onSort={handleSort}
+                  sortKey="strike"
+                  currentKey={sortKey}
+                  currentDir={sortDir}
+                  onSort={setSort}
                   align="right"
                 />
-                <SortableHeader
+                <SortableHeader<SortColumn>
                   label="Side"
-                  column="type"
-                  currentColumn={sortColumn}
-                  currentDirection={sortDirection}
-                  onSort={handleSort}
+                  sortKey="type"
+                  currentKey={sortKey}
+                  currentDir={sortDir}
+                  onSort={setSort}
                   align="center"
                 />
-                <SortableHeader
+                <SortableHeader<SortColumn>
                   label="Expiry"
-                  column="dte_at_alert"
-                  currentColumn={sortColumn}
-                  currentDirection={sortDirection}
-                  onSort={handleSort}
+                  sortKey="dte_at_alert"
+                  currentKey={sortKey}
+                  currentDir={sortDir}
+                  onSort={setSort}
                   align="left"
-                  title="Expiry date and DTE at time of alert"
+                  tooltip="Expiry date and DTE at time of alert"
                 />
-                <SortableHeader
+                <SortableHeader<SortColumn>
                   label="Distance"
-                  column="distance_from_spot"
-                  currentColumn={sortColumn}
-                  currentDirection={sortDirection}
-                  onSort={handleSort}
+                  sortKey="distance_from_spot"
+                  currentKey={sortKey}
+                  currentDir={sortDir}
+                  onSort={setSort}
                   align="right"
-                  title="Points and percent from spot at alert time"
+                  tooltip="Points and percent from spot at alert time"
                 />
-                <SortableHeader
+                <SortableHeader<SortColumn>
                   label="Premium"
-                  column="total_premium"
-                  currentColumn={sortColumn}
-                  currentDirection={sortDirection}
-                  onSort={handleSort}
+                  sortKey="total_premium"
+                  currentKey={sortKey}
+                  currentDir={sortDir}
+                  onSort={setSort}
                   align="right"
-                  title="Aggregate premium traded on this option_chain today"
+                  tooltip="Aggregate premium traded on this option_chain today"
                 />
-                <SortableHeader
+                <SortableHeader<SortColumn>
                   label="Ask %"
-                  column="ask_side_ratio"
-                  currentColumn={sortColumn}
-                  currentDirection={sortDirection}
-                  onSort={handleSort}
+                  sortKey="ask_side_ratio"
+                  currentKey={sortKey}
+                  currentDir={sortDir}
+                  onSort={setSort}
                   align="right"
-                  title="Share of premium filled at/above ask"
+                  tooltip="Share of premium filled at/above ask"
                 />
-                <SortableHeader
+                <SortableHeader<SortColumn>
                   label="Size"
-                  column="total_size"
-                  currentColumn={sortColumn}
-                  currentDirection={sortDirection}
-                  onSort={handleSort}
+                  sortKey="total_size"
+                  currentKey={sortKey}
+                  currentDir={sortDir}
+                  onSort={setSort}
                   align="right"
-                  title="Total contracts transacted in aggregated alerts"
+                  tooltip="Total contracts transacted in aggregated alerts"
                 />
-                <SortableHeader
+                <SortableHeader<SortColumn>
                   label="Vol/OI"
-                  column="volume_oi_ratio"
-                  currentColumn={sortColumn}
-                  currentDirection={sortDirection}
-                  onSort={handleSort}
+                  sortKey="volume_oi_ratio"
+                  currentKey={sortKey}
+                  currentDir={sortDir}
+                  onSort={setSort}
                   align="right"
-                  title="Day volume vs. open interest — new-position signal"
+                  tooltip="Day volume vs. open interest — new-position signal"
                 />
                 <th
                   scope="col"
@@ -521,108 +491,21 @@ export function WhalePositioningTable({
                 >
                   Rule
                 </th>
-                <SortableHeader
+                <SortableHeader<SortColumn>
                   label="Age"
-                  column="age_minutes"
-                  currentColumn={sortColumn}
-                  currentDirection={sortDirection}
-                  onSort={handleSort}
+                  sortKey="age_minutes"
+                  currentKey={sortKey}
+                  currentDir={sortDir}
+                  onSort={setSort}
                   align="right"
-                  title="Minutes since the alert was emitted"
+                  tooltip="Minutes since the alert was emitted"
                 />
               </tr>
             </thead>
             <tbody>
-              {sortedAlerts.map((a) => {
-                const deltaColor =
-                  a.distance_from_spot > 0
-                    ? 'text-emerald-400'
-                    : a.distance_from_spot < 0
-                      ? 'text-rose-400'
-                      : 'text-slate-400';
-                const sideColor =
-                  a.type === 'call' ? 'text-emerald-400' : 'text-rose-400';
-                const sideLabel = a.type === 'call' ? 'C' : 'P';
-                return (
-                  <tr
-                    key={a.option_chain}
-                    className="border-edge/30 hover:bg-surface-alt/60 border-b transition-colors"
-                  >
-                    <td className="text-secondary px-2 py-1.5 text-right font-semibold">
-                      {Math.round(a.strike).toLocaleString()}
-                    </td>
-                    <td className="px-2 py-1.5 text-center">
-                      <span
-                        className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold ${sideColor} bg-current/10`}
-                        aria-label={a.type === 'call' ? 'Call' : 'Put'}
-                      >
-                        {sideLabel}
-                      </span>
-                    </td>
-                    <td className="text-secondary px-2 py-1.5 text-left">
-                      {formatExpiry(a.expiry, a.dte_at_alert)}
-                    </td>
-                    <td className={`px-2 py-1.5 text-right ${deltaColor}`}>
-                      {formatSignedInt(a.distance_from_spot)}{' '}
-                      <span className="text-muted text-[10px]">
-                        ({formatPctSigned(a.distance_pct)})
-                      </span>
-                    </td>
-                    <td className="px-2 py-1.5 text-right">
-                      <span className="text-secondary text-[12px] font-bold">
-                        {formatPremium(a.total_premium)}
-                      </span>
-                    </td>
-                    <td className="text-secondary px-2 py-1.5 text-right">
-                      {formatAskPct(a.ask_side_ratio)}
-                    </td>
-                    <td className="text-secondary px-2 py-1.5 text-right">
-                      {Math.round(a.total_size).toLocaleString()}
-                    </td>
-                    <td className="text-secondary px-2 py-1.5 text-right">
-                      {formatVolOi(a.volume_oi_ratio)}
-                    </td>
-                    <td className="px-2 py-1.5">
-                      <div className="flex flex-wrap gap-1">
-                        <span
-                          aria-label={`Rule ${a.alert_rule}`}
-                          title={a.alert_rule}
-                          className="text-muted border-edge inline-block rounded-full border bg-slate-500/10 px-1.5 py-0.5 font-mono text-[9px] font-semibold whitespace-nowrap"
-                        >
-                          {shortRule(a.alert_rule)}
-                        </span>
-                        {a.has_multileg && (
-                          <span
-                            aria-label="Multileg"
-                            className="inline-block rounded-full border border-indigo-500/30 bg-indigo-500/15 px-1.5 py-0.5 font-mono text-[9px] font-semibold whitespace-nowrap text-indigo-300"
-                          >
-                            ML
-                          </span>
-                        )}
-                        {a.has_sweep && (
-                          <span
-                            aria-label="Sweep"
-                            className="inline-block rounded-full border border-sky-500/30 bg-sky-500/15 px-1.5 py-0.5 font-mono text-[9px] font-semibold whitespace-nowrap text-sky-300"
-                          >
-                            SWP
-                          </span>
-                        )}
-                        {a.has_floor && (
-                          <span
-                            aria-label="Floor"
-                            className="inline-block rounded-full border border-amber-500/30 bg-amber-500/15 px-1.5 py-0.5 font-mono text-[9px] font-semibold whitespace-nowrap text-amber-300"
-                          >
-                            FLR
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="text-muted px-2 py-1.5 text-right">
-                      {formatAge(a.age_minutes)}
-                    </td>
-                  </tr>
-                );
-              })}
+              {sortedAlerts.map((a) => (
+                <WhaleAlertRow key={a.option_chain} alert={a} />
+              ))}
             </tbody>
           </table>
         </div>
