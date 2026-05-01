@@ -632,11 +632,13 @@ async function loadNetDealerGammaForTicker(
  */
 /**
  * Stamp HHI and morning IV-vol correlation on every squeeze flag in place.
- * Two queries per flag — one for the band's per-strike notional, one for
- * the strike's pre-11:00 CT IV trajectory. Failure to compute either
- * feature stamps `null` (column is nullable; pass-flag derivation handles
- * it as false). Per-flag failures are caught individually so one bad
- * fire can't poison the rest of the batch.
+ * Two queries per flag — one for the band's per-strike notional (within
+ * ±0.5% of spot, same side), one for the strike's pre-11:00 CT IV
+ * trajectory. Both run in parallel across all flags via Promise.all so
+ * a 10-flag batch issues 20 concurrent queries instead of 20 sequential.
+ * Per-flag failures are caught individually so one bad fire can't poison
+ * the rest of the batch — failed enrichment stamps null (columns are
+ * nullable; the read endpoint treats null as "not eligible for pass").
  */
 type NumericFromDb = string | number | null;
 interface BandRow {
@@ -650,15 +652,17 @@ interface IvRow {
   cum_volume: NumericFromDb;
 }
 
-async function enrichWithPrecisionStack(
+async function enrichSingleFlag(
   sql: ReturnType<typeof getDb>,
-  flags: SqueezeFlag[],
+  f: SqueezeFlag,
 ): Promise<void> {
-  for (const f of flags) {
-    try {
-      const bandLow = f.spot_at_detect * (1 - PROXIMITY_BAND_PCT);
-      const bandHigh = f.spot_at_detect * (1 + PROXIMITY_BAND_PCT);
-      const bandRows = (await sql`
+  try {
+    const bandLow = f.spot_at_detect * (1 - PROXIMITY_BAND_PCT);
+    const bandHigh = f.spot_at_detect * (1 + PROXIMITY_BAND_PCT);
+
+    // Fire both queries in parallel — they're independent.
+    const [bandRows, ivRows] = (await Promise.all([
+      sql`
         SELECT DISTINCT ON (strike)
                strike, volume, mid_price
         FROM strike_iv_snapshots
@@ -669,19 +673,8 @@ async function enrichWithPrecisionStack(
           AND ts >= (${f.ts}::timestamptz - INTERVAL '15 minutes')
           AND strike BETWEEN ${bandLow} AND ${bandHigh}
         ORDER BY strike, ts DESC
-      `) as BandRow[];
-      const bandSamples: BandStrikeSample[] = [];
-      for (const r of bandRows) {
-        const strike = Number(r.strike);
-        const volume = r.volume == null ? NaN : Number(r.volume);
-        const midPrice = r.mid_price == null ? NaN : Number(r.mid_price);
-        if (Number.isFinite(strike) && Number.isFinite(volume) && Number.isFinite(midPrice)) {
-          bandSamples.push({ strike, volume, midPrice });
-        }
-      }
-      f.hhi_neighborhood = computeHhi(bandSamples);
-
-      const ivRows = (await sql`
+      `,
+      sql`
         SELECT date_trunc('minute', ts AT TIME ZONE 'America/Chicago') AS minute_ct,
                AVG(iv_mid) AS iv,
                MAX(volume) AS cum_volume
@@ -697,32 +690,56 @@ async function enrichWithPrecisionStack(
           AND iv_mid < 5
         GROUP BY 1
         ORDER BY minute_ct
-      `) as IvRow[];
-      const ivSamples: IvVolSample[] = [];
-      for (const r of ivRows) {
-        const ts =
-          r.minute_ct instanceof Date
-            ? r.minute_ct.toISOString()
-            : String(r.minute_ct);
-        const iv = r.iv == null ? NaN : Number(r.iv);
-        const volume = r.cum_volume == null ? NaN : Number(r.cum_volume);
-        if (Number.isFinite(iv) && Number.isFinite(volume)) {
-          ivSamples.push({ ts, iv, volume });
-        }
+      `,
+    ])) as [BandRow[], IvRow[]];
+
+    const bandSamples: BandStrikeSample[] = [];
+    for (const r of bandRows) {
+      const strike = Number(r.strike);
+      const volume = r.volume == null ? NaN : Number(r.volume);
+      const midPrice = r.mid_price == null ? NaN : Number(r.mid_price);
+      if (
+        Number.isFinite(strike) &&
+        Number.isFinite(volume) &&
+        Number.isFinite(midPrice)
+      ) {
+        bandSamples.push({ strike, volume, midPrice });
       }
-      f.iv_morning_vol_corr = computeIvMorningVolCorr(ivSamples);
-    } catch (err) {
-      Sentry.setTag('cron.job', 'fetch-strike-iv');
-      Sentry.setTag('strike_iv.phase', 'precision_stack_enrichment');
-      Sentry.captureException(err);
-      logger.warn(
-        { err, ticker: f.ticker, strike: f.strike },
-        'fetch-strike-iv: precision-stack enrichment failed (non-fatal)',
-      );
-      f.hhi_neighborhood = null;
-      f.iv_morning_vol_corr = null;
     }
+    f.hhi_neighborhood = computeHhi(bandSamples);
+
+    const ivSamples: IvVolSample[] = [];
+    for (const r of ivRows) {
+      const ts =
+        r.minute_ct instanceof Date
+          ? r.minute_ct.toISOString()
+          : String(r.minute_ct);
+      const iv = r.iv == null ? NaN : Number(r.iv);
+      const volume = r.cum_volume == null ? NaN : Number(r.cum_volume);
+      if (Number.isFinite(iv) && Number.isFinite(volume)) {
+        ivSamples.push({ ts, iv, volume });
+      }
+    }
+    f.iv_morning_vol_corr = computeIvMorningVolCorr(ivSamples);
+  } catch (err) {
+    Sentry.setTag('cron.job', 'fetch-strike-iv');
+    Sentry.setTag('strike_iv.phase', 'precision_stack_enrichment');
+    Sentry.captureException(err);
+    logger.warn(
+      { err, ticker: f.ticker, strike: f.strike },
+      'fetch-strike-iv: precision-stack enrichment failed (non-fatal)',
+    );
+    f.hhi_neighborhood = null;
+    f.iv_morning_vol_corr = null;
   }
+}
+
+async function enrichWithPrecisionStack(
+  sql: ReturnType<typeof getDb>,
+  flags: SqueezeFlag[],
+): Promise<void> {
+  // Fan out across flags — each enrichSingleFlag handles its own errors.
+  await Promise.all(flags.map((f) => enrichSingleFlag(sql, f)));
 }
 
 async function persistSqueezeFlags(

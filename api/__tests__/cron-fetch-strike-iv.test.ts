@@ -1388,5 +1388,125 @@ describe('fetch-strike-iv handler', () => {
     // NVDA isn't in NDG_TICKERS (only SPXW is) → 'unknown'.
     expect(args[12]).toBe('unknown');
     expect(['forming', 'active']).toContain(args[13]);
+    // Precision-stack columns should be null when band/IV queries
+    // return empty (no neighbor strikes, no morning IV samples).
+    expect(args[15]).toBeNull();
+    expect(args[16]).toBeNull();
+  });
+
+  it('stamps hhi_neighborhood + iv_morning_vol_corr on the squeeze INSERT when band + morning IV data are present', async () => {
+    // Reuse the working squeeze fixture (NVDA 212C, ~10.5× velocity).
+    const nvdaChain = makeChain('NVDA', 210, {
+      putStrikes: [205, 207],
+      callStrikes: [212, 215],
+      bid: 0.5,
+      ask: 0.7,
+      openInterest: 1000,
+    });
+    const q11 = quietExpansionChains();
+    mockChainSequence([
+      makeChain('SPY', 710, {}),
+      makeChain('$SPX', 7100, { contractRoot: 'SPXW' }),
+      makeChain('$NDX', 22500, { contractRoot: 'NDXP' }),
+      q11.rutw,
+      makeChain('QQQ', 500, {}),
+      makeChain('IWM', 235, {}),
+      q11.smh,
+      nvdaChain,
+      q11.tsla,
+      q11.meta,
+      q11.msft,
+      q11.googl,
+      q11.nflx,
+      q11.tsm,
+      makeChain('SNDK', 140, {}),
+      q11.mstr,
+      q11.mu,
+    ]);
+
+    const NOW_MS = MARKET_TIME.getTime();
+    const squeezeWindowRows = Array.from({ length: 35 }, (_, i) => ({
+      strike: '212.00',
+      side: 'call' as const,
+      expiry: '2026-04-25',
+      ts: new Date(NOW_MS - (34 - i) * 60_000).toISOString(),
+      volume:
+        i < 20
+          ? 100 * (i + 1)
+          : 100 * 20 + 700 * (i - 19),
+      oi: 1000,
+      spot: 209.5 + (i / 34) * 1.0,
+    }));
+
+    // Cross-strike notional band — 5 strikes within ±0.5% of spot 210.5
+    // with varied notional. Diffuse band → low HHI → numeric value.
+    const bandRows = [
+      { strike: '210.00', volume: '500', mid_price: '0.80' },
+      { strike: '211.00', volume: '600', mid_price: '0.75' },
+      { strike: '212.00', volume: '700', mid_price: '0.65' },
+      { strike: '213.00', volume: '550', mid_price: '0.55' },
+      { strike: '214.00', volume: '450', mid_price: '0.45' },
+    ];
+
+    // Morning IV trajectory: 10 minutes of varied IV/vol deltas so
+    // computeIvMorningVolCorr returns a finite correlation.
+    const ivSteps = [1, 3, 2, 5, 4, 6, 2, 7, 3, 4];
+    let iv = 0.20;
+    let vol = 100;
+    const ivRows = ivSteps.map((step, idx) => {
+      const row = {
+        minute_ct: new Date(NOW_MS - (15 - idx) * 60_000).toISOString(),
+        iv: iv.toString(),
+        cum_volume: vol.toString(),
+      };
+      iv += step * 0.001;
+      vol += step * 10;
+      return row;
+    });
+
+    mockSql.mockImplementation((strings: TemplateStringsArray) => {
+      const joined = Array.isArray(strings) ? strings.join(' ') : '';
+      if (joined.includes('INSERT INTO gamma_squeeze_events')) {
+        return Promise.resolve([{ id: 1 }]);
+      }
+      // Precision-stack: cross-strike band query
+      if (
+        joined.includes('SELECT DISTINCT ON (strike)') &&
+        joined.includes('mid_price')
+      ) {
+        return Promise.resolve(bandRows);
+      }
+      // Precision-stack: morning IV trajectory query
+      if (joined.includes('AVG(iv_mid)')) {
+        return Promise.resolve(ivRows);
+      }
+      // Squeeze window loader (45-min trailing window)
+      if (
+        joined.includes('FROM strike_iv_snapshots') &&
+        joined.includes("INTERVAL '45 minutes'")
+      ) {
+        return Promise.resolve(squeezeWindowRows);
+      }
+      return Promise.resolve([]);
+    });
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+    expect(res._status).toBe(200);
+
+    const squeezeInserts = vi.mocked(mockSql).mock.calls.filter((call) => {
+      const strings = call[0] as TemplateStringsArray | undefined;
+      const joined = Array.isArray(strings) ? strings.join(' ') : '';
+      return joined.includes('INSERT INTO gamma_squeeze_events');
+    });
+    expect(squeezeInserts.length).toBeGreaterThanOrEqual(1);
+    const args = (squeezeInserts[0] as unknown[]).slice(1);
+    // hhi_neighborhood (positional 15) — diffuse band, expect 0 < hhi < 1.
+    expect(typeof args[15]).toBe('number');
+    expect(args[15] as number).toBeGreaterThan(0);
+    expect(args[15] as number).toBeLessThan(1);
+    // iv_morning_vol_corr (positional 16) — sequential ramp → ~+1.
+    expect(typeof args[16]).toBe('number');
+    expect(args[16] as number).toBeGreaterThan(0.5);
   });
 });

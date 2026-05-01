@@ -2914,4 +2914,23 @@ export const MIGRATIONS: Migration[] = [
       sql`ALTER TABLE gamma_squeeze_events ADD COLUMN IF NOT EXISTS precision_stack_pass BOOLEAN`,
     ],
   },
+  {
+    id: 105,
+    description:
+      'Drop precision_stack_pass from gamma_squeeze_events. Migration #104 ' +
+      'added the column with the intent that an after-close cron would ' +
+      'stamp it from per-day percentiles, but that cron was never built ' +
+      'and the live ingest path in fetch-strike-iv.ts never writes it. ' +
+      'The read endpoint /api/gamma-squeezes already computes the pass ' +
+      'flag at request time from (hhi_neighborhood, iv_morning_vol_corr) ' +
+      'using same-day percentiles across the queried result set, so the ' +
+      'column has no readers and no live writers — pure dead weight. ' +
+      'Drop instead of leaving stale NULLs across the table. The two ' +
+      'numeric columns (hhi_neighborhood, iv_morning_vol_corr) stay ' +
+      'because the cron does write them at fire time and the read ' +
+      'endpoint reads them.',
+    statements: (sql) => [
+      sql`ALTER TABLE gamma_squeeze_events DROP COLUMN IF EXISTS precision_stack_pass`,
+    ],
+  },
 ];
