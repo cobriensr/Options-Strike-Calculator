@@ -175,9 +175,7 @@ const renderVx: Renderer = (bySymbol, derived) => {
         `  Signal: Near-term stress priced in. Straddle cones may understate range.`,
       );
     } else if (derived.vxTermSignal === 'CONTANGO') {
-      lines.push(
-        `  Signal: Normal vol regime. Favorable for premium selling.`,
-      );
+      lines.push(`  Signal: Normal vol regime. Favorable for premium selling.`);
     }
   }
   return lines;
