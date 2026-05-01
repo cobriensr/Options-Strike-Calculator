@@ -97,6 +97,11 @@ const PeriscopeChat = lazy(() =>
     handleStaleChunk,
   ),
 );
+const PeriscopeChatHistory = lazy(() =>
+  import('./components/PeriscopeChat/PeriscopeChatHistory.tsx').catch(
+    handleStaleChunk,
+  ),
+);
 const FuturesPanel = lazy(() =>
   import('./components/FuturesCalculator/FuturesPanel').catch(handleStaleChunk),
 );
@@ -701,6 +706,9 @@ export default function StrikeCalculator() {
         : []),
       ...(isAuthenticated
         ? [{ id: 'sec-periscope-chat', label: 'Periscope Chat' }]
+        : []),
+      ...(isAuthenticated
+        ? [{ id: 'sec-periscope-history', label: 'Periscope History' }]
         : []),
       { id: 'sec-positions', label: 'Position Monitor' },
       ...(isAuthenticated ? [{ id: 'sec-bwb', label: 'BWB Calculator' }] : []),
@@ -1433,6 +1441,20 @@ export default function StrikeCalculator() {
                     <ErrorBoundary label="Periscope Chat">
                       <Suspense fallback={<SkeletonSection lines={4} tall />}>
                         <PeriscopeChat />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </>
+                )}
+
+                {isAuthenticated && (
+                  <>
+                    <span
+                      id="sec-periscope-history"
+                      className="block scroll-mt-28"
+                    />
+                    <ErrorBoundary label="Periscope History">
+                      <Suspense fallback={<SkeletonSection lines={4} tall />}>
+                        <PeriscopeChatHistory />
                       </Suspense>
                     </ErrorBoundary>
                   </>
