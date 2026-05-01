@@ -13,6 +13,13 @@
  * parameterized `INSERT INTO ... VALUES ($1,...,$N), (...) ON CONFLICT
  * ... DO UPDATE SET ...` call via `sql.query()`.
  *
+ * Transactional guarantees:
+ *   - Single-chunk runs use a direct `sql.query()` — atomic per Postgres
+ *     statement semantics.
+ *   - Multi-chunk runs (rows.length > chunkSize) wrap every chunk in a
+ *     single `sql.transaction(...)` so a failure on chunk N rolls back
+ *     chunks 1..N-1. No half-upserted state.
+ *
  * Adoption is staged — see Phase 3b in
  * docs/superpowers/specs/api-refactor-2026-05-02.md. This module is
  * greenfield; no consumer migrates here.
@@ -86,16 +93,21 @@ function parseConflictColumns(conflictTarget: string): Set<string> {
 }
 
 /**
- * Build a single INSERT...VALUES(...)...ON CONFLICT statement for one
- * chunk and run it via `sql.query()`. Each row contributes one
- * `(...)` tuple of `$N` placeholders aligned to a flat params array.
+ * Build a single INSERT...VALUES(...)...ON CONFLICT statement and its
+ * flat parameter array for one chunk. Each row contributes one `(...)`
+ * tuple of `$N` placeholders aligned to a flat params array.
+ *
+ * Returned as a `(stmt, params)` pair so callers can either run it
+ * directly via `sql.query(stmt, params)` (single-chunk fast path) or
+ * via `txn.query(stmt, params)` inside a `sql.transaction` callback
+ * (multi-chunk all-or-nothing path).
  */
-async function runChunk<T extends Record<string, unknown>>(
+function buildChunkQuery<T extends Record<string, unknown>>(
   opts: BulkUpsertOptions<T>,
   chunk: readonly T[],
   updateColumns: readonly string[],
-): Promise<void> {
-  const { sql, table, columns, conflictTarget } = opts;
+): { stmt: string; params: unknown[] } {
+  const { table, columns, conflictTarget } = opts;
 
   const colCount = columns.length;
   const params: unknown[] = [];
@@ -123,7 +135,7 @@ async function runChunk<T extends Record<string, unknown>>(
     ${onConflict}
   `;
 
-  await sql.query(stmt, params);
+  return { stmt, params };
 }
 
 /**
@@ -134,9 +146,26 @@ async function runChunk<T extends Record<string, unknown>>(
  *   - `chunkSize` defaults to BULK_UPSERT_DEFAULT_CHUNK_SIZE (500).
  *   - `conflictUpdateColumns` defaults to every column not named in
  *     `conflictTarget`. Pass `[]` to coerce ON CONFLICT DO NOTHING.
- *   - Multi-chunk: each chunk runs as its own statement. Failures
- *     bubble up (Neon throws — we don't swallow). Caller wraps in a
- *     transaction if it needs all-or-nothing semantics across chunks.
+ *   - Single-chunk path: one `sql.query()` call (no transaction
+ *     overhead).
+ *   - Multi-chunk path: ALL chunks run inside a single
+ *     `sql.transaction(...)` so a mid-loop failure rolls back every
+ *     prior chunk. The wrapper is all-or-nothing — callers don't need
+ *     to reason about partial state.
+ *   - `'ON CONSTRAINT <name>'` form: when `conflictTarget` is the
+ *     `ON CONSTRAINT` form, default `conflictUpdateColumns` cannot be
+ *     derived (we don't have access to the constraint definition).
+ *     Callers MUST pass `conflictUpdateColumns` explicitly — we throw
+ *     a clear error otherwise to avoid silently overwriting every
+ *     column on conflict.
+ *
+ * IMPORTANT — caller responsibility: rows passed to a single
+ * `bulkUpsert` call MUST be deduplicated by `conflictTarget`. Postgres
+ * raises `cardinality_violation` ("ON CONFLICT DO UPDATE command
+ * cannot affect row a second time") if two rows in the same statement
+ * collide on the conflict target. This helper does NOT dedupe — that
+ * would require knowing the precedence rule (last-wins vs first-wins
+ * vs merged), which is caller-specific. Dedupe upstream.
  *
  * Returns `{ rows: rows.length }`. Note: this is the input row count,
  * NOT the number of rows that mutated the DB. Neon's serverless driver
@@ -146,7 +175,7 @@ async function runChunk<T extends Record<string, unknown>>(
 export async function bulkUpsert<T extends Record<string, unknown>>(
   opts: BulkUpsertOptions<T>,
 ): Promise<BulkUpsertResult> {
-  const { rows, columns, conflictTarget, chunkSize: chunkOverride } = opts;
+  const { sql, rows, columns, conflictTarget, chunkSize: chunkOverride } = opts;
 
   if (rows.length === 0) return { rows: 0 };
   if (columns.length === 0) {
@@ -158,25 +187,50 @@ export async function bulkUpsert<T extends Record<string, unknown>>(
     throw new Error('bulkUpsert: chunkSize must be > 0');
   }
 
+  // Hoisted: parsing the conflict target every iteration of the
+  // filter callback below would be wasted work + the closure misled
+  // reviewers about the cost.
+  const conflictSet = parseConflictColumns(conflictTarget);
+
   // Resolve the conflict-update column list once. Default to "every
   // column not in the conflict target" so callers don't have to repeat
   // the column list — matches the SQL pattern they already write by hand.
-  const updateColumns = opts.conflictUpdateColumns
-    ? [...opts.conflictUpdateColumns]
-    : columns.filter((c) => {
-        const conflictSet = parseConflictColumns(conflictTarget);
-        return !conflictSet.has(c.toLowerCase());
-      });
+  let updateColumns: readonly string[];
+  if (opts.conflictUpdateColumns) {
+    updateColumns = [...opts.conflictUpdateColumns];
+  } else {
+    // ON CONSTRAINT <name> form yields an empty conflictSet; we cannot
+    // safely derive a default because "every column not in the conflict
+    // target" silently means "every column" — callers almost never want
+    // an upsert that overwrites the conflict-key columns. Reject loudly.
+    if (conflictSet.size === 0) {
+      throw new Error(
+        'bulkUpsert: ON CONSTRAINT form requires explicit conflictUpdateColumns (cannot derive default)',
+      );
+    }
+    updateColumns = columns.filter((c) => !conflictSet.has(c.toLowerCase()));
+  }
 
-  // Single-chunk fast path skips the slicing arithmetic.
+  // Single-chunk fast path: one query, no transaction overhead.
   if (rows.length <= chunkSize) {
-    await runChunk(opts, rows, updateColumns);
+    const { stmt, params } = buildChunkQuery(opts, rows, updateColumns);
+    await sql.query(stmt, params);
     return { rows: rows.length };
   }
 
+  // Multi-chunk path: wrap the entire loop in a single Postgres
+  // transaction so a failure on chunk N rolls back chunks 1..N-1.
+  // We pre-build every (stmt, params) pair so the callback is a pure
+  // synchronous mapper — `sql.transaction` requires a non-async fn.
+  const chunkQueries: { stmt: string; params: unknown[] }[] = [];
   for (let offset = 0; offset < rows.length; offset += chunkSize) {
     const slice = rows.slice(offset, offset + chunkSize);
-    await runChunk(opts, slice, updateColumns);
+    chunkQueries.push(buildChunkQuery(opts, slice, updateColumns));
   }
+
+  await sql.transaction((txn) =>
+    chunkQueries.map(({ stmt, params }) => txn.query(stmt, params)),
+  );
+
   return { rows: rows.length };
 }
