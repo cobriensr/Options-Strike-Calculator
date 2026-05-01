@@ -63,32 +63,65 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const bodyParsed = periscopeChatUpdateBodySchema.safeParse(req.body);
   if (respondIfInvalid(bodyParsed, res, done)) return;
-  const { calibration_quality, regime_tag } = bodyParsed.data;
+  const { calibration_quality, regime_tag, clear } = bodyParsed.data;
 
-  if (calibration_quality === undefined && regime_tag === undefined) {
+  const clearRegime = clear?.includes('regime_tag') ?? false;
+  const clearQuality = clear?.includes('calibration_quality') ?? false;
+  const hasAnyDirective =
+    calibration_quality !== undefined ||
+    regime_tag !== undefined ||
+    clearRegime ||
+    clearQuality;
+  if (!hasAnyDirective) {
     done({ status: 400 });
     return res.status(400).json({
-      error: 'Provide at least one of calibration_quality or regime_tag.',
+      error:
+        'Provide at least one of calibration_quality, regime_tag, or clear[].',
+    });
+  }
+  if (clearRegime && regime_tag !== undefined) {
+    done({ status: 400 });
+    return res.status(400).json({
+      error: 'Cannot both set and clear regime_tag in the same request.',
+    });
+  }
+  if (clearQuality && calibration_quality !== undefined) {
+    done({ status: 400 });
+    return res.status(400).json({
+      error: 'Cannot both set and clear calibration_quality in the same request.',
     });
   }
 
   try {
     const sql = getDb();
 
-    // COALESCE preserves the existing value when a field is omitted.
-    // Casting null parameters to the column types so the COALESCE
-    // type inference stays unambiguous on either branch.
+    // Three states per field — set, omitted, or cleared.
+    //   set:     write the new value (parameterized)
+    //   omitted: COALESCE preserves the existing column value (NULL
+    //            param + COALESCE → keep current)
+    //   cleared: pass an explicit "clear" sentinel and use a
+    //            conditional in SQL to set NULL or COALESCE
+    //
+    // Neon's tagged template doesn't support fragment composition,
+    // so we encode the clear flag as a boolean parameter and let
+    // PG's CASE pick the branch.
     const rows = await sql`
       UPDATE periscope_analyses
       SET
-        calibration_quality = COALESCE(
-          ${calibration_quality ?? null}::smallint,
-          calibration_quality
-        ),
-        regime_tag = COALESCE(
-          ${regime_tag ?? null}::text,
-          regime_tag
-        )
+        calibration_quality = CASE
+          WHEN ${clearQuality}::boolean THEN NULL
+          ELSE COALESCE(
+            ${calibration_quality ?? null}::smallint,
+            calibration_quality
+          )
+        END,
+        regime_tag = CASE
+          WHEN ${clearRegime}::boolean THEN NULL
+          ELSE COALESCE(
+            ${regime_tag ?? null}::text,
+            regime_tag
+          )
+        END
       WHERE id = ${id}
       RETURNING id, calibration_quality, regime_tag
     `;
@@ -103,7 +136,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({
       id: Number(row.id),
       calibration_quality:
-        row.calibration_quality == null ? null : Number(row.calibration_quality),
+        row.calibration_quality == null
+          ? null
+          : Number(row.calibration_quality),
       regime_tag: (row.regime_tag as string | null) ?? null,
     });
   } catch (err) {

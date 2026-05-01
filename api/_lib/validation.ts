@@ -521,13 +521,18 @@ export type PeriscopeChatDetailQuery = z.infer<
 // ============================================================
 
 /**
- * PATCH/POST body for inline annotation edits. Both fields are
- * optional; the endpoint requires at least one to be present (checked
- * server-side, since Zod refining for "at least one of" gets noisy).
+ * PATCH/POST body for inline annotation edits. Both edit fields are
+ * optional; the endpoint requires at least one set/clear directive to
+ * be present.
  *
  * `calibration_quality` is the 1-5 star rating; `regime_tag` is the
  * fixed enum from the periscope skill (pin / drift-and-cap /
  * gap-and-rip / trap / cone-breach / chop / other).
+ *
+ * `clear` is an array of field names to explicitly null out. The
+ * endpoint distinguishes "field omitted" (preserve existing) from
+ * "field cleared" (set to null) via this list, since plain `null` in
+ * JSON would round-trip ambiguously through Zod.
  */
 export const periscopeChatUpdateBodySchema = z.object({
   calibration_quality: z.number().int().min(1).max(5).optional(),
@@ -541,6 +546,10 @@ export const periscopeChatUpdateBodySchema = z.object({
       'chop',
       'other',
     ])
+    .optional(),
+  clear: z
+    .array(z.enum(['regime_tag', 'calibration_quality']))
+    .max(2)
     .optional(),
 });
 

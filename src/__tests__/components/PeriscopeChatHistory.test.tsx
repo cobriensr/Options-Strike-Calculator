@@ -467,6 +467,65 @@ describe('<PeriscopeChatAnnotations />', () => {
     expect(optionTexts).toContain('pin');
   });
 
+  it('shows a clear button when a regime tag is set, hidden otherwise', () => {
+    const { rerender } = render(
+      <PeriscopeChatAnnotations
+        rowId={1}
+        calibrationQuality={null}
+        regimeTag={null}
+        onSaved={vi.fn()}
+      />,
+    );
+    expect(
+      screen.queryByLabelText(/clear regime tag/i),
+    ).not.toBeInTheDocument();
+
+    rerender(
+      <PeriscopeChatAnnotations
+        rowId={1}
+        calibrationQuality={null}
+        regimeTag="pin"
+        onSaved={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText(/clear regime tag/i)).toBeInTheDocument();
+  });
+
+  it('PATCHes a clear directive when the regime clear button is clicked', async () => {
+    const user = userEvent.setup();
+    setRoutes({
+      '/api/periscope-chat-update': (init) => {
+        const body = JSON.parse(String((init?.body ?? '{}') as string)) as {
+          clear: string[];
+        };
+        expect(body.clear).toEqual(['regime_tag']);
+        return {
+          body: { id: 1, calibration_quality: null, regime_tag: null },
+        };
+      },
+    });
+    const onSaved = vi.fn();
+
+    render(
+      <PeriscopeChatAnnotations
+        rowId={1}
+        calibrationQuality={null}
+        regimeTag="pin"
+        onSaved={onSaved}
+      />,
+    );
+
+    await user.click(screen.getByLabelText(/clear regime tag/i));
+
+    await waitFor(() => {
+      expect(onSaved).toHaveBeenCalledWith({
+        id: 1,
+        calibration_quality: null,
+        regime_tag: null,
+      });
+    });
+  });
+
   it('shows an error when the update endpoint fails', async () => {
     const user = userEvent.setup();
     setRoutes({

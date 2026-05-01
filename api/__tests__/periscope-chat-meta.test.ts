@@ -331,9 +331,7 @@ describe('PATCH/POST /api/periscope-chat-update', () => {
     const res = mockResponse();
     await updateHandler(req, res);
     expect(res._status).toBe(400);
-    expect((res._json as { error: string }).error).toMatch(
-      /at least one of/i,
-    );
+    expect((res._json as { error: string }).error).toMatch(/at least one of/i);
   });
 
   it('returns 404 when row does not exist', async () => {
@@ -398,5 +396,62 @@ describe('PATCH/POST /api/periscope-chat-update', () => {
     const res = mockResponse();
     await updateHandler(req, res);
     expect(res._status).toBe(200);
+  });
+
+  it('clears regime_tag when clear: ["regime_tag"] is sent', async () => {
+    mockSql.mockResolvedValueOnce([
+      { id: '42', calibration_quality: '5', regime_tag: null },
+    ]);
+    const req = mockRequest({
+      method: 'PATCH',
+      query: { id: '42' },
+      body: { clear: ['regime_tag'] },
+    });
+    const res = mockResponse();
+    await updateHandler(req, res);
+    expect(res._status).toBe(200);
+    const body = res._json as { regime_tag: string | null };
+    expect(body.regime_tag).toBeNull();
+  });
+
+  it('clears calibration_quality when clear: ["calibration_quality"] is sent', async () => {
+    mockSql.mockResolvedValueOnce([
+      { id: '42', calibration_quality: null, regime_tag: 'pin' },
+    ]);
+    const req = mockRequest({
+      method: 'PATCH',
+      query: { id: '42' },
+      body: { clear: ['calibration_quality'] },
+    });
+    const res = mockResponse();
+    await updateHandler(req, res);
+    expect(res._status).toBe(200);
+    const body = res._json as { calibration_quality: number | null };
+    expect(body.calibration_quality).toBeNull();
+  });
+
+  it('returns 400 when clear and a set value conflict on the same field', async () => {
+    const req = mockRequest({
+      method: 'PATCH',
+      query: { id: '42' },
+      body: { regime_tag: 'pin', clear: ['regime_tag'] },
+    });
+    const res = mockResponse();
+    await updateHandler(req, res);
+    expect(res._status).toBe(400);
+    expect((res._json as { error: string }).error).toMatch(
+      /both set and clear/i,
+    );
+  });
+
+  it('returns 400 when clear contains an unknown field name', async () => {
+    const req = mockRequest({
+      method: 'PATCH',
+      query: { id: '42' },
+      body: { clear: ['not_a_real_field'] },
+    });
+    const res = mockResponse();
+    await updateHandler(req, res);
+    expect(res._status).toBe(400);
   });
 });

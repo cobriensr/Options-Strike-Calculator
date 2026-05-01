@@ -1,14 +1,15 @@
 /**
  * Inline annotation editor — calibration stars (1-5) + regime tag
- * dropdown. PATCHes updates to /api/periscope-chat-update. The UI
- * reflects new values only after the server confirms; on error the
- * displayed value stays at the prop value (no local override flip).
+ * dropdown + clear buttons. PATCHes updates to /api/periscope-chat-
+ * update. The UI reflects new values only after the server confirms;
+ * on error the displayed value stays at the prop value (no local
+ * override flip).
  *
- * Note: the regime-tag dropdown only shows the "(unset)" option when
- * the row has no tag yet. Once a tag is set, "(unset)" is hidden —
- * the current update endpoint treats omitted/null fields as "no
- * change" (COALESCE), so there's no clear-to-null path. Adding clear
- * semantics is a follow-up endpoint change.
+ * Clear semantics: the update endpoint accepts a `clear: ['regime_
+ * tag']` directive that explicitly NULLs the column (distinct from
+ * omitting the field, which preserves the existing value). When a
+ * regime tag is set, an "× clear" button appears next to the
+ * dropdown that issues that directive.
  *
  * Used inside PeriscopeChatDetail and reusable from any row that needs
  * to edit annotations. The parent owns the row and gets a callback
@@ -45,11 +46,19 @@ export default function PeriscopeChatAnnotations({
   const [error, setError] = useState<string | null>(null);
 
   const update = useCallback(
-    async (body: { calibration_quality?: number; regime_tag?: string }) => {
+    async (body: {
+      calibration_quality?: number;
+      regime_tag?: string;
+      clear?: Array<'regime_tag' | 'calibration_quality'>;
+    }) => {
+      // Pick the field name being edited for the saving spinner. A
+      // clear directive uses the cleared field name.
       const field =
         body.calibration_quality !== undefined
           ? 'calibration_quality'
-          : 'regime_tag';
+          : body.regime_tag !== undefined
+            ? 'regime_tag'
+            : (body.clear?.[0] ?? 'regime_tag');
       setSavingField(field);
       setError(null);
       try {
@@ -114,9 +123,9 @@ export default function PeriscopeChatAnnotations({
         )}
       </div>
 
-      {/* Regime tag dropdown. (unset) shown only when no tag is set yet —
-          the update endpoint can't clear back to null today, so we hide
-          the affordance once a value exists rather than offer a no-op. */}
+      {/* Regime tag dropdown + clear button. (unset) is shown only when
+          no tag is set; once a tag is set, the × button next to the
+          dropdown issues a clear directive instead. */}
       <label className="flex items-center gap-1">
         <span className="text-muted text-[10px] tracking-wide uppercase">
           Regime
@@ -138,6 +147,20 @@ export default function PeriscopeChatAnnotations({
             </option>
           ))}
         </select>
+        {regimeTag != null && (
+          <button
+            type="button"
+            onClick={() => {
+              void update({ clear: ['regime_tag'] });
+            }}
+            disabled={savingField !== null}
+            aria-label="Clear regime tag"
+            title="Clear regime tag"
+            className="text-muted hover:text-primary px-1 text-xs disabled:opacity-50"
+          >
+            ×
+          </button>
+        )}
       </label>
 
       {savingField && <span className="text-muted">Saving {savingField}…</span>}
