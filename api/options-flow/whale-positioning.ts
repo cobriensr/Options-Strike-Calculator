@@ -57,6 +57,10 @@ import {
   isoDateToEpochDays,
   type UwFlowAlert,
 } from '../_lib/flow-alert-derive.js';
+import {
+  lastSessionOpenUtc,
+  sessionOpenUtcForDate,
+} from '../_lib/session-windows.js';
 
 // ============================================================
 // QUERY VALIDATION
@@ -109,79 +113,6 @@ interface WhaleAlert {
 }
 
 // ============================================================
-// SESSION-OPEN HELPERS
-// ============================================================
-
-/**
- * Return the UTC ISO timestamp of the most recent 08:30 America/Chicago
- * instant at or before `now`. If `now` is before today's 08:30 CT, returns
- * null (pre-market — caller should skip `newer_than`). Uses Intl TZ lookup
- * to avoid DST bugs.
- */
-function lastSessionOpenUtc(now: Date): string | null {
-  // Candidate UTC hour for 08:30 CT is 13:30 UTC during CDT, 14:30 UTC during
-  // CST. Try both; pick the one that lands on 08:30 in CT on the same CT
-  // calendar day.
-  const nowParts = getCtParts(now.toISOString());
-  const [y, m, d] = nowParts.dateStr
-    .split('-')
-    .map((p) => Number.parseInt(p, 10));
-
-  for (const utcHour of [13, 14]) {
-    const candidate = new Date(
-      Date.UTC(y!, (m ?? 1) - 1, d ?? 1, utcHour, 30, 0, 0),
-    );
-    const parts = getCtParts(candidate.toISOString());
-    if (
-      parts.dateStr === nowParts.dateStr &&
-      parts.hour === 8 &&
-      parts.minute === 30
-    ) {
-      if (candidate.getTime() <= now.getTime()) {
-        return candidate.toISOString();
-      }
-      return null; // pre-market today
-    }
-  }
-  return null;
-}
-
-/**
- * Return the UTC ISO timestamp of 08:30 America/New_York on a given
- * YYYY-MM-DD date string. Accounts for DST by trying both candidate
- * UTC hours (12:30 for EDT, 13:30 for EST) and verifying the result
- * via Intl TZ lookup — same strategy as `lastSessionOpenUtc` but for
- * ET instead of CT.
- */
-function sessionOpenUtcForDate(dateStr: string): string {
-  const [y, m, d] = dateStr.split('-').map((p) => Number.parseInt(p, 10));
-  // 08:30 EDT = 12:30 UTC, 08:30 EST = 13:30 UTC
-  for (const utcHour of [12, 13]) {
-    const candidate = new Date(
-      Date.UTC(y!, (m ?? 1) - 1, d ?? 1, utcHour, 30, 0, 0),
-    );
-    const etFmt = new Intl.DateTimeFormat('en-US', {
-      timeZone: 'America/New_York',
-      hour12: false,
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-    const etParts = etFmt.formatToParts(candidate);
-    const getP = (type: string) =>
-      etParts.find((p) => p.type === type)?.value ?? '';
-    const etHour = Number.parseInt(getP('hour'), 10) % 24;
-    const etMin = Number.parseInt(getP('minute'), 10);
-    if (etHour === 8 && etMin === 30) {
-      return candidate.toISOString();
-    }
-  }
-  // Fallback: assume EDT (12:30 UTC)
-  return new Date(
-    Date.UTC(y!, (m ?? 1) - 1, d ?? 1, 12, 30, 0, 0),
-  ).toISOString();
-}
-
-// ============================================================
 // DB ROW → WhaleAlert TRANSFORM
 // ============================================================
 
@@ -217,84 +148,85 @@ function parsedOrFallback(raw: string | null, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function dbRowToWhaleAlert(
-  row: WhaleAlertRow,
-  nowMs: number,
-): WhaleAlert | null {
-  const type = row.type;
-  if (type !== 'call' && type !== 'put') return null;
-
-  const strike = Number.parseFloat(row.strike);
-  const spot = Number.parseFloat(row.underlying_price ?? '');
-  const totalPrem = Number.parseFloat(row.total_premium);
-  const askPrem = Number.parseFloat(row.total_ask_side_prem ?? '');
-  const bidPrem = Number.parseFloat(row.total_bid_side_prem ?? '');
-  const volOiRatio = Number.parseFloat(row.volume_oi_ratio ?? '');
-
-  if (!Number.isFinite(strike) || !Number.isFinite(spot) || spot <= 0) {
-    return null;
-  }
-
-  const createdMs = new Date(row.created_at).getTime();
-  const age_minutes = Number.isFinite(createdMs)
-    ? Math.max(0, Math.round((nowMs - createdMs) / 60_000))
-    : 0;
-
-  const ask_side_ratio =
-    Number.isFinite(totalPrem) && totalPrem > 0 ? askPrem / totalPrem : null;
-
-  return {
-    option_chain: row.option_chain,
-    strike,
-    type,
-    expiry: row.expiry,
-    dte_at_alert: row.dte_at_alert ?? 0,
-    created_at: row.created_at,
-    age_minutes,
-    total_premium: Number.isFinite(totalPrem) ? totalPrem : 0,
-    total_ask_side_prem: Number.isFinite(askPrem) ? askPrem : 0,
-    total_bid_side_prem: Number.isFinite(bidPrem) ? bidPrem : 0,
-    ask_side_ratio,
-    total_size: row.total_size ?? 0,
-    volume: row.volume ?? 0,
-    open_interest: row.open_interest ?? 0,
-    volume_oi_ratio: Number.isFinite(volOiRatio) ? volOiRatio : 0,
-    has_sweep: row.has_sweep ?? false,
-    has_floor: row.has_floor ?? false,
-    has_multileg: row.has_multileg ?? false,
-    alert_rule: row.alert_rule,
-    underlying_price: spot,
-    distance_from_spot: parsedOrFallback(row.distance_from_spot, strike - spot),
-    distance_pct: parsedOrFallback(row.distance_pct, (strike - spot) / spot),
-    is_itm: row.is_itm ?? (type === 'call' ? strike < spot : strike > spot),
-  };
+/**
+ * Normalized intermediate the two source shapes (DB row, UW API alert)
+ * adapt to before going through the single WhaleAlert builder.
+ *
+ * String fields stay strings (Postgres NUMERIC and the UW API both ship
+ * numbers as strings). Numeric counts (`total_size`, `volume`,
+ * `open_interest`) are nullable because the DB row has them nullable;
+ * the UW API ships them as required numbers, so the UW adapter just
+ * passes them through.
+ *
+ * Three optional override fields exist because the DB persists computed
+ * `distance_from_spot`, `distance_pct`, and `is_itm` columns; we prefer
+ * the stored value (in case the row was ingested with a stale spot we
+ * still want to honor) and fall back to deriving from strike vs spot.
+ *
+ *   - dte_at_alert: number — DB has it pre-stored; UW alert needs it
+ *     derived from `created_at` vs `expiry`. Adapter computes for UW.
+ *
+ * Booleans use a `bool | null` shape so `dbRowToWhaleAlert`'s `?? false`
+ * defaulting and `toWhaleAlert`'s direct `boolean` pass-through are
+ * both representable.
+ */
+interface NormalizedAlertInput {
+  option_chain: string;
+  strikeStr: string;
+  type: string;
+  expiry: string;
+  created_at: string;
+  totalPremStr: string;
+  askPremStr: string | null;
+  bidPremStr: string | null;
+  volOiRatioStr: string | null;
+  total_size: number | null;
+  volume: number | null;
+  open_interest: number | null;
+  has_sweep: boolean | null;
+  has_floor: boolean | null;
+  has_multileg: boolean | null;
+  alert_rule: string;
+  underlyingPriceStr: string | null;
+  /** Pre-computed dte; null → adapter wants us to compute from created_at + expiry. */
+  dte_at_alert: number | null;
+  /** Pre-stored DB value; null → use strike-spot fallback. */
+  distance_from_spot_stored: string | null;
+  /** Pre-stored DB value; null → use (strike-spot)/spot fallback. */
+  distance_pct_stored: string | null;
+  /** Pre-stored DB value; null → derive from strike vs spot. */
+  is_itm_stored: boolean | null;
 }
 
-// ============================================================
-// DERIVED-FIELD TRANSFORM
-// ============================================================
-
-function toWhaleAlert(a: UwFlowAlert, nowMs: number): WhaleAlert | null {
-  const type = a.type;
+/**
+ * Single WhaleAlert builder. Both shapes (DB row, UW API alert) flow
+ * through this — see Phase 5j of the api-refactor plan.
+ *
+ * Returns null when:
+ *   - `type` is neither 'call' nor 'put' (drops 'stock' / unknown rows)
+ *   - strike or spot fails to parse, or spot is non-positive
+ *
+ * Otherwise produces the same WhaleAlert shape both callers used to.
+ */
+function buildWhaleAlert(
+  i: NormalizedAlertInput,
+  nowMs: number,
+): WhaleAlert | null {
+  const type = i.type;
   if (type !== 'call' && type !== 'put') return null;
 
-  const strike = Number.parseFloat(a.strike);
-  const spot = Number.parseFloat(a.underlying_price);
-  const totalPrem = Number.parseFloat(a.total_premium);
-  const askPrem = Number.parseFloat(a.total_ask_side_prem);
-  const bidPrem = Number.parseFloat(a.total_bid_side_prem);
-  const volOiRatio = Number.parseFloat(a.volume_oi_ratio);
+  const strike = Number.parseFloat(i.strikeStr);
+  const spot = Number.parseFloat(i.underlyingPriceStr ?? '');
+  const totalPrem = Number.parseFloat(i.totalPremStr);
+  const askPrem = Number.parseFloat(i.askPremStr ?? '');
+  const bidPrem = Number.parseFloat(i.bidPremStr ?? '');
+  const volOiRatio = Number.parseFloat(i.volOiRatioStr ?? '');
 
   if (!Number.isFinite(strike) || !Number.isFinite(spot) || spot <= 0) {
     return null;
   }
 
-  const { dateStr } = getCtParts(a.created_at);
-  const alertEpoch = isoDateToEpochDays(dateStr);
-  const expiryEpoch = isoDateToEpochDays(a.expiry);
-  const dte_at_alert = Math.max(0, expiryEpoch - alertEpoch);
-
-  const createdMs = new Date(a.created_at).getTime();
+  const createdMs = new Date(i.created_at).getTime();
   const age_minutes = Number.isFinite(createdMs)
     ? Math.max(0, Math.round((nowMs - createdMs) / 60_000))
     : 0;
@@ -302,35 +234,118 @@ function toWhaleAlert(a: UwFlowAlert, nowMs: number): WhaleAlert | null {
   const ask_side_ratio =
     Number.isFinite(totalPrem) && totalPrem > 0 ? askPrem / totalPrem : null;
 
-  const distance_from_spot = strike - spot;
-  const distance_pct = (strike - spot) / spot;
-  const is_itm = type === 'call' ? strike < spot : strike > spot;
+  // dte: prefer caller's pre-computed value; otherwise derive from
+  // created_at (in CT) → expiry (calendar diff).
+  let dte_at_alert: number;
+  if (i.dte_at_alert != null) {
+    dte_at_alert = i.dte_at_alert;
+  } else {
+    const { dateStr } = getCtParts(i.created_at);
+    const alertEpoch = isoDateToEpochDays(dateStr);
+    const expiryEpoch = isoDateToEpochDays(i.expiry);
+    dte_at_alert = Math.max(0, expiryEpoch - alertEpoch);
+  }
+
+  const distance_from_spot = parsedOrFallback(
+    i.distance_from_spot_stored,
+    strike - spot,
+  );
+  const distance_pct = parsedOrFallback(
+    i.distance_pct_stored,
+    (strike - spot) / spot,
+  );
+  const is_itm =
+    i.is_itm_stored ?? (type === 'call' ? strike < spot : strike > spot);
 
   return {
-    option_chain: a.option_chain,
+    option_chain: i.option_chain,
     strike,
     type,
-    expiry: a.expiry,
+    expiry: i.expiry,
     dte_at_alert,
-    created_at: a.created_at,
+    created_at: i.created_at,
     age_minutes,
     total_premium: Number.isFinite(totalPrem) ? totalPrem : 0,
     total_ask_side_prem: Number.isFinite(askPrem) ? askPrem : 0,
     total_bid_side_prem: Number.isFinite(bidPrem) ? bidPrem : 0,
     ask_side_ratio,
-    total_size: a.total_size,
-    volume: a.volume,
-    open_interest: a.open_interest,
+    total_size: i.total_size ?? 0,
+    volume: i.volume ?? 0,
+    open_interest: i.open_interest ?? 0,
     volume_oi_ratio: Number.isFinite(volOiRatio) ? volOiRatio : 0,
-    has_sweep: a.has_sweep,
-    has_floor: a.has_floor,
-    has_multileg: a.has_multileg,
-    alert_rule: a.alert_rule,
+    has_sweep: i.has_sweep ?? false,
+    has_floor: i.has_floor ?? false,
+    has_multileg: i.has_multileg ?? false,
+    alert_rule: i.alert_rule,
     underlying_price: spot,
     distance_from_spot,
     distance_pct,
     is_itm,
   };
+}
+
+/** Adapter: DB row → WhaleAlert via the shared buildWhaleAlert. */
+function dbRowToWhaleAlert(
+  row: WhaleAlertRow,
+  nowMs: number,
+): WhaleAlert | null {
+  return buildWhaleAlert(
+    {
+      option_chain: row.option_chain,
+      strikeStr: row.strike,
+      type: row.type,
+      expiry: row.expiry,
+      created_at: row.created_at,
+      totalPremStr: row.total_premium,
+      askPremStr: row.total_ask_side_prem,
+      bidPremStr: row.total_bid_side_prem,
+      volOiRatioStr: row.volume_oi_ratio,
+      total_size: row.total_size,
+      volume: row.volume,
+      open_interest: row.open_interest,
+      has_sweep: row.has_sweep,
+      has_floor: row.has_floor,
+      has_multileg: row.has_multileg,
+      alert_rule: row.alert_rule,
+      underlyingPriceStr: row.underlying_price,
+      dte_at_alert: row.dte_at_alert,
+      distance_from_spot_stored: row.distance_from_spot,
+      distance_pct_stored: row.distance_pct,
+      is_itm_stored: row.is_itm,
+    },
+    nowMs,
+  );
+}
+
+/** Adapter: UW API alert → WhaleAlert via the shared buildWhaleAlert. */
+function toWhaleAlert(a: UwFlowAlert, nowMs: number): WhaleAlert | null {
+  return buildWhaleAlert(
+    {
+      option_chain: a.option_chain,
+      strikeStr: a.strike,
+      type: a.type,
+      expiry: a.expiry,
+      created_at: a.created_at,
+      totalPremStr: a.total_premium,
+      askPremStr: a.total_ask_side_prem,
+      bidPremStr: a.total_bid_side_prem,
+      volOiRatioStr: a.volume_oi_ratio,
+      total_size: a.total_size,
+      volume: a.volume,
+      open_interest: a.open_interest,
+      has_sweep: a.has_sweep,
+      has_floor: a.has_floor,
+      has_multileg: a.has_multileg,
+      alert_rule: a.alert_rule,
+      underlyingPriceStr: a.underlying_price,
+      // UW alerts always derive these — pass null so builder computes.
+      dte_at_alert: null,
+      distance_from_spot_stored: null,
+      distance_pct_stored: null,
+      is_itm_stored: null,
+    },
+    nowMs,
+  );
 }
 
 // ============================================================
