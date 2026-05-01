@@ -291,17 +291,23 @@ export default function PeriscopeChat() {
         </div>
 
         {/* Image upload slots */}
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          {PERISCOPE_IMAGE_KINDS.map(({ kind, label, hint }) => (
-            <ImageSlot
-              key={kind}
-              label={label}
-              hint={hint}
-              preview={images[kind]?.preview ?? null}
-              disabled={inFlight}
-              onSelect={(file) => setImage(kind, file)}
-            />
-          ))}
+        <div className="flex flex-col gap-2">
+          <p className="text-muted text-xs">
+            Drop, click, or paste (Ctrl+V) screenshots — pasted images fill
+            chart → GEX → charm in order.
+          </p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            {PERISCOPE_IMAGE_KINDS.map(({ kind, label, hint }) => (
+              <ImageSlot
+                key={kind}
+                label={label}
+                hint={hint}
+                preview={images[kind]?.preview ?? null}
+                disabled={inFlight}
+                onSelect={(file) => setImage(kind, file)}
+              />
+            ))}
+          </div>
         </div>
 
         {/* Action row */}

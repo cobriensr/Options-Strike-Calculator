@@ -297,4 +297,99 @@ describe('usePeriscopeChat', () => {
     expect(sentBody.mode).toBe('debrief');
     expect(sentBody.parentId).toBe(17);
   });
+
+  // ============================================================
+  // Clipboard paste
+  // ============================================================
+
+  /** Build a minimal ClipboardEvent with one image item. jsdom doesn't
+   * implement the constructor's `clipboardData` field, so we synthesize
+   * the shape the handler reads. */
+  function pasteImageEvent(file: File): ClipboardEvent {
+    const item = {
+      type: file.type,
+      getAsFile: () => file,
+    } as unknown as DataTransferItem;
+    const event = new Event('paste') as ClipboardEvent;
+    Object.defineProperty(event, 'clipboardData', {
+      value: { items: [item] } as unknown as DataTransfer,
+    });
+    return event;
+  }
+
+  it('paste fills the chart slot when nothing is staged', () => {
+    const { result } = renderHook(() => usePeriscopeChat());
+    const file = makeFile('pasted.png');
+    act(() => {
+      document.dispatchEvent(pasteImageEvent(file));
+    });
+    expect(result.current.images.chart?.file).toBe(file);
+    expect(result.current.images.gex).toBeUndefined();
+    expect(result.current.images.charm).toBeUndefined();
+  });
+
+  it('paste fills the next empty slot in chart→gex→charm order', () => {
+    const { result } = renderHook(() => usePeriscopeChat());
+
+    act(() => {
+      result.current.setImage('chart', makeFile('a.png'));
+    });
+    act(() => {
+      document.dispatchEvent(pasteImageEvent(makeFile('b.png')));
+    });
+    expect(result.current.images.gex?.file.name).toBe('b.png');
+
+    act(() => {
+      document.dispatchEvent(pasteImageEvent(makeFile('c.png')));
+    });
+    expect(result.current.images.charm?.file.name).toBe('c.png');
+  });
+
+  it('paste replaces a removed slot rather than appending elsewhere', () => {
+    const { result } = renderHook(() => usePeriscopeChat());
+    act(() => {
+      result.current.setImage('chart', makeFile('a.png'));
+      result.current.setImage('gex', makeFile('b.png'));
+      result.current.setImage('charm', makeFile('c.png'));
+    });
+    act(() => {
+      result.current.setImage('gex', null); // open up the middle slot
+    });
+    act(() => {
+      document.dispatchEvent(pasteImageEvent(makeFile('replaced.png')));
+    });
+    expect(result.current.images.gex?.file.name).toBe('replaced.png');
+  });
+
+  it('paste is a silent no-op when all 3 slots are filled', () => {
+    const { result } = renderHook(() => usePeriscopeChat());
+    act(() => {
+      result.current.setImage('chart', makeFile('a.png'));
+      result.current.setImage('gex', makeFile('b.png'));
+      result.current.setImage('charm', makeFile('c.png'));
+    });
+    const before = mockCreateObjectURL.mock.calls.length;
+    act(() => {
+      document.dispatchEvent(pasteImageEvent(makeFile('extra.png')));
+    });
+    // No new createObjectURL call → setImage was not invoked.
+    expect(mockCreateObjectURL.mock.calls.length).toBe(before);
+    expect(result.current.images.chart?.file.name).toBe('a.png');
+  });
+
+  it('paste of non-image clipboard content is ignored', () => {
+    const { result } = renderHook(() => usePeriscopeChat());
+    const textItem = {
+      type: 'text/plain',
+      getAsFile: () => null,
+    } as unknown as DataTransferItem;
+    const event = new Event('paste') as ClipboardEvent;
+    Object.defineProperty(event, 'clipboardData', {
+      value: { items: [textItem] } as unknown as DataTransfer,
+    });
+    act(() => {
+      document.dispatchEvent(event);
+    });
+    expect(result.current.images.chart).toBeUndefined();
+  });
 });

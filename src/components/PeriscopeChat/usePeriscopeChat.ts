@@ -33,6 +33,19 @@ const ACCEPTED_MEDIA_TYPES: readonly PeriscopeImageMediaType[] = [
   'image/webp',
 ];
 
+/**
+ * Order in which clipboard-pasted images fill the slots. Matches the
+ * user's typical capture sequence: take a Periscope chart screenshot
+ * first, then the GEX heat map, then the charm heat map. Paste fills
+ * the FIRST empty slot in this order, so removing a slot and pasting
+ * replaces it (rather than appending to the end).
+ */
+const PASTE_FILL_ORDER: readonly PeriscopeImageKind[] = [
+  'chart',
+  'gex',
+  'charm',
+];
+
 /** Read a `File` as a base64 string (no `data:` prefix). */
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -159,6 +172,32 @@ export function usePeriscopeChat(): UsePeriscopeChatResult {
     },
     [],
   );
+
+  // Document-level paste listener — mirrors the pattern in
+  // src/hooks/useImageUpload.ts. Picks the first image in the clipboard
+  // payload and routes it to the next empty slot in PASTE_FILL_ORDER.
+  // Non-image clipboard content is ignored (text paste into a real
+  // textarea continues to work normally).
+  //
+  // We resolve the next empty slot from `imagesRef.current` rather
+  // than a captured `images` value so the handler stays referentially
+  // stable across renders without missing fast successive pastes.
+  useEffect(() => {
+    function handlePaste(e: ClipboardEvent) {
+      const items = Array.from(e.clipboardData?.items ?? []);
+      const imageItem = items.find((it) => it.type.startsWith('image/'));
+      if (!imageItem) return;
+      const file = imageItem.getAsFile();
+      if (!file) return;
+      const current = imagesRef.current;
+      const targetKind = PASTE_FILL_ORDER.find((k) => current[k] == null);
+      if (!targetKind) return; // all 3 slots full — silent no-op
+      e.preventDefault();
+      setImage(targetKind, file);
+    }
+    document.addEventListener('paste', handlePaste);
+    return () => document.removeEventListener('paste', handlePaste);
+  }, [setImage]);
 
   const reset = useCallback(() => {
     // Same purity rule as setImage: revoke imperatively, then setImages({}).
