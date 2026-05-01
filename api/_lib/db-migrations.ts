@@ -2933,4 +2933,34 @@ export const MIGRATIONS: Migration[] = [
       sql`ALTER TABLE gamma_squeeze_events DROP COLUMN IF EXISTS precision_stack_pass`,
     ],
   },
+  {
+    id: 106,
+    description:
+      'Backfill periscope_analyses.trading_date from the prose heading. ' +
+      'Rows captured before the chart_date extraction landed got stamped ' +
+      'with the capture-day date instead of the actual trading date the ' +
+      'chart was for — back-reads of yesterday tagged with today, etc. ' +
+      'Every periscope read prose starts with a `# YYYY-MM-DD ...` heading ' +
+      'Claude writes from the chart label, so we parse that and overwrite ' +
+      'trading_date for any row whose stored date disagrees with the prose. ' +
+      'Idempotent: only rows where the parsed date differs are touched, so ' +
+      'fresh DBs and re-runs are no-ops. Skips rows whose prose lacks the ' +
+      "heading (defensive — a malformed Claude response shouldn't crash " +
+      'the migration).',
+    statements: (sql) => [
+      sql`
+        UPDATE periscope_analyses
+        SET trading_date = m.matched_date
+        FROM (
+          SELECT id,
+                 (regexp_match(prose_text, '^#\s+(\d{4}-\d{2}-\d{2})'))[1]::date
+                   AS matched_date
+          FROM periscope_analyses
+          WHERE prose_text ~ '^#\s+\d{4}-\d{2}-\d{2}'
+        ) AS m
+        WHERE periscope_analyses.id = m.id
+          AND periscope_analyses.trading_date <> m.matched_date
+      `,
+    ],
+  },
 ];
