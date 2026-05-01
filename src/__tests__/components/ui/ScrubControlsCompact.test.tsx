@@ -71,9 +71,7 @@ describe('ScrubControlsCompact', () => {
     expect(
       screen.getByRole('button', { name: 'Previous snapshot' }),
     ).toBeEnabled();
-    expect(
-      screen.getByRole('button', { name: 'Next snapshot' }),
-    ).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Next snapshot' })).toBeEnabled();
   });
 
   it('forwards prev/next clicks to handlers', async () => {
