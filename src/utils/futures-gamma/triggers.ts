@@ -43,10 +43,10 @@
  */
 
 import {
-  DRIFT_OVERRIDE_CONSISTENCY_MIN,
   LEVEL_PROXIMITY_ES_POINTS,
   RULE_ARMED_BAND_ES,
 } from './playbook.js';
+import { evaluateDriftOverride } from './flow-signals.js';
 import type {
   EsLevel,
   GexRegime,
@@ -428,12 +428,11 @@ export function evaluateTriggers(input: EvaluateTriggersInput): TriggerState[] {
   // mean-revert rule is structurally wrong and `rulesForRegime` drops it.
   // Mirror that here so the trigger panel (and the push-alert cron that
   // reads `ACTIVE` rows) can't fire for a trade the UI refuses to show.
-  const trend = flowSignals?.priceTrend;
-  const driftConsistent =
-    trend != null && trend.consistency >= DRIFT_OVERRIDE_CONSISTENCY_MIN;
-  const driftUp = driftConsistent && trend != null && trend.direction === 'up';
-  const driftDown =
-    driftConsistent && trend != null && trend.direction === 'down';
+  // The drift predicate is shared with `playbook.ts` and `tradeBias.ts`
+  // via `evaluateDriftOverride` so the three sites can't drift apart
+  // again — the previous inline copies briefly disagreed about the
+  // consistency floor and produced a UI/cron divergence.
+  const drift = evaluateDriftOverride(flowSignals);
 
   return [
     evaluateWallProximity({
@@ -442,7 +441,7 @@ export function evaluateTriggers(input: EvaluateTriggersInput): TriggerState[] {
       esPrice,
       wall: callWall,
       walLabel: 'Call wall',
-      driftAgainst: driftUp,
+      driftAgainst: drift.up,
       driftDirectionLabel: 'up',
       fadeOrLift: 'fade',
     }),
@@ -452,7 +451,7 @@ export function evaluateTriggers(input: EvaluateTriggersInput): TriggerState[] {
       esPrice,
       wall: putWall,
       walLabel: 'Put wall',
-      driftAgainst: driftDown,
+      driftAgainst: drift.down,
       driftDirectionLabel: 'down',
       fadeOrLift: 'lift',
     }),

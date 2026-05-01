@@ -21,6 +21,7 @@
 
 import { getCTTime } from '../timezone.js';
 import { esTickRound } from './basis.js';
+import { evaluateDriftOverride } from './flow-signals.js';
 import type {
   GexRegime,
   PlaybookFlowSignals,
@@ -264,6 +265,174 @@ export function convictionFromCls(
  */
 export const DRIFT_OVERRIDE_CONSISTENCY_MIN = 0.55;
 
+// ── Rule builders ──────────────────────────────────────────────────────
+//
+// Three builders produce the +GEX fade-call, +GEX lift-put, and −GEX
+// break-call/break-put rules respectively. The two +GEX builders mirror
+// each other (sign of the stop offset, target placement guard,
+// sizingNote wording), so a single fade/lift helper would have to carry
+// four direction-specific strings and lose readability. Two narrow
+// builders end up shorter than one over-parameterized one.
+
+/**
+ * +GEX fade rule: SHORT into the overhead call wall, target zero-gamma
+ * pull-in. Stop = one ES tick ABOVE the wall (the INVALIDATION price);
+ * zero-gamma is the TARGET, never the stop.
+ *
+ * Target-placement guard: ZG is emitted as target ONLY when it sits
+ * BELOW the call wall (the valid mean-revert geometry). When ZG is at or
+ * above the wall the structural thesis's magnet isn't below — leave
+ * target null so the trader trails stops manually rather than placing
+ * the target above the entry on a SHORT (mathematically inverted).
+ */
+function buildFadeCallRule(
+  levels: RuleLevels,
+  esPrice: number | null,
+  flowSignals: PlaybookFlowSignals | undefined,
+): PlaybookRule | null {
+  if (levels.esCallWall === null) return null;
+  const stop = esTickRound(levels.esCallWall + ES_TICK_SIZE);
+  const validTarget =
+    levels.esZeroGamma !== null && levels.esZeroGamma < levels.esCallWall
+      ? levels.esZeroGamma
+      : null;
+  return finalize(
+    {
+      id: 'pos-fade-call-wall',
+      condition: `Fade rallies into call wall at ${fmt(levels.esCallWall)} · stop ${fmt(stop)} (one tick above the wall)`,
+      direction: 'SHORT',
+      entryEs: levels.esCallWall,
+      targetEs: validTarget,
+      stopEs: stop,
+      sizingNote:
+        validTarget === null
+          ? 'Tight stops — one ES tick above the wall invalidates the fade. Zero-gamma sits above the wall today; trail stops instead of targeting a fixed level.'
+          : 'Tight stops — one ES tick above the wall invalidates the fade.',
+    },
+    esPrice,
+    'fade-lift',
+    convictionFromCls(flowSignals?.upsideTargetCls ?? null),
+  );
+}
+
+/**
+ * +GEX lift rule: LONG dips into the put wall, target zero-gamma reclaim.
+ * Stop = one ES tick BELOW the wall. Target-placement guard mirrors the
+ * fade rule (ZG must sit ABOVE the put wall to be a valid target).
+ */
+function buildLiftPutRule(
+  levels: RuleLevels,
+  esPrice: number | null,
+  flowSignals: PlaybookFlowSignals | undefined,
+): PlaybookRule | null {
+  if (levels.esPutWall === null) return null;
+  const stop = esTickRound(levels.esPutWall - ES_TICK_SIZE);
+  const validTarget =
+    levels.esZeroGamma !== null && levels.esZeroGamma > levels.esPutWall
+      ? levels.esZeroGamma
+      : null;
+  return finalize(
+    {
+      id: 'pos-lift-put-wall',
+      condition: `Buy dips into put wall at ${fmt(levels.esPutWall)} · stop ${fmt(stop)} (one tick below the wall)`,
+      direction: 'LONG',
+      entryEs: levels.esPutWall,
+      targetEs: validTarget,
+      stopEs: stop,
+      sizingNote:
+        validTarget === null
+          ? 'Tight stops — one ES tick below the wall invalidates the lift. Zero-gamma sits below the wall today; trail stops instead of targeting a fixed level.'
+          : 'Tight stops — one ES tick below the wall invalidates the lift.',
+    },
+    esPrice,
+    'fade-lift',
+    convictionFromCls(flowSignals?.downsideTargetCls ?? null),
+  );
+}
+
+/**
+ * −GEX breakout rule for one wall direction:
+ *
+ *   - direction = 'up'   → LONG breakout above call wall, stop one tick
+ *                          BELOW (`callWall − ES_TICK_SIZE`).
+ *   - direction = 'down' → SHORT breakdown below put wall, stop one tick
+ *                          ABOVE (`putWall + ES_TICK_SIZE`).
+ *
+ * Returns null when the keyed wall is missing.
+ */
+function buildBreakRule(
+  direction: 'up' | 'down',
+  levels: RuleLevels,
+  esPrice: number | null,
+): PlaybookRule | null {
+  const wall = direction === 'up' ? levels.esCallWall : levels.esPutWall;
+  if (wall === null) return null;
+  const isUp = direction === 'up';
+  const stop = esTickRound(isUp ? wall - ES_TICK_SIZE : wall + ES_TICK_SIZE);
+  const wallLabel = isUp ? 'call wall' : 'put wall';
+  const action = isUp ? 'breakouts above' : 'breakdowns below';
+  const stopSide = isUp ? 'below' : 'above';
+  return finalize(
+    {
+      id: isUp ? 'neg-break-call-wall' : 'neg-break-put-wall',
+      condition: `Trade ${action} ${wallLabel} at ${fmt(wall)} · stop ${fmt(stop)} (one tick ${stopSide} the wall)`,
+      direction: isUp ? 'LONG' : 'SHORT',
+      entryEs: wall,
+      targetEs: null,
+      stopEs: stop,
+      sizingNote: 'Wider stops — negative gamma amplifies both directions.',
+    },
+    esPrice,
+    'breakout',
+  );
+}
+
+/**
+ * +GEX charm-drift rule (EITHER direction): price grinds toward the
+ * highest |GEX| strike (the gamma pin) where dealer hedging
+ * concentrates as OTM 0DTE options decay to zero delta. This is NOT
+ * max-pain (theoretical OI-payout minimum); when they diverge, gamma-pin
+ * is the mechanistic target because hedging flow follows gamma, not
+ * payout math.
+ *
+ * Skip when:
+ *   - the gamma pin is within ACTIVE proximity of current price (the
+ *     pin IS spot — "drift to here" is a no-op), or
+ *   - the gamma pin coincides with either wall (the fade-call or
+ *     lift-put rule already covers that exact level with a directional
+ *     thesis; an EITHER row at the same target confuses the trader).
+ */
+function buildCharmDriftRule(
+  phase: SessionPhase,
+  levels: RuleLevels,
+  esPrice: number | null,
+): PlaybookRule | null {
+  if (phase !== 'AFTERNOON' && phase !== 'POWER') return null;
+  if (levels.esGammaPin === null) return null;
+  const gammaPinCoincidesWithWall =
+    (levels.esCallWall !== null &&
+      Math.abs(levels.esGammaPin - levels.esCallWall) < ES_TICK_SIZE) ||
+    (levels.esPutWall !== null &&
+      Math.abs(levels.esGammaPin - levels.esPutWall) < ES_TICK_SIZE);
+  const gammaPinAtSpot =
+    esPrice !== null &&
+    Math.abs(levels.esGammaPin - esPrice) < RULE_ACTIVE_BAND_ES;
+  if (gammaPinCoincidesWithWall || gammaPinAtSpot) return null;
+  return finalize(
+    {
+      id: 'pos-charm-drift',
+      condition: `Charm drift toward gamma pin at ${fmt(levels.esGammaPin)}`,
+      direction: 'EITHER',
+      entryEs: null,
+      targetEs: levels.esGammaPin,
+      stopEs: null,
+      sizingNote: 'Enter between 13:30–14:30 CT; exit before 15:30 CT.',
+    },
+    esPrice,
+    'either',
+  );
+}
+
 /**
  * Generate 1-3 concrete rules for the current (regime, phase) pair.
  *
@@ -294,200 +463,34 @@ export function rulesForRegime(
   // trust SPX-derived levels.
   if (phase === 'PRE_OPEN' || phase === 'POST_CLOSE') return [];
 
-  const rules: PlaybookRule[] = [];
-
   // Drift-override gates: when the tape is grinding consistently in one
   // direction despite positive GEX dampening, the opposing fade/lift rule
-  // should be suppressed — the structural dampener isn't winning today.
-  // Requires both a non-flat direction AND consistency ≥ threshold so
-  // chop doesn't fire the override.
-  const drift = flowSignals?.priceTrend;
-  const driftConsistent =
-    drift !== null &&
-    drift !== undefined &&
-    drift.consistency >= DRIFT_OVERRIDE_CONSISTENCY_MIN;
-  const driftUp = driftConsistent && drift.direction === 'up';
-  const driftDown = driftConsistent && drift.direction === 'down';
+  // is suppressed — the structural dampener isn't winning today. The
+  // override predicate is shared with `triggers.ts` and `tradeBias.ts`
+  // via the `evaluateDriftOverride` helper to keep the three call sites
+  // in lockstep.
+  const drift = evaluateDriftOverride(flowSignals);
 
   if (regime === 'POSITIVE') {
-    // Fade moves into the overhead wall; target a mean-revert pull-in.
-    //
-    // Stop = one ES tick ABOVE the wall (i.e. wall + ES_TICK_SIZE). The
-    // stop is the INVALIDATION price — beyond it the structural thesis
-    // has failed. Zero-gamma is the TARGET of the trade, not the stop.
-    //
-    // Target-placement guard: the rule emits zeroGamma as target ONLY when
-    // ZG sits below the call wall (the valid mean-revert geometry). When
-    // ZG is above the call wall (rare — happens when cumulative netGamma
-    // crosses zero above the peak-gamma strike) the structural thesis's
-    // magnet isn't below; we leave target null and the trader trails
-    // stops manually. Picking ZG anyway would place the "target" above
-    // the entry on a SHORT — a mathematically inverted trade.
-    //
-    // Drift-override: `driftUp` suppresses this rule — fading calls while
-    // the tape melts up is the classic +GEX trap.
-    if (levels.esCallWall !== null && !driftUp) {
-      const stop = esTickRound(levels.esCallWall + ES_TICK_SIZE);
-      // Strict less-than: when ZG === callWall exactly, the target would
-      // be AT the entry, making the trade's reward/risk undefined. Treat
-      // equality as "no valid target" and let the trader trail stops.
-      const validTarget =
-        levels.esZeroGamma !== null && levels.esZeroGamma < levels.esCallWall
-          ? levels.esZeroGamma
-          : null;
-      rules.push(
-        finalize(
-          {
-            id: 'pos-fade-call-wall',
-            condition: `Fade rallies into call wall at ${fmt(levels.esCallWall)} · stop ${fmt(stop)} (one tick above the wall)`,
-            direction: 'SHORT',
-            entryEs: levels.esCallWall,
-            targetEs: validTarget,
-            stopEs: stop,
-            sizingNote:
-              validTarget === null
-                ? 'Tight stops — one ES tick above the wall invalidates the fade. Zero-gamma sits above the wall today; trail stops instead of targeting a fixed level.'
-                : 'Tight stops — one ES tick above the wall invalidates the fade.',
-          },
-          esPrice,
-          'fade-lift',
-          convictionFromCls(flowSignals?.upsideTargetCls ?? null),
-        ),
-      );
-    }
-
-    // Lift support at the put wall — mirror fade from below.
-    //
-    // Stop = one ES tick BELOW the wall (put wall − ES_TICK_SIZE).
-    //
-    // Target-placement guard mirrors the fade rule: ZG must sit ABOVE the
-    // put wall to be a valid lift target. When ZG is below the put wall
-    // (unusual) leave target null so the trader trails rather than
-    // targeting a price below entry on a LONG.
-    //
-    // Drift-override: `driftDown` suppresses this rule — buying put-wall
-    // dips while the tape grinds lower is the mirror +GEX trap.
-    if (levels.esPutWall !== null && !driftDown) {
-      const stop = esTickRound(levels.esPutWall - ES_TICK_SIZE);
-      const validTarget =
-        levels.esZeroGamma !== null && levels.esZeroGamma > levels.esPutWall
-          ? levels.esZeroGamma
-          : null;
-      rules.push(
-        finalize(
-          {
-            id: 'pos-lift-put-wall',
-            condition: `Buy dips into put wall at ${fmt(levels.esPutWall)} · stop ${fmt(stop)} (one tick below the wall)`,
-            direction: 'LONG',
-            entryEs: levels.esPutWall,
-            targetEs: validTarget,
-            stopEs: stop,
-            sizingNote:
-              validTarget === null
-                ? 'Tight stops — one ES tick below the wall invalidates the lift. Zero-gamma sits below the wall today; trail stops instead of targeting a fixed level.'
-                : 'Tight stops — one ES tick below the wall invalidates the lift.',
-          },
-          esPrice,
-          'fade-lift',
-          convictionFromCls(flowSignals?.downsideTargetCls ?? null),
-        ),
-      );
-    }
-
-    // Charm-drift window: price grinds toward the highest |GEX| strike
-    // (the "gamma pin") — where dealer hedging physically concentrates as
-    // OTM 0DTE options decay to zero delta. This is NOT max-pain
-    // (which is a theoretical OI-payout minimum). They often converge but
-    // when they diverge, gamma-pin is the mechanistic target because
-    // dealer hedging flow follows gamma, not payout math.
-    //
-    // Skip the rule when:
-    //   - the gamma pin is within ACTIVE proximity of current price (the
-    //     pin IS spot — "drift to here" is a degenerate no-op trade), or
-    //   - the gamma pin coincides with either wall (the fade-call or
-    //     lift-put rule already covers that exact level with a directional
-    //     thesis — emitting a second EITHER rule duplicates the target
-    //     and confuses the trader).
-    const gammaPinCoincidesWithWall =
-      levels.esGammaPin !== null &&
-      ((levels.esCallWall !== null &&
-        Math.abs(levels.esGammaPin - levels.esCallWall) < ES_TICK_SIZE) ||
-        (levels.esPutWall !== null &&
-          Math.abs(levels.esGammaPin - levels.esPutWall) < ES_TICK_SIZE));
-    const gammaPinAtSpot =
-      levels.esGammaPin !== null &&
-      esPrice !== null &&
-      Math.abs(levels.esGammaPin - esPrice) < RULE_ACTIVE_BAND_ES;
-    if (
-      (phase === 'AFTERNOON' || phase === 'POWER') &&
-      levels.esGammaPin !== null &&
-      !gammaPinCoincidesWithWall &&
-      !gammaPinAtSpot
-    ) {
-      rules.push(
-        finalize(
-          {
-            id: 'pos-charm-drift',
-            condition: `Charm drift toward gamma pin at ${fmt(levels.esGammaPin)}`,
-            direction: 'EITHER',
-            entryEs: null,
-            targetEs: levels.esGammaPin,
-            stopEs: null,
-            sizingNote: 'Enter between 13:30–14:30 CT; exit before 15:30 CT.',
-          },
-          esPrice,
-          'either',
-        ),
-      );
-    }
-  } else if (regime === 'NEGATIVE') {
-    // Breakouts of the walls in negative regimes — trade direction, not fades.
-    //
-    // Stop = one ES tick on the "inside" of the wall — if price pulls back
-    // through the wall the breakout has failed. LONG breakout stops BELOW
-    // the wall; SHORT breakdown stops ABOVE. Zero-gamma is NOT a valid
-    // stop: the same bug as the +GEX rules.
-    if (levels.esCallWall !== null) {
-      const stop = esTickRound(levels.esCallWall - ES_TICK_SIZE);
-      rules.push(
-        finalize(
-          {
-            id: 'neg-break-call-wall',
-            condition: `Trade breakouts above call wall at ${fmt(levels.esCallWall)} · stop ${fmt(stop)} (one tick below the wall)`,
-            direction: 'LONG',
-            entryEs: levels.esCallWall,
-            targetEs: null,
-            stopEs: stop,
-            sizingNote:
-              'Wider stops — negative gamma amplifies both directions.',
-          },
-          esPrice,
-          'breakout',
-        ),
-      );
-    }
-    if (levels.esPutWall !== null) {
-      const stop = esTickRound(levels.esPutWall + ES_TICK_SIZE);
-      rules.push(
-        finalize(
-          {
-            id: 'neg-break-put-wall',
-            condition: `Trade breakdowns below put wall at ${fmt(levels.esPutWall)} · stop ${fmt(stop)} (one tick above the wall)`,
-            direction: 'SHORT',
-            entryEs: levels.esPutWall,
-            targetEs: null,
-            stopEs: stop,
-            sizingNote:
-              'Wider stops — negative gamma amplifies both directions.',
-          },
-          esPrice,
-          'breakout',
-        ),
-      );
-    }
+    const candidates: Array<PlaybookRule | null> = [
+      // Fade calls suppressed when tape melts up (the classic +GEX trap).
+      drift.up ? null : buildFadeCallRule(levels, esPrice, flowSignals),
+      // Buy put-wall dips suppressed when tape grinds lower (mirror trap).
+      drift.down ? null : buildLiftPutRule(levels, esPrice, flowSignals),
+      buildCharmDriftRule(phase, levels, esPrice),
+    ];
+    return candidates.filter((r): r is PlaybookRule => r !== null);
   }
 
-  return rules;
+  if (regime === 'NEGATIVE') {
+    const candidates: Array<PlaybookRule | null> = [
+      buildBreakRule('up', levels, esPrice),
+      buildBreakRule('down', levels, esPrice),
+    ];
+    return candidates.filter((r): r is PlaybookRule => r !== null);
+  }
+
+  return [];
 }
 
 // ── Sizing guidance ────────────────────────────────────────────────────

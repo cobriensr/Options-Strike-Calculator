@@ -27,10 +27,8 @@
  * trader isn't surprised by the lack of a call.
  */
 
-import {
-  DRIFT_OVERRIDE_CONSISTENCY_MIN,
-  RULE_ACTIVE_BAND_ES,
-} from './playbook.js';
+import { RULE_ACTIVE_BAND_ES } from './playbook.js';
+import { evaluateDriftOverride } from './flow-signals.js';
 import type {
   EsLevel,
   GexRegime,
@@ -133,12 +131,39 @@ function wallFlowAligned(
 }
 
 function driftIsActive(flow: PlaybookFlowSignals): 'up' | 'down' | null {
-  const trend = flow.priceTrend;
-  if (!trend || trend.consistency < DRIFT_OVERRIDE_CONSISTENCY_MIN) return null;
-  if (trend.direction === 'up' || trend.direction === 'down') {
-    return trend.direction;
-  }
+  // Shared with `triggers.ts` and `playbook.ts` via `evaluateDriftOverride`
+  // so the three modules agree on what "drift override is firing" means.
+  const drift = evaluateDriftOverride(flow);
+  if (drift.up) return 'up';
+  if (drift.down) return 'down';
   return null;
+}
+
+/**
+ * Compose a directional bias for one −GEX break setup. Centralizes the
+ * `wallFlowAligned + 'strong' / 'mild' + reason` shape that previously
+ * repeated four times in `deriveTradeBias`'s NEGATIVE-regime branch.
+ *
+ * - `direction` — 'LONG' for the call-wall break, 'SHORT' for the put-wall.
+ * - `entryEs`   — the rule's entry level, propagated to the bias output.
+ * - `reasonOnAligned` / `reasonOnUnaligned` — human-readable strings
+ *   forwarded into the bias's `.reason` field. Pulled out as parameters
+ *   because the four sites used four different copy variants.
+ */
+function buildBreakBias(
+  direction: 'LONG' | 'SHORT',
+  entryEs: number | null,
+  flow: PlaybookFlowSignals,
+  reasonOnAligned: string,
+  reasonOnUnaligned: string,
+): TradeBias {
+  const aligned = wallFlowAligned(direction, flow);
+  return directional(
+    direction,
+    aligned === true ? 'strong' : 'mild',
+    entryEs,
+    aligned === true ? reasonOnAligned : reasonOnUnaligned,
+  );
 }
 
 /**
@@ -235,39 +260,38 @@ export function deriveTradeBias(input: TradeBiasInput): TradeBias {
   const activeBreakPut = activeRules.find((r) => r.id === 'neg-break-put-wall');
 
   if (activeBreakCall && callWallStatus !== 'BROKEN') {
-    const aligned = wallFlowAligned('LONG', flowSignals);
-    return directional(
+    return buildBreakBias(
       'LONG',
-      aligned === true ? 'strong' : 'mild',
       activeBreakCall.entryEs,
-      aligned === true
-        ? 'break-call · flow aligned'
-        : 'break-call continuation',
+      flowSignals,
+      'break-call · flow aligned',
+      'break-call continuation',
     );
   }
   if (activeBreakPut && putWallStatus !== 'BROKEN') {
-    const aligned = wallFlowAligned('SHORT', flowSignals);
-    return directional(
+    return buildBreakBias(
       'SHORT',
-      aligned === true ? 'strong' : 'mild',
       activeBreakPut.entryEs,
-      aligned === true ? 'break-put · flow aligned' : 'break-put continuation',
+      flowSignals,
+      'break-put · flow aligned',
+      'break-put continuation',
     );
   }
 
-  // Call wall already broken — the upside trend is live, trader
-  // missed the clean entry. Inherit the LONG bias with a "wait
-  // pullback" reason so they know there's no instant action.
+  // Call wall already broken — the upside trend is live, trader missed
+  // the clean entry. Inherit the LONG bias with a "wait pullback" reason
+  // so they know there's no instant action. Mirror block below for the
+  // put-wall side.
   if (callWallStatus === 'BROKEN' && putWallStatus !== 'BROKEN') {
     // Use the break-call-wall rule for entry (even if DISTANT) so the
     // trader can see the retest level.
     const breakCall = rules.find((r) => r.id === 'neg-break-call-wall');
     if (breakCall) {
-      const aligned = wallFlowAligned('LONG', flowSignals);
-      return directional(
+      return buildBreakBias(
         'LONG',
-        aligned === true ? 'strong' : 'mild',
         breakCall.entryEs,
+        flowSignals,
+        'break fired early · wait pullback',
         'break fired early · wait pullback',
       );
     }
@@ -275,11 +299,11 @@ export function deriveTradeBias(input: TradeBiasInput): TradeBias {
   if (putWallStatus === 'BROKEN' && callWallStatus !== 'BROKEN') {
     const breakPut = rules.find((r) => r.id === 'neg-break-put-wall');
     if (breakPut) {
-      const aligned = wallFlowAligned('SHORT', flowSignals);
-      return directional(
+      return buildBreakBias(
         'SHORT',
-        aligned === true ? 'strong' : 'mild',
         breakPut.entryEs,
+        flowSignals,
+        'break fired early · wait pullback',
         'break fired early · wait pullback',
       );
     }
