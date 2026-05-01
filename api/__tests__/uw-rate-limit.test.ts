@@ -27,10 +27,7 @@ vi.mock('../_lib/logger.js', () => ({
   default: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
-import {
-  acquireUWSlot,
-  UW_PER_MINUTE_CAP,
-} from '../_lib/uw-rate-limit.js';
+import { acquireUWSlot, UW_PER_MINUTE_CAP } from '../_lib/uw-rate-limit.js';
 
 describe('uw-rate-limit', () => {
   const originalEnv = process.env;

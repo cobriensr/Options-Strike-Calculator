@@ -8,11 +8,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import type {
-  ActiveSqueeze,
-  GammaSqueezeSide,
-  TapeAgreement,
-} from './types';
+import type { ActiveSqueeze, GammaSqueezeSide, TapeAgreement } from './types';
 
 function fmtPremium(x: number | null): string {
   if (x == null || !Number.isFinite(x)) return '—';
@@ -24,7 +20,10 @@ function fmtPremium(x: number | null): string {
   return `${sign}$${abs.toFixed(0)}`;
 }
 
-function tapeAgreementTooltip(side: GammaSqueezeSide, t: TapeAgreement): string {
+function tapeAgreementTooltip(
+  side: GammaSqueezeSide,
+  t: TapeAgreement,
+): string {
   const expected =
     side === 'call'
       ? 'For a CALL alert, each signal agrees when NCP > NPP (call premium dominating).'

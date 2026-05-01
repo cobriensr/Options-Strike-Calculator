@@ -86,10 +86,11 @@ const detailFixture = {
 function setRoutes(
   routes: Record<
     string,
-    { status?: number; body: unknown } | ((init?: RequestInit) => {
-      status?: number;
-      body: unknown;
-    })
+    | { status?: number; body: unknown }
+    | ((init?: RequestInit) => {
+        status?: number;
+        body: unknown;
+      })
   >,
 ) {
   globalThis.fetch = vi.fn(async (url: RequestInfo, init?: RequestInit) => {
@@ -424,7 +425,9 @@ describe('<PeriscopeChatAnnotations />', () => {
           regime_tag: string;
         };
         expect(body.regime_tag).toBe('pin');
-        return { body: { id: 1, calibration_quality: null, regime_tag: 'pin' } };
+        return {
+          body: { id: 1, calibration_quality: null, regime_tag: 'pin' },
+        };
       },
     });
     const onSaved = vi.fn();
@@ -570,4 +573,3 @@ describe('<PeriscopeChatAnnotations />', () => {
     expect(stars[4]!.textContent).toBe('☆');
   });
 });
-

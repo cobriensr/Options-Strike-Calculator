@@ -1430,10 +1430,7 @@ describe('fetch-strike-iv handler', () => {
       side: 'call' as const,
       expiry: '2026-04-25',
       ts: new Date(NOW_MS - (34 - i) * 60_000).toISOString(),
-      volume:
-        i < 20
-          ? 100 * (i + 1)
-          : 100 * 20 + 700 * (i - 19),
+      volume: i < 20 ? 100 * (i + 1) : 100 * 20 + 700 * (i - 19),
       oi: 1000,
       spot: 209.5 + (i / 34) * 1.0,
     }));
@@ -1451,7 +1448,7 @@ describe('fetch-strike-iv handler', () => {
     // Morning IV trajectory: 10 minutes of varied IV/vol deltas so
     // computeIvMorningVolCorr returns a finite correlation.
     const ivSteps = [1, 3, 2, 5, 4, 6, 2, 7, 3, 4];
-    let iv = 0.20;
+    let iv = 0.2;
     let vol = 100;
     const ivRows = ivSteps.map((step, idx) => {
       const row = {

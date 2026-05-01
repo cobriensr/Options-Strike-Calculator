@@ -114,8 +114,7 @@ function SummaryBanner({ scatter }: { scatter: ScatterPoint[] }) {
     return { n, mae, med, within5 };
   }, [scatter]);
   if (!stats) return null;
-  const biasColor =
-    Math.abs(stats.med) > 5 ? theme.red : theme.textTertiary;
+  const biasColor = Math.abs(stats.med) > 5 ? theme.red : theme.textTertiary;
   return (
     <div className="border-edge flex flex-wrap gap-x-5 gap-y-1 rounded border px-3 py-2 font-mono text-[11px]">
       <div>
@@ -207,8 +206,7 @@ function RegimeAnalysis({ scatter }: { scatter: ScatterPoint[] }) {
         const n = residuals.length;
         const med = median(residuals);
         const mae = residuals.reduce((s, r) => s + Math.abs(r), 0) / n;
-        const within5 =
-          residuals.filter((r) => Math.abs(r) <= 5).length / n;
+        const within5 = residuals.filter((r) => Math.abs(r) <= 5).length / n;
         return {
           regime,
           n,

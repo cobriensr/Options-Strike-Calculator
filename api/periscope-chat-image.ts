@@ -21,10 +21,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import {
-  guardOwnerEndpoint,
-  rejectIfRateLimited,
-} from './_lib/api-helpers.js';
+import { guardOwnerEndpoint, rejectIfRateLimited } from './_lib/api-helpers.js';
 import { getDb } from './_lib/db.js';
 import logger from './_lib/logger.js';
 import { Sentry, metrics } from './_lib/sentry.js';
@@ -84,9 +81,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
   if (!kindStr || !isValidKind(kindStr)) {
     done({ status: 400 });
-    return res
-      .status(400)
-      .json({ error: 'Provide ?kind=chart|gex|charm' });
+    return res.status(400).json({ error: 'Provide ?kind=chart|gex|charm' });
   }
 
   const token = process.env.BLOB_READ_WRITE_TOKEN;

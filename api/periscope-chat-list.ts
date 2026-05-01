@@ -119,7 +119,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         `;
 
     const items = rows.map(parseSummaryRow);
-    const nextBefore = items.length === limit ? items.at(-1)?.id ?? null : null;
+    const nextBefore =
+      items.length === limit ? (items.at(-1)?.id ?? null) : null;
 
     done({ status: 200 });
     return res.status(200).json({ items, nextBefore });

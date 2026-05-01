@@ -169,10 +169,10 @@ describe('uw-concurrency', () => {
     mockZrem.mockRejectedValueOnce(new Error('redis down'));
 
     // Should not throw — release is best-effort
-    await expect(releaseConcurrencySlot('slot-uuid-123')).resolves.not.toThrow();
+    await expect(
+      releaseConcurrencySlot('slot-uuid-123'),
+    ).resolves.not.toThrow();
 
-    expect(mockIncrement).toHaveBeenCalledWith(
-      'uw.concurrency.release_error',
-    );
+    expect(mockIncrement).toHaveBeenCalledWith('uw.concurrency.release_error');
   });
 });

@@ -88,7 +88,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (clearQuality && calibration_quality !== undefined) {
     done({ status: 400 });
     return res.status(400).json({
-      error: 'Cannot both set and clear calibration_quality in the same request.',
+      error:
+        'Cannot both set and clear calibration_quality in the same request.',
     });
   }
 

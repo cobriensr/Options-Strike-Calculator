@@ -137,10 +137,7 @@ export async function acquireConcurrencySlot(): Promise<string> {
         [slotId, String(now), String(expiresAt), String(UW_CONCURRENCY_CAP)],
       )) as [number, number] | null;
     } catch (err) {
-      logger.warn(
-        { err },
-        'uw-concurrency: Redis EVAL failed; failing open',
-      );
+      logger.warn({ err }, 'uw-concurrency: Redis EVAL failed; failing open');
       metrics.increment('uw.concurrency.redis_error');
       Sentry.captureException(err);
       return ''; // fail open

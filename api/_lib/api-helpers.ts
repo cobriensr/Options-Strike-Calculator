@@ -518,7 +518,9 @@ function classifyRetryDelay(msg: string, attempt: number): number | null {
     return 1000 * (attempt + 1);
   }
 
-  if (/timeout|ECONNREFUSED|ECONNRESET|fetch failed|socket hang up/i.test(msg)) {
+  if (
+    /timeout|ECONNREFUSED|ECONNRESET|fetch failed|socket hang up/i.test(msg)
+  ) {
     return 1000 * (attempt + 1);
   }
 
