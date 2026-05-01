@@ -48,12 +48,12 @@
  * Environment: CRON_SECRET (no UW_API_KEY needed — DB-only).
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { Sentry, metrics } from '../_lib/sentry.js';
-import logger from '../_lib/logger.js';
-import { cronGuard } from '../_lib/api-helpers.js';
-import { reportCronRun } from '../_lib/axiom.js';
+import { metrics } from '../_lib/sentry.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -167,13 +167,10 @@ async function enrichRow(row: PendingRow): Promise<EnrichOutcome> {
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res, { requireApiKey: false });
-  if (!guard) return;
-
-  const startTime = Date.now();
-
-  try {
+export default withCronInstrumentation(
+  'enrich-vega-spike-returns',
+  async (ctx): Promise<CronResult> => {
+    const { logger } = ctx;
     const sql = getDb();
 
     // Pending rows: fwd_return_30m still NULL, spike at least 30 min ago,
@@ -214,39 +211,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    const durationMs = Date.now() - startTime;
-
     logger.info(
       {
         pending: pending.length,
         enriched,
         skippedNoCandles,
         failed,
-        durationMs,
       },
       'enrich-vega-spike-returns completed',
     );
 
-    await reportCronRun('enrich-vega-spike-returns', {
-      status: failed > 0 ? 'partial' : 'ok',
-      pending: pending.length,
-      enriched,
-      skippedNoCandles,
-      failed,
-      durationMs,
-    });
-
-    return res.status(200).json({
-      job: 'enrich-vega-spike-returns',
-      pending: pending.length,
-      enriched,
-      skippedNoCandles,
-      durationMs,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'enrich-vega-spike-returns');
-    Sentry.captureException(err);
-    logger.error({ err }, 'enrich-vega-spike-returns error');
-    return res.status(500).json({ error: 'Internal error' });
-  }
-}
+    // Pre-wrapper response keys (pending/enriched/skippedNoCandles) move
+    // into metadata so existing toMatchObject assertions still pass.
+    return {
+      status: failed > 0 ? 'partial' : 'success',
+      metadata: {
+        pending: pending.length,
+        enriched,
+        skippedNoCandles,
+        failed,
+      },
+    };
+  },
+  { requireApiKey: false },
+);

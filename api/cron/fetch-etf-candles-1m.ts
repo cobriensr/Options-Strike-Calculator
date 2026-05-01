@@ -28,17 +28,14 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { Sentry, metrics } from '../_lib/sentry.js';
+import { metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
+import { cronJitter, uwFetch, withRetry } from '../_lib/api-helpers.js';
 import {
-  cronGuard,
-  cronJitter,
-  uwFetch,
-  withRetry,
-} from '../_lib/api-helpers.js';
-import { reportCronRun } from '../_lib/axiom.js';
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -92,16 +89,12 @@ async function storeCandles(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res);
-  if (!guard) return;
-  const { apiKey, today } = guard;
+export default withCronInstrumentation(
+  'fetch-etf-candles-1m',
+  async (ctx): Promise<CronResult> => {
+    const { apiKey, today, logger } = ctx;
+    await cronJitter();
 
-  await cronJitter();
-
-  const startTime = Date.now();
-
-  try {
     const [spyCandles, qqqCandles] = await Promise.all([
       withRetry(() =>
         uwFetch<UWCandleRow>(apiKey, `/stock/SPY/ohlc/1m?date=${today}`),
@@ -124,30 +117,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'fetch-etf-candles-1m completed',
     );
 
-    const durationMs = Date.now() - startTime;
-    await reportCronRun('fetch-etf-candles-1m', {
-      status: 'ok',
-      spy_candles: spyCandles.length,
-      spy_stored: spyResult.stored,
-      spy_skipped: spyResult.skipped,
-      qqq_candles: qqqCandles.length,
-      qqq_stored: qqqResult.stored,
-      qqq_skipped: qqqResult.skipped,
-      durationMs,
-    });
-
-    return res.status(200).json({
-      job: 'fetch-etf-candles-1m',
-      tickers: {
-        SPY: { stored: spyResult.stored, skipped: spyResult.skipped },
-        QQQ: { stored: qqqResult.stored, skipped: qqqResult.skipped },
+    return {
+      status: 'success',
+      metadata: {
+        tickers: {
+          SPY: { stored: spyResult.stored, skipped: spyResult.skipped },
+          QQQ: { stored: qqqResult.stored, skipped: qqqResult.skipped },
+        },
+        spy_candles: spyCandles.length,
+        spy_stored: spyResult.stored,
+        spy_skipped: spyResult.skipped,
+        qqq_candles: qqqCandles.length,
+        qqq_stored: qqqResult.stored,
+        qqq_skipped: qqqResult.skipped,
       },
-      durationMs,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-etf-candles-1m');
-    Sentry.captureException(err);
-    logger.error({ err }, 'fetch-etf-candles-1m error');
-    return res.status(500).json({ error: 'Internal error' });
-  }
-}
+    };
+  },
+);

@@ -8,13 +8,14 @@
  * Schedule: 35 13,14 * * 1-5 (DST-safe: skips if before 9:30 AM ET)
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import logger from '../_lib/logger.js';
 import { metrics, Sentry } from '../_lib/sentry.js';
-import { schwabFetch, cronGuard } from '../_lib/api-helpers.js';
+import { schwabFetch } from '../_lib/api-helpers.js';
 import { getETTime } from '../../src/utils/timezone.js';
-import { reportCronRun } from '../_lib/axiom.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 
 // ── Time helpers ────────────────────────────────────────────
 
@@ -125,18 +126,12 @@ function computeFillScore(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res, {
-    timeCheck: isAfterCashOpen,
-    requireApiKey: false,
-  });
-  if (!guard) return;
-  const { today: tradeDate } = guard;
+export default withCronInstrumentation(
+  'compute-es-overnight',
+  async (ctx): Promise<CronResult> => {
+    const { today: tradeDate, logger } = ctx;
+    const sql = getDb();
 
-  const startTime = Date.now();
-  const sql = getDb();
-
-  try {
     // 1. Query overnight bars
     const overnightStart = getOvernightStart(tradeDate);
     const overnightEnd = getOvernightEnd(tradeDate);
@@ -158,14 +153,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (!bars[0]?.globex_open) {
       logger.info({ tradeDate }, 'No overnight ES bars found');
-      await reportCronRun('compute-es-overnight', {
+      // metadata.skipped + metadata.reason preserve the pre-wrapper
+      // response shape that callers (and tests) rely on.
+      return {
         status: 'skipped',
-        reason: 'no candles or gap data',
-        durationMs: Date.now() - startTime,
-      });
-      return res
-        .status(200)
-        .json({ skipped: true, reason: 'No overnight bars' });
+        message: 'No overnight bars',
+        metadata: { skipped: true, reason: 'No overnight bars', tradeDate },
+      };
     }
 
     const overnight = bars[0];
@@ -308,29 +302,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     const barCount = Number.parseInt(String(overnight.bar_count), 10);
-    await reportCronRun('compute-es-overnight', {
-      status: 'ok',
-      tradeDate,
-      gap: `${gapPts >= 0 ? '+' : ''}${gapPts.toFixed(1)} ${gapDirection}`,
-      fillProbability,
-      fillScore,
-      barCount,
-      durationMs: Date.now() - startTime,
-    });
-    return res.status(200).json({
-      job: 'compute-es-overnight',
-      stored: true,
-      tradeDate,
-      gap: `${gapPts >= 0 ? '+' : ''}${gapPts.toFixed(1)} ${gapDirection}`,
-      fillProbability,
-      fillScore,
-      barCount,
-      durationMs: Date.now() - startTime,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'compute-es-overnight');
-    Sentry.captureException(err);
-    logger.error({ err }, 'compute-es-overnight failed');
-    return res.status(500).json({ error: 'Internal error' });
-  }
-}
+    const gapStr = `${gapPts >= 0 ? '+' : ''}${gapPts.toFixed(1)} ${gapDirection}`;
+    return {
+      status: 'success',
+      metadata: {
+        stored: true,
+        tradeDate,
+        gap: gapStr,
+        fillProbability,
+        fillScore,
+        barCount,
+      },
+    };
+  },
+  { timeCheck: isAfterCashOpen, requireApiKey: false },
+);

@@ -13,18 +13,18 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
-import logger from '../_lib/logger.js';
 import {
-  cronGuard,
   uwFetch,
   roundTo5Min,
   withRetry,
   checkDataQuality,
 } from '../_lib/api-helpers.js';
-import { reportCronRun } from '../_lib/axiom.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 
 const TICKERS: Array<{ ticker: string; source: string }> = [
   { ticker: 'SPY', source: 'spy_etf_tide' },
@@ -122,14 +122,10 @@ async function storeAllCandles(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res);
-  if (!guard) return;
-  const { apiKey, today } = guard;
-
-  const startTime = Date.now();
-
-  try {
+export default withCronInstrumentation(
+  'fetch-etf-tide',
+  async (ctx): Promise<CronResult> => {
+    const { apiKey, today, logger } = ctx;
     const results: Record<
       string,
       { stored: number; skipped: number; candles: number }
@@ -176,22 +172,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     logger.info({ results }, 'fetch-etf-tide completed');
 
-    const durationMs = Date.now() - startTime;
-    await reportCronRun('fetch-etf-tide', {
-      status: 'ok',
-      results,
-      durationMs,
-    });
-
-    return res.status(200).json({
-      job: 'fetch-etf-tide',
-      results,
-      durationMs,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-etf-tide');
-    Sentry.captureException(err);
-    logger.error({ err }, 'fetch-etf-tide error');
-    return res.status(500).json({ error: 'Internal error' });
-  }
-}
+    return {
+      status: 'success',
+      metadata: { results },
+    };
+  },
+);

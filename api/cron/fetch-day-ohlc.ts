@@ -20,15 +20,14 @@
  * Environment: CRON_SECRET, SIDECAR_URL, DATABASE_URL
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
-
-import { cronGuard } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
-import logger from '../_lib/logger.js';
 import { fetchDayOhlcFromPostgres } from '../_lib/postgres-day-summary.js';
-import { Sentry, metrics } from '../_lib/sentry.js';
-import { reportCronRun } from '../_lib/axiom.js';
+import { metrics } from '../_lib/sentry.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 
 interface SummaryRow {
   date: string;
@@ -50,27 +49,22 @@ function yesterdayEt(): string {
   return d.toISOString().slice(0, 10);
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res, {
-    marketHours: false,
-    requireApiKey: false,
-  });
-  if (!guard) return;
+export default withCronInstrumentation(
+  'fetch-day-ohlc',
+  async (ctx): Promise<CronResult> => {
+    const { logger } = ctx;
+    const targetDate = yesterdayEt();
+    const sidecarUrl = process.env.SIDECAR_URL?.trim().replace(/\/$/, '');
 
-  const startTime = Date.now();
-  const targetDate = yesterdayEt();
-  const sidecarUrl = process.env.SIDECAR_URL?.trim().replace(/\/$/, '');
+    if (!sidecarUrl) {
+      logger.warn('fetch-day-ohlc: SIDECAR_URL not configured');
+      return {
+        status: 'skipped',
+        message: 'SIDECAR_URL missing',
+        metadata: { skipped: true, reason: 'SIDECAR_URL missing' },
+      };
+    }
 
-  if (!sidecarUrl) {
-    logger.warn('fetch-day-ohlc: SIDECAR_URL not configured');
-    return res.status(200).json({
-      job: 'fetch-day-ohlc',
-      skipped: true,
-      reason: 'SIDECAR_URL missing',
-    });
-  }
-
-  try {
     // Single-date batch call. The endpoint's from=to semantics return
     // zero rows on non-trading days (weekends, NYSE holidays) — that's
     // a legit "skip this run" signal, not an error.
@@ -128,12 +122,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           { targetDate },
           'fetch-day-ohlc: no rows from sidecar or Postgres (holiday/weekend/halt)',
         );
-        return res.status(200).json({
-          job: 'fetch-day-ohlc',
-          targetDate,
-          skipped: true,
-          reason: 'no rows from sidecar',
-        });
+        return {
+          status: 'skipped',
+          message: 'no rows from sidecar',
+          metadata: {
+            targetDate,
+            skipped: true,
+            reason: 'no rows from sidecar',
+          },
+        };
       }
       ohlc = {
         open: pg.open,
@@ -164,7 +161,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     `;
 
     const updated = result.length;
-    const durationMs = Date.now() - startTime;
 
     if (updated === 0) {
       // day_embeddings row doesn't exist yet — the embedding cron hasn't
@@ -186,30 +182,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           range: ohlc.range,
           upExc: ohlc.upExc,
           downExc: ohlc.downExc,
-          durationMs,
         },
         'fetch-day-ohlc: updated',
       );
     }
 
-    await reportCronRun('fetch-day-ohlc', {
-      status: 'ok',
-      targetDate,
-      updated,
-      durationMs,
-    });
-
-    return res.status(200).json({
-      job: 'fetch-day-ohlc',
-      targetDate,
-      source,
-      updated,
-      durationMs,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-day-ohlc');
-    Sentry.captureException(err);
-    logger.error({ err, targetDate }, 'fetch-day-ohlc failed');
-    return res.status(500).json({ error: 'Internal error' });
-  }
-}
+    return {
+      status: 'success',
+      metadata: { targetDate, source, updated },
+    };
+  },
+  { marketHours: false, requireApiKey: false },
+);
