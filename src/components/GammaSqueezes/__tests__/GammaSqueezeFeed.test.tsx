@@ -73,6 +73,9 @@ function makeSqueeze(
     freshnessMin: 0,
     progressPct: null,
     isStale: false,
+    hhiNeighborhood: null,
+    ivMorningVolCorr: null,
+    precisionStackPass: false,
   };
   return {
     compoundKey: squeezeCompoundKey(base),

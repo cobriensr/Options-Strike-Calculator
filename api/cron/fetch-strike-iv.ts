@@ -62,6 +62,14 @@ import {
   type SqueezeWindowSample,
 } from '../_lib/gamma-squeeze.js';
 import { gatherContextSnapshot } from '../_lib/anomaly-context.js';
+import {
+  computeHhi,
+  computeIvMorningVolCorr,
+  IV_MORNING_CUTOFF_HOUR_CT,
+  PROXIMITY_BAND_PCT,
+  type BandStrikeSample,
+  type IvVolSample,
+} from '../_lib/precision-stack.js';
 
 // ── Schwab types (duplicated locally — api/chain.ts is an endpoint, not a
 //    reusable module, and extracting a shared helper is out of scope for
@@ -622,6 +630,101 @@ async function loadNetDealerGammaForTicker(
  * Sentry but does NOT roll back the IV anomaly path or the snapshot
  * ingestion — squeeze detection is the lowest-priority signal.
  */
+/**
+ * Stamp HHI and morning IV-vol correlation on every squeeze flag in place.
+ * Two queries per flag — one for the band's per-strike notional, one for
+ * the strike's pre-11:00 CT IV trajectory. Failure to compute either
+ * feature stamps `null` (column is nullable; pass-flag derivation handles
+ * it as false). Per-flag failures are caught individually so one bad
+ * fire can't poison the rest of the batch.
+ */
+type NumericFromDb = string | number | null;
+interface BandRow {
+  strike: string | number;
+  volume: NumericFromDb;
+  mid_price: NumericFromDb;
+}
+interface IvRow {
+  minute_ct: string | Date;
+  iv: NumericFromDb;
+  cum_volume: NumericFromDb;
+}
+
+async function enrichWithPrecisionStack(
+  sql: ReturnType<typeof getDb>,
+  flags: SqueezeFlag[],
+): Promise<void> {
+  for (const f of flags) {
+    try {
+      const bandLow = f.spot_at_detect * (1 - PROXIMITY_BAND_PCT);
+      const bandHigh = f.spot_at_detect * (1 + PROXIMITY_BAND_PCT);
+      const bandRows = (await sql`
+        SELECT DISTINCT ON (strike)
+               strike, volume, mid_price
+        FROM strike_iv_snapshots
+        WHERE ticker = ${f.ticker}
+          AND side = ${f.side}
+          AND expiry = ${f.expiry}
+          AND ts <= ${f.ts}
+          AND ts >= (${f.ts}::timestamptz - INTERVAL '15 minutes')
+          AND strike BETWEEN ${bandLow} AND ${bandHigh}
+        ORDER BY strike, ts DESC
+      `) as BandRow[];
+      const bandSamples: BandStrikeSample[] = [];
+      for (const r of bandRows) {
+        const strike = Number(r.strike);
+        const volume = r.volume == null ? NaN : Number(r.volume);
+        const midPrice = r.mid_price == null ? NaN : Number(r.mid_price);
+        if (Number.isFinite(strike) && Number.isFinite(volume) && Number.isFinite(midPrice)) {
+          bandSamples.push({ strike, volume, midPrice });
+        }
+      }
+      f.hhi_neighborhood = computeHhi(bandSamples);
+
+      const ivRows = (await sql`
+        SELECT date_trunc('minute', ts AT TIME ZONE 'America/Chicago') AS minute_ct,
+               AVG(iv_mid) AS iv,
+               MAX(volume) AS cum_volume
+        FROM strike_iv_snapshots
+        WHERE ticker = ${f.ticker}
+          AND strike = ${f.strike}
+          AND side = ${f.side}
+          AND expiry = ${f.expiry}
+          AND DATE(ts AT TIME ZONE 'America/Chicago') = DATE(${f.ts}::timestamptz AT TIME ZONE 'America/Chicago')
+          AND EXTRACT(HOUR FROM ts AT TIME ZONE 'America/Chicago') < ${IV_MORNING_CUTOFF_HOUR_CT}
+          AND iv_mid IS NOT NULL
+          AND iv_mid > 0
+          AND iv_mid < 5
+        GROUP BY 1
+        ORDER BY minute_ct
+      `) as IvRow[];
+      const ivSamples: IvVolSample[] = [];
+      for (const r of ivRows) {
+        const ts =
+          r.minute_ct instanceof Date
+            ? r.minute_ct.toISOString()
+            : String(r.minute_ct);
+        const iv = r.iv == null ? NaN : Number(r.iv);
+        const volume = r.cum_volume == null ? NaN : Number(r.cum_volume);
+        if (Number.isFinite(iv) && Number.isFinite(volume)) {
+          ivSamples.push({ ts, iv, volume });
+        }
+      }
+      f.iv_morning_vol_corr = computeIvMorningVolCorr(ivSamples);
+    } catch (err) {
+      Sentry.setTag('cron.job', 'fetch-strike-iv');
+      Sentry.setTag('strike_iv.phase', 'precision_stack_enrichment');
+      Sentry.captureException(err);
+      logger.warn(
+        { err, ticker: f.ticker, strike: f.strike },
+        'fetch-strike-iv: precision-stack enrichment failed (non-fatal)',
+      );
+      f.hhi_neighborhood = null;
+      f.iv_morning_vol_corr = null;
+    }
+  }
+}
+
 async function persistSqueezeFlags(
   sql: ReturnType<typeof getDb>,
   flags: SqueezeFlag[],
@@ -635,12 +738,14 @@ async function persistSqueezeFlags(
         ticker, strike, side, expiry, ts,
         spot_at_detect, pct_from_strike, spot_trend_5m,
         vol_oi_15m, vol_oi_15m_prior, vol_oi_acceleration, vol_oi_total,
-        net_gamma_sign, squeeze_phase, context_snapshot
+        net_gamma_sign, squeeze_phase, context_snapshot,
+        hhi_neighborhood, iv_morning_vol_corr
       ) VALUES (
         ${f.ticker}, ${f.strike}, ${f.side}, ${f.expiry}, ${f.ts},
         ${f.spot_at_detect}, ${f.pct_from_strike}, ${f.spot_trend_5m},
         ${f.vol_oi_15m}, ${f.vol_oi_15m_prior}, ${f.vol_oi_acceleration}, ${f.vol_oi_total},
-        ${f.net_gamma_sign}, ${f.squeeze_phase}, ${contextJson}::jsonb
+        ${f.net_gamma_sign}, ${f.squeeze_phase}, ${contextJson}::jsonb,
+        ${f.hhi_neighborhood ?? null}, ${f.iv_morning_vol_corr ?? null}
       )
       ON CONFLICT (ticker, strike, side, expiry, ts) DO NOTHING
       RETURNING id
@@ -691,6 +796,10 @@ async function runDetection(
   const detectTs = new Date(sampledAtIso);
   const context = await gatherContextSnapshot(ticker, detectTs);
   const contextJson = JSON.stringify(context);
+
+  // Stamp HHI + iv_morning_vol_corr on every flag before persisting. Pure
+  // enrichment — failures are caught per-flag and stamp NULL columns.
+  await enrichWithPrecisionStack(sql, squeezeFlags);
 
   try {
     await persistSqueezeFlags(sql, squeezeFlags, contextJson);

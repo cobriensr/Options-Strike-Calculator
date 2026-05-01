@@ -17,6 +17,12 @@ import {
 import { gammaSqueezesQuerySchema } from './_lib/validation.js';
 import { STRIKE_IV_TICKERS, type StrikeIVTicker } from './_lib/constants.js';
 import { computePathShape, getLatestSpotsByTicker } from './_lib/path-shape.js';
+import {
+  evaluatePrecisionPass,
+  HHI_PASS_PERCENTILE,
+  IV_VOL_CORR_PASS_PERCENTILE,
+  quantile,
+} from './_lib/precision-stack.js';
 
 const TICKERS = STRIKE_IV_TICKERS;
 type Ticker = StrikeIVTicker;
@@ -58,6 +64,24 @@ export interface GammaSqueezeRow {
    * each request — read-only.
    */
   isStale: boolean;
+  /**
+   * Cross-strike Herfindahl of notional at fire time. Lower = diffuse
+   * neighborhood (winner archetype). Null when fewer than 3 strikes in
+   * the ±0.5% band had non-zero notional.
+   */
+  hhiNeighborhood: number | null;
+  /**
+   * Pearson correlation of per-minute (Δiv, Δvolume) restricted to ≤11:00
+   * CT for this strike. Higher = real demand. Null when fewer than 5
+   * minutes of pre-11:00 IV samples or one series had zero variance.
+   */
+  ivMorningVolCorr: number | null;
+  /**
+   * True iff (hhiNeighborhood ≤ p30 of day) AND (ivMorningVolCorr ≥ p80
+   * of day). Computed per-request from same-day events. ~3-5% of fires
+   * pass — high-precision filter, low recall.
+   */
+  precisionStackPass: boolean;
 }
 
 export interface GammaSqueezesResponse {
@@ -88,6 +112,8 @@ interface RawSqueezeRow {
   spot_at_close: NumericFromDb;
   reached_strike: boolean | null;
   max_call_pnl_pct: NumericFromDb;
+  hhi_neighborhood: NumericFromDb;
+  iv_morning_vol_corr: NumericFromDb;
 }
 
 function toIso(value: string | Date): string {
@@ -148,11 +174,62 @@ function mapSqueeze(r: RawSqueezeRow): GammaSqueezeRow {
     spotAtClose: parseNumOrNull(r.spot_at_close),
     reachedStrike: r.reached_strike,
     maxCallPnlPct: parseNumOrNull(r.max_call_pnl_pct),
-    // Filled in by attachPathShape after rows load.
+    hhiNeighborhood: parseNumOrNull(r.hhi_neighborhood),
+    ivMorningVolCorr: parseNumOrNull(r.iv_morning_vol_corr),
+    // Filled in by attachPathShape and attachPrecisionPass after rows load.
     freshnessMin: 0,
     progressPct: null,
     isStale: false,
+    precisionStackPass: false,
   };
+}
+
+/**
+ * Compute the precision-stack pass flag per row using same-day percentiles
+ * across all queried events. Mirrors the backfill logic but operates on
+ * the in-memory result set so the flag tracks day-so-far data during live
+ * trading. Mutates rows in place; returns nothing.
+ */
+function attachPrecisionPass(rowsByTicker: Map<string, GammaSqueezeRow[]>): void {
+  // Bucket all rows by trade_date_CT regardless of ticker — the precision
+  // signal is universe-wide, not per-ticker.
+  const byDate = new Map<string, GammaSqueezeRow[]>();
+  for (const rows of rowsByTicker.values()) {
+    for (const r of rows) {
+      const d = new Date(r.ts);
+      if (Number.isNaN(d.getTime())) continue;
+      // Convert to CT date by subtracting the UTC offset for America/Chicago
+      // at the row's ts. Practical shortcut for DST: use Intl with a fixed
+      // formatter — accurate across DST flips.
+      const ct = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Chicago',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(d);
+      const bucket = byDate.get(ct);
+      if (bucket) bucket.push(r);
+      else byDate.set(ct, [r]);
+    }
+  }
+  for (const rows of byDate.values()) {
+    const hhis = rows
+      .map((r) => r.hhiNeighborhood)
+      .filter((v): v is number => v != null && Number.isFinite(v));
+    const corrs = rows
+      .map((r) => r.ivMorningVolCorr)
+      .filter((v): v is number => v != null && Number.isFinite(v));
+    const hhiP30 = quantile(hhis, HHI_PASS_PERCENTILE);
+    const corrP80 = quantile(corrs, IV_VOL_CORR_PASS_PERCENTILE);
+    for (const r of rows) {
+      r.precisionStackPass = evaluatePrecisionPass(
+        r.hhiNeighborhood,
+        r.ivMorningVolCorr,
+        hhiP30,
+        corrP80,
+      );
+    }
+  }
 }
 
 async function attachPathShape(
@@ -229,7 +306,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                      spot_at_detect, pct_from_strike, spot_trend_5m,
                      vol_oi_15m, vol_oi_15m_prior, vol_oi_acceleration, vol_oi_total,
                      net_gamma_sign, squeeze_phase, context_snapshot,
-                     spot_at_close, reached_strike, max_call_pnl_pct
+                     spot_at_close, reached_strike, max_call_pnl_pct,
+                     hhi_neighborhood, iv_morning_vol_corr
               FROM gamma_squeeze_events
               WHERE ticker = ${t}
                 AND ts <= ${atDate.toISOString()}
@@ -242,7 +320,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                      spot_at_detect, pct_from_strike, spot_trend_5m,
                      vol_oi_15m, vol_oi_15m_prior, vol_oi_acceleration, vol_oi_total,
                      net_gamma_sign, squeeze_phase, context_snapshot,
-                     spot_at_close, reached_strike, max_call_pnl_pct
+                     spot_at_close, reached_strike, max_call_pnl_pct,
+                     hhi_neighborhood, iv_morning_vol_corr
               FROM gamma_squeeze_events
               WHERE ticker = ${t}
                 AND ts >= NOW() - INTERVAL '24 hours'
@@ -276,6 +355,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         Sentry.captureException(err);
         logger.warn({ err }, 'gamma-squeezes: path-shape attachment failed');
       }
+
+      // Precision-stack pass flag — derives per-day HHI/IV-vol-corr
+      // percentiles from the queried result set and tags each row.
+      // Pure in-memory, no DB call. Cannot fail in a way that would 500.
+      attachPrecisionPass(rowsByTicker);
 
       const response: GammaSqueezesResponse = { mode: 'list', latest, history };
 

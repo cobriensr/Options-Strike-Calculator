@@ -2893,4 +2893,25 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 104,
+    description:
+      'Add precision-stack overlay columns to gamma_squeeze_events: ' +
+      'hhi_neighborhood (Herfindahl of cross-strike premium concentration ' +
+      'within ±0.5% of spot at fire time, lower = diffuse), ' +
+      'iv_morning_vol_corr (Pearson correlation of per-minute Δ implied_vol ' +
+      'and Δ cumulative volume restricted to ≤11:00 CT, higher = real demand), ' +
+      'and precision_stack_pass (boolean — true when both filters fall in ' +
+      'the discriminating quantile vs the universe-day, computed by an ' +
+      'after-close cron). Columns nullable so historical events stay ' +
+      'queryable; backfill happens via scripts/backfill-precision-stack.py ' +
+      'and live cron stamping (Phase 2). Lifts precision from 17.5% (V≥5× ' +
+      'alone) to 48.8% (full stack at top 20%) on the 12-day in-sample ' +
+      'backtest. See spec: docs/superpowers/specs/precision-stack-overlay-2026-04-30.md.',
+    statements: (sql) => [
+      sql`ALTER TABLE gamma_squeeze_events ADD COLUMN IF NOT EXISTS hhi_neighborhood NUMERIC`,
+      sql`ALTER TABLE gamma_squeeze_events ADD COLUMN IF NOT EXISTS iv_morning_vol_corr NUMERIC`,
+      sql`ALTER TABLE gamma_squeeze_events ADD COLUMN IF NOT EXISTS precision_stack_pass BOOLEAN`,
+    ],
+  },
 ];

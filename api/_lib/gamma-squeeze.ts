@@ -84,6 +84,15 @@ export interface SqueezeFlag {
   vol_oi_total: number;
   net_gamma_sign: NetGammaSign;
   squeeze_phase: SqueezePhase;
+  /**
+   * Precision-stack overlay — populated by the cron after detection from
+   * `api/_lib/precision-stack.ts`. Both fields are optional: HHI requires
+   * ≥3 strikes in the ±0.5% band with non-zero notional; iv_morning_vol_corr
+   * requires ≥5 minutes of pre-11:00 CT IV samples with non-zero variance.
+   * The pass-flag itself is computed at read time using per-day percentiles.
+   */
+  hhi_neighborhood?: number | null;
+  iv_morning_vol_corr?: number | null;
 }
 
 // ── Tunable constants (kept here, not in api/_lib/constants.ts, since

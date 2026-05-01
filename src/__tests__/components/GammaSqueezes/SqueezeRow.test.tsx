@@ -30,6 +30,9 @@ function makeRow(over: Partial<GammaSqueezeRow> = {}): GammaSqueezeRow {
     freshnessMin: 0,
     progressPct: null,
     isStale: false,
+    hhiNeighborhood: null,
+    ivMorningVolCorr: null,
+    precisionStackPass: false,
     ...over,
   };
 }

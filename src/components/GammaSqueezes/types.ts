@@ -52,6 +52,24 @@ export interface GammaSqueezeRow {
    * UI should visually de-emphasize stale alerts.
    */
   isStale: boolean;
+  /**
+   * Cross-strike Herfindahl of cross-strike notional in the ±0.5% band
+   * at fire time. Lower = diffuse winner archetype. Null when band has
+   * fewer than 3 strikes with non-zero notional.
+   */
+  hhiNeighborhood: number | null;
+  /**
+   * Pearson correlation of per-minute (Δiv, Δvolume), restricted to
+   * ≤11:00 CT. Higher = real demand bid IV up. Null when fewer than
+   * 5 morning samples or zero variance in either series.
+   */
+  ivMorningVolCorr: number | null;
+  /**
+   * True iff (hhiNeighborhood ≤ p30 of the day) AND (ivMorningVolCorr
+   * ≥ p80 of the day). Computed per-request from same-day events. The
+   * "★" badge surfaces this in the row UI.
+   */
+  precisionStackPass: boolean;
 }
 
 export interface GammaSqueezesResponse {

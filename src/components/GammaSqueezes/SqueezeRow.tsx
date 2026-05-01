@@ -113,6 +113,27 @@ export function SqueezeRow({ squeeze }: { readonly squeeze: ActiveSqueeze }) {
         </span>
       ) : null}
 
+      {latest.precisionStackPass ? (
+        <span
+          className="rounded-md bg-amber-400/25 px-2 py-0.5 font-mono text-[10px] font-bold text-amber-200"
+          data-testid="squeeze-precision-pass"
+          title={
+            'Precision stack PASS — diffuse cross-strike neighborhood ' +
+            '(low HHI) AND morning IV rose with volume (real demand). ' +
+            `In-sample precision ~48% vs 17% base. ` +
+            (latest.hhiNeighborhood != null
+              ? `HHI=${latest.hhiNeighborhood.toFixed(3)}`
+              : 'HHI=—') +
+            ', ' +
+            (latest.ivMorningVolCorr != null
+              ? `iv-corr=${latest.ivMorningVolCorr.toFixed(2)}`
+              : 'iv-corr=—')
+          }
+        >
+          ★ precision
+        </span>
+      ) : null}
+
       <span
         className={`rounded-md px-2 py-0.5 font-mono text-[10px] font-bold ${phaseClass}`}
         data-testid={`squeeze-phase-${latest.squeezePhase}`}

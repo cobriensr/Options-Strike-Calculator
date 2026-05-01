@@ -38,6 +38,9 @@ function makeRow(
     freshnessMin: 0,
     progressPct: null,
     isStale: false,
+    hhiNeighborhood: null,
+    ivMorningVolCorr: null,
+    precisionStackPass: false,
     ...overrides,
   };
 }
