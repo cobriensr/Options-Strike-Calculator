@@ -188,28 +188,31 @@ These are the foundation. Other phases consume them. Tests-first.
 - `iron-condor.ts` — already clean, no refactor.
 - `gex-target/scorers.ts` and `features.ts` — already clean.
 
-## Deferred at completion (2026-04-30)
+## Deferred items — now shipped (2026-05-02 follow-up)
 
-These were originally scoped but deferred when the refactor pass shipped:
+The two items originally deferred when the main refactor pass landed
+have since shipped:
 
-- **Phase 3c — TRACELiveCalibrationPanel Scatter + stats extraction.** The file
-  had uncommitted edits from a parallel session at the time of the refactor.
-  Once those edits land or are discarded, the `calibration-stats.ts` and
-  `Scatter.tsx` extraction can ship as a small follow-up phase.
-- **DarkPoolLevels `<ScrubControlsCompact>` extraction.** The plan listed this
-  under Phase 1 consumers, but the actual refactor target is a 132-LOC UI
-  toolbar (DarkPoolLevels lines 168-300), not a state-machine adoption.
-  GexTarget's header has the same shape. A future phase should extract a
-  shared `<ScrubControlsCompact>` UI component (date picker + scrub buttons +
-  page indicator + sort dropdown) and consume it in both panels.
+- **Phase 3c — TRACELiveCalibrationPanel Scatter + stats extraction.**
+  Shipped in commit `6a672c5e`. Pulled `niceTicks` / `median` /
+  `classifyRegime` / `RegimeStatus` to `src/utils/calibration-stats.ts`
+  and the 150-LOC `Scatter` SVG sub-component to its own file.
+  TRACELiveCalibrationPanel.tsx: 621 → 428 LOC.
+- **Phase 4 — Shared `<ScrubControlsCompact>` UI component.** Shipped in
+  commit `cbab1249` (+ Prettier follow-up `70fab450`). Extracts the
+  scrub prev/next/select/LIVE quartet to `src/components/ui/`. Consumed
+  in DarkPoolLevels (-47 LOC) and GexTarget (-65 LOC). Panel-specific
+  widgets (date picker, sort selector, status badge, refresh button,
+  mode toggle, visible-count stepper) deliberately stay in their
+  consumers because the toolbars are too divergent to share more.
 
 ## Done when
 
-- All Phase 1-3 sub-tasks committed to `main`. ✅ (15 of 16 phases shipped;
-  3c deferred per above; DarkPoolLevels UI extraction deferred per above)
+- All Phase 1-3 sub-tasks committed to `main`. ✅ (16 of 16 phases shipped;
+  3c and Phase 4 follow-up landed 2026-05-02)
 - `npm run review` green. ✅
 - Final code-reviewer subagent verdict = `pass`. ✅ (final review on
-  full diff returned `pass`)
+  full diff returned `pass`; per-phase reviews on 3c and Phase 4 also pass)
 - No UI behavior regressions found in dev smoke test. ✅ (each phase
   verified in isolation; consumer tests all green)
 
@@ -217,25 +220,28 @@ These were originally scoped but deferred when the refactor pass shipped:
 
 Shipped phases (in commit order):
 
-| Phase | Commit    | Title                                                |
-| ----- | --------- | ---------------------------------------------------- |
-| 1a    | fd465e55  | useScrubController + useWallClockFreshness           |
-| 1b    | a6db22bb  | usePolling                                           |
-| 1c    | 2c8177ff  | flow-formatters + useTableSort                       |
-| 1d    | db8a6acc  | evaluateDriftOverride helper                         |
-| 2a    | 9def0412  | SortableHeader + flow tables adopt primitives        |
-| 2b    | 82570119  | useFuturesGammaPlaybook split (915 → 470 LOC)        |
-| 2c    | 8afeaa78  | selectTarget extraction from GexTarget               |
-| 2d    | 2cbdc105  | evaluateTriggers buildTriggerState factory           |
-| 2d.fu | 15c1ad5b  | walLabel typo fix                                    |
-| 3a    | f2922b1a  | App.tsx GatedSection + AppHeader (1524 → 1270 LOC)   |
-| 3b    | 1a33b6d8  | PositionRow split (823 → 370 LOC)                    |
-| 3b.fu | 6010ff05  | PctMaxBar lift                                       |
-| 3d    | f27a84ac  | calcHedge decomposition                              |
-| 3e    | 6c675b07  | playbook + tradeBias rule builders + drift adoption  |
-| 3f    | 5d47ed1c  | wallClockToUtcIso consolidation                      |
-| 3g    | e90f2073  | GexLandscape useMultiWindowDeltas                    |
+| Phase | Commit   | Title                                               |
+| ----- | -------- | --------------------------------------------------- |
+| 1a    | fd465e55 | useScrubController + useWallClockFreshness          |
+| 1b    | a6db22bb | usePolling                                          |
+| 1c    | 2c8177ff | flow-formatters + useTableSort                      |
+| 1d    | db8a6acc | evaluateDriftOverride helper                        |
+| 2a    | 9def0412 | SortableHeader + flow tables adopt primitives       |
+| 2b    | 82570119 | useFuturesGammaPlaybook split (915 → 470 LOC)       |
+| 2c    | 8afeaa78 | selectTarget extraction from GexTarget              |
+| 2d    | 2cbdc105 | evaluateTriggers buildTriggerState factory          |
+| 2d.fu | 15c1ad5b | walLabel typo fix                                   |
+| 3a    | f2922b1a | App.tsx GatedSection + AppHeader (1524 → 1270 LOC)  |
+| 3b    | 1a33b6d8 | PositionRow split (823 → 370 LOC)                   |
+| 3b.fu | 6010ff05 | PctMaxBar lift                                      |
+| 3d    | f27a84ac | calcHedge decomposition                             |
+| 3e    | 6c675b07 | playbook + tradeBias rule builders + drift adoption |
+| 3f    | 5d47ed1c | wallClockToUtcIso consolidation                     |
+| 3g    | e90f2073 | GexLandscape useMultiWindowDeltas                   |
+| 3c    | 6a672c5e | TRACELive: extract calibration-stats + Scatter      |
+| 4     | cbab1249 | ui: ScrubControlsCompact (DarkPool + GexTarget)     |
+| 4.fu  | 70fab450 | Phase 4 prettier follow-up                          |
 
-Final: **9222 tests pass** across 446 files; coverage 95.23% lines /
-93.56% statements. Net ~1,500 LOC of duplication removed from consumer
+Final: **9251 tests pass** across 448 files; coverage stays above
+project thresholds. Net ~1,800 LOC of duplication removed from consumer
 files; new primitives ship with their own tests.
