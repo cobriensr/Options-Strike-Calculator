@@ -39,7 +39,34 @@ vi.mock('../_lib/periscope-blob.js', () => ({
 
 vi.mock('../_lib/periscope-db.js', () => ({
   savePeriscopeAnalysis: vi.fn().mockResolvedValue(42),
-  buildPeriscopeSummary: vi.fn().mockReturnValue('summary'),
+  // Echo the structured input into the summary string so tests can
+  // verify which fields propagate (e.g. extracted vs analysis-derived).
+  // Format mirrors the real buildPeriscopeSummary output well enough
+  // that retrieval-query assertions can grep for `spot=`, `cone=`, etc.
+  buildPeriscopeSummary: vi.fn().mockImplementation((args: unknown) => {
+    const a = args as {
+      mode?: string;
+      tradingDate?: string;
+      structured?: {
+        spot?: number | null;
+        cone_lower?: number | null;
+        cone_upper?: number | null;
+        regime_tag?: string | null;
+      };
+      proseText?: string;
+    };
+    const s = a.structured ?? {};
+    const fmt = (n: number | null | undefined) =>
+      n == null ? 'null' : String(n);
+    return [
+      `mode=${a.mode ?? 'read'}`,
+      `date=${a.tradingDate ?? 'null'}`,
+      `spot=${fmt(s.spot)}`,
+      `cone=${fmt(s.cone_lower)}-${fmt(s.cone_upper)}`,
+      `regime=${s.regime_tag ?? 'null'}`,
+      `prose=${(a.proseText ?? '').slice(0, 80)}`,
+    ].join(' | ');
+  }),
 }));
 
 vi.mock('../_lib/periscope-calibration.js', () => ({
@@ -50,10 +77,19 @@ vi.mock('../_lib/periscope-retrieval.js', () => ({
   buildRetrievalBlock: vi.fn().mockResolvedValue(null),
 }));
 
-// Mock the Anthropic SDK — capture stream call. handler uses
-// `anthropic.messages.stream(params).finalMessage()`.
+vi.mock('../_lib/periscope-extract.js', () => ({
+  extractChartStructure: vi.fn().mockResolvedValue(null),
+}));
+
+// Mock the Anthropic SDK — capture both stream + create calls.
+//   - handler uses `anthropic.messages.stream(params).finalMessage()`
+//     for the main analysis call (Pass 2).
+//   - The extraction helper (Pass 1) uses `messages.create()` directly
+//     and is module-mocked above, so the create stub here is just a
+//     defensive default; tests don't rely on it firing.
 const mockFinalMessage = vi.fn();
 const mockStream = vi.fn().mockReturnValue({ finalMessage: mockFinalMessage });
+const mockCreate = vi.fn();
 
 vi.mock('@anthropic-ai/sdk', () => {
   class APIError extends Error {
@@ -84,7 +120,7 @@ vi.mock('@anthropic-ai/sdk', () => {
 
   class MockAnthropic {
     get messages() {
-      return { stream: mockStream };
+      return { stream: mockStream, create: mockCreate };
     }
     static readonly AuthenticationError = AuthenticationError;
     static readonly RateLimitError = RateLimitError;
@@ -107,8 +143,12 @@ import {
 } from '../_lib/api-helpers.js';
 import { generateEmbedding } from '../_lib/embeddings.js';
 import { savePeriscopeAnalysis } from '../_lib/periscope-db.js';
+import { extractChartStructure } from '../_lib/periscope-extract.js';
+import { buildRetrievalBlock } from '../_lib/periscope-retrieval.js';
 
 const mockSavePeriscopeAnalysis = vi.mocked(savePeriscopeAnalysis);
+const mockExtractChartStructure = vi.mocked(extractChartStructure);
+const mockBuildRetrievalBlock = vi.mocked(buildRetrievalBlock);
 
 const MockErrors = (globalThis as Record<string, unknown>).__MockErrors as {
   APIError: new (status: number, message: string) => Error;
@@ -131,7 +171,6 @@ function makeBody(
       data: string;
       mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
     }>;
-    context: string;
     parentId: number | null;
   }> = {},
 ) {
@@ -140,7 +179,6 @@ function makeBody(
     images: overrides.images ?? [
       { kind: 'chart', data: SAMPLE_BASE64, mediaType: 'image/png' },
     ],
-    ...(overrides.context !== undefined && { context: overrides.context }),
     ...(overrides.parentId !== undefined && { parentId: overrides.parentId }),
   };
 }
@@ -206,7 +244,10 @@ describe('POST /api/periscope-chat', () => {
     _resetEnvCache();
     mockStream.mockReset().mockReturnValue({ finalMessage: mockFinalMessage });
     mockFinalMessage.mockReset();
+    mockCreate.mockReset();
     mockSavePeriscopeAnalysis.mockReset().mockResolvedValue(42);
+    mockExtractChartStructure.mockReset().mockResolvedValue(null);
+    mockBuildRetrievalBlock.mockReset().mockResolvedValue(null);
     process.env.ANTHROPIC_API_KEY = 'test-key';
     // Restore mock defaults that restoreAllMocks may strip
     vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
@@ -388,9 +429,8 @@ describe('POST /api/periscope-chat', () => {
   });
 
   it('injects the calibration block as a second cached system block when present', async () => {
-    const { buildCalibrationBlock } = await import(
-      '../_lib/periscope-calibration.js'
-    );
+    const { buildCalibrationBlock } =
+      await import('../_lib/periscope-calibration.js');
     vi.mocked(buildCalibrationBlock).mockResolvedValueOnce(
       '## Calibration examples\nGold-rated read prose here.',
     );
@@ -409,16 +449,15 @@ describe('POST /api/periscope-chat', () => {
   });
 
   it('injects the retrieval block as a third cached system block when present', async () => {
-    const { buildRetrievalBlock } = await import(
-      '../_lib/periscope-retrieval.js'
-    );
+    const { buildRetrievalBlock } =
+      await import('../_lib/periscope-retrieval.js');
     vi.mocked(buildRetrievalBlock).mockResolvedValueOnce(
       '## Analogous past reads\nSimilar prior pin day.',
     );
     mockFinalMessage.mockResolvedValue(makeSDKResponse({ prose: 'Read.' }));
     const req = mockRequest({
       method: 'POST',
-      body: makeBody({ context: 'morning open, gap-down day' }),
+      body: makeBody(),
     });
     const res = mockResponse();
     await handler(req, res);
@@ -433,12 +472,10 @@ describe('POST /api/periscope-chat', () => {
   });
 
   it('injects all three blocks (skill + calibration + retrieval) when both helpers return content', async () => {
-    const { buildCalibrationBlock } = await import(
-      '../_lib/periscope-calibration.js'
-    );
-    const { buildRetrievalBlock } = await import(
-      '../_lib/periscope-retrieval.js'
-    );
+    const { buildCalibrationBlock } =
+      await import('../_lib/periscope-calibration.js');
+    const { buildRetrievalBlock } =
+      await import('../_lib/periscope-retrieval.js');
     vi.mocked(buildCalibrationBlock).mockResolvedValueOnce(
       '## Calibration examples\n...',
     );
@@ -448,7 +485,7 @@ describe('POST /api/periscope-chat', () => {
     mockFinalMessage.mockResolvedValue(makeSDKResponse({ prose: 'Read.' }));
     const req = mockRequest({
       method: 'POST',
-      body: makeBody({ context: 'morning open' }),
+      body: makeBody(),
     });
     const res = mockResponse();
     await handler(req, res);
@@ -522,5 +559,77 @@ describe('POST /api/periscope-chat', () => {
     expect(blocks[4]!.type).toBe('image');
     expect(blocks[5]!.text).toContain('[charm screenshot]');
     expect(blocks[6]!.type).toBe('image');
+  });
+
+  // ============================================================
+  // Phase 9 — two-Opus-call flow
+  // ============================================================
+
+  it('runs extraction once per submission (Pass 1 before main analysis)', async () => {
+    mockFinalMessage.mockResolvedValue(makeSDKResponse({ prose: 'Read.' }));
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(mockExtractChartStructure).toHaveBeenCalledOnce();
+    expect(mockExtractChartStructure).toHaveBeenCalledWith(
+      expect.objectContaining({ images: expect.any(Array) }),
+    );
+    // Main call ran exactly once after extraction.
+    expect(mockStream).toHaveBeenCalledOnce();
+  });
+
+  it('passes extracted structural summary as the retrieval query when extraction succeeds', async () => {
+    mockExtractChartStructure.mockResolvedValueOnce({
+      spot: 7120,
+      cone_lower: 7095,
+      cone_upper: 7150,
+      long_trigger: null,
+      short_trigger: null,
+      regime_tag: null,
+    });
+    mockFinalMessage.mockResolvedValue(makeSDKResponse({ prose: 'Read.' }));
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(mockBuildRetrievalBlock).toHaveBeenCalledOnce();
+    const args = mockBuildRetrievalBlock.mock.calls[0]![0];
+    expect(args.mode).toBe('read');
+    // The retrieval query is the extracted structural summary —
+    // the chart fingerprint, not free-form text.
+    expect(args.userContext).toContain('spot=7120');
+    expect(args.userContext).toContain('cone=7095-7150');
+  });
+
+  it('passes null retrieval query when extraction returns null (retrieval skipped)', async () => {
+    mockExtractChartStructure.mockResolvedValueOnce(null);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse({ prose: 'Read.' }));
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const args = mockBuildRetrievalBlock.mock.calls[0]![0];
+    expect(args.userContext).toBeNull();
+  });
+
+  it('still completes the main analysis when extraction returns null (best-effort)', async () => {
+    mockExtractChartStructure.mockResolvedValueOnce(null);
+    mockFinalMessage.mockResolvedValue(
+      makeSDKResponse({ prose: 'Read despite extraction failure.' }),
+    );
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const json = parseNdjsonResponse(res) as { ok: boolean; prose: string };
+    expect(json.ok).toBe(true);
+    expect(json.prose).toContain('Read despite extraction failure.');
+    // Main analysis ran even though extraction yielded nothing useful.
+    expect(mockStream).toHaveBeenCalledOnce();
   });
 });

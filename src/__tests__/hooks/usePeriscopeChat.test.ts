@@ -66,7 +66,6 @@ describe('usePeriscopeChat', () => {
     const { result } = renderHook(() => usePeriscopeChat());
     expect(result.current.mode).toBe('read');
     expect(result.current.images).toEqual({});
-    expect(result.current.context).toBe('');
     expect(result.current.parentId).toBeNull();
     expect(result.current.inFlight).toBe(false);
     expect(result.current.response).toBeNull();
@@ -151,7 +150,6 @@ describe('usePeriscopeChat', () => {
       result.current.setImage('chart', makeFile('a.png'));
       result.current.setImage('gex', makeFile('b.png'));
       result.current.setMode('debrief');
-      result.current.setContext('hello');
       result.current.setParentId(42);
     });
     expect(Object.keys(result.current.images)).toHaveLength(2);
@@ -162,7 +160,6 @@ describe('usePeriscopeChat', () => {
 
     expect(result.current.images).toEqual({});
     expect(result.current.mode).toBe('read');
-    expect(result.current.context).toBe('');
     expect(result.current.parentId).toBeNull();
     expect(mockRevokeObjectURL).toHaveBeenCalledTimes(2);
   });

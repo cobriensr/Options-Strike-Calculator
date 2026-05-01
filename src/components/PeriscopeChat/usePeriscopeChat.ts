@@ -2,8 +2,8 @@
  * State + submission hook for the Periscope Chat panel.
  *
  * Manages: mode (read|debrief), the per-kind staged image map, optional
- * context note, optional parent_id, and the in-flight / response /
- * error lifecycle for `POST /api/periscope-chat`.
+ * parent_id, and the in-flight / response / error lifecycle for
+ * `POST /api/periscope-chat`.
  *
  * Lifts the NDJSON-buffering pattern from `useChartAnalysis`: the
  * endpoint streams `{"ping":true}` keepalive lines + a single final
@@ -60,7 +60,6 @@ export interface UsePeriscopeChatResult {
   // State
   mode: PeriscopeMode;
   images: Partial<Record<PeriscopeImageKind, UploadedPeriscopeImage>>;
-  context: string;
   parentId: number | null;
   inFlight: boolean;
   elapsedMs: number;
@@ -68,7 +67,6 @@ export interface UsePeriscopeChatResult {
   error: string | null;
   // Setters
   setMode: (next: PeriscopeMode) => void;
-  setContext: (next: string) => void;
   setParentId: (next: number | null) => void;
   setImage: (kind: PeriscopeImageKind, file: File | null) => void;
   // Actions
@@ -81,7 +79,6 @@ export function usePeriscopeChat(): UsePeriscopeChatResult {
   const [images, setImages] = useState<
     Partial<Record<PeriscopeImageKind, UploadedPeriscopeImage>>
   >({});
-  const [context, setContext] = useState('');
   const [parentId, setParentId] = useState<number | null>(null);
   const [inFlight, setInFlight] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
@@ -170,7 +167,6 @@ export function usePeriscopeChat(): UsePeriscopeChatResult {
     }
     setImages({});
     setMode('read');
-    setContext('');
     setParentId(null);
     setResponse(null);
     setError(null);
@@ -204,7 +200,6 @@ export function usePeriscopeChat(): UsePeriscopeChatResult {
       const body = {
         mode,
         images: imagesPayload,
-        ...(context.trim() && { context: context.trim() }),
         ...(parentId != null && { parentId }),
       };
 
@@ -254,19 +249,17 @@ export function usePeriscopeChat(): UsePeriscopeChatResult {
     } finally {
       setInFlight(false);
     }
-  }, [context, images, mode, parentId]);
+  }, [images, mode, parentId]);
 
   return {
     mode,
     images,
-    context,
     parentId,
     inFlight,
     elapsedMs,
     response,
     error,
     setMode,
-    setContext,
     setParentId,
     setImage,
     submit,

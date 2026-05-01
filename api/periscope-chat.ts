@@ -7,7 +7,14 @@
  * the `periscope` skill. Response + embedding are persisted to
  * `periscope_analyses` (migration 103) for retrieval and calibration.
  *
- * Architecture mirrors /api/trace-live-analyze:
+ * Architecture mirrors /api/trace-live-analyze, with one extension
+ * (Phase 9 — two Opus 4.7 calls per submission):
+ *   - Pass 1 (extractChartStructure): a fast vision-only Opus call
+ *     reads the spot + cone bounds from the chart screenshot. The
+ *     extracted fingerprint feeds the retrieval embedding so we
+ *     match past reads by chart topology, not by prose context note.
+ *   - Pass 2 (callModel): the full analysis with calibration +
+ *     retrieval blocks injected as cached system prefixes.
  *   - NDJSON streaming response with 30s keepalive pings (Opus 4.7 +
  *     adaptive thinking high effort can take 3-9 minutes; non-streaming
  *     POST gets killed by intermediate proxies at ~5 min idle).
@@ -58,6 +65,7 @@ import {
 } from './_lib/periscope-db.js';
 import { buildCalibrationBlock } from './_lib/periscope-calibration.js';
 import { buildRetrievalBlock } from './_lib/periscope-retrieval.js';
+import { extractChartStructure } from './_lib/periscope-extract.js';
 
 // 780s ceiling matches /api/analyze and /api/trace-live-analyze. Opus
 // 4.7 with adaptive-thinking high-effort + 3 images can take 5-9 min on
@@ -106,12 +114,12 @@ interface CallResult {
 }
 
 /**
- * Build the user message content blocks: optional context text +
- * image blocks. Periscope screenshots are PNG/JPEG/GIF/WEBP base64.
+ * Build the user message content blocks: a small text preamble
+ * (mode + linkage) followed by labelled image blocks. Periscope
+ * screenshots are PNG/JPEG/GIF/WEBP base64.
  */
 function buildUserContent(args: {
   mode: PeriscopeMode;
-  context: string | undefined;
   parentId: number | null | undefined;
   images: Array<{
     kind: 'chart' | 'gex' | 'charm';
@@ -119,19 +127,16 @@ function buildUserContent(args: {
     mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
   }>;
 }): Anthropic.Messages.ContentBlockParam[] {
-  const { mode, context, parentId, images } = args;
+  const { mode, parentId, images } = args;
 
   const blocks: Anthropic.Messages.ContentBlockParam[] = [];
 
   // Mode + linkage preamble. Tells Claude whether this is an open read
-  // or a debrief, and whether a parent read exists (the context for
-  // a debrief is the read that preceded it).
+  // or a debrief, and whether a parent read exists (a debrief's
+  // context is the read that preceded it).
   const preamble = [
     `Mode: ${mode}`,
     parentId != null ? `Parent read id: ${parentId}` : null,
-    context != null && context.trim()
-      ? `User context: ${context.trim()}`
-      : null,
   ]
     .filter((line): line is string => line != null)
     .join('\n');
@@ -318,6 +323,30 @@ function parseStructuredFields(text: string): {
   return { prose, structured };
 }
 
+/**
+ * Build a short prose-shaped sentence carrying the extracted structural
+ * levels. Used as the proseText input to buildPeriscopeSummary when
+ * constructing the retrieval query, so the query embedding overlaps
+ * semantically with stored rows whose actual prose discusses similar
+ * spot / cone levels. Drops fields that came back null to keep the
+ * sentence terse and avoid embedding the literal word "null".
+ */
+function synthesizeStructuralProse(s: PeriscopeStructuredFields): string {
+  const parts: string[] = [];
+  if (s.spot != null) parts.push(`spot at ${s.spot}`);
+  if (s.cone_lower != null && s.cone_upper != null) {
+    parts.push(
+      `the 0DTE straddle cone bounded between ${s.cone_lower} and ${s.cone_upper}`,
+    );
+  } else if (s.cone_lower != null) {
+    parts.push(`cone lower bound at ${s.cone_lower}`);
+  } else if (s.cone_upper != null) {
+    parts.push(`cone upper bound at ${s.cone_upper}`);
+  }
+  if (parts.length === 0) return '';
+  return `0DTE SPX Periscope read with ${parts.join(' and ')}.`;
+}
+
 async function buildEmbeddingBestEffort(args: {
   mode: PeriscopeMode;
   tradingDate: string;
@@ -382,26 +411,74 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const tradingDate = capturedAt.slice(0, 10);
   const userContent = buildUserContent({
     mode: body.mode,
-    context: body.context,
     parentId: body.parentId ?? null,
     images: body.images,
   });
   const startTs = Date.now();
 
   try {
-    // Calibration + retrieval blocks fetched in parallel. Both are
-    // best-effort (return null on any DB / embedding error). Calibration
-    // is from gold-starred rows; retrieval is from embedding similarity
-    // to the user context note. Skipped entirely when prerequisites
-    // aren't met, so an empty calibration library or empty context
-    // doesn't slow anything down.
-    const [calibrationBlock, retrievalBlock] = await Promise.all([
+    // Phase 9 — two Opus 4.7 calls per submission:
+    //   Pass 1 (extractChartStructure): vision-only extraction of spot +
+    //          cone bounds from the chart screenshot. Drives retrieval
+    //          embedding so we match past reads by chart topology rather
+    //          than by the user's prose context note.
+    //   Pass 2 (callModel): the full analysis with calibration + retrieval
+    //          blocks injected as cached system prefixes.
+    //
+    // Extraction runs in parallel with the calibration fetch (independent
+    // work). Retrieval depends on extraction output, so it's sequential
+    // afterward. When extraction fails, we fall back to embedding the
+    // user's prose context note (the legacy Phase 8 path).
+    const [extractedStructure, calibrationBlock] = await Promise.all([
+      extractChartStructure({ images: body.images }),
       buildCalibrationBlock(body.mode),
-      buildRetrievalBlock({
-        mode: body.mode,
-        userContext: body.context ?? null,
-      }),
     ]);
+
+    // Build the retrieval query text. When extraction succeeded, use the
+    // structural summary so the query embedding has the same shape as
+    // stored embeddings (both are buildPeriscopeSummary outputs).
+    //
+    // Important: stored rows carry an 800-char prose excerpt that
+    // dominates the cosine similarity. If we left proseText='' here, the
+    // query vector would be all-structure / no-prose and would mostly
+    // retrieve rows whose tails happen to coincide rather than rows with
+    // analogous structure. We synthesize a short prose sentence carrying
+    // the same structural levels so the query has a prose-shaped tail
+    // that semantically overlaps with reads whose actual prose discusses
+    // similar spot / cone levels. Cheap, no migration required.
+    //
+    // If extraction failed, retrieval is skipped entirely.
+    const retrievalQueryText: string | null = extractedStructure
+      ? buildPeriscopeSummary({
+          mode: body.mode,
+          tradingDate,
+          structured: extractedStructure,
+          proseText: synthesizeStructuralProse(extractedStructure),
+        })
+      : null;
+
+    const retrievalBlock = await buildRetrievalBlock({
+      mode: body.mode,
+      userContext: retrievalQueryText,
+    });
+
+    if (extractedStructure) {
+      logger.info(
+        {
+          mode: body.mode,
+          spot: extractedStructure.spot,
+          cone_lower: extractedStructure.cone_lower,
+          cone_upper: extractedStructure.cone_upper,
+        },
+        'periscope-chat extraction succeeded',
+      );
+    } else {
+      logger.warn(
+        { mode: body.mode },
+        'periscope-chat extraction failed — retrieval skipped',
+      );
+    }
+
     const result = await callModel(
       userContent,
       calibrationBlock,
@@ -464,7 +541,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       tradingDate,
       mode: body.mode,
       parentId: body.parentId ?? null,
-      userContext: body.context ?? null,
+      userContext: null,
       imageUrls,
       proseText: prose,
       fullResponse: result.raw,

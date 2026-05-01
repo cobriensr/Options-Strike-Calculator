@@ -469,10 +469,6 @@ export const periscopeChatBodySchema = z
         3,
         'Maximum 3 images allowed (chart + GEX heat map + charm heat map)',
       ),
-    context: z
-      .string()
-      .max(4000, 'Context too long (max 4000 chars)')
-      .optional(),
     parentId: z.number().int().positive().finite().nullable().optional(),
   })
   .refine(

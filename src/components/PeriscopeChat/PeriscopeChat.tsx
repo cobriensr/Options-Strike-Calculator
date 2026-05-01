@@ -3,8 +3,8 @@
  *
  * Manual upload of 1-3 Periscope screenshots → Claude analysis via the
  * `periscope` skill. Mode toggle (Read / Debrief), per-kind drag-drop
- * slots, optional context, optional parent_id (debrief mode), submit
- * button, response area showing the structured fields + the prose.
+ * slots, optional parent_id (debrief mode), submit button, response
+ * area showing the structured fields + the prose.
  *
  * State + submission live in `usePeriscopeChat`. This component is
  * presentation only.
@@ -196,14 +196,12 @@ export default function PeriscopeChat() {
   const {
     mode,
     images,
-    context,
     parentId,
     inFlight,
     elapsedMs,
     response,
     error,
     setMode,
-    setContext,
     setParentId,
     setImage,
     submit,
@@ -305,19 +303,6 @@ export default function PeriscopeChat() {
             />
           ))}
         </div>
-
-        {/* Optional context */}
-        <label className="flex flex-col gap-1 text-xs">
-          <span className="text-muted">Context (optional)</span>
-          <textarea
-            value={context}
-            onChange={(e) => setContext(e.target.value)}
-            disabled={inFlight}
-            placeholder="e.g. morning open, gap-down day, post-FOMC"
-            rows={2}
-            className="border-edge bg-surface text-primary placeholder:text-muted resize-y rounded-md border px-3 py-2 font-mono text-xs focus:border-[var(--color-accent)] focus:outline-none"
-          />
-        </label>
 
         {/* Action row */}
         <div className="flex flex-wrap items-center gap-2">
