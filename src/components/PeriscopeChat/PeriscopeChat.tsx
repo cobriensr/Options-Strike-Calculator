@@ -12,6 +12,8 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef } from 'react';
 import type { ChangeEvent, DragEvent } from 'react';
+import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { SectionBox } from '../ui/SectionBox';
 import { usePeriscopeChat } from './usePeriscopeChat.js';
 import type { PeriscopeStructuredFields } from './types.js';
@@ -30,6 +32,85 @@ export const PERISCOPE_DEBRIEF_EVENT = 'periscope:start-debrief';
 
 interface DebriefEventDetail {
   parentId: number;
+}
+
+// ============================================================
+// Markdown renderer — styled to match ChartAnalysis aesthetics
+// ============================================================
+
+/**
+ * Tailwind-styled overrides for the markdown elements Claude actually
+ * produces in periscope reads: headings, bold, lists, and GFM tables.
+ * Defined once, memoized via the module scope, and reused by every
+ * render so react-markdown doesn't re-create the components map.
+ */
+const MARKDOWN_COMPONENTS = {
+  h1: ({ children }: { children?: React.ReactNode }) => (
+    <h1 className="text-primary mt-1 mb-2 text-base font-semibold">
+      {children}
+    </h1>
+  ),
+  h2: ({ children }: { children?: React.ReactNode }) => (
+    <h2 className="text-primary mt-3 mb-1.5 text-sm font-semibold">
+      {children}
+    </h2>
+  ),
+  h3: ({ children }: { children?: React.ReactNode }) => (
+    <h3 className="text-secondary mt-2 mb-1 text-xs font-semibold tracking-wide uppercase">
+      {children}
+    </h3>
+  ),
+  p: ({ children }: { children?: React.ReactNode }) => (
+    <p className="text-secondary my-1.5 text-xs leading-relaxed">{children}</p>
+  ),
+  strong: ({ children }: { children?: React.ReactNode }) => (
+    <strong className="text-primary font-semibold">{children}</strong>
+  ),
+  ul: ({ children }: { children?: React.ReactNode }) => (
+    <ul className="my-1.5 ml-4 list-disc space-y-0.5 text-xs">{children}</ul>
+  ),
+  ol: ({ children }: { children?: React.ReactNode }) => (
+    <ol className="my-1.5 ml-4 list-decimal space-y-0.5 text-xs">{children}</ol>
+  ),
+  li: ({ children }: { children?: React.ReactNode }) => (
+    <li className="text-secondary leading-relaxed">{children}</li>
+  ),
+  code: ({ children }: { children?: React.ReactNode }) => (
+    <code className="bg-surface text-primary rounded px-1 py-0.5 font-mono text-[11px]">
+      {children}
+    </code>
+  ),
+  hr: () => <hr className="border-edge my-3" />,
+  table: ({ children }: { children?: React.ReactNode }) => (
+    <div className="my-2 overflow-x-auto">
+      <table className="border-edge min-w-full border text-[11px]">
+        {children}
+      </table>
+    </div>
+  ),
+  thead: ({ children }: { children?: React.ReactNode }) => (
+    <thead className="bg-surface/60">{children}</thead>
+  ),
+  th: ({ children }: { children?: React.ReactNode }) => (
+    <th className="border-edge text-primary border px-2 py-1 text-left font-semibold">
+      {children}
+    </th>
+  ),
+  td: ({ children }: { children?: React.ReactNode }) => (
+    <td className="border-edge text-secondary border px-2 py-1">{children}</td>
+  ),
+};
+
+const REMARK_PLUGINS = [remarkGfm];
+
+function ProseView({ prose }: { prose: string }) {
+  return (
+    <div className="border-edge bg-surface/40 rounded-md border p-3">
+      <Markdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS}>
+        {prose}
+      </Markdown>
+    </div>
+  );
 }
 
 // ============================================================
@@ -269,24 +350,10 @@ export default function PeriscopeChat() {
               </button>
             ))}
           </div>
-          {mode === 'debrief' && (
-            <label className="text-muted ml-2 flex items-center gap-1 text-xs">
-              Parent read id:
-              <input
-                type="number"
-                value={parentId ?? ''}
-                onChange={(e) =>
-                  setParentId(
-                    e.target.value === ''
-                      ? null
-                      : Number.parseInt(e.target.value, 10),
-                  )
-                }
-                disabled={inFlight}
-                placeholder="(optional)"
-                className="border-edge bg-surface text-primary w-24 rounded border px-2 py-0.5 font-mono text-xs"
-              />
-            </label>
+          {mode === 'debrief' && parentId != null && (
+            <span className="text-muted ml-2 font-mono text-[10px]">
+              Linked to read #{parentId}
+            </span>
           )}
         </div>
 
@@ -349,20 +416,7 @@ export default function PeriscopeChat() {
         {response && (
           <div className="flex flex-col gap-3">
             <StructuredFieldsView fields={response.structured} />
-            <div className="border-edge bg-surface/40 text-primary rounded-md border p-3 text-sm whitespace-pre-wrap">
-              {response.prose}
-            </div>
-            <div className="text-muted flex flex-wrap gap-x-4 gap-y-1 text-[10px]">
-              <span>id: {response.id ?? '(save failed)'}</span>
-              <span>model: {response.model}</span>
-              <span>
-                tokens: {response.usage.input} in / {response.usage.output} out
-              </span>
-              <span>
-                cache: {response.usage.cacheRead} read /{' '}
-                {response.usage.cacheWrite} write
-              </span>
-            </div>
+            <ProseView prose={response.prose} />
           </div>
         )}
       </div>

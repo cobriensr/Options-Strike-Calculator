@@ -191,8 +191,13 @@ export async function savePeriscopeAnalysis(
       )
       RETURNING id
     `;
-    const id = rows[0]?.id;
-    return typeof id === 'number' ? id : null;
+    // Neon's serverless driver returns BIGSERIAL ids as strings
+    // (BigInt-safe representation). Coerce defensively, returning null
+    // only if the value is missing or not numeric.
+    const raw = rows[0]?.id;
+    if (raw == null) return null;
+    const id = Number(raw);
+    return Number.isFinite(id) ? id : null;
   } catch (err) {
     logger.error(
       { err, tradingDate, mode },

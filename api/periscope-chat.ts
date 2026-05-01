@@ -131,16 +131,36 @@ function buildUserContent(args: {
 
   const blocks: Anthropic.Messages.ContentBlockParam[] = [];
 
-  // Mode + linkage preamble. Tells Claude whether this is an open read
-  // or a debrief, and whether a parent read exists (a debrief's
-  // context is the read that preceded it).
-  const preamble = [
-    `Mode: ${mode}`,
-    parentId != null ? `Parent read id: ${parentId}` : null,
-  ]
-    .filter((line): line is string => line != null)
-    .join('\n');
-  blocks.push({ type: 'text', text: preamble });
+  // Mode-specific preamble. The skill's worked examples include hindsight
+  // checkmarks and outcome data ("Day rallied... settled 7,209.01") which
+  // the model otherwise copies into fresh Read responses — even when the
+  // chart's date matches a worked-example date by coincidence. The Read
+  // override below stops that leak. Debrief mode keeps the original
+  // behavior since hindsight/scoring IS the point there.
+  const preambleLines: string[] = [`Mode: ${mode}`];
+  if (parentId != null) preambleLines.push(`Parent read id: ${parentId}`);
+  if (mode === 'read') {
+    preambleLines.push(
+      '',
+      'YOU ARE IN READ MODE. Produce a forward-looking real-time read of the chart in front of you. Output ONLY:',
+      '  - Setup at slice end (current spot + immediate context)',
+      '  - Structural map (gamma + charm + positions levels)',
+      '  - Charm flow tally → directional bias',
+      '  - Trade thesis with bilateral triggers (long + short), stops, targets, R:R, no-trade zone',
+      '  - Regime label',
+      '  - The required JSON block at the very end',
+      '',
+      'DO NOT include any "## Debrief", "what triggered", "what actually happened", "the day delivered", settlement values, ✓ check-marks, or any hindsight scoring. Stop the response after the JSON block.',
+      '',
+      "If the chart's date or structure resembles a worked example in the skill, treat this as a fresh real-time read. The user already knows the worked-example outcomes — do not repeat them.",
+    );
+  } else {
+    preambleLines.push(
+      '',
+      'YOU ARE IN DEBRIEF MODE. Score the open read against actual price action visible in the candle chart. Honest facts only — no retroactive justification.',
+    );
+  }
+  blocks.push({ type: 'text', text: preambleLines.join('\n') });
 
   // Each image gets a label header + the image block, so Claude knows
   // which view it's looking at.
