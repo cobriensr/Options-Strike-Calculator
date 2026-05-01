@@ -8,6 +8,8 @@ import {
   spreadTypeLabel,
   cushionPct,
   formatPositionSummaryForClaude,
+  computeIronCondorMinCushion,
+  computeIronCondorPnL,
 } from '../../components/PositionMonitor/position-helpers';
 import type {
   DailyStatement,
@@ -492,5 +494,95 @@ describe('formatPositionSummaryForClaude', () => {
 
     // 1 spread + 1 IC + 1 butterfly = 3
     expect(result).toContain('3 defined-risk positions');
+  });
+});
+
+// ── computeIronCondorPnL ──────────────────────────────
+
+describe('computeIronCondorPnL', () => {
+  it('sums put + call openPnl when both wings are filled', () => {
+    const ic = {
+      putSpread: { openPnl: 120 },
+      callSpread: { openPnl: -40 },
+      maxProfit: 200,
+    };
+    const out = computeIronCondorPnL(ic);
+    expect(out.openPnl).toBe(80);
+    expect(out.pctMax).toBe(40); // 80 / 200 * 100
+  });
+
+  it('returns null openPnl + null pctMax when either wing is null', () => {
+    const ic = {
+      putSpread: { openPnl: null },
+      callSpread: { openPnl: 50 },
+      maxProfit: 200,
+    };
+    const out = computeIronCondorPnL(ic);
+    expect(out.openPnl).toBeNull();
+    expect(out.pctMax).toBeNull();
+  });
+
+  it('returns null pctMax when maxProfit is zero (avoids divide-by-zero)', () => {
+    const ic = {
+      putSpread: { openPnl: 10 },
+      callSpread: { openPnl: 10 },
+      maxProfit: 0,
+    };
+    const out = computeIronCondorPnL(ic);
+    expect(out.openPnl).toBe(20);
+    expect(out.pctMax).toBeNull();
+  });
+
+  it('handles negative openPnl (correct % can be negative)', () => {
+    const ic = {
+      putSpread: { openPnl: -50 },
+      callSpread: { openPnl: -50 },
+      maxProfit: 200,
+    };
+    const out = computeIronCondorPnL(ic);
+    expect(out.openPnl).toBe(-100);
+    expect(out.pctMax).toBe(-50);
+  });
+});
+
+// ── computeIronCondorMinCushion ───────────────────────
+
+describe('computeIronCondorMinCushion', () => {
+  function makeIc(putPct: number | null, callPct: number | null) {
+    return {
+      putSpread: makeSpread({
+        spreadType: 'PUT_CREDIT_SPREAD',
+        distanceToShortStrikePct: putPct,
+      }),
+      callSpread: makeSpread({
+        spreadType: 'CALL_CREDIT_SPREAD',
+        distanceToShortStrikePct: callPct,
+      }),
+    };
+  }
+
+  it('picks the smaller absolute cushion when both sides are present', () => {
+    const ic = makeIc(0.5, 1.2);
+    expect(computeIronCondorMinCushion(ic, 6600)).toBe(0.5);
+  });
+
+  it('uses |abs| so a negative cushion (touched) wins by magnitude', () => {
+    const ic = makeIc(-0.3, 0.9);
+    expect(computeIronCondorMinCushion(ic, 6600)).toBe(0.3);
+  });
+
+  it('falls through to whichever side is defined when one is null', () => {
+    expect(computeIronCondorMinCushion(makeIc(0.4, null), 6600)).toBe(0.4);
+    expect(computeIronCondorMinCushion(makeIc(null, 0.7), 6600)).toBe(0.7);
+  });
+
+  it('returns null when both wings have null cushion', () => {
+    expect(computeIronCondorMinCushion(makeIc(null, null), 6600)).toBeNull();
+  });
+
+  it('returns null when spot is non-positive (cushionPct guard)', () => {
+    const ic = makeIc(0.5, 0.5);
+    expect(computeIronCondorMinCushion(ic, 0)).toBeNull();
+    expect(computeIronCondorMinCushion(ic, -10)).toBeNull();
   });
 });

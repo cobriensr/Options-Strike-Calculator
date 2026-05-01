@@ -20,12 +20,14 @@ import {
   ButterflyRow,
   HedgeRows,
   NakedRows,
+} from './PositionRow';
+import {
   IronCondorCard,
   SpreadCard,
   ButterflyCard,
   HedgeCards,
   NakedCards,
-} from './PositionRow';
+} from './PositionCards';
 import { cushionPct } from './position-helpers';
 
 interface PositionTableProps {

@@ -57,6 +57,54 @@ export function cushionPct(s: Spread, spot: number): number | null {
   return s.distanceToShortStrikePct ?? null;
 }
 
+// ── Iron condor derived numbers ───────────────────────────────────────
+
+/**
+ * Sum the put-wing + call-wing open P&L and translate to a `% of max
+ * profit` figure. Both numbers go null when either wing's openPnl is
+ * unknown (the parent IC's % max collapses to "unknown").
+ *
+ * Used by both `IronCondorRow` (desktop <tr>) and `IronCondorCard`
+ * (mobile card view) — extracted here so the math has one canonical
+ * implementation.
+ */
+export function computeIronCondorPnL(ic: {
+  putSpread: { openPnl: number | null };
+  callSpread: { openPnl: number | null };
+  maxProfit: number;
+}): { openPnl: number | null; pctMax: number | null } {
+  const openPnl =
+    ic.putSpread.openPnl !== null && ic.callSpread.openPnl !== null
+      ? ic.putSpread.openPnl + ic.callSpread.openPnl
+      : null;
+  const pctMax =
+    ic.maxProfit > 0 && openPnl !== null
+      ? (openPnl / ic.maxProfit) * 100
+      : null;
+  return { openPnl, pctMax };
+}
+
+/**
+ * Pick the smaller (closer-to-touch) of the put-wing and call-wing
+ * cushions for the IC summary row. When only one wing has a defined
+ * cushion the other side falls through; when both are null the result
+ * is null.
+ */
+export function computeIronCondorMinCushion(
+  ic: {
+    putSpread: Spread;
+    callSpread: Spread;
+  },
+  spot: number,
+): number | null {
+  const putCushion = cushionPct(ic.putSpread, spot);
+  const callCushion = cushionPct(ic.callSpread, spot);
+  if (putCushion !== null && callCushion !== null) {
+    return Math.min(Math.abs(putCushion), Math.abs(callCushion));
+  }
+  return putCushion ?? callCushion;
+}
+
 /**
  * Format a parsed DailyStatement into a clean position summary
  * for Claude analysis context. Uses the spread-builder's parsed
