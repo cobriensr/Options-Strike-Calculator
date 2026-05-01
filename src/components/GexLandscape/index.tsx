@@ -54,6 +54,14 @@ import {
 } from './deltas';
 import { formatBiasForClaude } from './formatters';
 import type { PriceTrend, Snapshot } from './types';
+import { useMultiWindowDeltas } from './useMultiWindowDeltas';
+
+/**
+ * Lookback windows (in minutes) tracked by the GEX landscape Δ% display.
+ * Stable module-level array so `useMultiWindowDeltas` keeps a frozen
+ * reference and never reallocates state across renders.
+ */
+const DELTA_WINDOWS = [1, 5, 10, 15, 30] as const;
 
 const TOP5_MUTE_STORAGE_KEY = 'gex-landscape-top5-muted-v1';
 
@@ -141,21 +149,22 @@ const GexLandscape = memo(function GexLandscape({
   // Rolling buffer of recent snapshots for Δ% computations
   // (1m, 5m, 10m, 15m, 30m).
   const snapshotBufferRef = useRef<Snapshot[]>([]);
-  const [gexDeltaMap, setGexDeltaMap] = useState<Map<number, number | null>>(
-    new Map(),
-  );
-  const [gexDelta5mMap, setGexDelta5mMap] = useState<
-    Map<number, number | null>
-  >(new Map());
-  const [gexDelta10mMap, setGexDelta10mMap] = useState<
-    Map<number, number | null>
-  >(new Map());
-  const [gexDelta15mMap, setGexDelta15mMap] = useState<
-    Map<number, number | null>
-  >(new Map());
-  const [gexDelta30mMap, setGexDelta30mMap] = useState<
-    Map<number, number | null>
-  >(new Map());
+  // Keyed Δ% maps. `deltaMaps[1]`, `deltaMaps[5]`, … track strike →
+  // signed Δ% over each lookback window. The hook guarantees a non-null
+  // Map for every window passed in `DELTA_WINDOWS`; the `!` assertions
+  // below assert that contract to TypeScript (which can only see the
+  // `Record<number, …>` lookup as possibly-undefined under
+  // `noUncheckedIndexedAccess`).
+  const {
+    deltaMaps,
+    setDeltaMaps,
+    clearAll: clearDeltaMaps,
+  } = useMultiWindowDeltas(DELTA_WINDOWS);
+  const gexDeltaMap = deltaMaps[1]!;
+  const gexDelta5mMap = deltaMaps[5]!;
+  const gexDelta10mMap = deltaMaps[10]!;
+  const gexDelta15mMap = deltaMaps[15]!;
+  const gexDelta30mMap = deltaMaps[30]!;
   // 5-minute smoothed strikes — updated in the snapshot effect so the ref read
   // happens inside an effect (not during render), satisfying react-hooks/purity.
   const [smoothedRows, setSmoothedRows] = useState<GexStrikeLevel[]>([]);
@@ -315,14 +324,10 @@ const GexLandscape = memo(function GexLandscape({
   useEffect(() => {
     hasScrolledRef.current = false;
     snapshotBufferRef.current = [];
-    setGexDeltaMap(new Map());
-    setGexDelta5mMap(new Map());
-    setGexDelta10mMap(new Map());
-    setGexDelta15mMap(new Map());
-    setGexDelta30mMap(new Map());
+    clearDeltaMaps();
     setSmoothedRows([]);
     setPriceTrend(null);
-  }, [selectedDate]);
+  }, [selectedDate, clearDeltaMaps]);
 
   // Scroll ATM row into view only on initial data arrival.
   useEffect(() => {
@@ -353,30 +358,22 @@ const GexLandscape = memo(function GexLandscape({
     const buf = snapshotBufferRef.current.filter((snap) => snap.ts >= cutoff);
 
     // 1m delta — compare against the most recent buffered snapshot.
-    const prev1m = buf.at(-1);
-    setGexDeltaMap(
-      prev1m ? computeDeltaMap(strikes, prev1m.strikes) : new Map(),
-    );
-
     // 5/10/15/30m deltas — find closest snapshot for each lookback target.
     // Each map stays empty until the buffer holds a snapshot near that age,
     // so the table renders an em-dash until enough history accumulates.
+    // All five updates land in a single React commit via `setDeltaMaps`.
+    const prev1m = buf.at(-1);
     const snap5m = findClosestSnapshot(buf, now - 5 * 60 * 1000);
-    setGexDelta5mMap(
-      snap5m ? computeDeltaMap(strikes, snap5m.strikes) : new Map(),
-    );
     const snap10m = findClosestSnapshot(buf, now - 10 * 60 * 1000);
-    setGexDelta10mMap(
-      snap10m ? computeDeltaMap(strikes, snap10m.strikes) : new Map(),
-    );
     const snap15m = findClosestSnapshot(buf, now - 15 * 60 * 1000);
-    setGexDelta15mMap(
-      snap15m ? computeDeltaMap(strikes, snap15m.strikes) : new Map(),
-    );
     const snap30m = findClosestSnapshot(buf, now - 30 * 60 * 1000);
-    setGexDelta30mMap(
-      snap30m ? computeDeltaMap(strikes, snap30m.strikes) : new Map(),
-    );
+    setDeltaMaps({
+      1: prev1m ? computeDeltaMap(strikes, prev1m.strikes) : new Map(),
+      5: snap5m ? computeDeltaMap(strikes, snap5m.strikes) : new Map(),
+      10: snap10m ? computeDeltaMap(strikes, snap10m.strikes) : new Map(),
+      15: snap15m ? computeDeltaMap(strikes, snap15m.strikes) : new Map(),
+      30: snap30m ? computeDeltaMap(strikes, snap30m.strikes) : new Map(),
+    });
 
     // Push current snapshot and persist the updated buffer.
     buf.push({ strikes, ts: now });
@@ -390,7 +387,7 @@ const GexLandscape = memo(function GexLandscape({
     );
     setSmoothedRows(computeSmoothedStrikes(windowStrikes, buf, now));
     setPriceTrend(computePriceTrend(price, buf, now));
-  }, [strikes, timestamp]);
+  }, [strikes, timestamp, setDeltaMaps]);
 
   const headerRight = (
     <ScrubControls
