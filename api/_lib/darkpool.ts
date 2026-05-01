@@ -14,34 +14,18 @@
  */
 import logger from './logger.js';
 import { metrics, Sentry } from './sentry.js';
-import { getCTTime, getETDateStr } from '../../src/utils/timezone.js';
+import { getETDateStr } from '../../src/utils/timezone.js';
 import type { UwFetchOutcome } from './uw-result.js';
 import { uwFetch, parseUwHttpStatus } from './api-helpers.js';
+import {
+  passesDarkPoolQualityFilter,
+  DARK_POOL_FILTER_VERSION,
+} from './dark-pool-filter.js';
 
-const UW_BASE = 'https://api.unusualwhales.com/api';
-
-// ── Intraday-window guard ───────────────────────────────────
-
-/**
- * Regular-hours US equity session in Central Time:
- * 08:30 inclusive → 15:00 exclusive (minutes-of-day 510..900).
- *
- * `ext_hour_sold_codes` catches trades that UW flags as extended-hours,
- * but it does NOT catch regular-session-flagged trades whose `executed_at`
- * falls outside normal RTH — e.g. 06:15 CT pre-open block prints with
- * `ext_hour_sold_codes: null`. Per trader preference, those distort the
- * intraday volume profile and must be dropped before aggregation.
- */
-const INTRADAY_START_MIN_CT = 8 * 60 + 30; // 08:30 CT
-const INTRADAY_END_MIN_CT = 15 * 60; // 15:00 CT (exclusive)
-
-function isIntradayCT(executedAt: string): boolean {
-  const d = new Date(executedAt);
-  if (Number.isNaN(d.getTime())) return false;
-  const { hour, minute } = getCTTime(d);
-  const mins = hour * 60 + minute;
-  return mins >= INTRADAY_START_MIN_CT && mins < INTRADAY_END_MIN_CT;
-}
+// Re-export so adoption sites (and tests) can pick up the constant from
+// the conventional darkpool import path. The canonical home is
+// dark-pool-filter.ts; this is a passthrough.
+export { DARK_POOL_FILTER_VERSION };
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -124,41 +108,13 @@ export async function fetchDarkPoolBlocks(
       throw err;
     }
 
-    // Filter out canceled trades, extended-hours-only trades, and
-    // uncertain-price trades. Average-price and derivative-priced
-    // trades reflect a blended price over a period — they don't
-    // represent confirmed execution at the stated price, so they
-    // can inflate premium at price levels where no real institutional
-    // conviction existed.
-    //
-    // `contingent_trade` prints are pre-arranged swap resets / basket
-    // unwinds that clear on the tape at session-unrelated prices; they
-    // distort the per-level volume profile and must be dropped
-    // unconditionally. (If UW exposes further pre-arranged codes like
-    // `cross_trade` or `form_t` in the future, add them here.)
-    //
-    // The intraday-window guard drops anything that falls outside
-    // 08:30–15:00 CT — `ext_hour_sold_codes` alone misses
-    // regular-session-flagged trades that print pre-open or after 15:00.
-    //
-    // Also enforce a hard ET-date guard when a date is specified: UW's
-    // date filter can be loose, so we never trust it alone.
-    const filtered = trades.filter((t) => {
-      if (t.canceled) return false;
-      if (t.ext_hour_sold_codes) return false;
-      if (
-        t.trade_settlement !== 'regular' &&
-        t.trade_settlement !== 'regular_settlement'
-      ) {
-        return false;
-      }
-      if (t.sale_cond_codes === 'average_price_trade') return false;
-      if (t.sale_cond_codes === 'contingent_trade') return false;
-      if (t.trade_code === 'derivative_priced') return false;
-      if (!isIntradayCT(t.executed_at)) return false;
-      if (date && getETDateStr(new Date(t.executed_at)) !== date) return false;
-      return true;
-    });
+    // Quality filter — see passesDarkPoolQualityFilter for the full
+    // rationale on each disqualifying condition (canceled, ext_hour,
+    // contingent_trade, etc.). Centralized so the two pagination call
+    // sites can't drift apart again.
+    const filtered = trades.filter((t) =>
+      passesDarkPoolQualityFilter(t, { date }),
+    );
 
     if (filtered.length === 0) return { kind: 'empty' };
     return { kind: 'ok', data: filtered };
@@ -208,80 +164,86 @@ export async function fetchAllDarkPoolTrades(
   let olderThan: number | undefined;
   let paginationError: string | null = null;
 
-  try {
-    for (let page = 0; page < maxPages; page++) {
-      const params = new URLSearchParams({
-        min_premium: '0',
-        limit: '500',
-      });
-      if (date) params.set('date', date);
-      if (newerThan != null) params.set('newer_than', String(newerThan));
-      if (olderThan != null) params.set('older_than', String(olderThan));
+  // Pagination loop: each page goes through uwFetch() so the rate +
+  // concurrency gates apply (the previous raw fetch() bypassed both,
+  // silently violating UW's per-second concurrency cap). uwFetch throws
+  // for non-OK responses with the HTTP status embedded in the message
+  // (e.g. "UW API 503: ..."); we catch, parse, and surface the same
+  // Sentry warning + log shape the prior raw-fetch path emitted, then
+  // either rethrow (first-page failure) or break (mid-pagination, keep
+  // partial data).
+  for (let page = 0; page < maxPages; page++) {
+    const params = new URLSearchParams({
+      min_premium: '0',
+      limit: '500',
+    });
+    if (date) params.set('date', date);
+    if (newerThan != null) params.set('newer_than', String(newerThan));
+    if (olderThan != null) params.set('older_than', String(olderThan));
 
-      const res = await fetch(`${UW_BASE}/darkpool/SPY?${params}`, {
-        headers: { Authorization: `Bearer ${apiKey}` },
-        signal: AbortSignal.timeout(15_000),
-      });
-
-      if (!res.ok) {
-        const text = await res
-          .text()
-          .catch((e) => `[parse error: ${(e as Error).message}]`);
+    let batch: DarkPoolTrade[];
+    try {
+      batch = await uwFetch<DarkPoolTrade>(apiKey, `/darkpool/SPY?${params}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'network error';
+      const status = parseUwHttpStatus(msg);
+      if (status != null) {
         logger.warn(
-          { status: res.status, body: text.slice(0, 200), page },
+          { status, body: msg.slice(0, 200), page },
           'Dark pool paginated fetch non-OK',
         );
         Sentry.captureMessage('Dark pool paginated fetch non-OK', {
           level: 'warning',
           extra: {
-            status: res.status,
-            body: text.slice(0, 200),
+            status,
+            body: msg.slice(0, 200),
             page,
             fetched: all.length,
           },
         });
-        paginationError = `HTTP ${res.status}`;
+        paginationError = `HTTP ${status}`;
         break;
       }
-
-      const body = await res.json();
-      const batch: DarkPoolTrade[] = body.data ?? [];
-
-      if (batch.length === 0) break;
-
-      all.push(...batch);
-
-      // Use the oldest trade's timestamp as the cursor for the next page
-      const oldest = batch.at(-1);
-      if (!oldest) break;
-
-      // Defense in depth: if the oldest trade in this page has already
-      // crossed the requested ET date boundary, stop paginating. UW's
-      // `date` parameter can be loose when combined with `older_than`,
-      // and without this guard the loop walks backward into prior sessions
-      // and pollutes today's aggregates with yesterday's tape.
-      if (date) {
-        const oldestEtDate = getETDateStr(new Date(oldest.executed_at));
-        if (oldestEtDate < date) break;
-      }
-
-      const oldestTs = Math.floor(
-        new Date(oldest.executed_at).getTime() / 1000,
-      );
-      // If cursor didn't advance, we're stuck — stop
-      if (olderThan != null && oldestTs >= olderThan) break;
-      olderThan = oldestTs;
-
-      // Less than 500 means we got the last page
-      if (batch.length < 500) break;
-
-      // Rate limit: UW allows 120 req/60s. 600ms between pages = ~1.7/sec.
-      await new Promise((r) => setTimeout(r, 600));
+      // Network / unexpected throw: log + capture + rethrow with the
+      // partial-progress count so the cron's withRetry can decide what
+      // to do.
+      logger.error({ err, fetched: all.length }, 'Dark pool pagination error');
+      Sentry.captureException(err, { extra: { fetched: all.length } });
+      throw err;
     }
-  } catch (err) {
-    logger.error({ err, fetched: all.length }, 'Dark pool pagination error');
-    Sentry.captureException(err, { extra: { fetched: all.length } });
-    throw err;
+
+    if (batch.length === 0) break;
+
+    all.push(...batch);
+
+    // Use the oldest trade's timestamp as the cursor for the next page
+    const oldest = batch.at(-1);
+    if (!oldest) break;
+
+    // Defense in depth: if the oldest trade in this page has already
+    // crossed the requested ET date boundary, stop paginating. UW's
+    // `date` parameter can be loose when combined with `older_than`,
+    // and without this guard the loop walks backward into prior sessions
+    // and pollutes today's aggregates with yesterday's tape.
+    if (date) {
+      const oldestEtDate = getETDateStr(new Date(oldest.executed_at));
+      if (oldestEtDate < date) break;
+    }
+
+    const oldestTs = Math.floor(
+      new Date(oldest.executed_at).getTime() / 1000,
+    );
+    // If cursor didn't advance, we're stuck — stop
+    if (olderThan != null && oldestTs >= olderThan) break;
+    olderThan = oldestTs;
+
+    // Less than 500 means we got the last page
+    if (batch.length < 500) break;
+
+    // Inter-page sleep: uwFetch's rate gate handles the cumulative
+    // budget (100/min), but we keep a small spacer to play nice with
+    // upstream Envoy under burst pressure.
+    await new Promise((r) => setTimeout(r, 600));
   }
 
   // If the very first page failed and we collected nothing, throw so
@@ -294,27 +256,12 @@ export async function fetchAllDarkPoolTrades(
     throw new Error(`UW dark pool fetch failed: ${paginationError}`);
   }
 
-  // Apply the same quality filters, plus a hard ET-date guard.
-  // The date guard is defense in depth against UW's date/older_than
-  // interaction so a contaminated page still can't reach the DB.
-  // See `fetchDarkPoolBlocks` for the rationale on each filter —
-  // the two chains must stay in sync.
-  const filtered = all.filter((t) => {
-    if (t.canceled) return false;
-    if (t.ext_hour_sold_codes) return false;
-    if (
-      t.trade_settlement !== 'regular' &&
-      t.trade_settlement !== 'regular_settlement'
-    ) {
-      return false;
-    }
-    if (t.sale_cond_codes === 'average_price_trade') return false;
-    if (t.sale_cond_codes === 'contingent_trade') return false;
-    if (t.trade_code === 'derivative_priced') return false;
-    if (!isIntradayCT(t.executed_at)) return false;
-    if (date && getETDateStr(new Date(t.executed_at)) !== date) return false;
-    return true;
-  });
+  // Quality filter — see passesDarkPoolQualityFilter for the full
+  // rationale on each disqualifying condition. Centralized so the two
+  // pagination call sites can't drift apart again.
+  const filtered = all.filter((t) =>
+    passesDarkPoolQualityFilter(t, { date }),
+  );
 
   if (filtered.length === 0) return { kind: 'empty' };
   return { kind: 'ok', data: filtered };

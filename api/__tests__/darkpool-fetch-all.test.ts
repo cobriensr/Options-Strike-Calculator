@@ -29,6 +29,10 @@ vi.mock('../_lib/sentry.js', () => ({
     dbSave: vi.fn(),
     request: vi.fn(() => vi.fn()),
     increment: vi.fn(),
+    // Phase 1e: pagination now routes through uwFetch(), which records
+    // 429 hits via metrics.uwRateLimit. Tests with mocked 429 responses
+    // need this stub so the metrics call doesn't crash.
+    uwRateLimit: vi.fn(),
   },
 }));
 
