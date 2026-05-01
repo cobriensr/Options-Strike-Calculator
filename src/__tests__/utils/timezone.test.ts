@@ -12,6 +12,8 @@ import {
   getETMarketOpenUtcIso,
   getETCloseUtcIso,
   ctWallClockToUtcIso,
+  etWallClockToUtcIso,
+  wallClockToUtcIso,
 } from '../../utils/timezone';
 
 describe('timezone utilities', () => {
@@ -343,6 +345,61 @@ describe('timezone utilities', () => {
       expect(ctWallClockToUtcIso('not-a-date', 0)).toBeNull();
       expect(ctWallClockToUtcIso('2026-13-01', 0)).toBeNull();
       expect(ctWallClockToUtcIso('', 0)).toBeNull();
+    });
+  });
+
+  // ── Phase 3f: shared wallClockToUtcIso core ──────────────────────────
+  // Direct coverage for the shared implementation that powers both
+  // etWallClockToUtcIso and ctWallClockToUtcIso. The wrappers are now
+  // 1-line passthroughs, so any divergence between the two surfaces would
+  // be caught here at the core level rather than separately per zone.
+
+  describe('wallClockToUtcIso (shared core)', () => {
+    // Re-derive the production formatters via the same Intl config so the
+    // test exercises the public-facing offset semantics without reaching
+    // into the module's private formatter constants.
+    const ET = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      timeZoneName: 'shortOffset',
+      year: 'numeric',
+    });
+    const CT = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Chicago',
+      timeZoneName: 'shortOffset',
+      year: 'numeric',
+    });
+
+    it('produces the same result as etWallClockToUtcIso when given the ET formatter', () => {
+      const direct = wallClockToUtcIso('2026-04-17', 9 * 60 + 30, ET);
+      const wrapper = etWallClockToUtcIso('2026-04-17', 9 * 60 + 30);
+      expect(direct).toBe(wrapper);
+    });
+
+    it('produces the same result as ctWallClockToUtcIso when given the CT formatter', () => {
+      const direct = wallClockToUtcIso('2026-04-17', 16 * 60, CT);
+      const wrapper = ctWallClockToUtcIso('2026-04-17', 16 * 60);
+      expect(direct).toBe(wrapper);
+    });
+
+    it('handles the 2026 spring-forward DST boundary correctly', () => {
+      // 2026-03-08 is the US spring-forward day. 9:00 AM CT is solidly
+      // after the 2 AM transition, so CT is on CDT (GMT-5).
+      // 9:00 AM CDT = 14:00 UTC.
+      expect(wallClockToUtcIso('2026-03-08', 9 * 60, CT)).toBe(
+        '2026-03-08T14:00:00.000Z',
+      );
+    });
+
+    it('handles a near-midnight wall-clock that wraps the UTC day', () => {
+      // 11:30 PM CDT on 2026-04-17 is 04:30 UTC on 2026-04-18 (CDT = GMT-5).
+      const result = wallClockToUtcIso('2026-04-17', 23 * 60 + 30, CT);
+      expect(result).toBe('2026-04-18T04:30:00.000Z');
+    });
+
+    it('returns null for malformed inputs regardless of formatter', () => {
+      expect(wallClockToUtcIso('not-a-date', 0, ET)).toBeNull();
+      expect(wallClockToUtcIso('2026-13-01', 0, CT)).toBeNull();
+      expect(wallClockToUtcIso('', 0, ET)).toBeNull();
     });
   });
 });

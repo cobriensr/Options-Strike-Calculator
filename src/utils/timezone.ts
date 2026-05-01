@@ -107,6 +107,7 @@ export function getETTotalMinutes(date: Date): number {
 }
 
 const DATE_STR_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const GMT_OFFSET_RE = /GMT([+-]\d+)(?::(\d+))?/;
 
 /**
  * Get the day of week (0=Sun, 6=Sat) for a YYYY-MM-DD date string.
@@ -209,14 +210,23 @@ export function getETCloseUtcIso(dateStr: string): string | null {
 }
 
 /**
- * Shared helper: convert an ET wall-clock minute-of-day on a given ET
- * calendar date into the corresponding UTC ISO string. Probes ET's UTC
- * offset at noon via Intl.DateTimeFormat, so the result is correct across
- * both DST phases and any future TZ rule changes.
+ * Shared core: convert a wall-clock minute-of-day on a given calendar
+ * date into the corresponding UTC ISO string, given a formatter
+ * configured for the source timezone. Probes the zone's UTC offset at
+ * noon on the given date via `Intl.DateTimeFormat`, so the result is
+ * correct across both DST phases and any future TZ rule changes.
+ *
+ * Public callers should use the typed wrappers (`etWallClockToUtcIso`,
+ * `ctWallClockToUtcIso`) — exposed primarily so additional zones can
+ * plug in by passing their own pre-built `shortOffset` formatter.
+ *
+ * Returns `null` when `dateStr` is not a well-formed YYYY-MM-DD string
+ * or denotes an invalid date (e.g. '2026-13-01').
  */
-export function etWallClockToUtcIso(
+export function wallClockToUtcIso(
   dateStr: string,
-  etMinutesPastMidnight: number,
+  minutesPastMidnight: number,
+  formatter: Intl.DateTimeFormat,
 ): string | null {
   const dateMatch = DATE_STR_RE.exec(dateStr);
   if (!dateMatch) return null;
@@ -224,11 +234,11 @@ export function etWallClockToUtcIso(
   const month = Number(dateMatch[2]);
   const day = Number(dateMatch[3]);
 
-  // Probe ET's UTC offset at noon on the given date. Noon is safely
-  // inside the day even when DST transitions at 2 AM.
+  // Probe the zone's UTC offset at noon on the given date. Noon is
+  // safely inside the day even when DST transitions at 2 AM.
   const probe = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
   if (Number.isNaN(probe.getTime())) return null;
-  // Reject roll-overs from invalid components (e.g. '2026-13-01' ->
+  // Reject roll-overs from invalid components (e.g. '2026-13-01' →
   // Date.UTC wraps it to Jan 2027). The probe Date would still be valid,
   // so we validate each component against the reconstructed date.
   if (
@@ -239,22 +249,23 @@ export function etWallClockToUtcIso(
     return null;
   }
 
-  const parts = extractParts(ET_OFFSET_FORMATTER, probe);
+  const parts = extractParts(formatter, probe);
   const tzName = parts.timeZoneName ?? '';
-  // tzName is like "GMT-4" (EDT) or "GMT-5" (EST); parse the signed hour.
-  const offsetParsed = /GMT([+-]\d+)(?::(\d+))?/.exec(tzName);
+  // tzName is like "GMT-4" (EDT/CDT) or "GMT-5" (EST/CST); parse the
+  // signed hour and optional ":mm" suffix (some zones use 30/45 min).
+  const offsetParsed = GMT_OFFSET_RE.exec(tzName);
   if (!offsetParsed) return null;
   const offsetHours = Number.parseInt(offsetParsed[1]!, 10);
   const offsetMinutes = offsetParsed[2]
     ? Number.parseInt(offsetParsed[2], 10)
     : 0;
-  // Offset direction: "GMT-4" means ET is 4 hours *behind* UTC, so UTC =
-  // ET + 4 hours. 9:30 AM ET + 4h = 13:30 UTC.
+  // Offset direction: "GMT-4" means the zone is 4 hours *behind* UTC,
+  // so UTC = wall-clock + 4 hours. 9:30 AM ET (GMT-4) + 4h = 13:30 UTC.
   const signedOffsetMin =
     (offsetHours < 0 ? -1 : 1) * (Math.abs(offsetHours) * 60 + offsetMinutes);
-  // UTC minutes past UTC-midnight = ET minutes - signedOffsetMin.
-  // (When offset is -4h = -240, 570 ET-min -> 570 - (-240) = 810 = 13:30 UTC.)
-  const utcTotalMin = etMinutesPastMidnight - signedOffsetMin;
+  // UTC minutes past UTC-midnight = wall-clock minutes - signedOffsetMin.
+  // (When offset is -4h = -240, 570 ET-min → 570 - (-240) = 810 = 13:30 UTC.)
+  const utcTotalMin = minutesPastMidnight - signedOffsetMin;
   const utcHour = Math.floor(utcTotalMin / 60);
   const utcMinute = utcTotalMin % 60;
   // Construct the UTC ISO string directly (avoids Date's local-TZ trap).
@@ -264,9 +275,20 @@ export function etWallClockToUtcIso(
 }
 
 /**
- * Convert a CT wall-clock minute-of-day on a given CT calendar date into
- * the corresponding UTC ISO string. DST-safe — probes CT's UTC offset at
- * noon via Intl.DateTimeFormat.
+ * Convert an ET wall-clock minute-of-day on a given ET calendar date
+ * into the corresponding UTC ISO string. DST-safe via
+ * `wallClockToUtcIso`'s offset-probing strategy.
+ */
+export function etWallClockToUtcIso(
+  dateStr: string,
+  etMinutesPastMidnight: number,
+): string | null {
+  return wallClockToUtcIso(dateStr, etMinutesPastMidnight, ET_OFFSET_FORMATTER);
+}
+
+/**
+ * Convert a CT wall-clock minute-of-day on a given CT calendar date
+ * into the corresponding UTC ISO string. DST-safe.
  *
  * Use this when accepting CT-anchored input (e.g. an `<input type="time">`
  * or `datetime-local` whose value the UI labels as Central Time) and
@@ -277,45 +299,12 @@ export function etWallClockToUtcIso(
  *
  * Example: '2026-04-17' (CDT) + 9*60+30 -> '2026-04-17T14:30:00.000Z'
  *          '2026-01-15' (CST) + 9*60+30 -> '2026-01-15T15:30:00.000Z'
- *
- * Returns `null` when the input is malformed.
  */
 export function ctWallClockToUtcIso(
   dateStr: string,
   ctMinutesPastMidnight: number,
 ): string | null {
-  const dateMatch = DATE_STR_RE.exec(dateStr);
-  if (!dateMatch) return null;
-  const year = Number(dateMatch[1]);
-  const month = Number(dateMatch[2]);
-  const day = Number(dateMatch[3]);
-
-  const probe = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
-  if (Number.isNaN(probe.getTime())) return null;
-  if (
-    probe.getUTCFullYear() !== year ||
-    probe.getUTCMonth() !== month - 1 ||
-    probe.getUTCDate() !== day
-  ) {
-    return null;
-  }
-
-  const parts = extractParts(CT_OFFSET_FORMATTER, probe);
-  const tzName = parts.timeZoneName ?? '';
-  const offsetParsed = /GMT([+-]\d+)(?::(\d+))?/.exec(tzName);
-  if (!offsetParsed) return null;
-  const offsetHours = Number.parseInt(offsetParsed[1]!, 10);
-  const offsetMinutes = offsetParsed[2]
-    ? Number.parseInt(offsetParsed[2], 10)
-    : 0;
-  const signedOffsetMin =
-    (offsetHours < 0 ? -1 : 1) * (Math.abs(offsetHours) * 60 + offsetMinutes);
-  const utcTotalMin = ctMinutesPastMidnight - signedOffsetMin;
-  const utcHour = Math.floor(utcTotalMin / 60);
-  const utcMinute = utcTotalMin % 60;
-  return new Date(
-    Date.UTC(year, month - 1, day, utcHour, utcMinute, 0, 0),
-  ).toISOString();
+  return wallClockToUtcIso(dateStr, ctMinutesPastMidnight, CT_OFFSET_FORMATTER);
 }
 
 /**
