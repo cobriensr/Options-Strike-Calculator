@@ -210,6 +210,10 @@
     "api/trace-live-analyze.ts": {
       "maxDuration": 780,
       "includeFiles": ".claude/skills/**/SKILL.md"
+    },
+    "api/periscope-chat.ts": {
+      "maxDuration": 780,
+      "includeFiles": ".claude/skills/**/SKILL.md"
     }
   },
   "installCommand": "npm install --loglevel=error --no-audit --no-fund",
