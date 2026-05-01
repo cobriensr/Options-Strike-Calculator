@@ -127,10 +127,7 @@ export interface EvaluateTriggersInput {
  * evaluator body because every branch (ACTIVE, ARMED, DISTANT, BLOCKED)
  * needed them and was previously inlining all three identically.
  */
-const TRIGGER_META: Record<
-  TriggerId,
-  { name: string; condition: string }
-> = {
+const TRIGGER_META: Record<TriggerId, { name: string; condition: string }> = {
   'fade-call-wall': {
     name: 'Fade call wall',
     condition:

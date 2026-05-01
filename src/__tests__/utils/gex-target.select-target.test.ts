@@ -118,7 +118,9 @@ const ZERO_PRICE_CTX: PriceMovementContext = {
  *
  * `deltaGex_5m > 0` AND `gexDollars > 0` (call wall) ⇒ wall is growing.
  */
-function strongCallWall(overrides: Partial<MagnetFeatures> = {}): MagnetFeatures {
+function strongCallWall(
+  overrides: Partial<MagnetFeatures> = {},
+): MagnetFeatures {
   return makeFeatures({
     spot: 5000,
     distFromSpot: 25,

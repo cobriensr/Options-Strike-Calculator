@@ -51,7 +51,9 @@ function renderHeader(
 describe('SortableHeader', () => {
   it('renders the column label inside a button', () => {
     renderHeader({ label: 'Premium' });
-    expect(screen.getByRole('button', { name: /premium/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /premium/i }),
+    ).toBeInTheDocument();
   });
 
   it('aria-sort is "descending" when active and direction is desc', () => {
