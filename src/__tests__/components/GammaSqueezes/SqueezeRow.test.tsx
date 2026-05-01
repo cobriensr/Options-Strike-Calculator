@@ -33,6 +33,7 @@ function makeRow(over: Partial<GammaSqueezeRow> = {}): GammaSqueezeRow {
     hhiNeighborhood: null,
     ivMorningVolCorr: null,
     precisionStackPass: false,
+    tapeAgreement: { signals: [], agreeCount: 0, total: 0 },
     ...over,
   };
 }
@@ -87,9 +88,11 @@ describe('SqueezeRow', () => {
   it('renders net-gamma sign with the correct title', () => {
     render(<SqueezeRow squeeze={makeActive({ netGammaSign: 'short' })} />);
     const ndg = screen.getByText(/γ short/);
+    // Tooltip lead-in expanded with the precision-stack release; we still
+    // assert the core "NET SHORT gamma" copy survives.
     expect(ndg).toHaveAttribute(
       'title',
-      expect.stringContaining('Dealers net SHORT gamma'),
+      expect.stringContaining('NET SHORT gamma'),
     );
   });
 

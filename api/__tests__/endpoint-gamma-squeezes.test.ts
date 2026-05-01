@@ -222,8 +222,10 @@ describe('GET /api/gamma-squeezes', () => {
     };
     expect(body.latest.TSLA?.id).toBe(7);
     expect(body.latest.SPY).toBeNull();
-    // 2 calls: TSLA history + path-shape spot lookup.
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    // 4 calls: TSLA history + path-shape spot lookup +
+    // market_tide flow + market_tide_otm flow (TSLA has no per-ticker
+    // flow source and no ETF tide source, so those are skipped).
+    expect(mockSql).toHaveBeenCalledTimes(4);
   });
 
   it('returns 500 and captures to Sentry on DB error', async () => {

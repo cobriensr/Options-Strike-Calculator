@@ -70,6 +70,29 @@ export interface GammaSqueezeRow {
    * "★" badge surfaces this in the row UI.
    */
   precisionStackPass: boolean;
+  /**
+   * Tape-confirmation overlay computed per-request from same-day flow
+   * data. Each signal compares ncp vs npp in the alert's direction;
+   * UI surfaces the count as a `tape K/N` badge with a tooltip.
+   */
+  tapeAgreement: TapeAgreement;
+}
+
+export interface TapeSignalResult {
+  key: 'market_tide' | 'market_tide_otm' | 'ticker_flow' | 'etf_tide';
+  label: string;
+  /** True = agrees with side, false = disagrees, null = no data */
+  agrees: boolean | null;
+  ncp: number | null;
+  npp: number | null;
+}
+
+export interface TapeAgreement {
+  signals: TapeSignalResult[];
+  /** Count of signals that agree with the alert side. */
+  agreeCount: number;
+  /** Total signals with non-null verdicts (excludes no-data). */
+  total: number;
 }
 
 export interface GammaSqueezesResponse {

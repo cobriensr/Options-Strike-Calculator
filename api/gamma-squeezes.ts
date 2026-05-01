@@ -23,6 +23,15 @@ import {
   IV_VOL_CORR_PASS_PERCENTILE,
   quantile,
 } from './_lib/precision-stack.js';
+import {
+  etfTideSource,
+  evaluateTapeAgreement,
+  tickerFlowSource,
+  type AlertSide,
+  type FlowRow,
+  type TapeAgreement,
+} from './_lib/tape-confirmation.js';
+import { getFlowData } from './_lib/db-flow.js';
 
 const TICKERS = STRIKE_IV_TICKERS;
 type Ticker = StrikeIVTicker;
@@ -82,6 +91,14 @@ export interface GammaSqueezeRow {
    * pass — high-precision filter, low recall.
    */
   precisionStackPass: boolean;
+  /**
+   * Tape-confirmation overlay computed per-request from same-day flow
+   * data (latest market_tide / market_tide_otm / per-ticker flow / ETF
+   * tide rows). Each signal compares ncp vs npp in the alert's direction
+   * and reports agree/disagree/no-data. Soft confluence indicator only —
+   * NOT part of the precision-stack pass gate.
+   */
+  tapeAgreement: TapeAgreement;
 }
 
 export interface GammaSqueezesResponse {
@@ -176,12 +193,103 @@ function mapSqueeze(r: RawSqueezeRow): GammaSqueezeRow {
     maxCallPnlPct: parseNumOrNull(r.max_call_pnl_pct),
     hhiNeighborhood: parseNumOrNull(r.hhi_neighborhood),
     ivMorningVolCorr: parseNumOrNull(r.iv_morning_vol_corr),
-    // Filled in by attachPathShape and attachPrecisionPass after rows load.
+    // Filled in by attachPathShape, attachPrecisionPass, attachTapeAgreement after rows load.
     freshnessMin: 0,
     progressPct: null,
     isStale: false,
     precisionStackPass: false,
+    tapeAgreement: { signals: [], agreeCount: 0, total: 0 },
   };
+}
+
+/**
+ * Pull the latest row from a flow_data source for a given trade-date. The
+ * tape-confirmation overlay uses these as "as-of-now" snapshots — the
+ * frontend polls every ~30s during market hours so the badge reflects
+ * current macro tape, not the tape at fire time. Returns null when no
+ * data exists for that source/date.
+ */
+async function getLatestFlowRow(
+  source: string,
+  tradeDate: string,
+): Promise<FlowRow | null> {
+  const rows = await getFlowData(tradeDate, source);
+  if (rows.length === 0) return null;
+  const latest = rows.at(-1)!;
+  return {
+    ncp: latest.ncp,
+    npp: latest.npp,
+    netVolume: latest.netVolume,
+    otmNcp: latest.otmNcp,
+    otmNpp: latest.otmNpp,
+  };
+}
+
+/**
+ * Attach tape-agreement to each row using same-day flow_data. Buckets
+ * rows by trade-date-CT and ticker, fetches the latest flow row from
+ * each relevant source ONCE per (date, ticker) pair, then evaluates
+ * each row against that snapshot. Cannot 500 — failures stamp the
+ * default empty agreement and log to Sentry.
+ */
+async function attachTapeAgreement(
+  rowsByTicker: Map<string, GammaSqueezeRow[]>,
+): Promise<void> {
+  // Group queries by (trade_date_CT, ticker) to avoid re-fetching the
+  // same source repeatedly for events on the same day with the same
+  // ticker. Most rowsByTicker maps will already be 1 ticker per bucket
+  // but a long history can span multiple trade-dates.
+  const dateOfRow = (r: GammaSqueezeRow): string =>
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Chicago',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date(r.ts));
+
+  const cacheKey = (date: string, source: string): string =>
+    `${date}::${source}`;
+  const cache = new Map<string, FlowRow | null>();
+
+  const fetchOnce = async (
+    date: string,
+    source: string | null,
+  ): Promise<FlowRow | null> => {
+    if (source == null) return null;
+    const key = cacheKey(date, source);
+    if (cache.has(key)) return cache.get(key)!;
+    try {
+      const row = await getLatestFlowRow(source, date);
+      cache.set(key, row);
+      return row;
+    } catch (err) {
+      Sentry.captureException(err);
+      logger.warn(
+        { err, source, date },
+        'gamma-squeezes: flow-row fetch failed',
+      );
+      cache.set(key, null);
+      return null;
+    }
+  };
+
+  for (const rows of rowsByTicker.values()) {
+    for (const r of rows) {
+      const date = dateOfRow(r);
+      const [marketTide, marketTideOtm, tickerFlow, etfTide] = await Promise.all([
+        fetchOnce(date, 'market_tide'),
+        fetchOnce(date, 'market_tide_otm'),
+        fetchOnce(date, tickerFlowSource(r.ticker)),
+        fetchOnce(date, etfTideSource(r.ticker)),
+      ]);
+      r.tapeAgreement = evaluateTapeAgreement(r.side as AlertSide, {
+        marketTide,
+        marketTideOtm,
+        tickerFlow,
+        etfTide,
+      });
+    }
+  }
 }
 
 /**
@@ -190,7 +298,9 @@ function mapSqueeze(r: RawSqueezeRow): GammaSqueezeRow {
  * the in-memory result set so the flag tracks day-so-far data during live
  * trading. Mutates rows in place; returns nothing.
  */
-function attachPrecisionPass(rowsByTicker: Map<string, GammaSqueezeRow[]>): void {
+function attachPrecisionPass(
+  rowsByTicker: Map<string, GammaSqueezeRow[]>,
+): void {
   // Bucket all rows by trade_date_CT regardless of ticker — the precision
   // signal is universe-wide, not per-ticker.
   const byDate = new Map<string, GammaSqueezeRow[]>();
@@ -360,6 +470,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // percentiles from the queried result set and tags each row.
       // Pure in-memory, no DB call. Cannot fail in a way that would 500.
       attachPrecisionPass(rowsByTicker);
+
+      // Tape-confirmation overlay — fetches latest flow_data per source
+      // and per trade-date, attaches per-row agree/disagree verdict.
+      // Network query but failure-tolerant.
+      try {
+        await attachTapeAgreement(rowsByTicker);
+      } catch (err) {
+        Sentry.captureException(err);
+        logger.warn({ err }, 'gamma-squeezes: tape-agreement attach failed');
+      }
 
       const response: GammaSqueezesResponse = { mode: 'list', latest, history };
 

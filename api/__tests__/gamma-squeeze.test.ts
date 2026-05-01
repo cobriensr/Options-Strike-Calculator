@@ -102,12 +102,23 @@ const NOW = '2026-04-28T15:30:00.000Z'; // 10:30 CDT — inside gamma window.
 describe('detectGammaSqueezes', () => {
   // ── Gate 5: time-of-day ────────────────────────────────────
 
-  it('returns [] when called outside the 9-14 CT gamma window', () => {
+  it('returns [] when called outside the 9:00-13:30 CT gamma window', () => {
     const samples = makeWindow({ strike: 100, spotBase: 99 });
     const flags = detectGammaSqueezes(
       singletonMap(samples),
       'NVDA',
       '2026-04-28T20:30:00.000Z', // 15:30 CDT — past close window.
+      new Map(),
+    );
+    expect(flags).toEqual([]);
+  });
+
+  it('returns [] at exactly 13:30 CT (cutoff is exclusive)', () => {
+    const samples = makeWindow({ strike: 100, spotBase: 99 });
+    const flags = detectGammaSqueezes(
+      singletonMap(samples),
+      'NVDA',
+      '2026-04-28T18:30:00.000Z', // 13:30 CDT — at cutoff, must be excluded.
       new Map(),
     );
     expect(flags).toEqual([]);

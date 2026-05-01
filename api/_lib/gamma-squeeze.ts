@@ -112,9 +112,16 @@ export const PROX_PCT = 0.015;
  * the last 5 min (calls: positive, puts: negative).
  */
 export const TREND_PCT = 0.0005;
-/** Trading hours window (Central Time). */
+/**
+ * Trading hours window (Central Time). End is fractional — 13.5 = 13:30
+ * CT cutoff. Past 13:30 the squeeze trade has typically already played
+ * out (charm decay accelerates, gamma flips), and the EDA cohort of
+ * winning 0DTE calls had only 7/49 fires after 13:30 CT. Tightening the
+ * cutoff from 14:00 → 13:30 trades a small recall hit for cleaner
+ * actionable alerts during the high-conviction window.
+ */
 export const TOD_START_HOUR_CT = 9;
-export const TOD_END_HOUR_CT = 14;
+export const TOD_END_HOUR_CT = 13.5;
 /**
  * "Active" phase requires spot within this fraction of strike. Outside
  * this band but within PROX_PCT we're still "forming."

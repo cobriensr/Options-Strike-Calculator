@@ -8,7 +8,43 @@
  */
 
 import { useEffect, useState } from 'react';
-import type { ActiveSqueeze, GammaSqueezeSide } from './types';
+import type {
+  ActiveSqueeze,
+  GammaSqueezeSide,
+  TapeAgreement,
+} from './types';
+
+function fmtPremium(x: number | null): string {
+  if (x == null || !Number.isFinite(x)) return '—';
+  const abs = Math.abs(x);
+  const sign = x < 0 ? '−' : '';
+  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(1)}M`;
+  if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(0)}K`;
+  return `${sign}$${abs.toFixed(0)}`;
+}
+
+function tapeAgreementTooltip(side: GammaSqueezeSide, t: TapeAgreement): string {
+  const expected =
+    side === 'call'
+      ? 'For a CALL alert, each signal agrees when NCP > NPP (call premium dominating).'
+      : 'For a PUT alert, each signal agrees when NCP < NPP (put premium dominating).';
+  const lines = [
+    `Tape confirmation: ${t.agreeCount} / ${t.total} signals agree with the ${side} direction.`,
+    expected,
+    '',
+  ];
+  for (const s of t.signals) {
+    const verdict =
+      s.agrees === true ? '✓' : s.agrees === false ? '✗' : '— (no data)';
+    const values =
+      s.ncp != null && s.npp != null
+        ? `NCP ${fmtPremium(s.ncp)} vs NPP ${fmtPremium(s.npp)}`
+        : 'no data today';
+    lines.push(`  ${verdict} ${s.label}: ${values}`);
+  }
+  return lines.join('\n');
+}
 
 function fmtSignedPct(x: number, digits = 2): string {
   if (!Number.isFinite(x)) return '—';
@@ -76,7 +112,14 @@ export function SqueezeRow({ squeeze }: { readonly squeeze: ActiveSqueeze }) {
       data-testid={`squeeze-row-${squeeze.compoundKey}`}
       data-stale={isStale ? 'true' : undefined}
     >
-      <span className="text-primary font-mono text-xs font-semibold">
+      <span
+        className="text-primary font-mono text-xs font-semibold"
+        title={
+          isCall
+            ? `Call alert — squeeze setup expects spot to push UP into ${latest.strike}.`
+            : `Put alert — squeeze setup expects spot to push DOWN into ${latest.strike}.`
+        }
+      >
         {directionArrow}{' '}
         {occSymbol ? (
           <a
@@ -94,7 +137,12 @@ export function SqueezeRow({ squeeze }: { readonly squeeze: ActiveSqueeze }) {
         )}
       </span>
 
-      <span className="text-muted font-mono text-[10px]">{squeeze.expiry}</span>
+      <span
+        className="text-muted font-mono text-[10px]"
+        title="Option expiration date (0DTE = expires today)"
+      >
+        {squeeze.expiry}
+      </span>
 
       {isStale ? (
         <span
@@ -137,20 +185,35 @@ export function SqueezeRow({ squeeze }: { readonly squeeze: ActiveSqueeze }) {
       <span
         className={`rounded-md px-2 py-0.5 font-mono text-[10px] font-bold ${phaseClass}`}
         data-testid={`squeeze-phase-${latest.squeezePhase}`}
+        title={
+          latest.squeezePhase === 'active'
+            ? 'ACTIVE — velocity ≥ threshold AND spot within 0.5% of strike. Squeeze is engaged; trade window now.'
+            : latest.squeezePhase === 'forming'
+              ? 'FORMING — velocity ≥ threshold but spot still > 0.5% from strike. Setup building; wait for spot to close in.'
+              : 'EXHAUSTED — spot pierced strike OR velocity dropped below threshold. Trade window has likely passed.'
+        }
       >
         {latest.squeezePhase}
       </span>
 
       <span
         className="rounded-md bg-fuchsia-500/20 px-2 py-0.5 font-mono text-[10px] font-semibold text-fuchsia-200"
-        title="vol/OI added in last 15 minutes"
+        title={
+          `Velocity gate (Gate 1): vol/OI added in last 15 minutes. ` +
+          `Threshold to fire = 5×. Higher = more concentrated buying. ` +
+          `Current value: ${fmtRatio(latest.volOi15m)}`
+        }
       >
         vel {fmtRatio(latest.volOi15m)}
       </span>
 
       <span
         className="rounded-md bg-fuchsia-500/15 px-2 py-0.5 font-mono text-[10px] text-fuchsia-300"
-        title={`prior 15-min velocity: ${fmtRatio(latest.volOi15mPrior)}`}
+        title={
+          `Acceleration gate (Gate 2): current velocity must be ≥ 1.5× the prior 15-min velocity. ` +
+          `Prior 15-min velocity = ${fmtRatio(latest.volOi15mPrior)}. ` +
+          `Acceleration shown is the difference (current − prior).`
+        }
       >
         accel +{fmtRatio(latest.volOiAcceleration)}
       </span>
@@ -161,14 +224,22 @@ export function SqueezeRow({ squeeze }: { readonly squeeze: ActiveSqueeze }) {
             ? 'bg-emerald-500/20 text-emerald-200'
             : 'bg-amber-500/15 text-amber-300'
         } rounded-md px-2 py-0.5 font-mono text-[10px]`}
-        title={`spot ${latest.spotAtDetect.toFixed(2)} vs strike ${latest.strike}`}
+        title={
+          `Proximity gate (Gate 3): spot ${latest.spotAtDetect.toFixed(2)} vs strike ${latest.strike}. ` +
+          `Calls fire when spot is between 1.5% below and 0.5% above the strike. ` +
+          `Green = within 0.5% (active band); amber = forming (still 0.5-1.5% away).`
+        }
       >
         spot {fmtSignedPct(latest.pctFromStrike)}
       </span>
 
       <span
         className="rounded-md bg-sky-500/20 px-2 py-0.5 font-mono text-[10px] text-sky-300"
-        title="5-min spot trend"
+        title={
+          `Trend gate (Gate 4): spot move over last 5 min. ` +
+          `Calls require ≥ +0.05% (positive); puts require ≤ -0.05%. ` +
+          `Trend tells you the squeeze is moving toward the strike, not stalling.`
+        }
       >
         trend {fmtSignedPct(latest.spotTrend5m, 3)}
       </span>
@@ -177,19 +248,42 @@ export function SqueezeRow({ squeeze }: { readonly squeeze: ActiveSqueeze }) {
         className={`${ndgClass} rounded-md px-2 py-0.5 font-mono text-[10px]`}
         title={
           latest.netGammaSign === 'short'
-            ? 'Dealers net SHORT gamma at this strike — hedging amplifies moves'
+            ? 'NDG (Net Dealer Gamma) gate: dealers are NET SHORT gamma at this strike. Their hedging buys/sells AMPLIFIES the move into the strike — favored direction.'
             : latest.netGammaSign === 'unknown'
-              ? 'NDG not available for this ticker (single names lack strike_exposures)'
-              : 'Dealers net LONG gamma (should not appear; filtered upstream)'
+              ? 'NDG (Net Dealer Gamma): not available for this ticker. SPX/SPY/QQQ have strike-level NDG; single-names skip this gate.'
+              : 'NDG (Net Dealer Gamma): dealers net LONG gamma. Hedging DAMPENS moves. Should not appear here — filtered upstream by Gate 6.'
         }
       >
         γ {latest.netGammaSign}
       </span>
 
-      <span className="text-muted ml-auto font-mono text-[10px]">
+      {latest.tapeAgreement.total > 0 ? (
+        <span
+          className={`rounded-md px-2 py-0.5 font-mono text-[10px] font-semibold ${
+            latest.tapeAgreement.agreeCount === latest.tapeAgreement.total
+              ? 'bg-lime-500/25 text-lime-200'
+              : latest.tapeAgreement.agreeCount * 2 >=
+                  latest.tapeAgreement.total
+                ? 'bg-lime-500/15 text-lime-300'
+                : 'bg-rose-500/15 text-rose-300'
+          }`}
+          data-testid="squeeze-tape-agreement"
+          title={tapeAgreementTooltip(latest.side, latest.tapeAgreement)}
+        >
+          tape {latest.tapeAgreement.agreeCount}/{latest.tapeAgreement.total}
+        </span>
+      ) : null}
+
+      <span
+        className="text-muted ml-auto font-mono text-[10px]"
+        title="Number of times this compound key has fired in the active span."
+      >
         firings: {squeeze.firingCount}
       </span>
-      <span className="text-muted font-mono text-[10px]">
+      <span
+        className="text-muted font-mono text-[10px]"
+        title={`Most recent firing: ${new Date(latest.ts).toLocaleString()}`}
+      >
         last {fmtFreshness(freshnessMs)}
       </span>
     </div>

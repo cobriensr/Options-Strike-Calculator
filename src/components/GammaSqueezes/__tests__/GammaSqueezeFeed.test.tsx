@@ -76,6 +76,7 @@ function makeSqueeze(
     hhiNeighborhood: null,
     ivMorningVolCorr: null,
     precisionStackPass: false,
+    tapeAgreement: { signals: [], agreeCount: 0, total: 0 },
   };
   return {
     compoundKey: squeezeCompoundKey(base),

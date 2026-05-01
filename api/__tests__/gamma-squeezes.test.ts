@@ -169,9 +169,9 @@ describe('GET /api/gamma-squeezes', () => {
       history: Record<string, unknown[]>;
     };
     expect(body.mode).toBe('list');
-    // ticker filter narrows the bundles loop to a single SQL call;
-    // path-shape lookup adds one more (lateral spot lookup) → 2 total.
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    // SPY query path: 1 (history) + 1 (path-shape lateral spot) +
+    // 4 (tape: market_tide, market_tide_otm, spy_flow, spy_etf_tide) = 6.
+    expect(mockSql).toHaveBeenCalledTimes(6);
     expect(body.latest.SPY).toMatchObject({ id: 1 });
     expect(body.history.SPY).toHaveLength(2);
   });
