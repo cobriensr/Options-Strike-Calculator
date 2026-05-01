@@ -23,6 +23,23 @@
  *                     WHY this trigger is unavailable.
  * - RECENTLY_FIRED  — forward-compat only; Phase 1E will emit this once
  *                     the alerts system tracks recent fires.
+ *
+ * ## Internal structure (post-refactor)
+ *
+ * The body of `evaluateTriggers` is a thin orchestrator that dispatches
+ * each trigger to one of three pattern-specific helpers:
+ *
+ *   - `evaluateWallProximity` — fade-call-wall / lift-put-wall. Mirror
+ *     decision logic parameterized by direction (`'call'` vs `'put'`)
+ *     and the trend signal that suppresses the fade in that direction.
+ *   - `evaluateWallBreak` — break-call-wall / break-put-wall. Mirror
+ *     distance-sign decision logic parameterized by direction.
+ *   - `evaluateCharmDrift` — single-pattern session-window trigger.
+ *
+ * Each helper returns a fully-formed `TriggerState`. The shared
+ * `buildTriggerState` factory at the bottom of this module reduces the
+ * 8-field literal repetition that previously appeared 12+ times in the
+ * evaluator body.
  */
 
 import {
@@ -103,6 +120,44 @@ export interface EvaluateTriggersInput {
   flowSignals?: PlaybookFlowSignals | null;
 }
 
+// ── Trigger metadata ───────────────────────────────────────────────────
+
+/**
+ * Static `id`/`name`/`condition` triple per trigger. Pulled out of the
+ * evaluator body because every branch (ACTIVE, ARMED, DISTANT, BLOCKED)
+ * needed them and was previously inlining all three identically.
+ */
+const TRIGGER_META: Record<
+  TriggerId,
+  { name: string; condition: string }
+> = {
+  'fade-call-wall': {
+    name: 'Fade call wall',
+    condition:
+      'Positive-gamma regime and ES within 5 pts of the call wall — structural fade.',
+  },
+  'lift-put-wall': {
+    name: 'Lift put wall',
+    condition:
+      'Positive-gamma regime and ES within 5 pts of the put wall — structural lift.',
+  },
+  'break-call-wall': {
+    name: 'Break call wall',
+    condition:
+      'Negative-gamma regime and ES has broken above the call wall — trend continuation.',
+  },
+  'break-put-wall': {
+    name: 'Break put wall',
+    condition:
+      'Negative-gamma regime and ES has broken below the put wall — trend continuation.',
+  },
+  'charm-drift': {
+    name: 'Charm drift to pin',
+    condition:
+      'Positive-gamma regime in afternoon/power hour with gamma pin known — pin drift.',
+  },
+};
+
 // ── Helpers ────────────────────────────────────────────────────────────
 
 /** Look up the first level of a given kind, or null when absent. */
@@ -130,6 +185,228 @@ function proximityStatus(
     return { status: 'ARMED', distance };
   }
   return { status: 'DISTANT', distance };
+}
+
+/**
+ * Factory: build a `TriggerState` literal. Handles the 4-field repetition
+ * (id/name/condition pulled from `TRIGGER_META`) plus the optional fields
+ * that vary per status. Callers supply the variable bits — status, level
+ * label/price, distance, blocked reason — and never have to remember to
+ * fill in the static metadata.
+ */
+function buildTriggerState(args: {
+  id: TriggerId;
+  status: TriggerStatus;
+  levelLabel: string | null;
+  levelEsPrice: number | null;
+  distanceEsPoints: number | null;
+  blockedReason: string | null;
+}): TriggerState {
+  const meta = TRIGGER_META[args.id];
+  return {
+    id: args.id,
+    name: meta.name,
+    status: args.status,
+    condition: meta.condition,
+    levelLabel: args.levelLabel,
+    levelEsPrice: args.levelEsPrice,
+    distanceEsPoints: args.distanceEsPoints,
+    blockedReason: args.blockedReason,
+  };
+}
+
+// ── Pattern: wall-proximity (fade-call-wall, lift-put-wall) ────────────
+
+/**
+ * Decide the BLOCKED reason for a wall-proximity trigger, or null when
+ * no precondition fails. Centralizes the regime / drift-override / wall
+ * gates so the two mirror triggers share one decision table.
+ *
+ * `wall` is what `findLevel(levels, 'CALL_WALL' | 'PUT_WALL')` returned
+ * for this side; `driftAgainst` is true when the consistent priceTrend
+ * direction would structurally invalidate the fade (drift up against a
+ * call-wall fade, drift down against a put-wall lift).
+ */
+function wallProximityBlockedReason(args: {
+  regime: GexRegime;
+  wall: EsLevel | null;
+  driftAgainst: boolean;
+  driftDirectionLabel: 'up' | 'down';
+  fadeOrLift: 'fade' | 'lift';
+}): string | null {
+  if (args.regime !== 'POSITIVE') {
+    return 'Needs +GEX regime.';
+  }
+  if (args.driftAgainst) {
+    return `Drifting ${args.driftDirectionLabel} — ${args.fadeOrLift} suppressed by trend override.`;
+  }
+  if (args.wall === null) {
+    return 'Wall level unknown.';
+  }
+  return null;
+}
+
+interface WallProximityArgs {
+  id: 'fade-call-wall' | 'lift-put-wall';
+  regime: GexRegime;
+  esPrice: number | null;
+  wall: EsLevel | null;
+  walLabel: 'Call wall' | 'Put wall';
+  driftAgainst: boolean;
+  driftDirectionLabel: 'up' | 'down';
+  fadeOrLift: 'fade' | 'lift';
+}
+
+function evaluateWallProximity(args: WallProximityArgs): TriggerState {
+  const blockedReason = wallProximityBlockedReason({
+    regime: args.regime,
+    wall: args.wall,
+    driftAgainst: args.driftAgainst,
+    driftDirectionLabel: args.driftDirectionLabel,
+    fadeOrLift: args.fadeOrLift,
+  });
+
+  if (blockedReason !== null) {
+    return buildTriggerState({
+      id: args.id,
+      status: 'BLOCKED',
+      // The wall label/price still display when present so the trader sees
+      // *which* level the BLOCKED row corresponds to. When the wall itself
+      // is missing, both fields are null.
+      levelLabel: args.wall ? args.walLabel : null,
+      levelEsPrice: args.wall?.esPrice ?? null,
+      distanceEsPoints: null,
+      blockedReason,
+    });
+  }
+
+  // Past this point `args.wall` is non-null because `wallProximityBlockedReason`
+  // would have caught a missing wall in the regime/drift-pass case.
+  const wall = args.wall as EsLevel;
+  const { status, distance } = proximityStatus(args.esPrice, wall);
+  return buildTriggerState({
+    id: args.id,
+    status,
+    levelLabel: args.walLabel,
+    levelEsPrice: wall.esPrice,
+    distanceEsPoints: distance,
+    blockedReason: null,
+  });
+}
+
+// ── Pattern: wall-break (break-call-wall, break-put-wall) ──────────────
+
+/**
+ * Decide the live status for a wall-break trigger when preconditions pass
+ * and esPrice is known. The "broken" condition is direction-specific:
+ *
+ *   - break-call-wall: distance < 0 ⇒ price ABOVE the call wall ⇒ ACTIVE.
+ *   - break-put-wall:  distance > 0 ⇒ wall ABOVE price (price below) ⇒ ACTIVE.
+ *
+ * ARMED fires when price is within `RULE_ARMED_BAND_ES` on the
+ * pre-trigger side; otherwise DISTANT. The caller handles the
+ * regime/wall/esPrice BLOCKED + DISTANT preconditions.
+ */
+function wallBreakLiveStatus(
+  distance: number,
+  side: 'call' | 'put',
+): TriggerStatus {
+  if (side === 'call') {
+    if (distance < 0) return 'ACTIVE';
+    if (distance <= RULE_ARMED_BAND_ES) return 'ARMED';
+    return 'DISTANT';
+  }
+  // side === 'put': mirror — wall above price is the ACTIVE condition.
+  if (distance > 0) return 'ACTIVE';
+  if (-distance <= RULE_ARMED_BAND_ES) return 'ARMED';
+  return 'DISTANT';
+}
+
+interface WallBreakArgs {
+  id: 'break-call-wall' | 'break-put-wall';
+  regime: GexRegime;
+  esPrice: number | null;
+  wall: EsLevel | null;
+  wallLabel: 'Call wall' | 'Put wall';
+  side: 'call' | 'put';
+}
+
+function evaluateWallBreak(args: WallBreakArgs): TriggerState {
+  if (args.regime !== 'NEGATIVE') {
+    return buildTriggerState({
+      id: args.id,
+      status: 'BLOCKED',
+      levelLabel: args.wall ? args.wallLabel : null,
+      levelEsPrice: args.wall?.esPrice ?? null,
+      distanceEsPoints: null,
+      blockedReason: 'Needs −GEX regime.',
+    });
+  }
+  if (args.wall === null) {
+    return buildTriggerState({
+      id: args.id,
+      status: 'BLOCKED',
+      levelLabel: null,
+      levelEsPrice: null,
+      distanceEsPoints: null,
+      blockedReason: 'Wall level unknown.',
+    });
+  }
+  if (args.esPrice === null) {
+    // Regime + wall OK, but no live ES price — degrade to DISTANT
+    // rather than BLOCKED so the row still surfaces the wall level.
+    return buildTriggerState({
+      id: args.id,
+      status: 'DISTANT',
+      levelLabel: args.wallLabel,
+      levelEsPrice: args.wall.esPrice,
+      distanceEsPoints: null,
+      blockedReason: null,
+    });
+  }
+  const distance = args.wall.esPrice - args.esPrice;
+  return buildTriggerState({
+    id: args.id,
+    status: wallBreakLiveStatus(distance, args.side),
+    levelLabel: args.wallLabel,
+    levelEsPrice: args.wall.esPrice,
+    distanceEsPoints: distance,
+    blockedReason: null,
+  });
+}
+
+// ── Pattern: charm-drift ───────────────────────────────────────────────
+
+function evaluateCharmDrift(args: {
+  regime: GexRegime;
+  phase: SessionPhase;
+  gammaPin: number | null;
+}): TriggerState {
+  // Target = highest |netGamma| strike (gamma-pin), NOT max-pain. Dealer
+  // hedging concentrates where gamma concentrates; max-pain is a separate
+  // payout-minimization concept that often but not always aligns.
+  const charmRegimeOk = args.regime === 'POSITIVE';
+  const charmPhaseOk = args.phase === 'AFTERNOON' || args.phase === 'POWER';
+  if (!charmRegimeOk || !charmPhaseOk || args.gammaPin === null) {
+    return buildTriggerState({
+      id: 'charm-drift',
+      status: 'BLOCKED',
+      levelLabel: args.gammaPin !== null ? 'Gamma pin' : null,
+      levelEsPrice: args.gammaPin,
+      distanceEsPoints: null,
+      blockedReason: 'Needs +GEX in afternoon/power with gamma pin.',
+    });
+  }
+  // Charm-drift is a session-window trigger, not proximity-gated.
+  // Once preconditions are satisfied it is ACTIVE.
+  return buildTriggerState({
+    id: 'charm-drift',
+    status: 'ACTIVE',
+    levelLabel: 'Gamma pin',
+    levelEsPrice: args.gammaPin,
+    distanceEsPoints: null,
+    blockedReason: null,
+  });
 }
 
 // ── Evaluator ──────────────────────────────────────────────────────────
@@ -161,281 +438,43 @@ export function evaluateTriggers(input: EvaluateTriggersInput): TriggerState[] {
   const driftDown =
     driftConsistent && trend != null && trend.direction === 'down';
 
-  // ── fade-call-wall ────────────────────────────────────────────────
-  let fadeCallWall: TriggerState;
-  if (regime !== 'POSITIVE') {
-    fadeCallWall = {
+  return [
+    evaluateWallProximity({
       id: 'fade-call-wall',
-      name: 'Fade call wall',
-      status: 'BLOCKED',
-      condition:
-        'Positive-gamma regime and ES within 5 pts of the call wall — structural fade.',
-      levelLabel: callWall ? 'Call wall' : null,
-      levelEsPrice: callWall?.esPrice ?? null,
-      distanceEsPoints: null,
-      blockedReason: 'Needs +GEX regime.',
-    };
-  } else if (driftUp) {
-    // Tape is drifting up through the call wall — fade is structurally
-    // wrong here. Matches `rulesForRegime` suppression.
-    fadeCallWall = {
-      id: 'fade-call-wall',
-      name: 'Fade call wall',
-      status: 'BLOCKED',
-      condition:
-        'Positive-gamma regime and ES within 5 pts of the call wall — structural fade.',
-      levelLabel: callWall ? 'Call wall' : null,
-      levelEsPrice: callWall?.esPrice ?? null,
-      distanceEsPoints: null,
-      blockedReason: 'Drifting up — fade suppressed by trend override.',
-    };
-  } else if (callWall === null) {
-    fadeCallWall = {
-      id: 'fade-call-wall',
-      name: 'Fade call wall',
-      status: 'BLOCKED',
-      condition:
-        'Positive-gamma regime and ES within 5 pts of the call wall — structural fade.',
-      levelLabel: null,
-      levelEsPrice: null,
-      distanceEsPoints: null,
-      blockedReason: 'Wall level unknown.',
-    };
-  } else {
-    const { status, distance } = proximityStatus(esPrice, callWall);
-    fadeCallWall = {
-      id: 'fade-call-wall',
-      name: 'Fade call wall',
-      status,
-      condition:
-        'Positive-gamma regime and ES within 5 pts of the call wall — structural fade.',
-      levelLabel: 'Call wall',
-      levelEsPrice: callWall.esPrice,
-      distanceEsPoints: distance,
-      blockedReason: null,
-    };
-  }
-
-  // ── lift-put-wall ─────────────────────────────────────────────────
-  let liftPutWall: TriggerState;
-  if (regime !== 'POSITIVE') {
-    liftPutWall = {
+      regime,
+      esPrice,
+      wall: callWall,
+      walLabel: 'Call wall',
+      driftAgainst: driftUp,
+      driftDirectionLabel: 'up',
+      fadeOrLift: 'fade',
+    }),
+    evaluateWallProximity({
       id: 'lift-put-wall',
-      name: 'Lift put wall',
-      status: 'BLOCKED',
-      condition:
-        'Positive-gamma regime and ES within 5 pts of the put wall — structural lift.',
-      levelLabel: putWall ? 'Put wall' : null,
-      levelEsPrice: putWall?.esPrice ?? null,
-      distanceEsPoints: null,
-      blockedReason: 'Needs +GEX regime.',
-    };
-  } else if (driftDown) {
-    // Tape is drifting down through the put wall — lift is structurally
-    // wrong here. Matches `rulesForRegime` suppression.
-    liftPutWall = {
-      id: 'lift-put-wall',
-      name: 'Lift put wall',
-      status: 'BLOCKED',
-      condition:
-        'Positive-gamma regime and ES within 5 pts of the put wall — structural lift.',
-      levelLabel: putWall ? 'Put wall' : null,
-      levelEsPrice: putWall?.esPrice ?? null,
-      distanceEsPoints: null,
-      blockedReason: 'Drifting down — lift suppressed by trend override.',
-    };
-  } else if (putWall === null) {
-    liftPutWall = {
-      id: 'lift-put-wall',
-      name: 'Lift put wall',
-      status: 'BLOCKED',
-      condition:
-        'Positive-gamma regime and ES within 5 pts of the put wall — structural lift.',
-      levelLabel: null,
-      levelEsPrice: null,
-      distanceEsPoints: null,
-      blockedReason: 'Wall level unknown.',
-    };
-  } else {
-    const { status, distance } = proximityStatus(esPrice, putWall);
-    liftPutWall = {
-      id: 'lift-put-wall',
-      name: 'Lift put wall',
-      status,
-      condition:
-        'Positive-gamma regime and ES within 5 pts of the put wall — structural lift.',
-      levelLabel: 'Put wall',
-      levelEsPrice: putWall.esPrice,
-      distanceEsPoints: distance,
-      blockedReason: null,
-    };
-  }
-
-  // ── break-call-wall ───────────────────────────────────────────────
-  //
-  // ARMED semantics for breakouts: regime+wall preconditions satisfied,
-  // price is within 15 pts of the wall BUT still on the pre-trigger side
-  // (below the wall for a LONG break). ACTIVE fires once price clears
-  // the wall — i.e. distance sign flips negative. Beyond 15 pts below →
-  // DISTANT.
-  let breakCallWall: TriggerState;
-  if (regime !== 'NEGATIVE') {
-    breakCallWall = {
+      regime,
+      esPrice,
+      wall: putWall,
+      walLabel: 'Put wall',
+      driftAgainst: driftDown,
+      driftDirectionLabel: 'down',
+      fadeOrLift: 'lift',
+    }),
+    evaluateWallBreak({
       id: 'break-call-wall',
-      name: 'Break call wall',
-      status: 'BLOCKED',
-      condition:
-        'Negative-gamma regime and ES has broken above the call wall — trend continuation.',
-      levelLabel: callWall ? 'Call wall' : null,
-      levelEsPrice: callWall?.esPrice ?? null,
-      distanceEsPoints: null,
-      blockedReason: 'Needs −GEX regime.',
-    };
-  } else if (callWall === null) {
-    breakCallWall = {
-      id: 'break-call-wall',
-      name: 'Break call wall',
-      status: 'BLOCKED',
-      condition:
-        'Negative-gamma regime and ES has broken above the call wall — trend continuation.',
-      levelLabel: null,
-      levelEsPrice: null,
-      distanceEsPoints: null,
-      blockedReason: 'Wall level unknown.',
-    };
-  } else if (esPrice === null) {
-    breakCallWall = {
-      id: 'break-call-wall',
-      name: 'Break call wall',
-      status: 'DISTANT',
-      condition:
-        'Negative-gamma regime and ES has broken above the call wall — trend continuation.',
-      levelLabel: 'Call wall',
-      levelEsPrice: callWall.esPrice,
-      distanceEsPoints: null,
-      blockedReason: null,
-    };
-  } else {
-    const distance = callWall.esPrice - esPrice;
-    // Distance < 0 ⇒ price is above the wall ⇒ BROKEN ABOVE ⇒ ACTIVE.
-    let status: TriggerStatus;
-    if (distance < 0) {
-      status = 'ACTIVE';
-    } else if (distance <= RULE_ARMED_BAND_ES) {
-      status = 'ARMED';
-    } else {
-      status = 'DISTANT';
-    }
-    breakCallWall = {
-      id: 'break-call-wall',
-      name: 'Break call wall',
-      status,
-      condition:
-        'Negative-gamma regime and ES has broken above the call wall — trend continuation.',
-      levelLabel: 'Call wall',
-      levelEsPrice: callWall.esPrice,
-      distanceEsPoints: distance,
-      blockedReason: null,
-    };
-  }
-
-  // ── break-put-wall ────────────────────────────────────────────────
-  let breakPutWall: TriggerState;
-  if (regime !== 'NEGATIVE') {
-    breakPutWall = {
+      regime,
+      esPrice,
+      wall: callWall,
+      wallLabel: 'Call wall',
+      side: 'call',
+    }),
+    evaluateWallBreak({
       id: 'break-put-wall',
-      name: 'Break put wall',
-      status: 'BLOCKED',
-      condition:
-        'Negative-gamma regime and ES has broken below the put wall — trend continuation.',
-      levelLabel: putWall ? 'Put wall' : null,
-      levelEsPrice: putWall?.esPrice ?? null,
-      distanceEsPoints: null,
-      blockedReason: 'Needs −GEX regime.',
-    };
-  } else if (putWall === null) {
-    breakPutWall = {
-      id: 'break-put-wall',
-      name: 'Break put wall',
-      status: 'BLOCKED',
-      condition:
-        'Negative-gamma regime and ES has broken below the put wall — trend continuation.',
-      levelLabel: null,
-      levelEsPrice: null,
-      distanceEsPoints: null,
-      blockedReason: 'Wall level unknown.',
-    };
-  } else if (esPrice === null) {
-    breakPutWall = {
-      id: 'break-put-wall',
-      name: 'Break put wall',
-      status: 'DISTANT',
-      condition:
-        'Negative-gamma regime and ES has broken below the put wall — trend continuation.',
-      levelLabel: 'Put wall',
-      levelEsPrice: putWall.esPrice,
-      distanceEsPoints: null,
-      blockedReason: null,
-    };
-  } else {
-    const distance = putWall.esPrice - esPrice;
-    // Distance > 0 ⇒ level above price ⇒ price below wall ⇒ BROKEN BELOW
-    // ⇒ ACTIVE.
-    let status: TriggerStatus;
-    if (distance > 0) {
-      status = 'ACTIVE';
-    } else if (-distance <= RULE_ARMED_BAND_ES) {
-      status = 'ARMED';
-    } else {
-      status = 'DISTANT';
-    }
-    breakPutWall = {
-      id: 'break-put-wall',
-      name: 'Break put wall',
-      status,
-      condition:
-        'Negative-gamma regime and ES has broken below the put wall — trend continuation.',
-      levelLabel: 'Put wall',
-      levelEsPrice: putWall.esPrice,
-      distanceEsPoints: distance,
-      blockedReason: null,
-    };
-  }
-
-  // ── charm-drift ───────────────────────────────────────────────────
-  // Target = highest |netGamma| strike (gamma-pin), NOT max-pain. Dealer
-  // hedging concentrates where gamma concentrates; max-pain is a separate
-  // payout-minimization concept that often but not always aligns.
-  const charmRegimeOk = regime === 'POSITIVE';
-  const charmPhaseOk = phase === 'AFTERNOON' || phase === 'POWER';
-  let charmDrift: TriggerState;
-  if (!charmRegimeOk || !charmPhaseOk || gammaPin === null) {
-    charmDrift = {
-      id: 'charm-drift',
-      name: 'Charm drift to pin',
-      status: 'BLOCKED',
-      condition:
-        'Positive-gamma regime in afternoon/power hour with gamma pin known — pin drift.',
-      levelLabel: gammaPin !== null ? 'Gamma pin' : null,
-      levelEsPrice: gammaPin,
-      distanceEsPoints: null,
-      blockedReason: 'Needs +GEX in afternoon/power with gamma pin.',
-    };
-  } else {
-    // Charm-drift is a session-window trigger, not proximity-gated.
-    // Once preconditions are satisfied it is ACTIVE.
-    charmDrift = {
-      id: 'charm-drift',
-      name: 'Charm drift to pin',
-      status: 'ACTIVE',
-      condition:
-        'Positive-gamma regime in afternoon/power hour with gamma pin known — pin drift.',
-      levelLabel: 'Gamma pin',
-      levelEsPrice: gammaPin,
-      distanceEsPoints: null,
-      blockedReason: null,
-    };
-  }
-
-  return [fadeCallWall, liftPutWall, breakCallWall, breakPutWall, charmDrift];
+      regime,
+      esPrice,
+      wall: putWall,
+      wallLabel: 'Put wall',
+      side: 'put',
+    }),
+    evaluateCharmDrift({ regime, phase, gammaPin }),
+  ];
 }
