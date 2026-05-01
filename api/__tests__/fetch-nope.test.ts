@@ -3,7 +3,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const mockSql = vi.fn();
+// fetch-nope now uses bulkUpsert, which calls sql.query() internally
+// rather than the tagged-template form. We keep `mockSql` callable so
+// tests asserting "no SQL call" still work via the function-call count.
+const mockQuery = vi.fn().mockResolvedValue([]);
+const mockSql = Object.assign(vi.fn(), { query: mockQuery });
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
@@ -56,6 +60,7 @@ const GUARD = { apiKey: 'test-uw-key', today: '2026-04-14' };
 describe('fetch-nope handler', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    mockQuery.mockResolvedValue([]);
     mockCronGuard.mockReturnValue(GUARD);
     mockUwFetch.mockResolvedValue([]);
   });
@@ -69,10 +74,6 @@ describe('fetch-nope handler', () => {
       makeRow({ timestamp: '2026-04-14T18:47:00Z' }),
     ];
     mockUwFetch.mockResolvedValueOnce(rows);
-    mockSql
-      .mockResolvedValueOnce([{ ticker: 'SPY' }])
-      .mockResolvedValueOnce([{ ticker: 'SPY' }])
-      .mockResolvedValueOnce([{ ticker: 'SPY' }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -87,7 +88,8 @@ describe('fetch-nope handler', () => {
       fetched: 3,
       upserted: 3,
     });
-    expect(mockSql).toHaveBeenCalledTimes(3);
+    // bulkUpsert collapses N rows into a single sql.query() call.
+    expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 
   // ── Empty UW response ──────────────────────────────────────
@@ -108,7 +110,7 @@ describe('fetch-nope handler', () => {
       fetched: 0,
       upserted: 0,
     });
-    expect(mockSql).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 
   // ── Rule 2 guard: skip rows with zero stock_vol ────────────
@@ -119,7 +121,6 @@ describe('fetch-nope handler', () => {
       makeRow({ timestamp: '2026-04-14T18:46:00Z' }),
     ];
     mockUwFetch.mockResolvedValueOnce(rows);
-    mockSql.mockResolvedValueOnce([{ ticker: 'SPY' }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -130,7 +131,8 @@ describe('fetch-nope handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ fetched: 2, upserted: 1 });
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    // 1 valid row → 1 bulk upsert query.
+    expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 
   // ── Fetches SPY, not SPX ───────────────────────────────────
@@ -160,7 +162,7 @@ describe('fetch-nope handler', () => {
     await handler(req, res);
 
     expect(mockUwFetch).not.toHaveBeenCalled();
-    expect(mockSql).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 
   // ── Error handling ─────────────────────────────────────────

@@ -23,6 +23,7 @@ import {
   uwFetch,
   withRetry,
 } from '../_lib/api-helpers.js';
+import { bulkUpsert } from '../_lib/bulk-upsert.js';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
@@ -65,11 +66,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const db = getDb();
-    let upserted = 0;
+
+    // Filter out rows with invalid numerics (UW returns partial rows at
+    // session edges occasionally) before building the upsert payload.
+    const ingestedAt = new Date().toISOString();
+    const validRows: Array<{
+      ticker: string;
+      timestamp: string;
+      call_vol: number;
+      put_vol: number;
+      stock_vol: number;
+      call_delta: string;
+      put_delta: string;
+      call_fill_delta: string;
+      put_fill_delta: string;
+      nope: string;
+      nope_fill: string;
+      ingested_at: string;
+    }> = [];
     let skipped = 0;
     for (const r of rows) {
-      // Skip rows where any required numeric failed to parse — UW has
-      // historically returned partial rows at session edges.
       if (
         !Number.isFinite(Number.parseFloat(r.nope)) ||
         !Number.isFinite(r.stock_vol) ||
@@ -78,34 +94,49 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         skipped++;
         continue;
       }
-
-      const result = await db`
-        INSERT INTO nope_ticks (
-          ticker, timestamp,
-          call_vol, put_vol, stock_vol,
-          call_delta, put_delta, call_fill_delta, put_fill_delta,
-          nope, nope_fill
-        ) VALUES (
-          ${NOPE_TICKER}, ${r.timestamp},
-          ${r.call_vol}, ${r.put_vol}, ${r.stock_vol},
-          ${r.call_delta}, ${r.put_delta}, ${r.call_fill_delta}, ${r.put_fill_delta},
-          ${r.nope}, ${r.nope_fill}
-        )
-        ON CONFLICT (ticker, timestamp) DO UPDATE SET
-          call_vol        = EXCLUDED.call_vol,
-          put_vol         = EXCLUDED.put_vol,
-          stock_vol       = EXCLUDED.stock_vol,
-          call_delta      = EXCLUDED.call_delta,
-          put_delta       = EXCLUDED.put_delta,
-          call_fill_delta = EXCLUDED.call_fill_delta,
-          put_fill_delta  = EXCLUDED.put_fill_delta,
-          nope            = EXCLUDED.nope,
-          nope_fill       = EXCLUDED.nope_fill,
-          ingested_at     = now()
-        RETURNING ticker
-      `;
-      if (result.length > 0) upserted++;
+      validRows.push({
+        ticker: NOPE_TICKER,
+        timestamp: r.timestamp,
+        call_vol: r.call_vol,
+        put_vol: r.put_vol,
+        stock_vol: r.stock_vol,
+        call_delta: r.call_delta,
+        put_delta: r.put_delta,
+        call_fill_delta: r.call_fill_delta,
+        put_fill_delta: r.put_fill_delta,
+        nope: r.nope,
+        nope_fill: r.nope_fill,
+        // ingested_at is updated on every upsert (matches the legacy
+        // `ingested_at = now()` SET clause) by including it in the
+        // column list — bulkUpsert defaults to EXCLUDED.col on conflict.
+        ingested_at: ingestedAt,
+      });
     }
+
+    // ON CONFLICT DO UPDATE always yields a returned row, so the legacy
+    // `upserted` count was effectively `validRows.length`. Preserved
+    // verbatim by reusing that count after the bulk insert.
+    await bulkUpsert({
+      sql: db,
+      table: 'nope_ticks',
+      columns: [
+        'ticker',
+        'timestamp',
+        'call_vol',
+        'put_vol',
+        'stock_vol',
+        'call_delta',
+        'put_delta',
+        'call_fill_delta',
+        'put_fill_delta',
+        'nope',
+        'nope_fill',
+        'ingested_at',
+      ],
+      rows: validRows,
+      conflictTarget: '(ticker, timestamp)',
+    });
+    const upserted = validRows.length;
 
     if (skipped > 0) {
       logger.warn(
