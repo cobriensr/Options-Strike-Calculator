@@ -45,13 +45,14 @@ import AnalysisHistory from './components/ChartAnalysis/AnalysisHistory';
 import TradingScheduleSection from './components/TradingScheduleSection';
 import BacktestDiag from './components/BacktestDiag';
 import ErrorBoundary from './components/ErrorBoundary';
+import GatedSection from './components/GatedSection';
+import AppHeader from './components/AppHeader';
 import AlertBanner from './components/AlertBanner';
 import DarkPoolLevels from './components/DarkPoolLevels';
 import TRACELiveDashboard from './components/TRACELive';
 import { MarketInternalsPanel } from './components/MarketInternals/MarketInternalsPanel';
 import VegaSpikeFeed from './components/VegaSpikeFeed/VegaSpikeFeed';
 import NotificationPermission from './components/NotificationPermission';
-import { StatusBadge } from './components/ui';
 import { CollapseAllContext } from './components/collapse-context';
 import type { AmPm, Timezone } from './types';
 import type { CollapseSignal } from './components/collapse-context';
@@ -155,50 +156,6 @@ const WhaleBanner = lazy(() =>
     .then((m) => ({ default: m.WhaleBanner }))
     .catch(handleStaleChunk),
 );
-
-function SchwabAuthLink({
-  ariaLabel,
-  text,
-  color,
-}: {
-  ariaLabel: string;
-  text: string;
-  color?: string;
-}) {
-  return (
-    <a
-      href="/api/auth/init"
-      className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base no-underline transition-all duration-200"
-      style={color ? { color } : undefined}
-      aria-label={ariaLabel}
-    >
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 16 16"
-        fill="none"
-        aria-hidden="true"
-      >
-        <rect
-          x="3"
-          y="7"
-          width="10"
-          height="8"
-          rx="1.5"
-          stroke="currentColor"
-          strokeWidth="1.5"
-        />
-        <path
-          d="M5.5 7V5a2.5 2.5 0 015 0v2"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-        />
-      </svg>
-      <span className="text-[11px] font-semibold">{text}</span>
-    </a>
-  );
-}
 
 // ============================================================
 // ADMIN ENDPOINT RESPONSE SHAPES
@@ -665,8 +622,13 @@ export default function StrikeCalculator() {
     [darkMode, theme.chevronColor],
   );
 
+  // Owner/guest data sections need EITHER live market context OR a backtest
+  // snapshot to render meaningfully. Hoisted so the JSX gate is a single
+  // boolean and `<GatedSection gate={...}>` can read it directly.
+  const hasMarketOrSnapshot = market.hasData || !!historySnapshot;
+  const hasMarketContext = isAuthenticated && hasMarketOrSnapshot;
+
   const navSections = useMemo<NavSection[]>(() => {
-    const hasMarketOrSnapshot = market.hasData || !!historySnapshot;
     return [
       { id: 'sec-inputs', label: 'Inputs' },
       { id: 'sec-trading-schedule', label: 'Trading Schedule' },
@@ -714,7 +676,7 @@ export default function StrikeCalculator() {
       ...(isAuthenticated ? [{ id: 'sec-bwb', label: 'BWB Calculator' }] : []),
       { id: 'results', label: 'Results' },
     ];
-  }, [isAuthenticated, market.hasData, historySnapshot]);
+  }, [isAuthenticated, hasMarketOrSnapshot]);
 
   const analysisContext = useAnalysisContext({
     selectedDate: vix.selectedDate,
@@ -759,217 +721,25 @@ export default function StrikeCalculator() {
           Skip to results
         </a>
 
-        {/* Sticky header bar */}
-        <header
-          className="border-edge sticky top-0 z-50 border-b backdrop-blur-md"
-          style={{
-            backgroundColor:
-              'color-mix(in srgb, var(--color-page) 85%, transparent)',
-          }}
-        >
-          <div className="mx-auto flex max-w-[660px] items-center justify-between px-5 py-2 sm:py-3 lg:max-w-6xl">
-            <div>
-              <div className="text-accent hidden font-sans text-[10px] font-bold tracking-[0.2em] uppercase sm:block">
-                0DTE Options
-              </div>
-              <h1 className="text-primary m-0 font-serif text-[18px] leading-tight font-bold sm:text-[20px]">
-                Strike Calculator
-              </h1>
-            </div>
-            <div className="flex items-center gap-1.5 sm:gap-2">
-              {isBacktestMode && (
-                <StatusBadge label="BACKTEST" color={theme.backtest} dot />
-              )}
-              {isBacktestMode && historyData.loading && (
-                <StatusBadge label="Loading…" color={theme.textMuted} />
-              )}
-              {isBacktestMode && historyData.error && !historyData.loading && (
-                <StatusBadge
-                  label="NO INTRADAY"
-                  color={theme.red}
-                  dot
-                  title={historyData.error}
-                />
-              )}
-              {!isBacktestMode && market.hasData && (
-                <StatusBadge
-                  // FE-STATE-001: three-state live badge.
-                  //   Market closed             → CLOSED (muted)
-                  //   Market open, fresh        → LIVE   (green)
-                  //   Market open, stale  >=90s → STALE  (caution/yellow)
-                  //   Market open, stale >=180s → STALE  (red)
-                  // isVeryStale implies isStale, so the severity check
-                  // cascades from most-severe to least-severe.
-                  label={
-                    market.data.quotes?.marketOpen
-                      ? market.isStale
-                        ? 'STALE'
-                        : 'LIVE'
-                      : 'CLOSED'
-                  }
-                  color={
-                    market.data.quotes?.marketOpen
-                      ? market.isVeryStale
-                        ? theme.red
-                        : market.isStale
-                          ? theme.caution
-                          : theme.green
-                      : theme.textMuted
-                  }
-                  dot
-                  title={
-                    market.isStale && market.staleAgeSec != null
-                      ? `Quotes ${market.staleAgeSec}s old${market.isVeryStale ? ' — 3+ missed polls' : ''}`
-                      : undefined
-                  }
-                />
-              )}
-              {accessMode === 'public' && (
-                <SchwabAuthLink
-                  ariaLabel="Authenticate with Schwab"
-                  text="Sign in"
-                />
-              )}
-              {/* Access-key entry point for non-desktop viewports. The
-                  sidebar bottomSlot is the canonical mount on lg+, so
-                  this header instance is hidden there to avoid duplicate
-                  controls. */}
-              <span className="lg:hidden">
-                <AccessKeyButton compact />
-              </span>
-              {market.needsAuth && isOwner && (
-                <SchwabAuthLink
-                  ariaLabel="Re-authenticate with Schwab"
-                  text="Re-auth"
-                  color={theme.red}
-                />
-              )}
-              <button
-                onClick={handleCollapseAll}
-                aria-label={
-                  collapseSignal.collapsed
-                    ? 'Expand all sections'
-                    : 'Collapse all sections'
-                }
-                title={
-                  collapseSignal.collapsed
-                    ? 'Expand all sections'
-                    : 'Collapse all sections'
-                }
-                className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
-              >
-                <span className="text-[11px] font-semibold">
-                  {collapseSignal.collapsed ? '⊞ Expand' : '⊟ Collapse'}
-                </span>
-              </button>
-              {isOwner && (
-                <button
-                  onClick={handleRunMigrations}
-                  disabled={migrateRunning}
-                  aria-label="Run database migrations"
-                  title="Run DB migrations"
-                  className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200 disabled:cursor-wait disabled:opacity-50"
-                >
-                  <svg
-                    width="13"
-                    height="13"
-                    viewBox="0 0 16 16"
-                    fill="none"
-                    aria-hidden="true"
-                  >
-                    <ellipse
-                      cx="8"
-                      cy="4"
-                      rx="5"
-                      ry="2"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                    />
-                    <path
-                      d="M3 4v4c0 1.1 2.24 2 5 2s5-.9 5-2V4"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                    />
-                    <path
-                      d="M3 8v4c0 1.1 2.24 2 5 2s5-.9 5-2V8"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                    />
-                  </svg>
-                  <span className="text-[11px] font-semibold">
-                    {migrateRunning ? 'Running…' : 'Migrate DB'}
-                  </span>
-                </button>
-              )}
-              {isOwner && (
-                <button
-                  onClick={handleBackfillFeatures}
-                  disabled={backfillRunning}
-                  aria-label="Recompute training_features for all dates"
-                  title="Backfill training_features (rebuilds NOPE + flow + GEX feature columns for every date)"
-                  className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200 disabled:cursor-wait disabled:opacity-50"
-                >
-                  <svg
-                    width="13"
-                    height="13"
-                    viewBox="0 0 16 16"
-                    fill="none"
-                    aria-hidden="true"
-                  >
-                    <path
-                      d="M2 8a6 6 0 1 0 1.5-3.97"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                      strokeLinecap="round"
-                    />
-                    <path
-                      d="M1 1v4h4"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                  <span className="text-[11px] font-semibold">
-                    {backfillRunning ? 'Building…' : 'Backfill'}
-                  </span>
-                </button>
-              )}
-              {isOwner && (
-                <>
-                  <input
-                    ref={vixFileInputRef}
-                    type="file"
-                    accept=".csv"
-                    onChange={vixHandleFileUpload}
-                    className="hidden"
-                    aria-label="Upload VIX OHLC CSV file"
-                  />
-                  <button
-                    onClick={handleVixCsvClick}
-                    className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
-                  >
-                    <span className="text-[11px] font-semibold">
-                      {vix.vixDataLoaded ? vix.vixDataSource : 'Upload VIX CSV'}
-                    </span>
-                  </button>
-                </>
-              )}
-              <button
-                onClick={handleDarkModeToggle}
-                aria-label={
-                  darkMode ? 'Switch to light mode' : 'Switch to dark mode'
-                }
-                className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
-              >
-                {darkMode ? '\u2600\uFE0F' : '\uD83C\uDF19'}
-                <span className="text-[11px] font-semibold">
-                  {darkMode ? 'Light' : 'Dark'}
-                </span>
-              </button>
-            </div>
-          </div>
-        </header>
+        <AppHeader
+          accessMode={accessMode}
+          isOwner={isOwner}
+          isBacktestMode={isBacktestMode}
+          market={market}
+          historyData={historyData}
+          vix={vix}
+          vixFileInputRef={vixFileInputRef}
+          vixHandleFileUpload={vixHandleFileUpload}
+          onVixCsvClick={handleVixCsvClick}
+          collapseSignal={collapseSignal}
+          onCollapseAll={handleCollapseAll}
+          onRunMigrations={handleRunMigrations}
+          migrateRunning={migrateRunning}
+          onBackfillFeatures={handleBackfillFeatures}
+          backfillRunning={backfillRunning}
+          darkMode={darkMode}
+          onDarkModeToggle={handleDarkModeToggle}
+        />
 
         <div className="lg:flex lg:items-start">
           <SectionNav
@@ -1144,249 +914,225 @@ export default function StrikeCalculator() {
                   />
                 </ErrorBoundary>
 
-                {isAuthenticated && (market.hasData || !!historySnapshot) && (
-                  <>
-                    <span id="sec-darkpool" className="block scroll-mt-28" />
-                    <ErrorBoundary label="Dark Pool Levels">
-                      <DarkPoolLevels
-                        levels={darkPool.levels}
-                        loading={darkPool.loading}
-                        error={darkPool.error}
-                        updatedAt={darkPool.updatedAt}
-                        spxPrice={
-                          darkPool.isLive
-                            ? (market.data.quotes?.spx?.price ??
-                              results?.spot ??
-                              spxVal ??
-                              null)
-                            : (results?.spot ?? spxVal ?? null)
-                        }
-                        onRefresh={darkPool.refresh}
-                        selectedDate={darkPool.selectedDate}
-                        onDateChange={darkPool.setSelectedDate}
-                        scrubTime={darkPool.scrubTime}
-                        isLive={darkPool.isLive}
-                        isScrubbed={darkPool.isScrubbed}
-                        canScrubPrev={darkPool.canScrubPrev}
-                        canScrubNext={darkPool.canScrubNext}
-                        onScrubPrev={darkPool.scrubPrev}
-                        onScrubNext={darkPool.scrubNext}
-                        onScrubTo={darkPool.scrubTo}
-                        timeGrid={darkPool.timeGrid}
-                        onScrubLive={darkPool.scrubLive}
-                      />
-                    </ErrorBoundary>
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-darkpool"
+                  label="Dark Pool Levels"
+                >
+                  <DarkPoolLevels
+                    levels={darkPool.levels}
+                    loading={darkPool.loading}
+                    error={darkPool.error}
+                    updatedAt={darkPool.updatedAt}
+                    spxPrice={
+                      darkPool.isLive
+                        ? (market.data.quotes?.spx?.price ??
+                          results?.spot ??
+                          spxVal ??
+                          null)
+                        : (results?.spot ?? spxVal ?? null)
+                    }
+                    onRefresh={darkPool.refresh}
+                    selectedDate={darkPool.selectedDate}
+                    onDateChange={darkPool.setSelectedDate}
+                    scrubTime={darkPool.scrubTime}
+                    isLive={darkPool.isLive}
+                    isScrubbed={darkPool.isScrubbed}
+                    canScrubPrev={darkPool.canScrubPrev}
+                    canScrubNext={darkPool.canScrubNext}
+                    onScrubPrev={darkPool.scrubPrev}
+                    onScrubNext={darkPool.scrubNext}
+                    onScrubTo={darkPool.scrubTo}
+                    timeGrid={darkPool.timeGrid}
+                    onScrubLive={darkPool.scrubLive}
+                  />
+                </GatedSection>
 
-                    <span id="sec-trace-live" className="block scroll-mt-28" />
-                    <ErrorBoundary label="TRACE Live">
-                      <TRACELiveDashboard
-                        marketOpen={market.data.quotes?.marketOpen ?? false}
-                      />
-                    </ErrorBoundary>
-                  </>
-                )}
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-trace-live"
+                  label="TRACE Live"
+                >
+                  <TRACELiveDashboard
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
+                  />
+                </GatedSection>
 
-                {isAuthenticated && (market.hasData || !!historySnapshot) && (
-                  <>
-                    <span id="sec-gex" className="block scroll-mt-28" />
-                    <ErrorBoundary label="0DTE GEX Per Strike">
-                      <Suspense fallback={<SkeletonSection lines={6} tall />}>
-                        <GexPerStrike
-                          strikes={gexStrike.strikes}
-                          loading={gexStrike.loading}
-                          error={gexStrike.error}
-                          timestamp={gexStrike.timestamp}
-                          timestamps={gexStrike.timestamps}
-                          onRefresh={gexStrike.refresh}
-                          selectedDate={gexStrike.selectedDate}
-                          onDateChange={gexStrike.setSelectedDate}
-                          isLive={gexStrike.isLive}
-                          isToday={gexStrike.isToday}
-                          isScrubbed={gexStrike.isScrubbed}
-                          canScrubPrev={gexStrike.canScrubPrev}
-                          canScrubNext={gexStrike.canScrubNext}
-                          onScrubPrev={gexStrike.scrubPrev}
-                          onScrubNext={gexStrike.scrubNext}
-                          onScrubTo={gexStrike.scrubTo}
-                          onScrubLive={gexStrike.scrubLive}
-                        />
-                      </Suspense>
-                    </ErrorBoundary>
-                  </>
-                )}
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-gex"
+                  label="0DTE GEX Per Strike"
+                  fallback={<SkeletonSection lines={6} tall />}
+                >
+                  <GexPerStrike
+                    strikes={gexStrike.strikes}
+                    loading={gexStrike.loading}
+                    error={gexStrike.error}
+                    timestamp={gexStrike.timestamp}
+                    timestamps={gexStrike.timestamps}
+                    onRefresh={gexStrike.refresh}
+                    selectedDate={gexStrike.selectedDate}
+                    onDateChange={gexStrike.setSelectedDate}
+                    isLive={gexStrike.isLive}
+                    isToday={gexStrike.isToday}
+                    isScrubbed={gexStrike.isScrubbed}
+                    canScrubPrev={gexStrike.canScrubPrev}
+                    canScrubNext={gexStrike.canScrubNext}
+                    onScrubPrev={gexStrike.scrubPrev}
+                    onScrubNext={gexStrike.scrubNext}
+                    onScrubTo={gexStrike.scrubTo}
+                    onScrubLive={gexStrike.scrubLive}
+                  />
+                </GatedSection>
 
-                {isAuthenticated && (market.hasData || !!historySnapshot) && (
-                  <>
-                    <span id="sec-gex-target" className="block scroll-mt-28" />
-                    <ErrorBoundary label="GEX Target">
-                      <Suspense fallback={<SkeletonSection lines={6} tall />}>
-                        <GexTarget
-                          marketOpen={market.data.quotes?.marketOpen ?? false}
-                          gexTarget={gexTarget}
-                        />
-                      </Suspense>
-                    </ErrorBoundary>
-                  </>
-                )}
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-gex-target"
+                  label="GEX Target"
+                  fallback={<SkeletonSection lines={6} tall />}
+                >
+                  <GexTarget
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
+                    gexTarget={gexTarget}
+                  />
+                </GatedSection>
 
-                {isAuthenticated && (market.hasData || !!historySnapshot) && (
-                  <>
-                    <span
-                      id="sec-gex-landscape"
-                      className="block scroll-mt-28"
-                    />
-                    <ErrorBoundary label="GEX Landscape">
-                      <Suspense fallback={<SkeletonSection lines={6} tall />}>
-                        <GexLandscape
-                          strikes={gexStrike.strikes}
-                          loading={gexStrike.loading}
-                          error={gexStrike.error}
-                          timestamp={gexStrike.timestamp}
-                          timestamps={gexStrike.timestamps}
-                          onRefresh={gexStrike.refresh}
-                          selectedDate={gexStrike.selectedDate}
-                          onDateChange={gexStrike.setSelectedDate}
-                          isLive={gexStrike.isLive}
-                          isScrubbed={gexStrike.isScrubbed}
-                          canScrubPrev={gexStrike.canScrubPrev}
-                          canScrubNext={gexStrike.canScrubNext}
-                          onScrubPrev={gexStrike.scrubPrev}
-                          onScrubNext={gexStrike.scrubNext}
-                          onScrubTo={gexStrike.scrubTo}
-                          onScrubLive={gexStrike.scrubLive}
-                          onBiasChange={setGexBiasContext}
-                        />
-                      </Suspense>
-                    </ErrorBoundary>
-                  </>
-                )}
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-gex-landscape"
+                  label="GEX Landscape"
+                  fallback={<SkeletonSection lines={6} tall />}
+                >
+                  <GexLandscape
+                    strikes={gexStrike.strikes}
+                    loading={gexStrike.loading}
+                    error={gexStrike.error}
+                    timestamp={gexStrike.timestamp}
+                    timestamps={gexStrike.timestamps}
+                    onRefresh={gexStrike.refresh}
+                    selectedDate={gexStrike.selectedDate}
+                    onDateChange={gexStrike.setSelectedDate}
+                    isLive={gexStrike.isLive}
+                    isScrubbed={gexStrike.isScrubbed}
+                    canScrubPrev={gexStrike.canScrubPrev}
+                    canScrubNext={gexStrike.canScrubNext}
+                    onScrubPrev={gexStrike.scrubPrev}
+                    onScrubNext={gexStrike.scrubNext}
+                    onScrubTo={gexStrike.scrubTo}
+                    onScrubLive={gexStrike.scrubLive}
+                    onBiasChange={setGexBiasContext}
+                  />
+                </GatedSection>
 
-                {isAuthenticated && (market.hasData || !!historySnapshot) && (
-                  <>
-                    <span
-                      id="sec-futures-gamma-playbook"
-                      className="block scroll-mt-28"
-                    />
-                    <ErrorBoundary label="Futures Gamma Playbook">
-                      <Suspense fallback={<SkeletonSection lines={6} tall />}>
-                        <FuturesGammaPlaybook
-                          marketOpen={market.data.quotes?.marketOpen ?? false}
-                          onBiasChange={setPlaybookBiasContext}
-                        />
-                      </Suspense>
-                    </ErrorBoundary>
-                  </>
-                )}
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-futures-gamma-playbook"
+                  label="Futures Gamma Playbook"
+                  fallback={<SkeletonSection lines={6} tall />}
+                >
+                  <FuturesGammaPlaybook
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
+                    onBiasChange={setPlaybookBiasContext}
+                  />
+                </GatedSection>
 
-                {isAuthenticated && (market.hasData || !!historySnapshot) && (
-                  <>
-                    <span id="sec-zero-gamma" className="block scroll-mt-28" />
-                    <ErrorBoundary label="Zero Gamma">
-                      <Suspense fallback={<SkeletonSection lines={4} />}>
-                        <ZeroGammaPanel
-                          marketOpen={market.data.quotes?.marketOpen ?? false}
-                        />
-                      </Suspense>
-                    </ErrorBoundary>
-                  </>
-                )}
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-zero-gamma"
+                  label="Zero Gamma"
+                  fallback={<SkeletonSection lines={4} />}
+                >
+                  <ZeroGammaPanel
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
+                  />
+                </GatedSection>
 
-                {isAuthenticated && (market.hasData || !!historySnapshot) && (
-                  <>
-                    <span
-                      id="sec-market-internals"
-                      className="block scroll-mt-28"
-                    />
-                    <ErrorBoundary label="Breadth & TICK">
-                      <MarketInternalsPanel
-                        {...internals}
-                        marketOpen={market.data.quotes?.marketOpen ?? false}
-                        regime={regime}
-                      />
-                    </ErrorBoundary>
-                  </>
-                )}
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-market-internals"
+                  label="Breadth & TICK"
+                >
+                  <MarketInternalsPanel
+                    {...internals}
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
+                    regime={regime}
+                  />
+                </GatedSection>
 
-                {isAuthenticated && (market.hasData || !!historySnapshot) && (
-                  <>
-                    <span id="sec-vega-spikes" className="block scroll-mt-28" />
-                    <ErrorBoundary label="Dir Vega Spikes">
-                      <VegaSpikeFeed
-                        marketOpen={market.data.quotes?.marketOpen ?? false}
-                      />
-                    </ErrorBoundary>
-                  </>
-                )}
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-vega-spikes"
+                  label="Dir Vega Spikes"
+                >
+                  <VegaSpikeFeed
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
+                  />
+                </GatedSection>
 
-                {isAuthenticated && (market.hasData || !!historySnapshot) && (
-                  <>
-                    <span id="sec-greek-flow" className="block scroll-mt-28" />
-                    <ErrorBoundary label="Greek Flow">
-                      <Suspense fallback={<SkeletonSection lines={5} />}>
-                        <GreekFlowPanel
-                          marketOpen={market.data.quotes?.marketOpen ?? false}
-                        />
-                      </Suspense>
-                    </ErrorBoundary>
-                  </>
-                )}
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-greek-flow"
+                  label="Greek Flow"
+                  fallback={<SkeletonSection lines={5} />}
+                >
+                  <GreekFlowPanel
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
+                  />
+                </GatedSection>
 
-                {isAuthenticated && (market.hasData || !!historySnapshot) && (
-                  <>
-                    <span id="sec-market-flow" className="block scroll-mt-28" />
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-market-flow"
+                  label="Market Flow"
+                >
+                  <MarketFlow
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
+                    regime={regime}
+                    gexByStrike={gexByStrikeForFlow}
+                  />
+                </GatedSection>
 
-                    <ErrorBoundary label="Market Flow">
-                      <MarketFlow
-                        marketOpen={market.data.quotes?.marketOpen ?? false}
-                        regime={regime}
-                        gexByStrike={gexByStrikeForFlow}
-                      />
-                    </ErrorBoundary>
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-otm-flow"
+                  label="OTM Flow Alerts"
+                  fallback={<SkeletonSection lines={5} />}
+                >
+                  <OtmFlowAlerts
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
+                  />
+                </GatedSection>
 
-                    <span id="sec-otm-flow" className="block scroll-mt-28" />
-                    <ErrorBoundary label="OTM Flow Alerts">
-                      <Suspense fallback={<SkeletonSection lines={5} />}>
-                        <OtmFlowAlerts
-                          marketOpen={market.data.quotes?.marketOpen ?? false}
-                        />
-                      </Suspense>
-                    </ErrorBoundary>
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-institutional-program"
+                  label="Institutional Program"
+                  fallback={<SkeletonSection lines={6} />}
+                >
+                  <InstitutionalProgramSection />
+                </GatedSection>
 
-                    <span
-                      id="sec-institutional-program"
-                      className="block scroll-mt-28"
-                    />
-                    <ErrorBoundary label="Institutional Program">
-                      <Suspense fallback={<SkeletonSection lines={6} />}>
-                        <InstitutionalProgramSection />
-                      </Suspense>
-                    </ErrorBoundary>
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-whale-anomalies"
+                  label="Whale Anomalies"
+                  fallback={<SkeletonSection lines={5} />}
+                >
+                  <WhaleAnomaliesSection
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
+                  />
+                </GatedSection>
 
-                    <span
-                      id="sec-whale-anomalies"
-                      className="block scroll-mt-28"
-                    />
-                    <ErrorBoundary label="Whale Anomalies">
-                      <Suspense fallback={<SkeletonSection lines={5} />}>
-                        <WhaleAnomaliesSection
-                          marketOpen={market.data.quotes?.marketOpen ?? false}
-                        />
-                      </Suspense>
-                    </ErrorBoundary>
-
-                    <span
-                      id="sec-gamma-squeezes"
-                      className="block scroll-mt-28"
-                    />
-                    <ErrorBoundary label="Gamma Squeezes">
-                      <Suspense fallback={<SkeletonSection lines={5} />}>
-                        <GammaSqueezeFeed
-                          marketOpen={market.data.quotes?.marketOpen ?? false}
-                        />
-                      </Suspense>
-                    </ErrorBoundary>
-                  </>
-                )}
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-gamma-squeezes"
+                  label="Gamma Squeezes"
+                  fallback={<SkeletonSection lines={5} />}
+                >
+                  <GammaSqueezeFeed
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
+                  />
+                </GatedSection>
 
                 {isAuthenticated && (
                   <>
