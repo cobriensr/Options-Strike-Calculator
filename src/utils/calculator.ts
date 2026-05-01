@@ -42,7 +42,13 @@ export {
 
 export { buildPutBWB, buildCallBWB, bwbPnLAtExpiry } from './bwb.js';
 
-export { stressedSigma, calcHedge } from './hedge.js';
+export {
+  stressedSigma,
+  calcHedge,
+  priceHedgeLegs,
+  recommendHedgeContracts,
+  buildScenarioTable,
+} from './hedge.js';
 
 export {
   validateMarketTime,

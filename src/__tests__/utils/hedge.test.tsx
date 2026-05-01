@@ -5,6 +5,9 @@ import {
   calcAllDeltas,
   buildIronCondor,
   stressedSigma,
+  priceHedgeLegs,
+  recommendHedgeContracts,
+  buildScenarioTable,
 } from '../../utils/calculator';
 import type { DeltaRow, HedgeDelta } from '../../types';
 
@@ -1171,5 +1174,292 @@ describe('calcHedge: breakevenTarget parameter', () => {
 
     expect(h1.putStrikeSnapped).toBe(h2.putStrikeSnapped);
     expect(h1.callStrikeSnapped).toBe(h2.callStrikeSnapped);
+  });
+});
+
+// ── Decomposition tests (Phase 3d) ─────────────────────────────────────
+//
+// These exercise the priceHedgeLegs / recommendHedgeContracts /
+// buildScenarioTable helpers directly. The legacy `calcHedge`-based
+// tests above already cover the orchestrator path; these add coverage
+// for the building blocks in isolation so future refactors that touch
+// only one stage have a tighter failure signal.
+
+describe('priceHedgeLegs', () => {
+  it('returns put/call strikes that bracket spot with calendar-day annualization', () => {
+    const T = calcTimeToExpiry(6);
+    const pricing = priceHedgeLegs({
+      spot: 6800,
+      sigma: 0.28,
+      T,
+      skew: 0.03,
+      hedgeDelta: 2,
+      hedgeDte: 7,
+    });
+
+    expect(pricing.putStrikeSnapped).toBeLessThan(6800);
+    expect(pricing.callStrikeSnapped).toBeGreaterThan(6800);
+    // Calendar-day annualized: 7/365 ≈ 0.01918.
+    expect(pricing.tHedgeEntry).toBeCloseTo(7 / 365, 6);
+    // EOD T = (hedgeDte - 1) / 365.
+    expect(pricing.tHedgeEod).toBeCloseTo(6 / 365, 6);
+  });
+
+  it('snaps both strikes to a 5-pt grid (SPX strike increment)', () => {
+    const T = calcTimeToExpiry(6);
+    const pricing = priceHedgeLegs({
+      spot: 6800,
+      sigma: 0.28,
+      T,
+      skew: 0.03,
+      hedgeDelta: 2,
+      hedgeDte: 7,
+    });
+
+    expect(pricing.putStrikeSnapped % 5).toBe(0);
+    expect(pricing.callStrikeSnapped % 5).toBe(0);
+  });
+
+  it('returns positive premium and EOD recovery for a multi-day hedge', () => {
+    const T = calcTimeToExpiry(6);
+    const pricing = priceHedgeLegs({
+      spot: 6800,
+      sigma: 0.28,
+      T,
+      skew: 0.03,
+      hedgeDelta: 2,
+      hedgeDte: 7,
+    });
+
+    expect(pricing.putPremium).toBeGreaterThan(0);
+    expect(pricing.callPremium).toBeGreaterThan(0);
+    expect(pricing.putRecovery).toBeGreaterThan(0);
+    expect(pricing.callRecovery).toBeGreaterThan(0);
+    // Recovery (1 day later) should be less than entry premium (theta).
+    expect(pricing.putRecovery).toBeLessThan(pricing.putPremium);
+    expect(pricing.callRecovery).toBeLessThan(pricing.callPremium);
+  });
+
+  it('zeros EOD recovery when hedgeDte === 1 (intrinsic-only fallback)', () => {
+    const T = calcTimeToExpiry(6);
+    const pricing = priceHedgeLegs({
+      spot: 6800,
+      sigma: 0.28,
+      T,
+      skew: 0.03,
+      hedgeDelta: 2,
+      hedgeDte: 1,
+    });
+
+    expect(pricing.tHedgeEod).toBe(0);
+    expect(pricing.putRecovery).toBe(0);
+    expect(pricing.callRecovery).toBe(0);
+  });
+
+  it('matches calcHedge orchestrator pricing exactly', () => {
+    const { spot, sigma, T, ic } = makeTestIC();
+    const hedge = calcHedge({
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
+      hedgeDelta: 2,
+    });
+    const pricing = priceHedgeLegs({
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      hedgeDelta: 2,
+      hedgeDte: 7, // matches DEFAULTS.HEDGE_DTE
+    });
+
+    expect(pricing.putStrikeSnapped).toBe(hedge.putStrikeSnapped);
+    expect(pricing.callStrikeSnapped).toBe(hedge.callStrikeSnapped);
+    // calcHedge rounds the displayed premium to 2 decimals; comparing
+    // the rounded form rather than the raw float.
+    expect(Math.round(pricing.putPremium * 100) / 100).toBe(hedge.putPremium);
+    expect(Math.round(pricing.callPremium * 100) / 100).toBe(hedge.callPremium);
+  });
+});
+
+describe('recommendHedgeContracts', () => {
+  function pricingFor(spot = 6800) {
+    const T = calcTimeToExpiry(6);
+    return priceHedgeLegs({
+      spot,
+      sigma: 0.28,
+      T,
+      skew: 0.03,
+      hedgeDelta: 2,
+      hedgeDte: 7,
+    });
+  }
+
+  it('returns at least 1 contract per side (display floor)', () => {
+    const pricing = pricingFor();
+    const { recommendedPuts, recommendedCalls } = recommendHedgeContracts({
+      spot: 6800,
+      pricing,
+      icContracts: 15,
+      icMaxLossPts: 18,
+      breakevenTarget: 1.5,
+    });
+
+    expect(recommendedPuts).toBeGreaterThanOrEqual(1);
+    expect(recommendedCalls).toBeGreaterThanOrEqual(1);
+  });
+
+  it('scales contract recommendations roughly linearly with IC max loss', () => {
+    const pricing = pricingFor();
+    const small = recommendHedgeContracts({
+      spot: 6800,
+      pricing,
+      icContracts: 10,
+      icMaxLossPts: 10,
+      breakevenTarget: 1.5,
+    });
+    const large = recommendHedgeContracts({
+      spot: 6800,
+      pricing,
+      icContracts: 10,
+      icMaxLossPts: 100, // 10× the max loss
+      breakevenTarget: 1.5,
+    });
+
+    expect(large.recommendedPuts).toBeGreaterThan(small.recommendedPuts);
+    expect(large.recommendedCalls).toBeGreaterThan(small.recommendedCalls);
+  });
+
+  it('matches calcHedge orchestrator recommendations exactly', () => {
+    const { spot, sigma, T, ic } = makeTestIC();
+    const hedge = calcHedge({
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
+      hedgeDelta: 2,
+    });
+    const pricing = priceHedgeLegs({
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      hedgeDelta: 2,
+      hedgeDte: 7,
+    });
+    const reco = recommendHedgeContracts({
+      spot,
+      pricing,
+      icContracts: 15,
+      icMaxLossPts: ic.maxLoss,
+      breakevenTarget: 1.5,
+    });
+
+    expect(reco.recommendedPuts).toBe(hedge.recommendedPuts);
+    expect(reco.recommendedCalls).toBe(hedge.recommendedCalls);
+  });
+});
+
+describe('buildScenarioTable', () => {
+  function scenarioInputsFor(spot = 6800) {
+    const { ic } = makeTestIC(spot);
+    const pricing = priceHedgeLegs({
+      spot,
+      sigma: 0.28,
+      T: calcTimeToExpiry(6),
+      skew: 0.03,
+      hedgeDelta: 2,
+      hedgeDte: 7,
+    });
+    return {
+      spot,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
+      icCreditPts: ic.creditReceived,
+      icContracts: 15,
+      hedgePutStrike: pricing.putStrikeSnapped,
+      hedgeCallStrike: pricing.callStrikeSnapped,
+      hedgePutPremium: pricing.putPremium,
+      hedgeCallPremium: pricing.callPremium,
+      hedgePuts: 10,
+      hedgeCalls: 10,
+      hedgePutSigma: pricing.putSigma,
+      hedgeCallSigma: pricing.callSigma,
+      hedgeTRemaining: pricing.tHedgeEod,
+      movePoints: 0,
+    };
+  }
+
+  it('emits 9 crash + 9 rally rows in stable order', () => {
+    const scenarios = buildScenarioTable({
+      spot: 6800,
+      scenarioInputs: scenarioInputsFor(),
+    });
+
+    expect(scenarios).toHaveLength(18);
+    const crashes = scenarios.filter((s) => s.direction === 'crash');
+    const rallies = scenarios.filter((s) => s.direction === 'rally');
+    expect(crashes).toHaveLength(9);
+    expect(rallies).toHaveLength(9);
+    // Crashes come first.
+    expect(scenarios.at(0)?.direction).toBe('crash');
+    expect(scenarios.at(9)?.direction).toBe('rally');
+  });
+
+  it('uses spot-scaled crash percentages (1.5%..10%)', () => {
+    const scenarios = buildScenarioTable({
+      spot: 6800,
+      scenarioInputs: scenarioInputsFor(),
+    });
+    const crashes = scenarios.filter((s) => s.direction === 'crash');
+    // Smallest crash should be ~1.5% of spot, biggest ~10%.
+    expect(crashes.at(0)?.movePoints).toBe(Math.round(6800 * 0.015));
+    expect(crashes.at(-1)?.movePoints).toBe(Math.round(6800 * 0.1));
+    // Crash percentages should be monotonically increasing.
+    for (let i = 1; i < crashes.length; i++) {
+      const cur = crashes[i];
+      const prev = crashes[i - 1];
+      if (!cur || !prev) continue;
+      expect(cur.movePoints).toBeGreaterThan(prev.movePoints);
+    }
+  });
+
+  it('matches the scenarios returned by calcHedge orchestrator', () => {
+    const { spot, sigma, T, ic } = makeTestIC();
+    const hedge = calcHedge({
+      spot,
+      sigma,
+      T,
+      skew: 0.03,
+      icContracts: 15,
+      icCreditPts: ic.creditReceived,
+      icMaxLossPts: ic.maxLoss,
+      icShortPut: ic.shortPut,
+      icLongPut: ic.longPut,
+      icShortCall: ic.shortCall,
+      icLongCall: ic.longCall,
+      hedgeDelta: 2,
+    });
+
+    expect(hedge.scenarios).toHaveLength(18);
+    expect(hedge.scenarios.at(0)?.direction).toBe('crash');
+    expect(hedge.scenarios.at(9)?.direction).toBe('rally');
   });
 });

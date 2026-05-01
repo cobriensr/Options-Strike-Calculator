@@ -17,6 +17,39 @@ import {
 // HEDGE (REINSURANCE) CALCULATOR
 // ============================================================
 
+// ── Module constants ──────────────────────────────────────────────────
+
+/**
+ * Crash/rally scenario sizes as a fraction of spot. Each value generates
+ * one row in each direction of the scenario table; e.g. 0.015 → 1.5%
+ * crash AND 1.5% rally. Values were picked to span the trading-relevant
+ * range (1.5% covers a normal trend day, 10% covers a 2020-COVID-style
+ * tail). Changing this list changes the row count returned in
+ * `HedgeResult.scenarios` — downstream UI assumes 9 per direction.
+ */
+const CRASH_SCENARIO_PCTS = [
+  0.015, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.1,
+] as const;
+
+/**
+ * Bisection iteration cap when solving for the breakeven crash/rally.
+ * 50 iterations bracket the answer to roughly `(searchMax / 2^50)` ≈
+ * 10⁻¹⁵, which is well below the `Math.round` precision used on the
+ * returned points value — anything beyond ~30 iterations is wasted work
+ * but keeping 50 leaves margin if `searchMax` is later widened.
+ */
+const BREAKEVEN_MAX_ITER = 50;
+
+/**
+ * Upper bound on the breakeven search (as a fraction of spot). 15% is
+ * comfortably beyond every historical 1-day SPX move; pushing it higher
+ * gains nothing for realistic inputs but expands the dead-band where
+ * the bisection brackets a solution that doesn't exist.
+ */
+const BREAKEVEN_SEARCH_PCT = 0.15;
+
+// ── Public utilities ──────────────────────────────────────────────────
+
 /**
  * Estimates the IV multiplier under stress for hedge repricing.
  *
@@ -36,6 +69,8 @@ export function stressedSigma(baseSigma: number, movePct: number): number {
   const mult = 1 + sensitivity * absPct;
   return baseSigma * Math.min(mult, STRESS.MAX_MULT);
 }
+
+// ── Internal scenario / breakeven helpers ─────────────────────────────
 
 /**
  * Computes P&L for an IC + hedge position at a given SPX move.
@@ -158,7 +193,7 @@ function findBreakEven(
 ): number {
   let lo = searchMin;
   let hi = searchMax;
-  for (let i = 0; i < 50; i++) {
+  for (let i = 0; i < BREAKEVEN_MAX_ITER; i++) {
     const mid = (lo + hi) / 2;
     if (computeFn(mid) < 0) {
       lo = mid;
@@ -169,48 +204,52 @@ function findBreakEven(
   return Math.round((lo + hi) / 2);
 }
 
+// ── Decomposed building blocks ────────────────────────────────────────
+
+export interface HedgeLegPricing {
+  /** Raw computed strike before snapping to the nearest 5-pt SPX increment. */
+  putStrike: number;
+  callStrike: number;
+  /** Strike snapped to the actual SPX strike grid — what the order goes to. */
+  putStrikeSnapped: number;
+  callStrikeSnapped: number;
+  /** Skew-adjusted IVs used to price each leg. */
+  putSigma: number;
+  callSigma: number;
+  /** Premium paid per contract for each leg, in SPX points. */
+  putPremium: number;
+  callPremium: number;
+  /** EOD recovery value if the underlying is unchanged at EOD close. */
+  putRecovery: number;
+  callRecovery: number;
+  /**
+   * Annualized time to expiry at hedge entry (hedgeDte calendar days).
+   * Calendar-day annualized — see FE-MATH-008 in `calcHedge`.
+   */
+  tHedgeEntry: number;
+  /**
+   * Annualized time remaining at EOD close, one calendar day after
+   * entry. `Math.max(0, ...)` so a 1DTE hedge resolves to 0.
+   */
+  tHedgeEod: number;
+}
+
 /**
- * Calculates full hedge recommendation for an IC position.
- *
- * The sizing algorithm targets breakeven at 1.5× the distance from spot
- * to the hedge strike. This is a standard reinsurance sizing approach:
- * - Below 1×: hedge hasn't started paying (deductible zone)
- * - At 1×: hedge is ATM (starts paying)
- * - At 1.5×: hedge covers the full IC max loss (target)
- * - Above 1.5×: hedge exceeds IC loss (profit on catastrophe)
- *
- * Hedge pricing uses the specified DTE (default 7 days). The scenario
- * table values hedges at (DTE - 1 day) remaining to model "sell to close
- * at EOD" — capturing the extrinsic value a longer-dated hedge retains.
+ * Price the four hedge legs (put strike + premium, call strike + premium)
+ * plus the EOD-close recovery if the underlying doesn't move. Pure: no
+ * sizing, no scenario generation. Extracted so that the strike+premium
+ * pipeline can be unit-tested independently of the recommend/scenario
+ * stages.
  */
-export function calcHedge(params: {
+export function priceHedgeLegs(params: {
   spot: number;
   sigma: number;
   T: number;
   skew: number;
-  icContracts: number;
-  icCreditPts: number;
-  icMaxLossPts: number;
-  icShortPut: number;
-  icLongPut: number;
-  icShortCall: number;
-  icLongCall: number;
   hedgeDelta: HedgeDelta;
-  hedgeDte?: number;
-  breakevenTarget?: number;
-}): HedgeResult {
-  const {
-    spot,
-    sigma,
-    T,
-    skew,
-    icContracts,
-    icCreditPts,
-    icMaxLossPts,
-    hedgeDelta,
-    hedgeDte = DEFAULTS.HEDGE_DTE,
-    breakevenTarget = STRESS.BREAKEVEN_TARGET,
-  } = params;
+  hedgeDte: number;
+}): HedgeLegPricing {
+  const { spot, sigma, T, skew, hedgeDelta, hedgeDte } = params;
   const z = HEDGE_Z_SCORES[hedgeDelta];
   const sqrtT = Math.sqrt(T);
 
@@ -263,6 +302,63 @@ export function calcHedge(params: {
   // (see FE-MATH-008 comment above) — the EOD close is one overnight later.
   const tHedgeEod = Math.max(0, (hedgeDte - 1) / MARKET.CALENDAR_DAYS_PER_YEAR);
 
+  // EOD recovery if price doesn't move (used by the daily-cost calc).
+  const putRecovery =
+    tHedgeEod > 0
+      ? blackScholesPrice(spot, putStrikeSnapped, putSigma, tHedgeEod, 'put')
+      : 0;
+  const callRecovery =
+    tHedgeEod > 0
+      ? blackScholesPrice(spot, callStrikeSnapped, callSigma, tHedgeEod, 'call')
+      : 0;
+
+  return {
+    putStrike,
+    callStrike,
+    putStrikeSnapped,
+    callStrikeSnapped,
+    putSigma,
+    callSigma,
+    putPremium,
+    callPremium,
+    putRecovery,
+    callRecovery,
+    tHedgeEntry,
+    tHedgeEod,
+  };
+}
+
+export interface HedgeContractRecommendation {
+  recommendedPuts: number;
+  recommendedCalls: number;
+}
+
+/**
+ * Recommend put/call hedge contract counts targeting an IC max-loss
+ * payout at `breakevenTarget × distanceToHedgeStrike`. Sized using the
+ * NET payout (BS value at EOD minus entry premium) per contract — that's
+ * the actual P&L each contract generates at the target move. Contracts
+ * are floored at 1 even when the target payout is non-positive so the
+ * UI always displays a buyable size.
+ */
+export function recommendHedgeContracts(params: {
+  spot: number;
+  pricing: HedgeLegPricing;
+  icContracts: number;
+  icMaxLossPts: number;
+  breakevenTarget: number;
+}): HedgeContractRecommendation {
+  const { spot, pricing, icContracts, icMaxLossPts, breakevenTarget } = params;
+  const {
+    putStrikeSnapped,
+    callStrikeSnapped,
+    putSigma,
+    callSigma,
+    putPremium,
+    callPremium,
+    tHedgeEod,
+  } = pricing;
+
   // IC max loss in dollars (total position)
   const icMaxLossDollars = icMaxLossPts * SPX_MULTIPLIER * icContracts;
 
@@ -271,11 +367,9 @@ export function calcHedge(params: {
   const distToCallHedge = callStrikeSnapped - spot;
 
   // Target crash: breakevenTarget × distance to hedge strike
-  // (defaults to STRESS.BREAKEVEN_TARGET = 1.5; can be overridden per-trade).
-  // Size using NET payout (BS value at EOD minus entry premium) per contract,
-  // since that's the actual P&L each contract generates at the target move
   const targetPutSpot = spot - distToPutHedge * breakevenTarget;
   const targetCallSpot = spot + distToCallHedge * breakevenTarget;
+
   const putValueAtTarget =
     tHedgeEod > 0
       ? blackScholesPrice(
@@ -296,12 +390,12 @@ export function calcHedge(params: {
           'call',
         )
       : Math.max(0, targetCallSpot - callStrikeSnapped);
+
   const putPayoutAtTarget =
     Math.max(0, putValueAtTarget - putPremium) * SPX_MULTIPLIER;
   const callPayoutAtTarget =
     Math.max(0, callValueAtTarget - callPremium) * SPX_MULTIPLIER;
 
-  // Recommended contracts: enough to approximately cover IC max loss at target crash
   const recommendedPuts =
     putPayoutAtTarget > 0
       ? Math.max(1, Math.round(icMaxLossDollars / putPayoutAtTarget))
@@ -311,16 +405,131 @@ export function calcHedge(params: {
       ? Math.max(1, Math.round(icMaxLossDollars / callPayoutAtTarget))
       : 1;
 
-  // Total daily cost = premium paid - estimated EOD recovery (when OTM)
-  // If the hedge isn't needed (price stays flat), we recover most of the premium
-  const putRecovery =
-    tHedgeEod > 0
-      ? blackScholesPrice(spot, putStrikeSnapped, putSigma, tHedgeEod, 'put')
-      : 0;
-  const callRecovery =
-    tHedgeEod > 0
-      ? blackScholesPrice(spot, callStrikeSnapped, callSigma, tHedgeEod, 'call')
-      : 0;
+  return { recommendedPuts, recommendedCalls };
+}
+
+/**
+ * Generate the full crash + rally scenario grid. One row per
+ * `CRASH_SCENARIO_PCTS` entry per direction, in the same order — crashes
+ * first, rallies second — matching the existing UI table layout.
+ */
+export function buildScenarioTable(params: {
+  spot: number;
+  scenarioInputs: Parameters<typeof computeScenarioPnL>[0];
+}): HedgeScenario[] {
+  const { spot, scenarioInputs } = params;
+  const crashLevels = CRASH_SCENARIO_PCTS.map((pct) => Math.round(spot * pct));
+  const scenarios: HedgeScenario[] = [];
+
+  for (const pts of crashLevels) {
+    const result = computeScenarioPnL({ ...scenarioInputs, movePoints: pts });
+    scenarios.push({
+      movePoints: pts,
+      movePct: ((pts / spot) * 100).toFixed(1),
+      direction: 'crash',
+      icPnL: result.icPnL,
+      hedgePutPnL: result.hedgePutPnL,
+      hedgeCallPnL: result.hedgeCallPnL,
+      hedgeCost: result.hedgeCost,
+      netPnL: result.netPnL,
+    });
+  }
+
+  for (const pts of crashLevels) {
+    const result = computeScenarioPnL({ ...scenarioInputs, movePoints: -pts });
+    scenarios.push({
+      movePoints: pts,
+      movePct: ((pts / spot) * 100).toFixed(1),
+      direction: 'rally',
+      icPnL: result.icPnL,
+      hedgePutPnL: result.hedgePutPnL,
+      hedgeCallPnL: result.hedgeCallPnL,
+      hedgeCost: result.hedgeCost,
+      netPnL: result.netPnL,
+    });
+  }
+
+  return scenarios;
+}
+
+// ── Public orchestrator ───────────────────────────────────────────────
+
+/**
+ * Calculates full hedge recommendation for an IC position.
+ *
+ * The sizing algorithm targets breakeven at 1.5× the distance from spot
+ * to the hedge strike. This is a standard reinsurance sizing approach:
+ * - Below 1×: hedge hasn't started paying (deductible zone)
+ * - At 1×: hedge is ATM (starts paying)
+ * - At 1.5×: hedge covers the full IC max loss (target)
+ * - Above 1.5×: hedge exceeds IC loss (profit on catastrophe)
+ *
+ * Hedge pricing uses the specified DTE (default 7 days). The scenario
+ * table values hedges at (DTE - 1 day) remaining to model "sell to close
+ * at EOD" — capturing the extrinsic value a longer-dated hedge retains.
+ *
+ * Composition:
+ *   1. `priceHedgeLegs` — strike selection + premium + EOD recovery.
+ *   2. `recommendHedgeContracts` — target-payout contract sizing.
+ *   3. Daily cost + vega + breakeven derivation (cheap glue).
+ *   4. `buildScenarioTable` — crash/rally grid.
+ */
+export function calcHedge(params: {
+  spot: number;
+  sigma: number;
+  T: number;
+  skew: number;
+  icContracts: number;
+  icCreditPts: number;
+  icMaxLossPts: number;
+  icShortPut: number;
+  icLongPut: number;
+  icShortCall: number;
+  icLongCall: number;
+  hedgeDelta: HedgeDelta;
+  hedgeDte?: number;
+  breakevenTarget?: number;
+}): HedgeResult {
+  const {
+    spot,
+    sigma,
+    T,
+    skew,
+    icContracts,
+    icCreditPts,
+    icMaxLossPts,
+    hedgeDelta,
+    hedgeDte = DEFAULTS.HEDGE_DTE,
+    breakevenTarget = STRESS.BREAKEVEN_TARGET,
+  } = params;
+
+  // 1. Strike + premium pipeline.
+  const pricing = priceHedgeLegs({ spot, sigma, T, skew, hedgeDelta, hedgeDte });
+  const {
+    putStrike,
+    callStrike,
+    putStrikeSnapped,
+    callStrikeSnapped,
+    putSigma,
+    callSigma,
+    putPremium,
+    callPremium,
+    putRecovery,
+    callRecovery,
+    tHedgeEntry,
+    tHedgeEod,
+  } = pricing;
+
+  // 2. Target-payout contract sizing.
+  const { recommendedPuts, recommendedCalls } = recommendHedgeContracts({
+    spot,
+    pricing,
+    icContracts,
+    icMaxLossPts,
+    breakevenTarget,
+  });
+
+  // 3a. Daily cost = premium paid - estimated EOD recovery (when OTM).
   const netPutCostPts = putPremium - putRecovery;
   const netCallCostPts = callPremium - callRecovery;
   const dailyCostPts =
@@ -330,8 +539,7 @@ export function calcHedge(params: {
     icCreditPts * SPX_MULTIPLIER * icContracts - dailyCostDollars,
   );
 
-  // Vega: $ change per 1% IV move (0.01 sigma change) for each hedge contract
-  // Computed at entry DTE for the full hedge position
+  // 3b. Vega per 1% IV move per leg, then position-weighted total.
   const putVegaRaw = calcBSVega(spot, putStrikeSnapped, putSigma, tHedgeEntry);
   const callVegaRaw = calcBSVega(
     spot,
@@ -339,7 +547,6 @@ export function calcHedge(params: {
     callSigma,
     tHedgeEntry,
   );
-  // Convert: vega per 1.0 σ → per 0.01 σ (1 vol point), × SPX multiplier
   const vegaScale = 0.01 * SPX_MULTIPLIER;
   const putVegaPer1Pct = Math.round(putVegaRaw * vegaScale * 100) / 100;
   const callVegaPer1Pct = Math.round(callVegaRaw * vegaScale * 100) / 100;
@@ -349,8 +556,8 @@ export function calcHedge(params: {
         100,
     ) / 100;
 
-  // Helper to compute net P&L at a given crash/rally size
-  const scenarioParams = {
+  // 3c. Breakeven crash/rally — bisect over the scenario P&L.
+  const scenarioInputs = {
     spot,
     icShortPut: params.icShortPut,
     icLongPut: params.icLongPut,
@@ -367,62 +574,30 @@ export function calcHedge(params: {
     hedgePutSigma: putSigma,
     hedgeCallSigma: callSigma,
     hedgeTRemaining: tHedgeEod,
+    movePoints: 0, // placeholder; overridden per call
   };
 
   const netPnLAtCrash = (pts: number) =>
-    computeScenarioPnL({ ...scenarioParams, movePoints: pts }).netPnL;
+    computeScenarioPnL({ ...scenarioInputs, movePoints: pts }).netPnL;
   const netPnLAtRally = (pts: number) =>
-    computeScenarioPnL({ ...scenarioParams, movePoints: -pts }).netPnL;
+    computeScenarioPnL({ ...scenarioInputs, movePoints: -pts }).netPnL;
 
-  // Find breakeven points (crash/rally size where net P&L = 0)
-  // IC becomes losing when move > (spot - shortPut), so search from there
+  // IC becomes losing when move > (spot - shortPut), so search from there.
   const distToShortPut = spot - params.icShortPut;
   const distToShortCall = params.icShortCall - spot;
-
   const breakEvenCrashPts = findBreakEven(
     (move) => netPnLAtCrash(move),
-    distToShortPut, // starts losing here
-    spot * 0.15, // max 15% crash
+    distToShortPut,
+    spot * BREAKEVEN_SEARCH_PCT,
   );
-
   const breakEvenRallyPts = findBreakEven(
     (move) => netPnLAtRally(move),
     distToShortCall,
-    spot * 0.15,
+    spot * BREAKEVEN_SEARCH_PCT,
   );
 
-  // Build scenario table: percentage-based levels scaled to current spot
-  const crashPcts = [0.015, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.1];
-  const crashLevels = crashPcts.map((pct) => Math.round(spot * pct));
-  const scenarios: HedgeScenario[] = [];
-
-  for (const pts of crashLevels) {
-    const result = computeScenarioPnL({ ...scenarioParams, movePoints: pts });
-    scenarios.push({
-      movePoints: pts,
-      movePct: ((pts / spot) * 100).toFixed(1),
-      direction: 'crash',
-      icPnL: result.icPnL,
-      hedgePutPnL: result.hedgePutPnL,
-      hedgeCallPnL: result.hedgeCallPnL,
-      hedgeCost: result.hedgeCost,
-      netPnL: result.netPnL,
-    });
-  }
-
-  for (const pts of crashLevels) {
-    const result = computeScenarioPnL({ ...scenarioParams, movePoints: -pts });
-    scenarios.push({
-      movePoints: pts,
-      movePct: ((pts / spot) * 100).toFixed(1),
-      direction: 'rally',
-      icPnL: result.icPnL,
-      hedgePutPnL: result.hedgePutPnL,
-      hedgeCallPnL: result.hedgeCallPnL,
-      hedgeCost: result.hedgeCost,
-      netPnL: result.netPnL,
-    });
-  }
+  // 4. Scenario grid.
+  const scenarios = buildScenarioTable({ spot, scenarioInputs });
 
   return {
     hedgeDelta,
