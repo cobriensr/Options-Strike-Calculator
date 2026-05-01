@@ -44,6 +44,7 @@ vi.mock('../_lib/logger.js', () => ({
 
 import listHandler from '../periscope-chat-list.js';
 import detailHandler from '../periscope-chat-detail.js';
+import updateHandler from '../periscope-chat-update.js';
 import { guardOwnerEndpoint } from '../_lib/api-helpers.js';
 
 beforeEach(() => {
@@ -262,5 +263,140 @@ describe('GET /api/periscope-chat-detail', () => {
     };
     expect(body.image_urls).toHaveLength(1);
     expect(body.image_urls[0]!.url).toBe('https://b/c.png');
+  });
+});
+
+// ============================================================
+// /api/periscope-chat-update
+// ============================================================
+
+describe('PATCH/POST /api/periscope-chat-update', () => {
+  it('returns 405 for non-PATCH/POST methods', async () => {
+    const req = mockRequest({ method: 'GET', query: { id: '1' }, body: {} });
+    const res = mockResponse();
+    await updateHandler(req, res);
+    expect(res._status).toBe(405);
+  });
+
+  it('returns 401 when not owner', async () => {
+    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
+      res.status(401).json({ error: 'Not authenticated' });
+      return true;
+    });
+    const req = mockRequest({
+      method: 'PATCH',
+      query: { id: '1' },
+      body: { calibration_quality: 5 },
+    });
+    const res = mockResponse();
+    await updateHandler(req, res);
+    expect(res._status).toBe(401);
+  });
+
+  it('returns 400 when id is missing', async () => {
+    const req = mockRequest({
+      method: 'PATCH',
+      query: {},
+      body: { calibration_quality: 4 },
+    });
+    const res = mockResponse();
+    await updateHandler(req, res);
+    expect(res._status).toBe(400);
+  });
+
+  it('returns 400 when calibration_quality is out of range', async () => {
+    const req = mockRequest({
+      method: 'PATCH',
+      query: { id: '1' },
+      body: { calibration_quality: 9 },
+    });
+    const res = mockResponse();
+    await updateHandler(req, res);
+    expect(res._status).toBe(400);
+  });
+
+  it('returns 400 when regime_tag is not a known enum value', async () => {
+    const req = mockRequest({
+      method: 'PATCH',
+      query: { id: '1' },
+      body: { regime_tag: 'not-a-real-tag' },
+    });
+    const res = mockResponse();
+    await updateHandler(req, res);
+    expect(res._status).toBe(400);
+  });
+
+  it('returns 400 when neither field is provided', async () => {
+    const req = mockRequest({ method: 'PATCH', query: { id: '1' }, body: {} });
+    const res = mockResponse();
+    await updateHandler(req, res);
+    expect(res._status).toBe(400);
+    expect((res._json as { error: string }).error).toMatch(
+      /at least one of/i,
+    );
+  });
+
+  it('returns 404 when row does not exist', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    const req = mockRequest({
+      method: 'PATCH',
+      query: { id: '999' },
+      body: { calibration_quality: 5 },
+    });
+    const res = mockResponse();
+    await updateHandler(req, res);
+    expect(res._status).toBe(404);
+  });
+
+  it('updates calibration_quality and returns the persisted value', async () => {
+    mockSql.mockResolvedValueOnce([
+      { id: '42', calibration_quality: '5', regime_tag: 'pin' },
+    ]);
+    const req = mockRequest({
+      method: 'PATCH',
+      query: { id: '42' },
+      body: { calibration_quality: 5 },
+    });
+    const res = mockResponse();
+    await updateHandler(req, res);
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      id: number;
+      calibration_quality: number;
+      regime_tag: string;
+    };
+    expect(body.id).toBe(42);
+    expect(body.calibration_quality).toBe(5);
+    expect(body.regime_tag).toBe('pin');
+  });
+
+  it('updates regime_tag and returns the persisted value', async () => {
+    mockSql.mockResolvedValueOnce([
+      { id: '42', calibration_quality: null, regime_tag: 'trap' },
+    ]);
+    const req = mockRequest({
+      method: 'POST',
+      query: { id: '42' },
+      body: { regime_tag: 'trap' },
+    });
+    const res = mockResponse();
+    await updateHandler(req, res);
+    expect(res._status).toBe(200);
+    const body = res._json as { regime_tag: string };
+    expect(body.regime_tag).toBe('trap');
+  });
+
+  it('accepts both fields together', async () => {
+    mockSql.mockResolvedValueOnce([
+      { id: '42', calibration_quality: '4', regime_tag: 'pin' },
+    ]);
+    const req = mockRequest({
+      method: 'PATCH',
+      query: { id: '42' },
+      body: { calibration_quality: 4, regime_tag: 'pin' },
+    });
+    const res = mockResponse();
+    await updateHandler(req, res);
+    expect(res._status).toBe(200);
   });
 });

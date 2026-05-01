@@ -517,6 +517,38 @@ export type PeriscopeChatDetailQuery = z.infer<
 >;
 
 // ============================================================
+// /api/periscope-chat-update
+// ============================================================
+
+/**
+ * PATCH/POST body for inline annotation edits. Both fields are
+ * optional; the endpoint requires at least one to be present (checked
+ * server-side, since Zod refining for "at least one of" gets noisy).
+ *
+ * `calibration_quality` is the 1-5 star rating; `regime_tag` is the
+ * fixed enum from the periscope skill (pin / drift-and-cap /
+ * gap-and-rip / trap / cone-breach / chop / other).
+ */
+export const periscopeChatUpdateBodySchema = z.object({
+  calibration_quality: z.number().int().min(1).max(5).optional(),
+  regime_tag: z
+    .enum([
+      'pin',
+      'drift-and-cap',
+      'gap-and-rip',
+      'trap',
+      'cone-breach',
+      'chop',
+      'other',
+    ])
+    .optional(),
+});
+
+export type PeriscopeChatUpdateBody = z.infer<
+  typeof periscopeChatUpdateBodySchema
+>;
+
+// ============================================================
 // /api/pre-market
 // ============================================================
 
