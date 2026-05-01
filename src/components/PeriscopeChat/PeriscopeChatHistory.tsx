@@ -62,12 +62,76 @@ function fmtNum(n: number | null): string {
     : n.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
-function fmtTime(iso: string): string {
+/** YYYY-MM-DD → "Apr 30" (terse; the year is implied by context). */
+function fmtTradingDate(iso: string): string {
   try {
-    return new Date(iso).toLocaleString();
+    const d = new Date(`${iso}T12:00:00Z`);
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   } catch {
     return iso;
   }
+}
+
+/** "3h ago" / "5m ago" / "just now" — relative time of capture. */
+function fmtRelative(iso: string): string {
+  try {
+    const t = new Date(iso).getTime();
+    const diffMs = Date.now() - t;
+    const min = Math.floor(diffMs / 60_000);
+    if (min < 1) return 'just now';
+    if (min < 60) return `${min}m ago`;
+    const h = Math.floor(min / 60);
+    if (h < 24) return `${h}h ago`;
+    const d = Math.floor(h / 24);
+    if (d < 7) return `${d}d ago`;
+    return new Date(iso).toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+    });
+  } catch {
+    return iso;
+  }
+}
+
+/** Format duration_ms as "12s" / "2m 30s" — used to show analysis cost. */
+function fmtDuration(ms: number | null): string | null {
+  if (ms == null || ms <= 0) return null;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
+/**
+ * Tailwind classes for each regime tag — chosen to evoke the trade
+ * thesis quickly. Pin = blue (suppressive equilibrium), drift-and-cap
+ * = emerald (mechanical drift), gap-and-rip = amber (vol expansion up),
+ * trap = red (failed move), cone-breach = purple (vol extension),
+ * chop = slate (no thesis), other = neutral.
+ */
+const REGIME_STYLES: Record<string, string> = {
+  pin: 'bg-blue-900/40 text-blue-300',
+  'drift-and-cap': 'bg-emerald-900/40 text-emerald-300',
+  'gap-and-rip': 'bg-amber-900/40 text-amber-300',
+  trap: 'bg-red-900/40 text-red-300',
+  'cone-breach': 'bg-purple-900/40 text-purple-300',
+  chop: 'bg-slate-800/60 text-slate-300',
+  other: 'bg-slate-800/60 text-slate-300',
+};
+
+function regimeStyle(tag: string | null): string {
+  if (!tag) return 'bg-slate-800/60 text-slate-300';
+  return REGIME_STYLES[tag] ?? 'bg-slate-800/60 text-slate-300';
+}
+
+/**
+ * Subtle mode-tinted background applied to the row card. Mirrors the
+ * pattern in src/components/ChartAnalysis/AnalysisHistoryItem.tsx —
+ * gives the row immediate visual identity without shouting.
+ */
+function modeTint(mode: 'read' | 'debrief'): string {
+  return mode === 'debrief'
+    ? 'border-purple-900/40 bg-purple-950/10'
+    : 'border-emerald-900/30 bg-emerald-950/10';
 }
 
 export default function PeriscopeChatHistory() {
@@ -163,11 +227,11 @@ export default function PeriscopeChatHistory() {
           </p>
         )}
 
-        <ul className="flex flex-col gap-1">
+        <ul className="flex flex-col gap-2">
           {merged.map((item) => (
             <li
               key={item.id}
-              className="border-edge bg-surface/40 rounded-md border"
+              className={`overflow-hidden rounded-lg border ${modeTint(item.mode)}`}
             >
               <div className="flex items-stretch">
                 <button
@@ -176,39 +240,81 @@ export default function PeriscopeChatHistory() {
                     setOpenRowId((prev) => (prev === item.id ? null : item.id))
                   }
                   aria-expanded={openRowId === item.id}
-                  className="hover:bg-surface/60 flex flex-1 flex-col gap-0.5 p-2 text-left transition focus:ring-1 focus:ring-[var(--color-accent)] focus:outline-none"
+                  className="hover:bg-surface/30 flex flex-1 flex-col gap-1.5 p-3 text-left transition focus:ring-1 focus:ring-[var(--color-accent)] focus:outline-none"
                 >
-                  <div className="flex flex-wrap items-baseline gap-x-3 text-xs">
-                    <span className="text-primary font-mono">#{item.id}</span>
+                  {/* Row 1 — identity + spot */}
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                     <span
-                      className={`rounded px-1.5 py-0 text-[10px] tracking-wide uppercase ${
+                      className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold tracking-wide uppercase ${
                         item.mode === 'debrief'
-                          ? 'bg-purple-900/40 text-purple-300'
-                          : 'bg-emerald-900/40 text-emerald-300'
+                          ? 'bg-purple-900/50 text-purple-200'
+                          : 'bg-emerald-900/50 text-emerald-200'
                       }`}
                     >
                       {item.mode}
                     </span>
-                    <span className="text-muted">
-                      {fmtTime(item.captured_at)}
+                    <span className="text-primary font-mono text-xs font-semibold">
+                      {fmtTradingDate(item.trading_date)}
                     </span>
                     {item.regime_tag && (
-                      <span className="text-secondary font-mono">
+                      <span
+                        className={`rounded-full px-2 py-0.5 font-mono text-[10px] ${regimeStyle(item.regime_tag)}`}
+                      >
                         {item.regime_tag}
                       </span>
                     )}
-                    {item.calibration_quality != null && (
-                      <span className="text-yellow-400">
-                        {'★'.repeat(item.calibration_quality)}
-                        {'☆'.repeat(5 - item.calibration_quality)}
+                    {item.calibration_quality != null &&
+                      item.calibration_quality > 0 && (
+                        <span
+                          className="text-yellow-400"
+                          title={`${item.calibration_quality}/5 stars`}
+                        >
+                          {'★'.repeat(item.calibration_quality)}
+                        </span>
+                      )}
+                    <span className="text-muted ml-auto flex items-baseline gap-1.5 font-mono text-xs">
+                      <span className="text-[10px] uppercase">spot</span>
+                      <span className="text-primary text-sm font-semibold">
+                        {fmtNum(item.spot)}
                       </span>
-                    )}
-                    <span className="text-muted ml-auto font-mono">
-                      spot {fmtNum(item.spot)}
                     </span>
                   </div>
+
+                  {/* Row 2 — triggers + linkage + meta */}
+                  <div className="text-muted flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[10px]">
+                    {item.long_trigger != null && (
+                      <span>
+                        <span className="text-emerald-400">▲</span> long{' '}
+                        <span className="text-secondary">
+                          {fmtNum(item.long_trigger)}
+                        </span>
+                      </span>
+                    )}
+                    {item.short_trigger != null && (
+                      <span>
+                        <span className="text-red-400">▼</span> short{' '}
+                        <span className="text-secondary">
+                          {fmtNum(item.short_trigger)}
+                        </span>
+                      </span>
+                    )}
+                    {item.parent_id != null && (
+                      <span className="text-purple-300">
+                        ↳ debrief of #{item.parent_id}
+                      </span>
+                    )}
+                    <span className="ml-auto flex items-center gap-2">
+                      {fmtDuration(item.duration_ms) && (
+                        <span>{fmtDuration(item.duration_ms)}</span>
+                      )}
+                      <span>{fmtRelative(item.captured_at)}</span>
+                      <span className="text-[9px] opacity-60">#{item.id}</span>
+                    </span>
+                  </div>
+
+                  {/* Row 3 — prose excerpt */}
                   {item.prose_excerpt && (
-                    <p className="text-muted line-clamp-2 text-xs">
+                    <p className="text-secondary line-clamp-3 text-xs leading-relaxed">
                       {item.prose_excerpt}
                     </p>
                   )}
@@ -217,7 +323,7 @@ export default function PeriscopeChatHistory() {
                   <button
                     type="button"
                     onClick={() => emitStartDebrief(item.id)}
-                    className="border-edge text-secondary hover:bg-surface/60 hover:text-primary flex shrink-0 items-center border-l px-3 text-xs transition focus:ring-1 focus:ring-[var(--color-accent)] focus:outline-none"
+                    className="border-edge text-secondary hover:bg-surface/40 hover:text-primary flex shrink-0 items-center border-l px-3 text-xs font-medium transition focus:ring-1 focus:ring-[var(--color-accent)] focus:outline-none"
                     title={`Start a debrief linked to read #${item.id}`}
                   >
                     Debrief →
