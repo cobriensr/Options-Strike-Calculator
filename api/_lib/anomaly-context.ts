@@ -54,6 +54,7 @@
 import { getDb } from './db.js';
 import { redis } from './schwab.js';
 import { computeMicrostructureSignals } from './microstructure-signals.js';
+import { numOrNull } from './numeric-coercion.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
 import logger from './logger.js';
 import { Sentry } from './sentry.js';
@@ -142,12 +143,6 @@ export interface ContextSnapshot {
 
 // ── Helpers ──────────────────────────────────────────────────
 
-function toNum(v: unknown): number | null {
-  if (v == null) return null;
-  const n = typeof v === 'number' ? v : Number.parseFloat(String(v));
-  return Number.isFinite(n) ? n : null;
-}
-
 /** ts minus N minutes, as an ISO string. */
 function minusMinutes(ts: Date, mins: number): string {
   return new Date(ts.getTime() - mins * 60_000).toISOString();
@@ -210,7 +205,7 @@ async function getSpotFromStrikeIV(
     LIMIT 1
   `;
   if (rows.length === 0) return null;
-  return toNum(rows[0]!.spot);
+  return numOrNull(rows[0]!.spot);
 }
 
 /**
@@ -234,7 +229,7 @@ async function getSpxCloseAt(at: Date): Promise<number | null> {
     LIMIT 1
   `;
   if (rows.length === 0) return null;
-  return toNum(rows[0]!.close);
+  return numOrNull(rows[0]!.close);
 }
 
 /**
@@ -259,7 +254,7 @@ async function getFuturesCloseAt(
     LIMIT 1
   `;
   if (rows.length === 0) return null;
-  return toNum(rows[0]!.close);
+  return numOrNull(rows[0]!.close);
 }
 
 /**
@@ -280,7 +275,7 @@ async function getVixAt(at: Date): Promise<number | null> {
     LIMIT 1
   `;
   if (rows.length === 0) return null;
-  return toNum(rows[0]!.vix);
+  return numOrNull(rows[0]!.vix);
 }
 
 /**
@@ -298,7 +293,7 @@ async function getVix9dLatest(): Promise<number | null> {
     LIMIT 1
   `;
   if (rows.length === 0) return null;
-  return toNum(rows[0]!.vix9d);
+  return numOrNull(rows[0]!.vix9d);
 }
 
 /**
@@ -325,9 +320,9 @@ async function getVix1dLatest(): Promise<number | null> {
       const keys = Object.keys(parsed).sort();
       const lastKey = keys.at(-1);
       if (!lastKey) return null;
-      return toNum(parsed[lastKey]!.c);
+      return numOrNull(parsed[lastKey]!.c);
     }
-    return toNum(entry.c);
+    return numOrNull(entry.c);
   } catch (err) {
     logger.warn({ err }, 'getVix1dLatest: redis read failed');
     return null;
@@ -361,7 +356,7 @@ async function getRecentFlowAlerts(
     return {
       ts,
       type: String(r.alert_rule ?? 'unknown'),
-      premium: toNum(r.total_premium) ?? 0,
+      premium: numOrNull(r.total_premium) ?? 0,
     };
   });
 }
@@ -401,8 +396,8 @@ async function getRecentDarkPrints(
         : String(r.latest_time);
     return {
       ts,
-      price: toNum(r.spx_approx) ?? 0,
-      premium: toNum(r.total_premium) ?? 0,
+      price: numOrNull(r.spx_approx) ?? 0,
+      premium: numOrNull(r.total_premium) ?? 0,
     };
   });
 }
@@ -492,7 +487,7 @@ async function getInstitutionalLatest(at: Date): Promise<{
       : String(r.executed_at);
   return {
     ts,
-    premium: toNum(r.premium) ?? 0,
+    premium: numOrNull(r.premium) ?? 0,
     side: String(r.side ?? 'unknown'),
   };
 }
@@ -544,8 +539,8 @@ async function getNetFlow5m(ticker: string, at: Date): Promise<number | null> {
     `,
   ]);
   if (latest.length === 0 || prior.length === 0) return null;
-  const latestSum = (toNum(latest[0]!.ncp) ?? 0) + (toNum(latest[0]!.npp) ?? 0);
-  const priorSum = (toNum(prior[0]!.ncp) ?? 0) + (toNum(prior[0]!.npp) ?? 0);
+  const latestSum = (numOrNull(latest[0]!.ncp) ?? 0) + (numOrNull(latest[0]!.npp) ?? 0);
+  const priorSum = (numOrNull(prior[0]!.ncp) ?? 0) + (numOrNull(prior[0]!.npp) ?? 0);
   return latestSum - priorSum;
 }
 
@@ -563,7 +558,7 @@ async function getNopeLatest(at: Date): Promise<number | null> {
     LIMIT 1
   `;
   if (rows.length === 0) return null;
-  return toNum(rows[0]!.nope);
+  return numOrNull(rows[0]!.nope);
 }
 
 /**
@@ -590,7 +585,7 @@ async function getPutPremium0dtePctile(at: Date): Promise<number | null> {
     ORDER BY timestamp DESC
     LIMIT 1
   `;
-  const todayNpp = todayRows.length > 0 ? toNum(todayRows[0]!.npp) : null;
+  const todayNpp = todayRows.length > 0 ? numOrNull(todayRows[0]!.npp) : null;
   if (todayNpp == null) return null;
 
   // Historical same-time-of-day comparison: pull all rows from the last
@@ -615,7 +610,7 @@ async function getPutPremium0dtePctile(at: Date): Promise<number | null> {
   const nppByDate = new Map<string, { lag: number; npp: number }>();
   for (const r of historyRows) {
     const d = String(r.date);
-    const n = toNum(r.npp);
+    const n = numOrNull(r.npp);
     if (n == null) continue;
     const rowTs =
       r.timestamp instanceof Date ? r.timestamp : new Date(String(r.timestamp));
@@ -658,8 +653,8 @@ async function getZeroGammaLatest(at: Date): Promise<{
     LIMIT 1
   `;
   if (rows.length === 0) return { level: null, distancePct: null };
-  const spot = toNum(rows[0]!.spot);
-  const zeroGamma = toNum(rows[0]!.zero_gamma);
+  const spot = numOrNull(rows[0]!.spot);
+  const zeroGamma = numOrNull(rows[0]!.zero_gamma);
   if (zeroGamma == null || spot == null || spot === 0) {
     return { level: zeroGamma, distancePct: null };
   }

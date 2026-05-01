@@ -10,6 +10,7 @@
  */
 
 import { getDb } from './db.js';
+import { parsedOrFallback } from './numeric-coercion.js';
 
 export const GREEK_FLOW_TICKERS = ['SPY', 'QQQ'] as const;
 export type GreekFlowTicker = (typeof GREEK_FLOW_TICKERS)[number];
@@ -72,12 +73,6 @@ export interface GreekFlowRow {
   cum_otm_total_delta_flow: number;
 }
 
-function toNum(value: string | number | null | undefined): number {
-  if (value == null) return 0;
-  const n = typeof value === 'number' ? value : Number(value);
-  return Number.isFinite(n) ? n : 0;
-}
-
 function toIso(value: string | Date): string {
   if (value instanceof Date) return value.toISOString();
   const parsed = new Date(value);
@@ -88,24 +83,24 @@ function mapRow(r: RawGreekFlowRow): GreekFlowRow {
   return {
     ticker: r.ticker as GreekFlowTicker,
     timestamp: toIso(r.timestamp),
-    transactions: toNum(r.transactions),
-    volume: toNum(r.volume),
-    dir_vega_flow: toNum(r.dir_vega_flow),
-    total_vega_flow: toNum(r.total_vega_flow),
-    otm_dir_vega_flow: toNum(r.otm_dir_vega_flow),
-    otm_total_vega_flow: toNum(r.otm_total_vega_flow),
-    dir_delta_flow: toNum(r.dir_delta_flow),
-    total_delta_flow: toNum(r.total_delta_flow),
-    otm_dir_delta_flow: toNum(r.otm_dir_delta_flow),
-    otm_total_delta_flow: toNum(r.otm_total_delta_flow),
-    cum_dir_vega_flow: toNum(r.cum_dir_vega_flow),
-    cum_total_vega_flow: toNum(r.cum_total_vega_flow),
-    cum_otm_dir_vega_flow: toNum(r.cum_otm_dir_vega_flow),
-    cum_otm_total_vega_flow: toNum(r.cum_otm_total_vega_flow),
-    cum_dir_delta_flow: toNum(r.cum_dir_delta_flow),
-    cum_total_delta_flow: toNum(r.cum_total_delta_flow),
-    cum_otm_dir_delta_flow: toNum(r.cum_otm_dir_delta_flow),
-    cum_otm_total_delta_flow: toNum(r.cum_otm_total_delta_flow),
+    transactions: parsedOrFallback(r.transactions, 0),
+    volume: parsedOrFallback(r.volume, 0),
+    dir_vega_flow: parsedOrFallback(r.dir_vega_flow, 0),
+    total_vega_flow: parsedOrFallback(r.total_vega_flow, 0),
+    otm_dir_vega_flow: parsedOrFallback(r.otm_dir_vega_flow, 0),
+    otm_total_vega_flow: parsedOrFallback(r.otm_total_vega_flow, 0),
+    dir_delta_flow: parsedOrFallback(r.dir_delta_flow, 0),
+    total_delta_flow: parsedOrFallback(r.total_delta_flow, 0),
+    otm_dir_delta_flow: parsedOrFallback(r.otm_dir_delta_flow, 0),
+    otm_total_delta_flow: parsedOrFallback(r.otm_total_delta_flow, 0),
+    cum_dir_vega_flow: parsedOrFallback(r.cum_dir_vega_flow, 0),
+    cum_total_vega_flow: parsedOrFallback(r.cum_total_vega_flow, 0),
+    cum_otm_dir_vega_flow: parsedOrFallback(r.cum_otm_dir_vega_flow, 0),
+    cum_otm_total_vega_flow: parsedOrFallback(r.cum_otm_total_vega_flow, 0),
+    cum_dir_delta_flow: parsedOrFallback(r.cum_dir_delta_flow, 0),
+    cum_total_delta_flow: parsedOrFallback(r.cum_total_delta_flow, 0),
+    cum_otm_dir_delta_flow: parsedOrFallback(r.cum_otm_dir_delta_flow, 0),
+    cum_otm_total_delta_flow: parsedOrFallback(r.cum_otm_total_delta_flow, 0),
   };
 }
 

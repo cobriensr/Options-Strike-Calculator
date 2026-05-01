@@ -10,6 +10,7 @@ import type { NeonQueryFunction } from '@neondatabase/serverless';
 import { z } from 'zod';
 import { fmtOI, fmtPct, fmtPrice } from './format-helpers.js';
 import logger from './logger.js';
+import { numOrNull } from './numeric-coercion.js';
 import { metrics, Sentry } from './sentry.js';
 
 type Sql = NeonQueryFunction<false, false>;
@@ -47,12 +48,6 @@ interface DerivedSignals {
 
 // ── Helpers ────────────────────────────────────────────────
 
-function num(val: string | null | undefined): number | null {
-  if (val == null) return null;
-  const n = Number(val);
-  return Number.isFinite(n) ? n : null;
-}
-
 function fmtVolRatio(val: number | null): string {
   if (val == null) return 'N/A';
   const label =
@@ -88,12 +83,12 @@ const renderEs: Renderer = (bySymbol, derived) => {
   const es = bySymbol.get('ES');
   if (!es) return null;
 
-  const esPrice = num(es.price);
+  const esPrice = numOrNull(es.price);
   const lines = [
     `ES Futures (/ES):`,
-    `  Current: ${fmtPrice(esPrice)} | 1H: ${fmtPct(num(es.change_1h_pct))} | Day: ${fmtPct(num(es.change_day_pct))}`,
+    `  Current: ${fmtPrice(esPrice)} | 1H: ${fmtPct(numOrNull(es.change_1h_pct))} | Day: ${fmtPct(numOrNull(es.change_day_pct))}`,
   ];
-  const volRatio = num(es.volume_ratio);
+  const volRatio = numOrNull(es.volume_ratio);
   if (volRatio != null) {
     lines.push(`  Volume Ratio: ${fmtVolRatio(volRatio)}`);
   }
@@ -117,14 +112,14 @@ const renderNq: Renderer = (bySymbol, derived) => {
 
   const lines = [
     `NQ Futures (/NQ):`,
-    `  Current: ${fmtPrice(num(nq.price))} | 1H: ${fmtPct(num(nq.change_1h_pct))} | Day: ${fmtPct(num(nq.change_day_pct))}`,
+    `  Current: ${fmtPrice(numOrNull(nq.price))} | 1H: ${fmtPct(numOrNull(nq.change_1h_pct))} | Day: ${fmtPct(numOrNull(nq.change_day_pct))}`,
   ];
   if (derived.nqEsRatio != null) {
     lines.push(`  NQ/ES Ratio: ${derived.nqEsRatio.toFixed(3)}`);
   }
   // Divergence check: compare NQ and ES day direction
-  const esDay = num(bySymbol.get('ES')?.change_day_pct ?? null);
-  const nqDay = num(nq.change_day_pct);
+  const esDay = numOrNull(bySymbol.get('ES')?.change_day_pct ?? null);
+  const nqDay = numOrNull(nq.change_day_pct);
   if (esDay != null && nqDay != null) {
     const aligned = (esDay >= 0 && nqDay >= 0) || (esDay < 0 && nqDay < 0);
     lines.push(`  NQ-ES Direction: ${aligned ? 'ALIGNED' : 'DIVERGING'}`);
@@ -137,8 +132,8 @@ const renderVx: Renderer = (bySymbol, derived) => {
   const vxBack = bySymbol.get('VX2');
   if (!vxFront) return null;
 
-  const frontPrice = num(vxFront.price);
-  const backPrice = num(vxBack?.price ?? null);
+  const frontPrice = numOrNull(vxFront.price);
+  const backPrice = numOrNull(vxBack?.price ?? null);
   const lines = [`VIX Futures (/VX):`];
   if (frontPrice != null && backPrice != null) {
     lines.push(
@@ -168,11 +163,11 @@ const renderZn: Renderer = (bySymbol) => {
 
   const lines = [
     `10Y Treasury (/ZN):`,
-    `  Current: ${fmtPrice(num(zn.price))} | 1H: ${fmtPct(num(zn.change_1h_pct))} | Day: ${fmtPct(num(zn.change_day_pct))}`,
+    `  Current: ${fmtPrice(numOrNull(zn.price))} | 1H: ${fmtPct(numOrNull(zn.change_1h_pct))} | Day: ${fmtPct(numOrNull(zn.change_day_pct))}`,
   ];
   // Flight-to-safety check
-  const znDay = num(zn.change_day_pct);
-  const esDay = num(bySymbol.get('ES')?.change_day_pct ?? null);
+  const znDay = numOrNull(zn.change_day_pct);
+  const esDay = numOrNull(bySymbol.get('ES')?.change_day_pct ?? null);
   if (znDay != null && esDay != null) {
     if (znDay > 0.1 && esDay < -0.2) {
       lines.push(
@@ -195,10 +190,10 @@ const renderRty: Renderer = (bySymbol) => {
 
   const lines = [
     `Russell 2000 (/RTY):`,
-    `  Current: ${fmtPrice(num(rty.price))} | 1H: ${fmtPct(num(rty.change_1h_pct))} | Day: ${fmtPct(num(rty.change_day_pct))}`,
+    `  Current: ${fmtPrice(numOrNull(rty.price))} | 1H: ${fmtPct(numOrNull(rty.change_1h_pct))} | Day: ${fmtPct(numOrNull(rty.change_day_pct))}`,
   ];
-  const rtyDay = num(rty.change_day_pct);
-  const esDay = num(bySymbol.get('ES')?.change_day_pct ?? null);
+  const rtyDay = numOrNull(rty.change_day_pct);
+  const esDay = numOrNull(bySymbol.get('ES')?.change_day_pct ?? null);
   if (rtyDay != null && esDay != null) {
     const aligned = (rtyDay >= 0 && esDay >= 0) || (rtyDay < 0 && esDay < 0);
     lines.push(
@@ -214,9 +209,9 @@ const renderCl: Renderer = (bySymbol) => {
 
   const lines = [
     `Crude Oil (/CL):`,
-    `  Current: ${fmtPrice(num(cl.price))} | 1H: ${fmtPct(num(cl.change_1h_pct))} | Day: ${fmtPct(num(cl.change_day_pct))}`,
+    `  Current: ${fmtPrice(numOrNull(cl.price))} | 1H: ${fmtPct(numOrNull(cl.change_1h_pct))} | Day: ${fmtPct(numOrNull(cl.change_day_pct))}`,
   ];
-  const clDay = num(cl.change_day_pct);
+  const clDay = numOrNull(cl.change_day_pct);
   if (clDay != null) {
     if (clDay < -2) {
       lines.push(
@@ -237,11 +232,11 @@ const renderGc: Renderer = (bySymbol) => {
 
   const lines = [
     `Gold (/GC):`,
-    `  Current: ${fmtPrice(num(gc.price))} | 1H: ${fmtPct(num(gc.change_1h_pct))} | Day: ${fmtPct(num(gc.change_day_pct))}`,
+    `  Current: ${fmtPrice(numOrNull(gc.price))} | 1H: ${fmtPct(numOrNull(gc.change_1h_pct))} | Day: ${fmtPct(numOrNull(gc.change_day_pct))}`,
   ];
-  const gcDay = num(gc.change_day_pct);
-  const esDay = num(bySymbol.get('ES')?.change_day_pct ?? null);
-  const znDay = num(bySymbol.get('ZN')?.change_day_pct ?? null);
+  const gcDay = numOrNull(gc.change_day_pct);
+  const esDay = numOrNull(bySymbol.get('ES')?.change_day_pct ?? null);
+  const znDay = numOrNull(bySymbol.get('ZN')?.change_day_pct ?? null);
   if (gcDay != null && esDay != null) {
     if (gcDay > 0.5 && esDay < -0.2) {
       lines.push(
@@ -267,9 +262,9 @@ const renderDx: Renderer = (bySymbol) => {
 
   const lines = [
     `US Dollar Index (/DX):`,
-    `  Current: ${fmtPrice(num(dx.price))} | 1H: ${fmtPct(num(dx.change_1h_pct))} | Day: ${fmtPct(num(dx.change_day_pct))}`,
+    `  Current: ${fmtPrice(numOrNull(dx.price))} | 1H: ${fmtPct(numOrNull(dx.change_1h_pct))} | Day: ${fmtPct(numOrNull(dx.change_day_pct))}`,
   ];
-  const dxDay = num(dx.change_day_pct);
+  const dxDay = numOrNull(dx.change_day_pct);
   if (dxDay != null) {
     if (dxDay > 0.5) {
       lines.push(
@@ -434,20 +429,20 @@ function computeDerivedSignals(
   };
 
   // ES-SPX basis
-  const esPrice = num(bySymbol.get('ES')?.price ?? null);
+  const esPrice = numOrNull(bySymbol.get('ES')?.price ?? null);
   if (esPrice != null && spxPrice != null && spxPrice > 0) {
     result.esSpxBasis = esPrice - spxPrice;
   }
 
   // NQ/ES ratio
-  const nqPrice = num(bySymbol.get('NQ')?.price ?? null);
+  const nqPrice = numOrNull(bySymbol.get('NQ')?.price ?? null);
   if (nqPrice != null && esPrice != null && esPrice > 0) {
     result.nqEsRatio = nqPrice / esPrice;
   }
 
   // VX term structure
-  const vxFront = num(bySymbol.get('VX1')?.price ?? null);
-  const vxBack = num(bySymbol.get('VX2')?.price ?? null);
+  const vxFront = numOrNull(bySymbol.get('VX1')?.price ?? null);
+  const vxBack = numOrNull(bySymbol.get('VX2')?.price ?? null);
   if (vxFront != null && vxBack != null) {
     result.vxTermSpread = vxFront - vxBack;
     if (result.vxTermSpread > 0.25) {

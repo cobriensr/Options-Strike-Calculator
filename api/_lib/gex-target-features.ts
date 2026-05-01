@@ -35,7 +35,10 @@
 import type { NeonQueryFunction } from '@neondatabase/serverless';
 import { getDb } from './db.js';
 import logger from './logger.js';
-import { numOrNull as canonicalNumOrNull } from './numeric-coercion.js';
+import {
+  numOrNull as canonicalNumOrNull,
+  parsedOrFallback,
+} from './numeric-coercion.js';
 import {
   GEX_TARGET_CONFIG,
   computeGexTarget,
@@ -230,24 +233,24 @@ function groupRowsIntoSnapshots(rows: RawStrikeRow[]): GexSnapshot[] {
     bucket.strikes.push({
       strike,
       price,
-      callGammaOi: toNum(row.call_gamma_oi),
-      putGammaOi: toNum(row.put_gamma_oi),
-      callGammaVol: toNum(row.call_gamma_vol),
-      putGammaVol: toNum(row.put_gamma_vol),
-      callGammaAsk: toNum(row.call_gamma_ask),
-      callGammaBid: toNum(row.call_gamma_bid),
-      putGammaAsk: toNum(row.put_gamma_ask),
-      putGammaBid: toNum(row.put_gamma_bid),
-      callCharmOi: toNum(row.call_charm_oi),
-      putCharmOi: toNum(row.put_charm_oi),
-      callCharmVol: toNum(row.call_charm_vol),
-      putCharmVol: toNum(row.put_charm_vol),
-      callDeltaOi: toNum(row.call_delta_oi),
-      putDeltaOi: toNum(row.put_delta_oi),
-      callVannaOi: toNum(row.call_vanna_oi),
-      putVannaOi: toNum(row.put_vanna_oi),
-      callVannaVol: toNum(row.call_vanna_vol),
-      putVannaVol: toNum(row.put_vanna_vol),
+      callGammaOi: parsedOrFallback(row.call_gamma_oi, 0),
+      putGammaOi: parsedOrFallback(row.put_gamma_oi, 0),
+      callGammaVol: parsedOrFallback(row.call_gamma_vol, 0),
+      putGammaVol: parsedOrFallback(row.put_gamma_vol, 0),
+      callGammaAsk: parsedOrFallback(row.call_gamma_ask, 0),
+      callGammaBid: parsedOrFallback(row.call_gamma_bid, 0),
+      putGammaAsk: parsedOrFallback(row.put_gamma_ask, 0),
+      putGammaBid: parsedOrFallback(row.put_gamma_bid, 0),
+      callCharmOi: parsedOrFallback(row.call_charm_oi, 0),
+      putCharmOi: parsedOrFallback(row.put_charm_oi, 0),
+      callCharmVol: parsedOrFallback(row.call_charm_vol, 0),
+      putCharmVol: parsedOrFallback(row.put_charm_vol, 0),
+      callDeltaOi: parsedOrFallback(row.call_delta_oi, 0),
+      putDeltaOi: parsedOrFallback(row.put_delta_oi, 0),
+      callVannaOi: parsedOrFallback(row.call_vanna_oi, 0),
+      putVannaOi: parsedOrFallback(row.put_vanna_oi, 0),
+      callVannaVol: parsedOrFallback(row.call_vanna_vol, 0),
+      putVannaVol: parsedOrFallback(row.put_vanna_vol, 0),
     });
   }
 
@@ -266,17 +269,6 @@ function groupRowsIntoSnapshots(rows: RawStrikeRow[]): GexSnapshot[] {
 
   snapshots.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
   return snapshots;
-}
-
-/**
- * Parse a Neon numeric string into a JS number, defaulting to 0 on null
- * or non-finite input. Used for the optional Greek columns which may be
- * null in the DB but are expected to be numeric at the scoring layer.
- */
-function toNum(value: string | null | undefined): number {
-  if (value === null || value === undefined) return 0;
-  const n = Number.parseFloat(value);
-  return Number.isFinite(n) ? n : 0;
 }
 
 // ── writeFeatureRows ────────────────────────────────────────────────────

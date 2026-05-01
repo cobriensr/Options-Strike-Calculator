@@ -35,6 +35,7 @@
  */
 import { getDb } from './db.js';
 import logger from './logger.js';
+import { numOrNull } from './numeric-coercion.js';
 import { metrics, Sentry } from './sentry.js';
 import { uwFetch } from './api-helpers.js';
 
@@ -78,10 +79,6 @@ interface SPXCandleDbRow {
 
 function todayUtcDateString(): string {
   return new Date().toISOString().slice(0, 10);
-}
-
-function toNumber(value: string | number): number {
-  return typeof value === 'number' ? value : Number.parseFloat(value);
 }
 
 function toEpochMs(value: string | Date): number {
@@ -141,16 +138,11 @@ export async function fetchSPXCandles(
 
       for (const row of rows) {
         if (row.market_time === 'r') {
-          const open = toNumber(row.open);
-          const high = toNumber(row.high);
-          const low = toNumber(row.low);
-          const close = toNumber(row.close);
-          if (
-            Number.isNaN(open) ||
-            Number.isNaN(high) ||
-            Number.isNaN(low) ||
-            Number.isNaN(close)
-          ) {
+          const open = numOrNull(row.open);
+          const high = numOrNull(row.high);
+          const low = numOrNull(row.low);
+          const close = numOrNull(row.close);
+          if (open === null || high === null || low === null || close === null) {
             continue;
           }
           candles.push({
@@ -164,8 +156,8 @@ export async function fetchSPXCandles(
         } else if (row.market_time === 'pr' && previousClose === null) {
           // ORDER BY timestamp ASC guarantees the first pr row we see
           // is the earliest premarket bar of the session.
-          const prOpen = toNumber(row.open);
-          if (!Number.isNaN(prOpen)) previousClose = prOpen;
+          const prOpen = numOrNull(row.open);
+          if (prOpen !== null) previousClose = prOpen;
         }
       }
 
