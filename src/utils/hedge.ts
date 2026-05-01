@@ -504,7 +504,14 @@ export function calcHedge(params: {
   } = params;
 
   // 1. Strike + premium pipeline.
-  const pricing = priceHedgeLegs({ spot, sigma, T, skew, hedgeDelta, hedgeDte });
+  const pricing = priceHedgeLegs({
+    spot,
+    sigma,
+    T,
+    skew,
+    hedgeDelta,
+    hedgeDte,
+  });
   const {
     putStrike,
     callStrike,
