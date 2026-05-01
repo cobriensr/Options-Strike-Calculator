@@ -66,9 +66,20 @@ export interface IvVolSample {
 
 /**
  * Cross-strike Herfindahl of notional ($-volume) within a price band.
+ *
  * Returns null when fewer than MIN_BAND_STRIKES contribute non-zero
  * notional, or total notional is zero. Caller is responsible for
- * filtering to the right band (this function does not know the spot).
+ * filtering the input set to the right band — this function does NOT
+ * know the spot. The two band axes the caller must pre-filter on:
+ *
+ *   - **Price**: strikes within ±PROXIMITY_BAND_PCT of spot at fire time.
+ *   - **Side**: SAME side as the alert (call alerts compare against
+ *     other calls in the band; put alerts compare against other puts).
+ *     Mixing call + put notionals would conflate two distinct gamma
+ *     dynamics and produce a meaningless value.
+ *
+ * Lower HHI = diffuse band (winner archetype — broad participation).
+ * Higher HHI = one strike dominates (whale archetype — often loses).
  */
 export function computeHhi(
   strikes: readonly BandStrikeSample[],

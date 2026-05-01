@@ -235,13 +235,19 @@ async function getLatestFlowRow(
 async function attachTapeAgreement(
   rowsByTicker: Map<string, GammaSqueezeRow[]>,
 ): Promise<void> {
-  // Group queries by (trade_date_CT, ticker) to avoid re-fetching the
+  // Group queries by (trade_date_ET, ticker) to avoid re-fetching the
   // same source repeatedly for events on the same day with the same
   // ticker. Most rowsByTicker maps will already be 1 ticker per bucket
   // but a long history can span multiple trade-dates.
+  //
+  // Important: `flow_data.date` is stamped with ET (`getETDateStr` via
+  // cronGuard's `today`), so the lookup MUST use ET to align with what
+  // the cron writes. CT and ET agree during US market hours, so this
+  // matters only for events captured at the day boundary — but pinning
+  // to ET removes the latent drift entirely.
   const dateOfRow = (r: GammaSqueezeRow): string =>
     new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'America/Chicago',
+      timeZone: 'America/New_York',
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
@@ -276,12 +282,13 @@ async function attachTapeAgreement(
   for (const rows of rowsByTicker.values()) {
     for (const r of rows) {
       const date = dateOfRow(r);
-      const [marketTide, marketTideOtm, tickerFlow, etfTide] = await Promise.all([
-        fetchOnce(date, 'market_tide'),
-        fetchOnce(date, 'market_tide_otm'),
-        fetchOnce(date, tickerFlowSource(r.ticker)),
-        fetchOnce(date, etfTideSource(r.ticker)),
-      ]);
+      const [marketTide, marketTideOtm, tickerFlow, etfTide] =
+        await Promise.all([
+          fetchOnce(date, 'market_tide'),
+          fetchOnce(date, 'market_tide_otm'),
+          fetchOnce(date, tickerFlowSource(r.ticker)),
+          fetchOnce(date, etfTideSource(r.ticker)),
+        ]);
       r.tapeAgreement = evaluateTapeAgreement(r.side as AlertSide, {
         marketTide,
         marketTideOtm,

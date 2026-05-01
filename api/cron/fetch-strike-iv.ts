@@ -683,6 +683,12 @@ async function enrichSingleFlag(
           AND strike = ${f.strike}
           AND side = ${f.side}
           AND expiry = ${f.expiry}
+          -- Sargable lower bound on raw \`ts\`: morning data lives within
+          -- the 12 hours preceding any market-hours fire, so this both
+          -- enables the (ticker, strike, side, expiry, ts) index AND
+          -- keeps the per-tz filter narrow.
+          AND ts >= (${f.ts}::timestamptz - INTERVAL '12 hours')
+          AND ts <= ${f.ts}::timestamptz
           AND DATE(ts AT TIME ZONE 'America/Chicago') = DATE(${f.ts}::timestamptz AT TIME ZONE 'America/Chicago')
           AND EXTRACT(HOUR FROM ts AT TIME ZONE 'America/Chicago') < ${IV_MORNING_CUTOFF_HOUR_CT}
           AND iv_mid IS NOT NULL
