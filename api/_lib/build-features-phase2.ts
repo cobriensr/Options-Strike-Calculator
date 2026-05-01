@@ -1,9 +1,17 @@
 /**
  * Phase 2 feature engineering for build-features cron.
  *
- * Extracts: previous-day stats, realized volatility, VIX term structure,
- * VVIX percentile, economic events (FOMC/OPEX/etc.), max pain,
- * dark pool features, and options volume/premium.
+ * Extracts: previous-day stats, realized volatility, RV/IV ratio,
+ * VIX term structure, VVIX percentile, economic events (FOMC/OPEX/etc.),
+ * max pain, dark pool features, options volume/premium, OI change
+ * features, and vol surface features.
+ *
+ * The orchestrator (`engineerPhase2Features`) sequences the per-phase
+ * helpers below. Each helper mutates the shared `features` object in
+ * place; sequential ordering matters because some helpers depend on
+ * fields written by earlier ones (e.g. `addRealizedIvRatio` reads
+ * `realized_vol_5d` which `addRealizedVol` writes; `addMaxPain` reads
+ * `spx_open` which is written by the caller before this orchestrator).
  */
 
 import type { NeonQueryFunction } from '@neondatabase/serverless';
@@ -56,17 +64,25 @@ export function isWithinUWWindow(
   return daysAgo <= calendarWindow;
 }
 
+// ── Phase helpers ───────────────────────────────────────────────
+//
+// Each helper mutates `features` in place. Helpers are independently
+// callable (handy for narrower unit tests), but the orchestrator calls
+// them in a strict order — see `engineerPhase2Features` at the bottom.
+
+type Sql = NeonQueryFunction<false, false>;
+
 /**
- * Engineer Phase 2 features: previous day, realized vol, events,
- * VIX term structure, max pain, dark pool, options volume.
- * Mutates `features` in place.
+ * Previous-day features: range, direction, range category, VIX delta.
+ * Reads `outcomes` for the most recent prior date and computes the VIX
+ * change using the already-populated `features.vix` (set by the caller
+ * via market_snapshots).
  */
-export async function engineerPhase2Features(
-  sql: NeonQueryFunction<false, false>,
+export async function addPrevDayFeatures(
+  sql: Sql,
   dateStr: string,
   features: FeatureRow,
 ): Promise<void> {
-  // Previous day features (from outcomes table)
   const prevDayRows = await sql`
     SELECT date, day_range_pts, close_vs_open, vix_close,
            CASE WHEN close_vs_open > 0 THEN 'UP' ELSE 'DOWN' END AS direction,
@@ -93,8 +109,18 @@ export async function engineerPhase2Features(
       features.prev_day_vix_change = vixNow - Number(prev.vix_close);
     }
   }
+}
 
-  // Realized volatility from log returns of settlement prices
+/**
+ * Realized volatility from log returns of settlement prices. Computes
+ * 5-day and 10-day annualized RV (252-trading-day basis) via population
+ * variance over `n-1` (sample) — same convention as numpy.std(ddof=1).
+ */
+export async function addRealizedVolFeatures(
+  sql: Sql,
+  dateStr: string,
+  features: FeatureRow,
+): Promise<void> {
   const settlements = await sql`
     SELECT settlement FROM outcomes
     WHERE date <= ${dateStr} AND settlement IS NOT NULL
@@ -132,8 +158,13 @@ export async function engineerPhase2Features(
       features.realized_vol_10d = Math.sqrt(variance10) * Math.sqrt(252) * 100;
     }
   }
+}
 
-  // RV/IV ratio
+/**
+ * RV/IV ratio: 5-day realized vol divided by VIX. Pure derived feature
+ * that depends on `addRealizedVolFeatures` having run first.
+ */
+export function addRealizedIvRatioFeatures(features: FeatureRow): void {
   const rv5 =
     typeof features.realized_vol_5d === 'number'
       ? features.realized_vol_5d
@@ -142,31 +173,58 @@ export async function engineerPhase2Features(
   if (rv5 !== null && vix !== null && vix > 0) {
     features.rv_iv_ratio = rv5 / vix;
   }
+}
 
-  // VIX term structure
+/**
+ * VIX term structure slope: (vix9d - vix1d) / vix. Pure derived feature
+ * computed from the already-populated VIX/VIX1d/VIX9d columns set by
+ * the caller via market_snapshots.
+ */
+export function addTermSlopeFeatures(features: FeatureRow): void {
+  const vix = typeof features.vix === 'number' ? features.vix : null;
   const vix1d = typeof features.vix1d === 'number' ? features.vix1d : null;
   const vix9d = typeof features.vix9d === 'number' ? features.vix9d : null;
   if (vix1d !== null && vix9d !== null && vix !== null && vix > 0) {
     features.vix_term_slope = (vix9d - vix1d) / vix;
   }
+}
 
-  // VVIX percentile (trailing 20-day)
-  if (features.vvix != null) {
-    const vvixHistory = await sql`
-      SELECT vvix FROM training_features
-      WHERE date < ${dateStr} AND vvix IS NOT NULL
-      ORDER BY date DESC LIMIT 20
-    `;
-    if (vvixHistory.length >= 10) {
-      const vvixValues = vvixHistory.map((r) => Number(r.vvix));
-      const vvixNow = typeof features.vvix === 'number' ? features.vvix : null;
-      const belowCount =
-        vvixNow !== null ? vvixValues.filter((v) => v <= vvixNow).length : 0;
-      features.vvix_percentile = belowCount / vvixValues.length;
-    }
+/**
+ * VVIX percentile over the trailing 20 training_features rows. Skipped
+ * unless we have at least 10 prior VVIX values to rank against.
+ */
+export async function addVvixPercentileFeatures(
+  sql: Sql,
+  dateStr: string,
+  features: FeatureRow,
+): Promise<void> {
+  if (features.vvix == null) return;
+
+  const vvixHistory = await sql`
+    SELECT vvix FROM training_features
+    WHERE date < ${dateStr} AND vvix IS NOT NULL
+    ORDER BY date DESC LIMIT 20
+  `;
+  if (vvixHistory.length >= 10) {
+    const vvixValues = vvixHistory.map((r) => Number(r.vvix));
+    const vvixNow = typeof features.vvix === 'number' ? features.vvix : null;
+    const belowCount =
+      vvixNow !== null ? vvixValues.filter((v) => v <= vvixNow).length : 0;
+    features.vvix_percentile = belowCount / vvixValues.length;
   }
+}
 
-  // Economic event features
+/**
+ * Economic event features: FOMC / OPEX / event_type / event_count /
+ * days_to_next_event. Mixes a `economic_events` lookup with a calendar
+ * computation for OPEX (3rd Friday of month). Sets defaults so even an
+ * empty calendar day still has populated fields.
+ */
+export async function addEventFeatures(
+  sql: Sql,
+  dateStr: string,
+  features: FeatureRow,
+): Promise<void> {
   features.is_opex = false;
   features.is_fomc = false;
   features.event_count = 0;
@@ -220,8 +278,19 @@ export async function engineerPhase2Features(
       );
     }
   }
+}
 
-  // Max pain (from Unusual Whales API)
+/**
+ * Max pain features: 0DTE max pain strike + distance from spx_open.
+ * Skipped (not stamped null) when outside the UW 30-trading-day rolling
+ * window — the cron sets `UW_API_KEY`; if missing, the entire phase is
+ * a no-op. Errors are logged but never propagated; downstream models
+ * see undefined max_pain_* (genuine NaN), not a fabricated 0.
+ */
+export async function addMaxPainFeatures(
+  dateStr: string,
+  features: FeatureRow,
+): Promise<void> {
   try {
     const apiKey = process.env.UW_API_KEY;
     if (apiKey && !isWithinUWWindow(dateStr)) {
@@ -260,8 +329,19 @@ export async function engineerPhase2Features(
   } catch (error_) {
     logger.warn({ err: error_ }, 'Max pain feature extraction failed');
   }
+}
 
-  // Dark pool features (from dark_pool_levels — full tape, per-$1 SPX)
+/**
+ * Dark pool features from the daily `dark_pool_levels` table: total
+ * premium, cluster count, top-cluster distance, support/resistance
+ * premium split (around spx_open), and concentration of premium at the
+ * single top level. Errors are logged but never propagated.
+ */
+export async function addDarkPoolFeatures(
+  sql: Sql,
+  dateStr: string,
+  features: FeatureRow,
+): Promise<void> {
   try {
     const dpRows = await sql`
       SELECT spx_approx, total_premium, trade_count, total_shares
@@ -315,8 +395,19 @@ export async function engineerPhase2Features(
   } catch (error_) {
     logger.warn({ err: error_ }, 'Dark pool feature extraction failed');
   }
+}
 
-  // Options volume & premium (from Unusual Whales API)
+/**
+ * Options volume + premium + OI features from the UW
+ * /stock/SPX/options-volume endpoint. Same UW-window pre-flight as
+ * max pain. Output: opt_call_volume / opt_put_volume / opt_*_oi /
+ * opt_*_premium / opt_vol_pcr / opt_oi_pcr / opt_premium_ratio /
+ * opt_call_vol_vs_avg30 / opt_put_vol_vs_avg30.
+ */
+export async function addOptionsVolumeFeatures(
+  dateStr: string,
+  features: FeatureRow,
+): Promise<void> {
   try {
     const apiKey = process.env.UW_API_KEY;
     if (apiKey && !isWithinUWWindow(dateStr)) {
@@ -394,8 +485,19 @@ export async function engineerPhase2Features(
   } catch (error_) {
     logger.warn({ err: error_ }, 'Options volume feature extraction failed');
   }
+}
 
-  // OI Change features (from oi_changes table — daily OI diffs)
+/**
+ * OI change features from the daily `oi_changes` snapshot: net OI
+ * change (calls + puts), per-side breakdown, premium aggregates,
+ * ask/bid ratio, multi-leg pct, top-strike distance, and top-5
+ * concentration. Errors logged, never propagated.
+ */
+export async function addOiChangeFeatures(
+  sql: Sql,
+  dateStr: string,
+  features: FeatureRow,
+): Promise<void> {
   try {
     const oicRows = await sql`
       SELECT option_symbol, strike, is_call, oi_diff,
@@ -481,13 +583,25 @@ export async function engineerPhase2Features(
   } catch (error_) {
     logger.warn({ err: error_ }, 'OI change feature extraction failed');
   }
+}
 
-  // Vol surface features (from vol_term_structure + vol_realized + iv_monitor)
+/**
+ * Vol surface features: 0DTE→30D term structure slope/spread/contango
+ * pulled from `vol_term_structure` + `iv_monitor`, plus realized vol +
+ * IV rank from `vol_realized`. Errors logged, never propagated.
+ *
+ * Term-structure source quirk: the UW /volatility/term-structure
+ * endpoint only returns monthly+ expiries (min DTE ~15). For the 0DTE
+ * end we use iv_monitor (from /interpolated-iv which includes 0DTE).
+ * Combining the two gives the full 0DTE-to-30D slope that defines
+ * contango/inversion.
+ */
+export async function addVolSurfaceFeatures(
+  sql: Sql,
+  dateStr: string,
+  features: FeatureRow,
+): Promise<void> {
   try {
-    // Term structure: the /volatility/term-structure endpoint only returns
-    // monthly+ expiries (min DTE ~15). For the 0DTE end we use iv_monitor
-    // (from /interpolated-iv which includes 0DTE). This gives us the full
-    // 0DTE-to-30D slope that defines contango/inversion.
     const tsRows = await sql`
       SELECT days, volatility FROM vol_term_structure
       WHERE date = ${dateStr}
@@ -548,6 +662,37 @@ export async function engineerPhase2Features(
     logger.warn({ err: error_ }, 'Vol surface feature extraction failed');
   }
 }
+
+// ── Orchestrator ────────────────────────────────────────────────
+
+/**
+ * Engineer Phase 2 features by sequencing the per-phase helpers above.
+ * Order matters: realized_vol must precede rv/iv ratio; spx_open must be
+ * already populated (caller writes it from market_snapshots) before max
+ * pain / dark pool / OI change run.
+ *
+ * Mutates `features` in place. Output is identical to the legacy
+ * monolithic implementation — verified by the orchestrator tests.
+ */
+export async function engineerPhase2Features(
+  sql: Sql,
+  dateStr: string,
+  features: FeatureRow,
+): Promise<void> {
+  await addPrevDayFeatures(sql, dateStr, features);
+  await addRealizedVolFeatures(sql, dateStr, features);
+  addRealizedIvRatioFeatures(features);
+  addTermSlopeFeatures(features);
+  await addVvixPercentileFeatures(sql, dateStr, features);
+  await addEventFeatures(sql, dateStr, features);
+  await addMaxPainFeatures(dateStr, features);
+  await addDarkPoolFeatures(sql, dateStr, features);
+  await addOptionsVolumeFeatures(dateStr, features);
+  await addOiChangeFeatures(sql, dateStr, features);
+  await addVolSurfaceFeatures(sql, dateStr, features);
+}
+
+// ── Internals ───────────────────────────────────────────────────
 
 // Local num helper (avoids importing full types module just for this)
 function num(v: unknown): number | null {

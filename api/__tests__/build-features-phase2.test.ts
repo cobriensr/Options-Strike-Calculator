@@ -21,6 +21,14 @@ vi.mock('../_lib/logger.js', () => ({
 import {
   engineerPhase2Features,
   isWithinUWWindow,
+  addPrevDayFeatures,
+  addRealizedVolFeatures,
+  addRealizedIvRatioFeatures,
+  addTermSlopeFeatures,
+  addVvixPercentileFeatures,
+  addMaxPainFeatures,
+  addDarkPoolFeatures,
+  addOptionsVolumeFeatures,
 } from '../_lib/build-features-phase2.js';
 import { fetchMaxPain } from '../_lib/max-pain.js';
 import type { FeatureRow } from '../_lib/build-features-types.js';
@@ -1826,3 +1834,287 @@ describe('isWithinUWWindow', () => {
     expect(isWithinUWWindow('2026-03-21', TODAY, 10)).toBe(false);
   });
 });
+
+// ── Per-phase isolation tests ─────────────────────────────────
+//
+// Each helper extracted from the legacy 490-LOC `engineerPhase2Features`
+// is independently testable via these focused unit tests. The
+// orchestrator's tests above exercise the full sequenced behaviour;
+// these tests pin individual helpers' contracts so a future
+// refactor that breaks one helper fails its own test rather than only
+// surfacing through orchestrator-level mock-sequence drift.
+
+describe('addPrevDayFeatures (isolated)', () => {
+  const DATE_STR = '2026-03-24';
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockSql.mockResolvedValue([]);
+  });
+
+  it('populates prev_day_* and prev_day_vix_change from outcomes + features.vix', async () => {
+    const features: FeatureRow = { vix: 18.5 };
+    mockSql.mockResolvedValueOnce([
+      {
+        date: '2026-03-23',
+        day_range_pts: 55,
+        close_vs_open: -3.1,
+        vix_close: '17.0',
+        direction: 'DOWN',
+        range_cat: 'NORMAL',
+      },
+    ]);
+
+    await addPrevDayFeatures(mockSql as never, DATE_STR, features);
+
+    expect(features.prev_day_range_pts).toBe(55);
+    expect(features.prev_day_direction).toBe('DOWN');
+    expect(features.prev_day_range_cat).toBe('NORMAL');
+    expect(features.prev_day_vix_change).toBeCloseTo(1.5, 6);
+  });
+
+  it('leaves features unchanged when outcomes table is empty', async () => {
+    const features: FeatureRow = { vix: 18.5 };
+    mockSql.mockResolvedValueOnce([]);
+
+    await addPrevDayFeatures(mockSql as never, DATE_STR, features);
+
+    expect(features.prev_day_range_pts).toBeUndefined();
+    expect(features.prev_day_vix_change).toBeUndefined();
+  });
+});
+
+describe('addRealizedVolFeatures (isolated)', () => {
+  const DATE_STR = '2026-03-24';
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockSql.mockResolvedValue([]);
+  });
+
+  it('computes realized_vol_5d (annualized) when 6+ settlements available', async () => {
+    // Six prices => five log returns. Mostly flat → small RV.
+    mockSql.mockResolvedValueOnce(
+      [5800, 5810, 5805, 5815, 5800, 5820].map((s) => ({ settlement: s })),
+    );
+
+    const features: FeatureRow = {};
+    await addRealizedVolFeatures(mockSql as never, DATE_STR, features);
+
+    // Sanity: should be a positive finite number (annualized %).
+    expect(features.realized_vol_5d).toBeGreaterThan(0);
+    expect(Number.isFinite(features.realized_vol_5d as number)).toBe(true);
+    expect(features.realized_vol_10d).toBeUndefined();
+  });
+
+  it('also computes realized_vol_10d when 11+ settlements available', async () => {
+    const prices = Array.from({ length: 11 }, (_, i) => 5800 + i * 2);
+    mockSql.mockResolvedValueOnce(prices.map((s) => ({ settlement: s })));
+
+    const features: FeatureRow = {};
+    await addRealizedVolFeatures(mockSql as never, DATE_STR, features);
+
+    expect(features.realized_vol_5d).toBeGreaterThan(0);
+    expect(features.realized_vol_10d).toBeGreaterThan(0);
+  });
+
+  it('skips both metrics with fewer than 6 settlements', async () => {
+    mockSql.mockResolvedValueOnce(
+      [5800, 5810, 5820].map((s) => ({ settlement: s })),
+    );
+
+    const features: FeatureRow = {};
+    await addRealizedVolFeatures(mockSql as never, DATE_STR, features);
+
+    expect(features.realized_vol_5d).toBeUndefined();
+    expect(features.realized_vol_10d).toBeUndefined();
+  });
+});
+
+describe('addRealizedIvRatioFeatures (isolated, pure)', () => {
+  it('computes rv_iv_ratio = realized_vol_5d / vix when both present', () => {
+    const features: FeatureRow = { vix: 20, realized_vol_5d: 30 };
+    addRealizedIvRatioFeatures(features);
+    expect(features.rv_iv_ratio).toBe(1.5);
+  });
+
+  it('leaves rv_iv_ratio undefined when realized_vol_5d missing', () => {
+    const features: FeatureRow = { vix: 20 };
+    addRealizedIvRatioFeatures(features);
+    expect(features.rv_iv_ratio).toBeUndefined();
+  });
+
+  it('leaves rv_iv_ratio undefined when vix is 0', () => {
+    const features: FeatureRow = { vix: 0, realized_vol_5d: 30 };
+    addRealizedIvRatioFeatures(features);
+    expect(features.rv_iv_ratio).toBeUndefined();
+  });
+});
+
+describe('addTermSlopeFeatures (isolated, pure)', () => {
+  it('computes (vix9d - vix1d) / vix when all three populated', () => {
+    const features: FeatureRow = { vix: 20, vix1d: 18, vix9d: 22 };
+    addTermSlopeFeatures(features);
+    expect(features.vix_term_slope).toBeCloseTo(0.2, 6);
+  });
+
+  it('leaves vix_term_slope undefined if vix1d is null', () => {
+    const features: FeatureRow = { vix: 20, vix9d: 22 };
+    addTermSlopeFeatures(features);
+    expect(features.vix_term_slope).toBeUndefined();
+  });
+});
+
+describe('addVvixPercentileFeatures (isolated)', () => {
+  const DATE_STR = '2026-03-24';
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockSql.mockResolvedValue([]);
+  });
+
+  it('returns immediately when features.vvix is null', async () => {
+    const features: FeatureRow = {};
+    await addVvixPercentileFeatures(mockSql as never, DATE_STR, features);
+    expect(features.vvix_percentile).toBeUndefined();
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('skips computation if fewer than 10 history rows', async () => {
+    mockSql.mockResolvedValueOnce(
+      Array.from({ length: 5 }, () => ({ vvix: 90 })),
+    );
+    const features: FeatureRow = { vvix: 100 };
+    await addVvixPercentileFeatures(mockSql as never, DATE_STR, features);
+    expect(features.vvix_percentile).toBeUndefined();
+  });
+
+  it('computes percentile when 10+ history rows present', async () => {
+    // 10 rows, all <= 100. Current vvix = 100 → 100% percentile.
+    mockSql.mockResolvedValueOnce(
+      Array.from({ length: 10 }, (_, i) => ({ vvix: 80 + i })),
+    );
+    const features: FeatureRow = { vvix: 100 };
+    await addVvixPercentileFeatures(mockSql as never, DATE_STR, features);
+    expect(features.vvix_percentile).toBe(1);
+  });
+});
+
+describe('addMaxPainFeatures (isolated)', () => {
+  const DATE_STR = '2026-03-24';
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    process.env = { ...originalEnv };
+    vi.setSystemTime(new Date('2026-03-25T14:00:00.000Z'));
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.useRealTimers();
+  });
+
+  it('skips fetch when UW_API_KEY is missing', async () => {
+    delete process.env.UW_API_KEY;
+    const features: FeatureRow = { spx_open: 5800 };
+    await addMaxPainFeatures(DATE_STR, features);
+    expect(features.max_pain_0dte).toBeUndefined();
+    expect(mockedFetchMaxPain).not.toHaveBeenCalled();
+  });
+
+  it('populates max_pain_0dte and max_pain_dist on success', async () => {
+    process.env.UW_API_KEY = 'test-key';
+    mockedFetchMaxPain.mockResolvedValueOnce({
+      kind: 'ok',
+      data: [{ expiry: DATE_STR, max_pain: '5805.5' }],
+    });
+    const features: FeatureRow = { spx_open: 5800 };
+    await addMaxPainFeatures(DATE_STR, features);
+    expect(features.max_pain_0dte).toBe(5805.5);
+    expect(features.max_pain_dist).toBe(5.5);
+  });
+
+  it('leaves features untouched on UW error', async () => {
+    process.env.UW_API_KEY = 'test-key';
+    mockedFetchMaxPain.mockResolvedValueOnce({
+      kind: 'error',
+      reason: 'HTTP 500',
+    });
+    const features: FeatureRow = { spx_open: 5800 };
+    await addMaxPainFeatures(DATE_STR, features);
+    expect(features.max_pain_0dte).toBeUndefined();
+    expect(features.max_pain_dist).toBeUndefined();
+  });
+});
+
+describe('addDarkPoolFeatures (isolated)', () => {
+  const DATE_STR = '2026-03-24';
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockSql.mockResolvedValue([]);
+  });
+
+  it('aggregates premium and computes support/resistance/concentration', async () => {
+    mockSql.mockResolvedValueOnce([
+      {
+        spx_approx: 5800,
+        total_premium: 1_000_000,
+        trade_count: 5,
+        total_shares: 1000,
+      },
+      {
+        spx_approx: 5790,
+        total_premium: 600_000,
+        trade_count: 3,
+        total_shares: 500,
+      },
+      {
+        spx_approx: 5810,
+        total_premium: 400_000,
+        trade_count: 2,
+        total_shares: 400,
+      },
+    ]);
+
+    const features: FeatureRow = { spx_open: 5800 };
+    await addDarkPoolFeatures(mockSql as never, DATE_STR, features);
+
+    expect(features.dp_total_premium).toBe(2_000_000);
+    expect(features.dp_cluster_count).toBe(3);
+    // Support (<=5800): 1m + 600k = 1.6m. Resistance (>5800): 400k.
+    expect(features.dp_support_premium).toBe(1_600_000);
+    expect(features.dp_resistance_premium).toBe(400_000);
+    expect(features.dp_top_cluster_dist).toBe(0);
+    // Top level (1m) / total (2m) = 0.5
+    expect(features.dp_concentration).toBe(0.5);
+  });
+
+  it('leaves features untouched when no rows returned', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    const features: FeatureRow = { spx_open: 5800 };
+    await addDarkPoolFeatures(mockSql as never, DATE_STR, features);
+    expect(features.dp_total_premium).toBeUndefined();
+  });
+});
+
+describe('addOptionsVolumeFeatures (isolated)', () => {
+  const DATE_STR = '2026-03-24';
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    process.env = { ...originalEnv };
+    vi.setSystemTime(new Date('2026-03-25T14:00:00.000Z'));
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.useRealTimers();
+  });
+
+  it('skips fetch when UW_API_KEY is missing', async () => {
+    delete process.env.UW_API_KEY;
+    const features: FeatureRow = {};
+    await addOptionsVolumeFeatures(DATE_STR, features);
+    expect(features.opt_call_volume).toBeUndefined();
+  });
+});
+
