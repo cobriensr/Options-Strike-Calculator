@@ -28,12 +28,13 @@ export interface EconomicEventRow {
   reported_period: string | null;
 }
 
+type NumericColumn = string | number | null;
 export interface VolRealizedRow {
-  iv_30d: string | number | null;
-  rv_30d: string | number | null;
-  iv_rv_spread: string | number | null;
-  iv_overpricing_pct: string | number | null;
-  iv_rank: string | number | null;
+  iv_30d: NumericColumn;
+  rv_30d: NumericColumn;
+  iv_rv_spread: NumericColumn;
+  iv_overpricing_pct: NumericColumn;
+  iv_rank: NumericColumn;
 }
 
 const HIGH_SEVERITY_TYPES = new Set(['FOMC', 'CPI', 'PCE', 'JOBS', 'GDP']);
@@ -556,9 +557,7 @@ export function formatVolRealizedForClaude(rv: VolRealizedRow): string | null {
   const iv30 = rv.iv_30d != null ? (Number(rv.iv_30d) * 100).toFixed(1) : null;
   const rv30 = rv.rv_30d != null ? (Number(rv.rv_30d) * 100).toFixed(1) : null;
   const spread =
-    rv.iv_rv_spread != null
-      ? (Number(rv.iv_rv_spread) * 100).toFixed(1)
-      : null;
+    rv.iv_rv_spread != null ? (Number(rv.iv_rv_spread) * 100).toFixed(1) : null;
   const overpricing =
     rv.iv_overpricing_pct != null
       ? Number(rv.iv_overpricing_pct).toFixed(1)

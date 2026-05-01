@@ -338,13 +338,13 @@ export async function fetchVolRealizedContext(
       LIMIT 1
     `;
     if (rvRows.length === 0) return null;
-    const rv = rvRows[0]!;
+    const rv = rvRows[0]! as Partial<VolRealizedRow>;
     return {
-      iv_30d: rv.iv_30d as string | number | null,
-      rv_30d: rv.rv_30d as string | number | null,
-      iv_rv_spread: rv.iv_rv_spread as string | number | null,
-      iv_overpricing_pct: rv.iv_overpricing_pct as string | number | null,
-      iv_rank: rv.iv_rank as string | number | null,
+      iv_30d: rv.iv_30d ?? null,
+      rv_30d: rv.rv_30d ?? null,
+      iv_rv_spread: rv.iv_rv_spread ?? null,
+      iv_overpricing_pct: rv.iv_overpricing_pct ?? null,
+      iv_rank: rv.iv_rank ?? null,
     };
   } catch (error_) {
     logger.error({ err: error_ }, 'Failed to fetch vol realized data');
