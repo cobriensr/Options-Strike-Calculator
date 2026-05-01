@@ -56,6 +56,7 @@ import {
   type PeriscopeStructuredFields,
   type PeriscopeMode,
 } from './_lib/periscope-db.js';
+import { buildCalibrationBlock } from './_lib/periscope-calibration.js';
 
 // 780s ceiling matches /api/analyze and /api/trace-live-analyze. Opus
 // 4.7 with adaptive-thinking high-effort + 3 images can take 5-9 min on
@@ -154,24 +155,40 @@ function buildUserContent(args: {
 
 async function callModel(
   userContent: Anthropic.Messages.ContentBlockParam[],
+  calibrationBlock: string | null,
 ): Promise<CallResult> {
   // Streaming for the same reason as /api/trace-live-analyze: at high
   // effort on a 3-image call the model can spend 5-9 min generating, and
   // a non-streaming POST holds the connection idle long enough for
   // Vercel's egress NAT (or AWS-side networking) to close it mid-flight.
   // .finalMessage() gives the same Message shape we'd get from .create().
+  //
+  // System prompt structure (Anthropic supports up to 4 cache breakpoints):
+  //   1. Skill text (cached) — stable per skill version
+  //   2. Calibration block (cached, optional) — changes when user
+  //      stars/unstars or re-tags a starred read; daily-stable in
+  //      practice. Skipped entirely when no gold examples exist.
+  const systemBlocks: Anthropic.Messages.TextBlockParam[] = [
+    {
+      type: 'text',
+      text: SYSTEM_TEXT,
+      cache_control: { type: 'ephemeral', ttl: '1h' },
+    },
+  ];
+  if (calibrationBlock != null) {
+    systemBlocks.push({
+      type: 'text',
+      text: calibrationBlock,
+      cache_control: { type: 'ephemeral', ttl: '1h' },
+    });
+  }
+
   const stream = anthropic.messages.stream({
     model: MODEL,
     max_tokens: 64_000,
     thinking: { type: 'adaptive' },
     output_config: { effort: 'high' },
-    system: [
-      {
-        type: 'text',
-        text: SYSTEM_TEXT,
-        cache_control: { type: 'ephemeral', ttl: '1h' },
-      },
-    ],
+    system: systemBlocks,
     messages: [{ role: 'user', content: userContent }],
   });
 
@@ -358,7 +375,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const startTs = Date.now();
 
   try {
-    const result = await callModel(userContent);
+    // Calibration block fetch is best-effort (returns null on any DB
+    // error). Run before the Anthropic call so cache_control on the
+    // block is stable across the request; we don't need to wait for
+    // images to upload first.
+    const calibrationBlock = await buildCalibrationBlock(body.mode);
+    const result = await callModel(userContent, calibrationBlock);
     const durationMs = Date.now() - startTs;
 
     logger.info(

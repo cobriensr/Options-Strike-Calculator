@@ -42,6 +42,10 @@ vi.mock('../_lib/periscope-db.js', () => ({
   buildPeriscopeSummary: vi.fn().mockReturnValue('summary'),
 }));
 
+vi.mock('../_lib/periscope-calibration.js', () => ({
+  buildCalibrationBlock: vi.fn().mockResolvedValue(null),
+}));
+
 // Mock the Anthropic SDK — capture stream call. handler uses
 // `anthropic.messages.stream(params).finalMessage()`.
 const mockFinalMessage = vi.fn();
@@ -367,6 +371,37 @@ describe('POST /api/periscope-chat', () => {
       regime_tag: null,
     });
     expect(mockSavePeriscopeAnalysis).toHaveBeenCalledOnce();
+  });
+
+  it('omits the calibration block from system prompt when none exist', async () => {
+    mockFinalMessage.mockResolvedValue(makeSDKResponse({ prose: 'Read.' }));
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const params = mockStream.mock.calls[0]![0];
+    expect(params.system).toHaveLength(1);
+  });
+
+  it('injects the calibration block as a second cached system block when present', async () => {
+    const { buildCalibrationBlock } = await import(
+      '../_lib/periscope-calibration.js'
+    );
+    vi.mocked(buildCalibrationBlock).mockResolvedValueOnce(
+      '## Calibration examples\nGold-rated read prose here.',
+    );
+    mockFinalMessage.mockResolvedValue(makeSDKResponse({ prose: 'Read.' }));
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const params = mockStream.mock.calls[0]![0];
+    expect(params.system).toHaveLength(2);
+    expect(params.system[1].text).toContain('Calibration examples');
+    expect(params.system[1].cache_control).toEqual({
+      type: 'ephemeral',
+      ttl: '1h',
+    });
   });
 
   it('uses Opus 4.7 with adaptive thinking + high effort + cached system prompt', async () => {
