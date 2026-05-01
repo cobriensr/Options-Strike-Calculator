@@ -372,3 +372,18 @@ export const VEGA_SPIKE_MIN_BARS_ELAPSED = 30;
 
 /** Window (seconds) within which concurrent SPY+QQQ alerts get the confluence flag. */
 export const VEGA_SPIKE_CONFLUENCE_WINDOW_SEC = 60;
+
+// ============================================================
+// CRON TICKER FAN-OUT
+// ============================================================
+
+/**
+ * Default in-flight concurrency for crons that fan out per-ticker
+ * Schwab/UW requests via `mapWithConcurrency`. UW caps concurrent
+ * in-flight requests at 3, so 4 is the highest safe value for UW
+ * crons (one slot of headroom for the limiter); Schwab is more
+ * permissive but 4 is a sensible default that won't 429 either API.
+ *
+ * Phase 3c of docs/superpowers/specs/api-refactor-2026-05-02.md.
+ */
+export const CRON_TICKER_DEFAULT_CONCURRENCY = 4;

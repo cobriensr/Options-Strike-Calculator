@@ -37,7 +37,9 @@ import {
   cronGuard,
   checkDataQuality,
   withRetry,
+  mapWithConcurrency,
 } from '../_lib/api-helpers.js';
+import { CRON_TICKER_DEFAULT_CONCURRENCY } from '../_lib/constants.js';
 import { reportCronRun } from '../_lib/axiom.js';
 import {
   ZERO_GAMMA_TICKERS,
@@ -247,9 +249,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     // Run all tasks in parallel; isolate failures so one ticker hiccup
-    // does not block the rest.
-    const settled = await Promise.allSettled(
-      tasks.map((t) => runOne(apiKey, today, t.ticker, t.expiry)),
+    // does not block the rest. mapWithConcurrency caps in-flight requests
+    // at CRON_TICKER_DEFAULT_CONCURRENCY so the 5-task fan-out never blows
+    // past UW's per-app concurrency cap. The runner mirrors Promise.allSettled
+    // shape so the existing aggregation loop is unchanged.
+    type SettledRun =
+      | { status: 'fulfilled'; value: TaskOutcome }
+      | { status: 'rejected'; reason: unknown };
+    const settled: SettledRun[] = await mapWithConcurrency(
+      tasks,
+      CRON_TICKER_DEFAULT_CONCURRENCY,
+      async (t): Promise<SettledRun> => {
+        try {
+          const value = await runOne(apiKey, today, t.ticker, t.expiry);
+          return { status: 'fulfilled', value };
+        } catch (reason) {
+          return { status: 'rejected', reason };
+        }
+      },
     );
 
     // Per-ticker aggregation

@@ -30,6 +30,26 @@ vi.mock('../_lib/api-helpers.js', () => ({
   cronGuard: vi.fn(),
   checkDataQuality: vi.fn(),
   withRetry: vi.fn(),
+  // Real implementation — preserves call ordering by sharing a cursor.
+  mapWithConcurrency: async <T, R>(
+    items: readonly T[],
+    limit: number,
+    worker: (item: T, idx: number) => Promise<R>,
+  ): Promise<R[]> => {
+    if (items.length === 0) return [];
+    const results = new Array<R>(items.length);
+    let cursor = 0;
+    const runner = async (): Promise<void> => {
+      while (cursor < items.length) {
+        const idx = cursor;
+        cursor += 1;
+        results[idx] = await worker(items[idx]!, idx);
+      }
+    };
+    const runnerCount = Math.max(1, Math.min(limit, items.length));
+    await Promise.all(Array.from({ length: runnerCount }, runner));
+    return results;
+  },
 }));
 
 vi.mock('../_lib/axiom.js', () => ({

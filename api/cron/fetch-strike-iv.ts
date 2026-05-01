@@ -36,8 +36,9 @@
 
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
-import { schwabFetch } from '../_lib/api-helpers.js';
+import { mapWithConcurrency, schwabFetch } from '../_lib/api-helpers.js';
 import {
+  CRON_TICKER_DEFAULT_CONCURRENCY,
   STRIKE_IV_OTM_RANGE_PCT_CASH_INDEX,
   STRIKE_IV_OTM_RANGE_PCT_BROAD_ETF,
   STRIKE_IV_OTM_RANGE_PCT_SINGLE_NAME,
@@ -587,8 +588,12 @@ export default withCronInstrumentation(
     const sql = getDb();
 
     // Run tickers in parallel — they're independent and fault-isolated.
-    const results = await Promise.all(
-      STRIKE_IV_TICKERS.map((t) => runTicker(t, sql, today, startTimeMs)),
+    // Cap in-flight requests via mapWithConcurrency so the 13-ticker fan-out
+    // never overruns Schwab's per-app concurrency budget.
+    const results = await mapWithConcurrency(
+      STRIKE_IV_TICKERS,
+      CRON_TICKER_DEFAULT_CONCURRENCY,
+      (t) => runTicker(t, sql, today, startTimeMs),
     );
 
     const totalInserted = results.reduce((sum, r) => sum + r.rowsInserted, 0);

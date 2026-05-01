@@ -41,6 +41,29 @@ vi.mock('../_lib/schwab.js', () => ({
 vi.mock('../_lib/api-helpers.js', () => ({
   // Programmable Schwab fetch.
   schwabFetch: vi.fn(),
+  // Real implementation — preserves call ordering by sharing a cursor.
+  // Worker idx 0 calls schwabFetch first, yielding the first
+  // `mockResolvedValueOnce` queue entry; runners then pull subsequent
+  // indices in order, so the mock-queue contract is unchanged.
+  mapWithConcurrency: async <T, R>(
+    items: readonly T[],
+    limit: number,
+    worker: (item: T, idx: number) => Promise<R>,
+  ): Promise<R[]> => {
+    if (items.length === 0) return [];
+    const results = new Array<R>(items.length);
+    let cursor = 0;
+    const runner = async (): Promise<void> => {
+      while (cursor < items.length) {
+        const idx = cursor;
+        cursor += 1;
+        results[idx] = await worker(items[idx]!, idx);
+      }
+    };
+    const runnerCount = Math.max(1, Math.min(limit, items.length));
+    await Promise.all(Array.from({ length: runnerCount }, runner));
+    return results;
+  },
   // Re-implemented cronGuard that matches the production contract but
   // reads from the test's env + fake timers.
   cronGuard: vi.fn((req, res) => {

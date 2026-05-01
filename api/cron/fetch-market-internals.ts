@@ -43,7 +43,9 @@ import {
   schwabFetch,
   checkDataQuality,
   withRetry,
+  mapWithConcurrency,
 } from '../_lib/api-helpers.js';
+import { CRON_TICKER_DEFAULT_CONCURRENCY } from '../_lib/constants.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -363,9 +365,13 @@ export default withCronInstrumentation(
     // Fetch both groups in parallel:
     // - pricehistory symbols ($TICK, $TRIN) get full OHLC bars
     // - quotes-only symbols ($ADD, $VOLD) get current-value snapshots
+    // mapWithConcurrency caps the per-symbol fan-out so a future symbol
+    // expansion doesn't 429 against Schwab's per-app concurrency budget.
     const [priceHistoryResults, quoteResults] = await Promise.all([
-      Promise.all(
-        PRICEHISTORY_SYMBOLS.map((s) => processSymbol(s, startMs, endMs)),
+      mapWithConcurrency(
+        PRICEHISTORY_SYMBOLS,
+        CRON_TICKER_DEFAULT_CONCURRENCY,
+        (s) => processSymbol(s, startMs, endMs),
       ),
       processQuoteSymbols(QUOTES_ONLY_SYMBOLS),
     ]);
