@@ -174,7 +174,13 @@ describe('embed-yesterday handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(500);
-    expect(Sentry.captureMessage).toHaveBeenCalledOnce();
+    // Post-wrapper adoption (Phase 3a Wave 3): the embed-failure path
+    // throws an `EmbedYesterdayError` sentinel that the cron-
+    // instrumentation wrapper routes through Sentry.captureException.
+    // Pre-wrapper code called Sentry.captureMessage on a free-form
+    // string. Either signal lights up the same Sentry alert; we assert
+    // captureException now since that's what the wrapper emits.
+    expect(Sentry.captureException).toHaveBeenCalledOnce();
   });
 
   it('returns 500 when upsert fails', async () => {

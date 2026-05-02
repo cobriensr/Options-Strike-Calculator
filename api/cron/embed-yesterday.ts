@@ -14,22 +14,23 @@
  *   - OpenAI API key for text-embedding-3-large @ 2000 dims
  *   - `day_embeddings` table (migration #73) present on Neon
  *
- * Runs daily at 07:00 UTC — that's 2-3 hours after the US cash
+ * Runs daily at 07:00 UTC - that's 2-3 hours after the US cash
  * session settles, so yesterday's futures tape is fully committed to
  * the archive + sidecar is quiet.
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { cronGuard } from '../_lib/api-helpers.js';
 import { fetchDaySummary } from '../_lib/archive-sidecar.js';
 import {
   DAY_EMBEDDING_DIMS,
   upsertDayEmbedding,
 } from '../_lib/day-embeddings.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 import { generateEmbedding } from '../_lib/embeddings.js';
-import logger from '../_lib/logger.js';
 import { fetchDaySummaryFromPostgres } from '../_lib/postgres-day-summary.js';
-import { metrics, Sentry } from '../_lib/sentry.js';
+import { metrics } from '../_lib/sentry.js';
 
 export const config = { maxDuration: 60 };
 
@@ -42,23 +43,33 @@ function priorTradingDay(today: string): string {
   return d.toISOString().slice(0, 10);
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res, {
-    marketHours: false,
-    requireApiKey: false,
-  });
-  if (!guard) return;
-  const { today } = guard;
+// Sentinel errors so the wrapper's errorPayload can preserve the
+// pre-wrapper response shapes verbatim. The body shape was a stable
+// downstream contract (Vercel cron dashboard + Sentry alerts both keyed
+// on the `error` field), so the wrapper preserves them rather than
+// migrating to `{job, error: 'Internal error'}`.
 
-  const date = priorTradingDay(today);
-  const startTime = Date.now();
-  logger.info({ date, invokedOn: today }, 'embed-yesterday start');
+class EmbedYesterdayError extends Error {
+  constructor(
+    public readonly kind: 'embed_failed' | 'upsert_failed',
+    public readonly date: string,
+  ) {
+    super(kind);
+    this.name = 'EmbedYesterdayError';
+  }
+}
 
-  try {
+export default withCronInstrumentation(
+  'embed-yesterday',
+  async (ctx): Promise<CronResult> => {
+    const { today, logger: log } = ctx;
+    const date = priorTradingDay(today);
+    log.info({ date, invokedOn: today }, 'embed-yesterday start');
+
     let summary = await fetchDaySummary(date);
     let source: 'sidecar' | 'postgres' = 'sidecar';
     if (!summary) {
-      // Sidecar archive doesn't have this date — usually because the
+      // Sidecar archive doesn't have this date - usually because the
       // parquet archive lags the streaming feed by a few days (parquet
       // gets refreshed manually after a fresh Databento batch is
       // converted and uploaded). Try the Postgres-fed fallback before
@@ -68,25 +79,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!summary) {
         // True empty: holiday, weekend (already filtered above), or
         // streaming feed didn't run that day. Recorded as skipped, not
-        // a failure — shouldn't page anyone.
-        logger.info({ date }, 'embed-yesterday: no summary for date');
+        // a failure - shouldn't page anyone.
+        log.info({ date }, 'embed-yesterday: no summary for date');
         metrics.increment('embed_yesterday.no_summary');
-        return res
-          .status(200)
-          .json({ date, skipped: true, reason: 'no_summary' });
+        return {
+          status: 'skipped',
+          message: 'no_summary',
+          metadata: { date, skipped: true, reason: 'no_summary' },
+        };
       }
       source = 'postgres';
       metrics.increment('embed_yesterday.postgres_fallback');
-      logger.info({ date }, 'embed-yesterday: using Postgres fallback');
+      log.info({ date }, 'embed-yesterday: using Postgres fallback');
     }
 
     const embedding = await generateEmbedding(summary);
     if (!embedding || embedding.length !== DAY_EMBEDDING_DIMS) {
-      Sentry.setTag('cron.job', 'embed-yesterday');
-      Sentry.captureMessage(
-        `embed-yesterday: embedding call returned unexpected shape for ${date}`,
-      );
-      return res.status(500).json({ date, error: 'embed_failed' });
+      throw new EmbedYesterdayError('embed_failed', date);
     }
 
     // Summary format: "YYYY-MM-DD SYM | ...". Second whitespace token is
@@ -98,18 +107,44 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const ok = await upsertDayEmbedding({ date, symbol, summary, embedding });
     if (!ok) {
-      return res.status(500).json({ date, error: 'upsert_failed' });
+      throw new EmbedYesterdayError('upsert_failed', date);
     }
 
-    const elapsed = Date.now() - startTime;
     metrics.increment('embed_yesterday.success');
-    logger.info({ date, symbol, source, elapsed }, 'embed-yesterday complete');
-    return res.status(200).json({ date, symbol, source, elapsed });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'embed-yesterday');
-    Sentry.captureException(err);
-    logger.error({ err, date }, 'embed-yesterday failed');
-    const msg = err instanceof Error ? err.message : String(err);
-    return res.status(500).json({ date, error: msg });
-  }
-}
+    log.info(
+      { date, symbol, source, elapsed: Date.now() - ctx.startTimeMs },
+      'embed-yesterday complete',
+    );
+    return {
+      status: 'success',
+      metadata: {
+        date,
+        symbol,
+        source,
+        // `elapsed` was the pre-wrapper response field name; the wrapper
+        // emits its own `durationMs` for observability parity, but
+        // existing dashboards reading the old key keep working.
+        elapsed: Date.now() - ctx.startTimeMs,
+      },
+    };
+  },
+  {
+    marketHours: false,
+    requireApiKey: false,
+    // Both legacy 500 shapes are `{date, error: <kind-or-msg>}`.
+    // EmbedYesterdayError sentinels carry the date + kind verbatim;
+    // any other thrown error falls back to `{date, error: <msg>}`
+    // using the priorTradingDay-derived date (best-effort: priorTradingDay
+    // may itself have not been called yet, in which case the date key
+    // is the wrapper's start-of-day - acceptable since this code only
+    // runs at 07:00 UTC, well after the date rolls).
+    errorPayload: (err, ctx) => {
+      const date = priorTradingDay(ctx.today);
+      if (err instanceof EmbedYesterdayError) {
+        return { date: err.date, error: err.kind };
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      return { date, error: msg };
+    },
+  },
+);
