@@ -26,17 +26,19 @@
  * Environment: CRON_SECRET, UW_API_KEY.
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
-  cronGuard,
   cronJitter,
   mapWithConcurrency,
   uwFetch,
   withRetry,
 } from '../_lib/api-helpers.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 import { STRIKE_IV_TICKERS, type StrikeIVTicker } from '../_lib/constants.js';
 
 // ── UW response types ────────────────────────────────────────
@@ -248,17 +250,15 @@ async function runTicker(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res);
-  if (!guard) return;
-  const { apiKey, today } = guard;
+export default withCronInstrumentation(
+  'fetch-strike-trade-volume',
+  async (ctx): Promise<CronResult> => {
+    const { apiKey, today } = ctx;
 
-  await cronJitter();
+    await cronJitter();
 
-  const startTime = Date.now();
-  const sql = getDb();
+    const sql = getDb();
 
-  try {
     // UW plan caps concurrent in-flight requests at 3. Firing all 14 tickers
     // via `Promise.all` reliably 429s the last 11. A 3-wide worker pool keeps
     // the cron under that ceiling; total wall-clock is ~5 sequential rounds
@@ -267,17 +267,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       runTicker(t, apiKey, sql, today),
     );
     const totalInserted = results.reduce((sum, r) => sum + r.rowsInserted, 0);
-    const durationMs = Date.now() - startTime;
-    return res.status(200).json({
-      job: 'fetch-strike-trade-volume',
-      totalInserted,
-      results,
-      durationMs,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-strike-trade-volume');
-    Sentry.captureException(err);
-    logger.error({ err }, 'fetch-strike-trade-volume error');
-    return res.status(500).json({ error: 'Internal error' });
-  }
-}
+
+    return {
+      status: 'success',
+      metadata: {
+        totalInserted,
+        results,
+      },
+    };
+  },
+);
