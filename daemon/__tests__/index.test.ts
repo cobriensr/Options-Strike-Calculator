@@ -12,17 +12,14 @@ import { describe, it, expect, vi } from 'vitest';
 import { fatalExit, gracefulShutdown, type ShutdownDeps } from '../src/index';
 
 interface CallLog {
-  kind:
-    | 'scheduler.stop'
-    | 'health.close'
-    | 'sentry.close'
-    | 'exit';
+  kind: 'scheduler.stop' | 'health.close' | 'sentry.close' | 'exit';
   arg?: number;
 }
 
-function makeDeps(opts?: {
-  healthRejects?: boolean;
-}): { deps: ShutdownDeps; calls: CallLog[] } {
+function makeDeps(opts?: { healthRejects?: boolean }): {
+  deps: ShutdownDeps;
+  calls: CallLog[];
+} {
   const calls: CallLog[] = [];
   const deps: ShutdownDeps = {
     scheduler: {

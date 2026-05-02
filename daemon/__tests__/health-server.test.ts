@@ -50,9 +50,9 @@ describe('computeHealthStatus', () => {
   });
 
   it('returns 503 when scheduler.status is "idle" (never started)', () => {
-    expect(
-      computeHealthStatus({ ...baseState, status: 'idle' }, 60_000),
-    ).toBe(503);
+    expect(computeHealthStatus({ ...baseState, status: 'idle' }, 60_000)).toBe(
+      503,
+    );
   });
 
   it('returns 503 when wedged: lastFailAt > lastSuccessAt and uptime past recovery window', () => {
@@ -61,9 +61,9 @@ describe('computeHealthStatus', () => {
       lastSuccessAt: '2026-05-01T13:30:00.000Z',
       lastFailAt: '2026-05-01T15:00:00.000Z',
     };
-    expect(
-      computeHealthStatus(wedged, WEDGED_DAEMON_THRESHOLD_MS + 1000),
-    ).toBe(503);
+    expect(computeHealthStatus(wedged, WEDGED_DAEMON_THRESHOLD_MS + 1000)).toBe(
+      503,
+    );
   });
 
   it('returns 503 when only failures observed and uptime past recovery window', () => {
@@ -72,9 +72,9 @@ describe('computeHealthStatus', () => {
       lastSuccessAt: null,
       lastFailAt: '2026-05-01T15:00:00.000Z',
     };
-    expect(
-      computeHealthStatus(wedged, WEDGED_DAEMON_THRESHOLD_MS + 1000),
-    ).toBe(503);
+    expect(computeHealthStatus(wedged, WEDGED_DAEMON_THRESHOLD_MS + 1000)).toBe(
+      503,
+    );
   });
 
   it('returns 200 during recovery window (recent fail, not yet wedged)', () => {

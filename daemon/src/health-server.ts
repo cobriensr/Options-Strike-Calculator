@@ -56,9 +56,7 @@ export function computeHealthStatus(
   if (state.status !== 'running') {
     return 503;
   }
-  const lastFail = state.lastFailAt
-    ? Date.parse(state.lastFailAt)
-    : Number.NaN;
+  const lastFail = state.lastFailAt ? Date.parse(state.lastFailAt) : Number.NaN;
   const lastSuccess = state.lastSuccessAt
     ? Date.parse(state.lastSuccessAt)
     : Number.NaN;
