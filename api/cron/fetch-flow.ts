@@ -10,19 +10,19 @@
  * Environment: UW_API_KEY, CRON_SECRET (for Vercel cron auth)
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
-import logger from '../_lib/logger.js';
 import {
-  cronGuard,
   uwFetch,
   withRetry,
   checkDataQuality,
 } from '../_lib/api-helpers.js';
-import { reportCronRun } from '../_lib/axiom.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 
-// ── Per-source status (BE-CRON-007) ─────────────────────────
+// Per-source status (BE-CRON-007)
 //
 // Explicit response shape for each data source so external monitoring
 // can distinguish a real fetch/store failure from a legitimate
@@ -34,13 +34,31 @@ import { reportCronRun } from '../_lib/axiom.js';
 // Naming note: `storedRows` is a row count (0 or 1 per fetch), while
 // the top-level response field `stored` is a boolean ("did anything
 // land at all"). They live two nesting levels apart and mean different
-// things — do not conflate them.
+// things - do not conflate them.
 
 type SourceStatus =
   | { succeeded: true; fetched: number; storedRows: number }
   | { succeeded: false; stage: 'fetch' | 'store'; reason: string };
 
-// ── Fetch helper ────────────────────────────────────────────
+// Sentinel: signals "all sources failed - return the legacy 500 body
+// with the structured `sources` field intact". Distinct from a thrown
+// error (rendered as { job, error: 'Internal error' } by the wrapper).
+class AllSourcesFailedError extends Error {
+  constructor(
+    public readonly responseBody: {
+      stored: boolean;
+      partial: boolean;
+      market_tide: { stored: boolean; timestamp?: string } | null;
+      market_tide_otm: { stored: boolean; timestamp?: string } | null;
+      sources: { marketTide: SourceStatus; marketTideOtm: SourceStatus };
+    },
+  ) {
+    super('All sources failed');
+    this.name = 'AllSourcesFailedError';
+  }
+}
+
+// Fetch helper
 
 interface MarketTideRow {
   date: string;
@@ -60,7 +78,7 @@ async function fetchMarketTide(
   return uwFetch<MarketTideRow>(apiKey, qs);
 }
 
-// ── Store helper ────────────────────────────────────────────
+// Store helper
 
 async function storeLatestCandle(
   rows: MarketTideRow[],
@@ -88,15 +106,13 @@ async function storeLatestCandle(
   return { stored: true, timestamp: latest.timestamp };
 }
 
-// ── Handler ─────────────────────────────────────────────────
+// Handler
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res);
-  if (!guard) return;
-  const { apiKey, today } = guard;
-  const startTime = Date.now();
+export default withCronInstrumentation(
+  'fetch-flow',
+  async (ctx): Promise<CronResult> => {
+    const { apiKey, today, logger: log } = ctx;
 
-  try {
     // Fetch both all-in and OTM Market Tide in parallel; partial failures are tolerated
     const [allInFetch, otmFetch] = await Promise.allSettled([
       withRetry(() => fetchMarketTide(apiKey, false)),
@@ -104,14 +120,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ]);
 
     if (allInFetch.status === 'rejected') {
-      logger.warn(
-        { err: allInFetch.reason },
-        'fetch-flow: all-in fetch failed',
-      );
+      log.warn({ err: allInFetch.reason }, 'fetch-flow: all-in fetch failed');
       Sentry.captureException(allInFetch.reason);
     }
     if (otmFetch.status === 'rejected') {
-      logger.warn({ err: otmFetch.reason }, 'fetch-flow: OTM fetch failed');
+      log.warn({ err: otmFetch.reason }, 'fetch-flow: OTM fetch failed');
       Sentry.captureException(otmFetch.reason);
     }
 
@@ -130,14 +143,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ]);
 
     if (allInStore.status === 'rejected') {
-      logger.warn(
-        { err: allInStore.reason },
-        'fetch-flow: all-in store failed',
-      );
+      log.warn({ err: allInStore.reason }, 'fetch-flow: all-in store failed');
       Sentry.captureException(allInStore.reason);
     }
     if (otmStore.status === 'rejected') {
-      logger.warn({ err: otmStore.reason }, 'fetch-flow: OTM store failed');
+      log.warn({ err: otmStore.reason }, 'fetch-flow: OTM store failed');
       Sentry.captureException(otmStore.reason);
     }
 
@@ -203,7 +213,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    logger.info(
+    log.info(
       {
         allIn: allInResult,
         otm: otmResult,
@@ -217,8 +227,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // BE-CRON-007: return 500 only on TOTAL failure (no source landed
     // anything). This preserves the Vercel cron dashboard failed-run
     // signal for the worst case while letting partial failures report
-    // 200 with the new structured `sources` field so monitoring can
-    // still tell a zero-row success from a fetch error.
+    // 200 with the structured `sources` field so monitoring can still
+    // tell a zero-row success from a fetch error.
     const responseBody = {
       stored: anyStored,
       partial,
@@ -233,30 +243,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     };
 
     if (!anyStored) {
-      return res.status(500).json({
-        error: 'All sources failed',
-        ...responseBody,
-      });
+      // Pre-wrapper: res.status(500).json({ error: 'All sources failed', ...responseBody }).
+      // The sentinel carries the responseBody so the wrapper's errorPayload
+      // can re-emit it verbatim alongside the legacy `error` key.
+      throw new AllSourcesFailedError(responseBody);
     }
 
-    await reportCronRun('fetch-flow', {
-      status: 'ok',
-      stored: anyStored,
-      partial,
-      allInRows: allInRows?.length ?? 0,
-      otmRows: otmRows?.length ?? 0,
-      sources: {
-        marketTide: marketTideStatus,
-        marketTideOtm: marketTideOtmStatus,
+    return {
+      status: 'success',
+      metadata: {
+        stored: anyStored,
+        partial,
+        allInRows: allInRows?.length ?? 0,
+        otmRows: otmRows?.length ?? 0,
+        market_tide: allInResult,
+        market_tide_otm: otmResult,
+        sources: {
+          marketTide: marketTideStatus,
+          marketTideOtm: marketTideOtmStatus,
+        },
       },
-      durationMs: Date.now() - startTime,
-    });
-
-    return res.status(200).json(responseBody);
-  } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-flow');
-    Sentry.captureException(err);
-    logger.error({ err }, 'fetch-flow error');
-    return res.status(500).json({ error: 'Internal error' });
-  }
-}
+    };
+  },
+  {
+    errorPayload: (err) =>
+      err instanceof AllSourcesFailedError
+        ? { error: 'All sources failed', ...err.responseBody }
+        : {},
+  },
+);
