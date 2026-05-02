@@ -32,7 +32,6 @@ import {
 import logger from './_lib/logger.js';
 import { requireEnv } from './_lib/env.js';
 import {
-  type EffortLevel,
   SYSTEM_PROMPT_PART1,
   SYSTEM_PROMPT_PART2,
 } from './_lib/analyze-prompts.js';
@@ -50,6 +49,7 @@ import {
 } from './_lib/embeddings.js';
 import { runAnalysisPreCheck } from './_lib/analyze-precheck.js';
 import { getETDateStr } from '../src/utils/timezone.js';
+import { runCachedAnthropicCall } from './_lib/anthropic-call.js';
 
 // Allow up to 13 minutes for Opus with adaptive thinking
 export const config = { maxDuration: 780 };
@@ -179,87 +179,46 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Stream the response — Anthropic sends headers immediately with streaming,
     // which avoids Node's undici headersTimeout (300s) killing long Opus requests.
     // The SDK handles transient retries (429, 5xx, connection errors) internally.
-    // Our wrapper only handles the Opus → Sonnet model fallback.
-    const streamRequest = (
-      model: string,
-      maxTokens: number,
-      effort: EffortLevel,
-    ) =>
-      anthropic.messages
-        .stream({
-          model,
-          max_tokens: maxTokens,
-          thinking: { type: 'adaptive' },
-          output_config: { effort },
-          system: systemParts,
-          // Pass the full tool-augmented message history so the model sees
-          // all previously fetched data when writing its final analysis.
-          messages: toolMessages,
-        } as unknown as Parameters<typeof anthropic.messages.stream>[0])
-        .finalMessage();
-    let data: Awaited<ReturnType<typeof streamRequest>>;
-    let usedModel = 'claude-opus-4-7';
-    try {
-      data = await streamRequest('claude-opus-4-7', 128000, 'medium');
-    } catch (error_) {
-      // Only fall back on availability issues — request errors won't succeed on any model
-      if (
-        error_ instanceof Anthropic.BadRequestError ||
-        error_ instanceof Anthropic.AuthenticationError ||
-        error_ instanceof Anthropic.PermissionDeniedError
-      ) {
-        throw error_;
-      }
-      logger.info(
-        { err: error_ },
-        'Opus unavailable, falling back to Sonnet 4.6',
-      );
-      metrics.increment('analyze.opus_fallback');
-      usedModel = 'claude-sonnet-4-6';
-      data = await streamRequest('claude-sonnet-4-6', 64000, 'high');
-    }
-    // Log usage for cost monitoring
-    if (data.usage) {
-      const u = data.usage;
-      logger.info(
-        {
-          model: usedModel,
-          mode: String(mode),
-          input: u.input_tokens ?? 0,
-          output: u.output_tokens ?? 0,
-          cache_write: u.cache_creation_input_tokens ?? 0,
-          cache_read: u.cache_read_input_tokens ?? 0,
-        },
-        'analyze usage',
-      );
-      // Alert on cache misses — helps catch silent invalidators
-      if (
-        u.cache_read_input_tokens === 0 &&
-        (u.cache_creation_input_tokens ?? 0) > 0
-      ) {
-        logger.warn(
-          { model: usedModel },
-          'Cache miss on system prompt — prefix may have changed',
+    // The shared helper handles the Opus → Sonnet model fallback + usage logging
+    // + cache-miss warning.
+    const callResult = await runCachedAnthropicCall({
+      client: anthropic,
+      systemBlocks: systemParts,
+      messages: toolMessages,
+      primaryModel: 'claude-opus-4-7',
+      fallbackModel: 'claude-sonnet-4-6',
+      maxTokens: 128000,
+      fallbackMaxTokens: 64000,
+      effort: 'medium',
+      fallbackEffort: 'high',
+      fallbackMetric: 'analyze.opus_fallback',
+      onUsage: (usage, modelUsed) => {
+        logger.info(
+          {
+            model: modelUsed,
+            mode: String(mode),
+            input: usage.input,
+            output: usage.output,
+            cache_write: usage.cacheWrite,
+            cache_read: usage.cacheRead,
+          },
+          'analyze usage',
         );
-      }
-    }
+      },
+    });
+    const usedModel = callResult.modelUsed;
     // Check stop reason before parsing
-    if (data.stop_reason === 'refusal') {
+    if (callResult.stopReason === 'refusal') {
       logger.warn({ model: usedModel }, 'Claude refused analysis request');
       done({ status: 422 });
       return res
         .status(422)
         .json({ error: 'Analysis request was refused by the model.' });
     }
-    if (data.stop_reason === 'max_tokens') {
+    if (callResult.stopReason === 'max_tokens') {
       logger.warn({ model: usedModel }, 'Response truncated at max_tokens');
     }
-    // Filter to text blocks only — thinking blocks are excluded
-    const text =
-      data.content
-        ?.filter((c) => c.type === 'text')
-        .map((c) => ('text' in c ? c.text : ''))
-        .join('') ?? '';
+    const text = callResult.text;
     let analysis: AnalysisResponse | null = null;
     try {
       // Strip markdown code fences if Claude wraps output despite instructions
@@ -277,7 +236,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         logger.warn(
           {
             issues: validated.error.issues.slice(0, 5),
-            stopReason: data.stop_reason,
+            stopReason: callResult.stopReason,
           },
           'Analysis response schema mismatch — using raw parsed output',
         );
@@ -285,7 +244,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     } catch {
       logger.error(
-        { raw: text.slice(0, 500), stopReason: data.stop_reason },
+        { raw: text.slice(0, 500), stopReason: callResult.stopReason },
         'Analysis response JSON parse failed',
       );
     }
@@ -296,7 +255,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!analysis && text.length > 0) {
       metrics.increment('analyze.stream_corruption');
       logger.error(
-        { stopReason: data.stop_reason, textLen: text.length },
+        { stopReason: callResult.stopReason, textLen: text.length },
         'Returning 502 — response text present but unparseable',
       );
       metrics.analyzeCall({

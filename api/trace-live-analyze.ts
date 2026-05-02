@@ -53,6 +53,7 @@ import {
 import { parseAndValidateTraceAnalysis } from './_lib/trace-live-parse.js';
 import { generateEmbedding } from './_lib/embeddings.js';
 import { uploadTraceLiveImages } from './_lib/trace-live-blob.js';
+import { runCachedAnthropicCall } from './_lib/anthropic-call.js';
 
 // 780s ceiling matches /api/analyze. A 3-image structured-output call on
 // Sonnet 4.6 with adaptive thinking typically lands in 30–90s, but the
@@ -110,29 +111,25 @@ async function callModel(
   model: string,
   userContent: ReturnType<typeof buildTraceLiveUserContent>,
 ): Promise<CallResult> {
-  // Streaming, not messages.create(). At effort:'high' on a 3-image
-  // structured-output call, the model spends 3-9 minutes generating —
-  // a non-streaming POST holds the function→Anthropic TCP connection
-  // idle that whole time, and Vercel's egress NAT (or AWS-side
-  // networking) closes idle connections at ~5 min, killing the call
-  // mid-flight with a 499 client_disconnected on Anthropic's side.
-  // Streaming forwards tokens as they're produced, so the connection
-  // never goes idle. .finalMessage() returns the same Message shape
-  // we'd get from .create() once the stream completes.
-  const stream = anthropic.messages.stream({
-    model,
-    max_tokens: 64_000,
-    thinking: { type: 'adaptive' },
-    // 'high' for the tick-call. Empirically, dropping to 'medium' degraded
-    // gamma.signAtSpot reads (called pale where the chart was clearly deep
-    // blue / positive_strong) — gamma sign is the load-bearing field for
-    // every downstream trade decision, so the latency cost of 'high' is
-    // worth the perception accuracy. 15-min cadence (raised from 10-min on
-    // 2026-04-28) absorbs the long-tail duration — average longest response
-    // is ~520s, so 10-min ticks were skipping ~19% of the time via the
-    // daemon's in-flight guard, producing visible 20–30 min UI gaps.
-    output_config: { effort: 'high' },
-    system: [
+  // Streaming via runCachedAnthropicCall (Phase 1f primitive). Streaming is
+  // mandatory: at effort:'high' on a 3-image structured-output call, the
+  // model spends 3-9 minutes generating — a non-streaming POST holds the
+  // function→Anthropic TCP connection idle long enough that Vercel's
+  // egress NAT (or AWS-side networking) closes it mid-flight with a 499
+  // client_disconnected on Anthropic's side. Streaming forwards tokens as
+  // they're produced, so the connection never goes idle.
+  //
+  // 'high' effort for the tick-call. Empirically, dropping to 'medium'
+  // degraded gamma.signAtSpot reads (called pale where the chart was
+  // clearly deep blue / positive_strong) — gamma sign is the load-bearing
+  // field for every downstream trade decision, so the latency cost of
+  // 'high' is worth the perception accuracy. 15-min cadence (raised from
+  // 10-min on 2026-04-28) absorbs the long-tail duration — average longest
+  // response is ~520s, so 10-min ticks were skipping ~19% of the time via
+  // the daemon's in-flight guard, producing visible 20–30 min UI gaps.
+  const result = await runCachedAnthropicCall({
+    client: anthropic,
+    systemBlocks: [
       {
         type: 'text',
         text: TRACE_LIVE_STABLE_SYSTEM_TEXT,
@@ -140,25 +137,17 @@ async function callModel(
       },
     ],
     messages: [{ role: 'user', content: userContent }],
+    primaryModel: model,
+    maxTokens: 64_000,
+    effort: 'high',
+    fallbackMetric: 'trace_live.opus_fallback',
   });
 
-  const response = await stream.finalMessage();
-
-  const text = response.content
-    .filter((c) => c.type === 'text')
-    .map((c) => ('text' in c ? c.text : ''))
-    .join('');
-
   return {
-    text,
-    usage: {
-      input: response.usage.input_tokens ?? 0,
-      output: response.usage.output_tokens ?? 0,
-      cacheRead: response.usage.cache_read_input_tokens ?? 0,
-      cacheWrite: response.usage.cache_creation_input_tokens ?? 0,
-    },
-    stopReason: response.stop_reason ?? null,
-    model,
+    text: result.text,
+    usage: result.usage,
+    stopReason: result.stopReason,
+    model: result.modelUsed,
   };
 }
 

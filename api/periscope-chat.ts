@@ -71,6 +71,7 @@ import {
 } from './_lib/periscope-prompts.js';
 import { buildRetrievalBlock } from './_lib/periscope-retrieval.js';
 import { extractChartStructure } from './_lib/periscope-extract.js';
+import { runCachedAnthropicCall } from './_lib/anthropic-call.js';
 
 // 780s ceiling matches /api/analyze and /api/trace-live-analyze. Opus
 // 4.7 with adaptive-thinking high-effort + 3 images can take 5-9 min on
@@ -123,11 +124,11 @@ async function callModel(
   calibrationBlock: string | null,
   retrievalBlock: string | null,
 ): Promise<CallResult> {
-  // Streaming for the same reason as /api/trace-live-analyze: at high
+  // Streaming via runCachedAnthropicCall (Phase 1f primitive). Streaming is
+  // required for the same reason as /api/trace-live-analyze: at high
   // effort on a 3-image call the model can spend 5-9 min generating, and
   // a non-streaming POST holds the connection idle long enough for
   // Vercel's egress NAT (or AWS-side networking) to close it mid-flight.
-  // .finalMessage() gives the same Message shape we'd get from .create().
   //
   // System prompt structure (Anthropic supports up to 4 cache breakpoints):
   //   1. Skill text (cached) — stable per skill version
@@ -161,33 +162,39 @@ async function callModel(
     });
   }
 
-  const stream = anthropic.messages.stream({
-    model: MODEL,
-    max_tokens: 64_000,
-    thinking: { type: 'adaptive' },
-    output_config: { effort: 'high' },
-    system: systemBlocks,
+  const result = await runCachedAnthropicCall({
+    client: anthropic,
+    systemBlocks,
     messages: [{ role: 'user', content: userContent }],
+    primaryModel: MODEL,
+    maxTokens: 64_000,
+    effort: 'high',
+    fallbackMetric: 'periscope_chat.opus_fallback',
   });
 
-  const response = await stream.finalMessage();
-
-  const text = response.content
-    .filter((c) => c.type === 'text')
-    .map((c) => ('text' in c ? c.text : ''))
-    .join('');
+  // Reconstruct the JSONB-saved `fullResponse` payload from the helper's
+  // outputs. The helper intentionally normalizes the SDK response shape;
+  // this object preserves the same keys persisted historically (text +
+  // usage + stop_reason + model) so the periscope_analyses.full_response
+  // column stays stable.
+  const raw: Record<string, unknown> = {
+    text: result.text,
+    usage: {
+      input_tokens: result.usage.input,
+      output_tokens: result.usage.output,
+      cache_read_input_tokens: result.usage.cacheRead,
+      cache_creation_input_tokens: result.usage.cacheWrite,
+    },
+    stop_reason: result.stopReason,
+    model: result.modelUsed,
+  };
 
   return {
-    text,
-    usage: {
-      input: response.usage.input_tokens ?? 0,
-      output: response.usage.output_tokens ?? 0,
-      cacheRead: response.usage.cache_read_input_tokens ?? 0,
-      cacheWrite: response.usage.cache_creation_input_tokens ?? 0,
-    },
-    stopReason: response.stop_reason ?? null,
-    model: response.model,
-    raw: response as unknown as Record<string, unknown>,
+    text: result.text,
+    usage: result.usage,
+    stopReason: result.stopReason,
+    model: result.modelUsed,
+    raw,
   };
 }
 
