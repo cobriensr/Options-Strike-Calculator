@@ -261,11 +261,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }, 30_000);
 
   const capturedAt = new Date().toISOString();
-  // Default trading_date to the capture day. If extraction succeeds and
-  // returns a valid chart_date, we override below with the date the
-  // chart was actually FOR — back-reads of yesterday's chart shouldn't
-  // be tagged with today's date.
-  let tradingDate = capturedAt.slice(0, 10);
   const startTs = Date.now();
 
   try {
@@ -293,6 +288,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       parentFetch,
     ]);
 
+    // Resolve trading_date with explicit precedence:
+    //   1. body.tradingDate — user override (back-read fix path)
+    //   2. extraction.chartDate — vision pulled the chart's date label
+    //   3. capture day — last-resort fallback (silent miscoding risk for
+    //      near-midnight back-reads, hence the override above)
+    // The two columns trading_date and captured_at intentionally diverge
+    // for back-reads: trading_date is the date the CHART is for, captured_at
+    // is when the user submitted it.
+    const tradingDate =
+      body.tradingDate ?? extraction?.chartDate ?? capturedAt.slice(0, 10);
+
     // Debrief-mode parent integrity checks. Hard-fail rather than letting
     // Claude proceed without a real open read to score against — the user
     // explicitly chose this so a debrief without a same-day morning read
@@ -318,16 +324,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         res.write(JSON.stringify({ ok: false, error: msg }) + '\n');
         return;
       }
-      if (
-        extraction?.chartDate != null &&
-        extraction.chartDate !== parentRead.tradingDate
-      ) {
-        const msg = `Debrief chart is dated ${extraction.chartDate} but the linked open read is for ${parentRead.tradingDate}. Run a fresh morning read for ${extraction.chartDate} before debriefing it.`;
+      // Compare the resolved trading_date (user override → extraction →
+      // capture-day) against the parent. This catches both auto-extracted
+      // mismatches and explicit user overrides that would link to the
+      // wrong day's read.
+      if (tradingDate !== parentRead.tradingDate) {
+        const msg = `Debrief chart is dated ${tradingDate} but the linked open read is for ${parentRead.tradingDate}. Run a fresh morning read for ${tradingDate} before debriefing it.`;
         logger.warn(
           {
             parentId: parentRead.id,
             parentDate: parentRead.tradingDate,
-            chartDate: extraction.chartDate,
+            chartDate: extraction?.chartDate ?? null,
+            overrideDate: body.tradingDate ?? null,
+            effectiveDate: tradingDate,
           },
           'periscope-chat: debrief chart/parent date mismatch',
         );
@@ -345,15 +354,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       parentRead,
       images: body.images,
     });
-
-    // Override trading_date with the chart's actual date when extraction
-    // pulled it. This makes back-reads correctly tagged: if the user
-    // submits a 4/30 chart on 5/1, trading_date = 4/30 (chart date),
-    // captured_at = 5/1 (request time). The two columns intentionally
-    // diverge for back-reads.
-    if (extraction?.chartDate) {
-      tradingDate = extraction.chartDate;
-    }
 
     // Build the retrieval query text. When extraction succeeded, use the
     // structural summary so the query embedding has the same shape as

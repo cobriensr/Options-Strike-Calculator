@@ -177,6 +177,7 @@ function makeBody(
       mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
     }>;
     parentId: number | null;
+    tradingDate: string;
   }> = {},
 ) {
   return {
@@ -185,6 +186,9 @@ function makeBody(
       { kind: 'chart', data: SAMPLE_BASE64, mediaType: 'image/png' },
     ],
     ...(overrides.parentId !== undefined && { parentId: overrides.parentId }),
+    ...(overrides.tradingDate !== undefined && {
+      tradingDate: overrides.tradingDate,
+    }),
   };
 }
 
@@ -545,6 +549,152 @@ describe('POST /api/periscope-chat', () => {
     const res = mockResponse();
     await handler(req, res);
     expect(mockFetchPeriscopeAnalysisById).not.toHaveBeenCalled();
+  });
+
+  // ============================================================
+  // tradingDate override (back-read fix path)
+  // ============================================================
+
+  it('uses an explicit body.tradingDate, even when extraction returns a different chartDate', async () => {
+    mockExtractChartStructure.mockResolvedValueOnce({
+      structured: {
+        spot: 7140,
+        cone_lower: null,
+        cone_upper: null,
+        long_trigger: null,
+        short_trigger: null,
+        regime_tag: null,
+      },
+      chartDate: '2026-05-01', // extraction says today
+    });
+    mockFinalMessage.mockResolvedValue(makeSDKResponse({ prose: 'Read.' }));
+
+    const req = mockRequest({
+      method: 'POST',
+      body: makeBody({ tradingDate: '2026-04-30' }),
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const saveArgs = mockSavePeriscopeAnalysis.mock.calls[0]![0] as {
+      tradingDate: string;
+    };
+    expect(saveArgs.tradingDate).toBe('2026-04-30');
+  });
+
+  it('falls back to extraction.chartDate when no override is provided', async () => {
+    mockExtractChartStructure.mockResolvedValueOnce({
+      structured: {
+        spot: 7140,
+        cone_lower: null,
+        cone_upper: null,
+        long_trigger: null,
+        short_trigger: null,
+        regime_tag: null,
+      },
+      chartDate: '2026-04-30',
+    });
+    mockFinalMessage.mockResolvedValue(makeSDKResponse({ prose: 'Read.' }));
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const saveArgs = mockSavePeriscopeAnalysis.mock.calls[0]![0] as {
+      tradingDate: string;
+    };
+    expect(saveArgs.tradingDate).toBe('2026-04-30');
+  });
+
+  it('returns 400 when tradingDate is malformed (Zod regex)', async () => {
+    const req = mockRequest({
+      method: 'POST',
+      body: makeBody({ tradingDate: 'not-a-date' }),
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(400);
+    expect(res._json).toMatchObject({
+      error: expect.stringContaining('YYYY-MM-DD'),
+    });
+  });
+
+  it('lets a debrief proceed when tradingDate override matches the parent date', async () => {
+    mockFetchPeriscopeAnalysisById.mockResolvedValueOnce({
+      id: 17,
+      mode: 'read',
+      tradingDate: '2026-04-30',
+      proseText: 'Yesterday morning read.',
+      structured: {
+        spot: 7140,
+        cone_lower: null,
+        cone_upper: null,
+        long_trigger: null,
+        short_trigger: null,
+        regime_tag: 'pin',
+      },
+    });
+    // Extraction fails entirely — without the override the handler would
+    // fall back to capture-day (today) and the date guard would 422.
+    mockExtractChartStructure.mockResolvedValueOnce(null);
+    mockFinalMessage.mockResolvedValue(
+      makeSDKResponse({ prose: 'Debrief: long trigger fired.' }),
+    );
+
+    const req = mockRequest({
+      method: 'POST',
+      body: makeBody({
+        mode: 'debrief',
+        parentId: 17,
+        tradingDate: '2026-04-30',
+      }),
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const saveArgs = mockSavePeriscopeAnalysis.mock.calls[0]![0] as {
+      tradingDate: string;
+      parentId: number | null;
+    };
+    expect(saveArgs.tradingDate).toBe('2026-04-30');
+    expect(saveArgs.parentId).toBe(17);
+  });
+
+  it('rejects a debrief whose tradingDate override conflicts with the parent', async () => {
+    mockFetchPeriscopeAnalysisById.mockResolvedValueOnce({
+      id: 17,
+      mode: 'read',
+      tradingDate: '2026-04-30',
+      proseText: 'Yesterday morning read.',
+      structured: {
+        spot: 7140,
+        cone_lower: null,
+        cone_upper: null,
+        long_trigger: null,
+        short_trigger: null,
+        regime_tag: 'pin',
+      },
+    });
+    mockExtractChartStructure.mockResolvedValueOnce(null);
+
+    const req = mockRequest({
+      method: 'POST',
+      body: makeBody({
+        mode: 'debrief',
+        parentId: 17,
+        tradingDate: '2026-05-01',
+      }),
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const json = parseNdjsonResponse(res) as { ok: boolean; error: string };
+    expect(json.ok).toBe(false);
+    expect(json.error).toContain('2026-05-01');
+    expect(json.error).toContain('2026-04-30');
+    expect(mockStream).not.toHaveBeenCalled();
   });
 
   it('JSON block parse failure: structured fields are all null but row still saves', async () => {

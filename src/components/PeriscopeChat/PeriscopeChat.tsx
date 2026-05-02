@@ -198,16 +198,19 @@ export default function PeriscopeChat() {
     mode,
     images,
     parentId,
+    tradingDate,
     inFlight,
     elapsedMs,
     response,
     error,
     setMode,
     setParentId,
+    setTradingDate,
     setImage,
     submit,
     reset,
   } = usePeriscopeChat();
+  const tradingDateInputId = useId();
 
   // Listen for "Debrief this" clicks from the history panel. The
   // event carries a parentId; we flip mode + prefill parentId so the
@@ -275,6 +278,40 @@ export default function PeriscopeChat() {
               Linked to read #{parentId}
             </span>
           )}
+
+          {/* Optional chart-date override — handles the near-midnight
+              back-read case where vision extraction may fail and the
+              capture-day fallback would mis-tag trading_date. */}
+          <div className="ml-auto flex items-center gap-2">
+            <label
+              htmlFor={tradingDateInputId}
+              className="text-muted text-xs"
+              title="Override the chart's trading date — leave blank for auto-detect"
+            >
+              Chart date:
+            </label>
+            <input
+              id={tradingDateInputId}
+              type="date"
+              value={tradingDate}
+              onChange={(e) => setTradingDate(e.target.value)}
+              disabled={inFlight}
+              className="border-edge bg-surface/60 text-secondary rounded-md border px-2 py-0.5 text-xs disabled:opacity-40"
+              aria-label="Optional chart date override (YYYY-MM-DD)"
+            />
+            {tradingDate && (
+              <button
+                type="button"
+                onClick={() => setTradingDate('')}
+                disabled={inFlight}
+                className="text-muted hover:text-primary text-xs disabled:opacity-40"
+                aria-label="Clear chart date override"
+                title="Clear override (auto-detect)"
+              >
+                ✕
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Image upload slots */}

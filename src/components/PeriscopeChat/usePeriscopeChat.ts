@@ -74,6 +74,8 @@ export interface UsePeriscopeChatResult {
   mode: PeriscopeMode;
   images: Partial<Record<PeriscopeImageKind, UploadedPeriscopeImage>>;
   parentId: number | null;
+  /** Optional explicit trading date (ISO YYYY-MM-DD), '' = auto-detect. */
+  tradingDate: string;
   inFlight: boolean;
   elapsedMs: number;
   response: PeriscopeChatSuccess | null;
@@ -81,11 +83,15 @@ export interface UsePeriscopeChatResult {
   // Setters
   setMode: (next: PeriscopeMode) => void;
   setParentId: (next: number | null) => void;
+  setTradingDate: (next: string) => void;
   setImage: (kind: PeriscopeImageKind, file: File | null) => void;
   // Actions
   submit: () => Promise<void>;
   reset: () => void;
 }
+
+/** Validate ISO YYYY-MM-DD before sending to the server. */
+const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 export function usePeriscopeChat(): UsePeriscopeChatResult {
   const [mode, setMode] = useState<PeriscopeMode>('read');
@@ -93,6 +99,7 @@ export function usePeriscopeChat(): UsePeriscopeChatResult {
     Partial<Record<PeriscopeImageKind, UploadedPeriscopeImage>>
   >({});
   const [parentId, setParentId] = useState<number | null>(null);
+  const [tradingDate, setTradingDate] = useState<string>('');
   const [inFlight, setInFlight] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [response, setResponse] = useState<PeriscopeChatSuccess | null>(null);
@@ -207,6 +214,7 @@ export function usePeriscopeChat(): UsePeriscopeChatResult {
     setImages({});
     setMode('read');
     setParentId(null);
+    setTradingDate('');
     setResponse(null);
     setError(null);
   }, []);
@@ -236,10 +244,17 @@ export function usePeriscopeChat(): UsePeriscopeChatResult {
         })),
       );
 
+      // Only forward tradingDate when the user provided a syntactically
+      // valid override; an empty string ('') means "auto-detect, let the
+      // server resolve via extraction → capture-day fallback".
+      const trimmedDate = tradingDate.trim();
+      const includeTradingDate =
+        trimmedDate.length > 0 && ISO_DATE_PATTERN.test(trimmedDate);
       const body = {
         mode,
         images: imagesPayload,
         ...(parentId != null && { parentId }),
+        ...(includeTradingDate && { tradingDate: trimmedDate }),
       };
 
       const res = await fetch(ENDPOINT, {
@@ -288,18 +303,20 @@ export function usePeriscopeChat(): UsePeriscopeChatResult {
     } finally {
       setInFlight(false);
     }
-  }, [images, mode, parentId]);
+  }, [images, mode, parentId, tradingDate]);
 
   return {
     mode,
     images,
     parentId,
+    tradingDate,
     inFlight,
     elapsedMs,
     response,
     error,
     setMode,
     setParentId,
+    setTradingDate,
     setImage,
     submit,
     reset,

@@ -470,6 +470,16 @@ export const periscopeChatBodySchema = z
         'Maximum 3 images allowed (chart + GEX heat map + charm heat map)',
       ),
     parentId: z.number().int().positive().finite().nullable().optional(),
+    /**
+     * Optional explicit trading date (ISO YYYY-MM-DD). When set, overrides
+     * the chart-date pulled by extractChartStructure. Useful for back-reads
+     * submitted near midnight CT where chart-date extraction can fail and
+     * the capture-day fallback would mis-tag the row.
+     */
+    tradingDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, 'tradingDate must be ISO YYYY-MM-DD')
+      .optional(),
   })
   .refine(
     (body) => {
