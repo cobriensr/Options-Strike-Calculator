@@ -32,7 +32,6 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -71,7 +70,7 @@ class _LauncherState:
     `KeyError`s at runtime (or worse, silent misses on assignment).
     """
 
-    proc: Any = None  # subprocess.Popen | None
+    proc: subprocess.Popen[str] | None = None
     started_at: float = 0.0
     last_ready_at: float = 0.0
     last_error: str | None = None
