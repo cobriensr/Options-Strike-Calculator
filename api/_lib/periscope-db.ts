@@ -99,6 +99,58 @@ export function buildPeriscopeSummary(args: {
   ].join(' | ');
 }
 
+/** Subset of a periscope_analyses row needed to anchor a debrief. */
+export interface PeriscopeParentRead {
+  id: number;
+  mode: PeriscopeMode;
+  tradingDate: string;
+  proseText: string;
+  structured: PeriscopeStructuredFields;
+}
+
+/**
+ * Fetch a single periscope_analyses row by id. Returns null when the row
+ * doesn't exist or the query fails. Used by /api/periscope-chat to inject
+ * the parent read's prose + structured fields into a debrief request so
+ * Claude has the open read to score against — without this the debrief
+ * preamble references a parent the model can't see.
+ */
+export async function fetchPeriscopeAnalysisById(
+  id: number,
+): Promise<PeriscopeParentRead | null> {
+  try {
+    const sql = getDb();
+    const rows = await sql`
+      SELECT id, mode, trading_date, prose_text,
+             spot, cone_lower, cone_upper,
+             long_trigger, short_trigger, regime_tag
+      FROM periscope_analyses
+      WHERE id = ${id}
+      LIMIT 1
+    `;
+    const r = rows[0];
+    if (r == null) return null;
+    return {
+      id: Number(r.id),
+      mode: r.mode as PeriscopeMode,
+      tradingDate: r.trading_date as string,
+      proseText: (r.prose_text as string) ?? '',
+      structured: {
+        spot: (r.spot as number | null) ?? null,
+        cone_lower: (r.cone_lower as number | null) ?? null,
+        cone_upper: (r.cone_upper as number | null) ?? null,
+        long_trigger: (r.long_trigger as number | null) ?? null,
+        short_trigger: (r.short_trigger as number | null) ?? null,
+        regime_tag: (r.regime_tag as string | null) ?? null,
+      },
+    };
+  } catch (err) {
+    logger.error({ err, id }, 'fetchPeriscopeAnalysisById: query failed');
+    Sentry.captureException(err);
+    return null;
+  }
+}
+
 /**
  * Persist a single Periscope read or debrief to Postgres. Returns the new
  * row id on success, null on any failure. Caller logs / Sentry-captures

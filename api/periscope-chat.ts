@@ -59,9 +59,11 @@ import { uploadPeriscopeImages } from './_lib/periscope-blob.js';
 import { generateEmbedding } from './_lib/embeddings.js';
 import {
   buildPeriscopeSummary,
+  fetchPeriscopeAnalysisById,
   savePeriscopeAnalysis,
   type PeriscopeStructuredFields,
   type PeriscopeMode,
+  type PeriscopeParentRead,
 } from './_lib/periscope-db.js';
 import { buildCalibrationBlock } from './_lib/periscope-calibration.js';
 import {
@@ -264,11 +266,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // chart was actually FOR — back-reads of yesterday's chart shouldn't
   // be tagged with today's date.
   let tradingDate = capturedAt.slice(0, 10);
-  const userContent = buildUserContent({
-    mode: body.mode,
-    parentId: body.parentId ?? null,
-    images: body.images,
-  });
   const startTs = Date.now();
 
   try {
@@ -280,14 +277,74 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     //   Pass 2 (callModel): the full analysis with calibration + retrieval
     //          blocks injected as cached system prefixes.
     //
-    // Extraction runs in parallel with the calibration fetch (independent
-    // work). Retrieval depends on extraction output, so it's sequential
-    // afterward. When extraction fails, we fall back to embedding the
-    // user's prose context note (the legacy Phase 8 path).
-    const [extraction, calibrationBlock] = await Promise.all([
+    // Extraction runs in parallel with the calibration fetch and (for
+    // debriefs) the parent-read fetch — all three are independent. The
+    // parent fetch is what gives Claude the open read to score against:
+    // without it the debrief preamble references a `parent_id` the model
+    // can't resolve.
+    const parentFetch: Promise<PeriscopeParentRead | null> =
+      body.mode === 'debrief' && body.parentId != null
+        ? fetchPeriscopeAnalysisById(body.parentId)
+        : Promise.resolve(null);
+
+    const [extraction, calibrationBlock, parentRead] = await Promise.all([
       extractChartStructure({ images: body.images }),
       buildCalibrationBlock(body.mode),
+      parentFetch,
     ]);
+
+    // Debrief-mode parent integrity checks. Hard-fail rather than letting
+    // Claude proceed without a real open read to score against — the user
+    // explicitly chose this so a debrief without a same-day morning read
+    // is rejected rather than silently producing a hindsight description.
+    if (body.mode === 'debrief') {
+      if (parentRead == null) {
+        const msg = `Parent read #${body.parentId} not found. Run a fresh morning read first.`;
+        logger.warn(
+          { parentId: body.parentId },
+          'periscope-chat: debrief parent missing',
+        );
+        done({ status: 404, error: 'parent_not_found' });
+        res.write(JSON.stringify({ ok: false, error: msg }) + '\n');
+        return;
+      }
+      if (parentRead.mode !== 'read') {
+        const msg = `Parent #${parentRead.id} is a debrief, not a read — debriefs can only be linked to a read.`;
+        logger.warn(
+          { parentId: parentRead.id, parentMode: parentRead.mode },
+          'periscope-chat: debrief parent is not a read',
+        );
+        done({ status: 422, error: 'parent_not_a_read' });
+        res.write(JSON.stringify({ ok: false, error: msg }) + '\n');
+        return;
+      }
+      if (
+        extraction?.chartDate != null &&
+        extraction.chartDate !== parentRead.tradingDate
+      ) {
+        const msg = `Debrief chart is dated ${extraction.chartDate} but the linked open read is for ${parentRead.tradingDate}. Run a fresh morning read for ${extraction.chartDate} before debriefing it.`;
+        logger.warn(
+          {
+            parentId: parentRead.id,
+            parentDate: parentRead.tradingDate,
+            chartDate: extraction.chartDate,
+          },
+          'periscope-chat: debrief chart/parent date mismatch',
+        );
+        done({ status: 422, error: 'date_mismatch' });
+        res.write(JSON.stringify({ ok: false, error: msg }) + '\n');
+        return;
+      }
+    }
+
+    // Build the user content AFTER the parent fetch so the debrief
+    // preamble can inline the open read's prose + structured fields.
+    const userContent = buildUserContent({
+      mode: body.mode,
+      parentId: body.parentId ?? null,
+      parentRead,
+      images: body.images,
+    });
 
     // Override trading_date with the chart's actual date when extraction
     // pulled it. This makes back-reads correctly tagged: if the user

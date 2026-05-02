@@ -261,6 +261,81 @@ describe('buildUserContent', () => {
     expect(preamble).toContain('YOU ARE IN DEBRIEF MODE');
   });
 
+  it('inlines parent prose + structured fields into the debrief preamble when parentRead is supplied', () => {
+    const blocks = buildUserContent({
+      mode: 'debrief',
+      parentId: 42,
+      parentRead: {
+        id: 42,
+        mode: 'read',
+        tradingDate: '2026-05-01',
+        proseText:
+          'Open read at 8:30 CT — pin day. Long trigger 7150, short trigger 7115.',
+        structured: {
+          spot: 7140,
+          cone_lower: 7092,
+          cone_upper: 7163,
+          long_trigger: 7150,
+          short_trigger: 7115,
+          regime_tag: 'trap',
+        },
+      },
+      images: [],
+    });
+
+    const preamble = (blocks[0] as { type: 'text'; text: string }).text;
+    expect(preamble).toContain('Mode: debrief');
+    expect(preamble).toContain('Parent read id: 42');
+    expect(preamble).toContain('Open read to score (id 42, 2026-05-01)');
+    expect(preamble).toContain('- spot: 7140');
+    expect(preamble).toContain('- cone: 7092 – 7163');
+    expect(preamble).toContain('- long trigger: 7150');
+    expect(preamble).toContain('- short trigger: 7115');
+    expect(preamble).toContain('- regime: trap');
+    expect(preamble).toContain(
+      'Open read at 8:30 CT — pin day. Long trigger 7150, short trigger 7115.',
+    );
+  });
+
+  it('omits the parent block in debrief mode when parentRead is null', () => {
+    const blocks = buildUserContent({
+      mode: 'debrief',
+      parentId: 42,
+      parentRead: null,
+      images: [],
+    });
+    const preamble = (blocks[0] as { type: 'text'; text: string }).text;
+    expect(preamble).toContain('YOU ARE IN DEBRIEF MODE');
+    expect(preamble).not.toContain('Open read to score');
+  });
+
+  it('renders n/a for null structured fields in the parent block', () => {
+    const blocks = buildUserContent({
+      mode: 'debrief',
+      parentId: 1,
+      parentRead: {
+        id: 1,
+        mode: 'read',
+        tradingDate: '2026-05-01',
+        proseText: '',
+        structured: {
+          spot: null,
+          cone_lower: null,
+          cone_upper: null,
+          long_trigger: null,
+          short_trigger: null,
+          regime_tag: null,
+        },
+      },
+      images: [],
+    });
+    const preamble = (blocks[0] as { type: 'text'; text: string }).text;
+    expect(preamble).toContain('- spot: n/a');
+    expect(preamble).toContain('- cone: n/a – n/a');
+    expect(preamble).toContain('- regime: n/a');
+    expect(preamble).toContain('(no prose recorded)');
+  });
+
   it('emits one [kind screenshot] label per image', () => {
     const blocks = buildUserContent({
       mode: 'read',

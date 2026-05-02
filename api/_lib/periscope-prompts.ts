@@ -18,6 +18,7 @@ import { Sentry } from './sentry.js';
 import logger from './logger.js';
 import type {
   PeriscopeMode,
+  PeriscopeParentRead,
   PeriscopeStructuredFields,
 } from './periscope-db.js';
 
@@ -27,17 +28,23 @@ import type {
  * Build the user message content blocks: a small text preamble
  * (mode + linkage) followed by labelled image blocks. Periscope
  * screenshots are PNG/JPEG/GIF/WEBP base64.
+ *
+ * In debrief mode, when `parentRead` is supplied the parent's prose +
+ * structured fields are inlined into the preamble. Without this Claude
+ * sees only `Parent read id: N` (a bare integer) and has no actual open
+ * read to score against — the debrief just describes the EOD chart.
  */
 export function buildUserContent(args: {
   mode: PeriscopeMode;
   parentId: number | null | undefined;
+  parentRead?: PeriscopeParentRead | null;
   images: Array<{
     kind: 'chart' | 'gex' | 'charm';
     data: string;
     mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
   }>;
 }): Anthropic.Messages.ContentBlockParam[] {
-  const { mode, parentId, images } = args;
+  const { mode, parentId, parentRead, images } = args;
 
   const blocks: Anthropic.Messages.ContentBlockParam[] = [];
 
@@ -47,30 +54,16 @@ export function buildUserContent(args: {
   // chart's date matches a worked-example date by coincidence. The Read
   // override below stops that leak. Debrief mode keeps the original
   // behavior since hindsight/scoring IS the point there.
-  const preambleLines: string[] = [`Mode: ${mode}`];
-  if (parentId != null) preambleLines.push(`Parent read id: ${parentId}`);
-  if (mode === 'read') {
-    preambleLines.push(
-      '',
-      'YOU ARE IN READ MODE. Produce a forward-looking real-time read of the chart in front of you. Output ONLY:',
-      '  - Setup at slice end (current spot + immediate context)',
-      '  - Structural map (gamma + charm + positions levels)',
-      '  - Charm flow tally → directional bias',
-      '  - Trade thesis with bilateral triggers (long + short), stops, targets, R:R, no-trade zone',
-      '  - Regime label',
-      '  - The required JSON block at the very end',
-      '',
-      'DO NOT include any "## Debrief", "what triggered", "what actually happened", "the day delivered", settlement values, ✓ check-marks, or any hindsight scoring. Stop the response after the JSON block.',
-      '',
-      "If the chart's date or structure resembles a worked example in the skill, treat this as a fresh real-time read. The user already knows the worked-example outcomes — do not repeat them.",
-    );
-  } else {
-    preambleLines.push(
-      '',
-      'YOU ARE IN DEBRIEF MODE. Score the open read against actual price action visible in the candle chart. Honest facts only — no retroactive justification.',
-    );
-  }
-  blocks.push({ type: 'text', text: preambleLines.join('\n') });
+  const headerLines = [`Mode: ${mode}`];
+  if (parentId != null) headerLines.push(`Parent read id: ${parentId}`);
+
+  const bodyLines =
+    mode === 'read' ? buildReadModeBody() : buildDebriefModeBody(parentRead);
+
+  blocks.push({
+    type: 'text',
+    text: [...headerLines, '', ...bodyLines].join('\n'),
+  });
 
   // Each image gets a label header + the image block, so Claude knows
   // which view it's looking at.
@@ -87,6 +80,58 @@ export function buildUserContent(args: {
   }
 
   return blocks;
+}
+
+function buildReadModeBody(): string[] {
+  return [
+    'YOU ARE IN READ MODE. Produce a forward-looking real-time read of the chart in front of you. Output ONLY:',
+    '  - Setup at slice end (current spot + immediate context)',
+    '  - Structural map (gamma + charm + positions levels)',
+    '  - Charm flow tally → directional bias',
+    '  - Trade thesis with bilateral triggers (long + short), stops, targets, R:R, no-trade zone',
+    '  - Regime label',
+    '  - The required JSON block at the very end',
+    '',
+    'DO NOT include any "## Debrief", "what triggered", "what actually happened", "the day delivered", settlement values, ✓ check-marks, or any hindsight scoring. Stop the response after the JSON block.',
+    '',
+    "If the chart's date or structure resembles a worked example in the skill, treat this as a fresh real-time read. The user already knows the worked-example outcomes — do not repeat them.",
+  ];
+}
+
+/**
+ * Render the parent read as a labelled prose section that Claude can score
+ * against. Structured fields go first as a compact summary, then the full
+ * prose. Both are needed: structured fields give Claude the exact trigger
+ * levels for an unambiguous score; prose carries the thesis / regime
+ * reasoning so the debrief can reference *why* the read called what it
+ * called, not just whether the price hit a number.
+ */
+function buildDebriefModeBody(
+  parent: PeriscopeParentRead | null | undefined,
+): string[] {
+  const head = [
+    'YOU ARE IN DEBRIEF MODE. Score the open read below against actual price action visible in the candle chart. Honest facts only — no retroactive justification.',
+  ];
+  if (parent == null) return head;
+
+  const s = parent.structured;
+  const fmt = (n: number | null) => (n == null ? 'n/a' : n.toString());
+  return [
+    ...head,
+    '',
+    `## Open read to score (id ${parent.id}, ${parent.tradingDate})`,
+    '',
+    'Structured fields from the open read:',
+    `- spot: ${fmt(s.spot)}`,
+    `- cone: ${fmt(s.cone_lower)} – ${fmt(s.cone_upper)}`,
+    `- long trigger: ${fmt(s.long_trigger)}`,
+    `- short trigger: ${fmt(s.short_trigger)}`,
+    `- regime: ${s.regime_tag ?? 'n/a'}`,
+    '',
+    'Full prose of the open read:',
+    '',
+    parent.proseText.length > 0 ? parent.proseText : '(no prose recorded)',
+  ];
 }
 
 // ── Structured-output extraction ──────────────────────────────

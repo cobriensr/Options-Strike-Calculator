@@ -477,7 +477,12 @@ export const periscopeChatBodySchema = z
       return total <= MAX_PERISCOPE_TOTAL_SIZE;
     },
     { message: 'Combined image size exceeds 30MB' },
-  );
+  )
+  .refine((body) => body.mode !== 'debrief' || body.parentId != null, {
+    message:
+      'Debrief mode requires a parent read id. Run a morning read first, then click "Debrief this" on it.',
+    path: ['parentId'],
+  });
 
 export type PeriscopeChatBody = z.infer<typeof periscopeChatBodySchema>;
 
