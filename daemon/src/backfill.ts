@@ -16,10 +16,14 @@
  *     won't have data, so the GEX query will return null and we skip).
  *   - slots before 09:35 ET / after 15:55 ET (16:00 close - 5 min).
  *   - half-day close handled via the same 12:55 ET cutoff as the daemon.
+ *
+ * Per-slot processing lives in `processSlot` which returns a discriminated
+ * outcome the loop body switches on for counter accumulation.
  */
 
 import { neon } from '@neondatabase/serverless';
-import { loadConfig } from './config.js';
+import type { Logger } from 'pino';
+import { loadConfig, type DaemonConfig } from './config.js';
 import { makeLogger } from './logger.js';
 import { runCapture } from './capture.js';
 import { fetchGexLandscape } from './gex.js';
@@ -114,6 +118,93 @@ async function hasExistingRow(
   return rows.length > 0;
 }
 
+/**
+ * Discriminated outcome of `processSlot`. The loop body switches on
+ * `outcome` to update the running counters; an exhaustive `switch`
+ * with a `never`-typed default forces compile-time review of every
+ * consumer when a new variant is added.
+ */
+export type SlotOutcome =
+  | { outcome: 'succeeded'; capturedAt: string }
+  | { outcome: 'skipped'; reason: string }
+  | { outcome: 'alreadyDone'; capturedAt: string }
+  | { outcome: 'failed'; error: unknown };
+
+/**
+ * Process a single backfill slot end-to-end. Returns a discriminated
+ * outcome describing success / skip / already-in-DB / failure. Never
+ * throws — failures collapse to `{ outcome: 'failed', error }`.
+ */
+export async function processSlot(
+  slot: Slot,
+  config: DaemonConfig,
+  logger: Logger,
+  date: string,
+): Promise<SlotOutcome> {
+  try {
+    // Idempotency check: if a previous run already wrote this slot's
+    // row, skip the entire capture+gex+post chain. Saves ~$0.04 per
+    // slot in Anthropic cost + browserless units + blob writes when
+    // re-running a backfill that partially succeeded earlier.
+    const targetCapturedAt = computeCapturedAtIso(
+      date,
+      slot.hourCt,
+      slot.minuteCt,
+    );
+    const existed = await hasExistingRow(config.databaseUrl, targetCapturedAt);
+    if (existed) {
+      logger.info(
+        { capturedAt: targetCapturedAt },
+        'Slot already in DB — skipping (idempotent)',
+      );
+      return { outcome: 'alreadyDone', capturedAt: targetCapturedAt };
+    }
+
+    logger.info('Slot start');
+
+    const capture = await runCapture({
+      logger,
+      date,
+      time: slot.hhmm,
+    });
+
+    const gex = await fetchGexLandscape({
+      databaseUrl: config.databaseUrl,
+      capturedAt: capture.capturedAt,
+      logger,
+    });
+    if (!gex) {
+      logger.warn(
+        'No GEX snapshot for this slot — skipping (cron may have been down)',
+      );
+      return {
+        outcome: 'skipped',
+        reason: 'no-gex-snapshot',
+      };
+    }
+
+    await postTraceLiveAnalyze({
+      endpoint: config.endpoint,
+      ownerSecret: config.ownerSecret,
+      logger,
+      capturedAt: capture.capturedAt,
+      spot: capture.spot,
+      stabilityPct: capture.stabilityPct,
+      etTimeLabel: `${slot.hhmm} CT`,
+      images: capture.images,
+      gex,
+    });
+    logger.info('Slot complete');
+    return { outcome: 'succeeded', capturedAt: capture.capturedAt };
+  } catch (err) {
+    logger.error(
+      { err: err instanceof Error ? err.message : String(err) },
+      'Slot failed',
+    );
+    return { outcome: 'failed', error: err };
+  }
+}
+
 async function main(): Promise<void> {
   const args = parseArgs();
   const config = loadConfig();
@@ -151,74 +242,32 @@ async function main(): Promise<void> {
       time: slot.hhmm,
     });
 
-    try {
-      // Idempotency check: if a previous run already wrote this slot's
-      // row, skip the entire capture+gex+post chain. Saves ~$0.04 per
-      // slot in Anthropic cost + browserless units + blob writes when
-      // re-running a backfill that partially succeeded earlier.
-      const targetCapturedAt = computeCapturedAtIso(
-        args.date,
-        slot.hourCt,
-        slot.minuteCt,
-      );
-      const existed = await hasExistingRow(
-        config.databaseUrl,
-        targetCapturedAt,
-      );
-      if (existed) {
-        slotLogger.info(
-          { capturedAt: targetCapturedAt },
-          'Slot already in DB — skipping (idempotent)',
-        );
+    const result = await processSlot(slot, config, slotLogger, args.date);
+    switch (result.outcome) {
+      case 'succeeded':
+        succeeded++;
+        break;
+      case 'alreadyDone':
         alreadyDone++;
         // No rate-limit gap needed for a no-op.
-        continue;
-      }
-
-      slotLogger.info('Slot start');
-
-      const capture = await runCapture({
-        logger: slotLogger,
-        date: args.date,
-        time: slot.hhmm,
-      });
-
-      const gex = await fetchGexLandscape({
-        databaseUrl: config.databaseUrl,
-        capturedAt: capture.capturedAt,
-        logger: slotLogger,
-      });
-      if (!gex) {
-        slotLogger.warn(
-          'No GEX snapshot for this slot — skipping (cron may have been down)',
-        );
+        if (i < slots.length - 1) continue;
+        break;
+      case 'skipped':
         skipped++;
-        await sleep(RATE_LIMIT_GAP_MS);
-        continue;
+        break;
+      case 'failed':
+        failed++;
+        break;
+      default: {
+        // Exhaustiveness guard — adding a new variant forces this
+        // switch to be revisited at compile time.
+        const _exhaustive: never = result;
+        throw new Error(`Unhandled slot outcome: ${JSON.stringify(_exhaustive)}`);
       }
-
-      await postTraceLiveAnalyze({
-        endpoint: config.endpoint,
-        ownerSecret: config.ownerSecret,
-        logger: slotLogger,
-        capturedAt: capture.capturedAt,
-        spot: capture.spot,
-        stabilityPct: capture.stabilityPct,
-        etTimeLabel: `${slot.hhmm} CT`,
-        images: capture.images,
-        gex,
-      });
-      slotLogger.info('Slot complete');
-      succeeded++;
-    } catch (err) {
-      slotLogger.error(
-        { err: err instanceof Error ? err.message : String(err) },
-        'Slot failed',
-      );
-      failed++;
     }
 
-    // Rate-limit gap. Last slot doesn't wait.
+    // Rate-limit gap. Last slot doesn't wait. `alreadyDone` already
+    // continues above so it never reaches here.
     if (i < slots.length - 1) {
       await sleep(RATE_LIMIT_GAP_MS);
     }
@@ -238,9 +287,19 @@ async function main(): Promise<void> {
   process.exit(failed > 0 && succeeded === 0 && alreadyDone === 0 ? 1 : 0);
 }
 
-main().catch((err: unknown) => {
-  process.stderr.write(
-    `FATAL: ${err instanceof Error ? err.message : String(err)}\n`,
-  );
-  process.exit(1);
-});
+// Only invoke `main` when this module is the entry point. `tsx
+// src/backfill.ts` sets `import.meta.url` to a `file://` URL matching
+// `process.argv[1]`; under vitest the file is dynamically imported,
+// so the URLs differ and `main` is skipped (preventing the test runner
+// from triggering the CLI's `process.exit(1)` for missing --date).
+const invokedAsEntrypoint =
+  import.meta.url ===
+  (process.argv[1] ? `file://${process.argv[1]}` : undefined);
+if (invokedAsEntrypoint) {
+  main().catch((err: unknown) => {
+    process.stderr.write(
+      `FATAL: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    process.exit(1);
+  });
+}
