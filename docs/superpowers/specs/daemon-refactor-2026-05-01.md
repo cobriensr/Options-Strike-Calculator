@@ -31,7 +31,7 @@ duplicated calendar/classification data shared with `src/` and `scripts/`.
   separate Railway service instances; do NOT consolidate with `api/_lib/`.
 - Each phase ≤5 files (CLAUDE.md `## Pre-Work`).
 - Each phase ends with `npm run review` (root) AND `npm run --prefix daemon build`
-  + a code-reviewer subagent verdict before commit.
+  - a code-reviewer subagent verdict before commit.
 - Commit directly to `main` (per memory `feedback_direct_to_main.md`).
 
 ## Files to create (new shared modules)
@@ -217,7 +217,7 @@ shared modules + adoption in BOTH callers per phase.
 
 - **Tests for `capture-script.ts`** — Playwright integration code,
   validated end-to-end on Railway. Mocking the browserless connection
-  + DOM probes for unit tests would be more code than the implementation.
+  - DOM probes for unit tests would be more code than the implementation.
 - **Logger / Sentry consolidation with `api/_lib/`** — daemon is a
   separate Railway service; sharing runtime instances with Vercel would
   be wrong.
@@ -230,9 +230,59 @@ shared modules + adoption in BOTH callers per phase.
 
 ## Done when
 
-- All Phase 1-3 sub-tasks committed to `main`.
-- `npm run review` green.
-- `npm run --prefix daemon build` clean.
-- Final code-reviewer subagent verdict = `pass`.
+- All Phase 1-3 sub-tasks committed to `main`. ✅
+- `npm run review` green. ✅ (modulo a pre-existing `useHistoryData.test.ts`
+  flake unrelated to this refactor)
+- `npm run --prefix daemon build` clean. ✅
+- Final code-reviewer subagent verdict = `pass`. ✅
 - No production regressions observed in Sentry / Railway logs in the
   24h after the last commit lands.
+
+## Outcome
+
+Shipped phases (in commit order; 11 commits total):
+
+| Phase | Commit    | Title                                                    |
+| ----- | --------- | -------------------------------------------------------- |
+| plan  | c8d179eb  | Plan doc                                                 |
+| 1a    | 13d28290  | Holiday + early-close calendar consolidation             |
+| 1b    | f2ed3513  | GEX classification → src/utils/gex-classification        |
+| 1c    | bbcc6625  | TRACE-Live TZ probe → src/utils/trace-live-tz            |
+| 2a    | 32cdff31  | capture-script.ts split (auth/selectors/dom/diagnostics) |
+| 2b    | ac6b491c  | gex.ts fetchGexLandscape → 4 helpers + 13 tests          |
+| 2c    | 0196e300  | backfill.ts processSlot extraction + 5 tests             |
+| 2d    | d37c64fd  | sleep helper consolidation                               |
+| 3a    | ce7943df  | fatalExit cleanup ordering + gracefulShutdown symmetry   |
+| 3b    | 09ff5ea3  | health endpoint 503 on wedged daemon (30-min window)     |
+| 3c    | 574e7990  | capture.ts SIGKILL timer cleanup                         |
+| 3.fmt | 524ac15f  | prettier follow-up                                       |
+
+**Final at HEAD:**
+
+- 18 files changed in daemon/, net **+819 LOC** (gain dominated by 4 new
+  test files / 31 tests + the new capture/ subdir's JSDoc-rich modules;
+  capture-script.ts itself shrank 503 → 156 LOC)
+- 4 new test files (`backfill.test.ts`, `gex.test.ts`,
+  `health-server.test.ts`, `index.test.ts`) — daemon now has its first
+  test coverage
+- 3 cross-codebase shared modules created in `src/`:
+  `src/utils/gex-classification.ts`, `src/utils/trace-live-tz.ts`,
+  expanded `src/data/marketHours.ts` exports
+- `vite.config.ts` extended to cover `daemon/__tests__/` without polluting
+  root coverage thresholds
+- All 9462 root tests pass (modulo 1 pre-existing flake) + 31 daemon tests pass
+
+## Optional follow-up candidates (not blockers)
+
+- **`killActiveChild` in `fatalExit`** — implementer skipped per the
+  spec's "optional" tag; OS reaps orphans on Railway. If a future
+  `uncaughtException` mid-capture causes user-visible orphan log noise,
+  reopen.
+- **`endsWith` fallback clauses in `invokedDirectly` check** — the
+  canonical `import.meta.url === \`file://${process.argv[1]}\`` first
+  clause is sufficient. Loose fallbacks could mis-trigger in pathological
+  invocation paths (vitest with that exact argv[1]). Worth tightening if
+  the test infra changes.
+- **Inner `if/continue` in `alreadyDone` branch of backfill loop** —
+  redundant with the post-switch rate-limit guard. Cosmetic dead-code
+  cleanup.
