@@ -5,24 +5,41 @@ Uses the official databento Python SDK with:
 - Callback-based record processing
 - Automatic reconnection with exponential backoff
 - Multiple subscribe() calls for different schema/dataset combos
+
+Phase 3b refactor: options-side record routing (Definition/Trade/Stat
+handlers + the option_definitions cache + the definition-lag drop
+counter) lives in ``options_router.OptionsRecordRouter``. This class
+retains: connection lifecycle, subscriptions, OHLCV / TBBO / system /
+reconnect handlers, ATM-window centering, and prefix→internal symbol
+resolution. The options-side handlers on this class are thin delegating
+shims so existing call sites and tests remain stable.
 """
 
 from __future__ import annotations
 
-import threading
 import time
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 import databento as db
-from databento import ReconnectPolicy, Side
+from databento import ReconnectPolicy
 
 from config import settings
 from logger_setup import log
+from options_router import (
+    DEFINITION_LAG_SUMMARY_INTERVAL_S,
+    STAT_TYPE_CLEARED_VOLUME,
+    STAT_TYPE_DELTA,
+    STAT_TYPE_IMPLIED_VOL,
+    STAT_TYPE_OPEN_INTEREST,
+    STAT_TYPE_OPENING_PRICE,
+    STAT_TYPE_SETTLEMENT,
+    STAT_TYPE_TO_KWARG,
+    OptionsRecordRouter,
+)
 from symbol_manager import (
     DATASET_CME,
-    OptionsStrikeSet,
     compute_atm_strikes,
     get_all_futures_subscriptions,
     get_nearest_es_expiry,
@@ -33,29 +50,18 @@ if TYPE_CHECKING:
     from trade_processor import TradeProcessor
 
 
-# Stat type constants from Databento Statistics schema
-STAT_TYPE_OPENING_PRICE = 1
-STAT_TYPE_SETTLEMENT = 3
-STAT_TYPE_CLEARED_VOLUME = 6
-STAT_TYPE_OPEN_INTEREST = 9
-STAT_TYPE_IMPLIED_VOL = 14
-STAT_TYPE_DELTA = 15
-
-# Map Databento stat_type to (upsert_options_daily kwarg name, value source).
-# value_source is "stat_value" (Decimal, scaled by 1e-9) or "stat_quantity"
-# (raw int, e.g. open_interest contracts or cleared volume contracts).
-#
-# Adding a new stat type: add the entry here AND make sure
-# upsert_options_daily() accepts the kwarg. The handler dispatches purely
-# from this dict; the locked test in test_databento_client.py forces
-# new entries to be a deliberate change.
-STAT_TYPE_TO_KWARG: dict[int, tuple[str, str]] = {
-    STAT_TYPE_OPEN_INTEREST: ("open_interest", "stat_quantity"),
-    STAT_TYPE_SETTLEMENT: ("settlement", "stat_value"),
-    STAT_TYPE_CLEARED_VOLUME: ("volume", "stat_quantity"),
-    STAT_TYPE_IMPLIED_VOL: ("implied_vol", "stat_value"),
-    STAT_TYPE_DELTA: ("delta", "stat_value"),
-}
+# Re-export for backward compatibility with code (and tests) that
+# previously imported these from databento_client.
+__all__ = [
+    "DatabentoClient",
+    "STAT_TYPE_OPENING_PRICE",
+    "STAT_TYPE_SETTLEMENT",
+    "STAT_TYPE_CLEARED_VOLUME",
+    "STAT_TYPE_OPEN_INTEREST",
+    "STAT_TYPE_IMPLIED_VOL",
+    "STAT_TYPE_DELTA",
+    "STAT_TYPE_TO_KWARG",
+]
 
 # Phase 2a note: we subscribe ONLY to ``tbbo``, never ``mbp-1``. Both
 # schemas emit ``MBP1Msg`` and share the same ``rtype``
@@ -67,7 +73,16 @@ STAT_TYPE_TO_KWARG: dict[int, tuple[str, str]] = {
 
 
 class DatabentoClient:
-    """Manages the Databento Live connection and data routing."""
+    """Manages the Databento Live connection and data routing.
+
+    Connection lifecycle, futures bar / TBBO / system / reconnect
+    handling, ATM-window centering, and prefix→internal symbol
+    resolution live here. Options-side record routing
+    (Definition/Trade/Stat handlers + ``option_definitions`` cache +
+    definition-lag drop accounting) is owned by
+    ``options_router.OptionsRecordRouter``; thin delegating shims
+    preserve the original public API.
+    """
 
     def __init__(
         self,
@@ -83,21 +98,23 @@ class DatabentoClient:
         self._quote_processor = quote_processor
         self._connected = False
         self._last_bar_ts = 0.0
-        self._options_strikes = OptionsStrikeSet()
-        self._lock = threading.Lock()
 
         # Shutdown barrier: set True at the start of stop() so in-flight
         # Databento callbacks can early-return before initiating a new DB
         # write. Prevents the "callback mid-flight when pool drains" race
-        # flagged by the audit under SIDE-006.
+        # flagged by the audit under SIDE-006. The router consults this
+        # via the predicate handed to it below.
         self._shutting_down = False
 
-        # SIDE-012: definition-lag drop tracking. When a trade arrives
-        # before its Definition record, _handle_trade silently dropped
-        # it. Now we count the drops and emit a periodic summary so
-        # operators can see if definition lag is systematic vs transient.
-        self._definition_lag_drops = 0
-        self._last_lag_summary_ts = 0.0
+        # Options-side state + handlers. The router owns
+        # _option_definitions, _options_strikes (the ATM filter window),
+        # and the SIDE-012 definition-lag drop counter. Predicate callback
+        # lets the router check the shutdown barrier without holding a
+        # back-reference to ``self``.
+        self._router = OptionsRecordRouter(
+            trade_processor=trade_processor,
+            is_shutting_down=lambda: self._shutting_down,
+        )
 
         # SIDE-011: reconnect gap observability. When the SDK reconnects
         # after a disconnect, we want to know (a) how long the gap was
@@ -120,9 +137,6 @@ class DatabentoClient:
         # Log symbol mapping summary once, not per-contract
         self._mapping_summary_logged = False
 
-        # Store option definitions: instrument_id -> {strike, option_type, expiry}
-        self._option_definitions: dict[int, dict] = {}
-
         # Whether we're waiting for the first ES bar to subscribe to options
         self._options_subscription_pending = False
 
@@ -133,6 +147,47 @@ class DatabentoClient:
     @property
     def last_bar_ts(self) -> float:
         return self._last_bar_ts
+
+    # ------------------------------------------------------------------
+    # Backward-compat property shims that proxy to the OptionsRecordRouter.
+    #
+    # The original DatabentoClient owned these fields directly; tests
+    # and a few internal callers read/write them. Routing them through
+    # the router keeps a single source of truth without breaking
+    # existing call sites.
+    # ------------------------------------------------------------------
+
+    @property
+    def _option_definitions(self) -> dict[int, dict]:
+        return self._router.option_definitions
+
+    @property
+    def _options_strikes(self) -> Any:
+        return self._router.options_strikes
+
+    @_options_strikes.setter
+    def _options_strikes(self, value: Any) -> None:
+        self._router.options_strikes = value
+
+    @property
+    def _definition_lag_drops(self) -> int:
+        return self._router.definition_lag_drops
+
+    @_definition_lag_drops.setter
+    def _definition_lag_drops(self, value: int) -> None:
+        self._router.definition_lag_drops = value
+
+    @property
+    def _last_lag_summary_ts(self) -> float:
+        return self._router.last_lag_summary_ts
+
+    @_last_lag_summary_ts.setter
+    def _last_lag_summary_ts(self, value: float) -> None:
+        self._router.last_lag_summary_ts = value
+
+    # SIDE-012 throttle window. Aliased here so existing references
+    # (and tests touching the constant) keep working after the move.
+    DEFINITION_LAG_SUMMARY_INTERVAL_S = DEFINITION_LAG_SUMMARY_INTERVAL_S
 
     def start(self) -> None:
         """Initialize the Databento Live client and subscribe to all feeds."""
@@ -639,196 +694,32 @@ class DatabentoClient:
 
         self._quote_processor.process_tbbo(symbol, record)
 
-    # SIDE-012: emit a lag-drop summary at most once per this interval.
-    DEFINITION_LAG_SUMMARY_INTERVAL_S = 60.0
+    # ------------------------------------------------------------------
+    # Options-side handlers — thin shims that delegate to the router.
+    # The original method names are preserved so existing callers
+    # (incl. _on_record dispatch and the ~870-LOC test suite) keep
+    # working unchanged.
+    # ------------------------------------------------------------------
 
     def _maybe_log_definition_lag_summary(self) -> None:
-        """Emit a periodic summary of definition-lag drops (SIDE-012).
-
-        Called from _handle_trade. If any trades have been dropped
-        since the last summary AND at least
-        DEFINITION_LAG_SUMMARY_INTERVAL_S seconds have passed, log a
-        structured warning (and forward to Sentry) then reset the
-        counter. This converts a previously-silent failure mode into
-        a visible one without spamming logs on every drop.
-        """
-        if self._definition_lag_drops == 0:
-            return
-        now = time.time()
-        if now - self._last_lag_summary_ts < self.DEFINITION_LAG_SUMMARY_INTERVAL_S:
-            return
-        drops = self._definition_lag_drops
-        self._definition_lag_drops = 0
-        self._last_lag_summary_ts = now
-
-        from sentry_setup import capture_message
-
-        capture_message(
-            f"Dropped {drops} ES option trades with no cached Definition "
-            f"(unknown instrument_id — either Definition lag or an "
-            f"untracked instrument)",
-            level="warning",
-            context={
-                "drops": drops,
-                "interval_s": round(self.DEFINITION_LAG_SUMMARY_INTERVAL_S, 1),
-            },
-        )
+        """Delegate to the router (SIDE-012 throttle)."""
+        self._router._maybe_log_definition_lag_summary()
 
     def _handle_trade(self, record: Any) -> None:
-        """Process an ES options trade record."""
-        if self._shutting_down:
-            return
-        # Map Databento Side enum to our char
-        side = getattr(record, "side", None)
-        if side == Side.ASK:
-            side_char = "A"
-        elif side == Side.BID:
-            side_char = "B"
-        else:
-            side_char = "N"
-
-        # We need to determine if this is an ES option and extract
-        # strike/expiry from the instrument definition
-        iid = getattr(record, "instrument_id", 0)
-        instrument_info = self._get_option_info(iid)
-        if instrument_info is None:
-            # SIDE-012: no Definition cached for this instrument_id —
-            # either the trade arrived before its Definition (lag) or
-            # we never received a Definition for this id at all
-            # (untracked instrument). Count it and let the periodic
-            # summary surface the total. Previously this was a silent
-            # return with no visibility.
-            self._definition_lag_drops += 1
-            self._maybe_log_definition_lag_summary()
-            return
-
-        strike = instrument_info["strike"]
-        option_type = instrument_info["option_type"]
-        expiry = instrument_info["expiry"]
-
-        # Filter: only process strikes in our ATM window
-        if strike not in self._options_strikes.strikes:
-            return
-
-        self._trade_processor.process_trade(
-            underlying="ES",
-            expiry=expiry,
-            strike=strike,
-            option_type=option_type,
-            ts_ns=record.ts_event,
-            price_raw=record.price,
-            size=record.size,
-            side_char=side_char,
-        )
+        """Delegate options-trade handling to the router."""
+        self._router.handle_trade(record)
 
     def _handle_stat(self, record: Any) -> None:
-        """Process a Statistics record (OI, settlement, IV, delta).
-
-        Dispatch is driven by the module-level ``STAT_TYPE_TO_KWARG``
-        table — each entry maps a Databento stat_type to the
-        ``upsert_options_daily(...)`` kwarg + the source field on the
-        record (``stat_value`` is a 1e-9-scaled Decimal price; ``stat_quantity``
-        is a raw integer count). Adding a new stat type is a one-line
-        dict update; the handler body never needs to grow.
-        """
-        if self._shutting_down:
-            return
-        from db import upsert_options_daily
-
-        stat_type = record.stat_type
-        mapping = STAT_TYPE_TO_KWARG.get(stat_type)
-        if mapping is None:
-            return
-        kwarg_name, value_source = mapping
-
-        iid = getattr(record, "instrument_id", 0)
-        instrument_info = self._get_option_info(iid)
-        if instrument_info is None:
-            return
-
-        strike = instrument_info["strike"]
-        option_type = instrument_info["option_type"]
-        expiry = instrument_info["expiry"]
-        trade_date = date.today()
-
-        # Resolve the value from the configured source field.
-        if value_source == "stat_value":
-            value: Any = (
-                Decimal(record.stat_value) / Decimal(1_000_000_000)
-                if hasattr(record, "stat_value")
-                else None
-            )
-        else:  # "stat_quantity"
-            stat_quantity = getattr(record, "stat_quantity", None)
-            value = int(stat_quantity) if stat_quantity else None
-
-        # Settlement carries an extra is_final flag derived from stat_flags.
-        extra_kwargs: dict[str, Any] = {}
-        if stat_type == STAT_TYPE_SETTLEMENT:
-            extra_kwargs["is_final"] = bool(getattr(record, "stat_flags", 0) & 1)
-
-        try:
-            upsert_options_daily(
-                "ES",
-                trade_date,
-                expiry,
-                Decimal(str(strike)),
-                option_type,
-                **{kwarg_name: value},
-                **extra_kwargs,
-            )
-        except Exception as exc:
-            log.error("Failed to upsert stat for strike %s: %s", strike, exc)
+        """Delegate options-stat handling to the router."""
+        self._router.handle_stat(record)
 
     def _handle_definition(self, record: Any) -> None:
-        """Process an InstrumentDefMsg to discover ES option instruments."""
-        # Extract key fields from the definition
-        instrument_class = getattr(record, "instrument_class", None)
-        if instrument_class not in ("C", "P"):
-            # Not a call or put -- could be a future ('F') or other.
-            # NOTE: databento_dbn returns an InstrumentClass enum whose
-            # __eq__ compares True against its string value, so this
-            # ``in`` check works for both enum and bare-string inputs.
-            return
+        """Delegate Definition handling to the router."""
+        self._router.handle_definition(record)
 
-        # SIDE-016: coerce InstrumentClass enum → string before storing.
-        # databento_dbn.InstrumentClass.CALL compares == 'C' (that's why
-        # the filter above works) but the value stored here propagates
-        # through _handle_trade / _handle_stat into psycopg2, which
-        # can't adapt the enum ("can't adapt type 'databento_dbn.
-        # InstrumentClass'"). The .value attribute gives the bare 'C'/
-        # 'P' string; the str() fallback covers older SDKs where
-        # instrument_class is already a bare string.
-        option_type_str = getattr(
-            instrument_class, "value", str(instrument_class)
-        )
-
-        strike_raw = getattr(record, "strike_price", 0)
-        strike = float(strike_raw) / 1e9 if strike_raw else 0
-
-        expiry_ns = getattr(record, "expiration", 0)
-        if expiry_ns:
-            expiry = datetime.fromtimestamp(expiry_ns / 1e9, tz=timezone.utc).date()
-        else:
-            return
-
-        iid = getattr(record, "instrument_id", 0)
-
-        # Store the option info for this instrument_id
-        with self._lock:
-            self._option_definitions[iid] = {
-                "strike": strike,
-                "option_type": option_type_str,  # 'C' or 'P'
-                "expiry": expiry,
-            }
-
-        log.debug(
-            "Definition: iid=%d strike=%.2f type=%s expiry=%s",
-            iid,
-            strike,
-            option_type_str,
-            expiry,
-        )
+    def _get_option_info(self, instrument_id: int) -> dict | None:
+        """Look up option strike/type/expiry for an instrument_id."""
+        return self._router._get_option_info(instrument_id)
 
     def _handle_symbol_mapping(self, record: Any) -> None:
         """Log symbol mappings for debugging.
@@ -881,10 +772,6 @@ class DatabentoClient:
                 len(self._options_strikes.strikes),
                 self._options_strikes.center_price,
             )
-
-    def _get_option_info(self, instrument_id: int) -> dict | None:
-        """Look up option strike/type/expiry for an instrument_id."""
-        return self._option_definitions.get(instrument_id)
 
     def stop(self) -> None:
         """Gracefully stop all Databento clients.
