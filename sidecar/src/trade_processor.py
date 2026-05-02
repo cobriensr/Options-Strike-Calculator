@@ -13,15 +13,20 @@ and exposed `get_unusual_volume_strikes()` for a Twilio SMS alert in
 alert engine (see SIDE-001 in the audit). If you want unusual-volume
 detection back, it belongs in a Vercel cron reading the DB table, not
 in a long-running sidecar process.
+
+The buffer + lock + batch-flush + DB-write machinery is inherited from
+``batched_writer.BatchedWriter[TradeRecord]``. Only ``_write`` (DB
+serialization) and ``process_trade`` (parse + ingest entry point) are
+specific to this module.
 """
 
 from __future__ import annotations
 
-import threading
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
+from batched_writer import BatchedWriter
 from db import batch_insert_options_trades
 from logger_setup import log
 
@@ -50,15 +55,18 @@ class TradeRecord:
     trade_date: date
 
 
-class TradeProcessor:
-    """Accumulates ES options trades and batches DB writes."""
+class TradeProcessor(BatchedWriter[TradeRecord]):
+    """Accumulates ES options trades and batches DB writes.
+
+    Inherits buffer + lock + batch-flush + background-flush thread from
+    :class:`BatchedWriter`. The DB serialization (``_write``) flattens
+    each :class:`TradeRecord` into the tuple shape expected by
+    ``db.batch_insert_options_trades``.
+    """
 
     def __init__(self, flush_interval_s: float = FLUSH_INTERVAL_S) -> None:
-        self._buffer: list[TradeRecord] = []
-        self._lock = threading.Lock()
-        self._flush_interval_s = flush_interval_s
-        self._stop_event = threading.Event()
-        self._flush_thread: threading.Thread | None = None
+        super().__init__(batch_size=BATCH_SIZE, thread_name="trade-processor-flush")
+        self._configured_flush_interval_s = flush_interval_s
 
     def process_trade(
         self,
@@ -104,18 +112,23 @@ class TradeProcessor:
             trade_date=trade_dt,
         )
 
-        # Buffer for batch insert
-        with self._lock:
-            self._buffer.append(record)
-            if len(self._buffer) >= BATCH_SIZE:
-                self._flush_buffer()
+        # Buffer for batch insert. BatchedWriter.add() handles the
+        # lock-swap-release-write pattern internally.
+        self.add(record)
 
-    def _flush_buffer(self) -> None:
-        """Flush buffered trades to the database."""
-        if not self._buffer:
-            return
+    # ------------------------------------------------------------------
+    # BatchedWriter hooks
+    # ------------------------------------------------------------------
 
-        rows = [
+    def _write(self, rows: list[TradeRecord]) -> None:
+        """Materialize TradeRecord dataclasses into tuples and batch-insert.
+
+        Errors are caught and logged here so a transient Neon hiccup
+        doesn't tear down the Databento callback thread. The base class
+        does NOT retry — buffered rows that hit a write failure are
+        discarded.
+        """
+        tuples = [
             (
                 r.underlying,
                 r.expiry,
@@ -127,64 +140,29 @@ class TradeProcessor:
                 r.side,
                 r.trade_date,
             )
-            for r in self._buffer
+            for r in rows
         ]
-        self._buffer.clear()
 
         try:
-            batch_insert_options_trades(rows)
+            batch_insert_options_trades(tuples)
         except Exception as exc:
             log.error("Failed to batch insert trades: %s", exc)
 
-    def flush(self) -> None:
-        """Force flush any remaining buffered trades."""
-        with self._lock:
-            self._flush_buffer()
+    # ------------------------------------------------------------------
+    # Convenience wrapper preserving the no-arg start_background_flush()
+    # call signature used by main.py + tests.
+    # ------------------------------------------------------------------
 
-    def start_background_flush(self) -> None:
-        """Start a daemon thread that flushes the buffer at a fixed cadence.
+    def start_background_flush(  # type: ignore[override]
+        self, interval_s: float | None = None
+    ) -> None:
+        """Start the periodic flush thread using the configured interval.
 
-        Idempotent — subsequent calls while a thread is alive are no-ops.
-        The daemon thread exits when the main thread exits; call stop()
-        for deterministic shutdown.
+        Wraps :meth:`BatchedWriter.start_background_flush` to default
+        ``interval_s`` to the value passed to ``__init__`` (so callers
+        can use the no-arg call shape ``proc.start_background_flush()``
+        that pre-dated the base class).
         """
-        if self._flush_thread is not None and self._flush_thread.is_alive():
-            return
-        self._stop_event.clear()
-        self._flush_thread = threading.Thread(
-            target=self._flush_loop,
-            name="trade-processor-flush",
-            daemon=True,
+        super().start_background_flush(
+            interval_s if interval_s is not None else self._configured_flush_interval_s
         )
-        self._flush_thread.start()
-        log.info(
-            "TradeProcessor background flush started (interval=%.1fs)",
-            self._flush_interval_s,
-        )
-
-    def _flush_loop(self) -> None:
-        """Thread body: flush periodically until stop_event is set."""
-        while True:
-            # Event.wait returns True if the event was set, False on
-            # timeout. We flush only on timeout (steady-state tick) and
-            # exit cleanly on set (shutdown path — the explicit stop()
-            # call will perform the final flush itself).
-            if self._stop_event.wait(timeout=self._flush_interval_s):
-                return
-            try:
-                self.flush()
-            except Exception as exc:
-                log.error("Background flush tick failed: %s", exc)
-
-    def stop(self) -> None:
-        """Signal the background thread to exit and force a final flush.
-
-        Safe to call even if start_background_flush() was never invoked.
-        Always performs a final self.flush() so callers get SIDE-006-style
-        shutdown semantics without having to call flush() separately.
-        """
-        self._stop_event.set()
-        thread = self._flush_thread
-        if thread is not None and thread.is_alive():
-            thread.join(timeout=2.0)
-        self.flush()

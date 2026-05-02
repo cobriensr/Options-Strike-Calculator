@@ -24,12 +24,16 @@ with an ``action != 'T'`` filter.
 No compute layer lives here — OFI, spread widening, book pressure, and
 any derived signals are Phase 2b concerns.
 
-Mirrors the structure of ``trade_processor.py``: in-memory buffers with
-batch flush at ``BATCH_SIZE``, explicit ``flush()`` on shutdown. Unlike
-the earlier draft, the DB write runs OUTSIDE the critical section — we
-swap the buffer under the lock, then release before issuing the network
-round trip — so high-volume callbacks don't serialize behind a single
-Neon query.
+Internally each TBBO record contributes to TWO independent buffers (one
+for top-of-book rows, one for trade ticks). Each buffer is owned by a
+separate :class:`BatchedWriter` instance, so the two batch-insert round
+trips run on their own ``page_size=500`` cadences and the lock-then-
+release-before-IO invariant is shared with ``trade_processor``.
+
+Unlike ``trade_processor``, ``quote_processor`` does NOT use a
+time-based background flush. TBBO volume reliably hits ``BATCH_SIZE``
+in seconds during active sessions; size + shutdown flushes are
+sufficient and avoid an unnecessary daemon thread.
 """
 
 from __future__ import annotations
@@ -40,6 +44,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
+from batched_writer import BatchedWriter
 from db import batch_insert_top_of_book, batch_insert_trade_ticks
 from logger_setup import log
 from sentry_setup import capture_exception
@@ -222,19 +227,69 @@ def _parse_trade_tick(symbol: str, record: Any) -> TradeTickRow | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Inner BatchedWriter subclasses — one per buffer. These exist only as
+# the DB-write specializations of the shared base; QuoteProcessor below
+# composes them rather than inheriting, since one TBBO record produces
+# rows in both buffers and a single BatchedWriter[T] cannot carry two
+# distinct row types.
+# ---------------------------------------------------------------------------
+
+
+class _TopOfBookWriter(BatchedWriter[TopOfBookRow]):
+    def __init__(self) -> None:
+        super().__init__(batch_size=BATCH_SIZE, thread_name="quote-tob-flush")
+
+    def _write(self, rows: list[TopOfBookRow]) -> None:
+        tuples = [(r.symbol, r.ts, r.bid, r.bid_size, r.ask, r.ask_size) for r in rows]
+        try:
+            batch_insert_top_of_book(tuples)
+        except Exception as exc:
+            log.error("Failed to batch insert top-of-book: %s", exc)
+            capture_exception(exc, context={"rows": len(tuples)})
+
+
+class _TradeTickWriter(BatchedWriter[TradeTickRow]):
+    def __init__(self) -> None:
+        super().__init__(batch_size=BATCH_SIZE, thread_name="quote-trade-flush")
+
+    def _write(self, rows: list[TradeTickRow]) -> None:
+        tuples = [(r.symbol, r.ts, r.price, r.size, r.aggressor_side) for r in rows]
+        try:
+            batch_insert_trade_ticks(tuples)
+        except Exception as exc:
+            log.error("Failed to batch insert trade ticks: %s", exc)
+            capture_exception(exc, context={"rows": len(tuples)})
+
+
 class QuoteProcessor:
     """Accumulates ES TBBO events and batches DB writes.
 
     Each TBBO record produces one top-of-book row AND one trade tick row.
-    Two separate in-memory buffers are maintained so the independent
-    batch-insert round trips to Neon can run on their own page_size-500
-    cadences.
+    Two separate :class:`BatchedWriter` instances are composed so the
+    independent batch-insert round trips to Neon can run on their own
+    ``page_size=500`` cadences. Both inherit the lock-then-release-
+    before-IO discipline from the shared base.
+
+    No background flush thread — TBBO volume reliably hits BATCH_SIZE
+    in seconds. Size-based auto-flush + an explicit :meth:`flush` on
+    shutdown is sufficient.
     """
 
     def __init__(self) -> None:
-        self._tob_buffer: list[TopOfBookRow] = []
-        self._trade_buffer: list[TradeTickRow] = []
-        self._lock = threading.Lock()
+        self._tob_writer = _TopOfBookWriter()
+        self._trade_writer = _TradeTickWriter()
+
+    @property
+    def _lock(self) -> threading.Lock:
+        """Compatibility shim for tests that observed the legacy
+        single-lock layout. Returns the TOB writer's lock; both inner
+        writers maintain the lock-then-release-before-IO invariant
+        independently, so this property is for assertion convenience
+        only — there is no longer a single shared lock and code outside
+        of test introspection should not depend on this exposing one.
+        """
+        return self._tob_writer._lock
 
     def process_tbbo(self, symbol: str, record: Any) -> None:
         """Parse a Databento TBBO record and buffer both the top-of-book
@@ -244,74 +299,24 @@ class QuoteProcessor:
         ``levels[0]``, so one record contributes to both buffers. A
         malformed record skips the affected row(s) rather than crashing —
         one bad tick must not kill the stream.
+
+        Both writers are independent: ``add()`` on each handles its own
+        lock-swap-release-write cycle, so a slow Neon round trip on one
+        buffer never blocks ingestion on the other.
         """
         tob = _parse_top_of_book(symbol, record)
         trade = _parse_trade_tick(symbol, record)
 
-        # Collect any buffers that have crossed BATCH_SIZE under the
-        # lock, then release before doing the DB round-trip. Holding the
-        # lock across ``execute_values`` would serialize every incoming
-        # callback behind one Neon query — untenable at TBBO volumes.
-        tob_to_flush: list[TopOfBookRow] = []
-        trades_to_flush: list[TradeTickRow] = []
-        with self._lock:
-            if tob is not None:
-                self._tob_buffer.append(tob)
-                if len(self._tob_buffer) >= BATCH_SIZE:
-                    tob_to_flush = self._tob_buffer
-                    self._tob_buffer = []
-            if trade is not None:
-                self._trade_buffer.append(trade)
-                if len(self._trade_buffer) >= BATCH_SIZE:
-                    trades_to_flush = self._trade_buffer
-                    self._trade_buffer = []
-
-        if tob_to_flush:
-            _write_top_of_book(tob_to_flush)
-        if trades_to_flush:
-            _write_trade_ticks(trades_to_flush)
+        if tob is not None:
+            self._tob_writer.add(tob)
+        if trade is not None:
+            self._trade_writer.add(trade)
 
     def flush(self) -> None:
         """Force flush both buffers. Called on shutdown.
 
-        Swaps each buffer out under the lock, then writes outside it
-        (same pattern as ``process_tbbo``).
+        Each inner BatchedWriter swaps its own buffer under its own
+        lock, then writes outside it (same pattern as ``process_tbbo``).
         """
-        with self._lock:
-            tob_to_flush = self._tob_buffer
-            trades_to_flush = self._trade_buffer
-            self._tob_buffer = []
-            self._trade_buffer = []
-
-        if tob_to_flush:
-            _write_top_of_book(tob_to_flush)
-        if trades_to_flush:
-            _write_trade_ticks(trades_to_flush)
-
-
-# ---------------------------------------------------------------------------
-# Write helpers — deliberately module-level so ``process_tbbo`` / ``flush``
-# can call them OUTSIDE ``self._lock`` without any accidental re-entrancy
-# risk. If a future subclass wants to override DB routing it can patch
-# ``quote_processor.batch_insert_*`` the same way tests do.
-# ---------------------------------------------------------------------------
-
-
-def _write_top_of_book(rows: list[TopOfBookRow]) -> None:
-    """Materialize TopOfBookRow dataclasses into tuples and batch-insert."""
-    tuples = [(r.symbol, r.ts, r.bid, r.bid_size, r.ask, r.ask_size) for r in rows]
-    try:
-        batch_insert_top_of_book(tuples)
-    except Exception as exc:
-        log.error("Failed to batch insert top-of-book: %s", exc)
-        capture_exception(exc, context={"rows": len(tuples)})
-
-
-def _write_trade_ticks(rows: list[TradeTickRow]) -> None:
-    """Materialize TradeTickRow dataclasses into tuples and batch-insert."""
-    tuples = [(r.symbol, r.ts, r.price, r.size, r.aggressor_side) for r in rows]
-    try:
-        batch_insert_trade_ticks(tuples)
-    except Exception as exc:
-        log.error("Failed to batch insert trade ticks: %s", exc)
-        capture_exception(exc, context={"rows": len(tuples)})
+        self._tob_writer.flush()
+        self._trade_writer.flush()
