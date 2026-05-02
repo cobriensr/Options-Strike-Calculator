@@ -17,11 +17,57 @@
 import * as Sentry from '@sentry/node';
 import { loadConfig } from './config.js';
 import { makeLogger } from './logger.js';
-import { createScheduler } from './scheduler.js';
+import { createScheduler, type Scheduler } from './scheduler.js';
 import { runCapture } from './capture.js';
 import { fetchGexLandscape } from './gex.js';
 import { postTraceLiveAnalyze } from './api-client.js';
-import { startHealthServer } from './health-server.js';
+import { startHealthServer, type HealthServer } from './health-server.js';
+
+/**
+ * Cleanup contract used by `fatalExit` and `gracefulShutdown`. Exported
+ * for unit-testability; the real wiring is `{ scheduler, health, sentry }`
+ * with `sentry` bound to `@sentry/node` namespace methods.
+ */
+export interface ShutdownDeps {
+  scheduler: Pick<Scheduler, 'stop'>;
+  health: Pick<HealthServer, 'close'>;
+  sentry: { close: (timeout?: number) => Promise<boolean> };
+  exit: (code: number) => void;
+}
+
+/**
+ * Process-level safety net. Must clean up in this order:
+ *   1. scheduler.stop()  — clear interval, no new ticks
+ *   2. health.close()    — stop accepting HTTP requests
+ *   3. sentry.close()    — drain queued events (2s budget)
+ *   4. exit(1)
+ *
+ * Errors from health.close() are swallowed so Sentry drain still runs.
+ * Returns the cleanup promise so tests can await ordering assertions.
+ */
+export function fatalExit(deps: ShutdownDeps): Promise<void> {
+  deps.scheduler.stop();
+  return deps.health
+    .close()
+    .catch(() => undefined)
+    .then(() => deps.sentry.close(2000))
+    .then(() => undefined)
+    .finally(() => deps.exit(1));
+}
+
+/**
+ * Graceful shutdown for SIGTERM / SIGINT. Same ordering as `fatalExit`
+ * but exits with code 0.
+ */
+export function gracefulShutdown(deps: ShutdownDeps): Promise<void> {
+  deps.scheduler.stop();
+  return deps.health
+    .close()
+    .catch(() => undefined)
+    .then(() => deps.sentry.close(2000))
+    .then(() => undefined)
+    .finally(() => deps.exit(0));
+}
 
 async function bootstrap(): Promise<void> {
   const config = loadConfig();
@@ -114,30 +160,33 @@ async function bootstrap(): Promise<void> {
   // (Railway injects this; defaults to 8080 locally).
   const health = startHealthServer({ scheduler, logger });
 
+  const shutdownDeps: ShutdownDeps = {
+    scheduler,
+    health,
+    sentry: { close: (timeout) => Sentry.close(timeout) },
+    exit: (code) => process.exit(code),
+  };
+
   // Graceful shutdown on SIGTERM / SIGINT — Railway sends SIGTERM with
   // a grace period before SIGKILL.
-  const shutdown = (signal: string): void => {
-    logger.info({ signal }, 'Received shutdown signal');
-    scheduler.stop();
-    void health.close().finally(() => {
-      void Sentry.close(2000).then(() => {
-        process.exit(0);
-      });
-    });
-  };
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => {
+    logger.info({ signal: 'SIGTERM' }, 'Received shutdown signal');
+    void gracefulShutdown(shutdownDeps);
+  });
+  process.on('SIGINT', () => {
+    logger.info({ signal: 'SIGINT' }, 'Received shutdown signal');
+    void gracefulShutdown(shutdownDeps);
+  });
 
   // Process-level safety nets — these should never fire if the per-tick
-  // try/catch is doing its job, but if they do we want a clean Sentry trail.
-  // Use Sentry.close() for proper drain (matches the graceful-shutdown path).
-  const fatalExit = (): void => {
-    void Sentry.close(2000).finally(() => process.exit(1));
-  };
+  // try/catch is doing its job, but if they do we want clean cleanup +
+  // a Sentry trail. Railway auto-restart papered over the previous shape
+  // (which only drained Sentry) but explicit cleanup is more graceful
+  // and avoids orphaned timers / sockets racing the exit.
   process.on('uncaughtException', (err) => {
     logger.fatal({ err }, 'uncaughtException');
     Sentry.captureException(err);
-    fatalExit();
+    void fatalExit(shutdownDeps);
   });
   process.on('unhandledRejection', (reason) => {
     logger.fatal({ reason }, 'unhandledRejection');
@@ -148,13 +197,25 @@ async function bootstrap(): Promise<void> {
         ? reason
         : new Error(`unhandledRejection: ${String(reason)}`),
     );
-    fatalExit();
+    void fatalExit(shutdownDeps);
   });
 }
 
-bootstrap().catch((err: unknown) => {
-  process.stderr.write(
-    `FATAL: daemon bootstrap failed — ${err instanceof Error ? err.message : String(err)}\n`,
-  );
-  process.exit(1);
-});
+// Only invoke bootstrap when this file is run directly (not when imported
+// by unit tests). The standard ESM idiom — argv[1] resolves to the module
+// path that Node was invoked with.
+const invokedDirectly =
+  import.meta.url === `file://${process.argv[1]}` ||
+  process.argv[1]?.endsWith('/daemon/src/index.ts') === true ||
+  process.argv[1]?.endsWith('/daemon/src/index.js') === true;
+
+if (invokedDirectly) {
+  try {
+    await bootstrap();
+  } catch (err: unknown) {
+    process.stderr.write(
+      `FATAL: daemon bootstrap failed — ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    process.exit(1);
+  }
+}
