@@ -22,6 +22,7 @@
  */
 
 import { getDb } from './db.js';
+import { fmtPct } from './format-helpers.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
 
 // ── Configuration ─────────────────────────────────────────────
@@ -149,11 +150,8 @@ export async function computeVixSpxDivergence(
 
 // ── Formatter ─────────────────────────────────────────────────
 
-function formatPct(v: number | null): string {
-  if (v == null) return 'N/A';
-  const sign = v >= 0 ? '+' : '';
-  return `${sign}${(v * 100).toFixed(2)}%`;
-}
+const formatPct = (v: number | null): string =>
+  fmtPct(v, { fromDecimal: true, digits: 2 });
 
 /**
  * Format the divergence result for injection into the analyze prompt.
