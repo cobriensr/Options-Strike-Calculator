@@ -21,11 +21,12 @@
  * Cache: private, s-maxage=60 (data updates every 5 min).
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+import type { VercelResponse } from '@vercel/node';
 import { z } from 'zod';
 import { getDb } from '../_lib/db.js';
-import { Sentry, metrics } from '../_lib/sentry.js';
+import { Sentry } from '../_lib/sentry.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
+import { withRequestScope } from '../_lib/request-scope.js';
 import logger from '../_lib/logger.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
 import {
@@ -125,42 +126,39 @@ async function fetchSpxForDate(tradeDate: string): Promise<number | null> {
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const done = metrics.request('/api/futures/snapshot');
+export default withRequestScope(
+  'GET',
+  '/api/futures/snapshot',
+  async (req, res, done) => {
+    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
-  if (req.method !== 'GET') {
-    done({ status: 405 });
-    return res.status(405).json({ error: 'GET only' });
-  }
+    const parsed = querySchema.safeParse(req.query);
+    if (!parsed.success) {
+      done({ status: 400 });
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(400).json({
+        error: 'Invalid query',
+        details: parsed.error.flatten(),
+      });
+    }
 
-  if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
-
-  const parsed = querySchema.safeParse(req.query);
-  if (!parsed.success) {
-    done({ status: 400 });
-    res.setHeader('Cache-Control', 'no-store');
-    return res.status(400).json({
-      error: 'Invalid query',
-      details: parsed.error.flatten(),
-    });
-  }
-
-  try {
-    if (parsed.data.at) {
-      const result = await handleHistorical(parsed.data.at, res);
+    try {
+      if (parsed.data.at) {
+        const result = await handleHistorical(parsed.data.at, res);
+        done({ status: 200 });
+        return result;
+      }
+      const result = await handleLatest(res);
       done({ status: 200 });
       return result;
+    } catch (err) {
+      done({ status: 500 });
+      Sentry.captureException(err);
+      logger.error({ err }, 'futures snapshot fetch error');
+      return res.status(500).json({ error: 'Internal error' });
     }
-    const result = await handleLatest(res);
-    done({ status: 200 });
-    return result;
-  } catch (err) {
-    done({ status: 500 });
-    Sentry.captureException(err);
-    logger.error({ err }, 'futures snapshot fetch error');
-    return res.status(500).json({ error: 'Internal error' });
-  }
-}
+  },
+);
 
 // ── Latest (default) path ───────────────────────────────────
 

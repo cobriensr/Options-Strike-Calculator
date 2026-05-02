@@ -10,7 +10,13 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { captureException: vi.fn() },
+  Sentry: {
+    captureException: vi.fn(),
+    withIsolationScope: vi.fn(
+      (fn: (scope: { setTransactionName: () => void }) => unknown) =>
+        fn({ setTransactionName: vi.fn() }),
+    ),
+  },
   metrics: { request: vi.fn(() => vi.fn()) },
 }));
 

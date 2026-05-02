@@ -32,14 +32,15 @@
  * }
  */
 
-import { Sentry, metrics } from './_lib/sentry.js';
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { Sentry } from './_lib/sentry.js';
+import type { VercelResponse } from '@vercel/node';
 import {
   schwabFetch,
   setCacheHeaders,
   isMarketOpen,
   guardOwnerOrGuestEndpoint,
 } from './_lib/api-helpers.js';
+import { withRequestScope } from './_lib/request-scope.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
 // ============================================================
@@ -211,61 +212,57 @@ function findCallForDelta(
 
 const TARGET_DELTAS = [5, 8, 10, 12, 15, 20];
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  return Sentry.withIsolationScope(async (scope) => {
-    scope.setTransactionName('GET /api/chain');
-    const done = metrics.request('/api/chain');
-    try {
-      if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
+export default withRequestScope('GET', '/api/chain', async (req, res, done) => {
+  try {
+    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
-      const today = getTodayET();
-      const strikeCount = Number(req.query.strikeCount) || 80;
+    const today = getTodayET();
+    const strikeCount = Number(req.query.strikeCount) || 80;
 
-      // Schwab uses $SPX for SPX options (SPXW weeklies for 0DTE)
-      // range=ALL to avoid missing strikes near ATM on fast-moving days
-      const result = await schwabFetch<SchwabChainResponse>(
-        `/chains?symbol=$SPX&contractType=ALL&includeUnderlyingQuote=true` +
-          `&strategy=SINGLE&range=ALL&fromDate=${today}&toDate=${today}` +
-          `&strikeCount=${strikeCount}`,
-      );
+    // Schwab uses $SPX for SPX options (SPXW weeklies for 0DTE)
+    // range=ALL to avoid missing strikes near ATM on fast-moving days
+    const result = await schwabFetch<SchwabChainResponse>(
+      `/chains?symbol=$SPX&contractType=ALL&includeUnderlyingQuote=true` +
+        `&strategy=SINGLE&range=ALL&fromDate=${today}&toDate=${today}` +
+        `&strikeCount=${strikeCount}`,
+    );
 
-      if (!result.ok) {
-        done({ status: result.status, error: 'schwab' });
-        return res.status(result.status).json({ error: result.error });
-      }
-
-      const chain = result.data;
-      const rawPuts = flattenMap(chain.putExpDateMap ?? {});
-      const rawCalls = flattenMap(chain.callExpDateMap ?? {});
-
-      if (rawPuts.length === 0 && rawCalls.length === 0) {
-        done({ status: 200 });
-        return res.status(200).json({
-          error:
-            'No 0DTE contracts found. Market may be closed or chain not yet available.',
-          underlying: chain.underlying
-            ? {
-                symbol: chain.underlying.symbol,
-                price: chain.underlying.last,
-                prevClose: chain.underlying.close,
-              }
-            : null,
-          puts: [],
-          calls: [],
-          targetDeltas: {},
-          asOf: new Date().toISOString(),
-        });
-      }
-
-      done({ status: 200 });
-      return buildResponse(res, chain, rawPuts, rawCalls, today);
-    } catch (error) {
-      done({ status: 500, error: 'unhandled' });
-      Sentry.captureException(error);
-      res.status(500).json({ error: 'Internal server error' });
+    if (!result.ok) {
+      done({ status: result.status, error: 'schwab' });
+      return res.status(result.status).json({ error: result.error });
     }
-  });
-}
+
+    const chain = result.data;
+    const rawPuts = flattenMap(chain.putExpDateMap ?? {});
+    const rawCalls = flattenMap(chain.callExpDateMap ?? {});
+
+    if (rawPuts.length === 0 && rawCalls.length === 0) {
+      done({ status: 200 });
+      return res.status(200).json({
+        error:
+          'No 0DTE contracts found. Market may be closed or chain not yet available.',
+        underlying: chain.underlying
+          ? {
+              symbol: chain.underlying.symbol,
+              price: chain.underlying.last,
+              prevClose: chain.underlying.close,
+            }
+          : null,
+        puts: [],
+        calls: [],
+        targetDeltas: {},
+        asOf: new Date().toISOString(),
+      });
+    }
+
+    done({ status: 200 });
+    return buildResponse(res, chain, rawPuts, rawCalls, today);
+  } catch (error) {
+    done({ status: 500, error: 'unhandled' });
+    Sentry.captureException(error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 /**
  * Calculates max pain strike and pin risk metrics.

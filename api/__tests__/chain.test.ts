@@ -118,7 +118,7 @@ describe('GET /api/chain', () => {
       },
     );
     const res = mockResponse();
-    await handler(mockRequest(), res);
+    await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(401);
   });
 
@@ -131,7 +131,7 @@ describe('GET /api/chain', () => {
     });
 
     const res = mockResponse();
-    await handler(mockRequest(), res);
+    await handler(mockRequest({ method: 'GET' }), res);
 
     expect(res._status).toBe(401);
     expect(res._json).toEqual({ error: 'Token expired' });
@@ -153,7 +153,7 @@ describe('GET /api/chain', () => {
     });
 
     const res = mockResponse();
-    await handler(mockRequest(), res);
+    await handler(mockRequest({ method: 'GET' }), res);
 
     expect(res._status).toBe(200);
     const json = res._json as Record<string, unknown>;
@@ -214,7 +214,7 @@ describe('GET /api/chain', () => {
     });
 
     const res = mockResponse();
-    await handler(mockRequest(), res);
+    await handler(mockRequest({ method: 'GET' }), res);
 
     expect(res._status).toBe(200);
     const json = res._json as Record<string, unknown>;
@@ -288,7 +288,7 @@ describe('GET /api/chain', () => {
     });
 
     const res = mockResponse();
-    await handler(mockRequest(), res);
+    await handler(mockRequest({ method: 'GET' }), res);
 
     expect(res._status).toBe(200);
     const json = res._json as Record<string, unknown>;
@@ -316,7 +316,7 @@ describe('GET /api/chain', () => {
       ),
     });
 
-    const req = mockRequest();
+    const req = mockRequest({ method: 'GET' });
     req.query = { strikeCount: '60' };
     const res = mockResponse();
     await handler(req, res);
@@ -343,7 +343,7 @@ describe('GET /api/chain', () => {
     });
 
     const res = mockResponse();
-    await handler(mockRequest(), res);
+    await handler(mockRequest({ method: 'GET' }), res);
 
     expect(res._status).toBe(200);
     const json = res._json as Record<string, unknown>;
@@ -369,7 +369,7 @@ describe('GET /api/chain', () => {
     });
 
     const res = mockResponse();
-    await handler(mockRequest(), res);
+    await handler(mockRequest({ method: 'GET' }), res);
 
     expect(res._status).toBe(200);
     const json = res._json as Record<string, unknown>;
@@ -405,7 +405,7 @@ describe('GET /api/chain', () => {
     });
 
     const res = mockResponse();
-    await handler(mockRequest(), res);
+    await handler(mockRequest({ method: 'GET' }), res);
 
     expect(res._status).toBe(200);
     const json = res._json as Record<string, unknown>;
@@ -431,7 +431,7 @@ describe('GET /api/chain', () => {
     });
 
     const res = mockResponse();
-    await handler(mockRequest(), res);
+    await handler(mockRequest({ method: 'GET' }), res);
 
     expect(res._status).toBe(200);
     const json = res._json as Record<string, unknown>;
@@ -465,7 +465,7 @@ describe('GET /api/chain', () => {
     });
 
     const res = mockResponse();
-    await handler(mockRequest(), res);
+    await handler(mockRequest({ method: 'GET' }), res);
 
     expect(res._status).toBe(200);
     const json = res._json as Record<string, unknown>;
@@ -492,7 +492,7 @@ describe('GET /api/chain', () => {
     });
 
     const res = mockResponse();
-    await handler(mockRequest(), res);
+    await handler(mockRequest({ method: 'GET' }), res);
 
     expect(res._status).toBe(200);
     const json = res._json as Record<string, unknown>;
@@ -514,7 +514,7 @@ describe('GET /api/chain', () => {
 
     const { setCacheHeaders } = await import('../_lib/api-helpers.js');
     const res = mockResponse();
-    await handler(mockRequest(), res);
+    await handler(mockRequest({ method: 'GET' }), res);
 
     expect(res._status).toBe(200);
     expect(vi.mocked(setCacheHeaders)).toHaveBeenCalledWith(res, 300, 60);
@@ -532,7 +532,7 @@ describe('GET /api/chain', () => {
     });
 
     const res = mockResponse();
-    await handler(mockRequest(), res);
+    await handler(mockRequest({ method: 'GET' }), res);
 
     const url = vi.mocked(schwabFetch).mock.calls[0]![0] as string;
     expect(url).toContain('strikeCount=80');
