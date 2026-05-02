@@ -32,6 +32,20 @@ import { reportCronRun } from './axiom.js';
  * Context handed to the cron logic. `today` and `apiKey` come from
  * `cronGuard()`; `startTimeMs` is captured at wrapper entry; `logger` is
  * the shared pino logger so call sites can rely on a single import.
+ *
+ * `req` is the raw VercelRequest. It is intentionally only populated
+ * when the handler opts in via `passReq: true` so the default surface
+ * stays narrow — most crons should derive everything from `today` /
+ * `apiKey` and never read query params. Handlers that DO need it (e.g.
+ * `?backfill=true`, `?date=YYYY-MM-DD`) opt in explicitly. The field is
+ * typed always-optional rather than via a generic
+ * `CronContext<P extends boolean>` because (1) the codebase's
+ * `exactOptionalPropertyTypes` policy treats `foo?: T` as
+ * "absent-or-undefined" coalesced and (2) a generic would propagate
+ * through every handler signature, exported type, and test — high TS
+ * churn for marginal type-safety gain. The pattern mirrors how
+ * `apiKey` handles `requireApiKey: false` (always typed string,
+ * empty when absent).
  */
 export interface CronContext {
   /** ET-localized YYYY-MM-DD date string. */
@@ -42,6 +56,12 @@ export interface CronContext {
   startTimeMs: number;
   /** Shared pino logger (re-exported so handlers don't need a separate import). */
   logger: typeof logger;
+  /**
+   * Raw VercelRequest. Populated only when `passReq: true` is set on
+   * the wrapper options. Handlers that did not opt in will see
+   * `undefined` here.
+   */
+  req?: VercelRequest;
 }
 
 /**
@@ -107,6 +127,25 @@ export interface WithCronInstrumentationOptions {
    * UW is down, fetch-outcomes when the source feed is unreachable).
    */
   errorStatus?: (err: unknown) => number;
+
+  /**
+   * Expose the raw VercelRequest on `CronContext.req`. Default: false.
+   *
+   * Opt-in escape hatch for the small number of handlers that need to
+   * read query params or headers from inside their business logic
+   * (e.g. `?backfill=true`, `?date=YYYY-MM-DD`). CronContext
+   * intentionally hides `req` so handlers don't accidentally couple to
+   * the Vercel request shape — passing `passReq: true` is the
+   * documented way to break that invariant when the alternative would
+   * be a module-scoped `currentReq` ref + dispatcher (which works
+   * today only because JS is single-threaded; any future `await`
+   * before the read silently breaks it).
+   *
+   * Prefer `dynamicTimeCheck` for time-gate decisions — `passReq` is
+   * for crons whose date-list selection or statement_timeout tuning
+   * also depends on the request.
+   */
+  passReq?: boolean;
 
   /**
    * Dynamic time-gate that reads the request. Default behavior: the
@@ -178,6 +217,7 @@ export function withCronInstrumentation(
       apiKey: guard.apiKey,
       startTimeMs,
       logger,
+      ...(opts.passReq ? { req } : {}),
     };
 
     // Composed with cronGuard's static gate. cronGuard runs first; only

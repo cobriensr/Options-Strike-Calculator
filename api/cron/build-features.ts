@@ -179,22 +179,18 @@ async function buildFeaturesForDate(
 
 // Wrapped main cron.
 //
-// `currentReq` is set by the dispatcher below before each invocation
-// and cleared in the finally block. The wrapped handler reads it to
-// pull `?backfill=` and `?date=` query params - CronContext
-// intentionally hides the raw request, but build-features needs both
-// for date-list selection AND statement_timeout tuning. Cron
-// invocations are serial (one Vercel sandbox = one request at a time),
-// so the module-scoped ref is safe even though the surface looks like
-// shared state.
-
-let currentReq: VercelRequest | null = null;
+// build-features needs the raw request to read `?backfill=` and
+// `?date=` for date-list selection AND statement_timeout tuning, so it
+// opts into the wrapper's `passReq: true` escape hatch. CronContext
+// intentionally hides `req` by default; this is the documented way to
+// surface it without a module-scoped ref + dispatcher (which worked
+// today only because JS is single-threaded — any future `await`
+// between assignment and read would silently break it).
 
 const wrappedCron = withCronInstrumentation(
   'build-features',
   async (ctx): Promise<CronResult> => {
-    const { logger: log } = ctx;
-    const req = currentReq;
+    const { logger: log, req } = ctx;
     const backfill = req?.query.backfill === 'true';
     const dateParamRaw = req?.query.date;
     const dateParam =
@@ -306,6 +302,7 @@ const wrappedCron = withCronInstrumentation(
   },
   {
     requireApiKey: false,
+    passReq: true,
     // Disable the default isMarketHours() gate; isPostClose owns the
     // window, and ?backfill=true / ?date= override it.
     marketHours: false,
@@ -323,11 +320,13 @@ const wrappedCron = withCronInstrumentation(
 );
 
 // Top-level dispatch.
+//
+// The 400 path for a malformed `?date=` parameter must reject BEFORE
+// any auth/time gate so the test contract { error: 'Invalid date
+// param, ...' } is preserved verbatim. Everything else delegates to
+// the instrumented wrapper.
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // 400 path - bad ?date= parameter must reject before any auth / time
-  // gate so the test contract { error: 'Invalid date param, ...' } is
-  // preserved verbatim.
   const dateParamRaw = req.query.date;
   const dateParam = typeof dateParamRaw === 'string' ? dateParamRaw : undefined;
   if (dateParam != null && !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
@@ -335,11 +334,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .status(400)
       .json({ error: 'Invalid date param, expected YYYY-MM-DD' });
   }
-
-  currentReq = req;
-  try {
-    await wrappedCron(req, res);
-  } finally {
-    currentReq = null;
-  }
+  await wrappedCron(req, res);
 }

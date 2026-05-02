@@ -338,6 +338,40 @@ describe('withCronInstrumentation', () => {
     );
   });
 
+  it('passReq: true exposes the raw VercelRequest on ctx.req', async () => {
+    vi.mocked(cronGuard).mockReturnValue(guardOk);
+    const handler = vi.fn().mockResolvedValue({ status: 'success' as const });
+    const wrapped = withCronInstrumentation('passreq-job', handler, {
+      passReq: true,
+    });
+
+    const req = mockRequest({
+      query: { backfill: 'true', date: '2026-04-07' },
+    });
+    const res = mockResponse();
+    await wrapped(req, res);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    const ctx = vi.mocked(handler).mock.calls[0]![0];
+    // The same request object cronGuard saw is forwarded — handlers can
+    // read query params, headers, etc. without a module-scoped ref.
+    expect(ctx.req).toBe(req);
+    expect(ctx.req?.query).toEqual({ backfill: 'true', date: '2026-04-07' });
+  });
+
+  it('passReq: omitted leaves ctx.req undefined (default surface stays narrow)', async () => {
+    vi.mocked(cronGuard).mockReturnValue(guardOk);
+    const handler = vi.fn().mockResolvedValue({ status: 'success' as const });
+    const wrapped = withCronInstrumentation('no-passreq-job', handler);
+
+    const res = mockResponse();
+    await wrapped(mockRequest({ query: { backfill: 'true' } }), res);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    const ctx = vi.mocked(handler).mock.calls[0]![0];
+    expect(ctx.req).toBeUndefined();
+  });
+
   it('dynamicTimeCheck: receives the request so handlers can read query params', async () => {
     vi.mocked(cronGuard).mockReturnValue(guardOk);
     const handler = vi.fn().mockResolvedValue({ status: 'success' as const });
