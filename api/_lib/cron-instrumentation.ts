@@ -85,6 +85,47 @@ export interface WithCronInstrumentationOptions {
   timeCheck?: () => boolean;
   /** Require `UW_API_KEY`. Default: true. */
   requireApiKey?: boolean;
+
+  /**
+   * Custom error response payload. When present, called on the error path
+   * to produce the JSON body sent to the client (status 500 default,
+   * unless errorStatus is also provided). The default behavior emits
+   * `{ job, error: 'Internal error' }` — pass this when the cron's
+   * existing test contract pins a specific error key (e.g. fetch-flow's
+   * `{ error: 'All sources failed' }`).
+   *
+   * Caller can include or exclude `job` themselves. If the callable
+   * returns `{}` (empty object), the legacy default body is sent. The
+   * `error` message is always included in the Axiom metadata regardless
+   * of what this returns, so observability is preserved.
+   */
+  errorPayload?: (err: unknown, ctx: CronContext) => Record<string, unknown>;
+
+  /**
+   * Custom error response status code. Default 500. Pass this when the
+   * cron returns 502 for upstream-API failure (e.g. fetch-darkpool when
+   * UW is down, fetch-outcomes when the source feed is unreachable).
+   */
+  errorStatus?: (err: unknown) => number;
+
+  /**
+   * Dynamic time-gate that reads the request. Default behavior: the
+   * static `timeCheck` option from cronGuard is used. When
+   * `dynamicTimeCheck` is provided, the wrapper passes `req` to the
+   * predicate so handlers can read query params (e.g. `?force=true` to
+   * bypass a market-hours gate, `?backfill=true` to enable a historical
+   * mode).
+   *
+   * Returns true → run the handler.
+   * Returns false → skip with status 200 + `{ skipped: true, reason }`.
+   *
+   * Note: this composes WITH cronGuard's static timeCheck. cronGuard
+   * runs first; if it allows the run, then `dynamicTimeCheck` is
+   * evaluated. If `dynamicTimeCheck` returns `{ run: false }`, the
+   * wrapper sends the skipped response and reports `status: 'skipped'`
+   * to Axiom with the supplied `reason`.
+   */
+  dynamicTimeCheck?: (req: VercelRequest) => { run: boolean; reason: string };
 }
 
 /**
@@ -111,7 +152,21 @@ export function withCronInstrumentation(
     req: VercelRequest,
     res: VercelResponse,
   ): Promise<void> {
-    const guard = cronGuard(req, res, opts);
+    // Forward only cronGuard's recognized options — narrows the public
+    // option surface and keeps wrapper-only options (errorPayload,
+    // errorStatus, dynamicTimeCheck) out of the guard call. Build the
+    // forwarded object incrementally so undefined keys don't show up in
+    // call assertions.
+    const guardOpts: {
+      marketHours?: boolean;
+      timeCheck?: () => boolean;
+      requireApiKey?: boolean;
+    } = {};
+    if (opts.marketHours !== undefined) guardOpts.marketHours = opts.marketHours;
+    if (opts.timeCheck !== undefined) guardOpts.timeCheck = opts.timeCheck;
+    if (opts.requireApiKey !== undefined)
+      guardOpts.requireApiKey = opts.requireApiKey;
+    const guard = cronGuard(req, res, guardOpts);
     if (!guard) return;
 
     const startTimeMs = Date.now();
@@ -123,6 +178,33 @@ export function withCronInstrumentation(
       startTimeMs,
       logger,
     };
+
+    // Composed with cronGuard's static gate. cronGuard runs first; only
+    // if it allows the run do we evaluate the request-aware predicate.
+    if (opts.dynamicTimeCheck) {
+      const dyn = opts.dynamicTimeCheck(req);
+      if (!dyn.run) {
+        const durationMs = Date.now() - startTimeMs;
+        try {
+          await reportCronRun(jobName, {
+            status: 'skipped',
+            message: dyn.reason,
+            durationMs,
+          });
+        } catch {
+          /* swallowed: observability path must never crash the response */
+        }
+        res.status(200).json({
+          job: jobName,
+          status: 'skipped',
+          message: dyn.reason,
+          skipped: true,
+          reason: dyn.reason,
+          durationMs,
+        });
+        return;
+      }
+    }
 
     try {
       const result = await handler(ctx);
@@ -156,8 +238,8 @@ export function withCronInstrumentation(
       // Backward-compat alias: pre-wrapper handlers wrote `error: <msg>` to
       // Axiom metadata. We emit BOTH `error` and `message` so existing
       // dashboards keyed on either field keep working post-adoption.
+      const errorMessage = err instanceof Error ? err.message : String(err);
       try {
-        const errorMessage = err instanceof Error ? err.message : String(err);
         await reportCronRun(jobName, {
           status: 'error',
           message: errorMessage,
@@ -168,7 +250,17 @@ export function withCronInstrumentation(
         /* swallowed: observability path must never crash the response */
       }
 
-      res.status(500).json({ job: jobName, error: 'Internal error' });
+      const status = opts.errorStatus ? opts.errorStatus(err) : 500;
+      const customBody = opts.errorPayload
+        ? opts.errorPayload(err, ctx)
+        : null;
+      // Empty-object return is treated as "no override" so callers can
+      // gate the override on err.kind without falling out of the API.
+      const body =
+        customBody && Object.keys(customBody).length > 0
+          ? customBody
+          : { job: jobName, error: 'Internal error' };
+      res.status(status).json(body);
     }
   };
 }

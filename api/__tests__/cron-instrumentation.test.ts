@@ -204,4 +204,167 @@ describe('withCronInstrumentation', () => {
       'number',
     );
   });
+
+  // ── Wave 2/3 enabler extensions ─────────────────────────────
+
+  it('errorPayload: handler-customized 500 body replaces the default', async () => {
+    vi.mocked(cronGuard).mockReturnValue(guardOk);
+    const handler = vi.fn().mockRejectedValue(new Error('upstream offline'));
+    const wrapped = withCronInstrumentation('payload-job', handler, {
+      errorPayload: (err) => ({
+        error: 'All sources failed',
+        detail: err instanceof Error ? err.message : String(err),
+      }),
+    });
+
+    const res = mockResponse();
+    await wrapped(mockRequest(), res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({
+      error: 'All sources failed',
+      detail: 'upstream offline',
+    });
+    // Axiom side keeps the legacy `error` field even when the response
+    // body is overridden — observability is never sacrificed for a body
+    // shape change.
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'payload-job',
+      expect.objectContaining({
+        status: 'error',
+        message: 'upstream offline',
+        error: 'upstream offline',
+      }),
+    );
+  });
+
+  it('errorPayload: empty-object return falls back to the legacy default', async () => {
+    vi.mocked(cronGuard).mockReturnValue(guardOk);
+    const handler = vi.fn().mockRejectedValue(new Error('bad input'));
+    const wrapped = withCronInstrumentation('fallback-job', handler, {
+      errorPayload: () => ({}),
+    });
+
+    const res = mockResponse();
+    await wrapped(mockRequest(), res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({
+      job: 'fallback-job',
+      error: 'Internal error',
+    });
+  });
+
+  it('errorStatus: returns 502 instead of the default 500', async () => {
+    vi.mocked(cronGuard).mockReturnValue(guardOk);
+    const handler = vi.fn().mockRejectedValue(new Error('upstream offline'));
+    const wrapped = withCronInstrumentation('upstream-job', handler, {
+      errorStatus: () => 502,
+    });
+
+    const res = mockResponse();
+    await wrapped(mockRequest(), res);
+
+    expect(res._status).toBe(502);
+    expect(res._json).toEqual({
+      job: 'upstream-job',
+      error: 'Internal error',
+    });
+  });
+
+  it('errorPayload + errorStatus: both overrides apply together', async () => {
+    vi.mocked(cronGuard).mockReturnValue(guardOk);
+    const handler = vi.fn().mockRejectedValue(new Error('UW down'));
+    const wrapped = withCronInstrumentation('combo-job', handler, {
+      errorStatus: () => 502,
+      errorPayload: (err) => ({
+        job: 'combo-job',
+        error: 'UW API error',
+        reason: err instanceof Error ? err.message : String(err),
+      }),
+    });
+
+    const res = mockResponse();
+    await wrapped(mockRequest(), res);
+
+    expect(res._status).toBe(502);
+    expect(res._json).toEqual({
+      job: 'combo-job',
+      error: 'UW API error',
+      reason: 'UW down',
+    });
+  });
+
+  it('dynamicTimeCheck: { run: true } runs the handler normally', async () => {
+    vi.mocked(cronGuard).mockReturnValue(guardOk);
+    const handler = vi.fn().mockResolvedValue({ status: 'success' as const });
+    const wrapped = withCronInstrumentation('dyn-ok-job', handler, {
+      dynamicTimeCheck: () => ({ run: true, reason: 'force=true' }),
+    });
+
+    const res = mockResponse();
+    await wrapped(mockRequest(), res);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(res._status).toBe(200);
+    expect((res._json as { status: string }).status).toBe('success');
+  });
+
+  it('dynamicTimeCheck: { run: false } skips with 200 + structured body', async () => {
+    vi.mocked(cronGuard).mockReturnValue(guardOk);
+    const handler = vi.fn();
+    const wrapped = withCronInstrumentation('dyn-skip-job', handler, {
+      dynamicTimeCheck: () => ({ run: false, reason: 'force not set' }),
+    });
+
+    const res = mockResponse();
+    await wrapped(mockRequest(), res);
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      job: 'dyn-skip-job',
+      status: 'skipped',
+      message: 'force not set',
+      skipped: true,
+      reason: 'force not set',
+    });
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'dyn-skip-job',
+      expect.objectContaining({
+        status: 'skipped',
+        message: 'force not set',
+      }),
+    );
+  });
+
+  it('dynamicTimeCheck: receives the request so handlers can read query params', async () => {
+    vi.mocked(cronGuard).mockReturnValue(guardOk);
+    const handler = vi.fn().mockResolvedValue({ status: 'success' as const });
+    const dynamicTimeCheck = vi.fn(
+      (req: { query?: Record<string, string | undefined> }) => ({
+        run: req.query?.force === 'true',
+        reason: 'force=true required',
+      }),
+    );
+    const wrapped = withCronInstrumentation('dyn-req-job', handler, {
+      dynamicTimeCheck,
+    });
+
+    // Without ?force=true → skipped.
+    const res1 = mockResponse();
+    await wrapped(mockRequest({ query: {} }), res1);
+    expect(handler).not.toHaveBeenCalled();
+    expect((res1._json as { skipped: boolean }).skipped).toBe(true);
+    expect(dynamicTimeCheck).toHaveBeenCalledWith(
+      expect.objectContaining({ query: {} }),
+    );
+
+    // With ?force=true → runs.
+    const res2 = mockResponse();
+    await wrapped(mockRequest({ query: { force: 'true' } }), res2);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(res2._status).toBe(200);
+    expect((res2._json as { status: string }).status).toBe('success');
+  });
 });
