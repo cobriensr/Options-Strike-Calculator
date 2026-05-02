@@ -242,20 +242,20 @@ shared modules + adoption in BOTH callers per phase.
 
 Shipped phases (in commit order; 11 commits total):
 
-| Phase | Commit    | Title                                                    |
-| ----- | --------- | -------------------------------------------------------- |
-| plan  | c8d179eb  | Plan doc                                                 |
-| 1a    | 13d28290  | Holiday + early-close calendar consolidation             |
-| 1b    | f2ed3513  | GEX classification → src/utils/gex-classification        |
-| 1c    | bbcc6625  | TRACE-Live TZ probe → src/utils/trace-live-tz            |
-| 2a    | 32cdff31  | capture-script.ts split (auth/selectors/dom/diagnostics) |
-| 2b    | ac6b491c  | gex.ts fetchGexLandscape → 4 helpers + 13 tests          |
-| 2c    | 0196e300  | backfill.ts processSlot extraction + 5 tests             |
-| 2d    | d37c64fd  | sleep helper consolidation                               |
-| 3a    | ce7943df  | fatalExit cleanup ordering + gracefulShutdown symmetry   |
-| 3b    | 09ff5ea3  | health endpoint 503 on wedged daemon (30-min window)     |
-| 3c    | 574e7990  | capture.ts SIGKILL timer cleanup                         |
-| 3.fmt | 524ac15f  | prettier follow-up                                       |
+| Phase | Commit   | Title                                                    |
+| ----- | -------- | -------------------------------------------------------- |
+| plan  | c8d179eb | Plan doc                                                 |
+| 1a    | 13d28290 | Holiday + early-close calendar consolidation             |
+| 1b    | f2ed3513 | GEX classification → src/utils/gex-classification        |
+| 1c    | bbcc6625 | TRACE-Live TZ probe → src/utils/trace-live-tz            |
+| 2a    | 32cdff31 | capture-script.ts split (auth/selectors/dom/diagnostics) |
+| 2b    | ac6b491c | gex.ts fetchGexLandscape → 4 helpers + 13 tests          |
+| 2c    | 0196e300 | backfill.ts processSlot extraction + 5 tests             |
+| 2d    | d37c64fd | sleep helper consolidation                               |
+| 3a    | ce7943df | fatalExit cleanup ordering + gracefulShutdown symmetry   |
+| 3b    | 09ff5ea3 | health endpoint 503 on wedged daemon (30-min window)     |
+| 3c    | 574e7990 | capture.ts SIGKILL timer cleanup                         |
+| 3.fmt | 524ac15f | prettier follow-up                                       |
 
 **Final at HEAD:**
 

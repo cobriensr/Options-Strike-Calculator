@@ -397,7 +397,7 @@ scope or are permanently skipped per below).
 
 ### Why the remaining sites are NOT adopting `bulkUpsert`
 
-- **`fetch-darkpool`** — the table is a *running aggregate* (sums of premium/shares/count keyed by date+strike). Additive ON CONFLICT (`col = table.col + EXCLUDED.col`, `GREATEST()`) is the data model, not boilerplate. A bulk upsert with EXCLUDED-only-replace would corrupt the aggregate. Per-row INSERT with explicit ON CONFLICT is the correct pattern.
+- **`fetch-darkpool`** — the table is a _running aggregate_ (sums of premium/shares/count keyed by date+strike). Additive ON CONFLICT (`col = table.col + EXCLUDED.col`, `GREATEST()`) is the data model, not boilerplate. A bulk upsert with EXCLUDED-only-replace would corrupt the aggregate. Per-row INSERT with explicit ON CONFLICT is the correct pattern.
 - **`fetch-spx-candles-1m`, `fetch-strike-exposure`, `persistSqueezeFlags`, `insertRows`** — all rely on `RETURNING id` to distinguish actual inserts from `DO NOTHING`-skipped rows for `stored` / `skipped` / `anomaliesDetected` metrics. That's a fundamentally different return contract than "I sent N rows, got N back" — it's "I sent N rows, M were actually inserted." All four already wrap their loops in `sql.transaction((txn) => rows.map(...))` so they're already atomic.
 
 ### Why we're closing rather than extending the helper
