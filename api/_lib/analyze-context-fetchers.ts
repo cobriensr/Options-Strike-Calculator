@@ -85,7 +85,6 @@ import {
   formatMarketInternalsForClaude,
   formatMlFindingsForClaude,
   formatPriorDayFlowForClaude,
-  formatVolRealizedForClaude,
   type EconomicEventRow,
   type VolRealizedRow,
 } from './analyze-context-formatters.js';
@@ -352,21 +351,6 @@ export async function fetchVolRealizedContext(
     Sentry.captureException(error_);
     return null;
   }
-}
-
-/**
- * Convenience wrapper that fetches + formats in one call. Preserves
- * the original `Promise<string | null>` shape of the fetcher for any
- * caller that doesn't need the raw row. The orchestrator should call
- * fetchVolRealizedContext + formatVolRealizedForClaude directly when
- * threading the row into multiple consumers.
- */
-export async function fetchAndFormatVolRealizedContext(
-  analysisDate: string,
-): Promise<string | null> {
-  const row = await fetchVolRealizedContext(analysisDate);
-  if (!row) return null;
-  return formatVolRealizedForClaude(row);
 }
 
 // ── Pre-market + overnight gap ────────────────────────────────────────
