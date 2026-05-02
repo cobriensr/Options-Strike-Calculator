@@ -126,8 +126,11 @@ export async function runCapture(
         'Capture script timed out — killing',
       );
       child.kill('SIGTERM');
-      // Hard-kill backstop after 5s if SIGTERM is ignored.
-      setTimeout(() => child.kill('SIGKILL'), 5000);
+      // Hard-kill backstop after 5s if SIGTERM is ignored. Cleared on
+      // 'close' below so the timer doesn't fire harmlessly after the
+      // child has already exited (benign but cleaner).
+      const killTimer = setTimeout(() => child.kill('SIGKILL'), 5000);
+      child.once('close', () => clearTimeout(killTimer));
     }, timeoutMs);
 
     child.stdout.on('data', (chunk: Buffer) => {
