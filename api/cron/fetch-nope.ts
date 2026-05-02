@@ -10,23 +10,19 @@
  * SPY (and ES), not the index itself.
  *
  * UW returns the full day each call. We rely on primary-key UPSERT for
- * idempotence — stable (historical) minutes are DO-NOTHING, the trailing
+ * idempotence - stable (historical) minutes are DO-NOTHING, the trailing
  * minute gets DO-UPDATE as fills accumulate.
  *
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
-import {
-  cronGuard,
-  cronJitter,
-  uwFetch,
-  withRetry,
-} from '../_lib/api-helpers.js';
+import { cronJitter, uwFetch, withRetry } from '../_lib/api-helpers.js';
 import { bulkUpsert } from '../_lib/bulk-upsert.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 import { getDb } from '../_lib/db.js';
-import logger from '../_lib/logger.js';
-import { Sentry } from '../_lib/sentry.js';
 
 export interface UwNopeRow {
   timestamp: string;
@@ -44,25 +40,20 @@ export interface UwNopeRow {
 const NOPE_TICKER = 'SPY';
 const NOPE_PATH = `/stock/${NOPE_TICKER}/nope`;
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res);
-  if (!guard) return;
-  const { apiKey } = guard;
+export default withCronInstrumentation(
+  'fetch-nope',
+  async (ctx): Promise<CronResult> => {
+    const { apiKey, logger: log } = ctx;
 
-  await cronJitter();
+    await cronJitter();
 
-  const startedAt = Date.now();
-
-  try {
     const rows = await withRetry(() => uwFetch<UwNopeRow>(apiKey, NOPE_PATH));
 
     if (rows.length === 0) {
-      return res.status(200).json({
-        job: 'fetch-nope',
-        fetched: 0,
-        upserted: 0,
-        durationMs: Date.now() - startedAt,
-      });
+      return {
+        status: 'success',
+        metadata: { fetched: 0, upserted: 0 },
+      };
     }
 
     const db = getDb();
@@ -108,7 +99,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         nope_fill: r.nope_fill,
         // ingested_at is updated on every upsert (matches the legacy
         // `ingested_at = now()` SET clause) by including it in the
-        // column list — bulkUpsert defaults to EXCLUDED.col on conflict.
+        // column list - bulkUpsert defaults to EXCLUDED.col on conflict.
         ingested_at: ingestedAt,
       });
     }
@@ -139,31 +130,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const upserted = validRows.length;
 
     if (skipped > 0) {
-      logger.warn(
+      log.warn(
         { skipped, fetched: rows.length },
         'fetch-nope skipped rows with invalid stock_vol or nope',
       );
     }
 
-    logger.info(
+    log.info(
       { fetched: rows.length, upserted, skipped },
       'fetch-nope completed',
     );
 
-    return res.status(200).json({
-      job: 'fetch-nope',
-      fetched: rows.length,
-      upserted,
-      skipped,
-      durationMs: Date.now() - startedAt,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-nope');
-    Sentry.captureException(err);
-    logger.error({ err }, 'fetch-nope error');
-    return res.status(500).json({
+    return {
+      status: 'success',
+      metadata: {
+        fetched: rows.length,
+        upserted,
+        skipped,
+      },
+    };
+  },
+  {
+    // Pre-wrapper code emitted `{ job, error: <err.message> }` on 500.
+    // The wrapper default is `{ job, error: 'Internal error' }` -
+    // override to keep the original message surfaced to monitoring.
+    errorPayload: (err) => ({
       job: 'fetch-nope',
       error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
+    }),
+  },
+);
