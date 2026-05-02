@@ -12,17 +12,16 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import { Sentry } from '../_lib/sentry.js';
-import logger from '../_lib/logger.js';
 import {
-  cronGuard,
   uwFetch,
   withRetry,
   checkDataQuality,
 } from '../_lib/api-helpers.js';
-import { reportCronRun } from '../_lib/axiom.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 import {
   getETTime,
   getETDayOfWeek,
@@ -75,17 +74,11 @@ function categorizeEvent(eventName: string): string {
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const force = req.query.force === 'true';
-  const guard = cronGuard(req, res, {
-    timeCheck: force ? () => true : isPreMarket,
-  });
-  if (!guard) return;
-  const { apiKey, today: todayStr } = guard;
+export default withCronInstrumentation(
+  'fetch-economic-calendar',
+  async (ctx): Promise<CronResult> => {
+    const { apiKey, today: todayStr, logger } = ctx;
 
-  const startTime = Date.now();
-
-  try {
     const events = await withRetry(() =>
       uwFetch<CalendarEvent>(apiKey, '/market/economic-calendar'),
     );
@@ -137,26 +130,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'fetch-economic-calendar completed',
     );
 
-    const durationMs = Date.now() - startTime;
-    await reportCronRun('fetch-economic-calendar', {
-      status: 'ok',
-      date: todayStr,
-      eventsStored: todayEvents.length,
-      events: todayEvents.map((e) => e.event),
-      durationMs,
-    });
-
-    return res.status(200).json({
-      job: 'fetch-economic-calendar',
-      date: todayStr,
-      eventsStored: todayEvents.length,
-      events: todayEvents.map((e) => e.event),
-      durationMs,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-economic-calendar');
-    Sentry.captureException(err);
-    logger.error({ err }, 'fetch-economic-calendar error');
-    return res.status(500).json({ error: 'Internal error' });
-  }
-}
+    return {
+      status: 'success',
+      metadata: {
+        date: todayStr,
+        eventsStored: todayEvents.length,
+        events: todayEvents.map((e) => e.event),
+      },
+    };
+  },
+  {
+    // The static market-hours check from cronGuard would reject 9:00–9:30 ET
+    // (pre-market). Disable it; the dynamicTimeCheck below owns the gate.
+    marketHours: false,
+    // ?force=true bypasses the pre-market window for one-shot manual
+    // runs (e.g. backfilling after a failed schedule fire). Without
+    // force, only the 9:00–9:30 ET pre-market window passes.
+    dynamicTimeCheck: (req) => {
+      const force = req.query?.force === 'true';
+      if (force) return { run: true, reason: 'force=true' };
+      return {
+        run: isPreMarket(),
+        reason: 'Outside time window',
+      };
+    },
+  },
+);
