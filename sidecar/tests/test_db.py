@@ -261,3 +261,65 @@ class TestBatchInsertTradeTicks:
         db.batch_insert_trade_ticks([SAMPLE_TRADE_ROW])
         kwargs = mock_execute_values.call_args.kwargs
         assert kwargs.get("page_size") == 500
+
+
+# ---------------------------------------------------------------------------
+# _execute_values_batch helper — the shared shape lifted out of the four
+# batch_insert callers above.
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteValuesBatch:
+    """Direct coverage of the helper. The four batch_insert public
+    functions exercise it transitively, but pinning behavior here
+    makes future tweaks (page size override, additional callers) safe
+    without dragging assertions through the SQL-shape suites."""
+
+    SAMPLE_SQL = "INSERT INTO some_table (a, b) VALUES %s"
+    SAMPLE_ROW = (1, 2)
+
+    def test_empty_rows_is_noop(
+        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
+    ) -> None:
+        """The empty-rows guard is what every caller relied on; pinning
+        it as a property of the helper itself."""
+        db._execute_values_batch(self.SAMPLE_SQL, [])
+        mock_execute_values.assert_not_called()
+
+    def test_single_row_passed_through(
+        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
+    ) -> None:
+        db._execute_values_batch(self.SAMPLE_SQL, [self.SAMPLE_ROW])
+        mock_execute_values.assert_called_once()
+        sql_arg = mock_execute_values.call_args[0][1]
+        rows_arg = mock_execute_values.call_args[0][2]
+        assert sql_arg == self.SAMPLE_SQL
+        assert rows_arg == [self.SAMPLE_ROW]
+
+    def test_multi_row_passed_through(
+        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
+    ) -> None:
+        rows = [self.SAMPLE_ROW] * 7
+        db._execute_values_batch(self.SAMPLE_SQL, rows)
+        rows_arg = mock_execute_values.call_args[0][2]
+        assert len(rows_arg) == 7
+
+    def test_default_page_size_is_module_constant(
+        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
+    ) -> None:
+        """The 500-row default has been the stable value across every
+        caller since SIDE-003; pin it via the named constant so a
+        future change is deliberate."""
+        assert db._DEFAULT_BATCH_PAGE_SIZE == 500
+        db._execute_values_batch(self.SAMPLE_SQL, [self.SAMPLE_ROW])
+        kwargs = mock_execute_values.call_args.kwargs
+        assert kwargs.get("page_size") == db._DEFAULT_BATCH_PAGE_SIZE
+
+    def test_page_size_override(
+        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
+    ) -> None:
+        """Callers can override page_size when the workload calls for
+        a different chunking strategy."""
+        db._execute_values_batch(self.SAMPLE_SQL, [self.SAMPLE_ROW], page_size=100)
+        kwargs = mock_execute_values.call_args.kwargs
+        assert kwargs.get("page_size") == 100

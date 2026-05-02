@@ -10,7 +10,7 @@ import time
 from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Generator
+from typing import Any, Generator, Sequence
 
 import psycopg2
 import psycopg2.extras
@@ -30,6 +30,13 @@ DEFAULT_GETCONN_TIMEOUT_S = 10.0
 # is the early-warning signal for pool saturation before the full
 # timeout kicks in.
 SLOW_GETCONN_WARNING_MS = 1000
+
+# Default chunk size handed to ``psycopg2.extras.execute_values`` for
+# every batch insert in this module. Tuned for Neon's round-trip
+# overhead: smaller pages let RTT dominate; larger pages risk
+# proportionally larger rollbacks on a single bad row. 500 has been the
+# stable value across all four batch-insert call sites since SIDE-003.
+_DEFAULT_BATCH_PAGE_SIZE = 500
 
 
 class PoolTimeoutError(RuntimeError):
@@ -160,6 +167,34 @@ def is_db_healthy() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Batch-insert helper
+# ---------------------------------------------------------------------------
+
+
+def _execute_values_batch(
+    sql: str,
+    rows: Sequence[tuple],
+    page_size: int = _DEFAULT_BATCH_PAGE_SIZE,
+) -> None:
+    """Run ``psycopg2.extras.execute_values(sql, rows, page_size=...)``.
+
+    Centralizes the verbatim shape that every batch-insert function
+    in this module needs: empty-rows no-op guard, one ``get_conn``
+    context, ``execute_values`` with the standard page size. Lets the
+    callers stay one-liners that just supply their own SQL.
+
+    The page size defaults to :data:`_DEFAULT_BATCH_PAGE_SIZE` (500),
+    which is the value every existing call site uses; callers that
+    need a different page size can override per-call.
+    """
+    if not rows:
+        return
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            psycopg2.extras.execute_values(cur, sql, rows, page_size=page_size)
+
+
+# ---------------------------------------------------------------------------
 # Upsert operations
 # ---------------------------------------------------------------------------
 
@@ -236,22 +271,16 @@ def batch_insert_options_trades(rows: list[tuple]) -> None:
     re-sends (which happen after brief disconnects) don't accumulate
     duplicate rows. See SIDE-003 in the audit for the full story.
     """
-    if not rows:
-        return
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            psycopg2.extras.execute_values(
-                cur,
-                """
-                INSERT INTO futures_options_trades
-                    (underlying, expiry, strike, option_type, ts, price, size, side, trade_date)
-                VALUES %s
-                ON CONFLICT (ts, underlying, expiry, strike, option_type, price, size, side)
-                DO NOTHING
-                """,
-                rows,
-                page_size=500,
-            )
+    _execute_values_batch(
+        """
+        INSERT INTO futures_options_trades
+            (underlying, expiry, strike, option_type, ts, price, size, side, trade_date)
+        VALUES %s
+        ON CONFLICT (ts, underlying, expiry, strike, option_type, price, size, side)
+        DO NOTHING
+        """,
+        rows,
+    )
 
 
 def upsert_options_daily(
@@ -313,20 +342,14 @@ def batch_insert_top_of_book(rows: list[tuple]) -> None:
     meaningful; a brief Databento resend just adds a few extra rows and
     downstream Phase 2b compute jobs will aggregate.
     """
-    if not rows:
-        return
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            psycopg2.extras.execute_values(
-                cur,
-                """
-                INSERT INTO futures_top_of_book
-                    (symbol, ts, bid, bid_size, ask, ask_size)
-                VALUES %s
-                """,
-                rows,
-                page_size=500,
-            )
+    _execute_values_batch(
+        """
+        INSERT INTO futures_top_of_book
+            (symbol, ts, bid, bid_size, ask, ask_size)
+        VALUES %s
+        """,
+        rows,
+    )
 
 
 def batch_insert_trade_ticks(rows: list[tuple]) -> None:
@@ -339,20 +362,14 @@ def batch_insert_trade_ticks(rows: list[tuple]) -> None:
     quote_processor.classify_aggressor() from the pre-trade BBO in the
     TBBO record's levels[0]. See migration #72's CHECK constraint.
     """
-    if not rows:
-        return
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            psycopg2.extras.execute_values(
-                cur,
-                """
-                INSERT INTO futures_trade_ticks
-                    (symbol, ts, price, size, aggressor_side)
-                VALUES %s
-                """,
-                rows,
-                page_size=500,
-            )
+    _execute_values_batch(
+        """
+        INSERT INTO futures_trade_ticks
+            (symbol, ts, price, size, aggressor_side)
+        VALUES %s
+        """,
+        rows,
+    )
 
 
 def upsert_theta_option_eod_batch(rows: list[tuple]) -> None:
@@ -370,34 +387,28 @@ def upsert_theta_option_eod_batch(rows: list[tuple]) -> None:
     earlier partial. `created_at` deliberately stays untouched so we
     preserve the first-seen timestamp across revisions.
     """
-    if not rows:
-        return
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            psycopg2.extras.execute_values(
-                cur,
-                """
-                INSERT INTO theta_option_eod
-                    (symbol, expiration, strike, option_type, date,
-                     open, high, low, close, volume, trade_count,
-                     bid, ask, bid_size, ask_size)
-                VALUES %s
-                ON CONFLICT (symbol, expiration, strike, option_type, date)
-                DO UPDATE SET
-                    open        = EXCLUDED.open,
-                    high        = EXCLUDED.high,
-                    low         = EXCLUDED.low,
-                    close       = EXCLUDED.close,
-                    volume      = EXCLUDED.volume,
-                    trade_count = EXCLUDED.trade_count,
-                    bid         = EXCLUDED.bid,
-                    ask         = EXCLUDED.ask,
-                    bid_size    = EXCLUDED.bid_size,
-                    ask_size    = EXCLUDED.ask_size
-                """,
-                rows,
-                page_size=500,
-            )
+    _execute_values_batch(
+        """
+        INSERT INTO theta_option_eod
+            (symbol, expiration, strike, option_type, date,
+             open, high, low, close, volume, trade_count,
+             bid, ask, bid_size, ask_size)
+        VALUES %s
+        ON CONFLICT (symbol, expiration, strike, option_type, date)
+        DO UPDATE SET
+            open        = EXCLUDED.open,
+            high        = EXCLUDED.high,
+            low         = EXCLUDED.low,
+            close       = EXCLUDED.close,
+            volume      = EXCLUDED.volume,
+            trade_count = EXCLUDED.trade_count,
+            bid         = EXCLUDED.bid,
+            ask         = EXCLUDED.ask,
+            bid_size    = EXCLUDED.bid_size,
+            ask_size    = EXCLUDED.ask_size
+        """,
+        rows,
+    )
 
 
 def has_theta_option_eod_rows(symbol: str) -> bool:
