@@ -391,24 +391,35 @@ scope or are permanently skipped per below).
   first error; the current per-symbol error continuation is the
   intended behavior.
 
-## Phase 3b — still partial (1/6 sites adopted)
+## Phase 3b — closed as permanently partial (2026-05-03)
 
-Five sites need `bulkUpsert` extension before they can adopt:
+**1 of 6 originally-scoped sites adopted (`fetch-nope` only). The remaining 5 sites are intentionally NOT adopted** — the helper doesn't fit their shape, and forcing the fit would expand the helper API for marginal benefit.
 
-- `fetch-darkpool` ON CONFLICT uses additive expressions
-  (`col = table.col + EXCLUDED.col`) and `GREATEST()`. Helper only
-  emits `col = EXCLUDED.col`. **Needs**: `conflictExpressions?: Record<string, string>`
-  raw-SQL-fragment override.
-- `fetch-spx-candles-1m`, `fetch-strike-exposure`, `persistSqueezeFlags`
-  (in strike-iv-detection), `insertRows`: all rely on `RETURNING id`
-  to count actual insertions vs conflict-skips for `stored` /
-  `skipped` / `anomaliesDetected` metrics. Helper returns input row
-  count, not affected count. **Needs**: `countAffected?: boolean`
-  returning `{ rows: number; affected: number }`.
+### Why the remaining sites are NOT adopting `bulkUpsert`
 
-Estimated scope: ~7-8 hr (extension + 5 site adoptions + tests + reviews).
+- **`fetch-darkpool`** — the table is a *running aggregate* (sums of premium/shares/count keyed by date+strike). Additive ON CONFLICT (`col = table.col + EXCLUDED.col`, `GREATEST()`) is the data model, not boilerplate. A bulk upsert with EXCLUDED-only-replace would corrupt the aggregate. Per-row INSERT with explicit ON CONFLICT is the correct pattern.
+- **`fetch-spx-candles-1m`, `fetch-strike-exposure`, `persistSqueezeFlags`, `insertRows`** — all rely on `RETURNING id` to distinguish actual inserts from `DO NOTHING`-skipped rows for `stored` / `skipped` / `anomaliesDetected` metrics. That's a fundamentally different return contract than "I sent N rows, got N back" — it's "I sent N rows, M were actually inserted." All four already wrap their loops in `sql.transaction((txn) => rows.map(...))` so they're already atomic.
 
-Both deferrals are recorded honestly so future work has a clean handoff.
+### Why we're closing rather than extending the helper
+
+Extending `bulkUpsert` with `conflictExpressions: Record<string, string>` (raw SQL fragments) plus `countAffected: boolean` (RETURNING-based row count) would:
+
+- Add ~7-8 hr of work (extension + 5 site adoptions + test mock surgery)
+- Create a `conflictExpressions` API that takes raw SQL fragments — even with a trusted-string contract, a category of complexity we don't currently carry
+- Move the SQL strings into a different argument shape rather than reducing them
+- Save ~2.5s per cron run (10-500 rows × ~5ms/round-trip) — noise for jobs running every 5 min
+
+The performance and atomicity arguments are weak; the duplication argument is aesthetic. The five sites work correctly today.
+
+### When to revisit
+
+Reopen if any of:
+
+- A specific site causes pain in production (slow, flaky, hard to test).
+- A 7th site emerges with the same shape (DO NOTHING + RETURNING-based counting), making the extension a 3-consumer payoff instead of 4.
+- Neon's serverless driver gets a true bulk-affected-count API that obviates the EXCLUDED-only constraint.
+
+Until then: leave as-is. `bulkUpsert` is the right primitive for `fetch-nope`'s shape; the other 5 sites have legitimately different shapes and shouldn't be forced into the same mold.
 
 ## Outcome
 
