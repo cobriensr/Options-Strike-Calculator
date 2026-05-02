@@ -266,7 +266,7 @@ describe('auto-prefill-premarket handler', () => {
     await handler(makeCronReq(), res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toEqual({ error: 'Internal error' });
+    expect(res._json).toMatchObject({ error: 'Internal error' });
     expect(Sentry.setTag).toHaveBeenCalledWith(
       'cron.job',
       'auto-prefill-premarket',
@@ -276,7 +276,7 @@ describe('auto-prefill-premarket handler', () => {
       'auto-prefill-premarket',
       expect.objectContaining({
         status: 'error',
-        error: 'connection refused',
+        message: 'connection refused',
       }),
     );
   });
@@ -300,7 +300,7 @@ describe('auto-prefill-premarket handler', () => {
     await handler(makeCronReq(), res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toEqual({ error: 'Internal error' });
+    expect(res._json).toMatchObject({ error: 'Internal error' });
     expect(Sentry.captureException).toHaveBeenCalled();
   });
 

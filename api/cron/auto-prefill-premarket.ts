@@ -11,13 +11,11 @@
  * Environment: CRON_SECRET
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import logger from '../_lib/logger.js';
-import { Sentry } from '../_lib/sentry.js';
-import { cronGuard } from '../_lib/api-helpers.js';
-import { getETDateStr } from '../../src/utils/timezone.js';
-import { reportCronRun } from '../_lib/axiom.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 
 // ── Time helpers ────────────────────────────────────────────
 
@@ -47,18 +45,16 @@ function getOvernightEndCT(todayET: string): string {
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res, {
-    marketHours: false,
-    requireApiKey: false,
-  });
-  if (!guard) return;
+export default withCronInstrumentation(
+  'auto-prefill-premarket',
+  async (ctx): Promise<CronResult> => {
+    const { logger } = ctx;
+    // The cronGuard's `today` is the same getETDateStr(new Date()) the
+    // pre-wrapper handler used; reusing it keeps test mocks (which stub
+    // cronGuard's return value) in sync without recomputing.
+    const tradeDate = ctx.today;
+    const sql = getDb();
 
-  const startTime = Date.now();
-  const tradeDate = getETDateStr(new Date());
-  const sql = getDb();
-
-  try {
     const overnightStart = getOvernightStartCT(tradeDate);
     const overnightEnd = getOvernightEndCT(tradeDate);
 
@@ -78,15 +74,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (!bars[0]?.globex_high) {
       logger.info({ tradeDate }, 'No overnight ES bars found for pre-fill');
-      await reportCronRun('auto-prefill-premarket', {
+      return {
         status: 'skipped',
-        tradeDate,
-        reason: 'No overnight bars',
-        durationMs: Date.now() - startTime,
-      });
-      return res
-        .status(200)
-        .json({ skipped: true, reason: 'No overnight bars' });
+        message: 'No overnight bars',
+        metadata: {
+          skipped: true,
+          reason: 'No overnight bars',
+          tradeDate,
+        },
+      };
     }
 
     const row = bars[0];
@@ -138,39 +134,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `Pre-market auto-filled: Globex H/L/C/VWAP = ${globexHigh}/${globexLow}/${globexClose}/${globexVwap?.toFixed(2) ?? 'N/A'}`,
     );
 
-    const durationMs = Date.now() - startTime;
-    await reportCronRun('auto-prefill-premarket', {
-      status: 'ok',
-      tradeDate,
-      globexHigh,
-      globexLow,
-      globexClose,
-      globexVwap,
-      barCount,
-      durationMs,
-    });
-
-    return res.status(200).json({
-      job: 'auto-prefill-premarket',
-      stored: true,
-      tradeDate,
-      globexHigh,
-      globexLow,
-      globexClose,
-      globexVwap,
-      barCount,
-      durationMs,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'auto-prefill-premarket');
-    Sentry.captureException(err);
-    logger.error({ err }, 'auto-prefill-premarket failed');
-    await reportCronRun('auto-prefill-premarket', {
-      status: 'error',
-      tradeDate,
-      error: err instanceof Error ? err.message : 'Unknown',
-      durationMs: Date.now() - startTime,
-    });
-    return res.status(500).json({ error: 'Internal error' });
-  }
-}
+    return {
+      status: 'success',
+      metadata: {
+        stored: true,
+        tradeDate,
+        globexHigh,
+        globexLow,
+        globexClose,
+        globexVwap,
+        barCount,
+      },
+    };
+  },
+  { marketHours: false, requireApiKey: false },
+);
