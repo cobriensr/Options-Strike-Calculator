@@ -296,3 +296,128 @@ def test_start_scheduler_is_idempotent(mock_theta_launcher_running) -> None:
         assert theta_fetcher._scheduler is first
     finally:
         theta_fetcher.stop_scheduler()
+
+
+# ---------------------------------------------------------------------------
+# _fetch_strike_pair — Phase 5b extraction. Per-strike call+put helper.
+# ---------------------------------------------------------------------------
+
+
+def _make_eod_row(opt_type: str) -> EodRow:
+    """Minimal EodRow fixture for strike-pair tests."""
+    return EodRow(
+        symbol="SPXW",
+        expiration=date(2024, 4, 19),
+        strike=Decimal("5100.00"),
+        option_type=opt_type,
+        trade_date=date(2024, 4, 18),
+        open=None,
+        high=None,
+        low=None,
+        close=Decimal("1.50"),
+        volume=None,
+        trade_count=None,
+        bid=None,
+        ask=None,
+        bid_size=None,
+        ask_size=None,
+    )
+
+
+def test_fetch_strike_pair_returns_both_sides() -> None:
+    from theta_fetcher import _fetch_strike_pair
+
+    fake_client = MagicMock()
+    fake_client.fetch_eod.side_effect = [
+        [_make_eod_row("C")],
+        [_make_eod_row("P")],
+    ]
+
+    rows, denied = _fetch_strike_pair(
+        fake_client,
+        "SPXW",
+        date(2024, 4, 19),
+        Decimal("5100.00"),
+        date(2024, 4, 18),
+        date(2024, 4, 18),
+    )
+
+    assert denied is False
+    assert len(rows) == 2
+    assert {r.option_type for r in rows} == {"C", "P"}
+    # Both rights fetched.
+    assert fake_client.fetch_eod.call_count == 2
+
+
+def test_fetch_strike_pair_subscription_denial_short_circuits_p_side() -> None:
+    """If C-side fetch raises ThetaSubscriptionError, the helper must
+    return (rows_so_far, True) without calling fetch_eod for P."""
+    from theta_fetcher import _fetch_strike_pair
+
+    fake_client = MagicMock()
+    fake_client.fetch_eod.side_effect = ThetaSubscriptionError("Not entitled")
+
+    rows, denied = _fetch_strike_pair(
+        fake_client,
+        "SPXW",
+        date(2024, 4, 19),
+        Decimal("5100.00"),
+        date(2024, 4, 18),
+        date(2024, 4, 18),
+    )
+
+    assert denied is True
+    assert rows == []
+    assert fake_client.fetch_eod.call_count == 1
+
+
+def test_fetch_strike_pair_per_side_exception_continues_to_other_side() -> None:
+    """Non-subscription exception on C must NOT abort — P should still fire,
+    matching the prior inline behavior. The C-side rows are dropped."""
+    from theta_fetcher import _fetch_strike_pair
+
+    fake_client = MagicMock()
+    fake_client.fetch_eod.side_effect = [
+        RuntimeError("transient"),
+        [_make_eod_row("P")],
+    ]
+
+    rows, denied = _fetch_strike_pair(
+        fake_client,
+        "SPXW",
+        date(2024, 4, 19),
+        Decimal("5100.00"),
+        date(2024, 4, 18),
+        date(2024, 4, 18),
+    )
+
+    assert denied is False
+    assert len(rows) == 1
+    assert rows[0].option_type == "P"
+    # Both attempted — C raised, P succeeded.
+    assert fake_client.fetch_eod.call_count == 2
+
+
+def test_fetch_strike_pair_p_side_denial_keeps_c_rows() -> None:
+    """If C succeeds and P denies, return (C rows, denied=True)."""
+    from theta_fetcher import _fetch_strike_pair
+
+    fake_client = MagicMock()
+    fake_client.fetch_eod.side_effect = [
+        [_make_eod_row("C")],
+        ThetaSubscriptionError("Not entitled"),
+    ]
+
+    rows, denied = _fetch_strike_pair(
+        fake_client,
+        "SPXW",
+        date(2024, 4, 19),
+        Decimal("5100.00"),
+        date(2024, 4, 18),
+        date(2024, 4, 18),
+    )
+
+    assert denied is True
+    assert len(rows) == 1
+    assert rows[0].option_type == "C"
+    assert fake_client.fetch_eod.call_count == 2

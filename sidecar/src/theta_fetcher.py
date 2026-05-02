@@ -271,43 +271,16 @@ def _fetch_root_range(
         root_denied = False
 
         for strike in strikes:
-            if root_denied:
+            pair_rows, denied = _fetch_strike_pair(
+                client, root, exp, strike, start_date, end_date
+            )
+            rows_batch.extend(pair_rows)
+            if len(rows_batch) >= BATCH_FLUSH_SIZE:
+                total += _flush_batch(rows_batch)
+                rows_batch = []
+            if denied:
+                root_denied = True
                 break
-            for opt_type in ("C", "P"):
-                try:
-                    rows = client.fetch_eod(
-                        root, exp, strike, opt_type, start_date, end_date
-                    )
-                except ThetaSubscriptionError:
-                    capture_message(
-                        "Theta denied fetch_eod — skipping root",
-                        level="error",
-                        context={
-                            "root": root,
-                            "expiration": exp.isoformat(),
-                        },
-                        tags=_THETA_TAGS,
-                    )
-                    root_denied = True
-                    break
-                except Exception as exc:
-                    capture_exception(
-                        exc,
-                        context={
-                            "phase": "fetch_eod",
-                            "root": root,
-                            "expiration": exp.isoformat(),
-                            "strike": str(strike),
-                            "right": opt_type,
-                        },
-                        tags=_THETA_TAGS,
-                    )
-                    continue
-
-                rows_batch.extend(rows)
-                if len(rows_batch) >= BATCH_FLUSH_SIZE:
-                    total += _flush_batch(rows_batch)
-                    rows_batch = []
 
         if rows_batch:
             total += _flush_batch(rows_batch)
@@ -318,6 +291,64 @@ def _fetch_root_range(
             return total
 
     return total
+
+
+def _fetch_strike_pair(
+    client: ThetaClient,
+    root: str,
+    exp: date,
+    strike: Any,
+    start_date: date,
+    end_date: date,
+) -> tuple[list[EodRow], bool]:
+    """Fetch EOD rows for one strike's call+put pair.
+
+    Returns ``(rows, denied)`` where ``denied`` is True iff a
+    ThetaSubscriptionError fired — the caller should mark the whole
+    root denied and stop iterating its strikes. Per-contract non-
+    subscription errors are captured to Sentry and the loop continues
+    onto the other side (C or P), matching the prior inline behavior.
+
+    Extracted from `_fetch_root_range` so the per-contract retry/skip
+    branches are unit-testable in isolation. The orchestrator now
+    reads as a 2-deep ``exp × strike`` loop with one helper call per
+    strike, instead of a 3-deep ``exp × strike × {C,P}`` loop with
+    inline error handling.
+    """
+    rows: list[EodRow] = []
+    for opt_type in ("C", "P"):
+        try:
+            fetched = client.fetch_eod(
+                root, exp, strike, opt_type, start_date, end_date
+            )
+        except ThetaSubscriptionError:
+            capture_message(
+                "Theta denied fetch_eod — skipping root",
+                level="error",
+                context={
+                    "root": root,
+                    "expiration": exp.isoformat(),
+                },
+                tags=_THETA_TAGS,
+            )
+            return rows, True
+        except Exception as exc:
+            capture_exception(
+                exc,
+                context={
+                    "phase": "fetch_eod",
+                    "root": root,
+                    "expiration": exp.isoformat(),
+                    "strike": str(strike),
+                    "right": opt_type,
+                },
+                tags=_THETA_TAGS,
+            )
+            continue
+
+        rows.extend(fetched)
+
+    return rows, False
 
 
 def _flush_batch(rows: list[EodRow]) -> int:
