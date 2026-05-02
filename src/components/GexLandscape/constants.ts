@@ -3,6 +3,7 @@
  * Tailwind class names, labels, tooltips, and numeric thresholds live here.
  */
 
+import { classSignal } from '../../utils/gex-classification';
 import type { BiasMetrics, Direction, GexClassification } from './types';
 
 /** Max points from spot to include in the table (≈20 strikes at 5-pt intervals). */
@@ -35,48 +36,28 @@ export const CLASS_META: Record<GexClassification, ClassMeta> = {
     badgeBg: 'bg-amber-500/25',
     badgeText: 'text-amber-400',
     rowBg: 'bg-amber-500/5',
-    signal: (dir) =>
-      dir === 'ceiling'
-        ? 'Ceiling Breakout Risk'
-        : dir === 'floor'
-          ? 'Floor Collapse Risk'
-          : 'Launch Zone',
+    signal: (dir) => classSignal('max-launchpad', dir),
   },
   'fading-launchpad': {
     badge: 'Fading Launchpad',
     badgeBg: 'bg-yellow-600/20',
     badgeText: 'text-yellow-500/80',
     rowBg: 'bg-yellow-600/5',
-    signal: (dir) =>
-      dir === 'ceiling'
-        ? 'Weakening Ceiling'
-        : dir === 'floor'
-          ? 'Weakening Floor'
-          : 'Fading Launch',
+    signal: (dir) => classSignal('fading-launchpad', dir),
   },
   'sticky-pin': {
     badge: 'Sticky Pin',
     badgeBg: 'bg-emerald-500/25',
     badgeText: 'text-emerald-400',
     rowBg: 'bg-emerald-500/5',
-    signal: (dir) =>
-      dir === 'ceiling'
-        ? 'Hard Ceiling'
-        : dir === 'floor'
-          ? 'Hard Floor'
-          : 'Pin Zone',
+    signal: (dir) => classSignal('sticky-pin', dir),
   },
   'weakening-pin': {
     badge: 'Weakening Pin',
     badgeBg: 'bg-emerald-500/10',
     badgeText: 'text-emerald-600',
     rowBg: '',
-    signal: (dir) =>
-      dir === 'ceiling'
-        ? 'Softening Ceiling'
-        : dir === 'floor'
-          ? 'Softening Floor'
-          : 'Weak Pin',
+    signal: (dir) => classSignal('weakening-pin', dir),
   },
 };
 

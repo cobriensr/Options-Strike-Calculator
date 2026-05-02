@@ -5,14 +5,16 @@
 
 import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
 import type { PriceTrend as PriceTrendInternal } from '../../utils/price-trend';
+import type {
+  GexClassification as GexClassificationInternal,
+  Direction as DirectionInternal,
+} from '../../utils/gex-classification';
 
-export type GexClassification =
-  | 'max-launchpad'
-  | 'fading-launchpad'
-  | 'sticky-pin'
-  | 'weakening-pin';
-
-export type Direction = 'ceiling' | 'floor' | 'atm';
+// `GexClassification` and `Direction` moved to src/utils/gex-classification.ts
+// so the daemon can share the same source of truth without pulling in
+// React-flavored modules. Re-exported here for backward compatibility.
+export type GexClassification = GexClassificationInternal;
+export type Direction = DirectionInternal;
 
 export interface Snapshot {
   strikes: GexStrikeLevel[];

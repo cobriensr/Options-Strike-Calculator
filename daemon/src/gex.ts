@@ -8,54 +8,20 @@
  * via the same kebab-case keys the frontend uses, and emits a payload
  * shaped like `TraceGexLandscape` from `api/_lib/trace-live-types.ts`.
  *
- * The frontend's CLASS_META.signal() mapping is duplicated here (the
- * daemon doesn't import from src/ to avoid Vite-vs-NodeNext resolution
- * differences). Source of truth: src/components/GexLandscape/constants.ts
- * — keep in sync if the frontend's signal labels change.
+ * Classification + signal labels come from the shared
+ * `src/utils/gex-classification.ts` module — both the GexLandscape
+ * frontend and this daemon read the same source of truth.
  */
 
 import { neon } from '@neondatabase/serverless';
 import type { Logger } from 'pino';
+import {
+  classSignal,
+  type Direction,
+  type GexClassification,
+} from '../../src/utils/gex-classification.js';
 
 const SPOT_BAND_DOLLARS = 12;
-
-type Direction = 'ceiling' | 'floor' | 'atm';
-type GexClassification =
-  | 'max-launchpad'
-  | 'fading-launchpad'
-  | 'sticky-pin'
-  | 'weakening-pin';
-
-// Duplicated from src/components/GexLandscape/constants.ts (CLASS_META.signal).
-function classSignal(cls: GexClassification, dir: Direction): string {
-  if (cls === 'max-launchpad') {
-    return dir === 'ceiling'
-      ? 'Ceiling Breakout Risk'
-      : dir === 'floor'
-        ? 'Floor Collapse Risk'
-        : 'Launch Zone';
-  }
-  if (cls === 'fading-launchpad') {
-    return dir === 'ceiling'
-      ? 'Weakening Ceiling'
-      : dir === 'floor'
-        ? 'Weakening Floor'
-        : 'Fading Launch';
-  }
-  if (cls === 'sticky-pin') {
-    return dir === 'ceiling'
-      ? 'Hard Ceiling'
-      : dir === 'floor'
-        ? 'Hard Floor'
-        : 'Pin Zone';
-  }
-  // weakening-pin
-  return dir === 'ceiling'
-    ? 'Softening Ceiling'
-    : dir === 'floor'
-      ? 'Softening Floor'
-      : 'Weak Pin';
-}
 
 function classify(netGamma: number, netCharm: number): GexClassification {
   if (netGamma < 0 && netCharm >= 0) return 'max-launchpad';
