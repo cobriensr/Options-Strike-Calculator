@@ -12,11 +12,7 @@
 
 import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
-import {
-  uwFetch,
-  withRetry,
-  checkDataQuality,
-} from '../_lib/api-helpers.js';
+import { uwFetch, withRetry, checkDataQuality } from '../_lib/api-helpers.js';
 import {
   withCronInstrumentation,
   type CronResult,

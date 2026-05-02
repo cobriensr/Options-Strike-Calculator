@@ -162,7 +162,8 @@ export function withCronInstrumentation(
       timeCheck?: () => boolean;
       requireApiKey?: boolean;
     } = {};
-    if (opts.marketHours !== undefined) guardOpts.marketHours = opts.marketHours;
+    if (opts.marketHours !== undefined)
+      guardOpts.marketHours = opts.marketHours;
     if (opts.timeCheck !== undefined) guardOpts.timeCheck = opts.timeCheck;
     if (opts.requireApiKey !== undefined)
       guardOpts.requireApiKey = opts.requireApiKey;
@@ -251,9 +252,7 @@ export function withCronInstrumentation(
       }
 
       const status = opts.errorStatus ? opts.errorStatus(err) : 500;
-      const customBody = opts.errorPayload
-        ? opts.errorPayload(err, ctx)
-        : null;
+      const customBody = opts.errorPayload ? opts.errorPayload(err, ctx) : null;
       // Empty-object return is treated as "no override" so callers can
       // gate the override on err.kind without falling out of the API.
       const body =

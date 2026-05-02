@@ -252,8 +252,7 @@ const mainCron = withCronInstrumentation(
     },
     // Schwab API failure → 502 with the original message; everything
     // else (DB errors, etc.) keeps the default 500 + 'Internal error'.
-    errorStatus: (err) =>
-      err instanceof UpstreamFetchError ? 502 : 500,
+    errorStatus: (err) => (err instanceof UpstreamFetchError ? 502 : 500),
     errorPayload: (err) =>
       err instanceof UpstreamFetchError ? { error: err.message } : {},
   },
