@@ -31,6 +31,7 @@ Environment setup:
 from __future__ import annotations
 
 import os
+from datetime import date
 from unittest.mock import MagicMock, patch
 
 # Required env vars for config.py's pydantic-settings validation.
@@ -872,3 +873,127 @@ class TestDefinitionOptionTypeCoercion:
             self._make_def_record(instrument_class="F", iid=44)
         )
         assert 44 not in client._option_definitions
+
+
+# ---------------------------------------------------------------------------
+# Phase 3a — STAT_TYPE_TO_KWARG dispatch table
+# ---------------------------------------------------------------------------
+
+
+class TestStatTypeToKwargTable:
+    """Lock the ``STAT_TYPE_TO_KWARG`` dict so adding a new stat type
+    is a deliberate change. The dict drives ``_handle_stat`` dispatch
+    in place of the previous 90-LOC if/elif chain — if a new stat type
+    appears in the wire feed and gets added to the dict without a
+    matching ``upsert_options_daily(...)`` kwarg, ``_handle_stat`` will
+    raise a TypeError on the first record. Lock both the keys and the
+    (kwarg_name, value_source) tuples to catch typos and accidental
+    re-shuffles.
+    """
+
+    def test_dict_contents_are_locked(self) -> None:
+        """Snapshot the full mapping. Adding a new stat type or
+        renaming a kwarg requires a deliberate edit to this assertion."""
+        from databento_client import (
+            STAT_TYPE_CLEARED_VOLUME,
+            STAT_TYPE_DELTA,
+            STAT_TYPE_IMPLIED_VOL,
+            STAT_TYPE_OPEN_INTEREST,
+            STAT_TYPE_SETTLEMENT,
+            STAT_TYPE_TO_KWARG,
+        )
+
+        assert STAT_TYPE_TO_KWARG == {
+            STAT_TYPE_OPEN_INTEREST: ("open_interest", "stat_quantity"),
+            STAT_TYPE_SETTLEMENT: ("settlement", "stat_value"),
+            STAT_TYPE_CLEARED_VOLUME: ("volume", "stat_quantity"),
+            STAT_TYPE_IMPLIED_VOL: ("implied_vol", "stat_value"),
+            STAT_TYPE_DELTA: ("delta", "stat_value"),
+        }
+
+    def test_value_sources_are_only_known_kinds(self) -> None:
+        """Defensive: only ``stat_value`` and ``stat_quantity`` are
+        valid value sources. A typo like ``stat_quanity`` would silently
+        route to the else branch and emit None for every record."""
+        from databento_client import STAT_TYPE_TO_KWARG
+
+        for kwarg_name, value_source in STAT_TYPE_TO_KWARG.values():
+            assert isinstance(kwarg_name, str) and kwarg_name
+            assert value_source in ("stat_value", "stat_quantity")
+
+    def test_handle_stat_dispatches_via_table(
+        self, client: DatabentoClient
+    ) -> None:
+        """End-to-end: every entry in the dict drives a successful
+        upsert_options_daily call with the right kwarg set."""
+        from databento_client import STAT_TYPE_TO_KWARG
+
+        # Preload a definition so the iid → option-info lookup succeeds.
+        client._option_definitions[7] = {
+            "strike": 5800.0,
+            "option_type": "C",
+            "expiry": date(2030, 1, 1),
+        }
+        client._options_strikes = MagicMock()
+        client._options_strikes.strikes = [5800.0]
+
+        for stat_type, (kwarg_name, _value_source) in STAT_TYPE_TO_KWARG.items():
+            client._test_upsert_options_daily.reset_mock()
+            rec = MagicMock()
+            rec.instrument_id = 7
+            rec.stat_type = stat_type
+            rec.stat_value = 1_500_000_000  # 1.5 in 1e-9 units
+            rec.stat_quantity = 42
+            rec.stat_flags = 0
+            client._handle_stat(rec)
+
+            client._test_upsert_options_daily.assert_called_once()
+            call_kwargs = client._test_upsert_options_daily.call_args.kwargs
+            assert kwarg_name in call_kwargs, (
+                f"stat_type={stat_type} did not pass kwarg {kwarg_name!r}; "
+                f"got kwargs={list(call_kwargs)}"
+            )
+
+    def test_unknown_stat_type_is_silently_dropped(
+        self, client: DatabentoClient
+    ) -> None:
+        """A stat_type not in the dict (e.g. STAT_TYPE_OPENING_PRICE = 1,
+        which we don't persist) must early-return without dispatching."""
+        client._option_definitions[7] = {
+            "strike": 5800.0,
+            "option_type": "C",
+            "expiry": date(2030, 1, 1),
+        }
+        rec = MagicMock()
+        rec.instrument_id = 7
+        rec.stat_type = 1  # STAT_TYPE_OPENING_PRICE — not in the table
+        rec.stat_value = 1_500_000_000
+        rec.stat_quantity = 42
+        client._handle_stat(rec)
+        client._test_upsert_options_daily.assert_not_called()
+
+    def test_settlement_passes_is_final_flag(
+        self, client: DatabentoClient
+    ) -> None:
+        """Settlement is the only stat type that derives ``is_final``
+        from ``stat_flags & 1``. The dict-driven path must preserve
+        that special case."""
+        from databento_client import STAT_TYPE_SETTLEMENT
+
+        client._option_definitions[7] = {
+            "strike": 5800.0,
+            "option_type": "C",
+            "expiry": date(2030, 1, 1),
+        }
+
+        rec = MagicMock()
+        rec.instrument_id = 7
+        rec.stat_type = STAT_TYPE_SETTLEMENT
+        rec.stat_value = 1_500_000_000
+        rec.stat_quantity = 0
+        rec.stat_flags = 1  # final
+        client._handle_stat(rec)
+
+        call_kwargs = client._test_upsert_options_daily.call_args.kwargs
+        assert call_kwargs["is_final"] is True
+        assert "settlement" in call_kwargs

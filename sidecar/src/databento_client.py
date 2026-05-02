@@ -41,6 +41,22 @@ STAT_TYPE_OPEN_INTEREST = 9
 STAT_TYPE_IMPLIED_VOL = 14
 STAT_TYPE_DELTA = 15
 
+# Map Databento stat_type to (upsert_options_daily kwarg name, value source).
+# value_source is "stat_value" (Decimal, scaled by 1e-9) or "stat_quantity"
+# (raw int, e.g. open_interest contracts or cleared volume contracts).
+#
+# Adding a new stat type: add the entry here AND make sure
+# upsert_options_daily() accepts the kwarg. The handler dispatches purely
+# from this dict; the locked test in test_databento_client.py forces
+# new entries to be a deliberate change.
+STAT_TYPE_TO_KWARG: dict[int, tuple[str, str]] = {
+    STAT_TYPE_OPEN_INTEREST: ("open_interest", "stat_quantity"),
+    STAT_TYPE_SETTLEMENT: ("settlement", "stat_value"),
+    STAT_TYPE_CLEARED_VOLUME: ("volume", "stat_quantity"),
+    STAT_TYPE_IMPLIED_VOL: ("implied_vol", "stat_value"),
+    STAT_TYPE_DELTA: ("delta", "stat_value"),
+}
+
 # Phase 2a note: we subscribe ONLY to ``tbbo``, never ``mbp-1``. Both
 # schemas emit ``MBP1Msg`` and share the same ``rtype``
 # (``RType.from_schema(Schema.MBP_1).value == RType.from_schema(Schema.TBBO).value == 1``),
@@ -706,20 +722,24 @@ class DatabentoClient:
         )
 
     def _handle_stat(self, record: Any) -> None:
-        """Process a Statistics record (OI, settlement, IV, delta)."""
+        """Process a Statistics record (OI, settlement, IV, delta).
+
+        Dispatch is driven by the module-level ``STAT_TYPE_TO_KWARG``
+        table — each entry maps a Databento stat_type to the
+        ``upsert_options_daily(...)`` kwarg + the source field on the
+        record (``stat_value`` is a 1e-9-scaled Decimal price; ``stat_quantity``
+        is a raw integer count). Adding a new stat type is a one-line
+        dict update; the handler body never needs to grow.
+        """
         if self._shutting_down:
             return
         from db import upsert_options_daily
 
         stat_type = record.stat_type
-        if stat_type not in (
-            STAT_TYPE_SETTLEMENT,
-            STAT_TYPE_CLEARED_VOLUME,
-            STAT_TYPE_OPEN_INTEREST,
-            STAT_TYPE_IMPLIED_VOL,
-            STAT_TYPE_DELTA,
-        ):
+        mapping = STAT_TYPE_TO_KWARG.get(stat_type)
+        if mapping is None:
             return
+        kwarg_name, value_source = mapping
 
         iid = getattr(record, "instrument_id", 0)
         instrument_info = self._get_option_info(iid)
@@ -731,68 +751,32 @@ class DatabentoClient:
         expiry = instrument_info["expiry"]
         trade_date = date.today()
 
-        # Convert stat value from 1e-9 int to Decimal
-        stat_value = (
-            Decimal(record.stat_value) / Decimal(1_000_000_000)
-            if hasattr(record, "stat_value")
-            else None
-        )
-        stat_quantity = getattr(record, "stat_quantity", None)
+        # Resolve the value from the configured source field.
+        if value_source == "stat_value":
+            value: Any = (
+                Decimal(record.stat_value) / Decimal(1_000_000_000)
+                if hasattr(record, "stat_value")
+                else None
+            )
+        else:  # "stat_quantity"
+            stat_quantity = getattr(record, "stat_quantity", None)
+            value = int(stat_quantity) if stat_quantity else None
 
-        # Determine if settlement is final
-        is_final = (
-            bool(getattr(record, "stat_flags", 0) & 1)
-            if stat_type == STAT_TYPE_SETTLEMENT
-            else False
-        )
+        # Settlement carries an extra is_final flag derived from stat_flags.
+        extra_kwargs: dict[str, Any] = {}
+        if stat_type == STAT_TYPE_SETTLEMENT:
+            extra_kwargs["is_final"] = bool(getattr(record, "stat_flags", 0) & 1)
 
         try:
-            if stat_type == STAT_TYPE_OPEN_INTEREST:
-                upsert_options_daily(
-                    "ES",
-                    trade_date,
-                    expiry,
-                    Decimal(str(strike)),
-                    option_type,
-                    open_interest=int(stat_quantity) if stat_quantity else None,
-                )
-            elif stat_type == STAT_TYPE_SETTLEMENT:
-                upsert_options_daily(
-                    "ES",
-                    trade_date,
-                    expiry,
-                    Decimal(str(strike)),
-                    option_type,
-                    settlement=stat_value,
-                    is_final=is_final,
-                )
-            elif stat_type == STAT_TYPE_CLEARED_VOLUME:
-                upsert_options_daily(
-                    "ES",
-                    trade_date,
-                    expiry,
-                    Decimal(str(strike)),
-                    option_type,
-                    volume=int(stat_quantity) if stat_quantity else None,
-                )
-            elif stat_type == STAT_TYPE_IMPLIED_VOL:
-                upsert_options_daily(
-                    "ES",
-                    trade_date,
-                    expiry,
-                    Decimal(str(strike)),
-                    option_type,
-                    implied_vol=stat_value,
-                )
-            elif stat_type == STAT_TYPE_DELTA:
-                upsert_options_daily(
-                    "ES",
-                    trade_date,
-                    expiry,
-                    Decimal(str(strike)),
-                    option_type,
-                    delta=stat_value,
-                )
+            upsert_options_daily(
+                "ES",
+                trade_date,
+                expiry,
+                Decimal(str(strike)),
+                option_type,
+                **{kwarg_name: value},
+                **extra_kwargs,
+            )
         except Exception as exc:
             log.error("Failed to upsert stat for strike %s: %s", strike, exc)
 
