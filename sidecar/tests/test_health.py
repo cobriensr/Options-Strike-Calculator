@@ -432,3 +432,97 @@ class TestIsTodayOrFutureUtc:
         import health
 
         assert health._is_today_or_future_utc("2020-01-01") is False
+
+
+class TestParseHelpers:
+    """Phase 5a — parse helpers extracted from the per-handler boilerplate."""
+
+    def test_parse_date_param_accepts_valid(self) -> None:
+        import health
+
+        qs = {"date": ["2025-01-15"]}
+        assert health._parse_date_param(qs, "date") == "2025-01-15"
+
+    def test_parse_date_param_rejects_garbage(self) -> None:
+        import health
+
+        with pytest.raises(health._BadRequest, match="date must be YYYY-MM-DD"):
+            health._parse_date_param({"date": ["nope"]}, "date")
+
+    def test_parse_date_param_rejects_missing(self) -> None:
+        import health
+
+        with pytest.raises(health._BadRequest, match="date must be YYYY-MM-DD"):
+            health._parse_date_param({}, "date")
+
+    def test_parse_optional_int_returns_none_when_absent(self) -> None:
+        import health
+
+        assert health._parse_optional_int({}, "k") is None
+
+    def test_parse_optional_int_returns_value_when_present(self) -> None:
+        import health
+
+        assert health._parse_optional_int({"k": ["20"]}, "k") == 20
+
+    def test_parse_optional_int_rejects_non_int(self) -> None:
+        import health
+
+        with pytest.raises(health._BadRequest, match="k must be an integer"):
+            health._parse_optional_int({"k": ["abc"]}, "k")
+
+    def test_parse_optional_int_rejects_below_lo(self) -> None:
+        import health
+
+        with pytest.raises(health._BadRequest, match=">= 1"):
+            health._parse_optional_int({"horizon_days": ["0"]}, "horizon_days", lo=1)
+
+    def test_parse_date_range_happy(self) -> None:
+        import health
+
+        qs = {"from": ["2024-01-01"], "to": ["2024-06-30"]}
+        assert health._parse_date_range(qs) == ("2024-01-01", "2024-06-30")
+
+    def test_parse_date_range_rejects_bad_format(self) -> None:
+        import health
+
+        qs = {"from": ["bad"], "to": ["2024-06-30"]}
+        with pytest.raises(health._BadRequest, match="from/to must be YYYY-MM-DD"):
+            health._parse_date_range(qs)
+
+    def test_parse_date_range_rejects_inverted(self) -> None:
+        import health
+
+        qs = {"from": ["2024-06-30"], "to": ["2024-01-01"]}
+        with pytest.raises(health._BadRequest, match="to must be >= from"):
+            health._parse_date_range(qs)
+
+    def test_parse_date_range_rejects_over_3_year_cap(self) -> None:
+        """Locks the _BATCH_RANGE_MAX_DAYS named constant — anything
+        past 3 years × 366 days is rejected."""
+        import health
+
+        # Pick a span deliberately past the cap.
+        qs = {"from": ["2020-01-01"], "to": ["2024-01-01"]}
+        with pytest.raises(health._BadRequest, match="cannot exceed 3 years"):
+            health._parse_date_range(qs)
+
+    def test_batch_range_max_days_is_3_years(self) -> None:
+        """Lock the named constant against accidental drift."""
+        import health
+
+        assert health._BATCH_RANGE_MAX_DAYS == 366 * 3
+
+    def test_aq_returns_archive_query_module(self) -> None:
+        """Holder pattern: _aq() lazy-loads archive_query and returns the
+        same module object on subsequent calls."""
+        import health
+
+        # Reset the module cache so we exercise the lazy path.
+        health._archive_query_module = None
+        first = health._aq()
+        second = health._aq()
+        import archive_query
+
+        assert first is archive_query
+        assert second is archive_query

@@ -12,13 +12,25 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import re
 import threading
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from typing import Any, Callable
+from urllib.parse import parse_qs, urlparse
 
 from archive_seeder import SeedBusyError
 from logger_setup import log
+
+# 3-year window cap on /archive/*-batch range queries. A 3-year range
+# is ~750 trading dates × ~370k instruments — well within the 8 vCPU
+# budget on Railway. Anything larger should paginate client-side.
+# Used by 3 batch handlers (day-features-batch, day-summary-batch,
+# day-summary-prediction-batch).
+_BATCH_RANGE_MAX_DAYS = 366 * 3
+
+# Compiled once — every archive handler reuses this.
+_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def _is_today_or_future_utc(date_str: str) -> bool:
@@ -36,6 +48,99 @@ def _is_today_or_future_utc(date_str: str) -> bool:
     """
     today_utc = datetime.now(timezone.utc).date().isoformat()
     return date_str >= today_utc
+
+
+class _BadRequest(Exception):
+    """Raised by parse helpers when an input is missing/malformed.
+
+    Internal sentinel — caught by the route dispatch and converted to
+    HTTP 400. Never escapes the module.
+    """
+
+
+def _parse_date_param(qs: dict[str, list[str]], name: str) -> str:
+    """Return ``qs[name]`` validated as YYYY-MM-DD, or raise _BadRequest.
+
+    Centralizes the regex check that was inlined in 10+ handlers. The
+    error message mirrors the one each handler used so test assertions
+    that grep for "YYYY-MM-DD" continue to pass.
+    """
+    raw = (qs.get(name) or [""])[0]
+    if not _DATE_RE.fullmatch(raw):
+        raise _BadRequest(f"{name} must be YYYY-MM-DD")
+    return raw
+
+
+def _parse_optional_int(
+    qs: dict[str, list[str]], name: str, *, lo: int | None = None
+) -> int | None:
+    """Parse an optional integer query param, or raise _BadRequest.
+
+    Returns None when the param is absent (so the caller can omit the
+    kwarg and let the query layer apply its own default). When present
+    but unparseable / below ``lo``, raises with the same messages each
+    handler used previously.
+    """
+    raw = (qs.get(name) or [""])[0]
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        raise _BadRequest(f"{name} must be an integer") from None
+    if lo is not None and value < lo:
+        raise _BadRequest(f"{name} must be >= {lo}")
+    return value
+
+
+def _parse_date_range(
+    qs: dict[str, list[str]],
+) -> tuple[str, str]:
+    """Parse from/to YYYY-MM-DD pair + apply the 3-year cap.
+
+    Returns ``(start, end)`` strings; raises _BadRequest with the
+    handler's pre-existing message on any violation. Centralizes the
+    block duplicated across 3 batch handlers.
+    """
+    start = (qs.get("from") or [""])[0]
+    end = (qs.get("to") or [""])[0]
+    for v in (start, end):
+        if not _DATE_RE.fullmatch(v):
+            raise _BadRequest("from/to must be YYYY-MM-DD")
+    try:
+        d0 = date.fromisoformat(start)
+        d1 = date.fromisoformat(end)
+    except ValueError:
+        raise _BadRequest("invalid date") from None
+    if d1 < d0:
+        raise _BadRequest("to must be >= from")
+    if (d1 - d0).days > _BATCH_RANGE_MAX_DAYS:
+        raise _BadRequest("range cannot exceed 3 years")
+    return start, end
+
+
+# Lazy-loaded reference to the `archive_query` module. DuckDB import
+# cost (~12 MB) is real, so we defer until the first archive request
+# rather than paying it at sidecar startup. The holder pattern (vs.
+# importing inside each handler) means we pay the import once and the
+# module attribute lookup on every call after — same cheap dict probe
+# the per-handler `import` already devolves to after Python's import
+# cache warms.
+#
+# Tests that patch `archive_query.X` continue to work: `_aq()` returns
+# the same module object the test patches, so the attribute lookup
+# resolves to the patched callable.
+_archive_query_module: Any = None
+
+
+def _aq() -> Any:
+    """Return the lazy-loaded `archive_query` module."""
+    global _archive_query_module
+    if _archive_query_module is None:
+        import archive_query
+
+        _archive_query_module = archive_query
+    return _archive_query_module
 
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -194,77 +299,49 @@ class HealthHandler(BaseHTTPRequestHandler):
         and the archive itself doesn't contain any secrets. Date is the
         only input and is validated to match YYYY-MM-DD exactly.
         """
-        from urllib.parse import parse_qs, urlparse
-        import re
-
         qs = parse_qs(urlparse(self.path).query)
-        date = (qs.get("date") or [""])[0]
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
-            self.send_response(400)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": "date must be YYYY-MM-DD"}).encode())
+        try:
+            d = _parse_date_param(qs, "date")
+        except _BadRequest as exc:
+            self._send_json(400, {"error": str(exc)})
             return
 
         try:
-            # Local import keeps sidecar startup fast when nothing in
-            # the current deploy path touches the archive; duckdb adds
-            # ~12 MB of import cost we can defer to first query.
-            import archive_query
-
-            result = archive_query.es_day_summary(date)
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps(result).encode())
+            result = _aq().es_day_summary(d)
+            self._send_json(200, result)
         except ValueError as exc:
             # Known "no data for this date" — return 404 with message.
-            self.send_response(404)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": str(exc)}).encode())
+            self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            log.error("es-range query failed for %s: %s", date, exc)
-            self.send_response(500)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": "query failed"}).encode())
+            log.error("es-range query failed for %s: %s", d, exc)
+            self._send_json(500, {"error": "query failed"})
 
     def _handle_archive_analog_days(self) -> None:
         """GET /archive/analog-days?date=YYYY-MM-DD&until_minute=60&k=20"""
-        from urllib.parse import parse_qs, urlparse
-        import re
-
         qs = parse_qs(urlparse(self.path).query)
-        date = (qs.get("date") or [""])[0]
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
-            self._send_json(400, {"error": "date must be YYYY-MM-DD"})
+        try:
+            d = _parse_date_param(qs, "date")
+            # `until_minute` and `k` have defaults in the query layer —
+            # only pass through when supplied so validation errors come
+            # from the ONE place that knows the bounds.
+            kwargs: dict[str, int] = {}
+            for name in ("until_minute", "k"):
+                value = _parse_optional_int(qs, name)
+                if value is not None:
+                    kwargs[name] = value
+        except _BadRequest as exc:
+            self._send_json(400, {"error": str(exc)})
             return
 
-        # `until_minute` and `k` have defaults in the query layer — only
-        # pass through when supplied so validation errors come from the
-        # ONE place that knows the bounds.
-        kwargs: dict[str, int] = {}
-        for name in ("until_minute", "k"):
-            raw = (qs.get(name) or [""])[0]
-            if raw:
-                try:
-                    kwargs[name] = int(raw)
-                except ValueError:
-                    self._send_json(400, {"error": f"{name} must be an integer"})
-                    return
-
         try:
-            import archive_query
-
-            result = archive_query.analog_days(date, **kwargs)
+            result = _aq().analog_days(d, **kwargs)
             self._send_json(200, result)
         except ValueError as exc:
             # Bounds errors ("k must be...") and no-data errors both
             # surface as ValueError; the message is user-facing either way.
             self._send_json(400, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            log.error("analog-days query failed for %s: %s", date, exc)
+            log.error("analog-days query failed for %s: %s", d, exc)
             self._send_json(500, {"error": "query failed"})
 
     def _handle_archive_day_summary(self) -> None:
@@ -275,33 +352,29 @@ class HealthHandler(BaseHTTPRequestHandler):
         summary. The summary text is the ONLY input to the embedding
         pipeline; changing its format invalidates stored embeddings.
         """
-        from urllib.parse import parse_qs, urlparse
-        import re
-
         qs = parse_qs(urlparse(self.path).query)
-        date = (qs.get("date") or [""])[0]
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
-            self._send_json(400, {"error": "date must be YYYY-MM-DD"})
+        try:
+            d = _parse_date_param(qs, "date")
+        except _BadRequest as exc:
+            self._send_json(400, {"error": str(exc)})
             return
 
         # SIDE-017: short-circuit today/future — archive never has
         # those partitions during RTH. Avoids a 3–7s DuckDB query that
         # is guaranteed to miss and consume memory each time.
-        if _is_today_or_future_utc(date):
+        if _is_today_or_future_utc(d):
             self._send_json(
                 404, {"error": "date not yet in archive (today or future)"}
             )
             return
 
         try:
-            import archive_query
-
-            text = archive_query.day_summary_text(date)
-            self._send_json(200, {"date": date, "summary": text})
+            text = _aq().day_summary_text(d)
+            self._send_json(200, {"date": d, "summary": text})
         except ValueError as exc:
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            log.error("day-summary query failed for %s: %s", date, exc)
+            log.error("day-summary query failed for %s: %s", d, exc)
             self._send_json(500, {"error": "query failed"})
 
     def _handle_archive_day_features(self) -> None:
@@ -313,36 +386,32 @@ class HealthHandler(BaseHTTPRequestHandler):
         computed. Changing the feature set requires a coordinated
         migration + re-backfill and should bump the response shape.
         """
-        from urllib.parse import parse_qs, urlparse
-        import re
-
         qs = parse_qs(urlparse(self.path).query)
-        date = (qs.get("date") or [""])[0]
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
-            self._send_json(400, {"error": "date must be YYYY-MM-DD"})
+        try:
+            d = _parse_date_param(qs, "date")
+        except _BadRequest as exc:
+            self._send_json(400, {"error": str(exc)})
             return
 
         # SIDE-017: short-circuit today/future — same rationale as
         # _handle_archive_day_summary. The refresh-current-snapshot
         # cron fires both of these in parallel every 5 min in RTH.
-        if _is_today_or_future_utc(date):
+        if _is_today_or_future_utc(d):
             self._send_json(
                 404, {"error": "date not yet in archive (today or future)"}
             )
             return
 
         try:
-            import archive_query
-
-            vector = archive_query.day_features_vector(date)
+            vector = _aq().day_features_vector(d)
             self._send_json(
                 200,
-                {"date": date, "dim": len(vector), "vector": vector},
+                {"date": d, "dim": len(vector), "vector": vector},
             )
         except ValueError as exc:
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            log.error("day-features query failed for %s: %s", date, exc)
+            log.error("day-features query failed for %s: %s", d, exc)
             self._send_json(500, {"error": "query failed"})
 
     def _handle_archive_day_features_batch(self) -> None:
@@ -354,35 +423,15 @@ class HealthHandler(BaseHTTPRequestHandler):
         3 years per request to bound query cost (a 3-year range is
         ~750 dates × ~370k instruments = well within 8 vCPU budget).
         """
-        from urllib.parse import parse_qs, urlparse
-        import re
-        from datetime import date
-
         qs = parse_qs(urlparse(self.path).query)
-        start = (qs.get("from") or [""])[0]
-        end = (qs.get("to") or [""])[0]
-        for v in (start, end):
-            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
-                self._send_json(400, {"error": "from/to must be YYYY-MM-DD"})
-                return
         try:
-            d0 = date.fromisoformat(start)
-            d1 = date.fromisoformat(end)
-        except ValueError:
-            self._send_json(400, {"error": "invalid date"})
-            return
-        if d1 < d0:
-            self._send_json(400, {"error": "to must be >= from"})
-            return
-        # 3-year window cap — longer ranges should paginate client-side.
-        if (d1 - d0).days > 366 * 3:
-            self._send_json(400, {"error": "range cannot exceed 3 years"})
+            start, end = _parse_date_range(qs)
+        except _BadRequest as exc:
+            self._send_json(400, {"error": str(exc)})
             return
 
         try:
-            import archive_query
-
-            rows = archive_query.day_features_batch(start, end)
+            rows = _aq().day_features_batch(start, end)
             self._send_json(200, {"from": start, "to": end, "rows": rows})
         except Exception as exc:  # noqa: BLE001
             log.error("day-features-batch failed for %s..%s: %s", start, end, exc)
@@ -390,34 +439,15 @@ class HealthHandler(BaseHTTPRequestHandler):
 
     def _handle_archive_day_summary_batch(self) -> None:
         """GET /archive/day-summary-batch?from=YYYY-MM-DD&to=YYYY-MM-DD"""
-        from urllib.parse import parse_qs, urlparse
-        import re
-        from datetime import date
-
         qs = parse_qs(urlparse(self.path).query)
-        start = (qs.get("from") or [""])[0]
-        end = (qs.get("to") or [""])[0]
-        for v in (start, end):
-            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
-                self._send_json(400, {"error": "from/to must be YYYY-MM-DD"})
-                return
         try:
-            d0 = date.fromisoformat(start)
-            d1 = date.fromisoformat(end)
-        except ValueError:
-            self._send_json(400, {"error": "invalid date"})
-            return
-        if d1 < d0:
-            self._send_json(400, {"error": "to must be >= from"})
-            return
-        if (d1 - d0).days > 366 * 3:
-            self._send_json(400, {"error": "range cannot exceed 3 years"})
+            start, end = _parse_date_range(qs)
+        except _BadRequest as exc:
+            self._send_json(400, {"error": str(exc)})
             return
 
         try:
-            import archive_query
-
-            rows = archive_query.day_summary_batch(start, end)
+            rows = _aq().day_summary_batch(start, end)
             self._send_json(200, {"from": start, "to": end, "rows": rows})
         except Exception as exc:  # noqa: BLE001
             log.error("day-summary-batch failed for %s..%s: %s", start, end, exc)
@@ -431,54 +461,33 @@ class HealthHandler(BaseHTTPRequestHandler):
         includes fields available by the end of the first trading hour
         (no EOD close, no full-day range, no full-day volume).
         """
-        from urllib.parse import parse_qs, urlparse
-        import re
-
         qs = parse_qs(urlparse(self.path).query)
-        date = (qs.get("date") or [""])[0]
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
-            self._send_json(400, {"error": "date must be YYYY-MM-DD"})
-            return
         try:
-            import archive_query
+            d = _parse_date_param(qs, "date")
+        except _BadRequest as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
 
-            text = archive_query.day_summary_prediction(date)
-            self._send_json(200, {"date": date, "summary": text})
+        try:
+            text = _aq().day_summary_prediction(d)
+            self._send_json(200, {"date": d, "summary": text})
         except ValueError as exc:
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            log.error("day-summary-prediction failed for %s: %s", date, exc)
+            log.error("day-summary-prediction failed for %s: %s", d, exc)
             self._send_json(500, {"error": "query failed"})
 
     def _handle_archive_day_summary_prediction_batch(self) -> None:
         """GET /archive/day-summary-prediction-batch?from=Y-M-D&to=Y-M-D"""
-        from urllib.parse import parse_qs, urlparse
-        import re
-        from datetime import date
-
         qs = parse_qs(urlparse(self.path).query)
-        start = (qs.get("from") or [""])[0]
-        end = (qs.get("to") or [""])[0]
-        for v in (start, end):
-            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
-                self._send_json(400, {"error": "from/to must be YYYY-MM-DD"})
-                return
         try:
-            d0 = date.fromisoformat(start)
-            d1 = date.fromisoformat(end)
-        except ValueError:
-            self._send_json(400, {"error": "invalid date"})
+            start, end = _parse_date_range(qs)
+        except _BadRequest as exc:
+            self._send_json(400, {"error": str(exc)})
             return
-        if d1 < d0:
-            self._send_json(400, {"error": "to must be >= from"})
-            return
-        if (d1 - d0).days > 366 * 3:
-            self._send_json(400, {"error": "range cannot exceed 3 years"})
-            return
-        try:
-            import archive_query
 
-            rows = archive_query.day_summary_prediction_batch(start, end)
+        try:
+            rows = _aq().day_summary_prediction_batch(start, end)
             self._send_json(200, {"from": start, "to": end, "rows": rows})
         except Exception as exc:  # noqa: BLE001
             log.error(
@@ -498,24 +507,20 @@ class HealthHandler(BaseHTTPRequestHandler):
         Unauthenticated — TBBO data is public market data, and the
         sidecar doesn't expose any secrets through this shape.
         """
-        from urllib.parse import parse_qs, urlparse
-        import re
-
         qs = parse_qs(urlparse(self.path).query)
-        date = (qs.get("date") or [""])[0]
         symbol = (qs.get("symbol") or [""])[0].upper()
 
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
-            self._send_json(400, {"error": "date must be YYYY-MM-DD"})
+        try:
+            d = _parse_date_param(qs, "date")
+        except _BadRequest as exc:
+            self._send_json(400, {"error": str(exc)})
             return
         if symbol not in {"ES", "NQ"}:
             self._send_json(400, {"error": "symbol must be 'ES' or 'NQ'"})
             return
 
         try:
-            import archive_query
-
-            result = archive_query.tbbo_day_microstructure(date, symbol)
+            result = _aq().tbbo_day_microstructure(d, symbol)
             self._send_json(200, result)
         except ValueError as exc:
             # "No TBBO X bars found..." = 404; invalid-input errors were
@@ -525,7 +530,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             log.error(
                 "tbbo-day-microstructure failed for %s/%s: %s",
-                date,
+                d,
                 symbol,
                 exc,
             )
@@ -538,14 +543,12 @@ class HealthHandler(BaseHTTPRequestHandler):
         describing where ``value`` falls in the last 252 days of historical
         daily-mean OFI at ``window`` for ``symbol`` (front-month only).
         """
-        from urllib.parse import parse_qs, urlparse
         import math
 
         qs = parse_qs(urlparse(self.path).query)
         symbol = (qs.get("symbol") or [""])[0].upper()
         value_raw = (qs.get("value") or [""])[0]
         window = (qs.get("window") or ["1h"])[0]
-        horizon_raw = (qs.get("horizon_days") or [""])[0]
 
         if symbol not in {"ES", "NQ"}:
             self._send_json(400, {"error": "symbol must be 'ES' or 'NQ'"})
@@ -566,29 +569,22 @@ class HealthHandler(BaseHTTPRequestHandler):
             return
 
         kwargs: dict[str, object] = {"window": window}
-        if horizon_raw:
-            try:
-                horizon = int(horizon_raw)
-            except ValueError:
-                self._send_json(400, {"error": "horizon_days must be an integer"})
-                return
-            if horizon < 1:
-                self._send_json(400, {"error": "horizon_days must be >= 1"})
-                return
-            # Import locally to keep `archive_query` (and thus DuckDB)
-            # off the import path of unrelated handlers.
-            import archive_query as _archive_query
-
-            if horizon > _archive_query._TBBO_OFI_MAX_HORIZON_DAYS:
-                # Public unauthenticated endpoint — cap at ~4 trading
-                # years to bound query cost. A caller requesting an
-                # absurd horizon would otherwise full-scan the archive.
+        try:
+            horizon = _parse_optional_int(qs, "horizon_days", lo=1)
+        except _BadRequest as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        if horizon is not None:
+            # Public unauthenticated endpoint — cap at ~4 trading
+            # years to bound query cost. A caller requesting an
+            # absurd horizon would otherwise full-scan the archive.
+            if horizon > _aq()._TBBO_OFI_MAX_HORIZON_DAYS:
                 self._send_json(
                     400,
                     {
                         "error": (
                             "horizon_days must be <= "
-                            f"{_archive_query._TBBO_OFI_MAX_HORIZON_DAYS}"
+                            f"{_aq()._TBBO_OFI_MAX_HORIZON_DAYS}"
                         )
                     },
                 )
@@ -596,9 +592,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             kwargs["horizon_days"] = horizon
 
         try:
-            import archive_query
-
-            result = archive_query.tbbo_ofi_percentile(symbol, value, **kwargs)
+            result = _aq().tbbo_ofi_percentile(symbol, value, **kwargs)
             self._send_json(200, result)
         except ValueError as exc:
             # No-data errors → 404 (empty archive / window never had data);
