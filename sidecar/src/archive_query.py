@@ -31,6 +31,7 @@ from typing import Any
 
 import duckdb
 
+from front_month import front_month_cte
 from logger_setup import log
 
 _ROOT = Path(os.environ.get("ARCHIVE_ROOT", "/data/archive"))
@@ -779,50 +780,28 @@ def day_features_batch(
     ohlcv = _ohlcv_glob(root)
     symbology = _symbology_path(root)
 
+    # Standardized via `front_month_cte` (Phase 2b). Behavior change vs
+    # pre-refactor: tied-volume contracts now resolve to the
+    # lexicographically-smaller name instead of whichever row DuckDB
+    # happened to surface first. Real-volume ties between two ES outright
+    # contracts on the same day are vanishingly rare in production data;
+    # the determinism guarantee is the win.
     rows = conn.execute(
-        """
-        WITH filtered AS (
-            SELECT bars.ts_event,
-                   bars.open,
-                   bars.close,
-                   bars.volume,
-                   sym.symbol,
-                   CAST(date_trunc('day', bars.ts_event) AS DATE) AS day
-            FROM read_parquet(?) AS bars
-            JOIN read_parquet(?) AS sym USING (instrument_id)
-            WHERE sym.symbol LIKE 'ES%'
-              AND strpos(sym.symbol, ' ') = 0
-              AND CAST(date_trunc('day', bars.ts_event) AS DATE)
-                  BETWEEN ?::DATE AND ?::DATE
-        ),
-        contract_volume AS (
-            SELECT day, symbol, SUM(volume) AS total_vol
-            FROM filtered
-            GROUP BY day, symbol
-        ),
-        front_contract AS (
-            SELECT day, symbol
-            FROM (
-                SELECT day, symbol,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY day ORDER BY total_vol DESC
-                       ) AS rk
-                FROM contract_volume
-            ) ranked
-            WHERE rk = 1
-        ),
-        front_bars AS (
-            SELECT f.ts_event, f.open, f.close, f.symbol, f.day
-            FROM filtered f
-            JOIN front_contract fc USING (day, symbol)
-        ),
+        front_month_cte(
+            symbol_like="'ES%'",
+            parquet_path_param="?",
+            symbology_path_param="?",
+            date_filter_sql="BETWEEN ?::DATE AND ?::DATE",
+            extra_select_cols=("bars.open", "bars.close"),
+        )
+        + """
         per_day AS (
             SELECT day,
                    symbol,
                    MIN(ts_event) AS session_open_ts,
                    FIRST(open ORDER BY ts_event) AS day_open,
                    COUNT(*) AS total_bars
-            FROM front_bars
+            FROM fb
             GROUP BY day, symbol
         ),
         first_hour AS (
@@ -835,7 +814,7 @@ def day_features_batch(
                        / 60.0 AS INTEGER
                    ) AS minute_idx,
                    fb.close
-            FROM front_bars fb
+            FROM fb
             JOIN per_day pd USING (day, symbol)
             WHERE fb.ts_event > pd.session_open_ts
               AND fb.ts_event
@@ -905,35 +884,23 @@ def day_summary_batch(
     ohlcv = _ohlcv_glob(root)
     symbology = _symbology_path(root)
 
+    # Standardized via `front_month_cte` (Phase 2b). Tied-volume
+    # contracts now resolve deterministically by `symbol ASC` rather
+    # than relying on DuckDB row order — see day_features_batch comment.
     rows = conn.execute(
-        """
-        WITH filtered AS (
-            SELECT bars.ts_event,
-                   bars.open, bars.high, bars.low, bars.close, bars.volume,
-                   sym.symbol,
-                   CAST(date_trunc('day', bars.ts_event) AS DATE) AS day
-            FROM read_parquet(?) AS bars
-            JOIN read_parquet(?) AS sym USING (instrument_id)
-            WHERE sym.symbol LIKE 'ES%'
-              AND strpos(sym.symbol, ' ') = 0
-              AND CAST(date_trunc('day', bars.ts_event) AS DATE)
-                  BETWEEN ?::DATE AND ?::DATE
-        ),
-        contract_volume AS (
-            SELECT day, symbol, SUM(volume) AS total_vol
-            FROM filtered GROUP BY day, symbol
-        ),
-        front_contract AS (
-            SELECT day, symbol FROM (
-                SELECT day, symbol,
-                       ROW_NUMBER() OVER (PARTITION BY day ORDER BY total_vol DESC) AS rk
-                FROM contract_volume
-            ) r WHERE rk = 1
-        ),
-        fb AS (
-            SELECT f.* FROM filtered f
-            JOIN front_contract fc USING (day, symbol)
-        ),
+        front_month_cte(
+            symbol_like="'ES%'",
+            parquet_path_param="?",
+            symbology_path_param="?",
+            date_filter_sql="BETWEEN ?::DATE AND ?::DATE",
+            extra_select_cols=(
+                "bars.open",
+                "bars.high",
+                "bars.low",
+                "bars.close",
+            ),
+        )
+        + """
         base AS (
             SELECT day,
                    symbol,
@@ -1030,35 +997,23 @@ def day_summary_prediction_batch(
     ohlcv = _ohlcv_glob(root)
     symbology = _symbology_path(root)
 
+    # Standardized via `front_month_cte` (Phase 2b). Tied-volume
+    # contracts now resolve deterministically by `symbol ASC` rather
+    # than relying on DuckDB row order — see day_features_batch comment.
     rows = conn.execute(
-        """
-        WITH filtered AS (
-            SELECT bars.ts_event, bars.open, bars.high, bars.low,
-                   bars.close, bars.volume,
-                   sym.symbol,
-                   CAST(date_trunc('day', bars.ts_event) AS DATE) AS day
-            FROM read_parquet(?) AS bars
-            JOIN read_parquet(?) AS sym USING (instrument_id)
-            WHERE sym.symbol LIKE 'ES%'
-              AND strpos(sym.symbol, ' ') = 0
-              AND CAST(date_trunc('day', bars.ts_event) AS DATE)
-                  BETWEEN ?::DATE AND ?::DATE
-        ),
-        contract_volume AS (
-            SELECT day, symbol, SUM(volume) AS total_vol
-            FROM filtered GROUP BY day, symbol
-        ),
-        front_contract AS (
-            SELECT day, symbol FROM (
-                SELECT day, symbol,
-                       ROW_NUMBER() OVER (PARTITION BY day ORDER BY total_vol DESC) AS rk
-                FROM contract_volume
-            ) r WHERE rk = 1
-        ),
-        fb AS (
-            SELECT f.* FROM filtered f
-            JOIN front_contract fc USING (day, symbol)
-        ),
+        front_month_cte(
+            symbol_like="'ES%'",
+            parquet_path_param="?",
+            symbology_path_param="?",
+            date_filter_sql="BETWEEN ?::DATE AND ?::DATE",
+            extra_select_cols=(
+                "bars.open",
+                "bars.high",
+                "bars.low",
+                "bars.close",
+            ),
+        )
+        + """
         day_bounds AS (
             SELECT day, symbol,
                    MIN(ts_event) AS open_ts,
@@ -1416,37 +1371,26 @@ def tbbo_ofi_percentile(
     # (DuckDB's ROWS BETWEEN doesn't accept runtime scalars in older
     # versions). We validated `window` against a fixed allowlist above so
     # the interpolation is safe.
+    # Standardized via `front_month_cte` (Phase 2b). TBBO already used
+    # `contract ASC` as the volume-tie tiebreak, so this site is
+    # behaviorally unchanged — only the SQL text moves into the shared
+    # builder. The percentile-rank query has no date filter on the
+    # `filtered` CTE; pass an always-true predicate so the builder's
+    # required `date_filter_sql` slot is satisfied.
+    front_month_sql = front_month_cte(
+        symbol_like="?",  # bound below via execute(..., [..., f"{root}%", ...])
+        parquet_path_param="?",
+        symbology_path_param="?",
+        date_filter_sql="IS NOT NULL",  # no date filter; archive is bounded by horizon_days LIMIT
+        ts_column="ts_recv",
+        contract_col="contract",
+        size_col="size",
+        exclude_hyphenated=True,
+        extra_select_cols=("bars.side",),
+    )
     daily = conn.execute(
-        f"""
-        WITH filtered AS (
-            SELECT bars.ts_recv,
-                   bars.side,
-                   bars.size,
-                   sym.symbol AS contract,
-                   CAST(date_trunc('day', bars.ts_recv) AS DATE) AS day
-            FROM read_parquet(?) AS bars
-            JOIN read_parquet(?) AS sym USING (instrument_id)
-            WHERE sym.symbol LIKE ?
-              AND strpos(sym.symbol, ' ') = 0
-              AND strpos(sym.symbol, '-') = 0
-        ),
-        contract_day_volume AS (
-            SELECT day, contract, SUM(size) AS total_vol
-            FROM filtered
-            GROUP BY day, contract
-        ),
-        front_contract AS (
-            SELECT day, contract
-            FROM (
-                SELECT day, contract,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY day
-                           ORDER BY total_vol DESC, contract ASC
-                       ) AS rk
-                FROM contract_day_volume
-            ) r
-            WHERE rk = 1
-        ),
+        front_month_sql
+        + f"""
         per_minute AS (
             SELECT f.day,
                    CAST(date_trunc('minute', f.ts_recv) AS TIMESTAMP) AS minute,

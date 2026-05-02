@@ -1227,3 +1227,130 @@ def test_connection_sets_memory_limit_and_temp_directory(tmp_path: Path) -> None
         )
     finally:
         archive_query.reset_connection_for_tests()
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for Phase 2b — front_month_cte adoption
+# ---------------------------------------------------------------------------
+#
+# The shared `front_month_cte` builder standardizes the
+# `filtered -> contract_volume -> front_contract -> fb` chain across
+# `day_features_batch`, `day_summary_batch`,
+# `day_summary_prediction_batch`, and `tbbo_ofi_percentile`. Three of
+# those sites (the OHLCV ones) previously had no explicit volume-tie
+# tiebreak and relied on DuckDB row order. The adoption pins
+# `tiebreak='contract_asc'` everywhere, so the fixtures below
+# deliberately construct a tied-volume case and assert the
+# lexicographically-smaller contract wins.
+
+
+def test_day_features_batch_tied_volume_resolves_deterministically(
+    tmp_path: Path,
+) -> None:
+    """Two ES contracts with byte-identical day volume should resolve
+    to the lexicographically-smaller contract under the new
+    `tiebreak='contract_asc'` policy. Pre-refactor the OHLCV sites had
+    no tiebreak and the answer depended on DuckDB row order — this
+    test locks the new deterministic behavior so a future refactor
+    can't silently revert it.
+    """
+    from datetime import datetime, timezone
+
+    closes = [5300.0 + i for i in range(1, 61)]
+    # Two contracts on the same day, identical bars (same volume).
+    bars = _sixty_minute_day((2024, 6, 3), 201, 5300.0, closes)
+    bars += _sixty_minute_day((2024, 6, 3), 202, 5300.0, closes)
+    _build_archive(
+        tmp_path,
+        bars,
+        [
+            (
+                201,
+                "ESM4",  # lexicographically smaller
+                datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc),
+                datetime(2024, 6, 3, 15, 30, tzinfo=timezone.utc),
+            ),
+            (
+                202,
+                "ESU4",  # tied volume but should lose tiebreak
+                datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc),
+                datetime(2024, 6, 3, 15, 30, tzinfo=timezone.utc),
+            ),
+        ],
+    )
+
+    batch = archive_query.day_features_batch(
+        "2024-06-03", "2024-06-03", root=tmp_path
+    )
+    assert len(batch) == 1
+    # ESM4 < ESU4 lex-wise → ESM4 wins.
+    assert batch[0]["symbol"] == "ESM4"
+
+
+def test_day_summary_batch_tied_volume_resolves_deterministically(
+    tmp_path: Path,
+) -> None:
+    """Mirror of day_features_batch tiebreak test for day_summary_batch."""
+    from datetime import datetime, timezone
+
+    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    d1 = datetime(2024, 6, 3, 21, 0, tzinfo=timezone.utc)
+    # Same OHLCV for both contracts — identical day volume.
+    bars = [
+        (d0, 201, 5300.0, 5305.0, 5299.0, 5300.0, 1_000_000),
+        (d1, 201, 5300.0, 5310.0, 5299.0, 5305.0, 1_000_000),
+        (d0, 202, 5300.0, 5305.0, 5299.0, 5300.0, 1_000_000),
+        (d1, 202, 5300.0, 5310.0, 5299.0, 5305.0, 1_000_000),
+    ]
+    _build_archive(
+        tmp_path,
+        bars,
+        [
+            (201, "ESM4", d0, d1),
+            (202, "ESU4", d0, d1),
+        ],
+    )
+
+    batch = archive_query.day_summary_batch(
+        "2024-06-03", "2024-06-03", root=tmp_path
+    )
+    assert len(batch) == 1
+    assert batch[0]["symbol"] == "ESM4"
+
+
+def test_day_summary_prediction_batch_tied_volume_resolves_deterministically(
+    tmp_path: Path,
+) -> None:
+    """Mirror tiebreak test for day_summary_prediction_batch."""
+    from datetime import datetime, timezone
+
+    closes = [5300.0 + i for i in range(1, 61)]
+    bars = _sixty_minute_day((2024, 6, 3), 201, 5300.0, closes)
+    bars += _sixty_minute_day((2024, 6, 3), 202, 5300.0, closes)
+    _build_archive(
+        tmp_path,
+        bars,
+        [
+            (
+                201,
+                "ESM4",
+                datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc),
+                datetime(2024, 6, 3, 15, 30, tzinfo=timezone.utc),
+            ),
+            (
+                202,
+                "ESU4",
+                datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc),
+                datetime(2024, 6, 3, 15, 30, tzinfo=timezone.utc),
+            ),
+        ],
+    )
+
+    batch = archive_query.day_summary_prediction_batch(
+        "2024-06-03", "2024-06-03", root=tmp_path
+    )
+    # The prediction batch only emits days with >=10 first-hour bars; both
+    # contracts produce the full 60. Tied-volume case should still resolve
+    # to ESM4.
+    assert len(batch) == 1
+    assert batch[0]["symbol"] == "ESM4"
