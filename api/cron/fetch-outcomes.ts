@@ -27,13 +27,16 @@ import { Sentry, metrics } from '../_lib/sentry.js';
 import { saveOutcome, getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
+import {
   getETTime,
   getETDayOfWeek,
   getETDateStr,
 } from '../../src/utils/timezone.js';
 import { isTradingDay } from '../../src/data/marketHours.js';
 import { buildAnalysisSummary, generateEmbedding } from '../_lib/embeddings.js';
-import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Time window check ──────────────────────────────────────
 
@@ -79,47 +82,27 @@ interface QuotesResponse {
   [symbol: string]: QuoteData;
 }
 
-// ── Handler ─────────────────────────────────────────────────
+// ── Upstream-failure sentinel ──────────────────────────────
+//
+// Distinct error class so the wrapper's errorStatus/errorPayload
+// callbacks can route Schwab API failures to a 502 with the original
+// error message preserved, instead of the default 500.
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.query.backfill === 'true') {
-    // Backfill bypasses time check but still needs auth — check method + secret only
-    const guard = cronGuard(req, res, {
-      marketHours: false,
-      requireApiKey: false,
-    });
-    if (!guard) return;
-    return handleBackfill(res);
+class UpstreamFetchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UpstreamFetchError';
   }
+}
 
-  const force = req.query.force === 'true';
-  const guard = cronGuard(req, res, {
-    timeCheck: force ? () => true : isAfterClose,
-    requireApiKey: false,
-  });
-  if (!guard) return;
-  const { today: dateStr } = guard;
+// ── Main handler (force + post-close + holiday gates) ──────
 
-  // Holiday gate: skip NYSE-closed days so we don't silently report success
-  // after calling Schwab on Thanksgiving/Christmas/etc. `force=true` bypasses
-  // this so a trader can manually re-run on any calendar day.
-  const startTime = Date.now();
+const mainCron = withCronInstrumentation(
+  'fetch-outcomes',
+  async (ctx): Promise<CronResult> => {
+    const { today: dateStr, logger: log } = ctx;
 
-  if (!force && !isTradingDay(dateStr)) {
-    logger.info({ date: dateStr }, 'fetch-outcomes: skipping non-trading day');
-    await reportCronRun('fetch-outcomes', {
-      status: 'skipped',
-      reason: 'not_trading_day',
-      durationMs: Date.now() - startTime,
-    });
-    return res
-      .status(200)
-      .json({ skipped: true, reason: 'not_trading_day', date: dateStr });
-  }
-  const now = new Date();
-
-  try {
-    // Fetch SPX intraday candles for today
+    const now = new Date();
     const start = now.getTime() - 24 * 60 * 60 * 1000;
     const end = now.getTime();
 
@@ -131,11 +114,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     if (!intradayResult.ok) {
-      logger.error(
+      log.error(
         { error: intradayResult.error },
         'fetch-outcomes: Schwab intraday fetch failed',
       );
-      return res.status(502).json({ error: intradayResult.error });
+      throw new UpstreamFetchError(intradayResult.error);
     }
 
     // Filter to today's candles only (9:30 AM ET = 570 min)
@@ -148,13 +131,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
     if (candles.length === 0) {
-      logger.warn('fetch-outcomes: No intraday candles found for today');
-      await reportCronRun('fetch-outcomes', {
+      log.warn('fetch-outcomes: No intraday candles found for today');
+      return {
         status: 'skipped',
-        reason: 'No candles',
-        durationMs: Date.now() - startTime,
-      });
-      return res.status(200).json({ skipped: true, reason: 'No candles' });
+        message: 'No candles',
+        metadata: { skipped: true, reason: 'No candles' },
+      };
     }
 
     const dayOpen = candles[0]!.open;
@@ -162,7 +144,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const dayLow = Math.min(...candles.map((c) => c.low));
     const settlement = candles.at(-1)!.close;
 
-    // Fetch VIX and VIX1D quotes
+    // Fetch VIX and VIX1D quotes (best-effort; VIX failure is non-fatal)
     const quotesResult = await withRetry(() =>
       schwabFetch<QuotesResponse>('/quotes?symbols=$VIX,$VIX1D&fields=quote'),
     );
@@ -171,7 +153,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let vix1dClose: number | undefined;
 
     if (!quotesResult.ok) {
-      logger.warn(
+      log.warn(
         { error: quotesResult.error },
         'fetch-outcomes: VIX quotes failed, saving SPX data only',
       );
@@ -192,15 +174,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
     // Re-embed analyses from today with outcome data (fire-and-forget).
-    // This upgrades the pre-trade embedding to include settlement + correctness,
-    // making future retrieval richer when this day appears as a historical analog.
+    // This upgrades the pre-trade embedding to include settlement +
+    // correctness, making future retrieval richer when this day appears
+    // as a historical analog.
     void enrichAnalysisEmbeddings(dateStr, settlement);
 
-    // Populate actual_close + actual_path on every trace_live_analyses row
-    // captured today so downstream ML (analogs, calibration, drift) has
-    // realized outcomes paired with each prediction. Awaited so the cron's
-    // success signal includes whether the join succeeded — fire-and-forget
-    // here would mean ML scripts run before the data they depend on lands.
+    // Populate actual_close + actual_path on every trace_live_analyses
+    // row captured today so downstream ML (analogs, calibration, drift)
+    // has realized outcomes paired with each prediction. Awaited so the
+    // cron's success signal includes whether the join succeeded —
+    // fire-and-forget would mean ML scripts run before the data they
+    // depend on lands.
     await populateTraceLiveOutcomes(dateStr, settlement, candles);
 
     // Data quality check: alert if settlement is null
@@ -217,11 +201,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       minRows: 0,
     });
 
-    logger.info(
+    const rangePts = Math.round(dayHigh - dayLow);
+    log.info(
       {
         date: dateStr,
         settlement,
-        range: Math.round(dayHigh - dayLow),
+        range: rangePts,
         vixClose,
         vix1dClose,
         candles: candles.length,
@@ -229,37 +214,66 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'fetch-outcomes: saved',
     );
 
-    const rangePts = Math.round(dayHigh - dayLow);
-    await reportCronRun('fetch-outcomes', {
-      status: 'ok',
-      date: dateStr,
-      settlement,
-      dayOpen,
-      dayHigh,
-      dayLow,
-      rangePts,
-      vixClose,
-      vix1dClose,
-      durationMs: Date.now() - startTime,
+    return {
+      status: 'success',
+      metadata: {
+        date: dateStr,
+        settlement,
+        dayOpen,
+        dayHigh,
+        dayLow,
+        rangePts,
+        vixClose: vixClose ?? null,
+        vix1dClose: vix1dClose ?? null,
+      },
+    };
+  },
+  {
+    requireApiKey: false,
+    // Disable the default isMarketHours() gate; the dynamic predicate
+    // below owns the time window (4:15-5:30 PM ET, plus ?force=true,
+    // plus the holiday filter that ?force=true also bypasses).
+    marketHours: false,
+    dynamicTimeCheck: (req) => {
+      const force = req.query?.force === 'true';
+      if (force) return { run: true, reason: 'force=true' };
+      if (!isAfterClose()) {
+        return { run: false, reason: 'Outside time window' };
+      }
+      // Holiday gate: skip NYSE-closed days so we don't silently report
+      // success after calling Schwab on Thanksgiving/Christmas/etc.
+      // ?force=true above bypasses this so a trader can manually re-run
+      // on any calendar day.
+      const todayStr = getETDateStr(new Date());
+      if (!isTradingDay(todayStr)) {
+        return { run: false, reason: 'not_trading_day' };
+      }
+      return { run: true, reason: 'in window' };
+    },
+    // Schwab API failure → 502 with the original message; everything
+    // else (DB errors, etc.) keeps the default 500 + 'Internal error'.
+    errorStatus: (err) =>
+      err instanceof UpstreamFetchError ? 502 : 500,
+    errorPayload: (err) =>
+      err instanceof UpstreamFetchError ? { error: err.message } : {},
+  },
+);
+
+// ── Top-level dispatch (backfill vs main) ──────────────────
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.query.backfill === 'true') {
+    // Backfill bypasses time check but still needs auth — check method +
+    // secret only. Bespoke response shape (`{backfill, saved, skipped}`)
+    // keeps it out of the standard wrapper.
+    const guard = cronGuard(req, res, {
+      marketHours: false,
+      requireApiKey: false,
     });
-    return res.status(200).json({
-      job: 'fetch-outcomes',
-      date: dateStr,
-      settlement,
-      dayOpen,
-      dayHigh,
-      dayLow,
-      rangePts,
-      vixClose: vixClose ?? null,
-      vix1dClose: vix1dClose ?? null,
-      durationMs: Date.now() - startTime,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-outcomes');
-    Sentry.captureException(err);
-    logger.error({ err }, 'fetch-outcomes error');
-    return res.status(500).json({ error: 'Internal error' });
+    if (!guard) return;
+    return handleBackfill(res);
   }
+  return mainCron(req, res);
 }
 
 // ── Trace-live outcomes join ───────────────────────────────

@@ -341,11 +341,14 @@ describe('withCronInstrumentation', () => {
   it('dynamicTimeCheck: receives the request so handlers can read query params', async () => {
     vi.mocked(cronGuard).mockReturnValue(guardOk);
     const handler = vi.fn().mockResolvedValue({ status: 'success' as const });
+    // VercelRequest's `query` is a string-or-array map; the wrapper hands
+    // back the same request object cronGuard saw. Cast to a narrower
+    // shape just inside the predicate so the test reads cleanly.
     const dynamicTimeCheck = vi.fn(
-      (req: { query?: Record<string, string | undefined> }) => ({
-        run: req.query?.force === 'true',
-        reason: 'force=true required',
-      }),
+      (req: import('@vercel/node').VercelRequest) => {
+        const force = req.query?.force === 'true';
+        return { run: force, reason: 'force=true required' };
+      },
     );
     const wrapped = withCronInstrumentation('dyn-req-job', handler, {
       dynamicTimeCheck,

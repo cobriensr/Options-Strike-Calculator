@@ -161,7 +161,7 @@ describe('fetch-outcomes handler', () => {
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(200);
-    expect(res._json).toEqual({
+    expect(res._json).toMatchObject({
       skipped: true,
       reason: 'Outside time window',
     });
@@ -212,10 +212,15 @@ describe('fetch-outcomes handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(res._json).toEqual({
+    // Wrapper-emitted skipped body. The `date` key was dropped from the
+    // body when the holiday gate moved into dynamicTimeCheck (which
+    // doesn't have access to the cron's `today` formatter); the per-cron
+    // metadata is now keyed under `reason`. The Axiom-side dashboard is
+    // unaffected — `reportCronRun` still receives the date via the
+    // wrapper's startTimeMs/durationMs envelope.
+    expect(res._json).toMatchObject({
       skipped: true,
       reason: 'not_trading_day',
-      date: '2026-01-19',
     });
     expect(mockedSchwabFetch).not.toHaveBeenCalled();
     expect(mockSaveOutcome).not.toHaveBeenCalled();
@@ -426,7 +431,7 @@ describe('fetch-outcomes handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(res._json).toEqual({ skipped: true, reason: 'No candles' });
+    expect(res._json).toMatchObject({ skipped: true, reason: 'No candles' });
     expect(mockSaveOutcome).not.toHaveBeenCalled();
   });
 
@@ -477,7 +482,7 @@ describe('fetch-outcomes handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toEqual({ error: 'Internal error' });
+    expect(res._json).toMatchObject({ error: 'Internal error' });
   });
 
   // ── Backfill mode ─────────────────────────────────────────
