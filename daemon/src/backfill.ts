@@ -29,6 +29,7 @@ import { runCapture } from './capture.js';
 import { fetchGexLandscape } from './gex.js';
 import { postTraceLiveAnalyze } from './api-client.js';
 import { computeCapturedAtIso } from '../../src/utils/trace-live-tz.js';
+import { sleep } from './utils/sleep.js';
 
 interface BackfillArgs {
   date: string;
@@ -87,10 +88,6 @@ function buildSlots(startCt: string, endCt: string, stepMin: number): Slot[] {
     });
   }
   return slots;
-}
-
-async function sleep(ms: number): Promise<void> {
-  return await new Promise((r) => setTimeout(r, ms));
 }
 
 /**

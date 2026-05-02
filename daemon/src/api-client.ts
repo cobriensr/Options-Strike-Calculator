@@ -17,6 +17,7 @@
 
 import type { Logger } from 'pino';
 import type { DaemonGexLandscape } from './gex.js';
+import { sleep } from './utils/sleep.js';
 
 const POST_TIMEOUT_MS = 780_000;
 const MAX_RETRIES = 2;
@@ -166,10 +167,6 @@ function shouldRetry(status: number): boolean {
   // 429 once (rate limited), 5xx always (transient server error).
   // 4xx other than 429 = payload bug, no retry.
   return status === 429 || (status >= 500 && status < 600);
-}
-
-async function sleep(ms: number): Promise<void> {
-  return await new Promise((r) => setTimeout(r, ms));
 }
 
 /**
