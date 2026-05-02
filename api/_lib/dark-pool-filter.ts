@@ -23,6 +23,7 @@
  */
 
 import { getCTTime, getETDateStr } from '../../src/utils/timezone.js';
+import { SESSION_OPEN_MIN_CT, SESSION_CLOSE_MIN_CT } from './constants.js';
 
 /**
  * Structural subset of a UW dark-pool trade. We avoid importing the full
@@ -46,19 +47,15 @@ export interface DarkPoolFilterableTrade {
 export const DARK_POOL_FILTER_VERSION = '2026-05-02';
 
 /**
- * Regular-hours US equity session in Central Time:
- * 08:30 inclusive → 15:00 exclusive.
+ * Regular-hours US equity session window. Authored in CT in
+ * `constants.ts` (08:30 inclusive → 15:00 exclusive) — see Phase 5m.
  *
  * `ext_hour_sold_codes` catches trades UW flags as extended-hours, but
  * does NOT catch regular-session-flagged trades whose `executed_at`
  * falls outside normal RTH (e.g. 06:15 CT pre-open block prints with
  * `ext_hour_sold_codes: null`). Per trader preference, those distort
  * the intraday volume profile and must be dropped before aggregation.
- */
-export const INTRADAY_START_MIN_CT = 8 * 60 + 30; // 08:30 CT
-export const INTRADAY_END_MIN_CT = 15 * 60; // 15:00 CT (exclusive)
-
-/**
+ *
  * True when the trade's `executed_at` is inside the regular-hours
  * Central-Time session window. Returns false for unparseable dates.
  */
@@ -67,7 +64,7 @@ export function isIntradayCT(executedAt: string): boolean {
   if (Number.isNaN(d.getTime())) return false;
   const { hour, minute } = getCTTime(d);
   const mins = hour * 60 + minute;
-  return mins >= INTRADAY_START_MIN_CT && mins < INTRADAY_END_MIN_CT;
+  return mins >= SESSION_OPEN_MIN_CT && mins < SESSION_CLOSE_MIN_CT;
 }
 
 export interface DarkPoolFilterOptions {

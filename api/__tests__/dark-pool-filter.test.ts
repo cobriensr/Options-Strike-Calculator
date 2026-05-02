@@ -14,10 +14,12 @@ import {
   passesDarkPoolQualityFilter,
   isIntradayCT,
   DARK_POOL_FILTER_VERSION,
-  INTRADAY_START_MIN_CT,
-  INTRADAY_END_MIN_CT,
   type DarkPoolFilterableTrade,
 } from '../_lib/dark-pool-filter.js';
+import {
+  SESSION_OPEN_MIN_CT,
+  SESSION_CLOSE_MIN_CT,
+} from '../_lib/constants.js';
 
 function makeTrade(
   overrides: Partial<DarkPoolFilterableTrade> = {},
@@ -151,8 +153,8 @@ describe('isIntradayCT', () => {
   });
 
   it('uses the documented boundaries', () => {
-    expect(INTRADAY_START_MIN_CT).toBe(8 * 60 + 30);
-    expect(INTRADAY_END_MIN_CT).toBe(15 * 60);
+    expect(SESSION_OPEN_MIN_CT).toBe(8 * 60 + 30);
+    expect(SESSION_CLOSE_MIN_CT).toBe(15 * 60);
   });
 });
 

@@ -105,6 +105,7 @@
 
 import { getDb } from './db.js';
 import { fmtPct, formatDollarAbbrev, formatSigned } from './format-helpers.js';
+import { SESSION_OPEN_HOUR_UTC, SESSION_OPEN_MINUTE_UTC } from './constants.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
 
 // ── Configuration ─────────────────────────────────────────────
@@ -151,9 +152,13 @@ const WHALE_PREMIUM_MIN_FLOOR = 5_000_000; // $5M total floor
  */
 const ETF_TIDE_DELTA_THRESHOLD = 50_000_000;
 
-/** RTH session anchor (13:30 UTC = 08:30 CT = 09:30 ET). */
-const RTH_OPEN_HOUR_UTC = 13;
-const RTH_OPEN_MINUTE_UTC = 30;
+/**
+ * RTH session anchor (13:30 UTC = 08:30 CT = 09:30 ET). Sourced from
+ * `constants.ts` — single source of truth (Phase 5m). Re-aliased
+ * locally to keep the `rthOpenIsoFor` body identical.
+ */
+const RTH_OPEN_HOUR_UTC = SESSION_OPEN_HOUR_UTC;
+const RTH_OPEN_MINUTE_UTC = SESSION_OPEN_MINUTE_UTC;
 
 // ── Types ─────────────────────────────────────────────────────
 

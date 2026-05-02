@@ -14,13 +14,46 @@ export const TIMEOUTS = {
   DEFAULT: 10_000,
 } as const;
 
-/** Market time boundaries in minutes since midnight (ET) */
+// ============================================================
+// SESSION HOURS — single source of truth
+// ============================================================
+//
+// US equity regular-trading-hours session window. Authored in CT (the
+// trader's timezone) and exposed in ET / UTC equivalents for the
+// existing callers that expressed the same instant in those zones.
+//
+// 08:30 CT == 09:30 ET == 13:30 UTC (DST) / 14:30 UTC (standard).
+// 15:00 CT == 16:00 ET == 20:00 UTC (DST) / 21:00 UTC (standard).
+//
+// The UTC anchor is DST-sensitive — anchor against an ET date string
+// (e.g. via getETDateStr) and convert through getETTime / getCTTime
+// rather than using the UTC hour directly. The legacy UTC constant
+// below is preserved for the `rthOpenIsoFor` call in uw-deltas.ts which
+// uses 13:30 UTC as its DST-tolerant "earliest candidate" anchor.
+
+/** 08:30 CT in minutes since CT midnight = 510. */
+export const SESSION_OPEN_MIN_CT = 8 * 60 + 30;
+/** 15:00 CT in minutes since CT midnight = 900 (exclusive). */
+export const SESSION_CLOSE_MIN_CT = 15 * 60;
+
+/** Market time boundaries in minutes since midnight (ET). 9:30 ET == 8:30 CT. */
 export const MARKET_MINUTES = {
-  /** 9:30 AM ET = 570 minutes */
-  OPEN: 570,
-  /** 4:00 PM ET = 960 minutes */
-  CLOSE: 960,
+  /** 9:30 AM ET = 570 minutes (== SESSION_OPEN_MIN_CT + 60). */
+  OPEN: SESSION_OPEN_MIN_CT + 60,
+  /** 4:00 PM ET = 960 minutes (== SESSION_CLOSE_MIN_CT + 60). */
+  CLOSE: SESSION_CLOSE_MIN_CT + 60,
 } as const;
+
+/**
+ * Earliest-candidate UTC hour for the cash-session open. 13:30 UTC ==
+ * 09:30 ET during DST and 08:30 ET during standard time, so this is
+ * the DST-tolerant lower bound for "after the open". Real
+ * timezone-aware comparisons should anchor on an ET date string
+ * (`getETDateStr`) and convert through `getETTime`/`getCTTime`.
+ */
+export const SESSION_OPEN_HOUR_UTC = 13;
+/** Minutes-of-hour companion to `SESSION_OPEN_HOUR_UTC`. */
+export const SESSION_OPEN_MINUTE_UTC = 30;
 
 /** Unusual Whales API base URL */
 export const UW_BASE = 'https://api.unusualwhales.com/api';
