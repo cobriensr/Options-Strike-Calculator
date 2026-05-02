@@ -36,19 +36,23 @@ type SourceStatus =
   | { succeeded: true; fetched: number; storedRows: number }
   | { succeeded: false; stage: 'fetch' | 'store'; reason: string };
 
+// Shared response-body shape used in both the success path (passed
+// through wrapper metadata) and the AllSourcesFailedError sentinel.
+// Single source of truth so the two construction sites can't drift —
+// flagged by Wave 3 reviewer.
+type FetchFlowResponseBody = {
+  stored: boolean;
+  partial: boolean;
+  market_tide: { stored: boolean; timestamp?: string } | null;
+  market_tide_otm: { stored: boolean; timestamp?: string } | null;
+  sources: { marketTide: SourceStatus; marketTideOtm: SourceStatus };
+};
+
 // Sentinel: signals "all sources failed - return the legacy 500 body
 // with the structured `sources` field intact". Distinct from a thrown
 // error (rendered as { job, error: 'Internal error' } by the wrapper).
 class AllSourcesFailedError extends Error {
-  constructor(
-    public readonly responseBody: {
-      stored: boolean;
-      partial: boolean;
-      market_tide: { stored: boolean; timestamp?: string } | null;
-      market_tide_otm: { stored: boolean; timestamp?: string } | null;
-      sources: { marketTide: SourceStatus; marketTideOtm: SourceStatus };
-    },
-  ) {
+  constructor(public readonly responseBody: FetchFlowResponseBody) {
     super('All sources failed');
     this.name = 'AllSourcesFailedError';
   }
@@ -225,7 +229,7 @@ export default withCronInstrumentation(
     // signal for the worst case while letting partial failures report
     // 200 with the structured `sources` field so monitoring can still
     // tell a zero-row success from a fetch error.
-    const responseBody = {
+    const responseBody: FetchFlowResponseBody = {
       stored: anyStored,
       partial,
       market_tide: allInResult,
