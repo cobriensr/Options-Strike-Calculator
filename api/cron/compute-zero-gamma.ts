@@ -37,11 +37,13 @@
  * Environment: CRON_SECRET (no UW API key required — purely derivative)
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
-import { cronGuard } from '../_lib/api-helpers.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 import { computeZeroGammaLevel, type GexStrike } from '../_lib/zero-gamma.js';
 import {
   ZERO_GAMMA_TICKERS,
@@ -237,34 +239,34 @@ async function processTicker(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res, { requireApiKey: false });
-  if (!guard) return;
-  const { today } = guard;
+export default withCronInstrumentation(
+  'compute-zero-gamma',
+  async (ctx): Promise<CronResult> => {
+    const { today } = ctx;
+    const sql = getDb();
 
-  const startTime = Date.now();
-  const sql = getDb();
+    const perTicker: Record<
+      string,
+      TickerOutcome | { stored: false; error: string }
+    > = {};
 
-  const perTicker: Record<
-    string,
-    TickerOutcome | { stored: false; error: string }
-  > = {};
-
-  for (const ticker of ZERO_GAMMA_TICKERS) {
-    try {
-      perTicker[ticker] = await processTicker(sql, ticker, today);
-    } catch (err) {
-      Sentry.setTag('cron.job', 'compute-zero-gamma');
-      Sentry.setTag('ticker', ticker);
-      Sentry.captureException(err);
-      logger.error({ err, ticker }, 'compute-zero-gamma: per-ticker failure');
-      perTicker[ticker] = { stored: false, error: String(err) };
+    for (const ticker of ZERO_GAMMA_TICKERS) {
+      try {
+        perTicker[ticker] = await processTicker(sql, ticker, today);
+      } catch (err) {
+        // The wrapper sets `cron.job` once at entry; we only need the ticker
+        // tag here so per-ticker exceptions are filterable in Sentry.
+        Sentry.setTag('ticker', ticker);
+        Sentry.captureException(err);
+        logger.error({ err, ticker }, 'compute-zero-gamma: per-ticker failure');
+        perTicker[ticker] = { stored: false, error: String(err) };
+      }
     }
-  }
 
-  return res.status(200).json({
-    job: 'compute-zero-gamma',
-    perTicker,
-    durationMs: Date.now() - startTime,
-  });
-}
+    return {
+      status: 'success',
+      metadata: { perTicker },
+    };
+  },
+  { requireApiKey: false },
+);
