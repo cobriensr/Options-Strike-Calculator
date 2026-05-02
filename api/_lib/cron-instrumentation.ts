@@ -152,10 +152,16 @@ export function withCronInstrumentation(
       // reportCronRun never throws — it swallows errors internally — but
       // we still wrap defensively so a downstream rewrite can't break the
       // 500 response path.
+      //
+      // Backward-compat alias: pre-wrapper handlers wrote `error: <msg>` to
+      // Axiom metadata. We emit BOTH `error` and `message` so existing
+      // dashboards keyed on either field keep working post-adoption.
       try {
+        const errorMessage = err instanceof Error ? err.message : String(err);
         await reportCronRun(jobName, {
           status: 'error',
-          message: err instanceof Error ? err.message : String(err),
+          message: errorMessage,
+          error: errorMessage,
           durationMs,
         });
       } catch {

@@ -162,7 +162,11 @@ describe('withCronInstrumentation', () => {
       'boom-job',
       expect.objectContaining({
         status: 'error',
+        // Both `message` (new wrapper field) and `error` (legacy field
+        // pre-Phase-3a) are emitted so existing Axiom dashboards keyed on
+        // either key keep working post-adoption.
         message: 'handler exploded',
+        error: 'handler exploded',
       }),
     );
     expect(res._status).toBe(500);
