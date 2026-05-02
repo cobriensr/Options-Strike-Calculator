@@ -9,11 +9,11 @@
  * On first run, backfills all historical dates. After that, only processes today.
  *
  * Feature engineering is split into focused modules:
- *   build-features-flow.ts   — flow checkpoint NCP/NPP + agreement
- *   build-features-gex.ts    — GEX, Greek exposure, per-strike features
- *   build-features-phase2.ts — prev day, realized vol, events, max pain, dark pool, options
- *   build-features-monitor.ts — IV monitor + flow ratio monitor dynamics
- *   build-features-types.ts  — shared types, constants, and helpers
+ *   build-features-flow.ts   - flow checkpoint NCP/NPP + agreement
+ *   build-features-gex.ts    - GEX, Greek exposure, per-strike features
+ *   build-features-phase2.ts - prev day, realized vol, events, max pain, dark pool, options
+ *   build-features-monitor.ts - IV monitor + flow ratio monitor dynamics
+ *   build-features-types.ts  - shared types, constants, and helpers
  *
  * Environment: DATABASE_URL, CRON_SECRET
  */
@@ -21,8 +21,10 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
-import logger from '../_lib/logger.js';
-import { cronGuard } from '../_lib/api-helpers.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 import {
   getETTime,
   getETDayOfWeek,
@@ -30,10 +32,7 @@ import {
   getETDateStr,
 } from '../../src/utils/timezone.js';
 import { getMarketCloseHourET } from '../../src/data/marketHours.js';
-import type {
-  FeatureRow,
-  SnapshotRow,
-} from '../_lib/build-features-types.js';
+import type { FeatureRow, SnapshotRow } from '../_lib/build-features-types.js';
 import { num } from '../_lib/build-features-types.js';
 import { engineerFlowFeatures } from '../_lib/build-features-flow.js';
 import { engineerGexFeatures } from '../_lib/build-features-gex.js';
@@ -51,18 +50,17 @@ import {
   extractLabelsForDate,
   upsertLabels,
 } from '../_lib/build-features-labels.js';
-import { reportCronRun } from '../_lib/axiom.js';
 
 export const config = { maxDuration: 300 };
 
-// ── Time window check ──────────────────────────────────────
+// Time window check
 
 function isPostClose(): boolean {
   const now = new Date();
   const day = getETDayOfWeek(now);
   if (day === 0 || day === 6) return false;
 
-  // Skip market holidays — getMarketCloseHourET returns null for closed days.
+  // Skip market holidays. getMarketCloseHourET returns null for closed days.
   // Without this check, a holiday like Good Friday 2026-04-03 would still
   // land in the post-close window and produce a phantom training_features
   // row from empty UW API responses.
@@ -86,7 +84,7 @@ function toDateStr(val: unknown): string {
   return s;
 }
 
-// ── Build features for a single date ───────────────────────
+// Build features for a single date
 
 async function buildFeaturesForDate(
   dateStr: string,
@@ -145,7 +143,7 @@ async function buildFeaturesForDate(
   }
 
   // Day of week from date string. The dateStr is already an ET calendar
-  // date, so the weekday is a pure property of that date — no TZ math
+  // date, so the weekday is a pure property of that date - no TZ math
   // needed. The TZ-aware helper handles DST and any host TZ uniformly,
   // unlike the previous hardcoded -05:00 offset.
   const dow = getETDayOfWeekFromDateStr(dateStr);
@@ -179,61 +177,57 @@ async function buildFeaturesForDate(
   return features;
 }
 
-// ── Handler ─────────────────────────────────────────────────
+// Wrapped main cron.
+//
+// `currentReq` is set by the dispatcher below before each invocation
+// and cleared in the finally block. The wrapped handler reads it to
+// pull `?backfill=` and `?date=` query params - CronContext
+// intentionally hides the raw request, but build-features needs both
+// for date-list selection AND statement_timeout tuning. Cron
+// invocations are serial (one Vercel sandbox = one request at a time),
+// so the module-scoped ref is safe even though the surface looks like
+// shared state.
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const backfill = req.query.backfill === 'true';
+let currentReq: VercelRequest | null = null;
 
-  // Optional `?date=YYYY-MM-DD` — process only the named date, skipping the
-  // time-window check. Useful for refetching a single day after a cron miss
-  // or to test freshness lag without running a blanket backfill that risks
-  // hitting rolling-window API failures on older dates.
-  const dateParamRaw = req.query.date;
-  const dateParam = typeof dateParamRaw === 'string' ? dateParamRaw : undefined;
-  if (dateParam != null && !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
-    return res
-      .status(400)
-      .json({ error: 'Invalid date param, expected YYYY-MM-DD' });
-  }
+const wrappedCron = withCronInstrumentation(
+  'build-features',
+  async (ctx): Promise<CronResult> => {
+    const { logger: log } = ctx;
+    const req = currentReq;
+    const backfill = req?.query.backfill === 'true';
+    const dateParamRaw = req?.query.date;
+    const dateParam =
+      typeof dateParamRaw === 'string' ? dateParamRaw : undefined;
 
-  // Time window is bypassed for backfill OR explicit single-date requests.
-  const skipTimeCheck = backfill || dateParam != null;
-  const guard = cronGuard(req, res, {
-    timeCheck: skipTimeCheck ? () => true : isPostClose,
-    requireApiKey: false,
-  });
-  if (!guard) return;
+    const sql = getDb();
+    // Single-date and current-day runs use the tighter timeout; only blanket
+    // backfill needs the long one.
+    if (backfill && dateParam == null) {
+      await sql`SET statement_timeout = '120000'`; // 120s per statement for backfill
+    } else {
+      await sql`SET statement_timeout = '30000'`; // 30s per statement
+    }
 
-  const startTime = Date.now();
-  const sql = getDb();
-  // Single-date and current-day runs use the tighter timeout; only blanket
-  // backfill needs the long one.
-  if (backfill && dateParam == null) {
-    await sql`SET statement_timeout = '120000'`; // 120s per statement for backfill
-  } else {
-    await sql`SET statement_timeout = '30000'`; // 30s per statement
-  }
+    // Diagnostic: log flow_data coverage for today before doing any work
+    const today = ctx.today;
+    const coverage = await sql`
+      SELECT source, COUNT(*) as rows
+      FROM flow_data
+      WHERE date = ${today}
+      GROUP BY source
+      ORDER BY source
+    `;
+    log.info({ date: today, sources: coverage }, 'flow_data coverage');
 
-  // Diagnostic: log flow_data coverage for today before doing any work
-  const today = guard.today;
-  const coverage = await sql`
-    SELECT source, COUNT(*) as rows
-    FROM flow_data
-    WHERE date = ${today}
-    GROUP BY source
-    ORDER BY source
-  `;
-  logger.info({ date: today, sources: coverage }, 'flow_data coverage');
-
-  try {
     // Determine which dates to process
     let dates: string[];
 
     if (dateParam != null) {
-      // Explicit single-date mode — highest precedence. Used for refetching
-      // one day after a cron miss or freshness investigation.
+      // Explicit single-date mode - highest precedence. Used for
+      // refetching one day after a cron miss or freshness investigation.
       dates = [dateParam];
-      logger.info({ date: dateParam }, 'build-features: single-date mode');
+      log.info({ date: dateParam }, 'build-features: single-date mode');
     } else if (backfill) {
       // Process all historical dates with flow data
       const rows = await sql`
@@ -251,7 +245,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           SELECT DISTINCT date FROM flow_data ORDER BY date ASC
         `;
         dates = rows.map((r) => toDateStr(r.date));
-        logger.info(
+        log.info(
           { dates: dates.length },
           'build-features: empty table, backfilling all dates',
         );
@@ -286,7 +280,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
       } catch (err) {
         Sentry.captureException(err);
-        logger.warn(
+        log.warn(
           { err, date: dateStr },
           'build-features: error processing date',
         );
@@ -294,33 +288,58 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    logger.info(
+    log.info(
       { dates: dates.length, featuresBuilt, labelsExtracted, errors },
       'build-features: completed',
     );
 
-    await reportCronRun('build-features', {
-      status: errors > 0 ? 'partial' : 'ok',
-      dates: dates.length,
-      featuresBuilt,
-      labelsExtracted,
-      errors,
-      completeness: latestCompleteness,
-      durationMs: Date.now() - startTime,
-    });
+    return {
+      status: errors > 0 ? 'partial' : 'success',
+      metadata: {
+        dates: dates.length,
+        featuresBuilt,
+        labelsExtracted,
+        errors,
+        completeness: latestCompleteness,
+      },
+    };
+  },
+  {
+    requireApiKey: false,
+    // Disable the default isMarketHours() gate; isPostClose owns the
+    // window, and ?backfill=true / ?date= override it.
+    marketHours: false,
+    dynamicTimeCheck: (req) => {
+      const backfill = req.query?.backfill === 'true';
+      const dateParam = typeof req.query?.date === 'string';
+      // Backfill OR explicit single-date requests bypass the time window.
+      if (backfill || dateParam) return { run: true, reason: 'override' };
+      return {
+        run: isPostClose(),
+        reason: 'Outside time window',
+      };
+    },
+  },
+);
 
-    return res.status(200).json({
-      job: 'build-features',
-      dates: dates.length,
-      featuresBuilt,
-      labelsExtracted,
-      errors,
-      durationMs: Date.now() - startTime,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'build-features');
-    Sentry.captureException(err);
-    logger.error({ err }, 'build-features error');
-    return res.status(500).json({ error: 'Internal error' });
+// Top-level dispatch.
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // 400 path - bad ?date= parameter must reject before any auth / time
+  // gate so the test contract { error: 'Invalid date param, ...' } is
+  // preserved verbatim.
+  const dateParamRaw = req.query.date;
+  const dateParam = typeof dateParamRaw === 'string' ? dateParamRaw : undefined;
+  if (dateParam != null && !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+    return res
+      .status(400)
+      .json({ error: 'Invalid date param, expected YYYY-MM-DD' });
+  }
+
+  currentReq = req;
+  try {
+    await wrappedCron(req, res);
+  } finally {
+    currentReq = null;
   }
 }

@@ -305,7 +305,7 @@ describe('build-features handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toEqual({ error: 'Internal error' });
+    expect(res._json).toMatchObject({ error: 'Internal error' });
   });
 
   // ── Invalid date filtering ────────────────────────────────
