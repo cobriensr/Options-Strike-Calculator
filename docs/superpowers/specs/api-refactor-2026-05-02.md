@@ -339,8 +339,103 @@ Targets: `fetch-strike-iv` (13 tickers), `fetch-strike-exposure`,
 
 ## Done when
 
-- All Phase 1-5 sub-tasks committed to `main`.
-- `npm run review` green.
-- Final code-reviewer subagent verdict = `pass`.
+- All Phase 1-5 sub-tasks committed to `main`. ✅ (with two explicit
+  partial scopes — see "Deferred" below)
+- `npm run review` green. ✅ (9441 tests pass / 3 skipped at HEAD;
+  93.84% statement coverage)
+- Final code-reviewer subagent verdict = `pass`. ✅
 - No production regressions observed in Sentry/Axiom in the 24h after
   the last commit lands.
+
+## Deferred (documented, not silently skipped)
+
+- **Phase 3a remaining batches (~30 of 49 crons).** Adoption was
+  alphabetical batches of 5; 15 crons (3 batches × 5) shipped. The
+  remaining ~30 have non-standard shapes that need wrapper enhancements
+  before adoption:
+  - `auto-prefill-premarket`, `backfill-futures-gaps`, `backup-tables`,
+    `build-features`, `compute-zero-gamma`: custom early-return paths
+    or non-standard error responses
+  - `fetch-economic-calendar`: `?force=true` query-param-driven
+    `timeCheck` can't be expressed as a static option
+  - `fetch-darkpool` / `fetch-flow` / `fetch-futures-snapshot` /
+    `fetch-greek-exposure`: 500-on-all-failed branches with custom
+    `error` payloads strict-tested via `toEqual`
+  - `embed-yesterday`, `fetch-es-options-eod`, `fetch-nope`,
+    `fetch-oi-change`, `fetch-outcomes`, `curate-lessons`: bespoke
+    error payloads, NDJSON streaming, or 502 paths
+- **Phase 3b — only 1/6 sites adopted bulkUpsert.** Five sites need
+  `bulkUpsert` extension before they can adopt:
+  - `fetch-darkpool` ON CONFLICT uses additive expressions
+    (`col = table.col + EXCLUDED.col`) and `GREATEST()`. Helper only
+    emits `col = EXCLUDED.col`.
+  - `fetch-spx-candles-1m`, `fetch-strike-exposure`, `persistSqueezeFlags`
+    (in strike-iv-detection), `insertRows`: all rely on `RETURNING id`
+    to count actual insertions vs conflict-skips for `stored` /
+    `skipped` / `anomaliesDetected` metrics. Helper returns input row
+    count, not affected count.
+
+Both deferrals are recorded honestly so future work has a clean handoff.
+
+## Outcome
+
+Shipped phases (in commit order; 40 commits total):
+
+| Phase | Commit    | Title                                                      |
+| ----- | --------- | ---------------------------------------------------------- |
+| plan  | f85f1055  | Plan doc                                                   |
+| 1a    | aca03516  | withCronInstrumentation HOF                                |
+| 1b    | eeec15b5  | bulkUpsert helper                                          |
+| 1c    | f408eef9  | format-helpers.ts                                          |
+| 1d    | bd5950e9  | numeric-coercion                                           |
+| 1e    | 71e3468e  | dark-pool-filter + uw-fetch-paged                          |
+| 1f    | f0c9496e  | request-scope + anthropic-call                             |
+| 1.fmt | d3bf12bf  | Phase 1 prettier follow-up                                 |
+| 1b.fu | a1355c28  | bulkUpsert true multi-chunk transaction + tests            |
+| 1f.fu | ec07e090  | anthropic-call configurable fallbackMetric + tests         |
+| 2     | 4b343402  | api-helpers.ts split into 4 modules + barrel               |
+| 3a-1  | fc728121  | withCronInstrumentation in 5 crons (batch 1)               |
+| 3a-2  | 70a24328  | withCronInstrumentation in 5 crons (batch 2)               |
+| 3a-3  | ff49e5cb  | withCronInstrumentation in 5 crons (batch 3)               |
+| 3b.p  | d5b25be1  | bulkUpsert adoption — fetch-nope only (5 deferred)         |
+| 3c    | 961f2dd0  | mapWithConcurrency for ticker fan-out (3 crons)            |
+| 4a    | 89124dea  | gex-target-history.ts SELECT + helpers extraction          |
+| 4b    | 7a21475d  | fetch-strike-iv.ts → strike-iv-detection.ts                |
+| 4c    | c650d75e  | build-features.ts → upsert + labels modules                |
+| 5a    | d29b8f1f  | build-features-phase2.ts split into 11 phase fns           |
+| 5b    | 519123e3  | csv-parser.ts pairShortsWithLongs helper                   |
+| 5c    | 144e515d  | futures-context.ts SYMBOL_RENDERERS table                  |
+| 5.fmt | e5378d1c  | Phase 5b/5c prettier follow-up                             |
+| 5d    | 14a1382d  | Adopt format-helpers in 4 _lib files                       |
+| 5e    | bda996a6  | Adopt numeric-coercion in 5 _lib files                     |
+| 5f    | d07b22bc  | db-strike-helpers split formatters                         |
+| 5g    | 7b213eaa  | analyze-context fetch/format split                         |
+| 5g.fu | 99d9e015  | Phase 5g lint follow-up                                    |
+| 5h    | c6a79b1f  | periscope-chat extract parse helpers                       |
+| 5i    | 2698087d  | positions extract spreads + persist helper                 |
+| 5j    | 8ab7d367  | whale-positioning collapse transforms + session-windows    |
+| 5g.fx | da46840d  | Phase 5g fix — drop dead wrapper + add formatter tests     |
+| 5k    | c105ae68  | Adopt runCachedAnthropicCall in 3 endpoints                |
+| 5l-1  | fe4d61d3  | Adopt withRequestScope (batch 1, 5 endpoints)              |
+| 5l-2  | c06feb35  | Adopt withRequestScope (batch 2, 2 endpoints)              |
+| 5m    | 42a018c6  | Session-hours gate consolidation                           |
+
+**Final at HEAD:**
+
+- 89 files changed across api/, net **+4,899 LOC** (gain dominated by
+  ~3,300 LOC of new test files + JSDoc'd helper modules; production code
+  shrank substantially in major hotspots)
+- Production-code shrinkage: api-helpers.ts -875, db-strike-helpers.ts -719,
+  build-features.ts -660, fetch-strike-iv.ts -442 (extracted to detection
+  module), gex-target-history.ts -374, positions.ts -208,
+  whale-positioning.ts -187
+- 12 new test files (~3,300 LOC of coverage) — every Phase 1 primitive
+  ships with its own dedicated test suite
+- **9441 tests pass** / 3 skipped; 93.84% statement coverage; tsc, eslint,
+  and prettier all green
+
+## Optional follow-up candidates (not blockers)
+
+- **`api/_lib/cross-asset-regime.ts:248` and `api/_lib/vix-divergence.ts:152`** each carry a private `formatPct` byte-identical to `fmtPct(v, { fromDecimal: true, digits: 2 })`. Phase 5d migrated 4 files; these two were not in scope. Fold into the next edit that touches either file.
+- **`bulkUpsert` extension** — add support for custom ON CONFLICT expressions and `RETURNING`-based row counting; unblocks the 5 deferred Phase 3b sites.
+- **`withCronInstrumentation` enhancements** — query-param-driven `timeCheck` (for `fetch-economic-calendar`'s `?force=true`), custom 500 payload override (for crons whose tests strict-assert `error: '<msg>'`), NDJSON streaming response (for `curate-lessons`); unblocks the ~30 deferred Phase 3a crons.
