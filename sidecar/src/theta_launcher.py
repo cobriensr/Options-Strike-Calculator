@@ -30,6 +30,7 @@ import subprocess
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
@@ -54,16 +55,31 @@ _ERROR_SIGNATURES = re.compile(
     re.IGNORECASE,
 )
 
-# Monitor state (guarded by _state_lock). Kept as a dict so helpers
-# can introspect without exposing module-level globals elsewhere.
-_state: dict[str, Any] = {
-    "proc": None,
-    "started_at": 0.0,
-    "last_ready_at": 0.0,
-    "last_error": None,
-    "stderr_tail": deque(maxlen=50),
-    "shutdown": False,
-}
+# Monitor state (guarded by _state_lock). Used to be `dict[str, Any]`,
+# which let typos like `_state["shutdwn"]` silently miss at runtime.
+# Typed dataclass surfaces those at type-check / mypy time. The lock
+# stays as a separate module-level handle (NOT a field) because the
+# fixture/reset paths take the lock externally — making it a field
+# would require code paths to reach `_state._lock`, an extra coupling.
+@dataclass
+class _LauncherState:
+    """Module-level mutable state for the Theta launcher subprocess.
+
+    Kept narrow on purpose — only fields the launcher's own helpers
+    read or mutate. New fields should go through this dataclass so
+    typos surface at type-check time rather than as silent
+    `KeyError`s at runtime (or worse, silent misses on assignment).
+    """
+
+    proc: Any = None  # subprocess.Popen | None
+    started_at: float = 0.0
+    last_ready_at: float = 0.0
+    last_error: str | None = None
+    stderr_tail: deque[str] = field(default_factory=lambda: deque(maxlen=50))
+    shutdown: bool = False
+
+
+_state = _LauncherState()
 _state_lock = threading.Lock()
 _last_sentry_by_signature: dict[str, float] = {}
 
@@ -104,7 +120,7 @@ def start() -> bool:
 
     if not _wait_for_ready():
         with _state_lock:
-            stderr_tail = list(_state["stderr_tail"])
+            stderr_tail = list(_state.stderr_tail)
         capture_message(
             "Theta HTTP server failed to come up within timeout",
             level="error",
@@ -124,20 +140,20 @@ def start() -> bool:
 def is_running() -> bool:
     """True if the subprocess is currently alive."""
     with _state_lock:
-        proc = _state["proc"]
+        proc = _state.proc
     return bool(proc and proc.poll() is None)
 
 
 def last_ready_at() -> float:
     """Epoch timestamp of the most recent successful readiness probe."""
     with _state_lock:
-        return float(_state["last_ready_at"])
+        return float(_state.last_ready_at)
 
 
 def last_error() -> str | None:
     """Most recent error line forwarded to Sentry, or None."""
     with _state_lock:
-        return _state["last_error"]
+        return _state.last_error
 
 
 def shutdown() -> None:
@@ -147,8 +163,8 @@ def shutdown() -> None:
     escalates to SIGKILL after 5s if the jar ignores the polite signal.
     """
     with _state_lock:
-        _state["shutdown"] = True
-        proc = _state["proc"]
+        _state.shutdown = True
+        proc = _state.proc
     if proc and proc.poll() is None:
         log.info("Terminating Theta Terminal subprocess")
         proc.terminate()
@@ -192,7 +208,7 @@ def _write_creds(email: str, password: str) -> None:
 def _spawn_subprocess() -> None:
     """Popen the jar and kick off stderr/stdout drain threads."""
     with _state_lock:
-        _state["proc"] = subprocess.Popen(
+        _state.proc = subprocess.Popen(
             ["java", "-jar", str(_JAR_PATH)],
             cwd=str(_THETA_HOME),
             stdout=subprocess.PIPE,
@@ -200,7 +216,7 @@ def _spawn_subprocess() -> None:
             text=True,
             bufsize=1,
         )
-        _state["started_at"] = time.time()
+        _state.started_at = time.time()
 
     threading.Thread(target=_stderr_tail_loop, name="theta-stderr", daemon=True).start()
     threading.Thread(
@@ -217,7 +233,7 @@ def _wait_for_ready() -> bool:
             with urlopen(url, timeout=2) as resp:  # noqa: S310 — localhost only
                 if 200 <= resp.status < 300:
                     with _state_lock:
-                        _state["last_ready_at"] = time.time()
+                        _state.last_ready_at = time.time()
                     return True
         except (URLError, TimeoutError, OSError):
             # Expected during boot — keep polling.
@@ -229,7 +245,7 @@ def _wait_for_ready() -> bool:
 def _stderr_tail_loop() -> None:
     """Capture stderr into a rolling buffer + forward errors to Sentry."""
     with _state_lock:
-        proc = _state["proc"]
+        proc = _state.proc
     if not proc or not proc.stderr:
         return
     for line in proc.stderr:
@@ -237,7 +253,7 @@ def _stderr_tail_loop() -> None:
         if not stripped:
             continue
         with _state_lock:
-            _state["stderr_tail"].append(stripped)
+            _state.stderr_tail.append(stripped)
         match = _ERROR_SIGNATURES.search(stripped)
         if match:
             _maybe_forward_to_sentry(match.group(1), stripped)
@@ -246,7 +262,7 @@ def _stderr_tail_loop() -> None:
 def _stdout_drain_loop() -> None:
     """Drain stdout so the OS pipe buffer never fills and stalls the jar."""
     with _state_lock:
-        proc = _state["proc"]
+        proc = _state.proc
     if not proc or not proc.stdout:
         return
     for _line in proc.stdout:
@@ -263,8 +279,8 @@ def _maybe_forward_to_sentry(signature: str, line: str) -> None:
         return
     _last_sentry_by_signature[signature] = now
     with _state_lock:
-        tail = list(_state["stderr_tail"])
-        _state["last_error"] = line
+        tail = list(_state.stderr_tail)
+        _state.last_error = line
     capture_message(
         f"Theta Terminal stderr: {signature}",
         level="error",
@@ -279,9 +295,9 @@ def _monitor_loop() -> None:
     max_backoff = 60
     while True:
         with _state_lock:
-            if _state["shutdown"]:
+            if _state.shutdown:
                 return
-            proc = _state["proc"]
+            proc = _state.proc
         if not proc:
             return
 
@@ -291,8 +307,8 @@ def _monitor_loop() -> None:
             continue
 
         with _state_lock:
-            uptime = time.time() - _state["started_at"]
-            stderr_tail = list(_state["stderr_tail"])
+            uptime = time.time() - _state.started_at
+            stderr_tail = list(_state.stderr_tail)
         capture_message(
             "Theta Terminal subprocess exited",
             level="error",
@@ -313,7 +329,7 @@ def _monitor_loop() -> None:
         time.sleep(backoff)
 
         with _state_lock:
-            if _state["shutdown"]:
+            if _state.shutdown:
                 return
         try:
             _spawn_subprocess()

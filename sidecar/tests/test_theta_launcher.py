@@ -32,12 +32,15 @@ def _reset_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Reset module state and redirect paths to a tmp dir per test."""
     import theta_launcher
 
-    theta_launcher._state["proc"] = None
-    theta_launcher._state["started_at"] = 0.0
-    theta_launcher._state["last_ready_at"] = 0.0
-    theta_launcher._state["last_error"] = None
-    theta_launcher._state["stderr_tail"].clear()
-    theta_launcher._state["shutdown"] = False
+    # Phase 5c: _state is now a typed dataclass (_LauncherState).
+    # Attribute access replaces the prior `_state["key"]` form so
+    # typos surface at type-check time.
+    theta_launcher._state.proc = None
+    theta_launcher._state.started_at = 0.0
+    theta_launcher._state.last_ready_at = 0.0
+    theta_launcher._state.last_error = None
+    theta_launcher._state.stderr_tail.clear()
+    theta_launcher._state.shutdown = False
     theta_launcher._last_sentry_by_signature.clear()
 
     # Redirect working dir + default jar path to tmp. Tests override _JAR_PATH
@@ -134,7 +137,7 @@ def test_wait_for_ready_returns_false_on_timeout(
 
     assert theta_launcher._wait_for_ready() is False
     # last_ready_at remains 0.0 — we never saw a successful probe.
-    assert theta_launcher._state["last_ready_at"] == 0.0
+    assert theta_launcher._state.last_ready_at == 0.0
 
 
 def test_wait_for_ready_returns_true_and_records_timestamp(
@@ -154,7 +157,7 @@ def test_wait_for_ready_returns_true_and_records_timestamp(
     monkeypatch.setattr(theta_launcher, "urlopen", lambda *_a, **_kw: _FakeResp())
 
     assert theta_launcher._wait_for_ready() is True
-    assert theta_launcher._state["last_ready_at"] > 0.0
+    assert theta_launcher._state.last_ready_at > 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +170,7 @@ def test_shutdown_is_noop_when_no_subprocess() -> None:
 
     # No proc set; should not raise.
     theta_launcher.shutdown()
-    assert theta_launcher._state["shutdown"] is True
+    assert theta_launcher._state.shutdown is True
 
 
 def test_shutdown_terminates_running_subprocess() -> None:
@@ -175,7 +178,7 @@ def test_shutdown_terminates_running_subprocess() -> None:
 
     proc = MagicMock()
     proc.poll.return_value = None  # still running
-    theta_launcher._state["proc"] = proc
+    theta_launcher._state.proc = proc
 
     theta_launcher.shutdown()
 
@@ -190,7 +193,7 @@ def test_shutdown_escalates_to_sigkill_when_wait_times_out() -> None:
     proc = MagicMock()
     proc.poll.return_value = None
     proc.wait.side_effect = subprocess.TimeoutExpired(cmd="java", timeout=5)
-    theta_launcher._state["proc"] = proc
+    theta_launcher._state.proc = proc
 
     theta_launcher.shutdown()
 
@@ -203,7 +206,7 @@ def test_shutdown_skips_terminate_if_process_already_exited() -> None:
 
     proc = MagicMock()
     proc.poll.return_value = 0  # already exited
-    theta_launcher._state["proc"] = proc
+    theta_launcher._state.proc = proc
 
     theta_launcher.shutdown()
 
@@ -229,7 +232,7 @@ def test_maybe_forward_rate_limits_repeat_signatures(
     )
 
     # Fill the stderr tail so the context payload is realistic.
-    theta_launcher._state["stderr_tail"].append("FATAL: something bad")
+    theta_launcher._state.stderr_tail.append("FATAL: something bad")
 
     # First call captures; second within 60s is suppressed.
     theta_launcher._maybe_forward_to_sentry("FATAL", "FATAL: something bad")
