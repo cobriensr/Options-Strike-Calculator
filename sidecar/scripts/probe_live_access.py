@@ -4,7 +4,7 @@ CFE (VX) and IFUS (DX).
 
 Run from sidecar/:
 
-    .venv/bin/python probe_live_access.py
+    .venv/bin/python scripts/probe_live_access.py
 
 Each probe opens a brief (~5 s) Live session per dataset. Databento may
 bill per session-minute, so keep probe runs infrequent. The probe does
@@ -115,7 +115,8 @@ def probe_live(
 
 
 def main() -> int:
-    load_dotenv(Path(__file__).resolve().parent / ".env")
+    # .env lives in sidecar/, this script lives in sidecar/scripts/.
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
     api_key = os.environ.get("DATABENTO_API_KEY")
     if not api_key:
         print("[FAIL] DATABENTO_API_KEY not set in sidecar/.env")

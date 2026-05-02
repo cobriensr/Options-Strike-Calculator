@@ -3,7 +3,7 @@
 
 Run from the sidecar/ directory:
 
-    cd sidecar && .venv/bin/python probe_cfe_access.py
+    cd sidecar && .venv/bin/python scripts/probe_cfe_access.py
 
 Metadata calls (list_datasets, list_schemas, get_cost) are free. The
 script only issues a billable `get_range` request if the cost quote
@@ -29,7 +29,8 @@ PULL_COST_THRESHOLD = 0.01
 
 
 def main() -> int:
-    load_dotenv(Path(__file__).resolve().parent / ".env")
+    # .env lives in sidecar/, this script lives in sidecar/scripts/.
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
     api_key = os.environ.get("DATABENTO_API_KEY")
     if not api_key:
