@@ -46,10 +46,10 @@
  *   }
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { z } from 'zod';
-import { Sentry, metrics } from '../_lib/sentry.js';
+import { Sentry } from '../_lib/sentry.js';
 import { guardOwnerOrGuestEndpoint, uwFetch } from '../_lib/api-helpers.js';
+import { withRequestScope } from '../_lib/request-scope.js';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import {
@@ -468,16 +468,10 @@ function buildResponse(
 // HANDLER
 // ============================================================
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  return Sentry.withIsolationScope(async (scope) => {
-    scope.setTransactionName('GET /api/options-flow/whale-positioning');
-    const done = metrics.request('/api/options-flow/whale-positioning');
-
-    if (req.method !== 'GET') {
-      done({ status: 405 });
-      return res.status(405).json({ error: 'GET only' });
-    }
-
+export default withRequestScope(
+  'GET',
+  '/api/options-flow/whale-positioning',
+  async (req, res, done) => {
     if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
     const parsed = querySchema.safeParse(req.query);
@@ -612,5 +606,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       logger.error({ err }, 'whale-positioning UW fetch error');
       return res.status(502).json({ error: 'Upstream flow data unavailable' });
     }
-  });
-}
+  },
+);

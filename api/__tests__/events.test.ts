@@ -36,7 +36,7 @@ describe('GET /api/events', () => {
   it('returns 500 when FRED_API_KEY is missing', async () => {
     delete process.env.FRED_API_KEY;
     const res = mockResponse();
-    await handler(mockRequest(), res);
+    await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(500);
     expect((res._json as { error: string }).error).toBe(
       'Service temporarily unavailable',
@@ -51,7 +51,7 @@ describe('GET /api/events', () => {
     vi.mocked(redis.get).mockResolvedValue(cachedEvents);
 
     const res = mockResponse();
-    await handler(mockRequest({ query: { days: '30' } }), res);
+    await handler(mockRequest({ method: 'GET', query: { days: '30' } }), res);
 
     expect(res._status).toBe(200);
     const json = res._json as { events: unknown[]; cached: boolean };
@@ -74,7 +74,7 @@ describe('GET /api/events', () => {
     );
 
     const res = mockResponse();
-    await handler(mockRequest({ query: { days: '30' } }), res);
+    await handler(mockRequest({ method: 'GET', query: { days: '30' } }), res);
 
     expect(res._status).toBe(200);
     const json = res._json as { events: unknown[]; cached: boolean };
@@ -98,7 +98,7 @@ describe('GET /api/events', () => {
     );
 
     const res = mockResponse();
-    await handler(mockRequest({ query: { days: '200' } }), res);
+    await handler(mockRequest({ method: 'GET', query: { days: '200' } }), res);
 
     expect(res._status).toBe(200);
     const json = res._json as { startDate: string; endDate: string };
@@ -144,7 +144,7 @@ describe('GET /api/events', () => {
     );
 
     const res = mockResponse();
-    await handler(mockRequest({ query: { days: '5' } }), res);
+    await handler(mockRequest({ method: 'GET', query: { days: '5' } }), res);
 
     expect(res._status).toBe(200);
     const json = res._json as { events: { event: string; severity: string }[] };
@@ -225,7 +225,7 @@ describe('GET /api/events', () => {
     vi.stubGlobal('fetch', mockFetch);
 
     const res = mockResponse();
-    await handler(mockRequest({ query: { days: '5' } }), res);
+    await handler(mockRequest({ method: 'GET', query: { days: '5' } }), res);
 
     expect(res._status).toBe(200);
     const json = res._json as {
@@ -263,7 +263,7 @@ describe('GET /api/events', () => {
     vi.stubGlobal('fetch', mockFetch);
 
     const res = mockResponse();
-    await handler(mockRequest({ query: { days: '5' } }), res);
+    await handler(mockRequest({ method: 'GET', query: { days: '5' } }), res);
 
     // Should still return 200 with events (just no earnings)
     expect(res._status).toBe(200);
@@ -284,7 +284,7 @@ describe('GET /api/events', () => {
     );
 
     const res = mockResponse();
-    await handler(mockRequest({ query: { days: '30' } }), res);
+    await handler(mockRequest({ method: 'GET', query: { days: '30' } }), res);
 
     // Should still return 200 with static events (FOMC, half-days)
     expect(res._status).toBe(200);
@@ -309,7 +309,7 @@ describe('GET /api/events', () => {
     );
 
     const res = mockResponse();
-    await handler(mockRequest({ query: { days: '30' } }), res);
+    await handler(mockRequest({ method: 'GET', query: { days: '30' } }), res);
 
     expect(res._status).toBe(500);
     expect((res._json as { error: string }).error).toBe(
@@ -333,7 +333,7 @@ describe('GET /api/events', () => {
     );
 
     const res = mockResponse();
-    await handler(mockRequest({ query: { days: '5' } }), res);
+    await handler(mockRequest({ method: 'GET', query: { days: '5' } }), res);
 
     // Should still succeed despite cache write failure
     expect(res._status).toBe(200);
@@ -358,7 +358,7 @@ describe('GET /api/events', () => {
     vi.stubGlobal('fetch', mockFetch);
 
     const res = mockResponse();
-    await handler(mockRequest({ query: { days: '5' } }), res);
+    await handler(mockRequest({ method: 'GET', query: { days: '5' } }), res);
 
     expect(res._status).toBe(200);
     const json = res._json as { events: { source: string }[] };
@@ -385,7 +385,7 @@ describe('GET /api/events', () => {
     vi.useFakeTimers({ now: fakeNow });
 
     const res = mockResponse();
-    await handler(mockRequest({ query: { days: '90' } }), res);
+    await handler(mockRequest({ method: 'GET', query: { days: '90' } }), res);
 
     vi.useRealTimers();
 
@@ -412,7 +412,7 @@ describe('GET /api/events', () => {
     vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
 
     const res = mockResponse();
-    await handler(mockRequest({ query: { days: '5' } }), res);
+    await handler(mockRequest({ method: 'GET', query: { days: '5' } }), res);
 
     expect(res._status).toBe(403);
     expect((res._json as { error: string }).error).toBe('Access denied');

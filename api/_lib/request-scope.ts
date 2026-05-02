@@ -37,7 +37,7 @@ export type ScopedHandler = (
   req: VercelRequest,
   res: VercelResponse,
   done: RequestDone,
-) => Promise<void>;
+) => Promise<unknown>;
 
 /**
  * Wrap an endpoint handler with the standard preamble.

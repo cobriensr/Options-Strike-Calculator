@@ -29,10 +29,10 @@
  * Owner-or-guest — Greek exposure derives from UW API (OPRA compliance).
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from './_lib/db.js';
-import { Sentry, metrics } from './_lib/sentry.js';
+import { Sentry } from './_lib/sentry.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
+import { withRequestScope } from './_lib/request-scope.js';
 import logger from './_lib/logger.js';
 import { fetchSPXCandles, type SPXCandle } from './_lib/spx-candles.js';
 import {
@@ -169,16 +169,10 @@ async function safeFetchCandles(
 
 // ── Handler ────────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  return Sentry.withIsolationScope(async (scope) => {
-    scope.setTransactionName('GET /api/gex-target-history');
-    const done = metrics.request('/api/gex-target-history');
-
-    if (req.method !== 'GET') {
-      done({ status: 405 });
-      return res.status(405).json({ error: 'GET only' });
-    }
-
+export default withRequestScope(
+  'GET',
+  '/api/gex-target-history',
+  async (req, res, done) => {
     if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
     // Validate the optional `date` param up front. An obviously
@@ -378,5 +372,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       logger.error({ err }, 'gex-target-history fetch error');
       return res.status(500).json({ error: 'Internal error' });
     }
-  });
-}
+  },
+);

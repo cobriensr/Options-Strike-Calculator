@@ -18,8 +18,8 @@
  */
 
 import { Sentry, metrics } from './_lib/sentry.js';
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { checkBot, setCacheHeaders } from './_lib/api-helpers.js';
+import { withRequestScope } from './_lib/request-scope.js';
 import { redis } from './_lib/schwab.js';
 import logger from './_lib/logger.js';
 import { getETDateStr } from '../src/utils/timezone.js';
@@ -450,10 +450,10 @@ async function fetchAllEvents(
 // HANDLER
 // ============================================================
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  return Sentry.withIsolationScope(async (scope) => {
-    scope.setTransactionName('GET /api/events');
-    const done = metrics.request('/api/events');
+export default withRequestScope(
+  'GET',
+  '/api/events',
+  async (req, res, done) => {
     try {
       const botCheck = await checkBot(req);
       if (botCheck.isBot) {
@@ -549,5 +549,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       Sentry.captureException(error);
       res.status(500).json({ error: 'Internal server error' });
     }
-  });
-}
+  },
+);

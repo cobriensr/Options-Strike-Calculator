@@ -5,15 +5,15 @@
  * Same auth tier as /api/iv-anomalies.
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from './_lib/db.js';
-import { Sentry, metrics } from './_lib/sentry.js';
+import { Sentry } from './_lib/sentry.js';
 import logger from './_lib/logger.js';
 import {
   guardOwnerOrGuestEndpoint,
   isMarketOpen,
   setCacheHeaders,
 } from './_lib/api-helpers.js';
+import { withRequestScope } from './_lib/request-scope.js';
 import { gammaSqueezesQuerySchema } from './_lib/validation.js';
 import { STRIKE_IV_TICKERS, type StrikeIVTicker } from './_lib/constants.js';
 import { computePathShape, getLatestSpotsByTicker } from './_lib/path-shape.js';
@@ -481,16 +481,10 @@ async function attachPathShape(
   }
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  return Sentry.withIsolationScope(async (scope) => {
-    scope.setTransactionName('GET /api/gamma-squeezes');
-    const done = metrics.request('/api/gamma-squeezes');
-
-    if (req.method !== 'GET') {
-      done({ status: 405 });
-      return res.status(405).json({ error: 'GET only' });
-    }
-
+export default withRequestScope(
+  'GET',
+  '/api/gamma-squeezes',
+  async (req, res, done) => {
     if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
     const parsed = gammaSqueezesQuerySchema.safeParse(req.query);
@@ -614,5 +608,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       logger.error({ err, ticker }, 'gamma-squeezes fetch error');
       return res.status(500).json({ error: 'Internal error' });
     }
-  });
-}
+  },
+);
