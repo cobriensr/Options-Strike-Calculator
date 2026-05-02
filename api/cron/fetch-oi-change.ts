@@ -14,11 +14,7 @@
  */
 
 import { getDb } from '../_lib/db.js';
-import {
-  uwFetch,
-  checkDataQuality,
-  withRetry,
-} from '../_lib/api-helpers.js';
+import { uwFetch, checkDataQuality, withRetry } from '../_lib/api-helpers.js';
 import {
   withCronInstrumentation,
   type CronResult,

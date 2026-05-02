@@ -84,9 +84,7 @@ interface ProseViewProps {
 export function ProseView({ prose, className }: ProseViewProps) {
   return (
     <div
-      className={
-        className ?? 'border-edge bg-surface/40 rounded-md border p-3'
-      }
+      className={className ?? 'border-edge bg-surface/40 rounded-md border p-3'}
     >
       <Markdown remarkPlugins={PLUGINS} components={COMPONENTS}>
         {prose}
@@ -94,4 +92,3 @@ export function ProseView({ prose, className }: ProseViewProps) {
     </div>
   );
 }
-

@@ -129,9 +129,18 @@ function fmtRatio(x: number, digits = 1): string {
 function fmtFreshness(deltaMs: number): string {
   const seconds = Math.max(0, Math.round(deltaMs / 1000));
   if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.round(seconds / 60);
+  const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m ago`;
-  return `${Math.round(minutes / 60)}h ago`;
+  const hours = Math.floor(minutes / 60);
+  const remMin = minutes % 60;
+  return remMin === 0 ? `${hours}h ago` : `${hours}h ${remMin}m ago`;
+}
+
+function fmtClockTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString([], {
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 }
 
 export function SqueezeRow({ squeeze }: { readonly squeeze: ActiveSqueeze }) {
@@ -361,13 +370,13 @@ export function SqueezeRow({ squeeze }: { readonly squeeze: ActiveSqueeze }) {
               data-dominant="none"
               title={
                 'No tape-side data: UW flow-per-strike-intraday did not ' +
-                "carry this strike in the last 15 min.\n" +
+                'carry this strike in the last 15 min.\n' +
                 '\n' +
                 'UW only emits per-minute side-classified prints for a ' +
                 'subset of strikes per ticker (typically round numbers / ' +
                 'peak-OI). The squeeze velocity gate uses Schwab data, ' +
-                "which has wider strike coverage — so the alert is real " +
-                "even when the tape pill is empty. Click the contract " +
+                'which has wider strike coverage — so the alert is real ' +
+                'even when the tape pill is empty. Click the contract ' +
                 'label to see the side breakdown directly on Unusual ' +
                 'Whales.'
               }
@@ -430,7 +439,7 @@ export function SqueezeRow({ squeeze }: { readonly squeeze: ActiveSqueeze }) {
         className="text-muted font-mono text-[10px]"
         title={`Most recent firing: ${new Date(latest.ts).toLocaleString()}`}
       >
-        last {fmtFreshness(freshnessMs)}
+        last {fmtClockTime(latest.ts)} ({fmtFreshness(freshnessMs)})
       </span>
     </div>
   );

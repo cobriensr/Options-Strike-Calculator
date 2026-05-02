@@ -29,10 +29,7 @@ export type Direction = 'ceiling' | 'floor' | 'atm';
  * GexLandscape strike table and persisted in the trace_live_analyses
  * payload. Changing any string is a frontend-visible change.
  */
-export function classSignal(
-  cls: GexClassification,
-  dir: Direction,
-): string {
+export function classSignal(cls: GexClassification, dir: Direction): string {
   if (cls === 'max-launchpad') {
     return dir === 'ceiling'
       ? 'Ceiling Breakout Risk'

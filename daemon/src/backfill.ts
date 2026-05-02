@@ -259,7 +259,9 @@ async function main(): Promise<void> {
         // Exhaustiveness guard — adding a new variant forces this
         // switch to be revisited at compile time.
         const _exhaustive: never = result;
-        throw new Error(`Unhandled slot outcome: ${JSON.stringify(_exhaustive)}`);
+        throw new Error(
+          `Unhandled slot outcome: ${JSON.stringify(_exhaustive)}`,
+        );
       }
     }
 

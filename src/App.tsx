@@ -654,6 +654,7 @@ export default function StrikeCalculator() {
             { id: 'sec-otm-flow', label: 'OTM Flow Alerts' },
             { id: 'sec-institutional-program', label: 'Institutional Program' },
             { id: 'sec-whale-anomalies', label: 'Whale Anomalies' },
+            { id: 'sec-gamma-squeezes', label: 'Gamma Squeezes' },
           ]
         : []),
       ...(isAuthenticated

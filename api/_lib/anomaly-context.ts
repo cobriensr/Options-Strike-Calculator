@@ -539,8 +539,10 @@ async function getNetFlow5m(ticker: string, at: Date): Promise<number | null> {
     `,
   ]);
   if (latest.length === 0 || prior.length === 0) return null;
-  const latestSum = (numOrNull(latest[0]!.ncp) ?? 0) + (numOrNull(latest[0]!.npp) ?? 0);
-  const priorSum = (numOrNull(prior[0]!.ncp) ?? 0) + (numOrNull(prior[0]!.npp) ?? 0);
+  const latestSum =
+    (numOrNull(latest[0]!.ncp) ?? 0) + (numOrNull(latest[0]!.npp) ?? 0);
+  const priorSum =
+    (numOrNull(prior[0]!.ncp) ?? 0) + (numOrNull(prior[0]!.npp) ?? 0);
   return latestSum - priorSum;
 }
 

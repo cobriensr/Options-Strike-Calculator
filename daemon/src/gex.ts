@@ -143,10 +143,7 @@ export async function fetchPriorGammaMap(
   }>;
   const map = new Map<number, number>();
   for (const r of priorRows) {
-    map.set(
-      Number(r.strike),
-      Number(r.call_gamma_oi) + Number(r.put_gamma_oi),
-    );
+    map.set(Number(r.strike), Number(r.call_gamma_oi) + Number(r.put_gamma_oi));
   }
   return map;
 }

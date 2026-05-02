@@ -20,7 +20,12 @@
  * connect → login → setup 3 chart pages → screenshot → emit JSON.
  */
 
-import { chromium, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import {
+  chromium,
+  type Browser,
+  type BrowserContext,
+  type Page,
+} from '@playwright/test';
 import { loginIfNeeded } from './capture/auth.js';
 import { CHART_TYPES, type ChartKey } from './capture/selectors.js';
 import {

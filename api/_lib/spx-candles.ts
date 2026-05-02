@@ -142,7 +142,12 @@ export async function fetchSPXCandles(
           const high = numOrNull(row.high);
           const low = numOrNull(row.low);
           const close = numOrNull(row.close);
-          if (open === null || high === null || low === null || close === null) {
+          if (
+            open === null ||
+            high === null ||
+            low === null ||
+            close === null
+          ) {
             continue;
           }
           candles.push({

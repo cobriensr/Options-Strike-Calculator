@@ -363,9 +363,7 @@ export default function PeriscopeChatHistory() {
           </div>
         )}
 
-        {loading && (
-          <p className="text-muted text-xs">Loading…</p>
-        )}
+        {loading && <p className="text-muted text-xs">Loading…</p>}
 
         {/* Empty state — selected date has no rows for the active filter */}
         {!loading &&

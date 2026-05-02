@@ -35,15 +35,15 @@ export async function failWithDiagnostics(
   const { label, originalErr, extra } = opts;
   const finalUrl = page.url();
   const screenshotPath = `/tmp/${label}-${Date.now()}.png`;
-  await page
-    .screenshot({ path: screenshotPath, fullPage: true })
-    .catch(() => {
-      /* swallow screenshot errors so we still throw the original cause */
-    });
+  await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => {
+    /* swallow screenshot errors so we still throw the original cause */
+  });
 
   const extraStr = extra
     ? Object.entries(extra)
-        .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
+        .map(
+          ([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`,
+        )
         .join(' ')
     : '';
 

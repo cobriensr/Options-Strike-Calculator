@@ -117,7 +117,9 @@ export async function loginIfNeeded(page: Page, env: LoginEnv): Promise<void> {
       await failWithDiagnostics(page, {
         label: 'trace-login-fail',
         originalErr: waitErr,
-        extra: { note: 'Login did not redirect to authenticated path within 30s' },
+        extra: {
+          note: 'Login did not redirect to authenticated path within 30s',
+        },
       });
     });
   await page.waitForTimeout(1000);

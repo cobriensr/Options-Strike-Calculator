@@ -58,9 +58,7 @@ export function computeCapturedAtIso(
   // Default -5 (EST) if Intl returned an unexpected shape -- safer than
   // throwing in a pure helper. Modern Node/V8 always returns 'GMT-4' or
   // 'GMT-5' for America/New_York.
-  const offsetHours = offsetMatch
-    ? Number.parseInt(offsetMatch[1]!, 10)
-    : -5;
+  const offsetHours = offsetMatch ? Number.parseInt(offsetMatch[1]!, 10) : -5;
   const sign = offsetHours < 0 ? '-' : '+';
   const offsetStr = `${sign}${String(Math.abs(offsetHours)).padStart(2, '0')}:00`;
   return new Date(`${isoLocal}${offsetStr}`).toISOString();

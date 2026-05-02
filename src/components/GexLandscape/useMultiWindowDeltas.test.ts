@@ -23,9 +23,11 @@ describe('useMultiWindowDeltas', () => {
       useMultiWindowDeltas([1, 5, 10, 15, 30]),
     );
 
-    expect(Object.keys(result.current.deltaMaps).map(Number).sort((a, b) => a - b)).toEqual([
-      1, 5, 10, 15, 30,
-    ]);
+    expect(
+      Object.keys(result.current.deltaMaps)
+        .map(Number)
+        .sort((a, b) => a - b),
+    ).toEqual([1, 5, 10, 15, 30]);
     for (const w of [1, 5, 10, 15, 30]) {
       expect(result.current.deltaMaps[w]).toBeInstanceOf(Map);
       expect(result.current.deltaMaps[w]?.size).toBe(0);

@@ -133,7 +133,12 @@ afterEach(() => {
  * date-filtered endpoint returns the rows for the selected day.
  */
 function setStandardRoutes(args: {
-  dates: Array<{ date: string; total: number; reads: number; debriefs: number }>;
+  dates: Array<{
+    date: string;
+    total: number;
+    reads: number;
+    debriefs: number;
+  }>;
   rowsByDate: Record<string, ListItem[]>;
 }) {
   setRoutes({
@@ -142,8 +147,9 @@ function setStandardRoutes(args: {
     },
     '/api/periscope-chat-list?date=': () => {
       const urlString = String(
-        (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
-          .at(-1)?.[0] ?? '',
+        (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.at(
+          -1,
+        )?.[0] ?? '',
       );
       const match = /date=(\d{4}-\d{2}-\d{2})/.exec(urlString);
       const date = match?.[1] ?? '';

@@ -43,9 +43,9 @@ function makeMockSql() {
   let transactionShouldFailOn: number | null = null;
   const transaction = vi.fn(
     async (
-      cb: (
-        txn: { query: (stmt: string, params?: unknown[]) => Promise<unknown> },
-      ) => unknown[],
+      cb: (txn: {
+        query: (stmt: string, params?: unknown[]) => Promise<unknown>;
+      }) => unknown[],
     ) => {
       const queued: Array<{ stmt: string; params: unknown[] }> = [];
       cb({
@@ -437,7 +437,9 @@ describe('bulkUpsert', () => {
         // refuse to silently default to "update every column".
         conflictTarget: 'ON CONSTRAINT demo_uniq',
       }),
-    ).rejects.toThrow(/ON CONSTRAINT form requires explicit conflictUpdateColumns/);
+    ).rejects.toThrow(
+      /ON CONSTRAINT form requires explicit conflictUpdateColumns/,
+    );
   });
 
   it('ON CONSTRAINT name form: works when conflictUpdateColumns provided', async () => {
