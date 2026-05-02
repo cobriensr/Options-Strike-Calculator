@@ -4,8 +4,9 @@
  * Fires the capture cycle every CADENCE_MS ms during the trading window:
  *   - 8:35 AM CT → 2:55 PM CT (= 9:35 AM ET → 3:55 PM ET)
  *   - Weekdays only (Mon–Fri)
- *   - Skips NYSE-closed full holidays (calendar copied from
- *     src/data/marketHours.ts — keep in lock-step at year boundaries)
+ *   - Skips NYSE-closed full holidays (calendar imported from
+ *     src/data/marketHours.ts — single source of truth shared with the
+ *     frontend)
  *
  * On half-day sessions (1 PM ET close) the daemon stops at 12:55 ET.
  * Half-day detection uses the same calendar.
@@ -17,43 +18,10 @@
  */
 
 import type { Logger } from 'pino';
-
-// ============================================================
-// Holiday calendar — copied from src/data/marketHours.ts.
-// Update both when a new year's NYSE schedule is published.
-// ============================================================
-
-const EARLY_CLOSE_DATES: ReadonlyMap<string, number> = new Map([
-  // 2025
-  ['2025-07-03', 13],
-  ['2025-11-28', 13],
-  ['2025-12-24', 13],
-  // 2026
-  ['2026-11-27', 13],
-  ['2026-12-24', 13],
-]);
-
-const MARKET_CLOSED_DATES: ReadonlySet<string> = new Set([
-  // 2025
-  '2025-04-18',
-  '2025-05-26',
-  '2025-06-19',
-  '2025-07-04',
-  '2025-09-01',
-  '2025-11-27',
-  '2025-12-25',
-  // 2026
-  '2026-01-01',
-  '2026-01-19',
-  '2026-02-16',
-  '2026-04-03',
-  '2026-05-25',
-  '2026-06-19',
-  '2026-07-03',
-  '2026-09-07',
-  '2026-11-26',
-  '2026-12-25',
-]);
+import {
+  EARLY_CLOSE_DATES,
+  MARKET_CLOSED_DATES,
+} from '../../src/data/marketHours.js';
 
 // ============================================================
 // ET-aware time helpers

@@ -5,7 +5,16 @@
  * Update once per year from: https://www.nyse.com/markets/hours-calendars
  */
 
-const EARLY_CLOSE_DATES: ReadonlyMap<string, number> = new Map([
+/**
+ * NYSE early-close days. Map value is the close hour in ET (24h).
+ * Currently always `13` (1 PM ET / 12 PM CT) — the only NYSE early-close
+ * variant in modern practice.
+ *
+ * Exported so the TRACE Live daemon (`daemon/src/scheduler.ts`) can read
+ * the same source of truth as the frontend. Cross-package imports use
+ * the explicit `.js` convention per CLAUDE.md.
+ */
+export const EARLY_CLOSE_DATES: ReadonlyMap<string, number> = new Map([
   // 2025
   ['2025-07-03', 13], // Day before July 4th (Thursday)
   ['2025-11-28', 13], // Black Friday
@@ -18,7 +27,11 @@ const EARLY_CLOSE_DATES: ReadonlyMap<string, number> = new Map([
   ['2026-12-24', 13], // Christmas Eve
 ]);
 
-const MARKET_CLOSED_DATES: ReadonlySet<string> = new Set([
+/**
+ * NYSE full-day market closures. Same exported-for-the-daemon contract
+ * as `EARLY_CLOSE_DATES` above.
+ */
+export const MARKET_CLOSED_DATES: ReadonlySet<string> = new Set([
   // 2025
   '2025-04-18', // Good Friday
   '2025-05-26', // Memorial Day
