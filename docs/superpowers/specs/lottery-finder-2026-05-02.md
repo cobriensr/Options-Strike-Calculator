@@ -3,6 +3,7 @@
 **Date:** 2026-05-02
 **Author:** Session continued from options-flow-analysis backtest
 **Status:** Spec — pending user approval before implementation
+**Revision:** v0.2 — added macro-context display layer; negative-findings appendix for macro-feature regime gating (p30/p31)
 
 ---
 
@@ -35,6 +36,7 @@ The user is fully aware of these caveats and chose to ship this as a discretiona
 | Top-3/day cherry-pick total $ excluding 4/21 + 5/1 | +$55 |
 | Days profitable (LOO, act30_trail10) | 6/12 (50%) |
 | Days profitable (LOO, hard_30m) | 3/12 (25%) — but mean +$127/day |
+| Macro-feature regime gates tested (p30 + p31) | None improved total P&L; see Appendix A |
 
 ---
 
@@ -69,6 +71,11 @@ The user is fully aware of these caveats and chose to ship this as a discretiona
 - [ ] Pull new minute-level trade data from existing source (likely Databento sidecar or UW per-strike intraday — confirm during implementation)
 - [ ] Run trigger detector on each chain's day-to-date trade stream
 - [ ] For each fire: compute features, RE-LOAD tag, cheap-call-PM flag
+- [ ] **Attach macro-context snapshot at fire time (asof lookup):**
+  - From `flow_data` table: latest `market_tide.ncp/npp`, `market_tide_otm.ncp/npp`, `spx_flow.ncp/npp`, `spy_etf_tide.ncp/npp`, `qqq_etf_tide.ncp/npp`, `zero_dte_greek_flow.ncp/npp`, all at or before fire timestamp
+  - From `spot_exposures` table: latest SPX `gamma_oi`, `gamma_vol`, `charm_oi`, `vanna_oi`
+  - From `strike_exposures` table (only when `underlying_symbol IN ('SPX','SPXW','NDX','NDXP','SPY','QQQ')`): per-strike GEX with bid/ask vol breakdown at the alert's strike
+  - Macro snapshot is **display-only** — NOT used as a selection gate (per p30/p31 negative findings, see Appendix A)
 - [ ] Write to `lottery_finder_fires` table with `ON CONFLICT (option_chain_id, trigger_time_ct) DO NOTHING`
 - [ ] Schedule in `vercel.json` every 5 min during market hours
 - [ ] Add path to `protect` array in `src/main.tsx` `initBotId()` call
@@ -109,11 +116,19 @@ The user is fully aware of these caveats and chose to ship this as a discretiona
 - [ ] Per-row display: realized return under each exit policy (live), peak ceiling
 - [ ] **Default exit policy = `act30_trail10`** (most conservative; positive in 50% of LOO days)
 - [ ] **Toggles** for: `hard_30m` (EV-best) and `tier_50_holdEod` (middle ground)
+- [ ] **Per-row macro context badges (display-only, not selection):**
+  - "Market Tide: ⬆️ +12M / ⬇️ -8M / ➡️ flat" — NCP minus NPP at fire time, color by sign
+  - "0DTE Flow: ⬆️ / ⬇️ / ➡️" — zero_dte_greek_flow diff at fire time
+  - "SPX Charm: 🔥 extreme / regular" — Q1 (most negative charm_oi) gets a fire emoji
+  - "SPX Spot GEX: 🔴 negative / 🟢 positive" — gamma_oi sign
+  - For SPY/QQQ/SPX/NDX alerts only: "Strike GEX: 🔴 net-short / 🟢 net-long" — call_minus_put gamma at strike
+  - Tooltips on each macro badge explain the metric AND link to the negative-findings caveat: "Macro context is informational only — backtest showed these features did not improve our specific selection rule. See Appendix A in the spec."
+- [ ] **Day-level macro banner** at top of feed: "Regime today: Market Tide [diff], 0DTE flow [diff], SPX gamma [sign]" — gives the trader at-a-glance context independent of any specific alert
 - [ ] Tooltips required on EVERY metric (see Tooltip Catalog below)
 - [ ] Filter chips: "RE-LOAD only", "Cheap-call-PM only", "Mode A (0DTE) only", "Mode B (DTE 1-3 stocks) only"
 - [ ] Sort: most recent fire first by default; option to sort by current realized %
 - [ ] Empty state: "No fires today yet. The detector emits during market hours; expect 0-5 cheap-call-PM RE-LOAD fires per day."
-- **Verify:** Visual review in dev; verify all tooltips populated; verify filter chips work
+- **Verify:** Visual review in dev; verify all tooltips populated; verify filter chips work; verify macro badges populated for at least 50% of fires (some macro lookups may miss for very early-session fires)
 
 ### Task 2.4 — Wire into App.tsx
 - [ ] Lazy-import `LotteryFinderFeed` (matches existing pattern from GammaSqueezeFeed)
@@ -167,6 +182,19 @@ ml/.venv/bin/python -u docs/tmp/options-flow-analysis/scripts/p28_lottery_discri
 ml/.venv/bin/python -u docs/tmp/options-flow-analysis/scripts/p29_stress_test.py
 # - p28: validates cheap-call-PM still has 1.5×+ lottery lift
 # - p29: validates rule isn't entirely driven by 1-2 outlier days
+
+### Step 5b: Re-run macro feature validation (informational)
+npx tsx docs/tmp/options-flow-analysis/scripts/dump_macro_tables.ts
+ml/.venv/bin/python -u docs/tmp/options-flow-analysis/scripts/p30_macro_features.py
+ml/.venv/bin/python -u docs/tmp/options-flow-analysis/scripts/p31_put_regime_rule.py
+# - dump_macro_tables: pulls latest flow_data, spot_exposures, strike_exposures
+# - p30: re-validates the macro-vs-rule discriminator analysis
+# - p31: re-validates the put regime-switching rule
+#
+# Pass criteria (informational): if EITHER macro AND-rule beats the
+# cheap-call-PM-only baseline by ≥ 10% on top-3/day total $ realized,
+# OPEN A NEW SPEC to upgrade the selector. Do NOT change the rule silently.
+# (At v0.1: both macro AND-rules underperformed; we re-test as data grows.)
 
 ### Step 6: Verify selection rule still holds (PASS/FAIL)
 Pass criteria (all must hold):
@@ -263,6 +291,27 @@ CREATE TABLE IF NOT EXISTS lottery_finder_fires (
   burst_ratio_vs_prev         NUMERIC,                   -- NULL on alert_seq=1
   entry_drop_pct_vs_prev      NUMERIC,                   -- NULL on alert_seq=1
 
+  -- Macro context snapshot at fire time (display-only, NOT used as a selector
+  -- per p30/p31 negative findings — see Appendix A). Sourced via asof lookup
+  -- against flow_data, spot_exposures, strike_exposures.
+  mkt_tide_ncp                NUMERIC,
+  mkt_tide_npp                NUMERIC,
+  mkt_tide_diff               NUMERIC,                  -- ncp - npp; signed regime indicator
+  mkt_tide_otm_diff           NUMERIC,                  -- OTM-only NCP - NPP
+  spx_flow_diff               NUMERIC,                  -- SPX-specific NCP - NPP
+  spy_etf_diff                NUMERIC,                  -- SPY ETF tide
+  qqq_etf_diff                NUMERIC,                  -- QQQ ETF tide
+  zero_dte_diff               NUMERIC,                  -- 0DTE greek flow
+  spx_spot_gamma_oi           NUMERIC,
+  spx_spot_gamma_vol          NUMERIC,
+  spx_spot_charm_oi           NUMERIC,
+  spx_spot_vanna_oi           NUMERIC,
+  -- Per-strike GEX (NULL for non-index/ETF tickers; ~4% coverage in backtest)
+  gex_strike_call_minus_put   NUMERIC,
+  gex_strike_call_ask_minus_bid NUMERIC,
+  gex_strike_put_ask_minus_bid  NUMERIC,
+  gex_strike_actual_strike    NUMERIC,                  -- nearest available strike
+
   -- Outcome (populated by enrich cron later in the day)
   realized_trail30_10_pct     NUMERIC,
   realized_hard30m_pct        NUMERIC,
@@ -351,3 +400,88 @@ Every metric on the UI gets a tooltip. Source of truth list:
 - **Sentry:** instrument the cron with `cron.lottery_finder.fires_per_run` metric.
 - **Backfill story:** when the table is first created, leave it empty. The cron starts populating fresh. The historical analysis (15 days) lives in `docs/tmp/options-flow-analysis/outputs/p26_per_trade_realized.csv` and is referenced by the spec, not in the production table.
 - **Sample size growth plan:** target 60+ days of live data before calling this "validated". Until then, the UI subtitle should remain explicit about caveats.
+
+---
+
+## Appendix A — Macro-feature gating: tested, not adopted (p30 + p31)
+
+This appendix documents a serious experiment that produced a clean negative result. **Future agents: do not re-derive this from scratch.** If a new approach to macro gating shows promise, treat it as a new hypothesis and run the same tests (univariate quintile, AND-rule, realistic-trader top-N/day) as p30/p31.
+
+### Hypothesis
+
+The cheap-call-PM rule's edge concentrated on 1-2 outlier days per 15. This suggests **regime dependence** — most lottery winners happen on days with extreme macro readings (high vol, big tide moves, negative gamma). If we could detect "today is a lottery-prone regime" from existing macro features, we could either:
+- Tighten cheap-call-PM (only fire on bullish-regime days), OR
+- Add a symmetrical cheap-put-PM rule for bearish-regime days
+
+### What we tested
+
+**Inputs (all already collected by existing crons; coverage 15/15 days for our window):**
+- `flow_data` table: `market_tide`, `market_tide_otm`, `spx_flow`, `spy_flow`, `qqq_flow`, `spy_etf_tide`, `qqq_etf_tide`, `zero_dte_greek_flow` (NCP, NPP, net_volume; 5-min granularity)
+- `spot_exposures` table: SPX `gamma_oi`, `gamma_vol`, `charm_oi`, `vanna_oi` (1-min granularity)
+- `strike_exposures` table: per-strike GEX with bid/ask volume breakdown for SPX/NDX/SPY/QQQ only
+
+**Methodology:** for each of 783 RE-LOAD fires, attach the latest macro snapshot at or before fire time. Run univariate quintile sweeps + AND-rule combinations + realistic-trader top-N/day P&L.
+
+### What the data showed (univariate)
+
+Several macro features DID predict lottery rate at the population level (1.5-2.1× lift in Q1 or Q5 quintile):
+
+| Feature | Best quintile | Lottery % | Lift |
+|---------|---------------|-----------|------|
+| spy_flow_diff | Q1 (most bearish) | 16.6% | 1.8× |
+| zero_dte_diff | Q1 (most bearish) | 19.1% | 2.1× |
+| spx_spot_charm_oi | Q1 (most negative) | 18.5% | 2.0× |
+| spx_spot_gamma_vol | Q1 (most negative) | 17.2% | 1.9× |
+| mkt_tide_diff | U-shaped (Q1+Q5 both 13.4%) | 13.4% | 1.5× |
+
+**Direction was opposite to the original hypothesis: bearish/volatile regime → lotteries, not bullish.** Mostly because RUTW puts on 4/21 dominated lottery counts.
+
+### What the data showed (combined rules — failed)
+
+When we combined macro features with cheap-call-PM (p30) and cheap-put-PM (p31):
+
+| Rule | n | Lottery % | Lift | Top-3/day act30 total $ |
+|------|---|-----------|------|--------------------------|
+| **cheap-call-PM only (current)** | **74** | **18.9%** | **2.1×** | **+$672** |
+| cheap-call-PM AND mkt_tide_otm > 0 | 23 | 17.4% | 1.9× | (smaller subset) |
+| cheap-call-PM AND ALL macro > 0 | 7 | 14.3% | 1.6× | -$142 |
+| cheap-put-PM only | 91 | 9.9% | 1.1× | (worse than baseline) |
+| cheap-put-PM AND spy_flow Q1 | 24 | 12.5% | 1.4× | (small lift, tiny n) |
+| **2-mode regime-gated (call neutral, put bearish)** | **78** | **10.3%** | **1.1×** | **+$27** |
+
+**Every macro-augmented rule UNDERPERFORMED the cheap-call-PM-only baseline on total realized P&L.** The 2-mode rule lost 95% of cheap-call-PM's total $ because the regime gate switched from calls to puts on 4/21 (the day calls were the lottery), and the cheap-put-PM rule couldn't catch the RUTW PUT lottery.
+
+### Root causes of the negative result
+
+1. **Lotteries are concentrated on a few days, not evenly distributed.** Macro features predict "today might be a lottery day" but DON'T tell us "this specific alert will lottery." The signal is at the day level, not the trade level.
+
+2. **Puts have an inherently lower lottery rate** (3.4% vs calls 16.1%) because options decay; the put lotteries that exist (RUTW 4/21) have specific characteristics our discriminator (cheap entry + PM + RE-LOAD) doesn't capture.
+
+3. **Per-strike GEX is mostly unavailable** for our alert universe. Only 30 of 783 RE-LOAD fires are on SPX/NDX/SPY/QQQ (the tickers we run per-strike GEX crons for); the rest are single stocks (TSLA, SNDK, etc.) where we'd need new cron infrastructure.
+
+4. **The cheap-call-PM rule already implicitly absorbs some regime signal** (calls don't tend to lottery on heavily-bearish days), so adding "regime is bullish" as an extra gate just shrinks the qualifying set without improving precision.
+
+### What we adopted
+
+- Macro features are computed and stored on every fire (display-only).
+- UI shows them as informational badges so the trader can see regime context.
+- They are NOT used as a selection gate.
+
+### When to re-test
+
+Open a new spec to re-evaluate macro gating if ANY of these are true:
+- Sample grows to ≥ 60 days AND p30 univariate lift on a single feature reaches ≥ 3.0× (suggests a stronger signal we're not seeing in 15 days)
+- We add per-strike GEX crons for the top RE-LOAD-frequent single stocks (TSLA, SNDK, MU, AMD) — would close the 96% coverage gap
+- We test a new feature class entirely (e.g., overnight gap, premarket move, IV-RV spread, dealer hedging proxy)
+- A specific failure mode emerges in production (rule keeps firing on chop days that everyone can see are bad)
+
+### Reproducibility
+
+All scripts and intermediate artifacts are saved:
+- `docs/tmp/options-flow-analysis/scripts/dump_macro_tables.ts` — pulls flow_data + spot/strike exposures
+- `docs/tmp/options-flow-analysis/scripts/p30_macro_features.py` — feature attachment + discriminator
+- `docs/tmp/options-flow-analysis/scripts/p31_put_regime_rule.py` — put + regime-switching test
+- `docs/tmp/options-flow-analysis/outputs/p30_reload_with_macro.csv` — per-fire macro features
+- `docs/tmp/options-flow-analysis/outputs/p31_combined_rule_features.csv` — 2-mode rule output
+
+To re-validate as data grows, see "Step 5b" in the Pipeline section above.

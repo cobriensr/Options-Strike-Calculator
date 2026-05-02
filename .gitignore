@@ -121,3 +121,46 @@ scripts/gamma-capture/screenshots/
 scripts/gamma-capture/*.csv
 scripts/gamma-capture/*.csv.bak
 scripts/eod-flow-analysis/output/backfill-buckets/
+
+# Lottery Finder backtest (docs/tmp/options-flow-analysis/) — track scripts
+# and load-bearing outputs (p14, p26-p31, macro_*) referenced by the spec at
+# docs/superpowers/specs/lottery-finder-2026-05-02.md. Ignore exploratory
+# intermediates from earlier phases (q*, p1-p9, p11-p22) so they don't
+# pollute git on every pipeline re-run.
+docs/tmp/options-flow-analysis/outputs/q*.csv
+docs/tmp/options-flow-analysis/outputs/p1_*.csv
+docs/tmp/options-flow-analysis/outputs/p2_*.csv
+docs/tmp/options-flow-analysis/outputs/p3_*.csv
+docs/tmp/options-flow-analysis/outputs/p4_*.csv
+docs/tmp/options-flow-analysis/outputs/p5_*.csv
+docs/tmp/options-flow-analysis/outputs/p6_*.csv
+docs/tmp/options-flow-analysis/outputs/p6b_*.csv
+docs/tmp/options-flow-analysis/outputs/p6c_*.csv
+docs/tmp/options-flow-analysis/outputs/p6d_*.csv
+docs/tmp/options-flow-analysis/outputs/p7_*.csv
+docs/tmp/options-flow-analysis/outputs/p8_*.csv
+docs/tmp/options-flow-analysis/outputs/p9_*.csv
+docs/tmp/options-flow-analysis/outputs/p11_*.csv
+docs/tmp/options-flow-analysis/outputs/p12_*.csv
+docs/tmp/options-flow-analysis/outputs/p15_*.csv
+docs/tmp/options-flow-analysis/outputs/p17_*.csv
+docs/tmp/options-flow-analysis/outputs/p18_*.csv
+docs/tmp/options-flow-analysis/outputs/p19_*.csv
+docs/tmp/options-flow-analysis/outputs/p20_*.csv
+docs/tmp/options-flow-analysis/outputs/p21_*.csv
+docs/tmp/options-flow-analysis/outputs/p22_*.csv
+docs/tmp/options-flow-analysis/outputs/v3_alerts.csv
+docs/tmp/options-flow-analysis/outputs/*.log
+
+# Lottery Finder — also ignore the 3 BIG computational intermediates
+# (>20MB each, ~155MB combined). These are regenerable from committed
+# scripts in <20 min total. Keep small load-bearing summaries tracked.
+#   p14_event_triggers.csv  (60MB) — regen: p14_event_trigger.py (~10 min)
+#   p27_policy_grid.csv     (22MB) — regen: p27_exit_policy_grid.py (~5 min)
+#   macro_strike_gex.csv    (72MB) — regen: dump_macro_tables.ts (~1 min)
+docs/tmp/options-flow-analysis/outputs/p14_event_triggers.csv
+docs/tmp/options-flow-analysis/outputs/p27_policy_grid.csv
+docs/tmp/options-flow-analysis/outputs/macro_strike_gex.csv
+
+# Python bytecode cache in scripts dir
+docs/tmp/options-flow-analysis/scripts/__pycache__/
