@@ -329,7 +329,7 @@ describe('fetch-es-options-eod handler', () => {
     await handler(makeCronReq(), res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toEqual({ error: 'Internal error' });
+    expect(res._json).toMatchObject({ error: 'Internal error' });
     expect(Sentry.setTag).toHaveBeenCalledWith(
       'cron.job',
       'fetch-es-options-eod',

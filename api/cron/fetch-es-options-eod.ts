@@ -16,13 +16,12 @@
  * Environment: CRON_SECRET
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
-import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
-import { cronGuard } from '../_lib/api-helpers.js';
-import { getETDateStr } from '../../src/utils/timezone.js';
-import { reportCronRun } from '../_lib/axiom.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
 
 // ── Max pain computation ────────────────────────────────────
 
@@ -67,18 +66,13 @@ function computeMaxPain(strikes: StrikeOI[]): number | null {
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guard = cronGuard(req, res, {
-    marketHours: false,
-    requireApiKey: false,
-  });
-  if (!guard) return;
+export default withCronInstrumentation(
+  'fetch-es-options-eod',
+  async (ctx): Promise<CronResult> => {
+    const { logger } = ctx;
+    const tradeDate = ctx.today;
+    const sql = getDb();
 
-  const startTime = Date.now();
-  const tradeDate = getETDateStr(new Date());
-  const sql = getDb();
-
-  try {
     // 1. Verify data arrived from the sidecar
     const countRows = await sql`
       SELECT
@@ -97,7 +91,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const totalRows = Number.parseInt(String(stats.total_rows), 10);
 
     if (totalRows === 0) {
-      Sentry.setTag('cron.job', 'fetch-es-options-eod');
       Sentry.captureMessage(
         `ES options EOD data missing for ${tradeDate}: no rows in futures_options_daily`,
         'warning',
@@ -106,12 +99,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         { tradeDate },
         'No ES options EOD data found -- sidecar may not have delivered',
       );
-      return res.status(200).json({
-        job: 'fetch-es-options-eod',
-        skipped: true,
-        reason: 'No EOD data from sidecar',
-        tradeDate,
-      });
+      return {
+        status: 'skipped',
+        message: 'No EOD data from sidecar',
+        metadata: {
+          job: 'fetch-es-options-eod',
+          skipped: true,
+          reason: 'No EOD data from sidecar',
+          tradeDate,
+        },
+      };
     }
 
     // 2. Compute OI concentration ratios
@@ -198,57 +195,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     const uniqueStrikes = Number.parseInt(String(stats.unique_strikes), 10);
-    const durationMs = Date.now() - startTime;
-
-    await reportCronRun('fetch-es-options-eod', {
-      status: 'ok',
-      tradeDate,
-      totalRows,
-      uniqueStrikes,
-      maxPain,
-      oiConcentration: {
-        call: {
-          strike: maxCallStrike,
-          oi: maxCallOi,
-          ratio: Number.parseFloat(callConcentration.toFixed(4)),
-        },
-        put: {
-          strike: maxPutStrike,
-          oi: maxPutOi,
-          ratio: Number.parseFloat(putConcentration.toFixed(4)),
-        },
+    const oiConcentration = {
+      call: {
+        strike: maxCallStrike,
+        oi: maxCallOi,
+        ratio: Number.parseFloat(callConcentration.toFixed(4)),
       },
-      totalCallOi,
-      totalPutOi,
-      durationMs,
-    });
-
-    return res.status(200).json({
-      job: 'fetch-es-options-eod',
-      tradeDate,
-      totalRows,
-      uniqueStrikes,
-      maxPain,
-      oiConcentration: {
-        call: {
-          strike: maxCallStrike,
-          oi: maxCallOi,
-          ratio: Number.parseFloat(callConcentration.toFixed(4)),
-        },
-        put: {
-          strike: maxPutStrike,
-          oi: maxPutOi,
-          ratio: Number.parseFloat(putConcentration.toFixed(4)),
-        },
+      put: {
+        strike: maxPutStrike,
+        oi: maxPutOi,
+        ratio: Number.parseFloat(putConcentration.toFixed(4)),
       },
-      totalCallOi,
-      totalPutOi,
-      durationMs,
-    });
-  } catch (err) {
-    Sentry.setTag('cron.job', 'fetch-es-options-eod');
-    Sentry.captureException(err);
-    logger.error({ err }, 'fetch-es-options-eod failed');
-    return res.status(500).json({ error: 'Internal error' });
-  }
-}
+    };
+
+    return {
+      status: 'success',
+      metadata: {
+        tradeDate,
+        totalRows,
+        uniqueStrikes,
+        maxPain,
+        oiConcentration,
+        totalCallOi,
+        totalPutOi,
+      },
+    };
+  },
+  { marketHours: false, requireApiKey: false },
+);
