@@ -24,6 +24,7 @@ import { makeLogger } from './logger.js';
 import { runCapture } from './capture.js';
 import { fetchGexLandscape } from './gex.js';
 import { postTraceLiveAnalyze } from './api-client.js';
+import { computeCapturedAtIso } from '../../src/utils/trace-live-tz.js';
 
 interface BackfillArgs {
   date: string;
@@ -86,34 +87,6 @@ function buildSlots(startCt: string, endCt: string, stepMin: number): Slot[] {
 
 async function sleep(ms: number): Promise<void> {
   return await new Promise((r) => setTimeout(r, ms));
-}
-
-/**
- * Compute the exact `capturedAt` ISO the capture script will produce
- * for a given (date, CT time). Mirrors capture-trace-live.ts's TZ-probe
- * logic so the existence check below queries the right value.
- *
- * If the script's logic ever changes, this must change too — keep them
- * in lock-step.
- */
-function computeCapturedAtIso(
-  date: string,
-  hourCt: number,
-  minuteCt: number,
-): string {
-  const isoLocal = `${date}T${String(hourCt + 1).padStart(2, '0')}:${String(minuteCt).padStart(2, '0')}:00`;
-  const probe = new Date(`${date}T12:00:00Z`);
-  const etDateFmt = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    timeZoneName: 'shortOffset',
-  });
-  const offsetParts = etDateFmt.formatToParts(probe);
-  const tz = offsetParts.find((p) => p.type === 'timeZoneName')?.value ?? '';
-  const offsetMatch = /GMT([+-]\d+)/.exec(tz);
-  const offsetHours = offsetMatch ? Number.parseInt(offsetMatch[1]!, 10) : -5;
-  const sign = offsetHours < 0 ? '-' : '+';
-  const offsetStr = `${sign}${String(Math.abs(offsetHours)).padStart(2, '0')}:00`;
-  return new Date(`${isoLocal}${offsetStr}`).toISOString();
 }
 
 /**

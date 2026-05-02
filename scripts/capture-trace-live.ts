@@ -45,6 +45,7 @@ import {
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { computeCapturedAtIso } from '../src/utils/trace-live-tz.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -497,31 +498,12 @@ async function main(): Promise<void> {
 
   // capturedAt: in live mode = now (script start). In backfill mode = the
   // historical UTC instant the user is targeting (date + time CT → UTC).
+  // Backfill path uses the shared TZ probe so daemon/src/backfill.ts can
+  // pre-compute the same value for its idempotency check.
   let capturedAt: string;
   if (args.date && args.time) {
     const [h, m] = args.time.split(':').map(Number) as [number, number];
-    // CT → UTC. Use the project's etWallClockToUtcIso convention: convert
-    // CT time to ET (+1h) then to UTC via a TZ-aware probe. For simplicity,
-    // we let the daemon's POST add the etTimeLabel and the API derive the
-    // UTC date itself — here we just emit UTC at face value using Date()
-    // which interprets "YYYY-MM-DDTHH:MM" as local time. To stay exact,
-    // we construct an ET-naive timestamp and let JS's TZ-conversion run.
-    const isoLocal = `${args.date}T${String(h + 1).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`;
-    // The local string above is ET-time. JS's Date() can't directly
-    // interpret a string as a specific timezone, so we probe ET's UTC
-    // offset for the date via Intl and append it as the ISO offset suffix.
-    const probe = new Date(`${args.date}T12:00:00Z`);
-    const etDateFmt = new Intl.DateTimeFormat('en-US', {
-      timeZone: 'America/New_York',
-      timeZoneName: 'shortOffset',
-    });
-    const offsetParts = etDateFmt.formatToParts(probe);
-    const tz = offsetParts.find((p) => p.type === 'timeZoneName')?.value ?? '';
-    const offsetMatch = /GMT([+-]\d+)/.exec(tz);
-    const offsetHours = offsetMatch ? Number.parseInt(offsetMatch[1]!, 10) : -5;
-    const sign = offsetHours < 0 ? '-' : '+';
-    const offsetStr = `${sign}${String(Math.abs(offsetHours)).padStart(2, '0')}:00`;
-    capturedAt = new Date(`${isoLocal}${offsetStr}`).toISOString();
+    capturedAt = computeCapturedAtIso(args.date, h, m);
   } else {
     capturedAt = new Date().toISOString();
   }
