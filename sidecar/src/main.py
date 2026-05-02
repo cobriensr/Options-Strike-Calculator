@@ -81,6 +81,19 @@ def main() -> None:
     # No-op locally if SENTRY_DSN is unset. Never raises.
     init_sentry()
 
+    # Verify required env vars BEFORE launching any subsystems. Missing
+    # env used to fall through past the Theta launcher (~60s blocking
+    # subprocess boot) and only fail at the verify_connection() call —
+    # wasted Railway compute and confusing logs. Fail fast instead.
+    required = ["DATABENTO_API_KEY", "DATABASE_URL"]
+    missing = [key for key in required if not os.environ.get(key)]
+    if missing:
+        log.error(
+            "Missing required environment variable(s): %s",
+            ", ".join(missing),
+        )
+        sys.exit(1)
+
     # Launch the co-resident Theta Terminal subprocess. Blocks up to
     # 60s waiting for its HTTP server. No-op when THETA_EMAIL /
     # THETA_PASSWORD are unset (local dev, or deliberate disable).
@@ -94,13 +107,6 @@ def main() -> None:
             name="theta-backfill",
             daemon=True,
         ).start()
-
-    # Verify required env vars
-    required = ["DATABENTO_API_KEY", "DATABASE_URL"]
-    for key in required:
-        if not os.environ.get(key):
-            log.error("Missing required environment variable: %s", key)
-            sys.exit(1)
 
     # Verify database connection
     verify_connection()
