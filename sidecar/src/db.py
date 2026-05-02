@@ -432,6 +432,17 @@ def load_alert_config() -> dict[str, dict]:
     """Load all alert configurations from the alert_config table.
 
     Returns a dict keyed by alert_type with {enabled, params, cooldown_minutes}.
+
+    Phase 5e — silent-fallback investigation. There are currently
+    ZERO production callers of this function (alert_engine was
+    removed 2026-04-08; the table is preserved as a future-use
+    asset). The empty-dict fallback IS the intended runtime
+    behavior — "no alerts configured" is a valid state — but the
+    unexpected-Exception branch used to swallow without observability.
+    Now we forward to Sentry before returning empty so any future
+    drift (schema change, connection issue, RLS policy add) surfaces
+    rather than silently masking. The UndefinedTable branch stays a
+    plain log.warning since that's a known-OK pre-init state.
     """
     configs: dict[str, dict] = {}
     try:
@@ -450,6 +461,22 @@ def load_alert_config() -> dict[str, dict]:
         log.warning("alert_config table does not exist yet -- using defaults")
     except Exception as exc:
         log.error("Failed to load alert_config: %s", exc)
+        # Forward to Sentry so config-loading drift surfaces in
+        # observability instead of silently degrading to "no alerts."
+        # Lazy import to avoid pulling sentry_setup into the db.py
+        # import path of every test that touches Postgres.
+        try:
+            from sentry_setup import capture_exception
+
+            capture_exception(
+                exc,
+                context={"phase": "load_alert_config"},
+                tags={"component": "db"},
+            )
+        except Exception:  # noqa: BLE001
+            # Sentry path failure must never block the empty-dict
+            # fallback — caller depends on this returning a dict.
+            pass
     return configs
 
 

@@ -323,3 +323,108 @@ class TestExecuteValuesBatch:
         db._execute_values_batch(self.SAMPLE_SQL, [self.SAMPLE_ROW], page_size=100)
         kwargs = mock_execute_values.call_args.kwargs
         assert kwargs.get("page_size") == 100
+
+
+# ---------------------------------------------------------------------------
+# Phase 5e — load_alert_config silent-fallback observability
+# ---------------------------------------------------------------------------
+
+
+class TestLoadAlertConfigObservability:
+    """Verify the empty-dict fallback now forwards unexpected exceptions
+    to Sentry. Empty config remains the documented runtime behavior;
+    the only behavior change is observability of the failure path.
+
+    Note on mocking psycopg2.errors.UndefinedTable: conftest mocks the
+    whole psycopg2 package, so its `errors` attribute is a MagicMock
+    where `UndefinedTable` is an auto-spec'd MagicMock (not an Exception
+    subclass — Python rejects it as an `except` target). Each test
+    that needs the UndefinedTable branch installs a real Exception
+    subclass for the duration of the test only.
+    """
+
+    @pytest.fixture
+    def real_undefined_table(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> type[Exception]:
+        """Install a real exception class for psycopg2.errors.UndefinedTable.
+
+        Without this, `except psycopg2.errors.UndefinedTable:` raises
+        TypeError because the mock's auto-attribute isn't a class.
+        """
+        import psycopg2
+
+        cls = type("UndefinedTable", (Exception,), {})
+        monkeypatch.setattr(psycopg2.errors, "UndefinedTable", cls)
+        return cls
+
+    def test_undefined_table_returns_empty_without_sentry(
+        self,
+        mock_conn_pool: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        real_undefined_table: type[Exception],
+    ) -> None:
+        """Pre-init state (table doesn't exist yet) is a known-OK
+        condition — must NOT page Sentry, just log a warning."""
+        mock_conn_pool.execute.side_effect = real_undefined_table(
+            "table missing"
+        )
+
+        captured: list[BaseException] = []
+        monkeypatch.setattr(
+            "sentry_setup.capture_exception",
+            lambda exc, **_kw: captured.append(exc),
+        )
+
+        result = db.load_alert_config()
+
+        assert result == {}
+        # UndefinedTable is the known pre-init state; Sentry stays quiet.
+        assert captured == []
+
+    def test_unexpected_exception_forwards_to_sentry(
+        self,
+        mock_conn_pool: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        real_undefined_table: type[Exception],
+    ) -> None:
+        """A non-UndefinedTable exception must surface in Sentry while
+        the empty-dict fallback is still returned (caller contract)."""
+        boom = RuntimeError("connection reset")
+        mock_conn_pool.execute.side_effect = boom
+
+        captured: list[tuple[BaseException, dict]] = []
+
+        def fake_capture(exc: BaseException, **kw: object) -> None:
+            captured.append((exc, kw))
+
+        monkeypatch.setattr("sentry_setup.capture_exception", fake_capture)
+
+        result = db.load_alert_config()
+
+        assert result == {}
+        assert len(captured) == 1
+        assert captured[0][0] is boom
+        # Tag + context shape locks the observability payload.
+        kwargs = captured[0][1]
+        assert kwargs.get("tags") == {"component": "db"}
+        assert kwargs.get("context") == {"phase": "load_alert_config"}
+
+    def test_sentry_failure_does_not_break_caller(
+        self,
+        mock_conn_pool: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        real_undefined_table: type[Exception],
+    ) -> None:
+        """If Sentry forwarding itself raises, the empty-dict caller
+        contract must still hold — never let observability break the
+        runtime fallback."""
+        mock_conn_pool.execute.side_effect = RuntimeError("connection reset")
+
+        def boom_sentry(*_a: object, **_kw: object) -> None:
+            raise RuntimeError("sentry SDK exploded")
+
+        monkeypatch.setattr("sentry_setup.capture_exception", boom_sentry)
+
+        # Must not raise — caller relies on dict return.
+        assert db.load_alert_config() == {}
