@@ -154,6 +154,39 @@ class TestCaptureMessageDisabled:
         mock_log.warning.assert_called_once()
 
 
+class TestApplyScope:
+    """Phase 5d — _apply_scope helper extracted from capture_* fns."""
+
+    def test_apply_tags_only(self) -> None:
+        scope = MagicMock()
+        sentry_setup._apply_scope(scope, {"component": "theta"}, None)
+        scope.set_tag.assert_called_once_with("component", "theta")
+        scope.set_extra.assert_not_called()
+
+    def test_apply_context_only(self) -> None:
+        scope = MagicMock()
+        sentry_setup._apply_scope(scope, None, {"symbol": "ES"})
+        scope.set_tag.assert_not_called()
+        scope.set_extra.assert_called_once_with("symbol", "ES")
+
+    def test_apply_both(self) -> None:
+        scope = MagicMock()
+        sentry_setup._apply_scope(
+            scope,
+            {"component": "theta"},
+            {"symbol": "ES", "horizon_days": 30},
+        )
+        scope.set_tag.assert_called_once_with("component", "theta")
+        # Both context kv pairs land as extras.
+        assert scope.set_extra.call_count == 2
+
+    def test_apply_neither_is_noop(self) -> None:
+        scope = MagicMock()
+        sentry_setup._apply_scope(scope, None, None)
+        scope.set_tag.assert_not_called()
+        scope.set_extra.assert_not_called()
+
+
 class TestCaptureExceptionEnabled:
     def test_forwards_to_sentry_when_enabled(
         self, monkeypatch: pytest.MonkeyPatch

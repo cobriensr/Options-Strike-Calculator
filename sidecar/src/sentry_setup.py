@@ -85,6 +85,26 @@ def is_enabled() -> bool:
 # `if sentry_enabled:` branches.
 
 
+def _apply_scope(
+    scope: Any,
+    tags: dict[str, str] | None,
+    context: dict[str, Any] | None,
+) -> None:
+    """Apply tags + context onto a Sentry scope.
+
+    Centralizes the loop body shared by ``capture_exception`` and
+    ``capture_message``. Tags become filterable scope tags in the
+    Sentry UI; context becomes full-fidelity extras attached to the
+    event payload. Either or both may be ``None`` (the no-op case).
+    """
+    if tags:
+        for key, value in tags.items():
+            scope.set_tag(key, value)
+    if context:
+        for key, value in context.items():
+            scope.set_extra(key, value)
+
+
 def capture_exception(
     exc: BaseException,
     *,
@@ -112,12 +132,7 @@ def capture_exception(
         import sentry_sdk
 
         with sentry_sdk.new_scope() as scope:
-            if tags:
-                for key, value in tags.items():
-                    scope.set_tag(key, value)
-            if context:
-                for key, value in context.items():
-                    scope.set_extra(key, value)
+            _apply_scope(scope, tags, context)
             sentry_sdk.capture_exception(exc)
     except Exception as inner:
         log.error("Failed to forward exception to Sentry: %s", inner)
@@ -151,12 +166,7 @@ def capture_message(
         import sentry_sdk
 
         with sentry_sdk.new_scope() as scope:
-            if tags:
-                for key, value in tags.items():
-                    scope.set_tag(key, value)
-            if context:
-                for key, value in context.items():
-                    scope.set_extra(key, value)
+            _apply_scope(scope, tags, context)
             sentry_sdk.capture_message(message, level=level)
     except Exception as inner:
         log.error("Failed to forward message to Sentry: %s", inner)
