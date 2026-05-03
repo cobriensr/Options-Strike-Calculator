@@ -5,7 +5,7 @@ pydantic>=2.7.0
 pydantic-settings>=2.3.0
 python-dotenv>=1.0.0
 apscheduler>=3.10.0
-duckdb>=1.0.0
+duckdb>=1.5.2
 # DuckDB's `SET TimeZone = '<name>'` validates the zone name against pytz.
 # Without this the archive_query module cannot force UTC session TZ, which
 # is load-bearing for TIMESTAMPTZ date-bucketing correctness — see
