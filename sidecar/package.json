@@ -29,7 +29,7 @@
     "tsx": "^4.19.0",
     "typescript": "^6.0.2",
     "typescript-eslint": "^8.58.1",
-    "vitest": "^4.1.4"
+    "vitest": "^4.1.5"
   },
   "overrides": {
     "postcss": ">=8.5.10"
