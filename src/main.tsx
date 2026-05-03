@@ -137,6 +137,7 @@ if (import.meta.env.PROD)
       { path: '/api/greek-exposure-strike', method: 'GET' },
       { path: '/api/spot-gex-history', method: 'GET' },
       { path: '/api/zero-gamma', method: 'GET' },
+      { path: '/api/dealer-regime', method: 'GET' },
       { path: '/api/max-pain-current', method: 'GET' },
       { path: '/api/vix-snapshots-recent', method: 'GET' },
       { path: '/api/ml/analyze-plots', method: 'POST' },

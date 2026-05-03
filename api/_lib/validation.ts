@@ -117,6 +117,21 @@ export const gexStrikeExpiryQuerySchema = z.object({
 export type GexStrikeExpiryQuery = z.infer<typeof gexStrikeExpiryQuerySchema>;
 
 // ============================================================
+// /api/dealer-regime
+// ============================================================
+
+/**
+ * Query params for GET /api/dealer-regime — backs the Dealer Regime
+ * Tile (Phase 2 of strike-battle-map). The endpoint accepts no query
+ * params: it always returns the latest row per ticker for the four
+ * tickers in `zero-gamma-tickers.ts`. We still validate to reject
+ * accidental query-string smuggling (anything passed gets a 400).
+ */
+export const dealerRegimeQuerySchema = z.object({}).strict();
+
+export type DealerRegimeQuery = z.infer<typeof dealerRegimeQuerySchema>;
+
+// ============================================================
 // /api/iv-anomalies
 // ============================================================
 
@@ -863,19 +878,31 @@ export type AnalysisResponse = z.infer<typeof analysisResponseSchema>;
 /**
  * Query params for GET /api/lottery-finder.
  *
- * Backs the LotteryFinder feed component + the date/time scrubber for
- * historical replay (Phase 2 of the spec).
+ * Backs the LotteryFinder feed component, the per-minute time
+ * scrubber, and the paginated result set (50 per page by default).
  *
- * - `date` (YYYY-MM-DD) bounds the result set to one trading day. The
- *   endpoint computes the day's CT-midnight bounds in UTC. Defaults to
- *   ET-today when omitted — keeps the live polling case cheap.
- * - `at` is the scrubber's replay cutoff (ISO timestamp). Only fires
- *   with `trigger_time_ct <= at` are returned. Mirrors the whale
- *   anomaly endpoint pattern.
- * - `limit` is capped at 200 — today's full fire stream rarely exceeds
- *   that even on heavy days; one day of historical fires from the
- *   archive is comfortable too.
- * - `ticker`, `reload`, `cheapCallPm`, `mode` map to the UI filter chips.
+ * Time-window semantics (the slider can ask for either):
+ *   - `minute` (ISO timestamp) — POINT-IN-TIME bucket. Returns fires
+ *     whose `trigger_time_ct` falls inside `[minute, minute + 1 min)`.
+ *     This is what the UI slider drives — drag to a minute, see what
+ *     fired then.
+ *   - `at` (ISO timestamp) — CUMULATIVE cutoff. Returns all fires
+ *     with `trigger_time_ct <= at`. Kept for back-compat with the
+ *     prior scrubber semantics; if both are provided, `minute` wins.
+ *   - Neither set — returns the whole day (subject to filters + limit).
+ *
+ * Pagination:
+ *   - `limit` defaults to 50 (one page). Max 200 — the UI uses
+ *     prev/next buttons over `offset` rather than ever asking for
+ *     thousands of rows in a single response.
+ *   - `offset` is 0-based. UI computes `offset = pageIndex * limit`.
+ *
+ * Filters (each maps to a UI chip; all optional, all AND-combined):
+ *   - `ticker` — single underlying symbol
+ *   - `reload` / `cheapCallPm` — boolean discriminator flags
+ *   - `mode` — Mode A (0DTE) or Mode B (DTE 1-3)
+ *   - `optionType` — 'C' or 'P'
+ *   - `tod` — time-of-day bucket (AM_open / MID / LUNCH / PM)
  */
 export const lotteryFinderQuerySchema = z.object({
   ticker: z
@@ -895,16 +922,20 @@ export const lotteryFinderQuerySchema = z.object({
       v === 'true' ? true : v === 'false' ? false : undefined,
     ),
   mode: z.enum(['A_intraday_0DTE', 'B_multi_day_DTE1_3']).optional(),
+  optionType: z.enum(['C', 'P']).optional(),
+  tod: z.enum(['AM_open', 'MID', 'LUNCH', 'PM']).optional(),
   date: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
     .optional(),
+  // Cumulative cutoff (back-compat). When both `at` and `minute` are
+  // present, the endpoint prefers `minute`.
   at: z.string().datetime({ offset: true }).optional(),
-  // Bumped from 100→500 default, 200→1000 max so the UI shows the
-  // full day's fire stream rather than just the AM-open burst. A
-  // backfilled day on the universe of ~50 tickers can have 1k+ fires;
-  // 500 covers most heavy days while bounding payload size.
-  limit: z.coerce.number().int().min(1).max(1000).default(500),
+  // Point-in-time minute bucket — the UI slider drives this.
+  minute: z.string().datetime({ offset: true }).optional(),
+  // Pagination — 50 per page is the UI's default size.
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
 });
 
 export type LotteryFinderQuery = z.infer<typeof lotteryFinderQuerySchema>;
