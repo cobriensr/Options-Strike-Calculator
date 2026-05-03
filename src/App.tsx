@@ -130,6 +130,11 @@ const GreekFlowPanel = lazy(() =>
     .then((m) => ({ default: m.GreekFlowPanel }))
     .catch(handleStaleChunk),
 );
+const StrikeBattleMap = lazy(() =>
+  import('./components/StrikeBattleMap')
+    .then((m) => ({ default: m.StrikeBattleMap }))
+    .catch(handleStaleChunk),
+);
 const BWBCalculator = lazy(() =>
   import('./components/BWBCalculator').catch(handleStaleChunk),
 );
@@ -1076,6 +1081,17 @@ export default function StrikeCalculator() {
                   fallback={<SkeletonSection lines={5} />}
                 >
                   <GreekFlowPanel
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
+                  />
+                </GatedSection>
+
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-strike-battle-map"
+                  label="Strike Battle Map"
+                  fallback={<SkeletonSection lines={5} />}
+                >
+                  <StrikeBattleMap
                     marketOpen={market.data.quotes?.marketOpen ?? false}
                   />
                 </GatedSection>
