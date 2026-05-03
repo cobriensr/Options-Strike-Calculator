@@ -1,0 +1,178 @@
+"""Unit tests for GexStrikeExpiryHandler._transform.
+
+DB writes are not exercised here — those are covered by an integration
+test once the daemon is connected to a real UW Advanced-tier socket.
+These tests verify the payload-to-row mapping, type coercion, and
+rejection logic at the handler boundary.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, date, datetime
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
+
+from handlers.gex_strike_expiry import (
+    _COLUMNS,
+    GexStrikeExpiryHandler,
+    _ms_epoch_to_minute,
+    _to_date,
+    _to_decimal,
+)
+
+_FIXTURE_PATH = (
+    Path(__file__).parent / "fixtures" / "gex_strike_expiry_sample.json"
+)
+
+
+@pytest.fixture
+def payload() -> dict:
+    with open(_FIXTURE_PATH) as f:
+        return json.load(f)
+
+
+@pytest.fixture
+def handler() -> GexStrikeExpiryHandler:
+    return GexStrikeExpiryHandler()
+
+
+@pytest.fixture
+def col_idx() -> dict[str, int]:
+    return {name: i for i, name in enumerate(_COLUMNS)}
+
+
+class TestTransform:
+    def test_returns_tuple_with_correct_arity(self, handler, payload):
+        row = handler._transform(payload)
+        assert row is not None
+        assert len(row) == len(_COLUMNS)
+
+    def test_identity_fields(self, handler, payload, col_idx):
+        row = handler._transform(payload)
+        assert row[col_idx["ticker"]] == "SPY"
+        assert row[col_idx["expiry"]] == date(2026, 5, 1)
+        assert row[col_idx["strike"]] == Decimal("722")
+
+    def test_ts_minute_truncated_to_minute(self, handler, payload, col_idx):
+        row = handler._transform(payload)
+        ts = row[col_idx["ts_minute"]]
+        assert isinstance(ts, datetime)
+        assert ts.tzinfo is not None
+        # 1777663530000 ms = 2026-05-01T19:25:30 UTC → truncated to 19:25:00
+        assert ts == datetime(2026, 5, 1, 19, 25, 0, tzinfo=UTC)
+        assert ts.second == 0
+        assert ts.microsecond == 0
+
+    def test_string_priced_fields_become_decimal(self, handler, payload, col_idx):
+        row = handler._transform(payload)
+        assert row[col_idx["price"]] == Decimal("722.18")
+        assert row[col_idx["call_gamma_oi"]] == Decimal("174792.59")
+        assert row[col_idx["put_gamma_oi"]] == Decimal("-1172037.66")
+        assert row[col_idx["call_charm_oi"]] == Decimal("85658181.72")
+        assert row[col_idx["put_vanna_bid_vol"]] == Decimal("-321.27")
+
+    def test_raw_payload_preserved(self, handler, payload, col_idx):
+        row = handler._transform(payload)
+        # Last column is the JSONB raw_payload — preserved verbatim.
+        assert row[col_idx["raw_payload"]] is payload
+
+
+class TestTransformRejection:
+    def test_rejects_missing_ticker(self, handler, payload):
+        del payload["ticker"]
+        assert handler._transform(payload) is None
+
+    def test_rejects_empty_ticker(self, handler, payload):
+        payload["ticker"] = ""
+        assert handler._transform(payload) is None
+
+    def test_rejects_missing_expiry(self, handler, payload):
+        del payload["expiry"]
+        assert handler._transform(payload) is None
+
+    def test_rejects_unparseable_expiry(self, handler, payload):
+        payload["expiry"] = "not-a-date"
+        assert handler._transform(payload) is None
+
+    def test_rejects_missing_strike(self, handler, payload):
+        del payload["strike"]
+        assert handler._transform(payload) is None
+
+    def test_rejects_missing_timestamp(self, handler, payload):
+        del payload["timestamp"]
+        assert handler._transform(payload) is None
+
+
+class TestEmptyStringNumericQuirk:
+    """UW emits ``""`` (empty string) on greek fields that aren't
+    computable for the bar — see unusual-whales-websocket skill.
+
+    The handler must coerce these to None (NULL in DB) rather than 0,
+    so downstream queries can distinguish "absent" from "zero exposure."
+    """
+
+    def test_empty_string_call_gamma_becomes_none(self, handler, payload, col_idx):
+        payload["call_gamma_oi"] = ""
+        row = handler._transform(payload)
+        assert row is not None
+        assert row[col_idx["call_gamma_oi"]] is None
+
+    def test_empty_string_charm_becomes_none(self, handler, payload, col_idx):
+        payload["put_charm_vol"] = ""
+        row = handler._transform(payload)
+        assert row is not None
+        assert row[col_idx["put_charm_vol"]] is None
+
+
+class TestHelperFunctions:
+    def test_to_decimal_handles_string_number(self):
+        assert _to_decimal("722.18") == Decimal("722.18")
+
+    def test_to_decimal_handles_negative(self):
+        assert _to_decimal("-1172037.66") == Decimal("-1172037.66")
+
+    def test_to_decimal_handles_empty_string(self):
+        assert _to_decimal("") is None
+
+    def test_to_decimal_handles_none(self):
+        assert _to_decimal(None) is None
+
+    def test_to_decimal_handles_garbage(self):
+        assert _to_decimal("not a number") is None
+
+    def test_to_date_iso_string(self):
+        assert _to_date("2026-05-01") == date(2026, 5, 1)
+
+    def test_to_date_invalid(self):
+        assert _to_date("garbage") is None
+        assert _to_date("") is None
+        assert _to_date(None) is None
+
+    def test_ms_epoch_truncates_to_minute(self):
+        # 1777663530000 ms = 2026-05-01T19:25:30 UTC
+        ts = _ms_epoch_to_minute(1777663530000)
+        assert ts == datetime(2026, 5, 1, 19, 25, 0, tzinfo=UTC)
+
+    def test_ms_epoch_handles_string(self):
+        ts = _ms_epoch_to_minute("1777663530000")
+        assert ts == datetime(2026, 5, 1, 19, 25, 0, tzinfo=UTC)
+
+    def test_ms_epoch_handles_empty(self):
+        assert _ms_epoch_to_minute("") is None
+        assert _ms_epoch_to_minute(None) is None
+
+    def test_columns_list_matches_table_definition(self):
+        # Sanity: the transform's tuple shape must match _COLUMNS length.
+        # The actual SQL column list is in api/_lib/db-migrations.ts
+        # migration #111 — test_db.test.ts asserts that side.
+        assert len(_COLUMNS) == 30
+        assert _COLUMNS[0] == "ticker"
+        assert _COLUMNS[-1] == "raw_payload"
+        # Conflict cols must be a subset of _COLUMNS.
+        from handlers.gex_strike_expiry import _CONFLICT_COLS
+
+        for c in _CONFLICT_COLS:
+            assert c in _COLUMNS

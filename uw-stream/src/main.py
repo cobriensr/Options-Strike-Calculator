@@ -20,6 +20,7 @@ from connector import Connector
 from db import close_pool, init_pool
 from handlers.base import Handler
 from handlers.flow_alerts import FlowAlertsHandler
+from handlers.gex_strike_expiry import GexStrikeExpiryHandler
 from handlers.option_trades import OptionTradesHandler
 from health import run_server
 from logger_setup import log
@@ -43,6 +44,9 @@ def _build_handlers(channels: list[str]) -> dict[str, Handler]:
     # Single shared handler instance for every option_trades:<TICKER>
     # subscription — see OptionTradesHandler docstring for rationale.
     option_trades = OptionTradesHandler()
+    # Same shared-instance pattern for gex_strike_expiry:<TICKER> — one
+    # queue + drain loop spans SPY + QQQ (and any future tickers).
+    gex_strike_expiry = GexStrikeExpiryHandler()
 
     selected: dict[str, Handler] = {}
     for ch in channels:
@@ -50,10 +54,13 @@ def _build_handlers(channels: list[str]) -> dict[str, Handler]:
             selected[ch] = flow_alerts
         elif ch.startswith("option_trades:"):
             selected[ch] = option_trades
+        elif ch.startswith("gex_strike_expiry:"):
+            selected[ch] = gex_strike_expiry
         else:
             raise RuntimeError(
                 f"WS_CHANNELS contains {ch!r} but no handler is registered. "
-                "Supported: flow-alerts, option_trades:<TICKER>"
+                "Supported: flow-alerts, option_trades:<TICKER>, "
+                "gex_strike_expiry:<TICKER>"
             )
         state.channel(ch).subscribed = False
     return selected

@@ -110,3 +110,44 @@ async def bulk_insert_ignore_conflict(
     async with pool.acquire() as conn, conn.transaction():
         await conn.executemany(sql, rows)
     return len(rows)
+
+
+async def bulk_upsert_replace(
+    table: str,
+    columns: list[str],
+    rows: list[tuple[Any, ...]],
+    conflict_cols: list[str],
+) -> int:
+    """Insert many rows with ``ON CONFLICT (...) DO UPDATE`` — every
+    non-conflict column is overwritten with the EXCLUDED value.
+
+    Use this for tables where the upstream value at a unique key can
+    legitimately change after the fact (UW restates aggregated GEX
+    intraday — same root cause as the vega_flow_etf restatement we hit
+    on 2026-05-01). Last write wins per (conflict_cols) tuple.
+
+    Returns the size of the input batch (asyncpg's ``executemany`` does
+    not give per-row insert/update counts without RETURNING).
+    """
+    if not rows:
+        return 0
+
+    update_cols = [c for c in columns if c not in conflict_cols]
+    if not update_cols:
+        # Pathological: every column is a conflict key. Falling back to
+        # DO NOTHING preserves intent (no value to overwrite anyway).
+        return await bulk_insert_ignore_conflict(table, columns, rows, conflict_cols)
+
+    placeholders = ", ".join(f"${i + 1}" for i in range(len(columns)))
+    conflict_clause = ", ".join(conflict_cols)
+    update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+    sql = (
+        f"INSERT INTO {table} ({', '.join(columns)}) "
+        f"VALUES ({placeholders}) "
+        f"ON CONFLICT ({conflict_clause}) DO UPDATE SET {update_clause}"
+    )
+
+    pool = get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.executemany(sql, rows)
+    return len(rows)
