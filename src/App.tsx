@@ -146,6 +146,11 @@ const WhaleAnomaliesSection = lazy(() =>
     .then((m) => ({ default: m.WhaleAnomaliesSection }))
     .catch(handleStaleChunk),
 );
+const LotteryFinderSection = lazy(() =>
+  import('./components/LotteryFinder/LotteryFinderSection')
+    .then((m) => ({ default: m.LotteryFinderSection }))
+    .catch(handleStaleChunk),
+);
 const WhaleBanner = lazy(() =>
   import('./components/WhaleAnomalies/WhaleBanner')
     .then((m) => ({ default: m.WhaleBanner }))
@@ -1114,6 +1119,17 @@ export default function StrikeCalculator() {
                   fallback={<SkeletonSection lines={5} />}
                 >
                   <WhaleAnomaliesSection
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
+                  />
+                </GatedSection>
+
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-lottery-finder"
+                  label="Lottery Finder"
+                  fallback={<SkeletonSection lines={5} />}
+                >
+                  <LotteryFinderSection
                     marketOpen={market.data.quotes?.marketOpen ?? false}
                   />
                 </GatedSection>
