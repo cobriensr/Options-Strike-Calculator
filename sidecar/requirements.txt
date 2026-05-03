@@ -1,4 +1,4 @@
-databento>=0.45.0
+databento>=0.77.0
 psycopg2>=2.9.9
 sentry-sdk>=2.0.0
 pydantic>=2.7.0
