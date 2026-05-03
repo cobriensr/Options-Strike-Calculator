@@ -74,8 +74,8 @@ describe('fetch-greek-flow-etf handler', () => {
     mockUwFetch.mockResolvedValue([makeGreekFlowTick()]);
     // Default: withRetry passes through
     mockWithRetry.mockImplementation((fn: () => unknown) => fn());
-    // Default: SQL INSERT returns a row (stored)
-    mockSql.mockResolvedValue([{ id: 1 }]);
+    // Default: UPSERT returns one row with was_insert=true (new row)
+    mockSql.mockResolvedValue([{ was_insert: true }]);
   });
 
   // ── Guard delegation ───────────────────────────────────────
@@ -209,11 +209,11 @@ describe('fetch-greek-flow-etf handler', () => {
     expect(res._json).toMatchObject({
       job: 'fetch-greek-flow-etf',
       tickers: {
-        SPY: { ticks: 1, stored: 1, skipped: 0 },
-        QQQ: { ticks: 1, stored: 1, skipped: 0 },
+        SPY: { ticks: 1, inserted: 1, updated: 0, failed: 0 },
+        QQQ: { ticks: 1, inserted: 1, updated: 0, failed: 0 },
       },
     });
-    // 2 INSERT calls (1 per ticker)
+    // 2 UPSERT calls (1 per ticker)
     expect(mockSql).toHaveBeenCalledTimes(2);
   });
 
@@ -242,18 +242,18 @@ describe('fetch-greek-flow-etf handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       tickers: {
-        SPY: { ticks: 0, stored: 0, skipped: 0 },
-        QQQ: { ticks: 0, stored: 0, skipped: 0 },
+        SPY: { ticks: 0, inserted: 0, updated: 0, failed: 0 },
+        QQQ: { ticks: 0, inserted: 0, updated: 0, failed: 0 },
       },
     });
     expect(mockSql).not.toHaveBeenCalled();
   });
 
-  // ── ON CONFLICT (duplicate) path ──────────────────────────
+  // ── UPSERT (existing-row) path ────────────────────────────
 
-  it('counts ON CONFLICT rows as skipped, not stored', async () => {
-    // Empty result array = ON CONFLICT DO NOTHING (no row returned)
-    mockSql.mockResolvedValue([]);
+  it('counts existing rows as updated when ON CONFLICT fires', async () => {
+    // was_insert=false ⇒ ON CONFLICT DO UPDATE fired (row pre-existed)
+    mockSql.mockResolvedValue([{ was_insert: false }]);
     mockUwFetch
       .mockResolvedValueOnce([makeGreekFlowTick({ ticker: 'SPY' })])
       .mockResolvedValueOnce([makeGreekFlowTick({ ticker: 'QQQ' })]);
@@ -265,15 +265,15 @@ describe('fetch-greek-flow-etf handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       tickers: {
-        SPY: { stored: 0, skipped: 1 },
-        QQQ: { stored: 0, skipped: 1 },
+        SPY: { inserted: 0, updated: 1, failed: 0 },
+        QQQ: { inserted: 0, updated: 1, failed: 0 },
       },
     });
   });
 
-  // ── Insert error handling ─────────────────────────────────
+  // ── Upsert error handling ─────────────────────────────────
 
-  it('counts insert error as skipped; whole handler still returns 200', async () => {
+  it('counts upsert error as failed; whole handler still returns 200', async () => {
     mockSql.mockRejectedValueOnce(new Error('DB insert failed'));
     mockUwFetch
       .mockResolvedValueOnce([makeGreekFlowTick({ ticker: 'SPY' })])
@@ -286,8 +286,8 @@ describe('fetch-greek-flow-etf handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       tickers: {
-        SPY: { stored: 0, skipped: 1 },
-        QQQ: { stored: 0, skipped: 0 },
+        SPY: { inserted: 0, updated: 0, failed: 1 },
+        QQQ: { inserted: 0, updated: 0, failed: 0 },
       },
     });
   });
@@ -381,7 +381,7 @@ describe('fetch-greek-flow-etf handler', () => {
     expect(res._status).toBe(200);
     // Both minute bars must be stored separately
     expect(res._json).toMatchObject({
-      tickers: { SPY: { ticks: 2, stored: 2, skipped: 0 } },
+      tickers: { SPY: { ticks: 2, inserted: 2, updated: 0, failed: 0 } },
     });
     expect(mockSql).toHaveBeenCalledTimes(2);
   });

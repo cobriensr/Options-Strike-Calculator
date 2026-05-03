@@ -54,6 +54,10 @@
       "schedule": "* 13-21 * * 1-5"
     },
     {
+      "path": "/api/cron/reconcile-greek-flow-etf",
+      "schedule": "0 22 * * 1-5"
+    },
+    {
       "path": "/api/cron/monitor-vega-spike",
       "schedule": "* 13-21 * * 1-5"
     },

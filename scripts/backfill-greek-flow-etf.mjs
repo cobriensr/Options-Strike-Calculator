@@ -2,16 +2,24 @@
 
 /**
  * Local backfill script for ETF Greek (delta/vega) flow on SPY and QQQ.
- * Fetches from the all-expiries Greek Flow endpoint per ticker per day.
+ * Fetches from the all-expiries Greek Flow endpoint per ticker per day,
+ * UPSERTING into vega_flow_etf so already-stored preliminary values get
+ * overwritten with UW's current (post-reconciliation) numbers.
  *
- * Stored at full 1-minute resolution in the vega_flow_etf table
- * (no downsampling). Idempotent on (ticker, timestamp).
+ * Why UPSERT: UW restates per-minute aggregates as late prints and
+ * cancellations resolve. The original ON CONFLICT DO NOTHING strategy
+ * left preliminary live-day values frozen in place even after UW
+ * finalized them — diverging by 5–40× on the May 2026 sessions before
+ * we caught it.
  *
  * Usage:
- *   UW_API_KEY=your_key DATABASE_URL="postgresql://..." node scripts/backfill-greek-flow-etf.mjs
+ *   # Last N trading days (default 30):
+ *   UW_API_KEY=... DATABASE_URL=... node scripts/backfill-greek-flow-etf.mjs
+ *   node scripts/backfill-greek-flow-etf.mjs 5
  *
- * Options:
- *   node scripts/backfill-greek-flow-etf.mjs 5    # 5 days instead of 30
+ *   # Explicit dates (any number, in any order):
+ *   node scripts/backfill-greek-flow-etf.mjs 2026-05-01
+ *   node scripts/backfill-greek-flow-etf.mjs 2026-04-29 2026-04-30 2026-05-01
  */
 
 import { neon } from '@neondatabase/serverless';
@@ -32,7 +40,13 @@ const sql = neon(DATABASE_URL);
 const UW_BASE = 'https://api.unusualwhales.com/api';
 const TICKERS = ['SPY', 'QQQ'];
 
-const days = Number.parseInt(process.argv[2] ?? '30', 10);
+// Args may be either a single integer (= last N trading days) or a list
+// of explicit YYYY-MM-DD dates.
+const args = process.argv.slice(2);
+const explicitDates = args.filter((a) => /^\d{4}-\d{2}-\d{2}$/.test(a));
+const days = explicitDates.length === 0
+  ? Number.parseInt(args[0] ?? '30', 10)
+  : 0;
 
 // ── Generate last N trading days ────────────────────────────
 
@@ -93,9 +107,11 @@ async function fetchGreekFlow(ticker, date) {
 // ── Store every minute bar (no downsampling) ────────────────
 
 async function storeTicks(ticks, ticker, date) {
-  if (ticks.length === 0) return { stored: 0, total: 0 };
+  if (ticks.length === 0)
+    return { inserted: 0, updated: 0, total: 0 };
 
-  let stored = 0;
+  let inserted = 0;
+  let updated = 0;
 
   for (const tick of ticks) {
     try {
@@ -116,16 +132,27 @@ async function storeTicks(ticks, ticker, date) {
           ${tick.total_delta_flow}, ${tick.otm_total_delta_flow},
           ${tick.transactions}, ${tick.volume}
         )
-        ON CONFLICT (ticker, timestamp) DO NOTHING
-        RETURNING id
+        ON CONFLICT (ticker, timestamp) DO UPDATE SET
+          dir_vega_flow        = EXCLUDED.dir_vega_flow,
+          otm_dir_vega_flow    = EXCLUDED.otm_dir_vega_flow,
+          total_vega_flow      = EXCLUDED.total_vega_flow,
+          otm_total_vega_flow  = EXCLUDED.otm_total_vega_flow,
+          dir_delta_flow       = EXCLUDED.dir_delta_flow,
+          otm_dir_delta_flow   = EXCLUDED.otm_dir_delta_flow,
+          total_delta_flow     = EXCLUDED.total_delta_flow,
+          otm_total_delta_flow = EXCLUDED.otm_total_delta_flow,
+          transactions         = EXCLUDED.transactions,
+          volume               = EXCLUDED.volume
+        RETURNING (xmax = 0) AS was_insert
       `;
-      if (result.length > 0) stored++;
+      if (result[0]?.was_insert) inserted++;
+      else updated++;
     } catch (err) {
-      console.warn(`  Insert error: ${err.message}`);
+      console.warn(`  Upsert error: ${err.message}`);
     }
   }
 
-  return { stored, total: ticks.length };
+  return { inserted, updated, total: ticks.length };
 }
 
 // ── Format for display ──────────────────────────────────────
@@ -160,15 +187,19 @@ function maxAbsDirVega(ticks) {
 // ── Main ────────────────────────────────────────────────────
 
 async function main() {
-  const tradingDays = getTradingDays(days);
+  const tradingDays =
+    explicitDates.length > 0 ? explicitDates.slice().sort() : getTradingDays(days);
 
-  console.log(`Backfilling ETF Greek Flow (SPY, QQQ — full 1-min resolution)`);
+  console.log(
+    `Backfilling ETF Greek Flow (SPY, QQQ — full 1-min resolution, UPSERT)`,
+  );
   console.log(
     `Days: ${tradingDays.length} (${tradingDays[0]} to ${tradingDays.at(-1)})`,
   );
   console.log(`Tickers: ${TICKERS.join(', ')}\n`);
 
-  let totalStored = 0;
+  let totalInserted = 0;
+  let totalUpdated = 0;
   let totalBars = 0;
 
   for (const date of tradingDays) {
@@ -178,13 +209,14 @@ async function main() {
       const ticks = await fetchGreekFlow(ticker, date);
       const result = await storeTicks(ticks, ticker, date);
 
-      totalStored += result.stored;
+      totalInserted += result.inserted;
+      totalUpdated += result.updated;
       totalBars += result.total;
 
       const dvMax = ticks.length > 0 ? fmt(maxAbsDirVega(ticks)) : 'N/A';
 
       console.log(
-        `  ${date} ${ticker}: ${result.total} ticks (${result.stored} new) | dir_vega max: ${dvMax}`,
+        `  ${date} ${ticker}: ${result.total} ticks (${result.inserted} new, ${result.updated} updated) | dir_vega max: ${dvMax}`,
       );
     }
   }
@@ -192,8 +224,8 @@ async function main() {
   console.log(`\nDone!`);
   console.log(`  Days × tickers: ${tradingDays.length} × ${TICKERS.length}`);
   console.log(`  Total bars seen: ${totalBars}`);
-  console.log(`  Newly stored: ${totalStored}`);
-  console.log(`  Skipped (duplicates): ${totalBars - totalStored}`);
+  console.log(`  Inserted: ${totalInserted}`);
+  console.log(`  Updated:  ${totalUpdated}`);
 }
 
 try {

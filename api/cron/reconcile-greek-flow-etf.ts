@@ -1,26 +1,21 @@
 /**
- * GET /api/cron/fetch-greek-flow-etf
+ * GET /api/cron/reconcile-greek-flow-etf
  *
- * Fetches all-expiries directional vega and delta flow for SPY and QQQ
- * from the Unusual Whales Greek Flow endpoint. Both tickers are fetched
- * in parallel.
+ * Post-close reconciliation pass for the SPY/QQQ Greek Flow data
+ * populated by fetch-greek-flow-etf.
  *
- * Unlike the SPX cron (fetch-greek-flow), which uses the 0DTE-only
- * /{expiry} sub-route and downsamples to 5-min intervals, this cron:
- *   - Uses /stock/{ticker}/greek-flow?date={today} (all expiries variant)
- *   - Stores ticks at FULL 1-minute resolution intentionally, because
- *     ETF options flow signal concentrates in short bursts that would be
- *     smeared by 5-min sampling.
- *   - UPSERTs all returned rows. UW restates per-minute aggregates as
- *     late prints / cancellations resolve, so the live cron is itself a
- *     continuous intraday reconciliation. A separate post-close
- *     reconcile-greek-flow-etf cron handles end-of-day finalization.
+ * Why this exists:
+ *   UW restates per-minute Greek-flow aggregates as late prints and
+ *   cancellations settle. The live cron (fetch-greek-flow-etf) already
+ *   UPSERTs every minute during market hours so it picks up *intraday*
+ *   restatements. But UW's final post-close reconciliation can land
+ *   AFTER the last 21:59 UTC live-cron tick. This cron re-fetches the
+ *   just-closed session once, an hour after close, to overwrite any
+ *   rows whose values were finalized after the live cron stopped.
  *
- * Stored in vega_flow_etf table (migration #92).
+ * Schedule: vercel.json registers `0 22 * * 1-5` (22:00 UTC = 5:00 PM ET).
  *
- * Total API calls per invocation: 2 (SPY + QQQ in parallel)
- *
- * Schedule: vercel.json registers `* 13-21 * * 1-5` (every minute).
+ * Total API calls per invocation: 2 (SPY + QQQ in parallel).
  *
  * Environment: UW_API_KEY, CRON_SECRET
  */
@@ -36,7 +31,7 @@ import {
 } from '../_lib/greek-flow-etf-store.js';
 
 export default withCronInstrumentation(
-  'fetch-greek-flow-etf',
+  'reconcile-greek-flow-etf',
   async (ctx): Promise<CronResult> => {
     const { apiKey, today } = ctx;
     await cronJitter();
@@ -57,15 +52,17 @@ export default withCronInstrumentation(
 
     ctx.logger.info(
       {
+        date: today,
         spy: { ticks: spyTicks.length, ...spyResult },
         qqq: { ticks: qqqTicks.length, ...qqqResult },
       },
-      'fetch-greek-flow-etf completed',
+      'reconcile-greek-flow-etf completed',
     );
 
     return {
       status: 'success',
       metadata: {
+        date: today,
         tickers: {
           SPY: { ticks: spyTicks.length, ...spyResult },
           QQQ: { ticks: qqqTicks.length, ...qqqResult },
@@ -73,4 +70,8 @@ export default withCronInstrumentation(
       },
     };
   },
+  // Reconcile fires AFTER market hours close (22:00 UTC ≈ 5:00 PM ET) to
+  // catch UW's post-close restatement, so the default market-hours gate
+  // is disabled.
+  { marketHours: false },
 );
