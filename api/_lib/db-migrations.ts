@@ -3325,8 +3325,8 @@ export const MIGRATIONS: Migration[] = [
       'strikes for SPY + QQQ with customer dir delta flow above the line ' +
       'and dealer net gamma below — so magnets (pin candidates) and ' +
       'amplifiers (cascade risk) are visible in one view. Schema notes: ' +
-      "values are stored as NUMERIC because UW emits them as JSON strings " +
-      "in scientific-ish notation that Decimal/Number.parseFloat handle " +
+      'values are stored as NUMERIC because UW emits them as JSON strings ' +
+      'in scientific-ish notation that Decimal/Number.parseFloat handle ' +
       'safely; raw_payload is kept as JSONB for forward-compat against ' +
       'channel schema additions. The natural dedupe key is (ticker, expiry, ' +
       'strike, ts_minute) — UW restates aggregated GEX intraday (same root ' +
@@ -3378,6 +3378,50 @@ export const MIGRATIONS: Migration[] = [
       // Strike-history scrub: "this strike across the whole day"
       sql`CREATE INDEX IF NOT EXISTS ws_gex_strike_expiry_ticker_strike_ts_idx
             ON ws_gex_strike_expiry (ticker, strike, ts_minute DESC)`,
+    ],
+  },
+  {
+    id: 112,
+    description:
+      'Rename spx_candles_1m → index_candles_1m and add symbol column to ' +
+      'support multi-index OHLC ingestion (initially SPX, with NDX added in a ' +
+      'follow-up so the dark pool read endpoint can do contemporaneous ' +
+      'QQQ→NDX mapping via the same candle-ratio query used for SPY→SPX). ' +
+      'Existing rows are backfilled to symbol="SPX" via the column DEFAULT. ' +
+      'A compatibility view named spx_candles_1m (filtered to symbol="SPX") ' +
+      'preserves the old name so unmigrated readers continue working unchanged ' +
+      'while we migrate them in bounded batches; the view is dropped in a later ' +
+      'migration once all 22 references have been rewritten to query ' +
+      'index_candles_1m directly. The old (date, timestamp) unique constraint ' +
+      'is replaced by (symbol, date, timestamp) so SPX and NDX rows can ' +
+      "coexist; the constraint's auto-index serves the dark pool read query " +
+      'pattern (symbol-leftmost) without needing a separate named index. A ' +
+      'partial unique index spx_candles_1m_compat_uniq on (date, timestamp) ' +
+      "WHERE symbol='SPX' is added so the existing fetch-spx-candles-1m cron's " +
+      'INSERT ... ON CONFLICT (date, timestamp) keeps resolving against an ' +
+      "exact-match unique target — Postgres rejects ON CONFLICT against a " +
+      'partial column subset of a multi-column unique constraint. The partial ' +
+      'index is dropped together with the compat view in a later migration ' +
+      'once the cron is rewritten to insert into index_candles_1m directly ' +
+      'with symbol-aware ON CONFLICT.',
+    statements: (sql) => [
+      sql`ALTER TABLE spx_candles_1m RENAME TO index_candles_1m`,
+      sql`ALTER TABLE index_candles_1m
+            ADD COLUMN symbol TEXT NOT NULL DEFAULT 'SPX'`,
+      sql`ALTER TABLE index_candles_1m
+            DROP CONSTRAINT spx_candles_1m_date_timestamp_key`,
+      sql`ALTER TABLE index_candles_1m
+            ADD CONSTRAINT index_candles_1m_symbol_date_timestamp_key
+            UNIQUE (symbol, date, timestamp)`,
+      sql`DROP INDEX IF EXISTS idx_spx_candles_1m_date_time`,
+      sql`CREATE UNIQUE INDEX spx_candles_1m_compat_uniq
+            ON index_candles_1m (date, timestamp)
+            WHERE symbol = 'SPX'`,
+      sql`CREATE VIEW spx_candles_1m AS
+            SELECT id, date, timestamp, open, high, low, close, volume,
+                   market_time, created_at, spx_schwab_price
+            FROM index_candles_1m
+            WHERE symbol = 'SPX'`,
     ],
   },
 ];

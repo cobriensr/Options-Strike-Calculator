@@ -71,11 +71,11 @@ uw-stream/                          (sibling to sidecar/, ml-sweep/)
 
 ## Channels — Phase 1 (Tier 1 only)
 
-| Channel                 | Subscription     | Target table       | Notes                                       |
-| ----------------------- | ---------------- | ------------------ | ------------------------------------------- |
-| `flow-alerts`           | global           | `flow_alerts`      | Hyphen, not underscore — common typo        |
-| `off_lit_trades`        | global           | `dark_pool_prints` | Session-hours filter per memory feedback    |
-| `gex_strike_expiry:SPX` | per-ticker (SPX) | `gex_zero_dte`     | Handler filters to today's expiry only      |
+| Channel                 | Subscription     | Target table             | Notes                                            |
+| ----------------------- | ---------------- | ------------------------ | ------------------------------------------------ |
+| `flow-alerts`           | global           | `flow_alerts`            | Hyphen, not underscore — common typo             |
+| `off_lit_trades`        | global (filter)  | `dark_pool_prints` (new) | SPY+QQQ only; see **Dark pool sub-design** below |
+| `gex_strike_expiry:SPX` | per-ticker (SPX) | `gex_zero_dte`           | Handler filters to today's expiry only           |
 
 ## Channels — Phase 2 (Tier 2, deferred)
 
@@ -87,7 +87,110 @@ uw-stream/                          (sibling to sidecar/, ml-sweep/)
 | `option_trades:SPXW`          | SPXW (size filter)         | `spxw_blocks`                      |
 | `contract_screener`           | global, filter to SPX 0DTE | `vol_0dte`                         |
 
-Exact target tables to be confirmed during Phase 1 by reading the corresponding cron handler — do not write into a new table; reuse what the cron writes today.
+Exact target tables to be confirmed during Phase 1 by reading the corresponding cron handler — do not write into a new table; reuse what the cron writes today. **Exception:** `off_lit_trades` writes to a new `dark_pool_prints` table — see sub-design below for rationale.
+
+## Dark pool — raw prints + read-time mapping (sub-design)
+
+Dark pool is the only Phase 1 channel where the daemon writes to a NEW table. The legacy `dark_pool_levels` is pre-aggregated, SPY-only, and bakes a static ×10 SPX mapping into storage — precluding multi-symbol coverage (SPY+QQQ → SPX+NDX views) and contemporaneous-basis accuracy.
+
+### Schema
+
+Stores every field UW sends in the `off_lit_trades` payload — even fields that are largely static per symbol (sector, marketcap, avg30_volume) — to maximize the surface available for downstream ML feature engineering. Storage cost per print is small; the user explicitly chose full-fidelity capture over normalized redundancy.
+
+```sql
+CREATE TABLE dark_pool_prints (
+  id                  BIGSERIAL     PRIMARY KEY,
+  -- Session-day partitioning helper (derived from executed_at in CT)
+  date                DATE          NOT NULL,
+
+  -- Core trade identity (from UW payload)
+  symbol              TEXT          NOT NULL,             -- 'SPY' | 'QQQ' (filtered at ingest)
+  executed_at         TIMESTAMPTZ   NOT NULL,             -- print timestamp
+  price               NUMERIC(12,4) NOT NULL,             -- equity price (string in payload, parsed)
+  size                INTEGER       NOT NULL,             -- shares in this print
+  volume              BIGINT,                             -- cumulative session volume reported by UW
+  type                TEXT,                               -- always 'off_lit' for this channel; stored for completeness
+
+  -- Trade classification (from UW payload)
+  trade_settlement    TEXT,                               -- 'regular', 'cash', etc.
+  trade_code          TEXT,                               -- nullable in payload
+  ext_hour_sold_codes TEXT,                               -- captured for completeness; rows where this equals 'extended_hours_trade' are dropped at ingest (so this column never holds that exact value, but other ext-hour codes are stored and may be useful for ML)
+  sale_cond_codes     TEXT,                               -- captured for completeness; rows where this contains the contingent-trade marker are dropped at ingest, but other sale-condition codes are stored
+
+  -- NBBO context at print time (from UW payload)
+  nbbo_bid            NUMERIC(12,4),
+  nbbo_ask            NUMERIC(12,4),
+  nbbo_bid_quantity   INTEGER,
+  nbbo_ask_quantity   INTEGER,
+
+  -- Symbol metadata (from UW payload — slowly varying, captured every print for ML time-series fidelity)
+  sector              TEXT,
+  next_earnings_date  DATE,
+  avg30_volume        NUMERIC(18,2),                      -- string-encoded float in payload
+  issue_type          TEXT,
+  marketcap           NUMERIC(20,2),                      -- string-encoded float; can be very large
+
+  -- Computed at ingest, not in payload
+  premium             NUMERIC(18,2) NOT NULL,             -- price * size
+
+  -- Bookkeeping
+  ingested_at         TIMESTAMPTZ   NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX idx_dark_pool_prints_dedup
+  ON dark_pool_prints (symbol, executed_at, price, size);
+CREATE INDEX idx_dark_pool_prints_symbol_date
+  ON dark_pool_prints (symbol, date, executed_at DESC);
+```
+
+Field-storage rationale: payloads where UW sends `null` for a column become NULL in the DB (no defaulting / coalescing). Numeric payload strings are parsed at the handler boundary; if parsing fails, the print is logged and dropped (data hygiene over silent corruption).
+
+### Handler `handlers/off_lit_trades.py`
+
+1. Drop unless `symbol ∈ {SPY, QQQ}` (firehose has every ticker)
+2. Drop unless `executed_at` falls inside 08:30–15:00 CT session window (memory: `feedback_extended_hours.md`)
+3. Drop on `ext_hour_sold_codes == 'extended_hours_trade'` or contingent-trade `sale_cond_codes` (memory: `feedback_contingent_trade_filter.md`)
+4. Cast string-encoded numerics at handler boundary (WS skill footgun) for `price`, `size`, `volume`, `nbbo_bid`, `nbbo_ask`, `nbbo_bid_quantity`, `nbbo_ask_quantity`, `avg30_volume`, `marketcap`
+5. Compute `premium = price * size`; derive `date` from `executed_at` in CT
+6. Map every remaining payload field 1:1 into the corresponding column (no field omitted)
+7. Batch COPY with `ON CONFLICT (symbol, executed_at, price, size) DO NOTHING` for replay idempotency
+
+### Read-time index mapping
+
+Levels are derived at read time, not stored — preserves raw fidelity and lets the mapping methodology evolve without backfill:
+
+```sql
+SELECT ROUND(p.price * (i.close / e.close)) AS level,
+       SUM(p.premium)     AS total_premium,
+       COUNT(*)           AS trade_count,
+       SUM(p.size)        AS total_shares,
+       MAX(p.executed_at) AS latest_time
+FROM dark_pool_prints p
+JOIN etf_candles_1m   e ON e.ticker = p.symbol AND e.timestamp = date_trunc('minute', p.executed_at)
+JOIN index_candles_1m i ON i.symbol = $index   AND i.timestamp = date_trunc('minute', p.executed_at)
+WHERE p.symbol = $etf AND p.date = $date
+GROUP BY 1
+ORDER BY total_premium DESC;
+```
+
+`(etf, index)` pairs for the 4 supported selector values:
+
+| Selector | etf   | index | Mapping           |
+| -------- | ----- | ----- | ----------------- |
+| `SPX`    | `SPY` | `SPX` | ratio query above |
+| `NDX`    | `QQQ` | `NDX` | ratio query above |
+| `SPY`    | `SPY` | —     | `ROUND(p.price)`  |
+| `QQQ`    | `QQQ` | —     | `ROUND(p.price)`  |
+
+Native-ETF views skip the candle joins entirely.
+
+### Prerequisite — NDX 1m candle ingestion
+
+`etf_candles_1m` covers SPY+QQQ; `spx_candles_1m` covers SPX. **No NDX candle table exists today.** A separate Phase 0 work item extends the existing index-candle infrastructure to ingest NDX (Schwab quotes `$NDX` the same way as `$SPX`). Until that ships, the QQQ→NDX view falls back to the prior trading day's `NDX_close / QQQ_close` ratio applied as a constant — documented as a degraded mode in the read endpoint.
+
+### Consumer migration (owned by migration spec)
+
+`dark_pool_levels` is read by 7+ modules across `api/` (`darkpool-levels.ts`, `system-status.ts`, `journal/status.ts`, `build-features-phase2.ts`, `analyze-context.ts`, `anomaly-context.ts`, `uw-deltas.ts`, plus tests). Migrating them is owned by the migration spec — daemon-side ingestion can ship and run alongside the legacy cron until consumer cutover.
 
 ## Configuration (Railway env vars)
 
@@ -162,6 +265,8 @@ Railway healthcheck path: `/healthz`. Restart policy: on-failure with 30s grace.
 2. **DB driver:** `asyncpg`. Faster COPY throughput, asyncio-native. Sidecar parity is a soft goal, not a hard rule.
 3. **Sentry:** share the sidecar DSN. Adds tagging on events (`service:uw-stream`) so alerts can still be scoped.
 4. **Whale-alert handling:** no filter. All alerts go to one unified `flow_alerts` table. Whale-alert UI / analyze paths must be updated to query that table with a WHERE clause at read time. **This is a frontend/api change item — see migration plan.**
+5. **Dark pool storage:** raw prints in a new `dark_pool_prints` table; SPX/NDX synthesized at read time via candle ratio (see sub-design). Symbols scoped to SPY+QQQ at ingest. Legacy `dark_pool_levels` table retired after consumer migration completes (owned by migration spec). One source of truth — no parallel pre-aggregated table maintained by the daemon.
+6. **NDX 1m candle ingestion:** prerequisite for accurate QQQ→NDX mapping. Extend existing index-candle cron infrastructure (Schwab serves `$NDX` like `$SPX`). Tracked as Phase 0 in the migration spec. Until shipped, QQQ→NDX read endpoint falls back to a static prior-day ratio.
 
 ## Still open
 
