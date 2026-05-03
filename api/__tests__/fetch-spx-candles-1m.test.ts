@@ -522,7 +522,7 @@ describe('fetch-spx-candles-1m handler', () => {
     });
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ err: expect.any(Error) }),
-      'Batch spx_candles_1m insert failed',
+      'Batch index_candles_1m insert failed',
     );
   });
 
@@ -562,7 +562,7 @@ describe('fetch-spx-candles-1m handler', () => {
     expect(vi.mocked(checkDataQuality)).toHaveBeenCalledWith(
       expect.objectContaining({
         job: 'fetch-spx-candles-1m',
-        table: 'spx_candles_1m',
+        table: 'index_candles_1m',
         date: TODAY,
       }),
     );

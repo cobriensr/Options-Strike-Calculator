@@ -3399,7 +3399,7 @@ export const MIGRATIONS: Migration[] = [
       'partial unique index spx_candles_1m_compat_uniq on (date, timestamp) ' +
       "WHERE symbol='SPX' is added so the existing fetch-spx-candles-1m cron's " +
       'INSERT ... ON CONFLICT (date, timestamp) keeps resolving against an ' +
-      "exact-match unique target — Postgres rejects ON CONFLICT against a " +
+      'exact-match unique target — Postgres rejects ON CONFLICT against a ' +
       'partial column subset of a multi-column unique constraint. The partial ' +
       'index is dropped together with the compat view in a later migration ' +
       'once the cron is rewritten to insert into index_candles_1m directly ' +
@@ -3422,6 +3422,24 @@ export const MIGRATIONS: Migration[] = [
                    market_time, created_at, spx_schwab_price
             FROM index_candles_1m
             WHERE symbol = 'SPX'`,
+    ],
+  },
+  {
+    id: 113,
+    description:
+      'Add ndx_schwab_price column to index_candles_1m for the NDX-row ' +
+      'Schwab-verified close anchor (mirrors the existing spx_schwab_price ' +
+      'column which only ever holds values for SPX rows). Parallel column ' +
+      'instead of renaming spx_schwab_price → schwab_close so the existing ' +
+      'readers in api/_lib/db-claude-tools.ts (4 SELECTs, the analyze-tool ' +
+      'docstring, and the result mapper) continue working unchanged. NDX ' +
+      'rows leave spx_schwab_price NULL and SPX rows leave ndx_schwab_price ' +
+      'NULL — wasteful per-row but additive and safe; a future cleanup ' +
+      'migration can collapse to a single schwab_close column once the ' +
+      'reader migration completes.',
+    statements: (sql) => [
+      sql`ALTER TABLE index_candles_1m
+            ADD COLUMN IF NOT EXISTS ndx_schwab_price NUMERIC`,
     ],
   },
 ];

@@ -2,9 +2,9 @@
  * GET /api/cron/fetch-spx-candles-1m
  *
  * Fetches 1-minute OHLCV candles from the Unusual Whales API and stores
- * them in the spx_candles_1m table. Runs every minute during market
- * hours (13-21 UTC, Mon-Fri) alongside fetch-gex-0dte so each GEX
- * snapshot has a matching price bar.
+ * them in the index_candles_1m table tagged with symbol='SPX'. Runs
+ * every minute during market hours (13-21 UTC, Mon-Fri) alongside
+ * fetch-gex-0dte so each GEX snapshot has a matching price bar.
  *
  * SPY → SPX translation: Cboe prohibits external distribution of
  * proprietary index OHLC (SPX, VIX, RUT, etc.) via API — only their
@@ -23,7 +23,7 @@
  *   - All candles returned by UW are stored, including premarket
  *     (`pr`) and postmarket (`po`). Filtering is done by the reader
  *     so future premarket/postmarket use cases aren't blocked.
- *   - ON CONFLICT (date, timestamp) DO NOTHING keeps the cron
+ *   - ON CONFLICT (symbol, date, timestamp) DO NOTHING keeps the cron
  *     idempotent when UW returns a timestamp we already have.
  *
  * Environment: UW_API_KEY, CRON_SECRET
@@ -71,7 +71,7 @@ interface UWCandleRow {
   market_time: 'pr' | 'r' | 'po';
 }
 
-/** Normalized row ready for insert into spx_candles_1m. */
+/** Normalized row ready for insert into index_candles_1m (symbol='SPX'). */
 interface SPXCandleRow {
   timestamp: string;
   open: number;
@@ -189,15 +189,15 @@ async function storeCandles(
     const results = await sql.transaction((txn) =>
       rows.map(
         (row) => txn`
-          INSERT INTO spx_candles_1m (
-            date, timestamp, open, high, low, close, volume, market_time
+          INSERT INTO index_candles_1m (
+            symbol, date, timestamp, open, high, low, close, volume, market_time
           )
           VALUES (
-            ${today}, ${row.timestamp},
+            'SPX', ${today}, ${row.timestamp},
             ${row.open}, ${row.high}, ${row.low}, ${row.close},
             ${row.volume}, ${row.market_time}
           )
-          ON CONFLICT (date, timestamp) DO NOTHING
+          ON CONFLICT (symbol, date, timestamp) DO NOTHING
           RETURNING id
         `,
       ),
@@ -210,7 +210,7 @@ async function storeCandles(
     return { stored, skipped: rows.length - stored };
   } catch (err) {
     Sentry.captureException(err);
-    logger.warn({ err }, 'Batch spx_candles_1m insert failed');
+    logger.warn({ err }, 'Batch index_candles_1m insert failed');
     return { stored: 0, skipped: rows.length };
   }
 }
@@ -278,9 +278,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const currentMinuteTs = now.toISOString();
     try {
       await getDb()`
-        UPDATE spx_candles_1m
+        UPDATE index_candles_1m
         SET spx_schwab_price = ${spxPrice}
-        WHERE date = ${today}
+        WHERE symbol = 'SPX'
+          AND date = ${today}
           AND timestamp = ${currentMinuteTs}
           AND spx_schwab_price IS NULL
       `;
@@ -312,13 +313,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const qcRows = await getDb()`
         SELECT COUNT(*) AS total,
                COUNT(*) FILTER (WHERE volume > 0) AS nonzero
-        FROM spx_candles_1m
-        WHERE date = ${today}
+        FROM index_candles_1m
+        WHERE symbol = 'SPX'
+          AND date = ${today}
       `;
       const { total, nonzero } = qcRows[0]!;
       await checkDataQuality({
         job: 'fetch-spx-candles-1m',
-        table: 'spx_candles_1m',
+        table: 'index_candles_1m',
         date: today,
         sourceFilter: '1-minute SPY candles translated to SPX',
         total: Number(total),
