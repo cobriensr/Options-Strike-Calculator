@@ -239,7 +239,7 @@ describe('fetchSPXCandles (DB-first)', () => {
     // Warning logged when falling back
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ date: '2026-03-27' }),
-      expect.stringContaining('spx_candles_1m empty'),
+      expect.stringContaining('index_candles_1m (SPX) empty'),
     );
   });
 
@@ -286,7 +286,7 @@ describe('fetchSPXCandles (DB-first)', () => {
     expect(result.candles).toHaveLength(1);
     expect(logger.error).toHaveBeenCalledWith(
       expect.objectContaining({ err: expect.any(Error) }),
-      expect.stringContaining('Failed to read spx_candles_1m'),
+      expect.stringContaining('Failed to read index_candles_1m (SPX)'),
     );
   });
 

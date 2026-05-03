@@ -126,8 +126,9 @@ export async function fetchSPXCandles(
     const sql = getDb();
     const rows = (await sql`
       SELECT timestamp, open, high, low, close, volume, market_time
-      FROM spx_candles_1m
-      WHERE date = ${targetDate}
+      FROM index_candles_1m
+      WHERE symbol = 'SPX'
+        AND date = ${targetDate}
         AND market_time IN ('r', 'pr')
       ORDER BY timestamp ASC
     `) as SPXCandleDbRow[];
@@ -171,12 +172,12 @@ export async function fetchSPXCandles(
 
     logger.warn(
       { date: targetDate },
-      'spx_candles_1m empty for date; falling back to live UW 5m fetch',
+      'index_candles_1m (SPX) empty for date; falling back to live UW 5m fetch',
     );
   } catch (err) {
     logger.error(
       { err },
-      'Failed to read spx_candles_1m; falling back to live UW 5m fetch',
+      'Failed to read index_candles_1m (SPX); falling back to live UW 5m fetch',
     );
     metrics.increment('spx_candles.fetch_error');
     Sentry.captureException(err);

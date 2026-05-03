@@ -61,32 +61,32 @@ export async function getSpxCandles(
   if (from && to) {
     rows = await db`
       SELECT timestamp, open, high, low, close, volume, spx_schwab_price
-      FROM spx_candles_1m
-      WHERE date = ${date} AND timestamp >= ${from} AND timestamp <= ${to}
+      FROM index_candles_1m
+      WHERE symbol = 'SPX' AND date = ${date} AND timestamp >= ${from} AND timestamp <= ${to}
       ORDER BY timestamp ASC
       LIMIT ${CANDLE_LIMIT}
     `;
   } else if (from) {
     rows = await db`
       SELECT timestamp, open, high, low, close, volume, spx_schwab_price
-      FROM spx_candles_1m
-      WHERE date = ${date} AND timestamp >= ${from}
+      FROM index_candles_1m
+      WHERE symbol = 'SPX' AND date = ${date} AND timestamp >= ${from}
       ORDER BY timestamp ASC
       LIMIT ${CANDLE_LIMIT}
     `;
   } else if (to) {
     rows = await db`
       SELECT timestamp, open, high, low, close, volume, spx_schwab_price
-      FROM spx_candles_1m
-      WHERE date = ${date} AND timestamp <= ${to}
+      FROM index_candles_1m
+      WHERE symbol = 'SPX' AND date = ${date} AND timestamp <= ${to}
       ORDER BY timestamp ASC
       LIMIT ${CANDLE_LIMIT}
     `;
   } else {
     rows = await db`
       SELECT timestamp, open, high, low, close, volume, spx_schwab_price
-      FROM spx_candles_1m
-      WHERE date = ${date}
+      FROM index_candles_1m
+      WHERE symbol = 'SPX' AND date = ${date}
       ORDER BY timestamp ASC
       LIMIT ${CANDLE_LIMIT}
     `;
