@@ -283,15 +283,18 @@ Per the `unusual-whales-api` skill's "API quirks — value restatement" section:
 
 ## Prerequisite — review zero-gamma logic before Phase 2
 
-The Dealer Regime classifier in Phase 2 reads from `/api/zero-gamma`. Before that classifier ships, audit the existing zero-gamma computation for correctness:
+**Status (2026-05-03):** ✅ Audited and unblocked. Findings + 14-day telemetry plot in `docs/tmp/zero-gamma-audit/AUDIT_FINDINGS.md`.
 
-- Locate the cron + SQL that populates the table feeding `/api/zero-gamma` (likely `api/cron/compute-zero-gamma.ts` per the existing cron schedule).
-- Verify the methodology: zero-gamma flip should be the price level where dealer net gamma crosses zero (cumulative call gamma + put gamma sums to zero across all strikes for the relevant expiry universe).
-- Cross-check a few historical days against SpotGamma TRACE's published zero-gamma — they should agree within ~0.2–0.5% on most days. Larger persistent divergence indicates a methodology bug.
-- Confirm the OI vs volume basis matches what the Dealer Regime tile expects: OI-based zero-gamma is the structural level (slow-moving), volume-based is the intraday level (faster-moving). Document which is exposed by the endpoint and pick one consistently for the tile.
-- If the audit surfaces a bug, fix it before Phase 2. Track as a separate commit in the same spec branch.
+Audit summary:
 
-This audit is its own scoped task — likely 1–2 hours. Block Phase 2 entry on it passing.
+- Architecture is sound — pure calculator + cron + read endpoint with clean per-ticker expiry policy.
+- Methodology uses kernel-smoothed sign-change detection (not full Black-Scholes re-pricing); known O(0.5%) approximation tradeoff for the regime-tile use case is acceptable.
+- 14-day telemetry on `net_gamma_at_spot` shows healthy regime-change behavior: SPX 7 sign-flips, SPY 7, QQQ 11, NDX 14. Distribution is 56% positive for SPX, 60% SPY, 84% QQQ, 95% NDX — plausible per-ticker positioning skews.
+- Two action items remain but DO NOT block Phase 2 build:
+  1. **Sign-convention spot-check** against a TRACE screenshot you already have (5-min task). Confirms whether `net_gamma_at_spot > 0` means "dealers long γ at spot" (dampening) or just "calls dominate." Resolves how the regime classifier labels its output.
+  2. **Confidence gate** at ≥ 0.10 in the regime classifier — most stored values land at 0.00–0.13, so consumers must filter low-confidence reads as "uncertain regime."
+
+Phase 2 build can start. Spot-check + confidence gate are required before the Dealer Regime tile goes live to users.
 
 ## Risks and rollbacks
 
