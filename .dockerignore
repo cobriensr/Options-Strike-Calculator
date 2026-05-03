@@ -1,12 +1,17 @@
-# Repo-root .dockerignore — keeps ml-sweep builds small by excluding
-# everything not needed inside the container. The ml-sweep service is
-# the only one using this root-directory build context; sidecar still
+# Repo-root .dockerignore — keeps ml-sweep + daemon builds small by
+# excluding everything not needed inside the container. ml-sweep and
+# daemon both use this root-directory build context; sidecar still
 # builds from its own sidecar/ subdir.
 #
-# Note: ml-sweep/Dockerfile explicitly COPYs only the paths it needs
-# (ml-sweep/*, ml/src, ml/scripts, ml/requirements.txt). The ignore
-# below is belt-and-suspenders: it strips large top-level trees before
-# Railway uploads the build context, cutting upload time and image size.
+# Note: each service's Dockerfile explicitly COPYs only the paths it
+# needs. The ignore below is belt-and-suspenders: it strips large
+# top-level trees before Railway uploads the build context, cutting
+# upload time and image size.
+#
+# The three !src/... re-inclusions are for the daemon service, which
+# imports a small set of shared modules from the main app's src/ tree
+# (holiday calendar, trace-live timezone helper, GEX classification).
+# Keeping them as a single source of truth avoids annual-drift bugs.
 
 # Frontend + backend TypeScript — unused by ml-sweep
 node_modules/
@@ -16,6 +21,13 @@ coverage/
 .next/
 .vercel/
 src/
+!src/data/
+src/data/*
+!src/data/marketHours.ts
+!src/utils/
+src/utils/*
+!src/utils/trace-live-tz.ts
+!src/utils/gex-classification.ts
 api/
 public/
 e2e/
