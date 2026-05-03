@@ -22,6 +22,9 @@ export default [
       'ml-sweep',
       'playwright-report',
       '.scannerwork',
+      // Scratch / debug / spec material — not production code, not
+      // shipped to users. Keeps lint focused on src/ + api/ + scripts/.
+      'docs',
     ],
   },
   js.configs.recommended,
