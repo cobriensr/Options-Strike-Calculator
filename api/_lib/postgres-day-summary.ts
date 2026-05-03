@@ -5,7 +5,7 @@
  * converted and uploaded to Vercel Blob yet, so the sidecar's
  * `/data/archive` volume hasn't been reseeded.
  *
- * The streaming Schwab → `spx_candles_1m` feed lands in Postgres in
+ * The streaming Schwab → `index_candles_1m (SPX)` feed lands in Postgres in
  * real-time, so this path closes the parquet-lag window (~7 days)
  * without manual intervention. When the parquet eventually catches up,
  * the cron writes are idempotent: subsequent runs overwrite via
@@ -55,7 +55,7 @@ function formatDelta(d: number | null): string {
 }
 
 /**
- * Build a day-summary string from `spx_candles_1m` for `dateIso`.
+ * Build a day-summary string from `index_candles_1m (SPX)` for `dateIso`.
  * Returns null when no regular-hours bars exist for the date.
  *
  * The first regular-hours bar's `timestamp` anchors the session start,
@@ -71,8 +71,9 @@ export async function fetchDaySummaryFromPostgres(
     const rows = (await sql`
       WITH bars AS (
         SELECT timestamp, open, high, low, close, volume
-        FROM spx_candles_1m
-        WHERE date = ${dateIso}::date
+        FROM index_candles_1m
+        WHERE symbol = 'SPX'
+          AND date = ${dateIso}::date
           AND market_time = 'r'
       ),
       anchor AS (
@@ -151,7 +152,7 @@ export interface DayOhlc {
 }
 
 /**
- * Aggregate `spx_candles_1m` regular-hours bars to a day's OHLC plus
+ * Aggregate `index_candles_1m (SPX)` regular-hours bars to a day's OHLC plus
  * simple excursion metrics for the `day_embeddings` OHLC columns.
  * Returns null when the day has no bars.
  *
@@ -168,15 +169,15 @@ export async function fetchDayOhlcFromPostgres(
   try {
     const rows = (await sql`
       SELECT
-        (SELECT open FROM spx_candles_1m
-         WHERE date = ${dateIso}::date AND market_time = 'r'
+        (SELECT open FROM index_candles_1m
+         WHERE symbol = 'SPX' AND date = ${dateIso}::date AND market_time = 'r'
          ORDER BY timestamp ASC LIMIT 1)::float8                AS day_open,
-        (SELECT MAX(high)::float8 FROM spx_candles_1m
-         WHERE date = ${dateIso}::date AND market_time = 'r')   AS day_high,
-        (SELECT MIN(low)::float8 FROM spx_candles_1m
-         WHERE date = ${dateIso}::date AND market_time = 'r')   AS day_low,
-        (SELECT close FROM spx_candles_1m
-         WHERE date = ${dateIso}::date AND market_time = 'r'
+        (SELECT MAX(high)::float8 FROM index_candles_1m
+         WHERE symbol = 'SPX' AND date = ${dateIso}::date AND market_time = 'r')   AS day_high,
+        (SELECT MIN(low)::float8 FROM index_candles_1m
+         WHERE symbol = 'SPX' AND date = ${dateIso}::date AND market_time = 'r')   AS day_low,
+        (SELECT close FROM index_candles_1m
+         WHERE symbol = 'SPX' AND date = ${dateIso}::date AND market_time = 'r'
          ORDER BY timestamp DESC LIMIT 1)::float8               AS day_close
     `) as {
       day_open: Numeric;

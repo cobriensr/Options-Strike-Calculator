@@ -13,7 +13,7 @@
  *
  *   - Own-ticker / SPX/SPY/QQQ 15m deltas: `strike_iv_snapshots.spot`
  *     (Phase 1 writes this minute-by-minute).
- *   - SPX spot for 5m/60m deltas: `spx_candles_1m` (1-min SPX bars).
+ *   - SPX spot for 5m/60m deltas: `index_candles_1m (SPX)` (1-min SPX bars).
  *   - Futures (ES, NQ, RTY, ZN, CL, GC, DX): `futures_bars`.
  *     ZN/CL/GC/DX double as bond/oil/gold/dollar proxies for the
  *     macro backdrop (no intraday TLT/USO/GLD/DXY ETF ingestion
@@ -43,7 +43,7 @@
  *   - `ym_delta_15m` (no YM futures ingestion)
  *   - `spy_delta_15m` / `qqq_delta_15m` pull from
  *     `strike_iv_snapshots` spot column which is populated by
- *     Phase 1. `spx_delta_15m` uses `spx_candles_1m` since it's a
+ *     Phase 1. `spx_delta_15m` uses `index_candles_1m (SPX)` since it's a
  *     more reliable 1-min cadence source.
  *
  * Each field is an independent query wrapped to return null on miss.
@@ -186,7 +186,7 @@ async function runSafe<T>(
 /**
  * Look up the latest spot price for a ticker from strike_iv_snapshots
  * within a staleness window. Used for SPY/QQQ own-ticker and cross-ticker
- * deltas (since spx_candles_1m is SPX-only).
+ * deltas (since index_candles_1m (SPX) is SPX-only).
  */
 async function getSpotFromStrikeIV(
   ticker: string,
@@ -221,8 +221,9 @@ async function getSpxCloseAt(at: Date): Promise<number | null> {
   const earliestDate = getETDateStr(earliest);
   const dates = atDate === earliestDate ? [atDate] : [earliestDate, atDate];
   const rows = await sql`
-    SELECT close FROM spx_candles_1m
-    WHERE date = ANY(${dates})
+    SELECT close FROM index_candles_1m
+    WHERE symbol = 'SPX'
+      AND date = ANY(${dates})
       AND timestamp <= ${atIso}
       AND timestamp >= ${earliestIso}
     ORDER BY timestamp DESC
