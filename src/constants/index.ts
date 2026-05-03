@@ -344,6 +344,10 @@ export const POLL_INTERVALS = {
    *  pushes WS updates near-continuously; we sample at 30s for the
    *  panel to keep render churn bounded without missing magnet shifts. */
   STRIKE_BATTLE_MAP: 30_000,
+  /** Dealer Regime Tile refresh (useDealerRegime) — matches the
+   *  compute-zero-gamma cron's 5-min cadence with 10× safety margin so
+   *  the tile picks up a fresh regime read within ≤30s of the write. */
+  DEALER_REGIME: 30_000,
   /** GEX per strike refresh (useGexPerStrike) */
   GEX_STRIKE: 60_000,
   /** GexTarget history refresh (useGexTarget) — matches the 1-min cron cadence */
