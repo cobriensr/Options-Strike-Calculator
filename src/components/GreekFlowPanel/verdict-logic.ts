@@ -150,10 +150,7 @@ export function computeVerdictTimeline(
     const qqq = qqqByTs.get(spy.timestamp);
     if (qqq == null) continue;
     const v = computeVerdict(
-      divergenceFromCum(
-        spy.cum_otm_dir_delta_flow,
-        qqq.cum_otm_dir_delta_flow,
-      ),
+      divergenceFromCum(spy.cum_otm_dir_delta_flow, qqq.cum_otm_dir_delta_flow),
       divergenceFromCum(spy.cum_otm_dir_vega_flow, qqq.cum_otm_dir_vega_flow),
     );
     points.push({ timestamp: spy.timestamp, kind: v.kind });

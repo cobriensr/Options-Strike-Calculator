@@ -1,25 +1,28 @@
 /**
  * FlowChart — small SVG line chart for one cumulative Greek-flow series,
- * color-mapped by sign (red below zero, green above zero).
+ * color-mapped by sign (red below zero, green above zero), with an
+ * optional grey context line for the complementary greek.
  *
- * Implementation mirrors the UW chart aesthetic from the Greek Flow
- * dashboard: a single line that flips color at the zero crossing, with
- * an explicit zero baseline drawn for context.
+ * Implementation mirrors the UW Greek Flow dashboard aesthetic: each
+ * panel shows BOTH delta and vega cumulatives — the active greek
+ * colored by its sign at the zero crossing, the complementary greek
+ * rendered as a faded grey line behind it for at-a-glance comparison.
  *
  * Implementation notes:
- *   - Uses a linearGradient + stop offsets to color the path so the
- *     transition lands exactly at the zero crossing — splitting into two
- *     filtered paths visibly seams at the boundary.
- *   - Y-axis auto-scales to the union of (min, max, 0) so the zero line
- *     is always inside the chart even when cumulative is one-sided.
+ *   - Uses a linearGradient + stop offsets to color the active path so
+ *     the transition lands exactly at the zero crossing.
+ *   - Y-axis auto-scales to the union of all values + 0, so both the
+ *     active and context series stay in frame on a shared axis.
  *   - Width fills the parent via SVG viewBox; height is fixed.
  */
 
 import { memo, useId, useMemo } from 'react';
 
 interface FlowChartProps {
-  /** Series of cumulative values, ordered by timestamp ascending. */
+  /** Active series (cumulative, sign-colored). */
   values: number[];
+  /** Optional complementary series rendered as a grey context line. */
+  contextValues?: number[];
   /** Optional fixed height override (SVG units). Default 60. */
   height?: number;
   /** ARIA label, e.g. "QQQ cumulative Dir Vega flow". */
@@ -30,37 +33,55 @@ const VIEW_W = 200;
 const PAD_X = 2;
 const PAD_Y = 4;
 
-function FlowChartInner({ values, height = 60, ariaLabel }: FlowChartProps) {
+function FlowChartInner({
+  values,
+  contextValues,
+  height = 60,
+  ariaLabel,
+}: FlowChartProps) {
   const gradientId = useId();
   const layout = useMemo(() => {
     if (values.length < 2) return null;
 
-    const minVal = Math.min(0, ...values);
-    const maxVal = Math.max(0, ...values);
+    const allValues = contextValues
+      ? [...values, ...contextValues]
+      : values;
+    const minVal = Math.min(0, ...allValues);
+    const maxVal = Math.max(0, ...allValues);
     const range = maxVal - minVal || 1;
 
     const innerH = height - PAD_Y * 2;
     const innerW = VIEW_W - PAD_X * 2;
 
-    const xAt = (i: number) =>
-      PAD_X + (i / Math.max(values.length - 1, 1)) * innerW;
+    const xAt = (i: number, n: number) =>
+      PAD_X + (i / Math.max(n - 1, 1)) * innerW;
     const yAt = (v: number) => PAD_Y + (1 - (v - minVal) / range) * innerH;
 
-    // Path of the line itself
     const linePath = values
-      .map((v, i) => `${i === 0 ? 'M' : 'L'} ${xAt(i)} ${yAt(v)}`)
+      .map(
+        (v, i) =>
+          `${i === 0 ? 'M' : 'L'} ${xAt(i, values.length)} ${yAt(v)}`,
+      )
       .join(' ');
+
+    const contextPath =
+      contextValues && contextValues.length >= 2
+        ? contextValues
+            .map(
+              (v, i) =>
+                `${i === 0 ? 'M' : 'L'} ${xAt(i, contextValues.length)} ${yAt(v)}`,
+            )
+            .join(' ')
+        : null;
 
     // Y position of the zero baseline. Used both for the dashed
     // baseline rule and for the gradient stop offset (so red/green
     // switches exactly at zero rather than at some arbitrary midpoint).
     const yZero = yAt(0);
-    // Stop offset for the gradient: 0 = top, 1 = bottom. Above the
-    // zero line should be green, below should be red.
     const zeroOffset = (yZero - PAD_Y) / innerH;
 
-    return { linePath, yZero, zeroOffset, minVal, maxVal };
-  }, [values, height]);
+    return { linePath, contextPath, yZero, zeroOffset, minVal, maxVal };
+  }, [values, contextValues, height]);
 
   if (layout == null) {
     return (
@@ -73,7 +94,7 @@ function FlowChartInner({ values, height = 60, ariaLabel }: FlowChartProps) {
     );
   }
 
-  const { linePath, yZero, zeroOffset, minVal, maxVal } = layout;
+  const { linePath, contextPath, yZero, zeroOffset, minVal, maxVal } = layout;
 
   return (
     <svg
@@ -105,6 +126,15 @@ function FlowChartInner({ values, height = 60, ariaLabel }: FlowChartProps) {
         strokeDasharray="2 2"
         className="text-secondary opacity-50"
       />
+      {contextPath != null && (
+        <path
+          d={contextPath}
+          fill="none"
+          stroke="rgb(167, 139, 250)"
+          strokeOpacity={0.45}
+          strokeWidth={1.0}
+        />
+      )}
       <path
         d={linePath}
         fill="none"
