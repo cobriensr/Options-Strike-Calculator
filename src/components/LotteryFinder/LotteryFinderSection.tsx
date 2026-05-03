@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { SectionBox } from '../ui/SectionBox.js';
 import { useLotteryFinder } from '../../hooks/useLotteryFinder.js';
 import { LotteryDayBanner } from './LotteryDayBanner.js';
@@ -9,7 +9,19 @@ import {
   type ExitPolicy,
   type LotteryFire,
   type LotteryMode,
+  type OptionType,
+  type TimeOfDay,
 } from './types.js';
+
+const PAGE_SIZE = 50;
+
+const TOD_FILTERS: Array<{ value: TimeOfDay | null; label: string }> = [
+  { value: null, label: 'all TOD' },
+  { value: 'AM_open', label: 'AM_open' },
+  { value: 'MID', label: 'MID' },
+  { value: 'LUNCH', label: 'LUNCH' },
+  { value: 'PM', label: 'PM' },
+];
 
 interface LotteryFinderSectionProps {
   marketOpen: boolean;
@@ -51,7 +63,8 @@ export function LotteryFinderSection({
   marketOpen,
 }: LotteryFinderSectionProps) {
   const [date, setDate] = useState<string>(todayCt());
-  const [scrubAt, setScrubAt] = useState<string | null>(null);
+  /** 1-minute bucket the slider is on; null = whole day. */
+  const [minute, setMinute] = useState<string | null>(null);
   const [exitPolicy, setExitPolicy] = useState<ExitPolicy>(
     'realizedTrail30_10Pct',
   );
@@ -59,16 +72,43 @@ export function LotteryFinderSection({
   const [cheapCallPmOnly, setCheapCallPmOnly] = useState<boolean>(false);
   const [modeFilter, setModeFilter] = useState<LotteryMode | null>(null);
   const [tickerFilter, setTickerFilter] = useState<string | null>(null);
+  const [optionTypeFilter, setOptionTypeFilter] = useState<OptionType | null>(
+    null,
+  );
+  const [todFilter, setTodFilter] = useState<TimeOfDay | null>(null);
+  /** 0-based page index. Reset to 0 whenever a filter or minute changes. */
+  const [page, setPage] = useState<number>(0);
 
-  const { fires, loading, error, fetchedAt, total } = useLotteryFinder({
+  // Reset to page 0 whenever the result set's identity changes.
+  // Otherwise the user could be on page 3, click a filter, and land
+  // on an empty page 3 of a 1-page result set.
+  useEffect(() => {
+    setPage(0);
+  }, [
     date,
-    at: scrubAt,
-    marketOpen,
-    ticker: tickerFilter,
-    reload: reloadOnly ? true : null,
-    cheapCallPm: cheapCallPmOnly ? true : null,
-    mode: modeFilter,
-  });
+    minute,
+    tickerFilter,
+    reloadOnly,
+    cheapCallPmOnly,
+    modeFilter,
+    optionTypeFilter,
+    todFilter,
+  ]);
+
+  const { fires, loading, error, fetchedAt, total, offset, hasMore } =
+    useLotteryFinder({
+      date,
+      minute,
+      marketOpen,
+      ticker: tickerFilter,
+      reload: reloadOnly ? true : null,
+      cheapCallPm: cheapCallPmOnly ? true : null,
+      mode: modeFilter,
+      optionType: optionTypeFilter,
+      tod: todFilter,
+      page,
+      pageSize: PAGE_SIZE,
+    });
 
   // Time-scrub bounds are anchored to the regular-session window of
   // the selected date (08:30 → 15:00 CT) — NOT to the displayed
@@ -120,8 +160,12 @@ export function LotteryFinderSection({
     return { min: ctToUtc(8, 30), max: ctToUtc(15, 0) };
   }, [date]);
 
-  const isLive = scrubAt == null && date === todayCt();
+  const isLive = minute == null && date === todayCt();
   const isHistorical = date !== todayCt();
+  // Counts on the chips reflect the current page only — after filter
+  // changes the list refetches, but cross-page counts would need a
+  // separate aggregation query. Acceptable: the user clicks the chip
+  // to apply the filter, the API returns the precise filtered total.
   const reloadCount = useMemo(
     () => fires.filter((f) => f.tags.reload).length,
     [fires],
@@ -130,6 +174,9 @@ export function LotteryFinderSection({
     () => fires.filter((f) => f.tags.cheapCallPm).length,
     [fires],
   );
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
 
   // Top tickers by fire count in the displayed page — gives the user
   // an obvious one-click filter dimension without forcing a 50-ticker
@@ -167,7 +214,9 @@ export function LotteryFinderSection({
         {/* Day-level macro banner — at-a-glance regime context */}
         <LotteryDayBanner fires={fires} />
 
-        {/* Date + scrub controls */}
+        {/* Date + scrub controls. The slider drives a 1-minute
+            point-in-time bucket — drag to a minute, see ONLY what
+            fired in that minute. Click "All day" to clear. */}
         <div className="flex flex-wrap items-center gap-3 text-xs">
           <label className="flex items-center gap-1.5">
             <span className="text-neutral-400">date</span>
@@ -177,7 +226,7 @@ export function LotteryFinderSection({
               max={todayCt()}
               onChange={(e) => {
                 setDate(e.target.value);
-                setScrubAt(null);
+                setMinute(null);
               }}
               className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-white"
               aria-label="Select trading day"
@@ -187,13 +236,18 @@ export function LotteryFinderSection({
             <button
               type="button"
               className={`rounded border px-2 py-1 text-xs font-semibold ${
-                isLive
+                minute == null
                   ? 'border-green-500 bg-green-950/40 text-green-200'
                   : 'border-neutral-700 bg-neutral-900 text-neutral-400 hover:text-white'
               }`}
-              onClick={() => setScrubAt(null)}
+              onClick={() => setMinute(null)}
+              title={
+                isLive
+                  ? 'Live: showing today (most recent first), polls every 30s'
+                  : 'Show every fire on the selected day'
+              }
             >
-              {date === todayCt() ? 'Live' : 'Latest'}
+              {date === todayCt() ? 'Live' : 'All day'}
             </button>
             <input
               type="range"
@@ -203,18 +257,19 @@ export function LotteryFinderSection({
               value={(() => {
                 const lo = Date.parse(scrubBounds.min);
                 const hi = Date.parse(scrubBounds.max);
-                const raw = scrubAt ? Date.parse(scrubAt) : hi;
+                const raw = minute ? Date.parse(minute) : lo;
                 return Math.max(lo, Math.min(hi, raw));
               })()}
               onChange={(e) =>
-                setScrubAt(new Date(Number(e.target.value)).toISOString())
+                setMinute(new Date(Number(e.target.value)).toISOString())
               }
-              className="w-48"
-              aria-label="Time scrubber (08:30 → 15:00 CT)"
+              className="w-64"
+              aria-label="Per-minute time scrubber (08:30 → 15:00 CT)"
+              title="Drag to a minute to see only that minute's fires"
             />
-            {scrubAt && (
-              <span className="font-mono text-xs text-neutral-300">
-                @ {formatTimeCT(scrubAt)} CT
+            {minute && (
+              <span className="font-mono text-xs text-purple-200">
+                {formatTimeCT(minute)} CT (1 min bucket)
               </span>
             )}
           </div>
@@ -269,6 +324,56 @@ export function LotteryFinderSection({
               }`}
             >
               {m.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Calls / Puts toggle */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[10px] uppercase tracking-wide text-neutral-500">
+            type
+          </span>
+          {[
+            { value: null, label: 'all' },
+            { value: 'C' as OptionType, label: 'calls' },
+            { value: 'P' as OptionType, label: 'puts' },
+          ].map((o) => (
+            <button
+              key={o.label}
+              type="button"
+              onClick={() => setOptionTypeFilter(o.value)}
+              className={`rounded border px-2 py-0.5 text-xs font-semibold ${
+                optionTypeFilter === o.value
+                  ? o.value === 'C'
+                    ? 'border-green-500 bg-green-950/40 text-green-200'
+                    : o.value === 'P'
+                      ? 'border-red-500 bg-red-950/40 text-red-200'
+                      : 'border-neutral-500 bg-neutral-800 text-neutral-200'
+                  : 'border-neutral-700 bg-neutral-900 text-neutral-400 hover:text-white'
+              }`}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Time-of-day chips */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[10px] uppercase tracking-wide text-neutral-500">
+            tod
+          </span>
+          {TOD_FILTERS.map((t) => (
+            <button
+              key={t.label}
+              type="button"
+              onClick={() => setTodFilter(t.value)}
+              className={`rounded border px-2 py-0.5 text-xs font-semibold ${
+                todFilter === t.value
+                  ? 'border-orange-500 bg-orange-950/40 text-orange-200'
+                  : 'border-neutral-700 bg-neutral-900 text-neutral-400 hover:text-white'
+              }`}
+            >
+              {t.label}
             </button>
           ))}
         </div>
@@ -371,16 +476,51 @@ export function LotteryFinderSection({
           </div>
         ) : (
           <div className="space-y-2">
-            <div className="text-[11px] text-neutral-500">
-              {total > fires.length ? (
-                <>
-                  Showing {fires.length} of {total} fires for {date} (most
-                  recent first — bump <code>?limit=</code> to see more)
-                </>
-              ) : (
-                <>
-                  {fires.length} fire{fires.length === 1 ? '' : 's'} for {date}
-                </>
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-neutral-500">
+              <span>
+                {minute ? (
+                  <>
+                    {total} fire{total === 1 ? '' : 's'} at{' '}
+                    <span className="font-mono text-purple-200">
+                      {formatTimeCT(minute)} CT
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    {total} fire{total === 1 ? '' : 's'} for {date}
+                  </>
+                )}
+                {total > 0 && (
+                  <span className="ml-2 text-neutral-600">
+                    showing {offset + 1}-{offset + fires.length}
+                  </span>
+                )}
+              </span>
+              {/* Pagination — only render when there's more than one page. */}
+              {total > PAGE_SIZE && (
+                <span className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setPage((p) => Math.max(0, p - 1))}
+                    disabled={page === 0}
+                    className="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-xs font-semibold text-neutral-300 enabled:hover:text-white disabled:opacity-40"
+                    aria-label="Previous page"
+                  >
+                    ← prev
+                  </button>
+                  <span className="font-mono text-xs text-neutral-400">
+                    {currentPage} / {totalPages}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setPage((p) => p + 1)}
+                    disabled={!hasMore}
+                    className="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-xs font-semibold text-neutral-300 enabled:hover:text-white disabled:opacity-40"
+                    aria-label="Next page"
+                  >
+                    next →
+                  </button>
+                </span>
               )}
             </div>
             {fires.map((f: LotteryFire) => (

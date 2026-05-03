@@ -119,18 +119,27 @@ export interface LotteryFire {
 
 export interface LotteryFinderResponse {
   date: string;
+  /** Cumulative cutoff (back-compat, not used by current UI). */
   asOf: string | null;
+  /** 1-minute point-in-time bucket the slider is on, when set. */
+  minute: string | null;
   filters: {
     ticker?: string;
     reload?: boolean;
     cheapCallPm?: boolean;
     mode?: LotteryMode;
+    optionType?: OptionType;
+    tod?: TimeOfDay;
   };
   /** Number of fires actually returned in this response (≤ limit). */
   count: number;
-  /** Total matching rows BEFORE limit — for "showing N of M" UI. */
+  /** Total matching rows BEFORE limit/offset — for "page X of Y" UI. */
   total: number;
   /** The effective limit applied. */
   limit: number;
+  /** Page offset (0 = first page). */
+  offset: number;
+  /** True when offset + count < total — surfaces the Next button. */
+  hasMore: boolean;
   fires: LotteryFire[];
 }

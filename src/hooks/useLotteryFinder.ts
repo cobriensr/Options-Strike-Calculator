@@ -1,8 +1,10 @@
 /**
- * useLotteryFinder — fetches /api/lottery-finder for a given trading
- * day and optional time-scrub cutoff. Polls every 30s during market
- * hours when scrubAt is null (live mode). When the user scrubs into
- * the past, polling stops because the response is stable.
+ * useLotteryFinder — fetches /api/lottery-finder with a per-minute
+ * scrubber bucket, paginated results (50 per page by default), and the
+ * full filter chip set (ticker / reload / cheap-call-PM / mode /
+ * optionType / TOD). Polls every 30s during market hours when no
+ * minute is selected and the date is today; otherwise the response is
+ * stable and polling is skipped.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -11,14 +13,20 @@ import type {
   LotteryFinderResponse,
   LotteryFire,
   LotteryMode,
+  OptionType,
+  TimeOfDay,
 } from '../components/LotteryFinder/types.js';
 import { getErrorMessage } from '../utils/error.js';
 
 interface UseLotteryFinderArgs {
   /** YYYY-MM-DD trading day. */
   date: string;
-  /** Optional scrubber cutoff ISO timestamp. Null = live mode. */
-  at?: string | null;
+  /**
+   * Optional 1-minute point-in-time bucket. When set, the endpoint
+   * returns only fires whose trigger_time_ct is in
+   * `[minute, minute + 1m)`. Drives the time-scrubber UX.
+   */
+  minute?: string | null;
   marketOpen: boolean;
   /** Filter by ticker. `null` returns all. */
   ticker?: string | null;
@@ -28,38 +36,54 @@ interface UseLotteryFinderArgs {
   cheapCallPm?: boolean | null;
   /** Filter by mode (Mode A or Mode B). */
   mode?: LotteryMode | null;
+  /** Filter by option type ('C' / 'P'). */
+  optionType?: OptionType | null;
+  /** Filter by time-of-day bucket. */
+  tod?: TimeOfDay | null;
+  /** 0-based page index (offset = page * limit). */
+  page?: number;
+  /** Page size. Default 50. */
+  pageSize?: number;
 }
 
 interface State {
   fires: LotteryFire[];
   loading: boolean;
   error: string | null;
-  asOf: string | null;
   fetchedAt: number | null;
-  /** Total matching fires before the LIMIT cap — for "showing N of M". */
+  /** Total matching fires across all pages. */
   total: number;
-  /** The effective limit the endpoint applied. */
+  /** Effective limit (page size) the endpoint applied. */
   limit: number;
+  /** Effective offset the endpoint applied. */
+  offset: number;
+  /** True when a Next page exists. */
+  hasMore: boolean;
 }
 
 const INITIAL_STATE: State = {
   fires: [],
   loading: true,
   error: null,
-  asOf: null,
   fetchedAt: null,
   total: 0,
   limit: 0,
+  offset: 0,
+  hasMore: false,
 };
 
 export function useLotteryFinder({
   date,
-  at,
+  minute,
   marketOpen,
   ticker = null,
   reload = null,
   cheapCallPm = null,
   mode = null,
+  optionType = null,
+  tod = null,
+  page = 0,
+  pageSize = 50,
 }: UseLotteryFinderArgs): State & { refetch: () => void } {
   const [state, setState] = useState<State>(INITIAL_STATE);
   const abortRef = useRef<AbortController | null>(null);
@@ -72,12 +96,18 @@ export function useLotteryFinder({
     abortRef.current = ctrl;
 
     try {
-      const params = new URLSearchParams({ date });
-      if (at) params.set('at', at);
+      const params = new URLSearchParams({
+        date,
+        limit: String(pageSize),
+        offset: String(page * pageSize),
+      });
+      if (minute) params.set('minute', minute);
       if (ticker) params.set('ticker', ticker);
       if (reload != null) params.set('reload', String(reload));
       if (cheapCallPm != null) params.set('cheapCallPm', String(cheapCallPm));
       if (mode != null) params.set('mode', mode);
+      if (optionType != null) params.set('optionType', optionType);
+      if (tod != null) params.set('tod', tod);
       const res = await fetch(`/api/lottery-finder?${params.toString()}`, {
         credentials: 'include',
         signal: ctrl.signal,
@@ -92,10 +122,11 @@ export function useLotteryFinder({
         fires: json.fires,
         loading: false,
         error: null,
-        asOf: json.asOf,
         fetchedAt: Date.now(),
         total: json.total,
         limit: json.limit,
+        offset: json.offset,
+        hasMore: json.hasMore,
       });
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
@@ -108,24 +139,29 @@ export function useLotteryFinder({
         error: getErrorMessage(err),
       }));
     }
-  }, [date, at, ticker, reload, cheapCallPm, mode]);
-
-  // (No INITIAL_STATE reset on date change — fetchOnce flips
-  // `loading: true` itself and the AbortController cancels in-flight
-  // requests, so we'd just produce an extra render with a "Loading…"
-  // flash. Stale rows from yesterday are addressed by gating the
-  // section's row list on `state.asOf`/`state.fires` matching the
-  // requested date if needed.)
+  }, [
+    date,
+    minute,
+    ticker,
+    reload,
+    cheapCallPm,
+    mode,
+    optionType,
+    tod,
+    page,
+    pageSize,
+  ]);
 
   useEffect(() => {
     fetchOnce();
     if (!marketOpen) return;
-    // No polling when scrubbed into the past — historical fires don't
-    // change, so polling is wasted CPU + bandwidth.
-    if (at) return;
+    // No polling when the user is on a specific minute (historical
+    // bucket — won't change) or browsing past page 0 (would shift
+    // their cursor on every poll).
+    if (minute || page > 0) return;
     const id = setInterval(fetchOnce, POLL_INTERVALS.OTM_FLOW);
     return () => clearInterval(id);
-  }, [fetchOnce, marketOpen, at]);
+  }, [fetchOnce, marketOpen, minute, page]);
 
   // Cancel any in-flight request on unmount.
   useEffect(() => () => abortRef.current?.abort(), []);

@@ -48,11 +48,17 @@ if (!DATABASE_URL) {
 
 const sql = neon(DATABASE_URL);
 const UW_BASE = 'https://api.unusualwhales.com/api';
-// Approximate NDX/QQQ ratio. NDX ≈ 24500 / QQQ ≈ 510 → ~48. The live
-// production cron fetches the ratio from Schwab each minute; this static
-// value is a backfill-only approximation. Update if QQQ drifts far enough
-// that the ratio changes by >5% between backfill runs.
-const QQQ_TO_NDX_RATIO = 48;
+// Approximate NDX/QQQ ratio. As of May 2026: NDX ≈ 24500 / QQQ ≈ 600
+// → ~41. The live production cron fetches the ratio from Schwab each
+// minute; this static value is a backfill-only approximation that will
+// systematically over- or under-state historical NDX values by the
+// drift between this constant and the actual session ratio. Recalibrate
+// before running if QQQ has moved >5% since this constant was last
+// updated. A future enhancement (option b in the Phase 1e review) would
+// fetch the Schwab quote once at script startup and use the live ratio
+// for the whole run, eliminating the seam between backfill and live-cron
+// rows.
+const QQQ_TO_NDX_RATIO = 41;
 const DAYS_TO_BACKFILL = 30;
 
 // ── ET timezone helpers ─────────────────────────────────────
