@@ -5,7 +5,8 @@
  *
  * Pulls 1-minute SPY OHLCV for the last N trading days from Unusual
  * Whales, translates SPY → SPX via the 10× ratio, and upserts into the
- * spx_candles_1m table via ON CONFLICT (date, timestamp) DO NOTHING.
+ * index_candles_1m table tagged symbol='SPX' via ON CONFLICT
+ * (symbol, date, timestamp) DO NOTHING.
  *
  * Why SPY? Cboe prohibits external distribution of SPX index prices, so
  * we fetch SPY and multiply by the SPX/SPY ratio. The production cron
@@ -203,15 +204,15 @@ async function storeCandles(candles) {
     const rowDate = getETDateStr(new Date(c.timestamp));
     try {
       const result = await sql`
-        INSERT INTO spx_candles_1m (
-          date, timestamp, open, high, low, close, volume, market_time
+        INSERT INTO index_candles_1m (
+          symbol, date, timestamp, open, high, low, close, volume, market_time
         )
         VALUES (
-          ${rowDate}, ${c.timestamp},
+          'SPX', ${rowDate}, ${c.timestamp},
           ${c.open}, ${c.high}, ${c.low}, ${c.close},
           ${c.volume}, ${c.market_time}
         )
-        ON CONFLICT (date, timestamp) DO NOTHING
+        ON CONFLICT (symbol, date, timestamp) DO NOTHING
         RETURNING id
       `;
       if (result.length > 0) {
@@ -234,7 +235,9 @@ async function main() {
   const startMs = Date.now();
   const tradingDays = getTradingDays(DAYS_TO_BACKFILL);
 
-  console.log(`Backfilling spx_candles_1m (${DAYS_TO_BACKFILL} trading days)`);
+  console.log(
+    `Backfilling index_candles_1m (SPX, ${DAYS_TO_BACKFILL} trading days)`,
+  );
   console.log(
     `Range: ${tradingDays[0]} to ${tradingDays.at(-1)} (skipping weekends)\n`,
   );

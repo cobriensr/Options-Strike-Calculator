@@ -35,11 +35,11 @@ const sql = neon(process.env.DATABASE_URL);
 //      live because the parquet archive is only refreshed when a fresh
 //      Databento batch is converted and uploaded.
 //
-//   2. `spx_candles_1m` (SPX cash, Schwab streaming feed → Postgres) —
+//   2. `index_candles_1m (SPX)` (SPX cash, Schwab streaming feed → Postgres) —
 //      covers the trailing ~2 months and has no parquet dependency.
 //
 // `day_embeddings` wins where present (longer history, ES-consistent with
-// existing analog-retrieval embeddings); `spx_candles_1m` aggregate fills
+// existing analog-retrieval embeddings); `index_candles_1m (SPX)` aggregate fills
 // in any date the parquet hasn't caught up to. We accept that the tail
 // (Postgres-fed) days use SPX prices instead of ES — daily *range* is
 // what regime classification depends on, and ES vs SPX range differs by
@@ -66,7 +66,7 @@ const dayEmbedRows = await sql`
   ORDER BY date
 `;
 
-// Source 2: spx_candles_1m, aggregated to daily OHLC for any dates the
+// Source 2: index_candles_1m (SPX), aggregated to daily OHLC for any dates the
 // first source didn't cover. Restrict to regular-hours bars so open/close
 // match the cash session.
 const haveDates = new Set(dayEmbedRows.map((r) => r.date));
@@ -78,8 +78,9 @@ const spxAggRows = await sql`
       open, high, low, close,
       ROW_NUMBER() OVER (PARTITION BY date ORDER BY timestamp ASC)  AS first_idx,
       ROW_NUMBER() OVER (PARTITION BY date ORDER BY timestamp DESC) AS last_idx
-    FROM spx_candles_1m
-    WHERE date >= '2024-06-01' AND date <= '2026-04-24'
+    FROM index_candles_1m
+    WHERE symbol = 'SPX'
+      AND date >= '2024-06-01' AND date <= '2026-04-24'
       AND market_time = 'r'
   )
   SELECT
@@ -90,7 +91,7 @@ const spxAggRows = await sql`
     MAX(CASE WHEN last_idx = 1 THEN close END)::float8    AS spx_close,
     (MAX(high) - MIN(low))::float8                        AS realized_range_dollars,
     NULL::text                                            AS vix_bucket,
-    'spx_candles_1m'                                      AS source
+    'index_candles_1m'                                    AS source
   FROM ranked
   GROUP BY date
   ORDER BY date
@@ -112,7 +113,7 @@ const byDate = new Map();
 for (const r of merged) byDate.set(r.date, r);
 
 console.log(
-  `Sources: ${dayEmbedRows.length} from day_embeddings + ${fillRows.length} from spx_candles_1m = ${merged.length} total`,
+  `Sources: ${dayEmbedRows.length} from day_embeddings + ${fillRows.length} from index_candles_1m (SPX) = ${merged.length} total`,
 );
 
 // ---------------------------------------------------------------------------
