@@ -206,19 +206,21 @@ describe('fetch-spx-candles-1m handler', () => {
           // Neon's tagged-template signature: (strings, ...values).
           // We ignore the strings array and capture the bound values.
           const values = _args.slice(1);
-          // positional values:
-          //   0 date, 1 timestamp,
-          //   2 open, 3 high, 4 low, 5 close,
-          //   6 volume, 7 market_time
+          // positional values (post Phase 1c — symbol is now a bound
+          // parameter to support both SPX and NDX from the same template):
+          //   0 symbol, 1 date, 2 timestamp,
+          //   3 open, 4 high, 5 low, 6 close,
+          //   7 volume, 8 market_time
           capturedRow = {
-            date: values[0],
-            timestamp: values[1],
-            open: values[2],
-            high: values[3],
-            low: values[4],
-            close: values[5],
-            volume: values[6],
-            market_time: values[7],
+            symbol: values[0],
+            date: values[1],
+            timestamp: values[2],
+            open: values[3],
+            high: values[4],
+            low: values[5],
+            close: values[6],
+            volume: values[7],
+            market_time: values[8],
           };
           return {};
         };
@@ -238,6 +240,7 @@ describe('fetch-spx-candles-1m handler', () => {
 
     expect(res._status).toBe(200);
     expect(capturedRow).not.toBeNull();
+    expect(capturedRow!.symbol).toBe('SPX');
     expect(capturedRow!.open).toBeCloseTo(580.0 * ratio, 4);
     expect(capturedRow!.high).toBeCloseTo(581.5 * ratio, 4);
     expect(capturedRow!.low).toBeCloseTo(579.25 * ratio, 4);
@@ -307,8 +310,13 @@ describe('fetch-spx-candles-1m handler', () => {
       reason: 'SPX/SPY ratio unavailable from Schwab',
     });
     expect(mockTransaction).not.toHaveBeenCalled();
+    // Phase 1c: Schwab failure now nullifies BOTH SPX and NDX ratios in
+    // one call, so both per-symbol counters increment.
     expect(vi.mocked(metrics).increment).toHaveBeenCalledWith(
-      'fetch_spx_candles_1m.ratio_unavailable',
+      'fetch_spx_candles_1m.ratio_unavailable_spx',
+    );
+    expect(vi.mocked(metrics).increment).toHaveBeenCalledWith(
+      'fetch_spx_candles_1m.ratio_unavailable_ndx',
     );
   });
 
@@ -476,7 +484,14 @@ describe('fetch-spx-candles-1m handler', () => {
 
   // ── Error handling ────────────────────────────────────────
 
-  it('returns 500 when UW API throws', async () => {
+  it('isolates UW throws per-symbol — 200 with reason instead of crashing the cron', async () => {
+    // Phase 1c: per-symbol error isolation. A UW throw used to bubble
+    // to the outer handler catch and return 500. With both SPX and NDX
+    // running in parallel we'd rather report "this symbol failed,
+    // continuing" — processIndexSafe wraps the throw into a
+    // SymbolResult with reason. NDX ratio is unavailable in the
+    // default Schwab mock so its flow short-circuits before reaching
+    // UW; only SPX exercises the throw path here.
     vi.mocked(uwFetch).mockRejectedValue(new Error('UW API timeout'));
 
     const res = mockResponse();
@@ -488,16 +503,15 @@ describe('fetch-spx-candles-1m handler', () => {
       res,
     );
 
-    expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'Internal error' });
-    expect(Sentry.setTag).toHaveBeenCalledWith(
-      'cron.job',
-      'fetch-spx-candles-1m',
-    );
+    expect(res._status).toBe(200);
+    const body = res._json as Record<string, unknown>;
+    expect(body.success).toBe(true);
+    expect(body.stored).toBe(false);
+    expect(body.reason).toMatch(/SPX flow threw.*UW API timeout/);
     expect(Sentry.captureException).toHaveBeenCalled();
     expect(logger.error).toHaveBeenCalledWith(
-      expect.objectContaining({ err: expect.any(Error) }),
-      'fetch-spx-candles-1m error',
+      expect.objectContaining({ err: expect.any(Error), symbol: 'SPX' }),
+      'fetch-spx-candles-1m: SPX flow threw',
     );
   });
 
@@ -698,5 +712,186 @@ describe('fetch-spx-candles-1m handler', () => {
     // Should still return 200 success — anchor failure is non-fatal
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ success: true });
+  });
+
+  // ── Multi-symbol (NDX) flow ──────────────────────────────
+
+  /** Schwab quotes covering all four symbols so both SPX and NDX flows resolve. */
+  function makeFullSchwabQuotes(
+    spxPrice = 6817.43,
+    spyPrice = 585.0,
+    ndxPrice = 24500.0,
+    qqqPrice = 510.0,
+  ) {
+    return {
+      ok: true as const,
+      data: {
+        $SPX: { quote: { lastPrice: spxPrice } },
+        SPY: { quote: { lastPrice: spyPrice } },
+        $NDX: { quote: { lastPrice: ndxPrice } },
+        QQQ: { quote: { lastPrice: qqqPrice } },
+      },
+    };
+  }
+
+  it('runs SPX and NDX flows in parallel when Schwab returns all four quotes', async () => {
+    vi.mocked(schwabFetch).mockResolvedValue(makeFullSchwabQuotes());
+    vi.mocked(uwFetch).mockResolvedValue([makeCandleRow()]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const body = res._json as Record<string, unknown>;
+    expect(body.success).toBe(true);
+    expect(body.totalStored).toBe(2);
+    // Both per-symbol blocks present
+    const spx = body.spx as Record<string, unknown>;
+    const ndx = body.ndx as Record<string, unknown>;
+    expect(spx.symbol).toBe('SPX');
+    expect(spx.stored).toBe(1);
+    expect(ndx.symbol).toBe('NDX');
+    expect(ndx.stored).toBe(1);
+    // Two storage transactions (one per symbol)
+    expect(mockTransaction).toHaveBeenCalledTimes(2);
+  });
+
+  it('isolates NDX failure — SPX still stores when NDX/QQQ price is missing', async () => {
+    // Schwab returns SPX/SPY but no NDX/QQQ — NDX ratio nullifies, SPX continues
+    vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true as const,
+      data: {
+        $SPX: { quote: { lastPrice: 6817.43 } },
+        SPY: { quote: { lastPrice: 585.0 } },
+        $NDX: { quote: {} }, // missing lastPrice
+        QQQ: { quote: { lastPrice: 510.0 } },
+      },
+    });
+    vi.mocked(uwFetch).mockResolvedValue([makeCandleRow()]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const body = res._json as Record<string, unknown>;
+    expect(body.success).toBe(true);
+    // SPX stored normally (top-level fields mirror SPX for backward compat)
+    expect(body.stored).toBe(1);
+    expect(body.totalStored).toBe(1);
+    // NDX block carries the failure reason
+    const ndx = body.ndx as Record<string, unknown>;
+    expect(ndx.symbol).toBe('NDX');
+    expect(ndx.stored).toBe(0);
+    expect(ndx.reason).toMatch(/NDX\/QQQ ratio unavailable/);
+    expect(vi.mocked(metrics).increment).toHaveBeenCalledWith(
+      'fetch_spx_candles_1m.ratio_unavailable_ndx',
+    );
+    // Only SPX storage transaction ran
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('isolates SPX failure — NDX still stores when SPX/SPY price is missing', async () => {
+    // SPX nullifies, NDX completes
+    vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true as const,
+      data: {
+        $SPX: { quote: {} }, // missing lastPrice
+        SPY: { quote: { lastPrice: 585.0 } },
+        $NDX: { quote: { lastPrice: 24500.0 } },
+        QQQ: { quote: { lastPrice: 510.0 } },
+      },
+    });
+    vi.mocked(uwFetch).mockResolvedValue([makeCandleRow()]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const body = res._json as Record<string, unknown>;
+    expect(body.success).toBe(true);
+    expect(body.totalStored).toBe(1);
+    // Top-level mirrors SPX failure
+    expect(body.stored).toBe(false);
+    expect(body.reason).toMatch(/SPX\/SPY ratio unavailable/);
+    // NDX block carries success
+    const ndx = body.ndx as Record<string, unknown>;
+    expect(ndx.symbol).toBe('NDX');
+    expect(ndx.stored).toBe(1);
+    expect(vi.mocked(metrics).increment).toHaveBeenCalledWith(
+      'fetch_spx_candles_1m.ratio_unavailable_spx',
+    );
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('translates QQQ prices to NDX using the live Schwab NDX/QQQ ratio', async () => {
+    const ndxPrice = 24500.0;
+    const qqqPrice = 510.0;
+    vi.mocked(schwabFetch).mockResolvedValue(
+      makeFullSchwabQuotes(6817.43, 585.0, ndxPrice, qqqPrice),
+    );
+    // QQQ candle priced at 510.50
+    vi.mocked(uwFetch).mockResolvedValue([
+      makeCandleRow({ open: '510.50', high: '511.00', low: '510.20', close: '510.85' }),
+    ]);
+
+    const ratio = ndxPrice / qqqPrice;
+
+    // Capture the second symbol's transaction (NDX runs second per
+    // INDEX_CONFIGS ordering in the handler — but Promise.all
+    // resolution order is stable for the call sites, not invocation
+    // order, so collect both and identify NDX by its symbol value)
+    const captured: Array<Record<string, unknown>> = [];
+    mockTransaction.mockImplementation(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const txnFn = (..._args: unknown[]) => {
+          const values = _args.slice(1);
+          captured.push({
+            symbol: values[0],
+            open: values[3],
+            high: values[4],
+            low: values[5],
+            close: values[6],
+          });
+          return {};
+        };
+        const queries = fn(txnFn);
+        return queries.map(() => [{ id: 1 }]);
+      },
+    );
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const ndxRow = captured.find((r) => r.symbol === 'NDX');
+    expect(ndxRow).toBeDefined();
+    expect(ndxRow!.open).toBeCloseTo(510.5 * ratio, 4);
+    expect(ndxRow!.high).toBeCloseTo(511.0 * ratio, 4);
+    expect(ndxRow!.low).toBeCloseTo(510.2 * ratio, 4);
+    expect(ndxRow!.close).toBeCloseTo(510.85 * ratio, 4);
   });
 });
