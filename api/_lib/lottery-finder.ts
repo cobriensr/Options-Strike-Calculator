@@ -213,7 +213,21 @@ export function buildFlowQuad(
 }
 
 /**
- * Classify a (ticker, dte, askPct) triple into Mode A or Mode B.
+ * Mode B in-play gate — Python p26 requires `|strike/spot - 1| ≤ 0.10`
+ * (the `in_play` mask). Far-OTM stock contracts on a Mode B ticker are
+ * suppressed because the v4 detector's IV/delta thresholds are noisy
+ * out there and the trade dynamics aren't lottery-shaped.
+ */
+const LOTTERY_MODE_B_IN_PLAY_PCT = 0.1;
+
+/**
+ * Classify a chain into Mode A, Mode B, or OUT_OF_UNIVERSE.
+ *
+ * Mode A (intraday 0DTE scalp): V3 ticker list ∪ {SPY, IWM}, DTE = 0,
+ * ask% ≥ 0.52. No moneyness gate.
+ *
+ * Mode B (multi-day trend): EXTENDED list \ {SPY, IWM}, DTE 1-3,
+ * ask% ≥ 0.52, AND |strike/spot - 1| ≤ 0.10 (the in_play gate from p26).
  *
  * Returns 'OUT_OF_UNIVERSE' when the chain doesn't fit either mode —
  * the cron filters those out before insertion. We keep them in the
@@ -224,23 +238,27 @@ export function classifyMode(
   ticker: string,
   dte: number,
   askPct: number,
+  strike: number,
+  spot: number,
 ): LotteryMode {
   if (askPct < LOTTERY_SPEC_V4.askPctMin) return 'OUT_OF_UNIVERSE';
   const tickerUpper = ticker.toUpperCase();
-  // Mode A: V3 list + SPY + IWM, DTE = 0
+  // Mode A: V3 list + SPY + IWM, DTE = 0. No moneyness gate.
   if (
     dte === 0 &&
     (LOTTERY_V3_TICKERS as readonly string[]).includes(tickerUpper)
   ) {
     return 'A_intraday_0DTE';
   }
-  // Mode B: extended list (excluding SPY/IWM), DTE 1-3
+  // Mode B: extended list (excluding SPY/IWM), DTE 1-3, in-play.
   if (
     dte > 0 &&
     dte <= 3 &&
     (LOTTERY_EXTENDED_TICKERS as readonly string[]).includes(tickerUpper) &&
     tickerUpper !== 'SPY' &&
-    tickerUpper !== 'IWM'
+    tickerUpper !== 'IWM' &&
+    spot > 0 &&
+    Math.abs(strike / spot - 1) <= LOTTERY_MODE_B_IN_PLAY_PCT
   ) {
     return 'B_multi_day_DTE1_3';
   }
@@ -298,21 +316,16 @@ export function detectChainFires(
   const windowMs = LOTTERY_WINDOW_MIN * 60 * 1000;
   const cooldownMs = LOTTERY_SPEC_V4.cooldownMin * 60 * 1000;
 
-  // Pre-compute suffix max price for to-EoD outcomes — not used here
-  // (outcomes happen in a separate enrich cron) but keeps parity with
-  // the Python implementation for callers that want it.
-
   // Cumulative size (for cum vol/OI).
   let cumVol = 0;
-  // First tick's underlying spot — falls back to subsequent ticks if null.
-  let spotAtFirst = 0;
-  for (const t of ticks) {
-    if (t.underlyingPrice != null && t.underlyingPrice > 0) {
-      spotAtFirst = t.underlyingPrice;
-      break;
-    }
+  // First-tick underlying spot — matches Python p14 `iloc[0]` exactly so
+  // the TS detector can't silently emit fires on a stream Python would
+  // skip (per feedback_no_silent_methodology_changes).
+  const firstTick = ticks[0]!;
+  if (firstTick.underlyingPrice == null || firstTick.underlyingPrice <= 0) {
+    return [];
   }
-  if (spotAtFirst === 0) return []; // no spot context → cannot fire
+  const spotAtFirst = firstTick.underlyingPrice;
 
   const fires: LotteryFire[] = [];
   let lastFireTs: number | null = null;
@@ -351,11 +364,13 @@ export function detectChainFires(
     cumVol += cur.size;
     const tsMs = cur.executedAt.getTime();
 
-    // Slide windowStart forward until everything in [windowStart, i] is
-    // within the 5-min trailing window.
+    // Slide windowStart forward until every tick in [windowStart, i] is
+    // strictly within the trailing 5-min window. Pandas `rolling('5min')`
+    // is closed='right' = (t-5min, t], so a tick at exactly t-5min is
+    // EXCLUDED. Hence `>=`, not `>`.
     while (
       windowStart < i &&
-      tsMs - ticks[windowStart]!.executedAt.getTime() > windowMs
+      tsMs - ticks[windowStart]!.executedAt.getTime() >= windowMs
     ) {
       applyTick(ticks[windowStart]!, -1);
       windowStart += 1;
@@ -464,7 +479,13 @@ export function enrichFires(
 
     const tod = getTimeOfDay(f.triggerTimeCt);
     const flowQuad = buildFlowQuad(meta.optionType, f.triggerAskPct);
-    const mode = classifyMode(meta.underlyingSymbol, meta.dte, f.triggerAskPct);
+    const mode = classifyMode(
+      meta.underlyingSymbol,
+      meta.dte,
+      f.triggerAskPct,
+      meta.strike,
+      f.spotAtFirst,
+    );
     const reloadTagged = isReload(burstRatioVsPrev, entryDropPctVsPrev);
     const cheapCallPmTagged = isCheapCallPm(meta.optionType, f.entryPrice, tod);
 

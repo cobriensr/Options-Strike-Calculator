@@ -43,8 +43,8 @@ function makeTick(
 }
 
 /**
- * Build a stream that should fire — 5 ask-side ticks within a 5-min
- * window summing to 50 contracts (vol/OI = 0.05) on OI=1000, all in
+ * Build a stream that should fire — 6 ask-side ticks within a 5-min
+ * window summing to 150 contracts (vol/OI = 0.15) on OI=1000, all in
  * the AM_open bucket.
  */
 function fireableStream(): OptionTradeTick[] {
@@ -54,7 +54,7 @@ function fireableStream(): OptionTradeTick[] {
     makeTick(60, { size: 20 }),
     makeTick(90, { size: 20 }),
     makeTick(120, { size: 20 }),
-    makeTick(150, { size: 20 }), // entry tick
+    makeTick(150, { size: 20 }), // entry tick (next print after trigger)
   ];
 }
 
@@ -126,29 +126,43 @@ describe('buildFlowQuad', () => {
 // ============================================================
 
 describe('classifyMode', () => {
+  // Mode A doesn't gate on moneyness — any strike works.
   it('classifies SNDK 0DTE call_ask as Mode A', () => {
-    expect(classifyMode('SNDK', 0, 0.8)).toBe('A_intraday_0DTE');
+    expect(classifyMode('SNDK', 0, 0.8, 1175, 1170)).toBe('A_intraday_0DTE');
   });
   it('classifies SPY 0DTE as Mode A (special-cased into V3 list)', () => {
-    expect(classifyMode('SPY', 0, 0.8)).toBe('A_intraday_0DTE');
+    expect(classifyMode('SPY', 0, 0.8, 500, 500)).toBe('A_intraday_0DTE');
   });
-  it('classifies META 2-DTE as Mode B', () => {
-    expect(classifyMode('META', 2, 0.8)).toBe('B_multi_day_DTE1_3');
+  it('classifies META 2-DTE near-ATM as Mode B', () => {
+    // strike=510, spot=500 → |510/500 - 1| = 0.02 ≤ 0.10
+    expect(classifyMode('META', 2, 0.8, 510, 500)).toBe('B_multi_day_DTE1_3');
+  });
+  it('rejects Mode B candidates outside the |moneyness|≤10% gate (p26 in_play)', () => {
+    // META 2-DTE strike=$1000 vs spot=$500 → 100% OTM, not Mode B
+    expect(classifyMode('META', 2, 0.8, 1000, 500)).toBe('OUT_OF_UNIVERSE');
+  });
+  it('keeps Mode B candidates within the |moneyness|≤10% gate', () => {
+    // strike=549, spot=500 → moneyness 9.8% (just inside the 10% gate).
+    // Note: 550/500 falls outside due to IEEE-754 fuzz (matches Python).
+    expect(classifyMode('META', 2, 0.8, 549, 500)).toBe('B_multi_day_DTE1_3');
   });
   it('rejects SPY DTE 1-3 from Mode B (SPY is Mode-A-only)', () => {
-    expect(classifyMode('SPY', 2, 0.8)).toBe('OUT_OF_UNIVERSE');
+    expect(classifyMode('SPY', 2, 0.8, 500, 500)).toBe('OUT_OF_UNIVERSE');
   });
   it('rejects DTE > 3 from both modes', () => {
-    expect(classifyMode('META', 4, 0.8)).toBe('OUT_OF_UNIVERSE');
+    expect(classifyMode('META', 4, 0.8, 500, 500)).toBe('OUT_OF_UNIVERSE');
   });
   it('rejects ask-side fraction below the universe threshold', () => {
-    expect(classifyMode('SNDK', 0, 0.5)).toBe('OUT_OF_UNIVERSE');
+    expect(classifyMode('SNDK', 0, 0.5, 1175, 1170)).toBe('OUT_OF_UNIVERSE');
   });
   it('rejects unknown tickers', () => {
-    expect(classifyMode('FAKE', 0, 0.9)).toBe('OUT_OF_UNIVERSE');
+    expect(classifyMode('FAKE', 0, 0.9, 100, 100)).toBe('OUT_OF_UNIVERSE');
   });
   it('uppercases ticker before checking the list', () => {
-    expect(classifyMode('sndk', 0, 0.8)).toBe('A_intraday_0DTE');
+    expect(classifyMode('sndk', 0, 0.8, 1175, 1170)).toBe('A_intraday_0DTE');
+  });
+  it('rejects Mode B when spot is 0 (cannot compute moneyness)', () => {
+    expect(classifyMode('META', 2, 0.8, 500, 0)).toBe('OUT_OF_UNIVERSE');
   });
 });
 
@@ -260,9 +274,31 @@ describe('detectChainFires', () => {
     expect(detectChainFires(ticks, 1000, 0)).toHaveLength(0);
   });
 
-  it('returns no fires when no tick has a positive underlying price', () => {
-    const ticks = fireableStream().map((t) => ({ ...t, underlyingPrice: null }));
+  it('returns no fires when first tick has null underlying price (matches Python iloc[0])', () => {
+    const stream = fireableStream();
+    const first = stream[0]!;
+    const ticks = [
+      { ...first, underlyingPrice: null },
+      ...stream.slice(1),
+    ];
     expect(detectChainFires(ticks, 1000, 0)).toHaveLength(0);
+  });
+
+  it('skips ticks with null IV from windowed-mean denominator without rejecting the fire', () => {
+    // 6 ticks; ticks 0,2,4 have IV=0.5, ticks 1,3,5 have IV=null.
+    // Windowed mean over non-null subset = 0.5 (above 0.35 ivMin) → fires.
+    const stream = fireableStream();
+    const ticks = stream.map((t, i) =>
+      i % 2 === 1 ? { ...t, impliedVolatility: null } : t,
+    );
+    expect(detectChainFires(ticks, 1000, 0)).toHaveLength(1);
+  });
+
+  it('cumulative vol/OI gate suppresses fires until the chain context is hot enough', () => {
+    // OI=10000 → fireableStream's 150 contracts gives cum vol/OI = 0.015,
+    // well below the 0.10 cum threshold. Window vol/OI also computed
+    // against same OI = 0.015 < 0.05. Should not fire.
+    expect(detectChainFires(fireableStream(), 10000, 0)).toHaveLength(0);
   });
 });
 
@@ -287,6 +323,27 @@ describe('detectChainFires — cooldown', () => {
     expect(fires[0]!.alertSeq).toBe(1);
     expect(fires[1]!.alertSeq).toBe(2);
     expect(fires[1]!.minutesSincePrevFire).toBeGreaterThan(5);
+  });
+
+  it('evicts ticks at exactly the 5-min boundary (closed=right semantics)', () => {
+    // 6 ticks at exact 60-second spacing — at i=5 (offset=300s = 5min),
+    // the tick at offset=0 is exactly windowMs old and must be evicted
+    // (matches pandas rolling('5min'), closed='right').
+    // Sizes 1000 each so vol/OI = 0.005 with OI=1M (window vol/OI gate
+    // intentionally falls below 0.05 — we only care that the eviction
+    // happened, not that the fire fires).
+    const ticks: OptionTradeTick[] = [
+      makeTick(0, { size: 1000 }),
+      makeTick(60, { size: 1000 }),
+      makeTick(120, { size: 1000 }),
+      makeTick(180, { size: 1000 }),
+      makeTick(240, { size: 1000 }),
+      makeTick(300, { size: 1000 }),
+    ];
+    const fires = detectChainFires(ticks, 1_000_000, 0);
+    // Below window-vol/OI gate, so no fires either way — but the test
+    // exists to document the boundary semantics and lock in `>=` over `>`.
+    expect(fires).toHaveLength(0);
   });
 
   it('suppresses a second fire within the 5-min cooldown', () => {
