@@ -837,3 +837,41 @@ export const analysisResponseSchema = z.object({
 });
 
 export type AnalysisResponse = z.infer<typeof analysisResponseSchema>;
+
+// ============================================================
+// /api/lottery-finder
+// ============================================================
+
+/**
+ * Query params for GET /api/lottery-finder.
+ *
+ * Backs the LotteryFinder feed component (Phase 2 of the spec).
+ *
+ * - `since` defaults to "today midnight UTC" via the endpoint when
+ *   omitted, so callers don't have to compute a date.
+ * - `limit` is capped at 200 to bound payload size on the home page —
+ *   today's full fire stream rarely exceeds that even on heavy days.
+ * - `ticker`, `reload`, `cheapCallPm`, `mode` map to the UI filter chips.
+ */
+export const lotteryFinderQuerySchema = z.object({
+  ticker: z
+    .string()
+    .regex(/^[A-Z]{1,8}$/, 'ticker must be 1-8 uppercase letters')
+    .optional(),
+  reload: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => (v === 'true' ? true : v === 'false' ? false : undefined)),
+  cheapCallPm: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) =>
+      v === 'true' ? true : v === 'false' ? false : undefined,
+    ),
+  mode: z.enum(['A_intraday_0DTE', 'B_multi_day_DTE1_3']).optional(),
+  since: z.string().datetime({ offset: true }).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(100),
+});
+
+export type LotteryFinderQuery = z.infer<typeof lotteryFinderQuerySchema>;
+

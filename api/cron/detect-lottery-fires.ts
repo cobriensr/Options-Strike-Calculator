@@ -1,0 +1,465 @@
+/**
+ * GET /api/cron/detect-lottery-fires
+ *
+ * Runs the v4 trigger detector on the rolling per-tick stream in
+ * ws_option_trades for the Lottery Finder universe (~50 tickers).
+ * Each qualifying fire is enriched with the per-fire discriminators
+ * (RE-LOAD, cheap-call-PM, mode, flow_quad, tod) plus a macro-context
+ * snapshot at fire time, then inserted into lottery_finder_fires with
+ * ON CONFLICT (option_chain_id, trigger_time_ct) DO NOTHING.
+ *
+ * Cadence: every minute during market hours (13:30–21:00 UTC, Mon-Fri).
+ * Each invocation scans the last 7 minutes of trades — wider than the
+ * 5-min v4 window so a slow cron tick can still pick up a trigger that
+ * landed at the front of its window. Cooldown + ON CONFLICT make
+ * re-firing on the same chain idempotent.
+ *
+ * Macro snapshot is **display-only** (per spec Appendix A — every
+ * macro-augmented selection rule UNDERPERFORMED the cheap-call-PM-only
+ * baseline on total realized $ in the 15-day backtest).
+ */
+
+import { getDb } from '../_lib/db.js';
+import {
+  detectChainFires,
+  enrichFires,
+  type LotteryFireRecord,
+  type OptionTradeTick,
+} from '../_lib/lottery-finder.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
+
+// 7-minute scan window — 5-min v4 window + 2-min slack so a slow cron
+// tick can't drop a trigger that landed at the start of its window.
+const SCAN_WINDOW_MIN = 7;
+
+// Per-chain print floor — matches the Python p14.py MIN_PRINTS / 14
+// scaling for a 7-min slice. The detector also gates on cntWindowMin
+// (≥5 in the rolling window) but we filter at the SQL level too so the
+// per-chain group-by stays cheap.
+const PER_CHAIN_MIN_PRINTS = 5;
+
+type DbNumeric = string | number;
+type DbNullableNumeric = DbNumeric | null;
+type DbTimestamp = string | Date;
+type DbSide = 'ask' | 'bid' | 'mid' | 'no_side';
+
+interface TickRow {
+  ticker: string;
+  option_chain: string;
+  option_type: 'C' | 'P';
+  strike: DbNumeric;
+  expiry: DbTimestamp;
+  executed_at: DbTimestamp;
+  price: DbNumeric;
+  size: number;
+  underlying_price: DbNullableNumeric;
+  side: DbSide;
+  implied_volatility: DbNullableNumeric;
+  delta: DbNullableNumeric;
+  open_interest: number | null;
+}
+
+interface ChainGroup {
+  ticker: string;
+  optionChain: string;
+  optionType: 'C' | 'P';
+  strike: number;
+  expiry: Date;
+  ticks: OptionTradeTick[];
+  oi: number;
+}
+
+interface FlowMacroRow {
+  source: string;
+  ncp: DbNumeric;
+  npp: DbNumeric;
+  otm_ncp: DbNullableNumeric;
+  otm_npp: DbNullableNumeric;
+}
+
+interface SpotMacroRow {
+  gamma_oi: DbNullableNumeric;
+  gamma_vol: DbNullableNumeric;
+  charm_oi: DbNullableNumeric;
+  vanna_oi: DbNullableNumeric;
+}
+
+interface StrikeMacroRow {
+  strike: DbNumeric;
+  call_minus_put: DbNullableNumeric;
+  call_ask_minus_bid: DbNullableNumeric;
+  put_ask_minus_bid: DbNullableNumeric;
+}
+
+/**
+ * Macro snapshot pulled once per fire (asof lookup). All fields are
+ * optional — many will be null on early-session fires before the
+ * upstream ingest crons have populated their tables.
+ */
+interface MacroSnapshot {
+  mkt_tide_ncp: number | null;
+  mkt_tide_npp: number | null;
+  mkt_tide_diff: number | null;
+  mkt_tide_otm_diff: number | null;
+  spx_flow_diff: number | null;
+  spy_etf_diff: number | null;
+  qqq_etf_diff: number | null;
+  zero_dte_diff: number | null;
+  spx_spot_gamma_oi: number | null;
+  spx_spot_gamma_vol: number | null;
+  spx_spot_charm_oi: number | null;
+  spx_spot_vanna_oi: number | null;
+  gex_strike_call_minus_put: number | null;
+  gex_strike_call_ask_minus_bid: number | null;
+  gex_strike_put_ask_minus_bid: number | null;
+  gex_strike_actual_strike: number | null;
+}
+
+const EMPTY_MACRO: MacroSnapshot = {
+  mkt_tide_ncp: null,
+  mkt_tide_npp: null,
+  mkt_tide_diff: null,
+  mkt_tide_otm_diff: null,
+  spx_flow_diff: null,
+  spy_etf_diff: null,
+  qqq_etf_diff: null,
+  zero_dte_diff: null,
+  spx_spot_gamma_oi: null,
+  spx_spot_gamma_vol: null,
+  spx_spot_charm_oi: null,
+  spx_spot_vanna_oi: null,
+  gex_strike_call_minus_put: null,
+  gex_strike_call_ask_minus_bid: null,
+  gex_strike_put_ask_minus_bid: null,
+  gex_strike_actual_strike: null,
+};
+
+const TICKERS_WITH_GEX_STRIKE = new Set(['SPX', 'SPXW', 'NDX', 'NDXP', 'SPY', 'QQQ']);
+
+export default withCronInstrumentation(
+  'detect-lottery-fires',
+  async (ctx): Promise<CronResult> => {
+    const db = getDb();
+
+    // Pull every tick in the scan window, ordered for chain-grouping.
+    const rows = (await db`
+      SELECT
+        ticker, option_chain, option_type, strike, expiry,
+        executed_at, price, size, underlying_price, side,
+        implied_volatility, delta, open_interest
+      FROM ws_option_trades
+      WHERE executed_at >= NOW() - (${SCAN_WINDOW_MIN}::int * INTERVAL '1 minute')
+        AND canceled = FALSE
+        AND price > 0
+      ORDER BY option_chain, executed_at ASC
+    `) as TickRow[];
+
+    if (rows.length === 0) {
+      return {
+        status: 'skipped',
+        message: 'no ticks in scan window',
+        metadata: { scanned: 0 },
+      };
+    }
+
+    // Group by chain. Already sorted by (chain, time) in SQL so a
+    // single linear pass is enough.
+    const groups = new Map<string, ChainGroup>();
+    for (const r of rows) {
+      let g = groups.get(r.option_chain);
+      if (!g) {
+        g = {
+          ticker: r.ticker,
+          optionChain: r.option_chain,
+          optionType: r.option_type,
+          strike: Number(r.strike),
+          expiry: new Date(r.expiry),
+          ticks: [],
+          oi: 0,
+        };
+        groups.set(r.option_chain, g);
+      }
+      g.ticks.push({
+        executedAt: new Date(r.executed_at),
+        optionChain: r.option_chain,
+        optionType: r.option_type,
+        strike: Number(r.strike),
+        expiry: new Date(r.expiry),
+        price: Number(r.price),
+        size: r.size,
+        underlyingPrice:
+          r.underlying_price != null ? Number(r.underlying_price) : null,
+        side: r.side,
+        impliedVolatility:
+          r.implied_volatility != null ? Number(r.implied_volatility) : null,
+        delta: r.delta != null ? Number(r.delta) : null,
+        openInterest: r.open_interest,
+      });
+      // Take the per-chain max OI — matches Python p14.py
+      // `g['open_interest'].max()`.
+      if (r.open_interest != null && r.open_interest > g.oi) {
+        g.oi = r.open_interest;
+      }
+    }
+
+    let totalFires = 0;
+    let inserted = 0;
+    let skippedNoOi = 0;
+    let skippedShort = 0;
+
+    for (const g of groups.values()) {
+      if (g.ticks.length < PER_CHAIN_MIN_PRINTS) {
+        skippedShort += 1;
+        continue;
+      }
+      if (g.oi <= 0) {
+        skippedNoOi += 1;
+        continue;
+      }
+
+      // DTE is computed from the trade-date (ET) of the first tick. The
+      // ws_option_trades scan window is 7 min so all ticks share the
+      // same date in practice; using the first tick keeps it cheap.
+      const firstTick = g.ticks[0]!;
+      const tradeDateStr = ctx.today; // ET YYYY-MM-DD from cronGuard
+      const expiryStr = isoDate(g.expiry);
+      const dte = daysBetween(tradeDateStr, expiryStr);
+
+      const fires = detectChainFires(g.ticks, g.oi, dte);
+      if (fires.length === 0) continue;
+      totalFires += fires.length;
+
+      const records = enrichFires(fires, {
+        date: tradeDateStr,
+        optionChainId: g.optionChain,
+        underlyingSymbol: g.ticker,
+        optionType: g.optionType,
+        strike: g.strike,
+        expiry: expiryStr,
+        dte,
+      });
+      // Suppress fires the universe doesn't claim — keeps the table
+      // focused on Mode A + Mode B and prevents far-OTM stock chains
+      // from polluting the UI.
+      const inUniverse = records.filter((r) => r.mode !== 'OUT_OF_UNIVERSE');
+      if (inUniverse.length === 0) continue;
+
+      for (const rec of inUniverse) {
+        const macro = await fetchMacroSnapshot(db, rec, firstTick.executedAt);
+        const result = (await db`
+          INSERT INTO lottery_finder_fires (
+            date, trigger_time_ct, entry_time_ct, option_chain_id,
+            underlying_symbol, option_type, strike, expiry, dte,
+            trigger_vol_to_oi_window, trigger_vol_to_oi_cum,
+            trigger_iv, trigger_delta, trigger_ask_pct,
+            trigger_window_size, trigger_window_prints,
+            entry_price, open_interest, spot_at_first,
+            alert_seq, minutes_since_prev_fire,
+            flow_quad, tod, mode,
+            reload_tagged, cheap_call_pm_tagged,
+            burst_ratio_vs_prev, entry_drop_pct_vs_prev,
+            mkt_tide_ncp, mkt_tide_npp, mkt_tide_diff, mkt_tide_otm_diff,
+            spx_flow_diff, spy_etf_diff, qqq_etf_diff, zero_dte_diff,
+            spx_spot_gamma_oi, spx_spot_gamma_vol, spx_spot_charm_oi, spx_spot_vanna_oi,
+            gex_strike_call_minus_put, gex_strike_call_ask_minus_bid,
+            gex_strike_put_ask_minus_bid, gex_strike_actual_strike
+          ) VALUES (
+            ${rec.date}::date, ${rec.triggerTimeCt.toISOString()}, ${rec.entryTimeCt.toISOString()},
+            ${rec.optionChainId}, ${rec.underlyingSymbol}, ${rec.optionType},
+            ${rec.strike}, ${rec.expiry}::date, ${rec.dte},
+            ${rec.triggerVolToOiWindow}, ${rec.triggerVolToOiCum},
+            ${rec.triggerIv}, ${rec.triggerDelta}, ${rec.triggerAskPct},
+            ${rec.triggerWindowSize}, ${rec.triggerWindowPrints},
+            ${rec.entryPrice}, ${rec.openInterest}, ${rec.spotAtFirst},
+            ${rec.alertSeq}, ${rec.minutesSincePrevFire},
+            ${rec.flowQuad}, ${rec.tod}, ${rec.mode},
+            ${rec.reloadTagged}, ${rec.cheapCallPmTagged},
+            ${rec.burstRatioVsPrev}, ${rec.entryDropPctVsPrev},
+            ${macro.mkt_tide_ncp}, ${macro.mkt_tide_npp}, ${macro.mkt_tide_diff}, ${macro.mkt_tide_otm_diff},
+            ${macro.spx_flow_diff}, ${macro.spy_etf_diff}, ${macro.qqq_etf_diff}, ${macro.zero_dte_diff},
+            ${macro.spx_spot_gamma_oi}, ${macro.spx_spot_gamma_vol}, ${macro.spx_spot_charm_oi}, ${macro.spx_spot_vanna_oi},
+            ${macro.gex_strike_call_minus_put}, ${macro.gex_strike_call_ask_minus_bid},
+            ${macro.gex_strike_put_ask_minus_bid}, ${macro.gex_strike_actual_strike}
+          )
+          ON CONFLICT (option_chain_id, trigger_time_ct) DO NOTHING
+          RETURNING id
+        `) as { id: number }[];
+        if (result.length > 0) inserted += 1;
+      }
+    }
+
+    ctx.logger.info(
+      {
+        scanned: rows.length,
+        chains: groups.size,
+        skippedShort,
+        skippedNoOi,
+        totalFires,
+        inserted,
+      },
+      'detect-lottery-fires completed',
+    );
+
+    return {
+      status: 'success',
+      rows: inserted,
+      metadata: {
+        scanned: rows.length,
+        chains: groups.size,
+        skippedShort,
+        skippedNoOi,
+        totalFires,
+        inserted,
+      },
+    };
+  },
+  { requireApiKey: false },
+);
+
+// ============================================================
+// Macro snapshot lookup — asof, NULLs tolerated.
+// ============================================================
+
+interface DbClient {
+  // Tagged-template SQL accessor — matches @neondatabase/serverless's
+  // call signature without coupling to its concrete type so tests can
+  // mock with a plain `vi.fn()`.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (strings: TemplateStringsArray, ...values: unknown[]): Promise<any[]>;
+}
+
+async function fetchMacroSnapshot(
+  db: DbClient,
+  rec: LotteryFireRecord,
+  asOf: Date,
+): Promise<MacroSnapshot> {
+  // Single round-trip per fire. flow_data + spot_exposures are required;
+  // strike_exposures only matters for index/ETF tickers and is left null
+  // otherwise.
+  const flowQuery = db`
+    SELECT source, ncp, npp, otm_ncp, otm_npp
+    FROM flow_data
+    WHERE timestamp <= ${asOf.toISOString()}
+      AND timestamp >= ${asOf.toISOString()}::timestamptz - INTERVAL '30 minutes'
+      AND source IN (
+        'market_tide', 'market_tide_otm', 'spx_flow',
+        'spy_etf_tide', 'qqq_etf_tide', 'zero_dte_greek_flow'
+      )
+    ORDER BY timestamp DESC
+    LIMIT 200
+  ` as Promise<FlowMacroRow[]>;
+
+  const spotQuery = db`
+    SELECT gamma_oi, gamma_vol, charm_oi, vanna_oi
+    FROM spot_exposures
+    WHERE ticker = 'SPX'
+      AND timestamp <= ${asOf.toISOString()}
+      AND timestamp >= ${asOf.toISOString()}::timestamptz - INTERVAL '30 minutes'
+    ORDER BY timestamp DESC
+    LIMIT 1
+  ` as Promise<SpotMacroRow[]>;
+
+  const wantStrike = TICKERS_WITH_GEX_STRIKE.has(rec.underlyingSymbol);
+  // Look up the closest stored strike (within ±1% of fire strike) for
+  // SPX/SPXW/NDX/NDXP/SPY/QQQ. Other tickers don't have per-strike GEX
+  // ingested, so we skip the query.
+  const strikeQuery: Promise<StrikeMacroRow[]> = wantStrike
+    ? (db`
+        SELECT
+          strike,
+          (call_gamma_oi - put_gamma_oi) AS call_minus_put,
+          (call_gamma_ask - call_gamma_bid) AS call_ask_minus_bid,
+          (put_gamma_ask - put_gamma_bid) AS put_ask_minus_bid
+        FROM strike_exposures
+        WHERE ticker = ${rec.underlyingSymbol}
+          AND timestamp <= ${asOf.toISOString()}
+          AND timestamp >= ${asOf.toISOString()}::timestamptz - INTERVAL '30 minutes'
+          AND ABS(strike - ${rec.strike}::numeric) / NULLIF(${rec.strike}::numeric, 0) <= 0.01
+        ORDER BY timestamp DESC, ABS(strike - ${rec.strike}::numeric) ASC
+        LIMIT 1
+      ` as Promise<StrikeMacroRow[]>)
+    : Promise.resolve<StrikeMacroRow[]>([]);
+
+  const [flowRows, spotRows, strikeRows] = await Promise.all([
+    flowQuery,
+    spotQuery,
+    strikeQuery,
+  ]);
+
+  // Reduce flowRows to one row per source (the most recent each).
+  interface ParsedFlowRow {
+    ncp: number;
+    npp: number;
+    otmNcp: number | null;
+    otmNpp: number | null;
+  }
+  const latestBySource = new Map<string, ParsedFlowRow>();
+  for (const r of flowRows) {
+    if (latestBySource.has(r.source)) continue;
+    latestBySource.set(r.source, {
+      ncp: Number(r.ncp),
+      npp: Number(r.npp),
+      otmNcp: r.otm_ncp != null ? Number(r.otm_ncp) : null,
+      otmNpp: r.otm_npp != null ? Number(r.otm_npp) : null,
+    });
+  }
+  const tide = latestBySource.get('market_tide');
+  const otm = latestBySource.get('market_tide_otm');
+  const spxF = latestBySource.get('spx_flow');
+  const spyE = latestBySource.get('spy_etf_tide');
+  const qqqE = latestBySource.get('qqq_etf_tide');
+  const zd = latestBySource.get('zero_dte_greek_flow');
+
+  const spot = spotRows[0];
+  const strikeRow = strikeRows[0];
+
+  return {
+    ...EMPTY_MACRO,
+    mkt_tide_ncp: tide?.ncp ?? null,
+    mkt_tide_npp: tide?.npp ?? null,
+    mkt_tide_diff: tide ? tide.ncp - tide.npp : null,
+    mkt_tide_otm_diff:
+      otm && otm.otmNcp != null && otm.otmNpp != null
+        ? otm.otmNcp - otm.otmNpp
+        : null,
+    spx_flow_diff: spxF ? spxF.ncp - spxF.npp : null,
+    spy_etf_diff: spyE ? spyE.ncp - spyE.npp : null,
+    qqq_etf_diff: qqqE ? qqqE.ncp - qqqE.npp : null,
+    zero_dte_diff: zd ? zd.ncp - zd.npp : null,
+    spx_spot_gamma_oi:
+      spot && spot.gamma_oi != null ? Number(spot.gamma_oi) : null,
+    spx_spot_gamma_vol:
+      spot && spot.gamma_vol != null ? Number(spot.gamma_vol) : null,
+    spx_spot_charm_oi:
+      spot && spot.charm_oi != null ? Number(spot.charm_oi) : null,
+    spx_spot_vanna_oi:
+      spot && spot.vanna_oi != null ? Number(spot.vanna_oi) : null,
+    gex_strike_call_minus_put:
+      strikeRow && strikeRow.call_minus_put != null
+        ? Number(strikeRow.call_minus_put)
+        : null,
+    gex_strike_call_ask_minus_bid:
+      strikeRow && strikeRow.call_ask_minus_bid != null
+        ? Number(strikeRow.call_ask_minus_bid)
+        : null,
+    gex_strike_put_ask_minus_bid:
+      strikeRow && strikeRow.put_ask_minus_bid != null
+        ? Number(strikeRow.put_ask_minus_bid)
+        : null,
+    gex_strike_actual_strike: strikeRow ? Number(strikeRow.strike) : null,
+  };
+}
+
+function isoDate(d: Date): string {
+  // YYYY-MM-DD in UTC — Postgres DATE column round-trips this fine.
+  return d.toISOString().slice(0, 10);
+}
+
+function daysBetween(fromYmd: string, toYmd: string): number {
+  const a = Date.parse(`${fromYmd}T00:00:00Z`);
+  const b = Date.parse(`${toYmd}T00:00:00Z`);
+  return Math.round((b - a) / 86_400_000);
+}
