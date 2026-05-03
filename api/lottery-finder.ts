@@ -115,18 +115,21 @@ export default async function handler(
       });
       return;
     }
-    const { ticker, reload, cheapCallPm, mode, since, limit } = parsed.data;
+    const { ticker, reload, cheapCallPm, mode, date, at, limit } = parsed.data;
 
-    // Default `since` to ET-today midnight (in UTC). Trading day rolls
-    // in CT/ET, not UTC — so "today" must anchor on the ET calendar
-    // date or the feed goes empty after 7pm CT (= 00:00 UTC next day).
-    const etToday = getETDateStr(new Date());
-    const sinceTs = since ?? `${etToday}T00:00:00.000Z`;
+    // Bound the result set to one trading day. `date` defaults to
+    // ET-today; the trading day rolls in CT/ET, not UTC. We filter on
+    // the `date` column (which the cron stamps from ctx.today, also
+    // ET-anchored) — exact equality, no TZ-bound math required.
+    const targetDate = date ?? getETDateStr(new Date());
+
+    // `at` is the scrubber cutoff. When provided, only fires with
+    // trigger_time_ct ≤ at are returned. Sentinel for "no cutoff" is
+    // a far-future timestamp on the trading day so the SQL stays one
+    // shape regardless of param presence.
+    const cutoffTs = at ?? `${targetDate}T23:59:59.999Z`;
 
     const db = getDb();
-    // Build the WHERE clause via tagged-template fragments. We use a
-    // single SELECT with conditional NULL filters so any combination
-    // of params produces one round-trip.
     const rows = (await db`
       SELECT
         id, date, trigger_time_ct, entry_time_ct, option_chain_id,
@@ -149,12 +152,13 @@ export default async function handler(
         peak_ceiling_pct, minutes_to_peak,
         inserted_at, enriched_at
       FROM lottery_finder_fires
-      WHERE trigger_time_ct >= ${sinceTs}::timestamptz
+      WHERE date = ${targetDate}::date
+        AND trigger_time_ct <= ${cutoffTs}::timestamptz
         AND (${ticker ?? null}::text IS NULL OR underlying_symbol = ${ticker ?? ''})
         AND (${reload ?? null}::boolean IS NULL OR reload_tagged = ${reload ?? false})
         AND (${cheapCallPm ?? null}::boolean IS NULL OR cheap_call_pm_tagged = ${cheapCallPm ?? false})
         AND (${mode ?? null}::text IS NULL OR mode = ${mode ?? ''})
-      ORDER BY trigger_time_ct DESC
+      ORDER BY trigger_time_ct ASC
       LIMIT ${limit}
     `) as FireRow[];
 
@@ -236,7 +240,8 @@ export default async function handler(
     // is cheap; the per-call DB scan is one indexed query.
     setCacheHeaders(res, 0, 0);
     res.status(200).json({
-      since: sinceTs,
+      date: targetDate,
+      asOf: at ?? null,
       filters: { ticker, reload, cheapCallPm, mode },
       count: fires.length,
       fires,

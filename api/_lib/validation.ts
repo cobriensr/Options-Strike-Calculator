@@ -845,12 +845,18 @@ export type AnalysisResponse = z.infer<typeof analysisResponseSchema>;
 /**
  * Query params for GET /api/lottery-finder.
  *
- * Backs the LotteryFinder feed component (Phase 2 of the spec).
+ * Backs the LotteryFinder feed component + the date/time scrubber for
+ * historical replay (Phase 2 of the spec).
  *
- * - `since` defaults to "today midnight UTC" via the endpoint when
- *   omitted, so callers don't have to compute a date.
- * - `limit` is capped at 200 to bound payload size on the home page —
- *   today's full fire stream rarely exceeds that even on heavy days.
+ * - `date` (YYYY-MM-DD) bounds the result set to one trading day. The
+ *   endpoint computes the day's CT-midnight bounds in UTC. Defaults to
+ *   ET-today when omitted — keeps the live polling case cheap.
+ * - `at` is the scrubber's replay cutoff (ISO timestamp). Only fires
+ *   with `trigger_time_ct <= at` are returned. Mirrors the whale
+ *   anomaly endpoint pattern.
+ * - `limit` is capped at 200 — today's full fire stream rarely exceeds
+ *   that even on heavy days; one day of historical fires from the
+ *   archive is comfortable too.
  * - `ticker`, `reload`, `cheapCallPm`, `mode` map to the UI filter chips.
  */
 export const lotteryFinderQuerySchema = z.object({
@@ -869,7 +875,11 @@ export const lotteryFinderQuerySchema = z.object({
       v === 'true' ? true : v === 'false' ? false : undefined,
     ),
   mode: z.enum(['A_intraday_0DTE', 'B_multi_day_DTE1_3']).optional(),
-  since: z.string().datetime({ offset: true }).optional(),
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+    .optional(),
+  at: z.string().datetime({ offset: true }).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(100),
 });
 

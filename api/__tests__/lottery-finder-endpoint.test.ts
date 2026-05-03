@@ -88,7 +88,7 @@ describe('lottery-finder endpoint', () => {
     mockSql.mockResolvedValue([]);
   });
 
-  it('returns transformed fires with default since (today)', async () => {
+  it('returns transformed fires with default date (ET-today) and asOf=null', async () => {
     mockSql.mockResolvedValueOnce([ROW]);
 
     const req = mockRequest({ method: 'GET', query: {} });
@@ -97,12 +97,15 @@ describe('lottery-finder endpoint', () => {
 
     expect(res._status).toBe(200);
     const body = res._json as {
-      since: string;
+      date: string;
+      asOf: string | null;
       filters: Record<string, unknown>;
       count: number;
       fires: Array<Record<string, unknown>>;
     };
     expect(body.count).toBe(1);
+    expect(body.asOf).toBeNull();
+    expect(body.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(body.fires[0]).toMatchObject({
       id: 42,
       underlyingSymbol: 'SNDK',
@@ -122,7 +125,45 @@ describe('lottery-finder endpoint', () => {
         alertSeq: 2,
       },
     });
-    expect(body.since).toMatch(/^\d{4}-\d{2}-\d{2}T00:00:00\.000Z$/);
+  });
+
+  it('honors explicit date param + at scrubber cutoff', async () => {
+    mockSql.mockResolvedValueOnce([ROW]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-04-21', at: '2026-04-21T18:30:00.000Z' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { date: string; asOf: string | null };
+    expect(body.date).toBe('2026-04-21');
+    expect(body.asOf).toBe('2026-04-21T18:30:00.000Z');
+  });
+
+  it('rejects malformed date (not YYYY-MM-DD)', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '04/21/2026' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(400);
+    expect(res._json).toMatchObject({ error: 'invalid query' });
+  });
+
+  it('rejects malformed at (not ISO datetime with offset)', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { at: '14:30 PM' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(400);
   });
 
   it('coerces numeric DB strings to numbers and nullable fields to null', async () => {
