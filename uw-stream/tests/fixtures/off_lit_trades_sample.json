@@ -1,0 +1,21 @@
+{
+  "symbol": "SPY",
+  "price": "585.42",
+  "type": "off_lit",
+  "size": 1500,
+  "volume": 45200000,
+  "trade_settlement": "regular",
+  "trade_code": null,
+  "ext_hour_sold_codes": null,
+  "sale_cond_codes": null,
+  "executed_at": "2026-04-22T14:35:00Z",
+  "nbbo_bid": "585.40",
+  "nbbo_ask": "585.43",
+  "nbbo_bid_quantity": 800,
+  "nbbo_ask_quantity": 1200,
+  "sector": "ETF",
+  "next_earnings_date": null,
+  "avg30_volume": "75000000.0",
+  "issue_type": "ETF",
+  "marketcap": null
+}
