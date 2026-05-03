@@ -31,7 +31,10 @@ type DbOptionType = 'C' | 'P';
 
 interface FireRow {
   id: DbId;
-  date: string;
+  // neon serverless returns DATE columns as Date objects (not strings)
+  // unless `arrayMode`/`fullResults` is configured otherwise. Type
+  // accordingly and normalise via toIso() at the boundary.
+  date: DbTimestamp;
   trigger_time_ct: DbTimestamp;
   entry_time_ct: DbTimestamp;
   option_chain_id: string;
@@ -96,10 +99,7 @@ const toIso = (v: DbTimestamp): string =>
 const num = (v: DbNullableNumeric): number | null =>
   v == null ? null : Number(v);
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   const guarded = await guardOwnerOrGuestEndpoint(req, res, () => undefined);
   if (guarded) return;
 
@@ -164,14 +164,17 @@ export default async function handler(
 
     const fires = rows.map((r) => ({
       id: Number(r.id),
-      date: r.date.slice(0, 10),
+      date: toIso(r.date).slice(0, 10),
       triggerTimeCt: toIso(r.trigger_time_ct),
       entryTimeCt: toIso(r.entry_time_ct),
       optionChainId: r.option_chain_id,
       underlyingSymbol: r.underlying_symbol,
       optionType: r.option_type,
       strike: Number(r.strike),
-      expiry: typeof r.expiry === 'string' ? r.expiry.slice(0, 10) : toIso(r.expiry).slice(0, 10),
+      expiry:
+        typeof r.expiry === 'string'
+          ? r.expiry.slice(0, 10)
+          : toIso(r.expiry).slice(0, 10),
       dte: Number(r.dte),
 
       trigger: {

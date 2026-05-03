@@ -127,6 +127,28 @@ describe('lottery-finder endpoint', () => {
     });
   });
 
+  it('handles DATE column returned as a Date object (neon serverless default)', async () => {
+    // Production regression: neon-serverless returns DATE columns as
+    // Date objects, not strings. The endpoint was calling
+    // `r.date.slice(0, 10)` which threw "r.date.slice is not a
+    // function" on every prod request. toIso() at the boundary fixes
+    // it; this test pins the behavior so a future "type says string,
+    // why am I calling toIso?" cleanup doesn't regress.
+    const ROW_WITH_DATE_OBJ = {
+      ...ROW,
+      date: new Date('2026-05-01T00:00:00.000Z'),
+    };
+    mockSql.mockResolvedValueOnce([ROW_WITH_DATE_OBJ]);
+
+    const req = mockRequest({ method: 'GET', query: {} });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { fires: Array<{ date: string }> };
+    expect(body.fires[0]!.date).toBe('2026-05-01');
+  });
+
   it('honors explicit date param + at scrubber cutoff', async () => {
     mockSql.mockResolvedValueOnce([ROW]);
 
@@ -178,8 +200,13 @@ describe('lottery-finder endpoint', () => {
     expect(typeof fire.strike).toBe('number');
     expect((fire as { trigger: { askPct: unknown } }).trigger.askPct).toBe(0.7);
     // Nullable column → null after coercion (not NaN, not undefined)
-    expect((fire as { macro: { spxFlowDiff: unknown } }).macro.spxFlowDiff).toBeNull();
-    expect((fire as { outcomes: { realizedHard30mPct: unknown } }).outcomes.realizedHard30mPct).toBeNull();
+    expect(
+      (fire as { macro: { spxFlowDiff: unknown } }).macro.spxFlowDiff,
+    ).toBeNull();
+    expect(
+      (fire as { outcomes: { realizedHard30mPct: unknown } }).outcomes
+        .realizedHard30mPct,
+    ).toBeNull();
   });
 
   it('rejects malformed ticker query (not 1-8 uppercase letters)', async () => {
@@ -234,7 +261,10 @@ describe('lottery-finder endpoint', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    const body = res._json as { filters: Record<string, unknown>; count: number };
+    const body = res._json as {
+      filters: Record<string, unknown>;
+      count: number;
+    };
     expect(body.filters).toMatchObject({
       ticker: 'SNDK',
       reload: true,
