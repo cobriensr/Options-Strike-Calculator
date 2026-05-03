@@ -1,0 +1,16 @@
+{
+  "id": "8f8a2c3b-1234-4567-89ab-cdef01234567",
+  "underlying_symbol": "SNDK",
+  "option_chain": "SNDK260501C01175000",
+  "executed_at": 1777663500000,
+  "price": "0.55",
+  "size": 25,
+  "underlying_price": "1170.85",
+  "side": "ask",
+  "implied_volatility": "0.412",
+  "delta": "0.182",
+  "open_interest": 1450,
+  "canceled": false,
+  "exchange": "BATS",
+  "tags": ["sweep"]
+}

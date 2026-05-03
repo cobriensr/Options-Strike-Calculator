@@ -20,6 +20,7 @@ from connector import Connector
 from db import close_pool, init_pool
 from handlers.base import Handler
 from handlers.flow_alerts import FlowAlertsHandler
+from handlers.option_trades import OptionTradesHandler
 from health import run_server
 from logger_setup import log
 from router import Router
@@ -33,18 +34,27 @@ def _build_handlers(channels: list[str]) -> dict[str, Handler]:
     Raises if the configured channel set contains a channel we have no
     handler for — fail fast on misconfiguration rather than silently
     dropping every payload.
+
+    For per-ticker channels (currently only ``option_trades:<TICKER>``)
+    every entry points to the SAME handler instance so the underlying
+    queue, batch, and DB write loop are shared across all tickers.
     """
-    available: dict[str, Handler] = {
-        "flow-alerts": FlowAlertsHandler(),
-    }
+    flow_alerts = FlowAlertsHandler()
+    # Single shared handler instance for every option_trades:<TICKER>
+    # subscription — see OptionTradesHandler docstring for rationale.
+    option_trades = OptionTradesHandler()
+
     selected: dict[str, Handler] = {}
     for ch in channels:
-        if ch not in available:
+        if ch == "flow-alerts":
+            selected[ch] = flow_alerts
+        elif ch.startswith("option_trades:"):
+            selected[ch] = option_trades
+        else:
             raise RuntimeError(
                 f"WS_CHANNELS contains {ch!r} but no handler is registered. "
-                f"Available: {sorted(available)}"
+                "Supported: flow-alerts, option_trades:<TICKER>"
             )
-        selected[ch] = available[ch]
         state.channel(ch).subscribed = False
     return selected
 
@@ -72,10 +82,19 @@ async def _run() -> None:
         asyncio.create_task(connector.run(), name="connector"),
         asyncio.create_task(run_server(), name="health"),
     ]
+    # Spawn one drain task per UNIQUE handler instance — many channels
+    # can share one handler (e.g. every option_trades:<TICKER> entry
+    # points at the same OptionTradesHandler) so iterating over
+    # handlers.items() would spawn duplicate drains on the same queue.
+    seen_handlers: set[int] = set()
     for ch_name, handler in handlers.items():
+        if id(handler) in seen_handlers:
+            continue
+        seen_handlers.add(id(handler))
         tasks.append(
-            asyncio.create_task(handler.run(), name=f"handler:{ch_name}")
+            asyncio.create_task(handler.run(), name=f"handler:{handler.name}"),
         )
+        log.info("started handler drain", extra={"handler": handler.name, "first_channel": ch_name})
 
     # Install signal handlers for clean Railway shutdown. SIGTERM is
     # what Railway sends on deploy / restart; SIGINT is for local Ctrl-C.

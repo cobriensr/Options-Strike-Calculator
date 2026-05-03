@@ -4,9 +4,18 @@ Railway-deployed Python service that consumes the UnusualWhales websocket
 (`wss://api.unusualwhales.com/socket`) and writes streamed data to Neon
 Postgres in batches.
 
-Phase 1 ships the `flow-alerts` channel only. See
-`docs/superpowers/specs/uw-websocket-daemon-2026-05-02.md` for the full
-phased build plan and
+Currently subscribes to:
+
+- **`flow-alerts`** — global UW WS firehose of unusual options flow alerts.
+  Writes to `ws_flow_alerts` (DDL: `sql/001_ws_flow_alerts.sql`).
+- **`option_trades:<TICKER>`** — per-tick option trade stream for the
+  Lottery Finder ticker universe (~50 tickers). Writes to
+  `ws_option_trades` (DDL: `sql/002_ws_option_trades.sql`). One shared
+  handler instance services every per-ticker subscription.
+
+See `docs/superpowers/specs/uw-websocket-daemon-2026-05-02.md` for the
+phased build plan, `docs/superpowers/specs/lottery-finder-2026-05-02.md`
+for the option_trades consumer (Phase 1.4 cron), and
 `docs/superpowers/specs/uw-cron-to-websocket-migration-2026-05-02.md`
 for the cron retirement plan that depends on this service.
 
@@ -33,10 +42,20 @@ Single asyncio process, four components:
 
 ## Schema
 
-Phase 1 writes to a new table `ws_flow_alerts` (DDL in `sql/001_ws_flow_alerts.sql`).
-Raw fields only — derived values like `dte_at_alert`, `distance_pct`, etc.
-are computed at read time via the `ws_flow_alerts_enriched` view. This
-keeps the daemon dumb and the math centralised.
+The daemon writes to two tables:
+
+- `ws_flow_alerts` — flow-alerts channel (DDL: `sql/001_ws_flow_alerts.sql`).
+  Raw fields only; derived values like `dte_at_alert`, `distance_pct`
+  live in the `ws_flow_alerts_enriched` view so the math stays
+  re-runnable against historic rows.
+- `ws_option_trades` — `option_trades:<TICKER>` channels (DDL:
+  `sql/002_ws_option_trades.sql`). One row per OPRA print with side
+  classification, IV, delta, and OI at trade time. Input feed for the
+  Lottery Finder cron's v4 trigger detector.
+
+Both tables follow the same shape: typed columns for everything the
+daemon explicitly extracts plus a `raw_payload JSONB` column carrying
+the full original WS payload for forward-compat.
 
 The cron-fed `flow_alerts` table is **not touched**. Both will run in
 parallel during the soak window; cutover happens in a later phase per
@@ -44,19 +63,19 @@ the migration plan.
 
 ## Environment
 
-| Var                      | Required | Notes                                                  |
-| ------------------------ | -------- | ------------------------------------------------------ |
-| `DATABASE_URL`           | yes      | Same Neon connection used by `api/`                    |
-| `UW_API_KEY`             | yes      | Advanced-tier UW key (websocket access required)       |
-| `SENTRY_DSN`             | no       | Shared with sidecar. Events tagged `service=uw-stream` |
-| `PORT`                   | no       | Default 8080. Railway provides one.                    |
-| `LOG_LEVEL`              | no       | Default `INFO`                                         |
-| `WS_QUEUE_SIZE`          | no       | Default 50000                                          |
-| `WS_BATCH_SIZE`          | no       | Default 500 rows                                       |
-| `WS_BATCH_INTERVAL_MS`   | no       | Default 2000ms                                         |
-| `WS_BACKPRESSURE_POLICY` | no       | `drop_oldest` (default), `drop_newest`, or `block`     |
-| `WS_LOG_SAMPLE_RATE`     | no       | Default 0.001 (1 in 1000 messages logged)              |
-| `WS_CHANNELS`            | no       | Comma-separated. Default `flow-alerts`.                |
+| Var | Required | Notes |
+| --- | --- | --- |
+| `DATABASE_URL` | yes | Same Neon connection used by `api/` |
+| `UW_API_KEY` | yes | Advanced-tier UW key (websocket access required) |
+| `SENTRY_DSN` | no | Shared with sidecar. Events tagged `service=uw-stream` |
+| `PORT` | no | Default 8080. Railway provides one. |
+| `LOG_LEVEL` | no | Default `INFO` |
+| `WS_QUEUE_SIZE` | no | Default 50000 |
+| `WS_BATCH_SIZE` | no | Default 500 rows |
+| `WS_BATCH_INTERVAL_MS` | no | Default 2000ms |
+| `WS_BACKPRESSURE_POLICY` | no | `drop_oldest` (default), `drop_newest`, or `block` |
+| `WS_LOG_SAMPLE_RATE` | no | Default 0.001 (1 in 1000 messages logged) |
+| `WS_CHANNELS` | no | Comma-separated. Default `flow-alerts`. Shorthand `option_trades_lottery` expands to one `option_trades:<TICKER>` per Lottery Finder ticker (~50). |
 
 ## Local development
 
@@ -84,17 +103,20 @@ ruff check src/ tests/
 
 Railway auto-deploys on push when `uw-stream/**` files change
 (see `railway.toml`). Set env vars in the Railway dashboard before the
-first deploy. Run the SQL DDL once against Neon before deploying:
+first deploy. Run the SQL DDL once against Neon before deploying any
+new daemon channel — both files are idempotent (`CREATE TABLE IF NOT EXISTS`,
+`CREATE INDEX IF NOT EXISTS`) so re-runs are no-ops:
 
 ```bash
 psql "$DATABASE_URL" -f sql/001_ws_flow_alerts.sql
+psql "$DATABASE_URL" -f sql/002_ws_option_trades.sql
 ```
 
 ## Operational notes
 
 - **Resubscribe on reconnect.** UW's server forgets joins on disconnect.
   The connector re-sends every join frame after each reconnect.
-- **String-encoded numerics.** Every UW WS field that *could* be a number
+- **String-encoded numerics.** Every UW WS field that _could_ be a number
   arrives as a JSON string. Handlers cast at the boundary.
 - **`flow-alerts` uses a hyphen** even though the docs URL is
   `flow_alerts`. Subscribe with the hyphen.

@@ -50,3 +50,38 @@ class TestChannelAliases:
     def test_empty_channels_raises(self):
         with pytest.raises(ValueError, match="empty list"):
             _ = _settings(",").channels
+
+
+class TestLotteryShorthand:
+    """`option_trades_lottery` expands inline to one option_trades:<TICKER>
+    channel per ticker in the Lottery Finder universe."""
+
+    def test_shorthand_expands_to_per_ticker_channels(self):
+        channels = _settings("option_trades_lottery").channels
+        # Universe is V3 + EXTENDED (set-deduped) — ~50 tickers.
+        assert len(channels) >= 40
+        assert all(c.startswith("option_trades:") for c in channels)
+        # Sorted for stable order — assert SNDK, SPY, META all present.
+        tickers = [c.removeprefix("option_trades:") for c in channels]
+        assert "SNDK" in tickers
+        assert "SPY" in tickers
+        assert "META" in tickers
+
+    def test_sorted_for_stable_order(self):
+        channels = _settings("option_trades_lottery").channels
+        tickers = [c.removeprefix("option_trades:") for c in channels]
+        assert tickers == sorted(tickers)
+
+    def test_combines_with_flow_alerts(self):
+        channels = _settings("flow-alerts,option_trades_lottery").channels
+        assert channels[0] == "flow-alerts"
+        assert all(c.startswith("option_trades:") for c in channels[1:])
+
+    def test_explicit_ticker_dedupes_against_shorthand(self):
+        # If the user lists option_trades_lottery AND a per-ticker
+        # entry, the per-ticker one shouldn't appear twice.
+        channels = _settings(
+            "option_trades:SNDK,option_trades_lottery",
+        ).channels
+        sndk_count = sum(1 for c in channels if c == "option_trades:SNDK")
+        assert sndk_count == 1

@@ -22,6 +22,31 @@ _CHANNEL_ALIASES: dict[str, str] = {
     "flow_alerts": "flow-alerts",
 }
 
+# Lottery Finder universe — V3 (Mode A 0DTE intraday list) plus EXTENDED
+# (Mode B DTE 1-3 trend list). Mirrors LOTTERY_V3_TICKERS +
+# LOTTERY_EXTENDED_TICKERS in api/_lib/lottery-finder.ts; if either side
+# changes, both lists need updating. Kept verbatim as a Python frozenset
+# so the WS subscription set is stable regardless of dict iteration
+# order in older Pythons.
+_LOTTERY_TICKERS: frozenset[str] = frozenset(
+    {
+        # V3 (Mode A 0DTE intraday)
+        "USAR", "WMT", "STX", "SOUN", "RIVN", "TSM", "SNDK", "XOM", "WDC", "SQQQ",
+        "NDXP", "USO", "TNA", "RDDT", "SMCI", "TSLL", "SNOW", "TEAM", "RKLB", "SOFI",
+        "RUTW", "TSLA", "SOXS", "WULF", "SLV", "SMH", "UBER", "MSTR", "TQQQ", "RIOT",
+        "SOXL", "UNH", "QQQ", "RBLX", "SPY", "IWM",
+        # EXTENDED (Mode B DTE 1-3 trend; SPY/IWM dedupe via set)
+        "MU", "META", "AMD", "NVDA", "INTC", "MSFT", "AMZN",
+        "PLTR", "AVGO", "GOOGL", "GOOG", "COIN", "HOOD", "MRVL",
+        "ORCL", "AAPL",
+    },
+)
+
+# Shorthand sentinel — typing `option_trades_lottery` in WS_CHANNELS
+# expands to `option_trades:<TICKER>` for every ticker in the Lottery
+# Finder universe. Saves typing 50+ channel names in env config.
+_LOTTERY_SHORTHAND = "option_trades_lottery"
+
 
 class Settings(BaseSettings):
     """All environment variables required by uw-stream."""
@@ -64,13 +89,29 @@ class Settings(BaseSettings):
         Applies the known-aliases map so common typos like
         ``flow_alerts`` (URL-path style) get mapped to the canonical
         WS channel name ``flow-alerts``.
+
+        The shorthand ``option_trades_lottery`` expands inline to one
+        ``option_trades:<TICKER>`` channel per ticker in the Lottery
+        Finder universe so the env var doesn't need to enumerate 50+
+        channels by hand.
         """
         seen: set[str] = set()
         out: list[str] = []
         for raw in self.ws_channels.split(","):
             ch = raw.strip()
             ch = _CHANNEL_ALIASES.get(ch, ch)
-            if ch and ch not in seen:
+            if not ch:
+                continue
+            if ch == _LOTTERY_SHORTHAND:
+                # Sorted so the channel order in /metrics + logs is
+                # stable across daemon restarts.
+                for ticker in sorted(_LOTTERY_TICKERS):
+                    expanded = f"option_trades:{ticker}"
+                    if expanded not in seen:
+                        seen.add(expanded)
+                        out.append(expanded)
+                continue
+            if ch not in seen:
                 seen.add(ch)
                 out.append(ch)
         if not out:
