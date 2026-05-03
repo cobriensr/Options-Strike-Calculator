@@ -2976,4 +2976,146 @@ export const MIGRATIONS: Migration[] = [
       'on a fresh DB are no-ops via IF EXISTS.',
     statements: (sql) => [sql`DROP TABLE IF EXISTS gamma_squeeze_events CASCADE`],
   },
+  {
+    id: 108,
+    description:
+      'Create ws_flow_alerts table + ws_flow_alerts_enriched view for the ' +
+      'new uw-stream Railway daemon (see docs/superpowers/specs/' +
+      'uw-websocket-daemon-2026-05-02.md). Distinct from the cron-fed ' +
+      'flow_alerts table (#59) — the daemon writes the global UW WS ' +
+      'flow-alerts firehose (every ticker, every DTE) while the cron is ' +
+      'scoped to SPXW 0-1 DTE Index. The two coexist during the soak ' +
+      'window; cutover happens via a later migration once parity is ' +
+      'verified. Schema design choices: only raw payload fields are ' +
+      'stored as columns; derived signals (dte_at_alert, moneyness, ' +
+      'minute_of_day, ask_side_ratio, etc.) are computed at read time ' +
+      'via the ws_flow_alerts_enriched VIEW so the math stays re-runnable ' +
+      'against historic rows. The OCC option_chain symbol is preserved ' +
+      'verbatim alongside parsed strike/expiry/option_type so UWs ' +
+      '/option-contract/{symbol}/* REST endpoints still work. ws_alert_id ' +
+      '(the per-alert UUID UW emits in the WS payloads `id` field) is the ' +
+      'natural dedupe key — using (option_chain, created_at) like the ' +
+      'cron-fed table does would collapse distinct rules firing on the ' +
+      'same contract within the same millisecond.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS ws_flow_alerts (
+          id BIGSERIAL PRIMARY KEY,
+
+          -- WS-side identity. UW emits a per-alert UUID in the WS
+          -- payloads "id" field; we make it NOT NULL so the daemon
+          -- rejects malformed payloads up front.
+          ws_alert_id UUID NOT NULL,
+          rule_id UUID,
+          rule_name TEXT,
+
+          -- Contract identification.
+          ticker TEXT NOT NULL,
+          option_chain TEXT NOT NULL,
+          issue_type TEXT,
+          expiry DATE NOT NULL,
+          strike NUMERIC(10, 3) NOT NULL,
+          option_type CHAR(1) NOT NULL,
+          CONSTRAINT ws_flow_alerts_option_type_chk CHECK (option_type IN ('C', 'P')),
+
+          -- Timing. created_at is derived from WS executed_at (ms epoch → UTC TIMESTAMPTZ).
+          created_at TIMESTAMPTZ NOT NULL,
+          start_time TIMESTAMPTZ,
+          end_time TIMESTAMPTZ,
+          received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+          -- Pricing.
+          price NUMERIC(12, 4),
+          underlying_price NUMERIC(12, 4),
+          bid NUMERIC(12, 4),
+          ask NUMERIC(12, 4),
+
+          -- Flow stats.
+          volume INTEGER,
+          total_size INTEGER,
+          total_premium NUMERIC(18, 2),
+          total_ask_side_prem NUMERIC(18, 2),
+          total_bid_side_prem NUMERIC(18, 2),
+          open_interest INTEGER,
+          volume_oi_ratio NUMERIC(10, 4),
+          trade_count INTEGER,
+          expiry_count INTEGER,
+
+          -- Side breakdown.
+          ask_vol INTEGER,
+          bid_vol INTEGER,
+          no_side_vol INTEGER,
+          mid_vol INTEGER,
+          multi_vol INTEGER,
+          stock_multi_vol INTEGER,
+
+          -- Boolean flags.
+          has_multileg BOOLEAN,
+          has_sweep BOOLEAN,
+          has_floor BOOLEAN,
+          has_singleleg BOOLEAN,
+          all_opening_trades BOOLEAN,
+
+          -- Array fields kept as JSONB for flexibility.
+          upstream_condition_details JSONB,
+          exchanges JSONB,
+          trade_ids JSONB,
+
+          -- Misc.
+          url TEXT,
+          raw_payload JSONB NOT NULL
+        )
+      `,
+      sql`CREATE UNIQUE INDEX IF NOT EXISTS ws_flow_alerts_alert_id_uq ON ws_flow_alerts (ws_alert_id)`,
+      sql`CREATE INDEX IF NOT EXISTS ws_flow_alerts_chain_created_idx ON ws_flow_alerts (option_chain, created_at)`,
+      sql`CREATE INDEX IF NOT EXISTS ws_flow_alerts_created_at_idx ON ws_flow_alerts (created_at DESC)`,
+      sql`CREATE INDEX IF NOT EXISTS ws_flow_alerts_ticker_created_idx ON ws_flow_alerts (ticker, created_at DESC)`,
+      sql`CREATE INDEX IF NOT EXISTS ws_flow_alerts_rule_name_idx ON ws_flow_alerts (rule_name)`,
+      sql`CREATE INDEX IF NOT EXISTS ws_flow_alerts_expiry_strike_idx ON ws_flow_alerts (expiry, strike)`,
+      sql`
+        CREATE OR REPLACE VIEW ws_flow_alerts_enriched AS
+        SELECT
+          a.*,
+          (a.expiry - (a.created_at AT TIME ZONE 'America/Chicago')::date) AS dte_at_alert,
+          (a.strike - a.underlying_price) AS distance_from_spot,
+          CASE
+            WHEN a.underlying_price IS NULL OR a.underlying_price = 0 THEN NULL
+            ELSE (a.strike - a.underlying_price) / a.underlying_price
+          END AS distance_pct,
+          CASE
+            WHEN a.option_type = 'C' AND a.strike < a.underlying_price THEN TRUE
+            WHEN a.option_type = 'P' AND a.strike > a.underlying_price THEN TRUE
+            ELSE FALSE
+          END AS is_itm,
+          CASE
+            WHEN a.underlying_price IS NULL THEN 'unknown'
+            WHEN a.option_type = 'C' AND a.strike < a.underlying_price THEN 'itm'
+            WHEN a.option_type = 'C' AND a.strike > a.underlying_price THEN 'otm'
+            WHEN a.option_type = 'P' AND a.strike > a.underlying_price THEN 'itm'
+            WHEN a.option_type = 'P' AND a.strike < a.underlying_price THEN 'otm'
+            ELSE 'atm'
+          END AS moneyness,
+          (
+            EXTRACT(HOUR FROM a.created_at AT TIME ZONE 'America/Chicago') * 60
+            + EXTRACT(MINUTE FROM a.created_at AT TIME ZONE 'America/Chicago')
+          )::INTEGER AS minute_of_day,
+          (
+            EXTRACT(HOUR FROM a.created_at AT TIME ZONE 'America/Chicago') * 60
+            + EXTRACT(MINUTE FROM a.created_at AT TIME ZONE 'America/Chicago')
+            - 510
+          )::INTEGER AS session_elapsed_min,
+          EXTRACT(DOW FROM a.created_at AT TIME ZONE 'America/Chicago')::INTEGER AS day_of_week,
+          CASE
+            WHEN a.total_premium IS NULL OR a.total_premium = 0 THEN NULL
+            ELSE a.total_ask_side_prem / a.total_premium
+          END AS ask_side_ratio,
+          CASE
+            WHEN a.total_premium IS NULL OR a.total_premium = 0 THEN NULL
+            ELSE a.total_bid_side_prem / a.total_premium
+          END AS bid_side_ratio,
+          (COALESCE(a.total_ask_side_prem, 0) - COALESCE(a.total_bid_side_prem, 0)) AS net_premium
+        FROM ws_flow_alerts a
+      `,
+    ],
+  },
 ];

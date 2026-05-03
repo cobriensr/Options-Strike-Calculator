@@ -12,6 +12,16 @@ from typing import Literal
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
+# Forgiving canonicalization for WS_CHANNELS env vars. UW's flow-alerts
+# channel uses a HYPHEN even though the URL path and most other channel
+# names use underscores — almost everyone (including ourselves on
+# Railway 2026-05-03) types `flow_alerts` and gets an empty handler
+# table. Map the underscore form back to the canonical hyphen form so
+# either env-var spelling boots cleanly.
+_CHANNEL_ALIASES: dict[str, str] = {
+    "flow_alerts": "flow-alerts",
+}
+
 
 class Settings(BaseSettings):
     """All environment variables required by uw-stream."""
@@ -49,11 +59,17 @@ class Settings(BaseSettings):
 
     @property
     def channels(self) -> list[str]:
-        """Parse WS_CHANNELS into a deduped, trimmed list."""
+        """Parse WS_CHANNELS into a deduped, trimmed list.
+
+        Applies the known-aliases map so common typos like
+        ``flow_alerts`` (URL-path style) get mapped to the canonical
+        WS channel name ``flow-alerts``.
+        """
         seen: set[str] = set()
         out: list[str] = []
         for raw in self.ws_channels.split(","):
             ch = raw.strip()
+            ch = _CHANNEL_ALIASES.get(ch, ch)
             if ch and ch not in seen:
                 seen.add(ch)
                 out.append(ch)

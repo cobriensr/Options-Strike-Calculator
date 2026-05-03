@@ -18,6 +18,8 @@ export default [
       '.clone',
       'sidecar',
       'daemon',
+      'uw-stream',
+      'ml-sweep',
       'playwright-report',
       '.scannerwork',
     ],
