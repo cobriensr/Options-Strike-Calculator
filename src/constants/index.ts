@@ -340,6 +340,10 @@ export const POLL_INTERVALS = {
   ZERO_GAMMA: 60_000,
   /** Greek flow refresh (useGreekFlow) — matches the every-minute fetch-greek-flow-etf cron */
   GREEK_FLOW: 60_000,
+  /** Strike Battle Map refresh (useGexStrikeExpiry) — uw-stream daemon
+   *  pushes WS updates near-continuously; we sample at 30s for the
+   *  panel to keep render churn bounded without missing magnet shifts. */
+  STRIKE_BATTLE_MAP: 30_000,
   /** GEX per strike refresh (useGexPerStrike) */
   GEX_STRIKE: 60_000,
   /** GexTarget history refresh (useGexTarget) — matches the 1-min cron cadence */
