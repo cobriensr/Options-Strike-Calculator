@@ -3463,4 +3463,89 @@ export const MIGRATIONS: Migration[] = [
       sql`DROP INDEX IF EXISTS spx_candles_1m_compat_uniq`,
     ],
   },
+  {
+    id: 115,
+    description:
+      'Drop push_subscriptions and regime_events tables. The Futures ' +
+      'Gamma Playbook feature these tables backed (Web Push VAPID ' +
+      'subscriptions in #49, server-detected regime alerts in #50) was ' +
+      'removed from the app along with the monitor-regime-events cron, ' +
+      'the /api/push/* endpoints, and the SW push handlers. No remaining ' +
+      'reader writes to or reads from either table.',
+    statements: (sql) => [
+      sql`DROP TABLE IF EXISTS push_subscriptions`,
+      sql`DROP TABLE IF EXISTS regime_events`,
+    ],
+  },
+  {
+    id: 116,
+    description:
+      'Create dark_pool_prints table for the uw-stream daemon to write ' +
+      'every off_lit_trades WS payload from SPY and QQQ as a raw print. ' +
+      'Replaces the cron-fed dark_pool_levels (pre-aggregated, SPY-only, ' +
+      'static SPX×10 mapping baked into storage) with a row-per-print ' +
+      'shape that supports multi-symbol coverage (SPX/NDX synthesized at ' +
+      'read time via candle ratio in index_candles_1m) and ML feature ' +
+      'engineering. Schema captures every field UW emits in the ' +
+      'off_lit_trades payload — including slowly-varying symbol metadata ' +
+      '(sector, marketcap, avg30_volume, next_earnings_date, issue_type) ' +
+      '— per the user-decided full-fidelity capture preference. ' +
+      'Idempotency via UNIQUE (symbol, executed_at, price, size) so ' +
+      'daemon reconnect/replay does not duplicate prints. Lookup index on ' +
+      '(symbol, date, executed_at DESC) serves the read endpoint that ' +
+      'aggregates prints to per-level rollups for the dark pool panel. ' +
+      'Daemon ingest filters: SPY+QQQ only, session hours 08:30–15:00 CT, ' +
+      'drops extended_hours_trade and contingent_trade rows at the handler ' +
+      'boundary (per memory feedback_extended_hours.md and ' +
+      'feedback_contingent_trade_filter.md). See ' +
+      'docs/superpowers/specs/uw-websocket-daemon-2026-05-02.md sub-design ' +
+      'for full schema rationale.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS dark_pool_prints (
+          id                  BIGSERIAL     PRIMARY KEY,
+          date                DATE          NOT NULL,
+          symbol              TEXT          NOT NULL,
+          executed_at         TIMESTAMPTZ   NOT NULL,
+          price               NUMERIC(12,4) NOT NULL,
+          size                INTEGER       NOT NULL,
+          volume              BIGINT,
+          type                TEXT,
+          trade_settlement    TEXT,
+          trade_code          TEXT,
+          ext_hour_sold_codes TEXT,
+          sale_cond_codes     TEXT,
+          nbbo_bid            NUMERIC(12,4),
+          nbbo_ask            NUMERIC(12,4),
+          nbbo_bid_quantity   INTEGER,
+          nbbo_ask_quantity   INTEGER,
+          sector              TEXT,
+          next_earnings_date  DATE,
+          avg30_volume        NUMERIC(18,2),
+          issue_type          TEXT,
+          marketcap           NUMERIC(20,2),
+          premium             NUMERIC(18,2) NOT NULL,
+          ingested_at         TIMESTAMPTZ   NOT NULL DEFAULT now()
+        )
+      `,
+      sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_dark_pool_prints_dedup
+          ON dark_pool_prints (symbol, executed_at, price, size)
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_dark_pool_prints_symbol_date
+          ON dark_pool_prints (symbol, date, executed_at DESC)
+      `,
+    ],
+  },
+  {
+    id: 117,
+    description:
+      'Drop whale_anomalies table. The Whale Anomalies component (#94) ' +
+      'and its detect-whales/resolve-whales crons were removed from the ' +
+      'app. The whale_alerts table (migration #59) is preserved because ' +
+      'the separate Whale Positioning feature still reads from it via ' +
+      '/api/options-flow/whale-positioning and the fetch-whale-alerts cron.',
+    statements: (sql) => [sql`DROP TABLE IF EXISTS whale_anomalies`],
+  },
 ];
