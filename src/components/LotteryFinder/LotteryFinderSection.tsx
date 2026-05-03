@@ -36,8 +36,9 @@ const todayCt = (): string => {
   return fmt.format(new Date());
 };
 
-const formatTimeCT = (iso: string): string => {
-  return new Date(iso).toLocaleTimeString('en-US', {
+const formatTimeCT = (input: string | number | Date): string => {
+  const d = input instanceof Date ? input : new Date(input);
+  return d.toLocaleTimeString('en-US', {
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
@@ -66,17 +67,49 @@ export function LotteryFinderSection({
     mode: modeFilter,
   });
 
-  // Time-scrub bounds: span the day's fires (chronological).
+  // Time-scrub bounds are anchored to the regular-session window of
+  // the selected date (08:30 → 15:00 CT) — NOT to the displayed
+  // fires. Otherwise scrubbing inward shrinks the result set, which
+  // shrinks the bounds, which collapses the slider mid-drag and
+  // causes snap-back.
+  //
+  // CT 08:30 = UTC 13:30 during CDT, 14:30 during CST. We don't have
+  // a TZ helper that knows the date's DST state at this layer, so we
+  // pin to UTC anchors of the *date's* CT-session by computing the
+  // bounds via Intl.DateTimeFormat. Keeps the slider stable across
+  // DST transitions.
   const scrubBounds = useMemo(() => {
-    if (fires.length === 0) return null;
-    const sorted = [...fires].sort((a, b) =>
-      a.triggerTimeCt.localeCompare(b.triggerTimeCt),
-    );
-    return {
-      min: sorted[0]!.triggerTimeCt,
-      max: sorted.at(-1)!.triggerTimeCt,
+    // 08:30 CT and 15:00 CT on `date`, expressed as UTC instants.
+    const ctToUtc = (hh: number, mm: number): string => {
+      // Construct a wall-clock "date hh:mm" string and interpret it
+      // through the America/Chicago locale to recover the UTC instant.
+      const wall = new Date(`${date}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00`);
+      // Compute the offset between the wall-clock as-if-UTC and the
+      // wall-clock as-if-CT for the same date — that's the negative
+      // of CT's UTC offset on that day.
+      const ctParts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Chicago',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+      }).formatToParts(wall);
+      const lookup: Record<string, string> = {};
+      for (const p of ctParts) lookup[p.type] = p.value;
+      // wall - asCt = offset; offset is what we need to add to a wall
+      // clock CT instant to get UTC.
+      const asCt = Date.UTC(
+        Number(lookup.year),
+        Number(lookup.month) - 1,
+        Number(lookup.day),
+        Number(lookup.hour === '24' ? '0' : lookup.hour),
+        Number(lookup.minute),
+      );
+      const offsetMs = wall.getTime() - asCt;
+      // wall is CT hh:mm interpreted as UTC; add the offset to get the
+      // true UTC instant for that CT wall clock.
+      return new Date(wall.getTime() + offsetMs).toISOString();
     };
-  }, [fires]);
+    return { min: ctToUtc(8, 30), max: ctToUtc(15, 0) };
+  }, [date]);
 
   const isLive = scrubAt == null && date === todayCt();
   const dayFires = fires.length;
@@ -134,25 +167,23 @@ export function LotteryFinderSection({
             >
               {date === todayCt() ? 'Live' : 'Latest'}
             </button>
-            {scrubBounds && (
-              <input
-                type="range"
-                min={Date.parse(scrubBounds.min)}
-                max={Date.parse(scrubBounds.max)}
-                step={60_000}
-                value={(() => {
-                  const lo = Date.parse(scrubBounds.min);
-                  const hi = Date.parse(scrubBounds.max);
-                  const raw = scrubAt ? Date.parse(scrubAt) : hi;
-                  return Math.max(lo, Math.min(hi, raw));
-                })()}
-                onChange={(e) =>
-                  setScrubAt(new Date(Number(e.target.value)).toISOString())
-                }
-                className="w-48"
-                aria-label="Time scrubber"
-              />
-            )}
+            <input
+              type="range"
+              min={Date.parse(scrubBounds.min)}
+              max={Date.parse(scrubBounds.max)}
+              step={60_000}
+              value={(() => {
+                const lo = Date.parse(scrubBounds.min);
+                const hi = Date.parse(scrubBounds.max);
+                const raw = scrubAt ? Date.parse(scrubAt) : hi;
+                return Math.max(lo, Math.min(hi, raw));
+              })()}
+              onChange={(e) =>
+                setScrubAt(new Date(Number(e.target.value)).toISOString())
+              }
+              className="w-48"
+              aria-label="Time scrubber (08:30 → 15:00 CT)"
+            />
             {scrubAt && (
               <span className="font-mono text-xs text-neutral-300">
                 @ {formatTimeCT(scrubAt)} CT
@@ -161,7 +192,7 @@ export function LotteryFinderSection({
           </div>
           {fetchedAt != null && (
             <span className="ml-auto text-[10px] text-neutral-500">
-              updated {formatTimeCT(new Date(fetchedAt).toISOString())} CT
+              updated {formatTimeCT(fetchedAt)} CT
             </span>
           )}
         </div>
@@ -242,11 +273,19 @@ export function LotteryFinderSection({
           </div>
         ) : fires.length === 0 ? (
           <div className="rounded border border-neutral-800 bg-neutral-950 p-3 text-sm text-neutral-400">
-            No fires for {date}
-            {(reloadOnly || cheapCallPmOnly || modeFilter) &&
-              ' matching the active filters'}
-            . The detector emits during market hours; expect 0–5 cheap-call-PM
-            RE-LOAD fires per day (most days are zero).
+            {reloadOnly || cheapCallPmOnly || modeFilter ? (
+              <>
+                No fires on {date} matching the active filters. Try clearing
+                a filter chip above.
+              </>
+            ) : (
+              <>
+                No fires for {date}. Either the detector hasn&apos;t fired yet
+                today, or this date is before historical backfill. Most days
+                are genuinely zero — expect 0–5 cheap-call-PM RE-LOAD fires
+                per day in the universe.
+              </>
+            )}
           </div>
         ) : (
           <div className="space-y-2">

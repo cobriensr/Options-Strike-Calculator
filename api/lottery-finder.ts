@@ -8,7 +8,7 @@
  * realized-exit outcomes under each policy when the enrich cron has
  * filled them in.
  *
- * Query params: ?ticker= ?reload= ?cheapCallPm= ?mode= ?since= ?limit=
+ * Query params: ?date= ?at= ?ticker= ?reload= ?cheapCallPm= ?mode= ?limit=
  * Validated by `lotteryFinderQuerySchema` in api/_lib/validation.ts.
  */
 

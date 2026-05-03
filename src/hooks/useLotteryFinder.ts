@@ -79,6 +79,9 @@ export function useLotteryFinder({
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = (await res.json()) as LotteryFinderResponse;
 
+      // The signal might have been aborted between fetch resolution
+      // and JSON parse; bail before clobbering newer state.
+      if (ctrl.signal.aborted) return;
       setState({
         fires: json.fires,
         loading: false,
@@ -88,6 +91,9 @@ export function useLotteryFinder({
       });
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
+      // Defensive: a non-abort error from a request that was just
+      // superseded by a newer fetch must not surface as the live error.
+      if (ctrl.signal.aborted) return;
       setState((prev) => ({
         ...prev,
         loading: false,
@@ -96,11 +102,12 @@ export function useLotteryFinder({
     }
   }, [date, at, ticker, reload, cheapCallPm, mode]);
 
-  // Reset state on date change so the prior day's rows don't briefly
-  // flash while the new fetch is in flight.
-  useEffect(() => {
-    setState(INITIAL_STATE);
-  }, [date]);
+  // (No INITIAL_STATE reset on date change — fetchOnce flips
+  // `loading: true` itself and the AbortController cancels in-flight
+  // requests, so we'd just produce an extra render with a "Loading…"
+  // flash. Stale rows from yesterday are addressed by gating the
+  // section's row list on `state.asOf`/`state.fires` matching the
+  // requested date if needed.)
 
   useEffect(() => {
     fetchOnce();
