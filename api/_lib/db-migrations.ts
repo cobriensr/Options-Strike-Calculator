@@ -3442,4 +3442,25 @@ export const MIGRATIONS: Migration[] = [
             ADD COLUMN IF NOT EXISTS ndx_schwab_price NUMERIC`,
     ],
   },
+  {
+    id: 114,
+    description:
+      'Drop the spx_candles_1m compatibility view and the ' +
+      'spx_candles_1m_compat_uniq partial unique index that migration ' +
+      '#112 installed as bridge shims for unmigrated readers and the ' +
+      'pre-Phase-1b cron INSERT. Phases 1d-i through 1d-vi migrated all ' +
+      '7+ production readers (db-claude-tools, spx-candles, ' +
+      'analyze-context, anomaly-context, postgres-day-summary, ' +
+      'vix-divergence, journal/status) and all backfill scripts to read ' +
+      'from index_candles_1m directly with explicit WHERE symbol = ' +
+      "'SPX'. Phase 1b rewired the cron INSERT to use the new (symbol, " +
+      'date, timestamp) constraint directly, retiring the partial-index ' +
+      'workaround. Phase 1c added NDX flow to the same cron. After this ' +
+      'migration, index_candles_1m is the single source of truth for ' +
+      'index OHLC and no compat shims remain.',
+    statements: (sql) => [
+      sql`DROP VIEW IF EXISTS spx_candles_1m`,
+      sql`DROP INDEX IF EXISTS spx_candles_1m_compat_uniq`,
+    ],
+  },
 ];
