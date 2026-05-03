@@ -25,7 +25,9 @@ import { useGexStrikeExpiry } from '../../hooks/useGexStrikeExpiry';
 
 const mockHook = vi.mocked(useGexStrikeExpiry);
 
-function makeRow(overrides: Partial<GexStrikeExpiryRow> = {}): GexStrikeExpiryRow {
+function makeRow(
+  overrides: Partial<GexStrikeExpiryRow> = {},
+): GexStrikeExpiryRow {
   return {
     ticker: 'SPY',
     expiry: '2026-05-04',
@@ -78,7 +80,9 @@ function happyPathReturn(): UseGexStrikeExpiryReturn {
   // Pile customer flow into 723 (a magnet) so concentration triggers the
   // highlighted strike border in the render assertions.
   const spy: GexStrikeExpiryRow[] = [];
-  for (const strike of [715, 716, 717, 718, 719, 720, 721, 722, 723, 724, 725]) {
+  for (const strike of [
+    715, 716, 717, 718, 719, 720, 721, 722, 723, 724, 725,
+  ]) {
     const isMagnet = strike === 723;
     spy.push(
       makeRow({
@@ -263,5 +267,52 @@ describe('StrikeBattleMap', () => {
     // QQQ section still renders with its waiting-for-daemon placeholder.
     const qqq = screen.getByText(/Waiting for daemon to deliver QQQ/);
     expect(qqq).toBeInTheDocument();
+  });
+
+  it('renders the legend chips for flow / gamma / magnet', () => {
+    mockHook.mockReturnValue(happyPathReturn());
+    render(<StrikeBattleMap marketOpen={true} />);
+    expect(screen.getByText(/bullish flow/i)).toBeInTheDocument();
+    expect(screen.getByText(/bearish flow/i)).toBeInTheDocument();
+    expect(screen.getByText(/dealer long γ/i)).toBeInTheDocument();
+    expect(screen.getByText(/dealer short γ/i)).toBeInTheDocument();
+    // 'magnet' also appears in the SPY ticker header — assert at least one.
+    expect(screen.getAllByText(/magnet/i).length).toBeGreaterThan(0);
+  });
+
+  it('shows "LIVE" on the scrubber when on today during market hours', () => {
+    mockHook.mockReturnValue(happyPathReturn());
+    render(<StrikeBattleMap marketOpen={true} />);
+    // Scrubber default value=null + liveAvailable=true → label "LIVE".
+    const slider = screen.getByLabelText(/snapshot minute/i);
+    expect(slider).toBeInTheDocument();
+    // The scrubber renders the LIVE label as text in its left column.
+    expect(screen.getAllByText(/^live$/i).length).toBeGreaterThan(0);
+  });
+
+  it('passes a UTC ISO `at` timestamp to the hook when the user scrubs to a minute', () => {
+    mockHook.mockReturnValue(happyPathReturn());
+    render(<StrikeBattleMap marketOpen={true} />);
+    const slider = screen.getByLabelText(/snapshot minute/i);
+    fireEvent.change(slider, { target: { value: '600' } }); // 10:00 CT
+    const lastCall = mockHook.mock.calls.at(-1);
+    expect(lastCall).toBeDefined();
+    // Third positional arg is the `at` UTC ISO string.
+    const at = lastCall?.[2];
+    expect(typeof at).toBe('string');
+    expect(at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00\.000Z$/);
+  });
+
+  it('resets `at` to null when the LIVE button is clicked after scrubbing', () => {
+    mockHook.mockReturnValue(happyPathReturn());
+    render(<StrikeBattleMap marketOpen={true} />);
+    const slider = screen.getByLabelText(/snapshot minute/i);
+    fireEvent.change(slider, { target: { value: '600' } });
+    // After scrubbing, a LIVE *button* appears (separate from the LIVE
+    // text label). Clicking it should reset minute → null → at null.
+    const liveBtn = screen.getByRole('button', { name: /^live$/i });
+    fireEvent.click(liveBtn);
+    const lastCall = mockHook.mock.calls.at(-1);
+    expect(lastCall?.[2]).toBeNull();
   });
 });

@@ -33,7 +33,7 @@
  * (frozen one-shot). Mirrors the GreekFlowPanel scrubber pattern.
  */
 
-import { memo, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import {
   useGexStrikeExpiry,
   type GexStrikeExpiryResponse,
@@ -42,13 +42,15 @@ import {
 } from '../../hooks/useGexStrikeExpiry';
 import { SectionBox } from '../ui';
 import { DateInput } from '../ui/DateInput';
-import { getETToday } from '../../utils/timezone';
+import { ctWallClockToUtcIso, getETToday } from '../../utils/timezone';
 import {
   computeConcentration,
   nearestOtmStrikes,
   type ConcentrationLabel,
   type StrikeMagnitude,
 } from './concentration';
+import { Legend } from './Legend';
+import { MinuteScrubber } from './MinuteScrubber';
 import { StrikeRow } from './StrikeRow';
 
 interface StrikeBattleMapProps {
@@ -63,8 +65,7 @@ const DEFAULT_STRIKE_COUNT: StrikeCount = 10;
 function customerDirectionalFlow(row: GexStrikeExpiryRow): number {
   const callBull =
     (row.call_gamma_ask_vol ?? 0) - (row.call_gamma_bid_vol ?? 0);
-  const putBear =
-    (row.put_gamma_ask_vol ?? 0) - (row.put_gamma_bid_vol ?? 0);
+  const putBear = (row.put_gamma_ask_vol ?? 0) - (row.put_gamma_bid_vol ?? 0);
   return callBull - putBear;
 }
 
@@ -77,13 +78,36 @@ function StrikeBattleMapInner({ marketOpen }: StrikeBattleMapProps) {
   const [selectedDate, setSelectedDate] = useState<string>(today);
   const [strikeCount, setStrikeCount] =
     useState<StrikeCount>(DEFAULT_STRIKE_COUNT);
+  const [selectedMinuteCT, setSelectedMinuteCT] = useState<number | null>(null);
   const isLive = selectedDate === today;
   const effectiveMarketOpen = isLive ? marketOpen : false;
+  const liveAvailable = isLive && marketOpen;
+
+  // Reset the minute filter whenever the date changes — switching days
+  // should land on "latest available" for the new day rather than
+  // carrying the previous minute over (which would silently produce
+  // empty rows if the new day has different ts_minute coverage).
+  useEffect(() => {
+    setSelectedMinuteCT(null);
+  }, [selectedDate]);
+
+  // Convert the CT minute-of-day to a UTC ISO string for the API. DST-
+  // safe via ctWallClockToUtcIso(); null = "latest available" (live for
+  // today during market hours, EOD snapshot for backfilled days).
+  const at = useMemo(
+    () =>
+      selectedMinuteCT == null
+        ? null
+        : ctWallClockToUtcIso(selectedDate, selectedMinuteCT),
+    [selectedDate, selectedMinuteCT],
+  );
+
   // The endpoint reads `expiry`; for the Battle Map we always look at
   // the same-day 0DTE expiry, so expiry == selectedDate.
   const { data, loading, error } = useGexStrikeExpiry(
     effectiveMarketOpen,
     selectedDate,
+    at,
   );
 
   const headerRight = (
@@ -95,7 +119,7 @@ function StrikeBattleMapInner({ marketOpen }: StrikeBattleMapProps) {
           onClick={() => setSelectedDate(today)}
           className="text-secondary hover:text-primary border-edge cursor-pointer rounded border bg-transparent px-2 py-0.5 font-mono text-[10px]"
         >
-          LIVE
+          TODAY
         </button>
       )}
       <DateInput
@@ -109,17 +133,19 @@ function StrikeBattleMapInner({ marketOpen }: StrikeBattleMapProps) {
   );
 
   return (
-    <SectionBox
-      label="Strike Battle Map"
-      headerRight={headerRight}
-      collapsible
-    >
+    <SectionBox label="Strike Battle Map" headerRight={headerRight} collapsible>
       <p className="text-secondary mb-3 font-sans text-xs">
-        Per-strike customer directional flow (top bar, green/red) vs dealer
-        net gamma (bottom bar, blue/orange) for 0DTE SPY + QQQ. Magnet
-        strikes outlined in green are pin candidates. Toggle the strike
-        count to widen the band on volatile / event-driven sessions.
+        Per-strike customer directional flow vs dealer net gamma for 0DTE SPY +
+        QQQ. Magnets surface pin candidates; widen the strike band on volatile
+        sessions. Backfilled days show the EOD snapshot only — true per-minute
+        scrubbing kicks in on live + future days as the daemon writes history.
       </p>
+      <Legend />
+      <MinuteScrubber
+        value={selectedMinuteCT}
+        onChange={setSelectedMinuteCT}
+        liveAvailable={liveAvailable}
+      />
       <Body
         data={data}
         loading={loading}
@@ -187,8 +213,8 @@ function Body({
   if (!haveAny) {
     return (
       <div className="text-secondary font-sans text-xs">
-        No strike-level GEX yet. Daemon will populate as UW pushes WS
-        updates during market hours.
+        No strike-level GEX yet. Daemon will populate as UW pushes WS updates
+        during market hours.
       </div>
     );
   }
