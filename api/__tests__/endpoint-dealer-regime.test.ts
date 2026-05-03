@@ -23,6 +23,8 @@ vi.mock('../_lib/api-helpers.js', () => ({
   ),
 }));
 
+import { isMarketOpen, setCacheHeaders } from '../_lib/api-helpers.js';
+
 const mockSql = vi.fn();
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
@@ -61,6 +63,8 @@ function fakeRow(
 
 beforeEach(() => {
   vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+  vi.mocked(isMarketOpen).mockReturnValue(false);
+  vi.mocked(setCacheHeaders).mockClear();
   mockSql.mockReset();
 });
 
@@ -157,6 +161,27 @@ describe('GET /api/dealer-regime', () => {
     expect(res._status).toBe(200);
     const body = res._json as { rows: Array<{ ticker: string }> };
     expect(body.rows.map((r) => r.ticker)).toEqual(['SPX']);
+  });
+
+  // ── Cache headers ──────────────────────────────────────────
+
+  it('uses 30s edge cache during market hours', async () => {
+    vi.mocked(isMarketOpen).mockReturnValueOnce(true);
+    mockSql.mockResolvedValueOnce([fakeRow('SPX')]);
+    const req = mockRequest({ method: 'GET', query: {} });
+    const res = mockResponse();
+    await handler(req, res);
+    // setCacheHeaders(res, sMaxAgeSec, swrSec) — match positional args.
+    expect(setCacheHeaders).toHaveBeenCalledWith(res, 30, 60);
+  });
+
+  it('uses 300s edge cache off-hours', async () => {
+    vi.mocked(isMarketOpen).mockReturnValueOnce(false);
+    mockSql.mockResolvedValueOnce([fakeRow('SPX')]);
+    const req = mockRequest({ method: 'GET', query: {} });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(setCacheHeaders).toHaveBeenCalledWith(res, 300, 60);
   });
 
   // ── Error propagation ──────────────────────────────────────
