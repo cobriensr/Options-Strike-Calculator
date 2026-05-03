@@ -17,36 +17,38 @@ import { parsedOrFallback } from './numeric-coercion.js';
 export const GEX_STRIKE_EXPIRY_TICKERS = ['SPY', 'QQQ'] as const;
 export type GexStrikeExpiryTicker = (typeof GEX_STRIKE_EXPIRY_TICKERS)[number];
 
+type RawNumeric = string | number | null;
+
 interface RawRow {
   ticker: string;
   expiry: string | Date;
   strike: string | number;
   ts_minute: string | Date;
-  price: string | number | null;
-  call_gamma_oi: string | number | null;
-  put_gamma_oi: string | number | null;
-  call_charm_oi: string | number | null;
-  put_charm_oi: string | number | null;
-  call_vanna_oi: string | number | null;
-  put_vanna_oi: string | number | null;
-  call_gamma_vol: string | number | null;
-  put_gamma_vol: string | number | null;
-  call_charm_vol: string | number | null;
-  put_charm_vol: string | number | null;
-  call_vanna_vol: string | number | null;
-  put_vanna_vol: string | number | null;
-  call_gamma_ask_vol: string | number | null;
-  call_gamma_bid_vol: string | number | null;
-  put_gamma_ask_vol: string | number | null;
-  put_gamma_bid_vol: string | number | null;
-  call_charm_ask_vol: string | number | null;
-  call_charm_bid_vol: string | number | null;
-  put_charm_ask_vol: string | number | null;
-  put_charm_bid_vol: string | number | null;
-  call_vanna_ask_vol: string | number | null;
-  call_vanna_bid_vol: string | number | null;
-  put_vanna_ask_vol: string | number | null;
-  put_vanna_bid_vol: string | number | null;
+  price: RawNumeric;
+  call_gamma_oi: RawNumeric;
+  put_gamma_oi: RawNumeric;
+  call_charm_oi: RawNumeric;
+  put_charm_oi: RawNumeric;
+  call_vanna_oi: RawNumeric;
+  put_vanna_oi: RawNumeric;
+  call_gamma_vol: RawNumeric;
+  put_gamma_vol: RawNumeric;
+  call_charm_vol: RawNumeric;
+  put_charm_vol: RawNumeric;
+  call_vanna_vol: RawNumeric;
+  put_vanna_vol: RawNumeric;
+  call_gamma_ask_vol: RawNumeric;
+  call_gamma_bid_vol: RawNumeric;
+  put_gamma_ask_vol: RawNumeric;
+  put_gamma_bid_vol: RawNumeric;
+  call_charm_ask_vol: RawNumeric;
+  call_charm_bid_vol: RawNumeric;
+  put_charm_ask_vol: RawNumeric;
+  put_charm_bid_vol: RawNumeric;
+  call_vanna_ask_vol: RawNumeric;
+  call_vanna_bid_vol: RawNumeric;
+  put_vanna_ask_vol: RawNumeric;
+  put_vanna_bid_vol: RawNumeric;
 }
 
 export interface GexStrikeExpiryRow {
@@ -92,7 +94,7 @@ function toExpiry(value: string | Date): string {
   return String(value).slice(0, 10);
 }
 
-function toNullableNumber(value: string | number | null): number | null {
+function toNullableNumber(value: RawNumeric): number | null {
   if (value == null) return null;
   const parsed = typeof value === 'number' ? value : Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : null;
