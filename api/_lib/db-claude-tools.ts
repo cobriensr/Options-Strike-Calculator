@@ -42,7 +42,7 @@ export interface SpxCandle1m {
 }
 
 /**
- * Fetch 1-minute SPX candles from the spx_candles_1m table.
+ * Fetch 1-minute SPX candles from the index_candles_1m table (filtered to symbol='SPX').
  *
  * @param db - Neon query function
  * @param date - Trading date (YYYY-MM-DD)

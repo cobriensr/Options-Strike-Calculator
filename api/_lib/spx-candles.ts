@@ -1,12 +1,13 @@
 /**
  * SPX Intraday Candles (DB-first, UW live fallback)
  *
- * Primary path: reads pre-baked 1-minute OHLCV candles from the
- * `spx_candles_1m` Postgres table. The `fetch-spx-candles-1m` cron
- * populates that table every minute during market hours, translating
- * UW SPY candles to SPX prices via the 10× ratio before insert. The
- * backfill script `scripts/backfill-spx-candles-1m.mjs` seeds the last
- * 30 days of history.
+ * Primary path: reads pre-baked 1-minute OHLCV candles from
+ * `index_candles_1m` (filtered to symbol='SPX'). The
+ * `fetch-spx-candles-1m` cron populates that table every minute
+ * during market hours, translating UW SPY candles to SPX prices via
+ * the live SPX/SPY ratio before insert. The backfill script
+ * `scripts/backfill-spx-candles-1m.mjs` seeds the last 30 days of
+ * history.
  *
  * Fallback path: if the table has zero rows for the requested date
  * (e.g., transition window before the cron has run, or a missed date),
@@ -64,7 +65,7 @@ export interface SPXCandle {
   datetime: number; // epoch ms (start_time)
 }
 
-/** Row shape returned by the SELECT against spx_candles_1m. */
+/** Row shape returned by the SELECT against index_candles_1m. */
 interface SPXCandleDbRow {
   timestamp: string | Date;
   open: string | number;
@@ -90,7 +91,7 @@ function toEpochMs(value: string | Date): number {
 /**
  * Fetch regular-session SPX candles for the given date.
  *
- * DB-first: reads 1-minute rows from `spx_candles_1m`. If the table
+ * DB-first: reads 1-minute rows from `index_candles_1m` (SPX). If the table
  * has zero rows for the requested date (both regular and premarket),
  * falls back to the on-demand UW 5-minute endpoint as a degraded mode.
  *
@@ -121,7 +122,7 @@ export async function fetchSPXCandles(
 }> {
   const targetDate = date ?? todayUtcDateString();
 
-  // ── Primary: read from spx_candles_1m ──────────────────────
+  // ── Primary: read from index_candles_1m (SPX) ──────────────
   try {
     const sql = getDb();
     const rows = (await sql`
@@ -189,7 +190,7 @@ export async function fetchSPXCandles(
 
 /**
  * Live fallback: fetch 5-minute SPY candles from UW and translate to
- * SPX. Degraded mode — only used when `spx_candles_1m` is empty for the
+ * SPX. Degraded mode — only used when `index_candles_1m` (SPX) is empty for the
  * requested date. Kept on the 5m endpoint (not 1m) so existing test
  * fixtures continue to apply and so the fallback is clearly lower
  * fidelity than the primary path.
