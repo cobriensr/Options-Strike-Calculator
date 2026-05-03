@@ -99,6 +99,24 @@ export const greekFlowQuerySchema = z.object({
 export type GreekFlowQuery = z.infer<typeof greekFlowQuerySchema>;
 
 // ============================================================
+// /api/gex-strike-expiry
+// ============================================================
+
+/**
+ * Query params for GET /api/gex-strike-expiry — backs the Strike
+ * Battle Map panel. `expiry` is required because the underlying table
+ * has rows for many expiries; we always pin one. `at` is optional
+ * (used by the historical scrubber to snapshot mid-session).
+ */
+export const gexStrikeExpiryQuerySchema = z.object({
+  ticker: z.enum(['SPY', 'QQQ']),
+  expiry: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'expiry must be YYYY-MM-DD'),
+  at: z.string().datetime({ offset: true }).optional(),
+});
+
+export type GexStrikeExpiryQuery = z.infer<typeof gexStrikeExpiryQuerySchema>;
+
+// ============================================================
 // /api/iv-anomalies
 // ============================================================
 
