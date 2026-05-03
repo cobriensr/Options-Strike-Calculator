@@ -48,10 +48,11 @@ The daemon writes to two tables:
   Raw fields only; derived values like `dte_at_alert`, `distance_pct`
   live in the `ws_flow_alerts_enriched` view so the math stays
   re-runnable against historic rows.
-- `ws_option_trades` — `option_trades:<TICKER>` channels (DDL:
-  `sql/002_ws_option_trades.sql`). One row per OPRA print with side
-  classification, IV, delta, and OI at trade time. Input feed for the
-  Lottery Finder cron's v4 trigger detector.
+- `ws_option_trades` — `option_trades:<TICKER>` channels. One row per
+  OPRA print with side classification, IV, delta, and OI at trade time.
+  Input feed for the Lottery Finder cron's v4 trigger detector. Schema
+  lives in `api/_lib/db-migrations.ts` migration #110; the daemon
+  assumes the table exists (Vercel `migrate-db` provisions it).
 
 Both tables follow the same shape: typed columns for everything the
 daemon explicitly extracts plus a `raw_payload JSONB` column carrying
@@ -103,14 +104,16 @@ ruff check src/ tests/
 
 Railway auto-deploys on push when `uw-stream/**` files change
 (see `railway.toml`). Set env vars in the Railway dashboard before the
-first deploy. Run the SQL DDL once against Neon before deploying any
-new daemon channel — both files are idempotent (`CREATE TABLE IF NOT EXISTS`,
-`CREATE INDEX IF NOT EXISTS`) so re-runs are no-ops:
+first deploy.
 
-```bash
-psql "$DATABASE_URL" -f sql/001_ws_flow_alerts.sql
-psql "$DATABASE_URL" -f sql/002_ws_option_trades.sql
-```
+Schema is owned by `api/_lib/db-migrations.ts` and applied by Vercel's
+`migrate-db` on every api/ deploy. Before enabling a new channel on
+Railway, ship the corresponding api/ migration first so the table
+exists when the daemon starts writing.
+
+(The legacy `sql/001_ws_flow_alerts.sql` file is kept for historical
+reference only — the same DDL also lives as migration #108 in the
+api/ migration chain. Going forward, all schema changes live there.)
 
 ## Operational notes
 
