@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { StrikeBattleMap } from '../../components/StrikeBattleMap';
 import type {
   GexStrikeExpiryResponse,
@@ -205,6 +205,47 @@ describe('StrikeBattleMap', () => {
     const qqq = screen.getByTestId('battle-map-ticker-QQQ');
     // QQQ has equal flow on every OTM strike → 'smeared' label
     expect(qqq.textContent).toMatch(/smeared/);
+  });
+
+  it('toggles to 20 strikes when the user picks the wider view', () => {
+    // Extend the SPY fixture to 21 strikes (711-731) so the wider view
+    // has enough material to actually show 20 (10 calls + 10 puts) at
+    // spot 720.5.
+    const spy: GexStrikeExpiryRow[] = [];
+    for (let strike = 711; strike <= 731; strike++) {
+      spy.push(
+        makeRow({
+          ticker: 'SPY',
+          strike,
+          price: 720.5,
+          call_gamma_oi: strike > 720.5 ? 1000 : 0,
+          put_gamma_oi: strike < 720.5 ? -800 : 0,
+          call_gamma_ask_vol: strike > 720.5 ? 100 : 0,
+          put_gamma_ask_vol: strike < 720.5 ? 80 : 0,
+        }),
+      );
+    }
+    mockHook.mockReturnValue({
+      data: { SPY: makeResponse('SPY', spy), QQQ: null },
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    render(<StrikeBattleMap marketOpen={true} />);
+
+    // Default view: 10 strikes (716–725 around spot 720.5).
+    expect(screen.getByTestId('strike-row-716')).toBeInTheDocument();
+    expect(screen.getByTestId('strike-row-725')).toBeInTheDocument();
+    expect(screen.queryByTestId('strike-row-715')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('strike-row-726')).not.toBeInTheDocument();
+
+    // Click the "20" toggle in the radiogroup.
+    const wider = screen.getByRole('radio', { name: '20' });
+    fireEvent.click(wider);
+
+    // Now strikes 711–730 should be visible (10 calls + 10 puts).
+    expect(screen.getByTestId('strike-row-711')).toBeInTheDocument();
+    expect(screen.getByTestId('strike-row-730')).toBeInTheDocument();
   });
 
   it('does not render a "no data" placeholder when one ticker has rows and the other does not', () => {

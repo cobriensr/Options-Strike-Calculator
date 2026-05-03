@@ -56,7 +56,9 @@ interface StrikeBattleMapProps {
 }
 
 const TICKERS: readonly GexStrikeExpiryTicker[] = ['SPY', 'QQQ'] as const;
-const STRIKES_PER_SIDE = 5;
+const STRIKE_COUNT_OPTIONS = [10, 20, 30] as const;
+type StrikeCount = (typeof STRIKE_COUNT_OPTIONS)[number];
+const DEFAULT_STRIKE_COUNT: StrikeCount = 10;
 
 function customerDirectionalFlow(row: GexStrikeExpiryRow): number {
   const callBull =
@@ -73,6 +75,8 @@ function dealerNetGamma(row: GexStrikeExpiryRow): number {
 function StrikeBattleMapInner({ marketOpen }: StrikeBattleMapProps) {
   const today = getETToday();
   const [selectedDate, setSelectedDate] = useState<string>(today);
+  const [strikeCount, setStrikeCount] =
+    useState<StrikeCount>(DEFAULT_STRIKE_COUNT);
   const isLive = selectedDate === today;
   const effectiveMarketOpen = isLive ? marketOpen : false;
   // The endpoint reads `expiry`; for the Battle Map we always look at
@@ -84,6 +88,7 @@ function StrikeBattleMapInner({ marketOpen }: StrikeBattleMapProps) {
 
   const headerRight = (
     <div className="flex items-center gap-2">
+      <StrikeCountToggle value={strikeCount} onChange={setStrikeCount} />
       {!isLive && (
         <button
           type="button"
@@ -112,10 +117,48 @@ function StrikeBattleMapInner({ marketOpen }: StrikeBattleMapProps) {
       <p className="text-secondary mb-3 font-sans text-xs">
         Per-strike customer directional flow (top bar, green/red) vs dealer
         net gamma (bottom bar, blue/orange) for 0DTE SPY + QQQ. Magnet
-        strikes outlined in green are pin candidates.
+        strikes outlined in green are pin candidates. Toggle the strike
+        count to widen the band on volatile / event-driven sessions.
       </p>
-      <Body data={data} loading={loading} error={error} />
+      <Body
+        data={data}
+        loading={loading}
+        error={error}
+        strikeCount={strikeCount}
+      />
     </SectionBox>
+  );
+}
+
+interface StrikeCountToggleProps {
+  value: StrikeCount;
+  onChange: (n: StrikeCount) => void;
+}
+
+function StrikeCountToggle({ value, onChange }: StrikeCountToggleProps) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Strike count"
+      className="border-edge inline-flex overflow-hidden rounded border"
+    >
+      {STRIKE_COUNT_OPTIONS.map((opt) => (
+        <button
+          key={opt}
+          type="button"
+          role="radio"
+          aria-checked={value === opt}
+          onClick={() => onChange(opt)}
+          className={`cursor-pointer px-2 py-0.5 font-mono text-[10px] ${
+            value === opt
+              ? 'bg-surface text-primary'
+              : 'text-secondary hover:text-primary'
+          }`}
+        >
+          {opt}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -123,10 +166,12 @@ function Body({
   data,
   loading,
   error,
+  strikeCount,
 }: {
   data: Record<GexStrikeExpiryTicker, GexStrikeExpiryResponse | null>;
   loading: boolean;
   error: string | null;
+  strikeCount: StrikeCount;
 }) {
   const haveAny = TICKERS.some((t) => data[t]?.rows.length);
   if (error && !haveAny) {
@@ -150,7 +195,12 @@ function Body({
   return (
     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
       {TICKERS.map((ticker) => (
-        <TickerSection key={ticker} ticker={ticker} payload={data[ticker]} />
+        <TickerSection
+          key={ticker}
+          ticker={ticker}
+          payload={data[ticker]}
+          strikeCount={strikeCount}
+        />
       ))}
     </div>
   );
@@ -159,10 +209,14 @@ function Body({
 interface TickerSectionProps {
   ticker: GexStrikeExpiryTicker;
   payload: GexStrikeExpiryResponse | null;
+  strikeCount: StrikeCount;
 }
 
-function TickerSection({ ticker, payload }: TickerSectionProps) {
-  const view = useMemo(() => buildTickerView(payload), [payload]);
+function TickerSection({ ticker, payload, strikeCount }: TickerSectionProps) {
+  const view = useMemo(
+    () => buildTickerView(payload, strikeCount),
+    [payload, strikeCount],
+  );
 
   if (view == null) {
     return (
@@ -227,6 +281,7 @@ interface TickerView {
 
 function buildTickerView(
   payload: GexStrikeExpiryResponse | null,
+  strikeCount: StrikeCount,
 ): TickerView | null {
   if (payload == null) return null;
   const all = payload.rows;
@@ -236,7 +291,9 @@ function buildTickerView(
   const spot = all.find((r) => r.price != null)?.price ?? null;
   if (spot == null || !Number.isFinite(spot)) return null;
 
-  const { calls, puts } = nearestOtmStrikes(all, spot, STRIKES_PER_SIDE);
+  // strikeCount is the total visible strikes (calls + puts), split evenly.
+  const perSide = Math.floor(strikeCount / 2);
+  const { calls, puts } = nearestOtmStrikes(all, spot, perSide);
   // Display order: puts first (descending strike), then calls (ascending),
   // matching standard option-chain visual convention.
   const ordered = [...puts, ...calls];
