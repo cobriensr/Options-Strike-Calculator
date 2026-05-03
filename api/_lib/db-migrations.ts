@@ -3313,4 +3313,71 @@ export const MIGRATIONS: Migration[] = [
             WHERE enriched_at IS NULL`,
     ],
   },
+  {
+    id: 111,
+    description:
+      'Create ws_gex_strike_expiry table for the uw-stream daemon to write ' +
+      'the UW WebSocket `gex_strike_expiry:<TICKER>` channel — per-strike, ' +
+      'per-expiry GEX (gamma / charm / vanna by OI, vol, ask-vol, bid-vol) ' +
+      'updated as fast as UW recomputes them. This is the data source for ' +
+      'the new Strike Battle Map panel (Phase 1 of docs/superpowers/specs/' +
+      'strike-battle-map-2026-05-03.md): the panel renders the top OTM 0DTE ' +
+      'strikes for SPY + QQQ with customer dir delta flow above the line ' +
+      'and dealer net gamma below — so magnets (pin candidates) and ' +
+      'amplifiers (cascade risk) are visible in one view. Schema notes: ' +
+      "values are stored as NUMERIC because UW emits them as JSON strings " +
+      "in scientific-ish notation that Decimal/Number.parseFloat handle " +
+      'safely; raw_payload is kept as JSONB for forward-compat against ' +
+      'channel schema additions. The natural dedupe key is (ticker, expiry, ' +
+      'strike, ts_minute) — UW restates aggregated GEX intraday (same root ' +
+      'cause as the vega_flow_etf restatement we hit on 2026-05-01) so this ' +
+      'table is UPSERTed on every WS push with last-write-wins per minute. ' +
+      'Two indexes: ticker+expiry+ts (panel queries) and ticker+strike+ts ' +
+      '(strike-history scrub).',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS ws_gex_strike_expiry (
+          id                  BIGSERIAL PRIMARY KEY,
+          ticker              TEXT        NOT NULL,
+          expiry              DATE        NOT NULL,
+          strike              NUMERIC(12, 4) NOT NULL,
+          ts_minute           TIMESTAMPTZ NOT NULL,
+          price               NUMERIC,
+          call_gamma_oi       NUMERIC,
+          put_gamma_oi        NUMERIC,
+          call_charm_oi       NUMERIC,
+          put_charm_oi        NUMERIC,
+          call_vanna_oi       NUMERIC,
+          put_vanna_oi        NUMERIC,
+          call_gamma_vol      NUMERIC,
+          put_gamma_vol       NUMERIC,
+          call_charm_vol      NUMERIC,
+          put_charm_vol       NUMERIC,
+          call_vanna_vol      NUMERIC,
+          put_vanna_vol       NUMERIC,
+          call_gamma_ask_vol  NUMERIC,
+          call_gamma_bid_vol  NUMERIC,
+          put_gamma_ask_vol   NUMERIC,
+          put_gamma_bid_vol   NUMERIC,
+          call_charm_ask_vol  NUMERIC,
+          call_charm_bid_vol  NUMERIC,
+          put_charm_ask_vol   NUMERIC,
+          put_charm_bid_vol   NUMERIC,
+          call_vanna_ask_vol  NUMERIC,
+          call_vanna_bid_vol  NUMERIC,
+          put_vanna_ask_vol   NUMERIC,
+          put_vanna_bid_vol   NUMERIC,
+          raw_payload         JSONB,
+          received_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+          UNIQUE (ticker, expiry, strike, ts_minute)
+        )
+      `,
+      // Panel queries: "all strikes for ticker X on expiry Y, latest minute"
+      sql`CREATE INDEX IF NOT EXISTS ws_gex_strike_expiry_ticker_expiry_ts_idx
+            ON ws_gex_strike_expiry (ticker, expiry, ts_minute DESC)`,
+      // Strike-history scrub: "this strike across the whole day"
+      sql`CREATE INDEX IF NOT EXISTS ws_gex_strike_expiry_ticker_strike_ts_idx
+            ON ws_gex_strike_expiry (ticker, strike, ts_minute DESC)`,
+    ],
+  },
 ];

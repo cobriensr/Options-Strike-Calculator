@@ -281,6 +281,18 @@ Per the `unusual-whales-api` skill's "API quirks — value restatement" section:
 - Plan doc updates (this file) for any deviation from the file list above — keep this doc as the durable handoff if context is lost mid-build.
 - Each phase commits in stages: (a) daemon handler + table + tests, (b) read endpoint + tests, (c) frontend + tests, (d) wire-up.
 
+## Prerequisite — review zero-gamma logic before Phase 2
+
+The Dealer Regime classifier in Phase 2 reads from `/api/zero-gamma`. Before that classifier ships, audit the existing zero-gamma computation for correctness:
+
+- Locate the cron + SQL that populates the table feeding `/api/zero-gamma` (likely `api/cron/compute-zero-gamma.ts` per the existing cron schedule).
+- Verify the methodology: zero-gamma flip should be the price level where dealer net gamma crosses zero (cumulative call gamma + put gamma sums to zero across all strikes for the relevant expiry universe).
+- Cross-check a few historical days against SpotGamma TRACE's published zero-gamma — they should agree within ~0.2–0.5% on most days. Larger persistent divergence indicates a methodology bug.
+- Confirm the OI vs volume basis matches what the Dealer Regime tile expects: OI-based zero-gamma is the structural level (slow-moving), volume-based is the intraday level (faster-moving). Document which is exposed by the endpoint and pick one consistently for the tile.
+- If the audit surfaces a bug, fix it before Phase 2. Track as a separate commit in the same spec branch.
+
+This audit is its own scoped task — likely 1–2 hours. Block Phase 2 entry on it passing.
+
 ## Risks and rollbacks
 
 - **Daemon can't keep up** — `gex_strike_expiry` is high-frequency. Mitigations: batched flush, last-write-wins per minute, drop-oldest backpressure if queue depth ever exceeds a threshold (matches existing pattern). Rollback: stop subscribing to the channel; the read endpoint returns empty; frontend gracefully renders empty state.
