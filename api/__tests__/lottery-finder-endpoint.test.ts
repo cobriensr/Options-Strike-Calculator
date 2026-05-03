@@ -162,6 +162,7 @@ describe('lottery-finder endpoint', () => {
     await handler(req, res);
 
     expect(res._status).toBe(400);
+    expect(res._json).toMatchObject({ error: 'invalid query' });
   });
 
   it('caps limit at 200', async () => {

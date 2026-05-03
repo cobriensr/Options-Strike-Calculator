@@ -21,6 +21,7 @@ import {
   setCacheHeaders,
 } from './_lib/api-helpers.js';
 import { lotteryFinderQuerySchema } from './_lib/validation.js';
+import { getETDateStr } from '../src/utils/timezone.js';
 
 type DbId = number | string;
 type DbNumeric = string | number;
@@ -116,10 +117,11 @@ export default async function handler(
     }
     const { ticker, reload, cheapCallPm, mode, since, limit } = parsed.data;
 
-    // Default `since` to today midnight UTC — the lottery feed is
-    // intraday-focused and stale yesterday-rows would clutter the UI.
-    const sinceTs =
-      since ?? `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`;
+    // Default `since` to ET-today midnight (in UTC). Trading day rolls
+    // in CT/ET, not UTC — so "today" must anchor on the ET calendar
+    // date or the feed goes empty after 7pm CT (= 00:00 UTC next day).
+    const etToday = getETDateStr(new Date());
+    const sinceTs = since ?? `${etToday}T00:00:00.000Z`;
 
     const db = getDb();
     // Build the WHERE clause via tagged-template fragments. We use a
@@ -228,10 +230,11 @@ export default async function handler(
       insertedAt: toIso(r.inserted_at),
     }));
 
-    // 30s cache — matches the recommended client poll cadence in the
-    // spec. The hook can opportunistically refresh more often without
-    // hitting the DB on every poll.
-    setCacheHeaders(res, 30, 30);
+    // No CDN cache — the feed is an alert surface and the UI polls
+    // every 30s. Caching at the edge means most polls land on a stale
+    // copy and never see a just-inserted fire. The bot-protected GET
+    // is cheap; the per-call DB scan is one indexed query.
+    setCacheHeaders(res, 0, 0);
     res.status(200).json({
       since: sinceTs,
       filters: { ticker, reload, cheapCallPm, mode },

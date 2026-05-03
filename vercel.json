@@ -215,6 +215,7 @@
     "api/cron/curate-lessons.ts": { "maxDuration": 780 },
     "api/cron/build-features.ts": { "maxDuration": 300 },
     "api/cron/backfill-futures-gaps.ts": { "maxDuration": 800 },
+    "api/cron/detect-lottery-fires.ts": { "maxDuration": 60 },
     "api/trace-live-analyze.ts": {
       "maxDuration": 780,
       "includeFiles": ".claude/skills/**/SKILL.md"

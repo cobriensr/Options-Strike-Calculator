@@ -51,7 +51,10 @@ interface TickRow {
   option_chain: string;
   option_type: 'C' | 'P';
   strike: DbNumeric;
-  expiry: DbTimestamp;
+  // expiry is selected as `expiry::text` so the wire value is always a
+  // YYYY-MM-DD string, bypassing any driver-side Date<->TIMESTAMPTZ
+  // round-trip that could shift the date by a TZ offset.
+  expiry: string;
   executed_at: DbTimestamp;
   price: DbNumeric;
   size: number;
@@ -67,7 +70,8 @@ interface ChainGroup {
   optionChain: string;
   optionType: 'C' | 'P';
   strike: number;
-  expiry: Date;
+  // YYYY-MM-DD string (read from SQL as ::text — see TickRow.expiry).
+  expiry: string;
   ticks: OptionTradeTick[];
   oi: number;
 }
@@ -145,9 +149,12 @@ export default withCronInstrumentation(
     const db = getDb();
 
     // Pull every tick in the scan window, ordered for chain-grouping.
+    // expiry is cast to ::text so the wire value is a stable YYYY-MM-DD
+    // string — bypasses any driver-side Date<->TZ round-trip that could
+    // shift the date by an offset.
     const rows = (await db`
       SELECT
-        ticker, option_chain, option_type, strike, expiry,
+        ticker, option_chain, option_type, strike, expiry::text AS expiry,
         executed_at, price, size, underlying_price, side,
         implied_volatility, delta, open_interest
       FROM ws_option_trades
@@ -176,7 +183,7 @@ export default withCronInstrumentation(
           optionChain: r.option_chain,
           optionType: r.option_type,
           strike: Number(r.strike),
-          expiry: new Date(r.expiry),
+          expiry: r.expiry,
           ticks: [],
           oi: 0,
         };
@@ -187,7 +194,9 @@ export default withCronInstrumentation(
         optionChain: r.option_chain,
         optionType: r.option_type,
         strike: Number(r.strike),
-        expiry: new Date(r.expiry),
+        // OptionTradeTick.expiry is typed as Date — the detector uses it
+        // for parity with the parquet shape; a UTC midnight Date matches.
+        expiry: new Date(`${r.expiry}T00:00:00Z`),
         price: Number(r.price),
         size: r.size,
         underlyingPrice:
@@ -220,12 +229,12 @@ export default withCronInstrumentation(
         continue;
       }
 
-      // DTE is computed from the trade-date (ET) of the first tick. The
-      // ws_option_trades scan window is 7 min so all ticks share the
-      // same date in practice; using the first tick keeps it cheap.
+      // DTE is computed in ET. ctx.today is ET YYYY-MM-DD from cronGuard;
+      // g.expiry is the raw YYYY-MM-DD string from `expiry::text` so no
+      // driver-side TZ round-trip can shift the date.
       const firstTick = g.ticks[0]!;
-      const tradeDateStr = ctx.today; // ET YYYY-MM-DD from cronGuard
-      const expiryStr = isoDate(g.expiry);
+      const tradeDateStr = ctx.today;
+      const expiryStr = g.expiry;
       const dte = daysBetween(tradeDateStr, expiryStr);
 
       const fires = detectChainFires(g.ticks, g.oi, dte);
@@ -248,7 +257,20 @@ export default withCronInstrumentation(
       if (inUniverse.length === 0) continue;
 
       for (const rec of inUniverse) {
-        const macro = await fetchMacroSnapshot(db, rec, firstTick.executedAt);
+        // A transient flow_data / spot_exposures issue must not drop
+        // the fire — macro is display-only (per spec Appendix A), so
+        // fall back to EMPTY_MACRO and continue. The fire itself is
+        // the load-bearing record.
+        let macro: MacroSnapshot;
+        try {
+          macro = await fetchMacroSnapshot(db, rec, firstTick.executedAt);
+        } catch (macroErr) {
+          ctx.logger.warn(
+            { err: macroErr, optionChain: rec.optionChainId },
+            'detect-lottery-fires macro snapshot failed; using EMPTY_MACRO',
+          );
+          macro = EMPTY_MACRO;
+        }
         const result = (await db`
           INSERT INTO lottery_finder_fires (
             date, trigger_time_ct, entry_time_ct, option_chain_id,
@@ -451,11 +473,6 @@ async function fetchMacroSnapshot(
         : null,
     gex_strike_actual_strike: strikeRow ? Number(strikeRow.strike) : null,
   };
-}
-
-function isoDate(d: Date): string {
-  // YYYY-MM-DD in UTC — Postgres DATE column round-trips this fine.
-  return d.toISOString().slice(0, 10);
 }
 
 function daysBetween(fromYmd: string, toYmd: string): number {

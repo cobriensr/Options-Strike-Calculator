@@ -230,6 +230,39 @@ describe('detect-lottery-fires handler', () => {
     expect(mockSql).toHaveBeenCalledTimes(1);
   });
 
+  it('continues with EMPTY_MACRO when the macro snapshot lookup throws', async () => {
+    // Mock sequence: tick SELECT succeeds → flow_data REJECTS → insert
+    // still happens because the cron catches macro errors. The other
+    // two parallel macro queries are scheduled but the .then chain on
+    // flow_data rejects first inside Promise.all, so we only need one
+    // mocked query to drive the failure path.
+    mockSql
+      .mockResolvedValueOnce(fireableSndkStream())
+      .mockRejectedValueOnce(new Error('flow_data ECONNRESET'))
+      // Promise.all evaluates all three macro queries in parallel; the
+      // remaining two are still consumed even though Promise.all
+      // already short-circuited via the rejection.
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 99 }]); // insert proceeds with EMPTY_MACRO
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // Fire still landed in the table — macro is display-only so a
+    // transient flow_data outage must not drop alerts.
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 1,
+      totalFires: 1,
+      inserted: 1,
+    });
+  });
+
   it('honors ON CONFLICT (returns 0 inserted when DB returns no rows)', async () => {
     mockSql
       .mockResolvedValueOnce(fireableSndkStream())
