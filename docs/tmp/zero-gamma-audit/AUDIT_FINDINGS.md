@@ -40,12 +40,12 @@ For a regime indicator (rather than a tradeable level), this approximation is ac
 
 Plot: `docs/tmp/zero-gamma-audit/netgamma_trajectory.png`. Per-ticker `net_gamma_at_spot` over the trailing 14 days, every 5-min cron tick, color-coded by sign (green = positive, red = negative).
 
-| Ticker | Rows | Positive | Negative | Sign-flips | ZG distance avg from spot |
-|---|---:|---:|---:|---:|---:|
-| SPX | 775 | 437 (56%) | 337 (43%) | 7 | −0.34% |
-| SPY | 271 | 163 (60%) | 108 (40%) | 7 | −0.65% |
-| QQQ | 271 | 227 (84%) | 44 (16%) | 11 | −0.81% |
-| NDX | 259 | 245 (95%) | 14 (5%) | 14 | −0.77% |
+| Ticker | Rows |  Positive |  Negative | Sign-flips | ZG distance avg from spot |
+| ------ | ---: | --------: | --------: | ---------: | ------------------------: |
+| SPX    |  775 | 437 (56%) | 337 (43%) |          7 |                    −0.34% |
+| SPY    |  271 | 163 (60%) | 108 (40%) |          7 |                    −0.65% |
+| QQQ    |  271 | 227 (84%) |  44 (16%) |         11 |                    −0.81% |
+| NDX    |  259 | 245 (95%) |   14 (5%) |         14 |                    −0.77% |
 
 Reads:
 
@@ -56,26 +56,32 @@ Reads:
 
 This rebuts the original Concern #2 ("net γ at spot is consistently positive"). Closing it as not-a-bug.
 
-It also softens Concern #1: even without formally verifying UW's sign convention against their docs, the produced distribution shape looks like real dealer-gamma data — sign-flips with reasonable cadence, distance-from-spot in the right ballpark. The convention is at minimum *consistent enough* to drive a regime classifier, even if the exact sign tag (dealer-perspective vs directional) isn't formally documented.
+It also softens Concern #1: even without formally verifying UW's sign convention against their docs, the produced distribution shape looks like real dealer-gamma data — sign-flips with reasonable cadence, distance-from-spot in the right ballpark. The convention is at minimum _consistent enough_ to drive a regime classifier, even if the exact sign tag (dealer-perspective vs directional) isn't formally documented.
 
 ## MEDIUM concerns — recommended but no longer blocking Phase 2
 
-### Concern 1 — Sign convention is unverified (downgraded from HIGH)
+### Concern 1 — Sign convention CLOSED — interpretation #1 (dealer-side signed) confirmed (2026-05-03)
 
-`strike_exposures` per-row sign pattern: `call_gamma_oi` is always non-negative across the sample (145/145 SPX, 30/30 SPY, 29/29 QQQ rows). `put_gamma_oi` is always non-positive (130/130 SPX, 28/28 SPY, 26/26 QQQ). Per-strike call magnitude is 2–15× larger than put magnitude depending on ticker.
+**Resolution via SpotGamma TRACE spot-check on 2026-05-01 09:15 CT capture:**
 
-The cron sums these as `gamma = call_gamma_oi + put_gamma_oi` and treats the result as dealer net gamma at strike. The 14-day telemetry shows the SUM of these — `net_gamma_at_spot` — does flip sign on the appropriate cadence, so the methodology produces correct-shaped output regardless of how UW signs the per-leg values. The question is now just **what does the sign tag actually mean** so the Phase 2 regime classifier labels regimes correctly.
+| Read | TRACE | Our DB |
+| --- | --- | --- |
+| Time | 2026-05-01 09:15 CT (= 14:15 UTC) | `2026-05-01T14:14:14.270Z` |
+| Spot | ~7266 | 7270 |
+| Heatmap pixel at spot | Deep blue (clear +γ zone) | — |
+| GEX-by-Strike sidebar near spot | +1.7B + +1.7B above; −537M / −545M / −726M below; kernel-weighted ≈ +1.5B | — |
+| Our `net_gamma_at_spot` | — | **+3.57B (positive)** |
 
-Two interpretations are consistent with the data:
+Both signs agree. TRACE shows dealers long γ; our value is positive. Interpretation #1 (dealer-side signed) is the correct read: **`net_gamma_at_spot > 0` ⇒ dealers net long γ ⇒ dampening regime**. No label-flip required in the Phase 2 regime classifier.
 
-1. **Dealer-side signed:** `call_gamma_oi` positive ⇒ dealers are long call gamma at this strike, `put_gamma_oi` negative ⇒ dealers are short put gamma. Sum positive ⇒ dealers net long γ ⇒ dampening regime.
-2. **Directional convention:** the call/put split carries a positional sign tag, not a dealer-side tag. Sum positive ⇒ "call OI dominates" rather than "dealers long γ."
+**Earlier 14:55 EOD read** (spot 7236 vs zero_gamma 7183, our +4.69B) showed apparent disagreement with TRACE because spot was sitting on the zero-gamma boundary (red blob below 7232, blue above 7240). Boundary samples are unreliable for sign-convention testing — the deep-blue morning sample is the decisive read. Both samples remain consistent with interpretation #1 once the boundary issue is recognized.
 
-Both produce sane-looking distributions; only the *interpretation* differs.
+**What was reviewed:**
 
-**Recommended action (not blocking):** verify the convention via either UW API docs OR a one-day spot-check against SpotGamma TRACE on a date where you have a screenshot. If our `net_gamma_at_spot > 0` lines up with TRACE's blue/long-γ read at spot, interpretation #1 is correct. Otherwise label-flip the regime classifier accordingly.
-
-This can ride into Phase 2 build as a Phase 2.5 sanity check before the regime tile goes live to users.
+- `strike_exposures` per-row sign pattern: `call_gamma_oi` always non-negative (145/145 SPX, 30/30 SPY, 29/29 QQQ rows). `put_gamma_oi` always non-positive. Per-strike call magnitude 2–15× larger than put magnitude.
+- The cron sums these as `gamma = call_gamma_oi + put_gamma_oi` and treats the result as dealer net gamma at strike.
+- 14-day telemetry showed the SUM flips sign at regime-change cadence.
+- 2026-05-01 TRACE spot-check (above) settled the sign-tag interpretation.
 
 ## MEDIUM concerns — fix before Phase 2 launch but not blockers for build
 
@@ -118,7 +124,7 @@ The triangular kernel with half-width = 2 × median strike spacing is plausible 
 ## Phase 2 readiness — concrete checklist
 
 - [x] **Concern 2 closed** — 14-day telemetry shows `net_gamma_at_spot` flips signs at regime-change cadence (7–14 flips per ticker per 14 days). Original concern was a sample-of-one artifact from May 1.
-- [ ] **Concern 1 (recommended, non-blocking)** — sign-convention spot-check against a TRACE screenshot you already have. Quickest path: pick a date where you saved a TRACE screenshot, query `zero_gamma_levels.net_gamma_at_spot` for that timestamp, confirm the sign matches TRACE's blue/red read at spot. If it matches, dealer-side interpretation is confirmed. If inverted, flip the sign in the regime classifier.
+- [x] **Concern 1 closed (2026-05-03)** — TRACE spot-check on 2026-05-01 09:15 CT confirms interpretation #1 (dealer-side signed). Our `net_gamma_at_spot = +3.57B` matched TRACE's deep-blue read at spot ~7266. No label-flip needed in the regime classifier.
 - [ ] **Concern 3 in classifier** — confidence gate at ≥ 0.10 in the Dealer Regime classifier. Below threshold, fall through to "uncertain regime" rather than picking a side.
 - [ ] **Concern 4 (recommended, non-blocking)** — full TRACE cross-validation across 5–10 historical screenshots. Generates the bias/divergence numbers we need for long-term confidence.
 
@@ -126,8 +132,8 @@ The triangular kernel with half-width = 2 × median strike spacing is plausible 
 
 ## Files reviewed
 
-- /Users/charlesobrien/Documents/Workspace/strike-calculator/api/_lib/zero-gamma.ts
+- /Users/charlesobrien/Documents/Workspace/strike-calculator/api/\_lib/zero-gamma.ts
 - /Users/charlesobrien/Documents/Workspace/strike-calculator/api/cron/compute-zero-gamma.ts
 - /Users/charlesobrien/Documents/Workspace/strike-calculator/api/zero-gamma.ts
-- /Users/charlesobrien/Documents/Workspace/strike-calculator/api/_lib/zero-gamma-tickers.ts
+- /Users/charlesobrien/Documents/Workspace/strike-calculator/api/\_lib/zero-gamma-tickers.ts
 - docs/tmp/zero-gamma-audit/probe.mjs (audit data probe)
