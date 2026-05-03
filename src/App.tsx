@@ -42,7 +42,6 @@ import PreMarketInput from './components/PreMarketInput';
 import MarketRegimeSection from './components/MarketRegimeSection';
 import ResultsSection from './components/ResultsSection';
 import AnalysisHistory from './components/ChartAnalysis/AnalysisHistory';
-import TradingScheduleSection from './components/TradingScheduleSection';
 import BacktestDiag from './components/BacktestDiag';
 import ErrorBoundary from './components/ErrorBoundary';
 import GatedSection from './components/GatedSection';
@@ -56,7 +55,6 @@ import NotificationPermission from './components/NotificationPermission';
 import { CollapseAllContext } from './components/collapse-context';
 import type { AmPm, Timezone } from './types';
 import type { CollapseSignal } from './components/collapse-context';
-import type { PlaybookBias } from './utils/futures-gamma/types';
 import { useToast } from './hooks/useToast';
 import SectionNav from './components/SectionNav';
 import type { NavSection } from './components/SectionNav';
@@ -117,9 +115,6 @@ const GexTarget = lazy(() =>
 const GexLandscape = lazy(() =>
   import('./components/GexLandscape').catch(handleStaleChunk),
 );
-const FuturesGammaPlaybook = lazy(() =>
-  import('./components/FuturesGammaPlaybook').catch(handleStaleChunk),
-);
 const ZeroGammaPanel = lazy(() =>
   import('./components/ZeroGammaPanel')
     .then((m) => ({ default: m.ZeroGammaPanel }))
@@ -133,6 +128,11 @@ const GreekFlowPanel = lazy(() =>
 const StrikeBattleMap = lazy(() =>
   import('./components/StrikeBattleMap')
     .then((m) => ({ default: m.StrikeBattleMap }))
+    .catch(handleStaleChunk),
+);
+const DealerRegimeTile = lazy(() =>
+  import('./components/DealerRegimeTile')
+    .then((m) => ({ default: m.DealerRegimeTile }))
     .catch(handleStaleChunk),
 );
 const BWBCalculator = lazy(() =>
@@ -531,8 +531,6 @@ export default function StrikeCalculator() {
     null,
   );
   const [gexBiasContext, setGexBiasContext] = useState<string | null>(null);
-  const [playbookBiasContext, setPlaybookBiasContext] =
-    useState<PlaybookBias | null>(null);
   const handleAnalysisSaved = useCallback(() => {
     setHistoryRefreshKey((k) => k + 1);
     toast.show('Analysis saved', 'success');
@@ -636,7 +634,6 @@ export default function StrikeCalculator() {
   const navSections = useMemo<NavSection[]>(() => {
     return [
       { id: 'sec-inputs', label: 'Inputs' },
-      { id: 'sec-trading-schedule', label: 'Trading Schedule' },
       { id: 'sec-settings', label: 'Settings' },
       { id: 'sec-risk', label: 'Risk Calculator' },
       { id: 'sec-regime', label: 'Market Regime' },
@@ -647,10 +644,6 @@ export default function StrikeCalculator() {
             { id: 'sec-gex', label: 'GEX Per Strike' },
             { id: 'sec-gex-target', label: 'GEX Target' },
             { id: 'sec-gex-landscape', label: 'GEX Landscape' },
-            {
-              id: 'sec-futures-gamma-playbook',
-              label: 'Futures Gamma Playbook',
-            },
             { id: 'sec-zero-gamma', label: 'Zero Gamma' },
             { id: 'sec-market-internals', label: 'Breadth & TICK' },
             { id: 'sec-vega-spikes', label: 'Dir Vega Spikes' },
@@ -698,9 +691,6 @@ export default function StrikeCalculator() {
     events: market.data.events?.events,
     chain: chainData.chain,
     gexLandscapeBias: gexBiasContext,
-    playbookBias: playbookBiasContext
-      ? JSON.stringify(playbookBiasContext)
-      : null,
   });
 
   return (
@@ -816,18 +806,6 @@ export default function StrikeCalculator() {
                     errors={errors}
                   />
                 </div>
-
-                <span
-                  id="sec-trading-schedule"
-                  className="block scroll-mt-28"
-                />
-                <TradingScheduleSection
-                  selectedDate={vix.selectedDate}
-                  timeHour={timeHour}
-                  timeMinute={timeMinute}
-                  timeAmPm={timeAmPm}
-                  timezone={timezone}
-                />
 
                 <EventDayWarning
                   selectedDate={vix.selectedDate}
@@ -1031,18 +1009,6 @@ export default function StrikeCalculator() {
 
                 <GatedSection
                   gate={hasMarketContext}
-                  id="sec-futures-gamma-playbook"
-                  label="Futures Gamma Playbook"
-                  fallback={<SkeletonSection lines={6} tall />}
-                >
-                  <FuturesGammaPlaybook
-                    marketOpen={market.data.quotes?.marketOpen ?? false}
-                    onBiasChange={setPlaybookBiasContext}
-                  />
-                </GatedSection>
-
-                <GatedSection
-                  gate={hasMarketContext}
                   id="sec-zero-gamma"
                   label="Zero Gamma"
                   fallback={<SkeletonSection lines={4} />}
@@ -1081,6 +1047,17 @@ export default function StrikeCalculator() {
                   fallback={<SkeletonSection lines={5} />}
                 >
                   <GreekFlowPanel
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
+                  />
+                </GatedSection>
+
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-dealer-regime"
+                  label="Dealer Regime"
+                  fallback={<SkeletonSection lines={2} />}
+                >
+                  <DealerRegimeTile
                     marketOpen={market.data.quotes?.marketOpen ?? false}
                   />
                 </GatedSection>
