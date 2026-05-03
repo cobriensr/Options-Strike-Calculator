@@ -12,7 +12,7 @@
  *     calculator runs. When the user is actively snapshotting through
  *     the session this often produces usable paired reads; otherwise
  *     the helper returns null and the section is dropped.
- *   - SPX minute bars live in `spx_candles_1m` (1-min cadence), which
+ *   - SPX minute bars live in `index_candles_1m (SPX)` (1-min cadence), which
  *     gives a reliable 5-min return anchor.
  *
  * Partial data is preserved: the helper returns null only when BOTH
@@ -60,14 +60,15 @@ async function getSpxCloseAt(at: Date): Promise<number | null> {
   const earliest = new Date(at.getTime() - SPX_STALENESS_MS);
   const earliestIso = earliest.toISOString();
   // Include both potential ET calendar dates so the composite index
-  // (date, timestamp) on spx_candles_1m is usable. Covers the case
+  // (date, timestamp) on index_candles_1m (SPX) is usable. Covers the case
   // where the staleness window straddles an ET-midnight boundary.
   const atDate = getETDateStr(at);
   const earliestDate = getETDateStr(earliest);
   const dates = atDate === earliestDate ? [atDate] : [earliestDate, atDate];
   const rows = await sql`
-    SELECT close FROM spx_candles_1m
-    WHERE date = ANY(${dates})
+    SELECT close FROM index_candles_1m
+    WHERE symbol = 'SPX'
+      AND date = ANY(${dates})
       AND timestamp <= ${atIso}
       AND timestamp >= ${earliestIso}
     ORDER BY timestamp DESC
