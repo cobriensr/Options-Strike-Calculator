@@ -73,7 +73,7 @@ export default withCronInstrumentation(
       // parquet archive lags the streaming feed by a few days (parquet
       // gets refreshed manually after a fresh Databento batch is
       // converted and uploaded). Try the Postgres-fed fallback before
-      // giving up: spx_candles_1m is populated by Schwab streaming in
+      // giving up: index_candles_1m (SPX) is populated by Schwab streaming in
       // real-time, so most "missing in sidecar" dates are present here.
       summary = await fetchDaySummaryFromPostgres(date);
       if (!summary) {

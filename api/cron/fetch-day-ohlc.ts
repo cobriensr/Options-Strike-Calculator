@@ -113,7 +113,7 @@ export default withCronInstrumentation(
     } else {
       // Sidecar archive doesn't have structured OHLC for this date —
       // most often because the parquet hasn't been refreshed since the
-      // last Databento batch. Fall back to spx_candles_1m which the
+      // last Databento batch. Fall back to index_candles_1m (SPX) which the
       // streaming feed populates in real-time. When the parquet catches
       // up, a future cron run will overwrite these values.
       const pg = await fetchDayOhlcFromPostgres(targetDate);

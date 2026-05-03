@@ -36,6 +36,10 @@ interface State {
   error: string | null;
   asOf: string | null;
   fetchedAt: number | null;
+  /** Total matching fires before the LIMIT cap — for "showing N of M". */
+  total: number;
+  /** The effective limit the endpoint applied. */
+  limit: number;
 }
 
 const INITIAL_STATE: State = {
@@ -44,6 +48,8 @@ const INITIAL_STATE: State = {
   error: null,
   asOf: null,
   fetchedAt: null,
+  total: 0,
+  limit: 0,
 };
 
 export function useLotteryFinder({
@@ -88,6 +94,8 @@ export function useLotteryFinder({
         error: null,
         asOf: json.asOf,
         fetchedAt: Date.now(),
+        total: json.total,
+        limit: json.limit,
       });
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
@@ -122,8 +130,5 @@ export function useLotteryFinder({
   // Cancel any in-flight request on unmount.
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  return useMemo(
-    () => ({ ...state, refetch: fetchOnce }),
-    [state, fetchOnce],
-  );
+  return useMemo(() => ({ ...state, refetch: fetchOnce }), [state, fetchOnce]);
 }

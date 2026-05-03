@@ -130,37 +130,58 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const cutoffTs = at ?? `${targetDate}T23:59:59.999Z`;
 
     const db = getDb();
-    const rows = (await db`
-      SELECT
-        id, date, trigger_time_ct, entry_time_ct, option_chain_id,
-        underlying_symbol, option_type, strike, expiry, dte,
-        trigger_vol_to_oi_window, trigger_vol_to_oi_cum,
-        trigger_iv, trigger_delta, trigger_ask_pct,
-        trigger_window_size, trigger_window_prints,
-        entry_price, open_interest, spot_at_first,
-        alert_seq, minutes_since_prev_fire,
-        flow_quad, tod, mode,
-        reload_tagged, cheap_call_pm_tagged,
-        burst_ratio_vs_prev, entry_drop_pct_vs_prev,
-        mkt_tide_ncp, mkt_tide_npp, mkt_tide_diff, mkt_tide_otm_diff,
-        spx_flow_diff, spy_etf_diff, qqq_etf_diff, zero_dte_diff,
-        spx_spot_gamma_oi, spx_spot_gamma_vol, spx_spot_charm_oi, spx_spot_vanna_oi,
-        gex_strike_call_minus_put, gex_strike_call_ask_minus_bid,
-        gex_strike_put_ask_minus_bid, gex_strike_actual_strike,
-        realized_trail30_10_pct, realized_hard30m_pct,
-        realized_tier50_holdeod_pct, realized_eod_pct,
-        peak_ceiling_pct, minutes_to_peak,
-        inserted_at, enriched_at
-      FROM lottery_finder_fires
-      WHERE date = ${targetDate}::date
-        AND trigger_time_ct <= ${cutoffTs}::timestamptz
-        AND (${ticker ?? null}::text IS NULL OR underlying_symbol = ${ticker ?? ''})
-        AND (${reload ?? null}::boolean IS NULL OR reload_tagged = ${reload ?? false})
-        AND (${cheapCallPm ?? null}::boolean IS NULL OR cheap_call_pm_tagged = ${cheapCallPm ?? false})
-        AND (${mode ?? null}::text IS NULL OR mode = ${mode ?? ''})
-      ORDER BY trigger_time_ct ASC
-      LIMIT ${limit}
-    `) as FireRow[];
+
+    // Two queries in parallel: (1) the row payload bounded by LIMIT,
+    // and (2) the total matching count BEFORE limit so the UI can
+    // surface "showing N of M" when the limit truncates the day.
+    // ORDER BY DESC matches the spec ("most recent fire first by
+    // default") so a busy-day user sees the latest fires immediately
+    // and the time scrubber meaningfully shifts the visible window.
+    const [rows, totalRows] = (await Promise.all([
+      db`
+        SELECT
+          id, date, trigger_time_ct, entry_time_ct, option_chain_id,
+          underlying_symbol, option_type, strike, expiry, dte,
+          trigger_vol_to_oi_window, trigger_vol_to_oi_cum,
+          trigger_iv, trigger_delta, trigger_ask_pct,
+          trigger_window_size, trigger_window_prints,
+          entry_price, open_interest, spot_at_first,
+          alert_seq, minutes_since_prev_fire,
+          flow_quad, tod, mode,
+          reload_tagged, cheap_call_pm_tagged,
+          burst_ratio_vs_prev, entry_drop_pct_vs_prev,
+          mkt_tide_ncp, mkt_tide_npp, mkt_tide_diff, mkt_tide_otm_diff,
+          spx_flow_diff, spy_etf_diff, qqq_etf_diff, zero_dte_diff,
+          spx_spot_gamma_oi, spx_spot_gamma_vol, spx_spot_charm_oi, spx_spot_vanna_oi,
+          gex_strike_call_minus_put, gex_strike_call_ask_minus_bid,
+          gex_strike_put_ask_minus_bid, gex_strike_actual_strike,
+          realized_trail30_10_pct, realized_hard30m_pct,
+          realized_tier50_holdeod_pct, realized_eod_pct,
+          peak_ceiling_pct, minutes_to_peak,
+          inserted_at, enriched_at
+        FROM lottery_finder_fires
+        WHERE date = ${targetDate}::date
+          AND trigger_time_ct <= ${cutoffTs}::timestamptz
+          AND (${ticker ?? null}::text IS NULL OR underlying_symbol = ${ticker ?? ''})
+          AND (${reload ?? null}::boolean IS NULL OR reload_tagged = ${reload ?? false})
+          AND (${cheapCallPm ?? null}::boolean IS NULL OR cheap_call_pm_tagged = ${cheapCallPm ?? false})
+          AND (${mode ?? null}::text IS NULL OR mode = ${mode ?? ''})
+        ORDER BY trigger_time_ct DESC
+        LIMIT ${limit}
+      `,
+      db`
+        SELECT COUNT(*)::int AS total
+        FROM lottery_finder_fires
+        WHERE date = ${targetDate}::date
+          AND trigger_time_ct <= ${cutoffTs}::timestamptz
+          AND (${ticker ?? null}::text IS NULL OR underlying_symbol = ${ticker ?? ''})
+          AND (${reload ?? null}::boolean IS NULL OR reload_tagged = ${reload ?? false})
+          AND (${cheapCallPm ?? null}::boolean IS NULL OR cheap_call_pm_tagged = ${cheapCallPm ?? false})
+          AND (${mode ?? null}::text IS NULL OR mode = ${mode ?? ''})
+      `,
+    ])) as [FireRow[], { total: number }[]];
+
+    const total = totalRows[0]?.total ?? 0;
 
     const fires = rows.map((r) => ({
       id: Number(r.id),
@@ -246,7 +267,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       date: targetDate,
       asOf: at ?? null,
       filters: { ticker, reload, cheapCallPm, mode },
+      // count = rows returned (≤ limit). total = total matching rows
+      // before LIMIT. UI shows "Showing N of M" when total > count.
       count: fires.length,
+      total,
+      limit,
       fires,
     });
   } catch (err) {

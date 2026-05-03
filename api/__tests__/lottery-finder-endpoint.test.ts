@@ -89,7 +89,10 @@ describe('lottery-finder endpoint', () => {
   });
 
   it('returns transformed fires with default date (ET-today) and asOf=null', async () => {
-    mockSql.mockResolvedValueOnce([ROW]);
+    // Two SQL calls: rows query then COUNT(*) total query.
+    mockSql
+      .mockResolvedValueOnce([ROW])
+      .mockResolvedValueOnce([{ total: 1 }]);
 
     const req = mockRequest({ method: 'GET', query: {} });
     const res = mockResponse();
@@ -101,9 +104,13 @@ describe('lottery-finder endpoint', () => {
       asOf: string | null;
       filters: Record<string, unknown>;
       count: number;
+      total: number;
+      limit: number;
       fires: Array<Record<string, unknown>>;
     };
     expect(body.count).toBe(1);
+    expect(body.total).toBe(1);
+    expect(body.limit).toBe(500); // new default
     expect(body.asOf).toBeNull();
     expect(body.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(body.fires[0]).toMatchObject({
@@ -138,7 +145,9 @@ describe('lottery-finder endpoint', () => {
       ...ROW,
       date: new Date('2026-05-01T00:00:00.000Z'),
     };
-    mockSql.mockResolvedValueOnce([ROW_WITH_DATE_OBJ]);
+    mockSql
+      .mockResolvedValueOnce([ROW_WITH_DATE_OBJ])
+      .mockResolvedValueOnce([{ total: 1 }]);
 
     const req = mockRequest({ method: 'GET', query: {} });
     const res = mockResponse();
@@ -150,7 +159,9 @@ describe('lottery-finder endpoint', () => {
   });
 
   it('honors explicit date param + at scrubber cutoff', async () => {
-    mockSql.mockResolvedValueOnce([ROW]);
+    mockSql
+      .mockResolvedValueOnce([ROW])
+      .mockResolvedValueOnce([{ total: 1 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -189,7 +200,9 @@ describe('lottery-finder endpoint', () => {
   });
 
   it('coerces numeric DB strings to numbers and nullable fields to null', async () => {
-    mockSql.mockResolvedValueOnce([ROW]);
+    mockSql
+      .mockResolvedValueOnce([ROW])
+      .mockResolvedValueOnce([{ total: 1 }]);
 
     const req = mockRequest({ method: 'GET', query: {} });
     const res = mockResponse();
@@ -233,20 +246,43 @@ describe('lottery-finder endpoint', () => {
     expect(res._json).toMatchObject({ error: 'invalid query' });
   });
 
-  it('caps limit at 200', async () => {
+  it('caps limit at 1000', async () => {
     const req = mockRequest({
       method: 'GET',
-      query: { limit: '500' },
+      query: { limit: '5000' },
     });
     const res = mockResponse();
     await handler(req, res);
 
-    // Schema rejects > 200; the handler returns 400.
+    // Schema rejects > 1000; the handler returns 400.
     expect(res._status).toBe(400);
   });
 
+  it('returns showing-N-of-M total when LIMIT truncates the day', async () => {
+    // 500 rows returned, but the day actually has 1247 fires that match.
+    const ROWS = Array.from({ length: 500 }, (_, i) => ({ ...ROW, id: i + 1 }));
+    mockSql
+      .mockResolvedValueOnce(ROWS)
+      .mockResolvedValueOnce([{ total: 1247 }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-01' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { count: number; total: number; limit: number };
+    expect(body.count).toBe(500);
+    expect(body.total).toBe(1247);
+    expect(body.limit).toBe(500);
+  });
+
   it('reflects filter params back in the response envelope', async () => {
-    mockSql.mockResolvedValueOnce([]);
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ total: 0 }]);
 
     const req = mockRequest({
       method: 'GET',

@@ -58,11 +58,13 @@ export function LotteryFinderSection({
   const [reloadOnly, setReloadOnly] = useState<boolean>(false);
   const [cheapCallPmOnly, setCheapCallPmOnly] = useState<boolean>(false);
   const [modeFilter, setModeFilter] = useState<LotteryMode | null>(null);
+  const [tickerFilter, setTickerFilter] = useState<string | null>(null);
 
-  const { fires, loading, error, fetchedAt } = useLotteryFinder({
+  const { fires, loading, error, fetchedAt, total } = useLotteryFinder({
     date,
     at: scrubAt,
     marketOpen,
+    ticker: tickerFilter,
     reload: reloadOnly ? true : null,
     cheapCallPm: cheapCallPmOnly ? true : null,
     mode: modeFilter,
@@ -84,14 +86,20 @@ export function LotteryFinderSection({
     const ctToUtc = (hh: number, mm: number): string => {
       // Construct a wall-clock "date hh:mm" string and interpret it
       // through the America/Chicago locale to recover the UTC instant.
-      const wall = new Date(`${date}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00`);
+      const wall = new Date(
+        `${date}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00`,
+      );
       // Compute the offset between the wall-clock as-if-UTC and the
       // wall-clock as-if-CT for the same date — that's the negative
       // of CT's UTC offset on that day.
       const ctParts = new Intl.DateTimeFormat('en-US', {
         timeZone: 'America/Chicago',
-        year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit', hour12: false,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
       }).formatToParts(wall);
       const lookup: Record<string, string> = {};
       for (const p of ctParts) lookup[p.type] = p.value;
@@ -113,7 +121,7 @@ export function LotteryFinderSection({
   }, [date]);
 
   const isLive = scrubAt == null && date === todayCt();
-  const dayFires = fires.length;
+  const isHistorical = date !== todayCt();
   const reloadCount = useMemo(
     () => fires.filter((f) => f.tags.reload).length,
     [fires],
@@ -122,6 +130,22 @@ export function LotteryFinderSection({
     () => fires.filter((f) => f.tags.cheapCallPm).length,
     [fires],
   );
+
+  // Top tickers by fire count in the displayed page — gives the user
+  // an obvious one-click filter dimension without forcing a 50-ticker
+  // dropdown. Updates whenever the result set changes (filters/scrub).
+  const topTickers = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const f of fires) {
+      counts.set(
+        f.underlyingSymbol,
+        (counts.get(f.underlyingSymbol) ?? 0) + 1,
+      );
+    }
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 12);
+  }, [fires]);
 
   return (
     <SectionBox label="Lottery Finder" collapsible>
@@ -194,9 +218,14 @@ export function LotteryFinderSection({
               </span>
             )}
           </div>
-          {fetchedAt != null && (
+          {fetchedAt != null && !isHistorical && (
             <span className="ml-auto text-[10px] text-neutral-500">
               updated {formatTimeCT(fetchedAt)} CT
+            </span>
+          )}
+          {isHistorical && (
+            <span className="ml-auto text-[10px] text-neutral-500">
+              historical replay
             </span>
           )}
         </div>
@@ -213,8 +242,7 @@ export function LotteryFinderSection({
             }`}
             title="Show only fires tagged RE-LOAD (burst ≥2× prior AND entry dropped ≥30%)."
           >
-            RE-LOAD only{' '}
-            <span className="text-[10px]">{reloadCount}</span>
+            RE-LOAD only <span className="text-[10px]">{reloadCount}</span>
           </button>
           <button
             type="button"
@@ -244,6 +272,56 @@ export function LotteryFinderSection({
             </button>
           ))}
         </div>
+
+        {/* Ticker chips — top tickers in the current result set, click
+            to scope to one ticker. Universe is ~50 tickers; we show
+            only those actually present so the user can spot the
+            dominant tickers of the day at a glance. */}
+        {(topTickers.length > 0 || tickerFilter) && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[10px] uppercase tracking-wide text-neutral-500">
+              ticker
+            </span>
+            <button
+              type="button"
+              onClick={() => setTickerFilter(null)}
+              className={`rounded border px-2 py-0.5 text-xs font-semibold ${
+                tickerFilter == null
+                  ? 'border-emerald-500 bg-emerald-950/40 text-emerald-200'
+                  : 'border-neutral-700 bg-neutral-900 text-neutral-400 hover:text-white'
+              }`}
+            >
+              all
+            </button>
+            {topTickers.map(([t, n]) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() =>
+                  setTickerFilter(tickerFilter === t ? null : t)
+                }
+                className={`rounded border px-2 py-0.5 text-xs font-semibold ${
+                  tickerFilter === t
+                    ? 'border-emerald-500 bg-emerald-950/40 text-emerald-200'
+                    : 'border-neutral-700 bg-neutral-900 text-neutral-300 hover:text-white'
+                }`}
+                title={`Filter to ${t} only (${n} fires in current view)`}
+              >
+                {t} <span className="text-[10px] text-neutral-500">{n}</span>
+              </button>
+            ))}
+            {tickerFilter && !topTickers.some(([t]) => t === tickerFilter) && (
+              <button
+                type="button"
+                onClick={() => setTickerFilter(null)}
+                className="rounded border border-emerald-500 bg-emerald-950/40 px-2 py-0.5 text-xs font-semibold text-emerald-200"
+                title="Filter active but no fires for this ticker in the current view — click to clear"
+              >
+                {tickerFilter} <span className="text-[10px]">0</span>
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Exit policy selector */}
         <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -279,22 +357,31 @@ export function LotteryFinderSection({
           <div className="rounded border border-neutral-800 bg-neutral-950 p-3 text-sm text-neutral-400">
             {reloadOnly || cheapCallPmOnly || modeFilter ? (
               <>
-                No fires on {date} matching the active filters. Try clearing
-                a filter chip above.
+                No fires on {date} matching the active filters. Try clearing a
+                filter chip above.
               </>
             ) : (
               <>
                 No fires for {date}. Either the detector hasn&apos;t fired yet
-                today, or this date is before historical backfill. Most days
-                are genuinely zero — expect 0–5 cheap-call-PM RE-LOAD fires
-                per day in the universe.
+                today, or this date is before historical backfill. Most days are
+                genuinely zero — expect 0–5 cheap-call-PM RE-LOAD fires per day
+                in the universe.
               </>
             )}
           </div>
         ) : (
           <div className="space-y-2">
             <div className="text-[11px] text-neutral-500">
-              {dayFires} fire{dayFires === 1 ? '' : 's'} for {date}
+              {total > fires.length ? (
+                <>
+                  Showing {fires.length} of {total} fires for {date} (most
+                  recent first — bump <code>?limit=</code> to see more)
+                </>
+              ) : (
+                <>
+                  {fires.length} fire{fires.length === 1 ? '' : 's'} for {date}
+                </>
+              )}
             </div>
             {fires.map((f: LotteryFire) => (
               <LotteryRow key={f.id} fire={f} exitPolicy={exitPolicy} />

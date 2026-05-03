@@ -126,6 +126,11 @@ export interface LotteryFinderResponse {
     cheapCallPm?: boolean;
     mode?: LotteryMode;
   };
+  /** Number of fires actually returned in this response (≤ limit). */
   count: number;
+  /** Total matching rows BEFORE limit — for "showing N of M" UI. */
+  total: number;
+  /** The effective limit applied. */
+  limit: number;
   fires: LotteryFire[];
 }

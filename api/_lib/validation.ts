@@ -885,7 +885,9 @@ export const lotteryFinderQuerySchema = z.object({
   reload: z
     .enum(['true', 'false'])
     .optional()
-    .transform((v) => (v === 'true' ? true : v === 'false' ? false : undefined)),
+    .transform((v) =>
+      v === 'true' ? true : v === 'false' ? false : undefined,
+    ),
   cheapCallPm: z
     .enum(['true', 'false'])
     .optional()
@@ -898,8 +900,11 @@ export const lotteryFinderQuerySchema = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
     .optional(),
   at: z.string().datetime({ offset: true }).optional(),
-  limit: z.coerce.number().int().min(1).max(200).default(100),
+  // Bumped from 100→500 default, 200→1000 max so the UI shows the
+  // full day's fire stream rather than just the AM-open burst. A
+  // backfilled day on the universe of ~50 tickers can have 1k+ fires;
+  // 500 covers most heavy days while bounding payload size.
+  limit: z.coerce.number().int().min(1).max(1000).default(500),
 });
 
 export type LotteryFinderQuery = z.infer<typeof lotteryFinderQuerySchema>;
-

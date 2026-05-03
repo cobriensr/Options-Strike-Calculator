@@ -44,7 +44,7 @@ const DIAGNOSTIC_TABLE_ALLOWLIST = new Set<string>([
   'regime_events',
   'schema_migrations',
   'spot_exposures',
-  'spx_candles_1m',
+  'index_candles_1m',
   'strike_iv_snapshots',
   'theta_option_eod',
   'trace_live_analyses',

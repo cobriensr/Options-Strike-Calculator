@@ -96,7 +96,7 @@ describe('GET /api/journal/status', () => {
         // Pretend Postgres also has internal tables a guest shouldn't see
         { name: 'pg_internal_secret_table', count: 999 },
         { name: 'futures_trade_ticks', count: 12345 }, // not on allowlist
-        { name: 'spx_candles_1m', count: 80 },
+        { name: 'index_candles_1m', count: 80 },
       ])
       .mockResolvedValueOnce([{ latest: 18 }]);
     vi.mocked(getDb).mockReturnValue(mockSql as never);
@@ -108,7 +108,7 @@ describe('GET /api/journal/status', () => {
     const json = res._json as Record<string, unknown>;
     // Allowlisted rows present
     expect((json.tables as Record<string, number>).analyses).toBe(5);
-    expect((json.tables as Record<string, number>).spx_candles_1m).toBe(80);
+    expect((json.tables as Record<string, number>).index_candles_1m).toBe(80);
     // Non-allowlisted rows must NOT appear
     expect(
       (json.tables as Record<string, unknown>).pg_internal_secret_table,
