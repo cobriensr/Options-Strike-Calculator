@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { GreekFlowPanel } from '../../components/GreekFlowPanel';
 import type {
+  DivergenceResult,
   GreekFlowMetrics,
   GreekFlowResponse,
   GreekFlowRow,
+  Sign,
   UseGreekFlowReturn,
 } from '../../hooks/useGreekFlow';
 
@@ -58,27 +60,40 @@ function emptyMetrics(): GreekFlowMetrics {
   };
 }
 
-function emptyDivergence(): GreekFlowResponse['divergence'] {
-  const div = {
-    spySign: 0 as const,
-    qqqSign: 0 as const,
-    diverging: false,
-  };
+function div(spy: Sign, qqq: Sign): DivergenceResult {
   return {
-    dir_vega_flow: div,
-    total_vega_flow: div,
-    otm_dir_vega_flow: div,
-    otm_total_vega_flow: div,
-    dir_delta_flow: div,
-    total_delta_flow: div,
-    otm_dir_delta_flow: div,
-    otm_total_delta_flow: div,
+    spySign: spy,
+    qqqSign: qqq,
+    diverging: spy !== 0 && qqq !== 0 && spy !== qqq,
   };
 }
 
-function fakeRow(ticker: 'SPY' | 'QQQ', i: number): GreekFlowRow {
-  // 5 sample minutes; cum_* matches a running sum of monotonic per-minute
-  // values so the FlowChart has something to render.
+const NEUTRAL_DIV = div(0, 0);
+
+function divergenceFor(
+  delta: DivergenceResult,
+  vega: DivergenceResult,
+): GreekFlowResponse['divergence'] {
+  return {
+    dir_vega_flow: NEUTRAL_DIV,
+    total_vega_flow: NEUTRAL_DIV,
+    otm_dir_vega_flow: vega,
+    otm_total_vega_flow: NEUTRAL_DIV,
+    dir_delta_flow: NEUTRAL_DIV,
+    total_delta_flow: NEUTRAL_DIV,
+    otm_dir_delta_flow: delta,
+    otm_total_delta_flow: NEUTRAL_DIV,
+  };
+}
+
+function fakeRow(
+  ticker: 'SPY' | 'QQQ',
+  i: number,
+  deltaSign: 1 | -1 = 1,
+  vegaSign: 1 | -1 = 1,
+): GreekFlowRow {
+  const cumDelta = (i + 1) * deltaSign;
+  const cumVega = (i + 1) * vegaSign;
   return {
     ticker,
     timestamp: new Date(
@@ -86,35 +101,50 @@ function fakeRow(ticker: 'SPY' | 'QQQ', i: number): GreekFlowRow {
     ).toISOString(),
     transactions: 100,
     volume: 500,
-    dir_vega_flow: 1,
+    dir_vega_flow: vegaSign,
     total_vega_flow: 2,
-    otm_dir_vega_flow: 1,
+    otm_dir_vega_flow: vegaSign,
     otm_total_vega_flow: 1,
-    dir_delta_flow: 1,
+    dir_delta_flow: deltaSign,
     total_delta_flow: 1,
-    otm_dir_delta_flow: 1,
+    otm_dir_delta_flow: deltaSign,
     otm_total_delta_flow: 1,
-    cum_dir_vega_flow: i + 1,
+    cum_dir_vega_flow: cumVega,
     cum_total_vega_flow: (i + 1) * 2,
-    cum_otm_dir_vega_flow: i + 1,
+    cum_otm_dir_vega_flow: cumVega,
     cum_otm_total_vega_flow: i + 1,
-    cum_dir_delta_flow: i + 1,
+    cum_dir_delta_flow: cumDelta,
     cum_total_delta_flow: i + 1,
-    cum_otm_dir_delta_flow: i + 1,
+    cum_otm_dir_delta_flow: cumDelta,
     cum_otm_total_delta_flow: i + 1,
   };
 }
 
-function happyPathReturn(): UseGreekFlowReturn {
-  const rows = (ticker: 'SPY' | 'QQQ') =>
-    Array.from({ length: 5 }, (_, i) => fakeRow(ticker, i));
+interface ScenarioOpts {
+  spyDelta?: 1 | -1;
+  qqqDelta?: 1 | -1;
+  spyVega?: 1 | -1;
+  qqqVega?: 1 | -1;
+}
+
+function happyPathReturn(opts: ScenarioOpts = {}): UseGreekFlowReturn {
+  const spyDelta = opts.spyDelta ?? -1;
+  const qqqDelta = opts.qqqDelta ?? -1;
+  const spyVega = opts.spyVega ?? -1;
+  const qqqVega = opts.qqqVega ?? -1;
+  const spyRows = Array.from({ length: 5 }, (_, i) =>
+    fakeRow('SPY', i, spyDelta, spyVega),
+  );
+  const qqqRows = Array.from({ length: 5 }, (_, i) =>
+    fakeRow('QQQ', i, qqqDelta, qqqVega),
+  );
   const data: GreekFlowResponse = {
     date: '2026-04-28',
     tickers: {
-      SPY: { rows: rows('SPY'), metrics: emptyMetrics() },
-      QQQ: { rows: rows('QQQ'), metrics: emptyMetrics() },
+      SPY: { rows: spyRows, metrics: emptyMetrics() },
+      QQQ: { rows: qqqRows, metrics: emptyMetrics() },
     },
-    divergence: emptyDivergence(),
+    divergence: divergenceFor(div(spyDelta, qqqDelta), div(spyVega, qqqVega)),
     asOf: '2026-04-28T21:00:00.000Z',
   };
   return { data, loading: false, error: null, refresh: vi.fn() };
@@ -125,14 +155,12 @@ beforeEach(() => {
 });
 
 describe('GreekFlowPanel', () => {
-  it('renders the heading and ticker tabs', () => {
+  it('renders the heading', () => {
     mockUseGreekFlow.mockReturnValue(happyPathReturn());
     render(<GreekFlowPanel marketOpen={false} />);
     expect(
       screen.getByRole('heading', { name: /greek flow/i }),
     ).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'SPY' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'QQQ' })).toBeInTheDocument();
   });
 
   it('renders an alert when the hook errors', () => {
@@ -157,7 +185,7 @@ describe('GreekFlowPanel', () => {
     expect(screen.getByText(/loading/i)).toBeInTheDocument();
   });
 
-  it('renders the empty-data message when API returns no date', () => {
+  it('renders empty state when API returns no date', () => {
     mockUseGreekFlow.mockReturnValue({
       data: {
         date: null,
@@ -165,7 +193,7 @@ describe('GreekFlowPanel', () => {
           SPY: { rows: [], metrics: emptyMetrics() },
           QQQ: { rows: [], metrics: emptyMetrics() },
         },
-        divergence: emptyDivergence(),
+        divergence: divergenceFor(NEUTRAL_DIV, NEUTRAL_DIV),
         asOf: '2026-04-28T21:00:00.000Z',
       },
       loading: false,
@@ -176,37 +204,54 @@ describe('GreekFlowPanel', () => {
     expect(screen.getByText(/no greek flow data/i)).toBeInTheDocument();
   });
 
-  it('renders all 8 chart cells for the active ticker on the happy path', () => {
+  it('renders the 4 OTM Dir Delta + OTM Dir Vega charts for SPY and QQQ', () => {
     mockUseGreekFlow.mockReturnValue(happyPathReturn());
     render(<GreekFlowPanel marketOpen={true} />);
-    // 8 distinct field labels per ticker; SPY is the default tab.
-    const labels = [
-      'Dir Vega',
-      'OTM Dir Vega',
-      'Vega',
-      'OTM Vega',
-      'Dir Delta',
-      'OTM Dir Delta',
-      'Delta',
-      'OTM Delta',
-    ];
-    for (const label of labels) {
-      expect(screen.getByText(label)).toBeInTheDocument();
-    }
+    expect(
+      screen.getByLabelText('SPY cumulative OTM Dir Delta'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByLabelText('QQQ cumulative OTM Dir Delta'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByLabelText('SPY cumulative OTM Dir Vega'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByLabelText('QQQ cumulative OTM Dir Vega'),
+    ).toBeInTheDocument();
   });
 
-  it('switches the visible ticker when the QQQ tab is clicked', () => {
+  it('renders the verdict tile and the timeline strip', () => {
     mockUseGreekFlow.mockReturnValue(happyPathReturn());
     render(<GreekFlowPanel marketOpen={true} />);
+    expect(screen.getByTestId('greek-flow-verdict')).toBeInTheDocument();
+    expect(screen.getByTestId('greek-flow-timeline')).toBeInTheDocument();
+  });
 
-    const qqqTab = screen.getByRole('tab', { name: 'QQQ' });
-    expect(qqqTab).toHaveAttribute('aria-selected', 'false');
-
-    fireEvent.click(qqqTab);
-    expect(qqqTab).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByRole('tab', { name: 'SPY' })).toHaveAttribute(
-      'aria-selected',
-      'false',
+  it('shows directional-bear verdict when both deltas are negative', () => {
+    mockUseGreekFlow.mockReturnValue(
+      happyPathReturn({ spyDelta: -1, qqqDelta: -1, spyVega: -1, qqqVega: -1 }),
     );
+    render(<GreekFlowPanel marketOpen={true} />);
+    const tile = screen.getByTestId('greek-flow-verdict');
+    expect(tile).toHaveAttribute('data-verdict-kind', 'directional-bear');
+  });
+
+  it('shows directional-bull verdict when both deltas are positive', () => {
+    mockUseGreekFlow.mockReturnValue(
+      happyPathReturn({ spyDelta: 1, qqqDelta: 1, spyVega: 1, qqqVega: 1 }),
+    );
+    render(<GreekFlowPanel marketOpen={true} />);
+    const tile = screen.getByTestId('greek-flow-verdict');
+    expect(tile).toHaveAttribute('data-verdict-kind', 'directional-bull');
+  });
+
+  it('shows pin-harvest verdict when deltas disagree but vegas both short', () => {
+    mockUseGreekFlow.mockReturnValue(
+      happyPathReturn({ spyDelta: 1, qqqDelta: -1, spyVega: -1, qqqVega: -1 }),
+    );
+    render(<GreekFlowPanel marketOpen={true} />);
+    const tile = screen.getByTestId('greek-flow-verdict');
+    expect(tile).toHaveAttribute('data-verdict-kind', 'pin-harvest');
   });
 });

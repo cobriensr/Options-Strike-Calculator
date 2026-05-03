@@ -1,19 +1,19 @@
 /**
- * GreekFlowPanel — SPY + QQQ cumulative Greek flow dashboard.
+ * GreekFlowPanel — focused 4-chart Greek flow dashboard for SPY + QQQ.
  *
- * Mirrors the 8-chart Unusual Whales Greek Flow board:
+ * Layout (2x2):
+ *   SPY OTM Dir Delta | QQQ OTM Dir Delta
+ *   SPY OTM Dir Vega  | QQQ OTM Dir Vega
  *
- *   Vega row:  Dir Vega | OTM Dir Vega | Vega | OTM Vega
- *   Delta row: Dir Delta | OTM Dir Delta | Delta | OTM Delta
+ * A Verdict tile above the grid combines the two pairs into a single
+ * trade-recommendation label:
+ *   - Both deltas same sign → directional bull / bear confluence
+ *   - Deltas disagree, both vegas short → pin / premium-harvest regime
+ *   - Deltas disagree, both vegas long → vol expansion / event positioning
+ *   - Anything else → no trade
  *
- * Each chart shows the cumulative running sum across the session, with
- * a sign-aware fill (green above zero, red below) and a derived-signal
- * MetricsBar (slope / flip / cliff / divergence vs the other ticker).
- *
- * The panel polls /api/greek-flow every 60s during market hours. A date
- * scrubber switches between LIVE mode and a frozen historical session
- * (one-shot fetch, no polling). Both tickers are returned by a single
- * endpoint so the divergence badge has both signs available.
+ * Refreshes every POLL_INTERVALS.GREEK_FLOW (60s) during market hours.
+ * Date scrubber switches to a frozen one-shot view of any prior session.
  */
 
 import { memo, useState } from 'react';
@@ -26,6 +26,7 @@ import {
 } from '../../hooks/useGreekFlow';
 import { FlowChart } from './FlowChart';
 import { MetricsBar } from './MetricsBar';
+import { VerdictTile, VerdictTimeline } from './Verdict';
 import { SectionBox } from '../ui';
 import { DateInput } from '../ui/DateInput';
 import { getETToday } from '../../utils/timezone';
@@ -34,55 +35,45 @@ interface GreekFlowPanelProps {
   marketOpen: boolean;
 }
 
-const TICKERS: readonly GreekFlowTicker[] = ['SPY', 'QQQ'] as const;
-
 interface ChartCellSpec {
+  ticker: GreekFlowTicker;
   field: GreekFlowField;
   cumKey: keyof GreekFlowRow;
   label: string;
 }
 
-// 4 columns × 2 rows. Vega above, Delta below. Direction-signed
-// (Dir / OTM Dir) on the left where the trader's eye lands first.
+// Row order: deltas first (directional read), vegas second (regime read).
+// Column order: SPY left (broader market), QQQ right (tech-specific).
 const CHART_GRID: readonly ChartCellSpec[] = [
-  { field: 'dir_vega_flow', cumKey: 'cum_dir_vega_flow', label: 'Dir Vega' },
   {
-    field: 'otm_dir_vega_flow',
-    cumKey: 'cum_otm_dir_vega_flow',
-    label: 'OTM Dir Vega',
-  },
-  { field: 'total_vega_flow', cumKey: 'cum_total_vega_flow', label: 'Vega' },
-  {
-    field: 'otm_total_vega_flow',
-    cumKey: 'cum_otm_total_vega_flow',
-    label: 'OTM Vega',
-  },
-  {
-    field: 'dir_delta_flow',
-    cumKey: 'cum_dir_delta_flow',
-    label: 'Dir Delta',
-  },
-  {
+    ticker: 'SPY',
     field: 'otm_dir_delta_flow',
     cumKey: 'cum_otm_dir_delta_flow',
     label: 'OTM Dir Delta',
   },
   {
-    field: 'total_delta_flow',
-    cumKey: 'cum_total_delta_flow',
-    label: 'Delta',
+    ticker: 'QQQ',
+    field: 'otm_dir_delta_flow',
+    cumKey: 'cum_otm_dir_delta_flow',
+    label: 'OTM Dir Delta',
   },
   {
-    field: 'otm_total_delta_flow',
-    cumKey: 'cum_otm_total_delta_flow',
-    label: 'OTM Delta',
+    ticker: 'SPY',
+    field: 'otm_dir_vega_flow',
+    cumKey: 'cum_otm_dir_vega_flow',
+    label: 'OTM Dir Vega',
+  },
+  {
+    ticker: 'QQQ',
+    field: 'otm_dir_vega_flow',
+    cumKey: 'cum_otm_dir_vega_flow',
+    label: 'OTM Dir Vega',
   },
 ] as const;
 
 function GreekFlowPanelInner({ marketOpen }: GreekFlowPanelProps) {
   const today = getETToday();
   const [selectedDate, setSelectedDate] = useState<string>(today);
-  const [activeTicker, setActiveTicker] = useState<GreekFlowTicker>('SPY');
   const isLive = selectedDate === today;
   const effectiveMarketOpen = isLive ? marketOpen : false;
   const dateArg = isLive ? null : selectedDate;
@@ -91,7 +82,6 @@ function GreekFlowPanelInner({ marketOpen }: GreekFlowPanelProps) {
 
   const headerRight = (
     <div className="flex items-center gap-2">
-      <TickerTabs active={activeTicker} onChange={setActiveTicker} />
       {!isLive && (
         <button
           type="button"
@@ -114,50 +104,12 @@ function GreekFlowPanelInner({ marketOpen }: GreekFlowPanelProps) {
   return (
     <SectionBox label="Greek Flow" headerRight={headerRight} collapsible>
       <p className="text-secondary mb-3 font-sans text-xs">
-        Cumulative directional Δ &amp; V flow for SPY / QQQ. Slope = momentum;
-        flip = sign change in last 30m; cliff = abnormal 10-min Δ in 14:00–15:00
-        CT; div = SPY/QQQ sign disagreement.
+        Cumulative OTM Dir Δ &amp; V flow on SPY and QQQ. Verdict combines delta
+        agreement (directional bias) with vega agreement (vol regime). Refreshes
+        every 60s during market hours.
       </p>
-      <Body
-        data={data}
-        loading={loading}
-        error={error}
-        activeTicker={activeTicker}
-      />
+      <Body data={data} loading={loading} error={error} />
     </SectionBox>
-  );
-}
-
-function TickerTabs({
-  active,
-  onChange,
-}: {
-  active: GreekFlowTicker;
-  onChange: (t: GreekFlowTicker) => void;
-}) {
-  return (
-    <div
-      role="tablist"
-      aria-label="Greek flow ticker"
-      className="border-edge inline-flex overflow-hidden rounded border"
-    >
-      {TICKERS.map((t) => (
-        <button
-          key={t}
-          type="button"
-          role="tab"
-          aria-selected={active === t}
-          onClick={() => onChange(t)}
-          className={`cursor-pointer px-2 py-0.5 font-mono text-[10px] ${
-            active === t
-              ? 'bg-surface text-primary'
-              : 'text-secondary hover:text-primary'
-          }`}
-        >
-          {t}
-        </button>
-      ))}
-    </div>
   );
 }
 
@@ -165,12 +117,10 @@ function Body({
   data,
   loading,
   error,
-  activeTicker,
 }: {
   data: GreekFlowResponse | null;
   loading: boolean;
   error: string | null;
-  activeTicker: GreekFlowTicker;
 }) {
   if (error) {
     return (
@@ -179,11 +129,9 @@ function Body({
       </div>
     );
   }
-
   if (loading && data == null) {
     return <div className="text-secondary font-sans text-xs">Loading…</div>;
   }
-
   if (data == null || data.date == null) {
     return (
       <div className="text-secondary font-sans text-xs">
@@ -191,49 +139,55 @@ function Body({
       </div>
     );
   }
-
-  const tickerData = data.tickers[activeTicker];
-  const rows = tickerData.rows;
-
-  if (rows.length === 0) {
+  const spyRows = data.tickers.SPY.rows;
+  const qqqRows = data.tickers.QQQ.rows;
+  if (spyRows.length === 0 && qqqRows.length === 0) {
     return (
       <div className="text-secondary font-sans text-xs">
-        No rows for {activeTicker} on {data.date}.
+        No rows for {data.date}.
       </div>
     );
   }
 
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-      {CHART_GRID.map((spec) => {
-        const values = rows.map((r) => r[spec.cumKey] as number);
-        const fieldMetrics = tickerData.metrics[spec.field];
-        const fieldDivergence = data.divergence[spec.field];
-        return (
-          <div
-            key={spec.field}
-            className="border-edge bg-surface rounded-md border p-2"
-          >
-            <div className="text-primary mb-1 flex items-center justify-between font-sans text-[11px]">
-              <span className="font-semibold">{spec.label}</span>
-              <span className="text-secondary font-mono text-[9px]">
-                {activeTicker}
-              </span>
+    <>
+      <VerdictTile
+        delta={data.divergence.otm_dir_delta_flow}
+        vega={data.divergence.otm_dir_vega_flow}
+      />
+      <VerdictTimeline spyRows={spyRows} qqqRows={qqqRows} />
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        {CHART_GRID.map((spec) => {
+          const tickerData = data.tickers[spec.ticker];
+          const values = tickerData.rows.map((r) => r[spec.cumKey] as number);
+          const fieldMetrics = tickerData.metrics[spec.field];
+          const fieldDivergence = data.divergence[spec.field];
+          return (
+            <div
+              key={`${spec.ticker}-${spec.field}`}
+              className="border-edge bg-surface rounded-md border p-2"
+            >
+              <div className="text-primary mb-1 flex items-center justify-between font-sans text-[11px]">
+                <span className="font-semibold">{spec.label}</span>
+                <span className="text-secondary font-mono text-[9px]">
+                  {spec.ticker}
+                </span>
+              </div>
+              <FlowChart
+                values={values}
+                ariaLabel={`${spec.ticker} cumulative ${spec.label}`}
+              />
+              <MetricsBar
+                slope={fieldMetrics.slope}
+                flip={fieldMetrics.flip}
+                cliff={fieldMetrics.cliff}
+                divergence={fieldDivergence}
+              />
             </div>
-            <FlowChart
-              values={values}
-              ariaLabel={`${activeTicker} cumulative ${spec.label}`}
-            />
-            <MetricsBar
-              slope={fieldMetrics.slope}
-              flip={fieldMetrics.flip}
-              cliff={fieldMetrics.cliff}
-              divergence={fieldDivergence}
-            />
-          </div>
-        );
-      })}
-    </div>
+          );
+        })}
+      </div>
+    </>
   );
 }
 
