@@ -110,7 +110,7 @@ describe('lottery-finder endpoint', () => {
     };
     expect(body.count).toBe(1);
     expect(body.total).toBe(1);
-    expect(body.limit).toBe(500); // new default
+    expect(body.limit).toBe(50); // page size default
     expect(body.asOf).toBeNull();
     expect(body.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(body.fires[0]).toMatchObject({
@@ -246,7 +246,7 @@ describe('lottery-finder endpoint', () => {
     expect(res._json).toMatchObject({ error: 'invalid query' });
   });
 
-  it('caps limit at 1000', async () => {
+  it('caps limit at 200', async () => {
     const req = mockRequest({
       method: 'GET',
       query: { limit: '5000' },
@@ -254,29 +254,128 @@ describe('lottery-finder endpoint', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    // Schema rejects > 1000; the handler returns 400.
+    // Schema rejects > 200; the handler returns 400.
     expect(res._status).toBe(400);
   });
 
-  it('returns showing-N-of-M total when LIMIT truncates the day', async () => {
-    // 500 rows returned, but the day actually has 1247 fires that match.
-    const ROWS = Array.from({ length: 500 }, (_, i) => ({ ...ROW, id: i + 1 }));
+  it('paginates via offset + reports hasMore when more pages exist', async () => {
+    // Page 2 (offset=50, limit=50) of a 1247-fire day.
+    const ROWS = Array.from({ length: 50 }, (_, i) => ({ ...ROW, id: i + 51 }));
     mockSql
       .mockResolvedValueOnce(ROWS)
       .mockResolvedValueOnce([{ total: 1247 }]);
 
     const req = mockRequest({
       method: 'GET',
-      query: { date: '2026-05-01' },
+      query: { date: '2026-05-01', offset: '50', limit: '50' },
     });
     const res = mockResponse();
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    const body = res._json as { count: number; total: number; limit: number };
-    expect(body.count).toBe(500);
+    const body = res._json as {
+      count: number;
+      total: number;
+      limit: number;
+      offset: number;
+      hasMore: boolean;
+    };
+    expect(body.count).toBe(50);
     expect(body.total).toBe(1247);
-    expect(body.limit).toBe(500);
+    expect(body.limit).toBe(50);
+    expect(body.offset).toBe(50);
+    expect(body.hasMore).toBe(true); // 50 + 50 < 1247
+  });
+
+  it('hasMore=false on the last page', async () => {
+    const ROWS = Array.from({ length: 47 }, (_, i) => ({ ...ROW, id: i + 1200 }));
+    mockSql
+      .mockResolvedValueOnce(ROWS)
+      .mockResolvedValueOnce([{ total: 1247 }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-01', offset: '1200', limit: '50' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as { hasMore: boolean };
+    expect(body.hasMore).toBe(false); // 1200 + 47 == 1247
+  });
+
+  it('honors minute param as a 1-minute point-in-time bucket', async () => {
+    mockSql
+      .mockResolvedValueOnce([ROW])
+      .mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: {
+        date: '2026-05-01',
+        minute: '2026-05-01T14:35:00.000Z',
+      },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { minute: string | null };
+    expect(body.minute).toBe('2026-05-01T14:35:00.000Z');
+  });
+
+  it('filters by optionType (calls only)', async () => {
+    mockSql
+      .mockResolvedValueOnce([ROW])
+      .mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-01', optionType: 'C' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { filters: Record<string, unknown> };
+    expect(body.filters.optionType).toBe('C');
+  });
+
+  it('filters by tod bucket', async () => {
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ total: 0 }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-01', tod: 'PM' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { filters: Record<string, unknown> };
+    expect(body.filters.tod).toBe('PM');
+  });
+
+  it('rejects invalid optionType', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { optionType: 'X' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(400);
+  });
+
+  it('rejects invalid tod', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { tod: 'CLOSE' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(400);
   });
 
   it('reflects filter params back in the response envelope', async () => {

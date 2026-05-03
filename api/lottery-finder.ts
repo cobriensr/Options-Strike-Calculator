@@ -115,7 +115,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
       return;
     }
-    const { ticker, reload, cheapCallPm, mode, date, at, limit } = parsed.data;
+    const {
+      ticker,
+      reload,
+      cheapCallPm,
+      mode,
+      optionType,
+      tod,
+      date,
+      at,
+      minute,
+      limit,
+      offset,
+    } = parsed.data;
 
     // Bound the result set to one trading day. `date` defaults to
     // ET-today; the trading day rolls in CT/ET, not UTC. We filter on
@@ -123,11 +135,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // ET-anchored) — exact equality, no TZ-bound math required.
     const targetDate = date ?? getETDateStr(new Date());
 
-    // `at` is the scrubber cutoff. When provided, only fires with
-    // trigger_time_ct ≤ at are returned. Sentinel for "no cutoff" is
-    // a far-future timestamp on the trading day so the SQL stays one
-    // shape regardless of param presence.
-    const cutoffTs = at ?? `${targetDate}T23:59:59.999Z`;
+    // Time-window resolution: `minute` (point-in-time bucket) wins
+    // over `at` (cumulative cutoff). When neither is set, the whole
+    // day is in scope. Sentinel pair lets the SQL stay one shape:
+    // [windowStart, windowEnd) covers minute-bucket; for cutoff/full-day
+    // we set windowStart to the dawn of time and windowEnd to the
+    // requested upper bound.
+    let windowStart: string;
+    let windowEnd: string;
+    if (minute) {
+      // 1-minute bucket: [minute, minute + 1 min)
+      windowStart = minute;
+      windowEnd = new Date(Date.parse(minute) + 60_000).toISOString();
+    } else if (at) {
+      // Cumulative cutoff: (-∞, at]. Use a far-past sentinel for the
+      // lower bound and `at + 1 ms` for the upper so `< windowEnd`
+      // matches the historical `<= at` semantic.
+      windowStart = '1970-01-01T00:00:00.000Z';
+      windowEnd = new Date(Date.parse(at) + 1).toISOString();
+    } else {
+      // Whole day for `targetDate`.
+      windowStart = '1970-01-01T00:00:00.000Z';
+      windowEnd = `${targetDate}T23:59:59.999Z`;
+    }
 
     const db = getDb();
 
@@ -161,23 +191,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           inserted_at, enriched_at
         FROM lottery_finder_fires
         WHERE date = ${targetDate}::date
-          AND trigger_time_ct <= ${cutoffTs}::timestamptz
+          AND trigger_time_ct >= ${windowStart}::timestamptz
+          AND trigger_time_ct < ${windowEnd}::timestamptz
           AND (${ticker ?? null}::text IS NULL OR underlying_symbol = ${ticker ?? ''})
           AND (${reload ?? null}::boolean IS NULL OR reload_tagged = ${reload ?? false})
           AND (${cheapCallPm ?? null}::boolean IS NULL OR cheap_call_pm_tagged = ${cheapCallPm ?? false})
           AND (${mode ?? null}::text IS NULL OR mode = ${mode ?? ''})
-        ORDER BY trigger_time_ct DESC
+          AND (${optionType ?? null}::text IS NULL OR option_type = ${optionType ?? ''})
+          AND (${tod ?? null}::text IS NULL OR tod = ${tod ?? ''})
+        ORDER BY trigger_time_ct DESC, id DESC
         LIMIT ${limit}
+        OFFSET ${offset}
       `,
       db`
         SELECT COUNT(*)::int AS total
         FROM lottery_finder_fires
         WHERE date = ${targetDate}::date
-          AND trigger_time_ct <= ${cutoffTs}::timestamptz
+          AND trigger_time_ct >= ${windowStart}::timestamptz
+          AND trigger_time_ct < ${windowEnd}::timestamptz
           AND (${ticker ?? null}::text IS NULL OR underlying_symbol = ${ticker ?? ''})
           AND (${reload ?? null}::boolean IS NULL OR reload_tagged = ${reload ?? false})
           AND (${cheapCallPm ?? null}::boolean IS NULL OR cheap_call_pm_tagged = ${cheapCallPm ?? false})
           AND (${mode ?? null}::text IS NULL OR mode = ${mode ?? ''})
+          AND (${optionType ?? null}::text IS NULL OR option_type = ${optionType ?? ''})
+          AND (${tod ?? null}::text IS NULL OR tod = ${tod ?? ''})
       `,
     ])) as [FireRow[], { total: number }[]];
 
@@ -266,12 +303,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(200).json({
       date: targetDate,
       asOf: at ?? null,
-      filters: { ticker, reload, cheapCallPm, mode },
+      minute: minute ?? null,
+      filters: { ticker, reload, cheapCallPm, mode, optionType, tod },
       // count = rows returned (≤ limit). total = total matching rows
-      // before LIMIT. UI shows "Showing N of M" when total > count.
+      // before LIMIT/OFFSET. UI uses (offset, limit, total) for the
+      // page-N-of-M display + prev/next controls.
       count: fires.length,
       total,
       limit,
+      offset,
+      hasMore: offset + fires.length < total,
       fires,
     });
   } catch (err) {
