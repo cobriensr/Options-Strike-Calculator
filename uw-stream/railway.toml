@@ -1,0 +1,2 @@
+[deploy]
+watchPatterns = ["uw-stream/**"]
