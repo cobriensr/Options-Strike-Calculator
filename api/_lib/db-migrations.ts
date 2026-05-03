@@ -2974,7 +2974,9 @@ export const MIGRATIONS: Migration[] = [
       '2026-05-02.md). CASCADE removes the indexes (idx_gamma_squeeze_*, ' +
       'uniq_gamma_squeeze_events_key) automatically. Idempotent — re-runs ' +
       'on a fresh DB are no-ops via IF EXISTS.',
-    statements: (sql) => [sql`DROP TABLE IF EXISTS gamma_squeeze_events CASCADE`],
+    statements: (sql) => [
+      sql`DROP TABLE IF EXISTS gamma_squeeze_events CASCADE`,
+    ],
   },
   {
     id: 108,
@@ -3116,6 +3118,199 @@ export const MIGRATIONS: Migration[] = [
           (COALESCE(a.total_ask_side_prem, 0) - COALESCE(a.total_bid_side_prem, 0)) AS net_premium
         FROM ws_flow_alerts a
       `,
+    ],
+  },
+  {
+    id: 109,
+    description:
+      'Create ws_option_trades table for the uw-stream daemon to write the ' +
+      'UW WebSocket `option_trades:<TICKER>` per-tick stream. This is the ' +
+      "input feed for the Lottery Finder cron's v4 trigger detector — " +
+      'each row is one OPRA print with side classification, IV, delta, OI, ' +
+      'and underlying price at the moment of execution. Distinct from ' +
+      'ws_flow_alerts (#108): that table holds UW-aggregated burst alerts; ' +
+      'this one is raw per-trade ticks. Per-ticker filtering keeps daily ' +
+      'volume to ~1-3M rows/day (vs 6-10M for the global firehose) — ' +
+      'sufficient since the Lottery Finder universe is ~50 tickers. See ' +
+      'docs/superpowers/specs/lottery-finder-2026-05-02.md, Phase 1.4. ' +
+      'Schema notes: ws_trade_id is the natural dedupe key (UW emits a ' +
+      'UUID per print on the option_trades channel). raw_payload is kept ' +
+      'as JSONB for forward-compat — we do NOT store the full payload as ' +
+      'extracted columns because per-trade volume makes JSONB storage ' +
+      'cheaper than wide rows (~500 bytes payload vs ~12 typed columns). ' +
+      'A retention cron (TODO, separate spec) will DELETE rows older than ' +
+      '7 days to bound table size.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS ws_option_trades (
+          id BIGSERIAL PRIMARY KEY,
+
+          -- WS-side identity. UW emits a per-trade UUID on the option_trades
+          -- channel. NOT NULL so the daemon rejects malformed payloads up
+          -- front (mirrors the ws_alert_id pattern in ws_flow_alerts).
+          ws_trade_id UUID NOT NULL,
+
+          -- Contract identification.
+          ticker TEXT NOT NULL,
+          option_chain TEXT NOT NULL,        -- OCC OSI symbol, e.g. "SPY260502C00500000"
+          option_type CHAR(1) NOT NULL,      -- 'C' or 'P', parsed from option_chain
+          CONSTRAINT ws_option_trades_option_type_chk CHECK (option_type IN ('C', 'P')),
+          strike NUMERIC(10, 3) NOT NULL,    -- parsed from option_chain
+          expiry DATE NOT NULL,              -- parsed from option_chain
+
+          -- Timing. executed_at is derived from the WS payload's tape time
+          -- (ms epoch → UTC TIMESTAMPTZ). received_at is the daemon's local
+          -- write time — the gap is the end-to-end latency we instrument.
+          executed_at TIMESTAMPTZ NOT NULL,
+          received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+          -- Trade fields.
+          price NUMERIC(12, 4) NOT NULL,
+          size INTEGER NOT NULL,
+          underlying_price NUMERIC(12, 4),
+          side TEXT NOT NULL,                -- 'ask' | 'bid' | 'mid' | 'no_side'
+          CONSTRAINT ws_option_trades_side_chk
+            CHECK (side IN ('ask', 'bid', 'mid', 'no_side')),
+
+          -- Greeks at trade time (used by the v4 trigger 5-min rolling means).
+          implied_volatility NUMERIC(10, 6),
+          delta NUMERIC(10, 6),
+
+          -- Open interest snapshot at trade time. The detector takes
+          -- max(open_interest) per chain per day so a single non-null
+          -- value per chain is sufficient.
+          open_interest INTEGER,
+
+          -- Cancellation flag. UW emits canceled trades; the detector
+          -- filters these out (matches the parquet data convention).
+          canceled BOOLEAN NOT NULL DEFAULT FALSE,
+
+          -- Optional context retained as JSONB for forward-compat.
+          -- Holds anything the daemon doesn't extract into typed columns
+          -- (exchange, sip flags, sale_cond_codes, etc.).
+          raw_payload JSONB NOT NULL
+        )
+      `,
+      sql`CREATE UNIQUE INDEX IF NOT EXISTS ws_option_trades_trade_id_uq
+            ON ws_option_trades (ws_trade_id)`,
+      // Primary read pattern: detector reads recent trades for one chain
+      // (WHERE option_chain = X AND executed_at >= now - 5min).
+      sql`CREATE INDEX IF NOT EXISTS ws_option_trades_chain_executed_idx
+            ON ws_option_trades (option_chain, executed_at DESC)`,
+      // Per-ticker browsing + per-ticker scan for the trigger fan-out.
+      sql`CREATE INDEX IF NOT EXISTS ws_option_trades_ticker_executed_idx
+            ON ws_option_trades (ticker, executed_at DESC)`,
+      // Retention cron + global time-window queries.
+      sql`CREATE INDEX IF NOT EXISTS ws_option_trades_executed_idx
+            ON ws_option_trades (executed_at)`,
+    ],
+  },
+  {
+    id: 110,
+    description:
+      'Create lottery_finder_fires table — the output of the new Lottery ' +
+      'Finder detector (Phase 1.2 of docs/superpowers/specs/lottery-finder-' +
+      '2026-05-02.md). Each row is one v4 trigger fire enriched with ' +
+      'derived discriminators (RE-LOAD tag, cheap-call-PM flag), a macro ' +
+      'context snapshot at fire time (display-only — see Appendix A of ' +
+      'the spec for why macro is not used as a selection gate), and ' +
+      'realized-exit outcomes under three policies. The natural dedupe ' +
+      'key is (option_chain_id, trigger_time_ct) — the detector cooldown ' +
+      'guarantees ≥5 min between fires on the same chain so this composite ' +
+      'is collision-free. Outcome columns are NULL until the enrich cron ' +
+      'backfills them post-EoD. flow_quad/tod/mode are denormalised at ' +
+      'write time for fast UI filter chips.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS lottery_finder_fires (
+          id BIGSERIAL PRIMARY KEY,
+
+          -- Identity ─────────────────────────────────────────
+          date                          DATE NOT NULL,
+          trigger_time_ct               TIMESTAMPTZ NOT NULL,
+          entry_time_ct                 TIMESTAMPTZ NOT NULL,
+          option_chain_id               TEXT NOT NULL,
+          underlying_symbol             TEXT NOT NULL,
+          option_type                   CHAR(1) NOT NULL,
+          CONSTRAINT lottery_finder_fires_option_type_chk
+            CHECK (option_type IN ('C', 'P')),
+          strike                        NUMERIC(12, 4) NOT NULL,
+          expiry                        DATE NOT NULL,
+          dte                           SMALLINT NOT NULL,
+
+          -- Trigger features (5-min rolling, from the v4 detector) ──
+          trigger_vol_to_oi_window      NUMERIC NOT NULL,
+          trigger_vol_to_oi_cum         NUMERIC NOT NULL,
+          trigger_iv                    NUMERIC NOT NULL,
+          trigger_delta                 NUMERIC NOT NULL,
+          trigger_ask_pct               NUMERIC NOT NULL,
+          trigger_window_size           INTEGER NOT NULL,
+          trigger_window_prints         INTEGER NOT NULL,
+
+          -- Entry context ─────────────────────────────────────
+          entry_price                   NUMERIC(12, 4) NOT NULL,
+          open_interest                 INTEGER NOT NULL,
+          spot_at_first                 NUMERIC(12, 4) NOT NULL,
+          alert_seq                     INTEGER NOT NULL,
+          minutes_since_prev_fire       NUMERIC NOT NULL DEFAULT 0,
+
+          -- Derived discriminators ────────────────────────────
+          flow_quad                     TEXT NOT NULL,         -- call_ask | call_bid | call_mixed | put_*
+          tod                           TEXT NOT NULL,         -- AM_open | MID | LUNCH | PM
+          mode                          TEXT NOT NULL,         -- A_intraday_0DTE | B_multi_day_DTE1_3
+          reload_tagged                 BOOLEAN NOT NULL,
+          cheap_call_pm_tagged          BOOLEAN NOT NULL,
+          burst_ratio_vs_prev           NUMERIC,               -- NULL on alert_seq=1
+          entry_drop_pct_vs_prev        NUMERIC,               -- NULL on alert_seq=1
+
+          -- Macro snapshot at fire time (display-only) ────────
+          mkt_tide_ncp                  NUMERIC,
+          mkt_tide_npp                  NUMERIC,
+          mkt_tide_diff                 NUMERIC,               -- ncp - npp
+          mkt_tide_otm_diff             NUMERIC,
+          spx_flow_diff                 NUMERIC,
+          spy_etf_diff                  NUMERIC,
+          qqq_etf_diff                  NUMERIC,
+          zero_dte_diff                 NUMERIC,
+          spx_spot_gamma_oi             NUMERIC,
+          spx_spot_gamma_vol            NUMERIC,
+          spx_spot_charm_oi             NUMERIC,
+          spx_spot_vanna_oi             NUMERIC,
+          gex_strike_call_minus_put     NUMERIC,               -- index/ETF only; ~4% coverage
+          gex_strike_call_ask_minus_bid NUMERIC,
+          gex_strike_put_ask_minus_bid  NUMERIC,
+          gex_strike_actual_strike      NUMERIC,
+
+          -- Outcomes (populated by enrich cron post-EoD) ──────
+          realized_trail30_10_pct       NUMERIC,
+          realized_hard30m_pct          NUMERIC,
+          realized_tier50_holdeod_pct   NUMERIC,
+          realized_eod_pct              NUMERIC,
+          peak_ceiling_pct              NUMERIC,
+          minutes_to_peak               NUMERIC,
+
+          inserted_at                   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          enriched_at                   TIMESTAMPTZ
+        )
+      `,
+      // Natural dedupe key — detector cooldown guarantees uniqueness.
+      sql`CREATE UNIQUE INDEX IF NOT EXISTS lottery_finder_fires_chain_ts_uq
+            ON lottery_finder_fires (option_chain_id, trigger_time_ct)`,
+      // Primary read pattern: recent fires (UI), most-recent first.
+      sql`CREATE INDEX IF NOT EXISTS lottery_finder_fires_date_ts_idx
+            ON lottery_finder_fires (date DESC, trigger_time_ct DESC)`,
+      // Cheap-call-PM filter chip + RE-LOAD chip — partial index keeps it
+      // tiny since these flags fire on a small subset of all rows.
+      sql`CREATE INDEX IF NOT EXISTS lottery_finder_fires_cheap_call_pm_idx
+            ON lottery_finder_fires (date DESC, cheap_call_pm_tagged, reload_tagged)
+            WHERE cheap_call_pm_tagged = TRUE`,
+      // Per-ticker browsing.
+      sql`CREATE INDEX IF NOT EXISTS lottery_finder_fires_ticker_ts_idx
+            ON lottery_finder_fires (underlying_symbol, trigger_time_ct DESC)`,
+      // Enrich cron picks unenriched rows by inserted_at watermark.
+      sql`CREATE INDEX IF NOT EXISTS lottery_finder_fires_unenriched_idx
+            ON lottery_finder_fires (inserted_at)
+            WHERE enriched_at IS NULL`,
     ],
   },
 ];
