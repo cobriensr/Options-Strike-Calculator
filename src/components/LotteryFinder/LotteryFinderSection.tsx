@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { SectionBox } from '../ui/SectionBox.js';
 import { useLotteryFinder } from '../../hooks/useLotteryFinder.js';
+import { LotteryDayBanner } from './LotteryDayBanner.js';
 import { LotteryRow } from './LotteryRow.js';
 import {
   EXIT_POLICY_LABELS,
@@ -138,6 +139,9 @@ export function LotteryFinderSection({
             methodology
           </a>
         </p>
+
+        {/* Day-level macro banner — at-a-glance regime context */}
+        <LotteryDayBanner fires={fires} />
 
         {/* Date + scrub controls */}
         <div className="flex flex-wrap items-center gap-3 text-xs">
