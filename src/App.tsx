@@ -146,11 +146,6 @@ const WhaleAnomaliesSection = lazy(() =>
     .then((m) => ({ default: m.WhaleAnomaliesSection }))
     .catch(handleStaleChunk),
 );
-const GammaSqueezeFeed = lazy(() =>
-  import('./components/GammaSqueezes/GammaSqueezeFeed')
-    .then((m) => ({ default: m.GammaSqueezeFeed }))
-    .catch(handleStaleChunk),
-);
 const WhaleBanner = lazy(() =>
   import('./components/WhaleAnomalies/WhaleBanner')
     .then((m) => ({ default: m.WhaleBanner }))
@@ -654,7 +649,6 @@ export default function StrikeCalculator() {
             { id: 'sec-otm-flow', label: 'OTM Flow Alerts' },
             { id: 'sec-institutional-program', label: 'Institutional Program' },
             { id: 'sec-whale-anomalies', label: 'Whale Anomalies' },
-            { id: 'sec-gamma-squeezes', label: 'Gamma Squeezes' },
           ]
         : []),
       ...(isAuthenticated
@@ -1120,17 +1114,6 @@ export default function StrikeCalculator() {
                   fallback={<SkeletonSection lines={5} />}
                 >
                   <WhaleAnomaliesSection
-                    marketOpen={market.data.quotes?.marketOpen ?? false}
-                  />
-                </GatedSection>
-
-                <GatedSection
-                  gate={hasMarketContext}
-                  id="sec-gamma-squeezes"
-                  label="Gamma Squeezes"
-                  fallback={<SkeletonSection lines={5} />}
-                >
-                  <GammaSqueezeFeed
                     marketOpen={market.data.quotes?.marketOpen ?? false}
                   />
                 </GatedSection>

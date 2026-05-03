@@ -148,7 +148,6 @@ if (import.meta.env.PROD)
       { path: '/api/institutional-program/strike-heatmap', method: 'GET' },
       { path: '/api/whale-anomalies', method: 'GET' },
       { path: '/api/trace-live-calibration', method: 'GET' },
-      { path: '/api/gamma-squeezes', method: 'GET' },
       { path: '/api/strike-trade-volume', method: 'GET' },
       { path: '/api/system-status', method: 'GET' },
       { path: '/api/auth/guest-key', method: 'POST' },

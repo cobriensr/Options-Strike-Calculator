@@ -44,11 +44,6 @@ const TABLES: TableMigration[] = [
     indexName: 'uniq_strike_iv_snapshots_key',
   },
   {
-    table: 'gamma_squeeze_events',
-    keyCols: 'ticker, strike, side, expiry, ts',
-    indexName: 'uniq_gamma_squeeze_events_key',
-  },
-  {
     table: 'iv_anomalies',
     keyCols: 'ticker, strike, side, expiry, ts',
     indexName: 'uniq_iv_anomalies_key',

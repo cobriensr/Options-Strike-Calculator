@@ -3,8 +3,8 @@
  *
  * Wraps the Sentry isolation scope + transaction-name + metrics.request
  * + 405 method-check pattern that 7+ data endpoints in this repo
- * (`gex-target-history.ts`, `gamma-squeezes.ts`, `whale-positioning.ts`,
- * `top-strikes.ts`, etc.) repeat at the top of every default handler.
+ * (`gex-target-history.ts`, `whale-positioning.ts`, `top-strikes.ts`,
+ * etc.) repeat at the top of every default handler.
  *
  * Adoption is staged — see Phase 5l in
  * docs/superpowers/specs/api-refactor-2026-05-02.md. This module is

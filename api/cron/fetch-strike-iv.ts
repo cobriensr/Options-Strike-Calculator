@@ -54,16 +54,56 @@ import {
 } from '../_lib/constants.js';
 import { impliedVolatility } from '../../src/utils/black-scholes.js';
 import { getETCloseUtcIso } from '../../src/utils/timezone.js';
+import { Sentry } from '../_lib/sentry.js';
 import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
-import {
-  captureTickerException,
-  runDetection,
-  type SnapshotRow,
-  type SqlClient,
-} from '../_lib/strike-iv-detection.js';
+
+// ── Inline helpers (formerly in api/_lib/strike-iv-detection.ts) ─────
+//
+// strike-iv-detection.ts existed solely to host the gamma-squeeze
+// detection pipeline that wrote to `gamma_squeeze_events`. The IV
+// anomaly detector was retired with the Whale Anomalies migration
+// (docs/superpowers/specs/whale-anomalies-2026-04-29.md). The squeeze
+// detector + table are dropped in the Lottery Finder replacement
+// (docs/superpowers/specs/lottery-finder-2026-05-02.md). Only this
+// Sentry helper + the SnapshotRow shape used internally by the cron
+// outlived the squeeze code, so they're inlined here.
+
+type SqlClient = ReturnType<typeof getDb>;
+
+interface SnapshotRow {
+  ticker: StrikeIVTicker;
+  strike: number;
+  side: 'call' | 'put';
+  expiry: string; // YYYY-MM-DD
+  spot: number;
+  ivMid: number | null;
+  ivBid: number | null;
+  ivAsk: number | null;
+  midPrice: number;
+  oi: number;
+  volume: number;
+}
+
+/**
+ * Capture an exception to Sentry with the standard fetch-strike-iv tag
+ * bundle. Mirrors the verbatim setTag + captureException sequence the
+ * original cron repeated five times so the per-error noise stays
+ * consistent across detection, persist, enrichment, and per-ticker
+ * crash sites.
+ */
+function captureTickerException(
+  ticker: StrikeIVTicker,
+  err: unknown,
+  phase?: string,
+): void {
+  Sentry.setTag('cron.job', 'fetch-strike-iv');
+  Sentry.setTag('strike_iv.ticker', ticker);
+  if (phase) Sentry.setTag('strike_iv.phase', phase);
+  Sentry.captureException(err);
+}
 
 // ── Schwab types (duplicated locally — api/chain.ts is an endpoint, not a
 //    reusable module, and extracting a shared helper is out of scope for
@@ -485,7 +525,6 @@ async function insertRows(
 interface TickerResult {
   ticker: StrikeIVTicker;
   rowsInserted: number;
-  anomaliesDetected: number;
   skipped: boolean;
   reason?: string;
 }
@@ -508,7 +547,6 @@ async function runTicker(
       return {
         ticker,
         rowsInserted: 0,
-        anomaliesDetected: 0,
         skipped: true,
         reason: 'schwab_error',
       };
@@ -523,7 +561,6 @@ async function runTicker(
       return {
         ticker,
         rowsInserted: 0,
-        anomaliesDetected: 0,
         skipped: true,
         reason: 'empty_chain',
       };
@@ -531,28 +568,19 @@ async function runTicker(
 
     const rowsInserted = await insertRows(sql, rows);
 
-    // ── Phase 2: anomaly detection ────────────────────────────
+    // ── Detection retired ─────────────────────────────────────
     //
-    // Runs after ingestion so a detection failure cannot roll back
-    // the per-strike snapshot rows — Phase 1 data is strictly
-    // first-class. We use the cron's wall-clock start as the
-    // canonical ts so the window function that loads history can
-    // exclude the just-inserted samples cleanly (WHERE ts <
-    // sampledAtIso). The ingestion transaction stamps rows with
-    // NOW() which is slightly after nowMs, hence the < comparison
-    // is safe.
-    let anomaliesDetected = 0;
-    try {
-      const sampledAtIso = new Date(nowMs).toISOString();
-      anomaliesDetected = await runDetection(sql, ticker, rows, sampledAtIso);
-    } catch (err) {
-      captureTickerException(ticker, err, 'detection');
-      logger.error(
-        { err, ticker },
-        'fetch-strike-iv: detection failed — ingestion already persisted',
-      );
-    }
-
+    // Earlier the cron drove gamma-squeeze detection here against
+    // the just-inserted rows. The squeeze table + detector were
+    // dropped with the Lottery Finder migration. Detection now
+    // lives in api/cron/detect-lottery-fires.ts running against
+    // a richer, event-based trigger universe — see
+    // docs/superpowers/specs/lottery-finder-2026-05-02.md.
+    // Detection (gamma-squeeze + IV anomaly) was retired with the
+    // Lottery Finder migration — see Lottery Finder spec
+    // (docs/superpowers/specs/lottery-finder-2026-05-02.md). This cron
+    // is now ingestion-only; downstream signal detection happens in
+    // the lottery-finder cron against the lottery_finder_fires table.
     logger.info(
       {
         ticker,
@@ -560,19 +588,17 @@ async function runTicker(
         expiries,
         rowsInserted,
         candidateRows: rows.length,
-        anomaliesDetected,
       },
       'strike_iv_snapshots written',
     );
 
-    return { ticker, rowsInserted, anomaliesDetected, skipped: false };
+    return { ticker, rowsInserted, skipped: false };
   } catch (err) {
     captureTickerException(ticker, err);
     logger.error({ err, ticker }, 'fetch-strike-iv: ticker failed');
     return {
       ticker,
       rowsInserted: 0,
-      anomaliesDetected: 0,
       skipped: true,
       reason: 'exception',
     };
@@ -597,16 +623,11 @@ export default withCronInstrumentation(
     );
 
     const totalInserted = results.reduce((sum, r) => sum + r.rowsInserted, 0);
-    const totalAnomalies = results.reduce(
-      (sum, r) => sum + r.anomaliesDetected,
-      0,
-    );
 
     return {
       status: 'success',
       metadata: {
         totalInserted,
-        totalAnomalies,
         results,
       },
     };

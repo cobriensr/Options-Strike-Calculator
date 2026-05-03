@@ -2963,4 +2963,17 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 107,
+    description:
+      'Drop gamma_squeeze_events table — replaced by lottery_finder_fires ' +
+      'in the Lottery Finder migration. The velocity-based gamma squeeze ' +
+      'detector underperformed in the 15-day backtest and is being replaced ' +
+      'by the cheap-call-PM RE-LOAD selection rule discovered against the ' +
+      'options-flow archive (see docs/superpowers/specs/lottery-finder-' +
+      '2026-05-02.md). CASCADE removes the indexes (idx_gamma_squeeze_*, ' +
+      'uniq_gamma_squeeze_events_key) automatically. Idempotent — re-runs ' +
+      'on a fresh DB are no-ops via IF EXISTS.',
+    statements: (sql) => [sql`DROP TABLE IF EXISTS gamma_squeeze_events CASCADE`],
+  },
 ];

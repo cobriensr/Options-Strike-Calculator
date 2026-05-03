@@ -168,29 +168,6 @@ export const ivAnomaliesQuerySchema = z
 export type IVAnomaliesQuery = z.infer<typeof ivAnomaliesQuerySchema>;
 
 // ============================================================
-// /api/gamma-squeezes
-// ============================================================
-
-/**
- * Validation for `GET /api/gamma-squeezes` — sibling of the IV anomaly
- * endpoint. `ticker` narrows to one watchlist symbol; `limit` caps the
- * history depth. No history mode (per-strike replay) — gamma squeezes
- * are inherently a board view, not a per-strike chart.
- *
- * `at` enables point-in-time replay: when set, the handler returns
- * squeezes whose `ts` falls in the 24h window ending at `at` (mirrors
- * the IV anomalies replay window). When omitted, defaults to live
- * (`NOW() - 24h`). Format is ISO 8601 with offset.
- */
-export const gammaSqueezesQuerySchema = z.object({
-  ticker: z.enum(STRIKE_IV_TICKERS).optional(),
-  limit: z.coerce.number().int().min(1).max(500).default(100),
-  at: z.string().datetime({ offset: true }).optional(),
-});
-
-export type GammaSqueezesQuery = z.infer<typeof gammaSqueezesQuerySchema>;
-
-// ============================================================
 // /api/strike-trade-volume
 // ============================================================
 

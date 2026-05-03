@@ -5,7 +5,7 @@
  * tickers (SPX, NDX, SPY, QQQ) from the Unusual Whales spot-exposures
  * endpoint. Results land in `strike_exposures` keyed by (date, timestamp,
  * ticker, strike, expiry). Downstream consumers — compute-zero-gamma,
- * gamma-squeeze, build-features-gex — filter by `ticker` and `expiry`.
+ * build-features-gex — filter by `ticker` and `expiry`.
  *
  * Per-ticker expiry policy:
  *   - SPX: today (0DTE) + tomorrow (1DTE). The 1DTE pull is preserved
