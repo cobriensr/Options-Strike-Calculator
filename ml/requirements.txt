@@ -3,7 +3,7 @@ charset-normalizer==3.4.7
 contourpy==1.3.3
 cycler==0.12.1
 databento==0.75.0
-duckdb>=1.0
+duckdb>=1.5.2
 fonttools==4.62.1
 idna==3.11
 iniconfig==2.3.0
