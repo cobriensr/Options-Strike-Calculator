@@ -48,6 +48,8 @@ interface RawGreekFlowRow {
   cum_total_delta_flow: string | number;
   cum_otm_dir_delta_flow: string | number;
   cum_otm_total_delta_flow: string | number;
+  /** Per-minute close from etf_candles_1m. NULL when the candle is missing. */
+  price?: string | number | null;
 }
 
 export interface GreekFlowRow {
@@ -71,6 +73,8 @@ export interface GreekFlowRow {
   cum_total_delta_flow: number;
   cum_otm_dir_delta_flow: number;
   cum_otm_total_delta_flow: number;
+  /** Underlying ETF close at this minute (null when no matching candle). */
+  price: number | null;
 }
 
 function toIso(value: string | Date): string {
@@ -101,7 +105,16 @@ function mapRow(r: RawGreekFlowRow): GreekFlowRow {
     cum_total_delta_flow: parsedOrFallback(r.cum_total_delta_flow, 0),
     cum_otm_dir_delta_flow: parsedOrFallback(r.cum_otm_dir_delta_flow, 0),
     cum_otm_total_delta_flow: parsedOrFallback(r.cum_otm_total_delta_flow, 0),
+    price: parseNullableNumeric(r.price),
   };
+}
+
+function parseNullableNumeric(
+  value: string | number | null | undefined,
+): number | null {
+  if (value == null) return null;
+  const parsed = typeof value === 'number' ? value : Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 /**
@@ -140,31 +153,35 @@ export async function getGreekFlowSession(
   const sql = getDb();
   const rows = (await sql`
     SELECT
-      ticker,
-      timestamp,
-      transactions,
-      volume,
-      dir_vega_flow,
-      total_vega_flow,
-      otm_dir_vega_flow,
-      otm_total_vega_flow,
-      dir_delta_flow,
-      total_delta_flow,
-      otm_dir_delta_flow,
-      otm_total_delta_flow,
-      SUM(dir_vega_flow)        OVER w AS cum_dir_vega_flow,
-      SUM(total_vega_flow)      OVER w AS cum_total_vega_flow,
-      SUM(otm_dir_vega_flow)    OVER w AS cum_otm_dir_vega_flow,
-      SUM(otm_total_vega_flow)  OVER w AS cum_otm_total_vega_flow,
-      SUM(dir_delta_flow)       OVER w AS cum_dir_delta_flow,
-      SUM(total_delta_flow)     OVER w AS cum_total_delta_flow,
-      SUM(otm_dir_delta_flow)   OVER w AS cum_otm_dir_delta_flow,
-      SUM(otm_total_delta_flow) OVER w AS cum_otm_total_delta_flow
-    FROM vega_flow_etf
-    WHERE ticker IN ('SPY', 'QQQ')
-      AND date = ${date}::date
-    WINDOW w AS (PARTITION BY ticker ORDER BY timestamp)
-    ORDER BY ticker, timestamp
+      f.ticker,
+      f.timestamp,
+      f.transactions,
+      f.volume,
+      f.dir_vega_flow,
+      f.total_vega_flow,
+      f.otm_dir_vega_flow,
+      f.otm_total_vega_flow,
+      f.dir_delta_flow,
+      f.total_delta_flow,
+      f.otm_dir_delta_flow,
+      f.otm_total_delta_flow,
+      SUM(f.dir_vega_flow)        OVER w AS cum_dir_vega_flow,
+      SUM(f.total_vega_flow)      OVER w AS cum_total_vega_flow,
+      SUM(f.otm_dir_vega_flow)    OVER w AS cum_otm_dir_vega_flow,
+      SUM(f.otm_total_vega_flow)  OVER w AS cum_otm_total_vega_flow,
+      SUM(f.dir_delta_flow)       OVER w AS cum_dir_delta_flow,
+      SUM(f.total_delta_flow)     OVER w AS cum_total_delta_flow,
+      SUM(f.otm_dir_delta_flow)   OVER w AS cum_otm_dir_delta_flow,
+      SUM(f.otm_total_delta_flow) OVER w AS cum_otm_total_delta_flow,
+      c.close AS price
+    FROM vega_flow_etf f
+    LEFT JOIN etf_candles_1m c
+      ON c.ticker = f.ticker
+     AND c.timestamp = f.timestamp
+    WHERE f.ticker IN ('SPY', 'QQQ')
+      AND f.date = ${date}::date
+    WINDOW w AS (PARTITION BY f.ticker ORDER BY f.timestamp)
+    ORDER BY f.ticker, f.timestamp
   `) as RawGreekFlowRow[];
   return rows.map(mapRow);
 }

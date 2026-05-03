@@ -39,42 +39,36 @@ interface ChartCellSpec {
   ticker: GreekFlowTicker;
   field: GreekFlowField;
   cumKey: keyof GreekFlowRow;
-  /** Companion greek shown as a faded grey context line. */
-  contextCumKey: keyof GreekFlowRow;
   label: string;
 }
 
 // Row order: deltas first (directional read), vegas second (regime read).
 // Column order: SPY left (broader market), QQQ right (tech-specific).
-// Each panel pairs its active greek with the complementary greek as
-// a grey context line (same as the UW Greek Flow dashboard).
+// Each panel overlays the underlying ETF price (slate grey, independent
+// scale) as the context line — same as the UW Greek Flow dashboard.
 const CHART_GRID: readonly ChartCellSpec[] = [
   {
     ticker: 'SPY',
     field: 'otm_dir_delta_flow',
     cumKey: 'cum_otm_dir_delta_flow',
-    contextCumKey: 'cum_otm_dir_vega_flow',
     label: 'OTM Dir Delta',
   },
   {
     ticker: 'QQQ',
     field: 'otm_dir_delta_flow',
     cumKey: 'cum_otm_dir_delta_flow',
-    contextCumKey: 'cum_otm_dir_vega_flow',
     label: 'OTM Dir Delta',
   },
   {
     ticker: 'SPY',
     field: 'otm_dir_vega_flow',
     cumKey: 'cum_otm_dir_vega_flow',
-    contextCumKey: 'cum_otm_dir_delta_flow',
     label: 'OTM Dir Vega',
   },
   {
     ticker: 'QQQ',
     field: 'otm_dir_vega_flow',
     cumKey: 'cum_otm_dir_vega_flow',
-    contextCumKey: 'cum_otm_dir_delta_flow',
     label: 'OTM Dir Vega',
   },
 ] as const;
@@ -140,7 +134,7 @@ function Body({
   if (loading && data == null) {
     return <div className="text-secondary font-sans text-xs">Loading…</div>;
   }
-  if (data == null || data.date == null) {
+  if (data?.date == null) {
     return (
       <div className="text-secondary font-sans text-xs">
         No Greek flow data for the selected date.
@@ -168,9 +162,7 @@ function Body({
         {CHART_GRID.map((spec) => {
           const tickerData = data.tickers[spec.ticker];
           const values = tickerData.rows.map((r) => r[spec.cumKey] as number);
-          const contextValues = tickerData.rows.map(
-            (r) => r[spec.contextCumKey] as number,
-          );
+          const priceValues = tickerData.rows.map((r) => r.price);
           const fieldMetrics = tickerData.metrics[spec.field];
           const fieldDivergence = data.divergence[spec.field];
           return (
@@ -186,7 +178,7 @@ function Body({
               </div>
               <FlowChart
                 values={values}
-                contextValues={contextValues}
+                priceValues={priceValues}
                 ariaLabel={`${spec.ticker} cumulative ${spec.label}`}
               />
               <MetricsBar

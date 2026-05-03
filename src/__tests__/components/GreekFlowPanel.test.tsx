@@ -117,6 +117,7 @@ function fakeRow(
     cum_total_delta_flow: i + 1,
     cum_otm_dir_delta_flow: cumDelta,
     cum_otm_total_delta_flow: i + 1,
+    price: 100 + i * 0.1,
   };
 }
 

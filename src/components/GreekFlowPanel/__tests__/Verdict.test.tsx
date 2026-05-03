@@ -86,6 +86,7 @@ function row(
     cum_total_delta_flow: 0,
     cum_otm_dir_delta_flow: cumDelta,
     cum_otm_total_delta_flow: 0,
+    price: null,
   };
 }
 

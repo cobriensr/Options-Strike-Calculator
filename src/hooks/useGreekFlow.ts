@@ -52,6 +52,7 @@ export interface GreekFlowRow {
   cum_total_delta_flow: number;
   cum_otm_dir_delta_flow: number;
   cum_otm_total_delta_flow: number;
+  price: number | null;
 }
 
 export type Sign = 1 | -1 | 0;

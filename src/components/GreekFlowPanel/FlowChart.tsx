@@ -1,18 +1,21 @@
 /**
  * FlowChart — small SVG line chart for one cumulative Greek-flow series,
  * color-mapped by sign (red below zero, green above zero), with an
- * optional grey context line for the complementary greek.
+ * optional grey underlying-price overlay on a separate y-axis.
  *
- * Implementation mirrors the UW Greek Flow dashboard aesthetic: each
- * panel shows BOTH delta and vega cumulatives — the active greek
- * colored by its sign at the zero crossing, the complementary greek
- * rendered as a faded grey line behind it for at-a-glance comparison.
+ * Mirrors the UW Greek Flow dashboard aesthetic: each panel shows the
+ * cumulative greek (sign-colored, axis on right) plus the underlying
+ * ETF price (slate grey, independent scale) so flow vs price action are
+ * legible at a glance.
  *
  * Implementation notes:
  *   - Uses a linearGradient + stop offsets to color the active path so
  *     the transition lands exactly at the zero crossing.
- *   - Y-axis auto-scales to the union of all values + 0, so both the
- *     active and context series stay in frame on a shared axis.
+ *   - Active y-axis is auto-scaled to (min, max, 0) so the zero baseline
+ *     is always inside the chart even when cumulative is one-sided.
+ *   - Price y-axis is independent: scaled to its own min/max with a
+ *     small pad so it doesn't kiss the chart edges. Nullable values are
+ *     allowed (path breaks at gaps).
  *   - Width fills the parent via SVG viewBox; height is fixed.
  */
 
@@ -21,21 +24,26 @@ import { memo, useId, useMemo } from 'react';
 interface FlowChartProps {
   /** Active series (cumulative, sign-colored). */
   values: number[];
-  /** Optional complementary series rendered as a grey context line. */
-  contextValues?: number[];
+  /**
+   * Optional underlying ETF price series. Same length as `values`,
+   * timestamp-aligned. Null entries break the line at that gap.
+   */
+  priceValues?: (number | null)[];
   /** Optional fixed height override (SVG units). Default 60. */
   height?: number;
-  /** ARIA label, e.g. "QQQ cumulative Dir Vega flow". */
+  /** ARIA label, e.g. "QQQ cumulative OTM Dir Delta". */
   ariaLabel: string;
 }
 
 const VIEW_W = 200;
 const PAD_X = 2;
 const PAD_Y = 4;
+// Inset price line a little so it doesn't kiss the top/bottom edges.
+const PRICE_PAD_RATIO = 0.08;
 
 function FlowChartInner({
   values,
-  contextValues,
+  priceValues,
   height = 60,
   ariaLabel,
 }: FlowChartProps) {
@@ -43,11 +51,9 @@ function FlowChartInner({
   const layout = useMemo(() => {
     if (values.length < 2) return null;
 
-    const allValues = contextValues
-      ? [...values, ...contextValues]
-      : values;
-    const minVal = Math.min(0, ...allValues);
-    const maxVal = Math.max(0, ...allValues);
+    // Active series y-scale: 0-pinned so the zero baseline is in frame.
+    const minVal = Math.min(0, ...values);
+    const maxVal = Math.max(0, ...values);
     const range = maxVal - minVal || 1;
 
     const innerH = height - PAD_Y * 2;
@@ -59,29 +65,51 @@ function FlowChartInner({
 
     const linePath = values
       .map(
-        (v, i) =>
-          `${i === 0 ? 'M' : 'L'} ${xAt(i, values.length)} ${yAt(v)}`,
+        (v, i) => `${i === 0 ? 'M' : 'L'} ${xAt(i, values.length)} ${yAt(v)}`,
       )
       .join(' ');
 
-    const contextPath =
-      contextValues && contextValues.length >= 2
-        ? contextValues
-            .map(
-              (v, i) =>
-                `${i === 0 ? 'M' : 'L'} ${xAt(i, contextValues.length)} ${yAt(v)}`,
-            )
-            .join(' ')
-        : null;
+    // Price series y-scale: independent of the active scale so the price
+    // line uses the full vertical real estate. Nullable values break the
+    // path with a Move command instead of Line.
+    let pricePath: string | null = null;
+    if (priceValues && priceValues.length >= 2) {
+      const finitePrices = priceValues.filter(
+        (p): p is number => p != null && Number.isFinite(p),
+      );
+      if (finitePrices.length >= 2) {
+        const rawMin = Math.min(...finitePrices);
+        const rawMax = Math.max(...finitePrices);
+        const rawRange = rawMax - rawMin || 1;
+        const pad = rawRange * PRICE_PAD_RATIO;
+        const minPrice = rawMin - pad;
+        const maxPrice = rawMax + pad;
+        const priceRange = maxPrice - minPrice || 1;
+        const yAtPrice = (p: number) =>
+          PAD_Y + (1 - (p - minPrice) / priceRange) * innerH;
 
-    // Y position of the zero baseline. Used both for the dashed
-    // baseline rule and for the gradient stop offset (so red/green
-    // switches exactly at zero rather than at some arbitrary midpoint).
+        const segs: string[] = [];
+        let inSegment = false;
+        priceValues.forEach((p, i) => {
+          if (p == null || !Number.isFinite(p)) {
+            inSegment = false;
+            return;
+          }
+          const cmd = inSegment ? 'L' : 'M';
+          segs.push(
+            `${cmd} ${xAt(i, priceValues.length).toFixed(2)} ${yAtPrice(p).toFixed(2)}`,
+          );
+          inSegment = true;
+        });
+        pricePath = segs.length > 0 ? segs.join(' ') : null;
+      }
+    }
+
     const yZero = yAt(0);
     const zeroOffset = (yZero - PAD_Y) / innerH;
 
-    return { linePath, contextPath, yZero, zeroOffset, minVal, maxVal };
-  }, [values, contextValues, height]);
+    return { linePath, pricePath, yZero, zeroOffset, minVal, maxVal };
+  }, [values, priceValues, height]);
 
   if (layout == null) {
     return (
@@ -94,7 +122,7 @@ function FlowChartInner({
     );
   }
 
-  const { linePath, contextPath, yZero, zeroOffset, minVal, maxVal } = layout;
+  const { linePath, pricePath, yZero, zeroOffset, minVal, maxVal } = layout;
 
   return (
     <svg
@@ -126,12 +154,12 @@ function FlowChartInner({
         strokeDasharray="2 2"
         className="text-secondary opacity-50"
       />
-      {contextPath != null && (
+      {pricePath != null && (
         <path
-          d={contextPath}
+          d={pricePath}
           fill="none"
-          stroke="rgb(167, 139, 250)"
-          strokeOpacity={0.45}
+          stroke="rgb(148, 163, 184)"
+          strokeOpacity={0.55}
           strokeWidth={1.0}
         />
       )}
