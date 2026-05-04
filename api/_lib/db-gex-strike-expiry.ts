@@ -16,6 +16,28 @@
 
 import { getDb } from './db.js';
 import { parsedOrFallback } from './numeric-coercion.js';
+import { getPrimaryExpiry } from './zero-gamma-tickers.js';
+
+/**
+ * Per-ticker expiry remapping for the `ws_gex_strike_expiry` reads.
+ *
+ * The frontend always passes `selectedDate` (the calendar date the user
+ * is browsing) as `expiry`. For SPX/SPY/QQQ this matches the row's
+ * stored expiry — they have daily expirations. For NDX, UW only carries
+ * monthly expirations (3rd Friday); the ingest cron writes NDX rows
+ * with `expiry = front monthly`. Without this remap, every non-monthly
+ * date produces a query that returns zero NDX rows.
+ *
+ * Centralized here so both `getLatestGexPerStrikeWithDeltas` and
+ * `getTimestampsForDay` agree on the resolution.
+ */
+function resolveStoredExpiry(
+  ticker: GexStrikeExpiryTicker,
+  requestedExpiry: string,
+): string {
+  if (ticker === 'NDX') return getPrimaryExpiry('NDX', requestedExpiry);
+  return requestedExpiry;
+}
 
 export const GEX_STRIKE_EXPIRY_TICKERS = ['SPY', 'QQQ', 'SPX', 'NDX'] as const;
 export type GexStrikeExpiryTicker = (typeof GEX_STRIKE_EXPIRY_TICKERS)[number];
@@ -220,7 +242,10 @@ export async function getLatestGexPerStrikeWithDeltas(
   opts: FetchOpts,
 ): Promise<GexStrikeExpiryRowWithDeltas[]> {
   const sql = getDb();
-  const { ticker, expiry, at } = opts;
+  const { ticker, at } = opts;
+  // Remap requested calendar date → stored row expiry. NDX rows are
+  // stored under monthly expirations; SPX/SPY/QQQ pass through unchanged.
+  const expiry = resolveStoredExpiry(ticker, opts.expiry);
   const atParam = at ?? null;
 
   // 35-minute lookback is enough to cover the largest delta (30m) plus
@@ -397,9 +422,12 @@ export async function getLatestGexPerStrikeWithDeltas(
  */
 export async function getTimestampsForDay(
   ticker: GexStrikeExpiryTicker,
-  expiry: string,
+  requestedExpiry: string,
 ): Promise<string[]> {
   const sql = getDb();
+  // Same NDX monthly-expiry remap as the strikes query so scrub
+  // timestamps line up with the rows the panel actually sees.
+  const expiry = resolveStoredExpiry(ticker, requestedExpiry);
   const rows = (await sql`
     WITH ws_ts AS (
       SELECT DISTINCT ts_minute
