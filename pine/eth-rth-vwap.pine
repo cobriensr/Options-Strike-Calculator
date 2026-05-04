@@ -1,0 +1,92 @@
+//@version=6
+indicator('ETH + RTH Session VWAP', overlay = true)
+
+sessionGroup = 'Sessions'
+displayGroup = 'Display'
+
+priceSource = input.source(hlc3, 'VWAP source')
+timeZone = input.string('America/Chicago', 'Session timezone', group = sessionGroup)
+ethEveningSession = input.session(
+     '1700-2359',
+     'ETH evening session',
+     tooltip = 'Default starts the CME equity-index electronic session at 17:00 CT.',
+     group = sessionGroup
+)
+ethEveningDays = input.string(
+     '12345',
+     'ETH evening days',
+     tooltip = '1 = Sunday, 7 = Saturday. Default covers Sunday through Thursday evenings.',
+     group = sessionGroup
+)
+ethDaySession = input.session(
+     '0000-1600',
+     'ETH day session',
+     tooltip = 'Default continues the electronic session through 16:00 CT (CME daily close).',
+     group = sessionGroup
+)
+ethDayDays = input.string(
+     '23456',
+     'ETH day days',
+     tooltip = '1 = Sunday, 7 = Saturday. Default covers Monday through Friday.',
+     group = sessionGroup
+)
+rthSession = input.session(
+     '0830-1500',
+     'RTH session',
+     tooltip = 'Default is regular U.S. equity/index trading hours in CT (08:30–15:00), Monday through Friday.',
+     group = sessionGroup
+)
+rthDays = input.string(
+     '23456',
+     'RTH days',
+     tooltip = '1 = Sunday, 7 = Saturday. Default covers Monday through Friday.',
+     group = sessionGroup
+)
+
+showEth = input.bool(true, 'Show ETH VWAP', group = displayGroup)
+showRth = input.bool(true, 'Show RTH VWAP', group = displayGroup)
+ethColor = input.color(color.new(color.aqua, 0), 'ETH color', group = displayGroup)
+rthColor = input.color(color.new(color.orange, 0), 'RTH color', group = displayGroup)
+
+ethEveningString = ethEveningSession + ':' + ethEveningDays
+ethDayString = ethDaySession + ':' + ethDayDays
+rthString = rthSession + ':' + rthDays
+
+isInEthEvening = not na(time(timeframe.period, ethEveningString, timeZone))
+isInEthDay = not na(time(timeframe.period, ethDayString, timeZone))
+isInEth = isInEthEvening or isInEthDay
+isInRth = not na(time(timeframe.period, rthString, timeZone))
+
+isEthStart = isInEthEvening and (bar_index == 0 or not isInEth[1])
+isRthStart = isInRth and (bar_index == 0 or not isInRth[1])
+
+var float ethPriceVolume = na
+var float ethVolume = na
+var float rthPriceVolume = na
+var float rthVolume = na
+
+if isEthStart
+    ethPriceVolume := priceSource * volume
+    ethVolume := volume
+else if isInEth
+    ethPriceVolume := nz(ethPriceVolume) + priceSource * volume
+    ethVolume := nz(ethVolume) + volume
+else
+    ethPriceVolume := na
+    ethVolume := na
+
+if isRthStart
+    rthPriceVolume := priceSource * volume
+    rthVolume := volume
+else if isInRth
+    rthPriceVolume := nz(rthPriceVolume) + priceSource * volume
+    rthVolume := nz(rthVolume) + volume
+else
+    rthPriceVolume := na
+    rthVolume := na
+
+ethVwap = ethVolume > 0 ? ethPriceVolume / ethVolume : na
+rthVwap = rthVolume > 0 ? rthPriceVolume / rthVolume : na
+
+plot(showEth ? ethVwap : na, 'ETH VWAP', color = ethColor, linewidth = 2)
+plot(showRth ? rthVwap : na, 'RTH VWAP', color = rthColor, linewidth = 2)
