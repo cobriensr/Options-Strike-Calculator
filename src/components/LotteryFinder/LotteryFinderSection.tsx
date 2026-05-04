@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { SectionBox } from '../ui/SectionBox.js';
 import { useLotteryFinder } from '../../hooks/useLotteryFinder.js';
+import { ctSessionBounds } from './ct-window.js';
 import { LotteryDayBanner } from './LotteryDayBanner.js';
 import { LotteryRow } from './LotteryRow.js';
 import {
@@ -110,55 +111,9 @@ export function LotteryFinderSection({
       pageSize: PAGE_SIZE,
     });
 
-  // Time-scrub bounds are anchored to the regular-session window of
-  // the selected date (08:30 → 15:00 CT) — NOT to the displayed
-  // fires. Otherwise scrubbing inward shrinks the result set, which
-  // shrinks the bounds, which collapses the slider mid-drag and
-  // causes snap-back.
-  //
-  // CT 08:30 = UTC 13:30 during CDT, 14:30 during CST. We don't have
-  // a TZ helper that knows the date's DST state at this layer, so we
-  // pin to UTC anchors of the *date's* CT-session by computing the
-  // bounds via Intl.DateTimeFormat. Keeps the slider stable across
-  // DST transitions.
-  const scrubBounds = useMemo(() => {
-    // 08:30 CT and 15:00 CT on `date`, expressed as UTC instants.
-    const ctToUtc = (hh: number, mm: number): string => {
-      // Construct a wall-clock "date hh:mm" string and interpret it
-      // through the America/Chicago locale to recover the UTC instant.
-      const wall = new Date(
-        `${date}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00`,
-      );
-      // Compute the offset between the wall-clock as-if-UTC and the
-      // wall-clock as-if-CT for the same date — that's the negative
-      // of CT's UTC offset on that day.
-      const ctParts = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'America/Chicago',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-      }).formatToParts(wall);
-      const lookup: Record<string, string> = {};
-      for (const p of ctParts) lookup[p.type] = p.value;
-      // wall - asCt = offset; offset is what we need to add to a wall
-      // clock CT instant to get UTC.
-      const asCt = Date.UTC(
-        Number(lookup.year),
-        Number(lookup.month) - 1,
-        Number(lookup.day),
-        Number(lookup.hour === '24' ? '0' : lookup.hour),
-        Number(lookup.minute),
-      );
-      const offsetMs = wall.getTime() - asCt;
-      // wall is CT hh:mm interpreted as UTC; add the offset to get the
-      // true UTC instant for that CT wall clock.
-      return new Date(wall.getTime() + offsetMs).toISOString();
-    };
-    return { min: ctToUtc(8, 30), max: ctToUtc(15, 0) };
-  }, [date]);
+  // Regular-session bounds (08:30 → 15:00 CT) for the selected date,
+  // browser-TZ-independent. See ct-window.ts.
+  const scrubBounds = useMemo(() => ctSessionBounds(date), [date]);
 
   const isLive = minute == null && date === todayCt();
   const isHistorical = date !== todayCt();
@@ -184,14 +139,9 @@ export function LotteryFinderSection({
   const topTickers = useMemo(() => {
     const counts = new Map<string, number>();
     for (const f of fires) {
-      counts.set(
-        f.underlyingSymbol,
-        (counts.get(f.underlyingSymbol) ?? 0) + 1,
-      );
+      counts.set(f.underlyingSymbol, (counts.get(f.underlyingSymbol) ?? 0) + 1);
     }
-    return [...counts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 12);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
   }, [fires]);
 
   return (
@@ -330,7 +280,7 @@ export function LotteryFinderSection({
 
         {/* Calls / Puts toggle */}
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-[10px] uppercase tracking-wide text-neutral-500">
+          <span className="text-[10px] tracking-wide text-neutral-500 uppercase">
             type
           </span>
           {[
@@ -359,7 +309,7 @@ export function LotteryFinderSection({
 
         {/* Time-of-day chips */}
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-[10px] uppercase tracking-wide text-neutral-500">
+          <span className="text-[10px] tracking-wide text-neutral-500 uppercase">
             tod
           </span>
           {TOD_FILTERS.map((t) => (
@@ -384,7 +334,7 @@ export function LotteryFinderSection({
             dominant tickers of the day at a glance. */}
         {(topTickers.length > 0 || tickerFilter) && (
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[10px] uppercase tracking-wide text-neutral-500">
+            <span className="text-[10px] tracking-wide text-neutral-500 uppercase">
               ticker
             </span>
             <button
@@ -402,9 +352,7 @@ export function LotteryFinderSection({
               <button
                 key={t}
                 type="button"
-                onClick={() =>
-                  setTickerFilter(tickerFilter === t ? null : t)
-                }
+                onClick={() => setTickerFilter(tickerFilter === t ? null : t)}
                 className={`rounded border px-2 py-0.5 text-xs font-semibold ${
                   tickerFilter === t
                     ? 'border-emerald-500 bg-emerald-950/40 text-emerald-200'
