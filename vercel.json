@@ -142,10 +142,6 @@
       "schedule": "* 13-21 * * 1-5"
     },
     {
-      "path": "/api/cron/fetch-darkpool",
-      "schedule": "* 13-21 * * 1-5"
-    },
-    {
       "path": "/api/cron/fetch-flow-alerts",
       "schedule": "* 13-21 * * 1-5"
     },

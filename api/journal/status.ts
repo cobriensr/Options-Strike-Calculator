@@ -17,7 +17,7 @@ import { getDb } from '../_lib/db.js';
 const DIAGNOSTIC_TABLE_ALLOWLIST = new Set<string>([
   'analyses',
   'current_day_snapshot',
-  'dark_pool_levels',
+  'dark_pool_prints',
   'day_embeddings',
   'day_features',
   'economic_events',
