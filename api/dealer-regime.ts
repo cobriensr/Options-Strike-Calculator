@@ -13,11 +13,15 @@
  * spot exposures — same access category as `/api/zero-gamma` and
  * `/api/gex-strike-expiry`.
  *
- * No query params. Any provided params are rejected via the strict
- * schema so probes that smuggle data through the URL get a clean 400.
+ * Optional query params:
+ *   ?date=YYYY-MM-DD     — filter to a specific ET calendar date
+ *   ?at=<ISO timestamp>  — latest row per ticker at-or-before this minute
+ * No params ⇒ live mode, latest per ticker across all history.
  *
  * Response:
  *   {
+ *     date: string | null,    // echoes the date query param
+ *     at:   string | null,    // echoes the at query param
  *     rows: DealerRegimeRow[],
  *     asOf: string  // ISO timestamp of this response
  *   }
@@ -38,6 +42,8 @@ import {
 } from './_lib/db-dealer-regime.js';
 
 export interface DealerRegimeResponse {
+  date: string | null;
+  at: string | null;
   rows: DealerRegimeRow[];
   asOf: string;
 }
@@ -64,10 +70,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const asOf = new Date().toISOString();
+    const { date, at } = parsed.data;
 
     try {
-      const rows = await getLatestDealerRegime();
-      const response: DealerRegimeResponse = { rows, asOf };
+      const rows = await getLatestDealerRegime({
+        date: date ?? null,
+        at: at ?? null,
+      });
+      const response: DealerRegimeResponse = {
+        date: date ?? null,
+        at: at ?? null,
+        rows,
+        asOf,
+      };
 
       // Cron writes every 5 min during market hours; 30s edge cache
       // matches the polling cadence used by the tile + sibling panels.

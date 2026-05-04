@@ -92,12 +92,29 @@ describe('GET /api/dealer-regime', () => {
   // ── Validation ─────────────────────────────────────────────
 
   it('returns 400 when an unexpected query param is supplied', async () => {
-    // The endpoint takes no query params; the strict schema rejects
-    // anything passed so probes can't smuggle data through the URL.
+    // Strict schema rejects unknown keys (date/at are the only allowed
+    // optional params); anything else produces a clean 400.
     const req = mockRequest({
       method: 'GET',
       query: { ticker: 'SPY' },
     });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(400);
+  });
+
+  it('returns 400 when date format is wrong', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '05/01/2026' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(400);
+  });
+
+  it('returns 400 when at parameter is not a valid ISO datetime', async () => {
+    const req = mockRequest({ method: 'GET', query: { at: 'noon' } });
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(400);
@@ -112,8 +129,25 @@ describe('GET /api/dealer-regime', () => {
     await handler(req, res);
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
+      date: null,
+      at: null,
       rows: [],
       asOf: expect.any(String),
+    });
+  });
+
+  it('echoes date + at back in the response when scrubbed', async () => {
+    mockSql.mockResolvedValueOnce([fakeRow('SPX')]);
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-01', at: '2026-05-01T20:00:00Z' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      date: '2026-05-01',
+      at: '2026-05-01T20:00:00Z',
     });
   });
 

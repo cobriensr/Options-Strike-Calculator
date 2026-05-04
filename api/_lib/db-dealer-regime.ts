@@ -62,6 +62,13 @@ function mapRow(r: RawRow): DealerRegimeRow {
   };
 }
 
+export interface FetchOpts {
+  /** Optional ET calendar date — restrict rows to that day. */
+  date?: string | null;
+  /** Optional ISO timestamp — latest row per ticker at-or-before this. */
+  at?: string | null;
+}
+
 /**
  * Latest `zero_gamma_levels` row per ticker for the four-ticker set.
  *
@@ -70,17 +77,59 @@ function mapRow(r: RawRow): DealerRegimeRow {
  * the classifier maps absence to `uncertain`. Rows are ordered so they
  * come back in the same sequence as `ZERO_GAMMA_TICKERS` for stable
  * downstream consumption.
+ *
+ * `date` and `at` are independent filters — neither, either, or both
+ * may be set:
+ *   - neither: latest per ticker across all history (live mode)
+ *   - `date`: latest per ticker within that ET calendar date
+ *   - `at`:   latest per ticker at-or-before the timestamp
+ *   - both:   latest per ticker within the date AND at-or-before `at`
  */
-export async function getLatestDealerRegime(): Promise<DealerRegimeRow[]> {
+export async function getLatestDealerRegime(
+  opts: FetchOpts = {},
+): Promise<DealerRegimeRow[]> {
   const sql = getDb();
   const tickers = [...ZERO_GAMMA_TICKERS] as readonly string[];
-  const rows = (await sql`
-    SELECT DISTINCT ON (ticker)
-      ticker, ts, spot, zero_gamma, confidence, net_gamma_at_spot
-    FROM zero_gamma_levels
-    WHERE ticker = ANY(${tickers}::text[])
-    ORDER BY ticker, ts DESC
-  `) as RawRow[];
+  const { date, at } = opts;
+
+  let rows: RawRow[];
+  if (date && at) {
+    rows = (await sql`
+      SELECT DISTINCT ON (ticker)
+        ticker, ts, spot, zero_gamma, confidence, net_gamma_at_spot
+      FROM zero_gamma_levels
+      WHERE ticker = ANY(${tickers}::text[])
+        AND (ts AT TIME ZONE 'America/New_York')::date = ${date}::date
+        AND ts <= ${at}::timestamptz
+      ORDER BY ticker, ts DESC
+    `) as RawRow[];
+  } else if (date) {
+    rows = (await sql`
+      SELECT DISTINCT ON (ticker)
+        ticker, ts, spot, zero_gamma, confidence, net_gamma_at_spot
+      FROM zero_gamma_levels
+      WHERE ticker = ANY(${tickers}::text[])
+        AND (ts AT TIME ZONE 'America/New_York')::date = ${date}::date
+      ORDER BY ticker, ts DESC
+    `) as RawRow[];
+  } else if (at) {
+    rows = (await sql`
+      SELECT DISTINCT ON (ticker)
+        ticker, ts, spot, zero_gamma, confidence, net_gamma_at_spot
+      FROM zero_gamma_levels
+      WHERE ticker = ANY(${tickers}::text[])
+        AND ts <= ${at}::timestamptz
+      ORDER BY ticker, ts DESC
+    `) as RawRow[];
+  } else {
+    rows = (await sql`
+      SELECT DISTINCT ON (ticker)
+        ticker, ts, spot, zero_gamma, confidence, net_gamma_at_spot
+      FROM zero_gamma_levels
+      WHERE ticker = ANY(${tickers}::text[])
+      ORDER BY ticker, ts DESC
+    `) as RawRow[];
+  }
 
   // Re-order to match ZERO_GAMMA_TICKERS so the API response is stable.
   const byTicker = new Map(rows.map((r) => [r.ticker, mapRow(r)]));
