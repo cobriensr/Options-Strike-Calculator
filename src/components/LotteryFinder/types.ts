@@ -143,3 +143,74 @@ export interface LotteryFinderResponse {
   hasMore: boolean;
   fires: LotteryFire[];
 }
+
+// ============================================================
+// /api/net-flow-history response
+// ============================================================
+
+/** One per-tick row with deltas + cumulative columns. */
+export interface NetFlowTick {
+  /** UTC ISO timestamp. */
+  ts: string;
+  /** Per-tick net call premium (delta). */
+  ncp: number;
+  /** Per-tick net call volume (delta). */
+  ncv: number;
+  /** Per-tick net put premium (delta). */
+  npp: number;
+  /** Per-tick net put volume (delta). */
+  npv: number;
+  /** Cumulative NCP since session open. */
+  cumNcp: number;
+  /** Cumulative NCV since session open. */
+  cumNcv: number;
+  /** Cumulative NPP since session open. */
+  cumNpp: number;
+  /** Cumulative NPV since session open. */
+  cumNpv: number;
+}
+
+export interface NetFlowHistoryResponse {
+  ticker: string;
+  date: string;
+  /** Lower window bound, UTC ISO. */
+  from: string;
+  /** Upper window bound, UTC ISO. */
+  to: string;
+  count: number;
+  series: NetFlowTick[];
+}
+
+// ============================================================
+// /api/lottery-contract-tape response
+// ============================================================
+
+/** One per-minute bar with side-split volumes + price stats. */
+export interface ContractTapeBar {
+  /** UTC ISO timestamp at the start of the minute bucket. */
+  ts: string;
+  /** Volume printed at the ask side. */
+  askVol: number;
+  /** Volume printed at the bid side. */
+  bidVol: number;
+  /** Volume printed at the mid. */
+  midVol: number;
+  /** Volume with no side classification. */
+  noSideVol: number;
+  /** Total volume across all sides. */
+  totalVol: number;
+  /** Volume-weighted average price across the minute. */
+  avgPrice: number | null;
+  highPrice: number | null;
+  lowPrice: number | null;
+}
+
+export interface ContractTapeResponse {
+  /** OCC OSI symbol. */
+  chain: string;
+  date: string;
+  from: string;
+  to: string;
+  count: number;
+  series: ContractTapeBar[];
+}
