@@ -47,11 +47,11 @@ function makeStrike(overrides: Partial<GexStrikeLevel> = {}): GexStrikeLevel {
 /**
  * Build a set of strikes that produces a `rangebound` base verdict:
  * - Positive total GEX (gravity strike near ATM with large positive gamma)
- * - Gravity within SPOT_BAND (12 pts) of spot
+ * - Gravity within the per-ticker spot band (25 pts for SPX default) of spot
  */
 function rangeboundStrikes(): GexStrikeLevel[] {
   return [
-    // ATM gravity — largest |netGamma|, within 12 pts of spot (7030)
+    // ATM gravity — largest |netGamma|, within 25 pts of spot (SPX default band)
     makeStrike({ strike: 7030, netGamma: 8e9 }),
     // Some above and below strikes with smaller gamma
     makeStrike({ strike: 7050, netGamma: 1e9 }),
@@ -131,7 +131,7 @@ describe('computeBias drift override', () => {
     // Build strikes that produce gex-pull-up: gravity above spot, positive regime
     const strikes = [
       makeStrike({ strike: 7030, netGamma: 1e9 }),
-      makeStrike({ strike: 7060, netGamma: 10e9 }), // largest, >12pts above spot
+      makeStrike({ strike: 7060, netGamma: 10e9 }), // largest, >25pts above spot (SPX default band)
       makeStrike({ strike: 7010, netGamma: 5e8 }),
     ];
     const trend: PriceTrend = {

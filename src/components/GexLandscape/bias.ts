@@ -23,7 +23,7 @@
 
 import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
 import { classify } from './classify';
-import { SPOT_BAND } from './constants';
+import { BAND_BY_TICKER, type Ticker } from './constants';
 import type { BiasMetrics, DriftTarget, PriceTrend } from './types';
 
 export function computeBias(
@@ -32,9 +32,11 @@ export function computeBias(
   gexDeltaMap: Map<number, number | null>,
   gexDelta5mMap: Map<number, number | null>,
   priceTrend: PriceTrend | null = null,
+  ticker: Ticker = 'SPX',
 ): BiasMetrics {
-  const above = rows.filter((s) => s.strike > currentPrice + SPOT_BAND);
-  const below = rows.filter((s) => s.strike < currentPrice - SPOT_BAND);
+  const band = BAND_BY_TICKER[ticker];
+  const above = rows.filter((s) => s.strike > currentPrice + band);
+  const below = rows.filter((s) => s.strike < currentPrice - band);
 
   // Regime: sign of total net GEX
   let totalNetGex = 0;
@@ -43,10 +45,10 @@ export function computeBias(
     totalNetGex >= 0 ? 'positive' : 'negative';
 
   // GEX gravity: strike with the largest absolute GEX anywhere in the window.
-  // Include strikes within SPOT_BAND of spot — the strongest pin is often
-  // right at or near ATM, and excluding it would give a misleading gravity.
-  // The ATM-proximity check later naturally maps small |gravityOffset| to
-  // a `rangebound` / `volatile` verdict.
+  // Include strikes within the per-ticker band of spot — the strongest pin
+  // is often right at or near ATM, and excluding it would give a misleading
+  // gravity. The ATM-proximity check later naturally maps small
+  // |gravityOffset| to a `rangebound` / `volatile` verdict.
   let gravityRow: GexStrikeLevel | null = null;
   for (const s of rows) {
     if (
@@ -60,7 +62,7 @@ export function computeBias(
 
   // Verdict: gravity direction × regime
   let verdict: BiasMetrics['verdict'];
-  if (Math.abs(gravityOffset) <= SPOT_BAND) {
+  if (Math.abs(gravityOffset) <= band) {
     verdict = regime === 'negative' ? 'volatile' : 'rangebound';
   } else if (gravityOffset > 0) {
     verdict = regime === 'negative' ? 'breakout-risk-up' : 'gex-pull-up';

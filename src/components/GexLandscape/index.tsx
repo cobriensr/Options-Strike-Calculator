@@ -46,7 +46,7 @@ import { ScrubControls } from '../ScrubControls';
 import { StrikeTable } from './StrikeTable';
 import { computeBias } from './bias';
 import { computeGammaPressure, type GammaPressure } from './classify';
-import { PRICE_WINDOW } from './constants';
+import { PRICE_WINDOW, type Ticker } from './constants';
 import {
   computeDeltaMap,
   computePriceTrend,
@@ -123,6 +123,12 @@ export interface GexLandscapeProps {
   onScrubLive: () => void;
   /** Called whenever the structural bias summary changes; pass to analyze. */
   onBiasChange?: (summary: string | null) => void;
+  /**
+   * Ticker driving the per-ticker spot band used by `getDirection` and
+   * `computeBias`. Defaults to `'SPX'` to preserve historical SPX-only
+   * behaviour while Phase 3 wires up the dynamic ticker selector.
+   */
+  ticker?: Ticker;
 }
 
 const GexLandscape = memo(function GexLandscape({
@@ -143,6 +149,7 @@ const GexLandscape = memo(function GexLandscape({
   onScrubTo,
   onScrubLive,
   onBiasChange,
+  ticker = 'SPX',
 }: GexLandscapeProps) {
   const spotRowRef = useRef<HTMLDivElement>(null);
   // Scroll to ATM row only once on initial data arrival; never on scrub.
@@ -293,6 +300,7 @@ const GexLandscape = memo(function GexLandscape({
       gexDeltaMap,
       gexDelta5mMap,
       priceTrend,
+      ticker,
     );
   }, [
     smoothedRows,
@@ -301,6 +309,7 @@ const GexLandscape = memo(function GexLandscape({
     gexDeltaMap,
     gexDelta5mMap,
     priceTrend,
+    ticker,
   ]);
 
   // Notify parent whenever the structural bias verdict changes so it can be
@@ -534,6 +543,7 @@ const GexLandscape = memo(function GexLandscape({
             rows={rows}
             currentPrice={currentPrice}
             spotStrike={spotStrike}
+            ticker={ticker}
             maxChanged1mStrike={maxChanged1mStrike}
             maxChanged5mStrike={maxChanged5mStrike}
             gexDeltaMap={gexDeltaMap}
@@ -557,6 +567,7 @@ const GexLandscape = memo(function GexLandscape({
             rows={topFive}
             currentPrice={currentPrice}
             spotStrike={spotStrike}
+            ticker={ticker}
             maxChanged1mStrike={maxChanged1mStrike}
             maxChanged5mStrike={maxChanged5mStrike}
             gexDeltaMap={gexDeltaMap}

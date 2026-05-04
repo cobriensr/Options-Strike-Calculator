@@ -7,7 +7,7 @@
 
 import type { Ref } from 'react';
 import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
-import { CLASS_META, CLS_TOOLTIP } from './constants';
+import { CLASS_META, CLS_TOOLTIP, type Ticker } from './constants';
 import {
   charmTooltip,
   classify,
@@ -28,6 +28,8 @@ export interface StrikeTableProps {
   rows: GexStrikeLevel[];
   currentPrice: number;
   spotStrike: GexStrikeLevel | null;
+  /** Active ticker — drives the per-ticker spot band in `getDirection`. */
+  ticker: Ticker;
   maxChanged1mStrike: number | null;
   maxChanged5mStrike: number | null;
   gexDeltaMap: Map<number, number | null>;
@@ -58,6 +60,7 @@ export function StrikeTable({
   rows,
   currentPrice,
   spotStrike,
+  ticker,
   maxChanged1mStrike,
   maxChanged5mStrike,
   gexDeltaMap,
@@ -125,7 +128,7 @@ export function StrikeTable({
           // Confluence: same strike leads BOTH timeframes — stronger signal.
           const isConfluence = isMax1m && isMax5m;
           const isHighlighted = isMax1m || isMax5m;
-          const dir = getDirection(s.strike, currentPrice);
+          const dir = getDirection(s.strike, currentPrice, ticker);
           const cls = classify(s.netGamma, s.netCharm);
           const meta = CLASS_META[cls];
           const pct1m = gexDeltaMap.get(s.strike) ?? null;

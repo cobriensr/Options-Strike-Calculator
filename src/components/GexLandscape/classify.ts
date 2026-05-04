@@ -2,13 +2,18 @@
  * Classification helpers for the GexLandscape module.
  *
  * `classify` maps (netGamma, netCharm) to one of the four quadrant labels.
- * `getDirection` maps (strike, price) to ceiling / floor / atm.
+ * `getDirection` maps (strike, price, ticker) to ceiling / floor / atm
+ *   using a per-ticker spot band (`BAND_BY_TICKER`).
  * `computeGammaPressure` returns whether today's directional flow is
  *   reinforcing or unwinding the wall at a given strike.
  * `signalTooltip` and `charmTooltip` render the per-cell tooltip text.
  */
 
-import { PRESSURE_NEUTRAL_BAND_RATIO, SPOT_BAND } from './constants';
+import {
+  BAND_BY_TICKER,
+  PRESSURE_NEUTRAL_BAND_RATIO,
+  type Ticker,
+} from './constants';
 import type { Direction, GexClassification } from './types';
 
 export function classify(
@@ -72,9 +77,14 @@ export function computeGammaPressure(opts: {
   return pressure > 0 ? 'unwinding' : 'reinforcing';
 }
 
-export function getDirection(strike: number, price: number): Direction {
-  if (strike > price + SPOT_BAND) return 'ceiling';
-  if (strike < price - SPOT_BAND) return 'floor';
+export function getDirection(
+  strike: number,
+  price: number,
+  ticker: Ticker,
+): Direction {
+  const band = BAND_BY_TICKER[ticker];
+  if (strike > price + band) return 'ceiling';
+  if (strike < price - band) return 'floor';
   return 'atm';
 }
 
