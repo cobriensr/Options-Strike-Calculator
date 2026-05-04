@@ -28,7 +28,7 @@ const mockHook = vi.mocked(useGexStrikeExpiry);
 function makeRow(
   overrides: Partial<GexStrikeExpiryRow> = {},
 ): GexStrikeExpiryRow {
-  return {
+  const base: GexStrikeExpiryRow = {
     ticker: 'SPY',
     expiry: '2026-05-04',
     strike: 720,
@@ -58,8 +58,13 @@ function makeRow(
     call_vanna_bid_vol: null,
     put_vanna_ask_vol: null,
     put_vanna_bid_vol: null,
-    ...overrides,
+    gamma_delta_1m: null,
+    gamma_delta_5m: null,
+    gamma_delta_10m: null,
+    gamma_delta_15m: null,
+    gamma_delta_30m: null,
   };
+  return { ...base, ...overrides };
 }
 
 function makeResponse(
