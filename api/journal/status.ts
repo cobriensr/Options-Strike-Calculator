@@ -40,8 +40,6 @@ const DIAGNOSTIC_TABLE_ALLOWLIST = new Set<string>([
   'outcomes',
   'positions',
   'predictions',
-  'push_subscriptions',
-  'regime_events',
   'schema_migrations',
   'spot_exposures',
   'index_candles_1m',
@@ -52,7 +50,6 @@ const DIAGNOSTIC_TABLE_ALLOWLIST = new Set<string>([
   'training_features',
   'vega_spike_events',
   'vol_term_structure',
-  'whale_alerts',
   'zero_gamma_levels',
 ]);
 

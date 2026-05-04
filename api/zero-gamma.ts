@@ -6,8 +6,8 @@
  * trend / chart consumption.
  *
  * Owner-or-guest because `gamma_curve` exposes per-strike-derived aggregates
- * from UW (OPRA-licensed) data — same category as /api/spot-gex-history,
- * /api/greek-exposure-strike, and /api/gex-per-strike.
+ * from UW (OPRA-licensed) data — same category as
+ * /api/greek-exposure-strike and /api/gex-per-strike.
  *
  * Query params:
  *   ?ticker=SPX  — 1-5 uppercase letters; defaults to SPX

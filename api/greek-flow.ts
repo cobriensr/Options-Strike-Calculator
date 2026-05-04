@@ -7,8 +7,8 @@
  * derived metrics (slope / flip / cliff / divergence) for the UI panel.
  *
  * Owner-or-guest because `vega_flow_etf` is derived from UW (OPRA-licensed)
- * options flow — same access category as /api/spot-gex-history,
- * /api/zero-gamma, and /api/vega-spikes.
+ * options flow — same access category as /api/zero-gamma and
+ * /api/vega-spikes.
  *
  * Query params:
  *   ?date=YYYY-MM-DD  — optional; defaults to the latest ET date present

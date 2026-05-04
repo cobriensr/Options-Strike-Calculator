@@ -5,7 +5,7 @@
  * OHLC bars for $TICK, $ADD, $VOLD, and $TRIN plus a latest-per-symbol
  * lookup table for the compact badge UI.
  *
- * Polling semantics (mirrors useWhalePositioning):
+ * Polling semantics:
  *   - `marketOpen === true` — fetch on mount + poll every
  *     `POLL_INTERVALS.MARKET_INTERNALS` (60s, matches the 1-min cron).
  *   - `marketOpen === false` — fetch once on mount so the post-session

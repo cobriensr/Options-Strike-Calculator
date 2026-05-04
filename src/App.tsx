@@ -20,7 +20,6 @@ import { useVix1dData } from './hooks/useVix1dData';
 import { useSnapshotSave } from './hooks/useSnapshotSave';
 import { useComputedSignals } from './hooks/useComputedSignals';
 import { useChainData } from './hooks/useChainData';
-import MarketFlow from './components/MarketFlow';
 import { useAlertPolling } from './hooks/useAlertPolling';
 import { useMarketInternals } from './hooks/useMarketInternals';
 import { classifyRegime } from './utils/market-regime';
@@ -138,27 +137,14 @@ const DealerRegimeTile = lazy(() =>
 const BWBCalculator = lazy(() =>
   import('./components/BWBCalculator').catch(handleStaleChunk),
 );
-const OtmFlowAlerts = lazy(() =>
-  import('./components/OtmFlowAlerts/OtmFlowAlerts').catch(handleStaleChunk),
-);
 const InstitutionalProgramSection = lazy(() =>
   import('./components/InstitutionalProgram/InstitutionalProgramSection')
     .then((m) => ({ default: m.InstitutionalProgramSection }))
     .catch(handleStaleChunk),
 );
-const WhaleAnomaliesSection = lazy(() =>
-  import('./components/WhaleAnomalies/WhaleAnomaliesSection')
-    .then((m) => ({ default: m.WhaleAnomaliesSection }))
-    .catch(handleStaleChunk),
-);
 const LotteryFinderSection = lazy(() =>
   import('./components/LotteryFinder/LotteryFinderSection')
     .then((m) => ({ default: m.LotteryFinderSection }))
-    .catch(handleStaleChunk),
-);
-const WhaleBanner = lazy(() =>
-  import('./components/WhaleAnomalies/WhaleBanner')
-    .then((m) => ({ default: m.WhaleBanner }))
     .catch(handleStaleChunk),
 );
 
@@ -294,25 +280,11 @@ export default function StrikeCalculator() {
   const internals = useMarketInternals({
     marketOpen: market.data.quotes?.marketOpen ?? false,
   });
-  // Single regime classification — consumed by MarketInternalsPanel (badge)
-  // and FlowConfluencePanel (annotation) to avoid redundant computation.
   const regime = useMemo(
     () => classifyRegime(internals.bars),
     [internals.bars],
   );
-  // Single source of truth for GEX target data. Drives both the GexTarget
-  // panel AND the OptionsFlowTable's Net GEX column so flow-vs-GEX confluence
-  // is visible at a glance (strong flow into a positive-GEX magnet reads
-  // differently than flow into a negative-GEX wall). Calling the hook once
-  // here prevents dual polling intervals and divergent state trees.
   const gexTarget = useGexTarget(market.data.quotes?.marketOpen ?? false);
-  const gexByStrikeForFlow = useMemo(() => {
-    const map = new Map<number, number>();
-    gexTarget.oi?.leaderboard.forEach((s) => {
-      map.set(s.strike, s.features.gexDollars);
-    });
-    return map;
-  }, [gexTarget.oi]);
   const { results, errors } = useCalculation(
     dSpot,
     dSpx,
@@ -648,10 +620,7 @@ export default function StrikeCalculator() {
             { id: 'sec-market-internals', label: 'Breadth & TICK' },
             { id: 'sec-vega-spikes', label: 'Dir Vega Spikes' },
             { id: 'sec-greek-flow', label: 'Greek Flow' },
-            { id: 'sec-market-flow', label: 'Market Flow' },
-            { id: 'sec-otm-flow', label: 'OTM Flow Alerts' },
             { id: 'sec-institutional-program', label: 'Institutional Program' },
-            { id: 'sec-whale-anomalies', label: 'Whale Anomalies' },
           ]
         : []),
       ...(isAuthenticated
@@ -751,12 +720,6 @@ export default function StrikeCalculator() {
                 permission={alertState.notificationPermission}
                 onRequest={alertState.requestPermission}
               />
-            )}
-
-            {isAuthenticated && (
-              <Suspense fallback={null}>
-                <WhaleBanner />
-              </Suspense>
             )}
 
             <div className="mx-auto max-w-[660px] px-5 pt-6 pb-12 lg:max-w-6xl">
@@ -1075,45 +1038,11 @@ export default function StrikeCalculator() {
 
                 <GatedSection
                   gate={hasMarketContext}
-                  id="sec-market-flow"
-                  label="Market Flow"
-                >
-                  <MarketFlow
-                    marketOpen={market.data.quotes?.marketOpen ?? false}
-                    regime={regime}
-                    gexByStrike={gexByStrikeForFlow}
-                  />
-                </GatedSection>
-
-                <GatedSection
-                  gate={hasMarketContext}
-                  id="sec-otm-flow"
-                  label="OTM Flow Alerts"
-                  fallback={<SkeletonSection lines={5} />}
-                >
-                  <OtmFlowAlerts
-                    marketOpen={market.data.quotes?.marketOpen ?? false}
-                  />
-                </GatedSection>
-
-                <GatedSection
-                  gate={hasMarketContext}
                   id="sec-institutional-program"
                   label="Institutional Program"
                   fallback={<SkeletonSection lines={6} />}
                 >
                   <InstitutionalProgramSection />
-                </GatedSection>
-
-                <GatedSection
-                  gate={hasMarketContext}
-                  id="sec-whale-anomalies"
-                  label="Whale Anomalies"
-                  fallback={<SkeletonSection lines={5} />}
-                >
-                  <WhaleAnomaliesSection
-                    marketOpen={market.data.quotes?.marketOpen ?? false}
-                  />
                 </GatedSection>
 
                 <GatedSection

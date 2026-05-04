@@ -13,9 +13,7 @@
  *                       the frontend scrub controls). Takes precedence over
  *                       `time` when both are provided.
  *   ?window=<N>m      — additionally return every prior snapshot within the
- *                       last N minutes (1-15) as `windowSnapshots`. Powers
- *                       backtest-mode 5m Δ% computation in
- *                       `useFuturesGammaPlaybook` when scrubbed.
+ *                       last N minutes (1-15) as `windowSnapshots`.
  *
  * Returns the strikes for the resolved snapshot plus `timestamps` — every
  * snapshot timestamp recorded for `date`, ascending. The frontend uses this
@@ -32,7 +30,7 @@ import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
-/** Clamp bounds for `?window=<N>m`. Matches spec futures-playbook-backtest-flow-2026-04-21.md. */
+/** Clamp bounds for `?window=<N>m`. */
 const WINDOW_MIN_MINUTES = 1;
 const WINDOW_MAX_MINUTES = 15;
 

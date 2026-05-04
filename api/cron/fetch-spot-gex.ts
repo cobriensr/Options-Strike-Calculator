@@ -10,9 +10,9 @@
  *   - SPX price at each timestamp
  *
  * Writes all 1-minute ticks newer than the high-water-mark for today in
- * `spot_exposures`. Designed to run every minute during RTH (matches the
- * FuturesGammaPlaybook regime-monitor cadence) so the UI sees fresh dealer
- * positioning within 60 s. A single missed run auto-backfills on the next
+ * `spot_exposures`. Designed to run every minute during RTH so the UI
+ * sees fresh dealer positioning within 60 s. A single missed run
+ * auto-backfills on the next
  * invocation because UW returns the full session history and we diff
  * against the HWM before inserting. `ON CONFLICT DO NOTHING` on
  * (date, timestamp, ticker) is the belt-and-braces dedup.

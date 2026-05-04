@@ -10,8 +10,8 @@
  *   `long-γ` / `short-γ` / `transition` / `uncertain`
  *
  * Owner-or-guest tier because the data derives from UW (OPRA-licensed)
- * spot exposures — same access category as `/api/zero-gamma`,
- * `/api/spot-gex-history`, and `/api/gex-strike-expiry`.
+ * spot exposures — same access category as `/api/zero-gamma` and
+ * `/api/gex-strike-expiry`.
  *
  * No query params. Any provided params are rejected via the strict
  * schema so probes that smuggle data through the URL get a clean 400.

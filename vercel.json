@@ -146,10 +146,6 @@
       "schedule": "* 13-21 * * 1-5"
     },
     {
-      "path": "/api/cron/monitor-regime-events",
-      "schedule": "* 13-21 * * 1-5"
-    },
-    {
       "path": "/api/cron/fetch-darkpool",
       "schedule": "* 13-21 * * 1-5"
     },
@@ -158,19 +154,7 @@
       "schedule": "* 13-21 * * 1-5"
     },
     {
-      "path": "/api/cron/fetch-whale-alerts",
-      "schedule": "*/5 13-21 * * 1-5"
-    },
-    {
-      "path": "/api/cron/detect-whales",
-      "schedule": "* 13-21 * * 1-5"
-    },
-    {
       "path": "/api/cron/detect-lottery-fires",
-      "schedule": "* 13-21 * * 1-5"
-    },
-    {
-      "path": "/api/cron/resolve-whales",
       "schedule": "* 13-21 * * 1-5"
     },
     {

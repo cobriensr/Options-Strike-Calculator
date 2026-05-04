@@ -332,7 +332,7 @@ export const POLL_INTERVALS = {
   HISTORY: 10_000,
   /** Alert polling interval (useAlertPolling) */
   ALERTS: 10_000,
-  /** OTM SPXW flow alerts refresh (useOtmFlowAlerts) — matches fetch-flow-alerts cron cadence */
+  /** Polling cadence for the Lottery Finder hook (useLotteryFinder). */
   OTM_FLOW: 30_000,
   /** Dark pool levels refresh (useDarkPoolLevels) */
   DARK_POOL: 60_000,

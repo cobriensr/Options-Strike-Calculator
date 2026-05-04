@@ -3,7 +3,7 @@
  *
  * Single-owner app, but the owner can hand out comma-separated keys via the
  * GUEST_ACCESS_KEYS env var so a friend can view owner-gated read-only UI
- * (dark pool, GEX maps, futures playbook, etc.) without a Schwab session.
+ * (dark pool, GEX maps, etc.) without a Schwab session.
  *
  * The Anthropic-backed analyze endpoint stays owner-only — see CLAUDE.md
  * "Auth is single-owner" — so a leaked guest key cannot drain the API budget.

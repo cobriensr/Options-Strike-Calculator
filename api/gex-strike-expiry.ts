@@ -10,8 +10,8 @@
  * specific timestamp via `at` for the historical scrubber.
  *
  * Owner-or-guest tier because the data derives from UW (OPRA-licensed
- * options flow) — same access category as /api/spot-gex-history,
- * /api/zero-gamma, and /api/greek-flow.
+ * options flow) — same access category as /api/zero-gamma and
+ * /api/greek-flow.
  *
  * Query params:
  *   ?ticker=SPY|QQQ        — required

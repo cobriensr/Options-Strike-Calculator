@@ -28,27 +28,6 @@ export const guestKeySchema = z.object({
 export type GuestKeyBody = z.infer<typeof guestKeySchema>;
 
 // ============================================================
-// /api/spot-gex-history
-// ============================================================
-
-/**
- * Query params for GET /api/spot-gex-history.
- *
- * `date` is optional — when omitted the endpoint defaults to the latest
- * ET trading date that has rows in `spot_exposures`. When present it
- * must be a YYYY-MM-DD calendar date so we never feed arbitrary strings
- * into the SQL `date = $1` parameter.
- */
-export const spotGexHistoryQuerySchema = z.object({
-  date: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
-    .optional(),
-});
-
-export type SpotGexHistoryQuery = z.infer<typeof spotGexHistoryQuerySchema>;
-
-// ============================================================
 // /api/zero-gamma
 // ============================================================
 
@@ -122,12 +101,23 @@ export type GexStrikeExpiryQuery = z.infer<typeof gexStrikeExpiryQuerySchema>;
 
 /**
  * Query params for GET /api/dealer-regime — backs the Dealer Regime
- * Tile (Phase 2 of strike-battle-map). The endpoint accepts no query
- * params: it always returns the latest row per ticker for the four
- * tickers in `zero-gamma-tickers.ts`. We still validate to reject
- * accidental query-string smuggling (anything passed gets a 400).
+ * Tile (Phase 2 of strike-battle-map). Both params are optional:
+ *   - `date=YYYY-MM-DD` filters to a specific ET calendar date
+ *   - `at=<ISO timestamp>` returns the latest row per ticker at-or-before
+ *     this timestamp (used by the historical scrubber)
+ * No params ⇒ latest row per ticker (live mode). Strict object so any
+ * unknown query key produces a clean 400 instead of being silently
+ * ignored.
  */
-export const dealerRegimeQuerySchema = z.object({}).strict();
+export const dealerRegimeQuerySchema = z
+  .object({
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+      .optional(),
+    at: z.string().datetime({ offset: true }).optional(),
+  })
+  .strict();
 
 export type DealerRegimeQuery = z.infer<typeof dealerRegimeQuerySchema>;
 
@@ -271,54 +261,6 @@ export type IVAnomaliesCrossAssetBody = z.infer<
 >;
 
 // ============================================================
-// /api/options-flow/otm-heavy
-// ============================================================
-
-/**
- * Query params for GET /api/options-flow/otm-heavy.
- *
- * Serves the OTM SPXW Flow Alerts dashboard widget — rolling-window view
- * of far-OTM flow where premium is dominated by ask-lifts or bid-hits.
- *
- * - Both live and historical modes read from `flow_alerts` (no UW proxy —
- *   the ingest cron keeps the table fresh).
- * - `window_minutes` is a fixed set (UI slider options); refine rather
- *   than enum to keep coercion from the string query value.
- * - Thresholds mirror the component sliders: 0.50–0.95 for side ratios,
- *   0.001–0.02 (= 0.1%–2%) for distance, $10K–$∞ for premium floor.
- * - `as_of requires date` — historical mode is date-anchored; `as_of`
- *   alone without a calendar context is rejected.
- */
-export const otmHeavyQuerySchema = z
-  .object({
-    window_minutes: z.coerce
-      .number()
-      .int()
-      .refine((v) => [5, 15, 30, 60].includes(v), {
-        message: 'window_minutes must be 5, 15, 30, or 60',
-      })
-      .default(30),
-    min_ask_ratio: z.coerce.number().min(0.5).max(0.95).default(0.6),
-    min_bid_ratio: z.coerce.number().min(0.5).max(0.95).default(0.6),
-    min_distance_pct: z.coerce.number().min(0.001).max(0.02).default(0.005),
-    min_premium: z.coerce.number().int().min(10_000).default(50_000),
-    sides: z.enum(['ask', 'bid', 'both']).default('both'),
-    type: z.enum(['call', 'put', 'both']).default('both'),
-    date: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
-      .optional(),
-    as_of: z.string().datetime({ offset: true }).optional(),
-    limit: z.coerce.number().int().min(1).max(200).default(100),
-  })
-  .refine((v) => !(v.as_of && !v.date), {
-    message: 'as_of requires date',
-    path: ['as_of'],
-  });
-
-export type OtmHeavyQuery = z.infer<typeof otmHeavyQuerySchema>;
-
-// ============================================================
 // /api/alerts-ack
 // ============================================================
 
@@ -327,66 +269,6 @@ export const alertAckSchema = z.object({
 });
 
 export type AlertAckBody = z.infer<typeof alertAckSchema>;
-
-// ============================================================
-// /api/push/subscribe + /api/push/unsubscribe
-// ============================================================
-
-/**
- * Body schema for POST /api/push/subscribe.
- *
- * Matches the JSON shape produced by the browser's
- * `PushSubscription.toJSON()`. `endpoint` is the push-service URL,
- * `keys.p256dh` / `keys.auth` are the per-device public cryptographic
- * material web-push requires to encrypt a payload for this subscription.
- * `userAgent` is an optional self-reported device tag — trimmed to
- * prevent storage bloat from pathological UA strings.
- */
-const httpsEndpoint = z
-  .string()
-  .url()
-  .refine((u) => u.startsWith('https://'), {
-    message: 'endpoint must use https',
-  });
-
-export const PushSubscribeBodySchema = z.object({
-  endpoint: httpsEndpoint,
-  keys: z.object({
-    p256dh: z.string().min(1).max(200),
-    auth: z.string().min(1).max(100),
-  }),
-});
-
-export type PushSubscribeBody = z.infer<typeof PushSubscribeBodySchema>;
-
-/**
- * Body schema for POST /api/push/unsubscribe. Idempotent — callers
- * pass the exact endpoint they previously subscribed with.
- */
-export const PushUnsubscribeBodySchema = z.object({
-  endpoint: httpsEndpoint,
-});
-
-export type PushUnsubscribeBody = z.infer<typeof PushUnsubscribeBodySchema>;
-
-// ============================================================
-// /api/push/recent-events
-// ============================================================
-
-/**
- * Query params for GET /api/push/recent-events.
- *
- * `limit` is optional — when omitted the endpoint returns the last 20
- * rows from `regime_events`. When present it must coerce to a positive
- * integer 1..100 so the response never balloons past the budget. The
- * raw value arrives as a string in `req.query`, so we coerce before
- * validating.
- */
-export const PushRecentEventsQuerySchema = z.object({
-  limit: z.coerce.number().int().min(1).max(100).optional(),
-});
-
-export type PushRecentEventsQuery = z.infer<typeof PushRecentEventsQuerySchema>;
 
 // ============================================================
 // /api/positions (POST — thinkorswim CSV upload)

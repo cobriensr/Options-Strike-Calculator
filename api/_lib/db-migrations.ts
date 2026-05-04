@@ -3548,4 +3548,15 @@ export const MIGRATIONS: Migration[] = [
       '/api/options-flow/whale-positioning and the fetch-whale-alerts cron.',
     statements: (sql) => [sql`DROP TABLE IF EXISTS whale_anomalies`],
   },
+  {
+    id: 118,
+    description:
+      'Drop whale_alerts table. The Whale Positioning sub-section inside ' +
+      'Market Flow and the /api/options-flow/whale-positioning endpoint ' +
+      'were removed along with the fetch-whale-alerts cron. No remaining ' +
+      'reader writes to or reads from this table. flow_alerts is kept — ' +
+      'uw-deltas.ts (Whale Flow Positioning signal) still queries it on ' +
+      'every analyze-context build.',
+    statements: (sql) => [sql`DROP TABLE IF EXISTS whale_alerts`],
+  },
 ];

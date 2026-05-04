@@ -97,7 +97,6 @@ export interface UseAnalysisContextParams {
   events: readonly EventItem[] | undefined;
   chain: ChainResponse | null;
   gexLandscapeBias?: string | null;
-  playbookBias?: string | null;
 }
 
 export function useAnalysisContext({
@@ -115,7 +114,6 @@ export function useAnalysisContext({
   events,
   chain,
   gexLandscapeBias,
-  playbookBias,
 }: UseAnalysisContextParams): AnalysisContext {
   return useMemo(
     () =>
@@ -227,7 +225,6 @@ export function useAnalysisContext({
           };
         })(),
         gexLandscapeBias: gexLandscapeBias ?? undefined,
-        playbookBias: playbookBias ?? undefined,
       }) satisfies AnalysisContext,
     [
       selectedDate,
@@ -244,7 +241,6 @@ export function useAnalysisContext({
       events,
       chain,
       gexLandscapeBias,
-      playbookBias,
     ],
   );
 }

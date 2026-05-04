@@ -37,9 +37,8 @@ describe('App nav anchor alignment', () => {
     expect(appSource).not.toContain('id="sec-futures-calc"');
   });
 
-  it('renders both halves of the split market-flow section', () => {
+  it('renders the market-internals section', () => {
     expect(appSource).toContain('id="sec-market-internals"');
-    expect(appSource).toContain('id="sec-market-flow"');
   });
 
   it('skip-to-results link still targets the results anchor', () => {

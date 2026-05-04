@@ -13,17 +13,7 @@
  *
  * The primitive is framework-agnostic: no React, no hooks, no I/O.
  * Callers that have snapshot objects of any shape map to the
- * `{price, ts}` view before calling this. The current two callers are:
- *   - `GexLandscape` (client) — maps `Snapshot[]` via `strikes[0].price`.
- *   - `monitor-regime-events` (server cron) — maps rows from
- *     `spot_exposures` directly.
- *
- * Previously lived in `src/components/GexLandscape/deltas.ts` keyed on
- * the full `Snapshot` shape. That shape required a `strikes` array that
- * the server didn't have, forcing the server path to skip the
- * drift-override entirely — see
- * `docs/superpowers/specs/futures-playbook-server-drift-override-2026-04-21.md`
- * for the parity bug this module exists to fix.
+ * `{price, ts}` view before calling this.
  */
 
 /**
