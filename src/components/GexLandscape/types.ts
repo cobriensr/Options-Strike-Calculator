@@ -3,12 +3,57 @@
  * GexLandscape files — safe to import from anywhere in the folder.
  */
 
-import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
 import type { PriceTrend as PriceTrendInternal } from '../../utils/price-trend';
 import type {
   GexClassification as GexClassificationInternal,
   Direction as DirectionInternal,
 } from '../../utils/gex-classification';
+
+/**
+ * One per-strike row inside a GEX snapshot. Field shape matches the
+ * `/api/gex-strike-expiry` projection in `useGexLandscapeData` and the
+ * legacy `/api/gex-per-strike` payload — both write into the same canonical
+ * row format the GexLandscape table consumes.
+ */
+export interface GexStrikeLevel {
+  strike: number;
+  price: number;
+  // Gamma — OI (standing position)
+  callGammaOi: number;
+  putGammaOi: number;
+  netGamma: number;
+  // Gamma — volume (today's flow)
+  callGammaVol: number;
+  putGammaVol: number;
+  netGammaVol: number;
+  // Vol vs OI reinforcement signal
+  volReinforcement: 'reinforcing' | 'opposing' | 'neutral';
+  // Gamma — directionalized (bid/ask)
+  callGammaAsk: number;
+  callGammaBid: number;
+  putGammaAsk: number;
+  putGammaBid: number;
+  // Charm — OI
+  callCharmOi: number;
+  putCharmOi: number;
+  netCharm: number;
+  // Charm — volume
+  callCharmVol: number;
+  putCharmVol: number;
+  netCharmVol: number;
+  // Delta (DEX) — OI only, no vol variant from UW
+  callDeltaOi: number;
+  putDeltaOi: number;
+  netDelta: number;
+  // Vanna — OI
+  callVannaOi: number;
+  putVannaOi: number;
+  netVanna: number;
+  // Vanna — volume
+  callVannaVol: number;
+  putVannaVol: number;
+  netVannaVol: number;
+}
 
 // `GexClassification` and `Direction` moved to src/utils/gex-classification.ts
 // so the daemon can share the same source of truth without pulling in

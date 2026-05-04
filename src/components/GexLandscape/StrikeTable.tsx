@@ -6,7 +6,7 @@
  */
 
 import type { Ref } from 'react';
-import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
+import type { GexStrikeLevel } from './types';
 import { CLASS_META, CLS_TOOLTIP, type Ticker } from './constants';
 import {
   charmTooltip,

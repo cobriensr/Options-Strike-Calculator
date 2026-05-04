@@ -187,8 +187,8 @@ export interface PriceMovementContext {
 
 /**
  * One per-strike row inside a `GexSnapshot`. Field names intentionally
- * mirror `GexStrikeLevel` in `src/hooks/useGexPerStrike.ts` so the hook
- * can hand raw rows straight into the pipeline with no translation.
+ * mirror `GexStrikeLevel` in `src/components/GexLandscape/types.ts` so the
+ * hook can hand raw rows straight into the pipeline with no translation.
  *
  * Only the columns actually read by the scorer are listed here; the
  * hook's full record carries a few derived fields (`netGamma`,

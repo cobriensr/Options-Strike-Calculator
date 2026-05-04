@@ -3,7 +3,7 @@ import { render, screen, fireEvent, within } from '@testing-library/react';
 import GexLandscape from '../../components/GexLandscape';
 import { CollapseAllContext } from '../../components/collapse-context';
 import type { CollapseSignal } from '../../components/collapse-context';
-import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
+import type { GexStrikeLevel } from '../../components/GexLandscape/types';
 
 // ── Mocks ──────────────────────────────────────────────────────────────────────
 //

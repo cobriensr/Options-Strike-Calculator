@@ -6,8 +6,10 @@
 
 import { describe, expect, it } from 'vitest';
 import { computeBias } from '../../components/GexLandscape/bias';
-import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
-import type { PriceTrend } from '../../components/GexLandscape/types';
+import type {
+  GexStrikeLevel,
+  PriceTrend,
+} from '../../components/GexLandscape/types';
 
 /** Create a strike with sensible defaults for bias testing. */
 function makeStrike(overrides: Partial<GexStrikeLevel> = {}): GexStrikeLevel {

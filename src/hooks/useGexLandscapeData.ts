@@ -29,7 +29,7 @@ import {
   type GexStrikeExpiryRow,
   type GexStrikeExpiryTicker,
 } from './useGexStrikeExpiry';
-import type { GexStrikeLevel } from './useGexPerStrike';
+import type { GexStrikeLevel } from '../components/GexLandscape/types';
 
 export interface UseGexLandscapeDataReturn {
   strikes: GexStrikeLevel[];
@@ -87,7 +87,8 @@ export function projectExpiryRowToStrike(
   const netGammaVol = callGammaVol + putGammaVol;
 
   // Vol vs OI reinforcement: same sign = today's flow supports the level.
-  // Mirrors the canonical derivation in api/gex-per-strike.ts:78-84.
+  // Inherited from the original `/api/gex-per-strike` row mapper that fed
+  // GexLandscape pre-Phase 3 (since deleted with the REST endpoint).
   let volReinforcement: 'reinforcing' | 'opposing' | 'neutral' = 'neutral';
   if (netGammaOi !== 0 && netGammaVol !== 0) {
     const sameSign =

@@ -21,10 +21,14 @@
  *             ATM   + Negative → volatile
  */
 
-import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
 import { classify } from './classify';
 import { BAND_BY_TICKER, type Ticker } from './constants';
-import type { BiasMetrics, DriftTarget, PriceTrend } from './types';
+import type {
+  BiasMetrics,
+  DriftTarget,
+  GexStrikeLevel,
+  PriceTrend,
+} from './types';
 
 export function computeBias(
   rows: GexStrikeLevel[],

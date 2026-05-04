@@ -129,7 +129,6 @@ if (import.meta.env.PROD)
       { path: '/api/alerts', method: 'GET' },
       { path: '/api/alerts-ack', method: 'POST' },
       { path: '/api/vega-spikes', method: 'GET' },
-      { path: '/api/gex-per-strike', method: 'GET' },
       { path: '/api/greek-exposure-strike', method: 'GET' },
       { path: '/api/zero-gamma', method: 'GET' },
       { path: '/api/dealer-regime', method: 'GET' },

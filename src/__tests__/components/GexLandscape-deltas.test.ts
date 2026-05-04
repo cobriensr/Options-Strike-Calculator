@@ -11,8 +11,10 @@ import {
   computePriceTrend,
   computeSmoothedStrikes,
 } from '../../components/GexLandscape/deltas';
-import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
-import type { Snapshot } from '../../components/GexLandscape/types';
+import type {
+  GexStrikeLevel,
+  Snapshot,
+} from '../../components/GexLandscape/types';
 
 function makeStrike(overrides: Partial<GexStrikeLevel> = {}): GexStrikeLevel {
   return {

@@ -38,7 +38,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
 import { SectionBox } from '../ui';
-import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
+import type { GexStrikeLevel } from './types';
 import { useGexLandscapeData } from '../../hooks/useGexLandscapeData';
 import { useScrubController } from '../../hooks/useScrubController';
 import { useTopStrikesTracker } from '../../hooks/useTopStrikesTracker';

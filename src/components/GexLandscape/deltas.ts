@@ -9,9 +9,8 @@
  * Pure functions, no React — all state ownership lives in the component.
  */
 
-import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
 import { computePriceTrend as computePriceTrendPrimitive } from '../../utils/price-trend';
-import type { PriceTrend, Snapshot } from './types';
+import type { GexStrikeLevel, PriceTrend, Snapshot } from './types';
 
 /**
  * Average netGamma and netCharm for each strike across the current snapshot

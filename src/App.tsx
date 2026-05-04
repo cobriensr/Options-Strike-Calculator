@@ -260,8 +260,9 @@ export default function StrikeCalculator() {
 
   const darkPool = useDarkPoolLevels(market.data.quotes?.marketOpen ?? false);
   // GEX Landscape owns its own ticker / date / scrub state internally
-  // (Phase 3c of gex-landscape-ws-upgrade-2026-05-03.md), so App.tsx no
-  // longer threads the legacy `useGexPerStrike` props through.
+  // (Phase 3c of gex-landscape-ws-upgrade-2026-05-03.md) and pulls per-strike
+  // data via `useGexLandscapeData` → `/api/gex-strike-expiry`, so App.tsx no
+  // longer needs to thread per-strike props through.
   const gexTarget = useGexTarget(market.data.quotes?.marketOpen ?? false);
   const { results, errors } = useCalculation(
     dSpot,

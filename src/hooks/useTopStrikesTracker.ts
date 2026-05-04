@@ -25,7 +25,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import type { GexStrikeLevel } from './useGexPerStrike.js';
+import type { GexStrikeLevel } from '../components/GexLandscape/types';
 
 export interface UseTopStrikesTrackerInput {
   /** Current Top 5 (caller computes; order doesn't matter for this hook). */
