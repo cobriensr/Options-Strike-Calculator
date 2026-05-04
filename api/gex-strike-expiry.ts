@@ -14,17 +14,18 @@
  * /api/greek-flow.
  *
  * Query params:
- *   ?ticker=SPY|QQQ        — required
- *   ?expiry=YYYY-MM-DD     — required (typically today's 0DTE)
- *   ?at=<ISO timestamp>    — optional; latest row per strike at-or-before
- *                            this timestamp. Omit for live latest.
+ *   ?ticker=SPY|QQQ|SPX|NDX — required
+ *   ?expiry=YYYY-MM-DD      — required (typically today's 0DTE)
+ *   ?at=<ISO timestamp>     — optional; latest row per strike at-or-before
+ *                             this timestamp. Omit for live latest.
  *
  * Response:
  *   {
  *     ticker: string,
  *     expiry: string,
  *     at: string | null,
- *     rows: GexStrikeExpiryRow[],
+ *     rows: GexStrikeExpiryRowWithDeltas[],  // includes 1m/5m/10m/15m/30m Δ%
+ *     timestamps: string[],                  // every ts_minute for the day
  *     asOf: string
  *   }
  */
@@ -39,9 +40,9 @@ import {
 } from './_lib/api-helpers.js';
 import { gexStrikeExpiryQuerySchema } from './_lib/validation.js';
 import {
-  getLatestGexPerStrike,
+  getLatestGexPerStrikeWithDeltas,
   getTimestampsForDay,
-  type GexStrikeExpiryRow,
+  type GexStrikeExpiryRowWithDeltas,
   type GexStrikeExpiryTicker,
 } from './_lib/db-gex-strike-expiry.js';
 
@@ -49,7 +50,7 @@ export interface GexStrikeExpiryResponse {
   ticker: GexStrikeExpiryTicker;
   expiry: string;
   at: string | null;
-  rows: GexStrikeExpiryRow[];
+  rows: GexStrikeExpiryRowWithDeltas[];
   /**
    * Every distinct `ts_minute` value for (ticker, expiry), ascending.
    * Powers the scrub control's prev/next navigation — same role
@@ -87,7 +88,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // Run both queries in parallel so the scrub-timestamp helper
       // doesn't bolt extra latency onto the panel's primary fetch.
       const [rows, timestamps] = await Promise.all([
-        getLatestGexPerStrike({
+        getLatestGexPerStrikeWithDeltas({
           ticker,
           expiry,
           at: at ?? null,

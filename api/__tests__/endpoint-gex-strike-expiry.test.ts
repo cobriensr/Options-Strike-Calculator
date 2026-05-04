@@ -76,6 +76,14 @@ function fakeRow(strike: number, ts: string) {
     call_vanna_bid_vol: '1525.46',
     put_vanna_ask_vol: '523.79',
     put_vanna_bid_vol: '-321.27',
+    // SQL-side LAG ratios: 0.05 → +5% etc. Each value is the ratio
+    // returned from `(net_gamma / |LAG(net_gamma, N)|) - 1`; the
+    // server multiplies by 100 before responding.
+    gamma_delta_1m: '0.0125',
+    gamma_delta_5m: '0.04',
+    gamma_delta_10m: '0.075',
+    gamma_delta_15m: '0.12',
+    gamma_delta_30m: '0.22',
   };
 }
 
@@ -214,11 +222,41 @@ describe('GET /api/gex-strike-expiry', () => {
       price: 722.18,
       call_gamma_oi: 174792.59,
       put_gamma_oi: -1172037.66,
+      // SQL ratios scaled to percent before responding so the wire
+      // contract matches the legacy client-side `computeDeltaMap`
+      // (0.0125 → 1.25, 0.22 → 22, …).
+      gamma_delta_1m: 1.25,
+      gamma_delta_5m: 4,
+      gamma_delta_10m: 7.5,
+      gamma_delta_15m: 12,
+      gamma_delta_30m: 22,
     });
     expect(body.timestamps).toEqual([
       '2026-05-01T20:13:00.000Z',
       '2026-05-01T20:14:00.000Z',
     ]);
+  });
+
+  // ── Null deltas pass through ───────────────────────────────
+
+  it('preserves null deltas (insufficient LAG history) instead of coercing to 0', async () => {
+    const row = fakeRow(722, '2026-05-01T19:30:00Z');
+    // Mimic the SQL state where LAG(_, 30) has no comparable row yet.
+    row.gamma_delta_30m = null as unknown as string;
+    mockSql
+      .mockResolvedValueOnce([row])
+      .mockResolvedValueOnce([{ ts_minute: '2026-05-01T19:30:00Z' }]);
+    const req = mockRequest({
+      method: 'GET',
+      query: { ticker: 'SPY', expiry: '2026-05-01' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as { rows: Array<Record<string, unknown>> };
+    expect(body.rows[0]?.gamma_delta_30m).toBeNull();
+    // Earlier deltas remain populated.
+    expect(body.rows[0]?.gamma_delta_1m).toBe(1.25);
   });
 
   // ── Happy path with `at` ───────────────────────────────────

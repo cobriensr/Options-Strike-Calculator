@@ -54,6 +54,18 @@ export interface GexStrikeExpiryRow {
   call_vanna_bid_vol: number | null;
   put_vanna_ask_vol: number | null;
   put_vanna_bid_vol: number | null;
+  /**
+   * Per-strike Δ% over the 1/5/10/15/30m windows, computed server-side
+   * via SQL `LAG()` over `ws_gex_strike_expiry.ts_minute`. Values are
+   * percent (e.g. `5` for +5%), matching the legacy client-side
+   * `computeDeltaMap` convention. `null` when no comparable prior row
+   * exists inside the lookback window.
+   */
+  gamma_delta_1m: number | null;
+  gamma_delta_5m: number | null;
+  gamma_delta_10m: number | null;
+  gamma_delta_15m: number | null;
+  gamma_delta_30m: number | null;
 }
 
 export interface GexStrikeExpiryResponse {

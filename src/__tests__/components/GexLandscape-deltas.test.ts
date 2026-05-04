@@ -1,14 +1,15 @@
 /**
- * Unit tests for GexLandscape deltas helpers (computeDeltaMap,
- * findClosestSnapshot, computeSmoothedStrikes). Pure functions — no React.
+ * Unit tests for GexLandscape deltas helpers (computeSmoothedStrikes,
+ * computePriceTrend). Pure functions — no React.
+ *
+ * `computeDeltaMap` and `findClosestSnapshot` retired in Phase 4 — Δ%
+ * computation moved server-side via SQL `LAG()`.
  */
 
 import { describe, expect, it } from 'vitest';
 import {
-  computeDeltaMap,
   computePriceTrend,
   computeSmoothedStrikes,
-  findClosestSnapshot,
 } from '../../components/GexLandscape/deltas';
 import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
 import type { Snapshot } from '../../components/GexLandscape/types';
@@ -46,63 +47,6 @@ function makeStrike(overrides: Partial<GexStrikeLevel> = {}): GexStrikeLevel {
     ...overrides,
   };
 }
-
-describe('computeDeltaMap', () => {
-  it('returns the % change in netGamma between matched strikes', () => {
-    const prev = [makeStrike({ strike: 5800, netGamma: 100 })];
-    const curr = [makeStrike({ strike: 5800, netGamma: 120 })];
-    const map = computeDeltaMap(curr, prev);
-    expect(map.get(5800)).toBeCloseTo(20, 5);
-  });
-
-  it('uses absolute previous magnitude as the denominator', () => {
-    // (120 - (-100)) / |-100| * 100 = 220
-    const prev = [makeStrike({ strike: 5800, netGamma: -100 })];
-    const curr = [makeStrike({ strike: 5800, netGamma: 120 })];
-    expect(computeDeltaMap(curr, prev).get(5800)).toBeCloseTo(220, 5);
-  });
-
-  it('returns null for strikes missing from the previous snapshot', () => {
-    const map = computeDeltaMap(
-      [makeStrike({ strike: 5900, netGamma: 100 })],
-      [makeStrike({ strike: 5800, netGamma: 100 })],
-    );
-    expect(map.get(5900)).toBeNull();
-  });
-
-  it('returns null when the previous gamma is exactly zero (avoids div/0)', () => {
-    const prev = [makeStrike({ strike: 5800, netGamma: 0 })];
-    const curr = [makeStrike({ strike: 5800, netGamma: 50 })];
-    expect(computeDeltaMap(curr, prev).get(5800)).toBeNull();
-  });
-});
-
-describe('findClosestSnapshot', () => {
-  function snap(ts: number): Snapshot {
-    return { ts, strikes: [] };
-  }
-
-  it('returns null for an empty buffer', () => {
-    expect(findClosestSnapshot([], 1000)).toBeNull();
-  });
-
-  it('returns the snapshot with the smallest timestamp diff', () => {
-    const buf = [snap(900), snap(990), snap(1100)];
-    expect(findClosestSnapshot(buf, 1000)?.ts).toBe(990);
-  });
-
-  it('returns null when nothing falls within the tolerance window', () => {
-    const buf = [snap(0), snap(500_000)];
-    // Default toleranceMs = 120_000 — both are way outside
-    expect(findClosestSnapshot(buf, 1_000_000)).toBeNull();
-  });
-
-  it('respects a custom tolerance argument', () => {
-    const buf = [snap(900), snap(1500)];
-    expect(findClosestSnapshot(buf, 1000, 50)).toBeNull();
-    expect(findClosestSnapshot(buf, 1000, 200)?.ts).toBe(900);
-  });
-});
 
 describe('computeSmoothedStrikes', () => {
   it('returns the current snapshot unchanged when no buffer entries are recent', () => {

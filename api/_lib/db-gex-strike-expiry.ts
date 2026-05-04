@@ -4,8 +4,11 @@
  *
  * The panel use case is "give me the latest GEX per strike for this
  * ticker + expiry, optionally as of a specific minute for the
- * historical scrubber." That maps to a single SELECT with DISTINCT ON
- * over (strike) ordered by ts_minute DESC.
+ * historical scrubber, with per-strike Δ% over the 1/5/10/15/30m
+ * windows pre-computed." A 35-minute lookback CTE feeds `LAG()` window
+ * functions so the GEX Landscape's Δ% columns populate on first paint
+ * (no client-side ring-buffer warmup), then `DISTINCT ON (strike)`
+ * collapses to the latest row per strike.
  *
  * Ingestion is daemon-owned (uw-stream UPSERTs every WS push); this
  * module is read-only.
@@ -83,6 +86,24 @@ export interface GexStrikeExpiryRow {
   put_vanna_bid_vol: number | null;
 }
 
+/**
+ * Same row shape as `GexStrikeExpiryRow` plus per-strike Δ% (percent,
+ * not ratio — e.g. `5` means +5%) over the 1m / 5m / 10m / 15m / 30m
+ * lookback windows. Computed server-side via SQL `LAG()` windows so the
+ * GEX Landscape's Δ% columns populate immediately on page load instead
+ * of waiting on a client-side ring-buffer warmup.
+ *
+ * Each delta is `null` when there is no comparable prior row inside the
+ * lookback window (e.g. early in the session, or after a producer gap).
+ */
+export interface GexStrikeExpiryRowWithDeltas extends GexStrikeExpiryRow {
+  gamma_delta_1m: number | null;
+  gamma_delta_5m: number | null;
+  gamma_delta_10m: number | null;
+  gamma_delta_15m: number | null;
+  gamma_delta_30m: number | null;
+}
+
 function toIso(value: string | Date): string {
   if (value instanceof Date) return value.toISOString();
   const parsed = new Date(value);
@@ -143,21 +164,76 @@ interface FetchOpts {
   at?: string | null;
 }
 
+interface RawRowWithDeltas extends RawRow {
+  gamma_delta_1m: RawNumeric;
+  gamma_delta_5m: RawNumeric;
+  gamma_delta_10m: RawNumeric;
+  gamma_delta_15m: RawNumeric;
+  gamma_delta_30m: RawNumeric;
+}
+
+function mapRowWithDeltas(r: RawRowWithDeltas): GexStrikeExpiryRowWithDeltas {
+  return {
+    ...mapRow(r),
+    // SQL returns Δ as a ratio (e.g. 0.05 for +5%). Multiply by 100 so
+    // the wire format matches `computeDeltaMap` from
+    // `src/components/GexLandscape/deltas.ts`, which has always returned
+    // percent. Downstream consumers (BiasPanel trends, StrikeTable Δ%
+    // column, the maxChanged*Strike confluence markers) all assume
+    // percent.
+    gamma_delta_1m: scalePercent(r.gamma_delta_1m),
+    gamma_delta_5m: scalePercent(r.gamma_delta_5m),
+    gamma_delta_10m: scalePercent(r.gamma_delta_10m),
+    gamma_delta_15m: scalePercent(r.gamma_delta_15m),
+    gamma_delta_30m: scalePercent(r.gamma_delta_30m),
+  };
+}
+
+function scalePercent(value: RawNumeric): number | null {
+  const ratio = toNullableNumber(value);
+  return ratio == null ? null : ratio * 100;
+}
+
 /**
- * Latest GEX row per strike for a (ticker, expiry) — optionally
- * snapshotted to a specific timestamp via `at` (used by the historical
- * scrubber). Strikes are returned ordered ASC so the panel can render
- * them left-to-right without a client-side sort.
+ * Latest GEX row per strike for a (ticker, expiry), augmented with
+ * per-strike Δ% over the 1m / 5m / 10m / 15m / 30m windows. Computed
+ * via SQL `LAG()` over a 35-minute lookback CTE so the GEX Landscape's
+ * Δ% columns populate on first paint instead of waiting on a
+ * client-side buffer warmup.
+ *
+ * Optionally snapshotted to a specific timestamp via `at` (used by the
+ * historical scrubber); when omitted, anchors at NOW(). The `at` window
+ * filter applies to BOTH the visible row and the LAG history, so
+ * scrubbing back returns deltas as they were at that minute.
+ *
+ * Strict-LAG assumption: `LAG(_, N)` is positional, not range-based.
+ * With per-minute density (the expected case once the WS daemon has
+ * been running through a session), `LAG(_, 5)` returns the row that is
+ * exactly 5 minutes prior. If the producer drops minutes, `LAG(_, N)`
+ * returns the Nth-prior ROW, which may be slightly older than N
+ * minutes — an acceptable approximation for now. Density gaps will be
+ * measured by `docs/tmp/gex-ticker-probe/density_probe.mjs`; if they
+ * are material, swap to a tolerant range form
+ * (`RANGE BETWEEN INTERVAL 'N min 30s' PRECEDING ...`).
  */
-export async function getLatestGexPerStrike(
+export async function getLatestGexPerStrikeWithDeltas(
   opts: FetchOpts,
-): Promise<GexStrikeExpiryRow[]> {
+): Promise<GexStrikeExpiryRowWithDeltas[]> {
   const sql = getDb();
   const { ticker, expiry, at } = opts;
+  const atParam = at ?? null;
 
-  if (at) {
-    const rows = (await sql`
-      SELECT DISTINCT ON (strike)
+  // 35-minute lookback is enough to cover the largest delta (30m) plus
+  // a small buffer absorbed by minor producer jitter. The CTE filters
+  // first, then `LAG()` operates over per-strike partitions sorted
+  // ascending. `DISTINCT ON (strike)` then collapses to the latest
+  // row per strike (with deltas attached).
+  //
+  // `net_gamma::numeric` cast on the LAG ratio keeps division in the
+  // numeric domain (Postgres integer division otherwise truncates).
+  const rows = (await sql`
+    WITH series AS (
+      SELECT
         ticker, expiry, strike, ts_minute, price,
         call_gamma_oi, put_gamma_oi,
         call_charm_oi, put_charm_oi,
@@ -170,17 +246,38 @@ export async function getLatestGexPerStrike(
         call_charm_ask_vol, call_charm_bid_vol,
         put_charm_ask_vol, put_charm_bid_vol,
         call_vanna_ask_vol, call_vanna_bid_vol,
-        put_vanna_ask_vol, put_vanna_bid_vol
+        put_vanna_ask_vol, put_vanna_bid_vol,
+        (COALESCE(call_gamma_oi, 0) + COALESCE(put_gamma_oi, 0)) AS net_gamma
       FROM ws_gex_strike_expiry
       WHERE ticker = ${ticker}
         AND expiry = ${expiry}::date
-        AND ts_minute <= ${at}::timestamptz
-      ORDER BY strike, ts_minute DESC
-    `) as RawRow[];
-    return rows.map(mapRow);
-  }
-
-  const rows = (await sql`
+        AND ts_minute >= COALESCE(${atParam}::timestamptz, NOW()) - INTERVAL '35 minutes'
+        AND ts_minute <= COALESCE(${atParam}::timestamptz, NOW())
+    ),
+    deltas AS (
+      SELECT
+        ticker, expiry, strike, ts_minute, price,
+        call_gamma_oi, put_gamma_oi,
+        call_charm_oi, put_charm_oi,
+        call_vanna_oi, put_vanna_oi,
+        call_gamma_vol, put_gamma_vol,
+        call_charm_vol, put_charm_vol,
+        call_vanna_vol, put_vanna_vol,
+        call_gamma_ask_vol, call_gamma_bid_vol,
+        put_gamma_ask_vol, put_gamma_bid_vol,
+        call_charm_ask_vol, call_charm_bid_vol,
+        put_charm_ask_vol, put_charm_bid_vol,
+        call_vanna_ask_vol, call_vanna_bid_vol,
+        put_vanna_ask_vol, put_vanna_bid_vol,
+        net_gamma,
+        (net_gamma::numeric / NULLIF(ABS(LAG(net_gamma, 1)  OVER w), 0) - 1) AS gamma_delta_1m,
+        (net_gamma::numeric / NULLIF(ABS(LAG(net_gamma, 5)  OVER w), 0) - 1) AS gamma_delta_5m,
+        (net_gamma::numeric / NULLIF(ABS(LAG(net_gamma, 10) OVER w), 0) - 1) AS gamma_delta_10m,
+        (net_gamma::numeric / NULLIF(ABS(LAG(net_gamma, 15) OVER w), 0) - 1) AS gamma_delta_15m,
+        (net_gamma::numeric / NULLIF(ABS(LAG(net_gamma, 30) OVER w), 0) - 1) AS gamma_delta_30m
+      FROM series
+      WINDOW w AS (PARTITION BY ticker, expiry, strike ORDER BY ts_minute)
+    )
     SELECT DISTINCT ON (strike)
       ticker, expiry, strike, ts_minute, price,
       call_gamma_oi, put_gamma_oi,
@@ -194,13 +291,13 @@ export async function getLatestGexPerStrike(
       call_charm_ask_vol, call_charm_bid_vol,
       put_charm_ask_vol, put_charm_bid_vol,
       call_vanna_ask_vol, call_vanna_bid_vol,
-      put_vanna_ask_vol, put_vanna_bid_vol
-    FROM ws_gex_strike_expiry
-    WHERE ticker = ${ticker}
-      AND expiry = ${expiry}::date
+      put_vanna_ask_vol, put_vanna_bid_vol,
+      gamma_delta_1m, gamma_delta_5m, gamma_delta_10m,
+      gamma_delta_15m, gamma_delta_30m
+    FROM deltas
     ORDER BY strike, ts_minute DESC
-  `) as RawRow[];
-  return rows.map(mapRow);
+  `) as RawRowWithDeltas[];
+  return rows.map(mapRowWithDeltas);
 }
 
 /**

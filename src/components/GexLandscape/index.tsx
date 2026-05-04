@@ -50,22 +50,9 @@ import { StrikeTable } from './StrikeTable';
 import { computeBias } from './bias';
 import { computeGammaPressure, type GammaPressure } from './classify';
 import { PRICE_WINDOW, type Ticker } from './constants';
-import {
-  computeDeltaMap,
-  computePriceTrend,
-  computeSmoothedStrikes,
-  findClosestSnapshot,
-} from './deltas';
+import { computePriceTrend, computeSmoothedStrikes } from './deltas';
 import { formatBiasForClaude } from './formatters';
 import type { PriceTrend, Snapshot } from './types';
-import { useMultiWindowDeltas } from './useMultiWindowDeltas';
-
-/**
- * Lookback windows (in minutes) tracked by the GEX landscape Δ% display.
- * Stable module-level array so `useMultiWindowDeltas` keeps a frozen
- * reference and never reallocates state across renders.
- */
-const DELTA_WINDOWS = [1, 5, 10, 15, 30] as const;
 
 const TOP5_MUTE_STORAGE_KEY = 'gex-landscape-top5-muted-v1';
 
@@ -155,7 +142,18 @@ const GexLandscape = memo(function GexLandscape({
   const scrub = useScrubController(liveTimestamps);
   const { scrubTimestamp, isScrubbed, canScrubPrev, canScrubNext } = scrub;
 
-  const { strikes, timestamps, loading, error, refresh } = useGexLandscapeData(
+  const {
+    strikes,
+    timestamps,
+    gexDeltaMap,
+    gexDelta5mMap,
+    gexDelta10mMap,
+    gexDelta15mMap,
+    gexDelta30mMap,
+    loading,
+    error,
+    refresh,
+  } = useGexLandscapeData(
     selectedTicker,
     marketOpen,
     selectedDate,
@@ -212,25 +210,15 @@ const GexLandscape = memo(function GexLandscape({
   const spotRowRef = useRef<HTMLDivElement>(null);
   // Scroll to ATM row only once on initial data arrival; never on scrub.
   const hasScrolledRef = useRef(false);
-  // Rolling buffer of recent snapshots for Δ% computations
-  // (1m, 5m, 10m, 15m, 30m).
+  // Rolling buffer of recent snapshots — retained ONLY for the bias
+  // verdict's smoothed-strikes computation and price-trend detection
+  // (drifting-up/down override). Per-strike Δ% no longer reads from
+  // this buffer; that moved to a server-side SQL `LAG()` query in
+  // Phase 4 of `docs/superpowers/specs/gex-landscape-ws-upgrade-2026-05-03.md`,
+  // surfaced via the `gex*DeltaMap` props from `useGexLandscapeData`.
+  // The buffer still warms up over the session but the table's Δ%
+  // columns are populated from first paint regardless.
   const snapshotBufferRef = useRef<Snapshot[]>([]);
-  // Keyed Δ% maps. `deltaMaps[1]`, `deltaMaps[5]`, … track strike →
-  // signed Δ% over each lookback window. The hook guarantees a non-null
-  // Map for every window passed in `DELTA_WINDOWS`; the `!` assertions
-  // below assert that contract to TypeScript (which can only see the
-  // `Record<number, …>` lookup as possibly-undefined under
-  // `noUncheckedIndexedAccess`).
-  const {
-    deltaMaps,
-    setDeltaMaps,
-    clearAll: clearDeltaMaps,
-  } = useMultiWindowDeltas(DELTA_WINDOWS);
-  const gexDeltaMap = deltaMaps[1]!;
-  const gexDelta5mMap = deltaMaps[5]!;
-  const gexDelta10mMap = deltaMaps[10]!;
-  const gexDelta15mMap = deltaMaps[15]!;
-  const gexDelta30mMap = deltaMaps[30]!;
   // 5-minute smoothed strikes — updated in the snapshot effect so the ref read
   // happens inside an effect (not during render), satisfying react-hooks/purity.
   const [smoothedRows, setSmoothedRows] = useState<GexStrikeLevel[]>([]);
@@ -406,16 +394,16 @@ const GexLandscape = memo(function GexLandscape({
     [],
   );
 
-  // When the viewed date changes, reset scroll and all Δ% tracking so the new
-  // date's first snapshot gets a clean baseline instead of comparing against
-  // the previous date's strikes.
+  // When the viewed date changes, reset scroll and the smoothing/price-trend
+  // buffer so the new date's first snapshot gets a clean baseline. Δ% maps
+  // are sourced server-side now and refresh automatically with each poll —
+  // no client-side reset needed.
   useEffect(() => {
     hasScrolledRef.current = false;
     snapshotBufferRef.current = [];
-    clearDeltaMaps();
     setSmoothedRows([]);
     setPriceTrend(null);
-  }, [selectedDate, clearDeltaMaps]);
+  }, [selectedDate]);
 
   // Scroll ATM row into view only on initial data arrival.
   useEffect(() => {
@@ -429,9 +417,12 @@ const GexLandscape = memo(function GexLandscape({
     }
   }, [loading, rows.length]);
 
-  // Compute 1m, 5m, 10m, 15m, and 30m GEX Δ% on each new snapshot.
-  // Uses a rolling buffer keyed by snapshot timestamp to avoid duplicate
-  // processing and to support arbitrary lookback windows.
+  // Maintain the snapshot buffer for the bias verdict: 5-minute strike
+  // smoothing keeps the verdict stable across minor GEX fluctuations,
+  // and the price-trend computation drives the drifting-up/down override
+  // for the rangebound verdict. Per-strike Δ% used to be computed here
+  // too — Phase 4 moved that to a server-side SQL `LAG()` query so the
+  // table's Δ% columns populate immediately on first paint.
   useEffect(() => {
     if (!timestamp || strikes.length === 0) return;
     const now = new Date(timestamp).getTime();
@@ -439,29 +430,12 @@ const GexLandscape = memo(function GexLandscape({
     // Guard: don't process the same snapshot twice (e.g. re-render with same data).
     if (snapshotBufferRef.current.at(-1)?.ts === now) return;
 
-    // Prune entries older than 31 minutes to keep the buffer bounded while
-    // still covering the 30m lookback (extra minute absorbs the
-    // findClosestSnapshot tolerance window).
-    const cutoff = now - 31 * 60 * 1000;
+    // Prune entries older than 6 minutes — the smoothing window is 5
+    // minutes (extra minute absorbs minor jitter). The previous 31-min
+    // bound supported the largest server-bound delta lookup; now that
+    // deltas live server-side, the buffer can be much smaller.
+    const cutoff = now - 6 * 60 * 1000;
     const buf = snapshotBufferRef.current.filter((snap) => snap.ts >= cutoff);
-
-    // 1m delta — compare against the most recent buffered snapshot.
-    // 5/10/15/30m deltas — find closest snapshot for each lookback target.
-    // Each map stays empty until the buffer holds a snapshot near that age,
-    // so the table renders an em-dash until enough history accumulates.
-    // All five updates land in a single React commit via `setDeltaMaps`.
-    const prev1m = buf.at(-1);
-    const snap5m = findClosestSnapshot(buf, now - 5 * 60 * 1000);
-    const snap10m = findClosestSnapshot(buf, now - 10 * 60 * 1000);
-    const snap15m = findClosestSnapshot(buf, now - 15 * 60 * 1000);
-    const snap30m = findClosestSnapshot(buf, now - 30 * 60 * 1000);
-    setDeltaMaps({
-      1: prev1m ? computeDeltaMap(strikes, prev1m.strikes) : new Map(),
-      5: snap5m ? computeDeltaMap(strikes, snap5m.strikes) : new Map(),
-      10: snap10m ? computeDeltaMap(strikes, snap10m.strikes) : new Map(),
-      15: snap15m ? computeDeltaMap(strikes, snap15m.strikes) : new Map(),
-      30: snap30m ? computeDeltaMap(strikes, snap30m.strikes) : new Map(),
-    });
 
     // Push current snapshot and persist the updated buffer.
     buf.push({ strikes, ts: now });
@@ -475,7 +449,7 @@ const GexLandscape = memo(function GexLandscape({
     );
     setSmoothedRows(computeSmoothedStrikes(windowStrikes, buf, now));
     setPriceTrend(computePriceTrend(price, buf, now));
-  }, [strikes, timestamp, setDeltaMaps]);
+  }, [strikes, timestamp]);
 
   const headerRight = (
     <ScrubControls

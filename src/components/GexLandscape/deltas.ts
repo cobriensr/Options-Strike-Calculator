@@ -1,6 +1,10 @@
 /**
- * Snapshot-buffer helpers: 1m/5m Δ%, closest-snapshot lookup, and
- * per-strike smoothing used by the bias verdict.
+ * Snapshot-buffer helpers used by the bias verdict: 5-minute strike
+ * smoothing and price-trend detection.
+ *
+ * Per-strike Δ% used to live here (`computeDeltaMap`,
+ * `findClosestSnapshot`) but moved to a server-side SQL `LAG()` query
+ * in Phase 4 of the GEX Landscape WebSocket-driven accuracy upgrade.
  *
  * Pure functions, no React — all state ownership lives in the component.
  */
@@ -8,48 +12,6 @@
 import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
 import { computePriceTrend as computePriceTrendPrimitive } from '../../utils/price-trend';
 import type { PriceTrend, Snapshot } from './types';
-
-/** Compute % change in netGamma from prev → current for each strike. */
-export function computeDeltaMap(
-  current: GexStrikeLevel[],
-  prev: GexStrikeLevel[],
-): Map<number, number | null> {
-  const prevByStrike = new Map(prev.map((s) => [s.strike, s.netGamma]));
-  const result = new Map<number, number | null>();
-  for (const s of current) {
-    const prevGamma = prevByStrike.get(s.strike);
-    result.set(
-      s.strike,
-      prevGamma === undefined || prevGamma === 0
-        ? null
-        : ((s.netGamma - prevGamma) / Math.abs(prevGamma)) * 100,
-    );
-  }
-  return result;
-}
-
-/**
- * Find the snapshot in `buf` whose timestamp is closest to `targetTs`.
- * Returns null if no snapshot falls within `toleranceMs` of the target,
- * so callers get an empty column rather than a misleading comparison.
- */
-export function findClosestSnapshot(
-  buf: Snapshot[],
-  targetTs: number,
-  toleranceMs = 120_000,
-): Snapshot | null {
-  if (!buf.length) return null;
-  let closest: Snapshot | null = null;
-  let minDiff = Infinity;
-  for (const snap of buf) {
-    const diff = Math.abs(snap.ts - targetTs);
-    if (diff < minDiff) {
-      minDiff = diff;
-      closest = snap;
-    }
-  }
-  return minDiff <= toleranceMs ? closest : null;
-}
 
 /**
  * Average netGamma and netCharm for each strike across the current snapshot

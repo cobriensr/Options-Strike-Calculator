@@ -20,6 +20,13 @@ const dataMock = vi.hoisted(() =>
   vi.fn(() => ({
     strikes: [] as GexStrikeLevel[],
     timestamps: [] as string[],
+    // Δ% maps now arrive from the server-side LAG query (Phase 4) — stub
+    // them as empty per default so the consumer's `.get()` calls succeed.
+    gexDeltaMap: new Map<number, number | null>(),
+    gexDelta5mMap: new Map<number, number | null>(),
+    gexDelta10mMap: new Map<number, number | null>(),
+    gexDelta15mMap: new Map<number, number | null>(),
+    gexDelta30mMap: new Map<number, number | null>(),
     loading: false,
     error: null as string | null,
     refresh: vi.fn(),
@@ -129,6 +136,13 @@ function renderLandscape(opts: RenderOptions = {}) {
   dataMock.mockReturnValue({
     strikes,
     timestamps,
+    // Δ% maps now arrive from the server-side LAG query (Phase 4) — stub
+    // them as empty per default so the consumer's `.get()` calls succeed.
+    gexDeltaMap: new Map<number, number | null>(),
+    gexDelta5mMap: new Map<number, number | null>(),
+    gexDelta10mMap: new Map<number, number | null>(),
+    gexDelta15mMap: new Map<number, number | null>(),
+    gexDelta30mMap: new Map<number, number | null>(),
     loading,
     error,
     refresh: vi.fn(),
