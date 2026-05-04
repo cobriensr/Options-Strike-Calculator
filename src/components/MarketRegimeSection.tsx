@@ -30,6 +30,7 @@ interface Props {
   entryTimeLabel?: string;
   signals: ComputedSignals;
   chain: ChainResponse | null;
+  defaultCollapsed?: boolean;
 }
 
 export default function MarketRegimeSection({
@@ -46,6 +47,7 @@ export default function MarketRegimeSection({
   entryTimeLabel,
   signals,
   chain,
+  defaultCollapsed,
 }: Readonly<Props>) {
   const [showRegime, setShowRegime] = useState(true);
   const vixNum = dVix ? Number.parseFloat(dVix) : null;
@@ -65,6 +67,7 @@ export default function MarketRegimeSection({
       badge={bucket?.label ?? (results ? 'VIX ' + (vixNum || '\u2014') : null)}
       badgeColor={bucket ? vixBadgeColor : undefined}
       collapsible
+      defaultCollapsed={defaultCollapsed}
       headerRight={
         <button
           type="button"

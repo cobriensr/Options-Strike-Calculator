@@ -27,6 +27,7 @@ interface Props {
   onUseVix1dAsSigma: (sigma: number) => void;
   termShape?: string | null;
   termShapeAdvice?: string | null;
+  defaultCollapsed?: boolean;
 }
 
 export default function IVInputSection({
@@ -46,6 +47,7 @@ export default function IVInputSection({
   onUseVix1dAsSigma,
   termShape,
   termShapeAdvice,
+  defaultCollapsed,
 }: Readonly<Props>) {
   const [tooltipOpen, setTooltipOpen] = useState(false);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -72,6 +74,7 @@ export default function IVInputSection({
     <SectionBox
       label="Implied Volatility"
       collapsible
+      defaultCollapsed={defaultCollapsed}
       headerRight={
         <fieldset className="m-0 border-none p-0">
           <legend className="sr-only">IV input mode</legend>

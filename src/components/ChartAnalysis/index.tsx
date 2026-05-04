@@ -28,6 +28,7 @@ interface Props {
   readonly context: import('./types').AnalysisContext;
   readonly onAnalysisSaved?: () => void;
   readonly csvPositionSummary?: string | null;
+  readonly defaultCollapsed?: boolean;
 }
 
 export default function ChartAnalysis({
@@ -35,6 +36,7 @@ export default function ChartAnalysis({
   context,
   onAnalysisSaved,
   csvPositionSummary,
+  defaultCollapsed,
 }: Props) {
   const [mode, setMode] = useState<AnalysisMode>('entry');
   const [confirming, setConfirming] = useState(false);
@@ -186,7 +188,11 @@ export default function ChartAnalysis({
   // ── Render ────────────────────────────────────────────────
 
   return (
-    <SectionBox label="Chart Analysis" collapsible>
+    <SectionBox
+      label="Chart Analysis"
+      collapsible
+      defaultCollapsed={defaultCollapsed}
+    >
       <div className="font-sans text-[11px] leading-relaxed">
         <ChartControls
           mode={mode}

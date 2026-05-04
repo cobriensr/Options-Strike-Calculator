@@ -22,6 +22,7 @@ interface PositionMonitorProps {
    * Defaults to 12% if not provided.
    */
   portfolioRiskThresholdPct?: number;
+  defaultCollapsed?: boolean;
 }
 
 // ── Banner formatting helpers ──────────────────────────────
@@ -51,6 +52,7 @@ export default function PositionMonitor({
   spotPrice,
   onPositionSummaryChange,
   portfolioRiskThresholdPct = 12,
+  defaultCollapsed,
 }: Readonly<PositionMonitorProps>) {
   const [rawStatement, setRawStatement] = useState<DailyStatement | null>(null);
   // Snapshot spot price at upload time to avoid re-renders from
@@ -185,6 +187,7 @@ export default function PositionMonitor({
     <SectionBox
       label="Position Monitor"
       collapsible
+      defaultCollapsed={defaultCollapsed}
       badge={
         statement
           ? `${statement.date} \u2022 ${String(spreadCount)} spreads`

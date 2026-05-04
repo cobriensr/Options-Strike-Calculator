@@ -14,11 +14,13 @@ import { SectionBox } from '../ui';
 interface BWBCalculatorProps {
   selectedDate?: string;
   vix?: string | number | null;
+  defaultCollapsed?: boolean;
 }
 
 export default function BWBCalculator({
   selectedDate,
   vix,
+  defaultCollapsed,
 }: Readonly<BWBCalculatorProps>) {
   // Shared
   const [contracts, setContracts] = useState(1);
@@ -233,6 +235,7 @@ export default function BWBCalculator({
     <SectionBox
       label="Settlement Pin Calculator"
       collapsible
+      defaultCollapsed={defaultCollapsed}
       headerRight={
         <button
           onClick={handleClear}

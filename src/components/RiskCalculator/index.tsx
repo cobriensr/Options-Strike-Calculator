@@ -3,11 +3,21 @@ import { useRiskCalculator } from '../../hooks/useRiskCalculator';
 import RiskInputs from './RiskInputs';
 import RiskResults from './RiskResults';
 
-export default function RiskCalculator() {
+interface Props {
+  defaultCollapsed?: boolean;
+}
+
+export default function RiskCalculator({
+  defaultCollapsed,
+}: Readonly<Props> = {}) {
   const rc = useRiskCalculator();
 
   return (
-    <SectionBox label="Risk Calculator" collapsible>
+    <SectionBox
+      label="Risk Calculator"
+      collapsible
+      defaultCollapsed={defaultCollapsed}
+    >
       <RiskInputs
         mode={rc.mode}
         balance={rc.balance}

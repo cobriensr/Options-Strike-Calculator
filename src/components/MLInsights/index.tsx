@@ -71,7 +71,13 @@ function PlotTabs({
   );
 }
 
-export default function MLInsights() {
+interface MLInsightsProps {
+  defaultCollapsed?: boolean;
+}
+
+export default function MLInsights({
+  defaultCollapsed,
+}: Readonly<MLInsightsProps> = {}) {
   const { plots, findings, pipelineDate, loading, error, refetch } =
     useMLInsights();
   const [analyzeState, setAnalyzeState] = React.useState<
@@ -106,6 +112,7 @@ export default function MLInsights() {
       label="ML Insights"
       badge={pipelineDate}
       collapsible
+      defaultCollapsed={defaultCollapsed}
       headerRight={
         <div className="flex items-center gap-1.5">
           <button

@@ -41,6 +41,7 @@ interface Props {
   onOHLCFieldChange: (field: OHLCField) => void;
   vixDataLoaded: boolean;
   selectedDate: string;
+  defaultCollapsed?: boolean;
 }
 
 export default function AdvancedSection({
@@ -55,6 +56,7 @@ export default function AdvancedSection({
   showBWB,
   onToggleBWB,
   bwbNarrowWidth,
+  defaultCollapsed,
   onBwbNarrowWidthChange,
   bwbWideMultiplier,
   onBwbWideMultiplierChange,
@@ -74,6 +76,7 @@ export default function AdvancedSection({
     <SectionBox
       label="Advanced"
       collapsible
+      defaultCollapsed={defaultCollapsed}
       headerRight={
         <div className="flex gap-2">
           <button onClick={onToggleIC} className={toggleChipClass(showIC)}>

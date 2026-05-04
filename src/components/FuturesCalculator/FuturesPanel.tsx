@@ -83,7 +83,13 @@ function ctInputToIso(value: string): string | null {
   return ctWallClockToUtcIso(dateStr, hour * 60 + minute);
 }
 
-export default function FuturesPanel() {
+interface FuturesPanelProps {
+  defaultCollapsed?: boolean;
+}
+
+export default function FuturesPanel({
+  defaultCollapsed,
+}: Readonly<FuturesPanelProps> = {}) {
   // Raw `datetime-local` input value, interpreted as Central Time.
   // Empty = live.
   const [pickerValue, setPickerValue] = useState('');
@@ -123,6 +129,7 @@ export default function FuturesPanel() {
       label="Futures"
       badge={timeLabel}
       collapsible
+      defaultCollapsed={defaultCollapsed}
       headerRight={
         <div className="flex items-center gap-2">
           {isHistorical && (

@@ -21,9 +21,13 @@ import AnalysisHistoryPicker from './AnalysisHistoryPicker';
 interface Props {
   /** Bump this to trigger a refetch of analysis dates */
   readonly refreshKey?: number;
+  readonly defaultCollapsed?: boolean;
 }
 
-export default function AnalysisHistory({ refreshKey }: Props) {
+export default function AnalysisHistory({
+  refreshKey,
+  defaultCollapsed,
+}: Props) {
   const [allDates, setAllDates] = useState<DateEntry[]>([]);
   const [modeFilter, setModeFilter] = useState<ModeFilter>('all');
   const [selectedDate, setSelectedDate] = useState<string>('');
@@ -214,7 +218,11 @@ export default function AnalysisHistory({ refreshKey }: Props) {
 
   if (allDates.length === 0) {
     return (
-      <SectionBox label="Analysis History" collapsible>
+      <SectionBox
+      label="Analysis History"
+      collapsible
+      defaultCollapsed={defaultCollapsed}
+    >
         {fetchError && (
           <div className="text-danger text-[11px]">{fetchError}</div>
         )}
@@ -234,7 +242,11 @@ export default function AnalysisHistory({ refreshKey }: Props) {
   }
 
   return (
-    <SectionBox label="Analysis History" collapsible>
+    <SectionBox
+      label="Analysis History"
+      collapsible
+      defaultCollapsed={defaultCollapsed}
+    >
       <AnalysisHistoryPicker
         modeFilter={modeFilter}
         onModeFilterChange={setModeFilter}

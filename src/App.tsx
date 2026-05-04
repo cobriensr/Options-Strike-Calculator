@@ -585,8 +585,11 @@ export default function StrikeCalculator() {
 
   const navSections = useMemo<NavSection[]>(() => {
     return [
-      { id: 'sec-inputs', label: 'Inputs' },
-      { id: 'sec-settings', label: 'Settings' },
+      { id: 'sec-datetime', label: 'Date & Time' },
+      { id: 'sec-spot-price', label: 'Spot Price' },
+      { id: 'sec-premarket', label: 'Pre-Market' },
+      { id: 'sec-advanced', label: 'Advanced' },
+      { id: 'sec-iv', label: 'Implied Volatility' },
       { id: 'sec-risk', label: 'Risk Calculator' },
       { id: 'sec-regime', label: 'Market Regime' },
       ...(isAuthenticated && hasMarketOrSnapshot
@@ -713,41 +716,44 @@ export default function StrikeCalculator() {
               </p>
 
               <main>
-                <div
-                  id="sec-inputs"
-                  className="grid scroll-mt-28 grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0"
-                >
-                  <DateTimeSection
-                    chevronUrl={chevronUrl}
-                    selectedDate={vix.selectedDate}
-                    onDateChange={handleDateChange}
-                    vixDataLoaded={vix.vixDataLoaded}
-                    timeHour={timeHour}
-                    onHourChange={handleTimeHourChange}
-                    timeMinute={timeMinute}
-                    onMinuteChange={handleTimeMinuteChange}
-                    timeAmPm={timeAmPm}
-                    onAmPmChange={handleTimeAmPmChange}
-                    timezone={timezone}
-                    onTimezoneChange={handleTimezoneChange}
-                    timeEdited={timeEditedForDisplay}
-                    onResumeLive={handleResumeLive}
-                    errors={errors}
-                  />
+                <div className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0">
+                  <div id="sec-datetime" className="scroll-mt-28">
+                    <DateTimeSection
+                      chevronUrl={chevronUrl}
+                      selectedDate={vix.selectedDate}
+                      onDateChange={handleDateChange}
+                      vixDataLoaded={vix.vixDataLoaded}
+                      timeHour={timeHour}
+                      onHourChange={handleTimeHourChange}
+                      timeMinute={timeMinute}
+                      onMinuteChange={handleTimeMinuteChange}
+                      timeAmPm={timeAmPm}
+                      onAmPmChange={handleTimeAmPmChange}
+                      timezone={timezone}
+                      onTimezoneChange={handleTimezoneChange}
+                      timeEdited={timeEditedForDisplay}
+                      onResumeLive={handleResumeLive}
+                      errors={errors}
+                    />
+                  </div>
 
-                  <SpotPriceSection
-                    spotPrice={spotPrice}
-                    onSpotChange={handleSpotChange}
-                    spxDirect={spxDirect}
-                    onSpxDirectChange={handleSpxChange}
-                    spxRatio={spxRatio}
-                    onSpxRatioChange={setSpxRatio}
-                    dSpot={dSpot}
-                    effectiveRatio={effectiveRatio}
-                    spxDirectActive={spxDirectActive}
-                    derivedRatio={spxDirectActive ? spxVal / spyVal : spxRatio}
-                    errors={errors}
-                  />
+                  <div id="sec-spot-price" className="scroll-mt-28">
+                    <SpotPriceSection
+                      spotPrice={spotPrice}
+                      onSpotChange={handleSpotChange}
+                      spxDirect={spxDirect}
+                      onSpxDirectChange={handleSpxChange}
+                      spxRatio={spxRatio}
+                      onSpxRatioChange={setSpxRatio}
+                      dSpot={dSpot}
+                      effectiveRatio={effectiveRatio}
+                      spxDirectActive={spxDirectActive}
+                      derivedRatio={
+                        spxDirectActive ? spxVal / spyVal : spxRatio
+                      }
+                      errors={errors}
+                    />
+                  </div>
                 </div>
 
                 <EventDayWarning
@@ -756,64 +762,69 @@ export default function StrikeCalculator() {
                 />
 
                 {market.hasData && (
-                  <PreMarketInput
-                    date={vix.selectedDate}
-                    spxPrice={results?.spot}
-                    prevClose={market.data.yesterday?.yesterday?.close}
-                  />
+                  <div id="sec-premarket" className="scroll-mt-28">
+                    <PreMarketInput
+                      date={vix.selectedDate}
+                      spxPrice={results?.spot}
+                      prevClose={market.data.yesterday?.yesterday?.close}
+                    />
+                  </div>
                 )}
 
-                <div
-                  id="sec-settings"
-                  className="mt-6 grid scroll-mt-28 grid-cols-1 items-stretch gap-4 [&>*]:mt-0"
-                >
-                  <AdvancedSection
-                    skewPct={skewPct}
-                    onSkewChange={setSkewPct}
-                    showIC={showIC}
-                    onToggleIC={handleToggleIC}
-                    wingWidth={wingWidth}
-                    onWingWidthChange={setWingWidth}
-                    contracts={contracts}
-                    onContractsChange={setContracts}
-                    showBWB={showBWB}
-                    onToggleBWB={handleToggleBWB}
-                    bwbNarrowWidth={bwbNarrowWidth}
-                    onBwbNarrowWidthChange={setBwbNarrowWidth}
-                    bwbWideMultiplier={bwbWideMultiplier}
-                    onBwbWideMultiplierChange={setBwbWideMultiplier}
-                    results={results}
-                    vixOHLC={vix.vixOHLC}
-                    vixOHLCField={vix.vixOHLCField}
-                    onOHLCFieldChange={vix.setVixOHLCField}
-                    vixDataLoaded={vix.vixDataLoaded}
-                    selectedDate={vix.selectedDate}
-                  />
+                <div className="mt-6 grid grid-cols-1 items-stretch gap-4 [&>*]:mt-0">
+                  <div id="sec-advanced" className="scroll-mt-28">
+                    <AdvancedSection
+                      skewPct={skewPct}
+                      onSkewChange={setSkewPct}
+                      showIC={showIC}
+                      onToggleIC={handleToggleIC}
+                      wingWidth={wingWidth}
+                      onWingWidthChange={setWingWidth}
+                      contracts={contracts}
+                      onContractsChange={setContracts}
+                      showBWB={showBWB}
+                      onToggleBWB={handleToggleBWB}
+                      bwbNarrowWidth={bwbNarrowWidth}
+                      onBwbNarrowWidthChange={setBwbNarrowWidth}
+                      bwbWideMultiplier={bwbWideMultiplier}
+                      onBwbWideMultiplierChange={setBwbWideMultiplier}
+                      results={results}
+                      vixOHLC={vix.vixOHLC}
+                      vixOHLCField={vix.vixOHLCField}
+                      onOHLCFieldChange={vix.setVixOHLCField}
+                      vixDataLoaded={vix.vixDataLoaded}
+                      selectedDate={vix.selectedDate}
+                      defaultCollapsed
+                    />
+                  </div>
 
-                  <IVInputSection
-                    ivMode={ivMode}
-                    onIvModeChange={setIvMode}
-                    vixInput={vixInput}
-                    onVixChange={handleVixChange}
-                    multiplier={multiplier}
-                    onMultiplierChange={setMultiplier}
-                    directIVInput={directIVInput}
-                    onDirectIVChange={setDirectIVInput}
-                    dVix={dVix}
-                    results={results}
-                    errors={errors}
-                    market={market}
-                    historySnapshot={historySnapshot}
-                    onUseVix1dAsSigma={handleUseVix1dAsSigma}
-                    termShape={signals.vixTermShape}
-                    termShapeAdvice={signals.vixTermShapeAdvice}
-                  />
+                  <div id="sec-iv" className="scroll-mt-28">
+                    <IVInputSection
+                      ivMode={ivMode}
+                      onIvModeChange={setIvMode}
+                      vixInput={vixInput}
+                      onVixChange={handleVixChange}
+                      multiplier={multiplier}
+                      onMultiplierChange={setMultiplier}
+                      directIVInput={directIVInput}
+                      onDirectIVChange={setDirectIVInput}
+                      dVix={dVix}
+                      results={results}
+                      errors={errors}
+                      market={market}
+                      historySnapshot={historySnapshot}
+                      onUseVix1dAsSigma={handleUseVix1dAsSigma}
+                      termShape={signals.vixTermShape}
+                      termShapeAdvice={signals.vixTermShapeAdvice}
+                      defaultCollapsed
+                    />
+                  </div>
                 </div>
 
                 <span id="sec-risk" className="block scroll-mt-28" />
                 <ErrorBoundary label="Risk Calculator">
                   <Suspense fallback={<SkeletonSection lines={5} />}>
-                    <RiskCalculator />
+                    <RiskCalculator defaultCollapsed />
                   </Suspense>
                 </ErrorBoundary>
 
@@ -837,6 +848,7 @@ export default function StrikeCalculator() {
                     }
                     signals={signals}
                     chain={chainData.chain}
+                    defaultCollapsed
                   />
                 </ErrorBoundary>
 
@@ -1001,7 +1013,7 @@ export default function StrikeCalculator() {
                     <span id="sec-futures" className="block scroll-mt-28" />
                     <ErrorBoundary label="Futures">
                       <Suspense fallback={<SkeletonSection lines={5} />}>
-                        <FuturesPanel />
+                        <FuturesPanel defaultCollapsed />
                       </Suspense>
                     </ErrorBoundary>
                   </>
@@ -1018,6 +1030,7 @@ export default function StrikeCalculator() {
                           onAnalysisSaved={handleAnalysisSaved}
                           context={analysisContext}
                           csvPositionSummary={csvPositionSummary}
+                          defaultCollapsed
                         />
                       </Suspense>
                     </ErrorBoundary>
@@ -1026,7 +1039,10 @@ export default function StrikeCalculator() {
 
                 <span id="sec-history" className="block scroll-mt-28" />
                 <ErrorBoundary label="Analysis History">
-                  <AnalysisHistory refreshKey={historyRefreshKey} />
+                  <AnalysisHistory
+                    refreshKey={historyRefreshKey}
+                    defaultCollapsed
+                  />
                 </ErrorBoundary>
 
                 {isAuthenticated && (
@@ -1034,7 +1050,7 @@ export default function StrikeCalculator() {
                     <span id="sec-ml-insights" className="block scroll-mt-28" />
                     <ErrorBoundary label="ML Insights">
                       <Suspense fallback={<SkeletonSection lines={6} tall />}>
-                        <MLInsights />
+                        <MLInsights defaultCollapsed />
                       </Suspense>
                     </ErrorBoundary>
                   </>
@@ -1076,6 +1092,7 @@ export default function StrikeCalculator() {
                       spotPrice={results?.spot ?? spxVal ?? 0}
                       onPositionSummaryChange={setCsvPositionSummary}
                       portfolioRiskThresholdPct={portfolioRiskThresholdPct}
+                      defaultCollapsed
                     />
                   </Suspense>
                 </ErrorBoundary>
@@ -1088,6 +1105,7 @@ export default function StrikeCalculator() {
                         <BWBCalculator
                           selectedDate={vix.selectedDate}
                           vix={vixInput}
+                          defaultCollapsed
                         />
                       </Suspense>
                     </ErrorBoundary>
