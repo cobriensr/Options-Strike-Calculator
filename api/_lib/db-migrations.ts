@@ -3668,4 +3668,19 @@ export const MIGRATIONS: Migration[] = [
             ON net_flow_per_ticker_history (ticker, ts DESC)`,
     ],
   },
+  {
+    id: 123,
+    description:
+      'Add (symbol, timestamp DESC) index on index_candles_1m. The existing ' +
+      'unique key is (symbol, date, timestamp) — queries that JOIN by ' +
+      '(symbol, timestamp) without filtering on date (e.g. dark-pool level ' +
+      'synthesis in api/_lib/dark-pool-query.ts) degenerate to ~140 buffer ' +
+      'pages per row. Dark pool levels query timed out at 12s on 12k prints ' +
+      "for SPY 2026-05-01; with this index it's 296ms. Mirrors the " +
+      'idx_etf_candles_1m_ticker_ts shape on etf_candles_1m.',
+    statements: (sql) => [
+      sql`CREATE INDEX IF NOT EXISTS idx_index_candles_1m_symbol_ts
+            ON index_candles_1m (symbol, "timestamp" DESC)`,
+    ],
+  },
 ];
