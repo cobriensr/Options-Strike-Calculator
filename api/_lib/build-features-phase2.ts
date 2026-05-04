@@ -16,6 +16,7 @@
 
 import type { NeonQueryFunction } from '@neondatabase/serverless';
 import type { FeatureRow } from './build-features-types.js';
+import { getDarkPoolLevels } from './dark-pool-query.js';
 import { fetchMaxPain } from './max-pain.js';
 import { uwFetch } from './api-helpers.js';
 import logger from './logger.js';
@@ -332,31 +333,30 @@ export async function addMaxPainFeatures(
 }
 
 /**
- * Dark pool features from the daily `dark_pool_levels` table: total
- * premium, cluster count, top-cluster distance, support/resistance
- * premium split (around spx_open), and concentration of premium at the
- * single top level. Errors are logged but never propagated.
+ * Dark pool features for daily SPX clusters: total premium, cluster
+ * count, top-cluster distance, support/resistance premium split
+ * (around spx_open), and concentration of premium at the single top
+ * level. Reads via the shared dark-pool-query helper which is env-flag
+ * gated (USE_DAEMON_DARK_POOL): legacy dark_pool_levels by default,
+ * dark_pool_prints when daemon coverage is enabled. Errors are logged
+ * but never propagated.
+ *
+ * The `sql` parameter is preserved for signature compatibility with
+ * the caller's transaction context, but unused — the helper opens its
+ * own connection via getDb(). Acceptable because feature extraction
+ * is idempotent (UPSERT downstream) and never participates in the
+ * caller's transaction boundary.
  */
 export async function addDarkPoolFeatures(
-  sql: Sql,
+  _sql: Sql,
   dateStr: string,
   features: FeatureRow,
 ): Promise<void> {
   try {
-    const dpRows = await sql`
-      SELECT spx_approx, total_premium, trade_count, total_shares
-      FROM dark_pool_levels
-      WHERE date = ${dateStr}
-      ORDER BY total_premium DESC
-    `;
+    const result = await getDarkPoolLevels({ date: dateStr, symbol: 'SPX' });
+    const levels = result.levels;
 
-    if (dpRows.length > 0) {
-      const levels = dpRows.map((r) => ({
-        spxLevel: Number(r.spx_approx),
-        totalPremium: Number(r.total_premium),
-        tradeCount: Number(r.trade_count),
-      }));
-
+    if (levels.length > 0) {
       const totalPremium = levels.reduce((s, l) => s + l.totalPremium, 0);
 
       features.dp_total_premium = totalPremium;
@@ -366,13 +366,13 @@ export async function addDarkPoolFeatures(
       const topLevel = levels[0]!;
 
       if (spxPrice != null) {
-        features.dp_top_cluster_dist = topLevel.spxLevel - spxPrice;
+        features.dp_top_cluster_dist = topLevel.level - spxPrice;
 
         // Support = premium at levels AT or BELOW SPX; resistance = above
         let support = 0;
         let resistance = 0;
         for (const l of levels) {
-          if (l.spxLevel <= spxPrice) {
+          if (l.level <= spxPrice) {
             support += l.totalPremium;
           } else {
             resistance += l.totalPremium;

@@ -55,6 +55,11 @@ describe('engineerPhase2Features', () => {
     vi.resetAllMocks();
     mockSql.mockResolvedValue([]);
     process.env = { ...originalEnv };
+    // dark-pool-query helper (Phase 4c-iii migration) calls getDb()
+    // internally, which throws when DATABASE_URL is unset. The mocked
+    // neon() returns mockSql regardless of the URL so the value here
+    // is fake but non-empty.
+    process.env.DATABASE_URL = 'postgresql://test/test';
     // Pin the clock so isWithinUWWindow's default `today` is near DATE_STR.
     // Without this, the real system clock decides whether UW API fetches
     // are skipped, and historical tests become flaky.

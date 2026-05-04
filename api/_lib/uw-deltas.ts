@@ -104,6 +104,7 @@
  */
 
 import { getDb } from './db.js';
+import { getDarkPoolStrikeCountBuckets } from './dark-pool-query.js';
 import { fmtPct, formatDollarAbbrev, formatSigned } from './format-helpers.js';
 import { SESSION_OPEN_HOUR_UTC, SESSION_OPEN_MINUTE_UTC } from './constants.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
@@ -259,35 +260,32 @@ function populationStd(values: number[], mean: number): number {
 
 // ── 1. Dark pool velocity ─────────────────────────────────────
 
-interface DpBucketRow {
-  bucket_index: Numeric;
-  strike_count: Numeric;
-}
-
 /**
- * Compute dark pool velocity via a single parameterized SQL query that
- * buckets `latest_time` into 5-minute windows over the last 60 minutes
- * and counts distinct `spx_approx` rows per bucket. Bucket 0 is the
- * current 5-min window; buckets 1..12 are the baseline.
+ * Compute dark pool velocity via the shared dark-pool-query helper
+ * which buckets dark-pool activity into 5-minute windows over the
+ * last 60 minutes and counts distinct strike levels per bucket.
+ * Bucket 0 is the current 5-min window; buckets 1..12 are the
+ * baseline. The helper is env-flag gated so the query runs against
+ * legacy dark_pool_levels by default and dark_pool_prints once
+ * USE_DAEMON_DARK_POOL is set.
  */
 export async function computeDarkPoolVelocity(
   now: Date,
 ): Promise<DarkPoolVelocity | null> {
-  const sql = getDb();
   const lookbackMs = DP_VELOCITY_WINDOW_MS * (DP_VELOCITY_LOOKBACK_BUCKETS + 1);
   const earliestIso = new Date(now.getTime() - lookbackMs).toISOString();
   const nowIso = now.toISOString();
-  const windowMs = DP_VELOCITY_WINDOW_MS;
 
-  const rows = (await sql`
-    SELECT
-      FLOOR(EXTRACT(EPOCH FROM (${nowIso}::timestamptz - latest_time)) * 1000 / ${windowMs})::int AS bucket_index,
-      COUNT(DISTINCT spx_approx) AS strike_count
-    FROM dark_pool_levels
-    WHERE latest_time > ${earliestIso}
-      AND latest_time <= ${nowIso}
-    GROUP BY 1
-  `) as DpBucketRow[];
+  // Phase 4c-iii: read via the shared dark-pool-query helper which is
+  // env-flag gated (USE_DAEMON_DARK_POOL). Soak default reads from
+  // legacy dark_pool_levels with the same SQL shape; daemon path reads
+  // dark_pool_prints aggregated to per-bucket distinct level count.
+  const rows = await getDarkPoolStrikeCountBuckets({
+    symbol: 'SPX',
+    fromIso: earliestIso,
+    nowIso,
+    bucketMs: DP_VELOCITY_WINDOW_MS,
+  });
 
   if (rows.length === 0) return null;
 
@@ -298,15 +296,16 @@ export async function computeDarkPoolVelocity(
     0,
   );
   for (const r of rows) {
-    const idx = Number.parseInt(String(r.bucket_index ?? -1), 10);
-    const count = Number.parseInt(String(r.strike_count ?? 0), 10);
+    // Helper already returns numeric bucketIndex / strikeCount; defensive
+    // bounds check still required because the bucket index can exceed
+    // DP_VELOCITY_LOOKBACK_BUCKETS at the far edge of the time window.
     if (
-      Number.isFinite(idx) &&
-      idx >= 0 &&
-      idx <= DP_VELOCITY_LOOKBACK_BUCKETS &&
-      Number.isFinite(count)
+      Number.isFinite(r.bucketIndex) &&
+      r.bucketIndex >= 0 &&
+      r.bucketIndex <= DP_VELOCITY_LOOKBACK_BUCKETS &&
+      Number.isFinite(r.strikeCount)
     ) {
-      bucketCounts[idx] = count;
+      bucketCounts[r.bucketIndex] = r.strikeCount;
     }
   }
 
