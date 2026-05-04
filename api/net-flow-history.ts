@@ -15,6 +15,11 @@
  * cumulative line in SQL keeps the truth single-sourced and bounds
  * payload size — clients receive both delta and cumulative columns
  * in the same response and can render either.
+ *
+ * Sources: UNIONs `ws_net_flow_per_ticker` (live WS daemon) and
+ * `net_flow_per_ticker_history` (REST backfill, ~90-day history).
+ * On (ts) collision, WS wins via DISTINCT ON priority — WS is the
+ * authoritative live stream; REST fills history pre-daemon.
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
@@ -99,21 +104,37 @@ export default async function handler(
     const toTs = to ? ctHmToUtc(targetDate, to) : session.max;
 
     const db = getDb();
+    // Union both sources; DISTINCT ON (ts) with priority=1 for WS keeps
+    // the live row whenever both tables hold the same minute. REST fills
+    // gaps for historical fires that pre-date the WS daemon.
     const rows = (await db`
+      WITH unified AS (
+        SELECT DISTINCT ON (ts)
+          ts, net_call_prem, net_call_vol, net_put_prem, net_put_vol
+        FROM (
+          SELECT ts, net_call_prem, net_call_vol, net_put_prem, net_put_vol,
+            1 AS priority
+          FROM ws_net_flow_per_ticker
+          WHERE ticker = ${ticker}
+            AND ts >= ${fromTs}::timestamptz
+            AND ts <= ${toTs}::timestamptz
+          UNION ALL
+          SELECT ts, net_call_prem, net_call_vol, net_put_prem, net_put_vol,
+            2 AS priority
+          FROM net_flow_per_ticker_history
+          WHERE ticker = ${ticker}
+            AND ts >= ${fromTs}::timestamptz
+            AND ts <= ${toTs}::timestamptz
+        ) combined
+        ORDER BY ts, priority
+      )
       SELECT
-        ts,
-        net_call_prem,
-        net_call_vol,
-        net_put_prem,
-        net_put_vol,
+        ts, net_call_prem, net_call_vol, net_put_prem, net_put_vol,
         SUM(net_call_prem) OVER (ORDER BY ts) AS cum_ncp,
         SUM(net_call_vol) OVER (ORDER BY ts) AS cum_ncv,
         SUM(net_put_prem) OVER (ORDER BY ts) AS cum_npp,
         SUM(net_put_vol) OVER (ORDER BY ts) AS cum_npv
-      FROM ws_net_flow_per_ticker
-      WHERE ticker = ${ticker}
-        AND ts >= ${fromTs}::timestamptz
-        AND ts <= ${toTs}::timestamptz
+      FROM unified
       ORDER BY ts ASC
     `) as NetFlowRow[];
 

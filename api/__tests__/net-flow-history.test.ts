@@ -179,6 +179,28 @@ describe('net-flow-history endpoint', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
+  it('issues a SQL query that unions ws + history tables', async () => {
+    // Pins the union behavior — both tables must appear in the query
+    // so historical fires (pre-daemon) get rows from the REST backfill.
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { ticker: 'TSLA', date: '2026-05-01' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(mockSql).toHaveBeenCalledTimes(1);
+    // Tagged-template first arg is the strings array; concat for inspection.
+    const sqlText = (mockSql.mock.calls[0]![0] as TemplateStringsArray).join(
+      ' ',
+    );
+    expect(sqlText).toContain('ws_net_flow_per_ticker');
+    expect(sqlText).toContain('net_flow_per_ticker_history');
+    expect(sqlText).toContain('DISTINCT ON');
+  });
+
   it('handles DATE/TIMESTAMPTZ columns returned as Date objects', async () => {
     // neon-serverless can return TIMESTAMPTZ as Date — toIso() handles
     // both shapes. Pin the contract here.
