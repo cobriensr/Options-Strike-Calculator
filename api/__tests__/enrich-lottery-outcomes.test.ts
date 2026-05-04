@@ -71,13 +71,11 @@ describe('enrich-lottery-outcomes', () => {
 
     await handler(req, res);
 
-    expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({
-        ok: true,
-        message: expect.stringContaining('Enriched 1 fires'),
-      }),
-    );
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      message: expect.stringContaining('Enriched 1 fires'),
+    });
 
     // Verify UPDATE was called
     expect(mockSql).toHaveBeenCalledTimes(3);
@@ -105,13 +103,11 @@ describe('enrich-lottery-outcomes', () => {
 
     await handler(req, res);
 
-    expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({
-        ok: true,
-        message: expect.stringContaining('skipped 1'),
-      }),
-    );
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      message: expect.stringContaining('skipped 1'),
+    });
 
     // Verify no UPDATE was called (only 2 queries: fires + ticks)
     expect(mockSql).toHaveBeenCalledTimes(2);
@@ -128,13 +124,11 @@ describe('enrich-lottery-outcomes', () => {
 
     await handler(req, res);
 
-    expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({
-        ok: true,
-        message: 'No unenriched fires',
-      }),
-    );
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      message: 'No unenriched fires',
+    });
 
     expect(mockSql).toHaveBeenCalledTimes(1);
   });
