@@ -141,3 +141,36 @@ Read the report flatly. Pre-committed decision rules:
 
 - This is exploratory research, not a feature ship. Run lint on the Python (it's optional in ml/) but skip the code-reviewer subagent per CLAUDE.md ml/ exception.
 - If OTM wins, the production rollout becomes a separate spec — including extending the existing backfill pipeline to compute and store OTM-NCP/NPP, plus adding a 5th exit-policy chip.
+
+---
+
+## Result (appended 2026-05-04)
+
+**Verdict: TIE — OTM does NOT improve the signal. Killing.**
+
+Headline lottery rate (47,658 fires, gross of costs):
+
+- trail-30/10: 1.30%
+- inversion (all-NCP): **6.69%**
+- inversion (OTM-NCP): **5.86%**
+- delta: **−0.82pp** (OTM marginally worse, within ±2pp tie band)
+
+Stratified breakdown shows OTM is **directionally worse in 11/15 dates**
+and across nearly every cell:
+
+- Mode A: −1.09pp / Mode B: −0.68pp
+- Calls: −1.12pp / Puts: −0.49pp
+- AM_open: −0.98 / LUNCH: −1.18 / MID: −1.28 / PM: +0.06 (only stratum where OTM is not worse)
+
+**Why OTM loses**: my prior hypothesis was that ITM trades are noise.
+Wrong. Around-the-money ITM trades carry real directional information
+(institutional buyers loading up on ITM calls IS a bullish signal).
+Filtering them out reduces sample size at each minute AND removes
+genuine signal. The all-strikes NCP captures the relevant directional
+flow already.
+
+**Decision**: Keep `realizedFlowInversionPct` (all-NCP) as shipped.
+Do NOT add an OTM variant. Move to next feature in the screenshot
+priority list — **Dir Delta** (delta-weighted directional flow).
+
+Full report: [`compare.md`](../../../ml/experiments/lottery-otm-flow-eda/compare.md)
