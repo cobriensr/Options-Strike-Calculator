@@ -62,8 +62,8 @@ export default function MarketRegimeSection({
   return (
     <SectionBox
       label="Market Regime"
-      badge={results ? 'VIX ' + (vixNum || '\u2014') : null}
-      badgeColor={results ? vixBadgeColor : undefined}
+      badge={bucket?.label ?? (results ? 'VIX ' + (vixNum || '\u2014') : null)}
+      badgeColor={bucket ? vixBadgeColor : undefined}
       collapsible
       headerRight={
         <button

@@ -598,6 +598,9 @@ export default function StrikeCalculator() {
             { id: 'sec-zero-gamma', label: 'Zero Gamma' },
             { id: 'sec-vega-spikes', label: 'Dir Vega Spikes' },
             { id: 'sec-greek-flow', label: 'Greek Flow' },
+            { id: 'sec-dealer-regime', label: 'Dealer Regime' },
+            { id: 'sec-strike-battle-map', label: 'Strike Battle Map' },
+            { id: 'sec-lottery-finder', label: 'Lottery Finder' },
           ]
         : []),
       ...(isAuthenticated

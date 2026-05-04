@@ -198,7 +198,7 @@ describe('MarketRegimeSection', () => {
     expect(screen.getByText('Show Analysis')).toBeInTheDocument();
   });
 
-  it('shows VIX badge when results exist', () => {
+  it('shows VIX bucket badge when results exist', () => {
     render(
       <MarketRegimeSection
         dVix="18.5"
@@ -213,7 +213,11 @@ describe('MarketRegimeSection', () => {
         chain={null}
       />,
     );
-    expect(screen.getByText('VIX 18.5')).toBeInTheDocument();
+    // VIX 18.5 falls in the 18–20 bucket (en-dash). Badge surfaces the
+    // bucket label so the collapsed-section header shows the regime band
+    // rather than just the raw value. The label also appears in the
+    // expanded VIX-bucket table, so two matches are expected.
+    expect(screen.getAllByText('VIX 18–20').length).toBeGreaterThanOrEqual(1);
   });
 
   it('shows dash in VIX badge when dVix is not parseable', () => {
