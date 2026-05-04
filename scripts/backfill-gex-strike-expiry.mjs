@@ -47,7 +47,9 @@ if (!DATABASE_URL) {
 
 const sql = neon(DATABASE_URL);
 const UW_BASE = 'https://api.unusualwhales.com/api';
-const TICKERS = (process.env.TICKERS ?? 'SPY,QQQ').split(',').map((s) => s.trim());
+const TICKERS = (process.env.TICKERS ?? 'SPY,QQQ')
+  .split(',')
+  .map((s) => s.trim());
 
 // Args may be either a single integer (= last N trading days) or a list
 // of explicit YYYY-MM-DD dates.
@@ -120,7 +122,9 @@ async function fetchExpiryStrike(ticker, date) {
 function mapToTableRow(row, ticker, expiry) {
   const t = row.time ?? row.timestamp;
   const tsMinute = t
-    ? new Date(new Date(t).getTime() - (new Date(t).getTime() % 60_000)).toISOString()
+    ? new Date(
+        new Date(t).getTime() - (new Date(t).getTime() % 60_000),
+      ).toISOString()
     : new Date(`${expiry}T21:00:00Z`).toISOString(); // fallback: 4 PM ET
 
   return {

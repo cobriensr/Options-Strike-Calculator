@@ -44,9 +44,8 @@ const TICKERS = ['SPY', 'QQQ'];
 // of explicit YYYY-MM-DD dates.
 const args = process.argv.slice(2);
 const explicitDates = args.filter((a) => /^\d{4}-\d{2}-\d{2}$/.test(a));
-const days = explicitDates.length === 0
-  ? Number.parseInt(args[0] ?? '30', 10)
-  : 0;
+const days =
+  explicitDates.length === 0 ? Number.parseInt(args[0] ?? '30', 10) : 0;
 
 // ── Generate last N trading days ────────────────────────────
 
@@ -107,8 +106,7 @@ async function fetchGreekFlow(ticker, date) {
 // ── Store every minute bar (no downsampling) ────────────────
 
 async function storeTicks(ticks, ticker, date) {
-  if (ticks.length === 0)
-    return { inserted: 0, updated: 0, total: 0 };
+  if (ticks.length === 0) return { inserted: 0, updated: 0, total: 0 };
 
   let inserted = 0;
   let updated = 0;
@@ -188,7 +186,9 @@ function maxAbsDirVega(ticks) {
 
 async function main() {
   const tradingDays =
-    explicitDates.length > 0 ? explicitDates.slice().sort() : getTradingDays(days);
+    explicitDates.length > 0
+      ? explicitDates.slice().sort()
+      : getTradingDays(days);
 
   console.log(
     `Backfilling ETF Greek Flow (SPY, QQQ — full 1-min resolution, UPSERT)`,

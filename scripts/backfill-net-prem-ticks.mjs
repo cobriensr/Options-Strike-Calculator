@@ -61,12 +61,58 @@ const SOURCE = 'rest';
 
 // LOTTERY_V3_TICKERS ∪ LOTTERY_EXTENDED_TICKERS (deduped) — see header.
 const LOTTERY_TICKERS_ALL = [
-  'USAR', 'WMT', 'STX', 'SOUN', 'RIVN', 'TSM', 'SNDK', 'XOM', 'WDC',
-  'SQQQ', 'NDXP', 'USO', 'TNA', 'RDDT', 'SMCI', 'TSLL', 'SNOW', 'TEAM',
-  'RKLB', 'SOFI', 'RUTW', 'TSLA', 'SOXS', 'WULF', 'SLV', 'SMH', 'UBER',
-  'MSTR', 'TQQQ', 'RIOT', 'SOXL', 'UNH', 'QQQ', 'RBLX', 'SPY', 'IWM',
-  'MU', 'META', 'AMD', 'NVDA', 'INTC', 'MSFT', 'AMZN', 'PLTR', 'AVGO',
-  'GOOGL', 'GOOG', 'COIN', 'HOOD', 'MRVL', 'ORCL', 'AAPL',
+  'USAR',
+  'WMT',
+  'STX',
+  'SOUN',
+  'RIVN',
+  'TSM',
+  'SNDK',
+  'XOM',
+  'WDC',
+  'SQQQ',
+  'NDXP',
+  'USO',
+  'TNA',
+  'RDDT',
+  'SMCI',
+  'TSLL',
+  'SNOW',
+  'TEAM',
+  'RKLB',
+  'SOFI',
+  'RUTW',
+  'TSLA',
+  'SOXS',
+  'WULF',
+  'SLV',
+  'SMH',
+  'UBER',
+  'MSTR',
+  'TQQQ',
+  'RIOT',
+  'SOXL',
+  'UNH',
+  'QQQ',
+  'RBLX',
+  'SPY',
+  'IWM',
+  'MU',
+  'META',
+  'AMD',
+  'NVDA',
+  'INTC',
+  'MSFT',
+  'AMZN',
+  'PLTR',
+  'AVGO',
+  'GOOGL',
+  'GOOG',
+  'COIN',
+  'HOOD',
+  'MRVL',
+  'ORCL',
+  'AAPL',
 ];
 
 const TICKER_FILTER = (process.env.TICKERS ?? '')
@@ -157,9 +203,7 @@ async function fetchNetPremTicks(ticker, date) {
   }
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    console.warn(
-      `  UW ${res.status} ${ticker} ${date}: ${body.slice(0, 100)}`,
-    );
+    console.warn(`  UW ${res.status} ${ticker} ${date}: ${body.slice(0, 100)}`);
     return [];
   }
   const json = await res.json();
@@ -215,11 +259,18 @@ async function storeBatch(rows) {
       for (let k = 0; k < 13; k++) ph.push(`$${p++}`);
       placeholders.push(`(${ph.join(',')})`);
       values.push(
-        r.ticker, r.ts,
-        r.netCallPrem, r.netCallVol,
-        r.netPutPrem, r.netPutVol,
-        r.callVolume, r.callVolumeAsk, r.callVolumeBid,
-        r.putVolume, r.putVolumeAsk, r.putVolumeBid,
+        r.ticker,
+        r.ts,
+        r.netCallPrem,
+        r.netCallVol,
+        r.netPutPrem,
+        r.netPutVol,
+        r.callVolume,
+        r.callVolumeAsk,
+        r.callVolumeBid,
+        r.putVolume,
+        r.putVolumeAsk,
+        r.putVolumeBid,
         SOURCE,
       );
     }
@@ -351,12 +402,7 @@ async function main() {
   }
 
   const startWall = Date.now();
-  const totals = await pmapTickers(
-    tickers,
-    dates,
-    maxTsByTicker,
-    CONCURRENCY,
-  );
+  const totals = await pmapTickers(tickers, dates, maxTsByTicker, CONCURRENCY);
   const elapsed = ((Date.now() - startWall) / 1000).toFixed(1);
 
   console.log('');

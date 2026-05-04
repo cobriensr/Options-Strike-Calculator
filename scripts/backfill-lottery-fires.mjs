@@ -144,7 +144,9 @@ if (existsSync(P27_PATH)) {
     p27ByKey.set(key, r);
   }
 } else {
-  console.log(`  (p27 CSV not found at ${P27_PATH} — tier_50_holdEod will be NULL)`);
+  console.log(
+    `  (p27 CSV not found at ${P27_PATH} — tier_50_holdEod will be NULL)`,
+  );
 }
 
 // Index p14 by (date, chain, alert_seq) — alert_seq is 1-indexed and
@@ -184,13 +186,17 @@ for (const m of p26Rows) {
     const curSize = num(t.trigger_window_size);
     const curEntry = num(t.entry_price);
     if (prevSize && curSize) burstRatio = curSize / prevSize;
-    if (prevEntry && curEntry) entryDrop = ((curEntry - prevEntry) / prevEntry) * 100;
+    if (prevEntry && curEntry)
+      entryDrop = ((curEntry - prevEntry) / prevEntry) * 100;
   }
 
   const reloadTagged = bool(m.reload);
   const tod = m.tod;
   const cheapCallPm =
-    optionType === 'C' && tod === 'PM' && num(t.entry_price) != null && num(t.entry_price) < 1;
+    optionType === 'C' &&
+    tod === 'PM' &&
+    num(t.entry_price) != null &&
+    num(t.entry_price) < 1;
 
   records.push({
     date: m.date_str,
@@ -288,7 +294,9 @@ function chunk(arr, n) {
 let inserted = 0;
 let conflicts = 0;
 const batches = chunk(valid, BATCH_SIZE);
-console.log(`\nInserting ${valid.length} rows in ${batches.length} batches of ≤${BATCH_SIZE}...`);
+console.log(
+  `\nInserting ${valid.length} rows in ${batches.length} batches of ≤${BATCH_SIZE}...`,
+);
 
 for (let i = 0; i < batches.length; i++) {
   const batch = batches[i];
@@ -340,9 +348,13 @@ for (let i = 0; i < batches.length; i++) {
     if (rs.length > 0) inserted += 1;
     else conflicts += 1;
   }
-  process.stdout.write(`  batch ${i + 1}/${batches.length}: inserted=${inserted} conflicts=${conflicts}\r`);
+  process.stdout.write(
+    `  batch ${i + 1}/${batches.length}: inserted=${inserted} conflicts=${conflicts}\r`,
+  );
 }
 
 console.log('');
 console.log('');
-console.log(`Done. inserted=${inserted}, conflicts (already present)=${conflicts}`);
+console.log(
+  `Done. inserted=${inserted}, conflicts (already present)=${conflicts}`,
+);
