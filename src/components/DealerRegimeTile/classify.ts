@@ -51,12 +51,18 @@ export interface DealerRegimeConstants {
 
 /**
  * Locked constants per the Phase 2 spec.
- * `confidenceGate` may be re-tuned post-launch if `uncertain` dominates
- * the cell distribution; the audit observed 0.00–0.13 range so 0.10 is
- * deliberately conservative.
+ *
+ * `confidenceGate` was tuned from 0.10 → 0.05 on 2026-05-03 after the
+ * audit observed conf range 0.00–0.13 across 14 days of telemetry. At
+ * 0.10 the tile was projected to read `uncertain` ≥70% of the time
+ * (most rows fall below the gate), defeating the regime-read purpose.
+ * 0.05 still filters obvious noise (random kernel-crossing artifacts
+ * concentrate in the 0.00–0.03 band) while letting through the bulk
+ * of legitimate signal. Re-tune again if production data shows either
+ * uncertainty-dominance OR signal noise.
  */
 export const REGIME_CONSTANTS: DealerRegimeConstants = {
-  confidenceGate: 0.1,
+  confidenceGate: 0.05,
   boundaryPct: 0.003,
   staleAgeMs: 15 * 60 * 1000,
 };
@@ -104,4 +110,41 @@ export function classify(
   // floating-point so an exact 0 in practice means we have no data, not
   // that dealers are perfectly delta-hedged.
   return 'uncertain';
+}
+
+/**
+ * Why is this cell `uncertain`?
+ *
+ * Returns the FIRST gate that tripped, in the same priority order the
+ * classifier applies:
+ *   1. `no-data` — confidence or netGammaAtSpot is null
+ *   2. `low-confidence` — confidence below the gate
+ *   3. `stale` — row is older than the staleness threshold
+ *   4. `null` — input would NOT classify as uncertain
+ *
+ * Surfaced to the trader so they can tell *why* a cell is dim — fresh
+ * but low-confidence (wait for the next cron tick to maybe firm up) vs
+ * stale (data feed is broken — investigate) — without forcing them to
+ * read the underlying numbers.
+ */
+export type DealerRegimeUncertainReason = 'no-data' | 'low-confidence' | 'stale';
+
+export function classifyUncertainReason(
+  input: DealerRegimeInput,
+  options: ClassifyOptions = {},
+): DealerRegimeUncertainReason | null {
+  const { confidenceGate, staleAgeMs } = options.constants ?? REGIME_CONSTANTS;
+  const now = options.now ?? Date.now();
+
+  if (input.confidence == null || input.netGammaAtSpot == null) {
+    return 'no-data';
+  }
+  if (input.confidence < confidenceGate) {
+    return 'low-confidence';
+  }
+  const tsMs = Date.parse(input.ts);
+  if (Number.isNaN(tsMs) || now - tsMs > staleAgeMs) {
+    return 'stale';
+  }
+  return null;
 }

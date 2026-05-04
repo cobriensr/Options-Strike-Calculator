@@ -15,19 +15,23 @@
 
 import { memo } from 'react';
 import type { DealerRegimeRow } from '../../hooks/useDealerRegime';
-import type { DealerRegimeState } from './classify';
+import type {
+  DealerRegimeState,
+  DealerRegimeUncertainReason,
+} from './classify';
 
 interface CellProps {
   ticker: 'SPX' | 'NDX' | 'SPY' | 'QQQ';
   row: DealerRegimeRow | null;
   state: DealerRegimeState;
+  /** Why is this cell uncertain? Only set when state === 'uncertain'. */
+  uncertainReason?: DealerRegimeUncertainReason | null;
 }
 
 const STATE_CLASSES: Record<DealerRegimeState, string> = {
   'long-γ': 'bg-sky-400/15 text-sky-300 border-sky-400/40',
   'short-γ': 'bg-amber-400/15 text-amber-300 border-amber-400/40',
-  transition:
-    'bg-zinc-400/10 text-zinc-300 border-dashed border-zinc-400/30',
+  transition: 'bg-zinc-400/10 text-zinc-300 border-dashed border-zinc-400/30',
   uncertain: 'bg-zinc-700/30 text-zinc-500 border-zinc-700/40',
 };
 
@@ -36,6 +40,19 @@ const STATE_ARIA: Record<DealerRegimeState, string> = {
   'short-γ': 'Dealers short gamma — amplifying regime',
   transition: 'Spot near zero-gamma — regime in transition',
   uncertain: 'Insufficient data to classify regime',
+};
+
+const UNCERTAIN_REASON_LABEL: Record<DealerRegimeUncertainReason, string> = {
+  'no-data': 'no data',
+  'low-confidence': 'low conf',
+  stale: 'stale',
+};
+
+const UNCERTAIN_REASON_ARIA: Record<DealerRegimeUncertainReason, string> = {
+  'no-data': 'no data — cron has not yet written for this ticker',
+  'low-confidence':
+    'low confidence — calculator could not find a clean zero-gamma crossing',
+  stale: 'stale — most recent row exceeds 15-minute freshness window',
 };
 
 /**
@@ -80,7 +97,14 @@ function fmtConfidence(value: number | null): string {
   return value.toFixed(2);
 }
 
-function CellInner({ ticker, row, state }: CellProps) {
+function CellInner({ ticker, row, state, uncertainReason }: CellProps) {
+  const isUncertainWithReason = state === 'uncertain' && uncertainReason != null;
+  const ariaLabel = isUncertainWithReason
+    ? `${ticker}: uncertain — ${UNCERTAIN_REASON_ARIA[uncertainReason]}`
+    : `${ticker}: ${STATE_ARIA[state]}`;
+  const badgeText = isUncertainWithReason
+    ? `${state} · ${UNCERTAIN_REASON_LABEL[uncertainReason]}`
+    : state;
   return (
     <div
       className="border-edge bg-surface flex flex-col gap-1 rounded-md border p-2"
@@ -92,9 +116,9 @@ function CellInner({ ticker, row, state }: CellProps) {
       <div
         className={`inline-block w-fit rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold ${STATE_CLASSES[state]}`}
         role="status"
-        aria-label={`${ticker}: ${STATE_ARIA[state]}`}
+        aria-label={ariaLabel}
       >
-        {state}
+        {badgeText}
       </div>
       <div className="text-primary font-mono text-[11px]">
         net γ {fmtSignedAbbrev(row?.netGammaAtSpot ?? null)}

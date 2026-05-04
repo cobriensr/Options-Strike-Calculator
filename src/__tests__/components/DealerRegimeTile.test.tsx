@@ -130,7 +130,9 @@ describe('DealerRegimeTile', () => {
   });
 
   it('classifies low-confidence rows as uncertain', () => {
-    mockHook.mockReturnValue(ret([row('SPX', { confidence: 0.05 })]));
+    // Gate dropped to 0.05 in the audit-driven tuning — use 0.02 to be
+    // unambiguously below.
+    mockHook.mockReturnValue(ret([row('SPX', { confidence: 0.02 })]));
     render(<DealerRegimeTile marketOpen={true} />);
     const cell = screen.getByTestId('dealer-regime-cell-SPX');
     expect(cell.textContent).toMatch(/uncertain/);

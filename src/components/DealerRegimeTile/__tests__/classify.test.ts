@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   classify,
+  classifyUncertainReason,
   REGIME_CONSTANTS,
   type DealerRegimeInput,
 } from '../classify';
@@ -65,16 +66,16 @@ describe('classify — confidence gate', () => {
 describe('classify — boundary buffer', () => {
   it('returns transition when spot sits within boundary buffer of zero-gamma', () => {
     // 7240 vs 7239 = 0.0138% < 0.3% buffer
-    expect(
-      classify(input({ spot: 7240, zeroGamma: 7239 }), { now: NOW }),
-    ).toBe('transition');
+    expect(classify(input({ spot: 7240, zeroGamma: 7239 }), { now: NOW })).toBe(
+      'transition',
+    );
   });
 
   it('returns long-γ when spot is just outside the boundary buffer', () => {
     // 7240 vs 7218 = 0.30% — at the edge; classify as long-γ since strict <
-    expect(
-      classify(input({ spot: 7240, zeroGamma: 7218 }), { now: NOW }),
-    ).toBe('long-γ');
+    expect(classify(input({ spot: 7240, zeroGamma: 7218 }), { now: NOW })).toBe(
+      'long-γ',
+    );
   });
 
   it('skips the boundary check when zero-gamma is null', () => {
@@ -114,7 +115,7 @@ describe('classify — gate ordering (first-match-wins)', () => {
         input({
           spot: 7240,
           zeroGamma: 7239,
-          confidence: 0.05,
+          confidence: 0.02, // below 0.05 gate
         }),
         { now: NOW },
       ),
@@ -136,14 +137,63 @@ describe('classify — gate ordering (first-match-wins)', () => {
 });
 
 describe('classify — custom constants for tuning', () => {
-  it('honors a relaxed confidence gate', () => {
-    // The audit caveat — most rows have conf < 0.10. Tuning to 0.05 should
-    // let those through.
+  it('honors a stricter confidence gate', () => {
+    // Default gate is 0.05 (post-tuning). Override to 0.10 should reject
+    // a 0.07 row that would otherwise pass.
     expect(
       classify(input({ confidence: 0.07 }), {
         now: NOW,
-        constants: { ...REGIME_CONSTANTS, confidenceGate: 0.05 },
+        constants: { ...REGIME_CONSTANTS, confidenceGate: 0.1 },
       }),
-    ).toBe('long-γ');
+    ).toBe('uncertain');
+  });
+});
+
+describe('classifyUncertainReason', () => {
+  it('returns null when input would NOT classify as uncertain', () => {
+    expect(classifyUncertainReason(input(), { now: NOW })).toBeNull();
+  });
+
+  it('returns no-data when confidence or netGammaAtSpot is null', () => {
+    expect(
+      classifyUncertainReason(input({ confidence: null }), { now: NOW }),
+    ).toBe('no-data');
+    expect(
+      classifyUncertainReason(input({ netGammaAtSpot: null }), { now: NOW }),
+    ).toBe('no-data');
+  });
+
+  it('returns low-confidence when confidence is below the gate', () => {
+    expect(
+      classifyUncertainReason(input({ confidence: 0.02 }), { now: NOW }),
+    ).toBe('low-confidence');
+  });
+
+  it('returns stale when the row is older than the staleness window', () => {
+    const stale = new Date(NOW - 16 * 60 * 1000).toISOString();
+    expect(classifyUncertainReason(input({ ts: stale }), { now: NOW })).toBe(
+      'stale',
+    );
+  });
+
+  it('returns no-data ahead of low-confidence (priority order)', () => {
+    // Both null AND below gate — no-data wins because the input check
+    // runs first.
+    expect(
+      classifyUncertainReason(
+        input({ confidence: null, netGammaAtSpot: 1 }),
+        { now: NOW },
+      ),
+    ).toBe('no-data');
+  });
+
+  it('returns low-confidence ahead of stale (priority order)', () => {
+    const stale = new Date(NOW - 16 * 60 * 1000).toISOString();
+    expect(
+      classifyUncertainReason(
+        input({ confidence: 0.02, ts: stale }),
+        { now: NOW },
+      ),
+    ).toBe('low-confidence');
   });
 });

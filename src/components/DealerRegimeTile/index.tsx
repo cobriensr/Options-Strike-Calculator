@@ -32,7 +32,12 @@ import {
   etWallClockToUtcIso,
   getETToday,
 } from '../../utils/timezone';
-import { classify, type DealerRegimeState } from './classify';
+import {
+  classify,
+  classifyUncertainReason,
+  type DealerRegimeState,
+  type DealerRegimeUncertainReason,
+} from './classify';
 import { Cell } from './Cell';
 import { MinuteScrubber } from '../StrikeBattleMap/MinuteScrubber';
 
@@ -47,6 +52,7 @@ interface ClassifiedCell {
   ticker: Ticker;
   row: DealerRegimeRow | null;
   state: DealerRegimeState;
+  uncertainReason: DealerRegimeUncertainReason | null;
 }
 
 function DealerRegimeTileInner({ marketOpen }: DealerRegimeTileProps) {
@@ -97,19 +103,22 @@ function DealerRegimeTileInner({ marketOpen }: DealerRegimeTileProps) {
     }
     return TICKERS.map((ticker) => {
       const row = byTicker.get(ticker) ?? null;
-      const state: DealerRegimeState = row
-        ? classify(
-            {
-              spot: row.spot,
-              zeroGamma: row.zeroGamma,
-              confidence: row.confidence,
-              netGammaAtSpot: row.netGammaAtSpot,
-              ts: row.ts,
-            },
-            { now: classifierNow },
-          )
-        : 'uncertain';
-      return { ticker, row, state };
+      if (row == null) {
+        return { ticker, row, state: 'uncertain', uncertainReason: 'no-data' };
+      }
+      const input = {
+        spot: row.spot,
+        zeroGamma: row.zeroGamma,
+        confidence: row.confidence,
+        netGammaAtSpot: row.netGammaAtSpot,
+        ts: row.ts,
+      };
+      const state = classify(input, { now: classifierNow });
+      const uncertainReason =
+        state === 'uncertain'
+          ? classifyUncertainReason(input, { now: classifierNow })
+          : null;
+      return { ticker, row, state, uncertainReason };
     });
   }, [data, classifierNow]);
 
@@ -143,10 +152,9 @@ function DealerRegimeTileInner({ marketOpen }: DealerRegimeTileProps) {
         amplifying (acceleration-prone),{' '}
         <span className="text-zinc-300">transition</span> = spot near zero-gamma
         boundary, <span className="text-zinc-500">uncertain</span> = low
-        confidence or stale data. Live polls every 30s; scrub the date or
-        minute slider to read past sessions (compute-zero-gamma cron writes
-        every 5 min, so per-minute resolution snaps to the nearest 5-minute
-        bar).
+        confidence or stale data. Live polls every 30s; scrub the date or minute
+        slider to read past sessions (compute-zero-gamma cron writes every 5
+        min, so per-minute resolution snaps to the nearest 5-minute bar).
       </p>
       <MinuteScrubber
         value={selectedMinuteCT}
@@ -184,7 +192,13 @@ function Body({ cells, loading, error, hasData }: BodyProps) {
   return (
     <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
       {cells.map((c) => (
-        <Cell key={c.ticker} ticker={c.ticker} row={c.row} state={c.state} />
+        <Cell
+          key={c.ticker}
+          ticker={c.ticker}
+          row={c.row}
+          state={c.state}
+          uncertainReason={c.uncertainReason}
+        />
       ))}
     </div>
   );
