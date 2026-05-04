@@ -54,12 +54,58 @@ const UW_BASE = 'https://api.unusualwhales.com/api';
 const SOURCE = 'rest';
 
 const LOTTERY_TICKERS_ALL = [
-  'USAR', 'WMT', 'STX', 'SOUN', 'RIVN', 'TSM', 'SNDK', 'XOM', 'WDC',
-  'SQQQ', 'NDXP', 'USO', 'TNA', 'RDDT', 'SMCI', 'TSLL', 'SNOW', 'TEAM',
-  'RKLB', 'SOFI', 'RUTW', 'TSLA', 'SOXS', 'WULF', 'SLV', 'SMH', 'UBER',
-  'MSTR', 'TQQQ', 'RIOT', 'SOXL', 'UNH', 'QQQ', 'RBLX', 'SPY', 'IWM',
-  'MU', 'META', 'AMD', 'NVDA', 'INTC', 'MSFT', 'AMZN', 'PLTR', 'AVGO',
-  'GOOGL', 'GOOG', 'COIN', 'HOOD', 'MRVL', 'ORCL', 'AAPL',
+  'USAR',
+  'WMT',
+  'STX',
+  'SOUN',
+  'RIVN',
+  'TSM',
+  'SNDK',
+  'XOM',
+  'WDC',
+  'SQQQ',
+  'NDXP',
+  'USO',
+  'TNA',
+  'RDDT',
+  'SMCI',
+  'TSLL',
+  'SNOW',
+  'TEAM',
+  'RKLB',
+  'SOFI',
+  'RUTW',
+  'TSLA',
+  'SOXS',
+  'WULF',
+  'SLV',
+  'SMH',
+  'UBER',
+  'MSTR',
+  'TQQQ',
+  'RIOT',
+  'SOXL',
+  'UNH',
+  'QQQ',
+  'RBLX',
+  'SPY',
+  'IWM',
+  'MU',
+  'META',
+  'AMD',
+  'NVDA',
+  'INTC',
+  'MSFT',
+  'AMZN',
+  'PLTR',
+  'AVGO',
+  'GOOGL',
+  'GOOG',
+  'COIN',
+  'HOOD',
+  'MRVL',
+  'ORCL',
+  'AAPL',
 ];
 
 const TICKER_FILTER = (process.env.TICKERS ?? '')
@@ -191,12 +237,18 @@ async function storeBatch(rows) {
       for (let k = 0; k < 13; k++) ph.push(`$${p++}`);
       placeholders.push(`(${ph.join(',')})`);
       values.push(
-        r.ticker, r.ts,
-        r.dirDeltaFlow, r.dirVegaFlow,
-        r.otmDirDeltaFlow, r.otmDirVegaFlow,
-        r.totalDeltaFlow, r.totalVegaFlow,
-        r.otmTotalDeltaFlow, r.otmTotalVegaFlow,
-        r.transactions, r.volume,
+        r.ticker,
+        r.ts,
+        r.dirDeltaFlow,
+        r.dirVegaFlow,
+        r.otmDirDeltaFlow,
+        r.otmDirVegaFlow,
+        r.totalDeltaFlow,
+        r.totalVegaFlow,
+        r.otmTotalDeltaFlow,
+        r.otmTotalVegaFlow,
+        r.transactions,
+        r.volume,
         SOURCE,
       );
     }
@@ -253,7 +305,12 @@ async function backfillTickerDate(ticker, date) {
 
 async function pmapTickers(tickerList, dates, maxTsByTicker, concurrency) {
   const totals = {
-    pairs: 0, fetched: 0, kept: 0, stored: 0, empty: 0, skipped: 0,
+    pairs: 0,
+    fetched: 0,
+    kept: 0,
+    stored: 0,
+    empty: 0,
+    skipped: 0,
   };
   const queue = [...tickerList];
   const workers = Array.from({ length: concurrency }, async () => {
@@ -263,14 +320,14 @@ async function pmapTickers(tickerList, dates, maxTsByTicker, concurrency) {
       const maxTs = maxTsByTicker.get(ticker) ?? null;
       const maxDate = maxTs ? maxTs.slice(0, 10) : null;
       const perTicker = {
-        fetched: 0, kept: 0, stored: 0, empty: 0, skipped: 0,
+        fetched: 0,
+        kept: 0,
+        stored: 0,
+        empty: 0,
+        skipped: 0,
       };
       for (const date of dates) {
-        if (
-          process.env.BYPASS_RESUME !== '1' &&
-          maxDate &&
-          date < maxDate
-        ) {
+        if (process.env.BYPASS_RESUME !== '1' && maxDate && date < maxDate) {
           perTicker.skipped++;
           totals.skipped++;
           continue;
@@ -320,12 +377,7 @@ async function main() {
   }
 
   const startWall = Date.now();
-  const totals = await pmapTickers(
-    tickers,
-    dates,
-    maxTsByTicker,
-    CONCURRENCY,
-  );
+  const totals = await pmapTickers(tickers, dates, maxTsByTicker, CONCURRENCY);
   const elapsed = ((Date.now() - startWall) / 1000).toFixed(1);
 
   console.log('');

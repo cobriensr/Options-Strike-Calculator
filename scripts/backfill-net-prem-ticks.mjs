@@ -364,11 +364,7 @@ async function pmapTickers(tickerList, dates, maxTsByTicker, concurrency) {
         // Set BYPASS_RESUME=1 to force-fetch every date (ON CONFLICT
         // makes it idempotent — useful for filling gaps left by an
         // earlier broken run).
-        if (
-          process.env.BYPASS_RESUME !== '1' &&
-          maxDate &&
-          date < maxDate
-        ) {
+        if (process.env.BYPASS_RESUME !== '1' && maxDate && date < maxDate) {
           perTicker.skipped++;
           totals.skipped++;
           continue;

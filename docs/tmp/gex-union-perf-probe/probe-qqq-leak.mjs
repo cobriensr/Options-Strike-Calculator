@@ -1,7 +1,9 @@
 import { config } from 'dotenv';
 import { neon } from '@neondatabase/serverless';
 
-config({ path: '/Users/charlesobrien/Documents/Workspace/strike-calculator/.env.local' });
+config({
+  path: '/Users/charlesobrien/Documents/Workspace/strike-calculator/.env.local',
+});
 
 const sql = neon(process.env.DATABASE_URL);
 

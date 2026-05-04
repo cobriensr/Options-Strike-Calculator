@@ -30,15 +30,15 @@ ml/.venv/bin/python ml/experiments/lottery-net-flow-eda/analyze.py
 
 ## Features (computed for the ticker's fire-side flow series)
 
-| Feature | Definition |
-|---------|------------|
-| `ncp_at_fire` / `npp_at_fire` | Cumulative through `trigger_time_ct` |
-| `ncp_slope_5m` / `_15m` / `_30m` | Δcumulative / window minutes |
-| `asymmetry` | NCP / (NCP + NPP) at fire — 0.5 = balanced |
-| `direction_match` | bool — call fire & matched-side slope > 0 |
-| `level_pct_of_day_high` | matched-side at fire / max so far that day |
-| `pre_fire_variance` | std of per-min deltas over prior 30 min |
-| `lead_time_to_peak_min` | minutes since most recent matched-side local max (scipy.find_peaks, prominence ≥ 5% of day range) |
+| Feature                          | Definition                                                                                        |
+| -------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `ncp_at_fire` / `npp_at_fire`    | Cumulative through `trigger_time_ct`                                                              |
+| `ncp_slope_5m` / `_15m` / `_30m` | Δcumulative / window minutes                                                                      |
+| `asymmetry`                      | NCP / (NCP + NPP) at fire — 0.5 = balanced                                                        |
+| `direction_match`                | bool — call fire & matched-side slope > 0                                                         |
+| `level_pct_of_day_high`          | matched-side at fire / max so far that day                                                        |
+| `pre_fire_variance`              | std of per-min deltas over prior 30 min                                                           |
+| `lead_time_to_peak_min`          | minutes since most recent matched-side local max (scipy.find_peaks, prominence ≥ 5% of day range) |
 
 For call fires the **matched side is NCP**; for put fires it's NPP.
 One feature vector per fire — no aggregation across sides.
