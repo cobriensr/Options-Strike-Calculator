@@ -3698,4 +3698,38 @@ export const MIGRATIONS: Migration[] = [
             ADD COLUMN IF NOT EXISTS realized_flow_inversion_pct NUMERIC`,
     ],
   },
+  {
+    id: 125,
+    description:
+      'Create greek_flow_per_ticker_history table for the Dir-Delta inversion-exit EDA ' +
+      '(docs/superpowers/specs/lottery-dir-delta-eda-2026-05-04.md). Stores per-minute UW REST ' +
+      '/stock/{ticker}/greek-flow history for ~50 lottery tickers x 90 days — the input feed for ' +
+      'testing whether delta-weighted directional flow produces a stronger inversion-exit signal ' +
+      'than the all-strikes NCP we currently use. Schema mirrors the response shape: dir_delta_flow ' +
+      '+ dir_vega_flow + OTM variants + totals + transaction/volume counters. Natural dedupe key ' +
+      '(ticker, ts, source).',
+    statements: (sql) => [
+      sql`CREATE TABLE IF NOT EXISTS greek_flow_per_ticker_history (
+        id BIGSERIAL PRIMARY KEY,
+        ticker TEXT NOT NULL,
+        ts TIMESTAMPTZ NOT NULL,
+        dir_delta_flow NUMERIC,
+        dir_vega_flow NUMERIC,
+        otm_dir_delta_flow NUMERIC,
+        otm_dir_vega_flow NUMERIC,
+        total_delta_flow NUMERIC,
+        total_vega_flow NUMERIC,
+        otm_total_delta_flow NUMERIC,
+        otm_total_vega_flow NUMERIC,
+        transactions INTEGER,
+        volume INTEGER,
+        source TEXT NOT NULL,
+        fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`,
+      sql`CREATE UNIQUE INDEX IF NOT EXISTS greek_flow_per_ticker_history_ticker_ts_src_idx
+          ON greek_flow_per_ticker_history (ticker, ts, source)`,
+      sql`CREATE INDEX IF NOT EXISTS greek_flow_per_ticker_history_ticker_ts_idx
+          ON greek_flow_per_ticker_history (ticker, ts DESC)`,
+    ],
+  },
 ];
