@@ -255,25 +255,27 @@ distribution shift before any code that uses the flag for selection.
    detector should require a minimum N ticks in the window before
    firing, otherwise sparse-but-flat = false positive.
 
-4. **WS payload vs REST payload field set** — the REST endpoint
-   `/api/stock/{ticker}/net-prem-ticks` returns side-split volumes
-   per minute (`call_volume_bid_side`, `call_volume_ask_side`,
-   `put_volume_bid_side`, `put_volume_ask_side`) which the WS
-   payload does NOT carry (only the net diffs `net_call_vol` /
-   `net_put_vol`). Side-splits would let the panel show "calls
-   BOUGHT aggressively vs faded" — strictly richer than the diff.
+4. ~~**WS payload vs REST payload field set**~~ **ANSWERED 2026-05-03
+   — REST is not viable + side-splits derivable from existing data**:
 
-   Decisions to make:
+   Two findings collapsed this question:
 
-   - Hybrid daemon (WS for live ticks + REST polled per-minute for
-     side-splits)?
-   - Or REST-only via cron, accept ~1-min latency vs WS sub-second?
-   - Or skip side-splits at v1 and add later if the panel proves
-     useful?
+   - REST polling 50 tickers/min would compound with the existing
+     ~17 per-minute UW crons (fetch-spot-gex, fetch-greek-flow-etf,
+     monitor-vega-spike, fetch-strike-iv, fetch-strike-trade-volume,
+     etc.). UW's rate limiter is burst-aware; the user already saw
+     random 429s with semaphore=3 + jitter at lower load. Adding
+     50/min on top is operationally fragile.
+   - The side-split volumes the REST endpoint exposes
+     (`call_volume_bid_side`, `call_volume_ask_side`, etc.) are
+     computable from `ws_option_trades` directly — every per-tick
+     row has the OPRA `side` classification (ask/bid/mid/no_side)
+     and option_type. A per-ticker per-minute aggregation gives the
+     same data with zero extra UW load.
 
-   Recommend WS-only at v1 (matches existing daemon pattern, lower
-   complexity); promote to hybrid only if the side-split read in the
-   panel turns out to be load-bearing.
+   Decision: **WS-only**. The daemon writes raw deltas to
+   `ws_net_flow_per_ticker`; if the panel ever needs side-splits we
+   compute them at read time from `ws_option_trades` (`SUM(size) FILTER (WHERE option_type=X AND side=Y) GROUP BY date_trunc('minute', executed_at)`).
 
 ---
 
