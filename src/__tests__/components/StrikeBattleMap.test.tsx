@@ -63,7 +63,7 @@ function makeRow(
 }
 
 function makeResponse(
-  ticker: 'SPY' | 'QQQ',
+  ticker: 'SPY' | 'QQQ' | 'SPX' | 'NDX',
   rows: GexStrikeExpiryRow[],
 ): GexStrikeExpiryResponse {
   return {
@@ -118,7 +118,12 @@ function happyPathReturn(): UseGexStrikeExpiryReturn {
     );
   }
   return {
-    data: { SPY: makeResponse('SPY', spy), QQQ: makeResponse('QQQ', qqq) },
+    data: {
+      SPY: makeResponse('SPY', spy),
+      QQQ: makeResponse('QQQ', qqq),
+      SPX: null,
+      NDX: null,
+    },
     loading: false,
     error: null,
     refresh: vi.fn(),
@@ -132,7 +137,7 @@ beforeEach(() => {
 describe('StrikeBattleMap', () => {
   it('renders the heading on initial mount', () => {
     mockHook.mockReturnValue({
-      data: { SPY: null, QQQ: null },
+      data: { SPY: null, QQQ: null, SPX: null, NDX: null },
       loading: true,
       error: null,
       refresh: vi.fn(),
@@ -145,7 +150,7 @@ describe('StrikeBattleMap', () => {
 
   it('shows loading message before data arrives', () => {
     mockHook.mockReturnValue({
-      data: { SPY: null, QQQ: null },
+      data: { SPY: null, QQQ: null, SPX: null, NDX: null },
       loading: true,
       error: null,
       refresh: vi.fn(),
@@ -159,6 +164,8 @@ describe('StrikeBattleMap', () => {
       data: {
         SPY: makeResponse('SPY', []),
         QQQ: makeResponse('QQQ', []),
+        SPX: null,
+        NDX: null,
       },
       loading: false,
       error: null,
@@ -170,7 +177,7 @@ describe('StrikeBattleMap', () => {
 
   it('renders an alert when fetch errors and no data exists', () => {
     mockHook.mockReturnValue({
-      data: { SPY: null, QQQ: null },
+      data: { SPY: null, QQQ: null, SPX: null, NDX: null },
       loading: false,
       error: 'Partial fetch failure',
       refresh: vi.fn(),
@@ -230,7 +237,12 @@ describe('StrikeBattleMap', () => {
       );
     }
     mockHook.mockReturnValue({
-      data: { SPY: makeResponse('SPY', spy), QQQ: null },
+      data: {
+        SPY: makeResponse('SPY', spy),
+        QQQ: null,
+        SPX: null,
+        NDX: null,
+      },
       loading: false,
       error: null,
       refresh: vi.fn(),
@@ -257,6 +269,8 @@ describe('StrikeBattleMap', () => {
       data: {
         SPY: happyPathReturn().data.SPY,
         QQQ: null,
+        SPX: null,
+        NDX: null,
       },
       loading: false,
       error: null,

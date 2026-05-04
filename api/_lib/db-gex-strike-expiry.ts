@@ -14,7 +14,7 @@
 import { getDb } from './db.js';
 import { parsedOrFallback } from './numeric-coercion.js';
 
-export const GEX_STRIKE_EXPIRY_TICKERS = ['SPY', 'QQQ'] as const;
+export const GEX_STRIKE_EXPIRY_TICKERS = ['SPY', 'QQQ', 'SPX', 'NDX'] as const;
 export type GexStrikeExpiryTicker = (typeof GEX_STRIKE_EXPIRY_TICKERS)[number];
 
 type RawNumeric = string | number | null;

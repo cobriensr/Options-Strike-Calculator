@@ -22,7 +22,7 @@ import { getAccessMode } from '../utils/auth';
 
 // Ticker set + row shape mirror api/_lib/db-gex-strike-expiry.ts.
 
-export type GexStrikeExpiryTicker = 'SPY' | 'QQQ';
+export type GexStrikeExpiryTicker = 'SPY' | 'QQQ' | 'SPX' | 'NDX';
 
 export interface GexStrikeExpiryRow {
   ticker: GexStrikeExpiryTicker;
@@ -72,10 +72,21 @@ export interface UseGexStrikeExpiryReturn {
   refresh: () => void;
 }
 
+// Runtime fetch list intentionally narrower than GexStrikeExpiryTicker:
+// uw-stream only subscribes to SPY+QQQ until Phase 3d, and the
+// /api/gex-strike-expiry Zod validator (api/_lib/validation.ts) only
+// accepts those two. Adding SPX/NDX here before Phase 3d would produce
+// two guaranteed-400 fetches per poll and surface a misleading
+// "Partial fetch failure" alert. Re-widen this array once Phase 3d
+// ships (Railway WS_CHANNELS includes SPX/NDX) AND the Zod validator
+// is widened to accept them.
 const TICKERS: readonly GexStrikeExpiryTicker[] = ['SPY', 'QQQ'] as const;
 
-function emptyData(): Record<GexStrikeExpiryTicker, GexStrikeExpiryResponse | null> {
-  return { SPY: null, QQQ: null };
+function emptyData(): Record<
+  GexStrikeExpiryTicker,
+  GexStrikeExpiryResponse | null
+> {
+  return { SPY: null, QQQ: null, SPX: null, NDX: null };
 }
 
 async function fetchOne(
