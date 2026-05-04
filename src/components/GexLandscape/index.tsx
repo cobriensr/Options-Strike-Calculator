@@ -39,7 +39,10 @@ import {
 } from 'react';
 import { SectionBox } from '../ui';
 import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
+import { useGexLandscapeData } from '../../hooks/useGexLandscapeData';
+import { useScrubController } from '../../hooks/useScrubController';
 import { useTopStrikesTracker } from '../../hooks/useTopStrikesTracker';
+import { getETToday } from '../../utils/timezone';
 import { BiasPanel } from './BiasPanel';
 import { ClassificationLegend } from './ClassificationLegend';
 import { ScrubControls } from '../ScrubControls';
@@ -103,54 +106,109 @@ const TAB_TITLE: Record<LandscapeTab, string> = {
 };
 
 export interface GexLandscapeProps {
-  strikes: GexStrikeLevel[];
-  loading: boolean;
-  error: string | null;
-  timestamp: string | null;
-  /** All snapshot timestamps for the active date, ascending. */
-  timestamps: string[];
-  onRefresh: () => void;
-  selectedDate: string;
-  onDateChange: (date: string) => void;
-  isLive: boolean;
-  isScrubbed: boolean;
-  canScrubPrev: boolean;
-  canScrubNext: boolean;
-  onScrubPrev: () => void;
-  onScrubNext: () => void;
-  /** Jump directly to a specific snapshot timestamp. */
-  onScrubTo: (ts: string) => void;
-  onScrubLive: () => void;
+  /** Whether the equity market is currently open (drives polling + LIVE badge). */
+  marketOpen: boolean;
   /** Called whenever the structural bias summary changes; pass to analyze. */
   onBiasChange?: (summary: string | null) => void;
-  /**
-   * Ticker driving the per-ticker spot band used by `getDirection` and
-   * `computeBias`. Defaults to `'SPX'` to preserve historical SPX-only
-   * behaviour while Phase 3 wires up the dynamic ticker selector.
-   */
-  ticker?: Ticker;
 }
 
+/**
+ * Tickers offered by the GexLandscape selector. SPY is first because the
+ * uw-stream daemon currently only subscribes to SPY/QQQ; SPX/NDX appear
+ * in the radio group but render empty until Phase 3d widens the WS
+ * subscriptions and the Zod validator. Order is deliberate: ETFs first
+ * (where flow is hunted), index second (reaction surface).
+ */
+const TICKER_OPTIONS: readonly Ticker[] = ['SPY', 'QQQ', 'SPX', 'NDX'];
+
 const GexLandscape = memo(function GexLandscape({
-  strikes,
-  loading,
-  error,
-  timestamp,
-  timestamps,
-  onRefresh,
-  selectedDate,
-  onDateChange,
-  isLive,
-  isScrubbed,
-  canScrubPrev,
-  canScrubNext,
-  onScrubPrev,
-  onScrubNext,
-  onScrubTo,
-  onScrubLive,
+  marketOpen,
   onBiasChange,
-  ticker = 'SPX',
 }: GexLandscapeProps) {
+  // Owned internally (Phase 3c): App.tsx no longer threads scrub props.
+  // Defaults: SPX preserves the historical SPX-only mental model — users
+  // opening the page expect the SPX view. SPX renders empty until Phase
+  // 3d widens the uw-stream WS subscription + Zod validator; that brief
+  // regression is the accepted cost of the Path A migration. Date is
+  // today's ET calendar (used as the 0DTE expiry).
+  const [selectedTicker, setSelectedTicker] = useState<Ticker>('SPX');
+  const [selectedDate, setSelectedDate] = useState<string>(() => getETToday());
+
+  // Scrub state machine. We need the controller's `scrubTimestamp` BEFORE
+  // calling the data hook so we can pass it through as `at`. The
+  // controller's `timestamps` dep is the live response's `timestamps[]`
+  // — but on first mount that array is empty, so the controller starts
+  // out with `scrubTimestamp = null` (live), `at` is null, and the data
+  // hook polls live. As soon as the live response arrives, `timestamps`
+  // populates and the user can scrub. Stepping back from live sets
+  // `scrubTimestamp` to a real ts; the data hook's `at` flips, polling
+  // halts (per `useGexStrikeExpiry` semantics), and the API returns
+  // the at-or-before snapshot for that minute.
+  //
+  // The data hook is called with the live `timestamps` driving
+  // controller, then the controller's pin feeds back as `at`. This
+  // creates a single render-cycle dependency chain (no double fetch).
+  // We seed the controller from a separate snapshot of `timestamps`
+  // captured by a small effect to avoid a circular ref between hook
+  // calls — see the `liveTimestamps` state below.
+  const [liveTimestamps, setLiveTimestamps] = useState<string[]>([]);
+  const scrub = useScrubController(liveTimestamps);
+  const { scrubTimestamp, isScrubbed, canScrubPrev, canScrubNext } = scrub;
+
+  const { strikes, timestamps, loading, error, refresh } = useGexLandscapeData(
+    selectedTicker,
+    marketOpen,
+    selectedDate,
+    scrubTimestamp,
+  );
+
+  // Mirror live `timestamps` into the scrub controller's input. The
+  // controller can't depend on the same hook's output without creating
+  // a same-render circular dep (controller drives `at` → hook returns
+  // timestamps → controller reads them). Mirroring through state breaks
+  // the cycle: `timestamps` only update after the controller has
+  // already settled for this render. While scrubbed, the response's
+  // `timestamps` is just the single pinned minute, so we ignore it
+  // and keep the last live list.
+  useEffect(() => {
+    if (scrubTimestamp != null) return;
+    setLiveTimestamps(timestamps);
+  }, [scrubTimestamp, timestamps]);
+
+  const timestamp = scrubTimestamp ?? liveTimestamps.at(-1) ?? null;
+  const isLive = scrubTimestamp == null && marketOpen;
+
+  // `scrubLive` resets the scrub pin AND snaps the date back to today
+  // (mirrors the original useGexPerStrike behaviour — a single button
+  // returns the panel to "now" across both axes).
+  const scrubLive = useCallback(() => {
+    scrub.scrubLive();
+    setSelectedDate((cur) => {
+      const today = getETToday();
+      return cur === today ? cur : today;
+    });
+  }, [scrub]);
+
+  // Reset scrub when the user changes date or ticker — the previous
+  // selection's pinned ts is meaningless against a different (date,
+  // ticker) snapshot list. Also reset `liveTimestamps` so the scrub
+  // controller doesn't see stale timestamps from the previous ticker
+  // while the new fetch is in flight.
+  const clearScrub = scrub.scrubLive;
+  useEffect(() => {
+    clearScrub();
+    setLiveTimestamps([]);
+  }, [selectedDate, selectedTicker, clearScrub]);
+
+  const onRefresh = refresh;
+  const onDateChange = setSelectedDate;
+  const onScrubPrev = scrub.scrubPrev;
+  const onScrubNext = scrub.scrubNext;
+  const onScrubTo = scrub.scrubTo;
+  const onScrubLive = scrubLive;
+
+  // `ticker` was previously a prop; now derived from local state.
+  const ticker = selectedTicker;
   const spotRowRef = useRef<HTMLDivElement>(null);
   // Scroll to ATM row only once on initial data arrival; never on scrub.
   const hasScrolledRef = useRef(false);
@@ -422,7 +480,7 @@ const GexLandscape = memo(function GexLandscape({
   const headerRight = (
     <ScrubControls
       timestamp={timestamp}
-      timestamps={timestamps}
+      timestamps={liveTimestamps}
       selectedDate={selectedDate}
       onDateChange={onDateChange}
       isLive={isLive}
@@ -439,9 +497,14 @@ const GexLandscape = memo(function GexLandscape({
     />
   );
 
+  const tickerSelector = (
+    <TickerSelector value={selectedTicker} onChange={setSelectedTicker} />
+  );
+
   if (loading && rows.length === 0) {
     return (
       <SectionBox label="GEX LANDSCAPE" headerRight={headerRight} collapsible>
+        {tickerSelector}
         <div className="text-muted flex items-center justify-center py-8 font-mono text-[13px]">
           Loading GEX landscape…
         </div>
@@ -452,6 +515,7 @@ const GexLandscape = memo(function GexLandscape({
   if (error) {
     return (
       <SectionBox label="GEX LANDSCAPE" headerRight={headerRight} collapsible>
+        {tickerSelector}
         <div className="text-danger py-4 text-center font-mono text-[13px]">
           {error}
         </div>
@@ -462,6 +526,7 @@ const GexLandscape = memo(function GexLandscape({
   if (rows.length === 0) {
     return (
       <SectionBox label="GEX LANDSCAPE" headerRight={headerRight} collapsible>
+        {tickerSelector}
         <div className="text-muted py-8 text-center font-mono text-[13px]">
           No strike data available
         </div>
@@ -471,6 +536,7 @@ const GexLandscape = memo(function GexLandscape({
 
   return (
     <SectionBox label="GEX LANDSCAPE" headerRight={headerRight} collapsible>
+      {tickerSelector}
       <BiasPanel
         bias={bias}
         maxChanged1mStrike={maxChanged1mStrike}
@@ -589,3 +655,41 @@ const GexLandscape = memo(function GexLandscape({
 });
 
 export default GexLandscape;
+
+interface TickerSelectorProps {
+  value: Ticker;
+  onChange: (ticker: Ticker) => void;
+}
+
+/**
+ * Ticker radio group rendered at the top of the GEX Landscape section.
+ * Pattern matches `StrikeBattleMap`'s strike-count toggle so the two
+ * sibling panels stay visually consistent. SPX/NDX render until Phase
+ * 3d widens the WS subscriptions; until then they show empty state.
+ */
+function TickerSelector({ value, onChange }: TickerSelectorProps) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="GEX landscape ticker"
+      className="border-edge mb-2 inline-flex overflow-hidden rounded border"
+    >
+      {TICKER_OPTIONS.map((opt) => (
+        <button
+          key={opt}
+          type="button"
+          role="radio"
+          aria-checked={value === opt}
+          onClick={() => onChange(opt)}
+          className={`cursor-pointer px-3 py-1 font-mono text-[11px] tracking-wider uppercase transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/50 ${
+            value === opt
+              ? 'bg-surface text-primary'
+              : 'text-secondary hover:text-primary'
+          }`}
+        >
+          {opt}
+        </button>
+      ))}
+    </div>
+  );
+}

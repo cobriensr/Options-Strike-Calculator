@@ -1,13 +1,51 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import GexLandscape from '../../components/GexLandscape';
-import type { GexLandscapeProps } from '../../components/GexLandscape';
 import { CollapseAllContext } from '../../components/collapse-context';
 import type { CollapseSignal } from '../../components/collapse-context';
+import type { GexStrikeLevel } from '../../hooks/useGexPerStrike';
 
 // ── Mocks ──────────────────────────────────────────────────────────────────────
+//
+// GexLandscape was rewired in Phase 3c (gex-landscape-ws-upgrade-2026-05-03)
+// to own its scrub + ticker state internally. The component now drives its
+// data via `useGexLandscapeData` and `useScrubController` instead of taking
+// the previous 17-prop bag from App.tsx. We mock those hooks so each test
+// can express the panel's display state declaratively (matching the
+// pre-rewrite behaviour where the same fields were just props).
 
 vi.mock('../../utils/auth', () => ({ checkIsOwner: () => true }));
+
+const dataMock = vi.hoisted(() =>
+  vi.fn(() => ({
+    strikes: [] as GexStrikeLevel[],
+    timestamps: [] as string[],
+    loading: false,
+    error: null as string | null,
+    refresh: vi.fn(),
+  })),
+);
+
+const scrubMock = vi.hoisted(() =>
+  vi.fn(() => ({
+    scrubTimestamp: null as string | null,
+    isScrubbed: false,
+    canScrubPrev: false,
+    canScrubNext: false,
+    scrubPrev: vi.fn(),
+    scrubNext: vi.fn(),
+    scrubTo: vi.fn(),
+    scrubLive: vi.fn(),
+  })),
+);
+
+vi.mock('../../hooks/useGexLandscapeData', () => ({
+  useGexLandscapeData: () => dataMock(),
+}));
+
+vi.mock('../../hooks/useScrubController', () => ({
+  useScrubController: () => scrubMock(),
+}));
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -17,7 +55,7 @@ function makeStrike(
   netGamma: number,
   netCharm: number,
   volReinforcement: 'reinforcing' | 'opposing' | 'neutral' = 'neutral',
-) {
+): GexStrikeLevel {
   return {
     strike,
     price,
@@ -52,7 +90,7 @@ function makeStrike(
 
 const PRICE = 6880;
 
-const baseStrikes = [
+const baseStrikes: GexStrikeLevel[] = [
   // Ceiling: neg gamma + pos charm → Max Launchpad
   makeStrike(6910, PRICE, -50_000_000, 20_000_000, 'reinforcing'),
   // Spot area: pos gamma + pos charm → Sticky Pin
@@ -63,31 +101,53 @@ const baseStrikes = [
   makeStrike(6820, PRICE, -40_000_000, -10_000_000, 'neutral'),
 ];
 
-const defaultProps: GexLandscapeProps = {
-  strikes: baseStrikes,
-  loading: false,
-  error: null,
-  timestamp: '2026-04-13T19:45:00.000Z',
-  onRefresh: vi.fn(),
-  selectedDate: '2026-04-13',
-  onDateChange: vi.fn(),
-  isLive: true,
-  isScrubbed: false,
-  canScrubPrev: false,
-  canScrubNext: false,
-  onScrubPrev: vi.fn(),
-  onScrubNext: vi.fn(),
-  onScrubTo: vi.fn(),
-  onScrubLive: vi.fn(),
-  timestamps: ['2026-04-13T19:40:00.000Z', '2026-04-13T19:45:00.000Z'],
-};
-
 const collapseSignal: CollapseSignal = { version: 0, collapsed: false };
 
-function renderLandscape(overrides: Partial<GexLandscapeProps> = {}) {
+interface RenderOptions {
+  strikes?: GexStrikeLevel[];
+  timestamps?: string[];
+  loading?: boolean;
+  error?: string | null;
+  isScrubbed?: boolean;
+  canScrubPrev?: boolean;
+  canScrubNext?: boolean;
+  marketOpen?: boolean;
+}
+
+function renderLandscape(opts: RenderOptions = {}) {
+  const {
+    strikes = baseStrikes,
+    timestamps = ['2026-04-13T19:40:00.000Z', '2026-04-13T19:45:00.000Z'],
+    loading = false,
+    error = null,
+    isScrubbed = false,
+    canScrubPrev = false,
+    canScrubNext = false,
+    marketOpen = true,
+  } = opts;
+
+  dataMock.mockReturnValue({
+    strikes,
+    timestamps,
+    loading,
+    error,
+    refresh: vi.fn(),
+  });
+
+  scrubMock.mockReturnValue({
+    scrubTimestamp: isScrubbed ? (timestamps[0] ?? null) : null,
+    isScrubbed,
+    canScrubPrev,
+    canScrubNext,
+    scrubPrev: vi.fn(),
+    scrubNext: vi.fn(),
+    scrubTo: vi.fn(),
+    scrubLive: vi.fn(),
+  });
+
   return render(
     <CollapseAllContext.Provider value={collapseSignal}>
-      <GexLandscape {...defaultProps} {...overrides} />
+      <GexLandscape marketOpen={marketOpen} />
     </CollapseAllContext.Provider>,
   );
 }
@@ -191,14 +251,14 @@ describe('GexLandscape', () => {
 
   describe('header controls', () => {
     it('renders LIVE badge when isLive', () => {
-      renderLandscape({ isLive: true });
+      renderLandscape({ marketOpen: true });
       // SectionBox label + LIVE badge — at least one LIVE text
       const live = screen.getAllByText('LIVE');
       expect(live.length).toBeGreaterThan(0);
     });
 
     it('renders SCRUBBED badge when isScrubbed', () => {
-      renderLandscape({ isLive: false, isScrubbed: true });
+      renderLandscape({ marketOpen: false, isScrubbed: true });
       expect(screen.getByText('SCRUBBED')).toBeDefined();
     });
 
@@ -212,6 +272,41 @@ describe('GexLandscape', () => {
       renderLandscape({ canScrubNext: true });
       const nextBtn = screen.getByLabelText('Next snapshot');
       expect((nextBtn as HTMLButtonElement).disabled).toBe(false);
+    });
+  });
+
+  describe('ticker selector', () => {
+    it('renders SPY/QQQ/SPX/NDX radio options', () => {
+      renderLandscape();
+      const group = screen.getByRole('radiogroup', {
+        name: /gex landscape ticker/i,
+      });
+      const options = within(group).getAllByRole('radio');
+      expect(options.map((o) => o.textContent)).toEqual([
+        'SPY',
+        'QQQ',
+        'SPX',
+        'NDX',
+      ]);
+    });
+
+    it('defaults to SPX selected', () => {
+      renderLandscape();
+      const group = screen.getByRole('radiogroup', {
+        name: /gex landscape ticker/i,
+      });
+      const spx = within(group).getByRole('radio', { name: 'SPX' });
+      expect(spx.getAttribute('aria-checked')).toBe('true');
+    });
+
+    it('switches selection when another ticker is clicked', () => {
+      renderLandscape();
+      const group = screen.getByRole('radiogroup', {
+        name: /gex landscape ticker/i,
+      });
+      const qqq = within(group).getByRole('radio', { name: 'QQQ' });
+      fireEvent.click(qqq);
+      expect(qqq.getAttribute('aria-checked')).toBe('true');
     });
   });
 

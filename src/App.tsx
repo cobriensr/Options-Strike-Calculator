@@ -22,7 +22,6 @@ import { useComputedSignals } from './hooks/useComputedSignals';
 import { useChainData } from './hooks/useChainData';
 import { useAlertPolling } from './hooks/useAlertPolling';
 import { useDarkPoolLevels } from './hooks/useDarkPoolLevels';
-import { useGexPerStrike } from './hooks/useGexPerStrike';
 import { useGexTarget } from './hooks/useGexTarget';
 import { useAccessSession } from './hooks/useAccessSession';
 import AccessKeyButton from './components/AccessKey/AccessKeyButton';
@@ -260,10 +259,9 @@ export default function StrikeCalculator() {
   const alertState = useAlertPolling(market.data.quotes?.marketOpen ?? false);
 
   const darkPool = useDarkPoolLevels(market.data.quotes?.marketOpen ?? false);
-  // GEX Per Strike owns its own date state, decoupled from the calculator's
-  // vix.selectedDate. Picking a past date here is a backtest browsing
-  // action and must not re-anchor the Black-Scholes math elsewhere.
-  const gexStrike = useGexPerStrike(market.data.quotes?.marketOpen ?? false);
+  // GEX Landscape owns its own ticker / date / scrub state internally
+  // (Phase 3c of gex-landscape-ws-upgrade-2026-05-03.md), so App.tsx no
+  // longer threads the legacy `useGexPerStrike` props through.
   const gexTarget = useGexTarget(market.data.quotes?.marketOpen ?? false);
   const { results, errors } = useCalculation(
     dSpot,
@@ -923,22 +921,7 @@ export default function StrikeCalculator() {
                   fallback={<SkeletonSection lines={6} tall />}
                 >
                   <GexLandscape
-                    strikes={gexStrike.strikes}
-                    loading={gexStrike.loading}
-                    error={gexStrike.error}
-                    timestamp={gexStrike.timestamp}
-                    timestamps={gexStrike.timestamps}
-                    onRefresh={gexStrike.refresh}
-                    selectedDate={gexStrike.selectedDate}
-                    onDateChange={gexStrike.setSelectedDate}
-                    isLive={gexStrike.isLive}
-                    isScrubbed={gexStrike.isScrubbed}
-                    canScrubPrev={gexStrike.canScrubPrev}
-                    canScrubNext={gexStrike.canScrubNext}
-                    onScrubPrev={gexStrike.scrubPrev}
-                    onScrubNext={gexStrike.scrubNext}
-                    onScrubTo={gexStrike.scrubTo}
-                    onScrubLive={gexStrike.scrubLive}
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
                     onBiasChange={setGexBiasContext}
                   />
                 </GatedSection>
