@@ -822,10 +822,18 @@ describe('DarkPoolLevels — symbol selector', () => {
     const group = screen.getByRole('group', { name: 'Dark pool symbol' });
     expect(group).toBeInTheDocument();
 
-    const spxBtn = screen.getByRole('button', { name: 'Show dark pool for SPX' });
-    const ndxBtn = screen.getByRole('button', { name: 'Show dark pool for NDX' });
-    const spyBtn = screen.getByRole('button', { name: 'Show dark pool for SPY' });
-    const qqqBtn = screen.getByRole('button', { name: 'Show dark pool for QQQ' });
+    const spxBtn = screen.getByRole('button', {
+      name: 'Show dark pool for SPX',
+    });
+    const ndxBtn = screen.getByRole('button', {
+      name: 'Show dark pool for NDX',
+    });
+    const spyBtn = screen.getByRole('button', {
+      name: 'Show dark pool for SPY',
+    });
+    const qqqBtn = screen.getByRole('button', {
+      name: 'Show dark pool for QQQ',
+    });
 
     expect(ndxBtn.getAttribute('aria-pressed')).toBe('true');
     expect(spxBtn.getAttribute('aria-pressed')).toBe('false');

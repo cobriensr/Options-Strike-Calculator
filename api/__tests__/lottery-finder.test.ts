@@ -241,9 +241,9 @@ describe('detectChainFires', () => {
   });
 
   it('returns no fires when fewer than cntWindowMin ticks exist', () => {
-    expect(detectChainFires(fireableStream().slice(0, 4), 1000, 0)).toHaveLength(
-      0,
-    );
+    expect(
+      detectChainFires(fireableStream().slice(0, 4), 1000, 0),
+    ).toHaveLength(0);
   });
 
   it('returns no fires when window vol/OI is below threshold', () => {
@@ -277,10 +277,7 @@ describe('detectChainFires', () => {
   it('returns no fires when first tick has null underlying price (matches Python iloc[0])', () => {
     const stream = fireableStream();
     const first = stream[0]!;
-    const ticks = [
-      { ...first, underlyingPrice: null },
-      ...stream.slice(1),
-    ];
+    const ticks = [{ ...first, underlyingPrice: null }, ...stream.slice(1)];
     expect(detectChainFires(ticks, 1000, 0)).toHaveLength(0);
   });
 

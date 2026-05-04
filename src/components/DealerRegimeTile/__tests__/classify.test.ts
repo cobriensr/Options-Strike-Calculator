@@ -180,20 +180,18 @@ describe('classifyUncertainReason', () => {
     // Both null AND below gate — no-data wins because the input check
     // runs first.
     expect(
-      classifyUncertainReason(
-        input({ confidence: null, netGammaAtSpot: 1 }),
-        { now: NOW },
-      ),
+      classifyUncertainReason(input({ confidence: null, netGammaAtSpot: 1 }), {
+        now: NOW,
+      }),
     ).toBe('no-data');
   });
 
   it('returns low-confidence ahead of stale (priority order)', () => {
     const stale = new Date(NOW - 16 * 60 * 1000).toISOString();
     expect(
-      classifyUncertainReason(
-        input({ confidence: 0.02, ts: stale }),
-        { now: NOW },
-      ),
+      classifyUncertainReason(input({ confidence: 0.02, ts: stale }), {
+        now: NOW,
+      }),
     ).toBe('low-confidence');
   });
 });

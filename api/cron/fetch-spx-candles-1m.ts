@@ -157,7 +157,9 @@ function validateRatio(
  * symbol's data was unavailable. Per-symbol failures are independent
  * (e.g. NDX missing while SPX is fine still lets SPX proceed).
  */
-async function fetchSchwabRatios(): Promise<Map<IndexSymbol, RatioResult | null>> {
+async function fetchSchwabRatios(): Promise<
+  Map<IndexSymbol, RatioResult | null>
+> {
   const result = await schwabFetch<Record<string, SchwabQuoteEntry>>(
     '/quotes?symbols=SPY%2C%24SPX%2CQQQ%2C%24NDX&fields=quote',
   );
@@ -294,10 +296,7 @@ async function storeCandles(
     return { stored, skipped: rows.length - stored };
   } catch (err) {
     Sentry.captureException(err);
-    logger.warn(
-      { err, symbol },
-      'Batch index_candles_1m insert failed',
-    );
+    logger.warn({ err, symbol }, 'Batch index_candles_1m insert failed');
     return { stored: 0, skipped: rows.length };
   }
 }
@@ -371,7 +370,14 @@ async function processIndex(
   );
 
   if (rawRows.length === 0) {
-    return { symbol, stored: 0, skipped: 0, ratio, indexPrice, reason: 'No 1m candles' };
+    return {
+      symbol,
+      stored: 0,
+      skipped: 0,
+      ratio,
+      indexPrice,
+      reason: 'No 1m candles',
+    };
   }
 
   const translated = translateRows(rawRows, ratio, symbol);
@@ -441,7 +447,13 @@ async function processIndexSafe(
   currentMinuteTs: string,
 ): Promise<SymbolResult> {
   try {
-    return await processIndex(config, ratioResult, apiKey, today, currentMinuteTs);
+    return await processIndex(
+      config,
+      ratioResult,
+      apiKey,
+      today,
+      currentMinuteTs,
+    );
   } catch (err) {
     Sentry.captureException(err);
     logger.error(

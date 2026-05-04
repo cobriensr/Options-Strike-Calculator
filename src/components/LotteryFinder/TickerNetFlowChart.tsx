@@ -56,10 +56,8 @@ function TickerNetFlowChartInner({
     const innerH = height - PAD_Y * 2;
     const innerW = VIEW_W - PAD_X * 2;
 
-    const xAt = (ms: number) =>
-      PAD_X + ((ms - tsMin) / tsRange) * innerW;
-    const yAt = (v: number) =>
-      PAD_Y + (1 - (v - minVal) / range) * innerH;
+    const xAt = (ms: number) => PAD_X + ((ms - tsMin) / tsRange) * innerW;
+    const yAt = (v: number) => PAD_Y + (1 - (v - minVal) / range) * innerH;
 
     const ncpPath = series
       .map((r, i) => {

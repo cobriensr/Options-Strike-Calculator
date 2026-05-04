@@ -3588,17 +3588,17 @@ export const MIGRATIONS: Migration[] = [
     id: 121,
     description:
       'Create ws_net_flow_per_ticker table for the uw-stream daemon ' +
-      "to write the UW WebSocket `net_flow:<TICKER>` per-tick stream. " +
+      'to write the UW WebSocket `net_flow:<TICKER>` per-tick stream. ' +
       'Input feed for the Lottery Net Flow per-fire panel (Phase 1 of ' +
       'docs/superpowers/specs/lottery-net-flow-2026-05-03.md). Each ' +
       'row is a per-tick DELTA (NOT cumulative — confirmed via UW ' +
       'reference notebook): `net_call_prem` is the increment over the ' +
       'prior emission for that ticker, NOT the running total. ' +
       'Cumulative chart values are computed at read time via ' +
-      "SUM(...) OVER (PARTITION BY ticker, date ORDER BY ts). Storage " +
+      'SUM(...) OVER (PARTITION BY ticker, date ORDER BY ts). Storage ' +
       'shape mirrors ws_option_trades / ws_flow_alerts: typed columns ' +
       'for the emitted fields plus raw_payload JSONB for forward-compat. ' +
-      "Natural dedupe key (ticker, ts) — UW emits at most one tick " +
+      'Natural dedupe key (ticker, ts) — UW emits at most one tick ' +
       'per ticker per millisecond on this channel.',
     statements: (sql) => [
       sql`

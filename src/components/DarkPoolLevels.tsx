@@ -353,7 +353,7 @@ export default memo(function DarkPoolLevels({
             </p>
           ) : (
             <p className="text-muted m-0 mt-1 font-sans text-[11px]">
-              {selectedSymbol} dark pool data is rolling out \u2014 SPX is the only
+              {selectedSymbol} dark pool data is rolling out — SPX is the only
               fully-wired feed today.
             </p>
           )}

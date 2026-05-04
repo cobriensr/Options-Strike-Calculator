@@ -90,9 +90,7 @@ describe('lottery-finder endpoint', () => {
 
   it('returns transformed fires with default date (ET-today) and asOf=null', async () => {
     // Two SQL calls: rows query then COUNT(*) total query.
-    mockSql
-      .mockResolvedValueOnce([ROW])
-      .mockResolvedValueOnce([{ total: 1 }]);
+    mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
 
     const req = mockRequest({ method: 'GET', query: {} });
     const res = mockResponse();
@@ -159,9 +157,7 @@ describe('lottery-finder endpoint', () => {
   });
 
   it('honors explicit date param + at scrubber cutoff', async () => {
-    mockSql
-      .mockResolvedValueOnce([ROW])
-      .mockResolvedValueOnce([{ total: 1 }]);
+    mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -200,9 +196,7 @@ describe('lottery-finder endpoint', () => {
   });
 
   it('coerces numeric DB strings to numbers and nullable fields to null', async () => {
-    mockSql
-      .mockResolvedValueOnce([ROW])
-      .mockResolvedValueOnce([{ total: 1 }]);
+    mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
 
     const req = mockRequest({ method: 'GET', query: {} });
     const res = mockResponse();
@@ -288,7 +282,10 @@ describe('lottery-finder endpoint', () => {
   });
 
   it('hasMore=false on the last page', async () => {
-    const ROWS = Array.from({ length: 47 }, (_, i) => ({ ...ROW, id: i + 1200 }));
+    const ROWS = Array.from({ length: 47 }, (_, i) => ({
+      ...ROW,
+      id: i + 1200,
+    }));
     mockSql
       .mockResolvedValueOnce(ROWS)
       .mockResolvedValueOnce([{ total: 1247 }]);
@@ -305,9 +302,7 @@ describe('lottery-finder endpoint', () => {
   });
 
   it('honors minute param as a 1-minute point-in-time bucket', async () => {
-    mockSql
-      .mockResolvedValueOnce([ROW])
-      .mockResolvedValueOnce([{ total: 1 }]);
+    mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -325,9 +320,7 @@ describe('lottery-finder endpoint', () => {
   });
 
   it('filters by optionType (calls only)', async () => {
-    mockSql
-      .mockResolvedValueOnce([ROW])
-      .mockResolvedValueOnce([{ total: 1 }]);
+    mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -342,9 +335,7 @@ describe('lottery-finder endpoint', () => {
   });
 
   it('filters by tod bucket', async () => {
-    mockSql
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ total: 0 }]);
+    mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([{ total: 0 }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -379,9 +370,7 @@ describe('lottery-finder endpoint', () => {
   });
 
   it('reflects filter params back in the response envelope', async () => {
-    mockSql
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ total: 0 }]);
+    mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([{ total: 0 }]);
 
     const req = mockRequest({
       method: 'GET',

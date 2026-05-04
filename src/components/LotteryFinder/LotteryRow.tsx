@@ -277,16 +277,14 @@ export const LotteryRow = memo(function LotteryRow({
       {expanded && (
         <div className="mt-3 grid gap-3 border-t border-neutral-800 pt-3 md:grid-cols-2">
           <div>
-            <div className="mb-1 flex items-baseline justify-between text-[10px] uppercase tracking-wide text-neutral-500">
+            <div className="mb-1 flex items-baseline justify-between text-[10px] tracking-wide text-neutral-500 uppercase">
               <span>Contract Tape</span>
               <span className="text-neutral-600">
                 bid · ask · mid stack + VWAP
               </span>
             </div>
             {tape.loading && tape.series.length === 0 ? (
-              <div className="text-[10px] text-neutral-500">
-                Loading tape…
-              </div>
+              <div className="text-[10px] text-neutral-500">Loading tape…</div>
             ) : tape.error ? (
               <div className="text-[10px] text-red-300">
                 tape error: {tape.error}
@@ -300,7 +298,7 @@ export const LotteryRow = memo(function LotteryRow({
             )}
           </div>
           <div>
-            <div className="mb-1 flex items-baseline justify-between text-[10px] uppercase tracking-wide text-neutral-500">
+            <div className="mb-1 flex items-baseline justify-between text-[10px] tracking-wide text-neutral-500 uppercase">
               <span>{fire.underlyingSymbol} Net Flow</span>
               <span className="text-neutral-600">
                 cum NCP (green) · cum NPP (red)

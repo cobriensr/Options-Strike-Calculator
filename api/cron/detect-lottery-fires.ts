@@ -141,7 +141,14 @@ const EMPTY_MACRO: MacroSnapshot = {
   gex_strike_actual_strike: null,
 };
 
-const TICKERS_WITH_GEX_STRIKE = new Set(['SPX', 'SPXW', 'NDX', 'NDXP', 'SPY', 'QQQ']);
+const TICKERS_WITH_GEX_STRIKE = new Set([
+  'SPX',
+  'SPXW',
+  'NDX',
+  'NDXP',
+  'SPY',
+  'QQQ',
+]);
 
 export default withCronInstrumentation(
   'detect-lottery-fires',

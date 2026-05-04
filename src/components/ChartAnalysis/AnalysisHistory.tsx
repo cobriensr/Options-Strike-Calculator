@@ -219,10 +219,10 @@ export default function AnalysisHistory({
   if (allDates.length === 0) {
     return (
       <SectionBox
-      label="Analysis History"
-      collapsible
-      defaultCollapsed={defaultCollapsed}
-    >
+        label="Analysis History"
+        collapsible
+        defaultCollapsed={defaultCollapsed}
+      >
         {fetchError && (
           <div className="text-danger text-[11px]">{fetchError}</div>
         )}

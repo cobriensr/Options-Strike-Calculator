@@ -49,10 +49,7 @@ describe('realizedTrailAct30Trail10', () => {
   it('updates the running peak on new highs before exiting', () => {
     // 1.0 → +30 (activate, peak=30) → +50 (peak=50) → +60 (peak=60)
     //     → +50 (peak-10 = 50, equal triggers exit) → return 50
-    const r = realizedTrailAct30Trail10(
-      [1.0, 1.3, 1.5, 1.6, 1.5, 1.2],
-      ENTRY,
-    );
+    const r = realizedTrailAct30Trail10([1.0, 1.3, 1.5, 1.6, 1.5, 1.2], ENTRY);
     expect(r).toBeCloseTo(50, 6);
   });
 
@@ -86,7 +83,12 @@ describe('realizedHardStop30m', () => {
 
   it('honors a custom stopMin override', () => {
     // 60-min override → last in = index 3 (price 2.0)
-    const r = realizedHardStop30m([1.0, 1.4, 1.6, 2.0], ENTRY, [0, 15, 30, 45], 60);
+    const r = realizedHardStop30m(
+      [1.0, 1.4, 1.6, 2.0],
+      ENTRY,
+      [0, 15, 30, 45],
+      60,
+    );
     expect(r).toBeCloseTo(100, 6);
   });
 

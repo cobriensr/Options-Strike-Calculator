@@ -96,9 +96,7 @@ describe('useDealerRegime', () => {
     mockFetch.mockResolvedValueOnce({ ok: false, status: 500 });
     const { result } = renderHook(() => useDealerRegime(true));
     await act(async () => {});
-    await waitFor(() =>
-      expect(result.current.error).toMatch(/HTTP 500/),
-    );
+    await waitFor(() => expect(result.current.error).toMatch(/HTTP 500/));
   });
 
   it('surfaces fetch rejection as error', async () => {
@@ -186,9 +184,7 @@ describe('useDealerRegime', () => {
   });
 
   it('appends ?at=ISO when scrubbed to a specific minute', async () => {
-    renderHook(() =>
-      useDealerRegime(true, null, '2026-05-01T19:00:00.000Z'),
-    );
+    renderHook(() => useDealerRegime(true, null, '2026-05-01T19:00:00.000Z'));
     await act(async () => {});
     expect(mockFetch).toHaveBeenCalledWith(
       '/api/dealer-regime?at=2026-05-01T19%3A00%3A00.000Z',
@@ -208,9 +204,7 @@ describe('useDealerRegime', () => {
   });
 
   it('does not poll when at is set — snapshot is static', async () => {
-    renderHook(() =>
-      useDealerRegime(true, null, '2026-05-01T19:00:00.000Z'),
-    );
+    renderHook(() => useDealerRegime(true, null, '2026-05-01T19:00:00.000Z'));
     await act(async () => {});
     expect(mockFetch).toHaveBeenCalledTimes(1);
     mockFetch.mockClear();

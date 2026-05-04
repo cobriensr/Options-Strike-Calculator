@@ -98,7 +98,8 @@ function fmtConfidence(value: number | null): string {
 }
 
 function CellInner({ ticker, row, state, uncertainReason }: CellProps) {
-  const isUncertainWithReason = state === 'uncertain' && uncertainReason != null;
+  const isUncertainWithReason =
+    state === 'uncertain' && uncertainReason != null;
   const ariaLabel = isUncertainWithReason
     ? `${ticker}: uncertain — ${UNCERTAIN_REASON_ARIA[uncertainReason]}`
     : `${ticker}: ${STATE_ARIA[state]}`;

@@ -42,17 +42,65 @@ export const LOTTERY_WINDOW_MIN = 5;
 
 /** Mode A V3 ticker list (intraday 0DTE scalp universe + SPY/IWM). */
 export const LOTTERY_V3_TICKERS = [
-  'USAR', 'WMT', 'STX', 'SOUN', 'RIVN', 'TSM', 'SNDK', 'XOM', 'WDC', 'SQQQ',
-  'NDXP', 'USO', 'TNA', 'RDDT', 'SMCI', 'TSLL', 'SNOW', 'TEAM', 'RKLB', 'SOFI',
-  'RUTW', 'TSLA', 'SOXS', 'WULF', 'SLV', 'SMH', 'UBER', 'MSTR', 'TQQQ', 'RIOT',
-  'SOXL', 'UNH', 'QQQ', 'RBLX', 'SPY', 'IWM',
+  'USAR',
+  'WMT',
+  'STX',
+  'SOUN',
+  'RIVN',
+  'TSM',
+  'SNDK',
+  'XOM',
+  'WDC',
+  'SQQQ',
+  'NDXP',
+  'USO',
+  'TNA',
+  'RDDT',
+  'SMCI',
+  'TSLL',
+  'SNOW',
+  'TEAM',
+  'RKLB',
+  'SOFI',
+  'RUTW',
+  'TSLA',
+  'SOXS',
+  'WULF',
+  'SLV',
+  'SMH',
+  'UBER',
+  'MSTR',
+  'TQQQ',
+  'RIOT',
+  'SOXL',
+  'UNH',
+  'QQQ',
+  'RBLX',
+  'SPY',
+  'IWM',
 ] as const;
 
 /** Mode B extended ticker list (DTE 1-3 trend universe). */
 export const LOTTERY_EXTENDED_TICKERS = [
-  'SPY', 'IWM', 'MU', 'META', 'AMD', 'NVDA', 'INTC', 'MSFT', 'AMZN',
-  'PLTR', 'AVGO', 'GOOGL', 'GOOG', 'COIN', 'MSTR', 'HOOD', 'MRVL',
-  'ORCL', 'AAPL',
+  'SPY',
+  'IWM',
+  'MU',
+  'META',
+  'AMD',
+  'NVDA',
+  'INTC',
+  'MSFT',
+  'AMZN',
+  'PLTR',
+  'AVGO',
+  'GOOGL',
+  'GOOG',
+  'COIN',
+  'MSTR',
+  'HOOD',
+  'MRVL',
+  'ORCL',
+  'AAPL',
 ] as const;
 
 // ============================================================
@@ -203,10 +251,7 @@ export function getDominantSide(askPct: number): 'ask' | 'bid' | 'mixed' {
 /**
  * Compose flow_quad from option type + ask-side fraction. Matches p26.
  */
-export function buildFlowQuad(
-  optionType: 'C' | 'P',
-  askPct: number,
-): string {
+export function buildFlowQuad(optionType: 'C' | 'P', askPct: number): string {
   const sideLabel = getDominantSide(askPct);
   const typeLabel = optionType === 'C' ? 'call' : 'put';
   return `${typeLabel}_${sideLabel}`;

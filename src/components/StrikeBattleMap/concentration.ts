@@ -26,11 +26,7 @@ export interface StrikeMagnitude {
   signed: number;
 }
 
-export type ConcentrationLabel =
-  | 'magnet'
-  | 'partial'
-  | 'smeared'
-  | 'empty';
+export type ConcentrationLabel = 'magnet' | 'partial' | 'smeared' | 'empty';
 
 export interface ConcentrationResult {
   /** Strike with the largest absolute magnitude, or null when input is empty. */

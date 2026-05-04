@@ -56,8 +56,7 @@ function ContractTapeChartInner({
     const innerW = VIEW_W - PAD_X * 2;
     const barW = Math.max(0.6, (innerW / series.length) * 0.85);
 
-    const xAt = (ms: number) =>
-      PAD_X + ((ms - tsMin) / tsRange) * innerW;
+    const xAt = (ms: number) => PAD_X + ((ms - tsMin) / tsRange) * innerW;
     const volH = (v: number) => (v / maxVol) * innerH;
 
     type StackedBar = {
@@ -107,7 +106,9 @@ function ContractTapeChartInner({
           return;
         }
         const cmd = inSegment ? 'L' : 'M';
-        segs.push(`${cmd} ${xAt(tsMs[i]!).toFixed(2)} ${yAtPrice(p).toFixed(2)}`);
+        segs.push(
+          `${cmd} ${xAt(tsMs[i]!).toFixed(2)} ${yAtPrice(p).toFixed(2)}`,
+        );
         inSegment = true;
       });
       pricePath = segs.length > 0 ? segs.join(' ') : null;

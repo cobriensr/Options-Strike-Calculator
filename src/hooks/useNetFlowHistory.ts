@@ -75,10 +75,10 @@ export function useNetFlowHistory({
       const params = new URLSearchParams({ ticker, date });
       if (from) params.set('from', from);
       if (to) params.set('to', to);
-      const res = await fetch(
-        `/api/net-flow-history?${params.toString()}`,
-        { credentials: 'include', signal: ctrl.signal },
-      );
+      const res = await fetch(`/api/net-flow-history?${params.toString()}`, {
+        credentials: 'include',
+        signal: ctrl.signal,
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = (await res.json()) as NetFlowHistoryResponse;
 

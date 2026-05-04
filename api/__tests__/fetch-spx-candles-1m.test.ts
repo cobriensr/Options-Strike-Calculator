@@ -849,7 +849,12 @@ describe('fetch-spx-candles-1m handler', () => {
     );
     // QQQ candle priced at 510.50
     vi.mocked(uwFetch).mockResolvedValue([
-      makeCandleRow({ open: '510.50', high: '511.00', low: '510.20', close: '510.85' }),
+      makeCandleRow({
+        open: '510.50',
+        high: '511.00',
+        low: '510.20',
+        close: '510.85',
+      }),
     ]);
 
     const ratio = ndxPrice / qqqPrice;

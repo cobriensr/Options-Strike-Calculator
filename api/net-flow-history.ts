@@ -74,10 +74,7 @@ function ctHmToUtc(date: string, hm: string): string {
   return new Date(sessionMinUtc + deltaMin * 60_000).toISOString();
 }
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   const guarded = await guardOwnerOrGuestEndpoint(req, res, () => undefined);
   if (guarded) return;
 

@@ -127,7 +127,10 @@ export function classify(
  * stale (data feed is broken — investigate) — without forcing them to
  * read the underlying numbers.
  */
-export type DealerRegimeUncertainReason = 'no-data' | 'low-confidence' | 'stale';
+export type DealerRegimeUncertainReason =
+  | 'no-data'
+  | 'low-confidence'
+  | 'stale';
 
 export function classifyUncertainReason(
   input: DealerRegimeInput,
