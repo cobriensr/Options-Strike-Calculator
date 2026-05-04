@@ -203,6 +203,60 @@ async function processTicker(
   const netGamma = netGammaAtSpot(result.curve, snapshot.spot);
   const gammaCurveJson = JSON.stringify(result.curve);
 
+  // Sign-flip detection: read the previous row's net γ before inserting.
+  // When the sign changes between successive cron ticks, dealer-gamma
+  // regime flipped (long-γ ↔ short-γ at spot) — a load-bearing event for
+  // post-mortem context on trades that misfire around the transition.
+  // We log + breadcrumb here rather than alert because the flip is
+  // expected behavior, just one we want to be able to grep for.
+  const prevRows = (await sql`
+    SELECT net_gamma_at_spot::numeric AS net_gamma_at_spot
+    FROM zero_gamma_levels
+    WHERE ticker = ${ticker}
+    ORDER BY ts DESC
+    LIMIT 1
+  `) as { net_gamma_at_spot: string | number | null }[];
+  const prevNetGammaRaw = prevRows[0]?.net_gamma_at_spot ?? null;
+  const prevNetGamma =
+    prevNetGammaRaw == null
+      ? null
+      : typeof prevNetGammaRaw === 'number'
+        ? prevNetGammaRaw
+        : Number.parseFloat(prevNetGammaRaw);
+  const prev =
+    prevNetGamma != null && Number.isFinite(prevNetGamma) ? prevNetGamma : null;
+  const curr = Number.isFinite(netGamma) ? netGamma : null;
+  if (
+    prev != null &&
+    curr != null &&
+    Math.sign(prev) !== 0 &&
+    Math.sign(curr) !== 0 &&
+    Math.sign(prev) !== Math.sign(curr)
+  ) {
+    Sentry.addBreadcrumb({
+      category: 'dealer-regime',
+      message: `${ticker} dealer-gamma sign flip`,
+      level: 'info',
+      data: {
+        ticker,
+        prevNetGamma: prev,
+        newNetGamma: curr,
+        spot: snapshot.spot,
+      },
+    });
+    logger.info(
+      {
+        event: 'dealer_regime_sign_flip',
+        ticker,
+        prevNetGamma: prev,
+        newNetGamma: curr,
+        spot: snapshot.spot,
+        confidence: result.confidence,
+      },
+      'dealer-regime sign flip',
+    );
+  }
+
   await sql`
     INSERT INTO zero_gamma_levels (
       ticker, spot, zero_gamma, confidence,
