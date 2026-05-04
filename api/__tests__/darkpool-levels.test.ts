@@ -33,18 +33,23 @@ import logger from '../_lib/logger.js';
 
 // ── Helpers ───────────────────────────────────────────────
 
-function makeDbRow(overrides = {}) {
+function makeDbRow(overrides: Record<string, unknown> = {}) {
+  // Phase 4 migration: the helper now queries `dark_pool_prints` first,
+  // which returns a `level` column. The legacy `dark_pool_levels` table
+  // (queried only on SPX fallback) returns `spx_approx`. We populate
+  // both so the same fixture works whether the test exercises the
+  // prints path (default) or the legacy fallback path.
   return {
+    level: 6575,
     spx_approx: 6575,
     total_premium: '1300000000',
     trade_count: 13,
     total_shares: 2000000,
     latest_time: '2026-04-02T16:30:00Z',
     updated_at: '2026-04-02T16:35:00Z',
-    // The real query now attaches MAX(updated_at) OVER () to every row.
-    // Tests that care about meta.lastUpdated override this; others inherit
-    // the default, which matches a single-row result where the max equals
-    // the row's own updated_at.
+    // The real query attaches MAX(updated_at) OVER () to every row.
+    // Tests that care about meta.lastUpdated override this; others
+    // inherit the default which mirrors the row's own updated_at.
     max_updated_at: '2026-04-02T16:35:00Z',
     ...overrides,
   };
@@ -57,6 +62,30 @@ describe('GET /api/darkpool-levels', () => {
     vi.restoreAllMocks();
     vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     mockSql.mockReset();
+  });
+
+  it('echoes ?symbol=NDX in the response body', async () => {
+    mockSql.mockResolvedValue([]);
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { symbol: 'NDX' } }),
+      res,
+    );
+    expect(res._status).toBe(200);
+    const body = res._json as { symbol: string };
+    expect(body.symbol).toBe('NDX');
+  });
+
+  it('defaults symbol to SPX for garbage ?symbol= param', async () => {
+    mockSql.mockResolvedValue([]);
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { symbol: 'garbage' } }),
+      res,
+    );
+    expect(res._status).toBe(200);
+    const body = res._json as { symbol: string };
+    expect(body.symbol).toBe('SPX');
   });
 
   it('returns 405 for POST', async () => {
@@ -124,10 +153,12 @@ describe('GET /api/darkpool-levels', () => {
   it('returns levels sorted by premium', async () => {
     const rows = [
       makeDbRow({
+        level: 6575,
         spx_approx: 6575,
         total_premium: '1300000000',
       }),
       makeDbRow({
+        level: 6555,
         spx_approx: 6555,
         total_premium: '248000000',
       }),
@@ -249,12 +280,14 @@ describe('GET /api/darkpool-levels', () => {
     // much more recently, and its updated_at is what the window emits.
     mockSql.mockResolvedValue([
       makeDbRow({
+        level: 6575,
         spx_approx: 6575,
         total_premium: '1300000000',
         updated_at: '2026-04-02T13:30:00Z',
         max_updated_at: '2026-04-02T19:58:00Z',
       }),
       makeDbRow({
+        level: 6555,
         spx_approx: 6555,
         total_premium: '248000000',
         updated_at: '2026-04-02T19:58:00Z',
