@@ -11,6 +11,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import { metrics } from './_lib/sentry.js';
 import { getDb } from './_lib/db.js';
+import { getDarkPoolLastUpdated } from './_lib/dark-pool-query.js';
 import { redis, getAccessToken } from './_lib/schwab.js';
 
 interface ServiceCheck {
@@ -94,12 +95,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Stale thresholds: intraday tables ~15 min, daily tables ~30 hours
   let freshness: FreshnessCheck[] = [];
   try {
-    const [flow, spot, strike, darkpool, features, outcomes, findings] =
+    // Dark pool freshness now goes through the shared helper which is
+    // env-flag-gated (USE_DAEMON_DARK_POOL): reports legacy
+    // dark_pool_levels.updated_at when unset, dark_pool_prints.ingested_at
+    // when set. Same 10-min staleness threshold as before — daemon's
+    // per-print freshness is sub-second so this is generous either way.
+    const [flow, spot, strike, darkpoolTs, features, outcomes, findings] =
       await Promise.all([
         sql`SELECT MAX(timestamp) AS ts FROM flow_data`,
         sql`SELECT MAX(timestamp) AS ts FROM spot_exposures`,
         sql`SELECT MAX(timestamp) AS ts FROM strike_exposures`,
-        sql`SELECT MAX(updated_at) AS ts FROM dark_pool_levels`,
+        getDarkPoolLastUpdated(),
         sql`SELECT MAX(created_at) AS ts FROM training_features`,
         sql`SELECT MAX(created_at) AS ts FROM outcomes`,
         sql`SELECT updated_at AS ts FROM ml_findings WHERE id = 1 LIMIT 1`,
@@ -109,7 +115,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       computeFreshness('flow_data', flow[0]?.ts as string, 15),
       computeFreshness('spot_exposures', spot[0]?.ts as string, 15),
       computeFreshness('strike_exposures', strike[0]?.ts as string, 15),
-      computeFreshness('dark_pool_levels', darkpool[0]?.ts as string, 10),
+      computeFreshness('dark_pool', darkpoolTs, 10),
       computeFreshness('training_features', features[0]?.ts as string, 1800),
       computeFreshness('outcomes', outcomes[0]?.ts as string, 1800),
       computeFreshness('ml_findings', findings[0]?.ts as string, 2880),

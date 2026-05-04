@@ -42,7 +42,7 @@ function mockAllHealthy(opts?: { freshnessOverrides?: unknown[][] }) {
     [{ ts: now }], // flow_data
     [{ ts: now }], // spot_exposures
     [{ ts: now }], // strike_exposures
-    [{ ts: now }], // dark_pool_levels
+    [{ ts: now }], // dark_pool (via getDarkPoolLastUpdated helper)
     [{ ts: now }], // training_features
     [{ ts: now }], // outcomes
     [{ ts: now }], // ml_findings
@@ -208,7 +208,7 @@ describe('GET /api/system-status', () => {
         [{ ts: staleTs }], // flow_data — stale (threshold 15 min)
         [{ ts: staleTs }], // spot_exposures — stale
         [{ ts: new Date().toISOString() }], // strike_exposures — fresh
-        [{ ts: new Date().toISOString() }], // dark_pool_levels — fresh
+        [{ ts: new Date().toISOString() }], // dark_pool (via getDarkPoolLastUpdated helper) — fresh
         [{ ts: new Date().toISOString() }], // training_features — fresh (threshold 1800 min)
         [{ ts: new Date().toISOString() }], // outcomes — fresh
         [{ ts: new Date().toISOString() }], // ml_findings — fresh
@@ -241,7 +241,7 @@ describe('GET /api/system-status', () => {
         [{ ts: null }], // flow_data — no data
         [{ ts: null }], // spot_exposures — no data
         [{ ts: null }], // strike_exposures — no data
-        [{ ts: null }], // dark_pool_levels — no data
+        [{ ts: null }], // dark_pool (via getDarkPoolLastUpdated helper) — no data
         [{ ts: null }], // training_features — no data
         [{ ts: null }], // outcomes — no data
         [], // ml_findings — no rows
