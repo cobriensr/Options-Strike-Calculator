@@ -88,7 +88,7 @@ export type GreekFlowQuery = z.infer<typeof greekFlowQuerySchema>;
  * (used by the historical scrubber to snapshot mid-session).
  */
 export const gexStrikeExpiryQuerySchema = z.object({
-  ticker: z.enum(['SPY', 'QQQ']),
+  ticker: z.enum(['SPY', 'QQQ', 'SPX', 'NDX']),
   expiry: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'expiry must be YYYY-MM-DD'),
   at: z.string().datetime({ offset: true }).optional(),
 });
