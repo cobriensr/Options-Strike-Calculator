@@ -762,7 +762,7 @@ export default function StrikeCalculator() {
                 />
 
                 {market.hasData && (
-                  <div id="sec-premarket" className="scroll-mt-28">
+                  <div id="sec-premarket" className="mt-6 scroll-mt-28">
                     <PreMarketInput
                       date={vix.selectedDate}
                       spxPrice={results?.spot}
