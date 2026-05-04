@@ -838,3 +838,40 @@ export const netFlowHistoryQuerySchema = z.object({
 });
 
 export type NetFlowHistoryQuery = z.infer<typeof netFlowHistoryQuerySchema>;
+
+// ============================================================
+// /api/lottery-contract-tape
+// ============================================================
+
+/**
+ * Query params for GET /api/lottery-contract-tape.
+ *
+ * Backs the per-fire contract panel inside LotteryFinderRow.
+ * Returns per-minute aggregated bid/ask/mid volume + price stats for
+ * one OCC option chain on one date. Read from ws_option_trades.
+ *
+ * - `chain` is the OCC symbol — required, A-Z + digits only.
+ * - `date` defaults to ET-today.
+ * - `from` / `to` are optional HH:MM CT bounds.
+ */
+export const lotteryContractTapeQuerySchema = z.object({
+  chain: z
+    .string()
+    .regex(/^[A-Z0-9]{1,32}$/, 'chain must be an OCC symbol (A-Z + digits)'),
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+    .optional(),
+  from: z
+    .string()
+    .regex(/^\d{2}:\d{2}$/, 'from must be HH:MM CT')
+    .optional(),
+  to: z
+    .string()
+    .regex(/^\d{2}:\d{2}$/, 'to must be HH:MM CT')
+    .optional(),
+});
+
+export type LotteryContractTapeQuery = z.infer<
+  typeof lotteryContractTapeQuerySchema
+>;

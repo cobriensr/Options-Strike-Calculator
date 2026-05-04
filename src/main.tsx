@@ -137,6 +137,8 @@ if (import.meta.env.PROD)
       { path: '/api/ml/analyze-plots', method: 'POST' },
       { path: '/api/cron/warm-tbbo-percentile', method: 'GET' },
       { path: '/api/lottery-finder', method: 'GET' },
+      { path: '/api/lottery-contract-tape', method: 'GET' },
+      { path: '/api/net-flow-history', method: 'GET' },
       { path: '/api/trace-live-calibration', method: 'GET' },
       { path: '/api/strike-trade-volume', method: 'GET' },
       { path: '/api/system-status', method: 'GET' },
