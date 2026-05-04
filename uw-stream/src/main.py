@@ -21,6 +21,7 @@ from db import close_pool, init_pool
 from handlers.base import Handler
 from handlers.flow_alerts import FlowAlertsHandler
 from handlers.gex_strike_expiry import GexStrikeExpiryHandler
+from handlers.net_flow import NetFlowHandler
 from handlers.off_lit_trades import OffLitTradesHandler
 from handlers.option_trades import OptionTradesHandler
 from health import run_server
@@ -52,6 +53,10 @@ def _build_handlers(channels: list[str]) -> dict[str, Handler]:
     # filters to SPY+QQQ in _transform; everything else is dropped at
     # the cheapest possible point in the pipeline.
     off_lit_trades = OffLitTradesHandler()
+    # net_flow:<TICKER> follows the option_trades shape — one shared
+    # handler across the lottery universe (~50 tickers) so backpressure
+    # and batch flushes apply across the universe.
+    net_flow = NetFlowHandler()
 
     selected: dict[str, Handler] = {}
     for ch in channels:
@@ -63,11 +68,14 @@ def _build_handlers(channels: list[str]) -> dict[str, Handler]:
             selected[ch] = option_trades
         elif ch.startswith("gex_strike_expiry:"):
             selected[ch] = gex_strike_expiry
+        elif ch.startswith("net_flow:"):
+            selected[ch] = net_flow
         else:
             raise RuntimeError(
                 f"WS_CHANNELS contains {ch!r} but no handler is registered. "
                 "Supported: flow-alerts, off_lit_trades, "
-                "option_trades:<TICKER>, gex_strike_expiry:<TICKER>"
+                "option_trades:<TICKER>, gex_strike_expiry:<TICKER>, "
+                "net_flow:<TICKER>"
             )
         state.channel(ch).subscribed = False
     return selected

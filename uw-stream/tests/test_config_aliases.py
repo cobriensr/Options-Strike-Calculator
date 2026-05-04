@@ -85,3 +85,30 @@ class TestLotteryShorthand:
         ).channels
         sndk_count = sum(1 for c in channels if c == "option_trades:SNDK")
         assert sndk_count == 1
+
+
+class TestNetFlowLotteryShorthand:
+    """`net_flow_lottery` expands the same universe as
+    option_trades_lottery but as net_flow:<TICKER> channels."""
+
+    def test_shorthand_expands_to_per_ticker_channels(self):
+        channels = _settings("net_flow_lottery").channels
+        # Universe is V3 + EXTENDED (set-deduped) — ~50 tickers.
+        assert len(channels) >= 40
+        assert all(c.startswith("net_flow:") for c in channels)
+
+    def test_combines_with_option_trades_lottery_no_collision(self):
+        # Both shorthands target the same ticker set but different
+        # channel families, so total = 2x per-ticker count.
+        only_options = _settings("option_trades_lottery").channels
+        combined = _settings(
+            "option_trades_lottery,net_flow_lottery",
+        ).channels
+        assert len(combined) == 2 * len(only_options)
+        assert any(c.startswith("option_trades:") for c in combined)
+        assert any(c.startswith("net_flow:") for c in combined)
+
+    def test_explicit_per_ticker_dedupes_against_shorthand(self):
+        channels = _settings("net_flow:TSLA,net_flow_lottery").channels
+        tsla_count = sum(1 for c in channels if c == "net_flow:TSLA")
+        assert tsla_count == 1

@@ -42,10 +42,14 @@ _LOTTERY_TICKERS: frozenset[str] = frozenset(
     },
 )
 
-# Shorthand sentinel — typing `option_trades_lottery` in WS_CHANNELS
-# expands to `option_trades:<TICKER>` for every ticker in the Lottery
-# Finder universe. Saves typing 50+ channel names in env config.
-_LOTTERY_SHORTHAND = "option_trades_lottery"
+# Shorthand sentinels for the lottery universe — typing one of these
+# tokens in WS_CHANNELS expands to one per-ticker subscription per
+# token, saving 50+ channel names in env config. Same ticker set for
+# both shorthand spellings (option_trades_lottery, net_flow_lottery)
+# so the daemon can subscribe to per-tick option flow + per-tick net
+# premium aggregates on the same universe.
+_OPTION_TRADES_LOTTERY = "option_trades_lottery"
+_NET_FLOW_LOTTERY = "net_flow_lottery"
 
 
 class Settings(BaseSettings):
@@ -90,23 +94,31 @@ class Settings(BaseSettings):
         ``flow_alerts`` (URL-path style) get mapped to the canonical
         WS channel name ``flow-alerts``.
 
-        The shorthand ``option_trades_lottery`` expands inline to one
-        ``option_trades:<TICKER>`` channel per ticker in the Lottery
-        Finder universe so the env var doesn't need to enumerate 50+
-        channels by hand.
+        Two shorthands expand inline to per-ticker channels:
+        - ``option_trades_lottery`` → ``option_trades:<TICKER>`` per
+          ticker in the Lottery Finder universe.
+        - ``net_flow_lottery`` → ``net_flow:<TICKER>`` per ticker in
+          the same universe (per-tick net call/put premium aggregates).
+        Same ticker set for both so option-tape + net-flow stay aligned.
         """
         seen: set[str] = set()
         out: list[str] = []
+        # Map shorthand → expansion-prefix. Sorted ticker list inside
+        # so the channel order in /metrics + logs is stable across
+        # daemon restarts.
+        shorthand_prefix: dict[str, str] = {
+            _OPTION_TRADES_LOTTERY: "option_trades:",
+            _NET_FLOW_LOTTERY: "net_flow:",
+        }
         for raw in self.ws_channels.split(","):
             ch = raw.strip()
             ch = _CHANNEL_ALIASES.get(ch, ch)
             if not ch:
                 continue
-            if ch == _LOTTERY_SHORTHAND:
-                # Sorted so the channel order in /metrics + logs is
-                # stable across daemon restarts.
+            prefix = shorthand_prefix.get(ch)
+            if prefix is not None:
                 for ticker in sorted(_LOTTERY_TICKERS):
-                    expanded = f"option_trades:{ticker}"
+                    expanded = f"{prefix}{ticker}"
                     if expanded not in seen:
                         seen.add(expanded)
                         out.append(expanded)
