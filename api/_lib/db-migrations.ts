@@ -3584,4 +3584,45 @@ export const MIGRATIONS: Migration[] = [
       'See docs/superpowers/specs/uw-cron-to-websocket-migration-2026-05-02.md.',
     statements: (sql) => [sql`DROP TABLE IF EXISTS dark_pool_levels`],
   },
+  {
+    id: 121,
+    description:
+      'Create ws_net_flow_per_ticker table for the uw-stream daemon ' +
+      "to write the UW WebSocket `net_flow:<TICKER>` per-tick stream. " +
+      'Input feed for the Lottery Net Flow per-fire panel (Phase 1 of ' +
+      'docs/superpowers/specs/lottery-net-flow-2026-05-03.md). Each ' +
+      'row is a per-tick DELTA (NOT cumulative — confirmed via UW ' +
+      'reference notebook): `net_call_prem` is the increment over the ' +
+      'prior emission for that ticker, NOT the running total. ' +
+      'Cumulative chart values are computed at read time via ' +
+      "SUM(...) OVER (PARTITION BY ticker, date ORDER BY ts). Storage " +
+      'shape mirrors ws_option_trades / ws_flow_alerts: typed columns ' +
+      'for the emitted fields plus raw_payload JSONB for forward-compat. ' +
+      "Natural dedupe key (ticker, ts) — UW emits at most one tick " +
+      'per ticker per millisecond on this channel.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS ws_net_flow_per_ticker (
+          id BIGSERIAL PRIMARY KEY,
+          ticker TEXT NOT NULL,
+          ts TIMESTAMPTZ NOT NULL,
+          net_call_prem NUMERIC(18, 2) NOT NULL,
+          net_call_vol INTEGER NOT NULL,
+          net_put_prem NUMERIC(18, 2) NOT NULL,
+          net_put_vol INTEGER NOT NULL,
+          received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          raw_payload JSONB NOT NULL
+        )
+      `,
+      // Dedupe key: UW emits at most one tick per ticker per ms.
+      sql`CREATE UNIQUE INDEX IF NOT EXISTS ws_net_flow_per_ticker_uq
+            ON ws_net_flow_per_ticker (ticker, ts)`,
+      // Primary read pattern: time-series for a single ticker on a day.
+      sql`CREATE INDEX IF NOT EXISTS ws_net_flow_per_ticker_ticker_ts_idx
+            ON ws_net_flow_per_ticker (ticker, ts DESC)`,
+      // Retention cron + cross-ticker time-window queries.
+      sql`CREATE INDEX IF NOT EXISTS ws_net_flow_per_ticker_ts_idx
+            ON ws_net_flow_per_ticker (ts)`,
+    ],
+  },
 ];
