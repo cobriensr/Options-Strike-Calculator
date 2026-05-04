@@ -9,13 +9,19 @@ interface LotteryRowProps {
 }
 
 /**
- * UW Contract Lookup deep link. /historical_chains/<OCC> 404s; the
- * Contract Lookup page (`/flow/option_chains`) accepts a `?contract=`
- * query param that pre-loads the OCC symbol into the same view a
- * manual Contract Lookup search would surface.
+ * UW per-ticker stock page. UW doesn't appear to support a stable
+ * deep-link by OCC symbol — `/historical_chains/<OCC>` 404s, and
+ * `/flow/option_chains?contract=<OCC>` lands on Contract Lookup
+ * without pre-filling. The stock page (`/stock/<TICKER>`) is the
+ * safest landing point that won't 404; the user has to click into
+ * the chain from there for the specific strike/expiry, but at least
+ * the pivot works.
+ *
+ * If a true per-contract deep-link is found later, swap the return
+ * here — it's the single source of truth for the row link.
  */
-const uwContractUrl = (occSymbol: string): string =>
-  `https://unusualwhales.com/flow/option_chains?contract=${encodeURIComponent(occSymbol)}`;
+const uwContractUrl = (fire: { underlyingSymbol: string }): string =>
+  `https://unusualwhales.com/stock/${encodeURIComponent(fire.underlyingSymbol)}`;
 
 const formatTimeCT = (iso: string): string => {
   const d = new Date(iso);
@@ -100,11 +106,11 @@ export const LotteryRow = memo(function LotteryRow({
             per-contract flow page so the user can pivot from the row
             to the canonical context with one click. */}
         <a
-          href={uwContractUrl(fire.optionChainId)}
+          href={uwContractUrl(fire)}
           target="_blank"
           rel="noopener noreferrer"
           className="group flex items-baseline gap-2 hover:underline"
-          title={`Open ${fire.optionChainId} on Unusual Whales`}
+          title={`Open ${fire.underlyingSymbol} on Unusual Whales (contract: ${fire.optionChainId})`}
         >
           <span className="font-mono text-base font-semibold text-white group-hover:text-blue-300">
             {fire.underlyingSymbol}
