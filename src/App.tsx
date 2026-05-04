@@ -851,14 +851,22 @@ export default function StrikeCalculator() {
                     error={darkPool.error}
                     updatedAt={darkPool.updatedAt}
                     spxPrice={
-                      darkPool.isLive
-                        ? (market.data.quotes?.spx?.price ??
-                          results?.spot ??
-                          spxVal ??
-                          null)
-                        : (results?.spot ?? spxVal ?? null)
+                      // SPX selector is the only one with a wired
+                      // reference price; pass null for NDX/SPY/QQQ so
+                      // the distance column hides cleanly until those
+                      // price sources are added in a follow-up.
+                      darkPool.selectedSymbol !== 'SPX'
+                        ? null
+                        : darkPool.isLive
+                          ? (market.data.quotes?.spx?.price ??
+                            results?.spot ??
+                            spxVal ??
+                            null)
+                          : (results?.spot ?? spxVal ?? null)
                     }
                     onRefresh={darkPool.refresh}
+                    selectedSymbol={darkPool.selectedSymbol}
+                    onSymbolChange={darkPool.setSelectedSymbol}
                     selectedDate={darkPool.selectedDate}
                     onDateChange={darkPool.setSelectedDate}
                     scrubTime={darkPool.scrubTime}
