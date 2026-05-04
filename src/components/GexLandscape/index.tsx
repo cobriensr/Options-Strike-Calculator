@@ -394,16 +394,19 @@ const GexLandscape = memo(function GexLandscape({
     [],
   );
 
-  // When the viewed date changes, reset scroll and the smoothing/price-trend
-  // buffer so the new date's first snapshot gets a clean baseline. Δ% maps
-  // are sourced server-side now and refresh automatically with each poll —
-  // no client-side reset needed.
+  // When the viewed date OR ticker changes, reset scroll and the
+  // smoothing/price-trend buffer so the new context gets a clean baseline.
+  // Without resetting on ticker change, stale strikes from the prior
+  // ticker leak into computeSmoothedStrikes — which mixes scales (e.g.
+  // SPX 7,230 with QQQ 720) and corrupts the bias verdict's gravity
+  // pick. Δ% maps are sourced server-side now and refresh automatically
+  // with each poll — no client-side reset needed for those.
   useEffect(() => {
     hasScrolledRef.current = false;
     snapshotBufferRef.current = [];
     setSmoothedRows([]);
     setPriceTrend(null);
-  }, [selectedDate]);
+  }, [selectedDate, selectedTicker]);
 
   // Scroll ATM row into view only on initial data arrival.
   useEffect(() => {
