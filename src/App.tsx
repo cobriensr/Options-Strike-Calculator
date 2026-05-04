@@ -21,8 +21,6 @@ import { useSnapshotSave } from './hooks/useSnapshotSave';
 import { useComputedSignals } from './hooks/useComputedSignals';
 import { useChainData } from './hooks/useChainData';
 import { useAlertPolling } from './hooks/useAlertPolling';
-import { useMarketInternals } from './hooks/useMarketInternals';
-import { classifyRegime } from './utils/market-regime';
 import { useDarkPoolLevels } from './hooks/useDarkPoolLevels';
 import { useGexPerStrike } from './hooks/useGexPerStrike';
 import { useGexTarget } from './hooks/useGexTarget';
@@ -48,7 +46,6 @@ import AppHeader from './components/AppHeader';
 import AlertBanner from './components/AlertBanner';
 import DarkPoolLevels from './components/DarkPoolLevels';
 import TRACELiveDashboard from './components/TRACELive';
-import { MarketInternalsPanel } from './components/MarketInternals/MarketInternalsPanel';
 import VegaSpikeFeed from './components/VegaSpikeFeed/VegaSpikeFeed';
 import NotificationPermission from './components/NotificationPermission';
 import { CollapseAllContext } from './components/collapse-context';
@@ -267,15 +264,6 @@ export default function StrikeCalculator() {
   // vix.selectedDate. Picking a past date here is a backtest browsing
   // action and must not re-anchor the Black-Scholes math elsewhere.
   const gexStrike = useGexPerStrike(market.data.quotes?.marketOpen ?? false);
-  // Single hook call for market internals — shared by MarketInternalsPanel
-  // and FlowConfluencePanel to avoid duplicate 60-second polling loops.
-  const internals = useMarketInternals({
-    marketOpen: market.data.quotes?.marketOpen ?? false,
-  });
-  const regime = useMemo(
-    () => classifyRegime(internals.bars),
-    [internals.bars],
-  );
   const gexTarget = useGexTarget(market.data.quotes?.marketOpen ?? false);
   const { results, errors } = useCalculation(
     dSpot,
@@ -608,7 +596,6 @@ export default function StrikeCalculator() {
             { id: 'sec-gex-target', label: 'GEX Target' },
             { id: 'sec-gex-landscape', label: 'GEX Landscape' },
             { id: 'sec-zero-gamma', label: 'Zero Gamma' },
-            { id: 'sec-market-internals', label: 'Breadth & TICK' },
             { id: 'sec-vega-spikes', label: 'Dir Vega Spikes' },
             { id: 'sec-greek-flow', label: 'Greek Flow' },
           ]
@@ -941,18 +928,6 @@ export default function StrikeCalculator() {
                 >
                   <ZeroGammaPanel
                     marketOpen={market.data.quotes?.marketOpen ?? false}
-                  />
-                </GatedSection>
-
-                <GatedSection
-                  gate={hasMarketContext}
-                  id="sec-market-internals"
-                  label="Breadth & TICK"
-                >
-                  <MarketInternalsPanel
-                    {...internals}
-                    marketOpen={market.data.quotes?.marketOpen ?? false}
-                    regime={regime}
                   />
                 </GatedSection>
 

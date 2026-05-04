@@ -37,10 +37,6 @@ describe('App nav anchor alignment', () => {
     expect(appSource).not.toContain('id="sec-futures-calc"');
   });
 
-  it('renders the market-internals section', () => {
-    expect(appSource).toContain('id="sec-market-internals"');
-  });
-
   it('skip-to-results link still targets the results anchor', () => {
     expect(appSource).toContain('href="#results"');
   });
