@@ -799,3 +799,42 @@ export const lotteryFinderQuerySchema = z.object({
 });
 
 export type LotteryFinderQuery = z.infer<typeof lotteryFinderQuerySchema>;
+
+// ============================================================
+// /api/net-flow-history
+// ============================================================
+
+/**
+ * Query params for GET /api/net-flow-history.
+ *
+ * Backs the per-fire Net Flow panel inside LotteryFinderRow. Returns
+ * the ticker's per-tick net call/put premium + volume time series
+ * for the date plus the cumulative series computed via SQL
+ * `SUM(...) OVER (PARTITION BY ticker, date ORDER BY ts)`.
+ *
+ * - `ticker` required, uppercase 1-8 chars. No universe enum — the
+ *   daemon may subscribe to a superset later; an unknown ticker
+ *   returns an empty rows array, not 400.
+ * - `date` defaults to ET-today when omitted.
+ * - `from` / `to` are optional HH:MM CT bounds inside the day.
+ *   Default window is the full session 08:30 → 15:00 CT.
+ */
+export const netFlowHistoryQuerySchema = z.object({
+  ticker: z
+    .string()
+    .regex(/^[A-Z]{1,8}$/, 'ticker must be 1-8 uppercase letters'),
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+    .optional(),
+  from: z
+    .string()
+    .regex(/^\d{2}:\d{2}$/, 'from must be HH:MM CT')
+    .optional(),
+  to: z
+    .string()
+    .regex(/^\d{2}:\d{2}$/, 'to must be HH:MM CT')
+    .optional(),
+});
+
+export type NetFlowHistoryQuery = z.infer<typeof netFlowHistoryQuerySchema>;
