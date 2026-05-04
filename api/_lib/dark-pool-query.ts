@@ -363,3 +363,245 @@ function transformLegacyRow(r: LegacyRow): DarkPoolLevel {
     updatedAt: isoOrString(r.updated_at),
   };
 }
+
+// ──────────────────────────────────────────────────────────────────
+// Additional consumer-specific helpers (Phase 4c)
+// ──────────────────────────────────────────────────────────────────
+
+/**
+ * Most recent ingest timestamp for the dark-pool data source the read
+ * endpoint is currently serving from. Used by the system-status freshness
+ * check. Subject to the same USE_DAEMON_DARK_POOL gate as
+ * getDarkPoolLevels — flag unset means we report legacy freshness;
+ * flag set means we report daemon freshness. Reporting the wrong
+ * source's freshness during the transition would falsely alert that
+ * the cron is stale (when the daemon is actually serving fresh data)
+ * or vice versa.
+ */
+export async function getDarkPoolLastUpdated(): Promise<string | null> {
+  const sql = getDb();
+  if (shouldPreferDaemon()) {
+    const rows = (await sql`
+      SELECT MAX(ingested_at) AS ts
+      FROM dark_pool_prints
+      WHERE symbol IN ('SPY', 'QQQ')
+    `) as Array<{ ts: Timestampish }>;
+    const ts = rows[0]?.ts;
+    return ts == null ? null : isoOrString(ts);
+  }
+  const rows = (await sql`
+    SELECT MAX(updated_at) AS ts FROM dark_pool_levels
+  `) as Array<{ ts: Timestampish }>;
+  const ts = rows[0]?.ts;
+  return ts == null ? null : isoOrString(ts);
+}
+
+export interface RecentDarkPoolPrint {
+  /** ISO-8601 timestamp of the print (or aggregated bucket's latest_time). */
+  ts: string;
+  /** Index-equivalent price (SPX-approx for SPX selector). */
+  price: number;
+  /** Premium in dollars (per-print for daemon source, summed for legacy). */
+  premium: number;
+}
+
+/**
+ * Recent dark-pool activity for the analyze anomaly context. Returns up
+ * to `limit` rows from the time window [fromIso, toIso] sorted by
+ * timestamp DESC.
+ *
+ * In the prints path each row is one off-lit print (per-trade fidelity).
+ * In the legacy fallback each row is one aggregated level (per-strike
+ * row). The shape is the same `{ts, price, premium}` so the consumer
+ * can treat the two interchangeably.
+ */
+export async function getRecentDarkPoolPrints(opts: {
+  date: string;
+  symbol: DarkPoolSymbol;
+  fromIso: string;
+  toIso: string;
+  limit?: number;
+}): Promise<RecentDarkPoolPrint[]> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(opts.date)) {
+    throw new Error(`Invalid date for getRecentDarkPoolPrints: ${opts.date}`);
+  }
+  const sql = getDb();
+  const config = SELECTOR_CONFIGS[opts.symbol];
+  const limit = opts.limit ?? 20;
+
+  // Soak-window default for SPX → legacy table
+  if (config.legacyFallback && !shouldPreferDaemon()) {
+    const rows = (await sql`
+      SELECT latest_time, spx_approx, total_premium
+      FROM dark_pool_levels
+      WHERE date = ${opts.date}
+        AND latest_time >= ${opts.fromIso}
+        AND latest_time <= ${opts.toIso}
+      ORDER BY latest_time DESC
+      LIMIT ${limit}
+    `) as Array<{
+      latest_time: RequiredTimestampish;
+      spx_approx: RawNumeric;
+      total_premium: RawNumeric;
+    }>;
+    return rows.map((r) => ({
+      ts: isoOrStringNonNull(r.latest_time),
+      price: Number(r.spx_approx),
+      premium: Number(r.total_premium),
+    }));
+  }
+
+  // Prints path. SPX/NDX use the candle ratio for index-equivalent
+  // price; SPY/QQQ use native price. Per-print fidelity preserved.
+  const { etfTicker, indexSymbol } = config;
+  if (indexSymbol !== null) {
+    const rows = (await sql`
+      SELECT
+        p.executed_at,
+        ROUND(p.price * (i.close / e.close))::int AS price,
+        p.premium
+      FROM dark_pool_prints p
+      JOIN etf_candles_1m e
+        ON e.ticker = ${etfTicker}
+        AND e.timestamp = date_trunc('minute', p.executed_at)
+      JOIN index_candles_1m i
+        ON i.symbol = ${indexSymbol}
+        AND i.timestamp = date_trunc('minute', p.executed_at)
+      WHERE p.symbol = ${etfTicker}
+        AND p.date = ${opts.date}
+        AND p.executed_at >= ${opts.fromIso}
+        AND p.executed_at <= ${opts.toIso}
+        AND e.close > 0
+        AND i.close > 0
+      ORDER BY p.executed_at DESC
+      LIMIT ${limit}
+    `) as Array<{
+      executed_at: RequiredTimestampish;
+      price: RawNumeric;
+      premium: RawNumeric;
+    }>;
+    return rows.map((r) => ({
+      ts: isoOrStringNonNull(r.executed_at),
+      price: Number(r.price),
+      premium: Number(r.premium),
+    }));
+  }
+  const rows = (await sql`
+    SELECT p.executed_at, ROUND(p.price)::int AS price, p.premium
+    FROM dark_pool_prints p
+    WHERE p.symbol = ${etfTicker}
+      AND p.date = ${opts.date}
+      AND p.executed_at >= ${opts.fromIso}
+      AND p.executed_at <= ${opts.toIso}
+    ORDER BY p.executed_at DESC
+    LIMIT ${limit}
+  `) as Array<{
+    executed_at: RequiredTimestampish;
+    price: RawNumeric;
+    premium: RawNumeric;
+  }>;
+  return rows.map((r) => ({
+    ts: isoOrStringNonNull(r.executed_at),
+    price: Number(r.price),
+    premium: Number(r.premium),
+  }));
+}
+
+export interface DarkPoolBucket {
+  /** Bucket index from 0 (most recent) to N (older), per `bucketMs`. */
+  bucketIndex: number;
+  /** Distinct strike count in this bucket. */
+  strikeCount: number;
+}
+
+/**
+ * Time-bucketed distinct strike counts over a [fromIso, nowIso] window.
+ * Used by uw-deltas to compute dark-pool print velocity (current bucket
+ * vs lookback baseline).
+ *
+ * Bucket index 0 = the window starting at nowIso and looking back
+ * bucketMs; bucket 1 = the bucket before that; etc.
+ *
+ * Always queries a single source — soak-window flag respected as
+ * elsewhere. The "strike" definition differs by source: prints use
+ * the index-mapped or native price level; legacy uses spx_approx.
+ * For SPX selector during the soak window, this is identical to the
+ * pre-migration behavior.
+ */
+export async function getDarkPoolStrikeCountBuckets(opts: {
+  symbol: DarkPoolSymbol;
+  fromIso: string;
+  nowIso: string;
+  bucketMs: number;
+}): Promise<DarkPoolBucket[]> {
+  const sql = getDb();
+  const config = SELECTOR_CONFIGS[opts.symbol];
+
+  if (config.legacyFallback && !shouldPreferDaemon()) {
+    const rows = (await sql`
+      SELECT
+        FLOOR(EXTRACT(EPOCH FROM (${opts.nowIso}::timestamptz - latest_time)) * 1000 / ${opts.bucketMs})::int AS bucket_index,
+        COUNT(DISTINCT spx_approx) AS strike_count
+      FROM dark_pool_levels
+      WHERE latest_time > ${opts.fromIso}
+        AND latest_time <= ${opts.nowIso}
+      GROUP BY 1
+    `) as Array<{ bucket_index: RawNumeric; strike_count: RawNumeric }>;
+    return rows.map((r) => ({
+      bucketIndex: Number(r.bucket_index),
+      strikeCount: Number(r.strike_count),
+    }));
+  }
+
+  // Prints path. Bucket distinct prints by their index-mapped or native
+  // level. The COUNT(DISTINCT level) here is over the bucket; if the
+  // ratio JOIN drops a print (zero candle close), it's excluded — same
+  // semantics as getDarkPoolLevels's defensive WHERE.
+  const { etfTicker, indexSymbol } = config;
+  if (indexSymbol !== null) {
+    const rows = (await sql`
+      WITH agg AS (
+        SELECT
+          FLOOR(EXTRACT(EPOCH FROM (${opts.nowIso}::timestamptz - p.executed_at)) * 1000 / ${opts.bucketMs})::int AS bucket_index,
+          ROUND(p.price * (i.close / e.close))::int AS level
+        FROM dark_pool_prints p
+        JOIN etf_candles_1m e
+          ON e.ticker = ${etfTicker}
+          AND e.timestamp = date_trunc('minute', p.executed_at)
+        JOIN index_candles_1m i
+          ON i.symbol = ${indexSymbol}
+          AND i.timestamp = date_trunc('minute', p.executed_at)
+        WHERE p.symbol = ${etfTicker}
+          AND p.executed_at > ${opts.fromIso}
+          AND p.executed_at <= ${opts.nowIso}
+          AND e.close > 0
+          AND i.close > 0
+      )
+      SELECT bucket_index, COUNT(DISTINCT level) AS strike_count
+      FROM agg
+      GROUP BY 1
+    `) as Array<{ bucket_index: RawNumeric; strike_count: RawNumeric }>;
+    return rows.map((r) => ({
+      bucketIndex: Number(r.bucket_index),
+      strikeCount: Number(r.strike_count),
+    }));
+  }
+  const rows = (await sql`
+    WITH agg AS (
+      SELECT
+        FLOOR(EXTRACT(EPOCH FROM (${opts.nowIso}::timestamptz - p.executed_at)) * 1000 / ${opts.bucketMs})::int AS bucket_index,
+        ROUND(p.price)::int AS level
+      FROM dark_pool_prints p
+      WHERE p.symbol = ${etfTicker}
+        AND p.executed_at > ${opts.fromIso}
+        AND p.executed_at <= ${opts.nowIso}
+    )
+    SELECT bucket_index, COUNT(DISTINCT level) AS strike_count
+    FROM agg
+    GROUP BY 1
+  `) as Array<{ bucket_index: RawNumeric; strike_count: RawNumeric }>;
+  return rows.map((r) => ({
+    bucketIndex: Number(r.bucket_index),
+    strikeCount: Number(r.strike_count),
+  }));
+}
