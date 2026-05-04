@@ -45,6 +45,7 @@ import { ClassificationLegend } from './ClassificationLegend';
 import { ScrubControls } from '../ScrubControls';
 import { StrikeTable } from './StrikeTable';
 import { computeBias } from './bias';
+import { computeGammaPressure, type GammaPressure } from './classify';
 import { PRICE_WINDOW } from './constants';
 import {
   computeDeltaMap,
@@ -244,6 +245,26 @@ const GexLandscape = memo(function GexLandscape({
     }
     return maxAbs > 0 ? maxStrike : null;
   }, [gexDeltaMap, rows]);
+
+  // Per-strike gamma-pressure map (reinforcing / unwinding / neutral).
+  // Built from the full `strikes` list (not just the `rows` window) so the
+  // Top 5 tab — which surfaces walls outside ±PRICE_WINDOW — also lights up.
+  const gammaPressureMap = useMemo<Map<number, GammaPressure>>(() => {
+    const m = new Map<number, GammaPressure>();
+    for (const s of strikes) {
+      m.set(
+        s.strike,
+        computeGammaPressure({
+          callGammaAskVol: s.callGammaAsk,
+          callGammaBidVol: s.callGammaBid,
+          putGammaAskVol: s.putGammaAsk,
+          putGammaBidVol: s.putGammaBid,
+          dollarGammaOi: Math.abs(s.callGammaOi + s.putGammaOi),
+        }),
+      );
+    }
+    return m;
+  }, [strikes]);
 
   // Strike with the largest absolute 5m GEX Δ% (excludes ATM row).
   const maxChanged5mStrike = useMemo(() => {
@@ -520,6 +541,7 @@ const GexLandscape = memo(function GexLandscape({
             gexDelta10mMap={gexDelta10mMap}
             gexDelta15mMap={gexDelta15mMap}
             gexDelta30mMap={gexDelta30mMap}
+            gammaPressureMap={gammaPressureMap}
             spotRowRef={spotRowRef}
           />
         )}
@@ -542,6 +564,7 @@ const GexLandscape = memo(function GexLandscape({
             gexDelta10mMap={gexDelta10mMap}
             gexDelta15mMap={gexDelta15mMap}
             gexDelta30mMap={gexDelta30mMap}
+            gammaPressureMap={gammaPressureMap}
             spotRowRef={spotRowRef}
             showAtmDistance
             justEntered={justEntered}
