@@ -9,13 +9,13 @@ interface LotteryRowProps {
 }
 
 /**
- * UW per-contract flow page. The OCC symbol is the canonical key —
- * UW's historical_chains route renders the same flow + Greek + tape
- * timeline that drives the v4 detector, so the user lands on the
- * exact context for the fire.
+ * UW Contract Lookup deep link. /historical_chains/<OCC> 404s; the
+ * Contract Lookup page (`/flow/option_chains`) accepts a `?contract=`
+ * query param that pre-loads the OCC symbol into the same view a
+ * manual Contract Lookup search would surface.
  */
 const uwContractUrl = (occSymbol: string): string =>
-  `https://unusualwhales.com/historical_chains/${encodeURIComponent(occSymbol)}`;
+  `https://unusualwhales.com/flow/option_chains?contract=${encodeURIComponent(occSymbol)}`;
 
 const formatTimeCT = (iso: string): string => {
   const d = new Date(iso);
