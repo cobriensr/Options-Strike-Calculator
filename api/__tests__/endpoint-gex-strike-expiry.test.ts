@@ -45,9 +45,9 @@ import handler from '../gex-strike-expiry.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
 
-function fakeRow(strike: number, ts: string) {
+function fakeRow(strike: number, ts: string, ticker = 'SPY') {
   return {
-    ticker: 'SPY',
+    ticker,
     expiry: '2026-05-01',
     strike: String(strike),
     ts_minute: ts,
@@ -84,6 +84,54 @@ function fakeRow(strike: number, ts: string) {
     gamma_delta_10m: '0.075',
     gamma_delta_15m: '0.12',
     gamma_delta_30m: '0.22',
+  };
+}
+
+/**
+ * Row shape returned by the REST fallback (legacy `gex_strike_0dte`).
+ * Same wire contract as the WS path because the SQL UNION projects the
+ * legacy table's `call_gamma_ask` etc. to the WS column names. Charm
+ * and vanna bid-ask vol fields don't exist in the legacy schema and
+ * project as `NULL` from the UNION, so they're nullable here.
+ */
+function fakeRestRow(strike: number, ts: string) {
+  return {
+    ticker: 'SPX',
+    expiry: '2026-05-01',
+    strike: String(strike),
+    ts_minute: ts,
+    price: '5650.42',
+    call_gamma_oi: '125000.00',
+    put_gamma_oi: '-980000.00',
+    call_charm_oi: '50000000.00',
+    put_charm_oi: '-200000000.00',
+    call_vanna_oi: '-4000.00',
+    put_vanna_oi: '900000.00',
+    call_gamma_vol: '10000.00',
+    put_gamma_vol: '-150.00',
+    call_charm_vol: '-200000.00',
+    put_charm_vol: '-50000.00',
+    call_vanna_vol: '1500.00',
+    put_vanna_vol: '600.00',
+    // Legacy table renames: call_gamma_ask -> call_gamma_ask_vol etc.
+    call_gamma_ask_vol: '-3000.00',
+    call_gamma_bid_vol: '8000.00',
+    put_gamma_ask_vol: '-100.00',
+    put_gamma_bid_vol: '60.00',
+    // Charm/vanna bid-ask vol absent in legacy table → NULL projection.
+    call_charm_ask_vol: null,
+    call_charm_bid_vol: null,
+    put_charm_ask_vol: null,
+    put_charm_bid_vol: null,
+    call_vanna_ask_vol: null,
+    call_vanna_bid_vol: null,
+    put_vanna_ask_vol: null,
+    put_vanna_bid_vol: null,
+    gamma_delta_1m: '0.01',
+    gamma_delta_5m: '0.03',
+    gamma_delta_10m: '0.05',
+    gamma_delta_15m: '0.08',
+    gamma_delta_30m: '0.15',
   };
 }
 
@@ -282,6 +330,141 @@ describe('GET /api/gex-strike-expiry', () => {
       expiry: '2026-05-01',
       at: '2026-05-01T19:30:00Z',
       timestamps: ['2026-05-01T19:30:00.000Z'],
+    });
+  });
+
+  // ── Historical fallback (UNION ws + legacy gex_strike_0dte) ────
+
+  it('returns mapped rows for SPX historical date when WS empty / REST populated', async () => {
+    // Simulates the post-UNION resolved state: SPX requested, WS table
+    // had zero rows for the (ticker, expiry) window, so the rest_series
+    // CTE supplied rows from gex_strike_0dte. The endpoint sees the
+    // same shape either way — that's the whole point of branching in
+    // SQL instead of in the handler.
+    mockSql
+      .mockResolvedValueOnce([
+        fakeRestRow(5650, '2026-04-15T19:30:00Z'),
+        fakeRestRow(5655, '2026-04-15T19:30:00Z'),
+      ])
+      .mockResolvedValueOnce([
+        { ts_minute: '2026-04-15T19:29:00Z' },
+        { ts_minute: '2026-04-15T19:30:00Z' },
+      ]);
+    const req = mockRequest({
+      method: 'GET',
+      query: { ticker: 'SPX', expiry: '2026-05-01' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      ticker: string;
+      rows: Array<Record<string, unknown>>;
+      timestamps: string[];
+    };
+    expect(body.ticker).toBe('SPX');
+    expect(body.rows).toHaveLength(2);
+    expect(body.rows[0]).toMatchObject({
+      ticker: 'SPX',
+      strike: 5650,
+      price: 5650.42,
+      // Gamma fields populated from legacy table.
+      call_gamma_oi: 125000,
+      put_gamma_oi: -980000,
+      call_gamma_ask_vol: -3000,
+      call_gamma_bid_vol: 8000,
+      // Charm/vanna bid-ask vol absent in legacy schema → null.
+      call_charm_ask_vol: null,
+      call_charm_bid_vol: null,
+      put_charm_ask_vol: null,
+      put_charm_bid_vol: null,
+      call_vanna_ask_vol: null,
+      call_vanna_bid_vol: null,
+      put_vanna_ask_vol: null,
+      put_vanna_bid_vol: null,
+      // Δ% computed by LAG over the combined CTE — same wire contract
+      // as the WS path. Ratios from the mock get scaled to percent.
+      gamma_delta_1m: 1,
+      gamma_delta_5m: 3,
+      gamma_delta_30m: 15,
+    });
+    expect(body.timestamps).toEqual([
+      '2026-04-15T19:29:00.000Z',
+      '2026-04-15T19:30:00.000Z',
+    ]);
+  });
+
+  it('returns SPX rows from WS when WS populated (REST CTE gated off)', async () => {
+    // SPX with live WS data. The ws_count gate inside the SQL prevents
+    // the rest_series CTE from contributing — the handler can't
+    // distinguish; it just sees rows. We assert the response shape is
+    // identical to the standard WS happy path for an SPX ticker.
+    mockSql
+      .mockResolvedValueOnce([fakeRow(5650, '2026-05-03T19:30:00Z', 'SPX')])
+      .mockResolvedValueOnce([{ ts_minute: '2026-05-03T19:30:00Z' }]);
+    const req = mockRequest({
+      method: 'GET',
+      query: { ticker: 'SPX', expiry: '2026-05-03' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      ticker: string;
+      rows: Array<Record<string, unknown>>;
+    };
+    expect(body.ticker).toBe('SPX');
+    expect(body.rows).toHaveLength(1);
+    // Charm/vanna bid-ask vol fields are real numbers (WS path) — not
+    // the NULL projection from the REST fallback. Confirms the WS row
+    // came through untouched.
+    expect(body.rows[0]).toMatchObject({
+      ticker: 'SPX',
+      call_charm_ask_vol: 85184.72,
+      call_vanna_bid_vol: 1525.46,
+    });
+  });
+
+  it('returns empty rows for SPY with no WS data (REST CTE gated by ticker)', async () => {
+    // SPY can never reach gex_strike_0dte (legacy table is SPX-only,
+    // gated by `${ticker} = 'SPX'`). Empty WS for SPY → empty result.
+    mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    const req = mockRequest({
+      method: 'GET',
+      query: { ticker: 'SPY', expiry: '2026-04-15' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      ticker: 'SPY',
+      expiry: '2026-04-15',
+      rows: [],
+      timestamps: [],
+    });
+  });
+
+  it('returns empty rows for NDX historical date (no fallback — REST is SPX-only)', async () => {
+    // NDX subscriptions also landed late, but the legacy table has no
+    // NDX history. Same SQL gate (`ticker = 'SPX'`) keeps the REST CTE
+    // off; result is empty.
+    mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    const req = mockRequest({
+      method: 'GET',
+      query: { ticker: 'NDX', expiry: '2026-04-15' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      ticker: 'NDX',
+      expiry: '2026-04-15',
+      rows: [],
+      timestamps: [],
     });
   });
 

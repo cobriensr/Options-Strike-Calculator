@@ -231,8 +231,24 @@ export async function getLatestGexPerStrikeWithDeltas(
   //
   // `net_gamma::numeric` cast on the LAG ratio keeps division in the
   // numeric domain (Postgres integer division otherwise truncates).
+  //
+  // Historical fallback: SPX/NDX subscriptions only landed on the WS
+  // daemon recently, so for any pre-cutover trading day the WS table
+  // is empty. The legacy `gex_strike_0dte` cron has been populating
+  // SPX 0DTE history all along, so we UNION ALL it under a gate:
+  //   - `ws_count.n = 0`  → only fall through when WS has no rows
+  //     for this (ticker, expiry, window). Prevents double-counting
+  //     once the WS daemon catches up to the same minute.
+  //   - `ticker = 'SPX'`  → the legacy table is SPX-only (no ticker
+  //     column). Forcing this in the WHERE keeps SPY/QQQ/NDX queries
+  //     from accidentally pulling SPX rows.
+  // Column rename: legacy `call_gamma_ask` ↔ WS `call_gamma_ask_vol`
+  // (same semantic — directional volume gamma — different column
+  // name across schemas). Charm/vanna bid-ask vol fields don't exist
+  // in the legacy table; we project them as `NULL::numeric` so the
+  // UNION shape matches.
   const rows = (await sql`
-    WITH series AS (
+    WITH ws_series AS (
       SELECT
         ticker, expiry, strike, ts_minute, price,
         call_gamma_oi, put_gamma_oi,
@@ -253,6 +269,45 @@ export async function getLatestGexPerStrikeWithDeltas(
         AND expiry = ${expiry}::date
         AND ts_minute >= COALESCE(${atParam}::timestamptz, NOW()) - INTERVAL '35 minutes'
         AND ts_minute <= COALESCE(${atParam}::timestamptz, NOW())
+    ),
+    ws_count AS (
+      SELECT COUNT(*) AS n FROM ws_series
+    ),
+    rest_series AS (
+      SELECT
+        'SPX'::text AS ticker,
+        date AS expiry,
+        strike, timestamp AS ts_minute, price,
+        call_gamma_oi, put_gamma_oi,
+        call_charm_oi, put_charm_oi,
+        call_vanna_oi, put_vanna_oi,
+        call_gamma_vol, put_gamma_vol,
+        call_charm_vol, put_charm_vol,
+        call_vanna_vol, put_vanna_vol,
+        call_gamma_ask AS call_gamma_ask_vol,
+        call_gamma_bid AS call_gamma_bid_vol,
+        put_gamma_ask  AS put_gamma_ask_vol,
+        put_gamma_bid  AS put_gamma_bid_vol,
+        NULL::numeric AS call_charm_ask_vol,
+        NULL::numeric AS call_charm_bid_vol,
+        NULL::numeric AS put_charm_ask_vol,
+        NULL::numeric AS put_charm_bid_vol,
+        NULL::numeric AS call_vanna_ask_vol,
+        NULL::numeric AS call_vanna_bid_vol,
+        NULL::numeric AS put_vanna_ask_vol,
+        NULL::numeric AS put_vanna_bid_vol,
+        (COALESCE(call_gamma_oi, 0) + COALESCE(put_gamma_oi, 0)) AS net_gamma
+      FROM gex_strike_0dte
+      WHERE ${ticker} = 'SPX'
+        AND (SELECT n FROM ws_count) = 0
+        AND date = ${expiry}::date
+        AND timestamp >= COALESCE(${atParam}::timestamptz, NOW()) - INTERVAL '35 minutes'
+        AND timestamp <= COALESCE(${atParam}::timestamptz, NOW())
+    ),
+    combined AS (
+      SELECT * FROM ws_series
+      UNION ALL
+      SELECT * FROM rest_series
     ),
     deltas AS (
       SELECT
@@ -275,7 +330,7 @@ export async function getLatestGexPerStrikeWithDeltas(
         (net_gamma::numeric / NULLIF(ABS(LAG(net_gamma, 10) OVER w), 0) - 1) AS gamma_delta_10m,
         (net_gamma::numeric / NULLIF(ABS(LAG(net_gamma, 15) OVER w), 0) - 1) AS gamma_delta_15m,
         (net_gamma::numeric / NULLIF(ABS(LAG(net_gamma, 30) OVER w), 0) - 1) AS gamma_delta_30m
-      FROM series
+      FROM combined
       WINDOW w AS (PARTITION BY ticker, expiry, strike ORDER BY ts_minute)
     )
     SELECT DISTINCT ON (strike)
@@ -304,6 +359,12 @@ export async function getLatestGexPerStrikeWithDeltas(
  * Distinct ts_minute values for (ticker, expiry), ascending. Used by the
  * /api/gex-strike-expiry endpoint to power the scrub control's prev/next
  * navigation — same role timestamps[] plays for /api/gex-per-strike.
+ *
+ * Mirrors the historical fallback in `getLatestGexPerStrikeWithDeltas`:
+ * when WS has no rows for SPX on the requested expiry, fall through to
+ * `gex_strike_0dte` (legacy SPX-only 0DTE table) so the scrubber works
+ * on pre-cutover dates. The ws_count gate prevents double-listing once
+ * the WS daemon has caught up.
  */
 export async function getTimestampsForDay(
   ticker: GexStrikeExpiryTicker,
@@ -311,10 +372,25 @@ export async function getTimestampsForDay(
 ): Promise<string[]> {
   const sql = getDb();
   const rows = (await sql`
-    SELECT DISTINCT ts_minute
-    FROM ws_gex_strike_expiry
-    WHERE ticker = ${ticker}
-      AND expiry = ${expiry}::date
+    WITH ws_ts AS (
+      SELECT DISTINCT ts_minute
+      FROM ws_gex_strike_expiry
+      WHERE ticker = ${ticker}
+        AND expiry = ${expiry}::date
+    ),
+    ws_count AS (
+      SELECT COUNT(*) AS n FROM ws_ts
+    ),
+    rest_ts AS (
+      SELECT DISTINCT timestamp AS ts_minute
+      FROM gex_strike_0dte
+      WHERE ${ticker} = 'SPX'
+        AND (SELECT n FROM ws_count) = 0
+        AND date = ${expiry}::date
+    )
+    SELECT ts_minute FROM ws_ts
+    UNION
+    SELECT ts_minute FROM rest_ts
     ORDER BY ts_minute ASC
   `) as Array<{ ts_minute: string | Date }>;
   return rows.map((r) => toIso(r.ts_minute));
