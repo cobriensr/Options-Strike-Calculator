@@ -1,8 +1,8 @@
 /**
  * Shared dark-pool query helper.
  *
- * Reads aggregated dark-pool levels from the new `dark_pool_prints`
- * table (raw per-print rows written by the uw-stream daemon's
+ * Reads aggregated dark-pool levels from the `dark_pool_prints` table
+ * (raw per-print rows written by the uw-stream daemon's
  * off_lit_trades handler) and synthesizes index-equivalent views for
  * SPX and NDX selectors via the contemporaneous candle ratio in
  * `index_candles_1m`.
@@ -13,15 +13,10 @@
  *   SPY  → SPY prints, native price level (no ratio)
  *   QQQ  → QQQ prints, native price level (no ratio)
  *
- * Transition fallback (SPX only): the legacy `dark_pool_levels` table
- * (cron-fed, SPY-only, static SPX×10 mapping) is the data source for
- * any date where `dark_pool_prints` has no rows yet. This preserves
- * historical reads while the daemon backfills. The fallback path is
- * removed in Phase 7 (final cutover) when the legacy table is dropped.
- *
- * NDX/SPY/QQQ selectors do NOT fall back — those views did not exist
- * pre-migration, so an empty result for an unbackfilled date is the
- * honest answer.
+ * Phase 7 cutover (commit d1a14162 + this file's simplification): the
+ * legacy `dark_pool_levels` table and its fetch-darkpool cron are
+ * gone; this helper is daemon-only. The previous USE_DAEMON_DARK_POOL
+ * env-flag soak gate has been removed entirely.
  */
 
 import type { NeonQueryFunction } from '@neondatabase/serverless';
@@ -48,8 +43,6 @@ export interface DarkPoolLevelsResult {
   levels: DarkPoolLevel[];
   /** Most recent ingest write timestamp across all levels for this date. */
   lastUpdated: string | null;
-  /** True when the result came from the legacy `dark_pool_levels` table. */
-  legacyFallback: boolean;
 }
 
 interface SelectorConfig {
@@ -58,16 +51,13 @@ interface SelectorConfig {
   /** The index symbol to look up in index_candles_1m for the ratio.
    *  null = native ETF view (no ratio scaling). */
   indexSymbol: 'SPX' | 'NDX' | null;
-  /** True if the legacy dark_pool_levels table can serve as a fallback.
-   *  Only SPX qualifies — the legacy table is SPY+SPX-only. */
-  legacyFallback: boolean;
 }
 
 const SELECTOR_CONFIGS: Record<DarkPoolSymbol, SelectorConfig> = {
-  SPX: { etfTicker: 'SPY', indexSymbol: 'SPX', legacyFallback: true },
-  NDX: { etfTicker: 'QQQ', indexSymbol: 'NDX', legacyFallback: false },
-  SPY: { etfTicker: 'SPY', indexSymbol: null, legacyFallback: false },
-  QQQ: { etfTicker: 'QQQ', indexSymbol: null, legacyFallback: false },
+  SPX: { etfTicker: 'SPY', indexSymbol: 'SPX' },
+  NDX: { etfTicker: 'QQQ', indexSymbol: 'NDX' },
+  SPY: { etfTicker: 'SPY', indexSymbol: null },
+  QQQ: { etfTicker: 'QQQ', indexSymbol: null },
 };
 
 type RawNumeric = string | number;
@@ -76,16 +66,6 @@ type RequiredTimestampish = string | Date;
 
 interface PrintsRow {
   level: RawNumeric;
-  total_premium: RawNumeric;
-  trade_count: RawNumeric;
-  total_shares: RawNumeric;
-  latest_time: RequiredTimestampish;
-  updated_at: Timestampish;
-  max_updated_at: Timestampish;
-}
-
-interface LegacyRow {
-  spx_approx: RawNumeric;
   total_premium: RawNumeric;
   trade_count: RawNumeric;
   total_shares: RawNumeric;
@@ -105,20 +85,6 @@ function isoOrStringNonNull(v: RequiredTimestampish): string {
 }
 
 /**
- * Soak-window fallback control. Until USE_DAEMON_DARK_POOL is set to
- * 'true' in the environment, SPX selectors ALWAYS read from the legacy
- * dark_pool_levels table — even when dark_pool_prints has rows. This
- * prevents the "one daemon print bypasses the entire cron-fed dataset"
- * footgun during the soak window when the daemon is still warming up.
- *
- * NDX/SPY/QQQ selectors ignore this flag — they have no legacy source
- * to fall back to and always read from dark_pool_prints.
- */
-function shouldPreferDaemon(): boolean {
-  return process.env.USE_DAEMON_DARK_POOL === 'true';
-}
-
-/**
  * Fetch dark-pool aggregated levels for a date, optionally filtered to
  * "as of" a wall-clock CT time (only include prints executed at or
  * before that time on the requested date).
@@ -134,67 +100,23 @@ export async function getDarkPoolLevels(opts: {
   symbol: DarkPoolSymbol;
   asOfTimeCT?: string; // 'HH:MM' — optional time filter
 }): Promise<DarkPoolLevelsResult> {
-  // Defense-in-depth: validate date even though every current caller
-  // already does. Future callers (ML pipeline helpers in Phase 4c) may
-  // not — and a malformed date would otherwise reach the SQL layer.
   if (!/^\d{4}-\d{2}-\d{2}$/.test(opts.date)) {
     throw new Error(`Invalid date for getDarkPoolLevels: ${opts.date}`);
   }
 
   const sql = getDb();
   const config = SELECTOR_CONFIGS[opts.symbol];
-
-  // Soak-window guard: SPX prefers legacy until daemon coverage is
-  // verified and USE_DAEMON_DARK_POOL=true is set. Multi-symbol
-  // selectors (NDX/SPY/QQQ) always go to prints — they have no legacy
-  // source to fall back to.
-  if (config.legacyFallback && !shouldPreferDaemon()) {
-    const legacyRows = await queryLegacy(sql, {
-      date: opts.date,
-      asOfTimeCT: opts.asOfTimeCT,
-    });
-    return {
-      levels: legacyRows.map(transformLegacyRow),
-      lastUpdated:
-        legacyRows.length > 0
-          ? isoOrString(legacyRows[0]!.max_updated_at)
-          : null,
-      legacyFallback: true,
-    };
-  }
-
   const printsRows = await queryPrints(sql, {
     date: opts.date,
     config,
     asOfTimeCT: opts.asOfTimeCT,
   });
 
-  if (printsRows.length > 0) {
-    return {
-      levels: printsRows.map(transformPrintsRow),
-      lastUpdated: isoOrString(printsRows[0]!.max_updated_at),
-      legacyFallback: false,
-    };
-  }
-
-  // Empty prints: with the daemon flag on, SPX still falls back to the
-  // legacy table for dates the daemon hasn't backfilled. NDX/SPY/QQQ
-  // honestly return empty — those views did not exist pre-migration.
-  if (config.legacyFallback) {
-    const legacyRows = await queryLegacy(sql, {
-      date: opts.date,
-      asOfTimeCT: opts.asOfTimeCT,
-    });
-    if (legacyRows.length > 0) {
-      return {
-        levels: legacyRows.map(transformLegacyRow),
-        lastUpdated: isoOrString(legacyRows[0]!.max_updated_at),
-        legacyFallback: true,
-      };
-    }
-  }
-
-  return { levels: [], lastUpdated: null, legacyFallback: false };
+  return {
+    levels: printsRows.map(transformPrintsRow),
+    lastUpdated:
+      printsRows.length > 0 ? isoOrString(printsRows[0]!.max_updated_at) : null,
+  };
 }
 
 async function queryPrints(
@@ -232,6 +154,7 @@ async function queryPrints(
             AND p.date = ${date}
             AND p.executed_at <= (${`${date} ${asOfTimeCT}:00`}::timestamp AT TIME ZONE 'America/Chicago')
             AND e.close > 0
+            AND i.close > 0
           GROUP BY 1
         )
         SELECT level, total_premium, trade_count, total_shares,
@@ -317,31 +240,6 @@ async function queryPrints(
   `) as PrintsRow[];
 }
 
-async function queryLegacy(
-  sql: NeonQueryFunction<false, false>,
-  opts: { date: string; asOfTimeCT?: string },
-): Promise<LegacyRow[]> {
-  if (opts.asOfTimeCT && /^\d{2}:\d{2}$/.test(opts.asOfTimeCT)) {
-    return (await sql`
-      SELECT spx_approx, total_premium, trade_count, total_shares,
-             latest_time, updated_at,
-             MAX(updated_at) OVER () AS max_updated_at
-      FROM dark_pool_levels
-      WHERE date = ${opts.date}
-        AND latest_time <= (${`${opts.date} ${opts.asOfTimeCT}:00`}::timestamp AT TIME ZONE 'America/Chicago')
-      ORDER BY total_premium DESC
-    `) as LegacyRow[];
-  }
-  return (await sql`
-    SELECT spx_approx, total_premium, trade_count, total_shares,
-           latest_time, updated_at,
-           MAX(updated_at) OVER () AS max_updated_at
-    FROM dark_pool_levels
-    WHERE date = ${opts.date}
-    ORDER BY total_premium DESC
-  `) as LegacyRow[];
-}
-
 function transformPrintsRow(r: PrintsRow): DarkPoolLevel {
   return {
     level: Number(r.level),
@@ -353,67 +251,40 @@ function transformPrintsRow(r: PrintsRow): DarkPoolLevel {
   };
 }
 
-function transformLegacyRow(r: LegacyRow): DarkPoolLevel {
-  return {
-    level: Number(r.spx_approx),
-    totalPremium: Number(r.total_premium),
-    tradeCount: Number(r.trade_count),
-    totalShares: Number(r.total_shares),
-    latestTime: isoOrStringNonNull(r.latest_time),
-    updatedAt: isoOrString(r.updated_at),
-  };
-}
-
 // ──────────────────────────────────────────────────────────────────
-// Additional consumer-specific helpers (Phase 4c)
+// Additional consumer-specific helpers
 // ──────────────────────────────────────────────────────────────────
 
 /**
- * Most recent ingest timestamp for the dark-pool data source the read
- * endpoint is currently serving from. Used by the system-status freshness
- * check. Subject to the same USE_DAEMON_DARK_POOL gate as
- * getDarkPoolLevels — flag unset means we report legacy freshness;
- * flag set means we report daemon freshness. Reporting the wrong
- * source's freshness during the transition would falsely alert that
- * the cron is stale (when the daemon is actually serving fresh data)
- * or vice versa.
+ * Most recent ingest timestamp for the dark-pool data — used by the
+ * system-status freshness check. Daemon writes one row per print, so
+ * a healthy session produces sub-second freshness.
  */
 export async function getDarkPoolLastUpdated(): Promise<string | null> {
   const sql = getDb();
-  if (shouldPreferDaemon()) {
-    const rows = (await sql`
-      SELECT MAX(ingested_at) AS ts
-      FROM dark_pool_prints
-      WHERE symbol IN ('SPY', 'QQQ')
-    `) as Array<{ ts: Timestampish }>;
-    const ts = rows[0]?.ts;
-    return ts == null ? null : isoOrString(ts);
-  }
   const rows = (await sql`
-    SELECT MAX(updated_at) AS ts FROM dark_pool_levels
+    SELECT MAX(ingested_at) AS ts
+    FROM dark_pool_prints
+    WHERE symbol IN ('SPY', 'QQQ')
   `) as Array<{ ts: Timestampish }>;
   const ts = rows[0]?.ts;
   return ts == null ? null : isoOrString(ts);
 }
 
 export interface RecentDarkPoolPrint {
-  /** ISO-8601 timestamp of the print (or aggregated bucket's latest_time). */
+  /** ISO-8601 timestamp of the print. */
   ts: string;
   /** Index-equivalent price (SPX-approx for SPX selector). */
   price: number;
-  /** Premium in dollars (per-print for daemon source, summed for legacy). */
+  /** Premium in dollars (per-print). */
   premium: number;
 }
 
 /**
- * Recent dark-pool activity for the analyze anomaly context. Returns up
- * to `limit` rows from the time window [fromIso, toIso] sorted by
- * timestamp DESC.
- *
- * In the prints path each row is one off-lit print (per-trade fidelity).
- * In the legacy fallback each row is one aggregated level (per-strike
- * row). The shape is the same `{ts, price, premium}` so the consumer
- * can treat the two interchangeably.
+ * Recent dark-pool activity for the analyze anomaly context. Returns
+ * up to `limit` rows from the time window [fromIso, toIso] sorted by
+ * timestamp DESC. SPX/NDX selectors apply the candle ratio per row;
+ * SPY/QQQ use native price.
  */
 export async function getRecentDarkPoolPrints(opts: {
   date: string;
@@ -428,32 +299,8 @@ export async function getRecentDarkPoolPrints(opts: {
   const sql = getDb();
   const config = SELECTOR_CONFIGS[opts.symbol];
   const limit = opts.limit ?? 20;
-
-  // Soak-window default for SPX → legacy table
-  if (config.legacyFallback && !shouldPreferDaemon()) {
-    const rows = (await sql`
-      SELECT latest_time, spx_approx, total_premium
-      FROM dark_pool_levels
-      WHERE date = ${opts.date}
-        AND latest_time >= ${opts.fromIso}
-        AND latest_time <= ${opts.toIso}
-      ORDER BY latest_time DESC
-      LIMIT ${limit}
-    `) as Array<{
-      latest_time: RequiredTimestampish;
-      spx_approx: RawNumeric;
-      total_premium: RawNumeric;
-    }>;
-    return rows.map((r) => ({
-      ts: isoOrStringNonNull(r.latest_time),
-      price: Number(r.spx_approx),
-      premium: Number(r.total_premium),
-    }));
-  }
-
-  // Prints path. SPX/NDX use the candle ratio for index-equivalent
-  // price; SPY/QQQ use native price. Per-print fidelity preserved.
   const { etfTicker, indexSymbol } = config;
+
   if (indexSymbol !== null) {
     const rows = (await sql`
       SELECT
@@ -517,16 +364,10 @@ export interface DarkPoolBucket {
 /**
  * Time-bucketed distinct strike counts over a [fromIso, nowIso] window.
  * Used by uw-deltas to compute dark-pool print velocity (current bucket
- * vs lookback baseline).
- *
- * Bucket index 0 = the window starting at nowIso and looking back
- * bucketMs; bucket 1 = the bucket before that; etc.
- *
- * Always queries a single source — soak-window flag respected as
- * elsewhere. The "strike" definition differs by source: prints use
- * the index-mapped or native price level; legacy uses spx_approx.
- * For SPX selector during the soak window, this is identical to the
- * pre-migration behavior.
+ * vs lookback baseline). Bucket index 0 is the window starting at
+ * nowIso looking back bucketMs; bucket 1 is the bucket before that;
+ * etc. SPX/NDX use the index-mapped level via candle ratio; SPY/QQQ
+ * use native price level.
  */
 export async function getDarkPoolStrikeCountBuckets(opts: {
   symbol: DarkPoolSymbol;
@@ -536,28 +377,8 @@ export async function getDarkPoolStrikeCountBuckets(opts: {
 }): Promise<DarkPoolBucket[]> {
   const sql = getDb();
   const config = SELECTOR_CONFIGS[opts.symbol];
-
-  if (config.legacyFallback && !shouldPreferDaemon()) {
-    const rows = (await sql`
-      SELECT
-        FLOOR(EXTRACT(EPOCH FROM (${opts.nowIso}::timestamptz - latest_time)) * 1000 / ${opts.bucketMs})::int AS bucket_index,
-        COUNT(DISTINCT spx_approx) AS strike_count
-      FROM dark_pool_levels
-      WHERE latest_time > ${opts.fromIso}
-        AND latest_time <= ${opts.nowIso}
-      GROUP BY 1
-    `) as Array<{ bucket_index: RawNumeric; strike_count: RawNumeric }>;
-    return rows.map((r) => ({
-      bucketIndex: Number(r.bucket_index),
-      strikeCount: Number(r.strike_count),
-    }));
-  }
-
-  // Prints path. Bucket distinct prints by their index-mapped or native
-  // level. The COUNT(DISTINCT level) here is over the bucket; if the
-  // ratio JOIN drops a print (zero candle close), it's excluded — same
-  // semantics as getDarkPoolLevels's defensive WHERE.
   const { etfTicker, indexSymbol } = config;
+
   if (indexSymbol !== null) {
     const rows = (await sql`
       WITH agg AS (

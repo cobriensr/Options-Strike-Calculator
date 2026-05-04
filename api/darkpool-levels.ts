@@ -104,7 +104,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         symbol,
         meta: {
           lastUpdated: result.lastUpdated,
-          legacyFallback: result.legacyFallback,
         },
       });
     } catch (err) {
