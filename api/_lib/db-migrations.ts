@@ -3569,4 +3569,19 @@ export const MIGRATIONS: Migration[] = [
       'table). No remaining reader writes to or reads from it.',
     statements: (sql) => [sql`DROP TABLE IF EXISTS institutional_blocks`],
   },
+  {
+    id: 120,
+    description:
+      'Drop dark_pool_levels table — Phase 7 cutover of the dark-pool ' +
+      'cron-to-WS migration. The fetch-darkpool cron (deleted in commit ' +
+      'd1a14162) wrote to this table; the dark-pool-query helper has ' +
+      'been simplified to read exclusively from dark_pool_prints (the ' +
+      'uw-stream daemon target). All 4 production consumers ' +
+      '(darkpool-levels.ts, system-status.ts, build-features-phase2.ts, ' +
+      'uw-deltas.ts) now go through the helper. Historical data was ' +
+      'preserved via the backfill-dark-pool-prints.mjs script which ' +
+      'pulled SPY+QQQ off-lit prints from UW REST into dark_pool_prints. ' +
+      'See docs/superpowers/specs/uw-cron-to-websocket-migration-2026-05-02.md.',
+    statements: (sql) => [sql`DROP TABLE IF EXISTS dark_pool_levels`],
+  },
 ];
