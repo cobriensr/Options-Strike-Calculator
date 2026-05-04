@@ -61,15 +61,18 @@ function balancedChain() {
 }
 
 /**
- * Queue per-ticker mock responses. Each ticker contributes 3 SQL calls
- * (latest_ts SELECT, rows SELECT, INSERT) when a snapshot exists, or 1
- * (latest_ts SELECT) when the snapshot is empty.
+ * Queue per-ticker mock responses. Each ticker contributes 4 SQL calls
+ * (latest_ts SELECT, rows SELECT, prev net_gamma SELECT, INSERT) when a
+ * snapshot exists, or 1 (latest_ts SELECT) when the snapshot is empty.
+ * The prev-net-gamma SELECT was added by the dealer-regime sign-flip
+ * detection in compute-zero-gamma.ts (commit 5f8eee8b).
  */
 function queueAllTickersHappyPath() {
   for (let i = 0; i < TICKERS.length; i += 1) {
     mockSql
       .mockResolvedValueOnce([{ latest_ts: '2026-03-24T13:55:00.000Z' }])
       .mockResolvedValueOnce(balancedChain())
+      .mockResolvedValueOnce([]) // prev net_gamma SELECT (no prior row)
       .mockResolvedValueOnce([]); // INSERT
   }
 }
@@ -205,8 +208,8 @@ describe('compute-zero-gamma handler', () => {
       expect(entry!.spot).toBe(7105);
       expect(entry!.zeroGamma).not.toBeNull();
     }
-    // 4 tickers × 3 SQL calls = 12
-    expect(mockSql).toHaveBeenCalledTimes(12);
+    // 4 tickers × 4 SQL calls = 16
+    expect(mockSql).toHaveBeenCalledTimes(16);
   });
 
   it('uses April 3rd-Friday 2026-04-17 as NDX primary expiry on 2026-03-24', async () => {
@@ -285,11 +288,11 @@ describe('compute-zero-gamma handler', () => {
     await handler(authedReq(), res);
     expect(res._status).toBe(200);
 
-    // INSERT for each ticker is the 3rd SQL call within that ticker's
-    // 3-call group. Indices: SPX=2, NDX=5, SPY=8, QQQ=11.
+    // INSERT for each ticker is the 4th SQL call within that ticker's
+    // 4-call group. Indices: SPX=3, NDX=7, SPY=11, QQQ=15.
     type SqlCall = unknown[];
     const calls = mockSql.mock.calls as SqlCall[];
-    const insertIndices = [2, 5, 8, 11];
+    const insertIndices = [3, 7, 11, 15];
     insertIndices.forEach((idx, tickerIdx) => {
       const insertCall = calls[idx];
       expect(insertCall).toBeDefined();
@@ -311,13 +314,15 @@ describe('compute-zero-gamma handler', () => {
   // ── Per-ticker fault isolation ───────────────────────────
 
   it('isolates per-ticker DB failures — surviving tickers still complete', async () => {
-    // SPX: SELECT throws. NDX/SPY/QQQ: full happy path.
+    // SPX: SELECT throws. NDX/SPY/QQQ: full happy path (4 SQL calls each
+    // — latest_ts, rows, prev net_gamma, INSERT).
     mockSql.mockRejectedValueOnce(new Error('SPX latest_ts query failed'));
     for (let i = 0; i < TICKERS.length - 1; i += 1) {
       mockSql
         .mockResolvedValueOnce([{ latest_ts: '2026-03-24T13:55:00.000Z' }])
         .mockResolvedValueOnce(balancedChain())
-        .mockResolvedValueOnce([]);
+        .mockResolvedValueOnce([]) // prev net_gamma SELECT
+        .mockResolvedValueOnce([]); // INSERT
     }
 
     const res = mockResponse();

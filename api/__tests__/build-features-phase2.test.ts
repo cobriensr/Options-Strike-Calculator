@@ -890,7 +890,7 @@ describe('engineerPhase2Features', () => {
   describe('dark pool', () => {
     function makeDpRow(overrides = {}) {
       return {
-        spx_approx: 5800,
+        level: 5800,
         total_premium: '500000',
         trade_count: 50,
         total_shares: 100000,
@@ -906,8 +906,8 @@ describe('engineerPhase2Features', () => {
       mockSql.mockResolvedValueOnce([]); // eventRows
       mockSql.mockResolvedValueOnce([]); // nextEventRow
       mockSql.mockResolvedValueOnce([
-        makeDpRow({ spx_approx: 5800, total_premium: '500000' }),
-        makeDpRow({ spx_approx: 5810, total_premium: '300000' }),
+        makeDpRow({ level: 5800, total_premium: '500000' }),
+        makeDpRow({ level: 5810, total_premium: '300000' }),
       ]); // dpRows
 
       await engineerPhase2Features(mockSql as never, DATE_STR, features);
@@ -924,8 +924,8 @@ describe('engineerPhase2Features', () => {
       mockSql.mockResolvedValueOnce([]); // eventRows
       mockSql.mockResolvedValueOnce([]); // nextEventRow
       mockSql.mockResolvedValueOnce([
-        makeDpRow({ spx_approx: 5810, total_premium: '500000' }),
-        makeDpRow({ spx_approx: 5790, total_premium: '300000' }),
+        makeDpRow({ level: 5810, total_premium: '500000' }),
+        makeDpRow({ level: 5790, total_premium: '300000' }),
       ]); // dpRows
 
       await engineerPhase2Features(mockSql as never, DATE_STR, features);
@@ -942,9 +942,9 @@ describe('engineerPhase2Features', () => {
       mockSql.mockResolvedValueOnce([]); // eventRows
       mockSql.mockResolvedValueOnce([]); // nextEventRow
       mockSql.mockResolvedValueOnce([
-        makeDpRow({ spx_approx: 5810, total_premium: '500000' }), // above
-        makeDpRow({ spx_approx: 5800, total_premium: '300000' }), // below
-        makeDpRow({ spx_approx: 5790, total_premium: '200000' }), // below
+        makeDpRow({ level: 5810, total_premium: '500000' }), // above
+        makeDpRow({ level: 5800, total_premium: '300000' }), // below
+        makeDpRow({ level: 5790, total_premium: '200000' }), // below
       ]); // dpRows
 
       await engineerPhase2Features(mockSql as never, DATE_STR, features);
@@ -962,8 +962,8 @@ describe('engineerPhase2Features', () => {
       mockSql.mockResolvedValueOnce([]); // eventRows
       mockSql.mockResolvedValueOnce([]); // nextEventRow
       mockSql.mockResolvedValueOnce([
-        makeDpRow({ spx_approx: 5800, total_premium: '750000' }),
-        makeDpRow({ spx_approx: 5810, total_premium: '250000' }),
+        makeDpRow({ level: 5800, total_premium: '750000' }),
+        makeDpRow({ level: 5810, total_premium: '250000' }),
       ]); // dpRows
 
       await engineerPhase2Features(mockSql as never, DATE_STR, features);
@@ -980,7 +980,7 @@ describe('engineerPhase2Features', () => {
       mockSql.mockResolvedValueOnce([]); // eventRows
       mockSql.mockResolvedValueOnce([]); // nextEventRow
       mockSql.mockResolvedValueOnce([
-        makeDpRow({ spx_approx: 5810, total_premium: '500000' }),
+        makeDpRow({ level: 5810, total_premium: '500000' }),
       ]); // dpRows
 
       await engineerPhase2Features(mockSql as never, DATE_STR, features);
@@ -1740,7 +1740,7 @@ describe('engineerPhase2Features', () => {
       // Query 6: dpRows (from dark_pool_levels)
       mockSql.mockResolvedValueOnce([
         {
-          spx_approx: 5810,
+          level: 5810,
           total_premium: '500000',
           trade_count: 100,
           total_shares: 50000,
@@ -2060,19 +2060,19 @@ describe('addDarkPoolFeatures (isolated)', () => {
   it('aggregates premium and computes support/resistance/concentration', async () => {
     mockSql.mockResolvedValueOnce([
       {
-        spx_approx: 5800,
+        level: 5800,
         total_premium: 1_000_000,
         trade_count: 5,
         total_shares: 1000,
       },
       {
-        spx_approx: 5790,
+        level: 5790,
         total_premium: 600_000,
         trade_count: 3,
         total_shares: 500,
       },
       {
-        spx_approx: 5810,
+        level: 5810,
         total_premium: 400_000,
         trade_count: 2,
         total_shares: 400,

@@ -36,7 +36,7 @@ type QueryKind =
 
 function classify(strings: TemplateStringsArray): QueryKind {
   const joined = strings.join('');
-  if (joined.includes('FROM dark_pool_levels')) return 'dark_pool_velocity';
+  if (joined.includes('FROM dark_pool_prints')) return 'dark_pool_velocity';
   if (joined.includes('FROM spot_exposures')) return 'gex_intraday';
   if (joined.includes('FROM flow_alerts')) return 'whale_flow';
   if (joined.includes('FROM flow_data')) return 'etf_tide';
