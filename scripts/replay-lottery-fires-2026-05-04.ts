@@ -32,7 +32,12 @@ const SCAN_WINDOW_MIN = 7; // mirrors detect-lottery-fires.ts
 const PER_CHAIN_MIN_PRINTS = 5;
 
 const TICKERS_WITH_GEX_STRIKE = new Set([
-  'SPX', 'SPXW', 'NDX', 'NDXP', 'SPY', 'QQQ',
+  'SPX',
+  'SPXW',
+  'NDX',
+  'NDXP',
+  'SPY',
+  'QQQ',
 ]);
 
 type DbNumeric = string | number;
@@ -76,13 +81,22 @@ interface MacroSnapshot {
 }
 
 const EMPTY_MACRO: MacroSnapshot = {
-  mkt_tide_ncp: null, mkt_tide_npp: null, mkt_tide_diff: null,
-  mkt_tide_otm_diff: null, spx_flow_diff: null, spy_etf_diff: null,
-  qqq_etf_diff: null, zero_dte_diff: null,
-  spx_spot_gamma_oi: null, spx_spot_gamma_vol: null,
-  spx_spot_charm_oi: null, spx_spot_vanna_oi: null,
-  gex_strike_call_minus_put: null, gex_strike_call_ask_minus_bid: null,
-  gex_strike_put_ask_minus_bid: null, gex_strike_actual_strike: null,
+  mkt_tide_ncp: null,
+  mkt_tide_npp: null,
+  mkt_tide_diff: null,
+  mkt_tide_otm_diff: null,
+  spx_flow_diff: null,
+  spy_etf_diff: null,
+  qqq_etf_diff: null,
+  zero_dte_diff: null,
+  spx_spot_gamma_oi: null,
+  spx_spot_gamma_vol: null,
+  spx_spot_charm_oi: null,
+  spx_spot_vanna_oi: null,
+  gex_strike_call_minus_put: null,
+  gex_strike_call_ask_minus_bid: null,
+  gex_strike_put_ask_minus_bid: null,
+  gex_strike_actual_strike: null,
 };
 
 function daysBetween(fromYmd: string, toYmd: string): number {

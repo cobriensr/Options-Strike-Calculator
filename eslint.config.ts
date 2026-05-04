@@ -15,6 +15,7 @@ export default [
       'ml/.venv',
       '.claude/skills',
       '.claude/worktrees',
+      '.agents/skills',
       '.clone',
       'sidecar',
       'daemon',
