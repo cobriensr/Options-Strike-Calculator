@@ -468,6 +468,90 @@ describe('GET /api/gex-strike-expiry', () => {
     });
   });
 
+  // ── Historical-date scrubbing regression (effective_at fix) ─────
+  //
+  // Before the effective_at CTE was added, the lookback window in
+  // getLatestGexPerStrikeWithDeltas anchored to NOW() when `at` was
+  // null. For any historical expiry that filtered out the entire
+  // day's data because `ts_minute >= NOW() - 35min` lands days after
+  // the requested expiry. The fix anchors the lookback to
+  // MAX(ts_minute) for (ticker, expiry) across both tables when `at`
+  // is null, so historical-date scrubbing returns rows again.
+  //
+  // These tests document the regression scenario at the handler
+  // boundary. The actual SQL change is covered by the perf probe
+  // at docs/tmp/gex-union-perf-probe/check.mjs.
+  //
+  // The mockSql here can't see what SQL was generated, so these
+  // tests assert the handler still maps and returns rows for the
+  // (ticker, at=null, historical-expiry) tuple end-to-end — i.e.
+  // the wire contract that the GexLandscape historical scrubber
+  // depends on.
+
+  it('returns SPX historical rows with at=null (effective_at falls through to legacy MAX)', async () => {
+    mockSql
+      .mockResolvedValueOnce([
+        fakeRestRow(5650, '2026-05-01T20:04:40Z'),
+        fakeRestRow(5655, '2026-05-01T20:04:40Z'),
+      ])
+      .mockResolvedValueOnce([
+        { ts_minute: '2026-05-01T20:03:40Z' },
+        { ts_minute: '2026-05-01T20:04:40Z' },
+      ]);
+    const req = mockRequest({
+      method: 'GET',
+      query: { ticker: 'SPX', expiry: '2026-05-01' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      ticker: string;
+      at: string | null;
+      rows: Array<Record<string, unknown>>;
+    };
+    expect(body.ticker).toBe('SPX');
+    expect(body.at).toBeNull();
+    expect(body.rows).toHaveLength(2);
+    expect(body.rows[0]).toMatchObject({
+      ticker: 'SPX',
+      strike: 5650,
+      // Δ% derived in SQL — confirms the lookback window saw
+      // history (would be null if effective_at had landed outside
+      // the historical day, the pre-fix bug).
+      gamma_delta_1m: 1,
+      gamma_delta_30m: 15,
+    });
+  });
+
+  it('returns SPY historical EOD snapshot with at=null (effective_at = MAX(ts_minute) on WS)', async () => {
+    mockSql
+      .mockResolvedValueOnce([fakeRow(722, '2026-05-01T20:14:00Z', 'SPY')])
+      .mockResolvedValueOnce([{ ts_minute: '2026-05-01T20:14:00Z' }]);
+    const req = mockRequest({
+      method: 'GET',
+      query: { ticker: 'SPY', expiry: '2026-05-01' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      ticker: string;
+      at: string | null;
+      rows: Array<Record<string, unknown>>;
+    };
+    expect(body.ticker).toBe('SPY');
+    expect(body.at).toBeNull();
+    expect(body.rows).toHaveLength(1);
+    expect(body.rows[0]).toMatchObject({
+      ticker: 'SPY',
+      strike: 722,
+      ts_minute: '2026-05-01T20:14:00.000Z',
+    });
+  });
+
   // ── Error propagation ──────────────────────────────────────
 
   it('returns 500 when the DB query throws', async () => {

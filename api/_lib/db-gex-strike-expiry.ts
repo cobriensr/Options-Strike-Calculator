@@ -247,8 +247,37 @@ export async function getLatestGexPerStrikeWithDeltas(
   // name across schemas). Charm/vanna bid-ask vol fields don't exist
   // in the legacy table; we project them as `NULL::numeric` so the
   // UNION shape matches.
+  //
+  // Anchor for the 35-minute lookback: `effective_at`.
+  //   - When `at` is provided (snapshot mode), use it directly.
+  //   - When `at` is null (live mode), resolve to the latest
+  //     `ts_minute` available across BOTH tables for this
+  //     (ticker, expiry). Using NOW() breaks historical-date scrubbing
+  //     because the requested expiry's data sits days behind NOW(), so
+  //     `ts_minute >= NOW() - 35min` filters it all out.
+  //   - Fall back to NOW() if both tables are empty (defensive — the
+  //     downstream filters will return zero rows anyway).
+  // Postgres `GREATEST` returns NULL only when ALL inputs are NULL;
+  // it ignores NULLs alongside non-NULL values (verified on Neon
+  // PG 17.8). The `CASE WHEN ${ticker}='SPX'` projects NULL for
+  // non-SPX tickers, which `GREATEST` then ignores.
   const rows = (await sql`
-    WITH ws_series AS (
+    WITH effective_at AS (
+      SELECT
+        COALESCE(
+          ${atParam}::timestamptz,
+          GREATEST(
+            (SELECT MAX(ts_minute) FROM ws_gex_strike_expiry
+             WHERE ticker = ${ticker} AND expiry = ${expiry}::date),
+            CASE WHEN ${ticker} = 'SPX' THEN
+              (SELECT MAX(timestamp) FROM gex_strike_0dte
+               WHERE date = ${expiry}::date)
+            END
+          ),
+          NOW()
+        ) AS at_ts
+    ),
+    ws_series AS (
       SELECT
         ticker, expiry, strike, ts_minute, price,
         call_gamma_oi, put_gamma_oi,
@@ -267,8 +296,8 @@ export async function getLatestGexPerStrikeWithDeltas(
       FROM ws_gex_strike_expiry
       WHERE ticker = ${ticker}
         AND expiry = ${expiry}::date
-        AND ts_minute >= COALESCE(${atParam}::timestamptz, NOW()) - INTERVAL '35 minutes'
-        AND ts_minute <= COALESCE(${atParam}::timestamptz, NOW())
+        AND ts_minute >= (SELECT at_ts FROM effective_at) - INTERVAL '35 minutes'
+        AND ts_minute <= (SELECT at_ts FROM effective_at)
     ),
     ws_count AS (
       SELECT COUNT(*) AS n FROM ws_series
@@ -301,8 +330,8 @@ export async function getLatestGexPerStrikeWithDeltas(
       WHERE ${ticker} = 'SPX'
         AND (SELECT n FROM ws_count) = 0
         AND date = ${expiry}::date
-        AND timestamp >= COALESCE(${atParam}::timestamptz, NOW()) - INTERVAL '35 minutes'
-        AND timestamp <= COALESCE(${atParam}::timestamptz, NOW())
+        AND timestamp >= (SELECT at_ts FROM effective_at) - INTERVAL '35 minutes'
+        AND timestamp <= (SELECT at_ts FROM effective_at)
     ),
     combined AS (
       SELECT * FROM ws_series
