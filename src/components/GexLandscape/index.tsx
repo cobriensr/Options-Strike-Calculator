@@ -268,7 +268,11 @@ const GexLandscape = memo(function GexLandscape({
     timestamp,
     isLive,
     muted: top5Muted,
-    resetKey: selectedDate,
+    // Composite key — switching tickers must reset the tracker just
+    // like switching dates does, otherwise every strike on the new
+    // ticker shows the NEW pill (none of them were in the prior
+    // ticker's Top 5).
+    resetKey: `${selectedDate}:${selectedTicker}`,
   });
 
   // Find the strike closest to spot for the ATM indicator.

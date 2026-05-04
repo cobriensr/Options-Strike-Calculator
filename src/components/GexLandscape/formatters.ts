@@ -49,9 +49,15 @@ export function formatBiasForClaude(b: BiasMetrics): string {
   };
   const meta = VERDICT_META[b.verdict];
   const gravDir = b.gravityOffset >= 0 ? 'above' : 'below';
+  const gravOffsetDisplay = Math.abs(b.gravityOffset).toLocaleString(
+    undefined,
+    {
+      maximumFractionDigits: 2,
+    },
+  );
   const lines = [
     `Verdict: ${meta.label} — ${meta.desc}`,
-    `Regime: ${b.regime === 'positive' ? 'Positive' : 'Negative'} GEX (${fmtGex(b.totalNetGex)} total) | Gravity: ${b.gravityStrike.toLocaleString()} (${Math.abs(b.gravityOffset)} pts ${gravDir} spot, ${fmtGex(b.gravityGex)})`,
+    `Regime: ${b.regime === 'positive' ? 'Positive' : 'Negative'} GEX (${fmtGex(b.totalNetGex)} total) | Gravity: ${b.gravityStrike.toLocaleString()} (${gravOffsetDisplay} pts ${gravDir} spot, ${fmtGex(b.gravityGex)})`,
   ];
   if (b.upsideTargets.length > 0)
     lines.push(`Upside targets: ${b.upsideTargets.map(fmtTarget).join(', ')}`);

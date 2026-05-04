@@ -116,7 +116,11 @@ export function BiasPanel({
           >
             {bias.gravityOffset === 0
               ? 'ATM'
-              : `${bias.gravityOffset > 0 ? '↑' : '↓'} ${Math.abs(bias.gravityOffset)}pts`}
+              : `${bias.gravityOffset > 0 ? '↑' : '↓'} ${Math.abs(
+                  bias.gravityOffset,
+                ).toLocaleString(undefined, {
+                  maximumFractionDigits: 2,
+                })}pts`}
           </div>
           <div
             className="font-mono text-[10px]"
