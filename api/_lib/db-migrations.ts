@@ -3625,4 +3625,47 @@ export const MIGRATIONS: Migration[] = [
             ON ws_net_flow_per_ticker (ts)`,
     ],
   },
+  {
+    id: 122,
+    description:
+      'Create net_flow_per_ticker_history table for the REST-backfill EDA ' +
+      'pipeline (Task 1.1 of docs/superpowers/specs/lottery-net-flow-eda-2026-05-03.md). ' +
+      'Stores per-minute UW REST `/stock/{ticker}/net-prem-ticks` history for ' +
+      '~50 lottery tickers × 90 days — the input feed for the Lottery Net Flow ' +
+      'EDA (Phase 2). Kept separate from ws_net_flow_per_ticker (#121) to keep ' +
+      'WS-live (per-tick deltas) and REST-backfill data clean; the `source` column ' +
+      "('rest' / 'ws') allows a future union. Schema captures the full per-minute " +
+      'delta payload including the bonus bid/ask side-split volume fields UW returns ' +
+      'at the ticker level (call_volume_ask_side, call_volume_bid_side, ' +
+      'put_volume_ask_side, put_volume_bid_side). Natural dedupe key ' +
+      '(ticker, ts, source) — REST backfill may be re-run for a given ' +
+      '(ticker, date, source) pair without duplicating rows.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS net_flow_per_ticker_history (
+          id BIGSERIAL PRIMARY KEY,
+          ticker TEXT NOT NULL,
+          ts TIMESTAMPTZ NOT NULL,
+          net_call_prem NUMERIC(18, 2) NOT NULL,
+          net_call_vol INTEGER NOT NULL,
+          net_put_prem NUMERIC(18, 2) NOT NULL,
+          net_put_vol INTEGER NOT NULL,
+          call_volume INTEGER NOT NULL,
+          call_volume_ask_side INTEGER NOT NULL,
+          call_volume_bid_side INTEGER NOT NULL,
+          put_volume INTEGER NOT NULL,
+          put_volume_ask_side INTEGER NOT NULL,
+          put_volume_bid_side INTEGER NOT NULL,
+          source TEXT NOT NULL,
+          fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `,
+      // Dedupe key: REST backfill is re-runnable on (ticker, ts, source).
+      sql`CREATE UNIQUE INDEX IF NOT EXISTS net_flow_per_ticker_history_ticker_ts_src_idx
+            ON net_flow_per_ticker_history (ticker, ts, source)`,
+      // Primary read pattern: time-series for a single ticker.
+      sql`CREATE INDEX IF NOT EXISTS net_flow_per_ticker_history_ticker_ts_idx
+            ON net_flow_per_ticker_history (ticker, ts DESC)`,
+    ],
+  },
 ];
