@@ -19,7 +19,7 @@ import pytest
 from handlers.option_trades import (
     _COLUMNS,
     OptionTradesHandler,
-    _normalise_side,
+    _derive_side,
 )
 
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "option_trades_sample.json"
@@ -70,7 +70,8 @@ class TestTransform:
         assert row[col_idx["implied_volatility"]] == Decimal("0.412")
         assert row[col_idx["delta"]] == Decimal("0.182")
 
-    def test_side_passes_through_when_canonical(self, handler, payload, col_idx):
+    def test_side_derived_from_tags(self, handler, payload, col_idx):
+        # Fixture has tags: ['ask_side', 'bullish']
         row = handler._transform(payload)
         assert row[col_idx["side"]] == "ask"
 
@@ -184,31 +185,24 @@ class TestRejection:
         payload["size"] = 0
         assert handler._transform(payload) is None
 
-    def test_unknown_side_returns_none(self, handler, payload):
-        # Side CHECK constraint allows only ask/bid/mid/no_side; reject
-        # unknown values rather than let the DB do it.
-        payload["side"] = "stock_exchange"
-        assert handler._transform(payload) is None
-
     def test_missing_size_returns_none(self, handler, payload):
         del payload["size"]
         assert handler._transform(payload) is None
 
 
-class TestSideNormalisation:
+class TestSideDerivation:
     @pytest.mark.parametrize(
-        "raw,expected",
+        "tags,expected",
         [
-            ("ask", "ask"),
-            ("ASK", "ask"),
-            (" bid ", "bid"),
-            ("mid", "mid"),
-            ("no_side", "no_side"),
-            ("multi", None),
-            ("", None),
-            (None, None),
-            (123, None),
+            (["ask_side", "bullish"], "ask"),
+            (["bid_side", "bearish"], "bid"),
+            (["mid_side", "neutral"], "mid"),
+            (["bullish"], "no_side"),  # no side tag → no_side fallback
+            ([], "no_side"),
+            (None, "no_side"),
+            ("not_a_list", "no_side"),
+            (["ask_side", "bid_side"], "ask"),  # first match wins
         ],
     )
-    def test_normalise(self, raw, expected):
-        assert _normalise_side(raw) == expected
+    def test_derive(self, tags, expected):
+        assert _derive_side(tags) == expected

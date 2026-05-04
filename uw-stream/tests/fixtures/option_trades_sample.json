@@ -6,11 +6,10 @@
   "price": "0.55",
   "size": 25,
   "underlying_price": "1170.85",
-  "side": "ask",
   "implied_volatility": "0.412",
   "delta": "0.182",
   "open_interest": 1450,
   "canceled": false,
   "exchange": "BATS",
-  "tags": ["sweep"]
+  "tags": ["ask_side", "bullish"]
 }

@@ -58,10 +58,16 @@ _COLUMNS: list[str] = [
     "raw_payload",
 ]
 
-# UW emits a ``side`` enum with these four values on the option_trades
-# channel. Anything outside this set is rejected so the table's CHECK
-# constraint never fires.
-_VALID_SIDES = frozenset({"ask", "bid", "mid", "no_side"})
+# UW does NOT emit a top-level `side` field on the option_trades
+# channel — the side classification is one of the entries inside the
+# `tags` list (alongside an unrelated bullish/bearish/neutral tag).
+# Map the tag → canonical side; anything we can't classify falls back
+# to 'no_side' so we still record the print.
+_TAG_TO_SIDE: dict[str, str] = {
+    "ask_side": "ask",
+    "bid_side": "bid",
+    "mid_side": "mid",
+}
 
 
 class OptionTradesHandler(Handler):
@@ -134,13 +140,7 @@ class OptionTradesHandler(Handler):
             )
             return None
 
-        side = _normalise_side(payload.get("side"))
-        if side is None:
-            log.warning(
-                "option_trades unknown side value",
-                extra={"symbol": symbol, "raw_side": payload.get("side")},
-            )
-            return None
+        side = _derive_side(payload.get("tags"))
 
         return (
             ws_trade_id,
@@ -187,12 +187,21 @@ def _first(payload: dict, *keys: str) -> Any:
     return None
 
 
-def _normalise_side(v: Any) -> str | None:
-    """Return a canonical side or None if unrecognized."""
-    if not isinstance(v, str):
-        return None
-    s = v.strip().lower()
-    return s if s in _VALID_SIDES else None
+def _derive_side(tags: Any) -> str:
+    """Pull the canonical side from UW's `tags` list.
+
+    UW encodes side as one of `ask_side` / `bid_side` / `mid_side`
+    inside the per-print `tags` array (e.g. `['bid_side', 'bearish']`).
+    Returns 'no_side' when no recognised tag is present rather than
+    rejecting the row — the CHECK constraint accepts 'no_side', and a
+    print missing a side classification is still useful tape data.
+    """
+    if not isinstance(tags, list):
+        return "no_side"
+    for tag in tags:
+        if isinstance(tag, str) and tag in _TAG_TO_SIDE:
+            return _TAG_TO_SIDE[tag]
+    return "no_side"
 
 
 def _to_decimal(v: Any) -> Decimal | None:
