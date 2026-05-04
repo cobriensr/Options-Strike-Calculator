@@ -95,5 +95,7 @@ for (const date of DATES) {
   });
 }
 
-console.log('SPY OTM Dir Delta cumulative (live UW API), two reads 30s apart:\n');
+console.log(
+  'SPY OTM Dir Delta cumulative (live UW API), two reads 30s apart:\n',
+);
 console.table(rows);

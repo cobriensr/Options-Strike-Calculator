@@ -1,0 +1,151 @@
+{
+  "ORIGINAL: bottom-20% + filters": {
+    "n_trades": 10,
+    "win_rate_pct": 100.0,
+    "avg_win_pct": 0.1967,
+    "avg_loss_pct": null,
+    "expectancy_pct": 0.1967,
+    "gross_total_return_pct": 2.0,
+    "net_total_return_pct": 1.967,
+    "max_drawdown_pct": 0.0,
+    "profit_factor": NaN,
+    "exit_reason_breakdown": {
+      "tp": 10
+    },
+    "bucket_breakdown": {
+      "pm": 9,
+      "open": 1
+    },
+    "avg_hold_minutes": 6.0,
+    "trade_dates": ["2026-04-27", "2026-04-28", "2026-04-30", "2026-05-01"]
+  },
+  "A: INVERTED top-20% + filters": {
+    "n_trades": 55,
+    "win_rate_pct": 92.73,
+    "avg_win_pct": 0.1967,
+    "avg_loss_pct": -0.1033,
+    "expectancy_pct": 0.1749,
+    "gross_total_return_pct": 9.8,
+    "net_total_return_pct": 9.6185,
+    "max_drawdown_pct": 0.1033,
+    "profit_factor": 24.278,
+    "exit_reason_breakdown": {
+      "tp": 51,
+      "sl": 4
+    },
+    "bucket_breakdown": {
+      "pm": 50,
+      "open": 5
+    },
+    "avg_hold_minutes": 3.9,
+    "trade_dates": [
+      "2026-04-21",
+      "2026-04-22",
+      "2026-04-24",
+      "2026-04-27",
+      "2026-04-29",
+      "2026-04-30",
+      "2026-05-01"
+    ]
+  },
+  "B: Pure signal, NO filters": {
+    "n_trades": 195,
+    "win_rate_pct": 88.21,
+    "avg_win_pct": 0.1967,
+    "avg_loss_pct": -0.0946,
+    "expectancy_pct": 0.1623,
+    "gross_total_return_pct": 32.3,
+    "net_total_return_pct": 31.6565,
+    "max_drawdown_pct": 0.2066,
+    "profit_factor": 15.549,
+    "exit_reason_breakdown": {
+      "tp": 172,
+      "sl": 21,
+      "time": 2
+    },
+    "bucket_breakdown": {
+      "off-hours": 134,
+      "open": 34,
+      "pm": 27
+    },
+    "avg_hold_minutes": 2.5,
+    "trade_dates": [
+      "2026-04-20",
+      "2026-04-21",
+      "2026-04-22",
+      "2026-04-23",
+      "2026-04-27",
+      "2026-04-28",
+      "2026-04-29",
+      "2026-04-30",
+      "2026-05-01"
+    ]
+  },
+  "C: Filters only, NO signal": {
+    "n_trades": 173,
+    "win_rate_pct": 81.5,
+    "avg_win_pct": 0.1902,
+    "avg_loss_pct": -0.0983,
+    "expectancy_pct": 0.1368,
+    "gross_total_return_pct": 24.238,
+    "net_total_return_pct": 23.6671,
+    "max_drawdown_pct": 0.3198,
+    "profit_factor": 8.523,
+    "exit_reason_breakdown": {
+      "tp": 132,
+      "sl": 30,
+      "time": 11
+    },
+    "bucket_breakdown": {
+      "pm": 109,
+      "open": 64
+    },
+    "avg_hold_minutes": 6.6,
+    "trade_dates": [
+      "2026-04-13",
+      "2026-04-14",
+      "2026-04-15",
+      "2026-04-16",
+      "2026-04-17",
+      "2026-04-20",
+      "2026-04-21",
+      "2026-04-22",
+      "2026-04-23",
+      "2026-04-24",
+      "2026-04-27",
+      "2026-04-28",
+      "2026-04-29",
+      "2026-04-30",
+      "2026-05-01"
+    ]
+  },
+  "D: RANDOM matched-count": {
+    "n_trades": 8,
+    "win_rate_pct": 62.5,
+    "avg_win_pct": 0.1015,
+    "avg_loss_pct": -0.1033,
+    "expectancy_pct": 0.0247,
+    "gross_total_return_pct": 0.2241,
+    "net_total_return_pct": 0.1977,
+    "max_drawdown_pct": 0.2066,
+    "profit_factor": 1.638,
+    "exit_reason_breakdown": {
+      "time": 3,
+      "sl": 3,
+      "tp": 2
+    },
+    "bucket_breakdown": {
+      "pm": 5,
+      "open": 3
+    },
+    "avg_hold_minutes": 16.8,
+    "trade_dates": [
+      "2026-04-13",
+      "2026-04-14",
+      "2026-04-15",
+      "2026-04-16",
+      "2026-04-17",
+      "2026-04-28"
+    ]
+  }
+}

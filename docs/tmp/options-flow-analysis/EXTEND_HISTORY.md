@@ -15,10 +15,10 @@ verdict, and you don't want to discover that mid-pipeline.
 
 ## When to use this doc vs PIPELINE.md
 
-| Situation | Doc |
-|---|---|
-| One new trading day dropped, last night | PIPELINE.md |
-| Multiple weeks added to the archive at once | This doc |
+| Situation                                        | Doc                                                              |
+| ------------------------------------------------ | ---------------------------------------------------------------- |
+| One new trading day dropped, last night          | PIPELINE.md                                                      |
+| Multiple weeks added to the archive at once      | This doc                                                         |
 | Re-running because the rule started losing money | This doc + `lottery-finder-rule-rederivation-YYYY-MM-DD.md` spec |
 
 ---
@@ -34,13 +34,13 @@ ls -la /Users/charlesobrien/Desktop/Bot-Eod-parquet/*.parquet \
 
 **Expected file count for Jan-Apr 2026 (assuming you got every trading day):**
 
-| Month | Trading days |
-|---|---|
-| January 2026 | 21 (1st = New Year, 19th = MLK) |
-| February 2026 | 19 (16th = Presidents' Day) |
-| March 2026 | 22 |
-| April 2026 | ~22 (the 13th-30th are already there from the seed window — 14 days; April 1-10 + April 31 May 1 add ~10 more, total ~22) |
-| **Total** | **~84 trading days** |
+| Month         | Trading days                                                                                                              |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| January 2026  | 21 (1st = New Year, 19th = MLK)                                                                                           |
+| February 2026 | 19 (16th = Presidents' Day)                                                                                               |
+| March 2026    | 22                                                                                                                        |
+| April 2026    | ~22 (the 13th-30th are already there from the seed window — 14 days; April 1-10 + April 31 May 1 add ~10 more, total ~22) |
+| **Total**     | **~84 trading days**                                                                                                      |
 
 If the count is materially less than ~84, list the gaps explicitly
 before continuing — a missing week has compounding consequences for
@@ -96,14 +96,14 @@ or a renamed column (`tape_time` ↔ `executed_at`).
 Same as PIPELINE.md Steps 1-5 but the runtimes scale linearly with day
 count. Plan ~3-5 hours wall-clock end-to-end for ~80 days.
 
-| Step | Script | 15-day runtime | 80-day estimate |
-|---|---|---|---|
-| 1 | `p14_event_trigger.py` | ~10 min | ~50-60 min |
-| 2 | `p16_fix_tz.py` | <5 sec | <30 sec (in-place) |
-| 3 | `p26_canonical_realized.py` | ~5 min | ~30 min |
-| 4 | `p27_exit_policy_grid.py` | ~5 min | ~25 min |
-| 5 | `p28_lottery_discriminator.py` | ~30 sec | ~2 min |
-| 5 | `p29_stress_test.py` | ~1 min | ~5 min |
+| Step | Script                         | 15-day runtime | 80-day estimate    |
+| ---- | ------------------------------ | -------------- | ------------------ |
+| 1    | `p14_event_trigger.py`         | ~10 min        | ~50-60 min         |
+| 2    | `p16_fix_tz.py`                | <5 sec         | <30 sec (in-place) |
+| 3    | `p26_canonical_realized.py`    | ~5 min         | ~30 min            |
+| 4    | `p27_exit_policy_grid.py`      | ~5 min         | ~25 min            |
+| 5    | `p28_lottery_discriminator.py` | ~30 sec        | ~2 min             |
+| 5    | `p29_stress_test.py`           | ~1 min         | ~5 min             |
 
 Run the full chain:
 

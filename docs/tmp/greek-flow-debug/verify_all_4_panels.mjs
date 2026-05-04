@@ -50,7 +50,10 @@ function summarize(ticks, field) {
 
 const fmt = (n) =>
   Number.isFinite(n)
-    ? n.toLocaleString('en-US', { maximumFractionDigits: 0, signDisplay: 'auto' })
+    ? n.toLocaleString('en-US', {
+        maximumFractionDigits: 0,
+        signDisplay: 'auto',
+      })
     : '—';
 
 const rows = [];
@@ -68,5 +71,7 @@ for (const ticker of ['SPY', 'QQQ']) {
   }
 }
 
-console.log(`Cumulative trajectory on ${DATE} (live UW API, post-reconciliation):\n`);
+console.log(
+  `Cumulative trajectory on ${DATE} (live UW API, post-reconciliation):\n`,
+);
 console.table(rows);

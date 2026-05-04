@@ -64,13 +64,13 @@ It also softens Concern #1: even without formally verifying UW's sign convention
 
 **Resolution via SpotGamma TRACE spot-check on 2026-05-01 09:15 CT capture:**
 
-| Read | TRACE | Our DB |
-| --- | --- | --- |
-| Time | 2026-05-01 09:15 CT (= 14:15 UTC) | `2026-05-01T14:14:14.270Z` |
-| Spot | ~7266 | 7270 |
-| Heatmap pixel at spot | Deep blue (clear +γ zone) | — |
-| GEX-by-Strike sidebar near spot | +1.7B + +1.7B above; −537M / −545M / −726M below; kernel-weighted ≈ +1.5B | — |
-| Our `net_gamma_at_spot` | — | **+3.57B (positive)** |
+| Read                            | TRACE                                                                     | Our DB                     |
+| ------------------------------- | ------------------------------------------------------------------------- | -------------------------- |
+| Time                            | 2026-05-01 09:15 CT (= 14:15 UTC)                                         | `2026-05-01T14:14:14.270Z` |
+| Spot                            | ~7266                                                                     | 7270                       |
+| Heatmap pixel at spot           | Deep blue (clear +γ zone)                                                 | —                          |
+| GEX-by-Strike sidebar near spot | +1.7B + +1.7B above; −537M / −545M / −726M below; kernel-weighted ≈ +1.5B | —                          |
+| Our `net_gamma_at_spot`         | —                                                                         | **+3.57B (positive)**      |
 
 Both signs agree. TRACE shows dealers long γ; our value is positive. Interpretation #1 (dealer-side signed) is the correct read: **`net_gamma_at_spot > 0` ⇒ dealers net long γ ⇒ dampening regime**. No label-flip required in the Phase 2 regime classifier.
 

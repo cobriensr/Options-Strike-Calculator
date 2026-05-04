@@ -247,7 +247,7 @@ distribution shift before any code that uses the flag for selection.
    cumulative. UW's example does `cumsum()` to render the daily
    chart. Decision: daemon stores raw deltas; cumulative is computed
    at read time via `SUM(net_call_prem) OVER (PARTITION BY ticker,
-   date ORDER BY ts)`. Single source of truth, no double-counting
+date ORDER BY ts)`. Single source of truth, no double-counting
    risk on retries.
 
 3. **Tickers without enough flow** — RUTW, USAR, SOUN may have
@@ -259,7 +259,6 @@ distribution shift before any code that uses the flag for selection.
    — REST is not viable + side-splits derivable from existing data**:
 
    Two findings collapsed this question:
-
    - REST polling 50 tickers/min would compound with the existing
      ~17 per-minute UW crons (fetch-spot-gex, fetch-greek-flow-etf,
      monitor-vega-spike, fetch-strike-iv, fetch-strike-trade-volume,

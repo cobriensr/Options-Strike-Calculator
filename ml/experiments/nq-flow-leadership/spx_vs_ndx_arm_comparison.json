@@ -1,0 +1,154 @@
+{
+  "verdict": "SPX-complex meaningfully outperforms \u2014 supports switching to ES",
+  "feature_winner_count": {
+    "NDX-complex": 2,
+    "SPX-complex": 4,
+    "tie": 0
+  },
+  "per_arm": [
+    {
+      "arm": "NDX-complex",
+      "tickers": ["NDX", "NDXP", "QQQ"],
+      "n_total_correlations": 432,
+      "n_bonf_significant": 96,
+      "pct_bonf_significant": 22.22,
+      "mean_abs_rho_among_bonf_sig": 0.0686,
+      "max_abs_rho": 0.1206,
+      "top10_mean_abs_rho": 0.1095
+    },
+    {
+      "arm": "SPX-complex",
+      "tickers": ["SPX", "SPXW", "SPY"],
+      "n_total_correlations": 432,
+      "n_bonf_significant": 139,
+      "pct_bonf_significant": 32.18,
+      "mean_abs_rho_among_bonf_sig": 0.0805,
+      "max_abs_rho": 0.14,
+      "top10_mean_abs_rho": 0.1312
+    }
+  ],
+  "per_ticker": [
+    {
+      "ticker": "NDX",
+      "arm": "NDX-complex",
+      "n_significant_bonf": 13,
+      "n_significant_p05": 33,
+      "best_abs_rho": 0.12056489665254466,
+      "best_signed_rho": -0.12056489665254466,
+      "best_feature": "pwdd",
+      "best_window_min": 30,
+      "best_horizon_min": 60,
+      "best_expiry_filter": "all",
+      "best_n": 4950
+    },
+    {
+      "ticker": "NDXP",
+      "arm": "NDX-complex",
+      "n_significant_bonf": 21,
+      "n_significant_p05": 72,
+      "best_abs_rho": 0.08921021886476747,
+      "best_signed_rho": -0.08921021886476747,
+      "best_feature": "aggr_ratio",
+      "best_window_min": 30,
+      "best_horizon_min": 60,
+      "best_expiry_filter": "0dte",
+      "best_n": 4950
+    },
+    {
+      "ticker": "QQQ",
+      "arm": "NDX-complex",
+      "n_significant_bonf": 62,
+      "n_significant_p05": 108,
+      "best_abs_rho": 0.11703422166236806,
+      "best_signed_rho": -0.11703422166236806,
+      "best_feature": "aggr_ratio",
+      "best_window_min": 30,
+      "best_horizon_min": 30,
+      "best_expiry_filter": "0dte",
+      "best_n": 5400
+    },
+    {
+      "ticker": "SPX",
+      "arm": "SPX-complex",
+      "n_significant_bonf": 9,
+      "n_significant_p05": 28,
+      "best_abs_rho": 0.08553403991163384,
+      "best_signed_rho": 0.08553403991163384,
+      "best_feature": "aggr_ratio",
+      "best_window_min": 30,
+      "best_horizon_min": 60,
+      "best_expiry_filter": "all",
+      "best_n": 4950
+    },
+    {
+      "ticker": "SPXW",
+      "arm": "SPX-complex",
+      "n_significant_bonf": 48,
+      "n_significant_p05": 80,
+      "best_abs_rho": 0.1286269312858717,
+      "best_signed_rho": 0.1286269312858717,
+      "best_feature": "sweep_count",
+      "best_window_min": 15,
+      "best_horizon_min": 60,
+      "best_expiry_filter": "0dte",
+      "best_n": 4950
+    },
+    {
+      "ticker": "SPY",
+      "arm": "SPX-complex",
+      "n_significant_bonf": 82,
+      "n_significant_p05": 114,
+      "best_abs_rho": 0.1399845554394126,
+      "best_signed_rho": 0.1399845554394126,
+      "best_feature": "sweep_count",
+      "best_window_min": 5,
+      "best_horizon_min": 60,
+      "best_expiry_filter": "all",
+      "best_n": 4950
+    }
+  ],
+  "per_feature": [
+    {
+      "feature": "sweep_count",
+      "ndx_complex_max_abs_rho": 0.1139,
+      "spx_complex_max_abs_rho": 0.14,
+      "winner": "SPX-complex",
+      "gap": 0.0261
+    },
+    {
+      "feature": "sweep_premium",
+      "ndx_complex_max_abs_rho": 0.0818,
+      "spx_complex_max_abs_rho": 0.1363,
+      "winner": "SPX-complex",
+      "gap": 0.0545
+    },
+    {
+      "feature": "aggr_ratio",
+      "ndx_complex_max_abs_rho": 0.117,
+      "spx_complex_max_abs_rho": 0.1217,
+      "winner": "SPX-complex",
+      "gap": 0.0047
+    },
+    {
+      "feature": "pwdd",
+      "ndx_complex_max_abs_rho": 0.1206,
+      "spx_complex_max_abs_rho": 0.0918,
+      "winner": "NDX-complex",
+      "gap": 0.0287
+    },
+    {
+      "feature": "call_put_imb",
+      "ndx_complex_max_abs_rho": 0.0518,
+      "spx_complex_max_abs_rho": 0.0886,
+      "winner": "SPX-complex",
+      "gap": 0.0368
+    },
+    {
+      "feature": "otm_vega",
+      "ndx_complex_max_abs_rho": 0.0826,
+      "spx_complex_max_abs_rho": 0.0617,
+      "winner": "NDX-complex",
+      "gap": 0.021
+    }
+  ]
+}

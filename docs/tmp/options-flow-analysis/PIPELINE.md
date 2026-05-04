@@ -125,7 +125,7 @@ The production rule lives in `api/_lib/lottery-finder.ts` as constants:
 ```ts
 LOTTERY_SPEC_V4 = {
   volToOiWindowMin: 0.05,
-  volToOiCumMin: 0.10,
+  volToOiCumMin: 0.1,
   ivMin: 0.35,
   absDeltaMin: 0.13,
   askPctMin: 0.52,

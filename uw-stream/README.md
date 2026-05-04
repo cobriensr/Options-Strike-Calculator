@@ -64,19 +64,19 @@ the migration plan.
 
 ## Environment
 
-| Var | Required | Notes |
-| --- | --- | --- |
-| `DATABASE_URL` | yes | Same Neon connection used by `api/` |
-| `UW_API_KEY` | yes | Advanced-tier UW key (websocket access required) |
-| `SENTRY_DSN` | no | Shared with sidecar. Events tagged `service=uw-stream` |
-| `PORT` | no | Default 8080. Railway provides one. |
-| `LOG_LEVEL` | no | Default `INFO` |
-| `WS_QUEUE_SIZE` | no | Default 50000 |
-| `WS_BATCH_SIZE` | no | Default 500 rows |
-| `WS_BATCH_INTERVAL_MS` | no | Default 2000ms |
-| `WS_BACKPRESSURE_POLICY` | no | `drop_oldest` (default), `drop_newest`, or `block` |
-| `WS_LOG_SAMPLE_RATE` | no | Default 0.001 (1 in 1000 messages logged) |
-| `WS_CHANNELS` | no | Comma-separated. Default `flow-alerts`. Shorthand `option_trades_lottery` expands to one `option_trades:<TICKER>` per Lottery Finder ticker (~50). |
+| Var                      | Required | Notes                                                                                                                                              |
+| ------------------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`           | yes      | Same Neon connection used by `api/`                                                                                                                |
+| `UW_API_KEY`             | yes      | Advanced-tier UW key (websocket access required)                                                                                                   |
+| `SENTRY_DSN`             | no       | Shared with sidecar. Events tagged `service=uw-stream`                                                                                             |
+| `PORT`                   | no       | Default 8080. Railway provides one.                                                                                                                |
+| `LOG_LEVEL`              | no       | Default `INFO`                                                                                                                                     |
+| `WS_QUEUE_SIZE`          | no       | Default 50000                                                                                                                                      |
+| `WS_BATCH_SIZE`          | no       | Default 500 rows                                                                                                                                   |
+| `WS_BATCH_INTERVAL_MS`   | no       | Default 2000ms                                                                                                                                     |
+| `WS_BACKPRESSURE_POLICY` | no       | `drop_oldest` (default), `drop_newest`, or `block`                                                                                                 |
+| `WS_LOG_SAMPLE_RATE`     | no       | Default 0.001 (1 in 1000 messages logged)                                                                                                          |
+| `WS_CHANNELS`            | no       | Comma-separated. Default `flow-alerts`. Shorthand `option_trades_lottery` expands to one `option_trades:<TICKER>` per Lottery Finder ticker (~50). |
 
 ## Local development
 

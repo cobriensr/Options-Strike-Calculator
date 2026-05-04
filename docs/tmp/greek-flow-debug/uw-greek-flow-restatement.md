@@ -15,20 +15,20 @@ This is undocumented as far as we can find, and there's no field on the response
 We had a cron storing every minute returned by this endpoint during market hours, idempotent on `(ticker, timestamp)`. Below is what we stored vs what the **same endpoint** returns now (queried on 2026-05-03):
 
 | Minute (CT) | Value stored from live cron | Same endpoint re-queried 2026-05-03 |
-|---|---:|---:|
-| 08:30 | 87,958.19 | 5,539.23 |
-| 08:31 | -53,579.61 | -106,080.16 |
-| 08:32 | 65,166.68 | 46,736.37 |
-| 08:33 | 3,492.55 | 71,413.99 |
-| 08:34 | 30,798.85 | -54,050.72 |
-| 08:35 | 34,044.71 | -69,054.85 |
+| ----------- | --------------------------: | ----------------------------------: |
+| 08:30       |                   87,958.19 |                            5,539.23 |
+| 08:31       |                  -53,579.61 |                         -106,080.16 |
+| 08:32       |                   65,166.68 |                           46,736.37 |
+| 08:33       |                    3,492.55 |                           71,413.99 |
+| 08:34       |                   30,798.85 |                          -54,050.72 |
+| 08:35       |                   34,044.71 |                          -69,054.85 |
 
 Cumulative `otm_dir_delta_flow`:
 
-| Reference point | Stored from live | Re-queried 2026-05-03 | UW web tooltip |
-|---|---:|---:|---|
-| Cumulative at 08:33 CT | 103,037.80 | **17,609.44** | **17,609.44** ✓ |
-| End-of-session min cumulative | -725,207 | **-3,564,941** | ≈ **-3,570,000** ✓ |
+| Reference point               | Stored from live | Re-queried 2026-05-03 | UW web tooltip     |
+| ----------------------------- | ---------------: | --------------------: | ------------------ |
+| Cumulative at 08:33 CT        |       103,037.80 |         **17,609.44** | **17,609.44** ✓    |
+| End-of-session min cumulative |         -725,207 |        **-3,564,941** | ≈ **-3,570,000** ✓ |
 
 The post-close API value (17,609.44) matches the UW web display exactly. The same applies to all eight `*_flow` columns, not just `otm_dir_delta_flow`.
 
@@ -36,12 +36,12 @@ The post-close API value (17,609.44) matches the UW web display exactly. The sam
 
 To confirm post-close reconciliation has completed (the values are stable, not still drifting), we queried the endpoint twice with a 30-second gap on 2026-05-03 (Sunday) for each of the prior trading days:
 
-| Date | Ticks | Cum EOD | Cum max | Cum min | Stable on 30s re-read |
-|---|---:|---:|---:|---:|---|
-| 2026-04-28 | 405 | +1,375,843 | +2,024,470 | -68,125 | yes |
-| 2026-04-29 | 406 | -721,278 | +113,763 | -1,161,612 | yes |
-| 2026-04-30 | 406 | +194,659 | +1,730,511 | -175,337 | yes |
-| 2026-05-01 | 405 | -645,886 | +17,609 | -3,564,941 | yes |
+| Date       | Ticks |    Cum EOD |    Cum max |    Cum min | Stable on 30s re-read |
+| ---------- | ----: | ---------: | ---------: | ---------: | --------------------- |
+| 2026-04-28 |   405 | +1,375,843 | +2,024,470 |    -68,125 | yes                   |
+| 2026-04-29 |   406 |   -721,278 |   +113,763 | -1,161,612 | yes                   |
+| 2026-04-30 |   406 |   +194,659 | +1,730,511 |   -175,337 | yes                   |
+| 2026-05-01 |   405 |   -645,886 |    +17,609 | -3,564,941 | yes                   |
 
 All four most-recent trading days are stable on a 30-second re-read, so the API does converge on a final value — we just don't know within what window post-close, and there's no signal in the response telling consumers when a row is final.
 
@@ -51,7 +51,7 @@ The natural pattern when ingesting per-minute data is `INSERT … ON CONFLICT (t
 
 - Our stored cumulative for SPY on 2026-05-01 ended at **-96k**
 - UW's web display shows the day ending around **-3.57M**
-- Same date, same field, same source — different by **37×** in magnitude *and* opposite-side trajectory
+- Same date, same field, same source — different by **37×** in magnitude _and_ opposite-side trajectory
 
 We've been running our dashboard for weeks against stored preliminary data without noticing, because it was internally self-consistent — it just didn't match anyone else's view of the same flow. Reconciling against the public web display is what surfaced the issue.
 

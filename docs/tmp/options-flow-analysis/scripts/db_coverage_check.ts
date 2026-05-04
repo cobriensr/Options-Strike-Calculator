@@ -14,7 +14,9 @@ import { neon } from '@neondatabase/serverless';
 
 const url = process.env.DATABASE_URL;
 if (!url) {
-  console.error('DATABASE_URL not set; pull .env.local with `vercel env pull .env.local`');
+  console.error(
+    'DATABASE_URL not set; pull .env.local with `vercel env pull .env.local`',
+  );
   process.exit(1);
 }
 const sql = neon(url);
@@ -37,9 +39,13 @@ async function main() {
     GROUP BY source
     ORDER BY source
   `) as Array<{
-    source: string; first_date: string; last_date: string;
-    distinct_days: string; rows_total: string;
-    rows_in_window: string; days_in_window: string;
+    source: string;
+    first_date: string;
+    last_date: string;
+    distinct_days: string;
+    rows_total: string;
+    rows_in_window: string;
+    days_in_window: string;
   }>;
   console.table(flow);
 

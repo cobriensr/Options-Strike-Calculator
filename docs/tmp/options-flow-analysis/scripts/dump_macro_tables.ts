@@ -33,7 +33,9 @@ function toCsv(rows: Array<Record<string, unknown>>): string {
         const v = r[c];
         if (v === null || v === undefined) return '';
         const s = v instanceof Date ? v.toISOString() : String(v);
-        return s.includes(',') || s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s;
+        return s.includes(',') || s.includes('"')
+          ? `"${s.replace(/"/g, '""')}"`
+          : s;
       })
       .join(','),
   );
@@ -75,9 +77,21 @@ async function main() {
     ['SPX', 0.03],
   ];
   const dates: string[] = [
-    '2026-04-13', '2026-04-14', '2026-04-15', '2026-04-16', '2026-04-17',
-    '2026-04-20', '2026-04-21', '2026-04-22', '2026-04-23', '2026-04-24',
-    '2026-04-27', '2026-04-28', '2026-04-29', '2026-04-30', '2026-05-01',
+    '2026-04-13',
+    '2026-04-14',
+    '2026-04-15',
+    '2026-04-16',
+    '2026-04-17',
+    '2026-04-20',
+    '2026-04-21',
+    '2026-04-22',
+    '2026-04-23',
+    '2026-04-24',
+    '2026-04-27',
+    '2026-04-28',
+    '2026-04-29',
+    '2026-04-30',
+    '2026-05-01',
   ];
   const allStk: Array<Record<string, unknown>> = [];
   for (const [ticker, band] of tickerBands) {

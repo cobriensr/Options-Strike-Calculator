@@ -44,11 +44,11 @@ This spec runs the EDA first, then ships the plateau flag as **informational onl
 
 ## Data dependencies
 
-| Source | What we need | Notes |
-|---|---|---|
+| Source                                   | What we need                                         | Notes                                                                                                                       |
+| ---------------------------------------- | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | UW REST `/stock/{ticker}/net-prem-ticks` | Per-minute deltas, 50 tickers × 90 days ≈ 1.75M rows | Returns `net_call_premium`/`net_put_premium` as STRINGS (parseFloat), plus per-ticker bid/ask side splits as bonus features |
-| `lottery_finder_fires` | All historical fires + outcomes | Already populated (used by Lottery Finder UI) |
-| `ws_net_flow_per_ticker` | NOT used here — only ~hours of history at spec time | The new table from Phase 1.1 of the predecessor spec |
+| `lottery_finder_fires`                   | All historical fires + outcomes                      | Already populated (used by Lottery Finder UI)                                                                               |
+| `ws_net_flow_per_ticker`                 | NOT used here — only ~hours of history at spec time  | The new table from Phase 1.1 of the predecessor spec                                                                        |
 
 **Storage:** New table `net_flow_per_ticker_history` — separate from `ws_net_flow_per_ticker` to keep WS-live and REST-backfill data clean. Same shape as `ws_net_flow_per_ticker` but with `source TEXT NOT NULL` ('rest' / 'ws') in case we union later.
 
@@ -111,17 +111,17 @@ This spec runs the EDA first, then ships the plateau flag as **informational onl
 
 For every row in `lottery_finder_fires`, join `net_flow_per_ticker_history` on (ticker, date) and compute features from a 30-min pre-fire window ending at `trigger_time_ct`:
 
-| Feature | Definition |
-|---|---|
-| `ncp_at_fire` | Cumulative NCP from session-open through trigger time |
-| `npp_at_fire` | Cumulative NPP, same window |
-| `ncp_slope_5m` | NCP delta over the last 5 minutes / 5 |
-| `ncp_slope_15m` | NCP delta over the last 15 minutes / 15 |
-| `ncp_slope_30m` | NCP delta over the last 30 minutes / 30 |
-| `asymmetry` | NCP / (NCP + NPP) at fire — 0.5 = balanced |
-| `direction_match` | bool — call fire & ncp_slope_5m > 0, or put fire & npp_slope_5m > 0 |
-| `level_pct_of_day_high` | NCP at fire / max(NCP) over the day so far |
-| `pre_fire_variance` | std of per-minute NCP delta over the prior 30 min |
+| Feature                 | Definition                                                                             |
+| ----------------------- | -------------------------------------------------------------------------------------- |
+| `ncp_at_fire`           | Cumulative NCP from session-open through trigger time                                  |
+| `npp_at_fire`           | Cumulative NPP, same window                                                            |
+| `ncp_slope_5m`          | NCP delta over the last 5 minutes / 5                                                  |
+| `ncp_slope_15m`         | NCP delta over the last 15 minutes / 15                                                |
+| `ncp_slope_30m`         | NCP delta over the last 30 minutes / 30                                                |
+| `asymmetry`             | NCP / (NCP + NPP) at fire — 0.5 = balanced                                             |
+| `direction_match`       | bool — call fire & ncp_slope_5m > 0, or put fire & npp_slope_5m > 0                    |
+| `level_pct_of_day_high` | NCP at fire / max(NCP) over the day so far                                             |
+| `pre_fire_variance`     | std of per-minute NCP delta over the prior 30 min                                      |
 | `lead_time_to_ncp_peak` | minutes between fire and the most recent prior local NCP max (null if peak is at fire) |
 
 Output: `features.parquet` keyed by `(fire_id)` with all features + outcome columns from `lottery_finder_fires`.
@@ -174,23 +174,24 @@ None at this point — spec is buildable as-is. Any new ambiguity discovered dur
 
 ## Thresholds + constants (locked)
 
-| Constant | Value | Source |
-|---|---|---|
-| Backfill window | 90 calendar days | UW WebSocket plan retention (user has) |
-| Peak prominence | 0.05 × (day NCP max − day NCP min) | Default for scipy.signal.find_peaks |
-| Pre-fire feature window | 30 minutes | Anecdote was 25-min lead — pad to 30 |
-| Slope sub-windows | 5, 15, 30 min | Standard intraday horizons |
-| Lottery rate threshold | ≥ +100% realized | Matches Lottery Finder UI definition |
-| Concentration test | Coefficient of variation across strata | `feedback_uniform_lift_is_leakage` |
-| Backfill batch size | 500 rows / INSERT | `feedback_batched_inserts` |
-| Backfill concurrency | semaphore=3 + jitter | UW 429 history |
-| Session window | 08:30–15:00 CT | `feedback_extended_hours` |
+| Constant                | Value                                  | Source                                 |
+| ----------------------- | -------------------------------------- | -------------------------------------- |
+| Backfill window         | 90 calendar days                       | UW WebSocket plan retention (user has) |
+| Peak prominence         | 0.05 × (day NCP max − day NCP min)     | Default for scipy.signal.find_peaks    |
+| Pre-fire feature window | 30 minutes                             | Anecdote was 25-min lead — pad to 30   |
+| Slope sub-windows       | 5, 15, 30 min                          | Standard intraday horizons             |
+| Lottery rate threshold  | ≥ +100% realized                       | Matches Lottery Finder UI definition   |
+| Concentration test      | Coefficient of variation across strata | `feedback_uniform_lift_is_leakage`     |
+| Backfill batch size     | 500 rows / INSERT                      | `feedback_batched_inserts`             |
+| Backfill concurrency    | semaphore=3 + jitter                   | UW 429 history                         |
+| Session window          | 08:30–15:00 CT                         | `feedback_extended_hours`              |
 
 ---
 
 ## Files to create / modify
 
 ### Create
+
 - `api/_lib/db-migrations.ts` — append migration #122 (modify, not create)
 - `scripts/backfill-net-prem-ticks.mjs`
 - `ml/experiments/lottery-net-flow-eda/README.md`
@@ -200,9 +201,11 @@ None at this point — spec is buildable as-is. Any new ambiguity discovered dur
 - `ml/plots/lottery-net-flow-eda/*.png` (output)
 
 ### Modify
+
 - `api/__tests__/db.test.ts` (mock counts + applied list)
 
 ### Not modified (intentionally)
+
 - `api/cron/detect-lottery-fires.ts` — Phase 3 deferred
 - `api/_lib/lottery-finder.ts` — no schema change to fires output
 - Any frontend file — no UI work in this spec

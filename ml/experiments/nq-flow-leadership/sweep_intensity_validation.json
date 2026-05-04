@@ -1,0 +1,125 @@
+{
+  "description": "Volume-unconfound validation of SPY sweep_count finding. Compares raw sweep_count to sweep_count/total_trade_count (intensity) and sweep_premium/total_premium (intensity_prem). If intensity correlations collapse, original was a volume artifact; if they survive at full magnitude, signal is pure; partial survival = partial confound.",
+  "verdict": "Signal survives but at ~55% of original magnitude. Real signal rho ~0.08-0.10; original rho=0.140 was 50/50 blend of urgency-flow and volume-regime confound.",
+  "cross_feature_stats": [
+    {
+      "comparison": "sweep_count_vs_sweep_intensity",
+      "n_pairs": 160,
+      "same_sign_pct": 91.25,
+      "cross_rho": 0.7139,
+      "median_b_over_a_abs": 0.5523
+    },
+    {
+      "comparison": "sweep_count_vs_sweep_intensity_prem",
+      "n_pairs": 160,
+      "same_sign_pct": 86.88,
+      "cross_rho": 0.4266,
+      "median_b_over_a_abs": 0.5885
+    },
+    {
+      "comparison": "sweep_intensity_vs_sweep_intensity_prem",
+      "n_pairs": 160,
+      "same_sign_pct": 88.12,
+      "cross_rho": 0.8082,
+      "median_b_over_a_abs": 1.0229
+    }
+  ],
+  "spy_60m_head_to_head": [
+    {
+      "window_min": 5,
+      "expiry_filter": "all",
+      "sweep_count_rho": 0.14,
+      "sweep_count_pbonf": 4.898542735128996e-21,
+      "sweep_intensity_rho": 0.0982,
+      "sweep_intensity_pbonf": 5.01342549531227e-10,
+      "sweep_intensity_prem_rho": 0.0854,
+      "sweep_intensity_prem_pbonf": 1.9712773621116543e-7,
+      "sweep_premium_rho": 0.1161,
+      "intensity_survival_ratio": 0.701
+    },
+    {
+      "window_min": 1,
+      "expiry_filter": "all",
+      "sweep_count_rho": 0.1381,
+      "sweep_count_pbonf": 1.807457104272903e-20,
+      "sweep_intensity_rho": 0.0912,
+      "sweep_intensity_pbonf": 1.4122870680268775e-8,
+      "sweep_intensity_prem_rho": 0.0799,
+      "sweep_intensity_prem_pbonf": 1.9890040480122733e-6,
+      "sweep_premium_rho": 0.115,
+      "intensity_survival_ratio": 0.661
+    },
+    {
+      "window_min": 5,
+      "expiry_filter": "0dte",
+      "sweep_count_rho": 0.1339,
+      "sweep_count_pbonf": 3.9957544807840145e-19,
+      "sweep_intensity_rho": 0.0825,
+      "sweep_intensity_pbonf": 7.781737751721082e-7,
+      "sweep_intensity_prem_rho": 0.0863,
+      "sweep_intensity_prem_pbonf": 1.5282250788186167e-7,
+      "sweep_premium_rho": 0.1363,
+      "intensity_survival_ratio": 0.616
+    },
+    {
+      "window_min": 1,
+      "expiry_filter": "0dte",
+      "sweep_count_rho": 0.1332,
+      "sweep_count_pbonf": 6.466533558948399e-19,
+      "sweep_intensity_rho": 0.0811,
+      "sweep_intensity_pbonf": 1.396154793396647e-6,
+      "sweep_intensity_prem_rho": 0.0793,
+      "sweep_intensity_prem_pbonf": 2.9089429617991808e-6,
+      "sweep_premium_rho": 0.1293,
+      "intensity_survival_ratio": 0.609
+    },
+    {
+      "window_min": 15,
+      "expiry_filter": "all",
+      "sweep_count_rho": 0.1229,
+      "sweep_count_pbonf": 4.4109005981403543e-16,
+      "sweep_intensity_rho": 0.0692,
+      "sweep_intensity_pbonf": 0.0001248822072855324,
+      "sweep_intensity_prem_rho": 0.0593,
+      "sweep_intensity_prem_pbonf": 0.003326823571488344,
+      "sweep_premium_rho": 0.0984,
+      "intensity_survival_ratio": 0.563
+    },
+    {
+      "window_min": 15,
+      "expiry_filter": "0dte",
+      "sweep_count_rho": 0.1167,
+      "sweep_count_pbonf": 2.2779286398951753e-14,
+      "sweep_intensity_rho": 0.0575,
+      "sweep_intensity_pbonf": 0.0065188827526427235,
+      "sweep_intensity_prem_rho": 0.0572,
+      "sweep_intensity_prem_pbonf": 0.0071405106276171216,
+      "sweep_premium_rho": 0.1178,
+      "intensity_survival_ratio": 0.493
+    },
+    {
+      "window_min": 30,
+      "expiry_filter": "all",
+      "sweep_count_rho": 0.087,
+      "sweep_count_pbonf": 9.780457861818945e-8,
+      "sweep_intensity_rho": 0.0583,
+      "sweep_intensity_pbonf": 0.004556665082661884,
+      "sweep_intensity_prem_rho": 0.0383,
+      "sweep_intensity_prem_pbonf": 0.7953791086516193,
+      "sweep_premium_rho": 0.0708,
+      "intensity_survival_ratio": 0.67
+    },
+    {
+      "window_min": 30,
+      "expiry_filter": "0dte",
+      "sweep_count_rho": 0.0805,
+      "sweep_count_pbonf": 1.7871316473623547e-6,
+      "sweep_intensity_rho": 0.0467,
+      "sweep_intensity_pbonf": 0.12927388914110716,
+      "sweep_intensity_prem_rho": 0.0627,
+      "sweep_intensity_prem_pbonf": 0.0012875563567551589,
+      "sweep_premium_rho": 0.0881,
+      "intensity_survival_ratio": 0.58
+    }
+  ]
+}

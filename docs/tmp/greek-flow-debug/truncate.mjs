@@ -12,7 +12,9 @@ import { neon } from '@neondatabase/serverless';
 
 const url = process.env.DATABASE_URL;
 if (!url) {
-  console.error('DATABASE_URL missing — pull .env.local with `vercel env pull .env.local`');
+  console.error(
+    'DATABASE_URL missing — pull .env.local with `vercel env pull .env.local`',
+  );
   process.exit(1);
 }
 const sql = neon(url);

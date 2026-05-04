@@ -14,22 +14,22 @@ This is the second consumer of `zero_gamma_levels` (after the Anthropic analyze 
 
 ## Non-goals
 
-- No predictive modeling. The tile reflects *current* dealer regime, not *projected* regime.
+- No predictive modeling. The tile reflects _current_ dealer regime, not _projected_ regime.
 - No trade signals or entries derived from the tile — that's Phase 3 territory.
 - No new data sources. Reads only `zero_gamma_levels` (already populated by the `compute-zero-gamma` cron).
 - No cross-ticker regime aggregation. Each cell is independent.
 
 ## Locked decisions (from scoping conversation 2026-05-03)
 
-| Setting                  | Value                                                                                                |
-| ------------------------ | ---------------------------------------------------------------------------------------------------- |
-| Tickers                  | SPX, SPY, QQQ, NDX (all four — already in `zero_gamma_tickers.ts`)                                   |
-| States                   | `long-γ` / `short-γ` / `transition` / `uncertain`                                                    |
-| Sign convention          | Direct: `net_gamma_at_spot > 0` ⇒ dealers long γ (interpretation #1, confirmed via TRACE spot-check) |
-| Confidence gate          | `confidence < 0.10` ⇒ `uncertain` (Concern #3 from audit)                                            |
-| Boundary buffer          | `\|spot − zero_gamma\| / spot < 0.3%` ⇒ `transition` (covers the EOD ambiguity case)                 |
-| Mount                    | Own section above Strike Battle Map                                                                  |
-| Cadence                  | Polls every 30s during market hours (matches Strike Battle Map / SectionBox sibling pattern)         |
+| Setting                   | Value                                                                                                |
+| ------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Tickers                   | SPX, SPY, QQQ, NDX (all four — already in `zero_gamma_tickers.ts`)                                   |
+| States                    | `long-γ` / `short-γ` / `transition` / `uncertain`                                                    |
+| Sign convention           | Direct: `net_gamma_at_spot > 0` ⇒ dealers long γ (interpretation #1, confirmed via TRACE spot-check) |
+| Confidence gate           | `confidence < 0.10` ⇒ `uncertain` (Concern #3 from audit)                                            |
+| Boundary buffer           | `\|spot − zero_gamma\| / spot < 0.3%` ⇒ `transition` (covers the EOD ambiguity case)                 |
+| Mount                     | Own section above Strike Battle Map                                                                  |
+| Cadence                   | Polls every 30s during market hours (matches Strike Battle Map / SectionBox sibling pattern)         |
 | Live mode only on Mondays | Daemon writes forward; backfilled days exist via `compute-zero-gamma` cron, so historical reads work |
 
 ## Classifier rules
@@ -108,19 +108,19 @@ Total: 9 new files + 3 modifications across 5 phases. Each phase fits under the 
 
 Color tokens (Tailwind):
 
-- `long-γ`     → `bg-sky-400/15 text-sky-300 border-sky-400/40` (matches StrikeRow.tsx GAMMA_POS hue)
-- `short-γ`    → `bg-amber-400/15 text-amber-300 border-amber-400/40` (matches GAMMA_NEG)
+- `long-γ` → `bg-sky-400/15 text-sky-300 border-sky-400/40` (matches StrikeRow.tsx GAMMA_POS hue)
+- `short-γ` → `bg-amber-400/15 text-amber-300 border-amber-400/40` (matches GAMMA_NEG)
 - `transition` → `bg-zinc-400/10 text-zinc-300 border-zinc-400/30 border-dashed`
-- `uncertain`  → `bg-zinc-700/30 text-zinc-500 border-zinc-700/40`
+- `uncertain` → `bg-zinc-700/30 text-zinc-500 border-zinc-700/40`
 
 Hover tooltip per cell shows: `spot`, `zero_gamma`, `net_gamma_at_spot`, `confidence`, `ts` formatted as CT time.
 
 ## Thresholds / constants — locked
 
 ```ts
-export const REGIME_CONFIDENCE_GATE = 0.1;  // below ⇒ uncertain
-export const REGIME_BOUNDARY_PCT = 0.003;   // 0.3% of spot ⇒ transition
-export const REGIME_STALE_AGE_MS = 15 * 60 * 1000;  // 15 min ⇒ uncertain
+export const REGIME_CONFIDENCE_GATE = 0.1; // below ⇒ uncertain
+export const REGIME_BOUNDARY_PCT = 0.003; // 0.3% of spot ⇒ transition
+export const REGIME_STALE_AGE_MS = 15 * 60 * 1000; // 15 min ⇒ uncertain
 ```
 
 These ride alongside the existing zero-gamma constants — likely co-located in a new `api/_lib/dealer-regime-constants.ts` so the frontend hook and the classifier both consume the same values.
@@ -141,12 +141,12 @@ Each phase is independently shippable and reviewable.
 
 ## Risks
 
-| Risk                                                                                              | Mitigation                                                                                                     |
-| ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| Most rows have `confidence < 0.10` ⇒ tile says `uncertain` 80% of the time                        | The 0.10 gate is conservative. Track the state distribution post-launch; relax to 0.05 if `uncertain` dominates |
-| Boundary buffer of 0.3% misses transition cases on volatile days                                  | The buffer is intentionally tight. Re-tune after first volatile session if classifier flickers between states |
+| Risk                                                                                               | Mitigation                                                                                                             |
+| -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Most rows have `confidence < 0.10` ⇒ tile says `uncertain` 80% of the time                         | The 0.10 gate is conservative. Track the state distribution post-launch; relax to 0.05 if `uncertain` dominates        |
+| Boundary buffer of 0.3% misses transition cases on volatile days                                   | The buffer is intentionally tight. Re-tune after first volatile session if classifier flickers between states          |
 | `compute-zero-gamma` cron silently fails ⇒ stale rows ⇒ tile says `uncertain` for hours undetected | Stale-data guard (15-minute age) enforces the failure mode is visible (`uncertain` cells) rather than a stale `long-γ` |
-| Sign convention drifts if UW changes their per-leg sign tagging                                  | Phase 5 TRACE spot-check is one-time; add a daily cron-driven sanity probe in a follow-up if drift is suspected |
+| Sign convention drifts if UW changes their per-leg sign tagging                                    | Phase 5 TRACE spot-check is one-time; add a daily cron-driven sanity probe in a follow-up if drift is suspected        |
 
 ## Decision log
 

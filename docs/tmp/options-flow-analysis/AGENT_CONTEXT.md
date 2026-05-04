@@ -80,14 +80,14 @@ same file. Mode B requires `|strike/spot - 1| ≤ 0.10` (in-play gate).
 
 ## Where to go next
 
-| If you want to... | Read this |
-|---|---|
-| Append a new trading day's data to the analysis + DB | [PIPELINE.md](./PIPELINE.md) |
-| Check the historical pass/fail validation log | [PIPELINE_STATE.md](./PIPELINE_STATE.md) |
+| If you want to...                                                                                | Read this                                                                                                   |
+| ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| Append a new trading day's data to the analysis + DB                                             | [PIPELINE.md](./PIPELINE.md)                                                                                |
+| Check the historical pass/fail validation log                                                    | [PIPELINE_STATE.md](./PIPELINE_STATE.md)                                                                    |
 | Read the source-of-truth design doc (rule rationale, alternatives considered, negative findings) | [docs/superpowers/specs/lottery-finder-2026-05-02.md](../../superpowers/specs/lottery-finder-2026-05-02.md) |
-| See how the live cron writes fires to Postgres | `api/cron/detect-lottery-fires.ts` |
-| See how the React component consumes fires | `src/components/LotteryFinder/LotteryFinderSection.tsx` |
-| See how the daemon writes the WS feed the cron reads | `uw-stream/src/handlers/option_trades.py` |
+| See how the live cron writes fires to Postgres                                                   | `api/cron/detect-lottery-fires.ts`                                                                          |
+| See how the React component consumes fires                                                       | `src/components/LotteryFinder/LotteryFinderSection.tsx`                                                     |
+| See how the daemon writes the WS feed the cron reads                                             | `uw-stream/src/handlers/option_trades.py`                                                                   |
 
 ## What NOT to do
 

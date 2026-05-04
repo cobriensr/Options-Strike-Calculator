@@ -1,0 +1,20 @@
+{
+  "n_trades": 10,
+  "win_rate_pct": 100.0,
+  "avg_win_pct": 0.1967,
+  "avg_loss_pct": null,
+  "expectancy_pct": 0.1967,
+  "gross_total_return_pct": 2.0,
+  "net_total_return_pct": 1.967,
+  "max_drawdown_pct": 0.0,
+  "profit_factor": NaN,
+  "exit_reason_breakdown": {
+    "tp": 10
+  },
+  "bucket_breakdown": {
+    "pm": 9,
+    "open": 1
+  },
+  "avg_hold_minutes": 6.0,
+  "trade_dates": ["2026-04-27", "2026-04-28", "2026-04-30", "2026-05-01"]
+}

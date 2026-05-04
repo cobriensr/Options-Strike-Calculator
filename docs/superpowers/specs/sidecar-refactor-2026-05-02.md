@@ -296,24 +296,24 @@ line becomes explicit.
 
 Shipped phases (in commit order; 16 commits total):
 
-| Phase | Commit    | Title                                                       |
-| ----- | --------- | ----------------------------------------------------------- |
-| plan  | b8a0dceb  | Plan doc                                                    |
-| 1a    | 0e482b17  | main.py validate env BEFORE Theta launches                  |
-| 1b    | b9fabe47  | Drop dead twilio dependency                                 |
-| 1c    | 78f22856  | Move probe scripts to sidecar/scripts/                      |
-| 2a    | 5e190059  | front_month_cte SQL builder + 19 tests                      |
-| 2b    | 6c3bd2a2  | Adopt in 4 archive_query sites; standardize tiebreak        |
-| 3a    | 0addf040  | STAT_TYPE_TO_KWARG dict (90 LOC if/elif → 25 LOC)           |
-| 3b    | a1d2ba62  | Split OptionsRecordRouter off DatabentoClient (-129 LOC)    |
-| 4a    | 146bd127  | BatchedWriter[T] base for quote/trade processors            |
-| 4b    | 89cee6ef  | _execute_values_batch helper (4 callers)                    |
-| 5a    | ed092a03  | health.py route helpers + named batch-range constant        |
-| 5b    | bba0f044  | theta_fetcher `_fetch_strike_pair` extraction               |
-| 5c    | 2315968e  | theta_launcher typed `_LauncherState` dataclass             |
-| 5d    | 83ed6fde  | sentry_setup `_apply_scope` helper                          |
-| 5e    | e19ea9ec  | load_alert_config Sentry observability + UndefinedTable     |
-| 5.fu  | 41f3629f  | Final-review fixes: proc:Popen type + drop env Twilio block |
+| Phase | Commit   | Title                                                       |
+| ----- | -------- | ----------------------------------------------------------- |
+| plan  | b8a0dceb | Plan doc                                                    |
+| 1a    | 0e482b17 | main.py validate env BEFORE Theta launches                  |
+| 1b    | b9fabe47 | Drop dead twilio dependency                                 |
+| 1c    | 78f22856 | Move probe scripts to sidecar/scripts/                      |
+| 2a    | 5e190059 | front_month_cte SQL builder + 19 tests                      |
+| 2b    | 6c3bd2a2 | Adopt in 4 archive_query sites; standardize tiebreak        |
+| 3a    | 0addf040 | STAT_TYPE_TO_KWARG dict (90 LOC if/elif → 25 LOC)           |
+| 3b    | a1d2ba62 | Split OptionsRecordRouter off DatabentoClient (-129 LOC)    |
+| 4a    | 146bd127 | BatchedWriter[T] base for quote/trade processors            |
+| 4b    | 89cee6ef | \_execute_values_batch helper (4 callers)                   |
+| 5a    | ed092a03 | health.py route helpers + named batch-range constant        |
+| 5b    | bba0f044 | theta_fetcher `_fetch_strike_pair` extraction               |
+| 5c    | 2315968e | theta_launcher typed `_LauncherState` dataclass             |
+| 5d    | 83ed6fde | sentry_setup `_apply_scope` helper                          |
+| 5e    | e19ea9ec | load_alert_config Sentry observability + UndefinedTable     |
+| 5.fu  | 41f3629f | Final-review fixes: proc:Popen type + drop env Twilio block |
 
 **Final at HEAD:**
 
@@ -331,7 +331,7 @@ Shipped phases (in commit order; 16 commits total):
 
 - **`analog_days` front-month CTE** — Phase 2b excluded it because the
   CTE chain (`es_bars / day_front / front_only / per_day / window_closes
-  / path / target`) is structurally different from the canonical
+/ path / target`) is structurally different from the canonical
   `filtered → contract_volume → front_contract → fb` shape the builder
   produces. A wider builder API could accommodate it; not worth a
   standalone phase, but if a future contributor extends `front_month_cte`

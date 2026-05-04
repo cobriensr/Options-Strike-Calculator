@@ -9,20 +9,20 @@
 Add two complementary 0DTE direction-prediction surfaces driven by the UW WebSocket `gex_strike_expiry:<TICKER>` and `gex:<TICKER>` channels:
 
 1. **Strike Battle Map** — per-strike grid showing customer OTM directional flow vs dealer net gamma at the same strikes, so the trader can see at a glance which strikes are magnets (pin candidates) and which are amplifiers (cascade risk).
-2. **Dealer Regime Tile** — a single-glance tile next to the Greek Flow Verdict that classifies dealer-mechanic regime (long-γ / short-γ / zero-flip / charm-pin direction), so the verdict's "Bull confluence" or "Pin / harvest" label is qualified by what dealers *will be forced to do*.
+2. **Dealer Regime Tile** — a single-glance tile next to the Greek Flow Verdict that classifies dealer-mechanic regime (long-γ / short-γ / zero-flip / charm-pin direction), so the verdict's "Bull confluence" or "Pin / harvest" label is qualified by what dealers _will be forced to do_.
 
 These two surfaces are derived from the same data (UW WS GEX feeds), share the ingestion pipeline, and ship in two phases (Battle Map first, Regime Tile second).
 
 ## Why
 
-After fixing the `vega_flow_etf` data divergence, the four-panel Greek Flow + Verdict dashboard is correct but still tells you only about *customer intent*. Direction prediction needs a second axis — what dealers will *mechanically* do once price arrives at a given strike — to distinguish:
+After fixing the `vega_flow_etf` data divergence, the four-panel Greek Flow + Verdict dashboard is correct but still tells you only about _customer intent_. Direction prediction needs a second axis — what dealers will _mechanically_ do once price arrives at a given strike — to distinguish:
 
 - "Bull confluence + dealers short γ at top wall" → amplification, take size
 - "Bull confluence + dealers long γ at top wall" → dampened up-move, smaller size
 - "Pin/harvest + dealers long charm at K" → strong magnet to K
 - Bullish tape + zero-γ flip nearby → vol expansion risk, stand down
 
-Today TRACE/Periscope provide this via screenshot-driven Claude analysis (event-driven, manual). The UW WS GEX feeds give us a *continuous, real-time* programmatic source for the same underlying mechanics. They don't replace TRACE/Periscope; they fill the always-on dashboard slot.
+Today TRACE/Periscope provide this via screenshot-driven Claude analysis (event-driven, manual). The UW WS GEX feeds give us a _continuous, real-time_ programmatic source for the same underlying mechanics. They don't replace TRACE/Periscope; they fill the always-on dashboard slot.
 
 ## Phasing
 
@@ -234,45 +234,49 @@ Per the `unusual-whales-api` skill's "API quirks — value restatement" section:
 
 ## Open questions
 
-| # | Question | Default if unanswered |
-|---|---|---|
-| 1 | Strike radius for Battle Map: top-K nearest or fixed % band? | **Top-10 nearest 0DTE strikes (5 calls + 5 puts)** — fits a small panel and self-adjusts to spot |
-| 2 | Should the Battle Map also surface 1DTE/2DTE strikes during the last hour (charm pinning regime)? | **Phase 1: 0DTE only.** Add multi-DTE later if useful. |
-| 3 | Backfill of historical `ws_gex_strike_expiry`? | **No.** WS-only, going forward. The historical scrub on the panel will silently render fewer days until the table fills out (~1 month of history before scrub is meaningful). |
-| 4 | Frontend refresh cadence for Battle Map endpoint | **30s during market hours, frozen for date-scrubbed views.** Same pattern as `useGreekFlow`. |
-| 5 | How to surface strike concentration ratio (top1/top5)? | **Subtitle text under each ticker's section** — "concentration: 0.42 (smeared)" / "concentration: 0.71 (magnet @ 723)". |
-| 6 | Sign convention for "dealer net gamma" | UW's `call_gamma_oi + put_gamma_oi` sum (no flip applied). **Document explicitly** in `concentration.ts` so future readers don't second-guess. |
-| 7 | Visual when WS data not yet populated for a strike (e.g., backfill gap) | **Render the flow bar but leave the gamma bar greyed/empty with a "—" label.** Don't omit the strike entirely. |
+| #   | Question                                                                                          | Default if unanswered                                                                                                                                                         |
+| --- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Strike radius for Battle Map: top-K nearest or fixed % band?                                      | **Top-10 nearest 0DTE strikes (5 calls + 5 puts)** — fits a small panel and self-adjusts to spot                                                                              |
+| 2   | Should the Battle Map also surface 1DTE/2DTE strikes during the last hour (charm pinning regime)? | **Phase 1: 0DTE only.** Add multi-DTE later if useful.                                                                                                                        |
+| 3   | Backfill of historical `ws_gex_strike_expiry`?                                                    | **No.** WS-only, going forward. The historical scrub on the panel will silently render fewer days until the table fills out (~1 month of history before scrub is meaningful). |
+| 4   | Frontend refresh cadence for Battle Map endpoint                                                  | **30s during market hours, frozen for date-scrubbed views.** Same pattern as `useGreekFlow`.                                                                                  |
+| 5   | How to surface strike concentration ratio (top1/top5)?                                            | **Subtitle text under each ticker's section** — "concentration: 0.42 (smeared)" / "concentration: 0.71 (magnet @ 723)".                                                       |
+| 6   | Sign convention for "dealer net gamma"                                                            | UW's `call_gamma_oi + put_gamma_oi` sum (no flip applied). **Document explicitly** in `concentration.ts` so future readers don't second-guess.                                |
+| 7   | Visual when WS data not yet populated for a strike (e.g., backfill gap)                           | **Render the flow bar but leave the gamma bar greyed/empty with a "—" label.** Don't omit the strike entirely.                                                                |
 
 ## Thresholds / constants
 
-| Constant | Value | Rationale |
-|---|---|---|
-| `BATTLE_MAP_STRIKE_COUNT` | 10 (5 OTM call + 5 OTM put) | Fits panel, captures the magnet zone |
-| `BATTLE_MAP_REFRESH_MS` | 30,000 | Match Greek Flow panel cadence |
-| `CONCENTRATION_PIN_THRESHOLD` | 0.50 | top1/top5 ≥ 0.50 → label "magnet" |
-| `CONCENTRATION_SMEARED_THRESHOLD` | 0.30 | top1/top5 < 0.30 → label "smeared" |
-| `REGIME_LONG_GAMMA_THRESHOLD` | net γ > +50% of recent 5-day median abs(γ) | Avoid flipping label on noise |
-| `REGIME_SHORT_GAMMA_THRESHOLD` | net γ < −50% of recent 5-day median abs(γ) | Symmetric to above |
-| `REGIME_ZERO_FLIP_DISTANCE_PCT` | 0.20 | Spot within 0.20% of zero-gamma level → flag flip risk |
-| `REGIME_CHARM_PIN_HOUR_CT` | 14:00 | Only show charm-pin label after 2:00 PM CT |
-| `WS_GEX_DAEMON_BATCH_SIZE` | 100 rows | Match `flow_alerts.py` batched flush |
-| `WS_GEX_DAEMON_FLUSH_MS` | 1,000 | Match daemon convention |
+| Constant                          | Value                                      | Rationale                                              |
+| --------------------------------- | ------------------------------------------ | ------------------------------------------------------ |
+| `BATTLE_MAP_STRIKE_COUNT`         | 10 (5 OTM call + 5 OTM put)                | Fits panel, captures the magnet zone                   |
+| `BATTLE_MAP_REFRESH_MS`           | 30,000                                     | Match Greek Flow panel cadence                         |
+| `CONCENTRATION_PIN_THRESHOLD`     | 0.50                                       | top1/top5 ≥ 0.50 → label "magnet"                      |
+| `CONCENTRATION_SMEARED_THRESHOLD` | 0.30                                       | top1/top5 < 0.30 → label "smeared"                     |
+| `REGIME_LONG_GAMMA_THRESHOLD`     | net γ > +50% of recent 5-day median abs(γ) | Avoid flipping label on noise                          |
+| `REGIME_SHORT_GAMMA_THRESHOLD`    | net γ < −50% of recent 5-day median abs(γ) | Symmetric to above                                     |
+| `REGIME_ZERO_FLIP_DISTANCE_PCT`   | 0.20                                       | Spot within 0.20% of zero-gamma level → flag flip risk |
+| `REGIME_CHARM_PIN_HOUR_CT`        | 14:00                                      | Only show charm-pin label after 2:00 PM CT             |
+| `WS_GEX_DAEMON_BATCH_SIZE`        | 100 rows                                   | Match `flow_alerts.py` batched flush                   |
+| `WS_GEX_DAEMON_FLUSH_MS`          | 1,000                                      | Match daemon convention                                |
 
 ## Testing strategy
 
 **Unit:**
+
 - `concentration.ts` — concentration ratio, magnet detection, edge cases (all-zero, single-strike, missing strikes).
 - `dealer-regime-classifier.ts` — every regime + zero/empty `delta_per_one_percent_move_oi` edge case.
 - Python handler `_transform` — fixture-driven, including the empty-string-numeric quirk.
 
 **Endpoint:**
+
 - Auth (owner / guest / public), happy path, empty-table, malformed query.
 
 **Component:**
+
 - Render with sample data, verify strike ordering, magnet highlighting, tooltip text.
 
 **Integration:**
+
 - After Phase 1 ship, run a single market session + verify a screenshot of the panel against UW's TRACE/Periscope reference for the same minute. Smoke-test, no automation.
 
 ## Phasing rules

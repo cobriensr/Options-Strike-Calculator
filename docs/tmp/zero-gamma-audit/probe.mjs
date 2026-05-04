@@ -61,14 +61,19 @@ const recent = await sql`
 for (const r of recent) {
   const distancePct =
     r.zero_gamma != null
-      ? (((Number(r.zero_gamma) - Number(r.spot)) / Number(r.spot)) * 100).toFixed(2)
+      ? (
+          ((Number(r.zero_gamma) - Number(r.spot)) / Number(r.spot)) *
+          100
+        ).toFixed(2)
       : null;
   console.log(
     `  ${r.ts.toISOString?.() ?? r.ts}  ${r.ticker.padEnd(4)}  spot=${Number(r.spot).toFixed(2)}  zg=${r.zero_gamma != null ? Number(r.zero_gamma).toFixed(2) : 'null'}  Δ=${distancePct ?? '—'}%  conf=${Number(r.confidence).toFixed(2)}  netγ@spot=${r.net_gamma_at_spot != null ? Number(r.net_gamma_at_spot).toFixed(0) : 'null'}`,
   );
 }
 
-console.log('\n=== 3. SPY gamma profile around spot (most-recent snapshot) ===');
+console.log(
+  '\n=== 3. SPY gamma profile around spot (most-recent snapshot) ===',
+);
 const profile = await sql`
   WITH latest AS (
     SELECT MAX(timestamp) AS ts FROM strike_exposures WHERE ticker = 'SPY'
@@ -99,7 +104,10 @@ if (profile.length === 0) {
   // Identify nearest to spot
   let nearestIdx = 0;
   for (let i = 0; i < sorted.length; i++) {
-    if (Math.abs(sorted[i].strike - spot) < Math.abs(sorted[nearestIdx].strike - spot)) {
+    if (
+      Math.abs(sorted[i].strike - spot) <
+      Math.abs(sorted[nearestIdx].strike - spot)
+    ) {
       nearestIdx = i;
     }
   }
@@ -123,5 +131,7 @@ if (profile.length === 0) {
     else if (sorted[i].net_g < 0) negCount++;
     else zeroCount++;
   }
-  console.log(`\n  Profile-wide stats: ${sorted.length} strikes, pos=${posCount}, neg=${negCount}, zero=${zeroCount}, sign-flips=${flips}`);
+  console.log(
+    `\n  Profile-wide stats: ${sorted.length} strikes, pos=${posCount}, neg=${negCount}, zero=${zeroCount}, sign-flips=${flips}`,
+  );
 }
