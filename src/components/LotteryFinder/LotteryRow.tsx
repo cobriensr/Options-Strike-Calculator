@@ -1,4 +1,8 @@
-import { memo } from 'react';
+import { memo, useState } from 'react';
+import { useContractTape } from '../../hooks/useContractTape.js';
+import { useNetFlowHistory } from '../../hooks/useNetFlowHistory.js';
+import { ContractTapeChart } from './ContractTapeChart.js';
+import { TickerNetFlowChart } from './TickerNetFlowChart.js';
 import type { ExitPolicy, LotteryFire } from './types.js';
 import { EXIT_POLICY_LABELS, EXIT_POLICY_TOOLTIPS } from './types.js';
 
@@ -6,6 +10,8 @@ interface LotteryRowProps {
   fire: LotteryFire;
   /** Which realized exit policy to surface as the primary number. */
   exitPolicy: ExitPolicy;
+  /** Whether the parent's date is today (drives polling). */
+  marketOpen: boolean;
 }
 
 /**
@@ -89,10 +95,29 @@ const tideBadge = (
 export const LotteryRow = memo(function LotteryRow({
   fire,
   exitPolicy,
+  marketOpen,
 }: LotteryRowProps) {
   const realized = fire.outcomes[exitPolicy];
   const peak = fire.outcomes.peakCeilingPct;
   const tide = tideBadge(fire.macro.mktTideDiff);
+
+  // Expand state — when true, the per-fire panel renders below the
+  // summary lines and the two hooks fetch their data. Collapsed by
+  // default so we don't burn network on rows the user hasn't looked at.
+  const [expanded, setExpanded] = useState(false);
+
+  const tape = useContractTape({
+    chain: fire.optionChainId,
+    date: fire.date,
+    enabled: expanded,
+    marketOpen,
+  });
+  const netFlow = useNetFlowHistory({
+    ticker: fire.underlyingSymbol,
+    date: fire.date,
+    enabled: expanded,
+    marketOpen,
+  });
 
   return (
     <div className="rounded border border-neutral-800 bg-neutral-950 p-3 text-sm">
@@ -232,7 +257,73 @@ export const LotteryRow = memo(function LotteryRow({
         <span className="ml-auto text-neutral-500">
           {EXIT_POLICY_LABELS[exitPolicy]}
         </span>
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="ml-2 rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 text-[10px] font-semibold text-neutral-400 hover:text-white"
+          title={
+            expanded
+              ? 'Collapse contract + net-flow charts'
+              : 'Expand to show contract tape and ticker net-flow charts'
+          }
+          aria-expanded={expanded}
+        >
+          {expanded ? '▾ collapse' : '▸ expand'}
+        </button>
       </div>
+
+      {/* Expanded panel — twin charts. Lazy-loaded via the hooks'
+          `enabled` gate; collapsed rows do zero network. */}
+      {expanded && (
+        <div className="mt-3 grid gap-3 border-t border-neutral-800 pt-3 md:grid-cols-2">
+          <div>
+            <div className="mb-1 flex items-baseline justify-between text-[10px] uppercase tracking-wide text-neutral-500">
+              <span>Contract Tape</span>
+              <span className="text-neutral-600">
+                bid · ask · mid stack + VWAP
+              </span>
+            </div>
+            {tape.loading && tape.series.length === 0 ? (
+              <div className="text-[10px] text-neutral-500">
+                Loading tape…
+              </div>
+            ) : tape.error ? (
+              <div className="text-[10px] text-red-300">
+                tape error: {tape.error}
+              </div>
+            ) : (
+              <ContractTapeChart
+                series={tape.series}
+                markerTs={fire.triggerTimeCt}
+                ariaLabel={`${fire.optionChainId} per-minute tape`}
+              />
+            )}
+          </div>
+          <div>
+            <div className="mb-1 flex items-baseline justify-between text-[10px] uppercase tracking-wide text-neutral-500">
+              <span>{fire.underlyingSymbol} Net Flow</span>
+              <span className="text-neutral-600">
+                cum NCP (green) · cum NPP (red)
+              </span>
+            </div>
+            {netFlow.loading && netFlow.series.length === 0 ? (
+              <div className="text-[10px] text-neutral-500">
+                Loading net flow…
+              </div>
+            ) : netFlow.error ? (
+              <div className="text-[10px] text-red-300">
+                net flow error: {netFlow.error}
+              </div>
+            ) : (
+              <TickerNetFlowChart
+                series={netFlow.series}
+                markerTs={fire.triggerTimeCt}
+                ariaLabel={`${fire.underlyingSymbol} cumulative net call/put premium`}
+              />
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 });

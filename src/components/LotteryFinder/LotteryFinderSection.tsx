@@ -472,7 +472,12 @@ export function LotteryFinderSection({
               )}
             </div>
             {fires.map((f: LotteryFire) => (
-              <LotteryRow key={f.id} fire={f} exitPolicy={exitPolicy} />
+              <LotteryRow
+                key={f.id}
+                fire={f}
+                exitPolicy={exitPolicy}
+                marketOpen={marketOpen}
+              />
             ))}
           </div>
         )}
