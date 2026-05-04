@@ -103,9 +103,6 @@ const PeriscopeChatHistory = lazy(() =>
 const FuturesPanel = lazy(() =>
   import('./components/FuturesCalculator/FuturesPanel').catch(handleStaleChunk),
 );
-const GexPerStrike = lazy(() =>
-  import('./components/GexPerStrike').catch(handleStaleChunk),
-);
 const GexTarget = lazy(() =>
   import('./components/GexTarget')
     .then((m) => ({ default: m.GexTarget }))
@@ -608,7 +605,6 @@ export default function StrikeCalculator() {
         ? [
             { id: 'sec-darkpool', label: 'Dark Pool Levels' },
             { id: 'sec-trace-live', label: 'TRACE Live' },
-            { id: 'sec-gex', label: 'GEX Per Strike' },
             { id: 'sec-gex-target', label: 'GEX Target' },
             { id: 'sec-gex-landscape', label: 'GEX Landscape' },
             { id: 'sec-zero-gamma', label: 'Zero Gamma' },
@@ -895,33 +891,6 @@ export default function StrikeCalculator() {
                 >
                   <TRACELiveDashboard
                     marketOpen={market.data.quotes?.marketOpen ?? false}
-                  />
-                </GatedSection>
-
-                <GatedSection
-                  gate={hasMarketContext}
-                  id="sec-gex"
-                  label="0DTE GEX Per Strike"
-                  fallback={<SkeletonSection lines={6} tall />}
-                >
-                  <GexPerStrike
-                    strikes={gexStrike.strikes}
-                    loading={gexStrike.loading}
-                    error={gexStrike.error}
-                    timestamp={gexStrike.timestamp}
-                    timestamps={gexStrike.timestamps}
-                    onRefresh={gexStrike.refresh}
-                    selectedDate={gexStrike.selectedDate}
-                    onDateChange={gexStrike.setSelectedDate}
-                    isLive={gexStrike.isLive}
-                    isToday={gexStrike.isToday}
-                    isScrubbed={gexStrike.isScrubbed}
-                    canScrubPrev={gexStrike.canScrubPrev}
-                    canScrubNext={gexStrike.canScrubNext}
-                    onScrubPrev={gexStrike.scrubPrev}
-                    onScrubNext={gexStrike.scrubNext}
-                    onScrubTo={gexStrike.scrubTo}
-                    onScrubLive={gexStrike.scrubLive}
                   />
                 </GatedSection>
 
