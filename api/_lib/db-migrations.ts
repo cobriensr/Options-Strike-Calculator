@@ -3559,4 +3559,14 @@ export const MIGRATIONS: Migration[] = [
       'every analyze-context build.',
     statements: (sql) => [sql`DROP TABLE IF EXISTS whale_alerts`],
   },
+  {
+    id: 119,
+    description:
+      'Drop institutional_blocks table. The SPXW Institutional Program ' +
+      'component was removed from the app along with the ' +
+      '/api/institutional-program endpoints, the fetch-spxw-blocks cron, ' +
+      'and the orphaned anomaly-context.ts (last query against this ' +
+      'table). No remaining reader writes to or reads from it.',
+    statements: (sql) => [sql`DROP TABLE IF EXISTS institutional_blocks`],
+  },
 ];

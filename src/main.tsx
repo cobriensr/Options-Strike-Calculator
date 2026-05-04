@@ -137,8 +137,6 @@ if (import.meta.env.PROD)
       { path: '/api/vix-snapshots-recent', method: 'GET' },
       { path: '/api/ml/analyze-plots', method: 'POST' },
       { path: '/api/cron/warm-tbbo-percentile', method: 'GET' },
-      { path: '/api/institutional-program', method: 'GET' },
-      { path: '/api/institutional-program/strike-heatmap', method: 'GET' },
       { path: '/api/lottery-finder', method: 'GET' },
       { path: '/api/trace-live-calibration', method: 'GET' },
       { path: '/api/strike-trade-volume', method: 'GET' },

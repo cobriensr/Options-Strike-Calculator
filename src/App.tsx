@@ -137,11 +137,6 @@ const DealerRegimeTile = lazy(() =>
 const BWBCalculator = lazy(() =>
   import('./components/BWBCalculator').catch(handleStaleChunk),
 );
-const InstitutionalProgramSection = lazy(() =>
-  import('./components/InstitutionalProgram/InstitutionalProgramSection')
-    .then((m) => ({ default: m.InstitutionalProgramSection }))
-    .catch(handleStaleChunk),
-);
 const LotteryFinderSection = lazy(() =>
   import('./components/LotteryFinder/LotteryFinderSection')
     .then((m) => ({ default: m.LotteryFinderSection }))
@@ -620,7 +615,6 @@ export default function StrikeCalculator() {
             { id: 'sec-market-internals', label: 'Breadth & TICK' },
             { id: 'sec-vega-spikes', label: 'Dir Vega Spikes' },
             { id: 'sec-greek-flow', label: 'Greek Flow' },
-            { id: 'sec-institutional-program', label: 'Institutional Program' },
           ]
         : []),
       ...(isAuthenticated
@@ -1034,15 +1028,6 @@ export default function StrikeCalculator() {
                   <StrikeBattleMap
                     marketOpen={market.data.quotes?.marketOpen ?? false}
                   />
-                </GatedSection>
-
-                <GatedSection
-                  gate={hasMarketContext}
-                  id="sec-institutional-program"
-                  label="Institutional Program"
-                  fallback={<SkeletonSection lines={6} />}
-                >
-                  <InstitutionalProgramSection />
                 </GatedSection>
 
                 <GatedSection
