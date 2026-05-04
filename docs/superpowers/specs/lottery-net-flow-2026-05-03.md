@@ -71,13 +71,13 @@ Mirrors `option_trades.py`:
 Add `net_flow_lottery` shorthand to `Settings.channels` mirroring
 `option_trades_lottery` so env-var stays compact:
 
-```
+```bash
 WS_CHANNELS=flow-alerts,option_trades_lottery,net_flow_lottery
 ```
 
 ### 1.3 — Read endpoint `GET /api/net-flow-history`
 
-```
+```text
 ?ticker=TSLA&date=2026-05-01&from=09:00&to=14:00
 ```
 
@@ -188,7 +188,7 @@ commits (charts + endpoints in one, expand UX wiring in another).
 Per ticker, every minute (cron), compute over a rolling 30-minute
 window of `ws_net_flow_per_ticker`:
 
-```
+```text
 slope = (ncp[end] - ncp[start]) / 30  # per-minute rate
 range = max(|ncp[i]|) over the window
 plateau_score = |slope| / range  # dimensionless, smaller = flatter
@@ -240,32 +240,60 @@ distribution shift before any code that uses the flag for selection.
    institutional-large)? Could be a secondary heuristic: plateau-AT-
    high-magnitude is more meaningful than plateau-at-low-magnitude.
 
-2. **Cumulative vs delta NCP** — the WS payload gives per-tick deltas
-   (`net_call_prem` is the most-recent observation, not cumulative).
-   We need to integrate cumulatively for the chart. Confirm this in
-   the daemon's `_transform` (probably just `SUM(net_call_prem) OVER (PARTITION BY ticker, date ORDER BY ts)` at read time).
+2. ~~**Cumulative vs delta NCP**~~ **ANSWERED 2026-05-03 from UW
+   reference notebook**
+   ([net_prem_ticks_dashboard_v2.ipynb](https://github.com/unusual-whales/api-examples/blob/main/examples/net-prem-ticks-dashboard/net_prem_ticks_dashboard_v2.ipynb)):
+   each emission is a per-minute (REST) or per-tick (WS) DELTA, not
+   cumulative. UW's example does `cumsum()` to render the daily
+   chart. Decision: daemon stores raw deltas; cumulative is computed
+   at read time via `SUM(net_call_prem) OVER (PARTITION BY ticker,
+   date ORDER BY ts)`. Single source of truth, no double-counting
+   risk on retries.
 
 3. **Tickers without enough flow** — RUTW, USAR, SOUN may have
    sparse net_flow ticks (UW only emits on activity). The plateau
    detector should require a minimum N ticks in the window before
    firing, otherwise sparse-but-flat = false positive.
 
+4. **WS payload vs REST payload field set** — the REST endpoint
+   `/api/stock/{ticker}/net-prem-ticks` returns side-split volumes
+   per minute (`call_volume_bid_side`, `call_volume_ask_side`,
+   `put_volume_bid_side`, `put_volume_ask_side`) which the WS
+   payload does NOT carry (only the net diffs `net_call_vol` /
+   `net_put_vol`). Side-splits would let the panel show "calls
+   BOUGHT aggressively vs faded" — strictly richer than the diff.
+
+   Decisions to make:
+
+   - Hybrid daemon (WS for live ticks + REST polled per-minute for
+     side-splits)?
+   - Or REST-only via cron, accept ~1-min latency vs WS sub-second?
+   - Or skip side-splits at v1 and add later if the panel proves
+     useful?
+
+   Recommend WS-only at v1 (matches existing daemon pattern, lower
+   complexity); promote to hybrid only if the side-split read in the
+   panel turns out to be load-bearing.
+
 ---
 
 ## Success criteria
 
 **Phase 1:**
-- [ ] Daemon ingests net_flow:<TICKER> for all lottery tickers
+
+- [ ] Daemon ingests `net_flow:<TICKER>` for all lottery tickers
 - [ ] Table populated with ≥1 day of data
 - [ ] Endpoint returns valid time-series for any subscribed ticker
 
 **Phase 2:**
+
 - [ ] LotteryRow expands inline with both charts visible
 - [ ] Charts load only when expanded (lazy network)
 - [ ] Fire-time vertical marker aligned across both charts
 - [ ] Empty-state messages render for pre-backfill fires
 
 **Phase 3 (optional):**
+
 - [ ] Backtest documented in docs/tmp/
 - [ ] Plateau-flag adds ≥10pp lift on at least one fire subset OR
       gets explicitly shipped as informational-only with the
