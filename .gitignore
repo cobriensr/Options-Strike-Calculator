@@ -164,3 +164,7 @@ docs/tmp/options-flow-analysis/outputs/macro_strike_gex.csv
 
 # Python bytecode cache in scripts dir
 docs/tmp/options-flow-analysis/scripts/__pycache__/
+
+# Codex
+.agents/
+.codex/
