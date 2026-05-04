@@ -71,6 +71,7 @@ function makeResponse(
     expiry: '2026-05-04',
     at: null,
     rows,
+    timestamps: [],
     asOf: '2026-05-04T19:35:00Z',
   };
 }

@@ -159,7 +159,10 @@ describe('GET /api/gex-strike-expiry', () => {
   // ── Empty path ─────────────────────────────────────────────
 
   it('returns 200 with empty rows when table has no data for the date', async () => {
-    mockSql.mockResolvedValueOnce([]);
+    // Two queries fire in parallel: latest-per-strike + timestamps.
+    // Order of resolution doesn't matter, but mockResolvedValueOnce
+    // returns by call order, so seed both.
+    mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
     const req = mockRequest({
       method: 'GET',
       query: { ticker: 'SPY', expiry: '2026-05-01' },
@@ -172,16 +175,22 @@ describe('GET /api/gex-strike-expiry', () => {
       expiry: '2026-05-01',
       at: null,
       rows: [],
+      timestamps: [],
     });
   });
 
   // ── Happy path (no `at`) ───────────────────────────────────
 
   it('returns mapped rows with numeric coercion on the happy path', async () => {
-    mockSql.mockResolvedValueOnce([
-      fakeRow(722, '2026-05-01T20:14:00Z'),
-      fakeRow(723, '2026-05-01T20:14:00Z'),
-    ]);
+    mockSql
+      .mockResolvedValueOnce([
+        fakeRow(722, '2026-05-01T20:14:00Z'),
+        fakeRow(723, '2026-05-01T20:14:00Z'),
+      ])
+      .mockResolvedValueOnce([
+        { ts_minute: '2026-05-01T20:13:00Z' },
+        { ts_minute: '2026-05-01T20:14:00Z' },
+      ]);
     const req = mockRequest({
       method: 'GET',
       query: { ticker: 'SPY', expiry: '2026-05-01' },
@@ -195,21 +204,29 @@ describe('GET /api/gex-strike-expiry', () => {
       expiry: '2026-05-01',
       at: null,
     });
-    const body = res._json as { rows: Array<Record<string, unknown>> };
-    const rows = body.rows;
-    expect(rows).toHaveLength(2);
-    expect(rows[0]).toMatchObject({
+    const body = res._json as {
+      rows: Array<Record<string, unknown>>;
+      timestamps: string[];
+    };
+    expect(body.rows).toHaveLength(2);
+    expect(body.rows[0]).toMatchObject({
       strike: 722,
       price: 722.18,
       call_gamma_oi: 174792.59,
       put_gamma_oi: -1172037.66,
     });
+    expect(body.timestamps).toEqual([
+      '2026-05-01T20:13:00.000Z',
+      '2026-05-01T20:14:00.000Z',
+    ]);
   });
 
   // ── Happy path with `at` ───────────────────────────────────
 
   it('passes the at parameter through to the SQL query', async () => {
-    mockSql.mockResolvedValueOnce([fakeRow(722, '2026-05-01T19:30:00Z')]);
+    mockSql
+      .mockResolvedValueOnce([fakeRow(722, '2026-05-01T19:30:00Z')])
+      .mockResolvedValueOnce([{ ts_minute: '2026-05-01T19:30:00Z' }]);
     const req = mockRequest({
       method: 'GET',
       query: {
@@ -226,13 +243,17 @@ describe('GET /api/gex-strike-expiry', () => {
       ticker: 'QQQ',
       expiry: '2026-05-01',
       at: '2026-05-01T19:30:00Z',
+      timestamps: ['2026-05-01T19:30:00.000Z'],
     });
   });
 
   // ── Error propagation ──────────────────────────────────────
 
   it('returns 500 when the DB query throws', async () => {
-    mockSql.mockRejectedValueOnce(new Error('Connection refused'));
+    // Both parallel queries reject; Promise.all surfaces the first.
+    mockSql
+      .mockRejectedValueOnce(new Error('Connection refused'))
+      .mockRejectedValueOnce(new Error('Connection refused'));
     const req = mockRequest({
       method: 'GET',
       query: { ticker: 'SPY', expiry: '2026-05-01' },

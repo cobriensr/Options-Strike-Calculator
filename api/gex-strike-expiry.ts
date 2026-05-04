@@ -40,6 +40,7 @@ import {
 import { gexStrikeExpiryQuerySchema } from './_lib/validation.js';
 import {
   getLatestGexPerStrike,
+  getTimestampsForDay,
   type GexStrikeExpiryRow,
   type GexStrikeExpiryTicker,
 } from './_lib/db-gex-strike-expiry.js';
@@ -49,6 +50,12 @@ export interface GexStrikeExpiryResponse {
   expiry: string;
   at: string | null;
   rows: GexStrikeExpiryRow[];
+  /**
+   * Every distinct `ts_minute` value for (ticker, expiry), ascending.
+   * Powers the scrub control's prev/next navigation — same role
+   * `timestamps[]` plays in /api/gex-per-strike's response.
+   */
+  timestamps: string[];
   asOf: string;
 }
 
@@ -77,17 +84,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const asOf = new Date().toISOString();
 
     try {
-      const rows = await getLatestGexPerStrike({
-        ticker,
-        expiry,
-        at: at ?? null,
-      });
+      // Run both queries in parallel so the scrub-timestamp helper
+      // doesn't bolt extra latency onto the panel's primary fetch.
+      const [rows, timestamps] = await Promise.all([
+        getLatestGexPerStrike({
+          ticker,
+          expiry,
+          at: at ?? null,
+        }),
+        getTimestampsForDay(ticker, expiry),
+      ]);
 
       const response: GexStrikeExpiryResponse = {
         ticker,
         expiry,
         at: at ?? null,
         rows,
+        timestamps,
         asOf,
       };
 

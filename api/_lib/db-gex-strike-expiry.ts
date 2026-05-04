@@ -202,3 +202,23 @@ export async function getLatestGexPerStrike(
   `) as RawRow[];
   return rows.map(mapRow);
 }
+
+/**
+ * Distinct ts_minute values for (ticker, expiry), ascending. Used by the
+ * /api/gex-strike-expiry endpoint to power the scrub control's prev/next
+ * navigation — same role timestamps[] plays for /api/gex-per-strike.
+ */
+export async function getTimestampsForDay(
+  ticker: GexStrikeExpiryTicker,
+  expiry: string,
+): Promise<string[]> {
+  const sql = getDb();
+  const rows = (await sql`
+    SELECT DISTINCT ts_minute
+    FROM ws_gex_strike_expiry
+    WHERE ticker = ${ticker}
+      AND expiry = ${expiry}::date
+    ORDER BY ts_minute ASC
+  `) as Array<{ ts_minute: string | Date }>;
+  return rows.map((r) => toIso(r.ts_minute));
+}

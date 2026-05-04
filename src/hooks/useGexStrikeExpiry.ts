@@ -61,6 +61,12 @@ export interface GexStrikeExpiryResponse {
   expiry: string;
   at: string | null;
   rows: GexStrikeExpiryRow[];
+  /**
+   * Every distinct `ts_minute` value for (ticker, expiry), ascending.
+   * Surfaced by the API to power scrub-control prev/next navigation in
+   * the GexLandscape consumer (see useGexLandscapeData).
+   */
+  timestamps: string[];
   asOf: string;
 }
 
