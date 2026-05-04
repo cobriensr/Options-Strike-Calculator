@@ -126,21 +126,33 @@ const tickers =
 
 // ── Trading-day generator ────────────────────────────────────
 
+// Always compute calendar dates in CT, never local TZ. Original bug:
+// d.getDay() used local TZ while d.toISOString().slice(0, 10) used UTC.
+// When run from CT after 6 PM, the UTC date was 1 day ahead of the CT
+// date, so the script pushed Saturday-labeled strings for Friday data,
+// silently missing Mondays in the resulting series.
 function getTradingDays(count) {
-  const dates = [];
-  const d = new Date();
-  // Include today if a weekday (UW returns whatever's printed so far).
-  const today = d.getDay();
-  if (today !== 0 && today !== 6) {
-    dates.push(d.toISOString().slice(0, 10));
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Chicago',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const dates = new Set();
+  let cursor = new Date();
+  while (dates.size < count) {
+    const ctDateStr = fmt.format(cursor); // YYYY-MM-DD in CT
+    if (!dates.has(ctDateStr)) {
+      // 18:00 UTC = midday CT regardless of DST — anchors the calendar
+      // date unambiguously to its weekday.
+      const dayOfWeek = new Date(`${ctDateStr}T18:00:00Z`).getUTCDay();
+      if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+        dates.add(ctDateStr);
+      }
+    }
+    cursor = new Date(cursor.getTime() - 24 * 60 * 60 * 1000);
   }
-  while (dates.length < count) {
-    d.setDate(d.getDate() - 1);
-    const day = d.getDay();
-    if (day === 0 || day === 6) continue;
-    dates.push(d.toISOString().slice(0, 10));
-  }
-  return dates.reverse();
+  return Array.from(dates).sort();
 }
 
 // ── Session-window filter (08:30–15:00 CT) ───────────────────
@@ -349,7 +361,14 @@ async function pmapTickers(tickerList, dates, maxTsByTicker, concurrency) {
       for (const date of dates) {
         // Resumability: skip dates strictly before the latest covered
         // date. Re-fetch the latest-covered date in case it was partial.
-        if (maxDate && date < maxDate) {
+        // Set BYPASS_RESUME=1 to force-fetch every date (ON CONFLICT
+        // makes it idempotent — useful for filling gaps left by an
+        // earlier broken run).
+        if (
+          process.env.BYPASS_RESUME !== '1' &&
+          maxDate &&
+          date < maxDate
+        ) {
           perTicker.skipped++;
           totals.skipped++;
           continue;
