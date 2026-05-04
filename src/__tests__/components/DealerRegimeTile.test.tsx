@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { DealerRegimeTile } from '../../components/DealerRegimeTile';
 import type {
   DealerRegimeRow,
@@ -49,6 +49,8 @@ function row(
 
 function ret(rows: DealerRegimeRow[]): UseDealerRegimeReturn {
   const data: DealerRegimeResponse = {
+    date: null,
+    at: null,
     rows,
     asOf: '2026-05-04T18:00:00Z',
   };
@@ -172,4 +174,41 @@ describe('DealerRegimeTile', () => {
     const cell = screen.getByTestId('dealer-regime-cell-SPX');
     expect(cell.textContent).toMatch(/\+3\.5B/);
   });
+
+  // ── Phase 5b: backtest scrubber ────────────────────────────
+
+  it('renders the minute scrubber slider', () => {
+    mockHook.mockReturnValue(happyPathReturn());
+    render(<DealerRegimeTile marketOpen={true} />);
+    expect(screen.getByLabelText(/snapshot minute/i)).toBeInTheDocument();
+  });
+
+  it('passes a UTC ISO `at` timestamp to the hook when the scrubber moves', () => {
+    mockHook.mockReturnValue(happyPathReturn());
+    render(<DealerRegimeTile marketOpen={true} />);
+    const slider = screen.getByLabelText(/snapshot minute/i);
+    fireEvent.change(slider, { target: { value: '600' } }); // 10:00 CT
+    const lastCall = mockHook.mock.calls.at(-1);
+    // Hook signature: useDealerRegime(marketOpen, date, at). Third arg
+    // should now be a UTC ISO string.
+    const at = lastCall?.[2];
+    expect(typeof at).toBe('string');
+    expect(at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00\.000Z$/);
+  });
+
+  it('uses scrubbed timestamp as classifier `now` so a past row is not flagged stale', () => {
+    // Row at FRESH_TS (5 min before TEST_NOW) — would normally pass the
+    // staleness gate. But if the test scrubs to a date BEFORE TEST_NOW,
+    // the classifier's now should anchor to that date, not wall-clock.
+    // With selectedDate=today (default), no scrub → live mode → row
+    // remains classified as long-γ (fresh). Verifies the "live" path.
+    mockHook.mockReturnValue(happyPathReturn());
+    render(<DealerRegimeTile marketOpen={true} />);
+    const cell = screen.getByTestId('dealer-regime-cell-SPX');
+    expect(cell.textContent).toMatch(/long-γ/);
+  });
 });
+
+function happyPathReturn(): UseDealerRegimeReturn {
+  return ret([row('SPX'), row('NDX'), row('SPY'), row('QQQ')]);
+}

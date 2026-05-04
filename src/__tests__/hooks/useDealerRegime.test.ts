@@ -173,4 +173,50 @@ describe('useDealerRegime', () => {
     await act(async () => {});
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });
+
+  // ── Phase 5b: scrubber params ──────────────────────────────
+
+  it('appends ?date=YYYY-MM-DD when scrubbed to a past date', async () => {
+    renderHook(() => useDealerRegime(true, '2026-05-01', null));
+    await act(async () => {});
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/dealer-regime?date=2026-05-01',
+      expect.any(Object),
+    );
+  });
+
+  it('appends ?at=ISO when scrubbed to a specific minute', async () => {
+    renderHook(() =>
+      useDealerRegime(true, null, '2026-05-01T19:00:00.000Z'),
+    );
+    await act(async () => {});
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/dealer-regime?at=2026-05-01T19%3A00%3A00.000Z',
+      expect.any(Object),
+    );
+  });
+
+  it('does not poll when date is set — past data is static', async () => {
+    renderHook(() => useDealerRegime(true, '2026-05-01', null));
+    await act(async () => {});
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    mockFetch.mockClear();
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.DEALER_REGIME * 3);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('does not poll when at is set — snapshot is static', async () => {
+    renderHook(() =>
+      useDealerRegime(true, null, '2026-05-01T19:00:00.000Z'),
+    );
+    await act(async () => {});
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    mockFetch.mockClear();
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.DEALER_REGIME * 3);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
 });
