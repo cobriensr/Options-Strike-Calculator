@@ -110,7 +110,12 @@ class Connector:
     async def _subscribe_all(self, ws) -> None:
         """Send a join frame for every configured channel."""
         for ch in self.channels:
-            frame = orjson.dumps({"channel": ch, "msg_type": "join"})
+            # MUST send as a WS TEXT frame (opcode 0x1), not BINARY (0x2):
+            # UW's server only reads join control messages from text frames
+            # and silently drops binary ones. orjson.dumps() returns bytes
+            # which the websockets lib would send as BINARY — decode to str
+            # so it goes out as TEXT.
+            frame = orjson.dumps({"channel": ch, "msg_type": "join"}).decode()
             await ws.send(frame)
             # Subscription is pending until the server's ok ack arrives;
             # router flips this flag when it sees the ack.
