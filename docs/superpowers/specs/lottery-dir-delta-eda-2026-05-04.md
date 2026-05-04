@@ -167,3 +167,43 @@ Pre-committed decision rules (same as OTM EDA):
 
 - Endpoint behavior verified 2026-05-04 with curl probe on RDDT — 388 rows for the most recent date, retention extends through at least 2026-01-15 (~4 months).
 - Greek-flow timestamps are reported per-minute, same cadence as net-prem-ticks. The two endpoints don't share timestamps row-for-row but are both per-minute snapshots — separate tables avoids any reconciliation bugs.
+
+---
+
+## Result (appended 2026-05-04)
+
+**Verdict: TIE on lottery rate — but Dir Delta wins on median P&L. Hold off on shipping pending the user's call.**
+
+Headline (41,941 fires with both inversions computable):
+
+- trail-30/10 lottery rate: 1.43%
+- inversion (all-NCP): **6.84%**
+- inversion (Dir Delta): **6.82%**
+- delta: **−0.02pp** (effectively identical)
+
+But the P&L distribution tells a different story than lottery rate alone:
+
+| metric              | inv_all | inv_dirdelta |          Δ |
+| ------------------- | ------: | -----------: | ---------: |
+| median              |   −3.6% |    **−1.4%** | **+2.2pp** |
+| mean                |   +8.6% |   **+10.9%** | **+2.3pp** |
+| p25 (worst-quarter) |  −30.0% |   **−25.4%** | **+4.6pp** |
+| p75                 |  +20.9% |       +22.9% |     +2.0pp |
+
+**Dir Delta is a "less downside, same upside" change.** Lottery rate (≥+100% wins) is unchanged because the rare home-run fires don't depend on the matched-side flow specifics. But the everyday median P&L is meaningfully better — the worst quarter of trades loses ~4.6pp less.
+
+Stratified by mode:
+
+- A_intraday_0DTE: −0.85pp (Dir Delta worse for 0DTE)
+- B_multi_day_DTE1_3: +0.48pp (Dir Delta better for multi-day)
+
+Per the spec's pre-committed rule (lottery-rate ±2pp band), this is a
+TIE → "keep all-NCP, move to Dir Vega."
+
+But the improvement on median + mean + p25 is real signal that the
+lottery-rate-only decision rule misses. **Recommend a follow-up
+discussion with the user**: do we want to ship Dir Delta as a 5th
+exit policy on the basis of "less drawdown for the same upside,"
+even though lottery rate is unchanged?
+
+Full report: [`compare.md`](../../../ml/experiments/lottery-dir-delta-eda/compare.md)
