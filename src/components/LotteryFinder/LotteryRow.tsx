@@ -8,6 +8,15 @@ interface LotteryRowProps {
   exitPolicy: ExitPolicy;
 }
 
+/**
+ * UW per-contract flow page. The OCC symbol is the canonical key —
+ * UW's historical_chains route renders the same flow + Greek + tape
+ * timeline that drives the v4 detector, so the user lands on the
+ * exact context for the fire.
+ */
+const uwContractUrl = (occSymbol: string): string =>
+  `https://unusualwhales.com/historical_chains/${encodeURIComponent(occSymbol)}`;
+
 const formatTimeCT = (iso: string): string => {
   const d = new Date(iso);
   return d.toLocaleTimeString('en-US', {
@@ -87,12 +96,20 @@ export const LotteryRow = memo(function LotteryRow({
   return (
     <div className="rounded border border-neutral-800 bg-neutral-950 p-3 text-sm">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        {/* Ticker + strike + side */}
-        <div className="flex items-baseline gap-2">
-          <span className="font-mono text-base font-semibold text-white">
+        {/* Ticker + strike + side — the whole block links to UW's
+            per-contract flow page so the user can pivot from the row
+            to the canonical context with one click. */}
+        <a
+          href={uwContractUrl(fire.optionChainId)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="group flex items-baseline gap-2 hover:underline"
+          title={`Open ${fire.optionChainId} on Unusual Whales`}
+        >
+          <span className="font-mono text-base font-semibold text-white group-hover:text-blue-300">
             {fire.underlyingSymbol}
           </span>
-          <span className="font-mono text-base text-neutral-200">
+          <span className="font-mono text-base text-neutral-200 group-hover:text-blue-200">
             {fire.strike}
           </span>
           <span
@@ -101,7 +118,13 @@ export const LotteryRow = memo(function LotteryRow({
           >
             {fire.optionType}
           </span>
-        </div>
+          <span
+            className="text-[10px] text-neutral-600 group-hover:text-blue-400"
+            aria-hidden
+          >
+            ↗
+          </span>
+        </a>
 
         {/* Time of trigger */}
         <span className="font-mono text-xs text-neutral-400">
