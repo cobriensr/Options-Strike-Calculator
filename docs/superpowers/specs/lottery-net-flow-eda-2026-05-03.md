@@ -36,8 +36,9 @@ This spec runs the EDA first, then ships the plateau flag as **informational onl
 ## Universe + scope
 
 - **Tickers:** Union of `LOTTERY_V3_TICKERS` (38) + `LOTTERY_EXTENDED_TICKERS` (19) from `api/_lib/lottery-finder.ts`. Dedup → ~50 tickers.
-- **Date range:** Last 30 calendar days at the time the backfill runs (≈ 21 trading days). Bounded by UW REST `/stock/{ticker}/net-prem-ticks` retention.
+- **Date range:** Last 90 calendar days (≈ 63 trading days) — user has 90-day retention on UW WebSocket plan.
 - **Outcome labels:** Realized return under all 3 exit policies (`realizedTrail30_10Pct`, `realizedHard30mPct`, `realizedTier50HoldEodPct`) + `peakCeilingPct`. Reporting separately so we don't pre-commit to one policy.
+- **Join coverage:** `lottery_finder_fires` only has the 15-day backfill window (2026-04-13 → 2026-05-01) plus a few live-cron days. Net flow outside the fires window is not wasted — it gives us "what was flow doing on days that produced zero fires for ticker X" as a control comparison.
 
 ---
 
@@ -45,7 +46,7 @@ This spec runs the EDA first, then ships the plateau flag as **informational onl
 
 | Source | What we need | Notes |
 |---|---|---|
-| UW REST `/stock/{ticker}/net-prem-ticks` | Per-minute NCP/NPP/NCV/NPV deltas, 50 tickers × 30 days | Same endpoint pattern as `api/cron/fetch-flow.ts` |
+| UW REST `/stock/{ticker}/net-prem-ticks` | Per-minute deltas, 50 tickers × 90 days ≈ 1.75M rows | Returns `net_call_premium`/`net_put_premium` as STRINGS (parseFloat), plus per-ticker bid/ask side splits as bonus features |
 | `lottery_finder_fires` | All historical fires + outcomes | Already populated (used by Lottery Finder UI) |
 | `ws_net_flow_per_ticker` | NOT used here — only ~hours of history at spec time | The new table from Phase 1.1 of the predecessor spec |
 
@@ -59,7 +60,7 @@ This spec runs the EDA first, then ships the plateau flag as **informational onl
 
 #### Task 1.1 — Migration #122: `net_flow_per_ticker_history`
 
-- [ ] Add migration to `api/_lib/db-migrations.ts`. Schema mirrors `ws_net_flow_per_ticker` plus `source` column:
+- [ ] Add migration to `api/_lib/db-migrations.ts`. Schema captures per-minute deltas plus the bonus bid/ask side-split fields UW returns at the ticker level:
   ```sql
   CREATE TABLE IF NOT EXISTS net_flow_per_ticker_history (
     id BIGSERIAL PRIMARY KEY,
@@ -69,6 +70,12 @@ This spec runs the EDA first, then ships the plateau flag as **informational onl
     net_call_vol INTEGER NOT NULL,
     net_put_prem NUMERIC(18, 2) NOT NULL,
     net_put_vol INTEGER NOT NULL,
+    call_volume INTEGER NOT NULL,
+    call_volume_ask_side INTEGER NOT NULL,
+    call_volume_bid_side INTEGER NOT NULL,
+    put_volume INTEGER NOT NULL,
+    put_volume_ask_side INTEGER NOT NULL,
+    put_volume_bid_side INTEGER NOT NULL,
     source TEXT NOT NULL,
     fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
@@ -82,13 +89,15 @@ This spec runs the EDA first, then ships the plateau flag as **informational onl
 
 #### Task 1.2 — `scripts/backfill-net-prem-ticks.mjs`
 
-- [ ] Iterate over `LOTTERY_V3_TICKERS ∪ LOTTERY_EXTENDED_TICKERS` (dedup).
-- [ ] For each ticker × each of last 30 calendar days: GET `/stock/{ticker}/net-prem-ticks?date=YYYY-MM-DD` via `uwFetch` pattern.
-- [ ] Restrict rows to 08:30–15:00 CT per `feedback_extended_hours`.
+- [ ] Iterate over `LOTTERY_V3_TICKERS ∪ LOTTERY_EXTENDED_TICKERS` (dedup → ~50 tickers).
+- [ ] For each ticker × each of last 90 calendar days: GET `/stock/{ticker}/net-prem-ticks?date=YYYY-MM-DD` via `uwFetch` pattern.
+- [ ] **Parse `net_call_premium`/`net_put_premium` with `Number.parseFloat`** — UW returns these as JSON strings (per OpenAPI example).
+- [ ] Restrict rows to 08:30–15:00 CT per `feedback_extended_hours` (UTC equivalent: 13:30–20:00).
+- [ ] Skip empty `(ticker, date)` responses (weekends/holidays/non-trading days). Log skip count, do not error.
 - [ ] Batched INSERT (500/query) per `feedback_batched_inserts`. `ON CONFLICT (ticker, ts, source) DO NOTHING`.
-- [ ] Pacing: existing semaphore=3 + jitter pattern from sidecar (per UW 429 history). Resumable: skip (ticker, date) pairs already covered.
-- [ ] Print run summary: total rows, per-ticker row counts, gaps.
-- **Verify:** Dry-run on 1 ticker × 1 day, assert row shape; full run prints expected ~585k rows.
+- [ ] Pacing: existing semaphore=3 + jitter pattern from sidecar (per UW 429 history). Resumable: skip (ticker, date) pairs already covered (query existing `MAX(ts)` per ticker before fetching).
+- [ ] Print run summary: total rows, per-ticker row counts, skipped (ticker, date) pairs, 429 retries.
+- **Verify:** Dry-run on 1 ticker × 1 day, assert row shape matches schema (premiums parsed to numbers, no nulls); full run prints expected ~1.75M rows (50 × 63 × 390 = 1.23M trading-minute rows + ~partial-day padding).
 
 ### Phase 2 — EDA: feature extraction + univariate analysis
 
@@ -148,13 +157,18 @@ The UI surfacing (badge on the row) is unchanged regardless of which feature win
 
 ---
 
-## Open questions
+## Resolved questions (locked 2026-05-03)
 
-1. **Endpoint shape verification.** `/stock/{ticker}/net-prem-ticks` returns deltas per UW notebook + per `api/cron/fetch-flow.ts`. Need to confirm the response field names match what we expect (`net_call_premium` etc.) before writing the backfill — check actual response with a curl probe before bulk run.
-2. **30-day lookback enough?** `lottery_finder_fires` has ~15 days of backfilled history per the predecessor spec. So the join will only have ~15 days of paired data even if we fetch 30 days of net flow. That's ~3,000–10,000 fires depending on filter. Probably enough for univariate; tight for multivariate. Mitigation: re-run EDA in 30 days when data has doubled.
-3. **Peak-detection algorithm for `lead_time_to_ncp_peak`.** Use scipy `signal.find_peaks` with prominence threshold = 5% of day's NCP range. Confirm prominence threshold during implementation.
-4. **Calls vs puts symmetry.** All EDA features computed for the side that matches the fire's option type (call → use NCP, put → use NPP). Don't aggregate — they're different signals.
-5. **Should weekend/holidays cause `(ticker, date)` skip in backfill?** Yes — UW returns empty for non-trading days. Skip-via-empty-response is fine.
+1. **Endpoint shape.** RESOLVED — `/stock/{ticker}/net-prem-ticks` confirmed via OpenAPI spec (line 16231). Per-minute deltas, premium fields are JSON strings, includes per-ticker bid/ask side splits as bonus features (added to schema).
+2. **Lookback window.** RESOLVED — 90 days per user (UW WebSocket plan retention). `lottery_finder_fires` only has ~15 paired days, but the extra 75 days of net flow give us "control comparison" rows for ticker-days that produced zero fires.
+3. **Path: parquet vs REST.** RESOLVED — REST. User has 90-day retention; parquet only has 15.
+4. **Peak-detection algorithm for `lead_time_to_ncp_peak`.** Default LOCKED — scipy `signal.find_peaks` with `prominence ≥ 0.05 × (day_ncp_max − day_ncp_min)`. Tune in Phase 2 if it produces noisy peaks.
+5. **Calls vs puts symmetry.** Default LOCKED — one feature vector per fire; call fires use NCP series, put fires use NPP series. Side never aggregated.
+6. **Weekend/holiday handling.** LOCKED — skip-via-empty-response. UW returns empty `data: []` for non-trading days; backfill logs and continues.
+
+## Open questions (still need user input before code)
+
+None at this point — spec is buildable as-is. Any new ambiguity discovered during implementation gets a "Methodology amendment" section appended per `feedback_no_silent_methodology_changes`.
 
 ---
 
@@ -162,7 +176,8 @@ The UI surfacing (badge on the row) is unchanged regardless of which feature win
 
 | Constant | Value | Source |
 |---|---|---|
-| Backfill window | 30 calendar days | UW REST retention practical limit |
+| Backfill window | 90 calendar days | UW WebSocket plan retention (user has) |
+| Peak prominence | 0.05 × (day NCP max − day NCP min) | Default for scipy.signal.find_peaks |
 | Pre-fire feature window | 30 minutes | Anecdote was 25-min lead — pad to 30 |
 | Slope sub-windows | 5, 15, 30 min | Standard intraday horizons |
 | Lottery rate threshold | ≥ +100% realized | Matches Lottery Finder UI definition |
