@@ -10,7 +10,7 @@ const noop = vi.fn();
 
 function makeLevel(overrides: Partial<DarkPoolLevel> = {}): DarkPoolLevel {
   return {
-    spxLevel: 6575,
+    level: 6575,
     totalPremium: 1_300_000_000,
     tradeCount: 13,
     totalShares: 2_000_000,
@@ -101,7 +101,7 @@ describe('DarkPoolLevels: empty state', () => {
   it('shows badge with count when levels exist', () => {
     const levels = [
       makeLevel({ totalPremium: 1_000_000 }),
-      makeLevel({ spxLevel: 6550, totalPremium: 2_000_000 }),
+      makeLevel({ level: 6550, totalPremium: 2_000_000 }),
     ];
     render(
       <DarkPoolLevels
@@ -125,11 +125,11 @@ describe('DarkPoolLevels: rendering levels', () => {
   it('renders levels above threshold', () => {
     const levels = [
       makeLevel({
-        spxLevel: 6575,
+        level: 6575,
         totalPremium: 1_300_000_000,
       }),
       makeLevel({
-        spxLevel: 6555,
+        level: 6555,
         totalPremium: 248_000_000,
       }),
     ];
@@ -152,8 +152,8 @@ describe('DarkPoolLevels: rendering levels', () => {
   it('respects visible count limit', () => {
     // Default visibleCount is 15 — with 2 levels, both show
     const levels = [
-      makeLevel({ spxLevel: 6575, totalPremium: 500_000_000 }),
-      makeLevel({ spxLevel: 6540, totalPremium: 1_000_000 }),
+      makeLevel({ level: 6575, totalPremium: 500_000_000 }),
+      makeLevel({ level: 6540, totalPremium: 1_000_000 }),
     ];
     render(
       <DarkPoolLevels
@@ -255,8 +255,8 @@ describe('DarkPoolLevels: block count', () => {
 describe('DarkPoolLevels: premium bar sizing', () => {
   it('renders bar with proportional width', () => {
     const levels = [
-      makeLevel({ spxLevel: 6575, totalPremium: 1_000_000_000 }),
-      makeLevel({ spxLevel: 6555, totalPremium: 500_000_000 }),
+      makeLevel({ level: 6575, totalPremium: 1_000_000_000 }),
+      makeLevel({ level: 6555, totalPremium: 500_000_000 }),
     ];
     render(
       <DarkPoolLevels
@@ -279,8 +279,8 @@ describe('DarkPoolLevels: premium bar sizing', () => {
 
   it('uses minimum 2% bar width', () => {
     const levels = [
-      makeLevel({ spxLevel: 6575, totalPremium: 10_000_000_000 }),
-      makeLevel({ spxLevel: 6555, totalPremium: 100_000 }),
+      makeLevel({ level: 6575, totalPremium: 10_000_000_000 }),
+      makeLevel({ level: 6555, totalPremium: 100_000 }),
     ];
     render(
       <DarkPoolLevels
@@ -352,7 +352,7 @@ describe('DarkPoolLevels: accessibility', () => {
   it('renders rows with role="row"', () => {
     render(
       <DarkPoolLevels
-        levels={[makeLevel(), makeLevel({ spxLevel: 6550 })]}
+        levels={[makeLevel(), makeLevel({ level: 6550 })]}
         loading={false}
         error={null}
         updatedAt={null}
@@ -577,7 +577,7 @@ describe('DarkPoolLevels: distance from spot', () => {
   it('does not show distance column when spxPrice is not provided', () => {
     render(
       <DarkPoolLevels
-        levels={[makeLevel({ spxLevel: 6610 })]}
+        levels={[makeLevel({ level: 6610 })]}
         loading={false}
         error={null}
         updatedAt={null}
@@ -593,9 +593,9 @@ describe('DarkPoolLevels: distance from spot', () => {
     render(
       <DarkPoolLevels
         levels={[
-          makeLevel({ spxLevel: 6610 }),
-          makeLevel({ spxLevel: 6620 }),
-          makeLevel({ spxLevel: 6600 }),
+          makeLevel({ level: 6610 }),
+          makeLevel({ level: 6620 }),
+          makeLevel({ level: 6600 }),
         ]}
         loading={false}
         error={null}
@@ -613,8 +613,8 @@ describe('DarkPoolLevels: distance from spot', () => {
     render(
       <DarkPoolLevels
         levels={[
-          makeLevel({ spxLevel: 6611 }), // 1pt above — rounds to ATM display
-          makeLevel({ spxLevel: 6615 }),
+          makeLevel({ level: 6611 }), // 1pt above — rounds to ATM display
+          makeLevel({ level: 6615 }),
         ]}
         loading={false}
         error={null}
@@ -670,17 +670,17 @@ describe('DarkPoolLevels: sort modes', () => {
       <DarkPoolLevels
         levels={[
           makeLevel({
-            spxLevel: 6600,
+            level: 6600,
             latestTime: '2026-04-07T14:00:00Z',
             totalPremium: 500_000_000,
           }),
           makeLevel({
-            spxLevel: 6610,
+            level: 6610,
             latestTime: '2026-04-07T20:30:00Z',
             totalPremium: 100_000_000,
           }),
           makeLevel({
-            spxLevel: 6620,
+            level: 6620,
             latestTime: '2026-04-07T18:00:00Z',
             totalPremium: 300_000_000,
           }),
@@ -731,9 +731,9 @@ describe('DarkPoolLevels: sort modes', () => {
     render(
       <DarkPoolLevels
         levels={[
-          makeLevel({ spxLevel: 6600, totalPremium: 100_000_000 }),
-          makeLevel({ spxLevel: 6620, totalPremium: 200_000_000 }),
-          makeLevel({ spxLevel: 6610, totalPremium: 300_000_000 }),
+          makeLevel({ level: 6600, totalPremium: 100_000_000 }),
+          makeLevel({ level: 6620, totalPremium: 200_000_000 }),
+          makeLevel({ level: 6610, totalPremium: 300_000_000 }),
         ]}
         loading={false}
         error={null}
@@ -759,9 +759,9 @@ describe('DarkPoolLevels: sort modes', () => {
     render(
       <DarkPoolLevels
         levels={[
-          makeLevel({ spxLevel: 6580, totalPremium: 100_000_000 }),
-          makeLevel({ spxLevel: 6612, totalPremium: 50_000_000 }),
-          makeLevel({ spxLevel: 6640, totalPremium: 200_000_000 }),
+          makeLevel({ level: 6580, totalPremium: 100_000_000 }),
+          makeLevel({ level: 6612, totalPremium: 50_000_000 }),
+          makeLevel({ level: 6640, totalPremium: 200_000_000 }),
         ]}
         loading={false}
         error={null}
@@ -783,5 +783,126 @@ describe('DarkPoolLevels: sort modes', () => {
     const pos =
       s6612.compareDocumentPosition(s6580) & Node.DOCUMENT_POSITION_FOLLOWING;
     expect(pos).toBeTruthy();
+  });
+});
+
+// ============================================================
+// SYMBOL SELECTOR (Phase 6)
+// ============================================================
+
+describe('DarkPoolLevels — symbol selector', () => {
+  it('hides the selector when onSymbolChange is omitted', () => {
+    render(
+      <DarkPoolLevels
+        levels={[makeLevel()]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+        onRefresh={noop}
+      />,
+    );
+    expect(
+      screen.queryByRole('group', { name: 'Dark pool symbol' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('renders 4 symbol buttons with the active one aria-pressed', () => {
+    const onSymbolChange = vi.fn();
+    render(
+      <DarkPoolLevels
+        levels={[makeLevel()]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+        onRefresh={noop}
+        selectedSymbol="NDX"
+        onSymbolChange={onSymbolChange}
+      />,
+    );
+    const group = screen.getByRole('group', { name: 'Dark pool symbol' });
+    expect(group).toBeInTheDocument();
+
+    const spxBtn = screen.getByRole('button', { name: 'Show dark pool for SPX' });
+    const ndxBtn = screen.getByRole('button', { name: 'Show dark pool for NDX' });
+    const spyBtn = screen.getByRole('button', { name: 'Show dark pool for SPY' });
+    const qqqBtn = screen.getByRole('button', { name: 'Show dark pool for QQQ' });
+
+    expect(ndxBtn.getAttribute('aria-pressed')).toBe('true');
+    expect(spxBtn.getAttribute('aria-pressed')).toBe('false');
+    expect(spyBtn.getAttribute('aria-pressed')).toBe('false');
+    expect(qqqBtn.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('fires onSymbolChange with the clicked symbol', async () => {
+    const user = userEvent.setup();
+    const onSymbolChange = vi.fn();
+    render(
+      <DarkPoolLevels
+        levels={[makeLevel()]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+        onRefresh={noop}
+        selectedSymbol="SPX"
+        onSymbolChange={onSymbolChange}
+      />,
+    );
+    await user.click(
+      screen.getByRole('button', { name: 'Show dark pool for QQQ' }),
+    );
+    expect(onSymbolChange).toHaveBeenCalledTimes(1);
+    expect(onSymbolChange).toHaveBeenCalledWith('QQQ');
+  });
+
+  it('table aria-label and column header reflect selectedSymbol', () => {
+    render(
+      <DarkPoolLevels
+        levels={[makeLevel()]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+        onRefresh={noop}
+        selectedSymbol="NDX"
+        onSymbolChange={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole('table', { name: /Dark pool levels \(NDX\)/ }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('NDX Level')).toBeInTheDocument();
+  });
+
+  it('empty state for non-SPX selector shows the rolling-out hint', () => {
+    render(
+      <DarkPoolLevels
+        levels={[]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+        onRefresh={noop}
+        selectedSymbol="NDX"
+        onSymbolChange={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByText(/NDX dark pool data is rolling out/),
+    ).toBeInTheDocument();
+  });
+
+  it('empty state for SPX still shows the original block-detection hint', () => {
+    render(
+      <DarkPoolLevels
+        levels={[]}
+        loading={false}
+        error={null}
+        updatedAt={null}
+        onRefresh={noop}
+        selectedSymbol="SPX"
+        onSymbolChange={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByText(/Levels appear when large institutional blocks/),
+    ).toBeInTheDocument();
   });
 });

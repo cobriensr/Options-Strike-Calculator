@@ -18,7 +18,8 @@ import { DateInput } from './ui/DateInput';
 import { SectionBox } from './ui';
 import { StatusBadge } from './ui';
 import { ScrubControlsCompact } from './ui/ScrubControlsCompact';
-import type { DarkPoolLevel } from '../hooks/useDarkPoolLevels';
+import type { DarkPoolLevel, DarkPoolSymbol } from '../hooks/useDarkPoolLevels';
+import { DARK_POOL_SYMBOLS } from '../hooks/useDarkPoolLevels';
 
 const DEFAULT_VISIBLE = 15;
 const MIN_VISIBLE = 5;
@@ -32,8 +33,18 @@ interface Props {
   loading: boolean;
   error: string | null;
   updatedAt: string | null;
+  /** Reference price for ATM detection + distance label. Caller is
+   *  responsible for passing a price that matches `selectedSymbol`'s
+   *  scale (SPX→spx, NDX→ndx, SPY→spy, QQQ→qqq). When the price's
+   *  symbol does not match the selector, distance display will be
+   *  meaningless — the component does not enforce this; pass null
+   *  when the right price is unavailable. */
   spxPrice?: number | null;
   onRefresh: () => void;
+  // Symbol selector (optional — omit for tests or when hook is not wired;
+  // defaults to 'SPX' so legacy single-symbol callers still render).
+  selectedSymbol?: DarkPoolSymbol;
+  onSymbolChange?: (s: DarkPoolSymbol) => void;
   // Date & time scrubbing (optional — omit for tests or when hook is not wired)
   selectedDate?: string;
   onDateChange?: (d: string) => void;
@@ -78,6 +89,8 @@ export default memo(function DarkPoolLevels({
   updatedAt,
   spxPrice,
   onRefresh,
+  selectedSymbol = 'SPX',
+  onSymbolChange,
   selectedDate = new Date().toLocaleDateString('en-CA', {
     timeZone: 'America/New_York',
   }),
@@ -120,12 +133,11 @@ export default memo(function DarkPoolLevels({
     }
     if (sortBy === 'strike') {
       // Price-ladder order: highest strike at top, lowest at bottom
-      return [...levels].sort((a, b) => b.spxLevel - a.spxLevel);
+      return [...levels].sort((a, b) => b.level - a.level);
     }
     if (sortBy === 'distance' && spxPrice != null) {
       return [...levels].sort(
-        (a, b) =>
-          Math.abs(a.spxLevel - spxPrice) - Math.abs(b.spxLevel - spxPrice),
+        (a, b) => Math.abs(a.level - spxPrice) - Math.abs(b.level - spxPrice),
       );
     }
     // Default: API returns by premium desc
@@ -173,6 +185,40 @@ export default memo(function DarkPoolLevels({
 
   const headerRight = (
     <div className="flex flex-wrap items-center gap-2">
+      {/* Symbol selector — 4 buttons (SPX/NDX/SPY/QQQ).
+          Hidden when no onSymbolChange is provided so test fixtures
+          + legacy single-symbol callers don't render extra UI. */}
+      {onSymbolChange && (
+        <div
+          className="border-edge flex items-center gap-0.5 rounded border"
+          role="group"
+          aria-label="Dark pool symbol"
+        >
+          {DARK_POOL_SYMBOLS.map((s) => {
+            const active = s === selectedSymbol;
+            return (
+              <button
+                key={s}
+                onClick={() => onSymbolChange(s)}
+                aria-pressed={active}
+                aria-label={`Show dark pool for ${s}`}
+                className={
+                  'cursor-pointer px-1.5 py-0.5 font-mono text-[10px] font-semibold transition-colors ' +
+                  (active ? 'text-primary' : 'text-muted hover:text-secondary')
+                }
+                style={
+                  active
+                    ? { backgroundColor: 'rgba(255,255,255,0.06)' }
+                    : undefined
+                }
+              >
+                {s}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Time scrubber + LIVE button */}
       <ScrubControlsCompact
         timestamps={timeGrid}
@@ -301,9 +347,16 @@ export default memo(function DarkPoolLevels({
           <p className="text-secondary m-0 font-sans text-[13px]">
             No dark pool levels available for this session.
           </p>
-          <p className="text-muted m-0 mt-1 font-sans text-[11px]">
-            Levels appear when large institutional blocks are detected.
-          </p>
+          {selectedSymbol === 'SPX' ? (
+            <p className="text-muted m-0 mt-1 font-sans text-[11px]">
+              Levels appear when large institutional blocks are detected.
+            </p>
+          ) : (
+            <p className="text-muted m-0 mt-1 font-sans text-[11px]">
+              {selectedSymbol} dark pool data is rolling out \u2014 SPX is the only
+              fully-wired feed today.
+            </p>
+          )}
         </div>
       </SectionBox>
     );
@@ -316,10 +369,13 @@ export default memo(function DarkPoolLevels({
       collapsible
       headerRight={headerRight}
     >
-      <table className="w-full border-collapse" aria-label="Dark pool levels">
+      <table
+        className="w-full border-collapse"
+        aria-label={`Dark pool levels (${selectedSymbol})`}
+      >
         <thead className="sr-only">
           <tr>
-            <th>SPX Level</th>
+            <th>{selectedSymbol} Level</th>
             {spxPrice != null && <th>Distance</th>}
             <th>Premium</th>
             <th>Blocks</th>
@@ -329,7 +385,7 @@ export default memo(function DarkPoolLevels({
         <tbody>
           {filtered.map((level) => (
             <LevelRow
-              key={level.spxLevel}
+              key={level.level}
               level={level}
               maxPremium={maxPremium}
               spxPrice={spxPrice ?? null}
@@ -351,15 +407,14 @@ function LevelRow({
   spxPrice: number | null;
 }>) {
   const barWidth = Math.max((level.totalPremium / maxPremium) * 100, 2);
-  const isAtm = spxPrice != null && Math.abs(level.spxLevel - spxPrice) < 2.5;
-  const distLabel =
-    spxPrice != null ? formatDist(level.spxLevel, spxPrice) : null;
+  const isAtm = spxPrice != null && Math.abs(level.level - spxPrice) < 2.5;
+  const distLabel = spxPrice != null ? formatDist(level.level, spxPrice) : null;
 
   // Color the distance label: above spot = green, below = red, at = accent
   const distColor = (() => {
     if (spxPrice == null) return theme.textMuted;
     if (isAtm) return theme.accent;
-    return level.spxLevel > spxPrice ? theme.green : theme.red;
+    return level.level > spxPrice ? theme.green : theme.red;
   })();
 
   return (
@@ -367,12 +422,12 @@ function LevelRow({
       className="flex items-center gap-2 py-1.5"
       style={isAtm ? { backgroundColor: 'rgba(255,255,255,0.04)' } : undefined}
     >
-      {/* SPX Level */}
+      {/* Index level */}
       <td
         className="w-[52px] shrink-0 text-right font-mono text-sm font-bold"
         style={{ color: isAtm ? theme.accent : theme.text }}
       >
-        {level.spxLevel}
+        {level.level}
       </td>
 
       {/* Distance from spot (only when spxPrice is known) */}

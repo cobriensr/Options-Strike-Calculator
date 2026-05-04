@@ -22,7 +22,7 @@ vi.stubGlobal('fetch', mockFetch);
 
 function makeLevel(overrides: Partial<DarkPoolLevel> = {}): DarkPoolLevel {
   return {
-    spxLevel: 6575,
+    level: 6575,
     totalPremium: 1_300_000_000,
     tradeCount: 13,
     totalShares: 2_000_000,
@@ -97,7 +97,7 @@ describe('useDarkPoolLevels: fetching', () => {
   });
 
   it('returns levels from API response', async () => {
-    const levels = [makeLevel(), makeLevel({ spxLevel: 6600 })];
+    const levels = [makeLevel(), makeLevel({ level: 6600 })];
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({ levels, date: '2026-04-02' }),
@@ -107,7 +107,7 @@ describe('useDarkPoolLevels: fetching', () => {
 
     await waitFor(() => expect(result.current.levels).toHaveLength(2));
 
-    expect(result.current.levels[0]!.spxLevel).toBe(6575);
+    expect(result.current.levels[0]!.level).toBe(6575);
     expect(result.current.error).toBeNull();
   });
 

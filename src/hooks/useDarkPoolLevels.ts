@@ -24,8 +24,18 @@ import { checkIsOwner } from '../utils/auth';
 import { useTimeGridScrubber } from './useTimeGridScrubber';
 import { getETToday } from '../utils/timezone';
 
+export type DarkPoolSymbol = 'SPX' | 'NDX' | 'SPY' | 'QQQ';
+
+export const DARK_POOL_SYMBOLS: readonly DarkPoolSymbol[] = [
+  'SPX',
+  'NDX',
+  'SPY',
+  'QQQ',
+];
+
 export interface DarkPoolLevel {
-  spxLevel: number;
+  /** Index-equivalent or native price level depending on selected symbol. */
+  level: number;
   totalPremium: number;
   tradeCount: number;
   totalShares: number;
@@ -39,6 +49,9 @@ export interface UseDarkPoolLevelsReturn {
   error: string | null;
   updatedAt: string | null;
   refresh: () => void;
+  // Symbol selector
+  selectedSymbol: DarkPoolSymbol;
+  setSelectedSymbol: (s: DarkPoolSymbol) => void;
   // Date & time scrubbing
   selectedDate: string;
   setSelectedDate: (d: string) => void;
@@ -72,6 +85,11 @@ export function useDarkPoolLevels(
   // browsing dark pool history doesn't re-anchor the Black-Scholes math.
   const [selectedDate, setSelectedDate] = useState(getETToday);
 
+  // Symbol selector — defaults to SPX for backward compat with the
+  // pre-multi-symbol UX. NDX/SPY/QQQ require the daemon to be writing
+  // dark_pool_prints; until then those views show empty (no fallback).
+  const [selectedSymbol, setSelectedSymbol] = useState<DarkPoolSymbol>('SPX');
+
   // Time scrubber: null = live (no ?time= param), HH:MM = scrubbed.
   // The shared `useTimeGridScrubber` owns navigation; per-feature `isLive`
   // policy stays here because it depends on `isToday`.
@@ -87,6 +105,7 @@ export function useDarkPoolLevels(
     try {
       const qs = new URLSearchParams();
       qs.set('date', selectedDate);
+      qs.set('symbol', selectedSymbol);
       if (scrubTime) qs.set('time', scrubTime);
       const res = await fetch(`/api/darkpool-levels?${qs}`, {
         credentials: 'same-origin',
@@ -121,7 +140,7 @@ export function useDarkPoolLevels(
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-  }, [selectedDate, scrubTime]);
+  }, [selectedDate, selectedSymbol, scrubTime]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -130,10 +149,11 @@ export function useDarkPoolLevels(
     };
   }, []);
 
-  // Reset scrub time when the date changes so the new date always starts live.
+  // Reset scrub time when the date OR symbol changes so the view always
+  // starts live for the newly selected combination.
   useEffect(() => {
     scrubLive();
-  }, [selectedDate, scrubLive]);
+  }, [selectedDate, selectedSymbol, scrubLive]);
 
   useEffect(() => {
     if (!isOwner) {
@@ -174,6 +194,8 @@ export function useDarkPoolLevels(
     error,
     updatedAt,
     refresh,
+    selectedSymbol,
+    setSelectedSymbol,
     selectedDate,
     setSelectedDate,
     scrubTime,
