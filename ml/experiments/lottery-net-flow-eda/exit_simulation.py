@@ -466,7 +466,44 @@ def main() -> int:
     print(f"  median inversion: {results['inversion_pct'].median():+.1f}%")
     print(f"  median diff:      {(results['inversion_pct'] - results['trail_pct']).median():+.1f}pp")
     print(f"  median diff net:  {(results['inversion_net_pct'] - results['trail_net_pct']).median():+.1f}pp")
+
+    if os.environ.get("WRITE_DB") == "1":
+        write_back_to_db(results, db_url)
+
     return 0
+
+
+def write_back_to_db(results: pd.DataFrame, db_url: str) -> None:
+    """Persist inversion_pct into lottery_finder_fires.realized_flow_inversion_pct
+    via batched UPDATE-from-UNNEST. Gated by WRITE_DB=1 so analysis re-runs
+    don't accidentally clobber populated values."""
+    from decimal import Decimal
+
+    BATCH = 500
+    print(f"\nWRITE_DB=1 — updating realized_flow_inversion_pct for {len(results):,} rows...")
+    updated = 0
+    with psycopg2.connect(db_url) as conn:
+        with conn.cursor() as cur:
+            for start in range(0, len(results), BATCH):
+                chunk = results.iloc[start : start + BATCH]
+                ids = chunk["fire_id"].astype(int).tolist()
+                # Convert to Decimal so psycopg2 binds as NUMERIC cleanly.
+                pcts = [Decimal(str(round(float(p), 4))) for p in chunk["inversion_pct"]]
+                cur.execute(
+                    """
+                    UPDATE lottery_finder_fires AS f
+                    SET realized_flow_inversion_pct = u.pct
+                    FROM (
+                      SELECT unnest(%(ids)s::bigint[]) AS id,
+                             unnest(%(pcts)s::numeric[]) AS pct
+                    ) u
+                    WHERE f.id = u.id
+                    """,
+                    {"ids": ids, "pcts": pcts},
+                )
+                updated += cur.rowcount
+        conn.commit()
+    print(f"  updated {updated:,} of {len(results):,} rows")
 
 
 if __name__ == "__main__":

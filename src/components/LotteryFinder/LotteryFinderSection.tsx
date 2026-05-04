@@ -32,6 +32,7 @@ const EXIT_POLICIES: ExitPolicy[] = [
   'realizedTrail30_10Pct',
   'realizedHard30mPct',
   'realizedTier50HoldEodPct',
+  'realizedFlowInversionPct',
 ];
 
 const MODE_FILTERS: Array<{ value: LotteryMode | null; label: string }> = [

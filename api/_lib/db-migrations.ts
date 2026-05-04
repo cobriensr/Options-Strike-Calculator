@@ -3683,4 +3683,19 @@ export const MIGRATIONS: Migration[] = [
             ON index_candles_1m (symbol, "timestamp" DESC)`,
     ],
   },
+  {
+    id: 124,
+    description:
+      'Add realized_flow_inversion_pct to lottery_finder_fires. The new exit policy validated in ' +
+      '`ml/experiments/lottery-net-flow-eda/exit_simulation.py` against per-minute NBBO mid prices ' +
+      'on the 15-day parquet window — exit when matched-side ticker net flow slope flips negative ' +
+      'for >=3 consecutive minutes after the post-trigger flow peak. EDA showed +9.8pp mean uplift ' +
+      'after costs and 5x lottery rate (6.7% vs 1.3% under trail-30/10) with edge concentrated on ' +
+      'momentum-news days x call fires x AM/MID. Column is nullable; populated by exit_simulation.py ' +
+      'with WRITE_DB=1 after each parquet refresh, same backfill-only pattern as the existing realized_* columns.',
+    statements: (sql) => [
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS realized_flow_inversion_pct NUMERIC`,
+    ],
+  },
 ];

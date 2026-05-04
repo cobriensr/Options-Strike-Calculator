@@ -12,16 +12,18 @@ export type LotteryMode =
   | 'OUT_OF_UNIVERSE';
 export type TimeOfDay = 'AM_open' | 'MID' | 'LUNCH' | 'PM';
 
-/** Realized exit policies that ship in Phase 1 (default + 2 toggles). */
+/** Realized exit policies surfaced by the LotteryRow chip selector. */
 export type ExitPolicy =
   | 'realizedTrail30_10Pct' // act30_trail10 — default, conservative
   | 'realizedHard30mPct' //   hard 30-min stop, EV-best
-  | 'realizedTier50HoldEodPct'; // 50% off at +50%, hold rest
+  | 'realizedTier50HoldEodPct' // 50% off at +50%, hold rest
+  | 'realizedFlowInversionPct'; // exit when matched-side ticker flow inverts
 
 export const EXIT_POLICY_LABELS: Record<ExitPolicy, string> = {
   realizedTrail30_10Pct: 'trail 30/10',
   realizedHard30mPct: 'hard 30m',
   realizedTier50HoldEodPct: 'tier 50 + hold',
+  realizedFlowInversionPct: 'flow-inversion',
 };
 
 export const EXIT_POLICY_TOOLTIPS: Record<ExitPolicy, string> = {
@@ -31,6 +33,8 @@ export const EXIT_POLICY_TOOLTIPS: Record<ExitPolicy, string> = {
     'Hard time-stop: exit at minute 30 from entry, no matter what. Highest EV in the 15-day backtest (+$127/day mean), but only 25% of days are profitable — wins are bigger but rarer.',
   realizedTier50HoldEodPct:
     'Two-tier exit: sell half at +50%, hold the rest to end-of-session. Middle ground between the trailing stop and the hard exit.',
+  realizedFlowInversionPct:
+    'Exit when matched-side ticker net flow slope flips negative for ≥3 consecutive minutes after the post-trigger flow peak. Validated on 47k fires: +9.8pp mean uplift after costs and 5x lottery rate (6.7% vs 1.3% under trail-30/10), at the cost of more small losses (44.4% win rate vs 54.7%). Edge concentrates on call fires × AM/MID time-of-day, with the top 5 trading days carrying ~29% of all winners. Populated only for fires inside the 15-day parquet window — older / very-recent fires show —.',
 };
 
 export interface LotteryFireTrigger {
@@ -90,6 +94,7 @@ export interface LotteryFireOutcomes {
   realizedTrail30_10Pct: number | null;
   realizedHard30mPct: number | null;
   realizedTier50HoldEodPct: number | null;
+  realizedFlowInversionPct: number | null;
   realizedEodPct: number | null;
   peakCeilingPct: number | null;
   minutesToPeak: number | null;

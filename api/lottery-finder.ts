@@ -86,6 +86,7 @@ interface FireRow {
   realized_trail30_10_pct: DbNullableNumeric;
   realized_hard30m_pct: DbNullableNumeric;
   realized_tier50_holdeod_pct: DbNullableNumeric;
+  realized_flow_inversion_pct: DbNullableNumeric;
   realized_eod_pct: DbNullableNumeric;
   peak_ceiling_pct: DbNullableNumeric;
   minutes_to_peak: DbNullableNumeric;
@@ -186,7 +187,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           gex_strike_call_minus_put, gex_strike_call_ask_minus_bid,
           gex_strike_put_ask_minus_bid, gex_strike_actual_strike,
           realized_trail30_10_pct, realized_hard30m_pct,
-          realized_tier50_holdeod_pct, realized_eod_pct,
+          realized_tier50_holdeod_pct, realized_flow_inversion_pct,
+          realized_eod_pct,
           peak_ceiling_pct, minutes_to_peak,
           inserted_at, enriched_at
         FROM lottery_finder_fires
@@ -286,6 +288,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         realizedTrail30_10Pct: num(r.realized_trail30_10_pct),
         realizedHard30mPct: num(r.realized_hard30m_pct),
         realizedTier50HoldEodPct: num(r.realized_tier50_holdeod_pct),
+        realizedFlowInversionPct: num(r.realized_flow_inversion_pct),
         realizedEodPct: num(r.realized_eod_pct),
         peakCeilingPct: num(r.peak_ceiling_pct),
         minutesToPeak: num(r.minutes_to_peak),
