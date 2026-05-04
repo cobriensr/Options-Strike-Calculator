@@ -53,11 +53,13 @@ import {
 
 // ── Row shape from strike_exposures ──────────────────────────
 
+type RawNumeric = string | number | null;
+
 interface StrikeExposureRow {
   strike: string | number;
   price: string | number;
-  call_gamma_oi: string | number | null;
-  put_gamma_oi: string | number | null;
+  call_gamma_oi: RawNumeric;
+  put_gamma_oi: RawNumeric;
   timestamp: string | Date;
 }
 
