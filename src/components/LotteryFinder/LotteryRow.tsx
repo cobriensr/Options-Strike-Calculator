@@ -366,10 +366,7 @@ export const LotteryRow = memo(function LotteryRow({
             {(fire.trigger.volToOiWindow * 100).toFixed(0)}%
           </span>
         </span>
-        <span
-          className="text-neutral-500"
-          title={tier.tooltip}
-        >
+        <span className="text-neutral-500" title={tier.tooltip}>
           predicted peak{' '}
           <span className="font-mono text-neutral-300">
             {fire.forecastHighPeakPct}

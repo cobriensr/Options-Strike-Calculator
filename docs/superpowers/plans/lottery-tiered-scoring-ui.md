@@ -9,7 +9,7 @@ Goal: Define the scoring formula and ticker confidence intervals from existing d
 
 Files to create:
 
- ml/src/lottery_scoring.py — Compute ticker stats, CI, and score weights
+ml/src/lottery_scoring.py — Compute ticker stats, CI, and score weights
 Work items:
 
 Query lottery_otm_fires to compute per-ticker high-peak rates and confidence intervals
@@ -18,8 +18,8 @@ Output ticker stats JSON with: { ticker, n_fires, high_peak_rate, ci_width, tier
 Validate score distribution: ensure Tier 1 = ~15 fires/day, Tier 2 = ~40 fires/day
 Verification:
 
- ml/src/lottery_scoring.py runs without errors ✅
-Outputs  ml/data/lottery_ticker_stats.json with CI for all tickers ✅
+ml/src/lottery_scoring.py runs without errors ✅
+Outputs ml/data/lottery_ticker_stats.json with CI for all tickers ✅
 Score distribution matches target (Tier 1: 10-20/day, Tier 2: 30-50/day) ✅
 Dependencies: None
 
@@ -30,8 +30,8 @@ Goal: Add score column to lottery_otm_fires and create lottery_ticker_stats tabl
 
 Files to modify:
 
- api/_lib/db-migrations.ts — Add migration #124
- api/__tests__/db.test.ts — Update migration test
+api/\_lib/db-migrations.ts — Add migration #124
+api/**tests**/db.test.ts — Update migration test
 Work items:
 
 Add migration to create lottery_ticker_stats table with columns: ticker, n_fires, high_peak_rate, ci_width, tier (✓/⚠️)
@@ -41,7 +41,7 @@ Update db.test.ts to expect migration #124
 Verification:
 
 npm run lint passes
- api/__tests__/db.test.ts passes
+api/**tests**/db.test.ts passes
 Local DB has lottery_ticker_stats table with data
 lottery_finder_fires.score column exists
 Dependencies: Phase 0
@@ -53,8 +53,8 @@ Goal: Compute score on fire insert and expose ticker stats via API.
 
 Files to modify:
 
- api/cron/detect-lottery-fires.ts — Add scoring function, compute score on insert
- api/lottery-finder.ts — Join lottery_ticker_stats, return score + tier in response
+api/cron/detect-lottery-fires.ts — Add scoring function, compute score on insert
+api/lottery-finder.ts — Join lottery_ticker_stats, return score + tier in response
 Work items:
 
 Add computeFireScore(ticker, mode, price, tod, option_type) function to detect-lottery-fires.ts
@@ -203,8 +203,8 @@ Goal: Add tests, fix edge cases, polish UI.
 
 Files to create/modify:
 
-src/__tests__/lottery-scoring.test.ts — Unit tests for scoring logic
- api/__tests__/lottery-finder.test.ts — API tests for sort/filter
+src/**tests**/lottery-scoring.test.ts — Unit tests for scoring logic
+api/**tests**/lottery-finder.test.ts — API tests for sort/filter
 e2e/lottery-finder.spec.ts — E2E tests for UI interactions
 Work items:
 

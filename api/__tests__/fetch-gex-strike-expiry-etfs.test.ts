@@ -700,4 +700,130 @@ describe('fetch-gex-strike-expiry-etfs handler', () => {
     expect(spyMainUrl).toContain('min_strike=570');
     expect(spyMainUrl).toContain('max_strike=611');
   });
+
+  // ── Deadlock retry ───────────────────────────────────────
+
+  it('retries once on Postgres 40P01 deadlock and succeeds', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    vi.stubGlobal(
+      'fetch',
+      makeRoutedFetchMock({
+        '/SPY/spot-exposures/strike': async () => ({
+          ok: true,
+          json: async () => ({ data: [{ price: '590.5' }] }),
+        }),
+        '/SPY/spot-exposures/expiry-strike': async () => ({
+          ok: true,
+          json: async () => ({ data: [makeStrikeRow({ price: '590.5' })] }),
+        }),
+      }),
+    );
+
+    // First call: simulate a Neon deadlock; second call: success.
+    const deadlockErr = Object.assign(new Error('deadlock detected'), {
+      code: '40P01',
+    });
+    mockQuery
+      .mockRejectedValueOnce(deadlockErr)
+      .mockImplementationOnce(defaultQueryMock);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    // SPY retried (2 calls), QQQ + NDX returned no data → no insert.
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ ticker: 'SPY', code: '40P01', attempt: 1 }),
+      'fetch-gex-strike-expiry-etfs: lock conflict, retrying',
+    );
+    // The retry succeeded, so no Sentry capture.
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(res._json).toMatchObject({ status: 'success', rows: 1 });
+  });
+
+  it('captures and skips when deadlock persists across retries', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    vi.stubGlobal(
+      'fetch',
+      makeRoutedFetchMock({
+        '/SPY/spot-exposures/strike': async () => ({
+          ok: true,
+          json: async () => ({ data: [{ price: '590.5' }] }),
+        }),
+        '/SPY/spot-exposures/expiry-strike': async () => ({
+          ok: true,
+          json: async () => ({ data: [makeStrikeRow({ price: '590.5' })] }),
+        }),
+      }),
+    );
+
+    const deadlockErr = Object.assign(new Error('deadlock detected'), {
+      code: '40P01',
+    });
+    mockQuery
+      .mockRejectedValueOnce(deadlockErr)
+      .mockRejectedValueOnce(deadlockErr);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(Sentry.captureException).toHaveBeenCalledWith(deadlockErr);
+    expect(res._json).toMatchObject({ status: 'success', rows: 0 });
+  });
+
+  // ── Deterministic strike ordering ─────────────────────────
+
+  it('sorts strikes ascending by numeric value before INSERT', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    // UW returns strikes out of order; the cron must sort them so it
+    // and the uw-stream daemon acquire row locks in the same sequence.
+    const rows = [
+      makeStrikeRow({ strike: '600', price: '590.5' }),
+      makeStrikeRow({ strike: '585', price: '590.5' }),
+      makeStrikeRow({ strike: '595', price: '590.5' }),
+    ];
+    vi.stubGlobal(
+      'fetch',
+      makeRoutedFetchMock({
+        '/SPY/spot-exposures/strike': async () => ({
+          ok: true,
+          json: async () => ({ data: [{ price: '590.5' }] }),
+        }),
+        '/SPY/spot-exposures/expiry-strike': async () => ({
+          ok: true,
+          json: async () => ({ data: rows }),
+        }),
+      }),
+    );
+
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      mockResponse(),
+    );
+
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    const [, params] = mockQuery.mock.calls[0]!;
+    const p = params as unknown[];
+    // 30 columns per row, strike is column index 2 within each row.
+    const strikes = [p[2], p[2 + 30], p[2 + 60]];
+    expect(strikes).toEqual(['585', '595', '600']);
+  });
 });

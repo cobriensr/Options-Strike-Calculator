@@ -16,10 +16,7 @@
 import { config as loadEnv } from 'dotenv';
 import { neon } from '@neondatabase/serverless';
 import { computeLotteryScore } from '../api/_lib/lottery-score-weights.ts';
-import type {
-  LotteryMode,
-  TimeOfDay,
-} from '../api/_lib/lottery-finder.ts';
+import type { LotteryMode, TimeOfDay } from '../api/_lib/lottery-finder.ts';
 
 loadEnv({ path: '.env.local' });
 

@@ -447,90 +447,90 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               tier: (r.ticker_tier ?? '') as 'reliable' | 'uncertain' | '',
             };
       return {
-      id: Number(r.id),
-      date: toIso(r.date).slice(0, 10),
-      triggerTimeCt: toIso(r.trigger_time_ct),
-      entryTimeCt: toIso(r.entry_time_ct),
-      optionChainId: r.option_chain_id,
-      underlyingSymbol: r.underlying_symbol,
-      optionType: r.option_type,
-      strike: Number(r.strike),
-      expiry:
-        typeof r.expiry === 'string'
-          ? r.expiry.slice(0, 10)
-          : toIso(r.expiry).slice(0, 10),
-      dte: Number(r.dte),
+        id: Number(r.id),
+        date: toIso(r.date).slice(0, 10),
+        triggerTimeCt: toIso(r.trigger_time_ct),
+        entryTimeCt: toIso(r.entry_time_ct),
+        optionChainId: r.option_chain_id,
+        underlyingSymbol: r.underlying_symbol,
+        optionType: r.option_type,
+        strike: Number(r.strike),
+        expiry:
+          typeof r.expiry === 'string'
+            ? r.expiry.slice(0, 10)
+            : toIso(r.expiry).slice(0, 10),
+        dte: Number(r.dte),
 
-      score,
-      scoreTier: tier,
-      forecastHighPeakPct: forecastForTier(tier),
-      tickerStats,
-      // Daily cluster size on the chain (ticker × strike × type ×
-      // expiry). 1 = single fire today; higher means the row is the
-      // LATEST of N fires on this chain through the day. Hot chains
-      // routinely hit 50-300+ fires.
-      fireCount: Number(r.fire_count ?? 1),
-      firstFireTimeCt: toIso(r.first_fire_time_ct),
+        score,
+        scoreTier: tier,
+        forecastHighPeakPct: forecastForTier(tier),
+        tickerStats,
+        // Daily cluster size on the chain (ticker × strike × type ×
+        // expiry). 1 = single fire today; higher means the row is the
+        // LATEST of N fires on this chain through the day. Hot chains
+        // routinely hit 50-300+ fires.
+        fireCount: Number(r.fire_count ?? 1),
+        firstFireTimeCt: toIso(r.first_fire_time_ct),
 
-      trigger: {
-        volToOiWindow: Number(r.trigger_vol_to_oi_window),
-        volToOiCum: Number(r.trigger_vol_to_oi_cum),
-        iv: Number(r.trigger_iv),
-        delta: Number(r.trigger_delta),
-        askPct: Number(r.trigger_ask_pct),
-        windowSize: Number(r.trigger_window_size),
-        windowPrints: Number(r.trigger_window_prints),
-      },
+        trigger: {
+          volToOiWindow: Number(r.trigger_vol_to_oi_window),
+          volToOiCum: Number(r.trigger_vol_to_oi_cum),
+          iv: Number(r.trigger_iv),
+          delta: Number(r.trigger_delta),
+          askPct: Number(r.trigger_ask_pct),
+          windowSize: Number(r.trigger_window_size),
+          windowPrints: Number(r.trigger_window_prints),
+        },
 
-      entry: {
-        price: Number(r.entry_price),
-        openInterest: Number(r.open_interest),
-        spotAtFirst: Number(r.spot_at_first),
-        alertSeq: Number(r.alert_seq),
-        minutesSincePrevFire: Number(r.minutes_since_prev_fire),
-      },
+        entry: {
+          price: Number(r.entry_price),
+          openInterest: Number(r.open_interest),
+          spotAtFirst: Number(r.spot_at_first),
+          alertSeq: Number(r.alert_seq),
+          minutesSincePrevFire: Number(r.minutes_since_prev_fire),
+        },
 
-      tags: {
-        flowQuad: r.flow_quad,
-        tod: r.tod,
-        mode: r.mode,
-        reload: r.reload_tagged,
-        cheapCallPm: r.cheap_call_pm_tagged,
-        burstRatioVsPrev: num(r.burst_ratio_vs_prev),
-        entryDropPctVsPrev: num(r.entry_drop_pct_vs_prev),
-      },
+        tags: {
+          flowQuad: r.flow_quad,
+          tod: r.tod,
+          mode: r.mode,
+          reload: r.reload_tagged,
+          cheapCallPm: r.cheap_call_pm_tagged,
+          burstRatioVsPrev: num(r.burst_ratio_vs_prev),
+          entryDropPctVsPrev: num(r.entry_drop_pct_vs_prev),
+        },
 
-      macro: {
-        mktTideNcp: num(r.mkt_tide_ncp),
-        mktTideNpp: num(r.mkt_tide_npp),
-        mktTideDiff: num(r.mkt_tide_diff),
-        mktTideOtmDiff: num(r.mkt_tide_otm_diff),
-        spxFlowDiff: num(r.spx_flow_diff),
-        spyEtfDiff: num(r.spy_etf_diff),
-        qqqEtfDiff: num(r.qqq_etf_diff),
-        zeroDteDiff: num(r.zero_dte_diff),
-        spxSpotGammaOi: num(r.spx_spot_gamma_oi),
-        spxSpotGammaVol: num(r.spx_spot_gamma_vol),
-        spxSpotCharmOi: num(r.spx_spot_charm_oi),
-        spxSpotVannaOi: num(r.spx_spot_vanna_oi),
-        gexStrikeCallMinusPut: num(r.gex_strike_call_minus_put),
-        gexStrikeCallAskMinusBid: num(r.gex_strike_call_ask_minus_bid),
-        gexStrikePutAskMinusBid: num(r.gex_strike_put_ask_minus_bid),
-        gexStrikeActualStrike: num(r.gex_strike_actual_strike),
-      },
+        macro: {
+          mktTideNcp: num(r.mkt_tide_ncp),
+          mktTideNpp: num(r.mkt_tide_npp),
+          mktTideDiff: num(r.mkt_tide_diff),
+          mktTideOtmDiff: num(r.mkt_tide_otm_diff),
+          spxFlowDiff: num(r.spx_flow_diff),
+          spyEtfDiff: num(r.spy_etf_diff),
+          qqqEtfDiff: num(r.qqq_etf_diff),
+          zeroDteDiff: num(r.zero_dte_diff),
+          spxSpotGammaOi: num(r.spx_spot_gamma_oi),
+          spxSpotGammaVol: num(r.spx_spot_gamma_vol),
+          spxSpotCharmOi: num(r.spx_spot_charm_oi),
+          spxSpotVannaOi: num(r.spx_spot_vanna_oi),
+          gexStrikeCallMinusPut: num(r.gex_strike_call_minus_put),
+          gexStrikeCallAskMinusBid: num(r.gex_strike_call_ask_minus_bid),
+          gexStrikePutAskMinusBid: num(r.gex_strike_put_ask_minus_bid),
+          gexStrikeActualStrike: num(r.gex_strike_actual_strike),
+        },
 
-      outcomes: {
-        realizedTrail30_10Pct: num(r.realized_trail30_10_pct),
-        realizedHard30mPct: num(r.realized_hard30m_pct),
-        realizedTier50HoldEodPct: num(r.realized_tier50_holdeod_pct),
-        realizedFlowInversionPct: num(r.realized_flow_inversion_pct),
-        realizedEodPct: num(r.realized_eod_pct),
-        peakCeilingPct: num(r.peak_ceiling_pct),
-        minutesToPeak: num(r.minutes_to_peak),
-        enrichedAt: r.enriched_at != null ? toIso(r.enriched_at) : null,
-      },
+        outcomes: {
+          realizedTrail30_10Pct: num(r.realized_trail30_10_pct),
+          realizedHard30mPct: num(r.realized_hard30m_pct),
+          realizedTier50HoldEodPct: num(r.realized_tier50_holdeod_pct),
+          realizedFlowInversionPct: num(r.realized_flow_inversion_pct),
+          realizedEodPct: num(r.realized_eod_pct),
+          peakCeilingPct: num(r.peak_ceiling_pct),
+          minutesToPeak: num(r.minutes_to_peak),
+          enrichedAt: r.enriched_at != null ? toIso(r.enriched_at) : null,
+        },
 
-      insertedAt: toIso(r.inserted_at),
+        insertedAt: toIso(r.inserted_at),
       };
     });
 
@@ -543,7 +543,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       date: targetDate,
       asOf: at ?? null,
       minute: minute ?? null,
-      filters: { ticker, reload, cheapCallPm, mode, optionType, tod, sort, minScore },
+      filters: {
+        ticker,
+        reload,
+        cheapCallPm,
+        mode,
+        optionType,
+        tod,
+        sort,
+        minScore,
+      },
       // count = rows returned (≤ limit). total = total matching rows
       // before LIMIT/OFFSET. UI uses (offset, limit, total) for the
       // page-N-of-M display + prev/next controls.

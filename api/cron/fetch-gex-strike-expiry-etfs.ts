@@ -191,9 +191,19 @@ async function storeStrikes(
           const s = Number.parseFloat(r.strike);
           return s >= spotPrice - atmRange && s <= spotPrice + atmRange;
         })
-      : rows;
+      : [...rows];
 
   if (filtered.length === 0) return { stored: 0, skipped: 0 };
+
+  // Sort by numeric strike before building VALUES clauses so this cron
+  // and the uw-stream Python daemon both acquire row locks on
+  // ws_gex_strike_expiry in the same order. Without this, UW REST and
+  // WS payloads can arrive in different strike orders for the same
+  // (ticker, expiry, ts_minute) batch and trigger AB-BA deadlocks
+  // (SQLSTATE 40P01) on overlapping UPSERTs.
+  filtered.sort(
+    (a, b) => Number.parseFloat(a.strike) - Number.parseFloat(b.strike),
+  );
 
   const sql = getDb();
 
@@ -308,20 +318,41 @@ async function storeStrikes(
     RETURNING (xmax = 0) AS was_insert
   `;
 
-  try {
-    const result = (await sql.query(insertSql, sqlParams)) as Array<{
-      was_insert: boolean;
-    }>;
-    const stored = result.filter((r) => r.was_insert).length;
-    return { stored, skipped: result.length - stored };
-  } catch (err) {
-    logger.warn(
-      { err, ticker },
-      'fetch-gex-strike-expiry-etfs: batch insert failed',
-    );
-    Sentry.captureException(err);
-    return { stored: 0, skipped: filtered.length };
+  // Retry once on transient lock conflicts with the uw-stream daemon.
+  // 40P01 = deadlock_detected, 40001 = serialization_failure. Postgres
+  // aborts the losing transaction; a fresh attempt typically wins
+  // because the deterministic sort above means both writers now queue
+  // for the same row in the same order.
+  const MAX_ATTEMPTS = 2;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const result = (await sql.query(insertSql, sqlParams)) as Array<{
+        was_insert: boolean;
+      }>;
+      const stored = result.filter((r) => r.was_insert).length;
+      return { stored, skipped: result.length - stored };
+    } catch (err) {
+      const code = (err as { code?: string } | null)?.code;
+      const isLockConflict = code === '40P01' || code === '40001';
+      if (isLockConflict && attempt < MAX_ATTEMPTS) {
+        logger.warn(
+          { err, ticker, attempt, code },
+          'fetch-gex-strike-expiry-etfs: lock conflict, retrying',
+        );
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        continue;
+      }
+      logger.warn(
+        { err, ticker },
+        'fetch-gex-strike-expiry-etfs: batch insert failed',
+      );
+      Sentry.captureException(err);
+      return { stored: 0, skipped: filtered.length };
+    }
   }
+  // Unreachable: the loop above either returns or falls through to the
+  // catch's return. Satisfies TS's control-flow analysis.
+  return { stored: 0, skipped: filtered.length };
 }
 
 // ── Per-ticker orchestrator ───────────────────────────────────
