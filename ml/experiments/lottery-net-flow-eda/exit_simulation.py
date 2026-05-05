@@ -56,7 +56,7 @@ def load_fires(conn) -> pd.DataFrame:
                realized_trail30_10_pct, realized_eod_pct,
                mode, tod, cheap_call_pm_tagged
         FROM lottery_finder_fires
-        WHERE date >= '2026-04-13' AND date <= '2026-05-01'
+        WHERE date >= '2026-04-13' AND date <= '2026-05-04'
           AND realized_trail30_10_pct IS NOT NULL
         ORDER BY date, trigger_time_ct
         """,
@@ -372,7 +372,7 @@ def main() -> int:
             print("No fires in parquet window.")
             return 0
         tickers = sorted(fires["ticker"].unique().tolist())
-        flow = load_flow_for_dates(conn, tickers, "2026-04-13", "2026-05-01")
+        flow = load_flow_for_dates(conn, tickers, "2026-04-13", "2026-05-04")
     print(f"  fires:     {len(fires):,}")
     print(f"  tickers:   {len(tickers)}")
     print(f"  flow rows: {len(flow):,}")

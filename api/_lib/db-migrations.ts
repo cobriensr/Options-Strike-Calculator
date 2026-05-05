@@ -3738,11 +3738,11 @@ export const MIGRATIONS: Migration[] = [
     description:
       'Add tiered scoring to lottery_finder_fires + create lottery_ticker_stats. ' +
       'Phase 1 of docs/superpowers/plans/lottery-tiered-scoring-ui.md. The score ' +
-      "is the sum of weights for ticker × mode × entry-price × TOD × option-type, " +
+      'is the sum of weights for ticker × mode × entry-price × TOD × option-type, ' +
       'computed deterministically on insert (api/_lib/lottery-score-weights.ts). ' +
       'Tier (≥18 / 12-17 / <12) is derived from score in the read path. ' +
       'lottery_ticker_stats holds Wilson-CI-bounded high-peak rates per ticker ' +
-      "(seeded from ml/data/lottery_ticker_stats.json on the 21-day window) so " +
+      '(seeded from ml/data/lottery_ticker_stats.json on the 21-day window) so ' +
       'the UI can show ✓/⚠️ reliability indicators next to ticker names. The ' +
       '(date DESC, score DESC NULLS LAST) index supports `?sort=score` ORDER BYs.',
     statements: (sql) => [
@@ -3782,6 +3782,53 @@ export const MIGRATIONS: Migration[] = [
             ci_width = EXCLUDED.ci_width,
             tier = EXCLUDED.tier,
             updated_at = NOW()`,
+    ],
+  },
+  {
+    id: 127,
+    description:
+      'Create option_intraday_nbbo + option_intraday_nbbo_fetches cache tables for the ' +
+      'flow-inversion automation pipeline (Phase 2 of ' +
+      'docs/superpowers/specs/lottery-flow-inversion-automation-2026-05-05.md). ' +
+      'option_intraday_nbbo caches per-minute UW REST `/option-contract/{id}/intraday` rows ' +
+      'so the post-close enrich-lottery-outcomes cron can re-run the ' +
+      'realized_flow_inversion_pct computation without re-pulling UW. The endpoint does ' +
+      'not expose nbbo_bid/nbbo_ask directly — we store the side-split premium + volume ' +
+      'fields and derive a synthetic mid in code as ' +
+      '(premium_ask_side/volume_ask_side + premium_bid_side/volume_bid_side)/2 with ' +
+      '(high+low)/2 and close_price fallbacks. PK (option_chain, ts) auto-creates the ' +
+      'index used by both the read path (chain ASC + ts ASC for the post-trigger walk) ' +
+      'and the upsert path (ON CONFLICT). option_intraday_nbbo_fetches is a small ' +
+      'tracking table keyed (option_chain, date) so empty-result fetches are not retried ' +
+      'on every cron run — status=ok|empty|error + rows_fetched short-circuits the ' +
+      'fetcher when we have already attempted the (chain, date) pair.',
+    statements: (sql) => [
+      sql`CREATE TABLE IF NOT EXISTS option_intraday_nbbo (
+        option_chain TEXT NOT NULL,
+        ts TIMESTAMPTZ NOT NULL,
+        avg_price NUMERIC(14, 6),
+        close_price NUMERIC(14, 6),
+        high_price NUMERIC(14, 6),
+        low_price NUMERIC(14, 6),
+        premium_ask_side NUMERIC(20, 4),
+        premium_bid_side NUMERIC(20, 4),
+        premium_mid_side NUMERIC(20, 4),
+        volume_ask_side INTEGER,
+        volume_bid_side INTEGER,
+        volume_mid_side INTEGER,
+        fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (option_chain, ts)
+      )`,
+      sql`CREATE TABLE IF NOT EXISTS option_intraday_nbbo_fetches (
+        option_chain TEXT NOT NULL,
+        date DATE NOT NULL,
+        rows_fetched INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (option_chain, date),
+        CONSTRAINT option_intraday_nbbo_fetches_status_chk
+          CHECK (status IN ('ok', 'empty', 'error'))
+      )`,
     ],
   },
 ];
