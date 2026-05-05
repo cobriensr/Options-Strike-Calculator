@@ -89,9 +89,15 @@ const ROW = {
   ticker_ci_upper: 68.4,
   ticker_ci_width: 2.0,
   ticker_tier: 'reliable',
-  // fire_count comes from the dedup CTE's window function. 1 = unique
-  // row, no cluster. Tests that exercise multi-fire collapsing override.
+  // realized_flow_inversion_pct (4th exit policy) — null when not yet
+  // enriched, mirroring the other realized_* columns above.
+  realized_flow_inversion_pct: null,
+  // fire_count comes from the chain-day dedup CTE's window function.
+  // 1 = unique row, no cluster. Tests exercising multi-fire collapse
+  // override. first_fire_time_ct mirrors trigger_time_ct for unique
+  // rows; multi-fire tests override with the burst-start time.
   fire_count: 1,
+  first_fire_time_ct: '2026-05-01T19:00:00Z',
 };
 
 describe('lottery-finder endpoint', () => {
@@ -157,11 +163,18 @@ describe('lottery-finder endpoint', () => {
     });
   });
 
-  it('exposes fire_count from the dedup CTE as fireCount in the response', async () => {
-    // Real-world dup: 7 fires on TSLA 392.5P within a single minute
-    // collapsed to 1 row. The latest fire is the rep; fire_count=7 is
-    // the cluster size from COUNT(*) OVER (PARTITION BY ...).
-    const ROW_COLLAPSED = { ...ROW, fire_count: 7 };
+  it('exposes chain-day fire_count + first_fire_time_ct as fireCount + firstFireTimeCt', async () => {
+    // Real-world: TSLA 392.5C fires 315 times across the session; the
+    // chain-day CTE (PARTITION BY ticker × strike × type × expiry)
+    // collapses to one rep row. fire_count = 315 is the burst size,
+    // first_fire_time_ct = 09:35 the burst start, trigger_time_ct =
+    // 15:30 the latest fire (also the rep's macro/score basis).
+    const ROW_COLLAPSED = {
+      ...ROW,
+      fire_count: 315,
+      first_fire_time_ct: '2026-05-01T14:35:00Z',
+      trigger_time_ct: '2026-05-01T20:30:00Z',
+    };
     mockSql
       .mockResolvedValueOnce([ROW_COLLAPSED])
       .mockResolvedValueOnce([{ total: 1 }]);
@@ -171,8 +184,16 @@ describe('lottery-finder endpoint', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    const body = res._json as { fires: Array<{ fireCount: unknown }> };
-    expect(body.fires[0]!.fireCount).toBe(7);
+    const body = res._json as {
+      fires: Array<{
+        fireCount: number;
+        firstFireTimeCt: string;
+        triggerTimeCt: string;
+      }>;
+    };
+    expect(body.fires[0]!.fireCount).toBe(315);
+    expect(body.fires[0]!.firstFireTimeCt).toBe('2026-05-01T14:35:00Z');
+    expect(body.fires[0]!.triggerTimeCt).toBe('2026-05-01T20:30:00Z');
   });
 
   it('reports tickerStats=null when ticker_n_fires is missing (no JOIN match)', async () => {

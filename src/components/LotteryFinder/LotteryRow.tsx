@@ -245,18 +245,34 @@ export const LotteryRow = memo(function LotteryRow({
         <span className="text-[11px] text-neutral-400">
           fire #{fire.entry.alertSeq}
         </span>
-        {/* Cluster-size badge: shown only when the API collapsed >1
-            underlying fires (ticker × strike × type × minute) onto this
-            row. The count helps surface "this strike rang 7× in one
-            minute" without spamming the list. */}
+        {/* Chain-day cluster: shown only when the API collapsed >1
+            fires on this chain (ticker × strike × type × expiry) into a
+            single row for `date`. Carries the count + first-fire time
+            so the user sees the burst span at a glance. */}
         {fire.fireCount > 1 && (
           <span
             className="rounded border border-orange-500/40 bg-orange-950/30 px-1.5 py-0.5 text-[10px] font-semibold text-orange-200"
-            title={`${fire.fireCount} fires on this strike in the same minute — collapsed to the latest. Caused by the detector's per-invocation cooldown; the row carries the freshest macro and score.`}
+            title={`${fire.fireCount} fires on this chain since ${formatTimeCT(fire.firstFireTimeCt)} CT — collapsed to the latest. Hot chains routinely trigger 50-300+ times in a session; this row carries the freshest macro / score / exit-policy.`}
           >
-            ×{fire.fireCount}
+            ×{fire.fireCount} · since {formatTimeCT(fire.firstFireTimeCt)}
           </span>
         )}
+        {/* "Still hot" indicator — only when market is open and the
+            latest fire is within the last 10 minutes. Polling refresh
+            (~30s) keeps this honest without per-row timers. */}
+        {marketOpen &&
+          Date.now() - new Date(fire.triggerTimeCt).getTime() < 10 * 60_000 && (
+            <span
+              className="inline-flex items-center gap-1 rounded border border-red-500/50 bg-red-950/40 px-1.5 py-0.5 text-[10px] font-semibold text-red-200"
+              title="Latest fire on this chain was within the last 10 minutes — chain is still hot."
+            >
+              <span
+                className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-red-400"
+                aria-hidden
+              />
+              hot
+            </span>
+          )}
         {fire.tags.reload && (
           <span
             className="rounded border border-amber-500/40 bg-amber-950/30 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200"

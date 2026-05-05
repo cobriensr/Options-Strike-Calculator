@@ -108,12 +108,15 @@ interface FireRow {
   ticker_ci_width: DbNullableNumeric;
   ticker_tier: string | null;
 
-  // Per-(ticker, strike, type, minute-bucket) aggregate count from the
-  // dedup CTE. The detector cooldown is per cron invocation, so the
-  // table holds 2-7 fires for a single trigger window when the rolling
-  // detector keeps re-qualifying the next tick. Aggregating here keeps
-  // the UI to one row per minute with the latest fire as the rep.
+  // Per-(date, ticker, strike, option_type, expiry) aggregate count
+  // from the chain-day dedup CTE. Hot chains stay genuinely hot for
+  // hours — TSLA 392.5C fired 315 times in a single 6.5-hour session.
+  // We collapse to one row per chain per day with the LATEST fire as
+  // the rep (freshest macro / score / exit policy), surfacing the
+  // cluster size and the first-fire timestamp so the UI can render
+  // "×315 · since 13:30" for a still-hot chain.
   fire_count: number;
+  first_fire_time_ct: DbTimestamp;
 }
 
 /** Predicted peak-return range string for a given score tier. */
@@ -197,13 +200,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // and (2) the total matching count BEFORE limit so the UI can
     // surface "showing N of M" when the limit truncates the day.
     //
-    // Dedup CTE: the cron-detector cooldown is enforced per invocation,
-    // so a single rolling-window trigger emits 2-7 rows when successive
-    // cron runs re-qualify the next tick. We collapse on
-    // (underlying_symbol, strike, option_type, minute_bucket) — the
-    // latest fire wins (freshest macro / score) and `fire_count` carries
-    // the cluster size to the UI. Pagination math (LIMIT/OFFSET, total)
-    // operates on the collapsed shape.
+    // Chain-day dedup CTE: a single hot chain (e.g. TSLA 392.5C) can
+    // fire 100-300+ times in one session because high-vol/OI activity
+    // legitimately persists for hours. We collapse to one row per
+    // (date, underlying_symbol, strike, option_type, expiry) — the
+    // LATEST fire wins (freshest macro / score / exit policy),
+    // `fire_count` carries the cluster size, and `first_fire_time_ct`
+    // marks the burst start so the UI can render "×N · since HH:MM".
+    // Pagination math (LIMIT/OFFSET, total) operates on the collapsed
+    // shape. Date is already filter-bound to one day, so the partition
+    // doesn't need to include it — but expiry is required because the
+    // same strike can have multiple expiries listed on the same date.
     //
     // Sort modes (mutually exclusive ORDER BYs — neon's tagged
     // templates can't bind ORDER BY through `${}`, so we branch on
@@ -221,12 +228,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           SELECT
             f.*,
             COUNT(*) OVER (
-              PARTITION BY f.underlying_symbol, f.strike, f.option_type,
-                date_trunc('minute', f.trigger_time_ct)
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
             )::int AS fire_count,
+            MIN(f.trigger_time_ct) OVER (
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
+            ) AS first_fire_time_ct,
             ROW_NUMBER() OVER (
-              PARTITION BY f.underlying_symbol, f.strike, f.option_type,
-                date_trunc('minute', f.trigger_time_ct)
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
               ORDER BY f.trigger_time_ct DESC, f.id DESC
             ) AS rn
           FROM lottery_finder_fires f
@@ -262,7 +270,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.realized_eod_pct,
           f.peak_ceiling_pct, f.minutes_to_peak,
           f.inserted_at, f.enriched_at,
-          f.score, f.fire_count,
+          f.score, f.fire_count, f.first_fire_time_ct,
           s.n_fires AS ticker_n_fires,
           s.high_peak_rate AS ticker_high_peak_rate,
           s.ci_lower AS ticker_ci_lower,
@@ -282,12 +290,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           SELECT
             f.*,
             COUNT(*) OVER (
-              PARTITION BY f.underlying_symbol, f.strike, f.option_type,
-                date_trunc('minute', f.trigger_time_ct)
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
             )::int AS fire_count,
+            MIN(f.trigger_time_ct) OVER (
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
+            ) AS first_fire_time_ct,
             ROW_NUMBER() OVER (
-              PARTITION BY f.underlying_symbol, f.strike, f.option_type,
-                date_trunc('minute', f.trigger_time_ct)
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
               ORDER BY f.trigger_time_ct DESC, f.id DESC
             ) AS rn
           FROM lottery_finder_fires f
@@ -323,7 +332,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.realized_eod_pct,
           f.peak_ceiling_pct, f.minutes_to_peak,
           f.inserted_at, f.enriched_at,
-          f.score, f.fire_count,
+          f.score, f.fire_count, f.first_fire_time_ct,
           s.n_fires AS ticker_n_fires,
           s.high_peak_rate AS ticker_high_peak_rate,
           s.ci_lower AS ticker_ci_lower,
@@ -342,12 +351,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           SELECT
             f.*,
             COUNT(*) OVER (
-              PARTITION BY f.underlying_symbol, f.strike, f.option_type,
-                date_trunc('minute', f.trigger_time_ct)
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
             )::int AS fire_count,
+            MIN(f.trigger_time_ct) OVER (
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
+            ) AS first_fire_time_ct,
             ROW_NUMBER() OVER (
-              PARTITION BY f.underlying_symbol, f.strike, f.option_type,
-                date_trunc('minute', f.trigger_time_ct)
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
               ORDER BY f.trigger_time_ct DESC, f.id DESC
             ) AS rn
           FROM lottery_finder_fires f
@@ -383,7 +393,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.realized_eod_pct,
           f.peak_ceiling_pct, f.minutes_to_peak,
           f.inserted_at, f.enriched_at,
-          f.score, f.fire_count,
+          f.score, f.fire_count, f.first_fire_time_ct,
           s.n_fires AS ticker_n_fires,
           s.high_peak_rate AS ticker_high_peak_rate,
           s.ci_lower AS ticker_ci_lower,
@@ -397,9 +407,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         LIMIT ${limit}
         OFFSET ${offset}
       `,
-      // Total counts the collapsed shape (one row per ticker × strike ×
-      // option_type × minute-bucket) so pagination math matches the
-      // dedup'd CTE above.
+      // Total counts the collapsed shape (one row per chain per day:
+      // ticker × strike × option_type × expiry) so pagination math
+      // matches the dedup'd CTE above.
       db`
         SELECT COUNT(*)::int AS total
         FROM (
@@ -415,8 +425,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             AND (${optionType ?? null}::text IS NULL OR option_type = ${optionType ?? ''})
             AND (${tod ?? null}::text IS NULL OR tod = ${tod ?? ''})
             AND (${minScore ?? null}::int IS NULL OR score >= ${minScore ?? 0})
-          GROUP BY underlying_symbol, strike, option_type,
-            date_trunc('minute', trigger_time_ct)
+          GROUP BY underlying_symbol, strike, option_type, expiry
         ) collapsed
       `,
     ])) as [FireRow[], { total: number }[]];
@@ -456,10 +465,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       scoreTier: tier,
       forecastHighPeakPct: forecastForTier(tier),
       tickerStats,
-      // Cluster size on (ticker, strike, type, minute). 1 = unique;
-      // higher means the row represents the latest of N collapsed
-      // detector duplicates (per-invocation cooldown limitation).
+      // Daily cluster size on the chain (ticker × strike × type ×
+      // expiry). 1 = single fire today; higher means the row is the
+      // LATEST of N fires on this chain through the day. Hot chains
+      // routinely hit 50-300+ fires.
       fireCount: Number(r.fire_count ?? 1),
+      firstFireTimeCt: toIso(r.first_fire_time_ct),
 
       trigger: {
         volToOiWindow: Number(r.trigger_vol_to_oi_window),

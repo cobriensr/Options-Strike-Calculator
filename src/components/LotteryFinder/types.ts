@@ -143,13 +143,21 @@ export interface LotteryFire {
   /** Per-ticker reliability stats; `null` when no row exists. */
   tickerStats: LotteryTickerStats | null;
   /**
-   * Number of underlying fires collapsed onto this row by the API's
-   * (ticker × strike × option_type × minute-bucket) dedup CTE. 1 means
-   * unique; >1 means the row is the latest of a cluster (the detector
-   * cooldown is per cron invocation, so successive runs re-qualify the
-   * next tick).
+   * Number of fires collapsed onto this row by the API's chain-day
+   * dedup CTE — partitioned on (ticker × strike × option_type × expiry)
+   * scoped to the response's `date`. 1 means single fire today; higher
+   * means the row represents the LATEST fire of a hot chain that
+   * triggered repeatedly through the session (median 28+/day on
+   * mega-cap names; TSLA-class chains can hit 300+).
    */
   fireCount: number;
+  /**
+   * UTC ISO timestamp of the FIRST fire on this chain today. Pairs
+   * with `triggerTimeCt` (latest fire) so the UI can render the burst
+   * span — e.g. "×42 · since 09:35 CT" — and a "still hot" indicator
+   * when the latest fire is recent.
+   */
+  firstFireTimeCt: string;
 
   trigger: LotteryFireTrigger;
   entry: LotteryFireEntry;

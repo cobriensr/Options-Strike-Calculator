@@ -645,7 +645,11 @@ export function LotteryFinderSection({
             </div>
             {fires.map((f: LotteryFire) => (
               <LotteryRow
-                key={f.id}
+                // Key by chain (stable across polls). Using `f.id`
+                // would change every time a new fire on the same
+                // chain bumps the rep id, remounting the row and
+                // losing the user's expand state.
+                key={f.optionChainId}
                 fire={f}
                 exitPolicy={exitPolicy}
                 marketOpen={marketOpen}
