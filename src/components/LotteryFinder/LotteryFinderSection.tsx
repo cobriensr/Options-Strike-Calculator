@@ -263,9 +263,11 @@ export function LotteryFinderSection({
         {/* Day-level macro banner — at-a-glance regime context */}
         <LotteryDayBanner fires={fires} />
 
-        {/* Date + scrub controls. The slider drives a 1-minute
-            point-in-time bucket — drag to a minute, see ONLY what
-            fired in that minute. Click "All day" to clear. */}
+        {/* Date + scrub controls. Prev/next buttons step the 1-minute
+            point-in-time bucket by ±1 min — the drag slider was too
+            finicky to land on a target minute. Click "All day" /
+            "Live" to clear the bucket. Keyboard: tab to a button and
+            press space/enter to step. */}
         <div className="flex flex-wrap items-center gap-3 text-xs">
           <label className="flex items-center gap-1.5">
             <span className="text-neutral-400">date</span>
@@ -298,24 +300,46 @@ export function LotteryFinderSection({
             >
               {date === todayCt() ? 'Live' : 'All day'}
             </button>
-            <input
-              type="range"
-              min={Date.parse(scrubBounds.min)}
-              max={Date.parse(scrubBounds.max)}
-              step={60_000}
-              value={(() => {
-                const lo = Date.parse(scrubBounds.min);
-                const hi = Date.parse(scrubBounds.max);
-                const raw = minute ? Date.parse(minute) : lo;
-                return Math.max(lo, Math.min(hi, raw));
-              })()}
-              onChange={(e) =>
-                setMinute(new Date(Number(e.target.value)).toISOString())
-              }
-              className="w-64"
-              aria-label="Per-minute time scrubber (08:30 → 15:00 CT)"
-              title="Drag to a minute to see only that minute's fires"
-            />
+            {/* Per-minute step controls. Lo = 08:30 CT, hi = 15:00 CT
+                (regular session). When `minute` is null, prev seeds
+                from the upper bound (scrub back from close) and next
+                seeds from the lower bound (scrub forward from open). */}
+            {(() => {
+              const lo = Date.parse(scrubBounds.min);
+              const hi = Date.parse(scrubBounds.max);
+              const cur = minute ? Date.parse(minute) : null;
+              const atMin = cur != null && cur <= lo;
+              const atMax = cur != null && cur >= hi;
+              const step = (deltaMs: number) => {
+                const seed = cur ?? (deltaMs < 0 ? hi : lo);
+                const next = Math.max(lo, Math.min(hi, seed + deltaMs));
+                setMinute(new Date(next).toISOString());
+              };
+              return (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => step(-60_000)}
+                    disabled={atMin}
+                    className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs font-semibold text-neutral-300 enabled:hover:text-white disabled:opacity-40"
+                    aria-label="Step back one minute"
+                    title="Step back one minute (−1m)"
+                  >
+                    ◀ −1m
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => step(60_000)}
+                    disabled={atMax}
+                    className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs font-semibold text-neutral-300 enabled:hover:text-white disabled:opacity-40"
+                    aria-label="Step forward one minute"
+                    title="Step forward one minute (+1m)"
+                  >
+                    +1m ▶
+                  </button>
+                </>
+              );
+            })()}
             {minute && (
               <span className="font-mono text-xs text-purple-200">
                 {formatTimeCT(minute)} CT (1 min bucket)
