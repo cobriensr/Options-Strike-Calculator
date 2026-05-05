@@ -137,12 +137,17 @@ async function fetchSpotPrice(
 async function fetchExpiryStrike(
   apiKey: string,
   ticker: EtfTicker,
+  today: string,
   expiry: string,
   spotPrice: number | null,
 ): Promise<StrikeRow[]> {
   const atmRange = ATM_RANGE_BY_TICKER[ticker];
+  // `date` is the snapshot date (must be today or past — UW rejects future
+  // EST dates with 422). `expirations[]` filters which expiry to return.
+  // For 0DTE tickers (SPY/QQQ) today === expiry; for NDX's front monthly
+  // expiry these diverge.
   const params = new URLSearchParams({
-    date: expiry,
+    date: today,
     'expirations[]': expiry,
     limit: '500',
   });
@@ -366,7 +371,7 @@ async function processTicker(
 
   const spotPrice = await fetchSpotPrice(apiKey, ticker);
   const rows = await withRetry(() =>
-    fetchExpiryStrike(apiKey, ticker, expiry, spotPrice),
+    fetchExpiryStrike(apiKey, ticker, today, expiry, spotPrice),
   );
 
   if (rows.length === 0) {

@@ -577,9 +577,11 @@ describe('fetch-gex-strike-expiry-etfs handler', () => {
     );
     expect(ndxMainCalls.length).toBeGreaterThan(0);
     const ndxUrl = ndxMainCalls[0]![0] as string;
-    // Should reference the 3rd Friday of May 2026, not TODAY
-    expect(ndxUrl).toContain('2026-05-15');
-    expect(ndxUrl).not.toContain(TODAY);
+    // expirations[] should target the 3rd Friday of May 2026 (NDX front
+    // monthly), while `date` stays on TODAY because UW rejects future
+    // EST dates on the snapshot-date param.
+    expect(ndxUrl).toContain('expirations%5B%5D=2026-05-15');
+    expect(ndxUrl).toContain(`date=${TODAY}`);
   });
 
   // ── Preflight fallback ────────────────────────────────────
