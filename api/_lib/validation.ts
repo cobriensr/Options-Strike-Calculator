@@ -811,6 +811,49 @@ export const lotteryFinderQuerySchema = z.object({
 export type LotteryFinderQuery = z.infer<typeof lotteryFinderQuerySchema>;
 
 // ============================================================
+// /api/lottery-export
+// ============================================================
+
+/**
+ * Query params for GET /api/lottery-export.
+ *
+ * Owner-only EOD CSV/JSON dump of `lottery_finder_fires` for one day.
+ * Mirrors the filter surface of `lotteryFinderQuerySchema` so the UI
+ * can pass the active feed filters straight through, but drops the
+ * pagination / sort / scrubber knobs — exports always return every
+ * matching row in chronological order.
+ */
+export const lotteryExportQuerySchema = z.object({
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+    .optional(),
+  ticker: z
+    .string()
+    .regex(/^[A-Z]{1,8}$/, 'ticker must be 1-8 uppercase letters')
+    .optional(),
+  reload: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) =>
+      v === 'true' ? true : v === 'false' ? false : undefined,
+    ),
+  cheapCallPm: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) =>
+      v === 'true' ? true : v === 'false' ? false : undefined,
+    ),
+  mode: z.enum(['A_intraday_0DTE', 'B_multi_day_DTE1_3']).optional(),
+  optionType: z.enum(['C', 'P']).optional(),
+  tod: z.enum(['AM_open', 'MID', 'LUNCH', 'PM']).optional(),
+  minScore: z.coerce.number().int().min(0).max(50).optional(),
+  format: z.enum(['csv', 'json']).default('csv'),
+});
+
+export type LotteryExportQuery = z.infer<typeof lotteryExportQuerySchema>;
+
+// ============================================================
 // /api/net-flow-history
 // ============================================================
 

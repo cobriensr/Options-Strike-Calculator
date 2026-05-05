@@ -58,7 +58,11 @@ const CONVICTION_TO_MIN_SCORE: Record<ConvictionFloor, number | null> = {
   tier1: TIER1_MIN_SCORE,
 };
 
-const SORT_OPTIONS: Array<{ value: LotterySortMode; label: string; tooltip: string }> = [
+const SORT_OPTIONS: Array<{
+  value: LotterySortMode;
+  label: string;
+  tooltip: string;
+}> = [
   {
     value: 'chronological',
     label: 'newest',
@@ -121,6 +125,34 @@ const formatTimeCT = (input: string | number | Date): string => {
     hour12: false,
     timeZone: 'America/Chicago',
   });
+};
+
+interface ExportUrlParams {
+  date: string;
+  ticker?: string | null;
+  reload?: boolean | null;
+  cheapCallPm?: boolean | null;
+  mode?: LotteryMode | null;
+  optionType?: OptionType | null;
+  tod?: TimeOfDay | null;
+  minScore?: number | null;
+}
+
+/**
+ * Build the /api/lottery-export URL with only the params the user
+ * actually set. Boolean-true flags get serialized; null / false are
+ * omitted so the server schema's `.optional()` defaults are preserved.
+ */
+const buildExportUrl = (params: ExportUrlParams): string => {
+  const sp = new URLSearchParams({ date: params.date });
+  if (params.ticker) sp.set('ticker', params.ticker);
+  if (params.reload === true) sp.set('reload', 'true');
+  if (params.cheapCallPm === true) sp.set('cheapCallPm', 'true');
+  if (params.mode) sp.set('mode', params.mode);
+  if (params.optionType) sp.set('optionType', params.optionType);
+  if (params.tod) sp.set('tod', params.tod);
+  if (params.minScore != null) sp.set('minScore', String(params.minScore));
+  return `/api/lottery-export?${sp.toString()}`;
 };
 
 export function LotteryFinderSection({
@@ -356,6 +388,42 @@ export function LotteryFinderSection({
               historical replay
             </span>
           )}
+        </div>
+
+        {/* Export bar — owner-only CSV dump of the day. "Filtered"
+            mirrors the active feed filters; "All" is date-only. The
+            anchor element with `download` attribute lets the browser
+            handle the file save while carrying the owner cookie
+            naturally (no JS fetch + Blob round-trip needed). */}
+        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+          <span className="text-[10px] tracking-wide text-neutral-500 uppercase">
+            export
+          </span>
+          <a
+            href={buildExportUrl({
+              date,
+              ticker: tickerFilter,
+              reload: reloadOnly ? true : null,
+              cheapCallPm: cheapCallPmOnly ? true : null,
+              mode: modeFilter,
+              optionType: optionTypeFilter,
+              tod: todFilter,
+              minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
+            })}
+            download
+            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-xs font-semibold text-neutral-300 hover:text-white"
+            title="Export the current filtered view as CSV (one row per fire, all columns)."
+          >
+            ⤓ filtered
+          </a>
+          <a
+            href={buildExportUrl({ date })}
+            download
+            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-xs font-semibold text-neutral-300 hover:text-white"
+            title="Export every fire on the selected day as CSV — ignores active filters."
+          >
+            ⤓ all
+          </a>
         </div>
 
         {/* Sort + High Conviction filter — score-driven controls
