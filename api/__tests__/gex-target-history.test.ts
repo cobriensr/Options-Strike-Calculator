@@ -722,6 +722,24 @@ describe('GET /api/gex-target-history', () => {
       return rows;
     }
 
+    function makeRawGexRow(
+      ts: string,
+      strike: number,
+      overrides: Record<string, string | null> = {},
+    ) {
+      return {
+        timestamp: ts,
+        strike: String(strike),
+        call_gamma_vol: '100',
+        put_gamma_vol: '200',
+        call_gamma_ask: '10',
+        call_gamma_bid: '20',
+        put_gamma_ask: '30',
+        put_gamma_bid: '40',
+        ...overrides,
+      };
+    }
+
     it('returns all snapshots for the date', async () => {
       const ts1 = '2026-04-02T15:00:00Z';
       const ts2 = '2026-04-02T15:05:00Z';
@@ -735,6 +753,8 @@ describe('GET /api/gex-target-history', () => {
         ...makeTimestampRows(ts1),
         ...makeTimestampRows(ts2),
       ]);
+      // raw gex rows query
+      mockSql.mockResolvedValueOnce([]);
 
       vi.mocked(fetchSPXCandles).mockResolvedValue({
         candles: [
@@ -789,6 +809,7 @@ describe('GET /api/gex-target-history', () => {
         ...makeTimestampRows(ts1),
         ...makeTimestampRows(ts2),
       ]);
+      mockSql.mockResolvedValueOnce([]);
 
       vi.mocked(fetchSPXCandles).mockResolvedValue({
         candles: [],
@@ -819,12 +840,88 @@ describe('GET /api/gex-target-history', () => {
       expect(body.snapshots[0]!.dir).not.toBeNull();
     });
 
+    it('hydrates bulk vol and dir dollars from raw 0DTE rows', async () => {
+      const ts1 = '2026-04-02T15:00:00Z';
+
+      mockSql.mockResolvedValueOnce([{ date: '2026-04-02' }]);
+      mockSql.mockResolvedValueOnce([{ timestamp: ts1 }]);
+      mockSql.mockResolvedValueOnce(makeTimestampRows(ts1));
+      mockSql.mockResolvedValueOnce([
+        makeRawGexRow(ts1, 5805, {
+          call_gamma_vol: '111',
+          put_gamma_vol: '222',
+          call_gamma_ask: '10',
+          call_gamma_bid: '15',
+          put_gamma_ask: '20',
+          put_gamma_bid: '25',
+        }),
+      ]);
+
+      vi.mocked(fetchSPXCandles).mockResolvedValue({
+        candles: [],
+        previousClose: null,
+      });
+
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'GET',
+          query: { date: '2026-04-02', all: 'true' },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(200);
+      const body = res._json as {
+        snapshots: Array<{
+          vol: {
+            leaderboard: Array<{
+              strike: number;
+              features: {
+                gexDollars: number;
+                callGexDollars: number;
+                putGexDollars: number;
+              };
+            }>;
+          } | null;
+          dir: {
+            leaderboard: Array<{
+              strike: number;
+              features: {
+                gexDollars: number;
+                callGexDollars: number;
+                putGexDollars: number;
+              };
+            }>;
+          } | null;
+        }>;
+      };
+
+      const vol5805 = body.snapshots[0]!.vol!.leaderboard.find(
+        (row) => row.strike === 5805,
+      );
+      const dir5805 = body.snapshots[0]!.dir!.leaderboard.find(
+        (row) => row.strike === 5805,
+      );
+      expect(vol5805?.features).toMatchObject({
+        gexDollars: 333,
+        callGexDollars: 111,
+        putGexDollars: 222,
+      });
+      expect(dir5805?.features).toMatchObject({
+        gexDollars: 70,
+        callGexDollars: 25,
+        putGexDollars: 45,
+      });
+    });
+
     it('returns candles and previousClose at top level', async () => {
       const ts1 = '2026-04-02T15:00:00Z';
 
       mockSql.mockResolvedValueOnce([{ date: '2026-04-02' }]);
       mockSql.mockResolvedValueOnce([{ timestamp: ts1 }]);
       mockSql.mockResolvedValueOnce(makeTimestampRows(ts1));
+      mockSql.mockResolvedValueOnce([]);
 
       vi.mocked(fetchSPXCandles).mockResolvedValue({
         candles: [

@@ -595,6 +595,26 @@ export interface GexTargetFeatureRow {
   minutes_after_noon_ct: Numeric;
 }
 
+interface BulkFeatureBaseRow extends Omit<
+  GexTargetFeatureRow,
+  'call_gex_dollars' | 'put_gex_dollars'
+> {
+  net_gex: NumericOrNull;
+  call_gex: NumericOrNull;
+  put_gex: NumericOrNull;
+}
+
+interface BulkRawGexRow {
+  timestamp: string | Date;
+  strike: Numeric;
+  call_gamma_vol: NumericOrNull;
+  put_gamma_vol: NumericOrNull;
+  call_gamma_ask: NumericOrNull;
+  call_gamma_bid: NumericOrNull;
+  put_gamma_ask: NumericOrNull;
+  put_gamma_bid: NumericOrNull;
+}
+
 /**
  * Normalize a Postgres TIMESTAMPTZ / DATE value to its canonical ISO
  * string. The Neon serverless driver returns these columns as Date
@@ -649,6 +669,98 @@ export function num(value: Numeric): number {
  */
 export function numOrNull(value: NumericOrNull): number | null {
   return canonicalNumOrNull(value);
+}
+
+function joinKey(timestamp: string | Date, strike: Numeric): string | null {
+  const ts = toIso(timestamp);
+  if (ts == null) return null;
+  const strikeNum = num(strike);
+  const strikeKey = Number.isFinite(strikeNum)
+    ? String(strikeNum)
+    : String(strike);
+  return `${ts}|${strikeKey}`;
+}
+
+function sumAllOrNull(...values: NumericOrNull[]): number | null {
+  let total = 0;
+  for (const value of values) {
+    const parsed = numOrNull(value);
+    if (parsed == null) return null;
+    total += parsed;
+  }
+  return total;
+}
+
+function scaledGexDollars(
+  value: NumericOrNull,
+  spotPrice: Numeric,
+): number | null {
+  const parsed = numOrNull(value);
+  if (parsed == null) return null;
+  const spot = num(spotPrice);
+  return Number.isFinite(spot) ? parsed * spot * 0.01 : null;
+}
+
+function mergeBulkGexRows(
+  featureRows: BulkFeatureBaseRow[],
+  rawRows: BulkRawGexRow[],
+): GexTargetFeatureRow[] {
+  const rawByKey = new Map<string, BulkRawGexRow>();
+  for (const rawRow of rawRows) {
+    const key = joinKey(rawRow.timestamp, rawRow.strike);
+    if (key != null) rawByKey.set(key, rawRow);
+  }
+
+  return featureRows.map((row) => {
+    const { net_gex, call_gex, put_gex, ...featureRow } = row;
+    const key = joinKey(row.timestamp, row.strike);
+    const rawRow = key == null ? undefined : rawByKey.get(key);
+
+    let gexDollars: Numeric = row.gex_dollars;
+    let callGexDollars: Numeric = 0;
+    let putGexDollars: Numeric = 0;
+
+    if (row.mode === 'oi') {
+      gexDollars = scaledGexDollars(net_gex, row.spot_price) ?? row.gex_dollars;
+      callGexDollars = scaledGexDollars(call_gex, row.spot_price) ?? 0;
+      putGexDollars = scaledGexDollars(put_gex, row.spot_price) ?? 0;
+    } else if (row.mode === 'vol') {
+      gexDollars =
+        rawRow == null
+          ? row.gex_dollars
+          : (sumAllOrNull(rawRow.call_gamma_vol, rawRow.put_gamma_vol) ??
+            row.gex_dollars);
+      callGexDollars =
+        rawRow == null ? 0 : (numOrNull(rawRow.call_gamma_vol) ?? 0);
+      putGexDollars =
+        rawRow == null ? 0 : (numOrNull(rawRow.put_gamma_vol) ?? 0);
+    } else if (row.mode === 'dir') {
+      gexDollars =
+        rawRow == null
+          ? row.gex_dollars
+          : (sumAllOrNull(
+              rawRow.call_gamma_ask,
+              rawRow.call_gamma_bid,
+              rawRow.put_gamma_ask,
+              rawRow.put_gamma_bid,
+            ) ?? row.gex_dollars);
+      callGexDollars =
+        rawRow == null
+          ? 0
+          : (sumAllOrNull(rawRow.call_gamma_ask, rawRow.call_gamma_bid) ?? 0);
+      putGexDollars =
+        rawRow == null
+          ? 0
+          : (sumAllOrNull(rawRow.put_gamma_ask, rawRow.put_gamma_bid) ?? 0);
+    }
+
+    return {
+      ...featureRow,
+      gex_dollars: gexDollars,
+      call_gex_dollars: callGexDollars,
+      put_gex_dollars: putGexDollars,
+    };
+  });
 }
 
 /**
@@ -801,30 +913,18 @@ export async function loadStrikeScoreHistory(
 
   if (timestamp == null) {
     // Bulk path: every snapshot for the date. Used by `?all=true`.
-    return (await sql`
+    //
+    // Keep the large raw-gex read out of the feature query. Neon's
+    // planner can choose a nested-loop plan for the three-table join and
+    // repeatedly scan all `gex_strike_0dte` rows for the day, which makes
+    // the endpoint exceed the frontend's 10s request timeout.
+    const featureRows = (await sql`
       SELECT
         gtf.date, gtf.timestamp, gtf.mode, gtf.math_version, gtf.strike,
-        CASE gtf.mode
-          -- OI mode: greek_exposure_strike × spot × 0.01 converts raw
-          -- gamma exposure (gamma × OI × 100) into dealer dollar
-          -- hedging per 1% SPX move — matches SOFBOT's M/K display scale.
-          WHEN 'oi'  THEN COALESCE(ges.net_gex * gtf.spot_price::numeric * 0.01, gtf.gex_dollars)
-          WHEN 'vol' THEN COALESCE(gso.call_gamma_vol::numeric + gso.put_gamma_vol::numeric, gtf.gex_dollars)
-          WHEN 'dir' THEN COALESCE(gso.call_gamma_ask::numeric + gso.call_gamma_bid::numeric + gso.put_gamma_ask::numeric + gso.put_gamma_bid::numeric, gtf.gex_dollars)
-          ELSE gtf.gex_dollars
-        END AS gex_dollars,
-        CASE gtf.mode
-          WHEN 'oi'  THEN COALESCE(ges.call_gex::numeric * gtf.spot_price::numeric * 0.01, 0)
-          WHEN 'vol' THEN COALESCE(gso.call_gamma_vol::numeric, 0)
-          WHEN 'dir' THEN COALESCE(gso.call_gamma_ask::numeric + gso.call_gamma_bid::numeric, 0)
-          ELSE 0
-        END AS call_gex_dollars,
-        CASE gtf.mode
-          WHEN 'oi'  THEN COALESCE(ges.put_gex::numeric * gtf.spot_price::numeric * 0.01, 0)
-          WHEN 'vol' THEN COALESCE(gso.put_gamma_vol::numeric, 0)
-          WHEN 'dir' THEN COALESCE(gso.put_gamma_ask::numeric + gso.put_gamma_bid::numeric, 0)
-          ELSE 0
-        END AS put_gex_dollars,
+        gtf.gex_dollars,
+        ges.net_gex,
+        ges.call_gex,
+        ges.put_gex,
         ges.call_delta,
         ges.put_delta,
         gtf.delta_gex_1m, gtf.delta_gex_5m, gtf.delta_gex_20m, gtf.delta_gex_60m,
@@ -835,17 +935,27 @@ export async function loadStrikeScoreHistory(
         gtf.call_ratio, gtf.charm_net, gtf.delta_net, gtf.vanna_net,
         gtf.dist_from_spot, gtf.spot_price, gtf.minutes_after_noon_ct
       FROM gex_target_features gtf
-      LEFT JOIN gex_strike_0dte gso
-        ON  gso.date      = gtf.date
-        AND gso.timestamp = gtf.timestamp
-        AND gso.strike::numeric = gtf.strike::numeric
       LEFT JOIN greek_exposure_strike ges
         ON  ges.date   = gtf.date
         AND ges.expiry = gtf.date
         AND ges.strike::numeric = gtf.strike::numeric
       WHERE gtf.date = ${date}
       ORDER BY gtf.timestamp ASC, gtf.mode ASC, gtf.strike ASC
-    `) as GexTargetFeatureRow[];
+    `) as BulkFeatureBaseRow[];
+
+    if (featureRows.length === 0) return [];
+
+    const rawRows = (await sql`
+      SELECT
+        timestamp, strike,
+        call_gamma_vol, put_gamma_vol,
+        call_gamma_ask, call_gamma_bid,
+        put_gamma_ask, put_gamma_bid
+      FROM gex_strike_0dte
+      WHERE date = ${date}
+    `) as BulkRawGexRow[];
+
+    return mergeBulkGexRows(featureRows, rawRows);
   }
 
   // Single-snapshot path: one (date, timestamp) tuple. Default for
