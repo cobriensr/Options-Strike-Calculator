@@ -150,6 +150,10 @@
       "schedule": "* 13-21 * * 1-5"
     },
     {
+      "path": "/api/cron/fetch-net-flow-history",
+      "schedule": "25 21 * * 1-5"
+    },
+    {
       "path": "/api/cron/enrich-lottery-outcomes",
       "schedule": "30 21 * * 1-5"
     },

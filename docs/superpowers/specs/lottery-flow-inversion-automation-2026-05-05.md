@@ -163,14 +163,14 @@ re-runs are free (cache short-circuits the REST call).
 
 ## Open questions
 
-| # | Question | Resolution |
-| - | -------- | ---------- |
-| 1 | ~~Filter strategy for option_quotes volume?~~ | OBSOLETE — REST per-fire approach has no firehose problem. |
-| 2 | ~~Does UW expose `option_quotes:<TICKER>`?~~ | RESOLVED — no, confirmed via UW socket channels endpoint. Pivoted to REST `/option-contract/{id}/intraday`. |
-| 3 | Peak detection without scipy? | Minimal prominence port, ~40 lines. |
-| 4 | Run Phase 1 against the existing parquet window edit, or extend the script's date filter? | RESOLVED — edited the date filter. |
-| 5 | Should `realized_flow_inversion_pct` historic values (47,658 rows from EDA parquet path) be re-run with the new REST-NBBO path? | No — keep historic, only forward-fill. |
-| 6 | Should the cron skip a fire when intraday NBBO is unavailable (e.g. UW returns 404 / empty)? | Yes — log + skip + leave column NULL. Matches EDA's `no_post_trigger_prices` behavior. |
+| #   | Question                                                                                                                        | Resolution                                                                                                  |
+| --- | ------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| 1   | ~~Filter strategy for option_quotes volume?~~                                                                                   | OBSOLETE — REST per-fire approach has no firehose problem.                                                  |
+| 2   | ~~Does UW expose `option_quotes:<TICKER>`?~~                                                                                    | RESOLVED — no, confirmed via UW socket channels endpoint. Pivoted to REST `/option-contract/{id}/intraday`. |
+| 3   | Peak detection without scipy?                                                                                                   | Minimal prominence port, ~40 lines.                                                                         |
+| 4   | Run Phase 1 against the existing parquet window edit, or extend the script's date filter?                                       | RESOLVED — edited the date filter.                                                                          |
+| 5   | Should `realized_flow_inversion_pct` historic values (47,658 rows from EDA parquet path) be re-run with the new REST-NBBO path? | No — keep historic, only forward-fill.                                                                      |
+| 6   | Should the cron skip a fire when intraday NBBO is unavailable (e.g. UW returns 404 / empty)?                                    | Yes — log + skip + leave column NULL. Matches EDA's `no_post_trigger_prices` behavior.                      |
 
 ## Thresholds / constants
 
