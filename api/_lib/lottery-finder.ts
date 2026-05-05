@@ -348,11 +348,18 @@ export function isCheapCallPm(
  * NOTE on tick ordering: ticks must be sorted by executedAt ascending.
  * The function does not re-sort because the cron passes pre-sorted rows
  * straight from a Postgres ORDER BY.
+ *
+ * `priorLastFireMs` (optional) seeds the cooldown gate from a fire that
+ * landed before the current tick window — used by the cron handler to
+ * persist the 5-min cooldown across invocations. Without it, a 1-min
+ * cron with a 7-min scan window re-qualifies the next available tick
+ * each run and emits a duplicate fire with a slightly later timestamp.
  */
 export function detectChainFires(
   ticks: OptionTradeTick[],
   oi: number,
   dte: number,
+  priorLastFireMs: number | null = null,
 ): LotteryFire[] {
   if (dte > LOTTERY_SPEC_V4.dteMax || oi <= 0) return [];
   if (ticks.length < LOTTERY_SPEC_V4.cntWindowMin) return [];
@@ -373,7 +380,9 @@ export function detectChainFires(
   const spotAtFirst = firstTick.underlyingPrice;
 
   const fires: LotteryFire[] = [];
-  let lastFireTs: number | null = null;
+  // Seed from caller so the cooldown gate honors fires emitted in
+  // prior cron invocations on the same chain.
+  let lastFireTs: number | null = priorLastFireMs;
 
   // Two-pointer rolling window: windowStart slides right as ticks fall
   // out of the 5-min trailing window. Each iteration advances cumVol by

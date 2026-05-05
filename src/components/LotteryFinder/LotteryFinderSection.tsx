@@ -18,9 +18,45 @@ import {
 const PAGE_SIZE = 50;
 /** localStorage keys for persisting user preferences. */
 const SORT_LS_KEY = 'lottery.sortMode';
-const HIGH_CONVICTION_LS_KEY = 'lottery.highConvictionOnly';
-/** Tier 1 floor — matches LOTTERY_TIER_THRESHOLDS.tier1MinScore on the API. */
-const HIGH_CONVICTION_MIN_SCORE = 18;
+const CONVICTION_LS_KEY = 'lottery.convictionFloor';
+/**
+ * Legacy boolean key (pre-Tier 2 filter). Read on init for migration
+ * then ignored — the new key supersedes it.
+ */
+const LEGACY_HIGH_CONVICTION_LS_KEY = 'lottery.highConvictionOnly';
+/** Tier floors — match LOTTERY_TIER_THRESHOLDS on the API. */
+const TIER1_MIN_SCORE = 18;
+const TIER2_MIN_SCORE = 12;
+
+type ConvictionFloor = 'all' | 'tier2' | 'tier1';
+
+const CONVICTION_OPTIONS: Array<{
+  value: ConvictionFloor;
+  label: string;
+  tooltip: string;
+}> = [
+  {
+    value: 'all',
+    label: 'all',
+    tooltip: 'No score floor — show every fire including Tier 3.',
+  },
+  {
+    value: 'tier2',
+    label: '🔥🔥 Tier 2+',
+    tooltip: `Tier 2 or better (score ≥ ${TIER2_MIN_SCORE}). Historical high-peak rate ~63% (vs ~32% for Tier 3).`,
+  },
+  {
+    value: 'tier1',
+    label: '🔥🔥🔥 Tier 1',
+    tooltip: `Tier 1 only (score ≥ ${TIER1_MIN_SCORE}). Historical high-peak rate ~80%, ~4 fires/day.`,
+  },
+];
+
+const CONVICTION_TO_MIN_SCORE: Record<ConvictionFloor, number | null> = {
+  all: null,
+  tier2: TIER2_MIN_SCORE,
+  tier1: TIER1_MIN_SCORE,
+};
 
 const SORT_OPTIONS: Array<{ value: LotterySortMode; label: string; tooltip: string }> = [
   {
@@ -110,10 +146,19 @@ export function LotteryFinderSection({
     const stored = window.localStorage.getItem(SORT_LS_KEY);
     return stored === 'score' || stored === 'peak' ? stored : 'chronological';
   });
-  const [highConvictionOnly, setHighConvictionOnly] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return window.localStorage.getItem(HIGH_CONVICTION_LS_KEY) === '1';
-  });
+  const [convictionFloor, setConvictionFloor] = useState<ConvictionFloor>(
+    () => {
+      if (typeof window === 'undefined') return 'all';
+      const stored = window.localStorage.getItem(CONVICTION_LS_KEY);
+      if (stored === 'tier1' || stored === 'tier2' || stored === 'all') {
+        return stored;
+      }
+      // One-time migration from the legacy boolean key. '1' means the
+      // user had Tier 1 only enabled before; preserve that intent.
+      const legacy = window.localStorage.getItem(LEGACY_HIGH_CONVICTION_LS_KEY);
+      return legacy === '1' ? 'tier1' : 'all';
+    },
+  );
   /** 0-based page index. Reset to 0 whenever a filter or minute changes. */
   const [page, setPage] = useState<number>(0);
 
@@ -126,12 +171,9 @@ export function LotteryFinderSection({
   }, [sortMode]);
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      window.localStorage.setItem(
-        HIGH_CONVICTION_LS_KEY,
-        highConvictionOnly ? '1' : '0',
-      );
+      window.localStorage.setItem(CONVICTION_LS_KEY, convictionFloor);
     }
-  }, [highConvictionOnly]);
+  }, [convictionFloor]);
 
   // Reset to page 0 whenever the result set's identity changes.
   // Otherwise the user could be on page 3, click a filter, and land
@@ -148,7 +190,7 @@ export function LotteryFinderSection({
     optionTypeFilter,
     todFilter,
     sortMode,
-    highConvictionOnly,
+    convictionFloor,
   ]);
 
   const { fires, loading, error, fetchedAt, total, offset, hasMore } =
@@ -163,7 +205,7 @@ export function LotteryFinderSection({
       optionType: optionTypeFilter,
       tod: todFilter,
       sort: sortMode,
-      minScore: highConvictionOnly ? HIGH_CONVICTION_MIN_SCORE : null,
+      minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
       page,
       pageSize: PAGE_SIZE,
     });
@@ -319,19 +361,34 @@ export function LotteryFinderSection({
           <span className="ml-2 text-[10px] tracking-wide text-neutral-500 uppercase">
             conviction
           </span>
-          <button
-            type="button"
-            onClick={() => setHighConvictionOnly((v) => !v)}
-            className={`rounded border px-2 py-0.5 text-xs font-semibold ${
-              highConvictionOnly
+          {CONVICTION_OPTIONS.map((c) => {
+            const active = convictionFloor === c.value;
+            // Tier 1 = rose (most exclusive), Tier 2+ = amber, all =
+            // neutral. The active style tracks the floor so the
+            // user can read the filter at a glance.
+            const activeClass =
+              c.value === 'tier1'
                 ? 'border-rose-500 bg-rose-950/40 text-rose-200'
-                : 'border-neutral-700 bg-neutral-900 text-neutral-400 hover:text-white'
-            }`}
-            title={`Show only Tier 1 fires (score ≥ ${HIGH_CONVICTION_MIN_SCORE}). Historical high-peak rate ~80%.`}
-            aria-pressed={highConvictionOnly}
-          >
-            🔥🔥🔥 Tier 1 only
-          </button>
+                : c.value === 'tier2'
+                  ? 'border-amber-500 bg-amber-950/40 text-amber-200'
+                  : 'border-emerald-500 bg-emerald-950/40 text-emerald-200';
+            return (
+              <button
+                key={c.value}
+                type="button"
+                onClick={() => setConvictionFloor(c.value)}
+                className={`rounded border px-2 py-0.5 text-xs font-semibold ${
+                  active
+                    ? activeClass
+                    : 'border-neutral-700 bg-neutral-900 text-neutral-400 hover:text-white'
+                }`}
+                title={c.tooltip}
+                aria-pressed={active}
+              >
+                {c.label}
+              </button>
+            );
+          })}
         </div>
 
         {/* Filter chips */}
@@ -542,9 +599,15 @@ export function LotteryFinderSection({
                     showing {offset + 1}-{offset + fires.length}
                   </span>
                 )}
-                {highConvictionOnly && (
-                  <span className="ml-2 text-rose-300/80">
-                    (high conviction only)
+                {convictionFloor !== 'all' && (
+                  <span
+                    className={`ml-2 ${
+                      convictionFloor === 'tier1'
+                        ? 'text-rose-300/80'
+                        : 'text-amber-300/80'
+                    }`}
+                  >
+                    ({convictionFloor === 'tier1' ? 'Tier 1 only' : 'Tier 2+'})
                   </span>
                 )}
                 {sortMode !== 'chronological' && (

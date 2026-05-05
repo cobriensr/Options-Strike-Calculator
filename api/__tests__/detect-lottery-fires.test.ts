@@ -168,15 +168,17 @@ describe('detect-lottery-fires handler', () => {
   it('inserts a fire when the v4 detector matches a chain', async () => {
     // Mock sequence:
     //   1. SELECT recent ticks → fireable SNDK stream
-    //   2. flow_data macro lookup → []
-    //   3. spot_exposures macro lookup → []
-    //   4. INSERT → [{ id: 42 }]
+    //   2. SELECT prior fires per chain → [] (no cooldown seed)
+    //   3. flow_data macro lookup → []
+    //   4. spot_exposures macro lookup → []
+    //   5. INSERT → [{ id: 42 }]
     // Note: SNDK is in the LOTTERY_V3_TICKERS list and DTE=0, so the
     // mode-classifier returns A_intraday_0DTE; the strike-exposures
     // query is gated on TICKERS_WITH_GEX_STRIKE which excludes SNDK,
     // so it is NOT called.
     mockSql
       .mockResolvedValueOnce(fireableSndkStream()) // ticks
+      .mockResolvedValueOnce([]) // prior fires
       .mockResolvedValueOnce([]) // flow_data
       .mockResolvedValueOnce([]) // spot_exposures
       .mockResolvedValueOnce([{ id: 42 }]); // insert
@@ -208,6 +210,7 @@ describe('detect-lottery-fires handler', () => {
     // column wiring against future field renames in the INSERT.
     mockSql
       .mockResolvedValueOnce(fireableSndkStream())
+      .mockResolvedValueOnce([]) // prior fires
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ id: 42 }]);
@@ -220,9 +223,10 @@ describe('detect-lottery-fires handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // 4th mockSql call is the INSERT (after ticks SELECT, flow_data,
-    // spot_exposures). Score is the last bound value before the
-    // closing `)` so it's the trailing slot in the call's arg list.
+    // The INSERT is the last mockSql call (after ticks SELECT, prior
+    // fires, flow_data, spot_exposures). Score is the last bound value
+    // before the closing `)` so it's the trailing slot in the call's
+    // arg list.
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
     const score = insertCall.at(-1);
     expect(score).toBe(25);
@@ -236,10 +240,12 @@ describe('detect-lottery-fires handler', () => {
       strike: 500,
       underlying_price: 500,
     }));
-    // 4 queries for non-strike tickers, 5 for strike tickers (extra
-    // strike_exposures lookup).
+    // 5 queries for non-strike tickers, 6 for strike tickers (extra
+    // strike_exposures lookup): ticks, prior fires, flow_data,
+    // spot_exposures, strike_exposures, insert.
     mockSql
       .mockResolvedValueOnce(spyStream) // ticks
+      .mockResolvedValueOnce([]) // prior fires
       .mockResolvedValueOnce([]) // flow_data
       .mockResolvedValueOnce([]) // spot_exposures
       .mockResolvedValueOnce([]) // strike_exposures
@@ -254,7 +260,7 @@ describe('detect-lottery-fires handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ status: 'success', rows: 1 });
-    expect(mockSql).toHaveBeenCalledTimes(5);
+    expect(mockSql).toHaveBeenCalledTimes(6);
   });
 
   it('skips chains with fewer than the per-chain min prints', async () => {
@@ -286,7 +292,9 @@ describe('detect-lottery-fires handler', () => {
       option_chain: 'FAKE260501C00100000',
       strike: 100,
     }));
-    mockSql.mockResolvedValueOnce(fakeStream);
+    mockSql
+      .mockResolvedValueOnce(fakeStream) // ticks
+      .mockResolvedValueOnce([]); // prior fires (chain passes min-prints)
 
     const req = mockRequest({
       method: 'GET',
@@ -301,19 +309,20 @@ describe('detect-lottery-fires handler', () => {
       totalFires: 1,
       inserted: 0,
     });
-    // Only the initial SELECT — fire was detected but mode classifier
-    // dropped it as OUT_OF_UNIVERSE so no macro lookups happen.
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    // Ticks SELECT + prior-fires lookup — fire was detected but mode
+    // classifier dropped it as OUT_OF_UNIVERSE so no macro lookups happen.
+    expect(mockSql).toHaveBeenCalledTimes(2);
   });
 
   it('continues with EMPTY_MACRO when the macro snapshot lookup throws', async () => {
-    // Mock sequence: tick SELECT succeeds → flow_data REJECTS → insert
-    // still happens because the cron catches macro errors. The other
-    // two parallel macro queries are scheduled but the .then chain on
-    // flow_data rejects first inside Promise.all, so we only need one
-    // mocked query to drive the failure path.
+    // Mock sequence: tick SELECT → prior-fires SELECT → flow_data
+    // REJECTS → insert still happens because the cron catches macro
+    // errors. The other two parallel macro queries are scheduled but
+    // the .then chain on flow_data rejects first inside Promise.all,
+    // so we only need one mocked query to drive the failure path.
     mockSql
       .mockResolvedValueOnce(fireableSndkStream())
+      .mockResolvedValueOnce([]) // prior fires
       .mockRejectedValueOnce(new Error('flow_data ECONNRESET'))
       // Promise.all evaluates all three macro queries in parallel; the
       // remaining two are still consumed even though Promise.all
@@ -342,6 +351,7 @@ describe('detect-lottery-fires handler', () => {
   it('honors ON CONFLICT (returns 0 inserted when DB returns no rows)', async () => {
     mockSql
       .mockResolvedValueOnce(fireableSndkStream())
+      .mockResolvedValueOnce([]) // prior fires
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]); // insert returns no rows = ON CONFLICT hit
@@ -358,6 +368,79 @@ describe('detect-lottery-fires handler', () => {
       rows: 0,
       totalFires: 1,
       inserted: 0,
+    });
+  });
+
+  it('seeds detector cooldown from prior-fire SELECT — no duplicate fire when within 5-min window', async () => {
+    // Real-world dup pattern: a prior cron run fired on this chain at
+    // T-3min. The detector's in-memory cooldown is 5min; without a DB
+    // seed the next cron run (here) re-qualifies the same window and
+    // emits a duplicate fire with a slightly later trigger_time_ct.
+    //
+    // The fireable stream's first tick is 13:30:00Z. We seed the
+    // prior-fires SELECT with last_ms = 13:28:00Z (2 min before the
+    // first tick → within the 5-min cooldown). detectChainFires must
+    // suppress the fire entirely. No flow_data / spot / insert calls.
+    const priorMs = Date.parse('2026-05-01T13:28:00Z');
+    mockSql
+      .mockResolvedValueOnce(fireableSndkStream()) // ticks
+      .mockResolvedValueOnce([
+        {
+          option_chain_id: 'SNDK260501C01175000',
+          last_ms: String(priorMs),
+        },
+      ]); // prior fires — cooldown active
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 0,
+      totalFires: 0,
+      inserted: 0,
+      priorSeeds: 1,
+    });
+    // Exactly two SQL calls: the ticks SELECT and the prior-fires
+    // lookup. No macro queries, no insert.
+    expect(mockSql).toHaveBeenCalledTimes(2);
+  });
+
+  it('still fires when prior-fire is older than the 5-min cooldown', async () => {
+    // Same fixture, but the prior fire is 6 minutes before the first
+    // tick — outside the cooldown window. detectChainFires lets the
+    // current trigger through as if no prior had been recorded.
+    const priorMs = Date.parse('2026-05-01T13:24:00Z');
+    mockSql
+      .mockResolvedValueOnce(fireableSndkStream())
+      .mockResolvedValueOnce([
+        {
+          option_chain_id: 'SNDK260501C01175000',
+          last_ms: String(priorMs),
+        },
+      ])
+      .mockResolvedValueOnce([]) // flow_data
+      .mockResolvedValueOnce([]) // spot_exposures
+      .mockResolvedValueOnce([{ id: 7 }]); // insert
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 1,
+      totalFires: 1,
+      inserted: 1,
+      priorSeeds: 1,
     });
   });
 });

@@ -42,6 +42,12 @@ const SCAN_WINDOW_MIN = 7;
 // per-chain group-by stays cheap.
 const PER_CHAIN_MIN_PRINTS = 5;
 
+// Prior-fires lookback for the cooldown seed. The detector cooldown is
+// 5 minutes; we look back 10 to absorb clock skew and any retried cron
+// run. Anything older than 10 min can't gate the current window so
+// pulling it would just be wasted bytes.
+const PRIOR_FIRE_LOOKBACK_MIN = 10;
+
 type DbNumeric = string | number;
 type DbNullableNumeric = DbNumeric | null;
 type DbTimestamp = string | Date;
@@ -227,6 +233,35 @@ export default withCronInstrumentation(
     let skippedNoOi = 0;
     let skippedShort = 0;
 
+    // Seed cooldown state from the DB so successive cron runs don't
+    // re-qualify the next tick within the 5-min window. Without this,
+    // the in-memory cooldown in detectChainFires resets each invocation
+    // and the same logical trigger emits 2-7 rows with slightly later
+    // trigger_time_ct values — bypassing the unique index.
+    const eligibleChainIds: string[] = [];
+    for (const g of groups.values()) {
+      if (g.ticks.length >= PER_CHAIN_MIN_PRINTS && g.oi > 0) {
+        eligibleChainIds.push(g.optionChain);
+      }
+    }
+    const priorByChain = new Map<string, number>();
+    if (eligibleChainIds.length > 0) {
+      const priorRows = (await db`
+        SELECT
+          option_chain_id,
+          EXTRACT(EPOCH FROM MAX(trigger_time_ct)) * 1000 AS last_ms
+        FROM lottery_finder_fires
+        WHERE option_chain_id = ANY(${eligibleChainIds}::text[])
+          AND trigger_time_ct >= NOW() - (${PRIOR_FIRE_LOOKBACK_MIN}::int * INTERVAL '1 minute')
+        GROUP BY option_chain_id
+      `) as { option_chain_id: string; last_ms: DbNullableNumeric }[];
+      for (const r of priorRows) {
+        if (r.last_ms != null) {
+          priorByChain.set(r.option_chain_id, Number(r.last_ms));
+        }
+      }
+    }
+
     for (const g of groups.values()) {
       if (g.ticks.length < PER_CHAIN_MIN_PRINTS) {
         skippedShort += 1;
@@ -245,7 +280,8 @@ export default withCronInstrumentation(
       const expiryStr = g.expiry;
       const dte = daysBetween(tradeDateStr, expiryStr);
 
-      const fires = detectChainFires(g.ticks, g.oi, dte);
+      const priorMs = priorByChain.get(g.optionChain) ?? null;
+      const fires = detectChainFires(g.ticks, g.oi, dte, priorMs);
       if (fires.length === 0) continue;
       totalFires += fires.length;
 
@@ -343,6 +379,7 @@ export default withCronInstrumentation(
         skippedNoOi,
         totalFires,
         inserted,
+        priorSeeds: priorByChain.size,
       },
       'detect-lottery-fires completed',
     );
@@ -357,6 +394,7 @@ export default withCronInstrumentation(
         skippedNoOi,
         totalFires,
         inserted,
+        priorSeeds: priorByChain.size,
       },
     };
   },
