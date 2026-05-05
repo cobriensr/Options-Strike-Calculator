@@ -107,6 +107,13 @@ interface FireRow {
   ticker_ci_upper: DbNullableNumeric;
   ticker_ci_width: DbNullableNumeric;
   ticker_tier: string | null;
+
+  // Per-(ticker, strike, type, minute-bucket) aggregate count from the
+  // dedup CTE. The detector cooldown is per cron invocation, so the
+  // table holds 2-7 fires for a single trigger window when the rolling
+  // detector keeps re-qualifying the next tick. Aggregating here keeps
+  // the UI to one row per minute with the latest fire as the rep.
+  fire_count: number;
 }
 
 /** Predicted peak-return range string for a given score tier. */
@@ -190,6 +197,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // and (2) the total matching count BEFORE limit so the UI can
     // surface "showing N of M" when the limit truncates the day.
     //
+    // Dedup CTE: the cron-detector cooldown is enforced per invocation,
+    // so a single rolling-window trigger emits 2-7 rows when successive
+    // cron runs re-qualify the next tick. We collapse on
+    // (underlying_symbol, strike, option_type, minute_bucket) — the
+    // latest fire wins (freshest macro / score) and `fire_count` carries
+    // the cluster size to the UI. Pagination math (LIMIT/OFFSET, total)
+    // operates on the collapsed shape.
+    //
     // Sort modes (mutually exclusive ORDER BYs — neon's tagged
     // templates can't bind ORDER BY through `${}`, so we branch on
     // the validated `sort` enum):
@@ -202,6 +217,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const [rows, totalRows] = (await Promise.all([
       sort === 'score'
         ? db`
+        WITH filtered AS (
+          SELECT
+            f.*,
+            COUNT(*) OVER (
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type,
+                date_trunc('minute', f.trigger_time_ct)
+            )::int AS fire_count,
+            ROW_NUMBER() OVER (
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type,
+                date_trunc('minute', f.trigger_time_ct)
+              ORDER BY f.trigger_time_ct DESC, f.id DESC
+            ) AS rn
+          FROM lottery_finder_fires f
+          WHERE f.date = ${targetDate}::date
+            AND f.trigger_time_ct >= ${windowStart}::timestamptz
+            AND f.trigger_time_ct < ${windowEnd}::timestamptz
+            AND (${ticker ?? null}::text IS NULL OR f.underlying_symbol = ${ticker ?? ''})
+            AND (${reload ?? null}::boolean IS NULL OR f.reload_tagged = ${reload ?? false})
+            AND (${cheapCallPm ?? null}::boolean IS NULL OR f.cheap_call_pm_tagged = ${cheapCallPm ?? false})
+            AND (${mode ?? null}::text IS NULL OR f.mode = ${mode ?? ''})
+            AND (${optionType ?? null}::text IS NULL OR f.option_type = ${optionType ?? ''})
+            AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
+            AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
+        )
         SELECT
           f.id, f.date, f.trigger_time_ct, f.entry_time_ct, f.option_chain_id,
           f.underlying_symbol, f.option_type, f.strike, f.expiry, f.dte,
@@ -223,31 +262,46 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.realized_eod_pct,
           f.peak_ceiling_pct, f.minutes_to_peak,
           f.inserted_at, f.enriched_at,
-          f.score,
+          f.score, f.fire_count,
           s.n_fires AS ticker_n_fires,
           s.high_peak_rate AS ticker_high_peak_rate,
           s.ci_lower AS ticker_ci_lower,
           s.ci_upper AS ticker_ci_upper,
           s.ci_width AS ticker_ci_width,
           s.tier AS ticker_tier
-        FROM lottery_finder_fires f
+        FROM filtered f
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
-        WHERE f.date = ${targetDate}::date
-          AND f.trigger_time_ct >= ${windowStart}::timestamptz
-          AND f.trigger_time_ct < ${windowEnd}::timestamptz
-          AND (${ticker ?? null}::text IS NULL OR f.underlying_symbol = ${ticker ?? ''})
-          AND (${reload ?? null}::boolean IS NULL OR f.reload_tagged = ${reload ?? false})
-          AND (${cheapCallPm ?? null}::boolean IS NULL OR f.cheap_call_pm_tagged = ${cheapCallPm ?? false})
-          AND (${mode ?? null}::text IS NULL OR f.mode = ${mode ?? ''})
-          AND (${optionType ?? null}::text IS NULL OR f.option_type = ${optionType ?? ''})
-          AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
-          AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
+        WHERE f.rn = 1
         ORDER BY f.score DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
       `
         : sort === 'peak'
           ? db`
+        WITH filtered AS (
+          SELECT
+            f.*,
+            COUNT(*) OVER (
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type,
+                date_trunc('minute', f.trigger_time_ct)
+            )::int AS fire_count,
+            ROW_NUMBER() OVER (
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type,
+                date_trunc('minute', f.trigger_time_ct)
+              ORDER BY f.trigger_time_ct DESC, f.id DESC
+            ) AS rn
+          FROM lottery_finder_fires f
+          WHERE f.date = ${targetDate}::date
+            AND f.trigger_time_ct >= ${windowStart}::timestamptz
+            AND f.trigger_time_ct < ${windowEnd}::timestamptz
+            AND (${ticker ?? null}::text IS NULL OR f.underlying_symbol = ${ticker ?? ''})
+            AND (${reload ?? null}::boolean IS NULL OR f.reload_tagged = ${reload ?? false})
+            AND (${cheapCallPm ?? null}::boolean IS NULL OR f.cheap_call_pm_tagged = ${cheapCallPm ?? false})
+            AND (${mode ?? null}::text IS NULL OR f.mode = ${mode ?? ''})
+            AND (${optionType ?? null}::text IS NULL OR f.option_type = ${optionType ?? ''})
+            AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
+            AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
+        )
         SELECT
           f.id, f.date, f.trigger_time_ct, f.entry_time_ct, f.option_chain_id,
           f.underlying_symbol, f.option_type, f.strike, f.expiry, f.dte,
@@ -269,30 +323,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.realized_eod_pct,
           f.peak_ceiling_pct, f.minutes_to_peak,
           f.inserted_at, f.enriched_at,
-          f.score,
+          f.score, f.fire_count,
           s.n_fires AS ticker_n_fires,
           s.high_peak_rate AS ticker_high_peak_rate,
           s.ci_lower AS ticker_ci_lower,
           s.ci_upper AS ticker_ci_upper,
           s.ci_width AS ticker_ci_width,
           s.tier AS ticker_tier
-        FROM lottery_finder_fires f
+        FROM filtered f
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
-        WHERE f.date = ${targetDate}::date
-          AND f.trigger_time_ct >= ${windowStart}::timestamptz
-          AND f.trigger_time_ct < ${windowEnd}::timestamptz
-          AND (${ticker ?? null}::text IS NULL OR f.underlying_symbol = ${ticker ?? ''})
-          AND (${reload ?? null}::boolean IS NULL OR f.reload_tagged = ${reload ?? false})
-          AND (${cheapCallPm ?? null}::boolean IS NULL OR f.cheap_call_pm_tagged = ${cheapCallPm ?? false})
-          AND (${mode ?? null}::text IS NULL OR f.mode = ${mode ?? ''})
-          AND (${optionType ?? null}::text IS NULL OR f.option_type = ${optionType ?? ''})
-          AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
-          AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
+        WHERE f.rn = 1
         ORDER BY f.peak_ceiling_pct DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
       `
           : db`
+        WITH filtered AS (
+          SELECT
+            f.*,
+            COUNT(*) OVER (
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type,
+                date_trunc('minute', f.trigger_time_ct)
+            )::int AS fire_count,
+            ROW_NUMBER() OVER (
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type,
+                date_trunc('minute', f.trigger_time_ct)
+              ORDER BY f.trigger_time_ct DESC, f.id DESC
+            ) AS rn
+          FROM lottery_finder_fires f
+          WHERE f.date = ${targetDate}::date
+            AND f.trigger_time_ct >= ${windowStart}::timestamptz
+            AND f.trigger_time_ct < ${windowEnd}::timestamptz
+            AND (${ticker ?? null}::text IS NULL OR f.underlying_symbol = ${ticker ?? ''})
+            AND (${reload ?? null}::boolean IS NULL OR f.reload_tagged = ${reload ?? false})
+            AND (${cheapCallPm ?? null}::boolean IS NULL OR f.cheap_call_pm_tagged = ${cheapCallPm ?? false})
+            AND (${mode ?? null}::text IS NULL OR f.mode = ${mode ?? ''})
+            AND (${optionType ?? null}::text IS NULL OR f.option_type = ${optionType ?? ''})
+            AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
+            AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
+        )
         SELECT
           f.id, f.date, f.trigger_time_ct, f.entry_time_ct, f.option_chain_id,
           f.underlying_symbol, f.option_type, f.strike, f.expiry, f.dte,
@@ -314,42 +383,41 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.realized_eod_pct,
           f.peak_ceiling_pct, f.minutes_to_peak,
           f.inserted_at, f.enriched_at,
-          f.score,
+          f.score, f.fire_count,
           s.n_fires AS ticker_n_fires,
           s.high_peak_rate AS ticker_high_peak_rate,
           s.ci_lower AS ticker_ci_lower,
           s.ci_upper AS ticker_ci_upper,
           s.ci_width AS ticker_ci_width,
           s.tier AS ticker_tier
-        FROM lottery_finder_fires f
+        FROM filtered f
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
-        WHERE f.date = ${targetDate}::date
-          AND f.trigger_time_ct >= ${windowStart}::timestamptz
-          AND f.trigger_time_ct < ${windowEnd}::timestamptz
-          AND (${ticker ?? null}::text IS NULL OR f.underlying_symbol = ${ticker ?? ''})
-          AND (${reload ?? null}::boolean IS NULL OR f.reload_tagged = ${reload ?? false})
-          AND (${cheapCallPm ?? null}::boolean IS NULL OR f.cheap_call_pm_tagged = ${cheapCallPm ?? false})
-          AND (${mode ?? null}::text IS NULL OR f.mode = ${mode ?? ''})
-          AND (${optionType ?? null}::text IS NULL OR f.option_type = ${optionType ?? ''})
-          AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
-          AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
+        WHERE f.rn = 1
         ORDER BY f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
       `,
+      // Total counts the collapsed shape (one row per ticker × strike ×
+      // option_type × minute-bucket) so pagination math matches the
+      // dedup'd CTE above.
       db`
         SELECT COUNT(*)::int AS total
-        FROM lottery_finder_fires
-        WHERE date = ${targetDate}::date
-          AND trigger_time_ct >= ${windowStart}::timestamptz
-          AND trigger_time_ct < ${windowEnd}::timestamptz
-          AND (${ticker ?? null}::text IS NULL OR underlying_symbol = ${ticker ?? ''})
-          AND (${reload ?? null}::boolean IS NULL OR reload_tagged = ${reload ?? false})
-          AND (${cheapCallPm ?? null}::boolean IS NULL OR cheap_call_pm_tagged = ${cheapCallPm ?? false})
-          AND (${mode ?? null}::text IS NULL OR mode = ${mode ?? ''})
-          AND (${optionType ?? null}::text IS NULL OR option_type = ${optionType ?? ''})
-          AND (${tod ?? null}::text IS NULL OR tod = ${tod ?? ''})
-          AND (${minScore ?? null}::int IS NULL OR score >= ${minScore ?? 0})
+        FROM (
+          SELECT 1
+          FROM lottery_finder_fires
+          WHERE date = ${targetDate}::date
+            AND trigger_time_ct >= ${windowStart}::timestamptz
+            AND trigger_time_ct < ${windowEnd}::timestamptz
+            AND (${ticker ?? null}::text IS NULL OR underlying_symbol = ${ticker ?? ''})
+            AND (${reload ?? null}::boolean IS NULL OR reload_tagged = ${reload ?? false})
+            AND (${cheapCallPm ?? null}::boolean IS NULL OR cheap_call_pm_tagged = ${cheapCallPm ?? false})
+            AND (${mode ?? null}::text IS NULL OR mode = ${mode ?? ''})
+            AND (${optionType ?? null}::text IS NULL OR option_type = ${optionType ?? ''})
+            AND (${tod ?? null}::text IS NULL OR tod = ${tod ?? ''})
+            AND (${minScore ?? null}::int IS NULL OR score >= ${minScore ?? 0})
+          GROUP BY underlying_symbol, strike, option_type,
+            date_trunc('minute', trigger_time_ct)
+        ) collapsed
       `,
     ])) as [FireRow[], { total: number }[]];
 
@@ -388,6 +456,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       scoreTier: tier,
       forecastHighPeakPct: forecastForTier(tier),
       tickerStats,
+      // Cluster size on (ticker, strike, type, minute). 1 = unique;
+      // higher means the row represents the latest of N collapsed
+      // detector duplicates (per-invocation cooldown limitation).
+      fireCount: Number(r.fire_count ?? 1),
 
       trigger: {
         volToOiWindow: Number(r.trigger_vol_to_oi_window),

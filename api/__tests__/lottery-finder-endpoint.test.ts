@@ -89,6 +89,9 @@ const ROW = {
   ticker_ci_upper: 68.4,
   ticker_ci_width: 2.0,
   ticker_tier: 'reliable',
+  // fire_count comes from the dedup CTE's window function. 1 = unique
+  // row, no cluster. Tests that exercise multi-fire collapsing override.
+  fire_count: 1,
 };
 
 describe('lottery-finder endpoint', () => {
@@ -128,6 +131,7 @@ describe('lottery-finder endpoint', () => {
       score: 20,
       scoreTier: 'tier1',
       forecastHighPeakPct: '30-50%',
+      fireCount: 1,
       tickerStats: {
         nFires: 8147,
         highPeakRate: 67.4,
@@ -151,6 +155,24 @@ describe('lottery-finder endpoint', () => {
         alertSeq: 2,
       },
     });
+  });
+
+  it('exposes fire_count from the dedup CTE as fireCount in the response', async () => {
+    // Real-world dup: 7 fires on TSLA 392.5P within a single minute
+    // collapsed to 1 row. The latest fire is the rep; fire_count=7 is
+    // the cluster size from COUNT(*) OVER (PARTITION BY ...).
+    const ROW_COLLAPSED = { ...ROW, fire_count: 7 };
+    mockSql
+      .mockResolvedValueOnce([ROW_COLLAPSED])
+      .mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({ method: 'GET', query: {} });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { fires: Array<{ fireCount: unknown }> };
+    expect(body.fires[0]!.fireCount).toBe(7);
   });
 
   it('reports tickerStats=null when ticker_n_fires is missing (no JOIN match)', async () => {

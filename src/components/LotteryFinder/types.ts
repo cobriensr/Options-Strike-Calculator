@@ -142,6 +142,14 @@ export interface LotteryFire {
   forecastHighPeakPct: string;
   /** Per-ticker reliability stats; `null` when no row exists. */
   tickerStats: LotteryTickerStats | null;
+  /**
+   * Number of underlying fires collapsed onto this row by the API's
+   * (ticker × strike × option_type × minute-bucket) dedup CTE. 1 means
+   * unique; >1 means the row is the latest of a cluster (the detector
+   * cooldown is per cron invocation, so successive runs re-qualify the
+   * next tick).
+   */
+  fireCount: number;
 
   trigger: LotteryFireTrigger;
   entry: LotteryFireEntry;

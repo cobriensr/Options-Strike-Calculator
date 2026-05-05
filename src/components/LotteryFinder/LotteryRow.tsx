@@ -245,6 +245,18 @@ export const LotteryRow = memo(function LotteryRow({
         <span className="text-[11px] text-neutral-400">
           fire #{fire.entry.alertSeq}
         </span>
+        {/* Cluster-size badge: shown only when the API collapsed >1
+            underlying fires (ticker × strike × type × minute) onto this
+            row. The count helps surface "this strike rang 7× in one
+            minute" without spamming the list. */}
+        {fire.fireCount > 1 && (
+          <span
+            className="rounded border border-orange-500/40 bg-orange-950/30 px-1.5 py-0.5 text-[10px] font-semibold text-orange-200"
+            title={`${fire.fireCount} fires on this strike in the same minute — collapsed to the latest. Caused by the detector's per-invocation cooldown; the row carries the freshest macro and score.`}
+          >
+            ×{fire.fireCount}
+          </span>
+        )}
         {fire.tags.reload && (
           <span
             className="rounded border border-amber-500/40 bg-amber-950/30 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200"
