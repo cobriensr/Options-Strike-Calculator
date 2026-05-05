@@ -3831,4 +3831,13 @@ export const MIGRATIONS: Migration[] = [
       )`,
     ],
   },
+  {
+    id: 128,
+    description:
+      'Drop trace_live_analyses + trace_live_calibration tables. The TRACE Live feature (created in #88, extended in #89/90/91, with stratified residual calibration in #102) was removed from the app along with all api/trace-live-* endpoints, the resolve-trace-residuals cron, the capture daemon, and the populateTraceLiveOutcomes step in fetch-outcomes. CASCADE drops the HNSW + captured_at + actual_close indexes installed in #88/90 automatically. Idempotent — IF EXISTS makes re-runs on a fresh DB no-ops.',
+    statements: (sql) => [
+      sql`DROP TABLE IF EXISTS trace_live_analyses CASCADE`,
+      sql`DROP TABLE IF EXISTS trace_live_calibration CASCADE`,
+    ],
+  },
 ];

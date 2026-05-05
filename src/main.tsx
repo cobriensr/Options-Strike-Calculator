@@ -101,17 +101,8 @@ if (import.meta.env.PROD)
       { path: '/api/periscope-chat-image', method: 'GET' },
       { path: '/api/periscope-chat-update', method: 'PATCH' },
       { path: '/api/periscope-chat-update', method: 'POST' },
-      // /api/trace-live-analyze intentionally NOT in the protect list:
-      // the daemon (our automation) POSTs to it and can't carry a Kasada
-      // JS-challenge token. Owner cookie + 6/min rate limit + payload
-      // validation (3 PNGs + structured GEX) keep it secure on their own
-      // — BotID at the edge would block legitimate daemon traffic.
-      { path: '/api/trace-live-list', method: 'GET' },
-      { path: '/api/trace-live-get', method: 'GET' },
       { path: '/api/greek-flow', method: 'GET' },
       { path: '/api/gex-strike-expiry', method: 'GET' },
-      { path: '/api/trace-live-image', method: 'GET' },
-      { path: '/api/trace-live-analogs', method: 'GET' },
       { path: '/api/positions', method: 'GET' },
       { path: '/api/positions', method: 'POST' },
       { path: '/api/vix-ohlc', method: 'GET' },
@@ -139,7 +130,6 @@ if (import.meta.env.PROD)
       { path: '/api/lottery-export', method: 'GET' },
       { path: '/api/lottery-contract-tape', method: 'GET' },
       { path: '/api/net-flow-history', method: 'GET' },
-      { path: '/api/trace-live-calibration', method: 'GET' },
       { path: '/api/strike-trade-volume', method: 'GET' },
       { path: '/api/system-status', method: 'GET' },
       { path: '/api/auth/guest-key', method: 'POST' },

@@ -44,7 +44,6 @@ import GatedSection from './components/GatedSection';
 import AppHeader from './components/AppHeader';
 import AlertBanner from './components/AlertBanner';
 import DarkPoolLevels from './components/DarkPoolLevels';
-import TRACELiveDashboard from './components/TRACELive';
 import VegaSpikeFeed from './components/VegaSpikeFeed/VegaSpikeFeed';
 import NotificationPermission from './components/NotificationPermission';
 import { CollapseAllContext } from './components/collapse-context';
@@ -594,7 +593,6 @@ export default function StrikeCalculator() {
       ...(isAuthenticated && hasMarketOrSnapshot
         ? [
             { id: 'sec-darkpool', label: 'Dark Pool Levels' },
-            { id: 'sec-trace-live', label: 'TRACE Live' },
             { id: 'sec-gex-target', label: 'GEX Target' },
             { id: 'sec-gex-landscape', label: 'GEX Landscape' },
             { id: 'sec-zero-gamma', label: 'Zero Gamma' },
@@ -890,16 +888,6 @@ export default function StrikeCalculator() {
                     onScrubTo={darkPool.scrubTo}
                     timeGrid={darkPool.timeGrid}
                     onScrubLive={darkPool.scrubLive}
-                  />
-                </GatedSection>
-
-                <GatedSection
-                  gate={hasMarketContext}
-                  id="sec-trace-live"
-                  label="TRACE Live"
-                >
-                  <TRACELiveDashboard
-                    marketOpen={market.data.quotes?.marketOpen ?? false}
                   />
                 </GatedSection>
 

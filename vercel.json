@@ -158,10 +158,6 @@
       "schedule": "30 21 * * 1-5"
     },
     {
-      "path": "/api/cron/resolve-trace-residuals",
-      "schedule": "0 2 * * 1-5"
-    },
-    {
       "path": "/api/cron/fetch-nope",
       "schedule": "* 13-21 * * 1-5"
     },
@@ -206,10 +202,6 @@
     "api/cron/detect-lottery-fires.ts": { "maxDuration": 60 },
     "api/cron/enrich-lottery-outcomes.ts": { "maxDuration": 300 },
     "api/cron/fetch-gex-strike-expiry-etfs.ts": { "maxDuration": 60 },
-    "api/trace-live-analyze.ts": {
-      "maxDuration": 780,
-      "includeFiles": ".claude/skills/**/SKILL.md"
-    },
     "api/periscope-chat.ts": {
       "maxDuration": 780,
       "includeFiles": ".claude/skills/**/SKILL.md"

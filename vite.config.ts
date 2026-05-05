@@ -141,7 +141,6 @@ export default defineConfig({
         'src/components/ChartAnalysis/types.ts',
         'src/components/PositionMonitor/types.ts',
         'src/components/IVAnomalies/types.ts',
-        'src/components/TRACELive/types.ts',
         'src/components/GexLandscape/types.ts',
         'src/utils/futures-gamma/types.ts',
         'src/utils/gex-target/types.ts',
