@@ -246,6 +246,22 @@ export function LotteryFinderSection({
   // browser-TZ-independent. See ct-window.ts.
   const scrubBounds = useMemo(() => ctSessionBounds(date), [date]);
 
+  // Current wall-clock minute (UTC ms, floored to the minute). Used
+  // to cap forward navigation when viewing today — can't pick a
+  // minute that hasn't happened yet. Refreshed every 30s so the
+  // dropdown grows in lockstep with the trading session. Calling
+  // Date.now() inline during render would violate React 19's
+  // react-hooks/purity rule.
+  const [nowMinuteMs, setNowMinuteMs] = useState<number>(
+    () => Math.floor(Date.now() / 60_000) * 60_000,
+  );
+  useEffect(() => {
+    const id = setInterval(() => {
+      setNowMinuteMs(Math.floor(Date.now() / 60_000) * 60_000);
+    }, 30_000);
+    return () => clearInterval(id);
+  }, []);
+
   const isLive = minute == null && date === todayCt();
   const isHistorical = date !== todayCt();
   // Counts on the chips reflect the current page only — after filter
@@ -332,21 +348,38 @@ export function LotteryFinderSection({
             >
               {date === todayCt() ? 'Live' : 'All day'}
             </button>
-            {/* Per-minute step controls. Lo = 08:30 CT, hi = 15:00 CT
-                (regular session). When `minute` is null, prev seeds
-                from the upper bound (scrub back from close) and next
-                seeds from the lower bound (scrub forward from open). */}
+            {/* Per-minute controls. Lo = 08:30 CT, hi = 15:00 CT
+                (regular session). For today, hi is further capped at
+                the current CT minute (floored) so the user can't
+                scrub into the future. When `minute` is null, prev
+                seeds from the (effective) upper bound and next seeds
+                from the lower bound. The <select> lists every valid
+                minute as a fast-jump dropdown. */}
             {(() => {
               const lo = Date.parse(scrubBounds.min);
               const hi = Date.parse(scrubBounds.max);
+              const isToday = date === todayCt();
+              const effectiveHi = isToday ? Math.min(hi, nowMinuteMs) : hi;
+              const noValidBucket = effectiveHi < lo;
               const cur = minute ? Date.parse(minute) : null;
-              const atMin = cur != null && cur <= lo;
-              const atMax = cur != null && cur >= hi;
+              const atMin = noValidBucket || (cur != null && cur <= lo);
+              const atMax =
+                noValidBucket || (cur != null && cur >= effectiveHi);
               const step = (deltaMs: number) => {
-                const seed = cur ?? (deltaMs < 0 ? hi : lo);
-                const next = Math.max(lo, Math.min(hi, seed + deltaMs));
+                const seed = cur ?? (deltaMs < 0 ? effectiveHi : lo);
+                const next = Math.max(
+                  lo,
+                  Math.min(effectiveHi, seed + deltaMs),
+                );
                 setMinute(new Date(next).toISOString());
               };
+              const options: { value: string; label: string }[] = [];
+              if (!noValidBucket) {
+                for (let t = lo; t <= effectiveHi; t += 60_000) {
+                  const iso = new Date(t).toISOString();
+                  options.push({ value: iso, label: formatTimeCT(iso) });
+                }
+              }
               return (
                 <>
                   <button
@@ -359,13 +392,39 @@ export function LotteryFinderSection({
                   >
                     ◀ −1m
                   </button>
+                  <select
+                    value={minute ?? ''}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setMinute(v === '' ? null : v);
+                    }}
+                    disabled={noValidBucket}
+                    aria-label="Jump to a specific minute (Central Time)"
+                    title={
+                      isToday
+                        ? `Jump to a specific minute. Capped at the current CT minute (${formatTimeCT(nowMinuteMs)}).`
+                        : 'Jump to a specific minute (08:30–15:00 CT).'
+                    }
+                    className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 font-mono text-xs text-white disabled:opacity-40"
+                  >
+                    <option value="">— pick —</option>
+                    {options.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
                   <button
                     type="button"
                     onClick={() => step(60_000)}
                     disabled={atMax}
                     className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs font-semibold text-neutral-300 enabled:hover:text-white disabled:opacity-40"
                     aria-label="Step forward one minute"
-                    title="Step forward one minute (+1m)"
+                    title={
+                      isToday && cur != null && cur >= effectiveHi
+                        ? 'Cannot step past the current minute'
+                        : 'Step forward one minute (+1m)'
+                    }
                   >
                     +1m ▶
                   </button>
@@ -374,7 +433,7 @@ export function LotteryFinderSection({
             })()}
             {minute && (
               <span className="font-mono text-xs text-purple-200">
-                {formatTimeCT(minute)} CT (1 min bucket)
+                (1 min bucket)
               </span>
             )}
           </div>
