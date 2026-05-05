@@ -796,6 +796,16 @@ export const lotteryFinderQuerySchema = z.object({
   // Pagination — 50 per page is the UI's default size.
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
+  // Sort mode for the result set:
+  //   - `chronological` (default, preserves prior behavior): ORDER BY
+  //     trigger_time_ct DESC, id DESC
+  //   - `score`: ORDER BY score DESC NULLS LAST, trigger_time_ct DESC
+  //   - `peak`: ORDER BY peak_ceiling_pct DESC NULLS LAST, trigger_time_ct DESC
+  sort: z.enum(['chronological', 'score', 'peak']).default('chronological'),
+  // Minimum score floor (Tier 1 = 18). When set, the WHERE clause adds
+  // `score >= minScore` so the High-Conviction filter can collapse the
+  // visible feed.
+  minScore: z.coerce.number().int().min(0).max(50).optional(),
 });
 
 export type LotteryFinderQuery = z.infer<typeof lotteryFinderQuerySchema>;

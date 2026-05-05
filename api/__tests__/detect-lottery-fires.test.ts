@@ -200,6 +200,34 @@ describe('detect-lottery-fires handler', () => {
     });
   });
 
+  it('persists computeLotteryScore() output on the inserted row', async () => {
+    // Same fixture as the basic insert test. The detector pulls
+    // ticker=SNDK (weight 10), mode=A_intraday_0DTE (5),
+    // entryPrice=0.5 (≤$0.50 → 5), tod=AM_open (13:30Z = 9:30 ET → 3),
+    // optionType=C (2) → score 25. Pinning this guards the score
+    // column wiring against future field renames in the INSERT.
+    mockSql
+      .mockResolvedValueOnce(fireableSndkStream())
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 42 }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // 4th mockSql call is the INSERT (after ticks SELECT, flow_data,
+    // spot_exposures). Score is the last bound value before the
+    // closing `)` so it's the trailing slot in the call's arg list.
+    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
+    const score = insertCall.at(-1);
+    expect(score).toBe(25);
+  });
+
   it('issues the strike_exposures query for SPY (in TICKERS_WITH_GEX_STRIKE)', async () => {
     const spyStream = fireableSndkStream().map((t) => ({
       ...t,

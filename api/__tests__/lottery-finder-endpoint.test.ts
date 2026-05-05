@@ -79,6 +79,16 @@ const ROW = {
   minutes_to_peak: null,
   inserted_at: '2026-05-01T19:01:05Z',
   enriched_at: null,
+  // Score column (migration #126) — SNDK 0DTE call at $0.55 PM is
+  // ticker(10) + mode(5) + price(3, ≤$1.00) + tod(0, PM) + opt(2) = 20
+  // → Tier 1 (≥18). Ticker stats reflect a "reliable" SNDK row.
+  score: 20,
+  ticker_n_fires: 8147,
+  ticker_high_peak_rate: 67.4,
+  ticker_ci_lower: 66.4,
+  ticker_ci_upper: 68.4,
+  ticker_ci_width: 2.0,
+  ticker_tier: 'reliable',
 };
 
 describe('lottery-finder endpoint', () => {
@@ -115,6 +125,17 @@ describe('lottery-finder endpoint', () => {
       id: 42,
       underlyingSymbol: 'SNDK',
       strike: 1175,
+      score: 20,
+      scoreTier: 'tier1',
+      forecastHighPeakPct: '30-50%',
+      tickerStats: {
+        nFires: 8147,
+        highPeakRate: 67.4,
+        ciLower: 66.4,
+        ciUpper: 68.4,
+        ciWidth: 2.0,
+        tier: 'reliable',
+      },
       tags: {
         flowQuad: 'call_ask',
         tod: 'PM',
@@ -130,6 +151,91 @@ describe('lottery-finder endpoint', () => {
         alertSeq: 2,
       },
     });
+  });
+
+  it('reports tickerStats=null when ticker_n_fires is missing (no JOIN match)', async () => {
+    const ROW_NO_STATS = {
+      ...ROW,
+      ticker_n_fires: null,
+      ticker_high_peak_rate: null,
+      ticker_ci_lower: null,
+      ticker_ci_upper: null,
+      ticker_ci_width: null,
+      ticker_tier: null,
+    };
+    mockSql
+      .mockResolvedValueOnce([ROW_NO_STATS])
+      .mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({ method: 'GET', query: {} });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as { fires: Array<{ tickerStats: unknown }> };
+    expect(body.fires[0]!.tickerStats).toBeNull();
+  });
+
+  it('honors sort=score and echoes it in filters', async () => {
+    mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-01', sort: 'score' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { filters: Record<string, unknown> };
+    expect(body.filters.sort).toBe('score');
+  });
+
+  it('honors sort=peak and echoes it in filters', async () => {
+    mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-01', sort: 'peak' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { filters: Record<string, unknown> };
+    expect(body.filters.sort).toBe('peak');
+  });
+
+  it('honors minScore=18 — High Conviction filter binds the floor on both queries', async () => {
+    mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-01', minScore: '18' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { filters: Record<string, unknown> };
+    expect(body.filters.minScore).toBe(18);
+    // Both the rows query and the COUNT query must include the 18
+    // threshold so the page total stays accurate when the filter is
+    // on. Each tagged-template call is `(strings, ...values)`, so the
+    // 18 lives among the bound values.
+    const rowsCall = mockSql.mock.calls[0] as unknown[];
+    const countCall = mockSql.mock.calls[1] as unknown[];
+    expect(rowsCall.slice(1)).toContain(18);
+    expect(countCall.slice(1)).toContain(18);
+  });
+
+  it('rejects sort outside the {chronological|score|peak} enum', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { sort: 'random' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(400);
   });
 
   it('handles DATE column returned as a Date object (neon serverless default)', async () => {

@@ -9,6 +9,7 @@
  */
 
 import { getDb } from './db.js';
+import { LOTTERY_TICKER_STATS_SEED } from './lottery-ticker-stats-seed.js';
 
 export interface Migration {
   id: number;
@@ -3730,6 +3731,57 @@ export const MIGRATIONS: Migration[] = [
           ON greek_flow_per_ticker_history (ticker, ts, source)`,
       sql`CREATE INDEX IF NOT EXISTS greek_flow_per_ticker_history_ticker_ts_idx
           ON greek_flow_per_ticker_history (ticker, ts DESC)`,
+    ],
+  },
+  {
+    id: 126,
+    description:
+      'Add tiered scoring to lottery_finder_fires + create lottery_ticker_stats. ' +
+      'Phase 1 of docs/superpowers/plans/lottery-tiered-scoring-ui.md. The score ' +
+      "is the sum of weights for ticker × mode × entry-price × TOD × option-type, " +
+      'computed deterministically on insert (api/_lib/lottery-score-weights.ts). ' +
+      'Tier (≥18 / 12-17 / <12) is derived from score in the read path. ' +
+      'lottery_ticker_stats holds Wilson-CI-bounded high-peak rates per ticker ' +
+      "(seeded from ml/data/lottery_ticker_stats.json on the 21-day window) so " +
+      'the UI can show ✓/⚠️ reliability indicators next to ticker names. The ' +
+      '(date DESC, score DESC NULLS LAST) index supports `?sort=score` ORDER BYs.',
+    statements: (sql) => [
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS score INTEGER`,
+      sql`CREATE INDEX IF NOT EXISTS lottery_finder_fires_date_score_idx
+            ON lottery_finder_fires (date DESC, score DESC NULLS LAST)`,
+      sql`CREATE TABLE IF NOT EXISTS lottery_ticker_stats (
+        ticker TEXT PRIMARY KEY,
+        n_fires INTEGER NOT NULL,
+        high_peak_rate NUMERIC NOT NULL,
+        ci_lower NUMERIC NOT NULL,
+        ci_upper NUMERIC NOT NULL,
+        ci_width NUMERIC NOT NULL,
+        tier TEXT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`,
+      sql`INSERT INTO lottery_ticker_stats
+            (ticker, n_fires, high_peak_rate, ci_lower, ci_upper, ci_width, tier)
+          SELECT
+            ticker, n_fires, high_peak_rate, ci_lower, ci_upper, ci_width, tier
+          FROM jsonb_to_recordset(${JSON.stringify(LOTTERY_TICKER_STATS_SEED)}::jsonb)
+            AS s(
+              ticker TEXT,
+              n_fires INTEGER,
+              high_peak_rate NUMERIC,
+              ci_lower NUMERIC,
+              ci_upper NUMERIC,
+              ci_width NUMERIC,
+              tier TEXT
+            )
+          ON CONFLICT (ticker) DO UPDATE SET
+            n_fires = EXCLUDED.n_fires,
+            high_peak_rate = EXCLUDED.high_peak_rate,
+            ci_lower = EXCLUDED.ci_lower,
+            ci_upper = EXCLUDED.ci_upper,
+            ci_width = EXCLUDED.ci_width,
+            tier = EXCLUDED.tier,
+            updated_at = NOW()`,
     ],
   },
 ];

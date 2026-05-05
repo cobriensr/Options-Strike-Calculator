@@ -10,11 +10,37 @@ import {
   type ExitPolicy,
   type LotteryFire,
   type LotteryMode,
+  type LotterySortMode,
   type OptionType,
   type TimeOfDay,
 } from './types.js';
 
 const PAGE_SIZE = 50;
+/** localStorage keys for persisting user preferences. */
+const SORT_LS_KEY = 'lottery.sortMode';
+const HIGH_CONVICTION_LS_KEY = 'lottery.highConvictionOnly';
+/** Tier 1 floor — matches LOTTERY_TIER_THRESHOLDS.tier1MinScore on the API. */
+const HIGH_CONVICTION_MIN_SCORE = 18;
+
+const SORT_OPTIONS: Array<{ value: LotterySortMode; label: string; tooltip: string }> = [
+  {
+    value: 'chronological',
+    label: 'newest',
+    tooltip: 'Order by trigger time (most recent first). Default.',
+  },
+  {
+    value: 'score',
+    label: 'score',
+    tooltip:
+      'Order by composite score (Tier 1 first). Highest-conviction fires float to the top regardless of fire time.',
+  },
+  {
+    value: 'peak',
+    label: 'peak',
+    tooltip:
+      'Order by realized peak ceiling (largest move first). Post-hoc browsing — only meaningful once enrich-lottery-outcomes has populated peak_ceiling_pct.',
+  },
+];
 
 const TOD_FILTERS: Array<{ value: TimeOfDay | null; label: string }> = [
   { value: null, label: 'all TOD' },
@@ -78,8 +104,34 @@ export function LotteryFinderSection({
     null,
   );
   const [todFilter, setTodFilter] = useState<TimeOfDay | null>(null);
+  // Persisted preferences. SSR-safe init via lazy useState fn.
+  const [sortMode, setSortMode] = useState<LotterySortMode>(() => {
+    if (typeof window === 'undefined') return 'chronological';
+    const stored = window.localStorage.getItem(SORT_LS_KEY);
+    return stored === 'score' || stored === 'peak' ? stored : 'chronological';
+  });
+  const [highConvictionOnly, setHighConvictionOnly] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(HIGH_CONVICTION_LS_KEY) === '1';
+  });
   /** 0-based page index. Reset to 0 whenever a filter or minute changes. */
   const [page, setPage] = useState<number>(0);
+
+  // Persist on change. The === checks keep the writes idempotent so
+  // we don't thrash the storage on every render.
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(SORT_LS_KEY, sortMode);
+    }
+  }, [sortMode]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(
+        HIGH_CONVICTION_LS_KEY,
+        highConvictionOnly ? '1' : '0',
+      );
+    }
+  }, [highConvictionOnly]);
 
   // Reset to page 0 whenever the result set's identity changes.
   // Otherwise the user could be on page 3, click a filter, and land
@@ -95,6 +147,8 @@ export function LotteryFinderSection({
     modeFilter,
     optionTypeFilter,
     todFilter,
+    sortMode,
+    highConvictionOnly,
   ]);
 
   const { fires, loading, error, fetchedAt, total, offset, hasMore } =
@@ -108,6 +162,8 @@ export function LotteryFinderSection({
       mode: modeFilter,
       optionType: optionTypeFilter,
       tod: todFilter,
+      sort: sortMode,
+      minScore: highConvictionOnly ? HIGH_CONVICTION_MIN_SCORE : null,
       page,
       pageSize: PAGE_SIZE,
     });
@@ -234,6 +290,48 @@ export function LotteryFinderSection({
               historical replay
             </span>
           )}
+        </div>
+
+        {/* Sort + High Conviction filter — score-driven controls
+            that gate the API ORDER BY and WHERE clauses. Persist to
+            localStorage so the user's preferred ranking sticks across
+            reloads. */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[10px] tracking-wide text-neutral-500 uppercase">
+            sort
+          </span>
+          {SORT_OPTIONS.map((s) => (
+            <button
+              key={s.value}
+              type="button"
+              onClick={() => setSortMode(s.value)}
+              className={`rounded border px-2 py-0.5 text-xs font-semibold ${
+                sortMode === s.value
+                  ? 'border-sky-500 bg-sky-950/40 text-sky-200'
+                  : 'border-neutral-700 bg-neutral-900 text-neutral-400 hover:text-white'
+              }`}
+              title={s.tooltip}
+              aria-pressed={sortMode === s.value}
+            >
+              {s.label}
+            </button>
+          ))}
+          <span className="ml-2 text-[10px] tracking-wide text-neutral-500 uppercase">
+            conviction
+          </span>
+          <button
+            type="button"
+            onClick={() => setHighConvictionOnly((v) => !v)}
+            className={`rounded border px-2 py-0.5 text-xs font-semibold ${
+              highConvictionOnly
+                ? 'border-rose-500 bg-rose-950/40 text-rose-200'
+                : 'border-neutral-700 bg-neutral-900 text-neutral-400 hover:text-white'
+            }`}
+            title={`Show only Tier 1 fires (score ≥ ${HIGH_CONVICTION_MIN_SCORE}). Historical high-peak rate ~80%.`}
+            aria-pressed={highConvictionOnly}
+          >
+            🔥🔥🔥 Tier 1 only
+          </button>
         </div>
 
         {/* Filter chips */}
@@ -442,6 +540,16 @@ export function LotteryFinderSection({
                 {total > 0 && (
                   <span className="ml-2 text-neutral-600">
                     showing {offset + 1}-{offset + fires.length}
+                  </span>
+                )}
+                {highConvictionOnly && (
+                  <span className="ml-2 text-rose-300/80">
+                    (high conviction only)
+                  </span>
+                )}
+                {sortMode !== 'chronological' && (
+                  <span className="ml-2 text-sky-300/80">
+                    sorted by {sortMode}
                   </span>
                 )}
               </span>

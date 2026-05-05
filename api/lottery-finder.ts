@@ -21,6 +21,10 @@ import {
   setCacheHeaders,
 } from './_lib/api-helpers.js';
 import { lotteryFinderQuerySchema } from './_lib/validation.js';
+import {
+  lotteryScoreTier,
+  type LotteryScoreTier,
+} from './_lib/lottery-score-weights.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
 type DbId = number | string;
@@ -92,6 +96,24 @@ interface FireRow {
   minutes_to_peak: DbNullableNumeric;
   inserted_at: DbTimestamp;
   enriched_at: DbTimestamp | null;
+
+  // Tiered scoring (migration #126). `score` is computed at insert
+  // time from ticker × mode × entry-price × TOD × option-type. The
+  // ticker_* columns come from the LEFT JOIN on lottery_ticker_stats.
+  score: number | null;
+  ticker_n_fires: number | null;
+  ticker_high_peak_rate: DbNullableNumeric;
+  ticker_ci_lower: DbNullableNumeric;
+  ticker_ci_upper: DbNullableNumeric;
+  ticker_ci_width: DbNullableNumeric;
+  ticker_tier: string | null;
+}
+
+/** Predicted peak-return range string for a given score tier. */
+function forecastForTier(tier: LotteryScoreTier): string {
+  if (tier === 'tier1') return '30-50%';
+  if (tier === 'tier2') return '15-30%';
+  return '0-15%';
 }
 
 const toIso = (v: DbTimestamp): string =>
@@ -128,6 +150,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       minute,
       limit,
       offset,
+      sort,
+      minScore,
     } = parsed.data;
 
     // Bound the result set to one trading day. `date` defaults to
@@ -165,43 +189,151 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Two queries in parallel: (1) the row payload bounded by LIMIT,
     // and (2) the total matching count BEFORE limit so the UI can
     // surface "showing N of M" when the limit truncates the day.
-    // ORDER BY DESC matches the spec ("most recent fire first by
-    // default") so a busy-day user sees the latest fires immediately
-    // and the time scrubber meaningfully shifts the visible window.
+    //
+    // Sort modes (mutually exclusive ORDER BYs — neon's tagged
+    // templates can't bind ORDER BY through `${}`, so we branch on
+    // the validated `sort` enum):
+    //   - chronological: most-recent first (default; preserves prior UX)
+    //   - score: Tier-1 fires float to the top, score-tied chronological
+    //   - peak: highest realized peak first (post-hoc browsing)
+    // The (date, score DESC NULLS LAST) index from migration #126 makes
+    // the score sort cheap; the peak sort relies on the existing
+    // (date DESC, trigger_time_ct DESC) index for the date prefix.
     const [rows, totalRows] = (await Promise.all([
-      db`
+      sort === 'score'
+        ? db`
         SELECT
-          id, date, trigger_time_ct, entry_time_ct, option_chain_id,
-          underlying_symbol, option_type, strike, expiry, dte,
-          trigger_vol_to_oi_window, trigger_vol_to_oi_cum,
-          trigger_iv, trigger_delta, trigger_ask_pct,
-          trigger_window_size, trigger_window_prints,
-          entry_price, open_interest, spot_at_first,
-          alert_seq, minutes_since_prev_fire,
-          flow_quad, tod, mode,
-          reload_tagged, cheap_call_pm_tagged,
-          burst_ratio_vs_prev, entry_drop_pct_vs_prev,
-          mkt_tide_ncp, mkt_tide_npp, mkt_tide_diff, mkt_tide_otm_diff,
-          spx_flow_diff, spy_etf_diff, qqq_etf_diff, zero_dte_diff,
-          spx_spot_gamma_oi, spx_spot_gamma_vol, spx_spot_charm_oi, spx_spot_vanna_oi,
-          gex_strike_call_minus_put, gex_strike_call_ask_minus_bid,
-          gex_strike_put_ask_minus_bid, gex_strike_actual_strike,
-          realized_trail30_10_pct, realized_hard30m_pct,
-          realized_tier50_holdeod_pct, realized_flow_inversion_pct,
-          realized_eod_pct,
-          peak_ceiling_pct, minutes_to_peak,
-          inserted_at, enriched_at
-        FROM lottery_finder_fires
-        WHERE date = ${targetDate}::date
-          AND trigger_time_ct >= ${windowStart}::timestamptz
-          AND trigger_time_ct < ${windowEnd}::timestamptz
-          AND (${ticker ?? null}::text IS NULL OR underlying_symbol = ${ticker ?? ''})
-          AND (${reload ?? null}::boolean IS NULL OR reload_tagged = ${reload ?? false})
-          AND (${cheapCallPm ?? null}::boolean IS NULL OR cheap_call_pm_tagged = ${cheapCallPm ?? false})
-          AND (${mode ?? null}::text IS NULL OR mode = ${mode ?? ''})
-          AND (${optionType ?? null}::text IS NULL OR option_type = ${optionType ?? ''})
-          AND (${tod ?? null}::text IS NULL OR tod = ${tod ?? ''})
-        ORDER BY trigger_time_ct DESC, id DESC
+          f.id, f.date, f.trigger_time_ct, f.entry_time_ct, f.option_chain_id,
+          f.underlying_symbol, f.option_type, f.strike, f.expiry, f.dte,
+          f.trigger_vol_to_oi_window, f.trigger_vol_to_oi_cum,
+          f.trigger_iv, f.trigger_delta, f.trigger_ask_pct,
+          f.trigger_window_size, f.trigger_window_prints,
+          f.entry_price, f.open_interest, f.spot_at_first,
+          f.alert_seq, f.minutes_since_prev_fire,
+          f.flow_quad, f.tod, f.mode,
+          f.reload_tagged, f.cheap_call_pm_tagged,
+          f.burst_ratio_vs_prev, f.entry_drop_pct_vs_prev,
+          f.mkt_tide_ncp, f.mkt_tide_npp, f.mkt_tide_diff, f.mkt_tide_otm_diff,
+          f.spx_flow_diff, f.spy_etf_diff, f.qqq_etf_diff, f.zero_dte_diff,
+          f.spx_spot_gamma_oi, f.spx_spot_gamma_vol, f.spx_spot_charm_oi, f.spx_spot_vanna_oi,
+          f.gex_strike_call_minus_put, f.gex_strike_call_ask_minus_bid,
+          f.gex_strike_put_ask_minus_bid, f.gex_strike_actual_strike,
+          f.realized_trail30_10_pct, f.realized_hard30m_pct,
+          f.realized_tier50_holdeod_pct, f.realized_flow_inversion_pct,
+          f.realized_eod_pct,
+          f.peak_ceiling_pct, f.minutes_to_peak,
+          f.inserted_at, f.enriched_at,
+          f.score,
+          s.n_fires AS ticker_n_fires,
+          s.high_peak_rate AS ticker_high_peak_rate,
+          s.ci_lower AS ticker_ci_lower,
+          s.ci_upper AS ticker_ci_upper,
+          s.ci_width AS ticker_ci_width,
+          s.tier AS ticker_tier
+        FROM lottery_finder_fires f
+        LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
+        WHERE f.date = ${targetDate}::date
+          AND f.trigger_time_ct >= ${windowStart}::timestamptz
+          AND f.trigger_time_ct < ${windowEnd}::timestamptz
+          AND (${ticker ?? null}::text IS NULL OR f.underlying_symbol = ${ticker ?? ''})
+          AND (${reload ?? null}::boolean IS NULL OR f.reload_tagged = ${reload ?? false})
+          AND (${cheapCallPm ?? null}::boolean IS NULL OR f.cheap_call_pm_tagged = ${cheapCallPm ?? false})
+          AND (${mode ?? null}::text IS NULL OR f.mode = ${mode ?? ''})
+          AND (${optionType ?? null}::text IS NULL OR f.option_type = ${optionType ?? ''})
+          AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
+          AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
+        ORDER BY f.score DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
+        LIMIT ${limit}
+        OFFSET ${offset}
+      `
+        : sort === 'peak'
+          ? db`
+        SELECT
+          f.id, f.date, f.trigger_time_ct, f.entry_time_ct, f.option_chain_id,
+          f.underlying_symbol, f.option_type, f.strike, f.expiry, f.dte,
+          f.trigger_vol_to_oi_window, f.trigger_vol_to_oi_cum,
+          f.trigger_iv, f.trigger_delta, f.trigger_ask_pct,
+          f.trigger_window_size, f.trigger_window_prints,
+          f.entry_price, f.open_interest, f.spot_at_first,
+          f.alert_seq, f.minutes_since_prev_fire,
+          f.flow_quad, f.tod, f.mode,
+          f.reload_tagged, f.cheap_call_pm_tagged,
+          f.burst_ratio_vs_prev, f.entry_drop_pct_vs_prev,
+          f.mkt_tide_ncp, f.mkt_tide_npp, f.mkt_tide_diff, f.mkt_tide_otm_diff,
+          f.spx_flow_diff, f.spy_etf_diff, f.qqq_etf_diff, f.zero_dte_diff,
+          f.spx_spot_gamma_oi, f.spx_spot_gamma_vol, f.spx_spot_charm_oi, f.spx_spot_vanna_oi,
+          f.gex_strike_call_minus_put, f.gex_strike_call_ask_minus_bid,
+          f.gex_strike_put_ask_minus_bid, f.gex_strike_actual_strike,
+          f.realized_trail30_10_pct, f.realized_hard30m_pct,
+          f.realized_tier50_holdeod_pct, f.realized_flow_inversion_pct,
+          f.realized_eod_pct,
+          f.peak_ceiling_pct, f.minutes_to_peak,
+          f.inserted_at, f.enriched_at,
+          f.score,
+          s.n_fires AS ticker_n_fires,
+          s.high_peak_rate AS ticker_high_peak_rate,
+          s.ci_lower AS ticker_ci_lower,
+          s.ci_upper AS ticker_ci_upper,
+          s.ci_width AS ticker_ci_width,
+          s.tier AS ticker_tier
+        FROM lottery_finder_fires f
+        LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
+        WHERE f.date = ${targetDate}::date
+          AND f.trigger_time_ct >= ${windowStart}::timestamptz
+          AND f.trigger_time_ct < ${windowEnd}::timestamptz
+          AND (${ticker ?? null}::text IS NULL OR f.underlying_symbol = ${ticker ?? ''})
+          AND (${reload ?? null}::boolean IS NULL OR f.reload_tagged = ${reload ?? false})
+          AND (${cheapCallPm ?? null}::boolean IS NULL OR f.cheap_call_pm_tagged = ${cheapCallPm ?? false})
+          AND (${mode ?? null}::text IS NULL OR f.mode = ${mode ?? ''})
+          AND (${optionType ?? null}::text IS NULL OR f.option_type = ${optionType ?? ''})
+          AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
+          AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
+        ORDER BY f.peak_ceiling_pct DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
+        LIMIT ${limit}
+        OFFSET ${offset}
+      `
+          : db`
+        SELECT
+          f.id, f.date, f.trigger_time_ct, f.entry_time_ct, f.option_chain_id,
+          f.underlying_symbol, f.option_type, f.strike, f.expiry, f.dte,
+          f.trigger_vol_to_oi_window, f.trigger_vol_to_oi_cum,
+          f.trigger_iv, f.trigger_delta, f.trigger_ask_pct,
+          f.trigger_window_size, f.trigger_window_prints,
+          f.entry_price, f.open_interest, f.spot_at_first,
+          f.alert_seq, f.minutes_since_prev_fire,
+          f.flow_quad, f.tod, f.mode,
+          f.reload_tagged, f.cheap_call_pm_tagged,
+          f.burst_ratio_vs_prev, f.entry_drop_pct_vs_prev,
+          f.mkt_tide_ncp, f.mkt_tide_npp, f.mkt_tide_diff, f.mkt_tide_otm_diff,
+          f.spx_flow_diff, f.spy_etf_diff, f.qqq_etf_diff, f.zero_dte_diff,
+          f.spx_spot_gamma_oi, f.spx_spot_gamma_vol, f.spx_spot_charm_oi, f.spx_spot_vanna_oi,
+          f.gex_strike_call_minus_put, f.gex_strike_call_ask_minus_bid,
+          f.gex_strike_put_ask_minus_bid, f.gex_strike_actual_strike,
+          f.realized_trail30_10_pct, f.realized_hard30m_pct,
+          f.realized_tier50_holdeod_pct, f.realized_flow_inversion_pct,
+          f.realized_eod_pct,
+          f.peak_ceiling_pct, f.minutes_to_peak,
+          f.inserted_at, f.enriched_at,
+          f.score,
+          s.n_fires AS ticker_n_fires,
+          s.high_peak_rate AS ticker_high_peak_rate,
+          s.ci_lower AS ticker_ci_lower,
+          s.ci_upper AS ticker_ci_upper,
+          s.ci_width AS ticker_ci_width,
+          s.tier AS ticker_tier
+        FROM lottery_finder_fires f
+        LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
+        WHERE f.date = ${targetDate}::date
+          AND f.trigger_time_ct >= ${windowStart}::timestamptz
+          AND f.trigger_time_ct < ${windowEnd}::timestamptz
+          AND (${ticker ?? null}::text IS NULL OR f.underlying_symbol = ${ticker ?? ''})
+          AND (${reload ?? null}::boolean IS NULL OR f.reload_tagged = ${reload ?? false})
+          AND (${cheapCallPm ?? null}::boolean IS NULL OR f.cheap_call_pm_tagged = ${cheapCallPm ?? false})
+          AND (${mode ?? null}::text IS NULL OR f.mode = ${mode ?? ''})
+          AND (${optionType ?? null}::text IS NULL OR f.option_type = ${optionType ?? ''})
+          AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
+          AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
+        ORDER BY f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
       `,
@@ -217,12 +349,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           AND (${mode ?? null}::text IS NULL OR mode = ${mode ?? ''})
           AND (${optionType ?? null}::text IS NULL OR option_type = ${optionType ?? ''})
           AND (${tod ?? null}::text IS NULL OR tod = ${tod ?? ''})
+          AND (${minScore ?? null}::int IS NULL OR score >= ${minScore ?? 0})
       `,
     ])) as [FireRow[], { total: number }[]];
 
     const total = totalRows[0]?.total ?? 0;
 
-    const fires = rows.map((r) => ({
+    const fires = rows.map((r) => {
+      const score = r.score == null ? null : Number(r.score);
+      const tier: LotteryScoreTier = lotteryScoreTier(score);
+      const tickerStats =
+        r.ticker_n_fires == null
+          ? null
+          : {
+              nFires: Number(r.ticker_n_fires),
+              highPeakRate: Number(r.ticker_high_peak_rate ?? 0),
+              ciLower: Number(r.ticker_ci_lower ?? 0),
+              ciUpper: Number(r.ticker_ci_upper ?? 0),
+              ciWidth: Number(r.ticker_ci_width ?? 0),
+              tier: (r.ticker_tier ?? '') as 'reliable' | 'uncertain' | '',
+            };
+      return {
       id: Number(r.id),
       date: toIso(r.date).slice(0, 10),
       triggerTimeCt: toIso(r.trigger_time_ct),
@@ -236,6 +383,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           ? r.expiry.slice(0, 10)
           : toIso(r.expiry).slice(0, 10),
       dte: Number(r.dte),
+
+      score,
+      scoreTier: tier,
+      forecastHighPeakPct: forecastForTier(tier),
+      tickerStats,
 
       trigger: {
         volToOiWindow: Number(r.trigger_vol_to_oi_window),
@@ -296,7 +448,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       },
 
       insertedAt: toIso(r.inserted_at),
-    }));
+      };
+    });
 
     // No CDN cache — the feed is an alert surface and the UI polls
     // every 30s. Caching at the edge means most polls land on a stale
@@ -307,7 +460,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       date: targetDate,
       asOf: at ?? null,
       minute: minute ?? null,
-      filters: { ticker, reload, cheapCallPm, mode, optionType, tod },
+      filters: { ticker, reload, cheapCallPm, mode, optionType, tod, sort, minScore },
       // count = rows returned (≤ limit). total = total matching rows
       // before LIMIT/OFFSET. UI uses (offset, limit, total) for the
       // page-N-of-M display + prev/next controls.

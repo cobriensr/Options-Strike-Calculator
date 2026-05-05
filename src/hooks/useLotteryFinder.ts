@@ -13,6 +13,7 @@ import type {
   LotteryFinderResponse,
   LotteryFire,
   LotteryMode,
+  LotterySortMode,
   OptionType,
   TimeOfDay,
 } from '../components/LotteryFinder/types.js';
@@ -40,6 +41,10 @@ interface UseLotteryFinderArgs {
   optionType?: OptionType | null;
   /** Filter by time-of-day bucket. */
   tod?: TimeOfDay | null;
+  /** Sort mode for the result set. Default 'chronological'. */
+  sort?: LotterySortMode;
+  /** Minimum score floor (Tier 1 = 18 enables High Conviction filter). */
+  minScore?: number | null;
   /** 0-based page index (offset = page * limit). */
   page?: number;
   /** Page size. Default 50. */
@@ -82,6 +87,8 @@ export function useLotteryFinder({
   mode = null,
   optionType = null,
   tod = null,
+  sort = 'chronological',
+  minScore = null,
   page = 0,
   pageSize = 50,
 }: UseLotteryFinderArgs): State & { refetch: () => void } {
@@ -108,6 +115,8 @@ export function useLotteryFinder({
       if (mode != null) params.set('mode', mode);
       if (optionType != null) params.set('optionType', optionType);
       if (tod != null) params.set('tod', tod);
+      if (sort !== 'chronological') params.set('sort', sort);
+      if (minScore != null) params.set('minScore', String(minScore));
       const res = await fetch(`/api/lottery-finder?${params.toString()}`, {
         credentials: 'include',
         signal: ctrl.signal,
@@ -148,6 +157,8 @@ export function useLotteryFinder({
     mode,
     optionType,
     tod,
+    sort,
+    minScore,
     page,
     pageSize,
   ]);

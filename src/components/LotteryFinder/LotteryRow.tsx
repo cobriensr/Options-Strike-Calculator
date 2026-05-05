@@ -3,7 +3,12 @@ import { useContractTape } from '../../hooks/useContractTape.js';
 import { useNetFlowHistory } from '../../hooks/useNetFlowHistory.js';
 import { ContractTapeChart } from './ContractTapeChart.js';
 import { TickerNetFlowChart } from './TickerNetFlowChart.js';
-import type { ExitPolicy, LotteryFire } from './types.js';
+import type {
+  ExitPolicy,
+  LotteryFire,
+  LotteryScoreTier,
+  LotteryTickerStats,
+} from './types.js';
 import { EXIT_POLICY_LABELS, EXIT_POLICY_TOOLTIPS } from './types.js';
 
 interface LotteryRowProps {
@@ -74,6 +79,64 @@ const todBadge = (tod: string): string => {
   }
 };
 
+/**
+ * Tier badge: fire emojis sized to convey conviction. Tier 1 = 🔥🔥🔥
+ * (top ~5/day, ~80% high-peak rate), Tier 2 = 🔥🔥 (the bulk of the
+ * day, ~63% high-peak rate), Tier 3 = 🔥 (long tail, ~32%).
+ */
+const tierBadge = (
+  tier: LotteryScoreTier,
+  score: number | null,
+): { label: string; cls: string; tooltip: string } => {
+  if (tier === 'tier1') {
+    return {
+      label: '🔥🔥🔥',
+      cls: 'border-rose-500/50 bg-rose-950/40 text-rose-200',
+      tooltip: `Tier 1 (score ${score ?? '?'} ≥ 18): high conviction — ~80% of historical Tier 1 fires hit ≥50% peak return.`,
+    };
+  }
+  if (tier === 'tier2') {
+    return {
+      label: '🔥🔥',
+      cls: 'border-amber-500/40 bg-amber-950/30 text-amber-200',
+      tooltip: `Tier 2 (score ${score ?? '?'} = 12-17): solid setup — ~63% of historical Tier 2 fires hit ≥50% peak return.`,
+    };
+  }
+  return {
+    label: '🔥',
+    cls: 'border-neutral-700 bg-neutral-900 text-neutral-400',
+    tooltip: `Tier 3 (score ${score ?? '?'} < 12): low conviction — ~32% of historical Tier 3 fires hit ≥50% peak return.`,
+  };
+};
+
+/**
+ * Reliability indicator: ✓ when CI <10pp (tight enough to trust the
+ * point estimate), ⚠️ when CI >15pp (sample too small / variance too
+ * high), nothing in the middle band. Hidden when stats are missing.
+ */
+const ciIndicator = (
+  stats: LotteryTickerStats | null,
+  ticker: string,
+): { label: string; cls: string; tooltip: string } | null => {
+  if (stats == null) return null;
+  const tooltip = `${ticker}: ${stats.nFires.toLocaleString()} fires, ${stats.highPeakRate.toFixed(1)}% high-peak rate (95% CI ${stats.ciLower.toFixed(1)}–${stats.ciUpper.toFixed(1)}%, width ${stats.ciWidth.toFixed(1)}pp)`;
+  if (stats.tier === 'reliable') {
+    return {
+      label: '✓',
+      cls: 'text-green-400',
+      tooltip: `${tooltip} — CI ≤10pp, point estimate is trustworthy.`,
+    };
+  }
+  if (stats.tier === 'uncertain') {
+    return {
+      label: '⚠️',
+      cls: 'text-yellow-400',
+      tooltip: `${tooltip} — CI >15pp, small sample; treat the point estimate as noisy.`,
+    };
+  }
+  return null;
+};
+
 const tideBadge = (
   diff: number | null,
 ): { label: string; cls: string; tooltip: string } | null => {
@@ -100,6 +163,8 @@ export const LotteryRow = memo(function LotteryRow({
   const realized = fire.outcomes[exitPolicy];
   const peak = fire.outcomes.peakCeilingPct;
   const tide = tideBadge(fire.macro.mktTideDiff);
+  const tier = tierBadge(fire.scoreTier, fire.score);
+  const ci = ciIndicator(fire.tickerStats, fire.underlyingSymbol);
 
   // Expand state — when true, the per-fire panel renders below the
   // summary lines and the two hooks fetch their data. Collapsed by
@@ -122,6 +187,16 @@ export const LotteryRow = memo(function LotteryRow({
   return (
     <div className="rounded border border-neutral-800 bg-neutral-950 p-3 text-sm">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        {/* Tier badge — peak-potential at a glance. Sits before the
+            ticker so the user's eye lands on conviction first. */}
+        <span
+          className={`rounded border px-1.5 py-0.5 text-[11px] leading-none font-semibold ${tier.cls}`}
+          title={tier.tooltip}
+          aria-label={tier.tooltip}
+        >
+          {tier.label}
+        </span>
+
         {/* Ticker + strike + side — the whole block links to UW's
             per-contract flow page so the user can pivot from the row
             to the canonical context with one click. */}
@@ -135,6 +210,15 @@ export const LotteryRow = memo(function LotteryRow({
           <span className="font-mono text-base font-semibold text-white group-hover:text-blue-300">
             {fire.underlyingSymbol}
           </span>
+          {ci && (
+            <span
+              className={`text-xs leading-none font-bold ${ci.cls}`}
+              title={ci.tooltip}
+              aria-label={ci.tooltip}
+            >
+              {ci.label}
+            </span>
+          )}
           <span className="font-mono text-base text-neutral-200 group-hover:text-blue-200">
             {fire.strike}
           </span>
@@ -252,6 +336,15 @@ export const LotteryRow = memo(function LotteryRow({
           win-vol/OI{' '}
           <span className="font-mono text-neutral-300">
             {(fire.trigger.volToOiWindow * 100).toFixed(0)}%
+          </span>
+        </span>
+        <span
+          className="text-neutral-500"
+          title={tier.tooltip}
+        >
+          predicted peak{' '}
+          <span className="font-mono text-neutral-300">
+            {fire.forecastHighPeakPct}
           </span>
         </span>
         <span className="ml-auto text-neutral-500">

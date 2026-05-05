@@ -26,6 +26,7 @@ import {
   type LotteryFireRecord,
   type OptionTradeTick,
 } from '../_lib/lottery-finder.js';
+import { computeLotteryScore } from '../_lib/lottery-score-weights.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -278,6 +279,18 @@ export default withCronInstrumentation(
           );
           macro = EMPTY_MACRO;
         }
+        // Score is computed from the same fields persisted on the row
+        // (ticker, mode, entry price, TOD, option type) so the column
+        // is fully derivable for backfills via UPDATE; storing it
+        // avoids a JOIN on every read and lets `?sort=score` use the
+        // (date, score DESC) index from migration #126.
+        const score = computeLotteryScore({
+          ticker: rec.underlyingSymbol,
+          mode: rec.mode,
+          entryPrice: rec.entryPrice,
+          tod: rec.tod,
+          optionType: rec.optionType,
+        });
         const result = (await db`
           INSERT INTO lottery_finder_fires (
             date, trigger_time_ct, entry_time_ct, option_chain_id,
@@ -294,7 +307,8 @@ export default withCronInstrumentation(
             spx_flow_diff, spy_etf_diff, qqq_etf_diff, zero_dte_diff,
             spx_spot_gamma_oi, spx_spot_gamma_vol, spx_spot_charm_oi, spx_spot_vanna_oi,
             gex_strike_call_minus_put, gex_strike_call_ask_minus_bid,
-            gex_strike_put_ask_minus_bid, gex_strike_actual_strike
+            gex_strike_put_ask_minus_bid, gex_strike_actual_strike,
+            score
           ) VALUES (
             ${rec.date}::date, ${rec.triggerTimeCt.toISOString()}, ${rec.entryTimeCt.toISOString()},
             ${rec.optionChainId}, ${rec.underlyingSymbol}, ${rec.optionType},
@@ -311,7 +325,8 @@ export default withCronInstrumentation(
             ${macro.spx_flow_diff}, ${macro.spy_etf_diff}, ${macro.qqq_etf_diff}, ${macro.zero_dte_diff},
             ${macro.spx_spot_gamma_oi}, ${macro.spx_spot_gamma_vol}, ${macro.spx_spot_charm_oi}, ${macro.spx_spot_vanna_oi},
             ${macro.gex_strike_call_minus_put}, ${macro.gex_strike_call_ask_minus_bid},
-            ${macro.gex_strike_put_ask_minus_bid}, ${macro.gex_strike_actual_strike}
+            ${macro.gex_strike_put_ask_minus_bid}, ${macro.gex_strike_actual_strike},
+            ${score}
           )
           ON CONFLICT (option_chain_id, trigger_time_ct) DO NOTHING
           RETURNING id

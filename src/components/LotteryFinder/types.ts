@@ -101,6 +101,27 @@ export interface LotteryFireOutcomes {
   enrichedAt: string | null;
 }
 
+/** Tier label derived from `score`. Tier 1 ≥18, Tier 2 12-17, Tier 3 <12. */
+export type LotteryScoreTier = 'tier1' | 'tier2' | 'tier3';
+
+/** Sort modes accepted by /api/lottery-finder?sort=. */
+export type LotterySortMode = 'chronological' | 'score' | 'peak';
+
+/**
+ * Per-ticker reliability stats joined from `lottery_ticker_stats`.
+ * `null` when no stats row exists for the ticker (rare — universe is
+ * ~50 tickers and the seed covers all of them).
+ */
+export interface LotteryTickerStats {
+  nFires: number;
+  highPeakRate: number;
+  ciLower: number;
+  ciUpper: number;
+  ciWidth: number;
+  /** 'reliable' (CI <10pp), 'uncertain' (>15pp), '' in the middle. */
+  tier: 'reliable' | 'uncertain' | '';
+}
+
 export interface LotteryFire {
   id: number;
   date: string;
@@ -112,6 +133,15 @@ export interface LotteryFire {
   strike: number;
   expiry: string;
   dte: number;
+
+  /** Composite score (0-25). `null` only on rows pre-#126 backfill. */
+  score: number | null;
+  /** Tier label derived from `score` (tier3 when score is null). */
+  scoreTier: LotteryScoreTier;
+  /** Predicted peak-return range string for the tier (display-only). */
+  forecastHighPeakPct: string;
+  /** Per-ticker reliability stats; `null` when no row exists. */
+  tickerStats: LotteryTickerStats | null;
 
   trigger: LotteryFireTrigger;
   entry: LotteryFireEntry;
@@ -135,6 +165,8 @@ export interface LotteryFinderResponse {
     mode?: LotteryMode;
     optionType?: OptionType;
     tod?: TimeOfDay;
+    sort?: LotterySortMode;
+    minScore?: number;
   };
   /** Number of fires actually returned in this response (≤ limit). */
   count: number;
