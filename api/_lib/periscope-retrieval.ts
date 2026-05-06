@@ -37,6 +37,17 @@ interface RetrievalRow {
   trading_date: string;
   prose_text: string;
   similarity: number;
+  /**
+   * Signed R-multiple realized on the textbook execution model.
+   * Null when not yet computed (post-hoc by ml/src/compute_realized_outcomes.py)
+   * OR when neither trigger fired in-session.
+   */
+  realized_r: number | null;
+  /**
+   * 'long' / 'short' / 'neither' — which directional thesis fired,
+   * if any. Null when realized outcomes have not yet been computed.
+   */
+  realized_trigger_fired: 'long' | 'short' | 'neither' | null;
 }
 
 /**
@@ -65,6 +76,7 @@ export async function fetchSimilarPastReads(args: {
     const rows = await sql`
       WITH q AS (SELECT ${vectorLiteral}::vector AS v)
       SELECT id, mode, regime_tag, trading_date, prose_text,
+             realized_r, realized_trigger_fired,
              1 - (analysis_embedding <=> q.v) AS similarity
       FROM periscope_analyses, q
       WHERE mode = ${mode}
@@ -73,14 +85,30 @@ export async function fetchSimilarPastReads(args: {
       ORDER BY analysis_embedding <=> q.v ASC
       LIMIT ${TOP_K}
     `;
-    return rows.map((r) => ({
-      id: Number(r.id),
-      mode: r.mode as PeriscopeMode,
-      regime_tag: (r.regime_tag as string | null) ?? null,
-      trading_date: toIsoDate(r.trading_date),
-      prose_text: (r.prose_text as string) ?? '',
-      similarity: r.similarity == null ? 0 : Number(r.similarity),
-    }));
+    return rows.map((r) => {
+      const rRaw = r.realized_r;
+      const realizedR =
+        rRaw == null
+          ? null
+          : Number.isFinite(Number(rRaw))
+            ? Number(rRaw)
+            : null;
+      const fired = r.realized_trigger_fired;
+      const realizedFired =
+        fired === 'long' || fired === 'short' || fired === 'neither'
+          ? fired
+          : null;
+      return {
+        id: Number(r.id),
+        mode: r.mode as PeriscopeMode,
+        regime_tag: (r.regime_tag as string | null) ?? null,
+        trading_date: toIsoDate(r.trading_date),
+        prose_text: (r.prose_text as string) ?? '',
+        similarity: r.similarity == null ? 0 : Number(r.similarity),
+        realized_r: realizedR,
+        realized_trigger_fired: realizedFired,
+      };
+    });
   } catch (err) {
     logger.error({ err, mode }, 'fetchSimilarPastReads failed');
     return [];
@@ -94,6 +122,27 @@ export async function fetchSimilarPastReads(args: {
  */
 const EXAMPLE_PROSE_CHARS = 1200;
 const SIMILARITY_FLOOR = 0.3; // cosine similarity 0.3+ ≈ "broadly related"
+
+/**
+ * Render the realized-outcome tag for a retrieval example header.
+ *
+ *   - `realized_r` populated → signed-1dp R-multiple + winner/loser tag
+ *     based on which trigger fired (e.g. `+0.6R, long_winner`).
+ *   - `realized_trigger_fired === 'neither'` → `no_trigger` (the read
+ *     called a setup, but neither directional level was hit in-session).
+ *   - both null → `pending` (post-hoc enrichment hasn't run for the row
+ *     yet OR the row predates migration 132 / chose not to compute).
+ */
+function formatRealizedOutcome(row: RetrievalRow): string {
+  if (row.realized_trigger_fired === 'neither') return 'no_trigger';
+  if (row.realized_r == null || row.realized_trigger_fired == null) {
+    return 'pending';
+  }
+  const r = row.realized_r;
+  const sign = r >= 0 ? '+' : '';
+  const wonOrLost = r >= 0 ? 'winner' : 'loser';
+  return `${sign}${r.toFixed(1)}R, ${row.realized_trigger_fired}_${wonOrLost}`;
+}
 
 export function formatRetrievalBlock(
   examples: RetrievalRow[],
@@ -118,6 +167,7 @@ export function formatRetrievalBlock(
       `${ex.trading_date}`,
       ex.regime_tag ? `regime: ${ex.regime_tag}` : null,
       `similarity: ${(ex.similarity * 100).toFixed(0)}%`,
+      `realized: ${formatRealizedOutcome(ex)}`,
     ]
       .filter((s) => s != null)
       .join(' · ');

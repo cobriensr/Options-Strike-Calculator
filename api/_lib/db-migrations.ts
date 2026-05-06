@@ -3952,4 +3952,19 @@ export const MIGRATIONS: Migration[] = [
       sql`ALTER TABLE periscope_analyses ADD COLUMN IF NOT EXISTS futures_plan TEXT`,
     ],
   },
+  {
+    id: 132,
+    description:
+      'Add realized_* columns to periscope_analyses for retrospective outcome scoring (entry vs end-of-session price action). Populated post-hoc by ml/src/compute_realized_outcomes.py — null = pending.',
+    statements: (sql) => [
+      sql`ALTER TABLE periscope_analyses
+        ADD COLUMN IF NOT EXISTS realized_r NUMERIC,
+        ADD COLUMN IF NOT EXISTS realized_close_pts NUMERIC,
+        ADD COLUMN IF NOT EXISTS realized_max_favorable_pts NUMERIC,
+        ADD COLUMN IF NOT EXISTS realized_max_adverse_pts NUMERIC,
+        ADD COLUMN IF NOT EXISTS realized_trigger_fired TEXT
+          CHECK (realized_trigger_fired IN ('long', 'short', 'neither')),
+        ADD COLUMN IF NOT EXISTS realized_computed_at TIMESTAMPTZ`,
+    ],
+  },
 ];

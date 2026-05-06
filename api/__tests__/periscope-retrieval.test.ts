@@ -57,6 +57,8 @@ describe('fetchSimilarPastReads', () => {
         trading_date: '2026-04-30',
         prose_text: 'Past pin day.',
         similarity: '0.85',
+        realized_r: null,
+        realized_trigger_fired: null,
       },
     ]);
     const result = await fetchSimilarPastReads({
@@ -66,6 +68,42 @@ describe('fetchSimilarPastReads', () => {
     expect(result).toHaveLength(1);
     expect(result[0]!.id).toBe(5);
     expect(result[0]!.similarity).toBeCloseTo(0.85);
+    expect(result[0]!.realized_r).toBeNull();
+    expect(result[0]!.realized_trigger_fired).toBeNull();
+  });
+
+  it('coerces numeric realized_r and realized_trigger_fired enum', async () => {
+    mockSql.mockResolvedValueOnce([
+      {
+        id: '7',
+        mode: 'pre_trade',
+        regime_tag: 'cone-breach',
+        trading_date: '2026-05-01',
+        prose_text: 'Open trended up.',
+        similarity: '0.6',
+        realized_r: '0.62',
+        realized_trigger_fired: 'long',
+      },
+      {
+        id: '8',
+        mode: 'pre_trade',
+        regime_tag: null,
+        trading_date: '2026-05-02',
+        prose_text: 'No setup fired.',
+        similarity: '0.4',
+        realized_r: null,
+        realized_trigger_fired: 'neither',
+      },
+    ]);
+    const result = await fetchSimilarPastReads({
+      mode: 'pre_trade',
+      queryEmbedding: [0.1, 0.2, 0.3],
+    });
+    expect(result).toHaveLength(2);
+    expect(result[0]!.realized_r).toBeCloseTo(0.62);
+    expect(result[0]!.realized_trigger_fired).toBe('long');
+    expect(result[1]!.realized_r).toBeNull();
+    expect(result[1]!.realized_trigger_fired).toBe('neither');
   });
 });
 
@@ -84,6 +122,8 @@ describe('formatRetrievalBlock', () => {
           trading_date: '2026-04-30',
           prose_text: 'p',
           similarity: 0.1,
+          realized_r: null,
+          realized_trigger_fired: null,
         },
       ],
       'intraday',
@@ -101,6 +141,8 @@ describe('formatRetrievalBlock', () => {
           trading_date: '2026-04-30',
           prose_text: 'Pin day at 7120.',
           similarity: 0.78,
+          realized_r: null,
+          realized_trigger_fired: null,
         },
       ],
       'intraday',
@@ -121,11 +163,81 @@ describe('formatRetrievalBlock', () => {
           trading_date: '2026-04-30',
           prose_text: 'x'.repeat(3000),
           similarity: 0.5,
+          realized_r: null,
+          realized_trigger_fired: null,
         },
       ],
       'intraday',
     );
     expect(result).toContain('truncated for brevity');
+  });
+
+  it('renders realized: pending when realized_r is null', () => {
+    const result = formatRetrievalBlock(
+      [
+        {
+          id: 1,
+          mode: 'intraday',
+          regime_tag: null,
+          trading_date: '2026-04-30',
+          prose_text: 'Pending row.',
+          similarity: 0.78,
+          realized_r: null,
+          realized_trigger_fired: null,
+        },
+      ],
+      'intraday',
+    );
+    expect(result).toContain('realized: pending');
+  });
+
+  it('renders realized: no_trigger when neither side fired', () => {
+    const result = formatRetrievalBlock(
+      [
+        {
+          id: 1,
+          mode: 'intraday',
+          regime_tag: null,
+          trading_date: '2026-04-30',
+          prose_text: 'No fire.',
+          similarity: 0.78,
+          realized_r: null,
+          realized_trigger_fired: 'neither',
+        },
+      ],
+      'intraday',
+    );
+    expect(result).toContain('realized: no_trigger');
+  });
+
+  it('renders signed +R / loser tag when realized_r is populated', () => {
+    const result = formatRetrievalBlock(
+      [
+        {
+          id: 1,
+          mode: 'intraday',
+          regime_tag: null,
+          trading_date: '2026-04-30',
+          prose_text: 'Long winner.',
+          similarity: 0.78,
+          realized_r: 0.6,
+          realized_trigger_fired: 'long',
+        },
+        {
+          id: 2,
+          mode: 'intraday',
+          regime_tag: null,
+          trading_date: '2026-05-01',
+          prose_text: 'Short loser.',
+          similarity: 0.55,
+          realized_r: -1.2,
+          realized_trigger_fired: 'short',
+        },
+      ],
+      'intraday',
+    );
+    expect(result).toContain('realized: +0.6R, long_winner');
+    expect(result).toContain('realized: -1.2R, short_loser');
   });
 });
 
@@ -167,6 +279,8 @@ describe('buildRetrievalBlock', () => {
         trading_date: '2026-04-30',
         prose_text: 'p',
         similarity: '0.05', // below floor
+        realized_r: null,
+        realized_trigger_fired: null,
       },
     ]);
     const result = await buildRetrievalBlock({
@@ -186,6 +300,8 @@ describe('buildRetrievalBlock', () => {
         trading_date: '2026-04-30',
         prose_text: 'Past pin day at 7120.',
         similarity: '0.78',
+        realized_r: '0.4',
+        realized_trigger_fired: 'long',
       },
     ]);
     const result = await buildRetrievalBlock({
@@ -195,5 +311,6 @@ describe('buildRetrievalBlock', () => {
     expect(result).not.toBeNull();
     expect(result).toContain('Past pin day at 7120.');
     expect(result).toContain('similarity: 78%');
+    expect(result).toContain('realized: +0.4R, long_winner');
   });
 });
