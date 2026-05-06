@@ -237,15 +237,16 @@ export function usePeriscopeChat(): UsePeriscopeChatResult {
           { signal: ctrl.signal },
         );
         if (!res.ok) return;
+        // periscope-chat-list returns { items, nextBefore } — see
+        // api/periscope-chat-list.ts:219. `items` is ordered
+        // created_at DESC, so the first forward-mode entry is the
+        // most recent valid parent. Skip debriefs (chaining to a
+        // debrief is never the intent).
         const body = (await res.json()) as {
-          ok?: boolean;
-          rows?: Array<{ id: number; mode: string }>;
+          items?: Array<{ id: number; mode: string }>;
         };
-        if (!body.ok || !Array.isArray(body.rows)) return;
-        // Rows are returned `created_at DESC`. Pick the most recent
-        // forward read (skip debriefs — chaining to a debrief is
-        // never the intent).
-        const candidate = body.rows.find(
+        if (!Array.isArray(body.items)) return;
+        const candidate = body.items.find(
           (r) => r.mode === 'pre_trade' || r.mode === 'intraday',
         );
         if (candidate && typeof candidate.id === 'number') {
