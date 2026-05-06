@@ -131,10 +131,7 @@ function lastCumulative(
   return last ? (last[cumKey] as number) : null;
 }
 
-function emptyResponse(
-  asOf: string,
-  scope: GreekFlowScope,
-): GreekFlowResponse {
+function emptyResponse(asOf: string, scope: GreekFlowScope): GreekFlowResponse {
   const emptyMetrics = GREEK_FLOW_FIELDS.reduce<GreekFlowMetrics>(
     (acc, field) => {
       acc[field] = {

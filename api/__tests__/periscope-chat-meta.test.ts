@@ -208,7 +208,12 @@ describe('GET /api/periscope-chat-detail', () => {
     bias: 'fade-only',
     trade_types_recommended: ['iron_condor'],
     trade_types_avoided: ['naked_directional_long'],
-    key_levels: { gamma_floor: 7100, gamma_ceiling: 7150, magnet: 7120, charm_zero: 7130 },
+    key_levels: {
+      gamma_floor: 7100,
+      gamma_ceiling: 7150,
+      magnet: 7120,
+      charm_zero: 7130,
+    },
     expected_dealer_behavior: 'passive bid below 7100',
     confidence: 'medium',
     confidence_basis: 'twin-strike +γ floor',

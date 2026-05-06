@@ -113,10 +113,7 @@ export interface SpotLookupResult {
  *
  * Returns null on malformed inputs.
  */
-export function ctWallClockToUtcMs(
-  date: string,
-  time: string,
-): number | null {
+export function ctWallClockToUtcMs(date: string, time: string): number | null {
   const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
   const timeMatch = /^(\d{2}):(\d{2})$/.exec(time);
   if (!dateMatch || !timeMatch) return null;
@@ -254,10 +251,7 @@ export async function fetchSPXSpotAtTimestamp(args: {
 
     return null;
   } catch (err) {
-    logger.error(
-      { err, date, time },
-      'fetchSPXSpotAtTimestamp: query failed',
-    );
+    logger.error({ err, date, time }, 'fetchSPXSpotAtTimestamp: query failed');
     metrics.increment('spx_candles.spot_lookup_error');
     Sentry.captureException(err);
     return null;

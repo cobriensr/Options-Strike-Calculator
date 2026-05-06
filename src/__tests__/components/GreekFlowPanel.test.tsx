@@ -302,8 +302,8 @@ describe('GreekFlowPanel', () => {
 
     expect(screen.queryByTestId('greek-flow-verdict')).not.toBeInTheDocument();
     expect(screen.queryByTestId('greek-flow-timeline')).not.toBeInTheDocument();
-    expect(
-      screen.getByTestId('greek-flow-context-caption'),
-    ).toHaveTextContent(/context only/i);
+    expect(screen.getByTestId('greek-flow-context-caption')).toHaveTextContent(
+      /context only/i,
+    );
   });
 });

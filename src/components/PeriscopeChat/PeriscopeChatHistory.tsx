@@ -246,8 +246,7 @@ export default function PeriscopeChatHistory() {
       try {
         // Cache-bust on refresh — same reason as the dates query.
         const baseUrl = `/api/periscope-chat-list?date=${selectedDate}&limit=100`;
-        const url =
-          refreshTick === 0 ? baseUrl : `${baseUrl}&_=${refreshTick}`;
+        const url = refreshTick === 0 ? baseUrl : `${baseUrl}&_=${refreshTick}`;
         const res = await fetch(url, { signal: ac.signal });
         if (!res.ok) {
           const body = (await res.json().catch(() => ({}))) as {

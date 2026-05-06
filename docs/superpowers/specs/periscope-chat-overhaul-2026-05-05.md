@@ -4,6 +4,7 @@
 **Author / owner:** Charles
 **Date:** 2026-05-05
 **Parent specs:**
+
 - `docs/superpowers/specs/periscope-chat-2026-04-30.md` (original component design)
 - `docs/superpowers/specs/strike-battle-map-2026-05-03.md` (sibling — defines `ws_gex_strike_expiry`)
 - `docs/superpowers/specs/uw-websocket-daemon-2026-05-02.md` (sibling — defines `ws_flow_alerts`)
@@ -28,28 +29,28 @@ End state: user picks `(date, time)` in the UI and uploads 1–3 Periscope scree
 
 ## Locked decisions (from scoping conversation 2026-05-05)
 
-| Setting | Value |
-|---|---|
-| Modes | `pre_trade` / `intraday` / `debrief` (replaces `read` / `debrief`) |
-| Existing-rows policy | DROP TABLE periscope_analyses CASCADE; rebuild from clean |
-| Parent linkage | Chain — first intraday → pre_trade; each subsequent intraday → previous intraday; debrief → last intraday |
-| SPX spot at read time | DB lookup against `index_candles_1m` (1-min granularity, market hours, Schwab-anchored) |
-| Time-matching tolerance | ±2 min |
-| Live read with no candle in tolerance | Hard-fail with explicit error |
-| Back-read with no candle in tolerance | Snap to nearest within ±2 min, log warning |
-| Back-read with no data for date at all | Hard-fail |
-| Cone (lower/upper bounds) | OCR — uses both visual cues (diverging triangle on price-action panel + horizontal labeled lines on heat-map panels) |
-| Per-strike MM-attributed GEX/charm | OCR via Pass 1B vision call (~$0.05–0.10 per submission, ~$2.50–5.00/day at 50 reads) |
-| Naive GEX (`ws_gex_strike_expiry`) in read prompt | NO — explicitly excluded |
-| `ws_flow_alerts` integration | YES — Phase 1.5, mode-specific queries (proximity to spot + recency window varies by mode) |
-| `greek_exposure_strike` morning snapshot | YES — pre_trade mode only (read prompt; not intraday/debrief) |
-| Skill restructure | Move non-load-bearing content (capture conventions, "How to apply this skill", second worked example) to `references/`; tighten SKILL.md to load-bearing read-time content |
-| TRACE residue cleanup | All references deleted (TRACE was removed in commit `d8371347`) |
-| VolSignals distillation source | 21 transcripts already in `docs/tmp/transcripts/` (1.md – 21.md) |
-| VolSignals output target | `.claude/skills/periscope/references/vol-signals-mm-heuristics.md` (placeholder already created 2026-05-05) |
-| Skill references shipping | `.claude/skills/**/*.md` glob in `vercel.json` includeFiles (already updated 2026-05-05) |
-| Code-review fixes | Folded into the relevant phases — no separate cleanup phase |
-| Output schema expansion | `bias`, `trade_types_recommended`, `trade_types_avoided`, `key_levels`, `expected_dealer_behavior`, `confidence`, `parse_ok` (in addition to existing fields) |
+| Setting                                           | Value                                                                                                                                                                      |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Modes                                             | `pre_trade` / `intraday` / `debrief` (replaces `read` / `debrief`)                                                                                                         |
+| Existing-rows policy                              | DROP TABLE periscope_analyses CASCADE; rebuild from clean                                                                                                                  |
+| Parent linkage                                    | Chain — first intraday → pre_trade; each subsequent intraday → previous intraday; debrief → last intraday                                                                  |
+| SPX spot at read time                             | DB lookup against `index_candles_1m` (1-min granularity, market hours, Schwab-anchored)                                                                                    |
+| Time-matching tolerance                           | ±2 min                                                                                                                                                                     |
+| Live read with no candle in tolerance             | Hard-fail with explicit error                                                                                                                                              |
+| Back-read with no candle in tolerance             | Snap to nearest within ±2 min, log warning                                                                                                                                 |
+| Back-read with no data for date at all            | Hard-fail                                                                                                                                                                  |
+| Cone (lower/upper bounds)                         | OCR — uses both visual cues (diverging triangle on price-action panel + horizontal labeled lines on heat-map panels)                                                       |
+| Per-strike MM-attributed GEX/charm                | OCR via Pass 1B vision call (~$0.05–0.10 per submission, ~$2.50–5.00/day at 50 reads)                                                                                      |
+| Naive GEX (`ws_gex_strike_expiry`) in read prompt | NO — explicitly excluded                                                                                                                                                   |
+| `ws_flow_alerts` integration                      | YES — Phase 1.5, mode-specific queries (proximity to spot + recency window varies by mode)                                                                                 |
+| `greek_exposure_strike` morning snapshot          | YES — pre_trade mode only (read prompt; not intraday/debrief)                                                                                                              |
+| Skill restructure                                 | Move non-load-bearing content (capture conventions, "How to apply this skill", second worked example) to `references/`; tighten SKILL.md to load-bearing read-time content |
+| TRACE residue cleanup                             | All references deleted (TRACE was removed in commit `d8371347`)                                                                                                            |
+| VolSignals distillation source                    | 21 transcripts already in `docs/tmp/transcripts/` (1.md – 21.md)                                                                                                           |
+| VolSignals output target                          | `.claude/skills/periscope/references/vol-signals-mm-heuristics.md` (placeholder already created 2026-05-05)                                                                |
+| Skill references shipping                         | `.claude/skills/**/*.md` glob in `vercel.json` includeFiles (already updated 2026-05-05)                                                                                   |
+| Code-review fixes                                 | Folded into the relevant phases — no separate cleanup phase                                                                                                                |
+| Output schema expansion                           | `bias`, `trade_types_recommended`, `trade_types_avoided`, `key_levels`, `expected_dealer_behavior`, `confidence`, `parse_ok` (in addition to existing fields)              |
 
 ## Architecture overview
 
@@ -230,7 +231,7 @@ Per-heuristic contract (already defined in placeholder):
 
 - Tag: `[verified]` / `[plausible]` / `[era-specific]` / `[contested]`
 - Citation: source-video index entry
-- Specific & falsifiable (e.g. *"after 2pm CT, charm flow accelerates ~2x"*) — reject vague generalities
+- Specific & falsifiable (e.g. _"after 2pm CT, charm flow accelerates ~2x"_) — reject vague generalities
 - Mapped to one of the 7 sections in the placeholder
 
 **Anti-pattern guard (per placeholder workflow):** if a heuristic conflicts with `SKILL.md`, flag as `[contested]` and surface to user — do NOT silently overwrite skill content.
@@ -269,7 +270,7 @@ Files:
     - `mode` CHECK constraint expanded to `IN ('pre_trade', 'intraday', 'debrief')`
     - `parent_id` BIGINT REFERENCES periscope_analyses(id) ON DELETE SET NULL (was missing in v1)
     - All Phase 2 new columns (`bias`, `trade_types_recommended`, `trade_types_avoided`, `key_levels`, `expected_dealer_behavior`, `confidence`, `confidence_basis`, `parse_ok`)
-    - `read_time` TIMESTAMPTZ NOT NULL — the user-selected time the read is *for* (distinct from `created_at` = capture time)
+    - `read_time` TIMESTAMPTZ NOT NULL — the user-selected time the read is _for_ (distinct from `created_at` = capture time)
     - `spot_at_read_time` NUMERIC NOT NULL — DB-looked-up SPX spot at read_time
     - `spot_source` TEXT CHECK IN ('db_exact', 'db_snapped') — audit which path produced the spot
   - Indexes:
@@ -320,11 +321,11 @@ Files:
 
 ### Existing tables consumed (no new)
 
-| Table | Purpose | Cron / source |
-|---|---|---|
-| `index_candles_1m` | SPX spot at read time | `fetch-spx-candles-1m` cron, every minute during market hours |
-| `ws_flow_alerts` | Recent informed flow context | uw-stream daemon (live websocket) |
-| `greek_exposure_strike` | Pre-trade morning per-strike snapshot | `fetch-greek-exposure-strike` cron, 8:30 CT daily |
+| Table                   | Purpose                               | Cron / source                                                 |
+| ----------------------- | ------------------------------------- | ------------------------------------------------------------- |
+| `index_candles_1m`      | SPX spot at read time                 | `fetch-spx-candles-1m` cron, every minute during market hours |
+| `ws_flow_alerts`        | Recent informed flow context          | uw-stream daemon (live websocket)                             |
+| `greek_exposure_strike` | Pre-trade morning per-strike snapshot | `fetch-greek-exposure-strike` cron, 8:30 CT daily             |
 
 ### New tables / migrations
 
@@ -340,32 +341,32 @@ Files:
 
 ## Open questions
 
-| Question | Default if not decided |
-|---|---|
-| Should pre_trade mode require chart+heat-maps OR allow chart-only with `greek_exposure_strike` as fallback? | Allow chart-only — frontend makes heat-map upload optional for pre_trade only. Heat maps still preferred when available. |
-| If `greek_exposure_strike` cron hasn't run yet for today (8:30 CT scrape lag), does pre_trade fall back to OCR? | Hard-fail with clear error: "morning greek snapshot not yet available, retry after 8:32 CT" |
-| Cone OCR cross-check — what tolerance defines a "match" between price-action triangle and heat-map horizontal lines? | ±0.5 pts; outside that, prefer the heat-map labeled value (typed text > visual triangle) |
-| Should debrief mode's flow-alert summary use `ws_flow_alerts_enriched` view or raw table? | View — already does the call/put + bullish/bearish enrichment |
-| Phase 4 distillation: do we wait for all 21 to be done before Phase 5 wires the file in, or wire after first 5 batches and iterate? | Wire after Phase 4 fully done — partial heuristics file would create a partial picture and regress reads |
-| Phase 6A migration: should `read_time` be the source of truth for "trading_date" derivation, or keep both columns? | Both — `trading_date` (date-only) for indexing/filtering, `read_time` (full TIMESTAMPTZ) for chain ordering |
+| Question                                                                                                                            | Default if not decided                                                                                                   |
+| ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Should pre_trade mode require chart+heat-maps OR allow chart-only with `greek_exposure_strike` as fallback?                         | Allow chart-only — frontend makes heat-map upload optional for pre_trade only. Heat maps still preferred when available. |
+| If `greek_exposure_strike` cron hasn't run yet for today (8:30 CT scrape lag), does pre_trade fall back to OCR?                     | Hard-fail with clear error: "morning greek snapshot not yet available, retry after 8:32 CT"                              |
+| Cone OCR cross-check — what tolerance defines a "match" between price-action triangle and heat-map horizontal lines?                | ±0.5 pts; outside that, prefer the heat-map labeled value (typed text > visual triangle)                                 |
+| Should debrief mode's flow-alert summary use `ws_flow_alerts_enriched` view or raw table?                                           | View — already does the call/put + bullish/bearish enrichment                                                            |
+| Phase 4 distillation: do we wait for all 21 to be done before Phase 5 wires the file in, or wire after first 5 batches and iterate? | Wire after Phase 4 fully done — partial heuristics file would create a partial picture and regress reads                 |
+| Phase 6A migration: should `read_time` be the source of truth for "trading_date" derivation, or keep both columns?                  | Both — `trading_date` (date-only) for indexing/filtering, `read_time` (full TIMESTAMPTZ) for chain ordering              |
 
 ## Thresholds / constants
 
-| Constant | Value | Where |
-|---|---|---|
-| Time-matching tolerance | ±2 min | `fetchSPXSpotAtTimestamp` |
-| Pre-trade flow window | last 30 min, ±20 pts of spot, top 8 alerts | `buildFlowContextBlock` |
-| Intraday flow window | last 15 min, ±10 pts of spot, top 8 alerts | `buildFlowContextBlock` |
-| Debrief flow aggregation | full session, hourly buckets | `buildFlowContextBlock` |
-| Pass 1B heat-map top-N | 5 positive + 5 negative per metric | `extractHeatMapStrikes` |
-| Calibration block soft cap | `EXAMPLE_PROSE_CHARS=1500 × TOP_N=3` ≈ 1.1K tokens | `periscope-calibration.ts` |
-| Retrieval similarity floor | 0.30 cosine | `periscope-retrieval.ts` (now logged for tuning) |
-| Retrieval top-K | 3 | `periscope-retrieval.ts` |
-| Pass 1A timeout | 120 s | `periscope-extract.ts` (existing) |
-| Pass 1B timeout | 120 s | `periscope-extract.ts` (new) |
-| Pass 2 timeout | 720 s (60 s slack under function 780 s) | `periscope-chat.ts` (existing) |
-| Cache TTL | 1 h ephemeral, all system blocks | `periscope-chat.ts` |
-| VolSignals heuristic cap (post-distill) | ~30–60 entries; audit + drop dead weight after 7 days of use | `references/vol-signals-mm-heuristics.md` |
+| Constant                                | Value                                                        | Where                                            |
+| --------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------ |
+| Time-matching tolerance                 | ±2 min                                                       | `fetchSPXSpotAtTimestamp`                        |
+| Pre-trade flow window                   | last 30 min, ±20 pts of spot, top 8 alerts                   | `buildFlowContextBlock`                          |
+| Intraday flow window                    | last 15 min, ±10 pts of spot, top 8 alerts                   | `buildFlowContextBlock`                          |
+| Debrief flow aggregation                | full session, hourly buckets                                 | `buildFlowContextBlock`                          |
+| Pass 1B heat-map top-N                  | 5 positive + 5 negative per metric                           | `extractHeatMapStrikes`                          |
+| Calibration block soft cap              | `EXAMPLE_PROSE_CHARS=1500 × TOP_N=3` ≈ 1.1K tokens           | `periscope-calibration.ts`                       |
+| Retrieval similarity floor              | 0.30 cosine                                                  | `periscope-retrieval.ts` (now logged for tuning) |
+| Retrieval top-K                         | 3                                                            | `periscope-retrieval.ts`                         |
+| Pass 1A timeout                         | 120 s                                                        | `periscope-extract.ts` (existing)                |
+| Pass 1B timeout                         | 120 s                                                        | `periscope-extract.ts` (new)                     |
+| Pass 2 timeout                          | 720 s (60 s slack under function 780 s)                      | `periscope-chat.ts` (existing)                   |
+| Cache TTL                               | 1 h ephemeral, all system blocks                             | `periscope-chat.ts`                              |
+| VolSignals heuristic cap (post-distill) | ~30–60 entries; audit + drop dead weight after 7 days of use | `references/vol-signals-mm-heuristics.md`        |
 
 ## Verification plan
 

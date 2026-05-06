@@ -111,7 +111,7 @@ function GreekFlowPanelInner({ marketOpen }: GreekFlowPanelProps) {
               onClick={() => setScope(opt.value)}
               className={
                 active
-                  ? 'text-primary bg-zinc-700/40 cursor-default px-2 py-0.5'
+                  ? 'text-primary cursor-default bg-zinc-700/40 px-2 py-0.5'
                   : 'text-secondary hover:text-primary cursor-pointer px-2 py-0.5'
               }
             >
@@ -143,9 +143,9 @@ function GreekFlowPanelInner({ marketOpen }: GreekFlowPanelProps) {
     <SectionBox label="Greek Flow" headerRight={headerRight} collapsible>
       <p className="text-secondary mb-3 font-sans text-xs">
         Cumulative OTM Dir Δ &amp; V flow on SPY and QQQ. Verdict combines delta
-        agreement (directional bias) with vega agreement (vol regime), driven
-        by today&apos;s 0DTE intent. All-DTE is context only. Refreshes every
-        60s during market hours.
+        agreement (directional bias) with vega agreement (vol regime), driven by
+        today&apos;s 0DTE intent. All-DTE is context only. Refreshes every 60s
+        during market hours.
       </p>
       <Body data={data} loading={loading} error={error} scope={scope} />
     </SectionBox>

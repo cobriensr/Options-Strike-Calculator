@@ -460,29 +460,29 @@ When citing a heuristic in a Periscope read, include the tag in parentheses, e.g
 
 ## Source-video index
 
-| Source | Title (from line 1 of file) |
-| --- | --- |
-| 1.md | Intro The Greeks - Delta, Gamma and Theta \| VolSignals Webinar |
-| 2.md | The Stock Market Doesn't Care About The War (Here's Why) |
-| 3.md | This Is A Critical Moment For The Stock Market |
-| 4.md | Something Strange is Happening Here... |
-| 5.md | Introduction To Pinning at Expiration (Charm + Gamma) |
-| 6.md | This is JUST Mechanics... (Here's Why) |
-| 7.md | Introduction To Dealer Hedging Dynamics (TGIF) |
-| 8.md | Introduction to Dealer Hedging Flows |
-| 9.md | Dealer Hedging Basics \| VolSignals Webinar |
-| 10.md | The Landscape — Who are the key market participants \| VolSignals Webinar |
-| 11.md | The Other Greeks \| VolSignals Webinar |
-| 12.md | What Market Makers Hope You NEVER Figure Out |
-| 13.md | Here's What Market Makers Don't Want You To Learn |
-| 14.md | This Is What Actually Predicts Market Direction |
-| 15.md | If You See This, It's a RED FLAG |
-| 16.md | This Signal Just Triggered (Why it Matters) |
-| 17.md | If You're Anxious About The Stock Market, Watch This. |
-| 18.md | The Iran Narrative Is Misleading (Here's Why & How To Protect Yourself) |
-| 19.md | The Next 24 Hours Could Change Everything |
-| 20.md | This Expiration Event Could Change Everything Next Week |
-| 21.md | This is a Problem... |
+| Source | Title (from line 1 of file)                                               |
+| ------ | ------------------------------------------------------------------------- |
+| 1.md   | Intro The Greeks - Delta, Gamma and Theta \| VolSignals Webinar           |
+| 2.md   | The Stock Market Doesn't Care About The War (Here's Why)                  |
+| 3.md   | This Is A Critical Moment For The Stock Market                            |
+| 4.md   | Something Strange is Happening Here...                                    |
+| 5.md   | Introduction To Pinning at Expiration (Charm + Gamma)                     |
+| 6.md   | This is JUST Mechanics... (Here's Why)                                    |
+| 7.md   | Introduction To Dealer Hedging Dynamics (TGIF)                            |
+| 8.md   | Introduction to Dealer Hedging Flows                                      |
+| 9.md   | Dealer Hedging Basics \| VolSignals Webinar                               |
+| 10.md  | The Landscape — Who are the key market participants \| VolSignals Webinar |
+| 11.md  | The Other Greeks \| VolSignals Webinar                                    |
+| 12.md  | What Market Makers Hope You NEVER Figure Out                              |
+| 13.md  | Here's What Market Makers Don't Want You To Learn                         |
+| 14.md  | This Is What Actually Predicts Market Direction                           |
+| 15.md  | If You See This, It's a RED FLAG                                          |
+| 16.md  | This Signal Just Triggered (Why it Matters)                               |
+| 17.md  | If You're Anxious About The Stock Market, Watch This.                     |
+| 18.md  | The Iran Narrative Is Misleading (Here's Why & How To Protect Yourself)   |
+| 19.md  | The Next 24 Hours Could Change Everything                                 |
+| 20.md  | This Expiration Event Could Change Everything Next Week                   |
+| 21.md  | This is a Problem...                                                      |
 
 ---
 

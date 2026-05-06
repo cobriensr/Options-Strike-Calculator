@@ -853,7 +853,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     Sentry.captureException(err, {
       tags: { module: 'periscope-chat', kind, mode: body.mode },
     });
-    logger.error({ err, mode: body.mode, kind }, 'periscope-chat unhandled error');
+    logger.error(
+      { err, mode: body.mode, kind },
+      'periscope-chat unhandled error',
+    );
     done({ status: 500, error: 'unhandled' });
     let errorMsg = err instanceof Error ? err.message : 'Analysis failed';
     if (err instanceof Anthropic.RateLimitError) {

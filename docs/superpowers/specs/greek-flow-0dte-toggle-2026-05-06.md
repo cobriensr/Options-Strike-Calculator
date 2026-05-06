@@ -19,15 +19,18 @@ Migration id 129.
 ### Phase 2 — Cron + upsert (3 files, ~80 LOC)
 
 **[api/cron/fetch-greek-flow-etf.ts](api/cron/fetch-greek-flow-etf.ts):**
+
 - Always fetch all-expiries for SPY + QQQ (existing behavior — `expiry = NULL` on insert).
 - Determine today's 0DTE expiry for each ticker via `/api/stock/{ticker}/expiry-breakdown` (cached for the cron tick — one extra call per ticker on first invocation of the day, served from in-memory cache after).
 - If today's date is in that ticker's expiry list, fetch the per-expiry variant and insert with `expiry = today`. If today is not an expiry day for that ticker, skip the per-expiry call (no wasted call).
 
-**[api/_lib/greek-flow-etf-store.ts](api/_lib/greek-flow-etf-store.ts):**
+**[api/\_lib/greek-flow-etf-store.ts](api/_lib/greek-flow-etf-store.ts):**
+
 - Extend `GreekFlowTick` with `expiry?: string` (UW returns it on per-expiry rows; not read by the upsert — caller passes expiry explicitly so the same shape works for both feeds, but typed for caller validation).
 - Extend `upsertGreekFlowTicks` to accept an `expiry: string | null` arg and pass through to the INSERT. ON CONFLICT clause adds `expiry` to the key.
 
-**[api/__tests__/fetch-greek-flow-etf.test.ts](api/__tests__/fetch-greek-flow-etf.test.ts):**
+**[api/**tests**/fetch-greek-flow-etf.test.ts](api/**tests**/fetch-greek-flow-etf.test.ts):**
+
 - Add a test: cron on an expiry day fires 6 calls (2 expiry-breakdown + 2 all-DTE + 2 per-expiry). Cron on a non-expiry day fires 4 calls (2 expiry-breakdown + 2 all-DTE).
 - Existing tests for all-DTE shape continue to pass.
 
@@ -36,21 +39,24 @@ Migration id 129.
 ### Phase 3 — Read endpoint (2 files, ~40 LOC)
 
 **[api/greek-flow.ts](api/greek-flow.ts):**
+
 - Add `?scope=0dte|all` query param, default `0dte`.
 - Pass scope through to `getGreekFlowSession`.
 - Cumulative SUM partition becomes `PARTITION BY ticker, expiry` so 0DTE and all-DTE accumulate independently — but the read filters to the requested scope only, so the response shape is unchanged.
 
-**[api/_lib/db-greek-flow.ts](api/_lib/db-greek-flow.ts):**
+**[api/\_lib/db-greek-flow.ts](api/_lib/db-greek-flow.ts):**
+
 - `getGreekFlowSession(date, scope)` — when `scope === '0dte'`, filter `WHERE expiry = date`. When `scope === 'all'`, filter `WHERE expiry IS NULL`.
 - `resolveLatestGreekFlowDate` unchanged.
 
-**[api/_lib/validation.ts](api/_lib/validation.ts):** Extend `greekFlowQuerySchema` with an optional `scope` enum.
+**[api/\_lib/validation.ts](api/_lib/validation.ts):** Extend `greekFlowQuerySchema` with an optional `scope` enum.
 
 **Verify:** `npm run review`. Endpoint test for both scopes returns shape-identical responses with different cumulative values.
 
 ### Phase 4 — Backfill script (1 file, ~120 LOC)
 
 **[scripts/backfill-greek-flow-etf-0dte.mjs](scripts/backfill-greek-flow-etf-0dte.mjs):**
+
 - For each trading day in retention window (default: every date present in `vega_flow_etf` table), fetch `/api/stock/{ticker}/expiry-breakdown` to get that ticker's expiry list for that day. If the day appears as an expiry, call `/api/stock/{ticker}/greek-flow/{day}?date={day}` and upsert with `expiry = day`.
 - Skip days where rows already exist with non-null expiry for that ticker (idempotent).
 - Mirror the existing `scripts/backfill-darkpool.mjs` shape — argv parsing, dotenv, withRetry on UW calls, batch logging.
@@ -60,15 +66,18 @@ Migration id 129.
 ### Phase 5 — Frontend toggle + verdict scoping (3 files, ~60 LOC)
 
 **[src/hooks/useGreekFlow.ts](src/hooks/useGreekFlow.ts):**
+
 - Add `scope: 'all' | '0dte'` arg, default `'0dte'`. Pass to `?scope=` query param.
 - Polling logic unchanged.
 
 **[src/components/GreekFlowPanel/index.tsx](src/components/GreekFlowPanel/index.tsx):**
+
 - Pill toggle in `headerRight` next to the date picker: `[ 0DTE ] [ All DTE ]`.
 - State held locally, default `'0dte'`. Toggle re-fetches via `useGreekFlow` arg change.
 - Verdict (and VerdictTimeline) only renders for `'0dte'` scope. For `'all'` show a small caption "context only — no verdict" above the chart grid.
 
-**[src/__tests__/components/GreekFlowPanel.test.tsx](src/__tests__/components/GreekFlowPanel.test.tsx):**
+**[src/**tests**/components/GreekFlowPanel.test.tsx](src/**tests**/components/GreekFlowPanel.test.tsx):**
+
 - Toggle changes the URL query param.
 - Verdict tile is hidden when scope is `all`.
 
@@ -81,9 +90,11 @@ Full `npm run review` run. Manual smoke test against staging Vercel preview. Con
 ## Files
 
 **Create:**
+
 - `scripts/backfill-greek-flow-etf-0dte.mjs`
 
 **Modify:**
+
 - `api/_lib/db-migrations.ts` (add migration 129)
 - `api/__tests__/db.test.ts` (mock + expected output for migration 129)
 - `api/cron/fetch-greek-flow-etf.ts` (per-expiry fetch path)
