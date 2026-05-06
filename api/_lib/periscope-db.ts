@@ -255,6 +255,26 @@ function asConfidence(raw: unknown): PeriscopeConfidence | null {
  * type and driver mode; this helper normalizes both shapes and rejects
  * non-finite results (NaN, Infinity).
  */
+/**
+ * Coerce a Postgres DATE column value to an ISO `YYYY-MM-DD` string.
+ *
+ * `@neondatabase/serverless` returns DATE columns as JavaScript `Date`
+ * objects (midnight UTC of the stored date), not strings. Casting via
+ * `as string` is a TypeScript lie — the runtime value is a Date, and
+ * any subsequent string comparison (e.g. `tradingDate !== row.trading_date`)
+ * fails because JS `!==` between a string and a Date is always true.
+ * Template-literal interpolation then renders the Date via `.toString()`,
+ * yielding "Wed May 06 2026 00:00:00 GMT+0000 (Coordinated Universal Time)"
+ * which is what surfaced in the user-visible error message.
+ *
+ * Use this helper at every row-mapping site that exposes `trading_date`
+ * to a downstream string consumer.
+ */
+export function toIsoDate(v: unknown): string {
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return String(v);
+}
+
 function toFiniteNumber(v: unknown): number | null {
   if (v == null) return null;
   const n = typeof v === 'number' ? v : Number(v);
@@ -313,7 +333,7 @@ export async function fetchPeriscopeAnalysisById(
     return {
       id: Number(r.id),
       mode: r.mode as PeriscopeMode,
-      tradingDate: r.trading_date as string,
+      tradingDate: toIsoDate(r.trading_date),
       proseText: (r.prose_text as string) ?? '',
       structured: rowToStructuredFields(r),
     };

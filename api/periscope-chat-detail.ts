@@ -24,6 +24,7 @@ import { getDb } from './_lib/db.js';
 import logger from './_lib/logger.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import { periscopeChatDetailQuerySchema } from './_lib/validation.js';
+import { toIsoDate } from './_lib/periscope-db.js';
 import type {
   PeriscopeBias,
   PeriscopeConfidence,
@@ -140,7 +141,7 @@ function parseDetailRow(r: Record<string, unknown>): PeriscopeChatDetailRow {
       : null;
   return {
     id,
-    trading_date: r.trading_date as string,
+    trading_date: toIsoDate(r.trading_date),
     captured_at: r.captured_at as string,
     read_time: r.read_time as string,
     spot_at_read_time: Number(r.spot_at_read_time),

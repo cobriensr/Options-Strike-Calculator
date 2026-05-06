@@ -26,6 +26,7 @@ import { getDb } from './db.js';
 import { generateEmbedding } from './embeddings.js';
 import logger from './logger.js';
 import type { PeriscopeMode } from './periscope-db.js';
+import { toIsoDate } from './periscope-db.js';
 
 const TOP_K = 3;
 
@@ -76,7 +77,7 @@ export async function fetchSimilarPastReads(args: {
       id: Number(r.id),
       mode: r.mode as PeriscopeMode,
       regime_tag: (r.regime_tag as string | null) ?? null,
-      trading_date: r.trading_date as string,
+      trading_date: toIsoDate(r.trading_date),
       prose_text: (r.prose_text as string) ?? '',
       similarity: r.similarity == null ? 0 : Number(r.similarity),
     }));
