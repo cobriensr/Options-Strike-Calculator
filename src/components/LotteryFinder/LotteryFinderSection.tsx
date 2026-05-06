@@ -19,6 +19,17 @@ const PAGE_SIZE = 50;
 /** localStorage keys for persisting user preferences. */
 const SORT_LS_KEY = 'lottery.sortMode';
 const CONVICTION_LS_KEY = 'lottery.convictionFloor';
+const HIDE_LATE_PM_LS_KEY = 'lottery.hideLatePm';
+/**
+ * Late-PM cutoff (CT minute-of-day). Fires whose triggerTimeCt is at
+ * or after this minute are hidden when the filter is on. 14:30 CT —
+ * 30 min before regular-session close — chosen because by that point
+ * there is structurally not enough remaining session for the
+ * cumulative-flow shape to develop a peak + inversion, so the
+ * flow_inversion exit policy can't fire and the fire becomes a coin
+ * flip on theta crush.
+ */
+const LATE_PM_CUTOFF_MIN_OF_DAY = 14 * 60 + 30;
 /**
  * Legacy boolean key (pre-Tier 2 filter). Read on init for migration
  * then ignored — the new key supersedes it.
@@ -232,6 +243,10 @@ export function LotteryFinderSection({
       return legacy === '1' ? 'tier1' : 'all';
     },
   );
+  const [hideLatePm, setHideLatePm] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(HIDE_LATE_PM_LS_KEY) === '1';
+  });
   /** 0-based page index. Reset to 0 whenever a filter or minute changes. */
   const [page, setPage] = useState<number>(0);
 
@@ -247,6 +262,11 @@ export function LotteryFinderSection({
       window.localStorage.setItem(CONVICTION_LS_KEY, convictionFloor);
     }
   }, [convictionFloor]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(HIDE_LATE_PM_LS_KEY, hideLatePm ? '1' : '0');
+    }
+  }, [hideLatePm]);
 
   // Reset to page 0 whenever the result set's identity changes.
   // Otherwise the user could be on page 3, click a filter, and land
@@ -320,6 +340,40 @@ export function LotteryFinderSection({
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
+
+  // Late-PM cutoff is applied client-side: keep `total` and pagination
+  // tied to the server's view (so filter chips and counts remain
+  // accurate to what's in the DB), and only filter the rendered list.
+  // The DOM-Intl conversion handles DST transparently.
+  const ctMinuteOfDay = useMemo(() => {
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Chicago',
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false,
+    });
+    return (iso: string): number => {
+      const parts = fmt.formatToParts(new Date(iso));
+      const h = Number.parseInt(
+        parts.find((p) => p.type === 'hour')?.value ?? '0',
+        10,
+      );
+      const m = Number.parseInt(
+        parts.find((p) => p.type === 'minute')?.value ?? '0',
+        10,
+      );
+      // 24-hour formatter sometimes emits hour=24 at midnight.
+      const hh = h === 24 ? 0 : h;
+      return hh * 60 + m;
+    };
+  }, []);
+  const displayedFires = useMemo(() => {
+    if (!hideLatePm) return fires;
+    return fires.filter(
+      (f) => ctMinuteOfDay(f.triggerTimeCt) < LATE_PM_CUTOFF_MIN_OF_DAY,
+    );
+  }, [fires, hideLatePm, ctMinuteOfDay]);
+  const hiddenLatePmCount = fires.length - displayedFires.length;
 
   // Top tickers by fire count in the displayed page — gives the user
   // an obvious one-click filter dimension without forcing a 50-ticker
@@ -668,6 +722,23 @@ export function LotteryFinderSection({
                 {t.label}
               </button>
             ))}
+            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+            <button
+              type="button"
+              onClick={() => setHideLatePm(!hideLatePm)}
+              className={`${CHIP_BASE} ${
+                hideLatePm ? CHIP_ACTIVE.purple : CHIP_INACTIVE
+              }`}
+              title="Hide fires triggered after 14:30 CT. Late-PM fires often lack enough remaining session for the flow_inversion signal to develop, so they devolve into theta-decay coin flips. Client-side filter — toolbar counts and pagination still reflect the full DB result."
+              aria-pressed={hideLatePm}
+            >
+              hide post-14:30
+              {hideLatePm && hiddenLatePmCount > 0 && (
+                <span className="text-[10px] opacity-70">
+                  −{hiddenLatePmCount}
+                </span>
+              )}
+            </button>
           </div>
 
           {/* Row 5 (conditional): Ticker chips — top tickers in the
@@ -801,6 +872,11 @@ export function LotteryFinderSection({
                     sorted by {sortMode}
                   </span>
                 )}
+                {hideLatePm && hiddenLatePmCount > 0 && (
+                  <span className="ml-2 text-purple-300/80">
+                    ({hiddenLatePmCount} hidden after 14:30 CT)
+                  </span>
+                )}
               </span>
               {/* Pagination — only render when there's more than one page. */}
               {total > PAGE_SIZE && (
@@ -829,7 +905,7 @@ export function LotteryFinderSection({
                 </span>
               )}
             </div>
-            {fires.map((f: LotteryFire) => (
+            {displayedFires.map((f: LotteryFire) => (
               <LotteryRow
                 // Key by chain (stable across polls). Using `f.id`
                 // would change every time a new fire on the same
