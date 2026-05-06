@@ -104,4 +104,47 @@ describe('parseTrailingJsonBlock', () => {
     expect(result).not.toBeNull();
     expect(result?.after).toContain('Trailing words.');
   });
+
+  // Tier 2 review fix: open fence must start a new line. A mid-prose
+  // mention like "use ```json{...}``` to" should not be parsed even
+  // though backward lastIndexOf would otherwise locate the pair.
+  it('returns null when the open fence is not at line start (mid-prose)', () => {
+    // The open fence is preceded by " " (space), not a newline. The
+    // backward walk locates a candidate open/close pair, but the
+    // line-start anchor rejects it.
+    const text = 'The user wrote ```json\n{"spot": 1}\n``` in chat earlier.';
+    expect(parseTrailingJsonBlock(text)).toBeNull();
+  });
+
+  it('accepts an open fence at start-of-text (no preceding newline)', () => {
+    // Symmetric guard: when lastOpen === 0 there is no character
+    // before it, and the anchor must permit that case.
+    const text = '```json\n{"spot": 1}\n```';
+    const result = parseTrailingJsonBlock(text);
+    expect(result).not.toBeNull();
+    expect(result?.body).toBe('{"spot": 1}');
+  });
+
+  // Tier 2 review fix: language-tag overflow. ```jsonl is JSON-Lines,
+  // not the block we asked for. Without this guard the parser would
+  // pick up the prefix match and silently misinterpret it.
+  it('returns null when the open fence has a language-tag overflow (```jsonl)', () => {
+    const text = '```jsonl\n{"spot": 1}\n{"spot": 2}\n```';
+    expect(parseTrailingJsonBlock(text)).toBeNull();
+  });
+
+  it('returns null when the open fence has a non-whitespace tag suffix (```jsonABC)', () => {
+    const text = '```jsonABC\n{"spot": 1}\n```';
+    expect(parseTrailingJsonBlock(text)).toBeNull();
+  });
+
+  it('accepts an open fence followed by whitespace before the newline (```json   \\n)', () => {
+    // Trailing whitespace on the open-fence line is benign — the body
+    // still starts at the next newline. The guard must allow space/tab
+    // between the fence and the newline.
+    const text = '```json   \n{"spot": 1}\n```';
+    const result = parseTrailingJsonBlock(text);
+    expect(result).not.toBeNull();
+    expect(result?.body).toBe('{"spot": 1}');
+  });
 });

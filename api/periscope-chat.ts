@@ -184,6 +184,32 @@ interface CallResult {
   raw: Record<string, unknown>;
 }
 
+/**
+ * Race a promise against a timer (Tier 2 review fix). Anthropic vision
+ * extraction calls are bounded — Pass 1A reads spot+cone, Pass 1B reads
+ * the heat maps — and have no business taking more than 60s. Without a
+ * shorter timeout, a single hung extraction would block on the
+ * SDK-level 720s ceiling and burn most of the function's budget for
+ * the actual analysis call.
+ */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${ms}ms`));
+    }, ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      },
+    );
+  });
+}
+
 async function callModel(
   userContent: Anthropic.Messages.ContentBlockParam[],
   calibrationBlock: string | null,
@@ -333,8 +359,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const keepalive = setInterval(() => {
     try {
       res.write(JSON.stringify({ ping: true }) + '\n');
-    } catch {
-      /* response already closed — clearInterval in finally */
+    } catch (err) {
+      // Tier 2 review fix: keep the failure low-severity (this is just
+      // a keepalive; the real response path's error handler still runs)
+      // but log it so a recurring pattern shows up rather than
+      // disappearing into a silent catch. clearInterval still runs in
+      // the finally block on the main flow.
+      logger.debug({ err }, 'periscope-chat: keepalive write failed');
     }
   }, 30_000);
 
@@ -407,13 +438,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     //
     // Extraction runs in parallel with the calibration fetch and (for
     // intraday/debrief) the parent-read fetch — all three are independent.
+    //
+    // Tier 2 review fix — non-essential context fetches are wrapped in
+    // .catch() so a transient DB / Neon hiccup degrades to "no
+    // calibration" / "no parent chain" instead of failing the whole
+    // submission. The handler downstream already accepts null/empty for
+    // each.
     const parentFetch: Promise<PeriscopeParentRead | null> =
       body.mode !== 'pre_trade' && body.parentId != null
-        ? fetchPeriscopeAnalysisById(body.parentId)
+        ? fetchPeriscopeAnalysisById(body.parentId).catch((err: unknown) => {
+            Sentry.captureException(err);
+            logger.warn(
+              { err, parentId: body.parentId },
+              'periscope-chat: parent fetch failed — treating as missing',
+            );
+            return null;
+          })
         : Promise.resolve(null);
     const parentChainFetch: Promise<ParentChainRow[]> =
       body.mode !== 'pre_trade' && body.parentId != null
-        ? fetchParentChain(body.parentId)
+        ? fetchParentChain(body.parentId).catch((err: unknown) => {
+            Sentry.captureException(err);
+            logger.warn(
+              { err, parentId: body.parentId },
+              'periscope-chat: parent chain fetch failed — continuing without chain',
+            );
+            return [];
+          })
         : Promise.resolve([]);
 
     // Pass 1B inputs: locate gex / charm heat-map images. Skipped when
@@ -431,18 +482,91 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       };
     const hasHeatMaps = gexImg != null || charmImg != null;
 
+    // Tier 2 review fix — Pass 1A and Pass 1B are vision-only extraction
+    // calls and are best-effort (extraction nullability already handled
+    // downstream). Run via Promise.allSettled with a 60s per-call timeout
+    // so a hung Pass 1B can never block Pass 1A from finishing in seconds.
+    // Pass 1A is similarly bounded — if extraction hangs, we'd rather
+    // log + continue with retrieval skipped than burn the function budget.
+    const calibrationBlockP = buildCalibrationBlock(body.mode).catch(
+      (err: unknown) => {
+        Sentry.captureException(err);
+        logger.warn(
+          { err, mode: body.mode },
+          'periscope-chat: calibration block fetch failed — continuing without',
+        );
+        return null;
+      },
+    );
+
     const heatMapFetch: Promise<HeatMapExtraction | null> = hasHeatMaps
       ? extractHeatMapStrikes(heatMapInput, anthropic)
       : Promise.resolve(null);
 
-    const [extraction, heatMaps, calibrationBlock, parentRead, parentChain] =
-      await Promise.all([
-        extractChartStructure({ images: body.images }, anthropic),
-        heatMapFetch,
-        buildCalibrationBlock(body.mode),
-        parentFetch,
-        parentChainFetch,
-      ]);
+    const [
+      [extractionSettled, heatMapSettled],
+      calibrationBlock,
+      parentRead,
+      parentChain,
+    ] = await Promise.all([
+      Promise.allSettled([
+        withTimeout(
+          extractChartStructure({ images: body.images }, anthropic),
+          60_000,
+          'pass1a',
+        ),
+        withTimeout(heatMapFetch, 60_000, 'pass1b'),
+      ]),
+      calibrationBlockP,
+      parentFetch,
+      parentChainFetch,
+    ]);
+
+    const extraction =
+      extractionSettled.status === 'fulfilled' ? extractionSettled.value : null;
+    if (extractionSettled.status === 'rejected') {
+      Sentry.captureException(extractionSettled.reason);
+      logger.warn(
+        { err: extractionSettled.reason, mode: body.mode },
+        'periscope-chat: pass 1A extraction failed/timeout — retrieval will be skipped',
+      );
+    }
+
+    const heatMaps =
+      heatMapSettled.status === 'fulfilled' ? heatMapSettled.value : null;
+    if (heatMapSettled.status === 'rejected') {
+      Sentry.captureException(heatMapSettled.reason);
+      logger.warn(
+        { err: heatMapSettled.reason, mode: body.mode },
+        'periscope-chat: pass 1B heat-map OCR failed/timeout — block omitted',
+      );
+    }
+
+    // Tier 2 review fix — Fix 3: cross-check that the chart's date label
+    // (read by Pass 1A) matches the user-selected trading date. The
+    // parent-trading-date guard below hard-blocks chain mismatches; this
+    // is the lighter cousin for the "user picked the wrong read_date for
+    // this chart upload" case. Sentry-warn only — do NOT block.
+    if (extraction?.chartDate != null && tradingDate !== extraction.chartDate) {
+      logger.warn(
+        {
+          chartDateFromExtraction: extraction.chartDate,
+          tradingDate,
+          readDate: body.read_date,
+          mode: body.mode,
+        },
+        'periscope-chat: extracted chart_date disagrees with trading_date — possible misuploaded chart',
+      );
+      Sentry.captureMessage('periscope-chat: chart_date mismatch', {
+        level: 'warning',
+        tags: { mode: body.mode },
+        extra: {
+          chartDateFromExtraction: extraction.chartDate,
+          tradingDate,
+          readDate: body.read_date,
+        },
+      });
+    }
 
     // Debrief / intraday parent integrity checks. Hard-fail rather than
     // letting Claude proceed without a real parent to anchor against.
@@ -718,8 +842,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Phase 6E: clearInterval at the TOP of the catch so a queued ping
     // can't race the error envelope onto the wire.
     clearInterval(keepalive);
-    Sentry.captureException(err);
-    logger.error({ err, mode: body.mode }, 'periscope-chat unhandled error');
+    // Tier 2 review fix: tag Anthropic failures by class so Sentry
+    // dashboards can split rate-limit / auth / generic-API spikes
+    // independently. The raw exception is still captured so the SDK
+    // class is preserved on the issue page.
+    let kind: 'rate_limit' | 'auth' | 'api_error' | 'unknown' = 'unknown';
+    if (err instanceof Anthropic.RateLimitError) kind = 'rate_limit';
+    else if (err instanceof Anthropic.AuthenticationError) kind = 'auth';
+    else if (err instanceof Anthropic.APIError) kind = 'api_error';
+    Sentry.captureException(err, {
+      tags: { module: 'periscope-chat', kind, mode: body.mode },
+    });
+    logger.error({ err, mode: body.mode, kind }, 'periscope-chat unhandled error');
     done({ status: 500, error: 'unhandled' });
     let errorMsg = err instanceof Error ? err.message : 'Analysis failed';
     if (err instanceof Anthropic.RateLimitError) {

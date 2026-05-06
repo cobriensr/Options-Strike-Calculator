@@ -142,6 +142,16 @@ export function usePeriscopeChat(): UsePeriscopeChatResult {
   const imagesRef = useRef(images);
   imagesRef.current = images;
 
+  // Tier 2 review fix: track parentId in a ref so the auto-link
+  // useEffect can re-check it just before calling setParentId. The
+  // effect short-circuits at the top when parentId is non-null, but
+  // an in-flight fetch can still resolve AFTER the user (or a window
+  // event from PeriscopeChatHistory) sets parentId explicitly — this
+  // guard prevents the in-flight resolve from clobbering an explicit
+  // choice with the auto-link candidate.
+  const parentIdRef = useRef(parentId);
+  parentIdRef.current = parentId;
+
   useEffect(() => {
     return () => {
       // Revoke any preview URLs still mounted at unmount.
@@ -250,6 +260,13 @@ export function usePeriscopeChat(): UsePeriscopeChatResult {
           (r) => r.mode === 'pre_trade' || r.mode === 'intraday',
         );
         if (candidate && typeof candidate.id === 'number') {
+          // Tier 2 review fix: re-check parentIdRef immediately before
+          // setting. The mode/parentId top-of-effect guard runs once
+          // when the effect mounts; a window event ("Debrief →" from
+          // history) firing mid-fetch sets parentId via setParentId,
+          // and we must not clobber that explicit choice with the
+          // auto-link candidate when the fetch resolves.
+          if (parentIdRef.current != null) return;
           setParentId(candidate.id);
         }
       } catch {

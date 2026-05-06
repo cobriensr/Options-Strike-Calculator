@@ -10,7 +10,7 @@
  * presentation only.
  */
 
-import { useCallback, useEffect, useId, useMemo, useRef } from 'react';
+import { useCallback, useId, useMemo, useRef } from 'react';
 import type { ChangeEvent, DragEvent } from 'react';
 import { SectionBox } from '../ui/SectionBox';
 import { usePeriscopeChat } from './usePeriscopeChat.js';
@@ -37,21 +37,6 @@ const TIME_OPTIONS: string[] = (() => {
   }
   return out;
 })();
-
-/**
- * Custom event name dispatched by PeriscopeChatHistory when the user
- * clicks "Debrief this" on a past row. The chat panel listens and
- * pre-fills mode + parentId so the user can immediately attach
- * screenshots and submit. Uses a window event (rather than props /
- * context) because the two panels are sibling lazy-loaded sections
- * — lifting state to App.tsx would couple them across the lazy
- * boundary.
- */
-export const PERISCOPE_DEBRIEF_EVENT = 'periscope:start-debrief';
-
-interface DebriefEventDetail {
-  parentId: number;
-}
 
 // ============================================================
 // Per-kind drag-drop slot
@@ -224,7 +209,6 @@ export default function PeriscopeChat() {
     response,
     error,
     setMode,
-    setParentId,
     setReadDate,
     setReadTime,
     setImage,
@@ -234,22 +218,12 @@ export default function PeriscopeChat() {
   const readDateInputId = useId();
   const readTimeInputId = useId();
 
-  // Listen for "Debrief this" clicks from the history panel. The
-  // event carries a parentId; we flip mode + prefill parentId so the
-  // user just has to drop screenshots and submit. Skipped if a
-  // submission is in flight (don't yank state out from under it).
-  useEffect(() => {
-    function onStartDebrief(e: Event) {
-      const detail = (e as CustomEvent<DebriefEventDetail>).detail;
-      if (!detail || typeof detail.parentId !== 'number') return;
-      if (inFlight) return;
-      setMode('debrief');
-      setParentId(detail.parentId);
-    }
-    window.addEventListener(PERISCOPE_DEBRIEF_EVENT, onStartDebrief);
-    return () =>
-      window.removeEventListener(PERISCOPE_DEBRIEF_EVENT, onStartDebrief);
-  }, [inFlight, setMode, setParentId]);
+  // Note: the "Debrief →" row button in PeriscopeChatHistory was
+  // removed in commit f8256518; the periscope:start-debrief event
+  // listener that pre-filled mode + parentId is no longer dispatched
+  // by anything and was removed in the Tier 2 review fixes. Auto-link
+  // for intraday/debrief modes now lives in usePeriscopeChat's
+  // parent-fetch useEffect.
 
   const stagedCount = Object.values(images).filter((v) => v != null).length;
   const canSubmit = !inFlight && stagedCount > 0;

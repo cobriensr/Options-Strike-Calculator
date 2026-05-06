@@ -78,8 +78,20 @@ function fmtNum(n: number | null): string {
 }
 
 function fmtTime(iso: string): string {
+  // Pin to America/Chicago + en-US (Tier 2 review fix): the rest of the
+  // periscope-chat surface uses CT exclusively (defaultReadDate /
+  // defaultReadTime in usePeriscopeChat.ts) so a system-locale render
+  // here mismatched the picker the user just chose. Pinning keeps the
+  // detail header consistent with the picker regardless of browser TZ.
   try {
-    return new Date(iso).toLocaleString();
+    return new Date(iso).toLocaleString('en-US', {
+      timeZone: 'America/Chicago',
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
   } catch {
     return iso;
   }

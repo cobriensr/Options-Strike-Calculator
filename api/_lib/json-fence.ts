@@ -35,6 +35,15 @@ const CLOSE_FENCE = '```';
 /**
  * Locate the last ```json...``` block in `text` and split the input
  * around it. Returns null when no well-formed block is present.
+ *
+ * Anchoring rules (Tier 2 review fix):
+ *   - The opening fence must start a new line (or sit at start-of-text)
+ *     so prose containing a literal ```json token mid-sentence does
+ *     not get parsed as a block.
+ *   - The character immediately after the opening fence must be a
+ *     newline / carriage-return / horizontal whitespace, so language
+ *     extensions like ```jsonl or ```jsonABC are rejected — those are
+ *     not the JSON block we asked the model for.
  */
 export function parseTrailingJsonBlock(text: string): TrailingJsonBlock | null {
   // Walk backward to find the LAST closing fence, then look behind it
@@ -47,6 +56,29 @@ export function parseTrailingJsonBlock(text: string): TrailingJsonBlock | null {
 
   const lastOpen = text.lastIndexOf(OPEN_FENCE, lastClose - 1);
   if (lastOpen < 0 || lastOpen >= lastClose) return null;
+
+  // Open fence must be at line-start (or start-of-text). A literal
+  // ```json appearing in the middle of a prose sentence — e.g. if the
+  // model echoes user content — is not a code block we asked for and
+  // would otherwise be picked up by the backward walk.
+  if (lastOpen > 0 && text[lastOpen - 1] !== '\n') {
+    return null;
+  }
+
+  // Reject language-tag overflow such as ```jsonl, ```jsonABC. The
+  // character after OPEN_FENCE must be whitespace (newline, CR, space,
+  // tab) before we trust this is the JSON block. Anything else means
+  // the model emitted a different language identifier whose prefix
+  // happens to be `json`.
+  const charAfterFence = text[lastOpen + OPEN_FENCE.length];
+  if (
+    charAfterFence !== '\n' &&
+    charAfterFence !== '\r' &&
+    charAfterFence !== ' ' &&
+    charAfterFence !== '\t'
+  ) {
+    return null;
+  }
 
   // Body starts after the first newline following ```json. Without that
   // newline we cannot reliably determine the body slice and reject the

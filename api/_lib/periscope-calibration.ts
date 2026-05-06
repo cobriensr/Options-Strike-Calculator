@@ -29,6 +29,7 @@
 
 import { getDb } from './db.js';
 import logger from './logger.js';
+import { Sentry } from './sentry.js';
 import type { PeriscopeMode } from './periscope-db.js';
 
 const TOP_N = 3;
@@ -74,7 +75,13 @@ export async function fetchCalibrationExamples(
       prose_text: (r.prose_text as string) ?? '',
     }));
   } catch (err) {
+    // Tier 2 review fix: surface the failure to Sentry alongside the
+    // log so silent calibration outages aren't invisible. Behavior
+    // unchanged — calibration is best-effort and we still return [].
     logger.error({ err, mode }, 'fetchCalibrationExamples failed');
+    Sentry.captureException(err, {
+      tags: { module: 'periscope-calibration', mode },
+    });
     return [];
   }
 }
