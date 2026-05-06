@@ -70,7 +70,7 @@ interface DateEntry {
   debriefs: number;
 }
 
-type ModeFilter = 'all' | 'read' | 'debrief';
+type ModeFilter = 'all' | 'forward' | 'debrief';
 
 // ============================================================
 // Formatters & style maps
@@ -148,14 +148,14 @@ function modeTint(mode: PeriscopeRowMode): string {
   return 'border-emerald-900/30 bg-emerald-950/10';
 }
 
-/** Treat pre_trade + intraday as the legacy `read` filter bucket. */
-function isReadMode(mode: PeriscopeRowMode): boolean {
+/** Treat pre_trade + intraday as forward-looking reads (vs. backward debriefs). */
+function isForwardMode(mode: PeriscopeRowMode): boolean {
   return mode === 'pre_trade' || mode === 'intraday';
 }
 
 const MODE_TABS: Array<{ key: ModeFilter; label: string }> = [
   { key: 'all', label: 'All' },
-  { key: 'read', label: 'Reads' },
+  { key: 'forward', label: 'Reads' },
   { key: 'debrief', label: 'Debriefs' },
 ];
 
@@ -163,7 +163,7 @@ function modeTabStyle(active: boolean, mode: ModeFilter): string {
   if (!active) {
     return 'border-edge text-muted hover:text-primary border bg-transparent';
   }
-  if (mode === 'read') {
+  if (mode === 'forward') {
     return 'border-emerald-700/60 bg-emerald-900/30 text-emerald-200 border';
   }
   if (mode === 'debrief') {
@@ -267,14 +267,16 @@ export default function PeriscopeChatHistory() {
   );
 
   // Apply mode filter + annotation overrides to the fetched rows.
-  // The legacy 'read' tab now buckets pre_trade + intraday so existing
-  // history continues to filter sensibly without expanding the tab UI.
+  // The 'forward' tab buckets pre_trade + intraday (forward-looking reads)
+  // and is rendered as "Reads" in the UI for continuity with the original
+  // 2-mode vocabulary; the internal key uses 'forward' to reflect what the
+  // bucket actually contains under the 3-mode lifecycle.
   const filtered = useMemo(() => {
     return items
       .filter((it) => {
         if (modeFilter === 'all') return true;
         if (modeFilter === 'debrief') return it.mode === 'debrief';
-        return isReadMode(it.mode);
+        return isForwardMode(it.mode);
       })
       .map((it) => {
         const o = annotationOverrides[it.id];
@@ -337,7 +339,7 @@ export default function PeriscopeChatHistory() {
               >
                 {dates.map((d) => {
                   const count =
-                    modeFilter === 'read'
+                    modeFilter === 'forward'
                       ? d.reads
                       : modeFilter === 'debrief'
                         ? d.debriefs
@@ -390,7 +392,7 @@ export default function PeriscopeChatHistory() {
               No{' '}
               {modeFilter === 'all'
                 ? 'rows'
-                : modeFilter === 'read'
+                : modeFilter === 'forward'
                   ? 'reads'
                   : 'debriefs'}{' '}
               for {fmtTradingDate(selectedDate)}.
@@ -492,7 +494,7 @@ export default function PeriscopeChatHistory() {
                     </p>
                   )}
                 </button>
-                {isReadMode(item.mode) && (
+                {isForwardMode(item.mode) && (
                   <button
                     type="button"
                     onClick={() => emitStartDebrief(item.id)}
