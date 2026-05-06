@@ -58,6 +58,8 @@ __snapshots__/
 !.claude/skills/delta-pressure/SKILL.md
 !.claude/skills/gamma/SKILL.md
 !.claude/skills/periscope/SKILL.md
+!.claude/skills/periscope/references
+!.claude/skills/periscope/references/**
 .vercel
 .env*.local
 .clone/
