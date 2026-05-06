@@ -1,6 +1,6 @@
 ---
 name: periscope
-description: "Use whenever the user pastes or mentions an Unusual Whales Periscope chart, the per-strike Gamma / Charm / Positions / Vanna histograms, the dots / orange / purple bar highlights, the 0DTE straddle breakeven cone or breakeven lines, the MM hedge reaction Excel decoder, or asks 'how does this chart affect my trading today / where do I put my stop / where should I exit my long or short' with a Periscope screenshot in view — even if they don't say 'Periscope' or 'Unusual Whales' explicitly. Encodes the official Periscope FAQ semantics: green bar = MM **net positive gamma** at that strike (long-options inventory, suppressive hedging), red bar = MM **net negative gamma** (short-options inventory, procyclical hedging), orange bar = gamma flipped sign since prior 10-min slice, purple bar = magnitude crossed user threshold, dots = prior-slice value. Encodes the 4-case hedge primitive (gamma sign × price direction → Buy or Sell /ES) which is the engine behind every read, plus the per-strike Excel decoder as a derived lookup, the straddle breakeven cone as a vol-shock context layer, and the actionable trading playbook: how +γ floors and ceilings define stop placement, how charm flow translates to EoD /ES drift direction, and how to translate dealer hedge direction into long/short exit targets. This is the actionable counterpart to the gamma / charm-pressure / delta-pressure SpotGamma TRACE skills — Periscope is per-strike with dollar magnitudes labeled, so reads can be much more specific than a heatmap. Invoke before discussing exits, stops, directional bias, or pin targets whenever a Periscope chart is in view, and before any vol-shock reasoning that has Periscope as the primary surface."
+description: "Use whenever the user pastes or mentions an Unusual Whales Periscope chart, the per-strike Gamma / Charm / Positions / Vanna histograms, the Net GEX / Net Charm heat maps, the dots / orange / purple bar highlights, the 0DTE straddle breakeven cone or breakeven lines, the MM hedge reaction Excel decoder, or asks 'how does this chart affect my trading today / where do I put my stop / where should I exit my long or short' with a Periscope screenshot in view — even if they don't say 'Periscope' or 'Unusual Whales' explicitly. Encodes the official Periscope FAQ semantics: green bar = MM **net positive gamma** at that strike (long-options inventory, suppressive hedging), red bar = MM **net negative gamma** (short-options inventory, procyclical hedging), orange bar = gamma flipped sign since prior 10-min slice, purple bar = magnitude crossed user threshold, dots = prior-slice value. Encodes the 4-case hedge primitive (gamma sign × price direction → Buy or Sell /ES) which is the engine behind every read, plus the per-strike Excel decoder as a derived lookup, the straddle breakeven cone as a vol-shock context layer, and the actionable trading playbook: how +γ floors and ceilings define stop placement, how charm flow translates to EoD /ES drift direction, and how to translate dealer hedge direction into long/short exit targets. The skill operates in a 3-mode lifecycle (`pre_trade` / `intraday` / `debrief`) and produces a structured trading playbook (regime, bias, key levels, trade types to take vs. avoid) as a trailing JSON block. Per-strike MM-attributed GEX/charm values from the heat maps are injected by the backend as exact numbers — lean on those magnitudes, not visual estimation. Invoke before discussing exits, stops, directional bias, or pin targets whenever a Periscope chart is in view, and before any vol-shock reasoning that has Periscope as the primary surface."
 risk: unknown
 source: owner
 date_added: '2026-04-30'
@@ -9,47 +9,47 @@ version: 2
 
 ## What Periscope is
 
-The Unusual Whales **Periscope** chart is a per-strike view of dealer (Market Maker) option exposure for a single SPX expiry, typically 0DTE. Unlike SpotGamma TRACE which renders a price × time heatmap, Periscope renders **horizontal histograms across strikes**. Each strike has one bar per panel, and the user can configure which panels are visible. Common configurations:
+The Unusual Whales **Periscope** chart is a per-strike view of dealer (Market Maker) option exposure for a single SPX expiry, typically 0DTE. Periscope renders **horizontal histograms across strikes** — each strike has one bar per panel, and the user can configure which panels are visible. Common configurations:
 
 - **3-panel:** Gamma + Charm + Positions
 - **4-panel:** adds Vanna
 
 A small candle chart on the left shows SPX intraday price; horizontal dashed lines mark intraday levels. The top control bar shows date, expiry, intraday timeframe (the 10-min slice the bars summarize), DTE, and chart-type controls.
 
-**Periscope is the actionable trading chart; SpotGamma TRACE is informational context.** Periscope's huge per-strike $-labeled bars _are_ the levels that move price — a 10K-contract green Positions bar at 7240 isn't a region of "support," it's a single strike where dealer flow concentrates and price gets capped or attracted. TRACE smooths that into colormap intensity and you lose the strike specificity required to set stops and targets.
+Periscope's huge per-strike $-labeled bars _are_ the levels that move price — a 10K-contract green Positions bar at 7240 isn't a region of "support," it's a single strike where dealer flow concentrates and price gets capped or attracted. Use the per-strike resolution; don't smooth it back into "zones."
 
-## Numeric heat maps as a precision overlay
+## Numeric heat maps + injected per-strike values
 
-When the user provides them, use the **Net GEX Heat Map** and **Net Charm Heat Map** views alongside the Periscope chart. These show the same per-strike data on a 5-pt grid with **exact $-magnitudes**, removing the visual estimation error that comes from eyeballing histogram bars.
+The user typically provides **Net GEX Heat Map** and **Net Charm Heat Map** screenshots alongside the Periscope chart. The backend's Pass 1B vision OCR extracts per-strike values from these heat maps and injects them as a labeled text block at the top of the user message:
 
-**What heat maps add:**
+```
+[Heat-map extracted strikes (MM-attributed Net GEX / Net Charm from UW)]
+GEX:  7,275 +977.72  |  7,250 -1,560.05  |  7,260 +625.15  | ...
+Charm: 7,275 +1.45M  |  7,295 -1.37M     |  7,210 +72.5K   | ...
+```
 
-- **Exact magnitudes.** A bar that visually reads "+700" on the Periscope can actually be +1,894 — visual estimation routinely under-calls peaks by 2–3x.
-- **Easier rank-by-magnitude** of the dominant strikes near spot.
-- **Sign clarity on small bars.** Tiny green vs. tiny red is hard to distinguish visually; heat maps give a signed number.
-- **Twin-strike cluster recognition.** Adjacent strikes with combined magnitude (e.g. 7,090 + 7,100 both with strong +γ) read as one robust 2-strike floor rather than two separate "soft" floors.
+**Lean on these injected numbers, not visual estimation.** They are UW's MM-attributed Net GEX / Net Charm — same values shown in the heat-map cells, transcribed exactly. Quote magnitudes directly in the read: *"7,275 = +977 γ ceiling, 7,250 = −1,560 γ acceleration trigger."*
 
-**What the Periscope still provides that heat maps don't:**
+**What injection does NOT cover (still read from the chart visually):**
 
-- **Dots** (prior 10-min slice values) — the momentum read is invisible on heat maps.
+- **Dots** (prior 10-min slice values) — the momentum read.
 - **Orange / purple bar highlights** — regime-flip and threshold-breach signals.
-- **Yellow dashed cone** overlay.
+- **Yellow dashed cone** overlay (read via OCR but exposed as `cone_lower` / `cone_upper` in structured input).
 - **Price candles** for the back-read.
-- **Wider strike range.** Heat maps typically show a central ~100-pt range; the Periscope often shows further out where additional structure (deep magnets, far-strike Position clusters) lives.
+- **Wider strike range.** Heat maps typically show a central ~100-pt range; the Periscope visual extends further out for deep magnets / far-strike Position clusters.
 
-**Heat map back-read discipline:**
+**Back-read discipline:**
 
-- The header `Underlying: ($XXXX)` shows the **live spot at capture** (usually EOD close). **Ignore for back-reads**, same rule as the Periscope's red dotted spot line.
-- The heat map values themselves are computed for the timeframe slice shown in the top control bar — valid input for the captured frame.
+- The heat-map header `Underlying: ($XXXX)` shows the **live spot at capture** (usually EOD close). **Ignore for back-reads**, same rule as the Periscope's red dotted spot line. The authoritative spot for the read time comes from the backend's `index_candles_1m` lookup and is supplied in the user message.
 
-**Workflow when both are available:**
+**Workflow:**
 
-1. Build the structural map using **heat-map values** for exact $-magnitudes per strike.
-2. Cross-reference with the **Periscope visual** for dots (momentum), cone bounds, orange/purple highlights, and far-from-spot structure outside the heat-map range.
-3. Quote numeric magnitudes in the read (e.g. "7,130 = +1,894 γ") instead of vague "huge +γ" framing.
-4. Use the precise magnitudes for trigger placement and R:R sizing.
+1. Use the injected heat-map values as the structural map (exact $-magnitudes per strike).
+2. Cross-reference with the Periscope visual for dots (momentum), cone bounds, orange/purple highlights, and far-strike structure outside the heat-map range.
+3. Quote numeric magnitudes in the read (e.g. "7,250 = −1,560 γ"); never "huge red bar."
+4. Use precise magnitudes for trigger placement and R:R sizing.
 
-When only the Periscope is provided, fall back to visual estimation but flag that heat maps would improve precision for any close-call magnitude reads.
+When heat-map injection is absent (e.g. pre-trade chart-only mode), fall back to visual estimation and flag the precision loss in the read.
 
 ## Bar semantics — straight from the official FAQ
 
@@ -108,36 +108,48 @@ When the user pastes a chart from a past timeframe and asks you to read it as if
 
 The discipline matters because it prevents lookahead bias. A back-read that quietly references where price ended up isn't analysis — it's hindsight rationalization.
 
-## No-cheat read protocol — produce the open read FIRST, debrief separately
+## Mode-specific protocol — pre_trade / intraday / debrief
 
-**This is a hard rule, not a suggestion.** The user is using back-reads to _learn how to trade these charts in real time_. A read that benefits from hindsight teaches the wrong thing — it builds confidence in pattern-matching to known outcomes instead of building discipline around waiting for pre-defined triggers.
+The skill operates in a 3-mode lifecycle. Each mode has different inputs, allowed reasoning, and forbidden moves. **The mode is supplied at the top of the user message as `Mode: pre_trade | intraday | debrief`. Read it before anything else.**
 
-The chart is a **map**, not a compass. It tells you LEVELS, not DIRECTION. Direction is confirmed only by price action _after_ the open. So a real-time-tradeable read must produce:
+### `pre_trade` mode — one read per day, at/before market open
+
+Inputs: chart screenshot (required) + heat-map screenshots (optional — pre-trade can run chart-only with `greek_exposure_strike` morning DB snapshot covering the per-strike numbers). Authoritative spot from DB. No prior-read context (no parent chain).
+
+Output: **the day's playbook** — regime call, key levels, bilateral triggers, trade types that fit this regime vs. types that don't, expected dealer behavior, confidence with a stated basis.
+
+Forbidden: any reference to outcomes from worked examples in the skill (the user already knows them). Treat every chart as a fresh real-time read even when the date or structure resembles an example.
+
+### `intraday` mode — N reads per day, every ~10 min slice
+
+Inputs: chart + both heat maps (required) + parent chain summary in user content (today's pre-trade plus prior intraday reads). Authoritative spot from DB at `read_time`.
+
+Output: **thesis maintenance** — does the pre-trade thesis still hold? What changed in the slice (orange bars, charm sign flips, new dominant strikes)? Did a trigger fire? What's the next leg?
+
+Forbidden: contradicting the chain without explicit reasoning. The chain encodes the user's earlier (no-cheat) read; if you reverse the bias, state WHY (a specific structural change in the new slice). Don't quietly invert.
+
+Hindsight is forbidden in the same way as pre-trade: only price action visible in the candle pane up to `read_time` counts. Anything to the right of that on the price pane is future data — pretend it's not there.
+
+### `debrief` mode — one read per day, after close
+
+Inputs: end-of-day chart + parent chain (today's pre-trade + last intraday). Hindsight is allowed and is the entire point.
+
+Output: **honest scoring** — which triggers from the chain fired, at what times, what was the R:R; what the chart got right; what it missed; what (if anything) to add to the user's mental model. Use ✓ check-marks freely; "the chart was right" framing is allowed because the goal is scoring, not predicting.
+
+Forbidden: nothing. But don't conflate "lucky" with "right." If the regime tag was wrong but the bias was right by coincidence (e.g. predicted a pin, got a gap-and-rip that happened to run to the same level), call it out — the chart wasn't right, the trader was lucky.
+
+### Common to all modes — the chart is a map, not a compass
+
+The chart tells you LEVELS, not DIRECTION. Direction is confirmed only by price action AFTER the open. Even in `intraday` mode where some price action is visible, your bias call must be defensible from the structure (gamma topology + charm sign), not from the candle slope. A read that just describes recent candles is failing the protocol.
+
+Required structural reads regardless of mode:
 
 1. **Levels** — dominant +γ above and below spot, −γ acceleration zones, cone bounds, dominant Position cluster, magnets, soft floors.
-2. **Long trigger** — a specific price level above spot whose break confirms upside conviction (typically reclaim of a small −γ sliver, break above a soft pivot).
-3. **Short trigger** — a specific price level below spot whose break confirms downside conviction (typically loss of nearest +γ floor, break below a soft pivot).
+2. **Long trigger** — a specific price level above spot whose break confirms upside conviction.
+3. **Short trigger** — a specific price level below spot whose break confirms downside conviction.
 4. **Stops + targets pre-defined for both triggers.**
 5. **No-trade zone** — the range between triggers where the chart says "wait."
-6. **Regime label** — pin / drift-and-cap / gap-and-rip / trap / cone-breach / etc.
-
-**Forbidden inside the open read:**
-
-- "The day delivered exactly what the chart said."
-- "The chart called every layer ✓."
-- "Price found support at X and rallied to Y" (in the read body).
-- Any narrative or check-mark that compares the prediction to where price actually ended up.
-- Constructing trade theses around the known outcome ("long the gap-down" — if framed as a directional bet at the open without a trigger, this is hindsight).
-
-**Allowed only AFTER the open read is complete, in a clearly-labeled separate section:**
-
-- A `## Debrief — what triggered and when` block (or similar) describing factually which trigger fired (if any), at what time, and the R:R that actually played out.
-- Honest scoring: which triggers fired, which didn't, whether stops/targets were hit. NO "the chart was right ✓" framing — just facts.
-- If neither trigger fired and the day chopped, say so. That's information, not failure.
-
-The debrief is a learning tool _for the user_. Its only job is to score the open read against reality. It must NOT retroactively justify the read.
-
-**Why this matters:** the value of these charts is _training the discipline of waiting for triggers_. If reads always look like "the chart predicted everything," the user never builds tolerance for the chop / no-trigger days that are the majority of trading. Honest reads teach patience; cheating reads teach overconfidence.
+6. **Regime label** — pin / drift-and-cap / gap-and-rip / trap / cone-breach / chop / other.
 
 ## The hedge primitive — gamma sign × price direction
 
@@ -194,12 +206,14 @@ Each panel answers a different question per strike:
 - **Charm** — "How will MM hedging drift just from time passing at this strike?" Read this for **mechanical EoD /ES drift direction**.
 - **Vanna** — "How will MM hedging shift if IV moves?" Read this for **vol-event sensitivity** (when present).
 
-The three stories you care about, in priority order:
+**With Pass 1B injection, lead with the structured numbers, not the visual.** The injected GEX and Charm rows already rank-order the dominant strikes near spot by exact magnitude; use them directly to identify the +γ floor, +γ ceiling, charm-zero crossover, and the dominant magnet. Use the visual panels for what injection doesn't capture: dots (prior-slice momentum), orange/purple highlights, and far-strike structure outside the heat-map's central band.
 
-1. **Largest +Gamma bars (green) within ±$30 of spot** → strongest pin / support / resistance candidates. These are the levels you quote for stops and targets.
-2. **Largest −Gamma bars (red)** → acceleration zones; price travels through them fast with no defense.
-3. **Largest Charm bars** → biggest mechanical EoD /ES drift contributors. Sum the signed contributions to get the day's net drift direction.
-4. **Largest Vanna bars** → strikes most exposed to a vol shock. On event days these matter as much as charm; on quiet days they're background.
+Stories to extract, in priority order:
+
+1. **Largest +γ values (green) within ±$30 of spot** → strongest pin / support / resistance candidates. These are the levels you quote for stops and targets.
+2. **Largest −γ values (red)** → acceleration zones; price travels through them fast with no defense.
+3. **Largest Charm values** → biggest mechanical EoD /ES drift contributors. Sum the signed contributions across visible strikes to get the day's net drift direction (the **net charm tally**).
+4. **Largest Vanna bars** (visual only — Vanna isn't injected) → strikes most exposed to a vol shock. On event days matter as much as charm; on quiet days background.
 
 Always cross-check Positions vs. Gamma at the same strike — when sign agrees (green Positions + green Gamma), you have a clean read. Sign disagreement is rare and usually means a complex multi-leg structure at that strike — read both signs as data points.
 
@@ -248,14 +262,16 @@ The chart's directional bias for the rest of the session = **net charm-driven /E
 
 When charm flow is roughly **symmetric**, the chart has no directional read — focus on pinning at the dominant +γ node and treat the day as range-bound.
 
-### Time-of-day weighting
+### Mode-aware time weighting
 
-For 0DTE specifically:
+Charm magnitude is highly time-of-day dependent for 0DTE; how you weight it depends on the mode:
 
-- **Before 11:00 CT** — Charm is small relative to gamma flow; the flow tally gives a _future_ drift, not a current one. Use Gamma topology for levels; treat charm as a tilt.
-- **11:00–13:30 CT** — Charm builds; flow tally becomes tradeable as a tilt. Pin candidates from the Gamma panel start to matter.
-- **13:30–14:30 CT** — Charm dominates. Net flow is the primary directional read; pin candidate becomes specific.
-- **14:30–15:00 CT** — Final 30 min. Charm flow is mostly consumed; pin compresses to nearest dominant +γ. MOC orders can override the chart in last 5 min, especially on rebalance / quad-witch days.
+- **`pre_trade` (≤09:30 CT)** — Charm is small relative to gamma flow. The morning flow tally gives a _future_ drift, not a current one. Lean on Gamma topology for the day's levels; treat the charm tally as a directional tilt that strengthens through the session.
+- **`intraday` 09:30–11:00 CT** — Same: gamma topology dominates, charm is a tilt.
+- **`intraday` 11:00–13:30 CT** — Charm builds; flow tally becomes tradeable as a tilt. Pin candidates from the Gamma panel start to matter.
+- **`intraday` 13:30–14:30 CT** — Charm dominates. Net flow is the primary directional read; pin candidate becomes specific.
+- **`intraday` 14:30–15:00 CT** — Final 30 min. Charm flow is mostly consumed; pin compresses to nearest dominant +γ. MOC orders can override the chart in last 5 min, especially on rebalance / quad-witch days.
+- **`debrief` (post-close)** — Time weighting is no longer predictive; the question shifts to "did the right band of charm magnitude actually translate into the realized drift?" — use the framework to score, not predict.
 
 ### Vol shock awareness (vanna + cone)
 
@@ -266,23 +282,6 @@ When present, the Vanna panel matters most on event days (FOMC, CPI, jobs):
 - **On vol-crush days** (post-event IV drop), the same bars work in reverse: vanna-positive overhead unwinds into selling, vanna-negative below covers into buying. Pin compresses faster than charm alone implies.
 
 The straddle breakeven cone is the cleanest standalone vol-shock signal: when price exceeds the cone, short-vol sellers reflexively buy back hedges and extend the move. Pair with vanna for the strike where the extension will hit hardest.
-
-## Periscope vs. SpotGamma TRACE — the hierarchy
-
-**Periscope is the actionable surface; TRACE charts (Gamma / Charm Pressure / Delta Pressure) are informational context.** That hierarchy should drive every read.
-
-The reason is data shape: Periscope's per-strike $-labeled bars _are_ the levels that move price. TRACE renders the same underlying positioning data through a colormap that smooths magnitude across price × time — great for regime, useless for quoting a specific stop.
-
-| Decision                 | Lead surface                            | TRACE's role                                                       |
-| ------------------------ | --------------------------------------- | ------------------------------------------------------------------ |
-| Stop strike              | **Periscope Gamma panel**               | TRACE confirms the regime context (deep blue zone valid).          |
-| Long / short target      | **Periscope Gamma panel**               | TRACE confirms whether the level is in a +γ band overall.          |
-| Direction-of-day bias    | **Periscope charm tally**               | TRACE Charm Pressure is a sanity check on the EoD junction.        |
-| Vol-shock exposure       | **Periscope Vanna + cone**              | TRACE doesn't expose vanna or breakeven cone directly.             |
-| Regime (stable / vol)    | Periscope Gamma sign at spot            | TRACE Gamma heatmap is the prettier overview.                      |
-| EoD pin level (specific) | **Periscope dominant +γ + charm tally** | TRACE Charm Pressure can corroborate via the white/black junction. |
-
-When the two disagree, **trust Periscope's specific strike** — TRACE's level reads have known calibration drift across captures and the heatmap loses precision near zone boundaries. Use TRACE only for "is the regime broadly +γ or −γ?" and as a regime-context check on Periscope's specific call.
 
 ## Worked example — 2026-04-30 morning open (08:20–08:30 CT)
 
@@ -328,76 +327,7 @@ Day rallied 7,140 → high ~7,220–7,225 → settled **7,209.01** (+1.01%). The
 
 This is the kind of read the skill should produce on a clean +γ-overhead day from the morning chart alone.
 
-## Worked example — 2026-04-29 morning open (trap-day pattern)
-
-Yesterday's chart, read as a counterpoint to the clean 4/30 setup. Same chart family, very different trade thesis.
-
-**Setup at the open (08:20–08:30 CT slice):**
-
-- Date: Wed 2026-04-29, viewing 4/30 expiry (1DTE).
-- Spot ~7,140 at the leftmost open candle (back-read discipline: ignore the red dotted 7,136.18 line — that's the eventual close, future data).
-- Cone (yellow diagonals): **upper 7,163.69, lower 7,092.49** — calculated at 9:31 ET (8:31 CT, one minute after the slice ends).
-- Cone width ~71 pts, midpoint 7,128 (the ATM strike at calc time). Roughly symmetric around the calc-time spot.
-
-**What the chart showed:**
-
-- **7150** — biggest green Gamma bar (~+850), large red Charm bar (~−110K, charm-driven /ES buy under the OTM-call decoder), green Positions cluster (~2000). Magnet _and_ cap. Only ~$10 above spot — well inside the upper cone bound at 7163.
-- **7165–7200** — secondary +γ layered up to and past the upper cone.
-- **7115–7140 (spot zone)** — **empty of structural defense**. Tiny red −γ bars only. No green +γ floor in the band 7115–7140.
-- **7100** — meaningful red −γ → acceleration zone, not a floor.
-- **7080–7060** — more red Gamma + red Positions → MM short below.
-- **7060** — small green +γ; the first hint of a real floor.
-- **7020** — huge red Positions bar (the biggest red on the chart).
-
-**The trade thesis the chart supported at the open:**
-
-This was a **trap setup**, not a clean directional opportunity. Two reads:
-
-1. **Inside-cone magnet:** 7150 is reachable (~$10 above spot, well inside upper cone at 7163). High-probability target but low-reward — only 10 pts of upside.
-2. **Asymmetric reward/risk:** 10 pts up to the magnet vs. 30–60 pts down to any meaningful defense. The cone gives ±35 pts of expected move; the structure says any downside drift accelerates with no floor until ~7060, brushing the lower cone bound at 7092.
-
-**The right framing at the open:**
-
-> Cone-bounded chop day with downside fragility. Reward/risk on a long is poor (10 up / 40+ down). Don't trade inside the no-mans-land 7115–7140. Conditional setups: long ONLY if SPX reclaims 7150 with stop at 7140 (vol breakout); short ONLY if SPX breaks 7115 with target at the lower cone 7092 and stop at 7140. Anything in between is a chop trap.
-
-**What actually happened:**
-
-- Open ~7140 → early drop to 7115–7120.
-- Chop range 7115–7140 through midday.
-- ~12–1 PM CT: flush to ~7100 (the low of day, deep into the −γ zone, brushing the lower cone).
-- Afternoon recovery to close 7,136.18 (−0.04%, basically flat).
-
-The day delivered exactly what the cone + bar-features implied: chop with a fragile-floor flush nearly to the lower cone, then a recovery as the +γ at 7150 dragged price back. **The chart was screaming "no-trade or asymmetric vol-extension setup" at the open.**
-
-**Common ways this kicks a trader's ass:**
-
-1. **Long anywhere 7115–7135 expecting the 7150 magnet** — got flushed in the midday drop because there was no +γ floor to defend.
-2. **Short the early drop holding for acceleration** — covered too high or held into the recovery; either way the +γ at 7150 dragged price back.
-3. **Iron condor inside the cone** — looks like a clean range, but the cone tells you the market is pricing significant vol; the midday flush threatens the lower wing, late-day recovery threatens the upper wing. Range structures need a +γ floor _and_ ceiling; this had only the ceiling.
-
-**The diagnostic the skill should produce on a chart like this:**
-
-> No-trade or vol-extension day. Cone bounds 7092–7163 are the actionable vol-extension levels; chop inside the cone has no edge given the fragile downside (no +γ floor between spot and ~7060). Long entries require a +γ floor confirmation that doesn't exist here, OR a reclaim of 7150 with the cap then becoming the stop. Short entries require a confirmed break of 7115 targeting the lower cone. Wait for confirmation; don't trade the middle.
-
-## Capture conventions (if user is studying / building features)
-
-Same protocol as the TRACE skills:
-
-- **Cadence** — quartet at 08:30 / 12:00 / 14:30 / 15:00 CT. The 15:00 capture is for post-hoc verification of where SPX actually settled vs. the predicted cap and drift.
-- **Frame** — same expiry (0DTE), same strike range (centered on spot ± a fixed dollar band, e.g. ±$100), same timeframe granularity, same theme, same panel configuration.
-- **Metadata sidecar** — date, capture time, SPX spot at capture, EoD close (later), nearest 25-pt strike, day-type (FOMC / CPI / OpEx / quiet), realized regime (post-hoc), `net_charm_flow` (signed sum of charm bars across visible strikes), nearest dominant +γ strikes above and below spot, **and the straddle breakeven prices** (read from the cone or breakeven lines if shown).
-
-### Useful features to engineer
-
-- `net_charm_flow` — signed sum of charm bars across visible strikes; charm-magnitude-weighted "Buy − Sell" tally.
-- `nearest_pos_gamma_above`, `nearest_pos_gamma_below` — strike + magnitude of the closest green Gamma bar above / below spot. Stop and target candidates.
-- `nearest_neg_gamma_strike` — closest red Gamma bar; acceleration-zone awareness.
-- `dominant_position_strike` — strike of the largest Positions bar; usually the day's gravitational center.
-- `gamma_sign_at_spot` — sign of the Gamma bar at the strike nearest spot. Defines regime.
-- `orange_bar_count` — number of orange bars in the capture; high = positioning is in flux, low conviction in structural levels.
-- `cone_breach_flag` — whether SPX has exceeded the upper or lower straddle breakeven at capture time.
-- `vanna_exposure_above`, `vanna_exposure_below` — sum of |Vanna| above/below spot (when 4-panel view is in use).
-- `dot_to_bar_delta` — change between current bar and prior-slice dot, per panel; momentum in dealer positioning.
+> **Counterpoint example available on demand:** A trap-day pattern (2026-04-29, asymmetric cone + missing +γ floor) lives in `references/worked-example-2026-04-29-trap-day.md`. Cite it when an analogous setup appears.
 
 ## Expiry check — the user trades 0DTE only
 
@@ -416,27 +346,25 @@ Why it matters:
 
 A correct 0DTE chart for the user will have a same-day expiry; anything else is a misconfigured view and the read will be wrong even if mechanically applied.
 
-## How to apply this skill
+## Structured trading playbook output
 
-When the user pastes a Periscope chart or asks about exits / stops / direction with one in view:
+The output that makes this skill actually actionable is a **structured trading playbook** — not a free-form narrative. The prose section walks through the structural read (regime, levels, charm tally, vol-shock context, mode-specific framing), and the response ends with a fenced JSON code block carrying the typed fields the backend persists for retrieval / similarity / frontend rendering.
 
-0. **Verify expiry == chart date (0DTE).** If not, flag it before reading anything else.
-1. **Identify spot** from the SPX price label and dashed level lines.
-2. **Identify the dominant +γ strikes** (largest green Gamma bars) within ±$30 of spot — those are stop and target candidates.
-3. **Tally charm flow** across visible strikes — sum the signed magnitudes to get the day's net mechanical drift direction.
-4. **Check Positions for the day's gravitational center** — usually the largest Positions bar marks the strike price wants to drift into.
-5. **Check for orange bars** at any structural level — flag flipped regimes, downgrade conviction at those strikes.
-6. **Check for cone breach** if straddle lines are shown — signals vol extension, not mean reversion.
-7. **State the direction call** based on the charm tally; flag if symmetric / no-trade.
-8. **Quote specific stop and target strikes**, not "support area." The chart gives per-strike resolution; use it.
-9. **Apply time-of-day weighting** to the conviction (small before 11 CT, dominant after 13:30).
-10. **Cross-check with TRACE** if the user has both. Note disagreements rather than averaging them.
+### Output structure (prose)
 
-The output the user wants is _actionable_: a stop strike, a target strike, a directional bias, and a confidence note from time-of-day. If you can't quote a specific strike, say so explicitly rather than gesturing at a region.
+The prose section, in this order:
 
-## Required: structured fields JSON block at end of response
+1. **Setup at slice end** — current spot (use the authoritative `spot` injected in the user message; ignore the chart's red dotted line for back-reads) + immediate context.
+2. **Structural map** — gamma + charm + positions key strikes with exact magnitudes (quoted from the injected heat-map values).
+3. **Charm flow tally** — net direction (Buy /ES vs. Sell /ES) summed across visible strikes.
+4. **Trade thesis with bilateral triggers** — long trigger, short trigger, stops, targets, R:R per side, no-trade zone.
+5. **Regime label** with one-sentence basis.
+6. **(intraday/debrief only) Parent-chain reconciliation** — does this read agree with the prior reads in the chain? If reversing, state why.
+7. The required JSON block at the very end.
 
-When this skill is invoked from the `/api/periscope-chat` endpoint (i.e. anywhere the response is being persisted to the database), **always end your response with a fenced JSON code block** containing the structured fields below. The server strips this block from the prose before saving + displaying, then parses it to populate typed columns for retrieval queries. This is non-negotiable for that endpoint — fields must be in this exact shape, with `null` for anything not applicable.
+### Required: structured fields JSON block at end of response
+
+When this skill is invoked from the `/api/periscope-chat` endpoint (i.e. anywhere the response is being persisted), **always end your response with a fenced JSON code block** containing the schema below. The server strips this block from the prose before saving + displaying, then parses it into typed columns. **This is non-negotiable** — fields must match the exact shape, with `null` for anything not applicable.
 
 Append exactly:
 
@@ -448,16 +376,59 @@ Append exactly:
   "cone_upper": <number | null>,
   "long_trigger": <number | null>,
   "short_trigger": <number | null>,
-  "regime_tag": <"pin" | "drift-and-cap" | "gap-and-rip" | "trap" | "cone-breach" | "chop" | "other" | null>
+  "regime_tag": <"pin" | "drift-and-cap" | "gap-and-rip" | "trap" | "cone-breach" | "chop" | "other" | null>,
+  "bias": <"long-only" | "short-only" | "fade-only" | "two-sided" | "no-trade" | null>,
+  "trade_types_recommended": [<trade-type enum string>, ...],
+  "trade_types_avoided": [<trade-type enum string>, ...],
+  "key_levels": {
+    "gamma_floor": <number | null>,
+    "gamma_ceiling": <number | null>,
+    "magnet": <number | null>,
+    "charm_zero": <number | null>
+  },
+  "expected_dealer_behavior": <string | null>,
+  "confidence": <"low" | "medium" | "high" | null>,
+  "confidence_basis": <string | null>
 }
 ```
 ````
 
-Field semantics:
+### Field semantics
 
-- **`spot`** — SPX spot at the analyzed timeframe slice (NOT the live spot from the red dotted line on a back-read; use the candle at the slice).
-- **`cone_lower` / `cone_upper`** — straddle breakeven cone bounds if visible on the chart (yellow dashed diagonals). `null` if not in cone display mode or values can't be read.
-- **`long_trigger` / `short_trigger`** — the specific price levels you set as bilateral entry triggers per the no-cheat protocol. `null` if your read concluded "no-trade" on that side.
-- **`regime_tag`** — your single-label classification of the day's setup. Use `"chop"` for symmetric cone-bounded chop without a clean directional read; `"other"` only if no listed pattern fits.
+- **`spot`** — SPX spot at the read time. Use the authoritative value supplied in the user message (DB lookup against `index_candles_1m`); never the chart's red dotted line on a back-read.
+- **`cone_lower` / `cone_upper`** — straddle breakeven cone bounds in price (yellow dashed). `null` if cone not visible.
+- **`long_trigger` / `short_trigger`** — bilateral entry triggers per the protocol. `null` if your read concluded "no-trade" on that side.
+- **`regime_tag`** — single-label classification: `pin` / `drift-and-cap` / `gap-and-rip` / `trap` / `cone-breach` / `chop` / `other`. Use `"chop"` for symmetric cone-bounded chop with no clean directional read; `"other"` only when no listed pattern fits.
+- **`bias`** — overall directional posture for the day:
+  - `long-only` — structure favors long entries; short trades fight the structure
+  - `short-only` — opposite
+  - `fade-only` — both directions valid but only off explicit triggers (most chop days)
+  - `two-sided` — both directions tradeable with their own setups
+  - `no-trade` — chart says wait
+- **`trade_types_recommended`** / **`trade_types_avoided`** — arrays from the trade-type enum below. Type the structures the structure SUPPORTS in `recommended`; type the structures it FIGHTS in `avoided`.
+
+Trade-type enum:
+
+```
+"debit_call_spread", "debit_put_spread",
+"credit_call_spread", "credit_put_spread",
+"iron_condor", "iron_butterfly", "broken_wing_butterfly",
+"directional_long_call", "directional_long_put",
+"naked_directional_call", "naked_directional_put",
+"calendar_spread", "diagonal_spread",
+"long_straddle", "long_strangle"
+```
+
+- **`key_levels`** — the concrete price anchors for the day:
+  - `gamma_floor` — nearest dominant +γ strike below spot (long stops go just below this)
+  - `gamma_ceiling` — nearest dominant +γ strike above spot (long targets go to this; short stops go just above)
+  - `magnet` — strike with the largest Positions or Gamma magnitude near spot — the gravitational center of the day
+  - `charm_zero` — strike where the net charm sign flips between supportive (+γ buying) and procyclical (−γ selling), if identifiable
+- **`expected_dealer_behavior`** — one-sentence forecast: *"passive bid below 7,250, passive offer above 7,275 — range-bound until either side breaks."* Concrete, mechanism-first; not opinion.
+- **`confidence`** — `low` / `medium` / `high`. Calibrated against:
+  - **High** — twin-strike +γ floor + matching charm sign + intraday parent chain agrees + clean cone
+  - **Medium** — single dominant level + reasonable charm tally + no contradicting orange bars
+  - **Low** — fragile structure (no nearby +γ floor, mixed charm), cone-breach setup, or major event window with vanna unknown
+- **`confidence_basis`** — required when `confidence != null`. One sentence stating WHY: a specific structural fact, not "looks good" / "feels right."
 
 For ad-hoc conversational reads outside the persistence endpoint, this block is optional but doesn't hurt. When in doubt, include it.
