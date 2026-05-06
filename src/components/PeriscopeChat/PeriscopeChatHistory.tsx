@@ -22,25 +22,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { SectionBox } from '../ui/SectionBox';
 import PeriscopeChatDetail from './PeriscopeChatDetail.js';
-import { PERISCOPE_DEBRIEF_EVENT } from './PeriscopeChat.js';
 import { fmtTradingDate } from './format-utils.js';
 import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils.js';
-
-/**
- * Dispatch a window event the chat panel listens for. Window event
- * (rather than prop drilling / context) because the two panels are
- * sibling lazy-loaded sections — lifting state to App.tsx would
- * couple their lazy chunks.
- */
-function emitStartDebrief(parentId: number) {
-  window.dispatchEvent(
-    new CustomEvent(PERISCOPE_DEBRIEF_EVENT, { detail: { parentId } }),
-  );
-  document
-    .getElementById('sec-periscope-chat')
-    ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
 
 // ============================================================
 // Types
@@ -499,7 +483,10 @@ export default function PeriscopeChatHistory() {
                     )}
                     {item.parent_id != null && (
                       <span className="text-purple-300">
-                        ↳ debrief of #{item.parent_id}
+                        ↳{' '}
+                        {item.mode === 'debrief'
+                          ? `debrief of #${item.parent_id}`
+                          : `chained from #${item.parent_id}`}
                       </span>
                     )}
                     <span className="ml-auto flex items-center gap-2">
@@ -518,16 +505,6 @@ export default function PeriscopeChatHistory() {
                     </p>
                   )}
                 </button>
-                {(item.mode === 'pre_trade' || item.mode === 'intraday') && (
-                  <button
-                    type="button"
-                    onClick={() => emitStartDebrief(item.id)}
-                    className="border-edge text-secondary hover:bg-surface/40 hover:text-primary flex shrink-0 items-center border-l px-3 text-xs font-medium transition focus:ring-1 focus:ring-[var(--color-accent)] focus:outline-none"
-                    title={`Start a debrief linked to read #${item.id}`}
-                  >
-                    Debrief →
-                  </button>
-                )}
               </div>
 
               {openRowId === item.id && (
