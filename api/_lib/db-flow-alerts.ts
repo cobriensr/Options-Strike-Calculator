@@ -33,6 +33,7 @@
 
 import { getDb } from './db.js';
 import logger from './logger.js';
+import { toIsoDate, toIsoTimestamp } from './periscope-db.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -143,8 +144,8 @@ export async function fetchRecentFlowAlerts(
       rule_name: r.rule_name == null ? null : String(r.rule_name),
       option_type: r.option_type as 'C' | 'P',
       strike: Number(r.strike),
-      expiry: String(r.expiry),
-      created_at: String(r.created_at),
+      expiry: toIsoDate(r.expiry),
+      created_at: toIsoTimestamp(r.created_at),
       underlying_price:
         r.underlying_price == null ? null : Number(r.underlying_price),
       total_premium: r.total_premium == null ? null : Number(r.total_premium),

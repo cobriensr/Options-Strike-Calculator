@@ -70,7 +70,7 @@ export function stripMarkdownForExcerpt(text: string): string {
 }
 
 import type { PeriscopeMode } from './_lib/periscope-db.js';
-import { toIsoDate } from './_lib/periscope-db.js';
+import { toIsoDate, toIsoTimestamp } from './_lib/periscope-db.js';
 
 interface PeriscopeChatSummary {
   id: number;
@@ -92,7 +92,7 @@ function parseSummaryRow(r: Record<string, unknown>): PeriscopeChatSummary {
   return {
     id: Number(r.id),
     trading_date: toIsoDate(r.trading_date),
-    captured_at: r.captured_at as string,
+    captured_at: toIsoTimestamp(r.captured_at),
     mode: r.mode as PeriscopeMode,
     parent_id: r.parent_id == null ? null : Number(r.parent_id),
     spot: r.spot == null ? null : Number(r.spot),

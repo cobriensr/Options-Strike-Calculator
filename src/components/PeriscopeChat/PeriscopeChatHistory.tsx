@@ -74,6 +74,15 @@ function fmtRelative(iso: string): string {
   try {
     const t = new Date(iso).getTime();
     const diffMs = Date.now() - t;
+    if (diffMs < 0) {
+      // Future timestamps: fall through to absolute date label rather
+      // than reporting "just now" for everything ahead of now (the
+      // negative-diff `min` would otherwise satisfy `min < 1`).
+      return new Date(iso).toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+      });
+    }
     const min = Math.floor(diffMs / 60_000);
     if (min < 1) return 'just now';
     if (min < 60) return `${min}m ago`;

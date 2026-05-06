@@ -271,6 +271,19 @@ export function usePeriscopeChat(): UsePeriscopeChatResult {
   // stable across renders without missing fast successive pastes.
   useEffect(() => {
     function handlePaste(e: ClipboardEvent) {
+      // Bail when the user is pasting into a real input — only intercept
+      // global / non-editable-target pastes for the Periscope slot fill.
+      // Without this guard the listener calls preventDefault() on every
+      // image clipboard paste anywhere on the page, hijacking pastes
+      // intended for journal notes, comment textareas, etc.
+      const target = e.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      ) {
+        return;
+      }
       const items = Array.from(e.clipboardData?.items ?? []);
       const imageItem = items.find((it) => it.type.startsWith('image/'));
       if (!imageItem) return;

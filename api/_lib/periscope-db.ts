@@ -275,6 +275,19 @@ export function toIsoDate(v: unknown): string {
   return String(v);
 }
 
+/**
+ * Coerce a Postgres TIMESTAMPTZ column value to a full ISO 8601 string.
+ *
+ * Same `Date`-object-from-Neon-driver issue as `toIsoDate`. Use this at
+ * every row-mapping site that exposes a TIMESTAMPTZ to a downstream
+ * string consumer (or to a `new Date(...)` constructor that would
+ * silently coerce but violate the typed contract).
+ */
+export function toIsoTimestamp(v: unknown): string {
+  if (v instanceof Date) return v.toISOString();
+  return String(v);
+}
+
 function toFiniteNumber(v: unknown): number | null {
   if (v == null) return null;
   const n = typeof v === 'number' ? v : Number(v);

@@ -73,6 +73,23 @@ function confidenceBadgeClass(conf: PeriscopeConfidence | null): string {
   }
 }
 
+/**
+ * True when at least one numeric field on `kl` is non-null. Used to
+ * gate both the grid render and the `hasAnything` card check so a row
+ * with `key_levels = { gamma_floor: null, ... }` does NOT render an
+ * empty 4-cell grid (or keep the whole card visible when it's the only
+ * "set" field). Type predicate so callers get `keyLevels`-narrowed-to-
+ * non-null inside the truthy branch.
+ */
+const hasKeyLevelValue = (
+  kl: PeriscopeKeyLevels | null,
+): kl is PeriscopeKeyLevels =>
+  kl != null &&
+  (kl.gamma_floor != null ||
+    kl.gamma_ceiling != null ||
+    kl.magnet != null ||
+    kl.charm_zero != null);
+
 export default function PlaybookView({ fields }: PlaybookViewProps) {
   const {
     bias,
@@ -90,9 +107,10 @@ export default function PlaybookView({ fields }: PlaybookViewProps) {
     confidence != null ||
     recommended.length > 0 ||
     avoided.length > 0 ||
-    keyLevels != null ||
+    hasKeyLevelValue(keyLevels) ||
     (expectedDealerBehavior != null && expectedDealerBehavior.length > 0) ||
-    (futuresPlan != null && futuresPlan.length > 0);
+    (futuresPlan != null && futuresPlan.length > 0) ||
+    (confidenceBasis != null && confidenceBasis.length > 0);
 
   if (!hasAnything) return null;
 
@@ -167,7 +185,7 @@ export default function PlaybookView({ fields }: PlaybookViewProps) {
           </p>
         </div>
       )}
-      {keyLevels != null && (
+      {hasKeyLevelValue(keyLevels) && (
         <div className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-4">
           <div className="flex flex-col">
             <span className="text-muted text-[10px] tracking-wide uppercase">
