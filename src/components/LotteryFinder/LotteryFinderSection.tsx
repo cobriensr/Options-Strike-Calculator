@@ -107,6 +107,47 @@ const MODE_FILTERS: Array<{ value: LotteryMode | null; label: string }> = [
   { value: 'B_multi_day_DTE1_3', label: 'Mode B (DTE 1-3)' },
 ];
 
+/**
+ * Shared chip styling. Every filter pill in the toolbar uses these so
+ * padding, radius, and weight stay consistent across groups. Active
+ * variants are looked up by accent name (Tailwind JIT can't synthesize
+ * `border-${color}-500` from a runtime string).
+ */
+const CHIP_BASE =
+  'inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors';
+const CHIP_INACTIVE =
+  'border-neutral-800 bg-neutral-900/60 text-neutral-400 hover:border-neutral-700 hover:text-neutral-100';
+const CHIP_ACTIVE: Record<
+  | 'sky'
+  | 'rose'
+  | 'amber'
+  | 'emerald'
+  | 'green'
+  | 'red'
+  | 'blue'
+  | 'fuchsia'
+  | 'orange'
+  | 'purple'
+  | 'neutral',
+  string
+> = {
+  sky: 'border-sky-500/70 bg-sky-950/40 text-sky-200',
+  rose: 'border-rose-500/70 bg-rose-950/40 text-rose-200',
+  amber: 'border-amber-500/70 bg-amber-950/40 text-amber-200',
+  emerald: 'border-emerald-500/70 bg-emerald-950/40 text-emerald-200',
+  green: 'border-green-500/70 bg-green-950/40 text-green-200',
+  red: 'border-red-500/70 bg-red-950/40 text-red-200',
+  blue: 'border-blue-500/70 bg-blue-950/40 text-blue-200',
+  fuchsia: 'border-fuchsia-500/70 bg-fuchsia-950/40 text-fuchsia-200',
+  orange: 'border-orange-500/70 bg-orange-950/40 text-orange-200',
+  purple: 'border-purple-500/70 bg-purple-950/40 text-purple-200',
+  neutral: 'border-neutral-500 bg-neutral-800 text-neutral-200',
+};
+
+const SECTION_LABEL =
+  'text-[10px] font-semibold tracking-[0.08em] text-neutral-500 uppercase';
+const TOOLBAR_DIVIDER = 'mx-1 hidden h-4 w-px bg-neutral-800 sm:block';
+
 const todayCt = (): string => {
   const fmt = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'America/Chicago',
@@ -311,397 +352,391 @@ export function LotteryFinderSection({
         {/* Day-level macro banner — at-a-glance regime context */}
         <LotteryDayBanner fires={fires} />
 
-        {/* Date + scrub controls. Prev/next buttons step the 1-minute
-            point-in-time bucket by ±1 min — the drag slider was too
-            finicky to land on a target minute. Click "All day" /
-            "Live" to clear the bucket. Keyboard: tab to a button and
-            press space/enter to step. */}
-        <div className="flex flex-wrap items-center gap-3 text-xs">
-          <label className="flex items-center gap-1.5">
-            <span className="text-neutral-400">date</span>
-            <input
-              type="date"
-              value={date}
-              max={todayCt()}
-              onChange={(e) => {
-                setDate(e.target.value);
-                setMinute(null);
-              }}
-              className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-white"
-              aria-label="Select trading day"
-            />
-          </label>
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              className={`rounded border px-2 py-1 text-xs font-semibold ${
-                minute == null
-                  ? 'border-green-500 bg-green-950/40 text-green-200'
-                  : 'border-neutral-700 bg-neutral-900 text-neutral-400 hover:text-white'
-              }`}
-              onClick={() => setMinute(null)}
-              title={
-                isLive
-                  ? 'Live: showing today (most recent first), polls every 30s'
-                  : 'Show every fire on the selected day'
-              }
-            >
-              {date === todayCt() ? 'Live' : 'All day'}
-            </button>
-            {/* Per-minute controls. Lo = 08:30 CT, hi = 15:00 CT
+        {/* Filter toolbar — single contained panel for date/scrub,
+            sort/conviction, type/TOD, mode tags, ticker, and exit
+            policy. All chips share CHIP_BASE styling so spacing and
+            weight stay consistent across groups. */}
+        <div className="space-y-2.5 rounded-lg border border-neutral-800/80 bg-neutral-950/40 p-2.5">
+          {/* Row 1: date + scrub controls. Prev/next buttons step the
+            1-minute point-in-time bucket by ±1 min — the drag slider
+            was too finicky to land on a target minute. Click "All
+            day" / "Live" to clear the bucket. Keyboard: tab to a
+            button and press space/enter to step. Export anchors are
+            inlined to the right so the toolbar starts with a single
+            row of controls instead of two. */}
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <label className="flex items-center gap-1.5">
+              <span className={SECTION_LABEL}>date</span>
+              <input
+                type="date"
+                value={date}
+                max={todayCt()}
+                onChange={(e) => {
+                  setDate(e.target.value);
+                  setMinute(null);
+                }}
+                className="rounded-md border border-neutral-800 bg-neutral-900/60 px-2 py-1 font-mono text-xs text-neutral-100 focus:border-neutral-600 focus:outline-none"
+                aria-label="Select trading day"
+              />
+            </label>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className={`${CHIP_BASE} ${
+                  minute == null ? CHIP_ACTIVE.green : CHIP_INACTIVE
+                }`}
+                onClick={() => setMinute(null)}
+                title={
+                  isLive
+                    ? 'Live: showing today (most recent first), polls every 30s'
+                    : 'Show every fire on the selected day'
+                }
+                aria-pressed={minute == null}
+              >
+                {date === todayCt() ? 'Live' : 'All day'}
+              </button>
+              {/* Per-minute controls. Lo = 08:30 CT, hi = 15:00 CT
                 (regular session). For today, hi is further capped at
                 the current CT minute (floored) so the user can't
                 scrub into the future. When `minute` is null, prev
                 seeds from the (effective) upper bound and next seeds
                 from the lower bound. The <select> lists every valid
                 minute as a fast-jump dropdown. */}
-            {(() => {
-              const lo = Date.parse(scrubBounds.min);
-              const hi = Date.parse(scrubBounds.max);
-              const isToday = date === todayCt();
-              const effectiveHi = isToday ? Math.min(hi, nowMinuteMs) : hi;
-              const noValidBucket = effectiveHi < lo;
-              const cur = minute ? Date.parse(minute) : null;
-              const atMin = noValidBucket || (cur != null && cur <= lo);
-              const atMax =
-                noValidBucket || (cur != null && cur >= effectiveHi);
-              const step = (deltaMs: number) => {
-                const seed = cur ?? (deltaMs < 0 ? effectiveHi : lo);
-                const next = Math.max(
-                  lo,
-                  Math.min(effectiveHi, seed + deltaMs),
-                );
-                setMinute(new Date(next).toISOString());
-              };
-              const options: { value: string; label: string }[] = [];
-              if (!noValidBucket) {
-                for (let t = lo; t <= effectiveHi; t += 60_000) {
-                  const iso = new Date(t).toISOString();
-                  options.push({ value: iso, label: formatTimeCT(iso) });
+              {(() => {
+                const lo = Date.parse(scrubBounds.min);
+                const hi = Date.parse(scrubBounds.max);
+                const isToday = date === todayCt();
+                const effectiveHi = isToday ? Math.min(hi, nowMinuteMs) : hi;
+                const noValidBucket = effectiveHi < lo;
+                const cur = minute ? Date.parse(minute) : null;
+                const atMin = noValidBucket || (cur != null && cur <= lo);
+                const atMax =
+                  noValidBucket || (cur != null && cur >= effectiveHi);
+                const step = (deltaMs: number) => {
+                  const seed = cur ?? (deltaMs < 0 ? effectiveHi : lo);
+                  const next = Math.max(
+                    lo,
+                    Math.min(effectiveHi, seed + deltaMs),
+                  );
+                  setMinute(new Date(next).toISOString());
+                };
+                const options: { value: string; label: string }[] = [];
+                if (!noValidBucket) {
+                  for (let t = lo; t <= effectiveHi; t += 60_000) {
+                    const iso = new Date(t).toISOString();
+                    options.push({ value: iso, label: formatTimeCT(iso) });
+                  }
                 }
-              }
-              return (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => step(-60_000)}
-                    disabled={atMin}
-                    className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs font-semibold text-neutral-300 enabled:hover:text-white disabled:opacity-40"
-                    aria-label="Step back one minute"
-                    title="Step back one minute (−1m)"
-                  >
-                    ◀ −1m
-                  </button>
-                  <select
-                    value={minute ?? ''}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setMinute(v === '' ? null : v);
-                    }}
-                    disabled={noValidBucket}
-                    aria-label="Jump to a specific minute (Central Time)"
-                    title={
-                      isToday
-                        ? `Jump to a specific minute. Capped at the current CT minute (${formatTimeCT(nowMinuteMs)}).`
-                        : 'Jump to a specific minute (08:30–15:00 CT).'
-                    }
-                    className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 font-mono text-xs text-white disabled:opacity-40"
-                  >
-                    <option value="">— pick —</option>
-                    {options.map((o) => (
-                      <option key={o.value} value={o.value}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    onClick={() => step(60_000)}
-                    disabled={atMax}
-                    className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs font-semibold text-neutral-300 enabled:hover:text-white disabled:opacity-40"
-                    aria-label="Step forward one minute"
-                    title={
-                      isToday && cur != null && cur >= effectiveHi
-                        ? 'Cannot step past the current minute'
-                        : 'Step forward one minute (+1m)'
-                    }
-                  >
-                    +1m ▶
-                  </button>
-                </>
-              );
-            })()}
-            {minute && (
-              <span className="font-mono text-xs text-purple-200">
-                (1 min bucket)
-              </span>
-            )}
+                return (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => step(-60_000)}
+                      disabled={atMin}
+                      className={`${CHIP_BASE} ${CHIP_INACTIVE} disabled:opacity-40 disabled:hover:border-neutral-800 disabled:hover:text-neutral-400`}
+                      aria-label="Step back one minute"
+                      title="Step back one minute (−1m)"
+                    >
+                      ◀ −1m
+                    </button>
+                    <select
+                      value={minute ?? ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setMinute(v === '' ? null : v);
+                      }}
+                      disabled={noValidBucket}
+                      aria-label="Jump to a specific minute (Central Time)"
+                      title={
+                        isToday
+                          ? `Jump to a specific minute. Capped at the current CT minute (${formatTimeCT(nowMinuteMs)}).`
+                          : 'Jump to a specific minute (08:30–15:00 CT).'
+                      }
+                      className="rounded-md border border-neutral-800 bg-neutral-900/60 px-2 py-1 font-mono text-xs text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
+                    >
+                      <option value="">— pick —</option>
+                      {options.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => step(60_000)}
+                      disabled={atMax}
+                      className={`${CHIP_BASE} ${CHIP_INACTIVE} disabled:opacity-40 disabled:hover:border-neutral-800 disabled:hover:text-neutral-400`}
+                      aria-label="Step forward one minute"
+                      title={
+                        isToday && cur != null && cur >= effectiveHi
+                          ? 'Cannot step past the current minute'
+                          : 'Step forward one minute (+1m)'
+                      }
+                    >
+                      +1m ▶
+                    </button>
+                  </>
+                );
+              })()}
+              {minute && (
+                <span className="font-mono text-xs text-purple-200">
+                  (1 min bucket)
+                </span>
+              )}
+            </div>
+            {/* Export anchors — owner-only CSV dump of the day. "Filtered"
+              mirrors the active feed filters; "All" is date-only. The
+              anchor element with `download` attribute lets the browser
+              handle the file save while carrying the owner cookie
+              naturally (no JS fetch + Blob round-trip needed). Inlined
+              here so the toolbar starts with one row of controls. */}
+            <div className="ml-auto flex items-center gap-1.5">
+              <span className={SECTION_LABEL}>export</span>
+              <a
+                href={buildExportUrl({
+                  date,
+                  ticker: tickerFilter,
+                  reload: reloadOnly ? true : null,
+                  cheapCallPm: cheapCallPmOnly ? true : null,
+                  mode: modeFilter,
+                  optionType: optionTypeFilter,
+                  tod: todFilter,
+                  minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
+                })}
+                download
+                className={`${CHIP_BASE} ${CHIP_INACTIVE}`}
+                title="Export the current filtered view as CSV (one row per fire, all columns)."
+              >
+                ⤓ filtered
+              </a>
+              <a
+                href={buildExportUrl({ date })}
+                download
+                className={`${CHIP_BASE} ${CHIP_INACTIVE}`}
+                title="Export every fire on the selected day as CSV — ignores active filters."
+              >
+                ⤓ all
+              </a>
+              {fetchedAt != null && !isHistorical && (
+                <span className="ml-1 text-[10px] text-neutral-500">
+                  updated {formatTimeCT(fetchedAt)} CT
+                </span>
+              )}
+              {isHistorical && (
+                <span className="ml-1 text-[10px] text-neutral-500">
+                  historical replay
+                </span>
+              )}
+            </div>
           </div>
-          {fetchedAt != null && !isHistorical && (
-            <span className="ml-auto text-[10px] text-neutral-500">
-              updated {formatTimeCT(fetchedAt)} CT
-            </span>
-          )}
-          {isHistorical && (
-            <span className="ml-auto text-[10px] text-neutral-500">
-              historical replay
-            </span>
-          )}
-        </div>
 
-        {/* Export bar — owner-only CSV dump of the day. "Filtered"
-            mirrors the active feed filters; "All" is date-only. The
-            anchor element with `download` attribute lets the browser
-            handle the file save while carrying the owner cookie
-            naturally (no JS fetch + Blob round-trip needed). */}
-        <div className="flex flex-wrap items-center gap-1.5 text-xs">
-          <span className="text-[10px] tracking-wide text-neutral-500 uppercase">
-            export
-          </span>
-          <a
-            href={buildExportUrl({
-              date,
-              ticker: tickerFilter,
-              reload: reloadOnly ? true : null,
-              cheapCallPm: cheapCallPmOnly ? true : null,
-              mode: modeFilter,
-              optionType: optionTypeFilter,
-              tod: todFilter,
-              minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
-            })}
-            download
-            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-xs font-semibold text-neutral-300 hover:text-white"
-            title="Export the current filtered view as CSV (one row per fire, all columns)."
-          >
-            ⤓ filtered
-          </a>
-          <a
-            href={buildExportUrl({ date })}
-            download
-            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-xs font-semibold text-neutral-300 hover:text-white"
-            title="Export every fire on the selected day as CSV — ignores active filters."
-          >
-            ⤓ all
-          </a>
-        </div>
-
-        {/* Sort + High Conviction filter — score-driven controls
-            that gate the API ORDER BY and WHERE clauses. Persist to
-            localStorage so the user's preferred ranking sticks across
-            reloads. */}
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-[10px] tracking-wide text-neutral-500 uppercase">
-            sort
-          </span>
-          {SORT_OPTIONS.map((s) => (
-            <button
-              key={s.value}
-              type="button"
-              onClick={() => setSortMode(s.value)}
-              className={`rounded border px-2 py-0.5 text-xs font-semibold ${
-                sortMode === s.value
-                  ? 'border-sky-500 bg-sky-950/40 text-sky-200'
-                  : 'border-neutral-700 bg-neutral-900 text-neutral-400 hover:text-white'
-              }`}
-              title={s.tooltip}
-              aria-pressed={sortMode === s.value}
-            >
-              {s.label}
-            </button>
-          ))}
-          <span className="ml-2 text-[10px] tracking-wide text-neutral-500 uppercase">
-            conviction
-          </span>
-          {CONVICTION_OPTIONS.map((c) => {
-            const active = convictionFloor === c.value;
-            // Tier 1 = rose (most exclusive), Tier 2+ = amber, all =
-            // neutral. The active style tracks the floor so the
-            // user can read the filter at a glance.
-            const activeClass =
-              c.value === 'tier1'
-                ? 'border-rose-500 bg-rose-950/40 text-rose-200'
-                : c.value === 'tier2'
-                  ? 'border-amber-500 bg-amber-950/40 text-amber-200'
-                  : 'border-emerald-500 bg-emerald-950/40 text-emerald-200';
-            return (
-              <button
-                key={c.value}
-                type="button"
-                onClick={() => setConvictionFloor(c.value)}
-                className={`rounded border px-2 py-0.5 text-xs font-semibold ${
-                  active
-                    ? activeClass
-                    : 'border-neutral-700 bg-neutral-900 text-neutral-400 hover:text-white'
-                }`}
-                title={c.tooltip}
-                aria-pressed={active}
-              >
-                {c.label}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Filter chips */}
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => setReloadOnly(!reloadOnly)}
-            className={`rounded border px-2 py-1 text-xs font-semibold ${
-              reloadOnly
-                ? 'border-amber-500 bg-amber-950/40 text-amber-200'
-                : 'border-neutral-700 bg-neutral-900 text-neutral-400 hover:text-white'
-            }`}
-            title="Show only fires tagged RE-LOAD (burst ≥2× prior AND entry dropped ≥30%)."
-          >
-            RE-LOAD only <span className="text-[10px]">{reloadCount}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setCheapCallPmOnly(!cheapCallPmOnly)}
-            className={`rounded border px-2 py-1 text-xs font-semibold ${
-              cheapCallPmOnly
-                ? 'border-fuchsia-500 bg-fuchsia-950/40 text-fuchsia-200'
-                : 'border-neutral-700 bg-neutral-900 text-neutral-400 hover:text-white'
-            }`}
-            title="Show only fires tagged cheap-call-PM (call + PM session + entry < $1). The Phase 1 selection rule."
-          >
-            Cheap-call-PM only{' '}
-            <span className="text-[10px]">{cheapPmCount}</span>
-          </button>
-          {MODE_FILTERS.map((m) => (
-            <button
-              key={m.label}
-              type="button"
-              onClick={() => setModeFilter(m.value)}
-              className={`rounded border px-2 py-1 text-xs font-semibold ${
-                modeFilter === m.value
-                  ? 'border-blue-500 bg-blue-950/40 text-blue-200'
-                  : 'border-neutral-700 bg-neutral-900 text-neutral-400 hover:text-white'
-              }`}
-            >
-              {m.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Calls / Puts toggle */}
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-[10px] tracking-wide text-neutral-500 uppercase">
-            type
-          </span>
-          {[
-            { value: null, label: 'all' },
-            { value: 'C' as OptionType, label: 'calls' },
-            { value: 'P' as OptionType, label: 'puts' },
-          ].map((o) => (
-            <button
-              key={o.label}
-              type="button"
-              onClick={() => setOptionTypeFilter(o.value)}
-              className={`rounded border px-2 py-0.5 text-xs font-semibold ${
-                optionTypeFilter === o.value
-                  ? o.value === 'C'
-                    ? 'border-green-500 bg-green-950/40 text-green-200'
-                    : o.value === 'P'
-                      ? 'border-red-500 bg-red-950/40 text-red-200'
-                      : 'border-neutral-500 bg-neutral-800 text-neutral-200'
-                  : 'border-neutral-700 bg-neutral-900 text-neutral-400 hover:text-white'
-              }`}
-            >
-              {o.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Time-of-day chips */}
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-[10px] tracking-wide text-neutral-500 uppercase">
-            tod
-          </span>
-          {TOD_FILTERS.map((t) => (
-            <button
-              key={t.label}
-              type="button"
-              onClick={() => setTodFilter(t.value)}
-              className={`rounded border px-2 py-0.5 text-xs font-semibold ${
-                todFilter === t.value
-                  ? 'border-orange-500 bg-orange-950/40 text-orange-200'
-                  : 'border-neutral-700 bg-neutral-900 text-neutral-400 hover:text-white'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Ticker chips — top tickers in the current result set, click
-            to scope to one ticker. Universe is ~50 tickers; we show
-            only those actually present so the user can spot the
-            dominant tickers of the day at a glance. */}
-        {(topTickers.length > 0 || tickerFilter) && (
+          {/* Row 2: Sort + Conviction — score-driven controls that gate
+            the API ORDER BY and WHERE clauses. Persist to localStorage
+            so the user's preferred ranking sticks across reloads. */}
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[10px] tracking-wide text-neutral-500 uppercase">
-              ticker
-            </span>
-            <button
-              type="button"
-              onClick={() => setTickerFilter(null)}
-              className={`rounded border px-2 py-0.5 text-xs font-semibold ${
-                tickerFilter == null
-                  ? 'border-emerald-500 bg-emerald-950/40 text-emerald-200'
-                  : 'border-neutral-700 bg-neutral-900 text-neutral-400 hover:text-white'
-              }`}
-            >
-              all
-            </button>
-            {topTickers.map(([t, n]) => (
+            <span className={SECTION_LABEL}>sort</span>
+            {SORT_OPTIONS.map((s) => (
               <button
-                key={t}
+                key={s.value}
                 type="button"
-                onClick={() => setTickerFilter(tickerFilter === t ? null : t)}
-                className={`rounded border px-2 py-0.5 text-xs font-semibold ${
-                  tickerFilter === t
-                    ? 'border-emerald-500 bg-emerald-950/40 text-emerald-200'
-                    : 'border-neutral-700 bg-neutral-900 text-neutral-300 hover:text-white'
+                onClick={() => setSortMode(s.value)}
+                className={`${CHIP_BASE} ${
+                  sortMode === s.value ? CHIP_ACTIVE.sky : CHIP_INACTIVE
                 }`}
-                title={`Filter to ${t} only (${n} fires in current view)`}
+                title={s.tooltip}
+                aria-pressed={sortMode === s.value}
               >
-                {t} <span className="text-[10px] text-neutral-500">{n}</span>
+                {s.label}
               </button>
             ))}
-            {tickerFilter && !topTickers.some(([t]) => t === tickerFilter) && (
+            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+            <span className={SECTION_LABEL}>conviction</span>
+            {CONVICTION_OPTIONS.map((c) => {
+              const active = convictionFloor === c.value;
+              // Tier 1 = rose (most exclusive), Tier 2+ = amber, all =
+              // emerald. The active style tracks the floor so the user
+              // can read the filter at a glance.
+              const activeColor: keyof typeof CHIP_ACTIVE =
+                c.value === 'tier1'
+                  ? 'rose'
+                  : c.value === 'tier2'
+                    ? 'amber'
+                    : 'emerald';
+              return (
+                <button
+                  key={c.value}
+                  type="button"
+                  onClick={() => setConvictionFloor(c.value)}
+                  className={`${CHIP_BASE} ${
+                    active ? CHIP_ACTIVE[activeColor] : CHIP_INACTIVE
+                  }`}
+                  title={c.tooltip}
+                  aria-pressed={active}
+                >
+                  {c.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Row 3: Tag toggles + Mode (A/B/all). RE-LOAD and
+            cheap-call-PM are independent boolean toggles with their
+            own counts; the MODE_FILTERS group is a single-select
+            radio set. */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className={SECTION_LABEL}>mode</span>
+            <button
+              type="button"
+              onClick={() => setReloadOnly(!reloadOnly)}
+              className={`${CHIP_BASE} ${
+                reloadOnly ? CHIP_ACTIVE.amber : CHIP_INACTIVE
+              }`}
+              title="Show only fires tagged RE-LOAD (burst ≥2× prior AND entry dropped ≥30%)."
+              aria-pressed={reloadOnly}
+            >
+              RE-LOAD only{' '}
+              <span className="text-[10px] opacity-70">{reloadCount}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setCheapCallPmOnly(!cheapCallPmOnly)}
+              className={`${CHIP_BASE} ${
+                cheapCallPmOnly ? CHIP_ACTIVE.fuchsia : CHIP_INACTIVE
+              }`}
+              title="Show only fires tagged cheap-call-PM (call + PM session + entry < $1). The Phase 1 selection rule."
+              aria-pressed={cheapCallPmOnly}
+            >
+              Cheap-call-PM only{' '}
+              <span className="text-[10px] opacity-70">{cheapPmCount}</span>
+            </button>
+            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+            {MODE_FILTERS.map((m) => (
+              <button
+                key={m.label}
+                type="button"
+                onClick={() => setModeFilter(m.value)}
+                className={`${CHIP_BASE} ${
+                  modeFilter === m.value ? CHIP_ACTIVE.blue : CHIP_INACTIVE
+                }`}
+                aria-pressed={modeFilter === m.value}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Row 4: Type (calls/puts) + Time-of-day. Two single-select
+            groups merged into one row with a divider — both are
+            narrow-cardinality option-type filters and read more
+            cleanly side-by-side than as separate rows. */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className={SECTION_LABEL}>type</span>
+            {[
+              { value: null, label: 'all' },
+              { value: 'C' as OptionType, label: 'calls' },
+              { value: 'P' as OptionType, label: 'puts' },
+            ].map((o) => {
+              const active = optionTypeFilter === o.value;
+              const activeColor: keyof typeof CHIP_ACTIVE =
+                o.value === 'C' ? 'green' : o.value === 'P' ? 'red' : 'neutral';
+              return (
+                <button
+                  key={o.label}
+                  type="button"
+                  onClick={() => setOptionTypeFilter(o.value)}
+                  className={`${CHIP_BASE} ${
+                    active ? CHIP_ACTIVE[activeColor] : CHIP_INACTIVE
+                  }`}
+                  aria-pressed={active}
+                >
+                  {o.label}
+                </button>
+              );
+            })}
+            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+            <span className={SECTION_LABEL}>tod</span>
+            {TOD_FILTERS.map((t) => (
+              <button
+                key={t.label}
+                type="button"
+                onClick={() => setTodFilter(t.value)}
+                className={`${CHIP_BASE} ${
+                  todFilter === t.value ? CHIP_ACTIVE.orange : CHIP_INACTIVE
+                }`}
+                aria-pressed={todFilter === t.value}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Row 5 (conditional): Ticker chips — top tickers in the
+            current result set, click to scope to one ticker. Universe
+            is ~50 tickers; we show only those actually present so the
+            user can spot the dominant tickers of the day at a glance. */}
+          {(topTickers.length > 0 || tickerFilter) && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className={SECTION_LABEL}>ticker</span>
               <button
                 type="button"
                 onClick={() => setTickerFilter(null)}
-                className="rounded border border-emerald-500 bg-emerald-950/40 px-2 py-0.5 text-xs font-semibold text-emerald-200"
-                title="Filter active but no fires for this ticker in the current view — click to clear"
+                className={`${CHIP_BASE} ${
+                  tickerFilter == null ? CHIP_ACTIVE.emerald : CHIP_INACTIVE
+                }`}
+                aria-pressed={tickerFilter == null}
               >
-                {tickerFilter} <span className="text-[10px]">0</span>
+                all
               </button>
-            )}
-          </div>
-        )}
+              {topTickers.map(([t, n]) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setTickerFilter(tickerFilter === t ? null : t)}
+                  className={`${CHIP_BASE} ${
+                    tickerFilter === t ? CHIP_ACTIVE.emerald : CHIP_INACTIVE
+                  }`}
+                  title={`Filter to ${t} only (${n} fires in current view)`}
+                  aria-pressed={tickerFilter === t}
+                >
+                  {t} <span className="text-[10px] opacity-70">{n}</span>
+                </button>
+              ))}
+              {tickerFilter &&
+                !topTickers.some(([t]) => t === tickerFilter) && (
+                  <button
+                    type="button"
+                    onClick={() => setTickerFilter(null)}
+                    className={`${CHIP_BASE} ${CHIP_ACTIVE.emerald}`}
+                    title="Filter active but no fires for this ticker in the current view — click to clear"
+                  >
+                    {tickerFilter}{' '}
+                    <span className="text-[10px] opacity-70">0</span>
+                  </button>
+                )}
+            </div>
+          )}
 
-        {/* Exit policy selector */}
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="text-neutral-400">realized exit:</span>
-          {EXIT_POLICIES.map((p) => (
-            <button
-              key={p}
-              type="button"
-              onClick={() => setExitPolicy(p)}
-              className={`rounded border px-2 py-1 text-xs font-semibold ${
-                exitPolicy === p
-                  ? 'border-purple-500 bg-purple-950/40 text-purple-200'
-                  : 'border-neutral-700 bg-neutral-900 text-neutral-400 hover:text-white'
-              }`}
-              title={EXIT_POLICY_TOOLTIPS[p]}
-            >
-              {EXIT_POLICY_LABELS[p]}
-            </button>
-          ))}
+          {/* Row 6: Exit policy selector — single-select set governing
+            which realized-exit metric drives the row badges below. */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className={SECTION_LABEL}>realized exit</span>
+            {EXIT_POLICIES.map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => setExitPolicy(p)}
+                className={`${CHIP_BASE} ${
+                  exitPolicy === p ? CHIP_ACTIVE.purple : CHIP_INACTIVE
+                }`}
+                title={EXIT_POLICY_TOOLTIPS[p]}
+                aria-pressed={exitPolicy === p}
+              >
+                {EXIT_POLICY_LABELS[p]}
+              </button>
+            ))}
+          </div>
         </div>
+        {/* /toolbar panel */}
 
         {/* Body */}
         {loading && fires.length === 0 ? (
