@@ -60,6 +60,15 @@ export interface PeriscopeStructuredFields {
   expected_dealer_behavior: string | null;
   confidence: PeriscopeConfidence | null;
   confidence_basis: string | null;
+  /**
+   * Generic directional-execution string for the user's directional
+   * futures trades (NQ + ES, read off the same SPX Periscope chart).
+   * Three labeled sections separated by blank lines: `LONG:`, `SHORT:`,
+   * `WAIT:` — each tied to a +γ/−γ level that determines whether MM
+   * hedging fuels or fights the direction. `null` when the chart
+   * supports neither direction at any level.
+   */
+  futures_plan: string | null;
 }
 
 /** The single final NDJSON envelope from `/api/periscope-chat`. */

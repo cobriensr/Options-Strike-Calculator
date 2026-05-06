@@ -3944,4 +3944,12 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 131,
+    description:
+      'Add futures_plan TEXT column to periscope_analyses for directional futures execution string (LONG/SHORT/WAIT framing tied to MM positioning).',
+    statements: (sql) => [
+      sql`ALTER TABLE periscope_analyses ADD COLUMN IF NOT EXISTS futures_plan TEXT`,
+    ],
+  },
 ];

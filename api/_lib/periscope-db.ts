@@ -84,6 +84,18 @@ export interface PeriscopeStructuredFields {
   expected_dealer_behavior: string | null;
   confidence: PeriscopeConfidence | null;
   confidence_basis: string | null;
+  /**
+   * Generic directional-execution string for the user's directional
+   * futures trades (NQ primarily, ES sometimes — read off the same SPX
+   * Periscope chart). Three labeled sections separated by blank lines:
+   * `LONG:` (verdict + level tie above spot), `SHORT:` (verdict + level
+   * tie below spot), `WAIT:` (no-trade band). Levels are SPX-priced;
+   * the contract sizes against the same structure. `null` only when
+   * the chart supports neither direction at any level. Embedded into
+   * `buildPeriscopeSummary` so similarity search clusters by futures
+   * setup across days.
+   */
+  futures_plan: string | null;
 }
 
 export interface SavePeriscopeAnalysisInput {
@@ -157,7 +169,7 @@ export function buildPeriscopeSummary(args: {
   const { mode, structured, proseText } = args;
   const fmt = (n: number | null) => (n == null ? 'null' : n.toString());
   const proseExcerpt = proseText.slice(0, 800).replace(/\s+/g, ' ').trim();
-  return [
+  const baseLine = [
     `mode=${mode}`,
     `spot=${fmt(structured.spot)}`,
     `cone=${fmt(structured.cone_lower)}-${fmt(structured.cone_upper)}`,
@@ -166,6 +178,15 @@ export function buildPeriscopeSummary(args: {
     `regime=${structured.regime_tag ?? 'null'}`,
     `prose=${proseExcerpt}`,
   ].join(' | ');
+  // Append futures_plan as a labeled segment so the embedding clusters
+  // reads by futures setup (LONG/SHORT/WAIT permission map). Whitespace
+  // is collapsed so the embedding input stays one logical "document"
+  // even though the model emits the field with internal blank lines.
+  if (structured.futures_plan != null && structured.futures_plan.length > 0) {
+    const collapsed = structured.futures_plan.replace(/\s+/g, ' ').trim();
+    return `${baseLine}\nFutures plan: ${collapsed}`;
+  }
+  return baseLine;
 }
 
 /** Subset of a periscope_analyses row needed to anchor a debrief / chain. */
@@ -260,6 +281,7 @@ function rowToStructuredFields(
     expected_dealer_behavior: str(r.expected_dealer_behavior),
     confidence: asConfidence(r.confidence),
     confidence_basis: str(r.confidence_basis),
+    futures_plan: str(r.futures_plan),
   };
 }
 
@@ -280,7 +302,8 @@ export async function fetchPeriscopeAnalysisById(
              spot, cone_lower, cone_upper,
              long_trigger, short_trigger, regime_tag,
              bias, trade_types_recommended, trade_types_avoided,
-             key_levels, expected_dealer_behavior, confidence, confidence_basis
+             key_levels, expected_dealer_behavior, confidence, confidence_basis,
+             futures_plan
       FROM periscope_analyses
       WHERE id = ${id}
       LIMIT 1
@@ -475,6 +498,7 @@ export async function savePeriscopeAnalysis(
         expected_dealer_behavior,
         confidence,
         confidence_basis,
+        futures_plan,
         parse_ok,
         model,
         input_tokens,
@@ -508,6 +532,7 @@ export async function savePeriscopeAnalysis(
         ${structured.expected_dealer_behavior},
         ${structured.confidence},
         ${structured.confidence_basis},
+        ${structured.futures_plan},
         ${parseOk},
         ${model},
         ${inputTokens},

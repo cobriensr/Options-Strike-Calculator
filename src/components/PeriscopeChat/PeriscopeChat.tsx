@@ -15,10 +15,7 @@ import type { ChangeEvent, DragEvent } from 'react';
 import { SectionBox } from '../ui/SectionBox';
 import { usePeriscopeChat } from './usePeriscopeChat.js';
 import { ProseView } from './PeriscopeProse.js';
-import type {
-  PeriscopeMode,
-  PeriscopeStructuredFields,
-} from './types.js';
+import type { PeriscopeMode, PeriscopeStructuredFields } from './types.js';
 import { PERISCOPE_IMAGE_KINDS } from './types.js';
 
 const MODE_OPTIONS: ReadonlyArray<{ value: PeriscopeMode; label: string }> = [
@@ -256,6 +253,7 @@ function PlaybookView({ fields }: PlaybookViewProps) {
     trade_types_avoided: avoided,
     key_levels: keyLevels,
     expected_dealer_behavior: expectedDealerBehavior,
+    futures_plan: futuresPlan,
   } = fields;
 
   const hasAnything =
@@ -264,7 +262,8 @@ function PlaybookView({ fields }: PlaybookViewProps) {
     recommended.length > 0 ||
     avoided.length > 0 ||
     keyLevels != null ||
-    (expectedDealerBehavior != null && expectedDealerBehavior.length > 0);
+    (expectedDealerBehavior != null && expectedDealerBehavior.length > 0) ||
+    (futuresPlan != null && futuresPlan.length > 0);
 
   if (!hasAnything) return null;
 
@@ -327,6 +326,16 @@ function PlaybookView({ fields }: PlaybookViewProps) {
               </div>
             </div>
           )}
+        </div>
+      )}
+      {futuresPlan != null && futuresPlan.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <span className="text-muted text-[10px] tracking-wide uppercase">
+            Futures plan
+          </span>
+          <p className="text-secondary text-xs whitespace-pre-line">
+            {futuresPlan}
+          </p>
         </div>
       )}
       {keyLevels != null && (
@@ -426,8 +435,8 @@ export default function PeriscopeChat() {
   const modeBadge =
     response == null
       ? null
-      : MODE_OPTIONS.find((m) => m.value === response.mode)?.label ??
-        response.mode;
+      : (MODE_OPTIONS.find((m) => m.value === response.mode)?.label ??
+        response.mode);
 
   return (
     <SectionBox

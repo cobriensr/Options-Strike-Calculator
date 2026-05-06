@@ -462,6 +462,7 @@ describe('POST /api/periscope-chat', () => {
         expected_dealer_behavior: null,
         confidence: null,
         confidence_basis: null,
+        futures_plan: null,
       },
     });
     // Extraction returns the same trading_date so the debrief proceeds
@@ -481,6 +482,7 @@ describe('POST /api/periscope-chat', () => {
         expected_dealer_behavior: null,
         confidence: null,
         confidence_basis: null,
+        futures_plan: null,
       },
       chartDate: '2026-05-06',
     });
@@ -571,6 +573,7 @@ describe('POST /api/periscope-chat', () => {
         expected_dealer_behavior: null,
         confidence: null,
         confidence_basis: null,
+        futures_plan: null,
       },
     });
     mockExtractChartStructure.mockResolvedValueOnce({
@@ -588,6 +591,7 @@ describe('POST /api/periscope-chat', () => {
         expected_dealer_behavior: null,
         confidence: null,
         confidence_basis: null,
+        futures_plan: null,
       },
       chartDate: '2026-05-06',
     });
@@ -632,6 +636,7 @@ describe('POST /api/periscope-chat', () => {
         expected_dealer_behavior: null,
         confidence: null,
         confidence_basis: null,
+        futures_plan: null,
       },
     });
 
@@ -919,6 +924,7 @@ describe('POST /api/periscope-chat', () => {
         expected_dealer_behavior: null,
         confidence: null,
         confidence_basis: null,
+        futures_plan: null,
       },
       chartDate: '2026-04-30',
     });

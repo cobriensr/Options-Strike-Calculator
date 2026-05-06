@@ -28,7 +28,7 @@ GEX:  7,275 +977.72  |  7,250 -1,560.05  |  7,260 +625.15  | ...
 Charm: 7,275 +1.45M  |  7,295 -1.37M     |  7,210 +72.5K   | ...
 ```
 
-**Lean on these injected numbers, not visual estimation.** They are UW's MM-attributed Net GEX / Net Charm — same values shown in the heat-map cells, transcribed exactly. Quote magnitudes directly in the read: *"7,275 = +977 γ ceiling, 7,250 = −1,560 γ acceleration trigger."*
+**Lean on these injected numbers, not visual estimation.** They are UW's MM-attributed Net GEX / Net Charm — same values shown in the heat-map cells, transcribed exactly. Quote magnitudes directly in the read: _"7,275 = +977 γ ceiling, 7,250 = −1,560 γ acceleration trigger."_
 
 **What injection does NOT cover (still read from the chart visually):**
 
@@ -283,6 +283,17 @@ When present, the Vanna panel matters most on event days (FOMC, CPI, jobs):
 
 The straddle breakeven cone is the cleanest standalone vol-shock signal: when price exceeds the cone, short-vol sellers reflexively buy back hedges and extend the move. Pair with vanna for the strike where the extension will hit hardest.
 
+### Futures execution — the permission/prohibition framing
+
+The 4-case hedge primitive tells you which directions MM hedging will FUEL vs. FIGHT. For directional futures execution this maps to a permission/prohibition rule:
+
+- **+γ above spot (green ceiling)** → MM SELLS the rip → fights longs into the level → **avoid naked longs that target the level** (use options structures instead, or wait for cone-breach behavior).
+- **−γ above spot (red acceleration zone)** → MM BUYS the rip → fuels longs through the level → **safe direction; long is permitted**.
+- **+γ below spot (green floor)** → MM BUYS the dip → fights shorts into the level → **avoid naked shorts that target the level** (the floor will catch you).
+- **−γ below spot (red acceleration zone)** → MM SELLS the dip → fuels shorts through the level → **safe direction; short is permitted**.
+
+The output `futures_plan` field carries this as three labeled sections (`LONG:`, `SHORT:`, `WAIT:`) tying each verdict to a specific +γ/−γ level. The user's directional bet is fundamentally a bet on which side of the next regime boundary the chart sits — fighting the dealer hedge direction is the trap to flag.
+
 ## Worked example — 2026-04-30 morning open (08:20–08:30 CT)
 
 This is the canonical "drift up, get capped at +γ cluster" day.
@@ -388,7 +399,8 @@ Append exactly:
   },
   "expected_dealer_behavior": <string | null>,
   "confidence": <"low" | "medium" | "high" | null>,
-  "confidence_basis": <string | null>
+  "confidence_basis": <string | null>,
+  "futures_plan": <string | null>
 }
 ```
 ````
@@ -424,11 +436,16 @@ Trade-type enum:
   - `gamma_ceiling` — nearest dominant +γ strike above spot (long targets go to this; short stops go just above)
   - `magnet` — strike with the largest Positions or Gamma magnitude near spot — the gravitational center of the day
   - `charm_zero` — strike where the net charm sign flips between supportive (+γ buying) and procyclical (−γ selling), if identifiable
-- **`expected_dealer_behavior`** — one-sentence forecast: *"passive bid below 7,250, passive offer above 7,275 — range-bound until either side breaks."* Concrete, mechanism-first; not opinion.
+- **`expected_dealer_behavior`** — one-sentence forecast: _"passive bid below 7,250, passive offer above 7,275 — range-bound until either side breaks."_ Concrete, mechanism-first; not opinion.
 - **`confidence`** — `low` / `medium` / `high`. Calibrated against:
   - **High** — twin-strike +γ floor + matching charm sign + intraday parent chain agrees + clean cone
   - **Medium** — single dominant level + reasonable charm tally + no contradicting orange bars
   - **Low** — fragile structure (no nearby +γ floor, mixed charm), cone-breach setup, or major event window with vanna unknown
 - **`confidence_basis`** — required when `confidence != null`. One sentence stating WHY: a specific structural fact, not "looks good" / "feels right."
+- **`futures_plan`** — a generic directional-execution string for the user's directional futures trades (they trade NQ + ES interchangeably). Three sections, separated by blank lines:
+  - **`LONG:`** — explicit go/no-go and reason tied to MM positioning above spot. State whether long is SAFE (MM hedging will fuel the move or stay out of the way), CONDITIONAL (allowed only on a specific level reclaim/break), or AVOID (MM hedging will fight you). Always tie the verdict to a specific +γ/−γ level. No R:R math; just where to enter, where to exit, and why the direction is safe or dangerous given dealer hedge sign.
+  - **`SHORT:`** — symmetric, focused on MM positioning below spot. Same verdict + level tie + no math.
+  - **`WAIT:`** — the no-trade zone (price band where dealer hedging is mixed and scalping fights both directions).
+    Use generic "LONG" / "SHORT" — do NOT lock to a specific contract. Levels are SPX-priced (the contract the user picks just sizes against the same level structure). `null` only when the chart genuinely supports neither direction at any level (rare; debrief mode usually has at least one direction's verdict to record).
 
 For ad-hoc conversational reads outside the persistence endpoint, this block is optional but doesn't hurt. When in doubt, include it.

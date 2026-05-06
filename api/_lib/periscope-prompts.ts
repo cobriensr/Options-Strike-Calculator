@@ -188,7 +188,7 @@ export function formatParentChainBlock(
   const lines: string[] = ['## Parent chain (oldest first)'];
   lines.push('');
   lines.push(
-    'Earlier reads in today\'s chain. Read your new bias against this — if you reverse the chain\'s posture, state the structural reason. Do NOT silently invert.',
+    "Earlier reads in today's chain. Read your new bias against this — if you reverse the chain's posture, state the structural reason. Do NOT silently invert.",
   );
   lines.push('');
 
@@ -286,7 +286,7 @@ function buildIntradayModeBody(): string[] {
     '  - Regime label',
     '  - The required JSON block at the very end',
     '',
-    'Reconcile against the parent chain. If you reverse the chain\'s bias, state the structural reason explicitly (a specific gamma / charm / positions change in this slice). Do NOT silently invert.',
+    "Reconcile against the parent chain. If you reverse the chain's bias, state the structural reason explicitly (a specific gamma / charm / positions change in this slice). Do NOT silently invert.",
     '',
     'DO NOT include any "## Debrief", "what triggered", "what actually happened", "the day delivered", settlement values, ✓ check-marks, or any hindsight scoring. Stop the response after the JSON block.',
     '',
@@ -376,6 +376,7 @@ function emptyStructured(): PeriscopeStructuredFields {
     expected_dealer_behavior: null,
     confidence: null,
     confidence_basis: null,
+    futures_plan: null,
   };
 }
 
@@ -395,9 +396,7 @@ const CONFIDENCE_VALUES = new Set<PeriscopeConfidence>([
 
 function coerceStringArray(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
-  return raw.filter(
-    (v): v is string => typeof v === 'string' && v.length > 0,
-  );
+  return raw.filter((v): v is string => typeof v === 'string' && v.length > 0);
 }
 
 function coerceKeyLevels(raw: unknown): PeriscopeKeyLevels | null {
@@ -476,6 +475,7 @@ export function parseStructuredFields(text: string): ParsedStructuredOutput {
     expected_dealer_behavior: str(parsed.expected_dealer_behavior),
     confidence,
     confidence_basis: str(parsed.confidence_basis),
+    futures_plan: str(parsed.futures_plan),
   };
 
   // Reassemble prose around the stripped block. `before` is the text up

@@ -373,6 +373,7 @@ function parseExtraction(text: string): PeriscopeExtractionResult | null {
       expected_dealer_behavior: null,
       confidence: null,
       confidence_basis: null,
+      futures_plan: null,
     },
     chartDate,
   };

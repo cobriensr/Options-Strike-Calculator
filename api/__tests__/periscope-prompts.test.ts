@@ -46,6 +46,7 @@ function fields(
     expected_dealer_behavior: null,
     confidence: null,
     confidence_basis: null,
+    futures_plan: null,
     ...overrides,
   };
 }
@@ -159,9 +160,7 @@ describe('parseStructuredFields', () => {
     });
     expect(structured.expected_dealer_behavior).toBe('passive bid below 7250');
     expect(structured.confidence).toBe('medium');
-    expect(structured.confidence_basis).toBe(
-      'twin-strike +γ floor confirmed',
-    );
+    expect(structured.confidence_basis).toBe('twin-strike +γ floor confirmed');
   });
 
   it('drops out-of-enum values for bias and confidence rather than throwing', () => {
@@ -211,6 +210,61 @@ describe('parseStructuredFields', () => {
     expect(structured.spot).toBeNull();
     // Empty regime_tag becomes null (length === 0 guard).
     expect(structured.regime_tag).toBeNull();
+  });
+
+  // ── futures_plan round-trip ────────────────────────────────────
+  // Generic LONG/SHORT/WAIT directional-execution string for the
+  // user's directional futures trades. Coerced like other string
+  // fields: present-and-non-empty → keep, missing/empty/non-string → null.
+
+  it('extracts a well-formed futures_plan string', () => {
+    const futuresPlan = [
+      'LONG: avoid until SPX reclaims 7,265 — heavy −γ at 7,250 will accelerate any dip.',
+      '',
+      'SHORT: setup is cleaner. Below 7,250, no +γ floor between spot and ~7,210.',
+      '',
+      'WAIT: 7,250–7,265.',
+    ].join('\n');
+    const text = [
+      '```json',
+      JSON.stringify({
+        spot: 7255,
+        futures_plan: futuresPlan,
+      }),
+      '```',
+    ].join('\n');
+    const { structured, parseOk } = parseStructuredFields(text);
+    expect(parseOk).toBe(true);
+    expect(structured.futures_plan).toBe(futuresPlan);
+  });
+
+  it('returns null futures_plan when the field is missing', () => {
+    const text = [
+      '```json',
+      JSON.stringify({ spot: 7255, regime_tag: 'pin' }),
+      '```',
+    ].join('\n');
+    const { structured, parseOk } = parseStructuredFields(text);
+    expect(parseOk).toBe(true);
+    expect(structured.futures_plan).toBeNull();
+  });
+
+  it('returns null futures_plan when the field is an empty string', () => {
+    const text = ['```json', '{"futures_plan": ""}', '```'].join('\n');
+    const { structured, parseOk } = parseStructuredFields(text);
+    expect(parseOk).toBe(true);
+    expect(structured.futures_plan).toBeNull();
+  });
+
+  it('returns null futures_plan when the field is a non-string value', () => {
+    const text = [
+      '```json',
+      JSON.stringify({ futures_plan: { not: 'a string' } }),
+      '```',
+    ].join('\n');
+    const { structured, parseOk } = parseStructuredFields(text);
+    expect(parseOk).toBe(true);
+    expect(structured.futures_plan).toBeNull();
   });
 });
 
@@ -334,6 +388,7 @@ describe('buildUserContent', () => {
           expected_dealer_behavior: null,
           confidence: null,
           confidence_basis: null,
+          futures_plan: null,
         },
       },
       images: [],
@@ -388,6 +443,7 @@ describe('buildUserContent', () => {
           expected_dealer_behavior: null,
           confidence: null,
           confidence_basis: null,
+          futures_plan: null,
         },
       },
       images: [],
