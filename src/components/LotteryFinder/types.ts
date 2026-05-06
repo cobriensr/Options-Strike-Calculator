@@ -267,3 +267,29 @@ export interface ContractTapeResponse {
   count: number;
   series: ContractTapeBar[];
 }
+
+// ============================================================
+// /api/ticker-candles response
+// ============================================================
+
+/** One per-minute regular-session OHLCV candle for an underlying. */
+export interface TickerCandle {
+  /** UTC ISO timestamp at the start of the minute. */
+  ts: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface TickerCandlesResponse {
+  ticker: string;
+  date: string;
+  /** Previous trading session's close — useful as a reference line. */
+  previousClose: number;
+  count: number;
+  candles: TickerCandle[];
+  marketOpen: boolean;
+  asOf: string;
+}

@@ -1,6 +1,7 @@
 import { memo, useMemo, useState } from 'react';
 import { useContractTape } from '../../hooks/useContractTape.js';
 import { useNetFlowHistory } from '../../hooks/useNetFlowHistory.js';
+import { useTickerCandles } from '../../hooks/useTickerCandles.js';
 import { ContractTapeChart } from './ContractTapeChart.js';
 import { TickerNetFlowChart } from './TickerNetFlowChart.js';
 import type {
@@ -227,6 +228,12 @@ export const LotteryRow = memo(function LotteryRow({
     marketOpen,
   });
   const netFlow = useNetFlowHistory({
+    ticker: fire.underlyingSymbol,
+    date: fire.date,
+    enabled: expanded,
+    marketOpen,
+  });
+  const tickerCandles = useTickerCandles({
     ticker: fire.underlyingSymbol,
     date: fire.date,
     enabled: expanded,
@@ -604,12 +611,20 @@ export const LotteryRow = memo(function LotteryRow({
                 </span>
               </div>
               <span className="text-[10px] tracking-wide text-neutral-600 uppercase">
-                NCP (green) · NPP (red)
+                price · NCP · NPP · net vol
               </span>
             </div>
-            {/* Latest cum NCP / NPP / divergence strip. */}
+            {/* Latest cum NCP / NPP / divergence + last spot strip. */}
             {flowStats != null && (
               <div className="mb-2 flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[10px] text-neutral-400">
+                {tickerCandles.candles.length > 0 && (
+                  <span>
+                    <span className="text-amber-300">spot</span>{' '}
+                    <span className="text-neutral-200">
+                      {tickerCandles.candles.at(-1)!.close.toFixed(2)}
+                    </span>
+                  </span>
+                )}
                 <span>
                   <span className="text-green-300">NCP</span>{' '}
                   <span className="text-neutral-200">
@@ -645,8 +660,10 @@ export const LotteryRow = memo(function LotteryRow({
             ) : (
               <TickerNetFlowChart
                 series={netFlow.series}
+                candles={tickerCandles.candles}
+                previousClose={tickerCandles.previousClose}
                 markerTs={fire.triggerTimeCt}
-                ariaLabel={`${fire.underlyingSymbol} cumulative net call/put premium`}
+                ariaLabel={`${fire.underlyingSymbol} cumulative net call/put premium with stock price overlay`}
               />
             )}
           </div>
