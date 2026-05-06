@@ -181,6 +181,12 @@ function dateCount(d: DateEntry, filter: ModeFilter): number {
 export default function PeriscopeChatHistory() {
   const [dates, setDates] = useState<DateEntry[]>([]);
   const [datesError, setDatesError] = useState<string | null>(null);
+  // Bumped by the `periscope:submitted` window event so the dates
+  // aggregation + selected-date rows re-fetch after a fresh submission
+  // by the sibling submit panel. Without this the dropdown counts
+  // grow stale (intraday read saved → DB row exists → panel still
+  // shows yesterday's count until manual page reload).
+  const [refreshTick, setRefreshTick] = useState(0);
   const [modeFilter, setModeFilter] = useState<ModeFilter>('all');
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [items, setItems] = useState<PeriscopeChatSummary[]>([]);
@@ -194,15 +200,28 @@ export default function PeriscopeChatHistory() {
     >
   >({});
 
-  // Fetch the date list once on mount. The picker dropdown shows every
-  // distinct trading_date with counts per mode.
+  // Re-fetch dates + rows when the submit panel publishes a new row.
+  useEffect(() => {
+    const handler = () => setRefreshTick((t) => t + 1);
+    window.addEventListener('periscope:submitted', handler);
+    return () => window.removeEventListener('periscope:submitted', handler);
+  }, []);
+
+  // Fetch the date list on mount + after every successful submission.
+  // The picker dropdown shows every distinct trading_date with counts
+  // per mode, kept fresh via the `refreshTick` dep.
   useEffect(() => {
     const ac = new AbortController();
     (async () => {
       try {
-        const res = await fetch('/api/periscope-chat-list?dates=true', {
-          signal: ac.signal,
-        });
+        // Cache-bust on refresh so the 30s s-maxage on
+        // /api/periscope-chat-list?dates=true doesn't echo a stale
+        // pre-submission count back to us.
+        const url =
+          refreshTick === 0
+            ? '/api/periscope-chat-list?dates=true'
+            : `/api/periscope-chat-list?dates=true&_=${refreshTick}`;
+        const res = await fetch(url, { signal: ac.signal });
         if (!res.ok) {
           if (!ac.signal.aborted) setDatesError('Failed to load dates');
           return;
@@ -219,7 +238,7 @@ export default function PeriscopeChatHistory() {
       }
     })();
     return () => ac.abort();
-  }, []);
+  }, [refreshTick]);
 
   // Fetch rows for the selected date.
   useEffect(() => {
@@ -232,10 +251,11 @@ export default function PeriscopeChatHistory() {
     setError(null);
     (async () => {
       try {
-        const res = await fetch(
-          `/api/periscope-chat-list?date=${selectedDate}&limit=100`,
-          { signal: ac.signal },
-        );
+        // Cache-bust on refresh — same reason as the dates query.
+        const baseUrl = `/api/periscope-chat-list?date=${selectedDate}&limit=100`;
+        const url =
+          refreshTick === 0 ? baseUrl : `${baseUrl}&_=${refreshTick}`;
+        const res = await fetch(url, { signal: ac.signal });
         if (!res.ok) {
           const body = (await res.json().catch(() => ({}))) as {
             error?: string;
@@ -253,7 +273,7 @@ export default function PeriscopeChatHistory() {
       }
     })();
     return () => ac.abort();
-  }, [selectedDate]);
+  }, [selectedDate, refreshTick]);
 
   const handleAnnotated = useCallback(
     (

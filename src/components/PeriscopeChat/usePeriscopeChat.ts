@@ -388,6 +388,12 @@ export function usePeriscopeChat(): UsePeriscopeChatResult {
         return;
       }
       setResponse(parsed);
+      // Notify the history panel (sibling component) that a fresh row
+      // was persisted so it can re-fetch dates + visible rows. The
+      // history panel's date-aggregation useEffect runs only on mount,
+      // so without this nudge, mid-day reads piled up in the DB invisible
+      // to the picker until the user manually reloaded.
+      window.dispatchEvent(new CustomEvent('periscope:submitted'));
     } catch (err) {
       const msg =
         err instanceof Error ? err.message : 'Unexpected analyze error.';
