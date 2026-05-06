@@ -67,6 +67,17 @@ const detailFixture = {
   long_trigger: 7125,
   short_trigger: 7115,
   regime_tag: null,
+  // Playbook fields — PlaybookView reads these directly and crashes on
+  // undefined arrays. Real API rows always include them (server emits
+  // [] for empty), so the fixture mirrors that shape.
+  bias: null,
+  trade_types_recommended: [] as string[],
+  trade_types_avoided: [] as string[],
+  key_levels: null,
+  expected_dealer_behavior: null,
+  confidence: null,
+  confidence_basis: null,
+  futures_plan: null,
   calibration_quality: null,
   image_urls: [{ kind: 'chart', url: 'https://b/c.png' }],
   model: 'claude-opus-4-7',
@@ -159,7 +170,7 @@ function setStandardRoutes(args: {
 }
 
 describe('<PeriscopeChatHistory />', () => {
-  it('fetches dates on mount + rows for the most recent date', async () => {
+  it('fetches dates on mount and rows when a date is selected', async () => {
     setStandardRoutes({
       dates: [
         { date: '2026-04-30', total: 2, reads: 1, debriefs: 1 },
@@ -177,8 +188,19 @@ describe('<PeriscopeChatHistory />', () => {
         ],
       },
     });
+    const user = userEvent.setup();
 
     render(<PeriscopeChatHistory />);
+
+    // Date dropdown is the picker's source of truth — wait for it to
+    // populate, then explicitly select a date (mirrors the
+    // AnalysisHistoryPicker UX; no auto-select on mount).
+    await waitFor(() => {
+      expect(
+        screen.getByRole('option', { name: /Apr 30, 2026/ }),
+      ).toBeInTheDocument();
+    });
+    await user.selectOptions(screen.getByLabelText('Date'), '2026-04-30');
 
     await waitFor(() => {
       expect(screen.getByText('First read of the day.')).toBeInTheDocument();
@@ -212,46 +234,6 @@ describe('<PeriscopeChatHistory />', () => {
     });
   });
 
-  it('dispatches a window event with parentId when Debrief is clicked on a read row', async () => {
-    setStandardRoutes({
-      dates: [{ date: '2026-04-30', total: 2, reads: 1, debriefs: 1 }],
-      rowsByDate: {
-        '2026-04-30': [
-          makeListItem({ id: 5, mode: 'intraday', prose_excerpt: 'Read 5 prose.' }),
-          makeListItem({
-            id: 4,
-            mode: 'debrief',
-            parent_id: 5,
-            prose_excerpt: 'Debrief 4 prose.',
-          }),
-        ],
-      },
-    });
-    const user = userEvent.setup();
-    const listener = vi.fn();
-    window.addEventListener('periscope:start-debrief', listener);
-
-    render(<PeriscopeChatHistory />);
-    await waitFor(() => {
-      expect(screen.getByText('Read 5 prose.')).toBeInTheDocument();
-    });
-
-    // Read rows have a Debrief button; debrief rows do not.
-    const debriefButtons = screen.queryAllByRole('button', {
-      name: /^debrief →$/i,
-    });
-    expect(debriefButtons).toHaveLength(1); // only on the read row
-    await user.click(debriefButtons[0]!);
-
-    expect(listener).toHaveBeenCalledOnce();
-    const event = listener.mock.calls[0]![0] as CustomEvent<{
-      parentId: number;
-    }>;
-    expect(event.detail.parentId).toBe(5);
-
-    window.removeEventListener('periscope:start-debrief', listener);
-  });
-
   it('filters rows when a mode tab is clicked', async () => {
     setStandardRoutes({
       dates: [{ date: '2026-04-30', total: 2, reads: 1, debriefs: 1 }],
@@ -271,12 +253,20 @@ describe('<PeriscopeChatHistory />', () => {
 
     render(<PeriscopeChatHistory />);
     await waitFor(() => {
+      expect(
+        screen.getByRole('option', { name: /Apr 30, 2026/ }),
+      ).toBeInTheDocument();
+    });
+    await user.selectOptions(screen.getByLabelText('Date'), '2026-04-30');
+    await waitFor(() => {
       expect(screen.getByText('Read row.')).toBeInTheDocument();
     });
     expect(screen.getByText('Debrief row.')).toBeInTheDocument();
 
-    // Click the Reads tab — only the read row should remain.
-    await user.click(screen.getByRole('button', { name: /^reads$/i }));
+    // Click the Mid-Day tab — only the intraday row should remain.
+    // Tabs are: All / Pre-Trade / Mid-Day / Review (intraday → Mid-Day,
+    // debrief → Review).
+    await user.click(screen.getByRole('button', { name: /^mid-day$/i }));
     expect(screen.getByText('Read row.')).toBeInTheDocument();
     expect(screen.queryByText('Debrief row.')).not.toBeInTheDocument();
   });

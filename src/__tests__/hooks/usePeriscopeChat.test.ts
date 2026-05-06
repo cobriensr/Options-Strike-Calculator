@@ -20,26 +20,67 @@ function makeFile(name = 'chart.png', type = 'image/png', bytes = 1024): File {
 }
 
 /**
+ * The hook fires GET /api/periscope-chat-list on mount when mode is
+ * intraday or debrief and parentId is null (auto-link). All submit-
+ * focused mocks must therefore handle that endpoint too — return an
+ * empty `items` list so the auto-link silently no-ops.
+ */
+function listResponse(): Response {
+  return {
+    ok: true,
+    status: 200,
+    json: () => Promise.resolve({ items: [] }),
+    text: () => Promise.resolve('{"items":[]}'),
+  } as unknown as Response;
+}
+
+/**
  * Mock fetch with NDJSON-shaped success body: 1 keepalive ping followed
- * by the final envelope.
+ * by the final envelope. List endpoint returns empty items.
  */
 function mockFetchSuccess(envelope: Record<string, unknown>) {
   const body = `{"ping":true}\n${JSON.stringify(envelope)}\n`;
-  globalThis.fetch = vi.fn().mockResolvedValue({
-    ok: true,
-    status: 200,
-    text: () => Promise.resolve(body),
-    json: () => Promise.resolve(envelope),
-  } as unknown as Response);
+  globalThis.fetch = vi.fn((url: RequestInfo) => {
+    const u = typeof url === 'string' ? url : (url as Request).url;
+    if (u.startsWith('/api/periscope-chat-list')) {
+      return Promise.resolve(listResponse());
+    }
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      text: () => Promise.resolve(body),
+      json: () => Promise.resolve(envelope),
+    } as unknown as Response);
+  }) as unknown as typeof globalThis.fetch;
 }
 
 function mockFetchHttpError(status: number, jsonBody: { error?: string } = {}) {
-  globalThis.fetch = vi.fn().mockResolvedValue({
-    ok: false,
-    status,
-    json: () => Promise.resolve(jsonBody),
-    text: () => Promise.resolve(JSON.stringify(jsonBody)),
-  } as unknown as Response);
+  globalThis.fetch = vi.fn((url: RequestInfo) => {
+    const u = typeof url === 'string' ? url : (url as Request).url;
+    if (u.startsWith('/api/periscope-chat-list')) {
+      return Promise.resolve(listResponse());
+    }
+    return Promise.resolve({
+      ok: false,
+      status,
+      json: () => Promise.resolve(jsonBody),
+      text: () => Promise.resolve(JSON.stringify(jsonBody)),
+    } as unknown as Response);
+  }) as unknown as typeof globalThis.fetch;
+}
+
+/**
+ * Returns just the calls fired against the submit endpoint, ignoring
+ * the auto-link list calls fired on mount. Tests that care about the
+ * submit payload should always go through this so they stay robust to
+ * the auto-link behavior.
+ */
+function submitCalls(): Array<[unknown, RequestInit | undefined]> {
+  const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+  return fetchMock.mock.calls.filter((c) => {
+    const url = typeof c[0] === 'string' ? c[0] : '';
+    return url.startsWith('/api/periscope-chat') && !url.startsWith('/api/periscope-chat-list');
+  }) as Array<[unknown, RequestInit | undefined]>;
 }
 
 // FileReader stub returning a `data:image/png;base64,xxx` URL so the
@@ -167,7 +208,9 @@ describe('usePeriscopeChat', () => {
   });
 
   it('submit without staged images surfaces an error and skips fetch', async () => {
-    globalThis.fetch = vi.fn();
+    globalThis.fetch = vi.fn(() =>
+      Promise.resolve(listResponse()),
+    ) as unknown as typeof globalThis.fetch;
     const { result } = renderHook(() => usePeriscopeChat());
 
     await act(async () => {
@@ -175,7 +218,9 @@ describe('usePeriscopeChat', () => {
     });
 
     expect(result.current.error).toMatch(/at least one screenshot/i);
-    expect(globalThis.fetch).not.toHaveBeenCalled();
+    // The auto-link list fetch may fire on mount, but submit must NOT
+    // post to /api/periscope-chat.
+    expect(submitCalls()).toHaveLength(0);
   });
 
   it('submit posts with the staged images and parses the NDJSON envelope', async () => {
@@ -223,10 +268,10 @@ describe('usePeriscopeChat', () => {
       expect(result.current.response).toEqual(envelope);
     });
     expect(result.current.error).toBeNull();
-    expect(globalThis.fetch).toHaveBeenCalledOnce();
+    const submits = submitCalls();
+    expect(submits).toHaveLength(1);
 
-    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
-    const [url, init] = fetchMock.mock.calls[0]!;
+    const [url, init] = submits[0]!;
     expect(url).toBe('/api/periscope-chat');
     const sentBody = JSON.parse((init as RequestInit).body as string) as {
       mode: string;
@@ -321,9 +366,10 @@ describe('usePeriscopeChat', () => {
       await result.current.submit();
     });
 
-    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+    const submits = submitCalls();
+    expect(submits).toHaveLength(1);
     const sentBody = JSON.parse(
-      (fetchMock.mock.calls[0]![1] as RequestInit).body as string,
+      (submits[0]![1] as RequestInit).body as string,
     ) as { parentId?: number; mode: string };
     expect(sentBody.mode).toBe('debrief');
     expect(sentBody.parentId).toBe(17);
