@@ -15,7 +15,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import PeriscopeChatAnnotations from './PeriscopeChatAnnotations.js';
 import { ProseView } from './PeriscopeProse.js';
+import PlaybookView from './PlaybookView.js';
 import { fmtTradingDate } from './format-utils.js';
+import type {
+  PeriscopeBias,
+  PeriscopeConfidence,
+  PeriscopeKeyLevels,
+} from './types.js';
 
 interface PeriscopeImageEntry {
   kind: string;
@@ -36,6 +42,14 @@ interface PeriscopeChatDetailRow {
   long_trigger: number | null;
   short_trigger: number | null;
   regime_tag: string | null;
+  bias: PeriscopeBias | null;
+  trade_types_recommended: string[];
+  trade_types_avoided: string[];
+  key_levels: PeriscopeKeyLevels | null;
+  expected_dealer_behavior: string | null;
+  confidence: PeriscopeConfidence | null;
+  confidence_basis: string | null;
+  futures_plan: string | null;
   calibration_quality: number | null;
   image_urls: PeriscopeImageEntry[];
   model: string;
@@ -228,6 +242,21 @@ export default function PeriscopeChatDetail({
           User context: {row.user_context}
         </div>
       )}
+
+      {/* Playbook — actionable summary, surfaces before prose. Hides
+          itself when every playbook field is empty (legacy rows). */}
+      <PlaybookView
+        fields={{
+          bias: row.bias,
+          trade_types_recommended: row.trade_types_recommended,
+          trade_types_avoided: row.trade_types_avoided,
+          key_levels: row.key_levels,
+          expected_dealer_behavior: row.expected_dealer_behavior,
+          confidence: row.confidence,
+          confidence_basis: row.confidence_basis,
+          futures_plan: row.futures_plan,
+        }}
+      />
 
       {/* Prose — rendered as markdown for proper headings, lists, tables */}
       <ProseView prose={row.prose_text} />

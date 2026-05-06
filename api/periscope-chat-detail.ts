@@ -60,6 +60,7 @@ interface PeriscopeChatDetailRow {
   expected_dealer_behavior: string | null;
   confidence: PeriscopeConfidence | null;
   confidence_basis: string | null;
+  futures_plan: string | null;
   parse_ok: boolean;
   calibration_quality: number | null;
   image_urls: PeriscopeImageEntry[];
@@ -162,6 +163,7 @@ function parseDetailRow(r: Record<string, unknown>): PeriscopeChatDetailRow {
       (r.expected_dealer_behavior as string | null) ?? null,
     confidence,
     confidence_basis: (r.confidence_basis as string | null) ?? null,
+    futures_plan: (r.futures_plan as string | null) ?? null,
     parse_ok: Boolean(r.parse_ok),
     calibration_quality:
       r.calibration_quality == null ? null : Number(r.calibration_quality),
@@ -214,7 +216,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
              long_trigger, short_trigger, regime_tag, bias,
              trade_types_recommended, trade_types_avoided, key_levels,
              expected_dealer_behavior, confidence, confidence_basis,
-             parse_ok, calibration_quality,
+             futures_plan, parse_ok, calibration_quality,
              image_urls, model, input_tokens, output_tokens,
              cache_read_tokens, cache_write_tokens, duration_ms,
              created_at
