@@ -4,9 +4,10 @@
  * Mirrors the orchestrator pattern in
  * src/components/ChartAnalysis/AnalysisHistory.tsx:
  *
- *   1. Mode filter tabs at the top (All / Reads / Debriefs)
+ *   1. Mode filter tabs at the top (All / Pre-Trade / Mid-Day / Review)
  *   2. Date dropdown — driven by /api/periscope-chat-list?dates=true
- *      (distinct trading_dates with per-mode counts)
+ *      (distinct trading_dates with per-mode counts). Always visible;
+ *      defaults to "Select a date..." sentinel.
  *   3. List of rows for the selected (date, mode) pair, fetched via
  *      /api/periscope-chat-list?date=YYYY-MM-DD
  *   4. Click a row to expand its full detail inline
@@ -23,6 +24,8 @@ import { SectionBox } from '../ui/SectionBox';
 import PeriscopeChatDetail from './PeriscopeChatDetail.js';
 import { PERISCOPE_DEBRIEF_EVENT } from './PeriscopeChat.js';
 import { fmtTradingDate } from './format-utils.js';
+import { theme } from '../../themes';
+import { tint } from '../../utils/ui-utils.js';
 
 /**
  * Dispatch a window event the chat panel listens for. Window event
@@ -70,7 +73,7 @@ interface DateEntry {
   debriefs: number;
 }
 
-type ModeFilter = 'all' | 'forward' | 'debrief';
+type ModeFilter = 'all' | 'pre_trade' | 'intraday' | 'debrief';
 
 // ============================================================
 // Formatters & style maps
@@ -148,28 +151,27 @@ function modeTint(mode: PeriscopeRowMode): string {
   return 'border-emerald-900/30 bg-emerald-950/10';
 }
 
-/** Treat pre_trade + intraday as forward-looking reads (vs. backward debriefs). */
-function isForwardMode(mode: PeriscopeRowMode): boolean {
-  return mode === 'pre_trade' || mode === 'intraday';
-}
-
 const MODE_TABS: Array<{ key: ModeFilter; label: string }> = [
   { key: 'all', label: 'All' },
-  { key: 'forward', label: 'Reads' },
-  { key: 'debrief', label: 'Debriefs' },
+  { key: 'pre_trade', label: 'Pre-Trade' },
+  { key: 'intraday', label: 'Mid-Day' },
+  { key: 'debrief', label: 'Review' },
 ];
 
-function modeTabStyle(active: boolean, mode: ModeFilter): string {
-  if (!active) {
-    return 'border-edge text-muted hover:text-primary border bg-transparent';
-  }
-  if (mode === 'forward') {
-    return 'border-emerald-700/60 bg-emerald-900/30 text-emerald-200 border';
-  }
-  if (mode === 'debrief') {
-    return 'border-purple-700/60 bg-purple-900/30 text-purple-200 border';
-  }
-  return 'border-edge bg-surface text-primary border';
+/** Per-mode color used for active tab tinting. Mirrors `modeTint()` rows. */
+function modeTabColor(mode: ModeFilter): string {
+  if (mode === 'pre_trade') return '#38BDF8'; // sky-400 — matches the sky-tinted row strip
+  if (mode === 'intraday') return '#34D399'; // emerald-400
+  if (mode === 'debrief') return '#A78BFA';
+  return theme.text;
+}
+
+/** Per-mode count for a given DateEntry. Used in the date dropdown options. */
+function dateCount(d: DateEntry, filter: ModeFilter): number {
+  if (filter === 'pre_trade') return d.pre_trades ?? 0;
+  if (filter === 'intraday') return d.intradays ?? 0;
+  if (filter === 'debrief') return d.debriefs;
+  return d.total;
 }
 
 // ============================================================
@@ -208,18 +210,15 @@ export default function PeriscopeChatHistory() {
         const data = (await res.json()) as { dates: DateEntry[] };
         if (ac.signal.aborted) return;
         setDates(data.dates);
-        // Default to the most recent date so the panel isn't empty
-        // for users with existing history.
-        if (data.dates.length > 0 && !selectedDate) {
-          setSelectedDate(data.dates[0]!.date);
-        }
+        // Date is left unselected by default — the dropdown shows
+        // "Select a date..." and the user picks. Mirrors the analysis-
+        // history pattern so both panels behave the same.
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') return;
         setDatesError('Failed to load dates');
       }
     })();
     return () => ac.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only
   }, []);
 
   // Fetch rows for the selected date.
@@ -267,16 +266,13 @@ export default function PeriscopeChatHistory() {
   );
 
   // Apply mode filter + annotation overrides to the fetched rows.
-  // The 'forward' tab buckets pre_trade + intraday (forward-looking reads)
-  // and is rendered as "Reads" in the UI for continuity with the original
-  // 2-mode vocabulary; the internal key uses 'forward' to reflect what the
-  // bucket actually contains under the 3-mode lifecycle.
+  // Mode keys map directly to row.mode now ('all' shows everything,
+  // 'pre_trade' / 'intraday' / 'debrief' filter to that exact mode).
   const filtered = useMemo(() => {
     return items
       .filter((it) => {
         if (modeFilter === 'all') return true;
-        if (modeFilter === 'debrief') return it.mode === 'debrief';
-        return isForwardMode(it.mode);
+        return it.mode === modeFilter;
       })
       .map((it) => {
         const o = annotationOverrides[it.id];
@@ -295,18 +291,27 @@ export default function PeriscopeChatHistory() {
       defaultCollapsed={true}
     >
       <div className="flex flex-col gap-3">
-        {/* Mode filter tabs */}
+        {/* Mode filter tabs — visual parity with AnalysisHistoryPicker */}
         <div className="flex flex-wrap gap-1.5">
-          {MODE_TABS.map(({ key, label }) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setModeFilter(key)}
-              className={`cursor-pointer rounded-full px-3 py-1 font-mono text-[10px] font-semibold tracking-wide uppercase transition ${modeTabStyle(modeFilter === key, key)}`}
-            >
-              {label}
-            </button>
-          ))}
+          {MODE_TABS.map(({ key, label }) => {
+            const active = modeFilter === key;
+            const color = modeTabColor(key);
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setModeFilter(key)}
+                className="cursor-pointer rounded-full px-3 py-1.5 font-mono text-[10px] font-semibold transition-all duration-100"
+                style={{
+                  backgroundColor: active ? tint(color, '15') : 'transparent',
+                  color: active ? color : theme.textMuted,
+                  border: `1.5px solid ${active ? color + '40' : theme.border}`,
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
         </div>
 
         {datesError && (
@@ -318,40 +323,37 @@ export default function PeriscopeChatHistory() {
           </div>
         )}
 
-        {/* Date dropdown */}
-        {dates.length > 0 && (
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="min-w-[200px] flex-1">
-              <label
-                htmlFor="periscope-date-picker"
-                className="text-muted mb-1 block font-sans text-[9px] font-bold tracking-wider uppercase"
-              >
-                Trading day
-              </label>
-              <select
-                id="periscope-date-picker"
-                value={selectedDate}
-                onChange={(e) => {
-                  setSelectedDate(e.target.value);
-                  setOpenRowId(null);
-                }}
-                className="bg-surface text-primary border-edge w-full cursor-pointer appearance-none rounded-md border px-3 py-1.5 font-mono text-xs transition focus:border-[var(--color-accent)] focus:outline-none"
-              >
-                {dates.map((d) => {
-                  const count =
-                    modeFilter === 'forward'
-                      ? d.reads
-                      : modeFilter === 'debrief'
-                        ? d.debriefs
-                        : d.total;
-                  return (
-                    <option key={d.date} value={d.date}>
-                      {fmtDateOption(d.date)} ({count})
-                    </option>
-                  );
-                })}
-              </select>
-            </div>
+        {/* Date dropdown — always visible; matches AnalysisHistoryPicker */}
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="min-w-[200px] flex-1">
+            <label
+              htmlFor="periscope-date-picker"
+              className="text-muted mb-1 block font-sans text-[9px] font-bold tracking-wider uppercase"
+            >
+              Date
+            </label>
+            <select
+              id="periscope-date-picker"
+              value={selectedDate}
+              onChange={(e) => {
+                setSelectedDate(e.target.value);
+                setOpenRowId(null);
+              }}
+              className="bg-input border-edge-strong hover:border-edge-heavy w-full cursor-pointer appearance-none rounded-lg border-[1.5px] px-3 py-2 font-mono text-[12px] transition-[border-color] duration-150 outline-none"
+              style={{ color: theme.text }}
+            >
+              <option value="">Select a date...</option>
+              {dates.map((d) => {
+                const count = dateCount(d, modeFilter);
+                return (
+                  <option key={d.date} value={d.date}>
+                    {fmtDateOption(d.date)} ({count})
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+          {selectedDate && (
             <div className="text-muted text-[10px]">
               {totalCount > 0 && filteredCount !== totalCount ? (
                 <span>
@@ -361,8 +363,8 @@ export default function PeriscopeChatHistory() {
                 <span>{totalCount} rows</span>
               )}
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
         {/* Empty state — no history at all */}
         {dates.length === 0 && !datesError && (
@@ -392,9 +394,11 @@ export default function PeriscopeChatHistory() {
               No{' '}
               {modeFilter === 'all'
                 ? 'rows'
-                : modeFilter === 'forward'
-                  ? 'reads'
-                  : 'debriefs'}{' '}
+                : modeFilter === 'pre_trade'
+                  ? 'pre-trade reads'
+                  : modeFilter === 'intraday'
+                    ? 'intraday reads'
+                    : 'debriefs'}{' '}
               for {fmtTradingDate(selectedDate)}.
             </p>
           )}
@@ -494,7 +498,7 @@ export default function PeriscopeChatHistory() {
                     </p>
                   )}
                 </button>
-                {isForwardMode(item.mode) && (
+                {(item.mode === 'pre_trade' || item.mode === 'intraday') && (
                   <button
                     type="button"
                     onClick={() => emitStartDebrief(item.id)}
