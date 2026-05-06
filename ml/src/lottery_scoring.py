@@ -120,14 +120,25 @@ def compute_ticker_stats(df: pd.DataFrame) -> pd.DataFrame:
 def define_score_weights(ticker_stats: pd.DataFrame) -> dict:
     """
     Define scoring weights based on ticker stats distribution.
-    
+
     Returns dict with weight mappings for each factor.
     """
-    # Ticker boost: 0-10 points based on high-peak rate
+    # Ticker boost: 0-10 points based on high-peak rate.
+    # CRITICAL: filter to statistically reliable tickers BEFORE ranking.
+    # Without this, tickers with 50-80 fires can land at the top by
+    # chance (CI width 20pp+) and crowd out high-volume names whose
+    # smaller raw rate is a much more reliable edge. The `tier` column
+    # is set to 'reliable' when Wilson CI width <10pp.
+    reliable = ticker_stats[ticker_stats['tier'] == 'reliable']
+    if len(reliable) < 15:
+        # Fall back to widening the bar if we don't have 15 reliable
+        # tickers yet (early-history case). Include 'borderline' (no
+        # label, 10≤CI<15) before going to 'uncertain'.
+        reliable = ticker_stats[ticker_stats['tier'] != 'uncertain']
     # Top 5 tickers get 10, next 5 get 7, next 5 get 5, rest get 0
-    top_tickers = ticker_stats.nlargest(5, 'high_peak_rate')['ticker'].tolist()
-    mid_tickers = ticker_stats.nlargest(10, 'high_peak_rate').tail(5)['ticker'].tolist()
-    good_tickers = ticker_stats.nlargest(15, 'high_peak_rate').tail(5)['ticker'].tolist()
+    top_tickers = reliable.nlargest(5, 'high_peak_rate')['ticker'].tolist()
+    mid_tickers = reliable.nlargest(10, 'high_peak_rate').tail(5)['ticker'].tolist()
+    good_tickers = reliable.nlargest(15, 'high_peak_rate').tail(5)['ticker'].tolist()
     
     ticker_weights = {}
     for ticker in top_tickers:

@@ -11,6 +11,11 @@
 #                     parquet, uploads to Vercel Blob, and deletes the
 #                     source CSV only after both writes + upload succeed
 #   3. whale_plots  — regenerates all 13 visualizations under ml/plots/whale-detection/
+#   4. enrich       — replays the EOD parquet against unenriched
+#                     lottery_finder_fires rows in Postgres, populating
+#                     the realized_*_pct + peak_ceiling_pct + minutes_to_peak
+#                     columns. Replaces the Vercel cron, which can only see
+#                     the partial ws_option_trades stream.
 #
 # Override the date with DATE=YYYY-MM-DD if needed:
 #     make nightly DATE=2026-04-29
@@ -24,6 +29,7 @@ SHELL := /bin/bash
 
 PYTHON      := ml/.venv/bin/python
 INPUT_DIR   ?= $(HOME)/Downloads/EOD-OptionFlow
+PARQUET_DIR ?= $(HOME)/Desktop/Bot-Eod-parquet
 ENV_FILE    := .env.local
 
 # Auto-detect the latest CSV's date if DATE is not provided.
@@ -34,16 +40,26 @@ DATE        ?= $(shell ls -1 $(INPUT_DIR)/bot-eod-report-*.csv 2>/dev/null \
 
 CSV_PATH    := $(INPUT_DIR)/bot-eod-report-$(DATE).csv
 
-.PHONY: help nightly analyze ingest plots check dry-run clean
+.PHONY: help nightly nightly-resume analyze ingest plots backfill-flow enrich refit update tune check dry-run clean
 
 help:
 	@echo "EOD options-flow pipeline targets:"
 	@echo ""
-	@echo "  make nightly                  Run full pipeline (analyze → ingest → plots)"
+	@echo "  make nightly                  Run full pipeline (analyze → ingest → plots → enrich)"
+	@echo "                                Auto-falls-back to plots+enrich if the parquet"
+	@echo "                                already exists for the latest date (CSV consumed"
+	@echo "                                by a previous invocation)."
 	@echo "  make nightly DATE=YYYY-MM-DD  Run pipeline for a specific date"
 	@echo "  make analyze                  EDA only (does NOT delete the CSV)"
 	@echo "  make ingest                   CSV → parquet → Blob upload + delete CSV"
 	@echo "  make plots                    Regenerate visualizations only (no CSV needed)"
+	@echo "  make enrich                   Backfill lottery_finder_fires realized_*_pct from EOD parquet"
+	@echo "  make refit                    Refit lottery score weights from enriched fires + backfill score column"
+	@echo "  make update                   Run after \`make nightly\`: refit + exit-policy search +"
+	@echo "                                feature audit + daily-tracker CSV append. Fast (~1m) — designed"
+	@echo "                                to run nightly so day-over-day drift is captured."
+	@echo "  make tune                     Heavy parameter grid for flow-inversion (~25m). Run weekly,"
+	@echo "                                not nightly — same dataset every night doesn't move the answer."
 	@echo "  make dry-run                  Run analyze + ingest --dry-run + plots"
 	@echo "  make check                    Sanity-check date detection and env"
 	@echo ""
@@ -78,14 +94,14 @@ check:
 analyze: check
 	@echo ""
 	@echo "════════════════════════════════════════════════════════════════"
-	@echo "  STEP 1/3 — analyze.py (EDA + per-day parquet aggregate)"
+	@echo "  STEP 1/4 — analyze.py (EDA + per-day parquet aggregate)"
 	@echo "════════════════════════════════════════════════════════════════"
 	$(PYTHON) scripts/eod-flow-analysis/analyze.py --day $(DATE)
 
 ingest: check
 	@echo ""
 	@echo "════════════════════════════════════════════════════════════════"
-	@echo "  STEP 2/3 — ingest-flow.py (CSV → Archive → Parquet → Blob → delete CSV)"
+	@echo "  STEP 2/4 — ingest-flow.py (CSV → Archive → Parquet → Blob → delete CSV)"
 	@echo "════════════════════════════════════════════════════════════════"
 	set -a && source $(ENV_FILE) && set +a && \
 	  $(PYTHON) scripts/ingest-flow.py $(DATE)
@@ -93,17 +109,96 @@ ingest: check
 plots:
 	@echo ""
 	@echo "════════════════════════════════════════════════════════════════"
-	@echo "  STEP 3/3 — whale_plots.py (13 visualizations)"
+	@echo "  STEP 3/4 — whale_plots.py (13 visualizations)"
 	@echo "════════════════════════════════════════════════════════════════"
 	$(PYTHON) ml/src/whale_plots.py
 
-nightly: analyze ingest plots
+backfill-flow:
+	@echo ""
+	@echo "════════════════════════════════════════════════════════════════"
+	@echo "  STEP 4/5 — backfill_net_flow_history.py (UW REST → Postgres)"
+	@echo "════════════════════════════════════════════════════════════════"
+	@# Idempotent (ON CONFLICT DO NOTHING). Mirrors the Vercel cron
+	@# fetch-net-flow-history; runs locally so flow-inversion can compute
+	@# even when the deployed cron silently fails.
+	$(PYTHON) scripts/backfill_net_flow_history.py
+
+enrich:
+	@echo ""
+	@echo "════════════════════════════════════════════════════════════════"
+	@echo "  STEP 5/5 — enrich_lottery_outcomes.py (replay parquet → Postgres)"
+	@echo "════════════════════════════════════════════════════════════════"
+	@# Auto-detects the date from the latest *-trades.parquet so this
+	@# still works after `ingest` has deleted the source CSV (which makes
+	@# `$(DATE)` resolve to empty here). Two passes:
+	@#   1. trail/hard/tier50/peak/eod/min_to_peak from parquet
+	@#   2. flow_inversion from parquet NBBO mids + net_flow_per_ticker_history
+	$(PYTHON) scripts/enrich_lottery_outcomes.py
+
+refit:
+	@echo ""
+	@echo "════════════════════════════════════════════════════════════════"
+	@echo "  REFIT — recompute ticker weights + backfill scores"
+	@echo "════════════════════════════════════════════════════════════════"
+	$(PYTHON) ml/src/lottery_scoring.py
+	$(PYTHON) scripts/sync_lottery_score_weights.py
+	$(PYTHON) scripts/backfill_lottery_scores.py
+
+update: refit
+	@echo ""
+	@echo "════════════════════════════════════════════════════════════════"
+	@echo "  UPDATE — daily research refresh (after nightly enrichment)"
+	@echo "════════════════════════════════════════════════════════════════"
+	@# Each script auto-detects the latest enriched fire date from the
+	@# DB and writes a date-stamped report to docs/tmp/ so day-over-day
+	@# diffs are easy. The CSV tracker keeps a one-line-per-day rollup
+	@# of the headline metrics for trend charting.
+	$(PYTHON) scripts/exit_policy_search.py
+	$(PYTHON) scripts/feature_audit.py
+	$(PYTHON) scripts/daily_tracker.py
+	@echo ""
+	@echo "  ✅ daily research artifacts:"
+	@echo "     docs/tmp/lottery-exit-policy-search-YYYY-MM-DD.md"
+	@echo "     docs/tmp/lottery-feature-audit-YYYY-MM-DD.md"
+	@echo "     docs/tmp/lottery-tracking.csv  (cumulative one-row-per-day)"
+
+tune:
+	@echo ""
+	@echo "════════════════════════════════════════════════════════════════"
+	@echo "  TUNE — flow-inversion parameter grid (heavy, ~25m)"
+	@echo "════════════════════════════════════════════════════════════════"
+	@# 84 (prom × window × persist) combos × 63K fires per mode. Pure-
+	@# Python loops — slow but cache-warm-friendly. Run weekly: the
+	@# answer doesn't move on a single new day of data.
+	$(PYTHON) scripts/tune_flow_inversion.py
+
+# Resume target — `plots + enrich` only. Useful when the CSV has
+# already been consumed by `ingest` in a previous invocation but the
+# parquet is still on disk. `nightly` auto-dispatches into this when
+# the CSV gate fails but a parquet exists.
+nightly-resume: plots backfill-flow enrich
+	@# No prereq on the CSV — assumes ingest already happened.
+
+nightly:
+	@if [[ -f "$(CSV_PATH)" ]]; then \
+	  echo "→ CSV found at $(CSV_PATH) — running full pipeline"; \
+	  $(MAKE) --no-print-directory analyze ingest plots backfill-flow enrich; \
+	elif ls -1 $(PARQUET_DIR)/*-trades.parquet >/dev/null 2>&1; then \
+	  echo "→ No CSV in $(INPUT_DIR), but parquet already on disk in $(PARQUET_DIR)"; \
+	  echo "  (CSV was consumed by a previous invocation — running plots + backfill-flow + enrich only)"; \
+	  $(MAKE) --no-print-directory nightly-resume; \
+	else \
+	  echo "❌ No CSV in $(INPUT_DIR) and no parquet in $(PARQUET_DIR)."; \
+	  echo "   Drop a bot-eod-report-YYYY-MM-DD.csv first."; \
+	  exit 2; \
+	fi
 	@# Final summary is printed by ml/src/whale_plots.py (the `plots` step) so
 	@# the date is sourced from the loaded data, not from `$(DATE)` — which
 	@# resolves to empty here because `?= $(shell ls ...)` re-runs after the
 	@# CSV has been deleted by `ingest`.
 
 dry-run: check
+	@# Intentionally omits `enrich` — dry-run skips DB writes by contract.
 	@echo ""
 	@echo "════════════════════════════════════════════════════════════════"
 	@echo "  DRY RUN — analyze + ingest --dry-run + plots"

@@ -10,10 +10,10 @@ import {
 
 describe('computeLotteryScore', () => {
   it('returns the maximum score for a top-tier 0DTE call', () => {
-    // USAR (10) + 0DTE (5) + price ≤ $0.50 (5) + AM_open (3) + call (2)
+    // USO (10) + 0DTE (5) + price ≤ $0.50 (5) + AM_open (3) + call (2)
     expect(
       computeLotteryScore({
-        ticker: 'USAR',
+        ticker: 'USO',
         mode: 'A_intraday_0DTE',
         entryPrice: 0.4,
         tod: 'AM_open',
@@ -62,9 +62,10 @@ describe('computeLotteryScore', () => {
   });
 
   it('does not give 0DTE credit to OUT_OF_UNIVERSE mode', () => {
+    // Use an unweighted ticker so the assertion isolates the mode bucket.
     expect(
       computeLotteryScore({
-        ticker: 'TSLA',
+        ticker: 'AAPL',
         mode: 'OUT_OF_UNIVERSE',
         entryPrice: 0.3,
         tod: 'AM_open',
@@ -74,9 +75,9 @@ describe('computeLotteryScore', () => {
   });
 
   it('matches the weights table for known tickers', () => {
-    expect(LOTTERY_TICKER_WEIGHTS.USAR).toBe(10);
-    expect(LOTTERY_TICKER_WEIGHTS.RDDT).toBe(7);
-    expect(LOTTERY_TICKER_WEIGHTS.RUTW).toBe(5);
+    expect(LOTTERY_TICKER_WEIGHTS.SNDK).toBe(10);
+    expect(LOTTERY_TICKER_WEIGHTS.NVDA).toBe(7);
+    expect(LOTTERY_TICKER_WEIGHTS.COIN).toBe(5);
     expect(LOTTERY_TICKER_WEIGHTS.AAPL).toBeUndefined();
   });
 });

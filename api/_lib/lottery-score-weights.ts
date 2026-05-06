@@ -1,9 +1,13 @@
 /**
- * Lottery fire score weights — derived from the 21-day historical
- * window in `ml/src/lottery_scoring.py` and frozen as a TypeScript
- * constant. Source-of-truth is `ml/data/lottery_score_weights.json`;
- * this module mirrors that file inline so the cron handler doesn't
- * touch the filesystem at runtime.
+ * Lottery fire score weights — derived from a rolling historical window
+ * by `ml/src/lottery_scoring.py` and frozen as a TypeScript constant.
+ * Source-of-truth is `ml/data/lottery_score_weights.json`; this module
+ * mirrors that file inline so the cron handler doesn't touch the
+ * filesystem at runtime.
+ *
+ * Regenerate via `make refit` (which runs the refit + this sync script
+ * + a score backfill). Do NOT hand-edit — changes will be lost on the
+ * next refit.
  *
  * Score formula (sum of buckets, range 0-25):
  *   ticker (0/5/7/10) + mode (0/5) + price (0/3/5) + tod (0/2/3) + option_type (0/2)
@@ -17,21 +21,21 @@
 import type { LotteryMode, TimeOfDay } from './lottery-finder.js';
 
 export const LOTTERY_TICKER_WEIGHTS: Readonly<Record<string, number>> = {
-  USAR: 10,
-  TEAM: 10,
-  WMT: 10,
-  XOM: 10,
   SNDK: 10,
-  RDDT: 7,
-  TSM: 7,
-  SOUN: 7,
-  SOFI: 7,
-  STX: 7,
-  RUTW: 5,
-  SNOW: 5,
-  TSLL: 5,
-  RIVN: 5,
-  TNA: 5,
+  USO: 10,
+  SLV: 10,
+  SOXL: 10,
+  TSLA: 10,
+  TQQQ: 7,
+  AMZN: 7,
+  NVDA: 7,
+  QQQ: 7,
+  AMD: 7,
+  MSFT: 5,
+  GOOG: 5,
+  MRVL: 5,
+  GOOGL: 5,
+  COIN: 5,
 };
 
 /** ($ entry price ≤ threshold → points). Evaluated in order; first match wins. */
