@@ -122,9 +122,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(502).json({ error: 'Failed to fetch image' });
     }
 
-    // The blob path includes a random suffix (set at upload time), so
-    // the same id+kind always resolves to the same immutable bytes —
-    // safe to cache aggressively at the browser.
+    // The blob path embeds a deterministic UUID per submission (set at
+    // upload time), so the same id+kind always resolves to the same
+    // immutable bytes — safe to cache aggressively at the browser.
     res.setHeader('Content-Type', 'image/png');
     res.setHeader('Cache-Control', 'private, max-age=86400, immutable');
     const contentLength = blobResp.headers.get('content-length');

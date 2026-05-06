@@ -3,42 +3,55 @@
  *
  * Manual Periscope chart analysis endpoint. The frontend uploads 1-3
  * screenshots (Periscope chart + GEX heat map + Charm heat map), picks
- * Read or Debrief mode, and gets back a structured Claude analysis using
- * the `periscope` skill. Response + embedding are persisted to
- * `periscope_analyses` (migration 103) for retrieval and calibration.
+ * a mode (`pre_trade` / `intraday` / `debrief`), supplies `read_date`
+ * and `read_time`, and gets back a structured trading playbook
+ * generated via the `periscope` skill. Response + embedding are
+ * persisted to `periscope_analyses` (rebuilt in migration 130, original
+ * shape from migration 103) for retrieval, calibration, and ML
+ * similarity over chained read trajectories.
  *
- * Architecture mirrors /api/trace-live-analyze, with one extension
- * (Phase 9 — two Opus 4.7 calls per submission):
- *   - Pass 1 (extractChartStructure): a fast vision-only Opus call
- *     reads the spot + cone bounds from the chart screenshot. The
- *     extracted fingerprint feeds the retrieval embedding so we
- *     match past reads by chart topology, not by prose context note.
- *   - Pass 2 (callModel): the full analysis with calibration +
- *     retrieval blocks injected as cached system prefixes.
+ * Architecture (three Opus 4.7 calls per submission):
+ *   - Pass 1A (extractChartStructure): vision-only, reads spot,
+ *     cone_lower, cone_upper, chart_date from the chart screenshot.
+ *   - Pass 1B (extractHeatMapStrikes): vision-only, reads top-N
+ *     positive/negative MM-attributed Net GEX + Net Charm strikes
+ *     from the heat-map screenshots (skipped when no heat maps
+ *     uploaded — common for pre_trade chart-only flow).
+ *   - Pass 2 (callModel): full analysis with high-effort thinking.
+ *     System prompt has 4 cached text blocks (skill, VolSignals
+ *     references, calibration, retrieval). User content carries the
+ *     mode header, authoritative spot from `index_candles_1m` lookup,
+ *     parent-chain summary (intraday/debrief), `ws_flow_alerts` block,
+ *     heat-map injected values, and the image attachments.
  *   - NDJSON streaming response with 30s keepalive pings (Opus 4.7 +
  *     adaptive thinking high effort can take 3-9 minutes; non-streaming
  *     POST gets killed by intermediate proxies at ~5 min idle).
- *   - Cached system prompt (the periscope skill content, ~10K tokens
- *     stable, ttl: 1h ephemeral cache).
- *   - Per-image Vercel Blob upload via uploadPeriscopeImages (best-effort).
+ *   - Per-image Vercel Blob upload via uploadPeriscopeImages
+ *     (best-effort, isolated from embedding so a blob failure cannot
+ *     lose the persisted row).
  *   - Embedding from buildPeriscopeSummary() over structured fields +
- *     prose excerpt — text-embedding-3-large @ 2000 dims.
+ *     mode + prose excerpt — text-embedding-3-large @ 2000 dims.
  *
  * Response parsing:
- *   - Claude is instructed (via the skill) to append a fenced JSON code
- *     block at the end of the prose with {spot, cone_lower, cone_upper,
- *     long_trigger, short_trigger, regime_tag}. This endpoint extracts
- *     the LAST fenced ```json block, parses it, and stores the typed
- *     fields. Prose is saved with the JSON block stripped.
- *   - On parse failure: row still saves with NULL structured fields and
- *     a Sentry event. Better to have prose without typed columns than no
- *     row at all.
+ *   - Claude appends a trailing fenced JSON block per the skill's
+ *     "Structured trading playbook output" section (spot, cone_lower,
+ *     cone_upper, long_trigger, short_trigger, regime_tag, bias,
+ *     trade_types_recommended/avoided, key_levels, expected_dealer_
+ *     behavior, confidence, confidence_basis). Parsing delegates to
+ *     `parseTrailingJsonBlock` (api/_lib/json-fence.ts).
+ *   - On parse failure: row still saves with NULL structured fields,
+ *     `parse_ok=false`, and a Sentry event. Better to have prose
+ *     without typed columns than no row at all.
  *
  * Auth: owner-only (rejectIfNotOwner via guardOwnerEndpoint). This is
  * Anthropic-API-backed and incurs per-call cost; guest path is
  * intentionally not enabled.
  *
- * Spec: docs/superpowers/specs/periscope-chat-2026-04-30.md
+ * Specs:
+ *   - docs/superpowers/specs/periscope-chat-2026-04-30.md (original)
+ *   - docs/superpowers/specs/periscope-chat-overhaul-2026-05-05.md
+ *     (3-mode lifecycle, DB rebuild, Pass 1B heat-map OCR,
+ *     ws_flow_alerts integration, references-block wiring)
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
