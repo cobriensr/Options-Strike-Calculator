@@ -103,7 +103,7 @@ const anthropic = new Anthropic({
 
 const MODEL = 'claude-opus-4-7';
 
-// Skill text loaded once at module init. The .claude/skills/**/SKILL.md
+// Skill text loaded once at module init. The .claude/skills/**/*.md
 // glob is in vercel.json includeFiles so the file ships with the
 // function bundle; SKILLS_DIR resolves relative to this module.
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -120,6 +120,42 @@ const PERISCOPE_SKILL = readFileSync(
 // editing the skill invalidates the cache, which is the desired
 // invalidation boundary.
 const SYSTEM_TEXT = PERISCOPE_SKILL;
+
+// VolSignals MM-heuristics references file. Distilled from former-MM
+// commentary (Imran Lakha / VolSignals) — Phase 4 of the periscope-chat
+// overhaul spec. Loaded as a separate cached system block so updates to
+// the references invalidate that block independently of the skill.
+//
+// Defensive fallback: the .claude/skills/**/*.md glob in vercel.json
+// includeFiles already covers this path (see commit b8453638), but if
+// the file fails to load for any reason we log a Sentry event and
+// continue without it. The skill works without references —
+// references-as-augmentation is the intent.
+let PERISCOPE_REFERENCES: string | null = null;
+try {
+  PERISCOPE_REFERENCES = readFileSync(
+    join(SKILLS_DIR, 'periscope', 'references', 'vol-signals-mm-heuristics.md'),
+    'utf8',
+  );
+} catch (err) {
+  // Module-init Sentry capture: surfaced to telemetry but does not
+  // crash the function bundle. Subsequent reads will simply skip the
+  // references block — fall back to skill-only behavior.
+  Sentry.captureException(err, {
+    tags: { module: 'periscope-chat', stage: 'references_load' },
+  });
+}
+
+// Header prepended to the references file when injected as a cached
+// system block. Tells the model how to interpret the verification tags
+// and how the references layer relative to the skill body.
+const PERISCOPE_REFERENCES_HEADER = `# Companion reference — VolSignals MM heuristics
+
+Below are distilled heuristics from former-MM commentary (Imran Lakha / VolSignals). Use them as INFORMED-PRIOR for dealer-flow reasoning when relevant to the read in front of you. Each entry has a verification tag — \`[verified]\` (first-principles math), \`[plausible]\` (Imran's framing, internally consistent), \`[era-specific]\` (pre-2024 / low-VIX-regime context, may not apply today), \`[contested]\` (conflicts with other framings — flag explicitly when citing). Quote tags in parentheses when you cite. The skill body in the prior system block remains the source of truth on Periscope mechanics; these heuristics layer on top, they don't override.
+
+---
+
+`;
 
 interface CallResult {
   text: string;
@@ -148,14 +184,22 @@ async function callModel(
   //
   // System prompt structure (Anthropic supports up to 4 cache breakpoints):
   //   1. Skill text (cached) — stable per skill version
-  //   2. Calibration block (cached, optional) — changes when user
+  //   2. References (cached, optional) — VolSignals MM-heuristics
+  //      companion file. Stable across days; invalidates only when the
+  //      distillation file is updated. Skipped if the file failed to
+  //      load at module init.
+  //   3. Calibration block (cached, optional) — changes when user
   //      stars/unstars or re-tags a starred read; daily-stable in
   //      practice. Skipped entirely when no gold examples exist.
-  //   3. Retrieval block (cached, optional) — top-K past reads with
+  //   4. Retrieval block (cached, optional) — top-K past reads with
   //      embedding similarity to the user's context note. Skipped
   //      when no context or no above-floor matches. Cache hit rate
   //      depends on the user repeating the same context phrasing,
   //      which they often do ("morning open", "midday flush", etc.)
+  //
+  // Order matters: highest-stability content first so a downstream
+  // dynamic block (calibration or retrieval) can't poison cache for
+  // the more stable upstream blocks.
   const systemBlocks: Anthropic.Messages.TextBlockParam[] = [
     {
       type: 'text',
@@ -163,6 +207,13 @@ async function callModel(
       cache_control: { type: 'ephemeral', ttl: '1h' },
     },
   ];
+  if (PERISCOPE_REFERENCES != null) {
+    systemBlocks.push({
+      type: 'text',
+      text: PERISCOPE_REFERENCES_HEADER + PERISCOPE_REFERENCES,
+      cache_control: { type: 'ephemeral', ttl: '1h' },
+    });
+  }
   if (calibrationBlock != null) {
     systemBlocks.push({
       type: 'text',
@@ -281,7 +332,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // is the new authoritative source (Phase 6B); body.tradingDate is a
   // legacy back-compat field that wins only when read_date isn't set
   // (callers in transition).
-  const tradingDate = body.read_date ?? body.tradingDate ?? capturedAt.slice(0, 10);
+  const tradingDate =
+    body.read_date ?? body.tradingDate ?? capturedAt.slice(0, 10);
 
   try {
     // Phase 6B: look up SPX spot at the user-picked (read_date, read_time)

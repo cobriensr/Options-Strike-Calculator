@@ -8,6 +8,31 @@ import { mockRequest, mockResponse } from './helpers';
 // Module mocks (hoisted above imports of the handler)
 // ============================================================
 
+// Capture readFileSync calls at module init so the
+// "loads SKILL.md and references at module init" test can verify both
+// paths were read. The mock falls through to the real fs (the bundled
+// files exist on disk in this repo, and the production function ships
+// them via vercel.json includeFiles), but records which paths were read.
+// vi.hoisted() makes the array available inside the hoisted vi.mock.
+const { readFileSyncCalls } = vi.hoisted(() => ({
+  readFileSyncCalls: [] as string[],
+}));
+vi.mock('node:fs', async () => {
+  const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+  return {
+    ...actual,
+    readFileSync: vi.fn(
+      (
+        path: Parameters<typeof actual.readFileSync>[0],
+        options?: Parameters<typeof actual.readFileSync>[1],
+      ) => {
+        readFileSyncCalls.push(typeof path === 'string' ? path : String(path));
+        return actual.readFileSync(path, options);
+      },
+    ),
+  };
+});
+
 vi.mock('../_lib/api-helpers.js', () => ({
   guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
   rejectIfRateLimited: vi.fn().mockResolvedValue(false),
@@ -83,9 +108,9 @@ vi.mock('../_lib/periscope-extract.js', () => ({
 }));
 
 vi.mock('../_lib/spx-candles.js', async () => {
-  const actual = await vi.importActual<
-    typeof import('../_lib/spx-candles.js')
-  >('../_lib/spx-candles.js');
+  const actual = await vi.importActual<typeof import('../_lib/spx-candles.js')>(
+    '../_lib/spx-candles.js',
+  );
   return {
     ...actual,
     fetchSPXSpotAtTimestamp: vi
@@ -710,10 +735,12 @@ describe('POST /api/periscope-chat', () => {
     await handler(req, res);
 
     const params = mockStream.mock.calls[0]![0];
-    expect(params.system).toHaveLength(1);
+    // Baseline is skill + references (Phase 5) — no calibration / retrieval.
+    expect(params.system).toHaveLength(2);
+    expect(params.system[1].text).toContain('VolSignals MM heuristics');
   });
 
-  it('injects the calibration block as a second cached system block when present', async () => {
+  it('injects the calibration block as a third cached system block when present', async () => {
     const { buildCalibrationBlock } =
       await import('../_lib/periscope-calibration.js');
     vi.mocked(buildCalibrationBlock).mockResolvedValueOnce(
@@ -725,9 +752,10 @@ describe('POST /api/periscope-chat', () => {
     await handler(req, res);
 
     const params = mockStream.mock.calls[0]![0];
-    expect(params.system).toHaveLength(2);
-    expect(params.system[1].text).toContain('Calibration examples');
-    expect(params.system[1].cache_control).toEqual({
+    // skill + references + calibration
+    expect(params.system).toHaveLength(3);
+    expect(params.system[2].text).toContain('Calibration examples');
+    expect(params.system[2].cache_control).toEqual({
       type: 'ephemeral',
       ttl: '1h',
     });
@@ -748,15 +776,16 @@ describe('POST /api/periscope-chat', () => {
     await handler(req, res);
 
     const params = mockStream.mock.calls[0]![0];
-    expect(params.system).toHaveLength(2); // skill + retrieval (no calibration)
-    expect(params.system[1].text).toContain('Analogous past reads');
-    expect(params.system[1].cache_control).toEqual({
+    // skill + references + retrieval (no calibration)
+    expect(params.system).toHaveLength(3);
+    expect(params.system[2].text).toContain('Analogous past reads');
+    expect(params.system[2].cache_control).toEqual({
       type: 'ephemeral',
       ttl: '1h',
     });
   });
 
-  it('injects all three blocks (skill + calibration + retrieval) when both helpers return content', async () => {
+  it('injects all four blocks (skill + references + calibration + retrieval) when both helpers return content', async () => {
     const { buildCalibrationBlock } =
       await import('../_lib/periscope-calibration.js');
     const { buildRetrievalBlock } =
@@ -776,10 +805,11 @@ describe('POST /api/periscope-chat', () => {
     await handler(req, res);
 
     const params = mockStream.mock.calls[0]![0];
-    expect(params.system).toHaveLength(3);
-    // Order: skill, then calibration, then retrieval
-    expect(params.system[1].text).toContain('Calibration examples');
-    expect(params.system[2].text).toContain('Analogous past reads');
+    expect(params.system).toHaveLength(4);
+    // Order: skill, references, calibration, retrieval
+    expect(params.system[1].text).toContain('VolSignals MM heuristics');
+    expect(params.system[2].text).toContain('Calibration examples');
+    expect(params.system[3].text).toContain('Analogous past reads');
   });
 
   it('uses Opus 4.7 with adaptive thinking + high effort + cached system prompt', async () => {
@@ -794,8 +824,13 @@ describe('POST /api/periscope-chat', () => {
     expect(params.model).toBe('claude-opus-4-7');
     expect(params.thinking).toEqual({ type: 'adaptive' });
     expect(params.output_config).toEqual({ effort: 'high' });
-    expect(params.system).toHaveLength(1);
+    // Baseline is skill + references (Phase 5).
+    expect(params.system).toHaveLength(2);
     expect(params.system[0].cache_control).toEqual({
+      type: 'ephemeral',
+      ttl: '1h',
+    });
+    expect(params.system[1].cache_control).toEqual({
       type: 'ephemeral',
       ttl: '1h',
     });
@@ -1088,13 +1123,227 @@ describe('POST /api/periscope-chat', () => {
     expect(json2.ok).toBe(true);
     expect(json2.usage.cacheRead).toBeGreaterThan(0);
 
-    // Both calls used the same system prefix shape (skill only — no
-    // calibration / retrieval) so the cache key is stable across them.
+    // Both calls used the same system prefix shape (skill + references —
+    // no calibration / retrieval) so the cache key is stable across all
+    // 4 supported block positions. Phase 5 adds the references block as
+    // index [1]; verify both blocks are byte-identical across calls.
     const params1 = mockStream.mock.calls[0]![0];
     const params2 = mockStream.mock.calls[1]![0];
+    expect(params1.system).toHaveLength(2);
+    expect(params2.system).toHaveLength(2);
     expect(params1.system[0].text).toBe(params2.system[0].text);
     expect(params1.system[0].cache_control).toEqual(
       params2.system[0].cache_control,
     );
+    expect(params1.system[1].text).toBe(params2.system[1].text);
+    expect(params1.system[1].cache_control).toEqual(
+      params2.system[1].cache_control,
+    );
+  });
+
+  // ============================================================
+  // Phase 5 — VolSignals references file as cached system block
+  // ============================================================
+
+  it('reads SKILL.md and the references file at module init', () => {
+    // The handler is imported above (top of file) which triggers the
+    // module-init readFileSync calls. We just check the recorded paths.
+    const skillCall = readFileSyncCalls.find((p) => p.endsWith('SKILL.md'));
+    const refsCall = readFileSyncCalls.find((p) =>
+      p.endsWith('vol-signals-mm-heuristics.md'),
+    );
+    expect(skillCall).toBeDefined();
+    expect(refsCall).toBeDefined();
+    // Both must live under .claude/skills/periscope/.
+    expect(skillCall).toContain('/.claude/skills/periscope/');
+    expect(refsCall).toContain('/.claude/skills/periscope/references/');
+  });
+
+  it('places the references block immediately after the skill (between skill and calibration)', async () => {
+    const { buildCalibrationBlock } =
+      await import('../_lib/periscope-calibration.js');
+    vi.mocked(buildCalibrationBlock).mockResolvedValueOnce(
+      '## Calibration examples\n...',
+    );
+    mockFinalMessage.mockResolvedValue(makeSDKResponse({ prose: 'Read.' }));
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const params = mockStream.mock.calls[0]![0];
+    // Sequence: [0] skill, [1] references, [2] calibration. Verify the
+    // references block sits between skill and calibration with the
+    // expected header and tag glossary.
+    expect(params.system).toHaveLength(3);
+    const refText = params.system[1].text as string;
+    expect(refText).toContain(
+      '# Companion reference — VolSignals MM heuristics',
+    );
+    expect(refText).toContain('[verified]');
+    expect(refText).toContain('[plausible]');
+    expect(refText).toContain('[era-specific]');
+    expect(refText).toContain('[contested]');
+    // Cache control matches the rest — ephemeral 1h.
+    expect(params.system[1].cache_control).toEqual({
+      type: 'ephemeral',
+      ttl: '1h',
+    });
+    // Calibration is at [2], not [1].
+    expect(params.system[2].text).toContain('Calibration examples');
+  });
+});
+
+// ============================================================
+// Phase 5 — references-load failure path (isolated module reload)
+// ============================================================
+//
+// The references file path is read once at module init. To exercise the
+// failure path we reset modules, re-mock node:fs to throw on the
+// references path (but pass through for SKILL.md), and re-import the
+// handler so it goes through module init again with the failing fs mock.
+// All other module mocks must be re-declared inside the isolate so the
+// fresh handler import sees them.
+describe('POST /api/periscope-chat — references file load failure', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it('omits the references block from system prompt when the file fails to load', async () => {
+    // Re-mock node:fs to throw on the references path. SKILL.md still
+    // loads (handler must remain functional with skill alone).
+    vi.doMock('node:fs', async () => {
+      const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+      return {
+        ...actual,
+        readFileSync: vi.fn(
+          (
+            path: Parameters<typeof actual.readFileSync>[0],
+            options?: Parameters<typeof actual.readFileSync>[1],
+          ) => {
+            const p = typeof path === 'string' ? path : String(path);
+            if (p.endsWith('vol-signals-mm-heuristics.md')) {
+              throw new Error('ENOENT (simulated): references file missing');
+            }
+            return actual.readFileSync(path, options);
+          },
+        ),
+      };
+    });
+
+    // Re-declare every other mock the handler depends on; vi.resetModules
+    // wipes the module registry so the previous vi.mock calls at the top
+    // of this file no longer apply to the fresh handler import.
+    vi.doMock('../_lib/api-helpers.js', () => ({
+      guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
+      rejectIfRateLimited: vi.fn().mockResolvedValue(false),
+      respondIfInvalid: vi.fn().mockReturnValue(false),
+    }));
+    vi.doMock('../_lib/embeddings.js', () => ({
+      generateEmbedding: vi.fn().mockResolvedValue(null),
+    }));
+    vi.doMock('../_lib/periscope-blob.js', () => ({
+      uploadPeriscopeImages: vi.fn().mockResolvedValue({}),
+    }));
+    vi.doMock('../_lib/periscope-db.js', () => ({
+      savePeriscopeAnalysis: vi.fn().mockResolvedValue(42),
+      fetchPeriscopeAnalysisById: vi.fn().mockResolvedValue(null),
+      fetchParentChain: vi.fn().mockResolvedValue([]),
+      buildPeriscopeSummary: vi.fn().mockReturnValue('summary'),
+    }));
+    vi.doMock('../_lib/periscope-calibration.js', () => ({
+      buildCalibrationBlock: vi.fn().mockResolvedValue(null),
+    }));
+    vi.doMock('../_lib/periscope-retrieval.js', () => ({
+      buildRetrievalBlock: vi.fn().mockResolvedValue(null),
+    }));
+    vi.doMock('../_lib/periscope-extract.js', () => ({
+      extractChartStructure: vi.fn().mockResolvedValue(null),
+      extractHeatMapStrikes: vi.fn().mockResolvedValue(null),
+    }));
+    vi.doMock('../_lib/spx-candles.js', async () => {
+      const actual = await vi.importActual<
+        typeof import('../_lib/spx-candles.js')
+      >('../_lib/spx-candles.js');
+      return {
+        ...actual,
+        fetchSPXSpotAtTimestamp: vi
+          .fn()
+          .mockResolvedValue({ price: 7120, source: 'db_exact' }),
+      };
+    });
+    vi.doMock('../_lib/periscope-flow-context.js', () => ({
+      buildFlowContextBlock: vi.fn().mockResolvedValue(null),
+    }));
+
+    // Anthropic SDK mock — capture stream params so we can inspect
+    // system[].length after the handler runs.
+    const localFinalMessage = vi.fn().mockResolvedValue({
+      content: [{ type: 'text', text: 'Read.' }],
+      usage: {
+        input_tokens: 1000,
+        output_tokens: 500,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      },
+      stop_reason: 'end_turn',
+      model: 'claude-opus-4-7',
+    });
+    const localStream = vi
+      .fn()
+      .mockReturnValue({ finalMessage: localFinalMessage });
+    vi.doMock('@anthropic-ai/sdk', () => {
+      class APIError extends Error {
+        status: number;
+        constructor(status: number, message: string) {
+          super(message);
+          this.status = status;
+        }
+      }
+      class MockAnthropic {
+        get messages() {
+          return { stream: localStream, create: vi.fn() };
+        }
+        static readonly APIError = APIError;
+        static readonly RateLimitError = class extends APIError {
+          constructor(message = 'Rate limited') {
+            super(429, message);
+          }
+        };
+        static readonly AuthenticationError = class extends APIError {
+          constructor(message = 'Auth error') {
+            super(401, message);
+          }
+        };
+      }
+      return { default: MockAnthropic, APIError };
+    });
+
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+
+    // Re-import the handler — module init runs against the failing fs
+    // mock and Sentry.captureException catches the references throw.
+    const { default: failHandler } = await import('../periscope-chat.js');
+
+    const req = mockRequest({
+      method: 'POST',
+      body: {
+        mode: 'pre_trade',
+        images: [
+          { kind: 'chart', data: 'aGVsbG8td29ybGQ=', mediaType: 'image/png' },
+        ],
+        read_date: '2026-05-06',
+        read_time: '08:30',
+      },
+    });
+    const res = mockResponse();
+    await failHandler(req, res);
+
+    // System prefix is skill-only (no references block, no calibration,
+    // no retrieval). Confirms the load-failure fallback path.
+    expect(localStream).toHaveBeenCalledOnce();
+    const params = localStream.mock.calls[0]![0];
+    expect(params.system).toHaveLength(1);
+    const skillText = params.system[0].text as string;
+    expect(skillText).not.toContain('VolSignals MM heuristics');
   });
 });
