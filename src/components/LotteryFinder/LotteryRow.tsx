@@ -1,4 +1,4 @@
-import { memo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { useContractTape } from '../../hooks/useContractTape.js';
 import { useNetFlowHistory } from '../../hooks/useNetFlowHistory.js';
 import { ContractTapeChart } from './ContractTapeChart.js';
@@ -49,6 +49,55 @@ const formatDollar = (n: number): string => {
   if (n >= 100) return `$${n.toFixed(0)}`;
   if (n >= 10) return `$${n.toFixed(1)}`;
   return `$${n.toFixed(2)}`;
+};
+
+/**
+ * Compact MM/DD form for the row chip (e.g. "5/6"). Strips the year
+ * and any zero-padding so the chip stays tight.
+ */
+const formatExpiryShort = (iso: string): string => {
+  const parts = iso.split('-');
+  const m = parts[1];
+  const d = parts[2];
+  if (m == null || d == null) return iso;
+  return `${Number.parseInt(m, 10)}/${Number.parseInt(d, 10)}`;
+};
+
+/** Full MM/DD/YYYY form for the expand-panel header. */
+const formatExpiryFull = (iso: string): string => {
+  const parts = iso.split('-');
+  const y = parts[0];
+  const m = parts[1];
+  const d = parts[2];
+  if (y == null || m == null || d == null) return iso;
+  return `${m}/${d}/${y}`;
+};
+
+/**
+ * DTE chip class — rose for 0DTE (the user's primary trade), amber
+ * for 1-3D, neutral for the long tail. Same accent language as the
+ * conviction chips so the visual hierarchy is consistent.
+ */
+const dteChipClass = (dte: number): string => {
+  if (dte === 0) return 'border-rose-500/50 bg-rose-950/40 text-rose-200';
+  if (dte <= 3) return 'border-amber-500/40 bg-amber-950/30 text-amber-200';
+  return 'border-neutral-700 bg-neutral-900 text-neutral-300';
+};
+
+/** Compact thousands/millions formatter for volume tallies. */
+const formatVol = (n: number): string => {
+  if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (Math.abs(n) >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toFixed(0);
+};
+
+/** Compact $ formatter for net premium tallies (signed). */
+const formatPremium = (n: number): string => {
+  const sign = n >= 0 ? '+' : '−';
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(1)}K`;
+  return `${sign}$${abs.toFixed(0)}`;
 };
 
 const pctClass = (n: number | null): string => {
@@ -184,6 +233,52 @@ export const LotteryRow = memo(function LotteryRow({
     marketOpen,
   });
 
+  /**
+   * Aggregate side-volume + vol-weighted avg fill across the tape
+   * series. Mirrors the totals UW shows above their contract chart
+   * (Bid Vol / Mid Vol / Ask Vol / Avg Fill) so the user gets the
+   * day's fill mix at a glance without staring at the bars.
+   */
+  const tapeStats = useMemo(() => {
+    if (tape.series.length === 0) return null;
+    let bid = 0;
+    let ask = 0;
+    let mid = 0;
+    let noSide = 0;
+    let priceVolSum = 0;
+    let volSum = 0;
+    for (const r of tape.series) {
+      bid += r.bidVol;
+      ask += r.askVol;
+      mid += r.midVol;
+      noSide += r.noSideVol;
+      if (r.avgPrice != null && Number.isFinite(r.avgPrice) && r.totalVol > 0) {
+        priceVolSum += r.avgPrice * r.totalVol;
+        volSum += r.totalVol;
+      }
+    }
+    return {
+      bid,
+      ask,
+      mid,
+      noSide,
+      total: bid + ask + mid + noSide,
+      avgFill: volSum > 0 ? priceVolSum / volSum : null,
+    };
+  }, [tape.series]);
+
+  /** Latest cumulative NCP / NPP plus signed call-minus-put divergence. */
+  const flowStats = useMemo(() => {
+    if (netFlow.series.length === 0) return null;
+    const last = netFlow.series.at(-1);
+    if (last == null) return null;
+    return {
+      cumNcp: last.cumNcp,
+      cumNpp: last.cumNpp,
+      diff: last.cumNcp - last.cumNpp,
+    };
+  }, [netFlow.series]);
+
   return (
     <div className="rounded border border-neutral-800 bg-neutral-950 p-3 text-sm">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -227,6 +322,20 @@ export const LotteryRow = memo(function LotteryRow({
             title={fire.optionType === 'C' ? 'Call' : 'Put'}
           >
             {fire.optionType}
+          </span>
+          {/* Expiry + DTE — 0DTE highlighted in rose so it's
+              scannable at a glance. The user trades 0DTE only, so
+              this chip is also a sanity check that the row isn't a
+              multi-day contract that slipped past the mode filter. */}
+          <span
+            className={`rounded border px-1.5 py-0.5 font-mono text-[10px] leading-none ${dteChipClass(fire.dte)}`}
+            title={`Expires ${formatExpiryFull(fire.expiry)} — ${
+              fire.dte === 0
+                ? '0DTE (same day)'
+                : `${fire.dte} day${fire.dte === 1 ? '' : 's'} to expiry`
+            }`}
+          >
+            {formatExpiryShort(fire.expiry)} · {fire.dte}D
           </span>
           <span
             className="text-[10px] text-neutral-600 group-hover:text-blue-400"
@@ -390,17 +499,81 @@ export const LotteryRow = memo(function LotteryRow({
         </button>
       </div>
 
-      {/* Expanded panel — twin charts. Lazy-loaded via the hooks'
-          `enabled` gate; collapsed rows do zero network. */}
+      {/* Expanded panel — twin UW-style chart panels. Lazy-loaded via
+          the hooks' `enabled` gate; collapsed rows do zero network.
+          Each panel renders a contract identifier, a side-volume
+          stats strip, and the chart, mirroring UW's Contract Lookup
+          layout so the user can pivot between this row and UW's
+          page without context-switching. */}
       {expanded && (
         <div className="mt-3 grid gap-3 border-t border-neutral-800 pt-3 md:grid-cols-2">
-          <div>
-            <div className="mb-1 flex items-baseline justify-between text-[10px] tracking-wide text-neutral-500 uppercase">
-              <span>Contract Tape</span>
-              <span className="text-neutral-600">
-                bid · ask · mid stack + VWAP
+          {/* CONTRACT TAPE PANEL */}
+          <div className="rounded-md border border-neutral-800/80 bg-neutral-950/40 p-2.5">
+            <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-[10px] font-semibold tracking-[0.08em] text-neutral-500 uppercase">
+                  contract
+                </span>
+                <span className="font-mono text-xs font-semibold text-neutral-100">
+                  {fire.underlyingSymbol}
+                </span>
+                <span className="font-mono text-xs text-neutral-300">
+                  {fire.strike}
+                </span>
+                <span
+                  className={`rounded border px-1 py-px text-[10px] leading-none font-bold ${optionTypeBadge(fire.optionType)}`}
+                  title={fire.optionType === 'C' ? 'Call' : 'Put'}
+                >
+                  {fire.optionType}
+                </span>
+                <span className="text-neutral-600">·</span>
+                <span className="font-mono text-xs text-neutral-300">
+                  {formatExpiryFull(fire.expiry)}
+                </span>
+                <span
+                  className={`rounded border px-1 py-px font-mono text-[10px] leading-none ${dteChipClass(fire.dte)}`}
+                >
+                  {fire.dte}D
+                </span>
+              </div>
+              <span className="text-[10px] tracking-wide text-neutral-600 uppercase">
+                bid · ask · mid + VWAP
               </span>
             </div>
+            {/* Side-volume + avg-fill stats strip — UW-style tally. */}
+            {tapeStats != null && tapeStats.total > 0 && (
+              <div className="mb-2 flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[10px] text-neutral-400">
+                <span>
+                  <span className="text-red-300">Bid</span>{' '}
+                  <span className="text-neutral-200">
+                    {formatVol(tapeStats.bid)}
+                  </span>
+                </span>
+                <span>
+                  <span className="text-blue-300">Mid</span>{' '}
+                  <span className="text-neutral-200">
+                    {formatVol(tapeStats.mid)}
+                  </span>
+                </span>
+                <span>
+                  <span className="text-green-300">Ask</span>{' '}
+                  <span className="text-neutral-200">
+                    {formatVol(tapeStats.ask)}
+                  </span>
+                </span>
+                {tapeStats.avgFill != null && (
+                  <span>
+                    Avg fill{' '}
+                    <span className="text-neutral-200">
+                      {formatDollar(tapeStats.avgFill)}
+                    </span>
+                  </span>
+                )}
+                <span className="ml-auto text-neutral-500">
+                  total {formatVol(tapeStats.total)}
+                </span>
+              </div>
+            )}
             {tape.loading && tape.series.length === 0 ? (
               <div className="text-[10px] text-neutral-500">Loading tape…</div>
             ) : tape.error ? (
@@ -415,13 +588,52 @@ export const LotteryRow = memo(function LotteryRow({
               />
             )}
           </div>
-          <div>
-            <div className="mb-1 flex items-baseline justify-between text-[10px] tracking-wide text-neutral-500 uppercase">
-              <span>{fire.underlyingSymbol} Net Flow</span>
-              <span className="text-neutral-600">
-                cum NCP (green) · cum NPP (red)
+
+          {/* NET FLOW PANEL */}
+          <div className="rounded-md border border-neutral-800/80 bg-neutral-950/40 p-2.5">
+            <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-[10px] font-semibold tracking-[0.08em] text-neutral-500 uppercase">
+                  net flow
+                </span>
+                <span className="font-mono text-xs font-semibold text-neutral-100">
+                  {fire.underlyingSymbol}
+                </span>
+                <span className="text-[10px] text-neutral-500">
+                  cumulative · session-to-date
+                </span>
+              </div>
+              <span className="text-[10px] tracking-wide text-neutral-600 uppercase">
+                NCP (green) · NPP (red)
               </span>
             </div>
+            {/* Latest cum NCP / NPP / divergence strip. */}
+            {flowStats != null && (
+              <div className="mb-2 flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[10px] text-neutral-400">
+                <span>
+                  <span className="text-green-300">NCP</span>{' '}
+                  <span className="text-neutral-200">
+                    {formatPremium(flowStats.cumNcp)}
+                  </span>
+                </span>
+                <span>
+                  <span className="text-red-300">NPP</span>{' '}
+                  <span className="text-neutral-200">
+                    {formatPremium(flowStats.cumNpp)}
+                  </span>
+                </span>
+                <span>
+                  Δ{' '}
+                  <span
+                    className={
+                      flowStats.diff >= 0 ? 'text-green-300' : 'text-red-300'
+                    }
+                  >
+                    {formatPremium(flowStats.diff)}
+                  </span>
+                </span>
+              </div>
+            )}
             {netFlow.loading && netFlow.series.length === 0 ? (
               <div className="text-[10px] text-neutral-500">
                 Loading net flow…
