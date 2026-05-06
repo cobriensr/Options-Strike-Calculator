@@ -27,11 +27,14 @@ import {
 } from '../_lib/periscope-prompts.js';
 
 // ============================================================
-// parseStructuredFields
+// parseStructuredFields — block-finding is delegated to
+// parseTrailingJsonBlock (covered exhaustively in
+// json-fence.test.ts). These tests focus on field-coercion +
+// parseOk wiring.
 // ============================================================
 
 describe('parseStructuredFields', () => {
-  it('extracts the trailing JSON block and strips it from prose', () => {
+  it('coerces fields and reports parseOk=true on a valid block', () => {
     const text = [
       'Setup at slice end: spot 5800.',
       '',
@@ -53,8 +56,9 @@ describe('parseStructuredFields', () => {
       '```',
     ].join('\n');
 
-    const { prose, structured } = parseStructuredFields(text);
+    const { prose, structured, parseOk } = parseStructuredFields(text);
 
+    expect(parseOk).toBe(true);
     expect(structured).toEqual({
       spot: 5800,
       cone_lower: 5780,
@@ -70,29 +74,11 @@ describe('parseStructuredFields', () => {
     expect(prose).not.toMatch(/^```$/m);
   });
 
-  it('picks the LAST JSON block when several are present', () => {
-    const text = [
-      'Example shape:',
-      '```json',
-      '{"spot": 1}',
-      '```',
-      '',
-      'Real output:',
-      '```json',
-      '{"spot": 5825, "cone_lower": null, "cone_upper": null, "long_trigger": null, "short_trigger": null, "regime_tag": "trend"}',
-      '```',
-    ].join('\n');
-
-    const { structured } = parseStructuredFields(text);
-
-    expect(structured.spot).toBe(5825);
-    expect(structured.regime_tag).toBe('trend');
-  });
-
-  it('returns null fields and full prose when no JSON block is present', () => {
+  it('returns null fields with parseOk=false and full prose when no JSON block is present', () => {
     const text = 'Just prose. No JSON.';
-    const { prose, structured } = parseStructuredFields(text);
+    const { prose, structured, parseOk } = parseStructuredFields(text);
 
+    expect(parseOk).toBe(false);
     expect(prose).toBe(text);
     expect(structured).toEqual({
       spot: null,
@@ -104,48 +90,32 @@ describe('parseStructuredFields', () => {
     });
   });
 
-  it('returns null fields when the JSON block is malformed (parse error)', () => {
+  it('returns parseOk=false on malformed JSON inside the block', () => {
     const text = ['Prose.', '', '```json', '{ not real json', '```'].join('\n');
 
-    const { prose, structured } = parseStructuredFields(text);
+    const { prose, structured, parseOk } = parseStructuredFields(text);
 
     // Parse failure leaves prose unchanged so caller can recover.
+    expect(parseOk).toBe(false);
     expect(prose).toBe(text);
     expect(structured.spot).toBeNull();
     expect(structured.regime_tag).toBeNull();
   });
 
-  it('coerces non-finite numbers (NaN, Infinity) to null', () => {
+  it('coerces non-numeric and empty-string fields to null', () => {
     const text = [
       '```json',
       '{"spot": "not a number", "cone_lower": null, "cone_upper": null, "long_trigger": null, "short_trigger": null, "regime_tag": ""}',
       '```',
     ].join('\n');
 
-    const { structured } = parseStructuredFields(text);
+    const { structured, parseOk } = parseStructuredFields(text);
 
+    expect(parseOk).toBe(true);
     // String "not a number" → not a number → null.
     expect(structured.spot).toBeNull();
     // Empty regime_tag becomes null (length === 0 guard).
     expect(structured.regime_tag).toBeNull();
-  });
-
-  it('handles a JSON block with only whitespace before the close fence', () => {
-    const text = ['```json', '   ', '```'].join('\n');
-
-    const { structured } = parseStructuredFields(text);
-
-    // Whitespace-only body → JSON.parse fails → all null.
-    expect(structured.spot).toBeNull();
-  });
-
-  it('returns null fields when the open fence comes after the close fence', () => {
-    // Close fence first, then a stray ```json — degenerate input.
-    const text = '``` no opener\nthen later ```json\n';
-    const { prose, structured } = parseStructuredFields(text);
-
-    expect(prose).toBe(text);
-    expect(structured.spot).toBeNull();
   });
 });
 

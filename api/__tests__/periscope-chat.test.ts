@@ -80,6 +80,7 @@ vi.mock('../_lib/periscope-retrieval.js', () => ({
 
 vi.mock('../_lib/periscope-extract.js', () => ({
   extractChartStructure: vi.fn().mockResolvedValue(null),
+  extractHeatMapStrikes: vi.fn().mockResolvedValue(null),
 }));
 
 // Mock the Anthropic SDK — capture both stream + create calls.
@@ -147,12 +148,16 @@ import {
   fetchPeriscopeAnalysisById,
   savePeriscopeAnalysis,
 } from '../_lib/periscope-db.js';
-import { extractChartStructure } from '../_lib/periscope-extract.js';
+import {
+  extractChartStructure,
+  extractHeatMapStrikes,
+} from '../_lib/periscope-extract.js';
 import { buildRetrievalBlock } from '../_lib/periscope-retrieval.js';
 
 const mockSavePeriscopeAnalysis = vi.mocked(savePeriscopeAnalysis);
 const mockFetchPeriscopeAnalysisById = vi.mocked(fetchPeriscopeAnalysisById);
 const mockExtractChartStructure = vi.mocked(extractChartStructure);
+const mockExtractHeatMapStrikes = vi.mocked(extractHeatMapStrikes);
 const mockBuildRetrievalBlock = vi.mocked(buildRetrievalBlock);
 
 const MockErrors = (globalThis as Record<string, unknown>).__MockErrors as {
@@ -257,6 +262,7 @@ describe('POST /api/periscope-chat', () => {
     mockSavePeriscopeAnalysis.mockReset().mockResolvedValue(42);
     mockFetchPeriscopeAnalysisById.mockReset().mockResolvedValue(null);
     mockExtractChartStructure.mockReset().mockResolvedValue(null);
+    mockExtractHeatMapStrikes.mockReset().mockResolvedValue(null);
     mockBuildRetrievalBlock.mockReset().mockResolvedValue(null);
     process.env.ANTHROPIC_API_KEY = 'test-key';
     // Restore mock defaults that restoreAllMocks may strip
@@ -880,8 +886,10 @@ describe('POST /api/periscope-chat', () => {
     await handler(req, res);
 
     expect(mockExtractChartStructure).toHaveBeenCalledOnce();
+    // Now takes (input, anthropic) — caller owns client lifecycle.
     expect(mockExtractChartStructure).toHaveBeenCalledWith(
       expect.objectContaining({ images: expect.any(Array) }),
+      expect.anything(),
     );
     // Main call ran exactly once after extraction.
     expect(mockStream).toHaveBeenCalledOnce();
@@ -942,5 +950,171 @@ describe('POST /api/periscope-chat', () => {
     expect(json.prose).toContain('Read despite extraction failure.');
     // Main analysis ran even though extraction yielded nothing useful.
     expect(mockStream).toHaveBeenCalledOnce();
+  });
+
+  // ============================================================
+  // Phase 1B — heat-map OCR injection
+  // ============================================================
+
+  it('injects the heat-map OCR block before the image blocks when extraction succeeds', async () => {
+    mockExtractHeatMapStrikes.mockResolvedValueOnce({
+      gex: [
+        { strike: 7275, value: 1450000, color: 'green' },
+        { strike: 7295, value: -1370000, color: 'red' },
+      ],
+      charm: [{ strike: 7240, value: 72521, color: 'green' }],
+    });
+    mockFinalMessage.mockResolvedValue(makeSDKResponse({ prose: 'Read.' }));
+
+    const images = [
+      { kind: 'chart', data: SAMPLE_BASE64, mediaType: 'image/png' },
+      { kind: 'gex', data: SAMPLE_BASE64, mediaType: 'image/png' },
+      { kind: 'charm', data: SAMPLE_BASE64, mediaType: 'image/png' },
+    ] as const;
+    const req = mockRequest({
+      method: 'POST',
+      body: makeBody({ images: [...images] }),
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const params = mockStream.mock.calls[0]![0];
+    const blocks = params.messages[0].content as Array<{
+      type: string;
+      text?: string;
+    }>;
+    // Find the heat-map block. Must come BEFORE the first image block.
+    const firstImageIdx = blocks.findIndex((b) => b.type === 'image');
+    const heatMapIdx = blocks.findIndex(
+      (b) =>
+        b.type === 'text' &&
+        typeof b.text === 'string' &&
+        b.text.includes('Heat-map extracted strikes'),
+    );
+    expect(heatMapIdx).toBeGreaterThanOrEqual(0);
+    expect(heatMapIdx).toBeLessThan(firstImageIdx);
+    const heatBlock = blocks[heatMapIdx]!.text!;
+    expect(heatBlock).toContain('MM-attributed Net GEX / Net Charm from UW');
+    expect(heatBlock).toContain('Net GEX');
+    expect(heatBlock).toContain('Net Charm');
+    expect(heatBlock).toContain('7275');
+    expect(heatBlock).toContain('+1,450,000');
+    expect(heatBlock).toContain('-1,370,000');
+  });
+
+  it('omits the heat-map block when no heat maps are uploaded', async () => {
+    // chart only — no gex/charm. Heat-map fetch must be skipped entirely.
+    mockFinalMessage.mockResolvedValue(makeSDKResponse({ prose: 'Read.' }));
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(mockExtractHeatMapStrikes).not.toHaveBeenCalled();
+    const params = mockStream.mock.calls[0]![0];
+    const blocks = params.messages[0].content as Array<{
+      type: string;
+      text?: string;
+    }>;
+    const heatBlock = blocks.find(
+      (b) =>
+        b.type === 'text' &&
+        typeof b.text === 'string' &&
+        b.text.includes('Heat-map extracted strikes'),
+    );
+    expect(heatBlock).toBeUndefined();
+  });
+
+  it('omits the heat-map block when the OCR call fails (best-effort)', async () => {
+    mockExtractHeatMapStrikes.mockResolvedValueOnce(null);
+    mockFinalMessage.mockResolvedValue(makeSDKResponse({ prose: 'Read.' }));
+
+    const images = [
+      { kind: 'chart', data: SAMPLE_BASE64, mediaType: 'image/png' },
+      { kind: 'gex', data: SAMPLE_BASE64, mediaType: 'image/png' },
+    ] as const;
+    const req = mockRequest({
+      method: 'POST',
+      body: makeBody({ images: [...images] }),
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(mockExtractHeatMapStrikes).toHaveBeenCalledOnce();
+    expect(res._status).toBe(200);
+    const params = mockStream.mock.calls[0]![0];
+    const blocks = params.messages[0].content as Array<{
+      type: string;
+      text?: string;
+    }>;
+    const heatBlock = blocks.find(
+      (b) =>
+        b.type === 'text' &&
+        typeof b.text === 'string' &&
+        b.text.includes('Heat-map extracted strikes'),
+    );
+    expect(heatBlock).toBeUndefined();
+  });
+
+  // ============================================================
+  // Cache stability — system prefix must remain identical across calls
+  // so Anthropic returns cache_read_input_tokens > 0 on call 2.
+  // ============================================================
+
+  it('reports cacheRead > 0 on a repeated call (mocked SDK simulates cache hit)', async () => {
+    // First call — synthetic "cache write" usage shape (cacheRead 0, cacheWrite > 0).
+    mockFinalMessage.mockResolvedValueOnce({
+      content: [{ type: 'text', text: 'First read.' }],
+      usage: {
+        input_tokens: 1000,
+        output_tokens: 500,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 9000,
+      },
+      stop_reason: 'end_turn',
+      model: 'claude-opus-4-7',
+    });
+    // Second call — synthetic "cache hit" shape (cacheRead > 0).
+    mockFinalMessage.mockResolvedValueOnce({
+      content: [{ type: 'text', text: 'Second read.' }],
+      usage: {
+        input_tokens: 1000,
+        output_tokens: 500,
+        cache_read_input_tokens: 9000,
+        cache_creation_input_tokens: 0,
+      },
+      stop_reason: 'end_turn',
+      model: 'claude-opus-4-7',
+    });
+
+    const req1 = mockRequest({ method: 'POST', body: makeBody() });
+    const res1 = mockResponse();
+    await handler(req1, res1);
+    const json1 = parseNdjsonResponse(res1) as {
+      ok: boolean;
+      usage: { cacheRead: number; cacheWrite: number };
+    };
+    expect(json1.ok).toBe(true);
+    expect(json1.usage.cacheRead).toBe(0);
+    expect(json1.usage.cacheWrite).toBeGreaterThan(0);
+
+    const req2 = mockRequest({ method: 'POST', body: makeBody() });
+    const res2 = mockResponse();
+    await handler(req2, res2);
+    const json2 = parseNdjsonResponse(res2) as {
+      ok: boolean;
+      usage: { cacheRead: number; cacheWrite: number };
+    };
+    expect(json2.ok).toBe(true);
+    expect(json2.usage.cacheRead).toBeGreaterThan(0);
+
+    // Both calls used the same system prefix shape (skill only — no
+    // calibration / retrieval) so the cache key is stable across them.
+    const params1 = mockStream.mock.calls[0]![0];
+    const params2 = mockStream.mock.calls[1]![0];
+    expect(params1.system[0].text).toBe(params2.system[0].text);
+    expect(params1.system[0].cache_control).toEqual(
+      params2.system[0].cache_control,
+    );
   });
 });

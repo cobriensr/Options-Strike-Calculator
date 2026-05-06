@@ -16,6 +16,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { Sentry } from './sentry.js';
 import logger from './logger.js';
+import { parseTrailingJsonBlock } from './json-fence.js';
 import type {
   PeriscopeMode,
   PeriscopeParentRead,
@@ -38,13 +39,20 @@ export function buildUserContent(args: {
   mode: PeriscopeMode;
   parentId: number | null | undefined;
   parentRead?: PeriscopeParentRead | null;
+  /**
+   * Optional pre-formatted text injected as its own user-content block
+   * BEFORE the image blocks. Used by the periscope-chat handler to
+   * surface Pass 1B heat-map OCR results so Claude has typed strike
+   * values alongside the visual heat maps.
+   */
+  heatMapBlock?: string | null;
   images: Array<{
     kind: 'chart' | 'gex' | 'charm';
     data: string;
     mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
   }>;
 }): Anthropic.Messages.ContentBlockParam[] {
-  const { mode, parentId, parentRead, images } = args;
+  const { mode, parentId, parentRead, heatMapBlock, images } = args;
 
   const blocks: Anthropic.Messages.ContentBlockParam[] = [];
 
@@ -65,6 +73,13 @@ export function buildUserContent(args: {
     text: [...headerLines, '', ...bodyLines].join('\n'),
   });
 
+  // Heat-map OCR results (Pass 1B) go BEFORE the image blocks so Claude
+  // sees the typed values first and uses the visual heat maps as a
+  // cross-check rather than the primary signal.
+  if (heatMapBlock != null && heatMapBlock.length > 0) {
+    blocks.push({ type: 'text', text: heatMapBlock });
+  }
+
   // Each image gets a label header + the image block, so Claude knows
   // which view it's looking at.
   for (const img of images) {
@@ -80,6 +95,50 @@ export function buildUserContent(args: {
   }
 
   return blocks;
+}
+
+/**
+ * Format a heat-map extraction result as a user-content text block.
+ * Returns null when both metric arrays are empty so the caller can
+ * skip the injection entirely.
+ *
+ * The block is labeled clearly so Claude knows the values are MM-
+ * attributed Net GEX / Net Charm from UW (not naive). Color is
+ * implied by the value's sign and elided to keep the block compact.
+ */
+export function formatHeatMapBlock(args: {
+  gex: Array<{ strike: number; value: number }>;
+  charm: Array<{ strike: number; value: number }>;
+}): string | null {
+  const { gex, charm } = args;
+  if (gex.length === 0 && charm.length === 0) return null;
+
+  const lines: string[] = [
+    '[Heat-map extracted strikes (MM-attributed Net GEX / Net Charm from UW)]',
+  ];
+
+  if (gex.length > 0) {
+    lines.push('');
+    lines.push('Net GEX (top strikes by absolute value):');
+    for (const cell of gex) {
+      lines.push(`  ${cell.strike}: ${formatSigned(cell.value)}`);
+    }
+  }
+  if (charm.length > 0) {
+    lines.push('');
+    lines.push('Net Charm (top strikes by absolute value):');
+    for (const cell of charm) {
+      lines.push(`  ${cell.strike}: ${formatSigned(cell.value)}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/** Format a number with explicit sign so green/red is unambiguous. */
+function formatSigned(n: number): string {
+  if (n > 0) return `+${n.toLocaleString('en-US')}`;
+  return n.toLocaleString('en-US');
 }
 
 function buildReadModeBody(): string[] {
@@ -137,23 +196,34 @@ function buildDebriefModeBody(
 // ── Structured-output extraction ──────────────────────────────
 
 /**
+ * Result of `parseStructuredFields`. `parseOk` is true iff a JSON block
+ * was found AND JSON.parse succeeded. We surface it as a sibling field
+ * (rather than mixing it into `PeriscopeStructuredFields`) because the
+ * structured shape models the model's typed output; `parseOk` is parser
+ * metadata. Phase 6A migration adds the DB column; for Phase 1 the
+ * caller propagates it through the response payload only.
+ */
+export interface ParsedStructuredOutput {
+  prose: string;
+  structured: PeriscopeStructuredFields;
+  parseOk: boolean;
+}
+
+/**
  * Extract the LAST fenced ```json...``` block from the response. Returns
- * { prose: text-with-block-stripped, structured: parsed-fields-or-nulls }.
- * On any parse failure: prose is the full text unchanged, structured is
- * all-null, and a Sentry event is recorded.
+ * { prose, structured, parseOk }. On any parse failure: prose is the full
+ * text unchanged, structured is all-null, parseOk is false, and a Sentry
+ * event is recorded for JSON.parse errors.
  *
  * Why "last" block: Claude may include illustrative JSON snippets earlier
  * in the prose (e.g. quoting a sample column shape). The structured-output
  * block is appended at the very end per the skill instruction, so we
  * always pick the last match.
  *
- * Implementation: uses lastIndexOf rather than a regex so the parse is
- * O(n) and immune to ReDoS backtracking on adversarial input.
+ * Block-finding is delegated to `parseTrailingJsonBlock` (json-fence.ts);
+ * this function owns field coercion + Sentry reporting only.
  */
-export function parseStructuredFields(text: string): {
-  prose: string;
-  structured: PeriscopeStructuredFields;
-} {
+export function parseStructuredFields(text: string): ParsedStructuredOutput {
   const nullStructured: PeriscopeStructuredFields = {
     spot: null,
     cone_lower: null,
@@ -163,44 +233,22 @@ export function parseStructuredFields(text: string): {
     regime_tag: null,
   };
 
-  const OPEN_FENCE = '```json';
-  const CLOSE_FENCE = '```';
-
-  // Walk backward to find the LAST closing fence, then look behind it
-  // for its matching opening fence. We need to skip the open fence's own
-  // closing-`` ``` `` characters when scanning, hence the search-backward
-  // from `(lastClose - 1)`.
-  const lastClose = text.lastIndexOf(CLOSE_FENCE);
-  if (lastClose < 0) {
+  const block = parseTrailingJsonBlock(text);
+  if (block == null) {
     logger.warn('periscope-chat: no JSON code block in response');
-    return { prose: text, structured: nullStructured };
+    return { prose: text, structured: nullStructured, parseOk: false };
   }
-  const lastOpen = text.lastIndexOf(OPEN_FENCE, lastClose - 1);
-  if (lastOpen < 0 || lastOpen >= lastClose) {
-    logger.warn('periscope-chat: no JSON code block in response');
-    return { prose: text, structured: nullStructured };
-  }
-
-  // Body starts after the first newline following ```json (skipping any
-  // trailing whitespace on the open-fence line) and ends at the close
-  // fence (we trim trailing whitespace from the body itself).
-  const bodyStartNewline = text.indexOf('\n', lastOpen + OPEN_FENCE.length);
-  if (bodyStartNewline < 0 || bodyStartNewline >= lastClose) {
-    logger.warn('periscope-chat: malformed JSON code block');
-    return { prose: text, structured: nullStructured };
-  }
-  const blockBody = text.slice(bodyStartNewline + 1, lastClose).trim();
 
   let parsed: Record<string, unknown>;
   try {
-    parsed = JSON.parse(blockBody) as Record<string, unknown>;
+    parsed = JSON.parse(block.body) as Record<string, unknown>;
   } catch (err) {
     logger.error(
-      { err, blockBody: blockBody.slice(0, 200) },
+      { err, blockBody: block.body.slice(0, 200) },
       'periscope-chat: failed to parse JSON block',
     );
     Sentry.captureException(err);
-    return { prose: text, structured: nullStructured };
+    return { prose: text, structured: nullStructured, parseOk: false };
   }
 
   const num = (v: unknown): number | null =>
@@ -217,14 +265,13 @@ export function parseStructuredFields(text: string): {
     regime_tag: str(parsed.regime_tag),
   };
 
-  // Strip the matched JSON block from the prose. Slice off everything
-  // from the opening fence through the closing fence (3 chars long).
-  const prose = text
-    .slice(0, lastOpen)
-    .concat(text.slice(lastClose + CLOSE_FENCE.length))
-    .trimEnd();
+  // Reassemble prose around the stripped block. `before` is the text up
+  // to the open fence; `after` is rare trailing prose past the close
+  // fence. trimEnd matches the prior behavior so callers don't see
+  // dangling whitespace.
+  const prose = (block.before + block.after).trimEnd();
 
-  return { prose, structured };
+  return { prose, structured, parseOk: true };
 }
 
 /**

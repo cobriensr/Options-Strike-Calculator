@@ -68,11 +68,17 @@ import {
 import { buildCalibrationBlock } from './_lib/periscope-calibration.js';
 import {
   buildUserContent,
+  formatHeatMapBlock,
   parseStructuredFields,
   synthesizeStructuralProse,
 } from './_lib/periscope-prompts.js';
 import { buildRetrievalBlock } from './_lib/periscope-retrieval.js';
-import { extractChartStructure } from './_lib/periscope-extract.js';
+import {
+  extractChartStructure,
+  extractHeatMapStrikes,
+  type HeatMapExtraction,
+  type HeatMapImage,
+} from './_lib/periscope-extract.js';
 import { runCachedAnthropicCall } from './_lib/anthropic-call.js';
 
 // 780s ceiling matches /api/analyze and /api/trace-live-analyze. Opus
@@ -282,11 +288,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ? fetchPeriscopeAnalysisById(body.parentId)
         : Promise.resolve(null);
 
-    const [extraction, calibrationBlock, parentRead] = await Promise.all([
-      extractChartStructure({ images: body.images }),
-      buildCalibrationBlock(body.mode),
-      parentFetch,
-    ]);
+    // Pass 1B inputs: locate gex / charm heat-map images. Skipped when
+    // neither is present (pre_trade with chart-only is allowed; intraday
+    // requires all three at the frontend layer per the spec).
+    const gexImg = body.images.find((i) => i.kind === 'gex');
+    const charmImg = body.images.find((i) => i.kind === 'charm');
+    const heatMapInput: { gex?: HeatMapImage; charm?: HeatMapImage } = {};
+    if (gexImg)
+      heatMapInput.gex = { data: gexImg.data, mediaType: gexImg.mediaType };
+    if (charmImg)
+      heatMapInput.charm = {
+        data: charmImg.data,
+        mediaType: charmImg.mediaType,
+      };
+    const hasHeatMaps = gexImg != null || charmImg != null;
+
+    const heatMapFetch: Promise<HeatMapExtraction | null> = hasHeatMaps
+      ? extractHeatMapStrikes(heatMapInput, anthropic)
+      : Promise.resolve(null);
+
+    const [extraction, heatMaps, calibrationBlock, parentRead] =
+      await Promise.all([
+        extractChartStructure({ images: body.images }, anthropic),
+        heatMapFetch,
+        buildCalibrationBlock(body.mode),
+        parentFetch,
+      ]);
 
     // Resolve trading_date with explicit precedence:
     //   1. body.tradingDate — user override (back-read fix path)
@@ -346,12 +373,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
+    // Format the Pass 1B OCR result as a user-content text block. Skipped
+    // when no heat-map images were uploaded or extraction failed entirely.
+    const heatMapBlock = heatMaps != null ? formatHeatMapBlock(heatMaps) : null;
+
     // Build the user content AFTER the parent fetch so the debrief
     // preamble can inline the open read's prose + structured fields.
     const userContent = buildUserContent({
       mode: body.mode,
       parentId: body.parentId ?? null,
       parentRead,
+      heatMapBlock,
       images: body.images,
     });
 
@@ -401,6 +433,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       );
     }
 
+    if (hasHeatMaps) {
+      if (heatMaps != null) {
+        logger.info(
+          {
+            mode: body.mode,
+            gexCount: heatMaps.gex.length,
+            charmCount: heatMaps.charm.length,
+          },
+          'periscope-chat heat-map OCR succeeded',
+        );
+      } else {
+        logger.warn(
+          { mode: body.mode },
+          'periscope-chat heat-map OCR failed — block omitted',
+        );
+      }
+    }
+
     const result = await callModel(
       userContent,
       calibrationBlock,
@@ -440,7 +490,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return;
     }
 
-    const { prose, structured } = parseStructuredFields(result.text);
+    const { prose, structured, parseOk } = parseStructuredFields(result.text);
 
     const [embedding, imageUrls] = await Promise.all([
       buildEmbeddingBestEffort({
@@ -483,6 +533,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     done({ status: 200 });
+    // parse_ok is propagated to the response so the frontend can flag
+    // partial reads. Phase 6A migration adds the corresponding DB
+    // column; in this phase we skip persistence to keep the change
+    // additive.
     res.write(
       JSON.stringify({
         ok: true,
@@ -490,6 +544,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         mode: body.mode,
         prose,
         structured,
+        parseOk,
         model: result.model,
         durationMs,
         usage: result.usage,
