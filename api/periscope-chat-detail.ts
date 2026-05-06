@@ -24,6 +24,12 @@ import { getDb } from './_lib/db.js';
 import logger from './_lib/logger.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import { periscopeChatDetailQuerySchema } from './_lib/validation.js';
+import type {
+  PeriscopeBias,
+  PeriscopeConfidence,
+  PeriscopeKeyLevels,
+  PeriscopeMode,
+} from './_lib/periscope-db.js';
 
 interface PeriscopeImageEntry {
   kind: string;
@@ -34,7 +40,10 @@ interface PeriscopeChatDetailRow {
   id: number;
   trading_date: string;
   captured_at: string;
-  mode: 'read' | 'debrief';
+  read_time: string;
+  spot_at_read_time: number;
+  spot_source: 'db_exact' | 'db_snapped';
+  mode: PeriscopeMode;
   parent_id: number | null;
   user_context: string | null;
   prose_text: string;
@@ -44,6 +53,14 @@ interface PeriscopeChatDetailRow {
   long_trigger: number | null;
   short_trigger: number | null;
   regime_tag: string | null;
+  bias: PeriscopeBias | null;
+  trade_types_recommended: string[];
+  trade_types_avoided: string[];
+  key_levels: PeriscopeKeyLevels | null;
+  expected_dealer_behavior: string | null;
+  confidence: PeriscopeConfidence | null;
+  confidence_basis: string | null;
+  parse_ok: boolean;
   calibration_quality: number | null;
   image_urls: PeriscopeImageEntry[];
   model: string;
@@ -72,6 +89,26 @@ function parseJsonbField<T>(v: unknown): T | null {
   return v as T;
 }
 
+function parseStringArray(raw: unknown): string[] {
+  const v = parseJsonbField<unknown>(raw);
+  if (!Array.isArray(v)) return [];
+  return v.filter((x): x is string => typeof x === 'string' && x.length > 0);
+}
+
+function parseKeyLevels(raw: unknown): PeriscopeKeyLevels | null {
+  const v = parseJsonbField<unknown>(raw);
+  if (v == null || typeof v !== 'object') return null;
+  const o = v as Record<string, unknown>;
+  const num = (x: unknown): number | null =>
+    typeof x === 'number' && Number.isFinite(x) ? x : null;
+  return {
+    gamma_floor: num(o.gamma_floor),
+    gamma_ceiling: num(o.gamma_ceiling),
+    magnet: num(o.magnet),
+    charm_zero: num(o.charm_zero),
+  };
+}
+
 function parseDetailRow(r: Record<string, unknown>): PeriscopeChatDetailRow {
   const id = Number(r.id);
   // Stored URLs in image_urls JSONB are the raw private Vercel Blob
@@ -84,11 +121,30 @@ function parseDetailRow(r: Record<string, unknown>): PeriscopeChatDetailRow {
     kind: img.kind,
     url: `/api/periscope-chat-image?id=${id}&kind=${encodeURIComponent(img.kind)}`,
   }));
+  const biasRaw = r.bias;
+  const bias =
+    biasRaw === 'long-only' ||
+    biasRaw === 'short-only' ||
+    biasRaw === 'fade-only' ||
+    biasRaw === 'two-sided' ||
+    biasRaw === 'no-trade'
+      ? biasRaw
+      : null;
+  const confidenceRaw = r.confidence;
+  const confidence =
+    confidenceRaw === 'low' ||
+    confidenceRaw === 'medium' ||
+    confidenceRaw === 'high'
+      ? confidenceRaw
+      : null;
   return {
     id,
     trading_date: r.trading_date as string,
     captured_at: r.captured_at as string,
-    mode: r.mode as 'read' | 'debrief',
+    read_time: r.read_time as string,
+    spot_at_read_time: Number(r.spot_at_read_time),
+    spot_source: r.spot_source as 'db_exact' | 'db_snapped',
+    mode: r.mode as PeriscopeMode,
     parent_id: r.parent_id == null ? null : Number(r.parent_id),
     user_context: (r.user_context as string | null) ?? null,
     prose_text: (r.prose_text as string) ?? '',
@@ -98,6 +154,15 @@ function parseDetailRow(r: Record<string, unknown>): PeriscopeChatDetailRow {
     long_trigger: r.long_trigger == null ? null : Number(r.long_trigger),
     short_trigger: r.short_trigger == null ? null : Number(r.short_trigger),
     regime_tag: (r.regime_tag as string | null) ?? null,
+    bias,
+    trade_types_recommended: parseStringArray(r.trade_types_recommended),
+    trade_types_avoided: parseStringArray(r.trade_types_avoided),
+    key_levels: parseKeyLevels(r.key_levels),
+    expected_dealer_behavior:
+      (r.expected_dealer_behavior as string | null) ?? null,
+    confidence,
+    confidence_basis: (r.confidence_basis as string | null) ?? null,
+    parse_ok: Boolean(r.parse_ok),
     calibration_quality:
       r.calibration_quality == null ? null : Number(r.calibration_quality),
     image_urls: proxiedImages,
@@ -143,9 +208,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     setCacheHeaders(res, 60, 120);
 
     const rows = await sql`
-      SELECT id, trading_date, captured_at, mode, parent_id,
+      SELECT id, trading_date, captured_at, read_time, spot_at_read_time,
+             spot_source, mode, parent_id,
              user_context, prose_text, spot, cone_lower, cone_upper,
-             long_trigger, short_trigger, regime_tag, calibration_quality,
+             long_trigger, short_trigger, regime_tag, bias,
+             trade_types_recommended, trade_types_avoided, key_levels,
+             expected_dealer_behavior, confidence, confidence_basis,
+             parse_ok, calibration_quality,
              image_urls, model, input_tokens, output_tokens,
              cache_read_tokens, cache_write_tokens, duration_ms,
              created_at

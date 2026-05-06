@@ -15,8 +15,30 @@ import type { ChangeEvent, DragEvent } from 'react';
 import { SectionBox } from '../ui/SectionBox';
 import { usePeriscopeChat } from './usePeriscopeChat.js';
 import { ProseView } from './PeriscopeProse.js';
-import type { PeriscopeStructuredFields } from './types.js';
+import type {
+  PeriscopeMode,
+  PeriscopeStructuredFields,
+} from './types.js';
 import { PERISCOPE_IMAGE_KINDS } from './types.js';
+
+const MODE_OPTIONS: ReadonlyArray<{ value: PeriscopeMode; label: string }> = [
+  { value: 'pre_trade', label: 'Pre-trade' },
+  { value: 'intraday', label: 'Intraday' },
+  { value: 'debrief', label: 'Debrief' },
+];
+
+/** Pre-built HH:MM options at 10-min granularity covering the full day. */
+const TIME_OPTIONS: string[] = (() => {
+  const out: string[] = [];
+  for (let h = 0; h < 24; h++) {
+    for (let m = 0; m < 60; m += 10) {
+      const hh = h.toString().padStart(2, '0');
+      const mm = m.toString().padStart(2, '0');
+      out.push(`${hh}:${mm}`);
+    }
+  }
+  return out;
+})();
 
 /**
  * Custom event name dispatched by PeriscopeChatHistory when the user
@@ -154,23 +176,54 @@ interface StructuredFieldsViewProps {
   fields: PeriscopeStructuredFields;
 }
 
+const fmtNum = (n: number | null) =>
+  n == null ? '—' : n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+
+function biasBadgeClass(bias: PeriscopeStructuredFields['bias']): string {
+  switch (bias) {
+    case 'long-only':
+      return 'bg-green-700/30 text-green-200 border-green-700/60';
+    case 'short-only':
+      return 'bg-red-700/30 text-red-200 border-red-700/60';
+    case 'fade-only':
+      return 'bg-amber-700/30 text-amber-200 border-amber-700/60';
+    case 'two-sided':
+      return 'bg-blue-700/30 text-blue-200 border-blue-700/60';
+    case 'no-trade':
+      return 'bg-slate-700/30 text-slate-300 border-slate-700/60';
+    default:
+      return 'bg-surface/60 text-muted border-edge';
+  }
+}
+
+function confidenceBadgeClass(
+  conf: PeriscopeStructuredFields['confidence'],
+): string {
+  switch (conf) {
+    case 'high':
+      return 'bg-emerald-700/30 text-emerald-200 border-emerald-700/60';
+    case 'medium':
+      return 'bg-yellow-700/30 text-yellow-200 border-yellow-700/60';
+    case 'low':
+      return 'bg-zinc-700/30 text-zinc-300 border-zinc-700/60';
+    default:
+      return 'bg-surface/60 text-muted border-edge';
+  }
+}
+
 function StructuredFieldsView({ fields }: StructuredFieldsViewProps) {
   const rows: Array<{ label: string; value: string }> = useMemo(() => {
-    const fmt = (n: number | null) =>
-      n == null
-        ? '—'
-        : n.toLocaleString(undefined, { maximumFractionDigits: 2 });
     return [
-      { label: 'Spot', value: fmt(fields.spot) },
+      { label: 'Spot', value: fmtNum(fields.spot) },
       {
         label: 'Cone',
         value:
           fields.cone_lower == null && fields.cone_upper == null
             ? '—'
-            : `${fmt(fields.cone_lower)} – ${fmt(fields.cone_upper)}`,
+            : `${fmtNum(fields.cone_lower)} – ${fmtNum(fields.cone_upper)}`,
       },
-      { label: 'Long trigger', value: fmt(fields.long_trigger) },
-      { label: 'Short trigger', value: fmt(fields.short_trigger) },
+      { label: 'Long trigger', value: fmtNum(fields.long_trigger) },
+      { label: 'Short trigger', value: fmtNum(fields.short_trigger) },
       { label: 'Regime', value: fields.regime_tag ?? '—' },
     ];
   }, [fields]);
@@ -189,6 +242,138 @@ function StructuredFieldsView({ fields }: StructuredFieldsViewProps) {
   );
 }
 
+interface PlaybookViewProps {
+  fields: PeriscopeStructuredFields;
+}
+
+/** Compact rendering of the new playbook fields. Function over form. */
+function PlaybookView({ fields }: PlaybookViewProps) {
+  const {
+    bias,
+    confidence,
+    confidence_basis: confidenceBasis,
+    trade_types_recommended: recommended,
+    trade_types_avoided: avoided,
+    key_levels: keyLevels,
+    expected_dealer_behavior: expectedDealerBehavior,
+  } = fields;
+
+  const hasAnything =
+    bias != null ||
+    confidence != null ||
+    recommended.length > 0 ||
+    avoided.length > 0 ||
+    keyLevels != null ||
+    (expectedDealerBehavior != null && expectedDealerBehavior.length > 0);
+
+  if (!hasAnything) return null;
+
+  return (
+    <div className="border-edge bg-surface/60 flex flex-col gap-3 rounded-md border p-3 text-sm">
+      {(bias != null || confidence != null) && (
+        <div className="flex flex-wrap items-center gap-2">
+          {bias != null && (
+            <span
+              className={`rounded border px-2 py-0.5 text-xs font-semibold tracking-wide uppercase ${biasBadgeClass(bias)}`}
+            >
+              {bias}
+            </span>
+          )}
+          {confidence != null && (
+            <span
+              className={`rounded border px-2 py-0.5 text-xs font-medium tracking-wide uppercase ${confidenceBadgeClass(confidence)}`}
+            >
+              {confidence} confidence
+            </span>
+          )}
+        </div>
+      )}
+      {confidenceBasis && (
+        <p className="text-muted text-xs italic">{confidenceBasis}</p>
+      )}
+      {(recommended.length > 0 || avoided.length > 0) && (
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {recommended.length > 0 && (
+            <div className="flex flex-col gap-1">
+              <span className="text-muted text-[10px] tracking-wide uppercase">
+                Recommended structures
+              </span>
+              <div className="flex flex-wrap gap-1">
+                {recommended.map((t) => (
+                  <span
+                    key={`rec-${t}`}
+                    className="rounded border border-green-700/60 bg-green-700/20 px-2 py-0.5 font-mono text-[11px] text-green-200"
+                  >
+                    {t}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          {avoided.length > 0 && (
+            <div className="flex flex-col gap-1">
+              <span className="text-muted text-[10px] tracking-wide uppercase">
+                Avoid
+              </span>
+              <div className="flex flex-wrap gap-1">
+                {avoided.map((t) => (
+                  <span
+                    key={`avoid-${t}`}
+                    className="rounded border border-red-700/60 bg-red-700/20 px-2 py-0.5 font-mono text-[11px] text-red-200"
+                  >
+                    {t}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {keyLevels != null && (
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-4">
+          <div className="flex flex-col">
+            <span className="text-muted text-[10px] tracking-wide uppercase">
+              γ floor
+            </span>
+            <span className="text-primary font-mono">
+              {fmtNum(keyLevels.gamma_floor)}
+            </span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-muted text-[10px] tracking-wide uppercase">
+              γ ceiling
+            </span>
+            <span className="text-primary font-mono">
+              {fmtNum(keyLevels.gamma_ceiling)}
+            </span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-muted text-[10px] tracking-wide uppercase">
+              Magnet
+            </span>
+            <span className="text-primary font-mono">
+              {fmtNum(keyLevels.magnet)}
+            </span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-muted text-[10px] tracking-wide uppercase">
+              Charm zero
+            </span>
+            <span className="text-primary font-mono">
+              {fmtNum(keyLevels.charm_zero)}
+            </span>
+          </div>
+        </div>
+      )}
+      {expectedDealerBehavior && (
+        <p className="text-secondary text-xs italic">
+          {expectedDealerBehavior}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ============================================================
 // Main panel
 // ============================================================
@@ -198,19 +383,22 @@ export default function PeriscopeChat() {
     mode,
     images,
     parentId,
-    tradingDate,
+    readDate,
+    readTime,
     inFlight,
     elapsedMs,
     response,
     error,
     setMode,
     setParentId,
-    setTradingDate,
+    setReadDate,
+    setReadTime,
     setImage,
     submit,
     reset,
   } = usePeriscopeChat();
-  const tradingDateInputId = useId();
+  const readDateInputId = useId();
+  const readTimeInputId = useId();
 
   // Listen for "Debrief this" clicks from the history panel. The
   // event carries a parentId; we flip mode + prefill parentId so the
@@ -235,12 +423,18 @@ export default function PeriscopeChat() {
   const elapsedLabel =
     elapsedMs > 0 ? ` · ${Math.floor(elapsedMs / 1000)}s elapsed` : '';
 
+  const modeBadge =
+    response == null
+      ? null
+      : MODE_OPTIONS.find((m) => m.value === response.mode)?.label ??
+        response.mode;
+
   return (
     <SectionBox
       label="Periscope Chat"
       badge={
         response
-          ? `${response.mode === 'debrief' ? 'Debrief' : 'Read'} · ${Math.round(response.durationMs / 1000)}s`
+          ? `${modeBadge} · ${Math.round(response.durationMs / 1000)}s`
           : null
       }
       collapsible
@@ -255,62 +449,70 @@ export default function PeriscopeChat() {
             role="radiogroup"
             aria-label="Analysis mode"
           >
-            {(['read', 'debrief'] as const).map((m) => (
+            {MODE_OPTIONS.map((opt) => (
               <button
-                key={m}
+                key={opt.value}
                 type="button"
                 role="radio"
-                aria-checked={mode === m}
-                onClick={() => setMode(m)}
+                aria-checked={mode === opt.value}
+                onClick={() => setMode(opt.value)}
                 disabled={inFlight}
                 className={`rounded px-3 py-1 text-xs font-medium tracking-wide uppercase transition ${
-                  mode === m
+                  mode === opt.value
                     ? 'bg-[var(--color-accent)] text-white shadow-sm'
                     : 'text-secondary hover:text-primary'
                 }`}
               >
-                {m}
+                {opt.label}
               </button>
             ))}
           </div>
-          {mode === 'debrief' && parentId != null && (
+          {(mode === 'intraday' || mode === 'debrief') && parentId != null && (
             <span className="text-muted ml-2 font-mono text-[10px]">
               Linked to read #{parentId}
             </span>
           )}
 
-          {/* Optional chart-date override — handles the near-midnight
-              back-read case where vision extraction may fail and the
-              capture-day fallback would mis-tag trading_date. */}
+          {/* Read date + time pickers — anchor the read against the SPX
+              candle the backend looks up from index_candles_1m. */}
           <div className="ml-auto flex items-center gap-2">
             <label
-              htmlFor={tradingDateInputId}
+              htmlFor={readDateInputId}
               className="text-muted text-xs"
-              title="Override the chart's trading date — leave blank for auto-detect"
+              title="The trading date the read is FOR (CT)"
             >
-              Chart date:
+              Read date:
             </label>
             <input
-              id={tradingDateInputId}
+              id={readDateInputId}
               type="date"
-              value={tradingDate}
-              onChange={(e) => setTradingDate(e.target.value)}
+              value={readDate}
+              onChange={(e) => setReadDate(e.target.value)}
               disabled={inFlight}
               className="border-edge bg-surface/60 text-secondary rounded-md border px-2 py-0.5 text-xs disabled:opacity-40"
-              aria-label="Optional chart date override (YYYY-MM-DD)"
+              aria-label="Read date (YYYY-MM-DD)"
             />
-            {tradingDate && (
-              <button
-                type="button"
-                onClick={() => setTradingDate('')}
-                disabled={inFlight}
-                className="text-muted hover:text-primary text-xs disabled:opacity-40"
-                aria-label="Clear chart date override"
-                title="Clear override (auto-detect)"
-              >
-                ✕
-              </button>
-            )}
+            <label
+              htmlFor={readTimeInputId}
+              className="text-muted ml-2 text-xs"
+              title="HH:MM (24h CT) — 10-min granularity"
+            >
+              Time:
+            </label>
+            <select
+              id={readTimeInputId}
+              value={readTime}
+              onChange={(e) => setReadTime(e.target.value)}
+              disabled={inFlight}
+              className="border-edge bg-surface/60 text-secondary rounded-md border px-2 py-0.5 text-xs disabled:opacity-40"
+              aria-label="Read time (HH:MM CT)"
+            >
+              {TIME_OPTIONS.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
 
@@ -344,7 +546,11 @@ export default function PeriscopeChat() {
           >
             {inFlight
               ? `Analyzing${elapsedLabel}…`
-              : `Submit ${mode === 'debrief' ? 'debrief' : 'read'}`}
+              : mode === 'debrief'
+                ? 'Submit debrief'
+                : mode === 'pre_trade'
+                  ? 'Submit pre-trade'
+                  : 'Submit intraday'}
           </button>
           <button
             type="button"
@@ -373,6 +579,20 @@ export default function PeriscopeChat() {
         {response && (
           <div className="flex flex-col gap-3">
             <StructuredFieldsView fields={response.structured} />
+            <PlaybookView fields={response.structured} />
+            {response.parseOk === false && (
+              <div
+                role="status"
+                className="rounded-md border border-amber-700/60 bg-amber-950/30 p-2 text-xs text-amber-300"
+              >
+                JSON playbook block was missing or malformed — structured fields
+                may be partial. Prose is unaffected.
+              </div>
+            )}
+            <p className="text-muted text-[10px]">
+              Spot at read time: {response.spotAtReadTime.toFixed(2)} (
+              {response.spotSource})
+            </p>
             <ProseView prose={response.prose} />
           </div>
         )}

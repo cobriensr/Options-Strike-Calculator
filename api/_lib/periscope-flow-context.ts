@@ -13,13 +13,6 @@
  *   intraday  : last 15 min, ±10 pts of spot, top 8
  *   debrief   : full session, hourly CT buckets
  *
- * The mode column today only carries `read | debrief`. The 3-mode
- * widening lands in Phase 6. For now `read` is treated as the
- * intraday case for the recent-window query — see {@link
- * resolveReadFlavor}. The `switch (mode)` includes an exhaustive
- * `never` check so adding a third branch in Phase 6 is a single-line
- * change, not a hunt-and-update.
- *
  * Failure mode: every code path returns `null` rather than throwing,
  * so the periscope read does not fail because a context query lost a
  * race with the websocket daemon. Caller wraps the call in a
@@ -35,12 +28,6 @@ import {
 import type { PeriscopeMode } from './periscope-db.js';
 
 // ── Window constants ────────────────────────────────────────
-
-// NOTE (Phase 6 follow-up): the mode column widens to
-// 'pre_trade' | 'intraday' | 'debrief'. When that lands, drop the
-// resolveReadFlavor() shim and switch directly on the new union; the
-// three constant blocks below already match the spec's pre/intra/debrief
-// windows, so the only change is the dispatch.
 
 const PRE_TRADE_WINDOW = {
   windowMinutes: 30,
@@ -75,18 +62,8 @@ export async function buildFlowContextBlock(
   const { mode, spot, asOf } = args;
 
   switch (mode) {
-    case 'read': {
-      // TEMPORARY MAPPING (Phase 1.5):
-      //   Today's mode column only has `read | debrief`. The 3-mode
-      //   migration in Phase 6 will widen `read` into `pre_trade` +
-      //   `intraday`. Until then, every `read` is dispatched through
-      //   resolveReadFlavor() which infers pre-open vs intraday from
-      //   the asOf timestamp. The Phase-6 migration will replace this
-      //   block with two separate cases that pick the constants
-      //   directly off the mode value.
-      const flavor = resolveReadFlavor(asOf);
-      const window =
-        flavor === 'pre_trade' ? PRE_TRADE_WINDOW : INTRADAY_WINDOW;
+    case 'pre_trade': {
+      const window = PRE_TRADE_WINDOW;
       const rows = await fetchRecentFlowAlerts({
         ticker: TICKER,
         windowMinutes: window.windowMinutes,
@@ -100,7 +77,25 @@ export async function buildFlowContextBlock(
         rows,
         windowMinutes: window.windowMinutes,
         spotProximityPts: window.spotProximityPts,
-        flavor,
+        flavor: 'pre_trade',
+      });
+    }
+    case 'intraday': {
+      const window = INTRADAY_WINDOW;
+      const rows = await fetchRecentFlowAlerts({
+        ticker: TICKER,
+        windowMinutes: window.windowMinutes,
+        spotProximityPts: window.spotProximityPts,
+        spot,
+        asOf,
+        topN: window.topN,
+      });
+      if (rows.length === 0) return null;
+      return formatRecentBlock({
+        rows,
+        windowMinutes: window.windowMinutes,
+        spotProximityPts: window.spotProximityPts,
+        flavor: 'intraday',
       });
     }
     case 'debrief': {
@@ -113,8 +108,6 @@ export async function buildFlowContextBlock(
       return formatDebriefBlock(buckets, date);
     }
     default: {
-      // Exhaustiveness check — adding a new PeriscopeMode value (Phase 6)
-      // will produce a compile error here until the new branch is added.
       const _exhaustive: never = mode;
       return _exhaustive;
     }
@@ -122,48 +115,6 @@ export async function buildFlowContextBlock(
 }
 
 // ── Internals ───────────────────────────────────────────────
-
-/**
- * Pre-Phase-6 heuristic: does `asOf` fall before the regular cash
- * session open (09:30 ET)? If so, treat the `read` as a pre-trade
- * read and use the wider 30-min / ±20pt window. Otherwise treat as
- * intraday with the tighter 15-min / ±10pt window.
- *
- * 09:30 ET = 14:30 UTC during EDT (DST), 14:30 UTC during EST (no DST
- * change for the equity open boundary itself but UTC offset shifts).
- * To keep this simple and tz-aware without pulling a heavy date lib,
- * we use Intl.DateTimeFormat with `America/New_York` to read the wall
- * clock at the source.
- */
-function resolveReadFlavor(asOf: Date): 'pre_trade' | 'intraday' {
-  const hourEt = etHour(asOf);
-  const minuteEt = etMinute(asOf);
-  // Pre-09:30 ET → pre_trade. The window is permissive on the lower
-  // bound (we don't try to require 06:30+ ET); a query with no rows
-  // returns null and the caller skips the block.
-  if (hourEt < 9) return 'pre_trade';
-  if (hourEt === 9 && minuteEt < 30) return 'pre_trade';
-  return 'intraday';
-}
-
-function etHour(d: Date): number {
-  const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    hour: '2-digit',
-    hour12: false,
-  });
-  // en-US in 24h returns "00".."23" (sometimes "24" for midnight on
-  // some runtimes — coerce to mod 24 for safety).
-  return Number(fmt.format(d)) % 24;
-}
-
-function etMinute(d: Date): number {
-  const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    minute: '2-digit',
-  });
-  return Number(fmt.format(d));
-}
 
 /** ISO YYYY-MM-DD for the date `d` lands on in America/Chicago. */
 function isoDateInCt(d: Date): string {

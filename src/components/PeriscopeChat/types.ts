@@ -7,7 +7,15 @@
  * source of truth.
  */
 
-export type PeriscopeMode = 'read' | 'debrief';
+export type PeriscopeMode = 'pre_trade' | 'intraday' | 'debrief';
+export type PeriscopeBias =
+  | 'long-only'
+  | 'short-only'
+  | 'fade-only'
+  | 'two-sided'
+  | 'no-trade';
+export type PeriscopeConfidence = 'low' | 'medium' | 'high';
+export type PeriscopeSpotSource = 'db_exact' | 'db_snapped';
 export type PeriscopeImageKind = 'chart' | 'gex' | 'charm';
 export type PeriscopeImageMediaType =
   | 'image/png'
@@ -24,11 +32,19 @@ export interface UploadedPeriscopeImage {
   preview: string;
 }
 
+export interface PeriscopeKeyLevels {
+  gamma_floor: number | null;
+  gamma_ceiling: number | null;
+  magnet: number | null;
+  charm_zero: number | null;
+}
+
 /**
  * Structured fields parsed from the JSON code block at the end of
  * Claude's prose response. Server may set any field to `null` when
  * the chart didn't carry that value (e.g. no cone visible) or when
- * parsing failed.
+ * parsing failed. Phase 2 expanded the playbook surface — every new
+ * field defaults to null / [] when the model didn't provide it.
  */
 export interface PeriscopeStructuredFields {
   spot: number | null;
@@ -37,6 +53,13 @@ export interface PeriscopeStructuredFields {
   long_trigger: number | null;
   short_trigger: number | null;
   regime_tag: string | null;
+  bias: PeriscopeBias | null;
+  trade_types_recommended: string[];
+  trade_types_avoided: string[];
+  key_levels: PeriscopeKeyLevels | null;
+  expected_dealer_behavior: string | null;
+  confidence: PeriscopeConfidence | null;
+  confidence_basis: string | null;
 }
 
 /** The single final NDJSON envelope from `/api/periscope-chat`. */
@@ -47,6 +70,13 @@ export interface PeriscopeChatSuccess {
   mode: PeriscopeMode;
   prose: string;
   structured: PeriscopeStructuredFields;
+  /** Boolean reflecting whether the JSON block parsed cleanly. */
+  parseOk: boolean;
+  /** SPX spot at read_time as looked up from index_candles_1m. */
+  spotAtReadTime: number;
+  spotSource: PeriscopeSpotSource;
+  /** ISO TIMESTAMPTZ of the read_time the analysis was anchored at. */
+  readTime: string;
   model: string;
   durationMs: number;
   usage: {

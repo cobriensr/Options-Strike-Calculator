@@ -26,9 +26,50 @@ import logger from './logger.js';
 import { Sentry } from './sentry.js';
 import type { PeriscopeImageUrls } from './periscope-blob.js';
 
-export type PeriscopeMode = 'read' | 'debrief';
+/**
+ * The 3-mode lifecycle (Phase 6 of the periscope-chat overhaul):
+ *   - `pre_trade` — one daily read at/before the open. No parent.
+ *   - `intraday` — every 10-min slice during the session. Parent is
+ *     today's pre_trade or the previous intraday read in the chain.
+ *   - `debrief` — one end-of-day read. Parent is the last intraday.
+ */
+export type PeriscopeMode = 'pre_trade' | 'intraday' | 'debrief';
 
-/** Structured fields parsed from the JSON code block at end of response. */
+/** Allowed bias enum values (mirrors DB CHECK constraint). */
+export type PeriscopeBias =
+  | 'long-only'
+  | 'short-only'
+  | 'fade-only'
+  | 'two-sided'
+  | 'no-trade';
+
+/** Allowed confidence enum values (mirrors DB CHECK constraint). */
+export type PeriscopeConfidence = 'low' | 'medium' | 'high';
+
+/** Spot lookup audit tag. Mirrors the DB CHECK on spot_source. */
+export type PeriscopeSpotSource = 'db_exact' | 'db_snapped';
+
+/** Concrete level anchors lifted from the playbook JSON. */
+export interface PeriscopeKeyLevels {
+  gamma_floor: number | null;
+  gamma_ceiling: number | null;
+  magnet: number | null;
+  charm_zero: number | null;
+}
+
+/**
+ * Structured fields parsed from the JSON code block at end of
+ * response. Phase 2 expanded the schema with the structured trading
+ * playbook (bias, trade_types_*, key_levels, expected_dealer_behavior,
+ * confidence, confidence_basis). Each new field is independently
+ * coerced; a single malformed value nulls itself but does NOT sink
+ * the rest of the structured payload.
+ *
+ * `parse_ok` is parser metadata, NOT a model-emitted field — set by
+ * `parseStructuredFields` to `true` iff the JSON block was found and
+ * `JSON.parse` succeeded. Persisted as a column so the dashboard can
+ * flag partial reads.
+ */
 export interface PeriscopeStructuredFields {
   spot: number | null;
   cone_lower: number | null;
@@ -36,15 +77,35 @@ export interface PeriscopeStructuredFields {
   long_trigger: number | null;
   short_trigger: number | null;
   regime_tag: string | null;
+  bias: PeriscopeBias | null;
+  trade_types_recommended: string[];
+  trade_types_avoided: string[];
+  key_levels: PeriscopeKeyLevels | null;
+  expected_dealer_behavior: string | null;
+  confidence: PeriscopeConfidence | null;
+  confidence_basis: string | null;
 }
 
 export interface SavePeriscopeAnalysisInput {
   /** ISO 8601 capture time (server-side, request arrival). */
   capturedAt: string;
-  /** YYYY-MM-DD. Derived from capturedAt in the endpoint. */
+  /** YYYY-MM-DD. Derived from capturedAt or read_date in the endpoint. */
   tradingDate: string;
+  /**
+   * The TIMESTAMPTZ the read is FOR — distinct from `captured_at`.
+   * Built from (read_date, read_time, CT) by the periscope-chat
+   * handler.
+   */
+  readTime: string;
+  /** Authoritative SPX spot at `read_time`, looked up from index_candles_1m. */
+  spotAtReadTime: number;
+  /** Audit which path produced `spotAtReadTime`. */
+  spotSource: PeriscopeSpotSource;
   mode: PeriscopeMode;
-  /** When this is a debrief that links to an existing read. */
+  /**
+   * When the read links to an existing read in the chain. Required for
+   * intraday + debrief; null only for pre_trade.
+   */
   parentId: number | null;
   /** Optional user-supplied note attached to the request. */
   userContext: string | null;
@@ -60,6 +121,8 @@ export interface SavePeriscopeAnalysisInput {
   /** text-embedding-3-large vector. null when generation failed. */
   embedding: number[] | null;
   structured: PeriscopeStructuredFields;
+  /** True iff the JSON block parsed cleanly. Parser metadata, not model-emitted. */
+  parseOk: boolean;
   // Anthropic call metadata for cost analysis + cache-hit monitoring:
   model: string;
   inputTokens: number | null;
@@ -74,6 +137,16 @@ export interface SavePeriscopeAnalysisInput {
  * truncated prose excerpt — this is what gets embedded by OpenAI's
  * text-embedding-3-large for retrieval queries. Keep the field order
  * stable; reordering invalidates similarity against past rows.
+ *
+ * Phase 6D: the calendar `date=` token has been REMOVED from the
+ * embedded text. The retrieval intent is topology / structural
+ * similarity, not "rows from the same week" — including the date
+ * fights cosine similarity by adding a uniform offset to every
+ * vector. The `mode` token is kept (3 distinct modes have distinct
+ * narrative shapes; embeddings cluster by mode meaningfully).
+ *
+ * `tradingDate` remains in the public arg shape so callers don't need
+ * to thread a different signature; it just isn't tokenized.
  */
 export function buildPeriscopeSummary(args: {
   mode: PeriscopeMode;
@@ -81,15 +154,11 @@ export function buildPeriscopeSummary(args: {
   structured: PeriscopeStructuredFields;
   proseText: string;
 }): string {
-  const { mode, tradingDate, structured, proseText } = args;
+  const { mode, structured, proseText } = args;
   const fmt = (n: number | null) => (n == null ? 'null' : n.toString());
-  // 800 chars ≈ 200 tokens — captures the open-read summary, regime
-  // diagnosis, and trigger geometry without dragging in late-prose
-  // boilerplate that fuzzes similarity.
   const proseExcerpt = proseText.slice(0, 800).replace(/\s+/g, ' ').trim();
   return [
     `mode=${mode}`,
-    `date=${tradingDate}`,
     `spot=${fmt(structured.spot)}`,
     `cone=${fmt(structured.cone_lower)}-${fmt(structured.cone_upper)}`,
     `long_trigger=${fmt(structured.long_trigger)}`,
@@ -99,13 +168,99 @@ export function buildPeriscopeSummary(args: {
   ].join(' | ');
 }
 
-/** Subset of a periscope_analyses row needed to anchor a debrief. */
+/** Subset of a periscope_analyses row needed to anchor a debrief / chain. */
 export interface PeriscopeParentRead {
   id: number;
   mode: PeriscopeMode;
   tradingDate: string;
   proseText: string;
   structured: PeriscopeStructuredFields;
+}
+
+/** Helpers for coercing JSONB columns the Neon driver returns as strings. */
+function parseJsonb<T>(raw: unknown, fallback: T): T {
+  if (raw == null) return fallback;
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return fallback;
+    }
+  }
+  return raw as T;
+}
+
+function asStringArray(raw: unknown): string[] {
+  const arr = parseJsonb<unknown>(raw, []);
+  if (!Array.isArray(arr)) return [];
+  return arr.filter((v): v is string => typeof v === 'string' && v.length > 0);
+}
+
+function asKeyLevels(raw: unknown): PeriscopeKeyLevels | null {
+  const obj = parseJsonb<unknown>(raw, null);
+  if (obj == null || typeof obj !== 'object') return null;
+  const o = obj as Record<string, unknown>;
+  const num = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? v : null;
+  return {
+    gamma_floor: num(o.gamma_floor),
+    gamma_ceiling: num(o.gamma_ceiling),
+    magnet: num(o.magnet),
+    charm_zero: num(o.charm_zero),
+  };
+}
+
+function asBias(raw: unknown): PeriscopeBias | null {
+  if (
+    raw === 'long-only' ||
+    raw === 'short-only' ||
+    raw === 'fade-only' ||
+    raw === 'two-sided' ||
+    raw === 'no-trade'
+  ) {
+    return raw;
+  }
+  return null;
+}
+
+function asConfidence(raw: unknown): PeriscopeConfidence | null {
+  if (raw === 'low' || raw === 'medium' || raw === 'high') return raw;
+  return null;
+}
+
+/**
+ * Coerce a Neon-driver value to a finite number. Numeric columns can
+ * round-trip as either `number` or `string` depending on the column
+ * type and driver mode; this helper normalizes both shapes and rejects
+ * non-finite results (NaN, Infinity).
+ */
+function toFiniteNumber(v: unknown): number | null {
+  if (v == null) return null;
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function rowToStructuredFields(
+  r: Record<string, unknown>,
+): PeriscopeStructuredFields {
+  const num = toFiniteNumber;
+  const str = (v: unknown): string | null =>
+    typeof v === 'string' && v.length > 0 ? v : null;
+  return {
+    spot: num(r.spot),
+    cone_lower: num(r.cone_lower),
+    cone_upper: num(r.cone_upper),
+    long_trigger: num(r.long_trigger),
+    short_trigger: num(r.short_trigger),
+    regime_tag: str(r.regime_tag),
+    bias: asBias(r.bias),
+    trade_types_recommended: asStringArray(r.trade_types_recommended),
+    trade_types_avoided: asStringArray(r.trade_types_avoided),
+    key_levels: asKeyLevels(r.key_levels),
+    expected_dealer_behavior: str(r.expected_dealer_behavior),
+    confidence: asConfidence(r.confidence),
+    confidence_basis: str(r.confidence_basis),
+  };
 }
 
 /**
@@ -123,7 +278,9 @@ export async function fetchPeriscopeAnalysisById(
     const rows = await sql`
       SELECT id, mode, trading_date, prose_text,
              spot, cone_lower, cone_upper,
-             long_trigger, short_trigger, regime_tag
+             long_trigger, short_trigger, regime_tag,
+             bias, trade_types_recommended, trade_types_avoided,
+             key_levels, expected_dealer_behavior, confidence, confidence_basis
       FROM periscope_analyses
       WHERE id = ${id}
       LIMIT 1
@@ -135,19 +292,98 @@ export async function fetchPeriscopeAnalysisById(
       mode: r.mode as PeriscopeMode,
       tradingDate: r.trading_date as string,
       proseText: (r.prose_text as string) ?? '',
-      structured: {
-        spot: (r.spot as number | null) ?? null,
-        cone_lower: (r.cone_lower as number | null) ?? null,
-        cone_upper: (r.cone_upper as number | null) ?? null,
-        long_trigger: (r.long_trigger as number | null) ?? null,
-        short_trigger: (r.short_trigger as number | null) ?? null,
-        regime_tag: (r.regime_tag as string | null) ?? null,
-      },
+      structured: rowToStructuredFields(r),
     };
   } catch (err) {
     logger.error({ err, id }, 'fetchPeriscopeAnalysisById: query failed');
     Sentry.captureException(err);
     return null;
+  }
+}
+
+/** One row in the parent chain returned by {@link fetchParentChain}. */
+export interface ParentChainRow {
+  id: number;
+  mode: PeriscopeMode;
+  regime_tag: string | null;
+  bias: PeriscopeBias | null;
+  /** First ~400 chars of the row's prose, whitespace-collapsed. */
+  prose_excerpt: string;
+  /** Compact subset of structured fields used to summarize the row. */
+  structured: {
+    spot: number | null;
+    cone_lower: number | null;
+    cone_upper: number | null;
+    long_trigger: number | null;
+    short_trigger: number | null;
+  };
+}
+
+const PARENT_CHAIN_DEPTH_CAP = 10;
+const PARENT_CHAIN_PROSE_CHARS = 400;
+
+/**
+ * Walk the parent chain from `parentId` back to the root pre_trade
+ * read using `WITH RECURSIVE`. Returns the ancestors in oldest-first
+ * order so callers can render the chain chronologically (root first,
+ * immediate parent last). Capped at PARENT_CHAIN_DEPTH_CAP levels to
+ * defend against malformed self-references.
+ */
+export async function fetchParentChain(
+  parentId: number,
+): Promise<ParentChainRow[]> {
+  try {
+    const sql = getDb();
+    const rows = await sql`
+      WITH RECURSIVE chain AS (
+        SELECT id, mode, regime_tag, bias, prose_text,
+               spot, cone_lower, cone_upper,
+               long_trigger, short_trigger,
+               parent_id, 0 AS depth
+        FROM periscope_analyses
+        WHERE id = ${parentId}
+        UNION ALL
+        SELECT p.id, p.mode, p.regime_tag, p.bias, p.prose_text,
+               p.spot, p.cone_lower, p.cone_upper,
+               p.long_trigger, p.short_trigger,
+               p.parent_id, c.depth + 1 AS depth
+        FROM periscope_analyses p
+        JOIN chain c ON p.id = c.parent_id
+        WHERE c.depth < ${PARENT_CHAIN_DEPTH_CAP}
+      )
+      SELECT id, mode, regime_tag, bias, prose_text,
+             spot, cone_lower, cone_upper,
+             long_trigger, short_trigger, depth
+      FROM chain
+      ORDER BY depth DESC
+    `;
+    const num = toFiniteNumber;
+    return rows.map((r): ParentChainRow => {
+      const proseRaw = (r.prose_text as string) ?? '';
+      const collapsed = proseRaw.replace(/\s+/g, ' ').trim();
+      const excerpt =
+        collapsed.length > PARENT_CHAIN_PROSE_CHARS
+          ? collapsed.slice(0, PARENT_CHAIN_PROSE_CHARS).trimEnd() + '…'
+          : collapsed;
+      return {
+        id: Number(r.id),
+        mode: r.mode as PeriscopeMode,
+        regime_tag: (r.regime_tag as string | null) ?? null,
+        bias: asBias(r.bias),
+        prose_excerpt: excerpt,
+        structured: {
+          spot: num(r.spot),
+          cone_lower: num(r.cone_lower),
+          cone_upper: num(r.cone_upper),
+          long_trigger: num(r.long_trigger),
+          short_trigger: num(r.short_trigger),
+        },
+      };
+    });
+  } catch (err) {
+    logger.error({ err, parentId }, 'fetchParentChain: query failed');
+    Sentry.captureException(err);
+    return [];
   }
 }
 
@@ -163,6 +399,9 @@ export async function savePeriscopeAnalysis(
   const {
     capturedAt,
     tradingDate,
+    readTime,
+    spotAtReadTime,
+    spotSource,
     mode,
     parentId,
     userContext,
@@ -171,6 +410,7 @@ export async function savePeriscopeAnalysis(
     fullResponse,
     embedding,
     structured,
+    parseOk,
     model,
     inputTokens,
     outputTokens,
@@ -194,11 +434,27 @@ export async function savePeriscopeAnalysis(
     ([kind, url]) => ({ kind, url }),
   );
 
+  // JSONB columns for the new playbook fields. We pre-stringify and
+  // cast at the SQL boundary so the Neon tagged template binds
+  // unambiguously. trade_types_* default to '[]' when empty so the
+  // column NOT NULL constraint is always satisfied.
+  const recommendedJson = JSON.stringify(structured.trade_types_recommended);
+  const avoidedJson = JSON.stringify(structured.trade_types_avoided);
+  // key_levels is nullable; pre-serialize when present so the bound
+  // value goes through the JSONB cast as a single string literal.
+  const keyLevelsJson =
+    structured.key_levels == null
+      ? null
+      : JSON.stringify(structured.key_levels);
+
   try {
     const rows = await sql`
       INSERT INTO periscope_analyses (
         trading_date,
         captured_at,
+        read_time,
+        spot_at_read_time,
+        spot_source,
         mode,
         parent_id,
         user_context,
@@ -212,6 +468,14 @@ export async function savePeriscopeAnalysis(
         long_trigger,
         short_trigger,
         regime_tag,
+        bias,
+        trade_types_recommended,
+        trade_types_avoided,
+        key_levels,
+        expected_dealer_behavior,
+        confidence,
+        confidence_basis,
+        parse_ok,
         model,
         input_tokens,
         output_tokens,
@@ -221,6 +485,9 @@ export async function savePeriscopeAnalysis(
       ) VALUES (
         ${tradingDate},
         ${capturedAt},
+        ${readTime},
+        ${spotAtReadTime},
+        ${spotSource},
         ${mode},
         ${parentId},
         ${userContext},
@@ -234,6 +501,14 @@ export async function savePeriscopeAnalysis(
         ${structured.long_trigger},
         ${structured.short_trigger},
         ${structured.regime_tag},
+        ${structured.bias},
+        ${recommendedJson}::jsonb,
+        ${avoidedJson}::jsonb,
+        ${keyLevelsJson}::jsonb,
+        ${structured.expected_dealer_behavior},
+        ${structured.confidence},
+        ${structured.confidence_basis},
+        ${parseOk},
         ${model},
         ${inputTokens},
         ${outputTokens},

@@ -29,13 +29,19 @@
 
 import { getDb } from './db.js';
 import logger from './logger.js';
+import type { PeriscopeMode } from './periscope-db.js';
 
 const TOP_N = 3;
 const QUALITY_THRESHOLD = 4;
 
+// Soft token cap for the calibration block: EXAMPLE_PROSE_CHARS=1500 *
+// TOP_N=3 ≈ 1.1K input tokens. Acceptable as a daily-stable cached
+// system-prompt tail; if either constant changes, eyeball the cache
+// hit rate before/after.
+
 interface CalibrationExampleRow {
   id: number;
-  mode: 'read' | 'debrief';
+  mode: PeriscopeMode;
   regime_tag: string | null;
   calibration_quality: number;
   prose_text: string;
@@ -48,7 +54,7 @@ interface CalibrationExampleRow {
  * array on any DB error — calibration is best-effort, not load-bearing.
  */
 export async function fetchCalibrationExamples(
-  mode: 'read' | 'debrief',
+  mode: PeriscopeMode,
 ): Promise<CalibrationExampleRow[]> {
   try {
     const sql = getDb();
@@ -62,7 +68,7 @@ export async function fetchCalibrationExamples(
     `;
     return rows.map((r) => ({
       id: Number(r.id),
-      mode: r.mode as 'read' | 'debrief',
+      mode: r.mode as PeriscopeMode,
       regime_tag: (r.regime_tag as string | null) ?? null,
       calibration_quality: Number(r.calibration_quality),
       prose_text: (r.prose_text as string) ?? '',
@@ -86,7 +92,7 @@ const EXAMPLE_PROSE_CHARS = 1500;
 
 export function formatCalibrationBlock(
   examples: CalibrationExampleRow[],
-  mode: 'read' | 'debrief',
+  mode: PeriscopeMode,
 ): string | null {
   if (examples.length === 0) return null;
 
@@ -117,7 +123,7 @@ ${sections.join('\n\n---\n\n')}`;
  * formatted block (string) or null when there are no examples.
  */
 export async function buildCalibrationBlock(
-  mode: 'read' | 'debrief',
+  mode: PeriscopeMode,
 ): Promise<string | null> {
   const examples = await fetchCalibrationExamples(mode);
   return formatCalibrationBlock(examples, mode);

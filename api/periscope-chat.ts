@@ -59,8 +59,10 @@ import { uploadPeriscopeImages } from './_lib/periscope-blob.js';
 import { generateEmbedding } from './_lib/embeddings.js';
 import {
   buildPeriscopeSummary,
+  fetchParentChain,
   fetchPeriscopeAnalysisById,
   savePeriscopeAnalysis,
+  type ParentChainRow,
   type PeriscopeStructuredFields,
   type PeriscopeMode,
   type PeriscopeParentRead,
@@ -81,6 +83,11 @@ import {
 } from './_lib/periscope-extract.js';
 import { runCachedAnthropicCall } from './_lib/anthropic-call.js';
 import { buildFlowContextBlock } from './_lib/periscope-flow-context.js';
+import {
+  ctWallClockToUtcMs,
+  fetchSPXSpotAtTimestamp,
+  type SpotLookupResult,
+} from './_lib/spx-candles.js';
 
 // 780s ceiling matches /api/analyze and /api/trace-live-analyze. Opus
 // 4.7 with adaptive-thinking high-effort + 3 images can take 5-9 min on
@@ -270,7 +277,61 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const capturedAt = new Date().toISOString();
   const startTs = Date.now();
 
+  // Resolve trading_date up-front from explicit body fields. read_date
+  // is the new authoritative source (Phase 6B); body.tradingDate is a
+  // legacy back-compat field that wins only when read_date isn't set
+  // (callers in transition).
+  const tradingDate = body.read_date ?? body.tradingDate ?? capturedAt.slice(0, 10);
+
   try {
+    // Phase 6B: look up SPX spot at the user-picked (read_date, read_time)
+    // FIRST so a missing-data condition fails fast before we burn an
+    // Anthropic call. Today-vs-back-read is gated by comparing read_date
+    // against today's CT calendar date — live reads must hit an exact
+    // bar; back-reads may snap within ±2 min.
+    const todayCt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Chicago',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date());
+    const isLiveRead = body.read_date === todayCt;
+
+    let spotLookup: SpotLookupResult | null = null;
+    try {
+      spotLookup = await fetchSPXSpotAtTimestamp({
+        date: body.read_date,
+        time: body.read_time,
+        toleranceMin: 2,
+        isLiveRead,
+      });
+    } catch (err) {
+      Sentry.captureException(err);
+      logger.error(
+        { err, date: body.read_date, time: body.read_time },
+        'periscope-chat: spot lookup threw',
+      );
+    }
+    if (spotLookup == null) {
+      const msg = isLiveRead
+        ? `No SPX candle for ${body.read_date} ${body.read_time} CT within ±2 min — data may not be fresh yet, retry in 1 min.`
+        : `No SPX intraday history for ${body.read_date} ${body.read_time} CT within ±2 min.`;
+      done({ status: 422, error: 'no_spx_candle' });
+      res.write(JSON.stringify({ ok: false, error: msg }) + '\n');
+      return;
+    }
+
+    // Build the read_time TIMESTAMPTZ for persistence. ctWallClockToUtcMs
+    // returns a ms epoch in UTC corresponding to the CT wall-clock pair.
+    const readTimeMs = ctWallClockToUtcMs(body.read_date, body.read_time);
+    if (readTimeMs == null) {
+      const msg = `Could not resolve read_time for ${body.read_date} ${body.read_time}.`;
+      done({ status: 422, error: 'bad_read_time' });
+      res.write(JSON.stringify({ ok: false, error: msg }) + '\n');
+      return;
+    }
+    const readTimeIso = new Date(readTimeMs).toISOString();
+
     // Phase 9 — two Opus 4.7 calls per submission:
     //   Pass 1 (extractChartStructure): vision-only extraction of spot +
     //          cone bounds from the chart screenshot. Drives retrieval
@@ -280,14 +341,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     //          blocks injected as cached system prefixes.
     //
     // Extraction runs in parallel with the calibration fetch and (for
-    // debriefs) the parent-read fetch — all three are independent. The
-    // parent fetch is what gives Claude the open read to score against:
-    // without it the debrief preamble references a `parent_id` the model
-    // can't resolve.
+    // intraday/debrief) the parent-read fetch — all three are independent.
     const parentFetch: Promise<PeriscopeParentRead | null> =
-      body.mode === 'debrief' && body.parentId != null
+      body.mode !== 'pre_trade' && body.parentId != null
         ? fetchPeriscopeAnalysisById(body.parentId)
         : Promise.resolve(null);
+    const parentChainFetch: Promise<ParentChainRow[]> =
+      body.mode !== 'pre_trade' && body.parentId != null
+        ? fetchParentChain(body.parentId)
+        : Promise.resolve([]);
 
     // Pass 1B inputs: locate gex / charm heat-map images. Skipped when
     // neither is present (pre_trade with chart-only is allowed; intraday
@@ -308,65 +370,49 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ? extractHeatMapStrikes(heatMapInput, anthropic)
       : Promise.resolve(null);
 
-    const [extraction, heatMaps, calibrationBlock, parentRead] =
+    const [extraction, heatMaps, calibrationBlock, parentRead, parentChain] =
       await Promise.all([
         extractChartStructure({ images: body.images }, anthropic),
         heatMapFetch,
         buildCalibrationBlock(body.mode),
         parentFetch,
+        parentChainFetch,
       ]);
 
-    // Resolve trading_date with explicit precedence:
-    //   1. body.tradingDate — user override (back-read fix path)
-    //   2. extraction.chartDate — vision pulled the chart's date label
-    //   3. capture day — last-resort fallback (silent miscoding risk for
-    //      near-midnight back-reads, hence the override above)
-    // The two columns trading_date and captured_at intentionally diverge
-    // for back-reads: trading_date is the date the CHART is for, captured_at
-    // is when the user submitted it.
-    const tradingDate =
-      body.tradingDate ?? extraction?.chartDate ?? capturedAt.slice(0, 10);
-
-    // Debrief-mode parent integrity checks. Hard-fail rather than letting
-    // Claude proceed without a real open read to score against — the user
-    // explicitly chose this so a debrief without a same-day morning read
-    // is rejected rather than silently producing a hindsight description.
-    if (body.mode === 'debrief') {
+    // Debrief / intraday parent integrity checks. Hard-fail rather than
+    // letting Claude proceed without a real parent to anchor against.
+    if (body.mode === 'debrief' || body.mode === 'intraday') {
       if (parentRead == null) {
-        const msg = `Parent read #${body.parentId} not found. Run a fresh morning read first.`;
+        const msg = `Parent read #${body.parentId} not found. Run today's pre-trade read first.`;
         logger.warn(
-          { parentId: body.parentId },
-          'periscope-chat: debrief parent missing',
+          { parentId: body.parentId, mode: body.mode },
+          'periscope-chat: parent missing',
         );
         done({ status: 404, error: 'parent_not_found' });
         res.write(JSON.stringify({ ok: false, error: msg }) + '\n');
         return;
       }
-      if (parentRead.mode !== 'read') {
-        const msg = `Parent #${parentRead.id} is a debrief, not a read — debriefs can only be linked to a read.`;
+      if (body.mode === 'debrief' && parentRead.mode === 'debrief') {
+        const msg = `Parent #${parentRead.id} is a debrief — debriefs can only be linked to a pre_trade or intraday read.`;
         logger.warn(
           { parentId: parentRead.id, parentMode: parentRead.mode },
-          'periscope-chat: debrief parent is not a read',
+          'periscope-chat: debrief parent is itself a debrief',
         );
-        done({ status: 422, error: 'parent_not_a_read' });
+        done({ status: 422, error: 'parent_is_debrief' });
         res.write(JSON.stringify({ ok: false, error: msg }) + '\n');
         return;
       }
-      // Compare the resolved trading_date (user override → extraction →
-      // capture-day) against the parent. This catches both auto-extracted
-      // mismatches and explicit user overrides that would link to the
-      // wrong day's read.
       if (tradingDate !== parentRead.tradingDate) {
-        const msg = `Debrief chart is dated ${tradingDate} but the linked open read is for ${parentRead.tradingDate}. Run a fresh morning read for ${tradingDate} before debriefing it.`;
+        const msg = `Chart is dated ${tradingDate} but the linked parent is for ${parentRead.tradingDate}. The chain must stay within the same trading day.`;
         logger.warn(
           {
             parentId: parentRead.id,
             parentDate: parentRead.tradingDate,
             chartDate: extraction?.chartDate ?? null,
-            overrideDate: body.tradingDate ?? null,
+            readDate: body.read_date,
             effectiveDate: tradingDate,
           },
-          'periscope-chat: debrief chart/parent date mismatch',
+          'periscope-chat: chart/parent date mismatch',
         );
         done({ status: 422, error: 'date_mismatch' });
         res.write(JSON.stringify({ ok: false, error: msg }) + '\n');
@@ -378,56 +424,54 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // when no heat-map images were uploaded or extraction failed entirely.
     const heatMapBlock = heatMaps != null ? formatHeatMapBlock(heatMaps) : null;
 
+    // Build the authoritative spot directive. Claude is instructed
+    // explicitly to use this number as the current spot rather than
+    // reading the chart's red dotted line.
+    const spotDirective = [
+      `Read time: ${body.read_date} ${body.read_time} CT.`,
+      `Authoritative SPX spot at read time: ${spotLookup.price.toFixed(2)} (source: ${spotLookup.source}).`,
+      'Use this as the current spot for all interpretation; do NOT use the chart red dotted spot line.',
+    ].join(' ');
+
     // Flow-alert context (Phase 1.5 of the periscope-chat overhaul spec).
     // Best-effort: a failure here MUST NOT lose the read. The helper
     // already swallows DB errors and returns null, but we layer a second
     // try/catch as defense-in-depth in case the formatter throws on
-    // malformed input. asOf comes from the capture timestamp; once
-    // Phase 6B lands, this should switch to body.read_time so back-reads
-    // anchor the window correctly.
+    // malformed input. asOf is the read_time TIMESTAMPTZ so back-reads
+    // anchor against the slice they're for, not the capture moment.
     let flowBlock: string | null = null;
-    const extractedSpot = extraction?.structured.spot ?? null;
-    if (extractedSpot != null) {
-      try {
-        flowBlock = await buildFlowContextBlock({
-          mode: body.mode,
-          spot: extractedSpot,
-          asOf: new Date(capturedAt),
-        });
-      } catch (err) {
-        Sentry.captureException(err);
-        logger.warn(
-          { err, mode: body.mode },
-          'periscope-chat flow-context block build failed — continuing without it',
-        );
-      }
+    try {
+      flowBlock = await buildFlowContextBlock({
+        mode: body.mode,
+        spot: spotLookup.price,
+        asOf: new Date(readTimeMs),
+      });
+    } catch (err) {
+      Sentry.captureException(err);
+      logger.warn(
+        { err, mode: body.mode },
+        'periscope-chat flow-context block build failed — continuing without it',
+      );
     }
 
     // Build the user content AFTER the parent fetch so the debrief
-    // preamble can inline the open read's prose + structured fields.
+    // preamble can inline the parent's prose + structured fields, and
+    // intraday/debrief see the full chain.
     const userContent = buildUserContent({
       mode: body.mode,
       parentId: body.parentId ?? null,
       parentRead,
+      parentChain,
       heatMapBlock,
       flowBlock,
+      spotDirective,
       images: body.images,
     });
 
     // Build the retrieval query text. When extraction succeeded, use the
     // structural summary so the query embedding has the same shape as
-    // stored embeddings (both are buildPeriscopeSummary outputs).
-    //
-    // Important: stored rows carry an 800-char prose excerpt that
-    // dominates the cosine similarity. If we left proseText='' here, the
-    // query vector would be all-structure / no-prose and would mostly
-    // retrieve rows whose tails happen to coincide rather than rows with
-    // analogous structure. We synthesize a short prose sentence carrying
-    // the same structural levels so the query has a prose-shaped tail
-    // that semantically overlaps with reads whose actual prose discusses
-    // similar spot / cone levels. Cheap, no migration required.
-    //
-    // If extraction failed, retrieval is skipped entirely.
+    // stored embeddings (both are buildPeriscopeSummary outputs). If
+    // extraction failed, retrieval is skipped entirely.
     const retrievalQueryText: string | null = extraction
       ? buildPeriscopeSummary({
           mode: body.mode,
@@ -508,6 +552,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (result.stopReason === 'refusal') {
+      // Stop the keepalive BEFORE the final write so a queued ping can't
+      // race the refusal envelope onto the wire (Phase 6E ordering fix).
+      clearInterval(keepalive);
       logger.warn(
         { model: result.model, mode: body.mode },
         'Claude refused periscope-chat request',
@@ -519,25 +566,46 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const { prose, structured, parseOk } = parseStructuredFields(result.text);
 
+    // Phase 6E: split the previous Promise.all([buildEmbedding, uploadImages])
+    // into independent best-effort calls so a Vercel Blob outage cannot
+    // sink the persisted row. Each helper already swallows its own
+    // failures and returns null/empty on error; we awaitAllSettled-style
+    // here just to keep the wall-clock parallel.
+    const embeddingPromise = buildEmbeddingBestEffort({
+      mode: body.mode,
+      tradingDate,
+      structured,
+      proseText: prose,
+    });
+    const imageUrlsPromise = (async () => {
+      try {
+        return await uploadPeriscopeImages({
+          capturedAt,
+          images: body.images.map((img) => ({
+            kind: img.kind,
+            base64: img.data,
+          })),
+        });
+      } catch (err) {
+        Sentry.captureException(err);
+        logger.error(
+          { err },
+          'periscope-chat image upload threw — continuing without urls',
+        );
+        return {};
+      }
+    })();
     const [embedding, imageUrls] = await Promise.all([
-      buildEmbeddingBestEffort({
-        mode: body.mode,
-        tradingDate,
-        structured,
-        proseText: prose,
-      }),
-      uploadPeriscopeImages({
-        capturedAt,
-        images: body.images.map((img) => ({
-          kind: img.kind,
-          base64: img.data,
-        })),
-      }),
+      embeddingPromise,
+      imageUrlsPromise,
     ]);
 
     const id = await savePeriscopeAnalysis({
       capturedAt,
       tradingDate,
+      readTime: readTimeIso,
+      spotAtReadTime: spotLookup.price,
+      spotSource: spotLookup.source,
       mode: body.mode,
       parentId: body.parentId ?? null,
       userContext: null,
@@ -546,6 +614,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       fullResponse: result.raw,
       embedding,
       structured,
+      parseOk,
       model: result.model,
       inputTokens: result.usage.input,
       outputTokens: result.usage.output,
@@ -559,11 +628,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'periscope-chat persisted',
     );
 
+    // Stop the keepalive BEFORE writing the final success envelope so a
+    // queued ping line can't be interleaved into the response stream
+    // mid-flush (Phase 6E ordering fix).
+    clearInterval(keepalive);
     done({ status: 200 });
-    // parse_ok is propagated to the response so the frontend can flag
-    // partial reads. Phase 6A migration adds the corresponding DB
-    // column; in this phase we skip persistence to keep the change
-    // additive.
     res.write(
       JSON.stringify({
         ok: true,
@@ -572,12 +641,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         prose,
         structured,
         parseOk,
+        spotAtReadTime: spotLookup.price,
+        spotSource: spotLookup.source,
+        readTime: readTimeIso,
         model: result.model,
         durationMs,
         usage: result.usage,
       }) + '\n',
     );
   } catch (err) {
+    // Phase 6E: clearInterval at the TOP of the catch so a queued ping
+    // can't race the error envelope onto the wire.
+    clearInterval(keepalive);
     Sentry.captureException(err);
     logger.error({ err, mode: body.mode }, 'periscope-chat unhandled error');
     done({ status: 500, error: 'unhandled' });
@@ -591,6 +666,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     res.write(JSON.stringify({ ok: false, error: errorMsg }) + '\n');
   } finally {
+    // Defensive: clearInterval is idempotent, so a duplicate call after
+    // an early-return branch is a no-op. res.end() must run on every
+    // exit path so connections don't dangle.
     clearInterval(keepalive);
     res.end();
   }

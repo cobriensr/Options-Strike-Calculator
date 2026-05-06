@@ -69,11 +69,13 @@ export function stripMarkdownForExcerpt(text: string): string {
   );
 }
 
+import type { PeriscopeMode } from './_lib/periscope-db.js';
+
 interface PeriscopeChatSummary {
   id: number;
   trading_date: string;
   captured_at: string;
-  mode: 'read' | 'debrief';
+  mode: PeriscopeMode;
   parent_id: number | null;
   spot: number | null;
   long_trigger: number | null;
@@ -90,7 +92,7 @@ function parseSummaryRow(r: Record<string, unknown>): PeriscopeChatSummary {
     id: Number(r.id),
     trading_date: r.trading_date as string,
     captured_at: r.captured_at as string,
-    mode: r.mode as 'read' | 'debrief',
+    mode: r.mode as PeriscopeMode,
     parent_id: r.parent_id == null ? null : Number(r.parent_id),
     spot: r.spot == null ? null : Number(r.spot),
     long_trigger: r.long_trigger == null ? null : Number(r.long_trigger),
@@ -138,7 +140,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         SELECT
           TO_CHAR(trading_date, 'YYYY-MM-DD') AS date,
           COUNT(*) AS total,
-          COUNT(*) FILTER (WHERE mode = 'read') AS reads,
+          COUNT(*) FILTER (WHERE mode = 'pre_trade') AS pre_trades,
+          COUNT(*) FILTER (WHERE mode = 'intraday') AS intradays,
           COUNT(*) FILTER (WHERE mode = 'debrief') AS debriefs
         FROM periscope_analyses
         GROUP BY trading_date
@@ -149,7 +152,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         dates: rows.map((r) => ({
           date: r.date as string,
           total: Number(r.total),
-          reads: Number(r.reads),
+          // `reads` retained as a back-compat aggregate (pre_trade + intraday)
+          // for any frontend still expecting the legacy field shape.
+          reads: Number(r.pre_trades) + Number(r.intradays),
+          pre_trades: Number(r.pre_trades),
+          intradays: Number(r.intradays),
           debriefs: Number(r.debriefs),
         })),
       });

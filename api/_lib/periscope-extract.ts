@@ -366,6 +366,13 @@ function parseExtraction(text: string): PeriscopeExtractionResult | null {
       long_trigger: null,
       short_trigger: null,
       regime_tag: null,
+      bias: null,
+      trade_types_recommended: [],
+      trade_types_avoided: [],
+      key_levels: null,
+      expected_dealer_behavior: null,
+      confidence: null,
+      confidence_basis: null,
     },
     chartDate,
   };

@@ -24,7 +24,7 @@ interface ListItem {
   id: number;
   trading_date: string;
   captured_at: string;
-  mode: 'read' | 'debrief';
+  mode: 'pre_trade' | 'intraday' | 'debrief';
   parent_id: number | null;
   spot: number | null;
   long_trigger: number | null;
@@ -40,7 +40,7 @@ function makeListItem(overrides: Partial<ListItem> = {}): ListItem {
     id: 1,
     trading_date: '2026-04-30',
     captured_at: '2026-04-30T13:30:00Z',
-    mode: 'read',
+    mode: 'intraday',
     parent_id: null,
     spot: 7120,
     long_trigger: 7125,
@@ -57,7 +57,7 @@ const detailFixture = {
   id: 42,
   trading_date: '2026-04-30',
   captured_at: '2026-04-30T13:30:00Z',
-  mode: 'read' as const,
+  mode: 'intraday' as const,
   parent_id: null,
   user_context: 'morning open',
   prose_text: 'Pin day at 7120. Floor at 7100.',
@@ -217,7 +217,7 @@ describe('<PeriscopeChatHistory />', () => {
       dates: [{ date: '2026-04-30', total: 2, reads: 1, debriefs: 1 }],
       rowsByDate: {
         '2026-04-30': [
-          makeListItem({ id: 5, mode: 'read', prose_excerpt: 'Read 5 prose.' }),
+          makeListItem({ id: 5, mode: 'intraday', prose_excerpt: 'Read 5 prose.' }),
           makeListItem({
             id: 4,
             mode: 'debrief',
@@ -257,7 +257,7 @@ describe('<PeriscopeChatHistory />', () => {
       dates: [{ date: '2026-04-30', total: 2, reads: 1, debriefs: 1 }],
       rowsByDate: {
         '2026-04-30': [
-          makeListItem({ id: 5, mode: 'read', prose_excerpt: 'Read row.' }),
+          makeListItem({ id: 5, mode: 'intraday', prose_excerpt: 'Read row.' }),
           makeListItem({
             id: 4,
             mode: 'debrief',

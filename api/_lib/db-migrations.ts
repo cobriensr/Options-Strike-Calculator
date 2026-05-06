@@ -3856,4 +3856,92 @@ export const MIGRATIONS: Migration[] = [
       sql`CREATE INDEX IF NOT EXISTS idx_vega_flow_etf_ticker_date_expiry ON vega_flow_etf (ticker, date, expiry)`,
     ],
   },
+  {
+    id: 130,
+    description:
+      'Drop and rebuild periscope_analyses for the 3-mode lifecycle ' +
+      '(pre_trade / intraday / debrief). User-approved CASCADE rebuild — ' +
+      'no FK consumers exist beyond the self-reference via parent_id ' +
+      '(verified Phase 0 audit). Adds the structured trading playbook ' +
+      'columns (bias, trade_types_recommended, trade_types_avoided, ' +
+      'key_levels, expected_dealer_behavior, confidence, confidence_basis, ' +
+      'parse_ok), the read-time anchor columns (read_time, ' +
+      'spot_at_read_time, spot_source) so DB-looked-up SPX spot replaces ' +
+      'the chart red-dotted-line spot, and an ON DELETE SET NULL on the ' +
+      'parent_id self-reference (was missing in v1 — orphaned a debrief ' +
+      'on parent delete). Indexes: (mode, calibration_quality) for ' +
+      'retrieval pre-filter, (parent_id) for chain traversal, partial ' +
+      '(calibration_quality DESC, created_at DESC) for the gold library ' +
+      'pull, and the HNSW on analysis_embedding carried forward. See ' +
+      'spec: docs/superpowers/specs/periscope-chat-overhaul-2026-05-05.md.',
+    statements: (sql) => [
+      sql`DROP TABLE IF EXISTS periscope_analyses CASCADE`,
+      sql`
+        CREATE TABLE periscope_analyses (
+          id                          BIGSERIAL PRIMARY KEY,
+          trading_date                DATE NOT NULL,
+          captured_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          read_time                   TIMESTAMPTZ NOT NULL,
+          spot_at_read_time           NUMERIC(10,2) NOT NULL,
+          spot_source                 TEXT NOT NULL
+                                      CHECK (spot_source IN ('db_exact', 'db_snapped')),
+          mode                        TEXT NOT NULL
+                                      CHECK (mode IN ('pre_trade', 'intraday', 'debrief')),
+          parent_id                   BIGINT REFERENCES periscope_analyses(id) ON DELETE SET NULL,
+          user_context                TEXT,
+          image_urls                  JSONB NOT NULL DEFAULT '[]'::jsonb,
+          prose_text                  TEXT NOT NULL,
+          full_response               JSONB NOT NULL,
+          analysis_embedding          vector(2000),
+          spot                        NUMERIC(10,2),
+          cone_lower                  NUMERIC(10,2),
+          cone_upper                  NUMERIC(10,2),
+          long_trigger                NUMERIC(10,2),
+          short_trigger               NUMERIC(10,2),
+          regime_tag                  TEXT,
+          bias                        TEXT
+                                      CHECK (bias IN ('long-only', 'short-only', 'fade-only', 'two-sided', 'no-trade')),
+          trade_types_recommended     JSONB NOT NULL DEFAULT '[]'::jsonb,
+          trade_types_avoided         JSONB NOT NULL DEFAULT '[]'::jsonb,
+          key_levels                  JSONB,
+          expected_dealer_behavior    TEXT,
+          confidence                  TEXT
+                                      CHECK (confidence IN ('low', 'medium', 'high')),
+          confidence_basis            TEXT,
+          parse_ok                    BOOLEAN NOT NULL DEFAULT FALSE,
+          calibration_quality         SMALLINT
+                                      CHECK (calibration_quality BETWEEN 1 AND 5),
+          model                       TEXT NOT NULL,
+          input_tokens                INTEGER,
+          output_tokens               INTEGER,
+          cache_read_tokens           INTEGER,
+          cache_write_tokens          INTEGER,
+          duration_ms                 INTEGER,
+          created_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `,
+      sql`
+        CREATE INDEX idx_periscope_analyses_trading_date
+          ON periscope_analyses (trading_date DESC)
+      `,
+      sql`
+        CREATE INDEX idx_periscope_analyses_mode_calibration
+          ON periscope_analyses (mode, calibration_quality)
+      `,
+      sql`
+        CREATE INDEX idx_periscope_analyses_parent_chain
+          ON periscope_analyses (parent_id)
+      `,
+      sql`
+        CREATE INDEX idx_periscope_analyses_calibration_quality
+          ON periscope_analyses (calibration_quality DESC, created_at DESC)
+          WHERE calibration_quality IS NOT NULL
+      `,
+      sql`
+        CREATE INDEX idx_periscope_analyses_embedding_hnsw
+          ON periscope_analyses USING hnsw (analysis_embedding vector_cosine_ops)
+          WHERE analysis_embedding IS NOT NULL
+      `,
+    ],
+  },
 ];

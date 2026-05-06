@@ -25,12 +25,13 @@
 import { getDb } from './db.js';
 import { generateEmbedding } from './embeddings.js';
 import logger from './logger.js';
+import type { PeriscopeMode } from './periscope-db.js';
 
 const TOP_K = 3;
 
 interface RetrievalRow {
   id: number;
-  mode: 'read' | 'debrief';
+  mode: PeriscopeMode;
   regime_tag: string | null;
   trading_date: string;
   prose_text: string;
@@ -42,9 +43,16 @@ interface RetrievalRow {
  * has the smallest cosine distance to the query embedding. Excludes
  * rows already gold-starred (those live in the calibration block) and
  * returns an empty array on any failure (best-effort).
+ *
+ * Phase 6D: the query embedding is now bound ONCE via a CTE rather
+ * than embedded twice in the SQL string. The previous shape (a
+ * literal `${vectorLiteral}::vector` in both the SELECT projection AND
+ * the ORDER BY clause) doubled the parser cost and made it easy for a
+ * future edit to drift the two literals apart. The CTE form keeps the
+ * vector text in one place and lets the planner reuse it.
  */
 export async function fetchSimilarPastReads(args: {
-  mode: 'read' | 'debrief';
+  mode: PeriscopeMode;
   queryEmbedding: number[];
 }): Promise<RetrievalRow[]> {
   const { mode, queryEmbedding } = args;
@@ -53,23 +61,20 @@ export async function fetchSimilarPastReads(args: {
   try {
     const sql = getDb();
     const vectorLiteral = `[${queryEmbedding.join(',')}]`;
-    // Cosine distance via pgvector's <=> operator. The HNSW index on
-    // analysis_embedding (migration 103) makes this query fast even
-    // at scale. Filter out rows with no embedding (early failures
-    // during generation) and rows that are gold-starred.
     const rows = await sql`
+      WITH q AS (SELECT ${vectorLiteral}::vector AS v)
       SELECT id, mode, regime_tag, trading_date, prose_text,
-             1 - (analysis_embedding <=> ${vectorLiteral}::vector) AS similarity
-      FROM periscope_analyses
+             1 - (analysis_embedding <=> q.v) AS similarity
+      FROM periscope_analyses, q
       WHERE mode = ${mode}
         AND analysis_embedding IS NOT NULL
         AND (calibration_quality IS NULL OR calibration_quality < 4)
-      ORDER BY analysis_embedding <=> ${vectorLiteral}::vector ASC
+      ORDER BY analysis_embedding <=> q.v ASC
       LIMIT ${TOP_K}
     `;
     return rows.map((r) => ({
       id: Number(r.id),
-      mode: r.mode as 'read' | 'debrief',
+      mode: r.mode as PeriscopeMode,
       regime_tag: (r.regime_tag as string | null) ?? null,
       trading_date: r.trading_date as string,
       prose_text: (r.prose_text as string) ?? '',
@@ -91,9 +96,19 @@ const SIMILARITY_FLOOR = 0.3; // cosine similarity 0.3+ ≈ "broadly related"
 
 export function formatRetrievalBlock(
   examples: RetrievalRow[],
-  mode: 'read' | 'debrief',
+  mode: PeriscopeMode,
 ): string | null {
   const filtered = examples.filter((e) => e.similarity >= SIMILARITY_FLOOR);
+  // Surface raw similarities for tuning even when nothing clears the floor.
+  // The output is small (3 numbers) and only logs once per submission.
+  logger.info(
+    {
+      mode,
+      similarities: examples.map((e) => Number(e.similarity.toFixed(4))),
+      kept: filtered.length,
+    },
+    'periscope retrieval similarities',
+  );
   if (filtered.length === 0) return null;
 
   const sections = filtered.map((ex, i) => {
@@ -133,7 +148,7 @@ ${sections.join('\n\n---\n\n')}`;
  * Skipped entirely when the input is empty / null.
  */
 export async function buildRetrievalBlock(args: {
-  mode: 'read' | 'debrief';
+  mode: PeriscopeMode;
   queryText: string | null | undefined;
 }): Promise<string | null> {
   const { mode, queryText } = args;

@@ -43,11 +43,13 @@ function emitStartDebrief(parentId: number) {
 // Types
 // ============================================================
 
+type PeriscopeRowMode = 'pre_trade' | 'intraday' | 'debrief';
+
 interface PeriscopeChatSummary {
   id: number;
   trading_date: string;
   captured_at: string;
-  mode: 'read' | 'debrief';
+  mode: PeriscopeRowMode;
   parent_id: number | null;
   spot: number | null;
   long_trigger: number | null;
@@ -61,7 +63,10 @@ interface PeriscopeChatSummary {
 interface DateEntry {
   date: string; // YYYY-MM-DD
   total: number;
+  /** Aggregate of pre_trades + intradays. Server-computed for back-compat. */
   reads: number;
+  pre_trades?: number;
+  intradays?: number;
   debriefs: number;
 }
 
@@ -137,10 +142,15 @@ function regimeStyle(tag: string | null): string {
   return REGIME_STYLES[tag] ?? 'bg-slate-800/60 text-slate-300';
 }
 
-function modeTint(mode: 'read' | 'debrief'): string {
-  return mode === 'debrief'
-    ? 'border-purple-900/40 bg-purple-950/10'
-    : 'border-emerald-900/30 bg-emerald-950/10';
+function modeTint(mode: PeriscopeRowMode): string {
+  if (mode === 'debrief') return 'border-purple-900/40 bg-purple-950/10';
+  if (mode === 'pre_trade') return 'border-sky-900/30 bg-sky-950/10';
+  return 'border-emerald-900/30 bg-emerald-950/10';
+}
+
+/** Treat pre_trade + intraday as the legacy `read` filter bucket. */
+function isReadMode(mode: PeriscopeRowMode): boolean {
+  return mode === 'pre_trade' || mode === 'intraday';
 }
 
 const MODE_TABS: Array<{ key: ModeFilter; label: string }> = [
@@ -257,9 +267,15 @@ export default function PeriscopeChatHistory() {
   );
 
   // Apply mode filter + annotation overrides to the fetched rows.
+  // The legacy 'read' tab now buckets pre_trade + intraday so existing
+  // history continues to filter sensibly without expanding the tab UI.
   const filtered = useMemo(() => {
     return items
-      .filter((it) => modeFilter === 'all' || it.mode === modeFilter)
+      .filter((it) => {
+        if (modeFilter === 'all') return true;
+        if (modeFilter === 'debrief') return it.mode === 'debrief';
+        return isReadMode(it.mode);
+      })
       .map((it) => {
         const o = annotationOverrides[it.id];
         return o ? { ...it, ...o } : it;
@@ -403,10 +419,12 @@ export default function PeriscopeChatHistory() {
                       className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold tracking-wide uppercase ${
                         item.mode === 'debrief'
                           ? 'bg-purple-900/50 text-purple-200'
-                          : 'bg-emerald-900/50 text-emerald-200'
+                          : item.mode === 'pre_trade'
+                            ? 'bg-sky-900/50 text-sky-200'
+                            : 'bg-emerald-900/50 text-emerald-200'
                       }`}
                     >
-                      {item.mode}
+                      {item.mode === 'pre_trade' ? 'pre-trade' : item.mode}
                     </span>
                     <span className="text-primary font-mono text-xs font-semibold">
                       {fmtTradingDate(item.trading_date)}
@@ -474,7 +492,7 @@ export default function PeriscopeChatHistory() {
                     </p>
                   )}
                 </button>
-                {item.mode === 'read' && (
+                {isReadMode(item.mode) && (
                   <button
                     type="button"
                     onClick={() => emitStartDebrief(item.id)}

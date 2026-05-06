@@ -43,11 +43,11 @@ const baseDebriefMomentUTC = new Date('2026-05-05T21:00:00Z'); // 16:00 CT debri
 
 // ── Empty result ──────────────────────────────────────────────────
 
-describe('buildFlowContextBlock — read mode (empty)', () => {
+describe('buildFlowContextBlock — intraday mode (empty)', () => {
   it('returns null when no recent alerts match', async () => {
     mockSql.mockResolvedValueOnce([]);
     const out = await buildFlowContextBlock({
-      mode: 'read',
+      mode: 'intraday',
       spot: 5800,
       asOf: baseIntradayMomentUTC,
     });
@@ -55,7 +55,7 @@ describe('buildFlowContextBlock — read mode (empty)', () => {
   });
 });
 
-describe('buildFlowContextBlock — read mode (rows present)', () => {
+describe('buildFlowContextBlock — intraday mode (rows present)', () => {
   it('formats a labelled list of alerts for intraday flavor', async () => {
     mockSql.mockResolvedValueOnce([
       {
@@ -91,7 +91,7 @@ describe('buildFlowContextBlock — read mode (rows present)', () => {
       },
     ]);
     const out = await buildFlowContextBlock({
-      mode: 'read',
+      mode: 'intraday',
       spot: 5800,
       asOf: baseIntradayMomentUTC,
     });
@@ -107,12 +107,11 @@ describe('buildFlowContextBlock — read mode (rows present)', () => {
     expect(out).toMatch(/prem \$450\.0K/);
   });
 
-  it('uses the wider pre-trade window when asOf is before 09:30 ET', async () => {
-    // 13:00 UTC = 08:00 CT / 09:00 ET → pre-open
+  it('uses the wider pre-trade window when mode = pre_trade', async () => {
     const preOpen = new Date('2026-05-05T13:00:00Z');
     mockSql.mockResolvedValueOnce([]);
     const out = await buildFlowContextBlock({
-      mode: 'read',
+      mode: 'pre_trade',
       spot: 5800,
       asOf: preOpen,
     });
@@ -192,7 +191,7 @@ describe('buildFlowContextBlock — window + proximity binds', () => {
   it('intraday read binds 15-min window + ±10pt strike band', async () => {
     mockSql.mockResolvedValueOnce([]);
     await buildFlowContextBlock({
-      mode: 'read',
+      mode: 'intraday',
       spot: 5800,
       asOf: baseIntradayMomentUTC,
     });
@@ -216,7 +215,7 @@ describe('buildFlowContextBlock — window + proximity binds', () => {
     const preOpen = new Date('2026-05-05T13:00:00Z');
     mockSql.mockResolvedValueOnce([]);
     await buildFlowContextBlock({
-      mode: 'read',
+      mode: 'pre_trade',
       spot: 5800,
       asOf: preOpen,
     });
@@ -236,7 +235,7 @@ describe('buildFlowContextBlock — best-effort error handling', () => {
   it('returns null on DB error rather than throwing', async () => {
     mockSql.mockRejectedValueOnce(new Error('connection reset'));
     const out = await buildFlowContextBlock({
-      mode: 'read',
+      mode: 'intraday',
       spot: 5800,
       asOf: baseIntradayMomentUTC,
     });

@@ -32,7 +32,7 @@ beforeEach(() => {
 describe('fetchSimilarPastReads', () => {
   it('returns empty when query embedding is empty', async () => {
     const result = await fetchSimilarPastReads({
-      mode: 'read',
+      mode: 'intraday',
       queryEmbedding: [],
     });
     expect(result).toEqual([]);
@@ -42,7 +42,7 @@ describe('fetchSimilarPastReads', () => {
   it('returns empty array on DB error (best-effort)', async () => {
     mockSql.mockRejectedValueOnce(new Error('DB down'));
     const result = await fetchSimilarPastReads({
-      mode: 'read',
+      mode: 'intraday',
       queryEmbedding: [0.1, 0.2, 0.3],
     });
     expect(result).toEqual([]);
@@ -52,7 +52,7 @@ describe('fetchSimilarPastReads', () => {
     mockSql.mockResolvedValueOnce([
       {
         id: '5',
-        mode: 'read',
+        mode: 'intraday',
         regime_tag: 'pin',
         trading_date: '2026-04-30',
         prose_text: 'Past pin day.',
@@ -60,7 +60,7 @@ describe('fetchSimilarPastReads', () => {
       },
     ]);
     const result = await fetchSimilarPastReads({
-      mode: 'read',
+      mode: 'intraday',
       queryEmbedding: [0.1, 0.2, 0.3],
     });
     expect(result).toHaveLength(1);
@@ -71,7 +71,7 @@ describe('fetchSimilarPastReads', () => {
 
 describe('formatRetrievalBlock', () => {
   it('returns null on empty input', () => {
-    expect(formatRetrievalBlock([], 'read')).toBeNull();
+    expect(formatRetrievalBlock([], 'intraday')).toBeNull();
   });
 
   it('filters out rows below the similarity floor', () => {
@@ -79,14 +79,14 @@ describe('formatRetrievalBlock', () => {
       [
         {
           id: 1,
-          mode: 'read',
+          mode: 'intraday',
           regime_tag: null,
           trading_date: '2026-04-30',
           prose_text: 'p',
           similarity: 0.1,
         },
       ],
-      'read',
+      'intraday',
     );
     expect(result).toBeNull();
   });
@@ -96,18 +96,18 @@ describe('formatRetrievalBlock', () => {
       [
         {
           id: 1,
-          mode: 'read',
+          mode: 'intraday',
           regime_tag: 'pin',
           trading_date: '2026-04-30',
           prose_text: 'Pin day at 7120.',
           similarity: 0.78,
         },
       ],
-      'read',
+      'intraday',
     );
     expect(result).not.toBeNull();
     expect(result).toContain('similarity: 78%');
-    expect(result).toContain('Analogous past reads');
+    expect(result).toContain('Analogous past intradays');
     expect(result).toContain('regime: pin');
   });
 
@@ -116,14 +116,14 @@ describe('formatRetrievalBlock', () => {
       [
         {
           id: 1,
-          mode: 'read',
+          mode: 'intraday',
           regime_tag: null,
           trading_date: '2026-04-30',
           prose_text: 'x'.repeat(3000),
           similarity: 0.5,
         },
       ],
-      'read',
+      'intraday',
     );
     expect(result).toContain('truncated for brevity');
   });
@@ -132,7 +132,7 @@ describe('formatRetrievalBlock', () => {
 describe('buildRetrievalBlock', () => {
   it('returns null when context is null', async () => {
     const result = await buildRetrievalBlock({
-      mode: 'read',
+      mode: 'intraday',
       queryText: null,
     });
     expect(result).toBeNull();
@@ -141,7 +141,7 @@ describe('buildRetrievalBlock', () => {
 
   it('returns null when context is empty / whitespace', async () => {
     const result = await buildRetrievalBlock({
-      mode: 'read',
+      mode: 'intraday',
       queryText: '   ',
     });
     expect(result).toBeNull();
@@ -151,7 +151,7 @@ describe('buildRetrievalBlock', () => {
   it('returns null when embedding generation fails', async () => {
     mockGenerateEmbedding.mockResolvedValueOnce(null);
     const result = await buildRetrievalBlock({
-      mode: 'read',
+      mode: 'intraday',
       queryText: 'morning open',
     });
     expect(result).toBeNull();
@@ -162,7 +162,7 @@ describe('buildRetrievalBlock', () => {
     mockSql.mockResolvedValueOnce([
       {
         id: '5',
-        mode: 'read',
+        mode: 'intraday',
         regime_tag: 'pin',
         trading_date: '2026-04-30',
         prose_text: 'p',
@@ -170,7 +170,7 @@ describe('buildRetrievalBlock', () => {
       },
     ]);
     const result = await buildRetrievalBlock({
-      mode: 'read',
+      mode: 'intraday',
       queryText: 'morning open',
     });
     expect(result).toBeNull();
@@ -181,7 +181,7 @@ describe('buildRetrievalBlock', () => {
     mockSql.mockResolvedValueOnce([
       {
         id: '5',
-        mode: 'read',
+        mode: 'intraday',
         regime_tag: 'pin',
         trading_date: '2026-04-30',
         prose_text: 'Past pin day at 7120.',
@@ -189,7 +189,7 @@ describe('buildRetrievalBlock', () => {
       },
     ]);
     const result = await buildRetrievalBlock({
-      mode: 'read',
+      mode: 'intraday',
       queryText: 'morning open, gap-down day',
     });
     expect(result).not.toBeNull();

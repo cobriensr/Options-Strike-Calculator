@@ -40,6 +40,7 @@ vi.mock('../_lib/periscope-blob.js', () => ({
 vi.mock('../_lib/periscope-db.js', () => ({
   savePeriscopeAnalysis: vi.fn().mockResolvedValue(42),
   fetchPeriscopeAnalysisById: vi.fn().mockResolvedValue(null),
+  fetchParentChain: vi.fn().mockResolvedValue([]),
   // Echo the structured input into the summary string so tests can
   // verify which fields propagate (e.g. extracted vs analysis-derived).
   // Format mirrors the real buildPeriscopeSummary output well enough
@@ -47,7 +48,6 @@ vi.mock('../_lib/periscope-db.js', () => ({
   buildPeriscopeSummary: vi.fn().mockImplementation((args: unknown) => {
     const a = args as {
       mode?: string;
-      tradingDate?: string;
       structured?: {
         spot?: number | null;
         cone_lower?: number | null;
@@ -60,8 +60,7 @@ vi.mock('../_lib/periscope-db.js', () => ({
     const fmt = (n: number | null | undefined) =>
       n == null ? 'null' : String(n);
     return [
-      `mode=${a.mode ?? 'read'}`,
-      `date=${a.tradingDate ?? 'null'}`,
+      `mode=${a.mode ?? 'pre_trade'}`,
       `spot=${fmt(s.spot)}`,
       `cone=${fmt(s.cone_lower)}-${fmt(s.cone_upper)}`,
       `regime=${s.regime_tag ?? 'null'}`,
@@ -81,6 +80,22 @@ vi.mock('../_lib/periscope-retrieval.js', () => ({
 vi.mock('../_lib/periscope-extract.js', () => ({
   extractChartStructure: vi.fn().mockResolvedValue(null),
   extractHeatMapStrikes: vi.fn().mockResolvedValue(null),
+}));
+
+vi.mock('../_lib/spx-candles.js', async () => {
+  const actual = await vi.importActual<
+    typeof import('../_lib/spx-candles.js')
+  >('../_lib/spx-candles.js');
+  return {
+    ...actual,
+    fetchSPXSpotAtTimestamp: vi
+      .fn()
+      .mockResolvedValue({ price: 7120, source: 'db_exact' }),
+  };
+});
+
+vi.mock('../_lib/periscope-flow-context.js', () => ({
+  buildFlowContextBlock: vi.fn().mockResolvedValue(null),
 }));
 
 // Mock the Anthropic SDK — capture both stream + create calls.
@@ -145,6 +160,7 @@ import {
 } from '../_lib/api-helpers.js';
 import { generateEmbedding } from '../_lib/embeddings.js';
 import {
+  fetchParentChain,
   fetchPeriscopeAnalysisById,
   savePeriscopeAnalysis,
 } from '../_lib/periscope-db.js';
@@ -153,12 +169,17 @@ import {
   extractHeatMapStrikes,
 } from '../_lib/periscope-extract.js';
 import { buildRetrievalBlock } from '../_lib/periscope-retrieval.js';
+import { fetchSPXSpotAtTimestamp } from '../_lib/spx-candles.js';
+import { buildFlowContextBlock } from '../_lib/periscope-flow-context.js';
 
 const mockSavePeriscopeAnalysis = vi.mocked(savePeriscopeAnalysis);
 const mockFetchPeriscopeAnalysisById = vi.mocked(fetchPeriscopeAnalysisById);
+const mockFetchParentChain = vi.mocked(fetchParentChain);
 const mockExtractChartStructure = vi.mocked(extractChartStructure);
 const mockExtractHeatMapStrikes = vi.mocked(extractHeatMapStrikes);
 const mockBuildRetrievalBlock = vi.mocked(buildRetrievalBlock);
+const mockFetchSPXSpotAtTimestamp = vi.mocked(fetchSPXSpotAtTimestamp);
+const mockBuildFlowContextBlock = vi.mocked(buildFlowContextBlock);
 
 const MockErrors = (globalThis as Record<string, unknown>).__MockErrors as {
   APIError: new (status: number, message: string) => Error;
@@ -175,7 +196,7 @@ const SAMPLE_BASE64 = 'aGVsbG8td29ybGQ='; // "hello-world"
 
 function makeBody(
   overrides: Partial<{
-    mode: 'read' | 'debrief';
+    mode: 'pre_trade' | 'intraday' | 'debrief';
     images: Array<{
       kind: 'chart' | 'gex' | 'charm';
       data: string;
@@ -183,13 +204,19 @@ function makeBody(
     }>;
     parentId: number | null;
     tradingDate: string;
+    read_date: string;
+    read_time: string;
   }> = {},
 ) {
   return {
-    mode: overrides.mode ?? 'read',
+    // Default to pre_trade so the parent-required guard for intraday/debrief
+    // doesn't trip every test that doesn't explicitly set parentId.
+    mode: overrides.mode ?? 'pre_trade',
     images: overrides.images ?? [
       { kind: 'chart', data: SAMPLE_BASE64, mediaType: 'image/png' },
     ],
+    read_date: overrides.read_date ?? '2026-05-06',
+    read_time: overrides.read_time ?? '08:30',
     ...(overrides.parentId !== undefined && { parentId: overrides.parentId }),
     ...(overrides.tradingDate !== undefined && {
       tradingDate: overrides.tradingDate,
@@ -261,9 +288,14 @@ describe('POST /api/periscope-chat', () => {
     mockCreate.mockReset();
     mockSavePeriscopeAnalysis.mockReset().mockResolvedValue(42);
     mockFetchPeriscopeAnalysisById.mockReset().mockResolvedValue(null);
+    mockFetchParentChain.mockReset().mockResolvedValue([]);
     mockExtractChartStructure.mockReset().mockResolvedValue(null);
     mockExtractHeatMapStrikes.mockReset().mockResolvedValue(null);
     mockBuildRetrievalBlock.mockReset().mockResolvedValue(null);
+    mockFetchSPXSpotAtTimestamp
+      .mockReset()
+      .mockResolvedValue({ price: 7120, source: 'db_exact' });
+    mockBuildFlowContextBlock.mockReset().mockResolvedValue(null);
     process.env.ANTHROPIC_API_KEY = 'test-key';
     // Restore mock defaults that restoreAllMocks may strip
     vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
@@ -348,7 +380,7 @@ describe('POST /api/periscope-chat', () => {
     expect(res._json).toMatchObject({ error: expect.stringContaining('3') });
   });
 
-  it('happy path: returns parsed structured fields on success (read mode)', async () => {
+  it('happy path: returns parsed structured fields on success (pre_trade mode)', async () => {
     mockFinalMessage.mockResolvedValue(
       makeSDKResponse({
         prose: 'The chart shows a clean pin-day setup at 7120.',
@@ -369,11 +401,11 @@ describe('POST /api/periscope-chat', () => {
     };
     expect(json.ok).toBe(true);
     expect(json.id).toBe(42);
-    expect(json.mode).toBe('read');
+    expect(json.mode).toBe('pre_trade');
     expect(json.prose).toContain('pin-day setup at 7120');
     // The JSON block must NOT appear in the prose
     expect(json.prose).not.toContain('```json');
-    expect(json.structured).toEqual({
+    expect(json.structured).toMatchObject({
       spot: 7120,
       cone_lower: 7095,
       cone_upper: 7150,
@@ -387,8 +419,8 @@ describe('POST /api/periscope-chat', () => {
   it('debrief mode persists parent_id and inlines the parent prose into the user message', async () => {
     mockFetchPeriscopeAnalysisById.mockResolvedValueOnce({
       id: 17,
-      mode: 'read',
-      tradingDate: '2026-05-01',
+      mode: 'pre_trade',
+      tradingDate: '2026-05-06',
       proseText:
         'Open read at 8:30 CT: spot 7140, +γ ceiling at 7150, lower cone 7092. Long trigger 7150, short trigger 7115.',
       structured: {
@@ -398,6 +430,13 @@ describe('POST /api/periscope-chat', () => {
         long_trigger: 7150,
         short_trigger: 7115,
         regime_tag: 'trap',
+        bias: null,
+        trade_types_recommended: [],
+        trade_types_avoided: [],
+        key_levels: null,
+        expected_dealer_behavior: null,
+        confidence: null,
+        confidence_basis: null,
       },
     });
     // Extraction returns the same trading_date so the debrief proceeds
@@ -410,8 +449,15 @@ describe('POST /api/periscope-chat', () => {
         long_trigger: null,
         short_trigger: null,
         regime_tag: null,
+        bias: null,
+        trade_types_recommended: [],
+        trade_types_avoided: [],
+        key_levels: null,
+        expected_dealer_behavior: null,
+        confidence: null,
+        confidence_basis: null,
       },
-      chartDate: '2026-05-01',
+      chartDate: '2026-05-06',
     });
     mockFinalMessage.mockResolvedValue(
       makeSDKResponse({ prose: 'Debrief: long trigger fired at 11:15 AM.' }),
@@ -419,7 +465,12 @@ describe('POST /api/periscope-chat', () => {
 
     const req = mockRequest({
       method: 'POST',
-      body: makeBody({ mode: 'debrief', parentId: 17 }),
+      body: makeBody({
+        mode: 'debrief',
+        parentId: 17,
+        read_date: '2026-05-06',
+        read_time: '15:00',
+      }),
     });
     const res = mockResponse();
     await handler(req, res);
@@ -478,7 +529,7 @@ describe('POST /api/periscope-chat', () => {
   it('returns 422 NDJSON envelope when the chart date does not match the parent read date', async () => {
     mockFetchPeriscopeAnalysisById.mockResolvedValueOnce({
       id: 17,
-      mode: 'read',
+      mode: 'pre_trade',
       tradingDate: '2026-04-30', // parent is yesterday's read
       proseText: 'Yesterday morning read.',
       structured: {
@@ -488,6 +539,13 @@ describe('POST /api/periscope-chat', () => {
         long_trigger: 7150,
         short_trigger: 7115,
         regime_tag: 'trap',
+        bias: null,
+        trade_types_recommended: [],
+        trade_types_avoided: [],
+        key_levels: null,
+        expected_dealer_behavior: null,
+        confidence: null,
+        confidence_basis: null,
       },
     });
     mockExtractChartStructure.mockResolvedValueOnce({
@@ -498,30 +556,42 @@ describe('POST /api/periscope-chat', () => {
         long_trigger: null,
         short_trigger: null,
         regime_tag: null,
+        bias: null,
+        trade_types_recommended: [],
+        trade_types_avoided: [],
+        key_levels: null,
+        expected_dealer_behavior: null,
+        confidence: null,
+        confidence_basis: null,
       },
-      chartDate: '2026-05-01', // debrief chart is for today
+      chartDate: '2026-05-06',
     });
 
     const req = mockRequest({
       method: 'POST',
-      body: makeBody({ mode: 'debrief', parentId: 17 }),
+      body: makeBody({
+        mode: 'debrief',
+        parentId: 17,
+        read_date: '2026-05-06',
+        read_time: '15:00',
+      }),
     });
     const res = mockResponse();
     await handler(req, res);
 
     const json = parseNdjsonResponse(res) as { ok: boolean; error: string };
     expect(json.ok).toBe(false);
-    expect(json.error).toContain('2026-05-01');
+    expect(json.error).toContain('2026-05-06');
     expect(json.error).toContain('2026-04-30');
     expect(mockStream).not.toHaveBeenCalled();
     expect(mockSavePeriscopeAnalysis).not.toHaveBeenCalled();
   });
 
-  it('returns 422 NDJSON envelope when parent is itself a debrief, not a read', async () => {
+  it('returns 422 NDJSON envelope when the debrief parent is itself a debrief', async () => {
     mockFetchPeriscopeAnalysisById.mockResolvedValueOnce({
       id: 17,
-      mode: 'debrief', // wrong — must be a read
-      tradingDate: '2026-05-01',
+      mode: 'debrief',
+      tradingDate: '2026-05-06',
       proseText: 'A previous debrief.',
       structured: {
         spot: 7140,
@@ -530,6 +600,13 @@ describe('POST /api/periscope-chat', () => {
         long_trigger: null,
         short_trigger: null,
         regime_tag: null,
+        bias: null,
+        trade_types_recommended: [],
+        trade_types_avoided: [],
+        key_levels: null,
+        expected_dealer_behavior: null,
+        confidence: null,
+        confidence_basis: null,
       },
     });
 
@@ -542,15 +619,15 @@ describe('POST /api/periscope-chat', () => {
 
     const json = parseNdjsonResponse(res) as { ok: boolean; error: string };
     expect(json.ok).toBe(false);
-    expect(json.error).toContain('debrief, not a read');
+    expect(json.error).toContain('debrief');
     expect(mockStream).not.toHaveBeenCalled();
   });
 
-  it('does not fetch a parent in read mode (parentId is ignored if sent)', async () => {
+  it('does not fetch a parent in pre_trade mode (parentId is ignored if sent)', async () => {
     mockFinalMessage.mockResolvedValue(makeSDKResponse({ prose: 'Read.' }));
     const req = mockRequest({
       method: 'POST',
-      body: makeBody({ mode: 'read' }),
+      body: makeBody({ mode: 'pre_trade' }),
     });
     const res = mockResponse();
     await handler(req, res);
@@ -558,149 +635,37 @@ describe('POST /api/periscope-chat', () => {
   });
 
   // ============================================================
-  // tradingDate override (back-read fix path)
+  // SPX spot lookup hard-fail path
   // ============================================================
 
-  it('uses an explicit body.tradingDate, even when extraction returns a different chartDate', async () => {
-    mockExtractChartStructure.mockResolvedValueOnce({
-      structured: {
-        spot: 7140,
-        cone_lower: null,
-        cone_upper: null,
-        long_trigger: null,
-        short_trigger: null,
-        regime_tag: null,
-      },
-      chartDate: '2026-05-01', // extraction says today
-    });
-    mockFinalMessage.mockResolvedValue(makeSDKResponse({ prose: 'Read.' }));
-
-    const req = mockRequest({
-      method: 'POST',
-      body: makeBody({ tradingDate: '2026-04-30' }),
-    });
-    const res = mockResponse();
-    await handler(req, res);
-
-    expect(res._status).toBe(200);
-    const saveArgs = mockSavePeriscopeAnalysis.mock.calls[0]![0] as {
-      tradingDate: string;
-    };
-    expect(saveArgs.tradingDate).toBe('2026-04-30');
-  });
-
-  it('falls back to extraction.chartDate when no override is provided', async () => {
-    mockExtractChartStructure.mockResolvedValueOnce({
-      structured: {
-        spot: 7140,
-        cone_lower: null,
-        cone_upper: null,
-        long_trigger: null,
-        short_trigger: null,
-        regime_tag: null,
-      },
-      chartDate: '2026-04-30',
-    });
-    mockFinalMessage.mockResolvedValue(makeSDKResponse({ prose: 'Read.' }));
-
+  it('returns 422 when fetchSPXSpotAtTimestamp returns null (no candle)', async () => {
+    mockFetchSPXSpotAtTimestamp.mockResolvedValueOnce(null);
     const req = mockRequest({ method: 'POST', body: makeBody() });
     const res = mockResponse();
     await handler(req, res);
-
-    const saveArgs = mockSavePeriscopeAnalysis.mock.calls[0]![0] as {
-      tradingDate: string;
-    };
-    expect(saveArgs.tradingDate).toBe('2026-04-30');
-  });
-
-  it('returns 400 when tradingDate is malformed (Zod regex)', async () => {
-    const req = mockRequest({
-      method: 'POST',
-      body: makeBody({ tradingDate: 'not-a-date' }),
-    });
-    const res = mockResponse();
-    await handler(req, res);
-    expect(res._status).toBe(400);
-    expect(res._json).toMatchObject({
-      error: expect.stringContaining('YYYY-MM-DD'),
-    });
-  });
-
-  it('lets a debrief proceed when tradingDate override matches the parent date', async () => {
-    mockFetchPeriscopeAnalysisById.mockResolvedValueOnce({
-      id: 17,
-      mode: 'read',
-      tradingDate: '2026-04-30',
-      proseText: 'Yesterday morning read.',
-      structured: {
-        spot: 7140,
-        cone_lower: null,
-        cone_upper: null,
-        long_trigger: null,
-        short_trigger: null,
-        regime_tag: 'pin',
-      },
-    });
-    // Extraction fails entirely — without the override the handler would
-    // fall back to capture-day (today) and the date guard would 422.
-    mockExtractChartStructure.mockResolvedValueOnce(null);
-    mockFinalMessage.mockResolvedValue(
-      makeSDKResponse({ prose: 'Debrief: long trigger fired.' }),
-    );
-
-    const req = mockRequest({
-      method: 'POST',
-      body: makeBody({
-        mode: 'debrief',
-        parentId: 17,
-        tradingDate: '2026-04-30',
-      }),
-    });
-    const res = mockResponse();
-    await handler(req, res);
-
-    expect(res._status).toBe(200);
-    const saveArgs = mockSavePeriscopeAnalysis.mock.calls[0]![0] as {
-      tradingDate: string;
-      parentId: number | null;
-    };
-    expect(saveArgs.tradingDate).toBe('2026-04-30');
-    expect(saveArgs.parentId).toBe(17);
-  });
-
-  it('rejects a debrief whose tradingDate override conflicts with the parent', async () => {
-    mockFetchPeriscopeAnalysisById.mockResolvedValueOnce({
-      id: 17,
-      mode: 'read',
-      tradingDate: '2026-04-30',
-      proseText: 'Yesterday morning read.',
-      structured: {
-        spot: 7140,
-        cone_lower: null,
-        cone_upper: null,
-        long_trigger: null,
-        short_trigger: null,
-        regime_tag: 'pin',
-      },
-    });
-    mockExtractChartStructure.mockResolvedValueOnce(null);
-
-    const req = mockRequest({
-      method: 'POST',
-      body: makeBody({
-        mode: 'debrief',
-        parentId: 17,
-        tradingDate: '2026-05-01',
-      }),
-    });
-    const res = mockResponse();
-    await handler(req, res);
-
     const json = parseNdjsonResponse(res) as { ok: boolean; error: string };
     expect(json.ok).toBe(false);
-    expect(json.error).toContain('2026-05-01');
-    expect(json.error).toContain('2026-04-30');
+    expect(json.error).toContain('No SPX');
     expect(mockStream).not.toHaveBeenCalled();
+    expect(mockSavePeriscopeAnalysis).not.toHaveBeenCalled();
+  });
+
+  it('persists spot_at_read_time + spot_source from the lookup result', async () => {
+    mockFetchSPXSpotAtTimestamp.mockResolvedValueOnce({
+      price: 7180.5,
+      source: 'db_snapped',
+    });
+    mockFinalMessage.mockResolvedValue(makeSDKResponse({ prose: 'Read.' }));
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(200);
+    const saveArgs = mockSavePeriscopeAnalysis.mock.calls[0]![0] as {
+      spotAtReadTime: number;
+      spotSource: string;
+    };
+    expect(saveArgs.spotAtReadTime).toBe(7180.5);
+    expect(saveArgs.spotSource).toBe('db_snapped');
   });
 
   it('JSON block parse failure: structured fields are all null but row still saves', async () => {
@@ -719,15 +684,21 @@ describe('POST /api/periscope-chat', () => {
     const json = parseNdjsonResponse(res) as {
       ok: boolean;
       structured: Record<string, unknown>;
+      parseOk: boolean;
     };
     expect(json.ok).toBe(true);
-    expect(json.structured).toEqual({
+    expect(json.parseOk).toBe(false);
+    expect(json.structured).toMatchObject({
       spot: null,
       cone_lower: null,
       cone_upper: null,
       long_trigger: null,
       short_trigger: null,
       regime_tag: null,
+      bias: null,
+      trade_types_recommended: [],
+      trade_types_avoided: [],
+      key_levels: null,
     });
     expect(mockSavePeriscopeAnalysis).toHaveBeenCalledOnce();
   });
@@ -860,19 +831,21 @@ describe('POST /api/periscope-chat', () => {
 
     expect(res._status).toBe(200);
     const params = mockStream.mock.calls[0]![0];
-    // preamble text + 3 × (label text + image block) = 7
-    expect(params.messages[0].content).toHaveLength(7);
+    // preamble + spotDirective + 3 × (label + image) = 8
+    expect(params.messages[0].content).toHaveLength(8);
     const blocks = params.messages[0].content as Array<{
       type: string;
       text?: string;
     }>;
     expect(blocks[0]!.type).toBe('text'); // preamble
-    expect(blocks[1]!.text).toContain('[chart screenshot]');
-    expect(blocks[2]!.type).toBe('image');
-    expect(blocks[3]!.text).toContain('[gex screenshot]');
-    expect(blocks[4]!.type).toBe('image');
-    expect(blocks[5]!.text).toContain('[charm screenshot]');
-    expect(blocks[6]!.type).toBe('image');
+    expect(blocks[1]!.type).toBe('text'); // spot directive
+    expect(blocks[1]!.text).toContain('Authoritative SPX spot');
+    expect(blocks[2]!.text).toContain('[chart screenshot]');
+    expect(blocks[3]!.type).toBe('image');
+    expect(blocks[4]!.text).toContain('[gex screenshot]');
+    expect(blocks[5]!.type).toBe('image');
+    expect(blocks[6]!.text).toContain('[charm screenshot]');
+    expect(blocks[7]!.type).toBe('image');
   });
 
   // ============================================================
@@ -904,6 +877,13 @@ describe('POST /api/periscope-chat', () => {
         long_trigger: null,
         short_trigger: null,
         regime_tag: null,
+        bias: null,
+        trade_types_recommended: [],
+        trade_types_avoided: [],
+        key_levels: null,
+        expected_dealer_behavior: null,
+        confidence: null,
+        confidence_basis: null,
       },
       chartDate: '2026-04-30',
     });
@@ -915,7 +895,7 @@ describe('POST /api/periscope-chat', () => {
 
     expect(mockBuildRetrievalBlock).toHaveBeenCalledOnce();
     const args = mockBuildRetrievalBlock.mock.calls[0]![0];
-    expect(args.mode).toBe('read');
+    expect(args.mode).toBe('pre_trade');
     // The retrieval query is the extracted structural summary —
     // the chart fingerprint, not free-form text.
     expect(args.queryText).toContain('spot=7120');

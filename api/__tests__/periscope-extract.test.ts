@@ -61,7 +61,7 @@ describe('extractChartStructure', () => {
     );
     expect(result).not.toBeNull();
     expect(result?.chartDate).toBe('2026-04-30');
-    expect(result?.structured).toEqual({
+    expect(result?.structured).toMatchObject({
       spot: 7120,
       cone_lower: 7095,
       cone_upper: 7150,
@@ -69,6 +69,10 @@ describe('extractChartStructure', () => {
       short_trigger: null,
       regime_tag: null,
     });
+    // Extract returns the empty playbook defaults — Pass 1 only reads
+    // the chart's structural primitives, never the playbook fields.
+    expect(result?.structured.trade_types_recommended).toEqual([]);
+    expect(result?.structured.bias).toBeNull();
   });
 
   it('preserves prose then takes the LAST JSON block', async () => {

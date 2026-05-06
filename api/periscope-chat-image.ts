@@ -21,21 +21,19 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { guardOwnerEndpoint, rejectIfRateLimited } from './_lib/api-helpers.js';
+import {
+  guardOwnerEndpoint,
+  rejectIfRateLimited,
+  respondIfInvalid,
+} from './_lib/api-helpers.js';
 import { getDb } from './_lib/db.js';
 import logger from './_lib/logger.js';
 import { Sentry, metrics } from './_lib/sentry.js';
+import { periscopeChatImageQuerySchema } from './_lib/validation.js';
 
 interface PeriscopeImageEntry {
   kind: string;
   url: string;
-}
-
-const VALID_KINDS = ['chart', 'gex', 'charm'] as const;
-type PeriscopeImageKind = (typeof VALID_KINDS)[number];
-
-function isValidKind(v: string): v is PeriscopeImageKind {
-  return (VALID_KINDS as readonly string[]).includes(v);
 }
 
 function parseJsonbField<T>(v: unknown): T | null {
@@ -71,18 +69,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const { id, kind } = req.query;
-  const idStr = typeof id === 'string' ? id : null;
-  const kindStr = typeof kind === 'string' ? kind : null;
-
-  if (!idStr || !/^\d+$/.test(idStr)) {
-    done({ status: 400 });
-    return res.status(400).json({ error: 'Provide ?id=N (integer)' });
-  }
-  if (!kindStr || !isValidKind(kindStr)) {
-    done({ status: 400 });
-    return res.status(400).json({ error: 'Provide ?kind=chart|gex|charm' });
-  }
+  const parsed = periscopeChatImageQuerySchema.safeParse(req.query);
+  if (respondIfInvalid(parsed, res, done)) return;
+  const { id, kind } = parsed.data;
+  const idStr = String(id);
+  const kindStr = kind;
 
   const token = process.env.BLOB_READ_WRITE_TOKEN;
   if (!token) {

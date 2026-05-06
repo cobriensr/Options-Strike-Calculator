@@ -110,7 +110,7 @@ describe('GET /api/periscope-chat-list', () => {
         id: '5',
         trading_date: '2026-04-30',
         captured_at: '2026-04-30T13:30:00Z',
-        mode: 'read',
+        mode: 'intraday',
         parent_id: null,
         spot: '7120',
         long_trigger: '7125',
@@ -133,7 +133,7 @@ describe('GET /api/periscope-chat-list', () => {
     };
     expect(body.items).toHaveLength(1);
     expect(body.items[0]!.id).toBe(5);
-    expect(body.items[0]!.mode).toBe('read');
+    expect(body.items[0]!.mode).toBe('intraday');
     expect(body.items[0]!.prose_excerpt).toContain('short prose');
     expect(body.nextBefore).toBeNull();
   });
@@ -155,7 +155,7 @@ describe('GET /api/periscope-chat-list', () => {
       id: String(100 - i),
       trading_date: '2026-04-30',
       captured_at: '2026-04-30T13:30:00Z',
-      mode: 'read',
+      mode: 'intraday',
       parent_id: null,
       spot: '7120',
       long_trigger: null,
@@ -192,7 +192,10 @@ describe('GET /api/periscope-chat-detail', () => {
     id: '42',
     trading_date: '2026-04-30',
     captured_at: '2026-04-30T13:30:00Z',
-    mode: 'read',
+    read_time: '2026-04-30T13:30:00Z',
+    spot_at_read_time: '7120',
+    spot_source: 'db_exact',
+    mode: 'intraday',
     parent_id: null,
     user_context: 'morning open',
     prose_text: 'Pin day at 7120.',
@@ -202,6 +205,14 @@ describe('GET /api/periscope-chat-detail', () => {
     long_trigger: '7125',
     short_trigger: '7115',
     regime_tag: 'pin',
+    bias: 'fade-only',
+    trade_types_recommended: ['iron_condor'],
+    trade_types_avoided: ['naked_directional_long'],
+    key_levels: { gamma_floor: 7100, gamma_ceiling: 7150, magnet: 7120, charm_zero: 7130 },
+    expected_dealer_behavior: 'passive bid below 7100',
+    confidence: 'medium',
+    confidence_basis: 'twin-strike +γ floor',
+    parse_ok: true,
     calibration_quality: null,
     image_urls: [{ kind: 'chart', url: 'https://b/c.png' }],
     model: 'claude-opus-4-7',
@@ -268,7 +279,7 @@ describe('GET /api/periscope-chat-detail', () => {
       image_urls: Array<{ kind: string; url: string }>;
     };
     expect(body.id).toBe(42);
-    expect(body.mode).toBe('read');
+    expect(body.mode).toBe('intraday');
     expect(body.spot).toBe(7120);
     expect(body.cone_lower).toBe(7095);
     expect(body.cone_upper).toBe(7150);

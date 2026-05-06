@@ -24,7 +24,7 @@ beforeEach(() => {
 describe('fetchCalibrationExamples', () => {
   it('returns an empty array when no rows match', async () => {
     mockSql.mockResolvedValueOnce([]);
-    const result = await fetchCalibrationExamples('read');
+    const result = await fetchCalibrationExamples('intraday');
     expect(result).toEqual([]);
   });
 
@@ -32,30 +32,30 @@ describe('fetchCalibrationExamples', () => {
     mockSql.mockResolvedValueOnce([
       {
         id: '5',
-        mode: 'read',
+        mode: 'intraday',
         regime_tag: 'pin',
         calibration_quality: '5',
         prose_text: 'Sample prose.',
       },
     ]);
-    const result = await fetchCalibrationExamples('read');
+    const result = await fetchCalibrationExamples('intraday');
     expect(result).toHaveLength(1);
     expect(result[0]!.id).toBe(5);
-    expect(result[0]!.mode).toBe('read');
+    expect(result[0]!.mode).toBe('intraday');
     expect(result[0]!.regime_tag).toBe('pin');
     expect(result[0]!.calibration_quality).toBe(5);
   });
 
   it('returns empty array on DB error (best-effort)', async () => {
     mockSql.mockRejectedValueOnce(new Error('DB down'));
-    const result = await fetchCalibrationExamples('read');
+    const result = await fetchCalibrationExamples('intraday');
     expect(result).toEqual([]);
   });
 });
 
 describe('formatCalibrationBlock', () => {
   it('returns null when there are no examples', () => {
-    const result = formatCalibrationBlock([], 'read');
+    const result = formatCalibrationBlock([], 'intraday');
     expect(result).toBeNull();
   });
 
@@ -64,13 +64,13 @@ describe('formatCalibrationBlock', () => {
       [
         {
           id: 1,
-          mode: 'read',
+          mode: 'intraday',
           regime_tag: 'pin',
           calibration_quality: 5,
           prose_text: 'Pin day at 7120.',
         },
       ],
-      'read',
+      'intraday',
     );
     expect(result).not.toBeNull();
     expect(result).toContain('Calibration examples');
@@ -84,13 +84,13 @@ describe('formatCalibrationBlock', () => {
       [
         {
           id: 1,
-          mode: 'read',
+          mode: 'intraday',
           regime_tag: null,
           calibration_quality: 4,
           prose_text: 'Some read.',
         },
       ],
-      'read',
+      'intraday',
     );
     expect(result).not.toBeNull();
     expect(result).not.toContain('regime: null');
@@ -103,13 +103,13 @@ describe('formatCalibrationBlock', () => {
       [
         {
           id: 1,
-          mode: 'read',
+          mode: 'intraday',
           regime_tag: null,
           calibration_quality: 5,
           prose_text: longProse,
         },
       ],
-      'read',
+      'intraday',
     );
     expect(result).toContain('truncated for brevity');
     // The prose section is capped at the truncation threshold; the
@@ -123,20 +123,20 @@ describe('formatCalibrationBlock', () => {
       [
         {
           id: 1,
-          mode: 'read',
+          mode: 'intraday',
           regime_tag: 'pin',
           calibration_quality: 5,
           prose_text: 'A',
         },
         {
           id: 2,
-          mode: 'read',
+          mode: 'intraday',
           regime_tag: 'trap',
           calibration_quality: 4,
           prose_text: 'B',
         },
       ],
-      'read',
+      'intraday',
     );
     expect(result).toContain('---');
     expect(result).toContain('Example 1');
@@ -163,7 +163,7 @@ describe('formatCalibrationBlock', () => {
 describe('buildCalibrationBlock', () => {
   it('returns null when no examples are persisted', async () => {
     mockSql.mockResolvedValueOnce([]);
-    const result = await buildCalibrationBlock('read');
+    const result = await buildCalibrationBlock('intraday');
     expect(result).toBeNull();
   });
 
@@ -171,13 +171,13 @@ describe('buildCalibrationBlock', () => {
     mockSql.mockResolvedValueOnce([
       {
         id: '1',
-        mode: 'read',
+        mode: 'intraday',
         regime_tag: 'pin',
         calibration_quality: '5',
         prose_text: 'Sample.',
       },
     ]);
-    const result = await buildCalibrationBlock('read');
+    const result = await buildCalibrationBlock('intraday');
     expect(result).not.toBeNull();
     expect(result).toContain('★★★★★');
   });

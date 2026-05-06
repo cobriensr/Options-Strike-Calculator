@@ -341,7 +341,7 @@ export const periscopeImageSchema = z.object({
 
 export const periscopeChatBodySchema = z
   .object({
-    mode: z.enum(['read', 'debrief']),
+    mode: z.enum(['pre_trade', 'intraday', 'debrief']),
     images: z
       .array(periscopeImageSchema)
       .min(1, 'At least one image is required')
@@ -351,10 +351,26 @@ export const periscopeChatBodySchema = z
       ),
     parentId: z.number().int().positive().finite().nullable().optional(),
     /**
-     * Optional explicit trading date (ISO YYYY-MM-DD). When set, overrides
-     * the chart-date pulled by extractChartStructure. Useful for back-reads
-     * submitted near midnight CT where chart-date extraction can fail and
-     * the capture-day fallback would mis-tag the row.
+     * The trading date the read is FOR (ISO YYYY-MM-DD). The backend
+     * uses this to anchor the SPX spot lookup against
+     * `index_candles_1m`. Distinct from `captured_at` which the server
+     * stamps at request arrival.
+     */
+    read_date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, 'read_date must be ISO YYYY-MM-DD'),
+    /**
+     * The wall-clock time the read is FOR, HH:MM 24-hour CT. The
+     * backend converts (read_date, read_time, CT) into a TIMESTAMPTZ
+     * for `read_time` persistence and queries `index_candles_1m` for
+     * the matching SPX bar.
+     */
+    read_time: z
+      .string()
+      .regex(/^\d{2}:\d{2}$/, 'read_time must be HH:MM (24-hour CT)'),
+    /**
+     * Legacy alias for `read_date` retained for the existing back-read
+     * UI override. Optional and additive.
      */
     tradingDate: z
       .string()
@@ -371,6 +387,11 @@ export const periscopeChatBodySchema = z
   .refine((body) => body.mode !== 'debrief' || body.parentId != null, {
     message:
       'Debrief mode requires a parent read id. Run a morning read first, then click "Debrief this" on it.',
+    path: ['parentId'],
+  })
+  .refine((body) => body.mode !== 'intraday' || body.parentId != null, {
+    message:
+      "Intraday mode requires a parent read id (today's pre-trade or the last intraday).",
     path: ['parentId'],
   });
 
@@ -413,6 +434,26 @@ export const periscopeChatDetailQuerySchema = z.object({
 
 export type PeriscopeChatDetailQuery = z.infer<
   typeof periscopeChatDetailQuerySchema
+>;
+
+// ============================================================
+// /api/periscope-chat-image
+// ============================================================
+
+/**
+ * Query schema for GET /api/periscope-chat-image. Replaces the prior
+ * ad-hoc regex validation in the handler with a single Zod schema for
+ * consistency with sibling endpoints (Phase 6E folded fix).
+ */
+export const periscopeChatImageQuerySchema = z
+  .object({
+    id: z.coerce.number().int().positive().finite(),
+    kind: z.enum(['chart', 'gex', 'charm']),
+  })
+  .strict();
+
+export type PeriscopeChatImageQuery = z.infer<
+  typeof periscopeChatImageQuerySchema
 >;
 
 // ============================================================
@@ -901,6 +942,34 @@ export const netFlowHistoryQuerySchema = z.object({
 });
 
 export type NetFlowHistoryQuery = z.infer<typeof netFlowHistoryQuerySchema>;
+
+// ============================================================
+// /api/ticker-candles
+// ============================================================
+
+/**
+ * Query params for GET /api/ticker-candles.
+ *
+ * Backs the per-fire Net Flow chart's stock-price overlay — given a
+ * ticker + trading date, returns 1-minute regular-session candles
+ * via Schwab pricehistory.
+ *
+ * - `ticker` required, uppercase 1-8 chars. Mirrors the net-flow
+ *   schema; an unknown ticker may legitimately return an empty
+ *   candles array (Schwab will 4xx, which we surface as 502).
+ * - `date` defaults to ET-today when omitted.
+ */
+export const tickerCandlesQuerySchema = z.object({
+  ticker: z
+    .string()
+    .regex(/^[A-Z]{1,8}$/, 'ticker must be 1-8 uppercase letters'),
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+    .optional(),
+});
+
+export type TickerCandlesQuery = z.infer<typeof tickerCandlesQuerySchema>;
 
 // ============================================================
 // /api/lottery-contract-tape

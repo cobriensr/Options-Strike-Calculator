@@ -18,6 +18,10 @@ import { Sentry } from './sentry.js';
 import logger from './logger.js';
 import { parseTrailingJsonBlock } from './json-fence.js';
 import type {
+  ParentChainRow,
+  PeriscopeBias,
+  PeriscopeConfidence,
+  PeriscopeKeyLevels,
   PeriscopeMode,
   PeriscopeParentRead,
   PeriscopeStructuredFields,
@@ -40,6 +44,13 @@ export function buildUserContent(args: {
   parentId: number | null | undefined;
   parentRead?: PeriscopeParentRead | null;
   /**
+   * Oldest-first parent chain (root pre_trade ... immediate parent).
+   * Used by `intraday` and `debrief` modes to inject a chain summary
+   * block AFTER the mode header and BEFORE the heat-map block.
+   * Pre_trade mode ignores this entirely (no parent context).
+   */
+  parentChain?: ParentChainRow[] | null;
+  /**
    * Optional pre-formatted text injected as its own user-content block
    * BEFORE the image blocks. Used by the periscope-chat handler to
    * surface Pass 1B heat-map OCR results so Claude has typed strike
@@ -54,32 +65,82 @@ export function buildUserContent(args: {
    * specific framing is built upstream by buildFlowContextBlock().
    */
   flowBlock?: string | null;
+  /**
+   * Optional pre-formatted text describing the authoritative SPX spot
+   * at read time, including its source (db_exact / db_snapped). Built
+   * by the periscope-chat handler from {@link fetchSPXSpotAtTimestamp}
+   * and injected so Claude binds analysis to the typed value rather
+   * than the chart's red dotted line.
+   */
+  spotDirective?: string | null;
   images: Array<{
     kind: 'chart' | 'gex' | 'charm';
     data: string;
     mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
   }>;
 }): Anthropic.Messages.ContentBlockParam[] {
-  const { mode, parentId, parentRead, heatMapBlock, flowBlock, images } = args;
+  const {
+    mode,
+    parentId,
+    parentRead,
+    parentChain,
+    heatMapBlock,
+    flowBlock,
+    spotDirective,
+    images,
+  } = args;
 
   const blocks: Anthropic.Messages.ContentBlockParam[] = [];
 
   // Mode-specific preamble. The skill's worked examples include hindsight
   // checkmarks and outcome data ("Day rallied... settled 7,209.01") which
-  // the model otherwise copies into fresh Read responses — even when the
-  // chart's date matches a worked-example date by coincidence. The Read
-  // override below stops that leak. Debrief mode keeps the original
-  // behavior since hindsight/scoring IS the point there.
+  // the model otherwise copies into fresh intraday responses — even when
+  // the chart's date matches a worked-example date by coincidence. The
+  // pre_trade and intraday overrides below stop that leak. Debrief mode
+  // keeps hindsight allowed since scoring IS the point there.
   const headerLines = [`Mode: ${mode}`];
   if (parentId != null) headerLines.push(`Parent read id: ${parentId}`);
 
-  const bodyLines =
-    mode === 'read' ? buildReadModeBody() : buildDebriefModeBody(parentRead);
+  let bodyLines: string[];
+  switch (mode) {
+    case 'pre_trade': {
+      bodyLines = buildPreTradeModeBody();
+      break;
+    }
+    case 'intraday': {
+      bodyLines = buildIntradayModeBody();
+      break;
+    }
+    case 'debrief': {
+      bodyLines = buildDebriefModeBody(parentRead);
+      break;
+    }
+    default: {
+      const _exhaustive: never = mode;
+      throw new Error(`Unknown periscope mode: ${String(_exhaustive)}`);
+    }
+  }
 
   blocks.push({
     type: 'text',
     text: [...headerLines, '', ...bodyLines].join('\n'),
   });
+
+  // Authoritative spot directive (Phase 6B). The handler computes this
+  // from index_candles_1m so Claude binds analysis to the DB-verified
+  // price rather than reading the chart's red dotted spot line.
+  if (spotDirective != null && spotDirective.length > 0) {
+    blocks.push({ type: 'text', text: spotDirective });
+  }
+
+  // Parent-chain summary (Phase 6C). Only intraday + debrief see prior
+  // reads; pre_trade is forward-looking and has no chain.
+  if (mode !== 'pre_trade') {
+    const chainBlock = formatParentChainBlock(parentChain ?? null);
+    if (chainBlock != null) {
+      blocks.push({ type: 'text', text: chainBlock });
+    }
+  }
 
   // Heat-map OCR results (Pass 1B) go BEFORE the image blocks so Claude
   // sees the typed values first and uses the visual heat maps as a
@@ -110,6 +171,42 @@ export function buildUserContent(args: {
   }
 
   return blocks;
+}
+
+/**
+ * Render the oldest-first parent chain as a small headed bullet list.
+ * Returns null when the chain is empty so the caller can skip the
+ * injection entirely. Each ancestor renders mode + regime + bias + a
+ * one-line excerpt of its prose so Claude can reason about the chain
+ * without inflating the user content past usefulness.
+ */
+export function formatParentChainBlock(
+  chain: ParentChainRow[] | null,
+): string | null {
+  if (chain == null || chain.length === 0) return null;
+
+  const lines: string[] = ['## Parent chain (oldest first)'];
+  lines.push('');
+  lines.push(
+    'Earlier reads in today\'s chain. Read your new bias against this — if you reverse the chain\'s posture, state the structural reason. Do NOT silently invert.',
+  );
+  lines.push('');
+
+  for (const row of chain) {
+    const meta = [
+      `mode=${row.mode}`,
+      row.regime_tag ? `regime=${row.regime_tag}` : null,
+      row.bias ? `bias=${row.bias}` : null,
+    ]
+      .filter((s): s is string => s != null)
+      .join(' · ');
+    lines.push(`- #${row.id} (${meta})`);
+    if (row.prose_excerpt.length > 0) {
+      lines.push(`  ${row.prose_excerpt}`);
+    }
+  }
+
+  return lines.join('\n');
 }
 
 /**
@@ -156,15 +253,40 @@ function formatSigned(n: number): string {
   return n.toLocaleString('en-US');
 }
 
-function buildReadModeBody(): string[] {
+/**
+ * Pre-trade preamble. No parent context — this is the day's first read,
+ * forward-looking, prior to any intraday price action. Hindsight is
+ * forbidden in the same way as intraday; only price visible up to
+ * read_time on the chart counts.
+ */
+function buildPreTradeModeBody(): string[] {
   return [
-    'YOU ARE IN READ MODE. Produce a forward-looking real-time read of the chart in front of you. Output ONLY:',
+    'YOU ARE IN PRE-TRADE MODE. Produce the day playbook BEFORE the open: setup → structural map → charm flow tally → trade thesis with bilateral triggers (long + short, stops, targets, R:R, no-trade zone) → regime label → the required JSON block at the very end.',
+    '',
+    'No prior intraday reads exist for today — there is no chain to reconcile against. Treat this as a fresh forward-looking read.',
+    '',
+    'DO NOT include any worked-example outcomes, "the day delivered", settlement values, ✓ check-marks, "what triggered", "what actually happened", or any hindsight scoring. Stop the response after the JSON block.',
+    '',
+    "If the chart's date or structure resembles a worked example in the skill, treat this as a fresh real-time read. The user already knows the worked-example outcomes — do not repeat them.",
+  ];
+}
+
+/**
+ * Intraday preamble. Has a parent chain (today's pre_trade plus any
+ * earlier intraday reads). Must reconcile against the chain rather
+ * than silently inverting a prior bias.
+ */
+function buildIntradayModeBody(): string[] {
+  return [
+    'YOU ARE IN INTRADAY MODE. Produce a forward-looking thesis-maintenance read of the chart in front of you. Output ONLY:',
     '  - Setup at slice end (current spot + immediate context)',
     '  - Structural map (gamma + charm + positions levels)',
     '  - Charm flow tally → directional bias',
     '  - Trade thesis with bilateral triggers (long + short), stops, targets, R:R, no-trade zone',
     '  - Regime label',
     '  - The required JSON block at the very end',
+    '',
+    'Reconcile against the parent chain. If you reverse the chain\'s bias, state the structural reason explicitly (a specific gamma / charm / positions change in this slice). Do NOT silently invert.',
     '',
     'DO NOT include any "## Debrief", "what triggered", "what actually happened", "the day delivered", settlement values, ✓ check-marks, or any hindsight scoring. Stop the response after the JSON block.',
     '',
@@ -238,20 +360,76 @@ export interface ParsedStructuredOutput {
  * Block-finding is delegated to `parseTrailingJsonBlock` (json-fence.ts);
  * this function owns field coercion + Sentry reporting only.
  */
-export function parseStructuredFields(text: string): ParsedStructuredOutput {
-  const nullStructured: PeriscopeStructuredFields = {
+/** Empty / null payload used when no JSON block was found or parsed. */
+function emptyStructured(): PeriscopeStructuredFields {
+  return {
     spot: null,
     cone_lower: null,
     cone_upper: null,
     long_trigger: null,
     short_trigger: null,
     regime_tag: null,
+    bias: null,
+    trade_types_recommended: [],
+    trade_types_avoided: [],
+    key_levels: null,
+    expected_dealer_behavior: null,
+    confidence: null,
+    confidence_basis: null,
   };
+}
 
+const BIAS_VALUES = new Set<PeriscopeBias>([
+  'long-only',
+  'short-only',
+  'fade-only',
+  'two-sided',
+  'no-trade',
+]);
+
+const CONFIDENCE_VALUES = new Set<PeriscopeConfidence>([
+  'low',
+  'medium',
+  'high',
+]);
+
+function coerceStringArray(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (v): v is string => typeof v === 'string' && v.length > 0,
+  );
+}
+
+function coerceKeyLevels(raw: unknown): PeriscopeKeyLevels | null {
+  if (raw == null || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  const num = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? v : null;
+  // Only emit a key_levels object if at least ONE field came back numeric;
+  // otherwise the column would carry an all-null shape that's no more
+  // informative than NULL.
+  const out: PeriscopeKeyLevels = {
+    gamma_floor: num(o.gamma_floor),
+    gamma_ceiling: num(o.gamma_ceiling),
+    magnet: num(o.magnet),
+    charm_zero: num(o.charm_zero),
+  };
+  if (
+    out.gamma_floor == null &&
+    out.gamma_ceiling == null &&
+    out.magnet == null &&
+    out.charm_zero == null
+  ) {
+    return null;
+  }
+  return out;
+}
+
+export function parseStructuredFields(text: string): ParsedStructuredOutput {
   const block = parseTrailingJsonBlock(text);
   if (block == null) {
     logger.warn('periscope-chat: no JSON code block in response');
-    return { prose: text, structured: nullStructured, parseOk: false };
+    return { prose: text, structured: emptyStructured(), parseOk: false };
   }
 
   let parsed: Record<string, unknown>;
@@ -263,13 +441,26 @@ export function parseStructuredFields(text: string): ParsedStructuredOutput {
       'periscope-chat: failed to parse JSON block',
     );
     Sentry.captureException(err);
-    return { prose: text, structured: nullStructured, parseOk: false };
+    return { prose: text, structured: emptyStructured(), parseOk: false };
   }
 
   const num = (v: unknown): number | null =>
     typeof v === 'number' && Number.isFinite(v) ? v : null;
   const str = (v: unknown): string | null =>
     typeof v === 'string' && v.length > 0 ? v : null;
+
+  const biasRaw = parsed.bias;
+  const bias =
+    typeof biasRaw === 'string' && BIAS_VALUES.has(biasRaw as PeriscopeBias)
+      ? (biasRaw as PeriscopeBias)
+      : null;
+
+  const confidenceRaw = parsed.confidence;
+  const confidence =
+    typeof confidenceRaw === 'string' &&
+    CONFIDENCE_VALUES.has(confidenceRaw as PeriscopeConfidence)
+      ? (confidenceRaw as PeriscopeConfidence)
+      : null;
 
   const structured: PeriscopeStructuredFields = {
     spot: num(parsed.spot),
@@ -278,6 +469,13 @@ export function parseStructuredFields(text: string): ParsedStructuredOutput {
     long_trigger: num(parsed.long_trigger),
     short_trigger: num(parsed.short_trigger),
     regime_tag: str(parsed.regime_tag),
+    bias,
+    trade_types_recommended: coerceStringArray(parsed.trade_types_recommended),
+    trade_types_avoided: coerceStringArray(parsed.trade_types_avoided),
+    key_levels: coerceKeyLevels(parsed.key_levels),
+    expected_dealer_behavior: str(parsed.expected_dealer_behavior),
+    confidence,
+    confidence_basis: str(parsed.confidence_basis),
   };
 
   // Reassemble prose around the stripped block. `before` is the text up

@@ -62,14 +62,16 @@ globalThis.FileReader =
 // ============================================================
 
 describe('usePeriscopeChat', () => {
-  it('starts in read mode with empty state', () => {
+  it('starts in intraday mode with empty state and default date/time', () => {
     const { result } = renderHook(() => usePeriscopeChat());
-    expect(result.current.mode).toBe('read');
+    expect(result.current.mode).toBe('intraday');
     expect(result.current.images).toEqual({});
     expect(result.current.parentId).toBeNull();
     expect(result.current.inFlight).toBe(false);
     expect(result.current.response).toBeNull();
     expect(result.current.error).toBeNull();
+    expect(result.current.readDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(result.current.readTime).toMatch(/^\d{2}:\d{2}$/);
   });
 
   it('setImage stages a valid image and creates a preview URL', () => {
@@ -159,7 +161,7 @@ describe('usePeriscopeChat', () => {
     });
 
     expect(result.current.images).toEqual({});
-    expect(result.current.mode).toBe('read');
+    expect(result.current.mode).toBe('intraday');
     expect(result.current.parentId).toBeNull();
     expect(mockRevokeObjectURL).toHaveBeenCalledTimes(2);
   });
@@ -180,7 +182,7 @@ describe('usePeriscopeChat', () => {
     const envelope = {
       ok: true,
       id: 7,
-      mode: 'read',
+      mode: 'pre_trade',
       prose: 'Pin day at 7120.',
       structured: {
         spot: 7120,
@@ -189,7 +191,18 @@ describe('usePeriscopeChat', () => {
         long_trigger: 7125,
         short_trigger: 7115,
         regime_tag: 'pin',
+        bias: 'fade-only',
+        trade_types_recommended: ['iron_condor'],
+        trade_types_avoided: [],
+        key_levels: null,
+        expected_dealer_behavior: null,
+        confidence: 'medium',
+        confidence_basis: 'twin-strike +γ floor',
       },
+      parseOk: true,
+      spotAtReadTime: 7120,
+      spotSource: 'db_exact',
+      readTime: '2026-05-06T13:30:00.000Z',
       model: 'claude-opus-4-7',
       durationMs: 12345,
       usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 100 },
@@ -199,6 +212,7 @@ describe('usePeriscopeChat', () => {
     const { result } = renderHook(() => usePeriscopeChat());
     act(() => {
       result.current.setImage('chart', makeFile('a.png'));
+      result.current.setMode('pre_trade');
     });
 
     await act(async () => {
@@ -216,9 +230,13 @@ describe('usePeriscopeChat', () => {
     expect(url).toBe('/api/periscope-chat');
     const sentBody = JSON.parse((init as RequestInit).body as string) as {
       mode: string;
+      read_date: string;
+      read_time: string;
       images: Array<{ kind: string; mediaType: string; data: string }>;
     };
-    expect(sentBody.mode).toBe('read');
+    expect(sentBody.mode).toBe('pre_trade');
+    expect(sentBody.read_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(sentBody.read_time).toMatch(/^\d{2}:\d{2}$/);
     expect(sentBody.images).toHaveLength(1);
     expect(sentBody.images[0]!.kind).toBe('chart');
     expect(sentBody.images[0]!.mediaType).toBe('image/png');
@@ -232,6 +250,7 @@ describe('usePeriscopeChat', () => {
     const { result } = renderHook(() => usePeriscopeChat());
     act(() => {
       result.current.setImage('chart', makeFile('a.png'));
+      result.current.setMode('pre_trade');
     });
 
     await act(async () => {
@@ -249,6 +268,7 @@ describe('usePeriscopeChat', () => {
     const { result } = renderHook(() => usePeriscopeChat());
     act(() => {
       result.current.setImage('chart', makeFile('a.png'));
+      result.current.setMode('pre_trade');
     });
 
     await act(async () => {
@@ -272,7 +292,18 @@ describe('usePeriscopeChat', () => {
         long_trigger: null,
         short_trigger: null,
         regime_tag: null,
+        bias: null,
+        trade_types_recommended: [],
+        trade_types_avoided: [],
+        key_levels: null,
+        expected_dealer_behavior: null,
+        confidence: null,
+        confidence_basis: null,
       },
+      parseOk: true,
+      spotAtReadTime: 7000,
+      spotSource: 'db_exact',
+      readTime: '2026-05-06T13:30:00.000Z',
       model: 'claude-opus-4-7',
       durationMs: 0,
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

@@ -15,11 +15,12 @@
  * the images are nice-to-have for going back to a past read and seeing
  * what the chart looked like.
  *
- * Path shape: `periscope/{YYYY-MM-DD}/{HHmmss}/{kind}.png` (UTC throughout
- * — capturedAt is ISO/UTC, and the dashboard converts to ET at display
- * time). We pass `addRandomSuffix: true` to `put()` so Vercel Blob appends
- * a random hash to the stored key, which makes retries within the same
- * second idempotent (no "blob already exists" error on replay).
+ * Path shape: `periscope/{YYYY-MM-DD}/{HHmmss}-{uuid}/{kind}.png` (UTC
+ * throughout — capturedAt is ISO/UTC, and the dashboard converts to ET
+ * at display time). The UUID segment defends against same-second
+ * replays without `addRandomSuffix: true`, which would otherwise mutate
+ * the resolved blob URL on every put and defeat deterministic-path
+ * lookup from the dashboard image proxy.
  *
  * Access mode: `'private'`. The strike-backups store is configured
  * private at the store level; mismatching access modes per-blob throws
@@ -31,6 +32,7 @@
  */
 
 import { put } from '@vercel/blob';
+import { randomUUID } from 'node:crypto';
 import logger from './logger.js';
 import { Sentry } from './sentry.js';
 
@@ -70,7 +72,11 @@ export async function uploadPeriscopeImages(args: {
   const hh = date.getUTCHours().toString().padStart(2, '0');
   const mm = date.getUTCMinutes().toString().padStart(2, '0');
   const ss = date.getUTCSeconds().toString().padStart(2, '0');
-  const prefix = `periscope/${yyyymmdd}/${hh}${mm}${ss}`;
+  // Single UUID per submission — the path stays deterministic per-row
+  // but globally unique, so a same-second replay produces a different
+  // top-level prefix and `put()` won't 409.
+  const submissionId = randomUUID();
+  const prefix = `periscope/${yyyymmdd}/${hh}${mm}${ss}-${submissionId}`;
 
   const results = await Promise.allSettled(
     images.map(async (img) => {
@@ -79,7 +85,6 @@ export async function uploadPeriscopeImages(args: {
       const result = await put(path, buffer, {
         access: 'private',
         contentType: 'image/png',
-        addRandomSuffix: true,
       });
       return { kind: img.kind, url: result.url };
     }),

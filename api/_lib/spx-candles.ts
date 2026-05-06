@@ -86,6 +86,184 @@ function toEpochMs(value: string | Date): number {
   return value instanceof Date ? value.getTime() : new Date(value).getTime();
 }
 
+// ── Spot lookup (periscope-chat read-time anchor) ───────────
+
+/** Result of {@link fetchSPXSpotAtTimestamp}. */
+export interface SpotLookupResult {
+  /** SPX price at the resolved candle timestamp. */
+  price: number;
+  /**
+   * `db_exact` when an `index_candles_1m` row matched the CT minute
+   * exactly. `db_snapped` when no exact match was found and we fell
+   * back to the nearest row inside the tolerance window.
+   */
+  source: 'db_exact' | 'db_snapped';
+}
+
+/**
+ * Compute the UTC ISO instant for a given (CT date, CT time) pair.
+ * Uses an Intl-driven offset probe rather than a hard-coded `-05:00` /
+ * `-06:00` so DST transitions inside America/Chicago resolve correctly.
+ *
+ * The probe builds a UTC "wall-clock" Date for the CT moment, asks
+ * Intl to format it back in CT, computes the delta vs. the input, and
+ * subtracts that delta to produce the true UTC instant. This is the
+ * conventional trick for "interpret these wall fields as if they live
+ * in tz X" without pulling a tz library.
+ *
+ * Returns null on malformed inputs.
+ */
+export function ctWallClockToUtcMs(
+  date: string,
+  time: string,
+): number | null {
+  const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  const timeMatch = /^(\d{2}):(\d{2})$/.exec(time);
+  if (!dateMatch || !timeMatch) return null;
+  const [, y, m, d] = dateMatch;
+  const [, hh, mm] = timeMatch;
+  const wallUtcMs = Date.UTC(
+    Number(y),
+    Number(m) - 1,
+    Number(d),
+    Number(hh),
+    Number(mm),
+    0,
+    0,
+  );
+  if (!Number.isFinite(wallUtcMs)) return null;
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Chicago',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(new Date(wallUtcMs));
+  const get = (type: string): number => {
+    const p = parts.find((x) => x.type === type);
+    return p ? Number(p.value) : Number.NaN;
+  };
+  const ctY = get('year');
+  const ctM = get('month');
+  const ctD = get('day');
+  let ctH = get('hour');
+  if (Number.isFinite(ctH)) ctH = ctH % 24;
+  const ctMin = get('minute');
+  if (
+    !Number.isFinite(ctY) ||
+    !Number.isFinite(ctM) ||
+    !Number.isFinite(ctD) ||
+    !Number.isFinite(ctH) ||
+    !Number.isFinite(ctMin)
+  ) {
+    return null;
+  }
+  const observedCtMs = Date.UTC(ctY, ctM - 1, ctD, ctH, ctMin, 0, 0);
+  const offsetMs = observedCtMs - wallUtcMs;
+  return wallUtcMs - offsetMs;
+}
+
+/**
+ * Look up the SPX spot price at the requested (date, CT time) pair
+ * from `index_candles_1m`. Used by /api/periscope-chat to anchor the
+ * read at a DB-verified spot rather than the chart red dotted line.
+ *
+ * Resolution policy:
+ *   - Filters to symbol = 'SPX', market_time = 'r'.
+ *   - Tries an exact (date, timestamp) match first --> `db_exact`.
+ *   - On miss, scans plus/minus tolerance minutes (default 2) for the
+ *     nearest row --> `db_snapped`.
+ *   - On live read (`isLiveRead: true`) with no exact match: returns
+ *     `null` so the caller can hard-fail with a 422. The snap path is
+ *     only used for back-reads.
+ *   - On any DB error: logs + returns `null`.
+ */
+export async function fetchSPXSpotAtTimestamp(args: {
+  date: string;
+  time: string;
+  toleranceMin?: number;
+  isLiveRead: boolean;
+}): Promise<SpotLookupResult | null> {
+  const { date, time, toleranceMin = 2, isLiveRead } = args;
+  const utcMs = ctWallClockToUtcMs(date, time);
+  if (utcMs == null) {
+    logger.warn(
+      { date, time },
+      'fetchSPXSpotAtTimestamp: malformed date/time inputs',
+    );
+    return null;
+  }
+  const exactIso = new Date(utcMs).toISOString();
+  const lowerIso = new Date(utcMs - toleranceMin * 60_000).toISOString();
+  const upperIso = new Date(utcMs + toleranceMin * 60_000).toISOString();
+
+  try {
+    const sql = getDb();
+
+    const exactRows = (await sql`
+      SELECT close
+      FROM index_candles_1m
+      WHERE symbol = 'SPX'
+        AND market_time = 'r'
+        AND date = ${date}
+        AND timestamp = ${exactIso}
+      LIMIT 1
+    `) as Array<{ close: string | number }>;
+
+    const exactRow = exactRows[0];
+    if (exactRow != null) {
+      const close = numOrNull(exactRow.close);
+      if (close != null) return { price: close, source: 'db_exact' };
+    }
+
+    if (isLiveRead) return null;
+
+    const snappedRows = (await sql`
+      SELECT close, timestamp
+      FROM index_candles_1m
+      WHERE symbol = 'SPX'
+        AND market_time = 'r'
+        AND date = ${date}
+        AND timestamp BETWEEN ${lowerIso} AND ${upperIso}
+      ORDER BY ABS(EXTRACT(EPOCH FROM (timestamp - ${exactIso}::timestamptz))) ASC
+      LIMIT 1
+    `) as Array<{ close: string | number; timestamp: string | Date }>;
+
+    const snappedRow = snappedRows[0];
+    if (snappedRow != null) {
+      const close = numOrNull(snappedRow.close);
+      if (close != null) {
+        logger.info(
+          {
+            date,
+            time,
+            requested: exactIso,
+            snappedTo:
+              snappedRow.timestamp instanceof Date
+                ? snappedRow.timestamp.toISOString()
+                : String(snappedRow.timestamp),
+          },
+          'fetchSPXSpotAtTimestamp: snapped to nearest bar within tolerance',
+        );
+        return { price: close, source: 'db_snapped' };
+      }
+    }
+
+    return null;
+  } catch (err) {
+    logger.error(
+      { err, date, time },
+      'fetchSPXSpotAtTimestamp: query failed',
+    );
+    metrics.increment('spx_candles.spot_lookup_error');
+    Sentry.captureException(err);
+    return null;
+  }
+}
+
 // ── Fetch ───────────────────────────────────────────────────
 
 /**

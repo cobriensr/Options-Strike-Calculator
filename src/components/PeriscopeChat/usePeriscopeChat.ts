@@ -74,8 +74,10 @@ export interface UsePeriscopeChatResult {
   mode: PeriscopeMode;
   images: Partial<Record<PeriscopeImageKind, UploadedPeriscopeImage>>;
   parentId: number | null;
-  /** Optional explicit trading date (ISO YYYY-MM-DD), '' = auto-detect. */
-  tradingDate: string;
+  /** ISO YYYY-MM-DD the read is FOR. Defaults to today CT. */
+  readDate: string;
+  /** HH:MM 24-hour CT the read is FOR. Defaults to nearest-floor 10-min. */
+  readTime: string;
   inFlight: boolean;
   elapsedMs: number;
   response: PeriscopeChatSuccess | null;
@@ -83,7 +85,8 @@ export interface UsePeriscopeChatResult {
   // Setters
   setMode: (next: PeriscopeMode) => void;
   setParentId: (next: number | null) => void;
-  setTradingDate: (next: string) => void;
+  setReadDate: (next: string) => void;
+  setReadTime: (next: string) => void;
   setImage: (kind: PeriscopeImageKind, file: File | null) => void;
   // Actions
   submit: () => Promise<void>;
@@ -92,14 +95,43 @@ export interface UsePeriscopeChatResult {
 
 /** Validate ISO YYYY-MM-DD before sending to the server. */
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const HHMM_PATTERN = /^\d{2}:\d{2}$/;
+
+/** Today's CT calendar date (YYYY-MM-DD). */
+function defaultReadDate(): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Chicago',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+}
+
+/** Current CT wall clock floored to the nearest 10-min boundary, HH:MM. */
+function defaultReadTime(): string {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(new Date());
+  const hh = parts.find((p) => p.type === 'hour')?.value ?? '00';
+  const mm = parts.find((p) => p.type === 'minute')?.value ?? '00';
+  const hourNum = Number.parseInt(hh, 10) % 24;
+  const minuteNum = Number.parseInt(mm, 10);
+  const flooredMinute = Math.floor(minuteNum / 10) * 10;
+  return `${hourNum.toString().padStart(2, '0')}:${flooredMinute.toString().padStart(2, '0')}`;
+}
 
 export function usePeriscopeChat(): UsePeriscopeChatResult {
-  const [mode, setMode] = useState<PeriscopeMode>('read');
+  const [mode, setMode] = useState<PeriscopeMode>('intraday');
   const [images, setImages] = useState<
     Partial<Record<PeriscopeImageKind, UploadedPeriscopeImage>>
   >({});
   const [parentId, setParentId] = useState<number | null>(null);
-  const [tradingDate, setTradingDate] = useState<string>('');
+  const [readDate, setReadDate] = useState<string>(defaultReadDate);
+  const [readTime, setReadTime] = useState<string>(defaultReadTime);
   const [inFlight, setInFlight] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [response, setResponse] = useState<PeriscopeChatSuccess | null>(null);
@@ -212,9 +244,10 @@ export function usePeriscopeChat(): UsePeriscopeChatResult {
       if (img) URL.revokeObjectURL(img.preview);
     }
     setImages({});
-    setMode('read');
+    setMode('intraday');
     setParentId(null);
-    setTradingDate('');
+    setReadDate(defaultReadDate());
+    setReadTime(defaultReadTime());
     setResponse(null);
     setError(null);
   }, []);
@@ -228,6 +261,22 @@ export function usePeriscopeChat(): UsePeriscopeChatResult {
     );
     if (stagedImages.length === 0) {
       setError('Add at least one screenshot before submitting.');
+      return;
+    }
+    if (!ISO_DATE_PATTERN.test(readDate)) {
+      setError('Read date must be ISO YYYY-MM-DD.');
+      return;
+    }
+    if (!HHMM_PATTERN.test(readTime)) {
+      setError('Read time must be HH:MM (24-hour CT).');
+      return;
+    }
+    if ((mode === 'intraday' || mode === 'debrief') && parentId == null) {
+      setError(
+        mode === 'intraday'
+          ? 'Intraday mode requires a parent — start a pre-trade read first.'
+          : 'Debrief mode requires a parent — link to today\'s last intraday or pre-trade read.',
+      );
       return;
     }
 
@@ -244,17 +293,12 @@ export function usePeriscopeChat(): UsePeriscopeChatResult {
         })),
       );
 
-      // Only forward tradingDate when the user provided a syntactically
-      // valid override; an empty string ('') means "auto-detect, let the
-      // server resolve via extraction → capture-day fallback".
-      const trimmedDate = tradingDate.trim();
-      const includeTradingDate =
-        trimmedDate.length > 0 && ISO_DATE_PATTERN.test(trimmedDate);
       const body = {
         mode,
         images: imagesPayload,
+        read_date: readDate,
+        read_time: readTime,
         ...(parentId != null && { parentId }),
-        ...(includeTradingDate && { tradingDate: trimmedDate }),
       };
 
       const res = await fetch(ENDPOINT, {
@@ -303,20 +347,22 @@ export function usePeriscopeChat(): UsePeriscopeChatResult {
     } finally {
       setInFlight(false);
     }
-  }, [images, mode, parentId, tradingDate]);
+  }, [images, mode, parentId, readDate, readTime]);
 
   return {
     mode,
     images,
     parentId,
-    tradingDate,
+    readDate,
+    readTime,
     inFlight,
     elapsedMs,
     response,
     error,
     setMode,
     setParentId,
-    setTradingDate,
+    setReadDate,
+    setReadTime,
     setImage,
     submit,
     reset,

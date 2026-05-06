@@ -26,7 +26,7 @@ interface PeriscopeChatDetailRow {
   id: number;
   trading_date: string;
   captured_at: string;
-  mode: 'read' | 'debrief';
+  mode: 'pre_trade' | 'intraday' | 'debrief';
   parent_id: number | null;
   user_context: string | null;
   prose_text: string;
@@ -180,7 +180,12 @@ export default function PeriscopeChatDetail({
       {/* Header row */}
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs">
         <span className="text-primary text-sm font-semibold">
-          #{row.id} · {row.mode === 'debrief' ? 'Debrief' : 'Read'}
+          #{row.id} ·{' '}
+          {row.mode === 'debrief'
+            ? 'Debrief'
+            : row.mode === 'pre_trade'
+              ? 'Pre-trade'
+              : 'Intraday'}
         </span>
         <span className="text-muted">{fmtTime(row.captured_at)}</span>
         <span className="text-muted">
