@@ -47,7 +47,10 @@ import {
 } from '../_lib/greek-flow-etf-store.js';
 
 interface ExpiryBreakdownEntry {
-  expiry: string;
+  // Live UW API uses `expires` (OpenAPI spec at /api/stock/{ticker}/
+  // expiry-breakdown documents `expiry`, but the live response shape
+  // uses `expires` — verified by curl 2026-05-06).
+  expires: string;
   chains: number;
   open_interest: number;
   volume: number;
@@ -83,8 +86,8 @@ export default withCronInstrumentation(
       ]);
 
     // Phase B: only fetch per-expiry data if today is an expiry day for the ticker.
-    const spyIsExpiry = spyExpiries.some((e) => e.expiry === today);
-    const qqqIsExpiry = qqqExpiries.some((e) => e.expiry === today);
+    const spyIsExpiry = spyExpiries.some((e) => e.expires === today);
+    const qqqIsExpiry = qqqExpiries.some((e) => e.expires === today);
 
     const [spy0dteTicks, qqq0dteTicks] = await Promise.all([
       spyIsExpiry

@@ -59,7 +59,7 @@ async function getCandidateDates() {
     SELECT DISTINCT date::text AS d
     FROM vega_flow_etf
     WHERE ticker IN ('SPY', 'QQQ')
-    ORDER BY date ASC
+    ORDER BY d ASC
   `;
   return rows.map((r) => r.d);
 }
@@ -94,10 +94,9 @@ async function uwGet(path) {
 }
 
 async function isExpiryDay(ticker, date) {
-  const entries = await uwGet(
-    `/stock/${ticker}/expiry-breakdown?date=${date}`,
-  );
-  return entries.some((e) => e.expiry === date);
+  const entries = await uwGet(`/stock/${ticker}/expiry-breakdown?date=${date}`);
+  // Live API field is `expires` (OpenAPI spec misleadingly says `expiry`).
+  return entries.some((e) => e.expires === date);
 }
 
 async function fetchPerExpiryTicks(ticker, date) {
@@ -143,7 +142,9 @@ async function upsertTicks(ticker, ticks, date, expiry) {
       if (result[0]?.was_insert) inserted++;
       else updated++;
     } catch (err) {
-      console.warn(`    upsert error (${ticker} ${tick.timestamp}): ${err.message}`);
+      console.warn(
+        `    upsert error (${ticker} ${tick.timestamp}): ${err.message}`,
+      );
       failed++;
     }
   }
@@ -159,7 +160,9 @@ async function main() {
     `Backfilling 0DTE per-expiry greek flow${dryRun ? ' [DRY RUN]' : ''}${force ? ' [FORCE]' : ''}`,
   );
   if (dates.length === 0) {
-    console.log('No candidate dates found. Pass dates explicitly or populate vega_flow_etf first.');
+    console.log(
+      'No candidate dates found. Pass dates explicitly or populate vega_flow_etf first.',
+    );
     return;
   }
   console.log(`Dates: ${dates.length} (${dates[0]} → ${dates.at(-1)})\n`);
@@ -192,7 +195,9 @@ async function main() {
       try {
         isExpiry = await isExpiryDay(ticker, date);
       } catch (err) {
-        perTickerSummary.push(`${ticker}: expiry-breakdown failed (${err.message})`);
+        perTickerSummary.push(
+          `${ticker}: expiry-breakdown failed (${err.message})`,
+        );
         totals.failed++;
         continue;
       }
@@ -207,7 +212,9 @@ async function main() {
       try {
         ticks = await fetchPerExpiryTicks(ticker, date);
       } catch (err) {
-        perTickerSummary.push(`${ticker}: per-expiry fetch failed (${err.message})`);
+        perTickerSummary.push(
+          `${ticker}: per-expiry fetch failed (${err.message})`,
+        );
         totals.failed++;
         continue;
       }

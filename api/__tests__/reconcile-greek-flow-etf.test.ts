@@ -57,11 +57,12 @@ function makeTick(overrides: Record<string, unknown> = {}) {
   };
 }
 
+// Live UW field is `expires` (OpenAPI spec says `expiry` — wrong).
 const NON_EXPIRY_BREAKDOWN = [
-  { expiry: '2026-04-29', chains: 100, open_interest: 1000, volume: 5000 },
+  { expires: '2026-04-29', chains: 100, open_interest: 1000, volume: 5000 },
 ];
 const EXPIRY_TODAY_BREAKDOWN = [
-  { expiry: '2026-04-27', chains: 200, open_interest: 5000, volume: 80000 },
+  { expires: '2026-04-27', chains: 200, open_interest: 5000, volume: 80000 },
 ];
 
 const AUTHORIZED_REQ = () =>

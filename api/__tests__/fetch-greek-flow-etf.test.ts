@@ -59,16 +59,17 @@ function makeGreekFlowTick(overrides: Record<string, unknown> = {}) {
   };
 }
 
-// expiry-breakdown response shape: { expiry, chains, open_interest, volume }.
+// expiry-breakdown response shape: { expires, chains, open_interest, volume }.
+// (Live API field is `expires`; OpenAPI spec misleadingly says `expiry`.)
 // Default: today is NOT in the list (non-expiry day), so per-expiry calls
 // are skipped. Tests that exercise the expiry path override this.
 const NON_EXPIRY_BREAKDOWN = [
-  { expiry: '2026-04-29', chains: 100, open_interest: 1000, volume: 5000 },
-  { expiry: '2026-05-01', chains: 100, open_interest: 1000, volume: 5000 },
+  { expires: '2026-04-29', chains: 100, open_interest: 1000, volume: 5000 },
+  { expires: '2026-05-01', chains: 100, open_interest: 1000, volume: 5000 },
 ];
 const EXPIRY_TODAY_BREAKDOWN = [
-  { expiry: '2026-04-27', chains: 200, open_interest: 5000, volume: 80000 },
-  { expiry: '2026-04-29', chains: 100, open_interest: 1000, volume: 5000 },
+  { expires: '2026-04-27', chains: 200, open_interest: 5000, volume: 80000 },
+  { expires: '2026-04-29', chains: 100, open_interest: 1000, volume: 5000 },
 ];
 
 const AUTHORIZED_REQ = () =>
@@ -95,8 +96,12 @@ function setupMocks(opts: {
   qqqExpiry?: ReturnType<typeof makeGreekFlowTick>[];
 }) {
   mockUwFetch
-    .mockResolvedValueOnce(opts.spyAll ?? [makeGreekFlowTick({ ticker: 'SPY' })])
-    .mockResolvedValueOnce(opts.qqqAll ?? [makeGreekFlowTick({ ticker: 'QQQ' })])
+    .mockResolvedValueOnce(
+      opts.spyAll ?? [makeGreekFlowTick({ ticker: 'SPY' })],
+    )
+    .mockResolvedValueOnce(
+      opts.qqqAll ?? [makeGreekFlowTick({ ticker: 'QQQ' })],
+    )
     .mockResolvedValueOnce(opts.spyBreakdown ?? NON_EXPIRY_BREAKDOWN)
     .mockResolvedValueOnce(opts.qqqBreakdown ?? NON_EXPIRY_BREAKDOWN);
   if (opts.spyExpiry) mockUwFetch.mockResolvedValueOnce(opts.spyExpiry);
@@ -325,10 +330,14 @@ describe('fetch-greek-flow-etf handler', () => {
       urls.some((u) => u.includes('/stock/QQQ/greek-flow?date=2026-04-27')),
     ).toBe(true);
     expect(
-      urls.some((u) => u.includes('/stock/SPY/expiry-breakdown?date=2026-04-27')),
+      urls.some((u) =>
+        u.includes('/stock/SPY/expiry-breakdown?date=2026-04-27'),
+      ),
     ).toBe(true);
     expect(
-      urls.some((u) => u.includes('/stock/QQQ/expiry-breakdown?date=2026-04-27')),
+      urls.some((u) =>
+        u.includes('/stock/QQQ/expiry-breakdown?date=2026-04-27'),
+      ),
     ).toBe(true);
   });
 
@@ -573,7 +582,9 @@ describe('fetch-greek-flow-etf handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
-      tickers: { SPY: { all: { ticks: 2, inserted: 2, updated: 0, failed: 0 } } },
+      tickers: {
+        SPY: { all: { ticks: 2, inserted: 2, updated: 0, failed: 0 } },
+      },
     });
     expect(mockSql).toHaveBeenCalledTimes(2);
   });
