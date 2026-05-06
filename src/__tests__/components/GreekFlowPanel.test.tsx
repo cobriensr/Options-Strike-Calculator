@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { GreekFlowPanel } from '../../components/GreekFlowPanel';
 import type {
   DivergenceResult,
   GreekFlowMetrics,
   GreekFlowResponse,
   GreekFlowRow,
+  GreekFlowScope,
   Sign,
   UseGreekFlowReturn,
 } from '../../hooks/useGreekFlow';
@@ -128,7 +130,10 @@ interface ScenarioOpts {
   qqqVega?: 1 | -1;
 }
 
-function happyPathReturn(opts: ScenarioOpts = {}): UseGreekFlowReturn {
+function happyPathReturn(
+  opts: ScenarioOpts = {},
+  scope: GreekFlowScope = '0dte',
+): UseGreekFlowReturn {
   const spyDelta = opts.spyDelta ?? -1;
   const qqqDelta = opts.qqqDelta ?? -1;
   const spyVega = opts.spyVega ?? -1;
@@ -141,6 +146,7 @@ function happyPathReturn(opts: ScenarioOpts = {}): UseGreekFlowReturn {
   );
   const data: GreekFlowResponse = {
     date: '2026-04-28',
+    scope,
     tickers: {
       SPY: { rows: spyRows, metrics: emptyMetrics() },
       QQQ: { rows: qqqRows, metrics: emptyMetrics() },
@@ -190,6 +196,7 @@ describe('GreekFlowPanel', () => {
     mockUseGreekFlow.mockReturnValue({
       data: {
         date: null,
+        scope: '0dte',
         tickers: {
           SPY: { rows: [], metrics: emptyMetrics() },
           QQQ: { rows: [], metrics: emptyMetrics() },
@@ -254,5 +261,49 @@ describe('GreekFlowPanel', () => {
     render(<GreekFlowPanel marketOpen={true} />);
     const tile = screen.getByTestId('greek-flow-verdict');
     expect(tile).toHaveAttribute('data-verdict-kind', 'pin-harvest');
+  });
+
+  // ── Scope toggle ──────────────────────────────────────────
+
+  it('defaults to 0DTE scope and passes it to the hook', () => {
+    mockUseGreekFlow.mockReturnValue(happyPathReturn());
+    render(<GreekFlowPanel marketOpen={true} />);
+    // Hook is called with (marketOpen, dateArg, scope) — third arg is scope.
+    expect(mockUseGreekFlow).toHaveBeenLastCalledWith(true, null, '0dte');
+    // 0DTE pill is checked, All DTE is not.
+    expect(screen.getByRole('radio', { name: /^0DTE$/i })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    expect(screen.getByRole('radio', { name: /^All DTE$/i })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    );
+  });
+
+  it('switches to all-DTE scope when the All DTE pill is clicked', async () => {
+    const user = userEvent.setup();
+    mockUseGreekFlow.mockReturnValue(happyPathReturn());
+    render(<GreekFlowPanel marketOpen={true} />);
+
+    await user.click(screen.getByRole('radio', { name: /^All DTE$/i }));
+
+    // Hook re-invoked with scope='all'.
+    expect(mockUseGreekFlow).toHaveBeenLastCalledWith(true, null, 'all');
+  });
+
+  it('hides the verdict tile + timeline when scope is all-DTE', async () => {
+    const user = userEvent.setup();
+    mockUseGreekFlow.mockReturnValue(happyPathReturn({}, 'all'));
+    render(<GreekFlowPanel marketOpen={true} />);
+
+    // Click All DTE — component switches scope and shows context caption.
+    await user.click(screen.getByRole('radio', { name: /^All DTE$/i }));
+
+    expect(screen.queryByTestId('greek-flow-verdict')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('greek-flow-timeline')).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId('greek-flow-context-caption'),
+    ).toHaveTextContent(/context only/i);
   });
 });

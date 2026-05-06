@@ -85,8 +85,18 @@ export type GreekFlowMetrics = Record<
   { slope: SlopeResult; flip: FlipResult; cliff: CliffResult }
 >;
 
+/**
+ * Which expiry slice to read:
+ *   - `'0dte'` — only today's expiry. Verdict-eligible.
+ *   - `'all'`  — all-expiries aggregate. Context-only (no verdict).
+ *
+ * Server validates this enum and defaults to `'0dte'` when omitted.
+ */
+export type GreekFlowScope = '0dte' | 'all';
+
 export interface GreekFlowResponse {
   date: string | null;
+  scope: GreekFlowScope;
   tickers: Record<
     GreekFlowTicker,
     { rows: GreekFlowRow[]; metrics: GreekFlowMetrics }
@@ -105,6 +115,7 @@ export interface UseGreekFlowReturn {
 export function useGreekFlow(
   marketOpen: boolean,
   date: string | null = null,
+  scope: GreekFlowScope = '0dte',
 ): UseGreekFlowReturn {
   const accessMode = getAccessMode();
   const [data, setData] = useState<GreekFlowResponse | null>(null);
@@ -116,7 +127,8 @@ export function useGreekFlow(
     try {
       const qs = new URLSearchParams();
       if (date) qs.set('date', date);
-      const url = qs.toString() ? `/api/greek-flow?${qs}` : '/api/greek-flow';
+      qs.set('scope', scope);
+      const url = `/api/greek-flow?${qs}`;
 
       const res = await fetch(url, {
         credentials: 'same-origin',
@@ -141,7 +153,7 @@ export function useGreekFlow(
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-  }, [date]);
+  }, [date, scope]);
 
   useEffect(() => {
     mountedRef.current = true;

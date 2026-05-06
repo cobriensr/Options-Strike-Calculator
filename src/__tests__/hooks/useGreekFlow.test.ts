@@ -36,6 +36,7 @@ const EMPTY_DIVERGENCE = {
 
 const SAMPLE: GreekFlowResponse = {
   date: '2026-04-28',
+  scope: '0dte',
   tickers: {
     SPY: { rows: [], metrics: EMPTY_METRICS },
     QQQ: { rows: [], metrics: EMPTY_METRICS },
@@ -86,20 +87,29 @@ describe('useGreekFlow', () => {
     expect(result.current.error).toBeNull();
   });
 
-  it('hits /api/greek-flow without ?date in live mode', async () => {
+  it('hits /api/greek-flow with default scope in live mode', async () => {
     renderHook(() => useGreekFlow(true));
     await act(async () => {});
     expect(mockFetch).toHaveBeenCalledWith(
-      '/api/greek-flow',
+      '/api/greek-flow?scope=0dte',
       expect.any(Object),
     );
   });
 
-  it('passes ?date=YYYY-MM-DD in date mode', async () => {
+  it('passes ?date=YYYY-MM-DD&scope=0dte in date mode', async () => {
     renderHook(() => useGreekFlow(false, '2026-04-25'));
     await act(async () => {});
     expect(mockFetch).toHaveBeenCalledWith(
-      '/api/greek-flow?date=2026-04-25',
+      '/api/greek-flow?date=2026-04-25&scope=0dte',
+      expect.any(Object),
+    );
+  });
+
+  it('passes scope=all when scope arg is "all"', async () => {
+    renderHook(() => useGreekFlow(true, null, 'all'));
+    await act(async () => {});
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/greek-flow?scope=all',
       expect.any(Object),
     );
   });

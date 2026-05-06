@@ -22,6 +22,7 @@ import {
   type GreekFlowField,
   type GreekFlowResponse,
   type GreekFlowRow,
+  type GreekFlowScope,
   type GreekFlowTicker,
 } from '../../hooks/useGreekFlow';
 import { FlowChart } from './FlowChart';
@@ -34,6 +35,11 @@ import { getETToday } from '../../utils/timezone';
 interface GreekFlowPanelProps {
   marketOpen: boolean;
 }
+
+const SCOPE_OPTIONS: readonly { value: GreekFlowScope; label: string }[] = [
+  { value: '0dte', label: '0DTE' },
+  { value: 'all', label: 'All DTE' },
+] as const;
 
 interface ChartCellSpec {
   ticker: GreekFlowTicker;
@@ -76,14 +82,44 @@ const CHART_GRID: readonly ChartCellSpec[] = [
 function GreekFlowPanelInner({ marketOpen }: GreekFlowPanelProps) {
   const today = getETToday();
   const [selectedDate, setSelectedDate] = useState<string>(today);
+  const [scope, setScope] = useState<GreekFlowScope>('0dte');
   const isLive = selectedDate === today;
   const effectiveMarketOpen = isLive ? marketOpen : false;
   const dateArg = isLive ? null : selectedDate;
 
-  const { data, loading, error } = useGreekFlow(effectiveMarketOpen, dateArg);
+  const { data, loading, error } = useGreekFlow(
+    effectiveMarketOpen,
+    dateArg,
+    scope,
+  );
 
   const headerRight = (
     <div className="flex items-center gap-2">
+      <div
+        role="radiogroup"
+        aria-label="Expiry scope"
+        className="border-edge bg-surface flex overflow-hidden rounded border font-mono text-[10px]"
+      >
+        {SCOPE_OPTIONS.map((opt) => {
+          const active = scope === opt.value;
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              onClick={() => setScope(opt.value)}
+              className={
+                active
+                  ? 'text-primary bg-zinc-700/40 cursor-default px-2 py-0.5'
+                  : 'text-secondary hover:text-primary cursor-pointer px-2 py-0.5'
+              }
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
       {!isLive && (
         <button
           type="button"
@@ -107,10 +143,11 @@ function GreekFlowPanelInner({ marketOpen }: GreekFlowPanelProps) {
     <SectionBox label="Greek Flow" headerRight={headerRight} collapsible>
       <p className="text-secondary mb-3 font-sans text-xs">
         Cumulative OTM Dir Δ &amp; V flow on SPY and QQQ. Verdict combines delta
-        agreement (directional bias) with vega agreement (vol regime). Refreshes
-        every 60s during market hours.
+        agreement (directional bias) with vega agreement (vol regime), driven
+        by today&apos;s 0DTE intent. All-DTE is context only. Refreshes every
+        60s during market hours.
       </p>
-      <Body data={data} loading={loading} error={error} />
+      <Body data={data} loading={loading} error={error} scope={scope} />
     </SectionBox>
   );
 }
@@ -119,10 +156,12 @@ function Body({
   data,
   loading,
   error,
+  scope,
 }: {
   data: GreekFlowResponse | null;
   loading: boolean;
   error: string | null;
+  scope: GreekFlowScope;
 }) {
   if (error) {
     return (
@@ -151,13 +190,31 @@ function Body({
     );
   }
 
+  // 0DTE is the actionable scope — surface the verdict + transition timeline.
+  // All-DTE blends LEAPS / monthly hedging into the cumulative line, so it
+  // only earns a context-only caption rather than driving a verdict.
+  const showVerdict = scope === '0dte';
+
   return (
     <>
-      <VerdictTile
-        delta={data.divergence.otm_dir_delta_flow}
-        vega={data.divergence.otm_dir_vega_flow}
-      />
-      <VerdictTimeline spyRows={spyRows} qqqRows={qqqRows} />
+      {showVerdict ? (
+        <>
+          <VerdictTile
+            delta={data.divergence.otm_dir_delta_flow}
+            vega={data.divergence.otm_dir_vega_flow}
+          />
+          <VerdictTimeline spyRows={spyRows} qqqRows={qqqRows} />
+        </>
+      ) : (
+        <div
+          data-testid="greek-flow-context-caption"
+          className="border-edge bg-surface text-secondary mb-3 rounded-md border px-3 py-2 font-sans text-xs"
+        >
+          Context only — no verdict. All-DTE blends today&apos;s 0DTE intent
+          with structural LEAPS / monthly hedging. Switch to 0DTE for a
+          tradeable read.
+        </div>
+      )}
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         {CHART_GRID.map((spec) => {
           const tickerData = data.tickers[spec.ticker];
