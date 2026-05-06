@@ -212,6 +212,53 @@ export function usePeriscopeChat(): UsePeriscopeChatResult {
     [],
   );
 
+  // Auto-link parentId for intraday/debrief modes. The chain semantics
+  // (intraday → previous intraday → ... → today's pre_trade; debrief →
+  // last intraday → pre_trade) mean the user's intent is always
+  // "chain to the most recent forward read on this date." Auto-fetching
+  // saves them from a friction step where the submission errors out
+  // because parentId starts as null. User can still override by clicking
+  // "Debrief →" on a specific row in history (existing window-event
+  // path); that path sets parentId via setParentId, which suppresses
+  // the auto-link refetch via the `parentId != null` short-circuit.
+  //
+  // Silent on failure: if the list endpoint errors or returns no
+  // forward reads for the date, parentId stays null and the existing
+  // submit-time validation surfaces a clear message.
+  useEffect(() => {
+    if (mode === 'pre_trade') return;
+    if (parentId != null) return;
+    if (!ISO_DATE_PATTERN.test(readDate)) return;
+    const ctrl = new AbortController();
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/periscope-chat-list?date=${encodeURIComponent(readDate)}&limit=20`,
+          { signal: ctrl.signal },
+        );
+        if (!res.ok) return;
+        const body = (await res.json()) as {
+          ok?: boolean;
+          rows?: Array<{ id: number; mode: string }>;
+        };
+        if (!body.ok || !Array.isArray(body.rows)) return;
+        // Rows are returned `created_at DESC`. Pick the most recent
+        // forward read (skip debriefs — chaining to a debrief is
+        // never the intent).
+        const candidate = body.rows.find(
+          (r) => r.mode === 'pre_trade' || r.mode === 'intraday',
+        );
+        if (candidate && typeof candidate.id === 'number') {
+          setParentId(candidate.id);
+        }
+      } catch {
+        // Aborted or network error — leave parentId null, submit
+        // validation surfaces the message.
+      }
+    })();
+    return () => ctrl.abort();
+  }, [mode, readDate, parentId]);
+
   // Document-level paste listener — mirrors the pattern in
   // src/hooks/useImageUpload.ts. Picks the first image in the clipboard
   // payload and routes it to the next empty slot in PASTE_FILL_ORDER.
@@ -275,7 +322,7 @@ export function usePeriscopeChat(): UsePeriscopeChatResult {
       setError(
         mode === 'intraday'
           ? 'Intraday mode requires a parent — start a pre-trade read first.'
-          : 'Debrief mode requires a parent — link to today\'s last intraday or pre-trade read.',
+          : "Debrief mode requires a parent — link to today's last intraday or pre-trade read.",
       );
       return;
     }
