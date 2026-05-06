@@ -382,16 +382,46 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     // Phase 6B: look up SPX spot at the user-picked (read_date, read_time)
     // FIRST so a missing-data condition fails fast before we burn an
-    // Anthropic call. Today-vs-back-read is gated by comparing read_date
-    // against today's CT calendar date — live reads must hit an exact
-    // bar; back-reads may snap within ±2 min.
+    // Anthropic call. Live-vs-back-read is gated by both the read_date
+    // matching today's CT calendar date AND the read_time being near the
+    // current CT wall clock (±5 min). Same-day reads with read_time well
+    // in the past (e.g. a 15:00 CT debrief submitted at 16:35 CT, or a
+    // 10:00 CT recap at noon) are back-reads — they should snap within
+    // ±2 min instead of hard-failing on the exact-bar requirement. The
+    // hard-fail mode exists for the narrow case where the user is
+    // submitting at HH:MM and the cron may not have written the bar yet
+    // (data freshness, not back-read intent).
+    const now = new Date();
     const todayCt = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'America/Chicago',
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
-    }).format(new Date());
-    const isLiveRead = body.read_date === todayCt;
+    }).format(now);
+    const nowCtParts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Chicago',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(now);
+    const nowCtHour =
+      Number.parseInt(
+        nowCtParts.find((p) => p.type === 'hour')?.value ?? '00',
+        10,
+      ) % 24;
+    const nowCtMinute = Number.parseInt(
+      nowCtParts.find((p) => p.type === 'minute')?.value ?? '00',
+      10,
+    );
+    const nowCtMinuteOfDay = nowCtHour * 60 + nowCtMinute;
+    const [readHourStr, readMinuteStr] = body.read_time.split(':');
+    const readMinuteOfDay =
+      Number.parseInt(readHourStr ?? '0', 10) * 60 +
+      Number.parseInt(readMinuteStr ?? '0', 10);
+    const minutesFromNow = Math.abs(readMinuteOfDay - nowCtMinuteOfDay);
+    const LIVE_FRESHNESS_MIN = 5;
+    const isLiveRead =
+      body.read_date === todayCt && minutesFromNow <= LIVE_FRESHNESS_MIN;
 
     let spotLookup: SpotLookupResult | null = null;
     try {
