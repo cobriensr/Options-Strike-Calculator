@@ -80,6 +80,7 @@ import {
   type HeatMapImage,
 } from './_lib/periscope-extract.js';
 import { runCachedAnthropicCall } from './_lib/anthropic-call.js';
+import { buildFlowContextBlock } from './_lib/periscope-flow-context.js';
 
 // 780s ceiling matches /api/analyze and /api/trace-live-analyze. Opus
 // 4.7 with adaptive-thinking high-effort + 3 images can take 5-9 min on
@@ -377,6 +378,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // when no heat-map images were uploaded or extraction failed entirely.
     const heatMapBlock = heatMaps != null ? formatHeatMapBlock(heatMaps) : null;
 
+    // Flow-alert context (Phase 1.5 of the periscope-chat overhaul spec).
+    // Best-effort: a failure here MUST NOT lose the read. The helper
+    // already swallows DB errors and returns null, but we layer a second
+    // try/catch as defense-in-depth in case the formatter throws on
+    // malformed input. asOf comes from the capture timestamp; once
+    // Phase 6B lands, this should switch to body.read_time so back-reads
+    // anchor the window correctly.
+    let flowBlock: string | null = null;
+    const extractedSpot = extraction?.structured.spot ?? null;
+    if (extractedSpot != null) {
+      try {
+        flowBlock = await buildFlowContextBlock({
+          mode: body.mode,
+          spot: extractedSpot,
+          asOf: new Date(capturedAt),
+        });
+      } catch (err) {
+        Sentry.captureException(err);
+        logger.warn(
+          { err, mode: body.mode },
+          'periscope-chat flow-context block build failed — continuing without it',
+        );
+      }
+    }
+
     // Build the user content AFTER the parent fetch so the debrief
     // preamble can inline the open read's prose + structured fields.
     const userContent = buildUserContent({
@@ -384,6 +410,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       parentId: body.parentId ?? null,
       parentRead,
       heatMapBlock,
+      flowBlock,
       images: body.images,
     });
 

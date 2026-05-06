@@ -46,13 +46,21 @@ export function buildUserContent(args: {
    * values alongside the visual heat maps.
    */
   heatMapBlock?: string | null;
+  /**
+   * Optional pre-formatted text injected as its own user-content block
+   * BETWEEN the heat-map block and the image blocks. Used by the
+   * periscope-chat handler to surface ws_flow_alerts informed-flow
+   * context (Phase 1.5 of the periscope-chat overhaul spec). Mode-
+   * specific framing is built upstream by buildFlowContextBlock().
+   */
+  flowBlock?: string | null;
   images: Array<{
     kind: 'chart' | 'gex' | 'charm';
     data: string;
     mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
   }>;
 }): Anthropic.Messages.ContentBlockParam[] {
-  const { mode, parentId, parentRead, heatMapBlock, images } = args;
+  const { mode, parentId, parentRead, heatMapBlock, flowBlock, images } = args;
 
   const blocks: Anthropic.Messages.ContentBlockParam[] = [];
 
@@ -78,6 +86,13 @@ export function buildUserContent(args: {
   // cross-check rather than the primary signal.
   if (heatMapBlock != null && heatMapBlock.length > 0) {
     blocks.push({ type: 'text', text: heatMapBlock });
+  }
+
+  // Flow-alert context (Phase 1.5) sits between the heat-map block and
+  // the images so it's read after the structured heat-map values but
+  // before Claude attends to the actual screenshots.
+  if (flowBlock != null && flowBlock.length > 0) {
+    blocks.push({ type: 'text', text: flowBlock });
   }
 
   // Each image gets a label header + the image block, so Claude knows
