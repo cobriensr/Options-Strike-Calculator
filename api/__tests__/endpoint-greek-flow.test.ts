@@ -178,14 +178,30 @@ describe('GET /api/greek-flow', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
+  it('rejects invalid scope with 400', async () => {
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { scope: 'weekly' } }),
+      res,
+    );
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
   it('returns empty-shape payload when the table has no rows', async () => {
     // First query (resolveLatestGreekFlowDate) returns []
     mockSql.mockResolvedValueOnce([]);
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(200);
-    const body = res._json as { date: string | null; tickers: unknown };
+    const body = res._json as {
+      date: string | null;
+      scope: string;
+      tickers: unknown;
+    };
     expect(body.date).toBeNull();
+    // Default scope = '0dte'.
+    expect(body.scope).toBe('0dte');
     expect(body.tickers).toBeDefined();
   });
 
@@ -201,6 +217,7 @@ describe('GET /api/greek-flow', () => {
 
     const body = res._json as {
       date: string;
+      scope: string;
       tickers: {
         SPY: { rows: unknown[]; metrics: Record<string, unknown> };
         QQQ: { rows: unknown[]; metrics: Record<string, unknown> };
@@ -212,6 +229,8 @@ describe('GET /api/greek-flow', () => {
     };
 
     expect(body.date).toBe('2026-04-28');
+    // Default scope is '0dte'.
+    expect(body.scope).toBe('0dte');
     expect(body.tickers.SPY.rows).toHaveLength(2);
     expect(body.tickers.QQQ.rows).toHaveLength(2);
     // SPY went deeper negative (-50 → -70), QQQ went higher positive
@@ -238,6 +257,49 @@ describe('GET /api/greek-flow', () => {
     expect(res._status).toBe(200);
     const body = res._json as { date: string };
     expect(body.date).toBe('2026-04-25');
+  });
+
+  it('echoes scope=all when requested and uses NULL expiry filter', async () => {
+    mockSql.mockResolvedValueOnce(fakeSessionRows());
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { date: '2026-04-25', scope: 'all' },
+      }),
+      res,
+    );
+    expect(res._status).toBe(200);
+    const body = res._json as { scope: string };
+    expect(body.scope).toBe('all');
+
+    // The session query is the second-to-last interpolated value (date),
+    // and the last one is expiryFilter. For scope='all', expiryFilter is
+    // null; for scope='0dte' it would equal the date.
+    const sessionCall = mockSql.mock.calls[0]!;
+    const interpolated = sessionCall.slice(1);
+    expect(interpolated).toContain('2026-04-25'); // date
+    expect(interpolated).toContain(null); // expiryFilter for scope=all
+  });
+
+  it('passes date as expiryFilter when scope=0dte (explicit)', async () => {
+    mockSql.mockResolvedValueOnce(fakeSessionRows());
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { date: '2026-04-25', scope: '0dte' },
+      }),
+      res,
+    );
+    expect(res._status).toBe(200);
+    const sessionCall = mockSql.mock.calls[0]!;
+    const interpolated = sessionCall.slice(1);
+    // Both date and expiryFilter are '2026-04-25' for 0dte scope.
+    expect(interpolated.filter((v) => v === '2026-04-25')).toHaveLength(2);
+    expect(interpolated).not.toContain(null);
   });
 
   it('returns 500 and reports to Sentry on DB failure', async () => {

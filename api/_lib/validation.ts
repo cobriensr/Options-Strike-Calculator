@@ -67,15 +67,25 @@ export type ZeroGammaQuery = z.infer<typeof zeroGammaQuerySchema>;
  * cumulative columns plus derived metrics (slope / flip / cliff /
  * divergence). `date` defaults to the latest ET trading date present
  * in `vega_flow_etf` when omitted.
+ *
+ * `scope` selects which expiry slice to read:
+ *   - `0dte` (default) — only rows where `expiry = date` (today's expiry).
+ *   - `all`            — only rows where `expiry IS NULL` (all-expiries
+ *                        aggregate from the unfiltered greek-flow endpoint).
+ *
+ * The two scopes are stored as separate rows in `vega_flow_etf` (added in
+ * migration #129) so cumulative window-function output never blends them.
  */
 export const greekFlowQuerySchema = z.object({
   date: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
     .optional(),
+  scope: z.enum(['0dte', 'all']).default('0dte'),
 });
 
 export type GreekFlowQuery = z.infer<typeof greekFlowQuerySchema>;
+export type GreekFlowScope = GreekFlowQuery['scope'];
 
 // ============================================================
 // /api/gex-strike-expiry

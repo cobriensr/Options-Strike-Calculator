@@ -140,17 +140,32 @@ export async function resolveLatestGreekFlowDate(
   return rows[0]?.d ?? null;
 }
 
+export type GreekFlowScope = '0dte' | 'all';
+
 /**
- * Returns SPY + QQQ rows for `date`, ordered by ticker then timestamp,
- * with cumulative columns added via Postgres window functions.
+ * Returns SPY + QQQ rows for `date` and `scope`, ordered by ticker then
+ * timestamp, with cumulative columns added via Postgres window functions.
  *
- * Empty array if the date has no rows (returned as-is — caller decides
- * whether that's an error or just "before market open").
+ * `scope` filters the underlying rows BEFORE the window function so the
+ * cumulative is naturally per-scope (no all-DTE values bleeding into 0DTE
+ * cumulative or vice versa):
+ *   - `'0dte'` → `expiry = date` (today's expiry slice).
+ *   - `'all'`  → `expiry IS NULL` (all-expiries aggregate).
+ *
+ * Uses `IS NOT DISTINCT FROM` so a single parameterized query handles both
+ * branches: NULL = NULL is treated as TRUE under that operator, which
+ * matches the `NULLS NOT DISTINCT` unique constraint installed in #129.
+ *
+ * Empty array if the (date, scope) pair has no rows (returned as-is —
+ * caller decides whether that's an error or just "before market open" /
+ * "today is not an SPY/QQQ expiry").
  */
 export async function getGreekFlowSession(
   date: string,
+  scope: GreekFlowScope,
 ): Promise<GreekFlowRow[]> {
   const sql = getDb();
+  const expiryFilter = scope === '0dte' ? date : null;
   const rows = (await sql`
     SELECT
       f.ticker,
@@ -180,6 +195,7 @@ export async function getGreekFlowSession(
      AND c.timestamp = f.timestamp
     WHERE f.ticker IN ('SPY', 'QQQ')
       AND f.date = ${date}::date
+      AND f.expiry IS NOT DISTINCT FROM ${expiryFilter}::date
     WINDOW w AS (PARTITION BY f.ticker ORDER BY f.timestamp)
     ORDER BY f.ticker, f.timestamp
   `) as RawGreekFlowRow[];

@@ -3840,4 +3840,20 @@ export const MIGRATIONS: Migration[] = [
       sql`DROP TABLE IF EXISTS trace_live_calibration CASCADE`,
     ],
   },
+  {
+    id: 129,
+    description:
+      'Add expiry column to vega_flow_etf for per-expiry (0DTE) and all-expiries (NULL) co-storage. ' +
+      'Replaces the (ticker, timestamp) unique constraint with (ticker, timestamp, expiry) using ' +
+      'NULLS NOT DISTINCT (Postgres 15+) so all-DTE rows (expiry IS NULL — existing behavior) coexist ' +
+      'with per-expiry rows (expiry = date) under one constraint. Adds (ticker, date, expiry) index ' +
+      'for the panel scope filter. Backs the Greek Flow panel scope toggle — see ' +
+      'docs/superpowers/specs/greek-flow-0dte-toggle-2026-05-06.md.',
+    statements: (sql) => [
+      sql`ALTER TABLE vega_flow_etf ADD COLUMN IF NOT EXISTS expiry DATE`,
+      sql`ALTER TABLE vega_flow_etf DROP CONSTRAINT IF EXISTS vega_flow_etf_ticker_timestamp_key`,
+      sql`ALTER TABLE vega_flow_etf ADD CONSTRAINT vega_flow_etf_ticker_timestamp_expiry_key UNIQUE NULLS NOT DISTINCT (ticker, timestamp, expiry)`,
+      sql`CREATE INDEX IF NOT EXISTS idx_vega_flow_etf_ticker_date_expiry ON vega_flow_etf (ticker, date, expiry)`,
+    ],
+  },
 ];

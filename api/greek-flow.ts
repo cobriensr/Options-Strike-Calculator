@@ -11,13 +11,18 @@
  * /api/vega-spikes.
  *
  * Query params:
- *   ?date=YYYY-MM-DD  — optional; defaults to the latest ET date present
- *                       in `vega_flow_etf`. Used by the panel to scrub
- *                       historical sessions.
+ *   ?date=YYYY-MM-DD       — optional; defaults to the latest ET date
+ *                            present in `vega_flow_etf`.
+ *   ?scope=0dte|all        — optional, default `0dte`. Selects which
+ *                            expiry slice to read (per migration #129
+ *                            scope split). `0dte` filters to today's
+ *                            expiry; `all` reads the all-expiries
+ *                            aggregate (`expiry IS NULL`).
  *
  * Response:
  *   {
  *     date: string | null,                  // resolved date (null if table empty)
+ *     scope: '0dte' | 'all',                // echoes the resolved scope
  *     tickers: {
  *       SPY: { rows: GreekFlowRow[], metrics: GreekFlowMetrics },
  *       QQQ: { rows: GreekFlowRow[], metrics: GreekFlowMetrics }
@@ -43,6 +48,7 @@ import {
   splitByTicker,
   type GreekFlowField,
   type GreekFlowRow,
+  type GreekFlowScope,
   type GreekFlowTicker,
 } from './_lib/db-greek-flow.js';
 import {
@@ -68,6 +74,7 @@ export type GreekFlowMetrics = Record<
 
 export interface GreekFlowResponse {
   date: string | null;
+  scope: GreekFlowScope;
   tickers: Record<
     GreekFlowTicker,
     {
@@ -124,7 +131,10 @@ function lastCumulative(
   return last ? (last[cumKey] as number) : null;
 }
 
-function emptyResponse(asOf: string): GreekFlowResponse {
+function emptyResponse(
+  asOf: string,
+  scope: GreekFlowScope,
+): GreekFlowResponse {
   const emptyMetrics = GREEK_FLOW_FIELDS.reduce<GreekFlowMetrics>(
     (acc, field) => {
       acc[field] = {
@@ -152,6 +162,7 @@ function emptyResponse(asOf: string): GreekFlowResponse {
   );
   return {
     date: null,
+    scope,
     tickers: {
       SPY: { rows: [], metrics: emptyMetrics },
       QQQ: { rows: [], metrics: emptyMetrics },
@@ -183,6 +194,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const requestedDate = parsed.data.date ?? null;
+    // Renamed to avoid colliding with the outer Sentry isolation `scope`.
+    const requestedScope: GreekFlowScope = parsed.data.scope;
     const asOf = new Date().toISOString();
 
     try {
@@ -192,10 +205,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         // need a separate "no data" branch.
         setCacheHeaders(res, 60, 60);
         done({ status: 200 });
-        return res.status(200).json(emptyResponse(asOf));
+        return res.status(200).json(emptyResponse(asOf, requestedScope));
       }
 
-      const allRows = await getGreekFlowSession(date);
+      const allRows = await getGreekFlowSession(date, requestedScope);
       const split = splitByTicker(allRows);
 
       const spyMetrics = computeMetrics(split.SPY);
@@ -216,6 +229,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const response: GreekFlowResponse = {
         date,
+        scope: requestedScope,
         tickers: {
           SPY: { rows: split.SPY, metrics: spyMetrics },
           QQQ: { rows: split.QQQ, metrics: qqqMetrics },

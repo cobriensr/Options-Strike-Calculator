@@ -59,20 +59,54 @@ function makeGreekFlowTick(overrides: Record<string, unknown> = {}) {
   };
 }
 
+// expiry-breakdown response shape: { expiry, chains, open_interest, volume }.
+// Default: today is NOT in the list (non-expiry day), so per-expiry calls
+// are skipped. Tests that exercise the expiry path override this.
+const NON_EXPIRY_BREAKDOWN = [
+  { expiry: '2026-04-29', chains: 100, open_interest: 1000, volume: 5000 },
+  { expiry: '2026-05-01', chains: 100, open_interest: 1000, volume: 5000 },
+];
+const EXPIRY_TODAY_BREAKDOWN = [
+  { expiry: '2026-04-27', chains: 200, open_interest: 5000, volume: 80000 },
+  { expiry: '2026-04-29', chains: 100, open_interest: 1000, volume: 5000 },
+];
+
 const AUTHORIZED_REQ = () =>
   mockRequest({
     method: 'GET',
     headers: { authorization: 'Bearer test-secret' },
   });
 
+/**
+ * Configure mockUwFetch to return responses for the 4 always-fired calls
+ * (2 all-DTE greek-flow + 2 expiry-breakdown), in the order Promise.all
+ * issues them: SPY all-DTE, QQQ all-DTE, SPY expiry-breakdown,
+ * QQQ expiry-breakdown.
+ *
+ * On expiry days, the handler then issues 2 more calls (SPY then QQQ
+ * per-expiry); pass `spyExpiry` / `qqqExpiry` to register those.
+ */
+function setupMocks(opts: {
+  spyAll?: ReturnType<typeof makeGreekFlowTick>[];
+  qqqAll?: ReturnType<typeof makeGreekFlowTick>[];
+  spyBreakdown?: typeof NON_EXPIRY_BREAKDOWN;
+  qqqBreakdown?: typeof NON_EXPIRY_BREAKDOWN;
+  spyExpiry?: ReturnType<typeof makeGreekFlowTick>[];
+  qqqExpiry?: ReturnType<typeof makeGreekFlowTick>[];
+}) {
+  mockUwFetch
+    .mockResolvedValueOnce(opts.spyAll ?? [makeGreekFlowTick({ ticker: 'SPY' })])
+    .mockResolvedValueOnce(opts.qqqAll ?? [makeGreekFlowTick({ ticker: 'QQQ' })])
+    .mockResolvedValueOnce(opts.spyBreakdown ?? NON_EXPIRY_BREAKDOWN)
+    .mockResolvedValueOnce(opts.qqqBreakdown ?? NON_EXPIRY_BREAKDOWN);
+  if (opts.spyExpiry) mockUwFetch.mockResolvedValueOnce(opts.spyExpiry);
+  if (opts.qqqExpiry) mockUwFetch.mockResolvedValueOnce(opts.qqqExpiry);
+}
+
 describe('fetch-greek-flow-etf handler', () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    // Default: cronGuard returns valid guard (market open, auth ok)
     mockCronGuard.mockReturnValue(GUARD);
-    // Default: uwFetch returns one tick for both tickers
-    mockUwFetch.mockResolvedValue([makeGreekFlowTick()]);
-    // Default: withRetry passes through
     mockWithRetry.mockImplementation((fn: () => unknown) => fn());
     // Default: UPSERT returns one row with was_insert=true (new row)
     mockSql.mockResolvedValue([{ was_insert: true }]);
@@ -81,9 +115,6 @@ describe('fetch-greek-flow-etf handler', () => {
   // ── Guard delegation ───────────────────────────────────────
 
   it('exits early without fetching when cronGuard returns null', async () => {
-    // cronGuard owns 405/401/skip responses; the handler's contract is
-    // simply to short-circuit when guard returns null. Real 405/401
-    // behavior is exercised in api/__tests__/api-helpers.test.ts.
     mockCronGuard.mockReturnValue(null);
     const req = mockRequest({ method: 'POST' });
     const res = mockResponse();
@@ -122,6 +153,7 @@ describe('fetch-greek-flow-etf handler', () => {
   });
 
   it('passes auth when CRON_SECRET matches', async () => {
+    setupMocks({});
     const req = AUTHORIZED_REQ();
     const res = mockResponse();
     await handler(req, res);
@@ -184,57 +216,151 @@ describe('fetch-greek-flow-etf handler', () => {
     expect(res._json).toMatchObject({ error: 'UW_API_KEY not configured' });
   });
 
-  // ── Happy path ────────────────────────────────────────────
+  // ── Non-expiry day happy path ─────────────────────────────
 
-  it('fetches both tickers, stores both, returns 200 with per-ticker counts', async () => {
-    const spyTick = makeGreekFlowTick({
-      ticker: 'SPY',
-      timestamp: '2026-04-27T14:32:00Z',
+  it('non-expiry day: fetches all-DTE + expiry-breakdown, skips per-expiry', async () => {
+    setupMocks({
+      spyAll: [makeGreekFlowTick({ ticker: 'SPY' })],
+      qqqAll: [makeGreekFlowTick({ ticker: 'QQQ' })],
+      // breakdowns default to NON_EXPIRY_BREAKDOWN (today not in list)
     });
-    const qqqTick = makeGreekFlowTick({
-      ticker: 'QQQ',
-      timestamp: '2026-04-27T14:32:00Z',
-    });
-
-    // First call returns SPY tick, second returns QQQ tick
-    mockUwFetch
-      .mockResolvedValueOnce([spyTick])
-      .mockResolvedValueOnce([qqqTick]);
 
     const req = AUTHORIZED_REQ();
     const res = mockResponse();
     await handler(req, res);
 
     expect(res._status).toBe(200);
+    // 4 UW calls: 2 all-DTE + 2 expiry-breakdown. No per-expiry calls.
+    expect(mockUwFetch).toHaveBeenCalledTimes(4);
+    // 2 UPSERT calls: 1 per ticker (all-DTE only; per-expiry tick lists are empty).
+    expect(mockSql).toHaveBeenCalledTimes(2);
     expect(res._json).toMatchObject({
       job: 'fetch-greek-flow-etf',
       tickers: {
-        SPY: { ticks: 1, inserted: 1, updated: 0, failed: 0 },
-        QQQ: { ticks: 1, inserted: 1, updated: 0, failed: 0 },
+        SPY: {
+          all: { ticks: 1, inserted: 1, updated: 0, failed: 0 },
+          expiry: null,
+        },
+        QQQ: {
+          all: { ticks: 1, inserted: 1, updated: 0, failed: 0 },
+          expiry: null,
+        },
       },
     });
-    // 2 UPSERT calls (1 per ticker)
-    expect(mockSql).toHaveBeenCalledTimes(2);
   });
 
-  // ── Verifies both endpoints are called ────────────────────
+  // ── Expiry day happy path ─────────────────────────────────
 
-  it('calls both /stock/SPY/greek-flow and /stock/QQQ/greek-flow endpoints', async () => {
-    mockUwFetch.mockResolvedValue([]);
+  it('expiry day: fetches all-DTE + expiry-breakdown + per-expiry for both tickers', async () => {
+    setupMocks({
+      spyAll: [makeGreekFlowTick({ ticker: 'SPY' })],
+      qqqAll: [makeGreekFlowTick({ ticker: 'QQQ' })],
+      spyBreakdown: EXPIRY_TODAY_BREAKDOWN,
+      qqqBreakdown: EXPIRY_TODAY_BREAKDOWN,
+      spyExpiry: [makeGreekFlowTick({ ticker: 'SPY', expiry: '2026-04-27' })],
+      qqqExpiry: [makeGreekFlowTick({ ticker: 'QQQ', expiry: '2026-04-27' })],
+    });
+
     const req = AUTHORIZED_REQ();
     const res = mockResponse();
     await handler(req, res);
 
-    expect(mockUwFetch).toHaveBeenCalledTimes(2);
+    expect(res._status).toBe(200);
+    // 6 UW calls: 2 all-DTE + 2 expiry-breakdown + 2 per-expiry.
+    expect(mockUwFetch).toHaveBeenCalledTimes(6);
+    // 4 UPSERT calls: 1 all-DTE + 1 per-expiry per ticker.
+    expect(mockSql).toHaveBeenCalledTimes(4);
+    expect(res._json).toMatchObject({
+      tickers: {
+        SPY: {
+          all: { ticks: 1, inserted: 1, updated: 0, failed: 0 },
+          expiry: { ticks: 1, inserted: 1, updated: 0, failed: 0 },
+        },
+        QQQ: {
+          all: { ticks: 1, inserted: 1, updated: 0, failed: 0 },
+          expiry: { ticks: 1, inserted: 1, updated: 0, failed: 0 },
+        },
+      },
+    });
+  });
+
+  it('expiry day for SPY only: fires per-expiry call for SPY but not QQQ', async () => {
+    setupMocks({
+      spyAll: [makeGreekFlowTick({ ticker: 'SPY' })],
+      qqqAll: [makeGreekFlowTick({ ticker: 'QQQ' })],
+      spyBreakdown: EXPIRY_TODAY_BREAKDOWN,
+      qqqBreakdown: NON_EXPIRY_BREAKDOWN,
+      spyExpiry: [makeGreekFlowTick({ ticker: 'SPY' })],
+      // qqqExpiry intentionally omitted — handler should not call it
+    });
+
+    const req = AUTHORIZED_REQ();
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // 5 UW calls: 4 always + 1 per-expiry (SPY only).
+    expect(mockUwFetch).toHaveBeenCalledTimes(5);
+    expect(res._json).toMatchObject({
+      tickers: {
+        SPY: { expiry: { ticks: 1 } },
+        QQQ: { expiry: null },
+      },
+    });
+  });
+
+  // ── URL coverage ──────────────────────────────────────────
+
+  it('calls all four required URLs (greek-flow + expiry-breakdown for both tickers)', async () => {
+    setupMocks({});
+    const req = AUTHORIZED_REQ();
+    const res = mockResponse();
+    await handler(req, res);
+
     const urls = mockUwFetch.mock.calls.map((c) => c[1] as string);
-    expect(urls.some((u) => u.includes('/stock/SPY/greek-flow'))).toBe(true);
-    expect(urls.some((u) => u.includes('/stock/QQQ/greek-flow'))).toBe(true);
+    expect(
+      urls.some((u) => u.includes('/stock/SPY/greek-flow?date=2026-04-27')),
+    ).toBe(true);
+    expect(
+      urls.some((u) => u.includes('/stock/QQQ/greek-flow?date=2026-04-27')),
+    ).toBe(true);
+    expect(
+      urls.some((u) => u.includes('/stock/SPY/expiry-breakdown?date=2026-04-27')),
+    ).toBe(true);
+    expect(
+      urls.some((u) => u.includes('/stock/QQQ/expiry-breakdown?date=2026-04-27')),
+    ).toBe(true);
+  });
+
+  it('per-expiry URL uses /stock/{ticker}/greek-flow/{today}?date={today} format', async () => {
+    setupMocks({
+      spyBreakdown: EXPIRY_TODAY_BREAKDOWN,
+      qqqBreakdown: EXPIRY_TODAY_BREAKDOWN,
+      spyExpiry: [makeGreekFlowTick()],
+      qqqExpiry: [makeGreekFlowTick()],
+    });
+
+    const req = AUTHORIZED_REQ();
+    const res = mockResponse();
+    await handler(req, res);
+
+    const urls = mockUwFetch.mock.calls.map((c) => c[1] as string);
+    expect(
+      urls.some(
+        (u) => u === '/stock/SPY/greek-flow/2026-04-27?date=2026-04-27',
+      ),
+    ).toBe(true);
+    expect(
+      urls.some(
+        (u) => u === '/stock/QQQ/greek-flow/2026-04-27?date=2026-04-27',
+      ),
+    ).toBe(true);
   });
 
   // ── Empty data ────────────────────────────────────────────
 
   it('handles empty data for both tickers (returns all zeros)', async () => {
-    mockUwFetch.mockResolvedValue([]);
+    setupMocks({ spyAll: [], qqqAll: [] });
     const req = AUTHORIZED_REQ();
     const res = mockResponse();
     await handler(req, res);
@@ -242,8 +368,14 @@ describe('fetch-greek-flow-etf handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       tickers: {
-        SPY: { ticks: 0, inserted: 0, updated: 0, failed: 0 },
-        QQQ: { ticks: 0, inserted: 0, updated: 0, failed: 0 },
+        SPY: {
+          all: { ticks: 0, inserted: 0, updated: 0, failed: 0 },
+          expiry: null,
+        },
+        QQQ: {
+          all: { ticks: 0, inserted: 0, updated: 0, failed: 0 },
+          expiry: null,
+        },
       },
     });
     expect(mockSql).not.toHaveBeenCalled();
@@ -252,11 +384,11 @@ describe('fetch-greek-flow-etf handler', () => {
   // ── UPSERT (existing-row) path ────────────────────────────
 
   it('counts existing rows as updated when ON CONFLICT fires', async () => {
-    // was_insert=false ⇒ ON CONFLICT DO UPDATE fired (row pre-existed)
     mockSql.mockResolvedValue([{ was_insert: false }]);
-    mockUwFetch
-      .mockResolvedValueOnce([makeGreekFlowTick({ ticker: 'SPY' })])
-      .mockResolvedValueOnce([makeGreekFlowTick({ ticker: 'QQQ' })]);
+    setupMocks({
+      spyAll: [makeGreekFlowTick({ ticker: 'SPY' })],
+      qqqAll: [makeGreekFlowTick({ ticker: 'QQQ' })],
+    });
 
     const req = AUTHORIZED_REQ();
     const res = mockResponse();
@@ -265,8 +397,8 @@ describe('fetch-greek-flow-etf handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       tickers: {
-        SPY: { inserted: 0, updated: 1, failed: 0 },
-        QQQ: { inserted: 0, updated: 1, failed: 0 },
+        SPY: { all: { inserted: 0, updated: 1, failed: 0 } },
+        QQQ: { all: { inserted: 0, updated: 1, failed: 0 } },
       },
     });
   });
@@ -275,9 +407,10 @@ describe('fetch-greek-flow-etf handler', () => {
 
   it('counts upsert error as failed; whole handler still returns 200', async () => {
     mockSql.mockRejectedValueOnce(new Error('DB insert failed'));
-    mockUwFetch
-      .mockResolvedValueOnce([makeGreekFlowTick({ ticker: 'SPY' })])
-      .mockResolvedValueOnce([]);
+    setupMocks({
+      spyAll: [makeGreekFlowTick({ ticker: 'SPY' })],
+      qqqAll: [],
+    });
 
     const req = AUTHORIZED_REQ();
     const res = mockResponse();
@@ -286,8 +419,8 @@ describe('fetch-greek-flow-etf handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       tickers: {
-        SPY: { inserted: 0, updated: 0, failed: 1 },
-        QQQ: { inserted: 0, updated: 0, failed: 0 },
+        SPY: { all: { inserted: 0, updated: 0, failed: 1 } },
+        QQQ: { all: { inserted: 0, updated: 0, failed: 0 } },
       },
     });
   });
@@ -314,12 +447,49 @@ describe('fetch-greek-flow-etf handler', () => {
     expect(res._json).toMatchObject({ error: 'Internal error' });
   });
 
+  it('returns 500 when expiry-breakdown call fails', async () => {
+    // First two withRetry calls (all-DTE SPY/QQQ) succeed; third (SPY
+    // expiry-breakdown) rejects. The rejection must propagate up.
+    mockWithRetry
+      .mockImplementationOnce((fn: () => unknown) => fn())
+      .mockImplementationOnce((fn: () => unknown) => fn())
+      .mockRejectedValueOnce(new Error('UW expiry-breakdown 500'));
+    mockUwFetch.mockResolvedValue([]);
+
+    const req = AUTHORIZED_REQ();
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toMatchObject({ error: 'Internal error' });
+  });
+
+  it('returns 500 when per-expiry call fails on an expiry day', async () => {
+    // The first 4 withRetry calls (all-DTE x2 + expiry-breakdown x2) succeed.
+    // The 5th (SPY per-expiry) rejects. Phase B failure must propagate too.
+    mockWithRetry
+      .mockImplementationOnce((fn: () => unknown) => fn())
+      .mockImplementationOnce((fn: () => unknown) => fn())
+      .mockImplementationOnce((fn: () => unknown) => fn())
+      .mockImplementationOnce((fn: () => unknown) => fn())
+      .mockRejectedValueOnce(new Error('UW per-expiry 503'));
+    mockUwFetch
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(EXPIRY_TODAY_BREAKDOWN)
+      .mockResolvedValueOnce(EXPIRY_TODAY_BREAKDOWN);
+
+    const req = AUTHORIZED_REQ();
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toMatchObject({ error: 'Internal error' });
+  });
+
   // ── 8-field INSERT column regression test ────────────────
 
-  it('persists all 8 vega+delta columns in the INSERT (field coverage regression)', async () => {
-    // Regression guard: ensures all 8 vega/delta fields specified in the spec
-    // are present in the SQL and that the interpolated values array carries the
-    // actual tick data. If a column is ever dropped from the INSERT, this fails.
+  it('persists all 8 vega+delta columns plus expiry in the INSERT (field coverage regression)', async () => {
     const tick = makeGreekFlowTick({
       ticker: 'SPY',
       dir_vega_flow: '-100000',
@@ -331,7 +501,7 @@ describe('fetch-greek-flow-etf handler', () => {
       total_delta_flow: '5000000',
       otm_total_delta_flow: '3000000',
     });
-    mockUwFetch.mockResolvedValueOnce([tick]).mockResolvedValueOnce([]);
+    setupMocks({ spyAll: [tick], qqqAll: [] });
 
     const req = AUTHORIZED_REQ();
     const res = mockResponse();
@@ -340,11 +510,10 @@ describe('fetch-greek-flow-etf handler', () => {
     expect(res._status).toBe(200);
     expect(mockSql).toHaveBeenCalledTimes(1);
 
-    // Inspect the tagged-template call: call[0] is the strings array.
     const [strings, ...values] = mockSql.mock.calls[0]!;
     const sqlText = (strings as readonly string[]).join('?');
 
-    // All 8 column names must appear in the SQL
+    // All 8 column names must appear in the SQL, plus the new expiry column.
     expect(sqlText).toContain('dir_vega_flow');
     expect(sqlText).toContain('otm_dir_vega_flow');
     expect(sqlText).toContain('total_vega_flow');
@@ -353,8 +522,10 @@ describe('fetch-greek-flow-etf handler', () => {
     expect(sqlText).toContain('otm_dir_delta_flow');
     expect(sqlText).toContain('total_delta_flow');
     expect(sqlText).toContain('otm_total_delta_flow');
+    expect(sqlText).toContain('expiry');
+    // ON CONFLICT clause must reference the new (ticker, timestamp, expiry) key.
+    expect(sqlText).toContain('ON CONFLICT (ticker, timestamp, expiry)');
 
-    // Interpolated values must include all 8 field values from the fixture
     expect(values).toContain('-100000'); // dir_vega_flow
     expect(values).toContain('-75000'); // otm_dir_vega_flow
     expect(values).toContain('200000'); // total_vega_flow
@@ -363,25 +534,46 @@ describe('fetch-greek-flow-etf handler', () => {
     expect(values).toContain('-1500000'); // otm_dir_delta_flow
     expect(values).toContain('5000000'); // total_delta_flow
     expect(values).toContain('3000000'); // otm_total_delta_flow
+    // All-DTE rows pass expiry=null.
+    expect(values).toContain(null);
   });
 
-  // ── No 5-min downsampling ─────────────────────────────────
+  // ── Per-expiry insert: expiry value is the date, not null ─
 
-  it('stores each minute bar as a separate INSERT (no 5-min downsampling)', async () => {
-    // Two ticks at different minutes in the same 5-min window —
-    // both should be inserted (1-min resolution, unlike SPX cron).
-    const tick1 = makeGreekFlowTick({ timestamp: '2026-04-27T14:31:00Z' });
-    const tick2 = makeGreekFlowTick({ timestamp: '2026-04-27T14:33:00Z' });
-    mockUwFetch.mockResolvedValueOnce([tick1, tick2]).mockResolvedValueOnce([]);
+  it('per-expiry INSERT carries expiry=today, not null', async () => {
+    setupMocks({
+      spyAll: [],
+      qqqAll: [],
+      spyBreakdown: EXPIRY_TODAY_BREAKDOWN,
+      qqqBreakdown: NON_EXPIRY_BREAKDOWN,
+      spyExpiry: [makeGreekFlowTick({ ticker: 'SPY' })],
+    });
 
     const req = AUTHORIZED_REQ();
     const res = mockResponse();
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // Both minute bars must be stored separately
+    expect(mockSql).toHaveBeenCalledTimes(1);
+    const [, ...values] = mockSql.mock.calls[0]!;
+    expect(values).toContain('2026-04-27');
+    expect(values).not.toContain(null);
+  });
+
+  // ── No 5-min downsampling ─────────────────────────────────
+
+  it('stores each minute bar as a separate INSERT (no 5-min downsampling)', async () => {
+    const tick1 = makeGreekFlowTick({ timestamp: '2026-04-27T14:31:00Z' });
+    const tick2 = makeGreekFlowTick({ timestamp: '2026-04-27T14:33:00Z' });
+    setupMocks({ spyAll: [tick1, tick2], qqqAll: [] });
+
+    const req = AUTHORIZED_REQ();
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
-      tickers: { SPY: { ticks: 2, inserted: 2, updated: 0, failed: 0 } },
+      tickers: { SPY: { all: { ticks: 2, inserted: 2, updated: 0, failed: 0 } } },
     });
     expect(mockSql).toHaveBeenCalledTimes(2);
   });

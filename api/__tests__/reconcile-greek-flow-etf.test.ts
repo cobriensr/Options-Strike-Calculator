@@ -57,26 +57,49 @@ function makeTick(overrides: Record<string, unknown> = {}) {
   };
 }
 
+const NON_EXPIRY_BREAKDOWN = [
+  { expiry: '2026-04-29', chains: 100, open_interest: 1000, volume: 5000 },
+];
+const EXPIRY_TODAY_BREAKDOWN = [
+  { expiry: '2026-04-27', chains: 200, open_interest: 5000, volume: 80000 },
+];
+
 const AUTHORIZED_REQ = () =>
   mockRequest({
     method: 'GET',
     headers: { authorization: 'Bearer test-secret' },
   });
 
+function setupMocks(opts: {
+  spyAll?: ReturnType<typeof makeTick>[];
+  qqqAll?: ReturnType<typeof makeTick>[];
+  spyBreakdown?: typeof NON_EXPIRY_BREAKDOWN;
+  qqqBreakdown?: typeof NON_EXPIRY_BREAKDOWN;
+  spyExpiry?: ReturnType<typeof makeTick>[];
+  qqqExpiry?: ReturnType<typeof makeTick>[];
+}) {
+  mockUwFetch
+    .mockResolvedValueOnce(opts.spyAll ?? [makeTick({ ticker: 'SPY' })])
+    .mockResolvedValueOnce(opts.qqqAll ?? [makeTick({ ticker: 'QQQ' })])
+    .mockResolvedValueOnce(opts.spyBreakdown ?? NON_EXPIRY_BREAKDOWN)
+    .mockResolvedValueOnce(opts.qqqBreakdown ?? NON_EXPIRY_BREAKDOWN);
+  if (opts.spyExpiry) mockUwFetch.mockResolvedValueOnce(opts.spyExpiry);
+  if (opts.qqqExpiry) mockUwFetch.mockResolvedValueOnce(opts.qqqExpiry);
+}
+
 describe('reconcile-greek-flow-etf handler', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mockCronGuard.mockReturnValue(GUARD);
-    mockUwFetch.mockResolvedValue([makeTick()]);
     mockWithRetry.mockImplementation((fn: () => unknown) => fn());
     mockSql.mockResolvedValue([{ was_insert: false }]);
   });
 
   it('passes marketHours: false to cronGuard so it can run after close', async () => {
+    setupMocks({});
     const req = AUTHORIZED_REQ();
     const res = mockResponse();
     await handler(req, res);
-    // Check the third arg (guard options) on the cronGuard mock
     const guardOpts = mockCronGuard.mock.calls[0]?.[2];
     expect(guardOpts).toMatchObject({ marketHours: false });
   });
@@ -89,50 +112,86 @@ describe('reconcile-greek-flow-etf handler', () => {
     expect(mockUwFetch).not.toHaveBeenCalled();
   });
 
-  it('fetches both tickers via /stock/{T}/greek-flow and reports updated counts', async () => {
-    // Both tickers return one tick each that already exists in DB ⇒ updated
-    mockUwFetch
-      .mockResolvedValueOnce([makeTick({ ticker: 'SPY' })])
-      .mockResolvedValueOnce([makeTick({ ticker: 'QQQ' })]);
+  it('non-expiry day: fetches all-DTE + expiry-breakdown, skips per-expiry', async () => {
+    setupMocks({
+      spyAll: [makeTick({ ticker: 'SPY' })],
+      qqqAll: [makeTick({ ticker: 'QQQ' })],
+    });
 
     const req = AUTHORIZED_REQ();
     const res = mockResponse();
     await handler(req, res);
 
     expect(res._status).toBe(200);
+    expect(mockUwFetch).toHaveBeenCalledTimes(4);
     expect(res._json).toMatchObject({
       job: 'reconcile-greek-flow-etf',
       date: '2026-04-27',
       tickers: {
-        SPY: { ticks: 1, inserted: 0, updated: 1, failed: 0 },
-        QQQ: { ticks: 1, inserted: 0, updated: 1, failed: 0 },
+        SPY: {
+          all: { ticks: 1, inserted: 0, updated: 1, failed: 0 },
+          expiry: null,
+        },
+        QQQ: {
+          all: { ticks: 1, inserted: 0, updated: 1, failed: 0 },
+          expiry: null,
+        },
       },
     });
+  });
 
-    const urls = mockUwFetch.mock.calls.map((c) => c[1] as string);
-    expect(urls.some((u) => u.includes('/stock/SPY/greek-flow'))).toBe(true);
-    expect(urls.some((u) => u.includes('/stock/QQQ/greek-flow'))).toBe(true);
+  it('expiry day: also reconciles per-expiry rows for both tickers', async () => {
+    setupMocks({
+      spyAll: [makeTick({ ticker: 'SPY' })],
+      qqqAll: [makeTick({ ticker: 'QQQ' })],
+      spyBreakdown: EXPIRY_TODAY_BREAKDOWN,
+      qqqBreakdown: EXPIRY_TODAY_BREAKDOWN,
+      spyExpiry: [makeTick({ ticker: 'SPY' })],
+      qqqExpiry: [makeTick({ ticker: 'QQQ' })],
+    });
+
+    const req = AUTHORIZED_REQ();
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(mockUwFetch).toHaveBeenCalledTimes(6);
+    expect(res._json).toMatchObject({
+      tickers: {
+        SPY: {
+          all: { ticks: 1 },
+          expiry: { ticks: 1, updated: 1 },
+        },
+        QQQ: {
+          all: { ticks: 1 },
+          expiry: { ticks: 1, updated: 1 },
+        },
+      },
+    });
   });
 
   it('counts new rows as inserted when no prior data exists', async () => {
     mockSql.mockResolvedValue([{ was_insert: true }]);
+    setupMocks({});
+
     const req = AUTHORIZED_REQ();
     const res = mockResponse();
     await handler(req, res);
 
     expect(res._json).toMatchObject({
       tickers: {
-        SPY: { inserted: 1, updated: 0, failed: 0 },
-        QQQ: { inserted: 1, updated: 0, failed: 0 },
+        SPY: { all: { inserted: 1, updated: 0, failed: 0 } },
+        QQQ: { all: { inserted: 1, updated: 0, failed: 0 } },
       },
     });
   });
 
   it('counts upsert error as failed; handler still returns 200', async () => {
     mockSql.mockRejectedValueOnce(new Error('DB upsert failed'));
-    mockUwFetch
-      .mockResolvedValueOnce([makeTick({ ticker: 'SPY' })])
-      .mockResolvedValueOnce([]);
+    setupMocks({
+      spyAll: [makeTick({ ticker: 'SPY' })],
+      qqqAll: [],
+    });
 
     const req = AUTHORIZED_REQ();
     const res = mockResponse();
@@ -141,8 +200,8 @@ describe('reconcile-greek-flow-etf handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       tickers: {
-        SPY: { inserted: 0, updated: 0, failed: 1 },
-        QQQ: { inserted: 0, updated: 0, failed: 0 },
+        SPY: { all: { inserted: 0, updated: 0, failed: 1 } },
+        QQQ: { all: { inserted: 0, updated: 0, failed: 0 } },
       },
     });
   });
