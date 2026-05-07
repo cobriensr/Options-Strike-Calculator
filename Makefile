@@ -40,16 +40,19 @@ DATE        ?= $(shell ls -1 $(INPUT_DIR)/bot-eod-report-*.csv 2>/dev/null \
 
 CSV_PATH    := $(INPUT_DIR)/bot-eod-report-$(DATE).csv
 
-.PHONY: help nightly nightly-resume analyze ingest plots backfill-flow enrich refit update tune check dry-run clean
+.PHONY: help nightly nightly-resume analyze ingest plots backfill-flow enrich refit update tune check dry-run clean download-fulltape
 
 help:
 	@echo "EOD options-flow pipeline targets:"
 	@echo ""
-	@echo "  make nightly                  Run full pipeline (analyze → ingest → plots → enrich)"
+	@echo "  make nightly                  Run full pipeline (download → analyze → ingest → plots → enrich)"
+	@echo "                                If no CSV is present, auto-downloads today's UW Full Tape first."
 	@echo "                                Auto-falls-back to plots+enrich if the parquet"
 	@echo "                                already exists for the latest date (CSV consumed"
 	@echo "                                by a previous invocation)."
 	@echo "  make nightly DATE=YYYY-MM-DD  Run pipeline for a specific date"
+	@echo "  make download-fulltape        Download today's UW Full Tape zip → CSV in $(INPUT_DIR)"
+	@echo "                                Override with DATE=YYYY-MM-DD (UW retains last 3 trading days)"
 	@echo "  make analyze                  EDA only (does NOT delete the CSV)"
 	@echo "  make ingest                   CSV → parquet → Blob upload + delete CSV"
 	@echo "  make plots                    Regenerate visualizations only (no CSV needed)"
@@ -178,6 +181,24 @@ tune:
 	@# answer doesn't move on a single new day of data.
 	$(PYTHON) scripts/tune_flow_inversion.py
 
+# Downloads today's UW Full Tape zip, unzips it, and places the CSV at
+# $(INPUT_DIR)/bot-eod-report-{date}.csv — the input shape that
+# `analyze` + `ingest` expect. Defaults DATE to today (in local CT)
+# when not provided. Idempotent: skips if the CSV already exists.
+download-fulltape:
+	@FETCH_DATE="$(DATE)"; \
+	if [[ -z "$$FETCH_DATE" ]]; then FETCH_DATE=$$(date +%Y-%m-%d); fi; \
+	echo ""; \
+	echo "════════════════════════════════════════════════════════════════"; \
+	echo "  STEP 0 — download-fulltape (UW Full Tape → CSV) for $$FETCH_DATE"; \
+	echo "════════════════════════════════════════════════════════════════"; \
+	if [[ ! -f "$(ENV_FILE)" ]]; then \
+	  echo "  ❌ $(ENV_FILE) not found — needed for UW_API_KEY"; \
+	  exit 2; \
+	fi; \
+	set -a && source $(ENV_FILE) && set +a && \
+	  bash scripts/download-fulltape.sh "$$FETCH_DATE"
+
 # Resume target — `plots + enrich` only. Useful when the CSV has
 # already been consumed by `ingest` in a previous invocation but the
 # parquet is still on disk. `nightly` auto-dispatches into this when
@@ -186,16 +207,25 @@ nightly-resume: plots backfill-flow enrich
 	@# No prereq on the CSV — assumes ingest already happened.
 
 nightly:
-	@if [[ -f "$(CSV_PATH)" ]]; then \
-	  echo "→ CSV found at $(CSV_PATH) — running full pipeline"; \
+	@# If neither a CSV nor a parquet is present, try to download today's
+	@# Full Tape from UW first. The sub-make re-globs the input dir on
+	@# return, so a freshly-downloaded CSV is picked up by DATE auto-detect.
+	@if ! ls -1 $(INPUT_DIR)/bot-eod-report-*.csv >/dev/null 2>&1 \
+	    && ! ls -1 $(PARQUET_DIR)/*-trades.parquet >/dev/null 2>&1; then \
+	  echo "→ No CSV in $(INPUT_DIR) and no parquet in $(PARQUET_DIR)."; \
+	  echo "  Attempting download-fulltape for today..."; \
+	  $(MAKE) --no-print-directory download-fulltape; \
+	fi
+	@if ls -1 $(INPUT_DIR)/bot-eod-report-*.csv >/dev/null 2>&1; then \
+	  echo "→ CSV found in $(INPUT_DIR) — running full pipeline"; \
 	  $(MAKE) --no-print-directory analyze ingest plots backfill-flow enrich; \
 	elif ls -1 $(PARQUET_DIR)/*-trades.parquet >/dev/null 2>&1; then \
 	  echo "→ No CSV in $(INPUT_DIR), but parquet already on disk in $(PARQUET_DIR)"; \
 	  echo "  (CSV was consumed by a previous invocation — running plots + backfill-flow + enrich only)"; \
 	  $(MAKE) --no-print-directory nightly-resume; \
 	else \
-	  echo "❌ No CSV in $(INPUT_DIR) and no parquet in $(PARQUET_DIR)."; \
-	  echo "   Drop a bot-eod-report-YYYY-MM-DD.csv first."; \
+	  echo "❌ download-fulltape did not produce a CSV in $(INPUT_DIR)."; \
+	  echo "   Common causes: UW hasn't posted today's tape yet, or DATE is outside the last-3-trading-day window."; \
 	  exit 2; \
 	fi
 	@# Final summary is printed by ml/src/whale_plots.py (the `plots` step) so
