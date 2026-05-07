@@ -37,10 +37,18 @@ _LOTTERY_TICKERS: frozenset[str] = frozenset(
         "SOXL", "UNH", "QQQ", "RBLX", "SPY", "IWM",
         "SPXW",  # Added 2026-05-07 — primary 0DTE traded chain. See spec
                  # docs/superpowers/specs/spxw-backfill-2026-05-07.md.
+        # Added 2026-05-07 from ticker discovery audit. V3 (Mode A) batch:
+        # AI / speculative / crypto-adjacent that surfaced as top
+        # 0DTE candidates. See docs/tmp/ticker-discovery-audit-2026-05-06.md
+        "CRWV", "IBIT", "ARM", "OKLO", "APLD", "IONQ",
+        "HIMS", "CAR", "IREN", "ASTS", "NBIS", "CRCL", "LITE", "NVTS",
         # EXTENDED (Mode B DTE 1-3 trend; SPY/IWM dedupe via set)
         "MU", "META", "AMD", "NVDA", "INTC", "MSFT", "AMZN",
         "PLTR", "AVGO", "GOOGL", "GOOG", "COIN", "HOOD", "MRVL",
         "ORCL", "AAPL",
+        # Added 2026-05-07 from ticker discovery audit. EXTENDED (Mode B)
+        # batch: mega-cap peer-class oversights.
+        "QCOM", "NFLX", "LLY", "BABA", "NOW", "CRWD",
     },
 )
 

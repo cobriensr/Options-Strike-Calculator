@@ -48,12 +48,21 @@ LOTTERY_V3_TICKERS = frozenset({
     'TEAM', 'RKLB', 'SOFI', 'RUTW', 'TSLA', 'SOXS', 'WULF', 'SLV',
     'SMH', 'UBER', 'MSTR', 'TQQQ', 'RIOT', 'SOXL', 'UNH', 'QQQ',
     'RBLX', 'SPY', 'IWM', 'SPXW',
+    # 2026-05-07 ticker-discovery batch (Option B audit additions)
+    'CRWV', 'IBIT', 'ARM', 'OKLO', 'APLD', 'IONQ',
+    'HIMS', 'CAR', 'IREN', 'ASTS', 'NBIS', 'CRCL', 'LITE', 'NVTS',
 })
 
 LOTTERY_EXTENDED_TICKERS = frozenset({
     'SPY', 'IWM', 'MU', 'META', 'AMD', 'NVDA', 'INTC', 'MSFT', 'AMZN',
     'PLTR', 'AVGO', 'GOOGL', 'GOOG', 'COIN', 'MSTR', 'HOOD', 'MRVL',
     'ORCL', 'AAPL',
+    # 2026-05-07 mega-cap peer-class additions
+    'QCOM', 'NFLX', 'LLY', 'BABA', 'NOW', 'CRWD',
+    # Dual-listed 2026-05-07: also in V3. Speculative names where most
+    # fire volume is on 1-3 DTE not 0DTE.
+    'CRWV', 'IBIT', 'ARM', 'OKLO', 'APLD', 'IONQ',
+    'HIMS', 'CAR', 'IREN', 'ASTS', 'NBIS', 'CRCL', 'LITE', 'NVTS',
 })
 
 LOTTERY_MODE_B_IN_PLAY_PCT = 0.10

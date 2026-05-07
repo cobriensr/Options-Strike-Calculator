@@ -60,11 +60,18 @@ TICKERS: list[str] = sorted(
         # wasn't being fetched, so flow_inversion stayed NULL.
         'TSLA', 'SOXS', 'WULF', 'SLV', 'SMH', 'UBER', 'MSTR', 'TQQQ',
         'RIOT', 'SOXL', 'UNH', 'QQQ', 'RBLX',
+        # V3 batch (2026-05-07 audit) — AI / speculative / crypto-adjacent
+        # 0DTE candidates from docs/tmp/ticker-discovery-audit-2026-05-06.md.
+        'CRWV', 'IBIT', 'ARM', 'OKLO', 'APLD', 'IONQ',
+        'HIMS', 'CAR', 'IREN', 'ASTS', 'NBIS', 'CRCL', 'LITE', 'NVTS',
         # EXTENDED (Mode B DTE 1-3) — TSLA + MSTR overlap with V3
         # additions above; set form dedupes.
         'MU', 'META', 'AMD', 'NVDA', 'INTC', 'MSFT', 'AMZN', 'PLTR',
         'AVGO', 'GOOGL', 'GOOG', 'COIN', 'HOOD', 'MRVL',
         'ORCL', 'AAPL',
+        # EXTENDED batch (2026-05-07 audit) — mega-cap peer-class
+        # oversights.
+        'QCOM', 'NFLX', 'LLY', 'BABA', 'NOW', 'CRWD',
     }
 )
 

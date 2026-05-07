@@ -83,6 +83,25 @@ export const LOTTERY_V3_TICKERS = [
   // scripts/backfill_lottery_fires_for_ticker.py since the WS
   // daemon doesn't subscribe to SPXW. See spec
   // docs/superpowers/specs/spxw-backfill-2026-05-07.md.
+  // Added 2026-05-07 from ticker discovery audit
+  // (docs/tmp/ticker-discovery-audit-2026-05-06.md): top-volume V3
+  // candidates that cleared >450 qualifying fires across the 18-day
+  // parquet window. AI / quantum / space / crypto-adjacent specs that
+  // exhibit the explosive 0DTE pattern V3 was designed for.
+  'CRWV',
+  'IBIT',
+  'ARM',
+  'OKLO',
+  'APLD',
+  'IONQ',
+  'HIMS',
+  'CAR',
+  'IREN',
+  'ASTS',
+  'NBIS',
+  'CRCL',
+  'LITE',
+  'NVTS',
 ] as const;
 
 /** Mode B extended ticker list (DTE 1-3 trend universe). */
@@ -106,6 +125,36 @@ export const LOTTERY_EXTENDED_TICKERS = [
   'MRVL',
   'ORCL',
   'AAPL',
+  // Added 2026-05-07 from ticker discovery audit
+  // (docs/tmp/ticker-discovery-audit-2026-05-06.md): mega-cap peer
+  // stocks whose 18-day fire counts (~500-1000 qualifying) place them
+  // squarely in the multi-day-trend cohort alongside META/NVDA/etc.
+  'QCOM',
+  'NFLX',
+  'LLY',
+  'BABA',
+  'NOW',
+  'CRWD',
+  // Dual-listed 2026-05-07: speculative AI/quantum/crypto-adjacent
+  // names that the discovery audit found also fire heavily on 1-3 DTE
+  // (in-play) chains, not just 0DTE. Without inclusion here they only
+  // qualify as Mode A (V3, DTE=0), which captures <5% of their fire
+  // volume. SPY/IWM are special-cased OUT of Mode B in classifyMode;
+  // these 14 are naturally in via membership.
+  'CRWV',
+  'IBIT',
+  'ARM',
+  'OKLO',
+  'APLD',
+  'IONQ',
+  'HIMS',
+  'CAR',
+  'IREN',
+  'ASTS',
+  'NBIS',
+  'CRCL',
+  'LITE',
+  'NVTS',
 ] as const;
 
 // ============================================================
