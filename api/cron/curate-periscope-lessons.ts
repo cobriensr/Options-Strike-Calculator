@@ -32,6 +32,8 @@ import { cronGuard } from '../_lib/api-helpers.js';
 import { generateEmbedding } from '../_lib/embeddings.js';
 import logger from '../_lib/logger.js';
 import {
+  type BatchCandidate,
+  dedupCandidatesInBatch,
   extractCandidatesViaLLM,
   extractCandidatesViaRegex,
   fetchUnprocessedDebriefs,
@@ -108,6 +110,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       'curate-periscope-lessons start',
     );
 
+    // Phase 1 — extract + embed every candidate from every debrief in
+    // memory. Nothing hits the DB write path yet so same-batch
+    // near-duplicates can be folded together before any INSERT/UPDATE.
+    const batch: BatchCandidate[] = [];
     for (const debrief of debriefs) {
       let extracted = extractCandidatesViaRegex(debrief.prose_text);
       if (extracted.length === 0) {
@@ -139,48 +145,66 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           );
           continue;
         }
+        batch.push({ debriefId: debrief.id, lessonText, embedding });
+      }
+    }
 
-        if (dryRun) {
+    // Phase 2 — fold same-batch near-duplicates so the DB only sees one
+    // upsert per distinct lesson. Eliminates the race where two
+    // near-duplicate candidates from the same cron run both miss the
+    // existing-lesson cosine search and end up as two separate rows.
+    const survivors = dedupCandidatesInBatch(batch);
+    if (batch.length !== survivors.length) {
+      logger.info(
+        { batchSize: batch.length, survivors: survivors.length },
+        'curate-periscope-lessons: in-batch dedup collapsed candidates',
+      );
+    }
+
+    // Phase 3 — upsert each survivor. The DB cosine search now only has
+    // to consider rows from PRIOR cron runs (or the same run's earlier
+    // survivors, all of which have already committed sequentially).
+    for (const survivor of survivors) {
+      if (dryRun) {
+        logger.info(
+          {
+            sourceIds: survivor.sourceIds,
+            lessonText: survivor.lessonText.slice(0, 100),
+            embeddingDim: survivor.embedding.length,
+          },
+          'curate-periscope-lessons: dry-run survivor (no upsert)',
+        );
+        continue;
+      }
+
+      try {
+        const result = await upsertLesson({
+          lessonText: survivor.lessonText,
+          embedding: survivor.embedding,
+          sourceIds: survivor.sourceIds,
+        });
+        if (result.inserted) {
+          inserted++;
           logger.info(
-            {
-              debriefId: debrief.id,
-              lessonText: lessonText.slice(0, 100),
-              embeddingDim: embedding.length,
-            },
-            'curate-periscope-lessons: dry-run candidate (no upsert)',
+            { lessonId: result.lessonId, sourceIds: survivor.sourceIds },
+            'curate-periscope-lessons: inserted new proposed lesson',
           );
-          continue;
-        }
-
-        try {
-          const result = await upsertLesson({
-            lessonText,
-            embedding,
-            sourceId: debrief.id,
-          });
-          if (result.inserted) {
-            inserted++;
-            logger.info(
-              { debriefId: debrief.id, lessonId: result.lessonId },
-              'curate-periscope-lessons: inserted new proposed lesson',
-            );
-          } else {
-            merged++;
-            logger.info(
-              { debriefId: debrief.id, lessonId: result.lessonId },
-              'curate-periscope-lessons: merged into existing lesson',
-            );
-          }
-        } catch (err) {
-          Sentry.setTag('cron.job', 'curate-periscope-lessons');
-          Sentry.captureException(err, {
-            tags: { stage: 'upsert', debriefId: String(debrief.id) },
-          });
-          logger.error(
-            { err, debriefId: debrief.id },
-            'curate-periscope-lessons: upsert failed',
+        } else {
+          merged++;
+          logger.info(
+            { lessonId: result.lessonId, sourceIds: survivor.sourceIds },
+            'curate-periscope-lessons: merged into existing lesson',
           );
         }
+      } catch (err) {
+        Sentry.setTag('cron.job', 'curate-periscope-lessons');
+        Sentry.captureException(err, {
+          tags: { stage: 'upsert', sourceIds: survivor.sourceIds.join(',') },
+        });
+        logger.error(
+          { err, sourceIds: survivor.sourceIds },
+          'curate-periscope-lessons: upsert failed',
+        );
       }
     }
 

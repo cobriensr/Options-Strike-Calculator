@@ -315,13 +315,104 @@ export async function findSimilarLesson(
 }
 
 // ============================================================
+// IN-BATCH DEDUP - merge near-duplicates BEFORE any DB write
+// ============================================================
+
+/**
+ * Pure cosine similarity between two equal-length numeric vectors.
+ * Returns 0 for zero-magnitude inputs (degenerate). No allocations.
+ */
+export function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length === 0 || a.length !== b.length) return 0;
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    const av = a[i] ?? 0;
+    const bv = b[i] ?? 0;
+    dot += av * bv;
+    na += av * av;
+    nb += bv * bv;
+  }
+  if (na === 0 || nb === 0) return 0;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+/** Input shape for {@link dedupCandidatesInBatch}. */
+export interface BatchCandidate {
+  debriefId: number;
+  lessonText: string;
+  embedding: number[];
+}
+
+/** Output shape — each survivor carries every debriefId that mapped to it. */
+export interface DedupedCandidate {
+  lessonText: string;
+  embedding: number[];
+  sourceIds: number[];
+}
+
+/**
+ * Collapse near-duplicate candidates from a single cron batch BEFORE any
+ * DB write. Eliminates the race where two near-identical candidates from
+ * the same batch both miss the existing-lesson cosine search (because
+ * neither has been INSERTed yet) and end up as two separate rows.
+ *
+ * Algorithm (O(n²) — fine at MVP volume of <30 candidates per cron run):
+ *   - Walk candidates in input order.
+ *   - For each candidate, check cosine vs every existing group's
+ *     representative embedding. If max similarity ≥ threshold, fold the
+ *     candidate's debriefId into that group's sourceIds (de-duplicated).
+ *     Otherwise create a new group with this candidate as representative.
+ *   - First-seen text wins (representative is the earlier candidate).
+ *
+ * Returns a list of survivor candidates with combined sourceIds. The
+ * caller upserts each survivor against the DB; subsequent same-batch
+ * duplicates are already absorbed into the survivor's sourceIds and
+ * won't trigger a duplicate INSERT.
+ */
+export function dedupCandidatesInBatch(
+  candidates: BatchCandidate[],
+  threshold: number = SIMILARITY_THRESHOLD,
+): DedupedCandidate[] {
+  const groups: DedupedCandidate[] = [];
+  for (const c of candidates) {
+    let bestIdx = -1;
+    let bestSim = threshold;
+    for (let i = 0; i < groups.length; i += 1) {
+      const sim = cosineSimilarity(c.embedding, groups[i]!.embedding);
+      if (sim >= bestSim) {
+        bestSim = sim;
+        bestIdx = i;
+      }
+    }
+    if (bestIdx >= 0) {
+      const g = groups[bestIdx]!;
+      if (!g.sourceIds.includes(c.debriefId)) g.sourceIds.push(c.debriefId);
+    } else {
+      groups.push({
+        lessonText: c.lessonText,
+        embedding: c.embedding,
+        sourceIds: [c.debriefId],
+      });
+    }
+  }
+  return groups;
+}
+
+// ============================================================
 // UPSERT - MERGE OR INSERT
 // ============================================================
 
 interface UpsertArgs {
   lessonText: string;
   embedding: number[];
-  sourceId: number;
+  /**
+   * Source debrief id(s) that surfaced this lesson. Length ≥ 1.
+   * Multiple ids land here when {@link dedupCandidatesInBatch} folded
+   * same-batch near-duplicates into one survivor before upsert.
+   */
+  sourceIds: number[];
 }
 
 interface UpsertResult {
@@ -335,48 +426,64 @@ const SIMILARITY_THRESHOLD = 0.8;
  * Insert a new proposed lesson OR merge into an existing one.
  *
  * Merge semantics:
- *   - increment citation_count by 1
- *   - append source_id to source_ids (idempotent - ARRAY_APPEND with
- *     a NOT-EXISTS guard so re-running the cron with the same debrief
- *     doesn't double-count)
+ *   - bump citation_count by the count of source_ids NOT already present
+ *     on the row (idempotent — re-running the cron with the same debrief
+ *     set never double-counts).
+ *   - source_ids array grows monotonically; existing entries left intact.
  *
  * Insert semantics:
- *   - status='proposed' (manual SQL promotion to 'active' in MVP)
- *   - citation_count=1
- *   - source_ids=[sourceId]
+ *   - status='proposed' (manual SQL promotion to 'active' in MVP).
+ *   - citation_count = sourceIds.length.
+ *   - source_ids = sourceIds (deduplicated input — caller's responsibility
+ *     to pass a unique list; {@link dedupCandidatesInBatch} guarantees it).
  *
  * Returns `{ inserted, lessonId }`.
  */
 export async function upsertLesson(args: UpsertArgs): Promise<UpsertResult> {
-  const { lessonText, embedding, sourceId } = args;
+  const { lessonText, embedding, sourceIds } = args;
+  if (sourceIds.length === 0) {
+    throw new Error('upsertLesson: sourceIds must not be empty');
+  }
 
   const matchId = await findSimilarLesson(embedding, SIMILARITY_THRESHOLD);
   const sql = getDb();
 
   if (matchId != null) {
-    // Merge: bump citation_count, append source_id if not already present.
+    // Merge: append any source_ids not already present, bump
+    // citation_count by the number of newly-added entries. Both done
+    // atomically in one UPDATE so a partially-applied merge is
+    // impossible.
+    const sourceIdsBigint = sourceIds.map((id) => String(id));
     await sql`
+      WITH incoming AS (
+        SELECT UNNEST(${sourceIdsBigint}::bigint[]) AS sid
+      ),
+      novel AS (
+        SELECT i.sid
+        FROM incoming i
+        WHERE NOT (i.sid = ANY(
+          SELECT UNNEST(source_ids) FROM periscope_lessons WHERE id = ${matchId}
+        ))
+      )
       UPDATE periscope_lessons
-      SET citation_count = citation_count + 1,
-          source_ids = CASE
-            WHEN ${sourceId}::bigint = ANY(source_ids) THEN source_ids
-            ELSE array_append(source_ids, ${sourceId}::bigint)
-          END
+      SET citation_count = citation_count + (SELECT COUNT(*)::int FROM novel),
+          source_ids = source_ids || (SELECT ARRAY_AGG(sid) FROM novel)
       WHERE id = ${matchId}
     `;
     return { inserted: false, lessonId: matchId };
   }
 
   const vectorLiteral = `[${embedding.join(',')}]`;
+  const sourceIdsBigint = sourceIds.map((id) => String(id));
   const rows = await sql`
     INSERT INTO periscope_lessons (
       lesson_text, source_ids, embedding, status, citation_count
     ) VALUES (
       ${lessonText},
-      ARRAY[${sourceId}::bigint]::bigint[],
+      ${sourceIdsBigint}::bigint[],
       ${vectorLiteral}::vector,
       'proposed',
-      1
+      ${sourceIds.length}
     )
     RETURNING id
   `;

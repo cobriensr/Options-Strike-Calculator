@@ -41,6 +41,8 @@ vi.mock('@anthropic-ai/sdk', () => {
 // ============================================================
 
 import {
+  cosineSimilarity,
+  dedupCandidatesInBatch,
   extractCandidatesViaRegex,
   extractCandidatesViaLLM,
   findSimilarLesson,
@@ -282,7 +284,7 @@ describe('upsertLesson', () => {
     const result = await upsertLesson({
       lessonText: 'New lesson',
       embedding: vec(2),
-      sourceId: 11,
+      sourceIds: [11],
     });
 
     expect(result).toEqual({ inserted: true, lessonId: 99 });
@@ -299,7 +301,7 @@ describe('upsertLesson', () => {
     const result = await upsertLesson({
       lessonText: 'Duplicate-ish lesson',
       embedding: vec(3),
-      sourceId: 22,
+      sourceIds: [22],
     });
 
     expect(result).toEqual({ inserted: false, lessonId: 5 });
@@ -316,7 +318,7 @@ describe('upsertLesson', () => {
     const result = await upsertLesson({
       lessonText: 'Distinct lesson',
       embedding: vec(4),
-      sourceId: 33,
+      sourceIds: [33],
     });
 
     expect(result).toEqual({ inserted: true, lessonId: 100 });
@@ -329,9 +331,116 @@ describe('upsertLesson', () => {
       upsertLesson({
         lessonText: 'X',
         embedding: vec(5),
-        sourceId: 1,
+        sourceIds: [1],
       }),
     ).rejects.toThrow('did not return an id');
+  });
+
+  it('inserts with full sourceIds + matching citation_count when survivor folded multiple debriefs', async () => {
+    mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([{ id: 200 }]);
+    const result = await upsertLesson({
+      lessonText: 'Folded survivor',
+      embedding: vec(7),
+      sourceIds: [10, 20, 30],
+    });
+    expect(result).toEqual({ inserted: true, lessonId: 200 });
+    // Bind values include the full sourceIds array as bigint[] strings.
+    const insertCall = mockSql.mock.calls[1]!;
+    expect(insertCall).toContainEqual(['10', '20', '30']);
+    expect(insertCall).toContain(3); // citation_count = sourceIds.length
+  });
+
+  it('rejects empty sourceIds array', async () => {
+    await expect(
+      upsertLesson({ lessonText: 'X', embedding: vec(8), sourceIds: [] }),
+    ).rejects.toThrow('sourceIds must not be empty');
+  });
+});
+
+// ============================================================
+// cosineSimilarity
+// ============================================================
+
+describe('cosineSimilarity', () => {
+  it('returns 1.0 for identical vectors', () => {
+    expect(cosineSimilarity([1, 2, 3], [1, 2, 3])).toBeCloseTo(1.0, 6);
+  });
+
+  it('returns -1.0 for opposite vectors', () => {
+    expect(cosineSimilarity([1, 2, 3], [-1, -2, -3])).toBeCloseTo(-1.0, 6);
+  });
+
+  it('returns 0 for orthogonal vectors', () => {
+    expect(cosineSimilarity([1, 0], [0, 1])).toBeCloseTo(0, 6);
+  });
+
+  it('returns 0 for zero-magnitude inputs (degenerate, no NaN)', () => {
+    expect(cosineSimilarity([0, 0, 0], [1, 2, 3])).toBe(0);
+  });
+
+  it('returns 0 for length-mismatched inputs', () => {
+    expect(cosineSimilarity([1, 2], [1, 2, 3])).toBe(0);
+  });
+
+  it('returns 0 for empty inputs', () => {
+    expect(cosineSimilarity([], [])).toBe(0);
+  });
+});
+
+// ============================================================
+// dedupCandidatesInBatch
+// ============================================================
+
+describe('dedupCandidatesInBatch', () => {
+  it('passes through distinct candidates unchanged (low similarity)', () => {
+    const result = dedupCandidatesInBatch([
+      { debriefId: 1, lessonText: 'A', embedding: [1, 0, 0] },
+      { debriefId: 2, lessonText: 'B', embedding: [0, 1, 0] },
+      { debriefId: 3, lessonText: 'C', embedding: [0, 0, 1] },
+    ]);
+    expect(result).toHaveLength(3);
+    expect(result.map((g) => g.sourceIds)).toEqual([[1], [2], [3]]);
+  });
+
+  it('folds near-duplicates above threshold into one survivor', () => {
+    // Two near-identical (cos ~0.99) plus one orthogonal.
+    const result = dedupCandidatesInBatch(
+      [
+        { debriefId: 1, lessonText: 'A', embedding: [1, 0, 0] },
+        { debriefId: 2, lessonText: 'A-dup', embedding: [0.99, 0.01, 0.01] },
+        { debriefId: 3, lessonText: 'B', embedding: [0, 1, 0] },
+      ],
+      0.8,
+    );
+    expect(result).toHaveLength(2);
+    const folded = result.find((g) => g.sourceIds.length === 2)!;
+    expect(folded.sourceIds.sort()).toEqual([1, 2]);
+    expect(folded.lessonText).toBe('A'); // first-seen wins
+  });
+
+  it('does not duplicate same debriefId within a survivor (idempotent)', () => {
+    const result = dedupCandidatesInBatch(
+      [
+        { debriefId: 1, lessonText: 'A', embedding: [1, 0, 0] },
+        { debriefId: 1, lessonText: 'A-again', embedding: [1, 0, 0] },
+      ],
+      0.8,
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]!.sourceIds).toEqual([1]);
+  });
+
+  it('returns empty array for empty input', () => {
+    expect(dedupCandidatesInBatch([])).toEqual([]);
+  });
+
+  it('respects threshold (lower threshold = more aggressive folding)', () => {
+    const candidates = [
+      { debriefId: 1, lessonText: 'A', embedding: [1, 0, 0] },
+      { debriefId: 2, lessonText: 'B', embedding: [0.7, 0.7, 0] }, // cos ~0.707
+    ];
+    expect(dedupCandidatesInBatch(candidates, 0.5)).toHaveLength(1); // folded
+    expect(dedupCandidatesInBatch(candidates, 0.8)).toHaveLength(2); // distinct
   });
 });
 
