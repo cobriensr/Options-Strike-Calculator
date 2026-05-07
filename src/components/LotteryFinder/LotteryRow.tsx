@@ -212,6 +212,17 @@ export const LotteryRow = memo(function LotteryRow({
 }: LotteryRowProps) {
   const realized = fire.outcomes[exitPolicy];
   const peak = fire.outcomes.peakCeilingPct;
+  // Fallback for when the selected exit policy returns null (most often
+  // realizedFlowInversionPct on late-PM 0DTE fires that don't have ≥5min
+  // of post-trigger flow data, or on early/insufficient-window cases).
+  // We surface realized_eod_pct as a secondary number so the row isn't
+  // just an em-dash — the option still expired or got marked-to-close,
+  // and the user wants to know what actually happened.
+  const eodFallback = fire.outcomes.realizedEodPct;
+  const showEodFallback =
+    realized == null &&
+    eodFallback != null &&
+    exitPolicy !== ('realizedEodPct' as ExitPolicy);
   const tide = tideBadge(fire.macro.mktTideDiff);
   const tier = tierBadge(fire.scoreTier, fire.score);
   const ci = ciIndicator(fire.tickerStats, fire.underlyingSymbol);
@@ -435,6 +446,19 @@ export const LotteryRow = memo(function LotteryRow({
           >
             {formatPct(realized)}
           </span>
+          {/* EOD fallback — only when the selected policy returned null
+              and we can show the user what the option actually did at
+              session close. The italic + smaller font signals "this
+              isn't your selected policy result, it's a fallback so the
+              row is informative instead of showing just em-dash". */}
+          {showEodFallback && (
+            <span
+              className={`font-mono text-xs italic ${pctClass(eodFallback)}`}
+              title={`Selected policy (${EXIT_POLICY_LABELS[exitPolicy]}) returned no exit for this fire. Showing realized end-of-session return as a fallback so the row remains informative. Most common cause: late-PM trigger leaves <5 min of post-trigger flow data for the inversion algorithm to detect.`}
+            >
+              {formatPct(eodFallback)} <span className="not-italic opacity-60">eod</span>
+            </span>
+          )}
           <span
             className="text-[10px] text-neutral-500"
             title="Best-case peak return — % gain at the highest post-entry print. Look-ahead reference, not tradeable."

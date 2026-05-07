@@ -22,18 +22,18 @@ import type { LotteryMode, TimeOfDay } from './lottery-finder.js';
 
 export const LOTTERY_TICKER_WEIGHTS: Readonly<Record<string, number>> = {
   SNDK: 10,
-  USO: 10,
   SLV: 10,
-  SOXL: 10,
+  USO: 10,
   TSLA: 10,
+  SOXL: 10,
   TQQQ: 7,
   AMZN: 7,
   NVDA: 7,
   QQQ: 7,
-  AMD: 7,
+  GOOG: 7,
   MSFT: 5,
-  GOOG: 5,
   MRVL: 5,
+  AMD: 5,
   GOOGL: 5,
   COIN: 5,
 };
@@ -41,10 +41,7 @@ export const LOTTERY_TICKER_WEIGHTS: Readonly<Record<string, number>> = {
 /** ($ entry price ≤ threshold → points). Evaluated in order; first match wins. */
 export const LOTTERY_PRICE_THRESHOLDS: ReadonlyArray<
   readonly [number, number]
-> = [
-  [0.5, 5],
-  [1.0, 3],
-];
+> = [[0.5, 5], [1.0, 3]];
 
 const MODE_WEIGHTS: Readonly<Record<LotteryMode, number>> = {
   A_intraday_0DTE: 5,
