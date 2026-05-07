@@ -3997,4 +3997,51 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 134,
+    description:
+      'Create silent_boom_alerts table for the detect-silent-boom cron. Surfaces a step-change anomaly pattern: chains that trade silently for 15-20 min then exhibit a single 5-min ask-side block much larger than their own trailing-window baseline. Distinct from lottery_finder_fires (sustained-burst detector) — the silent-boom signature is a temporal discontinuity, not a cumulative shape. Empirical basis: scripts/silent_boom_audit.py, n=13,958 fires across 19 days, peak ceiling +26% / 71.7% win rate, but ~0% mean realized at fixed horizons → discretionary signal, surfaced for manual review. Includes realized_*_pct + peak_ceiling_pct enrichment columns (populated by scripts/enrich_silent_boom_outcomes.py from parquet, mirrors the lottery_finder_fires enrichment pattern). Spec: docs/superpowers/specs/silent-boom-detector-2026-05-08.md.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS silent_boom_alerts (
+          id                BIGSERIAL PRIMARY KEY,
+          date              DATE NOT NULL,
+          bucket_ct         TIMESTAMPTZ NOT NULL,
+          option_chain_id   TEXT NOT NULL,
+          underlying_symbol TEXT NOT NULL,
+          option_type       CHAR(1) NOT NULL
+                            CHECK (option_type IN ('C', 'P')),
+          strike            NUMERIC NOT NULL,
+          expiry            DATE NOT NULL,
+          dte               SMALLINT NOT NULL,
+          spike_volume      INT NOT NULL,
+          baseline_volume   NUMERIC NOT NULL,
+          spike_ratio       NUMERIC NOT NULL,
+          ask_pct           NUMERIC NOT NULL,
+          vol_oi            NUMERIC NOT NULL,
+          entry_price       NUMERIC NOT NULL,
+          open_interest     INT NOT NULL,
+          -- Enrichment columns — populated by enrich_silent_boom_outcomes.py
+          -- from the parquet trade tape after market close. Same shape
+          -- as lottery_finder_fires realized_* columns.
+          peak_ceiling_pct      NUMERIC,
+          minutes_to_peak       NUMERIC,
+          realized_30m_pct      NUMERIC,
+          realized_60m_pct      NUMERIC,
+          realized_120m_pct     NUMERIC,
+          realized_eod_pct      NUMERIC,
+          enriched_at           TIMESTAMPTZ,
+          inserted_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `,
+      sql`CREATE UNIQUE INDEX IF NOT EXISTS silent_boom_alerts_chain_bucket_uq
+            ON silent_boom_alerts (option_chain_id, bucket_ct)`,
+      sql`CREATE INDEX IF NOT EXISTS silent_boom_alerts_date_bucket_idx
+            ON silent_boom_alerts (date DESC, bucket_ct DESC)`,
+      sql`CREATE INDEX IF NOT EXISTS silent_boom_alerts_ticker_idx
+            ON silent_boom_alerts (underlying_symbol, date DESC)`,
+      sql`CREATE INDEX IF NOT EXISTS silent_boom_alerts_unenriched_idx
+            ON silent_boom_alerts (date) WHERE enriched_at IS NULL`,
+    ],
+  },
 ];
