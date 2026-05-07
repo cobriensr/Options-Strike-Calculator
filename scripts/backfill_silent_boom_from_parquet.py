@@ -22,7 +22,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -44,6 +44,11 @@ VOL_OI_MIN = 0.25
 COOLDOWN_BUCKETS = 12
 MIN_OI = 100
 BUCKET_MS = 5 * 60 * 1000
+# Cooldown is wall-clock minutes — MUST match the TS detector's
+# `tsMs - lastFireMs < cooldownMs` gate. An index-based gate (12
+# rows in a sparse-bucket dataframe) silently diverges from the
+# live cron for low-volume chains.
+COOLDOWN_MS = COOLDOWN_BUCKETS * BUCKET_MS
 
 
 def load_env() -> None:
@@ -118,7 +123,12 @@ def load_buckets_for_date(date_str: str) -> pd.DataFrame:
 
 def detect_for_chain(chain_df: pd.DataFrame) -> list[dict]:
     """Walk forward through one chain's 5-min buckets, fire on the
-    silent-boom pattern. Returns list of fire dicts."""
+    silent-boom pattern. Returns list of fire dicts.
+
+    Cooldown is **wall-clock time-based** to match the TS detector:
+    `tsMs - lastFireMs < COOLDOWN_MS`. An index-based gate would
+    silently diverge for sparse chains (gaps between traded buckets
+    can span hours)."""
     if len(chain_df) < BASELINE_BUCKETS + 1:
         return []
     chain_df = chain_df.sort_values('bucket').reset_index(drop=True)
@@ -129,11 +139,17 @@ def detect_for_chain(chain_df: pd.DataFrame) -> list[dict]:
     vwap = chain_df['vwap'].to_numpy()
     last_price = chain_df['last_price'].to_numpy()
     buckets = chain_df['bucket'].to_numpy()
+    # Bucket timestamps as int64 ms — use the same epoch-ms semantics
+    # as the TS detector so the cooldown comparison is identical.
+    bucket_ms = (
+        pd.Series(buckets).astype('datetime64[ms]').astype('int64').to_numpy()
+    )
 
     fires: list[dict] = []
-    last_fire_idx = -COOLDOWN_BUCKETS - 1
+    last_fire_ms: int | None = None
     for i in range(BASELINE_BUCKETS, len(chain_df)):
-        if i - last_fire_idx < COOLDOWN_BUCKETS:
+        ts_ms = int(bucket_ms[i])
+        if last_fire_ms is not None and ts_ms - last_fire_ms < COOLDOWN_MS:
             continue
         baseline = float(np.median(sizes[i - BASELINE_BUCKETS:i]))
         if baseline > BASELINE_MEDIAN_MAX:
@@ -168,7 +184,7 @@ def detect_for_chain(chain_df: pd.DataFrame) -> list[dict]:
             'entry_price': entry,
             'open_interest': int(cur_oi),
         })
-        last_fire_idx = i
+        last_fire_ms = ts_ms
     return fires
 
 
@@ -215,6 +231,11 @@ def main() -> None:
     parser.add_argument('--to-date', help='YYYY-MM-DD inclusive')
     args = parser.parse_args()
 
+    if args.date and (args.from_date or args.to_date):
+        parser.error(
+            '--date is mutually exclusive with --from-date / --to-date'
+        )
+
     load_env()
     db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ['DATABASE_URL']
     conn = psycopg2.connect(db_url)
@@ -249,6 +270,14 @@ def main() -> None:
             elif opt_type_raw in ('put', 'P'):
                 opt_type = 'P'
             else:
+                # Parquet encoding drift: silently dropping every
+                # alert on this chain would be a pipeline-killing
+                # foot-gun. Surface the first occurrence so the next
+                # operator can decide whether to extend the mapping.
+                print(
+                    f'  [{date_str}] {chain_id}: unknown option_type='
+                    f'{opt_type_raw!r} — chain skipped'
+                )
                 continue
             strike = float(sub['strike'].iloc[0])
             exp_raw = sub['expiry'].iloc[0]

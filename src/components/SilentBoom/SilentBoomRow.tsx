@@ -117,6 +117,25 @@ const spikeBadge = (
   };
 };
 
+/**
+ * Custom equality: re-render only when something visible changed.
+ * The `alert` object identity flips on every 30s poll because it's
+ * spread fresh from the API JSON, so default shallow `memo` would
+ * re-render every row tree (including the `useMemo` blocks) on every
+ * tick. Compare the fields the row actually renders.
+ */
+function areRowsEqual(prev: SilentBoomRowProps, next: SilentBoomRowProps) {
+  if (prev.marketOpen !== next.marketOpen) return false;
+  const a = prev.alert;
+  const b = next.alert;
+  if (a.id !== b.id) return false;
+  if (a.outcomes.enrichedAt !== b.outcomes.enrichedAt) return false;
+  if (a.outcomes.peakCeilingPct !== b.outcomes.peakCeilingPct) return false;
+  if (a.outcomes.realized60mPct !== b.outcomes.realized60mPct) return false;
+  if (a.outcomes.realizedEodPct !== b.outcomes.realizedEodPct) return false;
+  return true;
+}
+
 export const SilentBoomRow = memo(function SilentBoomRow({
   alert,
   marketOpen,
@@ -490,4 +509,4 @@ export const SilentBoomRow = memo(function SilentBoomRow({
       )}
     </div>
   );
-});
+}, areRowsEqual);

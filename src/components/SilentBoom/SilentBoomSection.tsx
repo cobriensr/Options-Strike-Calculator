@@ -146,10 +146,13 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     setPage(0);
   }, [date, tickerFilter, optionTypeFilter, sortMode, minVolOi]);
 
+  const isHistorical = date !== todayCt();
+
   const { alerts, loading, error, fetchedAt, total, offset, hasMore } =
     useSilentBoomFeed({
       date,
       marketOpen,
+      historical: isHistorical,
       ticker: tickerFilter,
       optionType: optionTypeFilter,
       minVolOi,
@@ -157,8 +160,6 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       page,
       pageSize: PAGE_SIZE,
     });
-
-  const isHistorical = date !== todayCt();
 
   // Top tickers in the current page — quick one-click scope.
   const topTickers = useMemo(() => {
@@ -184,9 +185,9 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
           horizons average ~0%, so timing matters.{' '}
           <a
             className="text-neutral-400 underline hover:text-white"
-            href="/docs/superpowers/specs/silent-boom-detector-2026-05-08.md"
+            href="https://github.com/cobriensr/Options-Strike-Calculator/blob/main/docs/superpowers/specs/silent-boom-detector-2026-05-08.md"
             target="_blank"
-            rel="noreferrer"
+            rel="noopener noreferrer"
           >
             methodology
           </a>

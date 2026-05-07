@@ -26,7 +26,6 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -138,7 +137,9 @@ def update_outcomes(conn, updates: list[tuple]) -> None:
 
 def compute_outcomes(
     chain_df: pd.DataFrame, bucket_ct: pd.Timestamp, entry_price: float
-) -> tuple[float, float, float, float, float, float] | None:
+) -> tuple[
+    float, float, float | None, float | None, float | None, float
+] | None:
     if entry_price <= 0 or chain_df.empty:
         return None
     bucket_ts = bucket_ct
@@ -157,13 +158,14 @@ def compute_outcomes(
     peak_pct = float((prices[peak_idx] - entry_price) / entry_price * 100.0)
     mtp = float(minutes[peak_idx])
 
-    # Forward fixed-horizon returns — last price at or after the
-    # horizon's offset, fall back to last available tick if the
-    # horizon extends past EOD.
-    def at_horizon(h_min: float) -> float:
+    # Forward fixed-horizon returns — last price at or before the
+    # horizon's offset. Returns None when no tick falls inside the
+    # horizon so the column stays NULL in the DB; coding "no data"
+    # as 0% would silently inflate win rates for sparse chains.
+    def at_horizon(h_min: float) -> float | None:
         mask = minutes <= h_min
         if not mask.any():
-            return 0.0
+            return None
         last_idx = int(np.nonzero(mask)[0][-1])
         return float((prices[last_idx] - entry_price) / entry_price * 100.0)
 

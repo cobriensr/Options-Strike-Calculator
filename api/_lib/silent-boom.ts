@@ -2,11 +2,12 @@
  * Silent → Boom alert detector — pure TS port of
  * scripts/silent_boom_audit.py.
  *
- * Pattern: a chain trades silently for 20 min (BASELINE_BUCKETS × 5min),
- * then a single 5-min bucket shows a volume spike that's both
- * absolutely large (≥ MIN_SPIKE_VOL) and a multiple of its own
- * baseline (≥ SPIKE_MULTIPLIER × baseline median), heavily ask-side
- * (≥ ASK_PCT_MIN), with meaningful vol/OI of the spike alone
+ * Pattern: a chain has been quiet across its prior 4 *traded* 5-min
+ * buckets (regardless of wall-clock gaps between them — sparse chains
+ * may span hours), then a single 5-min bucket shows a volume spike
+ * that's both absolutely large (≥ MIN_SPIKE_VOL) and a multiple of its
+ * own baseline (≥ SPIKE_MULTIPLIER × baseline median), heavily
+ * ask-side (≥ ASK_PCT_MIN), with meaningful vol/OI of the spike alone
  * (≥ VOL_OI_MIN).
  *
  * This is a STEP-CHANGE ANOMALY DETECTOR — distinct from
@@ -22,8 +23,8 @@
 // Changing these silently changes the alert universe; treat as
 // load-bearing. Kept in lockstep with silent_boom_audit.py.
 // ============================================================
-export const SILENT_BOOM_SPEC_V1 = {
-  /** Number of 5-min buckets in the trailing baseline window. */
+export const SILENT_BOOM_SPEC_V1 = Object.freeze({
+  /** Number of prior traded 5-min buckets in the baseline window. */
   baselineBuckets: 4,
   /** Baseline median volume must be ≤ this to qualify as "silent". */
   baselineMedianMax: 500,
@@ -35,11 +36,13 @@ export const SILENT_BOOM_SPEC_V1 = {
   askPctMin: 0.7,
   /** Spike volume / max OI seen for chain. */
   volOiMin: 0.25,
-  /** Buckets between successive fires on the same chain. */
+  /** Wall-clock minutes between successive fires on the same chain
+   *  (12 buckets × 5 min = 60 min of real time). The cooldown gate is
+   *  time-based, not bucket-index-based — see detector for details. */
   cooldownBuckets: 12,
   /** Minimum OI for the chain to be considered. */
   minOi: 100,
-} as const;
+} as const);
 
 /** Bucket size in milliseconds (5 minutes). */
 export const SILENT_BOOM_BUCKET_MS = 5 * 60 * 1000;

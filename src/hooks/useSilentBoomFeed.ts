@@ -1,6 +1,7 @@
 /**
  * useSilentBoomFeed — fetches /api/silent-boom-feed with filter chips
- * and pagination. Polls every 30s during market hours when on page 0.
+ * and pagination. Polls every 30s during market hours when on page 0
+ * AND the selected date is today (historical days are static).
  *
  * Mirrors the pattern in useLotteryFinder.ts.
  */
@@ -18,6 +19,8 @@ import { getErrorMessage } from '../utils/error.js';
 interface UseSilentBoomFeedArgs {
   date: string;
   marketOpen: boolean;
+  /** When true, the date is in the past — feed is static, skip polling. */
+  historical?: boolean;
   ticker?: string | null;
   optionType?: OptionType | null;
   /** Vol/OI floor — UI default 0.5 to trim to actionable density. */
@@ -54,6 +57,7 @@ const INITIAL_STATE: State = {
 export function useSilentBoomFeed({
   date,
   marketOpen,
+  historical = false,
   ticker = null,
   optionType = null,
   minVolOi = 0.5,
@@ -113,9 +117,10 @@ export function useSilentBoomFeed({
     fetchOnce();
     if (!marketOpen) return;
     if (page > 0) return;
+    if (historical) return;
     const id = setInterval(fetchOnce, POLL_INTERVALS.OTM_FLOW);
     return () => clearInterval(id);
-  }, [fetchOnce, marketOpen, page]);
+  }, [fetchOnce, marketOpen, page, historical]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
