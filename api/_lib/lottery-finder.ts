@@ -40,7 +40,7 @@ export const LOTTERY_SPEC_V4 = {
 /** Rolling-window length in minutes. */
 export const LOTTERY_WINDOW_MIN = 5;
 
-/** Mode A V3 ticker list (intraday 0DTE scalp universe + SPY/IWM). */
+/** Mode A V3 ticker list (intraday 0DTE scalp universe + SPY/IWM/SPXW). */
 export const LOTTERY_V3_TICKERS = [
   'USAR',
   'WMT',
@@ -78,6 +78,11 @@ export const LOTTERY_V3_TICKERS = [
   'RBLX',
   'SPY',
   'IWM',
+  'SPXW', // Added 2026-05-07: 0DTE SPX weeklies — the user's primary
+          // traded chain. Backfilled from parquet via
+          // scripts/backfill_lottery_fires_for_ticker.py since the WS
+          // daemon doesn't subscribe to SPXW. See spec
+          // docs/superpowers/specs/spxw-backfill-2026-05-07.md.
 ] as const;
 
 /** Mode B extended ticker list (DTE 1-3 trend universe). */

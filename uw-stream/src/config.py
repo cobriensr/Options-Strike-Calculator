@@ -35,6 +35,8 @@ _LOTTERY_TICKERS: frozenset[str] = frozenset(
         "NDXP", "USO", "TNA", "RDDT", "SMCI", "TSLL", "SNOW", "TEAM", "RKLB", "SOFI",
         "RUTW", "TSLA", "SOXS", "WULF", "SLV", "SMH", "UBER", "MSTR", "TQQQ", "RIOT",
         "SOXL", "UNH", "QQQ", "RBLX", "SPY", "IWM",
+        "SPXW",  # Added 2026-05-07 — primary 0DTE traded chain. See spec
+                 # docs/superpowers/specs/spxw-backfill-2026-05-07.md.
         # EXTENDED (Mode B DTE 1-3 trend; SPY/IWM dedupe via set)
         "MU", "META", "AMD", "NVDA", "INTC", "MSFT", "AMZN",
         "PLTR", "AVGO", "GOOGL", "GOOG", "COIN", "HOOD", "MRVL",

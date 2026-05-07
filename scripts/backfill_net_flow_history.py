@@ -46,14 +46,25 @@ PARQUET_DIR = Path.home() / 'Desktop' / 'Bot-Eod-parquet'
 # update here. Set form preserves dedupe (SPY/IWM appear in both).
 TICKERS: list[str] = sorted(
     {
-        # V3
+        # V3 (Mode A 0DTE intraday) — keep aligned with
+        # api/_lib/lottery-finder.ts LOTTERY_V3_TICKERS and
+        # uw-stream/src/config.py _LOTTERY_TICKERS. Drift between any
+        # two of these three lists silently breaks flow_inversion for
+        # the missing tickers.
         'USAR', 'WMT', 'STX', 'SOUN', 'RIVN', 'TSM', 'SNDK', 'XOM',
         'WDC', 'SQQQ', 'NDXP', 'USO', 'TNA', 'RDDT', 'SMCI', 'TSLL',
         'SNOW', 'TEAM', 'RKLB', 'SOFI', 'RUTW', 'SPY', 'IWM',
-        # EXTENDED
+        'SPXW',
+        # V3 additions caught during the 2026-05-07 audit — these had
+        # been firing in detect-lottery-fires.ts but their flow data
+        # wasn't being fetched, so flow_inversion stayed NULL.
+        'TSLA', 'SOXS', 'WULF', 'SLV', 'SMH', 'UBER', 'MSTR', 'TQQQ',
+        'RIOT', 'SOXL', 'UNH', 'QQQ', 'RBLX',
+        # EXTENDED (Mode B DTE 1-3) — TSLA + MSTR overlap with V3
+        # additions above; set form dedupes.
         'MU', 'META', 'AMD', 'NVDA', 'INTC', 'MSFT', 'AMZN', 'PLTR',
-        'AVGO', 'GOOGL', 'GOOG', 'COIN', 'MSTR', 'HOOD', 'MRVL',
-        'ORCL', 'AAPL', 'TSLA',
+        'AVGO', 'GOOGL', 'GOOG', 'COIN', 'HOOD', 'MRVL',
+        'ORCL', 'AAPL',
     }
 )
 
@@ -103,21 +114,27 @@ def fetch_ticker(api_key: str, ticker: str, date: str) -> list[dict[str, Any]]:
         'Authorization': f'Bearer {api_key}',
         'Accept': 'application/json',
     })
-    # Naive retry on transient errors (UW occasionally 429s under load).
-    for attempt in range(3):
+    # Exponential backoff on 429. UW's rate-limit window is bursty —
+    # under load we've seen sustained 429s for 20-40s. Older code did
+    # 3 attempts maxing at 4.5s of total wait, which was too short and
+    # silently dropped tickers per backfill run. Now: 6 attempts with
+    # 1, 2, 4, 8, 16, 32s waits = ~63s max per ticker.
+    max_attempts = 6
+    for attempt in range(max_attempts):
         try:
             with urlopen(req, timeout=30) as resp:
                 payload = json.loads(resp.read())
             return payload.get('data', []) if isinstance(payload, dict) else []
         except HTTPError as e:
-            if e.code == 429 and attempt < 2:
-                time.sleep(1.5 * (attempt + 1))
+            if e.code == 429 and attempt < max_attempts - 1:
+                wait = min(60, 2 ** attempt)
+                time.sleep(wait)
                 continue
             print(f'[backfill-flow] {ticker} HTTPError {e.code}: {e.reason}')
             return []
         except URLError as e:
-            if attempt < 2:
-                time.sleep(1.0 * (attempt + 1))
+            if attempt < max_attempts - 1:
+                time.sleep(min(30, 2 ** attempt))
                 continue
             print(f'[backfill-flow] {ticker} URLError: {e.reason}')
             return []

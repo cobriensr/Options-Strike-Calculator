@@ -357,14 +357,20 @@ def load_parquet_chain_index(
     if include_nbbo:
         cols += ['nbbo_bid', 'nbbo_ask', 'size']
 
+    # `canceled` was bool in older parquets and string ('f'/'t') in
+    # newer ones — push only the chain filter, then post-filter
+    # canceled in pandas to handle both shapes.
     df = pd.read_parquet(
         path,
         columns=cols,
-        filters=[
-            ('option_chain_id', 'in', list(fired_chains)),
-            ('canceled', '=', 'f'),
-        ],
+        filters=[('option_chain_id', 'in', list(fired_chains))],
     )
+    if df['canceled'].dtype == bool:
+        df = df[~df['canceled']]
+    else:
+        df = df[
+            df['canceled'].astype(str).str.lower().isin(['f', 'false', '0', ''])
+        ]
     df = df[df['price'] > 0].copy()
     if df['executed_at'].dt.tz is None:
         df['executed_at'] = df['executed_at'].dt.tz_localize('UTC')
