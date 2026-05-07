@@ -20,14 +20,14 @@ User flagged that no SPXW fires appear in the dashboard despite SPXW being the u
 
 ### Phase 1 — Universe + score weights (~5 min)
 
-- Add `'SPXW'` to `LOTTERY_V3_TICKERS` in [api/_lib/lottery-finder.ts](../../../api/_lib/lottery-finder.ts).
+- Add `'SPXW'` to `LOTTERY_V3_TICKERS` in [api/\_lib/lottery-finder.ts](../../../api/_lib/lottery-finder.ts).
 - Run `make refit` so SPXW gets a tier weight if its history justifies one (will happen automatically once Phase 4 fires are in DB; for now, weights stay unchanged).
 
 ### Phase 2 — Python port of detector (~45 min)
 
 New file: `scripts/lottery_detector_py.py`.
 
-Faithful port of the following from [api/_lib/lottery-finder.ts](../../../api/_lib/lottery-finder.ts):
+Faithful port of the following from [api/\_lib/lottery-finder.ts](../../../api/_lib/lottery-finder.ts):
 
 - `LOTTERY_SPEC_V4` constants — frozen
 - `getTimeOfDay`, `getTimeOfDayFromCtHourMin`
@@ -43,7 +43,7 @@ Imports the existing `LOTTERY_V3_TICKERS` and `LOTTERY_EXTENDED_TICKERS` lists b
 
 New file: `scripts/test_lottery_detector_py.py`.
 
-Mirrors [api/__tests__/lottery-finder.test.ts](../../../api/__tests__/lottery-finder.test.ts) 1:1 by name and shape. ~50 cases covering all helpers + detector edge cases (DTE boundaries, OI=0, cooldown, eviction at 5-min boundary, mid-window IV/delta gates).
+Mirrors [api/**tests**/lottery-finder.test.ts](../../../api/__tests__/lottery-finder.test.ts) 1:1 by name and shape. ~50 cases covering all helpers + detector edge cases (DTE boundaries, OI=0, cooldown, eviction at 5-min boundary, mid-window IV/delta gates).
 
 Run via `ml/.venv/bin/pytest scripts/test_lottery_detector_py.py -q`.
 

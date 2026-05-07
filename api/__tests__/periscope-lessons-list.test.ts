@@ -110,10 +110,46 @@ describe('GET /api/periscope-lessons-list', () => {
     // handler doesn't re-sort the rows it received. Driver returns
     // them in the order Postgres yielded.
     mockSql.mockResolvedValueOnce([
-      { id: '1', lesson_text: 'p1', source_ids: [1], status: 'proposed', citation_count: '5', created_at: '2026-05-01T00:00:00Z', promoted_at: null, archived_at: null },
-      { id: '2', lesson_text: 'p2', source_ids: [2], status: 'proposed', citation_count: '1', created_at: '2026-05-01T00:00:00Z', promoted_at: null, archived_at: null },
-      { id: '3', lesson_text: 'a1', source_ids: [3], status: 'active', citation_count: '10', created_at: '2026-04-01T00:00:00Z', promoted_at: '2026-04-15T00:00:00Z', archived_at: null },
-      { id: '4', lesson_text: 'x1', source_ids: [4], status: 'archived', citation_count: '2', created_at: '2026-03-01T00:00:00Z', promoted_at: null, archived_at: '2026-04-01T00:00:00Z' },
+      {
+        id: '1',
+        lesson_text: 'p1',
+        source_ids: [1],
+        status: 'proposed',
+        citation_count: '5',
+        created_at: '2026-05-01T00:00:00Z',
+        promoted_at: null,
+        archived_at: null,
+      },
+      {
+        id: '2',
+        lesson_text: 'p2',
+        source_ids: [2],
+        status: 'proposed',
+        citation_count: '1',
+        created_at: '2026-05-01T00:00:00Z',
+        promoted_at: null,
+        archived_at: null,
+      },
+      {
+        id: '3',
+        lesson_text: 'a1',
+        source_ids: [3],
+        status: 'active',
+        citation_count: '10',
+        created_at: '2026-04-01T00:00:00Z',
+        promoted_at: '2026-04-15T00:00:00Z',
+        archived_at: null,
+      },
+      {
+        id: '4',
+        lesson_text: 'x1',
+        source_ids: [4],
+        status: 'archived',
+        citation_count: '2',
+        created_at: '2026-03-01T00:00:00Z',
+        promoted_at: null,
+        archived_at: '2026-04-01T00:00:00Z',
+      },
     ]);
 
     const req = mockRequest({ method: 'GET', query: {} });
@@ -121,7 +157,9 @@ describe('GET /api/periscope-lessons-list', () => {
     await listHandler(req, res);
 
     expect(res._status).toBe(200);
-    const body = res._json as { lessons: Array<{ id: number; status: string }> };
+    const body = res._json as {
+      lessons: Array<{ id: number; status: string }>;
+    };
     expect(body.lessons.map((l) => l.id)).toEqual([1, 2, 3, 4]);
   });
 

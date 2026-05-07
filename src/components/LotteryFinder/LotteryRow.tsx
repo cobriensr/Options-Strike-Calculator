@@ -456,7 +456,8 @@ export const LotteryRow = memo(function LotteryRow({
               className={`font-mono text-xs italic ${pctClass(eodFallback)}`}
               title={`Selected policy (${EXIT_POLICY_LABELS[exitPolicy]}) returned no exit for this fire. Showing realized end-of-session return as a fallback so the row remains informative. Most common cause: late-PM trigger leaves <5 min of post-trigger flow data for the inversion algorithm to detect.`}
             >
-              {formatPct(eodFallback)} <span className="not-italic opacity-60">eod</span>
+              {formatPct(eodFallback)}{' '}
+              <span className="not-italic opacity-60">eod</span>
             </span>
           )}
           <span

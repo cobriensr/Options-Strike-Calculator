@@ -79,7 +79,10 @@ function submitCalls(): Array<[unknown, RequestInit | undefined]> {
   const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
   return fetchMock.mock.calls.filter((c) => {
     const url = typeof c[0] === 'string' ? c[0] : '';
-    return url.startsWith('/api/periscope-chat') && !url.startsWith('/api/periscope-chat-list');
+    return (
+      url.startsWith('/api/periscope-chat') &&
+      !url.startsWith('/api/periscope-chat-list')
+    );
   }) as Array<[unknown, RequestInit | undefined]>;
 }
 

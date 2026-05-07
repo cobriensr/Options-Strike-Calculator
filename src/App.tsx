@@ -96,7 +96,9 @@ const PeriscopeChatHistory = lazy(() =>
   ),
 );
 const LessonLibrary = lazy(() =>
-  import('./components/PeriscopeChat/LessonLibrary.tsx').catch(handleStaleChunk),
+  import('./components/PeriscopeChat/LessonLibrary.tsx').catch(
+    handleStaleChunk,
+  ),
 );
 const FuturesPanel = lazy(() =>
   import('./components/FuturesCalculator/FuturesPanel').catch(handleStaleChunk),

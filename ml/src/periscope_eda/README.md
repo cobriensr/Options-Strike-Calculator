@@ -7,12 +7,12 @@ environment, queries Neon Postgres, and writes plots/CSVs to
 
 ## Scripts
 
-| # | Script                            | One-liner                                                                       | Meaningful at |
-| - | --------------------------------- | ------------------------------------------------------------------------------- | ------------- |
-| 1 | `01_confidence_calibration.py`    | Mean realized R per `confidence` band — checks if "high" actually wins more.    | n >= 10 per band |
-| 2 | `02_regime_bias_table.py`         | (regime_tag x bias) -> mean realized R pivot + heatmap for playbook sanity.     | n >= 30 total |
-| 3 | `03_trade_type_ev.py`             | Per-regime bar charts of mean R for each `trade_types_recommended` element.     | n >= 30 total |
-| 4 | `04_embedding_cluster.py`         | UMAP/t-SNE of the 2000-d analysis embeddings, colored by realized R.            | n >= 50 total |
+| #   | Script                         | One-liner                                                                    | Meaningful at    |
+| --- | ------------------------------ | ---------------------------------------------------------------------------- | ---------------- |
+| 1   | `01_confidence_calibration.py` | Mean realized R per `confidence` band — checks if "high" actually wins more. | n >= 10 per band |
+| 2   | `02_regime_bias_table.py`      | (regime_tag x bias) -> mean realized R pivot + heatmap for playbook sanity.  | n >= 30 total    |
+| 3   | `03_trade_type_ev.py`          | Per-regime bar charts of mean R for each `trade_types_recommended` element.  | n >= 30 total    |
+| 4   | `04_embedding_cluster.py`      | UMAP/t-SNE of the 2000-d analysis embeddings, colored by realized R.         | n >= 50 total    |
 
 ## Running
 

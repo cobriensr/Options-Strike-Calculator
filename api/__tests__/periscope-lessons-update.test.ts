@@ -267,7 +267,9 @@ describe('POST /api/periscope-lessons-update', () => {
     await updateHandler(req, res);
 
     expect(res._status).toBe(422);
-    expect((res._json as { error: string }).error).toMatch(/not currently archived/i);
+    expect((res._json as { error: string }).error).toMatch(
+      /not currently archived/i,
+    );
     expect(mockSql).toHaveBeenCalledTimes(1);
   });
 });

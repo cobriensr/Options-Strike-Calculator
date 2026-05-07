@@ -19,7 +19,9 @@ import type { PeriscopeLessonRow } from '../../components/PeriscopeChat/types';
 // Helpers
 // ============================================================
 
-function lesson(overrides: Partial<PeriscopeLessonRow> = {}): PeriscopeLessonRow {
+function lesson(
+  overrides: Partial<PeriscopeLessonRow> = {},
+): PeriscopeLessonRow {
   return {
     id: 1,
     lesson_text: 'Sample lesson',
@@ -87,8 +89,12 @@ describe('<LessonLibrary />', () => {
         screen.getByText('Pin days favor butterflies inside the cone.'),
       ).toBeInTheDocument();
     });
-    expect(screen.getByRole('button', { name: /^Promote$/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^Archive$/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /^Promote$/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /^Archive$/ }),
+    ).toBeInTheDocument();
     // proposed status badge text
     expect(screen.getByText('proposed')).toBeInTheDocument();
     // citation + sources metadata
@@ -130,16 +136,16 @@ describe('<LessonLibrary />', () => {
     expect(screen.queryByText('p1')).not.toBeInTheDocument();
     expect(screen.queryByText('x1')).not.toBeInTheDocument();
     // Active row gets only the Archive action, not Promote.
-    expect(screen.getByRole('button', { name: /^Archive$/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /^Archive$/ }),
+    ).toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: /^Promote$/ }),
     ).not.toBeInTheDocument();
   });
 
   it('shows the per-tab empty state copy when filter has no rows', async () => {
-    setListResponse([
-      lesson({ id: 1, status: 'proposed', lesson_text: 'p1' }),
-    ]);
+    setListResponse([lesson({ id: 1, status: 'proposed', lesson_text: 'p1' })]);
     const user = userEvent.setup();
 
     render(<LessonLibrary />);
