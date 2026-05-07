@@ -132,6 +132,7 @@ function happyPathReturn(): UseGexStrikeExpiryReturn {
     },
     loading: false,
     error: null,
+    errors: { SPY: null, QQQ: null, SPX: null, NDX: null },
     refresh: vi.fn(),
   };
 }
@@ -146,6 +147,7 @@ describe('StrikeBattleMap', () => {
       data: { SPY: null, QQQ: null, SPX: null, NDX: null },
       loading: true,
       error: null,
+      errors: { SPY: null, QQQ: null, SPX: null, NDX: null },
       refresh: vi.fn(),
     });
     render(<StrikeBattleMap marketOpen={false} />);
@@ -159,6 +161,7 @@ describe('StrikeBattleMap', () => {
       data: { SPY: null, QQQ: null, SPX: null, NDX: null },
       loading: true,
       error: null,
+      errors: { SPY: null, QQQ: null, SPX: null, NDX: null },
       refresh: vi.fn(),
     });
     render(<StrikeBattleMap marketOpen={true} />);
@@ -175,6 +178,7 @@ describe('StrikeBattleMap', () => {
       },
       loading: false,
       error: null,
+      errors: { SPY: null, QQQ: null, SPX: null, NDX: null },
       refresh: vi.fn(),
     });
     render(<StrikeBattleMap marketOpen={true} />);
@@ -185,7 +189,13 @@ describe('StrikeBattleMap', () => {
     mockHook.mockReturnValue({
       data: { SPY: null, QQQ: null, SPX: null, NDX: null },
       loading: false,
-      error: 'Partial fetch failure',
+      error: 'Partial fetch failure: SPY, QQQ, SPX, NDX',
+      errors: {
+        SPY: 'HTTP 500',
+        QQQ: 'HTTP 500',
+        SPX: 'HTTP 500',
+        NDX: 'HTTP 500',
+      },
       refresh: vi.fn(),
     });
     render(<StrikeBattleMap marketOpen={false} />);
@@ -251,6 +261,7 @@ describe('StrikeBattleMap', () => {
       },
       loading: false,
       error: null,
+      errors: { SPY: null, QQQ: null, SPX: null, NDX: null },
       refresh: vi.fn(),
     });
     render(<StrikeBattleMap marketOpen={true} />);
@@ -280,6 +291,7 @@ describe('StrikeBattleMap', () => {
       },
       loading: false,
       error: null,
+      errors: { SPY: null, QQQ: null, SPX: null, NDX: null },
       refresh: vi.fn(),
     });
     render(<StrikeBattleMap marketOpen={true} />);

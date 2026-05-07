@@ -180,13 +180,20 @@ export function useGexLandscapeData(
   expiry: string,
   at: string | null = null,
 ): UseGexLandscapeDataReturn {
-  const { data, loading, error, refresh } = useGexStrikeExpiry(
+  const { data, loading, errors, refresh } = useGexStrikeExpiry(
     marketOpen,
     expiry,
     at,
   );
 
   const tickerData = data[ticker];
+  // Per-ticker error: only surface a failure on the tab that actually
+  // failed. The hook's `error` field is a global summary
+  // ("Partial fetch failure: SPX, NDX") — useful for cross-ticker
+  // consumers like StrikeBattleMap, but wrong for a per-tab panel where
+  // SPY/QQQ may be fine while NDX is broken.
+  const tickerError = errors[ticker];
+  const error = tickerError == null ? null : `${ticker}: ${tickerError}`;
 
   // `rows` is recomputed every render via the `?? []` fallback, so we
   // memoize against the source `tickerData?.rows` reference (not the

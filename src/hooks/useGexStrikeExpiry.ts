@@ -86,7 +86,20 @@ export interface UseGexStrikeExpiryReturn {
   /** Per-ticker latest payload, or null until first successful fetch. */
   data: Record<GexStrikeExpiryTicker, GexStrikeExpiryResponse | null>;
   loading: boolean;
+  /**
+   * Summary error string, or `null` when every ticker fetch succeeded.
+   * Names the failed tickers so the UI can localize the cause without
+   * having to dig into `errors`. Format: `'Partial fetch failure: SPX'`
+   * (single) or `'Partial fetch failure: SPX, NDX'` (multiple).
+   */
   error: string | null;
+  /**
+   * Per-ticker error, or `null` when that ticker's fetch succeeded.
+   * Lets per-ticker consumers (GexLandscape) render a tab-scoped error
+   * instead of the global "Partial fetch failure" — so SPX no longer
+   * shows a red banner when only NDX failed.
+   */
+  errors: Record<GexStrikeExpiryTicker, string | null>;
   refresh: () => void;
 }
 
@@ -101,6 +114,10 @@ function emptyData(): Record<
   GexStrikeExpiryTicker,
   GexStrikeExpiryResponse | null
 > {
+  return { SPY: null, QQQ: null, SPX: null, NDX: null };
+}
+
+function emptyErrors(): Record<GexStrikeExpiryTicker, string | null> {
   return { SPY: null, QQQ: null, SPX: null, NDX: null };
 }
 
@@ -136,6 +153,8 @@ export function useGexStrikeExpiry(
     );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] =
+    useState<Record<GexStrikeExpiryTicker, string | null>>(emptyErrors);
   const mountedRef = useRef(true);
 
   const fetchAll = useCallback(async () => {
@@ -147,19 +166,26 @@ export function useGexStrikeExpiry(
       if (!mountedRef.current) return;
 
       const next = emptyData();
-      let anyError = false;
+      const nextErrors = emptyErrors();
+      const failedTickers: GexStrikeExpiryTicker[] = [];
       results.forEach((result, idx) => {
         const ticker = TICKERS[idx];
         if (ticker == null) return;
         if (result.status === 'fulfilled') {
           next[ticker] = result.value;
         } else {
-          anyError = true;
+          failedTickers.push(ticker);
+          nextErrors[ticker] = getErrorMessage(result.reason);
         }
       });
 
       setData(next);
-      setError(anyError ? 'Partial fetch failure' : null);
+      setErrors(nextErrors);
+      setError(
+        failedTickers.length > 0
+          ? `Partial fetch failure: ${failedTickers.join(', ')}`
+          : null,
+      );
     } catch (err) {
       if (mountedRef.current) setError(getErrorMessage(err));
     } finally {
@@ -197,5 +223,5 @@ export function useGexStrikeExpiry(
     void fetchAll();
   }, [fetchAll]);
 
-  return { data, loading, error, refresh };
+  return { data, loading, error, errors, refresh };
 }

@@ -285,6 +285,7 @@ describe('useGexLandscapeData — Δ% maps from server-side LAG', () => {
       },
       loading: false,
       error: null,
+      errors: { SPY: null, QQQ: null, SPX: null, NDX: null },
       refresh: vi.fn(),
     });
   }
@@ -354,6 +355,7 @@ describe('useGexLandscapeData — Δ% maps from server-side LAG', () => {
       data: { SPY: null, QQQ: null, SPX: null, NDX: null },
       loading: true,
       error: null,
+      errors: { SPY: null, QQQ: null, SPX: null, NDX: null },
       refresh: vi.fn(),
     });
 
@@ -385,5 +387,35 @@ describe('useGexLandscapeData — Δ% maps from server-side LAG', () => {
     // Same source rows array → memoized map keeps identity, avoiding
     // downstream re-render loops in BiasPanel / StrikeTable.
     expect(result.current.gexDeltaMap).toBe(firstMap);
+  });
+});
+
+describe('useGexLandscapeData — per-ticker error scoping', () => {
+  beforeEach(() => {
+    vi.mocked(useGexStrikeExpiry).mockReset();
+  });
+
+  it('only surfaces an error when the selected ticker itself failed', () => {
+    // Simulate NDX failing while SPX returned cleanly. The hook used
+    // to render "Partial fetch failure" on every tab; per-ticker
+    // scoping means SPX should now be error-free even though the
+    // global summary names NDX.
+    vi.mocked(useGexStrikeExpiry).mockReturnValue({
+      data: { SPY: null, QQQ: null, SPX: null, NDX: null },
+      loading: false,
+      error: 'Partial fetch failure: NDX',
+      errors: { SPY: null, QQQ: null, SPX: null, NDX: 'HTTP 500' },
+      refresh: vi.fn(),
+    });
+
+    const { result: spxResult } = renderHook(() =>
+      useGexLandscapeData('SPX', true, '2026-05-04'),
+    );
+    expect(spxResult.current.error).toBeNull();
+
+    const { result: ndxResult } = renderHook(() =>
+      useGexLandscapeData('NDX', true, '2026-05-04'),
+    );
+    expect(ndxResult.current.error).toBe('NDX: HTTP 500');
   });
 });
