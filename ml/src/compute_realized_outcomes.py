@@ -432,15 +432,19 @@ def score_row(row: dict, candles: pd.DataFrame) -> dict:
     # R-multiple. Stop distance is |entry - stop|; signed by P&L sign so a
     # long winner is +R and a short winner is also +R (move was favorable
     # to the simulated direction).
-    risk = abs(chosen.entry_price - chosen.stop_price)
-    if risk == 0:
-        realized_r: Optional[float] = None
+    #
+    # Risk is clamped to a 1-pt minimum so degenerate stops (entry sitting
+    # on top of the gamma floor / ceiling, or the +γ level above entry on
+    # a long) still produce a defined R rather than dropping the row to
+    # NULL. Real-world tick-tight stops are rare; this floor preserves
+    # row-counts for EDA without materially distorting realized R.
+    raw_risk = abs(chosen.entry_price - chosen.stop_price)
+    risk = max(1.0, raw_risk)
+    if chosen.fired == "long":
+        pnl = chosen.exit_price - chosen.entry_price
     else:
-        if chosen.fired == "long":
-            pnl = chosen.exit_price - chosen.entry_price
-        else:
-            pnl = chosen.entry_price - chosen.exit_price
-        realized_r = pnl / risk
+        pnl = chosen.entry_price - chosen.exit_price
+    realized_r: Optional[float] = pnl / risk
 
     return {
         "realized_r": realized_r,
