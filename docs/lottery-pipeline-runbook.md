@@ -6,7 +6,7 @@ Daily / weekly cadence for keeping the lottery_finder enrichment + research arti
 
 | When                                                 | Command               | Time     |
 | ---------------------------------------------------- | --------------------- | -------- |
-| **Every trading evening** (after EOD CSV is on disk) | `make nightly update` | ~1–6 min |
+| **Every trading evening** (after EOD CSV is on disk) | `make nightly update` | ~4–9 min |
 | **Once a week** (Sunday/Monday is fine)              | `make tune`           | ~25 min  |
 
 That's it. Anything else (`make refit`, `make enrich`, etc.) is also valid as a standalone, but the two lines above cover normal operation.
@@ -28,11 +28,12 @@ Pipeline (5 phases): `analyze → ingest → plots → backfill-flow → enrich`
 
 ### `make update`
 
-Refreshes the research layer using the freshly-enriched fires. Order: `refit → exit_policy_search → feature_audit → daily_tracker`.
+Refreshes the research layer using the freshly-enriched fires. Order: `refit → exit_policy_search → feature_audit → flow_inversion_timing → daily_tracker`.
 
 - **refit**: regenerates [ml/data/lottery_score_weights.json](../ml/data/lottery_score_weights.json), syncs to [api/\_lib/lottery-score-weights.ts](../api/_lib/lottery-score-weights.ts), backfills the `score` column on every fire under the new weights.
 - **exit_policy_search**: 18 exit policies head-to-head across all enriched fires → `docs/tmp/lottery-exit-policy-search-{LATEST_DATE}.md`.
 - **feature_audit**: Sharpe lift per fire-row feature on the Tier 2+ subset → `docs/tmp/lottery-feature-audit-{LATEST_DATE}.md`.
+- **flow_inversion_timing**: re-runs the inversion algorithm to capture exit timestamps; reports per-ticker median time-to-inversion + distribution → `docs/tmp/flow-inversion-timing-{LATEST_DATE}.md`. Slowest step (~3 min — parquet replay).
 - **daily_tracker**: appends one row to `docs/tmp/lottery-tracking.csv` (idempotent on date — same-day reruns overwrite).
 
 ### Chaining
@@ -60,6 +61,7 @@ Heavy parameter grid (84 combos × 63K fires) for the flow-inversion algorithm, 
 | `docs/tmp/lottery-tracking.csv`                 | One row per most-recent enriched fire date — headline metrics for trend charting | Cumulative (grows ~1 row/day) |
 | `docs/tmp/lottery-exit-policy-search-{DATE}.md` | 18 exit policies head-to-head                                                    | Per day                       |
 | `docs/tmp/lottery-feature-audit-{DATE}.md`      | Sharpe lift per feature on Tier 2+ subset                                        | Per day                       |
+| `docs/tmp/flow-inversion-timing-{DATE}.md`      | Per-ticker median time-to-inversion + distribution                               | Per day                       |
 | `docs/tmp/flow-inversion-tuning-{DATE}.md`      | Per-mode parameter grid + held-out test                                          | Per weekly tune               |
 | `ml/data/lottery_score_weights.json`            | Source of truth for ticker score weights                                         | Overwritten by every refit    |
 | `api/_lib/lottery-score-weights.ts`             | TS mirror — read by the cron                                                     | Overwritten by every refit    |

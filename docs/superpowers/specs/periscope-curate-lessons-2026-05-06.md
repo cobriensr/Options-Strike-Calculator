@@ -126,7 +126,7 @@ CREATE INDEX IF NOT EXISTS idx_periscope_lessons_embedding ON periscope_lessons
 - Query string: `?since=YYYY-MM-DD` for manual backfill window override; `?dry=true` for dry-run logging.
 - Default window: last 7 days.
 - Flow per debrief: extract via regex → fallback to LLM → for each candidate, embed + dedup + upsert.
-- Returns JSON envelope: `{ ok: true, processed: N, inserted: M, merged: K }`.
+- Returns JSON envelope: `{ ok: true, debriefsScanned: N, candidates: C, inserted: M, merged: K, embedFailures: F, dryRun: bool, sinceIso: string }`. Surfaces full pipeline state for telemetry without needing to grep logs.
 - Sentry capture on any thrown error (`Sentry.setTag('cron.job', 'curate-periscope-lessons')` + `captureException`).
 
 ### Phase 3 — Injection wiring

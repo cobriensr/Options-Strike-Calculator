@@ -56,8 +56,8 @@ help:
 	@echo "  make enrich                   Backfill lottery_finder_fires realized_*_pct from EOD parquet"
 	@echo "  make refit                    Refit lottery score weights from enriched fires + backfill score column"
 	@echo "  make update                   Run after \`make nightly\`: refit + exit-policy search +"
-	@echo "                                feature audit + daily-tracker CSV append. Fast (~1m) — designed"
-	@echo "                                to run nightly so day-over-day drift is captured."
+	@echo "                                feature audit + flow-inversion timing + tracker CSV. ~3-4m,"
+	@echo "                                designed to run nightly so day-over-day drift is captured."
 	@echo "  make tune                     Heavy parameter grid for flow-inversion (~25m). Run weekly,"
 	@echo "                                not nightly — same dataset every night doesn't move the answer."
 	@echo "  make dry-run                  Run analyze + ingest --dry-run + plots"
@@ -153,13 +153,19 @@ update: refit
 	@# DB and writes a date-stamped report to docs/tmp/ so day-over-day
 	@# diffs are easy. The CSV tracker keeps a one-line-per-day rollup
 	@# of the headline metrics for trend charting.
+	@#
+	@# Total runtime ~3-4 min: most of it is `flow_inversion_timing.py`,
+	@# which re-runs the simulate_flow_inversion algorithm against every
+	@# enriched fire to capture inversion timestamps (parquet replay).
 	$(PYTHON) scripts/exit_policy_search.py
 	$(PYTHON) scripts/feature_audit.py
+	$(PYTHON) scripts/flow_inversion_timing.py
 	$(PYTHON) scripts/daily_tracker.py
 	@echo ""
 	@echo "  ✅ daily research artifacts:"
 	@echo "     docs/tmp/lottery-exit-policy-search-YYYY-MM-DD.md"
 	@echo "     docs/tmp/lottery-feature-audit-YYYY-MM-DD.md"
+	@echo "     docs/tmp/flow-inversion-timing-YYYY-MM-DD.md"
 	@echo "     docs/tmp/lottery-tracking.csv  (cumulative one-row-per-day)"
 
 tune:
