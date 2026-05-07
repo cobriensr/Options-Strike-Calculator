@@ -6,28 +6,17 @@ displayGroup = 'Display'
 
 priceSource = input.source(hlc3, 'VWAP source')
 timeZone = input.string('America/Chicago', 'Session timezone', group = sessionGroup)
-ethEveningSession = input.session(
-     '1700-2359',
-     'ETH evening session',
-     tooltip = 'Default starts the CME equity-index electronic session at 17:00 CT.',
+
+ethSession = input.session(
+     '1700-1600',
+     'ETH session',
+     tooltip = 'CME equity-index electronic session: 17:00 CT to 16:00 CT next day. Use 1700-0830 for overnight-only.',
      group = sessionGroup
 )
-ethEveningDays = input.string(
+ethDays = input.string(
      '12345',
-     'ETH evening days',
-     tooltip = '1 = Sunday, 7 = Saturday. Default covers Sunday through Thursday evenings.',
-     group = sessionGroup
-)
-ethDaySession = input.session(
-     '0000-1600',
-     'ETH day session',
-     tooltip = 'Default continues the electronic session through 16:00 CT (CME daily close).',
-     group = sessionGroup
-)
-ethDayDays = input.string(
-     '23456',
-     'ETH day days',
-     tooltip = '1 = Sunday, 7 = Saturday. Default covers Monday through Friday.',
+     'ETH session days (start day)',
+     tooltip = '1 = Sunday, 7 = Saturday. Default = Sun–Thu starts (Sun eve through Fri close).',
      group = sessionGroup
 )
 rthSession = input.session(
@@ -48,16 +37,26 @@ showRth = input.bool(true, 'Show RTH VWAP', group = displayGroup)
 ethColor = input.color(color.new(color.aqua, 0), 'ETH color', group = displayGroup)
 rthColor = input.color(color.new(color.orange, 0), 'RTH color', group = displayGroup)
 
-ethEveningString = ethEveningSession + ':' + ethEveningDays
-ethDayString = ethDaySession + ':' + ethDayDays
+ethString = ethSession + ':' + ethDays
 rthString = rthSession + ':' + rthDays
 
-isInEthEvening = not na(time(timeframe.period, ethEveningString, timeZone))
-isInEthDay = not na(time(timeframe.period, ethDayString, timeZone))
-isInEth = isInEthEvening or isInEthDay
+isInEth = not na(time(timeframe.period, ethString, timeZone))
 isInRth = not na(time(timeframe.period, rthString, timeZone))
 
-isEthStart = isInEthEvening and (bar_index == 0 or not isInEth[1])
+// Robust ETH-start anchor: build a per-day session ID that rolls over at 17:00 CT.
+// Survives the 16:00–17:00 CT daily settlement break (no bars in that hour on most
+// charts) and the Fri-16:00 → Sun-17:00 weekly break, both of which break the naive
+// "previous bar outside session" pattern.
+ctHour  = hour(time, timeZone)
+ctDay   = dayofmonth(time, timeZone)
+ctMonth = month(time, timeZone)
+ctYear  = year(time, timeZone)
+ethSessionId = ctHour < 17
+     ? timestamp(timeZone, ctYear, ctMonth, ctDay, 0, 0) - 86400000
+     : timestamp(timeZone, ctYear, ctMonth, ctDay, 0, 0)
+
+ethSessionChanged = ta.change(ethSessionId) != 0
+isEthStart = isInEth and (bar_index == 0 or ethSessionChanged)
 isRthStart = isInRth and (bar_index == 0 or not isInRth[1])
 
 var float ethPriceVolume = na
@@ -65,22 +64,25 @@ var float ethVolume = na
 var float rthPriceVolume = na
 var float rthVolume = na
 
+priceVolume = nz(priceSource) * nz(volume)
+vol = nz(volume)
+
 if isEthStart
-    ethPriceVolume := priceSource * volume
-    ethVolume := volume
+    ethPriceVolume := priceVolume
+    ethVolume := vol
 else if isInEth
-    ethPriceVolume := nz(ethPriceVolume) + priceSource * volume
-    ethVolume := nz(ethVolume) + volume
+    ethPriceVolume := nz(ethPriceVolume) + priceVolume
+    ethVolume := nz(ethVolume) + vol
 else
     ethPriceVolume := na
     ethVolume := na
 
 if isRthStart
-    rthPriceVolume := priceSource * volume
-    rthVolume := volume
+    rthPriceVolume := priceVolume
+    rthVolume := vol
 else if isInRth
-    rthPriceVolume := nz(rthPriceVolume) + priceSource * volume
-    rthVolume := nz(rthVolume) + volume
+    rthPriceVolume := nz(rthPriceVolume) + priceVolume
+    rthVolume := nz(rthVolume) + vol
 else
     rthPriceVolume := na
     rthVolume := na
