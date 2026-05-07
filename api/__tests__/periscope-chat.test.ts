@@ -123,6 +123,11 @@ vi.mock('../_lib/periscope-flow-context.js', () => ({
   buildFlowContextBlock: vi.fn().mockResolvedValue(null),
 }));
 
+vi.mock('../_lib/periscope-lessons.js', () => ({
+  fetchActiveLessons: vi.fn().mockResolvedValue([]),
+  formatLessonsBlock: vi.fn().mockReturnValue(''),
+}));
+
 // Mock the Anthropic SDK — capture both stream + create calls.
 //   - handler uses `anthropic.messages.stream(params).finalMessage()`
 //     for the main analysis call (Pass 2).

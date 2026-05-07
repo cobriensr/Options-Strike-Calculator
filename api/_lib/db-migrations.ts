@@ -3967,4 +3967,34 @@ export const MIGRATIONS: Migration[] = [
         ADD COLUMN IF NOT EXISTS realized_computed_at TIMESTAMPTZ`,
     ],
   },
+  {
+    id: 133,
+    description:
+      'Create periscope_lessons table for the curate-periscope-lessons cron. Stores trader-supplied lessons extracted from the "What to add to the model" section of mode=debrief periscope_analyses rows. Status lifecycle: proposed -> active (manual SQL promotion in MVP) -> archived. Active rows inject as a "## Recent lessons learned" sub-section into the cached references block on every periscope-chat call. HNSW on embedding gates dedup (cosine >= 0.8 -> merge into existing row, else insert new proposed). See spec: docs/superpowers/specs/periscope-curate-lessons-2026-05-06.md.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS periscope_lessons (
+          id             BIGSERIAL PRIMARY KEY,
+          lesson_text    TEXT NOT NULL,
+          source_ids     BIGINT[] NOT NULL DEFAULT ARRAY[]::BIGINT[],
+          embedding      vector(2000),
+          status         TEXT NOT NULL DEFAULT 'proposed'
+                         CHECK (status IN ('proposed', 'active', 'archived')),
+          citation_count INT NOT NULL DEFAULT 1,
+          created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          promoted_at    TIMESTAMPTZ,
+          archived_at    TIMESTAMPTZ
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_periscope_lessons_status
+          ON periscope_lessons (status)
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_periscope_lessons_embedding
+          ON periscope_lessons USING hnsw (embedding vector_cosine_ops)
+          WHERE embedding IS NOT NULL AND status != 'archived'
+      `,
+    ],
+  },
 ];

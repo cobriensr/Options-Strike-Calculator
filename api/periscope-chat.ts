@@ -94,6 +94,10 @@ import {
   type HeatMapExtraction,
   type HeatMapImage,
 } from './_lib/periscope-extract.js';
+import {
+  fetchActiveLessons,
+  formatLessonsBlock,
+} from './_lib/periscope-lessons.js';
 import { runCachedAnthropicCall } from './_lib/anthropic-call.js';
 import { buildFlowContextBlock } from './_lib/periscope-flow-context.js';
 import {
@@ -223,10 +227,15 @@ async function callModel(
   //
   // System prompt structure (Anthropic supports up to 4 cache breakpoints):
   //   1. Skill text (cached) — stable per skill version
-  //   2. References (cached, optional) — VolSignals MM-heuristics
-  //      companion file. Stable across days; invalidates only when the
-  //      distillation file is updated. Skipped if the file failed to
-  //      load at module init.
+  //   2. References + recent lessons (cached, optional) — VolSignals
+  //      MM-heuristics companion file with an optional
+  //      "## Recent lessons learned" sub-section appended at request
+  //      time from the periscope_lessons table (curate-periscope-lessons
+  //      cron). Stable across days; invalidates only when the
+  //      distillation file is updated OR when the active-lessons set
+  //      changes (Sunday cron run -> Monday's first call rebuilds, all
+  //      subsequent reads cached). Skipped if the references file
+  //      failed to load at module init.
   //   3. Calibration block (cached, optional) — changes when user
   //      stars/unstars or re-tags a starred read; daily-stable in
   //      practice. Skipped entirely when no gold examples exist.
@@ -247,9 +256,27 @@ async function callModel(
     },
   ];
   if (PERISCOPE_REFERENCES != null) {
+    // Defensive shape (b) per spec: skip the DB roundtrip entirely on
+    // cold-start days when no lessons exist. Failure to fetch is
+    // best-effort — log + continue with the references file alone.
+    let lessonsBlock = '';
+    try {
+      const activeLessons = await fetchActiveLessons(15);
+      if (activeLessons.length > 0) {
+        lessonsBlock = formatLessonsBlock(activeLessons);
+      }
+    } catch (err) {
+      Sentry.captureException(err, {
+        tags: { module: 'periscope-chat', stage: 'lessons_fetch' },
+      });
+      logger.warn(
+        { err },
+        'periscope-chat: lessons fetch failed — continuing without',
+      );
+    }
     systemBlocks.push({
       type: 'text',
-      text: PERISCOPE_REFERENCES_HEADER + PERISCOPE_REFERENCES,
+      text: PERISCOPE_REFERENCES_HEADER + PERISCOPE_REFERENCES + lessonsBlock,
       cache_control: { type: 'ephemeral', ttl: '1h' },
     });
   }

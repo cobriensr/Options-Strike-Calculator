@@ -10,6 +10,10 @@
       "schedule": "0 3 * * 6"
     },
     {
+      "path": "/api/cron/curate-periscope-lessons",
+      "schedule": "0 3 * * 1"
+    },
+    {
       "path": "/api/cron/fetch-flow",
       "schedule": "0,5,10,15,20,25,30,35,40,45,50,55 13-21 * * 1-5"
     },
@@ -197,6 +201,7 @@
   "functions": {
     "api/analyze.ts": { "maxDuration": 780 },
     "api/cron/curate-lessons.ts": { "maxDuration": 780 },
+    "api/cron/curate-periscope-lessons.ts": { "maxDuration": 780 },
     "api/cron/build-features.ts": { "maxDuration": 300 },
     "api/cron/backfill-futures-gaps.ts": { "maxDuration": 800 },
     "api/cron/detect-lottery-fires.ts": { "maxDuration": 60 },
