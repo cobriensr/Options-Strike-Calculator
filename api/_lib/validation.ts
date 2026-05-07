@@ -886,6 +886,41 @@ export const lotteryFinderQuerySchema = z.object({
 export type LotteryFinderQuery = z.infer<typeof lotteryFinderQuerySchema>;
 
 // ============================================================
+// /api/silent-boom-feed
+// ============================================================
+
+/**
+ * Query params for GET /api/silent-boom-feed.
+ *
+ * Read endpoint backing the SilentBoomSection component. Filter
+ * surface deliberately tighter than lottery_finder — silent-boom
+ * is a discretionary alert feed, not a tier/score system.
+ */
+export const silentBoomFeedQuerySchema = z.object({
+  ticker: z
+    .string()
+    .regex(/^[A-Z]{1,8}$/, 'ticker must be 1-8 uppercase letters')
+    .optional(),
+  optionType: z.enum(['C', 'P']).optional(),
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+    .optional(),
+  // Vol/OI floor — filter to the more-actionable spikes. Default 0
+  // returns everything; UI defaults to 0.5.
+  minVolOi: z.coerce.number().min(0).max(100).default(0),
+  // Spike-ratio floor — same shape.
+  minSpikeRatio: z.coerce.number().min(0).max(1000).default(0),
+  // Pagination.
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+  // Sort: newest (bucket_ct DESC), spike_ratio DESC, vol_oi DESC, peak DESC.
+  sort: z.enum(['newest', 'spike_ratio', 'vol_oi', 'peak']).default('newest'),
+});
+
+export type SilentBoomFeedQuery = z.infer<typeof silentBoomFeedQuerySchema>;
+
+// ============================================================
 // /api/lottery-export
 // ============================================================
 

@@ -154,6 +154,10 @@
       "schedule": "* 13-21 * * 1-5"
     },
     {
+      "path": "/api/cron/detect-silent-boom",
+      "schedule": "*/5 13-21 * * 1-5"
+    },
+    {
       "path": "/api/cron/fetch-net-flow-history",
       "schedule": "25 21 * * 1-5"
     },
@@ -205,6 +209,7 @@
     "api/cron/build-features.ts": { "maxDuration": 300 },
     "api/cron/backfill-futures-gaps.ts": { "maxDuration": 800 },
     "api/cron/detect-lottery-fires.ts": { "maxDuration": 60 },
+    "api/cron/detect-silent-boom.ts": { "maxDuration": 60 },
     "api/cron/enrich-lottery-outcomes.ts": { "maxDuration": 300 },
     "api/cron/fetch-gex-strike-expiry-etfs.ts": { "maxDuration": 60 },
     "api/periscope-chat.ts": {
