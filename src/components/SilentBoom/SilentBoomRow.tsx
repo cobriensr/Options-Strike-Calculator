@@ -1,0 +1,493 @@
+import { memo, useMemo, useState } from 'react';
+import { useContractTape } from '../../hooks/useContractTape.js';
+import { useNetFlowHistory } from '../../hooks/useNetFlowHistory.js';
+import { useTickerCandles } from '../../hooks/useTickerCandles.js';
+import { ContractTapeChart } from '../LotteryFinder/ContractTapeChart.js';
+import { TickerNetFlowChart } from '../LotteryFinder/TickerNetFlowChart.js';
+import type { SilentBoomAlert } from './types.js';
+
+interface SilentBoomRowProps {
+  alert: SilentBoomAlert;
+  /** Whether the parent's date is today (drives polling). */
+  marketOpen: boolean;
+}
+
+const uwContractUrl = (alert: { optionChainId: string }): string =>
+  `https://unusualwhales.com/flow/option_chains?chain=${encodeURIComponent(alert.optionChainId)}`;
+
+const formatTimeCT = (iso: string): string => {
+  const d = new Date(iso);
+  return d.toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: 'America/Chicago',
+  });
+};
+
+const formatPct = (n: number | null): string => {
+  if (n == null) return '—';
+  const sign = n >= 0 ? '+' : '';
+  return `${sign}${n.toFixed(1)}%`;
+};
+
+const formatDollar = (n: number): string => {
+  if (n >= 100) return `$${n.toFixed(0)}`;
+  if (n >= 10) return `$${n.toFixed(1)}`;
+  return `$${n.toFixed(2)}`;
+};
+
+const formatExpiryShort = (iso: string): string => {
+  const parts = iso.split('-');
+  const m = parts[1];
+  const d = parts[2];
+  if (m == null || d == null) return iso;
+  return `${Number.parseInt(m, 10)}/${Number.parseInt(d, 10)}`;
+};
+
+const formatExpiryFull = (iso: string): string => {
+  const parts = iso.split('-');
+  const y = parts[0];
+  const m = parts[1];
+  const d = parts[2];
+  if (y == null || m == null || d == null) return iso;
+  return `${m}/${d}/${y}`;
+};
+
+const dteChipClass = (dte: number): string => {
+  if (dte === 0) return 'border-rose-500/50 bg-rose-950/40 text-rose-200';
+  if (dte <= 3) return 'border-amber-500/40 bg-amber-950/30 text-amber-200';
+  return 'border-neutral-700 bg-neutral-900 text-neutral-300';
+};
+
+const formatVol = (n: number): string => {
+  if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (Math.abs(n) >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toFixed(0);
+};
+
+const formatPremium = (n: number): string => {
+  const sign = n >= 0 ? '+' : '−';
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(1)}K`;
+  return `${sign}$${abs.toFixed(0)}`;
+};
+
+const pctClass = (n: number | null): string => {
+  if (n == null) return 'text-neutral-500';
+  if (n >= 50) return 'text-green-300';
+  if (n >= 0) return 'text-green-400';
+  if (n >= -25) return 'text-amber-300';
+  return 'text-red-300';
+};
+
+const optionTypeBadge = (t: 'C' | 'P'): string =>
+  t === 'C'
+    ? 'border-green-500/40 bg-green-950/30 text-green-200'
+    : 'border-red-500/40 bg-red-950/30 text-red-200';
+
+/**
+ * Spike-ratio badge — gives the eye an at-a-glance read on how
+ * extreme the burst was vs the contract's own preceding 4-bucket
+ * baseline. Detector min is 5x; tiers above that flag genuinely
+ * outlier prints.
+ */
+const spikeBadge = (
+  ratio: number,
+): { label: string; cls: string; tooltip: string } => {
+  if (ratio >= 50) {
+    return {
+      label: `×${ratio.toFixed(0)}`,
+      cls: 'border-rose-500/50 bg-rose-950/40 text-rose-200',
+      tooltip: `Spike ${ratio.toFixed(0)}× the preceding 4-bucket baseline — extreme outlier.`,
+    };
+  }
+  if (ratio >= 20) {
+    return {
+      label: `×${ratio.toFixed(0)}`,
+      cls: 'border-amber-500/40 bg-amber-950/30 text-amber-200',
+      tooltip: `Spike ${ratio.toFixed(0)}× the preceding 4-bucket baseline.`,
+    };
+  }
+  return {
+    label: `×${ratio.toFixed(0)}`,
+    cls: 'border-neutral-700 bg-neutral-900 text-neutral-300',
+    tooltip: `Spike ${ratio.toFixed(0)}× the preceding 4-bucket baseline (detector floor 5×).`,
+  };
+};
+
+export const SilentBoomRow = memo(function SilentBoomRow({
+  alert,
+  marketOpen,
+}: SilentBoomRowProps) {
+  const peak = alert.outcomes.peakCeilingPct;
+  const realized60 = alert.outcomes.realized60mPct;
+  const realizedEod = alert.outcomes.realizedEodPct;
+  const mtp = alert.outcomes.minutesToPeak;
+  const spike = spikeBadge(alert.spikeRatio);
+
+  const [expanded, setExpanded] = useState(false);
+
+  const tape = useContractTape({
+    chain: alert.optionChainId,
+    date: alert.date,
+    enabled: expanded,
+    marketOpen,
+  });
+  const netFlow = useNetFlowHistory({
+    ticker: alert.underlyingSymbol,
+    date: alert.date,
+    enabled: expanded,
+    marketOpen,
+  });
+  const tickerCandles = useTickerCandles({
+    ticker: alert.underlyingSymbol,
+    date: alert.date,
+    enabled: expanded,
+    marketOpen,
+  });
+
+  const tapeStats = useMemo(() => {
+    if (tape.series.length === 0) return null;
+    let bid = 0;
+    let ask = 0;
+    let mid = 0;
+    let noSide = 0;
+    let priceVolSum = 0;
+    let volSum = 0;
+    for (const r of tape.series) {
+      bid += r.bidVol;
+      ask += r.askVol;
+      mid += r.midVol;
+      noSide += r.noSideVol;
+      if (r.avgPrice != null && Number.isFinite(r.avgPrice) && r.totalVol > 0) {
+        priceVolSum += r.avgPrice * r.totalVol;
+        volSum += r.totalVol;
+      }
+    }
+    return {
+      bid,
+      ask,
+      mid,
+      noSide,
+      total: bid + ask + mid + noSide,
+      avgFill: volSum > 0 ? priceVolSum / volSum : null,
+    };
+  }, [tape.series]);
+
+  const flowStats = useMemo(() => {
+    if (netFlow.series.length === 0) return null;
+    const last = netFlow.series.at(-1);
+    if (last == null) return null;
+    return {
+      cumNcp: last.cumNcp,
+      cumNpp: last.cumNpp,
+      diff: last.cumNcp - last.cumNpp,
+    };
+  }, [netFlow.series]);
+
+  return (
+    <div className="rounded border border-neutral-800 bg-neutral-950 p-3 text-sm">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <a
+          href={uwContractUrl(alert)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="group flex items-baseline gap-2 hover:underline"
+          title={`Open ${alert.optionChainId} on Unusual Whales`}
+        >
+          <span className="font-mono text-base font-semibold text-white group-hover:text-blue-300">
+            {alert.underlyingSymbol}
+          </span>
+          <span className="font-mono text-base text-neutral-200 group-hover:text-blue-200">
+            {alert.strike}
+          </span>
+          <span
+            className={`rounded border px-1.5 py-0.5 text-[10px] font-bold ${optionTypeBadge(alert.optionType)}`}
+            title={alert.optionType === 'C' ? 'Call' : 'Put'}
+          >
+            {alert.optionType}
+          </span>
+          <span
+            className={`rounded border px-1.5 py-0.5 font-mono text-[10px] leading-none ${dteChipClass(alert.dte)}`}
+            title={`Expires ${formatExpiryFull(alert.expiry)} — ${
+              alert.dte === 0
+                ? '0DTE (same day)'
+                : `${alert.dte} day${alert.dte === 1 ? '' : 's'} to expiry`
+            }`}
+          >
+            {formatExpiryShort(alert.expiry)} · {alert.dte}D
+          </span>
+          <span
+            className="text-[10px] text-neutral-600 group-hover:text-blue-400"
+            aria-hidden
+          >
+            ↗
+          </span>
+        </a>
+
+        <span className="font-mono text-xs text-neutral-400">
+          {formatTimeCT(alert.bucketCt)} CT
+        </span>
+
+        <span
+          className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${spike.cls}`}
+          title={spike.tooltip}
+        >
+          {spike.label} burst
+        </span>
+
+        <span
+          className="text-[11px] text-neutral-300"
+          title="Vol/OI in the spike bucket — share of the whole open interest that traded in 5 minutes."
+        >
+          vol/OI{' '}
+          <span className="font-mono text-neutral-100">
+            {(alert.volOi * 100).toFixed(0)}%
+          </span>
+        </span>
+
+        <span
+          className="text-[11px] text-neutral-300"
+          title="Ask-side share of the spike bucket. ≥70% → directional buy pressure."
+        >
+          ask%{' '}
+          <span className="font-mono text-neutral-100">
+            {(alert.askPct * 100).toFixed(0)}%
+          </span>
+        </span>
+
+        <span className="flex-1" />
+
+        <div className="flex items-baseline gap-3">
+          <span
+            className={`font-mono text-lg font-bold ${pctClass(peak)}`}
+            title="Peak ceiling — best-case % gain from entry to the highest post-bucket print. Look-ahead reference, not tradeable."
+          >
+            {formatPct(peak)}
+          </span>
+          {mtp != null && peak != null && peak > 0 && (
+            <span
+              className="text-[10px] text-neutral-500"
+              title="Minutes from spike bucket start to the peak print."
+            >
+              t+{mtp.toFixed(0)}m
+            </span>
+          )}
+          <span
+            className={`font-mono text-xs ${pctClass(realized60)}`}
+            title="Fixed-horizon realized return at +60 minutes from the spike bucket start."
+          >
+            60m {formatPct(realized60)}
+          </span>
+        </div>
+      </div>
+
+      <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[11px] text-neutral-400">
+        <span>
+          entry{' '}
+          <span className="font-mono text-neutral-200">
+            {formatDollar(alert.entryPrice)}
+          </span>
+        </span>
+        <span>
+          spike vol{' '}
+          <span className="font-mono text-neutral-200">
+            {formatVol(alert.spikeVolume)}
+          </span>
+        </span>
+        <span title="Median per-bucket volume in the 4 buckets preceding the spike — the baseline the multiplier was measured against.">
+          baseline{' '}
+          <span className="font-mono text-neutral-300">
+            {formatVol(alert.baselineVolume)}
+          </span>
+        </span>
+        <span>
+          OI{' '}
+          <span className="font-mono text-neutral-300">
+            {formatVol(alert.openInterest)}
+          </span>
+        </span>
+        <span
+          className={`font-mono ${pctClass(realizedEod)}`}
+          title="Realized return at the last tick of the session."
+        >
+          eod {formatPct(realizedEod)}
+        </span>
+        <span className="ml-auto text-neutral-500">
+          {alert.outcomes.enrichedAt ? 'enriched' : 'pending enrich'}
+        </span>
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="ml-2 rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 text-[10px] font-semibold text-neutral-400 hover:text-white"
+          title={
+            expanded
+              ? 'Collapse contract + net-flow charts'
+              : 'Expand to show contract tape and ticker net-flow charts'
+          }
+          aria-expanded={expanded}
+        >
+          {expanded ? '▾ collapse' : '▸ expand'}
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="mt-3 grid gap-3 border-t border-neutral-800 pt-3 md:grid-cols-2">
+          {/* CONTRACT TAPE PANEL */}
+          <div className="rounded-md border border-neutral-800/80 bg-neutral-950/40 p-2.5">
+            <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-[10px] font-semibold tracking-[0.08em] text-neutral-500 uppercase">
+                  contract
+                </span>
+                <span className="font-mono text-xs font-semibold text-neutral-100">
+                  {alert.underlyingSymbol}
+                </span>
+                <span className="font-mono text-xs text-neutral-300">
+                  {alert.strike}
+                </span>
+                <span
+                  className={`rounded border px-1 py-px text-[10px] leading-none font-bold ${optionTypeBadge(alert.optionType)}`}
+                  title={alert.optionType === 'C' ? 'Call' : 'Put'}
+                >
+                  {alert.optionType}
+                </span>
+                <span className="text-neutral-600">·</span>
+                <span className="font-mono text-xs text-neutral-300">
+                  {formatExpiryFull(alert.expiry)}
+                </span>
+                <span
+                  className={`rounded border px-1 py-px font-mono text-[10px] leading-none ${dteChipClass(alert.dte)}`}
+                >
+                  {alert.dte}D
+                </span>
+              </div>
+              <span className="text-[10px] tracking-wide text-neutral-600 uppercase">
+                bid · ask · mid + VWAP
+              </span>
+            </div>
+            {tapeStats != null && tapeStats.total > 0 && (
+              <div className="mb-2 flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[10px] text-neutral-400">
+                <span>
+                  <span className="text-red-300">Bid</span>{' '}
+                  <span className="text-neutral-200">
+                    {formatVol(tapeStats.bid)}
+                  </span>
+                </span>
+                <span>
+                  <span className="text-blue-300">Mid</span>{' '}
+                  <span className="text-neutral-200">
+                    {formatVol(tapeStats.mid)}
+                  </span>
+                </span>
+                <span>
+                  <span className="text-green-300">Ask</span>{' '}
+                  <span className="text-neutral-200">
+                    {formatVol(tapeStats.ask)}
+                  </span>
+                </span>
+                {tapeStats.avgFill != null && (
+                  <span>
+                    Avg fill{' '}
+                    <span className="text-neutral-200">
+                      {formatDollar(tapeStats.avgFill)}
+                    </span>
+                  </span>
+                )}
+                <span className="ml-auto text-neutral-500">
+                  total {formatVol(tapeStats.total)}
+                </span>
+              </div>
+            )}
+            {tape.loading && tape.series.length === 0 ? (
+              <div className="text-[10px] text-neutral-500">Loading tape…</div>
+            ) : tape.error ? (
+              <div className="text-[10px] text-red-300">
+                tape error: {tape.error}
+              </div>
+            ) : (
+              <ContractTapeChart
+                series={tape.series}
+                markerTs={alert.bucketCt}
+                ariaLabel={`${alert.optionChainId} per-minute tape`}
+              />
+            )}
+          </div>
+
+          {/* NET FLOW PANEL */}
+          <div className="rounded-md border border-neutral-800/80 bg-neutral-950/40 p-2.5">
+            <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-[10px] font-semibold tracking-[0.08em] text-neutral-500 uppercase">
+                  net flow
+                </span>
+                <span className="font-mono text-xs font-semibold text-neutral-100">
+                  {alert.underlyingSymbol}
+                </span>
+                <span className="text-[10px] text-neutral-500">
+                  cumulative · session-to-date
+                </span>
+              </div>
+              <span className="text-[10px] tracking-wide text-neutral-600 uppercase">
+                price · NCP · NPP · net vol
+              </span>
+            </div>
+            {flowStats != null && (
+              <div className="mb-2 flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[10px] text-neutral-400">
+                {tickerCandles.candles.length > 0 && (
+                  <span>
+                    <span className="text-amber-300">spot</span>{' '}
+                    <span className="text-neutral-200">
+                      {tickerCandles.candles.at(-1)!.close.toFixed(2)}
+                    </span>
+                  </span>
+                )}
+                <span>
+                  <span className="text-green-300">NCP</span>{' '}
+                  <span className="text-neutral-200">
+                    {formatPremium(flowStats.cumNcp)}
+                  </span>
+                </span>
+                <span>
+                  <span className="text-red-300">NPP</span>{' '}
+                  <span className="text-neutral-200">
+                    {formatPremium(flowStats.cumNpp)}
+                  </span>
+                </span>
+                <span>
+                  Δ{' '}
+                  <span
+                    className={
+                      flowStats.diff >= 0 ? 'text-green-300' : 'text-red-300'
+                    }
+                  >
+                    {formatPremium(flowStats.diff)}
+                  </span>
+                </span>
+              </div>
+            )}
+            {netFlow.loading && netFlow.series.length === 0 ? (
+              <div className="text-[10px] text-neutral-500">
+                Loading net flow…
+              </div>
+            ) : netFlow.error ? (
+              <div className="text-[10px] text-red-300">
+                net flow error: {netFlow.error}
+              </div>
+            ) : (
+              <TickerNetFlowChart
+                series={netFlow.series}
+                candles={tickerCandles.candles}
+                previousClose={tickerCandles.previousClose}
+                markerTs={alert.bucketCt}
+                ariaLabel={`${alert.underlyingSymbol} cumulative net call/put premium with stock price overlay`}
+              />
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});

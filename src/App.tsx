@@ -139,6 +139,11 @@ const LotteryFinderSection = lazy(() =>
     .then((m) => ({ default: m.LotteryFinderSection }))
     .catch(handleStaleChunk),
 );
+const SilentBoomSection = lazy(() =>
+  import('./components/SilentBoom/SilentBoomSection')
+    .then((m) => ({ default: m.SilentBoomSection }))
+    .catch(handleStaleChunk),
+);
 
 // ============================================================
 // ADMIN ENDPOINT RESPONSE SHAPES
@@ -606,6 +611,7 @@ export default function StrikeCalculator() {
             { id: 'sec-dealer-regime', label: 'Dealer Regime' },
             { id: 'sec-strike-battle-map', label: 'Strike Battle Map' },
             { id: 'sec-lottery-finder', label: 'Lottery Finder' },
+            { id: 'sec-silent-boom', label: 'Silent Boom' },
           ]
         : []),
       ...(isAuthenticated
@@ -981,6 +987,17 @@ export default function StrikeCalculator() {
                   fallback={<SkeletonSection lines={5} />}
                 >
                   <LotteryFinderSection
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
+                  />
+                </GatedSection>
+
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-silent-boom"
+                  label="Silent Boom"
+                  fallback={<SkeletonSection lines={5} />}
+                >
+                  <SilentBoomSection
                     marketOpen={market.data.quotes?.marketOpen ?? false}
                   />
                 </GatedSection>
