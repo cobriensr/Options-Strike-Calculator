@@ -91,6 +91,8 @@ if (import.meta.env.PROD)
       { path: '/api/periscope-chat-image', method: 'GET' },
       { path: '/api/periscope-chat-update', method: 'PATCH' },
       { path: '/api/periscope-chat-update', method: 'POST' },
+      { path: '/api/periscope-lessons-list', method: 'GET' },
+      { path: '/api/periscope-lessons-update', method: 'POST' },
       { path: '/api/greek-flow', method: 'GET' },
       { path: '/api/gex-strike-expiry', method: 'GET' },
       { path: '/api/positions', method: 'GET' },

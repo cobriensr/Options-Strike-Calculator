@@ -138,3 +138,33 @@ export const REGIME_TAG_OPTIONS = [
   'chop',
   'other',
 ] as const;
+
+// ============================================================
+// Periscope Lesson Library
+// ============================================================
+
+/**
+ * Wire shape for a single row in the periscope_lessons table, as
+ * surfaced by /api/periscope-lessons-list. Mirrors the backend's
+ * `PeriscopeLessonListRow` (api/periscope-lessons-list.ts).
+ *
+ * Lifecycle:
+ *   - `proposed` — written by the curate cron, awaiting triage. Both
+ *     timestamps are null.
+ *   - `active`   — promoted by the user. `promoted_at` is set; rows in
+ *     this state are injected into the cached references block on
+ *     every periscope-chat call.
+ *   - `archived` — explicitly demoted. `archived_at` is set; the dedup
+ *     index excludes archived rows so the cron won't merge new
+ *     candidates back into a known-bad lesson.
+ */
+export interface PeriscopeLessonRow {
+  id: number;
+  lesson_text: string;
+  source_ids: number[];
+  status: 'proposed' | 'active' | 'archived';
+  citation_count: number;
+  created_at: string;
+  promoted_at: string | null;
+  archived_at: string | null;
+}

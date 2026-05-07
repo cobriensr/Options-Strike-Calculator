@@ -95,6 +95,9 @@ const PeriscopeChatHistory = lazy(() =>
     handleStaleChunk,
   ),
 );
+const LessonLibrary = lazy(() =>
+  import('./components/PeriscopeChat/LessonLibrary.tsx').catch(handleStaleChunk),
+);
 const FuturesPanel = lazy(() =>
   import('./components/FuturesCalculator/FuturesPanel').catch(handleStaleChunk),
 );
@@ -1051,6 +1054,15 @@ export default function StrikeCalculator() {
                     <ErrorBoundary label="Periscope History">
                       <Suspense fallback={<SkeletonSection lines={4} tall />}>
                         <PeriscopeChatHistory />
+                      </Suspense>
+                    </ErrorBoundary>
+                    <span
+                      id="sec-periscope-lessons"
+                      className="block scroll-mt-28"
+                    />
+                    <ErrorBoundary label="Periscope Lesson Library">
+                      <Suspense fallback={<SkeletonSection lines={4} tall />}>
+                        <LessonLibrary />
                       </Suspense>
                     </ErrorBoundary>
                   </>

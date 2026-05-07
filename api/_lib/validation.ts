@@ -498,6 +498,30 @@ export type PeriscopeChatUpdateBody = z.infer<
 >;
 
 // ============================================================
+// /api/periscope-lessons-update
+// ============================================================
+
+/**
+ * POST body for the LessonLibrary panel's promote / archive / unarchive
+ * actions. Mirrors the manual SQL workflow that shipped pre-MVP:
+ *
+ *   - `promote`   — proposed/active row → status='active' + promoted_at=now()
+ *   - `archive`   — any non-archived row → status='archived' + archived_at=now()
+ *   - `unarchive` — archived row → status='proposed', clear both timestamps
+ *
+ * The endpoint enforces the state-machine guards in handler logic
+ * (Zod just validates the action enum + the id shape).
+ */
+export const periscopeLessonsUpdateBodySchema = z.object({
+  id: z.number().int().positive(),
+  action: z.enum(['promote', 'archive', 'unarchive']),
+});
+
+export type PeriscopeLessonsUpdateBody = z.infer<
+  typeof periscopeLessonsUpdateBodySchema
+>;
+
+// ============================================================
 // /api/pre-market
 // ============================================================
 
