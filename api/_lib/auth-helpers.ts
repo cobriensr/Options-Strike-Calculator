@@ -310,16 +310,22 @@ export async function rejectIfRateLimited(
  *
  * We add Vary: Cookie to ensure the edge doesn't serve an owner's cached
  * response to a public visitor (who would get a 401 instead).
+ *
+ * `browserSec` (optional, default 0) sets `max-age` for the browser cache —
+ * without it, browsers store responses but must revalidate on every reuse
+ * via If-None-Match. Opt-in per endpoint based on staleness tolerance.
  */
 export function setCacheHeaders(
   res: VercelResponse,
   edgeSec: number,
   swr: number = 60,
+  browserSec: number = 0,
 ): void {
-  res.setHeader(
-    'Cache-Control',
-    `s-maxage=${edgeSec}, stale-while-revalidate=${swr}`,
-  );
+  const directives: string[] = [];
+  if (browserSec > 0) directives.push(`max-age=${browserSec}`);
+  directives.push(`s-maxage=${edgeSec}`);
+  directives.push(`stale-while-revalidate=${swr}`);
+  res.setHeader('Cache-Control', directives.join(', '));
   res.setHeader('Vary', 'Cookie');
 }
 

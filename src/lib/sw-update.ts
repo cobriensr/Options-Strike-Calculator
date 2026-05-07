@@ -43,13 +43,24 @@ export function getNeedsRefresh(): boolean {
 }
 
 /**
- * Trigger the update. Posts SKIP_WAITING to the waiting SW; the SW takes
- * control, fires `controllerchange` on the page, and the existing
- * listener in main.tsx reloads. Calling this when no update is pending
- * is a no-op.
+ * Trigger the update. Attaches a one-shot `controllerchange` listener so the
+ * page reloads exactly when the new SW takes control, then posts SKIP_WAITING
+ * to the waiting SW. Listener is scoped to this call (not global) so that
+ * unrelated controllerchange events — first-install activation in particular
+ * — don't trigger spurious reloads mid-load. Calling when no update is
+ * pending is a no-op.
  */
 export function applyUpdate(): void {
   if (!updateSWFn) return;
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener(
+      'controllerchange',
+      () => {
+        window.location.reload();
+      },
+      { once: true },
+    );
+  }
   // updateSW failures are surfaced by vite-plugin-pwa internally; on the
   // off chance the postMessage round-trip fails, the user can still reload
   // manually — silently swallowing here is intentional.

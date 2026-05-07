@@ -40,23 +40,13 @@ Sentry.init({
   },
 });
 
-// Reload when the service worker takes over a new deployment so the page picks
-// up the new JS bundle (and fresh BotID tokens) automatically. The
-// SKIP_WAITING -> activate -> controllerchange chain is initiated by the
-// "Reload" button in UpdateAvailableBanner (see src/lib/sw-update.ts).
-if ('serviceWorker' in navigator) {
-  let refreshing = false;
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (refreshing) return;
-    refreshing = true;
-    window.location.reload();
-  });
-}
-
 // Register the service worker in prompt mode. When a new SW reaches the
 // waiting state, vite-plugin-pwa fires `onNeedRefresh` — we surface this
 // to React via the sw-update bridge so UpdateAvailableBanner can render
-// a "New version available" toast with a Reload button.
+// a "New version available" toast with a Reload button. The reload itself
+// is wired up lazily in `applyUpdate()` so that first-install
+// controllerchange events don't trigger a spurious reload mid-load (which
+// was aborting in-flight XHRs as NS_BINDING_ABORTED on every page open).
 const updateSW = registerSW({
   onNeedRefresh() {
     markNeedsRefresh();

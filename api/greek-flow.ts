@@ -200,7 +200,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!date) {
         // Empty table — return shape-correct response so the UI doesn't
         // need a separate "no data" branch.
-        setCacheHeaders(res, 60, 60);
+        setCacheHeaders(res, 60, 60, 60);
         done({ status: 200 });
         return res.status(200).json(emptyResponse(asOf, requestedScope));
       }
@@ -236,8 +236,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       };
 
       // Live-ish during market hours, longer off-hours. Vary: Cookie via
-      // setCacheHeaders so owner vs anon caches don't collide.
-      setCacheHeaders(res, isMarketOpen() ? 30 : 300, 60);
+      // setCacheHeaders so owner vs anon caches don't collide. Browser
+      // max-age opt-in (matches edge TTL) prevents If-None-Match RTT
+      // storms on repeat reloads — the 609 kB payload is the heaviest in
+      // the app, so even 30s of staleness during market hours is worth it.
+      setCacheHeaders(
+        res,
+        isMarketOpen() ? 30 : 300,
+        60,
+        isMarketOpen() ? 30 : 300,
+      );
       done({ status: 200 });
       return res.status(200).json(response);
     } catch (err) {
