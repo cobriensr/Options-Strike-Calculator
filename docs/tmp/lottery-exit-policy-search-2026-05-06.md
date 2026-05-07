@@ -26,7 +26,7 @@ Dataset: 83,554 enriched fires across 18 trading days (2026-04-13 → 2026-05-06
 
 ## Per-tier comparison
 
-### T1  (n=9,384)
+### T1 (n=9,384)
 
     policy                                 n     mean%     med%    win%   Sharpe
     flow_inv (existing)                9,280   +17.97%  -12.22%   41.2%  +0.1035
@@ -42,7 +42,7 @@ Dataset: 83,554 enriched fires across 18 trading days (2026-04-13 → 2026-05-06
     trail30/10 (existing)              9,384    -1.19%  +20.00%   67.8%  -0.0217
     trail 25/10                        9,381    -1.25%  +16.67%   70.6%  -0.0248
 
-### T2  (n=12,044)
+### T2 (n=12,044)
 
     policy                                 n     mean%     med%    win%   Sharpe
     flow_inv (existing)               11,509    +9.98%   -4.46%   45.2%  +0.0915
@@ -58,7 +58,7 @@ Dataset: 83,554 enriched fires across 18 trading days (2026-04-13 → 2026-05-06
     cap25_floor10                     12,044    -1.64%  +15.25%   64.8%  -0.0357
     hard30m (existing)                12,044    -1.77%   -8.41%   38.4%  -0.0283
 
-### T3  (n=62,126)
+### T3 (n=62,126)
 
     policy                                 n     mean%     med%    win%   Sharpe
     flow_inv (existing)               58,899    +3.52%   -2.08%   46.0%  +0.0687
@@ -76,7 +76,7 @@ Dataset: 83,554 enriched fires across 18 trading days (2026-04-13 → 2026-05-06
 
 ## Per-mode comparison
 
-### A_intraday_0DTE  (n=24,805)
+### A_intraday_0DTE (n=24,805)
 
     policy                                 n     mean%     med%    win%   Sharpe
     flow_inv (existing)               23,738    +8.10%   -7.20%   41.0%  +0.0599
@@ -90,7 +90,7 @@ Dataset: 83,554 enriched fires across 18 trading days (2026-04-13 → 2026-05-06
     HYBRID flow_inv OR trail50/15     24,799    -2.13%   +0.23%   50.3%  -0.0418
     trail 25/10                       24,799    -2.33%  +13.47%   63.5%  -0.0494
 
-### B_multi_day_DTE1_3  (n=58,749)
+### B_multi_day_DTE1_3 (n=58,749)
 
     policy                                 n     mean%     med%    win%   Sharpe
     flow_inv (existing)               55,950    +5.30%   -1.58%   47.2%  +0.1062

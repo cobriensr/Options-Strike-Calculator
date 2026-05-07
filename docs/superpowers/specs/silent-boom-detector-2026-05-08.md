@@ -32,7 +32,7 @@ Mirrors the existing `lottery_finder_fires` pattern.
 
 ### Why a separate detector instead of extending lottery_finder
 
-Different *signal class*. lottery_finder is a sustained-burst detector. silent-boom is a step-change anomaly detector. Conflating them would dilute lottery_finder's calibration (already at ~85K validated fires) and corrupt the score weight refit. They're complementary, not overlapping.
+Different _signal class_. lottery_finder is a sustained-burst detector. silent-boom is a step-change anomaly detector. Conflating them would dilute lottery_finder's calibration (already at ~85K validated fires) and corrupt the score weight refit. They're complementary, not overlapping.
 
 ## Detection parameters (frozen)
 

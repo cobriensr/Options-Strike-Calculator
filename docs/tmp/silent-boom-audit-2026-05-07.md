@@ -24,7 +24,6 @@ Scanned 19 parquet days (2026-04-13 → 2026-05-07).
 
 ## By option type
 
-
 ## Top 25 tickers by fire count
 
     ticker   fires  mean_60m%  win_60m%  mean_peak%

@@ -59,10 +59,9 @@ Dataset: 79,688 fires with flow_inv populated.
     0             17,449 +12.40%  -9.14% 42.1%  +0.0823
     → spread: 3 → 0 = +0.2027 Sharpe
 
-
 ## Continuous features (Tier 2+ subset, quintile bins)
 
-### burst_ratio_vs_prev  (best=Q4, worst=Q5, spread=+0.0548)
+### burst_ratio_vs_prev (best=Q4, worst=Q5, spread=+0.0548)
 
     q        n                  range   mean%  win%   Sharpe
     Q1   2,842       0.008…0.530      +12.92% 41.1%  +0.0914
@@ -71,7 +70,7 @@ Dataset: 79,688 fires with flow_inv populated.
     Q4   2,842       1.223…2.227      +20.93% 45.2%  +0.1380
     Q5   2,842       2.227…151.600    +12.12% 41.1%  +0.0832
 
-### entry_drop_pct_vs_prev  (best=Q4, worst=Q1, spread=+0.0449)
+### entry_drop_pct_vs_prev (best=Q4, worst=Q1, spread=+0.0449)
 
     q        n                  range   mean%  win%   Sharpe
     Q1   2,842     -94.845…-19.496    +16.23% 37.9%  +0.0935
@@ -80,7 +79,7 @@ Dataset: 79,688 fires with flow_inv populated.
     Q4   2,840       4.444…18.056     +19.17% 45.9%  +0.1384
     Q5   2,841      18.081…580.435    +16.08% 38.5%  +0.0988
 
-### entry_price  (best=Q5, worst=Q1, spread=+0.2148)
+### entry_price (best=Q5, worst=Q1, spread=+0.2148)
 
     q        n                  range   mean%  win%   Sharpe
     Q1   4,231       0.010…0.460       -0.38% 29.8%  -0.0024
@@ -89,7 +88,7 @@ Dataset: 79,688 fires with flow_inv populated.
     Q4   4,172       2.350…7.000      +19.03% 49.9%  +0.1840
     Q5   4,144       7.020…359.550    +12.42% 55.2%  +0.2124
 
-### trigger_iv  (best=Q2, worst=Q4, spread=+0.1704)
+### trigger_iv (best=Q2, worst=Q4, spread=+0.1704)
 
     q        n                  range   mean%  win%   Sharpe
     Q1   4,158       0.350…0.507      +11.74% 46.2%  +0.1168
@@ -98,7 +97,7 @@ Dataset: 79,688 fires with flow_inv populated.
     Q4   4,158       0.758…1.156       -1.49% 42.0%  -0.0183
     Q5   4,158       1.156…55.105     +18.78% 43.8%  +0.1260
 
-### trigger_delta  (best=Q5, worst=Q1, spread=+0.6433)
+### trigger_delta (best=Q5, worst=Q1, spread=+0.6433)
 
     q        n                  range   mean%  win%   Sharpe
     Q1   4,158      -0.998…-0.387     -15.89% 35.6%  -0.2780
@@ -107,7 +106,7 @@ Dataset: 79,688 fires with flow_inv populated.
     Q4   4,158       0.304…0.656      +33.50% 48.8%  +0.2635
     Q5   4,158       0.657…0.997      +20.45% 62.8%  +0.3653
 
-### trigger_ask_pct  (best=Q1, worst=Q5, spread=+0.0791)
+### trigger_ask_pct (best=Q1, worst=Q5, spread=+0.0791)
 
     q        n                  range   mean%  win%   Sharpe
     Q1   4,211       0.520…0.525      +20.17% 43.0%  +0.1207
@@ -116,7 +115,7 @@ Dataset: 79,688 fires with flow_inv populated.
     Q4   3,389       0.600…0.688      +15.91% 45.4%  +0.1099
     Q5   4,110       0.688…1.000       +4.74% 42.7%  +0.0415
 
-### trigger_vol_to_oi_window  (best=Q5, worst=Q3, spread=+0.0409)
+### trigger_vol_to_oi_window (best=Q5, worst=Q3, spread=+0.0409)
 
     q        n                  range   mean%  win%   Sharpe
     Q1   4,158       0.050…0.078      +10.38% 45.9%  +0.1038
@@ -125,7 +124,7 @@ Dataset: 79,688 fires with flow_inv populated.
     Q4   4,158       0.214…0.569      +12.30% 42.2%  +0.0846
     Q5   4,158       0.570…3021.000   +25.04% 39.3%  +0.1197
 
-### mkt_tide_diff  (best=Q1, worst=Q5, spread=+0.4712)
+### mkt_tide_diff (best=Q1, worst=Q5, spread=+0.4712)
 
     q        n                  range   mean%  win%   Sharpe
     Q1   1,164 -211962428.500…-142313046.500 +26.10% 55.8%  +0.2416
@@ -134,7 +133,7 @@ Dataset: 79,688 fires with flow_inv populated.
     Q4   1,179 37289363.000…61088989.000 -13.43% 33.4%  -0.1899
     Q5   1,106 61130496.000…465046148.500 -13.27% 34.7%  -0.2296
 
-### spx_flow_diff  (best=Q2, worst=Q5, spread=+0.6102)
+### spx_flow_diff (best=Q2, worst=Q5, spread=+0.6102)
 
     q        n                  range   mean%  win%   Sharpe
     Q1   1,167 -852987427.000…-67244365.000  +9.44% 45.9%  +0.0965
@@ -143,7 +142,7 @@ Dataset: 79,688 fires with flow_inv populated.
     Q4   1,278 -11532202.000…9791672.000  -6.71% 40.2%  -0.0763
     Q5     990 11495428.000…153957200.000 -19.80% 28.9%  -0.4279
 
-### zero_dte_diff  (best=Q1, worst=Q4, spread=+0.2624)
+### zero_dte_diff (best=Q1, worst=Q4, spread=+0.2624)
 
     q        n                  range   mean%  win%   Sharpe
     Q1   1,172 -153993.650…-19353.040 +15.75% 46.4%  +0.1440
@@ -152,7 +151,7 @@ Dataset: 79,688 fires with flow_inv populated.
     Q4   1,231    5216.340…18105.010   -8.17% 36.6%  -0.1184
     Q5   1,046   18231.610…221673.060  +2.31% 40.1%  +0.0254
 
-### spx_spot_gamma_oi  (best=Q1, worst=Q4, spread=+0.6129)
+### spx_spot_gamma_oi (best=Q1, worst=Q4, spread=+0.6129)
 
     q        n                  range   mean%  win%   Sharpe
     Q1   1,150 -998951635.480…27272482629.450 +22.33% 52.5%  +0.2140
@@ -161,7 +160,7 @@ Dataset: 79,688 fires with flow_inv populated.
     Q4   1,132 51577364431.400…73460013286.500 -20.93% 32.5%  -0.3989
     Q5   1,147 73793316266.410…189619392518.770 +18.49% 47.2%  +0.1634
 
-### spx_spot_gamma_vol  (best=Q1, worst=Q3, spread=+0.4956)
+### spx_spot_gamma_vol (best=Q1, worst=Q3, spread=+0.4956)
 
     q        n                  range   mean%  win%   Sharpe
     Q1   1,156 -649740801370.760…-163064657191.010 +29.08% 55.9%  +0.2689
@@ -170,7 +169,7 @@ Dataset: 79,688 fires with flow_inv populated.
     Q4   1,154 15918453626.440…75489709993.610  -8.06% 39.2%  -0.1119
     Q5   1,134 75509904357.440…1520127641641.940  +2.31% 42.4%  +0.0247
 
-### spx_spot_charm_oi  (best=Q2, worst=Q4, spread=+0.3506)
+### spx_spot_charm_oi (best=Q2, worst=Q4, spread=+0.3506)
 
     q        n                  range   mean%  win%   Sharpe
     Q1   1,149 -54320253212856.000…-17014532901336.189  +7.79% 51.0%  +0.1131
@@ -179,7 +178,7 @@ Dataset: 79,688 fires with flow_inv populated.
     Q4   1,140 -11872847230011.461…-11067499214655.510  -8.01% 39.0%  -0.0975
     Q5   1,146 -11065511727753.750…53365896297257.797  -7.73% 36.2%  -0.0947
 
-### spx_spot_vanna_oi  (best=Q1, worst=Q5, spread=+0.1525)
+### spx_spot_vanna_oi (best=Q1, worst=Q5, spread=+0.1525)
 
     q        n                  range   mean%  win%   Sharpe
     Q1   1,148 -581376747.107…280377198.947 +11.39% 46.6%  +0.1096
@@ -188,26 +187,25 @@ Dataset: 79,688 fires with flow_inv populated.
     Q4   1,130 641934707.528…809097665.500  +0.25% 42.6%  +0.0029
     Q5   1,148 809206453.392…1208821543.678  -3.42% 39.6%  -0.0429
 
-### gex_strike_call_minus_put  (best=Q1, worst=Q4, spread=+2.2547)
+### gex_strike_call_minus_put (best=Q1, worst=Q4, spread=+2.2547)
 
     q        n                  range   mean%  win%   Sharpe
     Q1      50 879822.810…82711486.810 +30.89% 78.0%  +0.6240
     Q3      50 111136465.270…158057866.060  +1.71% 62.0%  +0.0242
     Q4      51 159017252.010…225496444.100 -68.14% 13.7%  -1.6307
 
-### gex_strike_call_ask_minus_bid  (best=Q1, worst=Q2, spread=+0.5548)
+### gex_strike_call_ask_minus_bid (best=Q1, worst=Q2, spread=+0.5548)
 
     q        n                  range   mean%  win%   Sharpe
     Q1      51 -131521806078.330…-4971638972.150 -22.82% 31.4%  -0.7033
     Q2      52 -4582224898.840…-36148547.340 -65.44% 11.5%  -1.2580
 
-### gex_strike_put_ask_minus_bid  (best=Q4, worst=Q2, spread=+4.6326)
+### gex_strike_put_ask_minus_bid (best=Q4, worst=Q2, spread=+4.6326)
 
     q        n                  range   mean%  win%   Sharpe
     Q1      50 -90036572495.950…-7338790876.970 -21.37% 32.0%  -0.6829
     Q2      54 -7039195269.440…-632222904.470 -84.96%  1.9%  -4.4628
     Q4      51 -423710038.080…-270407312.610 +11.52% 66.7%  +0.1698
-
 
 ## Ranked feature lift (best-bin Sharpe − worst-bin Sharpe)
 

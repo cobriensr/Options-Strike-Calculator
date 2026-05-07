@@ -83,12 +83,13 @@ These three are kept in the schema (future-proofing if UW starts populating) but
 - `report_flags` uses bare keys (`{intermarket_sweep}`, `{extended_hours}`) — note no `_trade` suffix unlike bot-eod-report's `extended_hours_trade`.
 - `canceled` rate: 0.0045% (496 of 11M) — matches bot-eod cancel-noise floor.
 - `tags` is the genuinely new enrichment: `{ask_side,bullish}`, `{bid_side,bearish,etf}`, `{ask_side,bullish,etf,earnings_this_week}`, etc.
-- `multi_vol > 0` confirms multi-leg attribution (e.g., QQQ row had multi_vol=89 of volume=4495).
+- **Important** — `ask_vol` / `bid_vol` / `mid_vol` / `no_side_vol` / `multi_vol` / `stock_multi_vol` are **CUMULATIVE running totals at the strike level**, not per-trade values. By end-of-day they reach hundreds of thousands of contracts on liquid strikes (e.g., NVDA 205C had `ask_vol=232,316` on its last row). Per-trade attribution requires a delta computation: sort by `option_chain_id` + `executed_at`, then diff consecutive rows. See `docs/tmp/fulltape-bot-eod-join-sanity-2026-05-07.md` for the empirical verification.
 - 11.07M raw rows vs ~10.6M filtered bot-eod — tiny difference, dominated by ETH and cancellations the Full Tape preserves.
 
 ### Phase 2 — Build `scripts/ingest-fulltape.py`
 
 Mirrors the structure of `scripts/ingest-flow.py` but minus the Blob upload:
+
 - argparse for date (positional) + `--keep-csv` flag (parity with bot-eod ingest)
 - `validate_header()` — **soft-fail** on schema drift (per Open Question 2 decision below) — null-fills missing cols, drops extras, warns loudly
 - `transform()` — minimal: add `date` partition column from filename, no row filters
@@ -99,6 +100,7 @@ Mirrors the structure of `scripts/ingest-flow.py` but minus the Blob upload:
 ### Phase 3 — Modify `scripts/download-fulltape.sh`
 
 Currently writes to `~/Downloads/EOD-OptionFlow/bot-eod-report-{date}.csv` — collides with the bot-eod CSV name. Change to:
+
 - Default output dir: `~/Downloads/EOD-FullTape/` (separate from `EOD-OptionFlow/`)
 - Default output filename: `fulltape-{date}.csv`
 - Keep `INPUT_DIR` env override for callers who want a custom path
@@ -112,12 +114,12 @@ Currently writes to `~/Downloads/EOD-OptionFlow/bot-eod-report-{date}.csv` — c
 
 ## Files to create / modify
 
-| Path | Action | Phase |
-|---|---|---|
-| `docs/superpowers/specs/fulltape-archive-2026-05-07.md` | NEW (this doc) | 0 |
-| `scripts/ingest-fulltape.py` | NEW | 2 |
-| `scripts/download-fulltape.sh` | MODIFY (output paths) | 3 |
-| `Makefile` | MODIFY (target + nightly hook) | 4 |
+| Path                                                    | Action                         | Phase |
+| ------------------------------------------------------- | ------------------------------ | ----- |
+| `docs/superpowers/specs/fulltape-archive-2026-05-07.md` | NEW (this doc)                 | 0     |
+| `scripts/ingest-fulltape.py`                            | NEW                            | 2     |
+| `scripts/download-fulltape.sh`                          | MODIFY (output paths)          | 3     |
+| `Makefile`                                              | MODIFY (target + nightly hook) | 4     |
 
 ## Data dependencies
 

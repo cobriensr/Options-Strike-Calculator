@@ -6,7 +6,6 @@ Excluded: 53 tickers already in the universe.
 
 Volume floor: 50,000 prints across the window.
 
-
 ## Ranked candidates by qualifying-fire count
 
     ticker      volume  chains  raw_fires  qualifying  per_day
