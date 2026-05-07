@@ -30,6 +30,8 @@ SHELL := /bin/bash
 PYTHON      := ml/.venv/bin/python
 INPUT_DIR   ?= $(HOME)/Downloads/EOD-OptionFlow
 PARQUET_DIR ?= $(HOME)/Desktop/Bot-Eod-parquet
+INPUT_DIR_FULLTAPE   ?= $(HOME)/Downloads/EOD-FullTape
+PARQUET_DIR_FULLTAPE ?= $(HOME)/Desktop/Eod-Full-Tape-parquet
 ENV_FILE    := .env.local
 
 # Auto-detect the latest CSV's date if DATE is not provided.
@@ -40,7 +42,7 @@ DATE        ?= $(shell ls -1 $(INPUT_DIR)/bot-eod-report-*.csv 2>/dev/null \
 
 CSV_PATH    := $(INPUT_DIR)/bot-eod-report-$(DATE).csv
 
-.PHONY: help nightly nightly-resume analyze ingest plots backfill-flow enrich refit update tune check dry-run clean download-fulltape
+.PHONY: help nightly nightly-resume analyze ingest plots backfill-flow enrich refit update tune check dry-run clean download-fulltape ingest-fulltape
 
 help:
 	@echo "EOD options-flow pipeline targets:"
@@ -48,10 +50,14 @@ help:
 	@echo "  make nightly                  Run full pipeline (analyze → ingest → plots → enrich)"
 	@echo "                                Auto-falls-back to plots+enrich if the parquet"
 	@echo "                                already exists for the latest date (CSV consumed"
-	@echo "                                by a previous invocation)."
+	@echo "                                by a previous invocation). Also captures the UW"
+	@echo "                                Full Tape as a best-effort final step (soft-fail)."
 	@echo "  make nightly DATE=YYYY-MM-DD  Run pipeline for a specific date"
-	@echo "  make download-fulltape        Manually download UW Full Tape zip → raw CSV (separate"
-	@echo "                                schema from the bot-eod-report; does NOT feed into nightly)"
+	@echo "  make download-fulltape        Download UW Full Tape zip → ~/Downloads/EOD-FullTape/"
+	@echo "                                fulltape-DATE.csv (40-col raw tape, separate schema"
+	@echo "                                from bot-eod-report). Feeds 'make ingest-fulltape'."
+	@echo "  make ingest-fulltape          Download + convert UW Full Tape CSV → parquet"
+	@echo "                                (auxiliary archive; ~/Desktop/Eod-Full-Tape-parquet)"
 	@echo "  make analyze                  EDA only (does NOT delete the CSV)"
 	@echo "  make ingest                   CSV → parquet → Blob upload + delete CSV"
 	@echo "  make plots                    Regenerate visualizations only (no CSV needed)"
@@ -205,6 +211,28 @@ download-fulltape:
 	set -a && source $(ENV_FILE) && set +a && \
 	  bash scripts/download-fulltape.sh "$$FETCH_DATE"
 
+# Download + ingest the UW Full Tape into the auxiliary parquet archive.
+# Standalone — runnable on its own to retry after a UW posting lag, and
+# also hooked into `nightly` as a best-effort final step (soft-fail). The
+# download step is idempotent: if today's CSV is already present it skips
+# the HTTP fetch. The ingest writes
+# ~/Desktop/Eod-Full-Tape-parquet/{date}-fulltape.parquet and deletes the
+# source CSV on success (unless --keep-csv was passed manually).
+ingest-fulltape:
+	@FETCH_DATE="$(DATE)"; \
+	if [[ -z "$$FETCH_DATE" ]]; then FETCH_DATE=$$(date +%Y-%m-%d); fi; \
+	echo ""; \
+	echo "════════════════════════════════════════════════════════════════"; \
+	echo "  STEP — ingest-fulltape (UW Full Tape → CSV → Parquet) for $$FETCH_DATE"; \
+	echo "════════════════════════════════════════════════════════════════"; \
+	if [[ ! -f "$(ENV_FILE)" ]]; then \
+	  echo "  ❌ $(ENV_FILE) not found — needed for UW_API_KEY"; \
+	  exit 2; \
+	fi; \
+	set -a && source $(ENV_FILE) && set +a && \
+	  bash scripts/download-fulltape.sh "$$FETCH_DATE" && \
+	  $(PYTHON) scripts/ingest-fulltape.py "$$FETCH_DATE"
+
 # Resume target — `plots + enrich` only. Useful when the CSV has
 # already been consumed by `ingest` in a previous invocation but the
 # parquet is still on disk. `nightly` auto-dispatches into this when
@@ -225,6 +253,11 @@ nightly:
 	  echo "   Drop a bot-eod-report-YYYY-MM-DD.csv first."; \
 	  exit 2; \
 	fi
+	@# Best-effort capture of UW's Full Tape into the parallel parquet archive.
+	@# Soft-fails: a UW posting lag, network blip, or schema drift logs a warning
+	@# but does NOT abort `nightly` and does NOT block a chained `make update`.
+	@# Re-run via `make ingest-fulltape` once UW posts.
+	$(MAKE) --no-print-directory ingest-fulltape || echo "⚠️  Full Tape ingest failed (UW lag or network); re-run with 'make ingest-fulltape' after UW posts. Bot-eod pipeline succeeded."
 	@# Final summary is printed by ml/src/whale_plots.py (the `plots` step) so
 	@# the date is sourced from the loaded data, not from `$(DATE)` — which
 	@# resolves to empty here because `?= $(shell ls ...)` re-runs after the

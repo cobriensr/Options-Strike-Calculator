@@ -2,12 +2,16 @@
 # Downloads the Unusual Whales Full Tape zip for a given trading date,
 # unzips it, and places the CSV at:
 #
-#     ~/Downloads/EOD-OptionFlow/bot-eod-report-{date}.csv
+#     ~/Downloads/EOD-FullTape/fulltape-{date}.csv
 #
-# That path is what the Makefile `nightly` target expects to feed into
-# scripts/ingest-flow.py. The downloaded CSV is consumed by `make ingest`,
-# converted to a parquet at ~/Desktop/Bot-Eod-parquet/{date}-trades.parquet,
-# then the source CSV is deleted.
+# That path is what scripts/ingest-fulltape.py expects. The Full Tape is
+# the auxiliary archive feed (40 cols, raw transaction tape) parallel to
+# bot-eod-report — see docs/superpowers/specs/fulltape-archive-2026-05-07.md.
+# The downloaded CSV is consumed by `make ingest-fulltape`, converted to
+# ~/Desktop/Eod-Full-Tape-parquet/{date}-fulltape.parquet, then deleted
+# (unless --keep-csv was passed to the ingest script).
+#
+# Override the destination dir with INPUT_DIR=... if needed.
 #
 # Usage:
 #   UW_API_KEY=xxx bash scripts/download-fulltape.sh 2026-05-07
@@ -26,8 +30,8 @@ if [[ ! "$DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
   exit 2
 fi
 
-INPUT_DIR="${INPUT_DIR:-$HOME/Downloads/EOD-OptionFlow}"
-TARGET="$INPUT_DIR/bot-eod-report-${DATE}.csv"
+INPUT_DIR="${INPUT_DIR:-$HOME/Downloads/EOD-FullTape}"
+TARGET="$INPUT_DIR/fulltape-${DATE}.csv"
 
 if [[ -f "$TARGET" ]]; then
   SIZE=$(du -h "$TARGET" | cut -f1)
