@@ -19,11 +19,20 @@
  * inserted any slot yet" — never a blank panel.
  */
 
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import { SectionBox } from '../ui';
 import { theme } from '../../themes';
 import { formatTimeCT } from '../../utils/component-formatters';
-import type { PeriscopeView, RankedRow, RankedRowSimple } from '../../hooks/usePeriscopeExposure';
+import type {
+  PeriscopeView,
+  RankedRow,
+  RankedRowSimple,
+} from '../../hooks/usePeriscopeExposure';
+import {
+  computeTradePlan,
+  type TradePlan,
+  type Verdict,
+} from '../../utils/periscope-trade-plan';
 
 interface PeriscopePanelProps {
   view: PeriscopeView | null;
@@ -58,7 +67,9 @@ function RankedCell({ row }: { row: RankedRow | RankedRowSimple }) {
   return (
     <span className="font-mono text-[12px]">
       <span style={{ color: theme.text }}>{row.strike}</span>{' '}
-      <span style={{ color: colorForValue(row.value) }}>{fmtSigned(row.value)}</span>
+      <span style={{ color: colorForValue(row.value) }}>
+        {fmtSigned(row.value)}
+      </span>
       {ptsLabel && <span style={{ color: theme.textMuted }}>{ptsLabel}</span>}
     </span>
   );
@@ -81,7 +92,10 @@ function PeriscopePanelInner({
   const headerRight = (
     <div className="flex items-center gap-3">
       {asOf && (
-        <span className="font-mono text-[10px]" style={{ color: theme.textMuted }}>
+        <span
+          className="font-mono text-[10px]"
+          style={{ color: theme.textMuted }}
+        >
           {formatTimeCT(asOf, { fallback: '' })} CT
         </span>
       )}
@@ -89,7 +103,7 @@ function PeriscopePanelInner({
         type="button"
         onClick={onRefresh}
         disabled={isLoading}
-        className="rounded px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider disabled:opacity-50"
+        className="rounded px-2 py-0.5 font-mono text-[10px] tracking-wider uppercase disabled:opacity-50"
         style={{
           color: theme.accent,
           backgroundColor: theme.accentBg,
@@ -133,22 +147,148 @@ function PeriscopePanelInner({
 }
 
 function PeriscopeBody({ view }: { view: PeriscopeView }) {
+  const plan = useMemo(() => computeTradePlan(view), [view]);
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-baseline justify-between font-mono text-[11px]">
         <span style={{ color: theme.textSecondary }}>
           Slot {formatTimeCT(view.capturedAt)} CT · {view.expiry}
         </span>
-        <span style={{ color: theme.text }}>
-          spot {view.spot.toFixed(2)}
-        </span>
+        <span style={{ color: theme.text }}>spot {view.spot.toFixed(2)}</span>
       </div>
+
+      <TradePlanSection plan={plan} />
 
       {view.cone && <ConeSection view={view} />}
       <GammaSection view={view} />
       <CharmSection view={view} />
       {view.vanna.topByAbs.length > 0 && <VannaSection view={view} />}
       {view.signFlips.length > 0 && <SignFlipsSection view={view} />}
+    </div>
+  );
+}
+
+function verdictColor(v: Verdict): string {
+  if (v === 'safe') return theme.green;
+  if (v === 'conditional') return theme.caution;
+  return theme.red;
+}
+
+function regimeColor(regime: TradePlan['regime']): string {
+  if (regime === 'cone-breach-up') return theme.green;
+  if (regime === 'cone-breach-down') return theme.red;
+  if (regime === 'pin') return theme.accent;
+  if (regime === 'drift-and-cap') return theme.text;
+  return theme.textMuted;
+}
+
+function fmtLevel(n: number | null): string {
+  if (n == null) return '—';
+  return n.toFixed(0);
+}
+
+function TradePlanSection({ plan }: { plan: TradePlan }) {
+  return (
+    <div
+      className="flex flex-col gap-2 rounded-md border p-3"
+      style={{
+        borderColor: theme.border,
+        backgroundColor: theme.surfaceAlt,
+      }}
+    >
+      <div className="flex items-baseline justify-between gap-3">
+        <h3
+          className="font-sans text-[10px] font-bold tracking-[0.12em] uppercase"
+          style={{ color: theme.textTertiary }}
+        >
+          Trade Plan
+        </h3>
+        <div className="flex items-center gap-2 font-mono text-[10px]">
+          <span
+            className="rounded px-1.5 py-0.5 uppercase tracking-wider"
+            style={{
+              color: regimeColor(plan.regime),
+              backgroundColor: `color-mix(in srgb, ${regimeColor(plan.regime)} 15%, transparent)`,
+            }}
+          >
+            {plan.regime}
+          </span>
+          <span
+            className="rounded px-1.5 py-0.5 uppercase tracking-wider"
+            style={{
+              color: theme.text,
+              backgroundColor: theme.chipBg,
+            }}
+          >
+            bias: {plan.bias}
+          </span>
+        </div>
+      </div>
+
+      <p
+        className="font-mono text-[11px] leading-snug"
+        style={{ color: theme.textSecondary }}
+      >
+        {plan.summary}
+      </p>
+
+      <DirectionalRow label="LONG" plan={plan.long} />
+      <DirectionalRow label="SHORT" plan={plan.short} />
+
+      {plan.waitZone != null && (
+        <div className="flex items-baseline gap-2 font-mono text-[11px]">
+          <span
+            className="font-bold"
+            style={{ color: theme.textTertiary }}
+          >
+            WAIT
+          </span>
+          <span style={{ color: theme.textMuted }}>{plan.waitZone}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DirectionalRow({
+  label,
+  plan,
+}: {
+  label: string;
+  plan: TradePlan['long'];
+}) {
+  const color = verdictColor(plan.verdict);
+  return (
+    <div className="flex flex-col gap-0.5 font-mono text-[11px]">
+      <div className="flex items-baseline gap-2">
+        <span className="font-bold" style={{ color: theme.text }}>
+          {label}
+        </span>
+        <span
+          className="rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wider"
+          style={{
+            color,
+            backgroundColor: `color-mix(in srgb, ${color} 15%, transparent)`,
+          }}
+        >
+          {plan.verdict}
+        </span>
+        {plan.verdict !== 'avoid' && (
+          <span
+            className="text-[10px]"
+            style={{ color: theme.textSecondary }}
+          >
+            trigger {fmtLevel(plan.trigger)} · stop {fmtLevel(plan.stop)} ·
+            target {fmtLevel(plan.target)}
+          </span>
+        )}
+      </div>
+      <span
+        className="leading-snug"
+        style={{ color: theme.textMuted }}
+      >
+        {plan.reason}
+      </span>
     </div>
   );
 }
@@ -167,7 +307,10 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex items-baseline justify-between">
-      <span className="font-mono text-[11px]" style={{ color: theme.textSecondary }}>
+      <span
+        className="font-mono text-[11px]"
+        style={{ color: theme.textSecondary }}
+      >
         {label}
       </span>
       <span className="font-mono text-[12px]">{value}</span>
@@ -184,7 +327,8 @@ function ConeSection({ view }: { view: PeriscopeView }) {
         label="Bounds"
         value={
           <span style={{ color: theme.text }}>
-            {cone.coneLower.toFixed(1)} — {cone.coneUpper.toFixed(1)} ({cone.coneWidth.toFixed(0)} pts)
+            {cone.coneLower.toFixed(1)} — {cone.coneUpper.toFixed(1)} (
+            {cone.coneWidth.toFixed(0)} pts)
           </span>
         }
       />
@@ -204,7 +348,8 @@ function ConeSection({ view }: { view: PeriscopeView }) {
           label="Breach"
           value={
             <span style={{ color: theme.textSecondary }}>
-              none — {(cone.coneUpper - view.spot).toFixed(0)} pts to upper, {(view.spot - cone.coneLower).toFixed(0)} pts to lower
+              none — {(cone.coneUpper - view.spot).toFixed(0)} pts to upper,{' '}
+              {(view.spot - cone.coneLower).toFixed(0)} pts to lower
             </span>
           }
         />
@@ -215,7 +360,9 @@ function ConeSection({ view }: { view: PeriscopeView }) {
             label={`${b.direction.toUpperCase()} breach`}
             value={
               <span style={{ color: theme.caution }}>
-                {formatTimeCT(b.breachTime)} CT · spot {b.spotAtBreach.toFixed(2)} ({fmtSigned(b.ptsPastBound)} pts past)
+                {formatTimeCT(b.breachTime)} CT · spot{' '}
+                {b.spotAtBreach.toFixed(2)} ({fmtSigned(b.ptsPastBound)} pts
+                past)
               </span>
             }
           />
@@ -302,7 +449,11 @@ function CharmSection({ view }: { view: PeriscopeView }) {
       {view.charm.charmZeroStrike != null && (
         <Row
           label="Charm-zero strike"
-          value={<span style={{ color: theme.text }}>{view.charm.charmZeroStrike}</span>}
+          value={
+            <span style={{ color: theme.text }}>
+              {view.charm.charmZeroStrike}
+            </span>
+          }
         />
       )}
     </div>
@@ -338,9 +489,13 @@ function SignFlipsSection({ view }: { view: PeriscopeView }) {
         >
           <span style={{ color: theme.textSecondary }}>{f.strike}</span>
           <span>
-            <span style={{ color: colorForValue(f.from) }}>{fmtSigned(f.from)}</span>
+            <span style={{ color: colorForValue(f.from) }}>
+              {fmtSigned(f.from)}
+            </span>
             <span style={{ color: theme.textMuted }}> → </span>
-            <span style={{ color: colorForValue(f.to) }}>{fmtSigned(f.to)}</span>
+            <span style={{ color: colorForValue(f.to) }}>
+              {fmtSigned(f.to)}
+            </span>
           </span>
         </div>
       ))}
