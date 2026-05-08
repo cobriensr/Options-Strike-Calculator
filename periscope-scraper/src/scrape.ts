@@ -999,10 +999,46 @@ export async function scrapeBackfill(
       { targetDate, startHhmm: startNorm, endHhmm: endNorm },
       'backfill: starting',
     );
-    await loadAndPrepPage(page);
-    await walkDateToTarget(page, targetDate);
-    // Settle after date change; Periscope re-fetches data here.
-    await page.waitForTimeout(1_500);
+
+    // Backfill prep: same headless quirk live mode ran into — UW's
+    // DTE=[0,0] popover renders empty in automated browsers for the
+    // CURRENT trading day even with our anti-detection flags on. Walk
+    // around it by using Single-Expiry mode (which DOES work) when
+    // the target is today. Single-Expiry doesn't list past dates, so
+    // historical backfills continue to use the original DTE=[0,0]
+    // path (which has been validated against a 17K-row May 7
+    // backfill).
+    const isTodayBackfill = targetDate === todayInCT();
+    if (isTodayBackfill) {
+      logger.info(
+        { url: UW_PERISCOPE_URL },
+        'backfill (today): navigating + using Single-Expiry mode',
+      );
+      await page.goto(UW_PERISCOPE_URL, { waitUntil: 'networkidle' });
+      const firstRow = page.locator('tr.table_row__wxw5u').first();
+      const emptyState = page.getByText(/no data available/i).first();
+      try {
+        await Promise.race([
+          firstRow.waitFor({ state: 'visible', timeout: 20_000 }),
+          emptyState.waitFor({ state: 'visible', timeout: 20_000 }),
+        ]);
+      } catch {
+        logger.warn('initial page render did not settle within 20s');
+      }
+      const ok = await setExpirySingle(page, targetDate);
+      if (!ok) {
+        throw new Error(
+          'backfill (today): setExpirySingle failed — UW UI may have changed',
+        );
+      }
+      await waitForTableReady(page);
+    } else {
+      await loadAndPrepPage(page);
+      await walkDateToTarget(page, targetDate);
+      // Settle after date change; Periscope re-fetches data here.
+      await page.waitForTimeout(1_500);
+    }
+
     await walkTimeframeToTarget(page, startNorm);
     await page.waitForTimeout(1_500);
 
