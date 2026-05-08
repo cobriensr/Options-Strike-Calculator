@@ -272,6 +272,31 @@ def silent_boom_tier(score: int) -> str:
     return 'tier3'
 
 
+def fetch_market_tide_for_day(conn, date_str: str) -> pd.DataFrame:
+    """Pull every market_tide tick for the trading day plus a 30-min
+    pre-buffer (so we can find the latest tick at or before the
+    earliest bucket of the day). Returned sorted ascending."""
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT timestamp, ncp, npp
+        FROM flow_data
+        WHERE source = 'market_tide'
+          AND timestamp >= (%s::date - INTERVAL '30 minutes')::timestamptz
+          AND timestamp < (%s::date + INTERVAL '1 day')::timestamptz
+        ORDER BY timestamp ASC
+        """,
+        (date_str, date_str),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return pd.DataFrame(columns=['timestamp', 'diff'])
+    df = pd.DataFrame(rows, columns=['timestamp', 'ncp', 'npp'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
+    df['diff'] = df['ncp'].astype(float) - df['npp'].astype(float)
+    return df[['timestamp', 'diff']]
+
+
 def insert_fires(conn, rows: list[tuple]) -> int:
     if not rows:
         return 0
@@ -284,7 +309,7 @@ def insert_fires(conn, rows: list[tuple]) -> int:
           option_type, strike, expiry, dte,
           spike_volume, baseline_volume, spike_ratio,
           ask_pct, vol_oi, entry_price, open_interest,
-          score, score_tier
+          score, score_tier, mkt_tide_diff
         )
         VALUES %s
         ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING
@@ -294,7 +319,7 @@ def insert_fires(conn, rows: list[tuple]) -> int:
         template=(
             '(%s::date, %s::timestamptz, %s, %s, %s, %s::numeric, '
             '%s::date, %s, %s, %s::numeric, %s::numeric, %s::numeric, '
-            '%s::numeric, %s::numeric, %s, %s::smallint, %s)'
+            '%s::numeric, %s::numeric, %s, %s::smallint, %s, %s)'
         ),
         page_size=500,
         fetch=True,
@@ -334,6 +359,27 @@ def main() -> None:
         if bucketed.empty:
             print(f'  [{date_str}] empty parquet — skipping')
             continue
+        # Pull market_tide ticks for the day once. Each fire's
+        # mkt_tide_diff is the latest tick at or before bucket_ct,
+        # capped to a 30-min staleness window — same semantics as the
+        # cron's tideDiffAt() and the lottery cron's macro snapshot.
+        tide_df = fetch_market_tide_for_day(conn, date_str)
+        if not tide_df.empty:
+            tide_df = tide_df.sort_values('timestamp').reset_index(drop=True)
+
+        def lookup_tide_diff(bucket_ts: pd.Timestamp) -> float | None:
+            if tide_df.empty:
+                return None
+            # Latest tick whose timestamp <= bucket_ts.
+            mask = tide_df['timestamp'] <= bucket_ts
+            if not mask.any():
+                return None
+            tick_idx = mask.idxmax() if False else mask[mask].index[-1]
+            tick_ts = tide_df.loc[tick_idx, 'timestamp']
+            if (bucket_ts - tick_ts).total_seconds() > 30 * 60:
+                return None
+            return float(tide_df.loc[tick_idx, 'diff'])
+
         rows_to_insert: list[tuple] = []
         fires_today = 0
         for chain_id, sub in bucketed.groupby('option_chain_id', sort=False):
@@ -385,6 +431,10 @@ def main() -> None:
                     option_type=opt_type,
                 )
                 tier = silent_boom_tier(score)
+                bucket_ts = f['bucket']
+                if bucket_ts.tz is None:
+                    bucket_ts = bucket_ts.tz_localize('UTC')
+                tide_diff = lookup_tide_diff(bucket_ts)
                 rows_to_insert.append((
                     date_str,
                     f['bucket'].isoformat(),
@@ -393,7 +443,7 @@ def main() -> None:
                     f['spike_volume'], f['baseline_volume'], f['spike_ratio'],
                     f['ask_pct'], f['vol_oi'], f['entry_price'],
                     f['open_interest'],
-                    score, tier,
+                    score, tier, tide_diff,
                 ))
                 fires_today += 1
         inserted = insert_fires(conn, rows_to_insert)

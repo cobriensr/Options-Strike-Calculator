@@ -208,6 +208,46 @@ export default withCronInstrumentation(
       }
     }
 
+    // Pull market_tide ticks across the scan window once. Each fire's
+    // mkt_tide_diff is the latest market_tide tick at or before the
+    // bucket time within 30 min — same window lottery uses. Single
+    // round-trip vs. a per-fire LATERAL.
+    const tideTicks = (await db`
+      SELECT
+        EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
+        ncp, npp
+      FROM flow_data
+      WHERE source = 'market_tide'
+        AND timestamp >= NOW() - (
+          (${SCAN_WINDOW_MIN}::int + 30) * INTERVAL '1 minute'
+        )
+      ORDER BY timestamp ASC
+    `) as { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[];
+    /** Sorted ascending by ts_ms — binary-search for the latest tick
+     *  at or before a target ms; returns the tide diff (ncp - npp) or
+     *  null when no tick falls inside the 30-min window. */
+    const tideDiffAt = (targetMs: number): number | null => {
+      if (tideTicks.length === 0) return null;
+      let lo = 0;
+      let hi = tideTicks.length - 1;
+      let found = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const ms = Number(tideTicks[mid]!.ts_ms);
+        if (ms <= targetMs) {
+          found = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      if (found < 0) return null;
+      const tick = tideTicks[found]!;
+      const tickMs = Number(tick.ts_ms);
+      if (targetMs - tickMs > 30 * 60 * 1000) return null;
+      return Number(tick.ncp) - Number(tick.npp);
+    };
+
     let totalFires = 0;
     let inserted = 0;
     let skippedShort = 0;
@@ -261,20 +301,22 @@ export default withCronInstrumentation(
         });
         const tier = silentBoomScoreTier(score);
 
+        const mktTideDiff = tideDiffAt(f.bucketTs.getTime());
+
         const result = (await db`
           INSERT INTO silent_boom_alerts (
             date, bucket_ct, option_chain_id, underlying_symbol,
             option_type, strike, expiry, dte,
             spike_volume, baseline_volume, spike_ratio,
             ask_pct, vol_oi, entry_price, open_interest,
-            score, score_tier
+            score, score_tier, mkt_tide_diff
           ) VALUES (
             ${ctx.today}::date, ${f.bucketTs.toISOString()},
             ${g.optionChain}, ${g.ticker},
             ${g.optionType}, ${g.strike}, ${g.expiry}::date, ${dte},
             ${f.spikeVolume}, ${f.baselineVolume}, ${f.spikeRatio},
             ${f.askPct}, ${f.volOi}, ${f.entryPrice}, ${f.openInterest},
-            ${score}, ${tier}
+            ${score}, ${tier}, ${mktTideDiff}
           )
           ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING
           RETURNING id

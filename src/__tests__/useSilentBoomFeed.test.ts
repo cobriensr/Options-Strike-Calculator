@@ -179,6 +179,7 @@ describe('useSilentBoomFeed', () => {
               openInterest: 5000,
               score: 24,
               scoreTier: 'tier1',
+              mktTideDiff: 5000,
               outcomes: {
                 peakCeilingPct: 25,
                 minutesToPeak: 18,

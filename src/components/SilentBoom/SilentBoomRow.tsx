@@ -88,6 +88,30 @@ const optionTypeBadge = (t: 'C' | 'P'): string =>
     : 'border-red-500/40 bg-red-950/30 text-red-200';
 
 /**
+ * Market Tide badge — display-only macro context. Same shape as
+ * lottery's tideBadge: arrow + sign on the NCP - NPP value snapshotted
+ * at the spike-bucket time. Per lottery's spec Appendix A this is
+ * informational regime context, never a selection signal.
+ */
+const tideBadge = (
+  diff: number | null,
+): { label: string; cls: string; tooltip: string } | null => {
+  if (diff == null) return null;
+  const arrow = diff > 0 ? '⬆' : diff < 0 ? '⬇' : '→';
+  const cls =
+    diff > 0
+      ? 'border-green-500/40 bg-green-950/30 text-green-200'
+      : diff < 0
+        ? 'border-red-500/40 bg-red-950/30 text-red-200'
+        : 'border-neutral-700 bg-neutral-900 text-neutral-300';
+  return {
+    label: `Tide ${arrow}`,
+    cls,
+    tooltip: `Market Tide NCP - NPP at the spike-bucket time = ${diff.toFixed(0)}. Display-only macro context, not a selection signal.`,
+  };
+};
+
+/**
  * Tier badge — fire-emoji conviction signal mirroring LotteryRow's
  * pattern. Tier 1 (~5% of fires) historically lands ~56% high-peak;
  * Tier 3 ~8%. See api/_lib/silent-boom-score.ts for calibration.
@@ -161,6 +185,7 @@ function areRowsEqual(prev: SilentBoomRowProps, next: SilentBoomRowProps) {
   if (a.id !== b.id) return false;
   if (a.score !== b.score) return false;
   if (a.scoreTier !== b.scoreTier) return false;
+  if (a.mktTideDiff !== b.mktTideDiff) return false;
   if (a.outcomes.enrichedAt !== b.outcomes.enrichedAt) return false;
   if (a.outcomes.peakCeilingPct !== b.outcomes.peakCeilingPct) return false;
   if (a.outcomes.realized60mPct !== b.outcomes.realized60mPct) return false;
@@ -178,6 +203,7 @@ export const SilentBoomRow = memo(function SilentBoomRow({
   const mtp = alert.outcomes.minutesToPeak;
   const spike = spikeBadge(alert.spikeRatio);
   const tier = tierBadge(alert.scoreTier, alert.score);
+  const tide = tideBadge(alert.mktTideDiff);
 
   const [expanded, setExpanded] = useState(false);
 
@@ -336,6 +362,16 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             {(alert.askPct * 100).toFixed(0)}%
           </span>
         </span>
+
+        {/* Market Tide context — display-only. */}
+        {tide && (
+          <span
+            className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${tide.cls}`}
+            title={tide.tooltip}
+          >
+            {tide.label}
+          </span>
+        )}
 
         <span className="flex-1" />
 

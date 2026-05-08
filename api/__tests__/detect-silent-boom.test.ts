@@ -132,10 +132,12 @@ describe('detect-silent-boom handler', () => {
   });
 
   it('inserts an alert when the silent-boom pattern matches', async () => {
-    // Sequence: SELECT ticks → SELECT prior fires (empty) → INSERT.
+    // Sequence: SELECT ticks → SELECT prior fires (empty) →
+    // SELECT market_tide ticks (empty) → INSERT.
     mockSql
       .mockResolvedValueOnce(fireableSilentBoomStream())
       .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // tide ticks
       .mockResolvedValueOnce([{ id: 42 }]); // insert
 
     const req = mockRequest({
@@ -161,6 +163,7 @@ describe('detect-silent-boom handler', () => {
     // bails with skippedShort before any prior-fires lookup or insert.
     const shortStream = fireableSilentBoomStream().slice(0, 3);
     mockSql.mockResolvedValueOnce(shortStream);
+    mockSql.mockResolvedValueOnce([]); // tide ticks (always queried)
 
     const req = mockRequest({
       method: 'GET',
@@ -176,9 +179,9 @@ describe('detect-silent-boom handler', () => {
       totalFires: 0,
       inserted: 0,
     });
-    // Just the ticks SELECT — chain failed the eligibility filter so
-    // no prior-fires lookup happens.
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    // ticks SELECT + tide ticks SELECT (no eligible chains so the
+    // prior-fires query is skipped, but tide ticks always queries).
+    expect(mockSql).toHaveBeenCalledTimes(2);
   });
 
   it('skips chains whose max OI is below the minOi floor', async () => {
@@ -190,7 +193,8 @@ describe('detect-silent-boom handler', () => {
     }));
     mockSql
       .mockResolvedValueOnce(lowOiStream) // ticks
-      .mockResolvedValueOnce([]); // prior fires (chain passed bucket-count gate)
+      .mockResolvedValueOnce([]) // prior fires (chain passed bucket-count gate)
+      .mockResolvedValueOnce([]); // tide ticks
 
     const req = mockRequest({
       method: 'GET',
@@ -212,6 +216,7 @@ describe('detect-silent-boom handler', () => {
     mockSql
       .mockResolvedValueOnce(fireableSilentBoomStream())
       .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // tide ticks
       .mockResolvedValueOnce([]); // insert returns no rows = ON CONFLICT hit
 
     const req = mockRequest({
@@ -241,7 +246,8 @@ describe('detect-silent-boom handler', () => {
           option_chain_id: 'SNDK260507C01175000',
           last_ms: String(priorMs),
         },
-      ]); // prior fire — cooldown active
+      ]) // prior fire — cooldown active
+      .mockResolvedValueOnce([]); // tide ticks
 
     const req = mockRequest({
       method: 'GET',
@@ -258,9 +264,61 @@ describe('detect-silent-boom handler', () => {
       inserted: 0,
       priorSeeds: 1,
     });
-    // Exactly two SQL calls — ticks SELECT and prior-fires lookup. No
-    // insert because the cooldown gate suppressed the fire entirely.
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    // Three SQL calls — ticks SELECT, prior-fires lookup, tide ticks
+    // SELECT. No insert because the cooldown gate suppressed the fire
+    // entirely.
+    expect(mockSql).toHaveBeenCalledTimes(3);
+  });
+
+  it('binds the latest market_tide tick (NCP - NPP) to the INSERT', async () => {
+    // Spike bucket at 13:20:00Z. Seed a market_tide tick at 13:18Z
+    // (2 min before, inside the 30-min staleness window) with
+    // NCP=8000, NPP=2000 — diff +6000.
+    const tickMs = Date.parse('2026-05-07T13:18:00Z');
+    mockSql
+      .mockResolvedValueOnce(fireableSilentBoomStream())
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([
+        { ts_ms: String(tickMs), ncp: '8000', npp: '2000' },
+      ]) // tide ticks
+      .mockResolvedValueOnce([{ id: 1 }]); // insert
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(mockSql).toHaveBeenCalledTimes(4);
+    // The INSERT is the last call. Tide diff is the last bound value.
+    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
+    const tideDiff = insertCall.at(-1);
+    expect(tideDiff).toBe(6000);
+  });
+
+  it('binds null tide diff when the latest tick is older than 30 minutes', async () => {
+    // Spike bucket at 13:20:00Z. Tide tick at 12:00Z — 80 min before,
+    // outside the 30-min staleness window, so tide diff should be null.
+    const staleTickMs = Date.parse('2026-05-07T12:00:00Z');
+    mockSql
+      .mockResolvedValueOnce(fireableSilentBoomStream())
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { ts_ms: String(staleTickMs), ncp: '8000', npp: '2000' },
+      ])
+      .mockResolvedValueOnce([{ id: 2 }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
+    expect(insertCall.at(-1)).toBeNull();
   });
 
   it('still fires when prior-fire is older than the 60-min cooldown', async () => {
@@ -275,6 +333,7 @@ describe('detect-silent-boom handler', () => {
           last_ms: String(priorMs),
         },
       ])
+      .mockResolvedValueOnce([]) // tide ticks
       .mockResolvedValueOnce([{ id: 99 }]); // insert
 
     const req = mockRequest({

@@ -4058,4 +4058,13 @@ export const MIGRATIONS: Migration[] = [
             ON silent_boom_alerts (date DESC, score_tier)`,
     ],
   },
+  {
+    id: 136,
+    description:
+      'Add mkt_tide_diff column to silent_boom_alerts. Snapshot of the Market Tide NCP - NPP at the spike-bucket time (sourced from flow_data WHERE source = market_tide, latest tick at or before bucket_ct within 30min). Display-only macro context surfaced as the Tide ⬆/⬇ badge on each row — same pattern as lottery_finder_fires.macro.mkt_tide_diff. Not a selection signal. Populated forward by the detect-silent-boom cron and backfill_silent_boom_from_parquet.py; existing rows are UPDATEd in a one-shot via the migration helper script (out-of-band).',
+    statements: (sql) => [
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS mkt_tide_diff NUMERIC`,
+    ],
+  },
 ];

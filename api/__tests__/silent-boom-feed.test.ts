@@ -49,6 +49,7 @@ interface AlertFixture {
   enriched_at: string | null;
   score: number | null;
   score_tier: 'tier1' | 'tier2' | 'tier3' | null;
+  mkt_tide_diff: string | null;
   inserted_at: string;
 }
 
@@ -79,6 +80,7 @@ function makeAlert(overrides: Partial<AlertFixture> = {}): AlertFixture {
     enriched_at: '2026-05-07T16:00:00Z',
     score: 24,
     score_tier: 'tier1',
+    mkt_tide_diff: '5000',
     inserted_at: '2026-05-07T13:30:30Z',
     ...overrides,
   };
@@ -89,7 +91,7 @@ describe('silent-boom-feed handler', () => {
     vi.resetAllMocks();
   });
 
-  it('returns alerts with the new score + scoreTier fields', async () => {
+  it('returns alerts with the new score + scoreTier + mktTideDiff fields', async () => {
     mockSql
       .mockResolvedValueOnce([{ n: 1 }]) // count
       .mockResolvedValueOnce([makeAlert()]); // list
@@ -100,11 +102,34 @@ describe('silent-boom-feed handler', () => {
 
     expect(res._status).toBe(200);
     const body = res._json as {
-      alerts: { score: number | null; scoreTier: string | null }[];
+      alerts: {
+        score: number | null;
+        scoreTier: string | null;
+        mktTideDiff: number | null;
+      }[];
       total: number;
     };
     expect(body.total).toBe(1);
-    expect(body.alerts[0]).toMatchObject({ score: 24, scoreTier: 'tier1' });
+    expect(body.alerts[0]).toMatchObject({
+      score: 24,
+      scoreTier: 'tier1',
+      mktTideDiff: 5000,
+    });
+  });
+
+  it('returns null mktTideDiff for rows lacking a market_tide tick', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([makeAlert({ mkt_tide_diff: null })]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      alerts: { mktTideDiff: number | null }[];
+    };
+    expect(body.alerts[0]?.mktTideDiff).toBeNull();
   });
 
   it('binds minScore into BOTH the count AND the list query (regression)', async () => {

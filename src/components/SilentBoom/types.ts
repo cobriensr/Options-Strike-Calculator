@@ -49,6 +49,9 @@ export interface SilentBoomAlert {
   score: number | null;
   /** 'tier1' | 'tier2' | 'tier3'; null only on legacy rows. */
   scoreTier: SilentBoomScoreTier | null;
+  /** Market Tide NCP - NPP at the spike-bucket time. Display-only
+   *  context — not a selection signal (lottery_finder convention). */
+  mktTideDiff: number | null;
   outcomes: SilentBoomOutcomes;
   insertedAt: string;
 }

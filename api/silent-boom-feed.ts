@@ -55,6 +55,7 @@ interface AlertRow {
   enriched_at: DbTimestamp | null;
   score: number | null;
   score_tier: 'tier1' | 'tier2' | 'tier3' | null;
+  mkt_tide_diff: DbNullableNumeric;
   inserted_at: DbTimestamp;
 }
 
@@ -79,6 +80,8 @@ interface SilentBoomAlertResponse {
   score: number | null;
   /** 'tier1' | 'tier2' | 'tier3' — null only on legacy rows. */
   scoreTier: 'tier1' | 'tier2' | 'tier3' | null;
+  /** Market Tide NCP - NPP at the spike-bucket time (display-only). */
+  mktTideDiff: number | null;
   outcomes: {
     peakCeilingPct: number | null;
     minutesToPeak: number | null;
@@ -316,6 +319,7 @@ export default async function handler(
       openInterest: r.open_interest,
       score: r.score,
       scoreTier: r.score_tier,
+      mktTideDiff: toNumOrNull(r.mkt_tide_diff),
       outcomes: {
         peakCeilingPct: toNumOrNull(r.peak_ceiling_pct),
         minutesToPeak: toNumOrNull(r.minutes_to_peak),
