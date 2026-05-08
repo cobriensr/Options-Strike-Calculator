@@ -45,14 +45,19 @@ RUN addgroup --system --gid 1001 scraper && \
 
 WORKDIR /app
 
-COPY --from=builder --chown=scraper:scraper /app/node_modules ./node_modules
-COPY --from=builder --chown=scraper:scraper /app/dist ./dist
+# Layer order matters for build caching: package.json + node_modules + the
+# Chromium install must precede COPY ./dist so a code-only rebuild (which
+# only invalidates the dist layer) keeps the ~120MB Chromium download cached.
 COPY --from=builder --chown=scraper:scraper /app/package.json ./package.json
+COPY --from=builder --chown=scraper:scraper /app/node_modules ./node_modules
 
 # Install Chromium into the scraper user's home so the runtime user owns it.
 USER scraper
 ENV PLAYWRIGHT_BROWSERS_PATH=/home/scraper/.cache/ms-playwright
 RUN npx playwright install chromium
+
+# Code is the most-frequently-changing input — copy it last.
+COPY --from=builder --chown=scraper:scraper /app/dist ./dist
 
 ENV NODE_ENV=production
 
