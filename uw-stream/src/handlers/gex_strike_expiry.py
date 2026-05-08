@@ -158,6 +158,23 @@ class GexStrikeExpiryHandler(Handler):
         # UPSERT: UW restates per-minute GEX as the trade tape settles,
         # so existing rows for the same (ticker, expiry, strike, minute)
         # must be overwritten with the latest values, not skipped.
+        #
+        # Sort rows by the conflict key BEFORE insert. The REST-side cron
+        # `/api/cron/fetch-gex-strike-expiry-etfs` (which writes to the
+        # same table on overlapping minutes) sorts its rows by strike
+        # before insert. Without a matching sort here the two writers
+        # acquire row locks in different orders → AB-BA deadlock,
+        # surfaced as `NeonDbError: deadlock detected` (Sentry issue 4G)
+        # on the cron and `asyncpg.protocol.bind_execute_many`
+        # DeadlockDetectedError (issue 4M) on this side. Canonicalizing
+        # the order here makes Postgres acquire locks in the same
+        # sequence regardless of which writer arrives first.
+        #
+        # WS arrival order (the original `rows` ordering) carries no
+        # data semantics — UPSERT is "last write wins per (ticker,
+        # expiry, strike, minute)" — so re-ordering before flush is
+        # safe.
+        rows.sort(key=lambda r: (r[0], r[1], r[2], r[3]))
         await db.bulk_upsert_replace(
             table=_TABLE,
             columns=_COLUMNS,

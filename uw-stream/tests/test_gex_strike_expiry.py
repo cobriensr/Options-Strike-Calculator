@@ -12,6 +12,7 @@ import json
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -176,3 +177,75 @@ class TestHelperFunctions:
 
         for c in _CONFLICT_COLS:
             assert c in _COLUMNS
+
+
+class TestFlushSortsByConflictKey:
+    """The REST cron `/api/cron/fetch-gex-strike-expiry-etfs` writes to
+    the same table with rows sorted by strike. Without a matching sort
+    here, two concurrent writers acquire row locks in different orders
+    and Postgres throws DeadlockDetected (Sentry 4G/4M).
+
+    Verify that `_flush` canonicalizes lock-acquisition order before
+    handing the batch to db.bulk_upsert_replace.
+    """
+
+    @pytest.mark.asyncio
+    async def test_flush_sorts_rows_by_ticker_expiry_strike_ts_minute(self):
+        handler = GexStrikeExpiryHandler()
+        # Deliberately disordered: same minute, mixed strikes, mixed
+        # tickers, mixed expiries. The expected output is lexicographic
+        # by (ticker, expiry, strike, ts_minute).
+        ts = datetime(2026, 5, 7, 19, 30, 0, tzinfo=UTC)
+        # Row tuples here are length-4 stand-ins for the 30-tuple — only
+        # the conflict-key positions are inspected by the sort.
+        unordered: list[tuple] = [
+            ("SPY", date(2026, 5, 8), Decimal("722"), ts),
+            ("QQQ", date(2026, 5, 7), Decimal("530"), ts),
+            ("SPY", date(2026, 5, 7), Decimal("723"), ts),
+            ("SPY", date(2026, 5, 7), Decimal("722"), ts),
+            ("QQQ", date(2026, 5, 7), Decimal("525"), ts),
+        ]
+        captured: list[list[tuple]] = []
+
+        def capture(**kwargs):
+            # AsyncMock awaits the result; a sync side_effect returning
+            # None makes the awaited mock resolve to None.
+            captured.append(list(kwargs["rows"]))
+
+        with patch("handlers.gex_strike_expiry.db") as mock_db:
+            mock_db.bulk_upsert_replace = AsyncMock(side_effect=capture)
+            await handler._flush(unordered)
+
+        assert len(captured) == 1
+        sorted_rows = captured[0]
+        # Lexicographic order: QQQ before SPY; within SPY, earlier
+        # expiry first; within (SPY, 2026-05-07), strike 722 then 723.
+        assert sorted_rows == [
+            ("QQQ", date(2026, 5, 7), Decimal("525"), ts),
+            ("QQQ", date(2026, 5, 7), Decimal("530"), ts),
+            ("SPY", date(2026, 5, 7), Decimal("722"), ts),
+            ("SPY", date(2026, 5, 7), Decimal("723"), ts),
+            ("SPY", date(2026, 5, 8), Decimal("722"), ts),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_flush_passes_through_table_columns_conflict(self):
+        # The sort is the only thing this layer adds; everything else
+        # must pass through to db.bulk_upsert_replace untouched so the
+        # SQL contract stays intact.
+        handler = GexStrikeExpiryHandler()
+        ts = datetime(2026, 5, 7, 19, 30, 0, tzinfo=UTC)
+        rows: list[tuple] = [("SPY", date(2026, 5, 7), Decimal("722"), ts)]
+        with patch("handlers.gex_strike_expiry.db") as mock_db:
+            mock_db.bulk_upsert_replace = AsyncMock()
+            await handler._flush(rows)
+            mock_db.bulk_upsert_replace.assert_awaited_once()
+            call_kwargs = mock_db.bulk_upsert_replace.await_args.kwargs
+            assert call_kwargs["table"] == "ws_gex_strike_expiry"
+            assert call_kwargs["columns"] == _COLUMNS
+            assert call_kwargs["conflict_cols"] == [
+                "ticker",
+                "expiry",
+                "strike",
+                "ts_minute",
+            ]
