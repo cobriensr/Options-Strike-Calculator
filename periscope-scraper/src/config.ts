@@ -15,7 +15,10 @@ function requireEnv(name: string): string {
 }
 
 export const DATABASE_URL = requireEnv('DATABASE_URL');
-export const SENTRY_DSN = requireEnv('SENTRY_DSN');
+// SENTRY_DSN is optional — when empty, index.ts skips Sentry.init and
+// errors land on stdout only. Useful for local dev runs without
+// Sentry credentials.
+export const SENTRY_DSN = process.env.SENTRY_DSN ?? '';
 
 // Auth is via Playwright storageState, not a raw cookie. The path
 // defaults to a Railway-volume location; locally, point it at the file
