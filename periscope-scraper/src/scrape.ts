@@ -203,9 +203,15 @@ async function withBrowser<T>(
     slowMo: headless ? 0 : 250,
   });
   try {
+    // Headless: 1920×1200 to render the full Periscope widescreen layout
+    // for clean DOM extraction. Headed: shrink to 1366×768 (laptop-class)
+    // so the window fits on a typical screen for visual debugging.
+    const viewport = headless
+      ? { width: 1920, height: 1200 }
+      : { width: 1366, height: 768 };
     const context = await browser.newContext({
       storageState: UW_AUTH_STATE_PATH,
-      viewport: { width: 1920, height: 1200 },
+      viewport,
     });
     const page = await context.newPage();
     return await fn(browser, page);

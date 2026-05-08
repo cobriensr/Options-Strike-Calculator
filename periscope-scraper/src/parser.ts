@@ -65,6 +65,36 @@ export interface PageHeader {
 const VALUE_PATTERN = /^(-?\d+(?:\.\d+)?)([KMB]?)$/;
 const UNDERLYING_PATTERN = /Underlying:\s*\(\$([\d.]+)\)/;
 const EXPIRY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const DATE_LABEL_PATTERN = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+(\w+)\s+(\d{1,2})$/;
+const MONTH_3LETTER: Record<string, number> = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+};
+
+/**
+ * Convert a Periscope date-picker label like "Thu, May 7" into a
+ * YYYY-MM-DD string for the given year. Returns null if the label
+ * doesn't match the expected shape (week-day, month-name, day-of-month).
+ *
+ * The label has no year on it — we trust the caller to supply the
+ * correct year (typically `new Date().getFullYear()` for live runs,
+ * or a fixed value in fixture-based tests).
+ */
+export function parseDateLabel(
+  label: string,
+  year: number,
+): string | null {
+  const m = DATE_LABEL_PATTERN.exec(label.trim());
+  if (!m) return null;
+  const monthName = m[1];
+  const dayStr = m[2];
+  if (monthName === undefined || dayStr === undefined) return null;
+  const monthNum = MONTH_3LETTER[monthName.toLowerCase().slice(0, 3)];
+  if (monthNum === undefined) return null;
+  const day = dayStr.padStart(2, '0');
+  const month = String(monthNum).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
 
 /**
  * Parse the value-cell title string into a number.
@@ -80,9 +110,9 @@ export function parseValueString(s: string): number | null {
 
   // Strip thousands commas first. The K/M/B suffix never coexists with
   // commas in real captures, so this is safe.
-  const cleaned = trimmed.replace(/,/g, '');
+  const cleaned = trimmed.replaceAll(',', '');
 
-  const match = cleaned.match(VALUE_PATTERN);
+  const match = VALUE_PATTERN.exec(cleaned);
   if (!match) return null;
 
   const numStr = match[1];
@@ -153,8 +183,11 @@ function readDropdownValue(root: HTMLElement, label: string): string | null {
  * required-field absence — the scraper should treat header-parse
  * failure as a fatal "page not rendered yet" condition and retry the
  * tick rather than write garbage rows.
+ *
+ * `year` provides the calendar year for the date-picker label (which
+ * has no year on it). Defaults to the current UTC year when omitted.
  */
-export function parseHeader(html: string): PageHeader {
+export function parseHeader(html: string, year?: number): PageHeader {
   const root = parse(html);
 
   // Spot: "Underlying: ($7337.07)" lives inside a span with that text.
@@ -162,7 +195,7 @@ export function parseHeader(html: string): PageHeader {
   // We don't anchor on a specific class because UW renames Tailwind hashes.
   let spot: number | null = null;
   for (const span of root.querySelectorAll('span')) {
-    const m = span.textContent.match(UNDERLYING_PATTERN);
+    const m = UNDERLYING_PATTERN.exec(span.textContent);
     if (m?.[1]) {
       const v = Number.parseFloat(m[1]);
       if (Number.isFinite(v) && v > 0) {
@@ -175,10 +208,28 @@ export function parseHeader(html: string): PageHeader {
     throw new Error('parseHeader: could not find Underlying spot price');
   }
 
-  const expiry = readDropdownValue(root, 'Expiry');
-  if (expiry === null || !EXPIRY_PATTERN.test(expiry)) {
+  // Expiry: prefer the date-picker label (always YYYY-MM-DD-derivable
+  // when DTE=0 narrows by date) over the Expiry dropdown (which reads
+  // "All" when in Multi mode and is irrelevant under DTE=0). Fall back
+  // to the Expiry dropdown for fixture/test contexts that don't render
+  // a date picker.
+  let expiry: string | null = null;
+  const dateBtn = root.querySelector(
+    '[data-testid="date-picker-button"] span[role="button"]',
+  );
+  const dateLabel = dateBtn?.textContent.trim() ?? '';
+  if (dateLabel !== '') {
+    expiry = parseDateLabel(dateLabel, year ?? new Date().getUTCFullYear());
+  }
+  if (expiry === null) {
+    const dropdownExpiry = readDropdownValue(root, 'Expiry');
+    if (dropdownExpiry !== null && EXPIRY_PATTERN.test(dropdownExpiry)) {
+      expiry = dropdownExpiry;
+    }
+  }
+  if (expiry === null) {
     throw new Error(
-      `parseHeader: expiry not found or malformed (got: ${expiry ?? 'null'})`,
+      `parseHeader: could not derive expiry from date picker ("${dateLabel}") or Expiry dropdown`,
     );
   }
 
@@ -200,7 +251,7 @@ export function parseHeader(html: string): PageHeader {
     if (span.textContent.trim() === 'Timeframe:') {
       const next = span.nextElementSibling;
       if (next?.tagName === 'SPAN') {
-        timeframe = next.textContent.trim().replace(/\s+/g, ' ');
+        timeframe = next.textContent.trim().replaceAll(/\s+/g, ' ');
         break;
       }
     }
@@ -231,7 +282,7 @@ export function parseTableRows(
       'td.table_stickyCol__r8NtE.table_left__otU2P',
     );
     const strikeSpan = strikeTd?.querySelector('span');
-    const strikeText = strikeSpan?.textContent.trim().replace(/,/g, '') ?? '';
+    const strikeText = strikeSpan?.textContent.trim().replaceAll(',', '') ?? '';
     const strike = Number.parseInt(strikeText, 10);
     if (!Number.isFinite(strike)) continue;
 
@@ -272,8 +323,9 @@ export function parseTableRows(
 export function parsePage(
   html: string,
   capturedAt: string,
+  year?: number,
 ): { header: PageHeader; rows: SnapshotRow[] } {
-  const header = parseHeader(html);
+  const header = parseHeader(html, year);
   const rows = parseTableRows(html, header.panel, capturedAt, header.expiry);
   return { header, rows };
 }
