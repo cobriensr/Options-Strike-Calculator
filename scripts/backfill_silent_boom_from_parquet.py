@@ -139,11 +139,14 @@ def detect_for_chain(chain_df: pd.DataFrame) -> list[dict]:
     vwap = chain_df['vwap'].to_numpy()
     last_price = chain_df['last_price'].to_numpy()
     buckets = chain_df['bucket'].to_numpy()
-    # Bucket timestamps as int64 ms — use the same epoch-ms semantics
-    # as the TS detector so the cooldown comparison is identical.
-    bucket_ms = (
-        pd.Series(buckets).astype('datetime64[ms]').astype('int64').to_numpy()
-    )
+    # Bucket timestamps as int64 epoch-ms — use the same semantics as
+    # the TS detector so the cooldown comparison is identical. Buckets
+    # may be tz-aware (UTC); pandas refuses to astype tz-aware →
+    # naive datetime64, so convert to UTC then drop the tz first.
+    bucket_series = pd.Series(buckets)
+    if bucket_series.dt.tz is not None:
+        bucket_series = bucket_series.dt.tz_convert('UTC').dt.tz_localize(None)
+    bucket_ms = bucket_series.astype('datetime64[ms]').astype('int64').to_numpy()
 
     fires: list[dict] = []
     last_fire_ms: int | None = None
