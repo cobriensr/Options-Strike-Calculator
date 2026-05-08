@@ -625,24 +625,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // so a hung Pass 1B can never block Pass 1A from finishing in seconds.
       // Pass 1A is similarly bounded — if extraction hangs, we'd rather
       // log + continue with retrieval skipped than burn the function budget.
-      const [
-        [extractionSettled, heatMapSettled],
-        calBlock,
-        pRead,
-        pChain,
-      ] = await Promise.all([
-        Promise.allSettled([
-          withTimeout(
-            extractChartStructure({ images: body.images }, anthropic),
-            60_000,
-            'pass1a',
-          ),
-          withTimeout(heatMapFetch, 60_000, 'pass1b'),
-        ]),
-        calibrationBlockP,
-        parentFetch,
-        parentChainFetch,
-      ]);
+      const [[extractionSettled, heatMapSettled], calBlock, pRead, pChain] =
+        await Promise.all([
+          Promise.allSettled([
+            withTimeout(
+              extractChartStructure({ images: body.images }, anthropic),
+              60_000,
+              'pass1a',
+            ),
+            withTimeout(heatMapFetch, 60_000, 'pass1b'),
+          ]),
+          calibrationBlockP,
+          parentFetch,
+          parentChainFetch,
+        ]);
 
       extraction =
         extractionSettled.status === 'fulfilled'
@@ -745,11 +741,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Build the authoritative spot directive. Claude is instructed
     // explicitly to use this number as the current spot rather than
     // reading the chart's red dotted line.
-    const spotDirective = [
+    //
+    // When the inputs come from DB synthesis (no chart image), Claude
+    // cannot read the cone bounds visually — they live only in
+    // extraction.structured.cone_lower/cone_upper which is used for
+    // retrieval/persistence, not the prompt itself. Inject them into
+    // the spot directive so the prompt carries the bounds explicitly.
+    const spotDirectiveLines = [
       `Read time: ${body.read_date} ${body.read_time} CT.`,
       `Authoritative SPX spot at read time: ${spotLookup.price.toFixed(2)} (source: ${spotLookup.source}).`,
       'Use this as the current spot for all interpretation; do NOT use the chart red dotted spot line.',
-    ].join(' ');
+    ];
+    if (
+      useDbSynthesis &&
+      extraction?.structured.cone_lower != null &&
+      extraction.structured.cone_upper != null
+    ) {
+      const cl = extraction.structured.cone_lower;
+      const cu = extraction.structured.cone_upper;
+      const width = cu - cl;
+      spotDirectiveLines.push(
+        `Straddle cone bounds (from cone_levels DB, computed at the 9:31 ET ATM-straddle anchor): lower ${cl.toFixed(2)}, upper ${cu.toFixed(2)}, width ${width.toFixed(2)} pts. Use these as the cone in your structured output (cone_lower, cone_upper) and frame inside-cone vs outside-cone targets against them.`,
+      );
+    }
+    if (useDbSynthesis) {
+      spotDirectiveLines.push(
+        'NOTE: this read is using stored Periscope data (no screenshots uploaded). The heat-map block below carries top positive + top negative gamma + charm strikes from periscope_snapshots for the slot. Treat the heat-map values as the per-strike structural map; the chart visual is unavailable.',
+      );
+    }
+    const spotDirective = spotDirectiveLines.join(' ');
 
     // Flow-alert context (Phase 1.5 of the periscope-chat overhaul spec).
     // Best-effort: a failure here MUST NOT lose the read. The helper
