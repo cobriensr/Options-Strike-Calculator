@@ -42,14 +42,18 @@ import {
 import { buildPeriscopeView } from './_lib/periscope-format.js';
 import type { PeriscopeView } from './_lib/periscope-format.js';
 import { getDb } from './_lib/db.js';
-import {
-  getETDateStr,
-  ctWallClockToUtcIso,
-} from '../src/utils/timezone.js';
+import { getETDateStr, ctWallClockToUtcIso } from '../src/utils/timezone.js';
 import logger from './_lib/logger.js';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/** Round an ISO timestamp UP to the end of its minute (XX:XX:59.999Z). */
+function endOfMinute(iso: string): string {
+  const d = new Date(iso);
+  d.setUTCSeconds(59, 999);
+  return d.toISOString();
+}
 
 /**
  * Read the SPX close at-or-before `asOf` (ISO) for the given date, or
@@ -97,9 +101,7 @@ async function fetchAvailableSlots(date: string): Promise<string[]> {
     ORDER BY captured_at ASC
   `) as Array<{ captured_at: string | Date }>;
   return rows.map((r) =>
-    r.captured_at instanceof Date
-      ? r.captured_at.toISOString()
-      : r.captured_at,
+    r.captured_at instanceof Date ? r.captured_at.toISOString() : r.captured_at,
   );
 }
 
@@ -142,7 +144,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             .status(400)
             .json({ error: 'could not resolve date/time to UTC' });
         }
-        asOf = iso;
+        // Round UP to end-of-minute so a slot whose captured_at is
+        // HH:MM:48.478Z is INCLUDED when the user picks HH:MM. Without
+        // this the at-or-before query skips the slot the user intended
+        // and returns the prior one — which breaks the prev/next
+        // stepper round-trip (HH:MM truncates seconds).
+        asOf = endOfMinute(iso);
       } else if (dateParam !== '') {
         // Date without time → end-of-day for that CT date so the slot
         // resolution lands on the last slot of the day.
@@ -151,7 +158,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           done({ status: 400, error: 'bad_date' });
           return res.status(400).json({ error: 'could not resolve date' });
         }
-        asOf = iso;
+        asOf = endOfMinute(iso);
       }
 
       // Cache: live reads get the short window; historical reads are

@@ -195,18 +195,21 @@ describe('GET /api/periscope-exposure', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
-  it('resolves picked (date, time) → asOf and returns the slot at-or-before', async () => {
-    // 2026-05-08 14:30 CT (CDT = UTC-5) → 2026-05-08T19:30:00Z
+  it('resolves picked (date, time) → asOf rounded to end-of-minute (catches HH:MM:XX slots)', async () => {
+    // 2026-05-08 14:30 CT (CDT = UTC-5) → asOf rounds UP to
+    // 19:30:59.999Z so a slot captured at 19:30:48.478Z is INCLUDED
+    // (the prev/next stepper depends on this — HH:MM truncates seconds
+    // and at-or-before would otherwise skip the intended slot).
     mockSql
       // fetchSpxSpot — at-or-before asOf
       .mockResolvedValueOnce([{ close: '7388.07' }])
       // fetchAvailableSlots
       .mockResolvedValueOnce([
-        { captured_at: '2026-05-08T19:20:00Z' },
-        { captured_at: '2026-05-08T19:30:00Z' },
+        { captured_at: '2026-05-08T19:20:48.478Z' },
+        { captured_at: '2026-05-08T19:30:48.478Z' },
       ])
       // fetchLatestPeriscopeSlot at-or-before asOf
-      .mockResolvedValueOnce([{ captured_at: '2026-05-08T19:30:00Z' }])
+      .mockResolvedValueOnce([{ captured_at: '2026-05-08T19:30:48.478Z' }])
       // loadSlot
       .mockResolvedValueOnce([
         { panel: 'gamma', strike: 7390, value: '5000' },
@@ -227,11 +230,11 @@ describe('GET /api/periscope-exposure', () => {
       data: { capturedAt: string; spot: number };
       availableSlots: string[];
     };
-    expect(body.data.capturedAt).toBe('2026-05-08T19:30:00Z');
+    expect(body.data.capturedAt).toBe('2026-05-08T19:30:48.478Z');
     expect(body.data.spot).toBe(7388.07);
     expect(body.availableSlots).toEqual([
-      '2026-05-08T19:20:00Z',
-      '2026-05-08T19:30:00Z',
+      '2026-05-08T19:20:48.478Z',
+      '2026-05-08T19:30:48.478Z',
     ]);
   });
 
