@@ -28,6 +28,7 @@ function makeAlert(overrides: Partial<SilentBoomAlert> = {}): SilentBoomAlert {
     mktTideDiff: null,
     zeroDteDiff: null,
     spxSpotGammaOi: null,
+    avgHoldMinutes: 197,
     outcomes: {
       peakCeilingPct: null,
       minutesToPeak: null,

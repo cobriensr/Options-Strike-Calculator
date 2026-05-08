@@ -4,12 +4,20 @@ import { useNetFlowHistory } from '../../hooks/useNetFlowHistory.js';
 import { useTickerCandles } from '../../hooks/useTickerCandles.js';
 import { ContractTapeChart } from '../LotteryFinder/ContractTapeChart.js';
 import { TickerNetFlowChart } from '../LotteryFinder/TickerNetFlowChart.js';
-import type { SilentBoomAlert, SilentBoomScoreTier } from './types.js';
+import {
+  SILENT_BOOM_EXIT_POLICY_LABELS,
+  SILENT_BOOM_EXIT_POLICY_TOOLTIPS,
+  type SilentBoomAlert,
+  type SilentBoomExitPolicy,
+  type SilentBoomScoreTier,
+} from './types.js';
 
 interface SilentBoomRowProps {
   alert: SilentBoomAlert;
   /** Whether the parent's date is today (drives polling). */
   marketOpen: boolean;
+  /** Which realized exit policy to surface as the primary % column. */
+  exitPolicy: SilentBoomExitPolicy;
 }
 
 const uwContractUrl = (alert: { optionChainId: string }): string =>
@@ -180,15 +188,20 @@ const spikeBadge = (
  */
 function areRowsEqual(prev: SilentBoomRowProps, next: SilentBoomRowProps) {
   if (prev.marketOpen !== next.marketOpen) return false;
+  if (prev.exitPolicy !== next.exitPolicy) return false;
   const a = prev.alert;
   const b = next.alert;
   if (a.id !== b.id) return false;
   if (a.score !== b.score) return false;
   if (a.scoreTier !== b.scoreTier) return false;
   if (a.mktTideDiff !== b.mktTideDiff) return false;
+  if (a.avgHoldMinutes !== b.avgHoldMinutes) return false;
   if (a.outcomes.enrichedAt !== b.outcomes.enrichedAt) return false;
   if (a.outcomes.peakCeilingPct !== b.outcomes.peakCeilingPct) return false;
+  if (a.outcomes.minutesToPeak !== b.outcomes.minutesToPeak) return false;
+  if (a.outcomes.realized30mPct !== b.outcomes.realized30mPct) return false;
   if (a.outcomes.realized60mPct !== b.outcomes.realized60mPct) return false;
+  if (a.outcomes.realized120mPct !== b.outcomes.realized120mPct) return false;
   if (a.outcomes.realizedEodPct !== b.outcomes.realizedEodPct) return false;
   return true;
 }
@@ -196,11 +209,17 @@ function areRowsEqual(prev: SilentBoomRowProps, next: SilentBoomRowProps) {
 export const SilentBoomRow = memo(function SilentBoomRow({
   alert,
   marketOpen,
+  exitPolicy,
 }: SilentBoomRowProps) {
   const peak = alert.outcomes.peakCeilingPct;
-  const realized60 = alert.outcomes.realized60mPct;
   const realizedEod = alert.outcomes.realizedEodPct;
   const mtp = alert.outcomes.minutesToPeak;
+  // Selected exit policy drives the primary big number on the row.
+  // 'peak' is special-cased: it lives on the row already as a separate
+  // small reference, so when active it just becomes the primary too.
+  const primaryValue: number | null = alert.outcomes[exitPolicy];
+  const primaryLabel = SILENT_BOOM_EXIT_POLICY_LABELS[exitPolicy];
+  const primaryTooltip = SILENT_BOOM_EXIT_POLICY_TOOLTIPS[exitPolicy];
   const spike = spikeBadge(alert.spikeRatio);
   const tier = tierBadge(alert.scoreTier, alert.score);
   const tide = tideBadge(alert.mktTideDiff);
@@ -276,6 +295,17 @@ export const SilentBoomRow = memo(function SilentBoomRow({
           aria-label={tier.tooltip}
         >
           {tier.label}
+        </span>
+        {/* Avg-hold-minutes hint — historical P75 minutes-to-peak among
+            winners for this (tier, ticker) cohort. Tells the user "if
+            this alert is going to work, expect it to peak around this
+            many minutes after the spike." Sourced from the cohort
+            lookup in api/_lib/silent-boom-hold.ts. */}
+        <span
+          className="rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 font-mono text-[10px] leading-none text-neutral-300"
+          title={`Cohort avg hold ~${alert.avgHoldMinutes} minutes — historical P75 of minutes-to-peak among winners (peak ≥ 50%) for ${alert.scoreTier ?? 'tier3'} alerts on ${alert.underlyingSymbol}. Use as a typical exit-window expectation, not a hard rule.`}
+        >
+          ~{alert.avgHoldMinutes}min
         </span>
         <a
           href={uwContractUrl(alert)}
@@ -377,25 +407,39 @@ export const SilentBoomRow = memo(function SilentBoomRow({
 
         <div className="flex items-baseline gap-3">
           <span
-            className={`font-mono text-lg font-bold ${pctClass(peak)}`}
-            title="Peak ceiling — best-case % gain from entry to the highest post-bucket print. Look-ahead reference, not tradeable."
+            className={`font-mono text-lg font-bold ${pctClass(primaryValue)}`}
+            title={primaryTooltip}
           >
-            {formatPct(peak)}
+            {formatPct(primaryValue)}
           </span>
-          {mtp != null && peak != null && peak > 0 && (
+          <span
+            className="text-[10px] tracking-wide text-neutral-500 uppercase"
+            title={primaryTooltip}
+          >
+            {primaryLabel}
+          </span>
+          {/* When peak is not the primary, show it as a small reference
+              chip so the look-ahead ceiling is always visible. When
+              peak IS primary, surface t+Nm to-peak time instead. */}
+          {exitPolicy !== 'peakCeilingPct' && peak != null && (
             <span
-              className="text-[10px] text-neutral-500"
-              title="Minutes from spike bucket start to the peak print."
+              className={`font-mono text-xs ${pctClass(peak)}`}
+              title="Peak ceiling — best-case % gain. Look-ahead reference, not tradeable."
             >
-              t+{mtp.toFixed(0)}m
+              peak {formatPct(peak)}
             </span>
           )}
-          <span
-            className={`font-mono text-xs ${pctClass(realized60)}`}
-            title="Fixed-horizon realized return at +60 minutes from the spike bucket start."
-          >
-            60m {formatPct(realized60)}
-          </span>
+          {exitPolicy === 'peakCeilingPct' &&
+            mtp != null &&
+            peak != null &&
+            peak > 0 && (
+              <span
+                className="text-[10px] text-neutral-500"
+                title="Minutes from spike bucket start to the peak print."
+              >
+                t+{mtp.toFixed(0)}m
+              </span>
+            )}
         </div>
       </div>
 

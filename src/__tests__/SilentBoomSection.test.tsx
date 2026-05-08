@@ -60,6 +60,7 @@ function makeAlert(overrides: Partial<SilentBoomAlert> = {}): SilentBoomAlert {
     mktTideDiff: null,
     zeroDteDiff: null,
     spxSpotGammaOi: null,
+    avgHoldMinutes: 197,
     outcomes: {
       peakCeilingPct: null,
       minutesToPeak: null,
@@ -236,5 +237,65 @@ describe('SilentBoomSection: filter interactions', () => {
     const volOiChip = screen.getByRole('button', { name: /^≥1\.0$/ });
     fireEvent.click(volOiChip);
     expect(window.localStorage.getItem('silentBoom.minVolOi')).toBe('1');
+  });
+});
+
+// ============================================================
+// EXIT-POLICY CHIP TOGGLE
+// ============================================================
+
+describe('SilentBoomSection: exit-policy chip', () => {
+  it('renders all five exit-policy chip labels', () => {
+    render(<SilentBoomSection marketOpen={false} />);
+    expect(screen.getByRole('button', { name: '30m' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '60m' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '120m' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'eod' })).toBeInTheDocument();
+    // 'peak' label exists on both this chip row AND the sort chip row.
+    expect(screen.getAllByRole('button', { name: 'peak' })).toHaveLength(2);
+  });
+
+  it('flips aria-pressed when an exit-policy chip is clicked', () => {
+    render(<SilentBoomSection marketOpen={false} />);
+    // Default is realized60mPct → 60m chip starts pressed.
+    const sixtyM = screen.getByRole('button', { name: '60m' });
+    expect(sixtyM).toHaveAttribute('aria-pressed', 'true');
+
+    const thirtyM = screen.getByRole('button', { name: '30m' });
+    expect(thirtyM).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(thirtyM);
+    expect(thirtyM).toHaveAttribute('aria-pressed', 'true');
+    expect(sixtyM).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('persists the exit-policy selection to localStorage when changed', () => {
+    render(<SilentBoomSection marketOpen={false} />);
+    fireEvent.click(screen.getByRole('button', { name: '120m' }));
+    expect(window.localStorage.getItem('silentBoom.exitPolicy')).toBe(
+      'realized120mPct',
+    );
+  });
+
+  it('hydrates the active chip from a previously-stored localStorage value', () => {
+    window.localStorage.setItem('silentBoom.exitPolicy', 'realized120mPct');
+    render(<SilentBoomSection marketOpen={false} />);
+    expect(screen.getByRole('button', { name: '120m' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(screen.getByRole('button', { name: '60m' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+  });
+
+  it('falls back to the realized60mPct default when localStorage holds a garbage value', () => {
+    window.localStorage.setItem('silentBoom.exitPolicy', 'not-a-real-policy');
+    render(<SilentBoomSection marketOpen={false} />);
+    // Type guard rejects the garbage and the initializer keeps 60m active.
+    expect(screen.getByRole('button', { name: '60m' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
   });
 });

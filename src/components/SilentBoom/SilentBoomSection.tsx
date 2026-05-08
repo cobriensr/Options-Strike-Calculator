@@ -5,13 +5,16 @@ import { ctSessionBounds } from '../LotteryFinder/ct-window.js';
 import { SilentBoomDayBanner } from './SilentBoomDayBanner.js';
 import { SilentBoomRegimeBanner } from './SilentBoomRegimeBanner.js';
 import { SilentBoomRow } from './SilentBoomRow.js';
-import type {
-  OptionType,
-  SilentBoomAlert,
-  SilentBoomBurstColor,
-  SilentBoomDteBucket,
-  SilentBoomSortMode,
-  SilentBoomTod,
+import {
+  SILENT_BOOM_EXIT_POLICY_LABELS,
+  SILENT_BOOM_EXIT_POLICY_TOOLTIPS,
+  type OptionType,
+  type SilentBoomAlert,
+  type SilentBoomBurstColor,
+  type SilentBoomDteBucket,
+  type SilentBoomExitPolicy,
+  type SilentBoomSortMode,
+  type SilentBoomTod,
 } from './types.js';
 
 const PAGE_SIZE = 50;
@@ -20,6 +23,21 @@ const MIN_VOL_OI_LS_KEY = 'silentBoom.minVolOi';
 const CONVICTION_LS_KEY = 'silentBoom.convictionFloor';
 const HIDE_LATE_PM_LS_KEY = 'silentBoom.hideLatePm';
 const HIDE_GHOSTS_LS_KEY = 'silentBoom.hideGhosts';
+const EXIT_POLICY_LS_KEY = 'silentBoom.exitPolicy';
+
+const EXIT_POLICIES: SilentBoomExitPolicy[] = [
+  'realized30mPct',
+  'realized60mPct',
+  'realized120mPct',
+  'realizedEodPct',
+  'peakCeilingPct',
+];
+
+function isSilentBoomExitPolicy(v: unknown): v is SilentBoomExitPolicy {
+  return (
+    typeof v === 'string' && (EXIT_POLICIES as readonly string[]).includes(v)
+  );
+}
 
 /**
  * "Ghost print" thresholds — a row is a ghost print when BOTH:
@@ -344,6 +362,11 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     if (typeof window === 'undefined') return false;
     return window.localStorage.getItem(HIDE_GHOSTS_LS_KEY) === '1';
   });
+  const [exitPolicy, setExitPolicy] = useState<SilentBoomExitPolicy>(() => {
+    if (typeof window === 'undefined') return 'realized60mPct';
+    const stored = window.localStorage.getItem(EXIT_POLICY_LS_KEY);
+    return isSilentBoomExitPolicy(stored) ? stored : 'realized60mPct';
+  });
   /** ISO of the 5-min bucket the scrubber is on; null = whole day. */
   const [bucketIso, setBucketIso] = useState<string | null>(null);
   const [page, setPage] = useState<number>(0);
@@ -373,6 +396,11 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       window.localStorage.setItem(HIDE_GHOSTS_LS_KEY, hideGhosts ? '1' : '0');
     }
   }, [hideGhosts]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(EXIT_POLICY_LS_KEY, exitPolicy);
+    }
+  }, [exitPolicy]);
 
   // Reset bucket scrub when the date changes — a bucket from yesterday
   // shouldn't carry over.
@@ -764,6 +792,33 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
             ))}
           </div>
 
+          {/* Row 2.6: realized-exit policy. Whichever chip is active
+              becomes the primary % shown on every row. Mirrors the
+              LotteryFinder pattern. Default 60m (least disruptive
+              switch from the row's prior emphasized column). */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span
+              className={SECTION_LABEL}
+              title="Choose which realized exit % is shown as the primary number on every alert. Peak is a look-ahead reference; the 30m / 60m / 120m / EOD options are tradeable horizons from the spike bucket start."
+            >
+              exit
+            </span>
+            {EXIT_POLICIES.map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => setExitPolicy(p)}
+                className={`${CHIP_BASE} ${
+                  exitPolicy === p ? CHIP_ACTIVE.purple : CHIP_INACTIVE
+                }`}
+                title={SILENT_BOOM_EXIT_POLICY_TOOLTIPS[p]}
+                aria-pressed={exitPolicy === p}
+              >
+                {SILENT_BOOM_EXIT_POLICY_LABELS[p]}
+              </button>
+            ))}
+          </div>
+
           {/* Row 3: sort + vol/OI floor */}
           <div className="flex flex-wrap items-center gap-1.5">
             <span className={SECTION_LABEL}>sort</span>
@@ -1063,6 +1118,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 key={`${a.optionChainId}|${a.bucketCt}`}
                 alert={a}
                 marketOpen={marketOpen}
+                exitPolicy={exitPolicy}
               />
             ))}
           </div>

@@ -184,6 +184,7 @@ describe('useSilentBoomFeed', () => {
               mktTideDiff: 5000,
               zeroDteDiff: 300,
               spxSpotGammaOi: 12345,
+              avgHoldMinutes: 144,
               outcomes: {
                 peakCeilingPct: 25,
                 minutesToPeak: 18,
