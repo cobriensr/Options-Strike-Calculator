@@ -636,9 +636,21 @@ async function withBrowser<T>(
   // default `true` applies.
   const headless =
     (process.env.HEADLESS ?? 'true').trim().toLowerCase() !== 'false';
+
+  // Anti-detection flags. Validated 2026-05-08: UW Periscope serves a
+  // stripped-down Single-mode dropdown (only an "All" placeholder, no
+  // date list) when navigator.webdriver is true OR the
+  // AutomationControlled blink feature is on. Headed runs without
+  // these flags get the full 1.2 MB popover with 20 dates; headless
+  // got 2 KB. These flags + the init script below close the gap.
   const browser = await chromium.launch({
     headless,
     slowMo: headless ? 0 : 250,
+    args: [
+      '--disable-blink-features=AutomationControlled',
+      '--no-sandbox',
+      '--disable-dev-shm-usage',
+    ],
   });
   try {
     // Headless: 1920×1200 to render the full Periscope widescreen layout
@@ -650,6 +662,16 @@ async function withBrowser<T>(
     const context = await browser.newContext({
       storageState: UW_AUTH_STATE_PATH,
       viewport,
+      // Real Chrome UA — `HeadlessChrome` in the default Playwright UA
+      // is the most common automation tell.
+      userAgent:
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      locale: 'en-US',
+      timezoneId: 'America/Chicago',
+    });
+    // Hide navigator.webdriver before any page script runs.
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     });
     const page = await context.newPage();
     return await fn(browser, page);
