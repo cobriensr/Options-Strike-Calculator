@@ -20,7 +20,7 @@
  * goes past the 30-minute freshness window.
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { withCronCheckin } from '../_lib/cron-instrumentation.js';
 import { cronGuard } from '../_lib/api-helpers.js';
 import { fetchDayFeatures, fetchDaySummary } from '../_lib/archive-sidecar.js';
 import { upsertCurrentSnapshot } from '../_lib/current-snapshot.js';
@@ -29,7 +29,7 @@ import { metrics, Sentry } from '../_lib/sentry.js';
 
 export const config = { maxDuration: 30 };
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default withCronCheckin('refresh-current-snapshot', async (req, res) => {
   const guard = cronGuard(req, res, {
     marketHours: true,
     requireApiKey: false,
@@ -85,4 +85,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const msg = err instanceof Error ? err.message : String(err);
     return res.status(500).json({ error: msg });
   }
-}
+});

@@ -27,7 +27,7 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { withCronCheckin } from '../_lib/cron-instrumentation.js';
 import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
@@ -232,7 +232,7 @@ async function runOne(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default withCronCheckin('fetch-strike-exposure', async (req, res) => {
   const guard = cronGuard(req, res);
   if (!guard) return;
   const { apiKey, today } = guard;
@@ -382,4 +382,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     logger.error({ err }, 'fetch-strike-exposure error');
     return res.status(500).json({ error: 'Internal error' });
   }
-}
+});

@@ -21,7 +21,6 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
@@ -33,6 +32,7 @@ import {
   withRetry,
 } from '../_lib/api-helpers.js';
 import { reportCronRun } from '../_lib/axiom.js';
+import { withCronCheckin } from '../_lib/cron-instrumentation.js';
 
 const ATM_RANGE = 200;
 const ALL_EXPIRY_SENTINEL = '1970-01-01';
@@ -140,7 +140,7 @@ async function storeStrikes(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default withCronCheckin('fetch-strike-all', async (req, res) => {
   const guard = cronGuard(req, res);
   if (!guard) return;
   const { apiKey, today } = guard;
@@ -213,4 +213,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     logger.error({ err }, 'fetch-strike-all error');
     return res.status(500).json({ error: 'Internal error' });
   }
-}
+});

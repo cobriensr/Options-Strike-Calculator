@@ -333,3 +333,87 @@ export function withCronInstrumentation(
     }
   };
 }
+
+/**
+ * Lighter-weight cron monitor wrap for handlers that can't adopt the
+ * full `withCronInstrumentation` (paginated handlers, NDJSON streamers,
+ * non-standard return shapes — see Phase 3 of the spec).
+ *
+ * Behaviour:
+ *   1. Read `SCHEDULE_MAP[jobName]`. If missing OR
+ *      `Sentry.captureCheckIn` is unavailable (per-test mocks), run the
+ *      handler unchanged.
+ *   2. Send `in_progress` check-in BEFORE the handler so missed-checkin
+ *      detection fires when the function never executes.
+ *   3. After the handler completes, look at `res.statusCode` to decide
+ *      `ok` vs `error`. This is the deliberate trade-off: handlers that
+ *      catch their own errors and respond 500 still get an `error`
+ *      check-in even though no exception bubbled to the wrapper.
+ *   4. If the handler throws (rare — most handlers catch internally),
+ *      send `error` check-in then re-throw. The throw will surface to
+ *      Vercel runtime as an unhandled rejection unless the handler does
+ *      its own outer try/catch, which is consistent with the existing
+ *      handler contract.
+ *
+ * This wrapper does NOT touch reportCronRun, the response shape, the
+ * cronGuard call, or any other handler-internal concerns. It is purely
+ * additive observability.
+ *
+ * Spec: docs/superpowers/specs/sentry-monitoring-2026-05-07.md
+ */
+export function withCronCheckin(
+  jobName: string,
+  // Permissive return type: handlers commonly `return res.status(N).json(...)`
+  // which yields VercelResponse; we don't read the value, so accept any.
+  inner: (req: VercelRequest, res: VercelResponse) => Promise<unknown>,
+): (req: VercelRequest, res: VercelResponse) => Promise<void> {
+  return async function checkedCron(
+    req: VercelRequest,
+    res: VercelResponse,
+  ): Promise<void> {
+    const config = SCHEDULE_MAP[jobName];
+    const captureCheckIn =
+      typeof Sentry.captureCheckIn === 'function'
+        ? Sentry.captureCheckIn
+        : null;
+
+    if (!config || !captureCheckIn) {
+      await inner(req, res);
+      return;
+    }
+
+    const monitorConfig = {
+      schedule: { type: 'crontab' as const, value: config.schedule },
+      checkinMargin: config.checkinMargin,
+      maxRuntime: config.maxRuntime,
+      failureIssueThreshold: config.failureIssueThreshold ?? 1,
+      recoveryThreshold: config.recoveryThreshold ?? 1,
+      timezone: 'UTC',
+    };
+
+    const startMs = Date.now();
+    const checkInId = captureCheckIn(
+      { monitorSlug: jobName, status: 'in_progress' },
+      monitorConfig,
+    );
+
+    try {
+      await inner(req, res);
+      const status: 'ok' | 'error' = res.statusCode >= 400 ? 'error' : 'ok';
+      captureCheckIn({
+        checkInId,
+        monitorSlug: jobName,
+        status,
+        duration: (Date.now() - startMs) / 1000,
+      });
+    } catch (err) {
+      captureCheckIn({
+        checkInId,
+        monitorSlug: jobName,
+        status: 'error',
+        duration: (Date.now() - startMs) / 1000,
+      });
+      throw err;
+    }
+  };
+}

@@ -26,7 +26,7 @@
  * See: docs/superpowers/specs/periscope-curate-lessons-2026-05-06.md
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { withCronCheckin } from '../_lib/cron-instrumentation.js';
 import { Sentry } from '../_lib/sentry.js';
 import { cronGuard } from '../_lib/api-helpers.js';
 import { generateEmbedding } from '../_lib/embeddings.js';
@@ -79,7 +79,7 @@ function resolveSinceIso(rawSince: unknown): string | null {
   return parsed.toISOString();
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default withCronCheckin('curate-periscope-lessons', async (req, res) => {
   const guard = cronGuard(req, res, {
     marketHours: false,
     requireApiKey: false,
@@ -226,4 +226,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     logger.error({ err }, 'curate-periscope-lessons cron failed');
     res.status(500).json({ error: 'Internal error' });
   }
-}
+});

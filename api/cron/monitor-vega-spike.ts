@@ -28,7 +28,7 @@
  * Environment: CRON_SECRET
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { withCronCheckin } from '../_lib/cron-instrumentation.js';
 import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
@@ -212,7 +212,7 @@ async function evaluateTicker(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default withCronCheckin('monitor-vega-spike', async (req, res) => {
   const guard = cronGuard(req, res, { requireApiKey: false });
   if (!guard) return;
   const { today } = guard;
@@ -313,4 +313,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     logger.error({ err }, 'monitor-vega-spike error');
     return res.status(500).json({ error: 'Internal error' });
   }
-}
+});

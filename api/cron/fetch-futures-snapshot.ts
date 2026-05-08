@@ -11,13 +11,13 @@
  * Environment: CRON_SECRET
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 import { cronGuard, withRetry } from '../_lib/api-helpers.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
 import { reportCronRun } from '../_lib/axiom.js';
+import { withCronCheckin } from '../_lib/cron-instrumentation.js';
 import {
   FUTURES_SYMBOLS,
   computeSnapshot,
@@ -26,7 +26,7 @@ import {
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default withCronCheckin('fetch-futures-snapshot', async (req, res) => {
   // Futures trade Sun 5 PM CT – Fri 5 PM CT; skip stock market hours check
   const guard = cronGuard(req, res, {
     requireApiKey: false,
@@ -133,4 +133,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     logger.error({ err }, 'fetch-futures-snapshot failed');
     return res.status(500).json({ error: 'Internal error' });
   }
-}
+});

@@ -19,13 +19,13 @@
  * Env: CRON_SECRET, SIDECAR_URL (consumed by archive-sidecar.ts).
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { withCronCheckin } from '../_lib/cron-instrumentation.js';
 import { cronGuard } from '../_lib/api-helpers.js';
 import { fetchTbboOfiPercentile } from '../_lib/archive-sidecar.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default withCronCheckin('warm-tbbo-percentile', async (req, res) => {
   const guard = cronGuard(req, res, {
     requireApiKey: false,
     marketHours: false,
@@ -68,4 +68,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     nq: nqOk,
     durationMs: Date.now() - startTime,
   });
-}
+});

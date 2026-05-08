@@ -12,7 +12,7 @@
  * Environment: CRON_SECRET, DATABENTO_API_KEY
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { withCronCheckin } from '../_lib/cron-instrumentation.js';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
@@ -185,7 +185,7 @@ async function fetchBars(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default withCronCheckin('backfill-futures-gaps', async (req, res) => {
   // No market hours check — runs daily regardless of day
   const guard = cronGuard(req, res, {
     requireApiKey: false,
@@ -334,4 +334,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     errors: errors.length > 0 ? errors : undefined,
     durationMs,
   });
-}
+});

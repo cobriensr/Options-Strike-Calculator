@@ -77,7 +77,7 @@ This single edit covers all 33 wrapped crons: they each get a Sentry cron monito
 
 **Files touched**: `api/_lib/cron-instrumentation.ts`, `api/__tests__/cron-instrumentation.test.ts` (new or extend), 1 schedule map (could be in `cron-instrumentation.ts` or a new `api/_lib/cron-schedules.ts`).
 
-### Phase 3 — Bring the 16 unwrapped crons under instrumentation
+### Phase 3 — Bring the 16 unwrapped crons under instrumentation (DONE)
 
 Sixteen handlers don't use `withCronInstrumentation` (mostly: paginated, non-standard return contract, or written before the wrapper existed):
 
@@ -90,7 +90,14 @@ fetch-zero-dte-flow.ts, fetch-vol-0dte.ts, refresh-current-snapshot.ts,
 warm-tbbo-percentile.ts
 ```
 
-These get a lighter wrapper — a new `withCronCheckin(jobName, schedule)` that ONLY wraps the `Sentry.withMonitor()` boundary without changing return shape or guard semantics. Applied in 4 batches of ≤5 files each. Out of scope for the initial ship — Phase 1 and Phase 2 land first; this becomes a follow-up after we validate the Phase 2 wrapper works in production for ~24h.
+These got the lighter `withCronCheckin(jobName, async (req, res) => { ... })` HOF in `cron-instrumentation.ts`. The wrapper:
+
+- Looks up `SCHEDULE_MAP[jobName]` (extended in this phase to cover all 16) and emits `Sentry.captureCheckIn({ status: 'in_progress' })` BEFORE the handler so missed-checkin detection fires when the function never executes.
+- After the handler completes, classifies the run as `ok` if `res.statusCode < 400` and `error` if `res.statusCode >= 400`. This is the deliberate trade-off: handlers that catch their own errors and respond 500 still get an `error` check-in even though no exception bubbled to the wrapper.
+- On a thrown exception, emits `error` and re-throws (matches existing handler contracts — no semantic change).
+- Defensively no-ops when `Sentry.captureCheckIn` is unavailable (per-test mocks across the cron suite).
+
+Applied in 4 batches of ≤5 files each. The wrap is purely additive: it does NOT modify the inner handler body, return shape, response codes, or error semantics in any of the 16 handlers.
 
 ### Phase 4 — Push notifications (user action, not automated)
 

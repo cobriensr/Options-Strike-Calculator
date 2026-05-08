@@ -36,8 +36,13 @@ export function mockResponse(): VercelResponse & {
     _body: '',
     _contentType: '',
     _chunks: [] as string[],
+    // Real Vercel response sets `statusCode` when `status()` is called
+    // (it's an Express-compatible setter). Mirror that so wrappers that
+    // read `res.statusCode` directly behave the same in tests.
+    statusCode: 200,
     status(code: number) {
       res._status = code;
+      res.statusCode = code;
       return res;
     },
     json(data: unknown) {

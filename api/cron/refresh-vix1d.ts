@@ -16,12 +16,12 @@
  * Schedule: 0 11 * * 1-5  (11:00 UTC = ~6-7 AM ET Mon–Fri)
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import { redis } from '../_lib/schwab.js';
 import logger from '../_lib/logger.js';
 import { cronGuard } from '../_lib/api-helpers.js';
 import { reportCronRun } from '../_lib/axiom.js';
+import { withCronCheckin } from '../_lib/cron-instrumentation.js';
 
 // ── Constants ──────────────────────────────────────────────────
 
@@ -95,8 +95,8 @@ export function parseCboeCsv(csv: string): Vix1dDailyMap {
 
 // ── Handler ────────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  return Sentry.withIsolationScope(async (scope) => {
+export default withCronCheckin('refresh-vix1d', async (req, res) => {
+  await Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/cron/refresh-vix1d');
     Sentry.setTag('cron.job', 'refresh-vix1d');
     const done = metrics.request('/api/cron/refresh-vix1d');
@@ -173,4 +173,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(500).json({ error: 'Internal server error' });
     }
   });
-}
+});

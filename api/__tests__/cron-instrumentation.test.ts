@@ -33,6 +33,7 @@ vi.mock('../_lib/sentry.js', () => ({
       const cb = args[1] as () => Promise<unknown>;
       return cb();
     }),
+    captureCheckIn: vi.fn(() => 'mock-checkin-id'),
   },
   metrics: { increment: vi.fn() },
 }));
@@ -41,6 +42,11 @@ vi.mock('../_lib/cron-schedules.js', () => ({
   SCHEDULE_MAP: {
     'monitored-job': {
       schedule: '*/5 * * * *',
+      checkinMargin: 2,
+      maxRuntime: 5,
+    },
+    'checkin-job': {
+      schedule: '*/15 * * * *',
       checkinMargin: 2,
       maxRuntime: 5,
     },
@@ -56,7 +62,10 @@ vi.mock('../_lib/logger.js', () => ({
   },
 }));
 
-import { withCronInstrumentation } from '../_lib/cron-instrumentation.js';
+import {
+  withCronInstrumentation,
+  withCronCheckin,
+} from '../_lib/cron-instrumentation.js';
 import { cronGuard } from '../_lib/api-helpers.js';
 import { reportCronRun } from '../_lib/axiom.js';
 import { Sentry } from '../_lib/sentry.js';
@@ -476,5 +485,102 @@ describe('withCronInstrumentation', () => {
     expect(Sentry.withMonitor).toHaveBeenCalledTimes(1);
     expect(Sentry.captureException).toHaveBeenCalledWith(boom);
     expect(res._status).toBe(500);
+  });
+});
+
+describe('withCronCheckin', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('runs the inner handler and emits in_progress + ok check-ins on 2xx', async () => {
+    const inner = vi.fn(async (_req, res) => {
+      res.status(200).json({ ok: true });
+    });
+    const wrapped = withCronCheckin('checkin-job', inner);
+
+    const res = mockResponse();
+    await wrapped(mockRequest(), res);
+
+    expect(inner).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureCheckIn).toHaveBeenCalledTimes(2);
+    const [firstCall, secondCall] = vi.mocked(Sentry.captureCheckIn).mock.calls;
+    expect(firstCall![0]).toEqual({
+      monitorSlug: 'checkin-job',
+      status: 'in_progress',
+    });
+    expect(firstCall![1]).toMatchObject({
+      schedule: { type: 'crontab', value: '*/15 * * * *' },
+      checkinMargin: 2,
+      maxRuntime: 5,
+      timezone: 'UTC',
+    });
+    expect(secondCall![0]).toMatchObject({
+      checkInId: 'mock-checkin-id',
+      monitorSlug: 'checkin-job',
+      status: 'ok',
+    });
+  });
+
+  it('emits error check-in when handler responds 5xx without throwing', async () => {
+    const inner = vi.fn(async (_req, res) => {
+      res.status(500).json({ error: 'oops' });
+    });
+    const wrapped = withCronCheckin('checkin-job', inner);
+
+    const res = mockResponse();
+    await wrapped(mockRequest(), res);
+
+    expect(Sentry.captureCheckIn).toHaveBeenCalledTimes(2);
+    const secondCall = vi.mocked(Sentry.captureCheckIn).mock.calls[1]!;
+    expect(secondCall[0]).toMatchObject({
+      checkInId: 'mock-checkin-id',
+      status: 'error',
+    });
+  });
+
+  it('emits error check-in and re-throws when inner throws', async () => {
+    const boom = new Error('inner exploded');
+    const inner = vi.fn(async () => {
+      throw boom;
+    });
+    const wrapped = withCronCheckin('checkin-job', inner);
+
+    const res = mockResponse();
+    await expect(wrapped(mockRequest(), res)).rejects.toThrow('inner exploded');
+
+    expect(Sentry.captureCheckIn).toHaveBeenCalledTimes(2);
+    const secondCall = vi.mocked(Sentry.captureCheckIn).mock.calls[1]!;
+    expect(secondCall[0]).toMatchObject({
+      checkInId: 'mock-checkin-id',
+      status: 'error',
+    });
+  });
+
+  it('skips Sentry calls entirely when no SCHEDULE_MAP entry exists', async () => {
+    const inner = vi.fn(async (_req, res) => {
+      res.status(200).json({ ok: true });
+    });
+    const wrapped = withCronCheckin('not-in-map-checkin', inner);
+
+    const res = mockResponse();
+    await wrapped(mockRequest(), res);
+
+    expect(inner).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureCheckIn).not.toHaveBeenCalled();
+    expect(res._status).toBe(200);
+  });
+
+  it('preserves the original response status code (does not mutate)', async () => {
+    const inner = vi.fn(async (_req, res) => {
+      res.status(502).json({ error: 'upstream' });
+    });
+    const wrapped = withCronCheckin('checkin-job', inner);
+
+    const res = mockResponse();
+    await wrapped(mockRequest(), res);
+
+    expect(res._status).toBe(502);
+    expect(res._json).toEqual({ error: 'upstream' });
   });
 });

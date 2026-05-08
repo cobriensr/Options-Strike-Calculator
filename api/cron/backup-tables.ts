@@ -12,13 +12,13 @@
  * Environment: CRON_SECRET, BLOB_READ_WRITE_TOKEN (auto-provisioned by Vercel Blob)
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { put, list, del } from '@vercel/blob';
 import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { cronGuard } from '../_lib/api-helpers.js';
 import { reportCronRun } from '../_lib/axiom.js';
+import { withCronCheckin } from '../_lib/cron-instrumentation.js';
 
 export const config = { maxDuration: 300 };
 
@@ -89,7 +89,7 @@ async function pruneOldBackups(currentDate: string): Promise<string[]> {
   return toDelete;
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default withCronCheckin('backup-tables', async (req, res) => {
   const guard = cronGuard(req, res, {
     marketHours: false,
     requireApiKey: false,
@@ -165,7 +165,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     durationMs: Date.now() - startTime,
   });
 
-  return res.status(200).json({
+  res.status(200).json({
     date: today,
     tables: results,
     totalRows,
@@ -173,4 +173,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     pruned: pruned.length,
     errors: errors.length > 0 ? errors : undefined,
   });
-}
+});

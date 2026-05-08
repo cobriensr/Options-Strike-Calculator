@@ -14,12 +14,12 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { uwFetch, cronGuard, withRetry } from '../_lib/api-helpers.js';
 import { reportCronRun } from '../_lib/axiom.js';
+import { withCronCheckin } from '../_lib/cron-instrumentation.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -147,7 +147,7 @@ async function storeRealizedVol(
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default withCronCheckin('fetch-vol-surface', async (req, res) => {
   const guard = cronGuard(req, res, { marketHours: false });
   if (!guard) return;
   const { apiKey, today } = guard;
@@ -231,4 +231,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     logger.error({ err }, 'fetch-vol-surface error');
     return res.status(500).json({ error: 'Internal error' });
   }
-}
+});

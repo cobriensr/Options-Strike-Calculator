@@ -9,7 +9,7 @@
  * Auth: Bearer token via CRON_SECRET env var (Vercel crons use GET).
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { withCronCheckin } from '../_lib/cron-instrumentation.js';
 import Anthropic from '@anthropic-ai/sdk';
 import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
@@ -108,7 +108,7 @@ interface PreparedLesson {
 // HANDLER
 // ============================================================
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default withCronCheckin('curate-lessons', async (req, res) => {
   const guard = cronGuard(req, res, {
     marketHours: false,
     requireApiKey: false,
@@ -503,7 +503,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     logger.error({ err }, 'Curation cron failed');
     return res.status(500).json({ error: 'Internal error' });
   }
-}
+});
 
 // ============================================================
 // HELPERS

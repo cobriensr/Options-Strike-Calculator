@@ -1,17 +1,14 @@
 /**
- * Cron schedule map → fed to Sentry.cron.withMonitor() inside
- * withCronInstrumentation. Keep entries in sync with vercel.json.
+ * Cron schedule map → fed to Sentry.withMonitor() inside
+ * withCronInstrumentation AND to Sentry.captureCheckIn() inside
+ * withCronCheckin (the lighter wrap for crons with non-standard shapes).
+ * Keep entries in sync with vercel.json.
  *
  * Why a separate file: the schedule strings live in vercel.json (the
- * canonical source) but the wrapper needs them at request time without
+ * canonical source) but both wrappers need them at request time without
  * parsing JSON on the cold path. Hand-mirroring the values is the
  * cheapest correct option — drift is caught by the unit test that
  * cross-checks each entry against the file at test time.
- *
- * Only entries for jobs that route through `withCronInstrumentation` are
- * present. Crons that bypass the wrapper (legacy, paginated, non-standard
- * shapes — see docs/superpowers/specs/sentry-monitoring-2026-05-07.md
- * Phase 3) get monitors in a separate sweep.
  *
  * Spec: docs/superpowers/specs/sentry-monitoring-2026-05-07.md
  */
@@ -196,6 +193,90 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
   },
   'reconcile-greek-flow-etf': {
     schedule: '0 22 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
+
+  // ── withCronCheckin (lighter wrap, original handler shape preserved) ──
+
+  'backfill-futures-gaps': {
+    schedule: '0 6 * * 1-6',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: LONG_RUNNER_MAX_RUNTIME,
+  },
+  'backup-tables': {
+    schedule: '0 5 * * 0',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: LONG_RUNNER_MAX_RUNTIME,
+  },
+  'curate-lessons': {
+    schedule: '0 3 * * 6',
+    checkinMargin: DEFAULT_MARGIN,
+    // Long-runner: 780s Vercel timeout. 14 min covers it with headroom.
+    maxRuntime: 14,
+  },
+  'curate-periscope-lessons': {
+    schedule: '0 3 * * 1',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: 14,
+  },
+  'fetch-futures-snapshot': {
+    schedule: '*/5 * * * 0-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
+  'fetch-spx-candles-1m': {
+    schedule: '* 13-21 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
+  'fetch-strike-all': {
+    schedule: '3,8,13,18,23,28,33,38,43,48,53,58 13-21 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
+  'fetch-strike-exposure': {
+    schedule: '3,8,13,18,23,28,33,38,43,48,53,58 13-21 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
+  'fetch-vol-0dte': {
+    schedule: '* 13-21 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
+  'fetch-vol-surface': {
+    schedule: '35 21 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
+  'fetch-zero-dte-flow': {
+    schedule: '4,9,14,19,24,29,34,39,44,49,54,59 13-21 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
+  'monitor-flow-ratio': {
+    schedule: '* 13-21 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
+  'monitor-vega-spike': {
+    schedule: '* 13-21 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
+  'refresh-current-snapshot': {
+    schedule: '*/5 13-20 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
+  'refresh-vix1d': {
+    schedule: '0 11 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
+  'warm-tbbo-percentile': {
+    schedule: '0 13 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
