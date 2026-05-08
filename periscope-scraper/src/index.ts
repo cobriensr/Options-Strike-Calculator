@@ -31,7 +31,7 @@ if (rawSentryDsn != null && rawSentryDsn.trim() !== '') {
 // Now safe to load config (and capture its throws via the Sentry above).
 const { LOG_LEVEL, MS_PER_TICK, isMarketHours } = await import('./config.js');
 const { insertSnapshots } = await import('./db.js');
-const { scrapeAllPanels } = await import('./scrape.js');
+const { scrapeAllPanels, scrapeBackfill } = await import('./scrape.js');
 
 const logger = pino({ level: LOG_LEVEL });
 
@@ -90,6 +90,35 @@ logger.info('periscope-scraper starting');
 
 const forceTick =
   (process.env.FORCE_TICK ?? '').trim().toLowerCase() === 'true';
+
+const backfillDate = (process.env.BACKFILL_DATE ?? '').trim();
+const backfillStart = (process.env.BACKFILL_START ?? '').trim() || '08:20';
+const backfillEnd = (process.env.BACKFILL_END ?? '').trim() || '14:50';
+
+if (backfillDate !== '') {
+  logger.info(
+    { backfillDate, backfillStart, backfillEnd },
+    'BACKFILL_DATE set — running historical backfill then exiting',
+  );
+  const startedAt = Date.now();
+  try {
+    const rows = await scrapeBackfill(
+      backfillDate,
+      backfillStart,
+      backfillEnd,
+    );
+    const inserted = await insertSnapshots(rows);
+    logger.info(
+      { rows: rows.length, inserted, ms: Date.now() - startedAt },
+      'backfill complete',
+    );
+  } catch (err) {
+    Sentry.captureException(err);
+    logger.error({ err, ms: Date.now() - startedAt }, 'backfill failed');
+  }
+  await Sentry.flush(2000);
+  process.exit(0);
+}
 
 if (forceTick) {
   logger.info('FORCE_TICK=true — running one tick (RTH gate bypassed) then exiting');

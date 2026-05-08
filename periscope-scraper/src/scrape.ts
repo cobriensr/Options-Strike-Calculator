@@ -32,7 +32,7 @@ import {
   UW_AUTH_STATE_PATH,
   UW_PERISCOPE_URL,
 } from './config.js';
-import { parsePage } from './parser.js';
+import { parseDateLabel, parsePage } from './parser.js';
 import type { Panel, SnapshotRow } from './types.js';
 
 const logger = pino({ level: LOG_LEVEL });
@@ -43,6 +43,51 @@ const GREEKS_TO_CAPTURE: ReadonlyArray<{ panel: Panel; label: string }> = [
   { panel: 'charm', label: 'Charm' },
   { panel: 'vanna', label: 'Vanna' },
 ];
+
+// ── Time-window helpers (used by both walkers and the backfill loop) ──
+
+const TIMEFRAME_PATTERN = /(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/;
+
+/** "8:20" → "08:20"; "08:20" → "08:20". Stable HH:MM string compare. */
+function normalizeHhmm(hhmm: string): string {
+  const parts = hhmm.split(':');
+  const h = parts[0] ?? '0';
+  const m = parts[1] ?? '0';
+  return `${h.padStart(2, '0')}:${m.padStart(2, '0')}`;
+}
+
+/** Extract the slot-start time from a Periscope timeframe label. */
+function parseTimeframeStart(label: string): string | null {
+  const m = label.match(TIMEFRAME_PATTERN);
+  if (m?.[1] == null) return null;
+  return normalizeHhmm(m[1]);
+}
+
+/** Advance an HH:MM string by 10 minutes. "08:20" → "08:30", "08:50" → "09:00". */
+function nextTimeframe(slotStartHhmm: string): string {
+  const [hStr, mStr] = slotStartHhmm.split(':');
+  const totalMin = Number.parseInt(hStr ?? '0', 10) * 60 +
+    Number.parseInt(mStr ?? '0', 10) + 10;
+  const newH = Math.floor(totalMin / 60);
+  const newM = totalMin % 60;
+  return `${String(newH).padStart(2, '0')}:${String(newM).padStart(2, '0')}`;
+}
+
+/**
+ * Compute the captured_at ISO timestamp for a backfilled slot. The
+ * `date` is YYYY-MM-DD, `slotEndHhmm` is the slot's end time as
+ * displayed by UW (which Periscope shows in the user's local tz —
+ * CT for the typical install).
+ *
+ * `new Date(yyyy-mm-ddTHH:MM:00)` interprets the string as LOCAL time
+ * and `.toISOString()` converts to UTC, so this yields the correct
+ * UTC ISO for a CT-running scraper. For Railway deploys, set the
+ * container TZ to America/Chicago so the same arithmetic holds.
+ */
+function computeCapturedAt(date: string, slotEndHhmm: string): string {
+  const local = new Date(`${date}T${normalizeHhmm(slotEndHhmm)}:00`);
+  return local.toISOString();
+}
 
 /**
  * Open the DTE filter popover and set Min/Max DTE to 0.
@@ -238,6 +283,112 @@ async function selectGreek(page: Page, label: string): Promise<void> {
   await page.waitForTimeout(1_000);
 }
 
+/**
+ * Walk the date picker chevrons until the displayed label matches the
+ * target YYYY-MM-DD. UW's date picker label looks like "Thu, May 7"
+ * — we parse the current label via parseDateLabel + the target's year,
+ * then click prev or next based on direction. Caps at 30 attempts to
+ * prevent infinite loops on unparseable labels.
+ */
+async function walkDateToTarget(
+  page: Page,
+  targetYmd: string,
+): Promise<void> {
+  const yearStr = targetYmd.slice(0, 4);
+  const year = Number.parseInt(yearStr, 10);
+  if (!Number.isFinite(year)) {
+    throw new Error(`walkDateToTarget: invalid target "${targetYmd}"`);
+  }
+
+  const labelLoc = page
+    .locator('[data-testid="date-picker-button"] span[role="button"]')
+    .first();
+  const prevBtn = page.getByLabel('Previous day').first();
+  const nextBtn = page.getByLabel('Next day').first();
+
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const label = ((await labelLoc.textContent()) ?? '').trim();
+    const currentYmd = parseDateLabel(label, year);
+    if (currentYmd === targetYmd) {
+      logger.info({ targetYmd, attempts: attempt }, 'walkDateToTarget: matched');
+      return;
+    }
+    if (currentYmd === null) {
+      throw new Error(
+        `walkDateToTarget: cannot parse current label "${label}"`,
+      );
+    }
+    if (currentYmd > targetYmd) {
+      await prevBtn.click({ timeout: 3_000 });
+    } else {
+      await nextBtn.click({ timeout: 3_000 });
+    }
+    await page.waitForTimeout(700);
+  }
+  throw new Error(
+    `walkDateToTarget: did not reach ${targetYmd} after 30 chevron clicks`,
+  );
+}
+
+/**
+ * Walk the timeframe-widget chevrons until the displayed slot starts at
+ * `targetStartHhmm`. Caps at 80 attempts (covers the full 8:20–15:00
+ * day plus a buffer).
+ */
+async function walkTimeframeToTarget(
+  page: Page,
+  targetStartHhmm: string,
+): Promise<void> {
+  const target = normalizeHhmm(targetStartHhmm);
+  const container = page
+    .locator('div.rounded-full')
+    .filter({ has: page.locator('span', { hasText: /^Timeframe:$/ }) })
+    .first();
+  const labelSpan = container.locator('span').last();
+  const prevBtn = container.locator('button').first();
+  const nextBtn = container.locator('button').last();
+
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const label = ((await labelSpan.textContent()) ?? '').trim();
+    const currentStart = parseTimeframeStart(label);
+    if (currentStart === target) {
+      logger.info(
+        { target, attempts: attempt },
+        'walkTimeframeToTarget: matched',
+      );
+      return;
+    }
+    if (currentStart === null) {
+      throw new Error(
+        `walkTimeframeToTarget: cannot parse current label "${label}"`,
+      );
+    }
+    if (currentStart > target) {
+      await prevBtn.click({ timeout: 3_000 });
+    } else {
+      await nextBtn.click({ timeout: 3_000 });
+    }
+    await page.waitForTimeout(500);
+  }
+  throw new Error(
+    `walkTimeframeToTarget: did not reach ${target} after 80 chevron clicks`,
+  );
+}
+
+/**
+ * Advance the timeframe by one slot (10 min forward) by clicking the
+ * next-chevron button. Caller is responsible for the post-click
+ * settle wait — we don't impose one here so the caller can absorb
+ * jitter (e.g. data fetch) however suits.
+ */
+async function advanceTimeframeOneSlot(page: Page): Promise<void> {
+  const container = page
+    .locator('div.rounded-full')
+    .filter({ has: page.locator('span', { hasText: /^Timeframe:$/ }) })
+    .first();
+  await container.locator('button').last().click({ timeout: 3_000 });
+}
+
 async function withBrowser<T>(
   fn: (browser: Browser, page: Page) => Promise<T>,
 ): Promise<T> {
@@ -269,103 +420,178 @@ async function withBrowser<T>(
   }
 }
 
-export async function scrapeAllPanels(): Promise<SnapshotRow[]> {
-  return await withBrowser(async (_browser, page) => {
-    logger.info({ url: UW_PERISCOPE_URL }, 'navigating to periscope');
-    await page.goto(UW_PERISCOPE_URL, { waitUntil: 'networkidle' });
+/**
+ * Capture rows for the three Greeks at the current page state. Assumes
+ * the page is already on the right date / timeframe / DTE filter — this
+ * function only handles the Greek-cycling + parsing.
+ *
+ * `capturedAt` is stamped on every emitted row. For live ticks pass
+ * `new Date().toISOString()`. For backfill, pass a per-slot timestamp
+ * computed from the slot's end time.
+ */
+async function captureCurrentSlot(
+  page: Page,
+  capturedAt: string,
+): Promise<SnapshotRow[]> {
+  // Empty-state short-circuit: this page state has no data (e.g. an
+  // expiry/date combo that resolves to nothing). Bail cleanly.
+  if ((await page.getByText(/no data available/i).count()) > 0) {
+    logger.warn(
+      'captureCurrentSlot: "No data available" — returning 0 rows',
+    );
+    return [];
+  }
 
-    // Wait for SOMETHING to render (table OR empty-state) before we
-    // touch filters. The Expiry default is "All" which yields the
-    // empty state — the DTE=[0,0] filter we apply next is what makes
-    // data appear.
-    const firstRow = page.locator('tr.table_row__wxw5u').first();
-    const emptyState = page.getByText(/no data available/i).first();
+  const slotRows: SnapshotRow[] = [];
+
+  for (const greek of GREEKS_TO_CAPTURE) {
     try {
-      await Promise.race([
-        firstRow.waitFor({ state: 'visible', timeout: 20_000 }),
-        emptyState.waitFor({ state: 'visible', timeout: 20_000 }),
-      ]);
-    } catch {
+      await selectGreek(page, greek.label);
+    } catch (err) {
       logger.warn(
-        'neither table rows nor empty-state appeared after 20s — proceeding anyway',
-      );
-    }
-
-    // Force DTE=[0,0] before anything else. The default filter combo
-    // (Expiry="All" / DTE=any) yields the empty state; DTE=0 narrows
-    // to today's 0DTE expiry which is what the user actually trades.
-    await setDTEZero(page);
-
-    // Settle: even when the table appears, the inner value cells
-    // sometimes render a tick later than the `<tr>` shells.
-    await page.waitForTimeout(2_000);
-
-    // Empty-state short-circuit: when "No data available" is rendered,
-    // the page header has no spot/min/max text and the data table isn't
-    // mounted — parsePage would throw on missing Underlying. Bail with
-    // an empty result so the caller gets a clean "0 rows" tick.
-    if ((await page.getByText(/no data available/i).count()) > 0) {
-      logger.warn(
-        'Periscope shows "No data available" — likely outside RTH or filter mismatch. Returning 0 rows.',
-      );
-      return [];
-    }
-
-    const allRows: SnapshotRow[] = [];
-    const capturedAt = new Date().toISOString();
-
-    for (const greek of GREEKS_TO_CAPTURE) {
-      try {
-        await selectGreek(page, greek.label);
-      } catch (err) {
-        logger.warn(
-          {
-            panel: greek.panel,
-            err: err instanceof Error ? err.message : String(err),
-          },
-          'selectGreek failed — skipping this Greek',
-        );
-        continue;
-      }
-
-      // Empty state can appear/disappear when switching Greeks if the
-      // user's filters resolve to data for some but not others. Re-check
-      // per Greek instead of trusting the initial gate.
-      if ((await page.getByText(/no data available/i).count()) > 0) {
-        logger.info(
-          { panel: greek.panel },
-          'no data for this Greek — skipping',
-        );
-        continue;
-      }
-
-      const html = await page.content();
-      const { header, rows } = parsePage(html, capturedAt);
-
-      // Sanity: header.panel must match what we just selected. If UW
-      // re-rendered to a different Greek (race condition, click missed),
-      // the dropdown text would be stale and we'd write wrong panel rows.
-      if (header.panel !== greek.panel) {
-        logger.warn(
-          { expected: greek.panel, got: header.panel },
-          'panel mismatch — skipping this Greek',
-        );
-        continue;
-      }
-
-      logger.info(
         {
           panel: greek.panel,
-          rows: rows.length,
-          spot: header.spot,
-          expiry: header.expiry,
-          timeframe: header.timeframe,
+          err: err instanceof Error ? err.message : String(err),
         },
-        'parsed Greek',
+        'selectGreek failed — skipping this Greek',
       );
-      allRows.push(...rows);
+      continue;
     }
 
+    if ((await page.getByText(/no data available/i).count()) > 0) {
+      logger.info(
+        { panel: greek.panel },
+        'no data for this Greek — skipping',
+      );
+      continue;
+    }
+
+    const html = await page.content();
+    const { header, rows } = parsePage(html, capturedAt);
+
+    if (header.panel !== greek.panel) {
+      logger.warn(
+        { expected: greek.panel, got: header.panel },
+        'panel mismatch — skipping this Greek',
+      );
+      continue;
+    }
+
+    logger.info(
+      {
+        panel: greek.panel,
+        rows: rows.length,
+        spot: header.spot,
+        expiry: header.expiry,
+        timeframe: header.timeframe,
+        capturedAt,
+      },
+      'parsed Greek',
+    );
+    slotRows.push(...rows);
+  }
+
+  return slotRows;
+}
+
+/**
+ * Common preamble shared by live and backfill flows: navigate to
+ * Periscope, wait for the table-or-empty-state to render, then apply
+ * DTE=[0,0]. Returns when the page is in a state where filter changes
+ * (date, timeframe) take effect deterministically.
+ */
+async function loadAndPrepPage(page: Page): Promise<void> {
+  logger.info({ url: UW_PERISCOPE_URL }, 'navigating to periscope');
+  await page.goto(UW_PERISCOPE_URL, { waitUntil: 'networkidle' });
+
+  const firstRow = page.locator('tr.table_row__wxw5u').first();
+  const emptyState = page.getByText(/no data available/i).first();
+  try {
+    await Promise.race([
+      firstRow.waitFor({ state: 'visible', timeout: 20_000 }),
+      emptyState.waitFor({ state: 'visible', timeout: 20_000 }),
+    ]);
+  } catch {
+    logger.warn(
+      'neither table rows nor empty-state appeared after 20s — proceeding anyway',
+    );
+  }
+
+  await setDTEZero(page);
+  // Settle: even when the table appears, the inner value cells
+  // sometimes render a tick later than the `<tr>` shells.
+  await page.waitForTimeout(2_000);
+}
+
+export async function scrapeAllPanels(): Promise<SnapshotRow[]> {
+  return await withBrowser(async (_browser, page) => {
+    await loadAndPrepPage(page);
+    return await captureCurrentSlot(page, new Date().toISOString());
+  });
+}
+
+/**
+ * Backfill mode: walk to a specific historical date, then iterate
+ * 10-min timeframe slots from `startHhmm` through `endHhmm`, capturing
+ * Gamma + Charm + Vanna at each. Used to seed the database with a
+ * full day's intraday history in one run.
+ *
+ * The captured_at on each row is computed from the slot's END time
+ * (e.g. an "08:20 - 08:30" slot stamps captured_at=08:30) so a
+ * backfilled day reproduces the live cron's row stamping.
+ */
+export async function scrapeBackfill(
+  targetDate: string,
+  startHhmm: string,
+  endHhmm: string,
+): Promise<SnapshotRow[]> {
+  const startNorm = normalizeHhmm(startHhmm);
+  const endNorm = normalizeHhmm(endHhmm);
+
+  return await withBrowser(async (_browser, page) => {
+    logger.info(
+      { targetDate, startHhmm: startNorm, endHhmm: endNorm },
+      'backfill: starting',
+    );
+    await loadAndPrepPage(page);
+    await walkDateToTarget(page, targetDate);
+    // Settle after date change; Periscope re-fetches data here.
+    await page.waitForTimeout(1_500);
+    await walkTimeframeToTarget(page, startNorm);
+    await page.waitForTimeout(1_500);
+
+    const allRows: SnapshotRow[] = [];
+    let currentStart = startNorm;
+    let slotsScanned = 0;
+
+    while (currentStart <= endNorm) {
+      const slotEnd = nextTimeframe(currentStart);
+      const capturedAt = computeCapturedAt(targetDate, slotEnd);
+
+      logger.info(
+        { slot: `${currentStart}-${slotEnd}`, capturedAt },
+        'backfill: scraping slot',
+      );
+
+      const slotRows = await captureCurrentSlot(page, capturedAt);
+      allRows.push(...slotRows);
+      slotsScanned += 1;
+
+      const nextStart = nextTimeframe(currentStart);
+      if (nextStart > endNorm) break;
+
+      await advanceTimeframeOneSlot(page);
+      // Wait for table to re-render under the new timeframe. UW's
+      // data fetch is ~1s under DTE=0 + specific date.
+      await page.waitForTimeout(1_500);
+
+      currentStart = nextStart;
+    }
+
+    logger.info(
+      { totalRows: allRows.length, slotsScanned },
+      'backfill: complete',
+    );
     return allRows;
   });
 }
