@@ -176,7 +176,28 @@ async function selectGreek(page: Page, label: string): Promise<void> {
     .locator('[data-radix-popper-content-wrapper]')
     .last();
   const option = popover.getByText(label, { exact: true }).first();
-  await option.click({ timeout: 5_000 });
+  try {
+    await option.click({ timeout: 3_000 });
+  } catch (err) {
+    // Diagnostic: dump the popover's visible text so the next run's
+    // logs show exactly what was on offer. Helps catch view-specific
+    // omissions (e.g. Vanna missing on the table view) and text-quirk
+    // selector misses.
+    const popoverText =
+      (await popover.textContent().catch(() => null)) ?? '<unreadable>';
+    logger.warn(
+      {
+        label,
+        popoverText: popoverText.replaceAll(/\s+/g, ' ').slice(0, 300),
+        err: err instanceof Error ? err.message : String(err),
+      },
+      'selectGreek: option not clickable — see popoverText',
+    );
+    // Close any open popover before bubbling so the next iteration
+    // starts from a clean state.
+    await page.keyboard.press('Escape').catch(() => undefined);
+    throw err;
+  }
 
   // Wait for the trigger's text-base span to display the new Greek
   // label. Playwright's locator-based wait avoids serialising a function
@@ -270,7 +291,18 @@ export async function scrapeAllPanels(): Promise<SnapshotRow[]> {
     const capturedAt = new Date().toISOString();
 
     for (const greek of GREEKS_TO_CAPTURE) {
-      await selectGreek(page, greek.label);
+      try {
+        await selectGreek(page, greek.label);
+      } catch (err) {
+        logger.warn(
+          {
+            panel: greek.panel,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          'selectGreek failed — skipping this Greek',
+        );
+        continue;
+      }
 
       // Empty state can appear/disappear when switching Greeks if the
       // user's filters resolve to data for some but not others. Re-check
