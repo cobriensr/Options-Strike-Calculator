@@ -46,7 +46,9 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 RUN addgroup --system --gid 1001 scraper && \
-    adduser --system --uid 1001 --ingroup scraper scraper
+    adduser --system --uid 1001 --ingroup scraper scraper && \
+    mkdir -p /home/scraper/.cache && \
+    chown -R scraper:scraper /home/scraper
 
 WORKDIR /app
 
