@@ -44,6 +44,12 @@ VOL_OI_MIN = 0.25
 COOLDOWN_BUCKETS = 12
 MIN_OI = 100
 BUCKET_MS = 5 * 60 * 1000
+
+# Mirror of SILENT_BOOM_TIER_THRESHOLDS in api/_lib/silent-boom-score.ts.
+# Calibrated against the historical 14,100-fire sample — see
+# docs/tmp/silent-boom-feature-audit-2026-05-08.md.
+TIER1_MIN_SCORE = 21
+TIER2_MIN_SCORE = 8
 # Cooldown is wall-clock minutes — MUST match the TS detector's
 # `tsMs - lastFireMs < cooldownMs` gate. An index-based gate (12
 # rows in a sparse-bucket dataframe) silently diverges from the
@@ -197,6 +203,75 @@ def days_between(from_ymd: str, to_ymd: str) -> int:
     return (b - a).days
 
 
+def silent_boom_tod_from_minute_ct(minute_of_day: int) -> str:
+    if minute_of_day < 10 * 60:
+        return 'AM_open'
+    if minute_of_day < 12 * 60:
+        return 'MID'
+    if minute_of_day < 13 * 60:
+        return 'LUNCH'
+    if minute_of_day < 15 * 60:
+        return 'PM'
+    return 'LATE'
+
+
+# Mirror of computeSilentBoomScore in api/_lib/silent-boom-score.ts.
+# Every bucket weight is justified in docs/tmp/silent-boom-feature-audit-2026-05-08.md.
+_TOD_WEIGHTS = {'AM_open': 5, 'MID': 1, 'LUNCH': 0, 'PM': -3, 'LATE': -3}
+
+
+def compute_silent_boom_score(
+    *,
+    dte: int,
+    baseline_volume: float,
+    spike_ratio: float,
+    entry_price: float,
+    ask_pct: float,
+    tod: str,
+    option_type: str,
+) -> int:
+    s = 0
+    # DTE
+    if   dte == 0:    s += 10
+    elif dte <= 3:    s += 4
+    elif dte <= 7:    s += 0
+    elif dte <= 30:   s += -3
+    else:             s += -8
+    # Baseline volume
+    if   baseline_volume <= 50:  s += -1
+    elif baseline_volume <= 200: s += 3
+    elif baseline_volume <= 500: s += 5
+    # Spike ratio
+    if   spike_ratio <= 10:  s += 5
+    elif spike_ratio <= 25:  s += 3
+    elif spike_ratio <= 50:  s += 1
+    elif spike_ratio <= 100: s += 0
+    else:                    s += -3
+    # Entry price
+    if   entry_price <= 0.5: s += 5
+    elif entry_price <= 1.0: s += 0
+    elif entry_price <= 5.0: s += -2
+    else:                    s += -5
+    # TOD
+    s += _TOD_WEIGHTS[tod]
+    # Ask%
+    if   ask_pct < 0.85: s += 2
+    elif ask_pct < 0.95: s += 1
+    else:                s += -1
+    # Call bonus
+    if option_type == 'C':
+        s += 1
+    return s
+
+
+def silent_boom_tier(score: int) -> str:
+    if score >= TIER1_MIN_SCORE:
+        return 'tier1'
+    if score >= TIER2_MIN_SCORE:
+        return 'tier2'
+    return 'tier3'
+
+
 def insert_fires(conn, rows: list[tuple]) -> int:
     if not rows:
         return 0
@@ -208,7 +283,8 @@ def insert_fires(conn, rows: list[tuple]) -> int:
           date, bucket_ct, option_chain_id, underlying_symbol,
           option_type, strike, expiry, dte,
           spike_volume, baseline_volume, spike_ratio,
-          ask_pct, vol_oi, entry_price, open_interest
+          ask_pct, vol_oi, entry_price, open_interest,
+          score, score_tier
         )
         VALUES %s
         ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING
@@ -218,7 +294,7 @@ def insert_fires(conn, rows: list[tuple]) -> int:
         template=(
             '(%s::date, %s::timestamptz, %s, %s, %s, %s::numeric, '
             '%s::date, %s, %s, %s::numeric, %s::numeric, %s::numeric, '
-            '%s::numeric, %s::numeric, %s)'
+            '%s::numeric, %s::numeric, %s, %s::smallint, %s)'
         ),
         page_size=500,
         fetch=True,
@@ -291,6 +367,24 @@ def main() -> None:
             )
             dte = days_between(date_str, exp_str)
             for f in fires:
+                # Score every row at insert time so the table lands
+                # fully populated (mirrors the cron path).
+                bucket_ts: pd.Timestamp = f['bucket']
+                if bucket_ts.tz is None:
+                    bucket_ts = bucket_ts.tz_localize('UTC')
+                bucket_ct = bucket_ts.tz_convert('America/Chicago')
+                ct_min_of_day = bucket_ct.hour * 60 + bucket_ct.minute
+                tod = silent_boom_tod_from_minute_ct(ct_min_of_day)
+                score = compute_silent_boom_score(
+                    dte=dte,
+                    baseline_volume=f['baseline_volume'],
+                    spike_ratio=f['spike_ratio'],
+                    entry_price=f['entry_price'],
+                    ask_pct=f['ask_pct'],
+                    tod=tod,
+                    option_type=opt_type,
+                )
+                tier = silent_boom_tier(score)
                 rows_to_insert.append((
                     date_str,
                     f['bucket'].isoformat(),
@@ -299,6 +393,7 @@ def main() -> None:
                     f['spike_volume'], f['baseline_volume'], f['spike_ratio'],
                     f['ask_pct'], f['vol_oi'], f['entry_price'],
                     f['open_interest'],
+                    score, tier,
                 ))
                 fires_today += 1
         inserted = insert_fires(conn, rows_to_insert)

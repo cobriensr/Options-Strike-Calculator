@@ -32,7 +32,12 @@ function emptyFeed(
 ): SilentBoomFeedResponse {
   return {
     date: '2026-05-07',
-    filters: { minVolOi: 0.5, minSpikeRatio: 0, sort: 'newest' },
+    filters: {
+      minVolOi: 0.5,
+      minSpikeRatio: 0,
+      minScore: null,
+      sort: 'newest',
+    },
     count: 0,
     total: 0,
     limit: 50,
@@ -95,6 +100,34 @@ describe('useSilentBoomFeed', () => {
     expect(url).not.toContain('optionType=');
   });
 
+  it('appends minScore to the URL when supplied', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFeed()));
+    renderHook(() =>
+      useSilentBoomFeed({
+        date: '2026-05-07',
+        marketOpen: false,
+        minScore: 21,
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toContain('minScore=21');
+  });
+
+  it('omits minScore when null/undefined', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFeed()));
+    renderHook(() =>
+      useSilentBoomFeed({
+        date: '2026-05-07',
+        marketOpen: false,
+        minScore: null,
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).not.toContain('minScore=');
+  });
+
   it('clears loading and exposes alerts on success', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse(
@@ -119,6 +152,8 @@ describe('useSilentBoomFeed', () => {
               volOi: 0.4,
               entryPrice: 0.5,
               openInterest: 5000,
+              score: 24,
+              scoreTier: 'tier1',
               outcomes: {
                 peakCeilingPct: 25,
                 minutesToPeak: 18,

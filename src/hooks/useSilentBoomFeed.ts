@@ -27,6 +27,8 @@ interface UseSilentBoomFeedArgs {
   minVolOi?: number;
   /** Spike-ratio floor. */
   minSpikeRatio?: number;
+  /** Composite-score floor — Tier 1 = 21, Tier 2 = 8. */
+  minScore?: number | null;
   sort?: SilentBoomSortMode;
   page?: number;
   pageSize?: number;
@@ -62,6 +64,7 @@ export function useSilentBoomFeed({
   optionType = null,
   minVolOi = 0.5,
   minSpikeRatio = 0,
+  minScore = null,
   sort = 'newest',
   page = 0,
   pageSize = 50,
@@ -85,6 +88,7 @@ export function useSilentBoomFeed({
       });
       if (ticker) params.set('ticker', ticker);
       if (optionType) params.set('optionType', optionType);
+      if (minScore != null) params.set('minScore', String(minScore));
       const res = await fetch(`/api/silent-boom-feed?${params.toString()}`, {
         credentials: 'include',
         signal: ctrl.signal,
@@ -111,7 +115,17 @@ export function useSilentBoomFeed({
         error: getErrorMessage(err),
       }));
     }
-  }, [date, ticker, optionType, minVolOi, minSpikeRatio, sort, page, pageSize]);
+  }, [
+    date,
+    ticker,
+    optionType,
+    minVolOi,
+    minSpikeRatio,
+    minScore,
+    sort,
+    page,
+    pageSize,
+  ]);
 
   useEffect(() => {
     fetchOnce();

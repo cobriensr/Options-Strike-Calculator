@@ -893,8 +893,8 @@ export type LotteryFinderQuery = z.infer<typeof lotteryFinderQuerySchema>;
  * Query params for GET /api/silent-boom-feed.
  *
  * Read endpoint backing the SilentBoomSection component. Filter
- * surface deliberately tighter than lottery_finder — silent-boom
- * is a discretionary alert feed, not a tier/score system.
+ * surface includes the `minScore` cut for the conviction-tier UX
+ * — see api/_lib/silent-boom-score.ts.
  */
 export const silentBoomFeedQuerySchema = z.object({
   ticker: z
@@ -911,6 +911,10 @@ export const silentBoomFeedQuerySchema = z.object({
   minVolOi: z.coerce.number().min(0).max(100).default(0),
   // Spike-ratio floor — same shape.
   minSpikeRatio: z.coerce.number().min(0).max(1000).default(0),
+  // Score floor — Tier 1 = 21, Tier 2 = 8 (see SILENT_BOOM_TIER_THRESHOLDS).
+  // The full observed range is roughly -22 to +33; the schema bounds
+  // are loose so we don't have to update them when weights are recalibrated.
+  minScore: z.coerce.number().int().min(-100).max(100).optional(),
   // Pagination.
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),

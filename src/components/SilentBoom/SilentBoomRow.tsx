@@ -4,7 +4,7 @@ import { useNetFlowHistory } from '../../hooks/useNetFlowHistory.js';
 import { useTickerCandles } from '../../hooks/useTickerCandles.js';
 import { ContractTapeChart } from '../LotteryFinder/ContractTapeChart.js';
 import { TickerNetFlowChart } from '../LotteryFinder/TickerNetFlowChart.js';
-import type { SilentBoomAlert } from './types.js';
+import type { SilentBoomAlert, SilentBoomScoreTier } from './types.js';
 
 interface SilentBoomRowProps {
   alert: SilentBoomAlert;
@@ -88,6 +88,36 @@ const optionTypeBadge = (t: 'C' | 'P'): string =>
     : 'border-red-500/40 bg-red-950/30 text-red-200';
 
 /**
+ * Tier badge — fire-emoji conviction signal mirroring LotteryRow's
+ * pattern. Tier 1 (~5% of fires) historically lands ~56% high-peak;
+ * Tier 3 ~8%. See api/_lib/silent-boom-score.ts for calibration.
+ */
+const tierBadge = (
+  tier: SilentBoomScoreTier | null,
+  score: number | null,
+): { label: string; cls: string; tooltip: string } => {
+  if (tier === 'tier1') {
+    return {
+      label: '🔥🔥🔥',
+      cls: 'border-rose-500/50 bg-rose-950/40 text-rose-200',
+      tooltip: `Tier 1 (score ${score ?? '?'} ≥ 21): high conviction — ~56% of historical Tier 1 fires hit ≥50% peak return (vs 16% baseline).`,
+    };
+  }
+  if (tier === 'tier2') {
+    return {
+      label: '🔥🔥',
+      cls: 'border-amber-500/40 bg-amber-950/30 text-amber-200',
+      tooltip: `Tier 2 (score ${score ?? '?'} = 8-20): solid setup — ~37% of historical Tier 2 fires hit ≥50% peak return.`,
+    };
+  }
+  return {
+    label: '🔥',
+    cls: 'border-neutral-700 bg-neutral-900 text-neutral-400',
+    tooltip: `Tier 3 (score ${score ?? '?'} < 8): low conviction — ~8% of historical Tier 3 fires hit ≥50% peak return.`,
+  };
+};
+
+/**
  * Spike-ratio badge — gives the eye an at-a-glance read on how
  * extreme the burst was vs the contract's own preceding 4-bucket
  * baseline. Detector min is 5x; tiers above that flag genuinely
@@ -129,6 +159,8 @@ function areRowsEqual(prev: SilentBoomRowProps, next: SilentBoomRowProps) {
   const a = prev.alert;
   const b = next.alert;
   if (a.id !== b.id) return false;
+  if (a.score !== b.score) return false;
+  if (a.scoreTier !== b.scoreTier) return false;
   if (a.outcomes.enrichedAt !== b.outcomes.enrichedAt) return false;
   if (a.outcomes.peakCeilingPct !== b.outcomes.peakCeilingPct) return false;
   if (a.outcomes.realized60mPct !== b.outcomes.realized60mPct) return false;
@@ -145,6 +177,7 @@ export const SilentBoomRow = memo(function SilentBoomRow({
   const realizedEod = alert.outcomes.realizedEodPct;
   const mtp = alert.outcomes.minutesToPeak;
   const spike = spikeBadge(alert.spikeRatio);
+  const tier = tierBadge(alert.scoreTier, alert.score);
 
   const [expanded, setExpanded] = useState(false);
 
@@ -209,6 +242,15 @@ export const SilentBoomRow = memo(function SilentBoomRow({
   return (
     <div className="rounded border border-neutral-800 bg-neutral-950 p-3 text-sm">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        {/* Tier badge — peak-potential at a glance. Sits before the
+            ticker so the user's eye lands on conviction first. */}
+        <span
+          className={`rounded border px-1.5 py-0.5 text-[11px] leading-none font-semibold ${tier.cls}`}
+          title={tier.tooltip}
+          aria-label={tier.tooltip}
+        >
+          {tier.label}
+        </span>
         <a
           href={uwContractUrl(alert)}
           target="_blank"

@@ -22,6 +22,11 @@ import {
   type ChainBucket,
 } from '../_lib/silent-boom.js';
 import {
+  computeSilentBoomScore,
+  silentBoomScoreTier,
+  silentBoomTodFromMinuteCt,
+} from '../_lib/silent-boom-score.js';
+import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
@@ -76,6 +81,31 @@ interface BucketBuilder {
 
 function bucketMsForTime(ms: number): number {
   return Math.floor(ms / SILENT_BOOM_BUCKET_MS) * SILENT_BOOM_BUCKET_MS;
+}
+
+/**
+ * Minute-of-day (Central Time) for the silent-boom score's TOD bucket.
+ * Intl-based so DST transitions are handled correctly without an
+ * extra dependency. Returns 0–1439.
+ */
+const CT_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/Chicago',
+  hour: 'numeric',
+  minute: 'numeric',
+  hour12: false,
+});
+function ctMinuteFromUtcMs(utcMs: number): number {
+  const parts = CT_FORMATTER.formatToParts(new Date(utcMs));
+  const h = Number.parseInt(
+    parts.find((p) => p.type === 'hour')?.value ?? '0',
+    10,
+  );
+  const m = Number.parseInt(
+    parts.find((p) => p.type === 'minute')?.value ?? '0',
+    10,
+  );
+  // 24-hour formatter sometimes emits hour=24 at midnight.
+  return (h === 24 ? 0 : h) * 60 + m;
 }
 
 function daysBetween(fromYmd: string, toYmd: string): number {
@@ -215,18 +245,36 @@ export default withCronInstrumentation(
       const dte = daysBetween(ctx.today, g.expiry);
 
       for (const f of fires) {
+        // Score is deterministic from the fire payload + day context.
+        // Computed inline so the row lands fully scored (no lazy
+        // backfill / re-pass).
+        const ctMinuteOfDay = ctMinuteFromUtcMs(f.bucketTs.getTime());
+        const tod = silentBoomTodFromMinuteCt(ctMinuteOfDay);
+        const score = computeSilentBoomScore({
+          dte,
+          baselineVolume: f.baselineVolume,
+          spikeRatio: f.spikeRatio,
+          entryPrice: f.entryPrice,
+          askPct: f.askPct,
+          tod,
+          optionType: g.optionType,
+        });
+        const tier = silentBoomScoreTier(score);
+
         const result = (await db`
           INSERT INTO silent_boom_alerts (
             date, bucket_ct, option_chain_id, underlying_symbol,
             option_type, strike, expiry, dte,
             spike_volume, baseline_volume, spike_ratio,
-            ask_pct, vol_oi, entry_price, open_interest
+            ask_pct, vol_oi, entry_price, open_interest,
+            score, score_tier
           ) VALUES (
             ${ctx.today}::date, ${f.bucketTs.toISOString()},
             ${g.optionChain}, ${g.ticker},
             ${g.optionType}, ${g.strike}, ${g.expiry}::date, ${dte},
             ${f.spikeVolume}, ${f.baselineVolume}, ${f.spikeRatio},
-            ${f.askPct}, ${f.volOi}, ${f.entryPrice}, ${f.openInterest}
+            ${f.askPct}, ${f.volOi}, ${f.entryPrice}, ${f.openInterest},
+            ${score}, ${tier}
           )
           ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING
           RETURNING id

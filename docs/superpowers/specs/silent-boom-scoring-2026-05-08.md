@@ -29,19 +29,20 @@ Standalone Python script `scripts/silent_boom_feature_audit.py` that stratifies 
 
 Candidate features (all already in `silent_boom_alerts`):
 
-| Feature | Stratification |
-|---|---|
-| `spike_ratio` | 5–10×, 10–25×, 25–50×, 50–100×, 100×+ |
-| `vol_oi` | 0.25–0.5, 0.5–1.0, 1.0–2.0, 2.0+ |
-| `ask_pct` | 0.70–0.85, 0.85–0.95, 0.95+ |
-| `open_interest` | <500, 500–2k, 2k–10k, 10k+ |
-| `dte` | 0DTE, 1–3D, 4–7D, 8–30D, 30D+ |
-| `option_type` | C vs P |
-| Time-of-day | AM_open (08:30–10:00 CT), MID (10:00–12:00), LUNCH (12:00–13:00), PM (13:00–15:00) |
-| `entry_price` | <$0.50, $0.50–1.00, $1.00–5.00, $5.00+ |
-| `baseline_volume` | <50, 50–200, 200–500 |
+| Feature           | Stratification                                                                     |
+| ----------------- | ---------------------------------------------------------------------------------- |
+| `spike_ratio`     | 5–10×, 10–25×, 25–50×, 50–100×, 100×+                                              |
+| `vol_oi`          | 0.25–0.5, 0.5–1.0, 1.0–2.0, 2.0+                                                   |
+| `ask_pct`         | 0.70–0.85, 0.85–0.95, 0.95+                                                        |
+| `open_interest`   | <500, 500–2k, 2k–10k, 10k+                                                         |
+| `dte`             | 0DTE, 1–3D, 4–7D, 8–30D, 30D+                                                      |
+| `option_type`     | C vs P                                                                             |
+| Time-of-day       | AM_open (08:30–10:00 CT), MID (10:00–12:00), LUNCH (12:00–13:00), PM (13:00–15:00) |
+| `entry_price`     | <$0.50, $0.50–1.00, $1.00–5.00, $5.00+                                             |
+| `baseline_volume` | <50, 50–200, 200–500                                                               |
 
 For each stratum the audit computes:
+
 - `n` (sample count)
 - `pct_high_peak` = % with peak_ceiling_pct ≥ 50
 - `mean_peak` = average peak %
@@ -57,11 +58,13 @@ Report sorts by `lift` within each feature so the strongest predictors surface f
 Translate the audit findings into an additive integer score, mirroring `api/_lib/lottery-score-weights.ts`.
 
 **New file:** `api/_lib/silent-boom-score.ts`
+
 - `SILENT_BOOM_SCORE_WEIGHTS` — frozen const, points-per-bucket per feature, calibrated from Phase 0
 - `SILENT_BOOM_TIER_THRESHOLDS = { tier1: ?, tier2: ? }` — calibrated to land Tier 1 ≈ top 5/day, Tier 2 ≈ bulk of day, matching lottery proportions
 - `computeSilentBoomScore(alert) → { score, tier }` — pure function
 
 **Migration #135** (in `api/_lib/db-migrations.ts`):
+
 - `ALTER TABLE silent_boom_alerts ADD COLUMN score smallint`
 - `ALTER TABLE silent_boom_alerts ADD COLUMN score_tier text` (`'tier1' | 'tier2' | 'tier3'`)
 - Index on `(date, score_tier)` for the tier-filter API path
@@ -71,46 +74,51 @@ Translate the audit findings into an additive integer score, mirroring `api/_lib
 **Backfill rerun:** add `score` / `score_tier` to `scripts/backfill_silent_boom_from_parquet.py` so the existing 14.1k get scored without a separate pass.
 
 **Tests:**
+
 - `api/__tests__/silent-boom-score.test.ts` — score correctness, tier boundary cases, frozen constants
 - Update `api/__tests__/db.test.ts` for migration #135 (mock count + sequence)
 
 ### Phase 2 — API + UI tier surface (3 files)
 
 **API** (`api/silent-boom-feed.ts`):
+
 - Return `score: number` and `scoreTier: 'tier1' | 'tier2' | 'tier3'` per row
 - Accept `?minScore=N` query param — filters to score ≥ N
 - Validation in `silentBoomFeedQuerySchema`
 
 **UI** (`src/components/SilentBoom/SilentBoomRow.tsx`):
+
 - Tier badge component identical to LotteryRow's (🔥 / 🔥🔥 / 🔥🔥🔥)
 - Tooltip surfaces the score breakdown (which features contributed)
 
 **UI** (`src/components/SilentBoom/SilentBoomSection.tsx`):
+
 - Conviction filter chip group (`all` / `Tier 2+` / `Tier 1`) — same UX as LotteryFinderSection
 - localStorage-persisted
 
 **Tests:**
+
 - Extend `src/__tests__/useSilentBoomFeed.test.ts` for the new `minScore` URL param
 
 ## Files to create/modify
 
-| Path | Action | Phase |
-|---|---|---|
-| `scripts/silent_boom_feature_audit.py` | new | 0 |
-| `docs/tmp/silent-boom-feature-audit-2026-05-08.md` | new (audit output) | 0 |
-| `api/_lib/silent-boom-score.ts` | new | 1 |
-| `api/__tests__/silent-boom-score.test.ts` | new | 1 |
-| `api/_lib/db-migrations.ts` | +migration #135 | 1 |
-| `api/__tests__/db.test.ts` | mock count update | 1 |
-| `api/cron/detect-silent-boom.ts` | score + bind columns | 1 |
-| `scripts/backfill_silent_boom_from_parquet.py` | score + bind columns | 1 |
-| `api/silent-boom-feed.ts` | return score/tier; accept minScore | 2 |
-| `api/_lib/validation.ts` | minScore in schema | 2 |
-| `src/components/SilentBoom/types.ts` | score/scoreTier on alert type | 2 |
-| `src/hooks/useSilentBoomFeed.ts` | minScore arg → URL param | 2 |
-| `src/components/SilentBoom/SilentBoomRow.tsx` | tier badge | 2 |
-| `src/components/SilentBoom/SilentBoomSection.tsx` | conviction filter | 2 |
-| `src/__tests__/useSilentBoomFeed.test.ts` | minScore URL test | 2 |
+| Path                                               | Action                             | Phase |
+| -------------------------------------------------- | ---------------------------------- | ----- |
+| `scripts/silent_boom_feature_audit.py`             | new                                | 0     |
+| `docs/tmp/silent-boom-feature-audit-2026-05-08.md` | new (audit output)                 | 0     |
+| `api/_lib/silent-boom-score.ts`                    | new                                | 1     |
+| `api/__tests__/silent-boom-score.test.ts`          | new                                | 1     |
+| `api/_lib/db-migrations.ts`                        | +migration #135                    | 1     |
+| `api/__tests__/db.test.ts`                         | mock count update                  | 1     |
+| `api/cron/detect-silent-boom.ts`                   | score + bind columns               | 1     |
+| `scripts/backfill_silent_boom_from_parquet.py`     | score + bind columns               | 1     |
+| `api/silent-boom-feed.ts`                          | return score/tier; accept minScore | 2     |
+| `api/_lib/validation.ts`                           | minScore in schema                 | 2     |
+| `src/components/SilentBoom/types.ts`               | score/scoreTier on alert type      | 2     |
+| `src/hooks/useSilentBoomFeed.ts`                   | minScore arg → URL param           | 2     |
+| `src/components/SilentBoom/SilentBoomRow.tsx`      | tier badge                         | 2     |
+| `src/components/SilentBoom/SilentBoomSection.tsx`  | conviction filter                  | 2     |
+| `src/__tests__/useSilentBoomFeed.test.ts`          | minScore URL test                  | 2     |
 
 ## Data dependencies
 

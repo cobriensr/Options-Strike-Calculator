@@ -7,6 +7,42 @@ import type { OptionType, SilentBoomSortMode } from './types.js';
 const PAGE_SIZE = 50;
 const SORT_LS_KEY = 'silentBoom.sortMode';
 const MIN_VOL_OI_LS_KEY = 'silentBoom.minVolOi';
+const CONVICTION_LS_KEY = 'silentBoom.convictionFloor';
+
+/** Tier floors — must match SILENT_BOOM_TIER_THRESHOLDS in
+ *  api/_lib/silent-boom-score.ts. */
+const TIER1_MIN_SCORE = 21;
+const TIER2_MIN_SCORE = 8;
+
+type ConvictionFloor = 'all' | 'tier2' | 'tier1';
+
+const CONVICTION_OPTIONS: Array<{
+  value: ConvictionFloor;
+  label: string;
+  tooltip: string;
+}> = [
+  {
+    value: 'all',
+    label: 'all',
+    tooltip: 'No score floor — show every alert including Tier 3.',
+  },
+  {
+    value: 'tier2',
+    label: '🔥🔥 Tier 2+',
+    tooltip: `Tier 2 or better (score ≥ ${TIER2_MIN_SCORE}). Historical high-peak rate ~37% (vs ~8% for Tier 3).`,
+  },
+  {
+    value: 'tier1',
+    label: '🔥🔥🔥 Tier 1',
+    tooltip: `Tier 1 only (score ≥ ${TIER1_MIN_SCORE}). Historical high-peak rate ~56%, ~5% of fires.`,
+  },
+];
+
+const CONVICTION_TO_MIN_SCORE: Record<ConvictionFloor, number | null> = {
+  all: null,
+  tier2: TIER2_MIN_SCORE,
+  tier1: TIER1_MIN_SCORE,
+};
 
 const VOL_OI_FLOORS: Array<{ value: number; label: string; tooltip: string }> =
   [
@@ -128,6 +164,16 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     const parsed = Number.parseFloat(stored);
     return Number.isFinite(parsed) ? parsed : 0.5;
   });
+  const [convictionFloor, setConvictionFloor] = useState<ConvictionFloor>(
+    () => {
+      if (typeof window === 'undefined') return 'all';
+      const stored = window.localStorage.getItem(CONVICTION_LS_KEY);
+      if (stored === 'tier1' || stored === 'tier2' || stored === 'all') {
+        return stored;
+      }
+      return 'all';
+    },
+  );
   const [page, setPage] = useState<number>(0);
 
   useEffect(() => {
@@ -140,11 +186,23 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       window.localStorage.setItem(MIN_VOL_OI_LS_KEY, String(minVolOi));
     }
   }, [minVolOi]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(CONVICTION_LS_KEY, convictionFloor);
+    }
+  }, [convictionFloor]);
 
   // Reset page on any filter change so we don't land on an empty page.
   useEffect(() => {
     setPage(0);
-  }, [date, tickerFilter, optionTypeFilter, sortMode, minVolOi]);
+  }, [
+    date,
+    tickerFilter,
+    optionTypeFilter,
+    sortMode,
+    minVolOi,
+    convictionFloor,
+  ]);
 
   const isHistorical = date !== todayCt();
 
@@ -156,6 +214,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       ticker: tickerFilter,
       optionType: optionTypeFilter,
       minVolOi,
+      minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
       sort: sortMode,
       page,
       pageSize: PAGE_SIZE,
@@ -221,7 +280,35 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
             </div>
           </div>
 
-          {/* Row 2: sort + vol/OI floor */}
+          {/* Row 2: conviction tier */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className={SECTION_LABEL}>conviction</span>
+            {CONVICTION_OPTIONS.map((c) => {
+              const active = convictionFloor === c.value;
+              const activeColor: keyof typeof CHIP_ACTIVE =
+                c.value === 'tier1'
+                  ? 'rose'
+                  : c.value === 'tier2'
+                    ? 'amber'
+                    : 'emerald';
+              return (
+                <button
+                  key={c.value}
+                  type="button"
+                  onClick={() => setConvictionFloor(c.value)}
+                  className={`${CHIP_BASE} ${
+                    active ? CHIP_ACTIVE[activeColor] : CHIP_INACTIVE
+                  }`}
+                  title={c.tooltip}
+                  aria-pressed={active}
+                >
+                  {c.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Row 3: sort + vol/OI floor */}
           <div className="flex flex-wrap items-center gap-1.5">
             <span className={SECTION_LABEL}>sort</span>
             {SORT_OPTIONS.map((s) => (
@@ -352,6 +439,17 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 {total > 0 && (
                   <span className="ml-2 text-neutral-600">
                     showing {offset + 1}-{offset + alerts.length}
+                  </span>
+                )}
+                {convictionFloor !== 'all' && (
+                  <span
+                    className={`ml-2 ${
+                      convictionFloor === 'tier1'
+                        ? 'text-rose-300/80'
+                        : 'text-amber-300/80'
+                    }`}
+                  >
+                    ({convictionFloor === 'tier1' ? 'Tier 1 only' : 'Tier 2+'})
                   </span>
                 )}
                 {sortMode !== 'newest' && (

@@ -4044,4 +4044,18 @@ export const MIGRATIONS: Migration[] = [
             ON silent_boom_alerts (date) WHERE enriched_at IS NULL`,
     ],
   },
+  {
+    id: 135,
+    description:
+      'Add score + score_tier columns to silent_boom_alerts. Score is an integer composite of 7 feature buckets (DTE, baseline_volume, spike_ratio, entry_price, TOD, ask_pct, option_type) calibrated against the historical 14,100-fire sample — see docs/tmp/silent-boom-feature-audit-2026-05-08.md and api/_lib/silent-boom-score.ts. Tier is the 3-level conviction badge (tier1/tier2/tier3) the dashboard renders; tier1 historically lands ~5% of fires with ~56% peak >= 50% rate vs ~8% for tier3. Spec: docs/superpowers/specs/silent-boom-scoring-2026-05-08.md.',
+    statements: (sql) => [
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS score SMALLINT`,
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS score_tier TEXT
+            CHECK (score_tier IN ('tier1', 'tier2', 'tier3'))`,
+      sql`CREATE INDEX IF NOT EXISTS silent_boom_alerts_date_tier_idx
+            ON silent_boom_alerts (date DESC, score_tier)`,
+    ],
+  },
 ];

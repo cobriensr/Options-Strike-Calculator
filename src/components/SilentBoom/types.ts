@@ -9,6 +9,8 @@ export type OptionType = 'C' | 'P';
 
 export type SilentBoomSortMode = 'newest' | 'spike_ratio' | 'vol_oi' | 'peak';
 
+export type SilentBoomScoreTier = 'tier1' | 'tier2' | 'tier3';
+
 export interface SilentBoomOutcomes {
   peakCeilingPct: number | null;
   minutesToPeak: number | null;
@@ -40,6 +42,11 @@ export interface SilentBoomAlert {
   volOi: number;
   entryPrice: number;
   openInterest: number;
+  /** Composite conviction score. See api/_lib/silent-boom-score.ts.
+   *  Null only on legacy rows pre-Phase-1. */
+  score: number | null;
+  /** 'tier1' | 'tier2' | 'tier3'; null only on legacy rows. */
+  scoreTier: SilentBoomScoreTier | null;
   outcomes: SilentBoomOutcomes;
   insertedAt: string;
 }
@@ -51,6 +58,7 @@ export interface SilentBoomFeedResponse {
     optionType?: OptionType;
     minVolOi: number;
     minSpikeRatio: number;
+    minScore: number | null;
     sort: SilentBoomSortMode;
   };
   count: number;

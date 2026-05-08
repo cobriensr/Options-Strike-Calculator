@@ -53,6 +53,8 @@ interface AlertRow {
   realized_120m_pct: DbNullableNumeric;
   realized_eod_pct: DbNullableNumeric;
   enriched_at: DbTimestamp | null;
+  score: number | null;
+  score_tier: 'tier1' | 'tier2' | 'tier3' | null;
   inserted_at: DbTimestamp;
 }
 
@@ -73,6 +75,10 @@ interface SilentBoomAlertResponse {
   volOi: number;
   entryPrice: number;
   openInterest: number;
+  /** Composite conviction score. See api/_lib/silent-boom-score.ts. */
+  score: number | null;
+  /** 'tier1' | 'tier2' | 'tier3' — null only on legacy rows. */
+  scoreTier: 'tier1' | 'tier2' | 'tier3' | null;
   outcomes: {
     peakCeilingPct: number | null;
     minutesToPeak: number | null;
@@ -92,6 +98,7 @@ interface SilentBoomFeedResponse {
     optionType?: 'C' | 'P';
     minVolOi: number;
     minSpikeRatio: number;
+    minScore: number | null;
     sort: 'newest' | 'spike_ratio' | 'vol_oi' | 'peak';
   };
   count: number;
@@ -170,6 +177,7 @@ export default async function handler(
         AND (${q.optionType ?? null}::text IS NULL OR option_type = ${q.optionType ?? null}::text)
         AND vol_oi >= ${q.minVolOi}::numeric
         AND spike_ratio >= ${q.minSpikeRatio}::numeric
+        AND (${q.minScore ?? null}::int IS NULL OR score >= ${q.minScore ?? null}::int)
     `) as { n: number }[];
     const total = totalRow[0]?.n ?? 0;
 
@@ -186,6 +194,7 @@ export default async function handler(
           AND (${q.optionType ?? null}::text IS NULL OR option_type = ${q.optionType ?? null}::text)
           AND vol_oi >= ${q.minVolOi}::numeric
           AND spike_ratio >= ${q.minSpikeRatio}::numeric
+          AND (${q.minScore ?? null}::int IS NULL OR score >= ${q.minScore ?? null}::int)
         ORDER BY spike_ratio DESC, bucket_ct DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
       `) as AlertRow[];
@@ -198,6 +207,7 @@ export default async function handler(
           AND (${q.optionType ?? null}::text IS NULL OR option_type = ${q.optionType ?? null}::text)
           AND vol_oi >= ${q.minVolOi}::numeric
           AND spike_ratio >= ${q.minSpikeRatio}::numeric
+          AND (${q.minScore ?? null}::int IS NULL OR score >= ${q.minScore ?? null}::int)
         ORDER BY vol_oi DESC, bucket_ct DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
       `) as AlertRow[];
@@ -210,6 +220,7 @@ export default async function handler(
           AND (${q.optionType ?? null}::text IS NULL OR option_type = ${q.optionType ?? null}::text)
           AND vol_oi >= ${q.minVolOi}::numeric
           AND spike_ratio >= ${q.minSpikeRatio}::numeric
+          AND (${q.minScore ?? null}::int IS NULL OR score >= ${q.minScore ?? null}::int)
         ORDER BY peak_ceiling_pct DESC NULLS LAST, bucket_ct DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
       `) as AlertRow[];
@@ -223,6 +234,7 @@ export default async function handler(
           AND (${q.optionType ?? null}::text IS NULL OR option_type = ${q.optionType ?? null}::text)
           AND vol_oi >= ${q.minVolOi}::numeric
           AND spike_ratio >= ${q.minSpikeRatio}::numeric
+          AND (${q.minScore ?? null}::int IS NULL OR score >= ${q.minScore ?? null}::int)
         ORDER BY bucket_ct DESC, id DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
       `) as AlertRow[];
@@ -245,6 +257,8 @@ export default async function handler(
       volOi: toNum(r.vol_oi),
       entryPrice: toNum(r.entry_price),
       openInterest: r.open_interest,
+      score: r.score,
+      scoreTier: r.score_tier,
       outcomes: {
         peakCeilingPct: toNumOrNull(r.peak_ceiling_pct),
         minutesToPeak: toNumOrNull(r.minutes_to_peak),
@@ -264,6 +278,7 @@ export default async function handler(
         ...(q.optionType ? { optionType: q.optionType } : {}),
         minVolOi: q.minVolOi,
         minSpikeRatio: q.minSpikeRatio,
+        minScore: q.minScore ?? null,
         sort: q.sort,
       },
       count: alerts.length,
