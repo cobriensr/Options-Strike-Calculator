@@ -33,6 +33,30 @@ vi.mock('../_lib/api-helpers.js', () => ({
   cronGuard: mockCronGuard,
   cronJitter: vi.fn(() => Promise.resolve()),
   withRetry: mockWithRetry,
+  // Use the real mapWithConcurrency — it preserves input-index call
+  // order (required by mockUwFetch's mockResolvedValueOnce sequence
+  // in setupMocks) and is small/pure enough not to need its own mock.
+  mapWithConcurrency: async <T, R>(
+    items: readonly T[],
+    limit: number,
+    worker: (item: T, idx: number) => Promise<R>,
+  ): Promise<R[]> => {
+    if (items.length === 0) return [];
+    const results = new Array<R>(items.length);
+    let cursor = 0;
+    const runner = async (): Promise<void> => {
+      while (cursor < items.length) {
+        const idx = cursor++;
+        const item = items[idx];
+        if (item === undefined) continue;
+        results[idx] = await worker(item, idx);
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(limit, items.length) }, runner),
+    );
+    return results;
+  },
 }));
 
 import handler from '../cron/fetch-greek-flow-etf.js';

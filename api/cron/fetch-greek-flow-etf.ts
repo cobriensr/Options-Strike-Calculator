@@ -36,7 +36,12 @@
  * See docs/superpowers/specs/greek-flow-0dte-toggle-2026-05-06.md.
  */
 
-import { cronJitter, uwFetch, withRetry } from '../_lib/api-helpers.js';
+import {
+  cronJitter,
+  mapWithConcurrency,
+  uwFetch,
+  withRetry,
+} from '../_lib/api-helpers.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -62,28 +67,52 @@ export default withCronInstrumentation(
     const { apiKey, today } = ctx;
     await cronJitter();
 
-    // Phase A: all-DTE flow + expiry breakdowns in parallel (4 calls).
-    const [spyAllTicks, qqqAllTicks, spyExpiries, qqqExpiries] =
-      await Promise.all([
-        withRetry(() =>
-          uwFetch<GreekFlowTick>(apiKey, `/stock/SPY/greek-flow?date=${today}`),
-        ),
-        withRetry(() =>
-          uwFetch<GreekFlowTick>(apiKey, `/stock/QQQ/greek-flow?date=${today}`),
-        ),
-        withRetry(() =>
+    // Phase A: all-DTE flow + expiry breakdowns capped at the UW
+    // 3-concurrent in-flight cap. A naked Promise.all over 4 calls
+    // races against UW's per-account concurrency limit — the 4th
+    // caller deterministically draws a "3 concurrent requests"
+    // 429. Even though the global Redis semaphore in
+    // `acquireConcurrencySlot()` will eventually serialize, paying
+    // a Redis acquire+release for the 4th slot wastes a Redis
+    // round-trip and tightens the timing race against UW's
+    // server-side counter when other crons are simultaneously
+    // contending for slots. `mapWithConcurrency` dispatches at most
+    // 3 in flight upfront, eliminating both effects.
+    //
+    // Index order (SPY all-DTE, QQQ all-DTE, SPY expiry-breakdown,
+    // QQQ expiry-breakdown) is load-bearing for tests that drive
+    // mockUwFetch with mockResolvedValueOnce. Keep the order stable.
+    type PhaseATask = { kind: 'all-dte' | 'expiry'; ticker: 'SPY' | 'QQQ' };
+    const phaseATasks: PhaseATask[] = [
+      { kind: 'all-dte', ticker: 'SPY' },
+      { kind: 'all-dte', ticker: 'QQQ' },
+      { kind: 'expiry', ticker: 'SPY' },
+      { kind: 'expiry', ticker: 'QQQ' },
+    ];
+    const phaseAResults = await mapWithConcurrency(
+      phaseATasks,
+      3,
+      async (task) => {
+        if (task.kind === 'all-dte') {
+          return withRetry(() =>
+            uwFetch<GreekFlowTick>(
+              apiKey,
+              `/stock/${task.ticker}/greek-flow?date=${today}`,
+            ),
+          );
+        }
+        return withRetry(() =>
           uwFetch<ExpiryBreakdownEntry>(
             apiKey,
-            `/stock/SPY/expiry-breakdown?date=${today}`,
+            `/stock/${task.ticker}/expiry-breakdown?date=${today}`,
           ),
-        ),
-        withRetry(() =>
-          uwFetch<ExpiryBreakdownEntry>(
-            apiKey,
-            `/stock/QQQ/expiry-breakdown?date=${today}`,
-          ),
-        ),
-      ]);
+        );
+      },
+    );
+    const spyAllTicks = phaseAResults[0] as GreekFlowTick[];
+    const qqqAllTicks = phaseAResults[1] as GreekFlowTick[];
+    const spyExpiries = phaseAResults[2] as ExpiryBreakdownEntry[];
+    const qqqExpiries = phaseAResults[3] as ExpiryBreakdownEntry[];
 
     // Phase B: only fetch per-expiry data if today is an expiry day for the ticker.
     const spyIsExpiry = spyExpiries.some((e) => e.expires === today);
