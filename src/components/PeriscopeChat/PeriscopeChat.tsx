@@ -10,7 +10,7 @@
  * presentation only.
  */
 
-import { useCallback, useId, useMemo, useRef } from 'react';
+import { useCallback, useId, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, DragEvent } from 'react';
 import { SectionBox } from '../ui/SectionBox';
 import { usePeriscopeChat } from './usePeriscopeChat.js';
@@ -234,6 +234,14 @@ export default function PeriscopeChat() {
   // <Error /> block below.
   const canSubmit = !inFlight;
 
+  // Upload boxes default-collapsed: the primary flow is "Submit
+  // without screenshots → Claude reads scraped Periscope data".
+  // Auto-expand when the user has staged any image (so a paste/drop
+  // surfaces the slots) or when there's nothing to fall back on
+  // (covered explicitly by the affordance copy).
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const showUploads = uploadOpen || stagedCount > 0;
+
   const elapsedLabel =
     elapsedMs > 0 ? ` · ${Math.floor(elapsedMs / 1000)}s elapsed` : '';
 
@@ -330,25 +338,47 @@ export default function PeriscopeChat() {
           </div>
         </div>
 
-        {/* Image upload slots */}
+        {/* Image upload slots — collapsed by default. Submit without
+            screenshots is the primary flow; the override toggle reveals
+            the drop zones when the user wants to upload manually. */}
         <div className="flex flex-col gap-2">
-          <p className="text-muted text-xs">
-            Submit without screenshots to use the latest scraped Periscope data
-            for the selected slot. Or drop, click, or paste (Ctrl+V)
-            screenshots — pasted images fill chart → GEX → charm in order.
-          </p>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            {PERISCOPE_IMAGE_KINDS.map(({ kind, label, hint }) => (
-              <ImageSlot
-                key={kind}
-                label={label}
-                hint={hint}
-                preview={images[kind]?.preview ?? null}
-                disabled={inFlight}
-                onSelect={(file) => setImage(kind, file)}
-              />
-            ))}
+          <div className="text-muted flex items-center justify-between text-xs">
+            <span>
+              Default: Claude reads the latest scraped Periscope data for the
+              selected slot.
+            </span>
+            <button
+              type="button"
+              onClick={() => setUploadOpen((v) => !v)}
+              disabled={inFlight}
+              className="border-edge text-secondary hover:text-primary rounded-md border px-2 py-0.5 text-[11px] uppercase tracking-wide transition disabled:opacity-40"
+            >
+              {showUploads
+                ? 'Hide screenshot upload'
+                : 'Override with screenshots'}
+            </button>
           </div>
+          {showUploads && (
+            <>
+              <p className="text-muted text-xs">
+                Drop, click, or paste (Ctrl+V) screenshots — pasted images fill
+                chart → GEX → charm in order. Uploaded images override the
+                stored Periscope data for this submission.
+              </p>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                {PERISCOPE_IMAGE_KINDS.map(({ kind, label, hint }) => (
+                  <ImageSlot
+                    key={kind}
+                    label={label}
+                    hint={hint}
+                    preview={images[kind]?.preview ?? null}
+                    disabled={inFlight}
+                    onSelect={(file) => setImage(kind, file)}
+                  />
+                ))}
+              </div>
+            </>
+          )}
         </div>
 
         {/* Action row */}
