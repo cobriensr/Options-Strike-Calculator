@@ -167,22 +167,25 @@ async function selectGreek(page: Page, label: string): Promise<void> {
 
   await trigger.click({ timeout: 5_000 });
   // Popover renders to a portal — give Radix a beat to mount.
-  await page.waitForTimeout(400);
+  await page.waitForTimeout(500);
 
-  // UW's Greek popover uses custom div/span markup (no role="menuitem"
-  // per the Phase 0 controls probe). Scope to the most-recently-opened
-  // Radix popper wrapper and find the option by its exact text.
-  const popover = page
-    .locator('[data-radix-popper-content-wrapper]')
-    .last();
-  const option = popover.getByText(label, { exact: true }).first();
+  // Vanna lives in a table footer (`tfoot > tr > td > span`) rather
+  // than the simple flat list Gamma + Charm use. Scoping to the
+  // popover wrapper has flaky `.last()` behavior across repeat
+  // dropdown opens (stale wrappers from prior clicks). Page-wide
+  // exact-text lookup is more robust — when the popover is open the
+  // option text appears uniquely outside the trigger (which shows
+  // the *previous* selection until commit), so collisions are
+  // unlikely. scrollIntoViewIfNeeded handles tfoot rows that fall
+  // below the popover's visible scroll area.
+  const option = page.getByText(label, { exact: true }).last();
   try {
+    await option.scrollIntoViewIfNeeded({ timeout: 2_000 });
     await option.click({ timeout: 3_000 });
   } catch (err) {
-    // Diagnostic: dump the popover's visible text so the next run's
-    // logs show exactly what was on offer. Helps catch view-specific
-    // omissions (e.g. Vanna missing on the table view) and text-quirk
-    // selector misses.
+    // Diagnostic: dump nearby popover text so the next run shows
+    // exactly which options were offered.
+    const popover = page.locator('[data-radix-popper-content-wrapper]').last();
     const popoverText =
       (await popover.textContent().catch(() => null)) ?? '<unreadable>';
     logger.warn(
