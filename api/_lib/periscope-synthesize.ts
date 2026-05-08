@@ -197,8 +197,11 @@ async function fetchCharmZeroStrike(
   const capturedAt = slotRows[0]?.captured_at;
   if (capturedAt == null) return null;
 
-  const minStrike = spot - CHARM_ZERO_HALFWIDTH;
-  const maxStrike = spot + CHARM_ZERO_HALFWIDTH;
+  // strike is INTEGER in periscope_snapshots — floor/ceil so a fractional
+  // spot (e.g. 7398.34) doesn't make Postgres reject the bound parameters
+  // with "invalid input syntax for type integer".
+  const minStrike = Math.floor(spot - CHARM_ZERO_HALFWIDTH);
+  const maxStrike = Math.ceil(spot + CHARM_ZERO_HALFWIDTH);
   const rows = (await sql`
     SELECT strike, value
     FROM periscope_snapshots
