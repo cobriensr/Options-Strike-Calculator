@@ -45,6 +45,53 @@ const GREEKS_TO_CAPTURE: ReadonlyArray<{ panel: Panel; label: string }> = [
 ];
 
 /**
+ * Open the DTE filter popover and set Min/Max DTE to 0.
+ *
+ * The user trades 0DTE-only, so the canonical scrape filter is
+ * DTE=[0,0]. This forces the table to show today's 0DTE expiry rows
+ * and filters out everything else, matching what the user configures
+ * by hand. More reliable than walking the Expiry tree.
+ *
+ * The DTE pill has `data-testid="dte-filter"` (stable), and the inputs
+ * inside the popover have placeholders "Min dte" / "Max dte" — we
+ * locate by those rather than by tailwind hash class.
+ *
+ * No-ops gracefully if the popover doesn't appear (e.g. UW renamed
+ * the test-id) — the page just won't filter, and we'll see "No data
+ * available" downstream which is the existing soft-fail path.
+ */
+async function setDTEZero(page: Page): Promise<void> {
+  const trigger = page.locator('[data-testid="dte-filter"]').first();
+  if ((await trigger.count()) === 0) {
+    logger.warn('setDTEZero: dte-filter trigger not found — skipping');
+    return;
+  }
+  await trigger.click({ timeout: 5_000 });
+  // Popover opens via Radix portal — wait for the inputs to be paintable.
+  await page.waitForTimeout(800);
+
+  const minInput = page.getByPlaceholder(/min dte/i).first();
+  const maxInput = page.getByPlaceholder(/max dte/i).first();
+
+  if ((await minInput.count()) === 0 || (await maxInput.count()) === 0) {
+    logger.warn('setDTEZero: Min/Max DTE inputs not found — skipping');
+    await page.keyboard.press('Escape');
+    return;
+  }
+
+  await minInput.fill('0');
+  await maxInput.fill('0');
+
+  // Commit + close: press Escape. UW's filter logic typically applies
+  // input changes immediately on blur or per-keystroke, so closing the
+  // popover doesn't undo the change.
+  await page.keyboard.press('Escape');
+  // Wait for the table to re-render under the new filter.
+  await page.waitForTimeout(1_500);
+  logger.info('setDTEZero: applied DTE=[0,0] filter');
+}
+
+/**
  * Click the Greek dropdown trigger and pick the named option.
  *
  * The dropdown trigger is the `<div data-sentry-component="DropdownFilter">`
@@ -118,11 +165,10 @@ export async function scrapeAllPanels(): Promise<SnapshotRow[]> {
     logger.info({ url: UW_PERISCOPE_URL }, 'navigating to periscope');
     await page.goto(UW_PERISCOPE_URL, { waitUntil: 'networkidle' });
 
-    // Wait for EITHER the data table OR the "No data available" empty
-    // state. The empty-state path means the user's filters resolve to
-    // no slice (typically: outside RTH with default Latest timeframe).
-    // We don't fail in that case — the parser will just return zero
-    // rows and the caller logs it.
+    // Wait for SOMETHING to render (table OR empty-state) before we
+    // touch filters. The Expiry default is "All" which yields the
+    // empty state — the DTE=[0,0] filter we apply next is what makes
+    // data appear.
     const firstRow = page.locator('tr.table_row__wxw5u').first();
     const emptyState = page.getByText(/no data available/i).first();
     try {
@@ -135,6 +181,12 @@ export async function scrapeAllPanels(): Promise<SnapshotRow[]> {
         'neither table rows nor empty-state appeared after 20s — proceeding anyway',
       );
     }
+
+    // Force DTE=[0,0] before anything else. The default filter combo
+    // (Expiry="All" / DTE=any) yields the empty state; DTE=0 narrows
+    // to today's 0DTE expiry which is what the user actually trades.
+    await setDTEZero(page);
+
     // Settle: even when the table appears, the inner value cells
     // sometimes render a tick later than the `<tr>` shells.
     await page.waitForTimeout(2_000);
