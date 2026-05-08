@@ -139,6 +139,149 @@ function computeCapturedAt(date: string, slotEndHhmm: string): string {
  * the test-id) — the page just won't filter, and we'll see "No data
  * available" downstream which is the existing soft-fail path.
  */
+/**
+ * Open the Expiry filter, switch to Single mode, and click the row
+ * matching `targetYmd` (YYYY-MM-DD). Returns true on success.
+ *
+ * UW Periscope renders the Expiry popover into a Radix portal with two
+ * tabs (Multi / Single). In Single mode, the popover body is a
+ * `<table><tfoot><tr>` list where each row's first `<span class="text-base">`
+ * holds a label like `05/08/2026 (0d)`. Clicking the matching row
+ * narrows the chart to that single expiry — the user-validated path
+ * for working pre-market data on a fresh trading day, since DTE=[0,0]
+ * mode renders empty before the first session trades.
+ *
+ * The function:
+ *   1. Locates the Expiry trigger (DropdownFilter with `Expiry` label).
+ *   2. Clicks it to open the popover.
+ *   3. Clicks the `Single` tab if present.
+ *   4. Finds the row whose label starts with the converted `MM/DD/YYYY`.
+ *   5. Clicks it and waits for the trigger pill to update.
+ *
+ * Returns false on any of: trigger not found, Single tab missing, or
+ * target date not present in the row list (e.g. a holiday). Callers
+ * should fall back to DTE=[0,0] in that case.
+ */
+async function setExpirySingle(
+  page: Page,
+  targetYmd: string,
+): Promise<boolean> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(targetYmd)) {
+    throw new Error(`setExpirySingle: invalid target "${targetYmd}"`);
+  }
+  const [yyyy, mm, dd] = targetYmd.split('-');
+  const targetMdy = `${mm}/${dd}/${yyyy}`;
+
+  const trigger = page
+    .locator('div[data-sentry-component="DropdownFilter"]')
+    .filter({ has: page.locator('span', { hasText: /^Expiry$/ }) })
+    .first();
+  if ((await trigger.count()) === 0) {
+    logger.warn('setExpirySingle: Expiry trigger not found');
+    return false;
+  }
+
+  // The DropdownFilter container has multiple clickable children
+  // (label, value, info icon). Clicking the container's center can
+  // land on the info icon's `DropdownIcon` popover instead of the
+  // Expiry filter. Click the value span (`span.text-base` — currently
+  // shows "All" or a single-mode date) which is unambiguously the
+  // filter trigger.
+  const triggerValue = trigger.locator('span.text-base').first();
+  await triggerValue.click({ timeout: 5_000 });
+  // Probe verified 1500ms is the right settle window for Radix popper
+  // mount + content render in this app.
+  await page.waitForTimeout(1_500);
+
+  // Find the popover whose content is the Expiry filter (contains a
+  // Switch component for Multi/Single tabs). Multiple Radix poppers can
+  // be mounted at once — picking by content keeps us off help-icon
+  // tooltips and other unrelated poppers.
+  const allPoppers = page.locator('[data-radix-popper-content-wrapper]');
+  const popperCount = await allPoppers.count();
+  let popoverIdx = -1;
+  for (let i = 0; i < popperCount; i += 1) {
+    const switchCount = await allPoppers
+      .nth(i)
+      .locator('[data-sentry-component="Switch"]')
+      .count();
+    if (switchCount > 0) {
+      popoverIdx = i;
+      break;
+    }
+  }
+  if (popoverIdx === -1) {
+    logger.warn(
+      { popperCount },
+      'setExpirySingle: Expiry popover (with Switch) not found among open Radix poppers',
+    );
+    await page.keyboard.press('Escape');
+    return false;
+  }
+  const popover = allPoppers.nth(popoverIdx);
+
+  // Click the Single tab. The probe (scripts/periscope-controls-probe.mjs)
+  // verified this exact selector + click sequence works to switch the
+  // popover from Multi (HierarchicalMultiSelect tree) to Single (flat
+  // <table><tfoot><tr> list of MM/DD/YYYY (Nd) labels).
+  const singleTab = popover
+    .locator('[data-sentry-component="Switch"]')
+    .locator('div', { hasText: /^Single$/ })
+    .first();
+  if ((await singleTab.count()) === 0) {
+    logger.warn('setExpirySingle: Single tab not found in popover');
+    await page.keyboard.press('Escape');
+    return false;
+  }
+  await singleTab.click({ timeout: 3_000 });
+  // After the Switch toggles to Single, UW lazy-loads the date list.
+  // Wait for either a row with `MM/DD/YYYY` to appear OR a 5s timeout.
+  await page
+    .locator('span.text-base', { hasText: /^\d{2}\/\d{2}\/\d{4}/ })
+    .first()
+    .waitFor({ state: 'visible', timeout: 5_000 })
+    .catch(() => undefined);
+  await page.waitForTimeout(500);
+
+  // Find the row whose first text-base span starts with MM/DD/YYYY.
+  // The row label is `MM/DD/YYYY (Nd)` so we match on prefix.
+  const rows = popover.locator('tr', {
+    has: page.locator('span.text-base', {
+      hasText: new RegExp(`^${escapeRegex(targetMdy)}\\b`),
+    }),
+  });
+  const rowCount = await rows.count();
+  if (rowCount === 0) {
+    // Known issue (2026-05-08 testing): in headless mode UW's Single
+    // popover currently renders only an "All" placeholder row instead
+    // of the date list captured by the headed probe — likely a UW UI
+    // change since 2026-05-07 OR a headless-detection guard. Fall back
+    // to DTE=[0,0]+walkDate. Re-probe with the headed
+    // periscope-controls-probe.mjs script to confirm the new markup
+    // when UW is up; the rest of this function is ready to consume it.
+    const fullHtmlLen = (await popover.innerHTML().catch(() => '')).length;
+    logger.warn(
+      { targetYmd, targetMdy, fullHtmlLen },
+      'setExpirySingle: Single-mode date list not populated — UW UI may have changed',
+    );
+    await page.keyboard.press('Escape');
+    return false;
+  }
+
+  await rows.first().click({ timeout: 3_000 });
+  // After click, the popover should close and the trigger pill should
+  // update to the YYYY-MM-DD or MM/DD/YYYY label. Give UW a beat to
+  // refetch + repaint the table for the new expiry.
+  await page.waitForTimeout(2_000);
+
+  logger.info({ targetYmd, targetMdy }, 'setExpirySingle: clicked target date row');
+  return true;
+}
+
+function escapeRegex(s: string): string {
+  return s.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 async function setDTEZero(page: Page): Promise<void> {
   const trigger = page.locator('[data-testid="dte-filter"]').first();
   if ((await trigger.count()) === 0) {
@@ -677,40 +820,70 @@ export async function scrapeAllPanels(): Promise<SnapshotRow[]> {
     }
 
     const today = todayInCT();
+
+    // Filter strategy for live mode: prefer Single-Expiry mode for
+    // today's date — this is the user-validated path that works
+    // pre-market. DTE=[0,0] is empirically empty pre-market on a
+    // fresh trading day even when Single-Expiry shows full data.
+    //
+    // Fall back to walkDateToTarget + DTE=[0,0] when Single-Expiry
+    // can't find today's row (holiday, weekend, or markup change).
+    let usedSingleExpiry = false;
     try {
-      await walkDateToTarget(page, today);
-      const ready = await waitForTableReady(page);
-      logger.info({ today, ready }, 'walked date picker to today');
+      usedSingleExpiry = await setExpirySingle(page, today);
     } catch (err) {
       logger.warn(
-        {
-          today,
-          err: err instanceof Error ? err.message : String(err),
-        },
-        'walkDateToTarget(today) failed — proceeding anyway',
+        { err: err instanceof Error ? err.message : String(err) },
+        'setExpirySingle threw — falling back to DTE=[0,0]',
       );
     }
 
-    await setDTEZero(page);
-    await page.waitForTimeout(2_000);
-
-    // "Latest" sentinel can render empty pre-market in DTE=[0,0] mode
-    // even when specific 10-min slots have data. If the table still
-    // shows "No data available" at this point, step back one slot to
-    // land on the most recent specific timeframe and re-check.
-    if ((await page.getByText(/no data available/i).count()) > 0) {
+    if (usedSingleExpiry) {
+      const ready = await waitForTableReady(page);
       logger.info(
-        'still empty after DTE=[0,0] — rewinding timeframe one slot to escape "Latest"',
+        { today, ready, mode: 'single-expiry' },
+        'live tick prep complete',
+      );
+    } else {
+      logger.info(
+        { today },
+        'Single-Expiry unavailable — falling back to walk-date + DTE=[0,0]',
       );
       try {
-        await rewindTimeframeOneSlot(page);
+        await walkDateToTarget(page, today);
         const ready = await waitForTableReady(page);
-        logger.info({ ready }, 'after timeframe rewind');
+        logger.info({ today, ready }, 'walked date picker to today');
       } catch (err) {
         logger.warn(
-          { err: err instanceof Error ? err.message : String(err) },
-          'rewindTimeframeOneSlot failed — proceeding to capture anyway',
+          {
+            today,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          'walkDateToTarget(today) failed — proceeding anyway',
         );
+      }
+
+      await setDTEZero(page);
+      await page.waitForTimeout(2_000);
+
+      // "Latest" sentinel can render empty pre-market in DTE=[0,0] mode
+      // even when specific 10-min slots have data. If the table still
+      // shows "No data available" at this point, step back one slot to
+      // land on the most recent specific timeframe and re-check.
+      if ((await page.getByText(/no data available/i).count()) > 0) {
+        logger.info(
+          'still empty after DTE=[0,0] — rewinding timeframe one slot to escape "Latest"',
+        );
+        try {
+          await rewindTimeframeOneSlot(page);
+          const ready = await waitForTableReady(page);
+          logger.info({ ready }, 'after timeframe rewind');
+        } catch (err) {
+          logger.warn(
+            { err: err instanceof Error ? err.message : String(err) },
+            'rewindTimeframeOneSlot failed — proceeding to capture anyway',
+          );
+        }
       }
     }
 
