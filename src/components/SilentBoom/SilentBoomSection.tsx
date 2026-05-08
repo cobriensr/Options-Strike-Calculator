@@ -6,6 +6,7 @@ import { SilentBoomDayBanner } from './SilentBoomDayBanner.js';
 import { SilentBoomRow } from './SilentBoomRow.js';
 import type {
   OptionType,
+  SilentBoomAlert,
   SilentBoomBurstColor,
   SilentBoomDteBucket,
   SilentBoomSortMode,
@@ -17,6 +18,23 @@ const SORT_LS_KEY = 'silentBoom.sortMode';
 const MIN_VOL_OI_LS_KEY = 'silentBoom.minVolOi';
 const CONVICTION_LS_KEY = 'silentBoom.convictionFloor';
 const HIDE_LATE_PM_LS_KEY = 'silentBoom.hideLatePm';
+const HIDE_GHOSTS_LS_KEY = 'silentBoom.hideGhosts';
+
+/**
+ * "Ghost print" thresholds — a row is a ghost print when BOTH:
+ *  - baseline_volume ≤ 50 (chain effectively dormant — see audit:
+ *    <50 baseline lifts at 0.74×, the worst baseline bucket), AND
+ *  - spike_ratio ≥ 100 (apparent burst is mostly arithmetic from a
+ *    near-zero baseline — audit lift 0.64× on 100×+, also worst).
+ *
+ * Either threshold alone is too aggressive: a chain with baseline=30
+ * and ratio=30 may still be a real moderate spike on a quiet name; a
+ * chain with baseline=200 and ratio=200 is a normal-trading chain
+ * with a genuinely huge spike. Both have to hold to identify the
+ * "block hit a dormant chain" pattern.
+ */
+const GHOST_PRINT_BASELINE_MAX = 50;
+const GHOST_PRINT_SPIKE_RATIO_MIN = 100;
 
 /**
  * Late-PM cutoff (CT minute-of-day). Alerts whose bucket_ct is at or
@@ -321,6 +339,10 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     if (typeof window === 'undefined') return false;
     return window.localStorage.getItem(HIDE_LATE_PM_LS_KEY) === '1';
   });
+  const [hideGhosts, setHideGhosts] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(HIDE_GHOSTS_LS_KEY) === '1';
+  });
   /** ISO of the 5-min bucket the scrubber is on; null = whole day. */
   const [bucketIso, setBucketIso] = useState<string | null>(null);
   const [page, setPage] = useState<number>(0);
@@ -345,6 +367,11 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       window.localStorage.setItem(HIDE_LATE_PM_LS_KEY, hideLatePm ? '1' : '0');
     }
   }, [hideLatePm]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(HIDE_GHOSTS_LS_KEY, hideGhosts ? '1' : '0');
+    }
+  }, [hideGhosts]);
 
   // Reset bucket scrub when the date changes — a bucket from yesterday
   // shouldn't carry over.
@@ -367,6 +394,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     convictionFloor,
     bucketIso,
     hideLatePm,
+    hideGhosts,
   ]);
 
   const isHistorical = date !== todayCt();
@@ -435,6 +463,9 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
   // server-paginated list. Server `total` and pagination remain tied to
   // the unfiltered DB result so the page chips stay accurate; the
   // displayed list reflects the user's local view.
+  const isGhostPrint = (a: SilentBoomAlert): boolean =>
+    a.baselineVolume <= GHOST_PRINT_BASELINE_MAX &&
+    a.spikeRatio >= GHOST_PRINT_SPIKE_RATIO_MIN;
   const displayedAlerts = useMemo(() => {
     let out = alerts;
     if (bucketIso != null) {
@@ -445,11 +476,23 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
         (a) => ctMinuteOfDay(a.bucketCt) < LATE_PM_CUTOFF_MIN_OF_DAY,
       );
     }
+    if (hideGhosts) {
+      out = out.filter((a) => !isGhostPrint(a));
+    }
     return out;
-  }, [alerts, bucketIso, hideLatePm, ctMinuteOfDay]);
+  }, [alerts, bucketIso, hideLatePm, hideGhosts, ctMinuteOfDay]);
+  // Per-filter hidden counts — computed against the unfiltered set
+  // so each chip's "−N" count reflects what THAT filter is hiding,
+  // independent of any other active filter.
   const hiddenLatePmCount =
     bucketIso == null && hideLatePm
-      ? alerts.length - displayedAlerts.length
+      ? alerts.filter(
+          (a) => ctMinuteOfDay(a.bucketCt) >= LATE_PM_CUTOFF_MIN_OF_DAY,
+        ).length
+      : 0;
+  const hiddenGhostsCount =
+    bucketIso == null && hideGhosts
+      ? alerts.filter((a) => isGhostPrint(a)).length
       : 0;
 
   // Top tickers in the current page — quick one-click scope.
@@ -819,6 +862,22 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 </span>
               )}
             </button>
+            <button
+              type="button"
+              onClick={() => setHideGhosts(!hideGhosts)}
+              className={`${CHIP_BASE} ${
+                hideGhosts ? CHIP_ACTIVE.red : CHIP_INACTIVE
+              }`}
+              title={`Hide "ghost prints" — alerts where baseline_volume ≤ ${GHOST_PRINT_BASELINE_MAX} AND spike_ratio ≥ ${GHOST_PRINT_SPIKE_RATIO_MIN}×. Pattern: a single block hits an effectively-dormant chain, producing a visually extreme ratio (red badge) but no follow-through volume. Audit lift on this cohort is ~0.6× — historically the worst combo. Client-side filter.`}
+              aria-pressed={hideGhosts}
+            >
+              hide ghosts
+              {hideGhosts && hiddenGhostsCount > 0 && (
+                <span className="text-[10px] opacity-70">
+                  −{hiddenGhostsCount}
+                </span>
+              )}
+            </button>
           </div>
 
           {/* Row 4 (conditional): ticker chips */}
@@ -956,6 +1015,11 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 {hideLatePm && hiddenLatePmCount > 0 && (
                   <span className="ml-2 text-purple-300/80">
                     ({hiddenLatePmCount} hidden after 14:30 CT)
+                  </span>
+                )}
+                {hideGhosts && hiddenGhostsCount > 0 && (
+                  <span className="ml-2 text-red-300/80">
+                    ({hiddenGhostsCount} ghost prints hidden)
                   </span>
                 )}
               </span>
