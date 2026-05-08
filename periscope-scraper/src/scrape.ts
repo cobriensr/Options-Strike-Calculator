@@ -79,16 +79,61 @@ async function setDTEZero(page: Page): Promise<void> {
     return;
   }
 
-  await minInput.fill('0');
-  await maxInput.fill('0');
+  // Use pressSequentially-then-Tab so React sees a real keystroke per
+  // character + the blur event UW likely uses to commit. fill() can
+  // occasionally bypass the controlled-input handler if React batches
+  // updates.
+  await minInput.click();
+  await minInput.fill('');
+  await minInput.pressSequentially('0');
+  await page.keyboard.press('Tab');
+  await maxInput.click();
+  await maxInput.fill('');
+  await maxInput.pressSequentially('0');
+  await page.keyboard.press('Tab');
 
-  // Commit + close: press Escape. UW's filter logic typically applies
-  // input changes immediately on blur or per-keystroke, so closing the
-  // popover doesn't undo the change.
+  // Verify the inputs hold "0" before closing.
+  const minVal = await minInput.inputValue();
+  const maxVal = await maxInput.inputValue();
+  logger.info(
+    { minVal, maxVal },
+    'setDTEZero: input values after fill',
+  );
+
+  // Close the popover. UW's filter applies on input change, so Escape
+  // shouldn't undo it.
   await page.keyboard.press('Escape');
-  // Wait for the table to re-render under the new filter.
   await page.waitForTimeout(1_500);
-  logger.info('setDTEZero: applied DTE=[0,0] filter');
+
+  // Diagnostic: log what the trigger pills show now, so a flaky filter
+  // commit shows up obviously in the next run's output.
+  const pills: Record<string, string> = {};
+  const dropdowns = page.locator('div[data-sentry-component="DropdownFilter"]');
+  const dropdownCount = await dropdowns.count();
+  for (let i = 0; i < dropdownCount; i += 1) {
+    const dd = dropdowns.nth(i);
+    const spans = dd.locator('span');
+    const spanCount = await spans.count();
+    let key = '';
+    for (let j = 0; j < spanCount; j += 1) {
+      const span = spans.nth(j);
+      const cls = (await span.getAttribute('class')) ?? '';
+      const txt = ((await span.textContent()) ?? '').trim();
+      if (cls.includes('text-xs')) {
+        key = txt;
+      } else if (cls.includes('text-base') && key !== '') {
+        pills[key] = txt;
+        break;
+      }
+    }
+  }
+  const dateBtn = page
+    .locator('[data-testid="date-picker-button"] span[role="button"]')
+    .first();
+  if ((await dateBtn.count()) > 0) {
+    pills['__date'] = ((await dateBtn.textContent()) ?? '').trim();
+  }
+  logger.info({ pills }, 'setDTEZero: trigger pill state after apply');
 }
 
 /**
@@ -147,7 +192,16 @@ async function selectGreek(page: Page, label: string): Promise<void> {
 async function withBrowser<T>(
   fn: (browser: Browser, page: Page) => Promise<T>,
 ): Promise<T> {
-  const browser = await chromium.launch({ headless: true });
+  // HEADLESS=false launches a visible Chromium for debugging — pair
+  // with FORCE_TICK=true to step through a single scrape pass while
+  // watching the page. Production deploys leave HEADLESS unset so the
+  // default `true` applies.
+  const headless =
+    (process.env.HEADLESS ?? 'true').trim().toLowerCase() !== 'false';
+  const browser = await chromium.launch({
+    headless,
+    slowMo: headless ? 0 : 250,
+  });
   try {
     const context = await browser.newContext({
       storageState: UW_AUTH_STATE_PATH,
