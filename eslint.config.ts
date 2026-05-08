@@ -106,6 +106,10 @@ export default [
     languageOptions: {
       globals: {
         ...globals.node,
+        // Probe scripts use page.evaluate(() => document.querySelector(...))
+        // — those callbacks execute in the Playwright browser context, so
+        // browser globals are intentional inside them.
+        ...globals.browser,
       },
     },
     rules: {

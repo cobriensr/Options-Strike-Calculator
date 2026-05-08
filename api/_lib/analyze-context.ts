@@ -78,6 +78,7 @@ import {
   formatPriorDayFlowForClaude,
   formatVolRealizedForClaude,
 } from './analyze-context-formatters.js';
+import { buildPeriscopeContextBlock } from './periscope-format.js';
 
 export { numOrUndef, parseEntryTimeAsUtc };
 export type { AnalysisContentBlock };
@@ -279,6 +280,26 @@ export async function buildAnalysisContext(
     fetchRangeForecastContext(analysisDate, numOrUndef(context.vix) ?? null),
   ]);
 
+  // Periscope MM-attributed exposure block (Phase 3 — replaces the
+  // screenshot workflow). Needs spot to rank levels relative to price;
+  // skips entirely when spot is unknown. Sequential rather than in the
+  // Promise.all above so existing test mocks aren't disturbed.
+  const periscopeSpot = numOrUndef(context.spx);
+  let periscopeContext: string | null = null;
+  if (periscopeSpot != null) {
+    try {
+      periscopeContext = await buildPeriscopeContextBlock({
+        date: analysisDate,
+        expiry: analysisDate,
+        spot: periscopeSpot,
+        ...(asOf != null ? { asOf } : {}),
+      });
+    } catch (err) {
+      logger.error({ err }, 'Failed to build periscope context block');
+      metrics.increment('analyze_context.periscope_fetch_error');
+    }
+  }
+
   const marketTideOtmSection = main.marketTideOtmContext
     ? `\n${main.marketTideOtmContext}\n`
     : '';
@@ -314,6 +335,8 @@ export async function buildAnalysisContext(
   if (!similarDaysContext) unavailable.push('Historical Analog Days');
   if (!rangeForecastContext)
     unavailable.push('Analog Range Forecast (cohort-conditional strikes)');
+  if (!periscopeContext)
+    unavailable.push('Periscope MM-attributed Exposure (latest 10-min slice)');
   if (!context.targetDeltaStrikes) unavailable.push('Chain Delta Rungs');
   const unavailableList = unavailable.map((s) => '- ' + s).join('\n');
   const unavailableSection =
@@ -380,6 +403,7 @@ ${main.greekFlowContext ? `\n## 0DTE SPX Delta Flow (from API)\nDelta flow measu
 ${main.spotGexContext ? `\n## SPX Aggregate GEX Panel (from API — intraday time series)\nThis replaces the Aggregate GEX screenshot. Includes OI Net Gamma (Rule 16), Volume Net Gamma, and Directionalized Volume Net Gamma updated every 5 minutes. If an Aggregate GEX screenshot is also provided, trust the API values — the screenshot is visual confirmation only.\n\n${main.spotGexContext}\n` : ''}
 ${main.strikeExposureContext ? `\n## SPX 0DTE Per-Strike Greek Profile (from API)\nThis is the naive per-strike gamma and charm profile for today's 0DTE expiration. It replaces the Net Charm (naive) screenshot. The "Net Gamma" column shows the gamma bar values at each strike. The "Net Charm" column shows how each wall evolves with time. The "Dir Gamma/Charm" columns show directionalized (ask/bid) exposure which approximates confirmed MM positioning. Periscope screenshots still provide CONFIRMED MM exposure — use API data for the naive profile and Periscope for strike-level confirmation.\n\n${main.strikeExposureContext}\n` : ''}
 ${main.netGexHeatmapContext ? `\n## SPX 0DTE Net GEX Heatmap (from API — signed dollar GEX per strike)\nThis is the signed net GEX dollar amount at each strike from the greek_exposure_strike table, updated every minute. This is the same data shown in the UW Net GEX Heatmap UI. Positive net_gex = net long gamma (dealer mean-reverting hedging → price suppression, pin magnetism); negative net_gex = net short gamma (dealer momentum hedging → price acceleration, breakouts). The gamma flip zone (net_gex sign change) is the structural regime boundary between suppression and acceleration. Use this alongside the Per-Strike Greek Profile — this adds the dollar-scaled magnitude and call/put composition that the naive profile lacks.\n\n${main.netGexHeatmapContext}\n` : ''}
+${periscopeContext ? `\n## Periscope MM-attributed Exposure (latest 10-min slice — replaces screenshots)\nThis block is the structured equivalent of the UW Periscope Market Maker Exposures Table the trader used to screenshot. It carries the **MM-attributed** Gamma / Charm / Vanna per strike (not naive aggregate) for today's 0DTE expiry, plus the prior-slice momentum read for sign-flip detection (orange-bar equivalent), plus the straddle cone bounds + any breach events.\n\nUse this for the periscope skill's structural read: +γ floor / ceiling near spot frame stops and targets, charm tally signs the EoD /ES drift, vanna extremes flag vol-shock sensitivity, sign flips mark regime changes, and a cone breach is a vol-extension setup (do not fade). Quote magnitudes directly — do NOT estimate from the screenshot when this block is present.\n\n${periscopeContext}\n` : ''}
 ${main.zeroGammaContext ? `\n## SPX 0DTE Zero-Gamma Level (derived from per-strike gamma profile)\nThe zero-gamma strike is the approximate SPX level at which aggregate dealer gamma flips sign. Above the flip (positive gamma) dealers hedge mean-reverting and price movement is suppressed. Below the flip (negative gamma) dealers hedge momentum and price movement accelerates. Distance-to-flip in cone fractions tells you how close today's price is to a regime change in units that match the straddle cone.\n\n${main.zeroGammaContext}\n` : ''}
 ${context.gexLandscapeBias ? `\n## GEX Landscape Structural Bias (from live GEX panel)\nThis is the real-time structural bias verdict computed from the per-strike GEX panel, using 5-minute smoothing. It synthesizes gravity direction (where the largest GEX wall sits relative to spot), total net GEX regime (positive = dealer counter-cyclical; negative = dealer pro-cyclical), and 1m/5m GEX trends into a single directional verdict. Use this as the GEX structural summary — it is more reliable than a manual reading because it uses the full strike-level data and smooths out per-snapshot noise.\n\n${context.gexLandscapeBias as string}\n` : ''}
 ${main.allExpiryStrikeContext ? `\n## SPX All-Expiry Per-Strike Profile (from API)\nThis shows gamma/charm across ALL expirations (not just 0DTE). Multi-day gamma anchors from weekly/monthly/quarterly options create structural walls that persist beyond the 0DTE session. When a 0DTE wall aligns with an all-expiry wall, it has the highest reliability. When they diverge (0DTE wall but all-expiry danger zone), the wall may fail under sustained pressure.\n\n${main.allExpiryStrikeContext}\n` : ''}
