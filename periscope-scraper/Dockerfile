@@ -7,7 +7,7 @@ WORKDIR /app
 # package-lock.json is committed; the explicit copy fails the build if it's
 # missing rather than silently masking a misconfiguration.
 #
-# Build context is the REPO ROOT (Railway default). All COPYs are
+# Build context is the REPO ROOT (Railway default — verified 2026-05-08). All COPYs are
 # prefixed with `periscope-scraper/` to match. The repo-root
 # .dockerignore re-includes `periscope-scraper/` so its files survive
 # the global tsconfig/package-lock excludes that target the main app.
