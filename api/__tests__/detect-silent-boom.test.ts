@@ -34,40 +34,48 @@ import handler from '../cron/detect-silent-boom.js';
 const GUARD = { apiKey: '', today: '2026-05-07' };
 
 // ============================================================
-// Fixture builders — generate ws_option_trades-shaped tick rows that
-// produce a silent-boom-eligible 5-min bucket sequence on a single
-// chain. Detector spec: 4 silent baseline buckets (≤500 vol each)
+// Fixture builders — generate the SQL-aggregated bucket rows the
+// handler now consumes (raw-tick projection was replaced with
+// in-Postgres date_bin aggregation to stay under Neon's 64 MB HTTP
+// cap). Detector spec: 4 silent baseline buckets (≤500 vol each)
 // followed by a spike bucket with size ≥1000, ratio ≥5×, ask% ≥0.7,
 // vol/OI ≥0.25, OI ≥100.
 // ============================================================
 
-interface TickOverrides {
-  price?: number;
+interface BucketOverrides {
   size?: number;
-  side?: 'ask' | 'bid' | 'mid' | 'no_side';
-  open_interest?: number | null;
+  askSize?: number;
+  bidSize?: number;
+  vwap?: number;
+  lastPrice?: number;
+  bucketMaxOi?: number | null;
 }
 
-function tick(
+function bucketRow(
   optionChain: string,
   ticker: string,
   optionType: 'C' | 'P',
   strike: number,
   expiry: string,
-  executedAtIso: string,
-  overrides: TickOverrides = {},
+  bucketTsIso: string,
+  overrides: BucketOverrides = {},
 ) {
+  const size = overrides.size ?? 100;
+  const vwap = overrides.vwap ?? 0.5;
   return {
     ticker,
     option_chain: optionChain,
     option_type: optionType,
     strike,
     expiry,
-    executed_at: executedAtIso,
-    price: overrides.price ?? 0.5,
-    size: overrides.size ?? 50,
-    side: overrides.side ?? 'ask',
-    open_interest: overrides.open_interest ?? 5000,
+    bucket_ts: bucketTsIso,
+    size,
+    ask_size: overrides.askSize ?? size, // default: all ask-side
+    bid_size: overrides.bidSize ?? 0,
+    notional: vwap * size,
+    bucket_max_oi:
+      overrides.bucketMaxOi === undefined ? 5000 : overrides.bucketMaxOi,
+    last_price: overrides.lastPrice ?? vwap,
   };
 }
 
@@ -87,19 +95,15 @@ function fireableSilentBoomStream() {
   const strike = 1175;
   const exp = '2026-05-07';
 
-  const rows: ReturnType<typeof tick>[] = [];
-  // Baseline buckets — one tick of size 100 each.
+  const rows: ReturnType<typeof bucketRow>[] = [];
   for (let b = 0; b < 4; b += 1) {
     const minute = b * 5;
     const iso = `2026-05-07T13:${String(minute).padStart(2, '0')}:00Z`;
-    rows.push(tick(chain, ticker, opt, strike, exp, iso, { size: 100 }));
+    rows.push(bucketRow(chain, ticker, opt, strike, exp, iso, { size: 100 }));
   }
-  // Spike bucket — multiple ask-side ticks summing to 2000.
-  const spikeIso = '2026-05-07T13:20:00Z';
-  rows.push(tick(chain, ticker, opt, strike, exp, spikeIso, { size: 1000 }));
   rows.push(
-    tick(chain, ticker, opt, strike, exp, '2026-05-07T13:21:00Z', {
-      size: 1000,
+    bucketRow(chain, ticker, opt, strike, exp, '2026-05-07T13:20:00Z', {
+      size: 2000,
     }),
   );
   return rows;
@@ -190,11 +194,11 @@ describe('detect-silent-boom handler', () => {
   });
 
   it('skips chains whose max OI is below the minOi floor', async () => {
-    // Same shape as the fireable stream but with OI=50 on every tick
-    // — below MIN_OI=100. Handler bails with skippedNoOi.
-    const lowOiStream = fireableSilentBoomStream().map((t) => ({
-      ...t,
-      open_interest: 50,
+    // Same shape as the fireable stream but with bucket_max_oi=50 on
+    // every bucket — below MIN_OI=100. Handler bails with skippedNoOi.
+    const lowOiStream = fireableSilentBoomStream().map((b) => ({
+      ...b,
+      bucket_max_oi: 50,
     }));
     mockSql
       .mockResolvedValueOnce(lowOiStream) // ticks

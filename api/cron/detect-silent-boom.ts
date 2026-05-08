@@ -1,10 +1,14 @@
 /**
  * GET /api/cron/detect-silent-boom
  *
- * Runs every 5 min during market hours. Reads the last 30 min of
- * ws_option_trades, buckets to 5-min, runs the silent-boom detector,
- * and INSERTs alerts into silent_boom_alerts with ON CONFLICT DO
- * NOTHING for idempotency.
+ * Runs every 5 min during market hours. Aggregates the last
+ * SCAN_WINDOW_MIN of ws_option_trades into 5-min per-chain buckets in
+ * SQL (size, ask/bid splits, vwap, last price, max OI), runs the
+ * silent-boom detector, and INSERTs alerts into silent_boom_alerts
+ * with ON CONFLICT DO NOTHING for idempotency. SQL-side aggregation is
+ * load-bearing: raw-tick projection of the same window blew past the
+ * Neon HTTP 64 MB response cap on busy days (Sentry
+ * SENTRY-EMERALD-DESERT-5S, 2026-05-08).
  *
  * Cooldown across cron-tick boundaries: queries silent_boom_alerts
  * for prior fires on the same chain within the last 60 min and
@@ -17,7 +21,6 @@
 import { getDb } from '../_lib/db.js';
 import {
   detectSilentBoomFires,
-  SILENT_BOOM_BUCKET_MS,
   SILENT_BOOM_SPEC_V1,
   type ChainBucket,
 } from '../_lib/silent-boom.js';
@@ -45,19 +48,24 @@ const PRIOR_FIRE_LOOKBACK_MIN = 70;
 type DbNumeric = string | number;
 type DbNullableNumeric = DbNumeric | null;
 type DbTimestamp = string | Date;
-type DbSide = 'ask' | 'bid' | 'mid' | 'no_side';
 
-interface TickRow {
+// Aggregated 5-min bucket row from SQL — see query below. Aggregating
+// in Postgres (rather than pulling raw ticks) avoids the Neon HTTP
+// driver's 64 MB response cap: on busy days the raw-tick projection
+// blew past it (Sentry SENTRY-EMERALD-DESERT-5S, 2026-05-08).
+interface BucketRow {
   ticker: string;
   option_chain: string;
   option_type: 'C' | 'P';
   strike: DbNumeric;
   expiry: string;
-  executed_at: DbTimestamp;
-  price: DbNumeric;
-  size: number;
-  side: DbSide;
-  open_interest: number | null;
+  bucket_ts: DbTimestamp;
+  size: DbNumeric;
+  ask_size: DbNumeric;
+  bid_size: DbNumeric;
+  notional: DbNumeric;
+  bucket_max_oi: number | null;
+  last_price: DbNumeric;
 }
 
 interface ChainGroupBuilder {
@@ -66,21 +74,8 @@ interface ChainGroupBuilder {
   optionType: 'C' | 'P';
   strike: number;
   expiry: string;
-  buckets: Map<number, BucketBuilder>;
+  buckets: ChainBucket[];
   oi: number;
-}
-
-interface BucketBuilder {
-  bucketMs: number;
-  size: number;
-  askSize: number;
-  bidSize: number;
-  notional: number; // price * size — divided at the end for vwap
-  lastPrice: number;
-}
-
-function bucketMsForTime(ms: number): number {
-  return Math.floor(ms / SILENT_BOOM_BUCKET_MS) * SILENT_BOOM_BUCKET_MS;
 }
 
 /**
@@ -119,30 +114,61 @@ export default withCronInstrumentation(
   async (ctx): Promise<CronResult> => {
     const db = getDb();
 
-    // Pull every tick in the scan window. expiry::text bypasses any
-    // driver-side TZ round-trip on DATE columns.
-    const rows = (await db`
+    // Aggregate to 5-min buckets in SQL so the wire payload stays
+    // bounded by chain-count, not tick-count. Raw-tick projection of
+    // the same window can exceed the Neon HTTP 64 MB cap on busy days.
+    // date_bin's 2000-01-01 origin is epoch-aligned at 5-min stride,
+    // so bucket starts match the prior `Math.floor(ms / 300_000)` JS
+    // bucketing exactly. ARRAY_AGG(... ORDER BY executed_at DESC)[1]
+    // preserves the prior `lastPrice = final tick under ASC sort`
+    // semantics.
+    const bucketRows = (await db`
       SELECT
-        ticker, option_chain, option_type, strike, expiry::text AS expiry,
-        executed_at, price, size, side, open_interest
+        ticker,
+        option_chain,
+        option_type,
+        strike,
+        expiry::text AS expiry,
+        date_bin(
+          INTERVAL '5 minutes',
+          executed_at,
+          TIMESTAMPTZ '2000-01-01 00:00:00+00'
+        ) AS bucket_ts,
+        SUM(size) AS size,
+        COALESCE(SUM(size) FILTER (WHERE side = 'ask'), 0) AS ask_size,
+        COALESCE(SUM(size) FILTER (WHERE side = 'bid'), 0) AS bid_size,
+        SUM(price * size) AS notional,
+        MAX(open_interest) AS bucket_max_oi,
+        (ARRAY_AGG(price ORDER BY executed_at DESC))[1] AS last_price
       FROM ws_option_trades
       WHERE executed_at >= NOW() - (${SCAN_WINDOW_MIN}::int * INTERVAL '1 minute')
         AND canceled = FALSE
         AND price > 0
-      ORDER BY option_chain, executed_at ASC
-    `) as TickRow[];
+      GROUP BY
+        ticker, option_chain, option_type, strike, expiry::text,
+        date_bin(
+          INTERVAL '5 minutes',
+          executed_at,
+          TIMESTAMPTZ '2000-01-01 00:00:00+00'
+        )
+      ORDER BY option_chain, bucket_ts ASC
+    `) as BucketRow[];
 
-    if (rows.length === 0) {
+    if (bucketRows.length === 0) {
       return {
         status: 'skipped',
         message: 'no ticks in scan window',
-        metadata: { scanned: 0 },
+        metadata: { bucketRows: 0 },
       };
     }
 
-    // Group by chain → bucket within chain. One linear pass.
+    // Group buckets by chain. SQL already orders by (option_chain,
+    // bucket_ts), so each chain's buckets land time-sorted in one
+    // linear pass — no per-chain re-sort needed. maxOi is the chain's
+    // running max across buckets; patched onto each bucket after the
+    // pass to match the detector's ChainBucket contract.
     const groups = new Map<string, ChainGroupBuilder>();
-    for (const r of rows) {
+    for (const r of bucketRows) {
       let g = groups.get(r.option_chain);
       if (!g) {
         g = {
@@ -151,42 +177,35 @@ export default withCronInstrumentation(
           optionType: r.option_type,
           strike: Number(r.strike),
           expiry: r.expiry,
-          buckets: new Map(),
+          buckets: [],
           oi: 0,
         };
         groups.set(r.option_chain, g);
       }
-      const ts = new Date(r.executed_at).getTime();
-      const bucketMs = bucketMsForTime(ts);
-      let b = g.buckets.get(bucketMs);
-      if (!b) {
-        b = {
-          bucketMs,
-          size: 0,
-          askSize: 0,
-          bidSize: 0,
-          notional: 0,
-          lastPrice: 0,
-        };
-        g.buckets.set(bucketMs, b);
+      const size = Number(r.size);
+      const notional = Number(r.notional);
+      g.buckets.push({
+        bucket: new Date(r.bucket_ts),
+        size,
+        askSize: Number(r.ask_size),
+        bidSize: Number(r.bid_size),
+        maxOi: 0, // patched below once chain-level max is known
+        vwap: size > 0 ? notional / size : 0,
+        lastPrice: Number(r.last_price),
+      });
+      if (r.bucket_max_oi != null && r.bucket_max_oi > g.oi) {
+        g.oi = r.bucket_max_oi;
       }
-      const size = r.size;
-      const price = Number(r.price);
-      b.size += size;
-      if (r.side === 'ask') b.askSize += size;
-      if (r.side === 'bid') b.bidSize += size;
-      b.notional += size * price;
-      b.lastPrice = price; // rows are sorted by executed_at within chain
-      if (r.open_interest != null && r.open_interest > g.oi) {
-        g.oi = r.open_interest;
-      }
+    }
+    for (const g of groups.values()) {
+      for (const b of g.buckets) b.maxOi = g.oi;
     }
 
     // Seed cooldown state from the DB so successive cron runs don't
     // re-fire within the cooldown window.
     const eligibleChainIds: string[] = [];
     for (const g of groups.values()) {
-      if (g.buckets.size >= SILENT_BOOM_SPEC_V1.baselineBuckets + 1) {
+      if (g.buckets.length >= SILENT_BOOM_SPEC_V1.baselineBuckets + 1) {
         eligibleChainIds.push(g.optionChain);
       }
     }
@@ -292,7 +311,7 @@ export default withCronInstrumentation(
     let skippedNoOi = 0;
 
     for (const g of groups.values()) {
-      if (g.buckets.size < SILENT_BOOM_SPEC_V1.baselineBuckets + 1) {
+      if (g.buckets.length < SILENT_BOOM_SPEC_V1.baselineBuckets + 1) {
         skippedShort += 1;
         continue;
       }
@@ -301,22 +320,8 @@ export default withCronInstrumentation(
         continue;
       }
 
-      // Build sorted ChainBucket[] for the detector.
-      const sortedBuckets = [...g.buckets.values()].sort(
-        (a, b) => a.bucketMs - b.bucketMs,
-      );
-      const chainBuckets: ChainBucket[] = sortedBuckets.map((b) => ({
-        bucket: new Date(b.bucketMs),
-        size: b.size,
-        askSize: b.askSize,
-        bidSize: b.bidSize,
-        maxOi: g.oi,
-        vwap: b.size > 0 ? b.notional / b.size : 0,
-        lastPrice: b.lastPrice,
-      }));
-
       const priorMs = priorByChain.get(g.optionChain) ?? null;
-      const fires = detectSilentBoomFires(chainBuckets, priorMs);
+      const fires = detectSilentBoomFires(g.buckets, priorMs);
       if (fires.length === 0) continue;
       totalFires += fires.length;
 
@@ -370,7 +375,7 @@ export default withCronInstrumentation(
 
     ctx.logger.info(
       {
-        scanned: rows.length,
+        bucketRows: bucketRows.length,
         chains: groups.size,
         skippedShort,
         skippedNoOi,
@@ -385,7 +390,7 @@ export default withCronInstrumentation(
       status: 'success',
       rows: inserted,
       metadata: {
-        scanned: rows.length,
+        bucketRows: bucketRows.length,
         chains: groups.size,
         skippedShort,
         skippedNoOi,
