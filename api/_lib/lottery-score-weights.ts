@@ -29,13 +29,13 @@ export const LOTTERY_TICKER_WEIGHTS: Readonly<Record<string, number>> = {
   TQQQ: 7,
   AMZN: 7,
   NVDA: 7,
-  QQQ: 7,
   GOOG: 7,
+  QQQ: 7,
+  OKLO: 5,
+  APLD: 5,
   MSFT: 5,
-  MRVL: 5,
-  AMD: 5,
-  GOOGL: 5,
-  COIN: 5,
+  CAR: 5,
+  QCOM: 5,
 };
 
 /** ($ entry price ≤ threshold → points). Evaluated in order; first match wins. */
