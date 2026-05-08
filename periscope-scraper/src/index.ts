@@ -31,7 +31,8 @@ if (rawSentryDsn != null && rawSentryDsn.trim() !== '') {
 // Now safe to load config (and capture its throws via the Sentry above).
 const { LOG_LEVEL, MS_PER_TICK, isMarketHours } = await import('./config.js');
 const { insertSnapshots } = await import('./db.js');
-const { scrapeAllPanels, scrapeBackfill } = await import('./scrape.js');
+const { scrapeAllPanels, scrapeBackfill, scrapeBackfillRange } =
+  await import('./scrape.js');
 
 const logger = pino({ level: LOG_LEVEL });
 
@@ -94,6 +95,41 @@ const forceTick =
 const backfillDate = (process.env.BACKFILL_DATE ?? '').trim();
 const backfillStart = (process.env.BACKFILL_START ?? '').trim() || '08:20';
 const backfillEnd = (process.env.BACKFILL_END ?? '').trim() || '14:50';
+const backfillDateStart = (process.env.BACKFILL_DATE_START ?? '').trim();
+const backfillDateEnd = (process.env.BACKFILL_DATE_END ?? '').trim();
+
+if (backfillDateStart !== '' && backfillDateEnd !== '') {
+  logger.info(
+    {
+      backfillDateStart,
+      backfillDateEnd,
+      backfillStart,
+      backfillEnd,
+    },
+    'BACKFILL_DATE_START + BACKFILL_DATE_END set — running multi-day range backfill',
+  );
+  const startedAt = Date.now();
+  try {
+    const summary = await scrapeBackfillRange(
+      backfillDateStart,
+      backfillDateEnd,
+      backfillStart,
+      backfillEnd,
+    );
+    logger.info(
+      { ...summary, totalMs: Date.now() - startedAt },
+      'backfill range complete',
+    );
+  } catch (err) {
+    Sentry.captureException(err);
+    logger.error(
+      { err, ms: Date.now() - startedAt },
+      'backfill range failed at top level',
+    );
+  }
+  await Sentry.flush(2000);
+  process.exit(0);
+}
 
 if (backfillDate !== '') {
   logger.info(

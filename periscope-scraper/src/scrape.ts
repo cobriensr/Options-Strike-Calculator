@@ -32,8 +32,25 @@ import {
   UW_AUTH_STATE_PATH,
   UW_PERISCOPE_URL,
 } from './config.js';
+import { insertSnapshots } from './db.js';
 import { parseDateLabel, parsePage } from './parser.js';
 import type { Panel, SnapshotRow } from './types.js';
+
+// US equity-options market holidays. SPX trading is closed on these
+// dates. Maintained inline because the periscope-scraper service does
+// not pull a holiday calendar from anywhere else; if the user backfills
+// a year not covered here, dates that fall on holidays will produce
+// "No data available" and the scraper logs + skips them, so the
+// holiday list is a perf optimization (skip-without-attempt), not a
+// correctness gate.
+const US_MARKET_HOLIDAYS: ReadonlySet<string> = new Set([
+  // 2025
+  '2025-01-01', '2025-01-20', '2025-02-17', '2025-04-18', '2025-05-26',
+  '2025-06-19', '2025-07-04', '2025-09-01', '2025-11-27', '2025-12-25',
+  // 2026
+  '2026-01-01', '2026-01-19', '2026-02-16', '2026-04-03', '2026-05-25',
+  '2026-06-19', '2026-07-03', '2026-09-07', '2026-11-26', '2026-12-25',
+]);
 
 const logger = pino({ level: LOG_LEVEL });
 
@@ -306,11 +323,18 @@ async function walkDateToTarget(
   const prevBtn = page.getByLabel('Previous day').first();
   const nextBtn = page.getByLabel('Next day').first();
 
-  for (let attempt = 0; attempt < 30; attempt += 1) {
+  // Cap at 200 — covers a full half-year walk if the storageState's
+  // saved date is far from the target (which happens on the first day
+  // of a multi-month backfill range). Within a range loop, day-to-day
+  // walks are 1-3 clicks so the cap is never hit in steady state.
+  for (let attempt = 0; attempt < 200; attempt += 1) {
     const label = ((await labelLoc.textContent()) ?? '').trim();
     const currentYmd = parseDateLabel(label, year);
     if (currentYmd === targetYmd) {
-      logger.info({ targetYmd, attempts: attempt }, 'walkDateToTarget: matched');
+      logger.debug(
+        { targetYmd, attempts: attempt },
+        'walkDateToTarget: matched',
+      );
       return;
     }
     if (currentYmd === null) {
@@ -323,11 +347,42 @@ async function walkDateToTarget(
     } else {
       await nextBtn.click({ timeout: 3_000 });
     }
-    await page.waitForTimeout(700);
+    await page.waitForTimeout(500);
   }
   throw new Error(
-    `walkDateToTarget: did not reach ${targetYmd} after 30 chevron clicks`,
+    `walkDateToTarget: did not reach ${targetYmd} after 200 chevron clicks`,
   );
+}
+
+/**
+ * Enumerate trading days (Mon-Fri, US-market non-holidays) from
+ * `startDate` through `endDate`, inclusive. Both bounds are YYYY-MM-DD.
+ *
+ * Uses UTC throughout — date arithmetic is purely calendrical here, no
+ * intraday timezone questions. The returned dates are themselves the
+ * trading-session calendar dates the scraper will navigate to.
+ */
+export function tradingDaysBetween(
+  startDate: string,
+  endDate: string,
+): string[] {
+  const out: string[] = [];
+  const cursor = new Date(`${startDate}T12:00:00Z`);
+  const end = new Date(`${endDate}T12:00:00Z`);
+  if (Number.isNaN(cursor.getTime()) || Number.isNaN(end.getTime())) {
+    throw new Error(
+      `tradingDaysBetween: invalid bound — start="${startDate}" end="${endDate}"`,
+    );
+  }
+  while (cursor.getTime() <= end.getTime()) {
+    const ymd = cursor.toISOString().slice(0, 10);
+    const day = cursor.getUTCDay();
+    if (day >= 1 && day <= 5 && !US_MARKET_HOLIDAYS.has(ymd)) {
+      out.push(ymd);
+    }
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return out;
 }
 
 /**
@@ -593,5 +648,122 @@ export async function scrapeBackfill(
       'backfill: complete',
     );
     return allRows;
+  });
+}
+
+/**
+ * Scrape every trading day in [startDate, endDate], skipping weekends
+ * and US-market holidays. Inserts rows per-day so progress is durable
+ * — a process kill mid-loop leaves prior days in the DB intact.
+ *
+ * Returns a summary; rows are NOT returned (they're already inserted).
+ * Errors on any single day log + continue to the next day.
+ */
+export async function scrapeBackfillRange(
+  startDate: string,
+  endDate: string,
+  startHhmm: string,
+  endHhmm: string,
+): Promise<{
+  totalRowsInserted: number;
+  daysScanned: number;
+  daysFailed: string[];
+  totalDays: number;
+}> {
+  const startNorm = normalizeHhmm(startHhmm);
+  const endNorm = normalizeHhmm(endHhmm);
+  const dates = tradingDaysBetween(startDate, endDate);
+
+  return await withBrowser(async (_browser, page) => {
+    logger.info(
+      { startDate, endDate, totalDays: dates.length, startHhmm: startNorm, endHhmm: endNorm },
+      'backfill range: starting',
+    );
+    if (dates.length === 0) {
+      logger.warn({ startDate, endDate }, 'backfill range: no trading days in range');
+      return { totalRowsInserted: 0, daysScanned: 0, daysFailed: [], totalDays: 0 };
+    }
+
+    await loadAndPrepPage(page);
+
+    let totalRowsInserted = 0;
+    let daysScanned = 0;
+    const daysFailed: string[] = [];
+
+    for (const [idx, date] of dates.entries()) {
+      const dayStarted = Date.now();
+      const progress = `${idx + 1}/${dates.length}`;
+      logger.info({ date, progress }, 'backfill range: starting day');
+
+      try {
+        await walkDateToTarget(page, date);
+        await page.waitForTimeout(1_500);
+        await walkTimeframeToTarget(page, startNorm);
+        await page.waitForTimeout(1_500);
+
+        const dayRows: SnapshotRow[] = [];
+        let currentStart = startNorm;
+        let slotsScanned = 0;
+
+        while (currentStart <= endNorm) {
+          const slotEnd = nextTimeframe(currentStart);
+          const capturedAt = computeCapturedAt(date, slotEnd);
+          const slotRows = await captureCurrentSlot(page, capturedAt);
+          dayRows.push(...slotRows);
+          slotsScanned += 1;
+
+          const nextStart = nextTimeframe(currentStart);
+          if (nextStart > endNorm) break;
+          await advanceTimeframeOneSlot(page);
+          await page.waitForTimeout(1_500);
+          currentStart = nextStart;
+        }
+
+        // Insert this day's rows. ON CONFLICT DO NOTHING in db.ts means
+        // a re-run for the same day is idempotent.
+        const inserted = await insertSnapshots(dayRows);
+        totalRowsInserted += inserted;
+        daysScanned += 1;
+
+        logger.info(
+          {
+            date,
+            progress,
+            slotsScanned,
+            rowsParsed: dayRows.length,
+            inserted,
+            totalRowsInserted,
+            daysFailed: daysFailed.length,
+            ms: Date.now() - dayStarted,
+          },
+          'backfill range: day complete',
+        );
+      } catch (err) {
+        daysFailed.push(date);
+        logger.error(
+          {
+            date,
+            progress,
+            err: err instanceof Error ? err.message : String(err),
+            ms: Date.now() - dayStarted,
+          },
+          'backfill range: day failed — continuing to next',
+        );
+        // Try to escape any stuck modal/popover state before next day.
+        await page.keyboard.press('Escape').catch(() => undefined);
+        await page.keyboard.press('Escape').catch(() => undefined);
+      }
+    }
+
+    logger.info(
+      { totalRowsInserted, daysScanned, daysFailed, totalDays: dates.length },
+      'backfill range: complete',
+    );
+    return {
+      totalRowsInserted,
+      daysScanned,
+      daysFailed,
+      totalDays: dates.length,
+    };
   });
 }
