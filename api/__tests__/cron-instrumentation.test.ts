@@ -27,8 +27,24 @@ vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
     setTag: vi.fn(),
     captureException: vi.fn(),
+    // Default pass-through so existing tests that don't supply a
+    // SCHEDULE_MAP entry behave identically — handler runs unmodified.
+    withMonitor: vi.fn(async (...args: unknown[]): Promise<unknown> => {
+      const cb = args[1] as () => Promise<unknown>;
+      return cb();
+    }),
   },
   metrics: { increment: vi.fn() },
+}));
+
+vi.mock('../_lib/cron-schedules.js', () => ({
+  SCHEDULE_MAP: {
+    'monitored-job': {
+      schedule: '*/5 * * * *',
+      checkinMargin: 2,
+      maxRuntime: 5,
+    },
+  },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -403,5 +419,62 @@ describe('withCronInstrumentation', () => {
     expect(handler).toHaveBeenCalledTimes(1);
     expect(res2._status).toBe(200);
     expect((res2._json as { status: string }).status).toBe('success');
+  });
+
+  // ── Sentry cron monitor wrapping ────────────────────────────
+
+  it('Sentry.withMonitor: wraps when SCHEDULE_MAP entry exists', async () => {
+    vi.mocked(cronGuard).mockReturnValue(guardOk);
+    const handler = vi.fn().mockResolvedValue({ status: 'success' as const });
+    const wrapped = withCronInstrumentation('monitored-job', handler);
+
+    const res = mockResponse();
+    await wrapped(mockRequest(), res);
+
+    expect(Sentry.withMonitor).toHaveBeenCalledTimes(1);
+    const [slug, , opts] = vi.mocked(Sentry.withMonitor).mock.calls[0]!;
+    expect(slug).toBe('monitored-job');
+    expect(opts).toMatchObject({
+      schedule: { type: 'crontab', value: '*/5 * * * *' },
+      checkinMargin: 2,
+      maxRuntime: 5,
+      failureIssueThreshold: 1,
+      recoveryThreshold: 1,
+      timezone: 'UTC',
+    });
+    // Handler still ran (mocked withMonitor invokes its callback).
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(res._status).toBe(200);
+  });
+
+  it('Sentry.withMonitor: skipped when no SCHEDULE_MAP entry', async () => {
+    vi.mocked(cronGuard).mockReturnValue(guardOk);
+    const handler = vi.fn().mockResolvedValue({ status: 'success' as const });
+    const wrapped = withCronInstrumentation('not-in-map', handler);
+
+    const res = mockResponse();
+    await wrapped(mockRequest(), res);
+
+    expect(Sentry.withMonitor).not.toHaveBeenCalled();
+    // Handler still ran via the unwrapped path — wrapper stays safe for
+    // jobs that haven't yet been added to the schedule map.
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(res._status).toBe(200);
+  });
+
+  it('Sentry.withMonitor: thrown errors propagate to existing catch', async () => {
+    vi.mocked(cronGuard).mockReturnValue(guardOk);
+    const boom = new Error('handler exploded');
+    const handler = vi.fn().mockRejectedValue(boom);
+    const wrapped = withCronInstrumentation('monitored-job', handler);
+
+    const res = mockResponse();
+    await wrapped(mockRequest(), res);
+
+    // withMonitor was still called — Sentry records the error check-in
+    // before re-throwing.
+    expect(Sentry.withMonitor).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(boom);
+    expect(res._status).toBe(500);
   });
 });

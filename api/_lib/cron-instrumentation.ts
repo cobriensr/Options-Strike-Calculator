@@ -27,6 +27,7 @@ import logger from './logger.js';
 import { Sentry } from './sentry.js';
 import { cronGuard } from './api-helpers.js';
 import { reportCronRun } from './axiom.js';
+import { SCHEDULE_MAP } from './cron-schedules.js';
 
 /**
  * Context handed to the cron logic. `today` and `apiKey` come from
@@ -247,8 +248,37 @@ export function withCronInstrumentation(
       }
     }
 
+    // Sentry Cron Monitor — wraps the handler call so a missed run, late
+    // run, or runtime overrun creates a Sentry issue automatically. We
+    // only wrap when a schedule entry exists for this jobName; jobs that
+    // route through this wrapper but lack a SCHEDULE_MAP entry run
+    // un-monitored (silent — keeps the wrapper safe for new crons added
+    // before the schedule map is updated; the
+    // `cron-schedules.test.ts` drift guard catches stale entries the
+    // other direction). See docs/superpowers/specs/sentry-monitoring-2026-05-07.md.
+    const monitorConfig = SCHEDULE_MAP[jobName];
+    const runHandler = (): Promise<CronResult> => {
+      // Skip the monitor wrap when no schedule is registered (new cron
+      // not yet added to SCHEDULE_MAP) OR when Sentry.withMonitor isn't
+      // present (per-test Sentry mocks across the cron suite stub a
+      // narrow surface). The handler still runs and reportCronRun still
+      // emits Axiom events — we just lose Sentry's missed-checkin signal
+      // for that one invocation.
+      if (!monitorConfig || typeof Sentry.withMonitor !== 'function') {
+        return handler(ctx);
+      }
+      return Sentry.withMonitor(jobName, () => handler(ctx), {
+        schedule: { type: 'crontab', value: monitorConfig.schedule },
+        checkinMargin: monitorConfig.checkinMargin,
+        maxRuntime: monitorConfig.maxRuntime,
+        failureIssueThreshold: monitorConfig.failureIssueThreshold ?? 1,
+        recoveryThreshold: monitorConfig.recoveryThreshold ?? 1,
+        timezone: 'UTC',
+      });
+    };
+
     try {
-      const result = await handler(ctx);
+      const result = await runHandler();
       const durationMs = Date.now() - startTimeMs;
 
       await reportCronRun(jobName, {

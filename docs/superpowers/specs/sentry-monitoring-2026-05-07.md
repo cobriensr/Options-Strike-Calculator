@@ -8,16 +8,17 @@ Close the three observability gaps surfaced by Sentry's Monitor/Alert split: (1)
 
 Audited 2026-05-07 against `no-org-jc / sentry-emerald-desert`:
 
-| Item | Type (post-split) | Notes |
-|---|---|---|
-| Issue alert rule 16804820 — "high priority issues" | **Alert** (routing) | Email-only → IssueOwners, fallthrough ActiveMembers. Last fired 2026-05-07 20:45 UTC. |
-| Uptime monitor 6838188 — `https://theta-options.com` | **Monitor** | 60s GET, 200–299 OK. Healthy. |
-| Metric monitors | **Monitor** | None. None to migrate (no metric alerts existed pre-split). |
-| Cron monitors | **Monitor** | None. 49 Vercel crons fire blind. |
-| Recent metric incidents | — | None. |
+| Item                                                 | Type (post-split)   | Notes                                                                                 |
+| ---------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------- |
+| Issue alert rule 16804820 — "high priority issues"   | **Alert** (routing) | Email-only → IssueOwners, fallthrough ActiveMembers. Last fired 2026-05-07 20:45 UTC. |
+| Uptime monitor 6838188 — `https://theta-options.com` | **Monitor**         | 60s GET, 200–299 OK. Healthy.                                                         |
+| Metric monitors                                      | **Monitor**         | None. None to migrate (no metric alerts existed pre-split).                           |
+| Cron monitors                                        | **Monitor**         | None. 49 Vercel crons fire blind.                                                     |
+| Recent metric incidents                              | —                   | None.                                                                                 |
 
 **Last 24h volume**: 1,466 errors + 793 warnings.
-- **1,413 events**: `NeonDbError: fetch failed` on `/api/gex-strike-expiry` (3h–6h ago) — *did not trigger high-priority alert*.
+
+- **1,413 events**: `NeonDbError: fetch failed` on `/api/gex-strike-expiry` (3h–6h ago) — _did not trigger high-priority alert_.
 - **354 events**: ES options Definition lag in sidecar.
 - **~450 events**: ~30 distinct UW 429 issues clustered in one rate-limit window.
 - 7 Postgres deadlocks; 1 missing `periscope_lessons` table; 1 `numeric field overflow` in `backfill-features`.
@@ -26,9 +27,9 @@ The NeonDb spike is the smoking gun: 1,413 events with zero alerts is exactly th
 
 ## Architecture — leverage what exists
 
-The codebase already has a clean choke point: `api/_lib/cron-instrumentation.ts` exports `withCronInstrumentation()`. **33 of 49** cron handlers funnel through it; the wrapper already calls `Sentry.setTag('cron.job', name)` and `Sentry.captureException()`. Adding `Sentry.cron.withMonitor()` here instruments all 33 in a single file edit. The other 16 handlers (legacy / non-standard shapes) get a follow-up sweep.
+The codebase already has a clean choke point: `api/_lib/cron-instrumentation.ts` exports `withCronInstrumentation()`. **33 of 49** cron handlers funnel through it; the wrapper already calls `Sentry.setTag('cron.job', name)` and `Sentry.captureException()`. Adding `Sentry.withMonitor()` here instruments all 33 in a single file edit. The other 16 handlers (legacy / non-standard shapes) get a follow-up sweep.
 
-Sentry node SDK is `^10.44.0` — `Sentry.cron.withMonitor()` and the metric alert API are both supported.
+Sentry node SDK is `^10.44.0` — `Sentry.withMonitor()` and the metric alert API are both supported.
 
 ## Phases
 
@@ -41,18 +42,21 @@ Each phase respects the CLAUDE.md ≤5 file budget. Run `npm run review` between
 Three rules created via `sentry api POST /api/0/projects/no-org-jc/sentry-emerald-desert/rules/`, idempotent (find-by-name → PUT, else POST):
 
 **1a. Volume spike on a single issue**
+
 - Condition: `event_frequency >= 50` in `1h` (interval) → routes immediately
 - Frequency: 30 min (no re-page on same issue)
 - Action: email Member 14663143 (the user) + fan-out to per-user notification preferences (mobile push if enabled)
 - Catches: NeonDb-style spike (1,413 events on ONE issue), ES Definition lag (354 events sustained)
 
 **1b. Aggregate error spike (substitute for the deprecated metric monitor)**
+
 - Condition: `event_frequency >= 25` in `5 minutes` for any issue with `level:error`
 - Frequency: 30 min (deduplicates re-pages)
 - Action: email Member 14663143
 - Catches: the case where many distinct issues each fire a few times — collective volume spike that 1a's per-issue threshold misses
 
 **1c. Critical infra patterns (first occurrence)**
+
 - Filter: `message` contains `deadlock` OR `does not exist` OR `numeric field overflow`
 - Condition: any first-seen issue matching the filter
 - Frequency: 5 min (immediate page on new occurrence)
@@ -64,7 +68,8 @@ Three rules created via `sentry api POST /api/0/projects/no-org-jc/sentry-emeral
 ### Phase 2 — Cron monitoring via single-file extension
 
 Modify `api/_lib/cron-instrumentation.ts` only:
-- Wrap the existing handler `try` block in `Sentry.cron.withMonitor(jobName, async () => { … }, { schedule: { type: 'crontab', value: SCHEDULE_MAP[jobName] } })`.
+
+- Wrap the existing handler `try` block in `Sentry.withMonitor(jobName, async () => { … }, { schedule: { type: 'crontab', value: SCHEDULE_MAP[jobName] } })`.
 - Maintain a `SCHEDULE_MAP` constant pulled from `vercel.json` at module load (or hard-coded — the schedules don't drift often). Each entry: `{ schedule, checkinMargin, maxRuntime, failureIssueThreshold, recoveryThreshold, timezone: 'UTC' }`.
 - Add a unit test asserting the wrapper still calls `reportCronRun` on success/failure (regression).
 
@@ -85,7 +90,7 @@ fetch-zero-dte-flow.ts, fetch-vol-0dte.ts, refresh-current-snapshot.ts,
 warm-tbbo-percentile.ts
 ```
 
-These get a lighter wrapper — a new `withCronCheckin(jobName, schedule)` that ONLY wraps the `Sentry.cron.withMonitor()` boundary without changing return shape or guard semantics. Applied in 4 batches of ≤5 files each. Out of scope for the initial ship — Phase 1 and Phase 2 land first; this becomes a follow-up after we validate the Phase 2 wrapper works in production for ~24h.
+These get a lighter wrapper — a new `withCronCheckin(jobName, schedule)` that ONLY wraps the `Sentry.withMonitor()` boundary without changing return shape or guard semantics. Applied in 4 batches of ≤5 files each. Out of scope for the initial ship — Phase 1 and Phase 2 land first; this becomes a follow-up after we validate the Phase 2 wrapper works in production for ~24h.
 
 ### Phase 4 — Push notifications (user action, not automated)
 
@@ -108,27 +113,30 @@ This is a one-time setup. Once enabled, the Phase 1b and 1c alert rules' "Send a
 
 ## Thresholds / constants
 
-| Constant | Value | Reason |
-|---|---|---|
-| `METRIC_MONITOR_CRITICAL_PER_MIN` | 100 | 5x current baseline tail; catches NeonDb-style spike. |
-| `METRIC_MONITOR_WARNING_PER_MIN` | 25 | 25x baseline; early signal. |
-| `ISSUE_VOLUME_THRESHOLD` | 50 events / 1h | Above sustained-noise ceiling for normal infra issues. |
-| `CRON_CHECKIN_MARGIN_MIN` | 2 | Vercel cold-start jitter; alert if late > 2 min. |
-| `CRON_MAX_RUNTIME_MIN` | 15 | Most crons finish < 30s; long-runners (`build-features`, `curate-lessons`) have explicit Vercel timeouts up to 800s, override per-job. |
-| `CRON_FAILURE_THRESHOLD` | 1 | Single failure pages immediately (not 3 — these are 1/min jobs, 3 = 3 min lag). |
-| `CRON_RECOVERY_THRESHOLD` | 1 | Resolve immediately on next success. |
+| Constant                          | Value          | Reason                                                                                                                                 |
+| --------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `METRIC_MONITOR_CRITICAL_PER_MIN` | 100            | 5x current baseline tail; catches NeonDb-style spike.                                                                                  |
+| `METRIC_MONITOR_WARNING_PER_MIN`  | 25             | 25x baseline; early signal.                                                                                                            |
+| `ISSUE_VOLUME_THRESHOLD`          | 50 events / 1h | Above sustained-noise ceiling for normal infra issues.                                                                                 |
+| `CRON_CHECKIN_MARGIN_MIN`         | 2              | Vercel cold-start jitter; alert if late > 2 min.                                                                                       |
+| `CRON_MAX_RUNTIME_MIN`            | 15             | Most crons finish < 30s; long-runners (`build-features`, `curate-lessons`) have explicit Vercel timeouts up to 800s, override per-job. |
+| `CRON_FAILURE_THRESHOLD`          | 1              | Single failure pages immediately (not 3 — these are 1/min jobs, 3 = 3 min lag).                                                        |
+| `CRON_RECOVERY_THRESHOLD`         | 1              | Resolve immediately on next success.                                                                                                   |
 
 ## Files to create / modify
 
 **Phase 1**:
+
 - `scripts/sentry/setup-monitors.sh` (new) — idempotent CLI script to create/update the three alert rules
 
 **Phase 2**:
-- `api/_lib/cron-instrumentation.ts` — wrap handler in `Sentry.cron.withMonitor()`
+
+- `api/_lib/cron-instrumentation.ts` — wrap handler in `Sentry.withMonitor()`
 - `api/_lib/cron-schedules.ts` (new) — `Record<string, CronMonitorConfig>` map of jobName → schedule + thresholds
 - `api/__tests__/cron-instrumentation.test.ts` — extend existing test (verify monitor wrapping doesn't break success/error paths)
 
 **Phase 4**:
+
 - No code; 5-step user runbook in this doc
 
 ## Verification per phase
