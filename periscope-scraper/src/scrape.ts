@@ -166,38 +166,49 @@ async function selectGreek(page: Page, label: string): Promise<void> {
   }
 
   await trigger.click({ timeout: 5_000 });
-  // Popover renders to a portal — give Radix a beat to mount.
-  await page.waitForTimeout(500);
 
-  // Vanna lives in a table footer (`tfoot > tr > td > span`) rather
-  // than the simple flat list Gamma + Charm use. Scoping to the
-  // popover wrapper has flaky `.last()` behavior across repeat
-  // dropdown opens (stale wrappers from prior clicks). Page-wide
-  // exact-text lookup is more robust — when the popover is open the
-  // option text appears uniquely outside the trigger (which shows
-  // the *previous* selection until commit), so collisions are
-  // unlikely. scrollIntoViewIfNeeded handles tfoot rows that fall
-  // below the popover's visible scroll area.
+  // Explicit popover-open wait. Radix takes longer to re-mount on
+  // repeat opens (after the previous close animation) than a fixed
+  // 500ms allowed for. Wait for the wrapper itself to be visible
+  // first, THEN search for the option — that way a slow popover
+  // doesn't manifest as a "Vanna not in DOM" timeout further down.
+  try {
+    await page
+      .locator('[data-radix-popper-content-wrapper]')
+      .last()
+      .waitFor({ state: 'visible', timeout: 5_000 });
+  } catch {
+    // Popover never opened. Trigger click might have been intercepted
+    // by an in-flight close animation from the prior selection.
+    logger.warn({ label }, 'selectGreek: popover did not open after trigger click');
+    await page.keyboard.press('Escape').catch(() => undefined);
+    throw new Error(`selectGreek: popover did not open for "${label}"`);
+  }
+
   const option = page.getByText(label, { exact: true }).last();
   try {
+    await option.waitFor({ state: 'visible', timeout: 3_000 });
     await option.scrollIntoViewIfNeeded({ timeout: 2_000 });
     await option.click({ timeout: 3_000 });
   } catch (err) {
-    // Diagnostic: dump nearby popover text so the next run shows
-    // exactly which options were offered.
+    // Diagnostic: dump popover text + take a screenshot so we can
+    // SEE the page state when the option isn't clickable.
     const popover = page.locator('[data-radix-popper-content-wrapper]').last();
     const popoverText =
       (await popover.textContent().catch(() => null)) ?? '<unreadable>';
+    const screenshotPath = `/tmp/periscope-fail-${label}-${Date.now()}.png`;
+    await page
+      .screenshot({ path: screenshotPath, fullPage: true })
+      .catch(() => undefined);
     logger.warn(
       {
         label,
         popoverText: popoverText.replaceAll(/\s+/g, ' ').slice(0, 300),
+        screenshotPath,
         err: err instanceof Error ? err.message : String(err),
       },
-      'selectGreek: option not clickable — see popoverText',
+      'selectGreek: option not clickable — screenshot saved',
     );
-    // Close any open popover before bubbling so the next iteration
-    // starts from a clean state.
     await page.keyboard.press('Escape').catch(() => undefined);
     throw err;
   }
