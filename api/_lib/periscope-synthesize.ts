@@ -157,19 +157,34 @@ async function fetchConeBounds(
   };
 }
 
+/** Strike window (±pts from spot) for charm-zero integration. Matches
+ *  the WIDE_SPOT_HALFWIDTH constant in periscope-format.ts so the
+ *  panel and Claude's prompt agree on which strikes count toward the
+ *  sign-change. The skill's intent is "near-spot EoD drift pivot" —
+ *  walking the full chain (which can extend 1000+ pts from spot)
+ *  finds sign changes way out in deep OTM territory that aren't the
+ *  pivot a trader cares about.
+ *
+ *  2026-05-08: panel returned 7310 vs Claude returned 7600 with spot
+ *  at 7391 — same algorithm, different bounds. Aligning to ±100. */
+const CHARM_ZERO_HALFWIDTH = 100;
+
 /**
  * Compute the charm-zero strike — the price where the cumulative charm
- * sum (sorted by strike, low → high) genuinely flips sign.
+ * sum (sorted by strike, low → high) genuinely flips sign within ±100
+ * of spot.
  *
  * Pass 1B's heat-map extraction only feeds Claude the top-N positive +
  * top-N negative strikes per panel, so Claude can't reliably identify
  * the contiguous sign-change point. Computing it here from the full
- * charm grid and injecting it into the prompt directly fills
- * `key_levels.charm_zero` deterministically.
+ * charm grid (filtered to ±100 of spot) and injecting it into the
+ * prompt directly fills `key_levels.charm_zero` deterministically AND
+ * matches what the panel renders.
  */
 async function fetchCharmZeroStrike(
   expiry: string,
   readTimeIso: string,
+  spot: number,
 ): Promise<number | null> {
   const sql = getDb();
   const slotRows = (await sql`
@@ -182,19 +197,24 @@ async function fetchCharmZeroStrike(
   const capturedAt = slotRows[0]?.captured_at;
   if (capturedAt == null) return null;
 
+  const minStrike = spot - CHARM_ZERO_HALFWIDTH;
+  const maxStrike = spot + CHARM_ZERO_HALFWIDTH;
   const rows = (await sql`
     SELECT strike, value
     FROM periscope_snapshots
     WHERE expiry = ${expiry}
       AND panel = 'charm'
       AND captured_at = ${capturedAt}
+      AND strike >= ${minStrike}
+      AND strike <= ${maxStrike}
     ORDER BY strike ASC
   `) as Array<{ strike: number; value: string | number }>;
   if (rows.length === 0) return null;
 
   let runningSum = 0;
   for (const r of rows) {
-    const v = typeof r.value === 'string' ? Number.parseFloat(r.value) : r.value;
+    const v =
+      typeof r.value === 'string' ? Number.parseFloat(r.value) : r.value;
     const prev = runningSum;
     runningSum += v;
     if (
@@ -240,7 +260,7 @@ export async function synthesizeFromDb(args: {
       fetchConeBounds(tradingDate),
       fetchTopStrikes(tradingDate, 'gamma', readTimeIso),
       fetchTopStrikes(tradingDate, 'charm', readTimeIso),
-      fetchCharmZeroStrike(tradingDate, readTimeIso),
+      fetchCharmZeroStrike(tradingDate, readTimeIso, spot),
     ]);
 
   // Gate: if we have NEITHER a cone NOR any periscope rows, the DB
