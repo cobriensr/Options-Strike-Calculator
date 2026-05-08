@@ -1,8 +1,19 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+
+// Mock the DB layer before importing the SUT — `getLatestSpotsByTicker`
+// uses Neon's tagged-template `sql` shape, so the mock returns whatever
+// the test queues up for the next call.
+const mockSql = vi.fn(async (): Promise<unknown[]> => []);
+
+vi.mock('../_lib/db.js', () => ({
+  getDb: vi.fn(() => mockSql),
+}));
+
 import {
   STALE_FRESHNESS_MIN,
   STALE_PROGRESS_PCT,
   computePathShape,
+  getLatestSpotsByTicker,
 } from '../_lib/path-shape.js';
 
 const T0 = new Date('2026-04-29T14:00:00Z').getTime(); // detection
@@ -102,5 +113,57 @@ describe('computePathShape', () => {
       NOW_STALE,
     );
     expect(justUnder.isStale).toBe(true);
+  });
+
+  it('returns null progress + non-stale when current spot is NaN/Infinity', () => {
+    const out = computePathShape(T0, 6500, 6510, Number.NaN, NOW_STALE);
+    expect(out.progressPct).toBeNull();
+    expect(out.isStale).toBe(false);
+  });
+});
+
+describe('getLatestSpotsByTicker', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSql.mockReset().mockImplementation(async () => []);
+  });
+
+  it('returns an empty Map and skips DB call when tickers is empty', async () => {
+    const map = await getLatestSpotsByTicker([], null);
+    expect(map.size).toBe(0);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('builds a Map keyed by ticker for live mode (at == null)', async () => {
+    mockSql.mockResolvedValueOnce([
+      { ticker: 'SPY', spot: 510.25 },
+      { ticker: 'QQQ', spot: '440.5' }, // string-typed numeric column
+    ]);
+    const map = await getLatestSpotsByTicker(['SPY', 'QQQ'], null);
+    expect(map.size).toBe(2);
+    expect(map.get('SPY')).toBe(510.25);
+    expect(map.get('QQQ')).toBe(440.5);
+    expect(mockSql).toHaveBeenCalledTimes(1);
+  });
+
+  it('builds a Map keyed by ticker for replay mode (at provided)', async () => {
+    mockSql.mockResolvedValueOnce([{ ticker: 'AAPL', spot: 215.1 }]);
+    const at = new Date('2026-04-29T18:30:00Z');
+    const map = await getLatestSpotsByTicker(['AAPL'], at);
+    expect(map.get('AAPL')).toBe(215.1);
+    expect(mockSql).toHaveBeenCalledTimes(1);
+  });
+
+  it('omits tickers with null spot or non-finite values', async () => {
+    mockSql.mockResolvedValueOnce([
+      { ticker: 'SPY', spot: null },
+      { ticker: 'QQQ', spot: 'not-a-number' }, // Number() yields NaN
+      { ticker: 'IWM', spot: 200 },
+    ]);
+    const map = await getLatestSpotsByTicker(['SPY', 'QQQ', 'IWM'], null);
+    expect(map.has('SPY')).toBe(false);
+    expect(map.has('QQQ')).toBe(false);
+    expect(map.get('IWM')).toBe(200);
+    expect(map.size).toBe(1);
   });
 });
