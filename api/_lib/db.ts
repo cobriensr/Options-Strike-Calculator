@@ -47,6 +47,54 @@ export function _resetDb() {
 }
 
 // ============================================================
+// TRANSIENT-ERROR RETRY
+// ============================================================
+
+/**
+ * Neon's HTTP serverless driver occasionally surfaces transient TLS /
+ * proxy / DNS hiccups as `NeonDbError: Error connecting to database:
+ * TypeError: fetch failed`. The error is non-deterministic and
+ * recovers on the next request. Read endpoints with high poll
+ * cadences (e.g. `/api/gex-strike-expiry`, polled every 30 s × 4
+ * tickers) amplify it into a Sentry firehose.
+ *
+ * `withDbRetry` is the DB-side analogue of
+ * `withRetry` in `uw-fetch.ts`: linear backoff (1 s, 2 s, 3 s),
+ * 2 retries by default, only retries when the error message looks
+ * like a transient network failure. Non-transient `NeonDbError`s
+ * (constraint violations, syntax errors) bubble up unchanged so the
+ * caller's error path stays intact.
+ */
+const DB_RETRYABLE_RX =
+  /timeout|ECONNREFUSED|ECONNRESET|ENETUNREACH|ENOTFOUND|fetch failed|socket hang up|TLS connection|EAI_AGAIN/i;
+
+export function isRetryableDbError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  // NeonDbError wraps the underlying network failure on `sourceError`.
+  // Inspect both layers so a `TypeError: fetch failed` cause matches
+  // even when the outer message is generic ("Error connecting to
+  // database").
+  const source = (err as { sourceError?: unknown }).sourceError;
+  const sourceMsg = source instanceof Error ? source.message : '';
+  return DB_RETRYABLE_RX.test(`${err.message} ${sourceMsg}`);
+}
+
+export async function withDbRetry<T>(
+  fn: () => Promise<T>,
+  retries: number = 2,
+): Promise<T> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt === retries || !isRetryableDbError(err)) throw err;
+      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+    }
+  }
+  throw new Error('unreachable');
+}
+
+// ============================================================
 // SCHEMA INITIALIZATION
 // ============================================================
 

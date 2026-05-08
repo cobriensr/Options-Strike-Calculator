@@ -14,9 +14,32 @@
  * module is read-only.
  */
 
-import { getDb } from './db.js';
+import { getDb, withDbRetry } from './db.js';
 import { parsedOrFallback } from './numeric-coercion.js';
 import { getPrimaryExpiry } from './zero-gamma-tickers.js';
+
+/**
+ * 30-second in-memory cache for `getTimestampsForDay`.
+ *
+ * The hook polls every 30 s and the timestamp list grows by ~1 entry
+ * per minute, so re-running the SQL on every poll is wasted work —
+ * worst-case staleness for a single 30-s window is invisible to the
+ * scrubber UI. Fluid Compute reuses function instances across
+ * concurrent requests, so a per-instance Map gets ~80–95% hit rate
+ * during market hours. Per-process is fine: cross-instance drift
+ * stays bounded to the TTL.
+ */
+const TIMESTAMPS_TTL_MS = 30_000;
+interface TimestampsCacheEntry {
+  data: string[];
+  expiresAt: number;
+}
+const timestampsCache = new Map<string, TimestampsCacheEntry>();
+
+/** Exported for tests so cache state doesn't leak across cases. */
+export function _resetTimestampsCache(): void {
+  timestampsCache.clear();
+}
 
 /**
  * Per-ticker expiry remapping for the `ws_gex_strike_expiry` reads.
@@ -286,7 +309,8 @@ export async function getLatestGexPerStrikeWithDeltas(
   // it ignores NULLs alongside non-NULL values (verified on Neon
   // PG 17.8). The `CASE WHEN ${ticker}='SPX'` projects NULL for
   // non-SPX tickers, which `GREATEST` then ignores.
-  const rows = (await sql`
+  const rows = (await withDbRetry(
+    () => sql`
     WITH effective_at AS (
       SELECT
         COALESCE(
@@ -405,7 +429,8 @@ export async function getLatestGexPerStrikeWithDeltas(
       gamma_delta_15m, gamma_delta_30m
     FROM deltas
     ORDER BY strike, ts_minute DESC
-  `) as RawRowWithDeltas[];
+  `,
+  )) as RawRowWithDeltas[];
   return rows.map(mapRowWithDeltas);
 }
 
@@ -424,11 +449,18 @@ export async function getTimestampsForDay(
   ticker: GexStrikeExpiryTicker,
   requestedExpiry: string,
 ): Promise<string[]> {
-  const sql = getDb();
   // Same NDX monthly-expiry remap as the strikes query so scrub
   // timestamps line up with the rows the panel actually sees.
   const expiry = resolveStoredExpiry(ticker, requestedExpiry);
-  const rows = (await sql`
+
+  const cacheKey = `${ticker}:${expiry}`;
+  const now = Date.now();
+  const cached = timestampsCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) return cached.data;
+
+  const sql = getDb();
+  const rows = (await withDbRetry(
+    () => sql`
     WITH ws_ts AS (
       SELECT DISTINCT ts_minute
       FROM ws_gex_strike_expiry
@@ -449,6 +481,9 @@ export async function getTimestampsForDay(
     UNION
     SELECT ts_minute FROM rest_ts
     ORDER BY ts_minute ASC
-  `) as Array<{ ts_minute: string | Date }>;
-  return rows.map((r) => toIso(r.ts_minute));
+  `,
+  )) as Array<{ ts_minute: string | Date }>;
+  const data = rows.map((r) => toIso(r.ts_minute));
+  timestampsCache.set(cacheKey, { data, expiresAt: now + TIMESTAMPS_TTL_MS });
+  return data;
 }

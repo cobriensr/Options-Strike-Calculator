@@ -27,6 +27,10 @@ vi.mock('../_lib/api-helpers.js', () => ({
 const mockSql = vi.fn();
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
+  // Bypass the retry wrapper at the endpoint test level — retry
+  // semantics get unit-tested in db-retry.test.ts where fake timers
+  // can advance the backoff sleeps deterministically.
+  withDbRetry: vi.fn(<T>(fn: () => Promise<T>) => fn()),
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
@@ -44,6 +48,7 @@ vi.mock('../_lib/logger.js', () => ({
 import handler from '../gex-strike-expiry.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
+import { _resetTimestampsCache } from '../_lib/db-gex-strike-expiry.js';
 
 function fakeRow(strike: number, ts: string, ticker = 'SPY') {
   return {
@@ -138,6 +143,10 @@ function fakeRestRow(strike: number, ts: string) {
 beforeEach(() => {
   vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
   mockSql.mockReset();
+  // Per-test cache clear — getTimestampsForDay caches across calls,
+  // so a cached entry from a prior test would short-circuit the
+  // mockSql sequence and silently desynchronize the next assertion.
+  _resetTimestampsCache();
 });
 
 describe('GET /api/gex-strike-expiry', () => {
@@ -556,6 +565,8 @@ describe('GET /api/gex-strike-expiry', () => {
 
   it('returns 500 when the DB query throws', async () => {
     // Both parallel queries reject; Promise.all surfaces the first.
+    // "Connection refused" (the plain English phrase) is not in the
+    // retry regex, so withDbRetry passes the rejection straight through.
     mockSql
       .mockRejectedValueOnce(new Error('Connection refused'))
       .mockRejectedValueOnce(new Error('Connection refused'));
@@ -569,5 +580,64 @@ describe('GET /api/gex-strike-expiry', () => {
     expect(res._status).toBe(500);
     expect(res._json).toMatchObject({ error: 'Internal error' });
     expect(Sentry.captureException).toHaveBeenCalled();
+  });
+
+  // ── Timestamps cache ───────────────────────────────────────
+  //
+  // The 30s in-memory cache for getTimestampsForDay halves the SQL
+  // load on the high-cadence panel poll. A second request with the
+  // same (ticker, expiry) within the window must NOT re-issue the
+  // timestamps query.
+  it('serves the second request from the timestamps cache (skips redundant SQL)', async () => {
+    // Request 1: both queries fire.
+    mockSql
+      .mockResolvedValueOnce([fakeRow(722, '2026-05-01T20:14:00Z')])
+      .mockResolvedValueOnce([{ ts_minute: '2026-05-01T20:14:00Z' }])
+      // Request 2: only the strikes query — timestamps comes from cache.
+      .mockResolvedValueOnce([fakeRow(723, '2026-05-01T20:15:00Z')]);
+
+    const baseQuery = { ticker: 'SPY', expiry: '2026-05-01' };
+    const res1 = mockResponse();
+    await handler(mockRequest({ method: 'GET', query: baseQuery }), res1);
+    const res2 = mockResponse();
+    await handler(mockRequest({ method: 'GET', query: baseQuery }), res2);
+
+    expect(res1._status).toBe(200);
+    expect(res2._status).toBe(200);
+    // 2 SQL calls for request 1 + 1 for request 2 = 3 total. Without
+    // the cache it would be 4.
+    expect(mockSql).toHaveBeenCalledTimes(3);
+    // Both responses surface the same timestamps payload.
+    expect((res2._json as { timestamps: string[] }).timestamps).toEqual([
+      '2026-05-01T20:14:00.000Z',
+    ]);
+  });
+
+  it('does not share cache across (ticker, expiry) pairs', async () => {
+    mockSql
+      // SPY 2026-05-01: strikes + timestamps
+      .mockResolvedValueOnce([fakeRow(722, '2026-05-01T20:14:00Z')])
+      .mockResolvedValueOnce([{ ts_minute: '2026-05-01T20:14:00Z' }])
+      // QQQ 2026-05-01: distinct cache key — both queries must fire
+      .mockResolvedValueOnce([fakeRow(530, '2026-05-01T20:14:00Z', 'QQQ')])
+      .mockResolvedValueOnce([{ ts_minute: '2026-05-01T20:14:00Z' }]);
+
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { ticker: 'SPY', expiry: '2026-05-01' },
+      }),
+      mockResponse(),
+    );
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { ticker: 'QQQ', expiry: '2026-05-01' },
+      }),
+      mockResponse(),
+    );
+
+    // 4 SQL calls — neither key was cached.
+    expect(mockSql).toHaveBeenCalledTimes(4);
   });
 });
