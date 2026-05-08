@@ -136,10 +136,32 @@ async function main() {
         cap.bodyHtml,
         'utf8',
       );
-      console.log(`  ✓ Captured expiry-open.html (${cap.bodyHtml.length} bytes)`);
+      console.log(`  ✓ Captured expiry-open.html (Multi mode, ${cap.bodyHtml.length} bytes)`);
       console.log(`  • element counts:`, cap.counts);
+
+      // Click the "Single" toggle inside the popover to see a flat-list
+      // markup we can drive more easily than the multi-select tree.
+      console.log('\n▸ Switching Expiry popover to Single mode...');
+      const singleToggle = page
+        .locator('[data-sentry-component="Switch"]')
+        .locator('div', { hasText: /^Single$/ })
+        .first();
+      if ((await singleToggle.count()) === 0) {
+        console.warn('  ✗ Single-mode toggle not found.');
+      } else {
+        await singleToggle.click();
+        await page.waitForTimeout(1500);
+        const single = await captureOpenControl(page, 'expiry-single');
+        await writeFile(
+          join(outDir, 'expiry-single.html'),
+          single.bodyHtml,
+          'utf8',
+        );
+        console.log(`  ✓ Captured expiry-single.html (${single.bodyHtml.length} bytes)`);
+        console.log(`  • element counts:`, single.counts);
+      }
     } catch (err) {
-      console.warn(`  ✗ Click on Expiry trigger failed: ${err.message}`);
+      console.warn(`  ✗ Expiry probe failed: ${err.message}`);
     }
   }
 
@@ -169,7 +191,9 @@ async function main() {
   await browser.close();
 }
 
-main().catch((err) => {
+try {
+  await main();
+} catch (err) {
   console.error('▸ Probe failed:', err);
   process.exit(1);
-});
+}
