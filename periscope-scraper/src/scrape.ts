@@ -118,11 +118,25 @@ export async function scrapeAllPanels(): Promise<SnapshotRow[]> {
     logger.info({ url: UW_PERISCOPE_URL }, 'navigating to periscope');
     await page.goto(UW_PERISCOPE_URL, { waitUntil: 'networkidle' });
 
-    // Wait for the data table to render. The first row's appearance is a
-    // sufficient signal that React hydration + initial data fetch are done.
-    await page.waitForSelector('tr.table_row__wxw5u', { timeout: 30_000 });
-    // Extra settle so the values populate (the `<tr>` shells render before
-    // their inner `<div title="...">` cells have data).
+    // Wait for EITHER the data table OR the "No data available" empty
+    // state. The empty-state path means the user's filters resolve to
+    // no slice (typically: outside RTH with default Latest timeframe).
+    // We don't fail in that case — the parser will just return zero
+    // rows and the caller logs it.
+    const firstRow = page.locator('tr.table_row__wxw5u').first();
+    const emptyState = page.getByText(/no data available/i).first();
+    try {
+      await Promise.race([
+        firstRow.waitFor({ state: 'visible', timeout: 20_000 }),
+        emptyState.waitFor({ state: 'visible', timeout: 20_000 }),
+      ]);
+    } catch {
+      logger.warn(
+        'neither table rows nor empty-state appeared after 20s — proceeding anyway',
+      );
+    }
+    // Settle: even when the table appears, the inner value cells
+    // sometimes render a tick later than the `<tr>` shells.
     await page.waitForTimeout(2_000);
 
     const allRows: SnapshotRow[] = [];
