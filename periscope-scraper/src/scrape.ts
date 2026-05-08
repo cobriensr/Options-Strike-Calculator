@@ -80,6 +80,23 @@ function parseTimeframeStart(label: string): string | null {
   return normalizeHhmm(m[1]);
 }
 
+/**
+ * Today's date in America/Chicago, formatted as YYYY-MM-DD. Used by
+ * the live scraper to walk the date picker to the current trading
+ * day regardless of whatever's saved in the storageState.
+ *
+ * `Intl.DateTimeFormat` with `en-CA` locale yields ISO-style
+ * YYYY-MM-DD format directly — no manual zero-padding needed.
+ */
+function todayInCT(): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Chicago',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+}
+
 /** Advance an HH:MM string by 10 minutes. "08:20" → "08:30", "08:50" → "09:00". */
 function nextTimeframe(slotStartHhmm: string): string {
   const [hStr, mStr] = slotStartHhmm.split(':');
@@ -590,6 +607,27 @@ async function loadAndPrepPage(page: Page): Promise<void> {
 export async function scrapeAllPanels(): Promise<SnapshotRow[]> {
   return await withBrowser(async (_browser, page) => {
     await loadAndPrepPage(page);
+
+    // Walk date to today (CT). The storageState may have a stale date
+    // from a prior --login session, so the scraper enforces "today" on
+    // every tick. Failures here are non-fatal — fall through with
+    // whatever date is shown so a misconfigured holiday/weekend run
+    // still produces a clean "no data" tick.
+    const today = todayInCT();
+    try {
+      await walkDateToTarget(page, today);
+      await page.waitForTimeout(1_500);
+      logger.info({ today }, 'walked date picker to today');
+    } catch (err) {
+      logger.warn(
+        {
+          today,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        'walkDateToTarget(today) failed — proceeding anyway',
+      );
+    }
+
     return await captureCurrentSlot(page, new Date().toISOString());
   });
 }
