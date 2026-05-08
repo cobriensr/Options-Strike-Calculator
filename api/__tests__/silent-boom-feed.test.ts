@@ -50,6 +50,8 @@ interface AlertFixture {
   score: number | null;
   score_tier: 'tier1' | 'tier2' | 'tier3' | null;
   mkt_tide_diff: string | null;
+  zero_dte_diff: string | null;
+  spx_spot_gamma_oi: string | null;
   inserted_at: string;
 }
 
@@ -81,6 +83,8 @@ function makeAlert(overrides: Partial<AlertFixture> = {}): AlertFixture {
     score: 24,
     score_tier: 'tier1',
     mkt_tide_diff: '5000',
+    zero_dte_diff: '300',
+    spx_spot_gamma_oi: '12345',
     inserted_at: '2026-05-07T13:30:30Z',
     ...overrides,
   };

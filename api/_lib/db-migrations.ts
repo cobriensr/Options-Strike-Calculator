@@ -4067,4 +4067,15 @@ export const MIGRATIONS: Migration[] = [
             ADD COLUMN IF NOT EXISTS mkt_tide_diff NUMERIC`,
     ],
   },
+  {
+    id: 137,
+    description:
+      'Add zero_dte_diff + spx_spot_gamma_oi columns to silent_boom_alerts. zero_dte_diff snapshots flow_data WHERE source = zero_dte_greek_flow (NCP - NPP) at the spike-bucket time; spx_spot_gamma_oi snapshots spot_exposures WHERE ticker = SPX (gamma_oi sign). Display-only regime context surfaced as the Day Banner regime strip on the dashboard — mirrors lottery_finder_fires.macro.zero_dte_diff and macro.spx_spot_gamma_oi. Not selection signals. Populated forward by detect-silent-boom and backfill_silent_boom_from_parquet.py; existing rows UPDATEd in one-shot via helper script.',
+    statements: (sql) => [
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS zero_dte_diff NUMERIC`,
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS spx_spot_gamma_oi NUMERIC`,
+    ],
+  },
 ];

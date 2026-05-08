@@ -272,21 +272,21 @@ def silent_boom_tier(score: int) -> str:
     return 'tier3'
 
 
-def fetch_market_tide_for_day(conn, date_str: str) -> pd.DataFrame:
-    """Pull every market_tide tick for the trading day plus a 30-min
-    pre-buffer (so we can find the latest tick at or before the
-    earliest bucket of the day). Returned sorted ascending."""
+def _fetch_flow_diff_for_day(conn, date_str: str, source: str) -> pd.DataFrame:
+    """Pull every flow_data tick for one source on the trading day plus
+    a 30-min pre-buffer. Returns columns [timestamp, diff] sorted
+    ascending."""
     cur = conn.cursor()
     cur.execute(
         """
         SELECT timestamp, ncp, npp
         FROM flow_data
-        WHERE source = 'market_tide'
+        WHERE source = %s
           AND timestamp >= (%s::date - INTERVAL '30 minutes')::timestamptz
           AND timestamp < (%s::date + INTERVAL '1 day')::timestamptz
         ORDER BY timestamp ASC
         """,
-        (date_str, date_str),
+        (source, date_str, date_str),
     )
     rows = cur.fetchall()
     if not rows:
@@ -295,6 +295,43 @@ def fetch_market_tide_for_day(conn, date_str: str) -> pd.DataFrame:
     df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
     df['diff'] = df['ncp'].astype(float) - df['npp'].astype(float)
     return df[['timestamp', 'diff']]
+
+
+def fetch_market_tide_for_day(conn, date_str: str) -> pd.DataFrame:
+    """Pull every market_tide tick for the trading day plus a 30-min
+    pre-buffer. Returned sorted ascending."""
+    return _fetch_flow_diff_for_day(conn, date_str, 'market_tide')
+
+
+def fetch_zero_dte_flow_for_day(conn, date_str: str) -> pd.DataFrame:
+    """Pull every zero_dte_greek_flow tick for the trading day plus
+    a 30-min pre-buffer. Same shape as fetch_market_tide_for_day."""
+    return _fetch_flow_diff_for_day(conn, date_str, 'zero_dte_greek_flow')
+
+
+def fetch_spx_gamma_for_day(conn, date_str: str) -> pd.DataFrame:
+    """Pull every SPX spot_exposures tick for the trading day plus a
+    30-min pre-buffer. Returns columns [timestamp, gamma_oi] sorted
+    ascending."""
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT timestamp, gamma_oi
+        FROM spot_exposures
+        WHERE ticker = 'SPX'
+          AND timestamp >= (%s::date - INTERVAL '30 minutes')::timestamptz
+          AND timestamp < (%s::date + INTERVAL '1 day')::timestamptz
+        ORDER BY timestamp ASC
+        """,
+        (date_str, date_str),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return pd.DataFrame(columns=['timestamp', 'gamma_oi'])
+    df = pd.DataFrame(rows, columns=['timestamp', 'gamma_oi'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
+    df['gamma_oi'] = df['gamma_oi'].astype(float)
+    return df
 
 
 def insert_fires(conn, rows: list[tuple]) -> int:
@@ -309,7 +346,8 @@ def insert_fires(conn, rows: list[tuple]) -> int:
           option_type, strike, expiry, dte,
           spike_volume, baseline_volume, spike_ratio,
           ask_pct, vol_oi, entry_price, open_interest,
-          score, score_tier, mkt_tide_diff
+          score, score_tier,
+          mkt_tide_diff, zero_dte_diff, spx_spot_gamma_oi
         )
         VALUES %s
         ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING
@@ -319,7 +357,8 @@ def insert_fires(conn, rows: list[tuple]) -> int:
         template=(
             '(%s::date, %s::timestamptz, %s, %s, %s, %s::numeric, '
             '%s::date, %s, %s, %s::numeric, %s::numeric, %s::numeric, '
-            '%s::numeric, %s::numeric, %s, %s::smallint, %s, %s)'
+            '%s::numeric, %s::numeric, %s, %s::smallint, %s, '
+            '%s, %s, %s)'
         ),
         page_size=500,
         fetch=True,
@@ -359,26 +398,44 @@ def main() -> None:
         if bucketed.empty:
             print(f'  [{date_str}] empty parquet — skipping')
             continue
-        # Pull market_tide ticks for the day once. Each fire's
-        # mkt_tide_diff is the latest tick at or before bucket_ct,
-        # capped to a 30-min staleness window — same semantics as the
-        # cron's tideDiffAt() and the lottery cron's macro snapshot.
+        # Pull macro snapshots for the day once. Each fire's
+        # mkt_tide_diff / zero_dte_diff / spx_spot_gamma_oi is the
+        # latest tick at or before bucket_ct, capped to a 30-min
+        # staleness window — same semantics as the cron's lookupAt()
+        # and the lottery cron's macro snapshot.
         tide_df = fetch_market_tide_for_day(conn, date_str)
+        zero_dte_df = fetch_zero_dte_flow_for_day(conn, date_str)
+        spx_gamma_df = fetch_spx_gamma_for_day(conn, date_str)
         if not tide_df.empty:
             tide_df = tide_df.sort_values('timestamp').reset_index(drop=True)
+        if not zero_dte_df.empty:
+            zero_dte_df = zero_dte_df.sort_values('timestamp').reset_index(drop=True)
+        if not spx_gamma_df.empty:
+            spx_gamma_df = spx_gamma_df.sort_values('timestamp').reset_index(drop=True)
 
-        def lookup_tide_diff(bucket_ts: pd.Timestamp) -> float | None:
-            if tide_df.empty:
+        def _lookup_latest(
+            df: pd.DataFrame, col: str, bucket_ts: pd.Timestamp
+        ) -> float | None:
+            """Latest df[col] whose timestamp ≤ bucket_ts within 30 min."""
+            if df.empty:
                 return None
-            # Latest tick whose timestamp <= bucket_ts.
-            mask = tide_df['timestamp'] <= bucket_ts
+            mask = df['timestamp'] <= bucket_ts
             if not mask.any():
                 return None
-            tick_idx = mask.idxmax() if False else mask[mask].index[-1]
-            tick_ts = tide_df.loc[tick_idx, 'timestamp']
+            tick_idx = mask[mask].index[-1]
+            tick_ts = df.loc[tick_idx, 'timestamp']
             if (bucket_ts - tick_ts).total_seconds() > 30 * 60:
                 return None
-            return float(tide_df.loc[tick_idx, 'diff'])
+            return float(df.loc[tick_idx, col])
+
+        def lookup_tide_diff(bucket_ts: pd.Timestamp) -> float | None:
+            return _lookup_latest(tide_df, 'diff', bucket_ts)
+
+        def lookup_zero_dte_diff(bucket_ts: pd.Timestamp) -> float | None:
+            return _lookup_latest(zero_dte_df, 'diff', bucket_ts)
+
+        def lookup_spx_gamma(bucket_ts: pd.Timestamp) -> float | None:
+            return _lookup_latest(spx_gamma_df, 'gamma_oi', bucket_ts)
 
         rows_to_insert: list[tuple] = []
         fires_today = 0
@@ -435,6 +492,8 @@ def main() -> None:
                 if bucket_ts.tz is None:
                     bucket_ts = bucket_ts.tz_localize('UTC')
                 tide_diff = lookup_tide_diff(bucket_ts)
+                zero_dte_diff = lookup_zero_dte_diff(bucket_ts)
+                spx_spot_gamma = lookup_spx_gamma(bucket_ts)
                 rows_to_insert.append((
                     date_str,
                     f['bucket'].isoformat(),
@@ -443,7 +502,8 @@ def main() -> None:
                     f['spike_volume'], f['baseline_volume'], f['spike_ratio'],
                     f['ask_pct'], f['vol_oi'], f['entry_price'],
                     f['open_interest'],
-                    score, tier, tide_diff,
+                    score, tier,
+                    tide_diff, zero_dte_diff, spx_spot_gamma,
                 ))
                 fires_today += 1
         inserted = insert_fires(conn, rows_to_insert)

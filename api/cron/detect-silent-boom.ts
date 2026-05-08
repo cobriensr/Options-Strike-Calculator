@@ -208,10 +208,10 @@ export default withCronInstrumentation(
       }
     }
 
-    // Pull market_tide ticks across the scan window once. Each fire's
-    // mkt_tide_diff is the latest market_tide tick at or before the
-    // bucket time within 30 min — same window lottery uses. Single
-    // round-trip vs. a per-fire LATERAL.
+    // Pull macro snapshots across the scan window once. Each fire's
+    // mkt_tide_diff / zero_dte_diff / spx_spot_gamma_oi is the latest
+    // tick at or before the bucket time within 30 min — same window
+    // lottery uses. Single round-trip per source vs. a per-fire LATERAL.
     const tideTicks = (await db`
       SELECT
         EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
@@ -223,17 +223,43 @@ export default withCronInstrumentation(
         )
       ORDER BY timestamp ASC
     `) as { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[];
-    /** Sorted ascending by ts_ms — binary-search for the latest tick
-     *  at or before a target ms; returns the tide diff (ncp - npp) or
-     *  null when no tick falls inside the 30-min window. */
-    const tideDiffAt = (targetMs: number): number | null => {
-      if (tideTicks.length === 0) return null;
+    const zeroDteTicks = (await db`
+      SELECT
+        EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
+        ncp, npp
+      FROM flow_data
+      WHERE source = 'zero_dte_greek_flow'
+        AND timestamp >= NOW() - (
+          (${SCAN_WINDOW_MIN}::int + 30) * INTERVAL '1 minute'
+        )
+      ORDER BY timestamp ASC
+    `) as { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[];
+    const spxGammaTicks = (await db`
+      SELECT
+        EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
+        gamma_oi
+      FROM spot_exposures
+      WHERE ticker = 'SPX'
+        AND timestamp >= NOW() - (
+          (${SCAN_WINDOW_MIN}::int + 30) * INTERVAL '1 minute'
+        )
+      ORDER BY timestamp ASC
+    `) as { ts_ms: DbNumeric; gamma_oi: DbNumeric }[];
+
+    /** Generic "latest tick at or before targetMs within 30min" lookup.
+     *  Sorted ascending; binary-search for the rightmost element with
+     *  ts_ms ≤ targetMs. Returns null when no tick falls in the window. */
+    const lookupAt = <T extends { ts_ms: DbNumeric }>(
+      ticks: T[],
+      targetMs: number,
+    ): T | null => {
+      if (ticks.length === 0) return null;
       let lo = 0;
-      let hi = tideTicks.length - 1;
+      let hi = ticks.length - 1;
       let found = -1;
       while (lo <= hi) {
         const mid = (lo + hi) >> 1;
-        const ms = Number(tideTicks[mid]!.ts_ms);
+        const ms = Number(ticks[mid]!.ts_ms);
         if (ms <= targetMs) {
           found = mid;
           lo = mid + 1;
@@ -242,10 +268,22 @@ export default withCronInstrumentation(
         }
       }
       if (found < 0) return null;
-      const tick = tideTicks[found]!;
+      const tick = ticks[found]!;
       const tickMs = Number(tick.ts_ms);
       if (targetMs - tickMs > 30 * 60 * 1000) return null;
-      return Number(tick.ncp) - Number(tick.npp);
+      return tick;
+    };
+    const tideDiffAt = (targetMs: number): number | null => {
+      const tick = lookupAt(tideTicks, targetMs);
+      return tick == null ? null : Number(tick.ncp) - Number(tick.npp);
+    };
+    const zeroDteDiffAt = (targetMs: number): number | null => {
+      const tick = lookupAt(zeroDteTicks, targetMs);
+      return tick == null ? null : Number(tick.ncp) - Number(tick.npp);
+    };
+    const spxGammaAt = (targetMs: number): number | null => {
+      const tick = lookupAt(spxGammaTicks, targetMs);
+      return tick == null ? null : Number(tick.gamma_oi);
     };
 
     let totalFires = 0;
@@ -301,7 +339,10 @@ export default withCronInstrumentation(
         });
         const tier = silentBoomScoreTier(score);
 
-        const mktTideDiff = tideDiffAt(f.bucketTs.getTime());
+        const targetMs = f.bucketTs.getTime();
+        const mktTideDiff = tideDiffAt(targetMs);
+        const zeroDteDiff = zeroDteDiffAt(targetMs);
+        const spxSpotGammaOi = spxGammaAt(targetMs);
 
         const result = (await db`
           INSERT INTO silent_boom_alerts (
@@ -309,14 +350,16 @@ export default withCronInstrumentation(
             option_type, strike, expiry, dte,
             spike_volume, baseline_volume, spike_ratio,
             ask_pct, vol_oi, entry_price, open_interest,
-            score, score_tier, mkt_tide_diff
+            score, score_tier,
+            mkt_tide_diff, zero_dte_diff, spx_spot_gamma_oi
           ) VALUES (
             ${ctx.today}::date, ${f.bucketTs.toISOString()},
             ${g.optionChain}, ${g.ticker},
             ${g.optionType}, ${g.strike}, ${g.expiry}::date, ${dte},
             ${f.spikeVolume}, ${f.baselineVolume}, ${f.spikeRatio},
             ${f.askPct}, ${f.volOi}, ${f.entryPrice}, ${f.openInterest},
-            ${score}, ${tier}, ${mktTideDiff}
+            ${score}, ${tier},
+            ${mktTideDiff}, ${zeroDteDiff}, ${spxSpotGammaOi}
           )
           ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING
           RETURNING id

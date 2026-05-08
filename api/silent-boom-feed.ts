@@ -56,6 +56,8 @@ interface AlertRow {
   score: number | null;
   score_tier: 'tier1' | 'tier2' | 'tier3' | null;
   mkt_tide_diff: DbNullableNumeric;
+  zero_dte_diff: DbNullableNumeric;
+  spx_spot_gamma_oi: DbNullableNumeric;
   inserted_at: DbTimestamp;
 }
 
@@ -82,6 +84,10 @@ interface SilentBoomAlertResponse {
   scoreTier: 'tier1' | 'tier2' | 'tier3' | null;
   /** Market Tide NCP - NPP at the spike-bucket time (display-only). */
   mktTideDiff: number | null;
+  /** zero_dte_greek_flow NCP - NPP at the spike-bucket time. */
+  zeroDteDiff: number | null;
+  /** SPX dealer gamma_oi at the spike-bucket time (sign indicator). */
+  spxSpotGammaOi: number | null;
   outcomes: {
     peakCeilingPct: number | null;
     minutesToPeak: number | null;
@@ -363,6 +369,8 @@ export default async function handler(
       score: r.score,
       scoreTier: r.score_tier,
       mktTideDiff: toNumOrNull(r.mkt_tide_diff),
+      zeroDteDiff: toNumOrNull(r.zero_dte_diff),
+      spxSpotGammaOi: toNumOrNull(r.spx_spot_gamma_oi),
       outcomes: {
         peakCeilingPct: toNumOrNull(r.peak_ceiling_pct),
         minutesToPeak: toNumOrNull(r.minutes_to_peak),

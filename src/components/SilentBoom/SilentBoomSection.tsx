@@ -3,6 +3,7 @@ import { SectionBox } from '../ui/SectionBox.js';
 import { useSilentBoomFeed } from '../../hooks/useSilentBoomFeed.js';
 import { ctSessionBounds } from '../LotteryFinder/ct-window.js';
 import { SilentBoomDayBanner } from './SilentBoomDayBanner.js';
+import { SilentBoomRegimeBanner } from './SilentBoomRegimeBanner.js';
 import { SilentBoomRow } from './SilentBoomRow.js';
 import type {
   OptionType,
@@ -526,6 +527,10 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
             methodology
           </a>
         </p>
+
+        {/* Regime banner — Market Tide / 0DTE Flow / SPX Gamma at the
+            latest alert's bucket time. Display-only macro context. */}
+        <SilentBoomRegimeBanner alerts={alerts} />
 
         {/* Day banner — tier counts + dominant ticker + loudest spike */}
         <SilentBoomDayBanner alerts={alerts} total={total} />

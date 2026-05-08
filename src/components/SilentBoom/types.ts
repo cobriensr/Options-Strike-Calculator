@@ -56,6 +56,10 @@ export interface SilentBoomAlert {
   /** Market Tide NCP - NPP at the spike-bucket time. Display-only
    *  context — not a selection signal (lottery_finder convention). */
   mktTideDiff: number | null;
+  /** zero_dte_greek_flow NCP - NPP at the spike-bucket time. */
+  zeroDteDiff: number | null;
+  /** SPX spot_exposures gamma_oi sign at the spike-bucket time. */
+  spxSpotGammaOi: number | null;
   outcomes: SilentBoomOutcomes;
   insertedAt: string;
 }

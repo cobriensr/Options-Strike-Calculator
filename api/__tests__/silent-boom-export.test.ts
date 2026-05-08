@@ -41,6 +41,9 @@ interface ExportRow {
   open_interest: number;
   score: number;
   score_tier: 'tier1' | 'tier2' | 'tier3';
+  mkt_tide_diff?: string | null;
+  zero_dte_diff?: string | null;
+  spx_spot_gamma_oi?: string | null;
 }
 
 function makeRow(overrides: Partial<ExportRow> = {}): ExportRow {

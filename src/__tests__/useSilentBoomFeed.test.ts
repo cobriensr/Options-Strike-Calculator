@@ -182,6 +182,8 @@ describe('useSilentBoomFeed', () => {
               score: 24,
               scoreTier: 'tier1',
               mktTideDiff: 5000,
+              zeroDteDiff: 300,
+              spxSpotGammaOi: 12345,
               outcomes: {
                 peakCeilingPct: 25,
                 minutesToPeak: 18,

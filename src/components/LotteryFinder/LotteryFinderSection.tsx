@@ -3,6 +3,7 @@ import { SectionBox } from '../ui/SectionBox.js';
 import { useLotteryFinder } from '../../hooks/useLotteryFinder.js';
 import { ctSessionBounds } from './ct-window.js';
 import { LotteryDayBanner } from './LotteryDayBanner.js';
+import { LotteryTierBanner } from './LotteryTierBanner.js';
 import { LotteryRow } from './LotteryRow.js';
 import {
   EXIT_POLICY_LABELS,
@@ -405,6 +406,10 @@ export function LotteryFinderSection({
 
         {/* Day-level macro banner — at-a-glance regime context */}
         <LotteryDayBanner fires={fires} />
+
+        {/* Day-level tier breakdown — counts + dominant ticker + top
+            score on the current page. Mirrors SilentBoomDayBanner. */}
+        <LotteryTierBanner fires={fires} total={total} />
 
         {/* Filter toolbar — single contained panel for date/scrub,
             sort/conviction, type/TOD, mode tags, ticker, and exit

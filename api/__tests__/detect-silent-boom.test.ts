@@ -138,6 +138,8 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce(fireableSilentBoomStream())
       .mockResolvedValueOnce([]) // prior fires
       .mockResolvedValueOnce([]) // tide ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]) // spx_gamma ticks
       .mockResolvedValueOnce([{ id: 42 }]); // insert
 
     const req = mockRequest({
@@ -164,6 +166,8 @@ describe('detect-silent-boom handler', () => {
     const shortStream = fireableSilentBoomStream().slice(0, 3);
     mockSql.mockResolvedValueOnce(shortStream);
     mockSql.mockResolvedValueOnce([]); // tide ticks (always queried)
+    mockSql.mockResolvedValueOnce([]); // zero_dte ticks
+    mockSql.mockResolvedValueOnce([]); // spx_gamma ticks
 
     const req = mockRequest({
       method: 'GET',
@@ -179,9 +183,10 @@ describe('detect-silent-boom handler', () => {
       totalFires: 0,
       inserted: 0,
     });
-    // ticks SELECT + tide ticks SELECT (no eligible chains so the
-    // prior-fires query is skipped, but tide ticks always queries).
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    // ticks SELECT + tide / zero_dte / spx_gamma SELECTs (always
+    // queried). No eligible chains so the prior-fires query is
+    // skipped; no fires so no INSERT.
+    expect(mockSql).toHaveBeenCalledTimes(4);
   });
 
   it('skips chains whose max OI is below the minOi floor', async () => {
@@ -194,7 +199,9 @@ describe('detect-silent-boom handler', () => {
     mockSql
       .mockResolvedValueOnce(lowOiStream) // ticks
       .mockResolvedValueOnce([]) // prior fires (chain passed bucket-count gate)
-      .mockResolvedValueOnce([]); // tide ticks
+      .mockResolvedValueOnce([]) // tide ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]); // spx_gamma ticks
 
     const req = mockRequest({
       method: 'GET',
@@ -217,6 +224,8 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce(fireableSilentBoomStream())
       .mockResolvedValueOnce([]) // prior fires
       .mockResolvedValueOnce([]) // tide ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]) // spx_gamma ticks
       .mockResolvedValueOnce([]); // insert returns no rows = ON CONFLICT hit
 
     const req = mockRequest({
@@ -247,7 +256,9 @@ describe('detect-silent-boom handler', () => {
           last_ms: String(priorMs),
         },
       ]) // prior fire — cooldown active
-      .mockResolvedValueOnce([]); // tide ticks
+      .mockResolvedValueOnce([]) // tide ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]); // spx_gamma ticks
 
     const req = mockRequest({
       method: 'GET',
@@ -264,10 +275,10 @@ describe('detect-silent-boom handler', () => {
       inserted: 0,
       priorSeeds: 1,
     });
-    // Three SQL calls — ticks SELECT, prior-fires lookup, tide ticks
-    // SELECT. No insert because the cooldown gate suppressed the fire
-    // entirely.
-    expect(mockSql).toHaveBeenCalledTimes(3);
+    // Five SQL calls — ticks SELECT, prior-fires lookup, three macro
+    // snapshot SELECTs (tide / zero_dte / spx_gamma). No insert
+    // because the cooldown gate suppressed the fire entirely.
+    expect(mockSql).toHaveBeenCalledTimes(5);
   });
 
   it('binds the latest market_tide tick (NCP - NPP) to the INSERT', async () => {
@@ -281,6 +292,10 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([
         { ts_ms: String(tickMs), ncp: '8000', npp: '2000' },
       ]) // tide ticks
+      .mockResolvedValueOnce([
+        { ts_ms: String(tickMs), ncp: '500', npp: '200' },
+      ]) // zero_dte ticks → diff +300
+      .mockResolvedValueOnce([{ ts_ms: String(tickMs), gamma_oi: '12345' }]) // spx_gamma ticks
       .mockResolvedValueOnce([{ id: 1 }]); // insert
 
     const req = mockRequest({
@@ -291,11 +306,16 @@ describe('detect-silent-boom handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(mockSql).toHaveBeenCalledTimes(4);
-    // The INSERT is the last call. Tide diff is the last bound value.
+    expect(mockSql).toHaveBeenCalledTimes(6);
+    // INSERT is the last call. Bound order ends with mkt_tide_diff,
+    // zero_dte_diff, spx_spot_gamma_oi.
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    const tideDiff = insertCall.at(-1);
+    const spxGamma = insertCall.at(-1);
+    const zeroDteDiff = insertCall.at(-2);
+    const tideDiff = insertCall.at(-3);
     expect(tideDiff).toBe(6000);
+    expect(zeroDteDiff).toBe(300);
+    expect(spxGamma).toBe(12345);
   });
 
   it('binds null tide diff when the latest tick is older than 30 minutes', async () => {
@@ -307,7 +327,13 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([
         { ts_ms: String(staleTickMs), ncp: '8000', npp: '2000' },
-      ])
+      ]) // tide tick — stale
+      .mockResolvedValueOnce([
+        { ts_ms: String(staleTickMs), ncp: '500', npp: '200' },
+      ]) // zero_dte tick — also stale
+      .mockResolvedValueOnce([
+        { ts_ms: String(staleTickMs), gamma_oi: '12345' },
+      ]) // spx_gamma tick — also stale
       .mockResolvedValueOnce([{ id: 2 }]);
 
     const req = mockRequest({
@@ -318,7 +344,11 @@ describe('detect-silent-boom handler', () => {
     await handler(req, res);
 
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
+    // All three macro fields are bound at the end; all three should
+    // be null because every tick was stale.
     expect(insertCall.at(-1)).toBeNull();
+    expect(insertCall.at(-2)).toBeNull();
+    expect(insertCall.at(-3)).toBeNull();
   });
 
   it('still fires when prior-fire is older than the 60-min cooldown', async () => {
@@ -334,6 +364,8 @@ describe('detect-silent-boom handler', () => {
         },
       ])
       .mockResolvedValueOnce([]) // tide ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]) // spx_gamma ticks
       .mockResolvedValueOnce([{ id: 99 }]); // insert
 
     const req = mockRequest({
