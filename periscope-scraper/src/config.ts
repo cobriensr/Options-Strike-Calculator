@@ -16,19 +16,19 @@ function requireEnv(name: string): string {
 
 export const DATABASE_URL = requireEnv('DATABASE_URL');
 export const SENTRY_DSN = requireEnv('SENTRY_DSN');
-// Required at boot even though scrape.ts is currently a stub — fail-fast
-// catches misconfigured deploys before the first tick rather than after.
-// Once Phase 0 lands real selectors, scrape.ts will use this cookie to
-// authenticate Playwright against UW Periscope.
-export const UW_SESSION_COOKIE = requireEnv('UW_SESSION_COOKIE');
 
-// Placeholder default — replaced by env after Phase 0 probe confirms the
-// live URL (page path may include query params for expiry / symbol / panel
-// selection). Production deploys MUST set UW_PERISCOPE_URL explicitly; the
-// default here only exists so misconfigured environments fail loudly with
-// a navigation error instead of crashing on a missing env var.
+// Auth is via Playwright storageState, not a raw cookie. The path
+// defaults to a Railway-volume location; locally, point it at the file
+// scripts/periscope-probe.mjs --login wrote to your home directory.
+export const UW_AUTH_STATE_PATH =
+  process.env.UW_AUTH_STATE_PATH ?? '/data/uw-auth-state.json';
+
+// Defaults to the Market Maker Exposures Table view confirmed in the
+// Phase 0 probe. Production deploys can override via env if UW renames
+// the route.
 export const UW_PERISCOPE_URL =
-  process.env.UW_PERISCOPE_URL ?? 'https://unusualwhales.com/periscope';
+  process.env.UW_PERISCOPE_URL ??
+  'https://unusualwhales.com/periscope/market-exposures-table';
 
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? 'info';
 

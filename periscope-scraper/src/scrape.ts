@@ -27,7 +27,11 @@
 
 import { chromium, type Browser, type Page } from 'playwright';
 import pino from 'pino';
-import { LOG_LEVEL, UW_PERISCOPE_URL } from './config.js';
+import {
+  LOG_LEVEL,
+  UW_AUTH_STATE_PATH,
+  UW_PERISCOPE_URL,
+} from './config.js';
 import { parsePage } from './parser.js';
 import type { Panel, SnapshotRow } from './types.js';
 
@@ -39,10 +43,6 @@ const GREEKS_TO_CAPTURE: ReadonlyArray<{ panel: Panel; label: string }> = [
   { panel: 'charm', label: 'Charm' },
   { panel: 'vanna', label: 'Vanna' },
 ];
-
-/** Where the Playwright storageState JSON lives. */
-const AUTH_STATE_PATH =
-  process.env.UW_AUTH_STATE_PATH ?? '/data/uw-auth-state.json';
 
 /**
  * Click the Greek dropdown trigger and pick the named option.
@@ -103,7 +103,7 @@ async function withBrowser<T>(
   const browser = await chromium.launch({ headless: true });
   try {
     const context = await browser.newContext({
-      storageState: AUTH_STATE_PATH,
+      storageState: UW_AUTH_STATE_PATH,
       viewport: { width: 1920, height: 1200 },
     });
     const page = await context.newPage();
