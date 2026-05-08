@@ -165,24 +165,34 @@ async function selectGreek(page: Page, label: string): Promise<void> {
     return;
   }
 
-  await trigger.click({ timeout: 5_000 });
-
-  // Explicit popover-open wait. Radix takes longer to re-mount on
-  // repeat opens (after the previous close animation) than a fixed
-  // 500ms allowed for. Wait for the wrapper itself to be visible
-  // first, THEN search for the option — that way a slow popover
-  // doesn't manifest as a "Vanna not in DOM" timeout further down.
-  try {
-    await page
-      .locator('[data-radix-popper-content-wrapper]')
-      .last()
-      .waitFor({ state: 'visible', timeout: 5_000 });
-  } catch {
-    // Popover never opened. Trigger click might have been intercepted
-    // by an in-flight close animation from the prior selection.
-    logger.warn({ label }, 'selectGreek: popover did not open after trigger click');
+  // Open the popover. Radix's close animation from a prior option
+  // click can swallow the next trigger click if we re-click too fast
+  // — the click registers but Radix's "click outside" handler treats
+  // it as a no-op against the just-finished popover. Settle first,
+  // use force:true to bypass actionability flicker, and retry once
+  // if the popover doesn't appear.
+  let popoverOpen = false;
+  for (let attempt = 0; attempt < 2 && !popoverOpen; attempt += 1) {
+    await page.waitForTimeout(attempt === 0 ? 800 : 1_500);
+    await trigger.click({ timeout: 5_000, force: true });
+    try {
+      await page
+        .locator('[data-radix-popper-content-wrapper]')
+        .last()
+        .waitFor({ state: 'visible', timeout: 3_500 });
+      popoverOpen = true;
+    } catch {
+      logger.warn(
+        { label, attempt: attempt + 1 },
+        'selectGreek: popover did not open after trigger click — retrying',
+      );
+    }
+  }
+  if (!popoverOpen) {
     await page.keyboard.press('Escape').catch(() => undefined);
-    throw new Error(`selectGreek: popover did not open for "${label}"`);
+    throw new Error(
+      `selectGreek: popover did not open for "${label}" after 2 attempts`,
+    );
   }
 
   const option = page.getByText(label, { exact: true }).last();
