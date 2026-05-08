@@ -611,7 +611,6 @@ export default function StrikeCalculator() {
             { id: 'sec-darkpool', label: 'Dark Pool Levels' },
             { id: 'sec-gex-target', label: 'GEX Target' },
             { id: 'sec-gex-landscape', label: 'GEX Landscape' },
-            { id: 'sec-periscope-exposure', label: 'Periscope MM Exposure' },
             { id: 'sec-zero-gamma', label: 'Zero Gamma' },
             { id: 'sec-vega-spikes', label: 'Dir Vega Spikes' },
             { id: 'sec-greek-flow', label: 'Greek Flow' },
@@ -630,6 +629,14 @@ export default function StrikeCalculator() {
       { id: 'sec-history', label: 'Analysis History' },
       ...(isAuthenticated
         ? [{ id: 'sec-ml-insights', label: 'ML Insights' }]
+        : []),
+      ...(hasMarketOrSnapshot
+        ? [
+            {
+              id: 'sec-periscope-exposure',
+              label: 'Periscope MM Exposure',
+            },
+          ]
         : []),
       ...(isAuthenticated
         ? [{ id: 'sec-periscope-chat', label: 'Periscope Chat' }]
@@ -935,22 +942,6 @@ export default function StrikeCalculator() {
 
                 <GatedSection
                   gate={hasMarketContext}
-                  id="sec-periscope-exposure"
-                  label="Periscope MM Exposure"
-                  fallback={<SkeletonSection lines={6} tall />}
-                >
-                  <PeriscopePanel
-                    view={periscope.view}
-                    emptyReason={periscope.emptyReason}
-                    asOf={periscope.asOf}
-                    isLoading={periscope.isLoading}
-                    error={periscope.error}
-                    onRefresh={periscope.refresh}
-                  />
-                </GatedSection>
-
-                <GatedSection
-                  gate={hasMarketContext}
                   id="sec-zero-gamma"
                   label="Zero Gamma"
                   fallback={<SkeletonSection lines={4} />}
@@ -1072,6 +1063,22 @@ export default function StrikeCalculator() {
                     </ErrorBoundary>
                   </>
                 )}
+
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-periscope-exposure"
+                  label="Periscope MM Exposure"
+                  fallback={<SkeletonSection lines={6} tall />}
+                >
+                  <PeriscopePanel
+                    view={periscope.view}
+                    emptyReason={periscope.emptyReason}
+                    asOf={periscope.asOf}
+                    isLoading={periscope.isLoading}
+                    error={periscope.error}
+                    onRefresh={periscope.refresh}
+                  />
+                </GatedSection>
 
                 {isAuthenticated && (
                   <>
