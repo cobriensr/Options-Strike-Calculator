@@ -5,8 +5,9 @@
  * Returns the full prose, structured fields, image URLs (Vercel Blob),
  * Anthropic call metadata, and parent/child linkage.
  *
- * Authorization: owner-only. Same posture as the rest of the
- * periscope-chat-* family.
+ * Authorization: owner OR guest. Read-only data; the user opted to
+ * share past playbooks with guest-key holders. Only the Claude POST
+ * endpoint (`/api/periscope-chat`) stays owner-gated.
  *
  * Rate limit: 120/min — clicking through past entries can fire several
  * requests in a few seconds; the frontend caches client-side so the
@@ -15,7 +16,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
-  guardOwnerEndpoint,
+  guardOwnerOrGuestEndpoint,
   rejectIfRateLimited,
   respondIfInvalid,
   setCacheHeaders,
@@ -189,7 +190,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'GET only' });
   }
 
-  if (await guardOwnerEndpoint(req, res, done)) return;
+  if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
   const rateLimited = await rejectIfRateLimited(
     req,

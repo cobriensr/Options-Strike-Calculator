@@ -13,8 +13,10 @@
  * periscope-chat-list / periscope-chat-update — the read is cacheable
  * at the edge, the write isn't.
  *
- * Authorization: owner-only via `guardOwnerEndpoint`. Lesson curation
- * is a personal workflow; guests don't see it.
+ * Authorization: owner OR guest. The user opted to share read access
+ * to the curated lesson library with guest-key holders.
+ * `/api/periscope-lessons-update` (the mutation that promotes /
+ * archives lessons) stays owner-only.
  *
  * Rate limit: 60/min — interactive review can fire bursts as the user
  * scrolls and toggles tabs.
@@ -34,7 +36,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
-  guardOwnerEndpoint,
+  guardOwnerOrGuestEndpoint,
   rejectIfRateLimited,
   setCacheHeaders,
 } from './_lib/api-helpers.js';
@@ -92,7 +94,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'GET only' });
   }
 
-  if (await guardOwnerEndpoint(req, res, done)) return;
+  if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
   const rateLimited = await rejectIfRateLimited(
     req,

@@ -15,9 +15,10 @@
  *   ?before=N       — return rows with id < this BIGSERIAL value
  *                     (cursor-style pagination from the most recent).
  *
- * Authorization: owner-only (`guardOwnerEndpoint`). The chat data is
- * Anthropic-API-backed and personal — guests don't see it. Mirrors
- * `/api/periscope-chat`'s auth posture.
+ * Authorization: owner OR guest (`guardOwnerOrGuestEndpoint`). The
+ * chat data is Anthropic-API-backed but the user has chosen to share
+ * read-only access with guest-key holders. Only `/api/periscope-chat`
+ * (the POST that calls Claude and incurs API cost) stays owner-only.
  *
  * Rate limit: 60/min — ample for browsing the history list and
  * occasional refreshes.
@@ -25,7 +26,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
-  guardOwnerEndpoint,
+  guardOwnerOrGuestEndpoint,
   rejectIfRateLimited,
   respondIfInvalid,
   setCacheHeaders,
@@ -117,7 +118,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'GET only' });
   }
 
-  if (await guardOwnerEndpoint(req, res, done)) return;
+  if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
   const rateLimited = await rejectIfRateLimited(
     req,

@@ -12,8 +12,9 @@
  * sparse object), so the lookup is `find by kind` instead of
  * `index by chart`.
  *
- * Authorization: owner-only. Same posture as the rest of the
- * periscope-chat-* family.
+ * Authorization: owner OR guest. Same posture as the rest of the
+ * periscope-chat-* read endpoints — only the Claude POST stays
+ * owner-gated.
  *
  * Rate limit: 240/min — three images per row times rapid history
  * browsing adds up. Strong browser caching (private, immutable, 1d)
@@ -22,7 +23,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
-  guardOwnerEndpoint,
+  guardOwnerOrGuestEndpoint,
   rejectIfRateLimited,
   respondIfInvalid,
 } from './_lib/api-helpers.js';
@@ -56,7 +57,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'GET only' });
   }
 
-  if (await guardOwnerEndpoint(req, res, done)) return;
+  if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
   const rateLimited = await rejectIfRateLimited(
     req,
