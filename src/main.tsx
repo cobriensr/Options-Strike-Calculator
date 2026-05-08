@@ -107,6 +107,7 @@ if (import.meta.env.PROD)
       { path: '/api/futures/snapshot', method: 'GET' },
       { path: '/api/gex-target-history', method: 'GET' },
       { path: '/api/nope-intraday', method: 'GET' },
+      { path: '/api/periscope-exposure', method: 'GET' },
       { path: '/api/ml/trigger-analyze', method: 'POST' },
       { path: '/api/darkpool-levels', method: 'GET' },
       { path: '/api/alerts', method: 'GET' },

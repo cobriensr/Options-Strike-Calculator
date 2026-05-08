@@ -23,6 +23,7 @@ import { useChainData } from './hooks/useChainData';
 import { useAlertPolling } from './hooks/useAlertPolling';
 import { useDarkPoolLevels } from './hooks/useDarkPoolLevels';
 import { useGexTarget } from './hooks/useGexTarget';
+import { usePeriscopeExposure } from './hooks/usePeriscopeExposure';
 import { useAccessSession } from './hooks/useAccessSession';
 import AccessKeyButton from './components/AccessKey/AccessKeyButton';
 import { useAnalysisContext } from './hooks/useAnalysisContext';
@@ -44,6 +45,7 @@ import GatedSection from './components/GatedSection';
 import AppHeader from './components/AppHeader';
 import AlertBanner from './components/AlertBanner';
 import DarkPoolLevels from './components/DarkPoolLevels';
+import { PeriscopePanel } from './components/Periscope/PeriscopePanel';
 import VegaSpikeFeed from './components/VegaSpikeFeed/VegaSpikeFeed';
 import NotificationPermission from './components/NotificationPermission';
 import { CollapseAllContext } from './components/collapse-context';
@@ -268,6 +270,10 @@ export default function StrikeCalculator() {
   const alertState = useAlertPolling(market.data.quotes?.marketOpen ?? false);
 
   const darkPool = useDarkPoolLevels(market.data.quotes?.marketOpen ?? false);
+  const periscope = usePeriscopeExposure({
+    marketOpen: market.data.quotes?.marketOpen ?? false,
+    spotHint: market.data.quotes?.spx?.price ?? null,
+  });
   // GEX Landscape owns its own ticker / date / scrub state internally
   // (Phase 3c of gex-landscape-ws-upgrade-2026-05-03.md) and pulls per-strike
   // data via `useGexLandscapeData` → `/api/gex-strike-expiry`, so App.tsx no
@@ -605,6 +611,7 @@ export default function StrikeCalculator() {
             { id: 'sec-darkpool', label: 'Dark Pool Levels' },
             { id: 'sec-gex-target', label: 'GEX Target' },
             { id: 'sec-gex-landscape', label: 'GEX Landscape' },
+            { id: 'sec-periscope-exposure', label: 'Periscope MM Exposure' },
             { id: 'sec-zero-gamma', label: 'Zero Gamma' },
             { id: 'sec-vega-spikes', label: 'Dir Vega Spikes' },
             { id: 'sec-greek-flow', label: 'Greek Flow' },
@@ -923,6 +930,22 @@ export default function StrikeCalculator() {
                   <GexLandscape
                     marketOpen={market.data.quotes?.marketOpen ?? false}
                     onBiasChange={setGexBiasContext}
+                  />
+                </GatedSection>
+
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-periscope-exposure"
+                  label="Periscope MM Exposure"
+                  fallback={<SkeletonSection lines={6} tall />}
+                >
+                  <PeriscopePanel
+                    view={periscope.view}
+                    emptyReason={periscope.emptyReason}
+                    asOf={periscope.asOf}
+                    isLoading={periscope.isLoading}
+                    error={periscope.error}
+                    onRefresh={periscope.refresh}
                   />
                 </GatedSection>
 

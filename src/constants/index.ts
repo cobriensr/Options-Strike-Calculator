@@ -358,6 +358,10 @@ export const POLL_INTERVALS = {
   ANOMALY_CROSS_ASSET: 30_000,
   /** Vega spike feed refresh (useVegaSpikes) — matches monitor-vega-spike cron cadence. */
   VEGA_SPIKES: 60_000,
+  /** Periscope MM exposure refresh (usePeriscopeExposure) — UW publishes
+   *  10-min slots, but we poll at 60s so a fresh slot lands in the UI
+   *  within ≤1 min of the scraper inserting it. */
+  PERISCOPE: 60_000,
 } as const;
 
 /** Progress messages shown during chart analysis */

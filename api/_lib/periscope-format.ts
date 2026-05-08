@@ -219,6 +219,165 @@ function fmtSigned(n: number): string {
   return `${n >= 0 ? '+' : ''}${n.toFixed(0)}`;
 }
 
+// ── Structured view shape — consumed by both the text formatter
+//    and the /api/periscope-exposure endpoint. Keeping a single
+//    computeView() so the frontend panel and Claude's prompt
+//    cannot drift out of sync.
+
+export interface RankedRow {
+  strike: number;
+  value: number;
+  /** Signed pts from spot (positive = strike above spot). */
+  ptsFromSpot: number;
+}
+
+export interface RankedRowSimple {
+  strike: number;
+  value: number;
+}
+
+export interface GammaTopology {
+  ceiling: RankedRow | null;
+  floor: RankedRow | null;
+  /** Top 3 negative-γ acceleration strikes within ±100 of spot. */
+  accelTop: RankedRow[];
+  /** Top 5 |γ| strikes within ±50 of spot. */
+  topByAbsNear: RankedRowSimple[];
+}
+
+export interface CharmFlow {
+  /** Sum of charm at strikes within ±50 of spot. */
+  tallyNear50: number;
+  /** Sum of charm at strikes within ±100 of spot. */
+  tallyWide100: number;
+  /** Top 4 |charm| strikes within ±100 of spot. */
+  topByAbs: RankedRowSimple[];
+  /** Strike where the cumulative charm sum crosses zero, or null. */
+  charmZeroStrike: number | null;
+}
+
+export interface VannaFlow {
+  /** Top 4 |vanna| strikes within ±100 of spot. */
+  topByAbs: RankedRowSimple[];
+}
+
+export interface GammaSignFlip {
+  strike: number;
+  from: number;
+  to: number;
+}
+
+export interface PeriscopeView {
+  capturedAt: string;
+  priorCapturedAt: string | null;
+  expiry: string;
+  spot: number;
+  gamma: GammaTopology;
+  charm: CharmFlow;
+  vanna: VannaFlow;
+  signFlips: GammaSignFlip[];
+  cone: ConeLevels | null;
+  breaches: ConeBreach[];
+}
+
+/**
+ * Pure view-model builder. Computes the structured periscope view
+ * (no formatting, no I/O) from already-fetched slot rows + cone data.
+ *
+ * Both `formatPeriscopeForClaude` (text) and the JSON API endpoint
+ * call this so the frontend panel and Claude's prompt can never
+ * disagree on which strike is the +γ ceiling.
+ */
+export function computePeriscopeView(args: {
+  latest: PeriscopeSlot;
+  prior: PeriscopeSlot | null;
+  spot: number;
+  cone: ConeLevels | null;
+  breaches: ConeBreach[];
+}): PeriscopeView {
+  const { latest, prior, spot, cone, breaches } = args;
+
+  const gammaNear = nearSpot(latest.gamma, spot, NEAR_SPOT_HALFWIDTH);
+  const gammaWide = nearSpot(latest.gamma, spot, WIDE_SPOT_HALFWIDTH);
+
+  const ceilingCandidate = gammaWide
+    .filter((r) => r.strike > spot && r.value > 0)
+    .sort((a, b) => b.value - a.value)[0];
+  const floorCandidate = gammaWide
+    .filter((r) => r.strike < spot && r.value > 0)
+    .sort((a, b) => b.value - a.value)[0];
+  const accelCandidates = gammaWide
+    .filter((r) => r.value < 0)
+    .sort((a, b) => a.value - b.value)
+    .slice(0, 3);
+
+  const withDelta = (r: PeriscopeRow): RankedRow => ({
+    strike: r.strike,
+    value: r.value,
+    ptsFromSpot: r.strike - spot,
+  });
+
+  const charmNear = nearSpot(latest.charm, spot, NEAR_SPOT_HALFWIDTH);
+  const charmWide = nearSpot(latest.charm, spot, WIDE_SPOT_HALFWIDTH);
+
+  // Charm-zero detection: first genuine sign change in cumulative sum
+  // walking strikes low → high.
+  const charmSorted = [...charmWide].sort((a, b) => a.strike - b.strike);
+  let runningSum = 0;
+  let charmZeroStrike: number | null = null;
+  for (const r of charmSorted) {
+    const prevSum = runningSum;
+    runningSum += r.value;
+    if (
+      prevSum !== 0 &&
+      runningSum !== 0 &&
+      Math.sign(prevSum) !== Math.sign(runningSum)
+    ) {
+      charmZeroStrike = r.strike;
+      break;
+    }
+  }
+
+  const vannaWide = nearSpot(latest.vanna, spot, WIDE_SPOT_HALFWIDTH);
+
+  const signFlips =
+    prior != null ? findGammaSignFlips(latest.gamma, prior.gamma) : [];
+
+  return {
+    capturedAt: latest.capturedAt,
+    priorCapturedAt: prior?.capturedAt ?? null,
+    expiry: latest.expiry,
+    spot,
+    gamma: {
+      ceiling: ceilingCandidate != null ? withDelta(ceilingCandidate) : null,
+      floor: floorCandidate != null ? withDelta(floorCandidate) : null,
+      accelTop: accelCandidates.map(withDelta),
+      topByAbsNear: topByAbs(gammaNear, 5).map((r) => ({
+        strike: r.strike,
+        value: r.value,
+      })),
+    },
+    charm: {
+      tallyNear50: tally(charmNear),
+      tallyWide100: tally(charmWide),
+      topByAbs: topByAbs(charmWide, 4).map((r) => ({
+        strike: r.strike,
+        value: r.value,
+      })),
+      charmZeroStrike,
+    },
+    vanna: {
+      topByAbs: topByAbs(vannaWide, 4).map((r) => ({
+        strike: r.strike,
+        value: r.value,
+      })),
+    },
+    signFlips,
+    cone,
+    breaches,
+  };
+}
+
 function topByAbs(rows: PeriscopeRow[], n: number): PeriscopeRow[] {
   return [...rows].sort((a, b) => Math.abs(b.value) - Math.abs(a.value)).slice(0, n);
 }
@@ -483,6 +642,26 @@ export async function buildPeriscopeContextBlock(args: {
   spot: number;
   asOf?: string;
 }): Promise<string | null> {
+  const view = await buildPeriscopeView(args);
+  if (view == null) return null;
+  // formatPeriscopeForClaude takes the same shape we already have on
+  // the view — pass through the original slot rows so the formatter's
+  // existing logic (and tests) stay byte-identical.
+  return formatPeriscopeForClaude(view._formatterArgs);
+}
+
+/**
+ * Fetch and compute the structured Periscope view for the given date.
+ * Returns null when no slot exists yet. Used by `/api/periscope-exposure`
+ * to feed the frontend panel and (via `buildPeriscopeContextBlock`) by
+ * the analyze endpoint to feed Claude's prompt.
+ */
+export async function buildPeriscopeView(args: {
+  date: string;
+  expiry: string;
+  spot: number;
+  asOf?: string;
+}): Promise<(PeriscopeView & { _formatterArgs: FormatterArgs }) | null> {
   const { date, expiry, spot, asOf } = args;
   const latest = await fetchLatestPeriscopeSlot(expiry, asOf);
   if (latest == null) return null;
@@ -491,5 +670,17 @@ export async function buildPeriscopeContextBlock(args: {
     fetchConeLevels(date),
     fetchConeBreaches(date, asOf),
   ]);
-  return formatPeriscopeForClaude({ latest, prior, spot, cone, breaches });
+  const view = computePeriscopeView({ latest, prior, spot, cone, breaches });
+  return {
+    ...view,
+    _formatterArgs: { latest, prior, spot, cone, breaches },
+  };
+}
+
+interface FormatterArgs {
+  latest: PeriscopeSlot;
+  prior: PeriscopeSlot | null;
+  spot: number;
+  cone: ConeLevels | null;
+  breaches: ConeBreach[];
 }
