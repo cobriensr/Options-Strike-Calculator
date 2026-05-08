@@ -60,7 +60,7 @@ const LOGIN_BASE = 'https://unusualwhales.com/login';
 const isLoginMode = process.argv.includes('--login');
 
 function ts() {
-  return new Date().toISOString().replace(/[:.]/g, '-');
+  return new Date().toISOString().replaceAll(/[:.]/g, '-');
 }
 
 async function loginFlow() {
@@ -95,8 +95,22 @@ async function loginFlow() {
   });
   const page = await context.newPage();
   await page.goto(LOGIN_BASE);
-  console.log('▸ A browser window has opened. Log in to UW manually.');
-  console.log("▸ When you're done, CLOSE the browser window to save state.");
+  console.log('');
+  console.log('────────────────────────────────────────────────────────────');
+  console.log('  A browser window opened. Steps:');
+  console.log('    1. Log in to Unusual Whales.');
+  console.log('    2. Navigate to:');
+  console.log('         https://unusualwhales.com/periscope/market-exposures-table');
+  console.log('    3. Configure the view: set Date, Timeframe, Expiry, Greek');
+  console.log('       to whatever should be the scraper default.');
+  console.log('    4. CLOSE the browser window when done.');
+  console.log('');
+  console.log('  Why step 3 matters: UW persists view filters in localStorage.');
+  console.log('  storageState only captures localStorage from origins you');
+  console.log('  actually visited in this session, so navigating to Periscope');
+  console.log('  + configuring is what makes the scraper inherit your view.');
+  console.log('────────────────────────────────────────────────────────────');
+  console.log('');
   await page.waitForEvent('close', { timeout: 15 * 60 * 1000 });
   const state = await context.storageState();
   await browser.close();
