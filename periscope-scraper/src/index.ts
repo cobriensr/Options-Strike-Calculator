@@ -9,9 +9,10 @@
  *   5. setInterval every MS_PER_TICK; each tick is a no-op outside RTH.
  *   6. SIGTERM handler clears the interval, flushes Sentry, exits 0.
  *
- * NOTE: scrapeAllPanels is currently a stub that throws. The first tick will
- * surface that error in Sentry + Railway logs but the loop continues so the
- * service stays up. Do NOT call scrapeAllPanels at module load time.
+ * One-shot test mode: set FORCE_TICK=true to bypass the RTH gate, run a
+ * single tick, and exit. Useful for verifying auth + selectors locally
+ * before the next market open without waiting for the schedule. The loop
+ * is NOT started in this mode.
  */
 
 import * as Sentry from '@sentry/node';
@@ -37,12 +38,12 @@ const logger = pino({ level: LOG_LEVEL });
 let intervalHandle: NodeJS.Timeout | null = null;
 let tickInFlight = false;
 
-async function runTick(): Promise<void> {
+async function runTick(opts: { bypassMarketHours?: boolean } = {}): Promise<void> {
   if (tickInFlight) {
     logger.warn('previous tick still running, skipping');
     return;
   }
-  if (!isMarketHours(new Date())) {
+  if (!opts.bypassMarketHours && !isMarketHours(new Date())) {
     logger.debug('outside RTH, skipping tick');
     return;
   }
@@ -87,8 +88,18 @@ process.on('SIGINT', () => {
 
 logger.info('periscope-scraper starting');
 
+const forceTick =
+  (process.env.FORCE_TICK ?? '').trim().toLowerCase() === 'true';
+
+if (forceTick) {
+  logger.info('FORCE_TICK=true — running one tick (RTH gate bypassed) then exiting');
+  await runTick({ bypassMarketHours: true });
+  await Sentry.flush(2000);
+  process.exit(0);
+}
+
 // Fire one tick immediately so a Railway restart mid-session resumes promptly.
-void runTick();
+await runTick();
 
 intervalHandle = setInterval(() => {
   void runTick();
