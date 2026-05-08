@@ -403,22 +403,31 @@ async function walkTimeframeToTarget(
   const prevBtn = container.locator('button').first();
   const nextBtn = container.locator('button').last();
 
-  for (let attempt = 0; attempt < 80; attempt += 1) {
+  // The first label after a date change is often "Latest" — UW's
+  // default setting that resolves to the most-recent slot during RTH
+  // but is non-parseable on historical dates. We treat any
+  // null-parse result as "click prev to escape into specific-time
+  // territory" rather than throwing. Cap raised to 90 so the escape
+  // attempts plus a full session walk-back fit within budget.
+  for (let attempt = 0; attempt < 90; attempt += 1) {
     const label = ((await labelSpan.textContent()) ?? '').trim();
     const currentStart = parseTimeframeStart(label);
     if (currentStart === target) {
-      logger.info(
+      logger.debug(
         { target, attempts: attempt },
         'walkTimeframeToTarget: matched',
       );
       return;
     }
     if (currentStart === null) {
-      throw new Error(
-        `walkTimeframeToTarget: cannot parse current label "${label}"`,
+      // Likely "Latest" or another non-HHMM label. Click prev to step
+      // into specific-time territory; the next iteration will parse.
+      logger.debug(
+        { label, target },
+        'walkTimeframeToTarget: non-HHMM label, clicking prev to escape',
       );
-    }
-    if (currentStart > target) {
+      await prevBtn.click({ timeout: 3_000 });
+    } else if (currentStart > target) {
       await prevBtn.click({ timeout: 3_000 });
     } else {
       await nextBtn.click({ timeout: 3_000 });
@@ -426,7 +435,7 @@ async function walkTimeframeToTarget(
     await page.waitForTimeout(500);
   }
   throw new Error(
-    `walkTimeframeToTarget: did not reach ${target} after 80 chevron clicks`,
+    `walkTimeframeToTarget: did not reach ${target} after 90 chevron clicks`,
   );
 }
 
