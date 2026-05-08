@@ -337,10 +337,12 @@ export function usePeriscopeChat(): UsePeriscopeChatResult {
     const stagedImages = Object.values(images).filter(
       (img): img is UploadedPeriscopeImage => img != null,
     );
-    if (stagedImages.length === 0) {
-      setError('Add at least one screenshot before submitting.');
-      return;
-    }
+    // 0 staged images is allowed — the backend synthesizes Pass 1A +
+    // Pass 1B from periscope_snapshots + cone_levels for the requested
+    // slot. The handler returns a 422 with a clear "no data for this
+    // slot" message when the DB doesn't have rows for the chosen
+    // (read_date, read_time), and that error surfaces here via the
+    // streaming response.
     if (!ISO_DATE_PATTERN.test(readDate)) {
       setError('Read date must be ISO YYYY-MM-DD.');
       return;

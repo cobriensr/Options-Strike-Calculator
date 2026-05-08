@@ -210,21 +210,13 @@ describe('usePeriscopeChat', () => {
     expect(mockRevokeObjectURL).toHaveBeenCalledTimes(2);
   });
 
-  it('submit without staged images surfaces an error and skips fetch', async () => {
-    globalThis.fetch = vi.fn(() =>
-      Promise.resolve(listResponse()),
-    ) as unknown as typeof globalThis.fetch;
-    const { result } = renderHook(() => usePeriscopeChat());
-
-    await act(async () => {
-      await result.current.submit();
-    });
-
-    expect(result.current.error).toMatch(/at least one screenshot/i);
-    // The auto-link list fetch may fire on mount, but submit must NOT
-    // post to /api/periscope-chat.
-    expect(submitCalls()).toHaveLength(0);
-  });
+  // The previous "submit without staged images surfaces an error and
+  // skips fetch" test was deleted with the screenshot-removal feature.
+  // 0 staged images is now a valid submission — the backend
+  // synthesizes Pass 1A + Pass 1B from periscope_snapshots +
+  // cone_levels and returns 422 no_periscope_data when the DB has no
+  // slot for the request. The server-side path is covered by
+  // api/__tests__/periscope-chat.test.ts.
 
   it('submit posts with the staged images and parses the NDJSON envelope', async () => {
     const envelope = {
