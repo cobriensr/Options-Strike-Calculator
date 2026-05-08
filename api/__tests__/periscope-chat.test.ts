@@ -382,16 +382,13 @@ describe('POST /api/periscope-chat', () => {
     expect(res._json).toEqual({ error: 'Server configuration error' });
   });
 
-  it('returns 400 when no images provided', async () => {
-    const req = mockRequest({
-      method: 'POST',
-      body: makeBody({ images: [] }),
-    });
-    const res = mockResponse();
-    await handler(req, res);
-    expect(res._status).toBe(400);
-    expect(res._json).toEqual({ error: 'At least one image is required' });
-  });
+  // 0 images is now ALLOWED at the schema level — the handler
+  // synthesizes Pass 1A + Pass 1B from periscope_snapshots +
+  // cone_levels for the requested slot. The downstream "no DB data
+  // for this slot" case returns 422 with `no_periscope_data` from the
+  // handler body, not 400 from validation. The previous "returns 400
+  // when no images provided" test was deleted with this change. See
+  // api/_lib/periscope-synthesize.ts for the synthesis path.
 
   it('returns 400 when more than 3 images', async () => {
     const images = [

@@ -93,7 +93,9 @@ import {
   extractHeatMapStrikes,
   type HeatMapExtraction,
   type HeatMapImage,
+  type PeriscopeExtractionResult,
 } from './_lib/periscope-extract.js';
+import { synthesizeFromDb } from './_lib/periscope-synthesize.js';
 import {
   fetchActiveLessons,
   formatLessonsBlock,
@@ -556,47 +558,117 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       },
     );
 
+    // No-screenshots path: synthesize Pass 1A + Pass 1B from
+    // periscope_snapshots + cone_levels. The user's whole goal of the
+    // periscope-scraper service was "click analyze and have Claude
+    // read the live data" — when images.length === 0, that's the
+    // request and we use the DB instead of vision OCR.
+    const useDbSynthesis = body.images.length === 0;
+
     const heatMapFetch: Promise<HeatMapExtraction | null> = hasHeatMaps
       ? extractHeatMapStrikes(heatMapInput, anthropic)
       : Promise.resolve(null);
 
-    const [
-      [extractionSettled, heatMapSettled],
-      calibrationBlock,
-      parentRead,
-      parentChain,
-    ] = await Promise.all([
-      Promise.allSettled([
-        withTimeout(
-          extractChartStructure({ images: body.images }, anthropic),
-          60_000,
-          'pass1a',
-        ),
-        withTimeout(heatMapFetch, 60_000, 'pass1b'),
-      ]),
-      calibrationBlockP,
-      parentFetch,
-      parentChainFetch,
-    ]);
+    let extraction: PeriscopeExtractionResult | null;
+    let heatMaps: HeatMapExtraction | null;
+    let calibrationBlock: Awaited<typeof calibrationBlockP>;
+    let parentRead: Awaited<typeof parentFetch>;
+    let parentChain: Awaited<typeof parentChainFetch>;
 
-    const extraction =
-      extractionSettled.status === 'fulfilled' ? extractionSettled.value : null;
-    if (extractionSettled.status === 'rejected') {
-      Sentry.captureException(extractionSettled.reason);
-      logger.warn(
-        { err: extractionSettled.reason, mode: body.mode },
-        'periscope-chat: pass 1A extraction failed/timeout — retrieval will be skipped',
-      );
-    }
+    if (useDbSynthesis) {
+      // No images — skip the vision passes entirely. Run synthesizer
+      // alongside the calibration / parent fetches.
+      const [synthesized, calBlock, pRead, pChain] = await Promise.all([
+        synthesizeFromDb({
+          tradingDate,
+          readTimeIso,
+          spot: spotLookup.price,
+        }).catch((err: unknown) => {
+          Sentry.captureException(err);
+          logger.error(
+            { err, tradingDate, readTimeIso },
+            'periscope-chat: DB synthesis threw',
+          );
+          return null;
+        }),
+        calibrationBlockP,
+        parentFetch,
+        parentChainFetch,
+      ]);
 
-    const heatMaps =
-      heatMapSettled.status === 'fulfilled' ? heatMapSettled.value : null;
-    if (heatMapSettled.status === 'rejected') {
-      Sentry.captureException(heatMapSettled.reason);
-      logger.warn(
-        { err: heatMapSettled.reason, mode: body.mode },
-        'periscope-chat: pass 1B heat-map OCR failed/timeout — block omitted',
+      if (synthesized == null) {
+        const msg = `No stored Periscope data for ${body.read_date} ${body.read_time} CT — wait for the scraper to publish the next slot, or upload screenshots manually.`;
+        done({ status: 422, error: 'no_periscope_data' });
+        res.write(JSON.stringify({ ok: false, error: msg }) + '\n');
+        return;
+      }
+
+      extraction = synthesized.extraction;
+      heatMaps = synthesized.heatMaps;
+      calibrationBlock = calBlock;
+      parentRead = pRead;
+      parentChain = pChain;
+      logger.info(
+        {
+          mode: body.mode,
+          tradingDate,
+          hasCone: extraction.structured.cone_lower != null,
+          gexStrikes: heatMaps?.gex.length ?? 0,
+          charmStrikes: heatMaps?.charm.length ?? 0,
+        },
+        'periscope-chat: using DB synthesis (no images uploaded)',
       );
+    } else {
+      // Tier 2 review fix — Pass 1A and Pass 1B are vision-only extraction
+      // calls and are best-effort (extraction nullability already handled
+      // downstream). Run via Promise.allSettled with a 60s per-call timeout
+      // so a hung Pass 1B can never block Pass 1A from finishing in seconds.
+      // Pass 1A is similarly bounded — if extraction hangs, we'd rather
+      // log + continue with retrieval skipped than burn the function budget.
+      const [
+        [extractionSettled, heatMapSettled],
+        calBlock,
+        pRead,
+        pChain,
+      ] = await Promise.all([
+        Promise.allSettled([
+          withTimeout(
+            extractChartStructure({ images: body.images }, anthropic),
+            60_000,
+            'pass1a',
+          ),
+          withTimeout(heatMapFetch, 60_000, 'pass1b'),
+        ]),
+        calibrationBlockP,
+        parentFetch,
+        parentChainFetch,
+      ]);
+
+      extraction =
+        extractionSettled.status === 'fulfilled'
+          ? extractionSettled.value
+          : null;
+      if (extractionSettled.status === 'rejected') {
+        Sentry.captureException(extractionSettled.reason);
+        logger.warn(
+          { err: extractionSettled.reason, mode: body.mode },
+          'periscope-chat: pass 1A extraction failed/timeout — retrieval will be skipped',
+        );
+      }
+
+      heatMaps =
+        heatMapSettled.status === 'fulfilled' ? heatMapSettled.value : null;
+      if (heatMapSettled.status === 'rejected') {
+        Sentry.captureException(heatMapSettled.reason);
+        logger.warn(
+          { err: heatMapSettled.reason, mode: body.mode },
+          'periscope-chat: pass 1B heat-map OCR failed/timeout — block omitted',
+        );
+      }
+
+      calibrationBlock = calBlock;
+      parentRead = pRead;
+      parentChain = pChain;
     }
 
     // Tier 2 review fix — Fix 3: cross-check that the chart's date label

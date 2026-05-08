@@ -226,7 +226,13 @@ export default function PeriscopeChat() {
   // parent-fetch useEffect.
 
   const stagedCount = Object.values(images).filter((v) => v != null).length;
-  const canSubmit = !inFlight && stagedCount > 0;
+  // 0 images is allowed — the backend synthesizes Pass 1A + Pass 1B
+  // from periscope_snapshots + cone_levels for the requested slot.
+  // The handler returns a 422 with a clear "no data for this slot"
+  // message when the DB doesn't have rows for the requested
+  // (read_date, read_time), and the error is surfaced via the
+  // <Error /> block below.
+  const canSubmit = !inFlight;
 
   const elapsedLabel =
     elapsedMs > 0 ? ` · ${Math.floor(elapsedMs / 1000)}s elapsed` : '';
@@ -327,8 +333,9 @@ export default function PeriscopeChat() {
         {/* Image upload slots */}
         <div className="flex flex-col gap-2">
           <p className="text-muted text-xs">
-            Drop, click, or paste (Ctrl+V) screenshots — pasted images fill
-            chart → GEX → charm in order.
+            Submit without screenshots to use the latest scraped Periscope data
+            for the selected slot. Or drop, click, or paste (Ctrl+V)
+            screenshots — pasted images fill chart → GEX → charm in order.
           </p>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             {PERISCOPE_IMAGE_KINDS.map(({ kind, label, hint }) => (
@@ -369,7 +376,9 @@ export default function PeriscopeChat() {
             Reset
           </button>
           <span className="text-muted ml-auto text-xs">
-            {stagedCount}/3 image{stagedCount === 1 ? '' : 's'} staged
+            {stagedCount === 0
+              ? 'No images staged · using stored Periscope data'
+              : `${stagedCount}/3 image${stagedCount === 1 ? '' : 's'} staged`}
           </span>
         </div>
 
