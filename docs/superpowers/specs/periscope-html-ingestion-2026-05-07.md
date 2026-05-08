@@ -291,22 +291,50 @@ The "I'm not at the screen" trigger surface. Layer onto existing futures-gamma a
 
 ---
 
-## Phase 0 — Discovery probe (do this BEFORE Phase 2)
+## Phase 0 — Discovery probe (do this BEFORE Phase 2 — user-driven)
 
-Run a one-shot Playwright session against UW Periscope to answer the open questions in Phase 2. Output: a short notes file appended to this spec recording the actual selectors + DOM facts. Time budget: 30 min. No DB writes, no commits.
+Tooling is in place (`scripts/periscope-probe.mjs`). The probe is a 2-step Playwright script the user runs locally; output goes to `docs/tmp/periscope-probe/<timestamp>/` and is then handed back so Claude can wire the production selectors into `periscope-scraper/src/scrape.ts`.
 
-**Checklist:**
+**Step 1 — one-time login (saves auth state):**
 
-- [ ] Confirm `playwright-core` + `@sparticuz/chromium-min` boots Chromium on the local machine
-- [ ] Log into UW manually, save cookies to a file
-- [ ] Load Periscope page in Playwright with cookies, take a snapshot of HTML for each panel
-- [ ] Identify selectors:
-  - Per-strike row container for Gamma panel
-  - Per-strike row container for Charm panel (verify the `<div title="Charm: -2,742.48">` pattern from screenshot)
-  - Same for Vanna + Positions
-- [ ] Check if orange/purple bar markers exist as CSS classes
-- [ ] Check if cone overlay coordinates are extractable (SVG paths) — if not, confirm we'll use Phase 1's option-chain compute as the source
-- [ ] Append findings under `## Phase 0 findings` below
+```bash
+npm i -D playwright       # if not already installed
+npx playwright install chromium
+PERISCOPE_URL='https://unusualwhales.com/periscope?...' \
+  node scripts/periscope-probe.mjs --login
+```
+
+A headed Chromium opens. Log in to UW manually, then close the browser window. The auth state is saved to `~/.periscope-probe-auth.json` (gitignored — do not commit).
+
+**Step 2 — capture (run anytime, headless):**
+
+```bash
+PERISCOPE_URL='https://unusualwhales.com/periscope?...' \
+  node scripts/periscope-probe.mjs
+```
+
+Output:
+
+- `docs/tmp/periscope-probe/<timestamp>/page.html` — full rendered DOM
+- `docs/tmp/periscope-probe/<timestamp>/page.png` — screenshot for cross-reference
+- `docs/tmp/periscope-probe/<timestamp>/meta.json` — URL, viewport, timing
+
+**Before running:** configure your Periscope view to show all 4 panels (Gamma + Charm + Vanna + Positions) so a single capture covers everything the scraper needs.
+
+**Hand back to Claude:**
+
+- The `page.html` file path
+- (Optional) the screenshot, helpful for visual cross-check
+
+**What Claude does with it:**
+
+- Identifies the per-strike row selector + value-extraction pattern for each panel (e.g. confirms the `<div title="Charm: -2,742.48">` pattern from the user's earlier devtools screenshot)
+- Identifies orange/purple bar CSS classes if present
+- Identifies expiry / timeframe / spot read locations in the header
+- Writes `periscope-scraper/src/scrape.ts` with concrete `page.evaluate(...)` selectors
+- Writes parser unit tests using a fixture HTML excerpt taken from the captured page
+
+**Fallback if structure is unclear:** Claude can request a second probe capture with the user changing one specific control (panel toggle, threshold slider, expiry switch) so DOM diffs reveal which elements correspond to which UI.
 
 ---
 

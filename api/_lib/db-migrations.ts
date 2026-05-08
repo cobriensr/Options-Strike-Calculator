@@ -4120,4 +4120,27 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 140,
+    description:
+      'Create periscope_snapshots table for the periscope-scraper Railway service (Phase 2 of docs/superpowers/specs/periscope-html-ingestion-2026-05-07.md). Stores per-strike MM-attributed dealer-flow values from UW Periscope HTML — Gamma / Charm / Vanna / Positions — captured every 10 min during RTH. Each snapshot covers the full chain (typically 150+ strikes) for the user-configured 0DTE expiry. UNIQUE (captured_at, expiry, panel, strike) gives natural idempotency on retry. Composite index supports the read-time queries the derived-signal layer (Phase 3) will run: prior-slice lookups for sign flips, time-series scans for charm-zero migration, and ±100pt windowed aggregations for charm tally. Schema accommodates Vanna which is mandatory on vol-shock days even though 0DTE Vanna is small — multi-DTE vanna is the dominant dealer-flow driver during VIX moves.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS periscope_snapshots (
+          id          BIGSERIAL PRIMARY KEY,
+          captured_at TIMESTAMPTZ NOT NULL,
+          expiry      DATE NOT NULL,
+          panel       TEXT NOT NULL CHECK (panel IN ('gamma', 'charm', 'vanna', 'positions')),
+          strike      INT NOT NULL,
+          value       NUMERIC(14,2) NOT NULL,
+          inserted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE (captured_at, expiry, panel, strike)
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_periscope_snapshots_lookup
+          ON periscope_snapshots (expiry, panel, captured_at, strike)
+      `,
+    ],
+  },
 ];

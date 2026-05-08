@@ -21,6 +21,10 @@ export default [
       'daemon',
       'uw-stream',
       'ml-sweep',
+      // periscope-scraper has its own node_modules + tsconfig; let the
+      // root lint cover the .ts source files but ignore its installed deps.
+      'periscope-scraper/node_modules',
+      'periscope-scraper/dist',
       'playwright-report',
       '.scannerwork',
       // Scratch / debug / spec material — not production code, not
