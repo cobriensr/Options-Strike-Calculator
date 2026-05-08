@@ -139,11 +139,33 @@ export async function scrapeAllPanels(): Promise<SnapshotRow[]> {
     // sometimes render a tick later than the `<tr>` shells.
     await page.waitForTimeout(2_000);
 
+    // Empty-state short-circuit: when "No data available" is rendered,
+    // the page header has no spot/min/max text and the data table isn't
+    // mounted — parsePage would throw on missing Underlying. Bail with
+    // an empty result so the caller gets a clean "0 rows" tick.
+    if ((await page.getByText(/no data available/i).count()) > 0) {
+      logger.warn(
+        'Periscope shows "No data available" — likely outside RTH or filter mismatch. Returning 0 rows.',
+      );
+      return [];
+    }
+
     const allRows: SnapshotRow[] = [];
     const capturedAt = new Date().toISOString();
 
     for (const greek of GREEKS_TO_CAPTURE) {
       await selectGreek(page, greek.label);
+
+      // Empty state can appear/disappear when switching Greeks if the
+      // user's filters resolve to data for some but not others. Re-check
+      // per Greek instead of trusting the initial gate.
+      if ((await page.getByText(/no data available/i).count()) > 0) {
+        logger.info(
+          { panel: greek.panel },
+          'no data for this Greek — skipping',
+        );
+        continue;
+      }
 
       const html = await page.content();
       const { header, rows } = parsePage(html, capturedAt);
