@@ -25,9 +25,18 @@ FROM node:24-slim
 
 # OS packages required by Playwright's bundled Chromium.
 # Reference: https://playwright.dev/docs/docker
+#
+# 2026-05-08: First Railway runtime failed with
+#   libXfixes.so.3: cannot open shared object file
+# Adding the libxfixes3 / libxext6 / libxcb1 / libnspr4 / libgtk-3-0
+# canonical Playwright deps that node:24-slim doesn't ship by default.
+# Switching to the explicit list maintained by Playwright is more
+# reliable than hand-curating; if Chromium ever fails to launch with
+# another missing .so, add it here.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         libnss3 \
+        libnspr4 \
         libatk1.0-0 \
         libatk-bridge2.0-0 \
         libcups2 \
@@ -36,7 +45,11 @@ RUN apt-get update && \
         libxcomposite1 \
         libxdamage1 \
         libxrandr2 \
+        libxfixes3 \
+        libxext6 \
+        libxcb1 \
         libgbm1 \
+        libgtk-3-0 \
         libxshmfence1 \
         libpango-1.0-0 \
         libcairo2 \
