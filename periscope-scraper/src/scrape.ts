@@ -470,6 +470,20 @@ async function advanceTimeframeOneSlot(page: Page): Promise<void> {
   await container.locator('button').last().click({ timeout: 3_000 });
 }
 
+/**
+ * Step the timeframe one slot backwards (10 min earlier). Used to
+ * escape the "Latest" sentinel when it renders empty — pre-market /
+ * post-close, the most recent specific slot has data even when
+ * "Latest" appears empty in DTE=[0,0] mode.
+ */
+async function rewindTimeframeOneSlot(page: Page): Promise<void> {
+  const container = page
+    .locator('div.rounded-full')
+    .filter({ has: page.locator('span', { hasText: /^Timeframe:$/ }) })
+    .first();
+  await container.locator('button').first().click({ timeout: 3_000 });
+}
+
 async function withBrowser<T>(
   fn: (browser: Browser, page: Page) => Promise<T>,
 ): Promise<T> {
@@ -604,20 +618,69 @@ async function loadAndPrepPage(page: Page): Promise<void> {
   await page.waitForTimeout(2_000);
 }
 
+/**
+ * Wait until the page either renders table rows OR has "No data
+ * available" persisting for a full poll cycle. UW takes a few seconds
+ * to refetch and repaint after a date change; a fixed wait too short
+ * yields a stale "no data" read on a date that DOES have data (UW
+ * Periscope publishes 10-min slots from ~5:50 CT onward every trading
+ * day).
+ *
+ * Returns true if rows are present, false on persistent "no data".
+ * Throws on overall timeout.
+ */
+async function waitForTableReady(page: Page, timeoutMs = 20_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  let consecutiveNoData = 0;
+  while (Date.now() < deadline) {
+    const rowCount = await page.locator('tr.table_row__wxw5u').count();
+    if (rowCount > 0) return true;
+    const noDataCount = await page.getByText(/no data available/i).count();
+    if (noDataCount > 0) {
+      consecutiveNoData += 1;
+      // Five consecutive "no data" reads spaced 1s apart = genuinely
+      // empty (e.g. weekend/holiday). Fewer isn't enough — after a
+      // date-walk UW takes 5–10s to refetch and the empty state
+      // persists during the request.
+      if (consecutiveNoData >= 5) return false;
+    } else {
+      consecutiveNoData = 0;
+    }
+    await page.waitForTimeout(1_000);
+  }
+  throw new Error('waitForTableReady: neither rows nor "no data" stabilized within timeout');
+}
+
 export async function scrapeAllPanels(): Promise<SnapshotRow[]> {
   return await withBrowser(async (_browser, page) => {
-    await loadAndPrepPage(page);
+    // Live mode prep order is critical: storageState often restores a
+    // stale date from the last --login session, and DTE=[0,0] resolves
+    // its expiry against whatever date the page thinks is "current".
+    // If we apply DTE=[0,0] BEFORE walking the date forward, the filter
+    // gets computed against the stale date and the table renders
+    // empty even when today's data exists. So: navigate, walk to today
+    // FIRST, wait for the table to populate, THEN apply DTE=[0,0].
+    logger.info({ url: UW_PERISCOPE_URL }, 'navigating to periscope');
+    await page.goto(UW_PERISCOPE_URL, { waitUntil: 'networkidle' });
 
-    // Walk date to today (CT). The storageState may have a stale date
-    // from a prior --login session, so the scraper enforces "today" on
-    // every tick. Failures here are non-fatal — fall through with
-    // whatever date is shown so a misconfigured holiday/weekend run
-    // still produces a clean "no data" tick.
+    const firstRow = page.locator('tr.table_row__wxw5u').first();
+    const emptyState = page.getByText(/no data available/i).first();
+    try {
+      await Promise.race([
+        firstRow.waitFor({ state: 'visible', timeout: 20_000 }),
+        emptyState.waitFor({ state: 'visible', timeout: 20_000 }),
+      ]);
+    } catch {
+      logger.warn(
+        'neither table rows nor empty-state appeared after 20s — proceeding anyway',
+      );
+    }
+
     const today = todayInCT();
     try {
       await walkDateToTarget(page, today);
-      await page.waitForTimeout(1_500);
-      logger.info({ today }, 'walked date picker to today');
+      const ready = await waitForTableReady(page);
+      logger.info({ today, ready }, 'walked date picker to today');
     } catch (err) {
       logger.warn(
         {
@@ -626,6 +689,29 @@ export async function scrapeAllPanels(): Promise<SnapshotRow[]> {
         },
         'walkDateToTarget(today) failed — proceeding anyway',
       );
+    }
+
+    await setDTEZero(page);
+    await page.waitForTimeout(2_000);
+
+    // "Latest" sentinel can render empty pre-market in DTE=[0,0] mode
+    // even when specific 10-min slots have data. If the table still
+    // shows "No data available" at this point, step back one slot to
+    // land on the most recent specific timeframe and re-check.
+    if ((await page.getByText(/no data available/i).count()) > 0) {
+      logger.info(
+        'still empty after DTE=[0,0] — rewinding timeframe one slot to escape "Latest"',
+      );
+      try {
+        await rewindTimeframeOneSlot(page);
+        const ready = await waitForTableReady(page);
+        logger.info({ ready }, 'after timeframe rewind');
+      } catch (err) {
+        logger.warn(
+          { err: err instanceof Error ? err.message : String(err) },
+          'rewindTimeframeOneSlot failed — proceeding to capture anyway',
+        );
+      }
     }
 
     return await captureCurrentSlot(page, new Date().toISOString());
