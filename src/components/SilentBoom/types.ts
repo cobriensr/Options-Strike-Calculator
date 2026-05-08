@@ -11,6 +11,8 @@ export type SilentBoomSortMode = 'newest' | 'spike_ratio' | 'vol_oi' | 'peak';
 
 export type SilentBoomScoreTier = 'tier1' | 'tier2' | 'tier3';
 
+export type SilentBoomTod = 'AM_open' | 'MID' | 'LUNCH' | 'PM' | 'LATE';
+
 export interface SilentBoomOutcomes {
   peakCeilingPct: number | null;
   minutesToPeak: number | null;
@@ -59,6 +61,7 @@ export interface SilentBoomFeedResponse {
     minVolOi: number;
     minSpikeRatio: number;
     minScore: number | null;
+    tod: SilentBoomTod | null;
     sort: SilentBoomSortMode;
   };
   count: number;

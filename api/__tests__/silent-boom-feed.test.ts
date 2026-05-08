@@ -170,6 +170,42 @@ describe('silent-boom-feed handler', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
+  it('binds tod into BOTH the count AND the list query', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([makeAlert()]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-07', tod: 'AM_open' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(mockSql).toHaveBeenCalledTimes(2);
+    for (const call of mockSql.mock.calls) {
+      const strings = call[0] as TemplateStringsArray | undefined;
+      const sqlText = (strings ?? []).join(' ');
+      // Both queries must extract CT minute-of-day and gate it.
+      expect(sqlText).toContain("AT TIME ZONE 'America/Chicago'");
+    }
+
+    const body = res._json as { filters: { tod: string | null } };
+    expect(body.filters.tod).toBe('AM_open');
+  });
+
+  it('rejects an invalid tod value with 400', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-07', tod: 'OVERNIGHT' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
   it('echoes minScore in the filters block of the response', async () => {
     mockSql.mockResolvedValueOnce([{ n: 0 }]).mockResolvedValueOnce([]);
     const req = mockRequest({
@@ -190,7 +226,10 @@ describe('silent-boom-feed handler', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    const body = res._json as { filters: { minScore: number | null } };
+    const body = res._json as {
+      filters: { minScore: number | null; tod: string | null };
+    };
     expect(body.filters.minScore).toBeNull();
+    expect(body.filters.tod).toBeNull();
   });
 });

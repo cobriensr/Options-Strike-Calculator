@@ -915,6 +915,10 @@ export const silentBoomFeedQuerySchema = z.object({
   // The full observed range is roughly -22 to +33; the schema bounds
   // are loose so we don't have to update them when weights are recalibrated.
   minScore: z.coerce.number().int().min(-100).max(100).optional(),
+  // Time-of-day bucket — narrows to a specific session phase. Mapped
+  // server-side via CT minute-of-day boundaries that mirror
+  // silentBoomTodFromMinuteCt() in api/_lib/silent-boom-score.ts.
+  tod: z.enum(['AM_open', 'MID', 'LUNCH', 'PM', 'LATE']).optional(),
   // Pagination.
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),

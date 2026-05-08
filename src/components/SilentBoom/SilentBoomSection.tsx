@@ -4,7 +4,11 @@ import { useSilentBoomFeed } from '../../hooks/useSilentBoomFeed.js';
 import { ctSessionBounds } from '../LotteryFinder/ct-window.js';
 import { SilentBoomDayBanner } from './SilentBoomDayBanner.js';
 import { SilentBoomRow } from './SilentBoomRow.js';
-import type { OptionType, SilentBoomSortMode } from './types.js';
+import type {
+  OptionType,
+  SilentBoomSortMode,
+  SilentBoomTod,
+} from './types.js';
 
 const PAGE_SIZE = 50;
 const SORT_LS_KEY = 'silentBoom.sortMode';
@@ -30,6 +34,14 @@ const TIER1_MIN_SCORE = 21;
 const TIER2_MIN_SCORE = 8;
 
 type ConvictionFloor = 'all' | 'tier2' | 'tier1';
+
+const TOD_FILTERS: Array<{ value: SilentBoomTod | null; label: string }> = [
+  { value: null, label: 'all TOD' },
+  { value: 'AM_open', label: 'AM_open' },
+  { value: 'MID', label: 'MID' },
+  { value: 'LUNCH', label: 'LUNCH' },
+  { value: 'PM', label: 'PM' },
+];
 
 const CONVICTION_OPTIONS: Array<{
   value: ConvictionFloor;
@@ -170,6 +182,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
   const [optionTypeFilter, setOptionTypeFilter] = useState<OptionType | null>(
     null,
   );
+  const [todFilter, setTodFilter] = useState<SilentBoomTod | null>(null);
   const [sortMode, setSortMode] = useState<SilentBoomSortMode>(() => {
     if (typeof window === 'undefined') return 'newest';
     const stored = window.localStorage.getItem(SORT_LS_KEY);
@@ -242,6 +255,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     date,
     tickerFilter,
     optionTypeFilter,
+    todFilter,
     sortMode,
     minVolOi,
     convictionFloor,
@@ -259,6 +273,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       historical: isHistorical,
       ticker: tickerFilter,
       optionType: optionTypeFilter,
+      tod: todFilter,
       minVolOi,
       minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
       sort: sortMode,
@@ -584,6 +599,32 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
               );
             })}
             <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+            <span className={SECTION_LABEL}>tod</span>
+            {TOD_FILTERS.map((t) => (
+              <button
+                key={t.label}
+                type="button"
+                onClick={() => setTodFilter(t.value)}
+                className={`${CHIP_BASE} ${
+                  todFilter === t.value ? CHIP_ACTIVE.orange : CHIP_INACTIVE
+                }`}
+                title={
+                  t.value === 'AM_open'
+                    ? 'Filter to AM_open (08:30–10:00 CT). Audit lift: 1.65× — strongest TOD bucket.'
+                    : t.value === 'MID'
+                      ? 'Filter to MID (10:00–12:00 CT). Audit lift: 1.09×.'
+                      : t.value === 'LUNCH'
+                        ? 'Filter to LUNCH (12:00–13:00 CT). Audit lift: 0.99× — neutral.'
+                        : t.value === 'PM'
+                          ? 'Filter to PM (13:00–15:00 CT). Audit lift: 0.50× — weakest TOD bucket.'
+                          : 'Show all time-of-day buckets.'
+                }
+                aria-pressed={todFilter === t.value}
+              >
+                {t.label}
+              </button>
+            ))}
+            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
             <button
               type="button"
               onClick={() => setHideLatePm(!hideLatePm)}
@@ -705,6 +746,11 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 {minVolOi > 0 && (
                   <span className="ml-2 text-amber-300/80">
                     vol/OI ≥ {minVolOi}
+                  </span>
+                )}
+                {todFilter && (
+                  <span className="ml-2 text-orange-300/80">
+                    {todFilter} only
                   </span>
                 )}
                 {hideLatePm && hiddenLatePmCount > 0 && (

@@ -13,6 +13,7 @@ import type {
   SilentBoomAlert,
   SilentBoomFeedResponse,
   SilentBoomSortMode,
+  SilentBoomTod,
 } from '../components/SilentBoom/types.js';
 import { getErrorMessage } from '../utils/error.js';
 
@@ -29,6 +30,8 @@ interface UseSilentBoomFeedArgs {
   minSpikeRatio?: number;
   /** Composite-score floor — Tier 1 = 21, Tier 2 = 8. */
   minScore?: number | null;
+  /** Time-of-day filter — null = all phases. */
+  tod?: SilentBoomTod | null;
   sort?: SilentBoomSortMode;
   page?: number;
   pageSize?: number;
@@ -65,6 +68,7 @@ export function useSilentBoomFeed({
   minVolOi = 0.5,
   minSpikeRatio = 0,
   minScore = null,
+  tod = null,
   sort = 'newest',
   page = 0,
   pageSize = 50,
@@ -89,6 +93,7 @@ export function useSilentBoomFeed({
       if (ticker) params.set('ticker', ticker);
       if (optionType) params.set('optionType', optionType);
       if (minScore != null) params.set('minScore', String(minScore));
+      if (tod) params.set('tod', tod);
       const res = await fetch(`/api/silent-boom-feed?${params.toString()}`, {
         credentials: 'include',
         signal: ctrl.signal,
@@ -122,6 +127,7 @@ export function useSilentBoomFeed({
     minVolOi,
     minSpikeRatio,
     minScore,
+    tod,
     sort,
     page,
     pageSize,

@@ -91,6 +91,8 @@ interface SilentBoomAlertResponse {
   insertedAt: string;
 }
 
+type SilentBoomTodEnum = 'AM_open' | 'MID' | 'LUNCH' | 'PM' | 'LATE';
+
 interface SilentBoomFeedResponse {
   date: string;
   filters: {
@@ -99,6 +101,7 @@ interface SilentBoomFeedResponse {
     minVolOi: number;
     minSpikeRatio: number;
     minScore: number | null;
+    tod: SilentBoomTodEnum | null;
     sort: 'newest' | 'spike_ratio' | 'vol_oi' | 'peak';
   };
   count: number;
@@ -159,6 +162,20 @@ export default async function handler(
   const q = parsed.data;
   const date = q.date ?? getETDateStr(new Date());
 
+  // TOD bucket → CT minute-of-day range. Boundaries mirror
+  // silentBoomTodFromMinuteCt in api/_lib/silent-boom-score.ts.
+  // Returns half-open [lo, hi) on the CT day. Null when no TOD filter.
+  const todRange = (() => {
+    if (q.tod === 'AM_open') return { lo: 0, hi: 10 * 60 };
+    if (q.tod === 'MID') return { lo: 10 * 60, hi: 12 * 60 };
+    if (q.tod === 'LUNCH') return { lo: 12 * 60, hi: 13 * 60 };
+    if (q.tod === 'PM') return { lo: 13 * 60, hi: 15 * 60 };
+    if (q.tod === 'LATE') return { lo: 15 * 60, hi: 24 * 60 };
+    return null;
+  })();
+  const todLo = todRange?.lo ?? null;
+  const todHi = todRange?.hi ?? null;
+
   try {
     const db = getDb();
 
@@ -178,6 +195,14 @@ export default async function handler(
         AND vol_oi >= ${q.minVolOi}::numeric
         AND spike_ratio >= ${q.minSpikeRatio}::numeric
         AND (${q.minScore ?? null}::int IS NULL OR score >= ${q.minScore ?? null}::int)
+        AND (${todLo}::int IS NULL OR (
+          EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
+          EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
+        ) >= ${todLo}::int)
+        AND (${todHi}::int IS NULL OR (
+          EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
+          EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
+        ) < ${todHi}::int)
     `) as { n: number }[];
     const total = totalRow[0]?.n ?? 0;
 
@@ -195,6 +220,14 @@ export default async function handler(
           AND vol_oi >= ${q.minVolOi}::numeric
           AND spike_ratio >= ${q.minSpikeRatio}::numeric
           AND (${q.minScore ?? null}::int IS NULL OR score >= ${q.minScore ?? null}::int)
+          AND (${todLo}::int IS NULL OR (
+            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
+            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
+          ) >= ${todLo}::int)
+          AND (${todHi}::int IS NULL OR (
+            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
+            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
+          ) < ${todHi}::int)
         ORDER BY spike_ratio DESC, bucket_ct DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
       `) as AlertRow[];
@@ -208,6 +241,14 @@ export default async function handler(
           AND vol_oi >= ${q.minVolOi}::numeric
           AND spike_ratio >= ${q.minSpikeRatio}::numeric
           AND (${q.minScore ?? null}::int IS NULL OR score >= ${q.minScore ?? null}::int)
+          AND (${todLo}::int IS NULL OR (
+            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
+            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
+          ) >= ${todLo}::int)
+          AND (${todHi}::int IS NULL OR (
+            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
+            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
+          ) < ${todHi}::int)
         ORDER BY vol_oi DESC, bucket_ct DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
       `) as AlertRow[];
@@ -221,6 +262,14 @@ export default async function handler(
           AND vol_oi >= ${q.minVolOi}::numeric
           AND spike_ratio >= ${q.minSpikeRatio}::numeric
           AND (${q.minScore ?? null}::int IS NULL OR score >= ${q.minScore ?? null}::int)
+          AND (${todLo}::int IS NULL OR (
+            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
+            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
+          ) >= ${todLo}::int)
+          AND (${todHi}::int IS NULL OR (
+            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
+            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
+          ) < ${todHi}::int)
         ORDER BY peak_ceiling_pct DESC NULLS LAST, bucket_ct DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
       `) as AlertRow[];
@@ -235,6 +284,14 @@ export default async function handler(
           AND vol_oi >= ${q.minVolOi}::numeric
           AND spike_ratio >= ${q.minSpikeRatio}::numeric
           AND (${q.minScore ?? null}::int IS NULL OR score >= ${q.minScore ?? null}::int)
+          AND (${todLo}::int IS NULL OR (
+            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
+            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
+          ) >= ${todLo}::int)
+          AND (${todHi}::int IS NULL OR (
+            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
+            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
+          ) < ${todHi}::int)
         ORDER BY bucket_ct DESC, id DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
       `) as AlertRow[];
@@ -279,6 +336,7 @@ export default async function handler(
         minVolOi: q.minVolOi,
         minSpikeRatio: q.minSpikeRatio,
         minScore: q.minScore ?? null,
+        tod: q.tod ?? null,
         sort: q.sort,
       },
       count: alerts.length,

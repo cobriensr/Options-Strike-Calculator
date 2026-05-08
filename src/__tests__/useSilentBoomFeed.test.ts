@@ -36,6 +36,7 @@ function emptyFeed(
       minVolOi: 0.5,
       minSpikeRatio: 0,
       minScore: null,
+      tod: null,
       sort: 'newest',
     },
     count: 0,
@@ -126,6 +127,30 @@ describe('useSilentBoomFeed', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const url = fetchMock.mock.calls[0]![0] as string;
     expect(url).not.toContain('minScore=');
+  });
+
+  it('appends tod when supplied', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFeed()));
+    renderHook(() =>
+      useSilentBoomFeed({
+        date: '2026-05-07',
+        marketOpen: false,
+        tod: 'AM_open',
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toContain('tod=AM_open');
+  });
+
+  it('omits tod when null', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFeed()));
+    renderHook(() =>
+      useSilentBoomFeed({ date: '2026-05-07', marketOpen: false, tod: null }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).not.toContain('tod=');
   });
 
   it('clears loading and exposes alerts on success', async () => {
