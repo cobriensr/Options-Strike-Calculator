@@ -292,6 +292,24 @@ export const SilentBoomRow = memo(function SilentBoomRow({
           {formatTimeCT(alert.bucketCt)} CT
         </span>
 
+        {/* "Still hot" pulse — only when market is open and the
+            alert's spike bucket is within the last 10 minutes. The
+            polling refresh (~30s) keeps this honest without per-row
+            timers. Mirrors LotteryRow. */}
+        {marketOpen &&
+          Date.now() - new Date(alert.bucketCt).getTime() < 10 * 60_000 && (
+            <span
+              className="inline-flex items-center gap-1 rounded border border-red-500/50 bg-red-950/40 px-1.5 py-0.5 text-[10px] font-semibold text-red-200"
+              title="Spike bucket fired within the last 10 minutes — alert is still hot."
+            >
+              <span
+                className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-red-400"
+                aria-hidden
+              />
+              hot
+            </span>
+          )}
+
         <span
           className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${spike.cls}`}
           title={spike.tooltip}

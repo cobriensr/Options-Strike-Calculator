@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { SectionBox } from '../ui/SectionBox.js';
 import { useSilentBoomFeed } from '../../hooks/useSilentBoomFeed.js';
+import { ctSessionBounds } from '../LotteryFinder/ct-window.js';
+import { SilentBoomDayBanner } from './SilentBoomDayBanner.js';
 import { SilentBoomRow } from './SilentBoomRow.js';
 import type { OptionType, SilentBoomSortMode } from './types.js';
 
@@ -8,6 +10,19 @@ const PAGE_SIZE = 50;
 const SORT_LS_KEY = 'silentBoom.sortMode';
 const MIN_VOL_OI_LS_KEY = 'silentBoom.minVolOi';
 const CONVICTION_LS_KEY = 'silentBoom.convictionFloor';
+const HIDE_LATE_PM_LS_KEY = 'silentBoom.hideLatePm';
+
+/**
+ * Late-PM cutoff (CT minute-of-day). Alerts whose bucket_ct is at or
+ * after this minute are hidden when the filter is on. 14:30 CT — 30
+ * min before the regular-session close — chosen because by that
+ * point the silent-boom audit's PM stratum lift is 0.50× and
+ * post-14:30 fires are the worst slice; the user's discretionary
+ * exit windows close fast enough that the move can't develop. The
+ * filter is client-side so toolbar counts and pagination still
+ * reflect the full DB result.
+ */
+const LATE_PM_CUTOFF_MIN_OF_DAY = 14 * 60 + 30;
 
 /** Tier floors — must match SILENT_BOOM_TIER_THRESHOLDS in
  *  api/_lib/silent-boom-score.ts. */
@@ -103,7 +118,16 @@ const CHIP_BASE =
 const CHIP_INACTIVE =
   'border-neutral-800 bg-neutral-900/60 text-neutral-400 hover:border-neutral-700 hover:text-neutral-100';
 const CHIP_ACTIVE: Record<
-  'sky' | 'rose' | 'amber' | 'emerald' | 'green' | 'red' | 'blue' | 'neutral',
+  | 'sky'
+  | 'rose'
+  | 'amber'
+  | 'emerald'
+  | 'green'
+  | 'red'
+  | 'blue'
+  | 'orange'
+  | 'purple'
+  | 'neutral',
   string
 > = {
   sky: 'border-sky-500/70 bg-sky-950/40 text-sky-200',
@@ -113,6 +137,8 @@ const CHIP_ACTIVE: Record<
   green: 'border-green-500/70 bg-green-950/40 text-green-200',
   red: 'border-red-500/70 bg-red-950/40 text-red-200',
   blue: 'border-blue-500/70 bg-blue-950/40 text-blue-200',
+  orange: 'border-orange-500/70 bg-orange-950/40 text-orange-200',
+  purple: 'border-purple-500/70 bg-purple-950/40 text-purple-200',
   neutral: 'border-neutral-500 bg-neutral-800 text-neutral-200',
 };
 
@@ -130,7 +156,7 @@ const todayCt = (): string => {
   return fmt.format(new Date());
 };
 
-const formatTimeCT = (input: number): string =>
+const formatTimeCT = (input: number | string): string =>
   new Date(input).toLocaleTimeString('en-US', {
     hour: '2-digit',
     minute: '2-digit',
@@ -174,6 +200,12 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       return 'all';
     },
   );
+  const [hideLatePm, setHideLatePm] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(HIDE_LATE_PM_LS_KEY) === '1';
+  });
+  /** ISO of the 5-min bucket the scrubber is on; null = whole day. */
+  const [bucketIso, setBucketIso] = useState<string | null>(null);
   const [page, setPage] = useState<number>(0);
 
   useEffect(() => {
@@ -191,6 +223,17 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       window.localStorage.setItem(CONVICTION_LS_KEY, convictionFloor);
     }
   }, [convictionFloor]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(HIDE_LATE_PM_LS_KEY, hideLatePm ? '1' : '0');
+    }
+  }, [hideLatePm]);
+
+  // Reset bucket scrub when the date changes — a bucket from yesterday
+  // shouldn't carry over.
+  useEffect(() => {
+    setBucketIso(null);
+  }, [date]);
 
   // Reset page on any filter change so we don't land on an empty page.
   useEffect(() => {
@@ -202,9 +245,12 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     sortMode,
     minVolOi,
     convictionFloor,
+    bucketIso,
+    hideLatePm,
   ]);
 
   const isHistorical = date !== todayCt();
+  const isLive = !isHistorical && bucketIso == null;
 
   const { alerts, loading, error, fetchedAt, total, offset, hasMore } =
     useSilentBoomFeed({
@@ -219,6 +265,67 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       page,
       pageSize: PAGE_SIZE,
     });
+
+  // Regular-session bounds (08:30 → 15:00 CT) for the selected date,
+  // browser-TZ-independent. Reused from the LotteryFinder helper so the
+  // two date scrubbers stay in lockstep.
+  const scrubBounds = useMemo(() => ctSessionBounds(date), [date]);
+
+  // Current wall-clock 5-min bucket (UTC ms, floored to the bucket).
+  // Used to cap forward navigation when viewing today — refreshed every
+  // 30s so the dropdown grows in lockstep with the trading session.
+  const [nowBucketMs, setNowBucketMs] = useState<number>(
+    () => Math.floor(Date.now() / 300_000) * 300_000,
+  );
+  useEffect(() => {
+    const id = setInterval(() => {
+      setNowBucketMs(Math.floor(Date.now() / 300_000) * 300_000);
+    }, 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // CT minute-of-day extractor for the late-PM filter. DOM-Intl based
+  // so DST transitions are handled transparently.
+  const ctMinuteOfDay = useMemo(() => {
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Chicago',
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false,
+    });
+    return (iso: string): number => {
+      const parts = fmt.formatToParts(new Date(iso));
+      const h = Number.parseInt(
+        parts.find((p) => p.type === 'hour')?.value ?? '0',
+        10,
+      );
+      const m = Number.parseInt(
+        parts.find((p) => p.type === 'minute')?.value ?? '0',
+        10,
+      );
+      const hh = h === 24 ? 0 : h;
+      return hh * 60 + m;
+    };
+  }, []);
+
+  // Apply the client-side filters (bucket scrub + late-PM hide) to the
+  // server-paginated list. Server `total` and pagination remain tied to
+  // the unfiltered DB result so the page chips stay accurate; the
+  // displayed list reflects the user's local view.
+  const displayedAlerts = useMemo(() => {
+    let out = alerts;
+    if (bucketIso != null) {
+      out = out.filter((a) => a.bucketCt === bucketIso);
+    }
+    if (hideLatePm) {
+      out = out.filter(
+        (a) => ctMinuteOfDay(a.bucketCt) < LATE_PM_CUTOFF_MIN_OF_DAY,
+      );
+    }
+    return out;
+  }, [alerts, bucketIso, hideLatePm, ctMinuteOfDay]);
+  const hiddenLatePmCount =
+    bucketIso == null && hideLatePm ? alerts.length - displayedAlerts.length : 0;
 
   // Top tickers in the current page — quick one-click scope.
   const topTickers = useMemo(() => {
@@ -252,8 +359,15 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
           </a>
         </p>
 
+        {/* Day banner — tier counts + dominant ticker + loudest spike */}
+        <SilentBoomDayBanner alerts={alerts} total={total} />
+
         <div className="space-y-2.5 rounded-lg border border-neutral-800/80 bg-neutral-950/40 p-2.5">
-          {/* Row 1: date + meta */}
+          {/* Row 1: date + scrub controls. Prev/next step the 5-min
+              bucket by ±5 min — matches the detector's bucket cadence
+              so every step lands on a real bucket boundary. The scrub
+              filter is client-side; the API still returns the whole
+              day and pagination/total stay tied to the unfiltered set. */}
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <label className="flex items-center gap-1.5">
               <span className={SECTION_LABEL}>date</span>
@@ -261,11 +375,112 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 type="date"
                 value={date}
                 max={todayCt()}
-                onChange={(e) => setDate(e.target.value)}
+                onChange={(e) => {
+                  setDate(e.target.value);
+                  setBucketIso(null);
+                }}
                 className="rounded-md border border-neutral-800 bg-neutral-900/60 px-2 py-1 font-mono text-xs text-neutral-100 focus:border-neutral-600 focus:outline-none"
                 aria-label="Select trading day"
               />
             </label>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className={`${CHIP_BASE} ${
+                  bucketIso == null ? CHIP_ACTIVE.green : CHIP_INACTIVE
+                }`}
+                onClick={() => setBucketIso(null)}
+                title={
+                  isLive
+                    ? 'Live: showing today (most recent first), polls every 30s'
+                    : 'Show every alert on the selected day'
+                }
+                aria-pressed={bucketIso == null}
+              >
+                {date === todayCt() ? 'Live' : 'All day'}
+              </button>
+              {(() => {
+                const lo = Date.parse(scrubBounds.min);
+                const hi = Date.parse(scrubBounds.max);
+                const isToday = date === todayCt();
+                const effectiveHi = isToday ? Math.min(hi, nowBucketMs) : hi;
+                const noValidBucket = effectiveHi < lo;
+                const cur = bucketIso ? Date.parse(bucketIso) : null;
+                const atMin = noValidBucket || (cur != null && cur <= lo);
+                const atMax =
+                  noValidBucket || (cur != null && cur >= effectiveHi);
+                const step = (deltaMs: number) => {
+                  const seed = cur ?? (deltaMs < 0 ? effectiveHi : lo);
+                  const next = Math.max(
+                    lo,
+                    Math.min(effectiveHi, seed + deltaMs),
+                  );
+                  setBucketIso(new Date(next).toISOString());
+                };
+                const options: { value: string; label: string }[] = [];
+                if (!noValidBucket) {
+                  for (let t = lo; t <= effectiveHi; t += 300_000) {
+                    const iso = new Date(t).toISOString();
+                    options.push({ value: iso, label: formatTimeCT(iso) });
+                  }
+                }
+                return (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => step(-300_000)}
+                      disabled={atMin}
+                      className={`${CHIP_BASE} ${CHIP_INACTIVE} disabled:opacity-40 disabled:hover:border-neutral-800 disabled:hover:text-neutral-400`}
+                      aria-label="Step back one 5-min bucket"
+                      title="Step back one bucket (−5m)"
+                    >
+                      ◀ −5m
+                    </button>
+                    <select
+                      value={bucketIso ?? ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setBucketIso(v === '' ? null : v);
+                      }}
+                      disabled={noValidBucket}
+                      aria-label="Jump to a specific 5-min bucket (Central Time)"
+                      title={
+                        isToday
+                          ? `Jump to a specific bucket. Capped at the current open bucket (${formatTimeCT(nowBucketMs)}).`
+                          : 'Jump to a specific 5-min bucket (08:30–15:00 CT).'
+                      }
+                      className="rounded-md border border-neutral-800 bg-neutral-900/60 px-2 py-1 font-mono text-xs text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
+                    >
+                      <option value="">— pick —</option>
+                      {options.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => step(300_000)}
+                      disabled={atMax}
+                      className={`${CHIP_BASE} ${CHIP_INACTIVE} disabled:opacity-40 disabled:hover:border-neutral-800 disabled:hover:text-neutral-400`}
+                      aria-label="Step forward one 5-min bucket"
+                      title={
+                        isToday && cur != null && cur >= effectiveHi
+                          ? 'Cannot step past the current bucket'
+                          : 'Step forward one bucket (+5m)'
+                      }
+                    >
+                      +5m ▶
+                    </button>
+                  </>
+                );
+              })()}
+              {bucketIso && (
+                <span className="font-mono text-xs text-purple-200">
+                  (5-min bucket)
+                </span>
+              )}
+            </div>
             <div className="ml-auto flex items-center gap-1.5">
               {fetchedAt != null && !isHistorical && (
                 <span className="text-[10px] text-neutral-500">
@@ -343,7 +558,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
             ))}
           </div>
 
-          {/* Row 3: option type */}
+          {/* Row 4: option type + hide-late-PM */}
           <div className="flex flex-wrap items-center gap-1.5">
             <span className={SECTION_LABEL}>type</span>
             {[
@@ -368,6 +583,23 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 </button>
               );
             })}
+            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+            <button
+              type="button"
+              onClick={() => setHideLatePm(!hideLatePm)}
+              className={`${CHIP_BASE} ${
+                hideLatePm ? CHIP_ACTIVE.purple : CHIP_INACTIVE
+              }`}
+              title="Hide alerts whose 5-min bucket is at or after 14:30 CT. Audit shows the PM stratum lift is 0.50× and post-14:30 fires are the worst slice — discretionary exit windows close fast enough that the move can't develop. Client-side filter; toolbar counts and pagination still reflect the full DB result."
+              aria-pressed={hideLatePm}
+            >
+              hide post-14:30
+              {hideLatePm && hiddenLatePmCount > 0 && (
+                <span className="text-[10px] opacity-70">
+                  −{hiddenLatePmCount}
+                </span>
+              )}
+            </button>
           </div>
 
           {/* Row 4 (conditional): ticker chips */}
@@ -435,11 +667,24 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
           <div className="space-y-2">
             <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-neutral-500">
               <span>
-                {total} alert{total === 1 ? '' : 's'} for {date}
-                {total > 0 && (
-                  <span className="ml-2 text-neutral-600">
-                    showing {offset + 1}-{offset + alerts.length}
-                  </span>
+                {bucketIso ? (
+                  <>
+                    {displayedAlerts.length} alert
+                    {displayedAlerts.length === 1 ? '' : 's'} in{' '}
+                    <span className="font-mono text-purple-200">
+                      {formatTimeCT(bucketIso)} CT
+                    </span>{' '}
+                    bucket
+                  </>
+                ) : (
+                  <>
+                    {total} alert{total === 1 ? '' : 's'} for {date}
+                    {total > 0 && (
+                      <span className="ml-2 text-neutral-600">
+                        showing {offset + 1}-{offset + alerts.length}
+                      </span>
+                    )}
+                  </>
                 )}
                 {convictionFloor !== 'all' && (
                   <span
@@ -460,6 +705,11 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 {minVolOi > 0 && (
                   <span className="ml-2 text-amber-300/80">
                     vol/OI ≥ {minVolOi}
+                  </span>
+                )}
+                {hideLatePm && hiddenLatePmCount > 0 && (
+                  <span className="ml-2 text-purple-300/80">
+                    ({hiddenLatePmCount} hidden after 14:30 CT)
                   </span>
                 )}
               </span>
@@ -489,7 +739,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 </span>
               )}
             </div>
-            {alerts.map((a) => (
+            {displayedAlerts.map((a) => (
               <SilentBoomRow
                 // Key by chain+bucket — alert.id rolls if we re-detect on
                 // the same bucket (we shouldn't, but ON CONFLICT DO NOTHING
