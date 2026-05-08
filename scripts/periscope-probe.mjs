@@ -64,9 +64,35 @@ function ts() {
 }
 
 async function loginFlow() {
-  console.log('▸ Login mode. Opening headed Chromium…');
-  const browser = await chromium.launch({ headless: false });
-  const context = await browser.newContext();
+  // Use the OS-installed Chrome (channel: 'chrome') instead of Playwright's
+  // bundled Chromium, with the AutomationControlled blink feature disabled.
+  // Google's "this browser is not secure" check fires on Playwright's
+  // bundled Chromium because of automation fingerprints; system Chrome with
+  // this flag often passes. Falls back to Chromium if Chrome isn't installed.
+  console.log('▸ Login mode. Opening system Chrome (anti-detection mode)…');
+  let browser;
+  try {
+    browser = await chromium.launch({
+      headless: false,
+      channel: 'chrome',
+      args: [
+        '--disable-blink-features=AutomationControlled',
+        '--disable-features=IsolateOrigins,site-per-process',
+      ],
+      ignoreDefaultArgs: ['--enable-automation'],
+    });
+  } catch (err) {
+    console.warn('▸ System Chrome not available, falling back to Chromium.');
+    console.warn(`▸ Reason: ${err instanceof Error ? err.message : String(err)}`);
+    console.warn('▸ Google login may reject this browser. If it does, see');
+    console.warn('▸ scripts/periscope-probe.mjs comments for cookie-paste fallback.');
+    browser = await chromium.launch({ headless: false });
+  }
+  const context = await browser.newContext({
+    userAgent:
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
+      '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  });
   const page = await context.newPage();
   await page.goto(LOGIN_BASE);
   console.log('▸ A browser window has opened. Log in to UW manually.');
