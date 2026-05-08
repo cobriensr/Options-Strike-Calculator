@@ -21,6 +21,7 @@ import {
   setCacheHeaders,
 } from './_lib/api-helpers.js';
 import { silentBoomFeedQuerySchema } from './_lib/validation.js';
+import { avgHoldMinutesFor } from './_lib/silent-boom-hold.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
 type DbId = number | string;
@@ -88,6 +89,13 @@ interface SilentBoomAlertResponse {
   zeroDteDiff: number | null;
   /** SPX dealer gamma_oi at the spike-bucket time (sign indicator). */
   spxSpotGammaOi: number | null;
+  /**
+   * Cohort-derived "typical exit window" hint (P75 of minutes-to-peak
+   * among historical winners for the (tier, ticker) cohort). Always
+   * populated. Falls back to tier3 default (224) when score_tier is
+   * null on legacy rows. See api/_lib/silent-boom-hold.ts.
+   */
+  avgHoldMinutes: number;
   outcomes: {
     peakCeilingPct: number | null;
     minutesToPeak: number | null;
@@ -371,6 +379,10 @@ export default async function handler(
       mktTideDiff: toNumOrNull(r.mkt_tide_diff),
       zeroDteDiff: toNumOrNull(r.zero_dte_diff),
       spxSpotGammaOi: toNumOrNull(r.spx_spot_gamma_oi),
+      avgHoldMinutes: avgHoldMinutesFor({
+        tier: r.score_tier,
+        ticker: r.underlying_symbol,
+      }),
       outcomes: {
         peakCeilingPct: toNumOrNull(r.peak_ceiling_pct),
         minutesToPeak: toNumOrNull(r.minutes_to_peak),

@@ -110,6 +110,7 @@ describe('silent-boom-feed handler', () => {
         score: number | null;
         scoreTier: string | null;
         mktTideDiff: number | null;
+        avgHoldMinutes: number;
       }[];
       total: number;
     };
@@ -118,7 +119,24 @@ describe('silent-boom-feed handler', () => {
       score: 24,
       scoreTier: 'tier1',
       mktTideDiff: 5000,
+      // SNDK has no override → tier1 default of 144
+      avgHoldMinutes: 144,
     });
+  });
+
+  it('uses the per-ticker avg-hold-minutes override on QQQ tier1', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([
+        makeAlert({ underlying_symbol: 'QQQ', score_tier: 'tier1' }),
+      ]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as { alerts: { avgHoldMinutes: number }[] };
+    expect(body.alerts[0]?.avgHoldMinutes).toBe(89);
   });
 
   it('returns null mktTideDiff for rows lacking a market_tide tick', async () => {
