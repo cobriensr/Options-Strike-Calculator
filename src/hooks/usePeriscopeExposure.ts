@@ -18,7 +18,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
-import { checkIsOwner } from '../utils/auth';
+import { getAccessMode } from '../utils/auth';
 
 export interface RankedRow {
   strike: number;
@@ -96,11 +96,16 @@ export function usePeriscopeExposure({
   marketOpen,
   spotHint,
 }: UsePeriscopeExposureOptions): UsePeriscopeExposureReturn {
-  const isOwner = checkIsOwner();
+  // Owner OR guest — periscope-exposure is a read-only data endpoint
+  // gated by guardOwnerOrGuestEndpoint server-side. The previous
+  // checkIsOwner() gate matched the useNopeIntraday pattern but
+  // unnecessarily blocked guest keys from seeing the panel data.
+  const accessMode = getAccessMode();
+  const canFetch = accessMode === 'owner' || accessMode === 'guest';
   const [view, setView] = useState<PeriscopeView | null>(null);
-  const [emptyReason, setEmptyReason] = useState<
-    'no_spot' | 'no_slot' | null
-  >(null);
+  const [emptyReason, setEmptyReason] = useState<'no_spot' | 'no_slot' | null>(
+    null,
+  );
   const [asOf, setAsOf] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -114,7 +119,7 @@ export function usePeriscopeExposure({
   }, []);
 
   const fetchView = useCallback(async () => {
-    if (!isOwner) return;
+    if (!canFetch) return;
     setIsLoading(true);
     try {
       const url =
@@ -135,22 +140,22 @@ export function usePeriscopeExposure({
     } finally {
       if (mountedRef.current) setIsLoading(false);
     }
-  }, [isOwner, spotHint]);
+  }, [canFetch, spotHint]);
 
   // Initial fetch.
   useEffect(() => {
-    if (!isOwner) return;
+    if (!canFetch) return;
     void fetchView();
-  }, [isOwner, fetchView]);
+  }, [canFetch, fetchView]);
 
   // Polling — RTH only.
   useEffect(() => {
-    if (!isOwner || !marketOpen) return;
+    if (!canFetch || !marketOpen) return;
     const id = setInterval(() => {
       void fetchView();
     }, POLL_INTERVALS.PERISCOPE);
     return () => clearInterval(id);
-  }, [isOwner, marketOpen, fetchView]);
+  }, [canFetch, marketOpen, fetchView]);
 
   return {
     view,
