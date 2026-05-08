@@ -4078,4 +4078,46 @@ export const MIGRATIONS: Migration[] = [
             ADD COLUMN IF NOT EXISTS spx_spot_gamma_oi NUMERIC`,
     ],
   },
+  {
+    id: 138,
+    description:
+      'Create cone_levels table for the daily 0DTE straddle breakeven cone (Phase 1 of docs/superpowers/specs/periscope-html-ingestion-2026-05-07.md). Replaces user-input manual cone bounds with auto-computed values from the SPX 0DTE option chain at 9:31 ET. Cone bounds derive from the ATM call+put marks: cone_upper = atm_strike + call_premium, cone_lower = atm_strike - put_premium. asymmetry_pts = (atm_strike - cone_lower) - (cone_upper - atm_strike); positive = downside-skewed (puts richer than calls). Read by the check-cone-breach cron + future ConeStatusPill UI panel. Date PK enforces one cone per session.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS cone_levels (
+          date          DATE PRIMARY KEY,
+          calc_time     TIMESTAMPTZ NOT NULL,
+          spot_at_calc  NUMERIC(10,2) NOT NULL,
+          atm_strike    INT NOT NULL,
+          call_premium  NUMERIC(10,4) NOT NULL,
+          put_premium   NUMERIC(10,4) NOT NULL,
+          cone_upper    NUMERIC(10,2) NOT NULL,
+          cone_lower    NUMERIC(10,2) NOT NULL,
+          cone_width    NUMERIC(8,2) NOT NULL,
+          asymmetry_pts NUMERIC(8,2) NOT NULL,
+          inserted_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `,
+    ],
+  },
+  {
+    id: 139,
+    description:
+      'Create cone_breach_events table for first-breach-per-direction-per-day events (Phase 1 of docs/superpowers/specs/periscope-html-ingestion-2026-05-07.md). Written by the check-cone-breach cron every minute during RTH; UNIQUE (date, direction) gives natural idempotency so the cron writes one upper + one lower row per session even though it runs ~390 times. Backs the cone-status pill (INSIDE / BREACHED_UP / BREACHED_DOWN) and the planned push-notification on first breach. Per UW: SPX exceeding the 0DTE straddle breakeven tends to extend (vol expansion), not fade — this table is the trigger surface for the chase-the-breakout futures bias.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS cone_breach_events (
+          id                   BIGSERIAL PRIMARY KEY,
+          date                 DATE NOT NULL,
+          direction            TEXT NOT NULL CHECK (direction IN ('upper', 'lower')),
+          breach_time          TIMESTAMPTZ NOT NULL,
+          spot_at_breach       NUMERIC(10,2) NOT NULL,
+          cone_bound_at_breach NUMERIC(10,2) NOT NULL,
+          pts_past_bound       NUMERIC(8,2) NOT NULL,
+          inserted_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE (date, direction)
+        )
+      `,
+    ],
+  },
 ];

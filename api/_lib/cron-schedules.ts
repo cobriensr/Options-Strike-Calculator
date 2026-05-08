@@ -41,6 +41,16 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: LONG_RUNNER_MAX_RUNTIME,
   },
+  'check-cone-breach': {
+    schedule: '* 13-21 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
+  'compute-cone': {
+    schedule: '32 13 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
   'compute-es-overnight': {
     schedule: '35 13,14 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
