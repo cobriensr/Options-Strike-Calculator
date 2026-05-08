@@ -4,11 +4,7 @@ import { useSilentBoomFeed } from '../../hooks/useSilentBoomFeed.js';
 import { ctSessionBounds } from '../LotteryFinder/ct-window.js';
 import { SilentBoomDayBanner } from './SilentBoomDayBanner.js';
 import { SilentBoomRow } from './SilentBoomRow.js';
-import type {
-  OptionType,
-  SilentBoomSortMode,
-  SilentBoomTod,
-} from './types.js';
+import type { OptionType, SilentBoomSortMode, SilentBoomTod } from './types.js';
 
 const PAGE_SIZE = 50;
 const SORT_LS_KEY = 'silentBoom.sortMode';
@@ -42,6 +38,32 @@ const TOD_FILTERS: Array<{ value: SilentBoomTod | null; label: string }> = [
   { value: 'LUNCH', label: 'LUNCH' },
   { value: 'PM', label: 'PM' },
 ];
+
+interface ExportUrlParams {
+  date: string;
+  ticker?: string | null;
+  optionType?: OptionType | null;
+  minVolOi?: number;
+  minScore?: number | null;
+  tod?: SilentBoomTod | null;
+}
+
+/**
+ * Build the /api/silent-boom-export URL with only the params the user
+ * actually set. Boolean-true / non-default values get serialized;
+ * null / 0 / undefined are omitted so the schema's defaults kick in.
+ */
+const buildExportUrl = (params: ExportUrlParams): string => {
+  const sp = new URLSearchParams({ date: params.date });
+  if (params.ticker) sp.set('ticker', params.ticker);
+  if (params.optionType) sp.set('optionType', params.optionType);
+  if (params.minVolOi != null && params.minVolOi > 0) {
+    sp.set('minVolOi', String(params.minVolOi));
+  }
+  if (params.minScore != null) sp.set('minScore', String(params.minScore));
+  if (params.tod) sp.set('tod', params.tod);
+  return `/api/silent-boom-export?${sp.toString()}`;
+};
 
 const CONVICTION_OPTIONS: Array<{
   value: ConvictionFloor;
@@ -340,7 +362,9 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     return out;
   }, [alerts, bucketIso, hideLatePm, ctMinuteOfDay]);
   const hiddenLatePmCount =
-    bucketIso == null && hideLatePm ? alerts.length - displayedAlerts.length : 0;
+    bucketIso == null && hideLatePm
+      ? alerts.length - displayedAlerts.length
+      : 0;
 
   // Top tickers in the current page — quick one-click scope.
   const topTickers = useMemo(() => {
@@ -497,13 +521,37 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
               )}
             </div>
             <div className="ml-auto flex items-center gap-1.5">
+              <span className={SECTION_LABEL}>export</span>
+              <a
+                href={buildExportUrl({
+                  date,
+                  ticker: tickerFilter,
+                  optionType: optionTypeFilter,
+                  minVolOi,
+                  minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
+                  tod: todFilter,
+                })}
+                download
+                className={`${CHIP_BASE} ${CHIP_INACTIVE}`}
+                title="Export the current filtered view as CSV (one row per alert, all columns including score / tier / outcomes)."
+              >
+                ⤓ filtered
+              </a>
+              <a
+                href={buildExportUrl({ date })}
+                download
+                className={`${CHIP_BASE} ${CHIP_INACTIVE}`}
+                title="Export every alert on the selected day as CSV — ignores active filters."
+              >
+                ⤓ all
+              </a>
               {fetchedAt != null && !isHistorical && (
-                <span className="text-[10px] text-neutral-500">
+                <span className="ml-1 text-[10px] text-neutral-500">
                   updated {formatTimeCT(fetchedAt)} CT
                 </span>
               )}
               {isHistorical && (
-                <span className="text-[10px] text-neutral-500">
+                <span className="ml-1 text-[10px] text-neutral-500">
                   historical replay
                 </span>
               )}

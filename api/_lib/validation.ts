@@ -928,6 +928,33 @@ export const silentBoomFeedQuerySchema = z.object({
 
 export type SilentBoomFeedQuery = z.infer<typeof silentBoomFeedQuerySchema>;
 
+/**
+ * Query params for GET /api/silent-boom-export.
+ *
+ * Owner-only EOD CSV / JSON dump of `silent_boom_alerts` for one
+ * trading day. Same filter shape as the feed endpoint minus
+ * pagination + sort (the spreadsheet always sorts chronologically
+ * for top-to-bottom reading).
+ */
+export const silentBoomExportQuerySchema = z.object({
+  ticker: z
+    .string()
+    .regex(/^[A-Z]{1,8}$/, 'ticker must be 1-8 uppercase letters')
+    .optional(),
+  optionType: z.enum(['C', 'P']).optional(),
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+    .optional(),
+  minVolOi: z.coerce.number().min(0).max(100).default(0),
+  minSpikeRatio: z.coerce.number().min(0).max(1000).default(0),
+  minScore: z.coerce.number().int().min(-100).max(100).optional(),
+  tod: z.enum(['AM_open', 'MID', 'LUNCH', 'PM', 'LATE']).optional(),
+  format: z.enum(['csv', 'json']).default('csv'),
+});
+
+export type SilentBoomExportQuery = z.infer<typeof silentBoomExportQuerySchema>;
+
 // ============================================================
 // /api/lottery-export
 // ============================================================
