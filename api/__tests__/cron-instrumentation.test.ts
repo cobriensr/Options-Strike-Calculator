@@ -107,6 +107,61 @@ describe('withCronInstrumentation', () => {
     );
   });
 
+  it('intentional skip (200) sends ok check-in to Sentry when SCHEDULE_MAP has entry', async () => {
+    // Simulate cronGuard's outside-time-window path: it sets status 200
+    // with `{ skipped: true, reason: 'Outside time window' }`, then
+    // returns null.
+    vi.mocked(cronGuard).mockImplementation((_req, res) => {
+      res.status(200).json({ skipped: true, reason: 'Outside time window' });
+      return null;
+    });
+    const handler = vi.fn();
+    const wrapped = withCronInstrumentation('monitored-job', handler);
+
+    await wrapped(mockRequest(), mockResponse());
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(Sentry.captureCheckIn).toHaveBeenCalledWith(
+      { monitorSlug: 'monitored-job', status: 'ok' },
+      expect.objectContaining({
+        schedule: { type: 'crontab', value: '*/5 * * * *' },
+        timezone: 'UTC',
+      }),
+    );
+  });
+
+  it('intentional skip on job without SCHEDULE_MAP entry does NOT send check-in', async () => {
+    vi.mocked(cronGuard).mockImplementation((_req, res) => {
+      res.status(200).json({ skipped: true, reason: 'Outside time window' });
+      return null;
+    });
+    const handler = vi.fn();
+    // 'unregistered-job' is not in the SCHEDULE_MAP mock above.
+    const wrapped = withCronInstrumentation('unregistered-job', handler);
+
+    await wrapped(mockRequest(), mockResponse());
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(Sentry.captureCheckIn).not.toHaveBeenCalled();
+  });
+
+  it('auth failure (401) does NOT send check-in (real failures still alert)', async () => {
+    // cronGuard's auth-failure path: status 401, then returns null.
+    vi.mocked(cronGuard).mockImplementation((_req, res) => {
+      res.status(401).json({ error: 'Unauthorized' });
+      return null;
+    });
+    const handler = vi.fn();
+    const wrapped = withCronInstrumentation('monitored-job', handler);
+
+    await wrapped(mockRequest(), mockResponse());
+
+    expect(handler).not.toHaveBeenCalled();
+    // No check-in — this is a real failure, the missed-checkin signal
+    // should still alert.
+    expect(Sentry.captureCheckIn).not.toHaveBeenCalled();
+  });
+
   it('happy path: success result reports + responds 200 with durationMs', async () => {
     vi.mocked(cronGuard).mockReturnValue(guardOk);
     const handler = vi.fn().mockResolvedValue({

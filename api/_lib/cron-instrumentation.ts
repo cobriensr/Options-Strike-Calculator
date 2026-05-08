@@ -30,6 +30,38 @@ import { reportCronRun } from './axiom.js';
 import { SCHEDULE_MAP } from './cron-schedules.js';
 
 /**
+ * Send a single `ok` check-in to Sentry for the given monitor. Used when
+ * the cron is intentionally skipped (outside market hours, weekend,
+ * holiday) so Sentry's missed-checkin signal stays accurate — without
+ * this, every minute of the post-close window in vercel.json's
+ * `* 13-21 * * 1-5` schedule alerts as a missed check-in even though
+ * the skip is by design. No-op when:
+ *   - the job has no SCHEDULE_MAP entry (new cron not yet registered),
+ *   - Sentry.captureCheckIn isn't available (per-test mocks).
+ */
+function sendIntentionalSkipCheckin(jobName: string): void {
+  const config = SCHEDULE_MAP[jobName];
+  const captureCheckIn =
+    typeof Sentry.captureCheckIn === 'function' ? Sentry.captureCheckIn : null;
+  if (!config || !captureCheckIn) return;
+  try {
+    captureCheckIn(
+      { monitorSlug: jobName, status: 'ok' },
+      {
+        schedule: { type: 'crontab', value: config.schedule },
+        checkinMargin: config.checkinMargin,
+        maxRuntime: config.maxRuntime,
+        failureIssueThreshold: config.failureIssueThreshold ?? 1,
+        recoveryThreshold: config.recoveryThreshold ?? 1,
+        timezone: 'UTC',
+      },
+    );
+  } catch {
+    /* swallowed: observability path must never crash the response */
+  }
+}
+
+/**
  * Context handed to the cron logic. `today` and `apiKey` come from
  * `cronGuard()`; `startTimeMs` is captured at wrapper entry; `logger` is
  * the shared pino logger so call sites can rely on a single import.
@@ -208,7 +240,16 @@ export function withCronInstrumentation(
     if (opts.requireApiKey !== undefined)
       guardOpts.requireApiKey = opts.requireApiKey;
     const guard = cronGuard(req, res, guardOpts);
-    if (!guard) return;
+    if (!guard) {
+      // Intentional skip (status 200, e.g. outside market hours) → tell
+      // Sentry the cron checked in. Real auth/config failures (4xx/5xx)
+      // get NO check-in so the missed-checkin signal still alerts on
+      // genuine outages.
+      if (res.statusCode === 200) {
+        sendIntentionalSkipCheckin(jobName);
+      }
+      return;
+    }
 
     const startTimeMs = Date.now();
     Sentry.setTag('cron.job', jobName);
