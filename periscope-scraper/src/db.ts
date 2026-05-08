@@ -45,13 +45,22 @@ export async function insertSnapshots(rows: SnapshotRow[]): Promise<number> {
     const params: unknown[] = [];
     let p = 1;
     for (const row of chunk) {
-      placeholders.push(`($${p++}, $${p++}, $${p++}, $${p++}, $${p++})`);
-      params.push(row.capturedAt, row.expiry, row.panel, row.strike, row.value);
+      placeholders.push(
+        `($${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++})`,
+      );
+      params.push(
+        row.capturedAt,
+        row.expiry,
+        row.panel,
+        row.strike,
+        row.value,
+        row.timeframe,
+      );
     }
 
     const text =
       `INSERT INTO periscope_snapshots ` +
-      `(captured_at, expiry, panel, strike, value) ` +
+      `(captured_at, expiry, panel, strike, value, timeframe) ` +
       `VALUES ${placeholders.join(', ')} ` +
       `ON CONFLICT (captured_at, expiry, panel, strike) DO NOTHING`;
 

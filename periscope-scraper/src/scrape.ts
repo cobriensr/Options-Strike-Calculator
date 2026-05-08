@@ -27,11 +27,7 @@
 
 import { chromium, type Browser, type Page } from 'playwright';
 import pino from 'pino';
-import {
-  LOG_LEVEL,
-  UW_AUTH_STATE_PATH,
-  UW_PERISCOPE_URL,
-} from './config.js';
+import { LOG_LEVEL, UW_AUTH_STATE_PATH, UW_PERISCOPE_URL } from './config.js';
 import { insertSnapshots } from './db.js';
 import { parseDateLabel, parsePage } from './parser.js';
 import type { Panel, SnapshotRow } from './types.js';
@@ -45,11 +41,27 @@ import type { Panel, SnapshotRow } from './types.js';
 // correctness gate.
 const US_MARKET_HOLIDAYS: ReadonlySet<string> = new Set([
   // 2025
-  '2025-01-01', '2025-01-20', '2025-02-17', '2025-04-18', '2025-05-26',
-  '2025-06-19', '2025-07-04', '2025-09-01', '2025-11-27', '2025-12-25',
+  '2025-01-01',
+  '2025-01-20',
+  '2025-02-17',
+  '2025-04-18',
+  '2025-05-26',
+  '2025-06-19',
+  '2025-07-04',
+  '2025-09-01',
+  '2025-11-27',
+  '2025-12-25',
   // 2026
-  '2026-01-01', '2026-01-19', '2026-02-16', '2026-04-03', '2026-05-25',
-  '2026-06-19', '2026-07-03', '2026-09-07', '2026-11-26', '2026-12-25',
+  '2026-01-01',
+  '2026-01-19',
+  '2026-02-16',
+  '2026-04-03',
+  '2026-05-25',
+  '2026-06-19',
+  '2026-07-03',
+  '2026-09-07',
+  '2026-11-26',
+  '2026-12-25',
 ]);
 
 const logger = pino({ level: LOG_LEVEL });
@@ -100,8 +112,10 @@ function todayInCT(): string {
 /** Advance an HH:MM string by 10 minutes. "08:20" → "08:30", "08:50" → "09:00". */
 function nextTimeframe(slotStartHhmm: string): string {
   const [hStr, mStr] = slotStartHhmm.split(':');
-  const totalMin = Number.parseInt(hStr ?? '0', 10) * 60 +
-    Number.parseInt(mStr ?? '0', 10) + 10;
+  const totalMin =
+    Number.parseInt(hStr ?? '0', 10) * 60 +
+    Number.parseInt(mStr ?? '0', 10) +
+    10;
   const newH = Math.floor(totalMin / 60);
   const newM = totalMin % 60;
   return `${String(newH).padStart(2, '0')}:${String(newM).padStart(2, '0')}`;
@@ -274,7 +288,10 @@ async function setExpirySingle(
   // refetch + repaint the table for the new expiry.
   await page.waitForTimeout(2_000);
 
-  logger.info({ targetYmd, targetMdy }, 'setExpirySingle: clicked target date row');
+  logger.info(
+    { targetYmd, targetMdy },
+    'setExpirySingle: clicked target date row',
+  );
   return true;
 }
 
@@ -317,10 +334,7 @@ async function setDTEZero(page: Page): Promise<void> {
   // Verify the inputs hold "0" before closing.
   const minVal = await minInput.inputValue();
   const maxVal = await maxInput.inputValue();
-  logger.info(
-    { minVal, maxVal },
-    'setDTEZero: input values after fill',
-  );
+  logger.info({ minVal, maxVal }, 'setDTEZero: input values after fill');
 
   // Close the popover. UW's filter applies on input change, so Escape
   // shouldn't undo it.
@@ -467,10 +481,7 @@ async function selectGreek(page: Page, label: string): Promise<void> {
  * then click prev or next based on direction. Caps at 30 attempts to
  * prevent infinite loops on unparseable labels.
  */
-async function walkDateToTarget(
-  page: Page,
-  targetYmd: string,
-): Promise<void> {
+async function walkDateToTarget(page: Page, targetYmd: string): Promise<void> {
   const yearStr = targetYmd.slice(0, 4);
   const year = Number.parseInt(yearStr, 10);
   if (!Number.isFinite(year)) {
@@ -696,13 +707,19 @@ async function captureCurrentSlot(
   // Empty-state short-circuit: this page state has no data (e.g. an
   // expiry/date combo that resolves to nothing). Bail cleanly.
   if ((await page.getByText(/no data available/i).count()) > 0) {
-    logger.warn(
-      'captureCurrentSlot: "No data available" — returning 0 rows',
-    );
+    logger.warn('captureCurrentSlot: "No data available" — returning 0 rows');
     return [];
   }
 
   const slotRows: SnapshotRow[] = [];
+  // Anchor: the timeframe we read from the FIRST Greek (gamma). All
+  // subsequent Greeks must come from the same slot — Greek-cycling
+  // takes 5–10s and UW publishes a new 10-min slot every 10 min, so
+  // mid-cycle rollover would silently mix two slots into one
+  // captured_at. When drift is detected, walk the timeframe widget
+  // back to the anchor and re-parse the panel.
+  let anchorTimeframe: string | null = null;
+  let anchorStart: string | null = null;
 
   for (const greek of GREEKS_TO_CAPTURE) {
     try {
@@ -719,36 +736,77 @@ async function captureCurrentSlot(
     }
 
     if ((await page.getByText(/no data available/i).count()) > 0) {
-      logger.info(
-        { panel: greek.panel },
-        'no data for this Greek — skipping',
-      );
+      logger.info({ panel: greek.panel }, 'no data for this Greek — skipping');
       continue;
     }
 
-    const html = await page.content();
-    const { header, rows } = parsePage(html, capturedAt);
+    let html = await page.content();
+    let parsed = parsePage(html, capturedAt);
 
-    if (header.panel !== greek.panel) {
+    if (parsed.header.panel !== greek.panel) {
       logger.warn(
-        { expected: greek.panel, got: header.panel },
+        { expected: greek.panel, got: parsed.header.panel },
         'panel mismatch — skipping this Greek',
       );
       continue;
     }
 
+    if (anchorTimeframe === null) {
+      // First Greek — record the anchor.
+      anchorTimeframe = parsed.header.timeframe;
+      anchorStart = parseTimeframeStart(parsed.header.timeframe);
+    } else if (parsed.header.timeframe !== anchorTimeframe) {
+      // Drift detected — UW rolled to a new slot mid-cycle. Walk the
+      // timeframe back to the anchor and re-parse the same Greek.
+      logger.info(
+        {
+          panel: greek.panel,
+          anchor: anchorTimeframe,
+          got: parsed.header.timeframe,
+        },
+        'timeframe drift — realigning to gamma anchor',
+      );
+      if (anchorStart != null) {
+        try {
+          await walkTimeframeToTarget(page, anchorStart);
+          await page.waitForTimeout(1_500);
+          html = await page.content();
+          parsed = parsePage(html, capturedAt);
+          if (parsed.header.timeframe !== anchorTimeframe) {
+            logger.warn(
+              {
+                panel: greek.panel,
+                anchor: anchorTimeframe,
+                got: parsed.header.timeframe,
+              },
+              'realign did not converge — committing rows with drifted timeframe',
+            );
+          }
+        } catch (err) {
+          logger.warn(
+            {
+              panel: greek.panel,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            'walkTimeframeToTarget failed during realign — committing drifted rows',
+          );
+        }
+      }
+    }
+
     logger.info(
       {
         panel: greek.panel,
-        rows: rows.length,
-        spot: header.spot,
-        expiry: header.expiry,
-        timeframe: header.timeframe,
+        rows: parsed.rows.length,
+        spot: parsed.header.spot,
+        expiry: parsed.header.expiry,
+        timeframe: parsed.header.timeframe,
+        anchorTimeframe,
         capturedAt,
       },
       'parsed Greek',
     );
-    slotRows.push(...rows);
+    slotRows.push(...parsed.rows);
   }
 
   return slotRows;
@@ -794,7 +852,10 @@ async function loadAndPrepPage(page: Page): Promise<void> {
  * Returns true if rows are present, false on persistent "no data".
  * Throws on overall timeout.
  */
-async function waitForTableReady(page: Page, timeoutMs = 20_000): Promise<boolean> {
+async function waitForTableReady(
+  page: Page,
+  timeoutMs = 20_000,
+): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   let consecutiveNoData = 0;
   while (Date.now() < deadline) {
@@ -813,7 +874,9 @@ async function waitForTableReady(page: Page, timeoutMs = 20_000): Promise<boolea
     }
     await page.waitForTimeout(1_000);
   }
-  throw new Error('waitForTableReady: neither rows nor "no data" stabilized within timeout');
+  throw new Error(
+    'waitForTableReady: neither rows nor "no data" stabilized within timeout',
+  );
 }
 
 export async function scrapeAllPanels(): Promise<SnapshotRow[]> {
@@ -1004,12 +1067,26 @@ export async function scrapeBackfillRange(
 
   return await withBrowser(async (_browser, page) => {
     logger.info(
-      { startDate, endDate, totalDays: dates.length, startHhmm: startNorm, endHhmm: endNorm },
+      {
+        startDate,
+        endDate,
+        totalDays: dates.length,
+        startHhmm: startNorm,
+        endHhmm: endNorm,
+      },
       'backfill range: starting',
     );
     if (dates.length === 0) {
-      logger.warn({ startDate, endDate }, 'backfill range: no trading days in range');
-      return { totalRowsInserted: 0, daysScanned: 0, daysFailed: [], totalDays: 0 };
+      logger.warn(
+        { startDate, endDate },
+        'backfill range: no trading days in range',
+      );
+      return {
+        totalRowsInserted: 0,
+        daysScanned: 0,
+        daysFailed: [],
+        totalDays: 0,
+      };
     }
 
     await loadAndPrepPage(page);

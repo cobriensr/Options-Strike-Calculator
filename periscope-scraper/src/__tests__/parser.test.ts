@@ -11,10 +11,7 @@ import {
   parseValueString,
 } from '../parser.js';
 
-const FIXTURE_PATH = resolve(
-  import.meta.dirname,
-  'fixtures/sample-page.html',
-);
+const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/sample-page.html');
 const FIXTURE_HTML = readFileSync(FIXTURE_PATH, 'utf8');
 const CAPTURED_AT = '2026-05-07T19:55:00.000Z';
 
@@ -132,6 +129,7 @@ describe('parseTableRows', () => {
       'charm',
       CAPTURED_AT,
       '2026-05-07',
+      '14:50 - 15:00',
     );
     // 14 rows in the fixture
     expect(rows).toHaveLength(14);
@@ -143,6 +141,7 @@ describe('parseTableRows', () => {
       'charm',
       CAPTURED_AT,
       '2026-05-07',
+      '14:50 - 15:00',
     );
     const strikes = rows.map((r) => r.strike).sort((a, b) => a - b);
     expect(strikes[0]).toBe(7215);
@@ -157,6 +156,7 @@ describe('parseTableRows', () => {
       'charm',
       CAPTURED_AT,
       '2026-05-07',
+      '14:50 - 15:00',
     );
     const byStrike = new Map(rows.map((r) => [r.strike, r.value]));
 
@@ -187,11 +187,13 @@ describe('parseTableRows', () => {
       'charm',
       CAPTURED_AT,
       '2026-05-07',
+      '14:50 - 15:00',
     );
     for (const r of rows) {
       expect(r.panel).toBe('charm');
       expect(r.capturedAt).toBe(CAPTURED_AT);
       expect(r.expiry).toBe('2026-05-07');
+      expect(r.timeframe).toBe('14:50 - 15:00');
     }
   });
 });

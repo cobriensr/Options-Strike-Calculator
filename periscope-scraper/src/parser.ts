@@ -65,10 +65,21 @@ export interface PageHeader {
 const VALUE_PATTERN = /^(-?\d+(?:\.\d+)?)([KMB]?)$/;
 const UNDERLYING_PATTERN = /Underlying:\s*\(\$([\d.]+)\)/;
 const EXPIRY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-const DATE_LABEL_PATTERN = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+(\w+)\s+(\d{1,2})$/;
+const DATE_LABEL_PATTERN =
+  /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+(\w+)\s+(\d{1,2})$/;
 const MONTH_3LETTER: Record<string, number> = {
-  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
-  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+  jan: 1,
+  feb: 2,
+  mar: 3,
+  apr: 4,
+  may: 5,
+  jun: 6,
+  jul: 7,
+  aug: 8,
+  sep: 9,
+  oct: 10,
+  nov: 11,
+  dec: 12,
 };
 
 /**
@@ -80,10 +91,7 @@ const MONTH_3LETTER: Record<string, number> = {
  * correct year (typically `new Date().getFullYear()` for live runs,
  * or a fixed value in fixture-based tests).
  */
-export function parseDateLabel(
-  label: string,
-  year: number,
-): string | null {
+export function parseDateLabel(label: string, year: number): string | null {
   const m = DATE_LABEL_PATTERN.exec(label.trim());
   if (!m) return null;
   const monthName = m[1];
@@ -272,6 +280,7 @@ export function parseTableRows(
   panel: Panel,
   capturedAt: string,
   expiry: string,
+  timeframe: string,
 ): SnapshotRow[] {
   const root = parse(html);
   const rows: SnapshotRow[] = [];
@@ -308,6 +317,7 @@ export function parseTableRows(
       panel,
       strike,
       value,
+      timeframe,
     });
   }
 
@@ -326,6 +336,12 @@ export function parsePage(
   year?: number,
 ): { header: PageHeader; rows: SnapshotRow[] } {
   const header = parseHeader(html, year);
-  const rows = parseTableRows(html, header.panel, capturedAt, header.expiry);
+  const rows = parseTableRows(
+    html,
+    header.panel,
+    capturedAt,
+    header.expiry,
+    header.timeframe,
+  );
   return { header, rows };
 }

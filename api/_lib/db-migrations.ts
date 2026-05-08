@@ -4143,4 +4143,15 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 141,
+    description:
+      'Add timeframe column to periscope_snapshots to record the UW slot label (e.g. "09:10 - 09:20") each row was actually captured from. Greek-cycling within a single tick takes 5–10s, and UW publishes a new 10-min slot mid-cycle every 10 min — without a per-row timeframe, the three panels at one captured_at could silently come from different slots. Storing the parsed label per row makes drift visible to the formatter and the panel, and lets the scraper realign timeframe back to the gamma anchor on subsequent Greek captures. Nullable so existing rows stay valid; the scraper writes a real value for every new row.',
+    statements: (sql) => [
+      sql`
+        ALTER TABLE periscope_snapshots
+        ADD COLUMN IF NOT EXISTS timeframe TEXT
+      `,
+    ],
+  },
 ];
