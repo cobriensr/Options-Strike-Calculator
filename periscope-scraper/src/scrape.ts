@@ -166,12 +166,16 @@ async function selectGreek(page: Page, label: string): Promise<void> {
   }
 
   await trigger.click({ timeout: 5_000 });
+  // Popover renders to a portal — give Radix a beat to mount.
+  await page.waitForTimeout(400);
 
-  // The popover renders into a portal at body level. Find the menu item
-  // by its text content. Radix UI menu items typically have role="menuitem".
-  const option = page
-    .getByRole('menuitem', { name: new RegExp(`^${label}$`, 'i') })
-    .first();
+  // UW's Greek popover uses custom div/span markup (no role="menuitem"
+  // per the Phase 0 controls probe). Scope to the most-recently-opened
+  // Radix popper wrapper and find the option by its exact text.
+  const popover = page
+    .locator('[data-radix-popper-content-wrapper]')
+    .last();
+  const option = popover.getByText(label, { exact: true }).first();
   await option.click({ timeout: 5_000 });
 
   // Wait for the trigger's text-base span to display the new Greek
