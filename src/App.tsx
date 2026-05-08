@@ -638,7 +638,7 @@ export default function StrikeCalculator() {
             },
           ]
         : []),
-      ...(isAuthenticated
+      ...(isOwner
         ? [{ id: 'sec-periscope-chat', label: 'Periscope Chat' }]
         : []),
       ...(isAuthenticated
@@ -648,7 +648,7 @@ export default function StrikeCalculator() {
       ...(isAuthenticated ? [{ id: 'sec-bwb', label: 'BWB Calculator' }] : []),
       { id: 'results', label: 'Results' },
     ];
-  }, [isAuthenticated, hasMarketOrSnapshot]);
+  }, [isAuthenticated, isOwner, hasMarketOrSnapshot]);
 
   const analysisContext = useAnalysisContext({
     selectedDate: vix.selectedDate,
@@ -1080,7 +1080,10 @@ export default function StrikeCalculator() {
                   />
                 </GatedSection>
 
-                {isAuthenticated && (
+                {/* Owner-only: Periscope Chat submits cost Anthropic
+                    money, so guests don't see the panel even though
+                    they CAN read the resulting playbooks via History. */}
+                {isOwner && (
                   <>
                     <span
                       id="sec-periscope-chat"
