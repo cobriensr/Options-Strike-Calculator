@@ -23,6 +23,7 @@ import { memo, useMemo } from 'react';
 import { SectionBox } from '../ui';
 import { theme } from '../../themes';
 import { formatTimeCT } from '../../utils/component-formatters';
+import { getCTTime } from '../../utils/timezone';
 import type {
   PeriscopeView,
   RankedRow,
@@ -414,7 +415,104 @@ function GammaSection({ view }: { view: PeriscopeView }) {
   );
 }
 
+/** Charm-tally magnitude under which we treat the tally as "noise" rather
+ *  than directional drift. Matches the threshold used by computeTradePlan. */
+const CHARM_DRIFT_NOISE_THRESHOLD = 1_000_000;
+
+interface CharmDriftRead {
+  position: { text: string; color: string };
+  drift: { text: string; color: string };
+  weight: { text: string; color: string };
+}
+
+function computeCharmDriftRead(args: {
+  spot: number;
+  charmZeroStrike: number;
+  tallyWide100: number;
+  capturedAt: string;
+}): CharmDriftRead {
+  const { spot, charmZeroStrike, tallyWide100, capturedAt } = args;
+
+  const distance = spot - charmZeroStrike;
+  const absDist = Math.abs(distance);
+  let positionText: string;
+  if (absDist < 1) {
+    positionText = `Spot pinned at charm-zero (${charmZeroStrike})`;
+  } else if (distance > 0) {
+    positionText = `Spot ${absDist.toFixed(0)} pts above charm-zero (${charmZeroStrike})`;
+  } else {
+    positionText = `Spot ${absDist.toFixed(0)} pts below charm-zero (${charmZeroStrike})`;
+  }
+
+  let driftText: string;
+  let driftColor: string;
+  if (Math.abs(tallyWide100) < CHARM_DRIFT_NOISE_THRESHOLD) {
+    driftText = `Tally ${fmtSigned(tallyWide100)} → flat, no mechanical drift`;
+    driftColor = theme.textMuted;
+  } else if (tallyWide100 >= 0) {
+    driftText = `Tally ${fmtSigned(tallyWide100)} → mechanical /ES BUY into close (drift up)`;
+    driftColor = theme.green;
+  } else {
+    driftText = `Tally ${fmtSigned(tallyWide100)} → mechanical /ES SELL into close (drift down)`;
+    driftColor = theme.red;
+  }
+
+  // Time-of-day weight class. The skill's framework: charm is a function
+  // of time-to-expiry — its hedging force grows non-linearly through the
+  // session and dominates the final 90 minutes. Buckets match the
+  // user's 5-phase intraday schedule.
+  const ct = getCTTime(new Date(capturedAt));
+  const minutes = ct.hour * 60 + ct.minute;
+  let weightText: string;
+  let weightColor: string;
+  if (minutes < 8 * 60 + 30) {
+    weightText = 'Pre-market — charm impact minimal';
+    weightColor = theme.textMuted;
+  } else if (minutes < 10 * 60 + 30) {
+    weightText = 'Morning — gamma dominates, charm light';
+    weightColor = theme.textMuted;
+  } else if (minutes < 13 * 60) {
+    weightText = 'Midday — charm building, dual-force';
+    weightColor = theme.textSecondary;
+  } else if (minutes < 14 * 60 + 30) {
+    weightText = 'Charm window — mechanical drift dominates';
+    weightColor = theme.text;
+  } else if (minutes < 15 * 60) {
+    weightText = 'Final 30m — pin / acceleration';
+    weightColor = theme.accent;
+  } else {
+    weightText = 'Post-close';
+    weightColor = theme.textMuted;
+  }
+
+  return {
+    position: { text: positionText, color: theme.textSecondary },
+    drift: { text: driftText, color: driftColor },
+    weight: { text: weightText, color: weightColor },
+  };
+}
+
+function CharmDriftRead({ read }: { read: CharmDriftRead }) {
+  return (
+    <div className="mt-1 flex flex-col gap-0.5 font-mono text-[11px]">
+      <div style={{ color: read.position.color }}>{read.position.text}</div>
+      <div style={{ color: read.drift.color }}>{read.drift.text}</div>
+      <div style={{ color: read.weight.color }}>{read.weight.text}</div>
+    </div>
+  );
+}
+
 function CharmSection({ view }: { view: PeriscopeView }) {
+  const driftRead =
+    view.charm.charmZeroStrike != null
+      ? computeCharmDriftRead({
+          spot: view.spot,
+          charmZeroStrike: view.charm.charmZeroStrike,
+          tallyWide100: view.charm.tallyWide100,
+          capturedAt: view.capturedAt,
+        })
+      : null;
+
   return (
     <div className="flex flex-col gap-1">
       <SectionHeader>Charm Flow</SectionHeader>
@@ -456,6 +554,7 @@ function CharmSection({ view }: { view: PeriscopeView }) {
           }
         />
       )}
+      {driftRead && <CharmDriftRead read={driftRead} />}
     </div>
   );
 }
