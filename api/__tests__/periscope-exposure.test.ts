@@ -79,8 +79,8 @@ beforeEach(() => {
 
 describe('GET /api/periscope-exposure', () => {
   it('returns no_spot when neither query nor DB yields a spot', async () => {
-    // No spot in query. fetchLatestSpxSpot returns []
-    mockSql.mockResolvedValueOnce([]);
+    // fetchSpxSpot returns []. fetchAvailableSlots returns [].
+    mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
     const { req, res } = makeReqRes();
     await handler(req, res as never);
     expect(res.statusCode).toBe(200);
@@ -88,13 +88,16 @@ describe('GET /api/periscope-exposure', () => {
       marketOpen: true,
       data: null,
       reason: 'no_spot',
+      availableSlots: [],
     });
   });
 
   it('returns no_slot when spot is available but no periscope rows exist', async () => {
     mockSql
-      // fetchLatestSpxSpot — spot from index_candles_1m
+      // fetchSpxSpot — spot from index_candles_1m
       .mockResolvedValueOnce([{ close: '7337.07' }])
+      // fetchAvailableSlots — no slots yet
+      .mockResolvedValueOnce([])
       // fetchLatestPeriscopeSlot — no captured_at
       .mockResolvedValueOnce([{ captured_at: null }]);
     const { req, res } = makeReqRes();
@@ -104,12 +107,18 @@ describe('GET /api/periscope-exposure', () => {
       marketOpen: true,
       data: null,
       reason: 'no_slot',
+      availableSlots: [],
     });
   });
 
   it('returns full view when slot + cone exist', async () => {
     mockSql
       .mockResolvedValueOnce([{ close: '7337' }])
+      // fetchAvailableSlots — two slots
+      .mockResolvedValueOnce([
+        { captured_at: '2026-05-08T13:40:00Z' },
+        { captured_at: '2026-05-08T13:50:00Z' },
+      ])
       // fetchLatestPeriscopeSlot — captured_at
       .mockResolvedValueOnce([{ captured_at: '2026-05-08T13:50:00Z' }])
       // loadSlot — gamma + charm + vanna rows
@@ -144,23 +153,86 @@ describe('GET /api/periscope-exposure', () => {
         gamma: { ceiling: { strike: number } | null };
         cone: { coneUpper: number } | null;
       };
+      availableSlots: string[];
     };
     expect(body.data.spot).toBe(7337);
     expect(body.data.gamma.ceiling?.strike).toBe(7350);
     expect(body.data.cone?.coneUpper).toBe(7395);
+    expect(body.availableSlots).toHaveLength(2);
   });
 
   it('honors the spot query param over the DB value', async () => {
     mockSql
+      // fetchAvailableSlots
+      .mockResolvedValueOnce([])
       // fetchLatestPeriscopeSlot — no slot, short-circuit before cone fetches
       .mockResolvedValueOnce([{ captured_at: null }]);
     const { req, res } = makeReqRes({ spot: '7400' });
     await handler(req, res as never);
     expect(res.statusCode).toBe(200);
     expect((res.body as { reason: string }).reason).toBe('no_slot');
-    // Critical: only ONE sql call (the slot lookup). The spot query
-    // param short-circuited the index_candles_1m lookup entirely.
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    // 2 calls: availableSlots + slot lookup. The spot query param
+    // short-circuited the index_candles_1m lookup.
+    expect(mockSql).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects ?date with non-YYYY-MM-DD format', async () => {
+    const { req, res } = makeReqRes({ date: 'not-a-date' });
+    await handler(req, res as never);
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toMatchObject({ error: 'date must be YYYY-MM-DD' });
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('rejects ?time with out-of-range value', async () => {
+    const { req, res } = makeReqRes({
+      date: '2026-05-08',
+      time: '25:99',
+    });
+    await handler(req, res as never);
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toMatchObject({ error: 'time must be HH:MM (CT)' });
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('resolves picked (date, time) → asOf and returns the slot at-or-before', async () => {
+    // 2026-05-08 14:30 CT (CDT = UTC-5) → 2026-05-08T19:30:00Z
+    mockSql
+      // fetchSpxSpot — at-or-before asOf
+      .mockResolvedValueOnce([{ close: '7388.07' }])
+      // fetchAvailableSlots
+      .mockResolvedValueOnce([
+        { captured_at: '2026-05-08T19:20:00Z' },
+        { captured_at: '2026-05-08T19:30:00Z' },
+      ])
+      // fetchLatestPeriscopeSlot at-or-before asOf
+      .mockResolvedValueOnce([{ captured_at: '2026-05-08T19:30:00Z' }])
+      // loadSlot
+      .mockResolvedValueOnce([
+        { panel: 'gamma', strike: 7390, value: '5000' },
+      ])
+      // fetchPriorPeriscopeSlot
+      .mockResolvedValueOnce([{ captured_at: null }])
+      // fetchConeLevels
+      .mockResolvedValueOnce([])
+      // fetchConeBreaches
+      .mockResolvedValueOnce([]);
+    const { req, res } = makeReqRes({
+      date: '2026-05-08',
+      time: '14:30',
+    });
+    await handler(req, res as never);
+    expect(res.statusCode).toBe(200);
+    const body = res.body as {
+      data: { capturedAt: string; spot: number };
+      availableSlots: string[];
+    };
+    expect(body.data.capturedAt).toBe('2026-05-08T19:30:00Z');
+    expect(body.data.spot).toBe(7388.07);
+    expect(body.availableSlots).toEqual([
+      '2026-05-08T19:20:00Z',
+      '2026-05-08T19:30:00Z',
+    ]);
   });
 
   it('returns 500 on unhandled error', async () => {

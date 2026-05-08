@@ -1,21 +1,31 @@
 /**
  * GET /api/periscope-exposure
  *
- * Returns the latest UW Periscope MM-attributed exposure slot for
- * today's 0DTE expiry, plus the straddle cone bounds and any breach
- * events. Same data the analyze endpoint injects into Claude's prompt
- * — exposed as JSON so the frontend panel can render it.
+ * Returns the UW Periscope MM-attributed exposure slot for the picked
+ * (date, time) — defaulting to today's latest — plus straddle cone
+ * bounds, breach events, and the list of available slot timestamps for
+ * that date. Same data the analyze endpoint injects into Claude's
+ * prompt, exposed as JSON for the frontend panel.
+ *
+ * Query params:
+ *   ?date=YYYY-MM-DD  CT trading date. Defaults to today's CT date.
+ *   ?time=HH:MM       CT wall clock. With date, resolves to the latest
+ *                     slot at-or-before (date, time). Omitted = latest
+ *                     known slot for the date.
+ *   ?spot=...         Optional fresher SPX spot override.
  *
  * Cache:
- *   Market hours: 30s edge + 30s SWR  (Periscope updates every 10 min;
- *                                       30s keeps refresh latency low)
- *   After hours: 300s edge + 60s SWR
+ *   Live (no date/time params): 30s edge + 30s SWR during RTH,
+ *                               300s + 60s after hours.
+ *   Picked slot: 300s + 60s — historical, immutable.
  *
  * Response shape:
  * {
  *   marketOpen: boolean,
  *   asOf: string (ISO),
- *   data: PeriscopeView | null,   // null when scraper has no slot yet
+ *   data: PeriscopeView | null,
+ *   reason?: 'no_spot' | 'no_slot',
+ *   availableSlots: string[],     // ISO captured_at, ascending
  * }
  *
  * Auth: owner OR guest (read-only data, same policy as /api/quotes
@@ -32,32 +42,68 @@ import {
 import { buildPeriscopeView } from './_lib/periscope-format.js';
 import type { PeriscopeView } from './_lib/periscope-format.js';
 import { getDb } from './_lib/db.js';
-import { getETDateStr } from '../src/utils/timezone.js';
+import {
+  getETDateStr,
+  ctWallClockToUtcIso,
+} from '../src/utils/timezone.js';
 import logger from './_lib/logger.js';
 
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
 /**
- * Read the most recent SPX spot price from `index_candles_1m` for the
- * given date. Used as the authoritative spot for ranking strikes (the
- * periscope skill enforces: never the chart's red dotted line).
+ * Read the SPX close at-or-before `asOf` (ISO) for the given date, or
+ * the latest close for that date when asOf is omitted. Used as the
+ * authoritative spot for ranking strikes (the periscope skill enforces:
+ * never the chart's red dotted line).
  */
-async function fetchLatestSpxSpot(date: string): Promise<number | null> {
+async function fetchSpxSpot(
+  date: string,
+  asOf?: string,
+): Promise<number | null> {
   const sql = getDb();
-  const rows = (await sql`
-    SELECT close
-    FROM index_candles_1m
-    WHERE symbol = 'SPX' AND date = ${date}
-    ORDER BY timestamp DESC
-    LIMIT 1
-  `) as Array<{ close: string | number }>;
+  const rows = asOf
+    ? ((await sql`
+        SELECT close
+        FROM index_candles_1m
+        WHERE symbol = 'SPX' AND date = ${date} AND timestamp <= ${asOf}
+        ORDER BY timestamp DESC
+        LIMIT 1
+      `) as Array<{ close: string | number }>)
+    : ((await sql`
+        SELECT close
+        FROM index_candles_1m
+        WHERE symbol = 'SPX' AND date = ${date}
+        ORDER BY timestamp DESC
+        LIMIT 1
+      `) as Array<{ close: string | number }>);
   if (rows.length === 0) return null;
   const v = Number(rows[0]!.close);
   return Number.isFinite(v) && v > 0 ? v : null;
 }
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
+/**
+ * List the distinct slot capture timestamps for the picked date, used
+ * to back the prev/next stepper in the panel. Filters on panel='gamma'
+ * — the per-row timeframe migration (#141) guarantees gamma/charm/vanna
+ * land at the same captured_at, so gamma is a safe anchor.
+ */
+async function fetchAvailableSlots(date: string): Promise<string[]> {
+  const sql = getDb();
+  const rows = (await sql`
+    SELECT DISTINCT captured_at
+    FROM periscope_snapshots
+    WHERE expiry = ${date} AND panel = 'gamma'
+    ORDER BY captured_at ASC
+  `) as Array<{ captured_at: string | Date }>;
+  return rows.map((r) =>
+    r.captured_at instanceof Date
+      ? r.captured_at.toISOString()
+      : r.captured_at,
+  );
+}
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/periscope-exposure');
     const done = metrics.request('/api/periscope-exposure');
@@ -65,18 +111,68 @@ export default async function handler(
       if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
       const marketOpen = isMarketOpen();
-      setCacheHeaders(res, marketOpen ? 30 : 300, marketOpen ? 30 : 60);
 
-      const date = getETDateStr(new Date());
+      // Parse + validate optional date/time params.
+      const dateParam = (req.query.date as string | undefined) ?? '';
+      const timeParam = (req.query.time as string | undefined) ?? '';
+      const isHistoricalRead = dateParam !== '' || timeParam !== '';
+
+      let date: string;
+      if (dateParam === '') {
+        date = getETDateStr(new Date());
+      } else if (DATE_RE.test(dateParam)) {
+        date = dateParam;
+      } else {
+        done({ status: 400, error: 'bad_date' });
+        return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+      }
+
+      let asOf: string | undefined;
+      if (timeParam !== '') {
+        if (!TIME_RE.test(timeParam)) {
+          done({ status: 400, error: 'bad_time' });
+          return res.status(400).json({ error: 'time must be HH:MM (CT)' });
+        }
+        const [hStr, mStr] = timeParam.split(':');
+        const minutes = Number(hStr) * 60 + Number(mStr);
+        const iso = ctWallClockToUtcIso(date, minutes);
+        if (iso == null) {
+          done({ status: 400, error: 'bad_datetime' });
+          return res
+            .status(400)
+            .json({ error: 'could not resolve date/time to UTC' });
+        }
+        asOf = iso;
+      } else if (dateParam !== '') {
+        // Date without time → end-of-day for that CT date so the slot
+        // resolution lands on the last slot of the day.
+        const iso = ctWallClockToUtcIso(date, 23 * 60 + 59);
+        if (iso == null) {
+          done({ status: 400, error: 'bad_date' });
+          return res.status(400).json({ error: 'could not resolve date' });
+        }
+        asOf = iso;
+      }
+
+      // Cache: live reads get the short window; historical reads are
+      // immutable so cache aggressively.
+      if (isHistoricalRead) {
+        setCacheHeaders(res, 300, 60);
+      } else {
+        setCacheHeaders(res, marketOpen ? 30 : 300, marketOpen ? 30 : 60);
+      }
 
       // Spot can come from query param (when frontend has a fresher
-      // value than the DB) or fall back to index_candles_1m.
+      // value than the DB) or fall back to index_candles_1m, capped at
+      // asOf so historical reads don't leak future spot.
       const spotParam = (req.query.spot as string | undefined) ?? '';
       const spotFromQuery = Number.parseFloat(spotParam);
       const spot: number | null =
         Number.isFinite(spotFromQuery) && spotFromQuery > 0
           ? spotFromQuery
-          : await fetchLatestSpxSpot(date);
+          : await fetchSpxSpot(date, asOf);
+
+      const availableSlots = await fetchAvailableSlots(date);
 
       if (spot == null) {
         // No spot at all — can't rank levels. Return marketOpen + null
@@ -87,6 +183,7 @@ export default async function handler(
           asOf: new Date().toISOString(),
           data: null,
           reason: 'no_spot',
+          availableSlots,
         });
       }
 
@@ -94,6 +191,7 @@ export default async function handler(
         date,
         expiry: date,
         spot,
+        ...(asOf != null ? { asOf } : {}),
       });
 
       // Strip the internal _formatterArgs before serializing — those
@@ -122,6 +220,7 @@ export default async function handler(
         asOf: new Date().toISOString(),
         data,
         reason: data == null ? 'no_slot' : undefined,
+        availableSlots,
       });
     } catch (error) {
       done({ status: 500, error: 'unhandled' });
