@@ -1,0 +1,159 @@
+<!--
+  Hand-extracted fixture from a real UW Periscope Market Maker Exposures Table
+  capture (2026-05-07 14:50–15:00 slice, Greek=Charm, Expiry=2026-05-07,
+  Underlying SPX $7337.07). Trimmed to just the header + ~15 representative
+  rows so the parser tests run fast.
+
+  Representative cases covered:
+    - Plain integer:        "Charm: 0"
+    - Negative tiny:        "Charm: -0.01"
+    - Sub-1 positive:       "Charm: 0.25"
+    - Mid-range positive:   "Charm: 23.88"
+    - Comma-separated:      "Charm: 15,404.71" / "Charm: -46,325.35"
+    - K-suffix:             "Charm: 235K"
+    - M-suffix:             "Charm: -2.36M" / "Charm: 444M" / "Charm: -819M"
+    - Min outlined cell:    outline: 2px solid var(--danger)
+    - Max outlined cell:    outline: 2px solid var(--success)
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Periscope Market Maker Exposures Table</title></head>
+<body>
+<main>
+<div class="card_cardTitleText__kcI4N">
+  <span>Net Charm Heat Map - SPX</span>
+  <span class="text-sm font-normal" title="Click to scroll to underlying price">
+    <span class="inline-block w-2 h-2 rounded-full bg-[var(--memo-blue)]"></span>Underlying: ($7337.07)
+  </span>
+  <span class="text-sm font-normal" title="Click to scroll to minimum value">
+    <span class="inline-block w-2 h-2 rounded-full bg-[var(--danger)]"></span>Minimum Value (-819M)
+  </span>
+  <span class="text-sm font-normal" title="Click to scroll to maximum value">
+    <span class="inline-block w-2 h-2 rounded-full bg-[var(--success)]"></span>Maximum Value (551M)
+  </span>
+</div>
+
+<div class="card_cardMenuItems__KwmaV">
+  <div class="flex flex-row gap-1 items-center">
+    <span role="button">Thu, May 7</span>
+  </div>
+
+  <div class="flex flex-row gap-1">
+    <span class="text-sm">Timeframe:</span>
+    <span class="text-sm">14:50 -  15:00</span>
+  </div>
+
+  <div data-sentry-component="DropdownFilter">
+    <div class="flex flex-row items-center gap-1">
+      <span class="text-xs">Expiry</span>
+      <span class="text-base font-medium capitalize">2026-05-07</span>
+    </div>
+  </div>
+
+  <div data-sentry-component="DropdownFilter">
+    <div class="flex flex-row items-center gap-1">
+      <span class="text-xs">Greek</span>
+      <span class="text-base font-medium capitalize">Charm</span>
+    </div>
+  </div>
+</div>
+
+<table class="table_table__L4o9O">
+<thead>
+  <tr>
+    <th></th>
+    <th class="table_stickyColHeader__nv760 table_left__otU2P"><span>Strike Price</span></th>
+    <th><span>05/07/2026</span></th>
+    <th></th>
+  </tr>
+</thead>
+<tbody>
+  <tr class="table_row__wxw5u">
+    <td></td>
+    <td class="table_stickyCol__r8NtE table_left__otU2P"><div class="flex items-center gap-1"><span>7,400</span></div></td>
+    <td class="text-right"><div class="rounded-sm flex items-center justify-end" style="background-color: rgb(57, 83, 93); color: rgb(255, 255, 255); font-weight: 400; outline: none;" title="Charm: 23.88">23.88</div></td>
+    <td></td>
+  </tr>
+  <tr class="table_row__wxw5u">
+    <td></td>
+    <td class="table_stickyCol__r8NtE table_left__otU2P"><div class="flex items-center gap-1"><span>7,395</span></div></td>
+    <td class="text-right"><div style="background-color: rgb(57, 83, 93); color: rgb(255, 255, 255); font-weight: 400; outline: none;" title="Charm: 366.67">366.67</div></td>
+    <td></td>
+  </tr>
+  <tr class="table_row__wxw5u">
+    <td></td>
+    <td class="table_stickyCol__r8NtE table_left__otU2P"><div class="flex items-center gap-1"><span>7,390</span></div></td>
+    <td class="text-right"><div style="background-color: rgb(57, 83, 93); color: rgb(255, 255, 255); font-weight: 400; outline: none;" title="Charm: 15,404.71">15,404.71</div></td>
+    <td></td>
+  </tr>
+  <tr class="table_row__wxw5u">
+    <td></td>
+    <td class="table_stickyCol__r8NtE table_left__otU2P"><div class="flex items-center gap-1"><span>7,385</span></div></td>
+    <td class="text-right"><div style="background-color: rgb(85, 67, 86); color: rgb(255, 255, 255); font-weight: 400; outline: none;" title="Charm: -46,325.35">-46,325.35</div></td>
+    <td></td>
+  </tr>
+  <tr class="table_row__wxw5u">
+    <td></td>
+    <td class="table_stickyCol__r8NtE table_left__otU2P"><div class="flex items-center gap-1"><span>7,380</span></div></td>
+    <td class="text-right"><div style="background-color: rgb(57, 83, 93); color: rgb(255, 255, 255); font-weight: 400; outline: none;" title="Charm: 235K">235K</div></td>
+    <td></td>
+  </tr>
+  <tr class="table_row__wxw5u">
+    <td></td>
+    <td class="table_stickyCol__r8NtE table_left__otU2P"><div class="flex items-center gap-1"><span>7,375</span></div></td>
+    <td class="text-right"><div style="background-color: rgb(87, 67, 86); color: rgb(255, 255, 255); font-weight: 400; outline: none;" title="Charm: -2.36M">-2.36M</div></td>
+    <td></td>
+  </tr>
+  <tr class="table_row__wxw5u">
+    <td></td>
+    <td class="table_stickyCol__r8NtE table_left__otU2P"><div class="flex items-center gap-1"><span>7,350</span></div></td>
+    <td class="text-right"><div style="background-color: rgb(53, 147, 125); color: rgb(255, 255, 255); font-weight: 600; outline: none;" title="Charm: 444M">444M</div></td>
+    <td></td>
+  </tr>
+  <tr class="table_row__wxw5u">
+    <td></td>
+    <td class="table_stickyCol__r8NtE table_left__otU2P"><div class="flex items-center gap-1"><span>7,345</span></div></td>
+    <td class="text-right"><div style="background-color: rgb(53, 158, 131); color: rgb(255, 255, 255); font-weight: 600; outline: 2px solid var(--success);" title="Charm: 551M">551M</div></td>
+    <td></td>
+  </tr>
+  <tr class="table_row__wxw5u">
+    <td></td>
+    <td class="table_stickyCol__r8NtE table_left__otU2P"><div class="flex items-center gap-1"><span>7,320</span></div></td>
+    <td class="text-right"><div style="background-color: rgb(236, 75, 94); color: rgb(255, 255, 255); font-weight: 600; outline: 2px solid var(--danger);" title="Charm: -819M">-819M</div></td>
+    <td></td>
+  </tr>
+  <tr class="table_row__wxw5u">
+    <td></td>
+    <td class="table_stickyCol__r8NtE table_left__otU2P"><div class="flex items-center gap-1"><span>7,250</span></div></td>
+    <td class="text-right"><div style="background-color: rgb(57, 83, 93); color: rgb(255, 255, 255); font-weight: 400; outline: none;" title="Charm: 4,055.6">4,055.6</div></td>
+    <td></td>
+  </tr>
+  <tr class="table_row__wxw5u">
+    <td></td>
+    <td class="table_stickyCol__r8NtE table_left__otU2P"><div class="flex items-center gap-1"><span>7,225</span></div></td>
+    <td class="text-right"><div style="background-color: rgb(85, 67, 86); color: rgb(255, 255, 255); font-weight: 400; outline: none;" title="Charm: -0.09">-0.09</div></td>
+    <td></td>
+  </tr>
+  <tr class="table_row__wxw5u">
+    <td></td>
+    <td class="table_stickyCol__r8NtE table_left__otU2P"><div class="flex items-center gap-1"><span>7,215</span></div></td>
+    <td class="text-right"><div style="background-color: rgb(57, 83, 93); color: rgb(255, 255, 255); font-weight: 400; outline: none;" title="Charm: 0">0</div></td>
+    <td></td>
+  </tr>
+  <tr class="table_row__wxw5u">
+    <td></td>
+    <td class="table_stickyCol__r8NtE table_left__otU2P"><div class="flex items-center gap-1"><span>7,420</span></div></td>
+    <td class="text-right"><div style="background-color: rgb(85, 67, 86); color: rgb(255, 255, 255); font-weight: 400; outline: none;" title="Charm: -0.01">-0.01</div></td>
+    <td></td>
+  </tr>
+  <tr class="table_row__wxw5u">
+    <td></td>
+    <td class="table_stickyCol__r8NtE table_left__otU2P"><div class="flex items-center gap-1"><span>7,410</span></div></td>
+    <td class="text-right"><div style="background-color: rgb(57, 83, 93); color: rgb(255, 255, 255); font-weight: 400; outline: none;" title="Charm: 0.25">0.25</div></td>
+    <td></td>
+  </tr>
+</tbody>
+</table>
+</main>
+</body>
+</html>
