@@ -574,6 +574,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let calibrationBlock: Awaited<typeof calibrationBlockP>;
     let parentRead: Awaited<typeof parentFetch>;
     let parentChain: Awaited<typeof parentChainFetch>;
+    /** Pre-computed charm-zero strike from the synthesizer; the prompt
+     *  injects this so Claude's structured output can populate
+     *  key_levels.charm_zero deterministically (Pass 1B's top-N
+     *  positive/negative cells aren't enough to identify the
+     *  contiguous sign-change). Null when not synthesizing or no
+     *  crossing exists. */
+    let synthesizedCharmZeroStrike: number | null = null;
 
     if (useDbSynthesis) {
       // No images — skip the vision passes entirely. Run synthesizer
@@ -605,6 +612,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       extraction = synthesized.extraction;
       heatMaps = synthesized.heatMaps;
+      synthesizedCharmZeroStrike = synthesized.charmZeroStrike;
       calibrationBlock = calBlock;
       parentRead = pRead;
       parentChain = pChain;
@@ -615,6 +623,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           hasCone: extraction.structured.cone_lower != null,
           gexStrikes: heatMaps?.gex.length ?? 0,
           charmStrikes: heatMaps?.charm.length ?? 0,
+          charmZeroStrike: synthesizedCharmZeroStrike,
         },
         'periscope-chat: using DB synthesis (no images uploaded)',
       );
@@ -762,6 +771,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const width = cu - cl;
       spotDirectiveLines.push(
         `Straddle cone bounds (from cone_levels DB, computed at the 9:31 ET ATM-straddle anchor): lower ${cl.toFixed(2)}, upper ${cu.toFixed(2)}, width ${width.toFixed(2)} pts. Use these as the cone in your structured output (cone_lower, cone_upper) and frame inside-cone vs outside-cone targets against them.`,
+      );
+    }
+    if (useDbSynthesis && synthesizedCharmZeroStrike != null) {
+      spotDirectiveLines.push(
+        `Charm-zero strike (cumulative charm sum sign-change, computed deterministically from the full per-strike charm grid for this slot): ${synthesizedCharmZeroStrike}. Use this for key_levels.charm_zero in your structured output — the heat-map block only carries top-N positive/negative cells and is insufficient to identify the contiguous sign-change.`,
       );
     }
     if (useDbSynthesis) {

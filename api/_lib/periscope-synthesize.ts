@@ -157,9 +157,63 @@ async function fetchConeBounds(
   };
 }
 
+/**
+ * Compute the charm-zero strike — the price where the cumulative charm
+ * sum (sorted by strike, low → high) genuinely flips sign.
+ *
+ * Pass 1B's heat-map extraction only feeds Claude the top-N positive +
+ * top-N negative strikes per panel, so Claude can't reliably identify
+ * the contiguous sign-change point. Computing it here from the full
+ * charm grid and injecting it into the prompt directly fills
+ * `key_levels.charm_zero` deterministically.
+ */
+async function fetchCharmZeroStrike(
+  expiry: string,
+  readTimeIso: string,
+): Promise<number | null> {
+  const sql = getDb();
+  const slotRows = (await sql`
+    SELECT MAX(captured_at) AS captured_at
+    FROM periscope_snapshots
+    WHERE expiry = ${expiry}
+      AND panel = 'charm'
+      AND captured_at <= ${readTimeIso}
+  `) as Array<{ captured_at: string | Date | null }>;
+  const capturedAt = slotRows[0]?.captured_at;
+  if (capturedAt == null) return null;
+
+  const rows = (await sql`
+    SELECT strike, value
+    FROM periscope_snapshots
+    WHERE expiry = ${expiry}
+      AND panel = 'charm'
+      AND captured_at = ${capturedAt}
+    ORDER BY strike ASC
+  `) as Array<{ strike: number; value: string | number }>;
+  if (rows.length === 0) return null;
+
+  let runningSum = 0;
+  for (const r of rows) {
+    const v = typeof r.value === 'string' ? Number.parseFloat(r.value) : r.value;
+    const prev = runningSum;
+    runningSum += v;
+    if (
+      prev !== 0 &&
+      runningSum !== 0 &&
+      Math.sign(prev) !== Math.sign(runningSum)
+    ) {
+      return r.strike;
+    }
+  }
+  return null;
+}
+
 export interface SynthesizeResult {
   extraction: PeriscopeExtractionResult;
   heatMaps: HeatMapExtraction | null;
+  /** Pre-computed charm-zero strike (cumulative sign change), null when
+   *  the cumulative sum never crosses or no charm rows exist. */
+  charmZeroStrike: number | null;
 }
 
 /**
@@ -181,11 +235,13 @@ export async function synthesizeFromDb(args: {
 }): Promise<SynthesizeResult | null> {
   const { tradingDate, readTimeIso, spot } = args;
 
-  const [coneBounds, gexStrikes, charmStrikes] = await Promise.all([
-    fetchConeBounds(tradingDate),
-    fetchTopStrikes(tradingDate, 'gamma', readTimeIso),
-    fetchTopStrikes(tradingDate, 'charm', readTimeIso),
-  ]);
+  const [coneBounds, gexStrikes, charmStrikes, charmZeroStrike] =
+    await Promise.all([
+      fetchConeBounds(tradingDate),
+      fetchTopStrikes(tradingDate, 'gamma', readTimeIso),
+      fetchTopStrikes(tradingDate, 'charm', readTimeIso),
+      fetchCharmZeroStrike(tradingDate, readTimeIso),
+    ]);
 
   // Gate: if we have NEITHER a cone NOR any periscope rows, the DB
   // genuinely has no data for this slot. Bail so the caller can ask
@@ -212,5 +268,5 @@ export async function synthesizeFromDb(args: {
       ? { gex: gexStrikes, charm: charmStrikes }
       : null;
 
-  return { extraction, heatMaps };
+  return { extraction, heatMaps, charmZeroStrike };
 }
