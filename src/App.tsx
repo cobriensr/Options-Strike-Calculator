@@ -23,7 +23,10 @@ import { useChainData } from './hooks/useChainData';
 import { useAlertPolling } from './hooks/useAlertPolling';
 import { useDarkPoolLevels } from './hooks/useDarkPoolLevels';
 import { useGexTarget } from './hooks/useGexTarget';
-import { usePeriscopeExposure } from './hooks/usePeriscopeExposure';
+import {
+  usePeriscopeExposure,
+  type PeriscopeSelectedSlot,
+} from './hooks/usePeriscopeExposure';
 import { useAccessSession } from './hooks/useAccessSession';
 import AccessKeyButton from './components/AccessKey/AccessKeyButton';
 import { useAnalysisContext } from './hooks/useAnalysisContext';
@@ -270,9 +273,14 @@ export default function StrikeCalculator() {
   const alertState = useAlertPolling(market.data.quotes?.marketOpen ?? false);
 
   const darkPool = useDarkPoolLevels(market.data.quotes?.marketOpen ?? false);
+  // Periscope panel time-travel: null = follow live (latest slot,
+  // polling on); set = view a historical slot, polling paused.
+  const [periscopeSlot, setPeriscopeSlot] =
+    useState<PeriscopeSelectedSlot | null>(null);
   const periscope = usePeriscopeExposure({
     marketOpen: market.data.quotes?.marketOpen ?? false,
     spotHint: market.data.quotes?.spx?.price ?? null,
+    selectedSlot: periscopeSlot,
   });
   // GEX Landscape owns its own ticker / date / scrub state internally
   // (Phase 3c of gex-landscape-ws-upgrade-2026-05-03.md) and pulls per-strike
@@ -1077,6 +1085,9 @@ export default function StrikeCalculator() {
                     isLoading={periscope.isLoading}
                     error={periscope.error}
                     onRefresh={periscope.refresh}
+                    availableSlots={periscope.availableSlots}
+                    selectedSlot={periscopeSlot}
+                    onSelectSlot={setPeriscopeSlot}
                   />
                 </GatedSection>
 

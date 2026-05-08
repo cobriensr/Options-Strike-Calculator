@@ -28,6 +28,7 @@ import type {
   PeriscopeView,
   RankedRow,
   RankedRowSimple,
+  PeriscopeSelectedSlot,
 } from '../../hooks/usePeriscopeExposure';
 import {
   computeTradePlan,
@@ -42,6 +43,31 @@ interface PeriscopePanelProps {
   isLoading: boolean;
   error: string | null;
   onRefresh: () => void;
+  /** ISO captured_at timestamps for the picked date, ascending. */
+  availableSlots: string[];
+  /** Selected slot (date+time CT) — null = follow live. */
+  selectedSlot: PeriscopeSelectedSlot | null;
+  /** Callback to change the selected slot. Pass null to drop back to live. */
+  onSelectSlot: (slot: PeriscopeSelectedSlot | null) => void;
+}
+
+/** Convert an ISO captured_at to a CT HH:MM string (zero-padded).
+ *  Used for both display (slot label) and the selectedSlot.time round-trip
+ *  when the user clicks prev/next. */
+function isoToCtTime(iso: string): string {
+  const ct = getCTTime(new Date(iso));
+  return `${String(ct.hour).padStart(2, '0')}:${String(ct.minute).padStart(2, '0')}`;
+}
+
+/** Convert an ISO captured_at to a CT YYYY-MM-DD string. */
+function isoToCtDate(iso: string): string {
+  const ctDate = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Chicago',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  return ctDate.format(new Date(iso));
 }
 
 function fmtSigned(n: number): string {
@@ -89,10 +115,105 @@ function PeriscopePanelInner({
   isLoading,
   error,
   onRefresh,
+  availableSlots,
+  selectedSlot,
+  onSelectSlot,
 }: PeriscopePanelProps) {
+  // Resolve the displayed slot's CT timestamps. When the rendered view
+  // exists, prefer its captured_at (ground truth). Otherwise fall back
+  // to the user's selectedSlot (so the picker still reflects the picked
+  // value during empty-state). Last resort: today's CT date for the
+  // date input.
+  const displayedDate =
+    selectedSlot?.date ??
+    (view != null
+      ? isoToCtDate(view.capturedAt)
+      : isoToCtDate(new Date().toISOString()));
+  const displayedTime =
+    selectedSlot?.time ?? (view != null ? isoToCtTime(view.capturedAt) : '');
+
+  // Step navigation index within availableSlots — uses the rendered
+  // capturedAt so prev/next is anchored to actual data, not to a picker
+  // value the user might have set to a slot that doesn't exist.
+  const currentSlotIso = view?.capturedAt;
+  const currentIdx =
+    currentSlotIso != null ? availableSlots.indexOf(currentSlotIso) : -1;
+  const canPrev = currentIdx > 0;
+  const canNext = currentIdx >= 0 && currentIdx < availableSlots.length - 1;
+
+  const stepTo = (iso: string) => {
+    onSelectSlot({ date: isoToCtDate(iso), time: isoToCtTime(iso) });
+  };
+
+  const isLive = selectedSlot == null;
+
   const headerRight = (
-    <div className="flex items-center gap-3">
-      {asOf && (
+    <div className="flex flex-wrap items-center gap-2">
+      <input
+        type="date"
+        value={displayedDate}
+        onChange={(e) => {
+          const newDate = e.target.value;
+          if (!newDate) return;
+          // When changing date, jump to that date's last slot via end-of-day
+          // (backend resolves to latest slot at-or-before 23:59 CT for the
+          // picked date).
+          onSelectSlot({ date: newDate, time: '23:59' });
+        }}
+        className="rounded border px-1.5 py-0.5 font-mono text-[10px]"
+        style={{
+          backgroundColor: theme.surfaceAlt,
+          borderColor: theme.border,
+          color: theme.text,
+        }}
+        aria-label="Periscope slot date"
+      />
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => {
+            if (canPrev) stepTo(availableSlots[currentIdx - 1]!);
+          }}
+          disabled={!canPrev}
+          className="rounded px-1.5 py-0.5 font-mono text-[10px] disabled:opacity-30"
+          style={{ color: theme.text, backgroundColor: theme.chipBg }}
+          aria-label="Previous slot"
+        >
+          ‹
+        </button>
+        <span
+          className="min-w-[40px] text-center font-mono text-[10px]"
+          style={{ color: theme.textSecondary }}
+        >
+          {displayedTime || '—'}
+        </span>
+        <button
+          type="button"
+          onClick={() => {
+            if (canNext) stepTo(availableSlots[currentIdx + 1]!);
+          }}
+          disabled={!canNext}
+          className="rounded px-1.5 py-0.5 font-mono text-[10px] disabled:opacity-30"
+          style={{ color: theme.text, backgroundColor: theme.chipBg }}
+          aria-label="Next slot"
+        >
+          ›
+        </button>
+      </div>
+      <button
+        type="button"
+        onClick={() => onSelectSlot(null)}
+        disabled={isLive}
+        className="rounded px-2 py-0.5 font-mono text-[10px] tracking-wider uppercase disabled:opacity-50"
+        style={{
+          color: isLive ? theme.green : theme.text,
+          backgroundColor: isLive ? theme.accentBg : theme.chipBg,
+        }}
+        aria-label="Return to live"
+      >
+        {isLive ? '● live' : 'live'}
+      </button>
+      {asOf && isLive && (
         <span
           className="font-mono text-[10px]"
           style={{ color: theme.textMuted }}

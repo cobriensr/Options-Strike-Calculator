@@ -72,6 +72,7 @@ interface PeriscopeExposureResponse {
   asOf: string;
   data: PeriscopeView | null;
   reason?: 'no_spot' | 'no_slot';
+  availableSlots?: string[];
 }
 
 export interface UsePeriscopeExposureReturn {
@@ -80,9 +81,22 @@ export interface UsePeriscopeExposureReturn {
    *  "waiting for first slot" vs "no SPX spot yet" message. */
   emptyReason: 'no_spot' | 'no_slot' | null;
   asOf: string | null;
+  /** ISO captured_at timestamps for the picked date, ascending. Backs
+   *  the prev/next stepper. Empty when the date has no slots. */
+  availableSlots: string[];
   isLoading: boolean;
   error: string | null;
   refresh: () => void;
+}
+
+/** Picked-slot override. When `null` the hook follows live (latest
+ *  slot, polling on during RTH). When set, the hook fetches that
+ *  specific (date, time) slot and pauses polling. */
+export interface PeriscopeSelectedSlot {
+  /** YYYY-MM-DD CT trading date. */
+  date: string;
+  /** HH:MM CT wall clock. */
+  time: string;
 }
 
 interface UsePeriscopeExposureOptions {
@@ -90,11 +104,15 @@ interface UsePeriscopeExposureOptions {
   /** Optional fresher SPX spot to send as a query param. Falls back to
    *  the server-side `index_candles_1m` lookup when omitted. */
   spotHint?: number | null;
+  /** When set, the hook fetches that specific historical slot instead
+   *  of latest, and pauses polling. */
+  selectedSlot?: PeriscopeSelectedSlot | null;
 }
 
 export function usePeriscopeExposure({
   marketOpen,
   spotHint,
+  selectedSlot,
 }: UsePeriscopeExposureOptions): UsePeriscopeExposureReturn {
   // Owner OR guest — periscope-exposure is a read-only data endpoint
   // gated by guardOwnerOrGuestEndpoint server-side. The previous
@@ -107,6 +125,7 @@ export function usePeriscopeExposure({
     null,
   );
   const [asOf, setAsOf] = useState<string | null>(null);
+  const [availableSlots, setAvailableSlots] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
@@ -118,14 +137,22 @@ export function usePeriscopeExposure({
     };
   }, []);
 
+  const isHistorical = selectedSlot != null;
+  const selectedDate = selectedSlot?.date;
+  const selectedTime = selectedSlot?.time;
+
   const fetchView = useCallback(async () => {
     if (!canFetch) return;
     setIsLoading(true);
     try {
-      const url =
-        spotHint != null && Number.isFinite(spotHint) && spotHint > 0
-          ? `/api/periscope-exposure?spot=${spotHint}`
-          : '/api/periscope-exposure';
+      const params = new URLSearchParams();
+      if (spotHint != null && Number.isFinite(spotHint) && spotHint > 0) {
+        params.set('spot', String(spotHint));
+      }
+      if (selectedDate != null) params.set('date', selectedDate);
+      if (selectedTime != null) params.set('time', selectedTime);
+      const qs = params.toString();
+      const url = qs ? `/api/periscope-exposure?${qs}` : '/api/periscope-exposure';
       const res = await fetch(url, { method: 'GET' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = (await res.json()) as PeriscopeExposureResponse;
@@ -133,6 +160,7 @@ export function usePeriscopeExposure({
       setView(body.data);
       setEmptyReason(body.reason ?? null);
       setAsOf(body.asOf);
+      setAvailableSlots(body.availableSlots ?? []);
       setError(null);
     } catch (err) {
       if (!mountedRef.current) return;
@@ -140,27 +168,30 @@ export function usePeriscopeExposure({
     } finally {
       if (mountedRef.current) setIsLoading(false);
     }
-  }, [canFetch, spotHint]);
+  }, [canFetch, spotHint, selectedDate, selectedTime]);
 
-  // Initial fetch.
+  // Initial fetch + refetch when selected slot changes.
   useEffect(() => {
     if (!canFetch) return;
     void fetchView();
   }, [canFetch, fetchView]);
 
-  // Polling — RTH only.
+  // Polling — RTH only AND only when on Live (no selectedSlot). When
+  // viewing a historical slot the data is immutable; polling is wasted
+  // bandwidth.
   useEffect(() => {
-    if (!canFetch || !marketOpen) return;
+    if (!canFetch || !marketOpen || isHistorical) return;
     const id = setInterval(() => {
       void fetchView();
     }, POLL_INTERVALS.PERISCOPE);
     return () => clearInterval(id);
-  }, [canFetch, marketOpen, fetchView]);
+  }, [canFetch, marketOpen, isHistorical, fetchView]);
 
   return {
     view,
     emptyReason,
     asOf,
+    availableSlots,
     isLoading,
     error,
     refresh: () => {

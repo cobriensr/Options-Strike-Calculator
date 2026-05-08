@@ -56,6 +56,9 @@ const baseProps = {
   isLoading: false,
   error: null as string | null,
   onRefresh: vi.fn(),
+  availableSlots: [] as string[],
+  selectedSlot: null as { date: string; time: string } | null,
+  onSelectSlot: vi.fn(),
 };
 
 // ============================================================
@@ -194,5 +197,132 @@ describe('PeriscopePanel: header controls', () => {
     render(<PeriscopePanel {...baseProps} onRefresh={onRefresh} />);
     fireEvent.click(screen.getByRole('button', { name: /refresh/i }));
     expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ============================================================
+// TIME-TRAVEL NAVIGATION
+// ============================================================
+
+describe('PeriscopePanel: time-travel nav', () => {
+  it('renders the date picker and prev/next/live controls', () => {
+    render(<PeriscopePanel {...baseProps} />);
+    expect(
+      screen.getByRole('button', { name: /previous slot/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /next slot/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /return to live/i }),
+    ).toBeInTheDocument();
+    // The "live" button is highlighted (filled dot) when selectedSlot is null.
+    expect(
+      screen.getByRole('button', { name: /return to live/i }),
+    ).toBeDisabled();
+  });
+
+  it('disables prev/next at the ends of availableSlots', () => {
+    const view = makeView({
+      capturedAt: '2026-05-08T14:00:00Z',
+    });
+    const slots = [
+      '2026-05-08T13:50:00Z',
+      '2026-05-08T14:00:00Z',
+      '2026-05-08T14:10:00Z',
+    ];
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        view={view}
+        availableSlots={slots}
+      />,
+    );
+    // Middle slot — both buttons enabled.
+    expect(
+      screen.getByRole('button', { name: /previous slot/i }),
+    ).not.toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: /next slot/i }),
+    ).not.toBeDisabled();
+  });
+
+  it('disables prev when on the first slot', () => {
+    const view = makeView({ capturedAt: '2026-05-08T13:50:00Z' });
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        view={view}
+        availableSlots={[
+          '2026-05-08T13:50:00Z',
+          '2026-05-08T14:00:00Z',
+        ]}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: /previous slot/i }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: /next slot/i }),
+    ).not.toBeDisabled();
+  });
+
+  it('calls onSelectSlot with the prior slot on prev click', () => {
+    const onSelectSlot = vi.fn();
+    const view = makeView({ capturedAt: '2026-05-08T14:00:00Z' });
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        view={view}
+        availableSlots={[
+          '2026-05-08T13:50:00Z',
+          '2026-05-08T14:00:00Z',
+        ]}
+        onSelectSlot={onSelectSlot}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /previous slot/i }));
+    expect(onSelectSlot).toHaveBeenCalledTimes(1);
+    const arg = onSelectSlot.mock.calls[0]?.[0] as {
+      date: string;
+      time: string;
+    };
+    expect(arg.date).toBe('2026-05-08');
+    // Time is CT — depends on DST. 13:50Z in CDT (UTC-5) is 08:50.
+    // Just assert it parses as HH:MM.
+    expect(arg.time).toMatch(/^\d{2}:\d{2}$/);
+  });
+
+  it('calls onSelectSlot(null) when Live is clicked while on a historical slot', () => {
+    const onSelectSlot = vi.fn();
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        selectedSlot={{ date: '2026-05-07', time: '13:30' }}
+        onSelectSlot={onSelectSlot}
+      />,
+    );
+    const liveBtn = screen.getByRole('button', { name: /return to live/i });
+    expect(liveBtn).not.toBeDisabled();
+    fireEvent.click(liveBtn);
+    expect(onSelectSlot).toHaveBeenCalledWith(null);
+  });
+
+  it('jumps to end-of-day when the date picker is changed', () => {
+    const onSelectSlot = vi.fn();
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        onSelectSlot={onSelectSlot}
+      />,
+    );
+    const dateInput = screen.getByLabelText(
+      /periscope slot date/i,
+    ) as HTMLInputElement;
+    fireEvent.change(dateInput, { target: { value: '2026-05-07' } });
+    expect(onSelectSlot).toHaveBeenCalledWith({
+      date: '2026-05-07',
+      time: '23:59',
+    });
   });
 });
