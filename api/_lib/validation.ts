@@ -919,6 +919,16 @@ export const silentBoomFeedQuerySchema = z.object({
   // server-side via CT minute-of-day boundaries that mirror
   // silentBoomTodFromMinuteCt() in api/_lib/silent-boom-score.ts.
   tod: z.enum(['AM_open', 'MID', 'LUNCH', 'PM', 'LATE']).optional(),
+  // Days-to-expiry bucket — '0' = 0DTE only, '1-3' = 1-3 days,
+  // '4+' = anything 4 or more. Audit shows 0DTE has the strongest
+  // lift (3.03×) by a wide margin; this filter lets the user scope
+  // straight to the cohort they actually trade.
+  dte: z.enum(['0', '1-3', '4+']).optional(),
+  // Burst color category — matches the spike-ratio badge in
+  // SilentBoomRow: 'red' = ≥50×, 'yellow' = 20-50×, 'grey' = <20×.
+  // Visual-intensity ordering (NOT empirical-lift ordering — see
+  // audit; smaller ratios actually score better historically).
+  burst: z.enum(['red', 'yellow', 'grey']).optional(),
   // Pagination.
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
@@ -950,6 +960,8 @@ export const silentBoomExportQuerySchema = z.object({
   minSpikeRatio: z.coerce.number().min(0).max(1000).default(0),
   minScore: z.coerce.number().int().min(-100).max(100).optional(),
   tod: z.enum(['AM_open', 'MID', 'LUNCH', 'PM', 'LATE']).optional(),
+  dte: z.enum(['0', '1-3', '4+']).optional(),
+  burst: z.enum(['red', 'yellow', 'grey']).optional(),
   format: z.enum(['csv', 'json']).default('csv'),
 });
 

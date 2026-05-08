@@ -13,6 +13,10 @@ export type SilentBoomScoreTier = 'tier1' | 'tier2' | 'tier3';
 
 export type SilentBoomTod = 'AM_open' | 'MID' | 'LUNCH' | 'PM' | 'LATE';
 
+export type SilentBoomDteBucket = '0' | '1-3' | '4+';
+
+export type SilentBoomBurstColor = 'red' | 'yellow' | 'grey';
+
 export interface SilentBoomOutcomes {
   peakCeilingPct: number | null;
   minutesToPeak: number | null;
@@ -65,6 +69,8 @@ export interface SilentBoomFeedResponse {
     minSpikeRatio: number;
     minScore: number | null;
     tod: SilentBoomTod | null;
+    dte: SilentBoomDteBucket | null;
+    burst: SilentBoomBurstColor | null;
     sort: SilentBoomSortMode;
   };
   count: number;

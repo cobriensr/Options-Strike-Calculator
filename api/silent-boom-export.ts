@@ -75,6 +75,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       minSpikeRatio,
       minScore,
       tod,
+      dte,
+      burst,
       format,
     } = parsed.data;
 
@@ -94,6 +96,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     })();
     const todLo = todRange?.lo ?? null;
     const todHi = todRange?.hi ?? null;
+
+    // DTE bucket → numeric range. Mirrors api/silent-boom-feed.ts.
+    const dteRange = (() => {
+      if (dte === '0') return { lo: 0, hi: 0 };
+      if (dte === '1-3') return { lo: 1, hi: 3 };
+      if (dte === '4+') return { lo: 4, hi: 100_000 };
+      return null;
+    })();
+    const dteLo = dteRange?.lo ?? null;
+    const dteHiBound = dteRange?.hi ?? 100_000;
+
+    // Burst color → spike_ratio range. Visual-intensity buckets.
+    const burstRange = (() => {
+      if (burst === 'red') return { lo: 50, hi: 1_000_000 };
+      if (burst === 'yellow') return { lo: 20, hi: 50 };
+      if (burst === 'grey') return { lo: 0, hi: 20 };
+      return null;
+    })();
+    const burstLo = burstRange?.lo ?? null;
+    const burstHiBound = burstRange?.hi ?? 1_000_000;
 
     const db = getDb();
 
@@ -116,6 +138,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
           EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
         ) < ${todHi}::int)
+        AND (${dteLo}::int IS NULL OR dte BETWEEN ${dteLo}::int AND ${dteHiBound}::int)
+        AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
       ORDER BY bucket_ct ASC, id ASC
     `) as Record<string, unknown>[];
 
@@ -133,6 +157,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           minSpikeRatio,
           minScore: minScore ?? null,
           tod: tod ?? null,
+          dte: dte ?? null,
+          burst: burst ?? null,
         },
         rows: normalized,
       });

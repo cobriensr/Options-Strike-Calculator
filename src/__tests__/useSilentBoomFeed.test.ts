@@ -37,6 +37,8 @@ function emptyFeed(
       minSpikeRatio: 0,
       minScore: null,
       tod: null,
+      dte: null,
+      burst: null,
       sort: 'newest',
     },
     count: 0,
@@ -276,5 +278,49 @@ describe('useSilentBoomFeed', () => {
       await vi.advanceTimersByTimeAsync(120_000);
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('appends dte when supplied', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFeed()));
+    renderHook(() =>
+      useSilentBoomFeed({
+        date: '2026-05-07',
+        marketOpen: false,
+        dte: '1-3',
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toContain('dte=1-3');
+  });
+
+  it('appends burst when supplied', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFeed()));
+    renderHook(() =>
+      useSilentBoomFeed({
+        date: '2026-05-07',
+        marketOpen: false,
+        burst: 'grey',
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toContain('burst=grey');
+  });
+
+  it('omits dte and burst when null', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFeed()));
+    renderHook(() =>
+      useSilentBoomFeed({
+        date: '2026-05-07',
+        marketOpen: false,
+        dte: null,
+        burst: null,
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).not.toContain('dte=');
+    expect(url).not.toContain('burst=');
   });
 });

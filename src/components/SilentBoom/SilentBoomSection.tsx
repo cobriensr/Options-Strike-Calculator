@@ -4,7 +4,13 @@ import { useSilentBoomFeed } from '../../hooks/useSilentBoomFeed.js';
 import { ctSessionBounds } from '../LotteryFinder/ct-window.js';
 import { SilentBoomDayBanner } from './SilentBoomDayBanner.js';
 import { SilentBoomRow } from './SilentBoomRow.js';
-import type { OptionType, SilentBoomSortMode, SilentBoomTod } from './types.js';
+import type {
+  OptionType,
+  SilentBoomBurstColor,
+  SilentBoomDteBucket,
+  SilentBoomSortMode,
+  SilentBoomTod,
+} from './types.js';
 
 const PAGE_SIZE = 50;
 const SORT_LS_KEY = 'silentBoom.sortMode';
@@ -39,6 +45,74 @@ const TOD_FILTERS: Array<{ value: SilentBoomTod | null; label: string }> = [
   { value: 'PM', label: 'PM' },
 ];
 
+const DTE_FILTERS: Array<{
+  value: SilentBoomDteBucket | null;
+  label: string;
+  tooltip: string;
+}> = [
+  { value: null, label: 'all DTE', tooltip: 'Show alerts at every DTE.' },
+  {
+    value: '0',
+    label: '0DTE',
+    tooltip:
+      '0DTE only — same-day expiry. Audit lift 3.03× (48.2% peak ≥ 50%); the strongest single segmenter.',
+  },
+  {
+    value: '1-3',
+    label: '1-3D',
+    tooltip:
+      '1-3 days to expiry. Audit lift 1.47× (23.5% peak ≥ 50%) — second-best DTE bucket.',
+  },
+  {
+    value: '4+',
+    label: '4D+',
+    tooltip:
+      '4+ days to expiry. Audit lift drops to 0.88× (4-7D) and below; weakest DTE buckets.',
+  },
+];
+
+/**
+ * Burst color category — matches the spike-ratio badge in
+ * SilentBoomRow. Visual-intensity ordering, NOT empirical-lift
+ * ordering. The audit shows smaller spike ratios actually score
+ * better historically (5–10× has lift 2.11× vs 100×+ at 0.64×).
+ * Tooltip notes this so the user picks deliberately.
+ */
+const BURST_FILTERS: Array<{
+  value: SilentBoomBurstColor | null;
+  label: string;
+  cls: keyof typeof CHIP_ACTIVE | null;
+  tooltip: string;
+}> = [
+  {
+    value: null,
+    label: 'all bursts',
+    cls: null,
+    tooltip: 'Show every burst color.',
+  },
+  {
+    value: 'red',
+    label: '🔴 ≥50×',
+    cls: 'rose',
+    tooltip:
+      'Red burst — spike_ratio ≥ 50×. Visually extreme but historically WEAKER (audit lift 1.17× and below). Often ghost prints on dead chains.',
+  },
+  {
+    value: 'yellow',
+    label: '🟡 20-50×',
+    cls: 'amber',
+    tooltip:
+      'Yellow burst — spike_ratio in [20×, 50×). Audit lift ~1.40-1.74×.',
+  },
+  {
+    value: 'grey',
+    label: '⚪ <20×',
+    cls: 'neutral',
+    tooltip:
+      'Grey burst — spike_ratio in [5×, 20×). Visually mild but historically the STRONGEST bucket (audit lift 1.74-2.11× on 5-25×).',
+  },
+];
+
 interface ExportUrlParams {
   date: string;
   ticker?: string | null;
@@ -46,6 +120,8 @@ interface ExportUrlParams {
   minVolOi?: number;
   minScore?: number | null;
   tod?: SilentBoomTod | null;
+  dte?: SilentBoomDteBucket | null;
+  burst?: SilentBoomBurstColor | null;
 }
 
 /**
@@ -62,6 +138,8 @@ const buildExportUrl = (params: ExportUrlParams): string => {
   }
   if (params.minScore != null) sp.set('minScore', String(params.minScore));
   if (params.tod) sp.set('tod', params.tod);
+  if (params.dte) sp.set('dte', params.dte);
+  if (params.burst) sp.set('burst', params.burst);
   return `/api/silent-boom-export?${sp.toString()}`;
 };
 
@@ -205,6 +283,10 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     null,
   );
   const [todFilter, setTodFilter] = useState<SilentBoomTod | null>(null);
+  const [dteFilter, setDteFilter] = useState<SilentBoomDteBucket | null>(null);
+  const [burstFilter, setBurstFilter] = useState<SilentBoomBurstColor | null>(
+    null,
+  );
   const [sortMode, setSortMode] = useState<SilentBoomSortMode>(() => {
     if (typeof window === 'undefined') return 'newest';
     const stored = window.localStorage.getItem(SORT_LS_KEY);
@@ -278,6 +360,8 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     tickerFilter,
     optionTypeFilter,
     todFilter,
+    dteFilter,
+    burstFilter,
     sortMode,
     minVolOi,
     convictionFloor,
@@ -296,6 +380,8 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       ticker: tickerFilter,
       optionType: optionTypeFilter,
       tod: todFilter,
+      dte: dteFilter,
+      burst: burstFilter,
       minVolOi,
       minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
       sort: sortMode,
@@ -530,6 +616,8 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                   minVolOi,
                   minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
                   tod: todFilter,
+                  dte: dteFilter,
+                  burst: burstFilter,
                 })}
                 download
                 className={`${CHIP_BASE} ${CHIP_INACTIVE}`}
@@ -584,6 +672,48 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 </button>
               );
             })}
+          </div>
+
+          {/* Row 2.5: DTE bucket + Burst color. DTE buckets the strongest
+              empirical segmenter so it gets prime real estate; burst is
+              visual-intensity only with a tooltip warning that smaller
+              ratios actually score better historically. */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className={SECTION_LABEL}>dte</span>
+            {DTE_FILTERS.map((d) => (
+              <button
+                key={d.label}
+                type="button"
+                onClick={() => setDteFilter(d.value)}
+                className={`${CHIP_BASE} ${
+                  dteFilter === d.value ? CHIP_ACTIVE.blue : CHIP_INACTIVE
+                }`}
+                title={d.tooltip}
+                aria-pressed={dteFilter === d.value}
+              >
+                {d.label}
+              </button>
+            ))}
+            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+            <span className={SECTION_LABEL}>burst</span>
+            {BURST_FILTERS.map((b) => (
+              <button
+                key={b.label}
+                type="button"
+                onClick={() => setBurstFilter(b.value)}
+                className={`${CHIP_BASE} ${
+                  burstFilter === b.value && b.cls
+                    ? CHIP_ACTIVE[b.cls]
+                    : burstFilter === b.value
+                      ? CHIP_ACTIVE.emerald
+                      : CHIP_INACTIVE
+                }`}
+                title={b.tooltip}
+                aria-pressed={burstFilter === b.value}
+              >
+                {b.label}
+              </button>
+            ))}
           </div>
 
           {/* Row 3: sort + vol/OI floor */}
@@ -799,6 +929,28 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 {todFilter && (
                   <span className="ml-2 text-orange-300/80">
                     {todFilter} only
+                  </span>
+                )}
+                {dteFilter && (
+                  <span className="ml-2 text-blue-300/80">
+                    {dteFilter === '0'
+                      ? '0DTE only'
+                      : dteFilter === '1-3'
+                        ? '1-3D only'
+                        : '4D+ only'}
+                  </span>
+                )}
+                {burstFilter && (
+                  <span
+                    className={`ml-2 ${
+                      burstFilter === 'red'
+                        ? 'text-rose-300/80'
+                        : burstFilter === 'yellow'
+                          ? 'text-amber-300/80'
+                          : 'text-neutral-400'
+                    }`}
+                  >
+                    {burstFilter} burst only
                   </span>
                 )}
                 {hideLatePm && hiddenLatePmCount > 0 && (

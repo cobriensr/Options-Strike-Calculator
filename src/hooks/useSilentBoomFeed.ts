@@ -11,6 +11,8 @@ import { POLL_INTERVALS } from '../constants/index.js';
 import type {
   OptionType,
   SilentBoomAlert,
+  SilentBoomBurstColor,
+  SilentBoomDteBucket,
   SilentBoomFeedResponse,
   SilentBoomSortMode,
   SilentBoomTod,
@@ -32,6 +34,10 @@ interface UseSilentBoomFeedArgs {
   minScore?: number | null;
   /** Time-of-day filter — null = all phases. */
   tod?: SilentBoomTod | null;
+  /** DTE bucket filter — null = all DTEs. */
+  dte?: SilentBoomDteBucket | null;
+  /** Burst-color category filter — null = all colors. */
+  burst?: SilentBoomBurstColor | null;
   sort?: SilentBoomSortMode;
   page?: number;
   pageSize?: number;
@@ -69,6 +75,8 @@ export function useSilentBoomFeed({
   minSpikeRatio = 0,
   minScore = null,
   tod = null,
+  dte = null,
+  burst = null,
   sort = 'newest',
   page = 0,
   pageSize = 50,
@@ -94,6 +102,8 @@ export function useSilentBoomFeed({
       if (optionType) params.set('optionType', optionType);
       if (minScore != null) params.set('minScore', String(minScore));
       if (tod) params.set('tod', tod);
+      if (dte) params.set('dte', dte);
+      if (burst) params.set('burst', burst);
       const res = await fetch(`/api/silent-boom-feed?${params.toString()}`, {
         credentials: 'include',
         signal: ctrl.signal,
@@ -128,6 +138,8 @@ export function useSilentBoomFeed({
     minSpikeRatio,
     minScore,
     tod,
+    dte,
+    burst,
     sort,
     page,
     pageSize,

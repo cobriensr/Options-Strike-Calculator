@@ -220,6 +220,76 @@ describe('silent-boom-feed handler', () => {
     expect(body.filters.tod).toBe('AM_open');
   });
 
+  it('binds dte into the SQL when supplied', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([makeAlert()]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-07', dte: '0' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    for (const call of mockSql.mock.calls) {
+      const strings = call[0] as TemplateStringsArray | undefined;
+      const sqlText = (strings ?? []).join(' ');
+      expect(sqlText).toContain('dte BETWEEN');
+    }
+    const body = res._json as { filters: { dte: string | null } };
+    expect(body.filters.dte).toBe('0');
+  });
+
+  it('binds burst into the SQL when supplied', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([makeAlert()]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-07', burst: 'grey' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // The burst filter compiles to spike_ratio range bounds — check
+    // BOTH count AND list query carry the gate so a regression that
+    // only filters the count fails this test.
+    for (const call of mockSql.mock.calls) {
+      const strings = call[0] as TemplateStringsArray | undefined;
+      const sqlText = (strings ?? []).join(' ');
+      expect(sqlText).toContain('spike_ratio >=');
+      expect(sqlText).toContain('spike_ratio <');
+    }
+    const body = res._json as { filters: { burst: string | null } };
+    expect(body.filters.burst).toBe('grey');
+  });
+
+  it('rejects an invalid dte value with 400', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-07', dte: '7' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid burst value with 400', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-07', burst: 'green' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
   it('rejects an invalid tod value with 400', async () => {
     const req = mockRequest({
       method: 'GET',

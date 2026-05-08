@@ -95,6 +95,8 @@ interface SilentBoomAlertResponse {
 }
 
 type SilentBoomTodEnum = 'AM_open' | 'MID' | 'LUNCH' | 'PM' | 'LATE';
+type SilentBoomDteBucket = '0' | '1-3' | '4+';
+type SilentBoomBurstColor = 'red' | 'yellow' | 'grey';
 
 interface SilentBoomFeedResponse {
   date: string;
@@ -105,6 +107,8 @@ interface SilentBoomFeedResponse {
     minSpikeRatio: number;
     minScore: number | null;
     tod: SilentBoomTodEnum | null;
+    dte: SilentBoomDteBucket | null;
+    burst: SilentBoomBurstColor | null;
     sort: 'newest' | 'spike_ratio' | 'vol_oi' | 'peak';
   };
   count: number;
@@ -179,6 +183,35 @@ export default async function handler(
   const todLo = todRange?.lo ?? null;
   const todHi = todRange?.hi ?? null;
 
+  // DTE bucket → numeric range. '0' is exact; '1-3' is BETWEEN; '4+'
+  // is >= 4. Bind boundaries as nullable ints so the gate evaluates
+  // to TRUE when no filter is set.
+  // DTE bucket → numeric range. '0' is exact; '1-3' is BETWEEN; '4+'
+  // is >= 4. Postgres has no IS NULL OR shortcut on BETWEEN, so we
+  // encode the "no upper bound" case via a sentinel (100k — larger
+  // than any real DTE).
+  const dteRange = (() => {
+    if (q.dte === '0') return { lo: 0, hi: 0 };
+    if (q.dte === '1-3') return { lo: 1, hi: 3 };
+    if (q.dte === '4+') return { lo: 4, hi: 100_000 };
+    return null;
+  })();
+  const dteLo = dteRange?.lo ?? null;
+  const dteHiBound = dteRange?.hi ?? 100_000;
+
+  // Burst color category → spike_ratio range. Mirrors the
+  // SilentBoomRow spike badge: red >= 50×, yellow 20-50×, grey < 20×.
+  // Detector floor is 5× so 'grey' lands 5–20×. Same sentinel pattern
+  // as DTE — "no upper bound" red collapses to a 1M sentinel.
+  const burstRange = (() => {
+    if (q.burst === 'red') return { lo: 50, hi: 1_000_000 };
+    if (q.burst === 'yellow') return { lo: 20, hi: 50 };
+    if (q.burst === 'grey') return { lo: 0, hi: 20 };
+    return null;
+  })();
+  const burstLo = burstRange?.lo ?? null;
+  const burstHiBound = burstRange?.hi ?? 1_000_000;
+
   try {
     const db = getDb();
 
@@ -206,6 +239,8 @@ export default async function handler(
           EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
           EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
         ) < ${todHi}::int)
+        AND (${dteLo}::int IS NULL OR dte BETWEEN ${dteLo}::int AND ${dteHiBound}::int)
+        AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
     `) as { n: number }[];
     const total = totalRow[0]?.n ?? 0;
 
@@ -231,6 +266,8 @@ export default async function handler(
             EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
             EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
           ) < ${todHi}::int)
+          AND (${dteLo}::int IS NULL OR dte BETWEEN ${dteLo}::int AND ${dteHiBound}::int)
+          AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
         ORDER BY spike_ratio DESC, bucket_ct DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
       `) as AlertRow[];
@@ -252,6 +289,8 @@ export default async function handler(
             EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
             EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
           ) < ${todHi}::int)
+          AND (${dteLo}::int IS NULL OR dte BETWEEN ${dteLo}::int AND ${dteHiBound}::int)
+          AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
         ORDER BY vol_oi DESC, bucket_ct DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
       `) as AlertRow[];
@@ -273,6 +312,8 @@ export default async function handler(
             EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
             EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
           ) < ${todHi}::int)
+          AND (${dteLo}::int IS NULL OR dte BETWEEN ${dteLo}::int AND ${dteHiBound}::int)
+          AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
         ORDER BY peak_ceiling_pct DESC NULLS LAST, bucket_ct DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
       `) as AlertRow[];
@@ -295,6 +336,8 @@ export default async function handler(
             EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
             EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
           ) < ${todHi}::int)
+          AND (${dteLo}::int IS NULL OR dte BETWEEN ${dteLo}::int AND ${dteHiBound}::int)
+          AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
         ORDER BY bucket_ct DESC, id DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
       `) as AlertRow[];
@@ -341,6 +384,8 @@ export default async function handler(
         minSpikeRatio: q.minSpikeRatio,
         minScore: q.minScore ?? null,
         tod: q.tod ?? null,
+        dte: q.dte ?? null,
+        burst: q.burst ?? null,
         sort: q.sort,
       },
       count: alerts.length,
