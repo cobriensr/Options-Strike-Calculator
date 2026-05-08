@@ -1,0 +1,29 @@
+# Railway config for the periscope-scraper service. Sibling to
+# sidecar/railway.toml and ml-sweep/railway.toml in the same project.
+#
+# Build context is the REPO ROOT (Railway default), so the Dockerfile's
+# COPY paths are prefixed with `periscope-scraper/`. The root
+# .dockerignore re-includes `periscope-scraper/**` so its files
+# survive the global excludes that target the main app's tsconfig /
+# package.json / src/.
+#
+# watchPatterns is INTENTIONALLY NARROW. Broader patterns like
+# `periscope-scraper/**` would bounce a long-running tick when a
+# README / TEARDOWN / docs commit lands. Only list paths that
+# actually influence the runtime image.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "periscope-scraper/Dockerfile"
+
+[deploy]
+watchPatterns = [
+  "periscope-scraper/src/**",
+  "periscope-scraper/package.json",
+  "periscope-scraper/package-lock.json",
+  "periscope-scraper/tsconfig.json",
+  "periscope-scraper/Dockerfile",
+  "periscope-scraper/railway.toml",
+]
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3

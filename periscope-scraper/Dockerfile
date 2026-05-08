@@ -6,11 +6,16 @@ WORKDIR /app
 # then we trim node_modules to production-only in the final stage.
 # package-lock.json is committed; the explicit copy fails the build if it's
 # missing rather than silently masking a misconfiguration.
-COPY package.json package-lock.json ./
+#
+# Build context is the REPO ROOT (Railway default). All COPYs are
+# prefixed with `periscope-scraper/` to match. The repo-root
+# .dockerignore re-includes `periscope-scraper/` so its files survive
+# the global tsconfig/package-lock excludes that target the main app.
+COPY periscope-scraper/package.json periscope-scraper/package-lock.json ./
 RUN npm ci
 
-COPY tsconfig.json ./
-COPY src ./src
+COPY periscope-scraper/tsconfig.json ./
+COPY periscope-scraper/src ./src
 RUN npm run build
 
 # Prune devDependencies for the runtime image.

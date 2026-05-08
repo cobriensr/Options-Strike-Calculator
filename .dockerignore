@@ -82,3 +82,11 @@ package-lock.json
 
 # Temporary comparison output files from Pine validation
 comparison-*.md
+
+# Re-include periscope-scraper service. The repo-root excludes above
+# (tsconfig*.json, package.json, package-lock.json, src/) target the
+# main app and must NOT strip the scraper's own tsconfig.json /
+# package.json / src/ when Railway builds the periscope-scraper
+# Dockerfile from the repo-root context.
+!periscope-scraper/
+!periscope-scraper/**
