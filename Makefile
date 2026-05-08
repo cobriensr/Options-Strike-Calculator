@@ -12,10 +12,11 @@
 #                     source CSV only after both writes + upload succeed
 #   3. whale_plots  — regenerates all 13 visualizations under ml/plots/whale-detection/
 #   4. enrich       — replays the EOD parquet against unenriched
-#                     lottery_finder_fires rows in Postgres, populating
-#                     the realized_*_pct + peak_ceiling_pct + minutes_to_peak
-#                     columns. Replaces the Vercel cron, which can only see
-#                     the partial ws_option_trades stream.
+#                     lottery_finder_fires AND silent_boom_alerts rows in
+#                     Postgres, populating the realized_*_pct +
+#                     peak_ceiling_pct + minutes_to_peak columns. Replaces
+#                     the Vercel cron, which can only see the partial
+#                     ws_option_trades stream.
 #
 # Override the date with DATE=YYYY-MM-DD if needed:
 #     make nightly DATE=2026-04-29
@@ -61,7 +62,7 @@ help:
 	@echo "  make analyze                  EDA only (does NOT delete the CSV)"
 	@echo "  make ingest                   CSV → parquet → Blob upload + delete CSV"
 	@echo "  make plots                    Regenerate visualizations only (no CSV needed)"
-	@echo "  make enrich                   Backfill lottery_finder_fires realized_*_pct from EOD parquet"
+	@echo "  make enrich                   Backfill lottery_finder_fires + silent_boom_alerts realized_*_pct from EOD parquet"
 	@echo "  make refit                    Refit lottery score weights from enriched fires + backfill score column"
 	@echo "  make update                   Run after \`make nightly\`: refit + exit-policy search +"
 	@echo "                                feature audit + flow-inversion timing + tracker CSV. ~3-4m,"
@@ -142,6 +143,15 @@ enrich:
 	@#   1. trail/hard/tier50/peak/eod/min_to_peak from parquet
 	@#   2. flow_inversion from parquet NBBO mids + net_flow_per_ticker_history
 	$(PYTHON) scripts/enrich_lottery_outcomes.py
+	@echo ""
+	@echo "════════════════════════════════════════════════════════════════"
+	@echo "  STEP 5/5 (cont.) — enrich_silent_boom_outcomes.py"
+	@echo "════════════════════════════════════════════════════════════════"
+	@# Idempotent (WHERE enriched_at IS NULL). Populates peak_ceiling_pct,
+	@# minutes_to_peak, realized_{30,60,120}m_pct, realized_eod_pct on
+	@# silent_boom_alerts from the same per-day *-trades.parquet that the
+	@# lottery enrichment uses. Mirrors that script's auto-date enumeration.
+	$(PYTHON) scripts/enrich_silent_boom_outcomes.py
 
 refit:
 	@echo ""
