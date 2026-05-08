@@ -20,6 +20,7 @@ vi.mock('../_lib/db.js', () => ({
 
 vi.mock('../_lib/api-helpers.js', () => ({
   guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
+  guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
   rejectIfRateLimited: vi.fn().mockResolvedValue(false),
   setCacheHeaders: vi.fn(),
 }));
@@ -37,11 +38,11 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 import listHandler from '../periscope-lessons-list.js';
-import { guardOwnerEndpoint } from '../_lib/api-helpers.js';
+import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 
 beforeEach(() => {
   mockSql.mockReset();
-  vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
+  vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
 });
 
 describe('GET /api/periscope-lessons-list', () => {
@@ -53,10 +54,12 @@ describe('GET /api/periscope-lessons-list', () => {
   });
 
   it('returns 401 when not owner', async () => {
-    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
-      res.status(401).json({ error: 'Not authenticated' });
-      return true;
-    });
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(401).json({ error: 'Not authenticated' });
+        return true;
+      },
+    );
     const req = mockRequest({ method: 'GET', query: {} });
     const res = mockResponse();
     await listHandler(req, res);

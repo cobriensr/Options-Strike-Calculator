@@ -39,6 +39,7 @@ vi.mock('../_lib/db.js', () => ({
 
 vi.mock('../_lib/api-helpers.js', () => ({
   guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
+  guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
   rejectIfRateLimited: vi.fn().mockResolvedValue(false),
   setCacheHeaders: vi.fn(),
   respondIfInvalid: vi
@@ -74,11 +75,15 @@ vi.mock('../_lib/logger.js', () => ({
 import listHandler from '../periscope-chat-list.js';
 import detailHandler from '../periscope-chat-detail.js';
 import updateHandler from '../periscope-chat-update.js';
-import { guardOwnerEndpoint } from '../_lib/api-helpers.js';
+import {
+  guardOwnerEndpoint,
+  guardOwnerOrGuestEndpoint,
+} from '../_lib/api-helpers.js';
 
 beforeEach(() => {
   mockSql.mockReset();
   vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
+  vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
 });
 
 // ============================================================
@@ -94,10 +99,12 @@ describe('GET /api/periscope-chat-list', () => {
   });
 
   it('returns 401 when not owner', async () => {
-    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
-      res.status(401).json({ error: 'Not authenticated' });
-      return true;
-    });
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(401).json({ error: 'Not authenticated' });
+        return true;
+      },
+    );
     const req = mockRequest({ method: 'GET', query: {} });
     const res = mockResponse();
     await listHandler(req, res);
@@ -251,10 +258,12 @@ describe('GET /api/periscope-chat-detail', () => {
   });
 
   it('returns 401 when not owner', async () => {
-    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
-      res.status(401).json({ error: 'Not authenticated' });
-      return true;
-    });
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(401).json({ error: 'Not authenticated' });
+        return true;
+      },
+    );
     const req = mockRequest({ method: 'GET', query: { id: '42' } });
     const res = mockResponse();
     await detailHandler(req, res);
@@ -340,10 +349,12 @@ describe('GET /api/periscope-chat-image', () => {
   });
 
   it('returns 401 when not owner', async () => {
-    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
-      res.status(401).json({ error: 'Not authenticated' });
-      return true;
-    });
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(401).json({ error: 'Not authenticated' });
+        return true;
+      },
+    );
     const req = mockRequest({
       method: 'GET',
       query: { id: '1', kind: 'chart' },
