@@ -37,6 +37,15 @@ ml-sweep/         PAC backtest runner (Python, Railway, NOT Vercel — sibling t
                   Do NOT enable scale-to-zero (kills sweeps mid-flight — HTTP idle counter is
                   blind to subprocess CPU)
 
+uw-stream/        UnusualWhales websocket consumer (Python, Railway, NOT Vercel — third Railway service)
+                  asyncio + websockets + asyncpg (NOT psycopg2 — different from sidecar). Connector → router →
+                  per-channel handler queues → asyncpg COPY → Neon. Subscribes to flow-alerts (note hyphen,
+                  not flow_alerts) and option_trades:<TICKER> for the Lottery Finder universe (~50 tickers).
+                  Writes to ws_flow_alerts (sql/001) and ws_option_trades (api migration #110); cron-fed
+                  flow_alerts table is NOT touched and runs in parallel during the soak window.
+                  Sentry tagged server_name=uw-stream; UW_API_KEY required (Advanced tier for WS access).
+                  Own Dockerfile, README.md, requirements.txt, conftest.py — own pytest suite under tests/.
+
 scripts/          Backfill scripts (backfill-etf-tide.mjs, backfill-greek-exposure.mjs, etc.)
 
 ml/               Python ML pipeline (clustering, EDA, classification, visualization)
