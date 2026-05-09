@@ -65,10 +65,28 @@ HTTP_CODE=$(curl -sS -L \
   "$URL")
 
 if [[ "$HTTP_CODE" != "200" ]]; then
+  # UW's endpoint 302-redirects to a GCS signed URL. When the underlying
+  # zip hasn't been posted yet, GCS returns 404 with an XML body whose
+  # <Code> is NoSuchKey. Distinguish that "not posted yet" case from a
+  # real auth/window 404 so the operator knows whether to retry later
+  # vs. fix configuration.
+  BODY=$(head -c 500 "$TMP_ZIP" 2>/dev/null || true)
+  TODAY_CT=$(TZ='America/Chicago' date +%Y-%m-%d)
+  YESTERDAY_CT=$(TZ='America/Chicago' date -v-1d +%Y-%m-%d 2>/dev/null \
+    || TZ='America/Chicago' date -d 'yesterday' +%Y-%m-%d 2>/dev/null \
+    || echo '')
+  if [[ "$HTTP_CODE" == "404" && "$BODY" == *"<Code>NoSuchKey</Code>"* ]] && \
+     [[ "$DATE" == "$TODAY_CT" || "$DATE" == "$YESTERDAY_CT" ]]; then
+    echo "⏳ UW hasn't posted the Full Tape zip for $DATE yet." >&2
+    echo "   The endpoint is redirecting to GCS correctly, but the underlying" >&2
+    echo "   object doesn't exist there. UW typically posts a few hours after" >&2
+    echo "   close — sometimes overnight. Retry in 1–3 hours." >&2
+    exit 6
+  fi
   echo "❌ HTTP $HTTP_CODE from UW Full Tape" >&2
   echo "   Common causes: 401 (bad token), 404 (date out of last-3-day window or not yet posted), 403 (no Advanced subscription), 429 (rate limited)." >&2
   echo "   Response body (truncated):" >&2
-  head -c 500 "$TMP_ZIP" >&2 || true
+  echo "$BODY" >&2
   echo >&2
   exit 3
 fi
