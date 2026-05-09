@@ -39,10 +39,17 @@ _RECONNECT_STORM_THRESHOLD = 5
 class Connector:
     """Manages the lifecycle of a single multiplexed UW WS connection."""
 
-    def __init__(self, channels: list[str], on_message) -> None:
+    def __init__(
+        self,
+        channels: list[str],
+        receive_queue: asyncio.Queue,
+    ) -> None:
         self.channels = channels
-        # Callback signature: async (raw_msg: str | bytes) -> None
-        self._on_message = on_message
+        # Bounded queue between the connector (producer) and the router
+        # (consumer). Connector only does ``put_nowait`` so the WS
+        # receive task can never block on JSON parsing or handler
+        # dispatch — those happen on the router task.
+        self._receive_queue = receive_queue
 
     async def run(self) -> None:
         """Run forever, reconnecting as needed."""
@@ -103,9 +110,36 @@ class Connector:
             await self._subscribe_all(ws)
             log.info("WS connected, awaiting messages")
             async for raw in ws:
-                # orjson.loads handles both str and bytes; defer parsing
-                # to the router so connector stays a pure transport.
-                await self._on_message(raw)
+                # Hand off to the router via a bounded queue. We never
+                # ``await`` here — the WS receive task must never block
+                # on parsing or dispatch (those run on the router task).
+                # On overflow, drop the oldest frame to make room: under
+                # sustained overload we'd rather lose stale ticks than
+                # back up the OS receive buffer.
+                try:
+                    self._receive_queue.put_nowait(raw)
+                except asyncio.QueueFull:
+                    try:
+                        self._receive_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+                    else:
+                        # task_done() balances the get_nowait we just did
+                        # so receive_queue.join() (if anyone calls it)
+                        # stays correct.
+                        self._receive_queue.task_done()
+                    # Should be impossible — we just made room — but
+                    # defensive in case another producer ever exists.
+                    # Log if it ever does happen so we don't drop frames
+                    # silently in an "impossible" branch.
+                    try:
+                        self._receive_queue.put_nowait(raw)
+                    except asyncio.QueueFull:
+                        log.warning(
+                            "receive_queue overflow even after eviction "
+                            "— dropping new frame",
+                        )
+                    state.receive_queue_drops += 1
 
     async def _subscribe_all(self, ws) -> None:
         """Send a join frame for every configured channel."""

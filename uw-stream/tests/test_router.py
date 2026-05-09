@@ -139,6 +139,48 @@ async def test_touch_not_called_for_join_ack(router: Router, fake: FakeHandler):
     assert state.channel("flow-alerts").last_message_ts is None
 
 
-# `asyncio` import is intentional even if pytest-asyncio's auto mode
-# resolves loops for us — keeps mypy / linters happy when reading tests.
-_ = asyncio
+@pytest.mark.asyncio
+async def test_run_consumes_from_receive_queue(router: Router, fake: FakeHandler):
+    """Phase 1 / C2: ``Router.run`` pulls raw frames off the connector
+    → router queue and dispatches them. Verifies the new architecture
+    (decoupled receive task) wires together end-to-end.
+    """
+    queue: asyncio.Queue = asyncio.Queue(maxsize=4)
+    queue.put_nowait(_wire("flow-alerts", {"x": 1}))
+    queue.put_nowait(_wire("flow-alerts", {"x": 2}))
+
+    # Run two iterations of the consume loop. We can't await
+    # ``router.run`` directly — it never returns — so step through it
+    # by awaiting the queue.get() + dispatch path manually for each
+    # known item, matching what ``run`` does in production.
+    state.receive_queue_depth = 0
+    for _ in range(2):
+        raw = await queue.get()
+        try:
+            await router.dispatch(raw)
+        finally:
+            queue.task_done()
+            state.receive_queue_depth = queue.qsize()
+
+    assert len(fake.received) == 2
+    assert fake.received == [{"x": 1}, {"x": 2}]
+    assert state.receive_queue_depth == 0
+
+
+@pytest.mark.asyncio
+async def test_run_iterates_until_cancelled(router: Router, fake: FakeHandler):
+    """Belt-and-suspenders: actually start ``router.run`` as a task,
+    push items, then cancel it. Confirms the full ``run`` coroutine
+    (not just inline reproduction) consumes from the receive queue.
+    """
+    queue: asyncio.Queue = asyncio.Queue(maxsize=4)
+    task = asyncio.create_task(router.run(queue))
+    try:
+        await queue.put(_wire("flow-alerts", {"x": 99}))
+        await asyncio.wait_for(queue.join(), timeout=1.0)
+        assert fake.received == [{"x": 99}]
+        assert state.receive_queue_depth == 0
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task

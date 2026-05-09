@@ -45,6 +45,8 @@ async def metrics(_request: web.Request) -> web.Response:
         "ws_connected": state.ws_connected,
         "last_message_ts": _iso(state.last_message_ts),
         "reconnects_last_hour": state.reconnects_last_hour(),
+        "receive_queue_depth": state.receive_queue_depth,
+        "receive_queue_drops": state.receive_queue_drops,
         "channels": {
             name: {
                 "subscribed": ch.subscribed,

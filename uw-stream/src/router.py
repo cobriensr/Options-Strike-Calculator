@@ -14,6 +14,7 @@ detect those, flip the channel's `subscribed` flag, and skip dispatch.
 
 from __future__ import annotations
 
+import asyncio
 import random
 from typing import Protocol
 
@@ -38,6 +39,22 @@ class Router:
 
     def __init__(self, handlers: dict[str, Handler]) -> None:
         self.handlers = handlers
+
+    async def run(self, receive_queue: asyncio.Queue) -> None:
+        """Consume raw frames from the connector → router queue forever.
+
+        Decouples the WS receive task (which only does ``put_nowait``)
+        from JSON parsing + handler dispatch. ``state.receive_queue_depth``
+        is updated each iteration so /metrics shows whether the router
+        is keeping up with the receive rate.
+        """
+        while True:
+            raw = await receive_queue.get()
+            try:
+                await self.dispatch(raw)
+            finally:
+                receive_queue.task_done()
+                state.receive_queue_depth = receive_queue.qsize()
 
     async def dispatch(self, raw: str | bytes) -> None:
         """Parse one WS frame and route to the matching handler."""

@@ -81,6 +81,37 @@ async def test_block_policy_does_not_drop(handler, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_block_policy_drops_after_timeout_when_queue_full(monkeypatch):
+    """Regression for C1: ``block`` policy must NOT freeze the receive
+    task when no consumer is draining the queue. After
+    BLOCK_PUT_TIMEOUT_S the payload is dropped and the counter ticks.
+    """
+    import time
+
+    from config import settings
+    from handlers import base as base_mod
+
+    # Tighten the queue to maxsize=1 so we hit backpressure on the
+    # second enqueue. Patch the timeout down to keep the test fast.
+    monkeypatch.setattr(settings, "ws_queue_size", 1)
+    monkeypatch.setattr(settings, "ws_backpressure_policy", "block")
+    monkeypatch.setattr(base_mod, "BLOCK_PUT_TIMEOUT_S", 0.02)
+
+    h = _CountingHandler()
+    await h.enqueue({"seq": 0})  # fills the queue
+    assert state.channel(h.name).drop_count == 0
+
+    started = time.monotonic()
+    await h.enqueue({"seq": 1})  # must time out and drop
+    elapsed = time.monotonic() - started
+
+    assert state.channel(h.name).drop_count == 1
+    # 100ms ceiling — well below the 20s WS ping timeout, well above the
+    # 20ms put timeout configured above so no flakiness on slow runners.
+    assert elapsed < 0.1, f"block-put waited {elapsed:.3f}s — too long"
+
+
+@pytest.mark.asyncio
 async def test_queue_depth_tracks_actual_queue_size(handler):
     await handler.enqueue({"seq": 0})
     assert state.channel(handler.name).queue_depth == 1

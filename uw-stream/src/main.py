@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import signal
 
 from config import settings
@@ -29,6 +30,34 @@ from logger_setup import log
 from router import Router
 from sentry_setup import capture_exception, init_sentry
 from state import state
+
+# Bounded buffer between the connector (WS receive) and the router
+# (parse + dispatch). At ~10k msgs/sec peak this gives ~1s of headroom
+# before drop-oldest kicks in. Override via WS_RECEIVE_QUEUE_SIZE for
+# load testing without a code change.
+RECEIVE_QUEUE_SIZE = 10_000
+
+
+def _receive_queue_size() -> int:
+    """Read WS_RECEIVE_QUEUE_SIZE env var or fall back to the default."""
+    raw = os.environ.get("WS_RECEIVE_QUEUE_SIZE")
+    if raw is None or not raw.strip():
+        return RECEIVE_QUEUE_SIZE
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning(
+            "ignoring invalid WS_RECEIVE_QUEUE_SIZE",
+            extra={"value": raw, "fallback": RECEIVE_QUEUE_SIZE},
+        )
+        return RECEIVE_QUEUE_SIZE
+    if value <= 0:
+        log.warning(
+            "ignoring non-positive WS_RECEIVE_QUEUE_SIZE",
+            extra={"value": raw, "fallback": RECEIVE_QUEUE_SIZE},
+        )
+        return RECEIVE_QUEUE_SIZE
+    return value
 
 
 def _build_handlers(channels: list[str]) -> dict[str, Handler]:
@@ -98,10 +127,17 @@ async def _run() -> None:
 
     handlers = _build_handlers(settings.channels)
     router = Router(handlers)
-    connector = Connector(channels=settings.channels, on_message=router.dispatch)
+    receive_queue_size = _receive_queue_size()
+    receive_queue: asyncio.Queue = asyncio.Queue(maxsize=receive_queue_size)
+    connector = Connector(channels=settings.channels, receive_queue=receive_queue)
+    log.info(
+        "receive queue configured",
+        extra={"maxsize": receive_queue_size},
+    )
 
     tasks: list[asyncio.Task] = [
         asyncio.create_task(connector.run(), name="connector"),
+        asyncio.create_task(router.run(receive_queue), name="router"),
         asyncio.create_task(run_server(), name="health"),
     ]
     # Spawn one drain task per UNIQUE handler instance — many channels
@@ -136,6 +172,28 @@ async def _run() -> None:
     )
 
     log.info("shutdown initiated", extra={"reason": _describe_done(done)})
+
+    # Drain in-flight handler batches BEFORE cancelling tasks. Railway
+    # sends SIGTERM on every deploy; without this, any rows still in
+    # the per-channel queue or in the in-memory batch are silently lost
+    # (~hundreds of tape rows per deploy). Drain is concurrent across
+    # handlers and bounded by each handler's deadline.
+    unique_handlers = list({id(h): h for h in handlers.values()}.values())
+    drain_results = await asyncio.gather(
+        *(h.drain() for h in unique_handlers),
+        return_exceptions=True,
+    )
+    for handler, result in zip(unique_handlers, drain_results, strict=True):
+        if isinstance(result, BaseException):
+            log.error(
+                "handler drain raised",
+                extra={"handler": handler.name, "err": str(result)},
+            )
+        else:
+            log.info(
+                "handler drained",
+                extra={"handler": handler.name, "rows_attempted": result},
+            )
 
     # Cancel everything still running and wait briefly for them to wind
     # down. We don't await indefinitely because Railway will SIGKILL us

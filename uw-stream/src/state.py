@@ -35,6 +35,13 @@ class State:
     last_message_ts: datetime | None = None
     reconnect_times: deque[datetime] = field(default_factory=lambda: deque(maxlen=64))
     channels: dict[str, ChannelMetrics] = field(default_factory=dict)
+    # Bounded queue between connector (producer) and router (consumer).
+    # Depth is set by the router on each loop iteration so /metrics can
+    # show whether the router is keeping up with the WS receive rate.
+    # Drops are incremented by the connector when the queue is full
+    # (drop-oldest semantics — the newest frame still gets enqueued).
+    receive_queue_depth: int = 0
+    receive_queue_drops: int = 0
 
     def reconnects_last_hour(self) -> int:
         """Count reconnect events that fell within the last hour."""
