@@ -565,9 +565,21 @@ function computeCharmDriftRead(args: {
     positionText = `Spot ${absDist.toFixed(0)} pts below charm-zero (${charmZeroStrike})`;
   }
 
+  // Compute the slot's CT minute-of-day first — both the drift line AND
+  // the weight class branch on it. The drift forecast describes
+  // mechanical /ES flow "into close"; once the close has passed, that
+  // forecast is moot and the line should say so explicitly rather than
+  // contradicting the Post-close weight label.
+  const ct = getCTTime(new Date(capturedAt));
+  const minutes = ct.hour * 60 + ct.minute;
+  const isPostClose = minutes >= 15 * 60;
+
   let driftText: string;
   let driftColor: string;
-  if (Math.abs(tallyWide100) < CHARM_DRIFT_NOISE_THRESHOLD) {
+  if (isPostClose) {
+    driftText = `Tally ${fmtSigned(tallyWide100)} — aftermarket reading, not applicable to intraday price movement`;
+    driftColor = theme.textMuted;
+  } else if (Math.abs(tallyWide100) < CHARM_DRIFT_NOISE_THRESHOLD) {
     driftText = `Tally ${fmtSigned(tallyWide100)} → flat, no mechanical drift`;
     driftColor = theme.textMuted;
   } else if (tallyWide100 >= 0) {
@@ -582,8 +594,6 @@ function computeCharmDriftRead(args: {
   // of time-to-expiry — its hedging force grows non-linearly through the
   // session and dominates the final 90 minutes. Buckets match the
   // user's 5-phase intraday schedule.
-  const ct = getCTTime(new Date(capturedAt));
-  const minutes = ct.hour * 60 + ct.minute;
   let weightText: string;
   let weightColor: string;
   if (minutes < 8 * 60 + 30) {
