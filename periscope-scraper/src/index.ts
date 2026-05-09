@@ -28,6 +28,33 @@ if (rawSentryDsn != null && rawSentryDsn.trim() !== '') {
   Sentry.init({ dsn: rawSentryDsn, tracesSampleRate: 0 });
 }
 
+// Seed the Playwright storageState file from a base64 env var BEFORE
+// loading config (which validates UW_AUTH_STATE_PATH). Pattern: encode
+// the local ~/.periscope-probe-auth.json with `base64 -i ...` and set
+// the result as Railway env var UW_AUTH_STATE_B64; this block decodes
+// it to UW_AUTH_STATE_PATH on every container start. Idempotent — if
+// the env var is unset (e.g., when running locally), this is a no-op
+// and the existing file on disk (if any) is used.
+{
+  const b64 = (process.env.UW_AUTH_STATE_B64 ?? '').trim();
+  if (b64 !== '') {
+    const { writeFile, mkdir } = await import('node:fs/promises');
+    const { dirname } = await import('node:path');
+    const target =
+      process.env.UW_AUTH_STATE_PATH ?? '/data/uw-auth-state.json';
+    try {
+      const decoded = Buffer.from(b64, 'base64').toString('utf8');
+      await mkdir(dirname(target), { recursive: true });
+      await writeFile(target, decoded, { mode: 0o600 });
+      console.log(
+        `auth-state seed: wrote ${decoded.length} bytes to ${target}`,
+      );
+    } catch (err) {
+      console.error('auth-state seed failed:', err);
+    }
+  }
+}
+
 // Now safe to load config (and capture its throws via the Sentry above).
 const { LOG_LEVEL, MS_PER_TICK, isMarketHours } = await import('./config.js');
 const { insertSnapshots } = await import('./db.js');
@@ -39,7 +66,9 @@ const logger = pino({ level: LOG_LEVEL });
 let intervalHandle: NodeJS.Timeout | null = null;
 let tickInFlight = false;
 
-async function runTick(opts: { bypassMarketHours?: boolean } = {}): Promise<void> {
+async function runTick(
+  opts: { bypassMarketHours?: boolean } = {},
+): Promise<void> {
   if (tickInFlight) {
     logger.warn('previous tick still running, skipping');
     return;
@@ -138,11 +167,7 @@ if (backfillDate !== '') {
   );
   const startedAt = Date.now();
   try {
-    const rows = await scrapeBackfill(
-      backfillDate,
-      backfillStart,
-      backfillEnd,
-    );
+    const rows = await scrapeBackfill(backfillDate, backfillStart, backfillEnd);
     const inserted = await insertSnapshots(rows);
     logger.info(
       { rows: rows.length, inserted, ms: Date.now() - startedAt },
@@ -157,7 +182,9 @@ if (backfillDate !== '') {
 }
 
 if (forceTick) {
-  logger.info('FORCE_TICK=true — running one tick (RTH gate bypassed) then exiting');
+  logger.info(
+    'FORCE_TICK=true — running one tick (RTH gate bypassed) then exiting',
+  );
   await runTick({ bypassMarketHours: true });
   await Sentry.flush(2000);
   process.exit(0);
