@@ -250,24 +250,43 @@ async function setExpirySingle(
   // verified this exact selector + click sequence works to switch the
   // popover from Multi (HierarchicalMultiSelect tree) to Single (flat
   // <table><tfoot><tr> list of MM/DD/YYYY (Nd) labels).
-  const singleTab = popover
-    .locator('[data-sentry-component="Switch"]')
-    .locator('div', { hasText: /^Single$/ })
-    .first();
-  if ((await singleTab.count()) === 0) {
-    logger.warn('setExpirySingle: Single tab not found in popover');
-    await page.keyboard.press('Escape');
-    return false;
+  //
+  // BUT: across consecutive setExpirySingle calls (e.g. range backfill
+  // walking date-by-date) the popover often opens already on Single
+  // because the prior call left it pinned. Re-clicking the active tab
+  // toggles it OFF on UW's Switch component, leaving the popover
+  // empty and the next row.click() failing with rowCount=0. Detect
+  // the pre-existing Single state by checking whether the date list
+  // is ALREADY populated on popover open; if yes, skip the tab click.
+  const preexistingDateRows = await popover
+    .locator('span.text-base')
+    .filter({ hasText: /^\d{2}\/\d{2}\/\d{4}/ })
+    .count();
+  if (preexistingDateRows === 0) {
+    const singleTab = popover
+      .locator('[data-sentry-component="Switch"]')
+      .locator('div', { hasText: /^Single$/ })
+      .first();
+    if ((await singleTab.count()) === 0) {
+      logger.warn('setExpirySingle: Single tab not found in popover');
+      await page.keyboard.press('Escape');
+      return false;
+    }
+    await singleTab.click({ timeout: 3_000 });
+    // After the Switch toggles to Single, UW lazy-loads the date list.
+    // Wait for either a row with `MM/DD/YYYY` to appear OR a 5s timeout.
+    await page
+      .locator('span.text-base', { hasText: /^\d{2}\/\d{2}\/\d{4}/ })
+      .first()
+      .waitFor({ state: 'visible', timeout: 5_000 })
+      .catch(() => undefined);
+    await page.waitForTimeout(500);
+  } else {
+    logger.debug(
+      { preexistingDateRows },
+      'setExpirySingle: popover already in Single mode — skipping tab click',
+    );
   }
-  await singleTab.click({ timeout: 3_000 });
-  // After the Switch toggles to Single, UW lazy-loads the date list.
-  // Wait for either a row with `MM/DD/YYYY` to appear OR a 5s timeout.
-  await page
-    .locator('span.text-base', { hasText: /^\d{2}\/\d{2}\/\d{4}/ })
-    .first()
-    .waitFor({ state: 'visible', timeout: 5_000 })
-    .catch(() => undefined);
-  await page.waitForTimeout(500);
 
   // Find the row whose first text-base span starts with MM/DD/YYYY.
   // The row label is `MM/DD/YYYY (Nd)` so we match on prefix.
