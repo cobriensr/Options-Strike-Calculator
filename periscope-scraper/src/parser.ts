@@ -335,7 +335,15 @@ export function parsePage(
   capturedAt: string,
   year?: number,
 ): { header: PageHeader; rows: SnapshotRow[] } {
-  const header = parseHeader(html, year);
+  // Default the year to the year of capturedAt (not the live calendar
+  // year). Critical for historical backfills: the date picker shows
+  // "Fri, Nov 14" with no year, and parseDateLabel needs to know
+  // whether that's 2025 or 2026. Using capturedAt's year ties parsing
+  // to the slot's actual ISO timestamp instead of `Date.now()`.
+  const fromCapturedAt = Number.parseInt(capturedAt.slice(0, 4), 10);
+  const resolvedYear =
+    year ?? (Number.isFinite(fromCapturedAt) ? fromCapturedAt : undefined);
+  const header = parseHeader(html, resolvedYear);
   const rows = parseTableRows(
     html,
     header.panel,

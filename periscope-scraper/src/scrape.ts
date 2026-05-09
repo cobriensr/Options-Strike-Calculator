@@ -25,8 +25,20 @@
  *       (Phase 2 — scraper)
  */
 
-import { chromium, type Browser, type Page } from 'playwright';
+import { type Browser, type Page } from 'playwright';
+import { chromium as chromiumExtra } from 'playwright-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import pino from 'pino';
+
+// Stealth plugin bundle — 17+ evasion modules that patch the most
+// common Chromium-automation tells (chrome.runtime, navigator.plugins,
+// WebGL vendor/renderer, iframe.contentWindow, permissions API, etc.).
+// UW's anti-bot returns "No data available" for historical dates when
+// it detects automation; the basic --disable-blink-features +
+// navigator.webdriver patch isn't enough on its own. Wrapping
+// chromiumExtra once at module-load time so every browser launched
+// through this module gets the full stealth bundle.
+chromiumExtra.use(StealthPlugin());
 import { LOG_LEVEL, UW_AUTH_STATE_PATH, UW_PERISCOPE_URL } from './config.js';
 import { insertSnapshots } from './db.js';
 import { parseDateLabel, parsePage } from './parser.js';
@@ -494,26 +506,46 @@ async function walkDateToTarget(page: Page, targetYmd: string): Promise<void> {
   const prevBtn = page.getByLabel('Previous day').first();
   const nextBtn = page.getByLabel('Next day').first();
 
+  // Decide between the day-chevron path (cheap for ±1-3 days) and the
+  // calendar widget (cheap for big jumps). Sequential day-chevron
+  // clicks past ~10 in a row appear to trip UW's anti-bot — historical
+  // backfills returned 0 rows for every slot until the calendar path
+  // was added. Threshold is conservative: anything more than 5
+  // calendar-days hops over to the calendar.
+  const currentLabel = ((await labelLoc.textContent()) ?? '').trim();
+  const currentYmd = parseDateLabel(currentLabel, year);
+  if (currentYmd === targetYmd) {
+    logger.debug({ targetYmd, attempts: 0 }, 'walkDateToTarget: already on target');
+    return;
+  }
+  if (currentYmd != null) {
+    const daysApart = Math.abs(daysBetweenYmd(currentYmd, targetYmd));
+    if (daysApart > 5) {
+      await walkDateViaCalendar(page, targetYmd);
+      return;
+    }
+  }
+
   // Cap at 200 — covers a full half-year walk if the storageState's
   // saved date is far from the target (which happens on the first day
   // of a multi-month backfill range). Within a range loop, day-to-day
   // walks are 1-3 clicks so the cap is never hit in steady state.
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const label = ((await labelLoc.textContent()) ?? '').trim();
-    const currentYmd = parseDateLabel(label, year);
-    if (currentYmd === targetYmd) {
+    const ymd = parseDateLabel(label, year);
+    if (ymd === targetYmd) {
       logger.debug(
         { targetYmd, attempts: attempt },
-        'walkDateToTarget: matched',
+        'walkDateToTarget: matched (day-chevron path)',
       );
       return;
     }
-    if (currentYmd === null) {
+    if (ymd === null) {
       throw new Error(
         `walkDateToTarget: cannot parse current label "${label}"`,
       );
     }
-    if (currentYmd > targetYmd) {
+    if (ymd > targetYmd) {
       await prevBtn.click({ timeout: 3_000 });
     } else {
       await nextBtn.click({ timeout: 3_000 });
@@ -523,6 +555,117 @@ async function walkDateToTarget(page: Page, targetYmd: string): Promise<void> {
   throw new Error(
     `walkDateToTarget: did not reach ${targetYmd} after 200 chevron clicks`,
   );
+}
+
+/**
+ * Calendar-based date walker. Used for big jumps (multi-month backfills)
+ * where the day-chevron path would (a) take 80+ clicks and (b) get
+ * throttled by UW's anti-bot.
+ *
+ * Flow:
+ *   1. Click `[data-testid="date-picker-button"]` to open the calendar.
+ *   2. Read the month-header label ("May 2026"). Compute month delta vs.
+ *      the target.
+ *   3. Click `aria-label="Previous month"` (or Next) the required number
+ *      of times.
+ *   4. Click the day cell — `<button>` containing `<span
+ *      class="font-medium">{day}</span>`. Skip disabled cells (UW marks
+ *      non-trading days with `disabled` + `cursor-not-allowed`).
+ *   5. The calendar should auto-close on day-click; if not, press Esc.
+ */
+async function walkDateViaCalendar(
+  page: Page,
+  targetYmd: string,
+): Promise<void> {
+  const targetYear = Number.parseInt(targetYmd.slice(0, 4), 10);
+  const targetMonth = Number.parseInt(targetYmd.slice(5, 7), 10); // 1-12
+  const targetDay = Number.parseInt(targetYmd.slice(8, 10), 10);
+
+  // Step 1: open the calendar
+  const datePill = page.locator('[data-testid="date-picker-button"]').first();
+  await datePill.click({ timeout: 5_000 });
+  await page.waitForTimeout(800);
+
+  // Step 2-3: walk months until the header matches target. The header
+  // is unique inside the popup — match it by regex on text.
+  const monthHeader = page
+    .locator('text=/^[A-Z][a-z]+ 20[0-9]{2}$/')
+    .first();
+  const prevMonth = page.getByLabel('Previous month').first();
+  const nextMonth = page.getByLabel('Next month').first();
+  for (let attempt = 0; attempt < 36; attempt += 1) {
+    const headerText = ((await monthHeader.textContent()) ?? '').trim();
+    const m = /^([A-Z][a-z]+) (20[0-9]{2})$/.exec(headerText);
+    if (m == null) {
+      throw new Error(
+        `walkDateViaCalendar: unparseable month header "${headerText}"`,
+      );
+    }
+    const curMonth = MONTH_NAME_TO_NUM[m[1]!] ?? 0;
+    const curYear = Number.parseInt(m[2]!, 10);
+    if (curYear === targetYear && curMonth === targetMonth) {
+      break;
+    }
+    const curMonths = curYear * 12 + curMonth;
+    const targetMonths = targetYear * 12 + targetMonth;
+    if (curMonths > targetMonths) {
+      await prevMonth.click({ timeout: 3_000 });
+    } else {
+      await nextMonth.click({ timeout: 3_000 });
+    }
+    await page.waitForTimeout(300);
+  }
+
+  // Step 4: click the day cell. Filter to enabled cells only — disabled
+  // cells (non-trading days, dates outside UW's retention window) are
+  // marked with the `disabled` attribute.
+  const dayCell = page
+    .locator(`button:not([disabled]):has(span.font-medium:text-is("${targetDay}"))`)
+    .first();
+  await dayCell.click({ timeout: 5_000 });
+  await page.waitForTimeout(800);
+
+  // Step 5: confirm the date pill now reflects the target (the popup
+  // should auto-close on day-click; if it didn't, the assertion still
+  // works because the pill text reflects the new selection).
+  const labelLoc = page
+    .locator('[data-testid="date-picker-button"] span[role="button"]')
+    .first();
+  const finalLabel = ((await labelLoc.textContent()) ?? '').trim();
+  const finalYmd = parseDateLabel(finalLabel, targetYear);
+  if (finalYmd !== targetYmd) {
+    // Try to dismiss the popup before throwing so subsequent clicks
+    // aren't shadowed.
+    await page.keyboard.press('Escape').catch(() => {});
+    throw new Error(
+      `walkDateViaCalendar: pill shows "${finalLabel}" (parsed=${finalYmd ?? 'null'}) after click — wanted ${targetYmd}`,
+    );
+  }
+  logger.debug({ targetYmd }, 'walkDateViaCalendar: matched');
+}
+
+const MONTH_NAME_TO_NUM: Record<string, number> = {
+  January: 1,
+  February: 2,
+  March: 3,
+  April: 4,
+  May: 5,
+  June: 6,
+  July: 7,
+  August: 8,
+  September: 9,
+  October: 10,
+  November: 11,
+  December: 12,
+};
+
+/** Calendar-day diff between two YYYY-MM-DD strings (target - current).
+ *  Negative when current > target. Used to decide whether to use the
+ *  day-chevron path or the calendar path. */
+function daysBetweenYmd(currentYmd: string, targetYmd: string): number {
+  const a = new Date(`${currentYmd}T12:00:00Z`).getTime();
+  const b = new Date(`${targetYmd}T12:00:00Z`).getTime();
+  return Math.round((b - a) / (24 * 60 * 60 * 1000));
 }
 
 /**
@@ -654,7 +797,7 @@ async function withBrowser<T>(
   // AutomationControlled blink feature is on. Headed runs without
   // these flags get the full 1.2 MB popover with 20 dates; headless
   // got 2 KB. These flags + the init script below close the gap.
-  const browser = await chromium.launch({
+  const browser = await chromiumExtra.launch({
     headless,
     slowMo: headless ? 0 : 250,
     args: [
@@ -810,35 +953,6 @@ async function captureCurrentSlot(
   }
 
   return slotRows;
-}
-
-/**
- * Common preamble shared by live and backfill flows: navigate to
- * Periscope, wait for the table-or-empty-state to render, then apply
- * DTE=[0,0]. Returns when the page is in a state where filter changes
- * (date, timeframe) take effect deterministically.
- */
-async function loadAndPrepPage(page: Page): Promise<void> {
-  logger.info({ url: UW_PERISCOPE_URL }, 'navigating to periscope');
-  await page.goto(UW_PERISCOPE_URL, { waitUntil: 'networkidle' });
-
-  const firstRow = page.locator('tr.table_row__wxw5u').first();
-  const emptyState = page.getByText(/no data available/i).first();
-  try {
-    await Promise.race([
-      firstRow.waitFor({ state: 'visible', timeout: 20_000 }),
-      emptyState.waitFor({ state: 'visible', timeout: 20_000 }),
-    ]);
-  } catch {
-    logger.warn(
-      'neither table rows nor empty-state appeared after 20s — proceeding anyway',
-    );
-  }
-
-  await setDTEZero(page);
-  // Settle: even when the table appears, the inner value cells
-  // sometimes render a tick later than the `<tr>` shells.
-  await page.waitForTimeout(2_000);
 }
 
 /**
@@ -1000,44 +1114,46 @@ export async function scrapeBackfill(
       'backfill: starting',
     );
 
-    // Backfill prep: same headless quirk live mode ran into — UW's
-    // DTE=[0,0] popover renders empty in automated browsers for the
-    // CURRENT trading day even with our anti-detection flags on. Walk
-    // around it by using Single-Expiry mode (which DOES work) when
-    // the target is today. Single-Expiry doesn't list past dates, so
-    // historical backfills continue to use the original DTE=[0,0]
-    // path (which has been validated against a 17K-row May 7
-    // backfill).
-    const isTodayBackfill = targetDate === todayInCT();
-    if (isTodayBackfill) {
-      logger.info(
-        { url: UW_PERISCOPE_URL },
-        'backfill (today): navigating + using Single-Expiry mode',
-      );
-      await page.goto(UW_PERISCOPE_URL, { waitUntil: 'networkidle' });
-      const firstRow = page.locator('tr.table_row__wxw5u').first();
-      const emptyState = page.getByText(/no data available/i).first();
-      try {
-        await Promise.race([
-          firstRow.waitFor({ state: 'visible', timeout: 20_000 }),
-          emptyState.waitFor({ state: 'visible', timeout: 20_000 }),
-        ]);
-      } catch {
-        logger.warn('initial page render did not settle within 20s');
-      }
-      const ok = await setExpirySingle(page, targetDate);
-      if (!ok) {
-        throw new Error(
-          'backfill (today): setExpirySingle failed — UW UI may have changed',
-        );
-      }
-      await waitForTableReady(page);
-    } else {
-      await loadAndPrepPage(page);
+    // Unified backfill prep: navigate, walk the date if needed, then pin
+    // Expiry=Single to the target date. DTE=[0,0] does NOT work for
+    // historical reads — UW returns "No data available" even when the
+    // chart's selected date matches the requested date (verified
+    // 2026-05-08 against multiple Nov 2025 dates). The Expiry=Single
+    // dropdown DOES list historical dates once the chart has been
+    // walked to them (rows like "11/14/2025 (0d)") so we use it for
+    // every backfill regardless of today vs. historical.
+    logger.info(
+      { url: UW_PERISCOPE_URL, targetDate },
+      'backfill: navigating + walking date + setting Expiry=Single',
+    );
+    await page.goto(UW_PERISCOPE_URL, { waitUntil: 'networkidle' });
+    const firstRow = page.locator('tr.table_row__wxw5u').first();
+    const emptyState = page.getByText(/no data available/i).first();
+    try {
+      await Promise.race([
+        firstRow.waitFor({ state: 'visible', timeout: 20_000 }),
+        emptyState.waitFor({ state: 'visible', timeout: 20_000 }),
+      ]);
+    } catch {
+      logger.warn('initial page render did not settle within 20s');
+    }
+
+    // Walk the chart date to the target. Required for historical reads
+    // because Single-Expiry's dropdown only lists dates near the chart's
+    // current selected date — clicking the calendar puts us in the right
+    // frame so the dropdown contains targetDate.
+    if (targetDate !== todayInCT()) {
       await walkDateToTarget(page, targetDate);
-      // Settle after date change; Periscope re-fetches data here.
       await page.waitForTimeout(1_500);
     }
+
+    const ok = await setExpirySingle(page, targetDate);
+    if (!ok) {
+      throw new Error(
+        `backfill: setExpirySingle(${targetDate}) failed — UW UI may have changed or date is outside Single-mode dropdown`,
+      );
+    }
+    await waitForTableReady(page);
 
     await walkTimeframeToTarget(page, startNorm);
     await page.waitForTimeout(1_500);
@@ -1125,7 +1241,23 @@ export async function scrapeBackfillRange(
       };
     }
 
-    await loadAndPrepPage(page);
+    // Range backfill prep: navigate to Periscope but DON'T set DTE=0-0.
+    // Each day inside the loop walks the calendar to its date and uses
+    // setExpirySingle(date) to pin Expiry to that day's 0DTE — which is
+    // the only filter path that actually returns rows for historical
+    // dates (DTE=0-0 returns "No data available", verified 2026-05-08).
+    logger.info({ url: UW_PERISCOPE_URL }, 'navigating to periscope');
+    await page.goto(UW_PERISCOPE_URL, { waitUntil: 'networkidle' });
+    const firstRow = page.locator('tr.table_row__wxw5u').first();
+    const emptyState = page.getByText(/no data available/i).first();
+    try {
+      await Promise.race([
+        firstRow.waitFor({ state: 'visible', timeout: 20_000 }),
+        emptyState.waitFor({ state: 'visible', timeout: 20_000 }),
+      ]);
+    } catch {
+      logger.warn('initial page render did not settle within 20s');
+    }
 
     let totalRowsInserted = 0;
     let daysScanned = 0;
@@ -1139,6 +1271,13 @@ export async function scrapeBackfillRange(
       try {
         await walkDateToTarget(page, date);
         await page.waitForTimeout(1_500);
+        const ok = await setExpirySingle(page, date);
+        if (!ok) {
+          throw new Error(
+            `setExpirySingle(${date}) failed — date may be outside Single-mode dropdown for this chart frame`,
+          );
+        }
+        await waitForTableReady(page);
         await walkTimeframeToTarget(page, startNorm);
         await page.waitForTimeout(1_500);
 
