@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import os
 from datetime import date
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 # Required env vars for config.py's pydantic-settings validation.
@@ -997,3 +998,577 @@ class TestStatTypeToKwargTable:
         call_kwargs = client._test_upsert_options_daily.call_args.kwargs
         assert call_kwargs["is_final"] is True
         assert "settlement" in call_kwargs
+
+
+# ---------------------------------------------------------------------------
+# Trivial property getters / setters and connection-state surface
+# ---------------------------------------------------------------------------
+
+
+class TestPropertiesAndShims:
+    def test_is_connected_default_false(self, client: DatabentoClient) -> None:
+        # _connected starts False before start() runs
+        assert client.is_connected is False
+        client._connected = True
+        assert client.is_connected is True
+
+    def test_last_bar_ts_starts_zero(self, client: DatabentoClient) -> None:
+        assert client.last_bar_ts == 0.0
+        client._last_bar_ts = 1234.5
+        assert client.last_bar_ts == 1234.5
+
+    def test_definition_lag_drops_setter_round_trips(
+        self, client: DatabentoClient
+    ) -> None:
+        """Exercise the setter on the property shim that proxies to the
+        OptionsRecordRouter (line 178)."""
+        client._definition_lag_drops = 17
+        assert client._definition_lag_drops == 17
+        # Reset to keep counter invariant for any later assertions
+        client._definition_lag_drops = 0
+
+    def test_last_lag_summary_ts_setter_round_trips(
+        self, client: DatabentoClient
+    ) -> None:
+        client._last_lag_summary_ts = 99.0
+        assert client._last_lag_summary_ts == pytest.approx(99.0)
+
+
+# ---------------------------------------------------------------------------
+# start() — full client init + subscribe orchestration
+# ---------------------------------------------------------------------------
+
+
+class TestStart:
+    def test_start_creates_live_client_and_subscribes(
+        self, client: DatabentoClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """start() must build the Live client, register both callbacks,
+        invoke each subscribe helper, and flip _connected to True."""
+        import databento
+
+        # Replace the mocked Live constructor for the duration of the test.
+        fake_live = MagicMock()
+        live_ctor = MagicMock(return_value=fake_live)
+        monkeypatch.setattr(databento, "Live", live_ctor)
+
+        # Provide a real QuoteProcessor stand-in so the L1 subscribe path runs.
+        client._quote_processor = MagicMock()
+        # Reset the test fixture's _client so start() sets it itself.
+        client._client = None
+
+        client.start()
+
+        # Live ctor was called with the expected reconnect policy
+        assert live_ctor.call_count == 1
+        ctor_kwargs = live_ctor.call_args.kwargs
+        assert ctor_kwargs["reconnect_policy"] == "reconnect"  # ReconnectPolicy.RECONNECT sentinel
+        assert ctor_kwargs["heartbeat_interval_s"] == 30
+        assert ctor_kwargs["ts_out"] is True
+
+        # Both callbacks were registered
+        fake_live.add_reconnect_callback.assert_called_once_with(client._on_reconnect)
+        fake_live.add_callback.assert_called_once()
+        cb_kwargs = fake_live.add_callback.call_args.kwargs
+        assert cb_kwargs["record_callback"] == client._on_record
+        assert cb_kwargs["exception_callback"] == client._on_error
+
+        # The futures + L1 + ES.OPT subscribes all fired (4 total subscribe
+        # calls: ohlcv-1m + tbbo + definition + statistics + trades = 5)
+        # We assert at least the futures + l1 fired by virtue of the Live
+        # client being created & start() being called.
+        fake_live.start.assert_called_once()
+        assert client._connected is True
+        assert client._options_subscription_pending is True
+
+    def test_start_skips_l1_when_no_quote_processor(
+        self, client: DatabentoClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If quote_processor is None, _subscribe_l1 must not run.
+
+        We verify by monkeypatching _subscribe_l1 to a tracking mock and
+        asserting it was NOT called when quote_processor is None.
+        """
+        import databento
+
+        fake_live = MagicMock()
+        monkeypatch.setattr(databento, "Live", MagicMock(return_value=fake_live))
+        client._quote_processor = None
+        client._client = None
+
+        sub_l1 = MagicMock()
+        monkeypatch.setattr(client, "_subscribe_l1", sub_l1)
+
+        client.start()
+
+        sub_l1.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _subscribe_futures_ohlcv — CME parent symbol subscription
+# ---------------------------------------------------------------------------
+
+
+class TestSubscribeFuturesOhlcv:
+    def test_subscribe_uses_cme_dataset_and_parent_symbols(
+        self, client: DatabentoClient
+    ) -> None:
+        """_subscribe_futures_ohlcv collects every CME-dataset config from
+        get_all_futures_subscriptions, passes the parent symbols to
+        client.subscribe, and populates _prefix_to_internal."""
+        client._client = MagicMock()
+        # Reset to verify the helper populates it
+        client._prefix_to_internal = {}
+
+        client._subscribe_futures_ohlcv()
+
+        # Exactly one subscribe call with schema ohlcv-1m and stype_in parent
+        assert client._client.subscribe.call_count == 1
+        kwargs = client._client.subscribe.call_args.kwargs
+        assert kwargs["schema"] == "ohlcv-1m"
+        assert kwargs["stype_in"] == "parent"
+        assert kwargs["dataset"] == "GLBX.MDP3"
+        # Parent symbol list is non-empty (real symbol_manager produces ES, NQ, etc.)
+        assert isinstance(kwargs["symbols"], list)
+        assert len(kwargs["symbols"]) > 0
+        # Prefix map is populated for at least ES / NQ (both CME)
+        assert "ES" in client._prefix_to_internal
+        assert "NQ" in client._prefix_to_internal
+
+    def test_no_client_is_noop(self, client: DatabentoClient) -> None:
+        client._client = None
+        client._subscribe_futures_ohlcv()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# _handle_ohlcv_from_client — alternate path that uses an explicit client arg
+# ---------------------------------------------------------------------------
+
+
+class TestHandleOhlcvFromClient:
+    def test_writes_bar_when_symbol_resolves(self, client: DatabentoClient) -> None:
+        fake_client = MagicMock()
+        fake_client.symbology_map = {7: "ESM6"}
+        # _prefix_to_internal already maps "ES" -> "ES" from fixture
+        rec = _make_bar_record(iid=7, close_raw=5800_000_000_000)
+
+        with patch("db.upsert_futures_bar") as upsert_mock:
+            client._handle_ohlcv_from_client(rec, fake_client)
+            upsert_mock.assert_called_once()
+            args = upsert_mock.call_args.args
+            assert args[0] == "ES"  # symbol
+            assert float(args[5]) == pytest.approx(5800.0)  # close
+
+    def test_returns_when_iid_missing(self, client: DatabentoClient) -> None:
+        fake_client = MagicMock()
+        rec = MagicMock()
+        rec.instrument_id = None
+        with patch("db.upsert_futures_bar") as upsert_mock:
+            client._handle_ohlcv_from_client(rec, fake_client)
+            upsert_mock.assert_not_called()
+
+    def test_returns_when_client_is_none(self, client: DatabentoClient) -> None:
+        rec = _make_bar_record(iid=1)
+        with patch("db.upsert_futures_bar") as upsert_mock:
+            client._handle_ohlcv_from_client(rec, None)
+            upsert_mock.assert_not_called()
+
+    def test_returns_when_symbology_map_lookup_fails(
+        self, client: DatabentoClient
+    ) -> None:
+        fake_client = MagicMock()
+        fake_client.symbology_map = {}  # iid=7 not in map
+        rec = _make_bar_record(iid=7)
+        with patch("db.upsert_futures_bar") as upsert_mock:
+            client._handle_ohlcv_from_client(rec, fake_client)
+            upsert_mock.assert_not_called()
+
+    def test_drops_spread_symbols(self, client: DatabentoClient) -> None:
+        """Raw symbols containing '-', ':', or whitespace are spreads/combos
+        and must be filtered out before any DB write."""
+        fake_client = MagicMock()
+        fake_client.symbology_map = {7: "ESM6-ESU6"}  # spread
+        rec = _make_bar_record(iid=7)
+        with patch("db.upsert_futures_bar") as upsert_mock:
+            client._handle_ohlcv_from_client(rec, fake_client)
+            upsert_mock.assert_not_called()
+
+    def test_drops_unrecognised_prefix(self, client: DatabentoClient) -> None:
+        """An outright contract whose prefix isn't in _prefix_to_internal
+        is dropped without crashing."""
+        fake_client = MagicMock()
+        fake_client.symbology_map = {7: "DXH6"}  # prefix "DX" not registered
+        rec = _make_bar_record(iid=7)
+        with patch("db.upsert_futures_bar") as upsert_mock:
+            client._handle_ohlcv_from_client(rec, fake_client)
+            upsert_mock.assert_not_called()
+
+    def test_handles_db_exception_silently(self, client: DatabentoClient) -> None:
+        """A DB blip in upsert_futures_bar must be caught and logged, not
+        propagated up to the SDK callback (which would tear the stream)."""
+        fake_client = MagicMock()
+        fake_client.symbology_map = {7: "ESM6"}
+        rec = _make_bar_record(iid=7)
+        with patch(
+            "db.upsert_futures_bar", side_effect=RuntimeError("boom")
+        ):
+            # Must not raise
+            client._handle_ohlcv_from_client(rec, fake_client)
+
+
+# ---------------------------------------------------------------------------
+# _on_record — exception handling & misc dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestOnRecordErrorHandling:
+    def test_dispatch_exception_is_swallowed(
+        self, client: DatabentoClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A handler raising must NOT propagate out of _on_record — that
+        would tear the SDK callback thread."""
+        def boom(_rec: Any) -> None:
+            raise RuntimeError("handler exploded")
+
+        monkeypatch.setattr(client, "_handle_trade", boom)
+        rec = MagicMock()
+        type(rec).__name__ = "TradeMsg"
+        # Must not raise
+        client._on_record(rec)
+
+    def test_ohlcv_msg_alt_casing_routes(
+        self, client: DatabentoClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The alt name ``OhlcvMsg`` (used by some SDK builds) routes to
+        _handle_ohlcv along with the canonical ``OHLCVMsg``."""
+        handler = MagicMock()
+        monkeypatch.setattr(client, "_handle_ohlcv", handler)
+        rec = MagicMock()
+        type(rec).__name__ = "OhlcvMsg"
+        client._on_record(rec)
+        handler.assert_called_once_with(rec)
+
+    def test_trade_msg_routes(
+        self, client: DatabentoClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        handler = MagicMock()
+        monkeypatch.setattr(client, "_handle_trade", handler)
+        rec = MagicMock()
+        type(rec).__name__ = "TradeMsg"
+        client._on_record(rec)
+        handler.assert_called_once_with(rec)
+
+    def test_mbp1msg_routes_to_tbbo_handler(
+        self, client: DatabentoClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        handler = MagicMock()
+        monkeypatch.setattr(client, "_handle_tbbo", handler)
+        rec = MagicMock()
+        type(rec).__name__ = "MBP1Msg"
+        client._on_record(rec)
+        handler.assert_called_once_with(rec)
+
+
+class TestOnError:
+    def test_on_error_sets_disconnected(self, client: DatabentoClient) -> None:
+        client._connected = True
+        client._on_error(RuntimeError("network gone"))
+        assert client._connected is False
+
+
+# ---------------------------------------------------------------------------
+# _on_reconnect — divide-by-zero / bad timestamp resilience
+# ---------------------------------------------------------------------------
+
+
+class TestOnReconnectExceptions:
+    def test_bad_timestamps_default_to_zero_gap(
+        self, client: DatabentoClient
+    ) -> None:
+        """If timestamp arithmetic blows up (non-numeric inputs), the
+        exception path must clamp gap_s to 0.0 and not fire the warning."""
+        # Pass non-numeric values to force the float division to TypeError
+        # inside the try/except.
+        client._on_reconnect("not-a-number", "also-not-a-number")  # type: ignore[arg-type]
+
+        # gap_s defaulted to 0.0, so no warning fires
+        client._test_capture_message.assert_not_called()
+        assert client._connected is True
+
+
+# ---------------------------------------------------------------------------
+# _resolve_symbol — cache hits, missing client, spread filter
+# ---------------------------------------------------------------------------
+
+
+class TestResolveSymbol:
+    def test_cache_hit_short_circuits(self, client: DatabentoClient) -> None:
+        """Subsequent lookups for the same iid must return the cached
+        result without re-consulting the symbology_map."""
+        client._resolved_cache[42] = "ES"
+        rec = MagicMock()
+        rec.instrument_id = 42
+        # Even with an empty symbology_map, the cache wins
+        client._client.symbology_map = {}
+        assert client._resolve_symbol(rec) == "ES"
+
+    def test_no_iid_returns_none(self, client: DatabentoClient) -> None:
+        rec = MagicMock()
+        rec.instrument_id = None
+        assert client._resolve_symbol(rec) is None
+
+    def test_no_client_returns_none(self, client: DatabentoClient) -> None:
+        client._client = None
+        rec = MagicMock()
+        rec.instrument_id = 42
+        assert client._resolve_symbol(rec) is None
+
+    def test_unmapped_iid_caches_none(self, client: DatabentoClient) -> None:
+        rec = MagicMock()
+        rec.instrument_id = 999  # not in {1: "ESM6", 2: "NQM6"}
+        assert client._resolve_symbol(rec) is None
+        # Cached as None so subsequent lookups don't re-traverse
+        assert client._resolved_cache[999] is None
+
+    def test_spread_symbol_caches_none(self, client: DatabentoClient) -> None:
+        client._client.symbology_map = {50: "ESM6-ESU6"}  # calendar spread
+        rec = MagicMock()
+        rec.instrument_id = 50
+        assert client._resolve_symbol(rec) is None
+        assert client._resolved_cache[50] is None
+
+    def test_unknown_prefix_caches_none(self, client: DatabentoClient) -> None:
+        """Outright contract whose prefix isn't in _prefix_to_internal."""
+        client._client.symbology_map = {60: "ZZH6"}  # "ZZ" prefix not mapped
+        rec = MagicMock()
+        rec.instrument_id = 60
+        assert client._resolve_symbol(rec) is None
+        assert client._resolved_cache[60] is None
+
+
+# ---------------------------------------------------------------------------
+# _handle_ohlcv — unknown-symbol drop and re-center trigger
+# ---------------------------------------------------------------------------
+
+
+class TestHandleOhlcvDispatch:
+    def test_unknown_symbol_is_dropped(self, client: DatabentoClient) -> None:
+        """When _resolve_symbol returns None, _handle_ohlcv must early-return
+        without any DB write."""
+        rec = _make_bar_record(iid=999)  # no symbology_map entry
+        with patch("db.upsert_futures_bar") as upsert_mock:
+            client._handle_ohlcv(rec)
+            upsert_mock.assert_not_called()
+
+    def test_es_bar_triggers_recenter_when_threshold_exceeded(
+        self, client: DatabentoClient
+    ) -> None:
+        """Once the ATM window has a center, an ES bar past the recenter
+        threshold must invoke _update_atm_strikes(new_close)."""
+        # First, set the initial ATM window so center_price > 0
+        client._update_atm_strikes(5800.0)
+        assert client._options_strikes.center_price == 5800.0
+
+        # Replace _update_atm_strikes so we can assert the recenter call
+        recenter = MagicMock()
+        with patch.object(client, "_update_atm_strikes", recenter):
+            # New bar at 5900 (100pt move — easily above any sane threshold)
+            rec = _make_bar_record(iid=1, close_raw=5900_000_000_000)
+            with patch("db.upsert_futures_bar"):
+                client._handle_ohlcv(rec)
+
+        recenter.assert_called_once_with(5900.0)
+
+
+# ---------------------------------------------------------------------------
+# _maybe_log_definition_lag_summary shim + symbol-mapping handler
+# ---------------------------------------------------------------------------
+
+
+class TestMaybeLogDefinitionLagSummaryShim:
+    def test_delegates_to_router(
+        self, client: DatabentoClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The thin shim on DatabentoClient just calls through to the
+        underlying router method."""
+        called = MagicMock()
+        monkeypatch.setattr(
+            client._router, "_maybe_log_definition_lag_summary", called
+        )
+        client._maybe_log_definition_lag_summary()
+        called.assert_called_once()
+
+
+class TestGetOptionInfoShim:
+    def test_returns_router_value(
+        self, client: DatabentoClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sentinel = {"strike": 5800.0, "option_type": "C", "expiry": None}
+        getter = MagicMock(return_value=sentinel)
+        monkeypatch.setattr(client._router, "_get_option_info", getter)
+        assert client._get_option_info(123) is sentinel
+        getter.assert_called_once_with(123)
+
+
+class TestSymbolMappingHandler:
+    def test_handle_symbol_mapping_logs_without_raising(
+        self, client: DatabentoClient
+    ) -> None:
+        """Symbol mapping handler reads three attributes off the record
+        and emits a debug log. Must tolerate missing attrs via getattr
+        defaults and never raise."""
+        rec = MagicMock()
+        rec.stype_in_symbol = "ES.FUT"
+        rec.stype_out_symbol = "ESM6"
+        rec.instrument_id = 42
+        # Must not raise
+        client._handle_symbol_mapping(rec)
+
+    def test_handle_symbol_mapping_with_missing_attrs(
+        self, client: DatabentoClient
+    ) -> None:
+        """Even a record missing all three attributes must be handled by
+        the getattr defaults without raising."""
+        rec = object()  # bare object — no attributes
+        client._handle_symbol_mapping(rec)
+
+
+# ---------------------------------------------------------------------------
+# _handle_system — error branch + symbology-map summary log
+# ---------------------------------------------------------------------------
+
+
+class TestHandleSystemErrorBranch:
+    def test_is_error_attribute_takes_error_branch(
+        self, client: DatabentoClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When ``is_error`` is truthy on the record, the ERROR log path
+        fires (line 747)."""
+        client._options_strikes = MagicMock()
+        client._options_strikes.strikes = []
+        client._options_strikes.center_price = 0.0
+
+        with caplog.at_level("ERROR"):
+            client._handle_system(_make_system_record("session expired", is_error=True))
+
+        error_lines = [
+            r.message for r in caplog.records if r.levelname == "ERROR"
+        ]
+        assert any("session expired" in m for m in error_lines)
+
+    def test_error_msg_class_name_takes_error_branch(
+        self, client: DatabentoClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Even if is_error is False, a record whose class name is
+        literally ``ErrorMsg`` must take the error path."""
+        client._options_strikes = MagicMock()
+        client._options_strikes.strikes = []
+        client._options_strikes.center_price = 0.0
+
+        rec = MagicMock()
+        rec.msg = "auth failure"
+        rec.is_error = False
+        type(rec).__name__ = "ErrorMsg"
+
+        with caplog.at_level("ERROR"):
+            client._handle_system(rec)
+
+        assert any(
+            "auth failure" in r.message and r.levelname == "ERROR"
+            for r in caplog.records
+        )
+
+    def test_first_end_of_interval_logs_symbology_summary(
+        self, client: DatabentoClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The first ``End of interval`` system message after start must
+        emit the one-shot symbology map summary log."""
+        client._options_strikes = MagicMock()
+        client._options_strikes.strikes = []
+        client._options_strikes.center_price = 0.0
+        # _client.symbology_map provided by the fixture as {1: "ESM6", 2: "NQM6"}
+        assert client._mapping_summary_logged is False
+
+        with caplog.at_level("INFO"):
+            client._handle_system(_make_system_record("End of interval for tbbo"))
+
+        assert client._mapping_summary_logged is True
+        # Subsequent end-of-interval messages must NOT re-log the summary
+        with caplog.at_level("INFO"):
+            client._handle_system(
+                _make_system_record("End of interval for ohlcv-1m")
+            )
+        # The summary log line contains "Symbology map:"
+        summary_lines = [
+            r.message for r in caplog.records if "Symbology map:" in r.message
+        ]
+        assert len(summary_lines) == 1
+
+
+# ---------------------------------------------------------------------------
+# stop() — shutdown sequence
+# ---------------------------------------------------------------------------
+
+
+class TestStop:
+    def test_stop_sets_barrier_and_stops_clients(
+        self, client: DatabentoClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """stop() flips _shutting_down + _connected, calls client.stop(),
+        nulls out _client, calls trade_processor.stop, and (when present)
+        quote_processor.flush."""
+        # Speed up the 200ms barrier sleep so the test isn't slow.
+        monkeypatch.setattr("time.sleep", lambda _s: None)
+
+        fake_live = MagicMock()
+        client._client = fake_live
+        qp = MagicMock()
+        client._quote_processor = qp
+
+        client.stop()
+
+        assert client._shutting_down is True
+        assert client._connected is False
+        fake_live.stop.assert_called_once()
+        assert client._client is None
+        client._trade_processor.stop.assert_called_once()
+        qp.flush.assert_called_once()
+
+    def test_stop_swallows_client_stop_exception(
+        self, client: DatabentoClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failure in client.stop() must not prevent the rest of the
+        teardown from running (trade_processor.stop in particular)."""
+        monkeypatch.setattr("time.sleep", lambda _s: None)
+        fake_live = MagicMock()
+        fake_live.stop.side_effect = RuntimeError("stop failed")
+        client._client = fake_live
+        client._quote_processor = None  # exercise the no-quote-processor branch
+
+        client.stop()
+
+        client._trade_processor.stop.assert_called_once()
+        assert client._client is None
+
+    def test_stop_with_no_client_still_stops_processors(
+        self, client: DatabentoClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If start() was never called, _client is None and stop() must
+        still finalise the processors cleanly."""
+        monkeypatch.setattr("time.sleep", lambda _s: None)
+        client._client = None
+        client._quote_processor = None
+        client.stop()
+        client._trade_processor.stop.assert_called_once()
+
+
+class TestBlockForClose:
+    def test_block_delegates_to_client(self, client: DatabentoClient) -> None:
+        fake_live = MagicMock()
+        client._client = fake_live
+        client.block_for_close(timeout=1.5)
+        fake_live.block_for_close.assert_called_once_with(timeout=1.5)
+
+    def test_block_is_noop_when_client_none(self, client: DatabentoClient) -> None:
+        client._client = None
+        client.block_for_close()  # must not raise

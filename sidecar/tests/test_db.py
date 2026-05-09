@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import sys
 from decimal import Decimal
+from typing import Generator
 from unittest.mock import MagicMock
 
 # Required env vars for config.py's pydantic-settings validation.
@@ -428,3 +429,676 @@ class TestLoadAlertConfigObservability:
 
         # Must not raise — caller relies on dict return.
         assert db.load_alert_config() == {}
+
+
+# ---------------------------------------------------------------------------
+# get_conn — dead-connection handling (SENTRY-EMERALD-DESERT-6S/-2C)
+# ---------------------------------------------------------------------------
+
+
+class TestGetConnDeadConnectionHandling:
+    """Verify get_conn doesn't mask the original exception when the
+    connection has been torn down by libpq (Neon SSL drop), and that
+    broken connections are discarded from the pool rather than handed
+    back to the next caller.
+
+    These tests bypass the per-test `mock_conn_pool` fixture (which
+    replaces get_conn wholesale) and instead patch the pool layer so
+    the real get_conn body executes.
+    """
+
+    @pytest.fixture
+    def fake_pool_with_conn(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[MagicMock, MagicMock]:
+        """Install a fake pool whose getconn() returns a controllable conn.
+
+        Returns (pool, conn) so each test can configure side effects on
+        the conn (rollback raising, closed != 0, etc.) and assert on
+        pool.putconn calls.
+        """
+        conn = MagicMock()
+        conn.closed = 0  # default: healthy
+        pool = MagicMock()
+        pool.getconn.return_value = conn
+        monkeypatch.setattr(db, "get_pool", lambda: pool)
+        return pool, conn
+
+    def test_original_exception_propagates_when_rollback_succeeds(
+        self, fake_pool_with_conn: tuple[MagicMock, MagicMock]
+    ) -> None:
+        """Baseline: when the body raises and rollback succeeds, the
+        body's exception is what reaches the caller (not the rollback)."""
+        _pool, conn = fake_pool_with_conn
+
+        with pytest.raises(RuntimeError, match="body boom"):
+            with db.get_conn() as _:
+                raise RuntimeError("body boom")
+
+        conn.rollback.assert_called_once()
+
+    def test_rollback_failure_does_not_mask_original_exception(
+        self, fake_pool_with_conn: tuple[MagicMock, MagicMock]
+    ) -> None:
+        """The bug from SENTRY-EMERALD-DESERT-6S: when the body raises
+        OperationalError (Neon SSL drop) and rollback then raises
+        InterfaceError (connection already closed), the InterfaceError
+        used to mask the real cause. The OperationalError must reach
+        the caller now."""
+        _pool, conn = fake_pool_with_conn
+        conn.rollback.side_effect = RuntimeError(
+            "InterfaceError: connection already closed"
+        )
+
+        with pytest.raises(RuntimeError, match="ssl drop"):
+            with db.get_conn() as _:
+                raise RuntimeError("ssl drop")
+
+        conn.rollback.assert_called_once()
+
+    def test_broken_connection_is_discarded_from_pool(
+        self, fake_pool_with_conn: tuple[MagicMock, MagicMock]
+    ) -> None:
+        """When libpq marks the connection broken (conn.closed != 0),
+        putconn must be called with close=True so the pool drops it
+        instead of handing the dead socket to the next caller."""
+        pool, conn = fake_pool_with_conn
+        conn.closed = 2  # libpq's "broken connection" state
+        conn.rollback.side_effect = RuntimeError("connection already closed")
+
+        with pytest.raises(RuntimeError):
+            with db.get_conn() as _:
+                raise RuntimeError("ssl drop")
+
+        pool.putconn.assert_called_once_with(conn, close=True)
+
+    def test_healthy_connection_returned_to_pool_with_close_false(
+        self, fake_pool_with_conn: tuple[MagicMock, MagicMock]
+    ) -> None:
+        """Regression guard: don't churn the pool when nothing is wrong.
+        On the success path (no exception, conn.closed == 0), putconn
+        must be called with close=False so the connection is reused."""
+        pool, conn = fake_pool_with_conn
+
+        with db.get_conn() as _:
+            pass
+
+        conn.commit.assert_called_once()
+        pool.putconn.assert_called_once_with(conn, close=False)
+
+    def test_putconn_failure_during_shutdown_is_swallowed(
+        self, fake_pool_with_conn: tuple[MagicMock, MagicMock]
+    ) -> None:
+        """During shutdown the pool may already be closed; putconn then
+        raises PoolError. That must not replace the body's exception."""
+        pool, conn = fake_pool_with_conn
+        pool.putconn.side_effect = RuntimeError("connection pool is closed")
+
+        with pytest.raises(RuntimeError, match="body boom"):
+            with db.get_conn() as _:
+                raise RuntimeError("body boom")
+
+
+# ---------------------------------------------------------------------------
+# get_pool — lazy init + re-init when closed
+# ---------------------------------------------------------------------------
+
+
+class TestGetPool:
+    """Cover the lazy-init and re-init paths in `get_pool`.
+
+    Each test resets `db._pool` so the prior test's pool doesn't bleed in.
+    We patch `psycopg2.pool.ThreadedConnectionPool` to avoid touching the
+    real driver, and stub `config.settings.database_url` via a fake module
+    so the lazy `from config import settings` call lands on our value.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_pool(self) -> Generator[None, None, None]:
+        """Restore db._pool to None before and after each test in this class."""
+        original = db._pool
+        db._pool = None
+        yield
+        db._pool = original
+
+    @pytest.fixture
+    def fake_threaded_pool(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> MagicMock:
+        """Patch the ThreadedConnectionPool factory to a MagicMock."""
+        import psycopg2.pool
+
+        factory = MagicMock()
+        factory.return_value = MagicMock()
+        monkeypatch.setattr(
+            psycopg2.pool, "ThreadedConnectionPool", factory
+        )
+        return factory
+
+    @pytest.fixture
+    def fake_settings(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Inject a fake `config` module exposing settings.database_url."""
+        fake_config = MagicMock()
+        fake_config.settings.database_url = (
+            "postgresql://u:p@host/db?sslmode=require"
+        )
+        monkeypatch.setitem(sys.modules, "config", fake_config)
+
+    def test_lazy_init_creates_pool_with_stripped_dsn(
+        self,
+        fake_threaded_pool: MagicMock,
+        fake_settings: None,
+    ) -> None:
+        """First call should construct a pool, stripping query params from
+        the DSN (Neon's pooler rejects startup params like statement_timeout)."""
+        pool = db.get_pool()
+
+        assert pool is fake_threaded_pool.return_value
+        fake_threaded_pool.assert_called_once()
+        kwargs = fake_threaded_pool.call_args.kwargs
+        assert kwargs["minconn"] == 1
+        assert kwargs["maxconn"] == 5
+        assert kwargs["sslmode"] == "require"
+        # `?sslmode=require` portion must be stripped before psycopg2 sees it.
+        assert kwargs["dsn"] == "postgresql://u:p@host/db"
+
+    def test_returns_same_pool_on_repeated_calls(
+        self,
+        fake_threaded_pool: MagicMock,
+        fake_settings: None,
+    ) -> None:
+        """Lazy init should be a one-shot — second call must reuse."""
+        first = db.get_pool()
+        # Mark it as not-closed so the re-init branch is skipped.
+        first.closed = False
+        second = db.get_pool()
+        assert first is second
+        assert fake_threaded_pool.call_count == 1
+
+    def test_reinit_when_pool_closed(
+        self,
+        fake_threaded_pool: MagicMock,
+        fake_settings: None,
+    ) -> None:
+        """If a prior pool is `closed`, get_pool must construct a new one."""
+        fake_threaded_pool.side_effect = [
+            MagicMock(closed=True),  # first pool, will be observed as closed
+            MagicMock(closed=False),  # second pool, the replacement
+        ]
+        first = db.get_pool()
+        assert first.closed is True
+        second = db.get_pool()
+        assert second is not first
+        assert fake_threaded_pool.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# _getconn_with_timeout — slow-borrow warning + retry-on-PoolError
+# ---------------------------------------------------------------------------
+
+
+class TestGetConnWithTimeout:
+    """Cover the slow-borrow Sentry warning and the PoolError retry loop."""
+
+    def test_fast_borrow_returns_immediately(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The happy path: getconn returns instantly, no warning fires."""
+        # monotonic returns the same value on each call -> elapsed_ms == 0
+        monkeypatch.setattr(db.time, "monotonic", lambda: 100.0)
+        conn = MagicMock()
+        pool = MagicMock()
+        pool.getconn.return_value = conn
+
+        captured: list[str] = []
+        monkeypatch.setattr(
+            "sentry_setup.capture_message",
+            lambda msg, **_kw: captured.append(msg),
+        )
+
+        result = db._getconn_with_timeout(pool, timeout_s=10.0)
+
+        assert result is conn
+        assert captured == []
+
+    def test_slow_borrow_triggers_sentry_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When elapsed_ms > SLOW_GETCONN_WARNING_MS (1000), forward to Sentry."""
+        # Two calls to monotonic: start=0, after-getconn=2.5s -> 2500ms
+        ticks = iter([0.0, 2.5])
+        monkeypatch.setattr(db.time, "monotonic", lambda: next(ticks))
+        conn = MagicMock()
+        pool = MagicMock()
+        pool.getconn.return_value = conn
+
+        captured: list[tuple[str, dict]] = []
+
+        def fake_capture(msg: str, **kwargs: object) -> None:
+            captured.append((msg, kwargs))
+
+        monkeypatch.setattr(
+            "sentry_setup.capture_message", fake_capture
+        )
+
+        result = db._getconn_with_timeout(pool, timeout_s=10.0)
+
+        assert result is conn
+        assert len(captured) == 1
+        msg, kwargs = captured[0]
+        assert "slow" in msg.lower()
+        assert kwargs.get("level") == "warning"
+        # Round to one decimal — matches the call site.
+        assert kwargs.get("context") == {"elapsed_ms": 2500.0}
+
+    def test_slow_borrow_sentry_failure_falls_back_to_log(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If the sentry import/call raises, the warning still goes to the
+        local log (covered) and the connection is still returned."""
+        ticks = iter([0.0, 2.0])
+        monkeypatch.setattr(db.time, "monotonic", lambda: next(ticks))
+        conn = MagicMock()
+        pool = MagicMock()
+        pool.getconn.return_value = conn
+
+        def boom(*_a: object, **_kw: object) -> None:
+            raise RuntimeError("sentry not available")
+
+        monkeypatch.setattr("sentry_setup.capture_message", boom)
+
+        # Must not raise — the slow path swallows sentry failures.
+        result = db._getconn_with_timeout(pool, timeout_s=10.0)
+        assert result is conn
+
+    def test_pool_error_retries_then_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """PoolError on first borrow should sleep+retry, then succeed."""
+        import psycopg2.pool
+
+        # Three monotonic reads: initial start, deadline-check after 1st
+        # PoolError (still inside deadline), and elapsed-ms read on the
+        # successful borrow path. Keep all values < timeout to skip the
+        # slow-warning branch.
+        ticks = iter([0.0, 0.001, 0.002, 0.003, 0.004])
+        monkeypatch.setattr(db.time, "monotonic", lambda: next(ticks))
+
+        sleeps: list[float] = []
+        monkeypatch.setattr(db.time, "sleep", lambda s: sleeps.append(s))
+
+        conn = MagicMock()
+        pool = MagicMock()
+        pool.getconn.side_effect = [
+            psycopg2.pool.PoolError("exhausted"),
+            conn,
+        ]
+
+        result = db._getconn_with_timeout(pool, timeout_s=10.0)
+
+        assert result is conn
+        assert sleeps == [0.005]  # initial backoff_s
+        assert pool.getconn.call_count == 2
+
+    def test_pool_error_past_deadline_raises_pool_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When PoolError persists past the deadline, raise PoolTimeoutError."""
+        import psycopg2.pool
+
+        # start=0, then deadline-check returns 5.0 (past the 1s timeout),
+        # then a final elapsed-ms read inside the raise.
+        ticks = iter([0.0, 5.0, 5.001])
+        monkeypatch.setattr(db.time, "monotonic", lambda: next(ticks))
+        monkeypatch.setattr(db.time, "sleep", lambda s: None)
+
+        pool = MagicMock()
+        pool.getconn.side_effect = psycopg2.pool.PoolError("exhausted")
+
+        with pytest.raises(db.PoolTimeoutError, match="db pool saturated"):
+            db._getconn_with_timeout(pool, timeout_s=1.0)
+
+
+# ---------------------------------------------------------------------------
+# verify_connection
+# ---------------------------------------------------------------------------
+
+
+class TestVerifyConnection:
+    def test_happy_path_returns_none(
+        self, mock_conn_pool: MagicMock
+    ) -> None:
+        """SELECT 1 returning (1,) means the DB is reachable."""
+        mock_conn_pool.fetchone.return_value = (1,)
+        # Must not raise.
+        db.verify_connection()
+        mock_conn_pool.execute.assert_called_once()
+        sql = mock_conn_pool.execute.call_args[0][0]
+        assert "SELECT 1" in sql
+
+    def test_no_row_raises_runtime_error(
+        self, mock_conn_pool: MagicMock
+    ) -> None:
+        mock_conn_pool.fetchone.return_value = None
+        with pytest.raises(
+            RuntimeError, match="Database connection verification failed"
+        ):
+            db.verify_connection()
+
+    def test_wrong_row_raises_runtime_error(
+        self, mock_conn_pool: MagicMock
+    ) -> None:
+        mock_conn_pool.fetchone.return_value = (0,)
+        with pytest.raises(
+            RuntimeError, match="Database connection verification failed"
+        ):
+            db.verify_connection()
+
+
+# ---------------------------------------------------------------------------
+# is_db_healthy
+# ---------------------------------------------------------------------------
+
+
+class TestIsDbHealthy:
+    def test_returns_true_on_success(
+        self, mock_conn_pool: MagicMock
+    ) -> None:
+        assert db.is_db_healthy() is True
+
+    def test_returns_false_on_exception(
+        self, mock_conn_pool: MagicMock
+    ) -> None:
+        mock_conn_pool.execute.side_effect = RuntimeError("connection reset")
+        assert db.is_db_healthy() is False
+
+
+# ---------------------------------------------------------------------------
+# upsert_futures_bar — single-row execute SQL shape
+# ---------------------------------------------------------------------------
+
+
+class TestUpsertFuturesBar:
+    def test_execute_called_with_expected_sql_and_params(
+        self, mock_conn_pool: MagicMock
+    ) -> None:
+        from datetime import datetime as _datetime
+
+        ts = _datetime(2026, 4, 18, 14, 30)
+        db.upsert_futures_bar(
+            "ES",
+            ts,
+            Decimal("5000.0"),
+            Decimal("5005.0"),
+            Decimal("4995.0"),
+            Decimal("5002.0"),
+            123,
+        )
+        mock_conn_pool.execute.assert_called_once()
+        sql, params = mock_conn_pool.execute.call_args[0]
+        assert "INSERT INTO futures_bars" in sql
+        assert "ON CONFLICT (symbol, ts) DO UPDATE" in sql
+        # Params tuple in declaration order.
+        assert params == (
+            "ES",
+            ts,
+            Decimal("5000.0"),
+            Decimal("5005.0"),
+            Decimal("4995.0"),
+            Decimal("5002.0"),
+            123,
+        )
+
+
+# ---------------------------------------------------------------------------
+# insert_options_trade — single-row execute SQL shape
+# ---------------------------------------------------------------------------
+
+
+class TestInsertOptionsTrade:
+    def test_execute_called_with_expected_sql_and_params(
+        self, mock_conn_pool: MagicMock
+    ) -> None:
+        from datetime import date as _date, datetime as _datetime
+
+        ts = _datetime(2026, 4, 5, 14, 30)
+        expiry = _date(2026, 4, 6)
+        trade_date = _date(2026, 4, 5)
+
+        db.insert_options_trade(
+            "ES",
+            expiry,
+            Decimal("5300.0"),
+            "C",
+            ts,
+            Decimal("50.25"),
+            1,
+            "B",
+            trade_date,
+        )
+        mock_conn_pool.execute.assert_called_once()
+        sql, params = mock_conn_pool.execute.call_args[0]
+        assert "INSERT INTO futures_options_trades" in sql
+        assert params == (
+            "ES",
+            expiry,
+            Decimal("5300.0"),
+            "C",
+            ts,
+            Decimal("50.25"),
+            1,
+            "B",
+            trade_date,
+        )
+
+
+# ---------------------------------------------------------------------------
+# upsert_options_daily — single-row execute SQL shape
+# ---------------------------------------------------------------------------
+
+
+class TestUpsertOptionsDaily:
+    def test_execute_called_with_expected_sql_and_params(
+        self, mock_conn_pool: MagicMock
+    ) -> None:
+        from datetime import date as _date
+
+        trade_date = _date(2026, 4, 5)
+        expiry = _date(2026, 4, 6)
+        db.upsert_options_daily(
+            "ES",
+            trade_date,
+            expiry,
+            Decimal("5300.0"),
+            "C",
+            open_interest=100,
+            volume=200,
+            settlement=Decimal("12.50"),
+            implied_vol=Decimal("0.18"),
+            delta=Decimal("0.42"),
+            is_final=True,
+        )
+        mock_conn_pool.execute.assert_called_once()
+        sql, params = mock_conn_pool.execute.call_args[0]
+        assert "INSERT INTO futures_options_daily" in sql
+        assert (
+            "ON CONFLICT (underlying, trade_date, expiry, strike, option_type)"
+            in sql
+        )
+        assert params == (
+            "ES",
+            trade_date,
+            expiry,
+            Decimal("5300.0"),
+            "C",
+            100,
+            200,
+            Decimal("12.50"),
+            Decimal("0.18"),
+            Decimal("0.42"),
+            True,
+        )
+
+    def test_defaults_propagate_as_none(
+        self, mock_conn_pool: MagicMock
+    ) -> None:
+        """All optional kwargs default to None so the COALESCE() upsert
+        on the SQL side keeps the existing column value."""
+        from datetime import date as _date
+
+        db.upsert_options_daily(
+            "ES",
+            _date(2026, 4, 5),
+            _date(2026, 4, 6),
+            Decimal("5300.0"),
+            "C",
+        )
+        params = mock_conn_pool.execute.call_args[0][1]
+        # Trailing 6 params: open_interest, volume, settlement, implied_vol,
+        # delta default to None; is_final defaults to False.
+        assert params[5:] == (None, None, None, None, None, False)
+
+
+# ---------------------------------------------------------------------------
+# load_alert_config — happy-path row iteration
+# ---------------------------------------------------------------------------
+
+
+class TestLoadAlertConfigHappyPath:
+    def test_returns_dict_keyed_by_alert_type(
+        self, mock_conn_pool: MagicMock
+    ) -> None:
+        """fetchall returns RealDictCursor-style rows; load_alert_config
+        must reshape into {alert_type: {...}}."""
+        mock_conn_pool.fetchall.return_value = [
+            {
+                "alert_type": "gap_widening",
+                "enabled": True,
+                "params": {"threshold": 0.5},
+                "cooldown_minutes": 15,
+            },
+            {
+                "alert_type": "vol_spike",
+                "enabled": False,
+                "params": {},
+                "cooldown_minutes": 30,
+            },
+        ]
+
+        result = db.load_alert_config()
+
+        assert set(result.keys()) == {"gap_widening", "vol_spike"}
+        assert result["gap_widening"]["enabled"] is True
+        assert result["gap_widening"]["params"] == {"threshold": 0.5}
+        assert result["gap_widening"]["cooldown_minutes"] == 15
+        assert result["vol_spike"]["enabled"] is False
+
+
+# ---------------------------------------------------------------------------
+# has_theta_option_eod_rows
+# ---------------------------------------------------------------------------
+
+
+class TestHasThetaOptionEodRows:
+    def test_returns_true_when_row_exists(
+        self, mock_conn_pool: MagicMock
+    ) -> None:
+        mock_conn_pool.fetchone.return_value = (1,)
+        assert db.has_theta_option_eod_rows("SPX") is True
+        sql, params = mock_conn_pool.execute.call_args[0]
+        assert "SELECT 1 FROM theta_option_eod" in sql
+        assert "LIMIT 1" in sql
+        assert params == ("SPX",)
+
+    def test_returns_false_when_no_row(
+        self, mock_conn_pool: MagicMock
+    ) -> None:
+        mock_conn_pool.fetchone.return_value = None
+        assert db.has_theta_option_eod_rows("SPX") is False
+
+
+# ---------------------------------------------------------------------------
+# get_recent_bars
+# ---------------------------------------------------------------------------
+
+
+class TestGetRecentBars:
+    def test_returns_dict_per_row(
+        self, mock_conn_pool: MagicMock
+    ) -> None:
+        from datetime import datetime as _datetime
+
+        rows = [
+            {
+                "ts": _datetime(2026, 4, 18, 14, 30),
+                "open": Decimal("5000.0"),
+                "high": Decimal("5005.0"),
+                "low": Decimal("4995.0"),
+                "close": Decimal("5002.0"),
+                "volume": 100,
+            },
+        ]
+        mock_conn_pool.fetchall.return_value = rows
+
+        result = db.get_recent_bars("ES", minutes=30)
+
+        assert len(result) == 1
+        assert result[0]["close"] == Decimal("5002.0")
+        sql, params = mock_conn_pool.execute.call_args[0]
+        assert "FROM futures_bars" in sql
+        assert "make_interval(mins => %s)" in sql
+        assert params == ("ES", 30)
+
+    def test_default_minutes_is_60(
+        self, mock_conn_pool: MagicMock
+    ) -> None:
+        mock_conn_pool.fetchall.return_value = []
+        db.get_recent_bars("ES")
+        params = mock_conn_pool.execute.call_args[0][1]
+        assert params == ("ES", 60)
+
+
+# ---------------------------------------------------------------------------
+# drain_pool
+# ---------------------------------------------------------------------------
+
+
+class TestDrainPool:
+    """Cover drain_pool with both an active and an already-drained pool.
+
+    Each test snapshots and restores `db._pool` so it doesn't leak into
+    sibling tests that depend on get_conn / get_pool fixtures.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _snapshot_pool(self) -> Generator[None, None, None]:
+        original = db._pool
+        yield
+        db._pool = original
+
+    def test_drains_active_pool_and_resets_to_none(self) -> None:
+        fake_pool = MagicMock()
+        fake_pool.closed = False
+        db._pool = fake_pool
+
+        db.drain_pool()
+
+        fake_pool.closeall.assert_called_once()
+        assert db._pool is None
+
+    def test_noop_when_pool_is_none(self) -> None:
+        db._pool = None
+        # Must not raise — the early-return guard handles this.
+        db.drain_pool()
+        assert db._pool is None
+
+    def test_noop_when_pool_already_closed(self) -> None:
+        fake_pool = MagicMock()
+        fake_pool.closed = True
+        db._pool = fake_pool
+
+        db.drain_pool()
+
+        fake_pool.closeall.assert_not_called()
+        # _pool is left as the closed pool (not reset) — covered by code path.
+        assert db._pool is fake_pool

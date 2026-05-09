@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -490,6 +491,16 @@ class TestParseHelpers:
         with pytest.raises(health._BadRequest, match="from/to must be YYYY-MM-DD"):
             health._parse_date_range(qs)
 
+    def test_parse_date_range_rejects_calendar_invalid(self) -> None:
+        """Cover lines 113-114 — regex passes but fromisoformat rejects.
+        e.g. month 13 / day 45 satisfies \\d{4}-\\d{2}-\\d{2} but is not
+        a real calendar date."""
+        import health
+
+        qs = {"from": ["2024-13-45"], "to": ["2024-12-31"]}
+        with pytest.raises(health._BadRequest, match="invalid date"):
+            health._parse_date_range(qs)
+
     def test_parse_date_range_rejects_inverted(self) -> None:
         import health
 
@@ -526,3 +537,855 @@ class TestParseHelpers:
 
         assert first is archive_query
         assert second is archive_query
+
+
+# ---------------------------------------------------------------------------
+# POST /admin/seed-archive — request driver
+# ---------------------------------------------------------------------------
+
+
+class _FakePostRequest:
+    """Minimal POST request stub for /admin/seed-archive tests."""
+
+    def __init__(
+        self,
+        path: str = "/admin/seed-archive",
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.path = path
+        header_lines = "Host: localhost\r\n"
+        for k, v in (headers or {}).items():
+            header_lines += f"{k}: {v}\r\n"
+        self.raw = (
+            f"POST {path} HTTP/1.1\r\n{header_lines}Content-Length: 0\r\n\r\n"
+        ).encode()
+
+    def makefile(self, mode: str, *_args: object) -> io.BytesIO:
+        if "r" in mode:
+            return io.BytesIO(self.raw)
+        return io.BytesIO()
+
+
+def _run_post_request(
+    path: str = "/admin/seed-archive",
+    headers: dict[str, str] | None = None,
+) -> tuple[int, dict]:
+    """Drive HealthHandler for one POST request; return (status, body_obj)."""
+    req = _FakePostRequest(path=path, headers=headers)
+    output = io.BytesIO()
+
+    # Match the same _H subclass pattern as _run_request — pylint S5720
+    # warns about self_inner but it's the existing convention in this
+    # file used to disambiguate from the outer `self` in test methods.
+    class _H(HealthHandler):
+        def setup(self_inner) -> None:  # noqa: N805
+            self_inner.rfile = req.makefile("rb")
+            self_inner.wfile = output
+
+        def finish(self_inner) -> None:  # noqa: N805
+            pass
+
+        def log_message(self_inner, *_a: object, **_kw: object) -> None:  # noqa: N805
+            pass
+
+    _H(req, ("127.0.0.1", 0), None)  # type: ignore[arg-type]
+    raw = output.getvalue().decode()
+    status_line, *_ = raw.split("\r\n", 1)
+    status = int(status_line.split()[1])
+    _, _, body_text = raw.partition("\r\n\r\n")
+    if not body_text:
+        return status, {}
+    try:
+        return status, json.loads(body_text)
+    except json.JSONDecodeError:
+        return status, {"_raw": body_text}
+
+
+# ---------------------------------------------------------------------------
+# POST /admin/seed-archive — full lifecycle
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def reset_seed_handler_state() -> None:
+    """Reset seeder callables + env between tests."""
+    HealthHandler.seed_archive = None
+    HealthHandler.seed_is_busy = None
+
+    os.environ.pop("ARCHIVE_SEED_TOKEN", None)
+    yield
+    HealthHandler.seed_archive = None
+    HealthHandler.seed_is_busy = None
+    os.environ.pop("ARCHIVE_SEED_TOKEN", None)
+
+
+class TestSeedArchivePost:
+    def test_post_unknown_path_404(self) -> None:
+        status, _body = _run_post_request(path="/some-other")
+        assert status == 404
+
+    def test_post_503_when_seed_archive_not_configured(self) -> None:
+        status, body = _run_post_request()
+        assert status == 503
+        assert body["error"] == "seed endpoint not configured"
+
+    def test_post_401_when_token_missing(self) -> None:
+        HealthHandler.seed_archive = staticmethod(lambda: {"failed": 0})
+        # No ARCHIVE_SEED_TOKEN set.
+        status, body = _run_post_request(headers={"X-Admin-Token": "nope"})
+        assert status == 401
+        assert body["error"] == "unauthorized"
+
+    def test_post_401_when_token_mismatched(self) -> None:
+
+        HealthHandler.seed_archive = staticmethod(lambda: {"failed": 0})
+        os.environ["ARCHIVE_SEED_TOKEN"] = "right"
+        status, body = _run_post_request(headers={"X-Admin-Token": "wrong"})
+        assert status == 401
+        assert body["error"] == "unauthorized"
+
+    def test_post_busy_returns_423(self) -> None:
+
+        HealthHandler.seed_archive = staticmethod(lambda: {"failed": 0})
+        HealthHandler.seed_is_busy = staticmethod(lambda: True)
+        os.environ["ARCHIVE_SEED_TOKEN"] = "tok"
+        status, body = _run_post_request(headers={"X-Admin-Token": "tok"})
+        assert status == 423
+        assert body["error"] == "seed already in progress"
+
+    def test_post_success_returns_200(self) -> None:
+
+        result_payload = {"failed": 0, "synced": 5}
+        HealthHandler.seed_archive = staticmethod(lambda: result_payload)
+        HealthHandler.seed_is_busy = staticmethod(lambda: False)
+        os.environ["ARCHIVE_SEED_TOKEN"] = "tok"
+        status, body = _run_post_request(headers={"X-Admin-Token": "tok"})
+        assert status == 200
+        assert body == result_payload
+
+    def test_post_500_when_result_has_failures(self) -> None:
+
+        HealthHandler.seed_archive = staticmethod(
+            lambda: {"failed": 3, "synced": 1}
+        )
+        os.environ["ARCHIVE_SEED_TOKEN"] = "tok"
+        status, body = _run_post_request(headers={"X-Admin-Token": "tok"})
+        assert status == 500
+        assert body["failed"] == 3
+
+    def test_post_seed_busy_error_returns_423(self) -> None:
+
+        from archive_seeder import SeedBusyError
+
+        def boom() -> dict:
+            raise SeedBusyError("locked")
+
+        HealthHandler.seed_archive = staticmethod(boom)
+        os.environ["ARCHIVE_SEED_TOKEN"] = "tok"
+        status, body = _run_post_request(headers={"X-Admin-Token": "tok"})
+        assert status == 423
+        assert body["error"] == "seed already in progress"
+
+    def test_post_unknown_exception_returns_500(self) -> None:
+
+        def boom() -> dict:
+            raise RuntimeError("disk full")
+
+        HealthHandler.seed_archive = staticmethod(boom)
+        os.environ["ARCHIVE_SEED_TOKEN"] = "tok"
+        status, body = _run_post_request(headers={"X-Admin-Token": "tok"})
+        assert status == 500
+        assert body["error"] == "disk full"
+
+
+# ---------------------------------------------------------------------------
+# /archive/es-range
+# ---------------------------------------------------------------------------
+
+
+class TestArchiveEsRange:
+    def test_es_range_400_on_bad_date(self, configure_base_callables) -> None:
+        status, body = _run_request("/archive/es-range?date=bad")
+        assert status == 400
+        assert "YYYY-MM-DD" in body["error"]
+
+    def test_es_range_200_happy(self, configure_base_callables) -> None:
+        with patch(
+            "archive_query.es_day_summary",
+            return_value={"date": "2024-01-15", "high": 4800.0},
+        ):
+            status, body = _run_request("/archive/es-range?date=2024-01-15")
+        assert status == 200
+        assert body["high"] == pytest.approx(4800.0)
+
+    def test_es_range_404_on_value_error(self, configure_base_callables) -> None:
+        with patch(
+            "archive_query.es_day_summary",
+            side_effect=ValueError("no data"),
+        ):
+            status, body = _run_request("/archive/es-range?date=2099-01-01")
+        assert status == 404
+        assert body["error"] == "no data"
+
+    def test_es_range_500_on_unexpected_exception(
+        self, configure_base_callables
+    ) -> None:
+        with patch(
+            "archive_query.es_day_summary",
+            side_effect=RuntimeError("duckdb crashed"),
+        ):
+            status, body = _run_request("/archive/es-range?date=2024-01-15")
+        assert status == 500
+        assert body["error"] == "query failed"
+
+
+# ---------------------------------------------------------------------------
+# /archive/analog-days
+# ---------------------------------------------------------------------------
+
+
+class TestArchiveAnalogDays:
+    def test_analog_days_400_on_bad_date(self, configure_base_callables) -> None:
+        status, body = _run_request("/archive/analog-days?date=bad")
+        assert status == 400
+        assert "YYYY-MM-DD" in body["error"]
+
+    def test_analog_days_400_on_bad_optional_int(
+        self, configure_base_callables
+    ) -> None:
+        status, body = _run_request(
+            "/archive/analog-days?date=2024-01-15&k=notanint"
+        )
+        assert status == 400
+        assert "k must be an integer" in body["error"]
+
+    def test_analog_days_200_passes_kwargs(
+        self, configure_base_callables
+    ) -> None:
+        sample = {"neighbors": [{"date": "2023-05-01", "distance": 0.1}]}
+        with patch(
+            "archive_query.analog_days", return_value=sample
+        ) as mock_q:
+            status, body = _run_request(
+                "/archive/analog-days?date=2024-01-15&until_minute=60&k=20"
+            )
+        assert status == 200
+        assert body == sample
+        mock_q.assert_called_once_with("2024-01-15", until_minute=60, k=20)
+
+    def test_analog_days_400_on_value_error(
+        self, configure_base_callables
+    ) -> None:
+        with patch(
+            "archive_query.analog_days",
+            side_effect=ValueError("k must be 1..50"),
+        ):
+            status, body = _run_request(
+                "/archive/analog-days?date=2024-01-15&k=999"
+            )
+        assert status == 400
+        assert "k must be" in body["error"]
+
+    def test_analog_days_500_on_unexpected_exception(
+        self, configure_base_callables
+    ) -> None:
+        with patch(
+            "archive_query.analog_days", side_effect=RuntimeError("oops")
+        ):
+            status, body = _run_request(
+                "/archive/analog-days?date=2024-01-15"
+            )
+        assert status == 500
+        assert body["error"] == "query failed"
+
+
+# ---------------------------------------------------------------------------
+# /archive/day-summary — exception path
+# ---------------------------------------------------------------------------
+
+
+class TestArchiveDaySummaryExceptions:
+    def _past_date(self) -> str:
+        from datetime import datetime, timedelta, timezone
+
+        return (
+            datetime.now(timezone.utc).date() - timedelta(days=45)
+        ).isoformat()
+
+    def test_day_summary_404_on_value_error(
+        self, configure_base_callables
+    ) -> None:
+        with patch(
+            "archive_query.day_summary_text",
+            side_effect=ValueError("no rows for date"),
+        ):
+            status, body = _run_request(
+                f"/archive/day-summary?date={self._past_date()}"
+            )
+        assert status == 404
+        assert body["error"] == "no rows for date"
+
+    def test_day_summary_500_on_unexpected(
+        self, configure_base_callables
+    ) -> None:
+        with patch(
+            "archive_query.day_summary_text",
+            side_effect=RuntimeError("boom"),
+        ):
+            status, body = _run_request(
+                f"/archive/day-summary?date={self._past_date()}"
+            )
+        assert status == 500
+        assert body["error"] == "query failed"
+
+    def test_day_features_400_on_bad_date(
+        self, configure_base_callables
+    ) -> None:
+        """Cover the _BadRequest branch (lines 392-394) — bad date 400s
+        before the today-or-future guard runs."""
+        with patch("archive_query.day_features_vector") as mock_q:
+            status, body = _run_request("/archive/day-features?date=nope")
+        assert status == 400
+        assert "YYYY-MM-DD" in body["error"]
+        mock_q.assert_not_called()
+
+    def test_day_features_404_on_value_error(
+        self, configure_base_callables
+    ) -> None:
+        with patch(
+            "archive_query.day_features_vector",
+            side_effect=ValueError("no rows"),
+        ):
+            status, body = _run_request(
+                f"/archive/day-features?date={self._past_date()}"
+            )
+        assert status == 404
+        assert body["error"] == "no rows"
+
+    def test_day_features_500_on_unexpected(
+        self, configure_base_callables
+    ) -> None:
+        with patch(
+            "archive_query.day_features_vector",
+            side_effect=RuntimeError("boom"),
+        ):
+            status, body = _run_request(
+                f"/archive/day-features?date={self._past_date()}"
+            )
+        assert status == 500
+        assert body["error"] == "query failed"
+
+
+# ---------------------------------------------------------------------------
+# /archive/day-features-batch + /archive/day-summary-batch +
+# /archive/day-summary-prediction-batch
+# ---------------------------------------------------------------------------
+
+
+class TestArchiveBatchHandlers:
+    def test_features_batch_400_on_bad_range(
+        self, configure_base_callables
+    ) -> None:
+        status, body = _run_request(
+            "/archive/day-features-batch?from=bad&to=2024-01-02"
+        )
+        assert status == 400
+        assert "YYYY-MM-DD" in body["error"]
+
+    def test_features_batch_200(self, configure_base_callables) -> None:
+        rows = [{"date": "2024-01-01", "vector": [0.1] * 60}]
+        with patch(
+            "archive_query.day_features_batch", return_value=rows
+        ) as mock_q:
+            status, body = _run_request(
+                "/archive/day-features-batch?from=2024-01-01&to=2024-01-02"
+            )
+        assert status == 200
+        assert body["from"] == "2024-01-01"
+        assert body["to"] == "2024-01-02"
+        assert body["rows"] == rows
+        mock_q.assert_called_once_with("2024-01-01", "2024-01-02")
+
+    def test_features_batch_500_on_exception(
+        self, configure_base_callables
+    ) -> None:
+        with patch(
+            "archive_query.day_features_batch",
+            side_effect=RuntimeError("boom"),
+        ):
+            status, body = _run_request(
+                "/archive/day-features-batch?from=2024-01-01&to=2024-01-02"
+            )
+        assert status == 500
+        assert body["error"] == "query failed"
+
+    def test_summary_batch_400_on_bad_range(
+        self, configure_base_callables
+    ) -> None:
+        status, _body = _run_request(
+            "/archive/day-summary-batch?from=bad&to=2024-01-02"
+        )
+        assert status == 400
+
+    def test_summary_batch_200(self, configure_base_callables) -> None:
+        rows = [{"date": "2024-01-01", "summary": "x"}]
+        with patch(
+            "archive_query.day_summary_batch", return_value=rows
+        ) as mock_q:
+            status, body = _run_request(
+                "/archive/day-summary-batch?from=2024-01-01&to=2024-01-02"
+            )
+        assert status == 200
+        assert body["rows"] == rows
+        mock_q.assert_called_once_with("2024-01-01", "2024-01-02")
+
+    def test_summary_batch_500_on_exception(
+        self, configure_base_callables
+    ) -> None:
+        with patch(
+            "archive_query.day_summary_batch",
+            side_effect=RuntimeError("boom"),
+        ):
+            status, _body = _run_request(
+                "/archive/day-summary-batch?from=2024-01-01&to=2024-01-02"
+            )
+        assert status == 500
+
+    def test_summary_prediction_400_on_bad_date(
+        self, configure_base_callables
+    ) -> None:
+        status, body = _run_request(
+            "/archive/day-summary-prediction?date=nope"
+        )
+        assert status == 400
+        assert "YYYY-MM-DD" in body["error"]
+
+    def test_summary_prediction_200(self, configure_base_callables) -> None:
+        with patch(
+            "archive_query.day_summary_prediction",
+            return_value="leakage-free text",
+        ):
+            status, body = _run_request(
+                "/archive/day-summary-prediction?date=2024-01-15"
+            )
+        assert status == 200
+        assert body["date"] == "2024-01-15"
+        assert body["summary"] == "leakage-free text"
+
+    def test_summary_prediction_404_on_value_error(
+        self, configure_base_callables
+    ) -> None:
+        with patch(
+            "archive_query.day_summary_prediction",
+            side_effect=ValueError("missing"),
+        ):
+            status, body = _run_request(
+                "/archive/day-summary-prediction?date=2024-01-15"
+            )
+        assert status == 404
+        assert body["error"] == "missing"
+
+    def test_summary_prediction_500_on_unexpected(
+        self, configure_base_callables
+    ) -> None:
+        with patch(
+            "archive_query.day_summary_prediction",
+            side_effect=RuntimeError("boom"),
+        ):
+            status, body = _run_request(
+                "/archive/day-summary-prediction?date=2024-01-15"
+            )
+        assert status == 500
+        assert body["error"] == "query failed"
+
+    def test_summary_prediction_batch_400(
+        self, configure_base_callables
+    ) -> None:
+        status, _body = _run_request(
+            "/archive/day-summary-prediction-batch?from=bad&to=2024-01-02"
+        )
+        assert status == 400
+
+    def test_summary_prediction_batch_200(
+        self, configure_base_callables
+    ) -> None:
+        rows = [{"date": "2024-01-01", "summary": "x"}]
+        with patch(
+            "archive_query.day_summary_prediction_batch", return_value=rows
+        ) as mock_q:
+            status, body = _run_request(
+                "/archive/day-summary-prediction-batch"
+                "?from=2024-01-01&to=2024-01-02"
+            )
+        assert status == 200
+        assert body["rows"] == rows
+        mock_q.assert_called_once_with("2024-01-01", "2024-01-02")
+
+    def test_summary_prediction_batch_500(
+        self, configure_base_callables
+    ) -> None:
+        with patch(
+            "archive_query.day_summary_prediction_batch",
+            side_effect=RuntimeError("boom"),
+        ):
+            status, _body = _run_request(
+                "/archive/day-summary-prediction-batch"
+                "?from=2024-01-01&to=2024-01-02"
+            )
+        assert status == 500
+
+
+# ---------------------------------------------------------------------------
+# /archive/tbbo-day-microstructure exception path + 500 path
+# ---------------------------------------------------------------------------
+
+
+class TestTbboDayMicrostructureMore:
+    def test_500_on_unexpected_exception(
+        self, configure_base_callables
+    ) -> None:
+        with patch(
+            "archive_query.tbbo_day_microstructure",
+            side_effect=RuntimeError("disk crashed"),
+        ):
+            status, body = _run_request(
+                "/archive/tbbo-day-microstructure?date=2024-01-15&symbol=ES"
+            )
+        assert status == 500
+        assert body["error"] == "query failed"
+
+
+# ---------------------------------------------------------------------------
+# /archive/tbbo-ofi-percentile — input branch coverage
+# ---------------------------------------------------------------------------
+
+
+class TestTbboOfiPercentileBranches:
+    def test_400_on_bad_symbol(self, configure_base_callables) -> None:
+        status, body = _run_request(
+            "/archive/tbbo-ofi-percentile?symbol=CL&value=0.1&window=1h"
+        )
+        assert status == 400
+        assert "ES" in body["error"]
+
+    def test_400_on_bad_window(self, configure_base_callables) -> None:
+        status, body = _run_request(
+            "/archive/tbbo-ofi-percentile?symbol=ES&value=0.1&window=999"
+        )
+        assert status == 400
+        assert "window" in body["error"]
+
+    def test_400_on_value_unparseable(
+        self, configure_base_callables
+    ) -> None:
+        status, body = _run_request(
+            "/archive/tbbo-ofi-percentile?symbol=ES&value=abc&window=1h"
+        )
+        assert status == 400
+        assert "finite" in body["error"]
+
+    def test_400_on_value_inf(self, configure_base_callables) -> None:
+        status, body = _run_request(
+            "/archive/tbbo-ofi-percentile?symbol=ES&value=inf&window=1h"
+        )
+        assert status == 400
+        assert "finite" in body["error"]
+
+    def test_400_on_horizon_below_lo(self, configure_base_callables) -> None:
+        status, body = _run_request(
+            "/archive/tbbo-ofi-percentile?symbol=ES&value=0.1"
+            "&window=1h&horizon_days=0"
+        )
+        assert status == 400
+        assert ">= 1" in body["error"]
+
+    def test_500_on_unexpected_exception(
+        self, configure_base_callables
+    ) -> None:
+        with patch(
+            "archive_query.tbbo_ofi_percentile",
+            side_effect=RuntimeError("boom"),
+        ):
+            status, body = _run_request(
+                "/archive/tbbo-ofi-percentile?symbol=ES&value=0.1&window=1h"
+            )
+        assert status == 500
+        assert body["error"] == "query failed"
+
+    def test_horizon_kwarg_passed_when_within_cap(
+        self, configure_base_callables
+    ) -> None:
+        sample = {
+            "symbol": "ES",
+            "window": "1h",
+            "current_value": 0.1,
+            "percentile": 50.0,
+            "mean": 0.0,
+            "std": 0.1,
+            "count": 100,
+        }
+        with patch(
+            "archive_query.tbbo_ofi_percentile", return_value=sample
+        ) as mock_q:
+            status, body = _run_request(
+                "/archive/tbbo-ofi-percentile?symbol=ES&value=0.1"
+                "&window=1h&horizon_days=100"
+            )
+        assert status == 200
+        assert body == sample
+        # Confirm the horizon_days kwarg was forwarded.
+        kwargs = mock_q.call_args.kwargs
+        assert kwargs.get("horizon_days") == 100
+
+
+# ---------------------------------------------------------------------------
+# Health endpoint freshness branch + DB-exception swallow
+# ---------------------------------------------------------------------------
+
+
+class TestHealthFreshness:
+    def test_data_fresh_true_when_recent(
+        self, configure_base_callables
+    ) -> None:
+        # last_bar_at returns "now" — staleness < 120s → fresh.
+        import time
+
+        HealthHandler.last_bar_at = staticmethod(lambda: time.time())
+        with patch("health._is_data_expected", return_value=True):
+            status, body = _run_request()
+        assert status == 200
+        assert body["checks"]["data_fresh"] is True
+
+    def test_data_fresh_false_when_stale(
+        self, configure_base_callables
+    ) -> None:
+        # Bar was 5 minutes ago — staleness > 120s → degraded.
+        import time
+
+        HealthHandler.last_bar_at = staticmethod(lambda: time.time() - 600)
+        with patch("health._is_data_expected", return_value=True):
+            status, body = _run_request()
+        assert status == 503
+        assert body["checks"]["data_fresh"] is False
+        assert body["status"] == "degraded"
+
+    def test_db_exception_swallowed_to_false(
+        self, configure_base_callables
+    ) -> None:
+        def boom() -> bool:
+            raise RuntimeError("conn refused")
+
+        HealthHandler.is_db_healthy = staticmethod(boom)
+        with patch("health._is_data_expected", return_value=False):
+            status, body = _run_request()
+        assert status == 503
+        assert body["checks"]["db"] is False
+
+
+# ---------------------------------------------------------------------------
+# _build_theta_block — partial-config guards
+# ---------------------------------------------------------------------------
+
+
+class TestBuildThetaBlock:
+    def test_returns_none_when_running_callable_unset(
+        self, configure_base_callables
+    ) -> None:
+        # Default reset: theta_is_running is None → block omitted entirely.
+        with patch("health._is_data_expected", return_value=False):
+            _status, body = _run_request()
+        assert "theta" not in body
+
+    def test_handles_missing_optional_callables(
+        self, configure_base_callables
+    ) -> None:
+        # Only running is set; others remain None — block must still render
+        # with last_ready_at=None and last_error=None.
+        HealthHandler.theta_is_running = staticmethod(lambda: True)
+        HealthHandler.theta_last_ready_at = None
+        HealthHandler.theta_last_error = None
+        with patch("health._is_data_expected", return_value=False):
+            _status, body = _run_request()
+        assert body["theta"] == {
+            "running": True,
+            "last_ready_at": None,
+            "last_error": None,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Pure helpers — _now_ts, _is_data_expected
+# ---------------------------------------------------------------------------
+
+
+class TestNowTs:
+    def test_returns_float(self) -> None:
+        import health
+
+        ts = health._now_ts()
+        assert isinstance(ts, float)
+        assert ts > 0
+
+
+class TestIsDataExpected:
+    """_is_data_expected branches by weekday + hour in CT."""
+
+    def _patched_dt(self, weekday: int, hour: int):
+        """Build a context manager that patches datetime.now to a fixed CT time."""
+        from datetime import datetime
+        from unittest.mock import patch as mpatch
+
+        # Pick a Wednesday base date (2024-01-03 was a Wednesday).
+        # Adjust by weekday delta. weekday(): Mon=0..Sun=6
+        from datetime import timedelta
+
+        wed = datetime(2024, 1, 3, hour, 0, 0)  # Wed (weekday=2)
+        delta = weekday - 2
+        target = wed + timedelta(days=delta)
+
+        class _FakeDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                # Return a tz-aware datetime in the requested tz.
+                if tz is None:
+                    return target
+                return target.replace(tzinfo=tz)
+
+        return mpatch("health.datetime", _FakeDateTime)
+
+    def test_saturday_returns_false(self) -> None:
+        import health
+
+        with self._patched_dt(weekday=5, hour=10):
+            assert health._is_data_expected() is False
+
+    def test_sunday_before_5pm_returns_false(self) -> None:
+        import health
+
+        with self._patched_dt(weekday=6, hour=10):
+            assert health._is_data_expected() is False
+
+    def test_sunday_after_5pm_returns_true(self) -> None:
+        import health
+
+        with self._patched_dt(weekday=6, hour=18):
+            assert health._is_data_expected() is True
+
+    def test_friday_after_4pm_returns_false(self) -> None:
+        import health
+
+        with self._patched_dt(weekday=4, hour=17):
+            assert health._is_data_expected() is False
+
+    def test_friday_morning_returns_true(self) -> None:
+        import health
+
+        with self._patched_dt(weekday=4, hour=10):
+            assert health._is_data_expected() is True
+
+    def test_maintenance_window_4pm_returns_false(self) -> None:
+        import health
+
+        # Tuesday 4 PM CT → maintenance window.
+        with self._patched_dt(weekday=1, hour=16):
+            assert health._is_data_expected() is False
+
+    def test_normal_weekday_returns_true(self) -> None:
+        import health
+
+        with self._patched_dt(weekday=2, hour=10):
+            assert health._is_data_expected() is True
+
+
+# ---------------------------------------------------------------------------
+# start_health_server — wiring smoke test
+# ---------------------------------------------------------------------------
+
+
+class TestStartHealthServer:
+    def test_wires_class_callables_and_returns_server(self) -> None:
+        import health
+
+        connected = lambda: True  # noqa: E731
+        last_bar = lambda: 0.0  # noqa: E731
+        db_healthy = lambda: True  # noqa: E731
+
+        # Patch ThreadingHTTPServer to avoid actually binding a port.
+        from unittest.mock import MagicMock as _MagicMock
+
+        fake_server = _MagicMock()
+        with patch("health.ThreadingHTTPServer") as fake_srv_cls, patch(
+            "health.threading.Thread"
+        ) as fake_thread:
+            fake_srv_cls.return_value = fake_server
+            result = health.start_health_server(
+                0,
+                connected,
+                last_bar,
+                db_healthy,
+            )
+        assert result is fake_server
+        fake_srv_cls.assert_called_once()
+        fake_thread.assert_called_once()
+        # Class-level callables must be installed.
+        assert health.HealthHandler.is_connected() is True
+        assert health.HealthHandler.last_bar_at() == pytest.approx(0.0)
+        assert health.HealthHandler.is_db_healthy() is True
+        # Theta defaults: server invoked without theta args → cleared.
+        assert health.HealthHandler.theta_is_running is None
+        assert health.HealthHandler.theta_last_ready_at is None
+        assert health.HealthHandler.theta_last_error is None
+        # Seed defaults: not configured → None.
+        assert health.HealthHandler.seed_archive is None
+        assert health.HealthHandler.seed_is_busy is None
+
+    def test_wires_optional_theta_and_seed_callables(self) -> None:
+        import health
+
+        with patch("health.ThreadingHTTPServer") as fake_srv_cls, patch(
+            "health.threading.Thread"
+        ):
+            from unittest.mock import MagicMock as _MagicMock
+
+            fake_srv_cls.return_value = _MagicMock()
+            health.start_health_server(
+                0,
+                lambda: True,
+                lambda: 0.0,
+                lambda: True,
+                theta_is_running=lambda: True,
+                theta_last_ready_at=lambda: 1.0,
+                theta_last_error=lambda: "err",
+                seed_archive=lambda: {"failed": 0},
+                seed_is_busy=lambda: False,
+            )
+        # All optional callables must be installed.
+        assert health.HealthHandler.theta_is_running() is True
+        assert health.HealthHandler.theta_last_ready_at() == pytest.approx(1.0)
+        assert health.HealthHandler.theta_last_error() == "err"
+        assert health.HealthHandler.seed_archive() == {"failed": 0}
+        assert health.HealthHandler.seed_is_busy() is False
+
+    def test_wires_theta_running_only_when_others_falsy(self) -> None:
+        """When theta_is_running is set but the other reporters aren't,
+        the staticmethod-wrap branch evaluates the falsy ternary path."""
+        import health
+
+        with patch("health.ThreadingHTTPServer") as fake_srv_cls, patch(
+            "health.threading.Thread"
+        ):
+            from unittest.mock import MagicMock as _MagicMock
+
+            fake_srv_cls.return_value = _MagicMock()
+            health.start_health_server(
+                0,
+                lambda: True,
+                lambda: 0.0,
+                lambda: True,
+                theta_is_running=lambda: True,
+                theta_last_ready_at=None,
+                theta_last_error=None,
+            )
+        assert health.HealthHandler.theta_is_running() is True
+        assert health.HealthHandler.theta_last_ready_at is None
+        assert health.HealthHandler.theta_last_error is None

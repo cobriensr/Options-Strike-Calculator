@@ -131,16 +131,32 @@ def get_conn(
         yield conn
         conn.commit()
     except Exception:
-        conn.rollback()
+        # Rolling back a connection whose socket libpq has already torn
+        # down raises InterfaceError("connection already closed"), which
+        # would mask the real exception (typically OperationalError from
+        # a Neon SSL drop mid-batch). Swallow the rollback failure and
+        # let the original exception propagate via `raise` below. See
+        # SENTRY-EMERALD-DESERT-6S / -2C.
+        try:
+            conn.rollback()
+        except Exception as rollback_exc:
+            log.debug(
+                "rollback after error failed (connection likely dead): %s",
+                rollback_exc,
+            )
         raise
     finally:
-        # Don't let putconn() failures mask the real exception. During
-        # shutdown the pool may already be closed, in which case putconn
-        # raises PoolError("connection pool is closed") — that's benign
-        # and shouldn't replace whatever the caller was actually raising.
+        # When libpq has marked the connection broken (`conn.closed != 0`,
+        # e.g. SSL drop, server-side disconnect), pass close=True so the
+        # pool discards it rather than handing the same dead socket to
+        # the next caller. Without this, a single network blip can poison
+        # every borrow until the pool happens to recycle.
         try:
-            pool.putconn(conn)
+            pool.putconn(conn, close=bool(conn.closed))
         except Exception as exc:
+            # Don't let putconn failures mask the real exception. During
+            # shutdown the pool may already be closed (PoolError) — that's
+            # benign and shouldn't replace whatever the caller was raising.
             log.debug("pool.putconn failed (likely shutdown): %s", exc)
 
 

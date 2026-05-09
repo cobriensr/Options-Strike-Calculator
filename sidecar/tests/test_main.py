@@ -140,3 +140,388 @@ def test_main_proceeds_when_required_env_present(
     patched_subsystems["theta_launcher_start"].assert_called_once()
     patched_subsystems["verify_connection"].assert_called_once()
     patched_subsystems["connect_with_retry"].assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# main() — Theta launched branch (lines 104-105)
+# ---------------------------------------------------------------------------
+
+
+def test_main_starts_theta_scheduler_and_backfill_when_launcher_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+    patched_subsystems: dict[str, MagicMock],
+) -> None:
+    """When theta_launcher.start() returns True, main() must start the
+    nightly scheduler AND spawn a daemon thread for the backfill."""
+    monkeypatch.setenv("DATABENTO_API_KEY", "test-key")
+    monkeypatch.setenv("DATABASE_URL", _FAKE_DB_URL)
+    # Flip the launcher mock to True so the inner branch runs.
+    patched_subsystems["theta_launcher_start"].return_value = True
+
+    fake_thread_cls = MagicMock()
+    monkeypatch.setattr(main.threading, "Thread", fake_thread_cls)
+
+    main.main()
+
+    patched_subsystems["theta_fetcher_start_scheduler"].assert_called_once()
+    fake_thread_cls.assert_called_once()
+    # Confirm the spawned thread was started as a daemon backfill.
+    kwargs = fake_thread_cls.call_args.kwargs
+    assert kwargs["daemon"] is True
+    assert kwargs["name"] == "theta-backfill"
+    fake_thread_cls.return_value.start.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# main() — seed_callable branch (lines 134-139)
+# ---------------------------------------------------------------------------
+
+
+def test_main_builds_seed_callable_when_archive_env_present(
+    monkeypatch: pytest.MonkeyPatch,
+    patched_subsystems: dict[str, MagicMock],
+) -> None:
+    """When ARCHIVE_MANIFEST_URL + BLOB_READ_WRITE_TOKEN are set, main()
+    must define a seed_callable that delegates to archive_seeder and
+    pass it to start_health_server."""
+    monkeypatch.setenv("DATABENTO_API_KEY", "test-key")
+    monkeypatch.setenv("DATABASE_URL", _FAKE_DB_URL)
+    monkeypatch.setenv("ARCHIVE_MANIFEST_URL", "https://example.com/m.json")
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "blob-token")
+    monkeypatch.setenv("ARCHIVE_ROOT", "/tmp/archive-test")
+
+    # Stub archive_seeder.seed_from_manifest so calling the closure is safe.
+    fake_result = MagicMock()
+    fake_result.as_dict.return_value = {"ok": True, "files": 3}
+    fake_seed = MagicMock(return_value=fake_result)
+    monkeypatch.setattr(main.archive_seeder, "seed_from_manifest", fake_seed)
+
+    main.main()
+
+    # The callable should have been forwarded to start_health_server
+    # under the seed_archive kwarg.
+    kwargs = patched_subsystems["start_health_server"].call_args.kwargs
+    seed_callable = kwargs["seed_archive"]
+    assert seed_callable is not None
+
+    # Invoking it must call archive_seeder with the env-derived args.
+    result = seed_callable()
+    assert result == {"ok": True, "files": 3}
+    fake_seed.assert_called_once_with(
+        "https://example.com/m.json", "/tmp/archive-test", "blob-token"
+    )
+
+
+def test_main_disables_seed_callable_when_archive_env_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    patched_subsystems: dict[str, MagicMock],
+) -> None:
+    """Without the archive env vars, seed_archive must be None so the
+    health server returns 503 from /admin/seed-archive."""
+    monkeypatch.setenv("DATABENTO_API_KEY", "test-key")
+    monkeypatch.setenv("DATABASE_URL", _FAKE_DB_URL)
+    monkeypatch.delenv("ARCHIVE_MANIFEST_URL", raising=False)
+    monkeypatch.delenv("BLOB_READ_WRITE_TOKEN", raising=False)
+
+    main.main()
+
+    kwargs = patched_subsystems["start_health_server"].call_args.kwargs
+    assert kwargs["seed_archive"] is None
+
+
+# ---------------------------------------------------------------------------
+# shutdown() — graceful signal handler (lines 47-71)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def shutdown_fixtures(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
+    """Patch every side effect inside shutdown(): theta + drain_pool +
+    time.sleep + sys.exit. Also reset the module-level _shutting_down
+    flag so each test starts from a clean slate."""
+    monkeypatch.setattr(main, "_shutting_down", False)
+    monkeypatch.setattr(main, "_client", None)
+
+    mocks = {
+        "theta_fetcher_stop": MagicMock(),
+        "theta_launcher_shutdown": MagicMock(),
+        "drain_pool": MagicMock(),
+        "time_sleep": MagicMock(),
+        "sys_exit": MagicMock(side_effect=SystemExit(0)),
+    }
+
+    monkeypatch.setattr(
+        main.theta_fetcher, "stop_scheduler", mocks["theta_fetcher_stop"]
+    )
+    monkeypatch.setattr(
+        main.theta_launcher, "shutdown", mocks["theta_launcher_shutdown"]
+    )
+    monkeypatch.setattr(main, "drain_pool", mocks["drain_pool"])
+    monkeypatch.setattr(main.time, "sleep", mocks["time_sleep"])
+    monkeypatch.setattr(main.sys, "exit", mocks["sys_exit"])
+
+    return mocks
+
+
+def test_shutdown_drains_pool_and_exits_when_no_client(
+    shutdown_fixtures: dict[str, MagicMock],
+) -> None:
+    """With no Databento client connected, shutdown still stops the
+    Theta scheduler, kills the jar, drains the DB pool, and exits 0."""
+    import signal as _signal
+
+    with pytest.raises(SystemExit):
+        main.shutdown(_signal.SIGTERM, None)
+
+    shutdown_fixtures["theta_fetcher_stop"].assert_called_once()
+    shutdown_fixtures["theta_launcher_shutdown"].assert_called_once()
+    shutdown_fixtures["drain_pool"].assert_called_once()
+    shutdown_fixtures["sys_exit"].assert_called_once_with(0)
+    assert main._shutting_down is True
+
+
+def test_shutdown_stops_client_when_present(
+    monkeypatch: pytest.MonkeyPatch,
+    shutdown_fixtures: dict[str, MagicMock],
+) -> None:
+    """With a Databento client connected, shutdown must call stop()
+    on it before draining."""
+    fake_client = MagicMock()
+    monkeypatch.setattr(main, "_client", fake_client)
+
+    import signal as _signal
+
+    with pytest.raises(SystemExit):
+        main.shutdown(_signal.SIGINT, None)
+
+    fake_client.stop.assert_called_once()
+    shutdown_fixtures["drain_pool"].assert_called_once()
+
+
+def test_shutdown_is_idempotent(
+    shutdown_fixtures: dict[str, MagicMock],
+) -> None:
+    """A second SIGTERM must early-return without re-running cleanup —
+    Railway can fire SIGTERM repeatedly if the container is slow to die."""
+    import signal as _signal
+
+    # First call sets _shutting_down=True and exits.
+    with pytest.raises(SystemExit):
+        main.shutdown(_signal.SIGTERM, None)
+
+    shutdown_fixtures["drain_pool"].reset_mock()
+    shutdown_fixtures["sys_exit"].reset_mock()
+    shutdown_fixtures["theta_fetcher_stop"].reset_mock()
+
+    # Second call: _shutting_down is already True, so the function
+    # must return immediately without re-running any cleanup.
+    main.shutdown(_signal.SIGTERM, None)
+
+    shutdown_fixtures["drain_pool"].assert_not_called()
+    shutdown_fixtures["sys_exit"].assert_not_called()
+    shutdown_fixtures["theta_fetcher_stop"].assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# connect_with_retry() — exponential backoff loop (lines 169-207)
+# ---------------------------------------------------------------------------
+
+
+def test_connect_with_retry_exits_when_shutting_down_after_clean_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A clean block_for_close() during shutdown must break the loop
+    immediately without sleeping or retrying."""
+    monkeypatch.setattr(main, "_shutting_down", False)
+    sleep_mock = MagicMock()
+    monkeypatch.setattr(main.time, "sleep", sleep_mock)
+
+    client = MagicMock()
+
+    # Flip _shutting_down=True after block_for_close so the loop sees it
+    # on the post-block check at line 184.
+    def _block() -> None:
+        main._shutting_down = True
+
+    client.block_for_close.side_effect = _block
+
+    main.connect_with_retry(client)
+
+    client.start.assert_called_once()
+    client.block_for_close.assert_called_once()
+    sleep_mock.assert_not_called()
+
+    # Reset so other tests aren't polluted.
+    monkeypatch.setattr(main, "_shutting_down", False)
+
+
+def test_connect_with_retry_reconnects_after_clean_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When block_for_close returns cleanly with no shutdown signal,
+    the loop must call client.stop(), reset backoff, and attempt to
+    reconnect after a sleep."""
+    monkeypatch.setattr(main, "_shutting_down", False)
+    sleep_calls: list[float] = []
+
+    def _fake_sleep(s: float) -> None:
+        sleep_calls.append(s)
+        # Stop the loop before the second iteration's start() call.
+        main._shutting_down = True
+
+    monkeypatch.setattr(main.time, "sleep", _fake_sleep)
+
+    client = MagicMock()
+    client.block_for_close.return_value = None
+
+    main.connect_with_retry(client)
+
+    client.start.assert_called_once()
+    client.block_for_close.assert_called_once()
+    client.stop.assert_called_once()
+    # Backoff reset to 1.0 means first sleep is 1.0s.
+    assert sleep_calls == [1.0]
+
+    monkeypatch.setattr(main, "_shutting_down", False)
+
+
+def test_connect_with_retry_handles_exception_and_backs_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raised exception must be sentry-captured, the client cleaned
+    up, and the loop must sleep and retry."""
+    monkeypatch.setattr(main, "_shutting_down", False)
+    capture_mock = MagicMock()
+    monkeypatch.setattr(main, "capture_exception", capture_mock)
+    sleep_calls: list[float] = []
+
+    def _fake_sleep(s: float) -> None:
+        sleep_calls.append(s)
+        main._shutting_down = True
+
+    monkeypatch.setattr(main.time, "sleep", _fake_sleep)
+
+    boom = RuntimeError("databento went pop")
+    client = MagicMock()
+    client.start.side_effect = boom
+
+    main.connect_with_retry(client)
+
+    capture_mock.assert_called_once()
+    args, kwargs = capture_mock.call_args
+    assert args[0] is boom
+    assert kwargs["context"] == {"backoff_s": 1.0}
+    client.stop.assert_called_once()
+    assert sleep_calls == [1.0]
+
+    monkeypatch.setattr(main, "_shutting_down", False)
+
+
+def test_connect_with_retry_swallows_stop_failure_after_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If client.stop() itself raises during error cleanup, the loop
+    must NOT propagate — it'll just retry on the next iteration."""
+    monkeypatch.setattr(main, "_shutting_down", False)
+    monkeypatch.setattr(main, "capture_exception", MagicMock())
+
+    def _fake_sleep(_s: float) -> None:
+        main._shutting_down = True
+
+    monkeypatch.setattr(main.time, "sleep", _fake_sleep)
+
+    client = MagicMock()
+    client.start.side_effect = RuntimeError("boom")
+    client.stop.side_effect = RuntimeError("stop also failed")
+
+    # Must not raise — the bare except inside connect_with_retry
+    # swallows stop() failures during the error path.
+    main.connect_with_retry(client)
+
+    monkeypatch.setattr(main, "_shutting_down", False)
+
+
+def test_connect_with_retry_breaks_on_keyboard_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """KeyboardInterrupt is caught explicitly and breaks the loop
+    without invoking capture_exception or sleeping."""
+    monkeypatch.setattr(main, "_shutting_down", False)
+    capture_mock = MagicMock()
+    monkeypatch.setattr(main, "capture_exception", capture_mock)
+    sleep_mock = MagicMock()
+    monkeypatch.setattr(main.time, "sleep", sleep_mock)
+
+    client = MagicMock()
+    client.start.side_effect = KeyboardInterrupt()
+
+    main.connect_with_retry(client)
+
+    capture_mock.assert_not_called()
+    sleep_mock.assert_not_called()
+
+
+def test_connect_with_retry_skips_loop_when_already_shutting_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If _shutting_down is True before the loop even starts,
+    connect_with_retry must not call client.start() at all."""
+    monkeypatch.setattr(main, "_shutting_down", True)
+    sleep_mock = MagicMock()
+    monkeypatch.setattr(main.time, "sleep", sleep_mock)
+
+    client = MagicMock()
+
+    main.connect_with_retry(client)
+
+    client.start.assert_not_called()
+    sleep_mock.assert_not_called()
+
+    monkeypatch.setattr(main, "_shutting_down", False)
+
+
+# ---------------------------------------------------------------------------
+# Signal handler registration & __main__ guard
+# ---------------------------------------------------------------------------
+
+
+def test_main_registers_signal_handlers(
+    monkeypatch: pytest.MonkeyPatch,
+    patched_subsystems: dict[str, MagicMock],
+) -> None:
+    """main() must register shutdown for SIGTERM AND SIGINT before
+    entering the connect loop, so Railway scaledown / Ctrl-C both
+    trigger graceful drain."""
+    monkeypatch.setenv("DATABENTO_API_KEY", "test-key")
+    monkeypatch.setenv("DATABASE_URL", _FAKE_DB_URL)
+
+    signal_mock = MagicMock()
+    monkeypatch.setattr(main.signal, "signal", signal_mock)
+
+    main.main()
+
+    import signal as _signal
+
+    registered_signals = {call.args[0] for call in signal_mock.call_args_list}
+    assert _signal.SIGTERM in registered_signals
+    assert _signal.SIGINT in registered_signals
+    # Both handlers must be the same shutdown function.
+    for call in signal_mock.call_args_list:
+        assert call.args[1] is main.shutdown
+
+
+def test_module_has_main_guard() -> None:
+    """The `if __name__ == '__main__': main()` guard must exist so
+    Railway's `python main.py` boot actually starts the relay.
+
+    We can't import-as-main without re-running the whole module
+    (including the side-effecting subsystem imports), so we assert on
+    the source bytes instead. Cheap, deterministic, and catches the
+    one regression we care about: someone deletes the guard.
+    """
+    import inspect
+
+    source = inspect.getsource(main)
+    assert 'if __name__ == "__main__":' in source
+    # The guard's body must call main() — not some other entry point.
+    assert "main()" in source.split('if __name__ == "__main__":')[1]

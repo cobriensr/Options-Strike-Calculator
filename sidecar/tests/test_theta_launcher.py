@@ -244,3 +244,494 @@ def test_maybe_forward_rate_limits_repeat_signatures(
         "java.lang.NullPointerException", "java.lang.NullPointerException at X"
     )
     assert len(captured) == 2
+
+
+def test_maybe_forward_records_last_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Forwarded lines populate _state.last_error for the read accessor."""
+    import theta_launcher
+
+    monkeypatch.setattr(theta_launcher, "capture_message", lambda *_a, **_kw: None)
+
+    theta_launcher._maybe_forward_to_sentry("SEVERE", "SEVERE: disk full")
+    assert theta_launcher._state.last_error == "SEVERE: disk full"
+
+
+# ---------------------------------------------------------------------------
+# Status accessors — is_running / last_ready_at / last_error
+# ---------------------------------------------------------------------------
+
+
+def test_is_running_false_when_no_proc() -> None:
+    import theta_launcher
+
+    assert theta_launcher.is_running() is False
+
+
+def test_is_running_true_when_proc_alive() -> None:
+    import theta_launcher
+
+    proc = MagicMock()
+    proc.poll.return_value = None
+    theta_launcher._state.proc = proc
+
+    assert theta_launcher.is_running() is True
+
+
+def test_is_running_false_when_proc_exited() -> None:
+    import theta_launcher
+
+    proc = MagicMock()
+    proc.poll.return_value = 137
+    theta_launcher._state.proc = proc
+
+    assert theta_launcher.is_running() is False
+
+
+def test_last_ready_at_returns_state_value() -> None:
+    import theta_launcher
+
+    theta_launcher._state.last_ready_at = 12345.5
+    assert theta_launcher.last_ready_at() == 12345.5
+
+
+def test_last_error_returns_none_by_default() -> None:
+    import theta_launcher
+
+    assert theta_launcher.last_error() is None
+
+
+def test_last_error_returns_state_value() -> None:
+    import theta_launcher
+
+    theta_launcher._state.last_error = "boom"
+    assert theta_launcher.last_error() == "boom"
+
+
+# ---------------------------------------------------------------------------
+# _spawn_subprocess — Popen call shape + thread spawn
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_subprocess_calls_popen_with_jar_and_starts_threads(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """_spawn_subprocess() builds the right java argv and starts daemon threads."""
+    import theta_launcher
+
+    fake_proc = MagicMock()
+    popen_calls: list[tuple[tuple, dict]] = []
+
+    def _fake_popen(*args: object, **kwargs: object) -> MagicMock:
+        popen_calls.append((args, kwargs))
+        return fake_proc
+
+    monkeypatch.setattr(theta_launcher.subprocess, "Popen", _fake_popen)
+
+    started_threads: list[object] = []
+    real_thread = theta_launcher.threading.Thread
+
+    def _capture_thread(*args: object, **kwargs: object) -> object:
+        t = real_thread(*args, **kwargs)
+        started_threads.append(kwargs.get("name"))
+        # Don't actually start the thread — the target loops would block on
+        # the mock's stderr/stdout iterators forever in some setups.
+        t.start = lambda: None  # type: ignore[method-assign]
+        return t
+
+    monkeypatch.setattr(theta_launcher.threading, "Thread", _capture_thread)
+
+    theta_launcher._spawn_subprocess()
+
+    # Popen received the right argv shape.
+    assert len(popen_calls) == 1
+    args, kwargs = popen_calls[0]
+    assert args[0][0] == "java"
+    assert args[0][1] == "-jar"
+    assert args[0][2].endswith("ThetaTerminalv3.jar")
+    assert kwargs["stdout"] == subprocess.PIPE
+    assert kwargs["stderr"] == subprocess.PIPE
+    assert kwargs["text"] is True
+
+    # State was populated.
+    assert theta_launcher._state.proc is fake_proc
+    assert theta_launcher._state.started_at > 0.0
+
+    # Both daemon threads were spawned.
+    assert "theta-stderr" in started_threads
+    assert "theta-stdout" in started_threads
+
+
+# ---------------------------------------------------------------------------
+# _stderr_tail_loop — line capture + sentry forwarding
+# ---------------------------------------------------------------------------
+
+
+def test_stderr_tail_loop_returns_when_no_proc() -> None:
+    import theta_launcher
+
+    # No proc set; loop should bail without raising.
+    theta_launcher._stderr_tail_loop()  # no assertions — just shouldn't hang
+
+
+def test_stderr_tail_loop_returns_when_proc_has_no_stderr() -> None:
+    import theta_launcher
+
+    proc = MagicMock()
+    proc.stderr = None
+    theta_launcher._state.proc = proc
+
+    theta_launcher._stderr_tail_loop()  # no-op
+
+
+def test_stderr_tail_loop_appends_lines_and_forwards_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-empty lines are buffered; matching ones go to Sentry."""
+    import theta_launcher
+
+    forwarded: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        theta_launcher,
+        "_maybe_forward_to_sentry",
+        lambda sig, line: forwarded.append((sig, line)),
+    )
+
+    proc = MagicMock()
+    # Mix benign lines, blank, and one matching error signature.
+    proc.stderr = iter(
+        [
+            "INFO: starting up\n",
+            "\n",  # blank — should be skipped
+            "FATAL: out of memory\n",
+            "DEBUG: heartbeat\n",
+        ]
+    )
+    theta_launcher._state.proc = proc
+
+    theta_launcher._stderr_tail_loop()
+
+    tail = list(theta_launcher._state.stderr_tail)
+    assert "INFO: starting up" in tail
+    assert "FATAL: out of memory" in tail
+    assert "DEBUG: heartbeat" in tail
+    # Blank line was skipped.
+    assert "" not in tail
+
+    # Only the FATAL line was forwarded.
+    assert len(forwarded) == 1
+    assert forwarded[0][0] == "FATAL"
+
+
+# ---------------------------------------------------------------------------
+# _stdout_drain_loop — pipe drain
+# ---------------------------------------------------------------------------
+
+
+def test_stdout_drain_loop_returns_when_no_proc() -> None:
+    import theta_launcher
+
+    theta_launcher._stdout_drain_loop()  # no-op
+
+
+def test_stdout_drain_loop_returns_when_proc_has_no_stdout() -> None:
+    import theta_launcher
+
+    proc = MagicMock()
+    proc.stdout = None
+    theta_launcher._state.proc = proc
+
+    theta_launcher._stdout_drain_loop()  # no-op
+
+
+def test_stdout_drain_loop_consumes_all_lines() -> None:
+    """The loop iterates the pipe to keep the OS buffer flowing."""
+    import theta_launcher
+
+    consumed: list[str] = []
+
+    class _StdoutTracker:
+        def __init__(self, lines: list[str]) -> None:
+            self._lines = iter(lines)
+
+        def __iter__(self) -> "_StdoutTracker":
+            return self
+
+        def __next__(self) -> str:
+            line = next(self._lines)
+            consumed.append(line)
+            return line
+
+    proc = MagicMock()
+    proc.stdout = _StdoutTracker(["heartbeat\n", "ok\n", "done\n"])
+    theta_launcher._state.proc = proc
+
+    theta_launcher._stdout_drain_loop()
+    assert consumed == ["heartbeat\n", "ok\n", "done\n"]
+
+
+# ---------------------------------------------------------------------------
+# start() — happy path + readiness failure paths
+# ---------------------------------------------------------------------------
+
+
+def test_start_returns_false_when_spawn_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If _spawn_subprocess explodes, start() captures it and returns False."""
+    import theta_launcher
+
+    monkeypatch.setenv("THETA_EMAIL", "user@example.com")
+    monkeypatch.setenv("THETA_PASSWORD", "secret")
+
+    monkeypatch.setattr(theta_launcher, "_write_creds", lambda *_a, **_kw: None)
+
+    def _boom() -> None:
+        raise RuntimeError("popen exploded")
+
+    monkeypatch.setattr(theta_launcher, "_spawn_subprocess", _boom)
+
+    captured: list[Exception] = []
+    monkeypatch.setattr(
+        theta_launcher,
+        "capture_exception",
+        lambda exc, **_kw: captured.append(exc),
+    )
+
+    assert theta_launcher.start() is False
+    assert len(captured) == 1
+    assert isinstance(captured[0], RuntimeError)
+
+
+def test_start_returns_false_when_readiness_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Successful spawn but readiness fails -> sentry message + False."""
+    import theta_launcher
+
+    monkeypatch.setenv("THETA_EMAIL", "user@example.com")
+    monkeypatch.setenv("THETA_PASSWORD", "secret")
+
+    monkeypatch.setattr(theta_launcher, "_write_creds", lambda *_a, **_kw: None)
+    monkeypatch.setattr(theta_launcher, "_spawn_subprocess", lambda: None)
+    monkeypatch.setattr(theta_launcher, "_wait_for_ready", lambda: False)
+
+    # Pre-populate stderr tail to verify it makes it into the context.
+    theta_launcher._state.stderr_tail.append("STARTUP FAILED")
+
+    captured: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        theta_launcher,
+        "capture_message",
+        lambda msg, **kw: captured.append((msg, kw)),
+    )
+
+    assert theta_launcher.start() is False
+    assert len(captured) == 1
+    msg, kw = captured[0]
+    assert "failed to come up" in msg
+    assert kw.get("tags") == {"component": "theta"}
+    assert "STARTUP FAILED" in kw["context"]["stderr_tail"]
+
+
+def test_start_returns_true_on_happy_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All boot steps succeed -> start() spawns monitor thread and returns True."""
+    import theta_launcher
+
+    monkeypatch.setenv("THETA_EMAIL", "user@example.com")
+    monkeypatch.setenv("THETA_PASSWORD", "secret")
+
+    monkeypatch.setattr(theta_launcher, "_write_creds", lambda *_a, **_kw: None)
+    monkeypatch.setattr(theta_launcher, "_spawn_subprocess", lambda: None)
+    monkeypatch.setattr(theta_launcher, "_wait_for_ready", lambda: True)
+
+    started_threads: list[str] = []
+    real_thread = theta_launcher.threading.Thread
+
+    def _capture_thread(*args: object, **kwargs: object) -> object:
+        t = real_thread(*args, **kwargs)
+        started_threads.append(kwargs.get("name", ""))
+        t.start = lambda: None  # type: ignore[method-assign]
+        return t
+
+    monkeypatch.setattr(theta_launcher.threading, "Thread", _capture_thread)
+
+    assert theta_launcher.start() is True
+    assert "theta-monitor" in started_threads
+
+
+# ---------------------------------------------------------------------------
+# _monitor_loop — restart, backoff, shutdown
+# ---------------------------------------------------------------------------
+
+
+def test_monitor_loop_returns_immediately_if_shutdown_set() -> None:
+    """Shutdown flag short-circuits the loop on first iteration."""
+    import theta_launcher
+
+    theta_launcher._state.shutdown = True
+    # No proc, no infinite loop — returns cleanly.
+    theta_launcher._monitor_loop()
+
+
+def test_monitor_loop_returns_when_no_proc() -> None:
+    """No proc set after acquiring lock -> loop returns."""
+    import theta_launcher
+
+    # shutdown=False, proc=None → second guard returns.
+    theta_launcher._state.proc = None
+    theta_launcher._state.shutdown = False
+    theta_launcher._monitor_loop()
+
+
+def test_monitor_loop_sleeps_when_proc_alive_then_exits_on_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """proc.poll() returns None -> loop sleeps; shutdown flips, loop exits."""
+    import theta_launcher
+
+    proc = MagicMock()
+    proc.poll.return_value = None  # alive
+    theta_launcher._state.proc = proc
+
+    sleep_calls: list[float] = []
+
+    def _fake_sleep(secs: float) -> None:
+        sleep_calls.append(secs)
+        # After the first sleep, set shutdown to break the loop.
+        theta_launcher._state.shutdown = True
+
+    monkeypatch.setattr(theta_launcher.time, "sleep", _fake_sleep)
+
+    theta_launcher._monitor_loop()
+
+    # First iteration slept (proc alive); second iteration short-circuited via shutdown.
+    assert sleep_calls == [5]
+
+
+def test_monitor_loop_restarts_after_unexpected_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-None poll() triggers sentry + restart via _spawn_subprocess."""
+    import theta_launcher
+
+    proc = MagicMock()
+    proc.poll.return_value = 1  # exited with rc=1
+    theta_launcher._state.proc = proc
+    theta_launcher._state.started_at = 1000.0
+
+    captured_messages: list[str] = []
+    monkeypatch.setattr(
+        theta_launcher,
+        "capture_message",
+        lambda msg, **_kw: captured_messages.append(msg),
+    )
+
+    spawn_calls: list[int] = []
+
+    def _fake_spawn() -> None:
+        spawn_calls.append(1)
+        # After respawn, set shutdown so the loop terminates after the post-restart guard.
+        theta_launcher._state.shutdown = True
+
+    monkeypatch.setattr(theta_launcher, "_spawn_subprocess", _fake_spawn)
+    monkeypatch.setattr(theta_launcher, "_wait_for_ready", lambda: True)
+    monkeypatch.setattr(theta_launcher.time, "sleep", lambda _s: None)
+
+    theta_launcher._monitor_loop()
+
+    assert any("exited" in m for m in captured_messages)
+    assert spawn_calls == [1]
+
+
+def test_monitor_loop_logs_warning_when_restart_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If restart doesn't reach ready, loop continues but logs warning."""
+    import theta_launcher
+
+    proc = MagicMock()
+    proc.poll.return_value = 1
+    theta_launcher._state.proc = proc
+
+    monkeypatch.setattr(theta_launcher, "capture_message", lambda *_a, **_kw: None)
+    monkeypatch.setattr(theta_launcher.time, "sleep", lambda _s: None)
+
+    def _fake_spawn() -> None:
+        # Stop the loop after this restart attempt.
+        theta_launcher._state.shutdown = True
+
+    monkeypatch.setattr(theta_launcher, "_spawn_subprocess", _fake_spawn)
+    monkeypatch.setattr(theta_launcher, "_wait_for_ready", lambda: False)
+
+    # Should not raise even though ready failed.
+    theta_launcher._monitor_loop()
+
+
+def test_monitor_loop_captures_exception_during_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raise during _spawn_subprocess is captured to Sentry, not propagated."""
+    import theta_launcher
+
+    proc = MagicMock()
+    proc.poll.return_value = 137
+    theta_launcher._state.proc = proc
+
+    monkeypatch.setattr(theta_launcher, "capture_message", lambda *_a, **_kw: None)
+    monkeypatch.setattr(theta_launcher.time, "sleep", lambda _s: None)
+
+    captured_exc: list[Exception] = []
+    monkeypatch.setattr(
+        theta_launcher,
+        "capture_exception",
+        lambda exc, **_kw: captured_exc.append(exc),
+    )
+
+    raise_count = {"n": 0}
+
+    def _raise_once() -> None:
+        raise_count["n"] += 1
+        # Stop the loop on the next iteration.
+        theta_launcher._state.shutdown = True
+        raise RuntimeError("respawn boom")
+
+    monkeypatch.setattr(theta_launcher, "_spawn_subprocess", _raise_once)
+    monkeypatch.setattr(theta_launcher, "_wait_for_ready", lambda: True)
+
+    theta_launcher._monitor_loop()
+
+    assert len(captured_exc) == 1
+    assert isinstance(captured_exc[0], RuntimeError)
+
+
+def test_monitor_loop_returns_after_sleep_if_shutdown_during_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shutdown set during the backoff sleep -> loop exits before respawn."""
+    import theta_launcher
+
+    proc = MagicMock()
+    proc.poll.return_value = 1
+    theta_launcher._state.proc = proc
+
+    monkeypatch.setattr(theta_launcher, "capture_message", lambda *_a, **_kw: None)
+
+    # Flip shutdown DURING the backoff sleep so the post-sleep guard returns.
+    def _flip_shutdown(_secs: float) -> None:
+        theta_launcher._state.shutdown = True
+
+    monkeypatch.setattr(theta_launcher.time, "sleep", _flip_shutdown)
+
+    spawn_calls: list[int] = []
+    monkeypatch.setattr(
+        theta_launcher, "_spawn_subprocess", lambda: spawn_calls.append(1)
+    )
+
+    theta_launcher._monitor_loop()
+    # _spawn_subprocess should NOT have been called.
+    assert spawn_calls == []
