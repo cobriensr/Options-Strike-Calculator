@@ -290,7 +290,13 @@ export default withRequestScope(
       // path and returns early so the single-snapshot path below is
       // completely unchanged.
       if (req.query.all === 'true') {
-        const allRows = await loadStrikeScoreHistory({ sql, date });
+        // loadStrikeScoreHistory hits Neon, safeFetchCandles hits Schwab —
+        // independent fetches that only need `date`. Parallelize so the
+        // bulk path doesn't serialize them. (Sentry consecutive-HTTP fix.)
+        const [allRows, candleResult] = await Promise.all([
+          loadStrikeScoreHistory({ sql, date }),
+          safeFetchCandles(date),
+        ]);
 
         // Group rows by their normalized timestamp key.
         const byTimestamp = new Map<string, GexTargetFeatureRow[]>();
@@ -314,7 +320,7 @@ export default withRequestScope(
             return { timestamp: ts, spot, ...grouped };
           });
 
-        const { candles, previousClose } = await safeFetchCandles(date);
+        const { candles, previousClose } = candleResult;
 
         const bulkResponse: GexTargetBulkResponse = {
           availableDates,
@@ -330,12 +336,13 @@ export default withRequestScope(
         return res.status(200).json(bulkResponse);
       }
 
-      // ── 5. Fetch the 30 feature rows for this snapshot ────────────
-      const featureRows = await loadStrikeScoreHistory({
-        sql,
-        date,
-        timestamp,
-      });
+      // ── 5/7. Feature rows + SPX candles in parallel ───────────────
+      // loadStrikeScoreHistory hits Neon, safeFetchCandles hits Schwab —
+      // independent fetches. Parallelize. (Sentry consecutive-HTTP fix.)
+      const [featureRows, candleResult] = await Promise.all([
+        loadStrikeScoreHistory({ sql, date, timestamp }),
+        safeFetchCandles(date),
+      ]);
 
       // ── 6. Reconstruct the three per-mode TargetScore objects ─────
       const grouped = groupRowsByMode(featureRows);
@@ -346,8 +353,7 @@ export default withRequestScope(
       const spot =
         featureRows.length > 0 ? num(featureRows[0]!.spot_price) : null;
 
-      // ── 7. Fetch SPX candles (best-effort) ────────────────────────
-      const { candles, previousClose } = await safeFetchCandles(date);
+      const { candles, previousClose } = candleResult;
 
       // ── 8. Respond ───────────────────────────────────────────────
       const response: GexTargetHistoryResponse = {
