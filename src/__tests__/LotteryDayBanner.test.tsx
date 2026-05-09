@@ -47,6 +47,7 @@ function makeFire(overrides: Partial<LotteryFire> = {}): LotteryFire {
     score: 15,
     scoreTier: 'tier2',
     forecastHighPeakPct: '40-60%',
+    avgHoldMinutes: 160,
     tickerStats: null,
     fireCount: 1,
     firstFireTimeCt: '2026-05-08T14:30:00Z',

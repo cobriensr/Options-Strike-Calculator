@@ -309,6 +309,26 @@ export const LotteryRow = memo(function LotteryRow({
         >
           {tier.label}
         </span>
+        {/* Avg-hold-minutes hint — historical P75 minutes-to-peak among
+            winners for this (tier, ticker) cohort. Tells the user "if
+            this fire is going to work, expect it to peak around this
+            many minutes from entry." Sourced from the cohort lookup
+            in api/_lib/lottery-hold.ts.
+
+            Note: lottery's tier1 P75 (~219min) is LONGER than tier2's
+            (~160min) because tier1 over-indexes on tail-blasters
+            (SNDK, RKLB) that hold for hours. The tooltip surfaces this
+            so a long tier1 number doesn't read as a typo. */}
+        <span
+          className="rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 font-mono text-[10px] leading-none text-neutral-300"
+          title={
+            fire.scoreTier === 'tier1'
+              ? `Cohort avg hold ~${fire.avgHoldMinutes} minutes — historical P75 of minutes-to-peak among winners (peak ≥ 50%) for tier 1 ${fire.underlyingSymbol} fires. Tier 1 winners often run on slow tail moves so this is typically LONGER than tier 2's. Use as a typical exit-window expectation, not a hard rule.`
+              : `Cohort avg hold ~${fire.avgHoldMinutes} minutes — historical P75 of minutes-to-peak among winners (peak ≥ 50%) for ${fire.scoreTier} ${fire.underlyingSymbol} fires. Use as a typical exit-window expectation, not a hard rule.`
+          }
+        >
+          ~{fire.avgHoldMinutes}min
+        </span>
 
         {/* Ticker + strike + side — the whole block links to UW's
             per-contract flow page so the user can pivot from the row

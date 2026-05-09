@@ -143,6 +143,17 @@ export interface LotteryFire {
   /** Per-ticker reliability stats; `null` when no row exists. */
   tickerStats: LotteryTickerStats | null;
   /**
+   * Cohort-derived "typical exit window" hint — historical P75 of
+   * minutes-to-peak among winners (peak_ceiling_pct >= 50) for the
+   * fire's (tier, ticker) cohort. Always populated by
+   * /api/lottery-finder. See api/_lib/lottery-hold.ts.
+   *
+   * NOTE: tier1 winners often run on slow tail moves (SNDK, RKLB)
+   * so the typical hold can be LONGER than tier 2's. Don't read
+   * tier1 = fast / tier3 = slow into the number.
+   */
+  avgHoldMinutes: number;
+  /**
    * Number of fires collapsed onto this row by the API's chain-day
    * dedup CTE — partitioned on (ticker × strike × option_type × expiry)
    * scoped to the response's `date`. 1 means single fire today; higher

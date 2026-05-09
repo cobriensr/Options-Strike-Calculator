@@ -92,6 +92,7 @@ function makeFire(overrides: Partial<LotteryFire> = {}): LotteryFire {
     score: 15,
     scoreTier: 'tier2',
     forecastHighPeakPct: '40-60%',
+    avgHoldMinutes: 160,
     tickerStats: null,
     fireCount: 1,
     firstFireTimeCt: '2026-05-08T14:30:00Z',
@@ -229,6 +230,60 @@ describe('LotteryRow: smoke', () => {
     );
     expect(screen.getByText('RE-LOAD')).toBeInTheDocument();
     expect(screen.getByText('cheap-call-PM')).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// AVG HOLD MINUTES — cohort hint chip
+// ============================================================
+
+describe('LotteryRow: avgHoldMinutes chip', () => {
+  it('renders the cohort avg-hold-minutes chip with the fire value', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({ avgHoldMinutes: 343 })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(screen.getByText('~343min')).toBeInTheDocument();
+  });
+
+  it('uses the tier1-specific tooltip phrasing on tier1 fires', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({
+          scoreTier: 'tier1',
+          score: 22,
+          avgHoldMinutes: 343,
+          underlyingSymbol: 'RKLB',
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    const chip = screen.getByText('~343min');
+    expect(chip.getAttribute('title')).toMatch(
+      /tier 1 .* often run on slow tail moves/,
+    );
+  });
+
+  it('uses the generic tooltip on tier2/tier3 fires', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({
+          scoreTier: 'tier3',
+          score: 5,
+          avgHoldMinutes: 50,
+          underlyingSymbol: 'SPXW',
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    const chip = screen.getByText('~50min');
+    expect(chip.getAttribute('title')).toMatch(/tier3 SPXW fires/);
+    expect(chip.getAttribute('title')).not.toMatch(/slow tail moves/);
   });
 });
 
