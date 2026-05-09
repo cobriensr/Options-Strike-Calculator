@@ -25,6 +25,7 @@ import {
   lotteryScoreTier,
   type LotteryScoreTier,
 } from './_lib/lottery-score-weights.js';
+import { avgHoldMinutesFor } from './_lib/lottery-hold.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
 type DbId = number | string;
@@ -464,6 +465,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         score,
         scoreTier: tier,
         forecastHighPeakPct: forecastForTier(tier),
+        // Cohort-derived "typical exit window" hint — historical P75
+        // of minutes_to_peak among winners for this (tier, ticker)
+        // pair. Surfaced as a "~Nmin" chip on the row. See
+        // api/_lib/lottery-hold.ts for the lookup constants.
+        avgHoldMinutes: avgHoldMinutesFor({
+          tier,
+          ticker: r.underlying_symbol,
+        }),
         tickerStats,
         // Daily cluster size on the chain (ticker × strike × type ×
         // expiry). 1 = single fire today; higher means the row is the

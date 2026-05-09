@@ -137,6 +137,8 @@ describe('lottery-finder endpoint', () => {
       score: 20,
       scoreTier: 'tier1',
       forecastHighPeakPct: '30-50%',
+      // SNDK tier1 has a per-ticker override at 340 (vs tier1 default of 219).
+      avgHoldMinutes: 340,
       fireCount: 1,
       tickerStats: {
         nFires: 8147,
