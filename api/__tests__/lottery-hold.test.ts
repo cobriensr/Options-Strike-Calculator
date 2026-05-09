@@ -32,6 +32,12 @@ describe('avgHoldMinutesFor (lottery)', () => {
     it('WMT tier2 → 296 (longest tier2 override)', () => {
       expect(avgHoldMinutesFor({ tier: 'tier2', ticker: 'WMT' })).toBe(296);
     });
+
+    it('SNDK tier2 → 96 (boundary case, exactly -40% delta)', () => {
+      // Sits right at the inclusion threshold; verifies the cohort key
+      // partitions SNDK across tiers (SNDK:tier1=340 vs SNDK:tier2=96).
+      expect(avgHoldMinutesFor({ tier: 'tier2', ticker: 'SNDK' })).toBe(96);
+    });
   });
 
   describe('per-ticker overrides — tier3', () => {

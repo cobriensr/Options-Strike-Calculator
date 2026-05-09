@@ -36,7 +36,7 @@ const TIER_DEFAULTS: Readonly<Record<LotteryScoreTier, number>> = {
  * Stricter bar than silent-boom (n>=30, |delta|>=0.25) because lottery
  * has 10x the data density and the same thresholds would yield 41
  * entries — too many to maintain by hand. Recompute monthly via the
- * Phase C script.
+ * Phase C script. 21 entries today (3 tier1 / 11 tier2 / 7 tier3).
  */
 const TICKER_OVERRIDES: ReadonlyMap<string, number> = new Map([
   // tier1 — three meaningful overrides
@@ -55,6 +55,7 @@ const TICKER_OVERRIDES: ReadonlyMap<string, number> = new Map([
   ['SPY:tier2', 78], //   n=54,  -51%
   ['APLD:tier2', 241], // n=68,  +51%
   ['SOXS:tier2', 90], //  n=60,  -43%
+  ['SNDK:tier2', 96], //  n=728, -40%
 
   // tier3 — seven meaningful overrides
   ['SPXW:tier3', 50], //  n=139, -78% vs tier default (230)

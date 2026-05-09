@@ -43,7 +43,7 @@ something the spec changes — the score formula is out of scope here.
 ### Ticker overrides
 
 Stricter bar than silent-boom (n≥50, |Δ|≥40%) because lottery's data
-density is 10× higher. Twenty entries clear the bar today:
+density is 10× higher. Twenty-one entries clear the bar today:
 
 | ticker | tier  | minutes | n   | Δ% vs tier default |
 | ------ | ----- | ------- | --- | ------------------ |
@@ -60,6 +60,7 @@ density is 10× higher. Twenty entries clear the bar today:
 | SPY    | tier2 | 78      | 54  | -51%               |
 | APLD   | tier2 | 241     | 68  | +51%               |
 | SOXS   | tier2 | 90      | 60  | -43%               |
+| SNDK   | tier2 | 96      | 728 | -40%               |
 | SPXW   | tier3 | 50      | 139 | -78%               |
 | WDC    | tier3 | 54      | 88  | -76%               |
 | SMH    | tier3 | 77      | 77  | -66%               |
