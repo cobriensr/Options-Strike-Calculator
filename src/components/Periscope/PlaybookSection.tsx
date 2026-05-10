@@ -313,7 +313,7 @@ function FuturesPlanBlock({ plan }: { plan: string }) {
         Futures Plan
       </span>
       <pre
-        className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed"
+        className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap"
         style={{ color: theme.textSecondary }}
       >
         {plan}
@@ -322,11 +322,18 @@ function FuturesPlanBlock({ plan }: { plan: string }) {
   );
 }
 
-function NarrativeBlock({ text }: { text: string }) {
+/**
+ * Concise italic line. Used for `confidenceBasis` (top summary) and
+ * `expectedDealerBehavior` (bottom dealer-behavior line). NEVER for
+ * the full prose — that lives in `periscope_analyses.prose_text` and
+ * is viewable in the PeriscopeChatHistory detail view. The panel is
+ * for at-a-glance trading decisions, not full debrief text.
+ */
+function ItalicSummaryLine({ text }: { text: string | null }) {
   if (!text || text.trim() === '') return null;
   return (
     <p
-      className="font-mono text-[11px] leading-snug"
+      className="font-mono text-[11px] leading-snug italic"
       style={{ color: theme.textSecondary }}
     >
       {text}
@@ -399,10 +406,16 @@ export function PlaybookSection({ playbook }: PlaybookSectionProps) {
         >
           Claude Playbook
         </h3>
-        <PlaybookHeader row={row} latestInProgress={playbook.latestInProgress} />
+        <PlaybookHeader
+          row={row}
+          latestInProgress={playbook.latestInProgress}
+        />
       </div>
 
       <TriggersRow payload={payload} />
+
+      {/* Top summary line — confidence_basis as a 1-sentence framing */}
+      <ItalicSummaryLine text={payload.confidenceBasis} />
 
       {payload.bias != null && (
         <div className="flex items-center gap-2 text-[11px]">
@@ -429,14 +442,17 @@ export function PlaybookSection({ playbook }: PlaybookSectionProps) {
 
       <StructuresRow payload={payload} />
 
+      {payload.futuresPlan != null && payload.futuresPlan.trim() !== '' && (
+        <FuturesPlanBlock plan={payload.futuresPlan} />
+      )}
+
       <GammaRow payload={payload} />
 
-      {payload.futuresPlan != null &&
-        payload.futuresPlan.trim() !== '' && (
-          <FuturesPlanBlock plan={payload.futuresPlan} />
-        )}
-
-      <NarrativeBlock text={payload.narrative} />
+      {/* Bottom summary line — expected_dealer_behavior as a 1-sentence
+          structural read. The full prose narrative is intentionally NOT
+          rendered in the panel — it lives in prose_text and is viewable
+          in PeriscopeChatHistory for full debrief reads. */}
+      <ItalicSummaryLine text={payload.expectedDealerBehavior} />
     </div>
   );
 }

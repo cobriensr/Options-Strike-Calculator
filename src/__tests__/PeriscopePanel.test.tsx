@@ -400,11 +400,13 @@ describe('PeriscopePanel: Claude playbook section', () => {
     createdAt: string;
   };
 
-  function makePlaybook(opts: {
-    data?: PlaybookData | null;
-    latestInProgress?: boolean;
-    error?: string | null;
-  } = {}) {
+  function makePlaybook(
+    opts: {
+      data?: PlaybookData | null;
+      latestInProgress?: boolean;
+      error?: string | null;
+    } = {},
+  ) {
     return {
       data: opts.data === undefined ? null : opts.data,
       latestInProgress: opts.latestInProgress ?? false,
@@ -440,9 +442,11 @@ describe('PeriscopePanel: Claude playbook section', () => {
         gammaCeiling: 5820,
         magnet: 5800,
         charmZero: 5805,
-        expectedDealerBehavior: null,
+        expectedDealerBehavior:
+          'Passive bid at the +γ floor, passive offer at the −γ trapdoor.',
         confidence: 'medium',
-        confidenceBasis: null,
+        confidenceBasis:
+          'Pin scaffolding verified by charm-zero at 5805 and dominant +γ wall.',
         narrative: 'Tight two-sided regime with charm pinning at 5805.',
       },
       parentId: null,
@@ -522,9 +526,7 @@ describe('PeriscopePanel: Claude playbook section', () => {
         })}
       />,
     );
-    expect(
-      screen.getByText(/Claude reading newer slot/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Claude reading newer slot/i)).toBeInTheDocument();
   });
 
   it('renders recommended + avoid structure chips', () => {
@@ -541,7 +543,7 @@ describe('PeriscopePanel: Claude playbook section', () => {
     expect(screen.getByText(/iron_condor/)).toBeInTheDocument();
   });
 
-  it('renders the futures plan and narrative blocks', () => {
+  it('renders the futures plan + structured summary lines (not the full prose narrative)', () => {
     render(
       <PeriscopePanel
         {...baseProps}
@@ -550,9 +552,21 @@ describe('PeriscopePanel: Claude playbook section', () => {
       />,
     );
     expect(screen.getByText(/Futures Plan/i)).toBeInTheDocument();
+    // confidence_basis renders as a top italic summary line
     expect(
-      screen.getByText(/Tight two-sided regime with charm pinning at 5805/i),
+      screen.getByText(/Pin scaffolding verified by charm-zero at 5805/i),
     ).toBeInTheDocument();
+    // expected_dealer_behavior renders as a bottom italic line under the gamma row
+    expect(
+      screen.getByText(/Passive bid at the \+γ floor, passive offer at the −γ/i),
+    ).toBeInTheDocument();
+    // The full prose narrative is INTENTIONALLY NOT rendered in the panel
+    // — it lives in periscope_analyses.prose_text and only surfaces in
+    // PeriscopeChatHistory's detail view. Renders here would have dumped
+    // the entire debrief into the live trading panel.
+    expect(
+      screen.queryByText(/Tight two-sided regime with charm pinning at 5805/i),
+    ).not.toBeInTheDocument();
   });
 
   it('renders staleness as a red chip when slot is over 25 minutes old', () => {
@@ -572,9 +586,7 @@ describe('PeriscopePanel: Claude playbook section', () => {
     );
     // The staleness chip uses an aria-label like "Slot age 40m ago" — we
     // assert the chip exists and is rendered with the minute count.
-    expect(
-      screen.getByLabelText(/Slot age 40m ago/i),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/Slot age 40m ago/i)).toBeInTheDocument();
   });
 
   it('renders "PRIOR SESSION" badge instead of staleness when slot is from a previous CT date', () => {
@@ -595,9 +607,7 @@ describe('PeriscopePanel: Claude playbook section', () => {
       />,
     );
     // Prior-session badge should appear instead of the red staleness counter.
-    expect(
-      screen.getByLabelText(/Prior trading session/i),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/Prior trading session/i)).toBeInTheDocument();
     // The ticking-time chip's aria-label format must NOT appear.
     expect(screen.queryByLabelText(/Slot age \d/)).not.toBeInTheDocument();
   });
