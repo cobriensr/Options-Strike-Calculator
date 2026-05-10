@@ -172,6 +172,15 @@ docs/tmp/options-flow-analysis/scripts/__pycache__/
 # Claude for selector identification. Do NOT commit.
 docs/tmp/periscope-probe/
 
-# Codex
+# Codex CLI tool config (per-clone, never committed)
 .agents/
-.codex/docs/tmp/periscope-controls/
+.codex/
+
+# Scratch / one-off analyses default to untracked. Per
+# CLAUDE.md, scratch files go in docs/tmp/ rather than /tmp or
+# ~/Downloads. A blanket ignore keeps `git status` clean across
+# active analysis sessions; the 147 already-tracked files in
+# docs/tmp/ stay tracked (gitignore doesn't affect those).
+# Add new files explicitly with `git add -f docs/tmp/<path>`
+# when an analysis becomes worth keeping under version control.
+docs/tmp/
