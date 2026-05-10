@@ -59,8 +59,30 @@ const { LOG_LEVEL, MS_PER_TICK, isMarketHours } = await import('./config.js');
 const { insertSnapshots } = await import('./db.js');
 const { scrapeAllPanels, scrapeBackfill, scrapeBackfillRange } =
   await import('./scrape.js');
+const { loadWebhookConfig, postPlaybookWebhook } = await import(
+  './webhook.js'
+);
 
 const logger = pino({ level: LOG_LEVEL });
+
+// Webhook config loaded once at boot. When either var is missing, the
+// helper short-circuits with `skipped: true` — lets us deploy code first
+// and arm the webhook later by setting Railway env vars.
+const webhookConfig = loadWebhookConfig();
+if (webhookConfig.baseUrl == null || webhookConfig.secret == null) {
+  logger.warn(
+    {
+      hasBaseUrl: webhookConfig.baseUrl != null,
+      hasSecret: webhookConfig.secret != null,
+    },
+    'auto-playbook webhook DISABLED — VERCEL_BASE_URL or PERISCOPE_WEBHOOK_SECRET not set',
+  );
+} else {
+  logger.info(
+    { baseUrl: webhookConfig.baseUrl },
+    'auto-playbook webhook armed',
+  );
+}
 
 let intervalHandle: NodeJS.Timeout | null = null;
 let tickInFlight = false;
@@ -86,6 +108,65 @@ async function runTick(
       { rows: rows.length, inserted, ms: Date.now() - startedAt },
       'tick complete',
     );
+
+    // Auto-playbook webhook (Phase 3 of periscope-auto-playbook spec).
+    // Fires once per tick — all rows in this batch share the same
+    // (capturedAt, timeframe). Failures Sentry-captured but never block
+    // the next tick. Skipped silently when env vars unset.
+    if (rows.length > 0) {
+      const anchor = rows[0]!;
+      const tradingDate = anchor.capturedAt.slice(0, 10);
+      const result = await postPlaybookWebhook(
+        {
+          tradingDate,
+          capturedAt: anchor.capturedAt,
+          slotKey: anchor.timeframe,
+        },
+        webhookConfig,
+      );
+      if (result.skipped) {
+        logger.debug(
+          { tradingDate, slotKey: anchor.timeframe },
+          'auto-playbook webhook skipped (config disabled)',
+        );
+      } else if (!result.ok) {
+        Sentry.captureException(
+          new Error(`auto-playbook webhook failed: ${result.error ?? '?'}`),
+          {
+            tags: {
+              service: 'periscope-scraper-webhook',
+              status: String(result.status ?? 'null'),
+              attempts: String(result.attempts),
+            },
+            extra: {
+              tradingDate,
+              capturedAt: anchor.capturedAt,
+              slotKey: anchor.timeframe,
+            },
+          },
+        );
+        logger.warn(
+          {
+            tradingDate,
+            slotKey: anchor.timeframe,
+            status: result.status,
+            attempts: result.attempts,
+            error: result.error,
+          },
+          'auto-playbook webhook failed',
+        );
+      } else {
+        logger.info(
+          {
+            tradingDate,
+            slotKey: anchor.timeframe,
+            status: result.status,
+            attempts: result.attempts,
+          },
+          'auto-playbook webhook posted',
+        );
+      }
+    }
   } catch (err) {
     Sentry.captureException(err);
     logger.error({ err, ms: Date.now() - startedAt }, 'tick failed');

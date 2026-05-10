@@ -105,9 +105,27 @@ immediate scrape during the loop's idle stretch, you can manually call
 | `UW_AUTH_STATE_B64`  | base64 of the storageState JSON    | Railway-only; decoded to `UW_AUTH_STATE_PATH` by the container start. |
 | `LOG_LEVEL`          | -                                  | Optional; defaults to `info`.                                         |
 
+## Optional env vars — auto-playbook webhook
+
+After each successful scrape tick, the scraper can POST a webhook to
+`/api/periscope-auto-playbook` on the main Vercel app. The endpoint then
+fires a Claude playbook for the slot via `waitUntil`. See
+`docs/superpowers/specs/periscope-auto-playbook-2026-05-10.md`.
+
+Both vars below must be set for the webhook to fire — when either is
+missing, the helper short-circuits with a one-time boot warning and the
+scrape loop continues unaffected. This lets the scraper deploy before
+the webhook is armed.
+
+| Variable                   | Source                                  | Notes                                                                 |
+| -------------------------- | --------------------------------------- | --------------------------------------------------------------------- |
+| `VERCEL_BASE_URL`          | Vercel deployment URL                   | e.g. `https://theta-options.com`. Trailing slashes are stripped.      |
+| `PERISCOPE_WEBHOOK_SECRET` | shared secret (also in Vercel env)      | Sent as `Authorization: Bearer <value>`. MUST match Vercel exactly.   |
+
 The destination table `periscope_snapshots` is created by migration 140 in
-the main app. Run `POST /api/journal/init` against the Vercel deployment to
-apply the migration before starting this service.
+the main app, and the auto-playbook columns by migration 142. Run
+`POST /api/journal/init` against the Vercel deployment to apply migrations
+before starting this service.
 
 ## Spec
 
