@@ -577,6 +577,31 @@ describe('PeriscopePanel: Claude playbook section', () => {
     ).toBeInTheDocument();
   });
 
+  it('renders "PRIOR SESSION" badge instead of staleness when slot is from a previous CT date', () => {
+    // 30+ hours ago — guaranteed to be a prior CT date regardless of when
+    // the test runs (clock skew + DST safe).
+    const yesterday = new Date(Date.now() - 30 * 60 * 60_000).toISOString();
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        view={makeView()}
+        playbook={makePlaybook({
+          data: fullRow({
+            slotCapturedAt: yesterday,
+            readTime: yesterday,
+            createdAt: yesterday,
+          }),
+        })}
+      />,
+    );
+    // Prior-session badge should appear instead of the red staleness counter.
+    expect(
+      screen.getByLabelText(/Prior trading session/i),
+    ).toBeInTheDocument();
+    // The ticking-time chip's aria-label format must NOT appear.
+    expect(screen.queryByLabelText(/Slot age \d/)).not.toBeInTheDocument();
+  });
+
   it('returns null section content when playbook.error is set (fall through to fallback)', () => {
     render(
       <PeriscopePanel

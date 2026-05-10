@@ -499,6 +499,18 @@ export async function runPeriscopeAutoPlaybook(
       { model: result.modelUsed, mode },
       'auto-playbook: Claude refused request',
     );
+    // Sentry-capture so the refusal is visible in observability — the
+    // function instance dies after the response, so a logger.warn alone
+    // gives no out-of-process signal. Matches the captureMessage call
+    // in the max_tokens branch below.
+    Sentry.captureMessage('periscope auto-playbook refused by Claude', {
+      tags: {
+        module: 'periscope-chat-runner',
+        stage: 'refusal',
+        mode,
+        model: result.modelUsed,
+      },
+    });
     return {
       status: 'failed',
       prose: '',

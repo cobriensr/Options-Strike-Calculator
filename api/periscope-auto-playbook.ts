@@ -287,7 +287,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // next 10-min tick will succeed.
     done({ status: 422 });
     return res.status(422).json({
-      error: `No SPX candle for ${body.tradingDate} ${readTimeCt} CT within +/- 2 min`,
+      error: `No SPX candle for ${body.tradingDate} ${readTimeCt} CT within +/- 5 min`,
     });
   }
 

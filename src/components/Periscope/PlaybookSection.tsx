@@ -41,6 +41,24 @@ function minutesSinceSlot(slotCapturedAt: string): number {
   return Math.max(diffMin, 0);
 }
 
+/** CT date (YYYY-MM-DD) of an ISO timestamp via Intl. */
+function ctDateOf(iso: string): string {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Chicago',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  return fmt.format(new Date(iso));
+}
+
+/** True when the slot's CT date is older than today's CT date. */
+function isPriorSession(slotCapturedAt: string): boolean {
+  const slotDate = ctDateOf(slotCapturedAt);
+  const todayDate = ctDateOf(new Date().toISOString());
+  return slotDate < todayDate;
+}
+
 /** Staleness threshold colors per spec — green <12 min, yellow 12-25, red >25. */
 function stalenessColor(minutes: number): string {
   if (minutes < 12) return theme.green;
@@ -49,6 +67,27 @@ function stalenessColor(minutes: number): string {
 }
 
 function StalenessChip({ slotCapturedAt }: { slotCapturedAt: string }) {
+  // Prior-session slots (e.g. yesterday's debrief showing Tuesday
+  // morning) shouldn't render a ticking "23h ago" red chip — that
+  // implies the scraper has fallen behind when really the data is
+  // intentionally yesterday's last read. Show a static muted "PRIOR
+  // SESSION" badge so the user knows it's last session's data without
+  // alarm bells.
+  if (isPriorSession(slotCapturedAt)) {
+    return (
+      <span
+        className="rounded px-1.5 py-0.5 font-mono text-[10px] tracking-wider uppercase"
+        style={{
+          color: theme.textMuted,
+          backgroundColor: theme.chipBg,
+        }}
+        aria-label="Prior trading session"
+      >
+        prior session
+      </span>
+    );
+  }
+
   const minutes = minutesSinceSlot(slotCapturedAt);
   const color = stalenessColor(minutes);
   const label =

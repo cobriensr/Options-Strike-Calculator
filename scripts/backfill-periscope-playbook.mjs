@@ -135,7 +135,18 @@ import { neon } from '@neondatabase/serverless';
 
 const DATABASE_URL = required('DATABASE_URL');
 const WEBHOOK_SECRET = required('PERISCOPE_WEBHOOK_SECRET');
-const VERCEL_BASE_URL = required('VERCEL_BASE_URL').replace(/\/+$/, '');
+const VERCEL_BASE_URL = stripTrailingSlashes(required('VERCEL_BASE_URL'));
+
+/**
+ * Strip trailing slashes without a regex. sonarjs/slow-regex flags
+ * /\/+$/ as ReDoS-vulnerable even though the input is trusted env;
+ * a plain loop satisfies the rule without an inline disable.
+ */
+function stripTrailingSlashes(s) {
+  let i = s.length;
+  while (i > 0 && s.charAt(i - 1) === '/') i -= 1;
+  return s.slice(0, i);
+}
 
 const BACKFILL_START = (process.env.BACKFILL_START ?? '2025-11-10').trim();
 const BACKFILL_END = (process.env.BACKFILL_END ?? yesterdayCtIso()).trim();
