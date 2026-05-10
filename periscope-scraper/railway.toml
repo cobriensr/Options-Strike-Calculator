@@ -1,5 +1,5 @@
 # Railway config for the periscope-scraper service. Sibling to
-# sidecar/railway.toml and ml-sweep/railway.toml in the same project.
+# sidecar/railway.toml and uw-stream/railway.toml in the same project.
 #
 # Build context is the REPO ROOT (Railway default), so the Dockerfile's
 # COPY paths are prefixed with `periscope-scraper/`. The root

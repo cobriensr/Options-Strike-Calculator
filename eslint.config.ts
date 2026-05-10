@@ -20,10 +20,9 @@ export default [
       'sidecar',
       'daemon',
       'uw-stream',
-      'ml-sweep',
       // periscope-scraper has its own node_modules + tsconfig + lint
-      // script; treat it like sidecar/daemon/uw-stream/ml-sweep and
-      // ignore the whole directory at the root.
+      // script; treat it like sidecar/daemon/uw-stream and ignore the
+      // whole directory at the root.
       'periscope-scraper',
       'playwright-report',
       '.scannerwork',
