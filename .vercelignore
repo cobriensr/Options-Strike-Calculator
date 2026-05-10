@@ -1,0 +1,44 @@
+# Vercel deploy upload exclusions.
+#
+# Mirrors vercel.json's ignoreCommand path list (the dirs whose changes
+# don't trigger a deploy) so they're also excluded from the upload when
+# a deploy IS triggered. ignoreCommand alone only gates deploy
+# triggering — it does not filter the build context. Without this file,
+# every deploy uploads ~hundreds of MB of Python venvs, Playwright +
+# Chromium binaries, and ML plots that no Vercel function can use.
+#
+# When adding a new top-level directory that Vercel shouldn't touch,
+# add it here AND to vercel.json's ignoreCommand path list to keep the
+# two aligned.
+
+# Railway-deployed services — never run on Vercel
+sidecar/
+uw-stream/
+periscope-scraper/
+daemon/
+
+# Python ML pipeline + research — local + GH Actions only
+ml/
+
+# Pine Script (TradingView) — not deployed anywhere
+pine/
+
+# Operational scripts (backfills, probes, audits) — local-only
+scripts/
+
+# Documentation — not needed at runtime
+docs/
+*.md
+
+# E2E + Playwright artifacts — local + CI only
+e2e/
+playwright-report/
+test-results/
+
+# Python build artifacts that may exist anywhere
+**/__pycache__/
+**/.venv/
+**/.pytest_cache/
+
+# Local scratch / temp output
+docs/tmp/
