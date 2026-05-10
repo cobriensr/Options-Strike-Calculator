@@ -64,8 +64,8 @@ export async function insertSnapshots(rows: SnapshotRow[]): Promise<number> {
       `VALUES ${placeholders.join(', ')} ` +
       `ON CONFLICT (captured_at, expiry, panel, strike) DO NOTHING`;
 
-    // The Neon serverless client is callable directly with (text, params).
-    await sql(text, params);
+    // Neon v1 routes (text, params) call form through sql.query().
+    await sql.query(text, params);
     submitted += chunk.length;
   }
 
