@@ -44,20 +44,44 @@ const TABLES = [
 
 const RETENTION_WEEKS = 4;
 
+// Neon's serverless HTTP driver caps responses at 64 MiB (67,108,864
+// bytes). One unbounded SELECT * on a tape table that has grown past
+// ~50 MB overruns the cap and the whole backup row aborts with HTTP
+// 507. Chunk via LIMIT/OFFSET — 50k rows × ~1 KB/row = ~50 MB per
+// round-trip, well under the limit. See SENTRY-EMERALD-DESERT-6V.
+const EXPORT_CHUNK_ROWS = 50_000;
+
 /**
  * Export a single table as JSONL string.
  * Uses sql.unsafe() for dynamic table names (safe here — names are hardcoded constants).
+ *
+ * Pages through the table in `EXPORT_CHUNK_ROWS`-sized batches so a
+ * single large table doesn't trip Neon's 64 MiB HTTP response cap.
+ * Returns the concatenated JSONL plus the total row count. ORDER BY a
+ * stable surrogate key so successive pages don't overlap or skip rows
+ * mid-export — most tables have an `id` PK; for the few that don't
+ * (schema_migrations) the row count is small enough that a single
+ * chunk covers it.
  */
 async function exportTable(
   tableName: string,
 ): Promise<{ jsonl: string; rowCount: number }> {
   const sql = getDb();
-  const rows = (await sql`SELECT * FROM ${sql.unsafe(tableName)}`) as Record<
-    string,
-    unknown
-  >[];
-  const lines = rows.map((row) => JSON.stringify(row));
-  return { jsonl: lines.join('\n'), rowCount: rows.length };
+  const lines: string[] = [];
+  let offset = 0;
+  while (true) {
+    const rows = (await sql`
+      SELECT * FROM ${sql.unsafe(tableName)}
+      ORDER BY 1
+      LIMIT ${EXPORT_CHUNK_ROWS}
+      OFFSET ${offset}
+    `) as Record<string, unknown>[];
+    if (rows.length === 0) break;
+    for (const row of rows) lines.push(JSON.stringify(row));
+    if (rows.length < EXPORT_CHUNK_ROWS) break;
+    offset += EXPORT_CHUNK_ROWS;
+  }
+  return { jsonl: lines.join('\n'), rowCount: lines.length };
 }
 
 /**
@@ -105,8 +129,19 @@ export default withCronCheckin('backup-tables', async (req, res) => {
   for (const table of TABLES) {
     try {
       const { jsonl, rowCount } = await exportTable(table);
-      const path = `backups/${today}/${table}.jsonl`;
 
+      // Vercel Blob's put() rejects empty bodies with "body is required"
+      // (SENTRY-EMERALD-DESERT-6T). Skip the upload for empty tables but
+      // still record them in results so the cron summary lists every
+      // intended table — a downstream consumer can tell "table absent
+      // from snapshot because empty" vs "table missing because failed."
+      if (rowCount === 0) {
+        results[table] = { rows: 0, bytes: 0 };
+        logger.info({ table }, 'Table empty — skipping blob upload');
+        continue;
+      }
+
+      const path = `backups/${today}/${table}.jsonl`;
       await put(path, jsonl, {
         access: 'private',
         allowOverwrite: true,

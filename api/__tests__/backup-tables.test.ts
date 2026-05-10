@@ -234,7 +234,12 @@ describe('backup-tables handler', () => {
     expect(json.totalBytes).toBe(expectedPerTable * 16);
   });
 
-  it('handles empty tables (zero rows) gracefully', async () => {
+  // SENTRY-EMERALD-DESERT-6T: Vercel Blob's put() rejects empty bodies
+  // with "body is required". Empty tables are now skipped — recorded in
+  // the results map with rows:0/bytes:0 but never sent to Blob — so the
+  // weekly cron stops alerting on tables that simply happen to have no
+  // rows this week.
+  it('skips put() for empty tables but still records them in results', async () => {
     mockSql.mockResolvedValue([]);
 
     const req = mockRequest({
@@ -250,16 +255,64 @@ describe('backup-tables handler', () => {
     expect(json.totalBytes).toBe(0);
     expect(json.errors).toBeUndefined();
 
-    // put() is still called with empty string for each table
-    expect(mockPut).toHaveBeenCalledTimes(16);
-    const firstCall = mockPut.mock.calls[0]!;
-    expect(firstCall[1]).toBe('');
+    // put() is NOT called when every table is empty.
+    expect(mockPut).not.toHaveBeenCalled();
+
+    // All 16 tables still appear in results so a downstream consumer can
+    // tell "table absent because empty" vs "table missing because failed".
+    const tables = json.tables as Record<
+      string,
+      { rows: number; bytes: number }
+    >;
+    expect(Object.keys(tables)).toHaveLength(16);
+    expect(tables.market_snapshots).toEqual({ rows: 0, bytes: 0 });
 
     // Happy path with no errors → status 'ok'
     expect(reportCronRun).toHaveBeenCalledWith(
       'backup-tables',
       expect.objectContaining({ status: 'ok', errors: 0 }),
     );
+  });
+
+  // SENTRY-EMERALD-DESERT-6V: Neon's serverless HTTP driver caps the
+  // response at 64 MiB. exportTable now pages via LIMIT/OFFSET so a
+  // single oversized table can't abort the whole backup row.
+  it('pages large tables via LIMIT/OFFSET chunks', async () => {
+    // Mock 50001 rows for `market_snapshots` (first table) — should
+    // require 2 chunks: [50000 rows] + [1 row]. All other tables stay
+    // small (1 row each) → 1 chunk.
+    const bigTable: Record<string, unknown>[] = Array.from(
+      { length: 50_000 },
+      (_, i) => ({ id: i }),
+    );
+    const tail: Record<string, unknown>[] = [{ id: 50_000 }];
+    const small: Record<string, unknown>[] = [{ id: 1 }];
+
+    mockSql
+      .mockResolvedValueOnce(bigTable) // market_snapshots chunk 1
+      .mockResolvedValueOnce(tail) // market_snapshots chunk 2
+      .mockResolvedValue(small); // every other table chunk 1
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as Record<string, unknown>;
+    const tables = json.tables as Record<
+      string,
+      { rows: number; bytes: number }
+    >;
+    // market_snapshots collected both pages: 50000 + 1 = 50001 rows.
+    expect(tables.market_snapshots!.rows).toBe(50_001);
+    // Total = 50001 (market_snapshots) + 15 × 1 (every other table)
+    expect(json.totalRows).toBe(50_016);
+    // 17 sql calls total: 2 for market_snapshots + 1 for each of the
+    // remaining 15 tables.
+    expect(mockSql).toHaveBeenCalledTimes(17);
   });
 
   // ── Individual table failure ──────────────────────────────
