@@ -637,3 +637,115 @@ export async function savePeriscopeAnalysis(
     return null;
   }
 }
+
+/**
+ * Auto-playbook completion payload — what the runner produces and the
+ * endpoint UPDATEs into the pre-inserted in_progress row. Mirrors the
+ * subset of `SavePeriscopeAnalysisInput` that changes between the
+ * placeholder INSERT and the final state.
+ */
+export interface CompletePeriscopeAnalysisInput {
+  status: PeriscopeAnalysisStatus;
+  proseText: string;
+  fullResponse: Record<string, unknown>;
+  embedding: number[] | null;
+  structured: PeriscopeStructuredFields;
+  parseOk: boolean;
+  panelPayload: Record<string, unknown> | null;
+  failureReason: string | null;
+  model: string | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  durationMs: number;
+}
+
+/**
+ * Update an in_progress periscope_analyses row with the final auto-playbook
+ * outcome. Returns true on success, false on any failure (logged + Sentry).
+ *
+ * Phase 2b of docs/superpowers/specs/periscope-auto-playbook-2026-05-10.md.
+ * The endpoint inserts a placeholder row with status='in_progress' so
+ * panel polls can show "Claude thinking…", then this helper writes the
+ * final state once the Claude call returns. Two-phase persistence so the
+ * panel never sees an empty hot-path query result while a tick is in
+ * flight.
+ */
+export async function completePeriscopeAnalysis(
+  rowId: number,
+  input: CompletePeriscopeAnalysisInput,
+): Promise<boolean> {
+  const sql = getDb();
+  const {
+    status,
+    proseText,
+    fullResponse,
+    embedding,
+    structured,
+    parseOk,
+    panelPayload,
+    failureReason,
+    model,
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    durationMs,
+  } = input;
+
+  const vectorLiteral =
+    embedding && embedding.length > 0 ? `[${embedding.join(',')}]` : null;
+  const recommendedJson = JSON.stringify(structured.trade_types_recommended);
+  const avoidedJson = JSON.stringify(structured.trade_types_avoided);
+  const keyLevelsJson =
+    structured.key_levels == null
+      ? null
+      : JSON.stringify(structured.key_levels);
+  const panelPayloadJson =
+    panelPayload == null ? null : JSON.stringify(panelPayload);
+
+  try {
+    const rows = await sql`
+      UPDATE periscope_analyses
+      SET
+        status = ${status},
+        prose_text = ${proseText},
+        full_response = ${JSON.stringify(fullResponse)}::jsonb,
+        analysis_embedding = ${vectorLiteral}::vector,
+        spot = ${structured.spot},
+        cone_lower = ${structured.cone_lower},
+        cone_upper = ${structured.cone_upper},
+        long_trigger = ${structured.long_trigger},
+        short_trigger = ${structured.short_trigger},
+        regime_tag = ${structured.regime_tag},
+        bias = ${structured.bias},
+        trade_types_recommended = ${recommendedJson}::jsonb,
+        trade_types_avoided = ${avoidedJson}::jsonb,
+        key_levels = ${keyLevelsJson}::jsonb,
+        expected_dealer_behavior = ${structured.expected_dealer_behavior},
+        confidence = ${structured.confidence},
+        confidence_basis = ${structured.confidence_basis},
+        futures_plan = ${structured.futures_plan},
+        parse_ok = ${parseOk},
+        panel_payload = ${panelPayloadJson}::jsonb,
+        failure_reason = ${failureReason},
+        model = ${model ?? 'unknown'},
+        input_tokens = ${inputTokens},
+        output_tokens = ${outputTokens},
+        cache_read_tokens = ${cacheReadTokens},
+        cache_write_tokens = ${cacheWriteTokens},
+        duration_ms = ${durationMs}
+      WHERE id = ${rowId}
+      RETURNING id
+    `;
+    return rows.length > 0;
+  } catch (err) {
+    logger.error(
+      { err, rowId, status },
+      'completePeriscopeAnalysis: update failed',
+    );
+    Sentry.captureException(err);
+    return false;
+  }
+}

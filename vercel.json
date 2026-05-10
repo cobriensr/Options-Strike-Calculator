@@ -223,6 +223,10 @@
     "api/periscope-chat.ts": {
       "maxDuration": 780,
       "includeFiles": ".claude/skills/**/*.md"
+    },
+    "api/periscope-auto-playbook.ts": {
+      "maxDuration": 720,
+      "includeFiles": ".claude/skills/**/*.md"
     }
   },
   "installCommand": "npm install --loglevel=error --no-audit --no-fund",
