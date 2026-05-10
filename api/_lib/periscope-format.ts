@@ -120,7 +120,8 @@ async function loadSlot(
   const vanna: PeriscopeRow[] = [];
 
   for (const r of rows) {
-    const v = typeof r.value === 'string' ? Number.parseFloat(r.value) : r.value;
+    const v =
+      typeof r.value === 'string' ? Number.parseFloat(r.value) : r.value;
     const row: PeriscopeRow = { strike: r.strike, value: v };
     if (r.panel === 'gamma') gamma.push(row);
     else if (r.panel === 'charm') charm.push(row);
@@ -379,10 +380,16 @@ export function computePeriscopeView(args: {
 }
 
 function topByAbs(rows: PeriscopeRow[], n: number): PeriscopeRow[] {
-  return [...rows].sort((a, b) => Math.abs(b.value) - Math.abs(a.value)).slice(0, n);
+  return [...rows]
+    .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
+    .slice(0, n);
 }
 
-function nearSpot(rows: PeriscopeRow[], spot: number, half: number): PeriscopeRow[] {
+function nearSpot(
+  rows: PeriscopeRow[],
+  spot: number,
+  half: number,
+): PeriscopeRow[] {
   return rows.filter((r) => Math.abs(r.strike - spot) <= half);
 }
 

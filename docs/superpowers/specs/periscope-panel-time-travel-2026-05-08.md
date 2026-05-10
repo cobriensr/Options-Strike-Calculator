@@ -39,6 +39,7 @@ Behavior:
 - Neither → unchanged (latest slot, today).
 
 Spot resolution when `date+time` is set:
+
 - Use `?spot=` if provided (frontend may pass slot-time spot from a
   separate lookup). Otherwise fall back to closest `index_candles_1m`
   close at-or-before the timestamp for the picked date.
@@ -69,6 +70,7 @@ Touch: `src/hooks/usePeriscopeExposure.ts`,
 new test cases in the existing test files.
 
 Hook changes:
+
 - New input: `selectedSlot: { date: string; time: string } | null`
   (null = follow Live).
 - When selected: pause polling, fetch with `?date=&time=`, no auto-refresh.
@@ -76,6 +78,7 @@ Hook changes:
 - Return `availableSlots` from the response so the UI can step.
 
 Panel header gains three controls:
+
 - **Date picker** (`<input type="date">`). When changed, sets selected
   slot to `{ date, time: <last slot of new date or current time> }`.
 - **Slot stepper**: prev/next buttons that walk `availableSlots` for the
@@ -100,6 +103,7 @@ or auto-skip.
 ## Data dependencies
 
 None new — all reads against existing tables.
+
 - `periscope_snapshots` (slot data + slot list query)
 - `cone_levels` (per-date)
 - `cone_breach_events` (capped at asOf)

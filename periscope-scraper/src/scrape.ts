@@ -534,7 +534,10 @@ async function walkDateToTarget(page: Page, targetYmd: string): Promise<void> {
   const currentLabel = ((await labelLoc.textContent()) ?? '').trim();
   const currentYmd = parseDateLabel(currentLabel, year);
   if (currentYmd === targetYmd) {
-    logger.debug({ targetYmd, attempts: 0 }, 'walkDateToTarget: already on target');
+    logger.debug(
+      { targetYmd, attempts: 0 },
+      'walkDateToTarget: already on target',
+    );
     return;
   }
   if (currentYmd != null) {
@@ -607,9 +610,7 @@ async function walkDateViaCalendar(
 
   // Step 2-3: walk months until the header matches target. The header
   // is unique inside the popup — match it by regex on text.
-  const monthHeader = page
-    .locator('text=/^[A-Z][a-z]+ 20[0-9]{2}$/')
-    .first();
+  const monthHeader = page.locator('text=/^[A-Z][a-z]+ 20[0-9]{2}$/').first();
   const prevMonth = page.getByLabel('Previous month').first();
   const nextMonth = page.getByLabel('Next month').first();
   for (let attempt = 0; attempt < 36; attempt += 1) {
@@ -639,7 +640,9 @@ async function walkDateViaCalendar(
   // cells (non-trading days, dates outside UW's retention window) are
   // marked with the `disabled` attribute.
   const dayCell = page
-    .locator(`button:not([disabled]):has(span.font-medium:text-is("${targetDay}"))`)
+    .locator(
+      `button:not([disabled]):has(span.font-medium:text-is("${targetDay}"))`,
+    )
     .first();
   await dayCell.click({ timeout: 5_000 });
   await page.waitForTimeout(800);

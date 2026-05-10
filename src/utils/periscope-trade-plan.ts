@@ -290,7 +290,8 @@ function tradePlanForUpperBreach(args: {
     summary,
     long: {
       verdict: 'safe',
-      reason: 'cone breached — vol-extension setup, MM hedging fuels continuation',
+      reason:
+        'cone breached — vol-extension setup, MM hedging fuels continuation',
       trigger: spot,
       stop: reclaimBound - 2,
       target: ceiling?.strike ?? null,

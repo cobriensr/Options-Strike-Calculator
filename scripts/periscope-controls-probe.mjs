@@ -33,7 +33,9 @@ if (!PERISCOPE_URL) {
   process.exit(1);
 }
 if (!existsSync(AUTH_PATH)) {
-  console.error(`ERROR: ${AUTH_PATH} not found. Run periscope-probe.mjs --login first.`);
+  console.error(
+    `ERROR: ${AUTH_PATH} not found. Run periscope-probe.mjs --login first.`,
+  );
   process.exit(1);
 }
 
@@ -52,7 +54,9 @@ async function captureOpenControl(page, name) {
     menuitem: document.querySelectorAll('[role="menuitem"]').length,
     option: document.querySelectorAll('[role="option"]').length,
     listbox: document.querySelectorAll('[role="listbox"]').length,
-    radixContent: document.querySelectorAll('[data-radix-popper-content-wrapper]').length,
+    radixContent: document.querySelectorAll(
+      '[data-radix-popper-content-wrapper]',
+    ).length,
     radixState: document.querySelectorAll('[data-state="open"]').length,
   }));
 
@@ -101,7 +105,9 @@ async function main() {
         cap.bodyHtml,
         'utf8',
       );
-      console.log(`  ✓ Captured timeframe-open.html (${cap.bodyHtml.length} bytes)`);
+      console.log(
+        `  ✓ Captured timeframe-open.html (${cap.bodyHtml.length} bytes)`,
+      );
       console.log(`  • element counts:`, cap.counts);
     } catch (err) {
       console.warn(`  ✗ Click on Timeframe area failed: ${err.message}`);
@@ -131,12 +137,10 @@ async function main() {
       await page.waitForTimeout(1500);
 
       const cap = await captureOpenControl(page, 'expiry');
-      await writeFile(
-        join(outDir, 'expiry-open.html'),
-        cap.bodyHtml,
-        'utf8',
+      await writeFile(join(outDir, 'expiry-open.html'), cap.bodyHtml, 'utf8');
+      console.log(
+        `  ✓ Captured expiry-open.html (Multi mode, ${cap.bodyHtml.length} bytes)`,
       );
-      console.log(`  ✓ Captured expiry-open.html (Multi mode, ${cap.bodyHtml.length} bytes)`);
       console.log(`  • element counts:`, cap.counts);
 
       // Click the "Single" toggle inside the popover to see a flat-list
@@ -157,7 +161,9 @@ async function main() {
           single.bodyHtml,
           'utf8',
         );
-        console.log(`  ✓ Captured expiry-single.html (${single.bodyHtml.length} bytes)`);
+        console.log(
+          `  ✓ Captured expiry-single.html (${single.bodyHtml.length} bytes)`,
+        );
         console.log(`  • element counts:`, single.counts);
       }
     } catch (err) {

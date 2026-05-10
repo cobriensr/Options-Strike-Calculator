@@ -226,7 +226,9 @@ describe('formatPeriscopeForClaude', () => {
       },
       breaches: [],
     });
-    expect(out).toMatch(/asymmetry \+5\.0 pts \(lower-skewed \(downside priced richer\)\)/);
+    expect(out).toMatch(
+      /asymmetry \+5\.0 pts \(lower-skewed \(downside priced richer\)\)/,
+    );
   });
 
   it('produces a coherent block when no strikes are near spot', () => {
@@ -492,17 +494,19 @@ describe('buildPeriscopeContextBlock', () => {
     mockSql
       .mockResolvedValueOnce([{ captured_at: '2026-05-07T19:50:00Z' }])
       .mockResolvedValueOnce(
-        [...realGamma2026_05_07, ...realCharm2026_05_07, ...realVanna2026_05_07].map(
-          ([strike, value], idx) => {
-            const total = realGamma2026_05_07.length;
-            const charmTotal = realCharm2026_05_07.length;
-            let panel: string;
-            if (idx < total) panel = 'gamma';
-            else if (idx < total + charmTotal) panel = 'charm';
-            else panel = 'vanna';
-            return { panel, strike, value: String(value) };
-          },
-        ),
+        [
+          ...realGamma2026_05_07,
+          ...realCharm2026_05_07,
+          ...realVanna2026_05_07,
+        ].map(([strike, value], idx) => {
+          const total = realGamma2026_05_07.length;
+          const charmTotal = realCharm2026_05_07.length;
+          let panel: string;
+          if (idx < total) panel = 'gamma';
+          else if (idx < total + charmTotal) panel = 'charm';
+          else panel = 'vanna';
+          return { panel, strike, value: String(value) };
+        }),
       )
       .mockResolvedValueOnce([{ captured_at: '2026-05-07T19:40:00Z' }])
       .mockResolvedValueOnce([

@@ -40,8 +40,7 @@ if (rawSentryDsn != null && rawSentryDsn.trim() !== '') {
   if (b64 !== '') {
     const { writeFile, mkdir } = await import('node:fs/promises');
     const { dirname } = await import('node:path');
-    const target =
-      process.env.UW_AUTH_STATE_PATH ?? '/data/uw-auth-state.json';
+    const target = process.env.UW_AUTH_STATE_PATH ?? '/data/uw-auth-state.json';
     try {
       const decoded = Buffer.from(b64, 'base64').toString('utf8');
       await mkdir(dirname(target), { recursive: true });

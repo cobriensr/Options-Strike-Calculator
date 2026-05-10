@@ -83,9 +83,13 @@ async function loginFlow() {
     });
   } catch (err) {
     console.warn('▸ System Chrome not available, falling back to Chromium.');
-    console.warn(`▸ Reason: ${err instanceof Error ? err.message : String(err)}`);
+    console.warn(
+      `▸ Reason: ${err instanceof Error ? err.message : String(err)}`,
+    );
     console.warn('▸ Google login may reject this browser. If it does, see');
-    console.warn('▸ scripts/periscope-probe.mjs comments for cookie-paste fallback.');
+    console.warn(
+      '▸ scripts/periscope-probe.mjs comments for cookie-paste fallback.',
+    );
     browser = await chromium.launch({ headless: false });
   }
   const context = await browser.newContext({
@@ -100,12 +104,16 @@ async function loginFlow() {
   console.log('  A browser window opened. Steps:');
   console.log('    1. Log in to Unusual Whales.');
   console.log('    2. Navigate to:');
-  console.log('         https://unusualwhales.com/periscope/market-exposures-table');
+  console.log(
+    '         https://unusualwhales.com/periscope/market-exposures-table',
+  );
   console.log('    3. Configure the view: set Date, Timeframe, Expiry, Greek');
   console.log('       to whatever should be the scraper default.');
   console.log('    4. CLOSE the browser window when done.');
   console.log('');
-  console.log('  Why step 3 matters: UW persists view filters in localStorage.');
+  console.log(
+    '  Why step 3 matters: UW persists view filters in localStorage.',
+  );
   console.log('  storageState only captures localStorage from origins you');
   console.log('  actually visited in this session, so navigating to Periscope');
   console.log('  + configuring is what makes the scraper inherit your view.');

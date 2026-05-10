@@ -152,7 +152,9 @@ export function usePeriscopeExposure({
       if (selectedDate != null) params.set('date', selectedDate);
       if (selectedTime != null) params.set('time', selectedTime);
       const qs = params.toString();
-      const url = qs ? `/api/periscope-exposure?${qs}` : '/api/periscope-exposure';
+      const url = qs
+        ? `/api/periscope-exposure?${qs}`
+        : '/api/periscope-exposure';
       const res = await fetch(url, { method: 'GET' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = (await res.json()) as PeriscopeExposureResponse;

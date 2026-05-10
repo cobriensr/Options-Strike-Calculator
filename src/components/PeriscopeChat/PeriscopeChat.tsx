@@ -351,7 +351,7 @@ export default function PeriscopeChat() {
               type="button"
               onClick={() => setUploadOpen((v) => !v)}
               disabled={inFlight}
-              className="border-edge text-secondary hover:text-primary rounded-md border px-2 py-0.5 text-[11px] uppercase tracking-wide transition disabled:opacity-40"
+              className="border-edge text-secondary hover:text-primary rounded-md border px-2 py-0.5 text-[11px] tracking-wide uppercase transition disabled:opacity-40"
             >
               {showUploads
                 ? 'Hide screenshot upload'

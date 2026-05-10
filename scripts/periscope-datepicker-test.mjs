@@ -41,7 +41,9 @@ if (!PERISCOPE_URL) {
   process.exit(1);
 }
 if (!existsSync(AUTH_PATH)) {
-  console.error(`ERROR: ${AUTH_PATH} not found. Run periscope-probe.mjs --login first.`);
+  console.error(
+    `ERROR: ${AUTH_PATH} not found. Run periscope-probe.mjs --login first.`,
+  );
   process.exit(1);
 }
 

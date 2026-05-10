@@ -38,8 +38,9 @@ vi.mock('../_lib/api-helpers.js', () => ({
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
     captureException: vi.fn(),
-    withIsolationScope: (fn: (s: { setTransactionName: (n: string) => void }) => unknown) =>
-      fn({ setTransactionName: () => undefined }),
+    withIsolationScope: (
+      fn: (s: { setTransactionName: (n: string) => void }) => unknown,
+    ) => fn({ setTransactionName: () => undefined }),
   },
   metrics: { request: () => () => undefined },
 }));
@@ -211,9 +212,7 @@ describe('GET /api/periscope-exposure', () => {
       // fetchLatestPeriscopeSlot at-or-before asOf
       .mockResolvedValueOnce([{ captured_at: '2026-05-08T19:30:48.478Z' }])
       // loadSlot
-      .mockResolvedValueOnce([
-        { panel: 'gamma', strike: 7390, value: '5000' },
-      ])
+      .mockResolvedValueOnce([{ panel: 'gamma', strike: 7390, value: '5000' }])
       // fetchPriorPeriscopeSlot
       .mockResolvedValueOnce([{ captured_at: null }])
       // fetchConeLevels
