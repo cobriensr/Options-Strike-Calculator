@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
+
+from channel_registry import is_known_channel_token
 
 # Forgiving canonicalization for WS_CHANNELS env vars. UW's flow-alerts
 # channel uses a HYPHEN even though the URL path and most other channel
@@ -96,6 +98,44 @@ class Settings(BaseSettings):
             raise ValueError("ws_log_sample_rate must be in [0.0, 1.0]")
         return v
 
+    @field_validator("ws_channels")
+    @classmethod
+    def _validate_channels_known(cls, v: str) -> str:
+        """Reject unknown channel names at Settings() construction.
+
+        Each comma-separated token in ``ws_channels`` is alias-resolved
+        and then checked against the channel registry. A typo in
+        WS_CHANNELS would otherwise silently boot the daemon with an
+        unsubscribed channel; surfacing it here means the operator sees
+        a clear error at startup instead of an empty handler table.
+        """
+        for raw in v.split(","):
+            tok = raw.strip()
+            if not tok:
+                continue
+            tok = _CHANNEL_ALIASES.get(tok, tok)
+            if not is_known_channel_token(tok):
+                raise ValueError(
+                    f"WS_CHANNELS contains unknown channel {tok!r}. "
+                    "Expected an exact channel name (e.g. 'flow-alerts', "
+                    "'off_lit_trades'), a prefixed channel (e.g. "
+                    "'option_trades:TSLA'), or a shorthand "
+                    "('option_trades_lottery', 'net_flow_lottery'). "
+                    "See channel_registry.py for the full list."
+                )
+        return v
+
+    @model_validator(mode="after")
+    def _validate_channels_non_empty(self) -> Settings:
+        """Fail at Settings() construction (not at first .channels read)
+        when WS_CHANNELS resolves to an empty list."""
+        if not self.channels:
+            raise ValueError(
+                "WS_CHANNELS resolved to an empty list "
+                "(check the WS_CHANNELS env var)"
+            )
+        return self
+
     @property
     def channels(self) -> list[str]:
         """Parse WS_CHANNELS into a deduped, trimmed list.
@@ -136,8 +176,6 @@ class Settings(BaseSettings):
             if ch not in seen:
                 seen.add(ch)
                 out.append(ch)
-        if not out:
-            raise ValueError("WS_CHANNELS resolved to an empty list")
         return out
 
     @property

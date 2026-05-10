@@ -4,9 +4,10 @@ Wires up Sentry → DB pool → handlers → router → connector → health ser
 then awaits everything concurrently. Exits cleanly on SIGTERM (Railway
 graceful shutdown signal) or SIGINT.
 
-Phase 1 ships only the flow-alerts handler. Adding a new channel later
-is a 3-line change here: import the handler, register it under
-``handlers[channel_name] = HandlerInstance()``.
+Adding a new channel: register its name → handler-class entry in
+``channel_registry.py``. ``_build_handlers`` here picks it up
+automatically (one instance per handler class, shared across every
+channel that maps to the same class).
 """
 
 from __future__ import annotations
@@ -16,15 +17,11 @@ import contextlib
 import os
 import signal
 
+from channel_registry import handler_class_for_channel
 from config import settings
 from connector import Connector
 from db import close_pool, init_pool
 from handlers.base import Handler
-from handlers.flow_alerts import FlowAlertsHandler
-from handlers.gex_strike_expiry import GexStrikeExpiryHandler
-from handlers.net_flow import NetFlowHandler
-from handlers.off_lit_trades import OffLitTradesHandler
-from handlers.option_trades import OptionTradesHandler
 from health import run_server
 from logger_setup import log
 from router import Router
@@ -63,49 +60,32 @@ def _receive_queue_size() -> int:
 def _build_handlers(channels: list[str]) -> dict[str, Handler]:
     """Map channel name → handler instance.
 
-    Raises if the configured channel set contains a channel we have no
-    handler for — fail fast on misconfiguration rather than silently
-    dropping every payload.
+    Channel-name → handler-class lookups go through ``channel_registry``
+    (the single source of truth — see that module's docstring). Every
+    channel sharing a handler class also shares a single handler
+    INSTANCE so the queue, batch, and DB write loop are pooled (e.g. one
+    OptionTradesHandler services every ``option_trades:<TICKER>``
+    subscription, so backpressure applies across the universe rather
+    than per-ticker).
 
-    For per-ticker channels (currently only ``option_trades:<TICKER>``)
-    every entry points to the SAME handler instance so the underlying
-    queue, batch, and DB write loop are shared across all tickers.
+    Raises ``RuntimeError`` if a channel slips past
+    ``Settings._validate_channels_known`` somehow — defense in depth, not
+    the primary error surface.
     """
-    flow_alerts = FlowAlertsHandler()
-    # Single shared handler instance for every option_trades:<TICKER>
-    # subscription — see OptionTradesHandler docstring for rationale.
-    option_trades = OptionTradesHandler()
-    # Same shared-instance pattern for gex_strike_expiry:<TICKER> — one
-    # queue + drain loop spans SPY + QQQ (and any future tickers).
-    gex_strike_expiry = GexStrikeExpiryHandler()
-    # off_lit_trades is a global firehose (not per-ticker). The handler
-    # filters to SPY+QQQ in _transform; everything else is dropped at
-    # the cheapest possible point in the pipeline.
-    off_lit_trades = OffLitTradesHandler()
-    # net_flow:<TICKER> follows the option_trades shape — one shared
-    # handler across the lottery universe (~50 tickers) so backpressure
-    # and batch flushes apply across the universe.
-    net_flow = NetFlowHandler()
-
+    instances: dict[type[Handler], Handler] = {}
     selected: dict[str, Handler] = {}
     for ch in channels:
-        if ch == "flow-alerts":
-            selected[ch] = flow_alerts
-        elif ch == "off_lit_trades":
-            selected[ch] = off_lit_trades
-        elif ch.startswith("option_trades:"):
-            selected[ch] = option_trades
-        elif ch.startswith("gex_strike_expiry:"):
-            selected[ch] = gex_strike_expiry
-        elif ch.startswith("net_flow:"):
-            selected[ch] = net_flow
-        else:
+        try:
+            handler_cls = handler_class_for_channel(ch)
+        except KeyError as exc:
             raise RuntimeError(
-                f"WS_CHANNELS contains {ch!r} but no handler is registered. "
-                "Supported: flow-alerts, off_lit_trades, "
-                "option_trades:<TICKER>, gex_strike_expiry:<TICKER>, "
-                "net_flow:<TICKER>"
-            )
+                f"WS_CHANNELS contains {ch!r} but no handler is registered "
+                "in channel_registry.py. This should have been rejected "
+                "at Settings() construction — file a bug."
+            ) from exc
+        if handler_cls not in instances:
+            instances[handler_cls] = handler_cls()
+        selected[ch] = instances[handler_cls]
         state.channel(ch).subscribed = False
     return selected
 

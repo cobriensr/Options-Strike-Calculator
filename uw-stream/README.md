@@ -68,7 +68,7 @@ the migration plan.
 | ------------------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `DATABASE_URL`           | yes      | Same Neon connection used by `api/`                                                                                                                |
 | `UW_API_KEY`             | yes      | Advanced-tier UW key (websocket access required)                                                                                                   |
-| `SENTRY_DSN`             | no       | Shared with sidecar. Events tagged `service=uw-stream`                                                                                             |
+| `SENTRY_DSN`             | no       | Shared with sidecar. Events have `server_name=uw-stream` (Sentry host display) and tag `service=uw-stream` (filter key). Search/filter by either.  |
 | `PORT`                   | no       | Default 8080. Railway provides one.                                                                                                                |
 | `LOG_LEVEL`              | no       | Default `INFO`                                                                                                                                     |
 | `WS_QUEUE_SIZE`          | no       | Default 50000                                                                                                                                      |

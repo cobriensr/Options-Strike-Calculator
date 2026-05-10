@@ -36,20 +36,36 @@ class TestChannelAliases:
         # Both forms collapse to one canonical entry.
         assert _settings("flow_alerts,flow-alerts").channels == ["flow-alerts"]
 
-    def test_unknown_channel_name_passes_through(self):
-        # Other channels (gex, market_tide, etc.) aren't in the alias
-        # map and should pass through unchanged.
-        assert _settings("market_tide").channels == ["market_tide"]
+    def test_unknown_channel_rejected_at_settings_construction(self):
+        # Typo in WS_CHANNELS (missing 'e' in 'lottery') is not a known
+        # alias, exact channel, or prefix — must fail at construction so
+        # the operator sees a clear startup error, not an empty handler
+        # table at runtime.
+        with pytest.raises(ValueError, match="unknown channel"):
+            _settings("option_trades_lottry")
 
     def test_whitespace_trimmed(self):
-        assert _settings(" flow_alerts , market_tide ").channels == [
+        # Both tokens are registered channels; whitespace around commas
+        # and outside tokens must be stripped before alias resolution
+        # and registry lookup.
+        assert _settings(" flow_alerts , off_lit_trades ").channels == [
             "flow-alerts",
-            "market_tide",
+            "off_lit_trades",
         ]
 
     def test_empty_channels_raises(self):
+        # Empty resolution now fails at Settings() construction, not at
+        # .channels property access — see model_validator in config.py.
         with pytest.raises(ValueError, match="empty list"):
-            _ = _settings(",").channels
+            _settings(",")
+
+    def test_empty_channels_raises_at_construction(self):
+        # Regression: the empty-list check must fire during Settings()
+        # construction (pydantic model_validator), not on first
+        # .channels read. Previously the property accessor raised, which
+        # fragmented the error path.
+        with pytest.raises(ValueError, match="WS_CHANNELS"):
+            _settings("")
 
 
 class TestLotteryShorthand:
