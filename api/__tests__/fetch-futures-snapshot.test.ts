@@ -517,9 +517,7 @@ describe('fetch-futures-snapshot handler', () => {
   // with 200 instead of running computeSnapshot — otherwise every symbol
   // fails for lack of fresh bars and Sentry's monitor times out.
   it('skips with 200 when futures market is closed', async () => {
-    const { isFuturesMarketOpen } = await import(
-      '../../src/utils/timezone.js'
-    );
+    const { isFuturesMarketOpen } = await import('../../src/utils/timezone.js');
     vi.mocked(isFuturesMarketOpen).mockReturnValueOnce(false);
     vi.mocked(cronGuard).mockReturnValueOnce({
       today: '2026-05-09',

@@ -15,10 +15,7 @@ import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 import { cronGuard, withRetry } from '../_lib/api-helpers.js';
-import {
-  getETDateStr,
-  isFuturesMarketOpen,
-} from '../../src/utils/timezone.js';
+import { getETDateStr, isFuturesMarketOpen } from '../../src/utils/timezone.js';
 import { reportCronRun } from '../_lib/axiom.js';
 import { withCronCheckin } from '../_lib/cron-instrumentation.js';
 import {
