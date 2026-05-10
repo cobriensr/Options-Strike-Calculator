@@ -27,6 +27,7 @@ import {
   usePeriscopeExposure,
   type PeriscopeSelectedSlot,
 } from './hooks/usePeriscopeExposure';
+import { usePeriscopePlaybook } from './hooks/usePeriscopePlaybook';
 import { useAccessSession } from './hooks/useAccessSession';
 import AccessKeyButton from './components/AccessKey/AccessKeyButton';
 import { useAnalysisContext } from './hooks/useAnalysisContext';
@@ -281,6 +282,15 @@ export default function StrikeCalculator() {
     marketOpen: market.data.quotes?.marketOpen ?? false,
     spotHint: market.data.quotes?.spx?.price ?? null,
     selectedSlot: periscopeSlot,
+  });
+  // Phase 4c: parallel hook for Claude's auto-playbook. When a complete
+  // panel_payload exists for the selected date, the panel renders it
+  // above (and instead of) the deterministic TradePlanSection. When
+  // viewing a historical slot, pass its date so the playbook lookup
+  // mirrors the time-travel selection.
+  const periscopePlaybook = usePeriscopePlaybook({
+    marketOpen: market.data.quotes?.marketOpen ?? false,
+    selectedDate: periscopeSlot?.date ?? null,
   });
   // GEX Landscape owns its own ticker / date / scrub state internally
   // (Phase 3c of gex-landscape-ws-upgrade-2026-05-03.md) and pulls per-strike
@@ -1088,6 +1098,7 @@ export default function StrikeCalculator() {
                     availableSlots={periscope.availableSlots}
                     selectedSlot={periscopeSlot}
                     onSelectSlot={setPeriscopeSlot}
+                    playbook={periscopePlaybook}
                   />
                 </GatedSection>
 
