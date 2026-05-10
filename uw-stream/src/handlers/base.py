@@ -306,10 +306,25 @@ class Handler(ABC):
         return flushed
 
     async def _safe_flush(self, rows: list[tuple]) -> None:
-        """Flush wrapped so a DB error never kills the drain loop."""
+        """Flush wrapped so a DB error never kills the drain loop.
+
+        Honest write-count reporting (Phase 3 / M2): ``write_attempted``
+        bumps by ``len(rows)`` regardless of outcome, so observers can
+        compute a dedup or failure rate. ``write_count`` reflects what
+        ``_flush`` returned — the rows the database actually accepted —
+        when the subclass returns an int; otherwise it falls back to
+        ``len(rows)`` so legacy subclasses without a return value are
+        unaffected.
+        """
         try:
-            await self._flush(rows)
-            state.channel(self.name).write_count += len(rows)
+            # Inside the try so a hypothetical state.channel() failure
+            # is caught by the same except — preserves the "flush wrapped
+            # so a DB error never kills the drain loop" contract even if
+            # the metrics surface ever grows beyond pure dict access.
+            state.channel(self.name).write_attempted += len(rows)
+            inserted = await self._flush(rows)
+            written = inserted if isinstance(inserted, int) else len(rows)
+            state.channel(self.name).write_count += written
         except Exception as exc:
             capture_exception(
                 exc,
@@ -329,5 +344,14 @@ class Handler(ABC):
         """Map a WS payload to a row tuple. Return None to skip."""
 
     @abstractmethod
-    async def _flush(self, rows: list[tuple]) -> None:
-        """Persist a batch of row tuples."""
+    async def _flush(self, rows: list[tuple]) -> int | None:
+        """Persist a batch of row tuples.
+
+        Subclasses SHOULD return the count of rows actually written (the
+        upstream ``bulk_insert_*`` helpers return this from asyncpg's
+        ``"INSERT 0 N"`` status string). Returning ``None`` is allowed
+        for backwards compatibility with legacy in-test handlers —
+        ``_safe_flush`` enforces the int-vs-fallback split via
+        ``isinstance(inserted, int)`` so the production count stays
+        honest regardless of subclass contract.
+        """

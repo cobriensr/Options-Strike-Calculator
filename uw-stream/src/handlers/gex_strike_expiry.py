@@ -34,7 +34,7 @@ from typing import Any
 
 import db
 from handlers.base import Handler
-from logger_setup import log
+from logger_setup import rate_limited_log
 
 _TABLE = "ws_gex_strike_expiry"
 # Must stay in sync with migration #111 in api/_lib/db-migrations.ts.
@@ -91,32 +91,40 @@ class GexStrikeExpiryHandler(Handler):
     def _transform(self, payload: dict) -> tuple | None:
         ticker = payload.get("ticker")
         if not isinstance(ticker, str) or not ticker:
-            log.warning(
-                "gex_strike_expiry payload missing ticker",
+            rate_limited_log.warning(
+                scope="gex_strike_expiry",
+                kind="missing_ticker",
+                message="gex_strike_expiry payload missing ticker",
                 extra={"sample": str(payload)[:200]},
             )
             return None
 
         expiry = _to_date(payload.get("expiry"))
         if expiry is None:
-            log.warning(
-                "gex_strike_expiry missing or unparseable expiry",
+            rate_limited_log.warning(
+                scope="gex_strike_expiry",
+                kind="missing_expiry",
+                message="gex_strike_expiry missing or unparseable expiry",
                 extra={"ticker": ticker, "raw_expiry": payload.get("expiry")},
             )
             return None
 
         strike = _to_decimal(payload.get("strike"))
         if strike is None:
-            log.warning(
-                "gex_strike_expiry missing or unparseable strike",
+            rate_limited_log.warning(
+                scope="gex_strike_expiry",
+                kind="missing_strike",
+                message="gex_strike_expiry missing or unparseable strike",
                 extra={"ticker": ticker, "raw_strike": payload.get("strike")},
             )
             return None
 
         ts_minute = _ms_epoch_to_minute(payload.get("timestamp"))
         if ts_minute is None:
-            log.warning(
-                "gex_strike_expiry missing or unparseable timestamp",
+            rate_limited_log.warning(
+                scope="gex_strike_expiry",
+                kind="missing_timestamp",
+                message="gex_strike_expiry missing or unparseable timestamp",
                 extra={"ticker": ticker, "raw_ts": payload.get("timestamp")},
             )
             return None
@@ -154,7 +162,7 @@ class GexStrikeExpiryHandler(Handler):
             payload,  # raw_payload — forward-compat against schema additions
         )
 
-    async def _flush(self, rows: list[tuple]) -> None:
+    async def _flush(self, rows: list[tuple]) -> int:
         # UPSERT: UW restates per-minute GEX as the trade tape settles,
         # so existing rows for the same (ticker, expiry, strike, minute)
         # must be overwritten with the latest values, not skipped.
@@ -175,7 +183,7 @@ class GexStrikeExpiryHandler(Handler):
         # expiry, strike, minute)" — so re-ordering before flush is
         # safe.
         rows.sort(key=lambda r: (r[0], r[1], r[2], r[3]))
-        await db.bulk_upsert_replace(
+        return await db.bulk_upsert_replace(
             table=_TABLE,
             columns=_COLUMNS,
             rows=rows,

@@ -98,7 +98,15 @@ class Connector:
                 backoff = min(backoff * 2, _MAX_BACKOFF_S)
 
     async def _connect_once(self) -> None:
-        """Open one WS, join channels, drain messages until the socket dies."""
+        """Open one WS, join channels, drain messages until the socket dies.
+
+        ``state.ws_connected`` only flips to ``True`` AFTER
+        ``_subscribe_all`` succeeds — flipping it on TCP/TLS handshake
+        completion alone (the obvious place) makes ``/healthz`` lie when
+        a typo'd channel name or server-side error frame causes the
+        join to fail. The socket would stay open with no data flowing
+        and the daemon would report green until the next disconnect.
+        """
         log.info("connecting to WS", extra={"channels": self.channels})
         async with websockets.connect(
             settings.ws_url,
@@ -106,8 +114,24 @@ class Connector:
             ping_timeout=_PING_TIMEOUT_S,
             max_size=2**22,  # 4 MB; option_trades can carry big arrays
         ) as ws:
+            try:
+                await self._subscribe_all(ws)
+            except Exception as exc:
+                # Subscribe failed — leave ws_connected False so /healthz
+                # reflects reality and the run() loop reconnects with a
+                # fresh handshake on the next iteration. Re-raise so the
+                # surrounding try/except in run() bumps the reconnect
+                # counter and applies the backoff.
+                log.warning(
+                    "WS subscribe failed; reconnecting",
+                    extra={"err": str(exc)},
+                )
+                capture_exception(
+                    exc,
+                    tags={"component": "connector", "stage": "subscribe"},
+                )
+                raise
             state.ws_connected = True
-            await self._subscribe_all(ws)
             log.info("WS connected, awaiting messages")
             async for raw in ws:
                 # Hand off to the router via a bounded queue. We never

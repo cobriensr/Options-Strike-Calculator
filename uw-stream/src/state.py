@@ -17,12 +17,22 @@ from datetime import UTC, datetime, timedelta
 
 @dataclass
 class ChannelMetrics:
-    """Per-channel counters surfaced via /metrics."""
+    """Per-channel counters surfaced via /metrics.
+
+    ``write_attempted`` counts every row the handler tried to flush
+    (i.e. the size of the batch passed into the bulk-insert helper).
+    ``write_count`` counts the rows the database actually inserted /
+    updated, parsed from asyncpg's ``"INSERT 0 N"`` status string. The
+    delta ``write_attempted - write_count`` is the dedup rate — useful
+    for spotting upstream replays (e.g. UW reconnect bursts) without
+    digging through Postgres logs.
+    """
 
     subscribed: bool = False
     last_message_ts: datetime | None = None
     queue_depth: int = 0
     drop_count: int = 0
+    write_attempted: int = 0
     write_count: int = 0
 
 

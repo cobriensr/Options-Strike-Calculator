@@ -214,8 +214,8 @@ class TestBulkInsertIgnoreConflict:
         assert sql.startswith("INSERT INTO t (a, b, c) VALUES")
         assert "ON CONFLICT (a) DO NOTHING" in sql
         assert list(args) == [1, 2, 3]
-        # Function still returns batch size for now (Phase 3 changes
-        # this to the parsed insert count).
+        # Phase 3 / M2: returns the parsed insert count from the
+        # ``"INSERT 0 N"`` status string, not the input batch size.
         assert result == 1
 
     @pytest.mark.asyncio
@@ -344,3 +344,112 @@ class TestBulkUpsertReplace:
         sql = conn.execute.await_args.args[0]
         assert "DO NOTHING" in sql
         assert "DO UPDATE" not in sql
+
+
+# ----------------------------------------------------------------------
+# Phase 3 / M2 — honest insert-count reporting from asyncpg's status string
+# ----------------------------------------------------------------------
+
+
+class TestBulkInsertReturnsParsedCount:
+    @pytest.mark.asyncio
+    async def test_bulk_insert_returns_inserted_count_from_status_string(self):
+        """``conn.execute`` returns ``"INSERT 0 N"``; the helper must
+        return N (the rows actually written) rather than ``len(rows)``.
+
+        This is what makes ``write_count`` trustworthy as a dedup-rate
+        signal — under ON CONFLICT DO NOTHING, repeated rows are silently
+        skipped and only the parsed N reflects reality.
+        """
+        conn = MagicMock()
+        # Input batch is 1000 rows but only 247 actually inserted
+        # (the rest were ON CONFLICT DO NOTHING duplicates).
+        conn.execute = AsyncMock(return_value="INSERT 0 247")
+        pool = _mock_pool_with_conn(conn)
+
+        cols = ["a", "b"]
+        rows = [(i, i) for i in range(1000)]
+
+        with patch("db.get_pool", return_value=pool):
+            result = await bulk_insert_ignore_conflict(
+                table="t",
+                columns=cols,
+                rows=rows,
+                conflict_cols=["a"],
+            )
+
+        assert result == 247
+
+    @pytest.mark.asyncio
+    async def test_bulk_insert_aggregates_inserted_count_across_chunks(self):
+        """30001 rows in a 4-col table splits into 5 chunks (7500 each
+        + 1 trailing). The helper must SUM the per-chunk parsed counts
+        — a single chunk's status would lose the others.
+        """
+        conn = MagicMock()
+        # First 4 chunks are 7500 rows, last is 1 row. Mock returns
+        # status strings that say all rows landed.
+        conn.execute = AsyncMock(
+            side_effect=[
+                "INSERT 0 7500",
+                "INSERT 0 7500",
+                "INSERT 0 7500",
+                "INSERT 0 7500",
+                "INSERT 0 1",
+            ],
+        )
+        pool = _mock_pool_with_conn(conn)
+
+        cols = ["a", "b", "c", "d"]
+        rows = [(i, i, i, i) for i in range(30001)]
+
+        with patch("db.get_pool", return_value=pool):
+            result = await bulk_insert_ignore_conflict(
+                table="t",
+                columns=cols,
+                rows=rows,
+                conflict_cols=["a"],
+            )
+
+        # All chunks reported full inserts → sum is 30001.
+        assert result == 30001
+        assert conn.execute.await_count == 5
+
+    @pytest.mark.asyncio
+    async def test_bulk_insert_returns_zero_when_status_is_unparseable(self):
+        """Defensive: a mock or future asyncpg version that returns ``""``
+        (or something other than ``INSERT 0 N``) shouldn't blow up the
+        flush — the helper just records 0 inserted and moves on.
+        """
+        conn = MagicMock()
+        conn.execute = AsyncMock(return_value="")
+        pool = _mock_pool_with_conn(conn)
+
+        with patch("db.get_pool", return_value=pool):
+            result = await bulk_insert_ignore_conflict(
+                table="t",
+                columns=["a"],
+                rows=[(1,), (2,), (3,)],
+                conflict_cols=["a"],
+            )
+
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_bulk_upsert_replace_returns_parsed_count(self):
+        """ON CONFLICT DO UPDATE: Postgres reports N as inserted+updated;
+        the helper still parses + returns it the same way.
+        """
+        conn = MagicMock()
+        conn.execute = AsyncMock(return_value="INSERT 0 5")
+        pool = _mock_pool_with_conn(conn)
+
+        with patch("db.get_pool", return_value=pool):
+            result = await bulk_upsert_replace(
+                table="t",
+                columns=["a", "b"],
+                rows=[(i, i + 1) for i in range(5)],
+                conflict_cols=["a"],
+            )
+
+        assert result == 5

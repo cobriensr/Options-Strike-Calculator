@@ -512,3 +512,112 @@ async def test_drain_exceeds_deadline_logs_warning(monkeypatch):
     )
 
     state.channels.clear()
+
+
+# ----------------------------------------------------------------------
+# Phase 3 / M2: write_attempted vs write_count separation
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_safe_flush_increments_attempted_and_actual_separately():
+    """``write_attempted`` counts every row the handler tried to flush;
+    ``write_count`` counts only the rows the database actually wrote
+    (i.e. what ``_flush`` returned). The delta is the dedup rate.
+    """
+    from handlers.base import Handler
+    from state import state
+
+    state.channels.clear()
+
+    class _ConflictHandler(Handler):
+        """Pretends N-2 of every batch landed (2 ON CONFLICT skips)."""
+
+        def __init__(self) -> None:
+            super().__init__(name="m2-attempted-vs-actual")
+
+        def _transform(self, payload: dict) -> tuple | None:
+            return (payload.get("seq"),)
+
+        async def _flush(self, rows: list[tuple]) -> int:
+            # Simulate N-2 of every batch landing — the other 2 are
+            # ON CONFLICT DO NOTHING dedup skips.
+            return max(0, len(rows) - 2)
+
+    h = _ConflictHandler()
+    rows = [(i,) for i in range(10)]
+
+    await h._safe_flush(rows)
+
+    metrics = state.channels[h.name]
+    assert metrics.write_attempted == 10
+    # 8 = 10 - 2 (the simulated dedup skips).
+    assert metrics.write_count == 8
+
+    # Second batch — counters accumulate, not reset.
+    await h._safe_flush(rows)
+    assert metrics.write_attempted == 20
+    assert metrics.write_count == 16
+
+    state.channels.clear()
+
+
+@pytest.mark.asyncio
+async def test_safe_flush_falls_back_to_len_when_flush_returns_none():
+    """Backwards compat: a subclass whose ``_flush`` returns nothing
+    should still see ``write_count`` increment by ``len(rows)``.
+    """
+    from handlers.base import Handler
+    from state import state
+
+    state.channels.clear()
+
+    class _LegacyHandler(Handler):
+        def __init__(self) -> None:
+            super().__init__(name="m2-legacy-flush")
+
+        def _transform(self, payload: dict) -> tuple | None:
+            return (payload.get("seq"),)
+
+        async def _flush(self, rows: list[tuple]) -> None:  # type: ignore[override]
+            return None
+
+    h = _LegacyHandler()
+    await h._safe_flush([(1,), (2,), (3,)])
+
+    metrics = state.channels[h.name]
+    assert metrics.write_attempted == 3
+    assert metrics.write_count == 3
+
+    state.channels.clear()
+
+
+@pytest.mark.asyncio
+async def test_safe_flush_attempted_increments_even_when_flush_raises():
+    """If ``_flush`` raises, ``write_attempted`` must still bump (we
+    tried), but ``write_count`` must NOT — those rows didn't land.
+    """
+    from handlers.base import Handler
+    from state import state
+
+    state.channels.clear()
+
+    class _RaisingHandler(Handler):
+        def __init__(self) -> None:
+            super().__init__(name="m2-raising-flush")
+
+        def _transform(self, payload: dict) -> tuple | None:
+            return (payload.get("seq"),)
+
+        async def _flush(self, rows: list[tuple]) -> int:
+            raise RuntimeError("simulated DB failure")
+
+    h = _RaisingHandler()
+    # _safe_flush swallows the exception per the existing contract.
+    await h._safe_flush([(1,), (2,)])
+
+    metrics = state.channels[h.name]
+    assert metrics.write_attempted == 2
+    assert metrics.write_count == 0
+
+    state.channels.clear()

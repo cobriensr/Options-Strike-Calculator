@@ -26,7 +26,7 @@ from uuid import UUID
 
 import db
 from handlers.base import Handler
-from logger_setup import log
+from logger_setup import rate_limited_log
 from utils import occ_parser, ticker_classify
 
 _TABLE = "ws_flow_alerts"
@@ -93,15 +93,22 @@ class FlowAlertsHandler(Handler):
     def _transform(self, payload: dict) -> tuple | None:
         symbol = payload.get("option_chain")
         if not isinstance(symbol, str):
-            log.warning("flow-alerts payload missing option_chain", extra={"sample": str(payload)[:200]})
+            rate_limited_log.warning(
+                scope="flow-alerts",
+                kind="missing_option_chain",
+                message="flow-alerts payload missing option_chain",
+                extra={"sample": str(payload)[:200]},
+            )
             return None
 
         # ws_alert_id (UW payload `id`) is the natural dedupe key —
         # NOT NULL UNIQUE in the table. Skip rows missing it.
         ws_alert_id = _to_uuid(payload.get("id"))
         if ws_alert_id is None:
-            log.warning(
-                "flow-alerts missing or malformed id",
+            rate_limited_log.warning(
+                scope="flow-alerts",
+                kind="missing_id",
+                message="flow-alerts missing or malformed id",
                 extra={"symbol": symbol, "raw_id": payload.get("id")},
             )
             return None
@@ -109,8 +116,10 @@ class FlowAlertsHandler(Handler):
         try:
             parsed = occ_parser.parse(symbol)
         except ValueError as exc:
-            log.warning(
-                "flow-alerts OCC parse failed",
+            rate_limited_log.warning(
+                scope="flow-alerts",
+                kind="occ_parse_failed",
+                message="flow-alerts OCC parse failed",
                 extra={"symbol": symbol, "err": str(exc)},
             )
             return None
@@ -124,7 +133,12 @@ class FlowAlertsHandler(Handler):
         # we store one canonical UTC timestamp.
         created_at = _ms_epoch_to_dt(payload.get("executed_at"))
         if created_at is None:
-            log.warning("flow-alerts missing executed_at", extra={"symbol": symbol})
+            rate_limited_log.warning(
+                scope="flow-alerts",
+                kind="missing_executed_at",
+                message="flow-alerts missing executed_at",
+                extra={"symbol": symbol},
+            )
             return None
 
         return (
@@ -171,8 +185,8 @@ class FlowAlertsHandler(Handler):
             payload,  # raw_payload — full original dict
         )
 
-    async def _flush(self, rows: list[tuple]) -> None:
-        await db.bulk_insert_ignore_conflict(
+    async def _flush(self, rows: list[tuple]) -> int:
+        return await db.bulk_insert_ignore_conflict(
             table=_TABLE,
             columns=_COLUMNS,
             rows=rows,

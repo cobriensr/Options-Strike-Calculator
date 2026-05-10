@@ -57,7 +57,7 @@ from zoneinfo import ZoneInfo
 
 import db
 from handlers.base import Handler
-from logger_setup import log
+from logger_setup import rate_limited_log
 
 _TABLE = "dark_pool_prints"
 
@@ -152,8 +152,10 @@ class OffLitTradesHandler(Handler):
         # 2. Parse executed_at; require it for the dedup key
         executed_at = _parse_iso(payload.get("executed_at"))
         if executed_at is None:
-            log.warning(
-                "off_lit_trades missing or malformed executed_at",
+            rate_limited_log.warning(
+                scope="off_lit_trades",
+                kind="missing_executed_at",
+                message="off_lit_trades missing or malformed executed_at",
                 extra={"symbol": symbol, "raw": payload.get("executed_at")},
             )
             return None
@@ -177,8 +179,10 @@ class OffLitTradesHandler(Handler):
         price = _to_decimal(payload.get("price"))
         size = _to_int(payload.get("size"))
         if price is None or size is None or price <= 0 or size <= 0:
-            log.warning(
-                "off_lit_trades missing or invalid price/size",
+            rate_limited_log.warning(
+                scope="off_lit_trades",
+                kind="invalid_price_or_size",
+                message="off_lit_trades missing or invalid price/size",
                 extra={"symbol": symbol, "price": payload.get("price"), "size": payload.get("size")},
             )
             return None
@@ -211,8 +215,8 @@ class OffLitTradesHandler(Handler):
             premium,
         )
 
-    async def _flush(self, rows: list[tuple]) -> None:
-        await db.bulk_insert_ignore_conflict(
+    async def _flush(self, rows: list[tuple]) -> int:
+        return await db.bulk_insert_ignore_conflict(
             table=_TABLE,
             columns=_COLUMNS,
             rows=rows,

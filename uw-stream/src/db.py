@@ -149,14 +149,15 @@ async def init_pool() -> asyncpg.Pool:
     global _pool
     if _pool is not None:
         return _pool
+    # 5 handlers x 2 + headroom for health check + manual queries.
     _pool = await asyncpg.create_pool(
         dsn=settings.database_url,
-        min_size=1,
-        max_size=5,
+        min_size=2,
+        max_size=10,
         command_timeout=30,
         init=_init_connection,
     )
-    log.info("asyncpg pool ready (min=1 max=5)")
+    log.info("asyncpg pool ready (min=2 max=10)")
     return _pool
 
 
@@ -193,11 +194,11 @@ async def bulk_insert_ignore_conflict(
     Neon was ~5s per flush, exceeding the default 2s
     ``WS_BATCH_INTERVAL_MS`` ceiling.
 
-    Returns the size of the input batch as an upper bound on inserted
-    rows. Honest insert-count reporting (parsing the ``"INSERT 0 N"``
-    status string) is wired into the caller in Phase 3 (M2); this
-    function's return shape stays unchanged for now so handler call
-    sites don't have to move in lock-step.
+    Returns the actual rows inserted, parsed from asyncpg's
+    ``"INSERT 0 N"`` status string. With ON CONFLICT DO NOTHING the
+    returned count can be < ``len(rows)`` when duplicates were skipped
+    — handler call sites use this to compute a dedup rate alongside
+    ``write_attempted``.
     """
     if not rows:
         return 0
@@ -210,13 +211,15 @@ async def bulk_insert_ignore_conflict(
     # matters, but it keeps semantics tight if a malformed payload
     # sneaks past the handler's _transform validator.
     pool = get_pool()
+    total_inserted = 0
     async with pool.acquire() as conn, conn.transaction():
         for chunk in _chunked_rows(rows, len(columns)):
             sql, flat_params = _build_multi_row_insert(
                 table, columns, chunk, suffix=suffix
             )
-            await conn.execute(sql, *flat_params)
-    return len(rows)
+            status = await conn.execute(sql, *flat_params)
+            total_inserted += _parse_insert_status(status)
+    return total_inserted
 
 
 async def bulk_upsert_replace(
@@ -239,8 +242,10 @@ async def bulk_upsert_replace(
     GexStrikeExpiry handler's pre-flush sort relies on to avoid AB-BA
     deadlocks against the REST cron writer.
 
-    Returns the size of the input batch (honest insert/update count
-    reporting is Phase 3 / M2).
+    Returns the count parsed from asyncpg's ``"INSERT 0 N"`` status
+    string. For ON CONFLICT DO UPDATE, Postgres reports N as the rows
+    inserted OR updated — i.e. every input row touches the table, so
+    in steady state this equals ``len(rows)``.
     """
     if not rows:
         return 0
@@ -256,10 +261,12 @@ async def bulk_upsert_replace(
     suffix = f"ON CONFLICT ({conflict_clause}) DO UPDATE SET {update_clause}"
 
     pool = get_pool()
+    total_inserted = 0
     async with pool.acquire() as conn, conn.transaction():
         for chunk in _chunked_rows(rows, len(columns)):
             sql, flat_params = _build_multi_row_insert(
                 table, columns, chunk, suffix=suffix
             )
-            await conn.execute(sql, *flat_params)
-    return len(rows)
+            status = await conn.execute(sql, *flat_params)
+            total_inserted += _parse_insert_status(status)
+    return total_inserted

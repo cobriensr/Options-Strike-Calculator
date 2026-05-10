@@ -28,9 +28,11 @@ def _reset_state():
     state.channels.clear()
     state.receive_queue_depth = 0
     state.receive_queue_drops = 0
+    state.ws_connected = False
     yield
     state.receive_queue_depth = 0
     state.receive_queue_drops = 0
+    state.ws_connected = False
 
 
 @pytest.mark.asyncio
@@ -169,3 +171,89 @@ async def test_connector_pushes_received_frames_into_queue(monkeypatch) -> None:
     while not queue.empty():
         drained.append(queue.get_nowait())
     assert drained == fake_frames
+
+
+# ----------------------------------------------------------------------
+# Phase 3 / M5: defer ws_connected = True until subscribe success
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ws_connected_only_set_after_subscribe_all(monkeypatch) -> None:
+    """``state.ws_connected`` must NOT flip to True if ``_subscribe_all``
+    raises — otherwise /healthz would lie when a typo'd channel name or
+    server-side error frame causes the join to fail. The socket stays
+    open with no data flowing and the daemon would report green until
+    the next disconnect.
+    """
+    queue: asyncio.Queue = asyncio.Queue(maxsize=10)
+    connector = Connector(channels=["bad-channel"], receive_queue=queue)
+
+    async def _raising_subscribe(_ws):
+        raise RuntimeError("simulated subscribe failure")
+
+    class _ConnCtx:
+        async def __aenter__(self):
+            return _AsyncIterableWS([])
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    def _fake_connect(*_args, **_kwargs):
+        return _ConnCtx()
+
+    import connector as connector_mod
+
+    monkeypatch.setattr(connector, "_subscribe_all", _raising_subscribe)
+    monkeypatch.setattr(connector_mod.websockets, "connect", _fake_connect)
+
+    # Sanity: starts False.
+    assert state.ws_connected is False
+
+    with pytest.raises(RuntimeError, match="simulated subscribe failure"):
+        await connector._connect_once()
+
+    # Subscribe failed → ws_connected must stay False so the next
+    # reconnect retries from scratch.
+    assert state.ws_connected is False
+
+
+@pytest.mark.asyncio
+async def test_ws_connected_set_to_true_when_subscribe_succeeds(monkeypatch) -> None:
+    """Mirror of the previous test: when subscribe completes cleanly,
+    the flag does flip to True before the receive loop starts.
+    """
+    queue: asyncio.Queue = asyncio.Queue(maxsize=10)
+    connector = Connector(channels=["good-channel"], receive_queue=queue)
+
+    subscribe_called = False
+
+    async def _ok_subscribe(_ws):
+        nonlocal subscribe_called
+        subscribe_called = True
+        # ws_connected MUST still be False at the moment subscribe runs;
+        # the connector flips it only after subscribe returns. This is
+        # what guarantees /healthz never lies during the join window.
+        assert state.ws_connected is False
+
+    class _ConnCtx:
+        async def __aenter__(self):
+            return _AsyncIterableWS([])
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    def _fake_connect(*_args, **_kwargs):
+        return _ConnCtx()
+
+    import connector as connector_mod
+
+    monkeypatch.setattr(connector, "_subscribe_all", _ok_subscribe)
+    monkeypatch.setattr(connector_mod.websockets, "connect", _fake_connect)
+
+    assert state.ws_connected is False
+
+    await connector._connect_once()
+
+    assert subscribe_called is True
+    assert state.ws_connected is True

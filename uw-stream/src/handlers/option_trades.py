@@ -29,7 +29,7 @@ from uuid import UUID
 
 import db
 from handlers.base import Handler
-from logger_setup import log
+from logger_setup import rate_limited_log
 from utils import occ_parser
 
 _TABLE = "ws_option_trades"
@@ -88,8 +88,10 @@ class OptionTradesHandler(Handler):
     def _transform(self, payload: dict) -> tuple | None:
         symbol = _first(payload, "option_chain", "option_chain_id", "option_symbol")
         if not isinstance(symbol, str):
-            log.warning(
-                "option_trades payload missing OCC symbol",
+            rate_limited_log.warning(
+                scope="option_trades",
+                kind="missing_occ_symbol",
+                message="option_trades payload missing OCC symbol",
                 extra={"sample": str(payload)[:200]},
             )
             return None
@@ -99,8 +101,10 @@ class OptionTradesHandler(Handler):
         # than risk a NULL violation downstream.
         ws_trade_id = _to_uuid(payload.get("id"))
         if ws_trade_id is None:
-            log.warning(
-                "option_trades missing or malformed id",
+            rate_limited_log.warning(
+                scope="option_trades",
+                kind="missing_id",
+                message="option_trades missing or malformed id",
                 extra={"symbol": symbol, "raw_id": payload.get("id")},
             )
             return None
@@ -108,8 +112,10 @@ class OptionTradesHandler(Handler):
         try:
             parsed = occ_parser.parse(symbol)
         except ValueError as exc:
-            log.warning(
-                "option_trades OCC parse failed",
+            rate_limited_log.warning(
+                scope="option_trades",
+                kind="occ_parse_failed",
+                message="option_trades OCC parse failed",
                 extra={"symbol": symbol, "err": str(exc)},
             )
             return None
@@ -122,8 +128,10 @@ class OptionTradesHandler(Handler):
             _first(payload, "executed_at", "tape_time", "timestamp"),
         )
         if executed_at is None:
-            log.warning(
-                "option_trades missing executed_at / tape_time",
+            rate_limited_log.warning(
+                scope="option_trades",
+                kind="missing_executed_at",
+                message="option_trades missing executed_at / tape_time",
                 extra={"symbol": symbol},
             )
             return None
@@ -134,8 +142,10 @@ class OptionTradesHandler(Handler):
             # Non-positive trade fields are unusable — the v4 detector
             # filters them out anyway (`price > 0` upstream), so reject
             # at ingest to keep table noise down.
-            log.warning(
-                "option_trades non-positive price/size",
+            rate_limited_log.warning(
+                scope="option_trades",
+                kind="non_positive_price_or_size",
+                message="option_trades non-positive price/size",
                 extra={"symbol": symbol, "price": str(price), "size": size},
             )
             return None
@@ -161,8 +171,8 @@ class OptionTradesHandler(Handler):
             payload,  # raw_payload — full original dict
         )
 
-    async def _flush(self, rows: list[tuple]) -> None:
-        await db.bulk_insert_ignore_conflict(
+    async def _flush(self, rows: list[tuple]) -> int:
+        return await db.bulk_insert_ignore_conflict(
             table=_TABLE,
             columns=_COLUMNS,
             rows=rows,

@@ -21,7 +21,7 @@ from typing import Protocol
 import orjson
 
 from config import settings
-from logger_setup import log
+from logger_setup import log, rate_limited_log
 from sentry_setup import capture_exception
 from state import state
 
@@ -57,16 +57,30 @@ class Router:
                 state.receive_queue_depth = receive_queue.qsize()
 
     async def dispatch(self, raw: str | bytes) -> None:
-        """Parse one WS frame and route to the matching handler."""
+        """Parse one WS frame and route to the matching handler.
+
+        Malformed-payload warnings are routed through
+        ``rate_limited_log`` because a UW wire-format change can flip
+        thousands of frames per second into one of these branches —
+        unbounded ``log.warning`` would saturate the asyncio loop on
+        JSON serialization + stdout writes alone.
+        """
         try:
             parsed = orjson.loads(raw)
         except orjson.JSONDecodeError as exc:
-            log.warning("malformed WS frame (not JSON)", extra={"err": str(exc)})
+            rate_limited_log.warning(
+                scope="router",
+                kind="malformed_json",
+                message="malformed WS frame (not JSON)",
+                extra={"err": str(exc)},
+            )
             return
 
         if not isinstance(parsed, list) or len(parsed) != 2:
-            log.warning(
-                "malformed WS frame (not a 2-element array)",
+            rate_limited_log.warning(
+                scope="router",
+                kind="malformed_envelope",
+                message="malformed WS frame (not a 2-element array)",
                 extra={"sample": _truncate(parsed)},
             )
             return
@@ -74,7 +88,12 @@ class Router:
         channel, payload = parsed
 
         if not isinstance(channel, str):
-            log.warning("channel is not a string", extra={"sample": _truncate(parsed)})
+            rate_limited_log.warning(
+                scope="router",
+                kind="non_string_channel",
+                message="channel is not a string",
+                extra={"sample": _truncate(parsed)},
+            )
             return
 
         # Detect the server's "you joined OK" ack. The server replies
@@ -86,8 +105,10 @@ class Router:
             return
 
         if not isinstance(payload, dict):
-            log.warning(
-                "payload is not a dict",
+            rate_limited_log.warning(
+                scope="router",
+                kind="non_dict_payload",
+                message="payload is not a dict",
                 extra={"channel": channel, "sample": _truncate(payload)},
             )
             return
@@ -106,7 +127,14 @@ class Router:
 
         handler = self.handlers.get(channel)
         if handler is None:
-            log.warning("no handler registered", extra={"channel": channel})
+            # Same throttle treatment — a config drift could spam this
+            # on every payload until the next deploy fixes it.
+            rate_limited_log.warning(
+                scope="router",
+                kind="no_handler_registered",
+                message="no handler registered",
+                extra={"channel": channel},
+            )
             return
 
         try:

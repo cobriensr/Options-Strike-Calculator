@@ -35,7 +35,7 @@ from typing import Any
 
 import db
 from handlers.base import Handler
-from logger_setup import log
+from logger_setup import rate_limited_log
 
 _TABLE = "ws_net_flow_per_ticker"
 # Natural dedupe key — UW emits at most one tick per (ticker, ms).
@@ -70,8 +70,10 @@ class NetFlowHandler(Handler):
     def _transform(self, payload: dict) -> tuple | None:
         ticker = payload.get("ticker")
         if not isinstance(ticker, str) or not ticker:
-            log.warning(
-                "net_flow payload missing ticker",
+            rate_limited_log.warning(
+                scope="net_flow",
+                kind="missing_ticker",
+                message="net_flow payload missing ticker",
                 extra={"sample": str(payload)[:200]},
             )
             return None
@@ -80,8 +82,10 @@ class NetFlowHandler(Handler):
         # in case the key drifts.
         ts = _ms_epoch_to_dt(_first(payload, "time", "tape_time", "timestamp"))
         if ts is None:
-            log.warning(
-                "net_flow missing time / tape_time",
+            rate_limited_log.warning(
+                scope="net_flow",
+                kind="missing_time",
+                message="net_flow missing time / tape_time",
                 extra={"ticker": ticker, "sample": str(payload)[:200]},
             )
             return None
@@ -98,8 +102,10 @@ class NetFlowHandler(Handler):
         ):
             # All four are required by the schema (NOT NULL). Reject the
             # whole row rather than silently writing partial data.
-            log.warning(
-                "net_flow missing required numeric field",
+            rate_limited_log.warning(
+                scope="net_flow",
+                kind="missing_numeric_field",
+                message="net_flow missing required numeric field",
                 extra={
                     "ticker": ticker,
                     "ncp": str(net_call_prem),
@@ -120,8 +126,8 @@ class NetFlowHandler(Handler):
             payload,  # raw_payload — full original dict
         )
 
-    async def _flush(self, rows: list[tuple]) -> None:
-        await db.bulk_insert_ignore_conflict(
+    async def _flush(self, rows: list[tuple]) -> int:
+        return await db.bulk_insert_ignore_conflict(
             table=_TABLE,
             columns=_COLUMNS,
             rows=rows,
