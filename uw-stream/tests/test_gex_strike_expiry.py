@@ -229,6 +229,49 @@ class TestFlushSortsByConflictKey:
         ]
 
     @pytest.mark.asyncio
+    async def test_flush_sorts_rows_for_deterministic_lock_order(self):
+        """Phase 2 of uw-stream-hardening replaced asyncpg.executemany
+        (N separate prepared-statement runs) with a single multi-row
+        INSERT per chunk. Under multi-row INSERT, Postgres acquires
+        row locks in tuple-list order *deterministically* — so the
+        pre-flush sort here is now load-bearing for deadlock
+        prevention against the REST-side cron writer
+        (`/api/cron/fetch-gex-strike-expiry-etfs`).
+
+        If this sort is removed or weakened, the AB-BA deadlock that
+        Sentry issues 4G / 4M tracked will resurface immediately the
+        first time the cron and the WS handler land on overlapping
+        minutes. Failing this test is a hard signal that the deadlock
+        contract is broken.
+        """
+        handler = GexStrikeExpiryHandler()
+        ts = datetime(2026, 5, 7, 19, 30, 0, tzinfo=UTC)
+        # Strikes deliberately out-of-order; expected order is sorted
+        # ascending by strike (under the same ticker / expiry / minute).
+        unordered: list[tuple] = [
+            ("SPY", date(2026, 5, 7), Decimal("1000"), ts),
+            ("SPY", date(2026, 5, 7), Decimal("5000"), ts),
+            ("SPY", date(2026, 5, 7), Decimal("2000"), ts),
+            ("SPY", date(2026, 5, 7), Decimal("4000"), ts),
+        ]
+        captured: list[list[tuple]] = []
+
+        def capture(**kwargs):
+            captured.append(list(kwargs["rows"]))
+
+        with patch("handlers.gex_strike_expiry.db") as mock_db:
+            mock_db.bulk_upsert_replace = AsyncMock(side_effect=capture)
+            await handler._flush(unordered)
+
+        assert len(captured) == 1
+        assert captured[0] == [
+            ("SPY", date(2026, 5, 7), Decimal("1000"), ts),
+            ("SPY", date(2026, 5, 7), Decimal("2000"), ts),
+            ("SPY", date(2026, 5, 7), Decimal("4000"), ts),
+            ("SPY", date(2026, 5, 7), Decimal("5000"), ts),
+        ]
+
+    @pytest.mark.asyncio
     async def test_flush_passes_through_table_columns_conflict(self):
         # The sort is the only thing this layer adds; everything else
         # must pass through to db.bulk_upsert_replace untouched so the

@@ -7,6 +7,7 @@ batch size is.
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Sequence
 from typing import Any
 
 import asyncpg
@@ -16,6 +17,107 @@ from config import settings
 from logger_setup import log
 
 _pool: asyncpg.Pool | None = None
+
+# Postgres' wire-protocol parameter limit per statement is 32767 (signed
+# int16). We cap a single multi-row INSERT at 30000 params to leave
+# headroom against off-by-ones and any future reserved slots. Anything
+# bigger gets sliced into multiple round-trips by `_chunked_rows`.
+MAX_INSERT_PARAMS = 30000
+
+
+def _build_multi_row_insert(
+    table: str,
+    cols: Sequence[str],
+    rows: Sequence[tuple],
+    *,
+    suffix: str = "",
+) -> tuple[str, list]:
+    """Build (sql, flat_params) for a single multi-row INSERT.
+
+    Produces ``INSERT INTO t (cols) VALUES ($1,$2,...), ($N+1,...), ...``
+    with all rows' params flattened into one list, so a single
+    ``conn.execute(sql, *flat_params)`` round-trip writes the entire
+    batch — replacing asyncpg's ``executemany`` (which is N separate
+    prepared-statement runs in one transaction, not pipelined).
+
+    Caller is responsible for chunking — this builder rejects row sets
+    whose total parameter count exceeds ``MAX_INSERT_PARAMS`` so a typo
+    can't silently blow the Postgres wire-protocol limit at runtime.
+
+    `suffix` is appended verbatim, e.g. ``"ON CONFLICT (...) DO NOTHING"``
+    or ``"ON CONFLICT (...) DO UPDATE SET col = EXCLUDED.col"``.
+    """
+    params_per_row = len(cols)
+    if not rows:
+        return "", []
+    total_params = len(rows) * params_per_row
+    if total_params > MAX_INSERT_PARAMS:
+        raise ValueError(
+            f"_build_multi_row_insert: {len(rows)} rows x {params_per_row} cols = "
+            f"{total_params} params exceeds MAX_INSERT_PARAMS={MAX_INSERT_PARAMS}"
+        )
+    col_list = ", ".join(cols)
+    value_groups: list[str] = []
+    flat: list = []
+    for i, row in enumerate(rows):
+        if len(row) != params_per_row:
+            raise ValueError(
+                f"_build_multi_row_insert: row {i} has {len(row)} values, "
+                f"expected {params_per_row}"
+            )
+        start = i * params_per_row + 1
+        placeholders = ", ".join(f"${start + j}" for j in range(params_per_row))
+        value_groups.append(f"({placeholders})")
+        flat.extend(row)
+    sql = f"INSERT INTO {table} ({col_list}) VALUES {', '.join(value_groups)}"
+    if suffix:
+        sql += f" {suffix}"
+    return sql, flat
+
+
+def _chunked_rows(
+    rows: Sequence[tuple],
+    params_per_row: int,
+) -> Iterator[Sequence[tuple]]:
+    """Yield slices of ``rows`` capped so each chunk fits MAX_INSERT_PARAMS.
+
+    A no-op pass-through when ``rows`` already fits in one statement; for
+    huge batches it splits into multiple round-trips automatically so
+    callers never have to reason about the wire-protocol limit.
+    """
+    if not rows:
+        return
+    if params_per_row <= 0:
+        raise ValueError("params_per_row must be positive")
+    max_per_chunk = MAX_INSERT_PARAMS // params_per_row
+    if max_per_chunk == 0:
+        # A single row already exceeds the limit — surface immediately
+        # rather than yielding an unflushable chunk.
+        raise ValueError(
+            f"_chunked_rows: params_per_row={params_per_row} exceeds "
+            f"MAX_INSERT_PARAMS={MAX_INSERT_PARAMS} for a single row"
+        )
+    for start in range(0, len(rows), max_per_chunk):
+        yield rows[start : start + max_per_chunk]
+
+
+def _parse_insert_status(status: str | None) -> int:
+    """Pull the row count out of asyncpg's ``"INSERT 0 N"`` status string.
+
+    asyncpg returns the SQL command-tag as a str like ``"INSERT 0 247"``
+    where the trailing integer is the rows actually written. Returns 0
+    on an unparseable / missing status so callers don't have to special-
+    case mocks.
+    """
+    if not status:
+        return 0
+    parts = status.split()
+    if len(parts) < 3 or parts[0] != "INSERT":
+        return 0
+    try:
+        return int(parts[-1])
+    except ValueError:
+        return 0
 
 
 def _orjson_dumps_str(v: Any) -> str:
@@ -83,32 +185,37 @@ async def bulk_insert_ignore_conflict(
 ) -> int:
     """Insert many rows with `ON CONFLICT (...) DO NOTHING`.
 
-    Returns the number of rows actually inserted (excluding conflicts).
-    Uses executemany rather than COPY because COPY does not support
-    ON CONFLICT — for the volume flow-alerts produces (~thousands/day)
-    executemany throughput is more than enough.
+    Issues one multi-row INSERT per chunk (chunked at
+    ``MAX_INSERT_PARAMS`` so a 30k+ row batch still completes), giving
+    one network round-trip per chunk instead of N. asyncpg's
+    ``executemany`` is NOT pipelined — it issues N separate prepared-
+    statement runs in one transaction, so a 500-row batch x ~10ms RTT to
+    Neon was ~5s per flush, exceeding the default 2s
+    ``WS_BATCH_INTERVAL_MS`` ceiling.
+
+    Returns the size of the input batch as an upper bound on inserted
+    rows. Honest insert-count reporting (parsing the ``"INSERT 0 N"``
+    status string) is wired into the caller in Phase 3 (M2); this
+    function's return shape stays unchanged for now so handler call
+    sites don't have to move in lock-step.
     """
     if not rows:
         return 0
 
-    placeholders = ", ".join(f"${i + 1}" for i in range(len(columns)))
     conflict_clause = ", ".join(conflict_cols)
-    sql = (
-        f"INSERT INTO {table} ({', '.join(columns)}) "
-        f"VALUES ({placeholders}) "
-        f"ON CONFLICT ({conflict_clause}) DO NOTHING"
-    )
+    suffix = f"ON CONFLICT ({conflict_clause}) DO NOTHING"
 
-    # Single explicit transaction so a row failure rolls the batch.
-    # Most flow-alert rows are independent so this rarely matters,
-    # but it keeps semantics tight if a malformed payload sneaks in.
-    # asyncpg's executemany returns "INSERT 0 N" status strings; we
-    # can't get per-row insertion count without RETURNING, so we
-    # report batch size as upper bound. The real inserted count is
-    # tracked via write_count in handler-side state.
+    # Single explicit transaction so a chunk-mid failure rolls the
+    # whole batch. Most flow-alert rows are independent so this rarely
+    # matters, but it keeps semantics tight if a malformed payload
+    # sneaks past the handler's _transform validator.
     pool = get_pool()
     async with pool.acquire() as conn, conn.transaction():
-        await conn.executemany(sql, rows)
+        for chunk in _chunked_rows(rows, len(columns)):
+            sql, flat_params = _build_multi_row_insert(
+                table, columns, chunk, suffix=suffix
+            )
+            await conn.execute(sql, *flat_params)
     return len(rows)
 
 
@@ -126,8 +233,14 @@ async def bulk_upsert_replace(
     intraday — same root cause as the vega_flow_etf restatement we hit
     on 2026-05-01). Last write wins per (conflict_cols) tuple.
 
-    Returns the size of the input batch (asyncpg's ``executemany`` does
-    not give per-row insert/update counts without RETURNING).
+    Issues one multi-row INSERT per chunk (chunked at
+    ``MAX_INSERT_PARAMS``). Per-chunk Postgres acquires row locks in
+    tuple-list order deterministically, which is the contract the
+    GexStrikeExpiry handler's pre-flush sort relies on to avoid AB-BA
+    deadlocks against the REST cron writer.
+
+    Returns the size of the input batch (honest insert/update count
+    reporting is Phase 3 / M2).
     """
     if not rows:
         return 0
@@ -138,16 +251,15 @@ async def bulk_upsert_replace(
         # DO NOTHING preserves intent (no value to overwrite anyway).
         return await bulk_insert_ignore_conflict(table, columns, rows, conflict_cols)
 
-    placeholders = ", ".join(f"${i + 1}" for i in range(len(columns)))
     conflict_clause = ", ".join(conflict_cols)
     update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
-    sql = (
-        f"INSERT INTO {table} ({', '.join(columns)}) "
-        f"VALUES ({placeholders}) "
-        f"ON CONFLICT ({conflict_clause}) DO UPDATE SET {update_clause}"
-    )
+    suffix = f"ON CONFLICT ({conflict_clause}) DO UPDATE SET {update_clause}"
 
     pool = get_pool()
     async with pool.acquire() as conn, conn.transaction():
-        await conn.executemany(sql, rows)
+        for chunk in _chunked_rows(rows, len(columns)):
+            sql, flat_params = _build_multi_row_insert(
+                table, columns, chunk, suffix=suffix
+            )
+            await conn.execute(sql, *flat_params)
     return len(rows)
