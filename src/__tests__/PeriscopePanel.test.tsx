@@ -138,6 +138,56 @@ describe('PeriscopePanel: smoke', () => {
 });
 
 // ============================================================
+// CHARM DRIFT — post-close suppression
+// ============================================================
+
+describe('PeriscopePanel: charm-drift post-close', () => {
+  // Post-close slots freeze on a terminal charm value (e.g. -1269.33M
+  // observed 2026-05-08 15:10–15:50 CT) that no longer predicts intraday
+  // drift. The panel must surface that explicitly instead of running the
+  // active "drift up/down" line that would otherwise mislead the user.
+  it('replaces the drift line with an aftermarket message when capturedAt is post-close', () => {
+    // 20:30Z = 15:30 CT — past the 15:00 CT cash close.
+    const view = makeView({
+      capturedAt: '2026-05-08T20:30:00Z',
+      charm: {
+        tallyNear50: -1_269_330_000,
+        tallyWide100: -1_269_330_000,
+        topByAbs: [{ strike: 7380, value: -806_000_000 }],
+        charmZeroStrike: 7315,
+      },
+    });
+    render(<PeriscopePanel {...baseProps} view={view} />);
+    expect(
+      screen.getByText(
+        /aftermarket reading, not applicable to intraday price movement/i,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/mechanical \/ES (BUY|SELL) into close/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('keeps the active drift line during the intraday charm window', () => {
+    // 19:00Z = 14:00 CT — final 30m bucket, drift line should fire.
+    const view = makeView({
+      capturedAt: '2026-05-08T19:00:00Z',
+      charm: {
+        tallyNear50: -50_000_000,
+        tallyWide100: -50_000_000,
+        topByAbs: [{ strike: 5800, value: 800_000 }],
+        charmZeroStrike: 5810,
+      },
+    });
+    render(<PeriscopePanel {...baseProps} view={view} />);
+    expect(
+      screen.getByText(/mechanical \/ES SELL into close/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/aftermarket reading/i)).not.toBeInTheDocument();
+  });
+});
+
+// ============================================================
 // STATE ROUTING — error / empty / loading
 // ============================================================
 
@@ -232,11 +282,7 @@ describe('PeriscopePanel: time-travel nav', () => {
       '2026-05-08T14:10:00Z',
     ];
     render(
-      <PeriscopePanel
-        {...baseProps}
-        view={view}
-        availableSlots={slots}
-      />,
+      <PeriscopePanel {...baseProps} view={view} availableSlots={slots} />,
     );
     // Middle slot — both buttons enabled.
     expect(
@@ -253,10 +299,7 @@ describe('PeriscopePanel: time-travel nav', () => {
       <PeriscopePanel
         {...baseProps}
         view={view}
-        availableSlots={[
-          '2026-05-08T13:50:00Z',
-          '2026-05-08T14:00:00Z',
-        ]}
+        availableSlots={['2026-05-08T13:50:00Z', '2026-05-08T14:00:00Z']}
       />,
     );
     expect(
@@ -274,10 +317,7 @@ describe('PeriscopePanel: time-travel nav', () => {
       <PeriscopePanel
         {...baseProps}
         view={view}
-        availableSlots={[
-          '2026-05-08T13:50:00Z',
-          '2026-05-08T14:00:00Z',
-        ]}
+        availableSlots={['2026-05-08T13:50:00Z', '2026-05-08T14:00:00Z']}
         onSelectSlot={onSelectSlot}
       />,
     );
@@ -310,12 +350,7 @@ describe('PeriscopePanel: time-travel nav', () => {
 
   it('jumps to end-of-day when the date picker is changed', () => {
     const onSelectSlot = vi.fn();
-    render(
-      <PeriscopePanel
-        {...baseProps}
-        onSelectSlot={onSelectSlot}
-      />,
-    );
+    render(<PeriscopePanel {...baseProps} onSelectSlot={onSelectSlot} />);
     const dateInput = screen.getByLabelText(
       /periscope slot date/i,
     ) as HTMLInputElement;

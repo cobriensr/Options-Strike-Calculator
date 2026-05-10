@@ -327,7 +327,7 @@ function TradePlanSection({ plan }: { plan: TradePlan }) {
         </h3>
         <div className="flex items-center gap-2 font-mono text-[10px]">
           <span
-            className="rounded px-1.5 py-0.5 uppercase tracking-wider"
+            className="rounded px-1.5 py-0.5 tracking-wider uppercase"
             style={{
               color: regimeColor(plan.regime),
               backgroundColor: `color-mix(in srgb, ${regimeColor(plan.regime)} 15%, transparent)`,
@@ -336,7 +336,7 @@ function TradePlanSection({ plan }: { plan: TradePlan }) {
             {plan.regime}
           </span>
           <span
-            className="rounded px-1.5 py-0.5 uppercase tracking-wider"
+            className="rounded px-1.5 py-0.5 tracking-wider uppercase"
             style={{
               color: theme.text,
               backgroundColor: theme.chipBg,
@@ -359,10 +359,7 @@ function TradePlanSection({ plan }: { plan: TradePlan }) {
 
       {plan.waitZone != null && (
         <div className="flex items-baseline gap-2 font-mono text-[11px]">
-          <span
-            className="font-bold"
-            style={{ color: theme.textTertiary }}
-          >
+          <span className="font-bold" style={{ color: theme.textTertiary }}>
             WAIT
           </span>
           <span style={{ color: theme.textMuted }}>{plan.waitZone}</span>
@@ -387,7 +384,7 @@ function DirectionalRow({
           {label}
         </span>
         <span
-          className="rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wider"
+          className="rounded px-1.5 py-0.5 text-[10px] tracking-wider uppercase"
           style={{
             color,
             backgroundColor: `color-mix(in srgb, ${color} 15%, transparent)`,
@@ -396,19 +393,13 @@ function DirectionalRow({
           {plan.verdict}
         </span>
         {plan.verdict !== 'avoid' && (
-          <span
-            className="text-[10px]"
-            style={{ color: theme.textSecondary }}
-          >
+          <span className="text-[10px]" style={{ color: theme.textSecondary }}>
             trigger {fmtLevel(plan.trigger)} · stop {fmtLevel(plan.stop)} ·
             target {fmtLevel(plan.target)}
           </span>
         )}
       </div>
-      <span
-        className="leading-snug"
-        style={{ color: theme.textMuted }}
-      >
+      <span className="leading-snug" style={{ color: theme.textMuted }}>
         {plan.reason}
       </span>
     </div>
@@ -565,11 +556,10 @@ function computeCharmDriftRead(args: {
     positionText = `Spot ${absDist.toFixed(0)} pts below charm-zero (${charmZeroStrike})`;
   }
 
-  // Compute the slot's CT minute-of-day first — both the drift line AND
-  // the weight class branch on it. The drift forecast describes
-  // mechanical /ES flow "into close"; once the close has passed, that
-  // forecast is moot and the line should say so explicitly rather than
-  // contradicting the Post-close weight label.
+  // Time-of-day weight class. The skill's framework: charm is a function
+  // of time-to-expiry — its hedging force grows non-linearly through the
+  // session and dominates the final 90 minutes. Buckets match the
+  // user's 5-phase intraday schedule.
   const ct = getCTTime(new Date(capturedAt));
   const minutes = ct.hour * 60 + ct.minute;
   const isPostClose = minutes >= 15 * 60;
@@ -577,7 +567,10 @@ function computeCharmDriftRead(args: {
   let driftText: string;
   let driftColor: string;
   if (isPostClose) {
-    driftText = `Tally ${fmtSigned(tallyWide100)} — aftermarket reading, not applicable to intraday price movement`;
+    // Post-close slots freeze on a terminal/expiry charm value that no
+    // longer predicts intraday drift — surface that instead of the
+    // active "drift up/down" line that would otherwise be misleading.
+    driftText = `Tally ${fmtSigned(tallyWide100)} → aftermarket reading, not applicable to intraday price movement`;
     driftColor = theme.textMuted;
   } else if (Math.abs(tallyWide100) < CHARM_DRIFT_NOISE_THRESHOLD) {
     driftText = `Tally ${fmtSigned(tallyWide100)} → flat, no mechanical drift`;
@@ -590,10 +583,6 @@ function computeCharmDriftRead(args: {
     driftColor = theme.red;
   }
 
-  // Time-of-day weight class. The skill's framework: charm is a function
-  // of time-to-expiry — its hedging force grows non-linearly through the
-  // session and dominates the final 90 minutes. Buckets match the
-  // user's 5-phase intraday schedule.
   let weightText: string;
   let weightColor: string;
   if (minutes < 8 * 60 + 30) {
