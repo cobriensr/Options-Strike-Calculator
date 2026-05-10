@@ -73,10 +73,7 @@ const bodySchema = z.object({
   capturedAt: z.string().datetime({ message: 'capturedAt must be ISO 8601' }),
   slotKey: z
     .string()
-    .regex(
-      /^\d{2}:\d{2} - \d{2}:\d{2}$/,
-      'slotKey must be "HH:MM - HH:MM"',
-    ),
+    .regex(/^\d{2}:\d{2} - \d{2}:\d{2}$/, 'slotKey must be "HH:MM - HH:MM"'),
 });
 
 type ParsedBody = z.infer<typeof bodySchema>;
@@ -105,7 +102,8 @@ function deriveMode(slotKey: string): ModeDerivation | null {
   // Format start as HH:MM (read_time anchor for the row)
   const readTimeCt = `${String(startHour).padStart(2, '0')}:${String(startMinute).padStart(2, '0')}`;
 
-  if (slotKey === FIRST_ANALYZABLE_SLOT) return { mode: 'pre_trade', readTimeCt };
+  if (slotKey === FIRST_ANALYZABLE_SLOT)
+    return { mode: 'pre_trade', readTimeCt };
   if (slotKey === LAST_ANALYZABLE_SLOT) return { mode: 'debrief', readTimeCt };
   return { mode: 'intraday', readTimeCt };
 }
@@ -345,10 +343,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Most likely cause: unique constraint violation from a race that
     // beat us between findExistingRowId and the INSERT. Re-check and
     // return 200 with the winner's id.
-    const winnerId = await findExistingRowId(
-      body.tradingDate,
-      body.capturedAt,
-    );
+    const winnerId = await findExistingRowId(body.tradingDate, body.capturedAt);
     if (winnerId != null) {
       logger.warn(
         {

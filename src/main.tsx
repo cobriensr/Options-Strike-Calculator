@@ -86,6 +86,7 @@ if (import.meta.env.PROD)
       { path: '/api/snapshot', method: 'POST' },
       { path: '/api/analyze', method: 'POST' },
       { path: '/api/periscope-chat', method: 'POST' },
+      { path: '/api/periscope-playbook', method: 'GET' },
       { path: '/api/periscope-chat-list', method: 'GET' },
       { path: '/api/periscope-chat-detail', method: 'GET' },
       { path: '/api/periscope-chat-image', method: 'GET' },

@@ -44,10 +44,9 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 vi.mock('../_lib/spx-candles.js', () => ({
-  ctWallClockToUtcMs: vi.fn(
-    (date: string, time: string) =>
-      // Stable epoch for any (date, time) — sufficient for endpoint tests.
-      new Date(`${date}T${time}:00.000Z`).getTime(),
+  ctWallClockToUtcMs: vi.fn((date: string, time: string) =>
+    // Stable epoch for any (date, time) — sufficient for endpoint tests.
+    new Date(`${date}T${time}:00.000Z`).getTime(),
   ),
   fetchSPXSpotAtTimestamp: vi
     .fn()
@@ -120,11 +119,13 @@ function authHeaders(secret = 'test-webhook-secret'): Record<string, string> {
   return { authorization: `Bearer ${secret}` };
 }
 
-function postReq(opts: {
-  body?: Record<string, unknown>;
-  headers?: Record<string, string>;
-  method?: string;
-} = {}) {
+function postReq(
+  opts: {
+    body?: Record<string, unknown>;
+    headers?: Record<string, string>;
+    method?: string;
+  } = {},
+) {
   return mockRequest({
     method: opts.method ?? 'POST',
     headers: { 'content-type': 'application/json', ...opts.headers },
@@ -229,7 +230,10 @@ describe('periscope-auto-playbook handler — body validation', () => {
   it('returns 400 on missing tradingDate', async () => {
     const req = postReq({
       headers: authHeaders(),
-      body: { capturedAt: '2026-05-12T13:30:00.000Z', slotKey: '08:30 - 08:40' },
+      body: {
+        capturedAt: '2026-05-12T13:30:00.000Z',
+        slotKey: '08:30 - 08:40',
+      },
     });
     const res = mockResponse();
     await handler(req, res);

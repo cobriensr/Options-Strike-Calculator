@@ -40,10 +40,7 @@ import {
 } from './periscope-prompts.js';
 import { buildCalibrationBlock } from './periscope-calibration.js';
 import { buildRetrievalBlock } from './periscope-retrieval.js';
-import {
-  fetchActiveLessons,
-  formatLessonsBlock,
-} from './periscope-lessons.js';
+import { fetchActiveLessons, formatLessonsBlock } from './periscope-lessons.js';
 import { buildFlowContextBlock } from './periscope-flow-context.js';
 import { generateEmbedding } from './embeddings.js';
 import {
@@ -226,8 +223,7 @@ async function buildSystemBlocks(args: {
     }
     blocks.push({
       type: 'text',
-      text:
-        PERISCOPE_REFERENCES_HEADER + PERISCOPE_REFERENCES + lessonsBlock,
+      text: PERISCOPE_REFERENCES_HEADER + PERISCOPE_REFERENCES + lessonsBlock,
       cache_control: { type: 'ephemeral', ttl: '1h' },
     });
   }
