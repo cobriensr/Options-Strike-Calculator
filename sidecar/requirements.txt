@@ -12,6 +12,6 @@ duckdb>=1.0.0
 # `archive_query._connection`. (Phase 4c shipped the same guard in the ML
 # pipeline; Phase 4b rework brings it to the sidecar.)
 pytz>=2024.1
-pytest>=8.0.0
+pytest>=9.0.3
 pytest-cov>=6.0
 ruff>=0.11
