@@ -220,10 +220,6 @@
     "api/cron/detect-silent-boom.ts": { "maxDuration": 60 },
     "api/cron/enrich-lottery-outcomes.ts": { "maxDuration": 300 },
     "api/cron/fetch-gex-strike-expiry-etfs.ts": { "maxDuration": 60 },
-    "api/periscope-chat.ts": {
-      "maxDuration": 780,
-      "includeFiles": ".claude/skills/**/*.md"
-    },
     "api/periscope-auto-playbook.ts": {
       "maxDuration": 720,
       "includeFiles": ".claude/skills/**/*.md"
