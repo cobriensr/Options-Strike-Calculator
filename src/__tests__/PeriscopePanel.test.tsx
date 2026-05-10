@@ -361,3 +361,233 @@ describe('PeriscopePanel: time-travel nav', () => {
     });
   });
 });
+
+// ============================================================
+// CLAUDE PLAYBOOK — Phase 4b render integration
+// ============================================================
+
+describe('PeriscopePanel: Claude playbook section', () => {
+  type PlaybookData = {
+    id: number;
+    mode: 'pre_trade' | 'intraday' | 'debrief';
+    status: 'in_progress' | 'complete' | 'failed' | 'truncated';
+    slotCapturedAt: string;
+    readTime: string;
+    spot: number;
+    panelPayload: {
+      spot: number | null;
+      cone: { lower: number; upper: number } | null;
+      longTrigger: number | null;
+      shortTrigger: number | null;
+      regime: string | null;
+      bias: string | null;
+      recommended: string[];
+      avoid: string[];
+      futuresPlan: string | null;
+      gammaFloor: number | null;
+      gammaCeiling: number | null;
+      magnet: number | null;
+      charmZero: number | null;
+      expectedDealerBehavior: string | null;
+      confidence: string | null;
+      confidenceBasis: string | null;
+      narrative: string;
+    } | null;
+    parentId: number | null;
+    model: string | null;
+    failureReason: string | null;
+    durationMs: number | null;
+    createdAt: string;
+  };
+
+  function makePlaybook(opts: {
+    data?: PlaybookData | null;
+    latestInProgress?: boolean;
+    error?: string | null;
+  } = {}) {
+    return {
+      data: opts.data === undefined ? null : opts.data,
+      latestInProgress: opts.latestInProgress ?? false,
+      asOf: '2026-05-08T13:30:00Z',
+      emptyReason: opts.data == null ? ('no_playbook' as const) : null,
+      isLoading: false,
+      error: opts.error ?? null,
+      refresh: vi.fn(),
+    };
+  }
+
+  function fullRow(overrides: Partial<PlaybookData> = {}): PlaybookData {
+    // Build slotCapturedAt 5 minutes ago so the staleness chip is green.
+    const recent = new Date(Date.now() - 5 * 60_000).toISOString();
+    return {
+      id: 777,
+      mode: 'intraday',
+      status: 'complete',
+      slotCapturedAt: recent,
+      readTime: recent,
+      spot: 5800.5,
+      panelPayload: {
+        spot: 5800.5,
+        cone: { lower: 5780, upper: 5820 },
+        longTrigger: 5810,
+        shortTrigger: 5790,
+        regime: 'drift-and-cap',
+        bias: 'two-sided',
+        recommended: ['debit_call_spread', 'directional_long_call'],
+        avoid: ['iron_condor', 'iron_butterfly'],
+        futuresPlan: 'LONG: SAFE above 5810\nSHORT: WAIT below 5790',
+        gammaFloor: 5780,
+        gammaCeiling: 5820,
+        magnet: 5800,
+        charmZero: 5805,
+        expectedDealerBehavior: null,
+        confidence: 'medium',
+        confidenceBasis: null,
+        narrative: 'Tight two-sided regime with charm pinning at 5805.',
+      },
+      parentId: null,
+      model: 'claude-opus-4-7',
+      failureReason: null,
+      durationMs: 1234,
+      createdAt: recent,
+      ...overrides,
+    };
+  }
+
+  it('renders the Claude Playbook header + triggers when a complete row is present', () => {
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        view={makeView()}
+        playbook={makePlaybook({ data: fullRow() })}
+      />,
+    );
+    expect(screen.getByText(/Claude Playbook/i)).toBeInTheDocument();
+    // CLAUDE badge in the header strip
+    expect(screen.getAllByText(/^Claude$/i).length).toBeGreaterThan(0);
+    // INTRADAY mode chip
+    expect(screen.getByText(/^INTRADAY$/)).toBeInTheDocument();
+    // Triggers
+    expect(screen.getByText(/LONG TRIGGER/i)).toBeInTheDocument();
+    // 5810 appears in the trigger cell AND inline in the futures plan
+    // narrative — just confirm at least one occurrence.
+    expect(screen.getAllByText(/\b5810\b/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/\b5790\b/).length).toBeGreaterThan(0);
+  });
+
+  it('hides the client-derived Trade Plan when Claude has a fresh playbook', () => {
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        view={makeView()}
+        playbook={makePlaybook({ data: fullRow() })}
+      />,
+    );
+    // "Trade Plan" header from TradePlanSection must not appear when
+    // Claude's playbook is fresh — Risk R14: the fallback only renders
+    // when no Claude playbook is present.
+    expect(screen.queryByText(/^Trade Plan$/i)).not.toBeInTheDocument();
+  });
+
+  it('shows the deterministic Trade Plan when no playbook is provided', () => {
+    render(<PeriscopePanel {...baseProps} view={makeView()} />);
+    expect(screen.getByText(/Trade Plan/i)).toBeInTheDocument();
+  });
+
+  it('shows the deterministic Trade Plan when playbook has data:null (no completed row)', () => {
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        view={makeView()}
+        playbook={makePlaybook({ data: null })}
+      />,
+    );
+    // The PlaybookSection's empty-state still renders Claude badge but
+    // the deterministic Trade Plan should ALSO be present beneath.
+    expect(screen.getByText(/Trade Plan/i)).toBeInTheDocument();
+    // Empty-state copy
+    expect(
+      screen.getByText(/waiting for first scraper tick of the day/i),
+    ).toBeInTheDocument();
+  });
+
+  it('surfaces the "Claude reading newer slot" hint when latestInProgress is true', () => {
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        view={makeView()}
+        playbook={makePlaybook({
+          data: fullRow(),
+          latestInProgress: true,
+        })}
+      />,
+    );
+    expect(
+      screen.getByText(/Claude reading newer slot/i),
+    ).toBeInTheDocument();
+  });
+
+  it('renders recommended + avoid structure chips', () => {
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        view={makeView()}
+        playbook={makePlaybook({ data: fullRow() })}
+      />,
+    );
+    expect(screen.getByText(/RECOMMENDED/i)).toBeInTheDocument();
+    expect(screen.getByText(/debit_call_spread/)).toBeInTheDocument();
+    expect(screen.getByText(/AVOID/i)).toBeInTheDocument();
+    expect(screen.getByText(/iron_condor/)).toBeInTheDocument();
+  });
+
+  it('renders the futures plan and narrative blocks', () => {
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        view={makeView()}
+        playbook={makePlaybook({ data: fullRow() })}
+      />,
+    );
+    expect(screen.getByText(/Futures Plan/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Tight two-sided regime with charm pinning at 5805/i),
+    ).toBeInTheDocument();
+  });
+
+  it('renders staleness as a red chip when slot is over 25 minutes old', () => {
+    const stale = new Date(Date.now() - 40 * 60_000).toISOString();
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        view={makeView()}
+        playbook={makePlaybook({
+          data: fullRow({
+            slotCapturedAt: stale,
+            readTime: stale,
+            createdAt: stale,
+          }),
+        })}
+      />,
+    );
+    // The staleness chip uses an aria-label like "Slot age 40m ago" — we
+    // assert the chip exists and is rendered with the minute count.
+    expect(
+      screen.getByLabelText(/Slot age 40m ago/i),
+    ).toBeInTheDocument();
+  });
+
+  it('returns null section content when playbook.error is set (fall through to fallback)', () => {
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        view={makeView()}
+        playbook={makePlaybook({ data: null, error: 'HTTP 500' })}
+      />,
+    );
+    // Claude Playbook header should NOT appear when error is set.
+    expect(screen.queryByText(/Claude Playbook/i)).not.toBeInTheDocument();
+    // Deterministic Trade Plan should still be visible.
+    expect(screen.getByText(/Trade Plan/i)).toBeInTheDocument();
+  });
+});

@@ -35,6 +35,8 @@ import {
   type TradePlan,
   type Verdict,
 } from '../../utils/periscope-trade-plan';
+import type { UsePeriscopePlaybookReturn } from '../../hooks/usePeriscopePlaybook';
+import { PlaybookSection } from './PlaybookSection';
 
 interface PeriscopePanelProps {
   view: PeriscopeView | null;
@@ -49,6 +51,13 @@ interface PeriscopePanelProps {
   selectedSlot: PeriscopeSelectedSlot | null;
   /** Callback to change the selected slot. Pass null to drop back to live. */
   onSelectSlot: (slot: PeriscopeSelectedSlot | null) => void;
+  /**
+   * Optional Claude-generated playbook. Rendered as the top section
+   * when available with status='complete'. The deterministic TradePlan
+   * section remains beneath as a fallback so the panel stays useful
+   * when no auto-playbook row exists yet (Risk R14 in the spec).
+   */
+  playbook?: UsePeriscopePlaybookReturn | undefined;
 }
 
 /** Convert an ISO captured_at to a CT HH:MM string (zero-padded).
@@ -118,6 +127,7 @@ function PeriscopePanelInner({
   availableSlots,
   selectedSlot,
   onSelectSlot,
+  playbook,
 }: PeriscopePanelProps) {
   // Resolve the displayed slot's CT timestamps. When the rendered view
   // exists, prefer its captured_at (ground truth). Otherwise fall back
@@ -254,7 +264,7 @@ function PeriscopePanelInner({
       </p>
     );
   } else {
-    body = <PeriscopeBody view={view} />;
+    body = <PeriscopeBody view={view} playbook={playbook} />;
   }
 
   return (
@@ -268,8 +278,16 @@ function PeriscopePanelInner({
   );
 }
 
-function PeriscopeBody({ view }: { view: PeriscopeView }) {
+function PeriscopeBody({
+  view,
+  playbook,
+}: {
+  view: PeriscopeView;
+  playbook?: UsePeriscopePlaybookReturn | undefined;
+}) {
   const plan = useMemo(() => computeTradePlan(view), [view]);
+  const hasClaudePlaybook =
+    playbook?.data != null && playbook.data.panelPayload != null;
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-baseline justify-between font-mono text-[11px]">
@@ -279,7 +297,12 @@ function PeriscopeBody({ view }: { view: PeriscopeView }) {
         <span style={{ color: theme.text }}>spot {view.spot.toFixed(2)}</span>
       </div>
 
-      <TradePlanSection plan={plan} />
+      {playbook != null && <PlaybookSection playbook={playbook} />}
+
+      {/* Deterministic client-derived trade plan stays as a fallback /
+          comparison surface — Risk R14 in the spec. Hidden visually when
+          Claude's playbook is fresh to keep the panel concise. */}
+      {!hasClaudePlaybook && <TradePlanSection plan={plan} />}
 
       {view.cone && <ConeSection view={view} />}
       <GammaSection view={view} />
