@@ -289,6 +289,32 @@ async function loadPendingSlots() {
   return byDay;
 }
 
+/**
+ * Count total + already-analyzed snapshot slots for the requested
+ * range. Lets the script distinguish "already done" (idempotent re-run)
+ * from "no data" (genuinely empty range) in the empty-result branch.
+ */
+async function loadSlotInventory() {
+  const todayCt = todayCtIso();
+  const rows = await sql`
+    SELECT
+      COUNT(DISTINCT s.captured_at)::int AS total,
+      COUNT(DISTINCT a.slot_captured_at)::int AS analyzed
+    FROM periscope_snapshots s
+    LEFT JOIN periscope_analyses a
+      ON a.slot_captured_at = s.captured_at
+      AND a.auto_generated = TRUE
+    WHERE s.panel = 'gamma'
+      AND s.timeframe IS NOT NULL
+      AND (s.captured_at AT TIME ZONE 'America/Chicago')::date
+          BETWEEN ${BACKFILL_START}::date AND ${BACKFILL_END}::date
+      AND (s.captured_at AT TIME ZONE 'America/Chicago')::date < ${todayCt}::date
+  `;
+  const total = Number(rows[0]?.total ?? 0);
+  const analyzed = Number(rows[0]?.analyzed ?? 0);
+  return { total, analyzed };
+}
+
 // ── Webhook helpers ────────────────────────────────────────────────
 
 async function postOneSlot({ tradingDate, capturedAt, slotKey }) {
@@ -458,14 +484,31 @@ async function main() {
   }
 
   console.log('▸ Querying periscope_snapshots for pending slots…');
+  const inventory = await loadSlotInventory();
   const byDay = await loadPendingSlots();
   const dayCount = byDay.size;
   let slotCount = 0;
   for (const slots of byDay.values()) slotCount += slots.length;
 
-  console.log(`  ${dayCount} days × ${slotCount} total slots pending`);
+  console.log(
+    `  inventory: ${inventory.total} total snapshot slots in range, ` +
+      `${inventory.analyzed} already analyzed`,
+  );
+  console.log(`  ${dayCount} days × ${slotCount} pending slots to fire`);
+
   if (slotCount === 0) {
-    console.log('▸ Nothing to backfill. Exiting.');
+    if (inventory.total === 0) {
+      console.log(
+        '▸ No periscope_snapshots rows for the requested range. ' +
+          'Either the date is outside the scraper window or the scraper ' +
+          'gapped that day — check with scripts/audit-periscope-scraper.py.',
+      );
+    } else {
+      console.log(
+        `▸ All ${inventory.total} slots already have auto-generated ` +
+          'playbooks. Idempotent re-run — nothing to do.',
+      );
+    }
     return;
   }
 
