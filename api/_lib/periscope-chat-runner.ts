@@ -443,8 +443,19 @@ export async function runPeriscopeAutoPlaybook(
       messages: [{ role: 'user', content: userContent }],
       primaryModel: MODEL,
       fallbackModel,
-      maxTokens: 64_000,
-      effort: 'high',
+      // 128K (Opus 4.7's full output ceiling) gives adaptive thinking
+      // breathing room without hitting stop_reason='max_tokens' on
+      // dense slots. Real observed output ~5-6K tokens, so the
+      // ceiling is only billed if Claude needs it.
+      maxTokens: 128_000,
+      // xhigh is Anthropic's recommended effort for agentic /
+      // coding-style Opus 4.7 use. Sits between 'high' and 'max'.
+      // Roughly doubles wall clock vs 'high' (≈120-150s observed)
+      // but still fits well under the 660s SDK timeout.
+      effort: 'xhigh',
+      // Sonnet 4.6 doesn't support xhigh — drop to high on fallback so
+      // the 529-overload retry path doesn't compound errors.
+      fallbackEffort: 'high',
       fallbackMetric: 'periscope_auto_playbook.opus_fallback',
     });
   } catch (err) {

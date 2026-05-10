@@ -67,10 +67,20 @@ export interface AnthropicCallOptions {
   /**
    * `output_config.effort` for the primary call. Forwarded verbatim.
    * Optional — leave undefined for the SDK default.
+   *
+   * Levels (Opus 4.7+): low | medium | high | xhigh | max.
+   * Anthropic's recommended default for agentic / coding work on
+   * Opus 4.7 is xhigh. max is Opus-only and the most expensive.
    */
-  effort?: 'low' | 'medium' | 'high';
-  /** `output_config.effort` for the fallback. Defaults to `effort`. */
-  fallbackEffort?: 'low' | 'medium' | 'high';
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  /**
+   * `output_config.effort` for the fallback. Defaults to `effort`.
+   *
+   * Set explicitly to `'high'` when the primary is `'xhigh'` or `'max'`
+   * — those levels are Opus 4.7+ only and the typical Sonnet 4.6
+   * fallback would 400 on them.
+   */
+  fallbackEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   /**
    * Whether to enable adaptive thinking on the primary call. Defaults
    * to `true` — every adoption site uses it today.
@@ -149,7 +159,7 @@ export async function runCachedAnthropicCall(
   const buildStream = (
     model: string,
     tokens: number,
-    eff: 'low' | 'medium' | 'high' | undefined,
+    eff: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined,
   ) => {
     const params: Record<string, unknown> = {
       model,
