@@ -72,7 +72,11 @@
  *   BACKFILL_START=2026-04-08 BACKFILL_END=2026-05-08 \
  *     node scripts/backfill-periscope-playbook.mjs
  *
- *   # 5. Preserve parent_id chains within each day at the cost of
+ *   # 5. Single day — use --date to run just one trading day. Overrides
+ *   #    both BACKFILL_START and BACKFILL_END. Format YYYY-MM-DD CT.
+ *   node scripts/backfill-periscope-playbook.mjs --date 2026-03-26
+ *
+ *   # 6. Preserve parent_id chains within each day at the cost of
  *   #    runtime — wait WITHIN_DAY_DELAY_MS between slots so each
  *   #    Claude call has time to complete before the next slot's
  *   #    parent lookup runs. Default 0 (fast, parents mostly null);
@@ -148,8 +152,43 @@ function stripTrailingSlashes(s) {
   return s.slice(0, i);
 }
 
-const BACKFILL_START = (process.env.BACKFILL_START ?? '2025-11-10').trim();
-const BACKFILL_END = (process.env.BACKFILL_END ?? yesterdayCtIso()).trim();
+/**
+ * Parse the optional `--date YYYY-MM-DD` (space-separated) or
+ * `--date=YYYY-MM-DD` (equals-separated) flag. When set, both START
+ * and END collapse to that single date. Bails on a malformed value so
+ * the user sees the typo immediately rather than after the script
+ * runs against an empty range.
+ */
+function parseDateFlag() {
+  const argv = process.argv;
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a === '--date') {
+      const next = argv[i + 1] ?? '';
+      return validateDate(next, '--date <DATE>');
+    }
+    if (a.startsWith('--date=')) {
+      return validateDate(a.slice('--date='.length), '--date=<DATE>');
+    }
+  }
+  return null;
+}
+
+function validateDate(value, sourceLabel) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    console.error(
+      `ERROR: ${sourceLabel} requires YYYY-MM-DD, got "${value}"`,
+    );
+    process.exit(1);
+  }
+  return value;
+}
+
+const DATE_FLAG = parseDateFlag();
+const BACKFILL_START = DATE_FLAG
+  ?? (process.env.BACKFILL_START ?? '2025-11-10').trim();
+const BACKFILL_END = DATE_FLAG
+  ?? (process.env.BACKFILL_END ?? yesterdayCtIso()).trim();
 const WITHIN_DAY_DELAY_MS = Number.parseInt(
   process.env.WITHIN_DAY_DELAY_MS ?? '0',
   10,
@@ -395,11 +434,28 @@ async function main() {
   console.log('  Periscope Auto-Playbook Historical Backfill');
   console.log('═══════════════════════════════════════════════════════════');
   console.log(`  endpoint:               ${ENDPOINT}`);
-  console.log(`  date range:             ${BACKFILL_START} → ${BACKFILL_END}`);
+  if (DATE_FLAG == null) {
+    console.log(`  date range:             ${BACKFILL_START} → ${BACKFILL_END}`);
+  } else {
+    console.log(`  mode:                   single day (--date ${DATE_FLAG})`);
+  }
   console.log(`  cross-day concurrency:  ${CROSS_DAY_CONCURRENCY}`);
   console.log(`  within-day delay:       ${WITHIN_DAY_DELAY_MS} ms`);
   console.log(`  dry run:                ${DRY ? 'YES' : 'no'}`);
   console.log('');
+
+  // Helpful early warning: when the user passes --date today, the SQL
+  // filter excludes today (it's reserved for live forward firing) and
+  // they'd otherwise see a confusing "Nothing to backfill" message
+  // without knowing why.
+  if (DATE_FLAG != null && DATE_FLAG === todayCtIso()) {
+    console.warn(
+      `  ⚠  --date ${DATE_FLAG} is today's CT date.\n` +
+        `     Live forward firing handles today; the script intentionally\n` +
+        `     skips it. Pick a past date.`,
+    );
+    return;
+  }
 
   console.log('▸ Querying periscope_snapshots for pending slots…');
   const byDay = await loadPendingSlots();
