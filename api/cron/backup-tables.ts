@@ -47,8 +47,8 @@ const RETENTION_WEEKS = 4;
 // Neon's serverless HTTP driver caps responses at 64 MiB (67,108,864
 // bytes). One unbounded SELECT * on a tape table that has grown past
 // ~50 MB overruns the cap and the whole backup row aborts with HTTP
-// 507. Chunk via LIMIT/OFFSET — 50k rows × ~1 KB/row = ~50 MB per
-// round-trip, well under the limit. See SENTRY-EMERALD-DESERT-6V.
+// 507. Chunk via LIMIT/OFFSET; 50k rows × ~1 KB/row = ~50 MB per
+// round-trip, comfortably under the limit. See SENTRY-EMERALD-DESERT-6V.
 const EXPORT_CHUNK_ROWS = 50_000;
 
 /**

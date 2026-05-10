@@ -40,8 +40,8 @@ export default withCronCheckin('fetch-futures-snapshot', async (req, res) => {
   // Futures are closed Sat all day, Fri 4pm-Sun 5pm CT, and the daily
   // 4-5pm CT maint window. computeSnapshot would fail every symbol for
   // lack of fresh bars, returning 500 every 5 min and burning Sentry's
-  // cron monitor. Skip cleanly with a 200 so the wrapper records an `ok`
-  // check-in. See SENTRY-EMERALD-DESERT-5E.
+  // cron monitor. Return 200 so withCronCheckin records an `ok` status
+  // on the closed-market path. See SENTRY-EMERALD-DESERT-5E.
   if (!isFuturesMarketOpen(now)) {
     logger.info(
       { ts: now.toISOString() },
