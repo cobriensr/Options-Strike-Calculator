@@ -288,6 +288,39 @@ describe('periscope-auto-playbook handler — mode derivation', () => {
     expect(res._json).toMatchObject({ mode: 'debrief' });
   });
 
+  it('anchors readTimeCt to END of timeframe (not START) for pre_trade', async () => {
+    // Regression: previously deriveMode used the START of the
+    // timeframe label as the spot-lookup anchor. For pre_trade that's
+    // 08:20 CT — pre-market — and fetchSPXSpotAtTimestamp filters to
+    // regular-hours candles only, so the lookup returned null and the
+    // endpoint 422'd. Anchoring at the END (08:30, market open)
+    // lands on the first regular-hours candle.
+    const req = postReq({
+      headers: authHeaders(),
+      body: { ...VALID_BODY, slotKey: '08:20 - 08:30' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(202);
+    // fetchSPXSpotAtTimestamp was called with time='08:30' (END), not '08:20'.
+    expect(mockFetchSpot).toHaveBeenCalledWith(
+      expect.objectContaining({ time: '08:30' }),
+    );
+  });
+
+  it('anchors readTimeCt to END for debrief (15:00, not 14:50)', async () => {
+    const req = postReq({
+      headers: authHeaders(),
+      body: { ...VALID_BODY, slotKey: '14:50 - 15:00' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(202);
+    expect(mockFetchSpot).toHaveBeenCalledWith(
+      expect.objectContaining({ time: '15:00' }),
+    );
+  });
+
   it('classifies 11:30 - 11:40 as intraday', async () => {
     const req = postReq({
       headers: authHeaders(),

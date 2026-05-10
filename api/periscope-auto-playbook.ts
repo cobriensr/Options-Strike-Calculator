@@ -94,13 +94,22 @@ function deriveMode(slotKey: string): ModeDerivation | null {
   if (!m) return null;
   const startHour = Number.parseInt(m[1] ?? '0', 10);
   const startMinute = Number.parseInt(m[2] ?? '0', 10);
+  const endHour = Number.parseInt(m[3] ?? '0', 10);
+  const endMinute = Number.parseInt(m[4] ?? '0', 10);
   const startMin = startHour * 60 + startMinute;
 
   if (startMin < FIRST_ANALYZABLE_MIN) return null;
   if (startMin > LAST_ANALYZABLE_START_MIN) return null;
 
-  // Format start as HH:MM (read_time anchor for the row)
-  const readTimeCt = `${String(startHour).padStart(2, '0')}:${String(startMinute).padStart(2, '0')}`;
+  // Anchor read_time at the END of the timeframe label, not the START.
+  // The scraper captures `captured_at` at the END of each 10-min slot
+  // (when the chart's data for that slot is published), so anchoring
+  // the spot lookup to the END aligns with the moment the read is
+  // actually "for". Critical for the pre_trade slot: START (08:20 CT)
+  // falls in pre-market and `fetchSPXSpotAtTimestamp` filters to
+  // regular-hours candles only → 422. END (08:30 CT) lands exactly on
+  // the first regular-hours candle.
+  const readTimeCt = `${String(endHour).padStart(2, '0')}:${String(endMinute).padStart(2, '0')}`;
 
   if (slotKey === FIRST_ANALYZABLE_SLOT)
     return { mode: 'pre_trade', readTimeCt };

@@ -243,15 +243,23 @@ function todayCtIso() {
 const sql = neon(DATABASE_URL);
 
 /**
- * Pull distinct (trading_date, captured_at, timeframe) tuples from
- * periscope_snapshots for the range, EXCLUDING slots that already
- * have an auto-generated playbook row. Returns rows grouped by
- * trading_date with slots sorted ascending.
+ * Pull one row per (trading_date, timeframe) from periscope_snapshots
+ * for the range, EXCLUDING slots that already have an auto-generated
+ * playbook row. Returns rows grouped by trading_date with slots
+ * sorted ascending.
+ *
+ * The scraper has historically captured the same timeframe label
+ * multiple times per CT date (e.g., an overnight read at 03:30 CDT
+ * AND the RTH read at 08:30 CDT both labeled "08:20-08:30"). Without
+ * deduping, the script would fire two webhooks per timeframe and
+ * land bogus pre-market rows. DISTINCT ON picks the LATEST
+ * captured_at per (trading_date, timeframe) — the RTH read wins,
+ * matching the live forward path's "most recent tick wins" semantic.
  */
 async function loadPendingSlots() {
   const todayCt = todayCtIso();
   const rows = await sql`
-    SELECT
+    SELECT DISTINCT ON ((s.captured_at AT TIME ZONE 'America/Chicago')::date, s.timeframe)
       (s.captured_at AT TIME ZONE 'America/Chicago')::date AS trading_date,
       s.captured_at,
       s.timeframe
@@ -266,8 +274,10 @@ async function loadPendingSlots() {
         WHERE a.auto_generated = TRUE
           AND a.slot_captured_at = s.captured_at
       )
-    GROUP BY trading_date, s.captured_at, s.timeframe
-    ORDER BY trading_date ASC, s.captured_at ASC
+    ORDER BY
+      (s.captured_at AT TIME ZONE 'America/Chicago')::date ASC,
+      s.timeframe ASC,
+      s.captured_at DESC
   `;
 
   // Group by trading_date.
@@ -290,28 +300,55 @@ async function loadPendingSlots() {
 }
 
 /**
- * Count total + already-analyzed snapshot slots for the requested
- * range. Lets the script distinguish "already done" (idempotent re-run)
- * from "no data" (genuinely empty range) in the empty-result branch.
+ * Count total + already-analyzed UNIQUE (trading_date, timeframe)
+ * slots for the requested range. Lets the script distinguish
+ * "already done" (idempotent re-run) from "no data" (genuinely
+ * empty range) in the empty-result branch. Counts pairs of
+ * (trading_date, timeframe) — not raw captured_at — to match the
+ * dedupe semantics in loadPendingSlots.
  */
 async function loadSlotInventory() {
   const todayCt = todayCtIso();
-  const rows = await sql`
-    SELECT
-      COUNT(DISTINCT s.captured_at)::int AS total,
-      COUNT(DISTINCT a.slot_captured_at)::int AS analyzed
-    FROM periscope_snapshots s
-    LEFT JOIN periscope_analyses a
-      ON a.slot_captured_at = s.captured_at
-      AND a.auto_generated = TRUE
-    WHERE s.panel = 'gamma'
-      AND s.timeframe IS NOT NULL
-      AND (s.captured_at AT TIME ZONE 'America/Chicago')::date
-          BETWEEN ${BACKFILL_START}::date AND ${BACKFILL_END}::date
-      AND (s.captured_at AT TIME ZONE 'America/Chicago')::date < ${todayCt}::date
+  // Total = distinct (trading_date, timeframe) pairs in snapshots.
+  const totalRows = await sql`
+    SELECT COUNT(*)::int AS total
+    FROM (
+      SELECT DISTINCT
+        (s.captured_at AT TIME ZONE 'America/Chicago')::date AS d,
+        s.timeframe
+      FROM periscope_snapshots s
+      WHERE s.panel = 'gamma'
+        AND s.timeframe IS NOT NULL
+        AND (s.captured_at AT TIME ZONE 'America/Chicago')::date
+            BETWEEN ${BACKFILL_START}::date AND ${BACKFILL_END}::date
+        AND (s.captured_at AT TIME ZONE 'America/Chicago')::date < ${todayCt}::date
+    ) t
   `;
-  const total = Number(rows[0]?.total ?? 0);
-  const analyzed = Number(rows[0]?.analyzed ?? 0);
+  // Analyzed = pairs where an auto_generated row exists at the latest
+  // captured_at per (trading_date, timeframe). Matches what
+  // loadPendingSlots considers "already done".
+  const analyzedRows = await sql`
+    SELECT COUNT(*)::int AS analyzed
+    FROM (
+      SELECT DISTINCT ON ((s.captured_at AT TIME ZONE 'America/Chicago')::date, s.timeframe)
+        s.captured_at
+      FROM periscope_snapshots s
+      WHERE s.panel = 'gamma'
+        AND s.timeframe IS NOT NULL
+        AND (s.captured_at AT TIME ZONE 'America/Chicago')::date
+            BETWEEN ${BACKFILL_START}::date AND ${BACKFILL_END}::date
+        AND (s.captured_at AT TIME ZONE 'America/Chicago')::date < ${todayCt}::date
+      ORDER BY
+        (s.captured_at AT TIME ZONE 'America/Chicago')::date ASC,
+        s.timeframe ASC,
+        s.captured_at DESC
+    ) latest
+    INNER JOIN periscope_analyses a
+      ON a.slot_captured_at = latest.captured_at
+      AND a.auto_generated = TRUE
+  `;
+  const total = Number(totalRows[0]?.total ?? 0);
+  const analyzed = Number(analyzedRows[0]?.analyzed ?? 0);
   return { total, analyzed };
 }
 
