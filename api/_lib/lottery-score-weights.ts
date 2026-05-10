@@ -22,20 +22,20 @@ import type { LotteryMode, TimeOfDay } from './lottery-finder.js';
 
 export const LOTTERY_TICKER_WEIGHTS: Readonly<Record<string, number>> = {
   SNDK: 10,
+  RKLB: 10,
   SLV: 10,
-  USO: 10,
-  TSLA: 10,
   SOXL: 10,
+  TSLA: 10,
+  USO: 7,
   TQQQ: 7,
   AMZN: 7,
   NVDA: 7,
   GOOG: 7,
-  QQQ: 7,
   OKLO: 5,
   APLD: 5,
   MSFT: 5,
-  CAR: 5,
   QCOM: 5,
+  CAR: 5,
 };
 
 /** ($ entry price ≤ threshold → points). Evaluated in order; first match wins. */

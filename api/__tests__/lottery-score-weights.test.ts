@@ -10,10 +10,12 @@ import {
 
 describe('computeLotteryScore', () => {
   it('returns the maximum score for a top-tier 0DTE call', () => {
-    // USO (10) + 0DTE (5) + price ≤ $0.50 (5) + AM_open (3) + call (2)
+    // SNDK (10) + 0DTE (5) + price ≤ $0.50 (5) + AM_open (3) + call (2)
+    // Use a tier-1 ticker (weight 10) so this asserts the actual ceiling;
+    // USO is tier-2 (weight 7) and would only sum to 22.
     expect(
       computeLotteryScore({
-        ticker: 'USO',
+        ticker: 'SNDK',
         mode: 'A_intraday_0DTE',
         entryPrice: 0.4,
         tod: 'AM_open',
