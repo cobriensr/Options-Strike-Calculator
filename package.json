@@ -42,7 +42,7 @@
     "@vercel/blob": "^2.3.3",
     "@vercel/functions": "^3.4.4",
     "@vercel/speed-insights": "^2.0.0",
-    "@vercel/toolbar": "^0.2.2",
+    "@vercel/toolbar": "^0.2.5",
     "botid": "^1.5.11",
     "lightweight-charts": "^5.1.0",
     "openai": "^6.32.0",
