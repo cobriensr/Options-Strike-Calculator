@@ -91,11 +91,6 @@ const PositionMonitor = lazy(() =>
 const MLInsights = lazy(() =>
   import('./components/MLInsights').catch(handleStaleChunk),
 );
-const PeriscopeChat = lazy(() =>
-  import('./components/PeriscopeChat/PeriscopeChat.tsx').catch(
-    handleStaleChunk,
-  ),
-);
 const PeriscopeChatHistory = lazy(() =>
   import('./components/PeriscopeChat/PeriscopeChatHistory.tsx').catch(
     handleStaleChunk,
@@ -656,9 +651,6 @@ export default function StrikeCalculator() {
             },
           ]
         : []),
-      ...(isOwner
-        ? [{ id: 'sec-periscope-chat', label: 'Periscope Chat' }]
-        : []),
       ...(isAuthenticated
         ? [{ id: 'sec-periscope-history', label: 'Periscope History' }]
         : []),
@@ -666,7 +658,7 @@ export default function StrikeCalculator() {
       ...(isAuthenticated ? [{ id: 'sec-bwb', label: 'BWB Calculator' }] : []),
       { id: 'results', label: 'Results' },
     ];
-  }, [isAuthenticated, isOwner, hasMarketOrSnapshot]);
+  }, [isAuthenticated, hasMarketOrSnapshot]);
 
   const analysisContext = useAnalysisContext({
     selectedDate: vix.selectedDate,
@@ -1102,22 +1094,12 @@ export default function StrikeCalculator() {
                   />
                 </GatedSection>
 
-                {/* Owner-only: Periscope Chat submits cost Anthropic
-                    money, so guests don't see the panel even though
-                    they CAN read the resulting playbooks via History. */}
-                {isOwner && (
-                  <>
-                    <span
-                      id="sec-periscope-chat"
-                      className="block scroll-mt-28"
-                    />
-                    <ErrorBoundary label="Periscope Chat">
-                      <Suspense fallback={<SkeletonSection lines={4} tall />}>
-                        <PeriscopeChat />
-                      </Suspense>
-                    </ErrorBoundary>
-                  </>
-                )}
+                {/* Manual Periscope Chat upload UI removed in Phase 4d
+                    of docs/superpowers/specs/periscope-auto-playbook-2026-05-10.md
+                    — the scraper-triggered auto-playbook now produces a
+                    playbook every 10-min RTH tick and renders directly in
+                    PeriscopePanel above. PeriscopeChatHistory remains for
+                    reviewing past entries (manual + auto). */}
 
                 {isAuthenticated && (
                   <>
