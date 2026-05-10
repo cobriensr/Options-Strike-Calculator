@@ -7,38 +7,43 @@
 # every deploy uploads ~hundreds of MB of Python venvs, Playwright +
 # Chromium binaries, and ML plots that no Vercel function can use.
 #
+# IMPORTANT: All top-level directory patterns are anchored with a
+# leading "/" so they match the repo root only. Without anchoring,
+# gitignore-style globs like "ml/" match at any depth — which would
+# also exclude api/ml/ (a real Vercel endpoint folder) and break the
+# build. "/ml/" matches the root ml/ directory only.
+#
 # When adding a new top-level directory that Vercel shouldn't touch,
-# add it here AND to vercel.json's ignoreCommand path list to keep the
-# two aligned.
+# add it here (with a leading "/") AND to vercel.json's ignoreCommand
+# path list to keep the two aligned.
 
 # Railway-deployed services — never run on Vercel
-sidecar/
-uw-stream/
-periscope-scraper/
-daemon/
+/sidecar/
+/uw-stream/
+/periscope-scraper/
+/daemon/
 
-# Python ML pipeline + research — local + GH Actions only
-ml/
+# Python ML pipeline + research — local + GH Actions only.
+# Anchored — api/ml/ contains real Vercel endpoint handlers and must
+# NOT be excluded.
+/ml/
 
 # Pine Script (TradingView) — not deployed anywhere
-pine/
+/pine/
 
 # Operational scripts (backfills, probes, audits) — local-only
-scripts/
+/scripts/
 
 # Documentation — not needed at runtime
-docs/
-*.md
+/docs/
+/*.md
 
 # E2E + Playwright artifacts — local + CI only
-e2e/
-playwright-report/
-test-results/
+/e2e/
+/playwright-report/
+/test-results/
 
-# Python build artifacts that may exist anywhere
+# Python build artifacts that may exist anywhere in the repo
 **/__pycache__/
 **/.venv/
 **/.pytest_cache/
-
-# Local scratch / temp output
-docs/tmp/
