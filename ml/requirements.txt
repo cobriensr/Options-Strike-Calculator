@@ -5,7 +5,7 @@ cycler==0.12.1
 databento==0.75.0
 duckdb>=1.0
 fonttools==4.62.1
-idna==3.11
+idna==3.13
 iniconfig==2.3.0
 joblib==1.5.3
 kiwisolver==1.5.0
