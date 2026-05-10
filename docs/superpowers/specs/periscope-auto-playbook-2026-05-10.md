@@ -232,10 +232,12 @@ Modify `periscope-scraper/src/index.ts` `runTick()`:
 
 ### Phase 5 — Historical backfill script (DEFERRED — on-demand)
 
-**Status:** Script delivered, not run. Initial deployment is forward-only —
-the auto-playbook starts accumulating entries from Monday's first scrape.
-The backfill script is built and tested but only invoked when the user is
-ready to spend the one-time cost (estimated $400-1500, see below).
+**Status:** Script delivered 2026-05-10, **not run**. Initial deployment is
+forward-only — the auto-playbook starts accumulating entries from Monday's
+first scrape. The backfill script (`scripts/backfill-periscope-playbook.mjs`)
+is built, syntax-validated, and dormant; invoke it when ready to spend the
+one-time cost (~$440–$930, see below). Full invocation context lives in
+the script's header docblock — read it before running.
 
 One-shot script when invoked: iterate Nov 2025–May 2026 trading days × all
 `periscope_snapshots.captured_at` slots, call the auto-playbook endpoint in
