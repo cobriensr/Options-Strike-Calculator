@@ -305,6 +305,16 @@ describe('periscope-auto-playbook handler — mode derivation', () => {
     expect(res._status).toBe(422);
   });
 
+  it('returns 422 on the 08:10 - 08:20 slot one-before pre_trade boundary', async () => {
+    const req = postReq({
+      headers: authHeaders(),
+      body: { ...VALID_BODY, slotKey: '08:10 - 08:20' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(422);
+  });
+
   it('returns 422 on post-close 15:00 - 15:10 slot', async () => {
     const req = postReq({
       headers: authHeaders(),

@@ -61,10 +61,14 @@ const FALLBACK_MODEL_DEFAULT = 'claude-sonnet-4-6';
 // the SDK surfaces a clean timeout rather than getting killed mid-stream.
 const SDK_TIMEOUT_MS = 660_000;
 
-// Skill + references load at module init. The same SKILLS_DIR resolution
-// pattern as `api/periscope-chat.ts` (via vercel.json includeFiles).
+// Skill + references load at module init. SKILLS_DIR resolves to
+// `<repo-root>/.claude/skills` — TWO levels up from `api/_lib/` (where
+// this file lives) vs. ONE level for `api/periscope-chat.ts`. The
+// vercel.json `includeFiles: ".claude/skills/**/*.md"` ships the
+// directory under `/var/task/.claude/skills` regardless of which
+// function imports the runner.
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SKILLS_DIR = join(__dirname, '..', '.claude', 'skills');
+const SKILLS_DIR = join(__dirname, '..', '..', '.claude', 'skills');
 
 const PERISCOPE_SKILL: string = (() => {
   try {

@@ -264,10 +264,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
   const readTimeIso = new Date(utcMs).toISOString();
 
+  // 5-min tolerance: scraper webhook fires immediately after the slot
+  // snapshot lands, racing `fetch-spx-candles-1m` (per-minute cron). The
+  // 2-min default in manual chat assumed the user picks a time after
+  // candles already exist; in the auto path the candle may still be
+  // landing. 5 min covers the worst-case write lag without snapping to
+  // an irrelevant bar.
   const spotLookup = await fetchSPXSpotAtTimestamp({
     date: body.tradingDate,
     time: readTimeCt,
-    toleranceMin: 2,
+    toleranceMin: 5,
     isLiveRead: false,
   }).catch((err: unknown) => {
     Sentry.captureException(err);
@@ -344,6 +350,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       body.capturedAt,
     );
     if (winnerId != null) {
+      logger.warn(
+        {
+          rowId: winnerId,
+          tradingDate: body.tradingDate,
+          slotCapturedAt: body.capturedAt,
+          mode,
+        },
+        'auto-playbook: unique-constraint race resolved — returning winner id',
+      );
+      Sentry.addBreadcrumb({
+        category: 'auto-playbook',
+        message: 'unique-constraint race resolved',
+        level: 'info',
+        data: { rowId: winnerId, slotCapturedAt: body.capturedAt },
+      });
       done({ status: 200 });
       return res.status(200).json({
         rowId: winnerId,
@@ -352,6 +373,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         raceLoser: true,
       });
     }
+    Sentry.captureMessage('auto-playbook: in_progress insert failed', {
+      tags: {
+        module: 'auto-playbook',
+        stage: 'insert_failed',
+        mode,
+      },
+    });
     done({ status: 500, error: 'insert_failed' });
     return res.status(500).json({ error: 'Failed to insert in_progress row' });
   }
