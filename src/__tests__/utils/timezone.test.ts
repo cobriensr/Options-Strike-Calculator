@@ -5,6 +5,8 @@ import {
   getETDateStr,
   getCTDateStr,
   getETDayOfWeek,
+  getCTDayOfWeek,
+  isFuturesMarketOpen,
   getETDayOfWeekFromDateStr,
   getETTotalMinutes,
   getCTToETOffsetMinutes,
@@ -89,6 +91,23 @@ describe('timezone utilities', () => {
     it('returns Saturday as 6', () => {
       const saturday = new Date('2026-03-14T15:00:00Z');
       expect(getETDayOfWeek(saturday)).toBe(6);
+    });
+
+    it('returns CT weekday for Saturday afternoon CT', () => {
+      // 2026-05-09 is a Saturday — sample at 22:05 CT (= 03:05Z Sun in UTC)
+      const satNightCT = new Date('2026-05-10T03:05:00Z');
+      expect(getCTDayOfWeek(satNightCT)).toBe(6);
+      // ET is one hour ahead — but at 03:05Z it's 23:05 ET Saturday too,
+      // so this date doesn't expose the cross-midnight CT/ET divergence.
+      expect(getETDayOfWeek(satNightCT)).toBe(6);
+    });
+
+    it('reports a different day in CT vs ET around CT midnight', () => {
+      // 2026-05-09 23:30 CT = Sat → 2026-05-10 00:30 ET = Sun.
+      // 23:30 CT in UTC is 04:30Z next day during CDT (UTC-5).
+      const ctSatEtSun = new Date('2026-05-10T04:30:00Z');
+      expect(getCTDayOfWeek(ctSatEtSun)).toBe(6); // Saturday CT
+      expect(getETDayOfWeek(ctSatEtSun)).toBe(0); // Sunday ET
     });
 
     it('falls back to date.getDay() when formatToParts returns unrecognized weekday', () => {
@@ -400,6 +419,62 @@ describe('timezone utilities', () => {
       expect(wallClockToUtcIso('not-a-date', 0, ET)).toBeNull();
       expect(wallClockToUtcIso('2026-13-01', 0, CT)).toBeNull();
       expect(wallClockToUtcIso('', 0, ET)).toBeNull();
+    });
+  });
+
+  describe('isFuturesMarketOpen', () => {
+    // CME equity-index futures: Sun 17:00 CT - Fri 16:00 CT, with a daily
+    // 16:00-17:00 CT maintenance break Mon-Thu, Saturday closed.
+    // All test instants are constructed in UTC and verified to land on
+    // the asserted CT wall-clock by getCTDayOfWeek + getCTTime.
+
+    it('returns true Wed mid-day during regular hours', () => {
+      // 2026-05-06 (Wed) 14:30 UTC = 09:30 CT (CDT, UTC-5)
+      expect(isFuturesMarketOpen(new Date('2026-05-06T14:30:00Z'))).toBe(true);
+    });
+
+    it('returns false during the daily 16:00-17:00 CT maint break Mon-Thu', () => {
+      // 2026-05-06 (Wed) 21:30 UTC = 16:30 CT
+      expect(isFuturesMarketOpen(new Date('2026-05-06T21:30:00Z'))).toBe(false);
+    });
+
+    it('returns true once the maint break ends at 17:00 CT', () => {
+      // 2026-05-06 (Wed) 22:00 UTC = 17:00 CT
+      expect(isFuturesMarketOpen(new Date('2026-05-06T22:00:00Z'))).toBe(true);
+    });
+
+    it('returns false on Friday at and after 16:00 CT (weekly close)', () => {
+      // 2026-05-08 (Fri) 21:00 UTC = 16:00 CT
+      expect(isFuturesMarketOpen(new Date('2026-05-08T21:00:00Z'))).toBe(false);
+      // 2026-05-08 (Fri) 23:30 UTC = 18:30 CT
+      expect(isFuturesMarketOpen(new Date('2026-05-08T23:30:00Z'))).toBe(false);
+    });
+
+    it('returns true on Friday before 16:00 CT', () => {
+      // 2026-05-08 (Fri) 20:55 UTC = 15:55 CT
+      expect(isFuturesMarketOpen(new Date('2026-05-08T20:55:00Z'))).toBe(true);
+    });
+
+    it('returns false all day Saturday', () => {
+      // 2026-05-09 (Sat) 14:00 UTC = 09:00 CT
+      expect(isFuturesMarketOpen(new Date('2026-05-09T14:00:00Z'))).toBe(false);
+      // 2026-05-10 (Sun in UTC) 03:05 UTC = 22:05 CT Saturday
+      // (the exact failing-cron timestamp from SENTRY-EMERALD-DESERT-5E)
+      expect(isFuturesMarketOpen(new Date('2026-05-10T03:05:00Z'))).toBe(false);
+    });
+
+    it('returns false on Sunday before 17:00 CT (weekly open)', () => {
+      // 2026-05-10 (Sun) 14:00 UTC = 09:00 CT
+      expect(isFuturesMarketOpen(new Date('2026-05-10T14:00:00Z'))).toBe(false);
+      // 2026-05-10 (Sun) 21:55 UTC = 16:55 CT
+      expect(isFuturesMarketOpen(new Date('2026-05-10T21:55:00Z'))).toBe(false);
+    });
+
+    it('returns true on Sunday at and after 17:00 CT', () => {
+      // 2026-05-10 (Sun) 22:00 UTC = 17:00 CT
+      expect(isFuturesMarketOpen(new Date('2026-05-10T22:00:00Z'))).toBe(true);
+      // 2026-05-10 (Sun) 23:30 UTC = 18:30 CT
+      expect(isFuturesMarketOpen(new Date('2026-05-10T23:30:00Z'))).toBe(true);
     });
   });
 });

@@ -15,7 +15,10 @@ import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 import { cronGuard, withRetry } from '../_lib/api-helpers.js';
-import { getETDateStr } from '../../src/utils/timezone.js';
+import {
+  getETDateStr,
+  isFuturesMarketOpen,
+} from '../../src/utils/timezone.js';
 import { reportCronRun } from '../_lib/axiom.js';
 import { withCronCheckin } from '../_lib/cron-instrumentation.js';
 import {
@@ -35,8 +38,26 @@ export default withCronCheckin('fetch-futures-snapshot', async (req, res) => {
   if (!guard) return;
 
   const startTime = Date.now();
-  const tradeDate = getETDateStr(new Date());
   const now = new Date();
+
+  // Futures are closed Sat all day, Fri 4pm-Sun 5pm CT, and the daily
+  // 4-5pm CT maint window. computeSnapshot would fail every symbol for
+  // lack of fresh bars, returning 500 every 5 min and burning Sentry's
+  // cron monitor. Skip cleanly with a 200 so the wrapper records an `ok`
+  // check-in. See SENTRY-EMERALD-DESERT-5E.
+  if (!isFuturesMarketOpen(now)) {
+    logger.info(
+      { ts: now.toISOString() },
+      'futures market closed — skipping snapshot',
+    );
+    return res.status(200).json({
+      job: 'fetch-futures-snapshot',
+      skipped: true,
+      reason: 'futures market closed',
+    });
+  }
+
+  const tradeDate = getETDateStr(now);
   const sql = getDb();
 
   try {

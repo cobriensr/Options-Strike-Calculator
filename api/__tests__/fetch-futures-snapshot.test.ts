@@ -31,6 +31,9 @@ vi.mock('../../src/utils/timezone.js', () => ({
   // computeSnapshot relies on this for DST-aware cash-session open;
   // 2026-04-03 is EDT so day-open is 13:30 UTC.
   getETMarketOpenUtcIso: vi.fn(() => '2026-04-03T13:30:00.000Z'),
+  // Default to "open" so existing tests keep their assumed behavior;
+  // tests that need the closed-market skip path override per-test.
+  isFuturesMarketOpen: vi.fn(() => true),
 }));
 
 import handler from '../cron/fetch-futures-snapshot.js';
@@ -507,5 +510,31 @@ describe('fetch-futures-snapshot handler', () => {
     expect(res._status).toBe(500);
     expect(res._json).toEqual({ error: 'Internal error' });
     expect(Sentry.captureException).toHaveBeenCalled();
+  });
+
+  // SENTRY-EMERALD-DESERT-5E: when futures are closed (Sat all day, Fri-Sun
+  // weekend gap, daily Mon-Thu maint break), the cron must short-circuit
+  // with 200 instead of running computeSnapshot — otherwise every symbol
+  // fails for lack of fresh bars and Sentry's monitor times out.
+  it('skips with 200 when futures market is closed', async () => {
+    const { isFuturesMarketOpen } = await import(
+      '../../src/utils/timezone.js'
+    );
+    vi.mocked(isFuturesMarketOpen).mockReturnValueOnce(false);
+    vi.mocked(cronGuard).mockReturnValueOnce({
+      today: '2026-05-09',
+      apiKey: 'test',
+    });
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      job: 'fetch-futures-snapshot',
+      skipped: true,
+      reason: 'futures market closed',
+    });
+    expect(mockSql).not.toHaveBeenCalled();
   });
 });

@@ -100,6 +100,47 @@ export function getETDayOfWeek(date: Date): number {
   return date.getDay();
 }
 
+/** Get the day of week (0=Sun, 6=Sat) in Central Time. */
+export function getCTDayOfWeek(date: Date): number {
+  const parts = extractParts(ctFormatter, date);
+  const dayMap: Record<string, number> = {
+    Sun: 0,
+    Mon: 1,
+    Tue: 2,
+    Wed: 3,
+    Thu: 4,
+    Fri: 5,
+    Sat: 6,
+  };
+  const weekday = parts.weekday;
+  if (weekday && weekday in dayMap) return dayMap[weekday]!;
+  return date.getDay();
+}
+
+/**
+ * True when the CME E-mini equity-index futures market (ES, NQ, RTY, etc.)
+ * is open for trading in Central Time.
+ *
+ * Schedule:
+ *   - Sun 17:00 CT → Fri 16:00 CT, with a daily 16:00-17:00 CT maintenance
+ *     break Mon-Thu.
+ *   - Saturday: closed all day.
+ *
+ * Use to gate cron jobs that depend on fresh futures bars — without this,
+ * jobs scheduled around the clock will fail every minute of the
+ * Friday-evening-through-Sunday-evening gap and pollute Sentry's monitor
+ * timeline. CME holidays are NOT modeled here (rare, low-priority).
+ */
+export function isFuturesMarketOpen(date: Date): boolean {
+  const day = getCTDayOfWeek(date);
+  const { hour } = getCTTime(date);
+  if (day === 6) return false;
+  if (day === 0 && hour < 17) return false;
+  if (day === 5 && hour >= 16) return false;
+  if (day >= 1 && day <= 4 && hour === 16) return false;
+  return true;
+}
+
 /** Get total minutes since midnight in Eastern Time. */
 export function getETTotalMinutes(date: Date): number {
   const { hour, minute } = getETTime(date);
