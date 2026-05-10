@@ -4154,4 +4154,41 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 142,
+    description:
+      'Extend periscope_analyses for the auto-playbook lifecycle (scraper-triggered Claude reads at 10-min cadence — Phase 1 of docs/superpowers/specs/periscope-auto-playbook-2026-05-10.md). Adds auto_generated flag distinguishing rows written by the cron path from manual entries; slot_captured_at to anchor each row to the exact periscope_snapshots tick it analyzed; status (in_progress / complete / failed / truncated) so the panel can render mid-flight states distinctly and surface max_tokens truncation rather than silently storing null payloads; failure_reason for status=failed forensics; panel_payload JSONB holding the structured tool_use output the frontend renders directly (SPOT, CONE, LONG/SHORT TRIGGER, REGIME, RECOMMENDED, AVOID, FUTURES PLAN, gamma floor/ceiling, charm zero, narrative). Unique (trading_date, slot_captured_at, auto_generated) lets the auto path and a manual rerun coexist for the same slot — Postgres NULL-distinct semantics on slot_captured_at keep historical rows (slot_captured_at IS NULL) valid without colliding. Partial index on (trading_date DESC, slot_captured_at DESC) WHERE status = complete supports the panel "latest playbook for today" query without scanning in-progress / failed / truncated rows. All columns nullable or default-backfilled so existing manual rows stay valid; the auto-playbook code path populates them on every new row.',
+    statements: (sql) => [
+      sql`
+        ALTER TABLE periscope_analyses
+        ADD COLUMN IF NOT EXISTS auto_generated BOOLEAN NOT NULL DEFAULT FALSE
+      `,
+      sql`
+        ALTER TABLE periscope_analyses
+        ADD COLUMN IF NOT EXISTS slot_captured_at TIMESTAMPTZ
+      `,
+      sql`
+        ALTER TABLE periscope_analyses
+        ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'complete'
+        CHECK (status IN ('in_progress', 'complete', 'failed', 'truncated'))
+      `,
+      sql`
+        ALTER TABLE periscope_analyses
+        ADD COLUMN IF NOT EXISTS failure_reason TEXT
+      `,
+      sql`
+        ALTER TABLE periscope_analyses
+        ADD COLUMN IF NOT EXISTS panel_payload JSONB
+      `,
+      sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_periscope_analyses_unique_slot
+          ON periscope_analyses (trading_date, slot_captured_at, auto_generated)
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_periscope_analyses_latest
+          ON periscope_analyses (trading_date DESC, slot_captured_at DESC)
+          WHERE status = 'complete'
+      `,
+    ],
+  },
 ];

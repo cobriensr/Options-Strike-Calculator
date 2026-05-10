@@ -1,0 +1,378 @@
+# Periscope Auto-Playbook — Scraper-Triggered Claude Reads
+
+**Date:** 2026-05-10
+**Status:** draft (hardened 2026-05-10 after critical review)
+
+## Goal
+
+Replace the manual Periscope chat button with a scraper-triggered auto-playbook
+loop: every 10-min scraper tick fires a Claude call against the freshly-written
+`periscope_snapshots` slot, persists a structured + prose playbook to
+`periscope_analyses`, and renders the latest entry as the live `PeriscopePanel`.
+First call of the trading day = `pre_trade`, last call ~15:00 CT = `debrief`,
+everything between = `intraday`. The Periscope history component remains for
+reviewing the full playbook + debrief stack.
+
+## Why now
+
+- User misses entries because the manual button is human-attention-bound.
+- `periscope_analyses` already encodes the 3-mode lifecycle and parent chaining.
+- Auto-firing produces ~25 labeled, timestamped, mode-tagged playbooks per
+  trading week — the corpus needed for the eventual prompt-tuning autoresearch
+  loop (separate spec).
+
+## Architecture
+
+```text
+Railway scraper (periscope-scraper)            Vercel Functions
+┌────────────────────────────────┐            ┌──────────────────────────────┐
+│ runTick() every 10 min RTH:    │            │ POST /api/periscope-         │
+│   1. scrapeAllPanels()          │  webhook   │   auto-playbook              │
+│   2. insertSnapshots(rows)      │ ─────────▶ │   Authorization: Bearer      │
+│   3. dedupe to 1 POST per       │            │   <PERISCOPE_WEBHOOK_SECRET> │
+│      (trading_date, captured_at)│            │                              │
+│   4. POST {capturedAt,slotKey}  │            │ ├─ guard secret              │
+│   5. retry 1x on 5xx, then drop │            │ ├─ acquire pg advisory lock  │
+└────────────────────────────────┘            │ ├─ no-op if row exists       │
+                                              │ ├─ insert in_progress row    │
+                                              │ ├─ return 202 immediately    │
+                                              │ └─ ctx.waitUntil(claude→DB) │
+                                              └──────────────────────────────┘
+                                                        │
+                                                        ▼
+                                              ┌──────────────────────────────┐
+                                              │ GET /api/periscope-playbook  │
+                                              │   ?date=YYYY-MM-DD           │
+                                              │ guardOwnerOrGuestEndpoint    │
+                                              │ Returns latest entry +       │
+                                              │   structured panel fields    │
+                                              └──────────────────────────────┘
+                                                        │
+                                                        ▼
+                                              PeriscopePanel.tsx (live render)
+                                              + PeriscopeHistory (timeline)
+```
+
+## Phases
+
+### Phase 1 — DB schema additions + structured panel JSON
+
+Extend `periscope_analyses` with:
+
+- `auto_generated BOOLEAN NOT NULL DEFAULT FALSE` — flags rows written by the
+  cron path vs. manual entries. **Used in unique constraint to allow auto + manual
+  rows to coexist for the same slot.**
+- `slot_captured_at TIMESTAMPTZ` — exact `periscope_snapshots.captured_at` the
+  read corresponds to. Indexed.
+- `status VARCHAR(20) NOT NULL DEFAULT 'complete'` — one of `'in_progress'`,
+  `'complete'`, `'failed'`, `'truncated'`. Lets the panel render a "thinking…"
+  state during the 5-9 min Claude call and surface stop_reason=='max_tokens'
+  truncation distinctly.
+- `failure_reason TEXT` — populated when status='failed' (Sentry event id,
+  error class, stop_reason).
+- `panel_payload JSONB` — structured Claude tool_use output. Validated by Zod
+  before write; reject + Sentry breadcrumb on schema mismatch. Schema:
+  `{spot, cone, longTrigger, shortTrigger, regime, recommended[], avoid[],
+futuresPlan: {long, short, wait}, gammaFloor, gammaCeiling, magnet,
+charmZero, narrative}`.
+- New unique constraint: `UNIQUE (trading_date, slot_captured_at, auto_generated)`
+  — auto and manual paths can each have one row per slot.
+- New index `idx_periscope_analyses_latest` on
+  `(trading_date DESC, slot_captured_at DESC) WHERE status = 'complete'`.
+  Partial index — panel queries only see completed rows.
+
+**Files:**
+
+- `api/_lib/db-migrations.ts` — new migration #N (atomic statements())
+- `api/__tests__/db.test.ts` — update mock sequence + expected output
+
+### Phase 2 — Shared chat-runner library + auto-playbook endpoint
+
+Refactor `api/periscope-chat.ts` so its prompt-building, Claude-call, embedding,
+and DB-insert logic moves into `api/_lib/periscope-chat-runner.ts` exporting
+`runPeriscopeChat({ mode, parentId, slotCapturedAt, autoGenerated, includeOCR, fallbackModel })`.
+**`includeOCR` defaults to `false`** — scraper verified accurate, no Pass 1B
+needed. Param retained so the capability can be flipped on without code change
+if data drift appears later.
+Existing `api/periscope-chat.ts` (manual POST) is **first deprecated** (returns
+410 Gone with `X-Deprecation-Replacement: /api/periscope-auto-playbook`) for
+one deploy, then deleted in a follow-up commit after the frontend is confirmed
+to no longer call it.
+
+New: `api/periscope-auto-playbook.ts`:
+
+- POST endpoint, **`Authorization: Bearer <PERISCOPE_WEBHOOK_SECRET>`** guard
+  via existing `cronGuard()` (matches that helper's expected header). New env
+  var `PERISCOPE_WEBHOOK_SECRET` distinct from `CRON_SECRET` — separate blast
+  radius (see Risk Register R3).
+- Body: `{ tradingDate: 'YYYY-MM-DD', capturedAt: ISO, slotKey: string }`.
+- **Concurrency: pg advisory lock** keyed on `hashtext('periscope-auto-' || trading_date || '-' || slot_captured_at)`. Released on function exit or 60s timeout. Prevents double-fire when scraper redeploys mid-tick.
+- **Idempotency:** if a row already exists for `(trading_date, slot_captured_at, auto_generated=true)` with status in (`'in_progress'`, `'complete'`), no-op + return 200.
+- **Mode derivation (NORMATIVE):**
+  - Periscope captures slots from 01:00 CT but auto-playbook only triggers on
+    slots whose timeframe label is `>= 08:20-08:30 CT`. Pre-market slots are
+    stored in `periscope_snapshots` but are not analyzed.
+  - `pre_trade` = the `08:20-08:30 CT` timeframe slot (the first analyzable
+    slot of the trading day). Deterministic by clock — no race detection
+    needed because every prior slot is pre-market and explicitly skipped.
+  - `debrief` = the last analyzable slot of the day (currently
+    `14:50-15:00 CT` timeframe; configurable via `LAST_ANALYZABLE_SLOT_CT`
+    constant).
+  - else `intraday`.
+  - Mode is computed once at row insertion from `slot_captured_at`'s
+    timeframe label and never updated.
+- **Parent resolution:** latest non-`debrief` row for the same `trading_date`.
+- **Async lifecycle (Vercel Fluid Compute):** insert `status='in_progress'`
+  row immediately, return 202 to scraper, run Claude call in
+  `ctx.waitUntil(promise)` so the function instance stays alive for full
+  Opus thinking budget. Function timeout set to 720s (matches analyze.ts
+  pattern). On Claude completion, UPDATE the row to status='complete' with
+  panel_payload + narrative + embedding.
+- **Claude call hardening:**
+  - Pass `fallbackModel: 'claude-sonnet-4-6'` to `runCachedAnthropicCall` so
+    Opus 4.7 overload (529) at 9:30 AM falls back gracefully.
+  - Branch on `stopReason === 'max_tokens'` → mark row `status='truncated'`,
+    log error level, Sentry tag `truncated_at_tokens`. Do not silently store
+    null panel_payload.
+  - Branch on `stopReason === 'refusal'` → mark `status='failed'` with reason.
+  - Stream the response (`.stream()` + `.finalMessage()`) to avoid HTTP timeout
+    on long Opus thinking runs.
+- **Kill switch:** `AUTO_PLAYBOOK_ENABLED` env var (default `'true'`). When
+  `'false'`, endpoint returns 503 + Sentry breadcrumb. Lets the user disable in
+  30s without redeploy if Monday goes wrong.
+- **Sentry tags on every code path:** `service='auto-playbook'`,
+  `mode`, `slot_captured_at`, `model_used`, `stop_reason`, `status`.
+
+New: `api/periscope-playbook.ts`:
+
+- GET, **`guardOwnerOrGuestEndpoint`** (matches `/api/periscope-exposure`'s
+  actual posture — not public; spec previously misstated this).
+- Query: `?date=YYYY-MM-DD` (defaults to today CT). `WHERE status = 'complete'
+AND auto_generated = TRUE` ordered by `slot_captured_at DESC` LIMIT 1.
+- Returns `panel_payload`, `mode`, `slot_captured_at`, `parent_id`, plus
+  `latest_in_progress: bool` so the panel can show a "Claude thinking…" hint
+  when a newer slot is mid-flight.
+- Cache: 60s edge + 60s SWR during RTH, 600s after hours.
+- **Cache bust on manual re-run:** the panel client passes `?nocache=<random>`
+  on manual re-run paths so the user immediately sees their re-run output.
+
+**Files:**
+
+- `api/_lib/periscope-chat-runner.ts` (new — extracted)
+- `api/periscope-auto-playbook.ts` (new)
+- `api/periscope-playbook.ts` (new)
+- `api/periscope-chat.ts` (deprecate → 410 Gone, then delete in follow-up)
+- `src/main.tsx` — add `/api/periscope-playbook` (GET) to `initBotId()`
+  `protect` array. **Do NOT add `/api/periscope-auto-playbook`** — it's
+  guarded by `PERISCOPE_WEBHOOK_SECRET`, not browser-originated, and adding it
+  to `protect` would 403-block every legitimate scraper call.
+- `vercel.json` — function `maxDuration: 720` for auto-playbook
+- `api/__tests__/periscope-auto-playbook.test.ts` (new)
+- `api/__tests__/periscope-playbook.test.ts` (new)
+
+### Phase 3 — Scraper webhook integration
+
+Modify `periscope-scraper/src/index.ts` `runTick()`:
+
+- After `insertSnapshots(rows)` succeeds and `rows.length > 0`, **dedupe rows
+  to a single (trading_date, captured_at) tuple** — scraper inserts 3 panels
+  per tick × ~150 strikes; webhook fires once per tick, not once per panel.
+- POST to `${VERCEL_BASE_URL}/api/periscope-auto-playbook` with
+  `Authorization: Bearer ${PERISCOPE_WEBHOOK_SECRET}`.
+- Body: `{ tradingDate, capturedAt, slotKey }` derived from the inserted batch.
+- **Retry 1x on 5xx or timeout** with exponential backoff (2s base). After
+  retry exhaustion, log + Sentry-capture but never block the next tick.
+- Failures are tagged `service='periscope-scraper-webhook'` and include
+  `slot_captured_at` for triage.
+- Add env vars: `VERCEL_BASE_URL`, `PERISCOPE_WEBHOOK_SECRET` to Railway
+  service config. **Never logged.**
+
+**Files:**
+
+- `periscope-scraper/src/index.ts` (modify `runTick`)
+- `periscope-scraper/src/webhook.ts` (new — POST helper with 1x retry)
+- `periscope-scraper/README.md` — document new env vars
+- `periscope-scraper/src/__tests__/webhook.test.ts` (new)
+
+### Phase 4 — Frontend rebuild: panel reads playbook, manual UI removed
+
+`PeriscopePanel.tsx` + `usePeriscopeExposure.ts`:
+
+- Rename hook to `usePeriscopePlaybook`. Switches to `GET /api/periscope-playbook`.
+- Render directly from `panel_payload`. Same visual contract as today.
+- **Render-state matrix:**
+  - `data === null` (no row for today yet) → "Waiting for first scrape…"
+  - `data.status === 'in_progress'` → "Claude reading slot {slot}…" + show
+    previous completed entry's structured fields below as the "current
+    playbook" (greyed)
+  - `data.status === 'truncated'` → red banner "Playbook truncated (max
+    tokens). Re-run." with rerun button
+  - `data.status === 'failed'` → red banner with failure_reason + retry button
+  - `data.status === 'complete' && panel_payload === null` (Zod validation
+    rejected payload) → fall back to deterministic exposure render +
+    Sentry breadcrumb
+  - `data.status === 'complete' && panel_payload != null` → normal render
+- **Staleness indicator:** "Updated {N} min ago" derived from `slot_captured_at`.
+  Color thresholds: green <12 min, yellow 12-25 min, red >25 min. Surfaces the
+  "no entry for current slot" failure case visually.
+- Manual "re-run" button: calls `POST /api/periscope-auto-playbook` with
+  cookie auth (not webhook secret), rate-limited via Redis at
+  `periscope-rerun:${owner}:${slotKey}` (1/60s per slot per user).
+- Delete `src/components/PeriscopeChat/PeriscopeChat.tsx` (manual UI). Verify
+  PeriscopeHistory points at `periscope_analyses` (it already should).
+
+**Files:**
+
+- `src/hooks/usePeriscopeExposure.ts` → `src/hooks/usePeriscopePlaybook.ts`
+- `src/components/Periscope/PeriscopePanel.tsx`
+- `src/components/PeriscopeChat/PeriscopeChat.tsx` (delete)
+- `src/components/PeriscopeChat/` directory (audit + delete unused)
+- `src/__tests__/PeriscopePanel.test.tsx`
+- `e2e/periscope-panel.spec.ts` (new — verify panel renders latest entry)
+
+### Phase 5 — Historical backfill script (DEFERRED — on-demand)
+
+**Status:** Script delivered, not run. Initial deployment is forward-only —
+the auto-playbook starts accumulating entries from Monday's first scrape.
+The backfill script is built and tested but only invoked when the user is
+ready to spend the one-time cost (estimated $400-1500, see below).
+
+One-shot script when invoked: iterate Nov 2025–May 2026 trading days × all
+`periscope_snapshots.captured_at` slots, call the auto-playbook endpoint in
+chronological order so `parent_id` chaining is correct. Skips slots that
+already have a `periscope_analyses` row.
+
+- **Strict per-day chronological** processing (no parallelism within a day);
+  cross-day parallelism allowed at concurrency=2 max.
+- **Skip current trading_date** to avoid colliding with live auto-firing.
+- Reads `PERISCOPE_WEBHOOK_SECRET` from `read -s` prompt or `.env.local`,
+  never as a hardcoded export.
+- **Cost (re-estimated — original $50-100 was wrong):**
+  ~37K input × 4,800 calls = 178M input tokens → $54 with prompt cache
+  (90% hit) or **$534 without**; ~5K output × 4,800 = 24M output tokens →
+  **$360**. Embedding: 4,800 × ~300 tokens × $0.13/MTok = ~$2.
+  **Total: $400-900 (with cache) → $900-1500 (no cache).**
+  Prompt cache must be wired before backfill runs to keep cost in the
+  lower band.
+
+**Files (delivered, dormant until invoked):**
+
+- `scripts/backfill-periscope-playbook.mjs` (new)
+- `scripts/README.md` (document, mark as on-demand)
+
+### Phase 6 — Verification (always last)
+
+- `npm run review` (tsc + eslint + prettier + vitest) clean.
+- `db.test.ts` mock count matches new migration sequence.
+- Vitest unit tests for `runPeriscopeChat`, mode-derivation,
+  idempotency, advisory lock, kill switch, fallback model.
+- Manual smoke: trigger one webhook from local with curl, verify
+  `periscope_analyses` row written + panel renders.
+- **Playwright e2e: `e2e/periscope-panel.spec.ts`** — confirms panel hits
+  `/api/periscope-playbook`, renders SPOT and at least one of LONG/SHORT
+  TRIGGER, and shows correct staleness color.
+- **1-day live shadow:** deploy with auto-playbook firing in parallel to the
+  existing deterministic panel for one trading day; compare panel outputs
+  before flipping the panel render to the new endpoint. **Required gate
+  before Phase 4 frontend swap.**
+
+## Files to create/modify (summary)
+
+**New (10):** `periscope-chat-runner.ts`, `periscope-auto-playbook.ts`,
+`periscope-playbook.ts`, 2× test files, `webhook.ts` + test,
+`usePeriscopePlaybook.ts`, `e2e/periscope-panel.spec.ts`,
+`scripts/backfill-periscope-playbook.mjs`.
+
+**Modified (8):** `db-migrations.ts`, `db.test.ts`, `main.tsx`,
+`PeriscopePanel.tsx`, `PeriscopePanel.test.tsx`, `scraper/index.ts`,
+`scraper/README.md`, `vercel.json`.
+
+**Deleted (2 paths):** `api/periscope-chat.ts` (after deprecation window),
+`src/components/PeriscopeChat/PeriscopeChat.tsx` (+ orphaned siblings).
+
+## Data dependencies
+
+- `periscope_snapshots` — read by chat-runner, written by scraper. No change.
+- `periscope_analyses` — extended (Phase 1 migration).
+- `index_candles_1m`, `cone_levels`, `cone_breach_events` — no change.
+- New env on **Railway scraper service**: `VERCEL_BASE_URL`, `PERISCOPE_WEBHOOK_SECRET`.
+- New env on **Vercel**: `PERISCOPE_WEBHOOK_SECRET`, `AUTO_PLAYBOOK_ENABLED='true'`.
+
+## Risk Register (pre-Monday hardening)
+
+| ID  | Risk                                                                                             | Severity | Mitigation                                                                                                                                                                                                                                                       | Status                      |
+| --- | ------------------------------------------------------------------------------------------------ | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- |
+| R1  | Synchronous Claude call vs 5s scraper timeout                                                    | P0       | `ctx.waitUntil(promise)` + 202 immediate response                                                                                                                                                                                                                | Specced (Phase 2)           |
+| R2  | Mode-derivation race retro-flips first row                                                       | P0       | Deterministic by timeframe label: `pre_trade` = 08:20-08:30 slot; pre-market slots filtered upstream so no race exists                                                                                                                                           | Resolved (Phase 2)          |
+| R3  | CRON_SECRET conflation = blast radius across 35 crons                                            | P0       | Separate `PERISCOPE_WEBHOOK_SECRET`                                                                                                                                                                                                                              | Confirmed (Phase 2/3)       |
+| R4  | Wrong webhook header (spec said `x-vercel-cron-secret`, cronGuard reads `Authorization: Bearer`) | P0       | Use `Authorization: Bearer` to match `cronGuard()`                                                                                                                                                                                                               | Specced (Phase 3)           |
+| R5  | `/api/periscope-playbook` referenced "public" but exposes Claude strategy                        | P1       | `guardOwnerOrGuestEndpoint` (matches actual `/api/periscope-exposure` posture)                                                                                                                                                                                   | Specced (Phase 2)           |
+| R6  | Adding webhook POST to botid `protect` would 403 the scraper                                     | P1       | Only GET in protect                                                                                                                                                                                                                                              | Specced (Phase 2)           |
+| R7  | No `fallbackModel` threading → 529 at 9:30 = no playbook                                         | P1       | Pass `fallbackModel: 'claude-sonnet-4-6'`                                                                                                                                                                                                                        | Specced (Phase 2)           |
+| R8  | `max_tokens` truncation silently saves null payload                                              | P1       | Distinct `status='truncated'` branch + Sentry tag                                                                                                                                                                                                                | Specced (Phase 1+2)         |
+| R9  | Manual rerun + auto path could collide on unique constraint                                      | P1       | Unique includes `auto_generated` flag; rows coexist                                                                                                                                                                                                              | Specced (Phase 1)           |
+| R10 | First-tick failure permanently misses pre_trade entry                                            | P1       | 1x retry on 5xx in scraper webhook helper                                                                                                                                                                                                                        | Specced (Phase 3)           |
+| R11 | Two scraper instances (redeploy) double-fire same slot                                           | P1       | pg advisory lock per (date, slot)                                                                                                                                                                                                                                | Specced (Phase 2)           |
+| R12 | DST transition Mar 8 2026 mid-backfill                                                           | P2       | Mode derivation uses `AT TIME ZONE 'America/Chicago'`; backfill verified across 2026-03-07/08                                                                                                                                                                    | Specced (Constants)         |
+| R13 | 60s edge cache hides manual rerun for up to 60s                                                  | P2       | `?nocache=<rand>` busts cache from rerun client                                                                                                                                                                                                                  | Specced (Phase 2)           |
+| R14 | Null `panel_payload` (Zod fail) renders silently blank                                           | P2       | Render-state matrix falls back to deterministic exposure render                                                                                                                                                                                                  | Specced (Phase 4)           |
+| R15 | Backfill script in shell history leaks secret                                                    | P2       | `read -s` prompt or `.env.local` source                                                                                                                                                                                                                          | Specced (Phase 5)           |
+| R16 | Stale render with no warning                                                                     | P2       | "Updated N min ago" with green/yellow/red staleness colors                                                                                                                                                                                                       | Specced (Phase 4)           |
+| R17 | api/periscope-chat.ts delete during deploy gap breaks frontend                                   | P2       | Deprecate (410 Gone) for one deploy, then delete                                                                                                                                                                                                                 | Specced (Phase 2)           |
+| R18 | Backfill cost materially higher than estimated                                                   | P2       | Defer backfill from initial deploy; ship script dormant. Forward-only auto-firing from Monday                                                                                                                                                                    | Resolved (Phase 5 deferred) |
+| R19 | OCR on every tick triples vision-token spend                                                     | P2       | OCR disabled in all modes; user verified scraper accuracy via 5-day audit (`docs/tmp/periscope-scraper-audit-2026-05-10.xlsx`). `runPeriscopeChat` keeps `includeOCR: boolean` param defaulting to `false` so capability can be re-enabled if data drift appears | Resolved (2026-05-10)       |
+
+## Decisions resolved (2026-05-10)
+
+1. **R3 — separate `PERISCOPE_WEBHOOK_SECRET`.** Confirmed. New env var on
+   Railway scraper + Vercel.
+2. **R18 — backfill deferred.** Forward-only initial deploy. Backfill script
+   built and tested but dormant; user invokes it when ready to spend $400-1500.
+3. **Mode derivation simplified.** Periscope's 08:20-08:30 timeframe slot is
+   deterministically `pre_trade`. Pre-market slots (01:00–08:20 CT) are
+   filtered out and never trigger auto-playbook, eliminating the race.
+   No 10-min hold-down needed.
+4. **R19 — OCR disabled in all modes.** User audited 5 random days
+   (`docs/tmp/periscope-scraper-audit-2026-05-10.xlsx`) covering 2025-11-20,
+   2026-01-14, 2026-02-10, 2026-03-26 (post-DST), 2026-04-14 — zero
+   discrepancies between scraper output and live UW Periscope UI. Saves
+   ~$300-900/yr in vision-token spend. `runPeriscopeChat` retains
+   `includeOCR: boolean` param defaulting to `false` so the capability can be
+   re-enabled if scraper drift ever appears.
+
+**Spec is locked. Ready to begin Phase 1 implementation.**
+
+## Thresholds / constants
+
+- **RTH window**: 08:30–15:00 CT (mode-derivation uses `AT TIME ZONE 'America/Chicago'` on TIMESTAMPTZ)
+- **DST handling**: backfill verified across 2026-03-07/2026-03-08 transition
+- **Webhook timeout**: 5s (scraper does not block on Claude completion)
+- **Auto-playbook function timeout**: 720s (matches analyze.ts Opus 4.7 budget)
+- **First analyzable slot**: `08:20-08:30 CT` timeframe (pre_trade). Earlier captures stored but not analyzed.
+- **Last analyzable slot**: `14:50-15:00 CT` timeframe (debrief), configurable via `LAST_ANALYZABLE_SLOT_CT`
+- **Manual re-run rate limit**: 1 per 60s per `(owner, slotKey)` via Redis
+- **Panel cache**: 60s edge + 60s SWR RTH, 600s after hours; bust via `?nocache=<rand>`
+- **Staleness colors**: green <12 min, yellow 12-25 min, red >25 min
+- **OCR**: disabled in all modes (scraper verified 100% accurate via 5-day audit 2026-05-10); `runPeriscopeChat` keeps `includeOCR` param for future toggle
+- **Backfill window**: 2025-11-10 → 2026-05-08 (~125 days), one-shot script, concurrency=2 cross-day, sequential within-day
+- **Backfill skips current trading_date**: yes
+- **Kill switch**: `AUTO_PLAYBOOK_ENABLED` env var, default `'true'`
+- **Sentry tags (every auto-playbook code path)**: `service='auto-playbook'`, `mode`, `slot_captured_at`, `model_used`, `stop_reason`, `status`
+
+## Rollback plan
+
+If Monday goes wrong:
+
+1. **Immediate (≤30s):** flip `AUTO_PLAYBOOK_ENABLED='false'` on Vercel.
+   Endpoint returns 503; scraper keeps running but Claude calls cease.
+2. **Frontend revert (≤5min):** redeploy with `usePeriscopePlaybook` swapped
+   back to `usePeriscopeExposure` (deterministic render). Branch kept ready
+   in `revert/periscope-panel-deterministic`.
+3. **Data hygiene:** `auto_generated=TRUE` rows can be soft-deleted by
+   setting `status='failed'` without touching the table structure.
+
+## Out of scope for this spec
+
+- Prompt tuning autoresearch loop (separate spec, depends on this one's backfill).
+- analyze.ts integration of structured `panel_payload` (separate spec, follows this).
+- Multi-expiry support (current periscope is 0DTE only — that constraint remains).
