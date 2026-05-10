@@ -325,6 +325,79 @@ class TestExecuteValuesBatch:
         kwargs = mock_execute_values.call_args.kwargs
         assert kwargs.get("page_size") == 100
 
+    def test_operational_error_retries_once_and_succeeds(
+        self,
+        mock_conn_pool: MagicMock,
+        mock_execute_values: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """SENTRY-EMERALD-DESERT-6X: when the first borrowed connection
+        is stale (Neon SSL drop after idle), execute_values raises
+        OperationalError. The helper must retry once with a fresh conn
+        rather than dropping the in-flight 500-row batch.
+
+        psycopg2 is mocked at session scope, so OperationalError isn't a
+        real class — install a temporary Exception subclass and patch
+        the mock attribute for the duration of the test."""
+        import psycopg2
+
+        class _FakeOpError(Exception):
+            pass
+
+        monkeypatch.setattr(psycopg2, "OperationalError", _FakeOpError)
+        mock_execute_values.side_effect = [
+            _FakeOpError("SSL connection has been closed unexpectedly"),
+            None,  # second attempt succeeds
+        ]
+
+        db._execute_values_batch(self.SAMPLE_SQL, [self.SAMPLE_ROW])
+
+        assert mock_execute_values.call_count == 2
+
+    def test_operational_error_raises_when_retry_also_fails(
+        self,
+        mock_conn_pool: MagicMock,
+        mock_execute_values: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """If the second attempt also fails with OperationalError, propagate
+        — the caller's capture_exception is the final-failure observability
+        path."""
+        import psycopg2
+
+        class _FakeOpError(Exception):
+            pass
+
+        monkeypatch.setattr(psycopg2, "OperationalError", _FakeOpError)
+        mock_execute_values.side_effect = _FakeOpError("still broken")
+
+        with pytest.raises(_FakeOpError, match="still broken"):
+            db._execute_values_batch(self.SAMPLE_SQL, [self.SAMPLE_ROW])
+
+        assert mock_execute_values.call_count == 2
+
+    def test_non_operational_error_does_not_retry(
+        self,
+        mock_conn_pool: MagicMock,
+        mock_execute_values: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Only OperationalError gets the retry. Programming errors
+        (bad SQL, constraint violations) must surface immediately —
+        retrying them would just delay the failure and double-log."""
+        import psycopg2
+
+        class _FakeOpError(Exception):
+            pass
+
+        monkeypatch.setattr(psycopg2, "OperationalError", _FakeOpError)
+        mock_execute_values.side_effect = ValueError("not an SSL drop")
+
+        with pytest.raises(ValueError, match="not an SSL drop"):
+            db._execute_values_batch(self.SAMPLE_SQL, [self.SAMPLE_ROW])
+
+        assert mock_execute_values.call_count == 1
+
 
 # ---------------------------------------------------------------------------
 # Phase 5e — load_alert_config silent-fallback observability
@@ -601,6 +674,24 @@ class TestGetPool:
         assert kwargs["sslmode"] == "require"
         # `?sslmode=require` portion must be stripped before psycopg2 sees it.
         assert kwargs["dsn"] == "postgresql://u:p@host/db"
+
+    def test_lazy_init_enables_tcp_keepalives(
+        self,
+        fake_threaded_pool: MagicMock,
+        fake_settings: None,
+    ) -> None:
+        """Pin the libpq keepalive params so the kernel can detect a
+        server-side SSL drop before the next query lands on a dead socket.
+        Without these, Neon idling the pooled connection over the
+        Fri-4pm-to-Sun-5pm-CT futures gap raises
+        ``OperationalError: SSL connection has been closed unexpectedly``
+        on the first batch after open. See SENTRY-EMERALD-DESERT-6X."""
+        db.get_pool()
+        kwargs = fake_threaded_pool.call_args.kwargs
+        assert kwargs["keepalives"] == 1
+        assert kwargs["keepalives_idle"] == 30
+        assert kwargs["keepalives_interval"] == 10
+        assert kwargs["keepalives_count"] == 5
 
     def test_returns_same_pool_on_repeated_calls(
         self,

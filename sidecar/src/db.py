@@ -52,11 +52,26 @@ def get_pool() -> psycopg2.pool.ThreadedConnectionPool:
         # Strip options from DSN — Neon's pooler rejects startup
         # parameters like statement_timeout. Set timeout per-query instead.
         dsn = settings.database_url.split("?")[0]
+        # TCP keepalives let the kernel notice a server-side SSL/TCP drop
+        # before the next query lands on a dead socket. Neon silently tears
+        # down idle pooler connections (e.g. the Fri 4pm → Sun 5pm CT
+        # futures gap when the sidecar's pool sits quiet); without
+        # keepalives, the first borrow after that gap raises
+        # ``OperationalError: SSL connection has been closed unexpectedly``
+        # mid-batch and the in-flight rows are lost. With these settings
+        # the kernel probes every 30s + 10s*5 = ~80s after each idle window,
+        # so the broken socket is detected and the pool's
+        # ``putconn(close=True)`` path can discard it before the next batch.
+        # See SENTRY-EMERALD-DESERT-6X / -2C.
         _pool = psycopg2.pool.ThreadedConnectionPool(
             minconn=1,
             maxconn=5,
             dsn=dsn,
             sslmode="require",
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=5,
         )
         log.info("Database pool created")
     return _pool
@@ -202,12 +217,32 @@ def _execute_values_batch(
     The page size defaults to :data:`_DEFAULT_BATCH_PAGE_SIZE` (500),
     which is the value every existing call site uses; callers that
     need a different page size can override per-call.
+
+    Retries once on :class:`psycopg2.OperationalError` (e.g. Neon SSL
+    drop on a stale pooled connection). ``get_conn`` discards the dead
+    connection via ``pool.putconn(close=True)`` in its finally block,
+    so the second borrow lands on a fresh socket. Without the retry,
+    the in-flight batch (typically 500 TBBO rows) is lost — only
+    ``capture_exception`` is called by the caller, no recovery. See
+    SENTRY-EMERALD-DESERT-6X.
     """
     if not rows:
         return
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            psycopg2.extras.execute_values(cur, sql, rows, page_size=page_size)
+    for attempt in (1, 2):
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    psycopg2.extras.execute_values(
+                        cur, sql, rows, page_size=page_size
+                    )
+            return
+        except psycopg2.OperationalError:
+            if attempt == 2:
+                raise
+            log.warning(
+                "_execute_values_batch: OperationalError on attempt 1, "
+                "retrying with a fresh connection"
+            )
 
 
 # ---------------------------------------------------------------------------
