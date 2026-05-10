@@ -241,7 +241,16 @@ ingest-fulltape:
 	fi; \
 	set -a && source $(ENV_FILE) && set +a && \
 	  bash scripts/download-fulltape.sh "$$FETCH_DATE" && \
-	  $(PYTHON) scripts/ingest-fulltape.py "$$FETCH_DATE"
+	  $(PYTHON) scripts/ingest-fulltape.py "$$FETCH_DATE" && \
+	  if [[ "$(SKIP_R2)" == "1" ]]; then \
+	    echo "  ⏭  SKIP_R2=1 set — parquet stays local, R2 push skipped"; \
+	  else \
+	    echo ""; \
+	    echo "════════════════════════════════════════════════════════════════"; \
+	    echo "  STEP — push to Cloudflare R2 (idempotent, only new files upload)"; \
+	    echo "════════════════════════════════════════════════════════════════"; \
+	    $(PYTHON) scripts/upload-fulltape-to-r2.py; \
+	  fi
 
 # Resume target — `plots + enrich` only. Useful when the CSV has
 # already been consumed by `ingest` in a previous invocation but the
