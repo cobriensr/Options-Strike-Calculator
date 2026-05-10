@@ -250,34 +250,50 @@ const sql = neon(DATABASE_URL);
  *
  * The scraper has historically captured the same timeframe label
  * multiple times per CT date (e.g., an overnight read at 03:30 CDT
- * AND the RTH read at 08:30 CDT both labeled "08:20-08:30"). Without
- * deduping, the script would fire two webhooks per timeframe and
- * land bogus pre-market rows. DISTINCT ON picks the LATEST
- * captured_at per (trading_date, timeframe) — the RTH read wins,
- * matching the live forward path's "most recent tick wins" semantic.
+ * AND the RTH read at 08:30 CDT both labeled "08:20-08:30"). The
+ * canonical capture is the LATEST `captured_at` per (date, timeframe)
+ * — that's the actual RTH read, matching the live forward path's
+ * "most recent tick wins" semantic.
+ *
+ * Two-step query (CTE) is REQUIRED — applying NOT EXISTS BEFORE the
+ * DISTINCT ON creates a subtle bug: when the canonical RTH capture
+ * is already analyzed, the NOT EXISTS filter excludes it, leaving
+ * the earlier pre-market capture as the only surviving row in that
+ * group — which DISTINCT ON then emits as "pending". The script
+ * fires webhooks with pre-market timestamps and lands bogus rows.
+ *
+ * The CTE pattern: pick canonical FIRST, then check NOT EXISTS
+ * against the canonical only. A timeframe with an already-analyzed
+ * canonical is fully excluded, regardless of whether it has other
+ * non-canonical captures.
  */
 async function loadPendingSlots() {
   const todayCt = todayCtIso();
   const rows = await sql`
-    SELECT DISTINCT ON ((s.captured_at AT TIME ZONE 'America/Chicago')::date, s.timeframe)
-      (s.captured_at AT TIME ZONE 'America/Chicago')::date AS trading_date,
-      s.captured_at,
-      s.timeframe
-    FROM periscope_snapshots s
-    WHERE s.panel = 'gamma'
-      AND s.timeframe IS NOT NULL
-      AND (s.captured_at AT TIME ZONE 'America/Chicago')::date
-          BETWEEN ${BACKFILL_START}::date AND ${BACKFILL_END}::date
-      AND (s.captured_at AT TIME ZONE 'America/Chicago')::date < ${todayCt}::date
-      AND NOT EXISTS (
-        SELECT 1 FROM periscope_analyses a
-        WHERE a.auto_generated = TRUE
-          AND a.slot_captured_at = s.captured_at
-      )
-    ORDER BY
-      (s.captured_at AT TIME ZONE 'America/Chicago')::date ASC,
-      s.timeframe ASC,
-      s.captured_at DESC
+    WITH canonical AS (
+      SELECT DISTINCT ON ((s.captured_at AT TIME ZONE 'America/Chicago')::date, s.timeframe)
+        (s.captured_at AT TIME ZONE 'America/Chicago')::date AS trading_date,
+        s.captured_at,
+        s.timeframe
+      FROM periscope_snapshots s
+      WHERE s.panel = 'gamma'
+        AND s.timeframe IS NOT NULL
+        AND (s.captured_at AT TIME ZONE 'America/Chicago')::date
+            BETWEEN ${BACKFILL_START}::date AND ${BACKFILL_END}::date
+        AND (s.captured_at AT TIME ZONE 'America/Chicago')::date < ${todayCt}::date
+      ORDER BY
+        (s.captured_at AT TIME ZONE 'America/Chicago')::date ASC,
+        s.timeframe ASC,
+        s.captured_at DESC
+    )
+    SELECT c.trading_date, c.captured_at, c.timeframe
+    FROM canonical c
+    WHERE NOT EXISTS (
+      SELECT 1 FROM periscope_analyses a
+      WHERE a.auto_generated = TRUE
+        AND a.slot_captured_at = c.captured_at
+    )
+    ORDER BY c.trading_date ASC, c.captured_at ASC
   `;
 
   // Group by trading_date.
