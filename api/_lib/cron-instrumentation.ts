@@ -189,32 +189,21 @@ async function sentryCheckInDirect(input: SentryCheckInInput): Promise<string> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5000);
   try {
+    // We deliberately use Node's default keep-alive pool here. Tried
+    // `Connection: close` in commit 62365e9e to eliminate stale-conn
+    // drops, but production showed the opposite: forcing a fresh TLS
+    // handshake per check-in produced ~100% miss rate (verified via
+    // Vercel runtime logs showing all handlers returning 200 while
+    // Sentry recorded "timeout check-in detected" every minute). Most
+    // likely Sentry's ingest edge throttles or RSTs unrecognized TLS
+    // sessions under burst. Keep-alive reuse is the lesser evil: the
+    // ~5% miss rate from stale-pool drops is silenced by the
+    // failureIssueThreshold: 3 policy in SCHEDULE_MAP.
     const response = await fetch(url, {
       method: 'POST',
-      // `Connection: close` forces a fresh TCP connection per check-in
-      // instead of reusing Node's keep-alive pool. Pool reuse was the
-      // suspected cause of the residual ~5% miss rate observed after
-      // commit bbc3a79a: the in_progress POST creates a pooled connection,
-      // 1-3s later the completion POST tries to reuse it, the server
-      // side has already reaped the idle conn, the client hasn't
-      // noticed → stale-connection abort → silent drop. Forcing close
-      // adds a ~30-80ms TLS handshake per request but eliminates the
-      // class of failure.
-      headers: {
-        'Content-Type': 'application/json',
-        Connection: 'close',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       signal: controller.signal,
-    });
-    // Drain the response body so undici releases the socket promptly.
-    // Without this, an unread body defers socket teardown to GC; with
-    // `Connection: close` requested the server-side close still fires,
-    // but the client-side socket sits half-closed until GC kicks in.
-    // We don't care about the content (Sentry's Crons endpoint returns
-    // 202 Accepted with no useful body), so cancel — never throws.
-    await response.body?.cancel().catch(() => {
-      /* nothing to do — best-effort socket cleanup */
     });
     // Sentry's Crons ingest returns 202 Accepted on success. A 4xx here
     // typically means a bad DSN, project mismatch, or rate-limit; a 5xx

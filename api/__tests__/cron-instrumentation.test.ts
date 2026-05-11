@@ -930,13 +930,13 @@ describe('withCronCheckin', () => {
     );
   });
 
-  it('serializes failureIssueThreshold and sends Connection:close on every POST', async () => {
-    // Two production hardening pieces ship together: a higher
-    // failureIssueThreshold on high-frequency monitors silences
-    // single-blip noise, and `Connection: close` forces a fresh TCP
-    // per check-in to avoid undici's keep-alive pool serving stale
-    // sockets. Both are wire-level details and must be locked in by a
-    // test so future refactors don't quietly drop them.
+  it('serializes failureIssueThreshold on monitor_config upsert', async () => {
+    // High-frequency monitors carry an elevated failureIssueThreshold
+    // in the monitor_config block so Sentry waits for 3 consecutive
+    // misses before opening an issue. This silences transient noise
+    // (~5% miss rate from stale keep-alive sockets) while still
+    // detecting real outages (3 consecutive misses on every-minute
+    // crons = 3min of no completions).
     const inner = vi.fn(async (_req, res) => {
       res.status(200).json({ ok: true });
     });
@@ -953,13 +953,13 @@ describe('withCronCheckin', () => {
       status: 'in_progress',
       monitor_config: { failure_issue_threshold: 3 },
     });
-    // Every check-in (both in_progress and completion) forces a fresh
-    // TCP connection — undici won't reuse pooled sockets here.
+    // We send default keep-alive headers (no Connection: close).
+    // Verified by negative-assertion to lock the revert from
+    // commit 62365e9e in place; Sentry's edge rejects fresh
+    // TLS sessions under burst, producing 100% miss rate.
     for (const c of calls) {
-      expect(c.headers).toMatchObject({
-        'Content-Type': 'application/json',
-        Connection: 'close',
-      });
+      expect(c.headers).toMatchObject({ 'Content-Type': 'application/json' });
+      expect(c.headers).not.toHaveProperty('Connection');
     }
   });
 
