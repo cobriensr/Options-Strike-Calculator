@@ -4191,4 +4191,74 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 143,
+    description:
+      'Create periscope_grades for EOD deterministic scoring of every auto-generated playbook (Phase 1 of docs/superpowers/specs/periscope-calibration-grading-2026-05-11.md). One row per (periscope_analysis_id, grader_version) — bumping the version when the rubric changes preserves historical grades for compare. Stores per-dimension binary grades (regime_correct, bias_correct, cone_held, gamma_floor_held, gamma_ceiling_held, charm_drift_correct, long_fired, short_fired, ic_blown_at_eod) alongside the raw observations (regime_observed, bias_observed_return, fire timestamps) that produced them — keeping the inputs lets a future re-grade run against archived state without re-fetching candles. trade_sims JSONB holds an array of {asset, side, entry, exit, exit_reason, pnl_pct, duration_min} entries (one per fired trigger × asset in {SPX, ES, NQ}); JSONB instead of normalized columns because the per-slot count varies 0–6 and the access pattern is whole-row reads. recommended/avoid_structures_correct hold {structure_name: bool|null} maps so we can compute per-structure accuracy without enumerating columns. graded_at + grader_version let the CLI surface "this was scored on rubric v1 at 15:30 CT". CASCADE on the FK so deleting a parent analysis (rare — only for test cleanup) drops the grade with it.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS periscope_grades (
+          id BIGSERIAL PRIMARY KEY,
+          periscope_analysis_id BIGINT NOT NULL
+            REFERENCES periscope_analyses(id) ON DELETE CASCADE,
+          trading_date DATE NOT NULL,
+          slot_captured_at TIMESTAMPTZ NOT NULL,
+          mode VARCHAR(20) NOT NULL
+            CHECK (mode IN ('pre_trade', 'intraday', 'debrief')),
+          confidence VARCHAR(20),
+          grader_version INTEGER NOT NULL DEFAULT 1,
+
+          regime_call TEXT,
+          regime_observed TEXT,
+          regime_correct BOOLEAN,
+
+          bias_call TEXT,
+          bias_observed_return NUMERIC(10, 6),
+          bias_correct BOOLEAN,
+
+          cone_lower NUMERIC(10, 3),
+          cone_upper NUMERIC(10, 3),
+          cone_held BOOLEAN,
+          gamma_floor NUMERIC(10, 3),
+          gamma_floor_held BOOLEAN,
+          gamma_ceiling NUMERIC(10, 3),
+          gamma_ceiling_held BOOLEAN,
+
+          charm_zero NUMERIC(10, 3),
+          charm_drift_call TEXT,
+          charm_drift_observed_pct NUMERIC(10, 6),
+          charm_drift_correct BOOLEAN,
+
+          long_trigger NUMERIC(10, 3),
+          long_fired BOOLEAN NOT NULL DEFAULT FALSE,
+          long_fired_at TIMESTAMPTZ,
+          short_trigger NUMERIC(10, 3),
+          short_fired BOOLEAN NOT NULL DEFAULT FALSE,
+          short_fired_at TIMESTAMPTZ,
+
+          trade_sims JSONB NOT NULL DEFAULT '[]'::jsonb,
+
+          eod_close NUMERIC(10, 3),
+          ic_blown_at_eod BOOLEAN,
+
+          recommended_structures_correct JSONB NOT NULL DEFAULT '{}'::jsonb,
+          avoid_structures_correct JSONB NOT NULL DEFAULT '{}'::jsonb,
+
+          graded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `,
+      sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_periscope_grades_unique
+          ON periscope_grades (periscope_analysis_id, grader_version)
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_periscope_grades_date
+          ON periscope_grades (trading_date DESC, slot_captured_at DESC)
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_periscope_grades_date_version
+          ON periscope_grades (trading_date DESC, grader_version)
+      `,
+    ],
+  },
 ];
