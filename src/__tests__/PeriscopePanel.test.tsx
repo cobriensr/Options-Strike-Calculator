@@ -558,7 +558,9 @@ describe('PeriscopePanel: Claude playbook section', () => {
     ).toBeInTheDocument();
     // expected_dealer_behavior renders as a bottom italic line under the gamma row
     expect(
-      screen.getByText(/Passive bid at the \+γ floor, passive offer at the −γ/i),
+      screen.getByText(
+        /Passive bid at the \+γ floor, passive offer at the −γ/i,
+      ),
     ).toBeInTheDocument();
     // The full prose narrative is INTENTIONALLY NOT rendered in the panel
     // — it lives in periscope_analyses.prose_text and only surfaces in

@@ -212,12 +212,77 @@ describe('GET /api/periscope-playbook — input contract', () => {
     expect(res.statusCode).toBe(400);
   });
 
+  it('returns 400 on malformed slot', async () => {
+    const { req, res } = makeReqRes({
+      date: '2026-05-12',
+      slot: 'definitely-not-iso',
+    });
+    await handler(req, res as never);
+    expect(res.statusCode).toBe(400);
+  });
+
   it('rejects when guardOwnerOrGuestEndpoint returns true', async () => {
     mockGuard.mockResolvedValueOnce(true);
     const { req, res } = makeReqRes();
     await handler(req, res as never);
     // Guard wrote its own response; handler should not have written one.
     expect(mockSql).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================
+// Slot-pinned lookups (time-travel from the panel)
+// ============================================================
+
+describe('GET /api/periscope-playbook — slot pinning', () => {
+  it('returns the row whose slot_captured_at matches when ?slot=ISO is set', async () => {
+    mockSql.mockResolvedValueOnce([COMPLETE_ROW]); // fetchComplete (slot-pinned)
+    mockSql.mockResolvedValueOnce([]); // hasLaterInProgress
+
+    const { req, res } = makeReqRes({
+      date: '2026-05-12',
+      slot: '2026-05-12T13:30:00.000Z',
+    });
+    await handler(req, res as never);
+
+    expect(res.statusCode).toBe(200);
+    const body = res.body as {
+      data: { id: number; slotCapturedAt: string };
+    };
+    expect(body.data).toMatchObject({
+      id: 777,
+      slotCapturedAt: '2026-05-12T13:30:00.000Z',
+    });
+  });
+
+  it('returns data=null when no row matches the pinned slot', async () => {
+    mockSql.mockResolvedValueOnce([]); // no match for that slot
+    mockSql.mockResolvedValueOnce([]); // no in_progress
+
+    const { req, res } = makeReqRes({
+      date: '2026-05-12',
+      slot: '2026-05-12T14:00:00.000Z',
+    });
+    await handler(req, res as never);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({ data: null, reason: 'no_playbook' });
+  });
+
+  it('uses historical cache headers when ?slot is set even without ?date', async () => {
+    mockSql.mockResolvedValueOnce([COMPLETE_ROW]);
+    mockSql.mockResolvedValueOnce([]);
+
+    const { req, res } = makeReqRes({
+      slot: '2026-05-12T13:30:00.000Z',
+    });
+    await handler(req, res as never);
+
+    expect(mockSetCacheHeaders).toHaveBeenCalledWith(
+      expect.anything(),
+      600,
+      60,
+    );
   });
 });
 
@@ -259,11 +324,7 @@ describe('GET /api/periscope-playbook — cache headers', () => {
     const { req, res } = makeReqRes(); // no date param = live
     await handler(req, res as never);
 
-    expect(mockSetCacheHeaders).toHaveBeenCalledWith(
-      expect.anything(),
-      60,
-      60,
-    );
+    expect(mockSetCacheHeaders).toHaveBeenCalledWith(expect.anything(), 60, 60);
   });
 
   it('uses 600s cache when live but market closed (after-hours panel)', async () => {

@@ -191,12 +191,38 @@ function PeriscopePanelInner({
         >
           ‹
         </button>
-        <span
-          className="min-w-[40px] text-center font-mono text-[10px]"
-          style={{ color: theme.textSecondary }}
+        {/* Slot dropdown lets the user jump anywhere in the day's
+            available scrapes without stepping ±10 min at a time. The
+            `‹›` buttons remain for fine adjustment. When the rendered
+            view is not yet anchored to an availableSlots entry (e.g.,
+            empty-state with no data), fall back to a single placeholder
+            option so the select still renders a valid value. */}
+        <select
+          value={currentSlotIso ?? ''}
+          onChange={(e) => {
+            if (e.target.value) stepTo(e.target.value);
+          }}
+          disabled={availableSlots.length === 0}
+          className="rounded border px-1 py-0.5 font-mono text-[10px] disabled:opacity-30"
+          style={{
+            backgroundColor: theme.surfaceAlt,
+            borderColor: theme.border,
+            color: theme.text,
+            minWidth: '60px',
+          }}
+          aria-label="Periscope slot time"
         >
-          {displayedTime || '—'}
-        </span>
+          {currentSlotIso == null && (
+            <option value="" disabled>
+              {displayedTime || '—'}
+            </option>
+          )}
+          {availableSlots.map((iso) => (
+            <option key={iso} value={iso}>
+              {isoToCtTime(iso)}
+            </option>
+          ))}
+        </select>
         <button
           type="button"
           onClick={() => {

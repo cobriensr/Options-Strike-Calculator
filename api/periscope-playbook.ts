@@ -10,6 +10,15 @@
  *
  * Query params:
  *   ?date=YYYY-MM-DD   CT trading date. Defaults to today's CT date.
+ *   ?slot=<ISO>        Optional slot_captured_at to pin the lookup to a
+ *                      specific tick. When set, the handler returns the
+ *                      auto-generated `complete` row whose
+ *                      slot_captured_at matches the ISO exactly; when
+ *                      absent, returns the latest complete row for the
+ *                      date (legacy behavior). The panel passes this
+ *                      whenever the user time-travels to a past slot
+ *                      so the playbook lane stays in sync with the
+ *                      exposure view.
  *   ?nocache=<rand>    Optional cache-bust hint for manual rerun flows.
  *                      The query string is not parsed; presence merely
  *                      forces the edge to revalidate via Cache-Control:
@@ -62,6 +71,11 @@ import type {
 } from './_lib/periscope-db.js';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+// Loose ISO-8601 with date+time+TZ marker. Tight enough to reject
+// obvious junk before it hits the DB; the Neon driver coerces the
+// trailing precision so we don't enforce milliseconds.
+const ISO_RE =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
 
 interface PlaybookRow {
   id: string | number;
@@ -112,37 +126,67 @@ function parseJsonbField(
 }
 
 /**
- * Fetch the latest completed auto-generated playbook for the date. Uses
- * the partial index `idx_periscope_analyses_latest` (created in
- * migration #142) which is keyed on (trading_date DESC, slot_captured_at
- * DESC) WHERE status = 'complete'.
+ * Fetch the completed auto-generated playbook for the date.
+ *
+ * When `slotCapturedAt` is null: returns the latest complete row (legacy
+ * behavior, used by Live mode). Uses the partial index
+ * `idx_periscope_analyses_latest` (migration #142) keyed on
+ * (trading_date DESC, slot_captured_at DESC) WHERE status = 'complete'.
+ *
+ * When `slotCapturedAt` is an ISO timestamp: pins the lookup to that
+ * exact tick. The panel passes this when the user time-travels so the
+ * playbook lane updates to match the rendered exposure slot rather
+ * than getting stuck on the most recent debrief row.
  */
-async function fetchLatestComplete(
+async function fetchComplete(
   date: string,
+  slotCapturedAt: string | null,
 ): Promise<PlaybookResponseRow | null> {
   const sql = getDb();
   try {
-    const rows = (await sql`
-      SELECT
-        id,
-        mode,
-        status,
-        slot_captured_at,
-        read_time,
-        spot_at_read_time,
-        panel_payload,
-        parent_id,
-        model,
-        failure_reason,
-        duration_ms,
-        created_at
-      FROM periscope_analyses
-      WHERE trading_date = ${date}
-        AND auto_generated = TRUE
-        AND status = 'complete'
-      ORDER BY slot_captured_at DESC
-      LIMIT 1
-    `) as PlaybookRow[];
+    const rows = (await (slotCapturedAt == null
+      ? sql`
+          SELECT
+            id,
+            mode,
+            status,
+            slot_captured_at,
+            read_time,
+            spot_at_read_time,
+            panel_payload,
+            parent_id,
+            model,
+            failure_reason,
+            duration_ms,
+            created_at
+          FROM periscope_analyses
+          WHERE trading_date = ${date}
+            AND auto_generated = TRUE
+            AND status = 'complete'
+          ORDER BY slot_captured_at DESC
+          LIMIT 1
+        `
+      : sql`
+          SELECT
+            id,
+            mode,
+            status,
+            slot_captured_at,
+            read_time,
+            spot_at_read_time,
+            panel_payload,
+            parent_id,
+            model,
+            failure_reason,
+            duration_ms,
+            created_at
+          FROM periscope_analyses
+          WHERE trading_date = ${date}
+            AND auto_generated = TRUE
+            AND status = 'complete'
+            AND slot_captured_at = ${slotCapturedAt}
+          LIMIT 1
+        `)) as PlaybookRow[];
     const row = rows[0];
     if (row == null) return null;
     const idNum = Number(row.id);
@@ -166,8 +210,8 @@ async function fetchLatestComplete(
   } catch (err) {
     Sentry.captureException(err);
     logger.error(
-      { err, date },
-      '/api/periscope-playbook: fetchLatestComplete query failed',
+      { err, date, slotCapturedAt },
+      '/api/periscope-playbook: fetchComplete query failed',
     );
     return null;
   }
@@ -229,7 +273,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
       const dateParam = (req.query.date as string | undefined) ?? '';
-      const isHistoricalRead = dateParam !== '';
+      const slotParam = (req.query.slot as string | undefined) ?? '';
+      const isHistoricalRead = dateParam !== '' || slotParam !== '';
       const noCache = (req.query.nocache as string | undefined) ?? '';
 
       let date: string;
@@ -241,6 +286,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         done({ status: 400, error: 'bad_date' });
         return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
       }
+
+      if (slotParam !== '' && !ISO_RE.test(slotParam)) {
+        done({ status: 400, error: 'bad_slot' });
+        return res.status(400).json({ error: 'slot must be ISO-8601' });
+      }
+      const slotCapturedAt: string | null = slotParam !== '' ? slotParam : null;
 
       const marketOpen = isMarketOpen();
 
@@ -258,7 +309,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         setCacheHeaders(res, marketOpen ? 60 : 600, 60);
       }
 
-      const data = await fetchLatestComplete(date);
+      const data = await fetchComplete(date, slotCapturedAt);
       const latestInProgress = await hasLaterInProgress(
         date,
         data?.slotCapturedAt ?? null,

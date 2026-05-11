@@ -198,6 +198,55 @@ describe('usePeriscopePlaybook: successful fetch', () => {
     const [url] = mockFetch.mock.calls[0]!;
     expect(url).toBe('/api/periscope-playbook');
   });
+
+  it('builds the URL with both ?date and ?slot when pinning a historical slot', async () => {
+    mockFetch.mockResolvedValue(
+      jsonResponse({
+        marketOpen: false,
+        asOf: '2026-04-15T20:00:00Z',
+        data: makePlaybookRow(),
+        latestInProgress: false,
+      }),
+    );
+    renderHook(() =>
+      usePeriscopePlaybook({
+        marketOpen: false,
+        selectedDate: '2026-04-15',
+        selectedSlotCapturedAt: '2026-04-15T14:30:00.000Z',
+      }),
+    );
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    const [url] = mockFetch.mock.calls[0]!;
+    expect(url).toContain('date=2026-04-15');
+    expect(url).toContain('slot=2026-04-15T14%3A30%3A00.000Z');
+  });
+
+  it('refetches when selectedSlotCapturedAt changes (prev/next on the panel)', async () => {
+    mockFetch.mockResolvedValue(
+      jsonResponse({
+        marketOpen: false,
+        asOf: '2026-04-15T20:00:00Z',
+        data: makePlaybookRow(),
+        latestInProgress: false,
+      }),
+    );
+    const { rerender } = renderHook(
+      ({ slot }: { slot: string | null }) =>
+        usePeriscopePlaybook({
+          marketOpen: false,
+          selectedDate: '2026-04-15',
+          selectedSlotCapturedAt: slot,
+        }),
+      {
+        initialProps: { slot: '2026-04-15T14:30:00.000Z' as string | null },
+      },
+    );
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    rerender({ slot: '2026-04-15T14:40:00.000Z' });
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+    const secondCallUrl = mockFetch.mock.calls[1]![0] as string;
+    expect(secondCallUrl).toContain('slot=2026-04-15T14%3A40%3A00.000Z');
+  });
 });
 
 // ============================================================

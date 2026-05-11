@@ -115,11 +115,18 @@ interface UsePeriscopePlaybookOptions {
   /** When set, fetch the historical playbook for that CT trading date
    *  and pause polling. When null (default), fetch today's latest. */
   selectedDate?: string | null;
+  /** When set, pin the playbook lookup to the exact `slot_captured_at`
+   *  ISO timestamp. The panel passes the rendered exposure slot's
+   *  capturedAt so the playbook lane updates as the user time-travels.
+   *  When null (default), the server returns the latest complete row
+   *  for the date — correct for Live mode. */
+  selectedSlotCapturedAt?: string | null;
 }
 
 export function usePeriscopePlaybook({
   marketOpen,
   selectedDate,
+  selectedSlotCapturedAt,
 }: UsePeriscopePlaybookOptions): UsePeriscopePlaybookReturn {
   // Same posture as /api/periscope-exposure: owner OR guest can read.
   const accessMode = getAccessMode();
@@ -148,6 +155,8 @@ export function usePeriscopePlaybook({
     try {
       const params = new URLSearchParams();
       if (selectedDate != null) params.set('date', selectedDate);
+      if (selectedSlotCapturedAt != null)
+        params.set('slot', selectedSlotCapturedAt);
       const qs = params.toString();
       const url = qs
         ? `/api/periscope-playbook?${qs}`
@@ -167,7 +176,7 @@ export function usePeriscopePlaybook({
     } finally {
       if (mountedRef.current) setIsLoading(false);
     }
-  }, [canFetch, selectedDate]);
+  }, [canFetch, selectedDate, selectedSlotCapturedAt]);
 
   // Initial fetch + refetch when selected date changes.
   useEffect(() => {

@@ -282,10 +282,15 @@ export default function StrikeCalculator() {
   // panel_payload exists for the selected date, the panel renders it
   // above (and instead of) the deterministic TradePlanSection. When
   // viewing a historical slot, pass its date so the playbook lookup
-  // mirrors the time-travel selection.
+  // mirrors the time-travel selection. Also pin to the rendered exposure
+  // view's `capturedAt` so prev/next on the time picker refetches the
+  // matching playbook (otherwise the API returns the latest debrief row
+  // regardless of which slot the panel is showing).
   const periscopePlaybook = usePeriscopePlaybook({
     marketOpen: market.data.quotes?.marketOpen ?? false,
     selectedDate: periscopeSlot?.date ?? null,
+    selectedSlotCapturedAt:
+      periscopeSlot != null ? (periscope.view?.capturedAt ?? null) : null,
   });
   // GEX Landscape owns its own ticker / date / scrub state internally
   // (Phase 3c of gex-landscape-ws-upgrade-2026-05-03.md) and pulls per-strike
