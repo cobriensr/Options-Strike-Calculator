@@ -255,12 +255,22 @@ function levelHeldBelow(
   return candles.every((c) => c.high < level);
 }
 
+/**
+ * Cone held = the daily 0DTE straddle breakeven cone held at EOD.
+ * The cone is priced from the morning ATM straddle; "held" is the
+ * settlement question — did SPX cash-settle within the breakeven
+ * range? Using the strict every-bar-inside definition was too tight
+ * (a ~28pt-wide cone is breached by intraday wicks on most days even
+ * when the settle is well inside).
+ *
+ * Returns null when cone or eodClose is unavailable.
+ */
 function coneHeld(
   cone: GraderPlaybook['cone'],
-  candles: Candle[],
+  eodClose: number | null,
 ): boolean | null {
-  if (cone == null || candles.length === 0) return null;
-  return candles.every((c) => c.low >= cone.lower && c.high <= cone.upper);
+  if (cone == null || eodClose == null) return null;
+  return eodClose >= cone.lower && eodClose <= cone.upper;
 }
 
 // ─── Charm drift ───────────────────────────────────────────────────
@@ -527,7 +537,7 @@ export function gradePlaybook(args: GradePlaybookArgs): Grade {
   const regime = gradeRegime({ playbook, observed: observedRegime });
 
   // ─── Levels held (over short window) ─────────────────────────────
-  const cone_held = coneHeld(playbook.cone, spxShort);
+  const cone_held = coneHeld(playbook.cone, eodClose);
   const gammaFloorHeld = levelHeldAbove(playbook.gammaFloor, spxShort);
   const gammaCeilingHeld = levelHeldBelow(playbook.gammaCeiling, spxShort);
 

@@ -154,7 +154,7 @@ describe('gradePlaybook: bias', () => {
 // ─── Cone held ─────────────────────────────────────────────────────
 
 describe('gradePlaybook: cone held', () => {
-  it('returns true when every short-window bar stays inside cone', () => {
+  it('returns true when EOD close lands inside the cone', () => {
     const grade = gradePlaybook(
       defaultArgs({
         playbook: defaultPlaybook({
@@ -162,22 +162,9 @@ describe('gradePlaybook: cone held', () => {
         }),
         spxCandles: [
           candle({ hourCT: 9, minute: 0, open: 5800, close: 5800 }),
-          candle({ hourCT: 9, minute: 30, open: 5815, close: 5810 }),
-          candle({ hourCT: 9, minute: 50, open: 5810, close: 5800 }),
-        ],
-      }),
-    );
-    expect(grade.coneHeld).toBe(true);
-  });
-
-  it('returns false on a single bar that breaches the upper cone', () => {
-    const grade = gradePlaybook(
-      defaultArgs({
-        playbook: defaultPlaybook({
-          cone: { lower: 5780, upper: 5820 },
-        }),
-        spxCandles: [
-          candle({ hourCT: 9, minute: 0, open: 5800, close: 5800 }),
+          // Intraday wick breaches the cone (high=5825), but settle
+          // is inside (5810) — the 0DTE breakeven cone is a *settle*
+          // bet, not an intraday-touch bet.
           candle({
             hourCT: 9,
             minute: 30,
@@ -186,10 +173,39 @@ describe('gradePlaybook: cone held', () => {
             low: 5810,
             close: 5818,
           }),
+          candle({ hourCT: 15, minute: 0, open: 5810, close: 5810 }),
+        ],
+      }),
+    );
+    expect(grade.coneHeld).toBe(true);
+  });
+
+  it('returns false when EOD close settles outside the cone', () => {
+    const grade = gradePlaybook(
+      defaultArgs({
+        playbook: defaultPlaybook({
+          cone: { lower: 5780, upper: 5820 },
+        }),
+        spxCandles: [
+          candle({ hourCT: 9, minute: 0, open: 5800, close: 5800 }),
+          candle({ hourCT: 15, minute: 0, open: 5825, close: 5830 }),
         ],
       }),
     );
     expect(grade.coneHeld).toBe(false);
+  });
+
+  it('returns null when cone is absent from playbook', () => {
+    const grade = gradePlaybook(
+      defaultArgs({
+        playbook: defaultPlaybook({ cone: null }),
+        spxCandles: [
+          candle({ hourCT: 9, minute: 0, open: 5800, close: 5800 }),
+          candle({ hourCT: 15, minute: 0, open: 5810, close: 5810 }),
+        ],
+      }),
+    );
+    expect(grade.coneHeld).toBeNull();
   });
 });
 

@@ -110,6 +110,13 @@ function eodForDate(dateStr) {
 }
 
 async function loadPlaybooks() {
+  // RTH-only filter: the auto-playbook system sometimes wrote rows for
+  // pre-market scraper captures (timeframe="08:20 - 08:30" but the
+  // capture actually ran at 03:30 CT during overnight scrape passes).
+  // Those rows have meaningless `spot` values (stale UW panel) so the
+  // grader's bias / regime / sim outputs are garbage for them. Filter
+  // by CT wall-clock here so the aggregate stats reflect real RTH
+  // playbooks only.
   const rows = await sql`
     SELECT
       id,
@@ -121,9 +128,27 @@ async function loadPlaybooks() {
     WHERE trading_date = ${DATE}
       AND auto_generated = TRUE
       AND status = 'complete'
+      AND (slot_captured_at AT TIME ZONE 'America/Chicago')::time
+          BETWEEN '08:30' AND '15:00'
     ORDER BY slot_captured_at ASC
   `;
   return rows;
+}
+
+/**
+ * Pull the daily 0DTE straddle breakeven cone from cone_levels
+ * (migration #138). Used as the fallback when panel_payload.cone is
+ * null. Returns {lower, upper} or null if no row.
+ */
+async function loadDailyCone(date) {
+  const rows = await sql`
+    SELECT cone_lower, cone_upper
+    FROM cone_levels
+    WHERE date = ${date}
+  `;
+  const r = rows[0];
+  if (r == null || r.cone_lower == null || r.cone_upper == null) return null;
+  return { lower: Number(r.cone_lower), upper: Number(r.cone_upper) };
 }
 
 async function loadSpxCandles(start, end) {
@@ -174,22 +199,29 @@ function parsePayload(raw) {
   return raw;
 }
 
-function toGraderPlaybook(panelPayload) {
+function toGraderPlaybook(panelPayload, fallbackCone) {
   // panel_payload uses snake_case-ish field names matching the runner
   // schema; map to camelCase for the grader. Most fields pass through
   // unchanged.
+  //
+  // Cone fallback: the playbook frequently omits `cone` on older
+  // schemas. We fall back to the deterministic 0DTE straddle cone
+  // from cone_levels (migration #138, populated daily at 9:31 ET from
+  // the ATM call+put premiums). The grader needs SOME cone to do
+  // cone-held / regime classification.
+  const playbookCone =
+    panelPayload.cone &&
+    typeof panelPayload.cone === 'object' &&
+    panelPayload.cone.lower != null &&
+    panelPayload.cone.upper != null
+      ? {
+          lower: Number(panelPayload.cone.lower),
+          upper: Number(panelPayload.cone.upper),
+        }
+      : null;
   return {
     spot: nullable(panelPayload.spot),
-    cone:
-      panelPayload.cone &&
-      typeof panelPayload.cone === 'object' &&
-      panelPayload.cone.lower != null &&
-      panelPayload.cone.upper != null
-        ? {
-            lower: Number(panelPayload.cone.lower),
-            upper: Number(panelPayload.cone.upper),
-          }
-        : null,
+    cone: playbookCone ?? fallbackCone ?? null,
     longTrigger: nullable(
       panelPayload.longTrigger ?? panelPayload.long_trigger,
     ),
@@ -283,6 +315,31 @@ async function upsertGrade(grade) {
   `;
 }
 
+function bumpBinary(bucket, field, ok) {
+  bucket.graded += 1;
+  if (ok) bucket[field] += 1;
+}
+
+function accumulateGradeStats(grade, correctCounts, simPnl) {
+  if (grade.regimeCorrect != null)
+    bumpBinary(correctCounts.regime, 'correct', grade.regimeCorrect);
+  if (grade.biasCorrect != null)
+    bumpBinary(correctCounts.bias, 'correct', grade.biasCorrect);
+  if (grade.coneHeld != null)
+    bumpBinary(correctCounts.cone, 'held', grade.coneHeld);
+  if (grade.gammaFloorHeld != null)
+    bumpBinary(correctCounts.floor, 'held', grade.gammaFloorHeld);
+  if (grade.gammaCeilingHeld != null)
+    bumpBinary(correctCounts.ceiling, 'held', grade.gammaCeilingHeld);
+  if (grade.charmDriftCorrect != null)
+    bumpBinary(correctCounts.charm, 'correct', grade.charmDriftCorrect);
+  if (grade.longFired) correctCounts.longFires += 1;
+  if (grade.shortFired) correctCounts.shortFires += 1;
+  if (grade.icBlownAtEod === true) correctCounts.icBlown += 1;
+  if (grade.icBlownAtEod === false) correctCounts.icSafe += 1;
+  for (const sim of grade.tradeSims) simPnl[sim.asset].push(sim.pnlPct);
+}
+
 async function main() {
   console.log('═══════════════════════════════════════════════════════════');
   console.log('  Periscope Calibration Grading');
@@ -306,14 +363,24 @@ async function main() {
   const dayEnd = eodCloseTs;
 
   // Bulk-fetch all candle data ONCE for the day, then filter per slot.
-  const [spxAll, esAll, nqAll] = await Promise.all([
+  // Cone fallback lives outside the playbook on older runs — pull it
+  // once and pass to every slot whose playbook doesn't carry one.
+  const [spxAll, esAll, nqAll, dailyCone] = await Promise.all([
     loadSpxCandles(dayStart, dayEnd),
     loadFuturesCandles('ES', dayStart, dayEnd),
     loadFuturesCandles('NQ', dayStart, dayEnd),
+    loadDailyCone(DATE),
   ]);
   console.log(
     `  candles: SPX=${spxAll.length} ES=${esAll.length} NQ=${nqAll.length}`,
   );
+  if (dailyCone) {
+    console.log(
+      `  cone fallback:    [${dailyCone.lower} - ${dailyCone.upper}] (cone_levels, used when payload.cone is null)`,
+    );
+  } else {
+    console.log(`  cone fallback:    NONE (cone_levels has no row for ${DATE})`);
+  }
   console.log('');
 
   const correctCounts = {
@@ -343,7 +410,7 @@ async function main() {
       );
       continue;
     }
-    const graderPlaybook = toGraderPlaybook(panelPayload);
+    const graderPlaybook = toGraderPlaybook(panelPayload, dailyCone);
 
     // Filter candles for this slot's windows.
     const slotMs = slotCapturedAt.getTime();
@@ -369,38 +436,7 @@ async function main() {
       eodCloseTs,
     });
 
-    // Aggregate stats.
-    if (grade.regimeCorrect != null) {
-      correctCounts.regime.graded += 1;
-      if (grade.regimeCorrect) correctCounts.regime.correct += 1;
-    }
-    if (grade.biasCorrect != null) {
-      correctCounts.bias.graded += 1;
-      if (grade.biasCorrect) correctCounts.bias.correct += 1;
-    }
-    if (grade.coneHeld != null) {
-      correctCounts.cone.graded += 1;
-      if (grade.coneHeld) correctCounts.cone.held += 1;
-    }
-    if (grade.gammaFloorHeld != null) {
-      correctCounts.floor.graded += 1;
-      if (grade.gammaFloorHeld) correctCounts.floor.held += 1;
-    }
-    if (grade.gammaCeilingHeld != null) {
-      correctCounts.ceiling.graded += 1;
-      if (grade.gammaCeilingHeld) correctCounts.ceiling.held += 1;
-    }
-    if (grade.charmDriftCorrect != null) {
-      correctCounts.charm.graded += 1;
-      if (grade.charmDriftCorrect) correctCounts.charm.correct += 1;
-    }
-    if (grade.longFired) correctCounts.longFires += 1;
-    if (grade.shortFired) correctCounts.shortFires += 1;
-    if (grade.icBlownAtEod === true) correctCounts.icBlown += 1;
-    if (grade.icBlownAtEod === false) correctCounts.icSafe += 1;
-    for (const sim of grade.tradeSims) {
-      simPnl[sim.asset].push(sim.pnlPct);
-    }
+    accumulateGradeStats(grade, correctCounts, simPnl);
 
     if (!DRY) await upsertGrade(grade);
     graded += 1;
