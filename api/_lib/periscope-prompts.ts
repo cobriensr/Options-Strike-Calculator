@@ -493,12 +493,13 @@ export const STRUCTURED_TOOL: Anthropic.Messages.Tool = {
         type: 'array',
         items: { type: 'string' },
         description:
-          'Recommended structures, e.g. iron_condor, debit_call_spread, broken_wing_butterfly. For iron_condor / iron_butterfly the wings are gamma_floor / gamma_ceiling — NOT the cone bounds.',
+          'REQUIRED non-empty array (unless bias = no-trade). Recommended structures, e.g. iron_condor, debit_call_spread, broken_wing_butterfly. For iron_condor / iron_butterfly the wings are gamma_floor / gamma_ceiling — NOT the cone bounds.',
       },
       trade_types_avoided: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Structures explicitly to avoid given the current read.',
+        description:
+          'REQUIRED non-empty array. Structures explicitly to avoid given the current read.',
       },
       key_levels: {
         type: ['object', 'null'],
@@ -513,22 +514,23 @@ export const STRUCTURED_TOOL: Anthropic.Messages.Tool = {
       expected_dealer_behavior: {
         type: ['string', 'null'],
         description:
-          'One-paragraph prose describing how dealers are expected to behave given the current gamma / charm topology. Multi-sentence is fine; the tool channel handles control characters correctly.',
+          'REQUIRED prose field. MUST contain the explicit FLOW-STRUCTURE CHECK from your prose narrative verbatim. State whether informed UW flow (from the flow context block) AGREES or CONFLICTS with the structural map, name the strike(s) where the check applies, and whether the conflict (if any) makes the slot NO-TRADE. Multi-sentence required.',
       },
       confidence: {
         type: ['string', 'null'],
         enum: ['low', 'medium', 'high', null],
-        description: 'Conviction level for the directional / structural call.',
+        description:
+          'Conviction level. Use high ONLY when you can name a concrete structural fact in confidence_basis (twin-strike +γ + matching charm + flow agreement). NEVER emit high without filling confidence_basis.',
       },
       confidence_basis: {
         type: ['string', 'null'],
         description:
-          'Short prose explaining what justifies the confidence level. May span multiple sentences.',
+          "REQUIRED whenever confidence != null. State the specific structural fact that justifies the conviction level — a fact, not a feeling. Bad: 'levels look clean'. Good: 'twin-strike +γ at 7,380 (+1,107) and 7,350 (+1,235) with no opposing flow in last 5 min'. Multi-sentence allowed.",
       },
       futures_plan: {
         type: ['string', 'null'],
         description:
-          'LONG / SHORT / WAIT framing in prose, tying futures execution to the structural levels above. May span multiple paragraphs.',
+          "REQUIRED prose field (multi-paragraph). MUST contain the explicit IF-THEN setups from your prose narrative verbatim. Format:\\n\\nSETUP A — IF [price condition], [direction] to [target], stop [stop]. R:R [ratio]. DISQUALIFIER: [condition].\\n\\nSETUP B — IF [opposite condition], [direction] to [target], stop [stop]. R:R [ratio]. DISQUALIFIER: [condition].\\n\\nNO-TRADE WHILE: [chop range / spread / event window].\\n\\nDo NOT submit empty or a generic 'go long/short' string — the trader uses this field directly. Mirror the prose verbatim so the panel UI shows the actionable plan.",
       },
     },
     required: [],
