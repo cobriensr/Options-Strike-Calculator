@@ -22,12 +22,35 @@
  * Phase 1a of docs/superpowers/specs/api-refactor-2026-05-02.md
  */
 
+import { timingSafeEqual } from 'node:crypto';
+
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import logger from './logger.js';
 import { Sentry } from './sentry.js';
 import { cronGuard } from './api-helpers.js';
 import { reportCronRun } from './axiom.js';
 import { SCHEDULE_MAP } from './cron-schedules.js';
+
+/**
+ * Constant-time check of the `Authorization: Bearer <CRON_SECRET>` header.
+ * Returns false when CRON_SECRET is unset or the header is missing/wrong.
+ *
+ * Used by `withCronCheckin` to short-circuit Sentry check-ins for
+ * unauthenticated traffic (bot scans, misrouted requests). Mirrors the
+ * auth check in `cronGuard()` — the duplication is deliberate: this
+ * decision must be made BEFORE the wrapper sends its `in_progress`
+ * check-in, which is before cronGuard runs inside the inner handler.
+ */
+function isCronAuthenticated(req: VercelRequest): boolean {
+  const cronSecret = process.env.CRON_SECRET ?? '';
+  if (cronSecret.length === 0) return false;
+  const authHeader = req.headers.authorization ?? '';
+  const expected = `Bearer ${cronSecret}`;
+  const authBuf = Buffer.from(authHeader);
+  const expBuf = Buffer.from(expected);
+  if (authBuf.length !== expBuf.length) return false;
+  return timingSafeEqual(authBuf, expBuf);
+}
 
 /**
  * Send a single `ok` check-in to Sentry for the given monitor. Used when
@@ -419,6 +442,18 @@ export function withCronCheckin(
         : null;
 
     if (!config || !captureCheckIn) {
+      await inner(req, res);
+      return;
+    }
+
+    // Skip Sentry check-ins for unauthenticated requests. Bot scans and
+    // misrouted traffic that hit `/api/cron/<job>` without a valid Bearer
+    // get a clean 401 from cronGuard inside `inner()`, but without this
+    // gate the wrapper would still register `in_progress` then `error`
+    // (because res.statusCode >= 400), creating a Sentry monitor incident
+    // from non-cron traffic. Real Vercel cron invocations always carry
+    // the matching Bearer header so they pass straight through.
+    if (!isCronAuthenticated(req)) {
       await inner(req, res);
       return;
     }

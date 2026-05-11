@@ -12,7 +12,7 @@
  *   - reportCronRun failure does NOT crash the response.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
@@ -544,8 +544,17 @@ describe('withCronInstrumentation', () => {
 });
 
 describe('withCronCheckin', () => {
+  const ORIGINAL_ENV = process.env;
+  const authedReq = () =>
+    mockRequest({ headers: { authorization: 'Bearer test-secret' } });
+
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env = { ...ORIGINAL_ENV, CRON_SECRET: 'test-secret' };
+  });
+
+  afterEach(() => {
+    process.env = ORIGINAL_ENV;
   });
 
   it('runs the inner handler and emits in_progress + ok check-ins on 2xx', async () => {
@@ -555,7 +564,7 @@ describe('withCronCheckin', () => {
     const wrapped = withCronCheckin('checkin-job', inner);
 
     const res = mockResponse();
-    await wrapped(mockRequest(), res);
+    await wrapped(authedReq(), res);
 
     expect(inner).toHaveBeenCalledTimes(1);
     expect(Sentry.captureCheckIn).toHaveBeenCalledTimes(2);
@@ -584,7 +593,7 @@ describe('withCronCheckin', () => {
     const wrapped = withCronCheckin('checkin-job', inner);
 
     const res = mockResponse();
-    await wrapped(mockRequest(), res);
+    await wrapped(authedReq(), res);
 
     expect(Sentry.captureCheckIn).toHaveBeenCalledTimes(2);
     const secondCall = vi.mocked(Sentry.captureCheckIn).mock.calls[1]!;
@@ -602,7 +611,7 @@ describe('withCronCheckin', () => {
     const wrapped = withCronCheckin('checkin-job', inner);
 
     const res = mockResponse();
-    await expect(wrapped(mockRequest(), res)).rejects.toThrow('inner exploded');
+    await expect(wrapped(authedReq(), res)).rejects.toThrow('inner exploded');
 
     expect(Sentry.captureCheckIn).toHaveBeenCalledTimes(2);
     const secondCall = vi.mocked(Sentry.captureCheckIn).mock.calls[1]!;
@@ -619,7 +628,7 @@ describe('withCronCheckin', () => {
     const wrapped = withCronCheckin('not-in-map-checkin', inner);
 
     const res = mockResponse();
-    await wrapped(mockRequest(), res);
+    await wrapped(authedReq(), res);
 
     expect(inner).toHaveBeenCalledTimes(1);
     expect(Sentry.captureCheckIn).not.toHaveBeenCalled();
@@ -633,9 +642,61 @@ describe('withCronCheckin', () => {
     const wrapped = withCronCheckin('checkin-job', inner);
 
     const res = mockResponse();
-    await wrapped(mockRequest(), res);
+    await wrapped(authedReq(), res);
 
     expect(res._status).toBe(502);
     expect(res._json).toEqual({ error: 'upstream' });
+  });
+
+  it('skips check-ins entirely when Authorization header is missing (unauthenticated traffic)', async () => {
+    // Bot scans / misrouted requests hit /api/cron/<job> without a Bearer
+    // header. cronGuard inside the handler returns 401, but the wrapper
+    // must NOT register the request as a cron run — otherwise the
+    // statusCode-based completion would send `status: 'error'` and
+    // create a false-positive Sentry monitor incident.
+    const inner = vi.fn(async (_req, res) => {
+      res.status(401).json({ error: 'Unauthorized' });
+    });
+    const wrapped = withCronCheckin('checkin-job', inner);
+
+    const res = mockResponse();
+    await wrapped(mockRequest(), res); // no Authorization header
+
+    expect(inner).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureCheckIn).not.toHaveBeenCalled();
+    expect(res._status).toBe(401);
+  });
+
+  it('skips check-ins when Authorization header is wrong', async () => {
+    const inner = vi.fn(async (_req, res) => {
+      res.status(401).json({ error: 'Unauthorized' });
+    });
+    const wrapped = withCronCheckin('checkin-job', inner);
+
+    const res = mockResponse();
+    await wrapped(
+      mockRequest({ headers: { authorization: 'Bearer wrong-secret' } }),
+      res,
+    );
+
+    expect(inner).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureCheckIn).not.toHaveBeenCalled();
+  });
+
+  it('skips check-ins when CRON_SECRET env is unset', async () => {
+    delete process.env.CRON_SECRET;
+    const inner = vi.fn(async (_req, res) => {
+      res.status(401).json({ error: 'Unauthorized' });
+    });
+    const wrapped = withCronCheckin('checkin-job', inner);
+
+    const res = mockResponse();
+    await wrapped(
+      mockRequest({ headers: { authorization: 'Bearer anything' } }),
+      res,
+    );
+
+    expect(inner).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureCheckIn).not.toHaveBeenCalled();
   });
 });
