@@ -24,6 +24,7 @@
 
 import { timingSafeEqual } from 'node:crypto';
 
+import { waitUntil } from '@vercel/functions';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import logger from './logger.js';
 import { Sentry } from './sentry.js';
@@ -53,12 +54,24 @@ function isCronAuthenticated(req: VercelRequest): boolean {
 }
 
 /**
- * Best-effort flush of Sentry's outbound queue before a Vercel Function
- * exits. `captureCheckIn` / `captureException` are fire-and-forget at
- * the SDK level; without an explicit flush, Fluid Compute can kill the
- * in-flight HTTP request before it reaches Sentry's wire, leaving cron
- * monitors stuck on `in_progress` and firing a false
- * "timeout check-in detected" issue when `maxRuntime` expires.
+ * Hand Sentry's outbound queue to Vercel via `waitUntil()` so the flush
+ * can drain AFTER the response is sent, instead of being killed when
+ * the Vercel Function exits.
+ *
+ * Why not `await Sentry.flush()`: tried that in commit 449fa949 and it
+ * had zero effect — `monitor-flow-ratio`, `monitor-vega-spike`, and
+ * friends kept firing "A timeout check-in detected" every minute after
+ * deploy. The function-exit pattern (`await flush; return`) doesn't
+ * keep the in-flight HTTP request alive on Fluid Compute the way it
+ * does on a traditional Node server. `waitUntil()` is Vercel's
+ * documented pattern for post-response work — it registers the promise
+ * with the runtime so the instance stays alive specifically to drain
+ * pending background promises, even after `res.end()`.
+ *
+ * `captureCheckIn` and `captureException` are fire-and-forget at the
+ * SDK level; without this helper, the completion check-in for a cron
+ * never reaches Sentry's wire and the monitor stays stuck on
+ * `in_progress` until `maxRuntime` expires.
  *
  * `Sentry.withMonitor()` does NOT flush internally either (verified
  * against `@sentry/core/build/cjs/exports.js` — under the hood it's
@@ -68,15 +81,20 @@ function isCronAuthenticated(req: VercelRequest): boolean {
  *
  * 2s matches the Sentry-docs default for serverless graceful shutdown.
  * No-op when `Sentry.flush` is unavailable (per-test mocks that stub a
- * narrow surface). Errors swallowed — observability paths must never
- * crash the response.
+ * narrow surface). Errors on the flush promise are swallowed by the
+ * `.catch` so `waitUntil` never sees a rejection — observability paths
+ * must never crash the response.
  */
-async function flushSentry(): Promise<void> {
+function flushSentry(): void {
   if (typeof Sentry.flush !== 'function') return;
   try {
-    await Sentry.flush(2000);
+    waitUntil(
+      Sentry.flush(2000).catch(() => {
+        /* swallowed: observability path must never crash the response */
+      }),
+    );
   } catch {
-    /* swallowed: observability path must never crash the response */
+    /* swallowed: waitUntil itself can throw outside a Vercel runtime */
   }
 }
 
@@ -298,7 +316,7 @@ export function withCronInstrumentation(
       // genuine outages.
       if (res.statusCode === 200) {
         sendIntentionalSkipCheckin(jobName);
-        await flushSentry();
+        flushSentry();
       }
       return;
     }
@@ -390,7 +408,7 @@ export function withCronInstrumentation(
         ...(result.metadata ?? {}),
         durationMs,
       });
-      await flushSentry();
+      flushSentry();
     } catch (err) {
       const durationMs = Date.now() - startTimeMs;
       Sentry.captureException(err);
@@ -424,7 +442,7 @@ export function withCronInstrumentation(
           ? customBody
           : { job: jobName, error: 'Internal error' };
       res.status(status).json(body);
-      await flushSentry();
+      flushSentry();
     }
   };
 }
@@ -513,7 +531,7 @@ export function withCronCheckin(
         status,
         duration: (Date.now() - startMs) / 1000,
       });
-      await flushSentry();
+      flushSentry();
     } catch (err) {
       captureCheckIn({
         checkInId,
@@ -521,7 +539,7 @@ export function withCronCheckin(
         status: 'error',
         duration: (Date.now() - startMs) / 1000,
       });
-      await flushSentry();
+      flushSentry();
       throw err;
     }
   };

@@ -15,6 +15,20 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
+const { waitUntilCalls } = vi.hoisted(() => ({
+  waitUntilCalls: [] as Promise<unknown>[],
+}));
+
+vi.mock('@vercel/functions', () => ({
+  // The wrapper registers Sentry.flush() with Vercel via waitUntil so
+  // the flush can drain after the response is sent. Tests assert the
+  // promise was handed to waitUntil — the captured list lets the order
+  // of operations be inspected per-test.
+  waitUntil: vi.fn((p: Promise<unknown>) => {
+    waitUntilCalls.push(p);
+  }),
+}));
+
 vi.mock('../_lib/api-helpers.js', () => ({
   cronGuard: vi.fn(),
 }));
@@ -71,12 +85,14 @@ import { cronGuard } from '../_lib/api-helpers.js';
 import { reportCronRun } from '../_lib/axiom.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
+import { waitUntil } from '@vercel/functions';
 
 const guardOk = { apiKey: 'KEY', today: '2026-05-02' };
 
 describe('withCronInstrumentation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    waitUntilCalls.length = 0;
   });
 
   it('returns early when cronGuard rejects (no handler call, no axiom event)', async () => {
@@ -543,14 +559,16 @@ describe('withCronInstrumentation', () => {
     expect(res._status).toBe(500);
   });
 
-  // ── Sentry.flush before function exit ─────────────────────────
+  // ── Sentry.flush via waitUntil before function exit ───────────
   // Sentry.withMonitor does NOT flush internally (verified against
-  // @sentry/core source). On Vercel Fluid Compute the captureCheckIn
-  // HTTP request can be killed before it reaches the wire, leaving
-  // monitors stuck on `in_progress` and firing a false
-  // "timeout check-in detected" issue. The wrapper must flush.
+  // @sentry/core source). On Vercel Fluid Compute, the captureCheckIn
+  // HTTP request gets killed when the function exits even with
+  // `await Sentry.flush()` (verified empirically — commit 449fa949 had
+  // no effect on the monitor incidents). The wrapper must hand the
+  // flush promise to `waitUntil()` so Vercel keeps the runtime alive
+  // long enough to drain it.
 
-  it('flushes Sentry after the happy-path response', async () => {
+  it('hands Sentry.flush() to waitUntil after the happy-path response', async () => {
     vi.mocked(cronGuard).mockReturnValue(guardOk);
     const handler = vi
       .fn()
@@ -562,9 +580,10 @@ describe('withCronInstrumentation', () => {
 
     expect(Sentry.flush).toHaveBeenCalledTimes(1);
     expect(Sentry.flush).toHaveBeenCalledWith(2000);
+    expect(waitUntil).toHaveBeenCalledTimes(1);
   });
 
-  it('flushes Sentry after the exception path response', async () => {
+  it('hands Sentry.flush() to waitUntil after the exception path response', async () => {
     vi.mocked(cronGuard).mockReturnValue(guardOk);
     const handler = vi.fn().mockRejectedValue(new Error('boom'));
     const wrapped = withCronInstrumentation('monitored-job', handler);
@@ -575,9 +594,10 @@ describe('withCronInstrumentation', () => {
     expect(res._status).toBe(500);
     expect(Sentry.flush).toHaveBeenCalledTimes(1);
     expect(Sentry.flush).toHaveBeenCalledWith(2000);
+    expect(waitUntil).toHaveBeenCalledTimes(1);
   });
 
-  it('flushes Sentry after sendIntentionalSkipCheckin (status 200 skip)', async () => {
+  it('hands Sentry.flush() to waitUntil after sendIntentionalSkipCheckin (status 200 skip)', async () => {
     vi.mocked(cronGuard).mockImplementation((_req, res) => {
       res.status(200).json({ skipped: true, reason: 'Outside time window' });
       return null;
@@ -591,12 +611,13 @@ describe('withCronInstrumentation', () => {
     expect(Sentry.captureCheckIn).toHaveBeenCalledTimes(1); // the skip check-in
     expect(Sentry.flush).toHaveBeenCalledTimes(1);
     expect(Sentry.flush).toHaveBeenCalledWith(2000);
+    expect(waitUntil).toHaveBeenCalledTimes(1);
   });
 
-  it('does NOT flush on auth-failure (cronGuard rejects with statusCode !== 200)', async () => {
+  it('does NOT flush or call waitUntil on auth-failure (cronGuard rejects with statusCode !== 200)', async () => {
     // No check-in is sent on real auth/config failures — so no flush
     // either. Keeps the missed-checkin signal accurate for genuine
-    // outages and avoids 2s of wasted billed time per bot-scan 401.
+    // outages and avoids waiting on a flush that has nothing to drain.
     vi.mocked(cronGuard).mockImplementation((_req, res) => {
       res.status(401).json({ error: 'Unauthorized' });
       return null;
@@ -606,6 +627,7 @@ describe('withCronInstrumentation', () => {
     await wrapped(mockRequest(), mockResponse());
 
     expect(Sentry.flush).not.toHaveBeenCalled();
+    expect(waitUntil).not.toHaveBeenCalled();
   });
 });
 
@@ -616,6 +638,7 @@ describe('withCronCheckin', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    waitUntilCalls.length = 0;
     process.env = { ...ORIGINAL_ENV, CRON_SECRET: 'test-secret' };
   });
 
@@ -766,11 +789,13 @@ describe('withCronCheckin', () => {
     expect(Sentry.captureCheckIn).not.toHaveBeenCalled();
   });
 
-  it('flushes Sentry after the ok completion check-in', async () => {
-    // Without this flush the completion HTTP request can be killed by
-    // Vercel's Fluid Compute function exit, leaving Sentry with only
-    // the in_progress signal and firing a false "timeout check-in
-    // detected" issue after maxRuntime expires.
+  it('hands Sentry.flush() to waitUntil after the ok completion check-in', async () => {
+    // Without waitUntil the completion HTTP request gets killed when
+    // Vercel's Fluid Compute exits the function, leaving Sentry with
+    // only the in_progress signal and firing a false "timeout check-in
+    // detected" issue after maxRuntime expires. `await Sentry.flush()`
+    // alone is insufficient — verified in production: commit 449fa949
+    // had zero effect on the monitor incidents.
     const inner = vi.fn(async (_req, res) => {
       res.status(200).json({ ok: true });
     });
@@ -782,14 +807,18 @@ describe('withCronCheckin', () => {
     expect(Sentry.captureCheckIn).toHaveBeenCalledTimes(2);
     expect(Sentry.flush).toHaveBeenCalledTimes(1);
     expect(Sentry.flush).toHaveBeenCalledWith(2000);
-    // Order matters: completion check-in must be sent before flush starts.
+    // The flush promise must be registered with Vercel's waitUntil so
+    // the runtime keeps the function alive long enough to drain it.
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    expect(waitUntilCalls).toHaveLength(1);
+    // Order matters: completion check-in must be enqueued before flush.
     const flushOrder = vi.mocked(Sentry.flush).mock.invocationCallOrder[0]!;
     const completionOrder = vi.mocked(Sentry.captureCheckIn).mock
       .invocationCallOrder[1]!;
     expect(flushOrder).toBeGreaterThan(completionOrder);
   });
 
-  it('flushes Sentry after the error completion check-in on 5xx', async () => {
+  it('hands Sentry.flush() to waitUntil after the error completion check-in on 5xx', async () => {
     const inner = vi.fn(async (_req, res) => {
       res.status(500).json({ error: 'oops' });
     });
@@ -800,9 +829,10 @@ describe('withCronCheckin', () => {
 
     expect(Sentry.flush).toHaveBeenCalledTimes(1);
     expect(Sentry.flush).toHaveBeenCalledWith(2000);
+    expect(waitUntil).toHaveBeenCalledTimes(1);
   });
 
-  it('flushes Sentry after the error check-in when inner throws (before re-throw)', async () => {
+  it('hands Sentry.flush() to waitUntil when inner throws (before re-throw)', async () => {
     const boom = new Error('inner exploded');
     const inner = vi.fn(async () => {
       throw boom;
@@ -814,9 +844,10 @@ describe('withCronCheckin', () => {
 
     expect(Sentry.flush).toHaveBeenCalledTimes(1);
     expect(Sentry.flush).toHaveBeenCalledWith(2000);
+    expect(waitUntil).toHaveBeenCalledTimes(1);
   });
 
-  it('does not call Sentry.flush when the auth gate skips check-ins', async () => {
+  it('does not call Sentry.flush or waitUntil when the auth gate skips check-ins', async () => {
     const inner = vi.fn(async (_req, res) => {
       res.status(401).json({ error: 'Unauthorized' });
     });
@@ -826,5 +857,24 @@ describe('withCronCheckin', () => {
     await wrapped(mockRequest(), res); // no Authorization header
 
     expect(Sentry.flush).not.toHaveBeenCalled();
+    expect(waitUntil).not.toHaveBeenCalled();
+  });
+
+  it('swallows a Sentry.flush() rejection so waitUntil never sees it', async () => {
+    // .catch() on the flush promise inside flushSentry() means waitUntil
+    // always receives a resolving promise even if Sentry's transport
+    // throws — observability paths must never crash the response.
+    vi.mocked(Sentry.flush).mockRejectedValueOnce(new Error('transport down'));
+    const inner = vi.fn(async (_req, res) => {
+      res.status(200).json({ ok: true });
+    });
+    const wrapped = withCronCheckin('checkin-job', inner);
+
+    const res = mockResponse();
+    await wrapped(authedReq(), res);
+
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    // The registered promise resolves cleanly — never rejects.
+    await expect(waitUntilCalls[0]).resolves.toBeUndefined();
   });
 });
