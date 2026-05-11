@@ -42,6 +42,13 @@ interface GapAnalysisInput {
   cashOpen: number;
   /** Previous SPX close */
   prevClose: number;
+  /**
+   * 0DTE ATM straddle cone bounds for the session, sourced from
+   * `cone_levels` (compute-cone cron). Optional — when omitted, the
+   * "% of straddle cone" line is skipped.
+   */
+  coneUpper?: number | null;
+  coneLower?: number | null;
 }
 
 /**
@@ -65,8 +72,8 @@ export function formatOvernightForClaude(
   const gl = preMarket.globexLow;
   const gc = preMarket.globexClose;
   const gv = preMarket.globexVwap;
-  const coneUpper = preMarket.straddleConeUpper;
-  const coneLower = preMarket.straddleConeLower;
+  const coneUpper = input.coneUpper ?? null;
+  const coneLower = input.coneLower ?? null;
 
   const lines: string[] = [];
 

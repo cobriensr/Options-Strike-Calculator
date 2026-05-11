@@ -162,8 +162,6 @@ describe('preMarketBodySchema', () => {
       globexLow: 5920,
       globexClose: 5935,
       globexVwap: 5932,
-      straddleConeUpper: 5960,
-      straddleConeLower: 5910,
       savedAt: '2026-05-10T08:25:00Z',
     });
     expect(result.success).toBe(true);

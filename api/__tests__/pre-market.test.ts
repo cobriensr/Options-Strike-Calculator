@@ -111,8 +111,6 @@ describe('GET /api/pre-market', () => {
       globexLow: 5690,
       globexClose: 5705,
       globexVwap: 5700,
-      straddleConeUpper: 5750,
-      straddleConeLower: 5650,
       savedAt: '2026-03-28T12:00:00Z',
     };
     mockDbFn.mockResolvedValueOnce([{ pre_market_data: preMarketData }]);
@@ -255,8 +253,6 @@ describe('POST /api/pre-market', () => {
         globexLow: 5690,
         globexClose: 5705,
         globexVwap: 5700,
-        straddleConeUpper: 5750,
-        straddleConeLower: 5650,
         savedAt: '2026-03-28T12:00:00Z',
       },
     });
@@ -306,7 +302,7 @@ describe('POST /api/pre-market', () => {
         globexHigh: 5710,
         globexLow: 5690,
         globexClose: 5705,
-        // no globexVwap, straddleConeUpper, straddleConeLower, savedAt
+        // no globexVwap, savedAt
       },
     });
     const res = mockResponse();

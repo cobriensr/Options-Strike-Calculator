@@ -1,13 +1,16 @@
 /**
- * ES Overnight & Straddle Cone Input Component
+ * ES Overnight Input Component
  *
- * Pre-market data entry for ES futures overnight session data
- * and Periscope straddle cone boundaries. Submitted before cash
- * open and fed into analyze.ts for gap analysis context.
+ * Pre-market data entry for ES futures overnight session data.
+ * Submitted before cash open and fed into analyze.ts for gap analysis
+ * context.
  *
- * Fields:
- *   ES Overnight: Globex High, Low, Close, VWAP (optional)
- *   Straddle Cone: Upper, Lower (from Periscope)
+ * Fields: Globex High, Low, Close, VWAP (optional).
+ *
+ * The 0DTE straddle cone is no longer entered manually — `compute-cone`
+ * cron (9:32 ET) auto-derives it from the SPX 0DTE ATM call+put marks
+ * and persists to `cone_levels`. The analyze pipeline reads it from
+ * there.
  *
  * Saves to /api/pre-market endpoint and stores in AnalysisContext.
  */
@@ -40,8 +43,6 @@ export default function PreMarketInput({
   const [globexLow, setGlobexLow] = useState('');
   const [globexClose, setGlobexClose] = useState('');
   const [globexVwap, setGlobexVwap] = useState('');
-  const [coneUpper, setConeUpper] = useState('');
-  const [coneLower, setConeLower] = useState('');
 
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -64,10 +65,6 @@ export default function PreMarketInput({
           if (d.globexLow != null) setGlobexLow(String(d.globexLow));
           if (d.globexClose != null) setGlobexClose(String(d.globexClose));
           if (d.globexVwap != null) setGlobexVwap(String(d.globexVwap));
-          if (d.straddleConeUpper != null)
-            setConeUpper(String(d.straddleConeUpper));
-          if (d.straddleConeLower != null)
-            setConeLower(String(d.straddleConeLower));
           if (d.savedAt) setSaved(true);
           if (d.autoFilled === true) {
             setAutoFilled(true);
@@ -90,8 +87,6 @@ export default function PreMarketInput({
       globexLow: globexLow ? Number.parseFloat(globexLow) : null,
       globexClose: globexClose ? Number.parseFloat(globexClose) : null,
       globexVwap: globexVwap ? Number.parseFloat(globexVwap) : null,
-      straddleConeUpper: coneUpper ? Number.parseFloat(coneUpper) : null,
-      straddleConeLower: coneLower ? Number.parseFloat(coneLower) : null,
       savedAt: new Date().toISOString(),
     };
 
@@ -141,17 +136,7 @@ export default function PreMarketInput({
     } finally {
       setSaving(false);
     }
-  }, [
-    globexHigh,
-    globexLow,
-    globexClose,
-    globexVwap,
-    coneUpper,
-    coneLower,
-    date,
-    apiBase,
-    onSave,
-  ]);
+  }, [globexHigh, globexLow, globexClose, globexVwap, date, apiBase, onSave]);
 
   // Live gap preview: ES Globex Close vs previous SPX close
   const gapPreview = useMemo(() => {
@@ -170,21 +155,12 @@ export default function PreMarketInput({
     ? inputCls + ' border-[color:var(--color-accent)] border-opacity-40'
     : inputCls;
 
-  // Overnight range with optional cone context
   const overnightRange = useMemo(() => {
     const h = Number.parseFloat(globexHigh);
     const l = Number.parseFloat(globexLow);
     if (Number.isNaN(h) || Number.isNaN(l) || h <= l) return null;
-    const range = h - l;
-    const cu = Number.parseFloat(coneUpper);
-    const cl = Number.parseFloat(coneLower);
-    if (!Number.isNaN(cu) && !Number.isNaN(cl) && cu > cl) {
-      const coneWidth = cu - cl;
-      const pct = ((range / coneWidth) * 100).toFixed(0);
-      return `${range.toFixed(1)} pts (${pct}% of cone)`;
-    }
-    return `${range.toFixed(1)} pts`;
-  }, [globexHigh, globexLow, coneUpper, coneLower]);
+    return `${(h - l).toFixed(1)} pts`;
+  }, [globexHigh, globexLow]);
 
   return (
     <SectionBox
@@ -321,47 +297,6 @@ export default function PreMarketInput({
         </div>
       )}
 
-      {/* Straddle Cone Section */}
-      <div className="border-edge border-t pt-3.5">
-        <div className="text-tertiary mb-2 flex items-baseline gap-1.5 font-sans text-[11px] font-bold tracking-[0.08em] uppercase">
-          Straddle Cone{' '}
-          <span className="text-muted text-[10px] font-normal tracking-normal normal-case">
-            from Periscope
-          </span>
-        </div>
-        <div className="grid grid-cols-2 gap-2.5">
-          <div>
-            <label htmlFor="pm-cone-upper" className={tinyLbl}>
-              Cone Upper
-            </label>
-            <input
-              id="pm-cone-upper"
-              type="text"
-              inputMode="decimal"
-              placeholder="6584.00"
-              value={coneUpper}
-              onChange={(e) => setConeUpper(e.target.value)}
-              className={inputCls}
-            />
-          </div>
-          <div>
-            <label htmlFor="pm-cone-lower" className={tinyLbl}>
-              Cone Lower
-            </label>
-            <input
-              id="pm-cone-lower"
-              type="text"
-              inputMode="decimal"
-              placeholder="6495.00"
-              value={coneLower}
-              onChange={(e) => setConeLower(e.target.value)}
-              className={inputCls}
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* Error display */}
       {error && <ErrorMsg>{error}</ErrorMsg>}
     </SectionBox>
   );

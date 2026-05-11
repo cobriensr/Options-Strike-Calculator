@@ -373,8 +373,32 @@ export async function fetchPreMarketContext(
   let overnightGapContext: string | null = null;
   let preMarketRow: PreMarketData | null = null;
 
+  const db = getDb();
+
+  // The 0DTE ATM straddle cone is auto-computed by the `compute-cone` cron
+  // at 9:32 ET and persisted to `cone_levels` (date PK). Read it here so
+  // the analyze pipeline has cone bounds without any manual input.
   try {
-    const db = getDb();
+    const coneRows = await db`
+      SELECT cone_upper, cone_lower FROM cone_levels
+      WHERE date = ${analysisDate}
+      LIMIT 1
+    `;
+    if (coneRows.length > 0 && coneRows[0] != null) {
+      const r = coneRows[0];
+      const cu = Number.parseFloat(String(r.cone_upper));
+      const cl = Number.parseFloat(String(r.cone_lower));
+      if (Number.isFinite(cu) && straddleConeUpper == null)
+        straddleConeUpper = cu;
+      if (Number.isFinite(cl) && straddleConeLower == null)
+        straddleConeLower = cl;
+    }
+  } catch (error_) {
+    logger.error({ err: error_ }, 'Failed to fetch cone_levels');
+    Sentry.captureException(error_);
+  }
+
+  try {
     const pmRows = await db`
       SELECT pre_market_data FROM market_snapshots
       WHERE date = ${analysisDate} AND pre_market_data IS NOT NULL
@@ -385,11 +409,6 @@ export async function fetchPreMarketContext(
       const pm = pmRows[0].pre_market_data as PreMarketData;
       preMarketRow = pm;
 
-      if (pm.straddleConeUpper != null && !straddleConeUpper)
-        straddleConeUpper = pm.straddleConeUpper;
-      if (pm.straddleConeLower != null && !straddleConeLower)
-        straddleConeLower = pm.straddleConeLower;
-
       const cashOpen = numOrUndef(context.spx);
       const prevCloseVal = numOrUndef(context.prevClose);
 
@@ -398,6 +417,8 @@ export async function fetchPreMarketContext(
           preMarket: pm,
           cashOpen,
           prevClose: prevCloseVal,
+          coneUpper: straddleConeUpper ?? null,
+          coneLower: straddleConeLower ?? null,
         });
       }
     }

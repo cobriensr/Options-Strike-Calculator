@@ -27,8 +27,13 @@ describe('PreMarketInput', () => {
     expect(screen.getByLabelText(/Globex Low/)).toBeInTheDocument();
     expect(screen.getByLabelText(/Globex Close/)).toBeInTheDocument();
     expect(screen.getByLabelText(/Globex VWAP/)).toBeInTheDocument();
-    expect(screen.getByLabelText(/Cone Upper/)).toBeInTheDocument();
-    expect(screen.getByLabelText(/Cone Lower/)).toBeInTheDocument();
+  });
+
+  it('does not render the manual cone inputs (auto-computed via cone_levels)', () => {
+    render(<PreMarketInput date="2026-03-28" />);
+
+    expect(screen.queryByLabelText(/Cone Upper/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Cone Lower/)).not.toBeInTheDocument();
   });
 
   it('renders Save button initially', () => {
@@ -53,8 +58,6 @@ describe('PreMarketInput', () => {
             globexLow: 5690,
             globexClose: 5710,
             globexVwap: 5705,
-            straddleConeUpper: 5760,
-            straddleConeLower: 5660,
             savedAt: '2026-03-28T12:00:00Z',
           },
         }),
@@ -67,8 +70,6 @@ describe('PreMarketInput', () => {
       expect(screen.getByLabelText(/Globex Low/)).toHaveValue('5690');
       expect(screen.getByLabelText(/Globex Close/)).toHaveValue('5710');
       expect(screen.getByLabelText(/Globex VWAP/)).toHaveValue('5705');
-      expect(screen.getByLabelText(/Cone Upper/)).toHaveValue('5760');
-      expect(screen.getByLabelText(/Cone Lower/)).toHaveValue('5660');
     });
 
     // Should show Update button when data was loaded (savedAt present)
@@ -282,20 +283,6 @@ describe('PreMarketInput', () => {
     });
   });
 
-  it('shows overnight range with cone percentage', async () => {
-    const user = userEvent.setup();
-    render(<PreMarketInput date="2026-03-28" />);
-
-    await user.type(screen.getByLabelText(/Globex High/), '5720');
-    await user.type(screen.getByLabelText(/Globex Low/), '5690');
-    await user.type(screen.getByLabelText(/Cone Upper/), '5750');
-    await user.type(screen.getByLabelText(/Cone Lower/), '5650');
-
-    await waitFor(() => {
-      expect(screen.getByText('30.0 pts (30% of cone)')).toBeInTheDocument();
-    });
-  });
-
   // ── Input typing ──────────────────────────────────────────
 
   it('allows typing in all fields', async () => {
@@ -306,14 +293,10 @@ describe('PreMarketInput', () => {
     await user.type(screen.getByLabelText(/Globex Low/), '5690.25');
     await user.type(screen.getByLabelText(/Globex Close/), '5710.75');
     await user.type(screen.getByLabelText(/Globex VWAP/), '5705.00');
-    await user.type(screen.getByLabelText(/Cone Upper/), '5760');
-    await user.type(screen.getByLabelText(/Cone Lower/), '5650');
 
     expect(screen.getByLabelText(/Globex High/)).toHaveValue('5720.50');
     expect(screen.getByLabelText(/Globex Low/)).toHaveValue('5690.25');
     expect(screen.getByLabelText(/Globex Close/)).toHaveValue('5710.75');
     expect(screen.getByLabelText(/Globex VWAP/)).toHaveValue('5705.00');
-    expect(screen.getByLabelText(/Cone Upper/)).toHaveValue('5760');
-    expect(screen.getByLabelText(/Cone Lower/)).toHaveValue('5650');
   });
 });

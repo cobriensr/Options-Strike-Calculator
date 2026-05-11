@@ -3,9 +3,12 @@
  *   Returns saved pre-market data for the given date.
  *
  * POST /api/pre-market
- *   Saves pre-market data (ES overnight + straddle cone).
- *   Body: { date, globexHigh, globexLow, globexClose, globexVwap?,
- *           straddleConeUpper?, straddleConeLower?, savedAt }
+ *   Saves pre-market data (ES overnight Globex H/L/C/VWAP).
+ *   Body: { date, globexHigh, globexLow, globexClose, globexVwap?, savedAt }
+ *
+ *   The 0DTE straddle cone is auto-computed by the `compute-cone` cron
+ *   into `cone_levels` (date PK) and is no longer accepted on this
+ *   endpoint.
  *
  * Data is stored in the market_snapshots table as a JSON column
  * (pre_market_data) to avoid a new table. If no snapshot exists
@@ -80,8 +83,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       globexLow: data.globexLow,
       globexClose: data.globexClose,
       globexVwap: data.globexVwap ?? null,
-      straddleConeUpper: data.straddleConeUpper ?? null,
-      straddleConeLower: data.straddleConeLower ?? null,
       savedAt: data.savedAt ?? new Date().toISOString(),
     });
 

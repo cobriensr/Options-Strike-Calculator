@@ -394,10 +394,12 @@ describe('formatMlFindingsForClaude (via buildAnalysisContext)', () => {
 
     // mockSql is called multiple times in buildAnalysisContext:
     // 1. vol_realized query
-    // 2. pre_market_data query
-    // 3. ml_findings query
+    // 2. cone_levels query
+    // 3. pre_market_data query
+    // 4. ml_findings query
     mockSql
       .mockResolvedValueOnce([]) // vol_realized
+      .mockResolvedValueOnce([]) // cone_levels
       .mockResolvedValueOnce([]) // pre_market_data
       .mockResolvedValueOnce([
         {
@@ -452,6 +454,7 @@ describe('formatMlFindingsForClaude (via buildAnalysisContext)', () => {
 
     mockSql
       .mockResolvedValueOnce([]) // vol_realized
+      .mockResolvedValueOnce([]) // cone_levels
       .mockResolvedValueOnce([]) // pre_market_data
       .mockResolvedValueOnce([
         { findings, updated_at: new Date('2026-01-10') },
@@ -488,6 +491,7 @@ describe('formatMlFindingsForClaude (via buildAnalysisContext)', () => {
 
     mockSql
       .mockResolvedValueOnce([]) // vol_realized
+      .mockResolvedValueOnce([]) // cone_levels
       .mockResolvedValueOnce([]) // pre_market_data
       .mockResolvedValueOnce([
         { findings, updated_at: new Date('2026-01-10') },
@@ -510,6 +514,7 @@ describe('formatMlFindingsForClaude (via buildAnalysisContext)', () => {
   it('handles ML findings fetch failure gracefully', async () => {
     mockSql
       .mockResolvedValueOnce([]) // vol_realized
+      .mockResolvedValueOnce([]) // cone_levels
       .mockResolvedValueOnce([]) // pre_market_data
       .mockRejectedValueOnce(new Error('DB connection lost')); // ml_findings
 
@@ -536,6 +541,7 @@ describe('formatMlFindingsForClaude (via buildAnalysisContext)', () => {
   it('handles empty ML findings rows', async () => {
     mockSql
       .mockResolvedValueOnce([]) // vol_realized
+      .mockResolvedValueOnce([]) // cone_levels
       .mockResolvedValueOnce([]) // pre_market_data
       .mockResolvedValueOnce([]); // ml_findings — empty
 
@@ -573,6 +579,7 @@ describe('formatMlFindingsForClaude (via buildAnalysisContext)', () => {
 
     mockSql
       .mockResolvedValueOnce([]) // vol_realized
+      .mockResolvedValueOnce([]) // cone_levels
       .mockResolvedValueOnce([]) // pre_market_data
       .mockResolvedValueOnce([
         { findings, updated_at: new Date('2026-01-10') },
@@ -1862,6 +1869,7 @@ describe('buildAnalysisContext: vol realized context', () => {
           iv_rank: 82,
         },
       ]) // vol_realized
+      .mockResolvedValueOnce([]) // cone_levels
       .mockResolvedValueOnce([]) // pre_market_data
       .mockResolvedValueOnce([]); // ml_findings
 
@@ -1892,8 +1900,9 @@ describe('buildAnalysisContext: vol realized context', () => {
           iv_rank: 15,
         },
       ]) // vol_realized
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+      .mockResolvedValueOnce([]) // cone_levels
+      .mockResolvedValueOnce([]) // pre_market_data
+      .mockResolvedValueOnce([]); // ml_findings
 
     const result = await buildAnalysisContext([], {
       mode: 'entry',
@@ -1920,8 +1929,9 @@ describe('buildAnalysisContext: vol realized context', () => {
           iv_rank: 50,
         },
       ]) // vol_realized
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+      .mockResolvedValueOnce([]) // cone_levels
+      .mockResolvedValueOnce([]) // pre_market_data
+      .mockResolvedValueOnce([]); // ml_findings
 
     const result = await buildAnalysisContext([], {
       mode: 'entry',
@@ -1940,6 +1950,7 @@ describe('buildAnalysisContext: vol realized context', () => {
   it('handles vol_realized DB error gracefully', async () => {
     mockSql
       .mockRejectedValueOnce(new Error('vol_realized table missing')) // vol_realized
+      .mockResolvedValueOnce([]) // cone_levels
       .mockResolvedValueOnce([]) // pre_market_data
       .mockResolvedValueOnce([]); // ml_findings
 
@@ -2307,11 +2318,12 @@ describe('buildAnalysisContext: coverage-fill', () => {
       'OVERNIGHT GAP: +24.5 pts from prior close',
     );
 
-    // mockSql call order: vol_realized → pre_market_data → ml_findings
+    // mockSql call order: vol_realized → cone_levels → pre_market_data → ml_findings
     // pre_market_data row must have `pre_market_data` field (the JSON column);
     // the fetcher unpacks it into preMarketRow when present.
     mockSql
       .mockResolvedValueOnce([]) // vol_realized
+      .mockResolvedValueOnce([]) // cone_levels
       .mockResolvedValueOnce([
         {
           pre_market_data: {

@@ -203,8 +203,6 @@ export interface PreMarketData {
   globexLow: number | null;
   globexClose: number | null;
   globexVwap: number | null;
-  straddleConeUpper: number | null;
-  straddleConeLower: number | null;
   savedAt: string | null;
   /**
    * Server-set when the row was populated automatically from upstream

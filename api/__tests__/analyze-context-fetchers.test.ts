@@ -250,15 +250,37 @@ describe('analyze-context-fetchers — catch fallbacks', () => {
     expect(await fetchVolRealizedContext('2026-04-29')).toBeNull();
   });
 
-  it('fetchPreMarketContext returns defaults on DB error', async () => {
-    const sql = vi.fn().mockRejectedValueOnce(new Error('boom'));
+  it('fetchPreMarketContext returns defaults when cone_levels query throws', async () => {
+    // First sql call is the cone_levels SELECT; reject it and resolve the
+    // pre_market_data call empty so we exercise only the cone-side catch.
+    const sql = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('cone_levels boom'))
+      .mockResolvedValueOnce([]);
     vi.mocked(getDb).mockReturnValue(sql as never);
     const result = await fetchPreMarketContext('2026-04-29', {}, 6610, 6600);
     expect(result.preMarketRow).toBeNull();
     expect(result.overnightGapContext).toBeNull();
-    // Initial cone values pass through unchanged
+    // Initial cone values pass through unchanged when cone_levels read fails
     expect(result.straddleConeUpper).toBe(6610);
     expect(result.straddleConeLower).toBe(6600);
+    expect(Sentry.captureException).toHaveBeenCalled();
+  });
+
+  it('fetchPreMarketContext returns defaults when pre_market_data query throws', async () => {
+    // Resolve cone_levels empty, reject pre_market_data so the pm-side
+    // catch is the one exercised.
+    const sql = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error('pre_market_data boom'));
+    vi.mocked(getDb).mockReturnValue(sql as never);
+    const result = await fetchPreMarketContext('2026-04-29', {}, 6610, 6600);
+    expect(result.preMarketRow).toBeNull();
+    expect(result.overnightGapContext).toBeNull();
+    expect(result.straddleConeUpper).toBe(6610);
+    expect(result.straddleConeLower).toBe(6600);
+    expect(Sentry.captureException).toHaveBeenCalled();
   });
 
   it('fetchSpxCandlesContext returns nulls when fetchSPXCandles throws', async () => {

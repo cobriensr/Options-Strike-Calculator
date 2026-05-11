@@ -236,6 +236,8 @@ export async function buildAnalysisContext(
         preMarket: preMarket.preMarketRow,
         cashOpen,
         prevClose: candles.previousClose,
+        coneUpper: straddleConeUpper ?? null,
+        coneLower: straddleConeLower ?? null,
       });
     }
   }

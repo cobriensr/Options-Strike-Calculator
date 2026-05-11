@@ -57,8 +57,6 @@ export const preMarketBodySchema = z.object({
   globexLow: z.number(),
   globexClose: z.number(),
   globexVwap: z.number().nullable().optional(),
-  straddleConeUpper: z.number().nullable().optional(),
-  straddleConeLower: z.number().nullable().optional(),
   savedAt: z.string().nullable().optional(),
 });
 

@@ -11,8 +11,6 @@ function basePreMarket(overrides: Partial<PreMarketData> = {}): PreMarketData {
     globexLow: 5690,
     globexClose: 5710,
     globexVwap: 5705,
-    straddleConeUpper: 5760,
-    straddleConeLower: 5660,
     savedAt: '2026-03-28T12:00:00Z',
     ...overrides,
   };
@@ -89,12 +87,11 @@ describe('formatOvernightForClaude', () => {
   it('shows cone consumption percentage', () => {
     // cone width = 100 pts, overnight range = 30 pts → 30%
     const result = formatOvernightForClaude({
-      preMarket: basePreMarket({
-        straddleConeUpper: 5760,
-        straddleConeLower: 5660,
-      }),
+      preMarket: basePreMarket(),
       cashOpen: 5715,
       prevClose: 5700,
+      coneUpper: 5760,
+      coneLower: 5660,
     })!;
 
     expect(result).toContain('30% of straddle cone');
@@ -103,12 +100,11 @@ describe('formatOvernightForClaude', () => {
   it('warns when >60% of cone consumed', () => {
     // cone width = 40 pts, overnight range = 30 pts → 75%
     const result = formatOvernightForClaude({
-      preMarket: basePreMarket({
-        straddleConeUpper: 5730,
-        straddleConeLower: 5690,
-      }),
+      preMarket: basePreMarket(),
       cashOpen: 5715,
       prevClose: 5700,
+      coneUpper: 5730,
+      coneLower: 5690,
     })!;
 
     expect(result).toContain('>60% of expected move happened overnight');
@@ -117,12 +113,11 @@ describe('formatOvernightForClaude', () => {
   it('notes quiet overnight when <20% consumed', () => {
     // cone width = 200 pts, overnight range = 30 pts → 15%
     const result = formatOvernightForClaude({
-      preMarket: basePreMarket({
-        straddleConeUpper: 5800,
-        straddleConeLower: 5600,
-      }),
+      preMarket: basePreMarket(),
       cashOpen: 5715,
       prevClose: 5700,
+      coneUpper: 5800,
+      coneLower: 5600,
     })!;
 
     expect(result).toContain('Quiet overnight');
@@ -130,12 +125,11 @@ describe('formatOvernightForClaude', () => {
 
   it('omits cone lines when cone bounds are null', () => {
     const result = formatOvernightForClaude({
-      preMarket: basePreMarket({
-        straddleConeUpper: null,
-        straddleConeLower: null,
-      }),
+      preMarket: basePreMarket(),
       cashOpen: 5715,
       prevClose: 5700,
+      coneUpper: null,
+      coneLower: null,
     })!;
 
     expect(result).not.toContain('straddle cone');
@@ -143,12 +137,11 @@ describe('formatOvernightForClaude', () => {
 
   it('skips cone consumption when coneWidth is 0', () => {
     const result = formatOvernightForClaude({
-      preMarket: basePreMarket({
-        straddleConeUpper: 5700,
-        straddleConeLower: 5700,
-      }),
+      preMarket: basePreMarket(),
       cashOpen: 5715,
       prevClose: 5700,
+      coneUpper: 5700,
+      coneLower: 5700,
     })!;
 
     // Zero-width cone skips the consumption line but implications still reference it
@@ -405,6 +398,8 @@ describe('formatOvernightForClaude', () => {
       preMarket: basePreMarket(),
       cashOpen: 5715,
       prevClose: 5700,
+      coneUpper: 5760,
+      coneLower: 5660,
     })!;
 
     expect(result).toContain('Implication for 0DTE');
@@ -446,12 +441,11 @@ describe('formatOvernightForClaude', () => {
 
   it('omits cone remaining when no cone bounds', () => {
     const result = formatOvernightForClaude({
-      preMarket: basePreMarket({
-        straddleConeUpper: null,
-        straddleConeLower: null,
-      }),
+      preMarket: basePreMarket(),
       cashOpen: 5715,
       prevClose: 5700,
+      coneUpper: null,
+      coneLower: null,
     })!;
 
     expect(result).not.toContain('% of straddle cone remaining');
