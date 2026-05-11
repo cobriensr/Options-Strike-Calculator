@@ -43,6 +43,13 @@ vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
 }));
 
+vi.mock('../_lib/auth-helpers.js', () => ({
+  // Rate limiter is its own tested unit — keep it out of the endpoint
+  // tests. Always returns false (not limited). A dedicated test below
+  // verifies the wiring with the real spy.
+  rejectIfRateLimited: vi.fn().mockResolvedValue(false),
+}));
+
 vi.mock('../_lib/spx-candles.js', () => ({
   ctWallClockToUtcMs: vi.fn((date: string, time: string) =>
     // Stable epoch for any (date, time) — sufficient for endpoint tests.
@@ -100,10 +107,12 @@ import handler from '../periscope-auto-playbook.js';
 import { savePeriscopeAnalysis } from '../_lib/periscope-db.js';
 import { fetchSPXSpotAtTimestamp } from '../_lib/spx-candles.js';
 import { runPeriscopeAutoPlaybook } from '../_lib/periscope-chat-runner.js';
+import { rejectIfRateLimited } from '../_lib/auth-helpers.js';
 
 const mockSavePeriscopeAnalysis = vi.mocked(savePeriscopeAnalysis);
 const mockFetchSpot = vi.mocked(fetchSPXSpotAtTimestamp);
 const mockRunner = vi.mocked(runPeriscopeAutoPlaybook);
+const mockRejectIfRateLimited = vi.mocked(rejectIfRateLimited);
 
 // ============================================================
 // Fixtures
@@ -446,6 +455,34 @@ describe('periscope-auto-playbook handler — happy path', () => {
     // Wait for the kicked-off promise to settle so the runner mock fires
     await waitUntilCalls[0];
     expect(mockRunner).toHaveBeenCalledTimes(1);
+  });
+
+  it('rate-limit guard is invoked with endpoint key and 30/min limit', async () => {
+    const req = postReq({ headers: authHeaders(), body: VALID_BODY });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(mockRejectIfRateLimited).toHaveBeenCalledWith(
+      req,
+      res,
+      'periscope-auto-playbook',
+      30,
+    );
+  });
+
+  it('returns 429 short-circuit when rate-limit guard rejects', async () => {
+    // Simulate the guard having already sent a 429 response.
+    mockRejectIfRateLimited.mockImplementationOnce(async (_req, res) => {
+      res.setHeader('Retry-After', '60');
+      res.status(429).json({ error: 'Too many requests' });
+      return true;
+    });
+    const req = postReq({ headers: authHeaders(), body: VALID_BODY });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(429);
+    // The handler must not reach the runner or insert when rate-limited.
+    expect(mockSavePeriscopeAnalysis).not.toHaveBeenCalled();
+    expect(mockRunner).not.toHaveBeenCalled();
   });
 
   it('returns 500 when ANTHROPIC_API_KEY is missing', async () => {

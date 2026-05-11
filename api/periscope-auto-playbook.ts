@@ -44,6 +44,7 @@ import { z } from 'zod';
 
 import { Sentry, metrics } from './_lib/sentry.js';
 import logger from './_lib/logger.js';
+import { rejectIfRateLimited } from './_lib/api-helpers.js';
 import { optionalEnv, requireEnv } from './_lib/env.js';
 import { getDb } from './_lib/db.js';
 import {
@@ -200,6 +201,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!checkWebhookAuth(req)) {
     done({ status: 401 });
     return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  // Rate limit defense-in-depth against a leaked Bearer token: max 30
+  // calls/min/IP. The scraper fires at most 1/10min during RTH (~6/hr),
+  // so 30 is generous for legitimate use but caps blast radius if the
+  // secret leaks and an adversary tries to drive expensive Opus 4.7
+  // xhigh calls in a loop.
+  const rateLimited = await rejectIfRateLimited(
+    req,
+    res,
+    'periscope-auto-playbook',
+    30,
+  );
+  if (rateLimited) {
+    done({ status: 429 });
+    return;
   }
 
   // Kill switch — flip env var to 'false' to disable in 30s without redeploy.

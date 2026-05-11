@@ -176,19 +176,17 @@ function parseDateFlag() {
 
 function validateDate(value, sourceLabel) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    console.error(
-      `ERROR: ${sourceLabel} requires YYYY-MM-DD, got "${value}"`,
-    );
+    console.error(`ERROR: ${sourceLabel} requires YYYY-MM-DD, got "${value}"`);
     process.exit(1);
   }
   return value;
 }
 
 const DATE_FLAG = parseDateFlag();
-const BACKFILL_START = DATE_FLAG
-  ?? (process.env.BACKFILL_START ?? '2025-11-10').trim();
-const BACKFILL_END = DATE_FLAG
-  ?? (process.env.BACKFILL_END ?? yesterdayCtIso()).trim();
+const BACKFILL_START =
+  DATE_FLAG ?? (process.env.BACKFILL_START ?? '2025-11-10').trim();
+const BACKFILL_END =
+  DATE_FLAG ?? (process.env.BACKFILL_END ?? yesterdayCtIso()).trim();
 const WITHIN_DAY_DELAY_MS = Number.parseInt(
   process.env.WITHIN_DAY_DELAY_MS ?? '0',
   10,
@@ -424,7 +422,8 @@ async function postOneSlot({ tradingDate, capturedAt, slotKey }) {
         ok: false,
         status: null,
         attempts: 2,
-        error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+        error:
+          err instanceof Error ? `${err.name}: ${err.message}` : String(err),
       };
     }
   }
@@ -514,7 +513,9 @@ async function main() {
   console.log('═══════════════════════════════════════════════════════════');
   console.log(`  endpoint:               ${ENDPOINT}`);
   if (DATE_FLAG == null) {
-    console.log(`  date range:             ${BACKFILL_START} → ${BACKFILL_END}`);
+    console.log(
+      `  date range:             ${BACKFILL_START} → ${BACKFILL_END}`,
+    );
   } else {
     console.log(`  mode:                   single day (--date ${DATE_FLAG})`);
   }
@@ -570,9 +571,7 @@ async function main() {
   const uncachedCostPerCall = 0.19;
   console.log('');
   console.log(`  Cost estimate (forward-firing endpoint, prompt cache on):`);
-  console.log(
-    `    cached:    $${(slotCount * cachedCostPerCall).toFixed(0)}`,
-  );
+  console.log(`    cached:    $${(slotCount * cachedCostPerCall).toFixed(0)}`);
   console.log(
     `    uncached:  $${(slotCount * uncachedCostPerCall).toFixed(0)}`,
   );
@@ -593,7 +592,21 @@ async function main() {
   console.log(`▸ Firing webhook for ${days.length} days…`);
   await runWithConcurrency(
     days,
-    (day) => processDay({ ...day, totals }),
+    async (day) => {
+      try {
+        await processDay({ ...day, totals });
+      } catch (err) {
+        // Defense in depth: processDay handles per-slot failures via its
+        // own try/catch (incrementing totals.failed), but an unexpected
+        // throw at the await boundary (DB pool exhaustion, network reset)
+        // would otherwise be swallowed by runWithConcurrency's generic
+        // catch without bumping the count — script would exit 0 with
+        // failed=0 despite real failures. Count it here so exit code is
+        // truthful.
+        totals.failed += 1;
+        console.error(`  ✗ ${day.tradingDate} day worker threw:`, err);
+      }
+    },
     CROSS_DAY_CONCURRENCY,
   );
 
