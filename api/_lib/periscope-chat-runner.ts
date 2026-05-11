@@ -157,9 +157,18 @@ export interface RunPeriscopeAutoPlaybookOutcome {
 function mapStructuredToPanelPayload(
   structured: PeriscopeStructuredFields,
   prose: string,
+  spotAtReadTime: number,
 ): Record<string, unknown> {
+  // ALWAYS use the DB-resolved spot for the panel payload. Claude's
+  // `structured.spot` echoes the value from its prompt context (often
+  // the UW heat-map's own price reading), which on some days drifts
+  // 30-50pt from actual SPX cash. The auto-playbook endpoint already
+  // queries index_candles_1m for the slot's authoritative SPX close
+  // and passes it in as `spotAtReadTime` — that's the value the
+  // panel renders and the grader compares against, so it has to be
+  // the SPX-cash truth, not Claude's echo.
   return {
-    spot: structured.spot,
+    spot: spotAtReadTime,
     cone:
       structured.cone_lower != null && structured.cone_upper != null
         ? { lower: structured.cone_lower, upper: structured.cone_upper }
@@ -577,7 +586,7 @@ export async function runPeriscopeAutoPlaybook(
       fullResponse,
       embedding,
       panelPayload: parseOk
-        ? mapStructuredToPanelPayload(structured, prose)
+        ? mapStructuredToPanelPayload(structured, prose, spotAtReadTime)
         : null,
       failureReason: `truncated_at_max_tokens output=${result.usage.output}`,
       modelUsed: result.modelUsed,
@@ -604,7 +613,7 @@ export async function runPeriscopeAutoPlaybook(
     parseOk,
     fullResponse,
     embedding,
-    panelPayload: mapStructuredToPanelPayload(structured, prose),
+    panelPayload: mapStructuredToPanelPayload(structured, prose, spotAtReadTime),
     failureReason: null,
     modelUsed: result.modelUsed,
     durationMs,

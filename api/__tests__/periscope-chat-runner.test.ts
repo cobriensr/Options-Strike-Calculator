@@ -197,6 +197,25 @@ describe('runPeriscopeAutoPlaybook', () => {
     expect(out.modelUsed).toBe('claude-opus-4-7');
     expect(out.inputTokens).toBe(1000);
     expect(out.cacheReadTokens).toBe(800);
+  });
+
+  it('panel_payload.spot uses DB-resolved spotAtReadTime, NOT Claude-echoed structured.spot', async () => {
+    // Override structured.spot so it disagrees with spotAtReadTime.
+    // The 2026-05-06/07 grading run found that Claude's structured
+    // output sometimes drifts 30-50pt from actual SPX cash. The panel
+    // payload must reflect the DB truth, not Claude's echo.
+    vi.mocked(parseStructuredFields).mockReturnValue({
+      prose: 'narrative prose',
+      structured: { ...structuredFixture, spot: 9999.99 }, // garbage
+      parseOk: true,
+    });
+    const out = await runPeriscopeAutoPlaybook({
+      ...baseInput,
+      spotAtReadTime: 5912.34,
+    });
+    expect(out.panelPayload).not.toBeNull();
+    expect(out.panelPayload?.spot).toBe(5912.34);
+    expect(out.structured.spot).toBe(9999.99); // raw structured untouched
     expect(out.failureReason).toBeNull();
   });
 
