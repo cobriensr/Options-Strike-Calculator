@@ -274,6 +274,106 @@ describe('periscope-auto-playbook handler — body validation', () => {
 // Mode derivation
 // ============================================================
 
+// ============================================================
+// RTH guard — prevent the 2026-05-10 stale-scrape regression
+// ============================================================
+
+describe('periscope-auto-playbook handler — RTH guard', () => {
+  it('returns 422 when capturedAt CT is pre-market (03:30 CDT)', async () => {
+    // 08:30 UTC = 03:30 CDT — the exact buggy scenario from 5/4-5/7.
+    const req = postReq({
+      body: {
+        ...VALID_BODY,
+        capturedAt: '2026-05-12T08:30:00.000Z',
+      },
+      headers: authHeaders(),
+    });
+    const res = mockResponse();
+    await handler(req as never, res as never);
+    expect(res._status).toBe(422);
+    expect(res._json).toMatchObject({
+      error: expect.stringContaining('outside RTH'),
+    });
+  });
+
+  it('returns 422 when capturedAt CT is post-close (15:30 CDT)', async () => {
+    // 20:30 UTC = 15:30 CDT.
+    const req = postReq({
+      body: {
+        ...VALID_BODY,
+        capturedAt: '2026-05-12T20:30:00.000Z',
+        slotKey: '15:20 - 15:30',
+      },
+      headers: authHeaders(),
+    });
+    const res = mockResponse();
+    await handler(req as never, res as never);
+    expect(res._status).toBe(422);
+  });
+
+  it('returns 422 on weekend captures (Saturday noon)', async () => {
+    const req = postReq({
+      body: {
+        ...VALID_BODY,
+        tradingDate: '2026-05-09',
+        capturedAt: '2026-05-09T17:00:00.000Z', // Sat 12:00 CDT
+      },
+      headers: authHeaders(),
+    });
+    const res = mockResponse();
+    await handler(req as never, res as never);
+    expect(res._status).toBe(422);
+  });
+
+  it('returns 422 when slot label disagrees with capturedAt by >10min', async () => {
+    // The exact bug: scraper grabbed UW panel at 08:30 CT but UW was
+    // still showing the "13:20-13:30" label from previous day's data.
+    const req = postReq({
+      body: {
+        ...VALID_BODY,
+        capturedAt: '2026-05-12T13:30:00.000Z', // 08:30 CDT
+        slotKey: '13:20 - 13:30',
+      },
+      headers: authHeaders(),
+    });
+    const res = mockResponse();
+    await handler(req as never, res as never);
+    expect(res._status).toBe(422);
+    expect(res._json).toMatchObject({
+      error: expect.stringContaining('stale scrape rejected'),
+    });
+  });
+
+  it('passes when capturedAt CT is exactly 08:30 (open boundary)', async () => {
+    // 13:30 UTC = 08:30 CDT — RTH open.
+    const req = postReq({
+      body: {
+        ...VALID_BODY,
+        capturedAt: '2026-05-12T13:30:00.000Z',
+        slotKey: '08:20 - 08:30',
+      },
+      headers: authHeaders(),
+    });
+    const res = mockResponse();
+    await handler(req as never, res as never);
+    expect(res._status).not.toBe(422);
+  });
+
+  it('passes when capturedAt CT is exactly 15:00 (close boundary)', async () => {
+    const req = postReq({
+      body: {
+        ...VALID_BODY,
+        capturedAt: '2026-05-12T20:00:00.000Z', // 15:00 CDT
+        slotKey: '14:50 - 15:00',
+      },
+      headers: authHeaders(),
+    });
+    const res = mockResponse();
+    await handler(req as never, res as never);
+    expect(res._status).not.toBe(422);
+  });
+});
+
 describe('periscope-auto-playbook handler — mode derivation', () => {
   it('classifies 08:20 - 08:30 as pre_trade', async () => {
     const req = postReq({
@@ -289,7 +389,11 @@ describe('periscope-auto-playbook handler — mode derivation', () => {
   it('classifies 14:50 - 15:00 as debrief', async () => {
     const req = postReq({
       headers: authHeaders(),
-      body: { ...VALID_BODY, slotKey: '14:50 - 15:00' },
+      body: {
+        ...VALID_BODY,
+        slotKey: '14:50 - 15:00',
+        capturedAt: '2026-05-12T20:00:00.000Z', // 15:00 CDT
+      },
     });
     const res = mockResponse();
     await handler(req, res);
@@ -320,7 +424,11 @@ describe('periscope-auto-playbook handler — mode derivation', () => {
   it('anchors readTimeCt to END for debrief (15:00, not 14:50)', async () => {
     const req = postReq({
       headers: authHeaders(),
-      body: { ...VALID_BODY, slotKey: '14:50 - 15:00' },
+      body: {
+        ...VALID_BODY,
+        slotKey: '14:50 - 15:00',
+        capturedAt: '2026-05-12T20:00:00.000Z', // 15:00 CDT
+      },
     });
     const res = mockResponse();
     await handler(req, res);
@@ -333,7 +441,11 @@ describe('periscope-auto-playbook handler — mode derivation', () => {
   it('classifies 11:30 - 11:40 as intraday', async () => {
     const req = postReq({
       headers: authHeaders(),
-      body: { ...VALID_BODY, slotKey: '11:30 - 11:40' },
+      body: {
+        ...VALID_BODY,
+        slotKey: '11:30 - 11:40',
+        capturedAt: '2026-05-12T16:40:00.000Z', // 11:40 CDT
+      },
     });
     const res = mockResponse();
     await handler(req, res);

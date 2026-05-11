@@ -133,21 +133,10 @@ function nextTimeframe(slotStartHhmm: string): string {
   return `${String(newH).padStart(2, '0')}:${String(newM).padStart(2, '0')}`;
 }
 
-/**
- * Compute the captured_at ISO timestamp for a backfilled slot. The
- * `date` is YYYY-MM-DD, `slotEndHhmm` is the slot's end time as
- * displayed by UW (which Periscope shows in the user's local tz —
- * CT for the typical install).
- *
- * `new Date(yyyy-mm-ddTHH:MM:00)` interprets the string as LOCAL time
- * and `.toISOString()` converts to UTC, so this yields the correct
- * UTC ISO for a CT-running scraper. For Railway deploys, set the
- * container TZ to America/Chicago so the same arithmetic holds.
- */
-function computeCapturedAt(date: string, slotEndHhmm: string): string {
-  const local = new Date(`${date}T${normalizeHhmm(slotEndHhmm)}:00`);
-  return local.toISOString();
-}
+// computeCapturedAt + isCtInRth live in ./dates.ts so unit tests can
+// exercise them without booting config.ts (which validates env vars
+// at module load). Re-exported here so existing callers keep working.
+export { computeCapturedAt } from './dates.js';
 
 /**
  * Open the DTE filter popover and set Min/Max DTE to 0.

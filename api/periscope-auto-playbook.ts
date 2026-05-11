@@ -118,6 +118,44 @@ function deriveMode(slotKey: string): ModeDerivation | null {
   return { mode: 'intraday', readTimeCt };
 }
 
+/**
+ * Convert a UTC Date to its CT wall-clock fields. DST-aware via
+ * Intl.DateTimeFormat. Returns 24-hour `hour`, `minute`, and the
+ * 3-letter weekday so callers can gate on RTH bounds without booting
+ * a moment-like library.
+ */
+function capturedAtToCt(d: Date): {
+  hour: number;
+  minute: number;
+  weekday: string;
+} {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(d);
+  const get = (t: string) =>
+    parts.find((p) => p.type === t)?.value ?? '';
+  return {
+    hour: Number.parseInt(get('hour'), 10),
+    minute: Number.parseInt(get('minute'), 10),
+    weekday: get('weekday'),
+  };
+}
+
+/** Parse the END time of a slot label like "08:20 - 08:30" → {h:8,m:30}. */
+function parseSlotEnd(slotKey: string): { hour: number; minute: number } | null {
+  // Match "HH:MM - HH:MM" with flexible whitespace.
+  const m = /^\s*\d{1,2}:\d{2}\s*-\s*(\d{1,2}):(\d{2})\s*$/.exec(slotKey);
+  if (m == null) return null;
+  const hour = Number.parseInt(m[1]!, 10);
+  const minute = Number.parseInt(m[2]!, 10);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+  return { hour, minute };
+}
+
 /** Look up the latest non-debrief auto-generated row for this trading day. */
 async function resolveParentId(tradingDate: string): Promise<number | null> {
   const sql = getDb();
@@ -249,6 +287,47 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
   const body: ParsedBody = parsed.data;
+
+  // RTH guard. The 2026-05-10 forensic audit found that a scraper TZ
+  // bug stamped pre-market captures (03:30-10:00 CT) with RTH slot
+  // labels, and the auto-playbook fired Claude reads on them — burning
+  // ~$50 of API spend on stale UW panel data. Two layered checks
+  // prevent recurrence:
+  //   1. `capturedAt` wall-clock CT must be inside [08:30, 15:00] —
+  //      catches stale-clock captures regardless of slot label
+  //   2. The slot label's END time must agree with `capturedAt` CT
+  //      within ±10 min — catches misalignment between when the
+  //      scraper ran and what UW's panel was actually showing
+  const capturedAtDate = new Date(body.capturedAt);
+  if (Number.isNaN(capturedAtDate.getTime())) {
+    done({ status: 400, error: 'bad_captured_at' });
+    return res.status(400).json({
+      error: 'capturedAt is not a valid ISO timestamp',
+    });
+  }
+  const capturedCt = capturedAtToCt(capturedAtDate);
+  const capturedMin = capturedCt.hour * 60 + capturedCt.minute;
+  const isWeekend = capturedCt.weekday === 'Sat' || capturedCt.weekday === 'Sun';
+  if (isWeekend || capturedMin < 8 * 60 + 30 || capturedMin > 15 * 60) {
+    done({ status: 422 });
+    return res.status(422).json({
+      error: `capturedAt CT wall-clock ${capturedCt.hour}:${String(capturedCt.minute).padStart(2, '0')} is outside RTH (08:30-15:00 CT, Mon-Fri)`,
+      slotKey: body.slotKey,
+      capturedAt: body.capturedAt,
+    });
+  }
+  const labelEnd = parseSlotEnd(body.slotKey);
+  if (labelEnd != null) {
+    const labelMin = labelEnd.hour * 60 + labelEnd.minute;
+    if (Math.abs(labelMin - capturedMin) > 10) {
+      done({ status: 422 });
+      return res.status(422).json({
+        error: `Slot label end (${labelEnd.hour}:${String(labelEnd.minute).padStart(2, '0')} CT) disagrees with capturedAt CT (${capturedCt.hour}:${String(capturedCt.minute).padStart(2, '0')}) by >10min — stale scrape rejected`,
+        slotKey: body.slotKey,
+        capturedAt: body.capturedAt,
+      });
+    }
+  }
 
   // Mode derivation. Pre-market and post-close slots are stored by the
   // scraper but are not analyzable — we 422 so the scraper logs but does
