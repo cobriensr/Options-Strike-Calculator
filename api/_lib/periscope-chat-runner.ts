@@ -37,6 +37,9 @@ import {
   buildUserContent,
   formatHeatMapBlock,
   parseStructuredFields,
+  parseStructuredFieldsFromToolInput,
+  STRUCTURED_TOOL,
+  STRUCTURED_TOOL_NAME,
 } from './periscope-prompts.js';
 import { buildCalibrationBlock } from './periscope-calibration.js';
 import { buildRetrievalBlock } from './periscope-retrieval.js';
@@ -466,6 +469,14 @@ export async function runPeriscopeAutoPlaybook(
       // the 529-overload retry path doesn't compound errors.
       fallbackEffort: 'high',
       fallbackMetric: 'periscope_auto_playbook.opus_fallback',
+      // Force the structured-output tool. The `input` field on the
+      // resulting `tool_use` block is schema-validated JSON, which
+      // eliminates the JSON.parse failure mode that occurred when
+      // Claude emitted control characters inside fenced ```json blocks
+      // (Sentry "Bad control character in string literal in JSON",
+      // fixed 2026-05-11 per llm-structured-output skill guidance).
+      tools: [STRUCTURED_TOOL],
+      toolChoice: { type: 'tool', name: STRUCTURED_TOOL_NAME },
     });
   } catch (err) {
     Sentry.captureException(err, {
@@ -549,7 +560,19 @@ export async function runPeriscopeAutoPlaybook(
     };
   }
 
-  const { prose, structured, parseOk } = parseStructuredFields(result.text);
+  // Prefer the tool_use channel — `input` is schema-validated by
+  // Anthropic, so we skip JSON.parse and its control-character pitfalls
+  // entirely. Fall back to the legacy fenced-JSON parser only if the
+  // tool_use block is missing (the model dropped the tool call, which
+  // shouldn't happen under `tool_choice: { type: 'tool' }` but is
+  // worth a safety net).
+  const toolBlock = result.toolUseBlocks.find(
+    (b) => b.name === STRUCTURED_TOOL_NAME,
+  );
+  const { prose, structured, parseOk } =
+    toolBlock != null
+      ? parseStructuredFieldsFromToolInput(toolBlock.input, result.text)
+      : parseStructuredFields(result.text);
 
   if (result.stopReason === 'max_tokens') {
     logger.error(
@@ -613,7 +636,11 @@ export async function runPeriscopeAutoPlaybook(
     parseOk,
     fullResponse,
     embedding,
-    panelPayload: mapStructuredToPanelPayload(structured, prose, spotAtReadTime),
+    panelPayload: mapStructuredToPanelPayload(
+      structured,
+      prose,
+      spotAtReadTime,
+    ),
     failureReason: null,
     modelUsed: result.modelUsed,
     durationMs,

@@ -25,6 +25,9 @@ import {
   formatHeatMapBlock,
   formatParentChainBlock,
   parseStructuredFields,
+  parseStructuredFieldsFromToolInput,
+  STRUCTURED_TOOL,
+  STRUCTURED_TOOL_NAME,
   synthesizeStructuralProse,
 } from '../_lib/periscope-prompts.js';
 import type { PeriscopeStructuredFields } from '../_lib/periscope-db.js';
@@ -298,6 +301,132 @@ describe('synthesizeStructuralProse', () => {
 
     const upperOnly = synthesizeStructuralProse(fields({ cone_upper: 5820 }));
     expect(upperOnly).toContain('cone upper bound at 5820');
+  });
+});
+
+// ============================================================
+// parseStructuredFieldsFromToolInput — tool_use channel (Sentry "Bad
+// control character" fix, 2026-05-11)
+// ============================================================
+
+describe('parseStructuredFieldsFromToolInput', () => {
+  it('coerces a well-formed tool_use input identically to the JSON-block path', () => {
+    const toolInput = {
+      spot: 5912.34,
+      cone_lower: 5880,
+      cone_upper: 5945,
+      long_trigger: 5920,
+      short_trigger: 5900,
+      regime_tag: 'pinning',
+      bias: 'two-sided',
+      trade_types_recommended: ['IC', 'BWB'],
+      trade_types_avoided: ['naked-call'],
+      key_levels: {
+        gamma_floor: 5895,
+        gamma_ceiling: 5925,
+        magnet: 5910,
+        charm_zero: 5905,
+      },
+      expected_dealer_behavior: 'suppressive',
+      confidence: 'medium',
+      confidence_basis: 'cone width small',
+      futures_plan: 'LONG: SAFE above 5920',
+    };
+    const { prose, structured, parseOk } = parseStructuredFieldsFromToolInput(
+      toolInput,
+      'narrative prose',
+    );
+    expect(parseOk).toBe(true);
+    expect(prose).toBe('narrative prose');
+    expect(structured.spot).toBe(5912.34);
+    expect(structured.bias).toBe('two-sided');
+    expect(structured.confidence).toBe('medium');
+    expect(structured.key_levels).toEqual({
+      gamma_floor: 5895,
+      gamma_ceiling: 5925,
+      magnet: 5910,
+      charm_zero: 5905,
+    });
+    expect(structured.trade_types_recommended).toEqual(['IC', 'BWB']);
+  });
+
+  it('handles multi-line / control-character prose fields — the failure mode the tool channel solves', () => {
+    // This input would have caused JSON.parse to throw "Bad control
+    // character in string literal in JSON" via the legacy fenced-block
+    // path. The tool_use channel hands us an already-parsed object, so
+    // newlines / tabs inside string fields are preserved verbatim.
+    const toolInput = {
+      expected_dealer_behavior:
+        'Suppressive bid at +γ floor.\n\nPassive offer at -γ ceiling.\tWatch charm tally for shift.',
+      futures_plan: 'LONG: cap at 7390\nSHORT: floor at 7350',
+      regime_tag: 'drift-and-cap',
+      bias: 'long-only',
+      confidence: 'high',
+    };
+    const { structured, parseOk } = parseStructuredFieldsFromToolInput(
+      toolInput,
+      'prose',
+    );
+    expect(parseOk).toBe(true);
+    expect(structured.expected_dealer_behavior).toContain('\n\n');
+    expect(structured.expected_dealer_behavior).toContain('\t');
+    expect(structured.futures_plan).toContain('\n');
+  });
+
+  it('returns parseOk=false with empty structured when tool input is null', () => {
+    const { structured, parseOk } = parseStructuredFieldsFromToolInput(
+      null,
+      'prose',
+    );
+    expect(parseOk).toBe(false);
+    expect(structured.spot).toBeNull();
+    expect(structured.trade_types_recommended).toEqual([]);
+  });
+
+  it('returns parseOk=false when tool input is not an object', () => {
+    const { parseOk } = parseStructuredFieldsFromToolInput('garbage', 'prose');
+    expect(parseOk).toBe(false);
+  });
+
+  it('coerces enum mismatches to null without throwing', () => {
+    const { structured, parseOk } = parseStructuredFieldsFromToolInput(
+      { bias: 'sideways', confidence: 'extreme' },
+      'prose',
+    );
+    expect(parseOk).toBe(true);
+    expect(structured.bias).toBeNull();
+    expect(structured.confidence).toBeNull();
+  });
+});
+
+describe('STRUCTURED_TOOL definition', () => {
+  it('has the documented tool name', () => {
+    expect(STRUCTURED_TOOL.name).toBe(STRUCTURED_TOOL_NAME);
+    expect(STRUCTURED_TOOL_NAME).toBe('emit_playbook_structured');
+  });
+
+  it('declares an input_schema with the expected properties', () => {
+    const schema = STRUCTURED_TOOL.input_schema as Record<string, unknown>;
+    expect(schema.type).toBe('object');
+    const props = schema.properties as Record<string, unknown>;
+    for (const key of [
+      'spot',
+      'cone_lower',
+      'cone_upper',
+      'long_trigger',
+      'short_trigger',
+      'regime_tag',
+      'bias',
+      'trade_types_recommended',
+      'trade_types_avoided',
+      'key_levels',
+      'expected_dealer_behavior',
+      'confidence',
+      'confidence_basis',
+      'futures_plan',
+    ]) {
+      expect(props[key]).toBeDefined();
+    }
   });
 });
 

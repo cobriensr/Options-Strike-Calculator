@@ -230,7 +230,7 @@ export async function extractCandidatesViaLLM(
   try {
     const anthropic = new Anthropic({ apiKey, timeout: 60_000, maxRetries: 1 });
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-7',
+      model: 'claude-sonnet-4-6',
       max_tokens: 2048,
       system: LLM_EXTRACTION_SYSTEM_PROMPT,
       messages: [{ role: 'user', content: prose }],

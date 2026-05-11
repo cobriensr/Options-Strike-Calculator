@@ -52,6 +52,9 @@ vi.mock('../_lib/periscope-prompts.js', () => ({
   buildUserContent: vi.fn(() => [{ type: 'text', text: 'user content' }]),
   formatHeatMapBlock: vi.fn(() => 'heat-map block'),
   parseStructuredFields: vi.fn(),
+  parseStructuredFieldsFromToolInput: vi.fn(),
+  STRUCTURED_TOOL: { name: 'emit_playbook_structured', input_schema: {} },
+  STRUCTURED_TOOL_NAME: 'emit_playbook_structured',
 }));
 
 vi.mock('../_lib/periscope-calibration.js', () => ({
@@ -86,7 +89,7 @@ import { runCachedAnthropicCall } from '../_lib/anthropic-call.js';
 import { synthesizeFromDb } from '../_lib/periscope-synthesize.js';
 import {
   buildUserContent,
-  parseStructuredFields,
+  parseStructuredFieldsFromToolInput,
 } from '../_lib/periscope-prompts.js';
 import { buildCalibrationBlock } from '../_lib/periscope-calibration.js';
 import { buildRetrievalBlock } from '../_lib/periscope-retrieval.js';
@@ -147,6 +150,9 @@ const synthFixture = {
 
 const okAnthropic = {
   text: 'narrative prose',
+  toolUseBlocks: [
+    { name: 'emit_playbook_structured', input: structuredFixture },
+  ],
   usage: { input: 1000, output: 250, cacheRead: 800, cacheWrite: 200 },
   modelUsed: 'claude-opus-4-7',
   cacheHit: true,
@@ -168,7 +174,7 @@ beforeEach(() => {
   vi.mocked(fetchPeriscopeAnalysisById).mockResolvedValue(null);
   vi.mocked(fetchParentChain).mockResolvedValue([]);
   vi.mocked(generateEmbedding).mockResolvedValue([0.1, 0.2, 0.3]);
-  vi.mocked(parseStructuredFields).mockReturnValue({
+  vi.mocked(parseStructuredFieldsFromToolInput).mockReturnValue({
     prose: 'narrative prose',
     structured: structuredFixture,
     parseOk: true,
@@ -204,7 +210,7 @@ describe('runPeriscopeAutoPlaybook', () => {
     // The 2026-05-06/07 grading run found that Claude's structured
     // output sometimes drifts 30-50pt from actual SPX cash. The panel
     // payload must reflect the DB truth, not Claude's echo.
-    vi.mocked(parseStructuredFields).mockReturnValue({
+    vi.mocked(parseStructuredFieldsFromToolInput).mockReturnValue({
       prose: 'narrative prose',
       structured: { ...structuredFixture, spot: 9999.99 }, // garbage
       parseOk: true,
@@ -286,7 +292,7 @@ describe('runPeriscopeAutoPlaybook', () => {
       stopReason: 'max_tokens',
       text: 'partial prose...',
     });
-    vi.mocked(parseStructuredFields).mockReturnValue({
+    vi.mocked(parseStructuredFieldsFromToolInput).mockReturnValue({
       prose: 'partial prose...',
       structured: structuredFixture,
       parseOk: true,
@@ -310,7 +316,7 @@ describe('runPeriscopeAutoPlaybook', () => {
       ...okAnthropic,
       stopReason: 'max_tokens',
     });
-    vi.mocked(parseStructuredFields).mockReturnValue({
+    vi.mocked(parseStructuredFieldsFromToolInput).mockReturnValue({
       prose: 'partial',
       structured: structuredFixture,
       parseOk: false,
@@ -415,7 +421,7 @@ describe('runPeriscopeAutoPlaybook', () => {
         },
       },
     } as unknown as Awaited<ReturnType<typeof synthesizeFromDb>>);
-    vi.mocked(parseStructuredFields).mockReturnValue({
+    vi.mocked(parseStructuredFieldsFromToolInput).mockReturnValue({
       prose: 'narrative prose',
       structured: { ...structuredFixture, cone_lower: null, cone_upper: null },
       parseOk: true,

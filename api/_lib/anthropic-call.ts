@@ -103,11 +103,39 @@ export interface AnthropicCallOptions {
   fallbackMetric?: string;
   /** Optional usage hook — fires once per successful call (any model). */
   onUsage?: (usage: AnthropicCallUsage, modelUsed: string) => void;
+  /**
+   * Optional tool definitions for structured-output extraction. Pair
+   * with `toolChoice: { type: 'tool', name: '...' }` to force Claude
+   * to emit a `tool_use` block whose `input` is schema-validated JSON.
+   *
+   * Use this instead of asking Claude for a fenced ```json block — the
+   * tool_use channel guarantees valid JSON (Anthropic constrains
+   * generation against the input_schema), eliminating the JSON.parse
+   * failure mode that periodically occurs when free-text prose fields
+   * contain unescaped control characters.
+   */
+  tools?: Anthropic.Messages.Tool[];
+  /**
+   * Optional tool-choice constraint. When set to
+   * `{ type: 'tool', name: '...' }`, Claude MUST call the named tool
+   * exactly once, returning structured data in a tool_use block.
+   * Claude may still emit text content blocks alongside the tool_use.
+   */
+  toolChoice?: Anthropic.Messages.ToolChoice;
 }
 
 export interface AnthropicCallResult {
   /** Concatenated text content from the response (text blocks only). */
   text: string;
+  /**
+   * Inputs from every `tool_use` content block in the response, in the
+   * order Claude emitted them. Empty when no tools were passed or
+   * Claude chose not to call any tool (only possible when toolChoice
+   * was unset or `'auto'`). When forced via
+   * `toolChoice: { type: 'tool', ... }` there will be exactly one
+   * entry per matching block.
+   */
+  toolUseBlocks: Array<{ name: string; input: unknown }>;
   /** Token / cache stats for the call that succeeded. */
   usage: AnthropicCallUsage;
   /** The model id that produced the response (primary or fallback). */
@@ -154,6 +182,8 @@ export async function runCachedAnthropicCall(
     thinking = true,
     fallbackMetric = 'anthropic.fallback',
     onUsage,
+    tools,
+    toolChoice,
   } = opts;
 
   const buildStream = (
@@ -169,6 +199,8 @@ export async function runCachedAnthropicCall(
     };
     if (thinking) params.thinking = { type: 'adaptive' };
     if (eff) params.output_config = { effort: eff };
+    if (tools != null && tools.length > 0) params.tools = tools;
+    if (toolChoice != null) params.tool_choice = toolChoice;
     return client.messages.stream(
       params as unknown as Parameters<typeof client.messages.stream>[0],
     );
@@ -206,6 +238,18 @@ export async function runCachedAnthropicCall(
     .map((c) => ('text' in c ? c.text : ''))
     .join('');
 
+  // Tool-use blocks live alongside text blocks when `tools` were
+  // passed. With `toolChoice: { type: 'tool', name: '...' }` Claude
+  // emits exactly one. The `input` field is schema-validated JSON
+  // (Anthropic constrains generation against `input_schema`), so
+  // callers can skip JSON.parse and use the object directly.
+  const toolUseBlocks = response.content
+    .filter((c) => c.type === 'tool_use')
+    .map((c) => ({
+      name: 'name' in c ? c.name : '',
+      input: 'input' in c ? c.input : null,
+    }));
+
   const usage: AnthropicCallUsage = {
     input: response.usage?.input_tokens ?? 0,
     output: response.usage?.output_tokens ?? 0,
@@ -229,6 +273,7 @@ export async function runCachedAnthropicCall(
 
   return {
     text,
+    toolUseBlocks,
     usage,
     modelUsed,
     cacheHit,

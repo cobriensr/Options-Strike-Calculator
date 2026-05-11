@@ -424,6 +424,188 @@ function coerceKeyLevels(raw: unknown): PeriscopeKeyLevels | null {
   return out;
 }
 
+/**
+ * Anthropic tool definition for the structured playbook fields.
+ *
+ * Forced via `tool_choice: { type: 'tool', name: STRUCTURED_TOOL_NAME }`
+ * so Claude is required to emit a valid `tool_use` block on every
+ * call. Anthropic constrains generation against the `input_schema`,
+ * which eliminates the JSON.parse failure mode that occurred when
+ * free-text prose fields contained unescaped control characters
+ * (Sentry: "Bad control character in string literal in JSON" — fixed
+ * 2026-05-11 by migrating away from fenced ```json blocks).
+ *
+ * Field descriptions act as implicit prompt instructions per the
+ * llm-structured-output skill — keep them prescriptive.
+ */
+export const STRUCTURED_TOOL_NAME = 'emit_playbook_structured';
+
+export const STRUCTURED_TOOL: Anthropic.Messages.Tool = {
+  name: STRUCTURED_TOOL_NAME,
+  description:
+    'Emit the structured fields of the playbook (typed parallel to the prose narrative). Call this exactly once per read with all fields populated to the best of your ability; use null / empty arrays when a field is genuinely unavailable for the current read.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      spot: {
+        type: ['number', 'null'],
+        description:
+          'SPX cash spot at read time. The system overwrites this with the authoritative DB-resolved spot; emit your best read of the panel here for prose consistency.',
+      },
+      cone_lower: {
+        type: ['number', 'null'],
+        description:
+          'Lower bound of the 0DTE straddle breakeven cone (cone.lower).',
+      },
+      cone_upper: {
+        type: ['number', 'null'],
+        description:
+          'Upper bound of the 0DTE straddle breakeven cone (cone.upper).',
+      },
+      long_trigger: {
+        type: ['number', 'null'],
+        description:
+          'Long-side trigger price. MUST be strictly below gamma_ceiling (the structural target). If the chart has no clean upside structural target above the trigger zone, emit null.',
+      },
+      short_trigger: {
+        type: ['number', 'null'],
+        description:
+          'Short-side trigger price. MUST be strictly above gamma_floor (the structural target). If the chart has no clean downside structural target below the trigger zone, emit null.',
+      },
+      regime_tag: {
+        type: ['string', 'null'],
+        description:
+          'Regime label. Common values: pin, drift-and-cap, cone-breach, cone-breach-up, cone-breach-down, chop, gap-and-rip, trap.',
+      },
+      bias: {
+        type: ['string', 'null'],
+        enum: [
+          'long-only',
+          'short-only',
+          'fade-only',
+          'two-sided',
+          'no-trade',
+          null,
+        ],
+        description: 'Directional bias for the read.',
+      },
+      trade_types_recommended: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Recommended structures, e.g. iron_condor, debit_call_spread, broken_wing_butterfly. For iron_condor / iron_butterfly the wings are gamma_floor / gamma_ceiling — NOT the cone bounds.',
+      },
+      trade_types_avoided: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Structures explicitly to avoid given the current read.',
+      },
+      key_levels: {
+        type: ['object', 'null'],
+        properties: {
+          gamma_floor: { type: ['number', 'null'] },
+          gamma_ceiling: { type: ['number', 'null'] },
+          magnet: { type: ['number', 'null'] },
+          charm_zero: { type: ['number', 'null'] },
+        },
+        description: 'Structural level map. Floor / ceiling are the IC wings.',
+      },
+      expected_dealer_behavior: {
+        type: ['string', 'null'],
+        description:
+          'One-paragraph prose describing how dealers are expected to behave given the current gamma / charm topology. Multi-sentence is fine; the tool channel handles control characters correctly.',
+      },
+      confidence: {
+        type: ['string', 'null'],
+        enum: ['low', 'medium', 'high', null],
+        description: 'Conviction level for the directional / structural call.',
+      },
+      confidence_basis: {
+        type: ['string', 'null'],
+        description:
+          'Short prose explaining what justifies the confidence level. May span multiple sentences.',
+      },
+      futures_plan: {
+        type: ['string', 'null'],
+        description:
+          'LONG / SHORT / WAIT framing in prose, tying futures execution to the structural levels above. May span multiple paragraphs.',
+      },
+    },
+    required: [],
+  },
+};
+
+/**
+ * Extract structured fields from a `tool_use` block's `input` (already
+ * parsed by Anthropic — no JSON.parse needed). Reuses the coercion +
+ * enum-validation logic from {@link parseStructuredFields} so the
+ * runtime output shape is identical regardless of channel.
+ *
+ * Use this when the runner forces `tool_choice` on the call. The
+ * function returns `parseOk: false` only when the tool input is
+ * absent or shape-malformed (e.g. wrong asset name) — never on the
+ * control-character-in-string failure mode that plagued JSON.parse.
+ */
+export function parseStructuredFieldsFromToolInput(
+  toolInput: unknown,
+  prose: string,
+): ParsedStructuredOutput {
+  if (toolInput == null || typeof toolInput !== 'object') {
+    logger.warn(
+      { toolInputType: typeof toolInput },
+      'periscope-chat: tool_use block missing or not an object',
+    );
+    return { prose, structured: emptyStructured(), parseOk: false };
+  }
+  const structured = coerceStructured(toolInput as Record<string, unknown>);
+  return { prose, structured, parseOk: true };
+}
+
+/**
+ * Shared field coercion. Extracted so both `parseStructuredFields`
+ * (legacy JSON-block path, kept for back-compat with periscope-chat
+ * manual flows) and `parseStructuredFieldsFromToolInput` (tool_use
+ * path, used by the auto-playbook) produce identical typed output.
+ */
+function coerceStructured(
+  parsed: Record<string, unknown>,
+): PeriscopeStructuredFields {
+  const num = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? v : null;
+  const str = (v: unknown): string | null =>
+    typeof v === 'string' && v.length > 0 ? v : null;
+
+  const biasRaw = parsed.bias;
+  const bias =
+    typeof biasRaw === 'string' && BIAS_VALUES.has(biasRaw as PeriscopeBias)
+      ? (biasRaw as PeriscopeBias)
+      : null;
+
+  const confidenceRaw = parsed.confidence;
+  const confidence =
+    typeof confidenceRaw === 'string' &&
+    CONFIDENCE_VALUES.has(confidenceRaw as PeriscopeConfidence)
+      ? (confidenceRaw as PeriscopeConfidence)
+      : null;
+
+  return {
+    spot: num(parsed.spot),
+    cone_lower: num(parsed.cone_lower),
+    cone_upper: num(parsed.cone_upper),
+    long_trigger: num(parsed.long_trigger),
+    short_trigger: num(parsed.short_trigger),
+    regime_tag: str(parsed.regime_tag),
+    bias,
+    trade_types_recommended: coerceStringArray(parsed.trade_types_recommended),
+    trade_types_avoided: coerceStringArray(parsed.trade_types_avoided),
+    key_levels: coerceKeyLevels(parsed.key_levels),
+    expected_dealer_behavior: str(parsed.expected_dealer_behavior),
+    confidence,
+    confidence_basis: str(parsed.confidence_basis),
+    futures_plan: str(parsed.futures_plan),
+  };
+}
+
 export function parseStructuredFields(text: string): ParsedStructuredOutput {
   const block = parseTrailingJsonBlock(text);
   if (block == null) {
@@ -443,40 +625,7 @@ export function parseStructuredFields(text: string): ParsedStructuredOutput {
     return { prose: text, structured: emptyStructured(), parseOk: false };
   }
 
-  const num = (v: unknown): number | null =>
-    typeof v === 'number' && Number.isFinite(v) ? v : null;
-  const str = (v: unknown): string | null =>
-    typeof v === 'string' && v.length > 0 ? v : null;
-
-  const biasRaw = parsed.bias;
-  const bias =
-    typeof biasRaw === 'string' && BIAS_VALUES.has(biasRaw as PeriscopeBias)
-      ? (biasRaw as PeriscopeBias)
-      : null;
-
-  const confidenceRaw = parsed.confidence;
-  const confidence =
-    typeof confidenceRaw === 'string' &&
-    CONFIDENCE_VALUES.has(confidenceRaw as PeriscopeConfidence)
-      ? (confidenceRaw as PeriscopeConfidence)
-      : null;
-
-  const structured: PeriscopeStructuredFields = {
-    spot: num(parsed.spot),
-    cone_lower: num(parsed.cone_lower),
-    cone_upper: num(parsed.cone_upper),
-    long_trigger: num(parsed.long_trigger),
-    short_trigger: num(parsed.short_trigger),
-    regime_tag: str(parsed.regime_tag),
-    bias,
-    trade_types_recommended: coerceStringArray(parsed.trade_types_recommended),
-    trade_types_avoided: coerceStringArray(parsed.trade_types_avoided),
-    key_levels: coerceKeyLevels(parsed.key_levels),
-    expected_dealer_behavior: str(parsed.expected_dealer_behavior),
-    confidence,
-    confidence_basis: str(parsed.confidence_basis),
-    futures_plan: str(parsed.futures_plan),
-  };
+  const structured = coerceStructured(parsed);
 
   // Reassemble prose around the stripped block. `before` is the text up
   // to the open fence; `after` is rare trailing prose past the close
