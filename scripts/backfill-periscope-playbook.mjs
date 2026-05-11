@@ -22,16 +22,28 @@
  * PeriscopeChatHistory and queryable for retrieval / calibration
  * grounding.
  *
- * # Cost expectations (re-estimated 2026-05-10)
+ * # Cost expectations (re-measured 2026-05-10 from live billing)
  *
- *   Per call: ~37K input tokens (~$0.11 raw, ~$0.011 with 90% prompt
- *             cache hit) + ~5K output tokens (~$0.075). Embedding adds
- *             ~$0.0005 per call (text-embedding-3-large, ~300 tokens).
- *   Per call total: $0.09 cached / $0.19 uncached.
- *   Full backfill (~125 days × ~39 analyzable slots = 4,875 calls):
- *     $440 with prompt cache (default — the runner already wires
- *           cache_control on the skill + references blocks)
- *     $930 without cache
+ * Model: claude-opus-4-7, effort=xhigh, max_tokens=128_000
+ * Pricing per MTok: $15 input / $1.50 cache_read / $18.75 cache_write / $75 output
+ *
+ * Observed per-call cost across 2026-05-06/07/08 backfill (111 calls,
+ * $84.69 total Anthropic billing):
+ *   - ~850 fresh input tokens     → $0.013
+ *   - ~25K cache_read tokens      → $0.038
+ *   - ~8.6K cache_write (amort.)  → $0.040 (front-loaded on cold start)
+ *   - ~9.6K output tokens         → $0.720 ← dominant term
+ *   - embedding                   → $0.0005
+ *   Steady-state per-call: ~$0.70 cached / ~$1.30 uncached
+ *
+ * Full backfill (~125 days × ~39 analyzable slots = 4,875 calls):
+ *     ~$3,400 with prompt cache on (the runner wires cache_control)
+ *     ~$6,300 without cache
+ *
+ * Output dominates because xhigh effort produces 8-12K tokens of
+ * reasoning + structured payload per call. Dropping to effort=high
+ * roughly halves output → ~$0.40/call cached. See
+ * api/_lib/periscope-chat-runner.ts MODEL + effort config.
  *
  * Prompt caching is wired by api/_lib/periscope-chat-runner.ts —
  * confirm it's still active before invoking by checking that
@@ -43,7 +55,7 @@
  * Run when you want immediate browsable history rather than waiting
  * weeks for forward-firing playbooks to accumulate. Concretely:
  *
- *  - You're ready to spend ~$440-$930 once
+ *  - You're ready to spend ~$3,400-$6,300 once (Opus 4.7 + xhigh)
  *  - You want the autoresearch loop (prompt-tuning, separate spec)
  *    to have labeled training data on day one
  *  - You want the calibration block + retrieval queries on live
@@ -566,11 +578,16 @@ async function main() {
     return;
   }
 
-  // Rough cost estimate (cached input + full output + embedding).
-  const cachedCostPerCall = 0.09;
-  const uncachedCostPerCall = 0.19;
+  // Cost estimate calibrated against observed 2026-05-06/07/08 billing
+  // (Opus 4.7, effort=xhigh, max_tokens=128_000). Output cost dominates.
+  // If you change MODEL or effort in api/_lib/periscope-chat-runner.ts,
+  // re-measure and update these constants.
+  const cachedCostPerCall = 0.7;
+  const uncachedCostPerCall = 1.3;
   console.log('');
-  console.log(`  Cost estimate (forward-firing endpoint, prompt cache on):`);
+  console.log(
+    `  Cost estimate (Opus 4.7 xhigh, 128K cap, prompt cache assumed on):`,
+  );
   console.log(`    cached:    $${(slotCount * cachedCostPerCall).toFixed(0)}`);
   console.log(
     `    uncached:  $${(slotCount * uncachedCostPerCall).toFixed(0)}`,
