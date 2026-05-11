@@ -374,6 +374,40 @@ describe('gradePlaybook: trade sims', () => {
     expect(spxSim!.pnlPct).toBeLessThan(0);
   });
 
+  it('does NOT exit on the entry bar itself (entry happens at bar close, intra-bar high/low already in past)', () => {
+    // Fire at min 9 close=5810. Same bar has an intra-bar low of 5780
+    // and high of 5811. Without the entry-bar skip, the loop would
+    // detect a stop hit at 5780 immediately (durationMin=0). With the
+    // skip, the trade survives the entry bar and proceeds to next.
+    const spx = [
+      candle({ hourCT: 9, minute: 0, open: 5800, close: 5800 }),
+      candle({ hourCT: 9, minute: 5, open: 5805, high: 5811, close: 5810 }),
+      candle({ hourCT: 9, minute: 6, open: 5810, close: 5811 }),
+      candle({ hourCT: 9, minute: 7, open: 5811, close: 5812 }),
+      candle({ hourCT: 9, minute: 8, open: 5812, close: 5811 }),
+      // Entry bar: trigger fires here at close=5810, but bar low=5780
+      // would have been a stop hit if entry bar were scanned.
+      candle({ hourCT: 9, minute: 9, open: 5810, low: 5780, close: 5810 }),
+      candle({ hourCT: 9, minute: 10, open: 5810, close: 5815 }),
+      candle({ hourCT: 15, minute: 0, open: 5815, close: 5815 }),
+    ];
+    const grade = gradePlaybook(
+      defaultArgs({
+        playbook: defaultPlaybook({
+          longTrigger: 5810,
+          shortTrigger: 5790,
+          gammaCeiling: 5820,
+          gammaFloor: 5780,
+        }),
+        spxCandles: spx,
+      }),
+    );
+    const spxSim = grade.tradeSims.find((s) => s.asset === 'SPX' && s.side === 'long');
+    expect(spxSim).toBeDefined();
+    expect(spxSim!.exitReason).toBe('eod');
+    expect(spxSim!.durationMin).toBeGreaterThan(0);
+  });
+
   it('long sim times out at EOD → exit_reason=eod', () => {
     const spx = [
       candle({ hourCT: 9, minute: 0, open: 5800, close: 5800 }),
@@ -638,6 +672,77 @@ describe('gradePlaybook: regime', () => {
     );
     expect(grade.regimeObserved).toBe('cone-breach-up');
     expect(grade.regimeCorrect).toBe(true);
+  });
+
+  it('grades generic `cone-breach` call correct when either direction is observed', () => {
+    const grade = gradePlaybook(
+      defaultArgs({
+        playbook: defaultPlaybook({
+          regime: 'cone-breach',
+          cone: { lower: 5780, upper: 5820 },
+        }),
+        spxCandles: [
+          candle({ hourCT: 9, minute: 0, open: 5800, close: 5800 }),
+          candle({ hourCT: 10, minute: 0, open: 5820, high: 5830, close: 5825 }),
+          candle({ hourCT: 15, minute: 0, open: 5825, close: 5825 }),
+        ],
+      }),
+    );
+    expect(grade.regimeObserved).toBe('cone-breach-up');
+    expect(grade.regimeCorrect).toBe(true);
+  });
+
+  it('maps chop call to observed mixed', () => {
+    const grade = gradePlaybook(
+      defaultArgs({
+        playbook: defaultPlaybook({
+          regime: 'chop',
+          bias: 'two-sided',
+          cone: { lower: 5780, upper: 5820 },
+        }),
+        spxCandles: [
+          candle({ hourCT: 9, minute: 0, open: 5800, close: 5800 }),
+          // No breach, no pin, two-sided → mixed.
+          candle({ hourCT: 10, minute: 0, open: 5810, close: 5790 }),
+          candle({ hourCT: 15, minute: 0, open: 5795, close: 5808 }),
+        ],
+      }),
+    );
+    expect(grade.regimeObserved).toBe('mixed');
+    expect(grade.regimeCorrect).toBe(true);
+  });
+
+  it('maps gap-and-rip call to observed cone-breach-up', () => {
+    const grade = gradePlaybook(
+      defaultArgs({
+        playbook: defaultPlaybook({
+          regime: 'gap-and-rip',
+          cone: { lower: 5780, upper: 5820 },
+        }),
+        spxCandles: [
+          candle({ hourCT: 9, minute: 0, open: 5800, close: 5800 }),
+          candle({ hourCT: 10, minute: 0, open: 5820, high: 5830, close: 5825 }),
+          candle({ hourCT: 15, minute: 0, open: 5825, close: 5825 }),
+        ],
+      }),
+    );
+    expect(grade.regimeCorrect).toBe(true);
+  });
+
+  it('returns null (ungraded) for an unrecognized regime call', () => {
+    const grade = gradePlaybook(
+      defaultArgs({
+        playbook: defaultPlaybook({
+          regime: 'made-up-regime',
+          cone: { lower: 5780, upper: 5820 },
+        }),
+        spxCandles: [
+          candle({ hourCT: 9, minute: 0, open: 5800, close: 5800 }),
+          candle({ hourCT: 15, minute: 0, open: 5810, close: 5810 }),
+        ],
+      }),
+    );
+    expect(grade.regimeCorrect).toBeNull();
   });
 
   it('classifies pin when spot ends within 5pt of magnet AND cone held', () => {

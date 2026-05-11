@@ -185,6 +185,31 @@ function classifyObservedRegime(args: {
   return 'mixed';
 }
 
+/**
+ * Map playbook regime strings to observed regime categories. The
+ * playbook emits richer vocab (chop, trap, gap-and-rip, generic
+ * `cone-breach` without direction); we collapse them onto the
+ * observed enum so we can compare apples to apples. Returns null
+ * for unmapped strings — surfaced as ungraded rather than wrong.
+ */
+function canonicalizeCalledRegime(raw: string): ObservedRegime | null {
+  const s = raw.trim().toLowerCase();
+  if (s === 'pin') return 'pin';
+  if (s === 'drift-and-cap' || s.startsWith('drift-and-cap'))
+    return 'drift-and-cap';
+  if (s === 'cone-breach-up') return 'cone-breach-up';
+  if (s === 'cone-breach-down') return 'cone-breach-down';
+  // Generic cone-breach without direction — match either breach by
+  // returning a sentinel that downstream comparison treats as
+  // "either direction is correct". We collapse to a non-direction
+  // value and let gradeRegime handle it via prefix.
+  if (s === 'cone-breach') return 'cone-breach-up'; // placeholder, see prefix logic
+  if (s === 'gap-and-rip') return 'cone-breach-up';
+  if (s === 'gap-and-rug' || s === 'gap-and-flush') return 'cone-breach-down';
+  if (s === 'chop' || s === 'two-sided' || s === 'trap') return 'mixed';
+  return null;
+}
+
 function gradeRegime(args: {
   playbook: GraderPlaybook;
   observed: ObservedRegime | null;
@@ -193,12 +218,22 @@ function gradeRegime(args: {
   if (observed == null || playbook.regime == null) {
     return { call: playbook.regime, observed, correct: null };
   }
-  // Normalize to compare — playbook regime strings may include
-  // qualifiers ("drift-and-cap-up"); match on prefix.
-  const callLower = playbook.regime.toLowerCase();
-  const observedLower = observed.toLowerCase();
-  const correct =
-    callLower === observedLower || callLower.startsWith(observedLower);
+  // Bidirectional acceptance:
+  //   - Exact match after canonicalization
+  //   - Generic `cone-breach` call matches either direction observed
+  const callCanonical = canonicalizeCalledRegime(playbook.regime);
+  const playbookRaw = playbook.regime.trim().toLowerCase();
+  let correct: boolean | null;
+  if (callCanonical == null) {
+    correct = null; // unmapped — surface as ungraded
+  } else if (
+    playbookRaw === 'cone-breach' &&
+    (observed === 'cone-breach-up' || observed === 'cone-breach-down')
+  ) {
+    correct = true;
+  } else {
+    correct = callCanonical === observed;
+  }
   return { call: playbook.regime, observed, correct };
 }
 
@@ -365,12 +400,17 @@ function simulateTrade(args: TradeSimArgs): TradeSim {
   } = args;
   const isLong = side === 'long';
 
-  // Scan bars at or after entry until stop/target/eod.
+  // Scan bars STRICTLY AFTER entry until stop/target/eod. Skipping
+  // the entry bar matters: the 5-min trigger close means we only know
+  // the price level at end-of-bar, so the bar's intra-bar high/low
+  // happened BEFORE we could have entered — they aren't real exit
+  // opportunities. The first bar that could plausibly exit us is the
+  // NEXT one.
   let exitPrice = entryPrice;
   let exitAt = eodCloseTs;
   let exitReason: TradeExitReason = 'eod';
   for (const c of candles) {
-    if (c.ts.getTime() < entryAt.getTime()) continue;
+    if (c.ts.getTime() <= entryAt.getTime()) continue;
     if (c.ts.getTime() > eodCloseTs.getTime()) break;
     if (isLong) {
       // Pessimistic ordering: assume stop fills before target if both
