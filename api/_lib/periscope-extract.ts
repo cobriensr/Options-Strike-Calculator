@@ -47,6 +47,108 @@ const MAX_TOKENS = 2048;
 // across two metrics, but the JSON shape is still small.
 const HEATMAP_MAX_TOKENS = 4096;
 
+// ── Tool definitions for structured-output extraction ─────────────
+//
+// Forcing `tool_choice: { type: 'tool', name: ... }` makes Anthropic
+// constrain generation against the input_schema, eliminating the
+// JSON.parse failure mode that occurred when prose fields contained
+// unescaped control characters (Sentry "Bad control character in
+// string literal in JSON"). The text-fence fallback in
+// `parseExtraction` / `parseHeatMapExtraction` stays as a safety net.
+
+const CHART_EXTRACTION_TOOL_NAME = 'emit_chart_extraction';
+const CHART_EXTRACTION_TOOL: Anthropic.Messages.Tool = {
+  name: CHART_EXTRACTION_TOOL_NAME,
+  description:
+    "Emit the chart structural primitives. Call this exactly once after reading the Periscope chart. Set a field to null if you can't read it reliably from the image.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      spot: {
+        type: ['number', 'null'],
+        description:
+          'SPX spot price shown on the price-action panel (typically labeled on the red dotted line). Null if not visible.',
+      },
+      cone_lower: {
+        type: ['number', 'null'],
+        description:
+          'Lower bound of the 0DTE straddle breakeven cone. Read from the labeled dashed line on the heat-map panel when present; otherwise from the diverging triangle on the price-action panel.',
+      },
+      cone_upper: {
+        type: ['number', 'null'],
+        description:
+          'Upper bound of the 0DTE straddle breakeven cone. Same source priority as cone_lower.',
+      },
+      chart_date: {
+        type: ['string', 'null'],
+        description:
+          'Trading date the chart depicts as ISO YYYY-MM-DD. Read from the chart\'s own date label, not the user\'s capture time. Null if not visible.',
+      },
+    },
+    required: [],
+  },
+};
+
+const HEATMAP_EXTRACTION_TOOL_NAME = 'emit_heatmap_extraction';
+const HEATMAP_EXTRACTION_TOOL: Anthropic.Messages.Tool = {
+  name: HEATMAP_EXTRACTION_TOOL_NAME,
+  description:
+    'Emit the top 5 positive and top 5 negative strikes per metric. Color must match value sign: green = positive, red = negative. Call this exactly once.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      gex: {
+        type: 'array',
+        description:
+          'Top 5 positive + top 5 negative GEX strikes. Empty array if the GEX panel is not provided or unreadable.',
+        items: {
+          type: 'object',
+          properties: {
+            strike: { type: 'number', description: 'Strike price.' },
+            value: { type: 'number', description: 'Signed dollar value.' },
+            color: {
+              type: 'string',
+              enum: ['green', 'red'],
+              description: 'Color must match value sign.',
+            },
+          },
+          required: ['strike', 'value', 'color'],
+        },
+      },
+      charm: {
+        type: 'array',
+        description:
+          'Top 5 positive + top 5 negative Charm strikes. Empty array if the Charm panel is not provided or unreadable.',
+        items: {
+          type: 'object',
+          properties: {
+            strike: { type: 'number' },
+            value: { type: 'number' },
+            color: { type: 'string', enum: ['green', 'red'] },
+          },
+          required: ['strike', 'value', 'color'],
+        },
+      },
+    },
+    required: [],
+  },
+};
+
+/**
+ * Pull the first tool_use block matching `toolName` from an Anthropic
+ * response. Returns the typed-but-unknown `input` object, or null when
+ * the model didn't call the tool (only possible under tool_choice='auto').
+ */
+function findToolInput(
+  response: { content: readonly Anthropic.Messages.ContentBlock[] },
+  toolName: string,
+): unknown {
+  for (const c of response.content) {
+    if (c.type === 'tool_use' && c.name === toolName) return c.input;
+  }
+  return null;
+}
+
 // Stable, cacheable system prompt for extraction. Cache hit on repeat
 // submissions saves the system-prompt input cost on the extraction
 // path — small absolute saving, but free.
@@ -187,9 +289,9 @@ export async function extractChartStructure(
     input.images.find((img) => img.kind === 'chart') ?? input.images[0];
   if (!chartImage) return null;
 
-  let text: string;
+  let response;
   try {
-    const response = await anthropic.messages.create({
+    response = await anthropic.messages.create({
       model: MODEL,
       max_tokens: MAX_TOKENS,
       system: [
@@ -199,6 +301,8 @@ export async function extractChartStructure(
           cache_control: { type: 'ephemeral', ttl: '1h' },
         },
       ],
+      tools: [CHART_EXTRACTION_TOOL],
+      tool_choice: { type: 'tool', name: CHART_EXTRACTION_TOOL_NAME },
       messages: [
         {
           role: 'user',
@@ -219,16 +323,24 @@ export async function extractChartStructure(
         },
       ],
     });
-    text = response.content
-      .filter((c) => c.type === 'text')
-      .map((c) => ('text' in c ? c.text : ''))
-      .join('');
   } catch (err) {
     logger.error({ err }, 'extractChartStructure: Anthropic call failed');
     Sentry.captureException(err);
     return null;
   }
 
+  // Prefer the tool_use channel — `input` is schema-validated by
+  // Anthropic. Fall back to the legacy text-block + JSON.parse path
+  // only if the tool_use block is missing (shouldn't happen under
+  // forced tool_choice, but cheap insurance).
+  const toolInput = findToolInput(response, CHART_EXTRACTION_TOOL_NAME);
+  if (toolInput != null && typeof toolInput === 'object') {
+    return parseExtractionFromInput(toolInput as Record<string, unknown>);
+  }
+  const text = response.content
+    .filter((c) => c.type === 'text')
+    .map((c) => ('text' in c ? c.text : ''))
+    .join('');
   return parseExtraction(text);
 }
 
@@ -278,9 +390,9 @@ export async function extractHeatMapStrikes(
     text: `Extract the top 5 positive + top 5 negative per-strike values for: ${provided.join(' and ')}. Return only the JSON block.`,
   });
 
-  let text: string;
+  let response;
   try {
-    const response = await anthropic.messages.create({
+    response = await anthropic.messages.create({
       model: MODEL,
       max_tokens: HEATMAP_MAX_TOKENS,
       system: [
@@ -290,6 +402,8 @@ export async function extractHeatMapStrikes(
           cache_control: { type: 'ephemeral', ttl: '1h' },
         },
       ],
+      tools: [HEATMAP_EXTRACTION_TOOL],
+      tool_choice: { type: 'tool', name: HEATMAP_EXTRACTION_TOOL_NAME },
       messages: [
         {
           role: 'user',
@@ -297,16 +411,22 @@ export async function extractHeatMapStrikes(
         },
       ],
     });
-    text = response.content
-      .filter((c) => c.type === 'text')
-      .map((c) => ('text' in c ? c.text : ''))
-      .join('');
   } catch (err) {
     logger.error({ err }, 'extractHeatMapStrikes: Anthropic call failed');
     Sentry.captureException(err);
     return null;
   }
 
+  const toolInput = findToolInput(response, HEATMAP_EXTRACTION_TOOL_NAME);
+  if (toolInput != null && typeof toolInput === 'object') {
+    return parseHeatMapExtractionFromInput(
+      toolInput as Record<string, unknown>,
+    );
+  }
+  const text = response.content
+    .filter((c) => c.type === 'text')
+    .map((c) => ('text' in c ? c.text : ''))
+    .join('');
   return parseHeatMapExtraction(text);
 }
 
@@ -338,7 +458,19 @@ function parseExtraction(text: string): PeriscopeExtractionResult | null {
     );
     return null;
   }
+  return parseExtractionFromInput(parsed);
+}
 
+/**
+ * Coerce an already-parsed extraction object (from a tool_use block's
+ * `input`) into `PeriscopeExtractionResult`. Skips JSON.parse entirely
+ * because Anthropic schema-validates the tool input — no control-
+ * character pitfalls. Returns null when none of the three structural
+ * fields could be read.
+ */
+function parseExtractionFromInput(
+  parsed: Record<string, unknown>,
+): PeriscopeExtractionResult | null {
   const num = (v: unknown): number | null =>
     typeof v === 'number' && Number.isFinite(v) ? v : null;
 
@@ -401,7 +533,17 @@ function parseHeatMapExtraction(text: string): HeatMapExtraction | null {
     );
     return null;
   }
+  return parseHeatMapExtractionFromInput(parsed);
+}
 
+/**
+ * Coerce an already-parsed heat-map extraction object (from a tool_use
+ * block's `input`) into `HeatMapExtraction`. Anthropic schema-validates
+ * the tool input, so no JSON.parse is needed.
+ */
+function parseHeatMapExtractionFromInput(
+  parsed: Record<string, unknown>,
+): HeatMapExtraction | null {
   const gex = coerceHeatMapStrikes(parsed.gex);
   const charm = coerceHeatMapStrikes(parsed.charm);
 

@@ -26,8 +26,39 @@ const validImage = {
 };
 
 function makeExtractionResponse(jsonBlock: string) {
+  // Legacy text-only response shape — exercises the fallback path
+  // (parseTrailingJsonBlock + JSON.parse). Retained because the
+  // production code still hits it when no tool_use block lands.
   return {
     content: [{ type: 'text', text: jsonBlock }],
+  };
+}
+
+function makeChartToolResponse(input: Record<string, unknown>) {
+  // Primary tool_use response shape — Anthropic schema-validates
+  // `input` so no JSON.parse occurs in the production code path.
+  return {
+    content: [
+      {
+        type: 'tool_use',
+        id: 'toolu_test',
+        name: 'emit_chart_extraction',
+        input,
+      },
+    ],
+  };
+}
+
+function makeHeatmapToolResponse(input: Record<string, unknown>) {
+  return {
+    content: [
+      {
+        type: 'tool_use',
+        id: 'toolu_test',
+        name: 'emit_heatmap_extraction',
+        input,
+      },
+    ],
   };
 }
 
@@ -371,5 +402,143 @@ describe('extractHeatMapStrikes', () => {
     });
     expect(callArgs.thinking).toBeUndefined();
     expect(callArgs.output_config).toBeUndefined();
+  });
+});
+
+// ============================================================
+// tool_use channel — the primary path after the 2026-05-11 migration
+// (eliminates the JSON.parse failure mode flagged in Sentry)
+// ============================================================
+
+describe('extractChartStructure — tool_use channel', () => {
+  it('reads structured fields from a tool_use block (no JSON.parse path)', async () => {
+    mockCreate.mockResolvedValueOnce(
+      makeChartToolResponse({
+        spot: 7120,
+        cone_lower: 7095,
+        cone_upper: 7150,
+        chart_date: '2026-04-30',
+      }),
+    );
+    const result = await extractChartStructure(
+      { images: [validImage] },
+      stubAnthropic,
+    );
+    expect(result).not.toBeNull();
+    expect(result?.chartDate).toBe('2026-04-30');
+    expect(result?.structured.spot).toBe(7120);
+    expect(result?.structured.cone_lower).toBe(7095);
+    expect(result?.structured.cone_upper).toBe(7150);
+  });
+
+  it('forces tool_choice on the Anthropic call', async () => {
+    mockCreate.mockResolvedValueOnce(
+      makeChartToolResponse({
+        spot: 7120,
+        cone_lower: 7095,
+        cone_upper: 7150,
+      }),
+    );
+    await extractChartStructure({ images: [validImage] }, stubAnthropic);
+    const callArgs = mockCreate.mock.calls[0]![0]!;
+    expect(callArgs.tool_choice).toEqual({
+      type: 'tool',
+      name: 'emit_chart_extraction',
+    });
+    expect(callArgs.tools).toBeDefined();
+    expect(callArgs.tools[0].name).toBe('emit_chart_extraction');
+  });
+
+  it('falls back to the text/JSON path when no tool_use block is present', async () => {
+    // Defense-in-depth: forced tool_choice almost guarantees emission,
+    // but if Claude somehow drops the tool the legacy fenced-JSON
+    // parser runs as a safety net.
+    mockCreate.mockResolvedValueOnce(
+      makeExtractionResponse(
+        '```json\n{"spot": 7120, "cone_lower": 7095, "cone_upper": 7150}\n```',
+      ),
+    );
+    const result = await extractChartStructure(
+      { images: [validImage] },
+      stubAnthropic,
+    );
+    expect(result?.structured.spot).toBe(7120);
+  });
+
+  it('returns null when tool_use input has all fields null (model could not read chart)', async () => {
+    mockCreate.mockResolvedValueOnce(
+      makeChartToolResponse({
+        spot: null,
+        cone_lower: null,
+        cone_upper: null,
+        chart_date: null,
+      }),
+    );
+    const result = await extractChartStructure(
+      { images: [validImage] },
+      stubAnthropic,
+    );
+    expect(result).toBeNull();
+  });
+});
+
+describe('extractHeatMapStrikes — tool_use channel', () => {
+  it('reads gex + charm arrays from tool_use input (no JSON.parse)', async () => {
+    mockCreate.mockResolvedValueOnce(
+      makeHeatmapToolResponse({
+        gex: [
+          { strike: 7100, value: 2_500_000, color: 'green' },
+          { strike: 7050, value: -1_800_000, color: 'red' },
+        ],
+        charm: [{ strike: 7080, value: 900_000, color: 'green' }],
+      }),
+    );
+    const result = await extractHeatMapStrikes(
+      {
+        gex: { data: SAMPLE_BASE64, mediaType: 'image/png' },
+        charm: { data: SAMPLE_BASE64, mediaType: 'image/png' },
+      },
+      stubAnthropic,
+    );
+    expect(result).not.toBeNull();
+    expect(result?.gex).toHaveLength(2);
+    expect(result?.charm).toHaveLength(1);
+    expect(result?.gex[0]).toMatchObject({ strike: 7100, color: 'green' });
+  });
+
+  it('drops cells whose color contradicts the value sign on the tool path', async () => {
+    mockCreate.mockResolvedValueOnce(
+      makeHeatmapToolResponse({
+        gex: [
+          { strike: 7100, value: 2_500_000, color: 'red' }, // mismatch — drop
+          { strike: 7050, value: -1_800_000, color: 'red' }, // OK
+        ],
+        charm: [],
+      }),
+    );
+    const result = await extractHeatMapStrikes(
+      { gex: { data: SAMPLE_BASE64, mediaType: 'image/png' } },
+      stubAnthropic,
+    );
+    expect(result?.gex).toHaveLength(1);
+    expect(result?.gex[0]!.strike).toBe(7050);
+  });
+
+  it('forces tool_choice on the heat-map call', async () => {
+    mockCreate.mockResolvedValueOnce(
+      makeHeatmapToolResponse({
+        gex: [{ strike: 7100, value: 2_500_000, color: 'green' }],
+        charm: [],
+      }),
+    );
+    await extractHeatMapStrikes(
+      { gex: { data: SAMPLE_BASE64, mediaType: 'image/png' } },
+      stubAnthropic,
+    );
+    const callArgs = mockCreate.mock.calls[0]![0]!;
+    expect(callArgs.tool_choice).toEqual({
+      type: 'tool',
+      name: 'emit_heatmap_extraction',
+    });
   });
 });
