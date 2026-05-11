@@ -22,7 +22,7 @@
  * Phase 1a of docs/superpowers/specs/api-refactor-2026-05-02.md
  */
 
-import { timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 
 import { waitUntil } from '@vercel/functions';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
@@ -30,7 +30,194 @@ import logger from './logger.js';
 import { Sentry } from './sentry.js';
 import { cronGuard } from './api-helpers.js';
 import { reportCronRun } from './axiom.js';
-import { SCHEDULE_MAP } from './cron-schedules.js';
+import { SCHEDULE_MAP, type CronMonitorConfig } from './cron-schedules.js';
+
+// ============================================================
+// DIRECT SENTRY CHECK-IN HTTP CLIENT
+// ============================================================
+//
+// `Sentry.captureCheckIn()` (and `Sentry.withMonitor()` which calls it
+// twice under the hood) is fire-and-forget at the SDK level. The
+// completion check-in is queued, the function returns, the queue
+// drain happens via the SDK's transport — and on Vercel Fluid Compute
+// the runtime can kill the in-flight HTTP request before it reaches
+// Sentry's wire. We tried `await Sentry.flush()` (commit 449fa949) and
+// `waitUntil(Sentry.flush())` (commit e6db3d3d); both helped, neither
+// reliably. Recovery check-ins only landed ~70% of the time, leaving
+// monitors firing "A timeout check-in detected" issues every minute.
+//
+// This bypass talks to Sentry's check-in ingest endpoint directly via
+// `await fetch()`. The await blocks until the HTTP response actually
+// arrives — no SDK queue, no flush, no Vercel exit race. Deterministic.
+//
+// Endpoint reference: https://docs.sentry.io/api/crons/
+
+interface SentryDsnParts {
+  /** The DSN's public key — used in the ingest URL path. */
+  publicKey: string;
+  /** Ingest host, e.g. `o12345.ingest.us.sentry.io`. */
+  ingestHost: string;
+  /** Numeric project id from the DSN path. */
+  projectId: string;
+}
+
+let cachedDsn: SentryDsnParts | null | undefined;
+
+/**
+ * Parse `SENTRY_DSN` into the ingest parts needed for Sentry's Crons
+ * HTTP API. Returns `null` when DSN is missing or malformed — caller
+ * must treat this as "no monitor signal" and skip the check-in.
+ *
+ * DSN shape: `https://<publicKey>@<host>/<projectId>`. The host is the
+ * org ingest subdomain on modern projects (e.g.
+ * `o12345.ingest.us.sentry.io`) and a plain `sentry.io` on legacy ones.
+ * Both work — `URL` parsing handles either.
+ */
+function getDsnParts(): SentryDsnParts | null {
+  if (cachedDsn !== undefined) return cachedDsn;
+  const dsn = process.env.SENTRY_DSN;
+  if (!dsn) {
+    cachedDsn = null;
+    return null;
+  }
+  try {
+    const url = new URL(dsn);
+    // Assumption: project id is a single path segment immediately after
+    // the host (hosted Sentry shape). Self-hosted deployments at a
+    // subpath like `https://key@host/relay/123` would mis-parse this —
+    // we'd send the URL with `relay/123` as the project id and Sentry
+    // would 404. Not a concern for the hosted DSN this project uses.
+    const projectId = url.pathname.replace(/^\/+/, '');
+    if (!url.username || !url.host || !projectId) {
+      cachedDsn = null;
+      return null;
+    }
+    cachedDsn = {
+      publicKey: url.username,
+      ingestHost: url.host,
+      projectId,
+    };
+  } catch {
+    cachedDsn = null;
+  }
+  return cachedDsn;
+}
+
+/**
+ * Test-only reset of the parsed-DSN cache. Tests that vary
+ * `process.env.SENTRY_DSN` between cases must call this in `beforeEach`
+ * so the next `getDsnParts()` call re-reads the env. Production code
+ * never calls this — the singleton cache is correct there because the
+ * DSN is fixed for a function's lifetime.
+ */
+export function _resetDsnCacheForTest(): void {
+  cachedDsn = undefined;
+}
+
+/** Sentry Crons API monitor_config payload (snake_case, per the spec). */
+interface SentryMonitorConfigPayload {
+  schedule: { type: 'crontab'; value: string };
+  checkin_margin: number;
+  max_runtime: number;
+  failure_issue_threshold: number;
+  recovery_threshold: number;
+  timezone: 'UTC';
+}
+
+function toMonitorConfigPayload(
+  c: CronMonitorConfig,
+): SentryMonitorConfigPayload {
+  return {
+    schedule: { type: 'crontab', value: c.schedule },
+    checkin_margin: c.checkinMargin,
+    max_runtime: c.maxRuntime,
+    failure_issue_threshold: c.failureIssueThreshold ?? 1,
+    recovery_threshold: c.recoveryThreshold ?? 1,
+    timezone: 'UTC',
+  };
+}
+
+interface SentryCheckInInput {
+  monitorSlug: string;
+  status: 'in_progress' | 'ok' | 'error';
+  /** Required for `ok`/`error`; omit for the first `in_progress`. */
+  checkInId?: string;
+  /** Job duration in seconds (only for `ok` / `error`). */
+  duration?: number;
+  /** Upsert the monitor config on the first `in_progress`. */
+  monitorConfig?: CronMonitorConfig;
+}
+
+/**
+ * POST a single check-in to Sentry's Crons ingest endpoint via direct
+ * `fetch()`. Returns the check-in id (either the one passed in or a
+ * freshly minted UUID for the initial `in_progress`).
+ *
+ * Always resolves — network errors, DSN parsing failures, and non-2xx
+ * responses are swallowed. The caller never gets back a useful
+ * "was it delivered?" signal; that's by design (observability paths
+ * must never crash the response). What we DO get is "the await blocks
+ * until the HTTP request actually returns" — which is the entire
+ * reason this bypass exists vs. the SDK's queue-and-flush dance.
+ *
+ * 5s timeout on the fetch so a slow Sentry can't stretch the function
+ * beyond its budget. Even on `error` the cron itself still completes
+ * — Sentry will only see the in_progress and fire a `maxRuntime`
+ * alert, which is the failure mode we're trying to fix in the first
+ * place; but better than blocking the response indefinitely.
+ */
+async function sentryCheckInDirect(input: SentryCheckInInput): Promise<string> {
+  const checkInId = input.checkInId ?? randomUUID();
+  const dsn = getDsnParts();
+  if (!dsn) return checkInId;
+
+  const url =
+    `https://${dsn.ingestHost}/api/${dsn.projectId}/cron/` +
+    `${encodeURIComponent(input.monitorSlug)}/${dsn.publicKey}/`;
+
+  const body: Record<string, unknown> = {
+    check_in_id: checkInId,
+    monitor_slug: input.monitorSlug,
+    status: input.status,
+    environment: process.env.VERCEL_ENV ?? 'production',
+  };
+  if (input.duration != null) body.duration = input.duration;
+  if (input.monitorConfig) {
+    body.monitor_config = toMonitorConfigPayload(input.monitorConfig);
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    // Sentry's Crons ingest returns 202 Accepted on success. A 4xx here
+    // typically means a bad DSN, project mismatch, or rate-limit; a 5xx
+    // means Sentry is down. Either way we still swallow (observability
+    // must never crash the response), but we log so the next "timeouts
+    // are firing again" investigation can immediately see whether the
+    // check-in itself was rejected vs. some other layer breaking.
+    if (!response.ok) {
+      logger.warn(
+        {
+          monitorSlug: input.monitorSlug,
+          status: input.status,
+          httpStatus: response.status,
+        },
+        'sentry check-in rejected',
+      );
+    }
+  } catch {
+    /* swallowed: observability path must never crash the response */
+  } finally {
+    clearTimeout(timer);
+  }
+  return checkInId;
+}
 
 /**
  * Constant-time check of the `Authorization: Bearer <CRON_SECRET>` header.
@@ -104,30 +291,21 @@ function flushSentry(): void {
  * holiday) so Sentry's missed-checkin signal stays accurate — without
  * this, every minute of the post-close window in vercel.json's
  * `* 13-21 * * 1-5` schedule alerts as a missed check-in even though
- * the skip is by design. No-op when:
- *   - the job has no SCHEDULE_MAP entry (new cron not yet registered),
- *   - Sentry.captureCheckIn isn't available (per-test mocks).
+ * the skip is by design.
+ *
+ * Uses the direct HTTP bypass (see `sentryCheckInDirect`) so the
+ * check-in actually leaves the function before Vercel kills the
+ * runtime. No-op when the job has no SCHEDULE_MAP entry (new cron not
+ * yet registered).
  */
-function sendIntentionalSkipCheckin(jobName: string): void {
+async function sendIntentionalSkipCheckin(jobName: string): Promise<void> {
   const config = SCHEDULE_MAP[jobName];
-  const captureCheckIn =
-    typeof Sentry.captureCheckIn === 'function' ? Sentry.captureCheckIn : null;
-  if (!config || !captureCheckIn) return;
-  try {
-    captureCheckIn(
-      { monitorSlug: jobName, status: 'ok' },
-      {
-        schedule: { type: 'crontab', value: config.schedule },
-        checkinMargin: config.checkinMargin,
-        maxRuntime: config.maxRuntime,
-        failureIssueThreshold: config.failureIssueThreshold ?? 1,
-        recoveryThreshold: config.recoveryThreshold ?? 1,
-        timezone: 'UTC',
-      },
-    );
-  } catch {
-    /* swallowed: observability path must never crash the response */
-  }
+  if (!config) return;
+  await sentryCheckInDirect({
+    monitorSlug: jobName,
+    status: 'ok',
+    monitorConfig: config,
+  });
 }
 
 /**
@@ -315,8 +493,7 @@ export function withCronInstrumentation(
       // get NO check-in so the missed-checkin signal still alerts on
       // genuine outages.
       if (res.statusCode === 200) {
-        sendIntentionalSkipCheckin(jobName);
-        flushSentry();
+        await sendIntentionalSkipCheckin(jobName);
       }
       return;
     }
@@ -359,38 +536,49 @@ export function withCronInstrumentation(
       }
     }
 
-    // Sentry Cron Monitor — wraps the handler call so a missed run, late
-    // run, or runtime overrun creates a Sentry issue automatically. We
-    // only wrap when a schedule entry exists for this jobName; jobs that
-    // route through this wrapper but lack a SCHEDULE_MAP entry run
-    // un-monitored (silent — keeps the wrapper safe for new crons added
-    // before the schedule map is updated; the
-    // `cron-schedules.test.ts` drift guard catches stale entries the
-    // other direction). See docs/superpowers/specs/sentry-monitoring-2026-05-07.md.
+    // Sentry Cron Monitor via the direct HTTP bypass. We used to wrap
+    // the handler in `Sentry.withMonitor()` which calls `captureCheckIn`
+    // twice fire-and-forget — that path lost ~30% of completion
+    // check-ins on Vercel Fluid Compute because the SDK queue didn't
+    // drain before the function exited (commits 449fa949 + e6db3d3d
+    // tried `await flush` then `waitUntil(flush)`, both partial). Now
+    // we POST to Sentry's Crons ingest endpoint directly and `await`
+    // the response — deterministic, no queue, no flush race.
+    //
+    // Side effect of dropping `Sentry.withMonitor()`: we no longer get
+    // the `withIsolationScope` wrap around the handler. Each cron runs
+    // in a fresh Vercel Function invocation, so the scope is already
+    // isolated at the runtime level — losing the SDK-level wrap is a
+    // no-op for breadcrumbs/tags in this codebase.
+    //
+    // Jobs without a SCHEDULE_MAP entry run un-monitored (handler still
+    // runs, reportCronRun still emits Axiom events — we just lose the
+    // Sentry missed-checkin signal for that one invocation). This keeps
+    // the wrapper safe for new crons added before the schedule map is
+    // updated; cron-schedules.test.ts catches stale entries the other
+    // direction. See docs/superpowers/specs/sentry-monitoring-2026-05-07.md.
     const monitorConfig = SCHEDULE_MAP[jobName];
-    const runHandler = (): Promise<CronResult> => {
-      // Skip the monitor wrap when no schedule is registered (new cron
-      // not yet added to SCHEDULE_MAP) OR when Sentry.withMonitor isn't
-      // present (per-test Sentry mocks across the cron suite stub a
-      // narrow surface). The handler still runs and reportCronRun still
-      // emits Axiom events — we just lose Sentry's missed-checkin signal
-      // for that one invocation.
-      if (!monitorConfig || typeof Sentry.withMonitor !== 'function') {
-        return handler(ctx);
-      }
-      return Sentry.withMonitor(jobName, () => handler(ctx), {
-        schedule: { type: 'crontab', value: monitorConfig.schedule },
-        checkinMargin: monitorConfig.checkinMargin,
-        maxRuntime: monitorConfig.maxRuntime,
-        failureIssueThreshold: monitorConfig.failureIssueThreshold ?? 1,
-        recoveryThreshold: monitorConfig.recoveryThreshold ?? 1,
-        timezone: 'UTC',
-      });
-    };
+
+    const checkInId = monitorConfig
+      ? await sentryCheckInDirect({
+          monitorSlug: jobName,
+          status: 'in_progress',
+          monitorConfig,
+        })
+      : null;
 
     try {
-      const result = await runHandler();
+      const result = await handler(ctx);
       const durationMs = Date.now() - startTimeMs;
+
+      if (monitorConfig && checkInId) {
+        await sentryCheckInDirect({
+          monitorSlug: jobName,
+          status: 'ok',
+          checkInId,
+          duration: durationMs / 1000,
+        });
+      }
 
       await reportCronRun(jobName, {
         status: result.status,
@@ -411,6 +599,16 @@ export function withCronInstrumentation(
       flushSentry();
     } catch (err) {
       const durationMs = Date.now() - startTimeMs;
+
+      if (monitorConfig && checkInId) {
+        await sentryCheckInDirect({
+          monitorSlug: jobName,
+          status: 'error',
+          checkInId,
+          duration: durationMs / 1000,
+        });
+      }
+
       Sentry.captureException(err);
       logger.error({ err, durationMs }, `${jobName} error`);
 
@@ -485,12 +683,11 @@ export function withCronCheckin(
     res: VercelResponse,
   ): Promise<void> {
     const config = SCHEDULE_MAP[jobName];
-    const captureCheckIn =
-      typeof Sentry.captureCheckIn === 'function'
-        ? Sentry.captureCheckIn
-        : null;
 
-    if (!config || !captureCheckIn) {
+    if (!config) {
+      // No schedule registered (new cron not yet in SCHEDULE_MAP) →
+      // run un-monitored. Matches the prior behaviour where the
+      // wrapper short-circuited on a missing config.
       await inner(req, res);
       return;
     }
@@ -507,39 +704,29 @@ export function withCronCheckin(
       return;
     }
 
-    const monitorConfig = {
-      schedule: { type: 'crontab' as const, value: config.schedule },
-      checkinMargin: config.checkinMargin,
-      maxRuntime: config.maxRuntime,
-      failureIssueThreshold: config.failureIssueThreshold ?? 1,
-      recoveryThreshold: config.recoveryThreshold ?? 1,
-      timezone: 'UTC',
-    };
-
     const startMs = Date.now();
-    const checkInId = captureCheckIn(
-      { monitorSlug: jobName, status: 'in_progress' },
-      monitorConfig,
-    );
+    const checkInId = await sentryCheckInDirect({
+      monitorSlug: jobName,
+      status: 'in_progress',
+      monitorConfig: config,
+    });
 
     try {
       await inner(req, res);
       const status: 'ok' | 'error' = res.statusCode >= 400 ? 'error' : 'ok';
-      captureCheckIn({
-        checkInId,
+      await sentryCheckInDirect({
         monitorSlug: jobName,
         status,
+        checkInId,
         duration: (Date.now() - startMs) / 1000,
       });
-      flushSentry();
     } catch (err) {
-      captureCheckIn({
-        checkInId,
+      await sentryCheckInDirect({
         monitorSlug: jobName,
         status: 'error',
+        checkInId,
         duration: (Date.now() - startMs) / 1000,
       });
-      flushSentry();
       throw err;
     }
   };

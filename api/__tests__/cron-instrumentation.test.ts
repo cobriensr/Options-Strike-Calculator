@@ -19,6 +19,16 @@ const { waitUntilCalls } = vi.hoisted(() => ({
   waitUntilCalls: [] as Promise<unknown>[],
 }));
 
+// Fixed DSN used in tests so the parsed ingest host / project id / public
+// key are predictable. Matches the production DSN shape.
+const TEST_DSN =
+  'https://abcdef0123456789@o111111.ingest.us.sentry.io/4511060900642816';
+
+const fetchMock = vi.fn<typeof fetch>(async () =>
+  Promise.resolve(new Response('', { status: 202 })),
+);
+vi.stubGlobal('fetch', fetchMock);
+
 vi.mock('@vercel/functions', () => ({
   // The wrapper registers Sentry.flush() with Vercel via waitUntil so
   // the flush can drain after the response is sent. Tests assert the
@@ -80,6 +90,7 @@ vi.mock('../_lib/logger.js', () => ({
 import {
   withCronInstrumentation,
   withCronCheckin,
+  _resetDsnCacheForTest,
 } from '../_lib/cron-instrumentation.js';
 import { cronGuard } from '../_lib/api-helpers.js';
 import { reportCronRun } from '../_lib/axiom.js';
@@ -89,10 +100,34 @@ import { waitUntil } from '@vercel/functions';
 
 const guardOk = { apiKey: 'KEY', today: '2026-05-02' };
 
+/**
+ * Inspect every fetch() call made during a test. Each entry is the
+ * parsed URL + JSON body of one POST to Sentry's Crons ingest endpoint.
+ * The new wrappers POST in_progress on entry and ok/error on exit, so
+ * a normal successful run produces two entries per monitored job.
+ */
+function getCheckInCalls(): Array<{
+  url: string;
+  body: Record<string, unknown>;
+}> {
+  return fetchMock.mock.calls.map(([url, init]) => {
+    const initObj = init as { body?: string } | undefined;
+    const rawBody = initObj?.body;
+    return {
+      url: String(url),
+      body: rawBody ? (JSON.parse(rawBody) as Record<string, unknown>) : {},
+    };
+  });
+}
+
 describe('withCronInstrumentation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     waitUntilCalls.length = 0;
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue(new Response('', { status: 202 }));
+    process.env.SENTRY_DSN = TEST_DSN;
+    _resetDsnCacheForTest();
   });
 
   it('returns early when cronGuard rejects (no handler call, no axiom event)', async () => {
@@ -124,7 +159,7 @@ describe('withCronInstrumentation', () => {
     );
   });
 
-  it('intentional skip (200) sends ok check-in to Sentry when SCHEDULE_MAP has entry', async () => {
+  it('intentional skip (200) sends ok check-in via direct HTTP when SCHEDULE_MAP has entry', async () => {
     // Simulate cronGuard's outside-time-window path: it sets status 200
     // with `{ skipped: true, reason: 'Outside time window' }`, then
     // returns null.
@@ -138,13 +173,19 @@ describe('withCronInstrumentation', () => {
     await wrapped(mockRequest(), mockResponse());
 
     expect(handler).not.toHaveBeenCalled();
-    expect(Sentry.captureCheckIn).toHaveBeenCalledWith(
-      { monitorSlug: 'monitored-job', status: 'ok' },
-      expect.objectContaining({
+    const calls = getCheckInCalls();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe(
+      'https://o111111.ingest.us.sentry.io/api/4511060900642816/cron/monitored-job/abcdef0123456789/',
+    );
+    expect(calls[0]!.body).toMatchObject({
+      monitor_slug: 'monitored-job',
+      status: 'ok',
+      monitor_config: {
         schedule: { type: 'crontab', value: '*/5 * * * *' },
         timezone: 'UTC',
-      }),
-    );
+      },
+    });
   });
 
   it('intentional skip on job without SCHEDULE_MAP entry does NOT send check-in', async () => {
@@ -502,9 +543,14 @@ describe('withCronInstrumentation', () => {
     expect((res2._json as { status: string }).status).toBe('success');
   });
 
-  // ── Sentry cron monitor wrapping ────────────────────────────
+  // ── Sentry cron monitor wrapping (direct HTTP) ──────────────
+  // The wrapper used to call `Sentry.withMonitor()` which fires two
+  // fire-and-forget `captureCheckIn` calls — the completion lost ~30%
+  // of the time on Vercel Fluid Compute. Now the wrapper hits Sentry's
+  // Crons ingest endpoint directly via `await fetch()` so the response
+  // is actually awaited before the function exits. Deterministic.
 
-  it('Sentry.withMonitor: wraps when SCHEDULE_MAP entry exists', async () => {
+  it('sends in_progress + ok check-ins via direct HTTP when SCHEDULE_MAP has entry', async () => {
     vi.mocked(cronGuard).mockReturnValue(guardOk);
     const handler = vi.fn().mockResolvedValue({ status: 'success' as const });
     const wrapped = withCronInstrumentation('monitored-job', handler);
@@ -512,23 +558,36 @@ describe('withCronInstrumentation', () => {
     const res = mockResponse();
     await wrapped(mockRequest(), res);
 
-    expect(Sentry.withMonitor).toHaveBeenCalledTimes(1);
-    const [slug, , opts] = vi.mocked(Sentry.withMonitor).mock.calls[0]!;
-    expect(slug).toBe('monitored-job');
-    expect(opts).toMatchObject({
-      schedule: { type: 'crontab', value: '*/5 * * * *' },
-      checkinMargin: 2,
-      maxRuntime: 5,
-      failureIssueThreshold: 1,
-      recoveryThreshold: 1,
-      timezone: 'UTC',
+    const calls = getCheckInCalls();
+    expect(calls).toHaveLength(2);
+    // Same Sentry Crons ingest URL for both check-ins (only `status` and
+    // body differ per call).
+    expect(calls[0]!.url).toBe(
+      'https://o111111.ingest.us.sentry.io/api/4511060900642816/cron/monitored-job/abcdef0123456789/',
+    );
+    expect(calls[0]!.body).toMatchObject({
+      monitor_slug: 'monitored-job',
+      status: 'in_progress',
+      monitor_config: {
+        schedule: { type: 'crontab', value: '*/5 * * * *' },
+        checkin_margin: 2,
+        max_runtime: 5,
+        failure_issue_threshold: 1,
+        recovery_threshold: 1,
+        timezone: 'UTC',
+      },
     });
-    // Handler still ran (mocked withMonitor invokes its callback).
+    expect(calls[1]!.body).toMatchObject({
+      monitor_slug: 'monitored-job',
+      status: 'ok',
+      check_in_id: calls[0]!.body.check_in_id, // same id pairs the run
+    });
+    expect(typeof calls[1]!.body.duration).toBe('number');
     expect(handler).toHaveBeenCalledTimes(1);
     expect(res._status).toBe(200);
   });
 
-  it('Sentry.withMonitor: skipped when no SCHEDULE_MAP entry', async () => {
+  it('skips direct HTTP check-ins when no SCHEDULE_MAP entry', async () => {
     vi.mocked(cronGuard).mockReturnValue(guardOk);
     const handler = vi.fn().mockResolvedValue({ status: 'success' as const });
     const wrapped = withCronInstrumentation('not-in-map', handler);
@@ -536,14 +595,14 @@ describe('withCronInstrumentation', () => {
     const res = mockResponse();
     await wrapped(mockRequest(), res);
 
-    expect(Sentry.withMonitor).not.toHaveBeenCalled();
+    expect(getCheckInCalls()).toHaveLength(0);
     // Handler still ran via the unwrapped path — wrapper stays safe for
     // jobs that haven't yet been added to the schedule map.
     expect(handler).toHaveBeenCalledTimes(1);
     expect(res._status).toBe(200);
   });
 
-  it('Sentry.withMonitor: thrown errors propagate to existing catch', async () => {
+  it('sends in_progress + error check-ins when handler throws', async () => {
     vi.mocked(cronGuard).mockReturnValue(guardOk);
     const boom = new Error('handler exploded');
     const handler = vi.fn().mockRejectedValue(boom);
@@ -552,23 +611,28 @@ describe('withCronInstrumentation', () => {
     const res = mockResponse();
     await wrapped(mockRequest(), res);
 
-    // withMonitor was still called — Sentry records the error check-in
-    // before re-throwing.
-    expect(Sentry.withMonitor).toHaveBeenCalledTimes(1);
+    const calls = getCheckInCalls();
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.body.status).toBe('in_progress');
+    expect(calls[1]!.body).toMatchObject({
+      monitor_slug: 'monitored-job',
+      status: 'error',
+      check_in_id: calls[0]!.body.check_in_id,
+    });
+    // The Sentry exception path is unchanged — captureException is still
+    // called for the thrown error and feeds Sentry's issues stream
+    // (separate from the cron monitor signal).
     expect(Sentry.captureException).toHaveBeenCalledWith(boom);
     expect(res._status).toBe(500);
   });
 
-  // ── Sentry.flush via waitUntil before function exit ───────────
-  // Sentry.withMonitor does NOT flush internally (verified against
-  // @sentry/core source). On Vercel Fluid Compute, the captureCheckIn
-  // HTTP request gets killed when the function exits even with
-  // `await Sentry.flush()` (verified empirically — commit 449fa949 had
-  // no effect on the monitor incidents). The wrapper must hand the
-  // flush promise to `waitUntil()` so Vercel keeps the runtime alive
-  // long enough to drain it.
+  // ── flushSentry still drains captureException via waitUntil ──
+  // The cron check-in path is now direct HTTP, but captureException
+  // (only fired on the catch path) still goes through the Sentry SDK
+  // queue and needs the waitUntil(flush) pattern to actually reach
+  // Sentry's wire on Vercel Fluid Compute.
 
-  it('hands Sentry.flush() to waitUntil after the happy-path response', async () => {
+  it('hands Sentry.flush() to waitUntil on the happy path (drains other Sentry signals)', async () => {
     vi.mocked(cronGuard).mockReturnValue(guardOk);
     const handler = vi
       .fn()
@@ -583,7 +647,7 @@ describe('withCronInstrumentation', () => {
     expect(waitUntil).toHaveBeenCalledTimes(1);
   });
 
-  it('hands Sentry.flush() to waitUntil after the exception path response', async () => {
+  it('hands Sentry.flush() to waitUntil on the exception path (drains captureException)', async () => {
     vi.mocked(cronGuard).mockReturnValue(guardOk);
     const handler = vi.fn().mockRejectedValue(new Error('boom'));
     const wrapped = withCronInstrumentation('monitored-job', handler);
@@ -597,7 +661,7 @@ describe('withCronInstrumentation', () => {
     expect(waitUntil).toHaveBeenCalledTimes(1);
   });
 
-  it('hands Sentry.flush() to waitUntil after sendIntentionalSkipCheckin (status 200 skip)', async () => {
+  it('intentional skip sends a single direct-HTTP ok check-in (no captureCheckIn / flush dance)', async () => {
     vi.mocked(cronGuard).mockImplementation((_req, res) => {
       res.status(200).json({ skipped: true, reason: 'Outside time window' });
       return null;
@@ -608,10 +672,16 @@ describe('withCronInstrumentation', () => {
     await wrapped(mockRequest(), mockResponse());
 
     expect(handler).not.toHaveBeenCalled();
-    expect(Sentry.captureCheckIn).toHaveBeenCalledTimes(1); // the skip check-in
-    expect(Sentry.flush).toHaveBeenCalledTimes(1);
-    expect(Sentry.flush).toHaveBeenCalledWith(2000);
-    expect(waitUntil).toHaveBeenCalledTimes(1);
+    const calls = getCheckInCalls();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.body).toMatchObject({
+      monitor_slug: 'monitored-job',
+      status: 'ok',
+    });
+    // The SDK queue/flush dance is irrelevant on the intentional-skip
+    // path — no SDK-side events are emitted, so we don't expect a flush.
+    expect(Sentry.flush).not.toHaveBeenCalled();
+    expect(waitUntil).not.toHaveBeenCalled();
   });
 
   it('does NOT flush or call waitUntil on auth-failure (cronGuard rejects with statusCode !== 200)', async () => {
@@ -639,14 +709,21 @@ describe('withCronCheckin', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     waitUntilCalls.length = 0;
-    process.env = { ...ORIGINAL_ENV, CRON_SECRET: 'test-secret' };
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue(new Response('', { status: 202 }));
+    process.env = {
+      ...ORIGINAL_ENV,
+      CRON_SECRET: 'test-secret',
+      SENTRY_DSN: TEST_DSN,
+    };
+    _resetDsnCacheForTest();
   });
 
   afterEach(() => {
     process.env = ORIGINAL_ENV;
   });
 
-  it('runs the inner handler and emits in_progress + ok check-ins on 2xx', async () => {
+  it('runs the inner handler and POSTs in_progress + ok via direct HTTP on 2xx', async () => {
     const inner = vi.fn(async (_req, res) => {
       res.status(200).json({ ok: true });
     });
@@ -656,26 +733,30 @@ describe('withCronCheckin', () => {
     await wrapped(authedReq(), res);
 
     expect(inner).toHaveBeenCalledTimes(1);
-    expect(Sentry.captureCheckIn).toHaveBeenCalledTimes(2);
-    const [firstCall, secondCall] = vi.mocked(Sentry.captureCheckIn).mock.calls;
-    expect(firstCall![0]).toEqual({
-      monitorSlug: 'checkin-job',
+    const calls = getCheckInCalls();
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.url).toBe(
+      'https://o111111.ingest.us.sentry.io/api/4511060900642816/cron/checkin-job/abcdef0123456789/',
+    );
+    expect(calls[0]!.body).toMatchObject({
+      monitor_slug: 'checkin-job',
       status: 'in_progress',
+      monitor_config: {
+        schedule: { type: 'crontab', value: '*/15 * * * *' },
+        checkin_margin: 2,
+        max_runtime: 5,
+        timezone: 'UTC',
+      },
     });
-    expect(firstCall![1]).toMatchObject({
-      schedule: { type: 'crontab', value: '*/15 * * * *' },
-      checkinMargin: 2,
-      maxRuntime: 5,
-      timezone: 'UTC',
-    });
-    expect(secondCall![0]).toMatchObject({
-      checkInId: 'mock-checkin-id',
-      monitorSlug: 'checkin-job',
+    expect(calls[1]!.body).toMatchObject({
+      monitor_slug: 'checkin-job',
       status: 'ok',
+      check_in_id: calls[0]!.body.check_in_id,
     });
+    expect(typeof calls[1]!.body.duration).toBe('number');
   });
 
-  it('emits error check-in when handler responds 5xx without throwing', async () => {
+  it('POSTs an error completion when handler responds 5xx without throwing', async () => {
     const inner = vi.fn(async (_req, res) => {
       res.status(500).json({ error: 'oops' });
     });
@@ -684,15 +765,16 @@ describe('withCronCheckin', () => {
     const res = mockResponse();
     await wrapped(authedReq(), res);
 
-    expect(Sentry.captureCheckIn).toHaveBeenCalledTimes(2);
-    const secondCall = vi.mocked(Sentry.captureCheckIn).mock.calls[1]!;
-    expect(secondCall[0]).toMatchObject({
-      checkInId: 'mock-checkin-id',
+    const calls = getCheckInCalls();
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.body).toMatchObject({
+      monitor_slug: 'checkin-job',
       status: 'error',
+      check_in_id: calls[0]!.body.check_in_id,
     });
   });
 
-  it('emits error check-in and re-throws when inner throws', async () => {
+  it('POSTs an error completion and re-throws when inner throws', async () => {
     const boom = new Error('inner exploded');
     const inner = vi.fn(async () => {
       throw boom;
@@ -702,11 +784,12 @@ describe('withCronCheckin', () => {
     const res = mockResponse();
     await expect(wrapped(authedReq(), res)).rejects.toThrow('inner exploded');
 
-    expect(Sentry.captureCheckIn).toHaveBeenCalledTimes(2);
-    const secondCall = vi.mocked(Sentry.captureCheckIn).mock.calls[1]!;
-    expect(secondCall[0]).toMatchObject({
-      checkInId: 'mock-checkin-id',
+    const calls = getCheckInCalls();
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.body).toMatchObject({
+      monitor_slug: 'checkin-job',
       status: 'error',
+      check_in_id: calls[0]!.body.check_in_id,
     });
   });
 
@@ -720,7 +803,7 @@ describe('withCronCheckin', () => {
     await wrapped(authedReq(), res);
 
     expect(inner).toHaveBeenCalledTimes(1);
-    expect(Sentry.captureCheckIn).not.toHaveBeenCalled();
+    expect(getCheckInCalls()).toHaveLength(0);
     expect(res._status).toBe(200);
   });
 
@@ -752,7 +835,7 @@ describe('withCronCheckin', () => {
     await wrapped(mockRequest(), res); // no Authorization header
 
     expect(inner).toHaveBeenCalledTimes(1);
-    expect(Sentry.captureCheckIn).not.toHaveBeenCalled();
+    expect(getCheckInCalls()).toHaveLength(0);
     expect(res._status).toBe(401);
   });
 
@@ -769,7 +852,7 @@ describe('withCronCheckin', () => {
     );
 
     expect(inner).toHaveBeenCalledTimes(1);
-    expect(Sentry.captureCheckIn).not.toHaveBeenCalled();
+    expect(getCheckInCalls()).toHaveLength(0);
   });
 
   it('skips check-ins when CRON_SECRET env is unset', async () => {
@@ -786,16 +869,36 @@ describe('withCronCheckin', () => {
     );
 
     expect(inner).toHaveBeenCalledTimes(1);
-    expect(Sentry.captureCheckIn).not.toHaveBeenCalled();
+    expect(getCheckInCalls()).toHaveLength(0);
   });
 
-  it('hands Sentry.flush() to waitUntil after the ok completion check-in', async () => {
-    // Without waitUntil the completion HTTP request gets killed when
-    // Vercel's Fluid Compute exits the function, leaving Sentry with
-    // only the in_progress signal and firing a false "timeout check-in
-    // detected" issue after maxRuntime expires. `await Sentry.flush()`
-    // alone is insufficient — verified in production: commit 449fa949
-    // had zero effect on the monitor incidents.
+  it('swallows fetch failures so the response is not crashed', async () => {
+    // The direct HTTP path catches errors internally — observability
+    // paths must never crash the response. Sentry being unreachable
+    // for the check-in must not propagate up.
+    fetchMock.mockRejectedValue(new Error('Sentry unreachable'));
+    const inner = vi.fn(async (_req, res) => {
+      res.status(200).json({ ok: true });
+    });
+    const wrapped = withCronCheckin('checkin-job', inner);
+
+    const res = mockResponse();
+    // No throw — wrapper resolves cleanly even though Sentry's endpoint
+    // is unavailable.
+    await wrapped(authedReq(), res);
+
+    expect(inner).toHaveBeenCalledTimes(1);
+    expect(res._status).toBe(200);
+    // We did try to hit Sentry — once for in_progress, once for ok.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('logs a warning when Sentry returns non-2xx for a check-in', async () => {
+    // 403 simulates a bad-DSN / project-mismatch scenario where the
+    // POST is shaped right but Sentry refuses it. The wrapper must not
+    // crash, but it MUST log so the next "why are timeouts firing?"
+    // debug session has a clear breadcrumb.
+    fetchMock.mockResolvedValue(new Response('forbidden', { status: 403 }));
     const inner = vi.fn(async (_req, res) => {
       res.status(200).json({ ok: true });
     });
@@ -804,67 +907,19 @@ describe('withCronCheckin', () => {
     const res = mockResponse();
     await wrapped(authedReq(), res);
 
-    expect(Sentry.captureCheckIn).toHaveBeenCalledTimes(2);
-    expect(Sentry.flush).toHaveBeenCalledTimes(1);
-    expect(Sentry.flush).toHaveBeenCalledWith(2000);
-    // The flush promise must be registered with Vercel's waitUntil so
-    // the runtime keeps the function alive long enough to drain it.
-    expect(waitUntil).toHaveBeenCalledTimes(1);
-    expect(waitUntilCalls).toHaveLength(1);
-    // Order matters: completion check-in must be enqueued before flush.
-    const flushOrder = vi.mocked(Sentry.flush).mock.invocationCallOrder[0]!;
-    const completionOrder = vi.mocked(Sentry.captureCheckIn).mock
-      .invocationCallOrder[1]!;
-    expect(flushOrder).toBeGreaterThan(completionOrder);
+    expect(res._status).toBe(200);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        monitorSlug: 'checkin-job',
+        httpStatus: 403,
+      }),
+      'sentry check-in rejected',
+    );
   });
 
-  it('hands Sentry.flush() to waitUntil after the error completion check-in on 5xx', async () => {
-    const inner = vi.fn(async (_req, res) => {
-      res.status(500).json({ error: 'oops' });
-    });
-    const wrapped = withCronCheckin('checkin-job', inner);
-
-    const res = mockResponse();
-    await wrapped(authedReq(), res);
-
-    expect(Sentry.flush).toHaveBeenCalledTimes(1);
-    expect(Sentry.flush).toHaveBeenCalledWith(2000);
-    expect(waitUntil).toHaveBeenCalledTimes(1);
-  });
-
-  it('hands Sentry.flush() to waitUntil when inner throws (before re-throw)', async () => {
-    const boom = new Error('inner exploded');
-    const inner = vi.fn(async () => {
-      throw boom;
-    });
-    const wrapped = withCronCheckin('checkin-job', inner);
-
-    const res = mockResponse();
-    await expect(wrapped(authedReq(), res)).rejects.toThrow('inner exploded');
-
-    expect(Sentry.flush).toHaveBeenCalledTimes(1);
-    expect(Sentry.flush).toHaveBeenCalledWith(2000);
-    expect(waitUntil).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not call Sentry.flush or waitUntil when the auth gate skips check-ins', async () => {
-    const inner = vi.fn(async (_req, res) => {
-      res.status(401).json({ error: 'Unauthorized' });
-    });
-    const wrapped = withCronCheckin('checkin-job', inner);
-
-    const res = mockResponse();
-    await wrapped(mockRequest(), res); // no Authorization header
-
-    expect(Sentry.flush).not.toHaveBeenCalled();
-    expect(waitUntil).not.toHaveBeenCalled();
-  });
-
-  it('swallows a Sentry.flush() rejection so waitUntil never sees it', async () => {
-    // .catch() on the flush promise inside flushSentry() means waitUntil
-    // always receives a resolving promise even if Sentry's transport
-    // throws — observability paths must never crash the response.
-    vi.mocked(Sentry.flush).mockRejectedValueOnce(new Error('transport down'));
+  it('does not POST when SENTRY_DSN is unset (degrades gracefully)', async () => {
+    delete process.env.SENTRY_DSN;
+    _resetDsnCacheForTest();
     const inner = vi.fn(async (_req, res) => {
       res.status(200).json({ ok: true });
     });
@@ -873,8 +928,9 @@ describe('withCronCheckin', () => {
     const res = mockResponse();
     await wrapped(authedReq(), res);
 
-    expect(waitUntil).toHaveBeenCalledTimes(1);
-    // The registered promise resolves cleanly — never rejects.
-    await expect(waitUntilCalls[0]).resolves.toBeUndefined();
+    // Handler still ran; Sentry just doesn't get a check-in this round.
+    expect(inner).toHaveBeenCalledTimes(1);
+    expect(res._status).toBe(200);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
