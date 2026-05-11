@@ -292,3 +292,124 @@ class TestFlushSortsByConflictKey:
                 "strike",
                 "ts_minute",
             ]
+
+
+class TestFlushDeduplicatesByConflictKey:
+    """UW pushes sub-second updates within the same minute for the same
+    (ticker, expiry, strike). After ``_transform`` truncates to
+    ``ts_minute`` those updates collapse onto the same conflict key, so
+    a single batch can contain duplicates. ``ON CONFLICT DO UPDATE`` then
+    fails with "command cannot affect row a second time" (Sentry 2C/4K).
+
+    Verify ``_flush`` deduplicates by the conflict key before handing the
+    batch to ``db.bulk_upsert_replace``, keeping the LAST occurrence to
+    match the existing "last write wins per minute" semantics.
+    """
+
+    @pytest.mark.asyncio
+    async def test_flush_keeps_last_write_for_duplicate_conflict_keys(self):
+        handler = GexStrikeExpiryHandler()
+        ts = datetime(2026, 5, 7, 19, 30, 0, tzinfo=UTC)
+        # Three pushes within the same minute for SPY 720 — the third
+        # must be the survivor. The price column (index 4) is the
+        # differentiator here; the conflict-key 4-tuple is identical
+        # across all three rows.
+        first = (
+            "SPY",
+            date(2026, 5, 7),
+            Decimal("720"),
+            ts,
+            Decimal("562.10"),  # price
+        )
+        second = (
+            "SPY",
+            date(2026, 5, 7),
+            Decimal("720"),
+            ts,
+            Decimal("562.30"),
+        )
+        third = (
+            "SPY",
+            date(2026, 5, 7),
+            Decimal("720"),
+            ts,
+            Decimal("562.55"),
+        )
+        captured: list[list[tuple]] = []
+
+        def capture(**kwargs):
+            captured.append(list(kwargs["rows"]))
+
+        with patch("handlers.gex_strike_expiry.db") as mock_db:
+            mock_db.bulk_upsert_replace = AsyncMock(side_effect=capture)
+            await handler._flush([first, second, third])
+
+        assert len(captured) == 1
+        # One row out, value carries the LAST write's price.
+        assert len(captured[0]) == 1
+        assert captured[0][0] == third
+
+    @pytest.mark.asyncio
+    async def test_flush_preserves_distinct_conflict_keys(self):
+        handler = GexStrikeExpiryHandler()
+        ts1 = datetime(2026, 5, 7, 19, 30, 0, tzinfo=UTC)
+        ts2 = datetime(2026, 5, 7, 19, 31, 0, tzinfo=UTC)
+        rows: list[tuple] = [
+            ("SPY", date(2026, 5, 7), Decimal("720"), ts1),
+            ("SPY", date(2026, 5, 7), Decimal("721"), ts1),  # diff strike
+            ("SPY", date(2026, 5, 7), Decimal("720"), ts2),  # diff minute
+            ("QQQ", date(2026, 5, 7), Decimal("720"), ts1),  # diff ticker
+        ]
+        captured: list[list[tuple]] = []
+
+        def capture(**kwargs):
+            captured.append(list(kwargs["rows"]))
+
+        with patch("handlers.gex_strike_expiry.db") as mock_db:
+            mock_db.bulk_upsert_replace = AsyncMock(side_effect=capture)
+            await handler._flush(rows)
+
+        # Distinct conflict keys → no dedupe, 4 rows out.
+        assert len(captured) == 1
+        assert len(captured[0]) == 4
+
+    @pytest.mark.asyncio
+    async def test_flush_dedup_runs_before_sort(self):
+        """The deadlock-prevention sort must apply AFTER the dedupe so
+        the lock-acquisition order is deterministic on the actually-
+        inserted row set, not the pre-dedupe arrival order."""
+        handler = GexStrikeExpiryHandler()
+        ts = datetime(2026, 5, 7, 19, 30, 0, tzinfo=UTC)
+        # Out-of-order strikes with one in-batch duplicate.
+        rows: list[tuple] = [
+            ("SPY", date(2026, 5, 7), Decimal("722"), ts),
+            ("SPY", date(2026, 5, 7), Decimal("720"), ts),
+            ("SPY", date(2026, 5, 7), Decimal("722"), ts),  # dup of strike 722
+            ("SPY", date(2026, 5, 7), Decimal("721"), ts),
+        ]
+        captured: list[list[tuple]] = []
+
+        def capture(**kwargs):
+            captured.append(list(kwargs["rows"]))
+
+        with patch("handlers.gex_strike_expiry.db") as mock_db:
+            mock_db.bulk_upsert_replace = AsyncMock(side_effect=capture)
+            await handler._flush(rows)
+
+        # 3 unique strikes, sorted ascending.
+        assert captured[0] == [
+            ("SPY", date(2026, 5, 7), Decimal("720"), ts),
+            ("SPY", date(2026, 5, 7), Decimal("721"), ts),
+            ("SPY", date(2026, 5, 7), Decimal("722"), ts),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_flush_empty_batch_is_no_op(self):
+        handler = GexStrikeExpiryHandler()
+        with patch("handlers.gex_strike_expiry.db") as mock_db:
+            mock_db.bulk_upsert_replace = AsyncMock(return_value=0)
+            await handler._flush([])
+            # An empty batch should still go through (db layer handles
+            # the no-op), so we don't shortcut the call.
+            mock_db.bulk_upsert_replace.assert_awaited_once()
+            assert mock_db.bulk_upsert_replace.await_args.kwargs["rows"] == []

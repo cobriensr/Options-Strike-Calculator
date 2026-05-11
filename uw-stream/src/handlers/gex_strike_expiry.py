@@ -163,6 +163,28 @@ class GexStrikeExpiryHandler(Handler):
         )
 
     async def _flush(self, rows: list[tuple]) -> int:
+        # Deduplicate by conflict key BEFORE insert. UW pushes sub-second
+        # updates within a single minute for the same (ticker, expiry,
+        # strike), and the ts_minute truncation in `_transform` collapses
+        # them onto the same row. Without this dedupe a batch of 500 can
+        # contain multiple rows with the same (ticker, expiry, strike,
+        # ts_minute) conflict key, and `ON CONFLICT DO UPDATE` then
+        # throws "command cannot affect row a second time" because
+        # Postgres refuses to apply the same row's UPDATE twice within a
+        # single statement (Sentry issues 2C / 4K, 26+ events since
+        # 2026-04-19). The handler's contract is already "last write
+        # wins per minute," so keeping the LAST occurrence of each
+        # conflict key here matches the existing semantics — we just
+        # collapse intra-batch duplicates that the per-statement
+        # constraint forbids.
+        #
+        # `dict[key] = row` overwrites on repeat assignment, so
+        # iterating in arrival order naturally keeps the last write.
+        dedup: dict[tuple, tuple] = {}
+        for row in rows:
+            dedup[(row[0], row[1], row[2], row[3])] = row
+        deduped = list(dedup.values())
+
         # UPSERT: UW restates per-minute GEX as the trade tape settles,
         # so existing rows for the same (ticker, expiry, strike, minute)
         # must be overwritten with the latest values, not skipped.
@@ -182,11 +204,11 @@ class GexStrikeExpiryHandler(Handler):
         # data semantics — UPSERT is "last write wins per (ticker,
         # expiry, strike, minute)" — so re-ordering before flush is
         # safe.
-        rows.sort(key=lambda r: (r[0], r[1], r[2], r[3]))
+        deduped.sort(key=lambda r: (r[0], r[1], r[2], r[3]))
         return await db.bulk_upsert_replace(
             table=_TABLE,
             columns=_COLUMNS,
-            rows=rows,
+            rows=deduped,
             conflict_cols=_CONFLICT_COLS,
         )
 
