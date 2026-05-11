@@ -355,7 +355,7 @@ function pickMagnet(view: PeriscopeView): number | null {
   return cand?.strike ?? null;
 }
 
-function fmtSigned(n: number): string {
+export function fmtSigned(n: number): string {
   if (Math.abs(n) >= 1_000_000)
     return `${n >= 0 ? '+' : ''}${(n / 1_000_000).toFixed(1)}M`;
   if (Math.abs(n) >= 1_000)
@@ -367,8 +367,15 @@ function signedPts(pts: number): string {
   return `${pts >= 0 ? '+' : ''}${pts.toFixed(0)} pts`;
 }
 
+// buildSummary handles only the regimes that fall through to the shared
+// drift-and-cap/chop path. Pin, cone-breach-up, cone-breach-down, and
+// no-data each return their own hand-built summary earlier in
+// computeTradePlan. Narrowing the param prevents accidental re-use of
+// this builder for those regimes.
+type SummaryRegime = 'drift-and-cap' | 'chop';
+
 function buildSummary(args: {
-  regime: Regime;
+  regime: SummaryRegime;
   bias: Bias;
   ceiling: PeriscopeView['gamma']['ceiling'];
   floor: PeriscopeView['gamma']['floor'];
@@ -380,11 +387,9 @@ function buildSummary(args: {
 }): string {
   const { regime, bias, ceiling, floor, charmWide } = args;
   const parts: string[] = [];
-  if (regime === 'pin') {
-    parts.push('Pin setup');
-  } else if (regime === 'drift-and-cap') {
+  if (regime === 'drift-and-cap') {
     parts.push('Drift-and-cap setup');
-  } else if (regime === 'chop') {
+  } else {
     parts.push('Range / chop');
   }
   if (ceiling != null && floor != null) {
@@ -410,23 +415,21 @@ function buildWaitZone(args: {
   shortPlan: DirectionalPlan;
   spot: number;
 }): string | null {
-  const { longPlan, shortPlan, spot } = args;
-  if (
-    longPlan.trigger == null &&
-    shortPlan.trigger == null &&
-    longPlan.verdict === 'avoid' &&
-    shortPlan.verdict === 'avoid'
-  ) {
-    return null; // no actionable setup at all
+  // Invariant in computeTradePlan: trigger == null ⟹ verdict === 'avoid'
+  // for every DirectionalPlan we hand off here. We branch only on trigger
+  // presence; the final fallthrough means "both triggers null → no
+  // actionable setup at all".
+  const { trigger: lt } = args.longPlan;
+  const { trigger: st } = args.shortPlan;
+  const { spot } = args;
+  if (lt != null && st != null) {
+    return `${st.toFixed(0)}–${lt.toFixed(0)} — no edge until either trigger fires.`;
   }
-  if (longPlan.trigger != null && shortPlan.trigger != null) {
-    return `${shortPlan.trigger.toFixed(0)}–${longPlan.trigger.toFixed(0)} — no edge until either trigger fires.`;
+  if (lt != null) {
+    return `Below ${lt.toFixed(0)} (current ${spot.toFixed(0)}) — no long edge.`;
   }
-  if (longPlan.trigger != null) {
-    return `Below ${longPlan.trigger.toFixed(0)} (current ${spot.toFixed(0)}) — no long edge.`;
-  }
-  if (shortPlan.trigger != null) {
-    return `Above ${shortPlan.trigger.toFixed(0)} (current ${spot.toFixed(0)}) — no short edge.`;
+  if (st != null) {
+    return `Above ${st.toFixed(0)} (current ${spot.toFixed(0)}) — no short edge.`;
   }
   return null;
 }

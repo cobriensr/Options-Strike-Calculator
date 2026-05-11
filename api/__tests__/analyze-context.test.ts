@@ -239,12 +239,14 @@ vi.mock('../../src/utils/zero-gamma.js', () => ({
   analyzeZeroGamma: vi.fn().mockReturnValue({ flipStrike: null }),
 }));
 
-vi.mock('../_lib/embeddings.js', () => ({
+const mockEmbeddings = vi.hoisted(() => ({
   buildAnalysisSummary: vi.fn().mockReturnValue('test summary'),
   generateEmbedding: vi.fn().mockResolvedValue(null),
   findSimilarAnalyses: vi.fn().mockResolvedValue([]),
   formatSimilarAnalysesBlock: vi.fn().mockReturnValue(''),
 }));
+
+vi.mock('../_lib/embeddings.js', () => mockEmbeddings);
 
 vi.mock('../_lib/futures-context.js', () => ({
   formatFuturesForClaude: vi.fn().mockResolvedValue(null),
@@ -313,6 +315,10 @@ vi.mock('../_lib/uw-deltas.js', () => ({
 
 vi.mock('../_lib/api-helpers.js', () => ({
   schwabFetch: vi.fn().mockResolvedValue({ ok: false, status: 401 }),
+}));
+
+vi.mock('../_lib/periscope-format.js', () => ({
+  buildPeriscopeContextBlock: vi.fn().mockResolvedValue(null),
 }));
 
 const mockLogger = vi.hoisted(() => ({
@@ -2207,6 +2213,396 @@ describe('buildAnalysisContext: win rate and similar analyses', () => {
     });
 
     expect(result.similarAnalysesBlock).toBe('');
+    vi.unstubAllGlobals();
+  });
+});
+
+// ── buildAnalysisContext: coverage-fill for scattered branches ────────
+
+describe('buildAnalysisContext: coverage-fill', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockLogger.warn.mockReset();
+    mockLogger.error.mockReset();
+    mockSql.mockReset();
+    mockSql.mockResolvedValue([]);
+
+    // Re-establish defaults so each test starts clean
+    const db = await import('../_lib/db.js');
+    vi.mocked(db.getFlowData).mockResolvedValue([] as never);
+    vi.mocked(db.getGreekExposure).mockResolvedValue([] as never);
+    vi.mocked(db.getSpotExposures).mockResolvedValue([] as never);
+    vi.mocked(db.getLatestPositions).mockResolvedValue(null as never);
+    vi.mocked(db.getPreviousRecommendation).mockResolvedValue(null as never);
+
+    const periscope = await import('../_lib/periscope-format.js');
+    vi.mocked(periscope.buildPeriscopeContextBlock).mockResolvedValue(null);
+
+    // Use hoisted mockEmbeddings (not a dynamic import) — the previous
+    // describe block's `vi.doMock('../_lib/embeddings.js', ...)` poisons
+    // dynamic imports, but mockEmbeddings is the same vi.fn() instances
+    // that buildAnalysisContext (eagerly imported at the top of this file)
+    // is actually calling.
+    mockEmbeddings.buildAnalysisSummary.mockReturnValue('test summary');
+    mockEmbeddings.generateEmbedding.mockResolvedValue(null);
+    mockEmbeddings.findSimilarAnalyses.mockResolvedValue([]);
+    mockEmbeddings.formatSimilarAnalysesBlock.mockReturnValue('');
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        text: () => Promise.resolve(''),
+      }),
+    );
+  });
+
+  it('logs error and bumps metric when getLatestPositions throws', async () => {
+    const { getLatestPositions } = await import('../_lib/db.js');
+    vi.mocked(getLatestPositions).mockRejectedValueOnce(
+      new Error('positions DB timeout'),
+    );
+
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-04-10',
+      isBacktest: false,
+    });
+
+    // Should complete despite the failure
+    expect(result.content.length).toBeGreaterThan(0);
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      expect.stringContaining('Failed to fetch positions for analysis'),
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it('retries overnight gap via dynamic overnight-gap import when candles supply previousClose and pre-market row exists', async () => {
+    // Trigger: !overnightGapContext (default null) && candles.previousClose
+    // (set via spx-candles mock, requires UW_API_KEY) && preMarket.preMarketRow
+    // (set via mockSql pre_market_data response) && context.spx (numOrUndef-truthy).
+    // To prevent the FIRST-pass formatOvernightForClaude inside fetchPreMarketContext
+    // from succeeding, omit context.prevClose — that gates the first-pass call.
+    process.env.UW_API_KEY = 'test-uw-key';
+    const { fetchSPXCandles } = await import('../_lib/spx-candles.js');
+    vi.mocked(fetchSPXCandles).mockResolvedValueOnce({
+      candles: [
+        {
+          ts: '2026-04-10T13:30:00Z',
+          open: 5700,
+          high: 5710,
+          low: 5695,
+          close: 5705,
+          volume: 1000,
+        } as never,
+      ],
+      previousClose: 5675.5,
+    } as never);
+
+    const { formatOvernightForClaude } =
+      await import('../_lib/overnight-gap.js');
+    vi.mocked(formatOvernightForClaude).mockReturnValue(
+      'OVERNIGHT GAP: +24.5 pts from prior close',
+    );
+
+    // mockSql call order: vol_realized → pre_market_data → ml_findings
+    // pre_market_data row must have `pre_market_data` field (the JSON column);
+    // the fetcher unpacks it into preMarketRow when present.
+    mockSql
+      .mockResolvedValueOnce([]) // vol_realized
+      .mockResolvedValueOnce([
+        {
+          pre_market_data: {
+            esOvernightHigh: 5710,
+            esOvernightLow: 5680,
+            esSessionOpen: 5700,
+            esSessionClose: 5705,
+          },
+        },
+      ]) // pre_market_data — triggers preMarketRow path
+      .mockResolvedValueOnce([]); // ml_findings
+
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-04-10',
+      spx: 5700, // numOrUndef-truthy → cashOpen branch taken
+      // intentionally no prevClose → first-pass overnightGapContext stays null
+    });
+
+    // formatOvernightForClaude should have been invoked from the retry path
+    // with the cashOpen / prevClose (from candles) / preMarketRow trio.
+    expect(vi.mocked(formatOvernightForClaude)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cashOpen: 5700,
+        prevClose: 5675.5,
+        preMarket: expect.any(Object),
+      }),
+    );
+    // And the resulting overnight gap context should be in the assembled text
+    const textBlock = result.content.find(
+      (b) => b.type === 'text' && b.text.includes('OVERNIGHT GAP'),
+    );
+    expect(textBlock).toBeDefined();
+    delete process.env.UW_API_KEY;
+    vi.unstubAllGlobals();
+  });
+
+  it('logs error and bumps metric when buildPeriscopeContextBlock throws', async () => {
+    const periscope = await import('../_lib/periscope-format.js');
+    vi.mocked(periscope.buildPeriscopeContextBlock).mockRejectedValueOnce(
+      new Error('periscope DB read failed'),
+    );
+    const sentry = await import('../_lib/sentry.js');
+
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-04-10',
+      spx: 5700, // required to enter periscope try-block
+    });
+
+    expect(result.content.length).toBeGreaterThan(0);
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      expect.stringContaining('Failed to build periscope context block'),
+    );
+    expect(vi.mocked(sentry.metrics.increment)).toHaveBeenCalledWith(
+      'analyze_context.periscope_fetch_error',
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it('skips periscope block entirely when context.spx is missing', async () => {
+    const periscope = await import('../_lib/periscope-format.js');
+
+    await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-04-10',
+      // no spx → periscopeSpot is null → periscope skipped
+    });
+
+    expect(
+      vi.mocked(periscope.buildPeriscopeContextBlock),
+    ).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it('renders chain delta rungs section with formatted puts and calls (covers fmtRung)', async () => {
+    // Triggers the fmtRung anonymous function at line 510 — formats each rung
+    // as `<deltaPct>Δ → <strike> ($<mid> mid, <iv>% IV, <oi> OI)`
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-04-10',
+      targetDeltaStrikes: {
+        preferredDelta: 7,
+        floorDelta: 5,
+        puts: [
+          {
+            delta: -0.07,
+            strike: 5650,
+            bid: 1.2,
+            ask: 1.4,
+            iv: 0.185,
+            oi: 4200,
+          },
+          {
+            delta: -0.05,
+            strike: 5625,
+            bid: 0.75,
+            ask: 0.95,
+            iv: 0.2,
+            oi: 3300,
+          },
+        ],
+        calls: [
+          {
+            delta: 0.08,
+            strike: 5750,
+            bid: 2.0,
+            ask: 2.3,
+            iv: 0.17,
+            oi: 5100,
+          },
+        ],
+      },
+    });
+
+    const textBlock = result.content.find(
+      (b) => b.type === 'text' && b.text.includes('Chain Delta Rungs'),
+    );
+    expect(textBlock).toBeDefined();
+    const text = (textBlock as { type: 'text'; text: string }).text;
+
+    // Header reflects preferred / floor deltas
+    expect(text).toContain('Preferred entry delta: 7Δ');
+    expect(text).toContain('Floor: 5Δ');
+
+    // PUTS rendered via fmtRung — verify the formatted output shape
+    // delta -0.07 → Math.round(-0.07 * 100) = -7 → "-7Δ"
+    expect(text).toContain('-7Δ → 5650');
+    // mid = (1.2 + 1.4) / 2 = 1.30 → "$1.30 mid"
+    expect(text).toContain('$1.30 mid');
+    // iv = 0.185 → 18.5% IV
+    expect(text).toContain('18.5% IV');
+    // oi = 4200 → 4.2K OI (formatOI)
+    expect(text).toContain('4.2K OI');
+
+    // Second put rung
+    expect(text).toContain('-5Δ → 5625');
+    expect(text).toContain('$0.85 mid');
+
+    // CALLS rendered via fmtRung
+    expect(text).toContain('8Δ → 5750');
+    expect(text).toContain('$2.15 mid');
+    expect(text).toContain('5.1K OI');
+
+    vi.unstubAllGlobals();
+  });
+
+  it('renders "(none available)" for empty calls when only puts are present', async () => {
+    // Covers the falsy branch of the callsLine ternary (callsLine = '(none available)')
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-04-10',
+      targetDeltaStrikes: {
+        preferredDelta: 7,
+        floorDelta: 5,
+        puts: [
+          {
+            delta: -0.06,
+            strike: 5640,
+            bid: 1.0,
+            ask: 1.2,
+            iv: 0.19,
+            oi: 2100,
+          },
+        ],
+        calls: [],
+      },
+    });
+
+    const textBlock = result.content.find(
+      (b) => b.type === 'text' && b.text.includes('Chain Delta Rungs'),
+    );
+    const text = (textBlock as { type: 'text'; text: string }).text;
+    expect(text).toContain('PUTS:  -6Δ → 5640');
+    expect(text).toContain('CALLS: (none available)');
+    vi.unstubAllGlobals();
+  });
+
+  it('renders "(none available)" for empty puts when only calls are present', async () => {
+    // Mirror branch: putsLine = '(none available)', callsLine populated
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-04-10',
+      targetDeltaStrikes: {
+        preferredDelta: 7,
+        floorDelta: 5,
+        puts: [],
+        calls: [
+          {
+            delta: 0.06,
+            strike: 5760,
+            bid: 1.4,
+            ask: 1.6,
+            iv: 0.16,
+            oi: 1800,
+          },
+        ],
+      },
+    });
+
+    const textBlock = result.content.find(
+      (b) => b.type === 'text' && b.text.includes('Chain Delta Rungs'),
+    );
+    const text = (textBlock as { type: 'text'; text: string }).text;
+    expect(text).toContain('PUTS:  (none available)');
+    expect(text).toContain('CALLS: 6Δ → 5760');
+    vi.unstubAllGlobals();
+  });
+
+  it('skips the rungs section when both puts and calls arrays are empty', async () => {
+    // Covers the early-return at `if (rungs.puts.length === 0 && rungs.calls.length === 0)`
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-04-10',
+      targetDeltaStrikes: {
+        preferredDelta: 7,
+        floorDelta: 5,
+        puts: [],
+        calls: [],
+      },
+    });
+
+    const textBlock = result.content.find(
+      (b) => b.type === 'text' && b.text.includes('Chain Delta Rungs'),
+    );
+    expect(textBlock).toBeUndefined();
+    // Empty rungs still counts as "no targetDeltaStrikes" for unavailability —
+    // verify the surrounding context still renders.
+    expect(result.content.length).toBeGreaterThan(0);
+    vi.unstubAllGlobals();
+  });
+
+  it('fetches similar analyses when generateEmbedding returns a vector (covers similar-analyses path)', async () => {
+    // Covers lines 587, 592: when generateEmbedding returns a truthy vector,
+    // findSimilarAnalyses + formatSimilarAnalysesBlock are invoked and the
+    // formatted block is stored on the result.
+    mockEmbeddings.generateEmbedding.mockResolvedValueOnce([
+      0.11, 0.22, 0.33,
+    ] as never);
+    mockEmbeddings.findSimilarAnalyses.mockResolvedValueOnce([
+      {
+        date: '2026-03-06',
+        structure: 'PUT CREDIT SPREAD',
+        confidence: 'HIGH',
+        outcome: 'WIN',
+      },
+    ] as never);
+    mockEmbeddings.formatSimilarAnalysesBlock.mockReturnValueOnce(
+      'Similar: 2026-03-06 PCS WIN',
+    );
+
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-04-10',
+      vix: 18.5,
+      vix1d: 17.2,
+      spx: 5700,
+      vixTermSignal: 'normal',
+      regimeZone: 'Low',
+      dowLabel: 'Thursday',
+    });
+
+    // findSimilarAnalyses must have been called with the queryEmbedding,
+    // analysisDate, and limit=3
+    expect(mockEmbeddings.findSimilarAnalyses).toHaveBeenCalledWith(
+      [0.11, 0.22, 0.33],
+      '2026-04-10',
+      3,
+    );
+    expect(mockEmbeddings.formatSimilarAnalysesBlock).toHaveBeenCalled();
+    expect(result.similarAnalysesBlock).toBe('Similar: 2026-03-06 PCS WIN');
+    vi.unstubAllGlobals();
+  });
+
+  it('logs error and returns empty similarAnalysesBlock when generateEmbedding throws (covers catch)', async () => {
+    // Covers line 595: catch handler in the similar-analyses try-block
+    mockEmbeddings.generateEmbedding.mockRejectedValueOnce(
+      new Error('OpenAI embeddings down') as never,
+    );
+
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-04-10',
+    });
+
+    expect(result.similarAnalysesBlock).toBe('');
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      expect.stringContaining('Failed to fetch similar analyses'),
+    );
     vi.unstubAllGlobals();
   });
 });

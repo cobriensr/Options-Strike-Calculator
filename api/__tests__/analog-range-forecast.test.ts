@@ -20,6 +20,7 @@ import { _resetClient } from '../_lib/embeddings.js';
 import {
   formatRangeForecast,
   getRangeForecast,
+  vixBucketOf,
 } from '../_lib/analog-range-forecast.js';
 
 describe('analog-range-forecast.ts', () => {
@@ -124,6 +125,22 @@ describe('analog-range-forecast.ts', () => {
     expect(out.strikes.condor30d.up).toBeGreaterThan(out.cohort.upExc[0.85]);
   });
 
+  it('returns null when unstratified rows exist but all ranges are non-finite (summarizeRows null path)', async () => {
+    mockEmbedding();
+    // Rows exist (passes length === 0 guard) but every numeric column is
+    // NaN — Number.isFinite filter drops them all, so summarizeRows
+    // returns null and getRangeForecast bails out (line 159).
+    const rows = Array.from({ length: 5 }, (_, i) => ({
+      date: `2024-01-${String(i + 1).padStart(2, '0')}`,
+      range_pt: Number.NaN,
+      up_exc: Number.NaN,
+      down_exc: Number.NaN,
+    }));
+    mockSql.mockResolvedValueOnce(rows);
+    const out = await getRangeForecast('2026-04-19', 'summary');
+    expect(out).toBeNull();
+  });
+
   it('falls back to unstratified when regime-matched subset is too thin', async () => {
     mockEmbedding();
     const unstratRows = Array.from({ length: 15 }, (_, i) => ({
@@ -144,6 +161,33 @@ describe('analog-range-forecast.ts', () => {
       .mockResolvedValueOnce(regimeRows);
 
     const out = await getRangeForecast('2026-04-19', 'summary', 'crisis');
+    if (!out) throw new Error('unreachable');
+    expect(out.regimeMatched).toBeNull();
+    expect(out.strikes.source).toBe('unstratified');
+  });
+
+  it('regime-matched cohort is null when subset is large enough but all values are non-finite (summarizeRows null branch)', async () => {
+    mockEmbedding();
+    const unstratRows = Array.from({ length: 15 }, (_, i) => ({
+      date: `2024-01-${String(i + 1).padStart(2, '0')}`,
+      range_pt: 10 + i,
+      up_exc: 5 + i,
+      down_exc: 8 + i,
+    }));
+    // Regime rows meet MIN_REGIME_COHORT count but all numbers are NaN —
+    // summarizeRows returns null, regimeMatched stays null (line 176
+    // false branch).
+    const regimeRows = Array.from({ length: 10 }, (_, i) => ({
+      date: `2024-02-${String(i + 1).padStart(2, '0')}`,
+      range_pt: Number.NaN,
+      up_exc: Number.NaN,
+      down_exc: Number.NaN,
+    }));
+    mockSql
+      .mockResolvedValueOnce(unstratRows)
+      .mockResolvedValueOnce(regimeRows);
+
+    const out = await getRangeForecast('2026-04-19', 'summary', 'low');
     if (!out) throw new Error('unreachable');
     expect(out.regimeMatched).toBeNull();
     expect(out.strikes.source).toBe('unstratified');
@@ -195,6 +239,73 @@ describe('analog-range-forecast.ts', () => {
     expect(block).toContain('30Δ condor: call 18pt up / put 22pt down');
     expect(block).toContain('12Δ condor: call 28pt up / put 32pt down');
     expect(block).toContain('unstratified cohort');
+  });
+
+  describe('vixBucketOf', () => {
+    it('returns null for null', () => {
+      expect(vixBucketOf(null)).toBeNull();
+    });
+
+    it('returns null for undefined', () => {
+      expect(vixBucketOf(undefined)).toBeNull();
+    });
+
+    it('returns null for NaN', () => {
+      expect(vixBucketOf(Number.NaN)).toBeNull();
+    });
+
+    it('returns null for +Infinity', () => {
+      expect(vixBucketOf(Number.POSITIVE_INFINITY)).toBeNull();
+    });
+
+    it('returns null for -Infinity', () => {
+      expect(vixBucketOf(Number.NEGATIVE_INFINITY)).toBeNull();
+    });
+
+    it('classifies VIX = 0 as low', () => {
+      expect(vixBucketOf(0)).toBe('low');
+    });
+
+    it('classifies a negative finite VIX (absurd input) as low', () => {
+      // -1 is finite, so it falls through the < 15 branch.
+      expect(vixBucketOf(-1)).toBe('low');
+    });
+
+    it('classifies VIX just below 15 as low', () => {
+      expect(vixBucketOf(14.99)).toBe('low');
+    });
+
+    it('classifies VIX exactly at 15 as normal (boundary inclusive on upper bucket)', () => {
+      expect(vixBucketOf(15)).toBe('normal');
+    });
+
+    it('classifies VIX between 15 and 22 as normal', () => {
+      expect(vixBucketOf(18)).toBe('normal');
+    });
+
+    it('classifies VIX just below 22 as normal', () => {
+      expect(vixBucketOf(21.99)).toBe('normal');
+    });
+
+    it('classifies VIX exactly at 22 as elevated (boundary inclusive on upper bucket)', () => {
+      expect(vixBucketOf(22)).toBe('elevated');
+    });
+
+    it('classifies VIX between 22 and 30 as elevated', () => {
+      expect(vixBucketOf(26)).toBe('elevated');
+    });
+
+    it('classifies VIX just below 30 as elevated', () => {
+      expect(vixBucketOf(29.99)).toBe('elevated');
+    });
+
+    it('classifies VIX exactly at 30 as crisis (boundary inclusive on upper bucket)', () => {
+      expect(vixBucketOf(30)).toBe('crisis');
+    });
+
+    it('classifies very high VIX (absurd input) as crisis', () => {
+      expect(vixBucketOf(1000)).toBe('crisis');
+    });
   });
 
   it('formatRangeForecast includes the regime-matched block when present', () => {

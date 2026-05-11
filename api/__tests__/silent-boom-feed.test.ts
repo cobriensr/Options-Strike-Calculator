@@ -349,4 +349,239 @@ describe('silent-boom-feed handler', () => {
     expect(body.filters.minScore).toBeNull();
     expect(body.filters.tod).toBeNull();
   });
+
+  // ------------------------------------------------------------------
+  // Coverage-fill tests for uncovered branches.
+  // ------------------------------------------------------------------
+
+  it('returns early when the owner/guest guard rejects (172-173)', async () => {
+    // The guard returns true when the response has already been sent
+    // (bot or auth rejection). The handler must short-circuit and
+    // never touch the DB.
+    const apiHelpers = await import('../_lib/api-helpers.js');
+    vi.mocked(apiHelpers.guardOwnerOrGuestEndpoint).mockResolvedValueOnce(true);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // No DB call when guarded; handler returned before parsing.
+    expect(mockSql).not.toHaveBeenCalled();
+    // res._status stays at default 200 (init) because the mocked guard
+    // didn't actually write to res — the contract is "guard already
+    // sent the response," and we only assert the handler returned.
+  });
+
+  it('coerces Date-instance bucket_ct / inserted_at / enriched_at / date via toIso paths (137-138, 143, 160-163)', async () => {
+    // Pass Date objects (mirrors what neon returns for TIMESTAMP /
+    // DATE columns) instead of strings. This exercises the
+    // `v instanceof Date` branches in toIso and toDateIso plus the
+    // null branch in toIsoOrNull.
+    const bucket = new Date('2026-05-07T13:30:00Z');
+    const inserted = new Date('2026-05-07T13:30:30Z');
+    const dateObj = new Date('2026-05-07T00:00:00Z');
+
+    mockSql.mockResolvedValueOnce([{ n: 1 }]).mockResolvedValueOnce([
+      {
+        ...makeAlert(),
+        // Override the timestamps with Date instances.
+        bucket_ct: bucket as unknown as string,
+        inserted_at: inserted as unknown as string,
+        date: dateObj as unknown as string,
+        enriched_at: null, // hits toIsoOrNull(null) → null branch
+      },
+    ]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      alerts: {
+        bucketCt: string;
+        insertedAt: string;
+        date: string;
+        outcomes: { enrichedAt: string | null };
+      }[];
+    };
+    // toIso(Date) → ISO string
+    expect(body.alerts[0]?.bucketCt).toBe('2026-05-07T13:30:00.000Z');
+    expect(body.alerts[0]?.insertedAt).toBe('2026-05-07T13:30:30.000Z');
+    // toDateIso(Date) → YYYY-MM-DD constructed from UTC components
+    expect(body.alerts[0]?.date).toBe('2026-05-07');
+    // toIsoOrNull(null) → null
+    expect(body.alerts[0]?.outcomes.enrichedAt).toBeNull();
+  });
+
+  it('binds dte 1-3 BETWEEN range into SQL (line 209)', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([makeAlert({ dte: 2 })]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-07', dte: '1-3' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { filters: { dte: string | null } };
+    expect(body.filters.dte).toBe('1-3');
+    for (const call of mockSql.mock.calls) {
+      const strings = call[0] as TemplateStringsArray | undefined;
+      const sqlText = (strings ?? []).join(' ');
+      expect(sqlText).toContain('dte BETWEEN');
+    }
+  });
+
+  it('binds dte 4+ range into SQL', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([makeAlert({ dte: 7 })]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-07', dte: '4+' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { filters: { dte: string | null } };
+    expect(body.filters.dte).toBe('4+');
+  });
+
+  it('binds burst red range into SQL (line 221)', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([makeAlert({ spike_ratio: '60' })]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-07', burst: 'red' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { filters: { burst: string | null } };
+    expect(body.filters.burst).toBe('red');
+  });
+
+  it('binds burst yellow range into SQL (line 222)', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([makeAlert({ spike_ratio: '30' })]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-07', burst: 'yellow' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { filters: { burst: string | null } };
+    expect(body.filters.burst).toBe('yellow');
+  });
+
+  it('uses spike_ratio sort branch (line 266)', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([makeAlert()]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-07', sort: 'spike_ratio' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { filters: { sort: string } };
+    expect(body.filters.sort).toBe('spike_ratio');
+    // The list query (2nd call) is the sort-specific branch — check
+    // the ORDER BY clause matches.
+    const listCall = mockSql.mock.calls[1];
+    const sqlText = (
+      (listCall?.[0] as TemplateStringsArray | undefined) ?? []
+    ).join(' ');
+    expect(sqlText).toContain('ORDER BY spike_ratio DESC');
+  });
+
+  it('uses vol_oi sort branch (line 289)', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([makeAlert()]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-07', sort: 'vol_oi' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { filters: { sort: string } };
+    expect(body.filters.sort).toBe('vol_oi');
+    const listCall = mockSql.mock.calls[1];
+    const sqlText = (
+      (listCall?.[0] as TemplateStringsArray | undefined) ?? []
+    ).join(' ');
+    expect(sqlText).toContain('ORDER BY vol_oi DESC');
+  });
+
+  it('uses peak sort branch (line 312)', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([makeAlert()]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-07', sort: 'peak' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { filters: { sort: string } };
+    expect(body.filters.sort).toBe('peak');
+    const listCall = mockSql.mock.calls[1];
+    const sqlText = (
+      (listCall?.[0] as TemplateStringsArray | undefined) ?? []
+    ).join(' ');
+    expect(sqlText).toContain('ORDER BY peak_ceiling_pct DESC');
+  });
+
+  it('captures DB errors via Sentry and returns 500 (422-424)', async () => {
+    const dbErr = new Error('boom');
+    mockSql.mockRejectedValueOnce(dbErr);
+
+    const sentryMod = await import('../_lib/sentry.js');
+    const loggerMod = await import('../_lib/logger.js');
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toMatchObject({ error: 'Internal error' });
+    expect(sentryMod.Sentry.captureException).toHaveBeenCalledWith(dbErr);
+    expect(loggerMod.default.error).toHaveBeenCalled();
+  });
+
+  it('defaults date to today (getETDateStr) when no date query param', async () => {
+    // Exercises the `date = q.date ?? getETDateStr(new Date())` path
+    // so the response echoes a YYYY-MM-DD calendar string.
+    mockSql.mockResolvedValueOnce([{ n: 0 }]).mockResolvedValueOnce([]);
+    const req = mockRequest({ method: 'GET', query: {} });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { date: string };
+    expect(body.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
 });

@@ -34,11 +34,13 @@ vi.mock('../_lib/sentry.js', () => ({
 
 import {
   buildPeriscopeSummary,
+  completePeriscopeAnalysis,
   fetchPeriscopeAnalysisById,
   fetchParentChain,
   savePeriscopeAnalysis,
   toIsoDate,
   toIsoTimestamp,
+  type CompletePeriscopeAnalysisInput,
   type PeriscopeStructuredFields,
   type SavePeriscopeAnalysisInput,
 } from '../_lib/periscope-db.js';
@@ -679,5 +681,261 @@ describe('savePeriscopeAnalysis', () => {
     const params = mockSql.mock.calls[0]!.slice(1) as unknown[];
     expect(params).toContain('truncated');
     expect(params).toContain('stop_reason=max_tokens at 64000');
+  });
+});
+
+// ============================================================
+// completePeriscopeAnalysis
+// ============================================================
+
+function completeInput(
+  overrides: Partial<CompletePeriscopeAnalysisInput> = {},
+): CompletePeriscopeAnalysisInput {
+  return {
+    status: 'complete',
+    proseText: 'Final auto-playbook prose.',
+    fullResponse: { content: [{ type: 'text', text: 'final' }] },
+    embedding: null,
+    structured: emptyStructured(),
+    parseOk: true,
+    panelPayload: null,
+    failureReason: null,
+    model: 'claude-opus-4-7',
+    inputTokens: 200,
+    outputTokens: 100,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 200,
+    durationMs: 4567,
+    ...overrides,
+  };
+}
+
+describe('completePeriscopeAnalysis', () => {
+  it('returns true when the UPDATE returns a row (happy path)', async () => {
+    mockSql.mockResolvedValueOnce([{ id: 42 }]);
+    const ok = await completePeriscopeAnalysis(42, completeInput());
+    expect(ok).toBe(true);
+    expect(mockSql).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns false when the UPDATE matches no row', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    const ok = await completePeriscopeAnalysis(999, completeInput());
+    expect(ok).toBe(false);
+    // No throw → no Sentry capture on this path.
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it('returns false and Sentry-captures when the UPDATE throws', async () => {
+    mockSql.mockRejectedValueOnce(new Error('deadlock detected'));
+    const ok = await completePeriscopeAnalysis(7, completeInput());
+    expect(ok).toBe(false);
+    expect(Sentry.captureException).toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ rowId: 7, status: 'complete' }),
+      'completePeriscopeAnalysis: update failed',
+    );
+  });
+
+  it('serializes a non-empty embedding into a vector literal', async () => {
+    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+    await completePeriscopeAnalysis(
+      1,
+      completeInput({ embedding: [0.4, 0.5, 0.6] }),
+    );
+    const params = mockSql.mock.calls[0]!.slice(1) as unknown[];
+    expect(params).toContain('[0.4,0.5,0.6]');
+  });
+
+  it('binds null vector when embedding is null', async () => {
+    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+    await completePeriscopeAnalysis(1, completeInput({ embedding: null }));
+    const params = mockSql.mock.calls[0]!.slice(1) as unknown[];
+    const vectorBind = params.find(
+      (p) => typeof p === 'string' && /^\[\d/.test(p),
+    );
+    expect(vectorBind).toBeUndefined();
+  });
+
+  it('binds null vector when embedding is an empty array', async () => {
+    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+    await completePeriscopeAnalysis(1, completeInput({ embedding: [] }));
+    const params = mockSql.mock.calls[0]!.slice(1) as unknown[];
+    const vectorBind = params.find(
+      (p) => typeof p === 'string' && /^\[\d/.test(p),
+    );
+    expect(vectorBind).toBeUndefined();
+  });
+
+  it('binds key_levels JSON when present and null when absent', async () => {
+    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+    await completePeriscopeAnalysis(
+      1,
+      completeInput({
+        structured: emptyStructured({
+          key_levels: {
+            gamma_floor: 5780,
+            gamma_ceiling: 5820,
+            magnet: 5800,
+            charm_zero: 5810,
+          },
+        }),
+      }),
+    );
+    const params = mockSql.mock.calls[0]!.slice(1) as unknown[];
+    const keyLevelsBind = params.find(
+      (p) => typeof p === 'string' && p.includes('"gamma_floor":5780'),
+    );
+    expect(keyLevelsBind).toBeDefined();
+  });
+
+  it('binds null key_levels when absent', async () => {
+    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+    await completePeriscopeAnalysis(
+      1,
+      completeInput({
+        structured: emptyStructured({ key_levels: null }),
+      }),
+    );
+    const params = mockSql.mock.calls[0]!.slice(1) as unknown[];
+    // The key_levels bind should be null (no JSON string containing
+    // gamma_floor).
+    const keyLevelsBind = params.find(
+      (p) => typeof p === 'string' && p.includes('"gamma_floor"'),
+    );
+    expect(keyLevelsBind).toBeUndefined();
+  });
+
+  it('binds panel_payload JSON when provided', async () => {
+    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+    await completePeriscopeAnalysis(
+      1,
+      completeInput({
+        panelPayload: { spot: 5800, regime: 'drift-and-cap' },
+      }),
+    );
+    const params = mockSql.mock.calls[0]!.slice(1) as unknown[];
+    const panelBind = params.find(
+      (p) => typeof p === 'string' && p.includes('"regime":"drift-and-cap"'),
+    );
+    expect(panelBind).toBeDefined();
+  });
+
+  it('binds null panel_payload when null', async () => {
+    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+    await completePeriscopeAnalysis(1, completeInput({ panelPayload: null }));
+    const params = mockSql.mock.calls[0]!.slice(1) as unknown[];
+    const panelBind = params.find(
+      (p) => typeof p === 'string' && p.includes('"regime"'),
+    );
+    expect(panelBind).toBeUndefined();
+  });
+
+  it("defaults missing model to 'unknown'", async () => {
+    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+    await completePeriscopeAnalysis(1, completeInput({ model: null }));
+    const params = mockSql.mock.calls[0]!.slice(1) as unknown[];
+    expect(params).toContain('unknown');
+  });
+
+  it('binds the provided model when set', async () => {
+    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+    await completePeriscopeAnalysis(
+      1,
+      completeInput({ model: 'claude-opus-4-7' }),
+    );
+    const params = mockSql.mock.calls[0]!.slice(1) as unknown[];
+    expect(params).toContain('claude-opus-4-7');
+  });
+
+  it('writes status=failed with a failure_reason', async () => {
+    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+    await completePeriscopeAnalysis(
+      1,
+      completeInput({
+        status: 'failed',
+        failureReason: 'anthropic_overloaded',
+        parseOk: false,
+      }),
+    );
+    const params = mockSql.mock.calls[0]!.slice(1) as unknown[];
+    expect(params).toContain('failed');
+    expect(params).toContain('anthropic_overloaded');
+    expect(params).toContain(false); // parseOk
+  });
+
+  it('writes status=truncated with a failure_reason', async () => {
+    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+    await completePeriscopeAnalysis(
+      1,
+      completeInput({
+        status: 'truncated',
+        failureReason: 'stop_reason=max_tokens at 128000',
+      }),
+    );
+    const params = mockSql.mock.calls[0]!.slice(1) as unknown[];
+    expect(params).toContain('truncated');
+    expect(params).toContain('stop_reason=max_tokens at 128000');
+  });
+
+  it('binds the row id into the WHERE clause', async () => {
+    mockSql.mockResolvedValueOnce([{ id: 555 }]);
+    await completePeriscopeAnalysis(555, completeInput());
+    const params = mockSql.mock.calls[0]!.slice(1) as unknown[];
+    expect(params).toContain(555);
+  });
+
+  it('binds full_response, recommended/avoided arrays, and structured fields', async () => {
+    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+    await completePeriscopeAnalysis(
+      1,
+      completeInput({
+        fullResponse: { stop_reason: 'end_turn' },
+        structured: emptyStructured({
+          spot: 5820,
+          cone_lower: 5790,
+          cone_upper: 5850,
+          long_trigger: 5830,
+          short_trigger: 5810,
+          regime_tag: 'pin',
+          bias: 'two-sided',
+          trade_types_recommended: ['iron_condor'],
+          trade_types_avoided: ['naked_long'],
+          expected_dealer_behavior: 'pin-suppression',
+          confidence: 'high',
+          confidence_basis: 'gamma walls',
+          futures_plan: 'WAIT: in cone',
+        }),
+        parseOk: true,
+      }),
+    );
+    const params = mockSql.mock.calls[0]!.slice(1) as unknown[];
+    expect(params).toContain(5820);
+    expect(params).toContain('pin');
+    expect(params).toContain('two-sided');
+    expect(params).toContain('high');
+    const fullRespBind = params.find(
+      (p) => typeof p === 'string' && p.includes('"stop_reason":"end_turn"'),
+    );
+    expect(fullRespBind).toBeDefined();
+    expect(params).toContain('["iron_condor"]');
+    expect(params).toContain('["naked_long"]');
+  });
+
+  it('handles empty trade_types arrays without throwing', async () => {
+    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+    const ok = await completePeriscopeAnalysis(
+      1,
+      completeInput({
+        structured: emptyStructured({
+          trade_types_recommended: [],
+          trade_types_avoided: [],
+        }),
+      }),
+    );
+    expect(ok).toBe(true);
+    const params = mockSql.mock.calls[0]!.slice(1) as unknown[];
+    const emptyArrJson = params.filter((p) => p === '[]');
+    expect(emptyArrJson.length).toBeGreaterThanOrEqual(2);
   });
 });

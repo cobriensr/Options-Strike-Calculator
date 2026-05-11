@@ -618,3 +618,419 @@ describe('analyze-context-fetchers — analog backends', () => {
     expect(fetchDayFeatures).toHaveBeenCalledOnce();
   });
 });
+
+// ── fetchMainData: 0DTE P/C premium ratio signal (lines 241-254) ──────
+//
+// When the zero_dte_index flow data has |NCP| > 0, the fetcher appends
+// a "Put/Call Premium Ratio" tail line to zeroDteIndexContext. The three
+// branches are: pcRatio > 1.5 (put-side hedging), pcRatio < 0.7
+// (call-side speculation), otherwise balanced. Pin every branch so a
+// future threshold edit can't silently change the trading signal.
+
+describe('analyze-context-fetchers — 0DTE P/C premium ratio signal', () => {
+  /**
+   * Build a partial getFlowData mock where the 8th call (zero_dte_index)
+   * resolves to the rows under test and every other call resolves to [].
+   * getFlowData is called 9x inside the Promise.all (8 flow queries +
+   * none for greek-flow which uses a different call). Order matches the
+   * source: market_tide, market_tide_otm, spx_flow, spy_flow, qqq_flow,
+   * spy_etf_tide, qqq_etf_tide, zero_dte_index, zero_dte_greek_flow.
+   */
+  function mockZeroDteRows(rows: Array<{ ncp: number; npp: number }>) {
+    vi.mocked(getFlowData).mockImplementation(
+      async (_d: string, kind: string) =>
+        (kind === 'zero_dte_index' ? rows : []) as never,
+    );
+  }
+
+  // Provide empty-array defaults for every other Promise.all leg so the
+  // try-block doesn't throw on `undefined.length` and fall into the catch.
+  beforeEach(async () => {
+    const { getGreekExposure, getSpotExposures } =
+      await import('../_lib/db.js');
+    const {
+      getStrikeExposures,
+      getAllExpiryStrikeExposures,
+      getNetGexHeatmap,
+    } = await import('../_lib/db-strike-helpers.js');
+    const { getRecentNope } = await import('../_lib/db-nope.js');
+    const { getMarketInternalsToday } = await import('../_lib/db-flow.js');
+    vi.mocked(getGreekExposure).mockResolvedValue([] as never);
+    vi.mocked(getSpotExposures).mockResolvedValue([] as never);
+    vi.mocked(getStrikeExposures).mockResolvedValue([] as never);
+    vi.mocked(getAllExpiryStrikeExposures).mockResolvedValue([] as never);
+    vi.mocked(getNetGexHeatmap).mockResolvedValue([] as never);
+    vi.mocked(getRecentNope).mockResolvedValue([] as never);
+    vi.mocked(getMarketInternalsToday).mockResolvedValue([] as never);
+  });
+
+  it('skips P/C ratio line when |NCP| is zero (guard fires)', async () => {
+    mockZeroDteRows([{ ncp: 0, npp: 100 }]);
+    const result = await fetchMainData(
+      '2026-04-29',
+      undefined,
+      undefined,
+      undefined,
+    );
+    expect(result.zeroDteIndexContext).toBe('flow');
+    expect(result.zeroDteIndexContext).not.toContain('Put/Call Premium Ratio');
+  });
+
+  it('emits "Balanced" message when pcRatio is exactly 1.0', async () => {
+    mockZeroDteRows([{ ncp: 100, npp: 100 }]);
+    const result = await fetchMainData(
+      '2026-04-29',
+      undefined,
+      undefined,
+      undefined,
+    );
+    expect(result.zeroDteIndexContext).toContain(
+      'Put/Call Premium Ratio: 1.00',
+    );
+    expect(result.zeroDteIndexContext).toContain(
+      'Balanced — no additional signal.',
+    );
+  });
+
+  it('emits "Extreme call-side speculation" when pcRatio < 0.7', async () => {
+    mockZeroDteRows([{ ncp: 100, npp: 50 }]); // ratio = 0.5
+    const result = await fetchMainData(
+      '2026-04-29',
+      undefined,
+      undefined,
+      undefined,
+    );
+    expect(result.zeroDteIndexContext).toContain(
+      'Put/Call Premium Ratio: 0.50',
+    );
+    expect(result.zeroDteIndexContext).toContain(
+      'Extreme call-side speculation',
+    );
+    expect(result.zeroDteIndexContext).toContain('CCS confidence');
+  });
+
+  it('emits "Extreme put-side hedging demand" when pcRatio > 1.5', async () => {
+    mockZeroDteRows([{ ncp: 50, npp: 100 }]); // ratio = 2.0
+    const result = await fetchMainData(
+      '2026-04-29',
+      undefined,
+      undefined,
+      undefined,
+    );
+    expect(result.zeroDteIndexContext).toContain(
+      'Put/Call Premium Ratio: 2.00',
+    );
+    expect(result.zeroDteIndexContext).toContain(
+      'Extreme put-side hedging demand',
+    );
+    expect(result.zeroDteIndexContext).toContain('PCS confidence');
+  });
+
+  it('treats pcRatio === 0.7 (boundary) as Balanced (strict <)', async () => {
+    mockZeroDteRows([{ ncp: 10, npp: 7 }]); // ratio = 0.7 exactly
+    const result = await fetchMainData(
+      '2026-04-29',
+      undefined,
+      undefined,
+      undefined,
+    );
+    expect(result.zeroDteIndexContext).toContain(
+      'Put/Call Premium Ratio: 0.70',
+    );
+    expect(result.zeroDteIndexContext).toContain(
+      'Balanced — no additional signal.',
+    );
+    expect(result.zeroDteIndexContext).not.toContain(
+      'Extreme call-side speculation',
+    );
+  });
+
+  it('treats pcRatio === 1.5 (boundary) as Balanced (strict >)', async () => {
+    mockZeroDteRows([{ ncp: 10, npp: 15 }]); // ratio = 1.5 exactly
+    const result = await fetchMainData(
+      '2026-04-29',
+      undefined,
+      undefined,
+      undefined,
+    );
+    expect(result.zeroDteIndexContext).toContain(
+      'Put/Call Premium Ratio: 1.50',
+    );
+    expect(result.zeroDteIndexContext).toContain(
+      'Balanced — no additional signal.',
+    );
+    expect(result.zeroDteIndexContext).not.toContain(
+      'Extreme put-side hedging demand',
+    );
+  });
+
+  it('skips P/C ratio block when zero_dte_index rows are empty', async () => {
+    // formatFlowDataForClaude is mocked to always return 'flow' regardless
+    // of input — so zeroDteIndexContext IS truthy. But rows.length === 0
+    // means the guard `zeroDteIndexRows.length > 0` is false and the
+    // signal is skipped.
+    vi.mocked(getFlowData).mockResolvedValue([] as never);
+    const result = await fetchMainData(
+      '2026-04-29',
+      undefined,
+      undefined,
+      undefined,
+    );
+    expect(result.zeroDteIndexContext).toBe('flow');
+    expect(result.zeroDteIndexContext).not.toContain('Put/Call Premium Ratio');
+  });
+
+  it('uses .at(-1) — latest row drives the ratio when multiple exist', async () => {
+    // Earlier row would give a balanced ratio; latest row is extreme put.
+    mockZeroDteRows([
+      { ncp: 100, npp: 100 }, // 1.00 — balanced
+      { ncp: 50, npp: 100 }, // 2.00 — extreme put
+    ]);
+    const result = await fetchMainData(
+      '2026-04-29',
+      undefined,
+      undefined,
+      undefined,
+    );
+    expect(result.zeroDteIndexContext).toContain(
+      'Put/Call Premium Ratio: 2.00',
+    );
+    expect(result.zeroDteIndexContext).toContain(
+      'Extreme put-side hedging demand',
+    );
+  });
+});
+
+// ── fetchDirectionalChainContext: 14DTE 50Δ strike picker (lines 685-715)
+//
+// The picker iterates Object.keys(expMap), parses DTE out of "YYYY-MM-DD:N"
+// keys, picks the expiry closest to 14 DTE, then filters contracts to
+// |delta| ∈ [0.4, 0.65] and sorts ascending by strikePrice. These tests
+// drive the picker via the public fetchDirectionalChainContext entry —
+// schwabFetch is mocked so we can hand in synthetic expiry maps and
+// verify selection without crossing a real network boundary.
+
+describe('analyze-context-fetchers — 14DTE 50Δ chain picker', () => {
+  // NCP=100, NPP=50 → NCP > NPP → flowDirection 'bullish' → uses callExpDateMap.
+  function setupBullishFlow() {
+    return { ncp: 100, npp: 50 };
+  }
+
+  function makeContract(
+    strike: number,
+    delta: number,
+    overrides: Partial<SchwabContractShape> = {},
+  ): SchwabContractShape {
+    return {
+      strikePrice: strike,
+      bid: 5,
+      ask: 6,
+      delta,
+      volatility: 20,
+      totalVolume: 100,
+      openInterest: 1000,
+      daysToExpiration: 14,
+      symbol: `SPXW_${strike}`,
+      ...overrides,
+    };
+  }
+
+  interface SchwabContractShape {
+    strikePrice: number;
+    bid: number;
+    ask: number;
+    delta: number;
+    volatility: number;
+    totalVolume: number;
+    openInterest: number;
+    daysToExpiration: number;
+    symbol: string;
+  }
+
+  it('returns null when expMap is empty', async () => {
+    const { ncp, npp } = setupBullishFlow();
+    vi.mocked(schwabFetch).mockResolvedValueOnce({
+      ok: true,
+      data: {
+        underlying: { last: 6600 },
+        callExpDateMap: {},
+        putExpDateMap: {},
+      },
+    } as never);
+    const result = await fetchDirectionalChainContext(
+      'midday',
+      { isBacktest: false },
+      ncp,
+      npp,
+    );
+    expect(result).toBeNull();
+  });
+
+  it('picks single expiration when only one exists at exactly 14 DTE', async () => {
+    const { ncp, npp } = setupBullishFlow();
+    vi.mocked(schwabFetch).mockResolvedValueOnce({
+      ok: true,
+      data: {
+        underlying: { last: 6600 },
+        callExpDateMap: {
+          '2026-05-13:14': {
+            '6600.0': [makeContract(6600, 0.5)],
+          },
+        },
+        putExpDateMap: {},
+      },
+    } as never);
+    const result = await fetchDirectionalChainContext(
+      'midday',
+      { isBacktest: false },
+      ncp,
+      npp,
+    );
+    expect(result).toContain('14 DTE SPX Call');
+    expect(result).toContain('2026-05-13');
+    expect(result).toContain('6600');
+  });
+
+  it('picks the expiration with smallest |dte - 14| when multiple exist', async () => {
+    const { ncp, npp } = setupBullishFlow();
+    // 10 DTE → diff 4; 18 DTE → diff 4 — first-seen wins (10 DTE).
+    // 12 DTE → diff 2 should beat both 10 and 18.
+    vi.mocked(schwabFetch).mockResolvedValueOnce({
+      ok: true,
+      data: {
+        underlying: { last: 6600 },
+        callExpDateMap: {
+          '2026-05-09:10': {
+            '6600.0': [makeContract(6600, 0.5)],
+          },
+          '2026-05-11:12': {
+            '6605.0': [makeContract(6605, 0.5)],
+          },
+          '2026-05-17:18': {
+            '6610.0': [makeContract(6610, 0.5)],
+          },
+        },
+        putExpDateMap: {},
+      },
+    } as never);
+    const result = await fetchDirectionalChainContext(
+      'midday',
+      { isBacktest: false },
+      ncp,
+      npp,
+    );
+    expect(result).toContain('12 DTE');
+    expect(result).toContain('2026-05-11');
+    // The closer expiry's strike is in the output; the others are NOT.
+    expect(result).toContain('6605');
+    expect(result).not.toContain('6610C');
+  });
+
+  it('returns null when every contract is filtered out by delta range', async () => {
+    const { ncp, npp } = setupBullishFlow();
+    vi.mocked(schwabFetch).mockResolvedValueOnce({
+      ok: true,
+      data: {
+        underlying: { last: 6600 },
+        callExpDateMap: {
+          '2026-05-13:14': {
+            '6500.0': [makeContract(6500, 0.85)], // >0.65 — filtered
+            '6700.0': [makeContract(6700, 0.2)], // <0.4 — filtered
+          },
+        },
+        putExpDateMap: {},
+      },
+    } as never);
+    const result = await fetchDirectionalChainContext(
+      'midday',
+      { isBacktest: false },
+      ncp,
+      npp,
+    );
+    expect(result).toBeNull();
+  });
+
+  it('keeps only |delta| ∈ [0.4, 0.65] and sorts ascending by strikePrice', async () => {
+    const { ncp, npp } = setupBullishFlow();
+    vi.mocked(schwabFetch).mockResolvedValueOnce({
+      ok: true,
+      data: {
+        underlying: { last: 6600 },
+        callExpDateMap: {
+          '2026-05-13:14': {
+            '6500.0': [makeContract(6500, 0.85)], // dropped (>0.65)
+            '6580.0': [makeContract(6580, 0.6)], // kept
+            '6600.0': [makeContract(6600, 0.5)], // kept
+            '6620.0': [makeContract(6620, 0.4)], // kept (boundary)
+            '6700.0': [makeContract(6700, 0.2)], // dropped (<0.4)
+          },
+        },
+        putExpDateMap: {},
+      },
+    } as never);
+    const result = await fetchDirectionalChainContext(
+      'midday',
+      { isBacktest: false },
+      ncp,
+      npp,
+    );
+    expect(result).not.toBeNull();
+    const text = result!;
+    // Kept strikes appear; dropped strikes do not.
+    expect(text).toContain('6580C');
+    expect(text).toContain('6600C');
+    expect(text).toContain('6620C');
+    expect(text).not.toContain('6500C');
+    expect(text).not.toContain('6700C');
+    // Ascending order: 6580 before 6600 before 6620
+    const idx6580 = text.indexOf('6580C');
+    const idx6600 = text.indexOf('6600C');
+    const idx6620 = text.indexOf('6620C');
+    expect(idx6580).toBeLessThan(idx6600);
+    expect(idx6600).toBeLessThan(idx6620);
+  });
+
+  it('returns formatted block for a single eligible contract with correct DTE/expDate split', async () => {
+    const { ncp, npp } = setupBullishFlow();
+    vi.mocked(schwabFetch).mockResolvedValueOnce({
+      ok: true,
+      data: {
+        underlying: { last: 6600 },
+        callExpDateMap: {
+          '2026-05-13:14': {
+            '6600.0': [
+              makeContract(6600, 0.5, {
+                bid: 12.5,
+                ask: 13.5,
+                volatility: 22.4,
+                openInterest: 1234,
+                totalVolume: 5678,
+              }),
+            ],
+          },
+        },
+        putExpDateMap: {},
+      },
+    } as never);
+    const result = await fetchDirectionalChainContext(
+      'midday',
+      { isBacktest: false },
+      ncp,
+      npp,
+    );
+    expect(result).not.toBeNull();
+    expect(result).toContain(
+      '## 14 DTE SPX Call Chain (2026-05-13 expiry, 40-65Δ range)',
+    );
+    expect(result).toContain('Flow direction: BULLISH');
+    expect(result).toContain('6600C');
+    expect(result).toContain('Bid $12.50');
+    expect(result).toContain('Ask $13.50');
+    expect(result).toContain('Mid $13.00');
+    expect(result).toContain('Δ 0.50');
+    expect(result).toContain('IV 22.4%');
+    // OI 1234 → "1.2K"; Vol 5678 → "5.7K"
+    expect(result).toContain('OI 1.2K');
+    expect(result).toContain('Vol 5.7K');
+  });
+});

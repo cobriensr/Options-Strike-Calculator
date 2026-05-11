@@ -22,6 +22,7 @@ vi.mock('../_lib/logger.js', () => ({
 
 import {
   buildUserContent,
+  formatHeatMapBlock,
   formatParentChainBlock,
   parseStructuredFields,
   synthesizeStructuralProse,
@@ -557,5 +558,274 @@ describe('formatParentChainBlock', () => {
     expect(out!).toContain('regime=drift-and-cap');
     expect(out!).toContain('bias=long-only');
     expect(out!).toContain('Morning playbook.');
+  });
+});
+
+// ============================================================
+// formatHeatMapBlock + formatSigned
+// formatSigned is NOT exported — it is tested indirectly through
+// formatHeatMapBlock, which is its sole call site.
+// ============================================================
+
+describe('formatHeatMapBlock', () => {
+  it('returns null when both gex and charm arrays are empty', () => {
+    expect(formatHeatMapBlock({ gex: [], charm: [] })).toBeNull();
+  });
+
+  it('emits only the Net GEX section when charm is empty', () => {
+    const out = formatHeatMapBlock({
+      gex: [{ strike: 7250, value: 1500 }],
+      charm: [],
+    });
+    expect(out).not.toBeNull();
+    expect(out!).toContain(
+      '[Heat-map extracted strikes (MM-attributed Net GEX / Net Charm from UW)]',
+    );
+    expect(out!).toContain('Net GEX (top strikes by absolute value):');
+    // The literal phrase "Net Charm" appears in the always-present
+    // header line; assert the Net Charm SECTION header is absent.
+    expect(out!).not.toContain('Net Charm (top strikes by absolute value):');
+  });
+
+  it('emits only the Net Charm section when gex is empty', () => {
+    const out = formatHeatMapBlock({
+      gex: [],
+      charm: [{ strike: 7260, value: -2000 }],
+    });
+    expect(out).not.toBeNull();
+    expect(out!).toContain(
+      '[Heat-map extracted strikes (MM-attributed Net GEX / Net Charm from UW)]',
+    );
+    expect(out!).toContain('Net Charm (top strikes by absolute value):');
+    // Likewise — header line mentions "Net GEX"; assert the section
+    // header is absent.
+    expect(out!).not.toContain('Net GEX (top strikes by absolute value):');
+  });
+
+  it('emits both sections with a blank line between when both are populated', () => {
+    const out = formatHeatMapBlock({
+      gex: [{ strike: 7250, value: 1500 }],
+      charm: [{ strike: 7260, value: -2000 }],
+    });
+    expect(out).not.toBeNull();
+    // Both section headers present.
+    expect(out!).toContain('Net GEX (top strikes by absolute value):');
+    expect(out!).toContain('Net Charm (top strikes by absolute value):');
+    // Blank line between sections (the line just before the Net Charm
+    // header must be empty).
+    const lines = out!.split('\n');
+    const charmIdx = lines.findIndex((l) => l.startsWith('Net Charm'));
+    expect(charmIdx).toBeGreaterThan(0);
+    expect(lines[charmIdx - 1]).toBe('');
+  });
+
+  it('uses the exact header line for the heat-map block', () => {
+    const out = formatHeatMapBlock({
+      gex: [{ strike: 7250, value: 1 }],
+      charm: [],
+    });
+    const firstLine = out!.split('\n')[0];
+    expect(firstLine).toBe(
+      '[Heat-map extracted strikes (MM-attributed Net GEX / Net Charm from UW)]',
+    );
+  });
+
+  it('renders strike lines with 2-space indent and "{strike}: {signed-value}" form', () => {
+    const out = formatHeatMapBlock({
+      gex: [{ strike: 7250, value: 1500 }],
+      charm: [],
+    });
+    expect(out!).toContain('  7250: +1,500');
+  });
+
+  it('prefixes positive numbers with + via formatSigned', () => {
+    const out = formatHeatMapBlock({
+      gex: [{ strike: 7250, value: 1234567 }],
+      charm: [],
+    });
+    expect(out!).toContain('  7250: +1,234,567');
+  });
+
+  it('renders negative numbers with a leading minus from toLocaleString', () => {
+    const out = formatHeatMapBlock({
+      gex: [{ strike: 7260, value: -2500 }],
+      charm: [],
+    });
+    expect(out!).toContain('  7260: -2,500');
+    // No `+` prefix on negatives.
+    expect(out!).not.toContain('+-');
+  });
+
+  it('renders zero as bare "0" (no leading + or -)', () => {
+    const out = formatHeatMapBlock({
+      gex: [{ strike: 7250, value: 0 }],
+      charm: [],
+    });
+    expect(out!).toContain('  7250: 0');
+    // Strike line must not gain a sign prefix on zero.
+    const lines = out!.split('\n');
+    const strikeLine = lines.find((l) => l.startsWith('  7250:'));
+    expect(strikeLine).toBe('  7250: 0');
+  });
+
+  it('emits one strike line per entry in input order', () => {
+    const out = formatHeatMapBlock({
+      gex: [
+        { strike: 7250, value: 1500 },
+        { strike: 7260, value: 800 },
+      ],
+      charm: [
+        { strike: 7240, value: -300 },
+        { strike: 7270, value: 450 },
+      ],
+    });
+    const lines = out!.split('\n');
+    const gexLines = lines.filter((l) => /^ {2}\d+:/.test(l));
+    expect(gexLines).toEqual([
+      '  7250: +1,500',
+      '  7260: +800',
+      '  7240: -300',
+      '  7270: +450',
+    ]);
+  });
+});
+
+// ============================================================
+// buildUserContent — uncovered branches:
+//  - spotDirective injection (line 133)
+//  - heatMapBlock injection (line 149)
+//  - flowBlock injection (line 156)
+// The default switch arm (line 119/120) is an unreachable
+// exhaustive-check; covering it requires a deliberate cast,
+// which we exercise below.
+// ============================================================
+
+describe('buildUserContent — optional text block injections', () => {
+  it('injects the spotDirective text block after the header', () => {
+    const blocks = buildUserContent({
+      mode: 'intraday',
+      parentId: null,
+      spotDirective: 'Authoritative spot: 7,250.42 (db_exact).',
+      images: [],
+    });
+    // First block is the header preamble; second should be the spot
+    // directive (no chain or heat-map / flow blocks were passed).
+    expect(blocks[1]).toMatchObject({
+      type: 'text',
+      text: 'Authoritative spot: 7,250.42 (db_exact).',
+    });
+  });
+
+  it('skips the spotDirective block when the string is empty', () => {
+    const blocks = buildUserContent({
+      mode: 'intraday',
+      parentId: null,
+      spotDirective: '',
+      images: [],
+    });
+    // Header is block 0; no other text blocks should follow.
+    expect(blocks).toHaveLength(1);
+  });
+
+  it('injects the heatMapBlock text block when supplied', () => {
+    const blocks = buildUserContent({
+      mode: 'intraday',
+      parentId: null,
+      heatMapBlock: '[Heat-map extracted strikes …]\n  7250: +1,500',
+      images: [],
+    });
+    const hasHeatMap = blocks.some(
+      (b) =>
+        b.type === 'text' &&
+        (b as { type: 'text'; text: string }).text.includes(
+          '[Heat-map extracted strikes',
+        ),
+    );
+    expect(hasHeatMap).toBe(true);
+  });
+
+  it('skips the heatMapBlock block when the string is empty', () => {
+    const blocks = buildUserContent({
+      mode: 'intraday',
+      parentId: null,
+      heatMapBlock: '',
+      images: [],
+    });
+    const hasHeatMap = blocks.some(
+      (b) =>
+        b.type === 'text' &&
+        (b as { type: 'text'; text: string }).text.includes(
+          'Heat-map extracted',
+        ),
+    );
+    expect(hasHeatMap).toBe(false);
+  });
+
+  it('injects the flowBlock text block when supplied', () => {
+    const blocks = buildUserContent({
+      mode: 'intraday',
+      parentId: null,
+      flowBlock: '[Informed flow context]\nAAPL 2026-05-30 250C swept...',
+      images: [],
+    });
+    const hasFlow = blocks.some(
+      (b) =>
+        b.type === 'text' &&
+        (b as { type: 'text'; text: string }).text.includes(
+          '[Informed flow context]',
+        ),
+    );
+    expect(hasFlow).toBe(true);
+  });
+
+  it('skips the flowBlock block when the string is empty', () => {
+    const blocks = buildUserContent({
+      mode: 'intraday',
+      parentId: null,
+      flowBlock: '',
+      images: [],
+    });
+    const hasFlow = blocks.some(
+      (b) =>
+        b.type === 'text' &&
+        (b as { type: 'text'; text: string }).text.includes(
+          'Informed flow context',
+        ),
+    );
+    expect(hasFlow).toBe(false);
+  });
+
+  it('emits spotDirective, heatMapBlock, and flowBlock in that order before images', () => {
+    const blocks = buildUserContent({
+      mode: 'intraday',
+      parentId: null,
+      spotDirective: 'SPOT_DIRECTIVE_MARKER',
+      heatMapBlock: 'HEAT_MAP_MARKER',
+      flowBlock: 'FLOW_MARKER',
+      images: [{ kind: 'chart', data: 'AAA', mediaType: 'image/png' }],
+    });
+    const textBlocks = blocks
+      .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+      .map((b) => b.text);
+    const spotIdx = textBlocks.findIndex((t) => t === 'SPOT_DIRECTIVE_MARKER');
+    const heatIdx = textBlocks.findIndex((t) => t === 'HEAT_MAP_MARKER');
+    const flowIdx = textBlocks.findIndex((t) => t === 'FLOW_MARKER');
+    const chartIdx = textBlocks.findIndex((t) => t === '[chart screenshot]');
+    expect(spotIdx).toBeGreaterThan(-1);
+    expect(heatIdx).toBeGreaterThan(spotIdx);
+    expect(flowIdx).toBeGreaterThan(heatIdx);
+    expect(chartIdx).toBeGreaterThan(flowIdx);
+  });
+
+  it('throws on an unknown mode (exhaustive-check default arm)', () => {
+    expect(() =>
+      buildUserContent({
+        // Intentional cast: forces the unreachable default arm
+        // (line 119-120) to fire so the throw is covered.
+        mode: 'made_up_mode' as unknown as 'pre_trade',
+        parentId: null,
+        images: [],
+      }),
+    ).toThrow(/Unknown periscope mode: made_up_mode/);
   });
 });

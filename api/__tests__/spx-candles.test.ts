@@ -15,13 +15,21 @@ vi.mock('../_lib/logger.js', () => ({
   },
 }));
 
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: { captureException: vi.fn() },
+  metrics: { increment: vi.fn(), request: vi.fn(() => vi.fn()) },
+}));
+
 import {
+  ctWallClockToUtcMs,
   fetchSPXCandles,
+  fetchSPXSpotAtTimestamp,
   formatSPXCandlesForClaude,
   type SPXCandle,
 } from '../_lib/spx-candles.js';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 
 // ── Helpers ────────────────────────────────────────────────
 
@@ -851,5 +859,367 @@ describe('formatSPXCandlesForClaude (candle table)', () => {
       .split('\n')
       .filter((l) => l.includes('▲') || l.includes('▼'));
     expect(dataRows).toHaveLength(12);
+  });
+});
+
+// ============================================================
+// ctWallClockToUtcMs — pure CT wall-clock → UTC ms converter
+// ============================================================
+
+describe('ctWallClockToUtcMs', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns UTC ms for 10:00 CT in January (CST = UTC-6)', () => {
+    // January is standard time (CST). 10:00 CT == 16:00 UTC.
+    const result = ctWallClockToUtcMs('2026-01-15', '10:00');
+    expect(result).toBe(Date.UTC(2026, 0, 15, 16, 0, 0, 0));
+  });
+
+  it('returns UTC ms for 10:00 CT in June (CDT = UTC-5)', () => {
+    // June is daylight time (CDT). 10:00 CT == 15:00 UTC.
+    const result = ctWallClockToUtcMs('2026-06-15', '10:00');
+    expect(result).toBe(Date.UTC(2026, 5, 15, 15, 0, 0, 0));
+  });
+
+  it('handles DST spring-forward Sunday — 03:00 CT wall-clock resolves to a finite ms', () => {
+    // 2026-03-08 is the US DST spring-forward Sunday. At 02:00 CST
+    // clocks jump to 03:00 CDT. Wall-clock "03:00" near the boundary
+    // is ambiguous for the hand-rolled offset probe: depending on how
+    // Intl formats the UTC anchor back into CT, the function may
+    // resolve to CST (UTC-6, → 09:00 UTC) or CDT (UTC-5, → 08:00 UTC).
+    // Either is acceptable — the function's spec is "whatever Intl
+    // reports, consistently". We only assert the offset is exactly
+    // one of the two valid Chicago-time offsets for that calendar day.
+    const result = ctWallClockToUtcMs('2026-03-08', '03:00');
+    expect(result).not.toBeNull();
+    const possibleCdt = Date.UTC(2026, 2, 8, 8, 0, 0, 0); // UTC-5
+    const possibleCst = Date.UTC(2026, 2, 8, 9, 0, 0, 0); // UTC-6
+    expect([possibleCdt, possibleCst]).toContain(result);
+  });
+
+  it('handles DST fall-back Sunday — 01:30 CT wall-clock returns consistent ms', () => {
+    // 2026-11-01 is US DST fall-back Sunday. Wall-clock 01:30 is
+    // ambiguous (occurs twice). Function must return *something*
+    // consistent — exact disambiguation is Intl's call. Assert the
+    // offset is exactly −5 (CDT) or −6 (CST).
+    const result = ctWallClockToUtcMs('2026-11-01', '01:30');
+    expect(result).not.toBeNull();
+    const possibleCdt = Date.UTC(2026, 10, 1, 6, 30, 0, 0); // UTC-5
+    const possibleCst = Date.UTC(2026, 10, 1, 7, 30, 0, 0); // UTC-6
+    expect([possibleCdt, possibleCst]).toContain(result);
+  });
+
+  it('returns null for malformed date strings', () => {
+    expect(ctWallClockToUtcMs('2026/01/15', '10:00')).toBeNull();
+    expect(ctWallClockToUtcMs('', '10:00')).toBeNull();
+    expect(ctWallClockToUtcMs('not-a-date', '10:00')).toBeNull();
+    expect(ctWallClockToUtcMs('2026-1-15', '10:00')).toBeNull();
+    expect(ctWallClockToUtcMs('26-01-15', '10:00')).toBeNull();
+  });
+
+  it('returns null for malformed time strings', () => {
+    expect(ctWallClockToUtcMs('2026-06-15', '10:00:00')).toBeNull();
+    expect(ctWallClockToUtcMs('2026-06-15', '10:9')).toBeNull();
+    expect(ctWallClockToUtcMs('2026-06-15', '')).toBeNull();
+    expect(ctWallClockToUtcMs('2026-06-15', 'noon')).toBeNull();
+    expect(ctWallClockToUtcMs('2026-06-15', '10')).toBeNull();
+  });
+
+  it('accepts hour and minute values within the parsed regex even if out of range', () => {
+    // The regex matches \d{2}:\d{2}, so "25:00" passes the parse step.
+    // The function does not range-check — Date.UTC normalizes it
+    // (25 → next day 01:00). Asserting we get *some* finite ms back.
+    const result = ctWallClockToUtcMs('2026-06-15', '25:00');
+    // Either returns a normalized ms or null; we only require it not
+    // throw. The contract is "hand-rolled — whatever Intl reports".
+    expect(typeof result === 'number' || result === null).toBe(true);
+  });
+
+  it('handles midnight CT (00:00) in June (CDT)', () => {
+    // 00:00 CDT == 05:00 UTC same day
+    const result = ctWallClockToUtcMs('2026-06-15', '00:00');
+    expect(result).toBe(Date.UTC(2026, 5, 15, 5, 0, 0, 0));
+  });
+
+  it('handles late evening CT (23:59) in June (CDT)', () => {
+    // 23:59 CDT == 04:59 UTC next day
+    const result = ctWallClockToUtcMs('2026-06-15', '23:59');
+    expect(result).toBe(Date.UTC(2026, 5, 16, 4, 59, 0, 0));
+  });
+
+  it('handles midnight CT (00:00) in January (CST)', () => {
+    // 00:00 CST == 06:00 UTC same day
+    const result = ctWallClockToUtcMs('2026-01-15', '00:00');
+    expect(result).toBe(Date.UTC(2026, 0, 15, 6, 0, 0, 0));
+  });
+});
+
+// ============================================================
+// fetchSPXSpotAtTimestamp — DB exact + tolerance fallback
+// ============================================================
+
+describe('fetchSPXSpotAtTimestamp', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns null without calling DB when date/time are malformed', async () => {
+    // mockSql will count any tagged-template invocation
+    const mockSql = vi.fn();
+    vi.mocked(getDb).mockReturnValue(
+      mockSql as unknown as ReturnType<typeof getDb>,
+    );
+
+    const result = await fetchSPXSpotAtTimestamp({
+      date: 'bad',
+      time: '10:00',
+      isLiveRead: false,
+    });
+    expect(result).toBeNull();
+    expect(mockSql).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ date: 'bad', time: '10:00' }),
+      expect.stringContaining('malformed'),
+    );
+  });
+
+  it('returns db_exact when the exact-minute row is present', async () => {
+    const mockSql = vi.fn().mockResolvedValueOnce([{ close: 5950.25 }]);
+    vi.mocked(getDb).mockReturnValue(
+      mockSql as unknown as ReturnType<typeof getDb>,
+    );
+
+    const result = await fetchSPXSpotAtTimestamp({
+      date: '2026-06-15',
+      time: '10:00',
+      isLiveRead: false,
+    });
+    expect(result).toEqual({ price: 5950.25, source: 'db_exact' });
+    expect(mockSql).toHaveBeenCalledTimes(1);
+  });
+
+  it('coerces string-typed close values from Neon NUMERIC columns', async () => {
+    const mockSql = vi.fn().mockResolvedValueOnce([{ close: '5950.25' }]);
+    vi.mocked(getDb).mockReturnValue(
+      mockSql as unknown as ReturnType<typeof getDb>,
+    );
+
+    const result = await fetchSPXSpotAtTimestamp({
+      date: '2026-06-15',
+      time: '10:00',
+      isLiveRead: false,
+    });
+    expect(result).toEqual({ price: 5950.25, source: 'db_exact' });
+  });
+
+  it('falls through to tolerance path when exact row has null close', async () => {
+    // First query returns a row with close=null → numOrNull returns null
+    // → must NOT return early; fall through to the snapped path.
+    const mockSql = vi
+      .fn()
+      .mockResolvedValueOnce([{ close: null }])
+      .mockResolvedValueOnce([
+        { close: 5951.5, timestamp: '2026-06-15T15:01:00.000Z' },
+      ]);
+    vi.mocked(getDb).mockReturnValue(
+      mockSql as unknown as ReturnType<typeof getDb>,
+    );
+
+    const result = await fetchSPXSpotAtTimestamp({
+      date: '2026-06-15',
+      time: '10:00',
+      isLiveRead: false,
+    });
+    expect(result).toEqual({ price: 5951.5, source: 'db_snapped' });
+    expect(mockSql).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns null and skips tolerance query when isLiveRead=true and exact misses', async () => {
+    const mockSql = vi.fn().mockResolvedValueOnce([]);
+    vi.mocked(getDb).mockReturnValue(
+      mockSql as unknown as ReturnType<typeof getDb>,
+    );
+
+    const result = await fetchSPXSpotAtTimestamp({
+      date: '2026-06-15',
+      time: '10:00',
+      isLiveRead: true,
+    });
+    expect(result).toBeNull();
+    // Tolerance query MUST NOT have been issued
+    expect(mockSql).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns db_snapped when exact misses and tolerance returns a row', async () => {
+    const mockSql = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { close: 5942.1, timestamp: '2026-06-15T15:01:00.000Z' },
+      ]);
+    vi.mocked(getDb).mockReturnValue(
+      mockSql as unknown as ReturnType<typeof getDb>,
+    );
+
+    const result = await fetchSPXSpotAtTimestamp({
+      date: '2026-06-15',
+      time: '10:00',
+      isLiveRead: false,
+    });
+    expect(result).toEqual({ price: 5942.1, source: 'db_snapped' });
+    expect(mockSql).toHaveBeenCalledTimes(2);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        snappedTo: expect.any(String),
+      }),
+      expect.stringContaining('snapped to nearest bar'),
+    );
+  });
+
+  it('formats Date-typed snappedTo timestamps via toISOString()', async () => {
+    // The function logs snappedRow.timestamp as either ISO string (if
+    // already string) or via .toISOString() (if Date). Cover the Date
+    // branch explicitly.
+    const snappedDate = new Date('2026-06-15T15:01:00.000Z');
+    const mockSql = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ close: 5942.1, timestamp: snappedDate }]);
+    vi.mocked(getDb).mockReturnValue(
+      mockSql as unknown as ReturnType<typeof getDb>,
+    );
+
+    const result = await fetchSPXSpotAtTimestamp({
+      date: '2026-06-15',
+      time: '10:00',
+      isLiveRead: false,
+    });
+    expect(result).toEqual({ price: 5942.1, source: 'db_snapped' });
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        snappedTo: '2026-06-15T15:01:00.000Z',
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('returns null when both exact and tolerance queries are empty', async () => {
+    const mockSql = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    vi.mocked(getDb).mockReturnValue(
+      mockSql as unknown as ReturnType<typeof getDb>,
+    );
+
+    const result = await fetchSPXSpotAtTimestamp({
+      date: '2026-06-15',
+      time: '10:00',
+      isLiveRead: false,
+    });
+    expect(result).toBeNull();
+    expect(mockSql).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns null when tolerance row has null close', async () => {
+    const mockSql = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { close: null, timestamp: '2026-06-15T15:01:00.000Z' },
+      ]);
+    vi.mocked(getDb).mockReturnValue(
+      mockSql as unknown as ReturnType<typeof getDb>,
+    );
+
+    const result = await fetchSPXSpotAtTimestamp({
+      date: '2026-06-15',
+      time: '10:00',
+      isLiveRead: false,
+    });
+    expect(result).toBeNull();
+  });
+
+  it('uses default toleranceMin=2 — tolerance window is ±2 minutes from utcMs', async () => {
+    const mockSql = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    vi.mocked(getDb).mockReturnValue(
+      mockSql as unknown as ReturnType<typeof getDb>,
+    );
+
+    // 10:00 CDT (June) → 15:00 UTC
+    await fetchSPXSpotAtTimestamp({
+      date: '2026-06-15',
+      time: '10:00',
+      isLiveRead: false,
+    });
+
+    // 2nd call (tolerance query) — interpolated values are call args
+    // after the strings array.
+    const toleranceCall = mockSql.mock.calls[1]!;
+    const interpolated = toleranceCall.slice(1) as unknown[];
+    // Expected bounds: 14:58Z and 15:02Z
+    expect(interpolated).toContain('2026-06-15T14:58:00.000Z');
+    expect(interpolated).toContain('2026-06-15T15:02:00.000Z');
+  });
+
+  it('respects a custom toleranceMin=5 — tolerance window is ±5 minutes', async () => {
+    const mockSql = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    vi.mocked(getDb).mockReturnValue(
+      mockSql as unknown as ReturnType<typeof getDb>,
+    );
+
+    // 10:00 CDT (June) → 15:00 UTC. ±5min → 14:55Z and 15:05Z.
+    await fetchSPXSpotAtTimestamp({
+      date: '2026-06-15',
+      time: '10:00',
+      toleranceMin: 5,
+      isLiveRead: false,
+    });
+
+    const toleranceCall = mockSql.mock.calls[1]!;
+    const interpolated = toleranceCall.slice(1) as unknown[];
+    expect(interpolated).toContain('2026-06-15T14:55:00.000Z');
+    expect(interpolated).toContain('2026-06-15T15:05:00.000Z');
+  });
+
+  it('returns null and logs on DB error (catch branch)', async () => {
+    const mockSql = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('connection refused'));
+    vi.mocked(getDb).mockReturnValue(
+      mockSql as unknown as ReturnType<typeof getDb>,
+    );
+
+    const result = await fetchSPXSpotAtTimestamp({
+      date: '2026-06-15',
+      time: '10:00',
+      isLiveRead: false,
+    });
+    expect(result).toBeNull();
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      expect.stringContaining('query failed'),
+    );
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'spx_candles.spot_lookup_error',
+    );
+    expect(Sentry.captureException).toHaveBeenCalled();
+  });
+
+  it('passes the exact ISO timestamp and date to the exact-match query', async () => {
+    const mockSql = vi.fn().mockResolvedValueOnce([{ close: 5950 }]);
+    vi.mocked(getDb).mockReturnValue(
+      mockSql as unknown as ReturnType<typeof getDb>,
+    );
+
+    await fetchSPXSpotAtTimestamp({
+      date: '2026-06-15',
+      time: '10:00',
+      isLiveRead: false,
+    });
+
+    const exactCall = mockSql.mock.calls[0]!;
+    const interpolated = exactCall.slice(1) as unknown[];
+    expect(interpolated).toContain('2026-06-15');
+    expect(interpolated).toContain('2026-06-15T15:00:00.000Z');
   });
 });
