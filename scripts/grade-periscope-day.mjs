@@ -379,7 +379,9 @@ async function main() {
       `  cone fallback:    [${dailyCone.lower} - ${dailyCone.upper}] (cone_levels, used when payload.cone is null)`,
     );
   } else {
-    console.log(`  cone fallback:    NONE (cone_levels has no row for ${DATE})`);
+    console.log(
+      `  cone fallback:    NONE (cone_levels has no row for ${DATE})`,
+    );
   }
   console.log('');
 

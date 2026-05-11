@@ -580,9 +580,7 @@ export function gradePlaybook(args: GradePlaybookArgs): Grade {
     const targetOk = isLong
       ? args.target > entryPrice
       : args.target < entryPrice;
-    const stopOk = isLong
-      ? args.stop < entryPrice
-      : args.stop > entryPrice;
+    const stopOk = isLong ? args.stop < entryPrice : args.stop > entryPrice;
     if (!targetOk || !stopOk) {
       // No row added — the trade is structurally undefined.
       return;

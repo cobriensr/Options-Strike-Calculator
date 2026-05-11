@@ -82,7 +82,7 @@ const CHART_EXTRACTION_TOOL: Anthropic.Messages.Tool = {
       chart_date: {
         type: ['string', 'null'],
         description:
-          'Trading date the chart depicts as ISO YYYY-MM-DD. Read from the chart\'s own date label, not the user\'s capture time. Null if not visible.',
+          "Trading date the chart depicts as ISO YYYY-MM-DD. Read from the chart's own date label, not the user's capture time. Null if not visible.",
       },
     },
     required: [],

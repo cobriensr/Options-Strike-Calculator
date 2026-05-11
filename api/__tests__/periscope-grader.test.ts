@@ -418,7 +418,9 @@ describe('gradePlaybook: trade sims', () => {
         spxCandles: spx,
       }),
     );
-    const spxSim = grade.tradeSims.find((s) => s.asset === 'SPX' && s.side === 'long');
+    const spxSim = grade.tradeSims.find(
+      (s) => s.asset === 'SPX' && s.side === 'long',
+    );
     expect(spxSim).toBeDefined();
     expect(spxSim!.exitReason).toBe('eod');
     expect(spxSim!.durationMin).toBeGreaterThan(0);
@@ -754,7 +756,13 @@ describe('gradePlaybook: regime', () => {
         }),
         spxCandles: [
           candle({ hourCT: 9, minute: 0, open: 5800, close: 5800 }),
-          candle({ hourCT: 10, minute: 0, open: 5820, high: 5830, close: 5825 }),
+          candle({
+            hourCT: 10,
+            minute: 0,
+            open: 5820,
+            high: 5830,
+            close: 5825,
+          }),
           candle({ hourCT: 15, minute: 0, open: 5825, close: 5825 }),
         ],
       }),
@@ -792,7 +800,13 @@ describe('gradePlaybook: regime', () => {
         }),
         spxCandles: [
           candle({ hourCT: 9, minute: 0, open: 5800, close: 5800 }),
-          candle({ hourCT: 10, minute: 0, open: 5820, high: 5830, close: 5825 }),
+          candle({
+            hourCT: 10,
+            minute: 0,
+            open: 5820,
+            high: 5830,
+            close: 5825,
+          }),
           candle({ hourCT: 15, minute: 0, open: 5825, close: 5825 }),
         ],
       }),

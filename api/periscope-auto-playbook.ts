@@ -136,8 +136,7 @@ function capturedAtToCt(d: Date): {
     minute: '2-digit',
     hourCycle: 'h23',
   }).formatToParts(d);
-  const get = (t: string) =>
-    parts.find((p) => p.type === t)?.value ?? '';
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
   return {
     hour: Number.parseInt(get('hour'), 10),
     minute: Number.parseInt(get('minute'), 10),
@@ -146,7 +145,9 @@ function capturedAtToCt(d: Date): {
 }
 
 /** Parse the END time of a slot label like "08:20 - 08:30" → {h:8,m:30}. */
-function parseSlotEnd(slotKey: string): { hour: number; minute: number } | null {
+function parseSlotEnd(
+  slotKey: string,
+): { hour: number; minute: number } | null {
   // Match "HH:MM - HH:MM" with flexible whitespace.
   const m = /^\s*\d{1,2}:\d{2}\s*-\s*(\d{1,2}):(\d{2})\s*$/.exec(slotKey);
   if (m == null) return null;
@@ -307,7 +308,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
   const capturedCt = capturedAtToCt(capturedAtDate);
   const capturedMin = capturedCt.hour * 60 + capturedCt.minute;
-  const isWeekend = capturedCt.weekday === 'Sat' || capturedCt.weekday === 'Sun';
+  const isWeekend =
+    capturedCt.weekday === 'Sat' || capturedCt.weekday === 'Sun';
   if (isWeekend || capturedMin < 8 * 60 + 30 || capturedMin > 15 * 60) {
     done({ status: 422 });
     return res.status(422).json({
