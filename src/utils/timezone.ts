@@ -18,6 +18,11 @@ const ctFormatter = new Intl.DateTimeFormat('en-US', {
   timeZone: 'America/Chicago',
   hour: 'numeric',
   minute: 'numeric',
+  // `weekday` must be requested or formatToParts() won't emit a
+  // `weekday` part — getCTDayOfWeek would then fall back to
+  // date.getDay() (host TZ), which returns the wrong day in CI
+  // where the runner is UTC. Matches the etFormatter shape.
+  weekday: 'short',
   hour12: false,
 });
 
