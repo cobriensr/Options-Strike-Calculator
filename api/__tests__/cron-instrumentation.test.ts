@@ -34,6 +34,7 @@ vi.mock('../_lib/sentry.js', () => ({
       return cb();
     }),
     captureCheckIn: vi.fn(() => 'mock-checkin-id'),
+    flush: vi.fn().mockResolvedValue(true),
   },
   metrics: { increment: vi.fn() },
 }));
@@ -541,6 +542,71 @@ describe('withCronInstrumentation', () => {
     expect(Sentry.captureException).toHaveBeenCalledWith(boom);
     expect(res._status).toBe(500);
   });
+
+  // ── Sentry.flush before function exit ─────────────────────────
+  // Sentry.withMonitor does NOT flush internally (verified against
+  // @sentry/core source). On Vercel Fluid Compute the captureCheckIn
+  // HTTP request can be killed before it reaches the wire, leaving
+  // monitors stuck on `in_progress` and firing a false
+  // "timeout check-in detected" issue. The wrapper must flush.
+
+  it('flushes Sentry after the happy-path response', async () => {
+    vi.mocked(cronGuard).mockReturnValue(guardOk);
+    const handler = vi
+      .fn()
+      .mockResolvedValue({ status: 'success' as const, rows: 1 });
+    const wrapped = withCronInstrumentation('monitored-job', handler);
+
+    const res = mockResponse();
+    await wrapped(mockRequest(), res);
+
+    expect(Sentry.flush).toHaveBeenCalledTimes(1);
+    expect(Sentry.flush).toHaveBeenCalledWith(2000);
+  });
+
+  it('flushes Sentry after the exception path response', async () => {
+    vi.mocked(cronGuard).mockReturnValue(guardOk);
+    const handler = vi.fn().mockRejectedValue(new Error('boom'));
+    const wrapped = withCronInstrumentation('monitored-job', handler);
+
+    const res = mockResponse();
+    await wrapped(mockRequest(), res);
+
+    expect(res._status).toBe(500);
+    expect(Sentry.flush).toHaveBeenCalledTimes(1);
+    expect(Sentry.flush).toHaveBeenCalledWith(2000);
+  });
+
+  it('flushes Sentry after sendIntentionalSkipCheckin (status 200 skip)', async () => {
+    vi.mocked(cronGuard).mockImplementation((_req, res) => {
+      res.status(200).json({ skipped: true, reason: 'Outside time window' });
+      return null;
+    });
+    const handler = vi.fn();
+    const wrapped = withCronInstrumentation('monitored-job', handler);
+
+    await wrapped(mockRequest(), mockResponse());
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(Sentry.captureCheckIn).toHaveBeenCalledTimes(1); // the skip check-in
+    expect(Sentry.flush).toHaveBeenCalledTimes(1);
+    expect(Sentry.flush).toHaveBeenCalledWith(2000);
+  });
+
+  it('does NOT flush on auth-failure (cronGuard rejects with statusCode !== 200)', async () => {
+    // No check-in is sent on real auth/config failures — so no flush
+    // either. Keeps the missed-checkin signal accurate for genuine
+    // outages and avoids 2s of wasted billed time per bot-scan 401.
+    vi.mocked(cronGuard).mockImplementation((_req, res) => {
+      res.status(401).json({ error: 'Unauthorized' });
+      return null;
+    });
+    const wrapped = withCronInstrumentation('monitored-job', vi.fn());
+
+    await wrapped(mockRequest(), mockResponse());
+
+    expect(Sentry.flush).not.toHaveBeenCalled();
+  });
 });
 
 describe('withCronCheckin', () => {
@@ -698,5 +764,67 @@ describe('withCronCheckin', () => {
 
     expect(inner).toHaveBeenCalledTimes(1);
     expect(Sentry.captureCheckIn).not.toHaveBeenCalled();
+  });
+
+  it('flushes Sentry after the ok completion check-in', async () => {
+    // Without this flush the completion HTTP request can be killed by
+    // Vercel's Fluid Compute function exit, leaving Sentry with only
+    // the in_progress signal and firing a false "timeout check-in
+    // detected" issue after maxRuntime expires.
+    const inner = vi.fn(async (_req, res) => {
+      res.status(200).json({ ok: true });
+    });
+    const wrapped = withCronCheckin('checkin-job', inner);
+
+    const res = mockResponse();
+    await wrapped(authedReq(), res);
+
+    expect(Sentry.captureCheckIn).toHaveBeenCalledTimes(2);
+    expect(Sentry.flush).toHaveBeenCalledTimes(1);
+    expect(Sentry.flush).toHaveBeenCalledWith(2000);
+    // Order matters: completion check-in must be sent before flush starts.
+    const flushOrder = vi.mocked(Sentry.flush).mock.invocationCallOrder[0]!;
+    const completionOrder = vi.mocked(Sentry.captureCheckIn).mock
+      .invocationCallOrder[1]!;
+    expect(flushOrder).toBeGreaterThan(completionOrder);
+  });
+
+  it('flushes Sentry after the error completion check-in on 5xx', async () => {
+    const inner = vi.fn(async (_req, res) => {
+      res.status(500).json({ error: 'oops' });
+    });
+    const wrapped = withCronCheckin('checkin-job', inner);
+
+    const res = mockResponse();
+    await wrapped(authedReq(), res);
+
+    expect(Sentry.flush).toHaveBeenCalledTimes(1);
+    expect(Sentry.flush).toHaveBeenCalledWith(2000);
+  });
+
+  it('flushes Sentry after the error check-in when inner throws (before re-throw)', async () => {
+    const boom = new Error('inner exploded');
+    const inner = vi.fn(async () => {
+      throw boom;
+    });
+    const wrapped = withCronCheckin('checkin-job', inner);
+
+    const res = mockResponse();
+    await expect(wrapped(authedReq(), res)).rejects.toThrow('inner exploded');
+
+    expect(Sentry.flush).toHaveBeenCalledTimes(1);
+    expect(Sentry.flush).toHaveBeenCalledWith(2000);
+  });
+
+  it('does not call Sentry.flush when the auth gate skips check-ins', async () => {
+    const inner = vi.fn(async (_req, res) => {
+      res.status(401).json({ error: 'Unauthorized' });
+    });
+    const wrapped = withCronCheckin('checkin-job', inner);
+
+    const res = mockResponse();
+    await wrapped(mockRequest(), res); // no Authorization header
+
+    expect(Sentry.flush).not.toHaveBeenCalled();
   });
 });
