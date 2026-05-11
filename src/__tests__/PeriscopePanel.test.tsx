@@ -638,6 +638,57 @@ describe('PeriscopePanel: Claude playbook section', () => {
     ).toBeInTheDocument();
   });
 
+  // ── Spot reconciliation (2026-05-11) — UW panel spot vs DB cash ──
+  // The runner overrides panel_payload.spot with the DB-resolved SPX
+  // cash from index_candles_1m. The header line currently shows the
+  // snapshot's recorded UW spot, which periodically drifts 20-50pt
+  // from cash. Reconciliation: prefer the playbook's cash spot when
+  // present; surface both labeled only when they materially diverge.
+
+  it('header shows snapshot spot when no playbook is present', () => {
+    render(<PeriscopePanel {...baseProps} view={makeView()} />);
+    // Default view spot is 5800.25 — no playbook → single "spot" line.
+    expect(screen.getByText(/spot 5800\.25/)).toBeInTheDocument();
+  });
+
+  it('header shows the playbook cash spot when playbook agrees within 2pt', () => {
+    // Default view spot 5800.25, default playbook spot 5800.50 → diff
+    // 0.25 < 2pt threshold → single "spot" line, preferring playbook.
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        view={makeView()}
+        playbook={makePlaybook({ data: fullRow() })}
+      />,
+    );
+    expect(screen.getByText(/spot 5800\.50/)).toBeInTheDocument();
+    // The lower-precision UW value should NOT also appear as a header
+    // label when they agree.
+    expect(screen.queryByText(/cash 5800\.50 · UW/)).not.toBeInTheDocument();
+  });
+
+  it('header shows BOTH spots labeled when UW vs cash diverge > 2pt', () => {
+    // The Sun 2026-05-11 audit found UW panel spots drifting 25-50pt
+    // from SPX cash on certain days. When that happens the header
+    // surfaces both: cash <playbook> · UW <view>.
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        view={makeView({ spot: 7398.93 })}
+        playbook={makePlaybook({
+          data: fullRow({
+            panelPayload: {
+              ...fullRow().panelPayload!,
+              spot: 7374.3,
+            },
+          }),
+        })}
+      />,
+    );
+    expect(screen.getByText(/cash 7374\.30/)).toBeInTheDocument();
+    expect(screen.getByText(/UW 7398\.93/)).toBeInTheDocument();
+  });
+
   it('renders staleness as a red chip when slot is over 25 minutes old', () => {
     const stale = new Date(Date.now() - 40 * 60_000).toISOString();
     render(

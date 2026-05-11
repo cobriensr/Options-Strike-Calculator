@@ -314,13 +314,44 @@ function PeriscopeBody({
   const plan = useMemo(() => computeTradePlan(view), [view]);
   const hasClaudePlaybook =
     playbook?.data != null && playbook.data.panelPayload != null;
+
+  // Spot reconciliation. Two sources can disagree:
+  //   - `view.spot` is what UW's Periscope panel displayed at scrape
+  //     time (recorded in periscope_snapshots).
+  //   - `playbook.data.panelPayload.spot` is the DB-resolved SPX cash
+  //     close at the slot's `read_time` (from index_candles_1m), per
+  //     the 2026-05-11 runner override.
+  // The DB cash value is the authoritative spot for analytical
+  // purposes; the UW panel reading periodically drifts 20-50pt from
+  // cash. When the playbook is present and the two diverge by >2pt,
+  // show both labeled so the trader doesn't see a contradiction.
+  // When agreement is tight or no playbook exists, show one value
+  // (preferring playbook's cash spot when available).
+  const playbookSpot = hasClaudePlaybook
+    ? (playbook?.data?.panelPayload?.spot ?? null)
+    : null;
+  const showBothSpots =
+    playbookSpot != null && Math.abs(view.spot - playbookSpot) > 2;
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-baseline justify-between font-mono text-[11px]">
         <span style={{ color: theme.textSecondary }}>
           Slot {formatTimeCT(view.capturedAt)} CT · {view.expiry}
         </span>
-        <span style={{ color: theme.text }}>spot {view.spot.toFixed(2)}</span>
+        {showBothSpots ? (
+          <span style={{ color: theme.text }}>
+            cash {playbookSpot!.toFixed(2)}
+            <span style={{ color: theme.textMuted }}>
+              {' '}
+              · UW {view.spot.toFixed(2)}
+            </span>
+          </span>
+        ) : (
+          <span style={{ color: theme.text }}>
+            spot {(playbookSpot ?? view.spot).toFixed(2)}
+          </span>
+        )}
       </div>
 
       {playbook != null && <PlaybookSection playbook={playbook} />}
