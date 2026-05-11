@@ -117,10 +117,10 @@ missing, the helper short-circuits with a one-time boot warning and the
 scrape loop continues unaffected. This lets the scraper deploy before
 the webhook is armed.
 
-| Variable                   | Source                                  | Notes                                                                 |
-| -------------------------- | --------------------------------------- | --------------------------------------------------------------------- |
-| `VERCEL_BASE_URL`          | Vercel deployment URL                   | e.g. `https://theta-options.com`. Trailing slashes are stripped.      |
-| `PERISCOPE_WEBHOOK_SECRET` | shared secret (also in Vercel env)      | Sent as `Authorization: Bearer <value>`. MUST match Vercel exactly.   |
+| Variable                   | Source                             | Notes                                                               |
+| -------------------------- | ---------------------------------- | ------------------------------------------------------------------- |
+| `VERCEL_BASE_URL`          | Vercel deployment URL              | e.g. `https://theta-options.com`. Trailing slashes are stripped.    |
+| `PERISCOPE_WEBHOOK_SECRET` | shared secret (also in Vercel env) | Sent as `Authorization: Bearer <value>`. MUST match Vercel exactly. |
 
 The destination table `periscope_snapshots` is created by migration 140 in
 the main app, and the auto-playbook columns by migration 142. Run

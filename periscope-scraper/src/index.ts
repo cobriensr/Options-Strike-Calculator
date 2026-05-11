@@ -59,9 +59,7 @@ const { LOG_LEVEL, MS_PER_TICK, isMarketHours } = await import('./config.js');
 const { insertSnapshots } = await import('./db.js');
 const { scrapeAllPanels, scrapeBackfill, scrapeBackfillRange } =
   await import('./scrape.js');
-const { loadWebhookConfig, postPlaybookWebhook } = await import(
-  './webhook.js'
-);
+const { loadWebhookConfig, postPlaybookWebhook } = await import('./webhook.js');
 
 const logger = pino({ level: LOG_LEVEL });
 

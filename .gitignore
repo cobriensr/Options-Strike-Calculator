@@ -184,3 +184,4 @@ docs/tmp/periscope-probe/
 # Add new files explicitly with `git add -f docs/tmp/<path>`
 # when an analysis becomes worth keeping under version control.
 docs/tmp/
+.claude/codebase-map.json

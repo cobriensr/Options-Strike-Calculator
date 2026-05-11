@@ -43,7 +43,12 @@ export interface WebhookResult {
 
 export type Fetcher = (
   input: string,
-  init: { method: string; headers: Record<string, string>; body: string; signal?: AbortSignal },
+  init: {
+    method: string;
+    headers: Record<string, string>;
+    body: string;
+    signal?: AbortSignal;
+  },
 ) => Promise<{ ok: boolean; status: number; text: () => Promise<string> }>;
 
 export interface WebhookConfig {
@@ -122,7 +127,12 @@ export async function postPlaybookWebhook(
       // returns it for non-analyzable slots (pre-market, post-close,
       // missing SPX candle), and retrying won't help.
       if (res.ok || res.status === 422) {
-        return { ok: true, status: res.status, attempts: attempt, skipped: false };
+        return {
+          ok: true,
+          status: res.status,
+          attempts: attempt,
+          skipped: false,
+        };
       }
 
       // Non-422 4xx: no retry — auth or contract issue.

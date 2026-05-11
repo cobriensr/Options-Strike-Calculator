@@ -149,7 +149,9 @@ describe('postPlaybookWebhook — success cases', () => {
 
 describe('postPlaybookWebhook — failure + retry', () => {
   it('does NOT retry on 401 (auth failure)', async () => {
-    const fetcher = vi.fn().mockResolvedValue(mockResponse(401, 'Unauthorized'));
+    const fetcher = vi
+      .fn()
+      .mockResolvedValue(mockResponse(401, 'Unauthorized'));
     const result = await postPlaybookWebhook(
       VALID_INPUT,
       configWith({ fetcher }),
