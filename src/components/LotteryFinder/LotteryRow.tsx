@@ -114,6 +114,11 @@ const optionTypeBadge = (t: 'C' | 'P'): string =>
     ? 'border-green-500/40 bg-green-950/30 text-green-200'
     : 'border-red-500/40 bg-red-950/30 text-red-200';
 
+const rowContainerClass = (t: 'C' | 'P'): string =>
+  t === 'C'
+    ? 'border-green-900/40 bg-green-950/20'
+    : 'border-red-900/40 bg-red-950/20';
+
 const todBadge = (tod: string): string => {
   switch (tod) {
     case 'AM_open':
@@ -298,7 +303,9 @@ export const LotteryRow = memo(function LotteryRow({
   }, [netFlow.series]);
 
   return (
-    <div className="rounded border border-neutral-800 bg-neutral-950 p-3 text-sm">
+    <div
+      className={`rounded border p-3 text-sm ${rowContainerClass(fire.optionType)}`}
+    >
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         {/* Tier badge — peak-potential at a glance. Sits before the
             ticker so the user's eye lands on conviction first. */}
