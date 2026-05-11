@@ -456,6 +456,61 @@ describe('gradePlaybook: trade sims', () => {
     expect(spxSim?.exitReason).toBe('eod');
   });
 
+  it('skips long sim entirely when target ≤ entry (inverted levels — gammaCeiling tighter than longTrigger fire)', () => {
+    // Long fires at minute 9 with close=5810; target=5805 (below entry).
+    // The pre-fix grader recorded this as a "target hit loss" at exit
+    // 5805. With the level-sanity gate, no trade row is recorded.
+    const spx = [
+      candle({ hourCT: 9, minute: 0, open: 5800, close: 5800 }),
+      candle({ hourCT: 9, minute: 5, open: 5805, high: 5811, close: 5810 }),
+      candle({ hourCT: 9, minute: 6, open: 5810, close: 5811 }),
+      candle({ hourCT: 9, minute: 7, open: 5811, close: 5812 }),
+      candle({ hourCT: 9, minute: 8, open: 5812, close: 5811 }),
+      candle({ hourCT: 9, minute: 9, open: 5811, close: 5810 }),
+      candle({ hourCT: 9, minute: 10, open: 5810, low: 5800, close: 5808 }),
+      candle({ hourCT: 15, minute: 0, open: 5808, close: 5808 }),
+    ];
+    const grade = gradePlaybook(
+      defaultArgs({
+        playbook: defaultPlaybook({
+          longTrigger: 5810,
+          shortTrigger: 5790,
+          gammaCeiling: 5805, // INVERTED — below entry
+          gammaFloor: 5780,
+        }),
+        spxCandles: spx,
+      }),
+    );
+    expect(grade.longFired).toBe(true);
+    expect(grade.tradeSims.filter((s) => s.side === 'long')).toHaveLength(0);
+  });
+
+  it('skips short sim when target ≥ entry (gammaFloor above shortTrigger fire)', () => {
+    const spx = [
+      candle({ hourCT: 9, minute: 0, open: 5800, close: 5800 }),
+      candle({ hourCT: 9, minute: 5, open: 5795, low: 5789, close: 5790 }),
+      candle({ hourCT: 9, minute: 6, open: 5790, close: 5789 }),
+      candle({ hourCT: 9, minute: 7, open: 5789, close: 5788 }),
+      candle({ hourCT: 9, minute: 8, open: 5788, close: 5789 }),
+      candle({ hourCT: 9, minute: 9, open: 5789, close: 5790 }),
+      candle({ hourCT: 9, minute: 10, open: 5790, high: 5800, close: 5798 }),
+      candle({ hourCT: 15, minute: 0, open: 5798, close: 5798 }),
+    ];
+    const grade = gradePlaybook(
+      defaultArgs({
+        playbook: defaultPlaybook({
+          longTrigger: 5810,
+          shortTrigger: 5790,
+          gammaCeiling: 5820,
+          gammaFloor: 5795, // INVERTED — above entry
+        }),
+        spxCandles: spx,
+      }),
+    );
+    expect(grade.shortFired).toBe(true);
+    expect(grade.tradeSims.filter((s) => s.side === 'short')).toHaveLength(0);
+  });
+
   it('records ES + NQ sims alongside SPX when their candles exist', () => {
     const spx = [
       candle({ hourCT: 9, minute: 0, open: 5800, close: 5800 }),

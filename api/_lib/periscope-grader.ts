@@ -567,13 +567,33 @@ export function gradePlaybook(args: GradePlaybookArgs): Grade {
     if (!args.fire.fired || args.fire.firedAt == null) return;
     if (args.stop == null || args.target == null) return;
     if (args.fire.firedAtPrice == null) return;
+    // Level-sanity gate: drop trades where the playbook's stop/target
+    // don't bracket the entry correctly. The Friday 2026-05-08 audit
+    // found "target hit" exits with negative P&L because the gamma
+    // ceiling/floor sat on the wrong side of where the trigger fired
+    // (e.g. long trigger at 7390 with gammaCeiling at 7388 — the next
+    // minute's low touches 7388, exit fires as "target", trade is
+    // actually a loss). Skip these entirely rather than polluting
+    // win-rate / mean-pnl stats.
+    const entryPrice = args.fire.firedAtPrice;
+    const isLong = args.side === 'long';
+    const targetOk = isLong
+      ? args.target > entryPrice
+      : args.target < entryPrice;
+    const stopOk = isLong
+      ? args.stop < entryPrice
+      : args.stop > entryPrice;
+    if (!targetOk || !stopOk) {
+      // No row added — the trade is structurally undefined.
+      return;
+    }
     const entryAt = args.fire.firedAt;
     // SPX trade uses SPX candles
     const spxSim = simulateTrade({
       asset: 'SPX',
       side: args.side,
       entryAt,
-      entryPrice: args.fire.firedAtPrice,
+      entryPrice,
       stop: args.stop,
       target: args.target,
       candles: spx,
