@@ -186,6 +186,17 @@ export async function runCachedAnthropicCall(
     toolChoice,
   } = opts;
 
+  // Anthropic constraint: when tool_choice forces a specific tool
+  // (type='tool' or type='any'), `thinking` cannot be enabled.
+  // The combination 400s with:
+  //   "Thinking may not be enabled when tool_choice forces tool use."
+  // Auto-disable thinking in that case so callers don't have to
+  // remember the rule per call site.
+  const forcedToolChoice =
+    toolChoice != null &&
+    (toolChoice.type === 'tool' || toolChoice.type === 'any');
+  const effectiveThinking = thinking && !forcedToolChoice;
+
   const buildStream = (
     model: string,
     tokens: number,
@@ -197,7 +208,7 @@ export async function runCachedAnthropicCall(
       system: systemBlocks,
       messages,
     };
-    if (thinking) params.thinking = { type: 'adaptive' };
+    if (effectiveThinking) params.thinking = { type: 'adaptive' };
     if (eff) params.output_config = { effort: eff };
     if (tools != null && tools.length > 0) params.tools = tools;
     if (toolChoice != null) params.tool_choice = toolChoice;

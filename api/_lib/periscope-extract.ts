@@ -302,7 +302,10 @@ export async function extractChartStructure(
         },
       ],
       tools: [CHART_EXTRACTION_TOOL],
-      tool_choice: { type: 'tool', name: CHART_EXTRACTION_TOOL_NAME },
+      // tool_choice='auto' — see runner comment. Anthropic disallows
+      // adaptive thinking together with forced tool_choice; auto +
+      // prescriptive tool description gets reliable tool emission.
+      tool_choice: { type: 'auto' },
       messages: [
         {
           role: 'user',
@@ -403,7 +406,7 @@ export async function extractHeatMapStrikes(
         },
       ],
       tools: [HEATMAP_EXTRACTION_TOOL],
-      tool_choice: { type: 'tool', name: HEATMAP_EXTRACTION_TOOL_NAME },
+      tool_choice: { type: 'auto' },
       messages: [
         {
           role: 'user',

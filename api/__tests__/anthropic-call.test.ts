@@ -379,4 +379,119 @@ describe('runCachedAnthropicCall', () => {
 
     expect(result.text).toBe('part-1 part-2');
   });
+
+  // ───────────────────────────────────────────────────────────────
+  // Tool-use channel: thinking must be auto-disabled when tool_choice
+  // forces a specific tool. Anthropic 400s otherwise:
+  //   "Thinking may not be enabled when tool_choice forces tool use."
+  // (Sentry regression 2026-05-11 — all auto-playbook calls were
+  // failing under bc8b0cac until this guard was added.)
+  // ───────────────────────────────────────────────────────────────
+
+  function makeCapturingClient(response: MockResponseShape): {
+    client: Anthropic;
+    capturedParams: () => Record<string, unknown> | null;
+  } {
+    let captured: Record<string, unknown> | null = null;
+    const client = {
+      messages: {
+        stream: (params: Record<string, unknown>) => {
+          captured = params;
+          return {
+            finalMessage: () => Promise.resolve(response),
+          };
+        },
+      },
+    } as unknown as Anthropic;
+    return { client, capturedParams: () => captured };
+  }
+
+  const OK_RESPONSE: MockResponseShape = {
+    content: [{ type: 'text', text: 'ok' }],
+    usage: {
+      input_tokens: 100,
+      output_tokens: 20,
+      cache_read_input_tokens: 50,
+      cache_creation_input_tokens: 0,
+    },
+    stop_reason: 'end_turn',
+  };
+
+  it('disables thinking when tool_choice forces a specific tool', async () => {
+    const { client, capturedParams } = makeCapturingClient(OK_RESPONSE);
+    await runCachedAnthropicCall({
+      client,
+      systemBlocks: SYS_BLOCKS,
+      messages: USER_MSG,
+      primaryModel: 'claude-opus-4-7',
+      maxTokens: 1024,
+      thinking: true,
+      tools: [
+        {
+          name: 'extract',
+          description: 'test',
+          input_schema: { type: 'object', properties: {} },
+        },
+      ],
+      toolChoice: { type: 'tool', name: 'extract' },
+    });
+    const params = capturedParams()!;
+    expect(params.thinking).toBeUndefined();
+    expect(params.tool_choice).toEqual({ type: 'tool', name: 'extract' });
+  });
+
+  it('disables thinking when tool_choice forces any tool (type=any)', async () => {
+    const { client, capturedParams } = makeCapturingClient(OK_RESPONSE);
+    await runCachedAnthropicCall({
+      client,
+      systemBlocks: SYS_BLOCKS,
+      messages: USER_MSG,
+      primaryModel: 'claude-opus-4-7',
+      maxTokens: 1024,
+      thinking: true,
+      tools: [
+        {
+          name: 'extract',
+          description: 'test',
+          input_schema: { type: 'object', properties: {} },
+        },
+      ],
+      toolChoice: { type: 'any' },
+    });
+    expect(capturedParams()!.thinking).toBeUndefined();
+  });
+
+  it('KEEPS thinking enabled when tool_choice is auto (or unset)', async () => {
+    const { client, capturedParams } = makeCapturingClient(OK_RESPONSE);
+    await runCachedAnthropicCall({
+      client,
+      systemBlocks: SYS_BLOCKS,
+      messages: USER_MSG,
+      primaryModel: 'claude-opus-4-7',
+      maxTokens: 1024,
+      thinking: true,
+      tools: [
+        {
+          name: 'extract',
+          description: 'test',
+          input_schema: { type: 'object', properties: {} },
+        },
+      ],
+      toolChoice: { type: 'auto' },
+    });
+    expect(capturedParams()!.thinking).toEqual({ type: 'adaptive' });
+  });
+
+  it('KEEPS thinking disabled when caller passed thinking=false (even without tool_choice)', async () => {
+    const { client, capturedParams } = makeCapturingClient(OK_RESPONSE);
+    await runCachedAnthropicCall({
+      client,
+      systemBlocks: SYS_BLOCKS,
+      messages: USER_MSG,
+      primaryModel: 'claude-opus-4-7',
+      maxTokens: 1024,
+      thinking: false,
+    });
+    expect(capturedParams()!.thinking).toBeUndefined();
+  });
 });

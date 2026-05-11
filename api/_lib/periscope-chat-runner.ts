@@ -476,7 +476,13 @@ export async function runPeriscopeAutoPlaybook(
       // (Sentry "Bad control character in string literal in JSON",
       // fixed 2026-05-11 per llm-structured-output skill guidance).
       tools: [STRUCTURED_TOOL],
-      toolChoice: { type: 'tool', name: STRUCTURED_TOOL_NAME },
+      // tool_choice='auto' instead of forced — Anthropic doesn't allow
+      // adaptive thinking together with tool_choice={type:'tool'} or
+      // {type:'any'}. Auto preserves thinking; the system prompt below
+      // and the tool's prescriptive description make Claude reliably
+      // call the tool. The runner has a legacy text/JSON fallback for
+      // the rare case where Claude emits no tool_use block.
+      toolChoice: { type: 'auto' },
     });
   } catch (err) {
     Sentry.captureException(err, {

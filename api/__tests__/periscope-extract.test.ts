@@ -431,7 +431,9 @@ describe('extractChartStructure — tool_use channel', () => {
     expect(result?.structured.cone_upper).toBe(7150);
   });
 
-  it('forces tool_choice on the Anthropic call', async () => {
+  it('passes tools + tool_choice=auto on the Anthropic call', async () => {
+    // tool_choice='auto' (not forced) — Anthropic disallows adaptive
+    // thinking with forced tool_choice, and we want both.
     mockCreate.mockResolvedValueOnce(
       makeChartToolResponse({
         spot: 7120,
@@ -441,10 +443,7 @@ describe('extractChartStructure — tool_use channel', () => {
     );
     await extractChartStructure({ images: [validImage] }, stubAnthropic);
     const callArgs = mockCreate.mock.calls[0]![0]!;
-    expect(callArgs.tool_choice).toEqual({
-      type: 'tool',
-      name: 'emit_chart_extraction',
-    });
+    expect(callArgs.tool_choice).toEqual({ type: 'auto' });
     expect(callArgs.tools).toBeDefined();
     expect(callArgs.tools[0].name).toBe('emit_chart_extraction');
   });
@@ -524,7 +523,7 @@ describe('extractHeatMapStrikes — tool_use channel', () => {
     expect(result?.gex[0]!.strike).toBe(7050);
   });
 
-  it('forces tool_choice on the heat-map call', async () => {
+  it('passes tools + tool_choice=auto on the heat-map call', async () => {
     mockCreate.mockResolvedValueOnce(
       makeHeatmapToolResponse({
         gex: [{ strike: 7100, value: 2_500_000, color: 'green' }],
@@ -536,9 +535,7 @@ describe('extractHeatMapStrikes — tool_use channel', () => {
       stubAnthropic,
     );
     const callArgs = mockCreate.mock.calls[0]![0]!;
-    expect(callArgs.tool_choice).toEqual({
-      type: 'tool',
-      name: 'emit_heatmap_extraction',
-    });
+    expect(callArgs.tool_choice).toEqual({ type: 'auto' });
+    expect(callArgs.tools[0].name).toBe('emit_heatmap_extraction');
   });
 });
