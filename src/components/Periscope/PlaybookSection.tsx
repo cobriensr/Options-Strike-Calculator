@@ -323,11 +323,12 @@ function FuturesPlanBlock({ plan }: { plan: string }) {
 }
 
 /**
- * Concise italic line. Used for `confidenceBasis` (top summary) and
- * `expectedDealerBehavior` (bottom dealer-behavior line). NEVER for
- * the full prose — that lives in `periscope_analyses.prose_text` and
- * is viewable in the PeriscopeChatHistory detail view. The panel is
- * for at-a-glance trading decisions, not full debrief text.
+ * Concise italic line. Reserved for SHORT summaries (≤ 200 chars).
+ * Long structured prose uses `LabeledProseBlock` below — italics at
+ * small font are unreadable beyond a couple sentences. The lessons
+ * (2026-05-11) made `confidenceBasis` and `expectedDealerBehavior`
+ * multi-sentence prose; gating on length keeps each rendering style
+ * matched to its content.
  */
 function ItalicSummaryLine({ text }: { text: string | null }) {
   if (!text || text.trim() === '') return null;
@@ -339,6 +340,57 @@ function ItalicSummaryLine({ text }: { text: string | null }) {
       {text}
     </p>
   );
+}
+
+/**
+ * Labeled, non-italic, paragraph-friendly prose block for the richer
+ * fields that Claude now writes under the IF-THEN / disqualifier /
+ * flow-structure-check lessons. Mirrors `FuturesPlanBlock` shape so
+ * the visual rhythm stays consistent.
+ */
+function LabeledProseBlock({
+  label,
+  text,
+}: {
+  label: string;
+  text: string | null;
+}) {
+  if (!text || text.trim() === '') return null;
+  return (
+    <div className="flex flex-col gap-1">
+      <span
+        className="font-sans text-[9px] font-bold tracking-[0.12em] uppercase"
+        style={{ color: theme.textTertiary }}
+      >
+        {label}
+      </span>
+      <p
+        className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap"
+        style={{ color: theme.textSecondary }}
+      >
+        {text}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Choose the right renderer based on text length. Short summary
+ * fits in an italic 1-liner; multi-sentence prose gets a labeled
+ * paragraph block.
+ */
+function ProseField({
+  label,
+  text,
+  longThreshold = 200,
+}: {
+  label: string;
+  text: string | null;
+  longThreshold?: number;
+}) {
+  if (!text || text.trim() === '') return null;
+  if (text.length <= longThreshold) return <ItalicSummaryLine text={text} />;
+  return <LabeledProseBlock label={label} text={text} />;
 }
 
 /** Empty-state body when no playbook has been produced for the picked date. */
@@ -414,8 +466,10 @@ export function PlaybookSection({ playbook }: PlaybookSectionProps) {
 
       <TriggersRow payload={payload} />
 
-      {/* Top summary line — confidence_basis as a 1-sentence framing */}
-      <ItalicSummaryLine text={payload.confidenceBasis} />
+      {/* Top: confidence_basis. Italic 1-liner when short, labeled
+          paragraph block when the new lessons (2026-05-11) produce
+          multi-sentence basis prose. */}
+      <ProseField label="Confidence Basis" text={payload.confidenceBasis} />
 
       {payload.bias != null && (
         <div className="flex items-center gap-2 text-[11px]">
@@ -448,11 +502,15 @@ export function PlaybookSection({ playbook }: PlaybookSectionProps) {
 
       <GammaRow payload={payload} />
 
-      {/* Bottom summary line — expected_dealer_behavior as a 1-sentence
-          structural read. The full prose narrative is intentionally NOT
-          rendered in the panel — it lives in prose_text and is viewable
-          in PeriscopeChatHistory for full debrief reads. */}
-      <ItalicSummaryLine text={payload.expectedDealerBehavior} />
+      {/* Bottom: expected_dealer_behavior. Italic line when terse,
+          labeled paragraph block when the new lessons produce a
+          multi-sentence FLOW-STRUCTURE CHECK. The full prose narrative
+          is intentionally NOT rendered in the panel — it lives in
+          prose_text for full debrief reads. */}
+      <ProseField
+        label="Dealer Behavior"
+        text={payload.expectedDealerBehavior}
+      />
     </div>
   );
 }

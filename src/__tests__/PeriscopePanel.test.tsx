@@ -571,6 +571,73 @@ describe('PeriscopePanel: Claude playbook section', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('switches to labeled paragraph block when confidenceBasis is multi-sentence (>200 chars)', () => {
+    // The 2026-05-11 lessons made confidence_basis multi-sentence
+    // structural prose. ItalicSummaryLine at text-[11px] is unreadable
+    // beyond ~2 sentences; ProseField switches to a labeled paragraph
+    // block above the threshold.
+    const longBasis =
+      'Twin-strike +γ at 7,380 (+1,107) and 7,350 (+1,235) with no opposing flow in last 5 min. ' +
+      'Charm-zero at 7,290 sits 94 pts below — supportive but consumed at this slice. ' +
+      'No flow-structure conflict between the structural map and UW informed flow at this read.';
+    expect(longBasis.length).toBeGreaterThan(200);
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        view={makeView()}
+        playbook={makePlaybook({
+          data: fullRow({
+            panelPayload: {
+              ...fullRow().panelPayload!,
+              confidenceBasis: longBasis,
+            },
+          }),
+        })}
+      />,
+    );
+    expect(screen.getByText(/CONFIDENCE BASIS/i)).toBeInTheDocument();
+    expect(screen.getByText(/Twin-strike \+γ at 7,380/i)).toBeInTheDocument();
+  });
+
+  it('keeps italic 1-liner when confidenceBasis is short (≤200 chars)', () => {
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        view={makeView()}
+        playbook={makePlaybook({ data: fullRow() })}
+      />,
+    );
+    // The default fixture's confidenceBasis is short, so no "CONFIDENCE
+    // BASIS" label should render — it stays an italic summary line.
+    expect(screen.queryByText(/^CONFIDENCE BASIS$/i)).not.toBeInTheDocument();
+  });
+
+  it('switches to labeled paragraph block when expectedDealerBehavior is long (>200 chars)', () => {
+    const longBehavior =
+      'Passive sell into 7,380 has already been absorbed by aggressive call buying; ' +
+      'if spot clears 7,390 dealers become forced /ES buyers through the −γ pocket at 7,400 up to the next +γ ring at 7,425. ' +
+      'On rejection back below 7,375, dealers transition to procyclical /ES sellers through the −γ acceleration at 7,365 down to the dominant +γ floor at 7,350.';
+    expect(longBehavior.length).toBeGreaterThan(200);
+    render(
+      <PeriscopePanel
+        {...baseProps}
+        view={makeView()}
+        playbook={makePlaybook({
+          data: fullRow({
+            panelPayload: {
+              ...fullRow().panelPayload!,
+              expectedDealerBehavior: longBehavior,
+            },
+          }),
+        })}
+      />,
+    );
+    expect(screen.getByText(/DEALER BEHAVIOR/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Passive sell into 7,380 has already been absorbed/i),
+    ).toBeInTheDocument();
+  });
+
   it('renders staleness as a red chip when slot is over 25 minutes old', () => {
     const stale = new Date(Date.now() - 40 * 60_000).toISOString();
     render(
