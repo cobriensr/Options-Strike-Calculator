@@ -834,6 +834,32 @@ async function fetchPercentileRanks(
       ? fetchTbboOfiPercentile('NQ', nqOfi1h, '1h')
       : Promise.resolve(null),
   ]);
+  if (esRank.status === 'rejected') {
+    logger.warn(
+      { err: esRank.reason },
+      'TBBO OFI 1h percentile fetch failed (ES)',
+    );
+    Sentry.captureException(esRank.reason, {
+      tags: {
+        module: 'analyze-context-fetchers',
+        signal: 'tbbo_ofi',
+        symbol: 'ES',
+      },
+    });
+  }
+  if (nqRank.status === 'rejected') {
+    logger.warn(
+      { err: nqRank.reason },
+      'TBBO OFI 1h percentile fetch failed (NQ)',
+    );
+    Sentry.captureException(nqRank.reason, {
+      tags: {
+        module: 'analyze-context-fetchers',
+        signal: 'tbbo_ofi',
+        symbol: 'NQ',
+      },
+    });
+  }
   return {
     es:
       esRank.status === 'fulfilled' && esRank.value != null

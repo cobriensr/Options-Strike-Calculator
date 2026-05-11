@@ -108,6 +108,8 @@ import { getDarkPoolStrikeCountBuckets } from './dark-pool-query.js';
 import { fmtPct, formatDollarAbbrev, formatSigned } from './format-helpers.js';
 import { SESSION_OPEN_HOUR_UTC, SESSION_OPEN_MINUTE_UTC } from './constants.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
+import logger from './logger.js';
+import { Sentry } from './sentry.js';
 
 // ── Configuration ─────────────────────────────────────────────
 
@@ -643,6 +645,40 @@ export async function computeUwDeltas(now: Date): Promise<UwDeltas | null> {
     computeWhaleFlowPositioning(now),
     computeEtfTideDivergence(now),
   ]);
+
+  if (darkPoolRes.status === 'rejected') {
+    logger.warn(
+      { err: darkPoolRes.reason },
+      'UW dark-pool velocity compute failed',
+    );
+    Sentry.captureException(darkPoolRes.reason, {
+      tags: { module: 'uw-deltas', signal: 'dark_pool' },
+    });
+  }
+  if (gexRes.status === 'rejected') {
+    logger.warn({ err: gexRes.reason }, 'UW GEX intraday delta compute failed');
+    Sentry.captureException(gexRes.reason, {
+      tags: { module: 'uw-deltas', signal: 'gex' },
+    });
+  }
+  if (whaleRes.status === 'rejected') {
+    logger.warn(
+      { err: whaleRes.reason },
+      'UW whale-flow positioning compute failed',
+    );
+    Sentry.captureException(whaleRes.reason, {
+      tags: { module: 'uw-deltas', signal: 'whale_flow' },
+    });
+  }
+  if (etfRes.status === 'rejected') {
+    logger.warn(
+      { err: etfRes.reason },
+      'UW ETF tide divergence compute failed',
+    );
+    Sentry.captureException(etfRes.reason, {
+      tags: { module: 'uw-deltas', signal: 'etf_tide' },
+    });
+  }
 
   const darkPool =
     darkPoolRes.status === 'fulfilled' ? darkPoolRes.value : null;

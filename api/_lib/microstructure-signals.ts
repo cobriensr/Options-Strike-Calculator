@@ -52,6 +52,8 @@
 
 import { getDb } from './db.js';
 import { formatSigned } from './format-helpers.js';
+import logger from './logger.js';
+import { Sentry } from './sentry.js';
 
 // ── Configuration ─────────────────────────────────────────────
 
@@ -433,6 +435,19 @@ export async function computeAllSymbolSignals(
     computeMicrostructureSignals(now, 'ES'),
     computeMicrostructureSignals(now, 'NQ'),
   ]);
+
+  if (esResult.status === 'rejected') {
+    logger.warn({ err: esResult.reason }, 'ES microstructure compute failed');
+    Sentry.captureException(esResult.reason, {
+      tags: { module: 'microstructure-signals', symbol: 'ES' },
+    });
+  }
+  if (nqResult.status === 'rejected') {
+    logger.warn({ err: nqResult.reason }, 'NQ microstructure compute failed');
+    Sentry.captureException(nqResult.reason, {
+      tags: { module: 'microstructure-signals', symbol: 'NQ' },
+    });
+  }
 
   return {
     es: esResult.status === 'fulfilled' ? esResult.value : null,
