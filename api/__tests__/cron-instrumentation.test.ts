@@ -75,6 +75,15 @@ vi.mock('../_lib/cron-schedules.js', () => ({
       checkinMargin: 2,
       maxRuntime: 5,
     },
+    // Mirrors a high-frequency entry in production: every-minute schedule
+    // with the elevated `failureIssueThreshold` that the direct-HTTP +
+    // threshold fix relies on.
+    'high-freq-job': {
+      schedule: '* 13-21 * * 1-5',
+      checkinMargin: 2,
+      maxRuntime: 5,
+      failureIssueThreshold: 3,
+    },
   },
 }));
 
@@ -109,13 +118,17 @@ const guardOk = { apiKey: 'KEY', today: '2026-05-02' };
 function getCheckInCalls(): Array<{
   url: string;
   body: Record<string, unknown>;
+  headers: Record<string, string>;
 }> {
   return fetchMock.mock.calls.map(([url, init]) => {
-    const initObj = init as { body?: string } | undefined;
+    const initObj = init as
+      | { body?: string; headers?: Record<string, string> }
+      | undefined;
     const rawBody = initObj?.body;
     return {
       url: String(url),
       body: rawBody ? (JSON.parse(rawBody) as Record<string, unknown>) : {},
+      headers: initObj?.headers ?? {},
     };
   });
 }
@@ -915,6 +928,39 @@ describe('withCronCheckin', () => {
       }),
       'sentry check-in rejected',
     );
+  });
+
+  it('serializes failureIssueThreshold and sends Connection:close on every POST', async () => {
+    // Two production hardening pieces ship together: a higher
+    // failureIssueThreshold on high-frequency monitors silences
+    // single-blip noise, and `Connection: close` forces a fresh TCP
+    // per check-in to avoid undici's keep-alive pool serving stale
+    // sockets. Both are wire-level details and must be locked in by a
+    // test so future refactors don't quietly drop them.
+    const inner = vi.fn(async (_req, res) => {
+      res.status(200).json({ ok: true });
+    });
+    const wrapped = withCronCheckin('high-freq-job', inner);
+
+    const res = mockResponse();
+    await wrapped(authedReq(), res);
+
+    const calls = getCheckInCalls();
+    expect(calls).toHaveLength(2);
+    // The first check-in (in_progress) carries the monitor_config
+    // upsert — that's where Sentry reads our failure-issue threshold.
+    expect(calls[0]!.body).toMatchObject({
+      status: 'in_progress',
+      monitor_config: { failure_issue_threshold: 3 },
+    });
+    // Every check-in (both in_progress and completion) forces a fresh
+    // TCP connection — undici won't reuse pooled sockets here.
+    for (const c of calls) {
+      expect(c.headers).toMatchObject({
+        'Content-Type': 'application/json',
+        Connection: 'close',
+      });
+    }
   });
 
   it('does not POST when SENTRY_DSN is unset (degrades gracefully)', async () => {
