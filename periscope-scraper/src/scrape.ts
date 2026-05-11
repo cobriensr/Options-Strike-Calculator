@@ -135,8 +135,10 @@ function nextTimeframe(slotStartHhmm: string): string {
 
 // computeCapturedAt + isCtInRth live in ./dates.ts so unit tests can
 // exercise them without booting config.ts (which validates env vars
-// at module load). Re-exported here so existing callers keep working.
-export { computeCapturedAt } from './dates.js';
+// at module load). Imported for internal use AND re-exported so
+// existing callers (and tests) keep working unchanged.
+import { computeCapturedAt } from './dates.js';
+export { computeCapturedAt };
 
 /**
  * Open the DTE filter popover and set Min/Max DTE to 0.
