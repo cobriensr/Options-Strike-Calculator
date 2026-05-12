@@ -225,3 +225,76 @@ export function useGexStrikeExpiry(
 
   return { data, loading, error, errors, refresh };
 }
+
+export interface UseGexStrikeExpirySpxReturn {
+  /** SPX-only payload, or null until first successful fetch / 401 / empty. */
+  data: GexStrikeExpiryResponse | null;
+  loading: boolean;
+  error: string | null;
+  refresh: () => void;
+}
+
+/**
+ * SPX-only sibling of `useGexStrikeExpiry`. Fires a single
+ * /api/gex-strike-expiry?ticker=SPX request per poll instead of
+ * fanning out to all four tickers. Used by GexLandscape after the
+ * MM-data swap (Phase 2 of
+ * docs/superpowers/specs/gex-landscape-mm-swap-2026-05-12.md), which
+ * only consumes SPX for the vol reinforcement side channel — fetching
+ * SPY/QQQ/NDX every 30s would be ~75% wasted bandwidth.
+ *
+ * StrikeBattleMap continues to use the multi-ticker `useGexStrikeExpiry`
+ * — that's the other consumer that genuinely needs the full Record.
+ */
+export function useGexStrikeExpirySpx(
+  marketOpen: boolean,
+  expiry: string,
+  at: string | null = null,
+): UseGexStrikeExpirySpxReturn {
+  const accessMode = getAccessMode();
+  const [data, setData] = useState<GexStrikeExpiryResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const mountedRef = useRef(true);
+
+  const fetchSpx = useCallback(async () => {
+    try {
+      const result = await fetchOne('SPX', expiry, at);
+      if (!mountedRef.current) return;
+      setData(result);
+      setError(null);
+    } catch (err) {
+      if (mountedRef.current) setError(getErrorMessage(err));
+    } finally {
+      if (mountedRef.current) setLoading(false);
+    }
+  }, [expiry, at]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (accessMode === 'public') {
+      setLoading(false);
+      return;
+    }
+    void fetchSpx();
+    if (!marketOpen || at) return;
+    const id = setInterval(
+      () => void fetchSpx(),
+      POLL_INTERVALS.STRIKE_BATTLE_MAP,
+    );
+    return () => clearInterval(id);
+  }, [accessMode, marketOpen, at, fetchSpx]);
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    void fetchSpx();
+  }, [fetchSpx]);
+
+  return { data, loading, error, refresh };
+}
