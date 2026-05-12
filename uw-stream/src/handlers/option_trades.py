@@ -78,12 +78,14 @@ class OptionTradesHandler(Handler):
     fragmenting into one queue per ticker.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, name: str = "option_trades") -> None:
         # Channel name is descriptive — the daemon registers this same
         # instance for every option_trades:<TICKER> entry in the handler
         # table, so this name is what shows up in /metrics and Sentry
-        # tags rather than any one ticker.
-        super().__init__(name="option_trades")
+        # tags rather than any one ticker. Subclasses (e.g. the
+        # SPXW-specific Interval B/A handler) override the name so
+        # their dedicated queue shows up separately in /metrics.
+        super().__init__(name=name)
 
     def _transform(self, payload: dict) -> tuple | None:
         symbol = _first(payload, "option_chain", "option_chain_id", "option_symbol")

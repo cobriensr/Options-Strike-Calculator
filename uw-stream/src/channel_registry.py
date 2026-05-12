@@ -105,6 +105,7 @@ def handler_class_for_channel(channel: str) -> type[Handler]:
     """
     from handlers.flow_alerts import FlowAlertsHandler
     from handlers.gex_strike_expiry import GexStrikeExpiryHandler
+    from handlers.interval_ba import SPXWIntervalBAHandler
     from handlers.net_flow import NetFlowHandler
     from handlers.off_lit_trades import OffLitTradesHandler
     from handlers.option_trades import OptionTradesHandler
@@ -112,6 +113,13 @@ def handler_class_for_channel(channel: str) -> type[Handler]:
     exact: dict[str, type[Handler]] = {
         "flow-alerts": FlowAlertsHandler,
         "off_lit_trades": OffLitTradesHandler,
+        # option_trades:SPXW gets a dedicated subclass that inherits
+        # the raw-tick write path from OptionTradesHandler AND emits
+        # Interval B/A ask-side alerts into interval_ba_alerts. See
+        # docs/superpowers/specs/interval-ba-ask-alert-2026-05-12.md.
+        # Listed exact so the option_trades: prefix below does NOT
+        # short-circuit to the base class.
+        "option_trades:SPXW": SPXWIntervalBAHandler,
     }
     if channel in exact:
         return exact[channel]

@@ -89,6 +89,22 @@ class Settings(BaseSettings):
     # Diagnostics.
     ws_log_sample_rate: float = 0.001
 
+    # Interval B/A alert thresholds (SPXW handler — see
+    # docs/superpowers/specs/interval-ba-ask-alert-2026-05-12.md).
+    # Defaults are tuned for SPXW 0DTE specifically: a ≥70% ask-side
+    # 5-min bucket on $250K+ premium is the structural-anomaly band
+    # given SPX's mid-fill-dominated tape.
+    #
+    # ``interval_ba_enabled`` defaults False so Phase 1 (handler ships)
+    # can run in production accumulating state and emitting "would
+    # have fired" log lines without writing to the not-yet-existing
+    # ``interval_ba_alerts`` table. Phase 2 (DB migration) flips this
+    # to True via the env var.
+    interval_ba_enabled: bool = False
+    interval_ba_ratio_threshold: float = 0.70
+    interval_ba_premium_floor: int = 250_000
+    interval_ba_window_sec: int = 300
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     @field_validator("ws_log_sample_rate")
@@ -96,6 +112,29 @@ class Settings(BaseSettings):
     def _validate_sample_rate(cls, v: float) -> float:
         if not 0.0 <= v <= 1.0:
             raise ValueError("ws_log_sample_rate must be in [0.0, 1.0]")
+        return v
+
+    @field_validator("interval_ba_ratio_threshold")
+    @classmethod
+    def _validate_ratio_threshold(cls, v: float) -> float:
+        if not 0.0 < v <= 1.0:
+            raise ValueError(
+                "interval_ba_ratio_threshold must be in (0.0, 1.0]"
+            )
+        return v
+
+    @field_validator("interval_ba_premium_floor")
+    @classmethod
+    def _validate_premium_floor(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("interval_ba_premium_floor must be >= 0")
+        return v
+
+    @field_validator("interval_ba_window_sec")
+    @classmethod
+    def _validate_window_sec(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("interval_ba_window_sec must be > 0")
         return v
 
     @field_validator("ws_channels")
