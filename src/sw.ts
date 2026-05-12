@@ -111,3 +111,38 @@ self.addEventListener('message', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
 });
+
+// ── Web Push handler ────────────────────────────────────────────────
+// Dormant infrastructure for v2 of the Interval B/A alert feature
+// (docs/superpowers/specs/interval-ba-ask-alert-2026-05-12.md, Phase 4).
+// Currently no VAPID server-side fan-out exists, so this handler never
+// fires in production today — it's wired up so the v2 server-push path
+// can light up by shipping the server fan-out alone, no SW redeploy.
+// The payload contract: { title: string, body: string, tag?: string,
+// requireInteraction?: boolean }. Malformed pushes fall back to a
+// generic "Strike Calculator alert" title so a push never silently fails.
+self.addEventListener('push', (event) => {
+  type PushPayload = {
+    title?: string;
+    body?: string;
+    tag?: string;
+    requireInteraction?: boolean;
+  };
+  let payload: PushPayload = {};
+  try {
+    payload = (event.data?.json() as PushPayload | undefined) ?? {};
+  } catch {
+    // Non-JSON push body — fall through to defaults.
+  }
+
+  const title = payload.title ?? 'Strike Calculator alert';
+  const options: NotificationOptions = {
+    body: payload.body ?? '',
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
+    tag: payload.tag,
+    requireInteraction: payload.requireInteraction ?? false,
+  };
+
+  event.waitUntil(self.registration.showNotification(title, options));
+});

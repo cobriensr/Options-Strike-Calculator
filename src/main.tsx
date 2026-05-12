@@ -112,6 +112,8 @@ if (import.meta.env.PROD)
       { path: '/api/darkpool-levels', method: 'GET' },
       { path: '/api/alerts', method: 'GET' },
       { path: '/api/alerts-ack', method: 'POST' },
+      { path: '/api/interval-ba-alerts', method: 'GET' },
+      { path: '/api/interval-ba-alerts-ack', method: 'POST' },
       { path: '/api/vega-spikes', method: 'GET' },
       { path: '/api/greek-exposure-strike', method: 'GET' },
       { path: '/api/zero-gamma', method: 'GET' },

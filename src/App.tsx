@@ -21,6 +21,7 @@ import { useSnapshotSave } from './hooks/useSnapshotSave';
 import { useComputedSignals } from './hooks/useComputedSignals';
 import { useChainData } from './hooks/useChainData';
 import { useAlertPolling } from './hooks/useAlertPolling';
+import { useIntervalBAAlerts } from './hooks/useIntervalBAAlerts';
 import { useDarkPoolLevels } from './hooks/useDarkPoolLevels';
 import { useGexTarget } from './hooks/useGexTarget';
 import {
@@ -48,6 +49,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import GatedSection from './components/GatedSection';
 import AppHeader from './components/AppHeader';
 import AlertBanner from './components/AlertBanner';
+import IntervalBAAlertBanner from './components/IntervalBAAlertBanner';
 import DarkPoolLevels from './components/DarkPoolLevels';
 import { PeriscopePanel } from './components/Periscope/PeriscopePanel';
 import VegaSpikeFeed from './components/VegaSpikeFeed/VegaSpikeFeed';
@@ -267,6 +269,9 @@ export default function StrikeCalculator() {
     market.data.quotes?.marketOpen ?? false,
   );
   const alertState = useAlertPolling(market.data.quotes?.marketOpen ?? false);
+  const intervalBAAlertState = useIntervalBAAlerts(
+    market.data.quotes?.marketOpen ?? false,
+  );
 
   const darkPool = useDarkPoolLevels(market.data.quotes?.marketOpen ?? false);
   // Periscope panel time-travel: null = follow live (latest slot,
@@ -687,6 +692,10 @@ export default function StrikeCalculator() {
       <AlertBanner
         alerts={alertState.alerts}
         onAcknowledge={alertState.acknowledge}
+      />
+      <IntervalBAAlertBanner
+        alerts={intervalBAAlertState.alerts}
+        onAcknowledge={intervalBAAlertState.acknowledge}
       />
       <div
         id="app-shell"

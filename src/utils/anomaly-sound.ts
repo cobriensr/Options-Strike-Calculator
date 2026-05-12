@@ -148,3 +148,76 @@ export function playAnomalyChime(
   playTone(CHIME_SPECS[kind]);
   return 'played';
 }
+
+// ────────────────────────────────────────────────────────────────────
+// Sweep alarm — used by the SPXW Interval B/A alert hook.
+// ────────────────────────────────────────────────────────────────────
+
+/**
+ * Play a 3-tone urgent ascending pattern (E5 → A5 → C6) audibly
+ * distinct from `playAnomalyChime`'s single-tone variants. Used by
+ * `useIntervalBAAlerts` to flag a SPXW ask-side flow burst. Severity
+ * scales the peak gain so an `extreme` alert is unambiguously louder
+ * than a `warning`. Honors the same `anomalySoundEnabled` flag and
+ * is NOT throttled — the hook handles per-alert chime repeats at
+ * severity-tuned intervals.
+ */
+const SWEEP_NOTES = [659.25, 880.0, 1046.5]; // E5 → A5 → C6
+const SWEEP_NOTE_DURATION_S = 0.12;
+const SWEEP_NOTE_GAP_S = 0.04;
+
+const SWEEP_VOLUME_BY_SEVERITY: Record<
+  'warning' | 'critical' | 'extreme',
+  number
+> = {
+  warning: 0.35,
+  critical: 0.55,
+  extreme: 0.75,
+};
+
+export function playSweepAlarm(
+  severity: 'warning' | 'critical' | 'extreme' = 'warning',
+): 'played' | 'disabled' {
+  if (!isAnomalySoundEnabled()) return 'disabled';
+
+  try {
+    const Ctor = getAudioContextCtor();
+    if (!Ctor) return 'played';
+    const ctx = new Ctor();
+    const peak = SWEEP_VOLUME_BY_SEVERITY[severity];
+    const now = ctx.currentTime;
+    let offset = 0;
+
+    for (const freq of SWEEP_NOTES) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0, now + offset);
+      gain.gain.linearRampToValueAtTime(peak, now + offset + 0.01);
+      gain.gain.exponentialRampToValueAtTime(
+        0.0001,
+        now + offset + SWEEP_NOTE_DURATION_S,
+      );
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + offset);
+      osc.stop(now + offset + SWEEP_NOTE_DURATION_S);
+      offset += SWEEP_NOTE_DURATION_S + SWEEP_NOTE_GAP_S;
+    }
+
+    // Close the context after the last note finishes — release resources
+    // without leaving an idle AudioContext on every chime.
+    setTimeout(
+      () => {
+        ctx.close().catch(() => {
+          // Already closed.
+        });
+      },
+      Math.ceil((offset + 0.1) * 1000),
+    );
+  } catch {
+    // AudioContext wiring failed — silent.
+  }
+  return 'played';
+}
