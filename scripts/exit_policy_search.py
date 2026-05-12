@@ -49,6 +49,8 @@ PARQUET_DIR = Path.home() / 'Desktop' / 'Bot-Eod-parquet'
 
 
 def load_env() -> None:
+    if not ENV_FILE.exists():
+        sys.exit(f'Missing env file: {ENV_FILE}')
     with ENV_FILE.open() as f:
         for line in f:
             m = re.match(r'^([A-Z_][A-Z0-9_]*)=(.*)$', line.strip())

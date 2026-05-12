@@ -179,6 +179,7 @@ def main() -> int:
 
     uploaded_bytes = 0
     started = time.monotonic()
+    failed: list[tuple[str, str]] = []
     for i, f in enumerate(to_upload, start=1):
         key = local_to_key(f)
         size = f.stat().st_size
@@ -194,8 +195,12 @@ def main() -> int:
                 ExtraArgs={"ContentType": "application/x-parquet"},
             )
         except ClientError as e:
-            sys.stderr.write(f"❌ {f.name}: {e}\n")
-            return 3
+            # Don't abandon the batch — every upload is idempotent (skip-if-
+            # present), so we record the failure and keep going. Operator gets
+            # a full list at the end and can re-run to retry just the failures.
+            sys.stderr.write(f"❌ [{i}/{len(to_upload)}] {f.name}: {e}\n")
+            failed.append((f.name, str(e)))
+            continue
         elapsed = time.monotonic() - t0
         mibps = size / 1024 / 1024 / max(elapsed, 0.001)
         uploaded_bytes += size
@@ -208,10 +213,17 @@ def main() -> int:
         )
 
     total_elapsed = time.monotonic() - started
+    succeeded = len(to_upload) - len(failed)
     print(
-        f"✅ Upload complete: {len(to_upload)} files, "
+        f"{'⚠️ ' if failed else '✅'} Upload complete: "
+        f"{succeeded}/{len(to_upload)} files, "
         f"{uploaded_bytes / 1024 / 1024 / 1024:.1f} GiB in {total_elapsed:.0f}s"
     )
+    if failed:
+        sys.stderr.write(f"❌ {len(failed)} upload(s) failed:\n")
+        for name, err in failed:
+            sys.stderr.write(f"  {name}: {err}\n")
+        return 3
     return 0
 
 

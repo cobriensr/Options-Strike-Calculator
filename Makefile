@@ -1,24 +1,28 @@
 # Makefile — EOD options-flow pipeline
 #
-# Default usage (after dropping a new CSV into ~/Downloads/EOD-OptionFlow/):
+# Default usage (after dropping new CSV(s) into ~/Downloads/EOD-OptionFlow/):
 #
 #     make nightly
 #
-# That runs:
-#   1. analyze.py   — produces per-day parquet aggregate at scripts/eod-flow-analysis/output/by-day/
-#   2. ingest-flow  — writes a full unfiltered archive parquet to
-#                     ~/Desktop/Bot-Eod-parquet/, then writes a filtered
-#                     parquet, uploads to Vercel Blob, and deletes the
-#                     source CSV only after both writes + upload succeed
-#   3. whale_plots  — regenerates all 13 visualizations under ml/plots/whale-detection/
-#   4. enrich       — replays the EOD parquet against unenriched
-#                     lottery_finder_fires AND silent_boom_alerts rows in
-#                     Postgres, populating the realized_*_pct +
-#                     peak_ceiling_pct + minutes_to_peak columns. Replaces
-#                     the Vercel cron, which can only see the partial
-#                     ws_option_trades stream.
+# Iterates every pending bot-eod-report-YYYY-MM-DD.csv (sorted ascending) and
+# runs analyze + ingest per-date, then a single closing pass of
+# plots + backfill-flow + enrich + ingest-fulltape. Run as
+# `make nightly update` to chain the research refresh after.
 #
-# Override the date with DATE=YYYY-MM-DD if needed:
+# Per-date steps (run for each pending CSV):
+#   1. analyze.py   — per-day parquet aggregate at scripts/eod-flow-analysis/output/by-day/
+#   2. ingest-flow  — full unfiltered archive parquet to ~/Desktop/Bot-Eod-parquet/,
+#                     filtered parquet uploaded to Vercel Blob, source CSV deleted on success
+#
+# Closing pass (run once at the end):
+#   3. whale_plots  — regenerates all 13 visualizations under ml/plots/whale-detection/
+#                     (aggregator across every parquet — wasteful to run per-iteration)
+#   4. backfill-flow — UW REST → Postgres net-flow history
+#   5. enrich       — replays the EOD parquets against unenriched
+#                     lottery_finder_fires AND silent_boom_alerts rows
+#   6. ingest-fulltape — best-effort UW Full Tape capture (soft-fail)
+#
+# Override the date with DATE=YYYY-MM-DD to run the single-date pipeline:
 #     make nightly DATE=2026-04-29
 #
 # Override the input directory with INPUT_DIR=...
@@ -35,25 +39,38 @@ INPUT_DIR_FULLTAPE   ?= $(HOME)/Downloads/EOD-FullTape
 PARQUET_DIR_FULLTAPE ?= $(HOME)/Desktop/Eod-Full-Tape-parquet
 ENV_FILE    := .env.local
 
-# Auto-detect the latest CSV's date if DATE is not provided.
-# Looks for files named bot-eod-report-YYYY-MM-DD.csv.
-DATE        ?= $(shell ls -1 $(INPUT_DIR)/bot-eod-report-*.csv 2>/dev/null \
-                      | sed -nE 's|.*bot-eod-report-([0-9]{4}-[0-9]{2}-[0-9]{2})\.csv|\1|p' \
-                      | sort | tail -1)
+# Every bot-eod-report-YYYY-MM-DD.csv in INPUT_DIR, ascending.
+PENDING_DATES := $(shell ls -1 $(INPUT_DIR)/bot-eod-report-*.csv 2>/dev/null \
+                       | sed -nE 's|.*bot-eod-report-([0-9]{4}-[0-9]{2}-[0-9]{2})\.csv|\1|p' \
+                       | sort)
+
+# Capture explicit DATE= override BEFORE the ?= default fires below.
+# `command line` and `environment` are user-set; `file` means we defaulted.
+ifneq ($(filter command line environment,$(origin DATE)),)
+DATE_EXPLICIT := 1
+else
+DATE_EXPLICIT :=
+endif
+
+# Default DATE = latest pending CSV (used by single-date targets like analyze, ingest).
+DATE        ?= $(lastword $(PENDING_DATES))
 
 CSV_PATH    := $(INPUT_DIR)/bot-eod-report-$(DATE).csv
 
-.PHONY: help nightly nightly-resume analyze ingest plots backfill-flow enrich refit update tune check dry-run clean download-fulltape ingest-fulltape
+.PHONY: help nightly nightly-one nightly-resume analyze ingest plots backfill-flow enrich refit update tune check dry-run clean download-fulltape ingest-fulltape
 
 help:
 	@echo "EOD options-flow pipeline targets:"
 	@echo ""
-	@echo "  make nightly                  Run full pipeline (analyze → ingest → plots → enrich)"
-	@echo "                                Auto-falls-back to plots+enrich if the parquet"
-	@echo "                                already exists for the latest date (CSV consumed"
-	@echo "                                by a previous invocation). Also captures the UW"
-	@echo "                                Full Tape as a best-effort final step (soft-fail)."
-	@echo "  make nightly DATE=YYYY-MM-DD  Run pipeline for a specific date"
+	@echo "  make nightly                  Iterate every pending CSV in INPUT_DIR (ascending)."
+	@echo "                                Per-date: analyze --no-rollup, ingest, backfill-flow,"
+	@echo "                                enrich-lottery, enrich-silent-boom. Closing pass:"
+	@echo "                                cumulative rollup + plots + best-effort fulltape."
+	@echo "                                Auto-falls-back to plots+enrich if no CSV is pending"
+	@echo "                                but parquets are on disk (CSV consumed by a previous"
+	@echo "                                invocation). Run as 'make nightly update' to chain the"
+	@echo "                                research refresh after."
+	@echo "  make nightly DATE=YYYY-MM-DD  Run pipeline for one specific date (no loop)"
 	@echo "  make download-fulltape        Download UW Full Tape zip → ~/Downloads/EOD-FullTape/"
 	@echo "                                fulltape-DATE.csv (40-col raw tape, separate schema"
 	@echo "                                from bot-eod-report). Feeds 'make ingest-fulltape'."
@@ -260,9 +277,35 @@ nightly-resume: plots backfill-flow enrich
 	@# No prereq on the CSV — assumes ingest already happened.
 
 nightly:
+ifdef DATE_EXPLICIT
+	@echo "→ DATE=$(DATE) (explicit override) — single-date pipeline"
 	@if [[ -f "$(CSV_PATH)" ]]; then \
-	  echo "→ CSV found at $(CSV_PATH) — running full pipeline"; \
-	  $(MAKE) --no-print-directory analyze ingest plots backfill-flow enrich; \
+	  $(MAKE) --no-print-directory nightly-one DATE=$(DATE); \
+	  echo ""; \
+	  echo "═══ Closing pass (cumulative rollup + plots) ═══"; \
+	  $(PYTHON) scripts/eod-flow-analysis/analyze.py --rollup-only; \
+	  $(MAKE) --no-print-directory plots; \
+	elif ls -1 $(PARQUET_DIR)/$(DATE)-trades.parquet >/dev/null 2>&1; then \
+	  echo "  CSV gone but parquet on disk — running backfill-flow + enrich + plots only for $(DATE)"; \
+	  $(MAKE) --no-print-directory backfill-flow-one enrich-one plots DATE=$(DATE); \
+	else \
+	  echo "❌ Neither $(CSV_PATH) nor $(PARQUET_DIR)/$(DATE)-trades.parquet exists."; \
+	  exit 2; \
+	fi
+else
+	@if [[ -n "$(PENDING_DATES)" ]]; then \
+	  count=$$(echo "$(PENDING_DATES)" | wc -w | tr -d ' '); \
+	  echo "→ Found $$count pending CSV(s) in $(INPUT_DIR):"; \
+	  for d in $(PENDING_DATES); do echo "   • $$d"; done; \
+	  for d in $(PENDING_DATES); do \
+	    echo ""; \
+	    echo "▶▶▶ Processing $$d ◀◀◀"; \
+	    $(MAKE) --no-print-directory nightly-one DATE=$$d; \
+	  done; \
+	  echo ""; \
+	  echo "═══ Closing pass (cumulative rollup + plots, once across all dates) ═══"; \
+	  $(PYTHON) scripts/eod-flow-analysis/analyze.py --rollup-only; \
+	  $(MAKE) --no-print-directory plots; \
 	elif ls -1 $(PARQUET_DIR)/*-trades.parquet >/dev/null 2>&1; then \
 	  echo "→ No CSV in $(INPUT_DIR), but parquet already on disk in $(PARQUET_DIR)"; \
 	  echo "  (CSV was consumed by a previous invocation — running plots + backfill-flow + enrich only)"; \
@@ -272,15 +315,66 @@ nightly:
 	  echo "   Drop a bot-eod-report-YYYY-MM-DD.csv first."; \
 	  exit 2; \
 	fi
+endif
 	@# Best-effort capture of UW's Full Tape into the parallel parquet archive.
 	@# Soft-fails: a UW posting lag, network blip, or schema drift logs a warning
 	@# but does NOT abort `nightly` and does NOT block a chained `make update`.
 	@# Re-run via `make ingest-fulltape` once UW posts.
 	$(MAKE) --no-print-directory ingest-fulltape || echo "⚠️  Full Tape ingest failed (UW lag or network); re-run with 'make ingest-fulltape' after UW posts. Bot-eod pipeline succeeded."
-	@# Final summary is printed by ml/src/whale_plots.py (the `plots` step) so
-	@# the date is sourced from the loaded data, not from `$(DATE)` — which
-	@# resolves to empty here because `?= $(shell ls ...)` re-runs after the
-	@# CSV has been deleted by `ingest`.
+
+# Per-date inner pipeline. Called once per pending CSV by `nightly`, or directly
+# by `nightly DATE=YYYY-MM-DD`. Per-date steps are analyze, ingest, backfill-flow,
+# and enrich — because backfill_net_flow_history.py and enrich_lottery_outcomes.py
+# are single-date scripts (they pick the latest parquet via detect_latest_date()
+# if no --date is passed). Only `plots` is a true cross-date aggregator and runs
+# once in `nightly`'s closing pass.
+#
+# Per-date `analyze` passes --no-rollup; the cumulative rollup is regenerated
+# once at the end of the loop in `nightly`'s closing pass.
+nightly-one:
+	@if [[ -z "$(DATE)" ]]; then \
+	  echo "❌ nightly-one requires DATE=YYYY-MM-DD"; \
+	  exit 2; \
+	fi
+	@if [[ ! -f "$(CSV_PATH)" ]]; then \
+	  echo "❌ CSV not found for DATE=$(DATE): $(CSV_PATH)"; \
+	  exit 2; \
+	fi
+	@$(MAKE) --no-print-directory analyze-one ingest backfill-flow-one enrich-one DATE=$(DATE)
+
+# Per-date analyze that skips the cumulative rollup (rollup runs once in the
+# closing pass). Differs from `analyze` only by the --no-rollup flag.
+analyze-one: check
+	@echo ""
+	@echo "════════════════════════════════════════════════════════════════"
+	@echo "  STEP 1/4 — analyze.py --no-rollup (per-day parquet aggregate)"
+	@echo "════════════════════════════════════════════════════════════════"
+	$(PYTHON) scripts/eod-flow-analysis/analyze.py --day $(DATE) --no-rollup
+
+# Per-date backfill of the net-prem-ticks history. Wraps backfill-flow with
+# an explicit --date so the loop iterates correctly instead of fetching the
+# latest parquet's date every iteration.
+backfill-flow-one:
+	@echo ""
+	@echo "════════════════════════════════════════════════════════════════"
+	@echo "  STEP 4/5 — backfill_net_flow_history.py --date $(DATE)"
+	@echo "════════════════════════════════════════════════════════════════"
+	$(PYTHON) scripts/backfill_net_flow_history.py --date $(DATE)
+
+# Per-date enrich. Wraps `enrich` to pass --date so each backlogged date
+# enriches its own lottery_finder_fires rows. enrich_silent_boom_outcomes.py
+# already iterates internally, so we pass --date there too to scope it.
+enrich-one:
+	@echo ""
+	@echo "════════════════════════════════════════════════════════════════"
+	@echo "  STEP 5/5 — enrich_lottery_outcomes.py --date $(DATE)"
+	@echo "════════════════════════════════════════════════════════════════"
+	$(PYTHON) scripts/enrich_lottery_outcomes.py --date $(DATE)
+	@echo ""
+	@echo "════════════════════════════════════════════════════════════════"
+	@echo "  STEP 5/5 (cont.) — enrich_silent_boom_outcomes.py --date $(DATE)"
+	@echo "════════════════════════════════════════════════════════════════"
+	$(PYTHON) scripts/enrich_silent_boom_outcomes.py --date $(DATE)
 
 dry-run: check
 	@# Intentionally omits `enrich` — dry-run skips DB writes by contract.

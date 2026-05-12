@@ -612,6 +612,15 @@ def mark_no_post_ticks(conn, fire_ids: list[int]) -> None:
         (fire_ids,),
     )
     conn.commit()
+    # Warn if the UPDATE silently affected fewer rows than expected — happens
+    # if a fire row was deleted between the fetch and this UPDATE. Without
+    # this guard we'd commit cleanly and re-scan those IDs on the next nightly.
+    if cur.rowcount != len(fire_ids):
+        print(
+            f'[enrich] WARN mark_no_post_ticks: expected {len(fire_ids)} rows '
+            f'updated, got {cur.rowcount}',
+            file=sys.stderr,
+        )
 
 
 def main() -> None:

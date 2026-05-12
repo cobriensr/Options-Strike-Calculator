@@ -28,6 +28,8 @@ ENV_FILE = ROOT / '.env.local'
 
 
 def load_env():
+    if not ENV_FILE.exists():
+        sys.exit(f'Missing env file: {ENV_FILE}')
     with ENV_FILE.open() as f:
         for line in f:
             m = re.match(r'^([A-Z_][A-Z0-9_]*)=(.*)$', line.strip())

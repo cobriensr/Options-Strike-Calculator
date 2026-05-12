@@ -115,7 +115,19 @@ def is_in_session_ct(tape_time_utc: str) -> bool:
     return SESSION_OPEN_MIN <= mod < SESSION_CLOSE_MIN
 
 
-def fetch_ticker(api_key: str, ticker: str, date: str) -> list[dict[str, Any]]:
+# Sentinel returned by fetch_ticker on network/HTTP failure so the caller can
+# distinguish "UW had no data for this ticker" from "we never got a response".
+# Don't confuse with a list of zero rows — that means UW returned an empty data
+# array, which is legitimate for quiet tickers.
+class FetchError:
+    __slots__ = ('reason',)
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+
+def fetch_ticker(
+    api_key: str, ticker: str, date: str
+) -> list[dict[str, Any]] | FetchError:
     url = f'{UW_BASE}/stock/{ticker}/net-prem-ticks?date={date}'
     req = Request(url, headers={
         'Authorization': f'Bearer {api_key}',
@@ -137,15 +149,17 @@ def fetch_ticker(api_key: str, ticker: str, date: str) -> list[dict[str, Any]]:
                 wait = min(60, 2 ** attempt)
                 time.sleep(wait)
                 continue
-            print(f'[backfill-flow] {ticker} HTTPError {e.code}: {e.reason}')
-            return []
+            reason = f'HTTPError {e.code}: {e.reason}'
+            print(f'[backfill-flow] {ticker} {reason}', file=sys.stderr)
+            return FetchError(reason)
         except URLError as e:
             if attempt < max_attempts - 1:
                 time.sleep(min(30, 2 ** attempt))
                 continue
-            print(f'[backfill-flow] {ticker} URLError: {e.reason}')
-            return []
-    return []
+            reason = f'URLError: {e.reason}'
+            print(f'[backfill-flow] {ticker} {reason}', file=sys.stderr)
+            return FetchError(reason)
+    return FetchError('max retries exhausted')
 
 
 def parse_row(raw: dict[str, Any]) -> tuple:
@@ -243,7 +257,11 @@ def main() -> None:
         total_kept = 0
         total_stored = 0
         empty = 0
+        failed: list[tuple[str, str]] = []
         for ticker, raw in results:
+            if isinstance(raw, FetchError):
+                failed.append((ticker, raw.reason))
+                continue
             total_fetched += len(raw)
             kept = [
                 parse_row(r) for r in raw
@@ -259,8 +277,25 @@ def main() -> None:
             f'kept_in_session={total_kept:,} '
             f'inserted={total_stored:,} '
             f'empty_tickers={empty} '
+            f'failed_tickers={len(failed)} '
             f'in {fetch_secs:.1f}s fetch + {time.time() - t0 - fetch_secs:.1f}s db'
         )
+        if failed:
+            print(
+                f'[backfill-flow] {len(failed)} ticker(s) failed to fetch:',
+                file=sys.stderr,
+            )
+            for t, r in failed:
+                print(f'  {t}: {r}', file=sys.stderr)
+        # Guard against a fully-failed run that would silently leave downstream
+        # flow-inversion enrichment with no source data. If we couldn't store
+        # any rows from any ticker, exit non-zero so the Makefile aborts the
+        # pipeline rather than chaining into enrich on empty data.
+        if total_stored == 0 and total_fetched == 0:
+            sys.exit(
+                f'[backfill-flow] FAIL: no rows fetched or stored '
+                f'(failed_tickers={len(failed)})'
+            )
     finally:
         conn.close()
 

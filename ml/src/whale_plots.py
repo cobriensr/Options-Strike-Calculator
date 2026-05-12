@@ -664,19 +664,40 @@ def main() -> int:
     pairs = detect_pairs(qual, df)
 
     print(f"→ Building plots into {OUTPUT_DIR}")
-    plot_01_daily_footprint(qual, OUTPUT_DIR)
-    plot_02_timeline(qual, df, OUTPUT_DIR)
-    plot_03_todays_level_map(qual, df, OUTPUT_DIR)
-    plot_04_outcome_scatter(qual, OUTPUT_DIR)
-    plot_05_time_to_target(qual, OUTPUT_DIR)
-    plot_06_rr_distribution(qual, OUTPUT_DIR)
-    plot_07_premium_distribution(df, thresholds, OUTPUT_DIR)
-    plot_08_filter_funnel(df, thresholds, OUTPUT_DIR)
-    plot_09_trade_count_distribution(df, thresholds, OUTPUT_DIR)
-    plot_10_alignment_matrix(qual, OUTPUT_DIR)
-    plot_11_synthetic_detector(qual, pairs, OUTPUT_DIR)
-    plot_12_minute_clustering(qual, OUTPUT_DIR)
-    plot_13_strike_magnet(qual, OUTPUT_DIR)
+    # Run each plot in isolation so a single rendering failure doesn't abandon
+    # the remaining plots. Collect failures and surface a non-zero exit at the
+    # end so the operator sees which specific plots broke.
+    plot_calls = [
+        ('01_daily_footprint',       lambda: plot_01_daily_footprint(qual, OUTPUT_DIR)),
+        ('02_timeline',              lambda: plot_02_timeline(qual, df, OUTPUT_DIR)),
+        ('03_todays_level_map',      lambda: plot_03_todays_level_map(qual, df, OUTPUT_DIR)),
+        ('04_outcome_scatter',       lambda: plot_04_outcome_scatter(qual, OUTPUT_DIR)),
+        ('05_time_to_target',        lambda: plot_05_time_to_target(qual, OUTPUT_DIR)),
+        ('06_rr_distribution',       lambda: plot_06_rr_distribution(qual, OUTPUT_DIR)),
+        ('07_premium_distribution',  lambda: plot_07_premium_distribution(df, thresholds, OUTPUT_DIR)),
+        ('08_filter_funnel',         lambda: plot_08_filter_funnel(df, thresholds, OUTPUT_DIR)),
+        ('09_trade_count_distribution', lambda: plot_09_trade_count_distribution(df, thresholds, OUTPUT_DIR)),
+        ('10_alignment_matrix',      lambda: plot_10_alignment_matrix(qual, OUTPUT_DIR)),
+        ('11_synthetic_detector',    lambda: plot_11_synthetic_detector(qual, pairs, OUTPUT_DIR)),
+        ('12_minute_clustering',     lambda: plot_12_minute_clustering(qual, OUTPUT_DIR)),
+        ('13_strike_magnet',         lambda: plot_13_strike_magnet(qual, OUTPUT_DIR)),
+    ]
+    failures: list[tuple[str, str]] = []
+    for name, fn in plot_calls:
+        try:
+            fn()
+        except Exception as e:
+            failures.append((name, f'{type(e).__name__}: {e}'))
+            print(f"  ⚠️  {name} FAILED — {type(e).__name__}: {e}", file=sys.stderr)
+
+    if failures:
+        print(
+            f"\n⚠️  {len(failures)}/{len(plot_calls)} plot(s) failed; "
+            f"{len(plot_calls) - len(failures)} succeeded in {OUTPUT_DIR}",
+            file=sys.stderr,
+        )
+        print_pipeline_summary(df["trade_date"].max())
+        return 1
 
     print(f"\n✅ All plots written to {OUTPUT_DIR}")
     print_pipeline_summary(df["trade_date"].max())

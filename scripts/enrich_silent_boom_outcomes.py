@@ -186,50 +186,63 @@ def main() -> None:
     load_env()
     db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ['DATABASE_URL']
     conn = psycopg2.connect(db_url)
+    try:
+        dates = (
+            [args.date]
+            if args.date
+            else list_parquet_dates(args.from_date, args.to_date)
+        )
+        print(f'[enrich-silent-boom] {len(dates)} dates')
 
-    dates = (
-        [args.date]
-        if args.date
-        else list_parquet_dates(args.from_date, args.to_date)
-    )
-    print(f'[enrich-silent-boom] {len(dates)} dates')
-
-    grand_updated = 0
-    t0 = time.time()
-    for date_str in dates:
-        td = time.time()
-        alerts = fetch_unenriched(conn, date_str)
-        if not alerts:
-            print(f'  [{date_str}] no unenriched alerts')
-            continue
-        path = PARQUET_DIR / f'{date_str}-trades.parquet'
-        if not path.exists():
-            print(f'  [{date_str}] parquet missing — skipping ({len(alerts)} alerts)')
-            continue
-        chain_ids = list({a['chain'] for a in alerts})
-        tape = load_chain_tape(path, chain_ids)
-        chain_index = dict(iter(tape.groupby('option_chain_id', sort=False)))
-        updates: list[tuple] = []
-        skipped = 0
-        for a in alerts:
-            chain_df = chain_index.get(a['chain'])
-            if chain_df is None:
-                skipped += 1
+        grand_updated = 0
+        t0 = time.time()
+        for date_str in dates:
+            td = time.time()
+            alerts = fetch_unenriched(conn, date_str)
+            if not alerts:
+                print(f'  [{date_str}] no unenriched alerts')
                 continue
-            res = compute_outcomes(chain_df, a['bucket_ct'], a['entry_price'])
-            if res is None:
-                skipped += 1
+            path = PARQUET_DIR / f'{date_str}-trades.parquet'
+            if not path.exists():
+                # Loud — pipeline operator needs to know a parquet went missing.
+                # Distinguish from the chain-not-in-parquet skip below.
+                print(
+                    f'  [{date_str}] WARN parquet missing — skipping '
+                    f'{len(alerts)} alerts',
+                    file=sys.stderr,
+                )
                 continue
-            peak, mtp, r30, r60, r120, eod = res
-            updates.append((a['id'], peak, mtp, r30, r60, r120, eod))
-        update_outcomes(conn, updates)
-        grand_updated += len(updates)
-        print(f'  [{date_str}] alerts={len(alerts):>4,} '
-              f'updated={len(updates):>4,} skipped={skipped} '
-              f'in {time.time() - td:.1f}s')
+            chain_ids = list({a['chain'] for a in alerts})
+            tape = load_chain_tape(path, chain_ids)
+            chain_index = dict(iter(tape.groupby('option_chain_id', sort=False)))
+            updates: list[tuple] = []
+            skipped_chain_missing = 0
+            skipped_no_outcome = 0
+            for a in alerts:
+                chain_df = chain_index.get(a['chain'])
+                if chain_df is None:
+                    skipped_chain_missing += 1
+                    continue
+                res = compute_outcomes(chain_df, a['bucket_ct'], a['entry_price'])
+                if res is None:
+                    skipped_no_outcome += 1
+                    continue
+                peak, mtp, r30, r60, r120, eod = res
+                updates.append((a['id'], peak, mtp, r30, r60, r120, eod))
+            update_outcomes(conn, updates)
+            grand_updated += len(updates)
+            print(
+                f'  [{date_str}] alerts={len(alerts):>4,} '
+                f'updated={len(updates):>4,} '
+                f'skipped_chain={skipped_chain_missing} '
+                f'skipped_no_outcome={skipped_no_outcome} '
+                f'in {time.time() - td:.1f}s'
+            )
 
-    print(f'\n[enrich-silent-boom] DONE updated={grand_updated:,} '
-          f'in {time.time() - t0:.1f}s')
+        print(f'\n[enrich-silent-boom] DONE updated={grand_updated:,} '
+              f'in {time.time() - t0:.1f}s')
+    finally:
+        conn.close()
 
 
 if __name__ == '__main__':

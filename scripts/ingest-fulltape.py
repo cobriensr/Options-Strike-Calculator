@@ -244,6 +244,20 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  Parquet {parquet_size / 1024**2:.1f} MB")
     print(f"  Ratio   {csv_size / parquet_size:.1f}×")
 
+    # Guard CSV deletion on real archive content. A 0-byte / suspiciously-small
+    # parquet from a polars streaming bug or interrupted write would otherwise
+    # destroy the source CSV with no recovery path. 10 MB floor catches both
+    # empty writes and partial writes — UW Full Tape parquets are >100 MB even
+    # on the quietest sessions.
+    PARQUET_MIN_BYTES = 10 * 1024 * 1024
+    if parquet_size < PARQUET_MIN_BYTES:
+        print(
+            f"ERROR: archive parquet only {parquet_size:,} bytes "
+            f"(< {PARQUET_MIN_BYTES:,} floor) — refusing to delete CSV",
+            file=sys.stderr,
+        )
+        return 3
+
     if not args.keep_csv:
         print(f"→ Deleting source CSV: {csv_path}")
         csv_path.unlink()
