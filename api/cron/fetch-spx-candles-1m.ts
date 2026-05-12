@@ -18,8 +18,13 @@
  *
  * The cron file name remains `fetch-spx-candles-1m` for cron-schedule
  * stability; despite the name it now ingests both symbols. The two
- * symbol flows run in parallel with per-symbol error isolation — an
- * NDX Schwab failure does not block SPX, and vice versa.
+ * symbol flows run sequentially (SPX, then NDX) with per-symbol error
+ * isolation — an NDX Schwab failure does not block SPX, and vice versa.
+ * Sequential execution keeps this handler from acquiring two UW
+ * concurrency slots simultaneously, which used to put it at the back
+ * of the global semaphore queue on busy minutes and trip
+ * `MAX_ACQUIRE_ATTEMPTS` saturation alerts (Sentry issue 79). The added
+ * latency is ~1 s and well under the cron's 60 s wall budget.
  *
  * Storage:
  *   - All candles returned by UW are stored, including premarket
@@ -436,8 +441,8 @@ async function processIndex(
 
 /**
  * Wrap processIndex with a catch-all so a thrown error from one symbol
- * cannot poison the Promise.all and abort the other symbol's flow.
- * Logs the error and returns a SymbolResult with the failure reason.
+ * cannot escape and abort the other symbol's flow. Logs the error and
+ * returns a SymbolResult with the failure reason.
  */
 async function processIndexSafe(
   config: IndexConfig,
@@ -490,23 +495,27 @@ export default withCronCheckin('fetch-spx-candles-1m', async (req, res) => {
     // Per-symbol error isolation: NDX failure does not block SPX, and
     // vice versa. processIndexSafe wraps each flow so a thrown error
     // becomes a SymbolResult with a reason rather than rejecting the
-    // Promise.all.
-    const [spxResult, ndxResult] = await Promise.all([
-      processIndexSafe(
-        SPX_CONFIG,
-        ratios.get('SPX') ?? null,
-        apiKey,
-        today,
-        currentMinuteTs,
-      ),
-      processIndexSafe(
-        NDX_CONFIG,
-        ratios.get('NDX') ?? null,
-        apiKey,
-        today,
-        currentMinuteTs,
-      ),
-    ]);
+    // outer try.
+    //
+    // Sequential (not Promise.all) so this handler only ever holds one
+    // UW concurrency slot at a time. Running both legs in parallel
+    // doubled this cron's slot demand and caused MAX_ACQUIRE_ATTEMPTS
+    // saturation when 15+ minute-cadence UW crons collided on the
+    // global cap-of-3 semaphore (Sentry issue 79).
+    const spxResult = await processIndexSafe(
+      SPX_CONFIG,
+      ratios.get('SPX') ?? null,
+      apiKey,
+      today,
+      currentMinuteTs,
+    );
+    const ndxResult = await processIndexSafe(
+      NDX_CONFIG,
+      ratios.get('NDX') ?? null,
+      apiKey,
+      today,
+      currentMinuteTs,
+    );
 
     const totalStored = spxResult.stored + ndxResult.stored;
 

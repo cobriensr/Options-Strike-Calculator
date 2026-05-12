@@ -487,8 +487,8 @@ describe('fetch-spx-candles-1m handler', () => {
   it('isolates UW throws per-symbol — 200 with reason instead of crashing the cron', async () => {
     // Phase 1c: per-symbol error isolation. A UW throw used to bubble
     // to the outer handler catch and return 500. With both SPX and NDX
-    // running in parallel we'd rather report "this symbol failed,
-    // continuing" — processIndexSafe wraps the throw into a
+    // run through the same handler we'd rather report "this symbol
+    // failed, continuing" — processIndexSafe wraps the throw into a
     // SymbolResult with reason. NDX ratio is unavailable in the
     // default Schwab mock so its flow short-circuits before reaching
     // UW; only SPX exercises the throw path here.
@@ -734,7 +734,7 @@ describe('fetch-spx-candles-1m handler', () => {
     };
   }
 
-  it('runs SPX and NDX flows in parallel when Schwab returns all four quotes', async () => {
+  it('runs SPX then NDX flows when Schwab returns all four quotes', async () => {
     vi.mocked(schwabFetch).mockResolvedValue(makeFullSchwabQuotes());
     vi.mocked(uwFetch).mockResolvedValue([makeCandleRow()]);
 
@@ -859,10 +859,9 @@ describe('fetch-spx-candles-1m handler', () => {
 
     const ratio = ndxPrice / qqqPrice;
 
-    // Capture the second symbol's transaction (NDX runs second per
-    // INDEX_CONFIGS ordering in the handler — but Promise.all
-    // resolution order is stable for the call sites, not invocation
-    // order, so collect both and identify NDX by its symbol value)
+    // Capture the second symbol's transaction (NDX runs second per the
+    // handler's sequential SPX-then-NDX ordering; identify NDX by its
+    // symbol value rather than relying on call index).
     const captured: Array<Record<string, unknown>> = [];
     mockTransaction.mockImplementation(
       async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
