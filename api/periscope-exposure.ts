@@ -41,69 +41,15 @@ import {
 } from './_lib/api-helpers.js';
 import { buildPeriscopeView } from './_lib/periscope-format.js';
 import type { PeriscopeView } from './_lib/periscope-format.js';
-import { getDb } from './_lib/db.js';
+import {
+  DATE_RE,
+  TIME_RE,
+  endOfMinute,
+  fetchAvailableSlots,
+  fetchSpxSpot,
+} from './_lib/periscope-query.js';
 import { getETDateStr, ctWallClockToUtcIso } from '../src/utils/timezone.js';
 import logger from './_lib/logger.js';
-
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
-
-/** Round an ISO timestamp UP to the end of its minute (XX:XX:59.999Z). */
-function endOfMinute(iso: string): string {
-  const d = new Date(iso);
-  d.setUTCSeconds(59, 999);
-  return d.toISOString();
-}
-
-/**
- * Read the SPX close at-or-before `asOf` (ISO) for the given date, or
- * the latest close for that date when asOf is omitted. Used as the
- * authoritative spot for ranking strikes (the periscope skill enforces:
- * never the chart's red dotted line).
- */
-async function fetchSpxSpot(
-  date: string,
-  asOf?: string,
-): Promise<number | null> {
-  const sql = getDb();
-  const rows = asOf
-    ? ((await sql`
-        SELECT close
-        FROM index_candles_1m
-        WHERE symbol = 'SPX' AND date = ${date} AND timestamp <= ${asOf}
-        ORDER BY timestamp DESC
-        LIMIT 1
-      `) as Array<{ close: string | number }>)
-    : ((await sql`
-        SELECT close
-        FROM index_candles_1m
-        WHERE symbol = 'SPX' AND date = ${date}
-        ORDER BY timestamp DESC
-        LIMIT 1
-      `) as Array<{ close: string | number }>);
-  if (rows.length === 0) return null;
-  const v = Number(rows[0]!.close);
-  return Number.isFinite(v) && v > 0 ? v : null;
-}
-
-/**
- * List the distinct slot capture timestamps for the picked date, used
- * to back the prev/next stepper in the panel. Filters on panel='gamma'
- * — the per-row timeframe migration (#141) guarantees gamma/charm/vanna
- * land at the same captured_at, so gamma is a safe anchor.
- */
-async function fetchAvailableSlots(date: string): Promise<string[]> {
-  const sql = getDb();
-  const rows = (await sql`
-    SELECT DISTINCT captured_at
-    FROM periscope_snapshots
-    WHERE expiry = ${date} AND panel = 'gamma'
-    ORDER BY captured_at ASC
-  `) as Array<{ captured_at: string | Date }>;
-  return rows.map((r) =>
-    r.captured_at instanceof Date ? r.captured_at.toISOString() : r.captured_at,
-  );
-}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
