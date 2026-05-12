@@ -22,6 +22,7 @@ import { useComputedSignals } from './hooks/useComputedSignals';
 import { useChainData } from './hooks/useChainData';
 import { useAlertPolling } from './hooks/useAlertPolling';
 import { useIntervalBAAlerts } from './hooks/useIntervalBAAlerts';
+import { usePushSubscription } from './hooks/usePushSubscription';
 import { useDarkPoolLevels } from './hooks/useDarkPoolLevels';
 import { useGexTarget } from './hooks/useGexTarget';
 import {
@@ -272,6 +273,11 @@ export default function StrikeCalculator() {
   const intervalBAAlertState = useIntervalBAAlerts(
     market.data.quotes?.marketOpen ?? false,
   );
+  // Web Push v2 (interval-ba-push-v2-2026-05-12.md): subscribe() runs
+  // the full grant + register + POST /api/push/subscribe flow. No-op
+  // when VITE_VAPID_PUBLIC_KEY is unset, so the existing in-tab
+  // Notification permission CTA stays functional in v2-dormant mode.
+  const pushSub = usePushSubscription();
 
   const darkPool = useDarkPoolLevels(market.data.quotes?.marketOpen ?? false);
   // Periscope panel time-travel: null = follow live (latest slot,
@@ -747,7 +753,16 @@ export default function StrikeCalculator() {
             {market.hasData && (
               <NotificationPermission
                 permission={alertState.notificationPermission}
-                onRequest={alertState.requestPermission}
+                onRequest={async () => {
+                  // Phase 3 path: bump Notification.permission so the
+                  // in-tab notifications fire from the polling hooks.
+                  await alertState.requestPermission();
+                  // v2 path: also register a Web Push subscription so
+                  // alerts can fire with the tab closed / minimized /
+                  // mobile PWA backgrounded. Silent no-op when
+                  // VITE_VAPID_PUBLIC_KEY is unset (v2 dormant).
+                  await pushSub.subscribe();
+                }}
               />
             )}
 

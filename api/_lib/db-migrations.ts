@@ -4302,4 +4302,26 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 145,
+    description:
+      'Create push_subscriptions table for Web Push VAPID fan-out of SPXW Interval B/A alerts (v2 of docs/superpowers/specs/interval-ba-ask-alert-2026-05-12.md, see docs/superpowers/specs/interval-ba-push-v2-2026-05-12.md). Stores one row per device-subscription that the owner has granted Notification permission on. endpoint is UNIQUE so the same browser re-subscribing UPSERTs cleanly (browser may rotate the endpoint on profile reset, generating a new row — orphan rows are cleaned up post-410 in api/_lib/push.ts). NOT keyed by user_id — single-owner app; multiple rows = multiple devices for the same owner. Fan-out by api/push/notify reads all rows and posts the payload to each endpoint using the web-push SDK. Distinct from the prior push_subscriptions table (#78, dropped in #115) which carried a user_id column and FuturesGammaPlaybook-specific shape — that table has been gone for weeks so there is no name collision risk on a fresh DB. created_at DESC index supports the "show me my devices" admin query; the UNIQUE constraint on endpoint serves the UPSERT path without needing a separate named index.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS push_subscriptions (
+          id BIGSERIAL PRIMARY KEY,
+          endpoint TEXT NOT NULL UNIQUE,
+          p256dh_key TEXT NOT NULL,
+          auth_key TEXT NOT NULL,
+          user_agent TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          last_used_at TIMESTAMPTZ
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_push_subscriptions_created_at
+          ON push_subscriptions (created_at DESC)
+      `,
+    ],
+  },
 ];

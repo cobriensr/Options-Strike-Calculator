@@ -41,6 +41,50 @@ export const alertAckSchema = z.object({
 export type AlertAckBody = z.infer<typeof alertAckSchema>;
 
 // ============================================================
+// /api/push/* — Web Push v2 endpoints
+// ============================================================
+
+/**
+ * POST /api/push/subscribe body.
+ *
+ * Shape matches the `PushSubscriptionJSON` interface that the browser's
+ * `PushSubscription.toJSON()` returns — we accept it verbatim and split
+ * into columns server-side. `user_agent` is the only extra field, sent
+ * by the client for "which device is this?" admin display.
+ */
+export const pushSubscribeSchema = z.object({
+  endpoint: z.string().url().max(2000),
+  keys: z.object({
+    p256dh: z.string().min(1).max(200),
+    auth: z.string().min(1).max(200),
+  }),
+  user_agent: z.string().max(500).optional(),
+});
+
+export type PushSubscribeBody = z.infer<typeof pushSubscribeSchema>;
+
+/** POST /api/push/unsubscribe body. */
+export const pushUnsubscribeSchema = z.object({
+  endpoint: z.string().url().max(2000),
+});
+
+export type PushUnsubscribeBody = z.infer<typeof pushUnsubscribeSchema>;
+
+/**
+ * POST /api/push/notify body. Internal-only, gated by
+ * INTERNAL_NOTIFY_SECRET header — uw-stream is the legit caller.
+ */
+export const pushNotifySchema = z.object({
+  title: z.string().min(1).max(200),
+  body: z.string().min(1).max(500),
+  tag: z.string().max(200).optional(),
+  requireInteraction: z.boolean().optional(),
+  url: z.string().url().max(2000).optional(),
+});
+
+export type PushNotifyBody = z.infer<typeof pushNotifySchema>;
+
+// ============================================================
 // Shared zod helpers
 // ============================================================
 

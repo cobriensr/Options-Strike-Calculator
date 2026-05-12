@@ -1,0 +1,225 @@
+"""Unit tests for notify_alert + build_payload.
+
+The HTTP path is mocked at aiohttp.ClientSession.post so no real
+network IO happens.  build_payload is exercised against the alert-row
+shape produced by SPXWIntervalBAHandler._build_alert_row.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, date, datetime
+from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from handlers.interval_ba import _ALERT_COLUMNS
+from notify import build_payload, notify_alert
+
+# Mirror the alert tuple shape from SPXWIntervalBAHandler. NOT every
+# field is used by the payload formatter — the rest are passed through
+# for the DB write — but the test fixture must populate the full tuple
+# so build_payload's index lookups all succeed.
+_FIXTURE_ROW = (
+    "SPXW260512C07360000",            # option_chain
+    "SPXW",                           # ticker
+    "C",                              # option_type
+    Decimal("7360.000"),              # strike
+    date(2026, 5, 12),                # expiry
+    datetime(2026, 5, 12, 17, 5, tzinfo=UTC),   # bucket_start
+    datetime(2026, 5, 12, 17, 10, tzinfo=UTC),  # bucket_end
+    datetime(2026, 5, 12, 17, 6, 24, tzinfo=UTC),  # fired_at
+    Decimal("71.23"),                 # ratio_pct
+    Decimal("950000.00"),             # ask_premium
+    Decimal("1330000.00"),            # total_premium
+    5,                                # trade_count
+    Decimal("408480.00"),             # top_trade_premium
+    888,                              # top_trade_size
+    datetime(2026, 5, 12, 17, 6, 23, tzinfo=UTC),  # top_trade_executed_at
+    True,                             # top_trade_is_sweep
+    False,                            # top_trade_is_floor
+    Decimal("7355.00"),               # underlying_price
+)
+
+
+class TestBuildPayload:
+    def test_title_format(self):
+        payload = build_payload(_FIXTURE_ROW, _ALERT_COLUMNS)
+        assert payload["title"] == "SPXW 7360C 71% ASK"
+
+    def test_body_format_with_million_premium(self):
+        payload = build_payload(_FIXTURE_ROW, _ALERT_COLUMNS)
+        assert payload["body"] == "$1.33M premium / 5 trades — top: $408K sweep"
+
+    def test_body_format_with_sub_million_premium(self):
+        # Mutate a copy: total $408K, single ASK trade.
+        row = list(_FIXTURE_ROW)
+        idx = {n: i for i, n in enumerate(_ALERT_COLUMNS)}
+        row[idx["total_premium"]] = Decimal("408480.00")
+        row[idx["trade_count"]] = 1
+        row[idx["top_trade_is_sweep"]] = True
+        row[idx["top_trade_is_floor"]] = False
+        payload = build_payload(tuple(row), _ALERT_COLUMNS)
+        assert payload["body"] == "$408K premium / 1 trade — top: $408K sweep"
+
+    def test_body_omits_top_trade_clause_when_null(self):
+        row = list(_FIXTURE_ROW)
+        idx = {n: i for i, n in enumerate(_ALERT_COLUMNS)}
+        row[idx["top_trade_premium"]] = None
+        row[idx["top_trade_size"]] = None
+        row[idx["top_trade_is_sweep"]] = None
+        row[idx["top_trade_is_floor"]] = None
+        payload = build_payload(tuple(row), _ALERT_COLUMNS)
+        assert "top:" not in payload["body"]
+        assert "$1.33M premium / 5 trades" in payload["body"]
+
+    def test_body_renders_floor_flag(self):
+        row = list(_FIXTURE_ROW)
+        idx = {n: i for i, n in enumerate(_ALERT_COLUMNS)}
+        row[idx["top_trade_is_sweep"]] = False
+        row[idx["top_trade_is_floor"]] = True
+        payload = build_payload(tuple(row), _ALERT_COLUMNS)
+        assert "floor" in payload["body"]
+        assert "sweep" not in payload["body"]
+
+    def test_tag_includes_option_chain(self):
+        payload = build_payload(_FIXTURE_ROW, _ALERT_COLUMNS)
+        assert payload["tag"] == "interval-ba-SPXW260512C07360000"
+
+    def test_require_interaction_true_for_extreme(self):
+        # $1.33M total → severity 'extreme' → requireInteraction True.
+        payload = build_payload(_FIXTURE_ROW, _ALERT_COLUMNS)
+        assert payload["requireInteraction"] is True
+
+    def test_require_interaction_false_for_warning(self):
+        # Lower total to below $500K → 'warning' tier.
+        row = list(_FIXTURE_ROW)
+        idx = {n: i for i, n in enumerate(_ALERT_COLUMNS)}
+        row[idx["total_premium"]] = Decimal("260000.00")
+        payload = build_payload(tuple(row), _ALERT_COLUMNS)
+        assert payload["requireInteraction"] is False
+
+    def test_require_interaction_true_for_critical(self):
+        # $750K → 'critical' tier → requireInteraction True.
+        row = list(_FIXTURE_ROW)
+        idx = {n: i for i, n in enumerate(_ALERT_COLUMNS)}
+        row[idx["total_premium"]] = Decimal("750000.00")
+        payload = build_payload(tuple(row), _ALERT_COLUMNS)
+        assert payload["requireInteraction"] is True
+
+    def test_put_option_type_in_title(self):
+        row = list(_FIXTURE_ROW)
+        idx = {n: i for i, n in enumerate(_ALERT_COLUMNS)}
+        row[idx["option_type"]] = "P"
+        row[idx["strike"]] = Decimal("7350.000")
+        payload = build_payload(tuple(row), _ALERT_COLUMNS)
+        assert payload["title"] == "SPXW 7350P 71% ASK"
+
+
+class TestNotifyAlertDormantState:
+    """When VERCEL_NOTIFY_URL or INTERNAL_NOTIFY_SECRET is empty, the
+    notifier must no-op silently — no HTTP call, no Sentry event."""
+
+    @pytest.mark.asyncio
+    async def test_noops_when_url_empty(self, monkeypatch):
+        monkeypatch.setattr("notify.settings.vercel_notify_url", "")
+        monkeypatch.setattr(
+            "notify.settings.internal_notify_secret", "non-empty",
+        )
+        with patch("aiohttp.ClientSession") as mock_session:
+            await notify_alert({"title": "x", "body": "y"})
+        mock_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_noops_when_secret_empty(self, monkeypatch):
+        monkeypatch.setattr(
+            "notify.settings.vercel_notify_url",
+            "https://example.com/notify",
+        )
+        monkeypatch.setattr("notify.settings.internal_notify_secret", "")
+        with patch("aiohttp.ClientSession") as mock_session:
+            await notify_alert({"title": "x", "body": "y"})
+        mock_session.assert_not_called()
+
+
+class TestNotifyAlertHttpPath:
+    """When both env vars are set, notifier POSTs the payload."""
+
+    @pytest.mark.asyncio
+    async def test_posts_payload_with_secret_header(self, monkeypatch):
+        monkeypatch.setattr(
+            "notify.settings.vercel_notify_url",
+            "https://example.com/api/push/notify",
+        )
+        monkeypatch.setattr(
+            "notify.settings.internal_notify_secret", "my-secret",
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=mock_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            await notify_alert(
+                {"title": "SPXW 7360C 71% ASK", "body": "$1.33M premium"},
+            )
+
+        mock_session.post.assert_called_once()
+        call_kwargs = mock_session.post.call_args
+        # Endpoint URL.
+        assert call_kwargs.args[0] == "https://example.com/api/push/notify"
+        # Secret header carried verbatim.
+        headers = call_kwargs.kwargs["headers"]
+        assert headers["x-internal-notify-secret"] == "my-secret"
+        # JSON body.
+        assert call_kwargs.kwargs["json"] == {
+            "title": "SPXW 7360C 71% ASK",
+            "body": "$1.33M premium",
+        }
+
+    @pytest.mark.asyncio
+    async def test_swallows_4xx_after_logging(self, monkeypatch):
+        monkeypatch.setattr(
+            "notify.settings.vercel_notify_url", "https://example.com/x",
+        )
+        monkeypatch.setattr(
+            "notify.settings.internal_notify_secret", "s",
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.status = 401
+        mock_resp.text = AsyncMock(return_value="Unauthorized")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=mock_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        # Must not raise — 4xx is logged + Sentry'd but swallowed.
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            await notify_alert({"title": "x", "body": "y"})
+
+    @pytest.mark.asyncio
+    async def test_swallows_network_exception(self, monkeypatch):
+        monkeypatch.setattr(
+            "notify.settings.vercel_notify_url", "https://example.com/x",
+        )
+        monkeypatch.setattr(
+            "notify.settings.internal_notify_secret", "s",
+        )
+
+        def raise_on_create(*_args, **_kwargs):
+            raise OSError("connection refused")
+
+        with patch("aiohttp.ClientSession", side_effect=raise_on_create):
+            # Must not raise even on hard network failure.
+            await notify_alert({"title": "x", "body": "y"})

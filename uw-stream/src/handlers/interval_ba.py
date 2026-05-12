@@ -35,6 +35,7 @@ from config import settings
 from handlers.option_trades import _COLUMNS as _RAW_COLUMNS
 from handlers.option_trades import OptionTradesHandler
 from logger_setup import log
+from notify import build_payload, schedule_notify
 from sentry_setup import capture_exception
 
 # Hot-path lookup: column name → tuple index in the raw-tick row built
@@ -310,6 +311,15 @@ class SPXWIntervalBAHandler(OptionTradesHandler):
                 rows=pending,
                 conflict_cols=_ALERT_CONFLICT_COLS,
             )
+            # Fire-and-forget Web Push notification for each row written.
+            # See docs/superpowers/specs/interval-ba-push-v2-2026-05-12.md.
+            # schedule_notify no-ops silently when VERCEL_NOTIFY_URL or
+            # INTERNAL_NOTIFY_SECRET are unset, so this is safe to call
+            # regardless of v2 activation state. It also holds a strong
+            # ref to the task so the GC doesn't reap it mid-flight.
+            for row in pending:
+                payload = build_payload(row, _ALERT_COLUMNS)
+                schedule_notify(payload)
         return inserted
 
     # ------------------------------------------------------------------

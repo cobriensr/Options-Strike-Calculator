@@ -115,6 +115,8 @@ if (import.meta.env.PROD)
       { path: '/api/alerts-ack', method: 'POST' },
       { path: '/api/interval-ba-alerts', method: 'GET' },
       { path: '/api/interval-ba-alerts-ack', method: 'POST' },
+      { path: '/api/push/subscribe', method: 'POST' },
+      { path: '/api/push/unsubscribe', method: 'POST' },
       { path: '/api/vega-spikes', method: 'GET' },
       { path: '/api/greek-exposure-strike', method: 'GET' },
       { path: '/api/zero-gamma', method: 'GET' },

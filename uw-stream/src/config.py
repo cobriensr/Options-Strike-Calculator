@@ -105,6 +105,16 @@ class Settings(BaseSettings):
     interval_ba_premium_floor: int = 250_000
     interval_ba_window_sec: int = 300
 
+    # Web Push v2 (see docs/superpowers/specs/interval-ba-push-v2-2026-05-12.md).
+    # Both default empty → notify_alert no-ops, mirroring the Phase 1
+    # interval_ba_enabled pattern. Activate by setting both env vars on
+    # Railway after the Vercel /api/push/* endpoints + VAPID keys are
+    # in place. INTERNAL_NOTIFY_SECRET must match the Vercel-side value
+    # byte-for-byte; the Vercel endpoint compares it via timing-safe
+    # equal.
+    vercel_notify_url: str = ""
+    internal_notify_secret: str = ""
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     @field_validator("ws_log_sample_rate")
