@@ -4261,4 +4261,45 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 144,
+    description:
+      'Create interval_ba_alerts for SPXW per-contract 5-min Interval B/A ask-side alert events (Phase 2 of docs/superpowers/specs/interval-ba-ask-alert-2026-05-12.md). Written by the uw-stream SPXWIntervalBAHandler when a 0DTE SPXW contract crosses the configured ask-side premium ratio (default 70%) AND clears the floor (default $250K) within its current 5-min wall-clock bucket. Schema captures bucket boundaries, the ratio + premium aggregates at fire time, the dominant ask-side print that drove the ratio (premium / size / executed_at / is_sweep / is_floor) so the user can jump straight to the per-trade tape, and the SPX underlying price snapshot for chart context. UNIQUE (option_chain, bucket_start) is the natural dedupe key — the handler already enforces "one alert per contract per bucket" in memory, but the constraint guarantees idempotency across daemon restarts. Two indexes: (fired_at DESC) for the polled REST read endpoint /api/interval-ba-alerts?since=ISO, and a partial (acknowledged, fired_at DESC) WHERE acknowledged = FALSE for the chime-repeat loop in useIntervalBAAlerts (mirrors the market_alerts pattern from #25). Phase 2 only creates the table; the handler ships with interval_ba_enabled=False until the env var is flipped post-migration.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS interval_ba_alerts (
+          id BIGSERIAL PRIMARY KEY,
+          option_chain TEXT NOT NULL,
+          ticker TEXT NOT NULL,
+          option_type CHAR(1) NOT NULL CHECK (option_type IN ('C', 'P')),
+          strike NUMERIC(10, 3) NOT NULL,
+          expiry DATE NOT NULL,
+          bucket_start TIMESTAMPTZ NOT NULL,
+          bucket_end TIMESTAMPTZ NOT NULL,
+          fired_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          ratio_pct NUMERIC(5, 2) NOT NULL,
+          ask_premium NUMERIC(14, 2) NOT NULL,
+          total_premium NUMERIC(14, 2) NOT NULL,
+          trade_count INTEGER NOT NULL,
+          top_trade_premium NUMERIC(14, 2),
+          top_trade_size INTEGER,
+          top_trade_executed_at TIMESTAMPTZ,
+          top_trade_is_sweep BOOLEAN,
+          top_trade_is_floor BOOLEAN,
+          underlying_price NUMERIC(10, 2),
+          acknowledged BOOLEAN NOT NULL DEFAULT FALSE,
+          UNIQUE (option_chain, bucket_start)
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_interval_ba_alerts_fired_at
+          ON interval_ba_alerts (fired_at DESC)
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_interval_ba_alerts_ack
+          ON interval_ba_alerts (acknowledged, fired_at DESC)
+          WHERE acknowledged = FALSE
+      `,
+    ],
+  },
 ];
