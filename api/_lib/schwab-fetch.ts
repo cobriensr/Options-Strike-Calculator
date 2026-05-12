@@ -55,41 +55,82 @@ async function schwabApiFetch<T>(
   const url = `${base}${path}`;
   const MAX_RETRIES = 2;
   let res: Response | undefined;
+  let lastNetworkError: unknown;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    res = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${authResult.token}`,
-        Accept: 'application/json',
-      },
-      signal: AbortSignal.timeout(TIMEOUTS.SCHWAB_API),
-    });
-
-    if (res.ok || res.status < 500) break;
+    try {
+      res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${authResult.token}`,
+          Accept: 'application/json',
+        },
+        signal: AbortSignal.timeout(TIMEOUTS.SCHWAB_API),
+      });
+      lastNetworkError = undefined;
+      if (res.ok || res.status < 500) break;
+    } catch (err) {
+      // Network-layer failure: AbortSignal.timeout firing a TimeoutError
+      // (DOMException), ECONNRESET, ENOTFOUND, etc. Treat these the same
+      // way we treat a 5xx — log + retry. Without this catch the throw
+      // bubbles up to the cron handler, which captures it to Sentry,
+      // producing one "TimeoutError" issue per timeout (issue 76 was
+      // ~15 events/3hr on fetch-strike-iv calling Schwab's /chains).
+      lastNetworkError = err;
+      res = undefined;
+    }
 
     if (attempt < MAX_RETRIES) {
+      const errMsg =
+        lastNetworkError instanceof Error
+          ? lastNetworkError.message
+          : undefined;
       logger.warn(
-        { status: res.status, attempt, endpoint },
+        {
+          status: res?.status,
+          attempt,
+          endpoint,
+          ...(errMsg != null ? { err: errMsg } : {}),
+        },
         'Schwab transient error, retrying',
       );
-      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+      // Linear backoff with ±25% jitter so parallel callers that hit a
+      // shared upstream blip don't synchronize their retries into a
+      // second thundering herd. Total wait at attempt=0: 0.75-1.25s; at
+      // attempt=1: 1.5-2.5s.
+      const baseMs = 1000 * (attempt + 1);
+      const jitterMs = baseMs * (0.75 + Math.random() * 0.5);
+      await new Promise((r) => setTimeout(r, jitterMs));
     }
   }
 
-  if (!res!.ok) {
+  // All retries exhausted with a network failure (no Response at all).
+  if (!res) {
     done(false);
-    const body = await res!.text();
-    const code =
-      res!.status === 401 ? 'SCHWAB_API_REJECTED' : `SCHWAB_API_${res!.status}`;
+    const errMessage =
+      lastNetworkError instanceof Error
+        ? lastNetworkError.message
+        : String(lastNetworkError ?? 'unknown error');
     return {
       ok: false,
-      error: `[${code}] Schwab API error (${res!.status}): ${body}`,
-      status: res!.status === 401 ? 401 : res!.status === 429 ? 429 : 502,
+      error: `[SCHWAB_API_NETWORK] Schwab API network error: ${errMessage}`,
+      status: 504,
+    };
+  }
+
+  if (!res.ok) {
+    done(false);
+    const body = await res.text();
+    const code =
+      res.status === 401 ? 'SCHWAB_API_REJECTED' : `SCHWAB_API_${res.status}`;
+    return {
+      ok: false,
+      error: `[${code}] Schwab API error (${res.status}): ${body}`,
+      status: res.status === 401 ? 401 : res.status === 429 ? 429 : 502,
     };
   }
 
   done(true);
-  const data: T = await res!.json();
+  const data: T = await res.json();
   return { ok: true, data };
 }
 

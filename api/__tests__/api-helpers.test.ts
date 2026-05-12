@@ -307,6 +307,61 @@ describe('api-helpers', () => {
       });
       vi.unstubAllGlobals();
     });
+
+    it('retries on AbortSignal timeout and returns data when a later attempt succeeds', async () => {
+      // Schwab's /chains endpoint occasionally exceeds the 30s
+      // AbortController timeout when the payload is large (SPXW with
+      // strikeCount=500 across multiple expiries). The timeout throws a
+      // DOMException("aborted", "TimeoutError"); the retry loop must
+      // catch it like a 5xx and try again rather than bubbling it up to
+      // the caller (which was producing Sentry issue 76 — one
+      // TimeoutError captureException per timed-out ticker per minute).
+      vi.mocked(getAccessToken).mockResolvedValue({ token: 'tok123' });
+      const mockData = { SPY: { quote: { lastPrice: 500 } } };
+      const timeoutErr = new DOMException(
+        'The operation was aborted due to timeout',
+        'TimeoutError',
+      );
+      const fetchMock = vi
+        .fn()
+        .mockRejectedValueOnce(timeoutErr)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve(mockData),
+        });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const result = await schwabFetch('/quotes');
+      expect(result).toEqual({ ok: true, data: mockData });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      vi.unstubAllGlobals();
+    });
+
+    it('returns a 504 ApiResult error when every attempt times out', async () => {
+      // After MAX_RETRIES (2) + initial = 3 consecutive timeouts the
+      // helper surfaces a structured error instead of throwing. The
+      // caller (fetch-strike-iv runTicker) reads `result.ok = false`
+      // and skips the ticker with reason='schwab_error' — no exception
+      // propagates, no Sentry captureException fires.
+      vi.mocked(getAccessToken).mockResolvedValue({ token: 'tok123' });
+      const timeoutErr = new DOMException(
+        'The operation was aborted due to timeout',
+        'TimeoutError',
+      );
+      const fetchMock = vi.fn().mockRejectedValue(timeoutErr);
+      vi.stubGlobal('fetch', fetchMock);
+
+      const result = await schwabFetch('/quotes');
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.status).toBe(504);
+        expect(result.error).toMatch(/^\[SCHWAB_API_NETWORK\]/);
+        expect(result.error).toContain('aborted due to timeout');
+      }
+      // 3 attempts = initial + 2 retries
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      vi.unstubAllGlobals();
+    });
   });
 
   // ============================================================
