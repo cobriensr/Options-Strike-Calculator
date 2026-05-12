@@ -450,6 +450,43 @@ describe('fetch-gex-0dte handler', () => {
     expect(text).toContain('$3300');
   });
 
+  it('dedupes duplicate strikes in a single batch (last-write-wins)', async () => {
+    // UW occasionally restates a strike across paging boundaries.
+    // (date, timestamp, strike) collapses to `strike` within one INSERT
+    // (date + timestamp are constants for the batch), so the upstream
+    // duplicate must be removed before reaching Postgres — otherwise
+    // ON CONFLICT raises cardinality_violation.
+    process.env.UW_API_KEY = 'uwkey';
+    const stale = makeStrikeRow({ strike: '5800', call_gamma_oi: '111' });
+    const fresh = makeStrikeRow({ strike: '5800', call_gamma_oi: '999' });
+    stubFetch([stale, fresh]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    const [, params] = mockQuery.mock.calls[0]!;
+    const p = params as unknown[];
+    // 1 deduped row * 22 columns = 22 — NOT 44
+    expect(p).toHaveLength(22);
+    // Last-write-wins: the fresh row's call_gamma_oi (index 4) survives
+    expect(p[4]).toBe('999');
+    expect(res._json).toMatchObject({ success: true, stored: 1, skipped: 0 });
+    // Observability: the dropped duplicate is surfaced (log + metric) so
+    // a UW pagination regression doesn't silently absorb rows.
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ duplicates: 1, kept: 1 }),
+      'fetch-gex-0dte: dropped duplicate strikes pre-INSERT',
+    );
+  });
+
   it('does NOT issue an INSERT when filtered rows are empty', async () => {
     process.env.UW_API_KEY = 'uwkey';
     // All strikes far outside ±200 window from ATM

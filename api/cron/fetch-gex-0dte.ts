@@ -154,6 +154,26 @@ async function storeStrikes(
   // Use original timestamp (no rounding — minute precision)
   const timestamp = new Date(rows[0]!.time).toISOString();
 
+  // Dedupe by strike (last-write-wins). The conflict target is
+  // (date, timestamp, strike) but date and timestamp are constants
+  // for the whole batch, so duplicates inside one INSERT collapse to
+  // matching strikes. UW occasionally restates a strike across paging
+  // boundaries — Postgres raises cardinality_violation
+  // ("ON CONFLICT DO UPDATE command cannot affect row a second time")
+  // if we let those through. See api/_lib/bulk-upsert.ts contract.
+  const byStrike = new Map<string, (typeof filtered)[number]>();
+  for (const r of filtered) byStrike.set(r.strike, r);
+  const deduped = [...byStrike.values()];
+  const duplicates = filtered.length - deduped.length;
+  if (duplicates > 0) {
+    // Surface so UW pagination regressions don't silently absorb rows.
+    logger.info(
+      { duplicates, kept: deduped.length },
+      'fetch-gex-0dte: dropped duplicate strikes pre-INSERT',
+    );
+    metrics.increment('fetch_gex_0dte.dedup_removed');
+  }
+
   const sql = getDb();
 
   // Single multi-row INSERT: one HTTP round-trip instead of one-per-row.
@@ -164,7 +184,7 @@ async function storeStrikes(
   const params: unknown[] = [];
   const valuesClauses: string[] = [];
 
-  for (const row of filtered) {
+  for (const row of deduped) {
     const base = params.length;
     const placeholders: string[] = [];
     for (let i = 1; i <= COLUMNS_PER_ROW; i++) {
@@ -220,12 +240,12 @@ async function storeStrikes(
       id: number;
     }>;
     const stored = result.length;
-    return { stored, skipped: filtered.length - stored };
+    return { stored, skipped: deduped.length - stored };
   } catch (err) {
     logger.warn({ err }, 'Batch gex_strike_0dte insert failed');
     metrics.increment('fetch_gex_0dte.batch_insert_error');
     Sentry.captureException(err);
-    return { stored: 0, skipped: filtered.length };
+    return { stored: 0, skipped: deduped.length };
   }
 }
 

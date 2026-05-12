@@ -790,6 +790,110 @@ describe('fetch-gex-strike-expiry-etfs handler', () => {
 
   // ── Deterministic strike ordering ─────────────────────────
 
+  it('dedupes by (strike, ts_minute) within a single batch (last-write-wins)', async () => {
+    // UW occasionally emits two rows for the same strike with sub-minute
+    // timestamps that floor to the same minute (or duplicates across
+    // paging boundaries). Conflict target (ticker, expiry, strike,
+    // ts_minute) collapses to (strike, ts_minute) within one INSERT
+    // because ticker + expiry are constant for the batch — without
+    // dedupe Postgres raises cardinality_violation.
+    process.env.UW_API_KEY = 'uwkey';
+    const stale = {
+      ...makeStrikeRow({
+        strike: '590',
+        price: '590.5',
+        time: '2026-05-06T14:30:15Z',
+      }),
+      call_gamma_oi: '111',
+    };
+    const fresh = {
+      ...makeStrikeRow({
+        strike: '590',
+        price: '590.5',
+        time: '2026-05-06T14:30:45Z',
+      }),
+      call_gamma_oi: '999',
+    };
+    vi.stubGlobal(
+      'fetch',
+      makeRoutedFetchMock({
+        '/SPY/spot-exposures/strike': async () => ({
+          ok: true,
+          json: async () => ({ data: [{ price: '590.5' }] }),
+        }),
+        '/SPY/spot-exposures/expiry-strike': async () => ({
+          ok: true,
+          json: async () => ({ data: [stale, fresh] }),
+        }),
+      }),
+    );
+
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      mockResponse(),
+    );
+
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    const [, params] = mockQuery.mock.calls[0]!;
+    const p = params as unknown[];
+    // 1 deduped row * 30 columns — NOT 60
+    expect(p).toHaveLength(30);
+    // Slot 5 is call_gamma_oi (index 5 within the 30-column layout);
+    // the fresh row's value should win.
+    expect(p[5]).toBe('999');
+    // Observability: the dropped duplicate is logged with the ticker so
+    // a UW pagination regression for a specific ETF is debuggable.
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ ticker: 'SPY', duplicates: 1, kept: 1 }),
+      'fetch-gex-strike-expiry-etfs: dropped duplicate (strike, ts_minute) pre-INSERT',
+    );
+  });
+
+  it('keeps both rows when same strike spans different minutes', async () => {
+    // Symmetric guard: dedupe is keyed by (strike, ts_minute), not just
+    // strike. Rows at the same strike but different minutes are distinct
+    // and must both reach the DB.
+    process.env.UW_API_KEY = 'uwkey';
+    const minute1 = makeStrikeRow({
+      strike: '590',
+      price: '590.5',
+      time: '2026-05-06T14:30:00Z',
+    });
+    const minute2 = makeStrikeRow({
+      strike: '590',
+      price: '590.5',
+      time: '2026-05-06T14:31:00Z',
+    });
+    vi.stubGlobal(
+      'fetch',
+      makeRoutedFetchMock({
+        '/SPY/spot-exposures/strike': async () => ({
+          ok: true,
+          json: async () => ({ data: [{ price: '590.5' }] }),
+        }),
+        '/SPY/spot-exposures/expiry-strike': async () => ({
+          ok: true,
+          json: async () => ({ data: [minute1, minute2] }),
+        }),
+      }),
+    );
+
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      mockResponse(),
+    );
+
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    const [, params] = mockQuery.mock.calls[0]!;
+    expect((params as unknown[]).length).toBe(60);
+  });
+
   it('sorts strikes ascending by numeric value before INSERT', async () => {
     process.env.UW_API_KEY = 'uwkey';
     // UW returns strikes out of order; the cron must sort them so it

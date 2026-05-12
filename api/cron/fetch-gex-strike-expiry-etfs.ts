@@ -41,7 +41,7 @@
  */
 
 import { getDb } from '../_lib/db.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { uwFetch, cronJitter, withRetry } from '../_lib/api-helpers.js';
 import {
@@ -210,6 +210,38 @@ async function storeStrikes(
     (a, b) => Number.parseFloat(a.strike) - Number.parseFloat(b.strike),
   );
 
+  // Precompute ts_minute (floor to 60s) per row, then dedupe by
+  // (strike, ts_minute) with last-write-wins. The conflict target is
+  // (ticker, expiry, strike, ts_minute); ticker and expiry are constants
+  // for this batch, so duplicates inside one INSERT collapse to matching
+  // (strike, ts_minute) pairs. Without this dedupe Postgres raises
+  // cardinality_violation ("ON CONFLICT DO UPDATE command cannot affect
+  // row a second time") — see api/_lib/bulk-upsert.ts contract. UW can
+  // emit duplicates across paging boundaries or when sub-minute samples
+  // floor to the same minute.
+  const fallbackTsMinute = new Date(`${expiry}T21:00:00Z`).toISOString();
+  const byKey = new Map<
+    string,
+    { row: (typeof filtered)[number]; tsMinute: string }
+  >();
+  for (const row of filtered) {
+    const tMs = new Date(row.time).getTime();
+    const tsMinute = Number.isFinite(tMs)
+      ? new Date(tMs - (tMs % 60_000)).toISOString()
+      : fallbackTsMinute;
+    byKey.set(`${row.strike}|${tsMinute}`, { row, tsMinute });
+  }
+  const deduped = [...byKey.values()];
+  const duplicates = filtered.length - deduped.length;
+  if (duplicates > 0) {
+    // Surface so UW pagination regressions don't silently absorb rows.
+    logger.info(
+      { ticker, duplicates, kept: deduped.length },
+      'fetch-gex-strike-expiry-etfs: dropped duplicate (strike, ts_minute) pre-INSERT',
+    );
+    metrics.increment('fetch_gex_strike_expiry_etfs.dedup_removed');
+  }
+
   const sql = getDb();
 
   // Single multi-row INSERT — one HTTP round-trip to Neon regardless of
@@ -220,26 +252,16 @@ async function storeStrikes(
   const sqlParams: unknown[] = [];
   const valuesClauses: string[] = [];
 
-  for (const row of filtered) {
+  for (const { row, tsMinute } of deduped) {
     const base = sqlParams.length;
     const placeholders: string[] = [];
     for (let i = 1; i <= COLUMNS_PER_ROW; i++) {
       placeholders.push(`$${base + i}`);
     }
-    // ts_minute is pre-truncated to the whole minute in JS (floor to
-    // nearest 60s) so the unique constraint (ticker, expiry, strike,
-    // ts_minute) fires correctly. Slot layout:
+    // Slot layout:
     //  1=ticker, 2=expiry, 3=strike, 4=ts_minute, 5=price,
     //  6–17=OI+vol greeks, 18–29=ask/bid-vol greeks, 30=raw_payload
     valuesClauses.push(`(${placeholders.join(',')})`);
-
-    // Truncate timestamp to nearest minute (floor) in JS, same as the
-    // backfill script:  t - (t % 60_000)
-    const rawTime = row.time;
-    const tMs = new Date(rawTime).getTime();
-    const tsMinute = Number.isFinite(tMs)
-      ? new Date(tMs - (tMs % 60_000)).toISOString()
-      : new Date(`${expiry}T21:00:00Z`).toISOString();
 
     sqlParams.push(
       ticker,
@@ -352,12 +374,12 @@ async function storeStrikes(
         'fetch-gex-strike-expiry-etfs: batch insert failed',
       );
       Sentry.captureException(err);
-      return { stored: 0, skipped: filtered.length };
+      return { stored: 0, skipped: deduped.length };
     }
   }
   // Unreachable: the loop above either returns or falls through to the
   // catch's return. Satisfies TS's control-flow analysis.
-  return { stored: 0, skipped: filtered.length };
+  return { stored: 0, skipped: deduped.length };
 }
 
 // ── Per-ticker orchestrator ───────────────────────────────────
