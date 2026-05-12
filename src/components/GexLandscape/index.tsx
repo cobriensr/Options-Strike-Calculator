@@ -9,10 +9,13 @@
  *   Weakening Pin    — pos gamma + neg charm  (wall losing grip as day ages)
  *
  * Direction context (Ceiling / Floor) is overlaid based on strike vs. spot.
- * GEX Δ% shows the % change in net gamma since the previous 1-min snapshot.
- * Vol reinforcement signals whether intraday flow confirms OI structure.
+ * GEX Δ% shows the % change in MM dollar gamma vs. the prior 10-min slot
+ * (10m and 30m windows at MM cadence). Vol reinforcement signals whether
+ * intraday flow confirms OI structure — sourced from the WS side channel
+ * since MM-attribution data structurally cannot provide call/put split.
  *
- * Reuses the same gexStrike data passed to GexPerStrike — no extra fetch.
+ * Primary data source is `/api/periscope-strikes` (MM-attributed,
+ * 10-min cadence) — see docs/superpowers/specs/gex-landscape-mm-swap-2026-05-12.md.
  *
  * Module layout:
  *   types.ts                 — shared TS types
@@ -49,7 +52,7 @@ import { ScrubControls } from '../ScrubControls';
 import { StrikeTable } from './StrikeTable';
 import { computeBias } from './bias';
 import { computeGammaPressure, type GammaPressure } from './classify';
-import { PRICE_WINDOW, type Ticker } from './constants';
+import { PRICE_WINDOW } from './constants';
 import { computePriceTrend, computeSmoothedStrikes } from './deltas';
 import { formatBiasForClaude } from './formatters';
 import type { PriceTrend, Snapshot } from './types';
@@ -99,26 +102,15 @@ export interface GexLandscapeProps {
   onBiasChange?: (summary: string | null) => void;
 }
 
-/**
- * Tickers offered by the GexLandscape selector. SPY is first because the
- * uw-stream daemon currently only subscribes to SPY/QQQ; SPX/NDX appear
- * in the radio group but render empty until Phase 3d widens the WS
- * subscriptions and the Zod validator. Order is deliberate: ETFs first
- * (where flow is hunted), index second (reaction surface).
- */
-const TICKER_OPTIONS: readonly Ticker[] = ['SPY', 'QQQ', 'SPX', 'NDX'];
-
 const GexLandscape = memo(function GexLandscape({
   marketOpen,
   onBiasChange,
 }: GexLandscapeProps) {
-  // Owned internally (Phase 3c): App.tsx no longer threads scrub props.
-  // Defaults: SPX preserves the historical SPX-only mental model — users
-  // opening the page expect the SPX view. SPX renders empty until Phase
-  // 3d widens the uw-stream WS subscription + Zod validator; that brief
-  // regression is the accepted cost of the Path A migration. Date is
-  // today's ET calendar (used as the 0DTE expiry).
-  const [selectedTicker, setSelectedTicker] = useState<Ticker>('SPX');
+  // SPX-only since Phase 3 of the MM swap
+  // (docs/superpowers/specs/gex-landscape-mm-swap-2026-05-12.md) — MM
+  // data comes from periscope_snapshots which only captures SPX 0DTE.
+  // The prior multi-ticker selector lived here; SPY/QQQ flow hunting
+  // moved elsewhere per feedback_hunt_flow_in_spy_qqq.md.
   const [selectedDate, setSelectedDate] = useState<string>(() => getETToday());
 
   // Scrub state machine. We need the controller's `scrubTimestamp` BEFORE
@@ -145,20 +137,12 @@ const GexLandscape = memo(function GexLandscape({
   const {
     strikes,
     timestamps,
-    gexDeltaMap,
-    gexDelta5mMap,
     gexDelta10mMap,
-    gexDelta15mMap,
     gexDelta30mMap,
     loading,
     error,
     refresh,
-  } = useGexLandscapeData(
-    selectedTicker,
-    marketOpen,
-    selectedDate,
-    scrubTimestamp,
-  );
+  } = useGexLandscapeData('SPX', marketOpen, selectedDate, scrubTimestamp);
 
   // Mirror live `timestamps` into the scrub controller's input. The
   // controller can't depend on the same hook's output without creating
@@ -187,16 +171,16 @@ const GexLandscape = memo(function GexLandscape({
     });
   }, [scrub]);
 
-  // Reset scrub when the user changes date or ticker — the previous
-  // selection's pinned ts is meaningless against a different (date,
-  // ticker) snapshot list. Also reset `liveTimestamps` so the scrub
-  // controller doesn't see stale timestamps from the previous ticker
-  // while the new fetch is in flight.
+  // Reset scrub when the user changes date — the previous selection's
+  // pinned ts is meaningless against a different date's snapshot list.
+  // Also reset `liveTimestamps` so the scrub controller doesn't see
+  // stale timestamps from the previous date while the new fetch is in
+  // flight.
   const clearScrub = scrub.scrubLive;
   useEffect(() => {
     clearScrub();
     setLiveTimestamps([]);
-  }, [selectedDate, selectedTicker, clearScrub]);
+  }, [selectedDate, clearScrub]);
 
   const onRefresh = refresh;
   const onDateChange = setSelectedDate;
@@ -205,8 +189,6 @@ const GexLandscape = memo(function GexLandscape({
   const onScrubTo = scrub.scrubTo;
   const onScrubLive = scrubLive;
 
-  // `ticker` was previously a prop; now derived from local state.
-  const ticker = selectedTicker;
   const spotRowRef = useRef<HTMLDivElement>(null);
   // Scroll to ATM row only once on initial data arrival; never on scrub.
   const hasScrolledRef = useRef(false);
@@ -268,11 +250,9 @@ const GexLandscape = memo(function GexLandscape({
     timestamp,
     isLive,
     muted: top5Muted,
-    // Composite key — switching tickers must reset the tracker just
-    // like switching dates does, otherwise every strike on the new
-    // ticker shows the NEW pill (none of them were in the prior
-    // ticker's Top 5).
-    resetKey: `${selectedDate}:${selectedTicker}`,
+    // Reset the tracker on date change so strikes from the prior
+    // session don't get NEW pills against today's Top 5.
+    resetKey: selectedDate,
   });
 
   // Find the strike closest to spot for the ATM indicator.
@@ -287,12 +267,12 @@ const GexLandscape = memo(function GexLandscape({
     );
   }, [rows, currentPrice]);
 
-  // Strike with the largest absolute 1m GEX Δ% (excludes ATM row).
-  const maxChanged1mStrike = useMemo(() => {
+  // Strike with the largest absolute 10m GEX Δ% (excludes ATM row).
+  const maxChanged10mStrike = useMemo(() => {
     let maxAbs = 0;
     let maxStrike: number | null = null;
     for (const s of rows) {
-      const pct = gexDeltaMap.get(s.strike) ?? null;
+      const pct = gexDelta10mMap.get(s.strike) ?? null;
       if (pct === null) continue;
       const abs = Math.abs(pct);
       if (abs > maxAbs) {
@@ -301,7 +281,7 @@ const GexLandscape = memo(function GexLandscape({
       }
     }
     return maxAbs > 0 ? maxStrike : null;
-  }, [gexDeltaMap, rows]);
+  }, [gexDelta10mMap, rows]);
 
   // Per-strike gamma-pressure map (reinforcing / unwinding / neutral).
   // Built from the full `strikes` list (not just the `rows` window) so the
@@ -323,12 +303,12 @@ const GexLandscape = memo(function GexLandscape({
     return m;
   }, [strikes]);
 
-  // Strike with the largest absolute 5m GEX Δ% (excludes ATM row).
-  const maxChanged5mStrike = useMemo(() => {
+  // Strike with the largest absolute 30m GEX Δ% (excludes ATM row).
+  const maxChanged30mStrike = useMemo(() => {
     let maxAbs = 0;
     let maxStrike: number | null = null;
     for (const s of rows) {
-      const pct = gexDelta5mMap.get(s.strike) ?? null;
+      const pct = gexDelta30mMap.get(s.strike) ?? null;
       if (pct === null) continue;
       const abs = Math.abs(pct);
       if (abs > maxAbs) {
@@ -337,7 +317,7 @@ const GexLandscape = memo(function GexLandscape({
       }
     }
     return maxAbs > 0 ? maxStrike : null;
-  }, [gexDelta5mMap, rows]);
+  }, [gexDelta30mMap, rows]);
 
   // Structural bias synthesis — directional verdict + key levels + trends.
   // Uses smoothedRows (5-min avg) so small per-snapshot GEX fluctuations don't
@@ -347,19 +327,17 @@ const GexLandscape = memo(function GexLandscape({
     return computeBias(
       base,
       currentPrice,
-      gexDeltaMap,
-      gexDelta5mMap,
+      gexDelta10mMap,
+      gexDelta30mMap,
       priceTrend,
-      ticker,
     );
   }, [
     smoothedRows,
     rows,
     currentPrice,
-    gexDeltaMap,
-    gexDelta5mMap,
+    gexDelta10mMap,
+    gexDelta30mMap,
     priceTrend,
-    ticker,
   ]);
 
   // Notify parent whenever the structural bias verdict changes so it can be
@@ -398,19 +376,16 @@ const GexLandscape = memo(function GexLandscape({
     [],
   );
 
-  // When the viewed date OR ticker changes, reset scroll and the
-  // smoothing/price-trend buffer so the new context gets a clean baseline.
-  // Without resetting on ticker change, stale strikes from the prior
-  // ticker leak into computeSmoothedStrikes — which mixes scales (e.g.
-  // SPX 7,230 with QQQ 720) and corrupts the bias verdict's gravity
-  // pick. Δ% maps are sourced server-side now and refresh automatically
-  // with each poll — no client-side reset needed for those.
+  // When the viewed date changes, reset scroll and the smoothing /
+  // price-trend buffer so the new session gets a clean baseline. Δ%
+  // maps come straight from the hook and refresh automatically on each
+  // poll — no client-side reset needed for those.
   useEffect(() => {
     hasScrolledRef.current = false;
     snapshotBufferRef.current = [];
     setSmoothedRows([]);
     setPriceTrend(null);
-  }, [selectedDate, selectedTicker]);
+  }, [selectedDate]);
 
   // Scroll ATM row into view only on initial data arrival.
   useEffect(() => {
@@ -478,14 +453,9 @@ const GexLandscape = memo(function GexLandscape({
     />
   );
 
-  const tickerSelector = (
-    <TickerSelector value={selectedTicker} onChange={setSelectedTicker} />
-  );
-
   if (loading && rows.length === 0) {
     return (
       <SectionBox label="GEX LANDSCAPE" headerRight={headerRight} collapsible>
-        {tickerSelector}
         <div className="text-muted flex items-center justify-center py-8 font-mono text-[13px]">
           Loading GEX landscape…
         </div>
@@ -496,7 +466,6 @@ const GexLandscape = memo(function GexLandscape({
   if (error) {
     return (
       <SectionBox label="GEX LANDSCAPE" headerRight={headerRight} collapsible>
-        {tickerSelector}
         <div className="text-danger py-4 text-center font-mono text-[13px]">
           {error}
         </div>
@@ -507,7 +476,6 @@ const GexLandscape = memo(function GexLandscape({
   if (rows.length === 0) {
     return (
       <SectionBox label="GEX LANDSCAPE" headerRight={headerRight} collapsible>
-        {tickerSelector}
         <div className="text-muted py-8 text-center font-mono text-[13px]">
           No strike data available
         </div>
@@ -517,11 +485,10 @@ const GexLandscape = memo(function GexLandscape({
 
   return (
     <SectionBox label="GEX LANDSCAPE" headerRight={headerRight} collapsible>
-      {tickerSelector}
       <BiasPanel
         bias={bias}
-        maxChanged1mStrike={maxChanged1mStrike}
-        maxChanged5mStrike={maxChanged5mStrike}
+        maxChanged10mStrike={maxChanged10mStrike}
+        maxChanged30mStrike={maxChanged30mStrike}
       />
       <div
         ref={tablistRef}
@@ -590,13 +557,9 @@ const GexLandscape = memo(function GexLandscape({
             rows={rows}
             currentPrice={currentPrice}
             spotStrike={spotStrike}
-            ticker={ticker}
-            maxChanged1mStrike={maxChanged1mStrike}
-            maxChanged5mStrike={maxChanged5mStrike}
-            gexDeltaMap={gexDeltaMap}
-            gexDelta5mMap={gexDelta5mMap}
+            maxChanged10mStrike={maxChanged10mStrike}
+            maxChanged30mStrike={maxChanged30mStrike}
             gexDelta10mMap={gexDelta10mMap}
-            gexDelta15mMap={gexDelta15mMap}
             gexDelta30mMap={gexDelta30mMap}
             gammaPressureMap={gammaPressureMap}
             spotRowRef={spotRowRef}
@@ -614,13 +577,9 @@ const GexLandscape = memo(function GexLandscape({
             rows={topFive}
             currentPrice={currentPrice}
             spotStrike={spotStrike}
-            ticker={ticker}
-            maxChanged1mStrike={maxChanged1mStrike}
-            maxChanged5mStrike={maxChanged5mStrike}
-            gexDeltaMap={gexDeltaMap}
-            gexDelta5mMap={gexDelta5mMap}
+            maxChanged10mStrike={maxChanged10mStrike}
+            maxChanged30mStrike={maxChanged30mStrike}
             gexDelta10mMap={gexDelta10mMap}
-            gexDelta15mMap={gexDelta15mMap}
             gexDelta30mMap={gexDelta30mMap}
             gammaPressureMap={gammaPressureMap}
             spotRowRef={spotRowRef}
@@ -636,41 +595,3 @@ const GexLandscape = memo(function GexLandscape({
 });
 
 export default GexLandscape;
-
-interface TickerSelectorProps {
-  value: Ticker;
-  onChange: (ticker: Ticker) => void;
-}
-
-/**
- * Ticker radio group rendered at the top of the GEX Landscape section.
- * Pattern matches `StrikeBattleMap`'s strike-count toggle so the two
- * sibling panels stay visually consistent. SPX/NDX render until Phase
- * 3d widens the WS subscriptions; until then they show empty state.
- */
-function TickerSelector({ value, onChange }: TickerSelectorProps) {
-  return (
-    <div
-      role="radiogroup"
-      aria-label="GEX landscape ticker"
-      className="border-edge mb-2 inline-flex overflow-hidden rounded border"
-    >
-      {TICKER_OPTIONS.map((opt) => (
-        <button
-          key={opt}
-          type="button"
-          role="radio"
-          aria-checked={value === opt}
-          onClick={() => onChange(opt)}
-          className={`cursor-pointer px-3 py-1 font-mono text-[11px] tracking-wider uppercase transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/50 ${
-            value === opt
-              ? 'bg-surface text-primary'
-              : 'text-secondary hover:text-primary'
-          }`}
-        >
-          {opt}
-        </button>
-      ))}
-    </div>
-  );
-}

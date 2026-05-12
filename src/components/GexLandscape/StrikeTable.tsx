@@ -1,13 +1,18 @@
 /**
  * StrikeTable — sticky-header + scrollable grid of strikes within the
- * display window, with per-strike classification, signal, GEX, multi-window
- * Δ% (1m/5m/10m/15m/30m), charm, and vol reinforcement cells. The ATM row is
+ * display window, with per-strike classification, signal, GEX, MM-cadence
+ * Δ% (10m/30m), charm, and vol reinforcement cells. The ATM row is
  * ref-tagged so the parent can scroll it into view on initial load.
+ *
+ * Phase 3 of docs/superpowers/specs/gex-landscape-mm-swap-2026-05-12.md
+ * dropped the 1m/5m/15m columns — MM data publishes at 10-min cadence so
+ * faster windows have no signal. SPX-only after the swap; ticker prop +
+ * `getDirection`'s ticker param both removed.
  */
 
 import type { Ref } from 'react';
 import type { GexStrikeLevel } from './types';
-import { CLASS_META, CLS_TOOLTIP, type Ticker } from './constants';
+import { CLASS_META, CLS_TOOLTIP } from './constants';
 import {
   charmTooltip,
   classify,
@@ -18,24 +23,17 @@ import {
 import { fmtGex, fmtPct } from './formatters';
 
 /**
- * Strike | Classification | Signal | Net GEX
- *   | 1m Δ% | 5m Δ% | 10m Δ% | 15m Δ% | 30m Δ% | Charm | Vol
+ * Strike | Classification | Signal | Net GEX | 10m Δ% | 30m Δ% | Charm | Vol
  */
-const COLS =
-  'grid-cols-[76px_130px_1fr_88px_64px_64px_64px_64px_64px_76px_56px]';
+const COLS = 'grid-cols-[76px_130px_1fr_88px_72px_72px_76px_56px]';
 
 export interface StrikeTableProps {
   rows: GexStrikeLevel[];
   currentPrice: number;
   spotStrike: GexStrikeLevel | null;
-  /** Active ticker — drives the per-ticker spot band in `getDirection`. */
-  ticker: Ticker;
-  maxChanged1mStrike: number | null;
-  maxChanged5mStrike: number | null;
-  gexDeltaMap: Map<number, number | null>;
-  gexDelta5mMap: Map<number, number | null>;
+  maxChanged10mStrike: number | null;
+  maxChanged30mStrike: number | null;
   gexDelta10mMap: Map<number, number | null>;
-  gexDelta15mMap: Map<number, number | null>;
   gexDelta30mMap: Map<number, number | null>;
   spotRowRef: Ref<HTMLDivElement>;
   /**
@@ -60,13 +58,9 @@ export function StrikeTable({
   rows,
   currentPrice,
   spotStrike,
-  ticker,
-  maxChanged1mStrike,
-  maxChanged5mStrike,
-  gexDeltaMap,
-  gexDelta5mMap,
+  maxChanged10mStrike,
+  maxChanged30mStrike,
   gexDelta10mMap,
-  gexDelta15mMap,
   gexDelta30mMap,
   spotRowRef,
   showAtmDistance = false,
@@ -86,27 +80,19 @@ export function StrikeTable({
         <div className="px-3 py-2">Signal</div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="Dollar Γ at current spot: γ × OI × 100 × spot² × 0.01 (from /spot-exposures/strike). Gamma is evaluated at SPOT, so values spike sharply at ATM and decay fast. Shows where dealer hedging is concentrated RIGHT NOW. Different metric than the GEX Strike Board's GEX $ — that one uses strike-fixed gamma and converts to dealer hedge dollars per 1% SPX move."
+          title="MM-attributed dollar gamma per strike, captured by the periscope-scraper every 10 min during RTH. This is what UW Periscope renders on the Net GEX heat map — the proprietary dealer-attribution number, NOT the naive call+put gamma OI sum."
         >
           Dollar Γ
         </div>
-        <div className="px-3 py-2 text-right">1m Δ%</div>
-        <div className="px-3 py-2 text-right">5m Δ%</div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="GEX Δ% over 10 minutes — empty until 10+ min of buffered snapshots accumulate this session."
+          title="% change in MM dollar gamma vs. the prior 10-min slot. The fastest signal at MM cadence — captures sign flips and acceleration. Empty when no prior slot is available (first slot of the session)."
         >
           10m Δ%
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="GEX Δ% over 15 minutes — empty until 15+ min of buffered snapshots accumulate this session."
-        >
-          15m Δ%
-        </div>
-        <div
-          className="cursor-help px-3 py-2 text-right"
-          title="GEX Δ% over 30 minutes — empty until 30+ min of buffered snapshots accumulate this session."
+          title="% change in MM dollar gamma vs. the slot 30 min ago (3 slots back). Captures session-scale build/unwind. Empty until 3 slots of history exist."
         >
           30m Δ%
         </div>
@@ -123,18 +109,15 @@ export function StrikeTable({
         {rows.map((s) => {
           const isSpot = s.strike === spotStrike?.strike;
           const isAboveSpot = s.strike > currentPrice;
-          const isMax1m = !isSpot && s.strike === maxChanged1mStrike;
-          const isMax5m = !isSpot && s.strike === maxChanged5mStrike;
+          const isMax10m = !isSpot && s.strike === maxChanged10mStrike;
+          const isMax30m = !isSpot && s.strike === maxChanged30mStrike;
           // Confluence: same strike leads BOTH timeframes — stronger signal.
-          const isConfluence = isMax1m && isMax5m;
-          const isHighlighted = isMax1m || isMax5m;
-          const dir = getDirection(s.strike, currentPrice, ticker);
+          const isConfluence = isMax10m && isMax30m;
+          const isHighlighted = isMax10m || isMax30m;
+          const dir = getDirection(s.strike, currentPrice);
           const cls = classify(s.netGamma, s.netCharm);
           const meta = CLASS_META[cls];
-          const pct1m = gexDeltaMap.get(s.strike) ?? null;
-          const pct5m = gexDelta5mMap.get(s.strike) ?? null;
           const pct10m = gexDelta10mMap.get(s.strike) ?? null;
-          const pct15m = gexDelta15mMap.get(s.strike) ?? null;
           const pct30m = gexDelta30mMap.get(s.strike) ?? null;
           const isNew = justEntered?.has(s.strike) ?? false;
           const isAnchor = oldestStrike !== null && s.strike === oldestStrike;
@@ -268,40 +251,6 @@ export function StrikeTable({
                 </span>
               </div>
 
-              {/* 1m GEX Δ% */}
-              <div className="flex items-center justify-end px-3 py-1.5">
-                <span
-                  className="font-mono text-[11px]"
-                  style={{
-                    color:
-                      pct1m === null
-                        ? 'var(--color-muted)'
-                        : pct1m >= 0
-                          ? 'rgba(74,222,128,0.85)'
-                          : 'rgba(248,113,113,0.85)',
-                  }}
-                >
-                  {fmtPct(pct1m)}
-                </span>
-              </div>
-
-              {/* 5m GEX Δ% */}
-              <div className="flex items-center justify-end px-3 py-1.5">
-                <span
-                  className="font-mono text-[11px]"
-                  style={{
-                    color:
-                      pct5m === null
-                        ? 'var(--color-muted)'
-                        : pct5m >= 0
-                          ? 'rgba(74,222,128,0.85)'
-                          : 'rgba(248,113,113,0.85)',
-                  }}
-                >
-                  {fmtPct(pct5m)}
-                </span>
-              </div>
-
               {/* 10m GEX Δ% */}
               <div className="flex items-center justify-end px-3 py-1.5">
                 <span
@@ -316,23 +265,6 @@ export function StrikeTable({
                   }}
                 >
                   {fmtPct(pct10m)}
-                </span>
-              </div>
-
-              {/* 15m GEX Δ% */}
-              <div className="flex items-center justify-end px-3 py-1.5">
-                <span
-                  className="font-mono text-[11px]"
-                  style={{
-                    color:
-                      pct15m === null
-                        ? 'var(--color-muted)'
-                        : pct15m >= 0
-                          ? 'rgba(74,222,128,0.85)'
-                          : 'rgba(248,113,113,0.85)',
-                  }}
-                >
-                  {fmtPct(pct15m)}
                 </span>
               </div>
 

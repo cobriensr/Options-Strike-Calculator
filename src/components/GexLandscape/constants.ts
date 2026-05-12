@@ -9,28 +9,15 @@ import type { BiasMetrics, Direction, GexClassification } from './types';
 /** Max points from spot to include in the table (≈20 strikes at 5-pt intervals). */
 export const PRICE_WINDOW = 50;
 
-/** Tickers supported by the GEX Landscape's per-ticker classification bands. */
-export type Ticker = 'SPY' | 'QQQ' | 'SPX' | 'NDX';
-
 /**
- * Points from spot within which a strike is considered "at money", per
- * ticker. Each value is ±5 strikes given the ticker's strike grid:
- *   - SPY:  1pt grid → 5pt band
- *   - QQQ:  1pt grid → 5pt band
- *   - SPX:  5pt grid → 25pt band
- *   - NDX:  25pt grid → 125pt band
- *
- * Note: SPX behaviour changes from a previous scalar `SPOT_BAND = 12` to
- * `BAND_BY_TICKER.SPX = 25` as the intentional consequence of the
- * per-ticker rebalance — the prior 12pt value was tuned for SPY/QQQ scale
- * and was too tight for the 5pt SPX strike grid.
+ * Points from spot within which a strike is considered "at money".
+ * Sized for SPX's 5pt strike grid → 25pt band ≈ ±5 strikes. Phase 3 of
+ * the MM swap (docs/superpowers/specs/gex-landscape-mm-swap-2026-05-12.md)
+ * narrowed this panel to SPX-only; multi-ticker support and the
+ * `BAND_BY_TICKER` lookup were removed because the MM data source
+ * (periscope_snapshots) only captures SPX 0DTE.
  */
-export const BAND_BY_TICKER: Record<Ticker, number> = {
-  SPY: 5,
-  QQQ: 5,
-  SPX: 25,
-  NDX: 125,
-};
+export const SPX_SPOT_BAND = 25;
 
 /**
  * Neutral band for gamma pressure: ratio of |pressure| to |dollar gamma OI|

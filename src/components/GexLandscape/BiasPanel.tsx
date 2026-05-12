@@ -5,7 +5,7 @@
  *   • Verdict label + description with a positional regime badge
  *   • GEX Gravity (strike with the largest |GEX|)
  *   • Top 2 upside and downside drift targets with classification + vol flag
- *   • 1m and 5m ceiling/floor GEX trends
+ *   • 10m and 30m ceiling/floor GEX trends (MM cadence)
  */
 
 import {
@@ -19,16 +19,16 @@ import type { BiasMetrics, DriftTarget } from './types';
 
 export interface BiasPanelProps {
   bias: BiasMetrics;
-  /** Strike with the largest |1m Δ%|; used for the ⚡ confluence marker. */
-  maxChanged1mStrike: number | null;
-  /** Strike with the largest |5m Δ%|; used for the ⚡ confluence marker. */
-  maxChanged5mStrike: number | null;
+  /** Strike with the largest |10m Δ%|; used for the ⚡ confluence marker. */
+  maxChanged10mStrike: number | null;
+  /** Strike with the largest |30m Δ%|; used for the ⚡ confluence marker. */
+  maxChanged30mStrike: number | null;
 }
 
 export function BiasPanel({
   bias,
-  maxChanged1mStrike,
-  maxChanged5mStrike,
+  maxChanged10mStrike,
+  maxChanged30mStrike,
 }: BiasPanelProps) {
   const vm = VERDICT_META[bias.verdict];
   const isDrifting =
@@ -37,28 +37,28 @@ export function BiasPanel({
     isDrifting && bias.priceTrend
       ? ` (${bias.priceTrend.changePts > 0 ? '+' : ''}${bias.priceTrend.changePts.toFixed(1)} pts / 5m)`
       : '';
-  const floorTrendColor =
-    bias.floorTrend === null
+  const floorTrend10mColor =
+    bias.floorTrend10m === null
       ? 'var(--color-muted)'
-      : bias.floorTrend >= 0
+      : bias.floorTrend10m >= 0
         ? '#4ade80'
         : '#f87171';
-  const ceilTrendColor =
-    bias.ceilingTrend === null
+  const ceilTrend10mColor =
+    bias.ceilingTrend10m === null
       ? 'var(--color-muted)'
-      : bias.ceilingTrend <= 0
+      : bias.ceilingTrend10m <= 0
         ? '#4ade80'
         : '#fbbf24';
-  const floorTrend5mColor =
-    bias.floorTrend5m === null
+  const floorTrend30mColor =
+    bias.floorTrend30m === null
       ? 'var(--color-muted)'
-      : bias.floorTrend5m >= 0
+      : bias.floorTrend30m >= 0
         ? '#4ade80'
         : '#f87171';
-  const ceilTrend5mColor =
-    bias.ceilingTrend5m === null
+  const ceilTrend30mColor =
+    bias.ceilingTrend30m === null
       ? 'var(--color-muted)'
-      : bias.ceilingTrend5m <= 0
+      : bias.ceilingTrend30m <= 0
         ? '#4ade80'
         : '#fbbf24';
 
@@ -69,9 +69,10 @@ export function BiasPanel({
         <div className="flex items-center gap-2.5">
           <span
             className={`cursor-help rounded border px-2 py-0.5 font-mono text-[11px] font-bold ${vm.color} ${vm.bg} ${vm.border}`}
-            title={VERDICT_TOOLTIP[bias.verdict]}
+            title={`${VERDICT_TOOLTIP[bias.verdict]}\n\nNote: verdict thresholds are still calibrated against pre-MM-swap naive GEX magnitudes. Phase 4 of the MM swap re-tunes them from real periscope_snapshots data after a session of observation.`}
           >
-            {vm.label}
+            {vm.label}{' '}
+            <span className="font-normal opacity-60">(calibrating)</span>
           </span>
           <span className="text-secondary font-mono text-[11px]">
             {vm.desc}
@@ -139,8 +140,8 @@ export function BiasPanel({
           title="Top 2 strikes above spot by absolute GEX — where the most MM hedging activity sits overhead. Positive regime: price gets pulled toward the first target. Negative regime: a break through can accelerate toward the second."
           targets={bias.upsideTargets}
           strikeColor="text-emerald-400"
-          maxChanged1mStrike={maxChanged1mStrike}
-          maxChanged5mStrike={maxChanged5mStrike}
+          maxChanged10mStrike={maxChanged10mStrike}
+          maxChanged30mStrike={maxChanged30mStrike}
         />
 
         {/* Divider */}
@@ -152,34 +153,34 @@ export function BiasPanel({
           title="Top 2 strikes below spot by absolute GEX — where the most MM hedging activity sits below you. Positive regime: price gets pulled toward the first target. Negative regime: a break through can accelerate toward the second."
           targets={bias.downsideTargets}
           strikeColor="text-red-400"
-          maxChanged1mStrike={maxChanged1mStrike}
-          maxChanged5mStrike={maxChanged5mStrike}
+          maxChanged10mStrike={maxChanged10mStrike}
+          maxChanged30mStrike={maxChanged30mStrike}
         />
 
         {/* Divider */}
         <div className="h-full w-px bg-white/10" />
 
-        {/* 1m Trend */}
+        {/* 10m Trend */}
         <TrendColumn
-          label="1m Trend"
-          title="Average % change in net GEX for strikes above (Ceil) and below (Floor) spot vs. the last 1-minute snapshot. Floor growing (green) = support hardening. Ceiling growing (amber) = resistance building. Ceiling shrinking (green) = that overhead wall is weakening."
-          floorValue={bias.floorTrend}
-          ceilValue={bias.ceilingTrend}
-          floorColor={floorTrendColor}
-          ceilColor={ceilTrendColor}
+          label="10m Trend"
+          title="Average % change in MM dollar gamma for strikes above (Ceil) and below (Floor) spot vs. the prior 10-min slot. Floor growing (green) = support hardening. Ceiling growing (amber) = resistance building. Ceiling shrinking (green) = that overhead wall is weakening."
+          floorValue={bias.floorTrend10m}
+          ceilValue={bias.ceilingTrend10m}
+          floorColor={floorTrend10mColor}
+          ceilColor={ceilTrend10mColor}
         />
 
         {/* Divider */}
         <div className="h-full w-px bg-white/10" />
 
-        {/* 5m Trend */}
+        {/* 30m Trend */}
         <TrendColumn
-          label="5m Trend"
-          title="Average % change in net GEX for strikes above (Ceil) and below (Floor) spot vs. the snapshot 5 minutes ago. Confirms whether the 1m trend is part of a sustained move or just a brief spike."
-          floorValue={bias.floorTrend5m}
-          ceilValue={bias.ceilingTrend5m}
-          floorColor={floorTrend5mColor}
-          ceilColor={ceilTrend5mColor}
+          label="30m Trend"
+          title="Average % change in MM dollar gamma for strikes above (Ceil) and below (Floor) spot vs. the slot 30 min ago. Confirms whether the 10m trend is part of a sustained session-scale move or just a single-slot spike."
+          floorValue={bias.floorTrend30m}
+          ceilValue={bias.ceilingTrend30m}
+          floorColor={floorTrend30mColor}
+          ceilColor={ceilTrend30mColor}
         />
       </div>
     </div>
@@ -191,8 +192,8 @@ interface DriftTargetColumnProps {
   title: string;
   targets: DriftTarget[];
   strikeColor: string;
-  maxChanged1mStrike: number | null;
-  maxChanged5mStrike: number | null;
+  maxChanged10mStrike: number | null;
+  maxChanged30mStrike: number | null;
 }
 
 function DriftTargetColumn({
@@ -200,8 +201,8 @@ function DriftTargetColumn({
   title,
   targets,
   strikeColor,
-  maxChanged1mStrike,
-  maxChanged5mStrike,
+  maxChanged10mStrike,
+  maxChanged30mStrike,
 }: DriftTargetColumnProps) {
   return (
     <div title={title}>
@@ -221,7 +222,8 @@ function DriftTargetColumn({
       ) : (
         targets.map((t) => {
           const isConfluence =
-            t.strike === maxChanged1mStrike || t.strike === maxChanged5mStrike;
+            t.strike === maxChanged10mStrike ||
+            t.strike === maxChanged30mStrike;
           return (
             <div
               key={t.strike}

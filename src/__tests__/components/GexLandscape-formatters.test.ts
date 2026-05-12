@@ -86,10 +86,10 @@ describe('formatBiasForClaude', () => {
       gravityGex: 1_800_000_000,
       upsideTargets: [],
       downsideTargets: [],
-      floorTrend: null,
-      ceilingTrend: null,
-      floorTrend5m: null,
-      ceilingTrend5m: null,
+      floorTrend10m: null,
+      ceilingTrend10m: null,
+      floorTrend30m: null,
+      ceilingTrend30m: null,
       priceTrend: null,
       ...overrides,
     };
@@ -145,22 +145,22 @@ describe('formatBiasForClaude', () => {
     expect(out).not.toMatch(/Downside targets:/);
   });
 
-  it('appends 1m and 5m trend lines when trend values are present', () => {
+  it('appends 10m and 30m trend lines when trend values are present', () => {
     const bias = baseBias({
-      ceilingTrend: 8.4,
-      floorTrend: -3.1,
-      ceilingTrend5m: 12.3,
-      floorTrend5m: 5.7,
+      ceilingTrend10m: 8.4,
+      floorTrend10m: -3.1,
+      ceilingTrend30m: 12.3,
+      floorTrend30m: 5.7,
     });
     const out = formatBiasForClaude(bias);
-    expect(out).toMatch(/1m GEX trend: ceiling \+8\.4% \| floor \u22123\.1%/);
-    expect(out).toMatch(/5m GEX trend: ceiling \+12% \| floor \+5\.7%/);
+    expect(out).toMatch(/10m GEX trend: ceiling \+8\.4% \| floor \u22123\.1%/);
+    expect(out).toMatch(/30m GEX trend: ceiling \+12% \| floor \+5\.7%/);
   });
 
   it('skips trend lines entirely when both ceiling and floor are null', () => {
     const out = formatBiasForClaude(baseBias());
-    expect(out).not.toMatch(/1m GEX trend:/);
-    expect(out).not.toMatch(/5m GEX trend:/);
+    expect(out).not.toMatch(/10m GEX trend:/);
+    expect(out).not.toMatch(/30m GEX trend:/);
   });
 
   it('excludes the volTag when reinforcement is neutral', () => {

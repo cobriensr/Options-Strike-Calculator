@@ -22,7 +22,7 @@
  */
 
 import { classify } from './classify';
-import { BAND_BY_TICKER, type Ticker } from './constants';
+import { SPX_SPOT_BAND } from './constants';
 import type {
   BiasMetrics,
   DriftTarget,
@@ -33,14 +33,12 @@ import type {
 export function computeBias(
   rows: GexStrikeLevel[],
   currentPrice: number,
-  gexDeltaMap: Map<number, number | null>,
-  gexDelta5mMap: Map<number, number | null>,
+  gexDelta10mMap: Map<number, number | null>,
+  gexDelta30mMap: Map<number, number | null>,
   priceTrend: PriceTrend | null = null,
-  ticker: Ticker = 'SPX',
 ): BiasMetrics {
-  const band = BAND_BY_TICKER[ticker];
-  const above = rows.filter((s) => s.strike > currentPrice + band);
-  const below = rows.filter((s) => s.strike < currentPrice - band);
+  const above = rows.filter((s) => s.strike > currentPrice + SPX_SPOT_BAND);
+  const below = rows.filter((s) => s.strike < currentPrice - SPX_SPOT_BAND);
 
   // Regime: sign of total net GEX
   let totalNetGex = 0;
@@ -66,7 +64,7 @@ export function computeBias(
 
   // Verdict: gravity direction × regime
   let verdict: BiasMetrics['verdict'];
-  if (Math.abs(gravityOffset) <= band) {
+  if (Math.abs(gravityOffset) <= SPX_SPOT_BAND) {
     verdict = regime === 'negative' ? 'volatile' : 'rangebound';
   } else if (gravityOffset > 0) {
     verdict = regime === 'negative' ? 'breakout-risk-up' : 'gex-pull-up';
@@ -105,7 +103,7 @@ export function computeBias(
   const upsideTargets = [...above].sort(byAbsGex).slice(0, 2).map(toTarget);
   const downsideTargets = [...below].sort(byAbsGex).slice(0, 2).map(toTarget);
 
-  // Aggregate 1m Δ% trends above and below spot
+  // Aggregate 10m / 30m Δ% trends above and below spot (MM cadence).
   const avg = (vals: (number | null | undefined)[]) => {
     let sum = 0;
     let count = 0;
@@ -127,10 +125,10 @@ export function computeBias(
     gravityGex: gravityRow?.netGamma ?? 0,
     upsideTargets,
     downsideTargets,
-    floorTrend: avg(below.map((s) => gexDeltaMap.get(s.strike))),
-    ceilingTrend: avg(above.map((s) => gexDeltaMap.get(s.strike))),
-    floorTrend5m: avg(below.map((s) => gexDelta5mMap.get(s.strike))),
-    ceilingTrend5m: avg(above.map((s) => gexDelta5mMap.get(s.strike))),
+    floorTrend10m: avg(below.map((s) => gexDelta10mMap.get(s.strike))),
+    ceilingTrend10m: avg(above.map((s) => gexDelta10mMap.get(s.strike))),
+    floorTrend30m: avg(below.map((s) => gexDelta30mMap.get(s.strike))),
+    ceilingTrend30m: avg(above.map((s) => gexDelta30mMap.get(s.strike))),
     priceTrend,
   };
 }

@@ -289,41 +289,6 @@ describe('GexLandscape', () => {
     });
   });
 
-  describe('ticker selector', () => {
-    it('renders SPY/QQQ/SPX/NDX radio options', () => {
-      renderLandscape();
-      const group = screen.getByRole('radiogroup', {
-        name: /gex landscape ticker/i,
-      });
-      const options = within(group).getAllByRole('radio');
-      expect(options.map((o) => o.textContent)).toEqual([
-        'SPY',
-        'QQQ',
-        'SPX',
-        'NDX',
-      ]);
-    });
-
-    it('defaults to SPX selected', () => {
-      renderLandscape();
-      const group = screen.getByRole('radiogroup', {
-        name: /gex landscape ticker/i,
-      });
-      const spx = within(group).getByRole('radio', { name: 'SPX' });
-      expect(spx.getAttribute('aria-checked')).toBe('true');
-    });
-
-    it('switches selection when another ticker is clicked', () => {
-      renderLandscape();
-      const group = screen.getByRole('radiogroup', {
-        name: /gex landscape ticker/i,
-      });
-      const qqq = within(group).getByRole('radio', { name: 'QQQ' });
-      fireEvent.click(qqq);
-      expect(qqq.getAttribute('aria-checked')).toBe('true');
-    });
-  });
-
   describe('PRICE_WINDOW filter', () => {
     it('excludes strikes beyond 200 pts from spot', () => {
       const farStrike = makeStrike(PRICE + 250, PRICE, -10_000_000, 5_000_000);
@@ -511,6 +476,31 @@ describe('GexLandscape', () => {
       fireEvent.click(screen.getByRole('tab', { name: 'Top 5 GEX' }));
       const panel = screen.getByRole('tabpanel', { name: 'Top 5 GEX' });
       expect(within(panel).getAllByRole('listitem')).toHaveLength(2);
+    });
+  });
+
+  describe('MM-attributed Phase 3 surface', () => {
+    it('shows the (calibrating) suffix on the bias verdict label', () => {
+      // Phase 3 default: bias verdict thresholds are still tuned to
+      // pre-swap naive GEX magnitudes; the suffix flags that to the
+      // trader until Phase 4 recalibrates from real periscope_snapshots.
+      renderLandscape();
+      // BiasPanel always renders SOMETHING (even the rangebound default
+      // when strikes are empty), so the suffix should be visible
+      // regardless of the input shape.
+      expect(screen.getByText(/\(calibrating\)/)).toBeDefined();
+    });
+
+    it('renders 10m + 30m Δ% column headers and no 1m / 5m / 15m headers', () => {
+      // The StrikeTable column set after the MM swap. The absence
+      // assertion guards against accidental re-introduction of the
+      // deprecated columns when Phase 4 work touches StrikeTable.
+      renderLandscape();
+      expect(screen.getByText('10m Δ%')).toBeDefined();
+      expect(screen.getByText('30m Δ%')).toBeDefined();
+      expect(screen.queryByText('1m Δ%')).toBeNull();
+      expect(screen.queryByText('5m Δ%')).toBeNull();
+      expect(screen.queryByText('15m Δ%')).toBeNull();
     });
   });
 });

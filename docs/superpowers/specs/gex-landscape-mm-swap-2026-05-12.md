@@ -139,6 +139,25 @@ thin for threshold tuning.
 
 **Files:** `src/components/GexLandscape/bias.ts` (constants only)
 
+**Phase 4 cleanup checklist** — items flagged during the Phase 3 review
+that aren't bug-fixes but need attention before the swap is truly
+finished:
+
+- `src/utils/price-trend.ts`'s `windowMs = 5 * 60 * 1000` was tuned for
+  the 1-min WS cadence. At 10-min MM cadence, a 5-min window can hold
+  at most one snapshot — the drift override (`rangebound` →
+  `drifting-up` / `drifting-down`) is effectively dormant. Widen to
+  ~20-30 min OR document that the override is intentionally dormant
+  on the MM-source path.
+- `useGexLandscapeData` still calls `useGexStrikeExpirySpx` for the
+  vol reinforcement side channel. If UW ever publishes per-strike
+  call/put ask/bid attribution in `periscope_snapshots`, drop the WS
+  side channel entirely — the `wsByStrike` projection + the
+  `useGexStrikeExpirySpx` hook would both become orphan code.
+- `useGexLandscapeData`'s `_ticker: string` parameter is unused
+  vestigial scaffolding kept for Phase 2 call-site compatibility.
+  Drop it from the signature here AND the call site in `index.tsx`.
+
 ## Open questions
 
 1. **Δ% windows** — go with `10m / 20m / 30m` as the natural slot

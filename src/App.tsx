@@ -303,10 +303,11 @@ export default function StrikeCalculator() {
     selectedSlotCapturedAt:
       periscopeSlot != null ? (periscope.view?.capturedAt ?? null) : null,
   });
-  // GEX Landscape owns its own ticker / date / scrub state internally
-  // (Phase 3c of gex-landscape-ws-upgrade-2026-05-03.md) and pulls per-strike
-  // data via `useGexLandscapeData` → `/api/gex-strike-expiry`, so App.tsx no
-  // longer needs to thread per-strike props through.
+  // GEX Landscape owns its own date / scrub state internally and pulls
+  // MM-attributed per-strike data via `useGexLandscapeData` →
+  // `/api/periscope-strikes` (with a WS side channel for vol
+  // reinforcement). SPX-only since Phase 3 of the MM swap, so App.tsx
+  // no longer threads ticker or per-strike props through.
   const gexTarget = useGexTarget(market.data.quotes?.marketOpen ?? false);
   const { results, errors } = useCalculation(
     dSpot,
