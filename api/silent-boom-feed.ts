@@ -111,6 +111,7 @@ interface SilentBoomAlertResponse {
 type SilentBoomTodEnum = 'AM_open' | 'MID' | 'LUNCH' | 'PM' | 'LATE';
 type SilentBoomDteBucket = '0' | '1-3' | '4+';
 type SilentBoomBurstColor = 'red' | 'yellow' | 'grey';
+type SilentBoomAskPctBand = '70-80' | '80-90' | '90-95' | '95-99' | '100';
 
 interface SilentBoomFeedResponse {
   date: string;
@@ -123,6 +124,7 @@ interface SilentBoomFeedResponse {
     tod: SilentBoomTodEnum | null;
     dte: SilentBoomDteBucket | null;
     burst: SilentBoomBurstColor | null;
+    askPctBand: SilentBoomAskPctBand | null;
     sort: 'newest' | 'spike_ratio' | 'vol_oi' | 'peak';
   };
   count: number;
@@ -226,6 +228,21 @@ export default async function handler(
   const burstLo = burstRange?.lo ?? null;
   const burstHiBound = burstRange?.hi ?? 1_000_000;
 
+  // Ask% band → [askLo, askHi). The '100' band is exact equality
+  // ask_pct = 1.0; expressed here as [1.0, 1.001) so the half-open
+  // gate matches uniformly with the other bands. Bands derive from
+  // docs/superpowers/specs/silent-boom-ask-100-demote-2026-05-12.md.
+  const askPctRange = (() => {
+    if (q.askPctBand === '70-80') return { lo: 0.7, hi: 0.8 };
+    if (q.askPctBand === '80-90') return { lo: 0.8, hi: 0.9 };
+    if (q.askPctBand === '90-95') return { lo: 0.9, hi: 0.95 };
+    if (q.askPctBand === '95-99') return { lo: 0.95, hi: 1.0 };
+    if (q.askPctBand === '100') return { lo: 1.0, hi: 1.001 };
+    return null;
+  })();
+  const askPctLo = askPctRange?.lo ?? null;
+  const askPctHiBound = askPctRange?.hi ?? 1.001;
+
   try {
     const db = getDb();
 
@@ -255,6 +272,7 @@ export default async function handler(
         ) < ${todHi}::int)
         AND (${dteLo}::int IS NULL OR dte BETWEEN ${dteLo}::int AND ${dteHiBound}::int)
         AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
+        AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
     `) as { n: number }[];
     const total = totalRow[0]?.n ?? 0;
 
@@ -282,6 +300,7 @@ export default async function handler(
           ) < ${todHi}::int)
           AND (${dteLo}::int IS NULL OR dte BETWEEN ${dteLo}::int AND ${dteHiBound}::int)
           AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
+          AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
         ORDER BY spike_ratio DESC, bucket_ct DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
       `) as AlertRow[];
@@ -305,6 +324,7 @@ export default async function handler(
           ) < ${todHi}::int)
           AND (${dteLo}::int IS NULL OR dte BETWEEN ${dteLo}::int AND ${dteHiBound}::int)
           AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
+          AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
         ORDER BY vol_oi DESC, bucket_ct DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
       `) as AlertRow[];
@@ -328,6 +348,7 @@ export default async function handler(
           ) < ${todHi}::int)
           AND (${dteLo}::int IS NULL OR dte BETWEEN ${dteLo}::int AND ${dteHiBound}::int)
           AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
+          AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
         ORDER BY peak_ceiling_pct DESC NULLS LAST, bucket_ct DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
       `) as AlertRow[];
@@ -352,6 +373,7 @@ export default async function handler(
           ) < ${todHi}::int)
           AND (${dteLo}::int IS NULL OR dte BETWEEN ${dteLo}::int AND ${dteHiBound}::int)
           AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
+          AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
         ORDER BY bucket_ct DESC, id DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
       `) as AlertRow[];
@@ -406,6 +428,7 @@ export default async function handler(
         tod: q.tod ?? null,
         dte: q.dte ?? null,
         burst: q.burst ?? null,
+        askPctBand: q.askPctBand ?? null,
         sort: q.sort,
       },
       count: alerts.length,

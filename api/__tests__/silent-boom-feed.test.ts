@@ -312,6 +312,52 @@ describe('silent-boom-feed handler', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
+  it('binds askPctBand into the SQL when supplied', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([makeAlert()]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-07', askPctBand: '100' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // The askPctBand filter compiles to ask_pct range bounds — check
+    // BOTH count AND list query carry the gate.
+    for (const call of mockSql.mock.calls) {
+      const strings = call[0] as TemplateStringsArray | undefined;
+      const sqlText = (strings ?? []).join(' ');
+      expect(sqlText).toContain('ask_pct >=');
+      expect(sqlText).toContain('ask_pct <');
+    }
+    const body = res._json as { filters: { askPctBand: string | null } };
+    expect(body.filters.askPctBand).toBe('100');
+  });
+
+  it('rejects an invalid askPctBand value with 400', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-07', askPctBand: '60-70' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('omits askPctBand (null) from filters when not supplied', async () => {
+    mockSql.mockResolvedValueOnce([{ n: 0 }]).mockResolvedValueOnce([]);
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as { filters: { askPctBand: string | null } };
+    expect(body.filters.askPctBand).toBeNull();
+  });
+
   it('rejects an invalid tod value with 400', async () => {
     const req = mockRequest({
       method: 'GET',

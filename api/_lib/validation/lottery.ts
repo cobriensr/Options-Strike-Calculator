@@ -129,6 +129,13 @@ export const silentBoomFeedQuerySchema = z.object({
   // Visual-intensity ordering (NOT empirical-lift ordering — see
   // audit; smaller ratios actually score better historically).
   burst: z.enum(['red', 'yellow', 'grey']).optional(),
+  // Ask% band — analytical slice of the 5 ask_pct buckets that
+  // motivated the saturation-penalty work in
+  // docs/superpowers/specs/silent-boom-ask-100-demote-2026-05-12.md.
+  // '100' is exact equality (ask_pct = 1.0) — that's the cliff bucket
+  // where win > 0% drops from ≥99% to 77%. The other 4 are half-open
+  // ranges. UI default is no filter.
+  askPctBand: z.enum(['70-80', '80-90', '90-95', '95-99', '100']).optional(),
   // Pagination.
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
