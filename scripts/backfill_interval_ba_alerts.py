@@ -245,10 +245,29 @@ def load_spxw_day(parquet_path: Path) -> pd.DataFrame:
 
 
 def detect_alerts_for_day(df: pd.DataFrame) -> list[tuple]:
-    """Group day's SPXW 0DTE trades into 5-min buckets per contract;
-    return alert rows for buckets meeting the ratio + floor thresholds.
+    """Tick-by-tick replay of the live ``SPXWIntervalBAHandler._observe``
+    semantics across the day's SPXW 0DTE trades.
 
-    Returns rows in the order of _INSERT_COLUMNS.
+    Maintains a per-``(option_chain, bucket_epoch)`` running aggregate.
+    At each tick, recomputes ``ask_premium`` / ``total_premium`` over
+    every tick seen SO FAR in the current bucket; fires when both
+    ``ratio >= RATIO_THRESHOLD`` AND ``total_premium >= PREMIUM_FLOOR``
+    cross AND the bucket hasn't already fired. Dedupe per
+    ``(chain, bucket_epoch)`` matches the in-memory ``self._fired`` set
+    the live handler uses.
+
+    Why tick-by-tick instead of group-by-bucket close:
+    A bucket can peak at ≥70% mid-burst then settle below 70% by close
+    as bid/mid flow piles in (today's SPXW 7360c on 2026-05-12 is the
+    canonical example — peaked 79.1% during the 12:06:23 sweep, closed
+    56% by 12:10). The live handler fires on the mid-bucket crossing
+    moment; the old group-by version of this script would have missed
+    those signals entirely. Now the two paths produce the same alert
+    set against the same input.
+
+    Captures ratio + premium aggregates AT FIRE TIME (not at bucket
+    close), matching what the live handler writes via
+    ``_build_alert_row`` in ``uw-stream/src/handlers/interval_ba.py``.
     """
     if df.empty:
         return []
@@ -259,9 +278,6 @@ def detect_alerts_for_day(df: pd.DataFrame) -> list[tuple]:
         * df['size'].astype(int).map(Decimal)
         * MULTIPLIER
     )
-    # Tag set per row (Python objects, can't vectorize the str-array
-    # parse cleanly but the alternative regex-based extraction is
-    # marginally faster and harder to read; tags column is ~30 chars).
     df['tag_set'] = df['tags'].map(parse_tags)
     df['report_set'] = df['report_flags'].map(parse_tags)
     df['side'] = df['tag_set'].map(derive_side)
@@ -273,7 +289,6 @@ def detect_alerts_for_day(df: pd.DataFrame) -> list[tuple]:
     ].map(lambda s: 'floor' in s)
     df['bucket_epoch'] = df['executed_at'].map(bucket_floor_epoch)
 
-    # Option type may be 'call'/'put' or 'C'/'P' depending on era.
     df['option_type_norm'] = df['option_type'].map(
         lambda v: 'C' if v in ('C', 'call') else ('P' if v in ('P', 'put') else None),
     )
@@ -281,57 +296,93 @@ def detect_alerts_for_day(df: pd.DataFrame) -> list[tuple]:
     if df.empty:
         return []
 
-    # Pre-compute the per-trade ask flag.
     df['is_ask'] = df['side'] == 'ask'
-    df['ask_premium_d'] = df['premium_d'].where(df['is_ask'], Decimal(0))
+
+    # Chronological walk. Ticks within a single 5-min bucket may not be
+    # naturally sorted by source — sort explicitly to make the rolling
+    # cumulative deterministic.
+    df = df.sort_values('executed_at', kind='mergesort').reset_index(drop=True)
+
+    # Per-(chain, bucket_epoch) running state.
+    State = dict[str, object]
+    bucket_state: dict[tuple[str, int], State] = {}
+    fired: set[tuple[str, int]] = set()
 
     out_rows: list[tuple] = []
-    # Group by (option_chain, bucket_epoch). At single-day scale (5-min
-    # x ~100 active strikes = 100*78 = ~7800 groups) the apply overhead
-    # is acceptable.
-    for (chain, bucket_epoch), sub in df.groupby(
-        ['option_chain_id', 'bucket_epoch'], sort=False,
-    ):
-        total_premium = sum(sub['premium_d'])
-        ask_premium = sum(sub['ask_premium_d'])
-        if total_premium < PREMIUM_FLOOR:
+
+    for row in df.itertuples(index=False):
+        chain = row.option_chain_id
+        bucket_epoch = int(row.bucket_epoch)
+        key = (chain, bucket_epoch)
+        if key in fired:
             continue
-        ratio = ask_premium / total_premium
+
+        s = bucket_state.get(key)
+        if s is None:
+            s = {
+                'total': Decimal(0),
+                'ask': Decimal(0),
+                'count': 0,
+                'top_premium': Decimal(0),
+                'top_row': None,
+            }
+            bucket_state[key] = s
+
+        premium_d = row.premium_d
+        s['total'] = s['total'] + premium_d  # type: ignore[operator]
+        s['count'] = s['count'] + 1  # type: ignore[operator]
+        if row.is_ask:
+            s['ask'] = s['ask'] + premium_d  # type: ignore[operator]
+            if premium_d > s['top_premium']:  # type: ignore[operator]
+                s['top_premium'] = premium_d
+                s['top_row'] = row
+
+        total = s['total']
+        if total < PREMIUM_FLOOR:  # type: ignore[operator]
+            continue
+        ratio = s['ask'] / total  # type: ignore[operator]
         if ratio < RATIO_THRESHOLD:
             continue
 
-        # Top ask print — argmax over ask-side rows by premium.
-        ask_rows = sub[sub['is_ask']]
-        if ask_rows.empty:
+        # Threshold crossed — fire. Capture state AT THIS TICK.
+        top = s['top_row']
+        if top is None:
+            # Shouldn't happen — ratio ≥ 70% requires ask > 0 — but
+            # defensive: skip and don't fire yet.
             continue
-        top_idx = ask_rows['premium_d'].idxmax()
-        top = ask_rows.loc[top_idx]
+        fired.add(key)
 
         bucket_start = datetime.fromtimestamp(bucket_epoch, tz=UTC)
         bucket_end = bucket_start + timedelta(seconds=BUCKET_SEC)
+        # fired_at = the executed_at of the threshold-crossing tick.
+        # This is what the live handler captures (the tick whose
+        # arrival flipped the alert state).
+        fired_at = row.executed_at.to_pydatetime()
+        top_executed_at = top.executed_at.to_pydatetime()  # type: ignore[union-attr]
+        underlying = None
+        if pd.notna(top.underlying_price):  # type: ignore[union-attr]
+            underlying = Decimal(str(top.underlying_price))  # type: ignore[union-attr]
 
         out_rows.append(
             (
                 chain,                                       # option_chain
                 TICKER,                                      # ticker
-                top['option_type_norm'],                     # option_type
-                Decimal(str(top['strike'])),                 # strike
-                top['expiry_iso'],                           # expiry
+                top.option_type_norm,                        # option_type
+                Decimal(str(top.strike)),                    # strike
+                top.expiry_iso,                              # expiry
                 bucket_start,                                # bucket_start
                 bucket_end,                                  # bucket_end
-                top['executed_at'].to_pydatetime(),          # fired_at
+                fired_at,                                    # fired_at
                 (ratio * Decimal(100)).quantize(Decimal('0.01')),  # ratio_pct
-                ask_premium.quantize(Decimal('0.01')),       # ask_premium
-                total_premium.quantize(Decimal('0.01')),     # total_premium
-                int(len(sub)),                               # trade_count
-                Decimal(str(top['premium_d'])).quantize(Decimal('0.01')),
-                int(top['size']),                            # top_trade_size
-                top['executed_at'].to_pydatetime(),          # top_trade_executed_at
-                bool(top['is_sweep']),                       # top_trade_is_sweep
-                bool(top['is_floor']),                       # top_trade_is_floor
-                Decimal(str(top['underlying_price']))
-                if pd.notna(top['underlying_price'])
-                else None,                                   # underlying_price
+                s['ask'].quantize(Decimal('0.01')),          # ask_premium
+                total.quantize(Decimal('0.01')),             # total_premium
+                int(s['count']),                             # trade_count
+                s['top_premium'].quantize(Decimal('0.01')),  # top_trade_premium
+                int(top.size),                               # top_trade_size
+                top_executed_at,                             # top_trade_executed_at
+                bool(top.is_sweep),                          # top_trade_is_sweep
+                bool(top.is_floor),                          # top_trade_is_floor
+                underlying,                                  # underlying_price
             ),
         )
     return out_rows
