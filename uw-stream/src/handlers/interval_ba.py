@@ -107,6 +107,14 @@ _ALERT_CONFLICT_COLS = ["option_chain", "bucket_start"]
 # (docs/tmp/interval-ba-confluence-vs-solo-20260512-231709.md).
 _CONFLUENCE_WINDOW_SEC = 90
 
+# OPRA multi-leg sale condition codes carried on UW's ``trade_code``
+# field. A print with one of these codes is a spread leg, not a
+# directional bet — see migration #146 and api/_lib/silent-boom.ts.
+# Frozenset for O(1) membership in the per-tick hot path.
+_MULTI_LEG_CODES: frozenset[str] = frozenset(
+    {"mlat", "mlet", "mlft", "mfto", "masl", "mesl", "mfsl", "mlct"},
+)
+
 
 @dataclass(slots=True, frozen=True)
 class _Tick:
@@ -118,6 +126,7 @@ class _Tick:
     side: str  # 'ask' | 'bid' | 'mid' | 'no_side'
     is_sweep: bool
     is_floor: bool
+    is_multi_leg: bool
 
 
 class IntervalBAHandler(OptionTradesHandler):
@@ -197,6 +206,9 @@ class IntervalBAHandler(OptionTradesHandler):
         )
         self._premium_floor = Decimal(settings.interval_ba_premium_floor)
         self._bucket_sec = int(settings.interval_ba_window_sec)
+        self._multi_leg_share_max = Decimal(
+            str(settings.interval_ba_multi_leg_share_max),
+        )
 
     # ------------------------------------------------------------------
     # Transform — runs the inherited raw-tick build, then side-effects
@@ -264,6 +276,9 @@ class IntervalBAHandler(OptionTradesHandler):
         price: Decimal = row[_C["price"]]
         size: int = row[_C["size"]]
         tags = payload.get("tags") if isinstance(payload, dict) else None
+        trade_code = (
+            payload.get("trade_code") if isinstance(payload, dict) else None
+        )
         tick = _Tick(
             executed_at=executed_at,
             premium=price * Decimal(size) * _MULTIPLIER,
@@ -271,6 +286,7 @@ class IntervalBAHandler(OptionTradesHandler):
             side=row[_C["side"]],
             is_sweep=_has_tag(tags, "sweep"),
             is_floor=_has_tag(tags, "floor"),
+            is_multi_leg=_is_multi_leg_code(trade_code),
         )
         bucket.append(tick)
 
@@ -287,11 +303,37 @@ class IntervalBAHandler(OptionTradesHandler):
                 del chain_buckets[stale_epoch]
 
         # Re-evaluate aggregates over THIS tick's bucket only.
-        ask_premium, total_premium, top_tick = _aggregate(bucket)
+        ask_premium, total_premium, multi_leg_premium, top_tick = _aggregate(
+            bucket,
+        )
         if total_premium <= 0 or total_premium < self._premium_floor:
             return
         ratio = ask_premium / total_premium
         if ratio < self._ratio_threshold:
+            return
+        # Multi-leg gate: spread-leg-dominated buckets carry no
+        # directional thesis (see _MULTI_LEG_CODES + silent-boom's
+        # SILENT_BOOM_SPEC_V1.multiLegShareMax). The 2026-05-13 SPXW
+        # 6850 false fire was a single $1.14M ``mlet`` print → 100%
+        # ask, 100% multi-leg; this gate rejects that case.
+        if multi_leg_premium / total_premium >= self._multi_leg_share_max:
+            log.info(
+                "interval_ba alert suppressed by multi-leg gate",
+                extra={
+                    "channel": self.name,
+                    "option_chain": chain,
+                    "bucket_start_epoch": bucket_start_epoch,
+                    "ratio_pct": str((ratio * Decimal(100)).quantize(_TWO_PLACES)),
+                    "total_premium": str(total_premium),
+                    "multi_leg_premium": str(multi_leg_premium),
+                    "multi_leg_share": str(
+                        (multi_leg_premium / total_premium).quantize(
+                            Decimal("0.0001"),
+                        ),
+                    ),
+                    "trade_count": len(bucket),
+                },
+            )
             return
 
         # Threshold crossed: queue the alert and dedupe.
@@ -412,24 +454,35 @@ class IntervalBAHandler(OptionTradesHandler):
 # ----------------------------------------------------------------------
 
 
-def _aggregate(ticks: Iterable[_Tick]) -> tuple[Decimal, Decimal, _Tick | None]:
-    """Sum ask / total premium and find the largest ask-side print.
+def _aggregate(
+    ticks: Iterable[_Tick],
+) -> tuple[Decimal, Decimal, Decimal, _Tick | None]:
+    """Sum ask / total / multi-leg premium and find the largest ask print.
 
-    Returns ``(ask_premium, total_premium, top_ask_tick_or_None)``.
-    Single pass over the iterable so the hot path stays O(n).
+    Returns ``(ask_premium, total_premium, multi_leg_premium,
+    top_ask_tick_or_None)``. Single pass over the iterable so the hot
+    path stays O(n).
     """
     ask_premium = Decimal(0)
     total_premium = Decimal(0)
+    multi_leg_premium = Decimal(0)
     top_tick: _Tick | None = None
     top_premium = Decimal(0)
     for t in ticks:
         total_premium += t.premium
+        if t.is_multi_leg:
+            multi_leg_premium += t.premium
         if t.side == "ask":
             ask_premium += t.premium
             if t.premium > top_premium:
                 top_premium = t.premium
                 top_tick = t
-    return ask_premium, total_premium, top_tick
+    return ask_premium, total_premium, multi_leg_premium, top_tick
+
+
+def _is_multi_leg_code(code: Any) -> bool:
+    """True iff ``code`` is one of the OPRA multi-leg sale conditions."""
+    return isinstance(code, str) and code.lower() in _MULTI_LEG_CODES
 
 
 def _build_alert_row(

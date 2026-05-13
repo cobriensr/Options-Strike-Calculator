@@ -111,6 +111,17 @@ class Settings(BaseSettings):
     interval_ba_ratio_threshold: float = 0.75
     interval_ba_premium_floor: int = 250_000
     interval_ba_window_sec: int = 300
+    # Reject the alert when the multi-leg share of the bucket's premium
+    # is at or above this threshold. Mirrors the silent-boom detector's
+    # ``multiLegShareMax`` (see api/_lib/silent-boom.ts and migration
+    # #146): UW's ``trade_code`` field carries the OPRA multi-leg sale
+    # condition codes (mlat/mlet/mlft/mfto/masl/mesl/mfsl/mlct), and
+    # spread-leg-dominated buckets carry no directional thesis. The
+    # 2026-05-13 SPXW 6850 false fire was a single $1.14M ``mlet``
+    # print → 100% ask, 100% multi-leg; this gate rejects that case.
+    # Distribution of ML share across surviving fires is bimodal at ~0%
+    # and ~100%, so 0.5 is a clean separator.
+    interval_ba_multi_leg_share_max: float = 0.5
 
     # Per-ticker opt-in. Each handler (SPY/SPXW/QQQ) gates its DB+push
     # path on its ticker being present here. Defaults to all three;
@@ -160,6 +171,15 @@ class Settings(BaseSettings):
     def _validate_window_sec(cls, v: int) -> int:
         if v <= 0:
             raise ValueError("interval_ba_window_sec must be > 0")
+        return v
+
+    @field_validator("interval_ba_multi_leg_share_max")
+    @classmethod
+    def _validate_multi_leg_share_max(cls, v: float) -> float:
+        if not 0.0 < v <= 1.0:
+            raise ValueError(
+                "interval_ba_multi_leg_share_max must be in (0.0, 1.0]"
+            )
         return v
 
     @field_validator("ws_channels")

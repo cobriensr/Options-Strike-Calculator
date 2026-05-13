@@ -244,6 +244,105 @@ class TestAlertEmission:
 
 
 # ----------------------------------------------------------------------
+# Multi-leg gate
+# ----------------------------------------------------------------------
+
+
+class TestMultiLegGate:
+    """Reject buckets dominated by spread-leg routing (trade_code in
+    mlat/mlet/mlft/mfto/masl/mesl/mfsl/mlct). The 2026-05-13 SPXW 6850
+    false fire was a single $1.14M ``mlet`` print → 100% ask, 100%
+    multi-leg; the gate at multi_leg_share ≥ 0.5 rejects exactly that.
+    """
+
+    def test_no_alert_when_single_multi_leg_print_dominates_bucket(
+        self, handler, base_payload,
+    ):
+        """The 2026-05-13 SPXW 6850 false fire: 1 print, 100% ask, mlet."""
+        p = _payload(
+            base_payload,
+            executed_at_ms=_BUCKET_ANCHOR_MS + 38_000,
+            price="569.11",
+            size=20,  # → $1,138,220 premium (matches prod incident)
+        )
+        p["trade_code"] = "mlet"
+        handler._transform(p)
+        assert handler._pending_alerts == []
+
+    @pytest.mark.parametrize(
+        "code",
+        ["mlat", "mlet", "mlft", "mfto", "masl", "mesl", "mfsl", "mlct"],
+    )
+    def test_all_opra_multi_leg_codes_are_rejected(
+        self, handler, base_payload, code,
+    ):
+        """All 8 OPRA multi-leg sale conditions gate the alert."""
+        p = _payload(
+            base_payload,
+            executed_at_ms=_BUCKET_ANCHOR_MS + 50_000,
+            price="4.60",
+            size=888,  # $408K — would otherwise fire on the ratio/floor
+        )
+        p["trade_code"] = code
+        handler._transform(p)
+        assert handler._pending_alerts == []
+
+    def test_trade_code_match_is_case_insensitive(self, handler, base_payload):
+        """UW occasionally upper-cases the trade_code; the gate is robust."""
+        p = _payload(
+            base_payload,
+            executed_at_ms=_BUCKET_ANCHOR_MS + 60_000,
+            price="4.60",
+            size=888,
+        )
+        p["trade_code"] = "MLET"
+        handler._transform(p)
+        assert handler._pending_alerts == []
+
+    def test_alert_fires_when_multi_leg_share_below_threshold(
+        self, handler, base_payload,
+    ):
+        """≥50% single-leg → alert still fires (multi-leg < 50% share)."""
+        # Single-leg ask: $408K
+        single = _payload(
+            base_payload,
+            executed_at_ms=_BUCKET_ANCHOR_MS + 65_000,
+            price="4.60",
+            size=888,
+        )
+        # Multi-leg ask: $138K (24% share of $546K total)
+        multi = _payload(
+            base_payload,
+            executed_at_ms=_BUCKET_ANCHOR_MS + 70_000,
+            price="4.60",
+            size=300,
+        )
+        multi["trade_code"] = "mlat"
+        handler._transform(single)
+        # First print already fires on its own (100% ask, $408K > floor) —
+        # the multi-leg follow-up just confirms dedupe doesn't reverse it.
+        assert len(handler._pending_alerts) == 1
+        handler._transform(multi)
+        assert len(handler._pending_alerts) == 1
+
+    def test_alert_fires_with_no_trade_code_in_payload(
+        self, handler, base_payload,
+    ):
+        """Payload missing trade_code → tick is treated as single-leg."""
+        # Build a payload WITHOUT the field; fixture doesn't include it
+        # by default so this is the default case.
+        p = _payload(
+            base_payload,
+            executed_at_ms=_BUCKET_ANCHOR_MS + 75_000,
+            price="4.60",
+            size=888,
+        )
+        assert "trade_code" not in p
+        handler._transform(p)
+        assert len(handler._pending_alerts) == 1
+
+
+# ----------------------------------------------------------------------
 # Dedupe + bucket rollover
 # ----------------------------------------------------------------------
 
