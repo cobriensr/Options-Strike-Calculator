@@ -5,7 +5,7 @@
 
 1. `ask_pct = 1.0` exact is a sharp performance cliff: median peak +4.51%, win > 0% = 77.0% (vs ≥99% in every other band). The cliff replicates inside every tier (`tier1`: 81.4%, `tier2`: 71.3%, `tier3`: 77.7%). ρ_spearman(ask_pct, peak) = −0.270 across the full sample.
 
-2. Multi-leg attribution (per UW OPRA `trade_code`: `mlat`/`mlet`/`mlft`/`mfto`/`masl`/`mesl`/`mfsl`/`mctr`) is over-represented in the ask=100% band (33% of fires there are ≥90% multi-leg by size) AND is a **separate, orthogonal** performance drag in every band: 95-99% control band shows multi-leg fires win > 100% at 3.8% vs 11.7% for single-leg.
+2. Multi-leg attribution (per UW OPRA `trade_code`: `mlat`/`mlet`/`mlft`/`mfto`/`masl`/`mesl`/`mfsl`/`mlct`) is over-represented in the ask=100% band (33% of fires there are ≥90% multi-leg by size) AND is a **separate, orthogonal** performance drag in every band: 95-99% control band shows multi-leg fires win > 100% at 3.8% vs 11.7% for single-leg.
 
 Trader's goal is directional high-probability flow only. Multi-leg fires (spread legs, hedges) carry no directional thesis even when their leg prints aggressively at the ask.
 
@@ -50,7 +50,7 @@ Same multi-leg drag, completely independent of the ask=100% cliff.
 ## Decisions (locked from 2026-05-12 conversation)
 
 - **Multi-leg drop predicate:** `multi_leg_share >= 0.50`. The size distribution is bimodal (most fires at ~0% or ~100% ML), so 50% is a clean separator. Drops ~33% of ask=100% fires + ~25% of 95-99% fires.
-- **Multi-leg codes:** `('mlat', 'mlet', 'mlft', 'mfto', 'masl', 'mesl', 'mfsl', 'mctr')`.
+- **Multi-leg codes:** `('mlat', 'mlet', 'mlft', 'mfto', 'masl', 'mesl', 'mfsl', 'mlct')`.
 - **Drop layer:** detector (`api/_lib/silent-boom.ts`). Rejected fires never enter `silent_boom_alerts`.
 - **Schema:** add nullable `multi_leg_share NUMERIC` column to `silent_boom_alerts`. Surviving fires carry their attribution for tooltip display + future analysis.
 - **Ask=1.0 demotion:** `ASK_PCT_SATURATED_PENALTY = -30` in `silent-boom-score.ts`. Max positive score = +33; with −30 saturation, ceiling is +3, well below tier2 threshold of 8.
@@ -99,7 +99,7 @@ Same multi-leg drag, completely independent of the ask=100% cliff.
 
 ## Constants
 
-- Multi-leg codes: `('mlat', 'mlet', 'mlft', 'mfto', 'masl', 'mesl', 'mfsl', 'mctr')`
+- Multi-leg codes: `('mlat', 'mlet', 'mlft', 'mfto', 'masl', 'mesl', 'mfsl', 'mlct')`
 - Multi-leg drop threshold: `0.50` (size share)
 - ASK saturation threshold: `1.0` (exact)
 - ASK saturation penalty: `−30`

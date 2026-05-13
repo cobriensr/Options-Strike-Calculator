@@ -254,10 +254,12 @@ def compute_silent_boom_score(
     else:                    s += -5
     # TOD
     s += _TOD_WEIGHTS[tod]
-    # Ask%
+    # Ask% — saturation cliff at ask_pct = 1.0 forces tier3 (spec:
+    # docs/superpowers/specs/silent-boom-ask-100-demote-2026-05-12.md).
     if   ask_pct < 0.85: s += 2
     elif ask_pct < 0.95: s += 1
-    else:                s += -1
+    elif ask_pct < 1.0:  s += -1
+    else:                s += -30
     # Call bonus
     if option_type == 'C':
         s += 1

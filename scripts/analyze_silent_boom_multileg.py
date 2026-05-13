@@ -13,7 +13,7 @@ tape, last ~9 days only) to compute the multi-leg share of each fire's
     masl — Multi-Leg Auto vs Single-Leg
     mesl — Multi-Leg Electronic vs Single-Leg
     mfsl — Multi-Leg Floor vs Single-Leg
-    mctr — Multi-Leg Cross Trade
+    mlct — Multi-Leg Cross Trade
 
 Population baseline (15-min slice 2026-05-12): ~22% of total option
 volume is multi-leg. If silent-boom fires with ask_pct = 1.0 show
@@ -28,6 +28,7 @@ Usage:
 
 from __future__ import annotations
 
+import math
 import os
 import pathlib
 import re
@@ -42,7 +43,7 @@ ENV_FILE = ROOT / '.env.local'
 OUT_DIR = ROOT / 'docs' / 'tmp'
 
 MULTI_LEG_CODES = (
-    'mlat', 'mlet', 'mlft', 'mfto', 'masl', 'mesl', 'mfsl', 'mctr',
+    'mlat', 'mlet', 'mlft', 'mfto', 'masl', 'mesl', 'mfsl', 'mlct',
 )
 
 # Ask bands in DISPLAY units (0-100). Source column ask_pct is fraction.
@@ -77,7 +78,7 @@ def load_env() -> None:
 
 
 def fmt_pct(n: float, sign: bool = True) -> str:
-    if n != n:
+    if math.isnan(n):
         return '—'
     fmt = '+.2f' if sign else '.2f'
     return f'{n:{fmt}}%'

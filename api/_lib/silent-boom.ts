@@ -76,7 +76,7 @@ export interface ChainBucket {
   /** Bid-side contracts in this bucket. */
   bidSize: number;
   /** Multi-leg contracts in this bucket — sum of size whose UW
-   *  trade_code is one of mlat/mlet/mlft/mfto/masl/mesl/mfsl/mctr
+   *  trade_code is one of mlat/mlet/mlft/mfto/masl/mesl/mfsl/mlct
    *  (OPRA-standard multi-leg sale conditions). Caller aggregates
    *  from ws_option_trades.raw_payload->>'trade_code'. */
   multiLegSize: number;

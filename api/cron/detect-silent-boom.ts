@@ -79,7 +79,7 @@ const MULTI_LEG_TRADE_CODES = [
   'masl',
   'mesl',
   'mfsl',
-  'mctr',
+  'mlct',
 ] as const;
 
 interface ChainGroupBuilder {
