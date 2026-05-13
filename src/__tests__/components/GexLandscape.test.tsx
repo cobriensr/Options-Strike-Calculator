@@ -480,15 +480,13 @@ describe('GexLandscape', () => {
   });
 
   describe('MM-attributed Phase 3 surface', () => {
-    it('shows the (calibrating) suffix on the bias verdict label', () => {
-      // Phase 3 default: bias verdict thresholds are still tuned to
-      // pre-swap naive GEX magnitudes; the suffix flags that to the
-      // trader until Phase 4 recalibrates from real periscope_snapshots.
+    it('does NOT show the (calibrating) suffix after Phase 4 recalibration', () => {
+      // Phase 4 dropped the suffix after the bias verdict thresholds
+      // were validated against 5 days of periscope_snapshots history
+      // (scripts/probe-mm-bias-calibration.mjs). Asserting its absence
+      // guards against accidental re-introduction.
       renderLandscape();
-      // BiasPanel always renders SOMETHING (even the rangebound default
-      // when strikes are empty), so the suffix should be visible
-      // regardless of the input shape.
-      expect(screen.getByText(/\(calibrating\)/)).toBeDefined();
+      expect(screen.queryByText(/\(calibrating\)/)).toBeNull();
     });
 
     it('renders 10m + 30m Δ% column headers and no 1m / 5m / 15m headers', () => {

@@ -142,7 +142,7 @@ const GexLandscape = memo(function GexLandscape({
     loading,
     error,
     refresh,
-  } = useGexLandscapeData('SPX', marketOpen, selectedDate, scrubTimestamp);
+  } = useGexLandscapeData(marketOpen, selectedDate, scrubTimestamp);
 
   // Mirror live `timestamps` into the scrub controller's input. The
   // controller can't depend on the same hook's output without creating
@@ -412,11 +412,12 @@ const GexLandscape = memo(function GexLandscape({
     // Guard: don't process the same snapshot twice (e.g. re-render with same data).
     if (snapshotBufferRef.current.at(-1)?.ts === now) return;
 
-    // Prune entries older than 6 minutes — the smoothing window is 5
-    // minutes (extra minute absorbs minor jitter). The previous 31-min
-    // bound supported the largest server-bound delta lookup; now that
-    // deltas live server-side, the buffer can be much smaller.
-    const cutoff = now - 6 * 60 * 1000;
+    // Prune entries older than 31 minutes — `computePriceTrend` (in
+    // deltas.ts) uses a 30-min window at MM cadence (Phase 4 widening),
+    // and 1 extra minute absorbs jitter at slot boundaries. Smoothing
+    // still works off the last 5 min internally, so widening the buffer
+    // here doesn't change that behaviour.
+    const cutoff = now - 31 * 60 * 1000;
     const buf = snapshotBufferRef.current.filter((snap) => snap.ts >= cutoff);
 
     // Push current snapshot and persist the updated buffer.

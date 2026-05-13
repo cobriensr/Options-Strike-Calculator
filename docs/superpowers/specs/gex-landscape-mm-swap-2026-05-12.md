@@ -1,7 +1,7 @@
 # GEX Landscape — MM-attributed swap (SPX-only)
 
 **Date:** 2026-05-12
-**Status:** Draft — pending answers on open questions
+**Status:** Shipped — Phase 1 (ae2988b8), Phase 2 (85a8e5cc), Phase 3 (5453ef8b), Phase 4 (this).
 
 ## Goal
 

@@ -50,12 +50,25 @@ export interface UseGexLandscapeDataReturn {
 }
 
 /**
+ * Magnitude floor for the Δ% denominator. Strikes whose prior gamma
+ * has |value| < this floor produce huge meaningless percentages
+ * (a +5 strike against a 0.01 prior reads 50,000% Δ); the floor maps
+ * those to `null` so the BiasPanel mean and the StrikeTable cells
+ * don't get poisoned. The value was chosen from the Phase 4 probe
+ * (scripts/probe-mm-bias-calibration.mjs): ATM strike |gamma| p10
+ * across 5 days = 112, so 100 sits just below typical ATM and only
+ * filters near-zero strikes (which have no economic meaning at MM
+ * scale anyway).
+ */
+const DELTA_NOISE_FLOOR = 100;
+
+/**
  * Build a single Δ% map from the current MM strikes vs. a prior slot's
  * gamma-keyed lookup. Percent change uses `|prior|` as the denominator
  * so the sign of the delta reflects movement direction even when the
  * prior gamma is negative (the natural case in negative-gamma regimes).
  * Returns `null` when the strike isn't in the lookback OR the prior
- * gamma is 0 (would be a divide-by-zero).
+ * gamma's magnitude is below `DELTA_NOISE_FLOOR`.
  */
 function buildDeltaMap(
   currentStrikes: ReadonlyArray<{ strike: number; gamma: number }>,
@@ -68,7 +81,7 @@ function buildDeltaMap(
   }
   for (const r of currentStrikes) {
     const p = prior.get(r.strike);
-    if (p === undefined || p === 0) {
+    if (p === undefined || Math.abs(p) < DELTA_NOISE_FLOOR) {
       out.set(r.strike, null);
     } else {
       out.set(r.strike, ((r.gamma - p) / Math.abs(p)) * 100);
@@ -146,11 +159,6 @@ export function projectMmStrike(
 }
 
 export function useGexLandscapeData(
-  // Phase 2: ticker parameter is unused (SPX-only). Typed as `string`
-  // (not `unknown`) so the call site's positional-arg ordering stays
-  // type-checked — passing `marketOpen` (boolean) here still fails to
-  // compile. Phase 3 removes it from both sides.
-  _ticker: string,
   marketOpen: boolean,
   expiry: string,
   at: string | null = null,

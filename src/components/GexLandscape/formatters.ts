@@ -78,7 +78,7 @@ export function formatBiasForClaude(b: BiasMetrics): string {
   if (b.priceTrend && b.priceTrend.direction !== 'flat') {
     const dir = b.priceTrend.direction === 'up' ? 'UP' : 'DOWN';
     lines.push(
-      `Price trend: DRIFTING ${dir} (${b.priceTrend.changePts > 0 ? '+' : ''}${b.priceTrend.changePts.toFixed(1)} pts, ${fmtPct(b.priceTrend.changePct)} over 5m)`,
+      `Price trend: DRIFTING ${dir} (${b.priceTrend.changePts > 0 ? '+' : ''}${b.priceTrend.changePts.toFixed(1)} pts, ${fmtPct(b.priceTrend.changePct)} over 30m)`,
     );
   }
   return lines.join('\n');

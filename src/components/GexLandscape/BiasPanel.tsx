@@ -35,7 +35,7 @@ export function BiasPanel({
     bias.verdict === 'drifting-down' || bias.verdict === 'drifting-up';
   const driftSuffix =
     isDrifting && bias.priceTrend
-      ? ` (${bias.priceTrend.changePts > 0 ? '+' : ''}${bias.priceTrend.changePts.toFixed(1)} pts / 5m)`
+      ? ` (${bias.priceTrend.changePts > 0 ? '+' : ''}${bias.priceTrend.changePts.toFixed(1)} pts / 30m)`
       : '';
   const floorTrend10mColor =
     bias.floorTrend10m === null
@@ -69,10 +69,9 @@ export function BiasPanel({
         <div className="flex items-center gap-2.5">
           <span
             className={`cursor-help rounded border px-2 py-0.5 font-mono text-[11px] font-bold ${vm.color} ${vm.bg} ${vm.border}`}
-            title={`${VERDICT_TOOLTIP[bias.verdict]}\n\nNote: verdict thresholds are still calibrated against pre-MM-swap naive GEX magnitudes. Phase 4 of the MM swap re-tunes them from real periscope_snapshots data after a session of observation.`}
+            title={VERDICT_TOOLTIP[bias.verdict]}
           >
-            {vm.label}{' '}
-            <span className="font-normal opacity-60">(calibrating)</span>
+            {vm.label}
           </span>
           <span className="text-secondary font-mono text-[11px]">
             {vm.desc}

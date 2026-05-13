@@ -56,6 +56,13 @@ export function computeSmoothedStrikes(
  * step-intervals when `currentPrice` is appended, giving the
  * consistency math real signal.
  *
+ * Phase 4 of the MM swap widened the window from 5 min to 30 min:
+ * MM data publishes at 10-min cadence, so a 5-min window can only
+ * ever hold one snapshot and the drift override
+ * (`rangebound` → `drifting-up` / `drifting-down`) was effectively
+ * dormant. 30 min gives exactly 3 snapshots, the minimum that satisfies
+ * `MIN_BUFFERED_SNAPSHOTS` and produces a real consistency reading.
+ *
  * The primitive lives in `src/utils/` so the server-side regime cron
  * can import it without pulling in React / GexLandscape — see
  * `docs/superpowers/specs/futures-playbook-server-drift-override-2026-04-21.md`.
@@ -66,7 +73,7 @@ export function computePriceTrend(
   currentPrice: number,
   buf: Snapshot[],
   nowTs: number,
-  windowMs = 5 * 60 * 1000,
+  windowMs = 30 * 60 * 1000,
 ): PriceTrend {
   const inWindow = buf.filter(
     (snap) => snap.ts >= nowTs - windowMs && snap.strikes.length > 0,

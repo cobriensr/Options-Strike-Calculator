@@ -236,13 +236,35 @@ describe('useGexLandscapeData — adapter behavior', () => {
     mockWs([]);
 
     const { result } = renderHook(() =>
-      useGexLandscapeData('SPX', true, '2026-05-12'),
+      useGexLandscapeData(true, '2026-05-12'),
     );
 
     // ((5000 - 4500) / |4500|) * 100 ≈ 11.11
     expect(result.current.gexDelta10mMap.get(7350)).toBeCloseTo(11.11, 1);
     // ((5000 - 3500) / |3500|) * 100 ≈ 42.86
     expect(result.current.gexDelta30mMap.get(7350)).toBeCloseTo(42.86, 1);
+  });
+
+  it('returns null delta when prior gamma is below the noise floor (|prior| < 100)', () => {
+    // Phase 4 calibration: strikes with near-zero prior gamma produce
+    // huge meaningless % values (a +50 strike against a 0.5 prior
+    // reads 10,000%). The floor maps those to null so the BiasPanel
+    // mean and the StrikeTable cells don't get poisoned.
+    mockPrimary(
+      {
+        capturedAt: '2026-05-12T18:40:00.000Z',
+        spot: 7340,
+        strikes: [{ strike: 7350, gamma: 5000, charm: 0 }],
+        availableSlots: [],
+      },
+      { prior10m: new Map([[7350, 50]]) }, // |50| < 100 → null
+    );
+    mockWs([]);
+
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-12'),
+    );
+    expect(result.current.gexDelta10mMap.get(7350)).toBeNull();
   });
 
   it('returns null delta when prior gamma is 0 (no divide by zero)', () => {
@@ -258,7 +280,7 @@ describe('useGexLandscapeData — adapter behavior', () => {
     mockWs([]);
 
     const { result } = renderHook(() =>
-      useGexLandscapeData('SPX', true, '2026-05-12'),
+      useGexLandscapeData(true, '2026-05-12'),
     );
     expect(result.current.gexDelta10mMap.get(7350)).toBeNull();
   });
@@ -276,7 +298,7 @@ describe('useGexLandscapeData — adapter behavior', () => {
     mockWs([]);
 
     const { result } = renderHook(() =>
-      useGexLandscapeData('SPX', true, '2026-05-12'),
+      useGexLandscapeData(true, '2026-05-12'),
     );
     expect(result.current.gexDelta10mMap.get(7350)).toBeNull();
   });
@@ -297,7 +319,7 @@ describe('useGexLandscapeData — adapter behavior', () => {
     mockWs([]);
 
     const { result } = renderHook(() =>
-      useGexLandscapeData('SPX', true, '2026-05-12'),
+      useGexLandscapeData(true, '2026-05-12'),
     );
     // ((-1B - -2B) / |-2B|) * 100 = 50
     expect(result.current.gexDelta10mMap.get(7350)).toBe(50);
@@ -313,7 +335,7 @@ describe('useGexLandscapeData — adapter behavior', () => {
     mockWs([]);
 
     const { result } = renderHook(() =>
-      useGexLandscapeData('SPX', true, '2026-05-12'),
+      useGexLandscapeData(true, '2026-05-12'),
     );
     expect(result.current.gexDeltaMap.size).toBe(0);
     expect(result.current.gexDelta5mMap.size).toBe(0);
@@ -338,7 +360,7 @@ describe('useGexLandscapeData — adapter behavior', () => {
     ]);
 
     const { result } = renderHook(() =>
-      useGexLandscapeData('SPX', true, '2026-05-12'),
+      useGexLandscapeData(true, '2026-05-12'),
     );
     expect(result.current.strikes[0]?.volReinforcement).toBe('reinforcing');
   });
@@ -353,7 +375,7 @@ describe('useGexLandscapeData — adapter behavior', () => {
     mockWs([]);
 
     const { result } = renderHook(() =>
-      useGexLandscapeData('SPX', true, '2026-05-12'),
+      useGexLandscapeData(true, '2026-05-12'),
     );
     expect(result.current.strikes).toEqual([]);
   });
@@ -363,7 +385,7 @@ describe('useGexLandscapeData — adapter behavior', () => {
     mockWs([], 'WS down');
 
     const { result } = renderHook(() =>
-      useGexLandscapeData('SPX', true, '2026-05-12'),
+      useGexLandscapeData(true, '2026-05-12'),
     );
     expect(result.current.error).toBe('periscope-strikes: HTTP 500');
   });
@@ -378,7 +400,7 @@ describe('useGexLandscapeData — adapter behavior', () => {
     mockWs([], 'HTTP 500');
 
     const { result } = renderHook(() =>
-      useGexLandscapeData('SPX', true, '2026-05-12'),
+      useGexLandscapeData(true, '2026-05-12'),
     );
     expect(result.current.error).toBe('SPX vol reinforcement: HTTP 500');
   });
