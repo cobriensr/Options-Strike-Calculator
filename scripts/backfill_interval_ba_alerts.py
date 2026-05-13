@@ -59,8 +59,10 @@ ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / '.env.local'
 PARQUET_DIR = Path.home() / 'Desktop' / 'Eod-Full-Tape-parquet'
 
-# Match the SPXWIntervalBAHandler defaults.
-TICKER = 'SPXW'
+# Match the SPXWIntervalBAHandler defaults. Configurable per-ticker via
+# --ticker so the same script can backfill SPY / QQQ / future tickers
+# into interval_ba_alerts for cross-symbol confluence analysis.
+DEFAULT_TICKER = 'SPXW'
 # Raised 2026-05-12 from 0.70 to 0.75 after the empirical edge analysis
 # (docs/tmp/interval-ba-analysis-20260512-214350.md) found the 70-75%
 # band sits at baseline hit rate while 75-85% delivers +4pp edge.
@@ -208,16 +210,16 @@ def ct_date(ts: pd.Timestamp) -> str:
     return ts.tz_convert(_CT).date().isoformat()
 
 
-def load_spxw_day(parquet_path: Path) -> pd.DataFrame:
-    """Read the parquet, filter to SPXW + 0DTE + valid trades.
+def load_ticker_day(parquet_path: Path, ticker: str) -> pd.DataFrame:
+    """Read the parquet, filter to ``ticker`` + 0DTE + valid trades.
 
     Predicate pushdown via pyarrow keeps us from materialising the full
-    11M-row table — only SPXW rows reach pandas.
+    11M-row table — only matching-ticker rows reach pandas.
     """
     table = pq.read_table(
         parquet_path,
         columns=_READ_COLUMNS,
-        filters=[('underlying_symbol', '=', TICKER)],
+        filters=[('underlying_symbol', '=', ticker)],
     )
     if table.num_rows == 0:
         return pd.DataFrame()
@@ -247,7 +249,7 @@ def load_spxw_day(parquet_path: Path) -> pd.DataFrame:
     return df
 
 
-def detect_alerts_for_day(df: pd.DataFrame) -> list[tuple]:
+def detect_alerts_for_day(df: pd.DataFrame, ticker: str) -> list[tuple]:
     """Tick-by-tick replay of the live ``SPXWIntervalBAHandler._observe``
     semantics across the day's SPXW 0DTE trades.
 
@@ -369,7 +371,7 @@ def detect_alerts_for_day(df: pd.DataFrame) -> list[tuple]:
         out_rows.append(
             (
                 chain,                                       # option_chain
-                TICKER,                                      # ticker
+                ticker,                                      # ticker
                 top.option_type_norm,                        # option_type
                 Decimal(str(top.strike)),                    # strike
                 top.expiry_iso,                              # expiry
@@ -413,6 +415,16 @@ def insert_alerts(conn, rows: list[tuple]) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        '--ticker',
+        type=str,
+        default=DEFAULT_TICKER,
+        help=(
+            'Underlying ticker to backfill (default: %(default)s). '
+            'Supports any UW Full Tape ticker; SPY/QQQ are common '
+            'companions for cross-symbol confluence analysis.'
+        ),
+    )
     parser.add_argument('--from-date', type=str, default=None)
     parser.add_argument('--to-date', type=str, default=None)
     parser.add_argument('--limit-days', type=int, default=None)
@@ -422,6 +434,7 @@ def main() -> int:
         help='Read parquets and detect alerts but skip DB writes.',
     )
     args = parser.parse_args()
+    ticker: str = args.ticker.upper()
 
     load_env()
     if not PARQUET_DIR.exists():
@@ -430,7 +443,10 @@ def main() -> int:
     if not dates:
         sys.exit('No parquet files matched the date range')
 
-    print(f'Backfilling {len(dates)} day(s): {dates[0][0]} → {dates[-1][0]}')
+    print(
+        f'Backfilling {ticker} across {len(dates)} day(s): '
+        f'{dates[0][0]} → {dates[-1][0]}',
+    )
     if args.dry_run:
         print('DRY RUN — DB writes skipped')
 
@@ -448,16 +464,16 @@ def main() -> int:
     try:
         for date_str, parquet_path in dates:
             t0 = time.monotonic()
-            df = load_spxw_day(parquet_path)
+            df = load_ticker_day(parquet_path, ticker)
             t_load = time.monotonic() - t0
             if df.empty:
                 print(
-                    f'  {date_str}  rows=0      no SPXW 0DTE flow '
+                    f'  {date_str}  rows=0      no {ticker} 0DTE flow '
                     f'(load {t_load:.1f}s)',
                 )
                 continue
             t1 = time.monotonic()
-            rows = detect_alerts_for_day(df)
+            rows = detect_alerts_for_day(df, ticker)
             t_detect = time.monotonic() - t1
             total_alerts += len(rows)
 
