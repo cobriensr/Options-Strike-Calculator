@@ -16,10 +16,23 @@ import type { StrikeScore } from '../../utils/gex-target';
 
 // ── Formatters ────────────────────────────────────────────────────────
 
+/**
+ * Compact percent formatter for the sparkline row. Drops the decimal
+ * once magnitude is >= 100% so big sign-flip deltas (e.g. -876% from a
+ * near-zero prior) fit in the cell without pushing the sparkline SVG
+ * around. Below 100%, keep one decimal for fine-grained intraday reads.
+ */
 function formatPct(v: number | null): string {
   if (v === null) return '—';
-  const sign = v >= 0 ? '+' : '';
-  return `${sign}${(v * 100).toFixed(1)}%`;
+  const pct = v * 100;
+  const abs = Math.abs(pct);
+  const sign = pct < 0 ? '-' : '+';
+  if (abs >= 1000) {
+    // Cap the display at >999% so the cell width never blows out even
+    // when the prior was effectively zero and divided into.
+    return `${sign}>999%`;
+  }
+  return abs >= 100 ? `${sign}${abs.toFixed(0)}%` : `${sign}${abs.toFixed(1)}%`;
 }
 
 // ── Sparkline ─────────────────────────────────────────────────────────
@@ -231,9 +244,13 @@ export const SparklinePanel = memo(function SparklinePanel({
                   colorOverride={pct20m !== null ? pctColor : undefined}
                 />
 
-                {/* 20m % change */}
+                {/* 20m % change. Fixed-width + right-aligned so long
+                    values (e.g. -876%, >999% cap) don't push the
+                    sparkline left and shift the column layout across
+                    rows. min-w sized to fit the widest realistic
+                    label without truncation. */}
                 <span
-                  className="ml-auto font-mono text-[10px]"
+                  className="ml-auto min-w-[48px] shrink-0 text-right font-mono text-[10px] tabular-nums"
                   style={{ color: pctColor }}
                 >
                   {formatPct(pct20m)}

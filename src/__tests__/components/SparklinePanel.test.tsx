@@ -125,6 +125,39 @@ describe('SparklinePanel: 20m delta percentage', () => {
     render(<SparklinePanel leaderboard={leaderboard} />);
     expect(screen.getByText('—')).toBeInTheDocument();
   });
+
+  it('drops the decimal when magnitude is >= 100% so the cell stays compact', () => {
+    // -876.2% would push the sparkline left across rows; -876% fits.
+    const leaderboard = [
+      makeStrike(5800, {
+        features: makeFeatures({ deltaPct_20m: -8.762, strike: 5800 }),
+      }),
+    ];
+    render(<SparklinePanel leaderboard={leaderboard} />);
+    expect(screen.getByText('-876%')).toBeInTheDocument();
+  });
+
+  it('caps the display at >999% to prevent cell-width blowout', () => {
+    // A near-zero prior divides into ~50,000% deltas; cap so the
+    // sparkline column never grows mid-render.
+    const leaderboard = [
+      makeStrike(5800, {
+        features: makeFeatures({ deltaPct_20m: 500, strike: 5800 }),
+      }),
+    ];
+    render(<SparklinePanel leaderboard={leaderboard} />);
+    expect(screen.getByText('+>999%')).toBeInTheDocument();
+  });
+
+  it('keeps the decimal for |abs| < 100 so fine-grained moves are visible', () => {
+    const leaderboard = [
+      makeStrike(5800, {
+        features: makeFeatures({ deltaPct_20m: 0.998, strike: 5800 }),
+      }),
+    ];
+    render(<SparklinePanel leaderboard={leaderboard} />);
+    expect(screen.getByText('+99.8%')).toBeInTheDocument();
+  });
 });
 
 describe('SparklinePanel: SVG sparklines', () => {
