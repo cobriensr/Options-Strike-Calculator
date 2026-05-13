@@ -36,22 +36,28 @@ const formatStrike = (n: number): string =>
 
 const SEVERITY_STYLES: Record<
   IntervalBAFeedAlert['severity'],
-  { stripe: string; badge: string; label: string }
+  { stripe: string; badge: string; label: string; tooltip: string }
 > = {
   extreme: {
     stripe: 'border-l-rose-400',
     badge: 'bg-rose-500/20 text-rose-200 border border-rose-500/40',
     label: 'EXTREME',
+    tooltip:
+      'EXTREME — bucket total premium ≥ $1M. The highest tier; an aggregate this large in a 5-min ask-side bucket is structurally rare for SPX/SPXW/SPY/QQQ.',
   },
   critical: {
     stripe: 'border-l-orange-400',
     badge: 'bg-orange-500/20 text-orange-200 border border-orange-500/40',
     label: 'CRITICAL',
+    tooltip:
+      'CRITICAL — bucket total premium $500K–$1M. Above the noise floor; meaningful concentration of ask-side buying.',
   },
   warning: {
     stripe: 'border-l-amber-400',
     badge: 'bg-amber-500/20 text-amber-200 border border-amber-500/40',
     label: 'WARNING',
+    tooltip:
+      'WARNING — bucket total premium $250K–$500K. Cleared the $250K floor + ≥75% ask ratio, but smaller-tier conviction than CRITICAL/EXTREME.',
   },
 };
 
@@ -74,7 +80,8 @@ export function IntervalBARow({ alert }: Readonly<IntervalBARowProps>) {
 
       {/* Severity pill */}
       <span
-        className={`rounded px-1.5 py-0.5 font-sans text-[9px] font-bold ${sev.badge}`}
+        title={sev.tooltip}
+        className={`cursor-help rounded px-1.5 py-0.5 font-sans text-[9px] font-bold ${sev.badge}`}
       >
         {sev.label}
       </span>
@@ -86,14 +93,22 @@ export function IntervalBARow({ alert }: Readonly<IntervalBARowProps>) {
         </span>
         <span className="text-neutral-100">{formatStrike(alert.strike)}</span>
         <span
-          className={`rounded px-1.5 py-0.5 font-sans text-[10px] font-bold ${sideBadge}`}
+          title={
+            isCall
+              ? 'CALL — ask-side buyers paid up for upside calls. Bullish directional bet.'
+              : 'PUT — ask-side buyers paid up for downside puts. Bearish directional bet.'
+          }
+          className={`cursor-help rounded px-1.5 py-0.5 font-sans text-[10px] font-bold ${sideBadge}`}
         >
           {isCall ? 'CALL' : 'PUT'}
         </span>
       </span>
 
       {/* Ratio */}
-      <span className="ml-auto flex flex-col items-end">
+      <span
+        title="Ask-side premium ÷ total bucket premium. ≥75% is the structural-anomaly threshold for SPX/SPY/QQQ — informed-flow conviction signature."
+        className="ml-auto flex cursor-help flex-col items-end"
+      >
         <span className="text-neutral-100">{alert.ratio_pct.toFixed(0)}%</span>
         <span className="text-[10px] text-neutral-500">ratio</span>
       </span>

@@ -93,7 +93,12 @@ export default function IntervalBAAlertBanner({
             <div className="min-w-0 flex-1">
               <div className="mb-1 flex items-center gap-2">
                 <span
-                  className="rounded px-1.5 py-0.5 font-sans text-[10px] font-bold"
+                  title={
+                    alert.option_type === 'C'
+                      ? 'CALL — ask-side buyers paid up for upside calls. Bullish directional bet.'
+                      : 'PUT — ask-side buyers paid up for downside puts. Bearish directional bet.'
+                  }
+                  className="cursor-help rounded px-1.5 py-0.5 font-sans text-[10px] font-bold"
                   style={sideBadge}
                 >
                   {alert.option_type === 'C' ? 'CALL' : 'PUT'}
