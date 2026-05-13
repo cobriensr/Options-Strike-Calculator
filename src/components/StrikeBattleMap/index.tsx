@@ -73,6 +73,29 @@ function dealerNetGamma(row: GexStrikeExpiryRow): number {
   return (row.call_gamma_oi ?? 0) + (row.put_gamma_oi ?? 0);
 }
 
+/**
+ * UTC ISO → CT minute-of-day (0-1439), or null when the ISO is
+ * unparseable or the resulting minute falls outside the cash session.
+ * Uses Intl with timeZone: 'America/Chicago' so DST is handled
+ * correctly (matches `ctWallClockToUtcIso`'s round-trip semantics).
+ */
+function utcIsoToCtMinute(iso: string): number | null {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(d);
+  const hStr = parts.find((p) => p.type === 'hour')?.value ?? '0';
+  const mStr = parts.find((p) => p.type === 'minute')?.value ?? '0';
+  // Intl returns "24" for midnight in some locales — clamp to 0.
+  const h = hStr === '24' ? 0 : Number.parseInt(hStr, 10);
+  const m = Number.parseInt(mStr, 10);
+  return h * 60 + m;
+}
+
 function StrikeBattleMapInner({ marketOpen }: StrikeBattleMapProps) {
   const today = getETToday();
   const [selectedDate, setSelectedDate] = useState<string>(today);
@@ -110,6 +133,25 @@ function StrikeBattleMapInner({ marketOpen }: StrikeBattleMapProps) {
     at,
   );
 
+  // Union of ascending CT minutes that have data on either ticker.
+  // Drives the MinuteScrubber's prev/next stepper so it lands on
+  // actual data points instead of stepping over empty minutes. The
+  // endpoint returns `timestamps` as ISO UTC strings; convert each
+  // to CT minute-of-day via Intl, dedupe + sort. When neither ticker
+  // returns timestamps (backfilled days or first load) the stepper
+  // falls back to ±1-minute walking.
+  const availableMinutes = useMemo<readonly number[]>(() => {
+    const all = new Set<number>();
+    for (const t of TICKERS) {
+      const tsList = data[t]?.timestamps ?? [];
+      for (const iso of tsList) {
+        const m = utcIsoToCtMinute(iso);
+        if (m !== null) all.add(m);
+      }
+    }
+    return [...all].sort((a, b) => a - b);
+  }, [data]);
+
   const headerRight = (
     <div className="flex items-center gap-2">
       <StrikeCountToggle value={strikeCount} onChange={setStrikeCount} />
@@ -145,6 +187,7 @@ function StrikeBattleMapInner({ marketOpen }: StrikeBattleMapProps) {
         value={selectedMinuteCT}
         onChange={setSelectedMinuteCT}
         liveAvailable={liveAvailable}
+        availableMinutes={availableMinutes}
       />
       <Body
         data={data}
