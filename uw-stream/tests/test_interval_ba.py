@@ -30,6 +30,18 @@ from handlers.interval_ba import (
 
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "interval_ba_sample.json"
 
+
+# Registry is module-level, so fires from one test leak into the next.
+# Reset before every test to keep cross-test confluence detection from
+# tagging an alert with a partner that came from an earlier case.
+@pytest.fixture(autouse=True)
+def _reset_recent_fires():
+    from handlers import recent_fires
+
+    recent_fires._reset_for_tests()
+    yield
+    recent_fires._reset_for_tests()
+
 # Bucket containing 17:06 UTC (2026-05-12 12:05-12:10 CT). All "same
 # bucket" timestamps below derive from this anchor so the alignment is
 # obvious in failure messages.
@@ -1019,6 +1031,158 @@ class TestBaseClassGuard:
         """Bare IntervalBAHandler() must fail loudly — _TICKER is unset."""
         with pytest.raises(NotImplementedError, match="_TICKER"):
             IntervalBAHandler()
+
+
+# ----------------------------------------------------------------------
+# Cross-symbol confluence — end-to-end through the handler. The
+# RecentFires registry's own unit tests are in test_recent_fires.py;
+# this class verifies the handler integrates with the registry the way
+# the spec describes (asymmetric tagging on write, OTHER-ticker-only,
+# direction-matched).
+# ----------------------------------------------------------------------
+
+
+def _fire_one_alert(handler, base_payload, *, chain, underlying_symbol):
+    """Push a single ask-side print through the handler that clears
+    both gates. Returns the appended alert tuple."""
+    handler._transform(
+        _payload(
+            base_payload,
+            underlying_symbol=underlying_symbol,
+            chain=chain,
+            executed_at_ms=_BUCKET_ANCHOR_MS + 80_000,
+            price="2.50",
+            size=1200,  # → $300K premium, above the $250K floor
+            tags=["ask_side", "bullish", "sweep"],
+        ),
+    )
+    assert len(handler._pending_alerts) == 1
+    return handler._pending_alerts[-1]
+
+
+class TestConfluenceTagging:
+    def test_first_fire_alone_is_solo(self, base_payload):
+        """SPXW fires by itself → confluence_tickers is []."""
+        h = SPXWIntervalBAHandler()
+        alert = _fire_one_alert(
+            h,
+            base_payload,
+            chain="SPXW260512C07360000",
+            underlying_symbol="SPXW",
+        )
+        assert alert[_AI["confluence_tickers"]] == []
+
+    def test_second_fire_picks_up_first_as_partner(self, base_payload):
+        """SPY fires; then SPXW fires same-direction within 90s.
+
+        Asymmetric tagging: the SPY row stays empty (it fired first
+        before SPXW existed in the registry); the SPXW row enumerates
+        ['SPY'] because the registry now has the SPY fire.
+        """
+        spy = SPYIntervalBAHandler()
+        spxw = SPXWIntervalBAHandler()
+
+        spy_alert = _fire_one_alert(
+            spy,
+            base_payload,
+            chain="SPY260512C00580000",
+            underlying_symbol="SPY",
+        )
+        spxw_alert = _fire_one_alert(
+            spxw,
+            base_payload,
+            chain="SPXW260512C07360000",
+            underlying_symbol="SPXW",
+        )
+        # SPY row written FIRST → no partners yet.
+        assert spy_alert[_AI["confluence_tickers"]] == []
+        # SPXW row written SECOND → sees SPY in the registry.
+        assert spxw_alert[_AI["confluence_tickers"]] == ["SPY"]
+
+    def test_three_way_confluence(self, base_payload):
+        """SPY then QQQ then SPXW all CALL within 90s → SPXW row
+        enumerates ['QQQ','SPY'] sorted."""
+        spy = SPYIntervalBAHandler()
+        qqq = QQQIntervalBAHandler()
+        spxw = SPXWIntervalBAHandler()
+
+        _fire_one_alert(
+            spy, base_payload,
+            chain="SPY260512C00580000", underlying_symbol="SPY",
+        )
+        qqq_alert = _fire_one_alert(
+            qqq, base_payload,
+            chain="QQQ260512C00510000", underlying_symbol="QQQ",
+        )
+        spxw_alert = _fire_one_alert(
+            spxw, base_payload,
+            chain="SPXW260512C07360000", underlying_symbol="SPXW",
+        )
+        # QQQ saw only SPY before it.
+        assert qqq_alert[_AI["confluence_tickers"]] == ["SPY"]
+        # SPXW saw both. Sorted for determinism (Q sorts after S — so
+        # the order is alphabetical: QQQ, SPY).
+        assert spxw_alert[_AI["confluence_tickers"]] == ["QQQ", "SPY"]
+
+    def test_opposite_direction_does_not_count_as_confluence(
+        self, base_payload,
+    ):
+        """SPY CALL fires; SPXW PUT fires same-time → NOT confluence.
+
+        Confluence requires same option_type (both CALL or both PUT).
+        Cross-direction simultaneous fires are unrelated signals.
+        """
+        spy = SPYIntervalBAHandler()
+        spxw = SPXWIntervalBAHandler()
+
+        _fire_one_alert(
+            spy, base_payload,
+            chain="SPY260512C00580000", underlying_symbol="SPY",
+        )
+        # SPXW PUT — different direction.
+        spxw._transform(
+            _payload(
+                base_payload,
+                underlying_symbol="SPXW",
+                chain="SPXW260512P07350000",
+                executed_at_ms=_BUCKET_ANCHOR_MS + 85_000,
+                price="2.50",
+                size=1200,
+                tags=["ask_side", "bearish"],
+            ),
+        )
+        assert len(spxw._pending_alerts) == 1
+        spxw_alert = spxw._pending_alerts[0]
+        assert spxw_alert[_AI["option_type"]] == "P"
+        assert spxw_alert[_AI["confluence_tickers"]] == []
+
+    def test_self_ticker_never_appears_in_own_confluence(self, base_payload):
+        """Two consecutive SPXW CALLs (different contracts) — the
+        second's confluence_tickers must NOT include 'SPXW' itself."""
+        h = SPXWIntervalBAHandler()
+        # First fire on 7360c.
+        _fire_one_alert(
+            h, base_payload,
+            chain="SPXW260512C07360000", underlying_symbol="SPXW",
+        )
+        # Second fire on 7370c — same direction, different contract.
+        # No deduping at the registry layer; the second alert just
+        # checks for OTHER tickers' partners.
+        h._transform(
+            _payload(
+                base_payload,
+                underlying_symbol="SPXW",
+                chain="SPXW260512C07370000",
+                executed_at_ms=_BUCKET_ANCHOR_MS + 100_000,
+                price="2.50",
+                size=1200,
+                tags=["ask_side", "bullish"],
+            ),
+        )
+        assert len(h._pending_alerts) == 2
+        second = h._pending_alerts[1]
+        assert "SPXW" not in second[_AI["confluence_tickers"]]
+        assert second[_AI["confluence_tickers"]] == []
 
 
 # ----------------------------------------------------------------------

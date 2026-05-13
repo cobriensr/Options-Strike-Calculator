@@ -48,6 +48,7 @@ from config import settings
 from handlers.option_trades import _COLUMNS as _RAW_COLUMNS
 from handlers.option_trades import OptionTradesHandler
 from logger_setup import log
+from handlers.recent_fires import lookup_confluence, record
 from notify import build_payload, schedule_notify
 from sentry_setup import capture_exception
 
@@ -89,8 +90,22 @@ _ALERT_COLUMNS: list[str] = [
     "top_trade_is_sweep",
     "top_trade_is_floor",
     "underlying_price",
+    # Cross-symbol confluence — OTHER tickers from the SPY/SPXW/QQQ
+    # trio that fired same-direction within the configured window.
+    # Empty list when this handler fires solo; populated when a partner
+    # ETF / index fired same-direction in the recent past. See
+    # docs/superpowers/specs/interval-ba-confluence-2026-05-13.md.
+    "confluence_tickers",
 ]
 _ALERT_CONFLICT_COLS = ["option_chain", "bucket_start"]
+
+# Symmetric window for cross-symbol confluence detection. A SPY fire
+# tagged ``+SPXW`` means SPXW fired same-direction within this many
+# seconds — the registry only stores the backward half; the forward
+# half is filled in by the later-firing handler's own lookback.
+# 90s is calibrated by the 2026-05-12 confluence-vs-solo analysis
+# (docs/tmp/interval-ba-confluence-vs-solo-20260512-231709.md).
+_CONFLUENCE_WINDOW_SEC = 90
 
 
 @dataclass(slots=True, frozen=True)
@@ -284,20 +299,36 @@ class IntervalBAHandler(OptionTradesHandler):
         self._prune_fired_if_needed(bucket_start_epoch)
         bucket_start = datetime.fromtimestamp(bucket_start_epoch, tz=UTC)
         bucket_end = bucket_start + timedelta(seconds=self._bucket_sec)
+        option_type = row[_C["option_type"]]
+        # Cross-symbol confluence: look back ``_CONFLUENCE_WINDOW_SEC``
+        # for same-direction fires on OTHER tickers, then record this
+        # fire so the LATER-firing handlers can find us in their
+        # lookbacks. Lookup-then-record is the documented order: the
+        # current alert never appears in its own confluence list.
+        fired_at = datetime.now(tz=UTC)
+        confluence = lookup_confluence(
+            ticker=ticker,
+            option_type=option_type,
+            fired_at=fired_at,
+            window_sec=_CONFLUENCE_WINDOW_SEC,
+        )
+        record(ticker=ticker, option_type=option_type, fired_at=fired_at)
         alert_row = _build_alert_row(
             chain=chain,
             ticker=ticker,
-            option_type=row[_C["option_type"]],
+            option_type=option_type,
             strike=row[_C["strike"]],
             expiry=expiry,
             bucket_start=bucket_start,
             bucket_end=bucket_end,
+            fired_at=fired_at,
             ratio=ratio,
             ask_premium=ask_premium,
             total_premium=total_premium,
             trade_count=len(bucket),
             top_tick=top_tick,
             underlying_price=row[_C["underlying_price"]],
+            confluence_tickers=confluence,
         )
         self._pending_alerts.append(alert_row)
         log.info(
@@ -410,14 +441,22 @@ def _build_alert_row(
     expiry: date,
     bucket_start: datetime,
     bucket_end: datetime,
+    fired_at: datetime,
     ratio: Decimal,
     ask_premium: Decimal,
     total_premium: Decimal,
     trade_count: int,
     top_tick: _Tick | None,
     underlying_price: Decimal | None,
+    confluence_tickers: list[str],
 ) -> tuple:
-    """Assemble an alert tuple in ``_ALERT_COLUMNS`` order."""
+    """Assemble an alert tuple in ``_ALERT_COLUMNS`` order.
+
+    ``fired_at`` is passed in (not computed here) so the caller can use
+    the SAME instant for both the alert row and the RecentFires
+    registry record — keeps the two views consistent down to the
+    microsecond.
+    """
     top_premium = (
         top_tick.premium.quantize(_TWO_PLACES) if top_tick is not None else None
     )
@@ -429,7 +468,7 @@ def _build_alert_row(
         expiry,
         bucket_start,
         bucket_end,
-        datetime.now(tz=UTC),
+        fired_at,
         (ratio * Decimal(100)).quantize(_TWO_PLACES),
         ask_premium.quantize(_TWO_PLACES),
         total_premium.quantize(_TWO_PLACES),
@@ -440,6 +479,7 @@ def _build_alert_row(
         top_tick.is_sweep if top_tick is not None else None,
         top_tick.is_floor if top_tick is not None else None,
         underlying_price,
+        confluence_tickers,
     )
 
 
