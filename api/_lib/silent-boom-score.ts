@@ -96,8 +96,18 @@ const ASK_PCT_WEIGHTS: ReadonlyArray<
   [0.95, 1], // 0.85–0.95 → +1 (20.5%, lift 1.29×)
 ] as const;
 
-/** 0.95+ ask% — slight penalty (0.87× lift). */
-const ASK_PCT_CAP_PENALTY = -1;
+/** 0.95 ≤ ask < 1.0 — slight penalty (0.87× lift). */
+const ASK_PCT_HIGH_PENALTY = -1;
+
+/** ask_pct = 1.0 exactly — structural-illiquidity floor. Set heavy
+ * enough that any otherwise-perfect score lands below the tier2 floor
+ * of 8: max positive components sum to +33 (10+5+5+5+5+2+1), so −30
+ * caps any saturated-ask fire at +3 → tier3. Empirical basis (full
+ * 15k-fire sample, scripts/analyze_silent_boom_vol_oi.py 2026-05-12):
+ * ask=1.0 fires win > 0% at 77.0% vs ≥99% in every other ask band;
+ * the cliff replicates inside every score_tier. Spec:
+ * docs/superpowers/specs/silent-boom-ask-100-demote-2026-05-12.md */
+const ASK_PCT_SATURATED_PENALTY = -30;
 
 /** Option type — small but consistent C edge (1.06× vs 0.93×). */
 const CALL_BONUS = 1;
@@ -232,7 +242,10 @@ export function computeSilentBoomScore(args: SilentBoomScoreInput): number {
       break;
     }
   }
-  if (!askScored) score += ASK_PCT_CAP_PENALTY;
+  if (!askScored) {
+    score +=
+      args.askPct >= 1.0 ? ASK_PCT_SATURATED_PENALTY : ASK_PCT_HIGH_PENALTY;
+  }
 
   // Call bonus
   if (args.optionType === 'C') score += CALL_BONUS;

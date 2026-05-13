@@ -82,11 +82,35 @@ describe('computeSilentBoomScore', () => {
     expect(computeSilentBoomScore({ ...ZERO_BASE, tod: 'LATE' })).toBe(-1 + -3);
   });
 
-  it('ask%: rewards 0.70–0.85, penalizes 0.95+', () => {
+  it('ask%: rewards 0.70–0.85, penalizes 0.95+, saturates at 1.0', () => {
     expect(computeSilentBoomScore({ ...ZERO_BASE, askPct: 0.75 })).toBe(0 + 2);
     expect(computeSilentBoomScore({ ...ZERO_BASE, askPct: 0.9 })).toBe(0 + 1);
     // ZERO_BASE has 0.95 → already -1, so the penalty is included.
     expect(computeSilentBoomScore(ZERO_BASE)).toBe(-1);
+    // 0.999 stays in the high-penalty band (cliff is at exactly 1.0).
+    expect(computeSilentBoomScore({ ...ZERO_BASE, askPct: 0.999 })).toBe(-1);
+    // ask = 1.0 — saturation penalty forces tier3.
+    expect(computeSilentBoomScore({ ...ZERO_BASE, askPct: 1.0 })).toBe(-30);
+  });
+
+  it('saturation: best-possible inputs at ask=1.0 still land below tier2', () => {
+    // Same components as the "strongest possible alert" case, but with
+    // ask_pct = 1.0 instead of 0.75. 33-point top score drops to +1
+    // (32-point delta: −2 lost ask reward + 30 saturation penalty
+    // applied). +1 is well below tier2 floor of 8 → tier3.
+    const saturated: SilentBoomScoreInput = {
+      dte: 0,
+      baselineVolume: 400,
+      spikeRatio: 7,
+      entryPrice: 0.4,
+      askPct: 1.0,
+      tod: 'AM_open',
+      optionType: 'C',
+    };
+    const score = computeSilentBoomScore(saturated);
+    expect(score).toBe(1);
+    expect(score).toBeLessThan(SILENT_BOOM_TIER_THRESHOLDS.tier2MinScore);
+    expect(silentBoomScoreTier(score)).toBe('tier3');
   });
 
   it('option type: +1 for calls', () => {
