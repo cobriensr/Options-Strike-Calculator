@@ -25,6 +25,7 @@ const SAMPLE_ALERT: IntervalBAFeedAlert = {
   top_trade_is_sweep: true,
   top_trade_is_floor: false,
   underlying_price: 5795,
+  confluence_tickers: [],
   severity: 'extreme',
 };
 
@@ -151,5 +152,76 @@ describe('IntervalBAFeed', () => {
     expect(url).toMatch(/^\/api\/interval-ba-feed\?/);
     expect(url).toContain('startTime=08%3A30');
     expect(url).toContain('endTime=15%3A00');
+    // Confluence filter is OFF by default → param absent from URL.
+    expect(url).not.toContain('confluenceOnly');
+  });
+
+  it('renders the +PARTNER pill when a row has confluence_tickers', async () => {
+    const partnered: IntervalBAFeedAlert = {
+      ...SAMPLE_ALERT,
+      confluence_tickers: ['SPY', 'QQQ'],
+    };
+    mockFetch({
+      alerts: [partnered],
+      summary: {
+        count: 1,
+        total_premium: 1400000,
+        extreme: 1,
+        critical: 0,
+        warning: 0,
+      },
+    });
+    render(<IntervalBAFeed />);
+    await waitFor(() => {
+      expect(screen.getByText(/5800/)).toBeInTheDocument();
+    });
+    // Pill content is the alphabetically sorted "+QQQ +SPY" string.
+    expect(screen.getByText('+QQQ +SPY')).toBeInTheDocument();
+  });
+
+  it('does NOT render the pill when confluence_tickers is empty', async () => {
+    // SAMPLE_ALERT defaults to empty confluence_tickers — solo fire.
+    mockFetch({
+      alerts: [SAMPLE_ALERT],
+      summary: {
+        count: 1,
+        total_premium: 1400000,
+        extreme: 1,
+        critical: 0,
+        warning: 0,
+      },
+    });
+    render(<IntervalBAFeed />);
+    await waitFor(() => {
+      expect(screen.getByText(/5800/)).toBeInTheDocument();
+    });
+    // No "+TICKER" pill rendered.
+    expect(screen.queryByText(/^\+/)).not.toBeInTheDocument();
+  });
+
+  it('toggles ?confluenceOnly=1 into the fetch URL', async () => {
+    const { default: userEvent } = await import(
+      '@testing-library/user-event'
+    );
+    const fetch = mockFetch({
+      alerts: [],
+      summary: {
+        count: 0,
+        total_premium: 0,
+        extreme: 0,
+        critical: 0,
+        warning: 0,
+      },
+    });
+    render(<IntervalBAFeed />);
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalled();
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /confluence only/i }));
+    await waitFor(() => {
+      const urls = fetch.mock.calls.map((c) => c[0] as string);
+      expect(urls.some((u) => u.includes('confluenceOnly=1'))).toBe(true);
+    });
   });
 });

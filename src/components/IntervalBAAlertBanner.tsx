@@ -103,6 +103,17 @@ export default function IntervalBAAlertBanner({
                 >
                   {alert.option_type === 'C' ? 'CALL' : 'PUT'}
                 </span>
+                {alert.confluence_tickers.length > 0 && (
+                  <span
+                    title={`Cross-symbol confluence — ${alert.confluence_tickers.join(' + ')} fired same-direction within ~90s.`}
+                    className="cursor-help rounded border border-sky-400/60 bg-sky-500/20 px-1.5 py-0.5 font-sans text-[10px] font-bold text-sky-100"
+                  >
+                    {[...alert.confluence_tickers]
+                      .sort()
+                      .map((t) => `+${t}`)
+                      .join(' ')}
+                  </span>
+                )}
                 <span className="font-sans text-xs font-semibold">
                   {formatIntervalBATitle(alert)}
                 </span>

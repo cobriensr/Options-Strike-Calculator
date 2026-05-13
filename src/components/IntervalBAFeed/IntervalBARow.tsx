@@ -104,6 +104,20 @@ export function IntervalBARow({ alert }: Readonly<IntervalBARowProps>) {
         </span>
       </span>
 
+      {/* Confluence partners pill — only render when populated. Sorted
+          for deterministic display; the server sorts but be defensive. */}
+      {alert.confluence_tickers.length > 0 && (
+        <span
+          title={`Cross-symbol confluence — ${alert.confluence_tickers.join(' + ')} fired same-direction within ~90s of this alert. CALL hit-rate lifts from 53% solo to 61% with at least one partner (per 2026-05-12 backfill analysis).`}
+          className="cursor-help inline-flex items-center gap-0.5 rounded border border-sky-500/40 bg-sky-500/15 px-1.5 py-0.5 font-sans text-[10px] font-bold text-sky-200"
+        >
+          {[...alert.confluence_tickers]
+            .sort()
+            .map((t) => `+${t}`)
+            .join(' ')}
+        </span>
+      )}
+
       {/* Ratio */}
       <span
         title="Ask-side premium ÷ total bucket premium. ≥75% is the structural-anomaly threshold for SPX/SPY/QQQ — informed-flow conviction signature."

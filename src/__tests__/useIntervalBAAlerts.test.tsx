@@ -28,6 +28,7 @@ vi.mock('../constants', async () => {
 import {
   useIntervalBAAlerts,
   formatIntervalBATitle,
+  formatIntervalBANotificationTitle,
   formatIntervalBABody,
   __resetChimesForTests,
   type IntervalBAAlert,
@@ -55,6 +56,7 @@ const baseAlert: IntervalBAAlert = {
   top_trade_is_sweep: true,
   top_trade_is_floor: false,
   underlying_price: 7355,
+  confluence_tickers: [],
   acknowledged: false,
   severity: 'extreme',
 };
@@ -82,6 +84,45 @@ describe('formatIntervalBATitle', () => {
     expect(formatIntervalBATitle({ ...baseAlert, strike: 7355.5 })).toBe(
       'SPXW 7356C 71% ASK',
     );
+  });
+
+  it('does NOT decorate with confluence partners (banner pill carries it)', () => {
+    // formatIntervalBATitle stays pure — the in-banner display adds a
+    // separate +PARTNER pill so we don't duplicate. The OS-notification
+    // formatter below is the one that suffixes.
+    expect(
+      formatIntervalBATitle({
+        ...baseAlert,
+        confluence_tickers: ['SPY', 'QQQ'],
+      }),
+    ).toBe('SPXW 7360C 71% ASK');
+  });
+});
+
+describe('formatIntervalBANotificationTitle', () => {
+  it('returns the bare title when no confluence partners', () => {
+    expect(formatIntervalBANotificationTitle(baseAlert)).toBe(
+      'SPXW 7360C 71% ASK',
+    );
+  });
+
+  it('appends single +TICKER suffix', () => {
+    expect(
+      formatIntervalBANotificationTitle({
+        ...baseAlert,
+        confluence_tickers: ['SPY'],
+      }),
+    ).toBe('SPXW 7360C 71% ASK +SPY');
+  });
+
+  it('sorts and appends multiple +TICKER suffixes alphabetically', () => {
+    // Insert reverse-sorted to confirm the formatter re-sorts.
+    expect(
+      formatIntervalBANotificationTitle({
+        ...baseAlert,
+        confluence_tickers: ['SPY', 'QQQ'],
+      }),
+    ).toBe('SPXW 7360C 71% ASK +QQQ +SPY');
   });
 });
 

@@ -45,6 +45,13 @@ export interface IntervalBAAlert {
   top_trade_is_sweep: boolean | null;
   top_trade_is_floor: boolean | null;
   underlying_price: number | null;
+  /**
+   * Cross-symbol confluence partners (Phase 5 of interval-ba-confluence
+   * spec). Empty list for solo fires; populated when SPY/SPXW/QQQ
+   * partners fired same-direction within ~90s. Used by the banner pill
+   * + by formatIntervalBATitle to suffix +TICKER on the notification.
+   */
+  confluence_tickers: string[];
   acknowledged: boolean;
   severity: 'warning' | 'critical' | 'extreme';
 }
@@ -98,12 +105,34 @@ export function __resetChimesForTests(): void {
 
 // ── Display helpers (exported for the banner component) ────
 
-/** Short alert title — e.g. "SPXW 7360C 71% ASK". */
+/** Short alert title — e.g. "SPXW 7360C 71% ASK".
+ *
+ * Does NOT include the confluence-partner suffix — the in-app banner
+ * renders a separate "+SPY" pill so the title-and-pill combo would
+ * duplicate the info. The OS Notification path adds the suffix on its
+ * own (no pill there) so the phone glance still carries the signal.
+ */
 export function formatIntervalBATitle(alert: IntervalBAAlert): string {
   const strike = Number.isInteger(alert.strike)
     ? alert.strike.toString()
     : alert.strike.toFixed(0);
   return `${alert.ticker} ${strike}${alert.option_type} ${alert.ratio_pct.toFixed(0)}% ASK`;
+}
+
+/** OS-notification title — base title + sorted "+TICKER" partner suffix.
+ *
+ * Mirrors notify.build_payload (Phase 4 push title decoration) so the
+ * desktop / mobile system notification renders the same way as the
+ * Web Push fan-out from uw-stream. Banner UI uses the base title plus
+ * a separate visual pill — don't use this formatter there.
+ */
+export function formatIntervalBANotificationTitle(
+  alert: IntervalBAAlert,
+): string {
+  const base = formatIntervalBATitle(alert);
+  if (alert.confluence_tickers.length === 0) return base;
+  const partners = [...alert.confluence_tickers].sort();
+  return `${base} ${partners.map((t) => `+${t}`).join(' ')}`;
 }
 
 /** Sentence-form alert body — e.g. "$1.33M premium / 5 trades — top: $408K sweep". */
@@ -135,7 +164,7 @@ function showBrowserNotification(alert: IntervalBAAlert): void {
     return;
   }
   try {
-    new Notification(formatIntervalBATitle(alert), {
+    new Notification(formatIntervalBANotificationTitle(alert), {
       body: formatIntervalBABody(alert),
       icon: '/icon-192.png',
       tag: `interval-ba-${alert.id}`,

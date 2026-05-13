@@ -68,10 +68,18 @@ export function IntervalBAFeed() {
   const [endTime, setEndTime] = useState<string>('15:00');
   const [optionType, setOptionType] = useState<'C' | 'P' | null>(null);
   const [minPremium, setMinPremium] = useState<number>(0);
+  const [confluenceOnly, setConfluenceOnly] = useState<boolean>(false);
 
   const params = useMemo(
-    () => ({ date, startTime, endTime, optionType, minPremium }),
-    [date, startTime, endTime, optionType, minPremium],
+    () => ({
+      date,
+      startTime,
+      endTime,
+      optionType,
+      minPremium,
+      confluenceOnly,
+    }),
+    [date, startTime, endTime, optionType, minPremium, confluenceOnly],
   );
   const { alerts, summary, loading, error, fetchedAt, refetch } =
     useIntervalBAFeed(params);
@@ -178,6 +186,16 @@ export function IntervalBAFeed() {
                 </button>
               );
             })}
+            <span className="mx-1 hidden h-3 w-px bg-neutral-800 sm:block" />
+            <button
+              type="button"
+              onClick={() => setConfluenceOnly((v) => !v)}
+              aria-pressed={confluenceOnly}
+              title="Only show alerts that fired with at least one same-direction partner from SPY/SPXW/QQQ within ~90s. Confluence cohort: +8pp CALL hit-rate vs solo (2026-05-12 backfill)."
+              className={`${CHIP_BASE} ${confluenceOnly ? CHIP_ACTIVE : CHIP_INACTIVE}`}
+            >
+              confluence only
+            </button>
           </div>
         </div>
 

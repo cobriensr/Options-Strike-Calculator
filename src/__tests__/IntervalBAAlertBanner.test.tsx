@@ -26,6 +26,7 @@ const sample: IntervalBAAlert = {
   top_trade_is_sweep: true,
   top_trade_is_floor: false,
   underlying_price: 7355,
+  confluence_tickers: [],
   acknowledged: false,
   severity: 'extreme',
 };
@@ -117,5 +118,24 @@ describe('IntervalBAAlertBanner', () => {
     render(<IntervalBAAlertBanner alerts={[sample]} onAcknowledge={ack} />);
     await user.click(screen.getByLabelText('Dismiss alert'));
     expect(ack).toHaveBeenCalledWith(42);
+  });
+
+  it('renders the +PARTNER pill when confluence_tickers is populated', () => {
+    render(
+      <IntervalBAAlertBanner
+        alerts={[{ ...sample, confluence_tickers: ['SPY', 'QQQ'] }]}
+        onAcknowledge={async () => {}}
+      />,
+    );
+    // Alphabetical sort → "+QQQ +SPY".
+    expect(screen.getByText('+QQQ +SPY')).toBeInTheDocument();
+  });
+
+  it('omits the +PARTNER pill on solo alerts', () => {
+    // sample has confluence_tickers=[].
+    render(
+      <IntervalBAAlertBanner alerts={[sample]} onAcknowledge={async () => {}} />,
+    );
+    expect(screen.queryByText(/^\+/)).not.toBeInTheDocument();
   });
 });

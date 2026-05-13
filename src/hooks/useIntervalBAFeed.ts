@@ -31,6 +31,13 @@ export interface IntervalBAFeedAlert {
   top_trade_is_sweep: boolean | null;
   top_trade_is_floor: boolean | null;
   underlying_price: number | null;
+  /**
+   * Cross-symbol confluence — partner tickers from the SPY/SPXW/QQQ
+   * trio that fired same-direction within the configured window.
+   * Empty array on solo fires; null on legacy backfilled rows
+   * surfaces as []. Phase 5 of interval-ba-confluence spec.
+   */
+  confluence_tickers: string[];
   severity: 'warning' | 'critical' | 'extreme';
 }
 
@@ -48,6 +55,12 @@ export interface UseIntervalBAFeedParams {
   endTime: string;
   optionType: 'C' | 'P' | null;
   minPremium: number;
+  /**
+   * When true, only fetch alerts with a non-empty confluence_tickers
+   * list (multi-symbol fires). Off by default — the historical feed
+   * shows everything so the user can compare solo vs confluence.
+   */
+  confluenceOnly: boolean;
 }
 
 export interface UseIntervalBAFeedState {
@@ -67,6 +80,9 @@ function buildUrl(p: UseIntervalBAFeedParams): string {
   });
   if (p.optionType) sp.set('optionType', p.optionType);
   if (p.minPremium > 0) sp.set('minPremium', String(p.minPremium));
+  // Endpoint parses the literal string "1" (anything else leaves
+  // the filter off). Match that contract exactly.
+  if (p.confluenceOnly) sp.set('confluenceOnly', '1');
   return `/api/interval-ba-feed?${sp.toString()}`;
 }
 
@@ -143,6 +159,7 @@ export function useIntervalBAFeed(
     params.endTime,
     params.optionType,
     params.minPremium,
+    params.confluenceOnly,
     refreshTick,
   ]);
 
