@@ -67,6 +67,14 @@ const STALE_THRESHOLD_MS = 2 * 60 * 1000;
 const WALL_CLOCK_TICK_MS = 30 * 1000;
 
 /**
+ * Number of consecutive poll failures before the error banner surfaces.
+ * The GEX Target widget polls once per POLL_INTERVALS.GEX_TARGET (60s);
+ * a single transient Neon hang shouldn't flash "signal timed out".
+ * Mirrors the same constant on useGexStrikeExpiry.
+ */
+const FAIL_GRACE_COUNT = 2;
+
+/**
  * SPX 1-minute candle as returned by the /api/gex-target-history endpoint.
  * Mirrors the shape defined server-side in `api/_lib/spx-candles.ts` — kept
  * as a local frontend copy so the hook doesn't cross the `src/` -> `api/`
@@ -283,6 +291,11 @@ export function useGexTarget(
   const todayET = getETToday();
   const isToday = selectedDate === todayET;
 
+  // Consecutive failure counter. Single transient Neon hang shouldn't
+  // flash "signal timed out" — only surface the error once polling has
+  // missed FAIL_GRACE_COUNT in a row. Same pattern as useGexStrikeExpiry.
+  const failCountRef = useRef(0);
+
   const fetchData = useCallback(
     async (tsOverride?: string | null) => {
       try {
@@ -293,15 +306,27 @@ export function useGexTarget(
         if (tsOverride) qs.set('ts', tsOverride);
         const res = await fetch(`/api/gex-target-history?${qs}`, {
           credentials: 'same-origin',
-          signal: AbortSignal.timeout(5_000),
+          // 30s covers ~p95 of API latency. 5s was too tight given the
+          // intermittent Neon serverless HTTP cold-connection hangs the
+          // /api/gex-target-history path is subject to (same root cause
+          // as gex-strike-expiry — see api/_lib/db.ts withDbRetry).
+          signal: AbortSignal.timeout(30_000),
         });
 
         if (!mountedRef.current) return;
 
         if (!res.ok) {
           // 401 is the owner check -- silently swallow so guest visitors
-          // don't see a scary error. Everything else is a real failure.
-          if (res.status !== 401) setError('Failed to load GexTarget data');
+          // don't see a scary error. Everything else counts toward the
+          // failure streak but only surfaces after FAIL_GRACE_COUNT.
+          if (res.status === 401) {
+            failCountRef.current = 0;
+            return;
+          }
+          failCountRef.current += 1;
+          if (failCountRef.current >= FAIL_GRACE_COUNT) {
+            setError('Failed to load GexTarget data');
+          }
           return;
         }
 
@@ -320,9 +345,14 @@ export function useGexTarget(
         setCandles(filterRegularSessionCT(data.candles ?? []));
         setPreviousClose(data.previousClose);
         setAvailableDates(data.availableDates ?? []);
+        failCountRef.current = 0;
         setError(null);
       } catch (err) {
-        if (mountedRef.current) setError(getErrorMessage(err));
+        if (!mountedRef.current) return;
+        failCountRef.current += 1;
+        if (failCountRef.current >= FAIL_GRACE_COUNT) {
+          setError(getErrorMessage(err));
+        }
       } finally {
         if (mountedRef.current) setLoading(false);
       }
