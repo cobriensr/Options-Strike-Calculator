@@ -4,8 +4,11 @@
  * Acknowledges an SPXW Interval B/A alert by ID. Stops the repeating
  * chime + clears the in-app banner for that alert.
  *
- * Owner-gated — only the site owner can dismiss alerts. Mirrors the
- * existing /api/alerts-ack contract (same body shape, same response).
+ * Owner-or-guest — guests with a valid GUEST_ACCESS_KEYS entry can also
+ * dismiss alerts. Matches the GET /api/interval-ba-alerts auth tier
+ * (both use guardOwnerOrGuestEndpoint) so dismissal isn't blocked by
+ * an empty OWNER_SECRET env (which would silently 401 the POST and
+ * make dismissed alerts reappear on refresh — verified 2026-05-13).
  *
  * Body: { id: number }
  */
@@ -13,7 +16,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from './_lib/db.js';
 import { Sentry, metrics } from './_lib/sentry.js';
-import { guardOwnerEndpoint } from './_lib/api-helpers.js';
+import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
 import { alertAckSchema } from './_lib/validation.js';
 
@@ -28,7 +31,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(405).json({ error: 'POST only' });
       }
 
-      if (await guardOwnerEndpoint(req, res, done)) return;
+      if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
       const parsed = alertAckSchema.safeParse(req.body);
       if (!parsed.success) {

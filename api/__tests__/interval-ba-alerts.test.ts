@@ -6,7 +6,6 @@ import { mockRequest, mockResponse } from './helpers';
 // ── Mocks ─────────────────────────────────────────────────────
 vi.mock('../_lib/api-helpers.js', () => ({
   guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
-  guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
 }));
 
 const mockSql = vi.fn();
@@ -28,10 +27,7 @@ vi.mock('../_lib/logger.js', () => ({
 
 import getHandler, { _internal } from '../interval-ba-alerts.js';
 import ackHandler from '../interval-ba-alerts-ack.js';
-import {
-  guardOwnerOrGuestEndpoint,
-  guardOwnerEndpoint,
-} from '../_lib/api-helpers.js';
+import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 
@@ -211,7 +207,7 @@ describe('severity derivation', () => {
 describe('POST /api/interval-ba-alerts-ack', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     mockSql.mockReset();
   });
 
@@ -222,11 +218,13 @@ describe('POST /api/interval-ba-alerts-ack', () => {
     expect(res._json).toEqual({ error: 'POST only' });
   });
 
-  it('returns 401 for non-owner (via guard)', async () => {
-    vi.mocked(guardOwnerEndpoint).mockImplementation(async (_req, res) => {
-      res.status(401).json({ error: 'Not authenticated' });
-      return true;
-    });
+  it('returns 401 for non-owner-and-non-guest (via guard)', async () => {
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(401).json({ error: 'Not authenticated' });
+        return true;
+      },
+    );
     const res = mockResponse();
     await ackHandler(mockRequest({ method: 'POST', body: { id: 1 } }), res);
     expect(res._status).toBe(401);
