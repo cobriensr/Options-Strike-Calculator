@@ -2,15 +2,20 @@
  * Row — one strike's worth of cells in the GEX Strike Board table.
  *
  * Receives a single `StrikeScore` plus precomputed bar stats and rank-change
- * info, and renders the eleven cells (RK / change / strike / dist / Δ% /
- * CHEX / DEX / VEX / Hedge/1% / est.Δ / HOT%). All per-row computations
- * (color picks, tooltip selection, dealer-bar geometry) are derived from
- * props, so the component is pure and `memo`-friendly.
+ * info, and renders the twelve cells (RK / change / strike / dist / Δ% /
+ * CHEX / DEX / VEX / Hedge/1% / MM Γ / est.Δ / HOT%). All per-row
+ * computations (color picks, tooltip selection, dealer-bar geometry) are
+ * derived from props, so the component is pure and `memo`-friendly.
  *
  * The C/P (est. Δ) cell renders inline rather than via a child component
  * because its bar is centre-anchored (ticks left/right of zero) — different
  * geometry than the standard CHEX/DEX/VEX `GreekBar`, and worth keeping
  * adjacent to the cell that owns it.
+ *
+ * The MM Γ cell shows UW Periscope's MM-attributed dollar gamma at this
+ * strike as a cross-check against the naive Hedge/1%. Different scales
+ * (MM is B-scale, Hedge/1% is K-scale) so the sign-agreement marker
+ * is the load-bearing signal, not magnitude.
  */
 
 import { memo } from 'react';
@@ -41,6 +46,14 @@ export interface RowProps {
   rankChange: RankChangeInfo;
   barStats: BarStatsBundle;
   isAlt: boolean;
+  /**
+   * MM-attributed dollar gamma at this strike from UW Periscope, or
+   * `null` when no MM slot exists for the strike (e.g. pre-market, or
+   * strike is outside the periscope_snapshots coverage window). Scale
+   * differs from `features.gexDollars` — the agreement marker compares
+   * signs, not magnitudes.
+   */
+  mmGamma: number | null;
 }
 
 const TD_CLS = 'px-1.5 py-1.5 text-[11px] font-mono whitespace-nowrap';
@@ -51,6 +64,7 @@ export const Row = memo(function Row({
   rankChange,
   barStats,
   isAlt,
+  mmGamma,
 }: RowProps) {
   const { features } = s;
 
@@ -80,6 +94,20 @@ export const Row = memo(function Row({
   const isHot = Math.abs(deltaPct1m ?? 0) >= 0.1;
 
   const gexColor = features.gexDollars >= 0 ? theme.green : theme.red;
+
+  // MM-attributed gamma cross-check. The naive scoring pipeline computes
+  // `wallSide` from the sign of `features.gexDollars`; if UW's MM
+  // attribution disagrees on the sign at this strike, the wall may be
+  // mis-classified. Both 0 → no marker (ambiguous). Either null → no
+  // marker (no MM data to compare against).
+  const mmAgreement: 'agree' | 'disagree' | 'none' =
+    mmGamma === null || mmGamma === 0 || features.gexDollars === 0
+      ? 'none'
+      : mmGamma > 0 === features.gexDollars > 0
+        ? 'agree'
+        : 'disagree';
+  const mmColor =
+    mmGamma === null ? theme.textMuted : mmGamma >= 0 ? theme.green : theme.red;
 
   const rowBg = s.isTarget
     ? 'rgba(99,102,241,0.10)'
@@ -176,6 +204,37 @@ export const Row = memo(function Row({
       {/* Hedge/1% */}
       <td className={TD_CLS} style={{ color: gexColor }}>
         {formatGex(features.gexDollars)}
+      </td>
+
+      {/* MM Γ — UW Periscope MM-attributed dollar gamma, with sign-
+          agreement marker against Hedge/1% (different scale, so the ✓/✗
+          is the load-bearing signal, not the value compare). */}
+      <td className={TD_CLS} style={{ color: mmColor }}>
+        {mmGamma === null ? (
+          <span style={{ color: theme.textMuted }}>—</span>
+        ) : (
+          <span className="inline-flex items-center gap-1">
+            <span>{formatGex(mmGamma)}</span>
+            {mmAgreement === 'agree' && (
+              <span
+                aria-label="MM attribution agrees with naive Hedge sign"
+                title="MM attribution agrees with naive Hedge sign"
+                style={{ color: theme.green }}
+              >
+                ✓
+              </span>
+            )}
+            {mmAgreement === 'disagree' && (
+              <span
+                aria-label="MM attribution disagrees with naive Hedge sign — wall side may be mis-classified"
+                title="MM attribution disagrees with naive Hedge sign — wall side may be mis-classified"
+                style={{ color: theme.red }}
+              >
+                ✗
+              </span>
+            )}
+          </span>
+        )}
       </td>
 
       {/* est. Δ — centre-anchored bar with sign-extending fill */}

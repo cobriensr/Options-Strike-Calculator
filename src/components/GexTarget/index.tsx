@@ -17,6 +17,7 @@ import { DateInput } from '../ui/DateInput';
 import { ScrubControlsCompact } from '../ui/ScrubControlsCompact';
 import type { UseGexTargetReturn, SPXCandle } from '../../hooks/useGexTarget';
 import { useNopeIntraday } from '../../hooks/useNopeIntraday';
+import { usePeriscopeStrikes } from '../../hooks/usePeriscopeStrikes';
 import { TargetTile } from './TargetTile';
 import { UrgencyPanel } from './UrgencyPanel';
 import { SparklinePanel } from './SparklinePanel';
@@ -117,6 +118,24 @@ export const GexTarget = memo(function GexTarget({
   // SPY NOPE intraday overlay for PriceChart. Independent fetch — failure
   // here doesn't impact the GEX panels.
   const { points: nopePoints } = useNopeIntraday({ marketOpen });
+
+  // MM-attributed gamma overlay for the Strike Board. Fetches the same
+  // periscope_snapshots slot that powers the GEX Landscape's "Dollar Γ"
+  // column so the trader can cross-check the naive scoring pipeline's
+  // wallSide pick against UW's MM-attribution math. Aligned to the
+  // GexTarget scrub timestamp when scrubbed, latest-otherwise.
+  const periscopeStrikes = usePeriscopeStrikes(
+    marketOpen,
+    selectedDate,
+    isScrubbed ? timestamp : null,
+  );
+  const mmGammaMap = useMemo<Map<number, number>>(() => {
+    const m = new Map<number, number>();
+    for (const s of periscopeStrikes.latest?.strikes ?? []) {
+      m.set(s.strike, s.gamma);
+    }
+    return m;
+  }, [periscopeStrikes.latest?.strikes]);
 
   // Filter NOPE to the scrubbed time window so the overlay tracks the
   // time picker the same way visibleCandles does for price bars.
@@ -355,7 +374,7 @@ export const GexTarget = memo(function GexTarget({
 
         {/* Panel 5: full-width strike box */}
         <div className="mt-3">
-          <StrikeBox leaderboard={top5ByGex} />
+          <StrikeBox leaderboard={top5ByGex} mmGammaMap={mmGammaMap} />
         </div>
       </>
     );

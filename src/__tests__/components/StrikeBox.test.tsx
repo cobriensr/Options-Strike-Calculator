@@ -104,7 +104,52 @@ describe('StrikeBox: table structure', () => {
     expect(screen.getByText('CHEX')).toBeInTheDocument();
     expect(screen.getByText('DEX')).toBeInTheDocument();
     expect(screen.getByText('VEX')).toBeInTheDocument();
+    expect(screen.getByText('Hedge/1%')).toBeInTheDocument();
+    expect(screen.getByText('MM Γ')).toBeInTheDocument();
     expect(screen.getByText('HOT%')).toBeInTheDocument();
+  });
+});
+
+describe('StrikeBox: MM Γ overlay', () => {
+  it('renders an em-dash in the MM Γ cell when no mmGammaMap is provided', () => {
+    render(<StrikeBox leaderboard={[makeStrike(5800)]} />);
+    // The cell renders "—" via theme.textMuted; query by the literal char.
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+  });
+
+  it('renders an em-dash for a strike absent from the mmGammaMap', () => {
+    const mm = new Map<number, number>([[9999, 1_000_000_000]]);
+    render(<StrikeBox leaderboard={[makeStrike(5800)]} mmGammaMap={mm} />);
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+  });
+
+  it('shows the ✓ marker when MM gamma sign agrees with naive Hedge sign', () => {
+    // Naive gexDollars defaults to +2B (positive). MM gamma also positive → agree.
+    const mm = new Map<number, number>([[5800, 3_500_000_000]]);
+    render(<StrikeBox leaderboard={[makeStrike(5800)]} mmGammaMap={mm} />);
+    expect(
+      screen.getByLabelText('MM attribution agrees with naive Hedge sign'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows the ✗ marker when MM gamma sign disagrees with naive Hedge sign', () => {
+    // Naive gexDollars +2B (positive) vs MM gamma negative → disagree.
+    const mm = new Map<number, number>([[5800, -3_500_000_000]]);
+    render(<StrikeBox leaderboard={[makeStrike(5800)]} mmGammaMap={mm} />);
+    expect(
+      screen.getByLabelText(/MM attribution disagrees with naive Hedge sign/i),
+    ).toBeInTheDocument();
+  });
+
+  it('shows neither marker when MM gamma is exactly zero', () => {
+    const mm = new Map<number, number>([[5800, 0]]);
+    render(<StrikeBox leaderboard={[makeStrike(5800)]} mmGammaMap={mm} />);
+    expect(
+      screen.queryByLabelText(/MM attribution agrees/),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText(/MM attribution disagrees/),
+    ).not.toBeInTheDocument();
   });
 });
 

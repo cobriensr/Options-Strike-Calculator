@@ -26,6 +26,16 @@ import type { RankChangeInfo } from './RankArrow';
 
 export interface StrikeBoxProps {
   leaderboard: StrikeScore[];
+  /**
+   * MM-attributed gamma per strike from UW Periscope's
+   * `periscope_snapshots`. When present, each row renders an extra
+   * "MM Γ" cell so the trader can cross-check the naive scoring
+   * pipeline's wallSide pick against UW's MM-attribution math. Missing
+   * map (e.g. pre-market or no MM coverage) renders an em-dash in the
+   * cell. Magnitude is on a different scale than `Hedge/1%` — the
+   * agreement signal is the sign comparison, not the value compare.
+   */
+  mmGammaMap?: Map<number, number>;
 }
 
 const TH_CLS =
@@ -33,6 +43,7 @@ const TH_CLS =
 
 export const StrikeBox = memo(function StrikeBox({
   leaderboard,
+  mmGammaMap,
 }: StrikeBoxProps) {
   // The parent (GexTarget/index.tsx) pre-sorts the leaderboard by |gexDollars|
   // and slices to 5 before passing it in. Use it directly — no re-sort needed.
@@ -135,6 +146,13 @@ export const StrikeBox = memo(function StrikeBox({
                   Hedge/1%
                 </th>
                 <th
+                  className={`${TH_CLS} cursor-help`}
+                  scope="col"
+                  title="MM-attributed dollar gamma from UW Periscope (periscope_snapshots, captured every 10 min during RTH). Cross-check column: scale is different from Hedge/1% — what matters is the SIGN comparison. A ✓ next to the value means MM attribution agrees with the naive Hedge/1% sign (same wall side); ✗ means they disagree (the scoring pipeline may have the wall on the wrong side)."
+                >
+                  MM Γ
+                </th>
+                <th
                   className={TH_CLS}
                   scope="col"
                   title="Net dealer delta in contracts (Σ call delta + Σ put delta from greek_exposure_strike). Positive = dealers net long delta (support zone); negative = net short delta (resistance zone)."
@@ -157,6 +175,7 @@ export const StrikeBox = memo(function StrikeBox({
                   }
                   barStats={barStats}
                   isAlt={idx % 2 === 1}
+                  mmGamma={mmGammaMap?.get(s.strike) ?? null}
                 />
               ))}
             </tbody>
