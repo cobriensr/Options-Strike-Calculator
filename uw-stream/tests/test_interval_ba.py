@@ -751,6 +751,167 @@ class TestFlush:
 
 
 # ----------------------------------------------------------------------
+# Phase 4 push gate — settings.interval_ba_push_confluence_only flips
+# whether solo fires reach schedule_notify. DB write is unaffected.
+# ----------------------------------------------------------------------
+
+
+class TestPushConfluenceOnlyGate:
+    @pytest.mark.asyncio
+    async def test_solo_alert_skips_notify_when_confluence_only_on(
+        self, handler, base_payload, monkeypatch,
+    ):
+        """With confluence_only=True (default), a solo fire writes to
+        the DB but doesn't reach schedule_notify."""
+        from config import settings
+
+        handler._enabled = True
+        monkeypatch.setattr(settings, "interval_ba_push_confluence_only", True)
+        # Stage one alert. No partners → confluence_tickers stays [].
+        handler._transform(
+            _payload(
+                base_payload,
+                executed_at_ms=_BUCKET_ANCHOR_MS + 60_000,
+                price="4.60",
+                size=888,
+            ),
+        )
+        assert len(handler._pending_alerts) == 1
+
+        # No-op DB write so the flush completes cleanly.
+        async def noop_bulk_insert(**_kwargs):
+            return 1
+
+        monkeypatch.setattr(
+            "handlers.option_trades.db.bulk_insert_ignore_conflict",
+            noop_bulk_insert,
+        )
+        monkeypatch.setattr(
+            "handlers.interval_ba.db.bulk_insert_ignore_conflict",
+            noop_bulk_insert,
+        )
+
+        notify_calls: list[dict] = []
+        monkeypatch.setattr(
+            "handlers.interval_ba.schedule_notify",
+            lambda p: notify_calls.append(p),
+        )
+
+        await handler._flush([])
+        assert notify_calls == []
+
+    @pytest.mark.asyncio
+    async def test_partnered_alert_pushes_when_confluence_only_on(
+        self, handler, base_payload, monkeypatch,
+    ):
+        """A SPXW fire that follows a SPY same-direction fire within
+        the confluence window DOES reach schedule_notify."""
+        from config import settings
+
+        monkeypatch.setattr(settings, "interval_ba_push_confluence_only", True)
+
+        # Step 1: SPY fires first to seed the recent_fires registry.
+        # This goes through the normal _observe but bypasses the SPY
+        # handler's own enable gate (we're using the SPXW handler's
+        # registry visibility — same module-level state).
+        spy_handler = SPYIntervalBAHandler()
+        spy_handler._enabled = True
+        spy_handler._transform(
+            _payload(
+                base_payload,
+                underlying_symbol="SPY",
+                chain="SPY260512C00580000",
+                executed_at_ms=_BUCKET_ANCHOR_MS + 50_000,
+                price="2.50",
+                size=1200,
+                tags=["ask_side", "bullish", "sweep"],
+            ),
+        )
+        assert len(spy_handler._pending_alerts) == 1
+
+        # Step 2: SPXW fires (the test's `handler` fixture is SPXW).
+        # Should see SPY in its confluence_tickers.
+        handler._enabled = True
+        handler._transform(
+            _payload(
+                base_payload,
+                executed_at_ms=_BUCKET_ANCHOR_MS + 60_000,
+                price="4.60",
+                size=888,
+            ),
+        )
+        assert len(handler._pending_alerts) == 1
+        idx = {n: i for i, n in enumerate(_ALERT_COLUMNS)}
+        assert handler._pending_alerts[0][idx["confluence_tickers"]] == ["SPY"]
+
+        async def noop_bulk_insert(**_kwargs):
+            return 1
+
+        monkeypatch.setattr(
+            "handlers.option_trades.db.bulk_insert_ignore_conflict",
+            noop_bulk_insert,
+        )
+        monkeypatch.setattr(
+            "handlers.interval_ba.db.bulk_insert_ignore_conflict",
+            noop_bulk_insert,
+        )
+
+        notify_calls: list[dict] = []
+        monkeypatch.setattr(
+            "handlers.interval_ba.schedule_notify",
+            lambda p: notify_calls.append(p),
+        )
+
+        await handler._flush([])
+        assert len(notify_calls) == 1
+        assert "+SPY" in notify_calls[0]["title"]
+
+    @pytest.mark.asyncio
+    async def test_solo_alert_pushes_when_confluence_only_off(
+        self, handler, base_payload, monkeypatch,
+    ):
+        """Backward-compat path: confluence_only=False restores
+        pre-Phase-4 behavior — every alert fires a push."""
+        from config import settings
+
+        handler._enabled = True
+        monkeypatch.setattr(
+            settings, "interval_ba_push_confluence_only", False,
+        )
+        handler._transform(
+            _payload(
+                base_payload,
+                executed_at_ms=_BUCKET_ANCHOR_MS + 60_000,
+                price="4.60",
+                size=888,
+            ),
+        )
+        assert len(handler._pending_alerts) == 1
+
+        async def noop_bulk_insert(**_kwargs):
+            return 1
+
+        monkeypatch.setattr(
+            "handlers.option_trades.db.bulk_insert_ignore_conflict",
+            noop_bulk_insert,
+        )
+        monkeypatch.setattr(
+            "handlers.interval_ba.db.bulk_insert_ignore_conflict",
+            noop_bulk_insert,
+        )
+
+        notify_calls: list[dict] = []
+        monkeypatch.setattr(
+            "handlers.interval_ba.schedule_notify",
+            lambda p: notify_calls.append(p),
+        )
+
+        await handler._flush([])
+        assert len(notify_calls) == 1
+        assert "+" not in notify_calls[0]["title"]
+
+
+# ----------------------------------------------------------------------
 # Helpers — _ct_date_from_utc, _has_tag
 # ----------------------------------------------------------------------
 

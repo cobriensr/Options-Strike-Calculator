@@ -122,19 +122,43 @@ async def notify_alert(payload: dict[str, Any]) -> None:
         )
 
 
-def build_payload(alert_row: tuple, columns: list[str]) -> dict[str, Any]:
+def build_payload(
+    alert_row: tuple,
+    columns: list[str],
+    *,
+    confluence_only: bool = False,
+) -> dict[str, Any] | None:
     """Build a push-notify payload from an interval_ba_alerts row tuple.
 
     Title and body shapes mirror the frontend formatters in
     ``src/hooks/useIntervalBAAlerts.ts``:
 
-      title  → "SPXW 7360C 71% ASK"
+      title  → "SPXW 7360C 71% ASK"           (solo)
+              "SPXW 7360C 71% ASK +SPY"        (one partner)
+              "SPXW 7360C 71% ASK +SPY +QQQ"   (two partners)
       body   → "$1.33M premium / 5 trades — top: $408K sweep"
 
     The frontend can re-derive richer detail from the alert row on click
     (the URL field points back into the app).
+
+    ``confluence_only`` toggles the Phase 4 push-volume gate: when True,
+    alerts without any cross-symbol partner return ``None`` so the
+    caller skips the Web Push fan-out (the in-app feed still shows them
+    because the DB write is unaffected). Default False preserves the
+    pre-Phase-4 behavior — every alert produces a payload.
     """
     idx = {name: i for i, name in enumerate(columns)}
+    confluence_tickers = (
+        alert_row[idx["confluence_tickers"]]
+        if "confluence_tickers" in idx
+        else None
+    )
+    # Normalize to a sorted list — None and empty both mean "solo".
+    partners: list[str] = sorted(confluence_tickers) if confluence_tickers else []
+
+    if confluence_only and not partners:
+        return None
+
     chain: str = alert_row[idx["option_chain"]]
     ticker: str = alert_row[idx["ticker"]]
     option_type: str = alert_row[idx["option_type"]]
@@ -150,6 +174,10 @@ def build_payload(alert_row: tuple, columns: list[str]) -> dict[str, Any]:
         str(int(strike)) if float(strike) == int(strike) else f"{float(strike):.0f}"
     )
     title = f"{ticker} {strike_str}{option_type} {float(ratio_pct):.0f}% ASK"
+    if partners:
+        # Suffix the partner tickers so the lock-screen / notification-
+        # tray glance carries the confluence signal. "+SPY" / "+SPY +QQQ".
+        title += " " + " ".join(f"+{t}" for t in partners)
     body = _format_body(
         total_premium=float(total_premium),
         trade_count=trade_count,

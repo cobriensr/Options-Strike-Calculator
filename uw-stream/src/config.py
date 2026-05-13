@@ -131,6 +131,16 @@ class Settings(BaseSettings):
     # property so the env shape matches ws_channels' convention.
     interval_ba_tickers_csv: str = "SPY,SPXW,QQQ"
 
+    # Push-notification gating (Phase 4 of cross-symbol confluence spec,
+    # docs/superpowers/specs/interval-ba-confluence-2026-05-13.md). When
+    # True (default), only alerts whose confluence_tickers list is
+    # non-empty fire a Web Push notification — solo SPY/SPXW/QQQ alerts
+    # still write to interval_ba_alerts and surface in the in-app feed,
+    # but they don't ping the phone. Suppresses the ~205-alerts/day fire
+    # hose to ~30-50/day. Set INTERVAL_BA_PUSH_CONFLUENCE_ONLY=false to
+    # restore the old "every alert pushes" behavior.
+    interval_ba_push_confluence_only: bool = True
+
     # Web Push v2 (see docs/superpowers/specs/interval-ba-push-v2-2026-05-12.md).
     # Both default empty → notify_alert no-ops, mirroring the Phase 1
     # interval_ba_enabled pattern. Activate by setting both env vars on

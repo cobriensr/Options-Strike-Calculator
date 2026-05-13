@@ -426,8 +426,18 @@ class IntervalBAHandler(OptionTradesHandler):
             # INTERNAL_NOTIFY_SECRET are unset, so this is safe to call
             # regardless of v2 activation state. It also holds a strong
             # ref to the task so the GC doesn't reap it mid-flight.
+            #
+            # Phase 4 confluence-only gate: when settings.interval_ba_
+            # push_confluence_only is True (default), build_payload
+            # returns None for solo fires — those rows still land in
+            # the DB and the in-app feed, but don't ping the phone.
+            confluence_only = bool(settings.interval_ba_push_confluence_only)
             for row in pending:
-                payload = build_payload(row, _ALERT_COLUMNS)
+                payload = build_payload(
+                    row, _ALERT_COLUMNS, confluence_only=confluence_only,
+                )
+                if payload is None:
+                    continue
                 schedule_notify(payload)
         return inserted
 

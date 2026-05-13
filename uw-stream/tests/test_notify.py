@@ -39,6 +39,7 @@ _FIXTURE_ROW = (
     True,                             # top_trade_is_sweep
     False,                            # top_trade_is_floor
     Decimal("7355.00"),               # underlying_price
+    [],                               # confluence_tickers — solo by default
 )
 
 
@@ -114,6 +115,70 @@ class TestBuildPayload:
         row[idx["strike"]] = Decimal("7350.000")
         payload = build_payload(tuple(row), _ALERT_COLUMNS)
         assert payload["title"] == "SPXW 7350P 71% ASK"
+
+
+class TestConfluenceDecoration:
+    """Phase 4: title decorates with +TICKER suffix(es) when the
+    confluence_tickers column is populated. confluence_only=True
+    skips solo fires entirely (returns None)."""
+
+    def test_solo_alert_title_has_no_partner_suffix(self):
+        # Fixture defaults confluence_tickers=[] — pure solo.
+        payload = build_payload(_FIXTURE_ROW, _ALERT_COLUMNS)
+        assert payload is not None
+        assert payload["title"] == "SPXW 7360C 71% ASK"
+        assert "+" not in payload["title"]
+
+    def test_one_partner_appends_single_suffix(self):
+        row = list(_FIXTURE_ROW)
+        idx = {n: i for i, n in enumerate(_ALERT_COLUMNS)}
+        row[idx["confluence_tickers"]] = ["SPY"]
+        payload = build_payload(tuple(row), _ALERT_COLUMNS)
+        assert payload is not None
+        assert payload["title"] == "SPXW 7360C 71% ASK +SPY"
+
+    def test_two_partners_append_both_suffixes_sorted(self):
+        row = list(_FIXTURE_ROW)
+        idx = {n: i for i, n in enumerate(_ALERT_COLUMNS)}
+        # Insertion order reversed to confirm the formatter sorts.
+        row[idx["confluence_tickers"]] = ["SPY", "QQQ"]
+        payload = build_payload(tuple(row), _ALERT_COLUMNS)
+        assert payload is not None
+        # QQQ sorts before SPY alphabetically.
+        assert payload["title"] == "SPXW 7360C 71% ASK +QQQ +SPY"
+
+    def test_none_value_treated_as_solo(self):
+        """Legacy rows (pre-migration #147) may have NULL → Python None."""
+        row = list(_FIXTURE_ROW)
+        idx = {n: i for i, n in enumerate(_ALERT_COLUMNS)}
+        row[idx["confluence_tickers"]] = None
+        payload = build_payload(tuple(row), _ALERT_COLUMNS)
+        assert payload is not None
+        assert payload["title"] == "SPXW 7360C 71% ASK"
+
+    def test_confluence_only_true_returns_none_for_solo(self):
+        payload = build_payload(
+            _FIXTURE_ROW, _ALERT_COLUMNS, confluence_only=True,
+        )
+        assert payload is None
+
+    def test_confluence_only_true_returns_payload_for_partnered(self):
+        row = list(_FIXTURE_ROW)
+        idx = {n: i for i, n in enumerate(_ALERT_COLUMNS)}
+        row[idx["confluence_tickers"]] = ["SPY"]
+        payload = build_payload(
+            tuple(row), _ALERT_COLUMNS, confluence_only=True,
+        )
+        assert payload is not None
+        assert "+SPY" in payload["title"]
+
+    def test_confluence_only_false_returns_payload_for_solo(self):
+        """Backward-compat: pre-Phase-4 callers don't pass the kwarg."""
+        payload = build_payload(
+            _FIXTURE_ROW, _ALERT_COLUMNS, confluence_only=False,
+        )
+        assert payload is not None
+        assert payload["title"] == "SPXW 7360C 71% ASK"
 
 
 class TestNotifyAlertDormantState:
