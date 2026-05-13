@@ -4336,4 +4336,19 @@ export const MIGRATIONS: Migration[] = [
             WHERE multi_leg_share IS NOT NULL`,
     ],
   },
+  {
+    id: 147,
+    description:
+      "Add confluence_tickers column to interval_ba_alerts (Phase 1 of docs/superpowers/specs/interval-ba-confluence-2026-05-13.md). Records which other tickers (SPY, QQQ) fired same-direction within a 90-second window of each alert — populated by the uw-stream handler at fire time (Phase 4). TEXT[] so multiple co-firing tickers can coexist in one row. GIN index supports WHERE confluence_tickers @> ARRAY['SPY'] array-containment queries from the feed endpoint filter (= ANY() would seq-scan; @> uses the GIN entries). Column defaults to NULL on existing rows; backfill deferred to Phase 7.",
+    statements: (sql) => [
+      sql`
+        ALTER TABLE interval_ba_alerts
+        ADD COLUMN IF NOT EXISTS confluence_tickers TEXT[]
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_interval_ba_alerts_confluence
+          ON interval_ba_alerts USING GIN (confluence_tickers)
+      `,
+    ],
+  },
 ];
