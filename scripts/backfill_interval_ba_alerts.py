@@ -92,8 +92,11 @@ _READ_COLUMNS = [
     'canceled',
 ]
 
-# Columns in interval_ba_alerts the INSERT touches (id / fired_at /
-# acknowledged auto-populate from defaults).
+# Columns in interval_ba_alerts the INSERT touches (id / acknowledged
+# auto-populate from defaults). fired_at is explicitly set to the
+# dominant ASK print's executed_at — without this, the schema default
+# NOW() would stamp every backfilled row with the script's run time,
+# making fired_at useless for any downstream forward-return analysis.
 _INSERT_COLUMNS = [
     'option_chain',
     'ticker',
@@ -102,6 +105,7 @@ _INSERT_COLUMNS = [
     'expiry',
     'bucket_start',
     'bucket_end',
+    'fired_at',
     'ratio_pct',
     'ask_premium',
     'total_premium',
@@ -315,6 +319,7 @@ def detect_alerts_for_day(df: pd.DataFrame) -> list[tuple]:
                 top['expiry_iso'],                           # expiry
                 bucket_start,                                # bucket_start
                 bucket_end,                                  # bucket_end
+                top['executed_at'].to_pydatetime(),          # fired_at
                 (ratio * Decimal(100)).quantize(Decimal('0.01')),  # ratio_pct
                 ask_premium.quantize(Decimal('0.01')),       # ask_premium
                 total_premium.quantize(Decimal('0.01')),     # total_premium
