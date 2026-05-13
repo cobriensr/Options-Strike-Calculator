@@ -89,6 +89,41 @@ describe('computeSmoothedStrikes', () => {
     expect(out!.netCharm).toBe(90);
   });
 
+  it('drops future-relative buffer entries when scrubbing backward', () => {
+    // Regression for the bias/scrub coordination bug verified 2026-05-12:
+    // when the user scrubs to a past snapshot, the live-accumulated buffer
+    // still contains entries from BEFORE the scrub (relative to wall clock,
+    // these are FUTURE relative to the scrubbed `nowTs`). Those entries
+    // must NOT contribute to the smoothed value — otherwise the bias
+    // verdict, gravity strike, and drift targets reflect data the user
+    // can't see in the rest of the panel.
+    const current = [makeStrike({ strike: 5800, netGamma: 100, netCharm: 30 })];
+    const buf: Snapshot[] = [
+      // Scrubbed-into snapshot (matches nowTs)
+      {
+        ts: 600_000,
+        strikes: [makeStrike({ strike: 5800, netGamma: 100, netCharm: 30 })],
+      },
+      // Live-buffered entry from AFTER the scrubbed nowTs (-9K wall built
+      // up later in the session). Without the upper bound this would
+      // drag the smoothed netGamma deeply negative.
+      {
+        ts: 1_200_000,
+        strikes: [
+          makeStrike({ strike: 5800, netGamma: -9_000, netCharm: -1_000 }),
+        ],
+      },
+    ];
+    // nowTs = 600_000 (scrubbed). Smoothing window 5min, so >= 300_000.
+    // The 1_200_000 entry passes the lower bound but MUST be excluded
+    // by the upper bound (ts > nowTs).
+    const [out] = computeSmoothedStrikes(current, buf, 600_000);
+    // Should average ONLY the scrubbed-into snapshot (matches current)
+    // with the current. Both have netGamma=100 → smoothed stays at 100.
+    expect(out!.netGamma).toBe(100);
+    expect(out!.netCharm).toBe(30);
+  });
+
   it('preserves a strike that has no history in the buffer', () => {
     const current = [
       makeStrike({ strike: 5800, netGamma: 100 }),
@@ -217,5 +252,29 @@ describe('computePriceTrend', () => {
     const trend = computePriceTrend(0, buf, NOW, WINDOW);
     expect(trend.changePct).toBe(0);
     expect(Number.isNaN(trend.changePct)).toBe(false);
+  });
+
+  it('drops future-relative buffer entries when scrubbing backward', () => {
+    // Regression for the scrub coordination bug (2026-05-12). nowTs is
+    // the scrubbed timestamp; the buffer holds live entries from AFTER
+    // that scrubbed moment. Without the upper bound `snap.ts <= nowTs`,
+    // those future entries would slip past the MIN_BUFFERED_SNAPSHOTS
+    // gate and produce a directional trend reading that reflects the
+    // post-scrub future, not what the trader is actually looking at.
+    const scrubbedNow = 600_000;
+    const buf = [
+      // Three flat-price snapshots at-or-before the scrub point — should
+      // qualify the buf for a trend reading.
+      priceSnap(300_000, 7000),
+      priceSnap(450_000, 7000),
+      priceSnap(600_000, 7000),
+      // Future-relative-to-scrub entries with strong directional move.
+      // If these leaked in, the trend would read "up" with +25 pts.
+      priceSnap(900_000, 7015),
+      priceSnap(1_200_000, 7025),
+    ];
+    const trend = computePriceTrend(7000, buf, scrubbedNow, WINDOW);
+    expect(trend.direction).toBe('flat');
+    expect(trend.changePts).toBe(0);
   });
 });

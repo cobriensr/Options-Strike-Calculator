@@ -19,6 +19,17 @@ import type { GexStrikeLevel, PriceTrend, Snapshot } from './types';
  * Smoothing makes the structural bias verdict stable: small minute-to-minute
  * GEX fluctuations won't flip the signal. The Δ% columns in the table still
  * show raw real-time changes — only the verdict inputs are smoothed.
+ *
+ * The filter has BOTH a lower AND an upper bound on `snap.ts`. The upper
+ * bound (`<= nowTs`) is load-bearing for scrub correctness: the snapshot
+ * buffer accumulates entries during live viewing and is NOT cleared when
+ * the user scrubs backward. Without the upper bound, buffer entries
+ * captured AFTER the scrubbed `nowTs` (i.e. still in the buffer from the
+ * pre-scrub live state) would leak into the smoothed values — making
+ * the bias verdict, gravity strike, and drift targets reflect data the
+ * user can't see in the rest of the panel. Verified 2026-05-12: the
+ * scrubbed panel rendered gravity=7405 with -8K when the actual
+ * scrubbed slot had 7405 at +181 — fixed by this upper bound.
  */
 export function computeSmoothedStrikes(
   current: GexStrikeLevel[],
@@ -26,7 +37,9 @@ export function computeSmoothedStrikes(
   nowTs: number,
   windowMs = 5 * 60 * 1000,
 ): GexStrikeLevel[] {
-  const recent = buf.filter((snap) => snap.ts >= nowTs - windowMs);
+  const recent = buf.filter(
+    (snap) => snap.ts >= nowTs - windowMs && snap.ts <= nowTs,
+  );
   if (recent.length === 0) return current;
   return current.map((s) => {
     const history = recent
@@ -75,8 +88,15 @@ export function computePriceTrend(
   nowTs: number,
   windowMs = 30 * 60 * 1000,
 ): PriceTrend {
+  // Upper bound `snap.ts <= nowTs` is load-bearing for scrub correctness
+  // — see the same rationale in `computeSmoothedStrikes` above. Without
+  // it, future-relative-to-scrubbed buffer entries leak into the
+  // price-trend computation and the drift override fires on stale data.
   const inWindow = buf.filter(
-    (snap) => snap.ts >= nowTs - windowMs && snap.strikes.length > 0,
+    (snap) =>
+      snap.ts >= nowTs - windowMs &&
+      snap.ts <= nowTs &&
+      snap.strikes.length > 0,
   );
   if (inWindow.length < MIN_BUFFERED_SNAPSHOTS) {
     return { direction: 'flat', changePct: 0, changePts: 0, consistency: 0 };
