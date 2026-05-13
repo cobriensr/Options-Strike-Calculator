@@ -4351,4 +4351,15 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 148,
+    description:
+      'Add composite (date, timestamp DESC) index on gex_strike_0dte to fix the SPX path of /api/gex-strike-expiry. Sentry showed the endpoint at p50=15s / p95=25s / max=32s — every SPX poll from useGexStrikeExpirySpx was hitting the client 8s timeout and surfacing "SPX vol reinforcement: signal timed out" in the GEX Landscape. The query in db-gex-strike-expiry.ts (getLatestGexPerStrikeWithDeltas + effective_at MAX(timestamp)) filters WHERE date = $1 AND timestamp BETWEEN x AND y; the only existing indexes from migration #47 are single-column idx_date and idx_ts DESC, neither of which lets the planner satisfy both predicates without a wide range scan. The UNIQUE (date, timestamp, strike) composite from #47 is technically usable but the planner prefers a narrower covering index. This index matches the exact filter shape (date eq + timestamp range, ordered DESC for the MAX) and should drop the SQL from ~22s to <500ms.',
+    statements: (sql) => [
+      sql`
+        CREATE INDEX IF NOT EXISTS idx_gex_strike_0dte_date_ts
+          ON gex_strike_0dte (date, timestamp DESC)
+      `,
+    ],
+  },
 ];
