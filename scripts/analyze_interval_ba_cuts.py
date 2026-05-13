@@ -106,7 +106,7 @@ def fmt_int(n: float) -> str:
     return f'{int(n)}'
 
 
-def load_alert_meta(conn) -> dict[int, dict]:
+def load_alert_meta(conn, ticker: str) -> dict[int, dict]:
     """Pull per-alert metadata that the CSV doesn't carry."""
     with conn.cursor() as cur:
         cur.execute(
@@ -114,7 +114,9 @@ def load_alert_meta(conn) -> dict[int, dict]:
             SELECT id, option_chain, option_type, fired_at, ratio_pct,
                    total_premium, top_trade_is_sweep, top_trade_is_floor
             FROM interval_ba_alerts
+            WHERE ticker = %s
             """,
+            (ticker,),
         )
         out = {}
         for r in cur.fetchall():
@@ -476,23 +478,45 @@ def cut_sweep_vs_nonsweep(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        '--ticker',
+        type=str,
+        default='SPXW',
+        help='Alert ticker to analyze (SPXW, SPY, QQQ). Default: SPXW.',
+    )
+    parser.add_argument(
         '--csv',
         type=str,
         default=None,
         help='Path to outcomes CSV. Default: newest under docs/tmp/.',
     )
     args = parser.parse_args()
+    ticker = args.ticker.upper()
     load_env()
 
+    # SPXW writes to the legacy no-ticker filename; SPY/QQQ stamp the
+    # slug into both the outcomes CSV and the analysis MD so the two
+    # tickers' outputs don't collide.
+    slug = '' if ticker == 'SPXW' else f'-{ticker.lower()}'
     if args.csv:
         csv_path = pathlib.Path(args.csv)
     else:
-        candidates = sorted(
-            glob.glob(str(OUT_DIR / 'interval-ba-outcomes-*.csv')),
+        raw = sorted(
+            glob.glob(str(OUT_DIR / f'interval-ba-outcomes{slug}-*.csv')),
             reverse=True,
         )
+        # When ticker == SPXW, the legacy glob "interval-ba-outcomes-*"
+        # also picks up ticker-slugged SPY/QQQ files. SPXW filenames have
+        # a year-prefixed stamp ("...-2026...") right after the prefix;
+        # ticker files have a letter ("...-spy-..."). Filter accordingly.
+        candidates = (
+            [p for p in raw if pathlib.Path(p).name.split('-')[3].isdigit()]
+            if slug == ''
+            else raw
+        )
         if not candidates:
-            sys.exit('No outcomes CSV found under docs/tmp/')
+            sys.exit(
+                f'No outcomes CSV found under docs/tmp/ for ticker={ticker}',
+            )
         csv_path = pathlib.Path(candidates[0])
     if not csv_path.exists():
         sys.exit(f'CSV missing: {csv_path}')
@@ -503,18 +527,18 @@ def main() -> int:
 
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     try:
-        print('Loading alert metadata from DB…')
-        alerts = load_alert_meta(conn)
+        print(f'Loading {ticker} alert metadata from DB…')
+        alerts = load_alert_meta(conn, ticker)
         print(f'  {len(alerts)} alerts total')
     finally:
         conn.close()
 
     md: list[str] = []
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-    md.append(f'# Interval B/A — empirical edge analysis ({stamp})\n')
+    md.append(f'# {ticker} Interval B/A — empirical edge analysis ({stamp})\n')
     md.append(
-        f'_Joined {len(alerts)} alerts against {len(paths)} forward-return '
-        f'paths from `{csv_path.name}`._\n',
+        f'_Joined {len(alerts)} {ticker} alerts against {len(paths)} '
+        f'forward-return paths from `{csv_path.name}`._\n',
     )
 
     cut_hit_rate_with_baseline(alerts, paths, md)
@@ -524,7 +548,7 @@ def main() -> int:
     cut_sweep_vs_nonsweep(alerts, paths, md)
 
     output = '\n'.join(md)
-    out_path = OUT_DIR / f'interval-ba-analysis-{stamp}.md'
+    out_path = OUT_DIR / f'interval-ba-analysis{slug}-{stamp}.md'
     out_path.write_text(output, encoding='utf-8')
     print(f'\nwrote {out_path}')
     print('\n' + output)

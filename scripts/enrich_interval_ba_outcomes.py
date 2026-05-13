@@ -47,7 +47,6 @@ ENV_FILE = ROOT / '.env.local'
 PARQUET_DIR = Path.home() / 'Desktop' / 'Eod-Full-Tape-parquet'
 OUT_DIR = ROOT / 'docs' / 'tmp'
 
-TICKER = 'SPXW'
 INTERVAL_MIN = 5  # 5-min cadence
 SESSION_END_CT = time(15, 0)  # 15:00 CT regular-session close
 _CT = ZoneInfo('America/Chicago')
@@ -84,16 +83,20 @@ def session_close_utc(date_iso: str) -> datetime:
     return naive.replace(tzinfo=_CT).astimezone(UTC)
 
 
-def load_spx_minute_series(parquet_path: Path) -> dict[datetime, float]:
-    """Return {minute_utc: spx_close} for one day from the parquet.
+def load_spot_minute_series(
+    parquet_path: Path,
+    ticker: str,
+) -> dict[datetime, float]:
+    """Return {minute_utc: underlying_close} for one day from the parquet.
 
-    Takes the last ``underlying_price`` per minute across all SPXW ticks.
-    Filters out canceled rows and obviously bad prices (<=0).
+    Takes the last ``underlying_price`` per minute across all ticks for
+    the configured ticker (SPXW, SPY, or QQQ). Filters out canceled rows
+    and obviously bad prices (<=0).
     """
     t = pq.read_table(
         parquet_path,
         columns=['underlying_symbol', 'executed_at', 'underlying_price', 'canceled'],
-        filters=[('underlying_symbol', '=', TICKER)],
+        filters=[('underlying_symbol', '=', ticker)],
     )
     if t.num_rows == 0:
         return {}
@@ -162,12 +165,13 @@ def build_forward_path(
 
 def fetch_alerts(
     conn,
+    ticker: str,
     from_date: str | None,
     to_date: str | None,
     limit_alerts: int | None,
 ) -> list[dict]:
-    where: list[str] = []
-    params: list[object] = []
+    where: list[str] = ['ticker = %s']
+    params: list[object] = [ticker]
     if from_date:
         where.append('expiry >= %s')
         params.append(from_date)
@@ -195,6 +199,12 @@ def fetch_alerts(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        '--ticker',
+        type=str,
+        default='SPXW',
+        help='Alert ticker to enrich (SPXW, SPY, QQQ). Default: SPXW.',
+    )
     parser.add_argument('--from-date', type=str, default=None)
     parser.add_argument('--to-date', type=str, default=None)
     parser.add_argument('--limit-alerts', type=int, default=None)
@@ -202,6 +212,7 @@ def main() -> int:
         '--dry-run', action='store_true', help='Skip CSV/MD writes.',
     )
     args = parser.parse_args()
+    ticker = args.ticker.upper()
 
     load_env()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -209,7 +220,7 @@ def main() -> int:
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     try:
         alerts = fetch_alerts(
-            conn, args.from_date, args.to_date, args.limit_alerts,
+            conn, ticker, args.from_date, args.to_date, args.limit_alerts,
         )
     finally:
         conn.close()
@@ -227,8 +238,14 @@ def main() -> int:
         by_date[date_iso].append(a)
 
     stamp = datetime.now(tz=UTC).strftime('%Y%m%d-%H%M%S')
-    csv_path = OUT_DIR / f'interval-ba-outcomes-{stamp}.csv'
-    md_path = OUT_DIR / f'interval-ba-outcomes-summary-{stamp}.md'
+    # Back-compat: SPXW writes to the original (no-ticker) filename so the
+    # existing CSV history and downstream consumers (analyze_*) don't need
+    # path migration. Non-SPXW tickers get a ticker slug in the filename
+    # so the auto-discovery in analyze_interval_ba_cuts.py still picks up
+    # the SPXW file by default.
+    slug = '' if ticker == 'SPXW' else f'-{ticker.lower()}'
+    csv_path = OUT_DIR / f'interval-ba-outcomes{slug}-{stamp}.csv'
+    md_path = OUT_DIR / f'interval-ba-outcomes-summary{slug}-{stamp}.md'
     print(
         f'Enriching {len(alerts)} alerts across {len(by_date)} day(s) '
         f'→ {csv_path.name}',
@@ -271,9 +288,9 @@ def main() -> int:
         if not parquet_path.exists():
             print(f'  {date_iso}  SKIP: parquet missing')
             continue
-        series = load_spx_minute_series(parquet_path)
+        series = load_spot_minute_series(parquet_path, ticker)
         if not series:
-            print(f'  {date_iso}  SKIP: no SPXW underlying data')
+            print(f'  {date_iso}  SKIP: no {ticker} underlying data')
             continue
         series_keys = sorted(series.keys())
         eod_utc = session_close_utc(date_iso)
