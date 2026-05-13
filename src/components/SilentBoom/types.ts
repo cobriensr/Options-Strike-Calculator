@@ -55,6 +55,19 @@ export type SilentBoomDteBucket = '0' | '1-3' | '4+';
 
 export type SilentBoomBurstColor = 'red' | 'yellow' | 'grey';
 
+/**
+ * Ask% band filter — five buckets matching the histogram in the
+ * 2026-05-12 saturation audit. '100' is exact ask_pct = 1.0 (the
+ * cliff bucket); the other four are half-open ranges. Spec:
+ * docs/superpowers/specs/silent-boom-ask-100-demote-2026-05-12.md
+ */
+export type SilentBoomAskPctBand =
+  | '70-80'
+  | '80-90'
+  | '90-95'
+  | '95-99'
+  | '100';
+
 export interface SilentBoomOutcomes {
   peakCeilingPct: number | null;
   minutesToPeak: number | null;
@@ -119,6 +132,7 @@ export interface SilentBoomFeedResponse {
     tod: SilentBoomTod | null;
     dte: SilentBoomDteBucket | null;
     burst: SilentBoomBurstColor | null;
+    askPctBand: SilentBoomAskPctBand | null;
     sort: SilentBoomSortMode;
   };
   count: number;

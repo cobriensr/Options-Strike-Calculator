@@ -77,6 +77,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       tod,
       dte,
       burst,
+      askPctBand,
       format,
     } = parsed.data;
 
@@ -117,6 +118,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const burstLo = burstRange?.lo ?? null;
     const burstHiBound = burstRange?.hi ?? 1_000_000;
 
+    // Ask% band → half-open [lo, hi). '100' is exact equality
+    // (ask_pct = 1.0) — the cliff bucket from the saturation audit.
+    // Mirrors api/silent-boom-feed.ts.
+    const askPctRange = (() => {
+      if (askPctBand === '70-80') return { lo: 0.7, hi: 0.8 };
+      if (askPctBand === '80-90') return { lo: 0.8, hi: 0.9 };
+      if (askPctBand === '90-95') return { lo: 0.9, hi: 0.95 };
+      if (askPctBand === '95-99') return { lo: 0.95, hi: 1.0 };
+      if (askPctBand === '100') return { lo: 1.0, hi: 1.001 };
+      return null;
+    })();
+    const askPctLo = askPctRange?.lo ?? null;
+    const askPctHiBound = askPctRange?.hi ?? 1.001;
+
     const db = getDb();
 
     // No LIMIT — export the full firehose. Order chronologically
@@ -140,6 +155,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ) < ${todHi}::int)
         AND (${dteLo}::int IS NULL OR dte BETWEEN ${dteLo}::int AND ${dteHiBound}::int)
         AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
+        AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
       ORDER BY bucket_ct ASC, id ASC
     `) as Record<string, unknown>[];
 
@@ -159,6 +175,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           tod: tod ?? null,
           dte: dte ?? null,
           burst: burst ?? null,
+          askPctBand: askPctBand ?? null,
         },
         rows: normalized,
       });

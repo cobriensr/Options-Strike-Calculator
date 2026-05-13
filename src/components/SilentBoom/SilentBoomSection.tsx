@@ -10,6 +10,7 @@ import {
   SILENT_BOOM_EXIT_POLICY_TOOLTIPS,
   type OptionType,
   type SilentBoomAlert,
+  type SilentBoomAskPctBand,
   type SilentBoomBurstColor,
   type SilentBoomDteBucket,
   type SilentBoomExitPolicy,
@@ -24,6 +25,7 @@ const CONVICTION_LS_KEY = 'silentBoom.convictionFloor';
 const HIDE_LATE_PM_LS_KEY = 'silentBoom.hideLatePm';
 const HIDE_GHOSTS_LS_KEY = 'silentBoom.hideGhosts';
 const EXIT_POLICY_LS_KEY = 'silentBoom.exitPolicy';
+const ASK_PCT_BAND_LS_KEY = 'silentBoom.askPctBand';
 
 const EXIT_POLICIES: SilentBoomExitPolicy[] = [
   'realized30mPct',
@@ -115,6 +117,54 @@ const DTE_FILTERS: Array<{
  * better historically (5–10× has lift 2.11× vs 100×+ at 0.64×).
  * Tooltip notes this so the user picks deliberately.
  */
+/**
+ * Ask% band filter — five buckets from the 2026-05-12 saturation
+ * audit. The '100' band is the cliff: win > 0% drops from ≥99% in
+ * every other band to 77%, and the cron now demotes those fires to
+ * tier3 by default. The 70-80 band is the strongest historical
+ * cohort (median peak +16.52%, win > 100% = 12.6%); leaving the
+ * filter at "all" matches Tier-1+ conviction without the cliff fires.
+ */
+const ASK_PCT_BAND_FILTERS: Array<{
+  value: SilentBoomAskPctBand | null;
+  label: string;
+  tooltip: string;
+}> = [
+  {
+    value: null,
+    label: 'all ask%',
+    tooltip: 'Show every ask% band.',
+  },
+  {
+    value: '70-80',
+    label: '70-80%',
+    tooltip:
+      'Strongest historical cohort: median peak +16.52%, win > 100% at 12.6% (vs 4.3% at the 100% cliff).',
+  },
+  {
+    value: '80-90',
+    label: '80-90%',
+    tooltip: 'Median peak +14.03%, win > 0% = 99.0%.',
+  },
+  {
+    value: '90-95',
+    label: '90-95%',
+    tooltip: 'Median peak +13.83%, win > 0% = 99.1%.',
+  },
+  {
+    value: '95-99',
+    label: '95-99%',
+    tooltip:
+      'Median peak +12.51%, win > 0% = 98.9%. The high-ask cohort that still performs.',
+  },
+  {
+    value: '100',
+    label: '100%',
+    tooltip:
+      'Cliff bucket — every print at the ask. Median peak +4.51%, win > 0% drops to 77.0%. These are auto-demoted to tier3 by the scorer; keep this filter off unless you specifically want to inspect them.',
+  },
+];
+
 const BURST_FILTERS: Array<{
   value: SilentBoomBurstColor | null;
   label: string;
@@ -159,6 +209,7 @@ interface ExportUrlParams {
   tod?: SilentBoomTod | null;
   dte?: SilentBoomDteBucket | null;
   burst?: SilentBoomBurstColor | null;
+  askPctBand?: SilentBoomAskPctBand | null;
 }
 
 /**
@@ -177,6 +228,7 @@ const buildExportUrl = (params: ExportUrlParams): string => {
   if (params.tod) sp.set('tod', params.tod);
   if (params.dte) sp.set('dte', params.dte);
   if (params.burst) sp.set('burst', params.burst);
+  if (params.askPctBand) sp.set('askPctBand', params.askPctBand);
   return `/api/silent-boom-export?${sp.toString()}`;
 };
 
@@ -324,6 +376,22 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
   const [burstFilter, setBurstFilter] = useState<SilentBoomBurstColor | null>(
     null,
   );
+  const [askPctBand, setAskPctBand] = useState<SilentBoomAskPctBand | null>(
+    () => {
+      if (typeof window === 'undefined') return null;
+      const stored = window.localStorage.getItem(ASK_PCT_BAND_LS_KEY);
+      if (
+        stored === '70-80' ||
+        stored === '80-90' ||
+        stored === '90-95' ||
+        stored === '95-99' ||
+        stored === '100'
+      ) {
+        return stored;
+      }
+      return null;
+    },
+  );
   const [sortMode, setSortMode] = useState<SilentBoomSortMode>(() => {
     if (typeof window === 'undefined') return 'newest';
     const stored = window.localStorage.getItem(SORT_LS_KEY);
@@ -401,6 +469,14 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       window.localStorage.setItem(EXIT_POLICY_LS_KEY, exitPolicy);
     }
   }, [exitPolicy]);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (askPctBand == null) {
+      window.localStorage.removeItem(ASK_PCT_BAND_LS_KEY);
+    } else {
+      window.localStorage.setItem(ASK_PCT_BAND_LS_KEY, askPctBand);
+    }
+  }, [askPctBand]);
 
   // Reset bucket scrub when the date changes — a bucket from yesterday
   // shouldn't carry over.
@@ -418,6 +494,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     todFilter,
     dteFilter,
     burstFilter,
+    askPctBand,
     sortMode,
     minVolOi,
     convictionFloor,
@@ -439,6 +516,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       tod: todFilter,
       dte: dteFilter,
       burst: burstFilter,
+      askPctBand,
       minVolOi,
       minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
       sort: sortMode,
@@ -694,6 +772,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                   tod: todFilter,
                   dte: dteFilter,
                   burst: burstFilter,
+                  askPctBand,
                 })}
                 download
                 className={`${CHIP_BASE} ${CHIP_INACTIVE}`}
@@ -786,6 +865,26 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 }`}
                 title={b.tooltip}
                 aria-pressed={burstFilter === b.value}
+              >
+                {b.label}
+              </button>
+            ))}
+            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+            <span className={SECTION_LABEL}>ask %</span>
+            {ASK_PCT_BAND_FILTERS.map((b) => (
+              <button
+                key={b.label}
+                type="button"
+                onClick={() => setAskPctBand(b.value)}
+                className={`${CHIP_BASE} ${
+                  askPctBand === b.value
+                    ? b.value === '100'
+                      ? CHIP_ACTIVE.rose
+                      : CHIP_ACTIVE.purple
+                    : CHIP_INACTIVE
+                }`}
+                title={b.tooltip}
+                aria-pressed={askPctBand === b.value}
               >
                 {b.label}
               </button>

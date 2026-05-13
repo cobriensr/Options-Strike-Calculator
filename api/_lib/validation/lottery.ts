@@ -169,6 +169,7 @@ export const silentBoomExportQuerySchema = z.object({
   tod: z.enum(['AM_open', 'MID', 'LUNCH', 'PM', 'LATE']).optional(),
   dte: z.enum(['0', '1-3', '4+']).optional(),
   burst: z.enum(['red', 'yellow', 'grey']).optional(),
+  askPctBand: z.enum(['70-80', '80-90', '90-95', '95-99', '100']).optional(),
   format: z.enum(['csv', 'json']).default('csv'),
 });
 

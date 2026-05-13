@@ -39,6 +39,7 @@ function emptyFeed(
       tod: null,
       dte: null,
       burst: null,
+      askPctBand: null,
       sort: 'newest',
     },
     count: 0,
@@ -325,5 +326,33 @@ describe('useSilentBoomFeed', () => {
     const url = fetchMock.mock.calls[0]![0] as string;
     expect(url).not.toContain('dte=');
     expect(url).not.toContain('burst=');
+  });
+
+  it('appends askPctBand when supplied', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFeed()));
+    renderHook(() =>
+      useSilentBoomFeed({
+        date: '2026-05-07',
+        marketOpen: false,
+        askPctBand: '100',
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toContain('askPctBand=100');
+  });
+
+  it('omits askPctBand when null', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFeed()));
+    renderHook(() =>
+      useSilentBoomFeed({
+        date: '2026-05-07',
+        marketOpen: false,
+        askPctBand: null,
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).not.toContain('askPctBand=');
   });
 });

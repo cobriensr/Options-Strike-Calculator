@@ -11,6 +11,7 @@ import { POLL_INTERVALS } from '../constants/index.js';
 import type {
   OptionType,
   SilentBoomAlert,
+  SilentBoomAskPctBand,
   SilentBoomBurstColor,
   SilentBoomDteBucket,
   SilentBoomFeedResponse,
@@ -38,6 +39,8 @@ interface UseSilentBoomFeedArgs {
   dte?: SilentBoomDteBucket | null;
   /** Burst-color category filter — null = all colors. */
   burst?: SilentBoomBurstColor | null;
+  /** Ask% band filter — null = all bands. */
+  askPctBand?: SilentBoomAskPctBand | null;
   sort?: SilentBoomSortMode;
   page?: number;
   pageSize?: number;
@@ -77,6 +80,7 @@ export function useSilentBoomFeed({
   tod = null,
   dte = null,
   burst = null,
+  askPctBand = null,
   sort = 'newest',
   page = 0,
   pageSize = 50,
@@ -104,6 +108,7 @@ export function useSilentBoomFeed({
       if (tod) params.set('tod', tod);
       if (dte) params.set('dte', dte);
       if (burst) params.set('burst', burst);
+      if (askPctBand) params.set('askPctBand', askPctBand);
       const res = await fetch(`/api/silent-boom-feed?${params.toString()}`, {
         credentials: 'include',
         signal: ctrl.signal,
@@ -140,6 +145,7 @@ export function useSilentBoomFeed({
     tod,
     dte,
     burst,
+    askPctBand,
     sort,
     page,
     pageSize,
