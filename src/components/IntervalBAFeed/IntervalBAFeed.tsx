@@ -52,6 +52,16 @@ function formatPremiumCompact(n: number): string {
   return `$${n.toFixed(0)}`;
 }
 
+function formatFetchedAtCT(ms: number): string {
+  return new Date(ms).toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+    timeZone: 'America/Chicago',
+  });
+}
+
 export function IntervalBAFeed() {
   const [date, setDate] = useState<string>(todayCt());
   const [startTime, setStartTime] = useState<string>('08:30');
@@ -63,7 +73,8 @@ export function IntervalBAFeed() {
     () => ({ date, startTime, endTime, optionType, minPremium }),
     [date, startTime, endTime, optionType, minPremium],
   );
-  const { alerts, summary, loading, error } = useIntervalBAFeed(params);
+  const { alerts, summary, loading, error, fetchedAt, refetch } =
+    useIntervalBAFeed(params);
 
   return (
     <SectionBox label="Interval B/A History" collapsible>
@@ -77,7 +88,7 @@ export function IntervalBAFeed() {
         </p>
 
         <div className="space-y-2 rounded-lg border border-neutral-800/80 bg-neutral-950/40 p-2.5">
-          {/* Row 1: date + time pickers */}
+          {/* Row 1: date + time pickers + refresh widget */}
           <div className="flex flex-wrap items-center gap-3 text-xs">
             <DateInput
               value={date}
@@ -97,6 +108,35 @@ export function IntervalBAFeed() {
               label="End"
               min={startTime}
             />
+            <div className="ml-auto flex items-center gap-2">
+              {fetchedAt != null && (
+                <span className="font-sans text-[10px] text-neutral-500">
+                  updated {formatFetchedAtCT(fetchedAt)} CT
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={refetch}
+                disabled={loading}
+                title="Refetch the feed for the current filters"
+                aria-label="Refresh feed"
+                className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-neutral-800 bg-neutral-900/60 text-neutral-400 transition-colors hover:border-neutral-700 hover:text-neutral-100 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                  className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`}
+                >
+                  <path d="M21 12a9 9 0 1 1-3.46-7.08" />
+                  <path d="M21 3v6h-6" />
+                </svg>
+              </button>
+            </div>
           </div>
 
           {/* Row 2: option type filter */}

@@ -9,7 +9,7 @@
  * Spec: docs/superpowers/specs/interval-ba-ask-alert-2026-05-12.md.
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 export interface IntervalBAFeedAlert {
   id: number;
@@ -56,6 +56,7 @@ export interface UseIntervalBAFeedState {
   loading: boolean;
   error: string | null;
   fetchedAt: number | null;
+  refetch: () => void;
 }
 
 function buildUrl(p: UseIntervalBAFeedParams): string {
@@ -77,6 +78,14 @@ export function useIntervalBAFeed(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [fetchedAt, setFetchedAt] = useState<number | null>(null);
+  // Bumping ``refreshTick`` re-runs the fetch effect without changing
+  // any of the user-facing params — that's the manual-refresh path.
+  // Same effect handles param-driven refetches AND manual ones, so
+  // the in-flight cancellation logic doesn't have to be duplicated.
+  const [refreshTick, setRefreshTick] = useState(0);
+  const refetch = useCallback(() => {
+    setRefreshTick((n) => n + 1);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -134,7 +143,8 @@ export function useIntervalBAFeed(
     params.endTime,
     params.optionType,
     params.minPremium,
+    refreshTick,
   ]);
 
-  return { alerts, summary, loading, error, fetchedAt };
+  return { alerts, summary, loading, error, fetchedAt, refetch };
 }
