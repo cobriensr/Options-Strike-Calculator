@@ -147,8 +147,8 @@ hdr('8. Neon-specific: idle compute suspend?');
 try {
   const neonInfo = await sql`SHOW neon.compute_id`;
   console.log('compute_id:', neonInfo[0]);
-} catch (e) {
-  console.log('SHOW neon.compute_id not supported on this version');
+} catch (err) {
+  console.log('SHOW neon.compute_id not supported:', err.message);
 }
 
 try {

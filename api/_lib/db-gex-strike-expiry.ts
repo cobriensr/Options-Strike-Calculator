@@ -444,28 +444,48 @@ export async function getLatestGexPerStrikeWithDeltas(
  * `gex_strike_0dte` (legacy SPX-only 0DTE table) so the scrubber works
  * on pre-cutover dates. The ws_count gate prevents double-listing once
  * the WS daemon has caught up.
+ *
+ * 24-hour anchor window: `ts_minute` for a given (ticker, expiry) row
+ * is when UW emitted the data, not when the option expires. A multi-DTE
+ * expiry like 2026-05-13 accumulates rows across every session leading
+ * up to it — 9 days × 390 minutes = 3.5K distinct ts_minute values, all
+ * of which the old query scanned (the 2026-05-13 incident: 561K-row
+ * index-only scan, 131s wall-clock, 188 concurrent waiters jamming
+ * Neon's file cache). The panel's scrubber only navigates within one
+ * trading session at a time, so clamping ts_minute to ±24 hours around
+ * the user's frame of reference (live: NOW(); snapshot: `at`) drops the
+ * scan to ~390 rows without changing the consumer's UX.
  */
 export async function getTimestampsForDay(
   ticker: GexStrikeExpiryTicker,
   requestedExpiry: string,
+  at: string | null = null,
 ): Promise<string[]> {
   // Same NDX monthly-expiry remap as the strikes query so scrub
   // timestamps line up with the rows the panel actually sees.
   const expiry = resolveStoredExpiry(ticker, requestedExpiry);
 
-  const cacheKey = `${ticker}:${expiry}`;
+  // Cache key includes `at` so live polling (anchor = NOW()) doesn't
+  // serve a stale snapshot-window list, and vice versa.
+  const cacheKey = `${ticker}:${expiry}:${at ?? 'live'}`;
   const now = Date.now();
   const cached = timestampsCache.get(cacheKey);
   if (cached && cached.expiresAt > now) return cached.data;
 
   const sql = getDb();
+  const atParam = at ?? null;
   const rows = (await withDbRetry(
     () => sql`
-    WITH ws_ts AS (
+    WITH anchor AS (
+      SELECT COALESCE(${atParam}::timestamptz, NOW()) AS ts
+    ),
+    ws_ts AS (
       SELECT DISTINCT ts_minute
       FROM ws_gex_strike_expiry
       WHERE ticker = ${ticker}
         AND expiry = ${expiry}::date
+        AND ts_minute > (SELECT ts FROM anchor) - INTERVAL '24 hours'
+        AND ts_minute <= (SELECT ts FROM anchor)
     ),
     ws_count AS (
       SELECT COUNT(*) AS n FROM ws_ts
@@ -476,6 +496,8 @@ export async function getTimestampsForDay(
       WHERE ${ticker} = 'SPX'
         AND (SELECT n FROM ws_count) = 0
         AND date = ${expiry}::date
+        AND timestamp > (SELECT ts FROM anchor) - INTERVAL '24 hours'
+        AND timestamp <= (SELECT ts FROM anchor)
     )
     SELECT ts_minute FROM ws_ts
     UNION

@@ -155,7 +155,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             expiry,
             at: at ?? null,
           }),
-          getTimestampsForDay(ticker, expiry),
+          getTimestampsForDay(ticker, expiry, at ?? null),
         ]);
         const body: GexStrikeExpiryResponse = {
           ticker,

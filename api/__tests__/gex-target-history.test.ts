@@ -40,7 +40,7 @@ vi.mock('../_lib/spx-candles.js', () => ({
   fetchSPXCandles: vi.fn(),
 }));
 
-import handler from '../gex-target-history.js';
+import handler, { _resetCacheForTests } from '../gex-target-history.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
@@ -215,6 +215,10 @@ describe('GET /api/gex-target-history', () => {
       previousClose: null,
     });
     mockSql.mockReset();
+    // Per-instance response cache + in-flight dedup live at module
+    // scope; reset between tests so an earlier case's cached body
+    // doesn't short-circuit the next case's mockSql sequence.
+    _resetCacheForTests();
   });
 
   it('returns 405 for non-GET methods', async () => {

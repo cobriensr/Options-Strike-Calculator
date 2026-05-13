@@ -147,6 +147,45 @@ export interface GexTargetHistoryResponse {
 // `loadStrikeScoreHistory()` in the same module.
 
 /**
+ * Per-function-instance response cache with single-flight dedup, mirroring
+ * the pattern added to /api/gex-strike-expiry on 2026-05-13.
+ *
+ * The GexTarget widget polls /api/gex-target-history every minute. When
+ * Neon's serverless HTTP has intermittent cold-connection hangs (the
+ * day's incident: p50=169s on the sibling endpoint), every poll stacks
+ * on top of the same slow upstream call. Caching at 15s TTL collapses
+ * the polling fan-out to one DB hit per ~14 polls; in-flight dedup
+ * collapses concurrent first-of-window requests to one shared promise.
+ *
+ * Stale-on-error path serves the prior payload when upstream throws —
+ * critical for a poll-driven UI that prefers stale-but-rendered to a
+ * red banner.
+ */
+const LIVE_TTL_MS = 15_000;
+const SNAPSHOT_TTL_MS = 5 * 60 * 1000;
+type CachedBody = GexTargetHistoryResponse | GexTargetBulkResponse;
+interface CacheEntry {
+  expiresAt: number;
+  body: CachedBody;
+}
+const responseCache = new Map<string, CacheEntry>();
+const inFlight = new Map<string, Promise<CachedBody>>();
+
+function ghKey(
+  date: string | undefined,
+  ts: string | undefined,
+  all: boolean,
+): string {
+  return `${date ?? 'latest'}|${ts ?? 'live'}|${all ? 'bulk' : 'one'}`;
+}
+
+/** Exported for tests so cache state doesn't leak across cases. */
+export function _resetCacheForTests(): void {
+  responseCache.clear();
+  inFlight.clear();
+}
+
+/**
  * Best-effort SPX candle fetch. Wrapping the call in its own try/catch
  * means the price chart panel can be empty without taking down the
  * entire endpoint — the leaderboard / target / scoring data is still
@@ -193,186 +232,197 @@ export default withRequestScope(
       tsParam !== undefined &&
       /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(tsParam);
 
-    try {
-      const sql = getDb();
+    // ── Cache + single-flight ─────────────────────────────────────
+    // Live keys (no ts) cache for 15s — gex_target_features writes are
+    // per-minute cron, so 15s of staleness is invisible. Snapshot keys
+    // cache for 5 min (past doesn't change). 400/empty paths skip the
+    // cache and go straight through.
+    const isBulk = req.query.all === 'true';
+    const key = ghKey(dateParam, tsParam, isBulk);
+    const nowMs = Date.now();
+    const cached = responseCache.get(key);
+    if (cached && cached.expiresAt > nowMs) {
+      res.setHeader('Cache-Control', 'no-store');
+      done({ status: 200 });
+      return res.status(200).json(cached.body);
+    }
 
-      // ── 1. availableDates: every distinct trading date with rows ──
-      const datesRows = (await sql`
-        SELECT DISTINCT date
-        FROM gex_target_features
-        ORDER BY date ASC
-      `) as Array<{ date: string | Date }>;
+    // Build the response body. Wrapped in single-flight: concurrent
+    // requests for the same cache key share one upstream fetch. The
+    // first caller pays the cost; subsequent callers await the same
+    // promise. Critical under the polling fan-out the GexTarget widget
+    // generates when Neon's serverless HTTP path is in a slow tail.
+    let inProgress = inFlight.get(key);
+    if (inProgress == null) {
+      inProgress = (async (): Promise<CachedBody> => {
+        const sql = getDb();
 
-      const availableDates = datesRows
-        .map((r) => toDateString(r.date))
-        .filter((d): d is string => d != null);
+        // ── 1. availableDates: every distinct trading date with rows ──
+        const datesRows = (await sql`
+          SELECT DISTINCT date
+          FROM gex_target_features
+          ORDER BY date ASC
+        `) as Array<{ date: string | Date }>;
 
-      // Empty database — return the empty payload shape so the frontend
-      // can render its "no data yet" state without crashing.
-      if (availableDates.length === 0) {
-        const empty: GexTargetHistoryResponse = {
-          availableDates: [],
-          date: null,
-          timestamps: [],
-          timestamp: null,
-          spot: null,
-          oi: null,
-          vol: null,
-          dir: null,
-          candles: [],
-          previousClose: null,
-        };
-        res.setHeader('Cache-Control', 'no-store');
-        done({ status: 200 });
-        return res.status(200).json(empty);
-      }
+        const availableDates = datesRows
+          .map((r) => toDateString(r.date))
+          .filter((d): d is string => d != null);
 
-      // ── 2. Resolve the target date ────────────────────────────────
-      // Use the requested date if provided; otherwise pick the most
-      // recent available date. We deliberately do NOT clamp to today
-      // because at session start today's row count may be zero.
-      const date = dateParam ?? availableDates.at(-1)!;
+        // Empty database — return the empty payload shape so the
+        // frontend can render its "no data yet" state without crashing.
+        if (availableDates.length === 0) {
+          return {
+            availableDates: [],
+            date: null,
+            timestamps: [],
+            timestamp: null,
+            spot: null,
+            oi: null,
+            vol: null,
+            dir: null,
+            candles: [],
+            previousClose: null,
+          } satisfies GexTargetHistoryResponse;
+        }
 
-      // ── 3. List timestamps for the resolved date ──────────────────
-      const timestampRows = (await sql`
-        SELECT DISTINCT timestamp
-        FROM gex_target_features
-        WHERE date = ${date}
-        ORDER BY timestamp ASC
-      `) as Array<{ timestamp: string | Date }>;
+        // ── 2. Resolve the target date ─────────────────────────────
+        // Use the requested date if provided; otherwise pick the most
+        // recent available date. We deliberately do NOT clamp to today
+        // because at session start today's row count may be zero.
+        const date = dateParam ?? availableDates.at(-1)!;
 
-      const timestamps = timestampRows
-        .map((r) => toIso(r.timestamp))
-        .filter((s): s is string => s != null);
+        // ── 3. List timestamps for the resolved date ───────────────
+        const timestampRows = (await sql`
+          SELECT DISTINCT timestamp
+          FROM gex_target_features
+          WHERE date = ${date}
+          ORDER BY timestamp ASC
+        `) as Array<{ timestamp: string | Date }>;
 
-      // No rows for the resolved date (e.g., requested a date that's in
-      // availableDates from a stale cache, or the date param doesn't
-      // match anything). Always include candles + availableDates so the
-      // frontend can keep its other panels populated.
-      if (timestamps.length === 0) {
-        const { candles, previousClose } = await safeFetchCandles(date);
-        const empty: GexTargetHistoryResponse = {
-          availableDates,
-          date,
-          timestamps: [],
-          timestamp: null,
-          spot: null,
-          oi: null,
-          vol: null,
-          dir: null,
-          candles,
-          previousClose,
-        };
-        res.setHeader('Cache-Control', 'no-store');
-        done({ status: 200 });
-        return res.status(200).json(empty);
-      }
+        const timestamps = timestampRows
+          .map((r) => toIso(r.timestamp))
+          .filter((s): s is string => s != null);
 
-      // ── 4. Resolve the target timestamp ───────────────────────────
-      // If the caller passed a valid `ts` and it exists in the day's
-      // snapshot list, use it. Otherwise fall back to the latest
-      // snapshot. The frontend treats this fallback as the "live" path.
-      let timestamp: string;
-      if (hasTs && tsParam !== undefined) {
-        const normalizedTs = toIso(tsParam) ?? tsParam;
-        timestamp = timestamps.includes(normalizedTs)
-          ? normalizedTs
-          : timestamps.at(-1)!;
-      } else {
-        timestamp = timestamps.at(-1)!;
-      }
+        // No rows for the resolved date — keep candles + availableDates
+        // populated so the frontend's other panels stay live.
+        if (timestamps.length === 0) {
+          const { candles, previousClose } = await safeFetchCandles(date);
+          return {
+            availableDates,
+            date,
+            timestamps: [],
+            timestamp: null,
+            spot: null,
+            oi: null,
+            vol: null,
+            dir: null,
+            candles,
+            previousClose,
+          } satisfies GexTargetHistoryResponse;
+        }
 
-      // ── 4b. Bulk mode (?all=true) ─────────────────────────────────
-      // When the caller passes `?all=true`, return every snapshot for
-      // the resolved date in one payload instead of a single-snapshot
-      // response. This branch shares steps 1–4 (availableDates, date
-      // resolution, timestamps, timestamp resolution) with the existing
-      // path and returns early so the single-snapshot path below is
-      // completely unchanged.
-      if (req.query.all === 'true') {
-        // loadStrikeScoreHistory hits Neon, safeFetchCandles hits Schwab —
-        // independent fetches that only need `date`. Parallelize so the
-        // bulk path doesn't serialize them. (Sentry consecutive-HTTP fix.)
-        const [allRows, candleResult] = await Promise.all([
-          loadStrikeScoreHistory({ sql, date }),
+        // ── 4. Resolve the target timestamp ───────────────────────
+        let timestamp: string;
+        if (hasTs && tsParam !== undefined) {
+          const normalizedTs = toIso(tsParam) ?? tsParam;
+          timestamp = timestamps.includes(normalizedTs)
+            ? normalizedTs
+            : timestamps.at(-1)!;
+        } else {
+          timestamp = timestamps.at(-1)!;
+        }
+
+        // ── 4b. Bulk mode (?all=true) ─────────────────────────────
+        if (isBulk) {
+          const [allRows, candleResult] = await Promise.all([
+            loadStrikeScoreHistory({ sql, date }),
+            safeFetchCandles(date),
+          ]);
+
+          const byTimestamp = new Map<string, GexTargetFeatureRow[]>();
+          for (const row of allRows) {
+            const tsKey = toIso(row.timestamp) ?? String(row.timestamp);
+            const bucket = byTimestamp.get(tsKey);
+            if (bucket) {
+              bucket.push(row);
+            } else {
+              byTimestamp.set(tsKey, [row]);
+            }
+          }
+
+          const snapshots: BulkSnapshot[] = timestamps
+            .filter((ts) => byTimestamp.has(ts))
+            .map((ts) => {
+              const rows = byTimestamp.get(ts)!;
+              const grouped = groupRowsByMode(rows);
+              const spot = rows.length > 0 ? num(rows[0]!.spot_price) : null;
+              return { timestamp: ts, spot, ...grouped };
+            });
+
+          const { candles, previousClose } = candleResult;
+
+          return {
+            availableDates,
+            date,
+            timestamps,
+            candles,
+            previousClose,
+            snapshots,
+          } satisfies GexTargetBulkResponse;
+        }
+
+        // ── 5/7. Feature rows + SPX candles in parallel ───────────
+        const [featureRows, candleResult] = await Promise.all([
+          loadStrikeScoreHistory({ sql, date, timestamp }),
           safeFetchCandles(date),
         ]);
 
-        // Group rows by their normalized timestamp key.
-        const byTimestamp = new Map<string, GexTargetFeatureRow[]>();
-        for (const row of allRows) {
-          const key = toIso(row.timestamp) ?? String(row.timestamp);
-          const bucket = byTimestamp.get(key);
-          if (bucket) {
-            bucket.push(row);
-          } else {
-            byTimestamp.set(key, [row]);
-          }
-        }
+        // ── 6. Reconstruct the three per-mode TargetScore objects ─
+        const grouped = groupRowsByMode(featureRows);
 
-        // Build one BulkSnapshot per timestamp in ascending order.
-        const snapshots: BulkSnapshot[] = timestamps
-          .filter((ts) => byTimestamp.has(ts))
-          .map((ts) => {
-            const rows = byTimestamp.get(ts)!;
-            const grouped = groupRowsByMode(rows);
-            const spot = rows.length > 0 ? num(rows[0]!.spot_price) : null;
-            return { timestamp: ts, spot, ...grouped };
-          });
-
+        const spot =
+          featureRows.length > 0 ? num(featureRows[0]!.spot_price) : null;
         const { candles, previousClose } = candleResult;
 
-        const bulkResponse: GexTargetBulkResponse = {
+        // ── 8. Respond ────────────────────────────────────────────
+        return {
           availableDates,
           date,
           timestamps,
+          timestamp,
+          spot,
+          oi: grouped.oi,
+          vol: grouped.vol,
+          dir: grouped.dir,
           candles,
           previousClose,
-          snapshots,
-        };
+        } satisfies GexTargetHistoryResponse;
+      })();
+      inFlight.set(key, inProgress);
+      // Clear from in-flight regardless of outcome. .catch(() => {}) on
+      // the cleanup branch keeps Node from flagging an unhandled
+      // rejection — the real catch is at the `await` below.
+      inProgress.finally(() => inFlight.delete(key)).catch(() => {});
+    }
 
-        res.setHeader('Cache-Control', 'no-store');
-        done({ status: 200 });
-        return res.status(200).json(bulkResponse);
-      }
-
-      // ── 5/7. Feature rows + SPX candles in parallel ───────────────
-      // loadStrikeScoreHistory hits Neon, safeFetchCandles hits Schwab —
-      // independent fetches. Parallelize. (Sentry consecutive-HTTP fix.)
-      const [featureRows, candleResult] = await Promise.all([
-        loadStrikeScoreHistory({ sql, date, timestamp }),
-        safeFetchCandles(date),
-      ]);
-
-      // ── 6. Reconstruct the three per-mode TargetScore objects ─────
-      const grouped = groupRowsByMode(featureRows);
-
-      // Spot is the same for every row in a snapshot — read it from any
-      // row. Null only when the snapshot has zero rows (race condition
-      // between the timestamp listing and the SELECT *).
-      const spot =
-        featureRows.length > 0 ? num(featureRows[0]!.spot_price) : null;
-
-      const { candles, previousClose } = candleResult;
-
-      // ── 8. Respond ───────────────────────────────────────────────
-      const response: GexTargetHistoryResponse = {
-        availableDates,
-        date,
-        timestamps,
-        timestamp,
-        spot,
-        oi: grouped.oi,
-        vol: grouped.vol,
-        dir: grouped.dir,
-        candles,
-        previousClose,
-      };
-
+    try {
+      const body = await inProgress;
+      responseCache.set(key, {
+        body,
+        expiresAt: Date.now() + (hasTs ? SNAPSHOT_TTL_MS : LIVE_TTL_MS),
+      });
       res.setHeader('Cache-Control', 'no-store');
       done({ status: 200 });
-      return res.status(200).json(response);
+      return res.status(200).json(body);
     } catch (err) {
+      // Stale-on-error: prefer last-known payload over a hard 500 for
+      // the polled GexTarget UI.
+      if (cached) {
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('X-Cache-Stale', '1');
+        done({ status: 200 });
+        return res.status(200).json(cached.body);
+      }
       done({ status: 500 });
       Sentry.captureException(err);
       logger.error({ err }, 'gex-target-history fetch error');
