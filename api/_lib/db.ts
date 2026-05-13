@@ -82,10 +82,26 @@ export function isRetryableDbError(err: unknown): boolean {
 export async function withDbRetry<T>(
   fn: () => Promise<T>,
   retries: number = 2,
+  perAttemptTimeoutMs?: number,
 ): Promise<T> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      return await fn();
+      if (perAttemptTimeoutMs == null) return await fn();
+      // Race against a per-attempt timeout. Neon's HTTP serverless
+      // driver has no AbortSignal hook, so a hung connection would
+      // otherwise consume the entire function budget (300s) and
+      // prevent any retry. Throwing a retryable error here lets the
+      // loop fall through to the next attempt — the retry classifier
+      // matches `timeout` in the message via DB_RETRYABLE_RX above.
+      return await Promise.race([
+        fn(),
+        new Promise<T>((_, reject) =>
+          setTimeout(
+            () => reject(new Error('db attempt timeout')),
+            perAttemptTimeoutMs,
+          ),
+        ),
+      ]);
     } catch (err) {
       if (attempt === retries || !isRetryableDbError(err)) throw err;
       await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));

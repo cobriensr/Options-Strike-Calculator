@@ -149,7 +149,7 @@ describe('useGexStrikeExpiry', () => {
     }
   });
 
-  it('1 ticker fails → error names that ticker; others populated', async () => {
+  it('1 ticker single failure is swallowed; error surfaces after 2 consecutive misses', async () => {
     fetchMock.mockImplementation(
       tickerRouter({
         SPX: { kind: 'http', status: 500 },
@@ -159,18 +159,29 @@ describe('useGexStrikeExpiry', () => {
       useGexStrikeExpiry(false, '2026-05-07'),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.error).toBe('Partial fetch failure: SPX');
+    // First failure swallowed by FAIL_GRACE_COUNT — keeps the user
+    // out of a red-banner flash for a single transient hang.
+    expect(result.current.error).toBeNull();
+    expect(result.current.errors.SPX).toBeNull();
+    // Successful tickers still populate.
+    expect(result.current.data.SPY?.ticker).toBe('SPY');
+    expect(result.current.data.QQQ?.ticker).toBe('QQQ');
+    expect(result.current.data.NDX?.ticker).toBe('NDX');
+
+    // Second consecutive failure → error surfaces.
+    await act(async () => {
+      result.current.refresh();
+    });
+    await waitFor(() =>
+      expect(result.current.error).toBe('Partial fetch failure: SPX'),
+    );
     expect(result.current.errors.SPX).toContain('SPX: HTTP 500');
     expect(result.current.errors.SPY).toBeNull();
     expect(result.current.errors.QQQ).toBeNull();
     expect(result.current.errors.NDX).toBeNull();
-    expect(result.current.data.SPX).toBeNull();
-    expect(result.current.data.SPY?.ticker).toBe('SPY');
-    expect(result.current.data.QQQ?.ticker).toBe('QQQ');
-    expect(result.current.data.NDX?.ticker).toBe('NDX');
   });
 
-  it('multiple tickers fail → error joins names in TICKERS order', async () => {
+  it('multiple tickers fail twice → error joins names in TICKERS order', async () => {
     fetchMock.mockImplementation(
       tickerRouter({
         SPX: { kind: 'http', status: 500 },
@@ -181,12 +192,54 @@ describe('useGexStrikeExpiry', () => {
       useGexStrikeExpiry(false, '2026-05-07'),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
-    // TICKERS = ['SPY', 'QQQ', 'SPX', 'NDX'] — failed in that order.
-    expect(result.current.error).toBe('Partial fetch failure: SPX, NDX');
+    // First miss swallowed.
+    expect(result.current.error).toBeNull();
+    // Second miss surfaces.
+    await act(async () => {
+      result.current.refresh();
+    });
+    await waitFor(() =>
+      expect(result.current.error).toBe('Partial fetch failure: SPX, NDX'),
+    );
     expect(result.current.errors.SPX).toBeTruthy();
     expect(result.current.errors.NDX).toBeTruthy();
     expect(result.current.errors.SPY).toBeNull();
     expect(result.current.errors.QQQ).toBeNull();
+  });
+
+  it('intermittent miss → success clears the failure counter', async () => {
+    // First call: SPX 500. Second call: SPX OK. Third call: SPX 500 again.
+    // Even after 2 total SPX failures, none consecutive → no error.
+    let spxCallCount = 0;
+    fetchMock.mockImplementation((url: string) => {
+      if (url.includes('ticker=SPX')) {
+        spxCallCount += 1;
+        if (spxCallCount === 1 || spxCallCount === 3) {
+          return Promise.resolve(jsonResponse({ error: 'x' }, 500));
+        }
+        return Promise.resolve(jsonResponse(emptyResp('SPX')));
+      }
+      const t = (['SPY', 'QQQ', 'NDX'] as GexStrikeExpiryTicker[]).find((x) =>
+        url.includes(`ticker=${x}`),
+      );
+      return Promise.resolve(jsonResponse(emptyResp(t ?? 'SPY')));
+    });
+    const { result } = renderHook(() =>
+      useGexStrikeExpiry(false, '2026-05-07'),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBeNull();
+    await act(async () => {
+      result.current.refresh();
+    });
+    await waitFor(() => expect(spxCallCount).toBe(2));
+    expect(result.current.error).toBeNull();
+    await act(async () => {
+      result.current.refresh();
+    });
+    await waitFor(() => expect(spxCallCount).toBe(3));
+    // 3rd SPX call failed, but it's the 1st in the current streak — silent.
+    expect(result.current.error).toBeNull();
   });
 
   it('401 is graceful — that ticker stays null but is NOT in failed list', async () => {

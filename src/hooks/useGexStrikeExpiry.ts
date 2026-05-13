@@ -121,6 +121,23 @@ function emptyErrors(): Record<GexStrikeExpiryTicker, string | null> {
   return { SPY: null, QQQ: null, SPX: null, NDX: null };
 }
 
+function emptyFailCounts(): Record<GexStrikeExpiryTicker, number> {
+  return { SPY: 0, QQQ: 0, SPX: 0, NDX: 0 };
+}
+
+// Per-fetch timeout. 30s covers ~p95 of API latency after the server
+// added a 6s per-attempt SQL ceiling + retry (see api/_lib/db.ts
+// withDbRetry). 8s was too tight when Neon's serverless HTTP path
+// hit intermittent cold-connection hangs — produced 50%+ user-visible
+// failures even though the SQL itself ran in ~230ms.
+const FETCH_TIMEOUT_MS = 30_000;
+
+// Don't surface a transient single-poll miss as an error. The GEX
+// Landscape polls every 30s; one timeout is invisible noise the user
+// shouldn't see flashed as a red banner. The 2nd consecutive failure
+// means real degradation worth showing.
+const FAIL_GRACE_COUNT = 2;
+
 async function fetchOne(
   ticker: GexStrikeExpiryTicker,
   expiry: string,
@@ -130,7 +147,7 @@ async function fetchOne(
   if (at) qs.set('at', at);
   const res = await fetch(`/api/gex-strike-expiry?${qs.toString()}`, {
     credentials: 'same-origin',
-    signal: AbortSignal.timeout(8_000),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (!res.ok) {
     // 401 for anon visitors is expected and non-fatal — the hook
@@ -157,6 +174,12 @@ export function useGexStrikeExpiry(
     useState<Record<GexStrikeExpiryTicker, string | null>>(emptyErrors);
   const mountedRef = useRef(true);
 
+  // Per-ticker consecutive-failure counter. Only surfaces an error once
+  // the same ticker fails FAIL_GRACE_COUNT polls in a row, so a single
+  // transient Neon hang doesn't flash a red banner on the user.
+  const failsRef =
+    useRef<Record<GexStrikeExpiryTicker, number>>(emptyFailCounts());
+
   const fetchAll = useCallback(async () => {
     try {
       const results = await Promise.allSettled(
@@ -167,23 +190,36 @@ export function useGexStrikeExpiry(
 
       const next = emptyData();
       const nextErrors = emptyErrors();
-      const failedTickers: GexStrikeExpiryTicker[] = [];
+      const erroredTickers: GexStrikeExpiryTicker[] = [];
       results.forEach((result, idx) => {
         const ticker = TICKERS[idx];
         if (ticker == null) return;
         if (result.status === 'fulfilled') {
           next[ticker] = result.value;
+          failsRef.current[ticker] = 0;
         } else {
-          failedTickers.push(ticker);
-          nextErrors[ticker] = getErrorMessage(result.reason);
+          failsRef.current[ticker] += 1;
+          if (failsRef.current[ticker] >= FAIL_GRACE_COUNT) {
+            erroredTickers.push(ticker);
+            nextErrors[ticker] = getErrorMessage(result.reason);
+          }
         }
       });
 
-      setData(next);
+      // Merge: keep the previous payload for tickers we just failed
+      // on so the user sees stale-but-rendered data instead of empties.
+      setData((prev) => {
+        const merged = { ...prev };
+        for (const t of TICKERS) {
+          const r = next[t];
+          if (r !== null || failsRef.current[t] === 0) merged[t] = r;
+        }
+        return merged;
+      });
       setErrors(nextErrors);
       setError(
-        failedTickers.length > 0
-          ? `Partial fetch failure: ${failedTickers.join(', ')}`
+        erroredTickers.length > 0
+          ? `Partial fetch failure: ${erroredTickers.join(', ')}`
           : null,
       );
     } catch (err) {
@@ -256,15 +292,27 @@ export function useGexStrikeExpirySpx(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
+  // Consecutive failure counter — only surface an error once SPX has
+  // missed FAIL_GRACE_COUNT polls in a row. Single-poll Neon hangs
+  // shouldn't render the "SPX vol reinforcement: signal timed out"
+  // banner; the previous payload (data state) stays sticky meanwhile.
+  const failCountRef = useRef(0);
 
   const fetchSpx = useCallback(async () => {
     try {
       const result = await fetchOne('SPX', expiry, at);
       if (!mountedRef.current) return;
-      setData(result);
+      // Sticky-on-empty: preserve the prior payload when the server
+      // returned null (401 anon path) so the panel doesn't blank out.
+      if (result !== null) setData(result);
+      failCountRef.current = 0;
       setError(null);
     } catch (err) {
-      if (mountedRef.current) setError(getErrorMessage(err));
+      if (!mountedRef.current) return;
+      failCountRef.current += 1;
+      if (failCountRef.current >= FAIL_GRACE_COUNT) {
+        setError(getErrorMessage(err));
+      }
     } finally {
       if (mountedRef.current) setLoading(false);
     }

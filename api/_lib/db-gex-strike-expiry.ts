@@ -309,6 +309,12 @@ export async function getLatestGexPerStrikeWithDeltas(
   // it ignores NULLs alongside non-NULL values (verified on Neon
   // PG 17.8). The `CASE WHEN ${ticker}='SPX'` projects NULL for
   // non-SPX tickers, which `GREATEST` then ignores.
+  // 6s per-attempt timeout. EXPLAIN ANALYZE shows the post-#148-index
+  // query at ~230ms; Sentry shows p50=2s but p95=269s due to intermittent
+  // Neon serverless connection hangs. A 6s ceiling per attempt + 2
+  // retries (so up to ~18s + backoff) crushes the long tail without
+  // sacrificing the headroom the slow-but-completing tail of legit
+  // queries needs.
   const rows = (await withDbRetry(
     () => sql`
     WITH effective_at AS (
@@ -430,6 +436,8 @@ export async function getLatestGexPerStrikeWithDeltas(
     FROM deltas
     ORDER BY strike, ts_minute DESC
   `,
+    2,
+    6_000,
   )) as RawRowWithDeltas[];
   return rows.map(mapRowWithDeltas);
 }
@@ -482,6 +490,8 @@ export async function getTimestampsForDay(
     SELECT ts_minute FROM rest_ts
     ORDER BY ts_minute ASC
   `,
+    2,
+    4_000,
   )) as Array<{ ts_minute: string | Date }>;
   const data = rows.map((r) => toIso(r.ts_minute));
   timestampsCache.set(cacheKey, { data, expiresAt: now + TIMESTAMPS_TTL_MS });
