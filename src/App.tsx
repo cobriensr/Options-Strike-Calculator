@@ -51,6 +51,7 @@ import GatedSection from './components/GatedSection';
 import AppHeader from './components/AppHeader';
 import AlertBanner from './components/AlertBanner';
 import IntervalBAAlertBanner from './components/IntervalBAAlertBanner';
+import { IntervalBAFeed } from './components/IntervalBAFeed/IntervalBAFeed';
 import DarkPoolLevels from './components/DarkPoolLevels';
 import { PeriscopePanel } from './components/Periscope/PeriscopePanel';
 import VegaSpikeFeed from './components/VegaSpikeFeed/VegaSpikeFeed';
@@ -643,6 +644,7 @@ export default function StrikeCalculator() {
             { id: 'sec-gex-landscape', label: 'GEX Landscape' },
             { id: 'sec-zero-gamma', label: 'Zero Gamma' },
             { id: 'sec-vega-spikes', label: 'Dir Vega Spikes' },
+            { id: 'sec-interval-ba-history', label: 'Interval B/A History' },
             { id: 'sec-greek-flow', label: 'Greek Flow' },
             { id: 'sec-dealer-regime', label: 'Dealer Regime' },
             { id: 'sec-strike-battle-map', label: 'Strike Battle Map' },
@@ -999,6 +1001,14 @@ export default function StrikeCalculator() {
                   <VegaSpikeFeed
                     marketOpen={market.data.quotes?.marketOpen ?? false}
                   />
+                </GatedSection>
+
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-interval-ba-history"
+                  label="Interval B/A History"
+                >
+                  <IntervalBAFeed />
                 </GatedSection>
 
                 <GatedSection
