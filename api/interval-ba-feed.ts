@@ -14,12 +14,19 @@
  *   ?endTime=HH:MM         — CT end   (default 15:00 — regular session close)
  *   ?optionType=C|P        — filter to calls or puts (default both)
  *   ?minPremium=N          — filter to total_premium >= N USD (default 0)
+ *   ?confluenceOnly=1      — only fires with ≥1 cross-symbol partner
+ *                            (alerts whose confluence_tickers is non-empty)
  *
  * Response:
  *   {
  *     alerts:  IntervalBAFeedAlert[],
  *     summary: { count, total_premium, extreme, critical, warning }
  *   }
+ *
+ * Each FeedAlert carries a `confluence_tickers: string[]` field — the
+ * SPY/SPXW/QQQ trio members (other than the alert's own ticker) that
+ * fired same-direction within the configured ±90s window. Legacy rows
+ * pre-Phase-3 collapse to []. See migration #147 + Phase 3 spec.
  *
  * Spec: docs/superpowers/specs/interval-ba-ask-alert-2026-05-12.md.
  */
@@ -53,6 +60,11 @@ interface FeedAlert {
   top_trade_is_sweep: boolean | null;
   top_trade_is_floor: boolean | null;
   underlying_price: number | null;
+  // Cross-symbol confluence (Phase 5 of interval-ba-confluence spec).
+  // Empty list for solo fires, populated when a partner ETF / index
+  // fired same-direction within the configured window. Migration #147
+  // added the column nullable; legacy backfilled rows surface as [].
+  confluence_tickers: string[];
   severity: Severity;
 }
 
@@ -128,6 +140,9 @@ interface RawRow {
   top_trade_is_sweep: boolean | null;
   top_trade_is_floor: boolean | null;
   underlying_price: string | number | null;
+  // Neon serializes TEXT[] as a JS string[]; legacy rows (pre-Phase-3
+  // populate) surface as null. We coalesce to [] in shapeRow().
+  confluence_tickers: string[] | null;
 }
 
 function shapeRow(r: RawRow): FeedAlert {
@@ -152,6 +167,7 @@ function shapeRow(r: RawRow): FeedAlert {
     top_trade_is_sweep: r.top_trade_is_sweep,
     top_trade_is_floor: r.top_trade_is_floor,
     underlying_price: toNumberOrNull(r.underlying_price),
+    confluence_tickers: r.confluence_tickers ?? [],
     severity: deriveSeverity(total_premium),
   };
 }
@@ -218,6 +234,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           ? Math.max(0, Number.parseFloat(minPremiumRaw))
           : 0;
 
+      // Phase 5: optional filter to only confluence (multi-symbol) fires.
+      // Applied in JS after the SQL fetch — at MAX_ROWS=500 the overhead
+      // is negligible vs the complexity of branching the SQL template
+      // four ways (optionType × confluenceOnly). The summary is rebuilt
+      // post-filter so the displayed tier counts match the visible rows.
+      const confluenceOnly = req.query.confluenceOnly === '1';
+
       const fromUtc = ctWallClockToUtcIso(dateStr, startMin);
       const toUtc = ctWallClockToUtcIso(dateStr, endMin);
       if (!fromUtc || !toUtc) {
@@ -237,7 +260,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                    ask_premium, total_premium, trade_count,
                    top_trade_premium, top_trade_size, top_trade_executed_at,
                    top_trade_is_sweep, top_trade_is_floor,
-                   underlying_price
+                   underlying_price, confluence_tickers
             FROM interval_ba_alerts
             WHERE expiry = ${dateStr}
               AND fired_at >= ${fromUtc}
@@ -253,7 +276,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                    ask_premium, total_premium, trade_count,
                    top_trade_premium, top_trade_size, top_trade_executed_at,
                    top_trade_is_sweep, top_trade_is_floor,
-                   underlying_price
+                   underlying_price, confluence_tickers
             FROM interval_ba_alerts
             WHERE expiry = ${dateStr}
               AND fired_at >= ${fromUtc}
@@ -264,7 +287,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           `;
       const rows = rawRows as unknown as RawRow[];
 
-      const alerts = rows.map(shapeRow);
+      const allAlerts = rows.map(shapeRow);
+      const alerts = confluenceOnly
+        ? allAlerts.filter((a) => a.confluence_tickers.length > 0)
+        : allAlerts;
       const summary = buildSummary(alerts);
 
       res.setHeader('Cache-Control', 'no-store');

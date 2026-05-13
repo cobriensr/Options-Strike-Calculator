@@ -49,6 +49,7 @@ const RAW_ROW = {
   top_trade_is_sweep: true,
   top_trade_is_floor: false,
   underlying_price: '5795.00',
+  confluence_tickers: null,
 };
 
 describe('GET /api/interval-ba-feed', () => {
@@ -199,6 +200,73 @@ describe('GET /api/interval-ba-feed', () => {
     );
     expect(res._status).toBe(500);
     expect(Sentry.captureException).toHaveBeenCalled();
+  });
+
+  // Phase 5: confluence_tickers pass-through + ?confluenceOnly=1 filter.
+  it('coalesces null confluence_tickers to [] in response', async () => {
+    mockSql.mockResolvedValue([RAW_ROW]); // confluence_tickers=null
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { date: '2026-03-27' } }),
+      res,
+    );
+    const body = res._json as { alerts: Record<string, unknown>[] };
+    expect(body.alerts[0]!.confluence_tickers).toEqual([]);
+  });
+
+  it('passes populated confluence_tickers through unchanged', async () => {
+    mockSql.mockResolvedValue([
+      { ...RAW_ROW, confluence_tickers: ['SPY', 'QQQ'] },
+    ]);
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { date: '2026-03-27' } }),
+      res,
+    );
+    const body = res._json as { alerts: Record<string, unknown>[] };
+    expect(body.alerts[0]!.confluence_tickers).toEqual(['SPY', 'QQQ']);
+  });
+
+  it('?confluenceOnly=1 drops rows with empty confluence_tickers', async () => {
+    mockSql.mockResolvedValue([
+      { ...RAW_ROW, id: 10, confluence_tickers: null }, // solo
+      { ...RAW_ROW, id: 11, confluence_tickers: [] }, // also solo
+      { ...RAW_ROW, id: 12, confluence_tickers: ['SPY'] }, // partnered
+    ]);
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { date: '2026-03-27', confluenceOnly: '1' },
+      }),
+      res,
+    );
+    const body = res._json as {
+      alerts: Array<{ id: number }>;
+      summary: { count: number };
+    };
+    expect(body.alerts).toHaveLength(1);
+    expect(body.alerts[0]!.id).toBe(12);
+    // Summary recomputed from filtered set.
+    expect(body.summary.count).toBe(1);
+  });
+
+  it('confluenceOnly with no value or wrong value passes through all', async () => {
+    mockSql.mockResolvedValue([
+      { ...RAW_ROW, id: 1, confluence_tickers: null },
+      { ...RAW_ROW, id: 2, confluence_tickers: ['SPY'] },
+    ]);
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { date: '2026-03-27', confluenceOnly: 'yes' },
+      }),
+      res,
+    );
+    const body = res._json as { alerts: Array<{ id: number }> };
+    // Anything but the literal string "1" leaves the filter off.
+    expect(body.alerts).toHaveLength(2);
   });
 });
 

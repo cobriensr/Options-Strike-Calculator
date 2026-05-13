@@ -54,6 +54,7 @@ const RAW_ROW = {
   top_trade_is_sweep: true,
   top_trade_is_floor: false,
   underlying_price: '7355.00',
+  confluence_tickers: null,
   acknowledged: false,
 };
 
@@ -162,6 +163,27 @@ describe('GET /api/interval-ba-alerts', () => {
     expect(res._status).toBe(500);
     expect(Sentry.captureException).toHaveBeenCalledWith(dbError);
     expect(logger.error).toHaveBeenCalled();
+  });
+
+  it('coalesces null confluence_tickers to empty array', async () => {
+    // Legacy rows pre-Phase-3 surface with confluence_tickers=null in
+    // the raw row; the API should expose them as [] so the frontend
+    // can rely on a stable string[] shape.
+    mockSql.mockResolvedValue([{ ...RAW_ROW, confluence_tickers: null }]);
+    const res = mockResponse();
+    await getHandler(mockRequest({ method: 'GET' }), res);
+    const body = res._json as { alerts: Record<string, unknown>[] };
+    expect(body.alerts[0]!.confluence_tickers).toEqual([]);
+  });
+
+  it('passes through populated confluence_tickers array', async () => {
+    mockSql.mockResolvedValue([
+      { ...RAW_ROW, confluence_tickers: ['QQQ', 'SPY'] },
+    ]);
+    const res = mockResponse();
+    await getHandler(mockRequest({ method: 'GET' }), res);
+    const body = res._json as { alerts: Record<string, unknown>[] };
+    expect(body.alerts[0]!.confluence_tickers).toEqual(['QQQ', 'SPY']);
   });
 
   it('preserves null top_trade_* and underlying_price', async () => {

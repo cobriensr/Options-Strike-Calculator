@@ -28,8 +28,13 @@
  * driver already produces Date instances; we ISO-stringify for
  * stable JSON shape across runtimes).
  *
+ * Each row carries `confluence_tickers: string[]` (Phase 5 of
+ * interval-ba-confluence spec) — partner tickers from the SPY/SPXW/QQQ
+ * trio that fired same-direction within the configured window. Legacy
+ * rows pre-Phase-3 surface as []. See migration #147.
+ *
  * Spec: docs/superpowers/specs/interval-ba-ask-alert-2026-05-12.md
- * Schema: api/_lib/db-migrations.ts migration #144.
+ * Schema: api/_lib/db-migrations.ts migration #144 + #147.
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
@@ -61,6 +66,11 @@ interface IntervalBAAlertRow {
   top_trade_is_sweep: boolean | null;
   top_trade_is_floor: boolean | null;
   underlying_price: number | null;
+  // Phase 5 — partner tickers (SPY/SPXW/QQQ) that fired same-direction
+  // within the confluence window. Empty list for solo fires; null on
+  // legacy rows pre-Phase-3 collapses to []. See migration #147 + the
+  // uw-stream RecentFires registry.
+  confluence_tickers: string[];
   acknowledged: boolean;
   severity: Severity;
 }
@@ -121,6 +131,7 @@ interface RawRow {
   top_trade_is_sweep: boolean | null;
   top_trade_is_floor: boolean | null;
   underlying_price: string | number | null;
+  confluence_tickers: string[] | null;
   acknowledged: boolean;
 }
 
@@ -146,6 +157,7 @@ function shapeRow(r: RawRow): IntervalBAAlertRow {
     top_trade_is_sweep: r.top_trade_is_sweep,
     top_trade_is_floor: r.top_trade_is_floor,
     underlying_price: toNumberOrNull(r.underlying_price),
+    confluence_tickers: r.confluence_tickers ?? [],
     acknowledged: r.acknowledged,
     severity: deriveSeverity(total_premium),
   };
@@ -177,7 +189,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                    ask_premium, total_premium, trade_count,
                    top_trade_premium, top_trade_size, top_trade_executed_at,
                    top_trade_is_sweep, top_trade_is_floor,
-                   underlying_price, acknowledged
+                   underlying_price, confluence_tickers, acknowledged
             FROM interval_ba_alerts
             WHERE fired_at > ${since}
             ORDER BY fired_at DESC
@@ -189,7 +201,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                    ask_premium, total_premium, trade_count,
                    top_trade_premium, top_trade_size, top_trade_executed_at,
                    top_trade_is_sweep, top_trade_is_floor,
-                   underlying_price, acknowledged
+                   underlying_price, confluence_tickers, acknowledged
             FROM interval_ba_alerts
             WHERE expiry = ${today} AND NOT acknowledged
             ORDER BY fired_at DESC
