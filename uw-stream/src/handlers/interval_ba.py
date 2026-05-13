@@ -1,23 +1,36 @@
-"""option_trades:SPXW — raw ticks + Interval B/A ask-side alerts.
+"""option_trades:{SPY,SPXW,QQQ} — raw ticks + Interval B/A ask-side alerts.
 
-Subclasses :class:`OptionTradesHandler` so SPXW ticks continue to flow
+Subclasses :class:`OptionTradesHandler` so option ticks continue to flow
 into ``ws_option_trades`` via the inherited ``_transform`` + ``_flush``.
 On top of that, an in-memory per-contract 5-minute bucket tracks the
 ask-side premium ratio; when a bucket crosses the configured ratio AND
 clears the premium floor, one alert row is queued for ``interval_ba_alerts``.
 
-Why a dedicated SPXW handler:
+Architecture: ``IntervalBAHandler`` is the base class, with one thin
+per-ticker subclass each (``SPYIntervalBAHandler``, ``SPXWIntervalBAHandler``,
+``QQQIntervalBAHandler``) that binds the ticker via class attribute
+``_TICKER``. Each subclass gets its own queue + drain task by virtue of
+being a distinct class (the ``one-instance-per-class`` invariant in
+``main._build_handlers``), so SPY's tick rate can't backpressure SPXW.
+
+Why a dedicated per-ticker handler:
 
 - SPX/SPXW option fills are dominated by mid-side prints because the
   NBBO is wide and most institutional flow is worked between the quote.
-  A ≥70% ask-side reading on a 5-min bucket is structurally rare for
+  A ≥75% ask-side reading on a 5-min bucket is structurally rare for
   SPX/SPXW (unlike single-name tickers where 50-60% ask is normal) and
-  signals real directional conviction.
+  signals real directional conviction. SPY/QQQ behave similarly per the
+  2026-05-13 edge-cuts analysis, so the same 75% / $250K calibration
+  applies to all three.
 - The actionable piece is usually a single dominant sweep that drove
   the ratio. The alert payload surfaces that print (premium, size,
   timestamp, ``is_sweep`` / ``is_floor`` flags) alongside the ratio.
+- Cross-symbol confluence (same-direction fires within 90s across two
+  or more of the three tickers) lifts SPXW CALL hit-rate from 53% solo
+  to 61% — see ``docs/superpowers/specs/interval-ba-confluence-2026-05-13.md``.
 
-See ``docs/superpowers/specs/interval-ba-ask-alert-2026-05-12.md``.
+See ``docs/superpowers/specs/interval-ba-ask-alert-2026-05-12.md`` for
+the original SPXW-only design.
 """
 
 from __future__ import annotations
@@ -82,7 +95,7 @@ _ALERT_CONFLICT_COLS = ["option_chain", "bucket_start"]
 
 @dataclass(slots=True, frozen=True)
 class _Tick:
-    """A single SPXW trade reduced to the fields the bucket needs."""
+    """A single options trade reduced to the fields the bucket needs."""
 
     executed_at: datetime
     premium: Decimal
@@ -92,16 +105,24 @@ class _Tick:
     is_floor: bool
 
 
-class SPXWIntervalBAHandler(OptionTradesHandler):
-    """option_trades:SPXW → raw ticks + interval B/A alerts.
+class IntervalBAHandler(OptionTradesHandler):
+    """Generic Interval B/A handler — one per-ticker subclass per instance.
 
-    Boots as its own handler instance (separate queue, separate drain
-    task) by virtue of being a different class than the base
-    OptionTradesHandler — see ``main._build_handlers`` for the
-    one-instance-per-class invariant. SPXW gets its own queue so its
-    high-volume ticks don't backpressure the alert path against the
-    rest of the lottery universe.
+    Subclasses bind the underlying ticker via class attribute ``_TICKER``
+    (e.g. ``"SPY"``, ``"SPXW"``, ``"QQQ"``). Direct instantiation of this
+    base class is rejected — use ``SPYIntervalBAHandler`` /
+    ``SPXWIntervalBAHandler`` / ``QQQIntervalBAHandler``.
+
+    Each subclass boots as its own handler instance (separate queue,
+    separate drain task) by virtue of being a distinct class — see
+    ``main._build_handlers`` for the one-instance-per-class invariant.
+    A dedicated queue per ticker means SPY's high-volume tick stream
+    cannot backpressure SPXW's alert path, and vice versa.
     """
+
+    # Subclasses MUST set this — empty string here forces a clear
+    # failure if the base class is instantiated directly.
+    _TICKER: str = ""
 
     # Buckets older than this many windows are pruned per-chain on
     # every observe call. 3 = current + previous + one ahead-of-time
@@ -117,10 +138,16 @@ class SPXWIntervalBAHandler(OptionTradesHandler):
     _FIRED_PRUNE_THRESHOLD = 50_000
 
     def __init__(self) -> None:
-        # Pass the SPXW-specific name through so state.channel and
+        if not self._TICKER:
+            raise NotImplementedError(
+                f"{type(self).__name__} must set class attribute _TICKER "
+                "(use one of SPYIntervalBAHandler / SPXWIntervalBAHandler / "
+                "QQQIntervalBAHandler).",
+            )
+        # Pass the per-ticker channel name through so state.channel and
         # Sentry tags don't carry a stray "option_trades" entry left
         # over from the parent's default.
-        super().__init__(name="option_trades:SPXW")
+        super().__init__(name=f"option_trades:{self._TICKER}")
 
         # Per-contract, per-bucket tick storage. Bucketing by epoch
         # makes out-of-order ticks (UW WS reconnect can deliver up to
@@ -141,7 +168,15 @@ class SPXWIntervalBAHandler(OptionTradesHandler):
 
         # Tuning resolved once at construction. Decimal cast preserves
         # exact comparison against premium sums (which are also Decimal).
-        self._enabled = bool(settings.interval_ba_enabled)
+        #
+        # Two gates: master switch (interval_ba_enabled) AND per-ticker
+        # opt-in (this ticker present in interval_ba_tickers). The
+        # per-ticker list lets the operator silence one ticker without
+        # touching code if its signal degrades — the handler still boots
+        # (registered in channel_registry) but writes nothing to the DB.
+        master_on = bool(settings.interval_ba_enabled)
+        ticker_on = self._TICKER in settings.interval_ba_tickers
+        self._enabled = master_on and ticker_on
         self._ratio_threshold = Decimal(
             str(settings.interval_ba_ratio_threshold),
         )
@@ -179,10 +214,11 @@ class SPXWIntervalBAHandler(OptionTradesHandler):
     def _observe(self, payload: dict, row: tuple) -> None:
         """Update rolling state for one tick; queue alert if it fires."""
         ticker = row[_C["ticker"]]
-        if ticker != "SPXW":
-            # Defensive — this handler is only registered for
-            # option_trades:SPXW, but a future routing change must not
-            # silently start computing ratios on the wrong universe.
+        if ticker != self._TICKER:
+            # Defensive — each subclass is only registered for one
+            # option_trades:<TICKER> channel, but a future routing change
+            # must not silently start computing ratios on the wrong
+            # universe (e.g. SPY ticks landing on the SPXW handler).
             return
 
         executed_at: datetime = row[_C["executed_at"]]
@@ -205,11 +241,11 @@ class SPXWIntervalBAHandler(OptionTradesHandler):
         chain_buckets = self._ticks.setdefault(chain, {})
         bucket = chain_buckets.setdefault(bucket_start_epoch, deque())
 
-        # Build the tick. SPXW is a 100-multiplier contract: premium =
-        # price * size * 100. UW also publishes a `premium` field but
-        # it's a string and not always present on the WS payload —
-        # computing it locally from the typed row keeps us source of
-        # truth and avoids string→Decimal parsing twice per tick.
+        # Build the tick. SPY/SPXW/QQQ all use the standard 100x options
+        # multiplier: premium = price * size * 100. UW also publishes a
+        # `premium` field but it's a string and not always present on the
+        # WS payload — computing it locally from the typed row keeps us
+        # source of truth and avoids string→Decimal parsing twice per tick.
         price: Decimal = row[_C["price"]]
         size: int = row[_C["size"]]
         tags = payload.get("tags") if isinstance(payload, dict) else None
@@ -419,3 +455,34 @@ def _ct_date_from_utc(ts: datetime) -> date:
 def _has_tag(tags: Any, name: str) -> bool:
     """True iff ``name`` is a string entry in the ``tags`` list."""
     return isinstance(tags, list) and name in tags
+
+
+# ----------------------------------------------------------------------
+# Per-ticker subclasses — one class per option_trades:<TICKER> channel.
+# Each binds the ticker via _TICKER. channel_registry maps the channel
+# string to the subclass; main._build_handlers' one-instance-per-class
+# invariant then gives each ticker its own queue + drain task.
+# ----------------------------------------------------------------------
+
+
+class SPYIntervalBAHandler(IntervalBAHandler):
+    """option_trades:SPY → SPY raw ticks + interval B/A alerts."""
+
+    _TICKER = "SPY"
+
+
+class SPXWIntervalBAHandler(IntervalBAHandler):
+    """option_trades:SPXW → SPXW raw ticks + interval B/A alerts.
+
+    The original SPXW-only implementation lives here as a thin subclass
+    of :class:`IntervalBAHandler`. All tests / channel_registry imports
+    still reference this name unchanged.
+    """
+
+    _TICKER = "SPXW"
+
+
+class QQQIntervalBAHandler(IntervalBAHandler):
+    """option_trades:QQQ → QQQ raw ticks + interval B/A alerts."""
+
+    _TICKER = "QQQ"

@@ -20,7 +20,10 @@ import pytest
 
 from handlers.interval_ba import (
     _ALERT_COLUMNS,
+    IntervalBAHandler,
+    QQQIntervalBAHandler,
     SPXWIntervalBAHandler,
+    SPYIntervalBAHandler,
     _ct_date_from_utc,
     _has_tag,
 )
@@ -718,6 +721,14 @@ class TestBucketFloor:
 
 
 class TestChannelRouting:
+    def test_spy_routes_to_interval_ba_handler(self):
+        from channel_registry import handler_class_for_channel
+        from handlers.option_trades import OptionTradesHandler
+
+        cls = handler_class_for_channel("option_trades:SPY")
+        assert cls is SPYIntervalBAHandler
+        assert issubclass(cls, OptionTradesHandler)
+
     def test_spxw_routes_to_interval_ba_handler(self):
         from channel_registry import handler_class_for_channel
         from handlers.option_trades import OptionTradesHandler
@@ -728,23 +739,39 @@ class TestChannelRouting:
         # chain that supplies raw-tick writes is intact.
         assert issubclass(cls, OptionTradesHandler)
 
-    def test_other_option_trades_tickers_still_use_base(self):
+    def test_qqq_routes_to_interval_ba_handler(self):
         from channel_registry import handler_class_for_channel
         from handlers.option_trades import OptionTradesHandler
 
-        for ticker in ("TSLA", "AAPL", "NVDA", "SPY", "IWM"):
+        cls = handler_class_for_channel("option_trades:QQQ")
+        assert cls is QQQIntervalBAHandler
+        assert issubclass(cls, OptionTradesHandler)
+
+    def test_other_option_trades_tickers_still_use_base(self):
+        """Single-name tickers (not the SPY/SPXW/QQQ trio) route to the
+        base OptionTradesHandler — raw-tick capture only, no alerting."""
+        from channel_registry import handler_class_for_channel
+        from handlers.option_trades import OptionTradesHandler
+
+        for ticker in ("TSLA", "AAPL", "NVDA", "IWM"):
             cls = handler_class_for_channel(f"option_trades:{ticker}")
             assert cls is OptionTradesHandler, (
                 f"option_trades:{ticker} should map to OptionTradesHandler, "
                 f"got {cls.__name__}"
             )
 
-    def test_spxw_channel_token_is_known(self):
-        """Registered as exact, so Settings._validate_channels_known
-        accepts the bare token without exercising the prefix path."""
+    def test_all_three_interval_ba_channel_tokens_are_known(self):
+        """Each of the three is registered exact, so
+        Settings._validate_channels_known accepts the bare tokens
+        without exercising the prefix path."""
         from channel_registry import is_known_channel_token
 
-        assert is_known_channel_token("option_trades:SPXW")
+        for tok in (
+            "option_trades:SPY",
+            "option_trades:SPXW",
+            "option_trades:QQQ",
+        ):
+            assert is_known_channel_token(tok), tok
 
 
 # ----------------------------------------------------------------------
@@ -905,3 +932,166 @@ class TestObserveSwallow:
 
         raw_idx = {n: i for i, n in enumerate(_RAW_COLS)}
         assert row[raw_idx["option_chain"]] == "SPXW260512C07360000"
+
+
+# ----------------------------------------------------------------------
+# Per-ticker subclasses — SPY and QQQ smoke tests. The full alert-logic
+# matrix is exercised against SPXW above; these confirm that swapping
+# in a different _TICKER subclass:
+#   - rejects ticks from the other two tickers (defensive filter)
+#   - fires when its own ticker's ticks cross the same gates
+#   - includes the right ticker string in the alert row
+# ----------------------------------------------------------------------
+
+
+class TestSubclassFiltering:
+    @pytest.mark.parametrize(
+        "subclass,foreign_chain",
+        [
+            (SPYIntervalBAHandler, "SPXW260512C07360000"),
+            (QQQIntervalBAHandler, "SPY260512C00580000"),
+        ],
+    )
+    def test_subclass_ignores_other_ticker_ticks(
+        self, base_payload, subclass, foreign_chain,
+    ):
+        """A SPY handler must drop SPXW ticks (and vice versa) silently."""
+        h = subclass()
+        h._transform(
+            _payload(
+                base_payload,
+                underlying_symbol="SPXW",  # foreign for both SPY + QQQ
+                chain=foreign_chain,
+                executed_at_ms=_BUCKET_ANCHOR_MS + 80_000,
+                price="5.00",
+                size=2000,
+            ),
+        )
+        assert h._pending_alerts == []
+
+    def test_spy_subclass_fires_on_spy_ticks(self, base_payload):
+        """SPY handler fires on SPY 0DTE ask-side flow that clears both gates.
+
+        SPY 0DTE strike layout differs from SPXW (3-digit underlying so
+        OCC strikes are 5-digit ×1000), but the handler is ticker-agnostic
+        below the filter — same ratio + premium-floor logic applies.
+        """
+        h = SPYIntervalBAHandler()
+        h._transform(
+            _payload(
+                base_payload,
+                underlying_symbol="SPY",
+                chain="SPY260512C00580000",  # SPY $580 call, 0DTE
+                executed_at_ms=_BUCKET_ANCHOR_MS + 80_000,
+                price="2.50",
+                size=1200,  # → $300,000 premium → above floor
+                tags=["ask_side", "bullish", "sweep"],
+            ),
+        )
+        assert len(h._pending_alerts) == 1
+        alert = h._pending_alerts[0]
+        assert alert[_AI["ticker"]] == "SPY"
+        assert alert[_AI["option_chain"]] == "SPY260512C00580000"
+        assert alert[_AI["ratio_pct"]] == Decimal("100.00")
+
+    def test_qqq_subclass_fires_on_qqq_ticks(self, base_payload):
+        """QQQ handler fires on QQQ 0DTE ask-side flow."""
+        h = QQQIntervalBAHandler()
+        h._transform(
+            _payload(
+                base_payload,
+                underlying_symbol="QQQ",
+                chain="QQQ260512P00510000",
+                executed_at_ms=_BUCKET_ANCHOR_MS + 80_000,
+                price="2.00",
+                size=1400,  # → $280,000 premium
+                tags=["ask_side", "bearish"],
+            ),
+        )
+        assert len(h._pending_alerts) == 1
+        alert = h._pending_alerts[0]
+        assert alert[_AI["ticker"]] == "QQQ"
+        assert alert[_AI["option_type"]] == "P"
+
+
+class TestBaseClassGuard:
+    def test_base_class_cannot_be_instantiated(self):
+        """Bare IntervalBAHandler() must fail loudly — _TICKER is unset."""
+        with pytest.raises(NotImplementedError, match="_TICKER"):
+            IntervalBAHandler()
+
+
+# ----------------------------------------------------------------------
+# Per-ticker enable gate — handler._enabled flips based on both the
+# master interval_ba_enabled flag AND the per-ticker opt-in list. This
+# is the new load-bearing config knob added in Phase 2; without test
+# coverage a regression here would silently re-enable a ticker the
+# operator tried to disable (or vice versa).
+# ----------------------------------------------------------------------
+
+
+class TestTickerGate:
+    def test_property_uppercases_and_trims_and_drops_empties(self, monkeypatch):
+        """``spy, spxw ,,`` normalizes to {"SPY","SPXW"}."""
+        from config import settings
+
+        monkeypatch.setattr(settings, "interval_ba_tickers_csv", "spy, spxw ,,")
+        assert settings.interval_ba_tickers == frozenset({"SPY", "SPXW"})
+
+    def test_property_empty_string_returns_empty_set(self, monkeypatch):
+        from config import settings
+
+        monkeypatch.setattr(settings, "interval_ba_tickers_csv", "")
+        assert settings.interval_ba_tickers == frozenset()
+
+    def test_master_off_disables_every_subclass(self, monkeypatch):
+        """Master switch wins even when ticker is in the opt-in list."""
+        from config import settings
+
+        monkeypatch.setattr(settings, "interval_ba_enabled", False)
+        monkeypatch.setattr(
+            settings, "interval_ba_tickers_csv", "SPY,SPXW,QQQ",
+        )
+        for subclass in (
+            SPYIntervalBAHandler,
+            SPXWIntervalBAHandler,
+            QQQIntervalBAHandler,
+        ):
+            assert subclass()._enabled is False, subclass.__name__
+
+    def test_ticker_opt_in_filters_subclasses(self, monkeypatch):
+        """Only SPXW is in the list → only SPXW handler is enabled."""
+        from config import settings
+
+        monkeypatch.setattr(settings, "interval_ba_enabled", True)
+        monkeypatch.setattr(settings, "interval_ba_tickers_csv", "SPXW")
+        assert SPYIntervalBAHandler()._enabled is False
+        assert SPXWIntervalBAHandler()._enabled is True
+        assert QQQIntervalBAHandler()._enabled is False
+
+    def test_lowercase_env_value_still_matches_uppercase_ticker(
+        self, monkeypatch,
+    ):
+        """Operator typing ``spy,spxw`` (lowercase) still enables them."""
+        from config import settings
+
+        monkeypatch.setattr(settings, "interval_ba_enabled", True)
+        monkeypatch.setattr(settings, "interval_ba_tickers_csv", "spy,spxw")
+        assert SPYIntervalBAHandler()._enabled is True
+        assert SPXWIntervalBAHandler()._enabled is True
+        assert QQQIntervalBAHandler()._enabled is False
+
+    def test_empty_ticker_list_disables_all_even_with_master_on(
+        self, monkeypatch,
+    ):
+        """Master on but ticker list empty → all three disabled."""
+        from config import settings
+
+        monkeypatch.setattr(settings, "interval_ba_enabled", True)
+        monkeypatch.setattr(settings, "interval_ba_tickers_csv", "")
+        for subclass in (
+            SPYIntervalBAHandler,
+            SPXWIntervalBAHandler,
+            QQQIntervalBAHandler,
+        ):
+            assert subclass()._enabled is False, subclass.__name__

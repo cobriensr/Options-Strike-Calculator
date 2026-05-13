@@ -112,6 +112,14 @@ class Settings(BaseSettings):
     interval_ba_premium_floor: int = 250_000
     interval_ba_window_sec: int = 300
 
+    # Per-ticker opt-in. Each handler (SPY/SPXW/QQQ) gates its DB+push
+    # path on its ticker being present here. Defaults to all three;
+    # operator can silence one (e.g. drop "QQQ") via the env var
+    # INTERVAL_BA_TICKERS=SPY,SPXW without a code change. Stored as a
+    # comma-separated string + parsed via the ``interval_ba_tickers``
+    # property so the env shape matches ws_channels' convention.
+    interval_ba_tickers_csv: str = "SPY,SPXW,QQQ"
+
     # Web Push v2 (see docs/superpowers/specs/interval-ba-push-v2-2026-05-12.md).
     # Both default empty → notify_alert no-ops, mirroring the Phase 1
     # interval_ba_enabled pattern. Activate by setting both env vars on
@@ -233,6 +241,20 @@ class Settings(BaseSettings):
                 seen.add(ch)
                 out.append(ch)
         return out
+
+    @property
+    def interval_ba_tickers(self) -> frozenset[str]:
+        """Parse interval_ba_tickers_csv into a deduped, trimmed set.
+
+        Each handler subclass checks membership at construction; an
+        empty / malformed env var silences every handler instance (the
+        master ``interval_ba_enabled`` switch is the explicit kill).
+        """
+        return frozenset(
+            t.strip().upper()
+            for t in self.interval_ba_tickers_csv.split(",")
+            if t.strip()
+        )
 
     @property
     def ws_url(self) -> str:

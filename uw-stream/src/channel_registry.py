@@ -105,7 +105,11 @@ def handler_class_for_channel(channel: str) -> type[Handler]:
     """
     from handlers.flow_alerts import FlowAlertsHandler
     from handlers.gex_strike_expiry import GexStrikeExpiryHandler
-    from handlers.interval_ba import SPXWIntervalBAHandler
+    from handlers.interval_ba import (
+        QQQIntervalBAHandler,
+        SPXWIntervalBAHandler,
+        SPYIntervalBAHandler,
+    )
     from handlers.net_flow import NetFlowHandler
     from handlers.off_lit_trades import OffLitTradesHandler
     from handlers.option_trades import OptionTradesHandler
@@ -113,13 +117,16 @@ def handler_class_for_channel(channel: str) -> type[Handler]:
     exact: dict[str, type[Handler]] = {
         "flow-alerts": FlowAlertsHandler,
         "off_lit_trades": OffLitTradesHandler,
-        # option_trades:SPXW gets a dedicated subclass that inherits
-        # the raw-tick write path from OptionTradesHandler AND emits
-        # Interval B/A ask-side alerts into interval_ba_alerts. See
-        # docs/superpowers/specs/interval-ba-ask-alert-2026-05-12.md.
+        # option_trades:{SPY,SPXW,QQQ} each get a dedicated subclass that
+        # inherits the raw-tick write path from OptionTradesHandler AND
+        # emits Interval B/A ask-side alerts into interval_ba_alerts. See
+        # docs/superpowers/specs/interval-ba-ask-alert-2026-05-12.md +
+        # docs/superpowers/specs/interval-ba-confluence-2026-05-13.md.
         # Listed exact so the option_trades: prefix below does NOT
-        # short-circuit to the base class.
+        # short-circuit to the base class for these three.
+        "option_trades:SPY": SPYIntervalBAHandler,
         "option_trades:SPXW": SPXWIntervalBAHandler,
+        "option_trades:QQQ": QQQIntervalBAHandler,
     }
     if channel in exact:
         return exact[channel]
