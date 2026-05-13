@@ -294,11 +294,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // labels, and the auto-playbook fired Claude reads on them — burning
   // ~$50 of API spend on stale UW panel data. Two layered checks
   // prevent recurrence:
-  //   1. `capturedAt` wall-clock CT must be inside [08:30, 15:00] —
-  //      catches stale-clock captures regardless of slot label
+  //   1. `capturedAt` wall-clock CT must be inside [08:30, 15:15] —
+  //      catches stale-clock captures regardless of slot label. The
+  //      upper bound includes a 15-minute post-close tail because the
+  //      LAST_ANALYZABLE_SLOT ("14:50 - 15:00") is, by definition,
+  //      captured AFTER 15:00 CT — the chart only labels that slot
+  //      once the boundary has passed, so the scraper's next tick at
+  //      ~15:05-15:10 CT is what observes it. A strict 15:00 ceiling
+  //      rejected every debrief from 2026-05-08 onward (the user
+  //      caught it 2026-05-13 — Mon/Tue/Wed all showed debrief=0).
   //   2. The slot label's END time must agree with `capturedAt` CT
   //      within ±10 min — catches misalignment between when the
-  //      scraper ran and what UW's panel was actually showing
+  //      scraper ran and what UW's panel was actually showing. This
+  //      already independently blocks the original stale-scrape case,
+  //      so widening the wall-clock window doesn't reopen the hole.
   const capturedAtDate = new Date(body.capturedAt);
   if (Number.isNaN(capturedAtDate.getTime())) {
     done({ status: 400, error: 'bad_captured_at' });
@@ -310,10 +319,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const capturedMin = capturedCt.hour * 60 + capturedCt.minute;
   const isWeekend =
     capturedCt.weekday === 'Sat' || capturedCt.weekday === 'Sun';
-  if (isWeekend || capturedMin < 8 * 60 + 30 || capturedMin > 15 * 60) {
+  // 15:15 CT = 915 min. Allows the debrief slot's natural ~10-min
+  // post-close capture lag without admitting next-day off-hours scrapes
+  // (which would still be caught by the slot-label-end ±10min check).
+  if (isWeekend || capturedMin < 8 * 60 + 30 || capturedMin > 15 * 60 + 15) {
     done({ status: 422 });
     return res.status(422).json({
-      error: `capturedAt CT wall-clock ${capturedCt.hour}:${String(capturedCt.minute).padStart(2, '0')} is outside RTH (08:30-15:00 CT, Mon-Fri)`,
+      error: `capturedAt CT wall-clock ${capturedCt.hour}:${String(capturedCt.minute).padStart(2, '0')} is outside RTH (08:30-15:15 CT, Mon-Fri)`,
       slotKey: body.slotKey,
       capturedAt: body.capturedAt,
     });

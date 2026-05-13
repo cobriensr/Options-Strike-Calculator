@@ -372,6 +372,39 @@ describe('periscope-auto-playbook handler — RTH guard', () => {
     await handler(req as never, res as never);
     expect(res._status).not.toBe(422);
   });
+
+  it('passes for 14:50-15:00 debrief captured at 15:10 CT (natural lag)', async () => {
+    // The LAST_ANALYZABLE_SLOT ("14:50 - 15:00") only gets labeled by
+    // UW once the boundary has passed, so the scraper's first capture
+    // of it is the 15:10 tick. The pre-2026-05-13 strict 15:00 ceiling
+    // rejected this and zeroed out 3 consecutive trading days of
+    // debriefs (5/8, 5/11, 5/12). The bound is now 15:15.
+    const req = postReq({
+      body: {
+        ...VALID_BODY,
+        capturedAt: '2026-05-12T20:10:00.000Z', // 15:10 CDT
+        slotKey: '14:50 - 15:00',
+      },
+      headers: authHeaders(),
+    });
+    const res = mockResponse();
+    await handler(req as never, res as never);
+    expect(res._status).not.toBe(422);
+  });
+
+  it('still rejects at 15:16 CT (just past the widened ceiling)', async () => {
+    const req = postReq({
+      body: {
+        ...VALID_BODY,
+        capturedAt: '2026-05-12T20:16:00.000Z', // 15:16 CDT
+        slotKey: '14:50 - 15:00',
+      },
+      headers: authHeaders(),
+    });
+    const res = mockResponse();
+    await handler(req as never, res as never);
+    expect(res._status).toBe(422);
+  });
 });
 
 describe('periscope-auto-playbook handler — mode derivation', () => {
