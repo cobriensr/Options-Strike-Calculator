@@ -4324,4 +4324,16 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 146,
+    description:
+      'Add multi_leg_share NUMERIC column to silent_boom_alerts (spec: docs/superpowers/specs/silent-boom-ask-100-demote-2026-05-12.md). Stores the fraction of spike-bucket size whose UW trade_code is one of mlat/mlet/mlft/mfto/masl/mesl/mfsl/mctr — the OPRA-standard multi-leg sale condition codes. The detector now rejects buckets whose multi_leg_share ≥ 0.50 outright so spread-leg-dominated prints never enter the table; surviving rows carry the share for tooltip display + analytical drill-down. Empirical basis: scripts/analyze_silent_boom_multileg.py 2026-05-12, showing multi-leg fires win > 100% at 3× lower rate than single-leg fires in every ask% band (95-99% control: 3.8% vs 11.7%). Nullable because rows written before this migration have no attribution available (ws_option_trades retention is 7d); the backfill script populates where parquet data is available, otherwise leaves NULL.',
+    statements: (sql) => [
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS multi_leg_share NUMERIC`,
+      sql`CREATE INDEX IF NOT EXISTS silent_boom_alerts_ml_share_idx
+            ON silent_boom_alerts (multi_leg_share)
+            WHERE multi_leg_share IS NOT NULL`,
+    ],
+  },
 ];

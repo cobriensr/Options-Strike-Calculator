@@ -63,10 +63,24 @@ interface BucketRow {
   size: DbNumeric;
   ask_size: DbNumeric;
   bid_size: DbNumeric;
+  multi_leg_size: DbNumeric;
   notional: DbNumeric;
   bucket_max_oi: number | null;
   last_price: DbNumeric;
 }
+
+/** OPRA-standard multi-leg sale condition codes — drop buckets whose
+ *  size is dominated by these (spec: silent-boom-ask-100-demote-2026-05-12). */
+const MULTI_LEG_TRADE_CODES = [
+  'mlat',
+  'mlet',
+  'mlft',
+  'mfto',
+  'masl',
+  'mesl',
+  'mfsl',
+  'mctr',
+] as const;
 
 interface ChainGroupBuilder {
   ticker: string;
@@ -137,6 +151,9 @@ export default withCronInstrumentation(
         SUM(size) AS size,
         COALESCE(SUM(size) FILTER (WHERE side = 'ask'), 0) AS ask_size,
         COALESCE(SUM(size) FILTER (WHERE side = 'bid'), 0) AS bid_size,
+        COALESCE(SUM(size) FILTER (
+          WHERE raw_payload->>'trade_code' = ANY(${MULTI_LEG_TRADE_CODES as unknown as string[]}::text[])
+        ), 0) AS multi_leg_size,
         SUM(price * size) AS notional,
         MAX(open_interest) AS bucket_max_oi,
         (ARRAY_AGG(price ORDER BY executed_at DESC))[1] AS last_price
@@ -189,6 +206,7 @@ export default withCronInstrumentation(
         size,
         askSize: Number(r.ask_size),
         bidSize: Number(r.bid_size),
+        multiLegSize: Number(r.multi_leg_size),
         maxOi: 0, // patched below once chain-level max is known
         vwap: size > 0 ? notional / size : 0,
         lastPrice: Number(r.last_price),
@@ -356,7 +374,8 @@ export default withCronInstrumentation(
             spike_volume, baseline_volume, spike_ratio,
             ask_pct, vol_oi, entry_price, open_interest,
             score, score_tier,
-            mkt_tide_diff, zero_dte_diff, spx_spot_gamma_oi
+            mkt_tide_diff, zero_dte_diff, spx_spot_gamma_oi,
+            multi_leg_share
           ) VALUES (
             ${ctx.today}::date, ${f.bucketTs.toISOString()},
             ${g.optionChain}, ${g.ticker},
@@ -364,7 +383,8 @@ export default withCronInstrumentation(
             ${f.spikeVolume}, ${f.baselineVolume}, ${f.spikeRatio},
             ${f.askPct}, ${f.volOi}, ${f.entryPrice}, ${f.openInterest},
             ${score}, ${tier},
-            ${mktTideDiff}, ${zeroDteDiff}, ${spxSpotGammaOi}
+            ${mktTideDiff}, ${zeroDteDiff}, ${spxSpotGammaOi},
+            ${f.multiLegShare}
           )
           ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING
           RETURNING id

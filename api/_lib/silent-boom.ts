@@ -42,6 +42,15 @@ export const SILENT_BOOM_SPEC_V1 = Object.freeze({
   cooldownBuckets: 12,
   /** Minimum OI for the chain to be considered. */
   minOi: 100,
+  /** Max multi-leg size share of the spike bucket. Buckets at or above
+   *  this threshold are rejected — they're dominated by spread-leg
+   *  routing (mlat/mlet/etc. trade codes) and carry no directional
+   *  thesis. Empirical basis: scripts/analyze_silent_boom_multileg.py
+   *  2026-05-12 — multi-leg fires win > 100% at 3× lower rate than
+   *  single-leg in every ask% band. Distribution is bimodal at ~0%
+   *  and ~100%, so 0.5 is a clean separator. Spec:
+   *  docs/superpowers/specs/silent-boom-ask-100-demote-2026-05-12.md */
+  multiLegShareMax: 0.5,
 } as const);
 
 /** Bucket size in milliseconds (5 minutes). */
@@ -66,6 +75,11 @@ export interface ChainBucket {
   askSize: number;
   /** Bid-side contracts in this bucket. */
   bidSize: number;
+  /** Multi-leg contracts in this bucket — sum of size whose UW
+   *  trade_code is one of mlat/mlet/mlft/mfto/masl/mesl/mfsl/mctr
+   *  (OPRA-standard multi-leg sale conditions). Caller aggregates
+   *  from ws_option_trades.raw_payload->>'trade_code'. */
+  multiLegSize: number;
   /** Max OI snapshot seen during the bucket (or earlier on this chain). */
   maxOi: number;
   /** Volume-weighted average price for the bucket. */
@@ -92,6 +106,10 @@ export interface SilentBoomFire {
   entryPrice: number;
   /** Max OI seen for chain at the spike bucket. */
   openInterest: number;
+  /** Fraction of spike-bucket size that came from multi-leg trades
+   *  (per UW trade_code). Always < multiLegShareMax — buckets at or
+   *  above the threshold were rejected before this fire was emitted. */
+  multiLegShare: number;
 }
 
 // ============================================================
@@ -122,6 +140,7 @@ export function detectSilentBoomFires(
     volOiMin,
     cooldownBuckets,
     minOi,
+    multiLegShareMax,
   } = SILENT_BOOM_SPEC_V1;
 
   if (buckets.length < baselineBuckets + 1) return [];
@@ -163,6 +182,11 @@ export function detectSilentBoomFires(
     const volOi = cur.size / cur.maxOi;
     if (volOi < volOiMin) continue;
 
+    // Multi-leg drop. Spread-leg-dominated buckets carry no directional
+    // thesis even when they print ask-heavy.
+    const multiLegShare = cur.size > 0 ? cur.multiLegSize / cur.size : 0;
+    if (multiLegShare >= multiLegShareMax) continue;
+
     const entry =
       Number.isFinite(cur.vwap) && cur.vwap > 0 ? cur.vwap : cur.lastPrice;
     if (entry <= 0) continue;
@@ -176,6 +200,7 @@ export function detectSilentBoomFires(
       volOi,
       entryPrice: entry,
       openInterest: cur.maxOi,
+      multiLegShare,
     });
     lastFireMs = tsMs;
   }

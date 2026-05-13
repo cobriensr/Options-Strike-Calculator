@@ -22,6 +22,7 @@ function makeBucket(
     size: 100,
     askSize: 60,
     bidSize: 40,
+    multiLegSize: 0,
     maxOi: 5_000,
     vwap: 0.1,
     lastPrice: 0.1,
@@ -60,6 +61,7 @@ describe('detectSilentBoomFires', () => {
     expect(f.volOi).toBeCloseTo(2000 / 5000, 6);
     expect(f.entryPrice).toBe(0.1);
     expect(f.openInterest).toBe(5_000);
+    expect(f.multiLegShare).toBe(0);
   });
 
   it('returns no fires when fewer than baseline+1 buckets exist', () => {
@@ -144,6 +146,28 @@ describe('detectSilentBoomFires', () => {
     seq[4]!.vwap = 0;
     seq[4]!.lastPrice = 0;
     expect(detectSilentBoomFires(seq)).toHaveLength(0);
+  });
+
+  it('rejects when multi-leg share meets or exceeds threshold', () => {
+    const seq = fireableSequence();
+    // 1000 of 2000 = 0.5 — at the floor, gate uses ≥.
+    seq[4]!.multiLegSize = 1_000;
+    expect(detectSilentBoomFires(seq)).toHaveLength(0);
+  });
+
+  it('rejects when multi-leg share dominates (100%)', () => {
+    const seq = fireableSequence();
+    seq[4]!.multiLegSize = 2_000;
+    expect(detectSilentBoomFires(seq)).toHaveLength(0);
+  });
+
+  it('accepts when multi-leg share is below threshold', () => {
+    const seq = fireableSequence();
+    // 800 of 2000 = 0.4 — below the 0.5 floor.
+    seq[4]!.multiLegSize = 800;
+    const fires = detectSilentBoomFires(seq);
+    expect(fires).toHaveLength(1);
+    expect(fires[0]!.multiLegShare).toBeCloseTo(0.4, 6);
   });
 });
 

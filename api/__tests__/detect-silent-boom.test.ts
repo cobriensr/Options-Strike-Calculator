@@ -46,6 +46,7 @@ interface BucketOverrides {
   size?: number;
   askSize?: number;
   bidSize?: number;
+  multiLegSize?: number;
   vwap?: number;
   lastPrice?: number;
   bucketMaxOi?: number | null;
@@ -72,6 +73,7 @@ function bucketRow(
     size,
     ask_size: overrides.askSize ?? size, // default: all ask-side
     bid_size: overrides.bidSize ?? 0,
+    multi_leg_size: overrides.multiLegSize ?? 0,
     notional: vwap * size,
     bucket_max_oi:
       overrides.bucketMaxOi === undefined ? 5000 : overrides.bucketMaxOi,
@@ -312,14 +314,17 @@ describe('detect-silent-boom handler', () => {
     expect(res._status).toBe(200);
     expect(mockSql).toHaveBeenCalledTimes(6);
     // INSERT is the last call. Bound order ends with mkt_tide_diff,
-    // zero_dte_diff, spx_spot_gamma_oi.
+    // zero_dte_diff, spx_spot_gamma_oi, multi_leg_share.
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    const spxGamma = insertCall.at(-1);
-    const zeroDteDiff = insertCall.at(-2);
-    const tideDiff = insertCall.at(-3);
+    const multiLegShare = insertCall.at(-1);
+    const spxGamma = insertCall.at(-2);
+    const zeroDteDiff = insertCall.at(-3);
+    const tideDiff = insertCall.at(-4);
     expect(tideDiff).toBe(6000);
     expect(zeroDteDiff).toBe(300);
     expect(spxGamma).toBe(12345);
+    // Single-leg-only stream: multi_leg_size=0 → share=0.
+    expect(multiLegShare).toBe(0);
   });
 
   it('binds null tide diff when the latest tick is older than 30 minutes', async () => {
@@ -348,11 +353,13 @@ describe('detect-silent-boom handler', () => {
     await handler(req, res);
 
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    // All three macro fields are bound at the end; all three should
-    // be null because every tick was stale.
-    expect(insertCall.at(-1)).toBeNull();
+    // multi_leg_share trails the three macro fields. Single-leg stream
+    // → multi_leg_share = 0; all three macro fields should be null
+    // because every tick was stale.
+    expect(insertCall.at(-1)).toBe(0);
     expect(insertCall.at(-2)).toBeNull();
     expect(insertCall.at(-3)).toBeNull();
+    expect(insertCall.at(-4)).toBeNull();
   });
 
   it('still fires when prior-fire is older than the 60-min cooldown', async () => {
