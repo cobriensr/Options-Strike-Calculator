@@ -45,7 +45,7 @@ vi.mock('../_lib/logger.js', () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
 }));
 
-import handler from '../gex-strike-expiry.js';
+import handler, { _resetCacheForTests } from '../gex-strike-expiry.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
 import { _resetTimestampsCache } from '../_lib/db-gex-strike-expiry.js';
@@ -146,7 +146,11 @@ beforeEach(() => {
   // Per-test cache clear — getTimestampsForDay caches across calls,
   // so a cached entry from a prior test would short-circuit the
   // mockSql sequence and silently desynchronize the next assertion.
+  // The endpoint-level response cache (per-function-instance dedup +
+  // stale-on-error) needs the same treatment — otherwise the second
+  // test for the same (ticker, expiry) key returns a cached body.
   _resetTimestampsCache();
+  _resetCacheForTests();
 });
 
 describe('GET /api/gex-strike-expiry', () => {
@@ -588,13 +592,12 @@ describe('GET /api/gex-strike-expiry', () => {
   // load on the high-cadence panel poll. A second request with the
   // same (ticker, expiry) within the window must NOT re-issue the
   // timestamps query.
-  it('serves the second request from the timestamps cache (skips redundant SQL)', async () => {
-    // Request 1: both queries fire.
+  it('serves the second request from the response cache (skips all SQL)', async () => {
+    // Request 1: both queries fire. Request 2 hits the per-instance
+    // response cache (LIVE_TTL_MS = 15s) — zero additional SQL.
     mockSql
       .mockResolvedValueOnce([fakeRow(722, '2026-05-01T20:14:00Z')])
-      .mockResolvedValueOnce([{ ts_minute: '2026-05-01T20:14:00Z' }])
-      // Request 2: only the strikes query — timestamps comes from cache.
-      .mockResolvedValueOnce([fakeRow(723, '2026-05-01T20:15:00Z')]);
+      .mockResolvedValueOnce([{ ts_minute: '2026-05-01T20:14:00Z' }]);
 
     const baseQuery = { ticker: 'SPY', expiry: '2026-05-01' };
     const res1 = mockResponse();
@@ -604,10 +607,10 @@ describe('GET /api/gex-strike-expiry', () => {
 
     expect(res1._status).toBe(200);
     expect(res2._status).toBe(200);
-    // 2 SQL calls for request 1 + 1 for request 2 = 3 total. Without
-    // the cache it would be 4.
-    expect(mockSql).toHaveBeenCalledTimes(3);
-    // Both responses surface the same timestamps payload.
+    // 2 SQL calls for request 1 + 0 for request 2 = 2 total. Without
+    // either cache it would be 4.
+    expect(mockSql).toHaveBeenCalledTimes(2);
+    // Both responses surface the same payload (same cached entry).
     expect((res2._json as { timestamps: string[] }).timestamps).toEqual([
       '2026-05-01T20:14:00.000Z',
     ]);

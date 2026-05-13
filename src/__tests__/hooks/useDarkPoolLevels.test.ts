@@ -309,7 +309,7 @@ describe('useDarkPoolLevels: gating', () => {
 // ============================================================
 
 describe('useDarkPoolLevels: error handling', () => {
-  it('sets error on non-ok response (not 401)', async () => {
+  it('sets error on non-ok response after FAIL_GRACE_COUNT consecutive misses', async () => {
     mockFetch.mockResolvedValue({
       ok: false,
       status: 500,
@@ -318,6 +318,14 @@ describe('useDarkPoolLevels: error handling', () => {
 
     const { result } = renderHook(() => useDarkPoolLevels(true));
 
+    // First miss is swallowed by the grace count — banner stays quiet.
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBeNull();
+
+    // Trigger a second poll → counter reaches FAIL_GRACE_COUNT.
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.DARK_POOL);
+    });
     await waitFor(() =>
       expect(result.current.error).toBe('Failed to load dark pool data'),
     );
@@ -337,15 +345,29 @@ describe('useDarkPoolLevels: error handling', () => {
     expect(result.current.error).toBeNull();
   });
 
-  it('sets error on network failure', async () => {
+  it('sets error on network failure after FAIL_GRACE_COUNT consecutive misses', async () => {
     mockFetch.mockRejectedValue(new Error('Network error'));
 
     const { result } = renderHook(() => useDarkPoolLevels(true));
 
+    // First failure swallowed.
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBeNull();
+
+    // Second consecutive failure → error surfaces.
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.DARK_POOL);
+    });
     await waitFor(() => expect(result.current.error).toBe('Network error'));
   });
 
   it('clears error on successful subsequent fetch', async () => {
+    // Two consecutive failures first to actually surface the error.
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: async () => ({ error: 'fail' }),
+    });
     mockFetch.mockResolvedValueOnce({
       ok: false,
       status: 500,
@@ -353,7 +375,10 @@ describe('useDarkPoolLevels: error handling', () => {
     });
 
     const { result } = renderHook(() => useDarkPoolLevels(true));
-
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.DARK_POOL);
+    });
     await waitFor(() => expect(result.current.error).toBeTruthy());
 
     mockFetch.mockResolvedValue({

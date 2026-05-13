@@ -24,6 +24,13 @@ import { checkIsOwner } from '../utils/auth';
 import { useTimeGridScrubber } from './useTimeGridScrubber';
 import { getETToday } from '../utils/timezone';
 
+/**
+ * Number of consecutive poll failures before the error banner surfaces.
+ * Same pattern as useGexStrikeExpiry + useGexTarget: a single transient
+ * Neon hang shouldn't flash a red banner on every blip.
+ */
+const FAIL_GRACE_COUNT = 2;
+
 export type DarkPoolSymbol = 'SPX' | 'NDX' | 'SPY' | 'QQQ';
 
 export const DARK_POOL_SYMBOLS: readonly DarkPoolSymbol[] = [
@@ -101,6 +108,11 @@ export function useDarkPoolLevels(
 
   const isLive = isToday && scrubTime === null;
 
+  // Consecutive failure counter. Single transient Neon hang shouldn't
+  // flash "signal timed out" on the dark pool panel. Same pattern as
+  // useGexStrikeExpiry + useGexTarget.
+  const failCountRef = useRef(0);
+
   const fetchLevels = useCallback(async () => {
     try {
       const qs = new URLSearchParams();
@@ -109,13 +121,23 @@ export function useDarkPoolLevels(
       if (scrubTime) qs.set('time', scrubTime);
       const res = await fetch(`/api/darkpool-levels?${qs}`, {
         credentials: 'same-origin',
-        signal: AbortSignal.timeout(5_000),
+        // 30s covers ~p95 of API latency. 5s was too tight against
+        // Neon's intermittent serverless HTTP cold-connection hangs.
+        signal: AbortSignal.timeout(30_000),
       });
 
       if (!mountedRef.current) return;
 
       if (!res.ok) {
-        if (res.status !== 401) setError('Failed to load dark pool data');
+        // 401 is the owner check — silently swallow.
+        if (res.status === 401) {
+          failCountRef.current = 0;
+          return;
+        }
+        failCountRef.current += 1;
+        if (failCountRef.current >= FAIL_GRACE_COUNT) {
+          setError('Failed to load dark pool data');
+        }
         return;
       }
 
@@ -128,6 +150,7 @@ export function useDarkPoolLevels(
       if (!mountedRef.current) return;
 
       setLevels(data.levels);
+      failCountRef.current = 0;
       setError(null);
 
       if (data.meta?.lastUpdated != null) {
@@ -136,7 +159,11 @@ export function useDarkPoolLevels(
         setUpdatedAt(data.levels[0]!.updatedAt);
       }
     } catch (err) {
-      if (mountedRef.current) setError(getErrorMessage(err));
+      if (!mountedRef.current) return;
+      failCountRef.current += 1;
+      if (failCountRef.current >= FAIL_GRACE_COUNT) {
+        setError(getErrorMessage(err));
+      }
     } finally {
       if (mountedRef.current) setLoading(false);
     }

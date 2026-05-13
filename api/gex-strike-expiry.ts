@@ -60,6 +60,52 @@ export interface GexStrikeExpiryResponse {
   asOf: string;
 }
 
+/**
+ * Per-function-instance response cache with single-flight de-dup.
+ *
+ * The endpoint is polled ~30s by the GexLandscape (SPX) + the
+ * StrikeBattleMap (4 tickers). When Neon's serverless HTTP path has
+ * cold-connection hangs (p50 = 169s observed 2026-05-13), every poll
+ * stacks on top of the same slow upstream call.
+ *
+ * Two-layer mitigation:
+ *
+ *   1. TTL cache. Live keys (no `at` arg) cache for LIVE_TTL_MS; the
+ *      uw-stream daemon UPSERTs ws_gex_strike_expiry every minute, so
+ *      ~15s of staleness is invisible. Snapshot keys (`at` present)
+ *      cache for SNAPSHOT_TTL_MS — the past doesn't change.
+ *   2. In-flight promise sharing. Concurrent requests for the same key
+ *      share the SQL call instead of fanning out N→Neon. The first
+ *      caller pays the cost; subsequent callers await the same promise.
+ *
+ * Fluid Compute reuses function instances across concurrent invocations,
+ * so a per-instance Map gets ~80-95% hit rate during market hours. The
+ * stale-on-error fallback path serves the prior payload when the
+ * upstream call throws — preferable to a 500 for a panel that polls.
+ */
+const LIVE_TTL_MS = 15_000;
+const SNAPSHOT_TTL_MS = 5 * 60 * 1000;
+interface CacheEntry {
+  expiresAt: number;
+  body: GexStrikeExpiryResponse;
+}
+const responseCache = new Map<string, CacheEntry>();
+const inFlight = new Map<string, Promise<GexStrikeExpiryResponse>>();
+
+function cacheKey(
+  ticker: string,
+  expiry: string,
+  at: string | null | undefined,
+): string {
+  return `${ticker}|${expiry}|${at ?? 'live'}`;
+}
+
+/** Exported for tests so cache state doesn't leak across cases. */
+export function _resetCacheForTests(): void {
+  responseCache.clear();
+  inFlight.clear();
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/gex-strike-expiry');
@@ -82,37 +128,74 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const { ticker, expiry, at } = parsed.data;
-    const asOf = new Date().toISOString();
+    const key = cacheKey(ticker, expiry, at);
+    const now = Date.now();
 
-    try {
-      // Run both queries in parallel so the scrub-timestamp helper
-      // doesn't bolt extra latency onto the panel's primary fetch.
-      const [rows, timestamps] = await Promise.all([
-        getLatestGexPerStrikeWithDeltas({
+    // 1. Fresh cache hit → instant return. Skips both the DB and any
+    //    in-flight wait.
+    const cached = responseCache.get(key);
+    if (cached && cached.expiresAt > now) {
+      setCacheHeaders(res, isMarketOpen() ? 30 : 300, 60);
+      done({ status: 200 });
+      return res.status(200).json(cached.body);
+    }
+
+    // 2. In-flight de-dup. If another concurrent request is already
+    //    fetching this key, await its promise instead of firing a
+    //    duplicate SQL call. Critical under polling fan-out.
+    let inProgress = inFlight.get(key);
+    if (inProgress == null) {
+      const ttlMs = at ? SNAPSHOT_TTL_MS : LIVE_TTL_MS;
+      inProgress = (async () => {
+        // Run both queries in parallel so the scrub-timestamp helper
+        // doesn't bolt extra latency onto the panel's primary fetch.
+        const [rows, timestamps] = await Promise.all([
+          getLatestGexPerStrikeWithDeltas({
+            ticker,
+            expiry,
+            at: at ?? null,
+          }),
+          getTimestampsForDay(ticker, expiry),
+        ]);
+        const body: GexStrikeExpiryResponse = {
           ticker,
           expiry,
           at: at ?? null,
-        }),
-        getTimestampsForDay(ticker, expiry),
-      ]);
+          rows,
+          timestamps,
+          asOf: new Date().toISOString(),
+        };
+        responseCache.set(key, { body, expiresAt: Date.now() + ttlMs });
+        return body;
+      })();
+      inFlight.set(key, inProgress);
+      // Clear from in-flight regardless of outcome so a transient
+      // upstream failure doesn't permanently stick a rejected promise.
+      // The trailing .catch swallows the rejection on this cleanup
+      // path so Node doesn't flag it as unhandled — the actual catch
+      // happens at the `await inProgress` below.
+      inProgress.finally(() => inFlight.delete(key)).catch(() => {});
+    }
 
-      const response: GexStrikeExpiryResponse = {
-        ticker,
-        expiry,
-        at: at ?? null,
-        rows,
-        timestamps,
-        asOf,
-      };
-
+    try {
+      const body = await inProgress;
       // Match the live Greek-flow panel cadence: short cache during
       // market hours so the daemon's UPSERTs surface quickly, longer
       // off-hours since values are settled. Vary on Cookie so the
       // owner / guest / anon caches don't collide.
       setCacheHeaders(res, isMarketOpen() ? 30 : 300, 60);
       done({ status: 200 });
-      return res.status(200).json(response);
+      return res.status(200).json(body);
     } catch (err) {
+      // Stale-on-error: if we have ANY prior payload (even past its
+      // TTL), serve it rather than failing the panel. The user's
+      // poll-driven UI prefers stale-but-rendered to a red banner.
+      if (cached) {
+        setCacheHeaders(res, 5, 30);
+        res.setHeader('X-Cache-Stale', '1');
+        done({ status: 200 });
+        return res.status(200).json(cached.body);
+      }
       done({ status: 500 });
       Sentry.captureException(err);
       logger.error(
