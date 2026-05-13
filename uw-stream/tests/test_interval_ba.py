@@ -177,7 +177,7 @@ class TestAlertEmission:
         assert handler._pending_alerts == []
 
     def test_no_alert_below_ratio_threshold(self, handler, base_payload):
-        """43% ask-side ratio stays under 70% threshold.
+        """43% ask-side ratio stays under the configured threshold.
 
         Mid prints land first so the single ASK print never has a
         bucket where it alone satisfies the ratio + floor (which would
@@ -201,7 +201,7 @@ class TestAlertEmission:
                 tags=["mid_side", "neutral"],
             ),
         )
-        # $300K ASK on top of $400K mid → total $700K, ratio 43% < 70%.
+        # $300K ASK on top of $400K mid → total $700K, ratio 43% < 75%.
         handler._transform(
             _payload(
                 base_payload,

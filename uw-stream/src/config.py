@@ -91,9 +91,16 @@ class Settings(BaseSettings):
 
     # Interval B/A alert thresholds (SPXW handler — see
     # docs/superpowers/specs/interval-ba-ask-alert-2026-05-12.md).
-    # Defaults are tuned for SPXW 0DTE specifically: a ≥70% ask-side
+    # Defaults are tuned for SPXW 0DTE specifically: a ≥75% ask-side
     # 5-min bucket on $250K+ premium is the structural-anomaly band
     # given SPX's mid-fill-dominated tape.
+    #
+    # Threshold raised 2026-05-12 from 0.70 → 0.75 after the empirical
+    # edge analysis (12,313-alert backfill against 89 trading days,
+    # docs/tmp/interval-ba-analysis-20260512-214350.md): the 70-75%
+    # ratio band has hit-rate only +0.0pp over baseline at EOD on
+    # CALLs, while the 75-85% band delivers +4pp edge with 26% fewer
+    # alerts. 70% was below saturation.
     #
     # ``interval_ba_enabled`` defaults False so Phase 1 (handler ships)
     # can run in production accumulating state and emitting "would
@@ -101,7 +108,7 @@ class Settings(BaseSettings):
     # ``interval_ba_alerts`` table. Phase 2 (DB migration) flips this
     # to True via the env var.
     interval_ba_enabled: bool = False
-    interval_ba_ratio_threshold: float = 0.70
+    interval_ba_ratio_threshold: float = 0.75
     interval_ba_premium_floor: int = 250_000
     interval_ba_window_sec: int = 300
 

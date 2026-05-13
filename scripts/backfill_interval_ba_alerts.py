@@ -61,7 +61,10 @@ PARQUET_DIR = Path.home() / 'Desktop' / 'Eod-Full-Tape-parquet'
 
 # Match the SPXWIntervalBAHandler defaults.
 TICKER = 'SPXW'
-RATIO_THRESHOLD = Decimal('0.70')
+# Raised 2026-05-12 from 0.70 to 0.75 after the empirical edge analysis
+# (docs/tmp/interval-ba-analysis-20260512-214350.md) found the 70-75%
+# band sits at baseline hit rate while 75-85% delivers +4pp edge.
+RATIO_THRESHOLD = Decimal('0.75')
 PREMIUM_FLOOR = Decimal(250_000)
 BUCKET_SEC = 300
 MULTIPLIER = Decimal(100)
