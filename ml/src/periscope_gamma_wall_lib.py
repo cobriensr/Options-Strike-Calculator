@@ -150,3 +150,36 @@ def compute_wall_event(
         "breached_eod": breached_eod,
         "success": 1 if classification == "held" else 0,
     }
+
+
+def compute_magnet_event(
+    spx_close: float,
+    magnet: float,
+    spot_at_read: float,
+) -> dict | None:
+    """Compare 'magnet as close predictor' vs 'spot as close predictor'.
+
+    Returns None when |magnet - spot_at_read| < MAGNET_MIN_DISTANCE_PTS to
+    avoid trivial wins (a magnet sitting on top of spot would always
+    'predict' close just by being near spot).
+
+    Otherwise returns:
+        err_magnet (float): (spx_close - magnet)^2
+        err_naive (float):  (spx_close - spot_at_read)^2
+        delta (float):      err_magnet - err_naive (negative = magnet beat naive)
+        magnet_won (bool):  delta < 0
+        distance (float):   |magnet - spot_at_read|
+    """
+    distance = abs(magnet - spot_at_read)
+    if distance < MAGNET_MIN_DISTANCE_PTS:
+        return None
+    err_magnet = (spx_close - magnet) ** 2
+    err_naive = (spx_close - spot_at_read) ** 2
+    delta = err_magnet - err_naive
+    return {
+        "err_magnet": err_magnet,
+        "err_naive": err_naive,
+        "delta": delta,
+        "magnet_won": delta < 0,
+        "distance": distance,
+    }

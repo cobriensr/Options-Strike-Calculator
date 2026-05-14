@@ -141,3 +141,29 @@ def test_wall_event_touch_tolerance_at_boundary():
     ev = compute_wall_event(bars, wall_strike=5005.0, wall_type="ceiling",
                             spot_at_read=5000.0)
     assert ev["touched"] is True
+
+
+from periscope_gamma_wall_lib import compute_magnet_event
+
+
+def test_magnet_event_excluded_when_too_close_to_spot():
+    assert compute_magnet_event(spx_close=5000.0, magnet=5001.0,
+                                spot_at_read=5000.0) is None
+
+
+def test_magnet_event_beats_naive():
+    ev = compute_magnet_event(spx_close=5008.0, magnet=5010.0,
+                              spot_at_read=5000.0)
+    assert ev is not None
+    assert ev["err_magnet"] == pytest.approx(4.0)
+    assert ev["err_naive"] == pytest.approx(64.0)
+    assert ev["delta"] == pytest.approx(-60.0)
+    assert ev["magnet_won"] is True
+
+
+def test_magnet_event_loses_to_naive():
+    ev = compute_magnet_event(spx_close=5001.0, magnet=5010.0,
+                              spot_at_read=5000.0)
+    assert ev is not None
+    assert ev["delta"] > 0
+    assert ev["magnet_won"] is False
