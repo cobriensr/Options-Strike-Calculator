@@ -44,6 +44,17 @@ When citing a heuristic in a Periscope read, include the tag in parentheses, e.g
 **Implication:** Persistent dealer book bias is short-downside-put / long-upside-call. Downside is an "accelerant" zone (short gamma builds fast on selloff); upside has more passive supply. Anything that REDUCES this short-futures hedge (charm decay, vol drop, expiry) is mechanically bullish for ES.
 **Periscope mapping:** Expect the standing positions panel to show net long calls clustered above spot and net short puts clustered below — the asymmetric "fence" around price.
 
+### "Long skew" regime: inverted dealer book makes tops unstable [plausible]
+
+**Source:** 22.md (VolSignals "Are positions telling us the top is in?" 2026-05-13) | quote-keyword: "long skew" / "customers chasing calls" / "inverse spot V correlation"
+**Mechanic:** The normal risk-reversal book (above) inverts when customers chase calls instead of selling them and stop buying puts. Dealer book flips to long puts / short calls. Above-spot positioning is now SHORT gamma instead of long — so rallies into red-bar (short-γ) clusters force MM /ES buying (procyclical chase UP), the same way short-γ below spot procyclically sells dips in the normal regime. The diagnostic tells: (a) 3-month 25Δ normalized skew compressed to historical lows (put IV − call IV abnormally narrow), (b) **inverse spot/vol correlation** — VIX rising WITH SPX, not against it. The second is eyeball-able live with no infra.
+**Implication:** Three behaviors break the standard model in this regime:
+
+1. **Rallies into red bars above price become fade fuel, not breakout fuel.** The chase extends the move in the moment, but as IV later decays the same forced /ES purchases reverse into passive selling — the rally retraces from its own mechanics, no news needed.
+2. **Vol-decay forced selling is a third drift driver** alongside delta and charm. Price stalled below short-call strikes with rich IV will see passive MM /ES selling as IV bleeds — directional movement not required.
+3. **Resolution paths:** either the market pulls back to reset positioning, or customers rehedge (re-engage long stock + long puts + short calls) and the normal regime resumes. There is no third path; the inverted state is unstable by construction.
+**Periscope mapping:** This is an interpretive overlay, not a quantitative gate. When the spot/vol correlation fingerprint is visible live, downgrade the confidence of red-bar-cluster breakout reads above spot, and flag the "chase-and-fade" pattern as a possibility instead of trend continuation. The 25Δ-90D skew percentile is not yet ingested in this codebase — see scrapped 2026-05-13 regime-gate exploration; the dataset/baseline to make this threshold-driven doesn't exist yet.
+
 ### Long-gamma absorbs; short-gamma chases [plausible]
 
 **Source:** 3.md, 7.md, 8.md, 13.md (multi-source consensus) | quote-keyword: "racing you to the book" / "shadow order book"
@@ -483,6 +494,7 @@ When citing a heuristic in a Periscope read, include the tag in parentheses, e.g
 | 19.md  | The Next 24 Hours Could Change Everything                                 |
 | 20.md  | This Expiration Event Could Change Everything Next Week                   |
 | 21.md  | This is a Problem...                                                      |
+| 22.md  | Are Positions Telling Us The Top Is In? (2026-05-13)                      |
 
 ---
 

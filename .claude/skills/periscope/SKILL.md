@@ -283,6 +283,16 @@ When present, the Vanna panel matters most on event days (FOMC, CPI, jobs):
 
 The straddle breakeven cone is the cleanest standalone vol-shock signal: when price exceeds the cone, short-vol sellers reflexively buy back hedges and extend the move. Pair with vanna for the strike where the extension will hit hardest.
 
+### Long-skew regime watchout
+
+The standard read above assumes the **normal regime** — customers long stock + long puts + short calls, dealers as the inverse counterparty (short puts + long calls), with suppressive +γ hedging above price. In a **long-skew regime** the dealer book inverts (customers chasing calls instead of selling them; 3M 25Δ skew at historical lows), and the same chart reads differently:
+
+- **Red-bar clusters above price become fade fuel, not breakout fuel.** Rallies into them extend in the moment (forced MM chasing UP) but tend to fade as IV later decays and the same /ES purchases reverse into passive selling.
+- **Vol-decay forced selling is a third drift mechanism** alongside delta (price moves) and charm (time decay). Price stalled below short-call strikes with rich IV produces passive MM /ES selling as IV bleeds — even with no directional move.
+- **Live fingerprint, no infra required: spot/vol positive correlation.** If VIX is rising with SPX (not against it), treat ceiling reads with extra caution; the structural defense above may be inverted.
+
+This is an interpretive overlay, not a quantitative regime gate. The 25Δ-90D skew percentile is not yet ingested in this codebase, and the relationship has not been validated against SPX 0DTE outcomes here. See `references/vol-signals-mm-heuristics.md` Section 1 ("Long skew" regime: inverted dealer book makes tops unstable) for the full mechanic. When the spot/vol fingerprint is visible live, downgrade confidence on red-bar-cluster breakout reads above spot and flag the "chase-and-fade" pattern as a possibility.
+
 ### Futures execution — the permission/prohibition framing
 
 The 4-case hedge primitive tells you which directions MM hedging will FUEL vs. FIGHT. For directional futures execution this maps to a permission/prohibition rule:
