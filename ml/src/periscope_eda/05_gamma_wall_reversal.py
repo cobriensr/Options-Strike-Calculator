@@ -25,6 +25,7 @@ Spec: docs/superpowers/specs/periscope-gamma-wall-edge-2026-05-14.md
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -38,8 +39,10 @@ sys.path.insert(0, str(_ML_SRC))
 
 import pandas as pd  # noqa: E402
 import psycopg2  # noqa: E402
+from statsmodels.stats.contingency_tables import mcnemar  # noqa: E402
 
 from periscope_gamma_wall_lib import (  # noqa: E402
+    PRIMARY_BUCKETS,
     compute_charm_zero_event,
     compute_magnet_event,
     compute_wall_event,
@@ -50,6 +53,10 @@ from periscope_gamma_wall_lib import (  # noqa: E402
 PLOT_DIR = Path("ml/plots/periscope-eda")
 CSV_PATH = Path("ml/exports/gamma_wall_events.csv")
 FINDINGS_PATH = Path("ml/findings.json")
+
+BONFERRONI_ALPHA = 0.05 / 3
+EFFECT_SIZE_THRESHOLD_PP = 0.10  # 10 percentage points
+EFFECT_SIZE_THRESHOLD_MAGNET = 1.0  # 1 SPX point^2 in median squared-error delta
 
 
 def fetch_reads(database_url: str) -> pd.DataFrame:
@@ -206,6 +213,79 @@ def build_events(reads: pd.DataFrame, database_url: str) -> dict[str, pd.DataFra
     }
 
 
+def test_walls(walls_df: pd.DataFrame) -> dict:
+    """Run primary McNemar test on walls (real vs sham success, paired).
+
+    Returns dict suitable for findings.json:
+        claim, n_pairs, real_success_rate, sham_success_rate,
+        effect_pp, p_value, passes_bonferroni, effect_size_meets_threshold,
+        verdict, threats_to_validity, notes
+    """
+    if walls_df.empty:
+        return {
+            "claim": "walls_hold",
+            "n_pairs": 0,
+            "verdict": "no_data",
+            "p_value": None,
+        }
+
+    primary = walls_df[walls_df["bucket"].isin(PRIMARY_BUCKETS)]
+    pivot = primary.pivot_table(
+        index=["read_id", "wall_type"],
+        columns="real_or_sham",
+        values="success",
+        aggfunc="first",
+    ).dropna()
+
+    if len(pivot) == 0:
+        return {
+            "claim": "walls_hold",
+            "n_pairs": 0,
+            "verdict": "no_data_in_primary_buckets",
+            "p_value": None,
+        }
+
+    # Build 2x2 contingency table for McNemar:
+    #            sham=0  sham=1
+    # real=0      a       b
+    # real=1      c       d
+    real = pivot["real"].astype(int).values
+    sham = pivot["sham"].astype(int).values
+    a = int(((real == 0) & (sham == 0)).sum())
+    b = int(((real == 0) & (sham == 1)).sum())
+    c = int(((real == 1) & (sham == 0)).sum())
+    d = int(((real == 1) & (sham == 1)).sum())
+    table = [[a, b], [c, d]]
+
+    result = mcnemar(table, exact=True)
+    p_value = float(result.pvalue)
+    real_rate = float(real.mean())
+    sham_rate = float(sham.mean())
+    effect_pp = real_rate - sham_rate
+
+    passes_p = p_value < BONFERRONI_ALPHA
+    passes_effect = effect_pp >= EFFECT_SIZE_THRESHOLD_PP
+
+    return {
+        "claim": "walls_hold",
+        "n_pairs": int(len(pivot)),
+        "real_success_rate": real_rate,
+        "sham_success_rate": sham_rate,
+        "effect_pp": effect_pp,
+        "p_value": p_value,
+        "bonferroni_alpha": BONFERRONI_ALPHA,
+        "passes_bonferroni": passes_p,
+        "effect_size_meets_threshold": passes_effect,
+        "verdict": "pass" if (passes_p and passes_effect) else "fail",
+        "contingency_table": {"a": a, "b": b, "c": c, "d": d},
+        "threats_to_validity": [
+            "SPX cash != tradeable (option premium not tested here)",
+            "Multiple reads per day not strictly independent",
+            "Selection effect on key_levels non-null",
+        ],
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -237,6 +317,10 @@ def main() -> int:
     CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
     events["walls"].to_csv(CSV_PATH, index=False)
     print(f"  wrote {CSV_PATH}")
+
+    print("\n=== Test 1: Walls hold (McNemar paired) ===")
+    walls_result = test_walls(events["walls"])
+    print(json.dumps(walls_result, indent=2, default=str))
 
     return 0
 
