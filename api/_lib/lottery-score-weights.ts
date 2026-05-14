@@ -29,22 +29,19 @@ export const LOTTERY_TICKER_WEIGHTS: Readonly<Record<string, number>> = {
   TQQQ: 7,
   USO: 7,
   AMZN: 7,
-  NVDA: 7,
   GOOG: 7,
+  NVDA: 7,
   QQQ: 5,
-  QCOM: 5,
   CAR: 5,
-  APLD: 5,
+  MSFT: 5,
   OKLO: 5,
+  QCOM: 5,
 };
 
 /** ($ entry price ≤ threshold → points). Evaluated in order; first match wins. */
 export const LOTTERY_PRICE_THRESHOLDS: ReadonlyArray<
   readonly [number, number]
-> = [
-  [0.5, 5],
-  [1.0, 3],
-];
+> = [[0.5, 5], [1.0, 3]];
 
 const MODE_WEIGHTS: Readonly<Record<LotteryMode, number>> = {
   A_intraday_0DTE: 5,

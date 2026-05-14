@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-04-25T20:52:56+00:00",
+  "generated_at": "2026-05-14T04:42:13+00:00",
   "dataset": {
     "total_days": 73,
     "labeled_days": 42,
@@ -189,7 +189,7 @@
     "status": "PASS",
     "warnings": [],
     "failures": [],
-    "run_time": "2026-04-25 15:52:36"
+    "run_time": "2026-05-13 23:42:03"
   },
   "pipeline_sections": [
     "health",
@@ -1163,6 +1163,52 @@
     "single_leg_conds": ["auto", "slan"],
     "rows_all_cond": 22267,
     "rows_singles": 15184
+  },
+  "calibration": {
+    "generated_at": "2026-05-14T04:41:59.325411+00:00",
+    "total_rows": 49,
+    "by_regime": {
+      "ranging": {
+        "n": 49,
+        "hit5": 0.30612244897959184,
+        "hit10": 0.5918367346938775,
+        "hit15": 0.8163265306122449,
+        "mean_abs_error": 9.355446440727139
+      }
+    },
+    "by_confidence": {
+      "high": {
+        "n": 49,
+        "hit5": 0.30612244897959184,
+        "hit10": 0.5918367346938775,
+        "hit15": 0.8163265306122449,
+        "mean_abs_error": 9.355446440727139
+      }
+    },
+    "by_stability": {
+      "high": {
+        "n": 16,
+        "hit5": 0.4375,
+        "hit10": 0.5625,
+        "hit15": 0.75,
+        "mean_abs_error": 8.565373974274394
+      },
+      "low": {
+        "n": 16,
+        "hit5": 0.3125,
+        "hit10": 0.6875,
+        "hit15": 0.8125,
+        "mean_abs_error": 9.285798880595678
+      },
+      "mid": {
+        "n": 17,
+        "hit5": 0.17647058823529413,
+        "hit10": 0.5294117647058824,
+        "hit15": 0.8823529411764706,
+        "mean_abs_error": 10.164594701041684
+      }
+    },
+    "calibration_score": NaN
   },
   "periscope_gamma_wall_edge": {
     "experiment": "periscope-gamma-wall-edge",
