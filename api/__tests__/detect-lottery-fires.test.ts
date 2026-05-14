@@ -224,12 +224,16 @@ describe('detect-lottery-fires handler', () => {
 
     expect(res._status).toBe(200);
     // The INSERT is the last mockSql call (after ticks SELECT, prior
-    // fires, flow_data, spot_exposures). Score is the last bound value
-    // before the closing `)` so it's the trailing slot in the call's
-    // arg list.
+    // fires, flow_data, spot_exposures). Bind order ends with
+    // `score, direction_gated` per Phase 4 direction gate (spec
+    // silent-boom-direction-gate-and-trail-ui-2026-05-14.md) — score
+    // is at(-2), direction_gated trailing at(-1).
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    const score = insertCall.at(-1);
+    const directionGated = insertCall.at(-1);
+    const score = insertCall.at(-2);
     expect(score).toBe(25);
+    // SNDK call with no OTM tide tick → ungated.
+    expect(directionGated).toBe(false);
   });
 
   it('binds mkt_tide_otm_diff from market_tide_otm ncp/npp (regression for vestigial otm_ncp bug, spec: silent-boom-otm-tide-and-trail-2026-05-13.md)', async () => {
@@ -256,18 +260,22 @@ describe('detect-lottery-fires handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // INSERT bind order (from detect-lottery-fires.ts lines 340-345):
+    // INSERT bind order (post Phase 4 gate, spec
+    // silent-boom-direction-gate-and-trail-ui-2026-05-14.md):
     //   ... mkt_tide_diff, mkt_tide_otm_diff, spx_flow_diff,
     //   spy_etf_diff, qqq_etf_diff, zero_dte_diff,
     //   spx_spot_gamma_oi, spx_spot_gamma_vol, spx_spot_charm_oi,
     //   spx_spot_vanna_oi, gex_strike_call_minus_put,
     //   gex_strike_call_ask_minus_bid, gex_strike_put_ask_minus_bid,
-    //   gex_strike_actual_strike, score
-    // → mkt_tide_otm_diff is the 14th-from-last bind position.
+    //   gex_strike_actual_strike, score, direction_gated
+    // → mkt_tide_otm_diff is the 15th-from-last bind position
+    //   (was -14 before #151 added direction_gated as the trailing bind).
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    expect(insertCall.at(-14)).toBe(3000); // 4000 - 1000
+    expect(insertCall.at(-15)).toBe(3000); // 4000 - 1000
     // Sanity: mkt_tide_diff (no 'market_tide' source in the mock) is null
-    expect(insertCall.at(-15)).toBeNull();
+    expect(insertCall.at(-16)).toBeNull();
+    // SNDK call with otm_diff = +3000 (well below the ±150M gate) → ungated.
+    expect(insertCall.at(-1)).toBe(false);
   });
 
   it('binds null mkt_tide_otm_diff when no market_tide_otm row is in the macro window', async () => {
@@ -288,9 +296,12 @@ describe('detect-lottery-fires handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
+    // Bind positions shifted -1 by the trailing direction_gated bind
+    // added in migration #151 (Phase 4 direction gate).
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    expect(insertCall.at(-15)).toBe(200); // mkt_tide_diff = 500 - 300
-    expect(insertCall.at(-14)).toBeNull(); // mkt_tide_otm_diff absent
+    expect(insertCall.at(-16)).toBe(200); // mkt_tide_diff = 500 - 300
+    expect(insertCall.at(-15)).toBeNull(); // mkt_tide_otm_diff absent
+    expect(insertCall.at(-1)).toBe(false); // otm null → ungated
   });
 
   it('issues the strike_exposures query for SPY (in TICKERS_WITH_GEX_STRIKE)', async () => {
@@ -470,6 +481,53 @@ describe('detect-lottery-fires handler', () => {
     // Exactly two SQL calls: the ticks SELECT and the prior-fires
     // lookup. No macro queries, no insert.
     expect(mockSql).toHaveBeenCalledTimes(2);
+  });
+
+  it('flags direction_gated=true on a counter-trend put fire (mkt_tide_otm_diff > +150M)', async () => {
+    // Phase 4 direction gate (spec
+    // silent-boom-direction-gate-and-trail-ui-2026-05-14.md): a PUT
+    // fire with OTM tide diff > +150M is bullish-counter-trend and
+    // should be gated. The fixture replaces every tick with a P-side
+    // print so the detector emits a put fire; the flow_data macro mock
+    // returns OTM ncp=300M, npp=100M → otm_diff = +200M (above T).
+    // Score is preserved (gate is read-time / display-only); only the
+    // boolean column flips.
+    const putStream = fireableSndkStream().map((t) => ({
+      ...t,
+      option_type: 'P' as const,
+      option_chain: 'SNDK260501P01175000',
+      delta: -0.18, // puts have negative delta
+    }));
+    mockSql
+      .mockResolvedValueOnce(putStream) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([
+        { source: 'market_tide_otm', ncp: '300000000', npp: '100000000' },
+      ]) // flow_data → otm_diff +200_000_000
+      .mockResolvedValueOnce([]) // spot_exposures
+      .mockResolvedValueOnce([{ id: 1 }]); // insert
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 1,
+      totalFires: 1,
+      inserted: 1,
+    });
+    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
+    // direction_gated is the trailing bind; score is at(-2). The gate
+    // must NOT mutate the score value — only the boolean column flips.
+    expect(insertCall.at(-1)).toBe(true);
+    // Score remains the computed value (not zeroed / not demoted).
+    expect(typeof insertCall.at(-2)).toBe('number');
+    expect(insertCall.at(-2)).toBeGreaterThan(0);
   });
 
   it('still fires when prior-fire is older than the 5-min cooldown', async () => {

@@ -387,13 +387,33 @@ export default withCronInstrumentation(
         const zeroDteDiff = zeroDteDiffAt(targetMs);
         const spxSpotGammaOi = spxGammaAt(targetMs);
 
+        // Phase 4 direction gate (spec:
+        // docs/superpowers/specs/silent-boom-direction-gate-and-trail-ui-2026-05-14.md).
+        // Counter-trend fires get demoted to tier3 and flagged with
+        // direction_gated=TRUE so the UI can render a "Gated" pill and
+        // the user can filter them out. Threshold is the all-in
+        // mkt_tide_diff (NCP - NPP across the whole tape) at fire time.
+        // STRICT > / < per spec — exactly ±T is NOT gated.
+        const DIRECTION_GATE_T = 100_000_000;
+        const directionGated = (() => {
+          if (mktTideDiff == null) return false;
+          if (g.optionType === 'P' && mktTideDiff > DIRECTION_GATE_T) {
+            return true;
+          }
+          if (g.optionType === 'C' && mktTideDiff < -DIRECTION_GATE_T) {
+            return true;
+          }
+          return false;
+        })();
+        const effectiveTier = directionGated ? 'tier3' : tier;
+
         const result = (await db`
           INSERT INTO silent_boom_alerts (
             date, bucket_ct, option_chain_id, underlying_symbol,
             option_type, strike, expiry, dte,
             spike_volume, baseline_volume, spike_ratio,
             ask_pct, vol_oi, entry_price, open_interest,
-            score, score_tier,
+            score, score_tier, direction_gated,
             mkt_tide_diff, mkt_tide_otm_diff, zero_dte_diff, spx_spot_gamma_oi,
             multi_leg_share
           ) VALUES (
@@ -402,7 +422,7 @@ export default withCronInstrumentation(
             ${g.optionType}, ${g.strike}, ${g.expiry}::date, ${dte},
             ${f.spikeVolume}, ${f.baselineVolume}, ${f.spikeRatio},
             ${f.askPct}, ${f.volOi}, ${f.entryPrice}, ${f.openInterest},
-            ${score}, ${tier},
+            ${score}, ${effectiveTier}, ${directionGated},
             ${mktTideDiff}, ${mktTideOtmDiff}, ${zeroDteDiff}, ${spxSpotGammaOi},
             ${f.multiLegShare}
           )

@@ -56,6 +56,7 @@ interface AlertRow {
   enriched_at: DbTimestamp | null;
   score: number | null;
   score_tier: 'tier1' | 'tier2' | 'tier3' | null;
+  direction_gated: boolean;
   mkt_tide_diff: DbNullableNumeric;
   zero_dte_diff: DbNullableNumeric;
   spx_spot_gamma_oi: DbNullableNumeric;
@@ -83,6 +84,14 @@ interface SilentBoomAlertResponse {
   score: number | null;
   /** 'tier1' | 'tier2' | 'tier3' — null only on legacy rows. */
   scoreTier: 'tier1' | 'tier2' | 'tier3' | null;
+  /**
+   * Phase 4 direction gate (spec:
+   * silent-boom-direction-gate-and-trail-ui-2026-05-14.md). TRUE when
+   * the fire was counter-trend per Market Tide at fire time — the
+   * detector demoted score_tier to 'tier3' on insert. UI renders a
+   * "Gated" pill and exposes a "Hide counter-trend" filter.
+   */
+  directionGated: boolean;
   /** Market Tide NCP - NPP at the spike-bucket time (display-only). */
   mktTideDiff: number | null;
   /** zero_dte_greek_flow NCP - NPP at the spike-bucket time. */
@@ -398,6 +407,7 @@ export default async function handler(
       openInterest: r.open_interest,
       score: r.score,
       scoreTier: r.score_tier,
+      directionGated: r.direction_gated === true,
       mktTideDiff: toNumOrNull(r.mkt_tide_diff),
       zeroDteDiff: toNumOrNull(r.zero_dte_diff),
       spxSpotGammaOi: toNumOrNull(r.spx_spot_gamma_oi),

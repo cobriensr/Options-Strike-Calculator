@@ -102,6 +102,12 @@ interface FireRow {
   // time from ticker × mode × entry-price × TOD × option-type. The
   // ticker_* columns come from the LEFT JOIN on lottery_ticker_stats.
   score: number | null;
+  // Phase 4 direction gate (migration #151, spec
+  // silent-boom-direction-gate-and-trail-ui-2026-05-14.md). TRUE when
+  // the fire was counter-trend per Market Tide OTM at fire time. The
+  // raw `score` is preserved on the row; the feed overrides the
+  // displayed `scoreTier` to 'tier3' when this flag is set.
+  direction_gated: boolean;
   ticker_n_fires: number | null;
   ticker_high_peak_rate: DbNullableNumeric;
   ticker_ci_lower: DbNullableNumeric;
@@ -271,7 +277,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.realized_eod_pct,
           f.peak_ceiling_pct, f.minutes_to_peak,
           f.inserted_at, f.enriched_at,
-          f.score, f.fire_count, f.first_fire_time_ct,
+          f.score, f.direction_gated, f.fire_count, f.first_fire_time_ct,
           s.n_fires AS ticker_n_fires,
           s.high_peak_rate AS ticker_high_peak_rate,
           s.ci_lower AS ticker_ci_lower,
@@ -333,7 +339,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.realized_eod_pct,
           f.peak_ceiling_pct, f.minutes_to_peak,
           f.inserted_at, f.enriched_at,
-          f.score, f.fire_count, f.first_fire_time_ct,
+          f.score, f.direction_gated, f.fire_count, f.first_fire_time_ct,
           s.n_fires AS ticker_n_fires,
           s.high_peak_rate AS ticker_high_peak_rate,
           s.ci_lower AS ticker_ci_lower,
@@ -394,7 +400,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.realized_eod_pct,
           f.peak_ceiling_pct, f.minutes_to_peak,
           f.inserted_at, f.enriched_at,
-          f.score, f.fire_count, f.first_fire_time_ct,
+          f.score, f.direction_gated, f.fire_count, f.first_fire_time_ct,
           s.n_fires AS ticker_n_fires,
           s.high_peak_rate AS ticker_high_peak_rate,
           s.ci_lower AS ticker_ci_lower,
@@ -435,7 +441,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const fires = rows.map((r) => {
       const score = r.score == null ? null : Number(r.score);
-      const tier: LotteryScoreTier = lotteryScoreTier(score);
+      // Phase 4 direction-gate override (spec:
+      // silent-boom-direction-gate-and-trail-ui-2026-05-14.md). Lottery
+      // does not mutate score on insert; the feed forces the displayed
+      // tier to 'tier3' when the row was flagged counter-trend so the
+      // UI badge + tier filters agree with the demoted semantics.
+      const directionGated = r.direction_gated === true;
+      const rawTier: LotteryScoreTier = lotteryScoreTier(score);
+      const tier: LotteryScoreTier = directionGated ? 'tier3' : rawTier;
       const tickerStats =
         r.ticker_n_fires == null
           ? null
@@ -464,6 +477,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         score,
         scoreTier: tier,
+        directionGated,
         forecastHighPeakPct: forecastForTier(tier),
         // Cohort-derived "typical exit window" hint — historical P75
         // of minutes_to_peak among winners for this (tier, ticker)

@@ -377,6 +377,57 @@ describe('detect-silent-boom handler', () => {
     expect(insertCall.at(-5)).toBeNull();
   });
 
+  it('flags direction_gated=true and demotes score_tier to tier3 on a counter-trend put fire (mkt_tide_diff > +100M)', async () => {
+    // Phase 4 direction gate (spec
+    // silent-boom-direction-gate-and-trail-ui-2026-05-14.md): a PUT
+    // fire with all-in mkt_tide_diff > +100M is bullish-counter-trend
+    // and should be demoted regardless of the underlying score. The
+    // fixture swaps the call stream for a put stream and seeds tide at
+    // ncp=200M, npp=50M → diff = +150_000_000 (above T=±100M).
+    const putStream = fireableSilentBoomStream().map((b) => ({
+      ...b,
+      option_type: 'P' as const,
+      option_chain: 'SNDK260507P01175000',
+    }));
+    const tickMs = Date.parse('2026-05-07T13:18:00Z');
+    mockSql
+      .mockResolvedValueOnce(putStream) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([
+        { ts_ms: String(tickMs), ncp: '200000000', npp: '50000000' },
+      ]) // tide ticks → diff +150_000_000 (counter-trend for puts)
+      .mockResolvedValueOnce([]) // tide_otm ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]) // spx_gamma ticks
+      .mockResolvedValueOnce([{ id: 1 }]); // insert
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 1,
+      totalFires: 1,
+      inserted: 1,
+    });
+    // Bind order ends with score, score_tier, direction_gated,
+    // mkt_tide_diff, mkt_tide_otm_diff, zero_dte_diff,
+    // spx_spot_gamma_oi, multi_leg_share. So:
+    //   at(-1) = multi_leg_share
+    //   at(-5) = mkt_tide_diff
+    //   at(-6) = direction_gated
+    //   at(-7) = score_tier (effective — demoted to 'tier3')
+    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
+    expect(insertCall.at(-5)).toBe(150_000_000);
+    expect(insertCall.at(-6)).toBe(true);
+    expect(insertCall.at(-7)).toBe('tier3');
+  });
+
   it('still fires when prior-fire is older than the 60-min cooldown', async () => {
     // Spike at 13:20:00Z, prior at 12:00:00Z (80 min before — outside
     // the 60-min cooldown). The detector lets the new fire through.

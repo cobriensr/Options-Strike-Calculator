@@ -325,6 +325,27 @@ export default withCronInstrumentation(
           tod: rec.tod,
           optionType: rec.optionType,
         });
+        // Phase 4 direction gate (spec:
+        // docs/superpowers/specs/silent-boom-direction-gate-and-trail-ui-2026-05-14.md).
+        // Counter-trend fires get flagged with direction_gated=TRUE so
+        // the feed endpoint can override the displayed score tier to
+        // tier3. The lottery score itself is NOT mutated — the raw
+        // score is preserved on the row and the gate is the read-time
+        // override. Threshold is the OTM-only mkt_tide_otm_diff per
+        // Phase 4 result (vs. all-in for silent boom). STRICT > / < per
+        // spec — exactly ±T is NOT gated.
+        const LOTTERY_DIRECTION_GATE_T = 150_000_000;
+        const directionGated = (() => {
+          const otm = macro.mkt_tide_otm_diff;
+          if (otm == null) return false;
+          if (rec.optionType === 'P' && otm > LOTTERY_DIRECTION_GATE_T) {
+            return true;
+          }
+          if (rec.optionType === 'C' && otm < -LOTTERY_DIRECTION_GATE_T) {
+            return true;
+          }
+          return false;
+        })();
         const result = (await db`
           INSERT INTO lottery_finder_fires (
             date, trigger_time_ct, entry_time_ct, option_chain_id,
@@ -342,7 +363,7 @@ export default withCronInstrumentation(
             spx_spot_gamma_oi, spx_spot_gamma_vol, spx_spot_charm_oi, spx_spot_vanna_oi,
             gex_strike_call_minus_put, gex_strike_call_ask_minus_bid,
             gex_strike_put_ask_minus_bid, gex_strike_actual_strike,
-            score
+            score, direction_gated
           ) VALUES (
             ${rec.date}::date, ${rec.triggerTimeCt.toISOString()}, ${rec.entryTimeCt.toISOString()},
             ${rec.optionChainId}, ${rec.underlyingSymbol}, ${rec.optionType},
@@ -360,7 +381,7 @@ export default withCronInstrumentation(
             ${macro.spx_spot_gamma_oi}, ${macro.spx_spot_gamma_vol}, ${macro.spx_spot_charm_oi}, ${macro.spx_spot_vanna_oi},
             ${macro.gex_strike_call_minus_put}, ${macro.gex_strike_call_ask_minus_bid},
             ${macro.gex_strike_put_ask_minus_bid}, ${macro.gex_strike_actual_strike},
-            ${score}
+            ${score}, ${directionGated}
           )
           ON CONFLICT (option_chain_id, trigger_time_ct) DO NOTHING
           RETURNING id

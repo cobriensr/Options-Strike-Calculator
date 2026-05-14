@@ -4380,4 +4380,15 @@ export const MIGRATIONS: Migration[] = [
             ADD COLUMN IF NOT EXISTS realized_trail30_10_pct NUMERIC`,
     ],
   },
+  {
+    id: 151,
+    description:
+      "Add direction_gated BOOLEAN column to silent_boom_alerts and lottery_finder_fires (spec: docs/superpowers/specs/silent-boom-direction-gate-and-trail-ui-2026-05-14.md). TRUE when a fire is counter-trend per Market Tide at fire time and the detector demoted it: silent_boom gates on the all-in mkt_tide_diff at T=±100M (puts with diff > +100M or calls with diff < -100M); lottery gates on the OTM mkt_tide_otm_diff at T=±150M. Thresholds chosen empirically from the 15K silent_boom + 96K lottery historical sample — counter-trend lottery fires showed +6.71% avg EOD vs trend-aligned -18.04% (24.75pp spread); silent_boom counter-trend tier1 fires showed -50.55% EOD vs -11.37% trend-aligned. Silent boom also overwrites score_tier to 'tier3' on gated rows; lottery preserves score and lets the feed endpoint override the displayed tier (lottery has no stored score_tier — it's computed from score at read time). NOT NULL with DEFAULT FALSE so existing rows automatically read as ungated until the one-shot backfill flips the historical counter-trend rows.",
+    statements: (sql) => [
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS direction_gated BOOLEAN NOT NULL DEFAULT FALSE`,
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS direction_gated BOOLEAN NOT NULL DEFAULT FALSE`,
+    ],
+  },
 ];
