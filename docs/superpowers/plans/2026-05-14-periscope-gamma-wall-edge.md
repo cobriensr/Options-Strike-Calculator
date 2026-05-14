@@ -857,11 +857,16 @@ def fetch_reads(database_url: str) -> pd.DataFrame:
 
 
 def fetch_bars_for_read(conn, trading_date, read_time_utc) -> pd.DataFrame:
-    """Fetch regular-hours SPX 1-min bars from read_time to 15:00 CT same day."""
+    """Fetch regular-hours SPX 1-min bars from read_time to 15:00 CT same day.
+
+    NOTE: queries index_candles_1m directly (the compat view spx_candles_1m
+    does not exist in this DB). symbol='SPX' filter is required.
+    """
     sql = """
         SELECT timestamp, close::float AS close
-        FROM spx_candles_1m
-        WHERE date = %s
+        FROM index_candles_1m
+        WHERE symbol = 'SPX'
+          AND date = %s
           AND timestamp >= %s
           AND timestamp <= ((%s::date + INTERVAL '15 hours')
                             AT TIME ZONE 'America/Chicago')
@@ -1703,11 +1708,17 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 Insert near other helpers:
 
 ```python
-def append_findings(findings_path: Path, blocks: list[dict]) -> None:
+def append_findings(
+    findings_path: Path,
+    blocks: list[dict],
+    data_window: dict,
+) -> None:
     """Append a list of result blocks to findings.json under a top-level key.
 
     Existing findings.json is preserved; we add (or overwrite) the
-    'periscope_gamma_wall_edge' key with today's run summary.
+    'periscope_gamma_wall_edge' key with today's run summary, including
+    a data_window block with the date range, distinct-day count, and a
+    prominent caveat string when the window is narrow.
     """
     if findings_path.exists():
         existing = json.loads(findings_path.read_text())
@@ -1716,15 +1727,52 @@ def append_findings(findings_path: Path, blocks: list[dict]) -> None:
     existing["periscope_gamma_wall_edge"] = {
         "experiment": "periscope-gamma-wall-edge",
         "run_date_utc": datetime.now(timezone.utc).isoformat(),
+        "data_window": data_window,
         "results": blocks,
     }
     findings_path.write_text(json.dumps(existing, indent=2, default=str) + "\n")
+
+
+def build_data_window(reads: pd.DataFrame) -> dict:
+    """Compute date-range stats + emit warnings when the window is narrow.
+
+    Triggers a 'narrow_window_warning' when distinct_days < 20, since per
+    the spec design the sensitivity check (one read per (date,mode)) needs
+    ~30+ days to be informative.
+    """
+    distinct_days = int(reads["trading_date"].nunique())
+    earliest = str(reads["trading_date"].min())
+    latest = str(reads["trading_date"].max())
+    warnings = []
+    if distinct_days < 20:
+        warnings.append(
+            f"NARROW WINDOW ({distinct_days} distinct trading days only). "
+            "Results reflect a single-regime snapshot. Within-day "
+            "correlation across the auto-playbook's ~35 reads/day is "
+            "high; the spec's first-read-per-(date,mode) sensitivity "
+            "check is underpowered at this N. Re-run after several "
+            "more weeks of data accumulate before trading on the result."
+        )
+    return {
+        "distinct_days": distinct_days,
+        "earliest": earliest,
+        "latest": latest,
+        "total_reads_in_window": int(len(reads)),
+        "warnings": warnings,
+    }
 ```
 
 - [ ] **Step 2: Wire into main()** at the very end (before `return 0`):
 
 ```python
-    append_findings(FINDINGS_PATH, [walls_result, magnet_result, charm_result])
+    data_window = build_data_window(reads)
+    if data_window["warnings"]:
+        print("\nDATA WINDOW WARNINGS:")
+        for w in data_window["warnings"]:
+            print(f"  ! {w}")
+    append_findings(FINDINGS_PATH,
+                    [walls_result, magnet_result, charm_result],
+                    data_window)
     print(f"\nWrote findings to {FINDINGS_PATH}")
 
     return 0
