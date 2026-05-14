@@ -62,7 +62,18 @@ function formatFetchedAtCT(ms: number): string {
   });
 }
 
-export function IntervalBAFeed() {
+interface IntervalBAFeedProps {
+  /**
+   * Whether the user's session is live (drives polling on the lazy
+   * tape/flow hooks inside expanded rows). Defaults to false so the
+   * component is usable in tests and SSR without prop wiring.
+   */
+  marketOpen?: boolean;
+}
+
+export function IntervalBAFeed({
+  marketOpen = false,
+}: Readonly<IntervalBAFeedProps> = {}) {
   const [date, setDate] = useState<string>(todayCt());
   const [startTime, setStartTime] = useState<string>('08:30');
   const [endTime, setEndTime] = useState<string>('15:00');
@@ -249,7 +260,12 @@ export function IntervalBAFeed() {
         ) : (
           <div className="space-y-1">
             {alerts.map((a) => (
-              <IntervalBARow key={a.id} alert={a} />
+              <IntervalBARow
+                key={a.id}
+                alert={a}
+                date={date}
+                marketOpen={marketOpen}
+              />
             ))}
           </div>
         )}

@@ -1008,7 +1008,9 @@ export default function StrikeCalculator() {
                   id="sec-interval-ba-history"
                   label="Interval B/A History"
                 >
-                  <IntervalBAFeed />
+                  <IntervalBAFeed
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
+                  />
                 </GatedSection>
 
                 <GatedSection

@@ -199,10 +199,67 @@ describe('IntervalBAFeed', () => {
     expect(screen.queryByText(/^\+/)).not.toBeInTheDocument();
   });
 
+  it('renders the moneyness pill — call OTM 0.09% for strike above spot', async () => {
+    // SAMPLE_ALERT: call, strike 5800, spot 5795 → OTM by ~0.09%
+    mockFetch({
+      alerts: [SAMPLE_ALERT],
+      summary: {
+        count: 1,
+        total_premium: 1400000,
+        extreme: 1,
+        critical: 0,
+        warning: 0,
+      },
+    });
+    render(<IntervalBAFeed />);
+    await waitFor(() => {
+      expect(screen.getByText(/OTM 0\.09%/i)).toBeInTheDocument();
+    });
+  });
+
+  it('renders ITM pill for a call with strike below spot', async () => {
+    const itmAlert: IntervalBAFeedAlert = {
+      ...SAMPLE_ALERT,
+      strike: 5700,
+      underlying_price: 5800,
+    };
+    mockFetch({
+      alerts: [itmAlert],
+      summary: {
+        count: 1,
+        total_premium: 1400000,
+        extreme: 1,
+        critical: 0,
+        warning: 0,
+      },
+    });
+    render(<IntervalBAFeed />);
+    await waitFor(() => {
+      expect(screen.getByText(/ITM/)).toBeInTheDocument();
+    });
+  });
+
+  it('exposes an expand toggle on each row', async () => {
+    mockFetch({
+      alerts: [SAMPLE_ALERT],
+      summary: {
+        count: 1,
+        total_premium: 1400000,
+        extreme: 1,
+        critical: 0,
+        warning: 0,
+      },
+    });
+    render(<IntervalBAFeed />);
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: /Expand charts for SPXW/i }),
+      ).toBeInTheDocument();
+    });
+  });
+
   it('toggles ?confluenceOnly=1 into the fetch URL', async () => {
-    const { default: userEvent } = await import(
-      '@testing-library/user-event'
-    );
+    const { default: userEvent } = await import('@testing-library/user-event');
     const fetch = mockFetch({
       alerts: [],
       summary: {

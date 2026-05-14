@@ -134,7 +134,10 @@ describe('IntervalBAAlertBanner', () => {
   it('omits the +PARTNER pill on solo alerts', () => {
     // sample has confluence_tickers=[].
     render(
-      <IntervalBAAlertBanner alerts={[sample]} onAcknowledge={async () => {}} />,
+      <IntervalBAAlertBanner
+        alerts={[sample]}
+        onAcknowledge={async () => {}}
+      />,
     );
     expect(screen.queryByText(/^\+/)).not.toBeInTheDocument();
   });
