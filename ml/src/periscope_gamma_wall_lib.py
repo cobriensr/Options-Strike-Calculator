@@ -41,3 +41,112 @@ def distance_bucket(distance: float) -> str:
     if distance < 15.0:
         return "7-15"
     return "15+"
+
+
+def compute_wall_event(
+    bars: pd.DataFrame,
+    wall_strike: float,
+    wall_type: WallType,
+    spot_at_read: float,
+) -> dict:
+    """Measure how SPX behaves vs a single wall over the trading window.
+
+    Args:
+        bars: DataFrame with columns 'timestamp' (datetime64) and 'close' (float),
+            sorted by timestamp ascending. Should already be filtered to bars
+            between read_time and 15:00 CT, regular hours only.
+        wall_strike: The gamma wall strike from periscope_analyses.key_levels.
+        wall_type: 'ceiling' (above spot) or 'floor' (below spot).
+        spot_at_read: SPX spot at read_time, anchor for distance and reversal.
+
+    Returns dict with:
+        distance_initial (float): |wall_strike - spot_at_read|.
+        bucket (str): one of '0-3', '3-7', '7-15', '15+'.
+        touched (bool): True if any bar.close came within +/-TOUCH_TOLERANCE_PTS.
+        t_touch_idx (int | None): index of the first touching bar in `bars`.
+        post_touch_price (float | None): close at +REVERSAL_WINDOW_MIN after t_touch,
+            or None if never touched / censored.
+        reversal_signed (float | None): signed reversal (positive = moved away
+            from wall toward spot). None if never touched / censored.
+        classification (str): 'held' / 'broken' / 'stalled' / 'never_touched' / 'censored'.
+        breached_eod (bool): for ceiling, spx_close > wall; for floor, spx_close < wall.
+        success (int): 1 if touched AND classification == 'held', else 0.
+    """
+    distance_initial = abs(wall_strike - spot_at_read)
+    bucket = distance_bucket(distance_initial)
+
+    if len(bars) == 0:
+        return {
+            "distance_initial": distance_initial,
+            "bucket": bucket,
+            "touched": False,
+            "t_touch_idx": None,
+            "post_touch_price": None,
+            "reversal_signed": None,
+            "classification": "never_touched",
+            "breached_eod": False,
+            "success": 0,
+        }
+
+    spx_close = float(bars["close"].iloc[-1])
+    breached_eod = (
+        spx_close > wall_strike if wall_type == "ceiling"
+        else spx_close < wall_strike
+    )
+
+    touch_mask = (bars["close"] - wall_strike).abs() <= TOUCH_TOLERANCE_PTS
+    if not touch_mask.any():
+        return {
+            "distance_initial": distance_initial,
+            "bucket": bucket,
+            "touched": False,
+            "t_touch_idx": None,
+            "post_touch_price": None,
+            "reversal_signed": None,
+            "classification": "never_touched",
+            "breached_eod": breached_eod,
+            "success": 0,
+        }
+
+    t_touch_idx = int(touch_mask.idxmax())
+    t_touch = bars["timestamp"].iloc[t_touch_idx]
+    window_end = t_touch + pd.Timedelta(minutes=REVERSAL_WINDOW_MIN)
+
+    bars_in_window = bars[bars["timestamp"] <= window_end]
+    if bars_in_window["timestamp"].iloc[-1] < window_end:
+        return {
+            "distance_initial": distance_initial,
+            "bucket": bucket,
+            "touched": True,
+            "t_touch_idx": t_touch_idx,
+            "post_touch_price": None,
+            "reversal_signed": None,
+            "classification": "censored",
+            "breached_eod": breached_eod,
+            "success": 0,
+        }
+
+    post_touch_price = float(bars_in_window["close"].iloc[-1])
+    if wall_type == "ceiling":
+        reversal_signed = spot_at_read - post_touch_price
+    else:
+        reversal_signed = post_touch_price - spot_at_read
+
+    if reversal_signed >= REVERSAL_THRESHOLD_PTS:
+        classification = "held"
+    elif reversal_signed <= -REVERSAL_THRESHOLD_PTS:
+        classification = "broken"
+    else:
+        classification = "stalled"
+
+    return {
+        "distance_initial": distance_initial,
+        "bucket": bucket,
+        "touched": True,
+        "t_touch_idx": t_touch_idx,
+        "post_touch_price": post_touch_price,
+        "reversal_signed": reversal_signed,
+        "classification": classification,
+        "breached_eod": breached_eod,
+        "success": 1 if classification == "held" else 0,
+    }

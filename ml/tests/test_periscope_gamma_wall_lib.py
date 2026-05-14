@@ -51,3 +51,93 @@ def test_distance_bucket(distance, expected):
 def test_distance_bucket_negative_raises():
     with pytest.raises(ValueError):
         distance_bucket(-1.0)
+
+
+from periscope_gamma_wall_lib import compute_wall_event
+
+
+def _bars_from_prices(prices: list[float], start_minute: int = 0) -> pd.DataFrame:
+    """Build a 1-min bar DataFrame for the given close prices.
+
+    All bars on 2026-05-14, market_time = 'r'. Starts at 14:30 UTC + start_minute.
+    """
+    base = datetime(2026, 5, 14, 14, 30, tzinfo=timezone.utc)
+    return pd.DataFrame({
+        "timestamp": [base + pd.Timedelta(minutes=start_minute + i)
+                      for i in range(len(prices))],
+        "close": prices,
+    })
+
+
+def test_wall_event_never_touched():
+    bars = _bars_from_prices([4995.0, 5000.0, 5005.0, 5002.0, 4998.0])
+    ev = compute_wall_event(bars, wall_strike=5020.0, wall_type="ceiling",
+                            spot_at_read=5000.0)
+    assert ev["touched"] is False
+    assert ev["classification"] == "never_touched"
+    assert ev["success"] == 0
+    assert ev["distance_initial"] == 20.0
+    assert ev["bucket"] == "15+"
+    assert ev["breached_eod"] is False
+
+
+def test_wall_event_held_ceiling():
+    prices = [5000.0, 5002.0, 5005.0] + [5004.0] * 14 + [4998.0]
+    bars = _bars_from_prices(prices)
+    ev = compute_wall_event(bars, wall_strike=5005.0, wall_type="ceiling",
+                            spot_at_read=5000.0)
+    assert ev["touched"] is True
+    assert ev["classification"] == "held"
+    assert ev["success"] == 1
+    assert ev["distance_initial"] == 5.0
+    assert ev["bucket"] == "3-7"
+    assert ev["reversal_signed"] >= REVERSAL_THRESHOLD_PTS
+
+
+def test_wall_event_broken_ceiling():
+    prices = [5000.0, 5003.0, 5005.0] + [5006.0] * 14 + [5010.0]
+    bars = _bars_from_prices(prices)
+    ev = compute_wall_event(bars, wall_strike=5005.0, wall_type="ceiling",
+                            spot_at_read=5000.0)
+    assert ev["touched"] is True
+    assert ev["classification"] == "broken"
+    assert ev["success"] == 0
+    assert ev["breached_eod"] is True
+
+
+def test_wall_event_stalled_ceiling():
+    prices = [5000.0, 5003.0, 5005.0] + [5004.0] * 14 + [5001.0]
+    bars = _bars_from_prices(prices)
+    ev = compute_wall_event(bars, wall_strike=5005.0, wall_type="ceiling",
+                            spot_at_read=5000.0)
+    assert ev["touched"] is True
+    assert ev["classification"] == "stalled"
+    assert ev["success"] == 0
+
+
+def test_wall_event_held_floor():
+    prices = [5000.0, 4998.0, 4995.0] + [4997.0] * 14 + [5003.0]
+    bars = _bars_from_prices(prices)
+    ev = compute_wall_event(bars, wall_strike=4995.0, wall_type="floor",
+                            spot_at_read=5000.0)
+    assert ev["touched"] is True
+    assert ev["classification"] == "held"
+    assert ev["success"] == 1
+
+
+def test_wall_event_censored_when_window_extends_past_bars():
+    prices = [5000.0, 5003.0, 5005.0]
+    bars = _bars_from_prices(prices)
+    ev = compute_wall_event(bars, wall_strike=5005.0, wall_type="ceiling",
+                            spot_at_read=5000.0)
+    assert ev["touched"] is True
+    assert ev["classification"] == "censored"
+    assert ev["success"] == 0
+
+
+def test_wall_event_touch_tolerance_at_boundary():
+    prices = [5004.0] + [5004.0] * 16
+    bars = _bars_from_prices(prices)
+    ev = compute_wall_event(bars, wall_strike=5005.0, wall_type="ceiling",
+                            spot_at_read=5000.0)
+    assert ev["touched"] is True
