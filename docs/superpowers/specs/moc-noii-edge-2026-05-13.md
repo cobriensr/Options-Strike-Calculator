@@ -13,12 +13,12 @@ answer determines whether a live data subscription should cover both venues
 
 Four downloaded historical batches (2025-05-13 → 2026-05-12, 252 trading days each):
 
-| Order ID                   | Dataset       | Symbols (effective)                                                                            |
-| -------------------------- | ------------- | ---------------------------------------------------------------------------------------------- |
+| Order ID                   | Dataset       | Symbols (effective)                                                                                        |
+| -------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------- |
 | `XNAS-20260514-7SQALEQH9G` | `XNAS.ITCH`   | QQQ, AAPL, MSFT, NVDA, META, AMZN, GOOGL, GOOG, TSLA, AVGO, COST, NFLX (NYSE-listed in req returned empty) |
-| `ARCX-20260514-KBSGK7PRBJ` | `ARCX.PILLAR` | SPY, IWM, VOO, DIA                                                                             |
-| `XNYS-20260514-96KAQJKAE9` | `XNYS.PILLAR` | ABBV, BAC, BRK.B, JNJ, JPM, LLY, MA, UNH, V, WMT, XOM (`P`, `SPY` returned empty)              |
-| `XNYS-20260514-V8BL6ETJ8H` | `XNYS.PILLAR` | PG, HD                                                                                         |
+| `ARCX-20260514-KBSGK7PRBJ` | `ARCX.PILLAR` | SPY, IWM, VOO, DIA                                                                                         |
+| `XNYS-20260514-96KAQJKAE9` | `XNYS.PILLAR` | ABBV, BAC, BRK.B, JNJ, JPM, LLY, MA, UNH, V, WMT, XOM (`P`, `SPY` returned empty)                          |
+| `XNYS-20260514-V8BL6ETJ8H` | `XNYS.PILLAR` | PG, HD                                                                                                     |
 
 Format: DBN+zstd, daily file split, `instrument_id` symbology (resolve via per-folder
 `symbology.json` / manifest), nanosecond Unix timestamps, raw (un-scaled) prices.
@@ -40,26 +40,26 @@ each phase per `feedback_per_phase_loop` rule. Commit + push between phases.
 - One row per NOII message. Columns: `ts_event_ns`, `ts_event_et`, `symbol`,
   `dataset`, `auction_type`, `auction_time`, `ref_price`, `cont_book_clr_price`,
   `side` (B/A/N), `paired_qty`, `total_imbalance_qty`, `market_imbalance_qty`,
-  `signed_imbalance` (computed: signed by `side` (B/A/N) ‘B’=+, ‘S’=−).
+  `signed_imbalance` (computed: signed by `side` — ‘B’=+, ‘A’=−, ‘N’=0).
 - CLI: `python -m src.imbalance.decoder <download-folder> <output-parquet>`.
 - Test: `ml/tests/test_imbalance_decoder.py` — decode 1 sample day, assert row
   count > 0 for at least one expected symbol, assert sign convention.
 - **Verify:** `python -m src.imbalance.decoder ~/Downloads/XNAS-20260514-7SQALEQH9G
-  ml/data/imbalance/xnas.parquet` produces a Parquet with > 100k rows and 12
+ml/data/imbalance/xnas.parquet` produces a Parquet with > 100k rows and 12
   unique symbols.
 
 ### Phase 2 — Snapshot Aggregation
 
-- `ml/src/imbalance/snapshots.py`: for each (symbol, date, auction_type='C')
-  pull the **last NOII message at or before 15:59:55 ET** and the **earliest
-  NOII message at or after 15:50:00 ET**. Output: per-day-per-symbol "close
-  snapshot" row + per-day-per-symbol "trend" row (delta from open of window
-  to last update).
-- Output: `ml/data/imbalance/snapshots_close.parquet` (one row per symbol-day).
-- Repeat for opening cross (`auction_type='M'`) → `snapshots_open.parquet`.
-- **Verify:** snapshots table has 252 days × ~29 symbols = ~7,300 rows for
-  close. Manual spot-check on 1 known day (e.g., MOC heavy day from periscope
-  debrief notes) matches eyeballed Periscope reads.
+- `ml/src/imbalance/snapshots.py`: for each (date, symbol, auction_type)
+  pull the **first NOII update at or after window-start** and the **last
+  update before window-end**, and emit **a single wide row** with
+  `*_first`, `*_last`, and trend columns (`abs_imbalance_trend`,
+  `signed_imbalance_trend`, `paired_qty_growth`). Wide shape is friendlier
+  for the Phase 3 join than the originally-spec'd two-row layout.
+- Windows (ET): `C` 15:50–16:00, `M` 09:00–09:30, `O` 09:25–09:30.
+- Output: `ml/data/imbalance/snapshots.parquet` (all auction types in one file).
+- **Verify:** snapshots panel populated for all four venue Parquets. Manual
+  spot-check on a known MOC-heavy day matches eyeballed Periscope reads.
 
 ### Phase 3 — Join with SPX 1-min Candles
 
@@ -100,8 +100,8 @@ each phase per `feedback_per_phase_loop` rule. Commit + push between phases.
 
 ### Phase 6 — Trend / Convergence Feature
 
-- Per Polygon GitHub example: track whether imbalance is *shrinking* (contra
-  liquidity arriving, indicative price will hold) or *growing* (pressure
+- Per Polygon GitHub example: track whether imbalance is _shrinking_ (contra
+  liquidity arriving, indicative price will hold) or _growing_ (pressure
   building, indicative will move) over 15:50→15:58 window. Add as feature in
   Phase 4 regression.
 - **Verify:** If trend feature improves R² by > 0.02, add to findings report.
