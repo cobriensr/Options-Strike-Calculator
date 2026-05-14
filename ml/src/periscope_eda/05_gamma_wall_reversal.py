@@ -494,6 +494,58 @@ def plot_distance_distribution(walls_df: pd.DataFrame, out_path: Path) -> None:
     plt.close(fig)
 
 
+def plot_magnet_quality(magnet_df: pd.DataFrame, out_path: Path) -> None:
+    """Scatter of |magnet - spot| vs |close - magnet|; overlay |close - spot|."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if magnet_df.empty:
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.text(0.5, 0.5, "No magnet events", ha="center", va="center")
+        ax.set_axis_off()
+        fig.savefig(out_path, dpi=120)
+        plt.close(fig)
+        return
+
+    abs_dist = (magnet_df["magnet"] - magnet_df["spot_at_read"]).abs()
+    abs_err_magnet = (magnet_df["spx_close"] - magnet_df["magnet"]).abs()
+    abs_err_naive = (magnet_df["spx_close"] - magnet_df["spot_at_read"]).abs()
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.scatter(
+        abs_dist,
+        abs_err_magnet,
+        alpha=0.6,
+        s=30,
+        c="#1f77b4",
+        label="|close − magnet|",
+    )
+    ax.scatter(
+        abs_dist,
+        abs_err_naive,
+        alpha=0.4,
+        s=30,
+        c="#ff7f0e",
+        label="|close − spot| (naive)",
+        marker="x",
+    )
+    ax.plot(
+        [0, abs_dist.max()],
+        [0, abs_dist.max()],
+        color="gray",
+        linestyle="--",
+        label="break-even",
+    )
+    ax.set_xlabel("|magnet − spot at read| (SPX points)")
+    ax.set_ylabel("Prediction error |close − target| (SPX points)")
+    ax.set_title(
+        "Magnet predictor quality vs naive 'close ≈ spot'\n"
+        "Below the dashed line = magnet beats naive"
+    )
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -545,6 +597,8 @@ def main() -> int:
         events["walls"], PLOT_DIR / "gamma_wall_distance_dist.png"
     )
     print(f"  wrote {PLOT_DIR / 'gamma_wall_distance_dist.png'}")
+    plot_magnet_quality(events["magnet"], PLOT_DIR / "magnet_predictor_quality.png")
+    print(f"  wrote {PLOT_DIR / 'magnet_predictor_quality.png'}")
 
     return 0
 
