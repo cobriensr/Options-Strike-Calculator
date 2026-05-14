@@ -14,17 +14,17 @@
 
 ## File Structure
 
-| Path | Purpose |
-|---|---|
-| `ml/src/periscope_gamma_wall_lib.py` | Pure functions: bucket, wall measurement, magnet metric, charm-zero cross, sham mirror. Importable by tests and runner. |
-| `ml/tests/test_periscope_gamma_wall_lib.py` | Pytest unit tests with synthetic 1-min bar DataFrames. No DB. |
-| `ml/src/periscope_eda/05_gamma_wall_reversal.py` | Runner: DB fetch, event assembly, statistical tests, plot generation, CSV export, findings.json append. |
-| `ml/plots/periscope-eda/gamma_wall_reversal.png` | (Output) Bar chart, hold rate by distance bucket, real vs sham, with 95% bootstrap CIs. |
-| `ml/plots/periscope-eda/gamma_wall_distance_dist.png` | (Output) Histogram of `distance_initial` by wall type. |
-| `ml/plots/periscope-eda/magnet_predictor_quality.png` | (Output) Scatter `\|magnet − spot\|` vs `\|close − magnet\|` with naive overlay. |
-| `ml/plots/periscope-eda/charm_zero_cross_rates.png` | (Output) Bar chart, cross rate real vs sham by distance bucket. |
-| `ml/exports/gamma_wall_events.csv` | (Output) Per-event data export for ad-hoc slicing. |
-| `ml/findings.json` | (Modified) Append three blocks: walls, magnet, charm-zero. |
+| Path                                                  | Purpose                                                                                                                 |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `ml/src/periscope_gamma_wall_lib.py`                  | Pure functions: bucket, wall measurement, magnet metric, charm-zero cross, sham mirror. Importable by tests and runner. |
+| `ml/tests/test_periscope_gamma_wall_lib.py`           | Pytest unit tests with synthetic 1-min bar DataFrames. No DB.                                                           |
+| `ml/src/periscope_eda/05_gamma_wall_reversal.py`      | Runner: DB fetch, event assembly, statistical tests, plot generation, CSV export, findings.json append.                 |
+| `ml/plots/periscope-eda/gamma_wall_reversal.png`      | (Output) Bar chart, hold rate by distance bucket, real vs sham, with 95% bootstrap CIs.                                 |
+| `ml/plots/periscope-eda/gamma_wall_distance_dist.png` | (Output) Histogram of `distance_initial` by wall type.                                                                  |
+| `ml/plots/periscope-eda/magnet_predictor_quality.png` | (Output) Scatter `\|magnet − spot\|` vs `\|close − magnet\|` with naive overlay.                                        |
+| `ml/plots/periscope-eda/charm_zero_cross_rates.png`   | (Output) Bar chart, cross rate real vs sham by distance bucket.                                                         |
+| `ml/exports/gamma_wall_events.csv`                    | (Output) Per-event data export for ad-hoc slicing.                                                                      |
+| `ml/findings.json`                                    | (Modified) Append three blocks: walls, magnet, charm-zero.                                                              |
 
 **Note on plot directory:** Existing `01–04` scripts use `ml/plots/periscope-eda/` (hyphen). The spec said `periscope_eda` (underscore) — we match the existing on-disk convention (hyphen) and update the spec footnote at the end.
 
@@ -61,6 +61,7 @@ SQL
 - [ ] **Step 2: Decide go/no-go**
 
 Per spec §"Pre-flight check":
+
 - `reads_with_both_walls ≥ 60` → run primary tests as specified
 - `30 ≤ reads_with_both_walls < 60` → run, flag wide CIs in findings.json
 - `reads_with_both_walls < 30` → STOP. Report descriptively only; do not run primary tests. Add note to findings.json: `"power": "underpowered (N<30)"`.
@@ -94,6 +95,7 @@ Any row that comes back (especially `regular_bars` near 0) indicates a coverage 
 ### Task 1: Create lib file and constants
 
 **Files:**
+
 - Create: `ml/src/periscope_gamma_wall_lib.py`
 - Create: `ml/tests/test_periscope_gamma_wall_lib.py`
 
@@ -190,6 +192,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 ### Task 2: Distance bucket function
 
 **Files:**
+
 - Modify: `ml/src/periscope_gamma_wall_lib.py`
 - Modify: `ml/tests/test_periscope_gamma_wall_lib.py`
 
@@ -275,6 +278,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 ### Task 3: Wall event measurement function
 
 **Files:**
+
 - Modify: `ml/src/periscope_gamma_wall_lib.py`
 - Modify: `ml/tests/test_periscope_gamma_wall_lib.py`
 
@@ -528,6 +532,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 ### Task 4: Magnet event function
 
 **Files:**
+
 - Modify: `ml/src/periscope_gamma_wall_lib.py`
 - Modify: `ml/tests/test_periscope_gamma_wall_lib.py`
 
@@ -636,6 +641,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 ### Task 5: Charm-zero cross + sham mirror
 
 **Files:**
+
 - Modify: `ml/src/periscope_gamma_wall_lib.py`
 - Modify: `ml/tests/test_periscope_gamma_wall_lib.py`
 
@@ -767,6 +773,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 ### Task 6: Scaffold runner with CLI and DB fetch
 
 **Files:**
+
 - Create: `ml/src/periscope_eda/05_gamma_wall_reversal.py`
 
 - [ ] **Step 1: Write the runner scaffold**
@@ -911,6 +918,7 @@ ml/.venv/bin/python ml/src/periscope_eda/05_gamma_wall_reversal.py
 ```
 
 Expected output:
+
 ```
 Fetching periscope reads with key_levels…
   N reads = <N>
@@ -935,6 +943,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 ### Task 7: Build per-event DataFrame (walls + magnet + charm-zero)
 
 **Files:**
+
 - Modify: `ml/src/periscope_eda/05_gamma_wall_reversal.py`
 
 - [ ] **Step 1: Add event-builder function**
@@ -1088,6 +1097,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 ### Task 8: McNemar test (walls)
 
 **Files:**
+
 - Modify: `ml/src/periscope_eda/05_gamma_wall_reversal.py`
 
 - [ ] **Step 1: Add walls primary test function**
@@ -1220,6 +1230,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 ### Task 9: Wilcoxon test (magnet)
 
 **Files:**
+
 - Modify: `ml/src/periscope_eda/05_gamma_wall_reversal.py`
 
 - [ ] **Step 1: Add magnet primary test function**
@@ -1303,6 +1314,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 ### Task 10: McNemar test (charm-zero)
 
 **Files:**
+
 - Modify: `ml/src/periscope_eda/05_gamma_wall_reversal.py`
 
 - [ ] **Step 1: Add charm-zero primary test function**
@@ -1390,6 +1402,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 ### Task 11: Plot 1 — Wall reversal bars (real vs sham by bucket)
 
 **Files:**
+
 - Modify: `ml/src/periscope_eda/05_gamma_wall_reversal.py`
 
 - [ ] **Step 1: Add plot function**
@@ -1496,6 +1509,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 ### Task 12: Plot 2 — Distance histogram
 
 **Files:**
+
 - Modify: `ml/src/periscope_eda/05_gamma_wall_reversal.py`
 
 - [ ] **Step 1: Add plot function**
@@ -1551,6 +1565,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 ### Task 13: Plot 3 — Magnet predictor scatter
 
 **Files:**
+
 - Modify: `ml/src/periscope_eda/05_gamma_wall_reversal.py`
 
 - [ ] **Step 1: Add plot function**
@@ -1618,6 +1633,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 ### Task 14: Plot 4 — Charm-zero cross rates
 
 **Files:**
+
 - Modify: `ml/src/periscope_eda/05_gamma_wall_reversal.py`
 
 - [ ] **Step 1: Add plot function**
@@ -1700,6 +1716,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 ### Task 15: Append to findings.json
 
 **Files:**
+
 - Modify: `ml/src/periscope_eda/05_gamma_wall_reversal.py`
 - Modify: `ml/findings.json`
 
@@ -1842,6 +1859,7 @@ for r in d['results']:
 ```
 
 Expected output (numbers will vary):
+
 ```
 walls_hold                      verdict=fail        p=0.21    n=87
 magnet_predicts_close           verdict=fail        p=0.65    n=42
