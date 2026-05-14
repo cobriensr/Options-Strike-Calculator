@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
@@ -61,18 +61,23 @@ def _bars_from_prices(prices: list[float], start_minute: int = 0) -> pd.DataFram
 
     All bars on 2026-05-14, market_time = 'r'. Starts at 14:30 UTC + start_minute.
     """
-    base = datetime(2026, 5, 14, 14, 30, tzinfo=timezone.utc)
-    return pd.DataFrame({
-        "timestamp": [base + pd.Timedelta(minutes=start_minute + i)
-                      for i in range(len(prices))],
-        "close": prices,
-    })
+    base = datetime(2026, 5, 14, 14, 30, tzinfo=UTC)
+    return pd.DataFrame(
+        {
+            "timestamp": [
+                base + pd.Timedelta(minutes=start_minute + i)
+                for i in range(len(prices))
+            ],
+            "close": prices,
+        }
+    )
 
 
 def test_wall_event_never_touched():
     bars = _bars_from_prices([4995.0, 5000.0, 5005.0, 5002.0, 4998.0])
-    ev = compute_wall_event(bars, wall_strike=5020.0, wall_type="ceiling",
-                            spot_at_read=5000.0)
+    ev = compute_wall_event(
+        bars, wall_strike=5020.0, wall_type="ceiling", spot_at_read=5000.0
+    )
     assert ev["touched"] is False
     assert ev["classification"] == "never_touched"
     assert ev["success"] == 0
@@ -84,8 +89,9 @@ def test_wall_event_never_touched():
 def test_wall_event_held_ceiling():
     prices = [5000.0, 5002.0, 5005.0] + [5004.0] * 14 + [4998.0]
     bars = _bars_from_prices(prices)
-    ev = compute_wall_event(bars, wall_strike=5005.0, wall_type="ceiling",
-                            spot_at_read=5000.0)
+    ev = compute_wall_event(
+        bars, wall_strike=5005.0, wall_type="ceiling", spot_at_read=5000.0
+    )
     assert ev["touched"] is True
     assert ev["classification"] == "held"
     assert ev["success"] == 1
@@ -97,8 +103,9 @@ def test_wall_event_held_ceiling():
 def test_wall_event_broken_ceiling():
     prices = [5000.0, 5003.0, 5005.0] + [5006.0] * 14 + [5010.0]
     bars = _bars_from_prices(prices)
-    ev = compute_wall_event(bars, wall_strike=5005.0, wall_type="ceiling",
-                            spot_at_read=5000.0)
+    ev = compute_wall_event(
+        bars, wall_strike=5005.0, wall_type="ceiling", spot_at_read=5000.0
+    )
     assert ev["touched"] is True
     assert ev["classification"] == "broken"
     assert ev["success"] == 0
@@ -108,8 +115,9 @@ def test_wall_event_broken_ceiling():
 def test_wall_event_stalled_ceiling():
     prices = [5000.0, 5003.0, 5005.0] + [5004.0] * 14 + [5001.0]
     bars = _bars_from_prices(prices)
-    ev = compute_wall_event(bars, wall_strike=5005.0, wall_type="ceiling",
-                            spot_at_read=5000.0)
+    ev = compute_wall_event(
+        bars, wall_strike=5005.0, wall_type="ceiling", spot_at_read=5000.0
+    )
     assert ev["touched"] is True
     assert ev["classification"] == "stalled"
     assert ev["success"] == 0
@@ -118,8 +126,9 @@ def test_wall_event_stalled_ceiling():
 def test_wall_event_held_floor():
     prices = [5000.0, 4998.0, 4995.0] + [4997.0] * 14 + [5003.0]
     bars = _bars_from_prices(prices)
-    ev = compute_wall_event(bars, wall_strike=4995.0, wall_type="floor",
-                            spot_at_read=5000.0)
+    ev = compute_wall_event(
+        bars, wall_strike=4995.0, wall_type="floor", spot_at_read=5000.0
+    )
     assert ev["touched"] is True
     assert ev["classification"] == "held"
     assert ev["success"] == 1
@@ -128,8 +137,9 @@ def test_wall_event_held_floor():
 def test_wall_event_censored_when_window_extends_past_bars():
     prices = [5000.0, 5003.0, 5005.0]
     bars = _bars_from_prices(prices)
-    ev = compute_wall_event(bars, wall_strike=5005.0, wall_type="ceiling",
-                            spot_at_read=5000.0)
+    ev = compute_wall_event(
+        bars, wall_strike=5005.0, wall_type="ceiling", spot_at_read=5000.0
+    )
     assert ev["touched"] is True
     assert ev["classification"] == "censored"
     assert ev["success"] == 0
@@ -138,8 +148,9 @@ def test_wall_event_censored_when_window_extends_past_bars():
 def test_wall_event_touch_tolerance_at_boundary():
     prices = [5004.0] + [5004.0] * 16
     bars = _bars_from_prices(prices)
-    ev = compute_wall_event(bars, wall_strike=5005.0, wall_type="ceiling",
-                            spot_at_read=5000.0)
+    ev = compute_wall_event(
+        bars, wall_strike=5005.0, wall_type="ceiling", spot_at_read=5000.0
+    )
     assert ev["touched"] is True
 
 
@@ -147,13 +158,14 @@ from periscope_gamma_wall_lib import compute_magnet_event
 
 
 def test_magnet_event_excluded_when_too_close_to_spot():
-    assert compute_magnet_event(spx_close=5000.0, magnet=5001.0,
-                                spot_at_read=5000.0) is None
+    assert (
+        compute_magnet_event(spx_close=5000.0, magnet=5001.0, spot_at_read=5000.0)
+        is None
+    )
 
 
 def test_magnet_event_beats_naive():
-    ev = compute_magnet_event(spx_close=5008.0, magnet=5010.0,
-                              spot_at_read=5000.0)
+    ev = compute_magnet_event(spx_close=5008.0, magnet=5010.0, spot_at_read=5000.0)
     assert ev is not None
     assert ev["err_magnet"] == pytest.approx(4.0)
     assert ev["err_naive"] == pytest.approx(64.0)
@@ -162,8 +174,7 @@ def test_magnet_event_beats_naive():
 
 
 def test_magnet_event_loses_to_naive():
-    ev = compute_magnet_event(spx_close=5001.0, magnet=5010.0,
-                              spot_at_read=5000.0)
+    ev = compute_magnet_event(spx_close=5001.0, magnet=5010.0, spot_at_read=5000.0)
     assert ev is not None
     assert ev["delta"] > 0
     assert ev["magnet_won"] is False
@@ -179,8 +190,9 @@ def test_mirror_strike_reflects_across_spot():
 
 def test_charm_zero_excluded_when_degenerate():
     bars = _bars_from_prices([5000.0, 5001.0, 5002.0])
-    assert compute_charm_zero_event(bars, charm_zero=5000.5,
-                                    spot_at_read=5000.0) is None
+    assert (
+        compute_charm_zero_event(bars, charm_zero=5000.5, spot_at_read=5000.0) is None
+    )
 
 
 def test_charm_zero_crossed_real_not_sham():

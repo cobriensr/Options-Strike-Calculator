@@ -10,7 +10,6 @@ Spec: docs/superpowers/specs/periscope-gamma-wall-edge-2026-05-14.md
 
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import Literal
 
 import pandas as pd
@@ -90,8 +89,7 @@ def compute_wall_event(
 
     spx_close = float(bars["close"].iloc[-1])
     breached_eod = (
-        spx_close > wall_strike if wall_type == "ceiling"
-        else spx_close < wall_strike
+        spx_close > wall_strike if wall_type == "ceiling" else spx_close < wall_strike
     )
 
     touch_mask = (bars["close"] - wall_strike).abs() <= TOUCH_TOLERANCE_PTS
