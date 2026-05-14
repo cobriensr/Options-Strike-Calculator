@@ -227,11 +227,11 @@ describe('GET /api/interval-ba-feed', () => {
     expect(body.alerts[0]!.confluence_tickers).toEqual(['SPY', 'QQQ']);
   });
 
-  it('?confluenceOnly=1 drops rows with empty confluence_tickers', async () => {
+  it('?confluenceOnly=1 binds the confluence gate into the SQL', async () => {
+    // SQL now applies the filter — the mock returns only what the
+    // filtered query would return (just the partnered row).
     mockSql.mockResolvedValue([
-      { ...RAW_ROW, id: 10, confluence_tickers: null }, // solo
-      { ...RAW_ROW, id: 11, confluence_tickers: [] }, // also solo
-      { ...RAW_ROW, id: 12, confluence_tickers: ['SPY'] }, // partnered
+      { ...RAW_ROW, id: 12, confluence_tickers: ['SPY'] },
     ]);
     const res = mockResponse();
     await handler(
@@ -241,17 +241,46 @@ describe('GET /api/interval-ba-feed', () => {
       }),
       res,
     );
+    expect(res._status).toBe(200);
+    // The SQL template must contain the confluence gate so the LIMIT
+    // operates against the filtered set, not the full universe.
+    const call = mockSql.mock.calls.at(-1) as unknown[];
+    const strings = call[0] as TemplateStringsArray | undefined;
+    const sqlText = (strings ?? []).join(' ');
+    expect(sqlText).toContain('confluence_tickers IS NOT NULL');
+    expect(sqlText).toContain('cardinality(confluence_tickers)');
     const body = res._json as {
       alerts: Array<{ id: number }>;
       summary: { count: number };
     };
     expect(body.alerts).toHaveLength(1);
     expect(body.alerts[0]!.id).toBe(12);
-    // Summary recomputed from filtered set.
     expect(body.summary.count).toBe(1);
   });
 
-  it('confluenceOnly with no value or wrong value passes through all', async () => {
+  it('confluenceOnly=1 does NOT apply a JS post-filter (SQL gate is authoritative)', async () => {
+    // Regression-proofing: if someone re-adds a JS .filter() on top of
+    // the SQL gate, this test fails. We feed the mock a row with empty
+    // confluence_tickers — a row that the real SQL gate would never
+    // return, but the mock returns regardless. If JS-side filtering is
+    // re-introduced, this row gets dropped and the assertion fails.
+    mockSql.mockResolvedValue([
+      { ...RAW_ROW, id: 99, confluence_tickers: [] },
+    ]);
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { date: '2026-03-27', confluenceOnly: '1' },
+      }),
+      res,
+    );
+    const body = res._json as { alerts: Array<{ id: number }> };
+    expect(body.alerts).toHaveLength(1);
+    expect(body.alerts[0]!.id).toBe(99);
+  });
+
+  it('confluenceOnly with no value or wrong value leaves the gate off (NULL sentinel)', async () => {
     mockSql.mockResolvedValue([
       { ...RAW_ROW, id: 1, confluence_tickers: null },
       { ...RAW_ROW, id: 2, confluence_tickers: ['SPY'] },
@@ -264,8 +293,14 @@ describe('GET /api/interval-ba-feed', () => {
       }),
       res,
     );
+    expect(res._status).toBe(200);
+    // The gate compiles to `(NULL::text IS NULL OR …)` so Postgres
+    // short-circuits to TRUE — every row passes. Verify the bound
+    // parameter is null.
+    const call = mockSql.mock.calls.at(-1) as unknown[];
+    const params = call.slice(1) as Array<unknown>;
+    expect(params).toContain(null);
     const body = res._json as { alerts: Array<{ id: number }> };
-    // Anything but the literal string "1" leaves the filter off.
     expect(body.alerts).toHaveLength(2);
   });
 });

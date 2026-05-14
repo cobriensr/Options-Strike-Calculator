@@ -132,7 +132,8 @@ export function formatIntervalBANotificationTitle(
   const base = formatIntervalBATitle(alert);
   if (alert.confluence_tickers.length === 0) return base;
   const partners = [...alert.confluence_tickers].sort();
-  return `${base} ${partners.map((t) => `+${t}`).join(' ')}`;
+  const suffix = partners.map((t) => '+' + t).join(' ');
+  return `${base} ${suffix}`;
 }
 
 /** Sentence-form alert body — e.g. "$1.33M premium / 5 trades — top: $408K sweep". */

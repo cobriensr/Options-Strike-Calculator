@@ -235,11 +235,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           : 0;
 
       // Phase 5: optional filter to only confluence (multi-symbol) fires.
-      // Applied in JS after the SQL fetch — at MAX_ROWS=500 the overhead
-      // is negligible vs the complexity of branching the SQL template
-      // four ways (optionType × confluenceOnly). The summary is rebuilt
-      // post-filter so the displayed tier counts match the visible rows.
+      // Pushed into the SQL WHERE via the `IS NULL OR ...` sentinel
+      // pattern so the MAX_ROWS=500 LIMIT operates against the filtered
+      // set, not the full universe. The earlier JS-side post-filter was
+      // silently truncating: 800 alerts ÷ 50 confluence meant the user
+      // could get only the confluence fires that happened to be in the
+      // top-500-by-fired_at, depending on the day's mix. The cardinality
+      // predicate is not GIN-indexable (GIN serves @>, <@, &&, = ANY),
+      // so the planner uses a seq scan + filter on the rowset already
+      // bounded by the (expiry, fired_at) range index — acceptable
+      // because a day's interval_ba_alerts is on the order of 10^3 rows.
       const confluenceOnly = req.query.confluenceOnly === '1';
+      const confluenceFilterTok: string | null = confluenceOnly ? '1' : null;
 
       const fromUtc = ctWallClockToUtcIso(dateStr, startMin);
       const toUtc = ctWallClockToUtcIso(dateStr, endMin);
@@ -267,6 +274,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               AND fired_at <  ${toUtc}
               AND option_type = ${optionType}
               AND total_premium >= ${minPremium}
+              AND (${confluenceFilterTok}::text IS NULL OR (
+                confluence_tickers IS NOT NULL
+                AND cardinality(confluence_tickers) > 0
+              ))
             ORDER BY fired_at DESC
             LIMIT ${MAX_ROWS}
           `
@@ -282,15 +293,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               AND fired_at >= ${fromUtc}
               AND fired_at <  ${toUtc}
               AND total_premium >= ${minPremium}
+              AND (${confluenceFilterTok}::text IS NULL OR (
+                confluence_tickers IS NOT NULL
+                AND cardinality(confluence_tickers) > 0
+              ))
             ORDER BY fired_at DESC
             LIMIT ${MAX_ROWS}
           `;
       const rows = rawRows as unknown as RawRow[];
 
-      const allAlerts = rows.map(shapeRow);
-      const alerts = confluenceOnly
-        ? allAlerts.filter((a) => a.confluence_tickers.length > 0)
-        : allAlerts;
+      const alerts = rows.map(shapeRow);
       const summary = buildSummary(alerts);
 
       res.setHeader('Cache-Control', 'no-store');

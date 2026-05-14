@@ -126,8 +126,8 @@ class Settings(BaseSettings):
     # Per-ticker opt-in. Each handler (SPY/SPXW/QQQ) gates its DB+push
     # path on its ticker being present here. Defaults to all three;
     # operator can silence one (e.g. drop "QQQ") via the env var
-    # INTERVAL_BA_TICKERS=SPY,SPXW without a code change. Stored as a
-    # comma-separated string + parsed via the ``interval_ba_tickers``
+    # INTERVAL_BA_TICKERS_CSV=SPY,SPXW without a code change. Stored as
+    # a comma-separated string + parsed via the ``interval_ba_tickers``
     # property so the env shape matches ws_channels' convention.
     interval_ba_tickers_csv: str = "SPY,SPXW,QQQ"
 
