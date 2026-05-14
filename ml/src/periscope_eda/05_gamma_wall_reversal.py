@@ -39,7 +39,7 @@ sys.path.insert(0, str(_ML_SRC))
 import pandas as pd  # noqa: E402
 import psycopg2  # noqa: E402
 
-from periscope_gamma_wall_lib import (  # noqa: E402, F401
+from periscope_gamma_wall_lib import (  # noqa: E402
     compute_charm_zero_event,
     compute_magnet_event,
     compute_wall_event,
@@ -99,6 +99,113 @@ def fetch_bars_for_read(conn, trading_date, read_time_utc) -> pd.DataFrame:
     )
 
 
+def build_events(reads: pd.DataFrame, database_url: str) -> dict[str, pd.DataFrame]:
+    """For each read, compute all per-event rows for the three claims.
+
+    Returns dict with keys 'walls', 'magnet', 'charm' — each a DataFrame.
+
+    Walls DataFrame columns:
+        read_id, trading_date, read_time_utc, mode, calibration_quality,
+        spot_at_read, wall_type, wall_strike, real_or_sham, distance_initial,
+        bucket, touched, classification, reversal_signed, breached_eod, success
+    """
+    wall_rows: list[dict] = []
+    magnet_rows: list[dict] = []
+    charm_rows: list[dict] = []
+    excluded_no_bars = 0
+
+    with psycopg2.connect(database_url) as conn:
+        for _, r in reads.iterrows():
+            bars = fetch_bars_for_read(conn, r.trading_date, r.read_time_utc)
+            if bars.empty:
+                excluded_no_bars += 1
+                continue
+
+            spx_close = float(bars["close"].iloc[-1])
+
+            for wall_type, real_strike in (
+                ("ceiling", r.wall_ceiling),
+                ("floor", r.wall_floor),
+            ):
+                if pd.isna(real_strike):
+                    continue
+                ev_real = compute_wall_event(
+                    bars,
+                    float(real_strike),
+                    wall_type,
+                    float(r.spot_at_read),
+                )
+                sham_strike = mirror_strike(float(r.spot_at_read), float(real_strike))
+                sham_type: str = "floor" if wall_type == "ceiling" else "ceiling"
+                ev_sham = compute_wall_event(
+                    bars,
+                    sham_strike,
+                    sham_type,
+                    float(r.spot_at_read),
+                )
+                for tag, ev, strike in (
+                    ("real", ev_real, float(real_strike)),
+                    ("sham", ev_sham, sham_strike),
+                ):
+                    wall_rows.append(
+                        {
+                            "read_id": int(r.read_id),
+                            "trading_date": r.trading_date,
+                            "read_time_utc": r.read_time_utc,
+                            "mode": r["mode"],
+                            "calibration_quality": r.calibration_quality,
+                            "spot_at_read": float(r.spot_at_read),
+                            "wall_type": wall_type,
+                            "wall_strike": strike,
+                            "real_or_sham": tag,
+                            **ev,
+                        }
+                    )
+
+            if pd.notna(r.magnet):
+                ev = compute_magnet_event(
+                    spx_close, float(r.magnet), float(r.spot_at_read)
+                )
+                if ev is not None:
+                    magnet_rows.append(
+                        {
+                            "read_id": int(r.read_id),
+                            "trading_date": r.trading_date,
+                            "mode": r["mode"],
+                            "calibration_quality": r.calibration_quality,
+                            "spot_at_read": float(r.spot_at_read),
+                            "magnet": float(r.magnet),
+                            "spx_close": spx_close,
+                            **ev,
+                        }
+                    )
+
+            if pd.notna(r.charm_zero):
+                ev = compute_charm_zero_event(
+                    bars, float(r.charm_zero), float(r.spot_at_read)
+                )
+                if ev is not None:
+                    charm_rows.append(
+                        {
+                            "read_id": int(r.read_id),
+                            "trading_date": r.trading_date,
+                            "mode": r["mode"],
+                            "calibration_quality": r.calibration_quality,
+                            "spot_at_read": float(r.spot_at_read),
+                            "charm_zero": float(r.charm_zero),
+                            "bucket": distance_bucket(ev["distance"]),
+                            **ev,
+                        }
+                    )
+
+    print(f"  excluded_no_bar_coverage = {excluded_no_bars}")
+    return {
+        "walls": pd.DataFrame(wall_rows),
+        "magnet": pd.DataFrame(magnet_rows),
+        "charm": pd.DataFrame(charm_rows),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -120,6 +227,17 @@ def main() -> int:
     )
     print(f"  with magnet     = {reads['magnet'].notna().sum()}")
     print(f"  with charm_zero = {reads['charm_zero'].notna().sum()}")
+
+    print("Building events…")
+    events = build_events(reads, args.database_url)
+    print(f"  walls events  (real+sham, ceiling+floor) = {len(events['walls'])}")
+    print(f"  magnet events                            = {len(events['magnet'])}")
+    print(f"  charm events                             = {len(events['charm'])}")
+
+    CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    events["walls"].to_csv(CSV_PATH, index=False)
+    print(f"  wrote {CSV_PATH}")
+
     return 0
 
 
