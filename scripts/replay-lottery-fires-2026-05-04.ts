@@ -138,7 +138,7 @@ async function fetchMacroSnapshot(
   const hit = macroCache.get(cacheKey);
   if (hit) return hit;
   const flowRows = (await db`
-    SELECT source, ncp, npp, otm_ncp, otm_npp
+    SELECT source, ncp, npp
     FROM flow_data
     WHERE timestamp <= ${asOf.toISOString()}
       AND timestamp >= ${asOf.toISOString()}::timestamptz - INTERVAL '30 minutes'
@@ -152,8 +152,6 @@ async function fetchMacroSnapshot(
     source: string;
     ncp: DbNumeric;
     npp: DbNumeric;
-    otm_ncp: DbNullableNumeric;
-    otm_npp: DbNullableNumeric;
   }[];
 
   const spotRows = (await db`
@@ -194,17 +192,12 @@ async function fetchMacroSnapshot(
       }[])
     : [];
 
-  const latestBySource = new Map<
-    string,
-    { ncp: number; npp: number; otmNcp: number | null; otmNpp: number | null }
-  >();
+  const latestBySource = new Map<string, { ncp: number; npp: number }>();
   for (const r of flowRows) {
     if (latestBySource.has(r.source)) continue;
     latestBySource.set(r.source, {
       ncp: Number(r.ncp),
       npp: Number(r.npp),
-      otmNcp: r.otm_ncp != null ? Number(r.otm_ncp) : null,
-      otmNpp: r.otm_npp != null ? Number(r.otm_npp) : null,
     });
   }
   const tide = latestBySource.get('market_tide');
@@ -221,10 +214,10 @@ async function fetchMacroSnapshot(
     mkt_tide_ncp: tide?.ncp ?? null,
     mkt_tide_npp: tide?.npp ?? null,
     mkt_tide_diff: tide ? tide.ncp - tide.npp : null,
-    mkt_tide_otm_diff:
-      otm && otm.otmNcp != null && otm.otmNpp != null
-        ? otm.otmNcp - otm.otmNpp
-        : null,
+    // For source='market_tide_otm', the OTM data lives in the regular
+    // ncp/npp columns — otm_ncp/otm_npp are vestigial and NULL for that
+    // source. Matches the corrected read in api/cron/detect-lottery-fires.ts.
+    mkt_tide_otm_diff: otm ? otm.ncp - otm.npp : null,
     spx_flow_diff: spxF ? spxF.ncp - spxF.npp : null,
     spy_etf_diff: spyE ? spyE.ncp - spyE.npp : null,
     qqq_etf_diff: qqqE ? qqqE.ncp - qqqE.npp : null,

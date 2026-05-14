@@ -182,7 +182,7 @@ def fetch_macro(
     iso = asof_utc.isoformat()
     cur.execute(
         """
-        SELECT source, ncp, npp, otm_ncp, otm_npp
+        SELECT source, ncp, npp
         FROM flow_data
         WHERE timestamp <= %s::timestamptz
           AND timestamp >= %s::timestamptz - INTERVAL '30 minutes'
@@ -229,14 +229,12 @@ def fetch_macro(
         strike_row = cur.fetchone()
 
     latest_by_source: dict[str, dict] = {}
-    for src, ncp, npp, otm_ncp, otm_npp in flow_rows:
+    for src, ncp, npp in flow_rows:
         if src in latest_by_source:
             continue
         latest_by_source[src] = {
             'ncp': float(ncp) if ncp is not None else 0,
             'npp': float(npp) if npp is not None else 0,
-            'otm_ncp': float(otm_ncp) if otm_ncp is not None else None,
-            'otm_npp': float(otm_npp) if otm_npp is not None else None,
         }
 
     tide = latest_by_source.get('market_tide')
@@ -250,11 +248,10 @@ def fetch_macro(
         'mkt_tide_ncp': tide['ncp'] if tide else None,
         'mkt_tide_npp': tide['npp'] if tide else None,
         'mkt_tide_diff': (tide['ncp'] - tide['npp']) if tide else None,
-        'mkt_tide_otm_diff': (
-            otm['otm_ncp'] - otm['otm_npp']
-            if otm and otm['otm_ncp'] is not None and otm['otm_npp'] is not None
-            else None
-        ),
+        # For source='market_tide_otm', OTM data lives in the regular
+        # ncp/npp columns — otm_ncp/otm_npp are vestigial NULLs for that
+        # source. Mirrors api/cron/detect-lottery-fires.ts.
+        'mkt_tide_otm_diff': (otm['ncp'] - otm['npp']) if otm else None,
         'spx_flow_diff': (spx_f['ncp'] - spx_f['npp']) if spx_f else None,
         'spy_etf_diff': (spy_e['ncp'] - spy_e['npp']) if spy_e else None,
         'qqq_etf_diff': (qqq_e['ncp'] - qqq_e['npp']) if qqq_e else None,

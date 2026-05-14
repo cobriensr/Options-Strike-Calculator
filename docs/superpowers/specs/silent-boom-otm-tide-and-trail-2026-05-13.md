@@ -42,6 +42,12 @@ Lottery already has the column but is only populated 2026-05-04+ for the all-in 
 - Sample-check 3 fires manually: confirm the backfilled value matches a hand-computed point-in-time lookup against `flow_data`
 - Re-run the direction gate analysis from this session against the OTM variant. Compare optimal T and lift vs all-in. Pick the better signal per detector → feeds Phase 4.
 
+**Prod deploy ordering** (OWNER_SECRET is empty in prod per [feedback_owner_secret_empty_in_prod](../../.claude/projects/-Users-charlesobrien-Documents-Workspace-strike-calculator/memory/feedback_owner_secret_empty_in_prod.md) — migrations require direct psql):
+
+1. Apply migration #149 in prod via psql FIRST (`ALTER TABLE silent_boom_alerts ADD COLUMN IF NOT EXISTS mkt_tide_otm_diff NUMERIC;` + `INSERT INTO schema_migrations (id, description, applied_at) VALUES (149, '...', NOW()) ON CONFLICT (id) DO NOTHING;`)
+2. THEN merge / deploy the detector patch. If the order is reversed, the next `detect-silent-boom` cron run will fail on `column "mkt_tide_otm_diff" does not exist`.
+3. Run `scripts/backfill_otm_tide_on_alerts.py` against prod after the migration to fill historical rows.
+
 ### Phase 2 — Trail-30/10 column + enrichment (1 day)
 
 Add `realized_trail30_10_pct` to `silent_boom_alerts`, adapt the existing Python enrichment script to compute it, run one-time backfill on 15,094 historical fires.
