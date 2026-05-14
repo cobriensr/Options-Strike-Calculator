@@ -76,6 +76,7 @@ FROM periscope_analyses;
 ```
 
 **Power thresholds (informal, not formal power analysis):**
+
 - If `reads_with_both_walls < 30` → flag underpowered, report
   descriptively only; do not draw conclusions.
 - If `reads_with_both_walls ≥ 60` → run primary tests as specified.
@@ -96,18 +97,18 @@ AND key_levels IS NOT NULL
 
 Extract per row:
 
-| Field | Source |
-|---|---|
-| `read_id` | `id` |
-| `trading_date` | `trading_date` |
-| `read_time_utc` | `read_time` |
-| `spot_at_read` | `spot_at_read_time` |
-| `mode` | `mode` |
-| `calibration_quality` | `calibration_quality` |
-| `wall_ceiling` | `key_levels->>'gamma_ceiling'::numeric` |
-| `wall_floor` | `key_levels->>'gamma_floor'::numeric` |
-| `magnet` | `key_levels->>'magnet'::numeric` |
-| `charm_zero` | `key_levels->>'charm_zero'::numeric` |
+| Field                 | Source                                  |
+| --------------------- | --------------------------------------- |
+| `read_id`             | `id`                                    |
+| `trading_date`        | `trading_date`                          |
+| `read_time_utc`       | `read_time`                             |
+| `spot_at_read`        | `spot_at_read_time`                     |
+| `mode`                | `mode`                                  |
+| `calibration_quality` | `calibration_quality`                   |
+| `wall_ceiling`        | `key_levels->>'gamma_ceiling'::numeric` |
+| `wall_floor`          | `key_levels->>'gamma_floor'::numeric`   |
+| `magnet`              | `key_levels->>'magnet'::numeric`        |
+| `charm_zero`          | `key_levels->>'charm_zero'::numeric`    |
 
 ### Source 2 — `spx_candles_1m` (compat view; underlying table `index_candles_1m`)
 
@@ -176,13 +177,13 @@ def measure_wall(read, bars, wall_strike, wall_type):
 
 ### Pre-registered knobs (FIXED, do not tune post-hoc)
 
-| Knob | Value | Rationale |
-|---|---|---|
-| Touch tolerance | ±1.0 SPX point | Tighter than 5pt strike grid; loose enough not to miss intra-bar touches |
-| Reversal threshold | ±2.0 SPX points | Roughly 1× typical 1-min SPX bar range; meaningful but not noise |
-| Reversal window | 15 minutes post-touch | Long enough for one full hedge cycle; short enough to attribute to the wall |
-| Distance buckets | `[0,3), [3,7), [7,15), [15,∞)` | Reflect "trivially close" / "near" / "tactically meaningful" / "out of reach" |
-| Primary distance pool | `[3, 15)` | Excludes trivial touches and thin-N far walls |
+| Knob                  | Value                          | Rationale                                                                     |
+| --------------------- | ------------------------------ | ----------------------------------------------------------------------------- |
+| Touch tolerance       | ±1.0 SPX point                 | Tighter than 5pt strike grid; loose enough not to miss intra-bar touches      |
+| Reversal threshold    | ±2.0 SPX points                | Roughly 1× typical 1-min SPX bar range; meaningful but not noise              |
+| Reversal window       | 15 minutes post-touch          | Long enough for one full hedge cycle; short enough to attribute to the wall   |
+| Distance buckets      | `[0,3), [3,7), [7,15), [15,∞)` | Reflect "trivially close" / "near" / "tactically meaningful" / "out of reach" |
+| Primary distance pool | `[3, 15)`                      | Excludes trivial touches and thin-N far walls                                 |
 
 ## Per-event measurement (Claim 2: magnet)
 
@@ -225,10 +226,10 @@ For each event, define `success = 1` if `touched=True AND classification='held'`
 
 Pair per `(read_id, wall_type)`: each read+wall_type produces one `(real_success, sham_success)` pair.
 
-| Claim | Test | Required p | Effect size minimum |
-|---|---|---|---|
-| 1. Walls | Paired McNemar (exact, two-sided) on `success` for real vs sham, restricted to events with `bucket ∈ {3-7, 7-15}` | `< 0.0167` | `P(real_success=1) − P(sham_success=1)` ≥ 10 percentage points |
-| 2. Magnet | Wilcoxon signed-rank on `delta = err_magnet − err_naive` over reads with `\|magnet − spot\| ≥ 3` | `< 0.0167` | Median `delta` < 0 with `\|median(delta)\|` ≥ 1 SPX point² |
+| Claim         | Test                                                                                                                                       | Required p | Effect size minimum                                                                                               |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ---------- | ----------------------------------------------------------------------------------------------------------------- |
+| 1. Walls      | Paired McNemar (exact, two-sided) on `success` for real vs sham, restricted to events with `bucket ∈ {3-7, 7-15}`                          | `< 0.0167` | `P(real_success=1) − P(sham_success=1)` ≥ 10 percentage points                                                    |
+| 2. Magnet     | Wilcoxon signed-rank on `delta = err_magnet − err_naive` over reads with `\|magnet − spot\| ≥ 3`                                           | `< 0.0167` | Median `delta` < 0 with `\|median(delta)\|` ≥ 1 SPX point²                                                        |
 | 3. Charm-zero | Paired McNemar (exact, two-sided) on `crossed_real` vs `crossed_sham` over reads with `\|charm_zero − spot\| ≥ 1` (degenerate-pair filter) | `< 0.0167` | `\|P(crossed_real) − P(crossed_sham)\|` ≥ 10 percentage points (direction not pre-specified — either sign counts) |
 
 ### Secondary (descriptive, NOT used for accept/reject)
@@ -307,14 +308,14 @@ Reads `DATABASE_URL` from `.env.local` via the existing
 
 ## Decision tree (post-experiment)
 
-| Walls | Magnet | Charm-zero | Implication / next step |
-|---|---|---|---|
-| Pass | — | — | Worth a follow-up: does the wall edge survive translation to SPX option premium? (Separate experiment) |
-| Fail | — | — | The "walls hold" claim is unsupported on user's actual read set. Reconsider stop-placement workflow. |
-| — | Pass | — | Magnet can become a feature in the analyze prompt context (predicted EOD level) |
-| — | Fail | — | Drop magnet language from periscope debrief framing — it's not adding information beyond spot |
-| — | — | Pass | Charm-zero is a real intraday-direction signal — possible analyze-prompt feature |
-| — | — | Fail | Charm-zero is decorative; deprecate from key_levels emphasis |
+| Walls | Magnet | Charm-zero | Implication / next step                                                                                |
+| ----- | ------ | ---------- | ------------------------------------------------------------------------------------------------------ |
+| Pass  | —      | —          | Worth a follow-up: does the wall edge survive translation to SPX option premium? (Separate experiment) |
+| Fail  | —      | —          | The "walls hold" claim is unsupported on user's actual read set. Reconsider stop-placement workflow.   |
+| —     | Pass   | —          | Magnet can become a feature in the analyze prompt context (predicted EOD level)                        |
+| —     | Fail   | —          | Drop magnet language from periscope debrief framing — it's not adding information beyond spot          |
+| —     | —      | Pass       | Charm-zero is a real intraday-direction signal — possible analyze-prompt feature                       |
+| —     | —      | Fail       | Charm-zero is decorative; deprecate from key_levels emphasis                                           |
 
 ## Open questions (must answer before implementation)
 
