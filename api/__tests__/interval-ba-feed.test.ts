@@ -248,7 +248,9 @@ describe('GET /api/interval-ba-feed', () => {
     const strings = call[0] as TemplateStringsArray | undefined;
     const sqlText = (strings ?? []).join(' ');
     expect(sqlText).toContain('confluence_tickers IS NOT NULL');
-    expect(sqlText).toContain('cardinality(confluence_tickers)');
+    // Aliased to `a` after the WITH base CTE was introduced for the
+    // SPXW→SPX spot fallback.
+    expect(sqlText).toContain('cardinality(a.confluence_tickers)');
     const body = res._json as {
       alerts: Array<{ id: number }>;
       summary: { count: number };
@@ -264,9 +266,7 @@ describe('GET /api/interval-ba-feed', () => {
     // confluence_tickers — a row that the real SQL gate would never
     // return, but the mock returns regardless. If JS-side filtering is
     // re-introduced, this row gets dropped and the assertion fails.
-    mockSql.mockResolvedValue([
-      { ...RAW_ROW, id: 99, confluence_tickers: [] },
-    ]);
+    mockSql.mockResolvedValue([{ ...RAW_ROW, id: 99, confluence_tickers: [] }]);
     const res = mockResponse();
     await handler(
       mockRequest({
@@ -302,6 +302,81 @@ describe('GET /api/interval-ba-feed', () => {
     expect(params).toContain(null);
     const body = res._json as { alerts: Array<{ id: number }> };
     expect(body.alerts).toHaveLength(2);
+  });
+
+  // SPXW underlying_price fallback — the SELECT now COALESCEs the
+  // on-row underlying_price with the closest-prior SPX 1m candle
+  // close via LEFT JOIN LATERAL on index_candles_1m.
+  it('SQL JOINs index_candles_1m to fill SPXW underlying_price', async () => {
+    mockSql.mockResolvedValue([]);
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { date: '2026-03-27' } }),
+      res,
+    );
+    expect(res._status).toBe(200);
+    const call = mockSql.mock.calls.at(-1) as unknown[];
+    const strings = call[0] as TemplateStringsArray | undefined;
+    const sqlText = (strings ?? []).join(' ');
+    expect(sqlText).toContain('index_candles_1m');
+    expect(sqlText).toContain("a.ticker = 'SPXW'");
+    expect(sqlText).toContain("c.symbol = 'SPX'");
+    expect(sqlText).toContain('COALESCE');
+    expect(sqlText).toContain('effective_spot AS underlying_price');
+  });
+
+  // Moneyness filter — single-select chip on the UI. Compiles to a
+  // `(NULL::text IS NULL OR …)` gate against the COALESCEd spot.
+  it('?moneyness=ITM binds the ITM gate into the SQL', async () => {
+    mockSql.mockResolvedValue([]);
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { date: '2026-03-27', moneyness: 'ITM' },
+      }),
+      res,
+    );
+    expect(res._status).toBe(200);
+    const call = mockSql.mock.calls.at(-1) as unknown[];
+    const params = call.slice(1) as Array<unknown>;
+    expect(params).toContain('ITM');
+  });
+
+  it('?moneyness=OTM binds the OTM gate into the SQL', async () => {
+    mockSql.mockResolvedValue([]);
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { date: '2026-03-27', moneyness: 'OTM' },
+      }),
+      res,
+    );
+    expect(res._status).toBe(200);
+    const call = mockSql.mock.calls.at(-1) as unknown[];
+    const params = call.slice(1) as Array<unknown>;
+    expect(params).toContain('OTM');
+  });
+
+  it('?moneyness with junk value leaves the gate off (NULL sentinel)', async () => {
+    mockSql.mockResolvedValue([RAW_ROW]);
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { date: '2026-03-27', moneyness: 'wat' },
+      }),
+      res,
+    );
+    expect(res._status).toBe(200);
+    const call = mockSql.mock.calls.at(-1) as unknown[];
+    const params = call.slice(1) as Array<unknown>;
+    // The bound moneyness param is null on bad input, so Postgres
+    // short-circuits the gate to TRUE and every row passes.
+    expect(params).toContain(null);
+    const body = res._json as { alerts: Array<unknown> };
+    expect(body.alerts).toHaveLength(1);
   });
 });
 

@@ -16,6 +16,22 @@
  *   ?minPremium=N          — filter to total_premium >= N USD (default 0)
  *   ?confluenceOnly=1      — only fires with ≥1 cross-symbol partner
  *                            (alerts whose confluence_tickers is non-empty)
+ *   ?moneyness=ITM|OTM     — filter by per-row moneyness state derived
+ *                            from the (option_type, strike, spot) triplet
+ *                            after the SPXW→SPX spot fallback below.
+ *                            ATM (within ±0.05% of strike) is excluded
+ *                            from both ITM-only and OTM-only filters.
+ *
+ * SPXW underlying_price fallback:
+ *   UW does not emit an underlying price on SPXW ticks (SPXW isn't a
+ *   tradable underlying — only the index option chain is). So the
+ *   uw-stream daemon stores NULL for every SPXW row. SPY/QQQ rows have
+ *   the price inline because UW sends it. To make ITM/OTM render
+ *   consistently across all three tickers we LEFT JOIN LATERAL the
+ *   nearest-prior 1m SPX candle (symbol='SPX', date=expiry,
+ *   timestamp ≤ fired_at) and COALESCE into underlying_price. The JOIN
+ *   is a no-op for SPY/QQQ rows because the lateral subquery's
+ *   `ticker = 'SPXW'` guard returns no rows.
  *
  * Response:
  *   {
@@ -248,6 +264,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const confluenceOnly = req.query.confluenceOnly === '1';
       const confluenceFilterTok: string | null = confluenceOnly ? '1' : null;
 
+      // Moneyness filter — NULL means "off" so the gate compiles to
+      // `(NULL IS NULL OR …)` which short-circuits to TRUE. Anything
+      // other than the exact strings 'ITM' / 'OTM' is treated as off.
+      const moneynessRaw = req.query.moneyness as string | undefined;
+      const moneynessFilter: 'ITM' | 'OTM' | null =
+        moneynessRaw === 'ITM' || moneynessRaw === 'OTM' ? moneynessRaw : null;
+
       const fromUtc = ctWallClockToUtcIso(dateStr, startMin);
       const toUtc = ctWallClockToUtcIso(dateStr, endMin);
       if (!fromUtc || !toUtc) {
@@ -260,43 +283,124 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // rather than bucket_start so the user gets exactly the slice
       // they asked for. expiry == dateStr enforces 0DTE per the
       // backfill semantics.
+      //
+      // The LEFT JOIN LATERAL pulls the closest 1m SPX candle at or
+      // before fired_at for SPXW rows; SPY/QQQ rows skip the lookup
+      // because the inner `a.ticker = 'SPXW'` guard yields no match.
+      // The COALESCE means we expose `effective_spot` which the
+      // frontend reads as underlying_price — the on-disk column stays
+      // untouched. moneyness_state in the SELECT is the same logic the
+      // pill renders client-side, recomputed in SQL so the gate can use
+      // it in WHERE without redundant client filtering.
       const rawRows = optionType
         ? await sql`
+            WITH base AS (
+              SELECT a.*,
+                COALESCE(a.underlying_price, spx.close)::numeric AS effective_spot
+              FROM interval_ba_alerts a
+              LEFT JOIN LATERAL (
+                SELECT close
+                FROM index_candles_1m c
+                WHERE a.ticker = 'SPXW'
+                  AND c.symbol = 'SPX'
+                  AND c.date = a.expiry
+                  AND c.timestamp <= a.fired_at
+                ORDER BY c.timestamp DESC
+                LIMIT 1
+              ) spx ON TRUE
+              WHERE a.expiry = ${dateStr}
+                AND a.fired_at >= ${fromUtc}
+                AND a.fired_at <  ${toUtc}
+                AND a.option_type = ${optionType}
+                AND a.total_premium >= ${minPremium}
+                AND (${confluenceFilterTok}::text IS NULL OR (
+                  a.confluence_tickers IS NOT NULL
+                  AND cardinality(a.confluence_tickers) > 0
+                ))
+            )
             SELECT id, option_chain, ticker, option_type, strike, expiry,
                    bucket_start, bucket_end, fired_at, ratio_pct,
                    ask_premium, total_premium, trade_count,
                    top_trade_premium, top_trade_size, top_trade_executed_at,
                    top_trade_is_sweep, top_trade_is_floor,
-                   underlying_price, confluence_tickers
-            FROM interval_ba_alerts
-            WHERE expiry = ${dateStr}
-              AND fired_at >= ${fromUtc}
-              AND fired_at <  ${toUtc}
-              AND option_type = ${optionType}
-              AND total_premium >= ${minPremium}
-              AND (${confluenceFilterTok}::text IS NULL OR (
-                confluence_tickers IS NOT NULL
-                AND cardinality(confluence_tickers) > 0
-              ))
+                   effective_spot AS underlying_price,
+                   confluence_tickers
+            FROM base
+            WHERE (${moneynessFilter}::text IS NULL OR (
+              effective_spot IS NOT NULL
+              AND effective_spot > 0
+              AND ABS(
+                CASE WHEN option_type = 'C'
+                  THEN effective_spot - strike
+                  ELSE strike - effective_spot
+                END
+              ) / effective_spot * 100 > 0.05
+              AND (
+                (${moneynessFilter}::text = 'ITM' AND (
+                  (option_type = 'C' AND effective_spot > strike)
+                  OR (option_type = 'P' AND strike > effective_spot)
+                ))
+                OR (${moneynessFilter}::text = 'OTM' AND (
+                  (option_type = 'C' AND effective_spot < strike)
+                  OR (option_type = 'P' AND strike < effective_spot)
+                ))
+              )
+            ))
             ORDER BY fired_at DESC
             LIMIT ${MAX_ROWS}
           `
         : await sql`
+            WITH base AS (
+              SELECT a.*,
+                COALESCE(a.underlying_price, spx.close)::numeric AS effective_spot
+              FROM interval_ba_alerts a
+              LEFT JOIN LATERAL (
+                SELECT close
+                FROM index_candles_1m c
+                WHERE a.ticker = 'SPXW'
+                  AND c.symbol = 'SPX'
+                  AND c.date = a.expiry
+                  AND c.timestamp <= a.fired_at
+                ORDER BY c.timestamp DESC
+                LIMIT 1
+              ) spx ON TRUE
+              WHERE a.expiry = ${dateStr}
+                AND a.fired_at >= ${fromUtc}
+                AND a.fired_at <  ${toUtc}
+                AND a.total_premium >= ${minPremium}
+                AND (${confluenceFilterTok}::text IS NULL OR (
+                  a.confluence_tickers IS NOT NULL
+                  AND cardinality(a.confluence_tickers) > 0
+                ))
+            )
             SELECT id, option_chain, ticker, option_type, strike, expiry,
                    bucket_start, bucket_end, fired_at, ratio_pct,
                    ask_premium, total_premium, trade_count,
                    top_trade_premium, top_trade_size, top_trade_executed_at,
                    top_trade_is_sweep, top_trade_is_floor,
-                   underlying_price, confluence_tickers
-            FROM interval_ba_alerts
-            WHERE expiry = ${dateStr}
-              AND fired_at >= ${fromUtc}
-              AND fired_at <  ${toUtc}
-              AND total_premium >= ${minPremium}
-              AND (${confluenceFilterTok}::text IS NULL OR (
-                confluence_tickers IS NOT NULL
-                AND cardinality(confluence_tickers) > 0
-              ))
+                   effective_spot AS underlying_price,
+                   confluence_tickers
+            FROM base
+            WHERE (${moneynessFilter}::text IS NULL OR (
+              effective_spot IS NOT NULL
+              AND effective_spot > 0
+              AND ABS(
+                CASE WHEN option_type = 'C'
+                  THEN effective_spot - strike
+                  ELSE strike - effective_spot
+                END
+              ) / effective_spot * 100 > 0.05
+              AND (
+                (${moneynessFilter}::text = 'ITM' AND (
+                  (option_type = 'C' AND effective_spot > strike)
+                  OR (option_type = 'P' AND strike > effective_spot)
+                ))
+                OR (${moneynessFilter}::text = 'OTM' AND (
+                  (option_type = 'C' AND effective_spot < strike)
+                  OR (option_type = 'P' AND strike < effective_spot)
+                ))
+              )
+            ))
             ORDER BY fired_at DESC
             LIMIT ${MAX_ROWS}
           `;

@@ -61,6 +61,13 @@ export interface UseIntervalBAFeedParams {
    * shows everything so the user can compare solo vs confluence.
    */
   confluenceOnly: boolean;
+  /**
+   * Moneyness gate computed server-side from the (option_type, strike,
+   * spot) triplet after the SPXW→SPX spot fallback. `null` = no filter.
+   * ATM rows (within ±0.05% of strike) are excluded from both buckets,
+   * matching the pill's classification.
+   */
+  moneyness: 'ITM' | 'OTM' | null;
 }
 
 export interface UseIntervalBAFeedState {
@@ -83,6 +90,7 @@ function buildUrl(p: UseIntervalBAFeedParams): string {
   // Endpoint parses the literal string "1" (anything else leaves
   // the filter off). Match that contract exactly.
   if (p.confluenceOnly) sp.set('confluenceOnly', '1');
+  if (p.moneyness) sp.set('moneyness', p.moneyness);
   return `/api/interval-ba-feed?${sp.toString()}`;
 }
 
@@ -160,6 +168,7 @@ export function useIntervalBAFeed(
     params.optionType,
     params.minPremium,
     params.confluenceOnly,
+    params.moneyness,
     refreshTick,
   ]);
 

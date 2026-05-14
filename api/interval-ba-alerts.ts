@@ -182,29 +182,62 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       // Neon's serverless `sql` tag returns `Record<string, any>[]`;
       // the SELECT list matches RawRow exactly so a cast is safe.
+      //
+      // SPXW underlying_price fallback: UW does not emit a spot on
+      // SPXW ticks (SPXW is the index option chain, not a tradable
+      // underlying), so the daemon writes NULL. We LEFT JOIN LATERAL
+      // the nearest-prior 1m SPX candle (symbol='SPX', date=expiry,
+      // timestamp ≤ fired_at) and COALESCE so SPXW rows render their
+      // ITM/OTM pill consistently with SPY/QQQ rows. The lateral
+      // subquery short-circuits on non-SPXW tickers via the inner
+      // `a.ticker = 'SPXW'` guard, so SPY/QQQ rows pay no JOIN cost.
       const rawRows = since
         ? await sql`
-            SELECT id, option_chain, ticker, option_type, strike, expiry,
-                   bucket_start, bucket_end, fired_at, ratio_pct,
-                   ask_premium, total_premium, trade_count,
-                   top_trade_premium, top_trade_size, top_trade_executed_at,
-                   top_trade_is_sweep, top_trade_is_floor,
-                   underlying_price, confluence_tickers, acknowledged
-            FROM interval_ba_alerts
-            WHERE fired_at > ${since}
-            ORDER BY fired_at DESC
+            SELECT a.id, a.option_chain, a.ticker, a.option_type, a.strike,
+                   a.expiry, a.bucket_start, a.bucket_end, a.fired_at,
+                   a.ratio_pct, a.ask_premium, a.total_premium, a.trade_count,
+                   a.top_trade_premium, a.top_trade_size,
+                   a.top_trade_executed_at, a.top_trade_is_sweep,
+                   a.top_trade_is_floor,
+                   COALESCE(a.underlying_price, spx.close)::numeric AS underlying_price,
+                   a.confluence_tickers, a.acknowledged
+            FROM interval_ba_alerts a
+            LEFT JOIN LATERAL (
+              SELECT close
+              FROM index_candles_1m c
+              WHERE a.ticker = 'SPXW'
+                AND c.symbol = 'SPX'
+                AND c.date = a.expiry
+                AND c.timestamp <= a.fired_at
+              ORDER BY c.timestamp DESC
+              LIMIT 1
+            ) spx ON TRUE
+            WHERE a.fired_at > ${since}
+            ORDER BY a.fired_at DESC
             LIMIT 20
           `
         : await sql`
-            SELECT id, option_chain, ticker, option_type, strike, expiry,
-                   bucket_start, bucket_end, fired_at, ratio_pct,
-                   ask_premium, total_premium, trade_count,
-                   top_trade_premium, top_trade_size, top_trade_executed_at,
-                   top_trade_is_sweep, top_trade_is_floor,
-                   underlying_price, confluence_tickers, acknowledged
-            FROM interval_ba_alerts
-            WHERE expiry = ${today} AND NOT acknowledged
-            ORDER BY fired_at DESC
+            SELECT a.id, a.option_chain, a.ticker, a.option_type, a.strike,
+                   a.expiry, a.bucket_start, a.bucket_end, a.fired_at,
+                   a.ratio_pct, a.ask_premium, a.total_premium, a.trade_count,
+                   a.top_trade_premium, a.top_trade_size,
+                   a.top_trade_executed_at, a.top_trade_is_sweep,
+                   a.top_trade_is_floor,
+                   COALESCE(a.underlying_price, spx.close)::numeric AS underlying_price,
+                   a.confluence_tickers, a.acknowledged
+            FROM interval_ba_alerts a
+            LEFT JOIN LATERAL (
+              SELECT close
+              FROM index_candles_1m c
+              WHERE a.ticker = 'SPXW'
+                AND c.symbol = 'SPX'
+                AND c.date = a.expiry
+                AND c.timestamp <= a.fired_at
+              ORDER BY c.timestamp DESC
+              LIMIT 1
+            ) spx ON TRUE
+            WHERE a.expiry = ${today} AND NOT a.acknowledged
+            ORDER BY a.fired_at DESC
             LIMIT 20
           `;
       const rows = rawRows as unknown as RawRow[];

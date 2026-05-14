@@ -80,6 +80,7 @@ export function IntervalBAFeed({
   const [optionType, setOptionType] = useState<'C' | 'P' | null>(null);
   const [minPremium, setMinPremium] = useState<number>(0);
   const [confluenceOnly, setConfluenceOnly] = useState<boolean>(false);
+  const [moneyness, setMoneyness] = useState<'ITM' | 'OTM' | null>(null);
 
   const params = useMemo(
     () => ({
@@ -89,8 +90,17 @@ export function IntervalBAFeed({
       optionType,
       minPremium,
       confluenceOnly,
+      moneyness,
     }),
-    [date, startTime, endTime, optionType, minPremium, confluenceOnly],
+    [
+      date,
+      startTime,
+      endTime,
+      optionType,
+      minPremium,
+      confluenceOnly,
+      moneyness,
+    ],
   );
   const { alerts, summary, loading, error, fetchedAt, refetch } =
     useIntervalBAFeed(params);
@@ -194,6 +204,35 @@ export function IntervalBAFeed({
                   aria-pressed={active}
                 >
                   {p.label}
+                </button>
+              );
+            })}
+            <span className="mx-1 hidden h-3 w-px bg-neutral-800 sm:block" />
+            <span className={SECTION_LABEL}>moneyness</span>
+            {(
+              [
+                { value: null, label: 'all' },
+                { value: 'ITM', label: 'ITM' },
+                { value: 'OTM', label: 'OTM' },
+              ] as const
+            ).map((o) => {
+              const active = moneyness === o.value;
+              return (
+                <button
+                  key={o.label}
+                  type="button"
+                  onClick={() => setMoneyness(o.value)}
+                  className={`${CHIP_BASE} ${active ? CHIP_ACTIVE : CHIP_INACTIVE}`}
+                  aria-pressed={active}
+                  title={
+                    o.value === 'ITM'
+                      ? 'Only show alerts where the strike is in-the-money at fire time (CALL: spot > strike, PUT: strike > spot). ATM rows (within ±0.05%) are excluded.'
+                      : o.value === 'OTM'
+                        ? 'Only show alerts where the strike is out-of-the-money at fire time (CALL: spot < strike, PUT: strike < spot). ATM rows (within ±0.05%) are excluded.'
+                        : 'Show alerts regardless of moneyness.'
+                  }
+                >
+                  {o.label}
                 </button>
               );
             })}

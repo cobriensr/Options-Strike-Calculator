@@ -186,6 +186,23 @@ describe('GET /api/interval-ba-alerts', () => {
     expect(body.alerts[0]!.confluence_tickers).toEqual(['QQQ', 'SPY']);
   });
 
+  it('SQL JOINs index_candles_1m to fill SPXW underlying_price', async () => {
+    // The live endpoint mirrors the historical-feed contract: a
+    // LEFT JOIN LATERAL onto index_candles_1m supplies the prior-minute
+    // SPX close so SPXW rows render an ITM/OTM pill consistent with
+    // SPY/QQQ rows (UW does not emit a spot for SPXW ticks).
+    mockSql.mockResolvedValue([]);
+    const res = mockResponse();
+    await getHandler(mockRequest({ method: 'GET' }), res);
+    const call = mockSql.mock.calls.at(-1) as unknown[];
+    const strings = call[0] as TemplateStringsArray | undefined;
+    const sqlText = (strings ?? []).join(' ');
+    expect(sqlText).toContain('index_candles_1m');
+    expect(sqlText).toContain("a.ticker = 'SPXW'");
+    expect(sqlText).toContain("c.symbol = 'SPX'");
+    expect(sqlText).toContain('COALESCE(a.underlying_price');
+  });
+
   it('preserves null top_trade_* and underlying_price', async () => {
     mockSql.mockResolvedValue([
       {
