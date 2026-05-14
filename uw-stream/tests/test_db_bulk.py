@@ -15,6 +15,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import asyncpg.exceptions
+
 from db import (
     MAX_INSERT_PARAMS,
     _build_multi_row_insert,
@@ -22,6 +24,7 @@ from db import (
     _parse_insert_status,
     bulk_insert_ignore_conflict,
     bulk_upsert_replace,
+    is_transient_db_error,
 )
 
 # ----------------------------------------------------------------------
@@ -453,3 +456,161 @@ class TestBulkInsertReturnsParsedCount:
             )
 
         assert result == 5
+
+
+# ----------------------------------------------------------------------
+# Transient-error retry behavior — added 2026-05-14 after a Neon scale-down
+# produced 7+ Sentry groups from one event because flush sites raised
+# without any reconnect / retry path. See sentry_setup._before_send for
+# the matching fingerprint collapse.
+# ----------------------------------------------------------------------
+
+
+class TestIsTransientDbError:
+    def test_stdlib_timeout_is_transient(self):
+        assert is_transient_db_error(TimeoutError("command_timeout"))
+
+    def test_asyncpg_interface_error_is_transient(self):
+        assert is_transient_db_error(
+            asyncpg.exceptions.InterfaceError("connection closed")
+        )
+
+    def test_asyncpg_connection_does_not_exist_is_transient(self):
+        assert is_transient_db_error(
+            asyncpg.exceptions.ConnectionDoesNotExistError("57P01")
+        )
+
+    def test_value_error_is_not_transient(self):
+        assert not is_transient_db_error(ValueError("bad row"))
+
+    def test_runtime_error_is_not_transient(self):
+        assert not is_transient_db_error(RuntimeError("logic bug"))
+
+
+class TestBulkInsertRetry:
+    @pytest.mark.asyncio
+    async def test_retries_after_transient_timeout_then_succeeds(self):
+        """One stdlib TimeoutError on the first attempt — second attempt
+        succeeds. ``conn.execute`` is called twice; the function returns
+        the second attempt's parsed count.
+        """
+        conn = MagicMock()
+        conn.execute = AsyncMock(
+            side_effect=[TimeoutError("command_timeout"), "INSERT 0 1"]
+        )
+        pool = _mock_pool_with_conn(conn)
+
+        with patch("db.get_pool", return_value=pool), patch(
+            "asyncio.sleep", new=AsyncMock()
+        ):
+            result = await bulk_insert_ignore_conflict(
+                table="t",
+                columns=["a", "b"],
+                rows=[(1, 2)],
+                conflict_cols=["a"],
+            )
+
+        assert result == 1
+        assert conn.execute.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_retries_acquires_fresh_connection_each_attempt(self):
+        """The retry must hit ``pool.acquire`` again — recovering from a
+        stale pool connection is the whole point. Counts acquire() calls.
+        """
+        conn = MagicMock()
+        conn.execute = AsyncMock(
+            side_effect=[
+                asyncpg.exceptions.ConnectionDoesNotExistError("57P01"),
+                "INSERT 0 1",
+            ]
+        )
+        pool = _mock_pool_with_conn(conn)
+
+        with patch("db.get_pool", return_value=pool), patch(
+            "asyncio.sleep", new=AsyncMock()
+        ):
+            await bulk_insert_ignore_conflict(
+                table="t",
+                columns=["a", "b"],
+                rows=[(1, 2)],
+                conflict_cols=["a"],
+            )
+
+        # Attempt 1 acquires, fails on execute. Attempt 2 acquires again.
+        assert pool.acquire.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_gives_up_after_max_attempts_and_reraises(self):
+        """Sustained transient failure: helper re-raises the last
+        TimeoutError after ``_DB_RETRY_MAX_ATTEMPTS`` attempts.
+        """
+        conn = MagicMock()
+        conn.execute = AsyncMock(side_effect=TimeoutError("persistent"))
+        pool = _mock_pool_with_conn(conn)
+
+        with patch("db.get_pool", return_value=pool), patch(
+            "asyncio.sleep", new=AsyncMock()
+        ), pytest.raises(TimeoutError):
+            await bulk_insert_ignore_conflict(
+                table="t",
+                columns=["a", "b"],
+                rows=[(1, 2)],
+                conflict_cols=["a"],
+            )
+
+        # 3 attempts total = 3 execute calls.
+        assert conn.execute.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_non_transient_error_does_not_retry(self):
+        """A plain ValueError (e.g. row-shape mismatch) must NOT trigger
+        retry — retrying a logic bug just amplifies cost.
+        """
+        conn = MagicMock()
+        conn.execute = AsyncMock(side_effect=ValueError("bad row"))
+        pool = _mock_pool_with_conn(conn)
+
+        with patch("db.get_pool", return_value=pool), patch(
+            "asyncio.sleep", new=AsyncMock()
+        ) as sleep_mock, pytest.raises(ValueError):
+            await bulk_insert_ignore_conflict(
+                table="t",
+                columns=["a", "b"],
+                rows=[(1, 2)],
+                conflict_cols=["a"],
+            )
+
+        # Exactly one attempt, no backoff sleep.
+        assert conn.execute.await_count == 1
+        sleep_mock.assert_not_awaited()
+
+
+class TestBulkUpsertRetry:
+    @pytest.mark.asyncio
+    async def test_upsert_retries_on_transient_and_returns_final_count(self):
+        """``bulk_upsert_replace`` shares the same retry wrapper.
+        First attempt blows up with an InterfaceError (socket already
+        closed); second attempt returns INSERT 0 3.
+        """
+        conn = MagicMock()
+        conn.execute = AsyncMock(
+            side_effect=[
+                asyncpg.exceptions.InterfaceError("connection is closed"),
+                "INSERT 0 3",
+            ]
+        )
+        pool = _mock_pool_with_conn(conn)
+
+        with patch("db.get_pool", return_value=pool), patch(
+            "asyncio.sleep", new=AsyncMock()
+        ):
+            result = await bulk_upsert_replace(
+                table="t",
+                columns=["a", "b"],
+                rows=[(i, i + 1) for i in range(3)],
+                conflict_cols=["a"],
+            )
+
+        assert result == 3
+        assert conn.execute.await_count == 2

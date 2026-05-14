@@ -20,6 +20,37 @@ from logger_setup import log
 _sentry_enabled = False
 
 
+def _before_send(event: dict[str, Any], hint: dict[str, Any]) -> dict[str, Any]:
+    """Collapse transient DB errors into one Sentry issue across all channels.
+
+    Without an explicit fingerprint, asyncpg connection-class failures
+    raised from N different handler `_flush` call sites produce N distinct
+    Sentry issues — a single Neon scale-down event split into 7+ groups
+    on 2026-05-13. We pin the fingerprint to the exception class name so
+    every handler's instance of the same transient failure rolls into one
+    issue, while preserving the channel as a tag for triage.
+
+    Imported lazily to avoid a Sentry init → db module load → settings
+    requirement at import time (tests stub settings out via env vars).
+    """
+    try:
+        exc_info = hint.get("exc_info") if hint else None
+        if not exc_info or len(exc_info) < 2:
+            return event
+        exc = exc_info[1]
+        from db import is_transient_db_error
+
+        if is_transient_db_error(exc):
+            event["fingerprint"] = [
+                "uw-stream-transient-db",
+                type(exc).__name__,
+            ]
+    except Exception as inner:
+        # Never let a fingerprint mistake drop the underlying event.
+        log.warning("before_send hook failed: %s", inner)
+    return event
+
+
 def init_sentry() -> None:
     """Initialize Sentry if SENTRY_DSN is set.
 
@@ -49,6 +80,7 @@ def init_sentry() -> None:
             traces_sample_rate=0.0,
             server_name="uw-stream",
             release=os.environ.get("RAILWAY_DEPLOYMENT_ID"),
+            before_send=_before_send,
         )
         # Tag every event so the shared sidecar DSN can be filtered.
         sentry_sdk.set_tag("service", "uw-stream")

@@ -7,16 +7,97 @@ batch size is.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
-from typing import Any
+import asyncio
+from collections.abc import Awaitable, Callable, Iterator, Sequence
+from typing import Any, TypeVar
 
 import asyncpg
+import asyncpg.exceptions
 import orjson
 
 from config import settings
 from logger_setup import log
 
 _pool: asyncpg.Pool | None = None
+
+# Exception classes that signal a transient connection-class failure where
+# the same call is safe to retry against a fresh pool connection. asyncpg
+# raises ``TimeoutError`` (stdlib) when ``command_timeout`` fires; the
+# ``PostgresConnectionError`` family covers Neon scale-down / restart
+# fault paths; ``InterfaceError`` is raised when the underlying socket is
+# already closed before we issue the next query.
+_TRANSIENT_DB_EXC: tuple[type[BaseException], ...] = (
+    TimeoutError,
+    asyncpg.exceptions.PostgresConnectionError,
+    asyncpg.exceptions.ConnectionDoesNotExistError,
+    asyncpg.exceptions.ConnectionFailureError,
+    asyncpg.exceptions.InterfaceError,
+)
+
+# Conservative defaults: 3 total attempts (initial + 2 retries) with a
+# small per-retry backoff. Caps total added latency at ~2s so a flush
+# that triggered a Neon restart still completes inside the handler's
+# batch interval budget on the happy retry path.
+_DB_RETRY_MAX_ATTEMPTS = 3
+_DB_RETRY_BACKOFF_S: tuple[float, ...] = (0.5, 1.5)
+
+T = TypeVar("T")
+
+
+def is_transient_db_error(exc: BaseException) -> bool:
+    """Return True iff ``exc`` is a connection-class failure worth retrying.
+
+    Exported (not underscored) so ``sentry_setup.before_send`` can fingerprint
+    the same set of exceptions that the retry wrapper considers transient —
+    keeps the "collapse 7 channel stacks into one Sentry group" guarantee
+    aligned with the actual retry policy.
+    """
+    return isinstance(exc, _TRANSIENT_DB_EXC)
+
+
+async def _with_db_retry(
+    label: str,
+    func: Callable[[], Awaitable[T]],
+) -> T:
+    """Run ``func`` with exponential-ish backoff on transient DB errors.
+
+    On a transient failure (`is_transient_db_error`), sleeps per
+    ``_DB_RETRY_BACKOFF_S`` and re-invokes ``func``. The caller passes a
+    fresh-acquire-and-transact closure so each attempt picks a new pool
+    connection — required to recover from a connection the pool still
+    thinks is alive but the wire underneath has been torn down by a Neon
+    restart. Non-transient errors propagate immediately; the final
+    transient error is re-raised after ``_DB_RETRY_MAX_ATTEMPTS``.
+    """
+    last_exc: BaseException | None = None
+    for attempt in range(_DB_RETRY_MAX_ATTEMPTS):
+        try:
+            return await func()
+        except BaseException as exc:
+            if not is_transient_db_error(exc):
+                raise
+            last_exc = exc
+            if attempt >= _DB_RETRY_MAX_ATTEMPTS - 1:
+                break
+            delay = _DB_RETRY_BACKOFF_S[
+                min(attempt, len(_DB_RETRY_BACKOFF_S) - 1)
+            ]
+            log.warning(
+                "db transient error; retrying",
+                extra={
+                    "label": label,
+                    "attempt": attempt + 1,
+                    "max_attempts": _DB_RETRY_MAX_ATTEMPTS,
+                    "delay_s": delay,
+                    "err_type": type(exc).__name__,
+                    "err": str(exc),
+                },
+            )
+            await asyncio.sleep(delay)
+    # All retries exhausted — surface the original failure so Sentry's
+    # ``before_send`` fingerprint can collapse cross-handler instances.
+    assert last_exc is not None
+    raise last_exc
 
 # Postgres' wire-protocol parameter limit per statement is 32767 (signed
 # int16). We cap a single multi-row INSERT at 30000 params to leave
@@ -210,16 +291,23 @@ async def bulk_insert_ignore_conflict(
     # whole batch. Most flow-alert rows are independent so this rarely
     # matters, but it keeps semantics tight if a malformed payload
     # sneaks past the handler's _transform validator.
-    pool = get_pool()
-    total_inserted = 0
-    async with pool.acquire() as conn, conn.transaction():
-        for chunk in _chunked_rows(rows, len(columns)):
-            sql, flat_params = _build_multi_row_insert(
-                table, columns, chunk, suffix=suffix
-            )
-            status = await conn.execute(sql, *flat_params)
-            total_inserted += _parse_insert_status(status)
-    return total_inserted
+    #
+    # Wrapped in ``_with_db_retry`` so a transient Neon-side connection
+    # tear-down (scale-down, restart, admin terminate) absorbs into a
+    # silent retry — ON CONFLICT DO NOTHING makes the redo idempotent.
+    async def _attempt() -> int:
+        pool = get_pool()
+        total_inserted = 0
+        async with pool.acquire() as conn, conn.transaction():
+            for chunk in _chunked_rows(rows, len(columns)):
+                sql, flat_params = _build_multi_row_insert(
+                    table, columns, chunk, suffix=suffix
+                )
+                status = await conn.execute(sql, *flat_params)
+                total_inserted += _parse_insert_status(status)
+        return total_inserted
+
+    return await _with_db_retry(f"bulk_insert_ignore_conflict:{table}", _attempt)
 
 
 async def bulk_upsert_replace(
@@ -260,13 +348,19 @@ async def bulk_upsert_replace(
     update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
     suffix = f"ON CONFLICT ({conflict_clause}) DO UPDATE SET {update_clause}"
 
-    pool = get_pool()
-    total_inserted = 0
-    async with pool.acquire() as conn, conn.transaction():
-        for chunk in _chunked_rows(rows, len(columns)):
-            sql, flat_params = _build_multi_row_insert(
-                table, columns, chunk, suffix=suffix
-            )
-            status = await conn.execute(sql, *flat_params)
-            total_inserted += _parse_insert_status(status)
-    return total_inserted
+    # See bulk_insert_ignore_conflict for retry rationale. ON CONFLICT
+    # DO UPDATE is last-write-wins, so retrying a partially-applied batch
+    # converges to the same final state.
+    async def _attempt() -> int:
+        pool = get_pool()
+        total_inserted = 0
+        async with pool.acquire() as conn, conn.transaction():
+            for chunk in _chunked_rows(rows, len(columns)):
+                sql, flat_params = _build_multi_row_insert(
+                    table, columns, chunk, suffix=suffix
+                )
+                status = await conn.execute(sql, *flat_params)
+                total_inserted += _parse_insert_status(status)
+        return total_inserted
+
+    return await _with_db_retry(f"bulk_upsert_replace:{table}", _attempt)
