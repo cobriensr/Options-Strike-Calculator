@@ -2,6 +2,7 @@
 
 **Created:** 2026-05-13 (market open, post-edge-validation)
 **Parent specs:**
+
 - [interval-ba-ask-alert-2026-05-12.md](./interval-ba-ask-alert-2026-05-12.md) — original SPXW handler + alert path
 - [interval-ba-push-v2-2026-05-12.md](./interval-ba-push-v2-2026-05-12.md) — Web Push fan-out via VAPID
 
@@ -13,15 +14,15 @@ The 2026-05-13 SPY/QQQ edge analysis ([interval-ba-analysis-spy-20260513-092202.
 
 ## Decided design
 
-| Knob | Value | Source |
-|---|---|---|
-| Ratio threshold | **0.75** for all 3 tickers | empirical edge cuts, all 3 tickers |
-| Premium floor | **$250,000** for all 3 tickers | inherit SPXW (calibrating SPY/QQQ floors would delay; current floor already gates 75% of QQQ and 80% of SPY backfilled fires) |
-| Confluence window | **90 seconds** symmetric around fire | confluence-vs-solo run |
-| Bucket window | **300 seconds** (unchanged) | existing |
-| Confluence tag granularity | **list of tickers** (e.g. `['SPY','QQQ']`), not a 2way/3way label | preserves info for downstream queries without committing to a tier scheme |
-| Default push policy | **confluence-only ON** by default; solo SPXW push suppressed until user opts in | volume forecast = ~205 alerts/day if all-solo pushes; user choice from 2026-05-13 scoping |
-| In-app feed | shows **all** fires (solo + confluence), confluence ones get a pill | confluence is post-hoc-visible without phone push |
+| Knob                       | Value                                                                           | Source                                                                                                                        |
+| -------------------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Ratio threshold            | **0.75** for all 3 tickers                                                      | empirical edge cuts, all 3 tickers                                                                                            |
+| Premium floor              | **$250,000** for all 3 tickers                                                  | inherit SPXW (calibrating SPY/QQQ floors would delay; current floor already gates 75% of QQQ and 80% of SPY backfilled fires) |
+| Confluence window          | **90 seconds** symmetric around fire                                            | confluence-vs-solo run                                                                                                        |
+| Bucket window              | **300 seconds** (unchanged)                                                     | existing                                                                                                                      |
+| Confluence tag granularity | **list of tickers** (e.g. `['SPY','QQQ']`), not a 2way/3way label               | preserves info for downstream queries without committing to a tier scheme                                                     |
+| Default push policy        | **confluence-only ON** by default; solo SPXW push suppressed until user opts in | volume forecast = ~205 alerts/day if all-solo pushes; user choice from 2026-05-13 scoping                                     |
+| In-app feed                | shows **all** fires (solo + confluence), confluence ones get a pill             | confluence is post-hoc-visible without phone push                                                                             |
 
 ## Architecture (delta from current SPXW-only)
 
@@ -52,6 +53,7 @@ Each phase is independently shippable. After each phase: run `npm run review` (o
 ### Phase 1 — DB migration + confluence_tickers column
 
 **Files:**
+
 - `api/_lib/db-migrations.ts` — Migration #146 adding `confluence_tickers TEXT[]` to `interval_ba_alerts`
 - `api/__tests__/db.test.ts` — update applied-migrations list + SQL call count
 
@@ -68,6 +70,7 @@ GIN index because we'll filter `WHERE 'SPY' = ANY(confluence_tickers)` etc. in t
 ### Phase 2 — Generalize handler to SPY/SPXW/QQQ
 
 **Files:**
+
 - `uw-stream/src/handlers/interval_ba.py` — rename `SPXWIntervalBAHandler` to `IntervalBAHandler`, add `ticker` constructor arg, remove the `if ticker != "SPXW": return` guard
 - `uw-stream/src/channel_registry.py` — add `option_trades:SPY` and `option_trades:QQQ` to the exact dict
 - `uw-stream/src/config.py` — add `interval_ba_tickers: list[str] = ['SPY', 'SPXW', 'QQQ']` (forward-compat; lets us drop a ticker without code change if signal degrades)
@@ -78,16 +81,19 @@ Open question: does each handler instance have its own queue, drain task, and DB
 ### Phase 3 — Shared RecentFires registry + confluence tagging
 
 **Files:**
+
 - `uw-stream/src/handlers/recent_fires.py` (NEW) — module-level deque keyed by `(ticker, option_type)`; methods `record(ticker, opt_type, fired_at)` and `lookup_confluence(ticker, opt_type, fired_at, window_sec)` → `list[str]` of OTHER tickers that fired same-direction in the window
 - `uw-stream/src/handlers/interval_ba.py` — on successful fire, call `record(...)` AND `lookup_confluence(...)`; pass result into the alert row tuple as a list (or NULL)
 - `uw-stream/tests/test_recent_fires.py` (NEW) — unit tests for window semantics, pruning, ordering
 
 The registry needs:
+
 - Bounded memory: deque maxlen=200 per `(ticker, opt_type)` key is more than enough for 90s @ ~1 fire/minute peak
 - Time-based eviction is not required if maxlen is small; old entries get pushed out naturally
 - Symmetric window: a fire records itself, then looks back. The "look forward" half of the symmetric window is handled by the LATER-firing handler's lookback — there's no need to re-tag already-written rows.
 
 **Caveat on symmetric semantics:** if SPXW fires at T=0 and SPY fires at T=+30s, the SPXW alert row written at T=0 will NOT have SPY in its `confluence_tickers` (SPY didn't exist yet). The SPY alert row written at T=+30s WILL have SPXW in its list. This is **asymmetric tagging on write** — acceptable trade-off, because:
+
 - the downstream push notification at T=+30s tags "+SPXW" which is what we care about for actionable alerts
 - the feed badge can either show "confluence partner exists" at query time (with a 90s correlated-query) or accept the slight asymmetry — recommend showing both rows in the feed with the same confluence pill rendered by the LATER row's data
 
@@ -96,6 +102,7 @@ Alternative considered and rejected: write a placeholder row at T=0 and UPDATE i
 ### Phase 4 — Push payload + user setting
 
 **Files:**
+
 - `uw-stream/src/notify.py` — `build_payload(row, columns)` decorates the title with `+SPY +QQQ` when `confluence_tickers` is non-empty. Add a kwarg `confluence_only=True` that returns `None` to skip notify when the alert is solo
 - `uw-stream/src/handlers/interval_ba.py` — read `settings.interval_ba_push_confluence_only` (default `True`) and pass to `build_payload`
 - `uw-stream/src/config.py` — `interval_ba_push_confluence_only: bool = True`
@@ -105,6 +112,7 @@ Alternative considered and rejected: write a placeholder row at T=0 and UPDATE i
 ### Phase 5 — Backend feed + endpoints expose confluence
 
 **Files:**
+
 - `api/interval-ba-feed.ts` — return `confluence_tickers` array in the response; add optional `?confluenceOnly=1` query filter (`WHERE confluence_tickers IS NOT NULL AND array_length(confluence_tickers, 1) > 0`)
 - `api/interval-ba-alerts.ts` — same: include in payload for the live banner
 - `api/__tests__/interval-ba-feed.test.ts`, `api/__tests__/interval-ba-alerts.test.ts` — assertions for confluence pass-through
@@ -112,6 +120,7 @@ Alternative considered and rejected: write a placeholder row at T=0 and UPDATE i
 ### Phase 6 — Frontend feed + banner UI
 
 **Files:**
+
 - `src/components/IntervalBAFeed/IntervalBARow.tsx` — pill showing `+SPY +QQQ` next to the ticker badge when `confluence_tickers` is non-empty
 - `src/components/IntervalBAAlertBanner.tsx` — same pill in the live banner
 - `src/components/IntervalBAFeed/IntervalBAFeed.tsx` — add a "Confluence only" filter toggle (drives `?confluenceOnly=1` on the feed endpoint)
@@ -121,6 +130,7 @@ Alternative considered and rejected: write a placeholder row at T=0 and UPDATE i
 ### Phase 7 — Backfill confluence tags onto historical rows
 
 **Files:**
+
 - `scripts/backfill_confluence_tags.py` (NEW) — one-shot, ticker-agnostic SQL pass: for each alert row, look back ±90s in the same table for OTHER-ticker same-direction fires and UPDATE `confluence_tickers`. Idempotent (skips rows that already have a non-NULL value unless `--force`).
 
 After this runs once, the historical feed shows confluence pills for the entire 89-day backfill window, and we can validate the live tagging matches the same logic.
