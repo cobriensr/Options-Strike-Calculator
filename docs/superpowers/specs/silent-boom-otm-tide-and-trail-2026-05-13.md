@@ -77,9 +77,34 @@ Currently no silent boom enrichment cron exists — `scripts/enrich_silent_boom_
 - `npm run review` passes (tsc + eslint + prettier + vitest)
 - Watch first scheduled run in Sentry / Vercel logs
 
-### Phase 4 — Re-run direction gate analysis with OTM (½ day)
+### Phase 4 — Re-run direction gate analysis with OTM — RESULTS 2026-05-13
 
-After Phase 1 backfill completes, re-run the historical analysis from this session against `mkt_tide_otm_diff`. Decide final gate thresholds for each detector and document them. **Do not ship the gate code yet** — that's a separate spec following this one.
+Coverage achieved post-backfill:
+
+- `silent_boom_alerts`: 100.0% (15,095/15,095) on both fields
+- `lottery_finder_fires`: 99.8% (96,563/96,781) — 218 pre-flow_data rows on 2026-04-14 acceptable
+
+**OTM vs all-in head-to-head at optimal thresholds**:
+
+| Detector    | Variant | T        | Demoted n        | Demoted avg EOD | Kept avg EOD | Verdict                                        |
+| ----------- | ------- | -------- | ---------------- | --------------- | ------------ | ---------------------------------------------- |
+| silent_boom | all-in  | 100M     | 5,166 (34%)      | **-4.84%**      | -2.73%       | Surgical demote                                |
+| silent_boom | OTM     | 100M     | 3,977 (26%)      | -1.74%          | -4.06%       | Demote bucket cleaner but kept set worse       |
+| lottery     | all-in  | 150M     | 21,621 (22%)     | -2.69%          | -1.88%       | Modest signal                                  |
+| lottery     | **OTM** | **150M** | **15,016 (16%)** | **+6.71%**      | **-3.63%**   | **Decisive — 24.75pp spread vs trend-aligned** |
+
+**Tier1 silent boom deep-dive** (n=766): both variants fail to cleanly demote tier1 losers — counter-trend loss-rate is 79.6% (OTM) vs 82.2% (all-in), statistically indistinguishable. Tier1 may need a different policy (e.g. trail-30/10 from Phase 2) rather than a directional gate.
+
+**Today's tier1 side-by-side**: OTM was bearish (-26M to -111M) early-session when all-in was bullish (+92M to +162M); SPY 746C +147% and AMZN 270C +117% wins both landed in buckets where OTM disagreed with all-in. OTM was over-bearish today.
+
+**Final recommendations for the follow-up gate-implementation spec**:
+
+- **silent_boom**: gate on `mkt_tide_diff` (all-in) at T = ±100M
+- **lottery_finder_fires**: gate on `mkt_tide_otm_diff` (OTM) at T = ±150M
+
+The detectors should diverge on which variant feeds the gate. Periscope's claim that OTM filters dealer-hedging noise validates for lottery (longer-horizon, multi-day positioning) but NOT for silent boom (5-min spike anomalies) — the all-in variant is more decisive on short-window setups where dealer flow IS the signal, not noise.
+
+**Out of scope for this spec**: actual gate implementation (demote vs hard-block; tier3 demotion vs skip-insert). A follow-up spec will design that based on these thresholds.
 
 ## Data dependencies
 
