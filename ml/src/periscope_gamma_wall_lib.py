@@ -24,3 +24,20 @@ MAGNET_MIN_DISTANCE_PTS = 3.0
 CHARM_ZERO_MIN_DISTANCE_PTS = 1.0
 
 WallType = Literal["ceiling", "floor"]
+
+
+def distance_bucket(distance: float) -> str:
+    """Bucket a wall-to-spot distance into pre-registered ranges.
+
+    Buckets: '0-3' (trivial), '3-7' (near), '7-15' (tactical), '15+' (far).
+    Primary test pools 3-7 and 7-15 (see spec §"Primary tests").
+    """
+    if distance < 0:
+        raise ValueError(f"distance must be non-negative, got {distance}")
+    if distance < 3.0:
+        return "0-3"
+    if distance < 7.0:
+        return "3-7"
+    if distance < 15.0:
+        return "7-15"
+    return "15+"
