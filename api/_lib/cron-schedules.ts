@@ -102,6 +102,11 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
+  'enrich-silent-boom-outcomes': {
+    schedule: '30 21 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
   'enrich-vega-spike-returns': {
     schedule: '*/5 13-21 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,

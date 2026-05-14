@@ -237,4 +237,11 @@ export default withCronInstrumentation(
       message: `Enriched ${enriched} fires (flow_inversion populated ${inversionFilled}), skipped ${skipped} (no post-entry ticks)`,
     };
   },
+  // Scheduled at 21:30 UTC = 17:30 ET = 90 min past the market-hours
+  // gate's 16:05 ET close-buffer. Without disabling the gate, cronGuard
+  // would skip every scheduled run with 'Outside time window' (manual
+  // Python runs of scripts/enrich_lottery_outcomes.py had been masking
+  // this in prod — verified by 21:49-22:11 UTC enrichment timestamps
+  // on multiple weekdays). UW is still required for flow-inversion.
+  { marketHours: false },
 );

@@ -68,11 +68,11 @@ Add `realized_trail30_10_pct` to `silent_boom_alerts`, adapt the existing Python
 
 Backfill ran in 17.7s across 15,013 historical fires. Real per-tier outcomes (vs the bounded-estimate projections from earlier in this session):
 
-| Tier | n | EOD avg | Trail avg (REAL) | Trail avg (bounded est, LB) | Trail win-rate (≥+30%) | Trail loss-rate (≤-30%) | EOD loss-rate |
-| ---- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| tier1 | 766 | -30.5% | **-5.5%** | +147.5% | 18% | **30%** | **78%** |
-| tier2 | 2,355 | -5.3% | -1.1% | +44.6% | 17% | 24% | 40% |
-| tier3 | 11,973 | -1.4% | -1.3% | +6.9% | 7% | 9% | 11% |
+| Tier  |      n | EOD avg | Trail avg (REAL) | Trail avg (bounded est, LB) | Trail win-rate (≥+30%) | Trail loss-rate (≤-30%) | EOD loss-rate |
+| ----- | -----: | ------: | ---------------: | --------------------------: | ---------------------: | ----------------------: | ------------: |
+| tier1 |    766 |  -30.5% |        **-5.5%** |                     +147.5% |                    18% |                 **30%** |       **78%** |
+| tier2 |  2,355 |   -5.3% |            -1.1% |                      +44.6% |                    17% |                     24% |           40% |
+| tier3 | 11,973 |   -1.4% |            -1.3% |                       +6.9% |                     7% |                      9% |           11% |
 
 **Reality vs the bounded estimate**: trail-30/10 trails on the RUNNING peak, exits on the first 10pp giveback, and misses subsequent runs. Hand-checked example: SPY 746C 2026-05-13 peaked at 342% and finished EOD +147%, but trail-30/10 exited at +29% because price hit an earlier intermediate peak, gave back 10pp, and tripped the stop before the bigger move. The bounded estimate's "exit at peak − 10pp" model assumed there is ONE peak; reality has many.
 

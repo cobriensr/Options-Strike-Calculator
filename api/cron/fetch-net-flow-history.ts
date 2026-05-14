@@ -219,4 +219,8 @@ export default withCronInstrumentation(
       },
     };
   },
+  // Scheduled at 21:25 UTC = 17:25 ET = 80 min past the market-hours
+  // gate's 16:05 ET close-buffer. Disable the gate so the run actually
+  // happens (the cron snapshot's whole purpose is post-close persistence).
+  { marketHours: false },
 );
