@@ -37,6 +37,8 @@ _HERE = Path(__file__).resolve().parent
 _ML_SRC = _HERE.parent
 sys.path.insert(0, str(_ML_SRC))
 
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import psycopg2  # noqa: E402
 from scipy.stats import wilcoxon  # noqa: E402
@@ -381,6 +383,95 @@ def test_charm_zero(charm_df: pd.DataFrame) -> dict:
     }
 
 
+def _bootstrap_ci(
+    values: np.ndarray,
+    n_boot: int = 1000,
+    alpha: float = 0.05,
+    seed: int = 42,
+) -> tuple[float, float]:
+    """Percentile bootstrap CI for the mean of a binary array."""
+    rng = np.random.default_rng(seed)
+    if len(values) == 0:
+        return (float("nan"), float("nan"))
+    boots = rng.choice(values, size=(n_boot, len(values)), replace=True).mean(axis=1)
+    lo = float(np.percentile(boots, 100 * alpha / 2))
+    hi = float(np.percentile(boots, 100 * (1 - alpha / 2)))
+    return (lo, hi)
+
+
+def plot_wall_reversal(walls_df: pd.DataFrame, out_path: Path) -> None:
+    """Bar chart: success rate by distance bucket, real vs sham, with 95% CIs."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    buckets = ["0-3", "3-7", "7-15", "15+"]
+    width = 0.35
+    x = np.arange(len(buckets))
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    max_rate = 0.0
+    for bar_offset, tag, color in (
+        (-width / 2, "real", "#1f77b4"),
+        (+width / 2, "sham", "#cccccc"),
+    ):
+        rates: list[float] = []
+        los: list[float] = []
+        his: list[float] = []
+        ns: list[int] = []
+        for bucket in buckets:
+            subset = walls_df[
+                (walls_df["bucket"] == bucket) & (walls_df["real_or_sham"] == tag)
+            ]
+            success = subset["success"].astype(int).values
+            ns.append(len(success))
+            if len(success) == 0:
+                rates.append(0.0)
+                los.append(0.0)
+                his.append(0.0)
+                continue
+            rate = float(success.mean())
+            lo, hi = _bootstrap_ci(success)
+            rates.append(rate)
+            los.append(lo)
+            his.append(hi)
+        yerr = [
+            [r - lo for r, lo in zip(rates, los, strict=False)],
+            [hi - r for r, hi in zip(rates, his, strict=False)],
+        ]
+        ax.bar(
+            x + bar_offset,
+            rates,
+            width,
+            yerr=yerr,
+            capsize=4,
+            color=color,
+            edgecolor="black",
+            label=tag,
+        )
+        for i, (r, n) in enumerate(zip(rates, ns, strict=False)):
+            ax.annotate(
+                f"n={n}",
+                xy=(x[i] + bar_offset, r),
+                xytext=(0, 4),
+                textcoords="offset points",
+                ha="center",
+                fontsize=8,
+            )
+        max_rate = max(max_rate, max(rates) if rates else 0.0)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(buckets)
+    ax.set_xlabel("Distance bucket (SPX points from spot)")
+    ax.set_ylabel("P(touched AND held) — success rate")
+    ax.set_title(
+        "Periscope gamma-wall reversal rate, real vs sham\n"
+        "(success = touched ±1pt AND reversed ≥2pt within 15min)"
+    )
+    ax.legend()
+    ax.set_ylim(0, max(0.5, max_rate * 1.5))
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -424,6 +515,10 @@ def main() -> int:
     print("\n=== Test 3: Charm-zero crosses (McNemar paired, two-sided) ===")
     charm_result = test_charm_zero(events["charm"])
     print(json.dumps(charm_result, indent=2, default=str))
+
+    print("\nWriting plots…")
+    plot_wall_reversal(events["walls"], PLOT_DIR / "gamma_wall_reversal.png")
+    print(f"  wrote {PLOT_DIR / 'gamma_wall_reversal.png'}")
 
     return 0
 
