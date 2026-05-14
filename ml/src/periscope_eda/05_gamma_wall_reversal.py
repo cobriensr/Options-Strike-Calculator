@@ -220,7 +220,7 @@ def test_walls(walls_df: pd.DataFrame) -> dict:
     Returns dict suitable for findings.json:
         claim, n_pairs, real_success_rate, sham_success_rate,
         effect_pp, p_value, passes_bonferroni, effect_size_meets_threshold,
-        verdict, threats_to_validity, notes
+        verdict, threats_to_validity
     """
     if walls_df.empty:
         return {
