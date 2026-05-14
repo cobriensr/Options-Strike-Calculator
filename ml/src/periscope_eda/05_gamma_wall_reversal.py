@@ -39,6 +39,7 @@ sys.path.insert(0, str(_ML_SRC))
 
 import pandas as pd  # noqa: E402
 import psycopg2  # noqa: E402
+from scipy.stats import wilcoxon  # noqa: E402
 from statsmodels.stats.contingency_tables import mcnemar  # noqa: E402
 
 from periscope_gamma_wall_lib import (  # noqa: E402
@@ -286,6 +287,52 @@ def test_walls(walls_df: pd.DataFrame) -> dict:
     }
 
 
+def test_magnet(magnet_df: pd.DataFrame) -> dict:
+    """Wilcoxon signed-rank on delta = err_magnet - err_naive.
+
+    H0: median delta == 0.
+    Win: median(delta) < 0 (magnet has lower squared error) AND
+         |median(delta)| >= EFFECT_SIZE_THRESHOLD_MAGNET (1 point^2).
+    """
+    if magnet_df.empty or len(magnet_df) < 6:
+        return {
+            "claim": "magnet_predicts_close",
+            "n_reads": int(len(magnet_df)),
+            "verdict": "no_data",
+            "p_value": None,
+        }
+
+    delta = magnet_df["delta"].astype(float).values
+    median_delta = float(pd.Series(delta).median())
+
+    # Wilcoxon requires non-zero values; scipy uses zero_method='wilcox' by
+    # default since 1.13 (treats zeros via the Wilcoxon convention).
+    result = wilcoxon(delta, alternative="less")  # H1: median < 0
+    p_value = float(result.pvalue)
+
+    passes_p = p_value < BONFERRONI_ALPHA
+    passes_effect = (median_delta < 0) and (
+        abs(median_delta) >= EFFECT_SIZE_THRESHOLD_MAGNET
+    )
+
+    return {
+        "claim": "magnet_predicts_close",
+        "n_reads": int(len(magnet_df)),
+        "median_delta": median_delta,
+        "median_err_magnet": float(pd.Series(magnet_df["err_magnet"]).median()),
+        "median_err_naive": float(pd.Series(magnet_df["err_naive"]).median()),
+        "p_value": p_value,
+        "bonferroni_alpha": BONFERRONI_ALPHA,
+        "passes_bonferroni": passes_p,
+        "effect_size_meets_threshold": passes_effect,
+        "verdict": "pass" if (passes_p and passes_effect) else "fail",
+        "threats_to_validity": [
+            "Subset |magnet - spot| >= 3pt only — small or near-spot magnets excluded",
+            "Squared-error metric penalizes large misses heavily",
+        ],
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -321,6 +368,10 @@ def main() -> int:
     print("\n=== Test 1: Walls hold (McNemar paired) ===")
     walls_result = test_walls(events["walls"])
     print(json.dumps(walls_result, indent=2, default=str))
+
+    print("\n=== Test 2: Magnet predicts close (Wilcoxon, one-sided less) ===")
+    magnet_result = test_magnet(events["magnet"])
+    print(json.dumps(magnet_result, indent=2, default=str))
 
     return 0
 
