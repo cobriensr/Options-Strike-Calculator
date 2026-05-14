@@ -155,6 +155,21 @@ const tierBadge = (
 };
 
 /**
+ * Direction-gated pill — Phase 4 (spec:
+ * silent-boom-direction-gate-and-trail-ui-2026-05-14.md). Surfaced
+ * next to the tier badge when the alert was counter-trend per Market
+ * Tide at fire time. The detector already demoted score_tier to
+ * 'tier3' on insert; the pill explains the demote so the user knows
+ * it isn't a noisy score but a deliberate macro gate.
+ */
+const gatedPill = (): { label: string; cls: string; tooltip: string } => ({
+  label: 'Gated',
+  cls: 'border-amber-500/60 bg-amber-950/40 text-amber-200',
+  tooltip:
+    'Counter-trend per Market Tide at fire time — demoted to tier3 by the direction gate (T=±100M on mkt_tide_diff). Score is preserved on the row; only the displayed tier is forced down.',
+});
+
+/**
  * Spike-ratio badge — gives the eye an at-a-glance read on how
  * extreme the burst was vs the contract's own preceding 4-bucket
  * baseline. Detector min is 5x; tiers above that flag genuinely
@@ -199,6 +214,7 @@ function areRowsEqual(prev: SilentBoomRowProps, next: SilentBoomRowProps) {
   if (a.id !== b.id) return false;
   if (a.score !== b.score) return false;
   if (a.scoreTier !== b.scoreTier) return false;
+  if (a.directionGated !== b.directionGated) return false;
   if (a.mktTideDiff !== b.mktTideDiff) return false;
   if (a.avgHoldMinutes !== b.avgHoldMinutes) return false;
   if (a.outcomes.enrichedAt !== b.outcomes.enrichedAt) return false;
@@ -208,6 +224,9 @@ function areRowsEqual(prev: SilentBoomRowProps, next: SilentBoomRowProps) {
   if (a.outcomes.realized60mPct !== b.outcomes.realized60mPct) return false;
   if (a.outcomes.realized120mPct !== b.outcomes.realized120mPct) return false;
   if (a.outcomes.realizedEodPct !== b.outcomes.realizedEodPct) return false;
+  if (a.outcomes.realizedTrail3010Pct !== b.outcomes.realizedTrail3010Pct) {
+    return false;
+  }
   return true;
 }
 
@@ -218,6 +237,7 @@ export const SilentBoomRow = memo(function SilentBoomRow({
 }: SilentBoomRowProps) {
   const peak = alert.outcomes.peakCeilingPct;
   const realizedEod = alert.outcomes.realizedEodPct;
+  const realizedTrail = alert.outcomes.realizedTrail3010Pct;
   const mtp = alert.outcomes.minutesToPeak;
   // Selected exit policy drives the primary big number on the row.
   // 'peak' is special-cased: it lives on the row already as a separate
@@ -228,6 +248,7 @@ export const SilentBoomRow = memo(function SilentBoomRow({
   const spike = spikeBadge(alert.spikeRatio);
   const tier = tierBadge(alert.scoreTier, alert.score);
   const tide = tideBadge(alert.mktTideDiff);
+  const gated = alert.directionGated ? gatedPill() : null;
 
   const [expanded, setExpanded] = useState(false);
 
@@ -303,6 +324,20 @@ export const SilentBoomRow = memo(function SilentBoomRow({
         >
           {tier.label}
         </span>
+        {/* Phase 4 direction-gate pill — surfaces the demote reason
+            so the user can distinguish "low score" from "counter-trend
+            macro context flagged it down." Sits right after the tier
+            badge so the two read as a unit. */}
+        {gated && (
+          <span
+            data-testid="silent-boom-gated-pill"
+            className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${gated.cls}`}
+            title={gated.tooltip}
+            aria-label={gated.tooltip}
+          >
+            {gated.label}
+          </span>
+        )}
         {/* Avg-hold-minutes hint — historical P75 minutes-to-peak among
             winners for this (tier, ticker) cohort. Tells the user "if
             this alert is going to work, expect it to peak around this
@@ -480,6 +515,18 @@ export const SilentBoomRow = memo(function SilentBoomRow({
           title="Realized return at the last tick of the session."
         >
           eod {formatPct(realizedEod)}
+        </span>
+        {/* Phase 2 trail-30/10 exit — recommended exit policy. Activate
+            trailing stop at +30%, exit at 10pp giveback from running
+            peak; if peak never crosses +30%, hold to EoD. Smaller font
+            than eod so it reads as a secondary metric, em-dash when
+            null (legacy rows pre-#150 / pending enrich). */}
+        <span
+          data-testid="silent-boom-trail3010"
+          className={`font-mono text-[10px] ${pctClass(realizedTrail)}`}
+          title="Trail-30/10 exit: activate trailing stop at +30% from entry, exit at 10pp giveback from running peak; hold to EoD if peak never crosses +30%. Recommended exit policy."
+        >
+          trail30 {formatPct(realizedTrail)}
         </span>
         <span className="ml-auto text-neutral-500">
           {alert.outcomes.enrichedAt ? 'enriched' : 'pending enrich'}

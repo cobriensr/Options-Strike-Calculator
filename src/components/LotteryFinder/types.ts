@@ -138,6 +138,15 @@ export interface LotteryFire {
   score: number | null;
   /** Tier label derived from `score` (tier3 when score is null). */
   scoreTier: LotteryScoreTier;
+  /**
+   * Phase 4 direction gate (spec:
+   * silent-boom-direction-gate-and-trail-ui-2026-05-14.md). TRUE when
+   * the fire was counter-trend per OTM Market Tide at fire time. The
+   * raw `score` is preserved; the feed forces `scoreTier` to 'tier3'
+   * when this flag is set. UI renders a "Gated" pill and offers a
+   * "Hide counter-trend" filter chip.
+   */
+  directionGated: boolean;
   /** Predicted peak-return range string for the tier (display-only). */
   forecastHighPeakPct: string;
   /** Per-ticker reliability stats; `null` when no row exists. */

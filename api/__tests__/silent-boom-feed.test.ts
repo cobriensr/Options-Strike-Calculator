@@ -46,9 +46,11 @@ interface AlertFixture {
   realized_60m_pct: string | null;
   realized_120m_pct: string | null;
   realized_eod_pct: string | null;
+  realized_trail30_10_pct: string | null;
   enriched_at: string | null;
   score: number | null;
   score_tier: 'tier1' | 'tier2' | 'tier3' | null;
+  direction_gated: boolean;
   mkt_tide_diff: string | null;
   zero_dte_diff: string | null;
   spx_spot_gamma_oi: string | null;
@@ -79,9 +81,11 @@ function makeAlert(overrides: Partial<AlertFixture> = {}): AlertFixture {
     realized_60m_pct: '40',
     realized_120m_pct: '20',
     realized_eod_pct: '5',
+    realized_trail30_10_pct: null,
     enriched_at: '2026-05-07T16:00:00Z',
     score: 24,
     score_tier: 'tier1',
+    direction_gated: false,
     mkt_tide_diff: '5000',
     zero_dte_diff: '300',
     spx_spot_gamma_oi: '12345',
@@ -200,6 +204,48 @@ describe('silent-boom-feed handler', () => {
     const body = res._json as { total: number; alerts: unknown[] };
     expect(body.total).toBe(0);
     expect(body.alerts).toEqual([]);
+  });
+
+  it('maps direction_gated + realized_trail30_10_pct into the response (Phase 4)', async () => {
+    mockSql.mockResolvedValueOnce([{ n: 1 }]).mockResolvedValueOnce([
+      makeAlert({
+        direction_gated: true,
+        realized_trail30_10_pct: '47.5',
+      }),
+    ]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      alerts: Array<{
+        directionGated: boolean;
+        outcomes: { realizedTrail3010Pct: number | null };
+      }>;
+    };
+    expect(body.alerts[0]?.directionGated).toBe(true);
+    expect(body.alerts[0]?.outcomes.realizedTrail3010Pct).toBe(47.5);
+  });
+
+  it('defaults directionGated=false and trail=null when the DB columns are unset', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([makeAlert()]); // both fields use fixture defaults
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      alerts: Array<{
+        directionGated: boolean;
+        outcomes: { realizedTrail3010Pct: number | null };
+      }>;
+    };
+    expect(body.alerts[0]?.directionGated).toBe(false);
+    expect(body.alerts[0]?.outcomes.realizedTrail3010Pct).toBeNull();
   });
 
   it('rejects invalid query params with 400', async () => {

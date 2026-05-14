@@ -192,6 +192,22 @@ const ciIndicator = (
   return null;
 };
 
+/**
+ * Direction-gated pill — Phase 4 (spec:
+ * silent-boom-direction-gate-and-trail-ui-2026-05-14.md). Surfaced
+ * next to the tier badge when the fire was counter-trend per OTM
+ * Market Tide at fire time (T=±150M on mkt_tide_otm_diff). The feed
+ * already forces `scoreTier` to 'tier3' on these rows; the pill
+ * explains the demote so the user knows it isn't a noisy score but a
+ * deliberate macro gate.
+ */
+const gatedPill = (): { label: string; cls: string; tooltip: string } => ({
+  label: 'Gated',
+  cls: 'border-amber-500/60 bg-amber-950/40 text-amber-200',
+  tooltip:
+    'Counter-trend per OTM Market Tide at fire time — demoted to tier3 by the direction gate (T=±150M on mkt_tide_otm_diff). Score is preserved on the row; only the displayed tier is forced down.',
+});
+
 const tideBadge = (
   diff: number | null,
 ): { label: string; cls: string; tooltip: string } | null => {
@@ -231,6 +247,7 @@ export const LotteryRow = memo(function LotteryRow({
   const tide = tideBadge(fire.macro.mktTideDiff);
   const tier = tierBadge(fire.scoreTier, fire.score);
   const ci = ciIndicator(fire.tickerStats, fire.underlyingSymbol);
+  const gated = fire.directionGated ? gatedPill() : null;
 
   // Expand state — when true, the per-fire panel renders below the
   // summary lines and the two hooks fetch their data. Collapsed by
@@ -316,6 +333,20 @@ export const LotteryRow = memo(function LotteryRow({
         >
           {tier.label}
         </span>
+        {/* Phase 4 direction-gate pill — surfaces the demote reason
+            so the user can distinguish "low score" from "counter-trend
+            macro context flagged it down." Sits right after the tier
+            badge so the two read as a unit. */}
+        {gated && (
+          <span
+            data-testid="lottery-gated-pill"
+            className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${gated.cls}`}
+            title={gated.tooltip}
+            aria-label={gated.tooltip}
+          >
+            {gated.label}
+          </span>
+        )}
         {/* Avg-hold-minutes hint — historical P75 minutes-to-peak among
             winners for this (tier, ticker) cohort. Tells the user "if
             this fire is going to work, expect it to peak around this

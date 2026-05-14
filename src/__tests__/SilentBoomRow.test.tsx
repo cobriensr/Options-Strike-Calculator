@@ -73,6 +73,7 @@ function makeAlert(overrides: Partial<SilentBoomAlert> = {}): SilentBoomAlert {
     openInterest: 5000,
     score: 12,
     scoreTier: 'tier2',
+    directionGated: false,
     mktTideDiff: 1500,
     zeroDteDiff: null,
     spxSpotGammaOi: null,
@@ -84,6 +85,7 @@ function makeAlert(overrides: Partial<SilentBoomAlert> = {}): SilentBoomAlert {
       realized60mPct: 22.5,
       realized120mPct: null,
       realizedEodPct: -10,
+      realizedTrail3010Pct: null,
       enrichedAt: '2026-05-08T20:00:00Z',
     },
     insertedAt: '2026-05-08T14:31:00Z',
@@ -147,6 +149,7 @@ describe('SilentBoomRow: smoke', () => {
           realized60mPct: 22.5,
           realized120mPct: null,
           realizedEodPct: -10,
+          realizedTrail3010Pct: null,
           enrichedAt: '2026-05-08T20:00:00Z',
         },
       }),
@@ -195,6 +198,7 @@ describe('SilentBoomRow: null outcomes', () => {
           realized60mPct: null,
           realized120mPct: null,
           realizedEodPct: null,
+          realizedTrail3010Pct: null,
           enrichedAt: null,
         },
       }),
@@ -233,6 +237,66 @@ describe('SilentBoomRow: badges', () => {
 });
 
 // ============================================================
+// PHASE 4: DIRECTION-GATE PILL + TRAIL-30/10 ROW
+// ============================================================
+
+describe('SilentBoomRow: direction-gate pill', () => {
+  it('renders the Gated pill when directionGated is true', () => {
+    renderRow(makeAlert({ directionGated: true }));
+    const pill = screen.getByTestId('silent-boom-gated-pill');
+    expect(pill).toBeInTheDocument();
+    expect(pill).toHaveTextContent('Gated');
+  });
+
+  it('does not render the Gated pill when directionGated is false', () => {
+    renderRow(makeAlert({ directionGated: false }));
+    expect(
+      screen.queryByTestId('silent-boom-gated-pill'),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe('SilentBoomRow: trail-30/10 row', () => {
+  it('renders trail30 with the realized value when populated', () => {
+    renderRow(
+      makeAlert({
+        outcomes: {
+          peakCeilingPct: 80,
+          minutesToPeak: 22,
+          realized30mPct: 30,
+          realized60mPct: 50,
+          realized120mPct: 60,
+          realizedEodPct: -5,
+          realizedTrail3010Pct: 35.7,
+          enrichedAt: '2026-05-08T20:00:00Z',
+        },
+      }),
+    );
+    const trail = screen.getByTestId('silent-boom-trail3010');
+    expect(trail).toHaveTextContent('trail30 +35.7%');
+  });
+
+  it('renders trail30 with em-dash when null (legacy / pending enrich)', () => {
+    renderRow(
+      makeAlert({
+        outcomes: {
+          peakCeilingPct: 80,
+          minutesToPeak: 22,
+          realized30mPct: null,
+          realized60mPct: null,
+          realized120mPct: null,
+          realizedEodPct: null,
+          realizedTrail3010Pct: null,
+          enrichedAt: null,
+        },
+      }),
+    );
+    const trail = screen.getByTestId('silent-boom-trail3010');
+    expect(trail).toHaveTextContent('trail30 —');
+  });
+});
+
+// ============================================================
 // EXIT POLICY CHIP — primary % swaps with the active policy
 // ============================================================
 
@@ -245,6 +309,7 @@ describe('SilentBoomRow: exitPolicy', () => {
       realized60mPct: 50,
       realized120mPct: 60,
       realizedEodPct: -5,
+      realizedTrail3010Pct: null,
       enrichedAt: '2026-05-08T20:00:00Z',
     },
   });
@@ -284,6 +349,7 @@ describe('SilentBoomRow: exitPolicy', () => {
           realized60mPct: 22.5,
           realized120mPct: null,
           realizedEodPct: -10,
+          realizedTrail3010Pct: null,
           enrichedAt: '2026-05-08T20:00:00Z',
         },
       }),
@@ -307,6 +373,7 @@ describe('SilentBoomRow: exitPolicy', () => {
           realized60mPct: null,
           realized120mPct: null,
           realizedEodPct: null,
+          realizedTrail3010Pct: null,
           enrichedAt: null,
         },
       }),

@@ -51,6 +51,7 @@ function makeFire(overrides: Partial<LotteryFire> = {}): LotteryFire {
     dte: 0,
     score: 15,
     scoreTier: 'tier2',
+    directionGated: false,
     forecastHighPeakPct: '40-60%',
     avgHoldMinutes: 160,
     tickerStats: null,
@@ -270,5 +271,57 @@ describe('LotteryFinderSection: filter interactions', () => {
     const sortChip = screen.getByRole('button', { name: /^score$/ });
     fireEvent.click(sortChip);
     expect(window.localStorage.getItem('lottery.sortMode')).toBe('score');
+  });
+
+  it('flips the hide-counter-trend aria-pressed state and persists to localStorage', () => {
+    render(<LotteryFinderSection marketOpen={false} />);
+    const chip = screen.getByTestId('lottery-hide-gated-chip');
+    expect(chip).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(chip);
+    expect(chip).toHaveAttribute('aria-pressed', 'true');
+    expect(window.localStorage.getItem('lottery.hideGated')).toBe('1');
+  });
+
+  it('drops gated rows from the displayed list when hide-counter-trend is on', () => {
+    const fires = [
+      makeFire({
+        id: 1,
+        optionChainId: 'AAPL260508C00200000',
+        directionGated: false,
+      }),
+      makeFire({
+        id: 2,
+        optionChainId: 'SPY260508P00500000',
+        underlyingSymbol: 'SPY',
+        optionType: 'P',
+        strike: 500,
+        directionGated: true,
+      }),
+    ];
+    mockUseLotteryFinder.mockReturnValue({
+      ...defaultHookResult,
+      fires,
+      total: 2,
+    });
+
+    render(<LotteryFinderSection marketOpen={false} />);
+
+    // Both tickers rendered before toggling.
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('lottery-row-SPY260508P00500000'),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('lottery-hide-gated-chip'));
+
+    // Only AAPL (non-gated) remains.
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('lottery-row-SPY260508P00500000'),
+    ).not.toBeInTheDocument();
   });
 });

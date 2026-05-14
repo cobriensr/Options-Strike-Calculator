@@ -91,6 +91,7 @@ function makeFire(overrides: Partial<LotteryFire> = {}): LotteryFire {
     dte: 0,
     score: 15,
     scoreTier: 'tier2',
+    directionGated: false,
     forecastHighPeakPct: '40-60%',
     avgHoldMinutes: 160,
     tickerStats: null,
@@ -367,6 +368,36 @@ describe('LotteryRow: tier + reliability badges', () => {
       />,
     );
     expect(screen.getByText('✓')).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// PHASE 4: DIRECTION-GATE PILL
+// ============================================================
+
+describe('LotteryRow: direction-gate pill', () => {
+  it('renders the Gated pill when directionGated is true', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({ directionGated: true })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    const pill = screen.getByTestId('lottery-gated-pill');
+    expect(pill).toBeInTheDocument();
+    expect(pill).toHaveTextContent('Gated');
+  });
+
+  it('does not render the Gated pill when directionGated is false', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({ directionGated: false })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(screen.queryByTestId('lottery-gated-pill')).not.toBeInTheDocument();
   });
 });
 

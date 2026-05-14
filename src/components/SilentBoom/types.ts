@@ -75,6 +75,15 @@ export interface SilentBoomOutcomes {
   realized60mPct: number | null;
   realized120mPct: number | null;
   realizedEodPct: number | null;
+  /**
+   * Phase 2 trail-30/10 realized return (migration #150). Trailing-stop
+   * exit policy: activate at +30% from entry, then exit at 10pp
+   * giveback from the running peak; if peak never crosses +30%, hold
+   * to last tick (EoD). Null on rows enriched before #150 — the
+   * nightly enrich pass backfills from parquet. Spec:
+   * docs/superpowers/specs/silent-boom-otm-tide-and-trail-2026-05-13.md
+   */
+  realizedTrail3010Pct: number | null;
   enrichedAt: string | null;
 }
 
@@ -104,6 +113,15 @@ export interface SilentBoomAlert {
   score: number | null;
   /** 'tier1' | 'tier2' | 'tier3'; null only on legacy rows. */
   scoreTier: SilentBoomScoreTier | null;
+  /**
+   * Phase 4 direction gate (spec:
+   * silent-boom-direction-gate-and-trail-ui-2026-05-14.md). TRUE when
+   * the fire was counter-trend per Market Tide at fire time — the
+   * detector demoted score_tier to 'tier3' on insert (T=±100M on
+   * mkt_tide_diff). UI renders a "Gated" pill on these rows and
+   * offers a "Hide counter-trend" filter chip.
+   */
+  directionGated: boolean;
   /** Market Tide NCP - NPP at the spike-bucket time. Display-only
    *  context — not a selection signal (lottery_finder convention). */
   mktTideDiff: number | null;

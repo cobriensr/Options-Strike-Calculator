@@ -57,6 +57,7 @@ function makeAlert(overrides: Partial<SilentBoomAlert> = {}): SilentBoomAlert {
     openInterest: 5000,
     score: 12,
     scoreTier: 'tier2',
+    directionGated: false,
     mktTideDiff: null,
     zeroDteDiff: null,
     spxSpotGammaOi: null,
@@ -68,6 +69,7 @@ function makeAlert(overrides: Partial<SilentBoomAlert> = {}): SilentBoomAlert {
       realized60mPct: null,
       realized120mPct: null,
       realizedEodPct: null,
+      realizedTrail3010Pct: null,
       enrichedAt: null,
     },
     insertedAt: '2026-05-08T14:31:00Z',
@@ -210,6 +212,58 @@ describe('SilentBoomSection: filter interactions', () => {
     const chip = screen.getByRole('button', { name: /hide ghosts/i });
     fireEvent.click(chip);
     expect(chip).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('flips the hide-counter-trend aria-pressed state and persists to localStorage', () => {
+    render(<SilentBoomSection marketOpen={false} />);
+    const chip = screen.getByTestId('silent-boom-hide-gated-chip');
+    expect(chip).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(chip);
+    expect(chip).toHaveAttribute('aria-pressed', 'true');
+    expect(window.localStorage.getItem('silentBoom.hideGated')).toBe('1');
+  });
+
+  it('drops gated rows from the displayed list when hide-counter-trend is on', () => {
+    const alerts = [
+      makeAlert({
+        id: 1,
+        optionChainId: 'AAPL260508C00200000',
+        directionGated: false,
+      }),
+      makeAlert({
+        id: 2,
+        optionChainId: 'SPY260508P00500000',
+        underlyingSymbol: 'SPY',
+        optionType: 'P',
+        strike: 500,
+        directionGated: true,
+      }),
+    ];
+    mockUseSilentBoomFeed.mockReturnValue({
+      ...defaultHookResult,
+      alerts,
+      total: 2,
+    });
+
+    render(<SilentBoomSection marketOpen={false} />);
+
+    // Both visible before toggling the filter.
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('silent-boom-row-SPY260508P00500000'),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('silent-boom-hide-gated-chip'));
+
+    // Only AAPL (non-gated) remains.
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('silent-boom-row-SPY260508P00500000'),
+    ).not.toBeInTheDocument();
   });
 
   it('persists the conviction-floor selection to localStorage when changed', () => {

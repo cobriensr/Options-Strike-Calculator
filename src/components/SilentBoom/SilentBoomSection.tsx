@@ -24,6 +24,7 @@ const MIN_VOL_OI_LS_KEY = 'silentBoom.minVolOi';
 const CONVICTION_LS_KEY = 'silentBoom.convictionFloor';
 const HIDE_LATE_PM_LS_KEY = 'silentBoom.hideLatePm';
 const HIDE_GHOSTS_LS_KEY = 'silentBoom.hideGhosts';
+const HIDE_GATED_LS_KEY = 'silentBoom.hideGated';
 const EXIT_POLICY_LS_KEY = 'silentBoom.exitPolicy';
 const ASK_PCT_BAND_LS_KEY = 'silentBoom.askPctBand';
 
@@ -430,6 +431,10 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     if (typeof window === 'undefined') return false;
     return window.localStorage.getItem(HIDE_GHOSTS_LS_KEY) === '1';
   });
+  const [hideGated, setHideGated] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(HIDE_GATED_LS_KEY) === '1';
+  });
   const [exitPolicy, setExitPolicy] = useState<SilentBoomExitPolicy>(() => {
     if (typeof window === 'undefined') return 'realized60mPct';
     const stored = window.localStorage.getItem(EXIT_POLICY_LS_KEY);
@@ -464,6 +469,11 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       window.localStorage.setItem(HIDE_GHOSTS_LS_KEY, hideGhosts ? '1' : '0');
     }
   }, [hideGhosts]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(HIDE_GATED_LS_KEY, hideGated ? '1' : '0');
+    }
+  }, [hideGated]);
   useEffect(() => {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(EXIT_POLICY_LS_KEY, exitPolicy);
@@ -501,6 +511,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     bucketIso,
     hideLatePm,
     hideGhosts,
+    hideGated,
   ]);
 
   const isHistorical = date !== todayCt();
@@ -586,8 +597,11 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     if (hideGhosts) {
       out = out.filter((a) => !isGhostPrint(a));
     }
+    if (hideGated) {
+      out = out.filter((a) => !a.directionGated);
+    }
     return out;
-  }, [alerts, bucketIso, hideLatePm, hideGhosts, ctMinuteOfDay]);
+  }, [alerts, bucketIso, hideLatePm, hideGhosts, hideGated, ctMinuteOfDay]);
   // Per-filter hidden counts — computed against the unfiltered set
   // so each chip's "−N" count reflects what THAT filter is hiding,
   // independent of any other active filter.
@@ -600,6 +614,10 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
   const hiddenGhostsCount =
     bucketIso == null && hideGhosts
       ? alerts.filter((a) => isGhostPrint(a)).length
+      : 0;
+  const hiddenGatedCount =
+    bucketIso == null && hideGated
+      ? alerts.filter((a) => a.directionGated).length
       : 0;
 
   // Top tickers in the current page — quick one-click scope.
@@ -1037,6 +1055,23 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 </span>
               )}
             </button>
+            <button
+              type="button"
+              data-testid="silent-boom-hide-gated-chip"
+              onClick={() => setHideGated(!hideGated)}
+              className={`${CHIP_BASE} ${
+                hideGated ? CHIP_ACTIVE.amber : CHIP_INACTIVE
+              }`}
+              title="Hide counter-trend alerts demoted to tier3 by the Phase 4 direction gate (T=±100M on mkt_tide_diff). Puts when mkt_tide_diff > +100M, calls when mkt_tide_diff < -100M. Score is preserved on the row; only the displayed tier is forced down. Client-side filter."
+              aria-pressed={hideGated}
+            >
+              hide counter-trend
+              {hideGated && hiddenGatedCount > 0 && (
+                <span className="text-[10px] opacity-70">
+                  −{hiddenGatedCount}
+                </span>
+              )}
+            </button>
           </div>
 
           {/* Row 4 (conditional): ticker chips */}
@@ -1179,6 +1214,11 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 {hideGhosts && hiddenGhostsCount > 0 && (
                   <span className="ml-2 text-red-300/80">
                     ({hiddenGhostsCount} ghost prints hidden)
+                  </span>
+                )}
+                {hideGated && hiddenGatedCount > 0 && (
+                  <span className="ml-2 text-amber-300/80">
+                    ({hiddenGatedCount} counter-trend hidden)
                   </span>
                 )}
               </span>

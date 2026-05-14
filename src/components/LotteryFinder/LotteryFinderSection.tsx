@@ -21,6 +21,7 @@ const PAGE_SIZE = 50;
 const SORT_LS_KEY = 'lottery.sortMode';
 const CONVICTION_LS_KEY = 'lottery.convictionFloor';
 const HIDE_LATE_PM_LS_KEY = 'lottery.hideLatePm';
+const HIDE_GATED_LS_KEY = 'lottery.hideGated';
 /**
  * Late-PM cutoff (CT minute-of-day). Fires whose triggerTimeCt is at
  * or after this minute are hidden when the filter is on. 14:30 CT —
@@ -248,6 +249,10 @@ export function LotteryFinderSection({
     if (typeof window === 'undefined') return false;
     return window.localStorage.getItem(HIDE_LATE_PM_LS_KEY) === '1';
   });
+  const [hideGated, setHideGated] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(HIDE_GATED_LS_KEY) === '1';
+  });
   /** 0-based page index. Reset to 0 whenever a filter or minute changes. */
   const [page, setPage] = useState<number>(0);
 
@@ -268,6 +273,11 @@ export function LotteryFinderSection({
       window.localStorage.setItem(HIDE_LATE_PM_LS_KEY, hideLatePm ? '1' : '0');
     }
   }, [hideLatePm]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(HIDE_GATED_LS_KEY, hideGated ? '1' : '0');
+    }
+  }, [hideGated]);
 
   // Reset to page 0 whenever the result set's identity changes.
   // Otherwise the user could be on page 3, click a filter, and land
@@ -285,6 +295,7 @@ export function LotteryFinderSection({
     todFilter,
     sortMode,
     convictionFloor,
+    hideGated,
   ]);
 
   const { fires, loading, error, fetchedAt, total, offset, hasMore } =
@@ -369,12 +380,27 @@ export function LotteryFinderSection({
     };
   }, []);
   const displayedFires = useMemo(() => {
-    if (!hideLatePm) return fires;
-    return fires.filter(
-      (f) => ctMinuteOfDay(f.triggerTimeCt) < LATE_PM_CUTOFF_MIN_OF_DAY,
-    );
-  }, [fires, hideLatePm, ctMinuteOfDay]);
-  const hiddenLatePmCount = fires.length - displayedFires.length;
+    let out = fires;
+    if (hideLatePm) {
+      out = out.filter(
+        (f) => ctMinuteOfDay(f.triggerTimeCt) < LATE_PM_CUTOFF_MIN_OF_DAY,
+      );
+    }
+    if (hideGated) {
+      out = out.filter((f) => !f.directionGated);
+    }
+    return out;
+  }, [fires, hideLatePm, hideGated, ctMinuteOfDay]);
+  // Per-filter hidden counts — computed against the unfiltered set so
+  // each chip's "−N" reflects only what THAT filter is hiding.
+  const hiddenLatePmCount = hideLatePm
+    ? fires.filter(
+        (f) => ctMinuteOfDay(f.triggerTimeCt) >= LATE_PM_CUTOFF_MIN_OF_DAY,
+      ).length
+    : 0;
+  const hiddenGatedCount = hideGated
+    ? fires.filter((f) => f.directionGated).length
+    : 0;
 
   // Top tickers by fire count in the displayed page — gives the user
   // an obvious one-click filter dimension without forcing a 50-ticker
@@ -744,6 +770,23 @@ export function LotteryFinderSection({
                 </span>
               )}
             </button>
+            <button
+              type="button"
+              data-testid="lottery-hide-gated-chip"
+              onClick={() => setHideGated(!hideGated)}
+              className={`${CHIP_BASE} ${
+                hideGated ? CHIP_ACTIVE.amber : CHIP_INACTIVE
+              }`}
+              title="Hide counter-trend fires demoted to tier3 by the Phase 4 direction gate (T=±150M on mkt_tide_otm_diff). Puts when otm_diff > +150M, calls when otm_diff < -150M. Score is preserved on the row; only the displayed tier is forced down. Client-side filter."
+              aria-pressed={hideGated}
+            >
+              hide counter-trend
+              {hideGated && hiddenGatedCount > 0 && (
+                <span className="text-[10px] opacity-70">
+                  −{hiddenGatedCount}
+                </span>
+              )}
+            </button>
           </div>
 
           {/* Row 5 (conditional): Ticker chips — top tickers in the
@@ -880,6 +923,11 @@ export function LotteryFinderSection({
                 {hideLatePm && hiddenLatePmCount > 0 && (
                   <span className="ml-2 text-purple-300/80">
                     ({hiddenLatePmCount} hidden after 14:30 CT)
+                  </span>
+                )}
+                {hideGated && hiddenGatedCount > 0 && (
+                  <span className="ml-2 text-amber-300/80">
+                    ({hiddenGatedCount} counter-trend hidden)
                   </span>
                 )}
               </span>

@@ -53,6 +53,14 @@ interface AlertRow {
   realized_60m_pct: DbNullableNumeric;
   realized_120m_pct: DbNullableNumeric;
   realized_eod_pct: DbNullableNumeric;
+  /**
+   * Phase 2 trail-30/10 outcome (migration #150). Trailing-stop exit:
+   * activate at +30% from entry, then exit at 10pp giveback from the
+   * running peak; if peak never crosses +30%, hold to last tick (EoD).
+   * Nullable because rows enriched before #150 have no trail computed;
+   * backfill recovers historical fires from the EOD parquet stream.
+   */
+  realized_trail30_10_pct: DbNullableNumeric;
   enriched_at: DbTimestamp | null;
   score: number | null;
   score_tier: 'tier1' | 'tier2' | 'tier3' | null;
@@ -112,6 +120,13 @@ interface SilentBoomAlertResponse {
     realized60mPct: number | null;
     realized120mPct: number | null;
     realizedEodPct: number | null;
+    /**
+     * Phase 2 trail-30/10 realized return (migration #150). Activate
+     * trailing stop at +30%, exit at 10pp giveback from running peak;
+     * if peak never crosses +30%, hold to last tick. Null on rows
+     * enriched before #150 — backfilled by the nightly enrich pass.
+     */
+    realizedTrail3010Pct: number | null;
     enrichedAt: string | null;
   };
   insertedAt: string;
@@ -422,6 +437,7 @@ export default async function handler(
         realized60mPct: toNumOrNull(r.realized_60m_pct),
         realized120mPct: toNumOrNull(r.realized_120m_pct),
         realizedEodPct: toNumOrNull(r.realized_eod_pct),
+        realizedTrail3010Pct: toNumOrNull(r.realized_trail30_10_pct),
         enrichedAt: toIsoOrNull(r.enriched_at),
       },
       insertedAt: toIso(r.inserted_at),
