@@ -144,6 +144,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce(fireableSilentBoomStream())
       .mockResolvedValueOnce([]) // prior fires
       .mockResolvedValueOnce([]) // tide ticks
+      .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
       .mockResolvedValueOnce([{ id: 42 }]); // insert
@@ -172,6 +173,7 @@ describe('detect-silent-boom handler', () => {
     const shortStream = fireableSilentBoomStream().slice(0, 3);
     mockSql.mockResolvedValueOnce(shortStream);
     mockSql.mockResolvedValueOnce([]); // tide ticks (always queried)
+    mockSql.mockResolvedValueOnce([]); // tide_otm ticks (always queried)
     mockSql.mockResolvedValueOnce([]); // zero_dte ticks
     mockSql.mockResolvedValueOnce([]); // spx_gamma ticks
 
@@ -189,10 +191,10 @@ describe('detect-silent-boom handler', () => {
       totalFires: 0,
       inserted: 0,
     });
-    // ticks SELECT + tide / zero_dte / spx_gamma SELECTs (always
-    // queried). No eligible chains so the prior-fires query is
-    // skipped; no fires so no INSERT.
-    expect(mockSql).toHaveBeenCalledTimes(4);
+    // ticks SELECT + tide / tide_otm / zero_dte / spx_gamma SELECTs
+    // (always queried). No eligible chains so the prior-fires query
+    // is skipped; no fires so no INSERT.
+    expect(mockSql).toHaveBeenCalledTimes(5);
   });
 
   it('skips chains whose max OI is below the minOi floor', async () => {
@@ -206,6 +208,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce(lowOiStream) // ticks
       .mockResolvedValueOnce([]) // prior fires (chain passed bucket-count gate)
       .mockResolvedValueOnce([]) // tide ticks
+      .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]); // spx_gamma ticks
 
@@ -230,6 +233,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce(fireableSilentBoomStream())
       .mockResolvedValueOnce([]) // prior fires
       .mockResolvedValueOnce([]) // tide ticks
+      .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
       .mockResolvedValueOnce([]); // insert returns no rows = ON CONFLICT hit
@@ -263,6 +267,7 @@ describe('detect-silent-boom handler', () => {
         },
       ]) // prior fire — cooldown active
       .mockResolvedValueOnce([]) // tide ticks
+      .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]); // spx_gamma ticks
 
@@ -281,16 +286,17 @@ describe('detect-silent-boom handler', () => {
       inserted: 0,
       priorSeeds: 1,
     });
-    // Five SQL calls — ticks SELECT, prior-fires lookup, three macro
-    // snapshot SELECTs (tide / zero_dte / spx_gamma). No insert
-    // because the cooldown gate suppressed the fire entirely.
-    expect(mockSql).toHaveBeenCalledTimes(5);
+    // Six SQL calls — ticks SELECT, prior-fires lookup, four macro
+    // snapshot SELECTs (tide / tide_otm / zero_dte / spx_gamma).
+    // No insert because the cooldown gate suppressed the fire entirely.
+    expect(mockSql).toHaveBeenCalledTimes(6);
   });
 
   it('binds the latest market_tide tick (NCP - NPP) to the INSERT', async () => {
     // Spike bucket at 13:20:00Z. Seed a market_tide tick at 13:18Z
     // (2 min before, inside the 30-min staleness window) with
-    // NCP=8000, NPP=2000 — diff +6000.
+    // NCP=8000, NPP=2000 — diff +6000. tide_otm at the same instant
+    // with NCP=4000, NPP=1000 → diff +3000.
     const tickMs = Date.parse('2026-05-07T13:18:00Z');
     mockSql
       .mockResolvedValueOnce(fireableSilentBoomStream())
@@ -298,6 +304,9 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([
         { ts_ms: String(tickMs), ncp: '8000', npp: '2000' },
       ]) // tide ticks
+      .mockResolvedValueOnce([
+        { ts_ms: String(tickMs), ncp: '4000', npp: '1000' },
+      ]) // tide_otm ticks → diff +3000
       .mockResolvedValueOnce([
         { ts_ms: String(tickMs), ncp: '500', npp: '200' },
       ]) // zero_dte ticks → diff +300
@@ -312,15 +321,17 @@ describe('detect-silent-boom handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(mockSql).toHaveBeenCalledTimes(6);
+    expect(mockSql).toHaveBeenCalledTimes(7);
     // INSERT is the last call. Bound order ends with mkt_tide_diff,
-    // zero_dte_diff, spx_spot_gamma_oi, multi_leg_share.
+    // mkt_tide_otm_diff, zero_dte_diff, spx_spot_gamma_oi, multi_leg_share.
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
     const multiLegShare = insertCall.at(-1);
     const spxGamma = insertCall.at(-2);
     const zeroDteDiff = insertCall.at(-3);
-    const tideDiff = insertCall.at(-4);
+    const tideOtmDiff = insertCall.at(-4);
+    const tideDiff = insertCall.at(-5);
     expect(tideDiff).toBe(6000);
+    expect(tideOtmDiff).toBe(3000);
     expect(zeroDteDiff).toBe(300);
     expect(spxGamma).toBe(12345);
     // Single-leg-only stream: multi_leg_size=0 → share=0.
@@ -338,6 +349,9 @@ describe('detect-silent-boom handler', () => {
         { ts_ms: String(staleTickMs), ncp: '8000', npp: '2000' },
       ]) // tide tick — stale
       .mockResolvedValueOnce([
+        { ts_ms: String(staleTickMs), ncp: '4000', npp: '1000' },
+      ]) // tide_otm tick — also stale
+      .mockResolvedValueOnce([
         { ts_ms: String(staleTickMs), ncp: '500', npp: '200' },
       ]) // zero_dte tick — also stale
       .mockResolvedValueOnce([
@@ -353,13 +367,14 @@ describe('detect-silent-boom handler', () => {
     await handler(req, res);
 
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    // multi_leg_share trails the three macro fields. Single-leg stream
-    // → multi_leg_share = 0; all three macro fields should be null
-    // because every tick was stale.
+    // multi_leg_share trails the four macro fields. Single-leg stream
+    // → multi_leg_share = 0; all four macro fields (tide, tide_otm,
+    // zero_dte, spx_gamma) should be null because every tick was stale.
     expect(insertCall.at(-1)).toBe(0);
     expect(insertCall.at(-2)).toBeNull();
     expect(insertCall.at(-3)).toBeNull();
     expect(insertCall.at(-4)).toBeNull();
+    expect(insertCall.at(-5)).toBeNull();
   });
 
   it('still fires when prior-fire is older than the 60-min cooldown', async () => {
@@ -375,6 +390,7 @@ describe('detect-silent-boom handler', () => {
         },
       ])
       .mockResolvedValueOnce([]) // tide ticks
+      .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
       .mockResolvedValueOnce([{ id: 99 }]); // insert

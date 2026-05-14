@@ -232,6 +232,67 @@ describe('detect-lottery-fires handler', () => {
     expect(score).toBe(25);
   });
 
+  it('binds mkt_tide_otm_diff from market_tide_otm ncp/npp (regression for vestigial otm_ncp bug, spec: silent-boom-otm-tide-and-trail-2026-05-13.md)', async () => {
+    // For source='market_tide_otm' rows, OTM NCP/NPP lives in the
+    // regular ncp/npp columns — the otm_ncp/otm_npp columns are
+    // vestigial and 100% NULL (0/5,277 rows on 2026-05-13). A prior
+    // form computed otm.otmNcp - otm.otmNpp and produced NULL on every
+    // historical lottery fire (verified 0/96,781 coverage). This test
+    // pins the correct read so the bug cannot reappear silently.
+    mockSql
+      .mockResolvedValueOnce(fireableSndkStream()) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([
+        { source: 'market_tide_otm', ncp: '4000', npp: '1000' },
+      ]) // flow_data
+      .mockResolvedValueOnce([]) // spot_exposures
+      .mockResolvedValueOnce([{ id: 42 }]); // insert
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // INSERT bind order (from detect-lottery-fires.ts lines 340-345):
+    //   ... mkt_tide_diff, mkt_tide_otm_diff, spx_flow_diff,
+    //   spy_etf_diff, qqq_etf_diff, zero_dte_diff,
+    //   spx_spot_gamma_oi, spx_spot_gamma_vol, spx_spot_charm_oi,
+    //   spx_spot_vanna_oi, gex_strike_call_minus_put,
+    //   gex_strike_call_ask_minus_bid, gex_strike_put_ask_minus_bid,
+    //   gex_strike_actual_strike, score
+    // → mkt_tide_otm_diff is the 14th-from-last bind position.
+    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
+    expect(insertCall.at(-14)).toBe(3000); // 4000 - 1000
+    // Sanity: mkt_tide_diff (no 'market_tide' source in the mock) is null
+    expect(insertCall.at(-15)).toBeNull();
+  });
+
+  it('binds null mkt_tide_otm_diff when no market_tide_otm row is in the macro window', async () => {
+    mockSql
+      .mockResolvedValueOnce(fireableSndkStream()) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([
+        { source: 'market_tide', ncp: '500', npp: '300' },
+      ]) // flow_data — only all-in tide, no OTM
+      .mockResolvedValueOnce([]) // spot_exposures
+      .mockResolvedValueOnce([{ id: 42 }]); // insert
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
+    expect(insertCall.at(-15)).toBe(200); // mkt_tide_diff = 500 - 300
+    expect(insertCall.at(-14)).toBeNull(); // mkt_tide_otm_diff absent
+  });
+
   it('issues the strike_exposures query for SPY (in TICKERS_WITH_GEX_STRIKE)', async () => {
     const spyStream = fireableSndkStream().map((t) => ({
       ...t,

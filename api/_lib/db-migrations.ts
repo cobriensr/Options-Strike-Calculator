@@ -4362,4 +4362,13 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 149,
+    description:
+      'Add mkt_tide_otm_diff NUMERIC column to silent_boom_alerts (Phase 1 of docs/superpowers/specs/silent-boom-otm-tide-and-trail-2026-05-13.md). Snapshot of the OTM-restricted Market Tide NCP - NPP at the spike-bucket time (sourced from flow_data WHERE source = market_tide_otm, latest tick at or before bucket_ct within 30min). Distinct from #136 mkt_tide_diff which captures the all-in variant; the OTM variant filters out dealer hedging noise and is the recommended directional signal per Periscope calibration. Populated forward by the detect-silent-boom cron and backfilled by scripts/backfill_otm_tide_on_alerts.py against the same flow_data table. Nullable because rows written before this migration have no snapshot — backfill recovers every historical date since flow_data source=market_tide_otm has continuous history back to 2026-02-09. Mirrors lottery_finder_fires.mkt_tide_otm_diff which already exists from #122. No index needed: queries filter on (date, bucket_ct) and only group by this column for analytics.',
+    statements: (sql) => [
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS mkt_tide_otm_diff NUMERIC`,
+    ],
+  },
 ];

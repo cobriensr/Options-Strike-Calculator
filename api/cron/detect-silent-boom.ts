@@ -260,6 +260,21 @@ export default withCronInstrumentation(
         )
       ORDER BY timestamp ASC
     `) as { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[];
+    // OTM variant of market_tide. Per the spec, the OTM data for
+    // source='market_tide_otm' lives in the regular ncp/npp columns;
+    // the otm_ncp/otm_npp columns on flow_data are vestigial and NULL
+    // for this source. Same lookup window (30 min) as the all-in tide.
+    const tideOtmTicks = (await db`
+      SELECT
+        EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
+        ncp, npp
+      FROM flow_data
+      WHERE source = 'market_tide_otm'
+        AND timestamp >= NOW() - (
+          (${SCAN_WINDOW_MIN}::int + 30) * INTERVAL '1 minute'
+        )
+      ORDER BY timestamp ASC
+    `) as { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[];
     const zeroDteTicks = (await db`
       SELECT
         EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
@@ -314,6 +329,10 @@ export default withCronInstrumentation(
       const tick = lookupAt(tideTicks, targetMs);
       return tick == null ? null : Number(tick.ncp) - Number(tick.npp);
     };
+    const tideOtmDiffAt = (targetMs: number): number | null => {
+      const tick = lookupAt(tideOtmTicks, targetMs);
+      return tick == null ? null : Number(tick.ncp) - Number(tick.npp);
+    };
     const zeroDteDiffAt = (targetMs: number): number | null => {
       const tick = lookupAt(zeroDteTicks, targetMs);
       return tick == null ? null : Number(tick.ncp) - Number(tick.npp);
@@ -364,6 +383,7 @@ export default withCronInstrumentation(
 
         const targetMs = f.bucketTs.getTime();
         const mktTideDiff = tideDiffAt(targetMs);
+        const mktTideOtmDiff = tideOtmDiffAt(targetMs);
         const zeroDteDiff = zeroDteDiffAt(targetMs);
         const spxSpotGammaOi = spxGammaAt(targetMs);
 
@@ -374,7 +394,7 @@ export default withCronInstrumentation(
             spike_volume, baseline_volume, spike_ratio,
             ask_pct, vol_oi, entry_price, open_interest,
             score, score_tier,
-            mkt_tide_diff, zero_dte_diff, spx_spot_gamma_oi,
+            mkt_tide_diff, mkt_tide_otm_diff, zero_dte_diff, spx_spot_gamma_oi,
             multi_leg_share
           ) VALUES (
             ${ctx.today}::date, ${f.bucketTs.toISOString()},
@@ -383,7 +403,7 @@ export default withCronInstrumentation(
             ${f.spikeVolume}, ${f.baselineVolume}, ${f.spikeRatio},
             ${f.askPct}, ${f.volOi}, ${f.entryPrice}, ${f.openInterest},
             ${score}, ${tier},
-            ${mktTideDiff}, ${zeroDteDiff}, ${spxSpotGammaOi},
+            ${mktTideDiff}, ${mktTideOtmDiff}, ${zeroDteDiff}, ${spxSpotGammaOi},
             ${f.multiLegShare}
           )
           ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING

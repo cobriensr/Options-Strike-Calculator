@@ -87,8 +87,6 @@ interface FlowMacroRow {
   source: string;
   ncp: DbNumeric;
   npp: DbNumeric;
-  otm_ncp: DbNullableNumeric;
-  otm_npp: DbNullableNumeric;
 }
 
 interface SpotMacroRow {
@@ -422,7 +420,7 @@ async function fetchMacroSnapshot(
   // strike_exposures only matters for index/ETF tickers and is left null
   // otherwise.
   const flowQuery = db`
-    SELECT source, ncp, npp, otm_ncp, otm_npp
+    SELECT source, ncp, npp
     FROM flow_data
     WHERE timestamp <= ${asOf.toISOString()}
       AND timestamp >= ${asOf.toISOString()}::timestamptz - INTERVAL '30 minutes'
@@ -475,8 +473,6 @@ async function fetchMacroSnapshot(
   interface ParsedFlowRow {
     ncp: number;
     npp: number;
-    otmNcp: number | null;
-    otmNpp: number | null;
   }
   const latestBySource = new Map<string, ParsedFlowRow>();
   for (const r of flowRows) {
@@ -484,8 +480,6 @@ async function fetchMacroSnapshot(
     latestBySource.set(r.source, {
       ncp: Number(r.ncp),
       npp: Number(r.npp),
-      otmNcp: r.otm_ncp != null ? Number(r.otm_ncp) : null,
-      otmNpp: r.otm_npp != null ? Number(r.otm_npp) : null,
     });
   }
   const tide = latestBySource.get('market_tide');
@@ -503,10 +497,12 @@ async function fetchMacroSnapshot(
     mkt_tide_ncp: tide?.ncp ?? null,
     mkt_tide_npp: tide?.npp ?? null,
     mkt_tide_diff: tide ? tide.ncp - tide.npp : null,
-    mkt_tide_otm_diff:
-      otm && otm.otmNcp != null && otm.otmNpp != null
-        ? otm.otmNcp - otm.otmNpp
-        : null,
+    // For source='market_tide_otm', the OTM data lives in the regular
+    // ncp/npp columns — the otm_ncp/otm_npp columns on flow_data are
+    // vestigial and NULL for this source (verified 2026-05-13: 0/5,277
+    // rows populated vs. 5,277/5,277 for ncp/npp). A prior form read
+    // otm_ncp/otm_npp here and produced NULL on every row.
+    mkt_tide_otm_diff: otm ? otm.ncp - otm.npp : null,
     spx_flow_diff: spxF ? spxF.ncp - spxF.npp : null,
     spy_etf_diff: spyE ? spyE.ncp - spyE.npp : null,
     qqq_etf_diff: qqqE ? qqqE.ncp - qqqE.npp : null,
