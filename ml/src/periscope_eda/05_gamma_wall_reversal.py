@@ -472,6 +472,28 @@ def plot_wall_reversal(walls_df: pd.DataFrame, out_path: Path) -> None:
     plt.close(fig)
 
 
+def plot_distance_distribution(walls_df: pd.DataFrame, out_path: Path) -> None:
+    """Histogram of distance_initial for real walls only (sham is mirror)."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    real = walls_df[walls_df["real_or_sham"] == "real"]
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for wall_type, color in (("ceiling", "#d62728"), ("floor", "#2ca02c")):
+        d = real.loc[real["wall_type"] == wall_type, "distance_initial"]
+        ax.hist(d, bins=20, alpha=0.5, label=wall_type, color=color, edgecolor="black")
+    for edge in (3.0, 7.0, 15.0):
+        ax.axvline(edge, color="gray", linestyle="--", linewidth=1)
+    ax.set_xlabel("Distance from spot at read time (SPX points)")
+    ax.set_ylabel("Number of reads")
+    ax.set_title(
+        "Distribution of gamma_ceiling / gamma_floor distance from spot\n"
+        "(dashed lines: 3 / 7 / 15 pt bucket edges)"
+    )
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -519,6 +541,10 @@ def main() -> int:
     print("\nWriting plots…")
     plot_wall_reversal(events["walls"], PLOT_DIR / "gamma_wall_reversal.png")
     print(f"  wrote {PLOT_DIR / 'gamma_wall_reversal.png'}")
+    plot_distance_distribution(
+        events["walls"], PLOT_DIR / "gamma_wall_distance_dist.png"
+    )
+    print(f"  wrote {PLOT_DIR / 'gamma_wall_distance_dist.png'}")
 
     return 0
 
