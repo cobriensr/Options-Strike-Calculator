@@ -124,7 +124,13 @@ def annotate_outliers(ax: plt.Axes, df: pd.DataFrame, coords: np.ndarray) -> Non
                 textcoords="offset points",
                 fontsize=7,
                 color="black",
-                bbox={"boxstyle": "round,pad=0.2", "fc": "white", "ec": "grey", "lw": 0.5, "alpha": 0.8},
+                bbox={
+                    "boxstyle": "round,pad=0.2",
+                    "fc": "white",
+                    "ec": "grey",
+                    "lw": 0.5,
+                    "alpha": 0.8,
+                },
             )
 
 
@@ -230,9 +236,7 @@ def main() -> int:
 
     matrix = np.vstack(df["embedding_vec"].to_list())
     if matrix.shape[0] < 3:
-        print(
-            f"Only {matrix.shape[0]} parseable embeddings — projection needs >= 3."
-        )
+        print(f"Only {matrix.shape[0]} parseable embeddings — projection needs >= 3.")
         return 0
 
     coords = project(matrix, args.method)

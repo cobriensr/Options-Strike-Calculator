@@ -41,7 +41,6 @@ except ImportError:
 
 from utils import ML_ROOT, section, subsection, takeaway
 
-
 # ── Args ─────────────────────────────────────────────────────
 
 
@@ -101,9 +100,7 @@ def inspect_counts_by_symbol(frame: pd.DataFrame) -> None:
 
 def inspect_yearly_cadence(frame: pd.DataFrame) -> None:
     subsection("Messages per year per symbol")
-    yearly = (
-        frame.groupby([frame.index.year, "symbol"]).size().unstack(fill_value=0)
-    )
+    yearly = frame.groupby([frame.index.year, "symbol"]).size().unstack(fill_value=0)
     print(yearly.to_string())
 
 

@@ -340,8 +340,7 @@ def _copy_condition(condition_path: Path | None, out_dir: Path) -> int:
         return 0
 
     degraded = sum(
-        1 for d in cond_days
-        if isinstance(d, dict) and d.get("condition") == "degraded"
+        1 for d in cond_days if isinstance(d, dict) and d.get("condition") == "degraded"
     )
     log.info(
         "Copied condition.json (%d degraded days of %d total)",
@@ -428,10 +427,7 @@ def main(argv: list[str] | None = None) -> int:
         f"{result.distinct_instruments:,} instruments"
     )
     print(f"  Range:  {result.start_date} → {result.end_date}")
-    print(
-        f"  Years:  {len(result.years)} "
-        f"({min(result.years)}–{max(result.years)})"
-    )
+    print(f"  Years:  {len(result.years)} ({min(result.years)}–{max(result.years)})")
     if result.degraded_days:
         print(
             f"  Note:   {result.degraded_days} degraded trading days — "

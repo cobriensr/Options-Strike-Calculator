@@ -59,13 +59,28 @@ def test_filter_primary_drops_secondary_venues() -> None:
 
 def test_aggregate_notional_sums_signed_qty_times_price() -> None:
     rows = [
-        _panel_row(d=date(2026, 5, 12), symbol="SPY", dataset="ARCX.PILLAR",
-                   signed_first=1_000, ref_first=400.0),
-        _panel_row(d=date(2026, 5, 12), symbol="IWM", dataset="ARCX.PILLAR",
-                   signed_first=-500, ref_first=200.0),
+        _panel_row(
+            d=date(2026, 5, 12),
+            symbol="SPY",
+            dataset="ARCX.PILLAR",
+            signed_first=1_000,
+            ref_first=400.0,
+        ),
+        _panel_row(
+            d=date(2026, 5, 12),
+            symbol="IWM",
+            dataset="ARCX.PILLAR",
+            signed_first=-500,
+            ref_first=200.0,
+        ),
         # Different date — should not contribute
-        _panel_row(d=date(2026, 5, 13), symbol="SPY", dataset="ARCX.PILLAR",
-                   signed_first=2_000, ref_first=400.0),
+        _panel_row(
+            d=date(2026, 5, 13),
+            symbol="SPY",
+            dataset="ARCX.PILLAR",
+            signed_first=2_000,
+            ref_first=400.0,
+        ),
     ]
     out = agg.aggregate_notional(pd.DataFrame(rows), {"SPY", "IWM"}, "first")
     assert out.loc[date(2026, 5, 12), "notional"] == 1_000 * 400 + (-500) * 200
@@ -90,9 +105,14 @@ def test_correlate_group_returns_filled_fields_with_signal() -> None:
         # Construct a real positive relationship: ret = 0.5 * notional/scale + noise
         ret = notional_seed * 1e-7 + rng.normal(0, 20)
         rows.append(
-            _panel_row(d=d, symbol="SPY", dataset="ARCX.PILLAR",
-                       signed_first=notional_seed / 400, ref_first=400.0,
-                       daily_ret=ret)
+            _panel_row(
+                d=d,
+                symbol="SPY",
+                dataset="ARCX.PILLAR",
+                signed_first=notional_seed / 400,
+                ref_first=400.0,
+                daily_ret=ret,
+            )
         )
     panel = pd.DataFrame(rows)
     res = agg.correlate_group(
@@ -112,14 +132,24 @@ def test_run_phase5_returns_predictive_and_explanatory_decisions(tmp_path) -> No
     rows = []
     for d in dates:
         # Symbols populated for two venue groups so all branches resolve
-        for sym, ds in [("SPY", "ARCX.PILLAR"), ("AAPL", "XNAS.ITCH"), ("JPM", "XNYS.PILLAR")]:
+        for sym, ds in [
+            ("SPY", "ARCX.PILLAR"),
+            ("AAPL", "XNAS.ITCH"),
+            ("JPM", "XNYS.PILLAR"),
+        ]:
             sf = float(rng.normal(0, 50_000))
             sl = sf * 0.3 + float(rng.normal(0, 5_000))
             rows.append(
-                _panel_row(d=d, symbol=sym, dataset=ds,
-                           signed_first=sf, signed_last=sl,
-                           ref_first=300.0, ref_last=300.0,
-                           daily_ret=float(rng.normal(0, 30)))
+                _panel_row(
+                    d=d,
+                    symbol=sym,
+                    dataset=ds,
+                    signed_first=sf,
+                    signed_last=sl,
+                    ref_first=300.0,
+                    ref_last=300.0,
+                    daily_ret=float(rng.normal(0, 30)),
+                )
             )
     panel = pd.DataFrame(rows)
     results, decision = agg.run_phase5(panel)

@@ -382,9 +382,7 @@ def q1_distributions(df: pd.DataFrame, out_path: Path) -> dict[str, Any]:
 
     ncols = 4
     nrows = (n_features + ncols - 1) // ncols
-    fig, axes = plt.subplots(
-        nrows, ncols, figsize=(PLOT_FIGSIZE_GRID[0], nrows * 2.5)
-    )
+    fig, axes = plt.subplots(nrows, ncols, figsize=(PLOT_FIGSIZE_GRID[0], nrows * 2.5))
     axes_flat = axes.flatten() if nrows > 1 else np.atleast_1d(axes).flatten()
 
     per_feature: dict[str, dict[str, float | int]] = {}
@@ -404,9 +402,7 @@ def q1_distributions(df: pd.DataFrame, out_path: Path) -> dict[str, Any]:
                 edgecolor="#222",
                 alpha=0.85,
             )
-            ax.axvline(
-                valid.median(), color=COLORS["red"], linewidth=1, linestyle="--"
-            )
+            ax.axvline(valid.median(), color=COLORS["red"], linewidth=1, linestyle="--")
         ax.set_title(col, fontsize=9)
         ax.tick_params(labelsize=7)
 
@@ -483,9 +479,7 @@ def q2_correlation(df: pd.DataFrame, out_path: Path) -> dict[str, Any]:
     ax.set_yticks(range(len(keep)))
     ax.set_xticklabels(keep, rotation=60, ha="right", fontsize=7)
     ax.set_yticklabels(keep, fontsize=7)
-    ax.set_title(
-        f"Microstructure features - Spearman correlation (N={len(df)})"
-    )
+    ax.set_title(f"Microstructure features - Spearman correlation (N={len(df)})")
     fig.colorbar(im, ax=ax, fraction=0.04, pad=0.02)
     fig.tight_layout()
     fig.savefig(out_path, dpi=PLOT_DPI)
@@ -605,7 +599,9 @@ def q4_returns(df: pd.DataFrame, out_path: Path) -> dict[str, Any]:
     Operates on the outcome-augmented frame produced by ``derive_outcomes``.
     """
     if "ret_day" not in df.columns:
-        raise ValueError("q4_returns requires outcome columns; call derive_outcomes first")
+        raise ValueError(
+            "q4_returns requires outcome columns; call derive_outcomes first"
+        )
 
     fig, axes = plt.subplots(2, 2, figsize=PLOT_FIGSIZE_GRID[0:1] + (10,))
     # Top row: ret_day and ret_5d histograms (all symbols combined).
@@ -631,15 +627,18 @@ def q4_returns(df: pd.DataFrame, out_path: Path) -> dict[str, Any]:
     xs = np.arange(len(syms))
     for i, cls in enumerate(["up", "flat", "down"]):
         counts = [
-            int(((df["symbol"] == s) & (df["regime_label"] == cls)).sum())
-            for s in syms
+            int(((df["symbol"] == s) & (df["regime_label"] == cls)).sum()) for s in syms
         ]
         ax_counts.bar(
             xs + (i - 1) * bar_w,
             counts,
             bar_w,
             label=cls,
-            color={"up": COLORS["green"], "flat": COLORS["gray"], "down": COLORS["red"]}[cls],
+            color={
+                "up": COLORS["green"],
+                "flat": COLORS["gray"],
+                "down": COLORS["red"],
+            }[cls],
             edgecolor="#222",
         )
     ax_counts.set_xticks(xs)
@@ -651,7 +650,9 @@ def q4_returns(df: pd.DataFrame, out_path: Path) -> dict[str, Any]:
     has_both = df.dropna(subset=["ret_day", "ret_5d"])
     color_map = {"up": COLORS["green"], "flat": COLORS["gray"], "down": COLORS["red"]}
     colors = [color_map[r] for r in has_both["regime_label"]]
-    ax_scatter.scatter(has_both["ret_day"], has_both["ret_5d"], c=colors, s=10, alpha=0.5)
+    ax_scatter.scatter(
+        has_both["ret_day"], has_both["ret_5d"], c=colors, s=10, alpha=0.5
+    )
     ax_scatter.axhline(0, color="#888", linewidth=0.5)
     ax_scatter.axvline(0, color="#888", linewidth=0.5)
     ax_scatter.set_xlabel("ret_day")
@@ -684,8 +685,7 @@ def q4_returns(df: pd.DataFrame, out_path: Path) -> dict[str, Any]:
     return {
         "id": "q4_returns",
         "summary": (
-            f"ret_day n={len(rd)}, ret_5d n={len(r5)} across "
-            f"{len(syms)} symbol(s)."
+            f"ret_day n={len(rd)}, ret_5d n={len(r5)} across {len(syms)} symbol(s)."
         ),
         "forward_days": FORWARD_DAYS,
         "up_threshold": OUTCOME_UP_THRESHOLD,
@@ -754,23 +754,22 @@ def q5_feature_vs_return(df: pd.DataFrame, out_path: Path) -> dict[str, Any]:
                     "significant": significant,
                 }
             )
-        rows.sort(key=lambda r: abs(r["spearman"]) if pd.notna(r["spearman"]) else -1, reverse=True)
+        rows.sort(
+            key=lambda r: abs(r["spearman"]) if pd.notna(r["spearman"]) else -1,
+            reverse=True,
+        )
         per_symbol[str(sym)] = rows[:CORRELATION_RANK_TOP_N]
 
     # Ranked bar plot: one subplot per symbol.
     ncols = len(symbols) if symbols else 1
-    fig, axes = plt.subplots(
-        1, ncols, figsize=(6 * ncols, 7), sharey=False
-    )
+    fig, axes = plt.subplots(1, ncols, figsize=(6 * ncols, 7), sharey=False)
     if ncols == 1:
         axes = [axes]
     for ax, sym in zip(axes, symbols):
         rows = per_symbol[str(sym)]
         feats = [r["feature"] for r in rows]
         rhos = [r["spearman"] if pd.notna(r["spearman"]) else 0 for r in rows]
-        colors = [
-            COLORS["green"] if r["significant"] else COLORS["gray"] for r in rows
-        ]
+        colors = [COLORS["green"] if r["significant"] else COLORS["gray"] for r in rows]
         ax.barh(feats[::-1], rhos[::-1], color=colors[::-1], edgecolor="#222")
         ax.axvline(0, color="#888", linewidth=0.5)
         ax.set_title(
@@ -923,9 +922,7 @@ def q6_cohorts(
         ax.axhline(0, color="#888", linewidth=0.5)
         ax.set_ylabel("ret_day")
 
-    fig.suptitle(
-        f"Cohort analysis - Q1 vs Q4 on top-{len(usable)} features"
-    )
+    fig.suptitle(f"Cohort analysis - Q1 vs Q4 on top-{len(usable)} features")
     fig.tight_layout(rect=(0, 0, 1, 0.93))
     fig.savefig(out_path, dpi=PLOT_DPI)
     plt.close(fig)
@@ -988,7 +985,9 @@ def run_all_questions(
     enriched = derive_outcomes(features_df, ohlcv_glob, symbology_path)
     log.info("After outcome join: %d rows", len(enriched))
 
-    q1 = q1_distributions(features_df, plots_dir / "microstructure_q1_distributions.png")
+    q1 = q1_distributions(
+        features_df, plots_dir / "microstructure_q1_distributions.png"
+    )
     q2 = q2_correlation(features_df, plots_dir / "microstructure_q2_correlation.png")
     q3 = q3_spread_zero_rate(
         features_df, plots_dir / "microstructure_q3_spread_zero_rate.png"
@@ -998,9 +997,7 @@ def run_all_questions(
         enriched, plots_dir / "microstructure_q5_feature_vs_return.png"
     )
     top_features = _pick_top_features(q5, top_n=3)
-    q6 = q6_cohorts(
-        enriched, plots_dir / "microstructure_q6_cohorts.png", top_features
-    )
+    q6 = q6_cohorts(enriched, plots_dir / "microstructure_q6_cohorts.png", top_features)
 
     date_vals = features_df["date"]
     findings: dict[str, Any] = {

@@ -429,9 +429,7 @@ def _compute_ofi_stats(
         total = buy_sum + sell_sum
 
         # OFI with sample-size guard: both NaN out if total < threshold.
-        ofi = (buy_sum - sell_sum) / total.where(
-            total >= OFI_MIN_TRADES_PER_WINDOW
-        )
+        ofi = (buy_sum - sell_sum) / total.where(total >= OFI_MIN_TRADES_PER_WINDOW)
         valid = ofi.dropna()
 
         if valid.empty:
@@ -510,10 +508,14 @@ def _compute_spread_widening_stats(
     # Baseline is strictly the prior 30 minutes, excluding the current
     # minute from its own reference.
     baseline_med = (
-        spread.shift(1).rolling(SPREAD_BASELINE_MINUTES, min_periods=SPREAD_BASELINE_MIN_PERIODS).median()
+        spread.shift(1)
+        .rolling(SPREAD_BASELINE_MINUTES, min_periods=SPREAD_BASELINE_MIN_PERIODS)
+        .median()
     )
     baseline_std = (
-        spread.shift(1).rolling(SPREAD_BASELINE_MINUTES, min_periods=SPREAD_BASELINE_MIN_PERIODS).std(ddof=0)
+        spread.shift(1)
+        .rolling(SPREAD_BASELINE_MINUTES, min_periods=SPREAD_BASELINE_MIN_PERIODS)
+        .std(ddof=0)
     )
 
     # z = (cur - baseline_med) / baseline_std; guard zero-std as z=0.
@@ -734,9 +736,7 @@ def compute_daily_features(
         conn = _new_connection()
 
     try:
-        contract = _pick_front_month(
-            conn, tbbo_glob, symbology_path, date_iso, symbol
-        )
+        contract = _pick_front_month(conn, tbbo_glob, symbology_path, date_iso, symbol)
         if contract is None:
             return None
 
@@ -760,25 +760,41 @@ def compute_daily_features(
         }
         row.update(
             _compute_ofi_stats(
-                conn, tbbo_glob, symbology_path, date_iso, contract,
+                conn,
+                tbbo_glob,
+                symbology_path,
+                date_iso,
+                contract,
                 per_minute=per_minute,
             )
         )
         row.update(
             _compute_spread_widening_stats(
-                conn, tbbo_glob, symbology_path, date_iso, contract,
+                conn,
+                tbbo_glob,
+                symbology_path,
+                date_iso,
+                contract,
                 per_minute=per_minute,
             )
         )
         row.update(
             _compute_tob_persistence_stats(
-                conn, tbbo_glob, symbology_path, date_iso, contract,
+                conn,
+                tbbo_glob,
+                symbology_path,
+                date_iso,
+                contract,
                 per_minute=per_minute,
             )
         )
         row.update(
             _compute_tick_velocity_stats(
-                conn, tbbo_glob, symbology_path, date_iso, contract,
+                conn,
+                tbbo_glob,
+                symbology_path,
+                date_iso,
+                contract,
                 per_minute=per_minute,
             )
         )
@@ -1007,7 +1023,9 @@ def main(argv: list[str] | None = None) -> int:
     elapsed = datetime.now(UTC) - t0
     print()
     print(f"Wrote {len(df):,} feature rows -> {args.out}")
-    print(f"  Symbols: {sorted(df['symbol'].unique().tolist()) if not df.empty else args.symbols}")
+    print(
+        f"  Symbols: {sorted(df['symbol'].unique().tolist()) if not df.empty else args.symbols}"
+    )
     if not df.empty:
         print(f"  Dates:   {df['date'].min()} .. {df['date'].max()}")
         print(f"  Degraded: {int(df['is_degraded'].sum())} rows")

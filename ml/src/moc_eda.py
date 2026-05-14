@@ -58,7 +58,6 @@ Requires: pandas, numpy, matplotlib, seaborn, scipy
 """
 
 import sys
-from pathlib import Path
 
 try:
     import matplotlib.pyplot as plt
@@ -72,7 +71,6 @@ except ImportError:
     sys.exit(1)
 
 from utils import ML_ROOT, section, subsection, takeaway
-
 
 PLOTS_DIR = ML_ROOT / "plots" / "moc"
 DEFAULT_INPUT = ML_ROOT / "data" / "moc_features_qqq.parquet"
@@ -139,7 +137,9 @@ def plot_target_distributions(frame: pd.DataFrame) -> None:
             bbox=dict(facecolor="white", alpha=0.8, edgecolor="none"),
             fontsize=9,
         )
-    fig.suptitle("QQQ last-10-min target distributions (15:50 -> 16:00 ET)", fontsize=13)
+    fig.suptitle(
+        "QQQ last-10-min target distributions (15:50 -> 16:00 ET)", fontsize=13
+    )
     fig.tight_layout()
     fig.savefig(PLOTS_DIR / "1_targets_distributions.png")
     plt.close(fig)
@@ -186,7 +186,9 @@ def plot_size_predicts_chaos(frame: pd.DataFrame) -> None:
     plt.close(fig)
 
     subsection("Plot 2 — size vs range")
-    print(f"  Pearson r = {pearson:+.3f}   Spearman r = {spearman:+.3f}   R^2 = {r**2:.3f}")
+    print(
+        f"  Pearson r = {pearson:+.3f}   Spearman r = {spearman:+.3f}   R^2 = {r**2:.3f}"
+    )
 
 
 # ── Plot 3: Direction ────────────────────────────────────────
@@ -303,8 +305,22 @@ def plot_decile_binning(frame: pd.DataFrame) -> None:
     x = grouped.index
     ax.plot(x, grouped["median_mae"], "-o", color="#c44e52", label="median MAE")
     ax.plot(x, grouped["p95_mae"], "-o", color="#4c72b0", label="95th-pct MAE")
-    ax.plot(x, grouped["median_range"], "--o", color="#c44e52", alpha=0.4, label="median range")
-    ax.plot(x, grouped["p95_range"], "--o", color="#4c72b0", alpha=0.4, label="95th-pct range")
+    ax.plot(
+        x,
+        grouped["median_range"],
+        "--o",
+        color="#c44e52",
+        alpha=0.4,
+        label="median range",
+    )
+    ax.plot(
+        x,
+        grouped["p95_range"],
+        "--o",
+        color="#4c72b0",
+        alpha=0.4,
+        label="95th-pct range",
+    )
     ax.set_xlabel("|imbalance_T50| decile  (0 = smallest, 9 = largest)")
     ax.set_ylabel("bps")
     ax.set_title("Last-10-min MAE & range by imbalance decile")
@@ -372,19 +388,26 @@ def plot_side_flip_effect(frame: pd.DataFrame) -> None:
 
 
 def plot_annual_tail_regimes(frame: pd.DataFrame) -> None:
-    annual = (
-        frame.groupby(frame.index.year)
-        .agg(
-            median_mae=("realized_mae_down_bps", "median"),
-            p95_mae=("realized_mae_down_bps", lambda s: s.quantile(0.95)),
-            p95_range=("realized_range_bps", lambda s: s.quantile(0.95)),
-            n=("realized_mae_down_bps", "count"),
-        )
+    annual = frame.groupby(frame.index.year).agg(
+        median_mae=("realized_mae_down_bps", "median"),
+        p95_mae=("realized_mae_down_bps", lambda s: s.quantile(0.95)),
+        p95_range=("realized_range_bps", lambda s: s.quantile(0.95)),
+        n=("realized_mae_down_bps", "count"),
     )
     fig, ax = plt.subplots(figsize=(11, 5))
-    ax.plot(annual.index, annual["median_mae"], "-o", color="#c44e52", label="median MAE")
-    ax.plot(annual.index, annual["p95_mae"], "-o", color="#4c72b0", label="95th-pct MAE")
-    ax.plot(annual.index, annual["p95_range"], "--o", color="#8172b2", label="95th-pct range")
+    ax.plot(
+        annual.index, annual["median_mae"], "-o", color="#c44e52", label="median MAE"
+    )
+    ax.plot(
+        annual.index, annual["p95_mae"], "-o", color="#4c72b0", label="95th-pct MAE"
+    )
+    ax.plot(
+        annual.index,
+        annual["p95_range"],
+        "--o",
+        color="#8172b2",
+        label="95th-pct range",
+    )
     ax.set_xlabel("Year")
     ax.set_ylabel("bps")
     ax.set_title("Annual last-10-min MAE & range — is the pattern stable over regimes?")
@@ -425,10 +448,36 @@ def plot_threshold_rules(frame: pd.DataFrame) -> pd.DataFrame:
     table = pd.DataFrame(rows).set_index("threshold")
 
     fig, ax = plt.subplots(figsize=(11, 6))
-    ax.plot(table.index, table["median_mae_above"], "-o", color="#c44e52", label="median MAE (above threshold)")
-    ax.plot(table.index, table["p95_mae_above"], "-o", color="#4c72b0", label="95th-pct MAE (above threshold)")
-    ax.plot(table.index, table["median_mae_below"], "--o", color="#c44e52", alpha=0.4, label="median MAE (below)")
-    ax.plot(table.index, table["p95_mae_below"], "--o", color="#4c72b0", alpha=0.4, label="95th-pct MAE (below)")
+    ax.plot(
+        table.index,
+        table["median_mae_above"],
+        "-o",
+        color="#c44e52",
+        label="median MAE (above threshold)",
+    )
+    ax.plot(
+        table.index,
+        table["p95_mae_above"],
+        "-o",
+        color="#4c72b0",
+        label="95th-pct MAE (above threshold)",
+    )
+    ax.plot(
+        table.index,
+        table["median_mae_below"],
+        "--o",
+        color="#c44e52",
+        alpha=0.4,
+        label="median MAE (below)",
+    )
+    ax.plot(
+        table.index,
+        table["p95_mae_below"],
+        "--o",
+        color="#4c72b0",
+        alpha=0.4,
+        label="95th-pct MAE (below)",
+    )
     ax.set_xscale("symlog", linthresh=10_000)
     ax.set_xlabel("|imbalance_T50| threshold (shares)")
     ax.set_ylabel("bps")
@@ -468,7 +517,9 @@ def print_correlation_matrix(frame: pd.DataFrame) -> None:
     available = [c for c in features if c in frame.columns]
 
     subsection("Pearson correlation (features vs targets)")
-    print(frame[available + targets].corr().loc[available, targets].round(3).to_string())
+    print(
+        frame[available + targets].corr().loc[available, targets].round(3).to_string()
+    )
 
     subsection("Spearman correlation (features vs targets)")
     print(
@@ -501,7 +552,7 @@ def main() -> None:
     plot_threshold_rules(frame)
 
     takeaway(
-        f"Wrote 8 plots -> plots/moc/. "
+        "Wrote 8 plots -> plots/moc/. "
         "Next phase depends on what the correlations and decile plot show. "
         "If top decile MAE >> bottom decile, write a threshold rule + validate "
         "with walk-forward. If buckets are flat, signal is weaker than hoped "

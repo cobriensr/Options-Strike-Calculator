@@ -41,14 +41,15 @@ FINDINGS_DIR = REPO_ROOT / "ml" / "findings"
 # ── Thresholds ───────────────────────────────────────────────────────────────
 
 HIT_THRESHOLDS = [5, 10, 15]  # ±$N hit windows
-MIN_TOTAL_ROWS = 50            # skip gracefully if insufficient data
-MIN_BUCKET_ROWS = 10           # warn (but proceed) if a bucket is smaller
+MIN_TOTAL_ROWS = 50  # skip gracefully if insufficient data
+MIN_BUCKET_ROWS = 10  # warn (but proceed) if a bucket is smaller
 
 # Confidence levels from the enum in the prompt (ordered worst → best)
 CONFIDENCE_ORDER = ["no_trade", "low", "medium", "high"]
 
 
 # ── Environment loading ───────────────────────────────────────────────────────
+
 
 def load_env() -> None:
     """Load .env.local into os.environ if present (prefer over env var)."""
@@ -63,6 +64,7 @@ def load_env() -> None:
 
 
 # ── Database load ─────────────────────────────────────────────────────────────
+
 
 def _column_exists(conn, table: str, column: str) -> bool:
     """Return True if column exists in table (Postgres information_schema check)."""
@@ -94,8 +96,14 @@ def load_trace_outcomes(conn) -> pd.DataFrame:
         )
         return pd.DataFrame(
             columns=[
-                "id", "captured_at", "regime", "confidence",
-                "stability_pct", "predicted_close", "actual_close", "full_response",
+                "id",
+                "captured_at",
+                "regime",
+                "confidence",
+                "stability_pct",
+                "predicted_close",
+                "actual_close",
+                "full_response",
             ]
         )
 
@@ -120,6 +128,7 @@ def load_trace_outcomes(conn) -> pd.DataFrame:
 
 
 # ── Feature engineering ───────────────────────────────────────────────────────
+
 
 def compute_errors(df: pd.DataFrame) -> pd.DataFrame:
     """Add error columns and hit flags to the DataFrame."""
@@ -160,6 +169,7 @@ def assign_stability_tertile(df: pd.DataFrame) -> pd.DataFrame:
 
 # ── Bucket summary helpers ────────────────────────────────────────────────────
 
+
 def bucket_summary(df: pd.DataFrame, group_col: str) -> dict[str, dict]:
     """
     Compute per-bucket hit-rate and mean absolute error.
@@ -189,6 +199,7 @@ def bucket_summary(df: pd.DataFrame, group_col: str) -> dict[str, dict]:
 
 # ── Calibration score ─────────────────────────────────────────────────────────
 
+
 def compute_calibration_score(by_confidence: dict[str, dict]) -> float:
     """
     Mean absolute deviation between claimed-confidence rank and actual
@@ -215,7 +226,9 @@ def compute_calibration_score(by_confidence: dict[str, dict]) -> float:
         actual_ranks[original_idx] = rank_pos
 
     n = len(present)
-    deviations = [abs(claimed_ranks[i] - actual_ranks[i]) / max(n - 1, 1) for i in range(n)]
+    deviations = [
+        abs(claimed_ranks[i] - actual_ranks[i]) / max(n - 1, 1) for i in range(n)
+    ]
     return float(np.mean(deviations))
 
 
@@ -369,6 +382,7 @@ def plot_error_distribution(df: pd.DataFrame, out_path: Path) -> None:
 
 # ── Summary JSON ──────────────────────────────────────────────────────────────
 
+
 def build_summary(
     df: pd.DataFrame,
     by_regime: dict[str, dict],
@@ -422,14 +436,19 @@ def merge_into_main_findings(summary: dict, ml_root: Path) -> Path | None:
         print(f"[findings] merged calibration into {findings_path}", file=sys.stderr)
         return findings_path
     except OSError as exc:
-        print(f"[findings] WARN: could not merge into findings.json: {exc}", file=sys.stderr)
+        print(
+            f"[findings] WARN: could not merge into findings.json: {exc}",
+            file=sys.stderr,
+        )
         return None
 
 
 def print_summary(summary: dict) -> None:
     print("\n=== Calibration Summary ===")
     print(f"Total rows: {summary['total_rows']}")
-    print(f"Calibration score: {summary['calibration_score']:.4f}  (0=perfect, 1=anti-calibrated)")
+    print(
+        f"Calibration score: {summary['calibration_score']:.4f}  (0=perfect, 1=anti-calibrated)"
+    )
 
     for group_label, group_data in [
         ("By regime", summary["by_regime"]),
@@ -448,6 +467,7 @@ def print_summary(summary: dict) -> None:
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     load_env()
@@ -533,7 +553,9 @@ def main() -> None:
     )
 
     # ── Summary ────────────────────────────────────────────────────────────────
-    summary = build_summary(df, by_regime, by_confidence, by_stability, calibration_score)
+    summary = build_summary(
+        df, by_regime, by_confidence, by_stability, calibration_score
+    )
     save_summary(summary, FINDINGS_DIR)
     # Merge into the main ml/findings.json so /api/ml/analyze-plots can include
     # the calibration slice when prompting Claude about the calibration plots.

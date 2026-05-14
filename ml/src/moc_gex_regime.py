@@ -49,7 +49,6 @@ except ImportError:
 
 from utils import ML_ROOT, section, subsection, takeaway
 
-
 PLOTS_DIR = ML_ROOT / "plots" / "moc"
 FEATURES_PATH = ML_ROOT / "data" / "moc_features_qqq.parquet"
 VIX_CACHE = ML_ROOT / "data" / "vix_daily.parquet"
@@ -91,7 +90,9 @@ def load_gex(path: Path) -> pd.DataFrame:
     frame = frame.set_index("date").sort_index()
     # Normalize to tz-naive so joins work with yfinance output.
     frame.index = frame.index.tz_localize(None)
-    print(f"  GEX: {len(frame):,} days from {frame.index.min().date()} -> {frame.index.max().date()}")
+    print(
+        f"  GEX: {len(frame):,} days from {frame.index.min().date()} -> {frame.index.max().date()}"
+    )
     print(f"  Columns: {list(frame.columns)}")
     return frame
 
@@ -102,7 +103,9 @@ def load_spx_daily(start: str, end: str) -> pd.DataFrame:
         print(f"  Loading SPX cache: {SPX_CACHE.name}")
         cached = pd.read_parquet(SPX_CACHE)
         # Extend cache if date range is insufficient.
-        if cached.index.min() <= pd.Timestamp(start) and cached.index.max() >= pd.Timestamp(end):
+        if cached.index.min() <= pd.Timestamp(
+            start
+        ) and cached.index.max() >= pd.Timestamp(end):
             return cached
         print("  Cache range insufficient, refetching...")
 
@@ -111,7 +114,12 @@ def load_spx_daily(start: str, end: str) -> pd.DataFrame:
     if isinstance(spx.columns, pd.MultiIndex):
         spx.columns = spx.columns.get_level_values(0)
     spx = spx[["Open", "High", "Low", "Close"]].rename(
-        columns={"Open": "spx_open", "High": "spx_high", "Low": "spx_low", "Close": "spx_close"}
+        columns={
+            "Open": "spx_open",
+            "High": "spx_high",
+            "Low": "spx_low",
+            "Close": "spx_close",
+        }
     )
     spx.index = pd.to_datetime(spx.index).tz_localize(None)
     spx.index.name = "date"
@@ -123,7 +131,9 @@ def load_spx_daily(start: str, end: str) -> pd.DataFrame:
 
 def load_vix() -> pd.DataFrame:
     if not VIX_CACHE.exists():
-        print(f"ERROR: {VIX_CACHE} missing. Run moc_regime_vix.py first to populate VIX cache.")
+        print(
+            f"ERROR: {VIX_CACHE} missing. Run moc_regime_vix.py first to populate VIX cache."
+        )
         sys.exit(1)
     return pd.read_parquet(VIX_CACHE)
 
@@ -132,7 +142,9 @@ def load_qqq_mae() -> pd.DataFrame:
     """Optional join — QQQ last-10-min realized MAE from earlier phases."""
     if not FEATURES_PATH.exists():
         return pd.DataFrame()
-    frame = pd.read_parquet(FEATURES_PATH)[["realized_mae_down_bps", "realized_range_bps"]]
+    frame = pd.read_parquet(FEATURES_PATH)[
+        ["realized_mae_down_bps", "realized_range_bps"]
+    ]
     frame = frame.rename(
         columns={
             "realized_mae_down_bps": "qqq_mae_10min_bps",
@@ -146,7 +158,9 @@ def load_qqq_mae() -> pd.DataFrame:
 # ── Derivations ──────────────────────────────────────────────
 
 
-def build_joined(gex: pd.DataFrame, spx: pd.DataFrame, vix: pd.DataFrame, qqq: pd.DataFrame) -> pd.DataFrame:
+def build_joined(
+    gex: pd.DataFrame, spx: pd.DataFrame, vix: pd.DataFrame, qqq: pd.DataFrame
+) -> pd.DataFrame:
     # CRITICAL: UW confirmed the GEX CSV is end-of-day only, so same-day
     # correlations are contaminated (the EOD snapshot partially reflects
     # the day's own move). Shift the GEX series forward by 1 trading day
@@ -162,9 +176,15 @@ def build_joined(gex: pd.DataFrame, spx: pd.DataFrame, vix: pd.DataFrame, qqq: p
         joined = joined.join(qqq, how="left")
 
     # Daily SPX volatility measures (bps of open).
-    joined["spx_range_bps"] = (joined["spx_high"] - joined["spx_low"]) / joined["spx_open"] * 10_000
-    joined["spx_abs_return_bps"] = (joined["spx_close"] - joined["spx_open"]).abs() / joined["spx_open"] * 10_000
-    joined["spx_return_bps"] = (joined["spx_close"] - joined["spx_open"]) / joined["spx_open"] * 10_000
+    joined["spx_range_bps"] = (
+        (joined["spx_high"] - joined["spx_low"]) / joined["spx_open"] * 10_000
+    )
+    joined["spx_abs_return_bps"] = (
+        (joined["spx_close"] - joined["spx_open"]).abs() / joined["spx_open"] * 10_000
+    )
+    joined["spx_return_bps"] = (
+        (joined["spx_close"] - joined["spx_open"]) / joined["spx_open"] * 10_000
+    )
 
     # GEX-derived regime features.
     joined["gex_sign"] = np.where(joined["net_gex"] >= 0, "long_gamma", "short_gamma")
@@ -234,7 +254,14 @@ def correlations(frame: pd.DataFrame) -> None:
     targets = ["spx_range_bps", "spx_abs_return_bps", "spx_return_bps"]
     if "qqq_mae_10min_bps" in frame.columns:
         targets.append("qqq_mae_10min_bps")
-    features = ["net_gex", "gex_abs", "call_gex", "put_gex", "put_call_gex_ratio", "vix_close"]
+    features = [
+        "net_gex",
+        "gex_abs",
+        "call_gex",
+        "put_gex",
+        "put_call_gex_ratio",
+        "vix_close",
+    ]
 
     rows = []
     for f in features:
@@ -262,8 +289,12 @@ def directional_skew(frame: pd.DataFrame) -> None:
     low_put = frame[x <= 1]["spx_return_bps"]
     print(f"  Pearson r  = {p:+.3f} (p={pp:.3f})")
     print(f"  Spearman r = {s:+.3f} (p={sp:.3f})")
-    print(f"  Mean SPX return when put_call_ratio > 1 (n={len(high_put)}): {high_put.mean():+.1f} bps")
-    print(f"  Mean SPX return when put_call_ratio <= 1 (n={len(low_put)}): {low_put.mean():+.1f} bps")
+    print(
+        f"  Mean SPX return when put_call_ratio > 1 (n={len(high_put)}): {high_put.mean():+.1f} bps"
+    )
+    print(
+        f"  Mean SPX return when put_call_ratio <= 1 (n={len(low_put)}): {low_put.mean():+.1f} bps"
+    )
     print(f"  Difference: {(high_put.mean() - low_put.mean()):+.1f} bps")
 
 
@@ -319,13 +350,22 @@ def plot_range_by_vix_gamma(frame: pd.DataFrame) -> None:
             label=sign.replace("_", " "),
         )
         for j, (m, c) in enumerate(zip(medians, counts)):
-            ax.annotate(f"n={c}", xy=(x_base[j] + offset, m), xytext=(0, 3),
-                        textcoords="offset points", ha="center", fontsize=8, color="gray")
+            ax.annotate(
+                f"n={c}",
+                xy=(x_base[j] + offset, m),
+                xytext=(0, 3),
+                textcoords="offset points",
+                ha="center",
+                fontsize=8,
+                color="gray",
+            )
 
     ax.set_xticks(x_base)
     ax.set_xticklabels(buckets)
     ax.set_ylabel("median SPX daily range (bps of open)")
-    ax.set_title("Does gamma regime split within each VIX bucket?\n(gap between bars = GEX is adding regime info on top of VIX)")
+    ax.set_title(
+        "Does gamma regime split within each VIX bucket?\n(gap between bars = GEX is adding regime info on top of VIX)"
+    )
     ax.legend()
     fig.tight_layout()
     fig.savefig(PLOTS_DIR / "15_spx_range_by_vix_gamma.png")
@@ -379,10 +419,13 @@ def plot_putcall_direction(frame: pd.DataFrame) -> None:
     high_mean = frame[frame["put_call_gex_ratio"] > 1]["spx_return_bps"].mean()
     low_mean = frame[frame["put_call_gex_ratio"] <= 1]["spx_return_bps"].mean()
     ax.text(
-        0.98, 0.95,
+        0.98,
+        0.95,
         f"mean when ratio > 1:  {high_mean:+.1f} bps\n"
         f"mean when ratio <= 1: {low_mean:+.1f} bps",
-        transform=ax.transAxes, ha="right", va="top",
+        transform=ax.transAxes,
+        ha="right",
+        va="top",
         bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "none"},
         fontsize=10,
     )

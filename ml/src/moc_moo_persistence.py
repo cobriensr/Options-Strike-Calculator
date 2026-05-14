@@ -35,7 +35,6 @@ Usage:
 """
 
 import sys
-from pathlib import Path
 
 try:
     import matplotlib.pyplot as plt
@@ -49,7 +48,6 @@ except ImportError:
     sys.exit(1)
 
 from utils import ML_ROOT, section, subsection, takeaway
-
 
 ET = "US/Eastern"
 PLOTS_DIR = ML_ROOT / "plots" / "moc"
@@ -127,7 +125,9 @@ def extract_moo_snapshot(day_messages: pd.DataFrame) -> pd.Series | None:
     cutoff_minutes = MOO_SNAPSHOT_HOUR * 60 + MOO_SNAPSHOT_MINUTE_MAX
     # Use only pre-open messages (strictly before 9:30) so we're not
     # accidentally picking a post-open print.
-    mask = (day_minutes >= MOO_SNAPSHOT_HOUR * 60 + 25) & (day_minutes <= cutoff_minutes)
+    mask = (day_minutes >= MOO_SNAPSHOT_HOUR * 60 + 25) & (
+        day_minutes <= cutoff_minutes
+    )
     candidates = day_messages.loc[mask]
     if candidates.empty:
         return None
@@ -301,7 +301,9 @@ def directional_accuracy(frame: pd.DataFrame) -> None:
         y = frame[target]
         mask = (x != 0) & (y != 0) & y.notna() & x.notna()
         agreement = (np.sign(x[mask]) == np.sign(y[mask])).mean()
-        print(f"  MOO sign -> {target:25s}  agreement = {agreement:.1%}  n={mask.sum()}")
+        print(
+            f"  MOO sign -> {target:25s}  agreement = {agreement:.1%}  n={mask.sum()}"
+        )
 
 
 def decile_binning(frame: pd.DataFrame) -> None:
@@ -371,9 +373,12 @@ def plot_directional(frame: pd.DataFrame) -> None:
     agreement = (np.sign(x[mask]) == np.sign(y[mask])).mean()
     p, _ = stats.pearsonr(x[mask], y[mask])
     ax.text(
-        0.98, 0.95,
+        0.98,
+        0.95,
         f"sign agreement = {agreement:.1%}\nPearson r = {p:+.3f}\nn = {mask.sum():,}",
-        transform=ax.transAxes, ha="right", va="top",
+        transform=ax.transAxes,
+        ha="right",
+        va="top",
         bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "none"},
         fontsize=10,
     )
@@ -394,8 +399,20 @@ def plot_range_decile(frame: pd.DataFrame) -> None:
         )
     )
     fig, ax = plt.subplots(figsize=(10, 5.5))
-    ax.plot(grouped.index, grouped["median_range"], "-o", color="#c44e52", label="median range")
-    ax.plot(grouped.index, grouped["p95_range"], "-o", color="#4c72b0", label="95th-pct range")
+    ax.plot(
+        grouped.index,
+        grouped["median_range"],
+        "-o",
+        color="#c44e52",
+        label="median range",
+    )
+    ax.plot(
+        grouped.index,
+        grouped["p95_range"],
+        "-o",
+        color="#4c72b0",
+        label="95th-pct range",
+    )
     ax.set_xlabel("|MOO signed imbalance| decile (0 = smallest, 9 = largest)")
     ax.set_ylabel("intraday range (bps of open)")
     ax.set_title("Does MOO size predict intraday range?")
@@ -425,9 +442,12 @@ def plot_persistence(frame: pd.DataFrame) -> None:
     agreement = (np.sign(x[mask]) == np.sign(y[mask])).mean()
     p, _ = stats.pearsonr(x[mask], y[mask])
     ax.text(
-        0.98, 0.95,
+        0.98,
+        0.95,
         f"sign agreement = {agreement:.1%}\nPearson r = {p:+.3f}\nn = {mask.sum():,}",
-        transform=ax.transAxes, ha="right", va="top",
+        transform=ax.transAxes,
+        ha="right",
+        va="top",
         bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "none"},
         fontsize=10,
     )

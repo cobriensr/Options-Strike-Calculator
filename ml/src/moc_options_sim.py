@@ -36,7 +36,6 @@ Usage:
 """
 
 import sys
-from pathlib import Path
 
 try:
     import matplotlib.pyplot as plt
@@ -49,7 +48,6 @@ except ImportError:
     sys.exit(1)
 
 from utils import ML_ROOT, section, subsection, takeaway
-
 
 ET = "US/Eastern"
 PLOTS_DIR = ML_ROOT / "plots" / "moc"
@@ -129,9 +127,7 @@ def load_data() -> pd.DataFrame:
 # ── Options pricing ──────────────────────────────────────────
 
 
-def atm_one_side_price_bps(
-    vix: float, window_minutes: float, spot: float
-) -> float:
+def atm_one_side_price_bps(vix: float, window_minutes: float, spot: float) -> float:
     """
     Price of a single 0DTE ATM call OR put in basis points of spot.
     Black-Scholes ATM approximation at short T. Strike = spot.
@@ -254,9 +250,8 @@ def summary_by_bucket(trades: pd.DataFrame) -> None:
 
 def directional_vs_random(trades: pd.DataFrame) -> None:
     subsection("Directional vs random edge (the decisive test)")
-    summary = (
-        trades.groupby("strategy", observed=True)["pnl_bps"]
-        .agg(["mean", "count"])
+    summary = trades.groupby("strategy", observed=True)["pnl_bps"].agg(
+        ["mean", "count"]
     )
     print(summary.to_string())
     print()
@@ -265,9 +260,13 @@ def directional_vs_random(trades: pd.DataFrame) -> None:
         random_ = summary.loc[f"{signal}_random", "mean"]
         edge = directional - random_
         n_dir = int(summary.loc[f"{signal}_directional", "count"])
-        se_approx = trades[trades["strategy"] == f"{signal}_directional"]["pnl_bps"].std() / np.sqrt(n_dir)
+        se_approx = trades[trades["strategy"] == f"{signal}_directional"][
+            "pnl_bps"
+        ].std() / np.sqrt(n_dir)
         t_stat = edge / (se_approx if se_approx > 0 else 1)
-        print(f"  {signal}: directional={directional:+.2f}  random={random_:+.2f}  edge={edge:+.2f} bps  (approx t={t_stat:.2f})")
+        print(
+            f"  {signal}: directional={directional:+.2f}  random={random_:+.2f}  edge={edge:+.2f} bps  (approx t={t_stat:.2f})"
+        )
 
 
 # ── Plots ────────────────────────────────────────────────────
@@ -308,7 +307,13 @@ def plot_pnl_distributions(trades: pd.DataFrame) -> None:
         upper = data.quantile(0.99) if not data.empty else 0
         ax.hist(data.clip(upper=upper), bins=50, color=color, edgecolor="white")
         ax.axvline(0, color="black", linewidth=0.5)
-        ax.axvline(data.mean(), color="red", linestyle="--", linewidth=1, label=f"mean {data.mean():+.1f}")
+        ax.axvline(
+            data.mean(),
+            color="red",
+            linestyle="--",
+            linewidth=1,
+            label=f"mean {data.mean():+.1f}",
+        )
         ax.set_title(strat)
         ax.set_xlabel("P&L (bps)")
         ax.legend(loc="upper right")
@@ -329,22 +334,40 @@ def main() -> None:
 
     # MOC window: 15:50 ET -> 16:00 ET = 10 min.
     moc_dir = simulate_strategy(
-        frame, "moc_signed_imbalance", "spot_at_T50", "close_at_T60",
-        window_minutes=10, label="MOC_directional",
+        frame,
+        "moc_signed_imbalance",
+        "spot_at_T50",
+        "close_at_T60",
+        window_minutes=10,
+        label="MOC_directional",
     )
     moc_rnd = simulate_strategy(
-        frame, "moc_signed_imbalance", "spot_at_T50", "close_at_T60",
-        window_minutes=10, label="MOC_random", rng_seed=42,
+        frame,
+        "moc_signed_imbalance",
+        "spot_at_T50",
+        "close_at_T60",
+        window_minutes=10,
+        label="MOC_random",
+        rng_seed=42,
     )
 
     # MOO window: 9:30 ET -> 16:00 ET = 390 min.
     moo_dir = simulate_strategy(
-        frame, "moo_signed_imbalance", "day_open", "day_close",
-        window_minutes=SESSION_MINUTES, label="MOO_directional",
+        frame,
+        "moo_signed_imbalance",
+        "day_open",
+        "day_close",
+        window_minutes=SESSION_MINUTES,
+        label="MOO_directional",
     )
     moo_rnd = simulate_strategy(
-        frame, "moo_signed_imbalance", "day_open", "day_close",
-        window_minutes=SESSION_MINUTES, label="MOO_random", rng_seed=42,
+        frame,
+        "moo_signed_imbalance",
+        "day_open",
+        "day_close",
+        window_minutes=SESSION_MINUTES,
+        label="MOO_random",
+        rng_seed=42,
     )
 
     trades = pd.concat([moc_dir, moc_rnd, moo_dir, moo_rnd], ignore_index=True)

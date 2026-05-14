@@ -24,7 +24,9 @@ def _panel_slice(n: int, signal_strength: float = 0.0) -> pd.DataFrame:
 
 def test_correlate_returns_expected_fields() -> None:
     df = _panel_slice(100, signal_strength=0.5)
-    res = eod_analysis.correlate(df, "signed_imbalance_last", "spx_ret_open_to_close_bps")
+    res = eod_analysis.correlate(
+        df, "signed_imbalance_last", "spx_ret_open_to_close_bps"
+    )
     assert res.feature == "signed_imbalance_last"
     assert res.target == "spx_ret_open_to_close_bps"
     assert res.n == 100
@@ -35,7 +37,9 @@ def test_correlate_returns_expected_fields() -> None:
 
 def test_correlate_zero_signal_low_rho() -> None:
     df = _panel_slice(100, signal_strength=0.0)
-    res = eod_analysis.correlate(df, "signed_imbalance_last", "spx_ret_open_to_close_bps")
+    res = eod_analysis.correlate(
+        df, "signed_imbalance_last", "spx_ret_open_to_close_bps"
+    )
     # With pure noise, |rho| should be small
     assert abs(res.rho) < 0.25
 
@@ -47,7 +51,9 @@ def test_correlate_skips_nan_rows() -> None:
             "spx_ret_open_to_close_bps": [10, 20, 30, 40, np.nan],
         }
     )
-    res = eod_analysis.correlate(df, "signed_imbalance_last", "spx_ret_open_to_close_bps")
+    res = eod_analysis.correlate(
+        df, "signed_imbalance_last", "spx_ret_open_to_close_bps"
+    )
     assert res.n == 3  # rows with both fields present
 
 

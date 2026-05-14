@@ -173,7 +173,11 @@ def clear_cache(*, before: dt_date | None = None) -> int:
         parquet.unlink()
         removed += 1
         # Best-effort empty-dir cleanup walking up
-        for ancestor in (parquet.parent, parquet.parent.parent, parquet.parent.parent.parent):
+        for ancestor in (
+            parquet.parent,
+            parquet.parent.parent,
+            parquet.parent.parent.parent,
+        ):
             try:
                 ancestor.rmdir()
             except OSError:
@@ -241,9 +245,7 @@ def _resolve_dates(
         # for dates that don't exist (weekends, days you haven't ingested yet).
         available = list_archive_dates(token=token)
         return [d for d in available if start <= d <= end]
-    raise TypeError(
-        f"Unsupported date_or_range type: {type(date_or_range).__name__}"
-    )
+    raise TypeError(f"Unsupported date_or_range type: {type(date_or_range).__name__}")
 
 
 def _store_id_from_token(token: str) -> str:

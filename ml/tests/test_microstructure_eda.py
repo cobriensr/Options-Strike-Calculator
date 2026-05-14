@@ -81,7 +81,9 @@ def _write_symbology(mappings: list[tuple[int, str]], root: Path) -> None:
             for iid, sym in mappings
         ]
     )
-    pq.write_table(pa.Table.from_pandas(df, preserve_index=False), root / "symbology.parquet")
+    pq.write_table(
+        pa.Table.from_pandas(df, preserve_index=False), root / "symbology.parquet"
+    )
 
 
 def _ohlcv_glob_of(root: Path) -> str:
@@ -198,7 +200,9 @@ def test_derive_outcomes_happy_path(archive_root: Path) -> None:
 
     assert len(enriched) == 1
     assert enriched.iloc[0]["ret_day"] == pytest.approx(0.01, abs=1e-9)
-    assert enriched.iloc[0]["ret_5d"] == pytest.approx((102.0 - 101.0) / 101.0, abs=1e-9)
+    assert enriched.iloc[0]["ret_5d"] == pytest.approx(
+        (102.0 - 101.0) / 101.0, abs=1e-9
+    )
     assert enriched.iloc[0]["regime_label"] == "up"
 
 
@@ -264,13 +268,13 @@ def test_derive_outcomes_utc_boundary(
 @pytest.mark.parametrize(
     ("ret", "expected"),
     [
-        (0.006, "up"),        # strictly greater than 0.005
-        (0.005, "flat"),      # exact upper boundary is flat
-        (0.004999, "flat"),   # inside flat band
-        (0.0, "flat"),        # zero is flat
+        (0.006, "up"),  # strictly greater than 0.005
+        (0.005, "flat"),  # exact upper boundary is flat
+        (0.004999, "flat"),  # inside flat band
+        (0.0, "flat"),  # zero is flat
         (-0.004999, "flat"),  # inside flat band
-        (-0.005, "flat"),     # exact lower boundary is flat
-        (-0.006, "down"),     # strictly less than -0.005
+        (-0.005, "flat"),  # exact lower boundary is flat
+        (-0.006, "down"),  # strictly less than -0.005
     ],
 )
 def test_outcome_classification_thresholds(
@@ -521,7 +525,9 @@ def test_degraded_rows_excluded_from_q5_and_q6(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_run_all_questions_emits_six_findings(archive_root: Path, tmp_path: Path) -> None:
+def test_run_all_questions_emits_six_findings(
+    archive_root: Path, tmp_path: Path
+) -> None:
     """Orchestrator must output findings with exactly 6 question entries.
 
     Uses a small synthetic OHLCV archive + feature Parquet so the whole

@@ -26,7 +26,6 @@ import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 import psycopg2
 
@@ -126,9 +125,7 @@ def plot_calibration(summary: pd.DataFrame, min_samples: int, mode: str) -> None
 
     ax.axhline(0, color="black", linewidth=0.8)
     title_mode = mode if mode != "all" else "all modes"
-    ax.set_title(
-        f"Confidence calibration — mean realized R per band ({title_mode})"
-    )
+    ax.set_title(f"Confidence calibration — mean realized R per band ({title_mode})")
     ax.set_xlabel("Confidence band")
     ax.set_ylabel("Mean realized R")
 
@@ -140,9 +137,7 @@ def plot_calibration(summary: pd.DataFrame, min_samples: int, mode: str) -> None
         legend_seen.add(label)
         handles.append(plt.Rectangle((0, 0), 1, 1, color=color, ec="black"))
     if handles:
-        ax.legend(
-            handles, list(legend_seen), loc="best", fontsize=8, framealpha=0.9
-        )
+        ax.legend(handles, list(legend_seen), loc="best", fontsize=8, framealpha=0.9)
 
     fig.tight_layout()
     fig.savefig(PLOT_PATH, dpi=120)

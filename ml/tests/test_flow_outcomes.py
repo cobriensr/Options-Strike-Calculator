@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date as dt_date, datetime
+from datetime import UTC, datetime
 
 import polars as pl
 
 from flow_outcomes import compute_outcomes, synthesize_minute_bars
-
 
 # --- synthesize_minute_bars --------------------------------------
 
@@ -88,7 +87,9 @@ def _make_minute_bars(
     """
     rows = []
     for minute_offset, close in underlying_path:
-        minute = datetime(2026, 4, 22, 14 + minute_offset // 60, minute_offset % 60, tzinfo=UTC)
+        minute = datetime(
+            2026, 4, 22, 14 + minute_offset // 60, minute_offset % 60, tzinfo=UTC
+        )
         rows.append(
             {
                 "underlying_symbol": symbol,

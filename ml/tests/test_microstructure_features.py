@@ -109,8 +109,9 @@ def _write_tbbo_parquet(rows: list[dict[str, object]], path: Path) -> None:
         # Still need a file the glob can resolve; write an empty year=1970 partition.
         year_dir = path / "year=1970"
         year_dir.mkdir(parents=True, exist_ok=True)
-        pq.write_table(pa.Table.from_pandas(df, preserve_index=False),
-                       year_dir / "part.parquet")
+        pq.write_table(
+            pa.Table.from_pandas(df, preserve_index=False), year_dir / "part.parquet"
+        )
         return
 
     for year, grp in df.groupby(df["ts_recv"].dt.year, sort=False):
@@ -215,8 +216,11 @@ def test_ofi_balanced_flow_mean_near_zero(tbbo_root: Path) -> None:
 
     conn = duckdb.connect()
     stats = ms._compute_ofi_stats(
-        conn, _tbbo_glob_of(tbbo_root), _symbology_of(tbbo_root),
-        "2026-03-10", "ESH6",
+        conn,
+        _tbbo_glob_of(tbbo_root),
+        _symbology_of(tbbo_root),
+        "2026-03-10",
+        "ESH6",
     )
     conn.close()
 
@@ -263,8 +267,11 @@ def test_ofi_aggressive_buyers_highly_positive(tbbo_root: Path) -> None:
 
     conn = duckdb.connect()
     stats = ms._compute_ofi_stats(
-        conn, _tbbo_glob_of(tbbo_root), _symbology_of(tbbo_root),
-        "2026-03-10", "ESH6",
+        conn,
+        _tbbo_glob_of(tbbo_root),
+        _symbology_of(tbbo_root),
+        "2026-03-10",
+        "ESH6",
     )
     conn.close()
 
@@ -301,8 +308,11 @@ def test_ofi_sparse_minute_skipped(tbbo_root: Path) -> None:
 
     conn = duckdb.connect()
     stats = ms._compute_ofi_stats(
-        conn, _tbbo_glob_of(tbbo_root), _symbology_of(tbbo_root),
-        "2026-03-10", "ESH6",
+        conn,
+        _tbbo_glob_of(tbbo_root),
+        _symbology_of(tbbo_root),
+        "2026-03-10",
+        "ESH6",
     )
     conn.close()
 
@@ -337,8 +347,11 @@ def test_spread_widening_flat_spreads(tbbo_root: Path) -> None:
 
     conn = duckdb.connect()
     stats = ms._compute_spread_widening_stats(
-        conn, _tbbo_glob_of(tbbo_root), _symbology_of(tbbo_root),
-        "2026-03-10", "ESH6",
+        conn,
+        _tbbo_glob_of(tbbo_root),
+        _symbology_of(tbbo_root),
+        "2026-03-10",
+        "ESH6",
     )
     conn.close()
 
@@ -392,8 +405,11 @@ def test_spread_widening_detects_one_wide_event(tbbo_root: Path) -> None:
 
     conn = duckdb.connect()
     stats = ms._compute_spread_widening_stats(
-        conn, _tbbo_glob_of(tbbo_root), _symbology_of(tbbo_root),
-        "2026-03-10", "ESH6",
+        conn,
+        _tbbo_glob_of(tbbo_root),
+        _symbology_of(tbbo_root),
+        "2026-03-10",
+        "ESH6",
     )
     conn.close()
 
@@ -427,8 +443,11 @@ def test_tob_sustained_buy_pressure_gives_long_run(tbbo_root: Path) -> None:
 
     conn = duckdb.connect()
     stats = ms._compute_tob_persistence_stats(
-        conn, _tbbo_glob_of(tbbo_root), _symbology_of(tbbo_root),
-        "2026-03-10", "ESH6",
+        conn,
+        _tbbo_glob_of(tbbo_root),
+        _symbology_of(tbbo_root),
+        "2026-03-10",
+        "ESH6",
     )
     conn.close()
 
@@ -465,8 +484,11 @@ def test_tob_balanced_has_zero_extreme_minutes(tbbo_root: Path) -> None:
 
     conn = duckdb.connect()
     stats = ms._compute_tob_persistence_stats(
-        conn, _tbbo_glob_of(tbbo_root), _symbology_of(tbbo_root),
-        "2026-03-10", "ESH6",
+        conn,
+        _tbbo_glob_of(tbbo_root),
+        _symbology_of(tbbo_root),
+        "2026-03-10",
+        "ESH6",
     )
     conn.close()
 
@@ -500,8 +522,11 @@ def test_tick_velocity_uniform_60_per_minute(tbbo_root: Path) -> None:
 
     conn = duckdb.connect()
     stats = ms._compute_tick_velocity_stats(
-        conn, _tbbo_glob_of(tbbo_root), _symbology_of(tbbo_root),
-        "2026-03-10", "ESH6",
+        conn,
+        _tbbo_glob_of(tbbo_root),
+        _symbology_of(tbbo_root),
+        "2026-03-10",
+        "ESH6",
     )
     conn.close()
 
@@ -615,8 +640,11 @@ def test_pick_front_month_picks_higher_volume(tbbo_root: Path) -> None:
 
     conn = duckdb.connect()
     contract = ms._pick_front_month(
-        conn, _tbbo_glob_of(tbbo_root), _symbology_of(tbbo_root),
-        "2026-03-10", "ES",
+        conn,
+        _tbbo_glob_of(tbbo_root),
+        _symbology_of(tbbo_root),
+        "2026-03-10",
+        "ES",
     )
     conn.close()
     assert contract == "ESH6"
@@ -651,8 +679,11 @@ def test_pick_front_month_excludes_spreads_and_options(tbbo_root: Path) -> None:
 
     conn = duckdb.connect()
     contract = ms._pick_front_month(
-        conn, _tbbo_glob_of(tbbo_root), _symbology_of(tbbo_root),
-        "2026-03-10", "ES",
+        conn,
+        _tbbo_glob_of(tbbo_root),
+        _symbology_of(tbbo_root),
+        "2026-03-10",
+        "ES",
     )
     conn.close()
     assert contract == "ESH6"
@@ -710,6 +741,7 @@ def test_is_degraded_flag_reads_condition_file(tbbo_root: Path) -> None:
     ]
     # Rewrite with both dates.
     import shutil
+
     shutil.rmtree(tbbo_root / "tbbo")
     _write_tbbo_parquet(rows2, tbbo_root / "tbbo")
 
@@ -941,9 +973,7 @@ def test_pick_front_month_tie_break_is_stable(tbbo_root: Path) -> None:
     for _ in range(5):
         conn = ms._new_connection()
         try:
-            picks.append(
-                ms._pick_front_month(conn, glob, sym_path, "2026-03-10", "ES")
-            )
+            picks.append(ms._pick_front_month(conn, glob, sym_path, "2026-03-10", "ES"))
         finally:
             conn.close()
     # Alphabetical tie-break: "ESH6" < "ESM6", so ESH6 always wins.

@@ -42,7 +42,6 @@ Usage:
 """
 
 import sys
-from pathlib import Path
 
 try:
     import matplotlib.pyplot as plt
@@ -55,7 +54,6 @@ except ImportError:
     sys.exit(1)
 
 from utils import ML_ROOT, section, subsection, takeaway
-
 
 PLOTS_DIR = ML_ROOT / "plots" / "moc"
 FEATURES_PATH = ML_ROOT / "data" / "moc_features_qqq.parquet"
@@ -142,21 +140,13 @@ def add_vol_metrics(frame: pd.DataFrame) -> pd.DataFrame:
     out["ratio_abs_return"] = (
         out["realized_abs_return_bps"] / out["implied_sigma_10min_bps"]
     )
-    out["ratio_mae"] = (
-        out["realized_mae_down_bps"] / out["implied_sigma_10min_bps"]
-    )
-    out["ratio_range"] = (
-        out["realized_range_bps"] / out["implied_sigma_10min_bps"]
-    )
+    out["ratio_mae"] = out["realized_mae_down_bps"] / out["implied_sigma_10min_bps"]
+    out["ratio_range"] = out["realized_range_bps"] / out["implied_sigma_10min_bps"]
 
     # Straddle simulation. Cost = BS ATM approximation at implied vol.
     # Payoff = |realized return|.  Net = payoff - cost.
-    out["straddle_cost_bps"] = (
-        ATM_STRADDLE_FACTOR * out["implied_sigma_10min_bps"]
-    )
-    out["straddle_pnl_bps"] = (
-        out["realized_abs_return_bps"] - out["straddle_cost_bps"]
-    )
+    out["straddle_cost_bps"] = ATM_STRADDLE_FACTOR * out["implied_sigma_10min_bps"]
+    out["straddle_pnl_bps"] = out["realized_abs_return_bps"] - out["straddle_cost_bps"]
 
     # Win rate indicator: did the straddle cover its cost this day?
     out["straddle_won"] = out["straddle_pnl_bps"] > 0
@@ -264,9 +254,7 @@ def plot_vol_premium(frame: pd.DataFrame) -> None:
 def plot_straddle_pnl(frame: pd.DataFrame) -> None:
     fig, ax = plt.subplots(figsize=(11, 6))
     buckets = [b[0] for b in VIX_BUCKETS]
-    data = [
-        frame[frame["vix_bucket"] == b]["straddle_pnl_bps"] for b in buckets
-    ]
+    data = [frame[frame["vix_bucket"] == b]["straddle_pnl_bps"] for b in buckets]
     bp = ax.boxplot(data, tick_labels=buckets, patch_artist=True, showfliers=True)
     colors = ["#55a868", "#4c72b0", "#dd8452", "#c44e52"]
     for patch, color in zip(bp["boxes"], colors):
@@ -313,12 +301,25 @@ def plot_cumulative_equity(frame: pd.DataFrame) -> None:
         if bdata.empty:
             continue
         cumulative = bdata.cumsum()
-        ax.plot(cumulative.index, cumulative.values, color=color, label=bucket, linewidth=1.5)
+        ax.plot(
+            cumulative.index,
+            cumulative.values,
+            color=color,
+            label=bucket,
+            linewidth=1.5,
+        )
 
     # Overall (all days, regardless of bucket).
     all_cum = frame["straddle_pnl_bps"].cumsum()
-    ax.plot(all_cum.index, all_cum.values, color="black", linestyle="--",
-            alpha=0.7, label="All days", linewidth=1)
+    ax.plot(
+        all_cum.index,
+        all_cum.values,
+        color="black",
+        linestyle="--",
+        alpha=0.7,
+        label="All days",
+        linewidth=1,
+    )
 
     ax.axhline(0.0, color="black", linewidth=0.5)
     ax.set_ylabel("Cumulative P&L (bps of underlying)")

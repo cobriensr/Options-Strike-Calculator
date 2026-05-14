@@ -10,6 +10,7 @@ Usage:
 Environment:
     DATABASE_URL - Neon Postgres connection string
 """
+
 from __future__ import annotations
 
 import os
@@ -26,11 +27,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "ml" / "src"))
 
 from lottery_exit_policies import (
-    realized_trail_act30_trail10,
+    minutes_to_peak,
+    peak_ceiling,
     realized_hard_stop_30m,
     realized_tier50_hold_eod,
-    peak_ceiling,
-    minutes_to_peak,
+    realized_trail_act30_trail10,
 )
 
 
@@ -43,11 +44,12 @@ def get_archive_path() -> Path:
         Path("/data/archive"),
         REPO_ROOT / "data" / "archive",
     ]
-    
+
     for path in candidates:
         if path.exists():
             # Look for parquet files (either ws_option_trades or date-trades pattern)
             import glob
+
             patterns = [
                 str(path / "**" / "ws_option_trades" / "**" / "*.parquet"),
                 str(path / "*-trades.parquet"),
@@ -56,7 +58,7 @@ def get_archive_path() -> Path:
             for pattern in patterns:
                 if glob.glob(pattern, recursive=True):
                     return path
-    
+
     raise FileNotFoundError(
         "Could not locate ws_option_trades Parquet archive. "
         f"Checked: {', '.join(str(p) for p in candidates)}"
@@ -73,7 +75,7 @@ def load_unenriched_fires(conn, limit: int | None = 1000) -> list[dict]:
             WHERE enriched_at IS NULL
         """)
         total = cur.fetchone()["total"]
-        
+
         # Then fetch the batch
         limit_clause = f"LIMIT {limit}" if limit else ""
         cur.execute(f"""
@@ -89,7 +91,7 @@ def load_unenriched_fires(conn, limit: int | None = 1000) -> list[dict]:
             {limit_clause}
         """)
         fires = cur.fetchall()
-        
+
         print(f"Total unenriched: {total}, fetching: {len(fires)}")
         return fires
 
@@ -101,10 +103,10 @@ def load_option_trades(
 ) -> list[dict]:
     """Load post-entry trades for an option from Parquet archive."""
     conn = duckdb.connect(":memory:")
-    
+
     # Set timezone to UTC to match Parquet data
     conn.execute("SET TimeZone='UTC'")
-    
+
     # Query the Parquet archive - handles both naming patterns
     query = f"""
         SELECT
@@ -117,10 +119,10 @@ def load_option_trades(
           AND price > 0
         ORDER BY executed_at ASC
     """
-    
+
     result = conn.execute(query, [option_chain_id, entry_time_ct]).fetchall()
     conn.close()
-    
+
     return [{"executed_at": row[0], "price": row[1]} for row in result]
 
 
@@ -131,19 +133,18 @@ def enrich_fire(conn, fire: dict, archive_path: Path) -> bool:
         fire["option_chain_id"],
         fire["entry_time_ct"],
     )
-    
+
     if not ticks:
         return False
-    
+
     prices = [t["price"] for t in ticks]
     entry_price = float(fire["entry_price"])  # Convert Decimal to float
-    
+
     # Compute minutes since entry for each tick
     minutes_since_entry = [
-        (t["executed_at"] - fire["entry_time_ct"]).total_seconds() / 60
-        for t in ticks
+        (t["executed_at"] - fire["entry_time_ct"]).total_seconds() / 60 for t in ticks
     ]
-    
+
     # Compute exit policies
     trail30_10 = realized_trail_act30_trail10(prices, entry_price)
     hard30m = realized_hard_stop_30m(prices, entry_price, minutes_since_entry)
@@ -151,10 +152,11 @@ def enrich_fire(conn, fire: dict, archive_path: Path) -> bool:
     eod = ((prices[-1] - entry_price) / entry_price) * 100
     peak = peak_ceiling(prices, entry_price)
     min_to_peak = minutes_to_peak(prices, minutes_since_entry)
-    
+
     # Update the fire
     with conn.cursor() as cur:
-        cur.execute("""
+        cur.execute(
+            """
             UPDATE lottery_finder_fires
             SET
                 realized_trail30_10_pct = %s,
@@ -165,8 +167,10 @@ def enrich_fire(conn, fire: dict, archive_path: Path) -> bool:
                 minutes_to_peak = %s,
                 enriched_at = NOW()
             WHERE id = %s
-        """, [trail30_10, hard30m, tier50, eod, peak, min_to_peak, fire["id"]])
-    
+        """,
+            [trail30_10, hard30m, tier50, eod, peak, min_to_peak, fire["id"]],
+        )
+
     conn.commit()
     return True
 
@@ -176,38 +180,38 @@ def main():
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
         raise ValueError("DATABASE_URL environment variable not set")
-    
+
     # Allow overriding batch size via env var (None = process all)
     batch_size = os.getenv("BATCH_SIZE")
     limit = int(batch_size) if batch_size else 1000
-    
+
     archive_path = get_archive_path()
     print(f"Using archive at: {archive_path}")
-    
+
     conn = psycopg2.connect(database_url)
-    
+
     try:
         fires = load_unenriched_fires(conn, limit)
-        
+
         if not fires:
             print("No fires to enrich")
             return
-        
+
         enriched = 0
         skipped = 0
-        
+
         for i, fire in enumerate(fires, 1):
             print(f"[{i}/{len(fires)}] Processing fire {fire['id']}...", end=" ")
-            
+
             if enrich_fire(conn, fire, archive_path):
                 enriched += 1
                 print("✓ enriched")
             else:
                 skipped += 1
                 print("⊘ skipped (no post-entry ticks)")
-        
+
         print(f"\nDone: {enriched} enriched, {skipped} skipped")
-    
+
     finally:
         conn.close()
 

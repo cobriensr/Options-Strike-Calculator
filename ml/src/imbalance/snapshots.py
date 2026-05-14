@@ -67,7 +67,9 @@ def _first_last_in_group(group: pd.DataFrame) -> pd.Series:
 
 def _aggregate_one(df: pd.DataFrame, auction_type: str) -> pd.DataFrame:
     start, end = AUCTION_WINDOWS[auction_type]
-    sub = df[(df["auction_type"] == auction_type) & _in_window(df["ts_event_et"], start, end)]
+    sub = df[
+        (df["auction_type"] == auction_type) & _in_window(df["ts_event_et"], start, end)
+    ]
     if sub.empty:
         return pd.DataFrame()
 
@@ -86,7 +88,9 @@ def _aggregate_one(df: pd.DataFrame, auction_type: str) -> pd.DataFrame:
     # pressure is BUILDING (clearing price may still move).
     snap["abs_imbalance_first"] = snap["signed_imbalance_first"].abs()
     snap["abs_imbalance_last"] = snap["signed_imbalance_last"].abs()
-    snap["abs_imbalance_trend"] = snap["abs_imbalance_last"] - snap["abs_imbalance_first"]
+    snap["abs_imbalance_trend"] = (
+        snap["abs_imbalance_last"] - snap["abs_imbalance_first"]
+    )
     snap["signed_imbalance_trend"] = (
         snap["signed_imbalance_last"] - snap["signed_imbalance_first"]
     )
@@ -105,10 +109,7 @@ def build_snapshots(parquets: list[Path]) -> pd.DataFrame:
         frames.append(pd.read_parquet(p))
     df = pd.concat(frames, ignore_index=True)
 
-    pieces = [
-        _aggregate_one(df, auction_type)
-        for auction_type in AUCTION_WINDOWS
-    ]
+    pieces = [_aggregate_one(df, auction_type) for auction_type in AUCTION_WINDOWS]
     return pd.concat([p for p in pieces if not p.empty], ignore_index=True)
 
 

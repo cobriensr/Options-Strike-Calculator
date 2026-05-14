@@ -129,7 +129,9 @@ def query_fulltape(sql: str, dates: list[str]) -> pd.DataFrame:
     con = duckdb.connect()
     # Configure the httpfs extension to talk to R2.
     con.execute("INSTALL httpfs; LOAD httpfs;")
-    con.execute(f"SET s3_endpoint='{_must_env('R2_ENDPOINT_URL').replace('https://', '')}';")
+    con.execute(
+        f"SET s3_endpoint='{_must_env('R2_ENDPOINT_URL').replace('https://', '')}';"
+    )
     con.execute(f"SET s3_access_key_id='{_must_env('R2_ACCESS_KEY_ID')}';")
     con.execute(f"SET s3_secret_access_key='{_must_env('R2_SECRET_ACCESS_KEY')}';")
     con.execute("SET s3_url_style='path';")

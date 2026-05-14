@@ -28,7 +28,6 @@ import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 import psycopg2
 
@@ -95,7 +94,10 @@ def plot_per_regime(agg: pd.DataFrame, min_samples: int) -> list[Path]:
             edgecolor="black",
         )
         for bar, n, mean in zip(
-            bars, group["n"].astype(int).tolist(), group["mean_r"].tolist(), strict=False
+            bars,
+            group["n"].astype(int).tolist(),
+            group["mean_r"].tolist(),
+            strict=False,
         ):
             marker = "*" if n < min_samples else ""
             ax.annotate(

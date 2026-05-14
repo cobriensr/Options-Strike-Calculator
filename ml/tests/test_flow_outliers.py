@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date as dt_date, datetime
+from datetime import UTC, datetime
+from datetime import date as dt_date
 
 import polars as pl
 import pytest
@@ -96,12 +97,36 @@ def test_enrich_repeat_count_partitions_by_chain() -> None:
     should be 0,1,2 for X-bigs and 0,1 for Y-bigs and 0 for the tiny X print."""
     df = pl.DataFrame(
         [
-            _row(option_chain_id="X", premium=600_000.0, executed_at=datetime(2026, 4, 22, 14, 0, tzinfo=UTC)),
-            _row(option_chain_id="X", premium=700_000.0, executed_at=datetime(2026, 4, 22, 14, 5, tzinfo=UTC)),
-            _row(option_chain_id="Y", premium=600_000.0, executed_at=datetime(2026, 4, 22, 14, 1, tzinfo=UTC)),
-            _row(option_chain_id="X", premium=100_000.0, executed_at=datetime(2026, 4, 22, 14, 10, tzinfo=UTC)),
-            _row(option_chain_id="X", premium=800_000.0, executed_at=datetime(2026, 4, 22, 14, 15, tzinfo=UTC)),
-            _row(option_chain_id="Y", premium=900_000.0, executed_at=datetime(2026, 4, 22, 14, 20, tzinfo=UTC)),
+            _row(
+                option_chain_id="X",
+                premium=600_000.0,
+                executed_at=datetime(2026, 4, 22, 14, 0, tzinfo=UTC),
+            ),
+            _row(
+                option_chain_id="X",
+                premium=700_000.0,
+                executed_at=datetime(2026, 4, 22, 14, 5, tzinfo=UTC),
+            ),
+            _row(
+                option_chain_id="Y",
+                premium=600_000.0,
+                executed_at=datetime(2026, 4, 22, 14, 1, tzinfo=UTC),
+            ),
+            _row(
+                option_chain_id="X",
+                premium=100_000.0,
+                executed_at=datetime(2026, 4, 22, 14, 10, tzinfo=UTC),
+            ),
+            _row(
+                option_chain_id="X",
+                premium=800_000.0,
+                executed_at=datetime(2026, 4, 22, 14, 15, tzinfo=UTC),
+            ),
+            _row(
+                option_chain_id="Y",
+                premium=900_000.0,
+                executed_at=datetime(2026, 4, 22, 14, 20, tzinfo=UTC),
+            ),
         ]
     )
     out = enrich_print_features(df).sort(["option_chain_id", "executed_at"])
@@ -308,9 +333,18 @@ def test_dte_bucket_zero() -> None:
 
 def test_dte_bucket_buckets() -> None:
     rows = [
-        _row(executed_at=datetime(2026, 4, 22, 14, 0, tzinfo=UTC), expiry=dt_date(2026, 4, 23)),  # 1
-        _row(executed_at=datetime(2026, 4, 22, 14, 0, tzinfo=UTC), expiry=dt_date(2026, 4, 25)),  # 3
-        _row(executed_at=datetime(2026, 4, 22, 14, 0, tzinfo=UTC), expiry=dt_date(2026, 5, 22)),  # 30
+        _row(
+            executed_at=datetime(2026, 4, 22, 14, 0, tzinfo=UTC),
+            expiry=dt_date(2026, 4, 23),
+        ),  # 1
+        _row(
+            executed_at=datetime(2026, 4, 22, 14, 0, tzinfo=UTC),
+            expiry=dt_date(2026, 4, 25),
+        ),  # 3
+        _row(
+            executed_at=datetime(2026, 4, 22, 14, 0, tzinfo=UTC),
+            expiry=dt_date(2026, 5, 22),
+        ),  # 30
     ]
     df = pl.DataFrame(rows)
     out = add_bucket_columns(df)

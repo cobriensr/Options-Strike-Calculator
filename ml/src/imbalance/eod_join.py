@@ -46,7 +46,9 @@ def _load_spx_daily_parquet(path: Path) -> pd.DataFrame:
     spx_open / spx_high / spx_low / spx_close."""
     raw = pd.read_parquet(path)
     raw.index.name = "date"
-    raw.index = pd.Index([d.date() if hasattr(d, "date") else d for d in raw.index], name="date")
+    raw.index = pd.Index(
+        [d.date() if hasattr(d, "date") else d for d in raw.index], name="date"
+    )
     return raw[["spx_open", "spx_high", "spx_low", "spx_close"]].astype(float)
 
 
@@ -75,7 +77,9 @@ def _load_spx_daily_from_db(after: date) -> pd.DataFrame:
         conn.close()
     if not rows:
         return pd.DataFrame()
-    df = pd.DataFrame(rows, columns=["date", "spx_open", "spx_high", "spx_low", "spx_close"])
+    df = pd.DataFrame(
+        rows, columns=["date", "spx_open", "spx_high", "spx_low", "spx_close"]
+    )
     df["date"] = pd.to_datetime(df["date"]).dt.date
     for c in ("spx_open", "spx_high", "spx_low", "spx_close"):
         df[c] = df[c].astype(float)
@@ -150,7 +154,9 @@ def _derive_high_res_target(window: pd.DataFrame) -> pd.DataFrame:
         return window
     out = window.copy()
     if {"spx_price_1550", "spx_price_1559"}.issubset(out.columns):
-        out["spx_ret_1550_1600_bps"] = _bps(out["spx_price_1559"], out["spx_price_1550"])
+        out["spx_ret_1550_1600_bps"] = _bps(
+            out["spx_price_1559"], out["spx_price_1550"]
+        )
     return out
 
 
@@ -180,7 +186,9 @@ def _print_coverage(panel: pd.DataFrame) -> None:
     print()
     print(f"Total snapshot rows:                   {len(panel):,}")
     print(f"Unique trading days:                   {panel['date'].nunique()}")
-    print(f"Rows with daily SPX populated:         {panel['spx_close'].notna().sum():,}")
+    print(
+        f"Rows with daily SPX populated:         {panel['spx_close'].notna().sum():,}"
+    )
     if "spx_ret_1550_1600_bps" in panel.columns:
         hires = int(panel["spx_ret_1550_1600_bps"].notna().sum())
         print(f"Rows with 15:50/15:59 high-res target: {hires:,}")

@@ -98,7 +98,9 @@ def test_aggregate_o_window_early_opening() -> None:
         _row("2026-05-12 09:24:59", auction_type="O", signed_imbalance=500),  # before
         _row("2026-05-12 09:25:00", auction_type="O", signed_imbalance=600),  # inside
         _row("2026-05-12 09:29:59", auction_type="O", signed_imbalance=450),  # inside
-        _row("2026-05-12 09:30:00", auction_type="O", signed_imbalance=999),  # at end (exclusive)
+        _row(
+            "2026-05-12 09:30:00", auction_type="O", signed_imbalance=999
+        ),  # at end (exclusive)
     ]
     snap = snapshots._aggregate_one(_frame(rows), "O")
     assert len(snap) == 1
@@ -112,8 +114,18 @@ def test_build_snapshots_concat_and_aggregate(tmp_path) -> None:
     # Create a tiny per-venue parquet and verify build_snapshots aggregates it.
     df = pd.DataFrame(
         [
-            _row("2026-05-12 15:50:00", symbol="SPY", signed_imbalance=-100, paired_qty=1000),
-            _row("2026-05-12 15:59:00", symbol="SPY", signed_imbalance=-30, paired_qty=2000),
+            _row(
+                "2026-05-12 15:50:00",
+                symbol="SPY",
+                signed_imbalance=-100,
+                paired_qty=1000,
+            ),
+            _row(
+                "2026-05-12 15:59:00",
+                symbol="SPY",
+                signed_imbalance=-30,
+                paired_qty=2000,
+            ),
             _row(
                 "2026-05-12 09:00:00",
                 symbol="SPY",

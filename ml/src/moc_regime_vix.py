@@ -36,7 +36,6 @@ Requires: yfinance, pandas, numpy, matplotlib, seaborn, scipy
 """
 
 import sys
-from pathlib import Path
 
 try:
     import matplotlib.pyplot as plt
@@ -51,7 +50,6 @@ except ImportError:
     sys.exit(1)
 
 from utils import ML_ROOT, section, subsection, takeaway
-
 
 PLOTS_DIR = ML_ROOT / "plots" / "moc"
 FEATURES_PATH = ML_ROOT / "data" / "moc_features_qqq.parquet"
@@ -115,7 +113,9 @@ def join_vix(features: pd.DataFrame, vix: pd.DataFrame) -> pd.DataFrame:
     missing = joined["vix_close"].isna().sum()
     if missing:
         print(f"  WARN: {missing} feature-days have no VIX match (likely holidays)")
-    joined = joined.dropna(subset=["vix_close", "T50_signed_imbalance", "realized_mae_down_bps"])
+    joined = joined.dropna(
+        subset=["vix_close", "T50_signed_imbalance", "realized_mae_down_bps"]
+    )
     print(f"  Joined: {len(joined):,} days with full data")
     return joined
 
@@ -168,7 +168,11 @@ def conditional_correlations(frame: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for bucket, grp in frame.groupby("vix_bucket", observed=True):
         x = grp["T50_signed_imbalance"].abs()
-        for target in ["realized_mae_down_bps", "realized_range_bps", "realized_return_bps"]:
+        for target in [
+            "realized_mae_down_bps",
+            "realized_range_bps",
+            "realized_return_bps",
+        ]:
             y = grp[target]
             mask = x.notna() & y.notna()
             if mask.sum() < 20:
@@ -176,7 +180,11 @@ def conditional_correlations(frame: pd.DataFrame) -> pd.DataFrame:
             else:
                 # For return we want SIGNED imbalance, not absolute — fix for
                 # the directional-prediction case.
-                x_signed = grp["T50_signed_imbalance"] if target == "realized_return_bps" else x
+                x_signed = (
+                    grp["T50_signed_imbalance"]
+                    if target == "realized_return_bps"
+                    else x
+                )
                 pearson, _ = stats.pearsonr(x_signed[mask], y[mask])
                 spearman, _ = stats.spearmanr(x_signed[mask], y[mask])
             rows.append(
@@ -207,14 +215,19 @@ def plot_tails_by_bucket(summary: pd.DataFrame) -> None:
     ax.set_xticks(x)
     ax.set_xticklabels(summary.index, rotation=15)
     ax.set_ylabel("bps")
-    ax.set_title(
-        "QQQ last-10-min MAE by VIX regime — does vol regime drive tail risk?"
-    )
+    ax.set_title("QQQ last-10-min MAE by VIX regime — does vol regime drive tail risk?")
     ax.legend()
     # Annotate bar heights with n for context.
     for i, n in enumerate(summary["n"]):
-        ax.annotate(f"n={n}", xy=(i, 0), xytext=(0, -20),
-                    textcoords="offset points", ha="center", fontsize=9, color="gray")
+        ax.annotate(
+            f"n={n}",
+            xy=(i, 0),
+            xytext=(0, -20),
+            textcoords="offset points",
+            ha="center",
+            fontsize=9,
+            color="gray",
+        )
     fig.tight_layout()
     fig.savefig(PLOTS_DIR / "9_tails_by_vix_bucket.png")
     plt.close(fig)
@@ -262,9 +275,24 @@ def plot_annual_vix_overlay(frame: pd.DataFrame) -> None:
     fig, ax_mae = plt.subplots(figsize=(11, 5))
     ax_vix = ax_mae.twinx()
 
-    ax_mae.bar(annual.index, annual["p95_mae"], color="#4c72b0", alpha=0.6, label="95th-pct MAE")
-    ax_vix.plot(annual.index, annual["median_vix"], "-o", color="#c44e52", label="median VIX")
-    ax_vix.plot(annual.index, annual["max_vix"], "--o", color="#c44e52", alpha=0.5, label="max VIX")
+    ax_mae.bar(
+        annual.index,
+        annual["p95_mae"],
+        color="#4c72b0",
+        alpha=0.6,
+        label="95th-pct MAE",
+    )
+    ax_vix.plot(
+        annual.index, annual["median_vix"], "-o", color="#c44e52", label="median VIX"
+    )
+    ax_vix.plot(
+        annual.index,
+        annual["max_vix"],
+        "--o",
+        color="#c44e52",
+        alpha=0.5,
+        label="max VIX",
+    )
     ax_mae.set_xlabel("Year")
     ax_mae.set_ylabel("p95 MAE (bps)", color="#4c72b0")
     ax_vix.set_ylabel("VIX level", color="#c44e52")

@@ -61,9 +61,13 @@ def enrich_print_features(df: pl.DataFrame) -> pl.DataFrame:
         .otherwise(None)
         .alias("nbbo_position"),
         # Distance from spot
-        ((pl.col("strike") - pl.col("underlying_price")).abs() / pl.col("underlying_price"))
-        .alias("distance_from_spot_pct"),
-        (pl.col("strike") - pl.col("underlying_price")).abs().alias("distance_from_spot_pts"),
+        (
+            (pl.col("strike") - pl.col("underlying_price")).abs()
+            / pl.col("underlying_price")
+        ).alias("distance_from_spot_pct"),
+        (pl.col("strike") - pl.col("underlying_price"))
+        .abs()
+        .alias("distance_from_spot_pts"),
     )
     # Repeat-print intensity within the day. Cumulative count of PRIOR
     # large prints (premium >= REPEAT_PRINT_FLOOR_USD) on the same chain,
@@ -80,7 +84,9 @@ def enrich_print_features(df: pl.DataFrame) -> pl.DataFrame:
     )
     enriched = enriched.with_columns(
         # Subtract self if this print itself qualifies, leaving prior count
-        (pl.col("_cum_big_inclusive") - pl.col("_is_big")).alias("repeat_print_count_today"),
+        (pl.col("_cum_big_inclusive") - pl.col("_is_big")).alias(
+            "repeat_print_count_today"
+        ),
     )
     return enriched.drop("_is_big", "_cum_big_inclusive")
 
@@ -111,10 +117,9 @@ def add_bucket_columns(df: pl.DataFrame) -> pl.DataFrame:
     # NB: must `.cast(Int32)` BEFORE multiplying — `dt.hour()` returns Int8
     # and `14 * 60` silently wraps mod 256 (840 → 72) → wrong buckets.
     ct_local = pl.col("executed_at").dt.convert_time_zone("America/Chicago")
-    minute_of_day_ct = (
-        ct_local.dt.hour().cast(pl.Int32) * 60
-        + ct_local.dt.minute().cast(pl.Int32)
-    )
+    minute_of_day_ct = ct_local.dt.hour().cast(
+        pl.Int32
+    ) * 60 + ct_local.dt.minute().cast(pl.Int32)
     time_bucket = pl.lit("after_close")  # default for anything outside session
     for start, end, label in TIME_BUCKET_BOUNDARIES_CT_MIN:
         time_bucket = (
@@ -167,44 +172,53 @@ def score_prints(df: pl.DataFrame) -> pl.DataFrame:
         * 100.0
         * pl.col("underlying_price")
     )
-    return df.with_columns(
-        c_premium_1m=(pl.col("premium") >= PREMIUM_TIER_1_USD).cast(pl.Int8),
-        c_premium_5m=(pl.col("premium") >= PREMIUM_TIER_2_USD).cast(pl.Int8),
-        c_zero_dte=(pl.col("expiry") == pl.col("executed_at").dt.date()).cast(pl.Int8),
-        c_sweep=pl.col("report_flags")
-        .str.contains(SWEEP_FLAG)
-        .fill_null(False)
-        .cast(pl.Int8),
-        c_outside_nbbo=(
-            (pl.col("price") > pl.col("nbbo_ask")) | (pl.col("price") < pl.col("nbbo_bid"))
-        ).cast(pl.Int8),
-        c_delta_weighted=(delta_weighted_notional >= DELTA_WEIGHTED_NOTIONAL_USD).cast(pl.Int8),
-    ).with_columns(
-        significance_score=(
-            pl.col("c_premium_1m")
-            + pl.col("c_premium_5m")
-            + pl.col("c_zero_dte")
-            + pl.col("c_sweep")
-            + pl.col("c_outside_nbbo")
-            + pl.col("c_delta_weighted")
-        ).cast(pl.Int8),
-        score_breakdown=pl.struct(
-            [
-                "c_premium_1m",
-                "c_premium_5m",
-                "c_zero_dte",
-                "c_sweep",
-                "c_outside_nbbo",
-                "c_delta_weighted",
-            ],
-        ),
-    ).drop(
-        "c_premium_1m",
-        "c_premium_5m",
-        "c_zero_dte",
-        "c_sweep",
-        "c_outside_nbbo",
-        "c_delta_weighted",
+    return (
+        df.with_columns(
+            c_premium_1m=(pl.col("premium") >= PREMIUM_TIER_1_USD).cast(pl.Int8),
+            c_premium_5m=(pl.col("premium") >= PREMIUM_TIER_2_USD).cast(pl.Int8),
+            c_zero_dte=(pl.col("expiry") == pl.col("executed_at").dt.date()).cast(
+                pl.Int8
+            ),
+            c_sweep=pl.col("report_flags")
+            .str.contains(SWEEP_FLAG)
+            .fill_null(False)
+            .cast(pl.Int8),
+            c_outside_nbbo=(
+                (pl.col("price") > pl.col("nbbo_ask"))
+                | (pl.col("price") < pl.col("nbbo_bid"))
+            ).cast(pl.Int8),
+            c_delta_weighted=(
+                delta_weighted_notional >= DELTA_WEIGHTED_NOTIONAL_USD
+            ).cast(pl.Int8),
+        )
+        .with_columns(
+            significance_score=(
+                pl.col("c_premium_1m")
+                + pl.col("c_premium_5m")
+                + pl.col("c_zero_dte")
+                + pl.col("c_sweep")
+                + pl.col("c_outside_nbbo")
+                + pl.col("c_delta_weighted")
+            ).cast(pl.Int8),
+            score_breakdown=pl.struct(
+                [
+                    "c_premium_1m",
+                    "c_premium_5m",
+                    "c_zero_dte",
+                    "c_sweep",
+                    "c_outside_nbbo",
+                    "c_delta_weighted",
+                ],
+            ),
+        )
+        .drop(
+            "c_premium_1m",
+            "c_premium_5m",
+            "c_zero_dte",
+            "c_sweep",
+            "c_outside_nbbo",
+            "c_delta_weighted",
+        )
     )
 
 
@@ -247,7 +261,12 @@ def summarize_outliers(
     If `outliers` has a `won` boolean column (added by Phase 5's compute_outcomes),
     `win_rate` is computed. Otherwise, returns just `n` per bucket.
     """
-    cols = group_by or ["signed_direction", "time_bucket", "dte_bucket", "ticker_family"]
+    cols = group_by or [
+        "signed_direction",
+        "time_bucket",
+        "dte_bucket",
+        "ticker_family",
+    ]
     aggs: list[pl.Expr] = [pl.len().alias("n")]
     if "won" in outliers.columns:
         aggs.append(pl.col("won").cast(pl.Float64).mean().alias("win_rate"))

@@ -116,7 +116,12 @@ def compute_outcomes(
         )
         .join(
             minute_bars.rename(
-                {"minute": "_bar_min", "high": "_bar_high", "low": "_bar_low", "close": "_bar_close"}
+                {
+                    "minute": "_bar_min",
+                    "high": "_bar_high",
+                    "low": "_bar_low",
+                    "close": "_bar_close",
+                }
             ),
             on="underlying_symbol",
             how="inner",
@@ -134,9 +139,8 @@ def compute_outcomes(
     # 4. Per-bar ITM-in-buyer's-direction flag (used for both win-detection
     #    and for time-in-itm diagnostics).
     is_call = pl.col("option_type") == "call"
-    bar_itm_for_buyer = (
-        (is_call & (pl.col("_bar_high") >= pl.col("strike")))
-        | (~is_call & (pl.col("_bar_low") <= pl.col("strike")))
+    bar_itm_for_buyer = (is_call & (pl.col("_bar_high") >= pl.col("strike"))) | (
+        ~is_call & (pl.col("_bar_low") <= pl.col("strike"))
     )
 
     # 5. Per-outlier aggregations.
@@ -162,72 +166,72 @@ def compute_outcomes(
     is_seller = pl.col("side") == "bid"
     is_call_col = pl.col("option_type") == "call"
 
-    enriched = (
-        indexed.join(per_outlier, on="_outlier_id", how="left").with_columns(
-            # PRIMARY: won
-            # Buyer wins if any bar was ITM. Seller wins if NO bar was ITM.
-            # 'no_side' / 'mid' get null — undirected.
-            won=pl.when(is_buyer)
-            .then(pl.col("_any_itm_buyer"))
-            .when(is_seller)
-            .then(pl.col("_any_itm_buyer").not_())
-            .otherwise(None),
-            # CLOSE-WON: stricter, based on the last bar's close vs strike
-            close_won=pl.when(is_buyer & is_call_col)
-            .then(pl.col("_last_close") >= pl.col("strike"))
-            .when(is_buyer & ~is_call_col)
-            .then(pl.col("_last_close") <= pl.col("strike"))
-            .when(is_seller & is_call_col)
-            .then(pl.col("_last_close") < pl.col("strike"))
-            .when(is_seller & ~is_call_col)
-            .then(pl.col("_last_close") > pl.col("strike"))
-            .otherwise(None),
-            # TIME TO ITM (buyer-frame; for sellers same number = time to breach)
-            time_to_itm_min=(pl.col("_first_itm_bar") - pl.col("executed_at")).dt.total_minutes(),
-            time_in_itm_min=pl.col("_time_in_itm_count").cast(pl.Int64),
-            # MFE = max favorable excursion in trade direction (in pts).
-            # Buyer call: max_high - strike (positive when above strike)
-            # Buyer put: strike - min_low
-            # Seller call: strike - max_high (positive when stayed below strike, "favorable")
-            # Seller put: min_low - strike
-            mfe_pts=pl.when(is_buyer & is_call_col)
-            .then(pl.col("_max_high") - pl.col("strike"))
-            .when(is_buyer & ~is_call_col)
-            .then(pl.col("strike") - pl.col("_min_low"))
-            .when(is_seller & is_call_col)
-            .then(pl.col("strike") - pl.col("_max_high"))
-            .when(is_seller & ~is_call_col)
-            .then(pl.col("_min_low") - pl.col("strike"))
-            .otherwise(None),
-            # MAE = closest the underlying came to the strike AGAINST the trade.
-            # For buyers, this is the same as MFE direction (their MFE IS the
-            # adverse-vs-target distance flipped). To keep meaningful, MAE for
-            # buyers is "lowest favorable distance" = same shape as MFE but
-            # using the adverse extreme.
-            # Buyer call: min_low - strike (negative when stayed below strike, bad)
-            # Buyer put: strike - max_high
-            # Seller call: strike - max_high (same as MFE — already adverse-aware)
-            # Seller put: min_low - strike (same as MFE)
-            mae_pts=pl.when(is_buyer & is_call_col)
-            .then(pl.col("_min_low") - pl.col("strike"))
-            .when(is_buyer & ~is_call_col)
-            .then(pl.col("strike") - pl.col("_max_high"))
-            .when(is_seller & is_call_col)
-            .then(pl.col("strike") - pl.col("_max_high"))
-            .when(is_seller & ~is_call_col)
-            .then(pl.col("_min_low") - pl.col("strike"))
-            .otherwise(None),
-            # Close distance from strike (signed in trade direction)
-            close_distance_from_strike_pts=pl.when(is_buyer & is_call_col)
-            .then(pl.col("_last_close") - pl.col("strike"))
-            .when(is_buyer & ~is_call_col)
-            .then(pl.col("strike") - pl.col("_last_close"))
-            .when(is_seller & is_call_col)
-            .then(pl.col("strike") - pl.col("_last_close"))
-            .when(is_seller & ~is_call_col)
-            .then(pl.col("_last_close") - pl.col("strike"))
-            .otherwise(None),
-        )
+    enriched = indexed.join(per_outlier, on="_outlier_id", how="left").with_columns(
+        # PRIMARY: won
+        # Buyer wins if any bar was ITM. Seller wins if NO bar was ITM.
+        # 'no_side' / 'mid' get null — undirected.
+        won=pl.when(is_buyer)
+        .then(pl.col("_any_itm_buyer"))
+        .when(is_seller)
+        .then(pl.col("_any_itm_buyer").not_())
+        .otherwise(None),
+        # CLOSE-WON: stricter, based on the last bar's close vs strike
+        close_won=pl.when(is_buyer & is_call_col)
+        .then(pl.col("_last_close") >= pl.col("strike"))
+        .when(is_buyer & ~is_call_col)
+        .then(pl.col("_last_close") <= pl.col("strike"))
+        .when(is_seller & is_call_col)
+        .then(pl.col("_last_close") < pl.col("strike"))
+        .when(is_seller & ~is_call_col)
+        .then(pl.col("_last_close") > pl.col("strike"))
+        .otherwise(None),
+        # TIME TO ITM (buyer-frame; for sellers same number = time to breach)
+        time_to_itm_min=(
+            pl.col("_first_itm_bar") - pl.col("executed_at")
+        ).dt.total_minutes(),
+        time_in_itm_min=pl.col("_time_in_itm_count").cast(pl.Int64),
+        # MFE = max favorable excursion in trade direction (in pts).
+        # Buyer call: max_high - strike (positive when above strike)
+        # Buyer put: strike - min_low
+        # Seller call: strike - max_high (positive when stayed below strike, "favorable")
+        # Seller put: min_low - strike
+        mfe_pts=pl.when(is_buyer & is_call_col)
+        .then(pl.col("_max_high") - pl.col("strike"))
+        .when(is_buyer & ~is_call_col)
+        .then(pl.col("strike") - pl.col("_min_low"))
+        .when(is_seller & is_call_col)
+        .then(pl.col("strike") - pl.col("_max_high"))
+        .when(is_seller & ~is_call_col)
+        .then(pl.col("_min_low") - pl.col("strike"))
+        .otherwise(None),
+        # MAE = closest the underlying came to the strike AGAINST the trade.
+        # For buyers, this is the same as MFE direction (their MFE IS the
+        # adverse-vs-target distance flipped). To keep meaningful, MAE for
+        # buyers is "lowest favorable distance" = same shape as MFE but
+        # using the adverse extreme.
+        # Buyer call: min_low - strike (negative when stayed below strike, bad)
+        # Buyer put: strike - max_high
+        # Seller call: strike - max_high (same as MFE — already adverse-aware)
+        # Seller put: min_low - strike (same as MFE)
+        mae_pts=pl.when(is_buyer & is_call_col)
+        .then(pl.col("_min_low") - pl.col("strike"))
+        .when(is_buyer & ~is_call_col)
+        .then(pl.col("strike") - pl.col("_max_high"))
+        .when(is_seller & is_call_col)
+        .then(pl.col("strike") - pl.col("_max_high"))
+        .when(is_seller & ~is_call_col)
+        .then(pl.col("_min_low") - pl.col("strike"))
+        .otherwise(None),
+        # Close distance from strike (signed in trade direction)
+        close_distance_from_strike_pts=pl.when(is_buyer & is_call_col)
+        .then(pl.col("_last_close") - pl.col("strike"))
+        .when(is_buyer & ~is_call_col)
+        .then(pl.col("strike") - pl.col("_last_close"))
+        .when(is_seller & is_call_col)
+        .then(pl.col("strike") - pl.col("_last_close"))
+        .when(is_seller & ~is_call_col)
+        .then(pl.col("_last_close") - pl.col("strike"))
+        .otherwise(None),
     )
 
     # 7. Drop scratch columns

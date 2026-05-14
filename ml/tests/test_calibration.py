@@ -167,7 +167,9 @@ class TestAssignStabilityTertile:
 
     def test_only_valid_labels(self, errors_df: pd.DataFrame):
         result = assign_stability_tertile(errors_df)
-        assert set(result["stability_tertile"].unique()).issubset({"low", "mid", "high"})
+        assert set(result["stability_tertile"].unique()).issubset(
+            {"low", "mid", "high"}
+        )
 
     def test_roughly_equal_thirds(self, errors_df: pd.DataFrame):
         """Each tertile should contain roughly 1/3 of rows (±5% tolerance)."""
@@ -455,7 +457,10 @@ class TestPrintSummary:
         print_summary(summary)
         captured = capsys.readouterr()
         assert str(len(full_df)) in captured.out
-        assert "calibration_score" in captured.out.lower() or "calibration" in captured.out.lower()
+        assert (
+            "calibration_score" in captured.out.lower()
+            or "calibration" in captured.out.lower()
+        )
 
     def test_prints_bucket_names(self, capsys, full_df: pd.DataFrame):
         by_regime = bucket_summary(full_df, "regime")
@@ -481,8 +486,15 @@ class TestEmptyAndDegenerateInput:
     def test_empty_df_raises_or_returns_empty(self):
         """An empty DataFrame should not crash bucket_summary — it should return {}."""
         df = pd.DataFrame(
-            columns=["regime", "confidence", "stability_tertile",
-                     "hit_5pt", "hit_10pt", "hit_15pt", "abs_error"]
+            columns=[
+                "regime",
+                "confidence",
+                "stability_tertile",
+                "hit_5pt",
+                "hit_10pt",
+                "hit_15pt",
+                "abs_error",
+            ]
         )
         result = bucket_summary(df, "regime")
         assert result == {}
@@ -564,8 +576,14 @@ class TestMain:
 
         empty_df = pd.DataFrame(
             columns=[
-                "id", "captured_at", "regime", "confidence",
-                "stability_pct", "predicted_close", "actual_close", "full_response"
+                "id",
+                "captured_at",
+                "regime",
+                "confidence",
+                "stability_pct",
+                "predicted_close",
+                "actual_close",
+                "full_response",
             ]
         )
         self._setup_mocks(monkeypatch, empty_df, plots_dir, findings_dir)
@@ -577,9 +595,7 @@ class TestMain:
         captured = capsys.readouterr()
         assert "WARNING" in captured.out or "warning" in captured.out.lower()
 
-    def test_main_creates_plots_and_findings(
-        self, monkeypatch, tmp_path: Path
-    ):
+    def test_main_creates_plots_and_findings(self, monkeypatch, tmp_path: Path):
         """main() must create 5 PNG files and 1 JSON findings file."""
         import calibration
 
@@ -590,10 +606,10 @@ class TestMain:
 
         # Enough rows: 3 regimes × 3 confidences × ~7 rows each
         df = _make_df(n=MIN_TOTAL_ROWS + 10, seed=7)
-        df["confidence"] = np.tile(["high", "medium", "low"], len(df))[:len(df)]
-        df["regime"] = np.tile(
-            ["trending_up", "ranging", "trending_down"], len(df)
-        )[:len(df)]
+        df["confidence"] = np.tile(["high", "medium", "low"], len(df))[: len(df)]
+        df["regime"] = np.tile(["trending_up", "ranging", "trending_down"], len(df))[
+            : len(df)
+        ]
         self._setup_mocks(monkeypatch, df, plots_dir, findings_dir)
 
         calibration.main()
@@ -621,9 +637,7 @@ class TestMain:
         assert "calibration_score" in loaded
         assert "by_regime" in loaded
 
-    def test_main_warns_on_insufficient_rows(
-        self, monkeypatch, capsys, tmp_path: Path
-    ):
+    def test_main_warns_on_insufficient_rows(self, monkeypatch, capsys, tmp_path: Path):
         """
         main() should continue (not exit) but emit a warning when
         N < MIN_TOTAL_ROWS.
@@ -653,9 +667,7 @@ class TestMain:
 
         assert "warn" in stderr_output.lower() or "minimum" in stderr_output.lower()
 
-    def test_main_missing_database_url_exits_nonzero(
-        self, monkeypatch, tmp_path: Path
-    ):
+    def test_main_missing_database_url_exits_nonzero(self, monkeypatch, tmp_path: Path):
         """main() must exit 1 when DATABASE_URL is unset."""
         import calibration
 
@@ -668,7 +680,9 @@ class TestMain:
         monkeypatch.setattr(calibration, "FINDINGS_DIR", findings_dir)
         monkeypatch.delenv("DATABASE_URL", raising=False)
         # Also prevent load_env from finding .env.local
-        monkeypatch.setattr(calibration, "ENV_LOCAL", tmp_path / ".env.local.nonexistent")
+        monkeypatch.setattr(
+            calibration, "ENV_LOCAL", tmp_path / ".env.local.nonexistent"
+        )
 
         with pytest.raises(SystemExit) as exc:
             calibration.main()

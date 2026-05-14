@@ -77,7 +77,7 @@ REGULAR_SESSION_START_UTC = 13 * 60 + 30  # 13:30 UTC = 9:30 ET
 # EOD close = 16:00 ET = 20:00 UTC (but last 1-min bar is stamped at 19:59 UTC
 # i.e. the bar that *opens* at 19:59 and closes at 20:00).  We use <= 20:00
 # so the 19:59-stamped bar (close = 16:00 ET price) is included.
-REGULAR_SESSION_END_UTC = 20 * 60   # 20:00 UTC = 16:00 ET
+REGULAR_SESSION_END_UTC = 20 * 60  # 20:00 UTC = 16:00 ET
 
 
 # ── DB connection ─────────────────────────────────────────────
@@ -86,7 +86,9 @@ REGULAR_SESSION_END_UTC = 20 * 60   # 20:00 UTC = 16:00 ET
 def get_connection() -> psycopg2.extensions.connection:
     database_url = os.environ.get("DATABASE_URL", "")
     if not database_url:
-        print("Error: DATABASE_URL not set. Run with 'set -a && source .env.local && set +a'")
+        print(
+            "Error: DATABASE_URL not set. Run with 'set -a && source .env.local && set +a'"
+        )
         sys.exit(1)
     try:
         return psycopg2.connect(database_url, sslmode="require", connect_timeout=15)
@@ -164,8 +166,12 @@ def _build_eod_close_map(candles: pd.DataFrame) -> dict[tuple, float]:
     # Regular session bars only (last bar is the 19:59 UTC bar)
     eod_cutoff_seconds = REGULAR_SESSION_END_UTC * 60  # 20:00:00 UTC in seconds
     reg = candles[
-        (candles["timestamp"].dt.hour * 3600 + candles["timestamp"].dt.minute * 60 +
-         candles["timestamp"].dt.second) < eod_cutoff_seconds
+        (
+            candles["timestamp"].dt.hour * 3600
+            + candles["timestamp"].dt.minute * 60
+            + candles["timestamp"].dt.second
+        )
+        < eod_cutoff_seconds
     ].copy()
     if reg.empty:
         return eod_map
@@ -267,7 +273,9 @@ def add_time_of_day(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def add_per_hour_return(df: pd.DataFrame, eod_close_minute_utc: int = 20 * 60) -> pd.DataFrame:
+def add_per_hour_return(
+    df: pd.DataFrame, eod_close_minute_utc: int = 20 * 60
+) -> pd.DataFrame:
     """Add fwd_return_per_hour = fwd_return_eod / (mins_to_close / 60).
 
     Requires the DataFrame to already have minute_utc (from add_time_of_day)
@@ -321,8 +329,7 @@ def build_control_samples(
 
     # Build candle index for fwd-return lookup
     candle_index: dict[tuple, float] = {
-        (r.ticker, r.timestamp): r.close
-        for r in candles.itertuples(index=False)
+        (r.ticker, r.timestamp): r.close for r in candles.itertuples(index=False)
     }
 
     # EOD close map for control EOD returns
@@ -343,8 +350,10 @@ def build_control_samples(
     control_rows = []
     for _, spike in spikes.iterrows():
         ticker = spike["ticker"]
-        spike_tod = spike["minute_utc"] if "minute_utc" in spike.index else (
-            spike["timestamp"].hour * 60 + spike["timestamp"].minute
+        spike_tod = (
+            spike["minute_utc"]
+            if "minute_utc" in spike.index
+            else (spike["timestamp"].hour * 60 + spike["timestamp"].minute)
         )
         exclusions = spike_times_by_ticker.get(ticker, set())
 
@@ -366,7 +375,9 @@ def build_control_samples(
             continue
 
         n_draw = min(n_control_per_spike, len(candidates))
-        sampled = candidates.sample(n=n_draw, random_state=int(rng.integers(1_000_000_000)))
+        sampled = candidates.sample(
+            n=n_draw, random_state=int(rng.integers(1_000_000_000))
+        )
 
         for _, cand in sampled.iterrows():
             t0 = cand["timestamp"].replace(second=0, microsecond=0)
@@ -379,7 +390,8 @@ def build_control_samples(
             fwd_close_15 = candle_index.get((ticker, t15))
             fwd_return_15m = (
                 (fwd_close_15 - base_close) / base_close
-                if fwd_close_15 is not None else np.nan
+                if fwd_close_15 is not None
+                else np.nan
             )
 
             # EOD return
@@ -387,7 +399,8 @@ def build_control_samples(
             eod_close = eod_close_map.get((ticker, cand_date))
             fwd_return_eod = (
                 (eod_close - base_close) / base_close
-                if eod_close is not None else np.nan
+                if eod_close is not None
+                else np.nan
             )
 
             # Only append if EOD return is computable
@@ -446,14 +459,26 @@ def plot_distribution_comparison(
     ctrl_vals = control["fwd_return_per_hour"].dropna().values
 
     # Absolute EOD medians for secondary annotation
-    spike_eod_median = float(np.median(spikes["fwd_return_eod"].dropna().values)) if spikes["fwd_return_eod"].notna().any() else float("nan")
-    ctrl_eod_median = float(np.median(control["fwd_return_eod"].dropna().values)) if control["fwd_return_eod"].notna().any() else float("nan")
+    spike_eod_median = (
+        float(np.median(spikes["fwd_return_eod"].dropna().values))
+        if spikes["fwd_return_eod"].notna().any()
+        else float("nan")
+    )
+    ctrl_eod_median = (
+        float(np.median(control["fwd_return_eod"].dropna().values))
+        if control["fwd_return_eod"].notna().any()
+        else float("nan")
+    )
 
     if len(spike_vals) == 0:
-        print("  WARNING: No spike fwd_return_per_hour values — skipping distribution plot")
+        print(
+            "  WARNING: No spike fwd_return_per_hour values — skipping distribution plot"
+        )
         return {}
     if len(ctrl_vals) == 0:
-        print("  WARNING: No control fwd_return_per_hour values — skipping distribution plot")
+        print(
+            "  WARNING: No control fwd_return_per_hour values — skipping distribution plot"
+        )
         return {}
 
     # Mann-Whitney U (two-sided: do spikes differ from control?)
@@ -468,8 +493,22 @@ def plot_distribution_comparison(
         40,
     )
 
-    ax.hist(ctrl_vals, bins=bins, alpha=0.45, color="#888899", label=f"Control (n={len(ctrl_vals)})", density=True)
-    ax.hist(spike_vals, bins=bins, alpha=0.65, color="#f5a623", label=f"Spike (n={len(spike_vals)})", density=True)
+    ax.hist(
+        ctrl_vals,
+        bins=bins,
+        alpha=0.45,
+        color="#888899",
+        label=f"Control (n={len(ctrl_vals)})",
+        density=True,
+    )
+    ax.hist(
+        spike_vals,
+        bins=bins,
+        alpha=0.65,
+        color="#f5a623",
+        label=f"Spike (n={len(spike_vals)})",
+        density=True,
+    )
 
     # KDE overlay
     for vals, color in [(ctrl_vals, "#aaaacc"), (spike_vals, "#ffcc55")]:
@@ -479,15 +518,28 @@ def plot_distribution_comparison(
             ax.plot(xs, kde(xs), color=color, lw=2)
 
     ax.axvline(0, color="#ffffff", lw=1, ls="--", alpha=0.4)
-    ax.axvline(np.median(spike_vals), color="#f5a623", lw=1.5, ls=":", alpha=0.8,
-               label=f"Spike median={np.median(spike_vals):.4f} %/h")
-    ax.axvline(np.median(ctrl_vals), color="#aaaacc", lw=1.5, ls=":", alpha=0.8,
-               label=f"Control median={np.median(ctrl_vals):.4f} %/h")
+    ax.axvline(
+        np.median(spike_vals),
+        color="#f5a623",
+        lw=1.5,
+        ls=":",
+        alpha=0.8,
+        label=f"Spike median={np.median(spike_vals):.4f} %/h",
+    )
+    ax.axvline(
+        np.median(ctrl_vals),
+        color="#aaaacc",
+        lw=1.5,
+        ls=":",
+        alpha=0.8,
+        label=f"Control median={np.median(ctrl_vals):.4f} %/h",
+    )
 
     p_str = f"{p_mw:.4f}" if p_mw >= 0.0001 else "<0.0001"
     eod_note = (
         f"  |  EOD medians: spike={spike_eod_median * 100:.3f}%, ctrl={ctrl_eod_median * 100:.3f}%"
-        if not (np.isnan(spike_eod_median) or np.isnan(ctrl_eod_median)) else ""
+        if not (np.isnan(spike_eod_median) or np.isnan(ctrl_eod_median))
+        else ""
     )
     ax.set_title(
         f"fwd_return_per_hour: Spike vs Control (time-normalized)\n"
@@ -495,7 +547,9 @@ def plot_distribution_comparison(
         f"{eod_note}",
         pad=12,
     )
-    ax.set_xlabel("Forward Return Rate (%/hour to close) — removes time-of-day confound")
+    ax.set_xlabel(
+        "Forward Return Rate (%/hour to close) — removes time-of-day confound"
+    )
     ax.set_ylabel("Density")
     ax.xaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0, decimals=2))
     ax.legend()
@@ -523,7 +577,9 @@ def plot_distribution_comparison(
 
 def plot_directionality(spikes: pd.DataFrame, out_path: Path) -> dict:
     """Hit-rate of sign(fwd_return_eod) == sign(dir_vega_flow), with Wilson CIs."""
-    df = spikes[spikes["fwd_return_eod"].notna() & spikes["dir_vega_flow"].notna()].copy()
+    df = spikes[
+        spikes["fwd_return_eod"].notna() & spikes["dir_vega_flow"].notna()
+    ].copy()
     if len(df) == 0:
         print("  WARNING: No valid rows for directionality plot — skipping")
         return {}
@@ -533,24 +589,28 @@ def plot_directionality(spikes: pd.DataFrame, out_path: Path) -> dict:
     df["agree"] = df["sign_flow"] == df["sign_ret"]
 
     results = []
-    for group_label, subset in [("SPY", df[df["ticker"] == "SPY"]),
-                                  ("QQQ", df[df["ticker"] == "QQQ"]),
-                                  ("Overall", df)]:
+    for group_label, subset in [
+        ("SPY", df[df["ticker"] == "SPY"]),
+        ("QQQ", df[df["ticker"] == "QQQ"]),
+        ("Overall", df),
+    ]:
         n = len(subset)
         k = int(subset["agree"].sum())
         if n == 0:
             continue
         lo, hi = wilson_ci(k, n)
         p_binom = stats.binomtest(k, n, p=0.5, alternative="two-sided").pvalue
-        results.append({
-            "label": group_label,
-            "n": n,
-            "k": k,
-            "rate": k / n,
-            "ci_lo": lo,
-            "ci_hi": hi,
-            "p_binom": p_binom,
-        })
+        results.append(
+            {
+                "label": group_label,
+                "n": n,
+                "k": k,
+                "rate": k / n,
+                "ci_lo": lo,
+                "ci_hi": hi,
+                "p_binom": p_binom,
+            }
+        )
 
     if not results:
         print("  WARNING: Empty directionality results — skipping")
@@ -565,11 +625,16 @@ def plot_directionality(spikes: pd.DataFrame, out_path: Path) -> dict:
     err_hi = [r["ci_hi"] - r["rate"] for r in results]
     colors = ["#5bc8f5", "#f5a623", "#aaffaa"]
 
-    bars = ax.bar(labels, rates, color=colors[:len(labels)], alpha=0.75, width=0.5)
+    bars = ax.bar(labels, rates, color=colors[: len(labels)], alpha=0.75, width=0.5)
     ax.errorbar(
-        labels, rates,
+        labels,
+        rates,
         yerr=[err_lo, err_hi],
-        fmt="none", color="#ffffff", capsize=6, lw=2, capthick=2,
+        fmt="none",
+        color="#ffffff",
+        capsize=6,
+        lw=2,
+        capthick=2,
     )
     ax.axhline(0.5, color="#ff6666", lw=1.5, ls="--", label="50% null")
 
@@ -579,11 +644,16 @@ def plot_directionality(spikes: pd.DataFrame, out_path: Path) -> dict:
             bar.get_x() + bar.get_width() / 2,
             bar.get_height() + err_hi[results.index(r)] + 0.02,
             f"{r['k']}/{r['n']}\np={p_str}",
-            ha="center", va="bottom", fontsize=9, color="#ccccdd",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            color="#ccccdd",
         )
 
     ax.set_ylim(0, 1.05)
-    ax.set_title("Directionality: sign(fwd_return_eod) == sign(dir_vega_flow)\n95% Wilson CIs, Binomial test vs 50% null")
+    ax.set_title(
+        "Directionality: sign(fwd_return_eod) == sign(dir_vega_flow)\n95% Wilson CIs, Binomial test vs 50% null"
+    )
     ax.set_ylabel("Hit Rate")
     ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0))
     ax.legend()
@@ -594,11 +664,17 @@ def plot_directionality(spikes: pd.DataFrame, out_path: Path) -> dict:
     plt.close(fig)
     print(f"  Saved: {out_path.name}")
 
-    return {r["label"]: {
-        "n": r["n"], "k": r["k"], "rate": round(r["rate"], 4),
-        "ci_lo": round(r["ci_lo"], 4), "ci_hi": round(r["ci_hi"], 4),
-        "p_binom": round(r["p_binom"], 4),
-    } for r in results}
+    return {
+        r["label"]: {
+            "n": r["n"],
+            "k": r["k"],
+            "rate": round(r["rate"], 4),
+            "ci_lo": round(r["ci_lo"], 4),
+            "ci_hi": round(r["ci_hi"], 4),
+            "p_binom": round(r["p_binom"], 4),
+        }
+        for r in results
+    }
 
 
 # ── Plot 3: Time-to-peak ──────────────────────────────────────
@@ -612,8 +688,13 @@ def plot_time_to_peak(spikes: pd.DataFrame, out_path: Path) -> dict:
     when the spike occurred; the categorical axis makes the arc readable
     without distorting scale for early-session spikes.
     """
-    horizon_cols = ["fwd_return_5m", "fwd_return_15m", "fwd_return_30m",
-                    "fwd_return_60m", "fwd_return_eod"]
+    horizon_cols = [
+        "fwd_return_5m",
+        "fwd_return_15m",
+        "fwd_return_30m",
+        "fwd_return_60m",
+        "fwd_return_eod",
+    ]
     horizon_labels = ["5m", "15m", "30m", "60m", "EOD"]
     x_positions = list(range(len(horizon_labels)))
 
@@ -637,7 +718,9 @@ def plot_time_to_peak(spikes: pd.DataFrame, out_path: Path) -> dict:
         n = len(subset)
         ax.set_title(f"{sign_label}\n(n={n})")
         if n == 0:
-            ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+            ax.text(
+                0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes
+            )
             continue
 
         # Individual traces
@@ -651,8 +734,12 @@ def plot_time_to_peak(spikes: pd.DataFrame, out_path: Path) -> dict:
         q25s = [float(subset[c].quantile(0.25)) for c in horizon_cols]
         q75s = [float(subset[c].quantile(0.75)) for c in horizon_cols]
 
-        ax.plot(x_positions, medians, color=base_color, lw=2.5, zorder=5, label="Median")
-        ax.fill_between(x_positions, q25s, q75s, color=base_color, alpha=0.25, label="IQR")
+        ax.plot(
+            x_positions, medians, color=base_color, lw=2.5, zorder=5, label="Median"
+        )
+        ax.fill_between(
+            x_positions, q25s, q75s, color=base_color, alpha=0.25, label="IQR"
+        )
         ax.axhline(0, color="#ffffff", lw=1, ls="--", alpha=0.4)
 
         ax.set_xlabel("Horizon")
@@ -676,7 +763,9 @@ def plot_time_to_peak(spikes: pd.DataFrame, out_path: Path) -> dict:
             "median_eod": round(medians[4], 5),
         }
 
-    fig.suptitle("Time-to-peak: Forward returns at 5m / 15m / 30m / 60m / EOD horizons", y=1.01)
+    fig.suptitle(
+        "Time-to-peak: Forward returns at 5m / 15m / 30m / 60m / EOD horizons", y=1.01
+    )
     plt.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -695,7 +784,9 @@ def plot_magnitude_scatter(spikes: pd.DataFrame, out_path: Path) -> dict:
     A z=4 spike at 9:35 ET and a z=4 spike at 14:50 ET should be comparable;
     absolute EOD returns would make the early spike look larger by construction.
     """
-    df = spikes[spikes["fwd_return_per_hour"].notna() & spikes["z_score"].notna()].copy()
+    df = spikes[
+        spikes["fwd_return_per_hour"].notna() & spikes["z_score"].notna()
+    ].copy()
     if len(df) < 4:
         print("  WARNING: Not enough data for magnitude scatter — skipping")
         return {}
@@ -708,8 +799,15 @@ def plot_magnitude_scatter(spikes: pd.DataFrame, out_path: Path) -> dict:
     for ticker, color in TICKER_COLORS.items():
         sub = df[df["ticker"] == ticker]
         if len(sub) > 0:
-            ax.scatter(sub["z_score"], sub["abs_ret_per_hour"],
-                       color=color, alpha=0.8, s=60, label=ticker, zorder=4)
+            ax.scatter(
+                sub["z_score"],
+                sub["abs_ret_per_hour"],
+                color=color,
+                alpha=0.8,
+                s=60,
+                label=ticker,
+                zorder=4,
+            )
 
     # Theil-Sen regression
     x_all = df["z_score"].values
@@ -730,18 +828,26 @@ def plot_magnitude_scatter(spikes: pd.DataFrame, out_path: Path) -> dict:
         y_lo = slope_lo * x_line + intercept
         y_hi = slope_hi * x_line + intercept
 
-        ax.plot(x_line, y_line, color="#aaffaa", lw=2, label=f"Theil-Sen: slope={slope:.6f}")
-        ax.fill_between(x_line, y_lo, y_hi, color="#aaffaa", alpha=0.15, label="95% CI slope")
+        ax.plot(
+            x_line, y_line, color="#aaffaa", lw=2, label=f"Theil-Sen: slope={slope:.6f}"
+        )
+        ax.fill_between(
+            x_line, y_lo, y_hi, color="#aaffaa", alpha=0.15, label="95% CI slope"
+        )
 
         # Pearson r for annotation
         if len(x_v) >= 3:
             r, p_r = stats.pearsonr(x_v, y_v)
             p_str = f"{p_r:.4f}" if p_r >= 0.0001 else "<0.0001"
             ax.text(
-                0.97, 0.05,
+                0.97,
+                0.05,
                 f"Pearson r={r:.3f}, p={p_str}\nn={len(x_v)}",
-                transform=ax.transAxes, ha="right", va="bottom",
-                fontsize=10, color="#ccccdd",
+                transform=ax.transAxes,
+                ha="right",
+                va="bottom",
+                fontsize=10,
+                color="#ccccdd",
                 bbox={"facecolor": "#1a1a2e", "edgecolor": "#444466", "alpha": 0.8},
             )
         ts_stats = {
@@ -753,7 +859,9 @@ def plot_magnitude_scatter(spikes: pd.DataFrame, out_path: Path) -> dict:
     else:
         ts_stats = {}
 
-    ax.set_title("z_score vs |fwd_return_per_hour| — Theil-Sen regression (time-normalized magnitude)")
+    ax.set_title(
+        "z_score vs |fwd_return_per_hour| — Theil-Sen regression (time-normalized magnitude)"
+    )
     ax.set_xlabel("Z-score (spike magnitude)")
     ax.set_ylabel("|Return Rate| (%/hour to close)")
     ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0, decimals=3))
@@ -782,7 +890,9 @@ def plot_tod_stratification(spikes: pd.DataFrame, out_path: Path) -> dict:
         print("  WARNING: No data for ToD stratification — skipping")
         return {}
 
-    df["spike_sign"] = df["dir_vega_flow"].apply(lambda v: "Positive" if v > 0 else "Negative")
+    df["spike_sign"] = df["dir_vega_flow"].apply(
+        lambda v: "Positive" if v > 0 else "Negative"
+    )
     periods = ["AM", "midday", "PM"]
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 7), sharey=True)
@@ -800,16 +910,22 @@ def plot_tod_stratification(spikes: pd.DataFrame, out_path: Path) -> dict:
         labels_for_box = []
         ns = []
         for period in periods:
-            pdata = subset[subset["session_period"] == period]["fwd_return_per_hour"].dropna()
+            pdata = subset[subset["session_period"] == period][
+                "fwd_return_per_hour"
+            ].dropna()
             if len(pdata) == 0:
-                print(f"  WARNING: No spikes in {period} period for {sign_label} — stratum skipped")
+                print(
+                    f"  WARNING: No spikes in {period} period for {sign_label} — stratum skipped"
+                )
                 continue
             data_for_box.append(pdata.values)
             labels_for_box.append(f"{period}\n(n={len(pdata)})")
             ns.append(len(pdata))
 
         if not data_for_box:
-            ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+            ax.text(
+                0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes
+            )
             continue
 
         ax.boxplot(
@@ -896,7 +1012,9 @@ def plot_confluence_vs_solo(spikes: pd.DataFrame, out_path: Path) -> dict:
         flierprops={"marker": "o", "color": "#aaffaa", "alpha": 0.5, "markersize": 5},
     )
     ax1.axhline(0, color="#ff6666", lw=1, ls="--", alpha=0.5)
-    ax1.set_title(f"fwd_return_per_hour: Confluence vs Solo\n(WARNING: n_confluence={n_conf} — eyeball only)")
+    ax1.set_title(
+        f"fwd_return_per_hour: Confluence vs Solo\n(WARNING: n_confluence={n_conf} — eyeball only)"
+    )
     ax1.set_ylabel("Forward Return Rate (%/hour to close)")
     ax1.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0, decimals=2))
     ax1.grid(True, axis="y", alpha=0.3)
@@ -904,12 +1022,26 @@ def plot_confluence_vs_solo(spikes: pd.DataFrame, out_path: Path) -> dict:
     # Right: scatter by z_score coloured by confluence
     ax2 = axes[1]
     if n_solo > 0:
-        ax2.scatter(solo_df["z_score"], solo_df["fwd_return_per_hour"].abs(),
-                    color="#5bc8f5", alpha=0.7, s=50, label=f"Solo (n={n_solo})", zorder=3)
+        ax2.scatter(
+            solo_df["z_score"],
+            solo_df["fwd_return_per_hour"].abs(),
+            color="#5bc8f5",
+            alpha=0.7,
+            s=50,
+            label=f"Solo (n={n_solo})",
+            zorder=3,
+        )
     if n_conf > 0:
-        ax2.scatter(conf_df["z_score"], conf_df["fwd_return_per_hour"].abs(),
-                    color="#ffcc00", alpha=0.9, s=120, marker="*",
-                    label=f"Confluence (n={n_conf})", zorder=5)
+        ax2.scatter(
+            conf_df["z_score"],
+            conf_df["fwd_return_per_hour"].abs(),
+            color="#ffcc00",
+            alpha=0.9,
+            s=120,
+            marker="*",
+            label=f"Confluence (n={n_conf})",
+            zorder=5,
+        )
     ax2.set_title("z_score vs |fwd_return_per_hour| by confluence")
     ax2.set_xlabel("Z-score")
     ax2.set_ylabel("|Return Rate| (%/hour to close)")
@@ -929,11 +1061,19 @@ def plot_confluence_vs_solo(spikes: pd.DataFrame, out_path: Path) -> dict:
 
     stats_out: dict = {"n_confluence": n_conf, "n_solo": n_solo}
     if n_conf > 0:
-        stats_out["confluence_median_per_hour"] = round(float(conf_df["fwd_return_per_hour"].median()), 5)
-        stats_out["confluence_mean_per_hour"] = round(float(conf_df["fwd_return_per_hour"].mean()), 5)
+        stats_out["confluence_median_per_hour"] = round(
+            float(conf_df["fwd_return_per_hour"].median()), 5
+        )
+        stats_out["confluence_mean_per_hour"] = round(
+            float(conf_df["fwd_return_per_hour"].mean()), 5
+        )
     if n_solo > 0:
-        stats_out["solo_median_per_hour"] = round(float(solo_df["fwd_return_per_hour"].median()), 5)
-        stats_out["solo_mean_per_hour"] = round(float(solo_df["fwd_return_per_hour"].mean()), 5)
+        stats_out["solo_median_per_hour"] = round(
+            float(solo_df["fwd_return_per_hour"].median()), 5
+        )
+        stats_out["solo_mean_per_hour"] = round(
+            float(solo_df["fwd_return_per_hour"].mean()), 5
+        )
     return stats_out
 
 
@@ -1110,9 +1250,13 @@ def write_findings_md(
                 for period in ["AM", "midday", "PM"]:
                     pdata = ps.get(period)
                     if pdata:
-                        parts.append(f"{period} n={pdata['n']}, median={fmt_pct(pdata['median'])}/h")
+                        parts.append(
+                            f"{period} n={pdata['n']}, median={fmt_pct(pdata['median'])}/h"
+                        )
                 if parts:
-                    lines.append(f"**{sign_key.capitalize()} spikes**: {'; '.join(parts)}.")
+                    lines.append(
+                        f"**{sign_key.capitalize()} spikes**: {'; '.join(parts)}."
+                    )
         lines += [
             "",
             "Per-hour normalization makes cross-stratum comparison valid: AM spikes had 4-6h to close, "
@@ -1147,8 +1291,16 @@ def write_findings_md(
         s_med = conf_stats.get("solo_median_per_hour")
         lines += [
             f"Confluence events: n={n_c}. Solo events: n={n_s}. "
-            + (f"Confluence median return rate: {fmt_pct(c_med)}/h. " if c_med is not None else "")
-            + (f"Solo median return rate: {fmt_pct(s_med)}/h. " if s_med is not None else "")
+            + (
+                f"Confluence median return rate: {fmt_pct(c_med)}/h. "
+                if c_med is not None
+                else ""
+            )
+            + (
+                f"Solo median return rate: {fmt_pct(s_med)}/h. "
+                if s_med is not None
+                else ""
+            )
             + "With only 2 confluence events, statistical testing is not meaningful — "
             "treat as an observation for future data collection.",
             "",
@@ -1193,7 +1345,9 @@ def main() -> None:
     print("Loading spike events ...")
     spikes_raw = load_spikes(conn)
     print(f"  {len(spikes_raw)} total spike events")
-    print(f"  SPY: {(spikes_raw['ticker'] == 'SPY').sum()}, QQQ: {(spikes_raw['ticker'] == 'QQQ').sum()}")
+    print(
+        f"  SPY: {(spikes_raw['ticker'] == 'SPY').sum()}, QQQ: {(spikes_raw['ticker'] == 'QQQ').sum()}"
+    )
     print(f"  Confluence: {spikes_raw['confluence'].sum()}")
 
     print("Loading candles ...")
@@ -1213,7 +1367,9 @@ def main() -> None:
     print(f"  Spikes with fwd_return_eod: {n_with_fwd_eod}/{len(spikes)}")
 
     if n_with_fwd_eod == 0:
-        print("\nERROR: No spikes have computable EOD forward returns. Check candle coverage.")
+        print(
+            "\nERROR: No spikes have computable EOD forward returns. Check candle coverage."
+        )
         sys.exit(1)
 
     # Add time-normalized return (requires minute_utc from add_time_of_day)
@@ -1229,7 +1385,9 @@ def main() -> None:
     # Clip negatives (shouldn't exist since EOD is computable, but be safe)
     mins_to_close = mins_to_close.clip(lower=0)
     median_mins_to_close = float(mins_to_close.median())
-    print(f"  Median time-to-close for EOD-valid spikes: {median_mins_to_close:.0f} min ({median_mins_to_close / 60:.1f}h)")
+    print(
+        f"  Median time-to-close for EOD-valid spikes: {median_mins_to_close:.0f} min ({median_mins_to_close / 60:.1f}h)"
+    )
 
     spikes_valid = eod_valid  # Use EOD-valid set as the primary analysis frame
 
@@ -1241,7 +1399,8 @@ def main() -> None:
 
     # 1. Distribution comparison
     dist_stats = plot_distribution_comparison(
-        spikes_valid, control,
+        spikes_valid,
+        control,
         PLOTS_DIR / "vega-spike-distribution-comparison.png",
     )
 
@@ -1301,10 +1460,16 @@ def main() -> None:
             f"p={ov['p_binom']:.4f}"
         )
     if dist_stats:
-        p_str = f"{dist_stats['mw_p']:.4f}" if dist_stats["mw_p"] >= 0.0001 else "<0.0001"
+        p_str = (
+            f"{dist_stats['mw_p']:.4f}" if dist_stats["mw_p"] >= 0.0001 else "<0.0001"
+        )
         print(
             f"  Mann-Whitney p={p_str}: "
-            + ("distributional difference detected" if dist_stats["mw_p"] < 0.05 else "no significant distributional difference")
+            + (
+                "distributional difference detected"
+                if dist_stats["mw_p"] < 0.05
+                else "no significant distributional difference"
+            )
         )
     print()
     print("Done.")

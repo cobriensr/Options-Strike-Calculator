@@ -36,30 +36,42 @@ def _make_fake_df() -> pd.DataFrame:
             "ts_event": datetime(2020, 6, 1, 14, 30, tzinfo=tz),
             "instrument_id": 101,
             "symbol": "ESU0",
-            "open": 3100.0, "high": 3105.0, "low": 3099.5,
-            "close": 3104.0, "volume": 1500,
+            "open": 3100.0,
+            "high": 3105.0,
+            "low": 3099.5,
+            "close": 3104.0,
+            "volume": 1500,
         },
         {
             "ts_event": datetime(2020, 6, 1, 14, 31, tzinfo=tz),
             "instrument_id": 101,
             "symbol": "ESU0",
-            "open": 3104.0, "high": 3107.0, "low": 3102.0,
-            "close": 3106.5, "volume": 2100,
+            "open": 3104.0,
+            "high": 3107.0,
+            "low": 3102.0,
+            "close": 3106.5,
+            "volume": 2100,
         },
         {
             "ts_event": datetime(2020, 12, 1, 20, 0, tzinfo=tz),
             "instrument_id": 202,
             "symbol": "ES 20 12 18 C3500",
-            "open": 12.5, "high": 13.0, "low": 12.3,
-            "close": 12.8, "volume": 45,
+            "open": 12.5,
+            "high": 13.0,
+            "low": 12.3,
+            "close": 12.8,
+            "volume": 45,
         },
         # 2021 bar — same underlying but new contract id
         {
             "ts_event": datetime(2021, 1, 4, 14, 30, tzinfo=tz),
             "instrument_id": 303,
             "symbol": "ESH1",
-            "open": 3700.0, "high": 3702.0, "low": 3699.0,
-            "close": 3701.0, "volume": 4200,
+            "open": 3700.0,
+            "high": 3702.0,
+            "low": 3699.0,
+            "close": 3701.0,
+            "volume": 4200,
         },
     ]
     df = pd.DataFrame(rows)
@@ -95,13 +107,17 @@ def fake_dbn_file(tmp_path: Path) -> Path:
 def sample_condition_json(tmp_path: Path) -> Path:
     """Write a fake condition.json alongside the fake DBN."""
     path = tmp_path / "condition.json"
-    path.write_text(json.dumps([
-        {"date": "2020-06-01", "condition": "available"},
-        {"date": "2020-06-02", "condition": "available"},
-        {"date": "2020-06-03", "condition": "degraded"},
-        {"date": "2020-06-04", "condition": "degraded"},
-        {"date": "2020-06-05", "condition": "available"},
-    ]))
+    path.write_text(
+        json.dumps(
+            [
+                {"date": "2020-06-01", "condition": "available"},
+                {"date": "2020-06-02", "condition": "available"},
+                {"date": "2020-06-03", "condition": "degraded"},
+                {"date": "2020-06-04", "condition": "degraded"},
+                {"date": "2020-06-05", "condition": "available"},
+            ]
+        )
+    )
     return path
 
 
@@ -159,7 +175,16 @@ def test_parquet_content_round_trips(
     # column from the directory name — so downstream backtests get
     # 'year' for free. This is desired behavior.
     df_2020 = pq.read_table(part_path).to_pandas()
-    assert {"ts_event", "instrument_id", "symbol", "open", "high", "low", "close", "volume"} <= set(df_2020.columns)
+    assert {
+        "ts_event",
+        "instrument_id",
+        "symbol",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+    } <= set(df_2020.columns)
     assert "year" in df_2020.columns
     assert (df_2020["year"] == 2020).all()
 
@@ -242,9 +267,7 @@ def test_condition_json_is_copied_and_counted(
     assert result.degraded_days == 2
 
     # The file content is copied verbatim.
-    assert json.loads(dest.read_text()) == json.loads(
-        sample_condition_json.read_text()
-    )
+    assert json.loads(dest.read_text()) == json.loads(sample_condition_json.read_text())
 
 
 def test_missing_condition_json_is_graceful(

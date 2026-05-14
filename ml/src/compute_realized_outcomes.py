@@ -33,6 +33,7 @@ Usage:
 Environment:
     DATABASE_URL - Neon Postgres connection string
 """
+
 from __future__ import annotations
 
 import argparse
@@ -42,7 +43,6 @@ import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
 
 import pandas as pd
 import psycopg2
@@ -64,20 +64,20 @@ class TriggerSimResult:
     """Outcome of simulating one directional thesis."""
 
     # Which trigger fired first ('long' / 'short') — None if it never fired.
-    fired: Optional[str]
+    fired: str | None
     # 1-based candle index (within the bar window) where the trigger fired.
     # Used for bilateral resolution (whichever triggers first wins).
-    fired_bar_idx: Optional[int]
+    fired_bar_idx: int | None
     # Realized exit price in SPX points.
-    exit_price: Optional[float]
+    exit_price: float | None
     # The entry price (= trigger value at the bar where it triggered).
-    entry_price: Optional[float]
+    entry_price: float | None
     # Stop and target levels actually used.
-    stop_price: Optional[float]
-    target_price: Optional[float]
+    stop_price: float | None
+    target_price: float | None
     # Max favorable / adverse excursion (absolute, signed by direction).
-    max_favorable_pts: Optional[float]
-    max_adverse_pts: Optional[float]
+    max_favorable_pts: float | None
+    max_adverse_pts: float | None
 
 
 def parse_args() -> argparse.Namespace:
@@ -111,8 +111,8 @@ def parse_args() -> argparse.Namespace:
 def load_unscored_rows(
     conn,
     *,
-    limit: Optional[int],
-    read_id: Optional[int],
+    limit: int | None,
+    read_id: int | None,
 ) -> list[dict]:
     """Pull rows that need scoring.
 
@@ -144,7 +144,7 @@ def load_unscored_rows(
             short_trigger,
             key_levels
         FROM periscope_analyses
-        WHERE {' AND '.join(where_clauses)}
+        WHERE {" AND ".join(where_clauses)}
         ORDER BY id ASC
         {limit_clause}
     """
@@ -215,7 +215,7 @@ def parse_key_levels(raw) -> dict:
     return {}
 
 
-def _finite_float(v) -> Optional[float]:
+def _finite_float(v) -> float | None:
     if v is None:
         return None
     try:
@@ -240,8 +240,8 @@ def simulate_long(
     if target_lvl is None:
         target_lvl = long_trigger + DEFAULT_TARGET_OFFSET_PTS
 
-    fired_idx: Optional[int] = None
-    exit_price: Optional[float] = None
+    fired_idx: int | None = None
+    exit_price: float | None = None
     max_high = float("-inf")
     min_low = float("inf")
 
@@ -317,8 +317,8 @@ def simulate_short(
     if target_lvl is None:
         target_lvl = short_trigger - DEFAULT_TARGET_OFFSET_PTS
 
-    fired_idx: Optional[int] = None
-    exit_price: Optional[float] = None
+    fired_idx: int | None = None
+    exit_price: float | None = None
     max_high = float("-inf")
     min_low = float("inf")
 
@@ -388,20 +388,24 @@ def score_row(row: dict, candles: pd.DataFrame) -> dict:
     key_levels = parse_key_levels(row.get("key_levels"))
     spot = _finite_float(row.get("spot_at_read_time"))
 
-    long_res: Optional[TriggerSimResult] = None
-    short_res: Optional[TriggerSimResult] = None
+    long_res: TriggerSimResult | None = None
+    short_res: TriggerSimResult | None = None
     if long_trig is not None:
         long_res = simulate_long(candles, long_trig, key_levels)
     if short_trig is not None:
         short_res = simulate_short(candles, short_trig, key_levels)
 
-    chosen: Optional[TriggerSimResult] = None
-    if long_res is not None and long_res.fired is not None and (
-        short_res is None or short_res.fired is None
+    chosen: TriggerSimResult | None = None
+    if (
+        long_res is not None
+        and long_res.fired is not None
+        and (short_res is None or short_res.fired is None)
     ):
         chosen = long_res
-    elif short_res is not None and short_res.fired is not None and (
-        long_res is None or long_res.fired is None
+    elif (
+        short_res is not None
+        and short_res.fired is not None
+        and (long_res is None or long_res.fired is None)
     ):
         chosen = short_res
     elif (
@@ -415,7 +419,7 @@ def score_row(row: dict, candles: pd.DataFrame) -> dict:
         short_idx = short_res.fired_bar_idx or 10**9
         chosen = long_res if long_idx <= short_idx else short_res
 
-    realized_close_pts: Optional[float] = None
+    realized_close_pts: float | None = None
     if not candles.empty and spot is not None:
         last_close = float(candles.iloc[-1]["close"])
         realized_close_pts = last_close - spot
@@ -444,7 +448,7 @@ def score_row(row: dict, candles: pd.DataFrame) -> dict:
         pnl = chosen.exit_price - chosen.entry_price
     else:
         pnl = chosen.entry_price - chosen.exit_price
-    realized_r: Optional[float] = pnl / risk
+    realized_r: float | None = pnl / risk
 
     return {
         "realized_r": realized_r,

@@ -103,9 +103,7 @@ def _filter_primary(panel: pd.DataFrame) -> pd.DataFrame:
     listing venue. Drops the NASDAQ-Cross-for-NYSE-listed rows (mostly noise)."""
     primary_pairs = set(PRIMARY_VENUE.items())
     return panel[
-        panel[["symbol", "dataset"]]
-        .apply(tuple, axis=1)
-        .isin(primary_pairs)
+        panel[["symbol", "dataset"]].apply(tuple, axis=1).isin(primary_pairs)
     ].copy()
 
 
@@ -125,9 +123,7 @@ def aggregate_notional(
     qty_col = f"signed_imbalance_{position}"
     px_col = f"ref_price_{position}"
 
-    sub = panel[
-        (panel["auction_type"] == "C") & (panel["symbol"].isin(symbols))
-    ].copy()
+    sub = panel[(panel["auction_type"] == "C") & (panel["symbol"].isin(symbols))].copy()
     # Drop rows missing either side of the multiplication
     sub = sub.dropna(subset=[qty_col, px_col])
     sub["notional"] = sub[qty_col] * sub[px_col]
@@ -152,7 +148,15 @@ def correlate_group(
     daily_target = targets.groupby("date")[target_col].first()
     joined = agg.join(daily_target.rename("target")).dropna()
     if len(joined) < 5:
-        return AggCorr(group_name, f"notional_{position}", target_col, len(joined), float("nan"), float("nan"), float("nan"))
+        return AggCorr(
+            group_name,
+            f"notional_{position}",
+            target_col,
+            len(joined),
+            float("nan"),
+            float("nan"),
+            float("nan"),
+        )
     rho, p = stats.spearmanr(joined["notional"], joined["target"])
     # R² of an OLS-equivalent univariate regression
     r, _ = stats.pearsonr(joined["notional"], joined["target"])
@@ -223,7 +227,9 @@ def run_phase5(panel: pd.DataFrame) -> tuple[list[AggCorr], dict]:
             "nasdaq_adds_material_info": adds,
         }
 
-    predictive = _build_decision("first", "predictive (15:50:00 first print, live-actionable)")
+    predictive = _build_decision(
+        "first", "predictive (15:50:00 first print, live-actionable)"
+    )
     explanatory = _build_decision("last", "explanatory (15:59:59 converged, post-hoc)")
 
     if predictive["nasdaq_adds_material_info"]:
@@ -255,7 +261,11 @@ def run_phase5(panel: pd.DataFrame) -> tuple[list[AggCorr], dict]:
             "subscription is ever justified. Databento Plus is overkill."
         )
 
-    return results, {"predictive": predictive, "explanatory": explanatory, "recommendation": rec}
+    return results, {
+        "predictive": predictive,
+        "explanatory": explanatory,
+        "recommendation": rec,
+    }
 
 
 def _decision_block(decision: dict) -> list[str]:
@@ -322,7 +332,9 @@ def main() -> int:
         print(f"{d['kind']}")
         print(f"  R² NYSE+ARCA: {d['nyse_r2']:.4f}")
         print(f"  R² All venues: {d['all_r2']:.4f}")
-        print(f"  Ratio: {d['ratio']:.3f}  →  NASDAQ adds material info? {d['nasdaq_adds_material_info']}")
+        print(
+            f"  Ratio: {d['ratio']:.3f}  →  NASDAQ adds material info? {d['nasdaq_adds_material_info']}"
+        )
     print()
     print(decision["recommendation"])
     print()

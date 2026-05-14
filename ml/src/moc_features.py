@@ -56,7 +56,6 @@ except ImportError:
 
 from utils import ML_ROOT, section, subsection, takeaway
 
-
 # ── Constants ────────────────────────────────────────────────
 
 ET = "US/Eastern"
@@ -134,7 +133,9 @@ def load_bars(dbn_path: Path, parquet_cache: Path) -> pd.DataFrame:
         print(f"ERROR: bars file not found: {dbn_path}")
         sys.exit(1)
 
-    print(f"  Decoding bars from {dbn_path.name} ({dbn_path.stat().st_size / 1e6:.1f} MB)")
+    print(
+        f"  Decoding bars from {dbn_path.name} ({dbn_path.stat().st_size / 1e6:.1f} MB)"
+    )
     store = db.DBNStore.from_file(str(dbn_path))
     frame = store.to_df(map_symbols=True)
     frame = frame[frame["symbol"] == SYMBOL]
@@ -270,9 +271,7 @@ def compute_targets(day_bars: pd.DataFrame) -> dict | None:
 # ── Per-day assembly ─────────────────────────────────────────
 
 
-def build_per_day_rows(
-    imbalance: pd.DataFrame, bars: pd.DataFrame
-) -> pd.DataFrame:
+def build_per_day_rows(imbalance: pd.DataFrame, bars: pd.DataFrame) -> pd.DataFrame:
     """
     Walk every trading day that exists in BOTH datasets and emit one row.
     """

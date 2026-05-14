@@ -259,9 +259,7 @@ def test_multipart_propagates_part_failure(tmp_path: Path) -> None:
     )
     bad_part = MagicMock(ok=False, status_code=500, text="server boom")
     with (
-        patch.object(
-            ingest_flow.requests, "post", side_effect=[create_resp, bad_part]
-        ),
+        patch.object(ingest_flow.requests, "post", side_effect=[create_resp, bad_part]),
         pytest.raises(RuntimeError, match="mpu part 1 failed"),
     ):
         ingest_flow._upload_multipart(parquet, "flow/x.parquet", "tok")

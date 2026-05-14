@@ -86,9 +86,7 @@ def _decode_one_file(path: Path, dataset: str) -> pd.DataFrame:
     # If this ever fires, the Databento schema or codec has changed.
     if df["side"].isna().any():
         n_bad = int(df["side"].isna().sum())
-        raise ValueError(
-            f"{path.name}: {n_bad} rows with NaN side — schema change?"
-        )
+        raise ValueError(f"{path.name}: {n_bad} rows with NaN side — schema change?")
 
     # Replace UINT32 sentinel with NaN on quantity fields.
     for col in (
@@ -100,9 +98,7 @@ def _decode_one_file(path: Path, dataset: str) -> pd.DataFrame:
         if col in df.columns:
             df.loc[df[col] == NULL_U32, col] = np.nan
 
-    df["signed_imbalance"] = _signed_imbalance(
-        df["side"], df["total_imbalance_qty"]
-    )
+    df["signed_imbalance"] = _signed_imbalance(df["side"], df["total_imbalance_qty"])
 
     keep = [c for c in KEEP_COLS if c in df.columns]
     return df[keep]

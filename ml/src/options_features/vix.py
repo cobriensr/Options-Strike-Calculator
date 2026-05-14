@@ -92,9 +92,7 @@ def load_vix_daily(
     if not need_pull:
         cached = pd.read_parquet(_CACHE_PATH)
         cached_end = pd.Timestamp(cached["day"].max()).date()
-        requested_end = (
-            pd.Timestamp(end).date() if end else pd.Timestamp.today().date()
-        )
+        requested_end = pd.Timestamp(end).date() if end else pd.Timestamp.today().date()
         # Tolerate up to 1 missing trading day before triggering a re-pull.
         # Avoids refresh thrash on weekends / holidays.
         if (requested_end - cached_end).days > 1:

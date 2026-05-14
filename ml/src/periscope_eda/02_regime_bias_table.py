@@ -94,7 +94,10 @@ def plot_heatmap(mean_pivot: pd.DataFrame, count_pivot: pd.DataFrame) -> None:
         import seaborn as sns
 
         fig, ax = plt.subplots(
-            figsize=(max(6, mean_pivot.shape[1] * 1.4), max(4, mean_pivot.shape[0] * 0.9))
+            figsize=(
+                max(6, mean_pivot.shape[1] * 1.4),
+                max(4, mean_pivot.shape[0] * 0.9),
+            )
         )
         annotations = mean_pivot.copy().astype(object)
         for r in mean_pivot.index:
@@ -117,10 +120,19 @@ def plot_heatmap(mean_pivot: pd.DataFrame, count_pivot: pd.DataFrame) -> None:
     except ImportError:
         # Fallback to matplotlib imshow if seaborn isn't installed.
         fig, ax = plt.subplots(
-            figsize=(max(6, mean_pivot.shape[1] * 1.4), max(4, mean_pivot.shape[0] * 0.9))
+            figsize=(
+                max(6, mean_pivot.shape[1] * 1.4),
+                max(4, mean_pivot.shape[0] * 0.9),
+            )
         )
         data = mean_pivot.astype(float).values
-        im = ax.imshow(data, cmap="RdBu_r", aspect="auto", vmin=-np.nanmax(np.abs(data)), vmax=np.nanmax(np.abs(data)))
+        im = ax.imshow(
+            data,
+            cmap="RdBu_r",
+            aspect="auto",
+            vmin=-np.nanmax(np.abs(data)),
+            vmax=np.nanmax(np.abs(data)),
+        )
         ax.set_xticks(range(mean_pivot.shape[1]))
         ax.set_xticklabels(mean_pivot.columns, rotation=45, ha="right")
         ax.set_yticks(range(mean_pivot.shape[0]))

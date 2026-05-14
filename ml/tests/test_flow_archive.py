@@ -88,7 +88,9 @@ def test_blob_direct_url_format() -> None:
 # --- list_archive_dates -------------------------------------------
 
 
-def _fake_list_response(blobs: list[str], has_more: bool = False, cursor: str | None = None) -> MagicMock:
+def _fake_list_response(
+    blobs: list[str], has_more: bool = False, cursor: str | None = None
+) -> MagicMock:
     return MagicMock(
         ok=True,
         json=MagicMock(
@@ -111,7 +113,9 @@ def test_list_archive_dates_parses_and_sorts() -> None:
         # Should be ignored — wrong shape
         "flow/year=2026/data.parquet",
     ]
-    with patch("flow_archive.requests.get", return_value=_fake_list_response(pathnames)):
+    with patch(
+        "flow_archive.requests.get", return_value=_fake_list_response(pathnames)
+    ):
         dates = list_archive_dates(token=FAKE_TOKEN)
     assert dates == [
         dt_date(2026, 4, 15),
@@ -177,7 +181,9 @@ def test_resolve_dates_rejects_inverted_range() -> None:
 # --- ensure_local + load_flow integration -------------------------
 
 
-def test_ensure_local_skips_download_when_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ensure_local_skips_download_when_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr("flow_archive.CACHE_ROOT", tmp_path)
     target = tmp_path / "year=2026" / "month=04" / "day=22" / "data.parquet"
     target.parent.mkdir(parents=True)
@@ -188,7 +194,9 @@ def test_ensure_local_skips_download_when_cached(tmp_path: Path, monkeypatch: py
     assert result == target
 
 
-def test_ensure_local_downloads_when_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ensure_local_downloads_when_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr("flow_archive.CACHE_ROOT", tmp_path)
     # Two-step download path: GET returns Parquet bytes directly (not JSON)
     fake_response = MagicMock(
@@ -203,7 +211,9 @@ def test_ensure_local_downloads_when_missing(tmp_path: Path, monkeypatch: pytest
     assert path.read_bytes() == b"PARQUET-MAGIC-BYTES"
 
 
-def test_load_flow_pushes_down_ticker_filter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_flow_pushes_down_ticker_filter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Build a small synthetic Parquet at the cache path; verify load_flow
     composes the LazyFrame with our pushdown filter."""
     monkeypatch.setattr("flow_archive.CACHE_ROOT", tmp_path)
@@ -223,7 +233,9 @@ def test_load_flow_pushes_down_ticker_filter(tmp_path: Path, monkeypatch: pytest
     assert df["underlying_symbol"].to_list() == ["SPY"]
 
 
-def test_load_flow_projects_columns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_flow_projects_columns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr("flow_archive.CACHE_ROOT", tmp_path)
     target = tmp_path / "year=2026" / "month=04" / "day=22" / "data.parquet"
     target.parent.mkdir(parents=True)
@@ -272,7 +284,9 @@ def test_load_flow_includes_underlying_when_ticker_filter_and_projection(
     assert df["premium"].to_list() == [1_500_000.0]
 
 
-def test_load_flow_unions_multiple_dates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_flow_unions_multiple_dates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr("flow_archive.CACHE_ROOT", tmp_path)
     for day in (15, 22):
         t = tmp_path / "year=2026" / "month=04" / f"day={day:02d}" / "data.parquet"
@@ -297,7 +311,9 @@ def test_load_flow_unions_multiple_dates(tmp_path: Path, monkeypatch: pytest.Mon
 # --- clear_cache --------------------------------------------------
 
 
-def test_clear_cache_removes_all_when_no_before(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_clear_cache_removes_all_when_no_before(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr("flow_archive.CACHE_ROOT", tmp_path)
     for day in (15, 22):
         t = tmp_path / "year=2026" / "month=04" / f"day={day:02d}" / "data.parquet"
@@ -308,7 +324,9 @@ def test_clear_cache_removes_all_when_no_before(tmp_path: Path, monkeypatch: pyt
     assert not list(tmp_path.rglob("data.parquet"))
 
 
-def test_clear_cache_respects_before_filter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_clear_cache_respects_before_filter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr("flow_archive.CACHE_ROOT", tmp_path)
     for day in (15, 22):
         t = tmp_path / "year=2026" / "month=04" / f"day={day:02d}" / "data.parquet"
@@ -323,6 +341,8 @@ def test_clear_cache_respects_before_filter(tmp_path: Path, monkeypatch: pytest.
     assert (tmp_path / "year=2026" / "month=04" / "day=22" / "data.parquet").exists()
 
 
-def test_clear_cache_returns_zero_when_root_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_clear_cache_returns_zero_when_root_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr("flow_archive.CACHE_ROOT", tmp_path / "nonexistent")
     assert clear_cache() == 0

@@ -55,9 +55,7 @@ class CorrResult:
         )
 
 
-def _filter_pair(
-    panel: pd.DataFrame, feature: str, target: str
-) -> pd.DataFrame:
+def _filter_pair(panel: pd.DataFrame, feature: str, target: str) -> pd.DataFrame:
     """Drop rows with NaN in either side and return a small two-column frame."""
     sub = panel[[feature, target]].dropna()
     return sub
@@ -131,7 +129,14 @@ def decile_bucket_chart(
     grp["ci"] = 1.96 * grp["std"] / np.sqrt(grp["count"])
 
     fig, ax = plt.subplots(figsize=(9, 5))
-    ax.bar(grp["decile"], grp["mean"], yerr=grp["ci"], capsize=4, color="#1f77b4", alpha=0.8)
+    ax.bar(
+        grp["decile"],
+        grp["mean"],
+        yerr=grp["ci"],
+        capsize=4,
+        color="#1f77b4",
+        alpha=0.8,
+    )
     ax.axhline(0, color="#888", linewidth=0.8)
     ax.set_xlabel(f"{feature} decile (0 = most negative, 9 = most positive)")
     ax.set_ylabel(f"Mean {target} (95% CI)")
@@ -141,7 +146,10 @@ def decile_bucket_chart(
     fig.savefig(out, dpi=120)
     plt.close(fig)
 
-    monotonic = bool((grp["mean"].diff().dropna() > 0).all() or (grp["mean"].diff().dropna() < 0).all())
+    monotonic = bool(
+        (grp["mean"].diff().dropna() > 0).all()
+        or (grp["mean"].diff().dropna() < 0).all()
+    )
     return {
         "n": len(sub),
         "skipped": False,
@@ -155,7 +163,9 @@ def decile_bucket_chart(
 def rolling_corr_chart(
     panel_slice: pd.DataFrame, feature: str, target: str, title: str, out: Path
 ) -> None:
-    sub = _filter_pair(panel_slice.set_index("date")[[feature, target]], feature, target)
+    sub = _filter_pair(
+        panel_slice.set_index("date")[[feature, target]], feature, target
+    )
     if len(sub) < 30:
         return
     rolling = sub[feature].rolling(20).corr(sub[target])
@@ -175,11 +185,21 @@ def rolling_corr_chart(
 def _verdict(results: list[CorrResult], decile: dict | None) -> tuple[str, str]:
     """Return ('EDGE FOUND' | 'NO EDGE', explanation_paragraph)."""
     headline = next(
-        (r for r in results if r.feature == "signed_imbalance_last" and r.target == "spx_ret_1550_1600_bps"),
+        (
+            r
+            for r in results
+            if r.feature == "signed_imbalance_last"
+            and r.target == "spx_ret_1550_1600_bps"
+        ),
         None,
     )
     daily = next(
-        (r for r in results if r.feature == "signed_imbalance_last" and r.target == "spx_ret_open_to_close_bps"),
+        (
+            r
+            for r in results
+            if r.feature == "signed_imbalance_last"
+            and r.target == "spx_ret_open_to_close_bps"
+        ),
         None,
     )
 
@@ -189,7 +209,9 @@ def _verdict(results: list[CorrResult], decile: dict | None) -> tuple[str, str]:
         and headline.p_value < EDGE_PVAL_THRESHOLD
     )
     edge_in_daily = bool(
-        daily and abs(daily.rho) >= EDGE_RHO_THRESHOLD and daily.p_value < EDGE_PVAL_THRESHOLD
+        daily
+        and abs(daily.rho) >= EDGE_RHO_THRESHOLD
+        and daily.p_value < EDGE_PVAL_THRESHOLD
     )
 
     if edge_in_headline or edge_in_daily:
@@ -223,11 +245,21 @@ def _verdict(results: list[CorrResult], decile: dict | None) -> tuple[str, str]:
 
 def _interpretation(verdict: str, results: list[CorrResult]) -> str:
     spy_daily = next(
-        (r for r in results if r.feature == "signed_imbalance_last" and r.target == "spx_ret_open_to_close_bps"),
+        (
+            r
+            for r in results
+            if r.feature == "signed_imbalance_last"
+            and r.target == "spx_ret_open_to_close_bps"
+        ),
         None,
     )
     spy_hires = next(
-        (r for r in results if r.feature == "signed_imbalance_last" and r.target == "spx_ret_1550_1600_bps"),
+        (
+            r
+            for r in results
+            if r.feature == "signed_imbalance_last"
+            and r.target == "spx_ret_1550_1600_bps"
+        ),
         None,
     )
     if verdict == "EDGE FOUND":
@@ -348,7 +380,9 @@ def _write_report(
     out.write_text("\n".join(md))
 
 
-def run_analysis(panel: pd.DataFrame, plot_dir: Path) -> tuple[list[CorrResult], dict | None]:
+def run_analysis(
+    panel: pd.DataFrame, plot_dir: Path
+) -> tuple[list[CorrResult], dict | None]:
     spy_arcx = _slice(panel, "SPY", "ARCX.PILLAR")
     qqq_xnas = _slice(panel, "QQQ", "XNAS.ITCH")
 

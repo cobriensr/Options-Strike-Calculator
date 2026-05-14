@@ -23,9 +23,27 @@ def _daily_frame(rows: list[dict]) -> pd.DataFrame:
 def test_derive_daily_targets_open_close_overnight_and_next_day() -> None:
     daily = _daily_frame(
         [
-            {"date": date(2026, 5, 8), "spx_open": 7400, "spx_high": 7420, "spx_low": 7390, "spx_close": 7410},
-            {"date": date(2026, 5, 9), "spx_open": 7415, "spx_high": 7430, "spx_low": 7405, "spx_close": 7425},
-            {"date": date(2026, 5, 12), "spx_open": 7440, "spx_high": 7460, "spx_low": 7430, "spx_close": 7450},
+            {
+                "date": date(2026, 5, 8),
+                "spx_open": 7400,
+                "spx_high": 7420,
+                "spx_low": 7390,
+                "spx_close": 7410,
+            },
+            {
+                "date": date(2026, 5, 9),
+                "spx_open": 7415,
+                "spx_high": 7430,
+                "spx_low": 7405,
+                "spx_close": 7425,
+            },
+            {
+                "date": date(2026, 5, 12),
+                "spx_open": 7440,
+                "spx_high": 7460,
+                "spx_low": 7430,
+                "spx_close": 7450,
+            },
         ]
     )
     out = eod_join._derive_daily_targets(daily)
