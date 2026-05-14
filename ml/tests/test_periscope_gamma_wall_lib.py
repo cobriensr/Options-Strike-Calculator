@@ -167,3 +167,34 @@ def test_magnet_event_loses_to_naive():
     assert ev is not None
     assert ev["delta"] > 0
     assert ev["magnet_won"] is False
+
+
+from periscope_gamma_wall_lib import compute_charm_zero_event, mirror_strike
+
+
+def test_mirror_strike_reflects_across_spot():
+    assert mirror_strike(spot=5000.0, real_strike=5010.0) == 4990.0
+    assert mirror_strike(spot=5000.0, real_strike=4985.0) == 5015.0
+
+
+def test_charm_zero_excluded_when_degenerate():
+    bars = _bars_from_prices([5000.0, 5001.0, 5002.0])
+    assert compute_charm_zero_event(bars, charm_zero=5000.5,
+                                    spot_at_read=5000.0) is None
+
+
+def test_charm_zero_crossed_real_not_sham():
+    bars = _bars_from_prices([4998.0, 5000.0, 5002.0, 5004.0, 5006.0, 5008.0])
+    ev = compute_charm_zero_event(bars, charm_zero=5005.0, spot_at_read=5000.0)
+    assert ev is not None
+    assert ev["crossed_real"] is True
+    assert ev["crossed_sham"] is False
+    assert ev["sham_strike"] == 4995.0
+
+
+def test_charm_zero_crossed_neither():
+    bars = _bars_from_prices([4999.0, 5000.0, 5001.0])
+    ev = compute_charm_zero_event(bars, charm_zero=5050.0, spot_at_read=5000.0)
+    assert ev is not None
+    assert ev["crossed_real"] is False
+    assert ev["crossed_sham"] is False

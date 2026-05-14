@@ -183,3 +183,54 @@ def compute_magnet_event(
         "magnet_won": delta < 0,
         "distance": distance,
     }
+
+
+def mirror_strike(spot: float, real_strike: float) -> float:
+    """Return the strike mirrored across spot.
+
+    mirror = 2*spot - real_strike, which sits at the same absolute
+    distance from spot on the opposite side. Used to construct sham
+    baselines (real wall above spot -> sham below at same distance).
+    """
+    return 2.0 * spot - real_strike
+
+
+def compute_charm_zero_event(
+    bars: pd.DataFrame,
+    charm_zero: float,
+    spot_at_read: float,
+) -> dict | None:
+    """Did SPX cross charm_zero (and its sham mirror) during the window?
+
+    A 'cross' = the open-time and close-time sides of the strike differ
+    in sign of (close - strike). Equivalent to: bars closed on different
+    sides of the strike.
+
+    Returns None if |charm_zero - spot| < CHARM_ZERO_MIN_DISTANCE_PTS
+    (degenerate-pair filter -- sham would collide with real).
+
+    Otherwise:
+        crossed_real (bool)
+        crossed_sham (bool)
+        sham_strike (float)
+        distance (float)
+    """
+    distance = abs(charm_zero - spot_at_read)
+    if distance < CHARM_ZERO_MIN_DISTANCE_PTS:
+        return None
+    if len(bars) < 2:
+        return None
+
+    first_close = float(bars["close"].iloc[0])
+    last_close = float(bars["close"].iloc[-1])
+
+    def _crossed(strike: float) -> bool:
+        return (first_close - strike) * (last_close - strike) < 0
+
+    sham = mirror_strike(spot_at_read, charm_zero)
+    return {
+        "crossed_real": _crossed(charm_zero),
+        "crossed_sham": _crossed(sham),
+        "sham_strike": sham,
+        "distance": distance,
+    }
