@@ -37,6 +37,10 @@ function formatPct(v: number | null): string {
 
 // ── Sparkline ─────────────────────────────────────────────────────────
 
+// SVG_W is the viewBox width (coordinate space). The rendered SVG uses
+// width="100%" + preserveAspectRatio="none" so it stretches to fill the
+// remaining flex space in the row — keeping the 20-min-wide sparkline
+// from forcing the % label off the right edge of the 200px sidebar.
 const SVG_W = 88;
 const SVG_H = 24;
 const PAD_X = 4;
@@ -74,10 +78,12 @@ const Sparkline = memo(function Sparkline({
     const midY = SVG_H / 2;
     return (
       <svg
-        width={SVG_W}
+        width="100%"
         height={SVG_H}
+        viewBox={`0 0 ${SVG_W} ${SVG_H}`}
+        preserveAspectRatio="none"
         aria-hidden="true"
-        style={{ display: 'block', flexShrink: 0 }}
+        style={{ display: 'block' }}
       >
         <line
           x1={PAD_X}
@@ -87,6 +93,7 @@ const Sparkline = memo(function Sparkline({
           stroke={theme.textMuted}
           strokeWidth={1}
           strokeDasharray="3 3"
+          vectorEffect="non-scaling-stroke"
         />
       </svg>
     );
@@ -127,10 +134,12 @@ const Sparkline = memo(function Sparkline({
 
   return (
     <svg
-      width={SVG_W}
+      width="100%"
       height={SVG_H}
+      viewBox={`0 0 ${SVG_W} ${SVG_H}`}
+      preserveAspectRatio="none"
       aria-hidden="true"
-      style={{ display: 'block', flexShrink: 0 }}
+      style={{ display: 'block' }}
     >
       <polyline
         points={pts}
@@ -139,6 +148,7 @@ const Sparkline = memo(function Sparkline({
         strokeWidth={1.5}
         strokeLinejoin="round"
         strokeLinecap="round"
+        vectorEffect="non-scaling-stroke"
       />
       {valid.map((p, i) => (
         <circle
@@ -147,6 +157,7 @@ const Sparkline = memo(function Sparkline({
           cy={toY(p.value)}
           r={DOT_R}
           fill={lineColor}
+          vectorEffect="non-scaling-stroke"
         />
       ))}
     </svg>
@@ -225,7 +236,7 @@ export const SparklinePanel = memo(function SparklinePanel({
             return (
               <div
                 key={s.strike}
-                className={`flex items-center gap-2 rounded px-1 -mx-1${isAtm ? 'bg-sky-500/10' : ''}`}
+                className={`-mx-1 flex items-center gap-2 rounded px-1 ${isAtm ? 'bg-sky-500/10' : ''}`}
                 aria-label={`Strike ${s.strike}`}
               >
                 {/* Strike label */}
@@ -238,11 +249,16 @@ export const SparklinePanel = memo(function SparklinePanel({
 
                 {/* Sparkline — pass pct20m color so line direction agrees with
                     the % label even when gexDollars has drifted from the value
-                    that deltaPct_20m was computed against (JOIN recalculation). */}
-                <Sparkline
-                  points={pts}
-                  colorOverride={pct20m !== null ? pctColor : undefined}
-                />
+                    that deltaPct_20m was computed against (JOIN recalculation).
+                    Wrapped in a min-w-0 flex-1 container so the SVG stretches
+                    to fill leftover row width instead of overflowing the 200px
+                    sidebar. */}
+                <div className="min-w-0 flex-1">
+                  <Sparkline
+                    points={pts}
+                    colorOverride={pct20m !== null ? pctColor : undefined}
+                  />
+                </div>
 
                 {/* 20m % change. Fixed-width + right-aligned so long
                     values (e.g. -876%, >999% cap) don't push the
@@ -250,7 +266,7 @@ export const SparklinePanel = memo(function SparklinePanel({
                     rows. min-w sized to fit the widest realistic
                     label without truncation. */}
                 <span
-                  className="ml-auto min-w-[48px] shrink-0 text-right font-mono text-[10px] tabular-nums"
+                  className="min-w-[48px] shrink-0 text-right font-mono text-[10px] tabular-nums"
                   style={{ color: pctColor }}
                 >
                   {formatPct(pct20m)}
