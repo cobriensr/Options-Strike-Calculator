@@ -333,6 +333,54 @@ def test_magnet(magnet_df: pd.DataFrame) -> dict:
     }
 
 
+def test_charm_zero(charm_df: pd.DataFrame) -> dict:
+    """McNemar paired on crossed_real vs crossed_sham.
+
+    Two-sided (direction not pre-specified — either sign counts per spec).
+    """
+    if charm_df.empty:
+        return {
+            "claim": "charm_zero_cross",
+            "n_pairs": 0,
+            "verdict": "no_data",
+            "p_value": None,
+        }
+
+    real = charm_df["crossed_real"].astype(int).values
+    sham = charm_df["crossed_sham"].astype(int).values
+    a = int(((real == 0) & (sham == 0)).sum())
+    b = int(((real == 0) & (sham == 1)).sum())
+    c = int(((real == 1) & (sham == 0)).sum())
+    d = int(((real == 1) & (sham == 1)).sum())
+    result = mcnemar([[a, b], [c, d]], exact=True)
+    p_value = float(result.pvalue)
+    real_rate = float(real.mean())
+    sham_rate = float(sham.mean())
+    effect_pp = abs(real_rate - sham_rate)  # two-sided: magnitude only
+
+    passes_p = p_value < BONFERRONI_ALPHA
+    passes_effect = effect_pp >= EFFECT_SIZE_THRESHOLD_PP
+
+    return {
+        "claim": "charm_zero_cross",
+        "n_pairs": int(len(charm_df)),
+        "real_cross_rate": real_rate,
+        "sham_cross_rate": sham_rate,
+        "effect_pp_abs": effect_pp,
+        "direction": "real > sham" if real_rate > sham_rate else "real < sham",
+        "p_value": p_value,
+        "bonferroni_alpha": BONFERRONI_ALPHA,
+        "passes_bonferroni": passes_p,
+        "effect_size_meets_threshold": passes_effect,
+        "verdict": "pass" if (passes_p and passes_effect) else "fail",
+        "contingency_table": {"a": a, "b": b, "c": c, "d": d},
+        "threats_to_validity": [
+            "Two-sided test by design — direction is descriptive, not predictive",
+            "Crossing defined by first vs last close only; ignores intraday excursions",
+        ],
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -372,6 +420,10 @@ def main() -> int:
     print("\n=== Test 2: Magnet predicts close (Wilcoxon, one-sided less) ===")
     magnet_result = test_magnet(events["magnet"])
     print(json.dumps(magnet_result, indent=2, default=str))
+
+    print("\n=== Test 3: Charm-zero crosses (McNemar paired, two-sided) ===")
+    charm_result = test_charm_zero(events["charm"])
+    print(json.dumps(charm_result, indent=2, default=str))
 
     return 0
 
