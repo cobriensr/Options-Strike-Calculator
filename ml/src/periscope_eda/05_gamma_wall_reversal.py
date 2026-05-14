@@ -546,6 +546,71 @@ def plot_magnet_quality(magnet_df: pd.DataFrame, out_path: Path) -> None:
     plt.close(fig)
 
 
+def plot_charm_zero(charm_df: pd.DataFrame, out_path: Path) -> None:
+    """Bar chart: cross rate real vs sham, stratified by distance bucket."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if charm_df.empty:
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.text(0.5, 0.5, "No charm-zero events", ha="center", va="center")
+        ax.set_axis_off()
+        fig.savefig(out_path, dpi=120)
+        plt.close(fig)
+        return
+
+    buckets = ["0-3", "3-7", "7-15", "15+"]
+    width = 0.35
+    x = np.arange(len(buckets))
+    fig, ax = plt.subplots(figsize=(9, 5))
+
+    real_rates: list[float] = []
+    sham_rates: list[float] = []
+    ns: list[int] = []
+    for bucket in buckets:
+        subset = charm_df[charm_df["bucket"] == bucket]
+        ns.append(len(subset))
+        if subset.empty:
+            real_rates.append(0.0)
+            sham_rates.append(0.0)
+            continue
+        real_rates.append(float(subset["crossed_real"].astype(int).mean()))
+        sham_rates.append(float(subset["crossed_sham"].astype(int).mean()))
+
+    ax.bar(
+        x - width / 2,
+        real_rates,
+        width,
+        color="#1f77b4",
+        edgecolor="black",
+        label="real charm_zero",
+    )
+    ax.bar(
+        x + width / 2,
+        sham_rates,
+        width,
+        color="#cccccc",
+        edgecolor="black",
+        label="sham (mirror)",
+    )
+    for i, n in enumerate(ns):
+        ax.annotate(
+            f"n={n}",
+            xy=(x[i], max(real_rates[i], sham_rates[i])),
+            xytext=(0, 4),
+            textcoords="offset points",
+            ha="center",
+            fontsize=8,
+        )
+    ax.set_xticks(x)
+    ax.set_xticklabels(buckets)
+    ax.set_xlabel("Distance bucket (SPX points from spot)")
+    ax.set_ylabel("P(crossed between read and 15:00 CT close)")
+    ax.set_title("Charm-zero cross rate, real vs sham (mirror across spot)")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -599,6 +664,8 @@ def main() -> int:
     print(f"  wrote {PLOT_DIR / 'gamma_wall_distance_dist.png'}")
     plot_magnet_quality(events["magnet"], PLOT_DIR / "magnet_predictor_quality.png")
     print(f"  wrote {PLOT_DIR / 'magnet_predictor_quality.png'}")
+    plot_charm_zero(events["charm"], PLOT_DIR / "charm_zero_cross_rates.png")
+    print(f"  wrote {PLOT_DIR / 'charm_zero_cross_rates.png'}")
 
     return 0
 
