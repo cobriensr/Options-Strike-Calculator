@@ -64,6 +64,32 @@ Add `realized_trail30_10_pct` to `silent_boom_alerts`, adapt the existing Python
 - Sample-check 5 rows manually against the ws_option_trades tape to confirm trail math
 - Compare avg `realized_trail30_10_pct` vs `realized_eod_pct` by tier — expect the lift table from today's bounded estimate to hold within ±20% (real fills are noisier than the upper-bound model)
 
+#### Phase 2 RESULTS — 2026-05-13 backfill complete
+
+Backfill ran in 17.7s across 15,013 historical fires. Real per-tier outcomes (vs the bounded-estimate projections from earlier in this session):
+
+| Tier | n | EOD avg | Trail avg (REAL) | Trail avg (bounded est, LB) | Trail win-rate (≥+30%) | Trail loss-rate (≤-30%) | EOD loss-rate |
+| ---- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| tier1 | 766 | -30.5% | **-5.5%** | +147.5% | 18% | **30%** | **78%** |
+| tier2 | 2,355 | -5.3% | -1.1% | +44.6% | 17% | 24% | 40% |
+| tier3 | 11,973 | -1.4% | -1.3% | +6.9% | 7% | 9% | 11% |
+
+**Reality vs the bounded estimate**: trail-30/10 trails on the RUNNING peak, exits on the first 10pp giveback, and misses subsequent runs. Hand-checked example: SPY 746C 2026-05-13 peaked at 342% and finished EOD +147%, but trail-30/10 exited at +29% because price hit an earlier intermediate peak, gave back 10pp, and tripped the stop before the bigger move. The bounded estimate's "exit at peak − 10pp" model assumed there is ONE peak; reality has many.
+
+**Net effect on the tier1 catastrophe**:
+
+- Loss rate (≤-30%) drops from 78% → 30% — a real 48pp reduction in tail risk
+- Win rate (≥+30%) rises from 12% → 18% — modest
+- Average return lifts from -30.5% → -5.5% — a meaningful +25pp swing per fire on the highest-conviction tier
+
+trail-30/10 is **defensive, not offensive**: it cuts catastrophic round-trips far more than it captures runners. That fits the entry signal — tier1 fires DO peak hard (avg peak +180%) but round-trip catastrophically; the trail stops the bleed without claiming the absolute max.
+
+**Recommended use** for the follow-up display/decision spec:
+
+- Surface trail-30/10 as the **default displayed exit policy** for tier1 + tier2 (where the lift is meaningful)
+- Tier3 trail vs EOD is statistically indistinguishable (-1.3% vs -1.4%); display either
+- Add a 25%/50% giveback variant later if the 10pp model proves too sensitive to intermediate peaks
+
 ### Phase 3 — Nightly enrichment cron (½ day)
 
 Currently no silent boom enrichment cron exists — `scripts/enrich_silent_boom_outcomes.py` is run manually. Add a TS cron that mirrors `api/cron/enrich-lottery-outcomes.ts`.

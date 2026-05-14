@@ -3,20 +3,28 @@
 
 For each unenriched alert (enriched_at IS NULL), reads the post-spike
 tick stream from the day's parquet and computes:
-  - peak_ceiling_pct  (max post-bucket return %, look-ahead reference)
-  - minutes_to_peak   (offset of the peak tick from the bucket start)
-  - realized_30m_pct  (return at +30m from bucket start)
-  - realized_60m_pct  (return at +60m)
-  - realized_120m_pct (return at +120m)
-  - realized_eod_pct  (return at last tick of the day)
+  - peak_ceiling_pct        (max post-bucket return %, look-ahead reference)
+  - minutes_to_peak         (offset of the peak tick from the bucket start)
+  - realized_30m_pct        (return at +30m from bucket start)
+  - realized_60m_pct        (return at +60m)
+  - realized_120m_pct       (return at +120m)
+  - realized_eod_pct        (return at last tick of the day)
+  - realized_trail30_10_pct (peak-trail exit: activate at +30%, trail 10pp)
 
 Mirrors the lottery_finder enrichment pattern. Read-only on parquet,
-writes to silent_boom_alerts. Idempotent: only touches rows with
-enriched_at IS NULL.
+writes to silent_boom_alerts. Idempotent: standard mode only touches
+rows with enriched_at IS NULL.
+
+`--backfill-mode` gates the SELECT on `realized_trail30_10_pct IS NULL`
+instead of `enriched_at IS NULL`, so rows enriched BEFORE migration #150
+landed (which have enriched_at populated but trail NULL) get picked up
+without resetting enriched_at on the table. Use this once after the
+column is added, then revert to the default flow.
 
 Usage:
     ml/.venv/bin/python scripts/enrich_silent_boom_outcomes.py
     ml/.venv/bin/python scripts/enrich_silent_boom_outcomes.py --date 2026-05-07
+    ml/.venv/bin/python scripts/enrich_silent_boom_outcomes.py --backfill-mode
 """
 
 from __future__ import annotations
@@ -36,6 +44,11 @@ from psycopg2.extras import execute_values
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / '.env.local'
 PARQUET_DIR = Path.home() / 'Desktop' / 'Bot-Eod-parquet'
+
+# Import the trail-30/10 exit policy from the shared ml/src module so this
+# script stays in sync with the lottery enrichment that uses the same fn.
+sys.path.insert(0, str(ROOT / 'ml' / 'src'))
+from lottery_exit_policies import realized_trail_act30_trail10  # noqa: E402
 
 # Forward-return horizons in minutes — match the columns we store.
 HORIZONS_MIN = [30, 60, 120]
@@ -87,13 +100,27 @@ def load_chain_tape(parquet_path: Path, chain_ids: list[str]) -> pd.DataFrame:
     return df.sort_values(['option_chain_id', 'executed_at'], kind='stable')
 
 
-def fetch_unenriched(conn, target_date: str):
+def fetch_unenriched(conn, target_date: str, backfill_mode: bool = False):
+    """Return alerts that still need enrichment for `target_date`.
+
+    Standard mode: rows with enriched_at IS NULL (nightly flow).
+    Backfill mode: rows with realized_trail30_10_pct IS NULL (one-shot
+    pickup after migration #150 lands — rows previously enriched get
+    re-touched and the UPDATE re-writes all 7 outcome columns; peak /
+    mtp / r30 / r60 / r120 / eod recompute identically from parquet so
+    the only material change is a fresh enriched_at = NOW() timestamp.
+    """
     cur = conn.cursor()
+    where_clause = (
+        'realized_trail30_10_pct IS NULL'
+        if backfill_mode
+        else 'enriched_at IS NULL'
+    )
     cur.execute(
-        """
+        f"""
         SELECT id, option_chain_id, bucket_ct, entry_price
         FROM silent_boom_alerts
-        WHERE date = %s AND enriched_at IS NULL
+        WHERE date = %s AND {where_clause}
         ORDER BY bucket_ct ASC
         """,
         (target_date,),
@@ -118,18 +145,19 @@ def update_outcomes(conn, updates: list[tuple]) -> None:
         cur,
         """
         UPDATE silent_boom_alerts AS a
-        SET peak_ceiling_pct  = v.peak,
-            minutes_to_peak   = v.mtp,
-            realized_30m_pct  = v.r30,
-            realized_60m_pct  = v.r60,
-            realized_120m_pct = v.r120,
-            realized_eod_pct  = v.eod,
-            enriched_at       = NOW()
-        FROM (VALUES %s) AS v(id, peak, mtp, r30, r60, r120, eod)
+        SET peak_ceiling_pct        = v.peak,
+            minutes_to_peak         = v.mtp,
+            realized_30m_pct        = v.r30,
+            realized_60m_pct        = v.r60,
+            realized_120m_pct       = v.r120,
+            realized_eod_pct        = v.eod,
+            realized_trail30_10_pct = v.trail30,
+            enriched_at             = NOW()
+        FROM (VALUES %s) AS v(id, peak, mtp, r30, r60, r120, eod, trail30)
         WHERE a.id = v.id
         """,
         updates,
-        template='(%s::bigint, %s, %s, %s, %s, %s, %s)',
+        template='(%s::bigint, %s, %s, %s, %s, %s, %s, %s)',
         page_size=500,
     )
     conn.commit()
@@ -138,7 +166,7 @@ def update_outcomes(conn, updates: list[tuple]) -> None:
 def compute_outcomes(
     chain_df: pd.DataFrame, bucket_ct: pd.Timestamp, entry_price: float
 ) -> tuple[
-    float, float, float | None, float | None, float | None, float
+    float, float, float | None, float | None, float | None, float, float
 ] | None:
     if entry_price <= 0 or chain_df.empty:
         return None
@@ -173,7 +201,13 @@ def compute_outcomes(
     r60 = at_horizon(60.0)
     r120 = at_horizon(120.0)
     eod = float((prices[-1] - entry_price) / entry_price * 100.0)
-    return peak_pct, mtp, r30, r60, r120, eod
+    # Trail-30/10: activate trailing stop at +30%, exit on 10pp giveback
+    # from running peak. Bounded between (-100%, peak_pct]; equals EoD
+    # return when peak never crossed +30%. Shared with lottery enrichment.
+    trail30 = float(
+        realized_trail_act30_trail10(prices.tolist(), entry_price)
+    )
+    return peak_pct, mtp, r30, r60, r120, eod, trail30
 
 
 def main() -> None:
@@ -181,6 +215,16 @@ def main() -> None:
     parser.add_argument('--date', help='YYYY-MM-DD; single-day mode')
     parser.add_argument('--from-date')
     parser.add_argument('--to-date')
+    parser.add_argument(
+        '--backfill-mode',
+        action='store_true',
+        help=(
+            'Gate the row fetch on realized_trail30_10_pct IS NULL instead '
+            'of enriched_at IS NULL. Use once after migration #150 to '
+            'fill the new column on previously-enriched rows without '
+            'resetting enriched_at on the table.'
+        ),
+    )
     args = parser.parse_args()
 
     load_env()
@@ -192,13 +236,14 @@ def main() -> None:
             if args.date
             else list_parquet_dates(args.from_date, args.to_date)
         )
-        print(f'[enrich-silent-boom] {len(dates)} dates')
+        mode_label = 'backfill' if args.backfill_mode else 'standard'
+        print(f'[enrich-silent-boom] {len(dates)} dates (mode={mode_label})')
 
         grand_updated = 0
         t0 = time.time()
         for date_str in dates:
             td = time.time()
-            alerts = fetch_unenriched(conn, date_str)
+            alerts = fetch_unenriched(conn, date_str, args.backfill_mode)
             if not alerts:
                 print(f'  [{date_str}] no unenriched alerts')
                 continue
@@ -227,8 +272,10 @@ def main() -> None:
                 if res is None:
                     skipped_no_outcome += 1
                     continue
-                peak, mtp, r30, r60, r120, eod = res
-                updates.append((a['id'], peak, mtp, r30, r60, r120, eod))
+                peak, mtp, r30, r60, r120, eod, trail30 = res
+                updates.append(
+                    (a['id'], peak, mtp, r30, r60, r120, eod, trail30)
+                )
             update_outcomes(conn, updates)
             grand_updated += len(updates)
             print(

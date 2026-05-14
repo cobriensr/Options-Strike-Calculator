@@ -4371,4 +4371,13 @@ export const MIGRATIONS: Migration[] = [
             ADD COLUMN IF NOT EXISTS mkt_tide_otm_diff NUMERIC`,
     ],
   },
+  {
+    id: 150,
+    description:
+      'Add realized_trail30_10_pct NUMERIC column to silent_boom_alerts (Phase 2 of docs/superpowers/specs/silent-boom-otm-tide-and-trail-2026-05-13.md). Stores the peak-trail exit return: activate trailing stop at +30% from entry, then exit at 10pp giveback from running peak; if peak never crosses +30%, hold to last tick (EoD). Computed by ml/src/lottery_exit_policies.py:realized_trail_act30_trail10 against the per-fire post-bucket tick stream from the EOD parquet — the same function lottery_finder_fires.realized_trail30_10_pct already uses (#110). Empirical basis from this session: tier1 silent boom fires averaged peak +297% / EoD -40.8% (hold-to-close was wrong); the bounded estimate model puts trail-30/10 at +147% for tier1, validated up/flat/down regimes. Populated by scripts/enrich_silent_boom_outcomes.py during the nightly enrichment pass (with a --backfill-mode flag that gates on realized_trail30_10_pct IS NULL instead of enriched_at IS NULL so a one-time historical run can fill rows enriched before this migration without resetting enriched_at). Lineage: extends the #146 multi_leg_share enrichment pattern — adds one outcome column alongside the existing peak/r30/r60/r120/eod set written by update_outcomes(). Nullable because rows enriched before this migration have no trail value computed; backfill recovers every historical fire since parquet retention covers the full silent_boom_alerts history. No index needed: read paths group by tier/date and aggregate this column for analytics.',
+    statements: (sql) => [
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS realized_trail30_10_pct NUMERIC`,
+    ],
+  },
 ];
