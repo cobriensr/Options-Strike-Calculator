@@ -1163,5 +1163,82 @@
     "single_leg_conds": ["auto", "slan"],
     "rows_all_cond": 22267,
     "rows_singles": 15184
+  },
+  "periscope_gamma_wall_edge": {
+    "experiment": "periscope-gamma-wall-edge",
+    "run_date_utc": "2026-05-14T16:56:39.367648+00:00",
+    "data_window": {
+      "distinct_days": 7,
+      "earliest": "2026-05-06",
+      "latest": "2026-05-14",
+      "total_reads_in_window": 230,
+      "warnings": [
+        "NARROW WINDOW (7 distinct trading days only). Results reflect a single-regime snapshot. Within-day correlation across the auto-playbook's ~35 reads/day is high; the spec's first-read-per-(date,mode) sensitivity check is underpowered at this N. Re-run after several more weeks of data accumulate before trading on the result."
+      ]
+    },
+    "results": [
+      {
+        "claim": "walls_hold",
+        "n_pairs": 163,
+        "real_success_rate": 0.012269938650306749,
+        "sham_success_rate": 0.024539877300613498,
+        "effect_pp": -0.012269938650306749,
+        "p_value": 0.6875,
+        "bonferroni_alpha": 0.016666666666666666,
+        "passes_bonferroni": false,
+        "effect_size_meets_threshold": false,
+        "verdict": "fail",
+        "contingency_table": {
+          "a": 157,
+          "b": 4,
+          "c": 2,
+          "d": 0
+        },
+        "threats_to_validity": [
+          "SPX cash != tradeable (option premium not tested here)",
+          "Multiple reads per day not strictly independent",
+          "Selection effect on key_levels non-null"
+        ]
+      },
+      {
+        "claim": "magnet_predicts_close",
+        "n_reads": 201,
+        "median_delta": 132.61125401068773,
+        "median_err_magnet": 341.6546724915724,
+        "median_err_naive": 133.59659538933525,
+        "p_value": 0.9999999969258274,
+        "bonferroni_alpha": 0.016666666666666666,
+        "passes_bonferroni": false,
+        "effect_size_meets_threshold": false,
+        "verdict": "fail",
+        "threats_to_validity": [
+          "Subset |magnet - spot| >= 3pt only \u2014 small or near-spot magnets excluded",
+          "Squared-error metric penalizes large misses heavily"
+        ]
+      },
+      {
+        "claim": "charm_zero_cross",
+        "n_pairs": 196,
+        "real_cross_rate": 0.025510204081632654,
+        "sham_cross_rate": 0.025510204081632654,
+        "effect_pp_abs": 0.0,
+        "direction": "real < sham",
+        "p_value": 1.0,
+        "bonferroni_alpha": 0.016666666666666666,
+        "passes_bonferroni": false,
+        "effect_size_meets_threshold": false,
+        "verdict": "fail",
+        "contingency_table": {
+          "a": 186,
+          "b": 5,
+          "c": 5,
+          "d": 0
+        },
+        "threats_to_validity": [
+          "Two-sided test by design \u2014 direction is descriptive, not predictive",
+          "Crossing defined by first vs last close only; ignores intraday excursions"
+        ]
+      }
+    ]
   }
 }

@@ -28,6 +28,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 # sys.path mutation must precede the `periscope_gamma_wall_lib` import below;
@@ -611,6 +612,60 @@ def plot_charm_zero(charm_df: pd.DataFrame, out_path: Path) -> None:
     plt.close(fig)
 
 
+def append_findings(
+    findings_path: Path,
+    blocks: list[dict],
+    data_window: dict,
+) -> None:
+    """Append a list of result blocks to findings.json under a top-level key.
+
+    Existing findings.json is preserved; we add (or overwrite) the
+    'periscope_gamma_wall_edge' key with today's run summary, including
+    a data_window block with the date range, distinct-day count, and a
+    prominent caveat string when the window is narrow.
+    """
+    if findings_path.exists():
+        existing = json.loads(findings_path.read_text())
+    else:
+        existing = {}
+    existing["periscope_gamma_wall_edge"] = {
+        "experiment": "periscope-gamma-wall-edge",
+        "run_date_utc": datetime.now(UTC).isoformat(),
+        "data_window": data_window,
+        "results": blocks,
+    }
+    findings_path.write_text(json.dumps(existing, indent=2, default=str) + "\n")
+
+
+def build_data_window(reads: pd.DataFrame) -> dict:
+    """Compute date-range stats + emit warnings when the window is narrow.
+
+    Triggers a 'narrow_window_warning' when distinct_days < 20, since per
+    the spec design the sensitivity check (one read per (date,mode)) needs
+    ~30+ days to be informative.
+    """
+    distinct_days = int(reads["trading_date"].nunique())
+    earliest = str(reads["trading_date"].min())
+    latest = str(reads["trading_date"].max())
+    warnings = []
+    if distinct_days < 20:
+        warnings.append(
+            f"NARROW WINDOW ({distinct_days} distinct trading days only). "
+            "Results reflect a single-regime snapshot. Within-day "
+            "correlation across the auto-playbook's ~35 reads/day is "
+            "high; the spec's first-read-per-(date,mode) sensitivity "
+            "check is underpowered at this N. Re-run after several "
+            "more weeks of data accumulate before trading on the result."
+        )
+    return {
+        "distinct_days": distinct_days,
+        "earliest": earliest,
+        "latest": latest,
+        "total_reads_in_window": int(len(reads)),
+        "warnings": warnings,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -666,6 +721,18 @@ def main() -> int:
     print(f"  wrote {PLOT_DIR / 'magnet_predictor_quality.png'}")
     plot_charm_zero(events["charm"], PLOT_DIR / "charm_zero_cross_rates.png")
     print(f"  wrote {PLOT_DIR / 'charm_zero_cross_rates.png'}")
+
+    data_window = build_data_window(reads)
+    if data_window["warnings"]:
+        print("\nDATA WINDOW WARNINGS:")
+        for w in data_window["warnings"]:
+            print(f"  ! {w}")
+    append_findings(
+        FINDINGS_PATH,
+        [walls_result, magnet_result, charm_result],
+        data_window,
+    )
+    print(f"\nWrote findings to {FINDINGS_PATH}")
 
     return 0
 
