@@ -40,7 +40,14 @@ export const LOTTERY_SPEC_V4 = {
 /** Rolling-window length in minutes. */
 export const LOTTERY_WINDOW_MIN = 5;
 
-/** Mode A V3 ticker list (intraday 0DTE scalp universe + SPY/IWM/SPXW). */
+/**
+ * Mode A V3 ticker list (intraday 0DTE scalp universe + SPY/IWM/SPXW).
+ *
+ * Curation methodology: see docs/tmp/ticker-discovery-audit-2026-05-06.md.
+ * Tickers below the 18-day-fire-count threshold may be hand-added with a
+ * comment when a high-profile setup is missed, but re-validate at the
+ * next audit cadence.
+ */
 export const LOTTERY_V3_TICKERS = [
   'USAR',
   'WMT',
@@ -102,6 +109,12 @@ export const LOTTERY_V3_TICKERS = [
   'CRCL',
   'LITE',
   'NVTS',
+  // Hand-added 2026-05-15 ahead of the next discovery-audit re-run.
+  // SEDG 54C 0DTE on 2026-05-15 had a textbook V3 setup (vol/OI 12.5x,
+  // ask% 55%, $58K single-leg premium burst, 3x mover) and would have
+  // cleared every threshold except universe membership. Will be
+  // re-validated against the next parquet-window audit.
+  'SEDG',
 ] as const;
 
 /** Mode B extended ticker list (DTE 1-3 trend universe). */
