@@ -74,7 +74,6 @@ const TICKERS = [
   'RIVN',
   'RKLB',
   'RUTW',
-  'SEDG',
   'SHOP',
   'SLV',
   'SMCI',

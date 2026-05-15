@@ -34,7 +34,7 @@ export function NetFlowRow({ netFlow }: NetFlowRowProps) {
   if (netFlow === null) {
     return (
       <div className="rounded-md border border-neutral-800 bg-neutral-900/40 p-3 text-xs text-neutral-500">
-        No net-flow ticks yet for today.
+        No net-flow data for this date.
       </div>
     );
   }

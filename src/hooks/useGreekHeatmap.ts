@@ -49,6 +49,7 @@ export interface GreekHeatmapResponse {
   atmStrike: number | null;
   regime: 'Long Γ' | 'Short Γ' | null;
   netGexK: number | null;
+  chainStrikes: GreekHeatmapTopStrike[];
   topStrikes: GreekHeatmapTopStrike[];
   netFlow: GreekHeatmapNetFlow | null;
 }
@@ -56,8 +57,13 @@ export interface GreekHeatmapResponse {
 interface UseGreekHeatmapArgs {
   ticker: string;
   /**
+   * Optional historical date (YYYY-MM-DD). Defaults to today on the
+   * server side. Must fall within the 90-day backfill window.
+   */
+  date?: string;
+  /**
    * When false, the hook fetches once on arg change but stops polling.
-   * Typical usage: pass `marketOpen && sectionExpanded`.
+   * Typical usage: pass `marketOpen && sectionExpanded && viewingToday`.
    */
   enabled: boolean;
 }
@@ -72,12 +78,25 @@ const INITIAL_STATE: State = { data: null, loading: true, error: null };
 
 export function useGreekHeatmap({
   ticker,
+  date,
   enabled,
 }: UseGreekHeatmapArgs): State & {
   refetch: () => void;
 } {
   const [state, setState] = useState<State>(INITIAL_STATE);
   const abortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+
+  // Track unmount so the catch block can distinguish "aborted because
+  // the component is gone" (silent return is correct) from "aborted
+  // because the parent re-rendered and a new fetch is starting"
+  // (must clear loading so the next fetch's setState can land cleanly).
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const fetchOnce = useCallback(async () => {
     abortRef.current?.abort();
@@ -85,24 +104,34 @@ export function useGreekHeatmap({
     abortRef.current = ctrl;
     setState((s) => ({ ...s, loading: true }));
     try {
-      const res = await fetchWithRetry(
-        `/api/greek-heatmap?ticker=${encodeURIComponent(ticker)}`,
-        { credentials: 'include', signal: ctrl.signal, maxRetries: 2 },
-      );
+      const params = new URLSearchParams({ ticker });
+      if (date) params.set('date', date);
+      const res = await fetchWithRetry(`/api/greek-heatmap?${params}`, {
+        credentials: 'include',
+        signal: ctrl.signal,
+        maxRetries: 2,
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = (await res.json()) as GreekHeatmapResponse;
       if (ctrl.signal.aborted) return;
       setState({ data: json, loading: false, error: null });
     } catch (err) {
-      // Swallow expected cancellations cleanly — a rapid ticker switch
-      // aborts the in-flight request and would otherwise surface as a
-      // spurious "AbortError" in the UI. Mirrors useLotteryFinder.
+      // AbortError on a still-mounted component means the parent
+      // triggered a new fetch (rapid ticker/date switch); the new
+      // fetch will set loading=false when it lands, so we can safely
+      // ignore this abort. On unmount, also safely ignore — there's
+      // no UI left to update. The previous version silently returned
+      // in BOTH cases which, paired with React StrictMode's intentional
+      // double-mount, occasionally left `loading: true` stuck on the
+      // first mount's state until the second mount's fetch eventually
+      // overwrote it.
       if (err instanceof DOMException && err.name === 'AbortError') return;
       if (ctrl.signal.aborted) return;
+      if (!mountedRef.current) return;
       const msg = err instanceof Error ? err.message : 'unknown fetch error';
       setState({ data: null, loading: false, error: msg });
     }
-  }, [ticker]);
+  }, [ticker, date]);
 
   useEffect(() => {
     fetchOnce();

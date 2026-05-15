@@ -1,10 +1,10 @@
 /**
- * GreekHeatmapSection unit tests — covers the section header (price +
- * regime chips), ticker chip-grid interaction, loading/error/empty
- * states, and the wired-up sub-components (NetFlowRow + Table).
- *
- * The data hook is mocked so tests never touch fetch; sub-components
- * render with their real markup so the integration is meaningful.
+ * GreekHeatmapSection unit tests — covers the rebuilt layout: ticker
+ * dropdown, date picker, top-5 callout chips (with scroll-to-strike),
+ * full-chain heatmap table with color-coded cells, and the
+ * loading / error / empty states. The data hook is mocked so tests
+ * never touch fetch; the rest of the sub-tree renders with real markup
+ * so the integration stays meaningful.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -49,6 +49,13 @@ function makeStrike(
 function makeData(
   overrides: Partial<GreekHeatmapResponse> = {},
 ): GreekHeatmapResponse {
+  const topStrikes = [
+    makeStrike(560, 200_000, 5_000, 800),
+    makeStrike(562.5, 100_000, 2_500, 400),
+    makeStrike(565, 150_000, 3_000, 500),
+    makeStrike(570, -50_000, -1_000, -200),
+    makeStrike(555, 80_000, 1_500, 300),
+  ];
   return {
     ticker: 'SPY',
     date: '2026-05-15',
@@ -57,13 +64,8 @@ function makeData(
     atmStrike: 562.5,
     regime: 'Long Γ',
     netGexK: 1591.2,
-    topStrikes: [
-      makeStrike(560, 200_000, 5_000, 800),
-      makeStrike(562.5, 100_000, 2_500, 400),
-      makeStrike(565, 150_000, 3_000, 500),
-      makeStrike(570, -50_000, -1_000, -200),
-      makeStrike(555, 80_000, 1_500, 300),
-    ],
+    chainStrikes: topStrikes,
+    topStrikes,
     netFlow: {
       cumulativeCallPrem: 1716,
       cumulativeCallVol: 6,
@@ -93,10 +95,8 @@ describe('GreekHeatmapSection', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows the underlying price chip in the header', () => {
+  it('shows the underlying price chip', () => {
     render(<GreekHeatmapSection marketOpen={true} />);
-    // Price chip is in the headerRight slot and renders even when
-    // collapsed. Format is "SPY $562.50".
     expect(screen.getByText('$562.50')).toBeInTheDocument();
   });
 
@@ -106,35 +106,97 @@ describe('GreekHeatmapSection', () => {
     expect(screen.getByText('+1591.2k')).toBeInTheDocument();
   });
 
-  it('renders the ticker chip grid with default SPY active when expanded', () => {
+  it('renders the ticker dropdown with SPY selected by default', () => {
     render(<GreekHeatmapSection marketOpen={true} />);
-    const spyChip = screen.getByRole('radio', { name: 'SPY' });
-    expect(spyChip).toHaveAttribute('aria-checked', 'true');
-    const tslaChip = screen.getByRole('radio', { name: 'TSLA' });
-    expect(tslaChip).toHaveAttribute('aria-checked', 'false');
+    const select = screen.getByLabelText(
+      /heatmap ticker/i,
+    ) as HTMLSelectElement;
+    expect(select.value).toBe('SPY');
+    // A few representative options should be present.
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(
+      expect.arrayContaining(['SPY', 'TSLA', 'NVDA']),
+    );
   });
 
-  it('switches the active ticker when a different chip is clicked', () => {
+  it('switches the active ticker via the dropdown', () => {
     render(<GreekHeatmapSection marketOpen={true} />);
-    const tslaChip = screen.getByRole('radio', { name: 'TSLA' });
-    fireEvent.click(tslaChip);
-    expect(tslaChip).toHaveAttribute('aria-checked', 'true');
-    // Hook re-invoked with the new ticker on the next render pass.
+    const select = screen.getByLabelText(
+      /heatmap ticker/i,
+    ) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'TSLA' } });
+    expect(select.value).toBe('TSLA');
     const lastCall = mockUseGreekHeatmap.mock.calls.at(-1)?.[0] as
       | { ticker: string }
       | undefined;
     expect(lastCall?.ticker).toBe('TSLA');
   });
 
-  it('renders top-5 strikes and highlights the ATM row', () => {
+  it('renders the date picker bounded to the last 90 days', () => {
     render(<GreekHeatmapSection marketOpen={true} />);
-    // Each strike renders as a tabular row; the ATM badge is text "ATM".
-    expect(screen.getByText('ATM')).toBeInTheDocument();
-    expect(screen.getByText('562.5')).toBeInTheDocument();
-    expect(screen.getByText('560')).toBeInTheDocument();
+    const dateInput = screen.getByLabelText(
+      /heatmap expiry date/i,
+    ) as HTMLInputElement;
+    expect(dateInput.type).toBe('date');
+    expect(dateInput.min).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(dateInput.max).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
-  it('renders the net-flow row with NCP / NPP / Total labels', () => {
+  it('passes a historical date to the hook when the user picks one', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+    const dateInput = screen.getByLabelText(
+      /heatmap expiry date/i,
+    ) as HTMLInputElement;
+    fireEvent.change(dateInput, { target: { value: '2026-04-01' } });
+    const lastCall = mockUseGreekHeatmap.mock.calls.at(-1)?.[0] as
+      | { date?: string; enabled: boolean }
+      | undefined;
+    expect(lastCall?.date).toBe('2026-04-01');
+    // Polling disabled when viewing a historical date.
+    expect(lastCall?.enabled).toBe(false);
+  });
+
+  it('shows a Historical badge when not viewing today', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+    const dateInput = screen.getByLabelText(
+      /heatmap expiry date/i,
+    ) as HTMLInputElement;
+    fireEvent.change(dateInput, { target: { value: '2026-04-01' } });
+    expect(screen.getByText(/historical/i)).toBeInTheDocument();
+  });
+
+  it('renders top-5 callout chips above the heatmap', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+    expect(screen.getByText(/top gex/i)).toBeInTheDocument();
+    // Each chip has the strike value as a button label.
+    expect(
+      screen.getByRole('button', { name: /jump to strike 560/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /jump to strike 565/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('clicking a top-strikes chip highlights the corresponding heatmap row', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+    const chip = screen.getByRole('button', { name: /jump to strike 565/i });
+    fireEvent.click(chip);
+    const row = document.getElementById('heatmap-strike-565');
+    expect(row).not.toBeNull();
+    expect(row!.className).toContain('ring-amber-400');
+  });
+
+  it('renders the full-chain heatmap rows with strike values', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+    // ATM badge only appears in the heatmap table.
+    expect(screen.getByText('ATM')).toBeInTheDocument();
+    // Strike values appear in BOTH the callout chips AND the heatmap
+    // rows — assert by row id to avoid ambiguity.
+    expect(document.getElementById('heatmap-strike-562.5')).not.toBeNull();
+    expect(document.getElementById('heatmap-strike-560')).not.toBeNull();
+    expect(document.getElementById('heatmap-strike-570')).not.toBeNull();
+  });
+
+  it('renders the net-flow row labels', () => {
     render(<GreekHeatmapSection marketOpen={true} />);
     expect(screen.getByText('NCP')).toBeInTheDocument();
     expect(screen.getByText('NPP')).toBeInTheDocument();
@@ -150,7 +212,7 @@ describe('GreekHeatmapSection', () => {
     });
     render(<GreekHeatmapSection marketOpen={true} />);
     expect(
-      screen.getByText(/loading spy 0dte greek snapshot/i),
+      screen.getByText(/loading spy .* greek snapshot/i),
     ).toBeInTheDocument();
   });
 
@@ -163,27 +225,28 @@ describe('GreekHeatmapSection', () => {
     });
     render(<GreekHeatmapSection marketOpen={true} />);
     expect(screen.getByText(/failed to load heatmap/i)).toBeInTheDocument();
-    const retry = screen.getByRole('button', { name: /retry/i });
-    fireEvent.click(retry);
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }));
     expect(mockRefetch).toHaveBeenCalledTimes(1);
   });
 
-  it('renders the empty-state hint when topStrikes is empty and asOf is null', () => {
+  it('renders an empty-state hint when chainStrikes is empty and asOf is null', () => {
     mockUseGreekHeatmap.mockReturnValue({
-      data: makeData({ topStrikes: [], asOf: null, atmStrike: null }),
+      data: makeData({
+        chainStrikes: [],
+        topStrikes: [],
+        asOf: null,
+        atmStrike: null,
+      }),
       loading: false,
       error: null,
       refetch: mockRefetch,
     });
     render(<GreekHeatmapSection marketOpen={true} />);
-    expect(
-      screen.getByText(/no 0dte expiry data for spy today/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/no greek data for spy/i)).toBeInTheDocument();
   });
 
-  it('gates polling on marketOpen passed through to the hook', () => {
+  it('gates polling on marketOpen + viewing-today', () => {
     render(<GreekHeatmapSection marketOpen={false} />);
-    // Hook should have been invoked with enabled=false.
     const firstCall = mockUseGreekHeatmap.mock.calls[0]?.[0] as
       | { enabled: boolean }
       | undefined;

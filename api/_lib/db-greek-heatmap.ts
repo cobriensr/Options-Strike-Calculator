@@ -1,21 +1,26 @@
 /**
  * Query helpers for the /api/greek-heatmap endpoint.
  *
- * Two reads, both targeting websocket-fed tables that uw-stream writes
- * for the lottery alerts universe:
+ * Three reads:
  *
- * - `ws_gex_strike_expiry` — per-minute snapshot of call/put gamma,
- *   charm, vanna (and the underlying spot) for every strike on a
- *   ticker's expiry chain. We collapse to the latest minute per strike
- *   via `DISTINCT ON (strike) ... ORDER BY ts_minute DESC`. The
- *   (ticker, expiry, ts_minute DESC) index from migration #111 covers
- *   the scan.
+ * - Chain snapshot (`getGreekHeatmapSnapshot`) — pulls ws_gex_strike_
+ *   expiry rows for the chosen (ticker, expiry) and returns:
+ *     • `chainStrikes` — the ATM ± 50 strikes (sorted by strike asc)
+ *       for the full heatmap grid.
+ *     • `topStrikes` — the top 5 by |net gamma OI| (sorted by |net|
+ *       desc) for the callout chips.
+ *     • Regime, netGexK, underlyingPrice, atmStrike — derived from
+ *       the FULL chain, not just the windowed slice.
  *
- * - `ws_net_flow_per_ticker` — per-tick DELTAS of net call/put premium
- *   and volume (NOT running totals; see uw-stream/src/handlers/net_flow
- *   for the rationale). Session-cumulative is computed at read time
- *   via `SUM(...) OVER (PARTITION BY ticker, date(ts) ORDER BY ts)` so
- *   the daemon can stay single-sourced.
+ *   Uses `DISTINCT ON (strike) ... ORDER BY ts_minute DESC` to collapse
+ *   to the latest minute per strike. Covered by the
+ *   (ticker, strike, ts_minute DESC) index from migration #111.
+ *
+ * - Net flow (`getGreekHeatmapNetFlow`) — session-cumulative NCP/NPP/
+ *   vol for the chosen ticker on the chosen date. For today, reads
+ *   from ws_net_flow_per_ticker (live WS deltas). For historical
+ *   dates, reads from net_flow_per_ticker_history (REST backfill,
+ *   source='rest'). Same SUM(...) OVER pattern either way.
  *
  * See docs/superpowers/specs/per-ticker-greek-heatmap-2026-05-15.md.
  */
@@ -42,6 +47,7 @@ export type GreekHeatmapSnapshot = {
   atmStrike: number | null;
   regime: 'Long Γ' | 'Short Γ' | null;
   netGexK: number | null;
+  chainStrikes: GreekHeatmapTopStrike[];
   topStrikes: GreekHeatmapTopStrike[];
 };
 
@@ -74,29 +80,56 @@ type NetFlowRow = {
 };
 
 const TOP_STRIKE_LIMIT = 5;
+const CHAIN_STRIKE_WINDOW = 50; // ± strikes around ATM (100 total).
 
 export async function getGreekHeatmapSnapshot(
   ticker: string,
   expiry: string,
+  today: string,
 ): Promise<GreekHeatmapSnapshot> {
   const db = getDb();
+  const isToday = expiry === today;
 
-  const rows = (await db`
-    SELECT DISTINCT ON (strike)
-      strike,
-      ts_minute,
-      price,
-      call_gamma_oi,
-      put_gamma_oi,
-      call_charm_oi,
-      put_charm_oi,
-      call_vanna_oi,
-      put_vanna_oi
-    FROM ws_gex_strike_expiry
-    WHERE ticker = ${ticker}
-      AND expiry = ${expiry}::date
-    ORDER BY strike, ts_minute DESC
-  `) as GexRow[];
+  // For today, read the live WS feed (ws_gex_strike_expiry). For
+  // historical dates, read the REST-backfilled archive
+  // (strike_exposures). Both share the per-strike OI Greek shape so
+  // we normalize to the same intermediate row type and the downstream
+  // top-N / chain-windowing / regime math stays unchanged.
+  const rows = isToday
+    ? ((await db`
+        SELECT DISTINCT ON (strike)
+          strike,
+          ts_minute,
+          price,
+          call_gamma_oi,
+          put_gamma_oi,
+          call_charm_oi,
+          put_charm_oi,
+          call_vanna_oi,
+          put_vanna_oi
+        FROM ws_gex_strike_expiry
+        WHERE ticker = ${ticker}
+          AND expiry = ${expiry}::date
+        ORDER BY strike, ts_minute DESC
+      `) as GexRow[])
+    : (
+        (await db`
+          SELECT DISTINCT ON (strike)
+            strike,
+            timestamp AS ts_minute,
+            price,
+            call_gamma_oi,
+            put_gamma_oi,
+            call_charm_oi,
+            put_charm_oi,
+            call_vanna_oi,
+            put_vanna_oi
+          FROM strike_exposures
+          WHERE ticker = ${ticker}
+            AND expiry = ${expiry}::date
+          ORDER BY strike, timestamp DESC
+        `) as GexRow[]
+      );
 
   if (rows.length === 0) {
     return {
@@ -106,6 +139,7 @@ export async function getGreekHeatmapSnapshot(
       atmStrike: null,
       regime: null,
       netGexK: null,
+      chainStrikes: [],
       topStrikes: [],
     };
   }
@@ -142,8 +176,7 @@ export async function getGreekHeatmapSnapshot(
   const regime: 'Long Γ' | 'Short Γ' = totalNetGamma > 0 ? 'Long Γ' : 'Short Γ';
 
   // UW emits one batch per ticker per minute; every row in a batch
-  // shares the same ts_minute and price. Use MAX defensively in case
-  // a flush straddled two minutes.
+  // shares the same ts_minute and price. Use MAX defensively.
   let latestMinute = rows[0]!.ts_minute;
   for (const r of rows) {
     if (r.ts_minute > latestMinute) latestMinute = r.ts_minute;
@@ -153,14 +186,35 @@ export async function getGreekHeatmapSnapshot(
     rows[0]!;
   const underlyingPrice = num(latestRow.price);
 
-  // ATM = closest of the returned top-5 to spot. The literal ATM
-  // strike isn't guaranteed to be in top-5 when GEX is concentrated
-  // away from spot; this gives the trader the dealer-wall-nearest-to-
-  // spot read, which is what's actionable for exit timing.
+  // Build the ATM ± 50 strike window (100 strikes total). Sort by
+  // proximity to spot, take 100, then re-sort by strike DESC for the
+  // grid display (highest strike at the top, matching the Periscope
+  // visual). If spot is null (rare — first-tick edge case), fall back
+  // to the middle 100 by strike index.
+  let chainStrikes: GreekHeatmapTopStrike[];
+  if (underlyingPrice !== null) {
+    chainStrikes = [...allStrikes]
+      .sort(
+        (a, b) =>
+          Math.abs(a.strike - underlyingPrice) -
+          Math.abs(b.strike - underlyingPrice),
+      )
+      .slice(0, CHAIN_STRIKE_WINDOW * 2)
+      .sort((a, b) => b.strike - a.strike);
+  } else {
+    const byStrike = [...allStrikes].sort((a, b) => b.strike - a.strike);
+    const mid = Math.floor(byStrike.length / 2);
+    chainStrikes = byStrike.slice(
+      Math.max(0, mid - CHAIN_STRIKE_WINDOW),
+      mid + CHAIN_STRIKE_WINDOW,
+    );
+  }
+
+  // ATM strike = closest of the rendered chain to spot.
   let atmStrike: number | null = null;
-  if (underlyingPrice !== null && topStrikes.length > 0) {
-    let closest = topStrikes[0]!.strike;
-    for (const s of topStrikes) {
+  if (underlyingPrice !== null && chainStrikes.length > 0) {
+    let closest = chainStrikes[0]!.strike;
+    for (const s of chainStrikes) {
       if (
         Math.abs(s.strike - underlyingPrice) <
         Math.abs(closest - underlyingPrice)
@@ -178,30 +232,58 @@ export async function getGreekHeatmapSnapshot(
     atmStrike,
     regime,
     netGexK,
+    chainStrikes,
     topStrikes,
   };
 }
 
+/**
+ * Session-cumulative net flow for `ticker` on the given `date`.
+ *
+ * For today, reads from ws_net_flow_per_ticker (the live WS feed).
+ * For historical dates, reads from net_flow_per_ticker_history with
+ * source='rest' (the REST-backfilled archive). Same SUM(...) OVER
+ * pattern either way; the source switch handles the
+ * data-retention boundary at end-of-day.
+ */
 export async function getGreekHeatmapNetFlow(
   ticker: string,
   date: string,
+  today: string,
 ): Promise<GreekHeatmapNetFlow | null> {
   const db = getDb();
+  const isToday = date === today;
 
-  const rows = (await db`
-    SELECT
-      ts,
-      SUM(net_call_prem) OVER w AS cum_call_prem,
-      SUM(net_call_vol)  OVER w AS cum_call_vol,
-      SUM(net_put_prem)  OVER w AS cum_put_prem,
-      SUM(net_put_vol)   OVER w AS cum_put_vol
-    FROM ws_net_flow_per_ticker
-    WHERE ticker = ${ticker}
-      AND date(ts) = ${date}::date
-    WINDOW w AS (PARTITION BY ticker, date(ts) ORDER BY ts)
-    ORDER BY ts DESC
-    LIMIT 1
-  `) as NetFlowRow[];
+  const rows = isToday
+    ? ((await db`
+        SELECT
+          ts,
+          SUM(net_call_prem) OVER w AS cum_call_prem,
+          SUM(net_call_vol)  OVER w AS cum_call_vol,
+          SUM(net_put_prem)  OVER w AS cum_put_prem,
+          SUM(net_put_vol)   OVER w AS cum_put_vol
+        FROM ws_net_flow_per_ticker
+        WHERE ticker = ${ticker}
+          AND date(ts) = ${date}::date
+        WINDOW w AS (PARTITION BY ticker, date(ts) ORDER BY ts)
+        ORDER BY ts DESC
+        LIMIT 1
+      `) as NetFlowRow[])
+    : ((await db`
+        SELECT
+          ts,
+          SUM(net_call_prem) OVER w AS cum_call_prem,
+          SUM(net_call_vol)  OVER w AS cum_call_vol,
+          SUM(net_put_prem)  OVER w AS cum_put_prem,
+          SUM(net_put_vol)   OVER w AS cum_put_vol
+        FROM net_flow_per_ticker_history
+        WHERE ticker = ${ticker}
+          AND date(ts) = ${date}::date
+          AND source = 'rest'
+        WINDOW w AS (PARTITION BY ticker, date(ts) ORDER BY ts)
+        ORDER BY ts DESC
+        LIMIT 1
+      `) as NetFlowRow[]);
 
   if (rows.length === 0) return null;
 

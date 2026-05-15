@@ -57,27 +57,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
       return;
     }
-    const { ticker } = parsed.data;
+    const { ticker, date } = parsed.data;
 
-    // 0DTE expiry == ET-today. The endpoint is intentionally strict
-    // about "today" — no date param. If you want a historical snapshot
-    // you're reaching for a different feature (ML backfill).
+    // Default = ET-today for the live read. Historical dates (within
+    // the 90-day Zod-enforced window) route through the same query
+    // helpers, which transparently switch between live (ws_*) and
+    // backfilled (net_flow_per_ticker_history) tables.
     const today = getETDateStr(new Date());
+    const expiry = date ?? today;
 
     const [snapshot, netFlow] = await Promise.all([
-      getGreekHeatmapSnapshot(ticker, today),
-      getGreekHeatmapNetFlow(ticker, today),
+      getGreekHeatmapSnapshot(ticker, expiry, today),
+      getGreekHeatmapNetFlow(ticker, expiry, today),
     ]);
 
-    setCacheHeaders(res, 30, 60);
+    // Today's data refreshes minutely; historical data is static.
+    // Cache headers reflect that — historical snapshots can sit in
+    // the edge for an hour without losing accuracy.
+    if (expiry === today) {
+      setCacheHeaders(res, 30, 60);
+    } else {
+      setCacheHeaders(res, 3600, 60);
+    }
     res.status(200).json({
       ticker,
-      date: today,
+      date: expiry,
       asOf: snapshot.asOf,
       underlyingPrice: snapshot.underlyingPrice,
       atmStrike: snapshot.atmStrike,
       regime: snapshot.regime,
       netGexK: snapshot.netGexK,
+      chainStrikes: snapshot.chainStrikes,
       topStrikes: snapshot.topStrikes,
       netFlow,
     });

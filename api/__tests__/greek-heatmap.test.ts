@@ -266,4 +266,108 @@ describe('greek-heatmap endpoint', () => {
     expect(mockSql).not.toHaveBeenCalled();
     expect(res._json).toBeNull();
   });
+
+  it('rejects historical date beyond the 90-day window with 400', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { ticker: 'SPY', date: '2024-01-01' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(400);
+    const body = res._json as { issues: { message: string }[] };
+    expect(body.issues.some((i) => /90 days/i.test(i.message))).toBe(true);
+  });
+
+  it('rejects malformed date with 400', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { ticker: 'SPY', date: 'not-a-date' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(400);
+  });
+
+  it('returns chainStrikes window centered on the ATM strike', async () => {
+    mockSql
+      .mockResolvedValueOnce([
+        // 6 strikes; spot is 462.50 so ATM = 460 (the closest).
+        gexRow(
+          440,
+          100_000,
+          1000,
+          200,
+          0,
+          0,
+          0,
+          '462.50',
+          '2026-05-15T16:00:00Z',
+        ),
+        gexRow(
+          450,
+          200_000,
+          2000,
+          400,
+          0,
+          0,
+          0,
+          '462.50',
+          '2026-05-15T16:00:00Z',
+        ),
+        gexRow(
+          460,
+          50_000,
+          500,
+          100,
+          0,
+          0,
+          0,
+          '462.50',
+          '2026-05-15T16:00:00Z',
+        ),
+        gexRow(
+          470,
+          500_000,
+          5000,
+          800,
+          0,
+          0,
+          0,
+          '462.50',
+          '2026-05-15T16:00:00Z',
+        ),
+        gexRow(
+          480,
+          150_000,
+          1500,
+          300,
+          0,
+          0,
+          0,
+          '462.50',
+          '2026-05-15T16:00:00Z',
+        ),
+        gexRow(490, 25_000, 250, 50, 0, 0, 0, '462.50', '2026-05-15T16:00:00Z'),
+      ])
+      .mockResolvedValueOnce([]);
+
+    const req = mockRequest({ method: 'GET', query: { ticker: 'TSLA' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      chainStrikes: { strike: number }[];
+      topStrikes: { strike: number }[];
+      atmStrike: number;
+    };
+    // All 6 fit within the ATM ± 50 window, so chainStrikes returns
+    // every strike (sorted DESC by strike for grid display).
+    expect(body.chainStrikes.map((s) => s.strike)).toEqual([
+      490, 480, 470, 460, 450, 440,
+    ]);
+    // topStrikes still independently sorts by |netGamma| DESC, top-5.
+    expect(body.topStrikes).toHaveLength(5);
+    expect(body.atmStrike).toBe(460);
+  });
 });
