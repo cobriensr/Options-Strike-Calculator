@@ -1,0 +1,212 @@
+/**
+ * useLotteryFinderTickerCounts — chip-strip data hook for the Lottery
+ * Finder dashboard. Builds /api/lottery-finder-ticker-counts with the
+ * active filters, polls every 30s during market hours (skipped when
+ * historical), aborts in-flight requests on filter change + unmount.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { renderHook, waitFor, act } from '@testing-library/react';
+import { useLotteryFinderTickerCounts } from '../hooks/useLotteryFinderTickerCounts';
+
+const fetchMock = vi.fn();
+
+beforeEach(() => {
+  fetchMock.mockReset();
+  globalThis.fetch = fetchMock as unknown as typeof fetch;
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+  } as Response;
+}
+
+const EMPTY = { tickers: [] };
+
+describe('useLotteryFinderTickerCounts', () => {
+  it('builds the URL with only the date when no optional filters are set', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY));
+    renderHook(() =>
+      useLotteryFinderTickerCounts({
+        date: '2026-05-14',
+        marketOpen: false,
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toMatch(/^\/api\/lottery-finder-ticker-counts\?/);
+    expect(url).toContain('date=2026-05-14');
+    expect(url).not.toContain('reload=');
+    expect(url).not.toContain('cheapCallPm=');
+    expect(url).not.toContain('mode=');
+    expect(url).not.toContain('optionType=');
+    expect(url).not.toContain('tod=');
+    expect(url).not.toContain('minScore=');
+  });
+
+  it('appends every optional filter to the URL when supplied', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY));
+    renderHook(() =>
+      useLotteryFinderTickerCounts({
+        date: '2026-05-14',
+        marketOpen: false,
+        reload: true,
+        cheapCallPm: false,
+        mode: 'A_intraday_0DTE',
+        optionType: 'C',
+        tod: 'PM',
+        minScore: 12,
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toContain('reload=true');
+    expect(url).toContain('cheapCallPm=false');
+    expect(url).toContain('mode=A_intraday_0DTE');
+    expect(url).toContain('optionType=C');
+    expect(url).toContain('tod=PM');
+    expect(url).toContain('minScore=12');
+  });
+
+  it('exposes tickers + clears loading on success', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        tickers: [
+          {
+            ticker: 'SPY',
+            count: 4,
+            peakBestPct: 18.2,
+            latestTriggerTimeCt: '10:42',
+          },
+          {
+            ticker: 'QQQ',
+            count: 2,
+            peakBestPct: null,
+            latestTriggerTimeCt: '11:15',
+          },
+        ],
+      }),
+    );
+    const { result } = renderHook(() =>
+      useLotteryFinderTickerCounts({
+        date: '2026-05-14',
+        marketOpen: false,
+      }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.tickers).toHaveLength(2);
+    expect(result.current.tickers[0]?.ticker).toBe('SPY');
+    expect(result.current.error).toBeNull();
+    expect(result.current.fetchedAt).toBeTypeOf('number');
+  });
+
+  it('exposes the error message on a non-2xx response', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'down' }, 500));
+    const { result } = renderHook(() =>
+      useLotteryFinderTickerCounts({
+        date: '2026-05-14',
+        marketOpen: false,
+      }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toContain('500');
+    expect(result.current.tickers).toEqual([]);
+  });
+
+  it('surfaces a rejected fetch as a string error', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('network down'));
+    const { result } = renderHook(() =>
+      useLotteryFinderTickerCounts({
+        date: '2026-05-14',
+        marketOpen: false,
+      }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBe('network down');
+  });
+
+  it('polls every 30s when marketOpen + non-historical', async () => {
+    vi.useFakeTimers();
+    fetchMock.mockResolvedValue(jsonResponse(EMPTY));
+    renderHook(() =>
+      useLotteryFinderTickerCounts({
+        date: '2026-05-14',
+        marketOpen: true,
+        historical: false,
+      }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not poll when historical=true even with marketOpen', async () => {
+    vi.useFakeTimers();
+    fetchMock.mockResolvedValue(jsonResponse(EMPTY));
+    renderHook(() =>
+      useLotteryFinderTickerCounts({
+        date: '2024-01-01',
+        marketOpen: true,
+        historical: true,
+      }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not poll when marketOpen=false', async () => {
+    vi.useFakeTimers();
+    fetchMock.mockResolvedValue(jsonResponse(EMPTY));
+    renderHook(() =>
+      useLotteryFinderTickerCounts({
+        date: '2026-05-14',
+        marketOpen: false,
+      }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('exposes refetch that triggers a fresh fetch', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(EMPTY));
+    const { result } = renderHook(() =>
+      useLotteryFinderTickerCounts({
+        date: '2026-05-14',
+        marketOpen: false,
+      }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      result.current.refetch();
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  });
+});

@@ -145,10 +145,13 @@ export default defineConfig({
         'src/utils/futures-gamma/types.ts',
         'src/utils/gex-target/types.ts',
         'api/_lib/uw-result.ts',
+        'src/types/index.ts',
         // Barrel re-export only.
         'src/utils/calculator.ts',
         'src/utils/export/index.ts',
         'src/utils/gex-target/index.ts',
+        'src/components/ui/index.tsx',
+        'api/_lib/validation.ts',
         'api/bwb-anchor.ts', // integration-tested via API
       ],
     },

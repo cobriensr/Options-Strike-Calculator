@@ -363,12 +363,12 @@ describe('SilentBoomTickerGroup', () => {
           exitPolicy={EXIT_POLICY}
         />,
       );
-      expect(screen.getByTestId('silent-boom-ticker-bias-NOW')).toHaveTextContent(
-        '↑ bull',
-      );
-      expect(screen.getByTestId('silent-boom-ticker-tide-NOW')).toHaveTextContent(
-        'tide ↑ aligned',
-      );
+      expect(
+        screen.getByTestId('silent-boom-ticker-bias-NOW'),
+      ).toHaveTextContent('↑ bull');
+      expect(
+        screen.getByTestId('silent-boom-ticker-tide-NOW'),
+      ).toHaveTextContent('tide ↑ aligned');
     });
 
     it('renders tide=counter when bias and tide point opposite ways', () => {
@@ -389,9 +389,9 @@ describe('SilentBoomTickerGroup', () => {
           exitPolicy={EXIT_POLICY}
         />,
       );
-      expect(screen.getByTestId('silent-boom-ticker-tide-NOW')).toHaveTextContent(
-        'tide ↑ counter',
-      );
+      expect(
+        screen.getByTestId('silent-boom-ticker-tide-NOW'),
+      ).toHaveTextContent('tide ↑ counter');
     });
 
     it('renders the strikes summary with (Npt) spread suffix when ≥2 distinct strikes', () => {
@@ -480,9 +480,9 @@ describe('SilentBoomTickerGroup', () => {
           exitPolicy={EXIT_POLICY}
         />,
       );
-      expect(screen.getByTestId('silent-boom-ticker-gated-NOW')).toHaveTextContent(
-        '1 gated',
-      );
+      expect(
+        screen.getByTestId('silent-boom-ticker-gated-NOW'),
+      ).toHaveTextContent('1 gated');
     });
 
     it('omits the gated chip when no alerts are direction-gated', () => {

@@ -281,4 +281,157 @@ describe('IntervalBAFeed', () => {
       expect(urls.some((u) => u.includes('confluenceOnly=1'))).toBe(true);
     });
   });
+
+  it('filters by call/put when the type chips are clicked', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const fetch = mockFetch({
+      alerts: [],
+      summary: {
+        count: 0,
+        total_premium: 0,
+        extreme: 0,
+        critical: 0,
+        warning: 0,
+      },
+    });
+    render(<IntervalBAFeed />);
+    await waitFor(() => expect(fetch).toHaveBeenCalled());
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /^calls$/i }));
+    await waitFor(() => {
+      const urls = fetch.mock.calls.map((c) => c[0] as string);
+      expect(urls.some((u) => u.includes('optionType=C'))).toBe(true);
+    });
+    await user.click(screen.getByRole('button', { name: /^puts$/i }));
+    await waitFor(() => {
+      const urls = fetch.mock.calls.map((c) => c[0] as string);
+      expect(urls.some((u) => u.includes('optionType=P'))).toBe(true);
+    });
+  });
+
+  it('filters by min premium when a floor chip is clicked', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const fetch = mockFetch({
+      alerts: [],
+      summary: {
+        count: 0,
+        total_premium: 0,
+        extreme: 0,
+        critical: 0,
+        warning: 0,
+      },
+    });
+    render(<IntervalBAFeed />);
+    await waitFor(() => expect(fetch).toHaveBeenCalled());
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /≥\$1M/ }));
+    await waitFor(() => {
+      const urls = fetch.mock.calls.map((c) => c[0] as string);
+      expect(urls.some((u) => u.includes('minPremium=1000000'))).toBe(true);
+    });
+  });
+
+  it('filters by moneyness when the ITM/OTM chip is clicked', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const fetch = mockFetch({
+      alerts: [],
+      summary: {
+        count: 0,
+        total_premium: 0,
+        extreme: 0,
+        critical: 0,
+        warning: 0,
+      },
+    });
+    render(<IntervalBAFeed />);
+    await waitFor(() => expect(fetch).toHaveBeenCalled());
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /^ITM$/ }));
+    await waitFor(() => {
+      const urls = fetch.mock.calls.map((c) => c[0] as string);
+      expect(urls.some((u) => u.includes('moneyness=ITM'))).toBe(true);
+    });
+    await user.click(screen.getByRole('button', { name: /^OTM$/ }));
+    await waitFor(() => {
+      const urls = fetch.mock.calls.map((c) => c[0] as string);
+      expect(urls.some((u) => u.includes('moneyness=OTM'))).toBe(true);
+    });
+  });
+
+  it('renders the "updated HH:MM:SS CT" timestamp once a fetch completes', async () => {
+    mockFetch({
+      alerts: [],
+      summary: {
+        count: 0,
+        total_premium: 0,
+        extreme: 0,
+        critical: 0,
+        warning: 0,
+      },
+    });
+    render(<IntervalBAFeed />);
+    await waitFor(() => {
+      expect(
+        screen.getByText(/^updated \d{2}:\d{2}:\d{2} CT$/),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it('renders the loading skeleton before the first response resolves', async () => {
+    // Hold the fetch promise open so the initial render is still loading.
+    const resolverRef: { resolve(r: Response): void } = {
+      resolve() {
+        /* replaced by the promise constructor */
+      },
+    };
+    const pending = new Promise<Response>((r) => {
+      resolverRef.resolve = r;
+    });
+    globalThis.fetch = vi.fn(() => pending) as unknown as typeof fetch;
+    render(<IntervalBAFeed />);
+    expect(screen.getByText(/Loading interval B\/A feed/i)).toBeInTheDocument();
+    resolverRef.resolve({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => ({
+        alerts: [],
+        summary: {
+          count: 0,
+          total_premium: 0,
+          extreme: 0,
+          critical: 0,
+          warning: 0,
+        },
+      }),
+    } as Response);
+    await waitFor(() => {
+      expect(
+        screen.getByText(/No SPXW Interval B\/A alerts/i),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it('renders the summary banner with critical and warning chips', async () => {
+    mockFetch({
+      alerts: [SAMPLE_ALERT],
+      summary: {
+        count: 3,
+        total_premium: 2_400_000,
+        extreme: 1,
+        critical: 1,
+        warning: 1,
+      },
+    });
+    render(<IntervalBAFeed />);
+    await waitFor(() => {
+      expect(screen.getByText(/extreme 1/i)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/critical 1/i)).toBeInTheDocument();
+    expect(screen.getByText(/warning 1/i)).toBeInTheDocument();
+    // "3" and "alerts · …" sit in adjacent spans inside the banner;
+    // assert each piece individually rather than the merged string.
+    expect(screen.getByText('3')).toBeInTheDocument();
+    expect(screen.getByText(/^alerts ·/)).toBeInTheDocument();
+  });
 });
