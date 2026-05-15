@@ -352,6 +352,11 @@ export const POLL_INTERVALS = {
   GEX_TARGET: 60_000,
   /** SPY NOPE intraday refresh (useNopeIntraday) — matches fetch-nope cron */
   NOPE: 60_000,
+  /** Pin-Setup Tile refresh (usePinSetupStatus) — on-demand endpoint
+   *  evaluates the latest gex_strike_0dte snapshot, which is written
+   *  every minute by the cron. 60s polling keeps the tile within one
+   *  snapshot of fresh data without hammering the endpoint. */
+  PIN_SETUP: 60_000,
   /** Market internals refresh ($TICK/$ADD/$VOLD/$TRIN) — matches 1-min cron */
   MARKET_INTERNALS: 60_000,
   /** Cross-asset confluence context (useAnomalyCrossAsset) — Phase F UI */

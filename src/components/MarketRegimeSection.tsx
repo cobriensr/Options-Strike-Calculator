@@ -155,6 +155,7 @@ export default function MarketRegimeSection({
                         : market.data.yesterday
                     }
                     movers={historySnapshot ? null : market.data.movers}
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
                     vixPrevClose={historySnapshot?.vixPrevClose ?? undefined}
                     spxOpen={historySnapshot?.runningOHLC.open ?? undefined}
                     spxPrevClose={historySnapshot?.previousClose ?? undefined}

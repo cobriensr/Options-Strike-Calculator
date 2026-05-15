@@ -5,11 +5,13 @@ import type {
 } from '../../types/api';
 import { computeRvIv, computeGap, computeBreadth } from './classifiers';
 import SignalCard from './SignalCard';
+import PinSetupTile from './PinSetupTile';
 
 interface Props {
   readonly quotes: QuotesResponse | null;
   readonly yesterday: YesterdayResponse | null;
   readonly movers: MoversResponse | null;
+  readonly marketOpen: boolean;
   readonly vixPrevClose?: number;
   readonly spxOpen?: number;
   readonly spxPrevClose?: number;
@@ -19,6 +21,7 @@ export default function PreTradeSignals({
   quotes,
   yesterday,
   movers,
+  marketOpen,
   vixPrevClose,
   spxOpen,
   spxPrevClose,
@@ -33,9 +36,6 @@ export default function PreTradeSignals({
   );
   const breadth = computeBreadth(movers);
 
-  const signals = [rvIv, gap, breadth].filter(Boolean);
-  if (signals.length === 0) return null;
-
   return (
     <div>
       <div className="text-accent mb-2.5 font-sans text-[11px] font-bold tracking-[0.14em] uppercase">
@@ -43,10 +43,11 @@ export default function PreTradeSignals({
       </div>
 
       <div className="grid grid-cols-1 gap-2.5">
+        <PinSetupTile marketOpen={marketOpen} />
         {rvIv && (
           <SignalCard
             title="Realized vs. Implied Vol"
-            subtitle="Yesterday actual \u00F7 VIX predicted"
+            subtitle="Yesterday actual ÷ VIX predicted"
             result={rvIv}
           />
         )}
