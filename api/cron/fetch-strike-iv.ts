@@ -38,7 +38,7 @@ import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { mapWithConcurrency, schwabFetch } from '../_lib/api-helpers.js';
 import {
-  CRON_TICKER_DEFAULT_CONCURRENCY,
+  STRIKE_IV_TICKER_CONCURRENCY,
   STRIKE_IV_OTM_RANGE_PCT_CASH_INDEX,
   STRIKE_IV_OTM_RANGE_PCT_BROAD_ETF,
   STRIKE_IV_OTM_RANGE_PCT_SINGLE_NAME,
@@ -618,7 +618,7 @@ export default withCronInstrumentation(
     // never overruns Schwab's per-app concurrency budget.
     const results = await mapWithConcurrency(
       STRIKE_IV_TICKERS,
-      CRON_TICKER_DEFAULT_CONCURRENCY,
+      STRIKE_IV_TICKER_CONCURRENCY,
       (t) => runTicker(t, sql, today, startTimeMs),
     );
 

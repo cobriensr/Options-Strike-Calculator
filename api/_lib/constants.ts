@@ -420,3 +420,13 @@ export const VEGA_SPIKE_CONFLUENCE_WINDOW_SEC = 60;
  * Phase 3c of docs/superpowers/specs/api-refactor-2026-05-02.md.
  */
 export const CRON_TICKER_DEFAULT_CONCURRENCY = 4;
+
+/**
+ * Strike-IV cron concurrency. fetch-strike-iv is Schwab-only (no UW)
+ * across 13 tickers — 4-wide fan-out produced enough sequential
+ * "waves" that Sentry's Consecutive HTTP detector fired on every run
+ * (SENTRY-EMERALD-DESERT-4F + 4D, 92 events between 2026-05-04 and
+ * 2026-05-14). 8 cuts the wave count from 4 → 2 while staying well
+ * inside Schwab's per-app concurrency budget.
+ */
+export const STRIKE_IV_TICKER_CONCURRENCY = 8;
