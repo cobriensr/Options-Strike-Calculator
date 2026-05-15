@@ -828,7 +828,7 @@ export default function StrikeCalculator() {
                   liveEvents={market.data.events?.events}
                 />
 
-                <div id="sec-premarket" className="scroll-mt-28">
+                <div id="sec-premarket" className="mt-6 scroll-mt-28">
                   <SectionBox label="Pre-Market Signals">
                     <OpeningFlowSignal />
                     <hr className="border-edge my-4" />
