@@ -16,7 +16,7 @@
  * compat with the renderer — Phase 3 drops the dead columns + fields.
  */
 
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { usePeriscopeStrikes } from './usePeriscopeStrikes';
 import {
   useGexStrikeExpirySpx,
@@ -270,13 +270,55 @@ export function useGexLandscapeData(
   // already the data's natural behavior, just exposed at finer
   // granularity in the picker.
   //
-  // Fallback to MM slots when WS data hasn't arrived yet (first
-  // paint, side-channel error, 401 for public visitors) so the
-  // picker isn't empty.
-  const wsTimestamps = ws.data?.timestamps;
+  // We CACHE the last known live (non-scrubbed) WS timestamps in
+  // state rather than reading `ws.data.timestamps` directly. The WS
+  // endpoint truncates `timestamps` to `<= at` while scrubbed, so
+  // returning the live response's list directly would cause a
+  // single-render flash when the user clicks Live: the in-flight
+  // `ws.data` still holds the scrubbed (truncated) response until
+  // the next poll lands, which would shrink the picker for one
+  // render. Caching the last live list keeps the picker stable
+  // across the scrub → Live transition.
+  //
+  // Fallback to MM slots when no live WS response has ever arrived
+  // (first paint, side-channel error, 401 for public visitors) so
+  // the picker isn't empty.
+  const [livePickerTimestamps, setLivePickerTimestamps] = useState<string[]>(
+    [],
+  );
+  // Reset the cache when the expiry changes. `useGexStrikeExpirySpx`
+  // is sticky-on-empty, so without this reset the picker would
+  // briefly show yesterday's minute list against today's chain until
+  // the new live WS response lands.
+  useEffect(() => {
+    setLivePickerTimestamps([]);
+  }, [expiry]);
+  const wsAt = ws.data?.at ?? null;
+  const wsRawTimestamps = ws.data?.timestamps;
+  useEffect(() => {
+    // `at === null` on the response means the WS endpoint returned a
+    // live (non-truncated) timestamps list. Only those are eligible
+    // for the picker cache.
+    if (wsAt !== null) return;
+    if (!wsRawTimestamps || wsRawTimestamps.length === 0) return;
+    // Skip the state update when contents are unchanged — every poll
+    // allocates a fresh array reference even when the underlying
+    // minute list is identical, so a naive setState would re-render
+    // (and re-fire `index.tsx`'s `liveTimestamps` mirror effect) on
+    // every poll.
+    setLivePickerTimestamps((prev) => {
+      if (
+        prev.length === wsRawTimestamps.length &&
+        prev.every((t, i) => t === wsRawTimestamps[i])
+      ) {
+        return prev;
+      }
+      return wsRawTimestamps;
+    });
+  }, [wsAt, wsRawTimestamps]);
   const timestamps =
-    wsTimestamps && wsTimestamps.length > 0
-      ? wsTimestamps
+    livePickerTimestamps.length > 0
+      ? livePickerTimestamps
       : (primary.latest?.availableSlots ?? []);
 
   // Primary errors take precedence (MM is the structural read).

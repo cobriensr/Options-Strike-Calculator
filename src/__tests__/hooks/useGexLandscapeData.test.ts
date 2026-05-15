@@ -430,7 +430,7 @@ describe('useGexLandscapeData — adapter behavior', () => {
     expect(result.current.strikes).toEqual([]);
   });
 
-  it('uses WS-feed minute-resolution timestamps for the picker when present', () => {
+  it('uses WS-feed minute-resolution timestamps for the picker on live responses', () => {
     mockPrimary({
       capturedAt: '2026-05-12T18:40:00.000Z',
       spot: 7340,
@@ -464,6 +464,118 @@ describe('useGexLandscapeData — adapter behavior', () => {
       '2026-05-12T18:39:00.000Z',
       '2026-05-12T18:40:00.000Z',
     ]);
+  });
+
+  it('resets the cached picker list when expiry changes', () => {
+    // useGexStrikeExpirySpx is sticky-on-empty, so without an explicit
+    // reset the picker would briefly show the prior day's minute list
+    // against the new chain. Verifies the cache wipes on expiry change.
+    mockPrimary({
+      capturedAt: '2026-05-12T18:40:00.000Z',
+      spot: 7340,
+      strikes: [{ strike: 7350, gamma: 5000, charm: 0 }],
+      availableSlots: ['2026-05-12T18:30:00.000Z', '2026-05-12T18:40:00.000Z'],
+    });
+    const day1Timestamps = [
+      '2026-05-12T18:38:00.000Z',
+      '2026-05-12T18:39:00.000Z',
+      '2026-05-12T18:40:00.000Z',
+    ];
+    vi.mocked(useGexStrikeExpirySpx).mockReturnValue({
+      data: {
+        ticker: 'SPX',
+        expiry: '2026-05-12',
+        at: null,
+        rows: [],
+        timestamps: day1Timestamps,
+        asOf: '2026-05-12T18:40:30.000Z',
+      },
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+
+    // First render: day 1's live response populates the cache.
+    const { result, rerender } = renderHook(
+      ({ expiry }: { expiry: string }) =>
+        useGexLandscapeData(true, expiry, null),
+      { initialProps: { expiry: '2026-05-12' } },
+    );
+    expect(result.current.timestamps).toEqual(day1Timestamps);
+
+    // Day 2 fetch hasn't completed yet, so MM has new availableSlots
+    // but the sticky WS hook is still showing day 1's data.
+    mockPrimary({
+      capturedAt: '2026-05-13T18:40:00.000Z',
+      spot: 7350,
+      strikes: [{ strike: 7350, gamma: 5000, charm: 0 }],
+      availableSlots: ['2026-05-13T18:30:00.000Z'],
+    });
+    // WS hook still returns day-1 data (sticky-on-empty).
+
+    rerender({ expiry: '2026-05-13' });
+    // Picker must NOT show day-1's cached minutes; should fall back
+    // to MM availableSlots until the new live WS response lands.
+    expect(result.current.timestamps).not.toEqual(day1Timestamps);
+    expect(result.current.timestamps).toEqual(['2026-05-13T18:30:00.000Z']);
+  });
+
+  it('keeps the cached live picker list when a scrubbed WS response arrives', () => {
+    // Repro of the "scrub → Live transient flash" the reviewer flagged:
+    // after a scrub, `ws.data.timestamps` is truncated to `<= at`.
+    // The hook should ignore truncated lists for the picker so the
+    // dropdown doesn't briefly shrink between the Live click and the
+    // next live poll.
+    mockPrimary({
+      capturedAt: '2026-05-12T18:40:00.000Z',
+      spot: 7340,
+      strikes: [{ strike: 7350, gamma: 5000, charm: 0 }],
+      availableSlots: ['2026-05-12T18:30:00.000Z', '2026-05-12T18:40:00.000Z'],
+    });
+    const liveTimestamps = [
+      '2026-05-12T18:38:00.000Z',
+      '2026-05-12T18:39:00.000Z',
+      '2026-05-12T18:40:00.000Z',
+    ];
+
+    // First render: live WS response → cache populates.
+    vi.mocked(useGexStrikeExpirySpx).mockReturnValue({
+      data: {
+        ticker: 'SPX',
+        expiry: '2026-05-12',
+        at: null,
+        rows: [],
+        timestamps: liveTimestamps,
+        asOf: '2026-05-12T18:40:30.000Z',
+      },
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+
+    const { result, rerender } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-12'),
+    );
+    expect(result.current.timestamps).toEqual(liveTimestamps);
+
+    // Now simulate a scrubbed response landing: `at` is non-null and
+    // `timestamps` is truncated. The picker MUST still show the
+    // cached live list, not the truncated one.
+    vi.mocked(useGexStrikeExpirySpx).mockReturnValue({
+      data: {
+        ticker: 'SPX',
+        expiry: '2026-05-12',
+        at: '2026-05-12T18:39:00.000Z',
+        rows: [],
+        timestamps: ['2026-05-12T18:39:00.000Z'],
+        asOf: '2026-05-12T18:39:30.000Z',
+      },
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    rerender();
+    expect(result.current.timestamps).toEqual(liveTimestamps);
   });
 
   it('falls back to MM availableSlots when WS timestamps are empty', () => {
