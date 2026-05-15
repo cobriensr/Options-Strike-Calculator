@@ -58,6 +58,10 @@ import { formatBiasForClaude } from './formatters';
 import type { PriceTrend, Snapshot } from './types';
 
 const TOP5_MUTE_STORAGE_KEY = 'gex-landscape-top5-muted-v1';
+const TOP5_RANK_STORAGE_KEY = 'gex-landscape-top5-rank-by-v1';
+
+/** Ranking basis for the Top 5 tab: MM-attributed netGamma or naive OI sum. */
+type Top5RankBy = 'mm' | 'naive';
 
 function readTop5MutedFromStorage(): boolean {
   try {
@@ -72,6 +76,26 @@ function writeTop5MutedToStorage(muted: boolean): void {
   try {
     if (typeof window === 'undefined' || !window.localStorage) return;
     window.localStorage.setItem(TOP5_MUTE_STORAGE_KEY, muted ? '1' : '0');
+  } catch {
+    /* private mode / quota — keep in-memory state */
+  }
+}
+
+function readTop5RankByFromStorage(): Top5RankBy {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return 'mm';
+    return window.localStorage.getItem(TOP5_RANK_STORAGE_KEY) === 'naive'
+      ? 'naive'
+      : 'mm';
+  } catch {
+    return 'mm';
+  }
+}
+
+function writeTop5RankByToStorage(rankBy: Top5RankBy): void {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    window.localStorage.setItem(TOP5_RANK_STORAGE_KEY, rankBy);
   } catch {
     /* private mode / quota — keep in-memory state */
   }
@@ -223,6 +247,16 @@ const GexLandscape = memo(function GexLandscape({
       return next;
     });
   }, []);
+  // Top 5 ranking basis. Persisted to localStorage so the choice
+  // survives reloads — the trader's reading style typically settles
+  // on one of MM or Naive for the day.
+  const [top5RankBy, setTop5RankBy] = useState<Top5RankBy>(() =>
+    readTop5RankByFromStorage(),
+  );
+  const setTop5RankByPersisted = useCallback((next: Top5RankBy) => {
+    setTop5RankBy(next);
+    writeTop5RankByToStorage(next);
+  }, []);
 
   const currentPrice = strikes[0]?.price ?? 0;
 
@@ -235,14 +269,19 @@ const GexLandscape = memo(function GexLandscape({
     [strikes, currentPrice],
   );
 
-  // Top 5 strikes by |netGamma| across the entire chain — ignores PRICE_WINDOW
-  // so distant institutional walls surface even when they're far from spot.
-  // Sorted descending so the biggest wall appears first.
+  // Top 5 strikes across the entire chain — ignores PRICE_WINDOW so
+  // distant institutional walls surface even when they're far from
+  // spot. Ranking basis switches between MM-attributed netGamma and
+  // naive callGammaOi + putGammaOi via the in-tab toggle. The two
+  // rankings can diverge significantly — that disagreement is the
+  // reason this toggle exists.
   const topFive = useMemo(() => {
+    const rankKey = (s: GexStrikeLevel) =>
+      top5RankBy === 'naive' ? s.callGammaOi + s.putGammaOi : s.netGamma;
     return [...strikes]
-      .sort((a, b) => Math.abs(b.netGamma) - Math.abs(a.netGamma))
+      .sort((a, b) => Math.abs(rankKey(b)) - Math.abs(rankKey(a)))
       .slice(0, TOP_GEX_COUNT);
-  }, [strikes]);
+  }, [strikes, top5RankBy]);
 
   // Track Top 5 composition across polls so the trader gets a chime on
   // any set change and can see which strike is the session anchor vs.
@@ -252,9 +291,13 @@ const GexLandscape = memo(function GexLandscape({
     timestamp,
     isLive,
     muted: top5Muted,
-    // Reset the tracker on date change so strikes from the prior
-    // session don't get NEW pills against today's Top 5.
-    resetKey: selectedDate,
+    // Reset the tracker on date change OR when the user flips the
+    // MM↔Naive ranking basis. Without the ranking key in the reset
+    // signal, flipping the toggle would fire a chime for every
+    // newly-ranked strike (user-initiated reranking is not flow
+    // signal). Strike "age" also stops being comparable across
+    // ranking bases, so wiping oldestStrike on toggle is correct.
+    resetKey: `${selectedDate}|${top5RankBy}`,
   });
 
   // Find the strike closest to spot for the ATM indicator.
@@ -586,20 +629,60 @@ const GexLandscape = memo(function GexLandscape({
         hidden={activeTab !== 'top5'}
       >
         {activeTab === 'top5' && (
-          <StrikeTable
-            rows={topFive}
-            currentPrice={currentPrice}
-            spotStrike={spotStrike}
-            maxChanged10mStrike={maxChanged10mStrike}
-            maxChanged30mStrike={maxChanged30mStrike}
-            gexDelta10mMap={gexDelta10mMap}
-            gexDelta30mMap={gexDelta30mMap}
-            gammaPressureMap={gammaPressureMap}
-            spotRowRef={spotRowRef}
-            showAtmDistance
-            justEntered={justEntered}
-            oldestStrike={oldestStrike}
-          />
+          <>
+            <div
+              role="radiogroup"
+              aria-label="Top 5 ranking basis"
+              className="mb-2 flex items-center gap-1.5"
+            >
+              <span
+                className="font-mono text-[10px] font-semibold tracking-wider uppercase"
+                style={{ color: 'var(--color-tertiary)' }}
+              >
+                Rank by
+              </span>
+              {(['mm', 'naive'] as const).map((key) => {
+                const selected = top5RankBy === key;
+                const label = key === 'mm' ? 'MM Γ' : 'Naive Γ';
+                const title =
+                  key === 'mm'
+                    ? 'Rank by absolute MM-attributed netGamma (UW dealer math).'
+                    : 'Rank by absolute naive call+put OI gamma sum (WS feed, unattributed). Can highlight strikes MM ranking misses.';
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    onClick={() => setTop5RankByPersisted(key)}
+                    title={title}
+                    className={[
+                      'rounded border px-2 py-0.5 font-mono text-[10px] font-semibold tracking-wider uppercase transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/50',
+                      selected
+                        ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
+                        : 'text-muted hover:text-secondary border-transparent',
+                    ].join(' ')}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            <StrikeTable
+              rows={topFive}
+              currentPrice={currentPrice}
+              spotStrike={spotStrike}
+              maxChanged10mStrike={maxChanged10mStrike}
+              maxChanged30mStrike={maxChanged30mStrike}
+              gexDelta10mMap={gexDelta10mMap}
+              gexDelta30mMap={gexDelta30mMap}
+              gammaPressureMap={gammaPressureMap}
+              spotRowRef={spotRowRef}
+              showAtmDistance
+              justEntered={justEntered}
+              oldestStrike={oldestStrike}
+            />
+          </>
         )}
       </div>
       <ClassificationLegend />
