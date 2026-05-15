@@ -16,3 +16,4 @@ export * from './validation/lottery.js';
 export * from './validation/snapshot.js';
 export * from './validation/market-data.js';
 export * from './validation/opening-flow.js';
+export * from './validation/greek-heatmap.js';
