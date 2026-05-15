@@ -56,6 +56,7 @@ import DarkPoolLevels from './components/DarkPoolLevels';
 import { PeriscopePanel } from './components/Periscope/PeriscopePanel';
 import { OpeningFlowSignal } from './components/OpeningFlowSignal';
 import PinSetupTile from './components/PinSetupTile';
+import { SectionBox } from './components/ui';
 import VegaSpikeFeed from './components/VegaSpikeFeed/VegaSpikeFeed';
 import NotificationPermission from './components/NotificationPermission';
 import { CollapseAllContext } from './components/collapse-context';
@@ -827,22 +828,20 @@ export default function StrikeCalculator() {
                   liveEvents={market.data.events?.events}
                 />
 
-                <div id="sec-opening-flow" className="mt-6 scroll-mt-28">
-                  <OpeningFlowSignal />
-                </div>
-
-                <div id="sec-premarket" className="mt-6 scroll-mt-28">
-                  <PinSetupTile
-                    marketOpen={market.data.quotes?.marketOpen ?? false}
-                  />
+                <div id="sec-premarket" className="scroll-mt-28">
+                  <SectionBox label="Pre-Market Signals">
+                    <OpeningFlowSignal />
+                    <hr className="border-edge my-4" />
+                    <PinSetupTile
+                      marketOpen={market.data.quotes?.marketOpen ?? false}
+                    />
+                  </SectionBox>
                   {market.hasData && (
-                    <div className="mt-4">
-                      <PreMarketInput
-                        date={vix.selectedDate}
-                        spxPrice={results?.spot}
-                        prevClose={market.data.yesterday?.yesterday?.close}
-                      />
-                    </div>
+                    <PreMarketInput
+                      date={vix.selectedDate}
+                      spxPrice={results?.spot}
+                      prevClose={market.data.yesterday?.yesterday?.close}
+                    />
                   )}
                 </div>
 

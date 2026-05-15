@@ -15,24 +15,21 @@ export function OpeningFlowSignal(): React.ReactElement {
   const headerStatusLabel = describeStatus(data?.windowStatus, isWindowOpen);
 
   return (
-    <section
-      className="rounded-lg border border-slate-700 bg-slate-900/60 p-4"
-      aria-labelledby="opening-flow-heading"
-    >
-      <header className="mb-3 flex items-center justify-between">
-        <div>
-          <h2
+    <div aria-labelledby="opening-flow-heading">
+      <header className="mb-3 flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h3
             id="opening-flow-heading"
-            className="text-sm font-semibold tracking-wide text-slate-200 uppercase"
+            className="text-tertiary font-sans text-[11px] font-bold tracking-[0.08em] uppercase"
           >
             Opening Flow Signal
-          </h2>
-          <p className="mt-0.5 text-xs text-slate-400">
+          </h3>
+          <p className="text-muted mt-0.5 font-sans text-[10px]">
             V4 rule · SPY + QQQ · 0DTE · 08:30–08:45 CT window
           </p>
         </div>
         <span
-          className="rounded bg-slate-800 px-2 py-1 text-xs font-medium text-slate-300"
+          className="bg-chip-bg text-secondary rounded-full px-2 py-0.5 font-sans text-[10px] font-medium whitespace-nowrap"
           aria-live="polite"
         >
           {headerStatusLabel}
@@ -42,14 +39,14 @@ export function OpeningFlowSignal(): React.ReactElement {
       {error && (
         <div
           role="alert"
-          className="mb-3 rounded border border-red-800 bg-red-900/40 px-3 py-2 text-xs text-red-200"
+          className="mb-3 rounded border border-red-800 bg-red-900/30 px-3 py-2 text-xs text-red-200"
         >
           {error}
         </div>
       )}
 
       {!data && !isWindowOpen && (
-        <p className="text-xs text-slate-400">
+        <p className="text-secondary font-sans text-[11px]">
           Outside the signal window. The panel auto-updates between 08:25 and
           08:50 CT on trading days.
         </p>
@@ -70,7 +67,7 @@ export function OpeningFlowSignal(): React.ReactElement {
           ))}
         </div>
       )}
-    </section>
+    </div>
   );
 }
 

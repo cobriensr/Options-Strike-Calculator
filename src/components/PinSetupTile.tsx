@@ -156,13 +156,13 @@ export default memo(function PinSetupTile({ marketOpen }: Props) {
   }, [data, marketOpen]);
 
   return (
-    <div className="bg-surface border-edge rounded-[10px] border p-3 sm:p-3.5">
+    <div>
       {/* Header: title + state badge */}
       <div className="mb-2 flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase">
+          <h3 className="text-tertiary font-sans text-[11px] font-bold tracking-[0.08em] uppercase">
             0DTE Pin Setup
-          </div>
+          </h3>
           <div className="text-muted font-sans text-[10px]">
             Dealer +γ classifier ·{' '}
             {data?.mode === 'historical' ? 'historical' : 'live'}
