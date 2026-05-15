@@ -88,6 +88,7 @@ export function MinuteScrubber({ range, at, onChange }: MinuteScrubberProps) {
         }}
         className="min-w-[200px] flex-1 cursor-pointer accent-emerald-400"
         aria-label="Scrub to a past minute"
+        aria-valuetext={`${formatCTLabel(isoMinute(valueMs))} CT`}
       />
       {!isLive && (
         <button

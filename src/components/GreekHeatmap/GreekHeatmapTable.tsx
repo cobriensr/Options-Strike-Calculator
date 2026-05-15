@@ -42,32 +42,42 @@ function formatGreek(value: number): string {
 }
 
 /**
- * Build the inline `backgroundColor` for a heatmap cell. Alpha scales
- * with `|value| / max`. Green for positive, rose for negative.
- * Floor at 0.08 so non-zero cells are still visibly tinted even when
- * far below the column max.
+ * Build the inline `backgroundColor` + the matching text class for a
+ * heatmap cell as a single unit. Alpha scales with `|value| / max`
+ * (green for positive, rose for negative; floor 0.08 so non-zero
+ * cells stay visibly tinted even when far below the column max).
+ *
+ * Text color flips to near-black above alpha ≈ 0.45 to keep WCAG-AA
+ * contrast (4.5:1+) — the saturated emerald/rose at high alpha
+ * washes out white text on a neutral-900 surface. Below the
+ * crossover, the dark surface dominates and white reads cleanly.
+ *
+ * Combined into one helper so the crossover and the alpha formula
+ * can't drift out of sync if either is edited.
  */
-function cellBg(value: number, max: number): string | undefined {
-  if (max === 0 || value === 0) return undefined;
+function cellStyle(
+  value: number,
+  max: number,
+): { bg: string | undefined; textClass: string } {
+  if (max === 0 || value === 0) {
+    return { bg: undefined, textClass: 'text-neutral-100' };
+  }
   const intensity = Math.min(1, Math.abs(value) / max);
   const alpha = 0.08 + intensity * 0.7;
-  return value > 0
-    ? `rgba(34, 197, 94, ${alpha.toFixed(3)})` // emerald-500
-    : `rgba(244, 63, 94, ${alpha.toFixed(3)})`; // rose-500
+  const bg =
+    value > 0
+      ? `rgba(34, 197, 94, ${alpha.toFixed(3)})` // emerald-500
+      : `rgba(244, 63, 94, ${alpha.toFixed(3)})`; // rose-500
+  const textClass = alpha > 0.45 ? 'text-neutral-950' : 'text-neutral-100';
+  return { bg, textClass };
 }
 
-/**
- * Choose the cell text color to keep WCAG-AA contrast (4.5:1+) over
- * the rgba background built by `cellBg`. The crossover happens around
- * alpha ≈ 0.45 — above that the saturated emerald/rose washes out
- * white text on the neutral-900 surface. Below, the dark surface
- * dominates and white reads fine.
- */
-function cellTextColor(value: number, max: number): string {
-  if (max === 0 || value === 0) return 'text-neutral-100';
-  const intensity = Math.min(1, Math.abs(value) / max);
-  const alpha = 0.08 + intensity * 0.7;
-  return alpha > 0.45 ? 'text-neutral-950' : 'text-neutral-100';
+/** Replace the literal `.` in non-integer strikes (e.g. 562.5) with
+ *  `_` so the DOM id is selector-safe. `document.getElementById` is
+ *  fine with dots, but any future `querySelector('#heatmap-strike-...')`
+ *  would parse the dot as a class separator and silently fail. */
+function strikeRowId(strike: number): string {
+  return `heatmap-strike-${String(strike).replace('.', '_')}`;
 }
 
 export function GreekHeatmapTable({
@@ -128,10 +138,13 @@ export function GreekHeatmapTable({
             const strikeClass = isAtm
               ? 'font-semibold text-amber-200'
               : 'font-medium text-neutral-200';
+            const gammaStyle = cellStyle(s.netGamma, maxAbs.gamma);
+            const charmStyle = cellStyle(s.netCharm, maxAbs.charm);
+            const vannaStyle = cellStyle(s.netVanna, maxAbs.vanna);
             return (
               <tr
                 key={s.strike}
-                id={`heatmap-strike-${s.strike}`}
+                id={strikeRowId(s.strike)}
                 className={rowClass}
               >
                 <td className={`px-3 py-1.5 tabular-nums ${strikeClass}`}>
@@ -146,23 +159,26 @@ export function GreekHeatmapTable({
                   )}
                 </td>
                 <td
-                  className={`px-3 py-1.5 text-right tabular-nums ${cellTextColor(s.netGamma, maxAbs.gamma)}`}
-                  style={{ backgroundColor: cellBg(s.netGamma, maxAbs.gamma) }}
+                  className={`px-3 py-1.5 text-right tabular-nums ${gammaStyle.textClass}`}
+                  style={{ backgroundColor: gammaStyle.bg }}
                   title={tooltipFor('gamma', s.netGamma)}
+                  aria-label={`Gamma ${formatGreek(s.netGamma)}`}
                 >
                   {formatGreek(s.netGamma)}
                 </td>
                 <td
-                  className={`px-3 py-1.5 text-right tabular-nums ${cellTextColor(s.netCharm, maxAbs.charm)}`}
-                  style={{ backgroundColor: cellBg(s.netCharm, maxAbs.charm) }}
+                  className={`px-3 py-1.5 text-right tabular-nums ${charmStyle.textClass}`}
+                  style={{ backgroundColor: charmStyle.bg }}
                   title={tooltipFor('charm', s.netCharm)}
+                  aria-label={`Charm ${formatGreek(s.netCharm)}`}
                 >
                   {formatGreek(s.netCharm)}
                 </td>
                 <td
-                  className={`px-3 py-1.5 text-right tabular-nums ${cellTextColor(s.netVanna, maxAbs.vanna)}`}
-                  style={{ backgroundColor: cellBg(s.netVanna, maxAbs.vanna) }}
+                  className={`px-3 py-1.5 text-right tabular-nums ${vannaStyle.textClass}`}
+                  style={{ backgroundColor: vannaStyle.bg }}
                   title={tooltipFor('vanna', s.netVanna)}
+                  aria-label={`Vanna ${formatGreek(s.netVanna)}`}
                 >
                   {formatGreek(s.netVanna)}
                 </td>

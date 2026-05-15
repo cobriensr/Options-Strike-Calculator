@@ -75,14 +75,18 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
   const isViewingToday = selectedDate === today;
   const isLiveTip = scrubbedAt === null;
   // Date min/max bounds for the picker — 90-day floor matches the
-  // backfill window. min/max are inclusive.
+  // backfill window. Both bounds anchored to ET so the picker can't
+  // drift one calendar day ahead of `today` after the UTC midnight
+  // rollover (which fires at 19:00 ET — well before the user goes
+  // home). Without ET anchoring, after that flip the user could pick
+  // a "future" ET date and trigger the Historical badge for tomorrow.
   const dateBounds = useMemo(() => {
-    const todayDate = new Date();
-    const oldest = new Date();
-    oldest.setUTCDate(oldest.getUTCDate() - 90);
+    const todayET = getETDateStr(new Date());
+    const ninetyAgo = new Date();
+    ninetyAgo.setUTCDate(ninetyAgo.getUTCDate() - 90);
     return {
-      min: oldest.toISOString().slice(0, 10),
-      max: todayDate.toISOString().slice(0, 10),
+      min: getETDateStr(ninetyAgo),
+      max: todayET,
     };
   }, []);
 
@@ -105,7 +109,12 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
   });
 
   const onJumpToStrike = useCallback((strike: number) => {
-    const el = document.getElementById(`heatmap-strike-${strike}`);
+    // ID must match the row id pattern in GreekHeatmapTable
+    // (`strikeRowId`): `.` is replaced with `_` so the id is
+    // querySelector-safe even though getElementById tolerates dots.
+    const el = document.getElementById(
+      `heatmap-strike-${String(strike).replace('.', '_')}`,
+    );
     // jsdom and some older browsers don't implement scrollIntoView —
     // gate so the click handler never throws (the highlight state
     // below would otherwise never get set in test environments).

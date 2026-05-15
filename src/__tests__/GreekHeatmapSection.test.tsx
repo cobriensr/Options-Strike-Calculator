@@ -197,8 +197,9 @@ describe('GreekHeatmapSection', () => {
     // ATM badge only appears in the heatmap table.
     expect(screen.getByText('ATM')).toBeInTheDocument();
     // Strike values appear in BOTH the callout chips AND the heatmap
-    // rows — assert by row id to avoid ambiguity.
-    expect(document.getElementById('heatmap-strike-562.5')).not.toBeNull();
+    // rows — assert by row id to avoid ambiguity. Non-integer strikes
+    // (e.g. 562.5) use `_` instead of `.` so the id is selector-safe.
+    expect(document.getElementById('heatmap-strike-562_5')).not.toBeNull();
     expect(document.getElementById('heatmap-strike-560')).not.toBeNull();
     expect(document.getElementById('heatmap-strike-570')).not.toBeNull();
   });
