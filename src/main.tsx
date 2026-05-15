@@ -109,6 +109,7 @@ if (import.meta.env.PROD)
       { path: '/api/nope-intraday', method: 'GET' },
       { path: '/api/periscope-exposure', method: 'GET' },
       { path: '/api/periscope-strikes', method: 'GET' },
+      { path: '/api/pin-setup-status', method: 'GET' },
       { path: '/api/ml/trigger-analyze', method: 'POST' },
       { path: '/api/darkpool-levels', method: 'GET' },
       { path: '/api/alerts', method: 'GET' },

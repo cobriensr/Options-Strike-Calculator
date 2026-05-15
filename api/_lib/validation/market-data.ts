@@ -112,6 +112,32 @@ export const dealerRegimeQuerySchema = z
 export type DealerRegimeQuery = z.infer<typeof dealerRegimeQuerySchema>;
 
 // ============================================================
+// /api/pin-setup-status
+// ============================================================
+
+/**
+ * GET /api/pin-setup-status query params.
+ *
+ * Two modes:
+ *   - Live (no params): evaluates the latest 0DTE snapshot available.
+ *   - Historical (`date=YYYY-MM-DD`): evaluates the snapshot at the
+ *     first row >= 09:30 CT on that date and attaches an `outcome`
+ *     field carrying the day's settle and delta-to-magnet.
+ *
+ * Strict object — unknown params produce a clean 400.
+ */
+export const pinSetupQuerySchema = z
+  .object({
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+      .optional(),
+  })
+  .strict();
+
+export type PinSetupQuery = z.infer<typeof pinSetupQuerySchema>;
+
+// ============================================================
 // /api/iv-anomalies
 // ============================================================
 
