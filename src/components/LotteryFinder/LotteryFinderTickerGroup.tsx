@@ -6,9 +6,18 @@
  * Phase 3 of docs/superpowers/specs/ticker-rollup-2026-05-14.md.
  */
 
-import { memo, useCallback } from 'react';
+import { memo, useCallback, useMemo } from 'react';
 import type { ExitPolicy, LotteryFire } from './types.js';
 import { LotteryRow } from './LotteryRow.js';
+import {
+  computeRollupAggregates,
+  formatBiasLabel,
+  formatSpreadDuration,
+  formatTideLabel,
+  type Bias,
+  type RollupAlertSummary,
+  type TideAggregate,
+} from '../../utils/ticker-rollup-aggregates.js';
 
 interface LotteryFinderTickerGroupProps {
   ticker: string;
@@ -23,6 +32,19 @@ function formatPeakPct(v: number | null): string {
   if (v == null) return '—';
   const sign = v >= 0 ? '+' : '';
   return `${sign}${v.toFixed(1)}%`;
+}
+
+function biasChipClass(bias: Bias): string {
+  if (bias === 'bull') return 'bg-emerald-950/40 text-emerald-400';
+  if (bias === 'bear') return 'bg-red-950/40 text-red-400';
+  return 'bg-neutral-800 text-neutral-300';
+}
+
+function tideChipClass(align: TideAggregate['align']): string {
+  if (align === 'aligned') return 'bg-emerald-950/40 text-emerald-400';
+  if (align === 'counter') return 'bg-red-950/40 text-red-400';
+  if (align === 'unknown') return 'bg-neutral-900 text-neutral-500';
+  return 'bg-neutral-800 text-neutral-300';
 }
 
 function peakColorClass(v: number | null): string {
@@ -95,6 +117,25 @@ function LotteryFinderTickerGroupBase({
   const strikesSummary = formatStrikesSummary(fires);
   const lastHitCt = formatLastHitCt(fires);
 
+  const agg = useMemo(
+    () =>
+      computeRollupAggregates(
+        fires.map<RollupAlertSummary>((f) => ({
+          optionType: f.optionType,
+          mktTideDiff: f.macro.mktTideDiff,
+          directionGated: f.directionGated,
+          triggeredAt: f.triggerTimeCt,
+          strike: f.strike,
+        })),
+      ),
+    [fires],
+  );
+
+  const strikesWithSpread =
+    agg.strikeRange != null && strikesSummary
+      ? `${strikesSummary} (${agg.strikeRange.spreadPts}pt)`
+      : strikesSummary;
+
   return (
     <div className="overflow-hidden rounded border border-neutral-800 bg-neutral-950/40">
       <button
@@ -118,12 +159,42 @@ function LotteryFinderTickerGroupBase({
           <span className="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-neutral-200">
             {count} fire{count === 1 ? '' : 's'}
           </span>
-          {strikesSummary && (
+          {strikesWithSpread && (
             <span
               className="font-mono text-[11px] text-neutral-400"
               data-testid={`lottery-ticker-strikes-${ticker}`}
             >
-              {strikesSummary}
+              {strikesWithSpread}
+            </span>
+          )}
+          {agg.bias && (
+            <span
+              className={`rounded px-1.5 py-0.5 font-mono text-[11px] font-semibold ${biasChipClass(agg.bias)}`}
+              data-testid={`lottery-ticker-bias-${ticker}`}
+            >
+              {formatBiasLabel(agg.bias)}
+            </span>
+          )}
+          <span
+            className={`rounded px-1.5 py-0.5 font-mono text-[11px] font-semibold ${tideChipClass(agg.tide.align)}`}
+            data-testid={`lottery-ticker-tide-${ticker}`}
+          >
+            {formatTideLabel(agg.tide)}
+          </span>
+          {agg.spreadMinutes != null && (
+            <span
+              className="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-neutral-300"
+              data-testid={`lottery-ticker-density-${ticker}`}
+            >
+              {formatSpreadDuration(agg.spreadMinutes)}
+            </span>
+          )}
+          {agg.gatedCount > 0 && (
+            <span
+              className="rounded bg-amber-950/40 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-amber-400"
+              data-testid={`lottery-ticker-gated-${ticker}`}
+            >
+              {agg.gatedCount} gated
             </span>
           )}
         </div>

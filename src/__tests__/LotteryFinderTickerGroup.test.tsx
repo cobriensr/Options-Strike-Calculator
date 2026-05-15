@@ -368,4 +368,175 @@ describe('LotteryFinderTickerGroup', () => {
       'lottery-row-TSLA260514C00260000',
     ]);
   });
+
+  describe('aggregate chips', () => {
+    function makeFireWithTide(
+      mktTideDiff: number | null,
+      overrides: Partial<LotteryFire> = {},
+    ): LotteryFire {
+      const base = makeFire(overrides);
+      return { ...base, macro: { ...base.macro, mktTideDiff } };
+    }
+
+    it('renders bias=bull and tide=aligned for all-call + positive-tide group', () => {
+      const fires = [
+        makeFireWithTide(200, { optionChainId: 'TSLA260514C00250000' }),
+        makeFireWithTide(50, {
+          optionChainId: 'TSLA260514C00260000',
+          strike: 260,
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="TSLA"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(screen.getByTestId('lottery-ticker-bias-TSLA')).toHaveTextContent(
+        '↑ bull',
+      );
+      expect(screen.getByTestId('lottery-ticker-tide-TSLA')).toHaveTextContent(
+        'tide ↑ aligned',
+      );
+    });
+
+    it('renders tide=counter when bias and tide point opposite ways', () => {
+      const fires = [
+        makeFireWithTide(200, {
+          optionChainId: 'TSLA260514P00250000',
+          optionType: 'P',
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="TSLA"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(screen.getByTestId('lottery-ticker-tide-TSLA')).toHaveTextContent(
+        'tide ↑ counter',
+      );
+    });
+
+    it('renders the strikes summary with (Npt) spread suffix when ≥2 distinct strikes', () => {
+      const fires = [
+        makeFire({ optionChainId: 'TSLA260514C00250000', strike: 250 }),
+        makeFire({ optionChainId: 'TSLA260514C00260000', strike: 260 }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="TSLA"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.getByTestId('lottery-ticker-strikes-TSLA'),
+      ).toHaveTextContent('250C, 260C (10pt)');
+    });
+
+    it('renders the time-density chip when fires span >0 minutes', () => {
+      const fires = [
+        makeFire({
+          optionChainId: 'TSLA260514C00250000',
+          triggerTimeCt: '2026-05-14T19:30:00Z',
+        }),
+        makeFire({
+          optionChainId: 'TSLA260514C00260000',
+          strike: 260,
+          triggerTimeCt: '2026-05-14T19:38:00Z',
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="TSLA"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.getByTestId('lottery-ticker-density-TSLA'),
+      ).toHaveTextContent('Δ 8min');
+    });
+
+    it('omits the time-density chip for a single-fire group', () => {
+      const fires = [makeFire({ optionChainId: 'TSLA260514C00250000' })];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="TSLA"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.queryByTestId('lottery-ticker-density-TSLA'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('renders the gated chip only when at least one fire is direction-gated', () => {
+      const fires = [
+        makeFire({
+          optionChainId: 'TSLA260514C00250000',
+          directionGated: true,
+        }),
+        makeFire({
+          optionChainId: 'TSLA260514C00260000',
+          strike: 260,
+          directionGated: false,
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="TSLA"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(screen.getByTestId('lottery-ticker-gated-TSLA')).toHaveTextContent(
+        '1 gated',
+      );
+    });
+
+    it('omits the gated chip when no fires are direction-gated', () => {
+      const fires = [
+        makeFire({
+          optionChainId: 'TSLA260514C00250000',
+          directionGated: false,
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="TSLA"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.queryByTestId('lottery-ticker-gated-TSLA'),
+      ).not.toBeInTheDocument();
+    });
+  });
 });
