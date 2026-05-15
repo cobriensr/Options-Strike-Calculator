@@ -48,9 +48,14 @@ LOTTERY_V3_TICKERS = frozenset({
     'TEAM', 'RKLB', 'SOFI', 'RUTW', 'TSLA', 'SOXS', 'WULF', 'SLV',
     'SMH', 'UBER', 'MSTR', 'TQQQ', 'RIOT', 'SOXL', 'UNH', 'QQQ',
     'RBLX', 'SPY', 'IWM', 'SPXW',
-    # 2026-05-07 ticker-discovery batch (Option B audit additions)
+    # 2026-05-07 ticker-discovery batch
     'CRWV', 'IBIT', 'ARM', 'OKLO', 'APLD', 'IONQ',
     'HIMS', 'CAR', 'IREN', 'ASTS', 'NBIS', 'CRCL', 'LITE', 'NVTS',
+    # 2026-05-15 ticker-discovery batch (24-day parquet audit;
+    # docs/tmp/ticker-discovery-audit-2026-05-14.md). All cleared the
+    # >450-qualifying-fire bar that produced the prior batch.
+    'BE', 'AAOI', 'SHOP', 'BA', 'APP', 'POET',
+    'DELL', 'CVNA', 'RGTI', 'IBM', 'CSCO',
 })
 
 LOTTERY_EXTENDED_TICKERS = frozenset({
@@ -63,6 +68,9 @@ LOTTERY_EXTENDED_TICKERS = frozenset({
     # fire volume is on 1-3 DTE not 0DTE.
     'CRWV', 'IBIT', 'ARM', 'OKLO', 'APLD', 'IONQ',
     'HIMS', 'CAR', 'IREN', 'ASTS', 'NBIS', 'CRCL', 'LITE', 'NVTS',
+    # 2026-05-15 ticker-discovery batch: higher-volume names whose
+    # 0DTE flow is meaningful but 1-3 DTE concentration is higher.
+    'GME', 'TLT',
 })
 
 LOTTERY_MODE_B_IN_PLAY_PCT = 0.10

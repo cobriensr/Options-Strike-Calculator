@@ -109,12 +109,25 @@ export const LOTTERY_V3_TICKERS = [
   'CRCL',
   'LITE',
   'NVTS',
-  // Hand-added 2026-05-15 ahead of the next discovery-audit re-run.
-  // SEDG 54C 0DTE on 2026-05-15 had a textbook V3 setup (vol/OI 12.5x,
-  // ask% 55%, $58K single-leg premium burst, 3x mover) and would have
-  // cleared every threshold except universe membership. Will be
-  // re-validated against the next parquet-window audit.
-  'SEDG',
+  // Added 2026-05-15 from second-round discovery audit
+  // (docs/tmp/ticker-discovery-audit-2026-05-14.md): candidates that
+  // cleared the >450 qualifying-fires bar across the 24-day parquet
+  // window. BE/CVNA had been hovering near the bar through two
+  // audits and have now grown into it. AAOI/SHOP/BA/APP and the
+  // mega-caps (DELL/IBM/CSCO) represent the post-May earnings-season
+  // ramp in 0DTE flow. RGTI/POET round out the quantum/AI cohort
+  // alongside the 2026-05-07 IONQ/QBTS additions.
+  'BE',
+  'AAOI',
+  'SHOP',
+  'BA',
+  'APP',
+  'POET',
+  'DELL',
+  'CVNA',
+  'RGTI',
+  'IBM',
+  'CSCO',
 ] as const;
 
 /** Mode B extended ticker list (DTE 1-3 trend universe). */
@@ -168,6 +181,14 @@ export const LOTTERY_EXTENDED_TICKERS = [
   'CRCL',
   'LITE',
   'NVTS',
+  // Added 2026-05-15 from second-round discovery audit
+  // (docs/tmp/ticker-discovery-audit-2026-05-06.md): higher-liquidity
+  // names whose fires concentrate on 1-3 DTE chains rather than 0DTE.
+  // GME's flow is meme-driven and runs through the 1-3 DTE bucket
+  // around catalysts; TLT is rate-sensitive and trades on the same
+  // multi-day swing structure as the mega-cap peer cohort.
+  'GME',
+  'TLT',
 ] as const;
 
 // ============================================================
