@@ -49,6 +49,19 @@ export type GreekHeatmapSnapshot = {
   netGexK: number | null;
   chainStrikes: GreekHeatmapTopStrike[];
   topStrikes: GreekHeatmapTopStrike[];
+  /**
+   * Intraday timestamp coverage for this (ticker, expiry). Drives the
+   * scrubber bounds on the client: `min` and `max` give the first /
+   * last ts_minute we have on the chosen date; `count` distinguishes
+   * "intraday-rich" (>1) from "EOD only" (1) so the UI can disable
+   * the scrubber and badge the gap when no minute resolution exists.
+   * `null` when there's no data for the (ticker, expiry) pair.
+   */
+  intradayRange: {
+    min: string;
+    max: string;
+    count: number;
+  } | null;
 };
 
 export type GreekHeatmapNetFlow = {
@@ -86,9 +99,13 @@ export async function getGreekHeatmapSnapshot(
   ticker: string,
   expiry: string,
   today: string,
+  at: string | undefined = undefined,
 ): Promise<GreekHeatmapSnapshot> {
   const db = getDb();
   const isToday = expiry === today;
+  // `at` upper-bounds the per-strike snapshot when scrubbing. When
+  // null, we pull the latest row per strike (live tip).
+  const atCutoff = at ?? null;
 
   // For today, read the live WS feed (ws_gex_strike_expiry). For
   // historical dates, read the REST-backfilled archive
@@ -110,10 +127,11 @@ export async function getGreekHeatmapSnapshot(
         FROM ws_gex_strike_expiry
         WHERE ticker = ${ticker}
           AND expiry = ${expiry}::date
+          AND (${atCutoff}::timestamptz IS NULL
+               OR ts_minute <= ${atCutoff}::timestamptz)
         ORDER BY strike, ts_minute DESC
       `) as GexRow[])
-    : (
-        (await db`
+    : ((await db`
           SELECT DISTINCT ON (strike)
             strike,
             timestamp AS ts_minute,
@@ -127,9 +145,43 @@ export async function getGreekHeatmapSnapshot(
           FROM strike_exposures
           WHERE ticker = ${ticker}
             AND expiry = ${expiry}::date
+            AND (${atCutoff}::timestamptz IS NULL
+                 OR timestamp <= ${atCutoff}::timestamptz)
           ORDER BY strike, timestamp DESC
-        `) as GexRow[]
-      );
+        `) as GexRow[]);
+
+  // Intraday coverage probe — separate query so it's not gated by
+  // `at` (the scrubber needs to know the full available range, not
+  // just up to where it currently is). One row per distinct ts_minute,
+  // collapsed to min/max/count.
+  const rangeRows = isToday
+    ? ((await db`
+        SELECT
+          MIN(ts_minute)::text AS first,
+          MAX(ts_minute)::text AS last,
+          COUNT(DISTINCT ts_minute)::int AS distinct_count
+        FROM ws_gex_strike_expiry
+        WHERE ticker = ${ticker}
+          AND expiry = ${expiry}::date
+      `) as {
+        first: string | null;
+        last: string | null;
+        distinct_count: number;
+      }[])
+    : ((await db`
+          SELECT
+            MIN(timestamp)::text AS first,
+            MAX(timestamp)::text AS last,
+            COUNT(DISTINCT timestamp)::int AS distinct_count
+          FROM strike_exposures
+          WHERE ticker = ${ticker}
+            AND expiry = ${expiry}::date
+        `) as {
+        first: string | null;
+        last: string | null;
+        distinct_count: number;
+      }[]);
+  const intradayRange = buildIntradayRange(rangeRows[0]);
 
   if (rows.length === 0) {
     return {
@@ -141,6 +193,7 @@ export async function getGreekHeatmapSnapshot(
       netGexK: null,
       chainStrikes: [],
       topStrikes: [],
+      intradayRange,
     };
   }
 
@@ -234,6 +287,7 @@ export async function getGreekHeatmapSnapshot(
     netGexK,
     chainStrikes,
     topStrikes,
+    intradayRange,
   };
 }
 
@@ -301,4 +355,22 @@ function num(s: string | number | null | undefined): number | null {
   if (s == null) return null;
   const n = typeof s === 'number' ? s : Number.parseFloat(s);
   return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Exported for direct unit testing — the null-vs-empty distinction
+ * (Postgres aggregate returns one row with NULLs when zero source
+ * rows exist) is easy to get wrong and worth covering.
+ */
+export function buildIntradayRange(
+  range:
+    | { first: string | null; last: string | null; distinct_count: number }
+    | undefined,
+): GreekHeatmapSnapshot['intradayRange'] {
+  if (range?.first == null || range.last == null) return null;
+  return {
+    min: new Date(range.first).toISOString(),
+    max: new Date(range.last).toISOString(),
+    count: range.distinct_count,
+  };
 }

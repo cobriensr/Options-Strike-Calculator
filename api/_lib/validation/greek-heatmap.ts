@@ -55,6 +55,18 @@ export const greekHeatmapQuerySchema = z.object({
       message: 'date must be within the last 90 days',
     })
     .optional(),
+  // Optional intraday-scrub timestamp. When provided, the snapshot
+  // returns the latest row per strike where `ts_minute <= at`. When
+  // omitted, returns the latest row per strike (live tip). Format is
+  // ISO 8601 UTC with second precision; the validator just gates the
+  // shape, downstream code casts to ::timestamptz.
+  at: z
+    .string()
+    .regex(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/,
+      'at must be ISO 8601 UTC (YYYY-MM-DDTHH:MM:SSZ)',
+    )
+    .optional(),
 });
 
 export type GreekHeatmapQuery = z.infer<typeof greekHeatmapQuerySchema>;

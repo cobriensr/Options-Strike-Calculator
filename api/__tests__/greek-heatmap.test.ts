@@ -17,14 +17,18 @@ vi.mock('../_lib/logger.js', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-const { mockGuard } = vi.hoisted(() => ({ mockGuard: vi.fn() }));
+const { mockGuard, mockSetCacheHeaders } = vi.hoisted(() => ({
+  mockGuard: vi.fn(),
+  mockSetCacheHeaders: vi.fn(),
+}));
 
 vi.mock('../_lib/api-helpers.js', () => ({
   guardOwnerOrGuestEndpoint: mockGuard,
-  setCacheHeaders: vi.fn(),
+  setCacheHeaders: mockSetCacheHeaders,
 }));
 
 import handler from '../greek-heatmap.js';
+import { buildIntradayRange } from '../_lib/db-greek-heatmap.js';
 
 function gexRow(
   strike: number,
@@ -289,6 +293,83 @@ describe('greek-heatmap endpoint', () => {
     expect(res._status).toBe(400);
   });
 
+  it('rejects malformed `at` (non-ISO) with 400', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { ticker: 'SPY', at: 'not-an-iso' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(400);
+    const body = res._json as { issues: { message: string }[] };
+    expect(body.issues.some((i) => /ISO 8601 UTC/i.test(i.message))).toBe(true);
+  });
+
+  it('forwards `at` and emits `intradayRange` in the response', async () => {
+    // Three SQL calls in Promise.all interleave order: snapshot query,
+    // net-flow query, intradayRange probe.
+    mockSql
+      .mockResolvedValueOnce([
+        gexRow(
+          560,
+          100_000,
+          1000,
+          200,
+          0,
+          0,
+          0,
+          '562.50',
+          '2026-05-15T16:00:00Z',
+        ),
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          first: '2026-05-15 13:30:00+00',
+          last: '2026-05-15 20:00:00+00',
+          distinct_count: 391,
+        },
+      ]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { ticker: 'SPY', at: '2026-05-15T15:00:00.000Z' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      at: string | null;
+      intradayRange: { min: string; max: string; count: number } | null;
+    };
+    expect(body.at).toBe('2026-05-15T15:00:00.000Z');
+    expect(body.intradayRange).not.toBeNull();
+    expect(body.intradayRange!.count).toBe(391);
+    expect(body.intradayRange!.min).toMatch(/^2026-05-15T13:30:00/);
+  });
+
+  it('cache headers: 30s/60s for live tip', async () => {
+    mockSql.mockResolvedValue([]);
+    const req = mockRequest({ method: 'GET', query: { ticker: 'SPY' } });
+    const res = mockResponse();
+    await handler(req, res);
+    // Live tip = today's date + no `at` set → short TTL.
+    expect(mockSetCacheHeaders).toHaveBeenCalledWith(res, 30, 60);
+  });
+
+  it('cache headers: 3600s/60s when scrubbed via `at`', async () => {
+    mockSql.mockResolvedValue([]);
+    const req = mockRequest({
+      method: 'GET',
+      query: { ticker: 'SPY', at: '2026-05-15T15:00:00.000Z' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    // Scrubbed = pinned to a past minute → long TTL.
+    expect(mockSetCacheHeaders).toHaveBeenCalledWith(res, 3600, 60);
+  });
+
   it('returns chainStrikes window centered on the ATM strike', async () => {
     mockSql
       .mockResolvedValueOnce([
@@ -369,5 +450,33 @@ describe('greek-heatmap endpoint', () => {
     // topStrikes still independently sorts by |netGamma| DESC, top-5.
     expect(body.topStrikes).toHaveLength(5);
     expect(body.atmStrike).toBe(460);
+  });
+});
+
+describe('buildIntradayRange', () => {
+  it('returns null when the aggregate row has null first/last (zero source rows)', () => {
+    expect(buildIntradayRange(undefined)).toBeNull();
+    expect(
+      buildIntradayRange({ first: null, last: null, distinct_count: 0 }),
+    ).toBeNull();
+    expect(
+      buildIntradayRange({
+        first: '2026-05-15 13:30:00+00',
+        last: null,
+        distinct_count: 1,
+      }),
+    ).toBeNull();
+  });
+
+  it('normalizes Postgres ::text output through new Date().toISOString()', () => {
+    const out = buildIntradayRange({
+      first: '2026-05-15 13:30:00+00',
+      last: '2026-05-15 20:00:00+00',
+      distinct_count: 391,
+    });
+    expect(out).not.toBeNull();
+    expect(out!.min).toMatch(/^2026-05-15T13:30:00/);
+    expect(out!.max).toMatch(/^2026-05-15T20:00:00/);
+    expect(out!.count).toBe(391);
   });
 });

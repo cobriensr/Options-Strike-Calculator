@@ -41,9 +41,16 @@ export interface GreekHeatmapNetFlow {
   asOf: string;
 }
 
+export interface GreekHeatmapIntradayRange {
+  min: string;
+  max: string;
+  count: number;
+}
+
 export interface GreekHeatmapResponse {
   ticker: string;
   date: string;
+  at: string | null;
   asOf: string | null;
   underlyingPrice: number | null;
   atmStrike: number | null;
@@ -51,6 +58,7 @@ export interface GreekHeatmapResponse {
   netGexK: number | null;
   chainStrikes: GreekHeatmapTopStrike[];
   topStrikes: GreekHeatmapTopStrike[];
+  intradayRange: GreekHeatmapIntradayRange | null;
   netFlow: GreekHeatmapNetFlow | null;
 }
 
@@ -62,8 +70,15 @@ interface UseGreekHeatmapArgs {
    */
   date?: string;
   /**
+   * Optional intraday scrub timestamp (ISO 8601 UTC). When omitted,
+   * the response returns the latest snapshot ("live tip"). When set,
+   * the snapshot is pinned to the latest row per strike where
+   * `ts_minute <= at`.
+   */
+  at?: string;
+  /**
    * When false, the hook fetches once on arg change but stops polling.
-   * Typical usage: pass `marketOpen && sectionExpanded && viewingToday`.
+   * Typical usage: pass `marketOpen && viewing-today && live-tip`.
    */
   enabled: boolean;
 }
@@ -79,6 +94,7 @@ const INITIAL_STATE: State = { data: null, loading: true, error: null };
 export function useGreekHeatmap({
   ticker,
   date,
+  at,
   enabled,
 }: UseGreekHeatmapArgs): State & {
   refetch: () => void;
@@ -106,6 +122,7 @@ export function useGreekHeatmap({
     try {
       const params = new URLSearchParams({ ticker });
       if (date) params.set('date', date);
+      if (at) params.set('at', at);
       const res = await fetchWithRetry(`/api/greek-heatmap?${params}`, {
         credentials: 'include',
         signal: ctrl.signal,
@@ -131,7 +148,7 @@ export function useGreekHeatmap({
       const msg = err instanceof Error ? err.message : 'unknown fetch error';
       setState({ data: null, loading: false, error: msg });
     }
-  }, [ticker, date]);
+  }, [ticker, date, at]);
 
   useEffect(() => {
     fetchOnce();

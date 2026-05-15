@@ -32,6 +32,7 @@ import { getETDateStr } from '../../utils/timezone';
 import { SectionBox } from '../ui/SectionBox';
 
 import { GreekHeatmapTable } from './GreekHeatmapTable';
+import { MinuteScrubber } from './MinuteScrubber';
 import { NetFlowRow } from './NetFlowRow';
 import { PriceChip } from './PriceChip';
 import { RegimeChip } from './RegimeChip';
@@ -60,6 +61,9 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
   const [selectedDate, setSelectedDate] = useState<string>(() =>
     getETDateStr(new Date()),
   );
+  // ISO 8601 UTC of the scrubbed minute, or null = LIVE (latest).
+  // Default LIVE; the MinuteScrubber flips it when the user drags.
+  const [scrubbedAt, setScrubbedAt] = useState<string | null>(null);
   const [highlightedStrike, setHighlightedStrike] = useState<number | null>(
     null,
   );
@@ -69,6 +73,7 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
 
   const today = useMemo(() => getETDateStr(new Date()), []);
   const isViewingToday = selectedDate === today;
+  const isLiveTip = scrubbedAt === null;
   // Date min/max bounds for the picker — 90-day floor matches the
   // backfill window. min/max are inclusive.
   const dateBounds = useMemo(() => {
@@ -81,12 +86,22 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
     };
   }, []);
 
+  // Reset the scrubber to LIVE when the ticker or date changes — the
+  // prior scrubbedAt was indexed against a different (ticker, date)
+  // pair and would either return empty or, worse, look like it's
+  // showing the new ticker at that timestamp.
+  useEffect(() => {
+    setScrubbedAt(null);
+  }, [ticker, selectedDate]);
+
   const { data, loading, error, refetch } = useGreekHeatmap({
     ticker,
     date: isViewingToday ? undefined : selectedDate,
-    // Polling only matters when viewing today. Historical dates fetch
-    // once on date/ticker change and stop.
-    enabled: marketOpen && isViewingToday,
+    at: scrubbedAt ?? undefined,
+    // Polling only matters when viewing today AND tracking the live
+    // tip (not scrubbed back). Historical dates and scrubbed minutes
+    // fetch once and stop — the data they show doesn't change.
+    enabled: marketOpen && isViewingToday && isLiveTip,
   });
 
   const onJumpToStrike = useCallback((strike: number) => {
@@ -157,6 +172,14 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
           </span>
         )}
       </div>
+
+      {data !== null && (
+        <MinuteScrubber
+          range={data.intradayRange}
+          at={scrubbedAt}
+          onChange={setScrubbedAt}
+        />
+      )}
 
       {data !== null && data.topStrikes.length > 0 && (
         <TopStrikesCallout

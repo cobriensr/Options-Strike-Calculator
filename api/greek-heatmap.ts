@@ -57,7 +57,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
       return;
     }
-    const { ticker, date } = parsed.data;
+    const { ticker, date, at } = parsed.data;
 
     // Default = ET-today for the live read. Historical dates (within
     // the 90-day Zod-enforced window) route through the same query
@@ -67,14 +67,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const expiry = date ?? today;
 
     const [snapshot, netFlow] = await Promise.all([
-      getGreekHeatmapSnapshot(ticker, expiry, today),
+      getGreekHeatmapSnapshot(ticker, expiry, today, at),
       getGreekHeatmapNetFlow(ticker, expiry, today),
     ]);
 
-    // Today's data refreshes minutely; historical data is static.
-    // Cache headers reflect that — historical snapshots can sit in
-    // the edge for an hour without losing accuracy.
-    if (expiry === today) {
+    // Today + live (no `at`) refreshes minutely; historical or
+    // scrubbed-to-a-fixed-minute data is static within the chosen
+    // window. Cache headers reflect that — anything pinned to a past
+    // minute can sit in the edge for an hour.
+    const isLiveTip = expiry === today && at === undefined;
+    if (isLiveTip) {
       setCacheHeaders(res, 30, 60);
     } else {
       setCacheHeaders(res, 3600, 60);
@@ -82,6 +84,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(200).json({
       ticker,
       date: expiry,
+      at: at ?? null,
       asOf: snapshot.asOf,
       underlyingPrice: snapshot.underlyingPrice,
       atmStrike: snapshot.atmStrike,
@@ -89,6 +92,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       netGexK: snapshot.netGexK,
       chainStrikes: snapshot.chainStrikes,
       topStrikes: snapshot.topStrikes,
+      intradayRange: snapshot.intradayRange,
       netFlow,
     });
   } catch (err) {

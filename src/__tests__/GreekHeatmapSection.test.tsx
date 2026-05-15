@@ -59,6 +59,7 @@ function makeData(
   return {
     ticker: 'SPY',
     date: '2026-05-15',
+    at: null,
     asOf: '2026-05-15T16:30:00Z',
     underlyingPrice: 562.5,
     atmStrike: 562.5,
@@ -66,6 +67,11 @@ function makeData(
     netGexK: 1591.2,
     chainStrikes: topStrikes,
     topStrikes,
+    intradayRange: {
+      min: '2026-05-15T13:30:00Z',
+      max: '2026-05-15T16:30:00Z',
+      count: 181,
+    },
     netFlow: {
       cumulativeCallPrem: 1716,
       cumulativeCallVol: 6,
@@ -100,10 +106,11 @@ describe('GreekHeatmapSection', () => {
     expect(screen.getByText('$562.50')).toBeInTheDocument();
   });
 
-  it('shows the Long Γ regime chip with magnitude', () => {
+  it('shows the Long Γ regime chip with magnitude scaled to M/B', () => {
     render(<GreekHeatmapSection marketOpen={true} />);
     expect(screen.getByText('Long Γ')).toBeInTheDocument();
-    expect(screen.getByText('+1591.2k')).toBeInTheDocument();
+    // netGexK = 1591.2 (thousands of dollars = $1.59M) renders as $1.6M.
+    expect(screen.getByText('+$1.6M')).toBeInTheDocument();
   });
 
   it('renders the ticker dropdown with SPY selected by default', () => {
@@ -251,5 +258,61 @@ describe('GreekHeatmapSection', () => {
       | { enabled: boolean }
       | undefined;
     expect(firstCall?.enabled).toBe(false);
+  });
+
+  it('renders the minute scrubber in LIVE mode by default', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+    expect(
+      screen.getByLabelText(/scrub to a past minute/i),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/^live$/i)).toBeInTheDocument();
+  });
+
+  it('disables the scrubber when intradayRange.count <= 1', () => {
+    mockUseGreekHeatmap.mockReturnValue({
+      data: makeData({
+        intradayRange: {
+          min: '2026-05-15T20:00:00Z',
+          max: '2026-05-15T20:00:00Z',
+          count: 1,
+        },
+      }),
+      loading: false,
+      error: null,
+      refetch: mockRefetch,
+    });
+    render(<GreekHeatmapSection marketOpen={true} />);
+    expect(screen.getByText(/no intraday data/i)).toBeInTheDocument();
+    expect(
+      screen.queryByLabelText(/scrub to a past minute/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('scrubbing to a past minute disables polling and passes `at` to the hook', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+    const slider = screen.getByLabelText(
+      /scrub to a past minute/i,
+    ) as HTMLInputElement;
+    // Drag to the minimum (start of intraday range).
+    fireEvent.change(slider, { target: { value: slider.min } });
+    const lastCall = mockUseGreekHeatmap.mock.calls.at(-1)?.[0] as
+      | { at?: string; enabled: boolean }
+      | undefined;
+    expect(lastCall?.at).toBe('2026-05-15T13:30:00.000Z');
+    expect(lastCall?.enabled).toBe(false);
+  });
+
+  it('Jump to live button resets scrubbedAt to null', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+    const slider = screen.getByLabelText(
+      /scrub to a past minute/i,
+    ) as HTMLInputElement;
+    fireEvent.change(slider, { target: { value: slider.min } });
+    const jumpBtn = screen.getByRole('button', { name: /jump to live/i });
+    fireEvent.click(jumpBtn);
+    const lastCall = mockUseGreekHeatmap.mock.calls.at(-1)?.[0] as
+      | { at?: string }
+      | undefined;
+    expect(lastCall?.at).toBeUndefined();
   });
 });
