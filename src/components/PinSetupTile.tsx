@@ -1,6 +1,6 @@
 /**
- * PinSetupTile — full-card widget in PreTradeSignals that surfaces the
- * /api/pin-setup-status classification.
+ * PinSetupTile — full-card widget rendered in the Pre-Market section
+ * that surfaces the /api/pin-setup-status classification.
  *
  * Features:
  *   - Status badge (ARMED / WATCH / NOT_TRIGGERED) with semantic color
@@ -14,12 +14,12 @@
  */
 
 import { memo, useMemo } from 'react';
-import { theme } from '../../themes';
-import { tint } from '../../utils/ui-utils';
+import { theme } from '../themes';
+import { tint } from '../utils/ui-utils';
 import {
   usePinSetupStatus,
   type PinSetupStatus,
-} from '../../hooks/usePinSetupStatus';
+} from '../hooks/usePinSetupStatus';
 
 const STALE_MINUTES_THRESHOLD = 30;
 

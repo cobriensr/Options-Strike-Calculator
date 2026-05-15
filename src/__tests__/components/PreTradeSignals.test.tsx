@@ -1,20 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
-
-// Stub the pin-setup hook so these tests don't exercise the network
-// path — the tile renders, but its content is opaque here. A dedicated
-// PinSetupTile.test.tsx covers the tile's behavior in detail.
-vi.mock('../../hooks/usePinSetupStatus', () => ({
-  usePinSetupStatus: () => ({
-    data: null,
-    loading: false,
-    error: null,
-    date: null,
-    setDate: vi.fn(),
-    refresh: vi.fn(),
-  }),
-}));
-
 import PreTradeSignals from '../../components/PreTradeSignals';
 import type {
   QuotesResponse,
@@ -114,18 +99,11 @@ function makeMovers(
 // ============================================================
 
 describe('PreTradeSignals', () => {
-  it('always renders the section + PinSetupTile even when other data is null', () => {
-    render(
-      <PreTradeSignals
-        quotes={null}
-        yesterday={null}
-        movers={null}
-        marketOpen={false}
-      />,
+  it('renders nothing when all data is null', () => {
+    const { container } = render(
+      <PreTradeSignals quotes={null} yesterday={null} movers={null} />,
     );
-    // Section heading + the always-on pin-setup tile
-    expect(screen.getByText('Pre-Trade Signals')).toBeInTheDocument();
-    expect(screen.getByText('0DTE Pin Setup')).toBeInTheDocument();
+    expect(container.innerHTML).toBe('');
   });
 
   it('renders the section heading when signals exist', () => {
@@ -134,7 +112,6 @@ describe('PreTradeSignals', () => {
         quotes={makeQuotes()}
         yesterday={makeYesterday()}
         movers={null}
-        marketOpen={true}
       />,
     );
     expect(screen.getByText('Pre-Trade Signals')).toBeInTheDocument();
@@ -152,7 +129,6 @@ describe('PreTradeSignals', () => {
           quotes={makeQuotes({ vix: { prevClose: 20 } })}
           yesterday={makeYesterday(0.5)}
           movers={null}
-          marketOpen={false}
         />,
       );
       expect(screen.getByText('PREMIUM RICH')).toBeInTheDocument();
@@ -167,7 +143,6 @@ describe('PreTradeSignals', () => {
           quotes={makeQuotes({ vix: { prevClose: 15 } })}
           yesterday={makeYesterday(0.9)}
           movers={null}
-          marketOpen={false}
         />,
       );
       expect(screen.getByText('FAIR VALUE')).toBeInTheDocument();
@@ -181,7 +156,6 @@ describe('PreTradeSignals', () => {
           quotes={makeQuotes({ vix: { prevClose: 12 } })}
           yesterday={makeYesterday(1.5)}
           movers={null}
-          marketOpen={false}
         />,
       );
       expect(screen.getByText('PREMIUM CHEAP')).toBeInTheDocument();
@@ -193,7 +167,6 @@ describe('PreTradeSignals', () => {
           quotes={makeQuotes()}
           yesterday={null}
           movers={null}
-          marketOpen={false}
         />,
       );
       expect(
@@ -213,7 +186,6 @@ describe('PreTradeSignals', () => {
           quotes={makeQuotes({ spx: { open: 5790, prevClose: 5780 } })}
           yesterday={null}
           movers={null}
-          marketOpen={false}
         />,
       );
       expect(screen.getByText('FLAT OPEN')).toBeInTheDocument();
@@ -227,7 +199,6 @@ describe('PreTradeSignals', () => {
           quotes={makeQuotes({ spx: { open: 5025, prevClose: 5000 } })}
           yesterday={null}
           movers={null}
-          marketOpen={false}
         />,
       );
       expect(screen.getByText('MODERATE GAP')).toBeInTheDocument();
@@ -241,7 +212,6 @@ describe('PreTradeSignals', () => {
           quotes={makeQuotes({ spx: { open: 4950, prevClose: 5000 } })}
           yesterday={null}
           movers={null}
-          marketOpen={false}
         />,
       );
       expect(screen.getByText('LARGE GAP')).toBeInTheDocument();
@@ -256,7 +226,6 @@ describe('PreTradeSignals', () => {
           quotes={makeQuotes({ spx: { open: 5050, prevClose: 5000 } })}
           yesterday={null}
           movers={null}
-          marketOpen={false}
         />,
       );
       expect(screen.getByText('LARGE GAP')).toBeInTheDocument();
@@ -275,12 +244,7 @@ describe('PreTradeSignals', () => {
         asOf: '2026-03-12T10:00:00Z',
       };
       render(
-        <PreTradeSignals
-          quotes={quotes}
-          yesterday={null}
-          movers={null}
-          marketOpen={false}
-        />,
+        <PreTradeSignals quotes={quotes} yesterday={null} movers={null} />,
       );
       expect(screen.queryByText('Overnight Gap')).not.toBeInTheDocument();
     });
@@ -296,7 +260,6 @@ describe('PreTradeSignals', () => {
           quotes={null}
           yesterday={null}
           movers={makeMovers({ concentrated: true, megaCapCount: 1 })}
-          marketOpen={false}
         />,
       );
       expect(screen.getByText('CONCENTRATED')).toBeInTheDocument();
@@ -309,7 +272,6 @@ describe('PreTradeSignals', () => {
           quotes={null}
           yesterday={null}
           movers={makeMovers({ concentrated: false, bias: 'mixed' })}
-          marketOpen={false}
         />,
       );
       expect(screen.getByText('BROAD / MIXED')).toBeInTheDocument();
@@ -321,7 +283,6 @@ describe('PreTradeSignals', () => {
           quotes={null}
           yesterday={null}
           movers={makeMovers({ concentrated: false, bias: 'bullish' })}
-          marketOpen={false}
         />,
       );
       expect(screen.getByText('BROAD RALLY')).toBeInTheDocument();
@@ -334,7 +295,6 @@ describe('PreTradeSignals', () => {
           quotes={null}
           yesterday={null}
           movers={makeMovers({ concentrated: false, bias: 'bearish' })}
-          marketOpen={false}
         />,
       );
       expect(screen.getByText('BROAD SELLOFF')).toBeInTheDocument();
@@ -342,14 +302,7 @@ describe('PreTradeSignals', () => {
     });
 
     it('does not render when movers is null', () => {
-      render(
-        <PreTradeSignals
-          quotes={null}
-          yesterday={null}
-          movers={null}
-          marketOpen={false}
-        />,
-      );
+      render(<PreTradeSignals quotes={null} yesterday={null} movers={null} />);
       expect(screen.queryByText('Move Breadth')).not.toBeInTheDocument();
     });
 
@@ -369,12 +322,7 @@ describe('PreTradeSignals', () => {
         asOf: '2026-03-12T10:00:00Z',
       };
       render(
-        <PreTradeSignals
-          quotes={null}
-          yesterday={null}
-          movers={emptyMovers}
-          marketOpen={false}
-        />,
+        <PreTradeSignals quotes={null} yesterday={null} movers={emptyMovers} />,
       );
       expect(screen.queryByText('Move Breadth')).not.toBeInTheDocument();
     });
@@ -392,7 +340,6 @@ describe('PreTradeSignals', () => {
         })}
         yesterday={makeYesterday(0.5)}
         movers={makeMovers({ concentrated: true })}
-        marketOpen={false}
       />,
     );
     expect(screen.getByText('Realized vs. Implied Vol')).toBeInTheDocument();

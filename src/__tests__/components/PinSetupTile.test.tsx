@@ -7,7 +7,7 @@ vi.mock('../../hooks/usePinSetupStatus', () => ({
   usePinSetupStatus: () => mockUsePinSetupStatus(),
 }));
 
-import PinSetupTile from '../../components/PreTradeSignals/PinSetupTile';
+import PinSetupTile from '../../components/PinSetupTile';
 import type { PinSetupStatus } from '../../hooks/usePinSetupStatus';
 
 const SETDATE = vi.fn();

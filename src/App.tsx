@@ -55,6 +55,7 @@ import { IntervalBAFeed } from './components/IntervalBAFeed/IntervalBAFeed';
 import DarkPoolLevels from './components/DarkPoolLevels';
 import { PeriscopePanel } from './components/Periscope/PeriscopePanel';
 import { OpeningFlowSignal } from './components/OpeningFlowSignal';
+import PinSetupTile from './components/PinSetupTile';
 import VegaSpikeFeed from './components/VegaSpikeFeed/VegaSpikeFeed';
 import NotificationPermission from './components/NotificationPermission';
 import { CollapseAllContext } from './components/collapse-context';
@@ -830,15 +831,20 @@ export default function StrikeCalculator() {
                   <OpeningFlowSignal />
                 </div>
 
-                {market.hasData && (
-                  <div id="sec-premarket" className="mt-6 scroll-mt-28">
-                    <PreMarketInput
-                      date={vix.selectedDate}
-                      spxPrice={results?.spot}
-                      prevClose={market.data.yesterday?.yesterday?.close}
-                    />
-                  </div>
-                )}
+                <div id="sec-premarket" className="mt-6 scroll-mt-28">
+                  <PinSetupTile
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
+                  />
+                  {market.hasData && (
+                    <div className="mt-4">
+                      <PreMarketInput
+                        date={vix.selectedDate}
+                        spxPrice={results?.spot}
+                        prevClose={market.data.yesterday?.yesterday?.close}
+                      />
+                    </div>
+                  )}
+                </div>
 
                 <div className="mt-6 grid grid-cols-1 items-stretch gap-4 [&>*]:mt-0">
                   <div id="sec-advanced" className="scroll-mt-28">
