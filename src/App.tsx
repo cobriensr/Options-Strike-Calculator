@@ -147,6 +147,11 @@ const LotteryFinderSection = lazy(() =>
     .then((m) => ({ default: m.LotteryFinderSection }))
     .catch(handleStaleChunk),
 );
+const GreekHeatmapSection = lazy(() =>
+  import('./components/GreekHeatmap/GreekHeatmapSection')
+    .then((m) => ({ default: m.GreekHeatmapSection }))
+    .catch(handleStaleChunk),
+);
 const SilentBoomSection = lazy(() =>
   import('./components/SilentBoom/SilentBoomSection')
     .then((m) => ({ default: m.SilentBoomSection }))
@@ -652,6 +657,7 @@ export default function StrikeCalculator() {
             { id: 'sec-dealer-regime', label: 'Dealer Regime' },
             { id: 'sec-strike-battle-map', label: 'Strike Battle Map' },
             { id: 'sec-lottery-finder', label: 'Lottery Finder' },
+            { id: 'sec-greek-heatmap', label: 'Greek Heatmap' },
             { id: 'sec-silent-boom', label: 'Silent Boom' },
           ]
         : []),
@@ -1063,6 +1069,17 @@ export default function StrikeCalculator() {
                   fallback={<SkeletonSection lines={5} />}
                 >
                   <LotteryFinderSection
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
+                  />
+                </GatedSection>
+
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-greek-heatmap"
+                  label="0DTE Greek Heatmap"
+                  fallback={<SkeletonSection lines={5} />}
+                >
+                  <GreekHeatmapSection
                     marketOpen={market.data.quotes?.marketOpen ?? false}
                   />
                 </GatedSection>
