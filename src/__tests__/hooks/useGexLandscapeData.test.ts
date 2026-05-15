@@ -358,7 +358,7 @@ describe('useGexLandscapeData — adapter behavior', () => {
     expect(result.current.gexDelta15mMap.size).toBe(0);
   });
 
-  it('builds naiveDelta10m / naiveDelta30m maps from server-computed WS fields', () => {
+  it('builds naive 1m / 5m / 10m / 30m maps from server-computed WS fields', () => {
     mockPrimary({
       capturedAt: '2026-05-12T18:40:00.000Z',
       spot: 7340,
@@ -371,17 +371,23 @@ describe('useGexLandscapeData — adapter behavior', () => {
     mockWs([
       makeWsRow({
         strike: 7350,
+        gamma_delta_1m: 2.4,
+        gamma_delta_5m: 7,
         gamma_delta_10m: 12.5,
         gamma_delta_30m: -8,
       }),
-      // 7360 absent from WS → both maps return null for it
+      // 7360 absent from WS → all four maps return null for it
     ]);
 
     const { result } = renderHook(() =>
       useGexLandscapeData(true, '2026-05-12'),
     );
+    expect(result.current.naiveDelta1mMap.get(7350)).toBe(2.4);
+    expect(result.current.naiveDelta5mMap.get(7350)).toBe(7);
     expect(result.current.naiveDelta10mMap.get(7350)).toBe(12.5);
     expect(result.current.naiveDelta30mMap.get(7350)).toBe(-8);
+    expect(result.current.naiveDelta1mMap.get(7360)).toBeNull();
+    expect(result.current.naiveDelta5mMap.get(7360)).toBeNull();
     expect(result.current.naiveDelta10mMap.get(7360)).toBeNull();
     expect(result.current.naiveDelta30mMap.get(7360)).toBeNull();
   });

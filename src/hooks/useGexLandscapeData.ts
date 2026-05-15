@@ -45,16 +45,19 @@ export interface UseGexLandscapeDataReturn {
   gexDelta15mMap: Map<number, number | null>;
   gexDelta30mMap: Map<number, number | null>;
   /**
-   * Naive per-strike Δ% over 10m / 30m, sourced from the WS feed's
-   * server-computed `gamma_delta_10m` / `gamma_delta_30m` (SQL `LAG()`
-   * over `ws_gex_strike_expiry.ts_minute`). Used by the BiasPanel's
-   * naive sub-readouts. Empty map when WS data is missing.
+   * Naive per-strike Δ% sourced from the WS feed's server-computed
+   * `gamma_delta_*m` fields (SQL `LAG()` over
+   * `ws_gex_strike_expiry.ts_minute`). 1m / 5m / 10m are the fast-cadence
+   * windows that MM data cannot expose (periscope cadence is 10 min);
+   * 30m is the session-scale window used by the BiasPanel.
    *
    * No client-side noise floor here — server uses `NULLIF(ABS(...),0)`
    * which only filters exact-zero priors. Tiny OTM strikes may surface
    * large percentages; aggregations in `bias.ts` use means, so a few
    * outliers don't dominate the floor/ceiling trend numbers.
    */
+  naiveDelta1mMap: Map<number, number | null>;
+  naiveDelta5mMap: Map<number, number | null>;
   naiveDelta10mMap: Map<number, number | null>;
   naiveDelta30mMap: Map<number, number | null>;
   loading: boolean;
@@ -217,10 +220,26 @@ export function useGexLandscapeData(
   );
 
   // Naive Δ% maps — pulled directly from each WS row's server-computed
-  // `gamma_delta_10m` / `gamma_delta_30m` fields (SQL `LAG()` already
-  // ran on the server, no client-side recompute needed). Strikes
-  // present in MM but absent from WS get `null` — the table cell and
-  // the bias panel both treat null as "no data" and render `—`.
+  // `gamma_delta_*m` fields (SQL `LAG()` already ran on the server,
+  // no client-side recompute needed). Strikes present in MM but
+  // absent from WS get `null` — the table cell and the bias panel
+  // both treat null as "no data" and render `—`.
+  const naiveDelta1mMap = useMemo<Map<number, number | null>>(() => {
+    const m = new Map<number, number | null>();
+    for (const mm of sourceStrikes ?? []) {
+      const wsRow = wsByStrike.get(mm.strike);
+      m.set(mm.strike, wsRow?.gamma_delta_1m ?? null);
+    }
+    return m;
+  }, [sourceStrikes, wsByStrike]);
+  const naiveDelta5mMap = useMemo<Map<number, number | null>>(() => {
+    const m = new Map<number, number | null>();
+    for (const mm of sourceStrikes ?? []) {
+      const wsRow = wsByStrike.get(mm.strike);
+      m.set(mm.strike, wsRow?.gamma_delta_5m ?? null);
+    }
+    return m;
+  }, [sourceStrikes, wsByStrike]);
   const naiveDelta10mMap = useMemo<Map<number, number | null>>(() => {
     const m = new Map<number, number | null>();
     for (const mm of sourceStrikes ?? []) {
@@ -264,6 +283,8 @@ export function useGexLandscapeData(
     gexDelta10mMap,
     gexDelta15mMap: emptyMap,
     gexDelta30mMap,
+    naiveDelta1mMap,
+    naiveDelta5mMap,
     naiveDelta10mMap,
     naiveDelta30mMap,
     loading: primary.loading,

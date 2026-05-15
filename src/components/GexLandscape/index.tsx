@@ -163,6 +163,8 @@ const GexLandscape = memo(function GexLandscape({
     timestamps,
     gexDelta10mMap,
     gexDelta30mMap,
+    naiveDelta1mMap,
+    naiveDelta5mMap,
     naiveDelta10mMap,
     naiveDelta30mMap,
     loading,
@@ -617,6 +619,9 @@ const GexLandscape = memo(function GexLandscape({
             maxChanged30mStrike={maxChanged30mStrike}
             gexDelta10mMap={gexDelta10mMap}
             gexDelta30mMap={gexDelta30mMap}
+            naiveDelta1mMap={naiveDelta1mMap}
+            naiveDelta5mMap={naiveDelta5mMap}
+            naiveDelta10mMap={naiveDelta10mMap}
             gammaPressureMap={gammaPressureMap}
             spotRowRef={spotRowRef}
           />
@@ -676,6 +681,9 @@ const GexLandscape = memo(function GexLandscape({
               maxChanged30mStrike={maxChanged30mStrike}
               gexDelta10mMap={gexDelta10mMap}
               gexDelta30mMap={gexDelta30mMap}
+              naiveDelta1mMap={naiveDelta1mMap}
+              naiveDelta5mMap={naiveDelta5mMap}
+              naiveDelta10mMap={naiveDelta10mMap}
               gammaPressureMap={gammaPressureMap}
               spotRowRef={spotRowRef}
               showAtmDistance

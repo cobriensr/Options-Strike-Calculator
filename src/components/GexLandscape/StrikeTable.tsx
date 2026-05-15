@@ -1,13 +1,15 @@
 /**
  * StrikeTable — sticky-header + scrollable grid of strikes within the
- * display window, with per-strike classification, signal, GEX, MM-cadence
- * Δ% (10m/30m), charm, and vol reinforcement cells. The ATM row is
+ * display window, with per-strike classification, signal, GEX, Δ%
+ * windows, charm, and vol reinforcement cells. The ATM row is
  * ref-tagged so the parent can scroll it into view on initial load.
  *
- * Phase 3 of docs/superpowers/specs/gex-landscape-mm-swap-2026-05-12.md
- * dropped the 1m/5m/15m columns — MM data publishes at 10-min cadence so
- * faster windows have no signal. SPX-only after the swap; ticker prop +
- * `getDirection`'s ticker param both removed.
+ * Δ% windows are split into two groups:
+ *   - MM Δ% (10m / 30m) — periscope-scraper cadence is 10 min, so
+ *     faster windows have no signal for MM data.
+ *   - Naive Δ% (1m / 5m / 10m) — WS feed is continuous, so the fast
+ *     windows expose intraday OI rotation that MM cannot see between
+ *     snapshots.
  */
 
 import type { Ref } from 'react';
@@ -23,9 +25,13 @@ import {
 import { fmtGex, fmtPct } from './formatters';
 
 /**
- * Strike | Classification | Signal | MM Γ | Naive Γ | 10m Δ% | 30m Δ% | Charm | Vol
+ * Strike | Class | Signal | MM Γ | MM 10m | MM 30m | Naive Γ | N 1m | N 5m | N 10m | Charm | Vol
+ *
+ * The Naive Γ + naive Δ% group sits together so MM and naive reads
+ * can be compared at a glance without the eye jumping across the row.
  */
-const COLS = 'grid-cols-[76px_130px_1fr_88px_88px_72px_72px_76px_56px]';
+const COLS =
+  'grid-cols-[76px_130px_1fr_88px_72px_72px_88px_64px_64px_64px_76px_56px]';
 
 export interface StrikeTableProps {
   rows: GexStrikeLevel[];
@@ -35,6 +41,10 @@ export interface StrikeTableProps {
   maxChanged30mStrike: number | null;
   gexDelta10mMap: Map<number, number | null>;
   gexDelta30mMap: Map<number, number | null>;
+  /** Naive Δ% maps — fast-cadence WS feed (server-computed via SQL LAG). */
+  naiveDelta1mMap: Map<number, number | null>;
+  naiveDelta5mMap: Map<number, number | null>;
+  naiveDelta10mMap: Map<number, number | null>;
   spotRowRef: Ref<HTMLDivElement>;
   /**
    * When true, non-ATM rows render a signed point offset from spot beneath
@@ -62,6 +72,9 @@ export function StrikeTable({
   maxChanged30mStrike,
   gexDelta10mMap,
   gexDelta30mMap,
+  naiveDelta1mMap,
+  naiveDelta5mMap,
+  naiveDelta10mMap,
   spotRowRef,
   showAtmDistance = false,
   justEntered,
@@ -86,21 +99,39 @@ export function StrikeTable({
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
+          title="% change in MM dollar gamma vs. the prior 10-min slot. The fastest signal at MM cadence — captures sign flips and acceleration. Empty when no prior slot is available (first slot of the session)."
+        >
+          MM 10m
+        </div>
+        <div
+          className="cursor-help px-3 py-2 text-right"
+          title="% change in MM dollar gamma vs. the slot 30 min ago (3 slots back). Captures session-scale build/unwind. Empty until 3 slots of history exist."
+        >
+          MM 30m
+        </div>
+        <div
+          className="cursor-help px-3 py-2 text-right"
           title="Naive dollar gamma per strike — raw sum of call_gamma_oi + put_gamma_oi from the WS feed. Standing-position read with no dealer-attribution math, so it can disagree on sign with MM Γ at the same strike. That disagreement is itself signal."
         >
           Naive Γ
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="% change in MM dollar gamma vs. the prior 10-min slot. The fastest signal at MM cadence — captures sign flips and acceleration. Empty when no prior slot is available (first slot of the session)."
+          title="% change in naive (call+put OI) gamma vs. the prior 1-min slot. Fastest naive cadence — only useful intraday since WS pushes continuously. MM cannot expose 1m because periscope-scraper is 10-min cadence."
         >
-          10m Δ%
+          N 1m
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="% change in MM dollar gamma vs. the slot 30 min ago (3 slots back). Captures session-scale build/unwind. Empty until 3 slots of history exist."
+          title="% change in naive gamma vs. the slot 5 min ago. Catches short-term OI rotation that's invisible to MM's 10-min cadence — useful for setup detection between MM snapshots."
         >
-          30m Δ%
+          N 5m
+        </div>
+        <div
+          className="cursor-help px-3 py-2 text-right"
+          title="% change in naive gamma vs. the slot 10 min ago. Lines up time-wise with MM 10m — direct comparison: if MM 10m and N 10m disagree on sign, the dealer-attribution math is overriding the raw OI structure."
+        >
+          N 10m
         </div>
         <div className="px-3 py-2 text-right">Charm</div>
         <div className="px-3 py-2 text-center">Vol</div>
@@ -125,6 +156,9 @@ export function StrikeTable({
           const meta = CLASS_META[cls];
           const pct10m = gexDelta10mMap.get(s.strike) ?? null;
           const pct30m = gexDelta30mMap.get(s.strike) ?? null;
+          const naive1m = naiveDelta1mMap.get(s.strike) ?? null;
+          const naive5m = naiveDelta5mMap.get(s.strike) ?? null;
+          const naive10m = naiveDelta10mMap.get(s.strike) ?? null;
           const naiveGamma = s.callGammaOi + s.putGammaOi;
           const naiveGammaColor =
             naiveGamma === 0
@@ -254,13 +288,47 @@ export function StrikeTable({
                 </span>
               </div>
 
-              {/* Net GEX — MM-attributed */}
+              {/* MM Γ — dealer-attributed dollar gamma */}
               <div className="flex items-center justify-end px-3 py-1.5">
                 <span
                   className="font-mono text-[11px]"
                   style={{ color: s.netGamma >= 0 ? '#4ade80' : '#fbbf24' }}
                 >
                   {fmtGex(s.netGamma)}
+                </span>
+              </div>
+
+              {/* MM 10m Δ% */}
+              <div className="flex items-center justify-end px-3 py-1.5">
+                <span
+                  className="font-mono text-[11px]"
+                  style={{
+                    color:
+                      pct10m === null
+                        ? 'var(--color-muted)'
+                        : pct10m >= 0
+                          ? 'rgba(74,222,128,0.85)'
+                          : 'rgba(248,113,113,0.85)',
+                  }}
+                >
+                  {fmtPct(pct10m)}
+                </span>
+              </div>
+
+              {/* MM 30m Δ% */}
+              <div className="flex items-center justify-end px-3 py-1.5">
+                <span
+                  className="font-mono text-[11px]"
+                  style={{
+                    color:
+                      pct30m === null
+                        ? 'var(--color-muted)'
+                        : pct30m >= 0
+                          ? 'rgba(74,222,128,0.85)'
+                          : 'rgba(248,113,113,0.85)',
+                  }}
+                >
+                  {fmtPct(pct30m)}
                 </span>
               </div>
 
@@ -281,37 +349,54 @@ export function StrikeTable({
                 </span>
               </div>
 
-              {/* 10m GEX Δ% */}
+              {/* Naive 1m Δ% — fastest WS-cadence window */}
               <div className="flex items-center justify-end px-3 py-1.5">
                 <span
                   className="font-mono text-[11px]"
                   style={{
                     color:
-                      pct10m === null
+                      naive1m === null
                         ? 'var(--color-muted)'
-                        : pct10m >= 0
+                        : naive1m >= 0
                           ? 'rgba(74,222,128,0.85)'
                           : 'rgba(248,113,113,0.85)',
                   }}
                 >
-                  {fmtPct(pct10m)}
+                  {fmtPct(naive1m)}
                 </span>
               </div>
 
-              {/* 30m GEX Δ% */}
+              {/* Naive 5m Δ% */}
               <div className="flex items-center justify-end px-3 py-1.5">
                 <span
                   className="font-mono text-[11px]"
                   style={{
                     color:
-                      pct30m === null
+                      naive5m === null
                         ? 'var(--color-muted)'
-                        : pct30m >= 0
+                        : naive5m >= 0
                           ? 'rgba(74,222,128,0.85)'
                           : 'rgba(248,113,113,0.85)',
                   }}
                 >
-                  {fmtPct(pct30m)}
+                  {fmtPct(naive5m)}
+                </span>
+              </div>
+
+              {/* Naive 10m Δ% — direct comparator to MM 10m for sign agreement */}
+              <div className="flex items-center justify-end px-3 py-1.5">
+                <span
+                  className="font-mono text-[11px]"
+                  style={{
+                    color:
+                      naive10m === null
+                        ? 'var(--color-muted)'
+                        : naive10m >= 0
+                          ? 'rgba(74,222,128,0.85)'
+                          : 'rgba(248,113,113,0.85)',
+                  }}
+                >
+                  {fmtPct(naive10m)}
                 </span>
               </div>
 

@@ -27,6 +27,8 @@ const dataMock = vi.hoisted(() =>
     gexDelta10mMap: new Map<number, number | null>(),
     gexDelta15mMap: new Map<number, number | null>(),
     gexDelta30mMap: new Map<number, number | null>(),
+    naiveDelta1mMap: new Map<number, number | null>(),
+    naiveDelta5mMap: new Map<number, number | null>(),
     naiveDelta10mMap: new Map<number, number | null>(),
     naiveDelta30mMap: new Map<number, number | null>(),
     loading: false,
@@ -145,6 +147,8 @@ function renderLandscape(opts: RenderOptions = {}) {
     gexDelta10mMap: new Map<number, number | null>(),
     gexDelta15mMap: new Map<number, number | null>(),
     gexDelta30mMap: new Map<number, number | null>(),
+    naiveDelta1mMap: new Map<number, number | null>(),
+    naiveDelta5mMap: new Map<number, number | null>(),
     naiveDelta10mMap: new Map<number, number | null>(),
     naiveDelta30mMap: new Map<number, number | null>(),
     loading,
@@ -590,15 +594,18 @@ describe('GexLandscape', () => {
       expect(screen.queryByText(/\(calibrating\)/)).toBeNull();
     });
 
-    it('renders 10m + 30m Δ% column headers and no 1m / 5m / 15m headers', () => {
-      // The StrikeTable column set after the MM swap. The absence
-      // assertion guards against accidental re-introduction of the
-      // deprecated columns when Phase 4 work touches StrikeTable.
+    it('renders MM and Naive Δ% column headers in the post-Phase-5 split', () => {
+      // After Phase 5 the Δ% block is split: MM still has 10m / 30m
+      // (periscope cadence is 10 min), and Naive adds 1m / 5m / 10m
+      // (continuous WS feed). 15m is intentionally not surfaced.
       renderLandscape();
-      expect(screen.getByText('10m Δ%')).toBeDefined();
-      expect(screen.getByText('30m Δ%')).toBeDefined();
-      expect(screen.queryByText('1m Δ%')).toBeNull();
-      expect(screen.queryByText('5m Δ%')).toBeNull();
+      expect(screen.getByText('MM 10m')).toBeDefined();
+      expect(screen.getByText('MM 30m')).toBeDefined();
+      expect(screen.getByText('N 1m')).toBeDefined();
+      expect(screen.getByText('N 5m')).toBeDefined();
+      expect(screen.getByText('N 10m')).toBeDefined();
+      // 15m intentionally absent.
+      expect(screen.queryByText('N 15m')).toBeNull();
       expect(screen.queryByText('15m Δ%')).toBeNull();
     });
   });
