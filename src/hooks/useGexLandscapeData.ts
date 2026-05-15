@@ -44,6 +44,19 @@ export interface UseGexLandscapeDataReturn {
   gexDelta10mMap: Map<number, number | null>;
   gexDelta15mMap: Map<number, number | null>;
   gexDelta30mMap: Map<number, number | null>;
+  /**
+   * Naive per-strike Δ% over 10m / 30m, sourced from the WS feed's
+   * server-computed `gamma_delta_10m` / `gamma_delta_30m` (SQL `LAG()`
+   * over `ws_gex_strike_expiry.ts_minute`). Used by the BiasPanel's
+   * naive sub-readouts. Empty map when WS data is missing.
+   *
+   * No client-side noise floor here — server uses `NULLIF(ABS(...),0)`
+   * which only filters exact-zero priors. Tiny OTM strikes may surface
+   * large percentages; aggregations in `bias.ts` use means, so a few
+   * outliers don't dominate the floor/ceiling trend numbers.
+   */
+  naiveDelta10mMap: Map<number, number | null>;
+  naiveDelta30mMap: Map<number, number | null>;
   loading: boolean;
   error: string | null;
   refresh: () => void;
@@ -94,13 +107,19 @@ function buildDeltaMap(
  * Project an MM strike row (+ optional matching WS row) into the
  * `GexStrikeLevel` shape the GexLandscape renderer consumes.
  *
- * - MM gamma → `netGamma`; MM charm → `netCharm`. Call/put OI splits
- *   are NOT available from MM data (UW's attribution math collapses
- *   the two sides), so those fields are zeroed.
- * - The WS side channel supplies `callGammaAsk` / `callGammaBid` /
- *   `putGammaAsk` / `putGammaBid` plus the `volReinforcement` verdict
- *   — the only place per-strike call/put attribution exists. Missing
- *   WS data (e.g. ticker mismatch) drops the strike to `neutral`.
+ * - MM gamma → `netGamma`; MM charm → `netCharm`. MM data does NOT
+ *   split call/put attribution (UW's dealer math collapses the two
+ *   sides), so the call/put _MM_ OI fields stay zero.
+ * - The WS side channel supplies:
+ *   - `callGammaOi` / `putGammaOi` — raw OI gamma, the NAIVE GEX
+ *     numerator. Surfaced so downstream consumers can compute
+ *     `callGammaOi + putGammaOi` for the naive sub-read alongside MM.
+ *   - `callGammaAsk` / `callGammaBid` / `putGammaAsk` / `putGammaBid`
+ *     — bid/ask attribution for the gamma-pressure cue.
+ *   - `volReinforcement` verdict from OI vs vol sign agreement.
+ *   Missing WS data (e.g. ticker mismatch) zeroes the naive fields
+ *   and drops `volReinforcement` to `neutral` — the MM read still
+ *   renders cleanly without the WS sub-channel.
  * - Vanna and delta fields are zeroed (out of Phase 2 scope).
  */
 export function projectMmStrike(
@@ -108,6 +127,8 @@ export function projectMmStrike(
   spot: number,
   wsRow: GexStrikeExpiryRow | undefined,
 ): GexStrikeLevel {
+  const callGammaOi = wsRow?.call_gamma_oi ?? 0;
+  const putGammaOi = wsRow?.put_gamma_oi ?? 0;
   const callGammaAsk = wsRow?.call_gamma_ask_vol ?? 0;
   const callGammaBid = wsRow?.call_gamma_bid_vol ?? 0;
   const putGammaAsk = wsRow?.put_gamma_ask_vol ?? 0;
@@ -115,7 +136,7 @@ export function projectMmStrike(
 
   let volReinforcement: 'reinforcing' | 'opposing' | 'neutral' = 'neutral';
   if (wsRow) {
-    const netGammaOi = (wsRow.call_gamma_oi ?? 0) + (wsRow.put_gamma_oi ?? 0);
+    const netGammaOi = callGammaOi + putGammaOi;
     const netGammaVol =
       (wsRow.call_gamma_vol ?? 0) + (wsRow.put_gamma_vol ?? 0);
     if (netGammaOi !== 0 && netGammaVol !== 0) {
@@ -129,8 +150,8 @@ export function projectMmStrike(
   return {
     strike: mmRow.strike,
     price: spot,
-    callGammaOi: 0,
-    putGammaOi: 0,
+    callGammaOi,
+    putGammaOi,
     netGamma: mmRow.gamma,
     callGammaVol: 0,
     putGammaVol: 0,
@@ -195,6 +216,28 @@ export function useGexLandscapeData(
     [sourceStrikes, primary.prior30m],
   );
 
+  // Naive Δ% maps — pulled directly from each WS row's server-computed
+  // `gamma_delta_10m` / `gamma_delta_30m` fields (SQL `LAG()` already
+  // ran on the server, no client-side recompute needed). Strikes
+  // present in MM but absent from WS get `null` — the table cell and
+  // the bias panel both treat null as "no data" and render `—`.
+  const naiveDelta10mMap = useMemo<Map<number, number | null>>(() => {
+    const m = new Map<number, number | null>();
+    for (const mm of sourceStrikes ?? []) {
+      const wsRow = wsByStrike.get(mm.strike);
+      m.set(mm.strike, wsRow?.gamma_delta_10m ?? null);
+    }
+    return m;
+  }, [sourceStrikes, wsByStrike]);
+  const naiveDelta30mMap = useMemo<Map<number, number | null>>(() => {
+    const m = new Map<number, number | null>();
+    for (const mm of sourceStrikes ?? []) {
+      const wsRow = wsByStrike.get(mm.strike);
+      m.set(mm.strike, wsRow?.gamma_delta_30m ?? null);
+    }
+    return m;
+  }, [sourceStrikes, wsByStrike]);
+
   // Empty-map back-compat for fields the Phase 2 component still
   // references (1m / 5m / 15m columns). Phase 3 removes them.
   const emptyMap = useMemo<Map<number, number | null>>(() => new Map(), []);
@@ -221,6 +264,8 @@ export function useGexLandscapeData(
     gexDelta10mMap,
     gexDelta15mMap: emptyMap,
     gexDelta30mMap,
+    naiveDelta10mMap,
+    naiveDelta30mMap,
     loading: primary.loading,
     error,
     refresh,

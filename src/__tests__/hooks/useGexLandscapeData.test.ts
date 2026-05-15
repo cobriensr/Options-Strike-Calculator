@@ -92,7 +92,7 @@ describe('projectMmStrike', () => {
     expect(out.netCharm).toBe(7_800_000_000);
   });
 
-  it('zeroes call/put OI splits — MM data does not provide them', () => {
+  it('zeroes naive OI fields when no WS row is matched', () => {
     const out = projectMmStrike(
       { strike: 7350, gamma: 5000, charm: 1000 },
       7340,
@@ -100,10 +100,26 @@ describe('projectMmStrike', () => {
     );
     expect(out.callGammaOi).toBe(0);
     expect(out.putGammaOi).toBe(0);
+    // MM-only fields stay zero regardless — these never come from WS.
     expect(out.callCharmOi).toBe(0);
     expect(out.putCharmOi).toBe(0);
     expect(out.callVannaOi).toBe(0);
     expect(out.putVannaOi).toBe(0);
+  });
+
+  it('populates callGammaOi / putGammaOi from the WS row for naive GEX downstream', () => {
+    const out = projectMmStrike(
+      { strike: 7350, gamma: 5000, charm: 0 },
+      7340,
+      makeWsRow({
+        call_gamma_oi: 14_000,
+        put_gamma_oi: -3_000,
+      }),
+    );
+    expect(out.callGammaOi).toBe(14_000);
+    expect(out.putGammaOi).toBe(-3_000);
+    // Naive net gamma is the consumer-side computation.
+    expect(out.callGammaOi + out.putGammaOi).toBe(11_000);
   });
 
   it('falls back to neutral volReinforcement when no WS row is matched', () => {
@@ -340,6 +356,34 @@ describe('useGexLandscapeData — adapter behavior', () => {
     expect(result.current.gexDeltaMap.size).toBe(0);
     expect(result.current.gexDelta5mMap.size).toBe(0);
     expect(result.current.gexDelta15mMap.size).toBe(0);
+  });
+
+  it('builds naiveDelta10m / naiveDelta30m maps from server-computed WS fields', () => {
+    mockPrimary({
+      capturedAt: '2026-05-12T18:40:00.000Z',
+      spot: 7340,
+      strikes: [
+        { strike: 7350, gamma: 5000, charm: 0 },
+        { strike: 7360, gamma: 1000, charm: 0 },
+      ],
+      availableSlots: [],
+    });
+    mockWs([
+      makeWsRow({
+        strike: 7350,
+        gamma_delta_10m: 12.5,
+        gamma_delta_30m: -8,
+      }),
+      // 7360 absent from WS → both maps return null for it
+    ]);
+
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-12'),
+    );
+    expect(result.current.naiveDelta10mMap.get(7350)).toBe(12.5);
+    expect(result.current.naiveDelta30mMap.get(7350)).toBe(-8);
+    expect(result.current.naiveDelta10mMap.get(7360)).toBeNull();
+    expect(result.current.naiveDelta30mMap.get(7360)).toBeNull();
   });
 
   it('projects vol reinforcement from the matching SPX WS row', () => {
