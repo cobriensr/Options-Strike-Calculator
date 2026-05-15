@@ -23,9 +23,9 @@ import {
 import { fmtGex, fmtPct } from './formatters';
 
 /**
- * Strike | Classification | Signal | Net GEX | 10m Δ% | 30m Δ% | Charm | Vol
+ * Strike | Classification | Signal | MM Γ | Naive Γ | 10m Δ% | 30m Δ% | Charm | Vol
  */
-const COLS = 'grid-cols-[76px_130px_1fr_88px_72px_72px_76px_56px]';
+const COLS = 'grid-cols-[76px_130px_1fr_88px_88px_72px_72px_76px_56px]';
 
 export interface StrikeTableProps {
   rows: GexStrikeLevel[];
@@ -82,7 +82,13 @@ export function StrikeTable({
           className="cursor-help px-3 py-2 text-right"
           title="MM-attributed dollar gamma per strike, captured by the periscope-scraper every 10 min during RTH. This is what UW Periscope renders on the Net GEX heat map — the proprietary dealer-attribution number, NOT the naive call+put gamma OI sum."
         >
-          Dollar Γ
+          MM Γ
+        </div>
+        <div
+          className="cursor-help px-3 py-2 text-right"
+          title="Naive dollar gamma per strike — raw sum of call_gamma_oi + put_gamma_oi from the WS feed. Standing-position read with no dealer-attribution math, so it can disagree on sign with MM Γ at the same strike. That disagreement is itself signal."
+        >
+          Naive Γ
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
@@ -119,6 +125,13 @@ export function StrikeTable({
           const meta = CLASS_META[cls];
           const pct10m = gexDelta10mMap.get(s.strike) ?? null;
           const pct30m = gexDelta30mMap.get(s.strike) ?? null;
+          const naiveGamma = s.callGammaOi + s.putGammaOi;
+          const naiveGammaColor =
+            naiveGamma === 0
+              ? 'var(--color-muted)'
+              : naiveGamma > 0
+                ? '#4ade80'
+                : '#fbbf24';
           const isNew = justEntered?.has(s.strike) ?? false;
           const isAnchor = oldestStrike !== null && s.strike === oldestStrike;
           const pressure: GammaPressure =
@@ -241,13 +254,30 @@ export function StrikeTable({
                 </span>
               </div>
 
-              {/* Net GEX */}
+              {/* Net GEX — MM-attributed */}
               <div className="flex items-center justify-end px-3 py-1.5">
                 <span
                   className="font-mono text-[11px]"
                   style={{ color: s.netGamma >= 0 ? '#4ade80' : '#fbbf24' }}
                 >
                   {fmtGex(s.netGamma)}
+                </span>
+              </div>
+
+              {/* Naive Γ — raw OI sum. Renders "—" when the sum is
+                  zero, which covers both (a) WS row absent (`projectMmStrike`
+                  zeros the OI fields) and (b) an exact call+put OI gamma
+                  cancellation. Case (b) is effectively impossible in
+                  real SPX data — call_gamma_oi and put_gamma_oi are
+                  computed dollar amounts that never coincide to the
+                  cent — so "—" reliably reads as "no WS data". */}
+              <div className="flex items-center justify-end px-3 py-1.5">
+                <span
+                  data-testid={`naive-gamma-cell-${s.strike}`}
+                  className="font-mono text-[11px]"
+                  style={{ color: naiveGammaColor }}
+                >
+                  {naiveGamma === 0 ? '—' : fmtGex(naiveGamma)}
                 </span>
               </div>
 

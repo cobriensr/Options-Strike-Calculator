@@ -27,6 +27,8 @@ const dataMock = vi.hoisted(() =>
     gexDelta10mMap: new Map<number, number | null>(),
     gexDelta15mMap: new Map<number, number | null>(),
     gexDelta30mMap: new Map<number, number | null>(),
+    naiveDelta10mMap: new Map<number, number | null>(),
+    naiveDelta30mMap: new Map<number, number | null>(),
     loading: false,
     error: null as string | null,
     refresh: vi.fn(),
@@ -143,6 +145,8 @@ function renderLandscape(opts: RenderOptions = {}) {
     gexDelta10mMap: new Map<number, number | null>(),
     gexDelta15mMap: new Map<number, number | null>(),
     gexDelta30mMap: new Map<number, number | null>(),
+    naiveDelta10mMap: new Map<number, number | null>(),
+    naiveDelta30mMap: new Map<number, number | null>(),
     loading,
     error,
     refresh: vi.fn(),
@@ -213,6 +217,41 @@ describe('GexLandscape', () => {
       // "ATM" may appear in both the spot row and the GEX Gravity panel
       // (when the gravity strike is at spot). At least one must exist.
       expect(screen.getAllByText('ATM').length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('naive Γ column', () => {
+    it('renders MM Γ and Naive Γ as separate column headers', () => {
+      renderLandscape();
+      expect(screen.getByText('MM Γ')).toBeDefined();
+      expect(screen.getByText('Naive Γ')).toBeDefined();
+    });
+
+    it('renders "—" placeholder in the naive cell when WS OI is absent', () => {
+      const strikes: GexStrikeLevel[] = [
+        {
+          ...makeStrike(PRICE, PRICE, 50_000_000, 10_000_000, 'neutral'),
+          callGammaOi: 0,
+          putGammaOi: 0,
+        },
+      ];
+      renderLandscape({ strikes });
+      const naiveCell = screen.getByTestId(`naive-gamma-cell-${PRICE}`);
+      expect(naiveCell.textContent).toBe('—');
+    });
+
+    it('renders the formatted naive sum when WS OI is present', () => {
+      const strikes: GexStrikeLevel[] = [
+        {
+          ...makeStrike(PRICE, PRICE, 50_000_000, 10_000_000, 'neutral'),
+          callGammaOi: 12_000_000,
+          putGammaOi: -3_000_000,
+        },
+      ];
+      renderLandscape({ strikes });
+      const naiveCell = screen.getByTestId(`naive-gamma-cell-${PRICE}`);
+      // fmtGex returns `+9.0M` for 9e6 (unicode '+' / unicode '−' minus).
+      expect(naiveCell.textContent).toBe('+9.0M');
     });
   });
 
