@@ -676,4 +676,20 @@ describe('silent-boom-feed handler', () => {
     const body = res._json as { date: string };
     expect(body.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
+
+  it('binds MIN_ALERT_ENTRY_PRICE (0.10) into both count + list SQL templates', async () => {
+    mockSql.mockResolvedValueOnce([{ n: 0 }]).mockResolvedValueOnce([]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // Two SQL calls: the count + the list. Both must bind 0.1 as a
+    // parameter (the entry-price floor) so sub-$0.10 algo prints are
+    // excluded from the rollup at the source.
+    const callsWithFloor = mockSql.mock.calls.filter((args) =>
+      args.slice(1).some((v) => v === 0.1),
+    );
+    expect(callsWithFloor.length).toBe(2);
+  });
 });

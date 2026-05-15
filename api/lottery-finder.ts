@@ -26,6 +26,7 @@ import {
   type LotteryScoreTier,
 } from './_lib/lottery-score-weights.js';
 import { avgHoldMinutesFor } from './_lib/lottery-hold.js';
+import { MIN_ALERT_ENTRY_PRICE } from './_lib/constants.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
 type DbId = number | string;
@@ -255,6 +256,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             AND (${optionType ?? null}::text IS NULL OR f.option_type = ${optionType ?? ''})
             AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
             AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
+            AND f.entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
         )
         SELECT
           f.id, f.date, f.trigger_time_ct, f.entry_time_ct, f.option_chain_id,
@@ -317,6 +319,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             AND (${optionType ?? null}::text IS NULL OR f.option_type = ${optionType ?? ''})
             AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
             AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
+            AND f.entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
         )
         SELECT
           f.id, f.date, f.trigger_time_ct, f.entry_time_ct, f.option_chain_id,
@@ -378,6 +381,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             AND (${optionType ?? null}::text IS NULL OR f.option_type = ${optionType ?? ''})
             AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
             AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
+            AND f.entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
         )
         SELECT
           f.id, f.date, f.trigger_time_ct, f.entry_time_ct, f.option_chain_id,
@@ -432,6 +436,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             AND (${optionType ?? null}::text IS NULL OR option_type = ${optionType ?? ''})
             AND (${tod ?? null}::text IS NULL OR tod = ${tod ?? ''})
             AND (${minScore ?? null}::int IS NULL OR score >= ${minScore ?? 0})
+            AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
           GROUP BY underlying_symbol, strike, option_type, expiry
         ) collapsed
       `,

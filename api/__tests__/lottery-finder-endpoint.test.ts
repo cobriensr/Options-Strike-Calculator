@@ -557,4 +557,21 @@ describe('lottery-finder endpoint', () => {
 
     expect(mockSql).not.toHaveBeenCalled();
   });
+
+  it('binds MIN_ALERT_ENTRY_PRICE (0.10) into both rows + count SQL templates', async () => {
+    mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // Two SQL calls: the rows CTE + the count subquery. Both must bind
+    // 0.1 as a parameter (the entry-price floor). Neon's tagged-template
+    // invocation packs interpolated values as call args after the
+    // strings array, so we check every arg of every call.
+    const callsWithFloor = mockSql.mock.calls.filter((args) =>
+      args.slice(1).some((v) => v === 0.1),
+    );
+    expect(callsWithFloor.length).toBe(2);
+  });
 });

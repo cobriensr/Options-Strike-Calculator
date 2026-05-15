@@ -430,3 +430,15 @@ export const CRON_TICKER_DEFAULT_CONCURRENCY = 4;
  * inside Schwab's per-app concurrency budget.
  */
 export const STRIKE_IV_TICKER_CONCURRENCY = 8;
+
+/**
+ * Minimum option entry price ($/contract) for alert feeds. Filters out
+ * the $0.01-$0.02 algo prints that re-trigger the lottery and silent-
+ * boom pipelines as algo noise. Applied at the data layer in
+ * `/api/lottery-finder` and `/api/silent-boom-feed` so sub-threshold
+ * fires never reach the rollup aggregator or the ticker list.
+ *
+ * Threshold chosen 2026-05-15 from trader feedback. Raise if the algo
+ * noise floor creeps up; lower if a real signal gets caught.
+ */
+export const MIN_ALERT_ENTRY_PRICE = 0.1;
