@@ -232,6 +232,86 @@ describe('SilentBoomTickerGroup', () => {
     expect(screen.getByText('+189.5%')).toBeInTheDocument();
   });
 
+  it('shows up to 3 strikes in the header (deduped, input order) with overflow count', () => {
+    const alerts = [
+      makeAlert({ optionChainId: 'NOW260515C00086000', strike: 86 }),
+      makeAlert({ optionChainId: 'NOW260515C00088000', strike: 88 }),
+      makeAlert({ optionChainId: 'NOW260515C00090000', strike: 90 }),
+      makeAlert({ optionChainId: 'NOW260515C00092000', strike: 92 }),
+      makeAlert({ optionChainId: 'NOW260515C00094000', strike: 94 }),
+    ];
+    render(
+      <SilentBoomTickerGroup
+        ticker="NOW"
+        alerts={alerts}
+        expanded={false}
+        onToggle={() => undefined}
+        marketOpen={true}
+        exitPolicy={EXIT_POLICY}
+      />,
+    );
+    const strikesEl = screen.getByTestId('silent-boom-ticker-strikes-NOW');
+    expect(strikesEl).toHaveTextContent('86C, 88C, 90C +2 more');
+  });
+
+  it('dedupes repeated (strike, type) pairs in the strikes summary', () => {
+    const alerts = [
+      makeAlert({
+        optionChainId: 'NOW260515C00086000',
+        strike: 86,
+        bucketCt: '2026-05-14T14:30:00Z',
+      }),
+      // Second alert on the same chain but a later bucket — should NOT
+      // duplicate "86C" in the summary.
+      makeAlert({
+        optionChainId: 'NOW260515C00086000',
+        strike: 86,
+        bucketCt: '2026-05-14T14:48:00Z',
+      }),
+      makeAlert({ optionChainId: 'NOW260515C00088000', strike: 88 }),
+    ];
+    render(
+      <SilentBoomTickerGroup
+        ticker="NOW"
+        alerts={alerts}
+        expanded={false}
+        onToggle={() => undefined}
+        marketOpen={true}
+        exitPolicy={EXIT_POLICY}
+      />,
+    );
+    const strikesEl = screen.getByTestId('silent-boom-ticker-strikes-NOW');
+    expect(strikesEl).toHaveTextContent('86C, 88C');
+    expect(strikesEl.textContent).not.toContain('+');
+  });
+
+  it('shows last-hit time formatted HH:MM CT (latest bucket across the group)', () => {
+    const alerts = [
+      // 19:30 UTC = 14:30 CT (CDT, May)
+      makeAlert({
+        optionChainId: 'NOW260515C00086000',
+        bucketCt: '2026-05-14T19:30:00Z',
+      }),
+      // 19:48 UTC = 14:48 CT — should be picked as latest
+      makeAlert({
+        optionChainId: 'NOW260515C00088000',
+        bucketCt: '2026-05-14T19:48:00Z',
+      }),
+    ];
+    render(
+      <SilentBoomTickerGroup
+        ticker="NOW"
+        alerts={alerts}
+        expanded={false}
+        onToggle={() => undefined}
+        marketOpen={true}
+        exitPolicy={EXIT_POLICY}
+      />,
+    );
+    const lastEl = screen.getByTestId('silent-boom-ticker-last-NOW');
+    expect(lastEl).toHaveTextContent('14:48');
+  });
+
   it('preserves the order of the alerts prop when rendered', () => {
     // Spec line: "Within-group rows stay in the user's chosen sort
     // order". Section sorts server-side; group must not re-sort.

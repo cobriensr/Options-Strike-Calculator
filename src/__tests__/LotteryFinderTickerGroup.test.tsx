@@ -297,6 +297,54 @@ describe('LotteryFinderTickerGroup', () => {
     expect(screen.getByText('—')).toBeInTheDocument();
   });
 
+  it('shows up to 3 strikes in the header with overflow count', () => {
+    const fires = [
+      makeFire({ optionChainId: 'TSLA260514C00250000', strike: 250 }),
+      makeFire({ optionChainId: 'TSLA260514C00260000', strike: 260 }),
+      makeFire({ optionChainId: 'TSLA260514C00270000', strike: 270 }),
+      makeFire({ optionChainId: 'TSLA260514C00280000', strike: 280 }),
+    ];
+    render(
+      <LotteryFinderTickerGroup
+        ticker="TSLA"
+        fires={fires}
+        expanded={false}
+        onToggle={() => undefined}
+        marketOpen={true}
+        exitPolicy={EXIT_POLICY}
+      />,
+    );
+    const strikesEl = screen.getByTestId('lottery-ticker-strikes-TSLA');
+    expect(strikesEl).toHaveTextContent('250C, 260C, 270C +1 more');
+  });
+
+  it('shows last-hit time formatted HH:MM CT (latest trigger across the group)', () => {
+    const fires = [
+      // 19:30 UTC = 14:30 CT (CDT, May)
+      makeFire({
+        optionChainId: 'TSLA260514C00250000',
+        triggerTimeCt: '2026-05-14T19:30:00Z',
+      }),
+      // 19:55 UTC = 14:55 CT — should be picked as latest
+      makeFire({
+        optionChainId: 'TSLA260514C00260000',
+        triggerTimeCt: '2026-05-14T19:55:00Z',
+      }),
+    ];
+    render(
+      <LotteryFinderTickerGroup
+        ticker="TSLA"
+        fires={fires}
+        expanded={false}
+        onToggle={() => undefined}
+        marketOpen={true}
+        exitPolicy={EXIT_POLICY}
+      />,
+    );
+    const lastEl = screen.getByTestId('lottery-ticker-last-TSLA');
+    expect(lastEl).toHaveTextContent('14:55');
+  });
+
   it('preserves the order of the fires prop when rendered', () => {
     const fires = [
       makeFire({ optionChainId: 'TSLA260514C00270000', strike: 270 }),

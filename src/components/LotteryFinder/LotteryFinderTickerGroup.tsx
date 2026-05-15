@@ -34,6 +34,44 @@ function peakColorClass(v: number | null): string {
   return 'text-red-400';
 }
 
+const CT_TIME_FMT = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/Chicago',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
+
+/** Returns HH:MM CT for the latest triggerTimeCt across the group. */
+function formatLastHitCt(fires: LotteryFire[]): string {
+  let maxMs = 0;
+  for (const f of fires) {
+    const t = Date.parse(f.triggerTimeCt);
+    if (Number.isFinite(t) && t > maxMs) maxMs = t;
+  }
+  if (maxMs === 0) return '—';
+  return CT_TIME_FMT.format(new Date(maxMs));
+}
+
+/**
+ * Dedupes (strike, optionType) pairs across the fire list, preserves
+ * input order (so the user's sortMode survives), shows up to 3, then
+ * "+N more" if the rest were truncated.
+ */
+function formatStrikesSummary(fires: LotteryFire[]): string {
+  const seen = new Set<string>();
+  const labels: string[] = [];
+  for (const f of fires) {
+    const key = `${f.strike}${f.optionType}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    labels.push(key);
+  }
+  if (labels.length === 0) return '';
+  const visible = labels.slice(0, 3).join(', ');
+  const extra = labels.length - 3;
+  return extra > 0 ? `${visible} +${extra} more` : visible;
+}
+
 function LotteryFinderTickerGroupBase({
   ticker,
   fires,
@@ -54,6 +92,8 @@ function LotteryFinderTickerGroupBase({
   }, null);
 
   const count = fires.length;
+  const strikesSummary = formatStrikesSummary(fires);
+  const lastHitCt = formatLastHitCt(fires);
 
   return (
     <div className="overflow-hidden rounded border border-neutral-800 bg-neutral-950/40">
@@ -62,9 +102,9 @@ function LotteryFinderTickerGroupBase({
         onClick={handleToggle}
         aria-expanded={expanded}
         aria-controls={`lottery-ticker-group-${ticker}`}
-        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition hover:bg-neutral-900"
+        className="flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-1 px-3 py-2 text-left transition hover:bg-neutral-900"
       >
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <span
             className="text-neutral-500"
             aria-hidden="true"
@@ -78,8 +118,23 @@ function LotteryFinderTickerGroupBase({
           <span className="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-neutral-200">
             {count} fire{count === 1 ? '' : 's'}
           </span>
+          {strikesSummary && (
+            <span
+              className="font-mono text-[11px] text-neutral-400"
+              data-testid={`lottery-ticker-strikes-${ticker}`}
+            >
+              {strikesSummary}
+            </span>
+          )}
         </div>
-        <div className="flex items-center gap-3 text-[11px]">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
+          <span
+            className="text-neutral-500"
+            data-testid={`lottery-ticker-last-${ticker}`}
+          >
+            last <span className="font-mono text-neutral-300">{lastHitCt}</span>{' '}
+            CT
+          </span>
           <span className="text-neutral-500">best peak</span>
           <span
             className={`font-mono font-semibold ${peakColorClass(peakBest)}`}
