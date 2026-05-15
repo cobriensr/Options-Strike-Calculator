@@ -292,3 +292,91 @@ describe('metrics.increment', () => {
     expect(mockMetrics.count).toHaveBeenCalledWith('custom.counter', 1);
   });
 });
+
+// =============================================================
+// beforeSend — UW 5xx fingerprint collapse + secret scrubbing
+// =============================================================
+
+describe('Sentry.init beforeSend', () => {
+  // Extract the beforeSend hook from the mocked Sentry.init call.
+  const initArgs = mockInit.mock.calls[0]?.[0] as
+    | { beforeSend: (event: Record<string, unknown>) => unknown }
+    | undefined;
+  const beforeSend = initArgs?.beforeSend;
+
+  it('was configured on init', () => {
+    expect(beforeSend).toBeDefined();
+  });
+
+  it('collapses UW 503 errors into a stable fingerprint', () => {
+    const event = {
+      exception: {
+        values: [
+          {
+            value:
+              'UW API 503: upstream connect error or disconnect/reset ' +
+              'before headers. reset reason: connection termination',
+          },
+        ],
+      },
+    };
+    const result = beforeSend!(event) as { fingerprint?: string[] };
+    expect(result.fingerprint).toEqual(['uw-api-5xx', '503']);
+  });
+
+  it('uses status code as the fingerprint discriminator', () => {
+    const event502 = {
+      exception: { values: [{ value: 'UW API 502: bad gateway' }] },
+    };
+    const event503 = {
+      exception: { values: [{ value: 'UW API 503: upstream reset' }] },
+    };
+    const event504 = {
+      exception: { values: [{ value: 'UW API 504: gateway timeout' }] },
+    };
+    const r502 = beforeSend!(event502) as { fingerprint?: string[] };
+    const r503 = beforeSend!(event503) as { fingerprint?: string[] };
+    const r504 = beforeSend!(event504) as { fingerprint?: string[] };
+    expect(r502.fingerprint).toEqual(['uw-api-5xx', '502']);
+    expect(r503.fingerprint).toEqual(['uw-api-5xx', '503']);
+    expect(r504.fingerprint).toEqual(['uw-api-5xx', '504']);
+  });
+
+  it('does not collapse UW 4xx errors (semantic body differences)', () => {
+    const event = {
+      exception: { values: [{ value: 'UW API 429: rate limit exceeded' }] },
+    };
+    const result = beforeSend!(event) as { fingerprint?: string[] };
+    expect(result.fingerprint).toBeUndefined();
+  });
+
+  it('does not collapse non-UW errors', () => {
+    const event = {
+      exception: { values: [{ value: 'Schwab API 503: Service Unavailable' }] },
+    };
+    const result = beforeSend!(event) as { fingerprint?: string[] };
+    expect(result.fingerprint).toBeUndefined();
+  });
+
+  it('scrubs Authorization header from request context', () => {
+    const event = {
+      request: {
+        headers: {
+          authorization: 'Bearer SECRET_TOKEN_VALUE',
+          'content-type': 'application/json',
+        },
+      },
+    };
+    const result = beforeSend!(event) as {
+      request: { headers: Record<string, string> };
+    };
+    expect(result.request.headers.authorization).toBe('[Filtered]');
+    expect(result.request.headers['content-type']).toBe('application/json');
+  });
+
+  it('handles events with no exception value gracefully', () => {
+    const event = {};
+    const result = beforeSend!(event) as { fingerprint?: string[] };
+    expect(result.fingerprint).toBeUndefined();
+  });
+});

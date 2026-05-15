@@ -33,6 +33,25 @@ Sentry.init({
     };
     scrubObject(event.extra);
     scrubObject(event.tags as Record<string, unknown> | undefined);
+
+    // Collapse upstream UW 5xx errors into one Sentry issue per status
+    // code. uwFetch() throws `Error("UW API <status>: <body>")` and the
+    // upstream body text varies per failure ("upstream connect error",
+    // "no healthy upstream", etc.), so the default fingerprint
+    // (stacktrace + message) splits a single Cloudfront/Envoy event
+    // into N distinct issues — DESERT-7V + DESERT-50 are the same UW
+    // 503 episode in two groups. Pinning the fingerprint to
+    // ['uw-api-5xx', '<status>'] keeps the issue count proportional to
+    // the failure mode rather than to caller diversity. 4xx (auth /
+    // rate limit) keep default fingerprinting — their bodies carry
+    // semantic differences worth distinguishing.
+    const uwMessage = event.exception?.values?.[0]?.value;
+    if (typeof uwMessage === 'string') {
+      const match = uwMessage.match(/^UW API (5\d\d):/);
+      if (match?.[1]) {
+        event.fingerprint = ['uw-api-5xx', match[1]];
+      }
+    }
     return event;
   },
 });
