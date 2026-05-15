@@ -517,6 +517,113 @@ describe('LotteryFinderTickerGroup', () => {
       );
     });
 
+    it('renders the conviction badge when criteria are met', () => {
+      // 3 fires, all calls, 3 distinct strikes, within 15min
+      const fires = [
+        makeFire({
+          optionChainId: 'XOM260515C00150000',
+          underlyingSymbol: 'XOM',
+          strike: 150,
+          triggerTimeCt: '2026-05-15T13:32:00Z',
+        }),
+        makeFire({
+          optionChainId: 'XOM260515C00152500',
+          underlyingSymbol: 'XOM',
+          strike: 152.5,
+          triggerTimeCt: '2026-05-15T13:33:00Z',
+        }),
+        makeFire({
+          optionChainId: 'XOM260515C00155000',
+          underlyingSymbol: 'XOM',
+          strike: 155,
+          triggerTimeCt: '2026-05-15T13:39:00Z',
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="XOM"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.getByTestId('lottery-ticker-conviction-XOM'),
+      ).toHaveTextContent('conviction');
+    });
+
+    it('omits the conviction badge when bias is mixed', () => {
+      // 5 fires, but a put among calls → mixed bias → no badge
+      const fires = [
+        makeFire({
+          optionChainId: 'SNDK260515P01295000',
+          underlyingSymbol: 'SNDK',
+          optionType: 'P',
+          strike: 1295,
+          triggerTimeCt: '2026-05-15T13:38:00Z',
+        }),
+        makeFire({
+          optionChainId: 'SNDK260515C01320000',
+          underlyingSymbol: 'SNDK',
+          strike: 1320,
+          triggerTimeCt: '2026-05-15T13:35:00Z',
+        }),
+        makeFire({
+          optionChainId: 'SNDK260515C01360000',
+          underlyingSymbol: 'SNDK',
+          strike: 1360,
+          triggerTimeCt: '2026-05-15T13:32:00Z',
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="SNDK"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.queryByTestId('lottery-ticker-conviction-SNDK'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('renders the aggregate premium chip with $K/$M formatting', () => {
+      // 2 fires, entry $1.22 × windowSize 100 × 100 = $12,200 each
+      const fire1 = makeFire({
+        optionChainId: 'XOM260515C00150000',
+        underlyingSymbol: 'XOM',
+        strike: 150,
+      });
+      const fire2 = makeFire({
+        optionChainId: 'XOM260515C00155000',
+        underlyingSymbol: 'XOM',
+        strike: 155,
+      });
+      fire1.entry = { ...fire1.entry, price: 1.22 };
+      fire1.trigger = { ...fire1.trigger, windowSize: 100 };
+      fire2.entry = { ...fire2.entry, price: 1.22 };
+      fire2.trigger = { ...fire2.trigger, windowSize: 100 };
+      render(
+        <LotteryFinderTickerGroup
+          ticker="XOM"
+          fires={[fire1, fire2]}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      // Total = 1.22 × 100 × 100 × 2 = $24,400 → "$24K"
+      expect(
+        screen.getByTestId('lottery-ticker-premium-XOM'),
+      ).toHaveTextContent('prem $24K');
+    });
+
     it('omits the gated chip when no fires are direction-gated', () => {
       const fires = [
         makeFire({

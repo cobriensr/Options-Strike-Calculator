@@ -11,6 +11,7 @@ import {
   type SilentBoomExitPolicy,
   type SilentBoomScoreTier,
 } from './types.js';
+import { formatPremiumAmount } from '../../utils/ticker-rollup-aggregates.js';
 
 interface SilentBoomRowProps {
   alert: SilentBoomAlert;
@@ -490,6 +491,15 @@ export const SilentBoomRow = memo(function SilentBoomRow({
           entry{' '}
           <span className="font-mono text-neutral-200">
             {formatDollar(alert.entryPrice)}
+          </span>
+        </span>
+        <span title="Spike-bucket premium: entry price × spike volume × 100">
+          prem{' '}
+          <span
+            className="font-mono text-sky-300"
+            data-testid={`silent-boom-row-premium-${alert.optionChainId}-${alert.bucketCt}`}
+          >
+            {formatPremiumAmount(alert.entryPrice * alert.spikeVolume * 100)}
           </span>
         </span>
         <span>

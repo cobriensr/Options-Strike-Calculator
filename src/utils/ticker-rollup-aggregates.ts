@@ -18,6 +18,12 @@ export interface RollupAlertSummary {
   /** ISO timestamp at fire/trigger (CT-anchored or UTC; we only diff). */
   triggeredAt: string;
   strike: number;
+  /**
+   * Trigger-window premium in dollars (entry price × contracts × 100).
+   * Optional so older callers / shapes without size data still compile;
+   * null/undefined rows simply don't contribute to `totalPremium`.
+   */
+  premium?: number | null;
 }
 
 export type Bias = 'bull' | 'bear' | 'mixed';
@@ -39,6 +45,11 @@ export interface RollupAggregates {
    * Null when fewer than 2 distinct strikes.
    */
   strikeRange: { min: number; max: number; spreadPts: number } | null;
+  /**
+   * Sum of `premium` across rows where it was provided. Null when no
+   * row contributed (every row had a null/undefined premium).
+   */
+  totalPremium: number | null;
 }
 
 export function computeRollupAggregates(
@@ -51,6 +62,7 @@ export function computeRollupAggregates(
       spreadMinutes: null,
       gatedCount: 0,
       strikeRange: null,
+      totalPremium: null,
     };
   }
 
@@ -59,8 +71,22 @@ export function computeRollupAggregates(
   const spreadMinutes = computeSpreadMinutes(rows);
   const gatedCount = rows.reduce((n, r) => n + (r.directionGated ? 1 : 0), 0);
   const strikeRange = computeStrikeRange(rows);
+  const totalPremium = computeTotalPremium(rows);
 
-  return { bias, tide, spreadMinutes, gatedCount, strikeRange };
+  return { bias, tide, spreadMinutes, gatedCount, strikeRange, totalPremium };
+}
+
+function computeTotalPremium(
+  rows: readonly RollupAlertSummary[],
+): number | null {
+  let sum = 0;
+  let contributed = false;
+  for (const r of rows) {
+    if (r.premium == null || !Number.isFinite(r.premium)) continue;
+    sum += r.premium;
+    contributed = true;
+  }
+  return contributed ? sum : null;
 }
 
 function computeBias(rows: readonly RollupAlertSummary[]): Bias {
@@ -187,3 +213,21 @@ export function isHighConviction(
 
 /** Display label for the high-conviction badge chip. */
 export const HIGH_CONVICTION_BADGE_LABEL = '✦ conviction';
+
+/**
+ * Compact unsigned dollar formatter for option premium amounts.
+ * Mirrors the Unusual Whales chart style — "$58K" / "$2.1M" — so the
+ * rollup matches what the trader sees in the source UI.
+ *
+ * Distinct from `LotteryRow.formatPremium` (which is signed and
+ * intended for NCP/NPP deltas). Keep the name explicit to avoid the
+ * two converging by accident.
+ */
+export function formatPremiumAmount(dollars: number): string {
+  if (!Number.isFinite(dollars)) return '$—';
+  const sign = dollars < 0 ? '-' : '';
+  const abs = Math.abs(dollars);
+  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${sign}$${Math.round(abs / 1_000)}K`;
+  return `${sign}$${Math.round(abs)}`;
+}

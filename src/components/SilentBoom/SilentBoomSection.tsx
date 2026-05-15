@@ -7,6 +7,11 @@ import { SilentBoomDayBanner } from './SilentBoomDayBanner.js';
 import { SilentBoomRegimeBanner } from './SilentBoomRegimeBanner.js';
 import { SilentBoomTickerGroup } from './SilentBoomTickerGroup.js';
 import {
+  computeRollupAggregates,
+  isHighConviction,
+  type RollupAlertSummary,
+} from '../../utils/ticker-rollup-aggregates.js';
+import {
   SILENT_BOOM_EXIT_POLICY_LABELS,
   SILENT_BOOM_EXIT_POLICY_TOOLTIPS,
   type OptionType,
@@ -664,17 +669,32 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       else map.set(a.underlyingSymbol, [a]);
     }
     return [...map.entries()]
-      .map(([ticker, list]) => ({
-        ticker,
-        alerts: list,
-        // Latest bucket within the group — used as tiebreak so two
-        // tickers with the same alert count are ordered by recency.
-        latestBucketMs: list.reduce<number>((max, a) => {
-          const t = Date.parse(a.bucketCt);
-          return Number.isFinite(t) && t > max ? t : max;
-        }, 0),
-      }))
+      .map(([ticker, list]) => {
+        const agg = computeRollupAggregates(
+          list.map<RollupAlertSummary>((a) => ({
+            optionType: a.optionType,
+            mktTideDiff: a.mktTideDiff,
+            directionGated: a.directionGated,
+            triggeredAt: a.bucketCt,
+            strike: a.strike,
+            premium: a.entryPrice * a.spikeVolume * 100,
+          })),
+        );
+        return {
+          ticker,
+          alerts: list,
+          conviction: isHighConviction(agg, list.length),
+          // Latest bucket within the group — used as tiebreak so two
+          // tickers with the same alert count are ordered by recency.
+          latestBucketMs: list.reduce<number>((max, a) => {
+            const t = Date.parse(a.bucketCt);
+            return Number.isFinite(t) && t > max ? t : max;
+          }, 0),
+        };
+      })
       .sort((a, b) => {
+        // Conviction-tagged tickers float to the top across the page.
+        if (a.conviction !== b.conviction) return a.conviction ? -1 : 1;
         if (b.alerts.length !== a.alerts.length) {
           return b.alerts.length - a.alerts.length;
         }

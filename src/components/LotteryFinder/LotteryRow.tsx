@@ -11,6 +11,7 @@ import type {
   LotteryTickerStats,
 } from './types.js';
 import { EXIT_POLICY_LABELS, EXIT_POLICY_TOOLTIPS } from './types.js';
+import { formatPremiumAmount } from '../../utils/ticker-rollup-aggregates.js';
 
 interface LotteryRowProps {
   fire: LotteryFire;
@@ -533,6 +534,17 @@ export const LotteryRow = memo(function LotteryRow({
           entry{' '}
           <span className="font-mono text-neutral-200">
             {formatDollar(fire.entry.price)}
+          </span>
+        </span>
+        <span title="Trigger-window premium: entry price × window contracts × 100">
+          prem{' '}
+          <span
+            className="font-mono text-sky-300"
+            data-testid={`lottery-row-premium-${fire.optionChainId}`}
+          >
+            {formatPremiumAmount(
+              fire.entry.price * fire.trigger.windowSize * 100,
+            )}
           </span>
         </span>
         <span>

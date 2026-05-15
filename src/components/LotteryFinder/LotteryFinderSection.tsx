@@ -16,6 +16,11 @@ import {
   type OptionType,
   type TimeOfDay,
 } from './types.js';
+import {
+  computeRollupAggregates,
+  isHighConviction,
+  type RollupAlertSummary,
+} from '../../utils/ticker-rollup-aggregates.js';
 
 const PAGE_SIZE = 50;
 /** localStorage keys for persisting user preferences. */
@@ -443,15 +448,33 @@ export function LotteryFinderSection({
       else map.set(f.underlyingSymbol, [f]);
     }
     return [...map.entries()]
-      .map(([ticker, list]) => ({
-        ticker,
-        fires: list,
-        latestTriggerMs: list.reduce<number>((max, f) => {
-          const t = Date.parse(f.triggerTimeCt);
-          return Number.isFinite(t) && t > max ? t : max;
-        }, 0),
-      }))
+      .map(([ticker, list]) => {
+        const agg = computeRollupAggregates(
+          list.map<RollupAlertSummary>((f) => ({
+            optionType: f.optionType,
+            mktTideDiff: f.macro.mktTideDiff,
+            directionGated: f.directionGated,
+            triggeredAt: f.triggerTimeCt,
+            strike: f.strike,
+            premium: f.entry.price * f.trigger.windowSize * 100,
+          })),
+        );
+        return {
+          ticker,
+          fires: list,
+          conviction: isHighConviction(agg, list.length),
+          latestTriggerMs: list.reduce<number>((max, f) => {
+            const t = Date.parse(f.triggerTimeCt);
+            return Number.isFinite(t) && t > max ? t : max;
+          }, 0),
+        };
+      })
       .sort((a, b) => {
+        // Conviction badges always rise to the top, regardless of fire
+        // count. Within the conviction tier (and within non-conviction
+        // tier) the existing rule applies: more fires first, then
+        // recency tiebreak.
+        if (a.conviction !== b.conviction) return a.conviction ? -1 : 1;
         if (b.fires.length !== a.fires.length) {
           return b.fires.length - a.fires.length;
         }

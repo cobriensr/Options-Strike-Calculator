@@ -506,6 +506,110 @@ describe('SilentBoomTickerGroup', () => {
         screen.queryByTestId('silent-boom-ticker-gated-NOW'),
       ).not.toBeInTheDocument();
     });
+
+    it('renders the conviction badge when criteria are met', () => {
+      const alerts = [
+        makeAlert({
+          optionChainId: 'XOM260515C00150000',
+          underlyingSymbol: 'XOM',
+          strike: 150,
+          bucketCt: '2026-05-15T13:32:00Z',
+        }),
+        makeAlert({
+          optionChainId: 'XOM260515C00152500',
+          underlyingSymbol: 'XOM',
+          strike: 152.5,
+          bucketCt: '2026-05-15T13:33:00Z',
+        }),
+        makeAlert({
+          optionChainId: 'XOM260515C00155000',
+          underlyingSymbol: 'XOM',
+          strike: 155,
+          bucketCt: '2026-05-15T13:39:00Z',
+        }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="XOM"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.getByTestId('silent-boom-ticker-conviction-XOM'),
+      ).toHaveTextContent('conviction');
+    });
+
+    it('omits the conviction badge when bias is mixed', () => {
+      const alerts = [
+        makeAlert({
+          optionChainId: 'SNDK260515P01295000',
+          underlyingSymbol: 'SNDK',
+          optionType: 'P',
+          strike: 1295,
+          bucketCt: '2026-05-15T13:38:00Z',
+        }),
+        makeAlert({
+          optionChainId: 'SNDK260515C01320000',
+          underlyingSymbol: 'SNDK',
+          strike: 1320,
+          bucketCt: '2026-05-15T13:35:00Z',
+        }),
+        makeAlert({
+          optionChainId: 'SNDK260515C01360000',
+          underlyingSymbol: 'SNDK',
+          strike: 1360,
+          bucketCt: '2026-05-15T13:32:00Z',
+        }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="SNDK"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.queryByTestId('silent-boom-ticker-conviction-SNDK'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('renders the aggregate premium chip with $K/$M formatting', () => {
+      // 2 alerts, entryPrice $1.22 × spikeVolume 100 × 100 = $12,200 each
+      const alert1 = makeAlert({
+        optionChainId: 'XOM260515C00150000',
+        underlyingSymbol: 'XOM',
+        strike: 150,
+        entryPrice: 1.22,
+        spikeVolume: 100,
+      });
+      const alert2 = makeAlert({
+        optionChainId: 'XOM260515C00155000',
+        underlyingSymbol: 'XOM',
+        strike: 155,
+        entryPrice: 1.22,
+        spikeVolume: 100,
+      });
+      render(
+        <SilentBoomTickerGroup
+          ticker="XOM"
+          alerts={[alert1, alert2]}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.getByTestId('silent-boom-ticker-premium-XOM'),
+      ).toHaveTextContent('prem $24K');
+    });
   });
 
   it('renders an em-dash when every alert has a null peak', () => {

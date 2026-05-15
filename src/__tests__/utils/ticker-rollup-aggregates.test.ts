@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   computeRollupAggregates,
   formatBiasLabel,
+  formatPremiumAmount,
   formatSpreadDuration,
   formatTideLabel,
   isHighConviction,
@@ -30,6 +31,7 @@ describe('computeRollupAggregates', () => {
     expect(agg.spreadMinutes).toBeNull();
     expect(agg.gatedCount).toBe(0);
     expect(agg.strikeRange).toBeNull();
+    expect(agg.totalPremium).toBeNull();
   });
 
   describe('bias', () => {
@@ -169,6 +171,41 @@ describe('computeRollupAggregates', () => {
     });
   });
 
+  describe('totalPremium', () => {
+    it('returns null when no row provides premium', () => {
+      const agg = computeRollupAggregates([
+        makeRow({ strike: 100 }),
+        makeRow({ strike: 105 }),
+      ]);
+      expect(agg.totalPremium).toBeNull();
+    });
+
+    it('sums provided premiums and ignores nulls', () => {
+      const agg = computeRollupAggregates([
+        makeRow({ strike: 100, premium: 58_051 }),
+        makeRow({ strike: 105, premium: null }),
+        makeRow({ strike: 110, premium: 12_000 }),
+      ]);
+      expect(agg.totalPremium).toBe(70_051);
+    });
+
+    it('returns 0 when every contributing row was zero', () => {
+      const agg = computeRollupAggregates([
+        makeRow({ strike: 100, premium: 0 }),
+        makeRow({ strike: 105, premium: 0 }),
+      ]);
+      expect(agg.totalPremium).toBe(0);
+    });
+
+    it('ignores non-finite premium values', () => {
+      const agg = computeRollupAggregates([
+        makeRow({ strike: 100, premium: Number.NaN }),
+        makeRow({ strike: 105, premium: 5_000 }),
+      ]);
+      expect(agg.totalPremium).toBe(5_000);
+    });
+  });
+
   describe('strikeRange', () => {
     it('null for a single distinct strike', () => {
       const agg = computeRollupAggregates([
@@ -215,6 +252,33 @@ describe('formatSpreadDuration', () => {
   it('renders hours with one decimal when > 60', () => {
     expect(formatSpreadDuration(150)).toBe('Δ 2.5h');
     expect(formatSpreadDuration(61)).toBe('Δ 1.0h');
+  });
+});
+
+describe('formatPremiumAmount', () => {
+  it('uses K abbreviation between 1K and 1M', () => {
+    expect(formatPremiumAmount(58_051)).toBe('$58K');
+    expect(formatPremiumAmount(1_000)).toBe('$1K');
+    expect(formatPremiumAmount(999_999)).toBe('$1000K');
+  });
+
+  it('uses M abbreviation at or above 1M with one decimal', () => {
+    expect(formatPremiumAmount(1_500_000)).toBe('$1.5M');
+    expect(formatPremiumAmount(2_100_000)).toBe('$2.1M');
+  });
+
+  it('renders sub-1K values without abbreviation', () => {
+    expect(formatPremiumAmount(0)).toBe('$0');
+    expect(formatPremiumAmount(420)).toBe('$420');
+  });
+
+  it('renders non-finite as $—', () => {
+    expect(formatPremiumAmount(Number.NaN)).toBe('$—');
+    expect(formatPremiumAmount(Number.POSITIVE_INFINITY)).toBe('$—');
+  });
+
+  it('handles negative input with a leading minus', () => {
+    expect(formatPremiumAmount(-5_000)).toBe('-$5K');
   });
 });
 

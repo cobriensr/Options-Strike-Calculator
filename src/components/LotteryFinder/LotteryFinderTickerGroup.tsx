@@ -12,8 +12,11 @@ import { LotteryRow } from './LotteryRow.js';
 import {
   computeRollupAggregates,
   formatBiasLabel,
+  formatPremiumAmount,
   formatSpreadDuration,
   formatTideLabel,
+  HIGH_CONVICTION_BADGE_LABEL,
+  isHighConviction,
   type Bias,
   type RollupAlertSummary,
   type TideAggregate,
@@ -126,10 +129,17 @@ function LotteryFinderTickerGroupBase({
           directionGated: f.directionGated,
           triggeredAt: f.triggerTimeCt,
           strike: f.strike,
+          // Trigger-window premium spent on this chain — the size×price
+          // signature the alert pipeline saw when it fired. windowSize
+          // is total contracts in the burst window; ×100 lifts contract
+          // count to share-equivalents for $ display.
+          premium: f.entry.price * f.trigger.windowSize * 100,
         })),
       ),
     [fires],
   );
+
+  const showConvictionBadge = isHighConviction(agg, fires.length);
 
   const strikesWithSpread =
     agg.strikeRange != null && strikesSummary
@@ -159,6 +169,15 @@ function LotteryFinderTickerGroupBase({
           <span className="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-neutral-200">
             {count} fire{count === 1 ? '' : 's'}
           </span>
+          {showConvictionBadge && (
+            <span
+              className="rounded bg-amber-500/20 px-1.5 py-0.5 font-mono text-[11px] font-bold text-amber-300 ring-1 ring-amber-400/60"
+              title="≥3 fires, single direction, multi-strike, within 15 min"
+              data-testid={`lottery-ticker-conviction-${ticker}`}
+            >
+              {HIGH_CONVICTION_BADGE_LABEL}
+            </span>
+          )}
           {strikesWithSpread && (
             <span
               className="font-mono text-[11px] text-neutral-400"
@@ -187,6 +206,15 @@ function LotteryFinderTickerGroupBase({
               data-testid={`lottery-ticker-density-${ticker}`}
             >
               {formatSpreadDuration(agg.spreadMinutes)}
+            </span>
+          )}
+          {agg.totalPremium != null && (
+            <span
+              className="rounded bg-sky-950/40 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-sky-300"
+              title="Sum of trigger-window premium across this ticker's fires"
+              data-testid={`lottery-ticker-premium-${ticker}`}
+            >
+              prem {formatPremiumAmount(agg.totalPremium)}
             </span>
           )}
           {agg.gatedCount > 0 && (

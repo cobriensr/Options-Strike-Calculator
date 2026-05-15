@@ -13,8 +13,11 @@ import { SilentBoomRow } from './SilentBoomRow.js';
 import {
   computeRollupAggregates,
   formatBiasLabel,
+  formatPremiumAmount,
   formatSpreadDuration,
   formatTideLabel,
+  HIGH_CONVICTION_BADGE_LABEL,
+  isHighConviction,
   type Bias,
   type RollupAlertSummary,
   type TideAggregate,
@@ -128,10 +131,16 @@ function SilentBoomTickerGroupBase({
           directionGated: a.directionGated,
           triggeredAt: a.bucketCt,
           strike: a.strike,
+          // Spike-bucket premium spent — what the detector saw fire.
+          // spikeVolume is contracts in the burst minute; ×100 lifts
+          // to share-equivalents for $ display.
+          premium: a.entryPrice * a.spikeVolume * 100,
         })),
       ),
     [alerts],
   );
+
+  const showConvictionBadge = isHighConviction(agg, alerts.length);
 
   const strikesWithSpread =
     agg.strikeRange != null && strikesSummary
@@ -161,6 +170,15 @@ function SilentBoomTickerGroupBase({
           <span className="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-neutral-200">
             {count} alert{count === 1 ? '' : 's'}
           </span>
+          {showConvictionBadge && (
+            <span
+              className="rounded bg-amber-500/20 px-1.5 py-0.5 font-mono text-[11px] font-bold text-amber-300 ring-1 ring-amber-400/60"
+              title="≥3 alerts, single direction, multi-strike, within 15 min"
+              data-testid={`silent-boom-ticker-conviction-${ticker}`}
+            >
+              {HIGH_CONVICTION_BADGE_LABEL}
+            </span>
+          )}
           {strikesWithSpread && (
             <span
               className="font-mono text-[11px] text-neutral-400"
@@ -189,6 +207,15 @@ function SilentBoomTickerGroupBase({
               data-testid={`silent-boom-ticker-density-${ticker}`}
             >
               {formatSpreadDuration(agg.spreadMinutes)}
+            </span>
+          )}
+          {agg.totalPremium != null && (
+            <span
+              className="rounded bg-sky-950/40 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-sky-300"
+              title="Sum of spike-bucket premium across this ticker's alerts"
+              data-testid={`silent-boom-ticker-premium-${ticker}`}
+            >
+              prem {formatPremiumAmount(agg.totalPremium)}
             </span>
           )}
           {agg.gatedCount > 0 && (
