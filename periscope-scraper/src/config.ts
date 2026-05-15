@@ -35,18 +35,17 @@ export const UW_PERISCOPE_URL =
 
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? 'info';
 
-/** 10 minutes between scrape passes. */
-export const MS_PER_TICK = 10 * 60 * 1000;
-
 /**
- * Returns true during the regular trading session window in UTC.
+ * 1 minute between tick wake-ups.
  *
- * RTH is 13:30–21:00 UTC (Mon–Fri). We use hour 13–20 inclusive, which covers
- * the full session plus a 1-hour tail buffer for late ticks and clock skew.
+ * The tick body is schedule-aware: it only invokes the Playwright
+ * scrape when a new 10-min UW slot is expected (i.e., the most
+ * recently closed 10-min window has not yet been captured). Outside
+ * that "publish window" — and outside the active polling window
+ * (08:21-15:14 CT) — the tick is a cheap no-op. See `runTick` in
+ * index.ts and `expectedWindowEnd` in dates.ts.
  */
-export function isMarketHours(d: Date): boolean {
-  const day = d.getUTCDay();
-  if (day < 1 || day > 5) return false;
-  const hour = d.getUTCHours();
-  return hour >= 13 && hour <= 20;
-}
+export const MS_PER_TICK = 60 * 1000;
+
+// Re-exported so index.ts can keep its old single-import shape.
+export { isInActivePollingWindow } from './dates.js';

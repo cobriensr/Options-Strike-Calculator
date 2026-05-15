@@ -76,11 +76,79 @@ export function computeCapturedAt(date: string, slotEndHhmm: string): string {
  * Intl.DateTimeFormat. Mon-Fri only.
  *
  * Used by the auto-playbook webhook guard to reject stale captures
- * that landed outside trading hours — and by the scraper's runTick
- * gate where extra safety is desired beyond the isMarketHours UTC
- * approximation.
+ * that landed outside trading hours.
  */
 export function isCtInRth(d: Date): boolean {
+  const { weekday, minutesSinceMidnight } = ctParts(d);
+  if (weekday === 'Sat' || weekday === 'Sun') return false;
+  return minutesSinceMidnight >= 8 * 60 + 30 && minutesSinceMidnight <= 15 * 60;
+}
+
+/**
+ * Returns true when the given UTC instant is inside the scraper's
+ * active polling window: Mon-Fri, 08:21-15:14 CT. DST-aware.
+ *
+ * Window bounds:
+ *   - 08:21 CT — earliest a 10-min slot ending at 08:20 could appear
+ *     in UW's "Latest" panel (publication lag is typically 1-3 min).
+ *   - 15:14 CT — latest tick that can still capture the debrief slot
+ *     ("14:50 - 15:00") within the auto-playbook's 15:15 CT wallclock
+ *     ceiling. Beyond this the scraper has nothing useful to do.
+ *
+ * Outside this window the scraper resets its dedup state and sleeps
+ * until the next active window.
+ */
+export function isInActivePollingWindow(d: Date): boolean {
+  const { weekday, minutesSinceMidnight } = ctParts(d);
+  if (weekday === 'Sat' || weekday === 'Sun') return false;
+  return (
+    minutesSinceMidnight >= 8 * 60 + 21 && minutesSinceMidnight <= 15 * 60 + 14
+  );
+}
+
+/**
+ * Return the end time (HH:MM) of the most recently CLOSED 10-min UW
+ * slot at the given instant, in CT. DST-aware. Returns null when the
+ * instant is before the first 10-min boundary of the day (00:10 CT).
+ *
+ * Examples (all CT):
+ *   08:30:00 → "08:30"  (the 08:20-08:30 slot just closed)
+ *   08:32:15 → "08:30"
+ *   08:39:59 → "08:30"
+ *   08:40:00 → "08:40"  (the 08:30-08:40 slot just closed)
+ *
+ * Used by the scraper to know which slot end-time to expect from UW's
+ * "Latest" panel. When lastCapturedWindowEnd === expectedWindowEnd, we
+ * already have the slot for this window and can skip the scrape until
+ * the next 10-min boundary closes.
+ */
+export function expectedWindowEnd(d: Date): string | null {
+  const { hour, minute } = ctParts(d);
+  const totalMin = hour * 60 + minute;
+  if (totalMin < 10) return null;
+  const endMin = Math.floor(totalMin / 10) * 10;
+  const eh = Math.floor(endMin / 60);
+  const em = endMin % 60;
+  return `${pad2(eh)}:${pad2(em)}`;
+}
+
+/**
+ * Parse the END time (HH:MM) from a UW slot label like "08:20 - 08:30".
+ * Returns null on unparseable input. The scraper uses this to compare
+ * a freshly-captured slot's end against `expectedWindowEnd(now)`.
+ */
+export function parseSlotEnd(slotKey: string): string | null {
+  const m = slotKey.match(/^\s*\d{1,2}:\d{2}\s*-\s*(\d{1,2}):(\d{2})\s*$/);
+  if (m == null) return null;
+  return `${pad2(Number.parseInt(m[1]!, 10))}:${m[2]}`;
+}
+
+function ctParts(d: Date): {
+  hour: number;
+  minute: number;
+  weekday: string;
+  minutesSinceMidnight: number;
+} {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/Chicago',
     weekday: 'short',
@@ -88,18 +156,19 @@ export function isCtInRth(d: Date): boolean {
     minute: '2-digit',
     hourCycle: 'h23',
   }).formatToParts(d);
-  const wk = parts.find((p) => p.type === 'weekday')?.value ?? '';
-  if (wk === 'Sat' || wk === 'Sun') return false;
-  const h = Number.parseInt(
-    parts.find((p) => p.type === 'hour')?.value ?? '0',
-    10,
-  );
-  const mi = Number.parseInt(
-    parts.find((p) => p.type === 'minute')?.value ?? '0',
-    10,
-  );
-  const minutesSinceMidnight = h * 60 + mi;
-  return minutesSinceMidnight >= 8 * 60 + 30 && minutesSinceMidnight <= 15 * 60;
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+  const hour = Number.parseInt(get('hour'), 10);
+  const minute = Number.parseInt(get('minute'), 10);
+  return {
+    hour,
+    minute,
+    weekday: get('weekday'),
+    minutesSinceMidnight: hour * 60 + minute,
+  };
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
 }
 
 function normalizeHhmm(s: string): string {
