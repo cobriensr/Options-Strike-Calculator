@@ -4,7 +4,7 @@ description: "Use whenever the user pastes or mentions an Unusual Whales Perisco
 risk: unknown
 source: owner
 date_added: '2026-04-30'
-version: 2
+version: 3
 ---
 
 ## What Periscope is
@@ -217,6 +217,8 @@ Stories to extract, in priority order:
 
 Always cross-check Positions vs. Gamma at the same strike — when sign agrees (green Positions + green Gamma), you have a clean read. Sign disagreement is rare and usually means a complex multi-leg structure at that strike — read both signs as data points.
 
+**Magnet identification — regime-modified:** the dominant magnet isn't always the largest +γ cluster. In an **active trending regime** (vol expanding, fixed-strike IV climbing day-over-day), price is drawn to the **largest dealer-short cluster** (largest red Gamma magnitude near or above spot in a rally, below spot in a sell-off) — that's where MMs are forced /ES chasers and the trend extends into the position they have to keep hedging. In a **settling regime** (vol relaxing, IV bleeding), price gravitates to the **largest dealer-long cluster** (largest green Gamma magnitude near spot) — that's where MM hedging suppresses motion and the day pins. When the chart shows both a large red cluster overhead and a large green cluster nearby, the regime determines which one acts as the magnet for the rest of the session: trending rally → red overhead pulls; settling chop → green nearby pulls.
+
 ## Trading rules — what the chart tells you to actually do
 
 This is the section to lean on when the user asks "where do I put my stop" or "where should I exit."
@@ -270,7 +272,7 @@ Charm magnitude is highly time-of-day dependent for 0DTE; how you weight it depe
 - **`intraday` 09:30–11:00 CT** — Same: gamma topology dominates, charm is a tilt.
 - **`intraday` 11:00–13:30 CT** — Charm builds; flow tally becomes tradeable as a tilt. Pin candidates from the Gamma panel start to matter.
 - **`intraday` 13:30–14:30 CT** — Charm dominates. Net flow is the primary directional read; pin candidate becomes specific.
-- **`intraday` 14:30–15:00 CT** — Final 30 min. Charm flow is mostly consumed; pin compresses to nearest dominant +γ. MOC orders can override the chart in last 5 min, especially on rebalance / quad-witch days.
+- **`intraday` 14:30–15:00 CT** — Final 30 min. Charm flow is mostly consumed; pin compresses to nearest dominant +γ. **Self-igniting unwind risk dominates** — large +γ Position clusters with a shrinking dot are actively unwinding their /ES hedge in this window; check the unwind direction against the charm tally and pin candidate (see "Self-igniting expiry unwind"). MOC orders can override the chart in last 5 min, especially on rebalance / quad-witch days.
 - **`debrief` (post-close)** — Time weighting is no longer predictive; the question shifts to "did the right band of charm magnitude actually translate into the realized drift?" — use the framework to score, not predict.
 
 ### Vol shock awareness (vanna + cone)
@@ -282,6 +284,20 @@ When present, the Vanna panel matters most on event days (FOMC, CPI, jobs):
 - **On vol-crush days** (post-event IV drop), the same bars work in reverse: vanna-positive overhead unwinds into selling, vanna-negative below covers into buying. Pin compresses faster than charm alone implies.
 
 The straddle breakeven cone is the cleanest standalone vol-shock signal: when price exceeds the cone, short-vol sellers reflexively buy back hedges and extend the move. Pair with vanna for the strike where the extension will hit hardest.
+
+### Self-igniting expiry unwind — non-conditional EoD flow
+
+Most Periscope reasoning treats dealer hedging as **conditional**: a price move (gamma) or time passing (charm) triggers a rebalance. Late in 0DTE, a third mechanic kicks in that's neither — **the hedge against an expiring option must converge to zero by settlement**, regardless of price action.
+
+When MM holds a large position with a substantial /ES hedge tied to it, the **mechanical unwind** is itself a directional flow. No external catalyst required — the hedge has to leave because the option is leaving.
+
+What this changes about the read:
+
+- **Large green Positions cluster surrounded by −γ in the last 60 min** = self-starting reversal risk. The /ES that MMs accumulated to hedge the cluster gets sold back through the −γ band below; the procyclical hedging in that band amplifies the unwind once it starts. The pin can break the wrong way with no external trigger.
+- **Direction of the unwind is set by the hedge sign, not by where price is moving.** A large MM long-call cluster above spot (MM was originally short /ES against the calls) → unwind is /ES BUYING into the close. A large MM long-put cluster below spot (MM was originally long /ES against the puts) → unwind is /ES SELLING into the close.
+- **Slice diagnostic:** when the dot on a large +γ Positions bar is meaningfully larger than the bar (position is shrinking) and you're inside the last 60 min, you're watching the unwind happen in real time. The /ES it generates is a tradeable directional flow distinct from the charm tally.
+
+Distinguish from charm: charm flow is gradual delta drift over time. Unwind flow is the residual hedge being closed because the option ceases to exist. They usually point the same direction; flag the read explicitly when the unwind sign disagrees with the net charm tally — the unwind typically wins in the last 30 min.
 
 ### Long-skew regime watchout
 
@@ -366,6 +382,8 @@ Why it matters:
 - **Dominant strikes shift.** Different expiries have different MM positioning concentrations — the 0DTE magnet is often at a different strike than the 6DTE magnet. Reading the wrong expiry's structure leads to the wrong target.
 
 A correct 0DTE chart for the user will have a same-day expiry; anything else is a misconfigured view and the read will be wrong even if mechanically applied.
+
+**3rd Friday AM monthly expirations — overnight context flag:** SPX has both PM (daily 0DTE) and AM (3rd Friday monthly, settling at the morning open) expirations. The user trades only PM 0DTE, so the same-day expiry rule still holds. But on a Thursday before a 3rd Friday AM expiry, the AM expiration's dealer hedges unwind into Friday's open — a self-igniting unwind on the largest-positioning expiry of the month. That flow can produce overnight directional pressure and an unusually directional open print that frames the PM 0DTE chart you'll be reading. If a major AM expiration is in play tomorrow, factor the expected open-print direction (driven by which side the AM hedge unwind clears) into the morning context; don't read the PM chart in isolation.
 
 ## Structured trading playbook output
 

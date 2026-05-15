@@ -23,7 +23,8 @@ States (priority order):
 The widget operates in **two modes**, selected by an optional `date` query param:
 
 - **Live mode** (no `date`): evaluates the latest available snapshot. State can transition through the day as positions grow. Used by the default tile rendering.
-- **Historical mode** (`date=YYYY-MM-DD`): evaluates the snapshot at the **first 0DTE timestamp ≥ 09:30 CT** for that date — i.e. "would the alert have fired at the canonical 9:30 check on that day?". Adds an `outcome` field with the day's settle and signed delta to the magnet, so users can score past days' calls without leaving the widget.
+- **Historical mode** (`date=YYYY-MM-DD`): evaluates the **end-of-session snapshot** for that CT date (MAX timestamp within 08:30–15:30 CT). The +γ wall builds continuously through the session, so the EOD snapshot reflects the peak wall strength and the regime the day actually settled into — not the early-morning preview. Combined with the `outcome` field (settle + signed delta to magnet), historical mode answers "did this day end up as a pin?" rather than "would the alert have fired by 9:30?".
+- **Bug-proofing**: snapshot selection filters by the CT date of the _timestamp_ (not the row's `date` column). Some cron writes mis-tag the `date` column with the next session's date, which would otherwise leak a stale prior-day EOD snapshot into a 9:30-CT-style query. Deriving the CT date from the timestamp itself is invariant to that bug.
 
 The 9:30 CT timepoint from the original framing is the canonical "first informative read"; the live widget can transition states later in the session as positions grow.
 

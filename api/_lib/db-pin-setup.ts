@@ -103,13 +103,23 @@ export async function getLatestPinSetup(
   //      endpoint exposes `staleMinutes` so the frontend can render
   //      a staleness indicator and the rule state is interpreted
   //      against current freshness, not silently against stale data.
-  //    - historical: first row on `date` with timestamp >= 09:30 CT.
+  //    - historical: end-of-session snapshot for the target CT date.
+  //      Filters by the CT date of the *timestamp* (not the row's
+  //      `date` column) because the cron has historically mis-tagged
+  //      some rows' `date` column with the next session's date — using
+  //      the timestamp-derived CT date is bug-proof against that.
+  //      We show EOD rather than 09:30 CT because the +γ wall builds
+  //      continuously through the day; users reviewing past sessions
+  //      want to know whether the day ended up as a pin (peak wall
+  //      strength + final settle), not where the wall was at the
+  //      first informative read.
   const snapTsRows = date
     ? ((await sql`
-        SELECT MIN(timestamp) AS ts
+        SELECT MAX(timestamp) AS ts
         FROM gex_strike_0dte
-        WHERE date = ${date}::date
-          AND (timestamp AT TIME ZONE 'US/Central')::time >= TIME '09:30'
+        WHERE (timestamp AT TIME ZONE 'US/Central')::date = ${date}::date
+          AND (timestamp AT TIME ZONE 'US/Central')::time
+                BETWEEN TIME '08:30' AND TIME '15:30'
       `) as Array<{ ts: string | Date | null }>)
     : ((await sql`
         SELECT MAX(timestamp) AS ts
@@ -164,19 +174,18 @@ export async function getLatestPinSetup(
   //    ORDER BY timestamp DESC + reverse in JS so we never lose the
   //    most-recent samples to a LIMIT clamp. Cap at 600 to comfortably
   //    cover a 6.5h session at 1-min cadence with backfill headroom.
+  //    Session date is derived from the snapshot timestamp itself
+  //    (CT date) rather than the row's `date` column, defensively
+  //    matching the snapshot-pick logic.
   const trajRows = (await sql`
-    WITH session AS (
-      SELECT date FROM gex_strike_0dte
-      WHERE timestamp = ${snapshotTs}::timestamptz
-      LIMIT 1
-    )
     SELECT
       timestamp  AS ts,
       price      AS price,
       gamma_dir  AS gamma_dir
-    FROM spot_exposures, session
-    WHERE spot_exposures.date = session.date
-      AND spot_exposures.ticker = 'SPX'
+    FROM spot_exposures
+    WHERE ticker = 'SPX'
+      AND (timestamp AT TIME ZONE 'US/Central')::date =
+            (${snapshotTs}::timestamptz AT TIME ZONE 'US/Central')::date
       AND (timestamp AT TIME ZONE 'US/Central')::time
             BETWEEN TIME '08:30' AND TIME '15:00'
     ORDER BY timestamp DESC
@@ -193,14 +202,16 @@ export async function getLatestPinSetup(
     }));
 
   // 4) Settle (historical mode only). Last cash-session SPX 1m close
-  //    on the snapshot's calendar date.
+  //    on the target CT date. Filters by the CT date of the timestamp
+  //    (not `date` column) to defend against the same cron mis-tagging
+  //    that breaks the snapshot-pick query.
   let settle: number | null = null;
   if (date) {
     const settleRows = (await sql`
       SELECT close
       FROM index_candles_1m
       WHERE symbol = 'SPX'
-        AND date = ${date}::date
+        AND (timestamp AT TIME ZONE 'US/Central')::date = ${date}::date
         AND (timestamp AT TIME ZONE 'US/Central')::time <= TIME '15:00'
       ORDER BY timestamp DESC
       LIMIT 1
