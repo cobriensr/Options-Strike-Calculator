@@ -51,6 +51,14 @@ _LOTTERY_TICKERS: frozenset[str] = frozenset(
         # Added 2026-05-07 from ticker discovery audit. EXTENDED (Mode B)
         # batch: mega-cap peer-class oversights.
         "QCOM", "NFLX", "LLY", "BABA", "NOW", "CRWD",
+        # Added 2026-05-15 from second-round discovery audit (24-day
+        # parquet window). See docs/tmp/ticker-discovery-audit-2026-05-14.md.
+        # V3 (Mode A 0DTE) — cleared the >450-qualifying-fire bar:
+        "BE", "AAOI", "SHOP", "BA", "APP", "POET",
+        "DELL", "CVNA", "RGTI", "IBM", "CSCO",
+        # EXTENDED (Mode B 1-3 DTE) — high-volume rate / meme names
+        # whose flow concentrates on multi-day chains:
+        "GME", "TLT",
     },
 )
 
