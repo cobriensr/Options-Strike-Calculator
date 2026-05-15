@@ -378,6 +378,48 @@ describe('GET /api/pin-setup-status', () => {
     expect(body.trajectory[0]!.ts).toMatch(/^\d{2}:\d{2}$/);
   });
 
+  it('preserves chronological order — reverses DESC SQL output before downsampling (tail-preservation)', async () => {
+    // db-pin-setup.ts queries `ORDER BY timestamp DESC LIMIT 600` and then
+    // `.slice().reverse()` so the handler sees the session in chronological
+    // (ASC) order. This test hands the mock 600 rows in DESC order with a
+    // strictly increasing gamma_dir from oldest → newest, then asserts the
+    // first element of the downsampled output is the OLDEST sample and the
+    // last is close to the NEWEST. If someone removes the .reverse() or
+    // flips the SQL to ASC by mistake, both assertions fail — catches the
+    // regression that the previous test (length + format only) would miss.
+    const N = 600;
+    const traj = Array.from({ length: N }, (_, descIdx) => ({
+      ts: new Date(
+        Date.UTC(2026, 4, 14, 13, 30 + (N - 1 - descIdx)),
+      ).toISOString(),
+      price: 7500,
+      // Newest (descIdx=0) gets the highest value; oldest (descIdx=N-1) the lowest.
+      gamma_dir: (10_000 + (N - 1 - descIdx)) * 1e6,
+    }));
+    mockSql.mockResolvedValueOnce([{ ts: SNAP_TS }]);
+    mockSql.mockResolvedValueOnce([strikeRow(7500, 41_751e6, -5_321e6, 7505)]);
+    mockSql.mockResolvedValueOnce(traj);
+
+    const req = mockRequest({ method: 'GET', query: {} });
+    const res = mockResponse();
+    await handler(req, res);
+    const body = res._json as {
+      trajectory: Array<{ gammaDirM: number }>;
+    };
+    expect(body.trajectory.length).toBeGreaterThan(0);
+    // First downsampled row corresponds to ASC index 0 = oldest = 10_000.
+    expect(body.trajectory[0]!.gammaDirM).toBe(10_000);
+    // Last downsampled row must be strictly newer than the first —
+    // i.e., the trajectory is chronological, not reversed.
+    const last = body.trajectory.at(-1)!.gammaDirM;
+    expect(last).toBeGreaterThan(body.trajectory[0]!.gammaDirM);
+    // And the last row should be within one downsample step of the newest
+    // sample (newest = 10_599). step = ceil(600/200) = 3, so last ASC
+    // index kept is 597 → gamma 10_597. Allow a small tolerance for the
+    // step arithmetic.
+    expect(last).toBeGreaterThanOrEqual(10_590);
+  });
+
   // ── Error path ─────────────────────────────────────────────
 
   it('returns 500 and reports to Sentry when SQL throws', async () => {
