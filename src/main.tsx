@@ -129,6 +129,7 @@ if (import.meta.env.PROD)
       { path: '/api/lottery-finder', method: 'GET' },
       { path: '/api/lottery-export', method: 'GET' },
       { path: '/api/lottery-contract-tape', method: 'GET' },
+      { path: '/api/opening-flow-signal', method: 'GET' },
       { path: '/api/silent-boom-feed', method: 'GET' },
       { path: '/api/silent-boom-export', method: 'GET' },
       { path: '/api/net-flow-history', method: 'GET' },

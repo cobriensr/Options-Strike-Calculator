@@ -54,6 +54,7 @@ import IntervalBAAlertBanner from './components/IntervalBAAlertBanner';
 import { IntervalBAFeed } from './components/IntervalBAFeed/IntervalBAFeed';
 import DarkPoolLevels from './components/DarkPoolLevels';
 import { PeriscopePanel } from './components/Periscope/PeriscopePanel';
+import { OpeningFlowSignal } from './components/OpeningFlowSignal';
 import VegaSpikeFeed from './components/VegaSpikeFeed/VegaSpikeFeed';
 import NotificationPermission from './components/NotificationPermission';
 import { CollapseAllContext } from './components/collapse-context';
@@ -824,6 +825,10 @@ export default function StrikeCalculator() {
                   selectedDate={vix.selectedDate}
                   liveEvents={market.data.events?.events}
                 />
+
+                <div id="sec-opening-flow" className="mt-6 scroll-mt-28">
+                  <OpeningFlowSignal />
+                </div>
 
                 {market.hasData && (
                   <div id="sec-premarket" className="mt-6 scroll-mt-28">

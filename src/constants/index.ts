@@ -334,6 +334,9 @@ export const POLL_INTERVALS = {
   ALERTS: 10_000,
   /** Polling cadence for the Lottery Finder hook (useLotteryFinder). */
   OTM_FLOW: 30_000,
+  /** Opening Flow Signal polling cadence (useOpeningFlowSignal) — gated to
+   *  the 09:25–09:50 CT window when the V4 rule can fire. */
+  OPENING_FLOW: 30_000,
   /** Dark pool levels refresh (useDarkPoolLevels) */
   DARK_POOL: 60_000,
   /** Zero-gamma per-ticker refresh (useZeroGamma) — matches the 5-min compute cron */
