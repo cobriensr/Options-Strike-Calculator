@@ -56,16 +56,92 @@ const UW_BASE = 'https://api.unusualwhales.com/api';
 const RECURRING_CRON_COVERED = new Set(['SPX', 'NDX', 'SPY', 'QQQ']);
 
 const LOTTERY_TICKERS = [
-  'AAOI', 'AAPL', 'AMD', 'AMZN', 'APLD', 'APP', 'ARM', 'ASTS', 'AVGO',
-  'BA', 'BABA', 'BE', 'CAR', 'COIN', 'CRCL', 'CRWD', 'CRWV', 'CSCO',
-  'CVNA', 'DELL', 'GME', 'GOOG', 'GOOGL', 'HIMS', 'HOOD', 'IBIT', 'IBM',
-  'INTC', 'IONQ', 'IREN', 'IWM', 'LITE', 'LLY', 'META', 'MRVL', 'MSFT',
-  'MSTR', 'MU', 'NBIS', 'NDXP', 'NFLX', 'NOW', 'NVDA', 'NVTS', 'OKLO',
-  'ORCL', 'PLTR', 'POET', 'QCOM', 'QQQ', 'RBLX', 'RDDT', 'RGTI', 'RIOT',
-  'RIVN', 'RKLB', 'RUTW', 'SEDG', 'SHOP', 'SLV', 'SMCI', 'SMH', 'SNDK',
-  'SNOW', 'SOFI', 'SOUN', 'SOXL', 'SOXS', 'SPXW', 'SPY', 'SQQQ', 'STX',
-  'TEAM', 'TLT', 'TNA', 'TQQQ', 'TSLA', 'TSLL', 'TSM', 'UBER', 'UNH',
-  'USAR', 'USO', 'WDC', 'WMT', 'WULF', 'XOM',
+  'AAOI',
+  'AAPL',
+  'AMD',
+  'AMZN',
+  'APLD',
+  'APP',
+  'ARM',
+  'ASTS',
+  'AVGO',
+  'BA',
+  'BABA',
+  'BE',
+  'CAR',
+  'COIN',
+  'CRCL',
+  'CRWD',
+  'CRWV',
+  'CSCO',
+  'CVNA',
+  'DELL',
+  'GME',
+  'GOOG',
+  'GOOGL',
+  'HIMS',
+  'HOOD',
+  'IBIT',
+  'IBM',
+  'INTC',
+  'IONQ',
+  'IREN',
+  'IWM',
+  'LITE',
+  'LLY',
+  'META',
+  'MRVL',
+  'MSFT',
+  'MSTR',
+  'MU',
+  'NBIS',
+  'NDXP',
+  'NFLX',
+  'NOW',
+  'NVDA',
+  'NVTS',
+  'OKLO',
+  'ORCL',
+  'PLTR',
+  'POET',
+  'QCOM',
+  'QQQ',
+  'RBLX',
+  'RDDT',
+  'RGTI',
+  'RIOT',
+  'RIVN',
+  'RKLB',
+  'RUTW',
+  'SHOP',
+  'SLV',
+  'SMCI',
+  'SMH',
+  'SNDK',
+  'SNOW',
+  'SOFI',
+  'SOUN',
+  'SOXL',
+  'SOXS',
+  'SPXW',
+  'SPY',
+  'SQQQ',
+  'STX',
+  'TEAM',
+  'TLT',
+  'TNA',
+  'TQQQ',
+  'TSLA',
+  'TSLL',
+  'TSM',
+  'UBER',
+  'UNH',
+  'USAR',
+  'USO',
+  'WDC',
+  'WMT',
+  'WULF',
+  'XOM',
 ].filter((t) => !RECURRING_CRON_COVERED.has(t));
 
 const days = Number.parseInt(process.argv[2] ?? '90', 10);
@@ -96,23 +172,41 @@ const BATCH_INSERT_SIZE = 500;
 
 // ── Trading-day + expiry helpers ────────────────────────────
 
+// Always compute calendar dates in CT, never local TZ. Without the
+// CT anchor, `d.getDay()` reads local TZ while `d.toISOString().slice(0, 10)`
+// reads UTC — when run from CT after 6 PM, the UTC date is 1 day ahead
+// of the CT date, so the script pushes Saturday-labeled strings for
+// Friday data and silently skips the corresponding Monday at the back
+// of the window. Pattern lifted from backfill-net-prem-ticks.mjs.
 function getTradingDays(count) {
-  const dates = [];
-  const d = new Date();
-  const today = d.getDay();
-  if (today !== 0 && today !== 6) {
-    dates.push(d.toISOString().slice(0, 10));
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Chicago',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const dates = new Set();
+  let cursor = new Date();
+  while (dates.size < count) {
+    const ctDateStr = fmt.format(cursor); // YYYY-MM-DD in CT
+    if (!dates.has(ctDateStr)) {
+      // 18:00 UTC = midday CT regardless of DST — anchors the calendar
+      // date unambiguously to its weekday.
+      const dayOfWeek = new Date(`${ctDateStr}T18:00:00Z`).getUTCDay();
+      if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+        dates.add(ctDateStr);
+      }
+    }
+    cursor = new Date(cursor.getTime() - 24 * 60 * 60 * 1000);
   }
-  while (dates.length < count) {
-    d.setDate(d.getDate() - 1);
-    const day = d.getDay();
-    if (day === 0 || day === 6) continue;
-    dates.push(d.toISOString().slice(0, 10));
-  }
-  return dates.reverse();
+  // Lex-sort is chronological on ISO YYYY-MM-DD strings — explicit
+  // comparator silences SonarJS S2871 (and documents the contract).
+  return Array.from(dates).sort((a, b) => a.localeCompare(b));
 }
 
 // ── UW fetch ────────────────────────────────────────────────
+
+const MAX_RETRIES_429 = 3;
 
 async function fetchStrikeExposure(ticker, date, expiry) {
   const params = new URLSearchParams({
@@ -121,18 +215,32 @@ async function fetchStrikeExposure(ticker, date, expiry) {
     limit: '500',
   });
   const url = `${UW_BASE}/stock/${ticker}/spot-exposures/expiry-strike?${params}`;
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${UW_API_KEY}` },
-  });
-  if (!res.ok) {
+
+  // Bounded retry on 429 — recursing unconditionally on every 429 would
+  // sleep-and-retry forever if UW serves persistent 429 (account
+  // suspension, plan cap, deep outage). Three attempts matches the
+  // pattern in scripts/backfill-dark-pool-prints.mjs; after that we
+  // give up on this (ticker, date) pair, surface the give-up in the
+  // log, and return [] so the per-ticker summary stays honest about
+  // which days didn't land.
+  for (let attempt = 0; attempt < MAX_RETRIES_429; attempt++) {
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${UW_API_KEY}` },
+    });
+    if (res.ok) {
+      const body = await res.json();
+      return body.data ?? [];
+    }
     if (res.status === 429) {
-      // Honor Retry-After header when UW throttles us. Default to 5s.
-      const retryAfter = Number.parseInt(res.headers.get('retry-after') ?? '5', 10);
+      const retryAfter = Number.parseInt(
+        res.headers.get('retry-after') ?? '5',
+        10,
+      );
       console.warn(
-        `  429 from UW for ${ticker} ${date} — sleeping ${retryAfter}s and retrying`,
+        `  429 from UW for ${ticker} ${date} (attempt ${attempt + 1}/${MAX_RETRIES_429}) — sleeping ${retryAfter}s`,
       );
       await new Promise((r) => setTimeout(r, retryAfter * 1000));
-      return fetchStrikeExposure(ticker, date, expiry);
+      continue;
     }
     const text = await res.text().catch(() => '');
     console.warn(
@@ -140,8 +248,10 @@ async function fetchStrikeExposure(ticker, date, expiry) {
     );
     return [];
   }
-  const body = await res.json();
-  return body.data ?? [];
+  console.warn(
+    `  Gave up on ${ticker} ${date} after ${MAX_RETRIES_429} 429 retries`,
+  );
+  return [];
 }
 
 // ── Batched store ───────────────────────────────────────────
@@ -159,7 +269,13 @@ async function bulkInsertStrikes(rows, date, ticker, expiry) {
   // The data timestamp is the same across all strikes in one UW
   // response — UW emits one snapshot per (ticker, expiry, date) on
   // this endpoint. Round to 5-min for consistency with the cron.
-  const dataTime = new Date(rows[0].time ?? `${date}T20:00:00Z`);
+  //
+  // Fallback timestamp (UW omits `time`): 21:00 UTC = 4 PM ET / 3 PM
+  // CT during DST, 4 PM ET / 3 PM CT during CST as well (ET drifts to
+  // UTC-5 in winter; 21:00 UTC is then 4 PM ET, still market close).
+  // Anchoring to ET market close keeps the snapshot stable across DST
+  // transitions.
+  const dataTime = new Date(rows[0].time ?? `${date}T21:00:00Z`);
   const minutes = dataTime.getMinutes();
   dataTime.setMinutes(minutes - (minutes % 5), 0, 0);
   const timestamp = dataTime.toISOString();
