@@ -7,9 +7,11 @@
  *   2. Plays the sweep-alarm chime (severity-scaled volume)
  *   3. Updates React state for the IntervalBAAlertBanner
  *
- * Owner-only — guests can still hit GET /api/interval-ba-alerts but the
- * banner + chime UX is gated to the owner here. Acknowledgement POSTs
- * to /api/interval-ba-alerts-ack (owner-only at the API layer).
+ * Owner-or-guest — both surfaces (banner + chime + browser notification)
+ * fire for any authenticated session. Public (signed-out) visitors get
+ * neither the polling nor the banner. Acknowledgement POSTs to
+ * /api/interval-ba-alerts-ack which is also owner-or-guest, so guest
+ * dismissals persist to the DB the same as the owner's.
  *
  * Mirrors `useAlertPolling` structurally; deviates only on payload shape
  * (IntervalBAAlertRow not MarketAlert), endpoint paths, and chime tone
@@ -20,7 +22,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
-import { checkIsOwner } from '../utils/auth';
+import { getAccessMode } from '../utils/auth';
 import { playSweepAlarm } from '../utils/anomaly-sound';
 
 // ── Types ──────────────────────────────────────────────────
@@ -181,7 +183,10 @@ function showBrowserNotification(alert: IntervalBAAlert): void {
 export function useIntervalBAAlerts(
   marketOpen: boolean,
 ): IntervalBAAlertPollingState {
-  const isOwner = checkIsOwner();
+  // Owner-or-guest: any authenticated session gets the banner + chime.
+  // Public visitors (no cookie) skip the poll loop entirely so we don't
+  // hammer the endpoint with 401s for signed-out browser tabs.
+  const hasSession = getAccessMode() !== 'public';
   const [alerts, setAlerts] = useState<IntervalBAAlert[]>([]);
   const lastSeenRef = useRef<string | null>(null);
   const seenIdsRef = useRef<Set<number>>(new Set());
@@ -234,7 +239,7 @@ export function useIntervalBAAlerts(
   }, []);
 
   useEffect(() => {
-    if (!isOwner || !marketOpen) return;
+    if (!hasSession || !marketOpen) return;
     fetchAlerts();
     const id = setInterval(fetchAlerts, POLL_INTERVALS.ALERTS);
     const seen = seenIdsRef.current;
@@ -247,22 +252,29 @@ export function useIntervalBAAlerts(
       // seen-IDs set is safe even for already-acknowledged alerts.
       for (const alertId of seen) stopChime(alertId);
     };
-  }, [isOwner, marketOpen, fetchAlerts]);
+  }, [hasSession, marketOpen, fetchAlerts]);
 
   const acknowledge = useCallback(async (id: number) => {
     stopChime(id);
     try {
-      await fetch('/api/interval-ba-alerts-ack', {
+      const res = await fetch('/api/interval-ba-alerts-ack', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id }),
       });
+      // Without this guard a 401/403/500 resolves silently — the local
+      // state was being marked acknowledged while the DB row still had
+      // acknowledged=FALSE, so dismissed alerts reappeared on refresh.
+      if (!res.ok) {
+        throw new Error(`ack failed: ${res.status}`);
+      }
       setAlerts((prev) =>
         prev.map((a) => (a.id === id ? { ...a, acknowledged: true } : a)),
       );
     } catch {
-      // Best-effort — user can retry.
+      // Best-effort — the alert stays visible so the user notices the
+      // dismiss didn't stick and can retry (or sign back in).
     }
   }, []);
 

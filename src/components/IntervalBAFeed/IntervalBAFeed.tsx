@@ -103,7 +103,7 @@ export function IntervalBAFeed({
     ],
   );
   const { alerts, summary, loading, error, fetchedAt, refetch } =
-    useIntervalBAFeed(params);
+    useIntervalBAFeed(params, marketOpen);
 
   return (
     <SectionBox label="Interval B/A History" collapsible>

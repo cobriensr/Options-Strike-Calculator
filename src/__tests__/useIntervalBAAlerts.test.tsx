@@ -5,7 +5,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 
 // ── Mocks ─────────────────────────────────────────────────────
 vi.mock('../utils/auth', () => ({
-  checkIsOwner: vi.fn(() => true),
+  getAccessMode: vi.fn(() => 'owner' as const),
 }));
 
 vi.mock('../utils/anomaly-sound', () => ({
@@ -33,7 +33,7 @@ import {
   __resetChimesForTests,
   type IntervalBAAlert,
 } from '../hooks/useIntervalBAAlerts';
-import { checkIsOwner } from '../utils/auth';
+import { getAccessMode } from '../utils/auth';
 import { playSweepAlarm } from '../utils/anomaly-sound';
 
 const baseAlert: IntervalBAAlert = {
@@ -195,7 +195,7 @@ describe('formatIntervalBABody', () => {
 
 describe('useIntervalBAAlerts', () => {
   beforeEach(() => {
-    vi.mocked(checkIsOwner).mockReturnValue(true);
+    vi.mocked(getAccessMode).mockReturnValue('owner');
     vi.mocked(playSweepAlarm).mockClear();
     // Clear the module-level chime dedupe map so alert id=1 in test A
     // doesn't suppress alert id=1 in test B.
@@ -207,12 +207,24 @@ describe('useIntervalBAAlerts', () => {
     vi.restoreAllMocks();
   });
 
-  it('does not poll when not owner', () => {
-    vi.mocked(checkIsOwner).mockReturnValue(false);
+  it('does not poll for public (signed-out) visitors', () => {
+    vi.mocked(getAccessMode).mockReturnValue('public');
     globalThis.fetch = vi.fn() as unknown as typeof fetch;
 
     renderHook(() => useIntervalBAAlerts(true));
     expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it('polls for guests with a valid guest-key session', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('guest');
+    mockFetchJson({ alerts: [baseAlert] });
+
+    const { result, unmount } = renderHook(() => useIntervalBAAlerts(true));
+    await waitFor(() => {
+      expect(result.current.alerts).toHaveLength(1);
+    });
+    expect(globalThis.fetch).toHaveBeenCalled();
+    unmount();
   });
 
   it('does not poll when market closed', () => {
@@ -325,6 +337,34 @@ describe('useIntervalBAAlerts', () => {
     );
     expect(result.current.alerts[0]?.acknowledged).toBe(true);
     expect(result.current.unacknowledgedCount).toBe(0);
+
+    unmount();
+  });
+
+  it('does NOT mark alert acknowledged when ack POST returns non-ok', async () => {
+    // Reproduces the bug where dismissed alerts reappeared on refresh:
+    // a 401/403/500 on POST /api/interval-ba-alerts-ack resolved
+    // silently and the local state lied that the dismiss succeeded.
+    // Now the alert must stay visible so the user notices + retries.
+    mockFetchJson({ alerts: [baseAlert] });
+
+    const { result, unmount } = renderHook(() => useIntervalBAAlerts(true));
+    await waitFor(() => {
+      expect(result.current.alerts).toHaveLength(1);
+    });
+
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      json: vi.fn().mockResolvedValue({ error: 'unauthorized' }),
+    }) as unknown as typeof fetch;
+
+    await act(async () => {
+      await result.current.acknowledge(1);
+    });
+
+    expect(result.current.alerts[0]?.acknowledged).toBe(false);
+    expect(result.current.unacknowledgedCount).toBe(1);
 
     unmount();
   });

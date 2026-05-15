@@ -2,14 +2,21 @@
  * useIntervalBAFeed — fetches the historical-backtest slice of
  * interval_ba_alerts for a CT calendar date + time window.
  *
- * Distinct from `useIntervalBAAlerts` (live polling at 10s for today's
- * unacknowledged alerts) — this hook fetches on demand whenever the
- * date / time / filter inputs change. No polling.
+ * Refetch model:
+ *   - Always: re-fetch when date / time / filter inputs change, or
+ *     when the caller bumps `refetch()`.
+ *   - Auto-polling: when `marketOpen` is true AND the selected `date`
+ *     is today (CT calendar), the hook bumps `refreshTick` every
+ *     POLL_INTERVALS.ALERTS ms so the live feed stays in lockstep with
+ *     `useIntervalBAAlerts` — without this the toast banner would surface
+ *     a new alert while the history table stayed stale until the user
+ *     hit the refresh button. Historical dates never poll.
  *
  * Spec: docs/superpowers/specs/interval-ba-ask-alert-2026-05-12.md.
  */
 
 import { useCallback, useEffect, useState } from 'react';
+import { POLL_INTERVALS } from '../constants';
 
 export interface IntervalBAFeedAlert {
   id: number;
@@ -94,8 +101,24 @@ function buildUrl(p: UseIntervalBAFeedParams): string {
   return `/api/interval-ba-feed?${sp.toString()}`;
 }
 
+/**
+ * CT calendar date in YYYY-MM-DD form. Duplicated here (rather than
+ * imported from the IntervalBAFeed component) to keep the hook
+ * self-contained — multiple call sites compute "today" the same way
+ * already.
+ */
+function todayCt(): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Chicago',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+}
+
 export function useIntervalBAFeed(
   params: UseIntervalBAFeedParams,
+  marketOpen: boolean = false,
 ): UseIntervalBAFeedState {
   const [alerts, setAlerts] = useState<IntervalBAFeedAlert[]>([]);
   const [summary, setSummary] = useState<IntervalBAFeedSummary | null>(null);
@@ -171,6 +194,22 @@ export function useIntervalBAFeed(
     params.moneyness,
     refreshTick,
   ]);
+
+  // Auto-poll the live feed when the user is looking at today's date
+  // during market hours. Cadence matches useIntervalBAAlerts so the
+  // banner and the history table stay in lockstep; historical dates and
+  // closed-market sessions skip polling entirely (no new rows arrive).
+  // The fetch effect above handles cancellation, so a slow request that
+  // overlaps with the next tick is harmlessly aborted on the next
+  // refreshTick bump.
+  useEffect(() => {
+    if (!marketOpen) return;
+    if (params.date !== todayCt()) return;
+    const id = setInterval(() => {
+      setRefreshTick((n) => n + 1);
+    }, POLL_INTERVALS.ALERTS);
+    return () => clearInterval(id);
+  }, [marketOpen, params.date]);
 
   return { alerts, summary, loading, error, fetchedAt, refetch };
 }
