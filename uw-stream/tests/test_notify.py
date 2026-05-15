@@ -288,3 +288,103 @@ class TestNotifyAlertHttpPath:
         with patch("aiohttp.ClientSession", side_effect=raise_on_create):
             # Must not raise even on hard network failure.
             await notify_alert({"title": "x", "body": "y"})
+
+
+class TestSentryThrottle:
+    """Both the 4xx and exception paths must Sentry the first occurrence
+    of a given failure mode per process, then suppress duplicates. This
+    matches the existing comment intent and prevents a misconfigured
+    secret from producing 59+ Sentry events in a day."""
+
+    @pytest.fixture(autouse=True)
+    def reset_seen(self):
+        from notify import _SENTRY_SEEN
+        _SENTRY_SEEN.clear()
+        yield
+        _SENTRY_SEEN.clear()
+
+    @pytest.mark.asyncio
+    async def test_4xx_sentry_throttles_to_one_per_status(self, monkeypatch):
+        monkeypatch.setattr(
+            "notify.settings.vercel_notify_url", "https://example.com/x",
+        )
+        monkeypatch.setattr("notify.settings.internal_notify_secret", "s")
+
+        mock_resp = MagicMock()
+        mock_resp.status = 401
+        mock_resp.text = AsyncMock(return_value="Unauthorized")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=mock_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("aiohttp.ClientSession", return_value=mock_session),
+            patch("notify.capture_message") as mock_capture,
+        ):
+            for _ in range(5):
+                await notify_alert({"title": "x", "body": "y"})
+
+        assert mock_capture.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_different_status_codes_each_report_once(self, monkeypatch):
+        monkeypatch.setattr(
+            "notify.settings.vercel_notify_url", "https://example.com/x",
+        )
+        monkeypatch.setattr("notify.settings.internal_notify_secret", "s")
+
+        # First two calls return 401, next two return 503 — verify each
+        # distinct status gets its own (single) Sentry event.
+        statuses = [401, 401, 503, 503]
+        responses = []
+        for status in statuses:
+            r = MagicMock()
+            r.status = status
+            r.text = AsyncMock(return_value="boom")
+            r.__aenter__ = AsyncMock(return_value=r)
+            r.__aexit__ = AsyncMock(return_value=False)
+            responses.append(r)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(side_effect=responses)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("aiohttp.ClientSession", return_value=mock_session),
+            patch("notify.capture_message") as mock_capture,
+        ):
+            for _ in statuses:
+                await notify_alert({"title": "x", "body": "y"})
+
+        assert mock_capture.call_count == 2
+        statuses_reported = {
+            call.kwargs["tags"]["status"]
+            for call in mock_capture.call_args_list
+        }
+        assert statuses_reported == {"401", "503"}
+
+    @pytest.mark.asyncio
+    async def test_exception_sentry_throttles_to_one_per_class(
+        self, monkeypatch,
+    ):
+        monkeypatch.setattr(
+            "notify.settings.vercel_notify_url", "https://example.com/x",
+        )
+        monkeypatch.setattr("notify.settings.internal_notify_secret", "s")
+
+        def raise_oserror(*_args, **_kwargs):
+            raise OSError("connection refused")
+
+        with (
+            patch("aiohttp.ClientSession", side_effect=raise_oserror),
+            patch("notify.capture_exception") as mock_capture,
+        ):
+            for _ in range(5):
+                await notify_alert({"title": "x", "body": "y"})
+
+        assert mock_capture.call_count == 1

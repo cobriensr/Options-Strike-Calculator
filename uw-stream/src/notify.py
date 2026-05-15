@@ -50,6 +50,27 @@ _SECRET_HEADER = "x-internal-notify-secret"
 # removes it, so the set stays bounded by in-flight notifications.
 _BACKGROUND_TASKS: set[asyncio.Task[None]] = set()
 
+# Sentry de-dup: one event per distinct failure mode per process. Without
+# this, a misconfigured INTERNAL_NOTIFY_SECRET on Vercel produces one
+# Sentry event per alert (59 events / 1d on 2026-05-14 → Escalating
+# trend) when the issue is really a single config mismatch. Reset on
+# every process start so a redeploy re-arms the alert.
+_SENTRY_SEEN: set[str] = set()
+
+
+def _should_report(key: str) -> bool:
+    """Return True on first occurrence of `key`, False thereafter.
+
+    Keyed on a stable failure-mode string (e.g. ``"status:401"`` or
+    ``"exc:ClientConnectorError"``) so each distinct mode still pages
+    once per process. Use sparingly — only on fire-and-forget paths
+    where the daemon log already captures every occurrence.
+    """
+    if key in _SENTRY_SEEN:
+        return False
+    _SENTRY_SEEN.add(key)
+    return True
+
 
 def schedule_notify(payload: dict[str, Any]) -> None:
     """Fire-and-forget schedule of `notify_alert(payload)`.
@@ -98,28 +119,30 @@ async def notify_alert(payload: dict[str, Any]) -> None:
                         "title": payload.get("title"),
                     },
                 )
-                capture_message(
-                    "vercel notify rejected push",
-                    level="warning",
-                    tags={
-                        "component": "notify",
-                        "status": str(resp.status),
-                    },
-                    context={"title": payload.get("title")},
-                )
+                if _should_report(f"status:{resp.status}"):
+                    capture_message(
+                        "vercel notify rejected push",
+                        level="warning",
+                        tags={
+                            "component": "notify",
+                            "status": str(resp.status),
+                        },
+                        context={"title": payload.get("title")},
+                    )
     except Exception as exc:
         # AbortError / ClientConnectorError / generic network — Sentry
         # the first occurrence per process, then swallow. The handler
         # path that called us already flushed to Postgres successfully.
-        capture_exception(
-            exc,
-            tags={"component": "notify"},
-            context={"url": url, "title": payload.get("title")},
-        )
         log.warning(
             "vercel notify call failed",
             extra={"err": str(exc), "title": payload.get("title")},
         )
+        if _should_report(f"exc:{type(exc).__name__}"):
+            capture_exception(
+                exc,
+                tags={"component": "notify"},
+                context={"url": url, "title": payload.get("title")},
+            )
 
 
 def build_payload(
