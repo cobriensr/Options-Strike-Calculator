@@ -19,7 +19,7 @@ import { Sentry, metrics } from '../_lib/sentry.js';
 import { checkDataQuality, cronGuard } from '../_lib/api-helpers.js';
 import { reportCronRun } from '../_lib/axiom.js';
 
-// Sequential loop: 7 symbols × 120s timeout worst case = ~840s.
+// Sequential loop: 6 symbols × 120s timeout worst case = ~720s.
 // Vercel's 300s default kills it mid-loop; 800s keeps us under the
 // 900s hard cap with breathing room.
 export const config = {
@@ -32,6 +32,11 @@ const DATABENTO_BASE = 'https://hist.databento.com/v0';
 const NANODOLLAR = 1_000_000_000;
 const MAX_PRICE = 99_999_999; // NUMERIC(12,4) limit
 
+// DX was dropped 2026-05-14: the IFUS.IMPACT dataset isn't on the
+// current Databento subscription, and the cron logged a 422
+// dataset_unavailable_range warning to Sentry every day for 27 days
+// (SENTRY-EMERALD-DESERT-25). Re-add if the IFUS.IMPACT subscription
+// is provisioned later.
 const SYMBOLS: Record<string, { continuous: string; dataset: string }> = {
   ES: { continuous: 'ES.c.0', dataset: 'GLBX.MDP3' },
   NQ: { continuous: 'NQ.c.0', dataset: 'GLBX.MDP3' },
@@ -39,7 +44,6 @@ const SYMBOLS: Record<string, { continuous: string; dataset: string }> = {
   RTY: { continuous: 'RTY.c.0', dataset: 'GLBX.MDP3' },
   CL: { continuous: 'CL.c.0', dataset: 'GLBX.MDP3' },
   GC: { continuous: 'GC.c.0', dataset: 'GLBX.MDP3' },
-  DX: { continuous: 'DX.c.0', dataset: 'IFUS.IMPACT' },
 };
 
 // Reasonable price bounds to filter spread/combo bars [min, max]
@@ -50,7 +54,6 @@ const PRICE_BOUNDS: Record<string, [number, number]> = {
   RTY: [500, 10000],
   CL: [20, 250],
   GC: [500, 10000],
-  DX: [70, 150],
 };
 
 interface OhlcvRecord {

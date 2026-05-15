@@ -71,7 +71,7 @@ function makeOhlcvRecord(
 /**
  * Stub fetch so only the first symbol (ES — first entry in SYMBOLS order)
  * returns real NDJSON. All other symbols get an empty response. This
- * isolates per-symbol rejection assertions from the 7-symbol fan-out.
+ * isolates per-symbol rejection assertions from the 6-symbol fan-out.
  *
  * BRITTLENESS NOTE: this helper depends on ES being iterated FIRST in
  * `Object.entries(SYMBOLS)` in the handler. If a future edit reorders
@@ -156,10 +156,10 @@ describe('backfill-futures-gaps handler', () => {
     };
     expect(json.job).toBe('backfill-futures-gaps');
     // Mock price 5705 is in-bounds for ES, NQ, RTY, GC (4 symbols × 2 bars)
-    // Out-of-bounds for ZN (50-200), CL (20-250), DX (70-150)
+    // Out-of-bounds for ZN (50-200), CL (20-250)
     expect(json.totalInserted).toBe(8);
-    expect(json.symbols).toHaveLength(7);
-    expect(mockFetch).toHaveBeenCalledTimes(7);
+    expect(json.symbols).toHaveLength(6);
+    expect(mockFetch).toHaveBeenCalledTimes(6);
   });
 
   // ── Empty response ────────────────────────────────────
@@ -249,7 +249,7 @@ describe('backfill-futures-gaps handler', () => {
       totalInserted: number;
       errors: string[] | undefined;
     };
-    // ES fails (network), 6 fetch. Of those, NQ/RTY/GC in-bounds = 3 bars
+    // ES fails (network), 5 fetch. Of those, NQ/RTY/GC in-bounds = 3 bars
     expect(json.totalInserted).toBe(3);
     expect(json.errors).toHaveLength(1);
   });
