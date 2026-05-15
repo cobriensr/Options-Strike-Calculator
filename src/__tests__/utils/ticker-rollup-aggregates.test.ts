@@ -11,7 +11,7 @@ function makeRow(
   overrides: Partial<RollupAlertSummary> = {},
 ): RollupAlertSummary {
   return {
-    optionType: 'call',
+    optionType: 'C',
     mktTideDiff: 100,
     directionGated: false,
     triggeredAt: '2026-05-15T13:30:00Z',
@@ -33,24 +33,24 @@ describe('computeRollupAggregates', () => {
   describe('bias', () => {
     it('all calls → bull', () => {
       const agg = computeRollupAggregates([
-        makeRow({ optionType: 'call' }),
-        makeRow({ optionType: 'call', strike: 105 }),
+        makeRow({ optionType: 'C' }),
+        makeRow({ optionType: 'C', strike: 105 }),
       ]);
       expect(agg.bias).toBe('bull');
     });
 
     it('all puts → bear', () => {
       const agg = computeRollupAggregates([
-        makeRow({ optionType: 'put' }),
-        makeRow({ optionType: 'put', strike: 95 }),
+        makeRow({ optionType: 'P' }),
+        makeRow({ optionType: 'P', strike: 95 }),
       ]);
       expect(agg.bias).toBe('bear');
     });
 
     it('mixed call+put → mixed', () => {
       const agg = computeRollupAggregates([
-        makeRow({ optionType: 'call' }),
-        makeRow({ optionType: 'put' }),
+        makeRow({ optionType: 'C' }),
+        makeRow({ optionType: 'P' }),
       ]);
       expect(agg.bias).toBe('mixed');
     });
@@ -59,56 +59,56 @@ describe('computeRollupAggregates', () => {
   describe('tide', () => {
     it('all positive tide + bull → aligned up', () => {
       const agg = computeRollupAggregates([
-        makeRow({ optionType: 'call', mktTideDiff: 200 }),
-        makeRow({ optionType: 'call', mktTideDiff: 50, strike: 105 }),
+        makeRow({ optionType: 'C', mktTideDiff: 200 }),
+        makeRow({ optionType: 'C', mktTideDiff: 50, strike: 105 }),
       ]);
       expect(agg.tide).toEqual({ dir: 'up', align: 'aligned' });
     });
 
     it('all negative tide + bear → aligned down', () => {
       const agg = computeRollupAggregates([
-        makeRow({ optionType: 'put', mktTideDiff: -200 }),
-        makeRow({ optionType: 'put', mktTideDiff: -50, strike: 95 }),
+        makeRow({ optionType: 'P', mktTideDiff: -200 }),
+        makeRow({ optionType: 'P', mktTideDiff: -50, strike: 95 }),
       ]);
       expect(agg.tide).toEqual({ dir: 'down', align: 'aligned' });
     });
 
     it('positive tide + bear → counter', () => {
       const agg = computeRollupAggregates([
-        makeRow({ optionType: 'put', mktTideDiff: 100 }),
-        makeRow({ optionType: 'put', mktTideDiff: 200, strike: 95 }),
+        makeRow({ optionType: 'P', mktTideDiff: 100 }),
+        makeRow({ optionType: 'P', mktTideDiff: 200, strike: 95 }),
       ]);
       expect(agg.tide).toEqual({ dir: 'up', align: 'counter' });
     });
 
     it('mixed tide signs → mixed regardless of bias', () => {
       const agg = computeRollupAggregates([
-        makeRow({ optionType: 'call', mktTideDiff: 100 }),
-        makeRow({ optionType: 'call', mktTideDiff: -200, strike: 105 }),
+        makeRow({ optionType: 'C', mktTideDiff: 100 }),
+        makeRow({ optionType: 'C', mktTideDiff: -200, strike: 105 }),
       ]);
       expect(agg.tide).toEqual({ dir: 'mixed', align: 'mixed' });
     });
 
     it('mixed bias → tide mixed regardless of sign agreement', () => {
       const agg = computeRollupAggregates([
-        makeRow({ optionType: 'call', mktTideDiff: 100 }),
-        makeRow({ optionType: 'put', mktTideDiff: 200 }),
+        makeRow({ optionType: 'C', mktTideDiff: 100 }),
+        makeRow({ optionType: 'P', mktTideDiff: 200 }),
       ]);
       expect(agg.tide).toEqual({ dir: 'mixed', align: 'mixed' });
     });
 
     it('all null mktTideDiff → unknown', () => {
       const agg = computeRollupAggregates([
-        makeRow({ optionType: 'call', mktTideDiff: null }),
-        makeRow({ optionType: 'call', mktTideDiff: null, strike: 105 }),
+        makeRow({ optionType: 'C', mktTideDiff: null }),
+        makeRow({ optionType: 'C', mktTideDiff: null, strike: 105 }),
       ]);
       expect(agg.tide).toEqual({ dir: 'unknown', align: 'unknown' });
     });
 
     it('exact-zero tide values are ignored (neither pos nor neg)', () => {
       const agg = computeRollupAggregates([
-        makeRow({ optionType: 'call', mktTideDiff: 0 }),
-        makeRow({ optionType: 'call', mktTideDiff: 0, strike: 105 }),
+        makeRow({ optionType: 'C', mktTideDiff: 0 }),
+        makeRow({ optionType: 'C', mktTideDiff: 0, strike: 105 }),
       ]);
       // No positive and no negative samples → mixed/unknown territory.
       // Implementation treats this as 'mixed' (pos=0, neg=0, but nonNull>0).
@@ -178,8 +178,8 @@ describe('computeRollupAggregates', () => {
 
     it('treats call+put at same strike as one distinct value', () => {
       const agg = computeRollupAggregates([
-        makeRow({ optionType: 'call', strike: 100 }),
-        makeRow({ optionType: 'put', strike: 100 }),
+        makeRow({ optionType: 'C', strike: 100 }),
+        makeRow({ optionType: 'P', strike: 100 }),
       ]);
       expect(agg.strikeRange).toBeNull();
     });

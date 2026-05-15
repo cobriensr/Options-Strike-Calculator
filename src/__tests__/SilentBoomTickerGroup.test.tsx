@@ -338,6 +338,176 @@ describe('SilentBoomTickerGroup', () => {
     ]);
   });
 
+  describe('aggregate chips', () => {
+    it('renders bias=bull and tide=aligned for all-call + positive-tide group', () => {
+      const alerts = [
+        makeAlert({
+          optionChainId: 'NOW260515C00086000',
+          optionType: 'C',
+          mktTideDiff: 200,
+        }),
+        makeAlert({
+          optionChainId: 'NOW260515C00088000',
+          optionType: 'C',
+          strike: 88,
+          mktTideDiff: 50,
+        }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="NOW"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(screen.getByTestId('silent-boom-ticker-bias-NOW')).toHaveTextContent(
+        '↑ bull',
+      );
+      expect(screen.getByTestId('silent-boom-ticker-tide-NOW')).toHaveTextContent(
+        'tide ↑ aligned',
+      );
+    });
+
+    it('renders tide=counter when bias and tide point opposite ways', () => {
+      const alerts = [
+        makeAlert({
+          optionChainId: 'NOW260515P00086000',
+          optionType: 'P',
+          mktTideDiff: 200,
+        }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="NOW"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(screen.getByTestId('silent-boom-ticker-tide-NOW')).toHaveTextContent(
+        'tide ↑ counter',
+      );
+    });
+
+    it('renders the strikes summary with (Npt) spread suffix when ≥2 distinct strikes', () => {
+      const alerts = [
+        makeAlert({ optionChainId: 'NOW260515C00086000', strike: 86 }),
+        makeAlert({ optionChainId: 'NOW260515C00088000', strike: 88 }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="NOW"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.getByTestId('silent-boom-ticker-strikes-NOW'),
+      ).toHaveTextContent('86C, 88C (2pt)');
+    });
+
+    it('renders the time-density chip when fires span >0 minutes', () => {
+      const alerts = [
+        makeAlert({
+          optionChainId: 'NOW260515C00086000',
+          bucketCt: '2026-05-14T14:30:00Z',
+        }),
+        makeAlert({
+          optionChainId: 'NOW260515C00088000',
+          strike: 88,
+          bucketCt: '2026-05-14T14:38:00Z',
+        }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="NOW"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.getByTestId('silent-boom-ticker-density-NOW'),
+      ).toHaveTextContent('Δ 8min');
+    });
+
+    it('omits the time-density chip for a single-fire group', () => {
+      const alerts = [makeAlert({ optionChainId: 'NOW260515C00086000' })];
+      render(
+        <SilentBoomTickerGroup
+          ticker="NOW"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.queryByTestId('silent-boom-ticker-density-NOW'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('renders the gated chip only when at least one alert is direction-gated', () => {
+      const alerts = [
+        makeAlert({
+          optionChainId: 'NOW260515C00086000',
+          directionGated: true,
+        }),
+        makeAlert({
+          optionChainId: 'NOW260515C00088000',
+          strike: 88,
+          directionGated: false,
+        }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="NOW"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(screen.getByTestId('silent-boom-ticker-gated-NOW')).toHaveTextContent(
+        '1 gated',
+      );
+    });
+
+    it('omits the gated chip when no alerts are direction-gated', () => {
+      const alerts = [
+        makeAlert({
+          optionChainId: 'NOW260515C00086000',
+          directionGated: false,
+        }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="NOW"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.queryByTestId('silent-boom-ticker-gated-NOW'),
+      ).not.toBeInTheDocument();
+    });
+  });
+
   it('renders an em-dash when every alert has a null peak', () => {
     const alerts = [
       makeAlert({

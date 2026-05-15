@@ -9,7 +9,8 @@
  */
 
 export interface RollupAlertSummary {
-  optionType: 'call' | 'put';
+  /** 'C' for call, 'P' for put — matches the project-wide OptionType. */
+  optionType: 'C' | 'P';
   /** Market Tide NCP - NPP at trigger time. Null = pre-Phase-4 row. */
   mktTideDiff: number | null;
   /** Phase 4 direction-gate flag. */
@@ -66,7 +67,7 @@ function computeBias(rows: readonly RollupAlertSummary[]): Bias {
   let calls = 0;
   let puts = 0;
   for (const r of rows) {
-    if (r.optionType === 'call') calls += 1;
+    if (r.optionType === 'C') calls += 1;
     else puts += 1;
   }
   if (calls > 0 && puts === 0) return 'bull';
