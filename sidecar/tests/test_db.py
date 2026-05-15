@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import date
 from decimal import Decimal
 from typing import Generator
 from unittest.mock import MagicMock
@@ -397,6 +398,124 @@ class TestExecuteValuesBatch:
             db._execute_values_batch(self.SAMPLE_SQL, [self.SAMPLE_ROW])
 
         assert mock_execute_values.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# _execute_with_retry helper — single-statement sibling of
+# _execute_values_batch. Same retry shape so the SSL-drop coverage now
+# extends to upsert_options_daily and any future single-statement caller
+# wired through the helper.
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteWithRetry:
+    """Direct coverage for the single-statement retry helper added to
+    fix SENTRY-EMERALD-DESERT-6W (the option-stat upsert path's Neon
+    SSL drop)."""
+
+    SAMPLE_SQL = "INSERT INTO some_table (a, b) VALUES (%s, %s)"
+    SAMPLE_PARAMS = (1, 2)
+
+    def test_success_on_first_attempt(
+        self, mock_conn_pool: MagicMock
+    ) -> None:
+        db._execute_with_retry(self.SAMPLE_SQL, self.SAMPLE_PARAMS)
+        mock_conn_pool.execute.assert_called_once_with(
+            self.SAMPLE_SQL, self.SAMPLE_PARAMS
+        )
+
+    def test_operational_error_retries_once_and_succeeds(
+        self,
+        mock_conn_pool: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """First borrowed connection is stale (Neon SSL drop after idle);
+        the helper retries on a fresh connection."""
+        import psycopg2
+
+        class _FakeOpError(Exception):
+            pass
+
+        monkeypatch.setattr(psycopg2, "OperationalError", _FakeOpError)
+        mock_conn_pool.execute.side_effect = [
+            _FakeOpError("SSL connection has been closed unexpectedly"),
+            None,
+        ]
+
+        db._execute_with_retry(self.SAMPLE_SQL, self.SAMPLE_PARAMS)
+
+        assert mock_conn_pool.execute.call_count == 2
+
+    def test_operational_error_raises_when_retry_also_fails(
+        self,
+        mock_conn_pool: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import psycopg2
+
+        class _FakeOpError(Exception):
+            pass
+
+        monkeypatch.setattr(psycopg2, "OperationalError", _FakeOpError)
+        mock_conn_pool.execute.side_effect = _FakeOpError("still broken")
+
+        with pytest.raises(_FakeOpError, match="still broken"):
+            db._execute_with_retry(self.SAMPLE_SQL, self.SAMPLE_PARAMS)
+
+        assert mock_conn_pool.execute.call_count == 2
+
+    def test_non_operational_error_does_not_retry(
+        self,
+        mock_conn_pool: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import psycopg2
+
+        class _FakeOpError(Exception):
+            pass
+
+        monkeypatch.setattr(psycopg2, "OperationalError", _FakeOpError)
+        mock_conn_pool.execute.side_effect = ValueError("bad SQL")
+
+        with pytest.raises(ValueError, match="bad SQL"):
+            db._execute_with_retry(self.SAMPLE_SQL, self.SAMPLE_PARAMS)
+
+        assert mock_conn_pool.execute.call_count == 1
+
+    def test_upsert_options_daily_routes_through_retry_helper(
+        self,
+        mock_conn_pool: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Smoke: a transient SSL drop on the option-stat upsert path
+        now recovers without dropping the in-flight stat (the failure
+        mode that produced SENTRY-EMERALD-DESERT-6W)."""
+        import psycopg2
+
+        class _FakeOpError(Exception):
+            pass
+
+        monkeypatch.setattr(psycopg2, "OperationalError", _FakeOpError)
+        mock_conn_pool.execute.side_effect = [
+            _FakeOpError("SSL connection has been closed unexpectedly"),
+            None,
+        ]
+
+        db.upsert_options_daily(
+            "ES",
+            date(2026, 5, 14),
+            date(2026, 5, 16),
+            Decimal("4400.0"),
+            "C",
+            open_interest=123,
+        )
+
+        assert mock_conn_pool.execute.call_count == 2
+        # Guard against a future rewire silently sending this path
+        # through a different SQL: pin that the call hits the target
+        # table.
+        sql_arg = mock_conn_pool.execute.call_args.args[0]
+        assert "INSERT INTO futures_options_daily" in sql_arg
 
 
 # ---------------------------------------------------------------------------

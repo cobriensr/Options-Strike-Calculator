@@ -260,21 +260,19 @@ def upsert_futures_bar(
     volume: int,
 ) -> None:
     """Insert or update a 1-minute OHLCV bar in futures_bars."""
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO futures_bars (symbol, ts, open, high, low, close, volume)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (symbol, ts) DO UPDATE SET
-                    open   = futures_bars.open,
-                    high   = GREATEST(futures_bars.high, EXCLUDED.high),
-                    low    = LEAST(futures_bars.low, EXCLUDED.low),
-                    close  = EXCLUDED.close,
-                    volume = GREATEST(futures_bars.volume, EXCLUDED.volume)
-                """,
-                (symbol, ts, open_, high, low, close, volume),
-            )
+    _execute_with_retry(
+        """
+        INSERT INTO futures_bars (symbol, ts, open, high, low, close, volume)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (symbol, ts) DO UPDATE SET
+            open   = futures_bars.open,
+            high   = GREATEST(futures_bars.high, EXCLUDED.high),
+            low    = LEAST(futures_bars.low, EXCLUDED.low),
+            close  = EXCLUDED.close,
+            volume = GREATEST(futures_bars.volume, EXCLUDED.volume)
+        """,
+        (symbol, ts, open_, high, low, close, volume),
+    )
 
 
 def insert_options_trade(
@@ -289,26 +287,24 @@ def insert_options_trade(
     trade_date: date,
 ) -> None:
     """Insert a single ES options trade record."""
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO futures_options_trades
-                    (underlying, expiry, strike, option_type, ts, price, size, side, trade_date)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    underlying,
-                    expiry,
-                    strike,
-                    option_type,
-                    ts,
-                    price,
-                    size,
-                    side,
-                    trade_date,
-                ),
-            )
+    _execute_with_retry(
+        """
+        INSERT INTO futures_options_trades
+            (underlying, expiry, strike, option_type, ts, price, size, side, trade_date)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            underlying,
+            expiry,
+            strike,
+            option_type,
+            ts,
+            price,
+            size,
+            side,
+            trade_date,
+        ),
+    )
 
 
 def batch_insert_options_trades(rows: list[tuple]) -> None:
@@ -334,6 +330,39 @@ def batch_insert_options_trades(rows: list[tuple]) -> None:
     )
 
 
+def _execute_with_retry(sql: str, params: tuple) -> None:
+    """Run a single ``cur.execute(sql, params)`` with one retry on
+    :class:`psycopg2.OperationalError`.
+
+    Mirrors :func:`_execute_values_batch`'s retry shape but for the
+    single-statement upsert/insert call sites that don't go through
+    ``execute_values``. ``get_conn`` discards the dead connection via
+    ``pool.putconn(close=True)`` in its finally block, so the second
+    attempt lands on a fresh socket.
+
+    The low-frequency option-stat path (one stat record per strike per
+    tick of Databento Statistics traffic) leaves pooled connections
+    idle long enough that Neon silently tears them down between bursts.
+    Without the retry, the next ``upsert_options_daily`` call lands on
+    a stale socket, raises ``OperationalError: SSL connection has been
+    closed unexpectedly``, and the in-flight upsert is lost. See
+    SENTRY-EMERALD-DESERT-6W.
+    """
+    for attempt in (1, 2):
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params)
+            return
+        except psycopg2.OperationalError:
+            if attempt == 2:
+                raise
+            log.warning(
+                "_execute_with_retry: OperationalError on attempt 1, "
+                "retrying with a fresh connection"
+            )
+
+
 def upsert_options_daily(
     underlying: str,
     trade_date: date,
@@ -349,37 +378,35 @@ def upsert_options_daily(
     is_final: bool = False,
 ) -> None:
     """Upsert EOD statistics for an ES option strike."""
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO futures_options_daily
-                    (underlying, trade_date, expiry, strike, option_type,
-                     open_interest, volume, settlement, implied_vol, delta, is_final)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (underlying, trade_date, expiry, strike, option_type)
-                DO UPDATE SET
-                    open_interest = COALESCE(EXCLUDED.open_interest, futures_options_daily.open_interest),
-                    volume        = COALESCE(EXCLUDED.volume, futures_options_daily.volume),
-                    settlement    = COALESCE(EXCLUDED.settlement, futures_options_daily.settlement),
-                    implied_vol   = COALESCE(EXCLUDED.implied_vol, futures_options_daily.implied_vol),
-                    delta         = COALESCE(EXCLUDED.delta, futures_options_daily.delta),
-                    is_final      = COALESCE(EXCLUDED.is_final, futures_options_daily.is_final)
-                """,
-                (
-                    underlying,
-                    trade_date,
-                    expiry,
-                    strike,
-                    option_type,
-                    open_interest,
-                    volume,
-                    settlement,
-                    implied_vol,
-                    delta,
-                    is_final,
-                ),
-            )
+    _execute_with_retry(
+        """
+        INSERT INTO futures_options_daily
+            (underlying, trade_date, expiry, strike, option_type,
+             open_interest, volume, settlement, implied_vol, delta, is_final)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (underlying, trade_date, expiry, strike, option_type)
+        DO UPDATE SET
+            open_interest = COALESCE(EXCLUDED.open_interest, futures_options_daily.open_interest),
+            volume        = COALESCE(EXCLUDED.volume, futures_options_daily.volume),
+            settlement    = COALESCE(EXCLUDED.settlement, futures_options_daily.settlement),
+            implied_vol   = COALESCE(EXCLUDED.implied_vol, futures_options_daily.implied_vol),
+            delta         = COALESCE(EXCLUDED.delta, futures_options_daily.delta),
+            is_final      = COALESCE(EXCLUDED.is_final, futures_options_daily.is_final)
+        """,
+        (
+            underlying,
+            trade_date,
+            expiry,
+            strike,
+            option_type,
+            open_interest,
+            volume,
+            settlement,
+            implied_vol,
+            delta,
+            is_final,
+        ),
+    )
 
 
 def batch_insert_top_of_book(rows: list[tuple]) -> None:
