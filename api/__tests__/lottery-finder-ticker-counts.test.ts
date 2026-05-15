@@ -1,0 +1,182 @@
+// @vitest-environment node
+
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mockRequest, mockResponse } from './helpers';
+
+vi.mock('../_lib/api-helpers.js', () => ({
+  guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
+  setCacheHeaders: vi.fn(),
+}));
+
+const mockSql = vi.fn();
+vi.mock('../_lib/db.js', () => ({
+  getDb: vi.fn(() => mockSql),
+}));
+
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: { captureException: vi.fn() },
+}));
+
+vi.mock('../_lib/logger.js', () => ({
+  default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+
+import handler from '../lottery-finder-ticker-counts.js';
+
+describe('lottery-finder-ticker-counts handler', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('returns chain-deduped counts sorted by count desc', async () => {
+    mockSql.mockResolvedValueOnce([
+      {
+        ticker: 'TSLA',
+        count: 3,
+        peak_best_pct: '303.2',
+        latest_trigger_time_ct: '2026-05-14T15:00:00Z',
+      },
+      {
+        ticker: 'NVDA',
+        count: 1,
+        peak_best_pct: '45.0',
+        latest_trigger_time_ct: '2026-05-14T14:30:00Z',
+      },
+    ]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-14' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      date: string;
+      tickers: {
+        ticker: string;
+        count: number;
+        peakBestPct: number | null;
+        latestTriggerTimeCt: string;
+      }[];
+    };
+    expect(body.date).toBe('2026-05-14');
+    expect(body.tickers).toHaveLength(2);
+    expect(body.tickers[0]?.ticker).toBe('TSLA');
+    expect(body.tickers[0]?.count).toBe(3);
+    expect(body.tickers[0]?.peakBestPct).toBe(303.2);
+    expect(mockSql).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns empty tickers array when no fires match', async () => {
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-14' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { tickers: unknown[] };
+    expect(body.tickers).toEqual([]);
+  });
+
+  it('echoes filters and forwards mode + minScore', async () => {
+    mockSql.mockResolvedValueOnce([
+      {
+        ticker: 'SMCI',
+        count: 2,
+        peak_best_pct: '110.0',
+        latest_trigger_time_ct: '2026-05-14T15:30:00Z',
+      },
+    ]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: {
+        date: '2026-05-14',
+        mode: 'A_intraday_0DTE',
+        minScore: '18',
+        reload: 'true',
+      },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      filters: {
+        mode: string | null;
+        minScore: number | null;
+        reload: boolean | null;
+      };
+    };
+    expect(body.filters.mode).toBe('A_intraday_0DTE');
+    expect(body.filters.minScore).toBe(18);
+    expect(body.filters.reload).toBe(true);
+    expect(mockSql).toHaveBeenCalledTimes(1);
+  });
+
+  it('distinguishes reload=false from reload absent', async () => {
+    // The zod transform maps 'false' → false (explicit) and missing →
+    // undefined. The SQL gate handles them differently: explicit false
+    // restricts to `reload_tagged = false`; absent passes the gate. A
+    // future schema refactor could collapse one into the other; this
+    // test fails loudly if that happens.
+    mockSql.mockResolvedValueOnce([
+      {
+        ticker: 'AAPL',
+        count: 1,
+        peak_best_pct: '50.0',
+        latest_trigger_time_ct: '2026-05-14T15:00:00Z',
+      },
+    ]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-14', reload: 'false' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      filters: { reload: boolean | null };
+    };
+    expect(body.filters.reload).toBe(false);
+    expect(mockSql).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns 400 on an invalid date', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: 'not-a-date' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('handles peak_best_pct = null without throwing', async () => {
+    mockSql.mockResolvedValueOnce([
+      {
+        ticker: 'XYZ',
+        count: 1,
+        peak_best_pct: null,
+        latest_trigger_time_ct: '2026-05-14T13:30:00Z',
+      },
+    ]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-14' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      tickers: { peakBestPct: number | null }[];
+    };
+    expect(body.tickers[0]?.peakBestPct).toBeNull();
+  });
+});

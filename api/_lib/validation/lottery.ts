@@ -254,3 +254,83 @@ export const lotteryContractTapeQuerySchema = z.object({
 export type LotteryContractTapeQuery = z.infer<
   typeof lotteryContractTapeQuerySchema
 >;
+
+// ============================================================
+// /api/silent-boom-ticker-counts
+// ============================================================
+
+/**
+ * Query params for GET /api/silent-boom-ticker-counts.
+ *
+ * Backs the ticker-rollup chip strip above SilentBoomSection. Returns
+ * one row per underlying with the count of matching alerts, the best
+ * realized peak%, and the latest bucket time — across the whole day
+ * regardless of pagination. The UI uses it to surface tickers that
+ * fired on pages other than the current one.
+ *
+ * Filter surface mirrors `silentBoomFeedQuerySchema` minus `ticker`
+ * (the chip strip is the ticker selector — passing one would collapse
+ * the response to a single row), pagination, and `sort`.
+ */
+export const silentBoomTickerCountsQuerySchema = z.object({
+  optionType: z.enum(['C', 'P']).optional(),
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+    .optional(),
+  minVolOi: z.coerce.number().min(0).max(100).default(0),
+  minSpikeRatio: z.coerce.number().min(0).max(1000).default(0),
+  minScore: z.coerce.number().int().min(-100).max(100).optional(),
+  tod: z.enum(['AM_open', 'MID', 'LUNCH', 'PM', 'LATE']).optional(),
+  dte: z.enum(['0', '1-3', '4+']).optional(),
+  burst: z.enum(['red', 'yellow', 'grey']).optional(),
+  askPctBand: z.enum(['70-80', '80-90', '90-95', '95-99', '100']).optional(),
+});
+
+export type SilentBoomTickerCountsQuery = z.infer<
+  typeof silentBoomTickerCountsQuerySchema
+>;
+
+// ============================================================
+// /api/lottery-finder-ticker-counts
+// ============================================================
+
+/**
+ * Query params for GET /api/lottery-finder-ticker-counts.
+ *
+ * Same role as the silent-boom equivalent: chip strip data source.
+ * Filter surface mirrors `lotteryFinderQuerySchema` minus `ticker`,
+ * pagination, sort, and the time-window scrubber (`at` / `minute`) —
+ * the strip is always whole-day so the user sees every ticker that
+ * fired regardless of where the scrubber sits.
+ *
+ * Chain-day dedup applies: a chain that fires 250×TSLA-392.5C in one
+ * day counts as 1 toward TSLA's total, matching the row-level dedup
+ * in /api/lottery-finder so the chip count equals what the user sees.
+ */
+export const lotteryFinderTickerCountsQuerySchema = z.object({
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+    .optional(),
+  reload: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) =>
+      v === 'true' ? true : v === 'false' ? false : undefined,
+    ),
+  cheapCallPm: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) =>
+      v === 'true' ? true : v === 'false' ? false : undefined,
+    ),
+  mode: z.enum(['A_intraday_0DTE', 'B_multi_day_DTE1_3']).optional(),
+  optionType: z.enum(['C', 'P']).optional(),
+  tod: z.enum(['AM_open', 'MID', 'LUNCH', 'PM']).optional(),
+  minScore: z.coerce.number().int().min(0).max(50).optional(),
+});
+
+export type LotteryFinderTickerCountsQuery = z.infer<
+  typeof lotteryFinderTickerCountsQuerySchema
+>;
