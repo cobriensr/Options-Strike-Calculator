@@ -261,7 +261,23 @@ export function useGexLandscapeData(
   // references (1m / 5m / 15m columns). Phase 3 removes them.
   const emptyMap = useMemo<Map<number, number | null>>(() => new Map(), []);
 
-  const timestamps = primary.latest?.availableSlots ?? [];
+  // Picker timestamps — prefer the WS feed's 1-min resolution list
+  // over MM's 10-min `availableSlots` so the trader can scrub at
+  // minute granularity (the cadence at which the Phase 5 naive Δ%
+  // columns carry signal). MM columns at-or-before resolve on the
+  // server when the user lands on a non-10-min minute, so the MM Γ /
+  // MM 10m / MM 30m cells stick for up to 10 minutes — that's
+  // already the data's natural behavior, just exposed at finer
+  // granularity in the picker.
+  //
+  // Fallback to MM slots when WS data hasn't arrived yet (first
+  // paint, side-channel error, 401 for public visitors) so the
+  // picker isn't empty.
+  const wsTimestamps = ws.data?.timestamps;
+  const timestamps =
+    wsTimestamps && wsTimestamps.length > 0
+      ? wsTimestamps
+      : (primary.latest?.availableSlots ?? []);
 
   // Primary errors take precedence (MM is the structural read).
   // WS side-channel errors degrade vol reinforcement only — surface

@@ -430,6 +430,62 @@ describe('useGexLandscapeData — adapter behavior', () => {
     expect(result.current.strikes).toEqual([]);
   });
 
+  it('uses WS-feed minute-resolution timestamps for the picker when present', () => {
+    mockPrimary({
+      capturedAt: '2026-05-12T18:40:00.000Z',
+      spot: 7340,
+      strikes: [{ strike: 7350, gamma: 5000, charm: 0 }],
+      availableSlots: ['2026-05-12T18:30:00.000Z', '2026-05-12T18:40:00.000Z'],
+    });
+    vi.mocked(useGexStrikeExpirySpx).mockReturnValue({
+      data: {
+        ticker: 'SPX',
+        expiry: '2026-05-12',
+        at: null,
+        rows: [],
+        timestamps: [
+          '2026-05-12T18:38:00.000Z',
+          '2026-05-12T18:39:00.000Z',
+          '2026-05-12T18:40:00.000Z',
+        ],
+        asOf: '2026-05-12T18:40:30.000Z',
+      },
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-12'),
+    );
+    // WS timestamps win — picker shows minute resolution.
+    expect(result.current.timestamps).toEqual([
+      '2026-05-12T18:38:00.000Z',
+      '2026-05-12T18:39:00.000Z',
+      '2026-05-12T18:40:00.000Z',
+    ]);
+  });
+
+  it('falls back to MM availableSlots when WS timestamps are empty', () => {
+    mockPrimary({
+      capturedAt: '2026-05-12T18:40:00.000Z',
+      spot: 7340,
+      strikes: [{ strike: 7350, gamma: 5000, charm: 0 }],
+      availableSlots: ['2026-05-12T18:30:00.000Z', '2026-05-12T18:40:00.000Z'],
+    });
+    // WS data is defined but timestamps is empty (e.g. first paint
+    // before WS feed has flushed any rows for this expiry).
+    mockWs([]);
+
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-12'),
+    );
+    expect(result.current.timestamps).toEqual([
+      '2026-05-12T18:30:00.000Z',
+      '2026-05-12T18:40:00.000Z',
+    ]);
+  });
+
   it('surfaces primary error before WS side-channel error', () => {
     mockPrimary(null, { error: 'periscope-strikes: HTTP 500' });
     mockWs([], 'WS down');
