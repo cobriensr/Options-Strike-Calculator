@@ -15,7 +15,12 @@ import {
   VERDICT_TOOLTIP,
 } from './constants';
 import { fmtGex, fmtPct } from './formatters';
-import type { BiasMetrics, DriftTarget } from './types';
+import type {
+  BiasMetrics,
+  DriftTarget,
+  NaiveBiasMetrics,
+  NaiveDriftTarget,
+} from './types';
 
 export interface BiasPanelProps {
   bias: BiasMetrics;
@@ -128,6 +133,7 @@ export function BiasPanel({
           >
             {bias.gravityStrike.toLocaleString()} · {fmtGex(bias.gravityGex)}
           </div>
+          <NaiveGravitySubLine naive={bias.naive} />
         </div>
 
         {/* Divider */}
@@ -141,6 +147,7 @@ export function BiasPanel({
           strikeColor="text-emerald-400"
           maxChanged10mStrike={maxChanged10mStrike}
           maxChanged30mStrike={maxChanged30mStrike}
+          naiveTargets={bias.naive?.upsideTargets ?? null}
         />
 
         {/* Divider */}
@@ -154,6 +161,7 @@ export function BiasPanel({
           strikeColor="text-red-400"
           maxChanged10mStrike={maxChanged10mStrike}
           maxChanged30mStrike={maxChanged30mStrike}
+          naiveTargets={bias.naive?.downsideTargets ?? null}
         />
 
         {/* Divider */}
@@ -167,6 +175,8 @@ export function BiasPanel({
           ceilValue={bias.ceilingTrend10m}
           floorColor={floorTrend10mColor}
           ceilColor={ceilTrend10mColor}
+          naiveFloorValue={bias.naive?.floorTrend10m ?? null}
+          naiveCeilValue={bias.naive?.ceilingTrend10m ?? null}
         />
 
         {/* Divider */}
@@ -180,8 +190,28 @@ export function BiasPanel({
           ceilValue={bias.ceilingTrend30m}
           floorColor={floorTrend30mColor}
           ceilColor={ceilTrend30mColor}
+          naiveFloorValue={bias.naive?.floorTrend30m ?? null}
+          naiveCeilValue={bias.naive?.ceilingTrend30m ?? null}
         />
       </div>
+    </div>
+  );
+}
+
+/**
+ * One-liner naive gravity readout shown directly under the MM gravity
+ * block. Renders nothing when no naive data is available so the
+ * panel collapses cleanly on first paint or for tickers without WS.
+ */
+function NaiveGravitySubLine({ naive }: { naive: NaiveBiasMetrics | null }) {
+  if (naive === null) return null;
+  return (
+    <div
+      className="mt-0.5 font-mono text-[9px]"
+      style={{ color: 'var(--color-muted)' }}
+      title="Naive — same gravity logic computed over raw call_gamma_oi + put_gamma_oi (WS feed, unattributed)."
+    >
+      Naive {naive.gravityStrike.toLocaleString()} · {fmtGex(naive.gravityGex)}
     </div>
   );
 }
@@ -193,6 +223,8 @@ interface DriftTargetColumnProps {
   strikeColor: string;
   maxChanged10mStrike: number | null;
   maxChanged30mStrike: number | null;
+  /** Naive parallel — rendered under MM list when non-null and non-empty. */
+  naiveTargets: NaiveDriftTarget[] | null;
 }
 
 function DriftTargetColumn({
@@ -202,6 +234,7 @@ function DriftTargetColumn({
   strikeColor,
   maxChanged10mStrike,
   maxChanged30mStrike,
+  naiveTargets,
 }: DriftTargetColumnProps) {
   return (
     <div title={title}>
@@ -273,6 +306,26 @@ function DriftTargetColumn({
           );
         })
       )}
+      {naiveTargets !== null && naiveTargets.length > 0 && (
+        <div
+          className="mt-0.5"
+          title="Naive — top targets computed over raw call_gamma_oi + put_gamma_oi (WS feed, unattributed). Can rank differently than MM at the same time."
+        >
+          {naiveTargets.map((t) => (
+            <div
+              key={`naive-${t.strike}`}
+              className="flex items-baseline gap-1.5 font-mono text-[9px]"
+              style={{ color: 'var(--color-muted)' }}
+            >
+              <span>Naive</span>
+              <span>{t.strike.toLocaleString()}</span>
+              <span style={{ color: t.netGamma >= 0 ? '#4ade80' : '#fbbf24' }}>
+                {fmtGex(t.netGamma)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -284,6 +337,9 @@ interface TrendColumnProps {
   ceilValue: number | null;
   floorColor: string;
   ceilColor: string;
+  /** Naive parallel — when both are null (no WS data), the sub-line is suppressed. */
+  naiveFloorValue: number | null;
+  naiveCeilValue: number | null;
 }
 
 function TrendColumn({
@@ -293,7 +349,10 @@ function TrendColumn({
   ceilValue,
   floorColor,
   ceilColor,
+  naiveFloorValue,
+  naiveCeilValue,
 }: TrendColumnProps) {
+  const hasNaive = naiveFloorValue !== null || naiveCeilValue !== null;
   return (
     <div className="cursor-help" title={title}>
       <div
@@ -330,6 +389,17 @@ function TrendColumn({
           {fmtPct(ceilValue)}
         </span>
       </div>
+      {hasNaive && (
+        <div
+          className="mt-0.5 flex items-baseline gap-1.5 font-mono text-[9px]"
+          style={{ color: 'var(--color-muted)' }}
+          title="Naive — same trend math computed over raw call_gamma_oi + put_gamma_oi from the WS feed."
+        >
+          <span>Naive</span>
+          <span>F {fmtPct(naiveFloorValue)}</span>
+          <span>C {fmtPct(naiveCeilValue)}</span>
+        </div>
+      )}
     </div>
   );
 }

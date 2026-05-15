@@ -91,6 +91,7 @@ describe('formatBiasForClaude', () => {
       floorTrend30m: null,
       ceilingTrend30m: null,
       priceTrend: null,
+      naive: null,
       ...overrides,
     };
   }
@@ -210,6 +211,35 @@ describe('formatBiasForClaude', () => {
     });
     const out = formatBiasForClaude(bias);
     expect(out).not.toMatch(/Price trend:/);
+  });
+
+  it('omits the naive line when naive is null', () => {
+    const out = formatBiasForClaude(baseBias({ naive: null }));
+    expect(out).not.toMatch(/Naive:/);
+  });
+
+  it('appends a naive line with gravity and trends when naive data is present', () => {
+    const out = formatBiasForClaude(
+      baseBias({
+        naive: {
+          gravityStrike: 7425,
+          gravityOffset: -15,
+          gravityGex: 18_000,
+          upsideTargets: [],
+          downsideTargets: [],
+          floorTrend10m: 5.2,
+          ceilingTrend10m: -3.1,
+          floorTrend30m: 12,
+          ceilingTrend30m: -7,
+        },
+      }),
+    );
+    expect(out).toMatch(/Naive: gravity 7,425/);
+    expect(out).toMatch(/15 pts below spot/);
+    // fmtGex(18000) → '+18K'
+    expect(out).toMatch(/\+18K/);
+    expect(out).toMatch(/10m ceiling −3\.1% \/ floor \+5\.2%/);
+    expect(out).toMatch(/30m ceiling −7\.0% \/ floor \+12%/);
   });
 
   // Suppress the locale-string console output from unused imports

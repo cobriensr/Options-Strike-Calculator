@@ -27,8 +27,95 @@ import type {
   BiasMetrics,
   DriftTarget,
   GexStrikeLevel,
+  NaiveBiasMetrics,
+  NaiveDriftTarget,
   PriceTrend,
 } from './types';
+
+/**
+ * Mean of nullable percent values, ignoring nulls/undefineds. Returns
+ * `null` when no usable values exist — matches the BiasPanel's "no
+ * data yet" rendering contract.
+ */
+function avgPct(vals: (number | null | undefined)[]): number | null {
+  let sum = 0;
+  let count = 0;
+  for (const v of vals) {
+    if (v !== null && v !== undefined) {
+      sum += v;
+      count++;
+    }
+  }
+  return count > 0 ? sum / count : null;
+}
+
+/**
+ * Parallel naive bias sub-read. Computes gravity / drift targets /
+ * floor+ceiling trends over `callGammaOi + putGammaOi` from the WS
+ * feed. Returns `null` when no strike has any naive OI data — the
+ * BiasPanel skips the sub-line entirely in that case.
+ *
+ * Verdict and regime are NOT computed here — those are MM-only
+ * structural reads. The naive sub-bias is a complementary view, not
+ * a parallel decision layer.
+ */
+export function computeNaiveSubBias(
+  rows: GexStrikeLevel[],
+  currentPrice: number,
+  naiveDelta10mMap: Map<number, number | null>,
+  naiveDelta30mMap: Map<number, number | null>,
+): NaiveBiasMetrics | null {
+  // Skip entirely when every row has zero naive OI — no WS data has
+  // arrived for this view. The MM-only readout still renders cleanly.
+  const hasAnyNaive = rows.some((s) => s.callGammaOi + s.putGammaOi !== 0);
+  if (!hasAnyNaive) return null;
+
+  const naive = (s: GexStrikeLevel) => s.callGammaOi + s.putGammaOi;
+  const above = rows.filter((s) => s.strike > currentPrice + SPX_SPOT_BAND);
+  const below = rows.filter((s) => s.strike < currentPrice - SPX_SPOT_BAND);
+
+  // Naive gravity — strike with the largest |naive netGamma|.
+  let gravityRow: GexStrikeLevel | null = null;
+  for (const s of rows) {
+    if (
+      gravityRow === null ||
+      Math.abs(naive(s)) > Math.abs(naive(gravityRow))
+    ) {
+      gravityRow = s;
+    }
+  }
+  const gravityStrike = gravityRow?.strike ?? currentPrice;
+  const gravityGex = gravityRow ? naive(gravityRow) : 0;
+  const gravityOffset = gravityRow ? gravityRow.strike - currentPrice : 0;
+
+  // Drift targets — top 2 above and below by |naive netGamma|.
+  const byAbsNaive = (a: GexStrikeLevel, b: GexStrikeLevel) =>
+    Math.abs(naive(b)) - Math.abs(naive(a));
+  const toNaiveTarget = (s: GexStrikeLevel): NaiveDriftTarget => ({
+    strike: s.strike,
+    netGamma: naive(s),
+  });
+  const upsideTargets = [...above]
+    .sort(byAbsNaive)
+    .slice(0, 2)
+    .map(toNaiveTarget);
+  const downsideTargets = [...below]
+    .sort(byAbsNaive)
+    .slice(0, 2)
+    .map(toNaiveTarget);
+
+  return {
+    gravityStrike,
+    gravityOffset,
+    gravityGex,
+    upsideTargets,
+    downsideTargets,
+    floorTrend10m: avgPct(below.map((s) => naiveDelta10mMap.get(s.strike))),
+    ceilingTrend10m: avgPct(above.map((s) => naiveDelta10mMap.get(s.strike))),
+    floorTrend30m: avgPct(below.map((s) => naiveDelta30mMap.get(s.strike))),
+    ceilingTrend30m: avgPct(above.map((s) => naiveDelta30mMap.get(s.strike))),
+  };
+}
 
 export function computeBias(
   rows: GexStrikeLevel[],
@@ -36,6 +123,7 @@ export function computeBias(
   gexDelta10mMap: Map<number, number | null>,
   gexDelta30mMap: Map<number, number | null>,
   priceTrend: PriceTrend | null = null,
+  naive: NaiveBiasMetrics | null = null,
 ): BiasMetrics {
   const above = rows.filter((s) => s.strike > currentPrice + SPX_SPOT_BAND);
   const below = rows.filter((s) => s.strike < currentPrice - SPX_SPOT_BAND);
@@ -103,19 +191,6 @@ export function computeBias(
   const upsideTargets = [...above].sort(byAbsGex).slice(0, 2).map(toTarget);
   const downsideTargets = [...below].sort(byAbsGex).slice(0, 2).map(toTarget);
 
-  // Aggregate 10m / 30m Δ% trends above and below spot (MM cadence).
-  const avg = (vals: (number | null | undefined)[]) => {
-    let sum = 0;
-    let count = 0;
-    for (const v of vals) {
-      if (v !== null && v !== undefined) {
-        sum += v;
-        count++;
-      }
-    }
-    return count > 0 ? sum / count : null;
-  };
-
   return {
     verdict,
     regime,
@@ -125,10 +200,11 @@ export function computeBias(
     gravityGex: gravityRow?.netGamma ?? 0,
     upsideTargets,
     downsideTargets,
-    floorTrend10m: avg(below.map((s) => gexDelta10mMap.get(s.strike))),
-    ceilingTrend10m: avg(above.map((s) => gexDelta10mMap.get(s.strike))),
-    floorTrend30m: avg(below.map((s) => gexDelta30mMap.get(s.strike))),
-    ceilingTrend30m: avg(above.map((s) => gexDelta30mMap.get(s.strike))),
+    floorTrend10m: avgPct(below.map((s) => gexDelta10mMap.get(s.strike))),
+    ceilingTrend10m: avgPct(above.map((s) => gexDelta10mMap.get(s.strike))),
+    floorTrend30m: avgPct(below.map((s) => gexDelta30mMap.get(s.strike))),
+    ceilingTrend30m: avgPct(above.map((s) => gexDelta30mMap.get(s.strike))),
     priceTrend,
+    naive,
   };
 }

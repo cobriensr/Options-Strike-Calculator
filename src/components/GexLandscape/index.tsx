@@ -50,7 +50,7 @@ import { BiasPanel } from './BiasPanel';
 import { ClassificationLegend } from './ClassificationLegend';
 import { ScrubControls } from '../ScrubControls';
 import { StrikeTable } from './StrikeTable';
-import { computeBias } from './bias';
+import { computeBias, computeNaiveSubBias } from './bias';
 import { computeGammaPressure, type GammaPressure } from './classify';
 import { PRICE_WINDOW } from './constants';
 import { computePriceTrend, computeSmoothedStrikes } from './deltas';
@@ -139,6 +139,8 @@ const GexLandscape = memo(function GexLandscape({
     timestamps,
     gexDelta10mMap,
     gexDelta30mMap,
+    naiveDelta10mMap,
+    naiveDelta30mMap,
     loading,
     error,
     refresh,
@@ -322,14 +324,22 @@ const GexLandscape = memo(function GexLandscape({
   // Structural bias synthesis — directional verdict + key levels + trends.
   // Uses smoothedRows (5-min avg) so small per-snapshot GEX fluctuations don't
   // flip the verdict. Falls back to raw rows until enough history accumulates.
+  // Naive sub-bias rides off the same row set but uses naive Δ% (WS-sourced).
   const bias = useMemo(() => {
     const base = smoothedRows.length > 0 ? smoothedRows : rows;
+    const naive = computeNaiveSubBias(
+      base,
+      currentPrice,
+      naiveDelta10mMap,
+      naiveDelta30mMap,
+    );
     return computeBias(
       base,
       currentPrice,
       gexDelta10mMap,
       gexDelta30mMap,
       priceTrend,
+      naive,
     );
   }, [
     smoothedRows,
@@ -337,6 +347,8 @@ const GexLandscape = memo(function GexLandscape({
     currentPrice,
     gexDelta10mMap,
     gexDelta30mMap,
+    naiveDelta10mMap,
+    naiveDelta30mMap,
     priceTrend,
   ]);
 

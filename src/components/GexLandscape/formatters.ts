@@ -81,5 +81,29 @@ export function formatBiasForClaude(b: BiasMetrics): string {
       `Price trend: DRIFTING ${dir} (${b.priceTrend.changePts > 0 ? '+' : ''}${b.priceTrend.changePts.toFixed(1)} pts, ${fmtPct(b.priceTrend.changePct)} over 30m)`,
     );
   }
+  if (b.naive) {
+    const n = b.naive;
+    const naiveDir = n.gravityOffset >= 0 ? 'above' : 'below';
+    const naiveOffsetDisplay = Math.abs(n.gravityOffset).toLocaleString(
+      undefined,
+      { maximumFractionDigits: 2 },
+    );
+    const parts = [
+      `Naive: gravity ${n.gravityStrike.toLocaleString()} (${naiveOffsetDisplay} pts ${naiveDir} spot, ${fmtGex(n.gravityGex)})`,
+    ];
+    const t10naive: string[] = [];
+    if (n.ceilingTrend10m !== null)
+      t10naive.push(`ceiling ${fmtPct(n.ceilingTrend10m)}`);
+    if (n.floorTrend10m !== null)
+      t10naive.push(`floor ${fmtPct(n.floorTrend10m)}`);
+    if (t10naive.length > 0) parts.push(`10m ${t10naive.join(' / ')}`);
+    const t30naive: string[] = [];
+    if (n.ceilingTrend30m !== null)
+      t30naive.push(`ceiling ${fmtPct(n.ceilingTrend30m)}`);
+    if (n.floorTrend30m !== null)
+      t30naive.push(`floor ${fmtPct(n.floorTrend30m)}`);
+    if (t30naive.length > 0) parts.push(`30m ${t30naive.join(' / ')}`);
+    lines.push(parts.join(' | '));
+  }
   return lines.join('\n');
 }
