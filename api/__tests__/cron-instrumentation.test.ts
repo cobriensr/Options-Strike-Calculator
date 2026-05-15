@@ -340,8 +340,11 @@ describe('withCronInstrumentation', () => {
 
   it('measures duration as monotonic non-negative ms', async () => {
     vi.mocked(cronGuard).mockReturnValue(guardOk);
+    // Sleep 25ms with an assertion at >=5ms so Node's setTimeout
+    // imprecision (callbacks can fire ~1ms early on fast/loaded CI
+    // runners) can't undershoot the bound.
     const handler = vi.fn().mockImplementation(async () => {
-      await new Promise((r) => setTimeout(r, 5));
+      await new Promise((r) => setTimeout(r, 25));
       return { status: 'success' as const };
     });
     const wrapped = withCronInstrumentation('time-job', handler);
