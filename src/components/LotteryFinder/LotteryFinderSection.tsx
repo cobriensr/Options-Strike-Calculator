@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { SectionBox } from '../ui/SectionBox.js';
 import { useLotteryFinder } from '../../hooks/useLotteryFinder.js';
+import { useLotteryFinderTickerCounts } from '../../hooks/useLotteryFinderTickerCounts.js';
 import { ctSessionBounds } from './ct-window.js';
 import { LotteryDayBanner } from './LotteryDayBanner.js';
 import { LotteryTierBanner } from './LotteryTierBanner.js';
-import { LotteryRow } from './LotteryRow.js';
+import { LotteryFinderTickerGroup } from './LotteryFinderTickerGroup.js';
 import {
   EXIT_POLICY_LABELS,
   EXIT_POLICY_TOOLTIPS,
@@ -22,6 +23,7 @@ const SORT_LS_KEY = 'lottery.sortMode';
 const CONVICTION_LS_KEY = 'lottery.convictionFloor';
 const HIDE_LATE_PM_LS_KEY = 'lottery.hideLatePm';
 const HIDE_GATED_LS_KEY = 'lottery.hideGated';
+const TICKER_EXPANDED_LS_KEY = 'lottery-ticker-expanded';
 /**
  * Late-PM cutoff (CT minute-of-day). Fires whose triggerTimeCt is at
  * or after this minute are hidden when the filter is on. 14:30 CT —
@@ -315,6 +317,22 @@ export function LotteryFinderSection({
       pageSize: PAGE_SIZE,
     });
 
+  // All-day ticker counts for the chip strip — chain-day deduped on
+  // the server so counts match what the user sees in the list.
+  // Independent of pagination + the minute scrubber so the strip
+  // always shows every ticker that fired today.
+  const tickerCounts = useLotteryFinderTickerCounts({
+    date,
+    marketOpen,
+    historical: date !== todayCt(),
+    reload: reloadOnly ? true : null,
+    cheapCallPm: cheapCallPmOnly ? true : null,
+    mode: modeFilter,
+    optionType: optionTypeFilter,
+    tod: todFilter,
+    minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
+  });
+
   // Regular-session bounds (08:30 → 15:00 CT) for the selected date,
   // browser-TZ-independent. See ct-window.ts.
   const scrubBounds = useMemo(() => ctSessionBounds(date), [date]);
@@ -402,16 +420,84 @@ export function LotteryFinderSection({
     ? fires.filter((f) => f.directionGated).length
     : 0;
 
-  // Top tickers by fire count in the displayed page — gives the user
-  // an obvious one-click filter dimension without forcing a 50-ticker
-  // dropdown. Updates whenever the result set changes (filters/scrub).
-  const topTickers = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const f of fires) {
-      counts.set(f.underlyingSymbol, (counts.get(f.underlyingSymbol) ?? 0) + 1);
+  // Top tickers from the dedicated all-day counts endpoint —
+  // independent of pagination + the minute scrubber so tickers that
+  // fired off the current page slice still appear in the strip.
+  const topTickers = useMemo(
+    () =>
+      tickerCounts.tickers
+        .slice(0, 12)
+        .map((t) => [t.ticker, t.count] as const),
+    [tickerCounts.tickers],
+  );
+
+  // Group displayed fires by ticker so each underlying renders as one
+  // collapsible row. Within-group ordering preserves the user's
+  // sortMode (fires arrive pre-sorted from the server). Group order:
+  // fire count desc, latest trigger time desc as tiebreak.
+  const groupedByTicker = useMemo(() => {
+    const map = new Map<string, LotteryFire[]>();
+    for (const f of displayedFires) {
+      const arr = map.get(f.underlyingSymbol);
+      if (arr) arr.push(f);
+      else map.set(f.underlyingSymbol, [f]);
     }
-    return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
-  }, [fires]);
+    return [...map.entries()]
+      .map(([ticker, list]) => ({
+        ticker,
+        fires: list,
+        latestTriggerMs: list.reduce<number>((max, f) => {
+          const t = Date.parse(f.triggerTimeCt);
+          return Number.isFinite(t) && t > max ? t : max;
+        }, 0),
+      }))
+      .sort((a, b) => {
+        if (b.fires.length !== a.fires.length) {
+          return b.fires.length - a.fires.length;
+        }
+        return b.latestTriggerMs - a.latestTriggerMs;
+      });
+  }, [displayedFires]);
+
+  // Per-ticker expand state, persisted to localStorage so users keep
+  // their open tickers across refreshes / filter changes. Default
+  // closed.
+  const [tickerExpandedMap, setTickerExpandedMap] = useState<
+    Record<string, boolean>
+  >(() => {
+    if (typeof window === 'undefined') return {};
+    try {
+      const raw = window.localStorage.getItem(TICKER_EXPANDED_LS_KEY);
+      if (!raw) return {};
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const out: Record<string, boolean> = {};
+        for (const [k, v] of Object.entries(
+          parsed as Record<string, unknown>,
+        )) {
+          if (typeof v === 'boolean') out[k] = v;
+        }
+        return out;
+      }
+      return {};
+    } catch {
+      return {};
+    }
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(
+        TICKER_EXPANDED_LS_KEY,
+        JSON.stringify(tickerExpandedMap),
+      );
+    } catch {
+      // Quota exceeded or storage disabled — swallow.
+    }
+  }, [tickerExpandedMap]);
+  const handleTickerToggle = useCallback((ticker: string) => {
+    setTickerExpandedMap((prev) => ({ ...prev, [ticker]: !prev[ticker] }));
+  }, []);
 
   return (
     <SectionBox label="Lottery Finder" collapsible>
@@ -814,7 +900,7 @@ export function LotteryFinderSection({
                   className={`${CHIP_BASE} ${
                     tickerFilter === t ? CHIP_ACTIVE.emerald : CHIP_INACTIVE
                   }`}
-                  title={`Filter to ${t} only (${n} fires in current view)`}
+                  title={`Filter to ${t} only (${n} fire${n === 1 ? '' : 's'} today)`}
                   aria-pressed={tickerFilter === t}
                 >
                   {t} <span className="text-[10px] opacity-70">{n}</span>
@@ -958,16 +1044,15 @@ export function LotteryFinderSection({
                 </span>
               )}
             </div>
-            {displayedFires.map((f: LotteryFire) => (
-              <LotteryRow
-                // Key by chain (stable across polls). Using `f.id`
-                // would change every time a new fire on the same
-                // chain bumps the rep id, remounting the row and
-                // losing the user's expand state.
-                key={f.optionChainId}
-                fire={f}
-                exitPolicy={exitPolicy}
+            {groupedByTicker.map((g) => (
+              <LotteryFinderTickerGroup
+                key={g.ticker}
+                ticker={g.ticker}
+                fires={g.fires}
+                expanded={tickerExpandedMap[g.ticker] === true}
+                onToggle={handleTickerToggle}
                 marketOpen={marketOpen}
+                exitPolicy={exitPolicy}
               />
             ))}
           </div>

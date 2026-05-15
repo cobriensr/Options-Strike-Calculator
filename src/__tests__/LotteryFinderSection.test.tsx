@@ -12,24 +12,38 @@ import type { LotteryFire } from '../components/LotteryFinder/types';
 
 // ── Mocks ─────────────────────────────────────────────────────────────
 
-const { mockUseLotteryFinder } = vi.hoisted(() => ({
-  mockUseLotteryFinder: vi.fn(),
-}));
+const { mockUseLotteryFinder, mockUseLotteryFinderTickerCounts } = vi.hoisted(
+  () => ({
+    mockUseLotteryFinder: vi.fn(),
+    mockUseLotteryFinderTickerCounts: vi.fn(),
+  }),
+);
 
 vi.mock('../hooks/useLotteryFinder', () => ({
   useLotteryFinder: mockUseLotteryFinder,
 }));
 
-// Stub LotteryRow so the section's pagination/filter logic is testable
-// without dragging in the contract-tape / net-flow hooks.
-vi.mock('../components/LotteryFinder/LotteryRow', () => ({
-  LotteryRow: ({ fire }: { fire: LotteryFire }) => (
-    <div
-      data-testid={`lottery-row-${fire.optionChainId}`}
-      data-ticker={fire.underlyingSymbol}
-    >
-      {fire.underlyingSymbol} {fire.strike}
-    </div>
+vi.mock('../hooks/useLotteryFinderTickerCounts', () => ({
+  useLotteryFinderTickerCounts: mockUseLotteryFinderTickerCounts,
+}));
+
+// Stub LotteryFinderTickerGroup to skip the expand/collapse gate —
+// section tests cover grouping orchestration, not TickerGroup's own
+// expand logic (covered separately). The stub renders the fires
+// directly so existing row-visibility assertions remain meaningful.
+vi.mock('../components/LotteryFinder/LotteryFinderTickerGroup', () => ({
+  LotteryFinderTickerGroup: ({ fires }: { fires: LotteryFire[] }) => (
+    <>
+      {fires.map((fire) => (
+        <div
+          key={fire.optionChainId}
+          data-testid={`lottery-row-${fire.optionChainId}`}
+          data-ticker={fire.underlyingSymbol}
+        >
+          {fire.underlyingSymbol} {fire.strike}
+        </div>
+      ))}
+    </>
   ),
 }));
 
@@ -130,9 +144,17 @@ const defaultHookResult = {
 beforeEach(() => {
   vi.clearAllMocks();
   // Clear localStorage between tests so persisted prefs don't leak
-  // between test cases (sortMode, convictionFloor, hideLatePm).
+  // between test cases (sortMode, convictionFloor, hideLatePm,
+  // lottery-ticker-expanded).
   window.localStorage.clear();
   mockUseLotteryFinder.mockReturnValue(defaultHookResult);
+  mockUseLotteryFinderTickerCounts.mockReturnValue({
+    tickers: [],
+    loading: false,
+    error: null,
+    fetchedAt: null,
+    refetch: vi.fn(),
+  });
 });
 
 // ============================================================
