@@ -4,6 +4,8 @@ import {
   formatBiasLabel,
   formatSpreadDuration,
   formatTideLabel,
+  isHighConviction,
+  HIGH_CONVICTION_BADGE_LABEL,
   type RollupAlertSummary,
 } from '../../utils/ticker-rollup-aggregates';
 
@@ -221,6 +223,187 @@ describe('formatBiasLabel', () => {
     expect(formatBiasLabel('bull')).toBe('↑ bull');
     expect(formatBiasLabel('bear')).toBe('↓ bear');
     expect(formatBiasLabel('mixed')).toBe('~ mixed');
+  });
+});
+
+describe('isHighConviction', () => {
+  // XOM golden case from 2026-05-15: 3 fires, all calls, 3 distinct
+  // strikes, Δ 7min. Must pass.
+  it('matches the XOM golden case', () => {
+    const rows = [
+      makeRow({
+        optionType: 'C',
+        strike: 152.5,
+        triggeredAt: '2026-05-15T13:39:00Z',
+      }),
+      makeRow({
+        optionType: 'C',
+        strike: 155,
+        triggeredAt: '2026-05-15T13:33:00Z',
+      }),
+      makeRow({
+        optionType: 'C',
+        strike: 150,
+        triggeredAt: '2026-05-15T13:32:00Z',
+      }),
+    ];
+    const agg = computeRollupAggregates(rows);
+    expect(isHighConviction(agg, rows.length)).toBe(true);
+  });
+
+  // SNDK rejection from 2026-05-15: 5 fires but a 1295P among 4 calls.
+  it('rejects the SNDK mixed-bias case', () => {
+    const rows = [
+      makeRow({
+        optionType: 'P',
+        strike: 1295,
+        triggeredAt: '2026-05-15T13:38:00Z',
+      }),
+      makeRow({
+        optionType: 'C',
+        strike: 1320,
+        triggeredAt: '2026-05-15T13:35:00Z',
+      }),
+      makeRow({
+        optionType: 'C',
+        strike: 1360,
+        triggeredAt: '2026-05-15T13:32:00Z',
+      }),
+      makeRow({
+        optionType: 'C',
+        strike: 1375,
+        triggeredAt: '2026-05-15T13:32:00Z',
+      }),
+      makeRow({
+        optionType: 'C',
+        strike: 1330,
+        triggeredAt: '2026-05-15T13:32:00Z',
+      }),
+    ];
+    const agg = computeRollupAggregates(rows);
+    expect(isHighConviction(agg, rows.length)).toBe(false);
+  });
+
+  it('rejects fewer than 3 fires', () => {
+    const rows = [
+      makeRow({ strike: 100, triggeredAt: '2026-05-15T13:30:00Z' }),
+      makeRow({ strike: 105, triggeredAt: '2026-05-15T13:32:00Z' }),
+    ];
+    const agg = computeRollupAggregates(rows);
+    expect(isHighConviction(agg, rows.length)).toBe(false);
+  });
+
+  it('rejects when only one distinct strike', () => {
+    const rows = [
+      makeRow({ strike: 100, triggeredAt: '2026-05-15T13:30:00Z' }),
+      makeRow({ strike: 100, triggeredAt: '2026-05-15T13:32:00Z' }),
+      makeRow({ strike: 100, triggeredAt: '2026-05-15T13:34:00Z' }),
+    ];
+    const agg = computeRollupAggregates(rows);
+    expect(isHighConviction(agg, rows.length)).toBe(false);
+  });
+
+  it('rejects when spread exceeds 15 minutes', () => {
+    const rows = [
+      makeRow({ strike: 100, triggeredAt: '2026-05-15T13:00:00Z' }),
+      makeRow({ strike: 105, triggeredAt: '2026-05-15T13:10:00Z' }),
+      makeRow({ strike: 110, triggeredAt: '2026-05-15T13:16:00Z' }),
+    ];
+    const agg = computeRollupAggregates(rows);
+    expect(agg.spreadMinutes).toBe(16);
+    expect(isHighConviction(agg, rows.length)).toBe(false);
+  });
+
+  it('accepts exactly 15-minute spread (boundary)', () => {
+    const rows = [
+      makeRow({ strike: 100, triggeredAt: '2026-05-15T13:00:00Z' }),
+      makeRow({ strike: 105, triggeredAt: '2026-05-15T13:07:00Z' }),
+      makeRow({ strike: 110, triggeredAt: '2026-05-15T13:15:00Z' }),
+    ];
+    const agg = computeRollupAggregates(rows);
+    expect(agg.spreadMinutes).toBe(15);
+    expect(isHighConviction(agg, rows.length)).toBe(true);
+  });
+
+  it('accepts a bearish 3-put cluster', () => {
+    const rows = [
+      makeRow({
+        optionType: 'P',
+        strike: 100,
+        mktTideDiff: -200,
+        triggeredAt: '2026-05-15T13:30:00Z',
+      }),
+      makeRow({
+        optionType: 'P',
+        strike: 95,
+        mktTideDiff: -100,
+        triggeredAt: '2026-05-15T13:34:00Z',
+      }),
+      makeRow({
+        optionType: 'P',
+        strike: 105,
+        mktTideDiff: -50,
+        triggeredAt: '2026-05-15T13:38:00Z',
+      }),
+    ];
+    const agg = computeRollupAggregates(rows);
+    expect(isHighConviction(agg, rows.length)).toBe(true);
+  });
+
+  it('accepts when tide is counter (alignment is not required)', () => {
+    const rows = [
+      makeRow({
+        optionType: 'C',
+        strike: 100,
+        mktTideDiff: -200,
+        triggeredAt: '2026-05-15T13:30:00Z',
+      }),
+      makeRow({
+        optionType: 'C',
+        strike: 105,
+        mktTideDiff: -100,
+        triggeredAt: '2026-05-15T13:34:00Z',
+      }),
+      makeRow({
+        optionType: 'C',
+        strike: 110,
+        mktTideDiff: -50,
+        triggeredAt: '2026-05-15T13:38:00Z',
+      }),
+    ];
+    const agg = computeRollupAggregates(rows);
+    expect(agg.tide).toEqual({ dir: 'down', align: 'counter' });
+    expect(isHighConviction(agg, rows.length)).toBe(true);
+  });
+
+  it('accepts when tide is unknown (Phase-4 ramp)', () => {
+    const rows = [
+      makeRow({
+        optionType: 'C',
+        strike: 100,
+        mktTideDiff: null,
+        triggeredAt: '2026-05-15T13:30:00Z',
+      }),
+      makeRow({
+        optionType: 'C',
+        strike: 105,
+        mktTideDiff: null,
+        triggeredAt: '2026-05-15T13:34:00Z',
+      }),
+      makeRow({
+        optionType: 'C',
+        strike: 110,
+        mktTideDiff: null,
+        triggeredAt: '2026-05-15T13:38:00Z',
+      }),
+    ];
+    const agg = computeRollupAggregates(rows);
+    expect(agg.tide).toEqual({ dir: 'unknown', align: 'unknown' });
+    expect(isHighConviction(agg, rows.length)).toBe(true);
+  });
+
+  it('exports a label constant for chip rendering', () => {
+    expect(HIGH_CONVICTION_BADGE_LABEL).toBe('✦ conviction');
   });
 });
 

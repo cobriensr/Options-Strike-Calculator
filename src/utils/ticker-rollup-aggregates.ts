@@ -156,3 +156,34 @@ export function formatTideLabel(tide: TideAggregate): string {
   const arrow = tide.dir === 'up' ? '↑' : '↓';
   return `tide ${arrow} ${tide.align}`;
 }
+
+/**
+ * Quick-succession ceiling for the high-conviction badge. Fires that
+ * cluster within this window read as one informed footprint; beyond it
+ * the alerts feel like separate, weakly-correlated events.
+ */
+export const HIGH_CONVICTION_MAX_SPREAD_MINUTES = 15;
+
+/** Minimum fires required for the high-conviction badge. */
+export const HIGH_CONVICTION_MIN_FIRES = 3;
+
+/**
+ * "Shiny" badge predicate: ≥3 fires, clean single-direction bias,
+ * ≥2 distinct strikes, all clustered within the quick-succession
+ * window. Tide alignment is intentionally NOT required — trader
+ * judgment from the 2026-05-15 scoping is that it's not load-bearing
+ * for the conviction read.
+ */
+export function isHighConviction(
+  agg: RollupAggregates,
+  fireCount: number,
+): boolean {
+  if (fireCount < HIGH_CONVICTION_MIN_FIRES) return false;
+  if (agg.bias === null || agg.bias === 'mixed') return false;
+  if (agg.strikeRange === null) return false;
+  if (agg.spreadMinutes === null) return false;
+  return agg.spreadMinutes <= HIGH_CONVICTION_MAX_SPREAD_MINUTES;
+}
+
+/** Display label for the high-conviction badge chip. */
+export const HIGH_CONVICTION_BADGE_LABEL = '✦ conviction';
