@@ -34,7 +34,17 @@ from psycopg2.extras import execute_values
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / '.env.local'
-PARQUET_DIR = Path.home() / 'Desktop' / 'Bot-Eod-parquet'
+# Default — the "Bot-Eod" capture which already has per-trade `side`
+# classified. The wider "Eod-Full-Tape" archive is available via
+# --parquet-dir + --parquet-format fulltape; in that mode side is
+# derived per-trade from the cumulative ask_vol/bid_vol/mid_vol/
+# no_side_vol columns (the columns are PER-CHAIN cumulative through
+# time, so a single trade's side is wherever the delta lands).
+DEFAULT_PARQUET_DIR = Path.home() / 'Desktop' / 'Bot-Eod-parquet'
+PARQUET_FORMATS = {
+    'trades': '{date}-trades.parquet',
+    'fulltape': '{date}-fulltape.parquet',
+}
 
 sys.path.insert(0, str(ROOT / 'scripts'))
 from lottery_detector_py import (  # noqa: E402
@@ -59,10 +69,19 @@ def load_env() -> None:
                 )
 
 
-def list_parquet_dates(from_date: str | None, to_date: str | None) -> list[str]:
+def list_parquet_dates(
+    parquet_dir: Path,
+    parquet_format: str,
+    from_date: str | None,
+    to_date: str | None,
+) -> list[str]:
+    suffix = PARQUET_FORMATS[parquet_format].format(date='')
+    glob_pat = f'*{suffix}'
+    re_suffix = re.escape(suffix)
+    date_re = rf'(\d{{4}}-\d{{2}}-\d{{2}}){re_suffix}$'
     out: list[str] = []
-    for p in sorted(PARQUET_DIR.glob('*-trades.parquet')):
-        m = re.match(r'(\d{4}-\d{2}-\d{2})-trades\.parquet', p.name)
+    for p in sorted(parquet_dir.glob(glob_pat)):
+        m = re.match(date_re, p.name)
         if not m:
             continue
         d = m.group(1)
@@ -75,18 +94,28 @@ def list_parquet_dates(from_date: str | None, to_date: str | None) -> list[str]:
 
 
 def load_chain_groups(
-    parquet_path: Path, ticker: str
+    parquet_path: Path, ticker: str, parquet_format: str = 'trades'
 ) -> dict[str, dict]:
     """Returns {option_chain_id: {ticks: [OptionTradeTick], oi: int,
     expiry: str, strike: float, option_type: 'C'/'P'}}."""
-    df = pd.read_parquet(
-        parquet_path,
-        columns=[
+    if parquet_format == 'fulltape':
+        columns = [
+            'executed_at', 'underlying_symbol', 'option_chain_id',
+            'option_type', 'strike', 'expiry', 'price', 'size',
+            'underlying_price', 'ask_vol', 'bid_vol', 'mid_vol',
+            'no_side_vol', 'implied_volatility', 'delta',
+            'open_interest', 'canceled',
+        ]
+    else:
+        columns = [
             'executed_at', 'underlying_symbol', 'option_chain_id',
             'option_type', 'strike', 'expiry', 'price', 'size',
             'underlying_price', 'side', 'implied_volatility', 'delta',
             'open_interest', 'canceled',
-        ],
+        ]
+    df = pd.read_parquet(
+        parquet_path,
+        columns=columns,
         filters=[('underlying_symbol', '=', ticker)],
     )
     if df.empty:
@@ -100,6 +129,28 @@ def load_chain_groups(
     if df['executed_at'].dt.tz is None:
         df['executed_at'] = df['executed_at'].dt.tz_localize('UTC')
     df = df.sort_values(['option_chain_id', 'executed_at'], kind='stable')
+
+    # Fulltape carries cumulative per-chain side-vols (ask_vol, bid_vol,
+    # mid_vol, no_side_vol) instead of a per-trade `side` string. Per
+    # the 2026-05-09 finding (feedback_uw_fulltape_vols_cumulative): the
+    # side that incremented between consecutive rows on the same chain
+    # IS this trade's side. First trade on a chain has prior=0, so the
+    # initial values directly attribute the trade. Multi-bucket ties
+    # are rare (effectively one side increments per print); pick the
+    # largest delta with a stable priority order.
+    if parquet_format == 'fulltape':
+        side_cols = ['ask_vol', 'bid_vol', 'mid_vol', 'no_side_vol']
+        priors = df.groupby('option_chain_id', sort=False)[side_cols].shift(
+            1, fill_value=0
+        )
+        deltas = (df[side_cols].astype('int64') - priors.astype('int64')).clip(
+            lower=0
+        )
+        # idxmax picks the side with the largest delta; ties resolve to
+        # the first column in `side_cols` order (ask > bid > mid > none).
+        side_idx = deltas.values.argmax(axis=1)
+        side_lookup = {0: 'ask', 1: 'bid', 2: 'mid', 3: 'no_side'}
+        df = df.assign(side=[side_lookup[i] for i in side_idx])
 
     out: dict[str, dict] = {}
     for chain_id, sub in df.groupby('option_chain_id', sort=False):
@@ -332,14 +383,32 @@ def main() -> None:
     parser.add_argument('--to-date', help='YYYY-MM-DD inclusive')
     parser.add_argument('--no-macro', action='store_true',
                         help='Skip macro snapshot lookup (much faster)')
+    parser.add_argument(
+        '--parquet-dir',
+        default=str(DEFAULT_PARQUET_DIR),
+        help='Directory containing parquet files. '
+             f'Default: {DEFAULT_PARQUET_DIR}',
+    )
+    parser.add_argument(
+        '--parquet-format',
+        choices=sorted(PARQUET_FORMATS.keys()),
+        default='trades',
+        help='Parquet schema. `trades` has per-trade `side`; `fulltape` '
+             'has cumulative per-side vols and side is derived per-trade '
+             'via delta computation.',
+    )
     args = parser.parse_args()
 
     load_env()
     db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ['DATABASE_URL']
     conn = psycopg2.connect(db_url)
 
-    dates = list_parquet_dates(args.from_date, args.to_date)
+    parquet_dir = Path(args.parquet_dir).expanduser()
+    dates = list_parquet_dates(
+        parquet_dir, args.parquet_format, args.from_date, args.to_date
+    )
     print(f'[backfill] ticker={args.ticker} dates={len(dates)} '
+          f'format={args.parquet_format} dir={parquet_dir} '
           f'(macro={"OFF" if args.no_macro else "ON"})')
 
     grand_fires = 0
@@ -347,10 +416,13 @@ def main() -> None:
     grand_chains = 0
     t0 = time.time()
 
+    file_pattern = PARQUET_FORMATS[args.parquet_format]
     for date_str in dates:
-        path = PARQUET_DIR / f'{date_str}-trades.parquet'
+        path = parquet_dir / file_pattern.format(date=date_str)
         td = time.time()
-        chain_groups = load_chain_groups(path, args.ticker)
+        chain_groups = load_chain_groups(
+            path, args.ticker, args.parquet_format
+        )
         if not chain_groups:
             print(f'  [{date_str}] no rows for {args.ticker}')
             continue
