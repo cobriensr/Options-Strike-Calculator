@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { SectionBox } from '../ui/SectionBox.js';
 import { useSilentBoomFeed } from '../../hooks/useSilentBoomFeed.js';
+import { useSilentBoomTickerCounts } from '../../hooks/useSilentBoomTickerCounts.js';
 import { ctSessionBounds } from '../LotteryFinder/ct-window.js';
 import { SilentBoomDayBanner } from './SilentBoomDayBanner.js';
 import { SilentBoomRegimeBanner } from './SilentBoomRegimeBanner.js';
-import { SilentBoomRow } from './SilentBoomRow.js';
+import { SilentBoomTickerGroup } from './SilentBoomTickerGroup.js';
 import {
   SILENT_BOOM_EXIT_POLICY_LABELS,
   SILENT_BOOM_EXIT_POLICY_TOOLTIPS,
@@ -27,6 +28,7 @@ const HIDE_GHOSTS_LS_KEY = 'silentBoom.hideGhosts';
 const HIDE_GATED_LS_KEY = 'silentBoom.hideGated';
 const EXIT_POLICY_LS_KEY = 'silentBoom.exitPolicy';
 const ASK_PCT_BAND_LS_KEY = 'silentBoom.askPctBand';
+const TICKER_EXPANDED_LS_KEY = 'silent-boom-ticker-expanded';
 
 const EXIT_POLICIES: SilentBoomExitPolicy[] = [
   'realized30mPct',
@@ -535,6 +537,23 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       pageSize: PAGE_SIZE,
     });
 
+  // All-day ticker counts for the chip strip — independent of the
+  // 50-item page slice so tickers that fired on later pages still
+  // appear. Mirrors the feed's server-side filters minus `ticker`
+  // (the chip strip IS the ticker selector).
+  const tickerCounts = useSilentBoomTickerCounts({
+    date,
+    marketOpen,
+    historical: isHistorical,
+    optionType: optionTypeFilter,
+    tod: todFilter,
+    dte: dteFilter,
+    burst: burstFilter,
+    askPctBand,
+    minVolOi,
+    minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
+  });
+
   // Regular-session bounds (08:30 → 15:00 CT) for the selected date,
   // browser-TZ-independent. Reused from the LotteryFinder helper so the
   // two date scrubbers stay in lockstep.
@@ -620,14 +639,88 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       ? alerts.filter((a) => a.directionGated).length
       : 0;
 
-  // Top tickers in the current page — quick one-click scope.
-  const topTickers = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const a of alerts) {
-      counts.set(a.underlyingSymbol, (counts.get(a.underlyingSymbol) ?? 0) + 1);
+  // Top tickers across the WHOLE day from the dedicated counts
+  // endpoint — independent of pagination. The list was previously
+  // built from the 50-item page slice, which hid tickers that fired
+  // on later pages.
+  const topTickers = useMemo(
+    () =>
+      tickerCounts.tickers
+        .slice(0, 12)
+        .map((t) => [t.ticker, t.count] as const),
+    [tickerCounts.tickers],
+  );
+
+  // Group the displayed alerts by ticker so each underlying renders
+  // as one collapsible row instead of N scattered cards. Within-group
+  // ordering preserves the user's chosen `sortMode` (the alerts arrive
+  // pre-sorted from the server). Group ordering sorts by count desc,
+  // then most-recent bucket desc as tiebreak.
+  const groupedByTicker = useMemo(() => {
+    const map = new Map<string, SilentBoomAlert[]>();
+    for (const a of displayedAlerts) {
+      const arr = map.get(a.underlyingSymbol);
+      if (arr) arr.push(a);
+      else map.set(a.underlyingSymbol, [a]);
     }
-    return [...counts.entries()].sort((b, c) => c[1] - b[1]).slice(0, 12);
-  }, [alerts]);
+    return [...map.entries()]
+      .map(([ticker, list]) => ({
+        ticker,
+        alerts: list,
+        // Latest bucket within the group — used as tiebreak so two
+        // tickers with the same alert count are ordered by recency.
+        latestBucketMs: list.reduce<number>((max, a) => {
+          const t = Date.parse(a.bucketCt);
+          return Number.isFinite(t) && t > max ? t : max;
+        }, 0),
+      }))
+      .sort((a, b) => {
+        if (b.alerts.length !== a.alerts.length) {
+          return b.alerts.length - a.alerts.length;
+        }
+        return b.latestBucketMs - a.latestBucketMs;
+      });
+  }, [displayedAlerts]);
+
+  // Per-ticker expand state, persisted to localStorage so users keep
+  // their open tickers across refreshes / filter changes. Default
+  // closed.
+  const [tickerExpandedMap, setTickerExpandedMap] = useState<
+    Record<string, boolean>
+  >(() => {
+    if (typeof window === 'undefined') return {};
+    try {
+      const raw = window.localStorage.getItem(TICKER_EXPANDED_LS_KEY);
+      if (!raw) return {};
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const out: Record<string, boolean> = {};
+        for (const [k, v] of Object.entries(
+          parsed as Record<string, unknown>,
+        )) {
+          if (typeof v === 'boolean') out[k] = v;
+        }
+        return out;
+      }
+      return {};
+    } catch {
+      return {};
+    }
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(
+        TICKER_EXPANDED_LS_KEY,
+        JSON.stringify(tickerExpandedMap),
+      );
+    } catch {
+      // Quota exceeded or storage disabled — swallow.
+    }
+  }, [tickerExpandedMap]);
+  const handleTickerToggle = useCallback((ticker: string) => {
+    setTickerExpandedMap((prev) => ({ ...prev, [ticker]: !prev[ticker] }));
+  }, []);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
@@ -1096,7 +1189,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                   className={`${CHIP_BASE} ${
                     tickerFilter === t ? CHIP_ACTIVE.emerald : CHIP_INACTIVE
                   }`}
-                  title={`Filter to ${t} only (${n} alerts in current view)`}
+                  title={`Filter to ${t} only (${n} alert${n === 1 ? '' : 's'} today)`}
                   aria-pressed={tickerFilter === t}
                 >
                   {t} <span className="text-[10px] opacity-70">{n}</span>
@@ -1248,14 +1341,13 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 </span>
               )}
             </div>
-            {displayedAlerts.map((a) => (
-              <SilentBoomRow
-                // Key by chain+bucket — alert.id rolls if we re-detect on
-                // the same bucket (we shouldn't, but ON CONFLICT DO NOTHING
-                // means the row id is stable). chain+bucket is the natural
-                // key the unique index is on, so it's the right identity.
-                key={`${a.optionChainId}|${a.bucketCt}`}
-                alert={a}
+            {groupedByTicker.map((g) => (
+              <SilentBoomTickerGroup
+                key={g.ticker}
+                ticker={g.ticker}
+                alerts={g.alerts}
+                expanded={tickerExpandedMap[g.ticker] === true}
+                onToggle={handleTickerToggle}
                 marketOpen={marketOpen}
                 exitPolicy={exitPolicy}
               />

@@ -12,24 +12,38 @@ import type { SilentBoomAlert } from '../components/SilentBoom/types';
 
 // ── Mocks ─────────────────────────────────────────────────────────────
 
-const { mockUseSilentBoomFeed } = vi.hoisted(() => ({
-  mockUseSilentBoomFeed: vi.fn(),
-}));
+const { mockUseSilentBoomFeed, mockUseSilentBoomTickerCounts } = vi.hoisted(
+  () => ({
+    mockUseSilentBoomFeed: vi.fn(),
+    mockUseSilentBoomTickerCounts: vi.fn(),
+  }),
+);
 
 vi.mock('../hooks/useSilentBoomFeed', () => ({
   useSilentBoomFeed: mockUseSilentBoomFeed,
 }));
 
-// Stub SilentBoomRow so the section's pagination/filter logic is testable
-// without dragging in the contract-tape / net-flow hooks.
-vi.mock('../components/SilentBoom/SilentBoomRow', () => ({
-  SilentBoomRow: ({ alert }: { alert: SilentBoomAlert }) => (
-    <div
-      data-testid={`silent-boom-row-${alert.optionChainId}`}
-      data-ticker={alert.underlyingSymbol}
-    >
-      {alert.underlyingSymbol} {alert.strike}
-    </div>
+vi.mock('../hooks/useSilentBoomTickerCounts', () => ({
+  useSilentBoomTickerCounts: mockUseSilentBoomTickerCounts,
+}));
+
+// Stub SilentBoomTickerGroup to skip the expand/collapse gate — Section
+// tests cover grouping orchestration but not TickerGroup's own expand
+// logic (covered separately). The stub renders the alerts directly so
+// the existing row-visibility assertions remain meaningful.
+vi.mock('../components/SilentBoom/SilentBoomTickerGroup', () => ({
+  SilentBoomTickerGroup: ({ alerts }: { alerts: SilentBoomAlert[] }) => (
+    <>
+      {alerts.map((alert) => (
+        <div
+          key={alert.optionChainId}
+          data-testid={`silent-boom-row-${alert.optionChainId}`}
+          data-ticker={alert.underlyingSymbol}
+        >
+          {alert.underlyingSymbol} {alert.strike}
+        </div>
+      ))}
+    </>
   ),
 }));
 
@@ -93,9 +107,16 @@ beforeEach(() => {
   vi.clearAllMocks();
   // Clear localStorage between tests so persisted prefs don't leak
   // across cases (sortMode, convictionFloor, hideLatePm, hideGhosts,
-  // minVolOi).
+  // minVolOi, silent-boom-ticker-expanded).
   window.localStorage.clear();
   mockUseSilentBoomFeed.mockReturnValue(defaultHookResult);
+  mockUseSilentBoomTickerCounts.mockReturnValue({
+    tickers: [],
+    loading: false,
+    error: null,
+    fetchedAt: null,
+    refetch: vi.fn(),
+  });
 });
 
 // ============================================================
