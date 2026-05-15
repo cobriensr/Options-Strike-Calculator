@@ -128,3 +128,64 @@ class TestNetFlowLotteryShorthand:
         channels = _settings("net_flow:TSLA,net_flow_lottery").channels
         tsla_count = sum(1 for c in channels if c == "net_flow:TSLA")
         assert tsla_count == 1
+
+
+class TestGexStrikeExpiryLotteryShorthand:
+    """`gex_strike_expiry_lottery` expands the same universe as
+    option_trades_lottery + net_flow_lottery but as
+    gex_strike_expiry:<TICKER> channels. Feeds the Greek Heatmap
+    section — see
+    docs/superpowers/specs/per-ticker-greek-heatmap-2026-05-15.md."""
+
+    def test_shorthand_expands_to_per_ticker_channels(self):
+        channels = _settings("gex_strike_expiry_lottery").channels
+        # Universe is V3 + EXTENDED (set-deduped) — ~50 tickers.
+        assert len(channels) >= 40
+        assert all(c.startswith("gex_strike_expiry:") for c in channels)
+        tickers = [
+            c.removeprefix("gex_strike_expiry:") for c in channels
+        ]
+        # Spot-check a representative slice of the universe — confirms
+        # the same _LOTTERY_TICKERS set is being expanded as for the
+        # other two lottery shorthands.
+        assert "SPY" in tickers
+        assert "TSLA" in tickers
+        assert "SPXW" in tickers
+
+    def test_sorted_for_stable_order(self):
+        channels = _settings("gex_strike_expiry_lottery").channels
+        tickers = [
+            c.removeprefix("gex_strike_expiry:") for c in channels
+        ]
+        assert tickers == sorted(tickers)
+
+    def test_same_ticker_count_as_other_lottery_shorthands(self):
+        # All three lottery shorthands must expand to the SAME ticker
+        # set — that's the cross-channel alignment guarantee. If
+        # _LOTTERY_TICKERS changes, all three counts move together.
+        options = _settings("option_trades_lottery").channels
+        netflow = _settings("net_flow_lottery").channels
+        gex = _settings("gex_strike_expiry_lottery").channels
+        assert len(options) == len(netflow) == len(gex)
+
+    def test_combines_with_other_lottery_shorthands(self):
+        # All three shorthands at once = 3x per-ticker count, with each
+        # channel family represented.
+        only_options = _settings("option_trades_lottery").channels
+        combined = _settings(
+            "option_trades_lottery,net_flow_lottery,"
+            "gex_strike_expiry_lottery",
+        ).channels
+        assert len(combined) == 3 * len(only_options)
+        assert any(c.startswith("option_trades:") for c in combined)
+        assert any(c.startswith("net_flow:") for c in combined)
+        assert any(c.startswith("gex_strike_expiry:") for c in combined)
+
+    def test_explicit_per_ticker_dedupes_against_shorthand(self):
+        channels = _settings(
+            "gex_strike_expiry:TSLA,gex_strike_expiry_lottery",
+        ).channels
+        tsla_count = sum(
+            1 for c in channels if c == "gex_strike_expiry:TSLA"
+        )
+        assert tsla_count == 1

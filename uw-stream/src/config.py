@@ -56,12 +56,15 @@ _LOTTERY_TICKERS: frozenset[str] = frozenset(
 
 # Shorthand sentinels for the lottery universe — typing one of these
 # tokens in WS_CHANNELS expands to one per-ticker subscription per
-# token, saving 50+ channel names in env config. Same ticker set for
-# both shorthand spellings (option_trades_lottery, net_flow_lottery)
-# so the daemon can subscribe to per-tick option flow + per-tick net
-# premium aggregates on the same universe.
+# token, saving 50+ channel names in env config. Same ticker set across
+# all three so the daemon can subscribe to per-tick option flow,
+# per-tick net premium aggregates, AND per-strike Greek exposures on
+# the same universe — keeping the alert ↔ flow ↔ Greek triple aligned
+# for the Greek Heatmap section (see
+# docs/superpowers/specs/per-ticker-greek-heatmap-2026-05-15.md).
 _OPTION_TRADES_LOTTERY = "option_trades_lottery"
 _NET_FLOW_LOTTERY = "net_flow_lottery"
+_GEX_STRIKE_EXPIRY_LOTTERY = "gex_strike_expiry_lottery"
 
 
 class Settings(BaseSettings):
@@ -214,7 +217,8 @@ class Settings(BaseSettings):
                     "Expected an exact channel name (e.g. 'flow-alerts', "
                     "'off_lit_trades'), a prefixed channel (e.g. "
                     "'option_trades:TSLA'), or a shorthand "
-                    "('option_trades_lottery', 'net_flow_lottery'). "
+                    "('option_trades_lottery', 'net_flow_lottery', "
+                    "'gex_strike_expiry_lottery'). "
                     "See channel_registry.py for the full list."
                 )
         return v
@@ -238,12 +242,16 @@ class Settings(BaseSettings):
         ``flow_alerts`` (URL-path style) get mapped to the canonical
         WS channel name ``flow-alerts``.
 
-        Two shorthands expand inline to per-ticker channels:
+        Three shorthands expand inline to per-ticker channels:
         - ``option_trades_lottery`` → ``option_trades:<TICKER>`` per
           ticker in the Lottery Finder universe.
         - ``net_flow_lottery`` → ``net_flow:<TICKER>`` per ticker in
           the same universe (per-tick net call/put premium aggregates).
-        Same ticker set for both so option-tape + net-flow stay aligned.
+        - ``gex_strike_expiry_lottery`` → ``gex_strike_expiry:<TICKER>``
+          per ticker in the same universe (per-strike-per-expiry Greek
+          exposures — feeds the Greek Heatmap section).
+        Same ticker set across all three so option-tape + net-flow +
+        Greek exposures stay aligned for cross-channel analysis.
         """
         seen: set[str] = set()
         out: list[str] = []
@@ -253,6 +261,7 @@ class Settings(BaseSettings):
         shorthand_prefix: dict[str, str] = {
             _OPTION_TRADES_LOTTERY: "option_trades:",
             _NET_FLOW_LOTTERY: "net_flow:",
+            _GEX_STRIKE_EXPIRY_LOTTERY: "gex_strike_expiry:",
         }
         for raw in self.ws_channels.split(","):
             ch = raw.strip()

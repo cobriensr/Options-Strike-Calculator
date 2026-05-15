@@ -61,6 +61,7 @@ SHORTHAND_CHANNELS: frozenset[str] = frozenset(
     {
         "option_trades_lottery",
         "net_flow_lottery",
+        "gex_strike_expiry_lottery",
     },
 )
 
