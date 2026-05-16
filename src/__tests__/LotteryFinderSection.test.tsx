@@ -465,48 +465,15 @@ describe('LotteryFinderSection: filter interactions', () => {
     );
   });
 
-  it('flips the hide-range-bottom aria-pressed state and persists to localStorage', () => {
+  it('no longer renders the hide-range-bottom chip (retired 2026-05-16)', () => {
+    // The hide-range-bottom chip + its -3 score penalty were retired
+    // after the EDA rerun showed no edge at the bottom-10% cohort
+    // (the original finding was a dimensional-bug artifact).
+    // See ml/findings/eda-rerun-2026-05-16/.
     render(<LotteryFinderSection marketOpen={false} />);
-    const chip = screen.getByTestId('lottery-hide-range-bottom-chip');
-    expect(chip).toHaveAttribute('aria-pressed', 'false');
-    fireEvent.click(chip);
-    expect(chip).toHaveAttribute('aria-pressed', 'true');
-    expect(window.localStorage.getItem('lottery.hideRangeBottom')).toBe('1');
-  });
-
-  it('drops bottom-10% range fires when hide-range-bottom is on', () => {
-    const fires = [
-      makeFire({
-        id: 1,
-        optionChainId: 'AAPL-bottom',
-        rangePosAtTrigger: 0.05,
-      }),
-      makeFire({
-        id: 2,
-        optionChainId: 'AAPL-mid',
-        rangePosAtTrigger: 0.5,
-      }),
-      makeFire({
-        id: 3,
-        optionChainId: 'AAPL-null',
-        rangePosAtTrigger: null,
-      }),
-    ];
-    mockUseLotteryFinder.mockReturnValue({
-      ...defaultHookResult,
-      fires,
-      total: 3,
-    });
-
-    render(<LotteryFinderSection marketOpen={false} />);
-    fireEvent.click(screen.getByTestId('lottery-hide-range-bottom-chip'));
-
-    // Bottom-10% row hidden; mid + null pass through.
     expect(
-      screen.queryByTestId('lottery-row-AAPL-bottom'),
+      screen.queryByTestId('lottery-hide-range-bottom-chip'),
     ).not.toBeInTheDocument();
-    expect(screen.getByTestId('lottery-row-AAPL-mid')).toBeInTheDocument();
-    expect(screen.getByTestId('lottery-row-AAPL-null')).toBeInTheDocument();
   });
 
   it('filters to ITM-only fires when the ITM moneyness chip is selected', () => {

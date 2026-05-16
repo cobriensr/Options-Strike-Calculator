@@ -358,10 +358,15 @@ export default withCronInstrumentation(
           rec.triggerTimeCt,
           rec.spotAtFirst,
         );
+        // rangePosAtTrigger is written to the row for the display-only
+        // "NEW HIGH" badge (range_pos ≥ 1.0 = spot punched above
+        // session high during the spike). It is NOT passed to
+        // applyEmpiricalBonuses — the original -3 bottom-10% penalty
+        // was retired after the 2026-05-16 EDA rerun showed no edge
+        // at either tail. See ml/findings/eda-rerun-2026-05-16/.
         const score = applyEmpiricalBonuses({
           baseScore,
           triggerVolToOiWindow: rec.triggerVolToOiWindow,
-          rangePosAtTrigger,
         });
         // Phase 4 direction gate (spec:
         // docs/superpowers/specs/silent-boom-direction-gate-and-trail-ui-2026-05-14.md).

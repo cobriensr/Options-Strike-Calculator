@@ -10,12 +10,12 @@ current scoring/filtering surfaces.
 
 ## Findings Recap (ranked by ship priority — easiest/highest evidence first)
 
-| # | Finding | Lift | Implementation cost |
-|---|---------|------|---------------------|
-| 2 | LF: `trigger.vol_to_oi_window ≥ 0.5` → +1 score | 1.10–1.35× | LOW — 1 file |
-| 3 | SB: Spread-Confirmed badge when `multi_leg_share ∈ [0.10, 0.50]` | 2.08× (display-only at N=217) | LOW — 4 files |
-| 4 | LF: Macro Window badge 24–72h before CPI/FOMC/JOBS/PCE | 1.32×/1.56× | MEDIUM — 5 files + economic_events join |
-| 1 | LF: Range Kill — suppress fires when `range_pos < 0.10` | 0.07× lift (kill) | HIGH — migration + cron + backfill + UI |
+| #   | Finding                                                          | Lift                          | Implementation cost                     |
+| --- | ---------------------------------------------------------------- | ----------------------------- | --------------------------------------- |
+| 2   | LF: `trigger.vol_to_oi_window ≥ 0.5` → +1 score                  | 1.10–1.35×                    | LOW — 1 file                            |
+| 3   | SB: Spread-Confirmed badge when `multi_leg_share ∈ [0.10, 0.50]` | 2.08× (display-only at N=217) | LOW — 4 files                           |
+| 4   | LF: Macro Window badge 24–72h before CPI/FOMC/JOBS/PCE           | 1.32×/1.56×                   | MEDIUM — 5 files + economic_events join |
+| 1   | LF: Range Kill — suppress fires when `range_pos < 0.10`          | 0.07× lift (kill)             | HIGH — migration + cron + backfill + UI |
 
 ## Phases (each ≤5 files; reviewer subagent between every phase)
 
@@ -35,6 +35,7 @@ needed. New fires from the next cron run score with the new weight.
 Existing tests for `computeLotteryScore` get a new case.
 
 **Files:**
+
 - `api/_lib/lottery-score-weights.ts` — add the +1 weight
 - `api/_lib/__tests__/lottery-score-weights.test.ts` (if exists) or
   inline test — add a vol_to_oi_window case
@@ -48,6 +49,7 @@ Display-only — no score impact (sweet-spot N=217 is too small to score
 yet per the EDA caveat).
 
 **Files:**
+
 - `api/silent-boom-feed.ts` — add multi_leg_share to AlertRow + response
 - `src/components/SilentBoom/types.ts` — add `multiLegShare: number | null`
 - `src/components/SilentBoom/SilentBoomRow.tsx` — render badge
@@ -67,6 +69,7 @@ PCE). Confirm field names by reading the migration before writing the
 query.
 
 **Files:**
+
 - `api/lottery-finder.ts` — LATERAL join + map to response
 - `src/components/LotteryFinder/types.ts` — add `hoursToNextMacroEvent: number | null`
 - `src/components/LotteryFinder/LotteryFinderTickerGroup.tsx` — render badge inline (a small chip per fire row)
@@ -84,6 +87,7 @@ candles ≤ `trigger_time_ct`.
 **On UW failure:** column stays NULL — feature degrades gracefully.
 
 **Files:**
+
 - `api/_lib/db-migrations.ts` — migration (next available id)
 - `api/__tests__/db.test.ts` — update mock sequence
 - `api/cron/detect-lottery-fires.ts` — fetch UW candles + compute
@@ -103,6 +107,7 @@ lift). −3 pulls every bottom-10% fire below tier3 boundary, which
 effectively suppresses them from any Tier 2+ conviction filter.
 
 **Files:**
+
 - `api/lottery-finder.ts` — add to response
 - `src/components/LotteryFinder/types.ts` — add `rangePosAtTrigger: number | null`
 - `src/components/LotteryFinder/LotteryFinderSection.tsx` — filter chip
@@ -116,6 +121,7 @@ One-off script in `scripts/backfill-range-pos.mjs` that iterates over
 (ticker, date), computes, and writes. Idempotent. Rate-limit aware.
 
 **Files:**
+
 - `scripts/backfill-range-pos.mjs` — the script
 - `package.json` — add `npm run backfill:range-pos` task (optional)
 
@@ -129,22 +135,67 @@ One-off script in `scripts/backfill-range-pos.mjs` that iterates over
 - **Score recomputation for historical LF rows?** Phase A adds +1 to
   new fires only; historical scores stay frozen. Same for Phase E. If
   the user wants historical tier reshuffling, add a `recompute-lottery-
-  scores.mjs` script in a follow-up. Out of scope for the 4-finding
+scores.mjs` script in a follow-up. Out of scope for the 4-finding
   ship.
 
-## Constants
+## Constants (post 2026-05-16 EDA-rerun retune)
 
-| Constant | Value | Where |
-|---|---|---|
-| `LF_VOL_TO_OI_WINDOW_BONUS_THRESHOLD` | 0.5 | lottery-score-weights.ts |
-| `LF_VOL_TO_OI_WINDOW_BONUS_POINTS` | 1 | lottery-score-weights.ts |
-| `SB_MULTI_LEG_CONFIRMED_LO` | 0.10 | SilentBoomRow.tsx (local) |
-| `SB_MULTI_LEG_CONFIRMED_HI` | 0.50 | SilentBoomRow.tsx (local) |
-| `LF_MACRO_WINDOW_LO_HOURS` | 24 | LotteryFinderTickerGroup.tsx |
-| `LF_MACRO_WINDOW_HI_HOURS` | 72 | LotteryFinderTickerGroup.tsx |
-| `LF_RANGE_KILL_THRESHOLD` | 0.10 | shared between lottery-score-weights.ts + LotteryFinderSection.tsx |
-| `LF_RANGE_KILL_PENALTY` | -3 | lottery-score-weights.ts |
-| `LF_RANGE_TOP_THRESHOLD` | 0.90 | LotteryFinderSection.tsx |
+| Constant                              | Value | Where                        |
+| ------------------------------------- | ----- | ---------------------------- |
+| `LF_VOL_TO_OI_WINDOW_BONUS_THRESHOLD` | 0.5   | lottery-score-bonuses.ts     |
+| `LF_VOL_TO_OI_WINDOW_BONUS_POINTS`    | 1     | lottery-score-bonuses.ts     |
+| `SB_SPREAD_CONFIRMED_LO`              | 0.10  | SilentBoomRow.tsx (local)    |
+| `SB_SPREAD_CONFIRMED_HI`              | 0.50  | SilentBoomRow.tsx (local)    |
+| `LF_MACRO_WINDOW_LO_HOURS`            | 72    | LotteryFinderTickerGroup.tsx |
+| `LF_MACRO_WINDOW_HI_HOURS`            | 168   | LotteryFinderTickerGroup.tsx |
+| `LF_NEW_HIGH_THRESHOLD`               | 1.0   | LotteryFinderTickerGroup.tsx |
+
+`LF_RANGE_KILL_THRESHOLD`, `LF_RANGE_KILL_PENALTY`, and
+`LF_RANGE_TOP_THRESHOLD` were removed on 2026-05-16 as part of the
+post-rerun retire. See "EDA Rerun & retire" below.
+
+## EDA Rerun & retire (2026-05-16)
+
+After Phase F (backfill) populated 604K rows of `range_pos_at_trigger`,
+a re-validation in `ml/findings/eda-rerun-2026-05-16/` revealed:
+
+- The original Range Kill / TOP-RANGE finding was driven by a
+  **dimensional bug** in `ml/src/cross_section_eda.py:328-359`: it
+  computed `range_pos = (stock_spot − SPX_session_low) / (SPX_session_high − SPX_session_low)`,
+  which for any non-index ticker (AAPL, TSLA, NVDA, …) produces large
+  negative values that `pd.cut(bins=[0, 0.1, …, 1.0001])` silently
+  drops to NaN. Only ~126 dimensional-accident rows survived in the
+  original bottom-10% cohort; the 2.4% win50 / 0.07× lift was 3 winners
+  out of 126 — sampling noise on a degenerate filter.
+- On the corrected 604K column, **bottom-10%** has win50 = 34.4% / lift
+  0.97×; **top-10%** has win50 = 36.1% / lift 1.01×. No edge at either
+  tail of the equity-ticker session range. Even inside tier1+2
+  (N=106K), the spread is 0.96×–1.06×.
+- The **saturated-1.0 sub-bucket** (N=143 — fires whose spot punched
+  above session high mid-bar, clamped at the upper bound) shows win50
+  = 55.9% / win100 = 46.9% — a real ~2.4× win100 lift. Small N but
+  clean directional rationale (breakout-momentum tell).
+- The **Macro Window** finding flipped buckets: the original EDA
+  claimed 1.32×/1.56× lift on the 24–72h bucket; the rerun on full
+  data shows 24–72h is 0.92×/0.87× (slightly anti-edge) and **72-168h**
+  is the actual edge bucket at **1.19×/1.28× lift on N=57,533**.
+- F2 (vol/OI ≥ 0.5) and F3 (SB Spread-Confirmed 10-50%) reproduced
+  exactly — those used DB columns directly with no derivation step.
+
+### Code actions taken 2026-05-16
+
+| Decision                        | Before                           | After                                                          |
+| ------------------------------- | -------------------------------- | -------------------------------------------------------------- |
+| Range Kill -3 score penalty     | applied when `range_pos < 0.10`  | retired; `lottery-score-bonuses.ts` no longer reads range_pos  |
+| "hide range-bottom" filter chip | rendered in LotteryFinderSection | removed                                                        |
+| "TOP-RANGE" badge               | rendered when `range_pos ≥ 0.90` | retargeted to "🔺 NEW HIGH" when `range_pos ≥ 1.0` (saturated) |
+| Macro Window threshold          | 24-72h                           | 72-168h                                                        |
+
+The `range_pos_at_trigger` column + cron-time UW candle fetch stay in
+place — the data has measurable value at the saturated-1.0 sub-bucket
+and is cheap to keep collecting (~50 UW calls/day, well under the
+120/min ceiling). Re-validate the NEW HIGH badge's scoring effect at
+N≥300 before adding any score weight.
 
 ## Out of scope
 

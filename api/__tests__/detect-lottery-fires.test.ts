@@ -257,7 +257,7 @@ describe('detect-lottery-fires handler', () => {
     expect(rangePos).toBeNull();
   });
 
-  it('computes range_pos_at_trigger from UW stock candles and applies the bottom-10% score penalty', async () => {
+  it('computes range_pos_at_trigger from UW stock candles for display use', async () => {
     // SNDK fixture's spot_at_first is 1170 (per the tick fixture).
     // Build a session where high=1200, low=1150 BEFORE trigger time —
     // range_pos = (1170 - 1150) / (1200 - 1150) = 0.4 (mid-range).
@@ -304,11 +304,17 @@ describe('detect-lottery-fires handler', () => {
     expect(score).toBe(25);
   });
 
-  it('applies the -3 range_pos score penalty when the fire is in the bottom-10% of the session range', async () => {
-    // Session range: low=1100, high=1300; spot=1170 → range_pos =
-    // (1170-1100)/(1300-1100) = 0.35... need spot at bottom-10%.
-    // Pick high=1500, low=1170: range_pos = (1170-1170)/(1500-1170) = 0.
-    // Below the 0.10 threshold → -3 penalty.
+  it('does NOT penalize the score even when range_pos lands in the bottom-10% (Range Kill retired 2026-05-16)', async () => {
+    // Regression for the 2026-05-16 EDA-rerun retirement: the original
+    // -3 bottom-10% penalty was driven by a dimensionally-buggy EDA
+    // finding (see ml/findings/eda-rerun-2026-05-16/). The corrected
+    // 604K-row column shows no edge at the bottom tail, so the score
+    // bonus layer no longer reads range_pos. range_pos still gets
+    // written for the display-only "NEW HIGH" badge.
+    //
+    // Spot=1170, candle high=1500, low=1170 → range_pos = 0 (bottom-10%).
+    // Pre-retirement this would have scored 22 (base 25 − 3). Post-
+    // retirement: 25 (no penalty).
     const stockCandles = [
       {
         start_time: '2026-05-01T13:00:00Z',
@@ -337,8 +343,8 @@ describe('detect-lottery-fires handler', () => {
     const rangePos = insertCall.at(-1);
     const score = insertCall.at(-3);
     expect(rangePos).toBe(0);
-    // Base 25 - 3 penalty = 22.
-    expect(score).toBe(22);
+    // No penalty applied — Range Kill retired. Base 25 unchanged.
+    expect(score).toBe(25);
   });
 
   it('binds mkt_tide_otm_diff from market_tide_otm ncp/npp (regression for vestigial otm_ncp bug, spec: silent-boom-otm-tide-and-trail-2026-05-13.md)', async () => {
