@@ -86,6 +86,14 @@ export interface ChainBucket {
   vwap: number;
   /** Last trade price in the bucket (fallback when vwap is null). */
   lastPrice: number;
+  /**
+   * Volume-weighted underlying spot during the bucket. Optional so
+   * older callers / parquet shapes that lack the underlying_price
+   * column still compile; null is passed through to the fire's
+   * `underlyingPriceAtSpike` for the OTM filter to gate on
+   * IS NOT NULL.
+   */
+  underlyingVwap?: number | null;
 }
 
 /** One silent-boom alert emitted by the detector. */
@@ -110,6 +118,9 @@ export interface SilentBoomFire {
    *  (per UW trade_code). Always < multiLegShareMax — buckets at or
    *  above the threshold were rejected before this fire was emitted. */
   multiLegShare: number;
+  /** Volume-weighted underlying spot during the spike bucket. NULL
+   *  on buckets where the source didn't carry underlying_price. */
+  underlyingPriceAtSpike: number | null;
 }
 
 // ============================================================
@@ -201,6 +212,10 @@ export function detectSilentBoomFires(
       entryPrice: entry,
       openInterest: cur.maxOi,
       multiLegShare,
+      underlyingPriceAtSpike:
+        cur.underlyingVwap != null && Number.isFinite(cur.underlyingVwap)
+          ? cur.underlyingVwap
+          : null,
     });
     lastFireMs = tsMs;
   }

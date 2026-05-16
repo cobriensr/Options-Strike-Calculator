@@ -67,6 +67,9 @@ interface BucketRow {
   notional: DbNumeric;
   bucket_max_oi: number | null;
   last_price: DbNumeric;
+  /** SUM(underlying_price * size) — paired with `size` to compute the
+   *  volume-weighted underlying spot for the OTM filter (migration #152). */
+  underlying_notional: DbNumeric | null;
 }
 
 /** OPRA-standard multi-leg sale condition codes — drop buckets whose
@@ -156,7 +159,8 @@ export default withCronInstrumentation(
         ), 0) AS multi_leg_size,
         SUM(price * size) AS notional,
         MAX(open_interest) AS bucket_max_oi,
-        (ARRAY_AGG(price ORDER BY executed_at DESC))[1] AS last_price
+        (ARRAY_AGG(price ORDER BY executed_at DESC))[1] AS last_price,
+        SUM(underlying_price * size) FILTER (WHERE underlying_price IS NOT NULL) AS underlying_notional
       FROM ws_option_trades
       WHERE executed_at >= NOW() - (${SCAN_WINDOW_MIN}::int * INTERVAL '1 minute')
         AND canceled = FALSE
@@ -201,6 +205,8 @@ export default withCronInstrumentation(
       }
       const size = Number(r.size);
       const notional = Number(r.notional);
+      const underlyingNotional =
+        r.underlying_notional != null ? Number(r.underlying_notional) : null;
       g.buckets.push({
         bucket: new Date(r.bucket_ts),
         size,
@@ -210,6 +216,10 @@ export default withCronInstrumentation(
         maxOi: 0, // patched below once chain-level max is known
         vwap: size > 0 ? notional / size : 0,
         lastPrice: Number(r.last_price),
+        underlyingVwap:
+          underlyingNotional != null && size > 0
+            ? underlyingNotional / size
+            : null,
       });
       if (r.bucket_max_oi != null && r.bucket_max_oi > g.oi) {
         g.oi = r.bucket_max_oi;
@@ -415,7 +425,7 @@ export default withCronInstrumentation(
             ask_pct, vol_oi, entry_price, open_interest,
             score, score_tier, direction_gated,
             mkt_tide_diff, mkt_tide_otm_diff, zero_dte_diff, spx_spot_gamma_oi,
-            multi_leg_share
+            multi_leg_share, underlying_price_at_spike
           ) VALUES (
             ${ctx.today}::date, ${f.bucketTs.toISOString()},
             ${g.optionChain}, ${g.ticker},
@@ -424,7 +434,7 @@ export default withCronInstrumentation(
             ${f.askPct}, ${f.volOi}, ${f.entryPrice}, ${f.openInterest},
             ${score}, ${effectiveTier}, ${directionGated},
             ${mktTideDiff}, ${mktTideOtmDiff}, ${zeroDteDiff}, ${spxSpotGammaOi},
-            ${f.multiLegShare}
+            ${f.multiLegShare}, ${f.underlyingPriceAtSpike}
           )
           ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING
           RETURNING id

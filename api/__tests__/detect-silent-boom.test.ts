@@ -50,6 +50,13 @@ interface BucketOverrides {
   vwap?: number;
   lastPrice?: number;
   bucketMaxOi?: number | null;
+  /**
+   * Volume-weighted underlying spot for the bucket. Drives the
+   * underlying_price_at_spike INSERT bind (migration #152). Default
+   * null mirrors a bucket where no underlying_price column was
+   * available — the detector passes null through.
+   */
+  underlyingPrice?: number | null;
 }
 
 function bucketRow(
@@ -63,6 +70,8 @@ function bucketRow(
 ) {
   const size = overrides.size ?? 100;
   const vwap = overrides.vwap ?? 0.5;
+  const underlyingPrice =
+    overrides.underlyingPrice === undefined ? null : overrides.underlyingPrice;
   return {
     ticker,
     option_chain: optionChain,
@@ -78,6 +87,8 @@ function bucketRow(
     bucket_max_oi:
       overrides.bucketMaxOi === undefined ? 5000 : overrides.bucketMaxOi,
     last_price: overrides.lastPrice ?? vwap,
+    underlying_notional:
+      underlyingPrice != null ? underlyingPrice * size : null,
   };
 }
 
@@ -323,19 +334,23 @@ describe('detect-silent-boom handler', () => {
     expect(res._status).toBe(200);
     expect(mockSql).toHaveBeenCalledTimes(7);
     // INSERT is the last call. Bound order ends with mkt_tide_diff,
-    // mkt_tide_otm_diff, zero_dte_diff, spx_spot_gamma_oi, multi_leg_share.
+    // mkt_tide_otm_diff, zero_dte_diff, spx_spot_gamma_oi,
+    // multi_leg_share, underlying_price_at_spike (last; #152).
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    const multiLegShare = insertCall.at(-1);
-    const spxGamma = insertCall.at(-2);
-    const zeroDteDiff = insertCall.at(-3);
-    const tideOtmDiff = insertCall.at(-4);
-    const tideDiff = insertCall.at(-5);
+    const underlyingAtSpike = insertCall.at(-1);
+    const multiLegShare = insertCall.at(-2);
+    const spxGamma = insertCall.at(-3);
+    const zeroDteDiff = insertCall.at(-4);
+    const tideOtmDiff = insertCall.at(-5);
+    const tideDiff = insertCall.at(-6);
     expect(tideDiff).toBe(6000);
     expect(tideOtmDiff).toBe(3000);
     expect(zeroDteDiff).toBe(300);
     expect(spxGamma).toBe(12345);
     // Single-leg-only stream: multi_leg_size=0 → share=0.
     expect(multiLegShare).toBe(0);
+    // Fixture buckets don't set underlyingPrice → null at the boundary.
+    expect(underlyingAtSpike).toBeNull();
   });
 
   it('binds null tide diff when the latest tick is older than 30 minutes', async () => {
@@ -367,14 +382,16 @@ describe('detect-silent-boom handler', () => {
     await handler(req, res);
 
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    // multi_leg_share trails the four macro fields. Single-leg stream
-    // → multi_leg_share = 0; all four macro fields (tide, tide_otm,
-    // zero_dte, spx_gamma) should be null because every tick was stale.
-    expect(insertCall.at(-1)).toBe(0);
-    expect(insertCall.at(-2)).toBeNull();
-    expect(insertCall.at(-3)).toBeNull();
-    expect(insertCall.at(-4)).toBeNull();
-    expect(insertCall.at(-5)).toBeNull();
+    // underlying_price_at_spike trails multi_leg_share (#152). Single-
+    // leg stream → multi_leg_share = 0; all four macro fields (tide,
+    // tide_otm, zero_dte, spx_gamma) are null because every tick was
+    // stale. underlyingPrice not set in fixture → null at the boundary.
+    expect(insertCall.at(-1)).toBeNull(); // underlying_price_at_spike
+    expect(insertCall.at(-2)).toBe(0); // multi_leg_share
+    expect(insertCall.at(-3)).toBeNull(); // spx_spot_gamma_oi
+    expect(insertCall.at(-4)).toBeNull(); // zero_dte_diff
+    expect(insertCall.at(-5)).toBeNull(); // mkt_tide_otm_diff
+    expect(insertCall.at(-6)).toBeNull(); // mkt_tide_diff
   });
 
   it('flags direction_gated=true and demotes score_tier to tier3 on a counter-trend put fire (mkt_tide_diff > +100M)', async () => {
@@ -417,15 +434,17 @@ describe('detect-silent-boom handler', () => {
     });
     // Bind order ends with score, score_tier, direction_gated,
     // mkt_tide_diff, mkt_tide_otm_diff, zero_dte_diff,
-    // spx_spot_gamma_oi, multi_leg_share. So:
-    //   at(-1) = multi_leg_share
-    //   at(-5) = mkt_tide_diff
-    //   at(-6) = direction_gated
-    //   at(-7) = score_tier (effective — demoted to 'tier3')
+    // spx_spot_gamma_oi, multi_leg_share, underlying_price_at_spike.
+    // So (after #152):
+    //   at(-1) = underlying_price_at_spike
+    //   at(-2) = multi_leg_share
+    //   at(-6) = mkt_tide_diff
+    //   at(-7) = direction_gated
+    //   at(-8) = score_tier (effective — demoted to 'tier3')
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    expect(insertCall.at(-5)).toBe(150_000_000);
-    expect(insertCall.at(-6)).toBe(true);
-    expect(insertCall.at(-7)).toBe('tier3');
+    expect(insertCall.at(-6)).toBe(150_000_000);
+    expect(insertCall.at(-7)).toBe(true);
+    expect(insertCall.at(-8)).toBe('tier3');
   });
 
   it('still fires when prior-fire is older than the 60-min cooldown', async () => {

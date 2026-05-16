@@ -4391,4 +4391,13 @@ export const MIGRATIONS: Migration[] = [
             ADD COLUMN IF NOT EXISTS direction_gated BOOLEAN NOT NULL DEFAULT FALSE`,
     ],
   },
+  {
+    id: 152,
+    description:
+      'Add underlying_price_at_spike NUMERIC column to silent_boom_alerts. Snapshot of the volume-weighted underlying spot during the spike bucket (computed from ws_option_trades.underlying_price weighted by trade size). Enables the Aggressive Premium filter chip (docs/superpowers/specs/aggressive-premium-chip-2026-05-15.md) to compute OTM-ness per fire (calls: strike > spot; puts: strike < spot) — closing the gap with the trader-mirrored UW filter that requires "OTM only". Populated forward by the detect-silent-boom cron (added to the bucket aggregation SQL); legacy rows backfilled by scripts/backfill_silent_boom_underlying_price.py from the Eod-Full-Tape archive where the spike-bucket prints are still on disk. Nullable because pre-migration rows have no snapshot until backfill lands; filter queries gate on IS NOT NULL.',
+    statements: (sql) => [
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS underlying_price_at_spike NUMERIC`,
+    ],
+  },
 ];
