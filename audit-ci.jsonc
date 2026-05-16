@@ -1,0 +1,46 @@
+// Suppression list for `npm run audit` (audit-ci wraps `npm audit`).
+//
+// Every entry below is a current finding that has been reviewed and accepted
+// in writing. New advisories that appear later will surface as a fresh failure
+// instead of being silently swallowed — that is the whole point of using
+// audit-ci over `npm audit` (which has no native suppression mechanism).
+//
+// When upgrading a flagged dependency, REMOVE its entry from `allowlist` so
+// audit-ci confirms the fix instead of permanently masking it.
+{
+  // Fail the command on anything moderate or higher.
+  "moderate": true,
+
+  "allowlist": [
+    // ── xlsx (SheetJS) ────────────────────────────────────────────────────
+    // Used WRITE-ONLY in this repo to generate downloadable .xlsx exports
+    // (src/utils/export/exportPnLComparison.ts, exportBWBComparison.ts).
+    // Both CVEs require *parsing* attacker-controlled .xlsx input via
+    // XLSX.read / XLSX.readFile, code paths we never call. The ToS
+    // paperMoney CSV upload uses a hand-rolled parser at
+    // api/_lib/csv-parser/parse.ts and does not touch xlsx.
+    // No npm fix exists; SheetJS publishes patches at cdn.sheetjs.com only.
+    "GHSA-4r6h-8v6p-xvw6", // Prototype Pollution in SheetJS
+    "GHSA-5pgg-2g8v-p4x9", // SheetJS ReDoS
+
+    // ── @vercel/node transitive deps ──────────────────────────────────────
+    // @vercel/node is a devDependency used by `vercel dev` / `vercel build`
+    // locally. Vercel's production runtime ships its own bundled toolchain,
+    // so none of these CVEs are reachable from deployed code.
+    // `npm audit fix --force` would downgrade @vercel/node 5.x → 3.0.1,
+    // which is the wrong direction (loses Fluid Compute / Node 24 support).
+
+    "GHSA-2g4f-4pwh-qvx6", // ajv ReDoS via $data — build-time JSON schema only
+    "GHSA-3ppc-4f35-3m26", // minimatch ReDoS — build-time glob only
+    "GHSA-7r86-cg39-jmmj", // minimatch matchOne() backtracking — build-time
+    "GHSA-23c5-xmqv-rm74", // minimatch nested *() extglobs — build-time
+    "GHSA-9wv6-86v2-598j", // path-to-regexp backtracking — build-time routing
+    "GHSA-v3rj-xjv7-4jmq", // smol-toml DoS via commented lines — build-time
+    "GHSA-c76h-2ccp-4975", // undici insufficient randomness — CLI HTTP only
+    "GHSA-g9mf-h72j-4rw9", // undici decompression chain — CLI HTTP only
+    "GHSA-2mjp-6q6p-2qxm", // undici request smuggling — CLI HTTP only
+    "GHSA-vrm6-8vpv-qv8q", // undici WS permessage-deflate — CLI HTTP only
+    "GHSA-v9p9-hfj2-hcw8", // undici WS server_max_window_bits — CLI HTTP only
+    "GHSA-4992-7rv2-5pvq"  // undici CRLF injection via upgrade — CLI HTTP only
+  ]
+}
