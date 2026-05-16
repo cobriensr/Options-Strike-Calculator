@@ -16,7 +16,13 @@ vi.mock('../_lib/logger.js', () => ({
   },
 }));
 
-import { buildFlowContextBlock } from '../_lib/periscope-flow-context.js';
+import {
+  buildFlowContextBlock,
+  INTRADAY_NO_ALERTS_TEXT,
+  PRE_TRADE_NO_ALERTS_TEXT,
+  DEBRIEF_NO_ALERTS_TEXT,
+  noAlertsSentinelForMode,
+} from '../_lib/periscope-flow-context.js';
 
 beforeEach(() => {
   mockSql.mockReset();
@@ -44,14 +50,20 @@ const baseDebriefMomentUTC = new Date('2026-05-05T21:00:00Z'); // 16:00 CT debri
 // ── Empty result ──────────────────────────────────────────────────
 
 describe('buildFlowContextBlock — intraday mode (empty)', () => {
-  it('returns null when no recent alerts match', async () => {
+  it('returns the NO_ALERTS sentinel when no recent alerts match', async () => {
     mockSql.mockResolvedValueOnce([]);
     const out = await buildFlowContextBlock({
       mode: 'intraday',
       spot: 5800,
       asOf: baseIntradayMomentUTC,
     });
-    expect(out).toBeNull();
+    expect(out).toBe(INTRADAY_NO_ALERTS_TEXT);
+    // The sentinel must carry the explicit marker + anti-fabrication
+    // instruction — these are the load-bearing strings the prompt
+    // relies on for INSUFFICIENT_DATA grounding.
+    expect(out).toContain('NO_ALERTS_IN_WINDOW');
+    expect(out).toContain('INSUFFICIENT_DATA');
+    expect(out).toContain('Do not cite specific timestamps');
   });
 });
 
@@ -115,7 +127,8 @@ describe('buildFlowContextBlock — intraday mode (rows present)', () => {
       spot: 5800,
       asOf: preOpen,
     });
-    expect(out).toBeNull();
+    expect(out).toBe(PRE_TRADE_NO_ALERTS_TEXT);
+    expect(out).toContain('NO_ALERTS_IN_WINDOW');
 
     // The recorded SQL bind values must reflect the wider strike band
     // (±20 pts) and 30-minute window. The query binds windowStart,
@@ -132,14 +145,16 @@ describe('buildFlowContextBlock — intraday mode (rows present)', () => {
 // ── Debrief mode ──────────────────────────────────────────────────
 
 describe('buildFlowContextBlock — debrief mode', () => {
-  it('returns null when no buckets', async () => {
+  it('returns the NO_ALERTS sentinel when no buckets', async () => {
     mockSql.mockResolvedValueOnce([]);
     const out = await buildFlowContextBlock({
       mode: 'debrief',
       spot: 5800,
       asOf: baseDebriefMomentUTC,
     });
-    expect(out).toBeNull();
+    expect(out).toBe(DEBRIEF_NO_ALERTS_TEXT);
+    expect(out).toContain('NO_ALERTS_IN_WINDOW');
+    expect(out).toContain('INSUFFICIENT_DATA');
   });
 
   it('formats hourly buckets table', async () => {
@@ -232,13 +247,32 @@ describe('buildFlowContextBlock — window + proximity binds', () => {
 // ── Best-effort failure ──────────────────────────────────────────
 
 describe('buildFlowContextBlock — best-effort error handling', () => {
-  it('returns null on DB error rather than throwing', async () => {
+  it('returns the NO_ALERTS sentinel on DB error rather than throwing', async () => {
+    // fetchRecentFlowAlerts catches DB errors internally and returns
+    // []; the function then takes the empty-rows path and emits the
+    // intraday sentinel. Net result: the model sees explicit
+    // INSUFFICIENT_DATA grounding whether the window was genuinely
+    // empty or the DB hiccuped.
     mockSql.mockRejectedValueOnce(new Error('connection reset'));
     const out = await buildFlowContextBlock({
       mode: 'intraday',
       spot: 5800,
       asOf: baseIntradayMomentUTC,
     });
-    expect(out).toBeNull();
+    expect(out).toBe(INTRADAY_NO_ALERTS_TEXT);
+  });
+});
+
+// ── noAlertsSentinelForMode helper ────────────────────────────────
+
+describe('noAlertsSentinelForMode', () => {
+  it('returns the intraday sentinel for intraday mode', () => {
+    expect(noAlertsSentinelForMode('intraday')).toBe(INTRADAY_NO_ALERTS_TEXT);
+  });
+  it('returns the pre-trade sentinel for pre_trade mode', () => {
+    expect(noAlertsSentinelForMode('pre_trade')).toBe(PRE_TRADE_NO_ALERTS_TEXT);
+  });
+  it('returns the debrief sentinel for debrief mode', () => {
+    expect(noAlertsSentinelForMode('debrief')).toBe(DEBRIEF_NO_ALERTS_TEXT);
   });
 });

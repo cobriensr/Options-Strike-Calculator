@@ -72,6 +72,7 @@ vi.mock('../_lib/periscope-lessons.js', () => ({
 
 vi.mock('../_lib/periscope-flow-context.js', () => ({
   buildFlowContextBlock: vi.fn(),
+  noAlertsSentinelForMode: vi.fn((mode: string) => `__sentinel_${mode}__`),
 }));
 
 vi.mock('../_lib/embeddings.js', () => ({
@@ -352,6 +353,20 @@ describe('runPeriscopeAutoPlaybook', () => {
     expect(out.status).toBe('complete');
     expect(Sentry.captureException).toHaveBeenCalledTimes(5);
     // Each failed collaborator captured exactly once.
+  });
+
+  it('substitutes NO_ALERTS sentinel into the prompt when buildFlowContextBlock throws', async () => {
+    // Anti-hallucination guard (see periscope-flow-hallucination-fix-2026-05-16):
+    // when the flow-context fetch throws, the runner must coalesce the
+    // error into the mode-specific NO_ALERTS sentinel rather than null —
+    // otherwise the model receives no flow context at all and fabricates
+    // citations to satisfy the prompt's REQUIRED FLOW-STRUCTURE check.
+    vi.mocked(buildFlowContextBlock).mockRejectedValue(new Error('flow-fail'));
+
+    await runPeriscopeAutoPlaybook(baseInput); // baseInput.mode === 'intraday'
+
+    const arg = vi.mocked(buildUserContent).mock.calls[0]?.[0];
+    expect(arg?.flowBlock).toBe('__sentinel_intraday__');
   });
 
   it('pre_trade mode skips parent + parent chain fetches', async () => {

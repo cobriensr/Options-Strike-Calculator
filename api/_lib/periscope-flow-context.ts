@@ -43,6 +43,63 @@ const INTRADAY_WINDOW = {
 
 const TICKER = 'SPXW' as const;
 
+// ── No-alerts sentinels (per mode) ──────────────────────────
+//
+// When the lookback window contains zero alerts we MUST still inject
+// SOMETHING into the prompt — otherwise the model is left with the
+// "REQUIRED FLOW-STRUCTURE CHECK" prompt instruction and no data, and
+// will fabricate citations to satisfy the requirement (root cause
+// audited 2026-05-16; see periscope-flow-hallucination-fix-2026-05-16
+// spec). The sentinel text carries the explicit NO_ALERTS_IN_WINDOW
+// marker and the anti-fabrication instruction, so the model can
+// declare FLOW-STRUCTURE: INSUFFICIENT_DATA on solid ground.
+
+const NO_ALERTS_FOOTER =
+  'No SPXW informed-flow alerts in the lookback window. ' +
+  'Do not cite specific timestamps, strikes, or alert rules. ' +
+  'The valid FLOW-STRUCTURE state is INSUFFICIENT_DATA.';
+
+export const INTRADAY_NO_ALERTS_TEXT = [
+  `Fresh SPXW flow alerts placed in the last ${INTRADAY_WINDOW.windowMinutes} min within ±${INTRADAY_WINDOW.spotProximityPts} pts of spot:`,
+  'NO_ALERTS_IN_WINDOW',
+  '',
+  NO_ALERTS_FOOTER,
+].join('\n');
+
+export const PRE_TRADE_NO_ALERTS_TEXT = [
+  `Pre-open SPXW flow alerts placed in the last ${PRE_TRADE_WINDOW.windowMinutes} min within ±${PRE_TRADE_WINDOW.spotProximityPts} pts of spot:`,
+  'NO_ALERTS_IN_WINDOW',
+  '',
+  NO_ALERTS_FOOTER,
+].join('\n');
+
+export const DEBRIEF_NO_ALERTS_TEXT = [
+  'SPXW flow distribution across the session (hourly CT buckets):',
+  'NO_ALERTS_IN_WINDOW',
+  '',
+  NO_ALERTS_FOOTER,
+].join('\n');
+
+/**
+ * Resolve the no-alerts sentinel for a given mode. Used by the runner
+ * to coalesce error paths (where buildFlowContextBlock threw) into the
+ * same model-facing text as the empty-rows path.
+ */
+export function noAlertsSentinelForMode(mode: PeriscopeMode): string {
+  switch (mode) {
+    case 'intraday':
+      return INTRADAY_NO_ALERTS_TEXT;
+    case 'pre_trade':
+      return PRE_TRADE_NO_ALERTS_TEXT;
+    case 'debrief':
+      return DEBRIEF_NO_ALERTS_TEXT;
+    default: {
+      const _exhaustive: never = mode;
+      return _exhaustive;
+    }
+  }
+}
+
 // ── Public API ──────────────────────────────────────────────
 
 interface BuildFlowContextArgs {
@@ -53,12 +110,19 @@ interface BuildFlowContextArgs {
 
 /**
  * Build a labelled flow-alert text block for injection into Pass 2
- * user content. Returns `null` when no alerts are available (caller
- * should skip appending in that case).
+ * user content. Always returns a non-empty string: when the lookback
+ * window contains zero alerts, returns a mode-specific NO_ALERTS
+ * sentinel rather than `null` — so the model never sees a silent
+ * absence and has explicit ground to declare FLOW-STRUCTURE
+ * INSUFFICIENT_DATA (see periscope-flow-hallucination-fix-2026-05-16
+ * spec for the audited root cause). Throws on internal error; callers
+ * are responsible for wrapping in try/catch and substituting
+ * `noAlertsSentinelForMode(mode)` so the model-facing content stays
+ * consistent even when the DB hiccups.
  */
 export async function buildFlowContextBlock(
   args: BuildFlowContextArgs,
-): Promise<string | null> {
+): Promise<string> {
   const { mode, spot, asOf } = args;
 
   switch (mode) {
@@ -72,7 +136,7 @@ export async function buildFlowContextBlock(
         asOf,
         topN: window.topN,
       });
-      if (rows.length === 0) return null;
+      if (rows.length === 0) return PRE_TRADE_NO_ALERTS_TEXT;
       return formatRecentBlock({
         rows,
         windowMinutes: window.windowMinutes,
@@ -90,7 +154,7 @@ export async function buildFlowContextBlock(
         asOf,
         topN: window.topN,
       });
-      if (rows.length === 0) return null;
+      if (rows.length === 0) return INTRADAY_NO_ALERTS_TEXT;
       return formatRecentBlock({
         rows,
         windowMinutes: window.windowMinutes,
@@ -104,7 +168,7 @@ export async function buildFlowContextBlock(
         ticker: TICKER,
         date,
       });
-      if (buckets.length === 0) return null;
+      if (buckets.length === 0) return DEBRIEF_NO_ALERTS_TEXT;
       return formatDebriefBlock(buckets, date);
     }
     default: {

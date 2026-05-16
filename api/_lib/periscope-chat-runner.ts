@@ -44,7 +44,10 @@ import {
 import { buildCalibrationBlock } from './periscope-calibration.js';
 import { buildRetrievalBlock } from './periscope-retrieval.js';
 import { fetchActiveLessons, formatLessonsBlock } from './periscope-lessons.js';
-import { buildFlowContextBlock } from './periscope-flow-context.js';
+import {
+  buildFlowContextBlock,
+  noAlertsSentinelForMode,
+} from './periscope-flow-context.js';
 import { generateEmbedding } from './embeddings.js';
 import {
   buildPeriscopeSummary,
@@ -392,9 +395,9 @@ export async function runPeriscopeAutoPlaybook(
         Sentry.captureException(err);
         logger.warn(
           { err, mode },
-          'auto-playbook: flow-context fetch failed — continuing without',
+          'auto-playbook: flow-context fetch failed — substituting NO_ALERTS sentinel so model declares INSUFFICIENT_DATA rather than fabricating',
         );
-        return null;
+        return noAlertsSentinelForMode(mode);
       }),
     ]);
 
