@@ -40,7 +40,15 @@ import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_values
 
-PARQUET_DIR = Path.home() / 'Desktop' / 'Bot-Eod-parquet'
+DEFAULT_PARQUET_DIR = Path.home() / 'Desktop' / 'Bot-Eod-parquet'
+PARQUET_FORMATS = {
+    'trades': '{date}-trades.parquet',
+    'fulltape': '{date}-fulltape.parquet',
+}
+# Module-level mutable so functions can read without threading args
+# through every call. Populated in main() from CLI args.
+PARQUET_DIR = DEFAULT_PARQUET_DIR
+PARQUET_FILE_PATTERN = PARQUET_FORMATS['trades']
 ENV_FILE = Path(__file__).resolve().parent.parent / '.env.local'
 
 
@@ -309,10 +317,11 @@ def load_env() -> None:
 
 
 def detect_latest_date() -> str:
-    files = sorted(PARQUET_DIR.glob('*-trades.parquet'))
+    suffix = PARQUET_FILE_PATTERN.format(date='')
+    files = sorted(PARQUET_DIR.glob(f'*{suffix}'))
     if not files:
-        sys.exit(f'No *-trades.parquet files in {PARQUET_DIR}')
-    m = re.match(r'(\d{4}-\d{2}-\d{2})-trades\.parquet', files[-1].name)
+        sys.exit(f'No *{suffix} files in {PARQUET_DIR}')
+    m = re.match(rf'(\d{{4}}-\d{{2}}-\d{{2}}){re.escape(suffix)}', files[-1].name)
     if not m:
         sys.exit(f'Cannot parse date from {files[-1].name}')
     return m.group(1)
@@ -349,7 +358,7 @@ def load_parquet_chain_index(
     """Load the day's parquet, filter to fired chains, return a dict of
     chain_id → sorted DataFrame. Includes nbbo_bid/nbbo_ask columns when
     include_nbbo=True (used by the flow-inversion second pass)."""
-    path = PARQUET_DIR / f'{target_date}-trades.parquet'
+    path = PARQUET_DIR / PARQUET_FILE_PATTERN.format(date=target_date)
     if not path.exists():
         sys.exit(f'Parquet not found: {path}')
 
@@ -365,6 +374,13 @@ def load_parquet_chain_index(
         columns=cols,
         filters=[('option_chain_id', 'in', list(fired_chains))],
     )
+    # Older fulltape parquets (Jan-Apr 2026) store numeric columns as
+    # decimal128 instead of float64; pandas returns those as Python
+    # Decimal objects that don't interop with floats in the exit-policy
+    # math. Coerce all numerics to float64 at the boundary.
+    for col in ('price', 'nbbo_bid', 'nbbo_ask', 'size'):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').astype('float64')
     if df['canceled'].dtype == bool:
         df = df[~df['canceled']]
     else:
@@ -627,9 +643,24 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         '--date',
-        help='YYYY-MM-DD; defaults to the latest *-trades.parquet on disk',
+        help='YYYY-MM-DD; defaults to the latest matching parquet on disk',
+    )
+    parser.add_argument(
+        '--parquet-dir',
+        default=str(DEFAULT_PARQUET_DIR),
+        help=f'Default: {DEFAULT_PARQUET_DIR}',
+    )
+    parser.add_argument(
+        '--parquet-format',
+        choices=sorted(PARQUET_FORMATS.keys()),
+        default='trades',
+        help='Parquet schema and filename suffix.',
     )
     args = parser.parse_args()
+
+    global PARQUET_DIR, PARQUET_FILE_PATTERN
+    PARQUET_DIR = Path(args.parquet_dir).expanduser()
+    PARQUET_FILE_PATTERN = PARQUET_FORMATS[args.parquet_format]
 
     load_env()
     target_date = args.date or detect_latest_date()
