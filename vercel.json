@@ -62,6 +62,10 @@
       "schedule": "0 12 * * 1-5"
     },
     {
+      "path": "/api/cron/cleanup-ws-option-trades",
+      "schedule": "5 12 * * 1-5"
+    },
+    {
       "path": "/api/cron/monitor-vega-spike",
       "schedule": "* 13-21 * * 1-5"
     },
