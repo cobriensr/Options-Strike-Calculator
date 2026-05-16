@@ -120,3 +120,68 @@ jobs:
             git pull --rebase --autostash &&
             git push
           )
+
+  takeit-retrain:
+    # Spec: docs/superpowers/specs/takeit-phase3-production-scoring-2026-05-16.md
+    # No untrusted input (github.event.*) is used in any `run:` block here —
+    # only repository checkout content, computed file paths, and secrets via
+    # `env:`. The hook on GH Actions workflow edits is informational.
+    name: Retrain take-it XGBoost classifiers + upload bundle to Blob
+    needs: pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+      PYTHON: python
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+          cache-dependency-path: ml/requirements.txt
+
+      - name: Install Python dependencies
+        run: pip install -r ml/requirements.txt
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Install Node dependencies for Blob upload
+        run: npm install @vercel/blob
+
+      - name: Build training set from production DB
+        run: PYTHONPATH=. python -m ml.src.takeit.build_training_set
+
+      - name: Train + calibrate + emit JSON bundles
+        run: PYTHONPATH=. python -m ml.src.takeit.train
+
+      - name: Brier drift gate (BRIER_ALERT_THRESHOLD=0.27)
+        run: |
+          python - <<'PY'
+          import json
+          from datetime import date
+          for at in ('lottery', 'silentboom'):
+              path = f'ml/findings/takeit-v1-{date.today().isoformat()}/{at}_metrics.json'
+              m = json.load(open(path))
+              brier = m['oof_brier']
+              ok = m['brier_ok']
+              print(f'[brier-gate] {at}: oof_brier={brier:.4f} ok={ok}')
+              if not ok:
+                  print(f'::warning::{at} oof_brier {brier:.4f} > 0.27 — model calibration may be drifting')
+          PY
+
+      - name: Upload bundles to Vercel Blob
+        run: node scripts/upload_takeit_bundles.mjs
+
+      - name: Summary
+        run: |
+          echo "::notice::take-it retrain complete; new bundles uploaded to Vercel Blob"
+          ls -lh ml/data/takeit/*.json
