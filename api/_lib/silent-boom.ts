@@ -56,6 +56,17 @@ export const SILENT_BOOM_SPEC_V1 = Object.freeze({
    *  cut was conservative; 0.7 is where the data says dealer-hedge
    *  dominance actually starts.
    *
+   *  Note on legacy data: silent_boom_alerts contains ~4,634 rows
+   *  with multi_leg_share ≥ 0.50 spanning 2026-05-07 → 2026-05-12.
+   *  These predate the original 0.5 gate landing in commit 77d3b3ad
+   *  (Tue May 12 23:03 CT) — they are NOT a sign that the gate
+   *  leaks. Every row inserted after the gate respects the live
+   *  threshold; verified 2026-05-16 (0 rows ≥ 0.50 inserted after
+   *  2026-05-13 04:30 UTC). The commit message on e4ef4ab0 mistook
+   *  the legacy population for an active leak; that was wrong. The
+   *  parquet backfill in f986527f only fills `WHERE multi_leg_share
+   *  IS NULL`, so it cannot overwrite a fresh detector-set value.
+   *
    *  Original empirical basis: scripts/analyze_silent_boom_multileg.py
    *  2026-05-12 — multi-leg fires win > 100% at 3× lower rate than
    *  single-leg in every ask% band. Specs:
