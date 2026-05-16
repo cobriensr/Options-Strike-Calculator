@@ -136,6 +136,13 @@ export const silentBoomFeedQuerySchema = z.object({
   // where win > 0% drops from ≥99% to 77%. The other 4 are half-open
   // ranges. UI default is no filter.
   askPctBand: z.enum(['70-80', '80-90', '90-95', '95-99', '100']).optional(),
+  // Aggressive Premium toggle — mirrors the trader's UW filter
+  // (premium ≥ $100K, DTE ≤ 8, vol/OI > 1, single-leg, OTM).
+  // When true, ALL of these constraints AND together with the other
+  // filters on this schema. Rows without underlying_price_at_spike
+  // (#152) are excluded from the OTM check. See spec
+  // docs/superpowers/specs/aggressive-premium-chip-2026-05-15.md.
+  aggressivePremium: z.coerce.boolean().optional(),
   // Pagination.
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
