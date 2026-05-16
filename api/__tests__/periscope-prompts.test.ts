@@ -483,9 +483,10 @@ describe('STRUCTURED_TOOL definition', () => {
       sentinel: desc.indexOf(NO_ALERTS_SENTINEL),
     };
     for (const [name, pos] of Object.entries(positions)) {
-      expect(pos, `clause "${name}" missing from description`).toBeGreaterThanOrEqual(
-        0,
-      );
+      expect(
+        pos,
+        `clause "${name}" missing from description`,
+      ).toBeGreaterThanOrEqual(0);
     }
     // Enum labels in canonical order (AGREEMENT < DISAGREEMENT < INSUFFICIENT).
     expect(positions.agreement).toBeLessThan(positions.disagreement);
@@ -496,6 +497,62 @@ describe('STRUCTURED_TOOL definition', () => {
     // Sentinel reference comes AFTER the fabrication rule — sentinel is the
     // trigger condition; the rule is the constraint.
     expect(positions.fabricationRule).toBeLessThan(positions.sentinel);
+  });
+
+  // Phase 4 of periscope-flow-hallucination-fix-2026-05-16: the
+  // confidence description tightens the HIGH rubric so it's structurally
+  // impossible without genuine flow grounding. These tests lock the
+  // load-bearing wording so the rubric can't silently drift back to the
+  // pre-Phase-4 "high if confidence_basis filled" gate.
+  it('confidence description forbids high when FLOW-STRUCTURE is INSUFFICIENT_DATA', () => {
+    const schema = STRUCTURED_TOOL.input_schema as Record<string, unknown>;
+    const props = schema.properties as Record<string, { description?: string }>;
+    const desc = props.confidence?.description ?? '';
+    expect(desc).toContain('FLOW-STRUCTURE: INSUFFICIENT_DATA');
+    expect(desc).toMatch(/"high" is FORBIDDEN/);
+    expect(desc).toMatch(/verification failure/);
+    // The 2:1 premium dominance threshold is what separates AGREEMENT
+    // from INSUFFICIENT_DATA — must appear in the rubric.
+    expect(desc).toContain('2:1');
+  });
+
+  it('confidence description requires twin-strike confluence for high', () => {
+    const schema = STRUCTURED_TOOL.input_schema as Record<string, unknown>;
+    const props = schema.properties as Record<string, { description?: string }>;
+    const desc = props.confidence?.description ?? '';
+    expect(desc).toMatch(/twin-strike \+γ floor/);
+    expect(desc).toContain('matching charm sign');
+    expect(desc).toContain('parent-chain agreement');
+  });
+
+  it('confidence description blocks high on DISAGREEMENT unless NO-TRADE', () => {
+    const schema = STRUCTURED_TOOL.input_schema as Record<string, unknown>;
+    const props = schema.properties as Record<string, { description?: string }>;
+    const desc = props.confidence?.description ?? '';
+    expect(desc).toContain('FLOW-STRUCTURE: DISAGREEMENT');
+    expect(desc).toMatch(/DISAGREEMENT.{0,200}FORBIDDEN/);
+    expect(desc).toContain('NO-TRADE');
+  });
+
+  it('confidence_basis description requires citation re-quote for high', () => {
+    const schema = STRUCTURED_TOOL.input_schema as Record<string, unknown>;
+    const props = schema.properties as Record<string, { description?: string }>;
+    const desc = props.confidence_basis?.description ?? '';
+    expect(desc).toMatch(/cite BOTH the FLOW-STRUCTURE AGREEMENT/);
+    expect(desc).toContain('twin-strike +γ');
+    expect(desc).toContain('verbatim');
+  });
+
+  it('confidence_basis description requires premium-share evidence for high', () => {
+    // Phase 4 reviewer feedback: the rubric requires ≥2:1 premium
+    // dominance for AGREEMENT, but a single-alert cite can't prove it.
+    // confidence_basis must state the dominant-side premium share so
+    // the gate is checkable from the prose.
+    const schema = STRUCTURED_TOOL.input_schema as Record<string, unknown>;
+    const props = schema.properties as Record<string, { description?: string }>;
+    const desc = props.confidence_basis?.description ?? '';
+    expect(desc).toMatch(/dominant-side premium share/);
+    expect(desc).toContain('≥2:1 dominance gate');
   });
 });
 

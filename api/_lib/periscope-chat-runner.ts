@@ -680,6 +680,51 @@ export async function runPeriscopeAutoPlaybook(
     );
   }
 
+  // Phase 4 symmetric drift check: HIGH confidence MUST be backed by a
+  // "FLOW-STRUCTURE: AGREEMENT" cite in expected_dealer_behavior (per
+  // the confidence rubric in periscope-prompts.ts). If the model emits
+  // confidence='high' without the literal AGREEMENT label — e.g. it
+  // paraphrased the format or dropped the prefix — the structural gate
+  // silently misses and the calibration leak we just closed re-opens.
+  // Non-blocking watchdog, same pattern as the INSUFFICIENT_DATA check.
+  if (
+    structured.confidence === 'high' &&
+    structured.expected_dealer_behavior != null &&
+    !structured.expected_dealer_behavior.includes('FLOW-STRUCTURE: AGREEMENT')
+  ) {
+    logger.warn(
+      {
+        mode,
+        tradingDate,
+        readTimeIso,
+        modelUsed: result.modelUsed,
+        expectedDealerBehavior: structured.expected_dealer_behavior.slice(
+          0,
+          200,
+        ),
+      },
+      'periscope auto-playbook: confidence=high without FLOW-STRUCTURE: AGREEMENT cite — Phase 4 rubric violation',
+    );
+    Sentry.captureMessage(
+      'periscope: HIGH confidence awarded without FLOW-STRUCTURE: AGREEMENT cite',
+      {
+        level: 'warning',
+        tags: {
+          module: 'periscope-chat-runner',
+          stage: 'high_confidence_without_agreement',
+          mode,
+          model: result.modelUsed,
+        },
+        extra: {
+          tradingDate,
+          readTimeIso,
+          expectedDealerBehaviorPreview:
+            structured.expected_dealer_behavior.slice(0, 200),
+        },
+      },
+    );
+  }
+
   const embedding = await buildEmbeddingBestEffort({
     mode,
     tradingDate,

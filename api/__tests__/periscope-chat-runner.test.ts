@@ -456,6 +456,94 @@ describe('runPeriscopeAutoPlaybook', () => {
     expect(driftCalls).toHaveLength(0);
   });
 
+  // Phase 4 symmetric drift check: confidence='high' must be backed by
+  // a literal "FLOW-STRUCTURE: AGREEMENT" cite in
+  // expected_dealer_behavior. If the model paraphrases or drops the
+  // prefix, the structural gate silently misses.
+  it('captures Sentry warning when confidence=high but no AGREEMENT cite', async () => {
+    vi.mocked(buildFlowContextBlock).mockResolvedValue(
+      'Fresh SPXW flow alerts placed in the last 15 min ...\n  - 14:30 CT CALL 5900 rule="RepeatedHits"',
+    );
+    vi.mocked(parseStructuredFieldsFromToolInput).mockReturnValue({
+      prose: 'narrative prose',
+      structured: {
+        ...structuredFixture,
+        confidence: 'high',
+        // Model paraphrased — missing the literal "FLOW-STRUCTURE: AGREEMENT"
+        // prefix. Phase 4 gate misses this; the watchdog catches it.
+        expected_dealer_behavior:
+          'Flow agrees with structural bias — 14:30 CT CALL 5900. Passive bid expected.',
+      },
+      parseOk: true,
+    });
+
+    await runPeriscopeAutoPlaybook(baseInput);
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'HIGH confidence awarded without FLOW-STRUCTURE: AGREEMENT',
+      ),
+      expect.objectContaining({
+        level: 'warning',
+        tags: expect.objectContaining({
+          stage: 'high_confidence_without_agreement',
+        }),
+      }),
+    );
+  });
+
+  it('does NOT capture HIGH-without-AGREEMENT warning when cite is properly formatted', async () => {
+    vi.mocked(buildFlowContextBlock).mockResolvedValue(
+      'Fresh SPXW flow alerts placed in the last 15 min ...\n  - 14:30 CT CALL 5900 rule="RepeatedHits"',
+    );
+    vi.mocked(parseStructuredFieldsFromToolInput).mockReturnValue({
+      prose: 'narrative prose',
+      structured: {
+        ...structuredFixture,
+        confidence: 'high',
+        expected_dealer_behavior:
+          'FLOW-STRUCTURE: AGREEMENT — 14:30 CT CALL 5900 rule="RepeatedHits". Passive bid expected.',
+      },
+      parseOk: true,
+    });
+
+    await runPeriscopeAutoPlaybook(baseInput);
+
+    const highConfCalls = vi
+      .mocked(Sentry.captureMessage)
+      .mock.calls.filter((call) =>
+        String(call[0]).includes(
+          'HIGH confidence awarded without FLOW-STRUCTURE: AGREEMENT',
+        ),
+      );
+    expect(highConfCalls).toHaveLength(0);
+  });
+
+  it('does NOT capture HIGH-without-AGREEMENT warning when confidence is not high', async () => {
+    vi.mocked(parseStructuredFieldsFromToolInput).mockReturnValue({
+      prose: 'narrative prose',
+      structured: {
+        ...structuredFixture,
+        confidence: 'medium',
+        // No AGREEMENT cite — but doesn't matter, confidence isn't high.
+        expected_dealer_behavior:
+          'Mixed signals. Passive bid expected below 5890.',
+      },
+      parseOk: true,
+    });
+
+    await runPeriscopeAutoPlaybook(baseInput);
+
+    const highConfCalls = vi
+      .mocked(Sentry.captureMessage)
+      .mock.calls.filter((call) =>
+        String(call[0]).includes(
+          'HIGH confidence awarded without FLOW-STRUCTURE: AGREEMENT',
+        ),
+      );
+    expect(highConfCalls).toHaveLength(0);
+  });
+
   it('pre_trade mode skips parent + parent chain fetches', async () => {
     await runPeriscopeAutoPlaybook({
       ...baseInput,

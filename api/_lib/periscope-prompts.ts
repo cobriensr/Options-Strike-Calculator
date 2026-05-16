@@ -512,13 +512,13 @@ export const STRUCTURED_TOOL: Anthropic.Messages.Tool = {
         },
         description: 'Structural level map. Floor / ceiling are the IC wings.',
       },
-      // TODO(phase-4-or-5): this field is overloaded — it carries BOTH the
-      // FLOW-STRUCTURE check and the dealer-behavior forecast. The SKILL.md
-      // contract describes expected_dealer_behavior as a single-sentence
-      // forecast only. Split into a dedicated `flow_structure` enum field
-      // (requires schema + DB migration + runner panel-payload mapping
-      // update) once Phase 4 confidence-rubric work lands. Tracked in
-      // docs/superpowers/specs/periscope-flow-hallucination-fix-2026-05-16.md.
+      // NOTE — field-overload: expected_dealer_behavior carries BOTH the
+      // FLOW-STRUCTURE check AND the dealer-behavior forecast. The
+      // SKILL.md contract describes it as a single-sentence forecast
+      // only. Splitting into a dedicated `flow_structure` enum field
+      // (requires schema + DB migration + runner panel-payload mapping)
+      // is tracked as Phase 5 follow-up in:
+      // docs/superpowers/specs/periscope-flow-hallucination-fix-2026-05-16.md
       expected_dealer_behavior: {
         type: ['string', 'null'],
         description:
@@ -530,12 +530,18 @@ export const STRUCTURED_TOOL: Anthropic.Messages.Tool = {
         type: ['string', 'null'],
         enum: ['low', 'medium', 'high', null],
         description:
-          'Conviction level. Use high ONLY when you can name a concrete structural fact in confidence_basis (twin-strike +γ + matching charm + flow agreement). NEVER emit high without filling confidence_basis.',
+          'Conviction level. STRUCTURAL GATING (enforced; emitting "high" outside these conditions is a verification failure): ' +
+          '"high" REQUIRES BOTH (a) the FLOW-STRUCTURE check in expected_dealer_behavior resolved to AGREEMENT with side-dominant flow ≥2:1 by premium, AND (b) twin-strike +γ floor + matching charm sign + intraday parent-chain agreement. ' +
+          'If expected_dealer_behavior contains "FLOW-STRUCTURE: INSUFFICIENT_DATA", "high" is FORBIDDEN — drop to "medium" or "low" instead (the 2026-05-15 audit identified 3 of 19 historical HIGH reads were issued on empty flow windows; this gate closes that loophole). ' +
+          'If expected_dealer_behavior contains "FLOW-STRUCTURE: DISAGREEMENT", "high" is FORBIDDEN unless the disagreement makes the slot NO-TRADE (no directional conviction to be high about). ' +
+          '"medium" is the DEFAULT — appropriate for AGREEMENT without twin-strike confluence, for INSUFFICIENT_DATA when the structural read is twin-confirmed, or for DISAGREEMENT that lands on NO-TRADE. ' +
+          '"low" is appropriate when structure is fragile (no nearby +γ floor, contradicting orange bars, or cone-breach in the first hour) regardless of flow state. ' +
+          'NEVER emit "high" without filling confidence_basis.',
       },
       confidence_basis: {
         type: ['string', 'null'],
         description:
-          "REQUIRED whenever confidence != null. State the specific structural fact that justifies the conviction level — a fact, not a feeling. Bad: 'levels look clean'. Good: 'twin-strike +γ at 7,380 (+1,107) and 7,350 (+1,235) with no opposing flow in last 5 min'. Multi-sentence allowed.",
+          "REQUIRED whenever confidence != null. State the specific structural fact that justifies the conviction level — a fact, not a feeling. For \"high\", you MUST cite BOTH the FLOW-STRUCTURE AGREEMENT (re-quote the verbatim alert from expected_dealer_behavior) AND the twin-strike +γ structural confluence, AND state the dominant-side premium share (e.g. 'calls 78% of window premium' or 'call:put ≈ 3.6:1') so the ≥2:1 dominance gate is checkable from the prose alone. Bad: 'levels look clean'. Good: 'twin-strike +γ at 7,380 (+1,107) and 7,350 (+1,235); FLOW-STRUCTURE: AGREEMENT — 14:30 CT PUT 7350 rule=RepeatedHits ($420K, ask 78%); put-side premium 3.6:1 dominant in the window'. Multi-sentence allowed.",
       },
       futures_plan: {
         type: ['string', 'null'],
