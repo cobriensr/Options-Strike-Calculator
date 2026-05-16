@@ -30,6 +30,9 @@ addopts = [
   "--strict-markers",
   "-q",
 ]
+markers = [
+  "slow: tests that read from the local Parquet archive (skip with -m 'not slow')",
+]
 filterwarnings = [
   "ignore:vert.*will be deprecated:PendingDeprecationWarning",
 ]
