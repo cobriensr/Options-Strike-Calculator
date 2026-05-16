@@ -692,4 +692,37 @@ describe('silent-boom-feed handler', () => {
     );
     expect(callsWithFloor.length).toBe(2);
   });
+
+  it('defaults aggressivePremium=false; binds false into both queries', async () => {
+    mockSql.mockResolvedValueOnce([{ n: 0 }]).mockResolvedValueOnce([]);
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(200);
+    const body = res._json as { filters: { aggressivePremium: boolean } };
+    expect(body.filters.aggressivePremium).toBe(false);
+    // Both queries see the boolean false bind so the OR-gated clause
+    // short-circuits and matches every row.
+    const callsWithFalse = mockSql.mock.calls.filter((args) =>
+      args.slice(1).some((v) => v === false),
+    );
+    expect(callsWithFalse.length).toBe(2);
+  });
+
+  it('echoes aggressivePremium=true and binds true into both queries', async () => {
+    mockSql.mockResolvedValueOnce([{ n: 0 }]).mockResolvedValueOnce([]);
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-07', aggressivePremium: 'true' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(200);
+    const body = res._json as { filters: { aggressivePremium: boolean } };
+    expect(body.filters.aggressivePremium).toBe(true);
+    const callsWithTrue = mockSql.mock.calls.filter((args) =>
+      args.slice(1).some((v) => v === true),
+    );
+    expect(callsWithTrue.length).toBe(2);
+  });
 });

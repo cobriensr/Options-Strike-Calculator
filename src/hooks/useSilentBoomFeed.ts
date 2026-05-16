@@ -41,6 +41,13 @@ interface UseSilentBoomFeedArgs {
   burst?: SilentBoomBurstColor | null;
   /** Ask% band filter — null = all bands. */
   askPctBand?: SilentBoomAskPctBand | null;
+  /**
+   * Aggressive Premium chip — single toggle that ANDs the trader's
+   * UW filter (premium ≥ $100K, DTE ≤ 8, vol/OI > 1, single-leg, OTM)
+   * onto the existing filters. Server-side enforced in
+   * api/silent-boom-feed.ts.
+   */
+  aggressivePremium?: boolean;
   sort?: SilentBoomSortMode;
   page?: number;
   pageSize?: number;
@@ -81,6 +88,7 @@ export function useSilentBoomFeed({
   dte = null,
   burst = null,
   askPctBand = null,
+  aggressivePremium = false,
   sort = 'newest',
   page = 0,
   pageSize = 50,
@@ -109,6 +117,7 @@ export function useSilentBoomFeed({
       if (dte) params.set('dte', dte);
       if (burst) params.set('burst', burst);
       if (askPctBand) params.set('askPctBand', askPctBand);
+      if (aggressivePremium) params.set('aggressivePremium', 'true');
       const res = await fetch(`/api/silent-boom-feed?${params.toString()}`, {
         credentials: 'include',
         signal: ctrl.signal,
@@ -146,6 +155,7 @@ export function useSilentBoomFeed({
     dte,
     burst,
     askPctBand,
+    aggressivePremium,
     sort,
     page,
     pageSize,

@@ -151,6 +151,7 @@ interface SilentBoomFeedResponse {
     burst: SilentBoomBurstColor | null;
     askPctBand: SilentBoomAskPctBand | null;
     sort: 'newest' | 'spike_ratio' | 'vol_oi' | 'peak';
+    aggressivePremium: boolean;
   };
   count: number;
   total: number;
@@ -268,6 +269,13 @@ export default async function handler(
   const askPctLo = askPctRange?.lo ?? null;
   const askPctHiBound = askPctRange?.hi ?? 1.001;
 
+  // Aggressive Premium filter (#152 + chip spec). Single boolean
+  // toggles the trader's UW filter: premium ≥ $100K, DTE ≤ 8,
+  // vol/OI > 1, single-leg, OTM. Each clause is folded into a single
+  // OR-gated composite below so the SQL is identical when the flag is
+  // off (the IS NOT TRUE branch matches every row).
+  const aggressivePremium = q.aggressivePremium === true;
+
   try {
     const db = getDb();
 
@@ -299,6 +307,20 @@ export default async function handler(
         AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
         AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
         AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
+        AND (
+          ${aggressivePremium}::boolean IS NOT TRUE
+          OR (
+            entry_price * spike_volume * 100 >= 100000
+            AND dte <= 8
+            AND vol_oi > 1.0
+            AND COALESCE(multi_leg_share, 0) < 0.10
+            AND underlying_price_at_spike IS NOT NULL
+            AND (
+              (option_type = 'C' AND strike > underlying_price_at_spike)
+              OR (option_type = 'P' AND strike < underlying_price_at_spike)
+            )
+          )
+        )
     `) as { n: number }[];
     const total = totalRow[0]?.n ?? 0;
 
@@ -328,6 +350,20 @@ export default async function handler(
           AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
           AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
           AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
+          AND (
+            ${aggressivePremium}::boolean IS NOT TRUE
+            OR (
+              entry_price * spike_volume * 100 >= 100000
+              AND dte <= 8
+              AND vol_oi > 1.0
+              AND COALESCE(multi_leg_share, 0) < 0.10
+              AND underlying_price_at_spike IS NOT NULL
+              AND (
+                (option_type = 'C' AND strike > underlying_price_at_spike)
+                OR (option_type = 'P' AND strike < underlying_price_at_spike)
+              )
+            )
+          )
         ORDER BY spike_ratio DESC, bucket_ct DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
       `) as AlertRow[];
@@ -353,6 +389,20 @@ export default async function handler(
           AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
           AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
           AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
+          AND (
+            ${aggressivePremium}::boolean IS NOT TRUE
+            OR (
+              entry_price * spike_volume * 100 >= 100000
+              AND dte <= 8
+              AND vol_oi > 1.0
+              AND COALESCE(multi_leg_share, 0) < 0.10
+              AND underlying_price_at_spike IS NOT NULL
+              AND (
+                (option_type = 'C' AND strike > underlying_price_at_spike)
+                OR (option_type = 'P' AND strike < underlying_price_at_spike)
+              )
+            )
+          )
         ORDER BY vol_oi DESC, bucket_ct DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
       `) as AlertRow[];
@@ -378,6 +428,20 @@ export default async function handler(
           AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
           AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
           AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
+          AND (
+            ${aggressivePremium}::boolean IS NOT TRUE
+            OR (
+              entry_price * spike_volume * 100 >= 100000
+              AND dte <= 8
+              AND vol_oi > 1.0
+              AND COALESCE(multi_leg_share, 0) < 0.10
+              AND underlying_price_at_spike IS NOT NULL
+              AND (
+                (option_type = 'C' AND strike > underlying_price_at_spike)
+                OR (option_type = 'P' AND strike < underlying_price_at_spike)
+              )
+            )
+          )
         ORDER BY peak_ceiling_pct DESC NULLS LAST, bucket_ct DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
       `) as AlertRow[];
@@ -404,6 +468,20 @@ export default async function handler(
           AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
           AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
           AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
+          AND (
+            ${aggressivePremium}::boolean IS NOT TRUE
+            OR (
+              entry_price * spike_volume * 100 >= 100000
+              AND dte <= 8
+              AND vol_oi > 1.0
+              AND COALESCE(multi_leg_share, 0) < 0.10
+              AND underlying_price_at_spike IS NOT NULL
+              AND (
+                (option_type = 'C' AND strike > underlying_price_at_spike)
+                OR (option_type = 'P' AND strike < underlying_price_at_spike)
+              )
+            )
+          )
         ORDER BY bucket_ct DESC, id DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
       `) as AlertRow[];
@@ -462,6 +540,7 @@ export default async function handler(
         burst: q.burst ?? null,
         askPctBand: q.askPctBand ?? null,
         sort: q.sort,
+        aggressivePremium,
       },
       count: alerts.length,
       total,

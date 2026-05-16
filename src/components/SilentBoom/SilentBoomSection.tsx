@@ -33,6 +33,7 @@ const CONVICTION_LS_KEY = 'silentBoom.convictionFloor';
 const HIDE_LATE_PM_LS_KEY = 'silentBoom.hideLatePm';
 const HIDE_GHOSTS_LS_KEY = 'silentBoom.hideGhosts';
 const HIDE_GATED_LS_KEY = 'silentBoom.hideGated';
+const AGGRESSIVE_PREMIUM_LS_KEY = 'silentBoom.aggressivePremium';
 const EXIT_POLICY_LS_KEY = 'silentBoom.exitPolicy';
 const ASK_PCT_BAND_LS_KEY = 'silentBoom.askPctBand';
 const TICKER_EXPANDED_LS_KEY = 'silent-boom-ticker-expanded';
@@ -444,6 +445,14 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     if (typeof window === 'undefined') return false;
     return window.localStorage.getItem(HIDE_GATED_LS_KEY) === '1';
   });
+  // Aggressive Premium chip — single toggle that ANDs together the
+  // trader's 5-criterion UW filter: premium ≥ $100K, DTE ≤ 8,
+  // vol/OI > 1, single-leg, OTM. See server-side enforcement in
+  // api/silent-boom-feed.ts and the migration #152 column it gates on.
+  const [aggressivePremium, setAggressivePremium] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(AGGRESSIVE_PREMIUM_LS_KEY) === '1';
+  });
   const [exitPolicy, setExitPolicy] = useState<SilentBoomExitPolicy>(() => {
     if (typeof window === 'undefined') return 'realized60mPct';
     const stored = window.localStorage.getItem(EXIT_POLICY_LS_KEY);
@@ -483,6 +492,14 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       window.localStorage.setItem(HIDE_GATED_LS_KEY, hideGated ? '1' : '0');
     }
   }, [hideGated]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(
+        AGGRESSIVE_PREMIUM_LS_KEY,
+        aggressivePremium ? '1' : '0',
+      );
+    }
+  }, [aggressivePremium]);
   useEffect(() => {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(EXIT_POLICY_LS_KEY, exitPolicy);
@@ -537,6 +554,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       dte: dteFilter,
       burst: burstFilter,
       askPctBand,
+      aggressivePremium,
       minVolOi,
       minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
       sort: sortMode,
@@ -1194,6 +1212,18 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                   −{hiddenGatedCount}
                 </span>
               )}
+            </button>
+            <button
+              type="button"
+              data-testid="silent-boom-aggressive-premium-chip"
+              onClick={() => setAggressivePremium(!aggressivePremium)}
+              className={`${CHIP_BASE} ${
+                aggressivePremium ? CHIP_ACTIVE.sky : CHIP_INACTIVE
+              }`}
+              title="Aggressive Premium: surface only alerts with premium ≥ $100K, DTE ≤ 8, vol/OI > 1, single-leg (multi_leg_share < 10%), and OTM (calls strike > spot, puts strike < spot). Mirrors the trader's UW filter. Server-side enforced via #152 underlying_price_at_spike — alerts with no spot snapshot are excluded from the OTM check."
+              aria-pressed={aggressivePremium}
+            >
+              💎 aggressive premium
             </button>
           </div>
 
