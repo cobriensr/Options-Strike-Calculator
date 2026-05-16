@@ -18,7 +18,7 @@ All of this is in the data. A gradient-boosted classifier trained on the enriche
 ## Decisions Made During Scoping
 
 1. **Score-only, no recommendation.** The model emits `P(win)` and SHAP top-3 green / red contributors. The trader decides. No threshold-based take/skip.
-2. **One model per alert type.** Lottery and Silent Boom share most features but the physics differs (block-stealth vs aggressive single-strike conviction). Train two independent LightGBM classifiers; share feature engineering pipeline.
+2. **One model per alert type.** Lottery and Silent Boom share most features but the physics differs (block-stealth vs aggressive single-strike conviction). Train two independent XGBoost classifiers (≥2.1, already in [ml/pyproject.toml](ml/pyproject.toml)); share feature engineering pipeline. LightGBM was the initial pick but XGBoost gets the same tree-based-SHAP story for one fewer dependency.
 3. **New score lives alongside the existing tier.** Do not replace `score` / `score_tier` columns. Add `takeit_prob` + `takeit_top_features` JSONB. The trader compares the two for a calibration period (~2 weeks) before any UI culling.
 4. **Walk-forward training, weekly retrain.** No leakage. Each Saturday cron retrains on the trailing 60 trading days; first 90 days seed training; remaining N validate.
 5. **Win definition:** `peak_ceiling_pct ≥ 20%` for both alert types. The model answers "was there ever a tradeable spike from entry?" — not "did the trailing-stop exit pay off." This separates the alert-quality question (what the model can know from entry-time features) from the exit-execution question (which depends on the trader's discipline, not the alert). Rows where `peak_ceiling_pct` is null are dropped from training. The 20% threshold is tunable in Phase 1 once class balance is measured.
@@ -71,7 +71,7 @@ Shared between both models:
 | `direction_gated`                    | existing column                     | Already a quality filter                       |
 | `multi_leg_share`                    | bucket aggregate (silent_boom)      | Spread-leg suppression                         |
 | `n_same_dir_fires_last_30min`        | rolling sequential cluster          | Momentum continuation proxy                    |
-| `recent_3_fires_same_ticker_outcome` | outcome lookback                    | Per-ticker streak signal                       |
+| `prior_session_win_rate_same_ticker` | outcome lookback (prior sessions)   | Per-ticker historical edge                     |
 
 Lottery-only:
 
@@ -132,7 +132,7 @@ Verify: row counts match enriched alert counts to within label-availability filt
 
 ### Phase 2 — Model training + calibration
 
-Output: `ml/data/takeit/lottery_classifier.joblib`, `silentboom_classifier.joblib`. LightGBM binary classifier per alert type, calibrated with isotonic regression on a held-out fold.
+Output: `ml/data/takeit/lottery_classifier.joblib`, `silentboom_classifier.joblib`. XGBoost binary classifier per alert type, calibrated with isotonic regression on a held-out time-tail.
 
 Files:
 
@@ -150,8 +150,8 @@ Output: every new alert lands with `takeit_prob` (real) and `takeit_top_features
 Files:
 
 - DB migration #N (next slot) — adds `takeit_prob`, `takeit_top_features`, `takeit_model_version` to both `lottery_finder_fires` and `silent_boom_alerts`. Backfill nulls.
-- `api/_lib/takeit-score.ts` — loads model JSON export (LightGBM `model.txt` format) at cold start, computes prob inline. No Python in the hot path.
-- `ml/src/takeit/export_model.py` — exports trained model to LightGBM text format + a JSON metadata sidecar (feature names, version, calibration spline).
+- `api/_lib/takeit-score.ts` — loads the XGBoost model JSON dump at cold start and computes prob inline. No Python in the hot path. (XGBoost's `save_model(path.json)` is the cross-language portable format; Node can score it via `xgboost-node` or by re-implementing tree traversal — to be decided in Phase 3.)
+- `ml/src/takeit/export_model.py` — exports the trained XGBoost model + isotonic calibration spline to JSON for the Vercel function to consume.
 - `api/cron/retrain-takeit.ts` — Saturday weekly cron triggers a Railway sidecar endpoint that re-runs `train.py` on the trailing 60 days and PUTs the new model to Vercel Blob; the Vercel function reloads on next cold start (no live hot-swap needed).
 - Updates to `api/cron/detect-lottery-fires.ts` and `api/cron/detect-silent-boom.ts` to call `computeTakeitScore()` inline after the existing `computeLotteryScore()` / `computeSilentBoomScore()` calls.
 - `api/__tests__/takeit-score.test.ts` — fixture verifies the TS scorer agrees with the Python scorer on a frozen set of 50 rows to within 1e-6.
@@ -188,7 +188,7 @@ Verify: Sentry receives metrics for two consecutive Mondays; one-month report sh
 
 1. **Win label.** `peak_ceiling_pct ≥ 20%`. Rows where `peak_ceiling_pct` is null are dropped from training. The trail-30/10 metric is ignored — the model is judging alert quality at entry time, not exit execution. Threshold is tunable in Phase 1 once class balance is measured.
 2. **SilentBoom sample gate.** Ship Lottery v1 first. Train script aborts SilentBoom training if `<500` labeled alerts available; auto-activates when the data ripens.
-3. **Ticker encoding.** One-hot for the top-15 tickers + an `OTHER` bucket. LightGBM handles the cardinality fine.
+3. **Ticker encoding.** One-hot for the top-15 tickers + an `OTHER` bucket. XGBoost handles the cardinality fine.
 4. **Model reload.** Vercel function cold-start is the propagation point. Worst-case ~1 hour from blob upload to live; acceptable for a weekly retrain cadence.
 
 ## Thresholds / Constants
