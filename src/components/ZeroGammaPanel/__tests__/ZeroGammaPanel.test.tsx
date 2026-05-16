@@ -69,18 +69,20 @@ describe('ZeroGammaPanel orchestration', () => {
     ).toBeInTheDocument();
   });
 
-  it('renders a TickerCard for each of the four tickers', () => {
+  it('renders a TickerCard for each of the three tickers', () => {
     // Drive every per-ticker hook call into the loading branch so each
     // card prints its own header and we can count them by ticker label.
     useZeroGammaMock.mockReturnValue(makeReturn({ loading: true }));
     render(<ZeroGammaPanel marketOpen={true} />);
-    // Four mock hook calls — one per TickerCardContainer.
-    expect(useZeroGammaMock).toHaveBeenCalledTimes(4);
-    for (const ticker of ['SPX', 'NDX', 'SPY', 'QQQ']) {
+    // Three mock hook calls — one per TickerCardContainer.
+    expect(useZeroGammaMock).toHaveBeenCalledTimes(3);
+    for (const ticker of ['SPX', 'SPY', 'QQQ']) {
       expect(screen.getByText(ticker)).toBeInTheDocument();
     }
-    // Loading is the per-card placeholder; should appear four times.
-    expect(screen.getAllByText('Loading…')).toHaveLength(4);
+    // NDX was dropped 2026-05-16 — its card must not render.
+    expect(screen.queryByText('NDX')).not.toBeInTheDocument();
+    // Loading is the per-card placeholder; should appear three times.
+    expect(screen.getAllByText('Loading…')).toHaveLength(3);
   });
 
   it('surfaces per-ticker errors via TickerCard alert role', () => {
@@ -90,7 +92,7 @@ describe('ZeroGammaPanel orchestration', () => {
     render(<ZeroGammaPanel marketOpen={true} />);
     // Each card renders its own alert when error is set.
     const alerts = screen.getAllByRole('alert');
-    expect(alerts).toHaveLength(4);
+    expect(alerts).toHaveLength(3);
     expect(alerts[0]).toHaveTextContent(/failed to load/i);
   });
 
@@ -101,8 +103,8 @@ describe('ZeroGammaPanel orchestration', () => {
     );
     render(<ZeroGammaPanel marketOpen={true} />);
     // At least one regime label means a data card actually rendered. All
-    // four cards share the same mock return so we expect four labels.
-    expect(screen.getAllByText('SUPPRESSION')).toHaveLength(4);
+    // three cards share the same mock return so we expect three labels.
+    expect(screen.getAllByText('SUPPRESSION')).toHaveLength(3);
   });
 
   it('renders the empty "No data yet" state when latest is null without error/loading', () => {
@@ -113,7 +115,7 @@ describe('ZeroGammaPanel orchestration', () => {
       makeReturn({ latest: null, history: [], loading: false, error: null }),
     );
     render(<ZeroGammaPanel marketOpen={true} />);
-    expect(screen.getAllByText('No data yet')).toHaveLength(4);
+    expect(screen.getAllByText('No data yet')).toHaveLength(3);
   });
 
   it('starts with the LIVE button hidden when the date input is today', () => {

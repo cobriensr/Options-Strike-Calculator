@@ -21,7 +21,7 @@ import type {
 } from './classify';
 
 interface CellProps {
-  ticker: 'SPX' | 'NDX' | 'SPY' | 'QQQ';
+  ticker: 'SPX' | 'SPY' | 'QQQ';
   row: DealerRegimeRow | null;
   state: DealerRegimeState;
   /** Why is this cell uncertain? Only set when state === 'uncertain'. */

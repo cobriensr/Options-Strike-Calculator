@@ -2,12 +2,13 @@
  * Read helper for the Dealer Regime Tile (Phase 2 of strike-battle-map).
  *
  * The tile needs the latest `zero_gamma_levels` row per ticker for the
- * full set defined in `zero-gamma-tickers.ts`. Each row carries the
+ * set defined in `zero-gamma-tickers.ts` (SPX, SPY, QQQ — NDX was dropped
+ * 2026-05-16; see that file's header for rationale). Each row carries the
  * inputs the classifier consumes — `spot`, `zero_gamma`, `confidence`,
  * `net_gamma_at_spot`, plus the row's `ts` for the staleness gate.
  *
  * Implementation uses `DISTINCT ON (ticker)` so a single query returns
- * the latest row across all four tickers. The cron writes every 5 min
+ * the latest row across all three tickers. The cron writes every 5 min
  * during market hours, so this picks up fresh data on every poll.
  *
  * Read-only; ingestion is owned by `api/cron/compute-zero-gamma.ts`.
@@ -70,7 +71,7 @@ export interface FetchOpts {
 }
 
 /**
- * Latest `zero_gamma_levels` row per ticker for the four-ticker set.
+ * Latest `zero_gamma_levels` row per ticker for the active ticker set.
  *
  * Returns up to one row per ticker. A ticker with no rows in the table
  * (e.g. cron has not yet run for it) is simply absent from the result —

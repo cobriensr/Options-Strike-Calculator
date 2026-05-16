@@ -20,13 +20,11 @@ vi.mock('../_lib/sentry.js', () => ({
 
 import handler from '../cron/compute-zero-gamma.js';
 
-// 2026-03-24 is past March's 3rd Friday (March 20) so NDX front monthly
-// rolls to April's 3rd Friday (2026-04-17).
 const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
 const OFF_HOURS_TIME = new Date('2026-03-24T11:00:00.000Z');
 const WEEKEND_TIME = new Date('2026-03-28T14:00:00.000Z');
 
-const TICKERS = ['SPX', 'NDX', 'SPY', 'QQQ'] as const;
+const TICKERS = ['SPX', 'SPY', 'QQQ'] as const;
 
 /**
  * Build a strike_exposures row. `timestamp` is shared across all rows in a
@@ -159,7 +157,7 @@ describe('compute-zero-gamma handler', () => {
   // ── No snapshot available (per-ticker) ───────────────────
 
   it('records "no snapshot" per ticker without inserting when latest_ts is null', async () => {
-    // 4 latest_ts SELECTs (one per ticker), all returning null.
+    // 3 latest_ts SELECTs (one per ticker), all returning null.
     for (let i = 0; i < TICKERS.length; i += 1) {
       mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
     }
@@ -177,11 +175,11 @@ describe('compute-zero-gamma handler', () => {
         reason: 'No strike_exposures snapshot',
       });
     }
-    // 4 SELECTs total, no INSERTs.
-    expect(mockSql).toHaveBeenCalledTimes(4);
+    // 3 SELECTs total, no INSERTs.
+    expect(mockSql).toHaveBeenCalledTimes(3);
   });
 
-  // ── Happy path: 4 tickers, 4 INSERTs ─────────────────────
+  // ── Happy path: 3 tickers, 3 INSERTs ─────────────────────
 
   it('inserts a gated zero_gamma row for every ticker', async () => {
     queueAllTickersHappyPath();
@@ -208,39 +206,30 @@ describe('compute-zero-gamma handler', () => {
       expect(entry!.spot).toBe(7105);
       expect(entry!.zeroGamma).not.toBeNull();
     }
-    // 4 tickers × 4 SQL calls = 16
-    expect(mockSql).toHaveBeenCalledTimes(16);
+    // 3 tickers × 4 SQL calls = 12
+    expect(mockSql).toHaveBeenCalledTimes(12);
   });
 
-  it('uses April 3rd-Friday 2026-04-17 as NDX primary expiry on 2026-03-24', async () => {
+  it('queries each ticker at today (0DTE) as the primary expiry', async () => {
     queueAllTickersHappyPath();
 
     const res = mockResponse();
     await handler(authedReq(), res);
     expect(res._status).toBe(200);
 
-    // The latest_ts SELECT for each ticker carries the primary expiry as an
-    // interpolated value. Find the call that targets ticker='NDX' and verify
-    // the expiry value is the Wed front date, not the Tue today.
+    // The latest_ts SELECT for each ticker interpolates (date, ticker,
+    // expiry). All three tickers should query at the cron's `today` value.
     type SqlCall = unknown[];
     const calls = mockSql.mock.calls as SqlCall[];
-    const ndxLatestTsCall = calls.find((c) => {
-      const values = c.slice(1) as unknown[];
-      // The latest_ts SELECT interpolates (date, ticker, expiry).
-      return values.includes('NDX');
-    });
-    expect(ndxLatestTsCall).toBeDefined();
-    const ndxValues = ndxLatestTsCall!.slice(1) as unknown[];
-    expect(ndxValues).toContain('2026-04-17');
-
-    // SPX should query at today (the cron's `today`) — confirm symmetry.
-    const spxLatestTsCall = calls.find((c) => {
-      const values = c.slice(1) as unknown[];
-      return values.includes('SPX');
-    });
-    expect(spxLatestTsCall).toBeDefined();
-    const spxValues = spxLatestTsCall!.slice(1) as unknown[];
-    expect(spxValues).toContain('2026-03-24');
+    for (const ticker of TICKERS) {
+      const latestTsCall = calls.find((c) => {
+        const values = c.slice(1) as unknown[];
+        return values.includes(ticker);
+      });
+      expect(latestTsCall).toBeDefined();
+      const values = latestTsCall!.slice(1) as unknown[];
+      expect(values).toContain('2026-03-24');
+    }
   });
 
   // ── No sign change in ±3% grid: zeroGamma null, row still inserted ─
@@ -289,10 +278,10 @@ describe('compute-zero-gamma handler', () => {
     expect(res._status).toBe(200);
 
     // INSERT for each ticker is the 4th SQL call within that ticker's
-    // 4-call group. Indices: SPX=3, NDX=7, SPY=11, QQQ=15.
+    // 4-call group. Indices: SPX=3, SPY=7, QQQ=11.
     type SqlCall = unknown[];
     const calls = mockSql.mock.calls as SqlCall[];
-    const insertIndices = [3, 7, 11, 15];
+    const insertIndices = [3, 7, 11];
     insertIndices.forEach((idx, tickerIdx) => {
       const insertCall = calls[idx];
       expect(insertCall).toBeDefined();
@@ -314,7 +303,7 @@ describe('compute-zero-gamma handler', () => {
   // ── Per-ticker fault isolation ───────────────────────────
 
   it('isolates per-ticker DB failures — surviving tickers still complete', async () => {
-    // SPX: SELECT throws. NDX/SPY/QQQ: full happy path (4 SQL calls each
+    // SPX: SELECT throws. SPY/QQQ: full happy path (4 SQL calls each
     // — latest_ts, rows, prev net_gamma, INSERT).
     mockSql.mockRejectedValueOnce(new Error('SPX latest_ts query failed'));
     for (let i = 0; i < TICKERS.length - 1; i += 1) {
@@ -334,7 +323,6 @@ describe('compute-zero-gamma handler', () => {
     };
     expect(body.perTicker.SPX).toMatchObject({ stored: false });
     expect(body.perTicker.SPX!.error).toBeDefined();
-    expect(body.perTicker.NDX).toMatchObject({ stored: true });
     expect(body.perTicker.SPY).toMatchObject({ stored: true });
     expect(body.perTicker.QQQ).toMatchObject({ stored: true });
   });

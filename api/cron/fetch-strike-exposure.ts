@@ -1,27 +1,29 @@
 /**
  * GET /api/cron/fetch-strike-exposure
  *
- * Fetches per-strike Greek exposure for the four cross-asset zero-gamma
- * tickers (SPX, NDX, SPY, QQQ) from the Unusual Whales spot-exposures
- * endpoint. Results land in `strike_exposures` keyed by (date, timestamp,
- * ticker, strike, expiry). Downstream consumers — compute-zero-gamma,
- * build-features-gex — filter by `ticker` and `expiry`.
+ * Fetches per-strike Greek exposure for the cross-asset zero-gamma tickers
+ * (SPX, SPY, QQQ) from the Unusual Whales spot-exposures endpoint. Results
+ * land in `strike_exposures` keyed by (date, timestamp, ticker, strike,
+ * expiry). Downstream consumers — compute-zero-gamma, build-features-gex —
+ * filter by `ticker` and `expiry`.
  *
  * Per-ticker expiry policy:
  *   - SPX: today (0DTE) + tomorrow (1DTE). The 1DTE pull is preserved
  *     for the Periscope view and the build-features-gex 1DTE column.
  *   - SPY/QQQ: today (0DTE). Both have daily expirations.
- *   - NDX: front Mon/Wed/Fri expiration (today if Mon/Wed/Fri, else +1).
- *     NDX does not have daily expirations.
  *
  * Per-ticker ATM window:
  *   - SPX  ±200 pts (~80 strikes at $5)
- *   - NDX  ±500 pts (~3% of ~18k)
  *   - SPY  ±20 pts (~3% of ~600)
  *   - QQQ  ±20 pts (~3% of ~500)
  *
- * Total UW calls per invocation: 5 (SPX × 2, plus 1 each for NDX, SPY, QQQ).
- * All five run in parallel with per-task fault isolation via
+ * NDX was dropped 2026-05-16: UW only publishes NDX monthlies and the
+ * front-month roll has near-zero OI on every monthly-expiry morning, so
+ * compute-zero-gamma rejected the snapshot ~daily. See
+ * `zero-gamma-tickers.ts` for the full rationale.
+ *
+ * Total UW calls per invocation: 4 (SPX × 2, plus 1 each for SPY, QQQ).
+ * All four run in parallel with per-task fault isolation via
  * Promise.allSettled — one ticker hiccup does not block the others.
  *
  * Environment: UW_API_KEY, CRON_SECRET
@@ -44,16 +46,18 @@ import { reportCronRun } from '../_lib/axiom.js';
 import {
   ZERO_GAMMA_TICKERS,
   getPrimaryExpiry,
-  type ZeroGammaTicker,
 } from '../_lib/zero-gamma-tickers.js';
 
 // ── Ticker config ───────────────────────────────────────────
 
-type Ticker = ZeroGammaTicker;
+// Narrowed to the runtime iteration set so dropping a ticker from
+// `ZERO_GAMMA_TICKERS` without removing its `ATM_RANGE_BY_TICKER` entry —
+// or adding one back without an entry — is a compile error. `ZeroGammaTicker`
+// stays the wider type for `getPrimaryExpiry` callers in other modules.
+type Ticker = (typeof ZERO_GAMMA_TICKERS)[number];
 
 const ATM_RANGE_BY_TICKER: Record<Ticker, number> = {
   SPX: 200,
-  NDX: 500,
   SPY: 20,
   QQQ: 20,
 };

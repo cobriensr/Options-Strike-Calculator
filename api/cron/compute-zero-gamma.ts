@@ -1,20 +1,21 @@
 /**
  * GET /api/cron/compute-zero-gamma
  *
- * Computes the zero-gamma level for each cross-asset ticker (SPX, NDX, SPY,
- * QQQ) during market hours. Reads the latest per-strike intraday gamma
+ * Computes the zero-gamma level for each cross-asset ticker (SPX, SPY, QQQ)
+ * during market hours. Reads the latest per-strike intraday gamma
  * snapshot from `strike_exposures` (written by fetch-strike-exposure on a
  * staggered 5-min cadence), aggregates call + put OI gamma into a signed
  * per-strike dealer gamma profile, and hands it to the pure
  * computeZeroGammaLevel() calculator in api/_lib/zero-gamma.
  *
+ * NDX was dropped 2026-05-16; see `zero-gamma-tickers.ts` for the full
+ * rationale (UW NDX monthlies + front-month roll → empty snapshots).
+ *
  * Outputs land in `zero_gamma_levels` (migration 82):
  *   - ticker, spot, zero_gamma (confidence-gated, nullable)
  *   - confidence (raw), net_gamma_at_spot, gamma_curve (JSONB)
  *
- * Per-ticker behavior:
- *   - SPX/SPY/QQQ → primary expiry = today (0DTE).
- *   - NDX → primary expiry = front Mon/Wed/Fri (handled by getPrimaryExpiry).
+ * All three tickers use primary expiry = today (0DTE).
  *
  * No confidence gating: zero-gamma is a regime indicator (the spot price
  * where dealer net gamma crosses sign), not a trade trigger. The level is
@@ -29,8 +30,8 @@
  * the source rows are committed before we read them. Cron line:
  *   4,9,14,19,24,29,34,39,44,49,54,59 13-21 * * 1-5
  *
- * Tickers run sequentially. The total work is 4 × (2 SELECTs + 1 INSERT) =
- * 12 trivial DB queries — sequential is cleaner than parallel and avoids
+ * Tickers run sequentially. The total work is 3 × (2 SELECTs + 1 INSERT) =
+ * 9 trivial DB queries — sequential is cleaner than parallel and avoids
  * connection-pool pressure on Neon serverless. Per-ticker failures are
  * caught individually so one bad ticker does not block the others.
  *

@@ -1,7 +1,8 @@
 /**
- * DealerRegimeTile — 4-cell row showing the dealer-gamma regime at spot
- * for SPX, NDX, SPY, QQQ. Sits above the Strike Battle Map as the
- * primary "is the market dampening or amplifying?" read.
+ * DealerRegimeTile — 3-cell row showing the dealer-gamma regime at spot
+ * for SPX, SPY, QQQ. Sits above the Strike Battle Map as the primary
+ * "is the market dampening or amplifying?" read. NDX was dropped
+ * 2026-05-16 (see api/_lib/zero-gamma-tickers.ts for rationale).
  *
  * Each cell maps a `zero_gamma_levels` row through the pure classifier
  * to one of: `long-γ`, `short-γ`, `transition`, `uncertain`.
@@ -41,7 +42,7 @@ import {
 import { Cell } from './Cell';
 import { MinuteScrubber } from '../StrikeBattleMap/MinuteScrubber';
 
-const TICKERS = ['SPX', 'NDX', 'SPY', 'QQQ'] as const;
+const TICKERS = ['SPX', 'SPY', 'QQQ'] as const;
 type Ticker = (typeof TICKERS)[number];
 
 interface DealerRegimeTileProps {
@@ -146,7 +147,7 @@ function DealerRegimeTileInner({ marketOpen }: DealerRegimeTileProps) {
   return (
     <SectionBox label="Dealer Regime" headerRight={headerRight} collapsible>
       <p className="text-secondary mb-3 font-sans text-xs">
-        Dealer-gamma regime at spot for SPX, NDX, SPY, QQQ.{' '}
+        Dealer-gamma regime at spot for SPX, SPY, QQQ.{' '}
         <span className="text-sky-300">Long γ</span> = dampening
         (mean-reverting), <span className="text-amber-300">short γ</span> =
         amplifying (acceleration-prone),{' '}

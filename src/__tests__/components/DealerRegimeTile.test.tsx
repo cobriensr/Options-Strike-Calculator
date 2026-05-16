@@ -33,7 +33,7 @@ afterEach(() => {
 });
 
 function row(
-  ticker: 'SPX' | 'NDX' | 'SPY' | 'QQQ',
+  ticker: 'SPX' | 'SPY' | 'QQQ',
   overrides: Partial<DealerRegimeRow> = {},
 ): DealerRegimeRow {
   return {
@@ -93,15 +93,15 @@ describe('DealerRegimeTile', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(/network blip/i);
   });
 
-  it('renders all four ticker cells on the happy path', () => {
-    mockHook.mockReturnValue(
-      ret([row('SPX'), row('NDX'), row('SPY'), row('QQQ')]),
-    );
+  it('renders all three ticker cells on the happy path', () => {
+    mockHook.mockReturnValue(ret([row('SPX'), row('SPY'), row('QQQ')]));
     render(<DealerRegimeTile marketOpen={true} />);
     expect(screen.getByTestId('dealer-regime-cell-SPX')).toBeInTheDocument();
-    expect(screen.getByTestId('dealer-regime-cell-NDX')).toBeInTheDocument();
     expect(screen.getByTestId('dealer-regime-cell-SPY')).toBeInTheDocument();
     expect(screen.getByTestId('dealer-regime-cell-QQQ')).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('dealer-regime-cell-NDX'),
+    ).not.toBeInTheDocument();
   });
 
   it('classifies fresh rows with positive net γ + clear zero-gamma as long-γ', () => {
@@ -160,12 +160,12 @@ describe('DealerRegimeTile', () => {
   });
 
   it('shows uncertain placeholder cells for tickers absent from the response', () => {
-    // Only SPX returned; NDX/SPY/QQQ should still render with uncertain.
+    // Only SPX returned; SPY/QQQ should still render with uncertain.
     mockHook.mockReturnValue(ret([row('SPX')]));
     render(<DealerRegimeTile marketOpen={true} />);
-    const ndx = screen.getByTestId('dealer-regime-cell-NDX');
-    expect(ndx.textContent).toMatch(/uncertain/);
-    expect(ndx.textContent).toMatch(/—/); // placeholder dash for missing values
+    const spy = screen.getByTestId('dealer-regime-cell-SPY');
+    expect(spy.textContent).toMatch(/uncertain/);
+    expect(spy.textContent).toMatch(/—/); // placeholder dash for missing values
   });
 
   it('formats net gamma as a signed abbreviation', () => {
@@ -212,5 +212,5 @@ describe('DealerRegimeTile', () => {
 });
 
 function happyPathReturn(): UseDealerRegimeReturn {
-  return ret([row('SPX'), row('NDX'), row('SPY'), row('QQQ')]);
+  return ret([row('SPX'), row('SPY'), row('QQQ')]);
 }

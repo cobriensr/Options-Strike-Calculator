@@ -1,17 +1,26 @@
 /**
  * Cross-asset zero-gamma ticker config.
  *
- * Single source of truth for the four tickers we run zero-gamma on, plus the
+ * Single source of truth for the tickers we run zero-gamma on, plus the
  * per-ticker primary-expiry policy. Both `fetch-strike-exposure` (ingest) and
  * `compute-zero-gamma` (compute) import from here so the ingest cron and the
  * derivative cron can never disagree about which tickers exist or which
  * expiry the zero-gamma level should be computed against.
  *
+ * NDX was dropped from `ZERO_GAMMA_TICKERS` on 2026-05-16: UW's
+ * /spot-exposures/expiry-strike only carries NDX monthlies, and on the
+ * morning of every monthly expiry the front-month roll has near-zero OI
+ * in the ATM window — `loadLatestSnapshot` consistently rejected the
+ * snapshot and the Dealer Regime tile rendered "no data" for NDX nearly
+ * every session. NDX remains in the `ZeroGammaTicker` type because
+ * `getPrimaryExpiry('NDX', ...)` is still called by `db-gex-strike-expiry`
+ * and `fetch-gex-strike-expiry-etfs` (Strike Battle Map path).
+ *
  * See docs/superpowers/specs/cross-asset-zero-gamma-2026-04-28.md.
  */
 
-export const ZERO_GAMMA_TICKERS = ['SPX', 'NDX', 'SPY', 'QQQ'] as const;
-export type ZeroGammaTicker = (typeof ZERO_GAMMA_TICKERS)[number];
+export const ZERO_GAMMA_TICKERS = ['SPX', 'SPY', 'QQQ'] as const;
+export type ZeroGammaTicker = 'SPX' | 'NDX' | 'SPY' | 'QQQ';
 
 /**
  * Third Friday of (year, month) — the standard NDX/SPX monthly expiration day.

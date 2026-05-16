@@ -47,7 +47,7 @@ import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
 
 function fakeRow(
-  ticker: 'SPX' | 'NDX' | 'SPY' | 'QQQ',
+  ticker: 'SPX' | 'SPY' | 'QQQ',
   overrides: Record<string, unknown> = {},
 ) {
   return {
@@ -155,11 +155,10 @@ describe('GET /api/dealer-regime', () => {
 
   it('returns mapped rows ordered to match ZERO_GAMMA_TICKERS', async () => {
     // Return out of order; the helper re-orders to match the canonical
-    // SPX, NDX, SPY, QQQ sequence.
+    // SPX, SPY, QQQ sequence.
     mockSql.mockResolvedValueOnce([
       fakeRow('QQQ', { spot: '674.0000', zero_gamma: '667.3309' }),
       fakeRow('SPX', { spot: '7230.0000', zero_gamma: null }),
-      fakeRow('NDX', { spot: '27710.0000', zero_gamma: '27269.9407' }),
       fakeRow('SPY', { spot: '720.6000', zero_gamma: '705.6628' }),
     ]);
     const req = mockRequest({ method: 'GET', query: {} });
@@ -172,7 +171,7 @@ describe('GET /api/dealer-regime', () => {
       asOf: string;
     };
     const rows = body.rows;
-    expect(rows.map((r) => r.ticker)).toEqual(['SPX', 'NDX', 'SPY', 'QQQ']);
+    expect(rows.map((r) => r.ticker)).toEqual(['SPX', 'SPY', 'QQQ']);
 
     // Spot-check numeric coercion on the SPX row (zero_gamma was null).
     expect(rows[0]).toMatchObject({
@@ -182,7 +181,7 @@ describe('GET /api/dealer-regime', () => {
       confidence: 0.392,
       netGammaAtSpot: 3500000000,
     });
-    expect(rows[1]).toMatchObject({ ticker: 'NDX', spot: 27710 });
+    expect(rows[1]).toMatchObject({ ticker: 'SPY', spot: 720.6 });
   });
 
   it('omits absent tickers without padding the response', async () => {

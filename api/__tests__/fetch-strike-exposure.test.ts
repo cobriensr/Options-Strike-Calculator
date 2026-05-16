@@ -25,15 +25,13 @@ import handler from '../cron/fetch-strike-exposure.js';
 import logger from '../_lib/logger.js';
 
 // Fixed market-hours time: Tuesday 10:00 AM ET (2026-03-24).
-// 2026-03-24 is past March's 3rd Friday (March 20) so NDX rolls to
-// April's 3rd Friday (2026-04-17).
 const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
 const OFF_HOURS_TIME = new Date('2026-03-24T11:00:00.000Z');
 const WEEKEND_TIME = new Date('2026-03-28T14:00:00.000Z');
 
-// 5 (ticker, expiry) tasks per cron invocation:
-//   SPX × 2 (today + tomorrow), NDX × 1 (front Mon/Wed/Fri), SPY × 1, QQQ × 1
-const EXPECTED_TASKS = 5;
+// 4 (ticker, expiry) tasks per cron invocation:
+//   SPX × 2 (today + tomorrow), SPY × 1, QQQ × 1
+const EXPECTED_TASKS = 4;
 
 function makeStrikeRow(overrides = {}) {
   return {
@@ -201,7 +199,7 @@ describe('fetch-strike-exposure handler', () => {
 
   // ── Happy path ────────────────────────────────────────────
 
-  it('fetches all 4 tickers, stores per-ticker rows, and returns 200', async () => {
+  it('fetches all 3 tickers, stores per-ticker rows, and returns 200', async () => {
     process.env.UW_API_KEY = 'uwkey';
     stubFetch([makeStrikeRow()]);
 
@@ -218,15 +216,15 @@ describe('fetch-strike-exposure handler', () => {
       totalStored: EXPECTED_TASKS,
       totalSkipped: 0,
     });
-    // 5 transactions: SPX × 2, NDX × 1, SPY × 1, QQQ × 1
+    // 4 transactions: SPX × 2, SPY × 1, QQQ × 1
     expect(mockTransaction).toHaveBeenCalledTimes(EXPECTED_TASKS);
 
     // Per-ticker bucket sanity
     const json = res._json as { perTicker: Record<string, unknown> };
     expect(json.perTicker.SPX).toMatchObject({ totalStored: 2 });
-    expect(json.perTicker.NDX).toMatchObject({ totalStored: 1 });
     expect(json.perTicker.SPY).toMatchObject({ totalStored: 1 });
     expect(json.perTicker.QQQ).toMatchObject({ totalStored: 1 });
+    expect(json.perTicker.NDX).toBeUndefined();
   });
 
   it('fans out to per-ticker UW URLs', async () => {
@@ -248,37 +246,16 @@ describe('fetch-strike-exposure handler', () => {
     expect(urls.some((u) => u.includes('/stock/SPX/spot-exposures'))).toBe(
       true,
     );
-    expect(urls.some((u) => u.includes('/stock/NDX/spot-exposures'))).toBe(
-      true,
-    );
     expect(urls.some((u) => u.includes('/stock/SPY/spot-exposures'))).toBe(
       true,
     );
     expect(urls.some((u) => u.includes('/stock/QQQ/spot-exposures'))).toBe(
       true,
     );
-  });
-
-  it('uses April 3rd-Friday 2026-04-17 as NDX front monthly on 2026-03-24', async () => {
-    process.env.UW_API_KEY = 'uwkey';
-    const fetchSpy = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ data: [makeStrikeRow()] }),
-    });
-    vi.stubGlobal('fetch', fetchSpy);
-
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
-
-    const ndxCall = (fetchSpy.mock.calls as unknown[][]).find((c) =>
-      String(c[0]).includes('/stock/NDX/spot-exposures'),
+    // NDX was dropped 2026-05-16; no UW call should hit /stock/NDX.
+    expect(urls.some((u) => u.includes('/stock/NDX/spot-exposures'))).toBe(
+      false,
     );
-    expect(ndxCall).toBeDefined();
-    expect(String(ndxCall![0])).toContain('2026-04-17');
   });
 
   it('returns success with zero rows when API returns empty data', async () => {
@@ -356,9 +333,12 @@ describe('fetch-strike-exposure handler', () => {
 
   it('respects per-ticker ATM windows', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    // Strike 5810 is within ALL ticker windows when price=5800.5
-    // (SPX ±200, NDX ±500, SPY ±20, QQQ ±20). Strike 5900 is in SPX/NDX
-    // but out of SPY/QQQ. Strike 6100 is only in NDX (out of SPX ±200).
+    // At price=5800.5 the active windows are SPX ±200 (5600.5–6000.5),
+    // SPY ±20 (5780.5–5820.5), QQQ ±20 (5780.5–5820.5).
+    //   - 5810 → in all three.
+    //   - 5900 → in SPX only.
+    //   - 6100 → outside every active window (proves the SPX ±200 filter
+    //     also rejects far-OTM strikes; was previously the NDX-only row).
     const rows = [
       makeStrikeRow({ strike: '5810', price: '5800.5' }),
       makeStrikeRow({ strike: '5900', price: '5800.5' }),
@@ -376,10 +356,8 @@ describe('fetch-strike-exposure handler', () => {
     const json = res._json as {
       perTicker: Record<string, { totalStored: number }>;
     };
-    // SPX × 2 expiries × 2 strikes (5810, 5900) = 4
+    // SPX × 2 expiries × 2 strikes (5810, 5900; 6100 rejected) = 4
     expect(json.perTicker.SPX!.totalStored).toBe(4);
-    // NDX × 1 expiry × 3 strikes = 3
-    expect(json.perTicker.NDX!.totalStored).toBe(3);
     // SPY × 1 expiry × 1 strike (only 5810) = 1
     expect(json.perTicker.SPY!.totalStored).toBe(1);
     // QQQ × 1 expiry × 1 strike = 1

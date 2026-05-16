@@ -1,12 +1,13 @@
 /**
  * ZeroGammaPanel — Cross-asset zero-gamma regime dashboard.
  *
- * Renders one card per cross-asset ticker (SPX, NDX, SPY, QQQ) showing the
+ * Renders one card per cross-asset ticker (SPX, SPY, QQQ) showing the
  * current spot, the zero-gamma level (dealer net gamma flip), distance
  * from spot, and a sparkline comparing spot drift vs zero-gamma drift over
- * the most recent 100 snapshots.
+ * the most recent 100 snapshots. NDX was dropped 2026-05-16 (see
+ * api/_lib/zero-gamma-tickers.ts for rationale).
  *
- * Date scrubber: a single date input above the cards switches all four
+ * Date scrubber: a single date input above the cards switches all three
  * tickers between LIVE mode (today, polling every minute during market
  * hours) and HISTORICAL mode (a past calendar date, one-shot fetch of
  * that day's snapshots, no polling).
@@ -19,7 +20,7 @@
  *   - spot WITHIN ~0.3% of ZG → KNIFE EDGE (the eye of the storm)
  *
  * Per the cross-asset zero-gamma spec
- * (docs/superpowers/specs/cross-asset-zero-gamma-2026-04-28.md), all four
+ * (docs/superpowers/specs/cross-asset-zero-gamma-2026-04-28.md), all
  * tickers' data is computed by the same compute-zero-gamma cron and
  * exposed via /api/zero-gamma?ticker=X[&date=Y].
  */
@@ -34,7 +35,7 @@ import { getETToday } from '../../utils/timezone';
 const ZG_DATE_TIP = (
   <>
     <strong>Replay any past trading day.</strong> Picking a past date freezes
-    polling and shows that day's zero-gamma snapshot history for all four
+    polling and shows that day's zero-gamma snapshot history for all three
     tickers.
   </>
 );
@@ -46,7 +47,7 @@ const ZG_LIVE_TIP = (
   </>
 );
 
-const TICKERS = ['SPX', 'NDX', 'SPY', 'QQQ'] as const;
+const TICKERS = ['SPX', 'SPY', 'QQQ'] as const;
 
 interface ZeroGammaPanelProps {
   marketOpen: boolean;
@@ -92,10 +93,10 @@ function ZeroGammaPanelInner({ marketOpen }: ZeroGammaPanelProps) {
   return (
     <SectionBox label="Zero Gamma" headerRight={headerRight} collapsible>
       <p className="text-secondary mb-3 font-sans text-xs">
-        Regime boundary across SPX / NDX / SPY / QQQ. Spot above ZG =
-        suppression; spot below = acceleration.
+        Regime boundary across SPX / SPY / QQQ. Spot above ZG = suppression;
+        spot below = acceleration.
       </p>
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
         {TICKERS.map((ticker) => (
           <TickerCardContainer
             key={ticker}

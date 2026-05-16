@@ -20,7 +20,7 @@ import { getErrorMessage } from '../utils/error';
 import { getAccessMode } from '../utils/auth';
 
 export interface DealerRegimeRow {
-  ticker: 'SPX' | 'NDX' | 'SPY' | 'QQQ';
+  ticker: 'SPX' | 'SPY' | 'QQQ';
   ts: string;
   spot: number;
   zeroGamma: number | null;
