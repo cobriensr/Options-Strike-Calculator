@@ -97,6 +97,7 @@ function makeFire(overrides: Partial<LotteryFire> = {}): LotteryFire {
       enrichedAt: '2026-05-14T20:00:00Z',
     },
     hoursToNextMacroEvent: null,
+    rangePosAtTrigger: null,
     insertedAt: '2026-05-14T19:31:00Z',
     ...overrides,
   };
@@ -252,6 +253,50 @@ describe('LotteryFinderTickerGroup', () => {
     expect(
       screen.getByTestId('lottery-macro-window-badge'),
     ).toBeInTheDocument();
+  });
+
+  it('renders the TOP-RANGE badge when rangePosAtTrigger ≥ 0.90', () => {
+    render(
+      <LotteryFinderTickerGroup
+        ticker="TSLA"
+        fires={[
+          makeFire({
+            optionChainId: 'TSLA-top',
+            rangePosAtTrigger: 0.95,
+          }),
+        ]}
+        expanded={true}
+        onToggle={() => undefined}
+        marketOpen={true}
+        exitPolicy={EXIT_POLICY}
+      />,
+    );
+    expect(screen.getByTestId('lottery-top-range-badge')).toBeInTheDocument();
+  });
+
+  it('omits the TOP-RANGE badge when rangePosAtTrigger is below 0.90 or null', () => {
+    render(
+      <LotteryFinderTickerGroup
+        ticker="TSLA"
+        fires={[
+          makeFire({
+            optionChainId: 'TSLA-mid',
+            rangePosAtTrigger: 0.5,
+          }),
+          makeFire({
+            optionChainId: 'TSLA-null',
+            rangePosAtTrigger: null,
+          }),
+        ]}
+        expanded={true}
+        onToggle={() => undefined}
+        marketOpen={true}
+        exitPolicy={EXIT_POLICY}
+      />,
+    );
+    expect(
+      screen.queryByTestId('lottery-top-range-badge'),
+    ).not.toBeInTheDocument();
   });
 
   it('omits the Macro Window badge when hoursToNextMacroEvent is outside [24, 72]', () => {

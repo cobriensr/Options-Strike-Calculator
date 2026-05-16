@@ -30,6 +30,7 @@ const SORT_LS_KEY = 'lottery.sortMode';
 const CONVICTION_LS_KEY = 'lottery.convictionFloor';
 const HIDE_LATE_PM_LS_KEY = 'lottery.hideLatePm';
 const HIDE_GATED_LS_KEY = 'lottery.hideGated';
+const HIDE_RANGE_BOTTOM_LS_KEY = 'lottery.hideRangeBottom';
 const AGGRESSIVE_PREMIUM_LS_KEY = 'lottery.aggressivePremium';
 const MONEYNESS_LS_KEY = 'lottery.moneynessMode';
 const TICKER_EXPANDED_LS_KEY = 'lottery-ticker-expanded';
@@ -67,6 +68,16 @@ const TIER2_MIN_SCORE = 12;
  */
 const AGGRESSIVE_PREMIUM_MIN_USD = 50_000;
 const AGGRESSIVE_PREMIUM_MAX_DTE = 3;
+
+/**
+ * Range Kill threshold — fires whose `rangePosAtTrigger` is below
+ * this value sit in the session-low cohort (2.4% win50 / 0.07× lift
+ * per the 2026-05-15 cross-section EDA). The chip hides them
+ * client-side; the score-bonus layer applies a separate -3 penalty
+ * for the same cohort so the cron-stored score reflects it server-
+ * side too.
+ */
+const RANGE_KILL_THRESHOLD = 0.1;
 
 /**
  * Moneyness chip — tri-state filter on strike vs. spot at first fire.
@@ -320,6 +331,10 @@ export function LotteryFinderSection({
     if (typeof window === 'undefined') return false;
     return window.localStorage.getItem(HIDE_GATED_LS_KEY) === '1';
   });
+  const [hideRangeBottom, setHideRangeBottom] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(HIDE_RANGE_BOTTOM_LS_KEY) === '1';
+  });
   const [aggressivePremium, setAggressivePremium] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     return window.localStorage.getItem(AGGRESSIVE_PREMIUM_LS_KEY) === '1';
@@ -357,6 +372,14 @@ export function LotteryFinderSection({
   useEffect(() => {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(
+        HIDE_RANGE_BOTTOM_LS_KEY,
+        hideRangeBottom ? '1' : '0',
+      );
+    }
+  }, [hideRangeBottom]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(
         AGGRESSIVE_PREMIUM_LS_KEY,
         aggressivePremium ? '1' : '0',
       );
@@ -385,6 +408,7 @@ export function LotteryFinderSection({
     sortMode,
     convictionFloor,
     hideGated,
+    hideRangeBottom,
     aggressivePremium,
     moneynessMode,
   ]);
@@ -505,11 +529,22 @@ export function LotteryFinderSection({
         return moneynessMode === 'otm' ? otm : !otm;
       });
     }
+    if (hideRangeBottom) {
+      // Suppress fires whose spot at trigger time sits in the bottom
+      // 10% of the underlying's session range. Null range_pos passes
+      // through (no signal data — don't penalize).
+      out = out.filter(
+        (f) =>
+          f.rangePosAtTrigger == null ||
+          f.rangePosAtTrigger >= RANGE_KILL_THRESHOLD,
+      );
+    }
     return out;
   }, [
     fires,
     hideLatePm,
     hideGated,
+    hideRangeBottom,
     aggressivePremium,
     moneynessMode,
     ctMinuteOfDay,
@@ -523,6 +558,13 @@ export function LotteryFinderSection({
     : 0;
   const hiddenGatedCount = hideGated
     ? fires.filter((f) => f.directionGated).length
+    : 0;
+  const hiddenRangeBottomCount = hideRangeBottom
+    ? fires.filter(
+        (f) =>
+          f.rangePosAtTrigger != null &&
+          f.rangePosAtTrigger < RANGE_KILL_THRESHOLD,
+      ).length
     : 0;
 
   // Top tickers from the dedicated all-day counts endpoint —
@@ -1045,6 +1087,23 @@ export function LotteryFinderSection({
               aria-pressed={aggressivePremium}
             >
               💎 aggressive premium
+            </button>
+            <button
+              type="button"
+              data-testid="lottery-hide-range-bottom-chip"
+              onClick={() => setHideRangeBottom(!hideRangeBottom)}
+              className={`${CHIP_BASE} ${
+                hideRangeBottom ? CHIP_ACTIVE.rose : CHIP_INACTIVE
+              }`}
+              title={`Range Kill: hide fires whose underlying spot sits in the bottom 10% of its session range at trigger time. 2026-05-15 EDA found this cohort has a 2.4% win50 rate vs 35.7% baseline (0.07× lift) — near-zero edge. Score also gets a -3 penalty server-side. Fires with no range_pos (legacy or UW failure) pass through.`}
+              aria-pressed={hideRangeBottom}
+            >
+              hide range-bottom
+              {hideRangeBottom && hiddenRangeBottomCount > 0 && (
+                <span className="text-[10px] opacity-70">
+                  −{hiddenRangeBottomCount}
+                </span>
+              )}
             </button>
           </div>
 

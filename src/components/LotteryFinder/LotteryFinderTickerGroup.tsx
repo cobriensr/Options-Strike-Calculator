@@ -35,6 +35,15 @@ import {
 const LF_MACRO_WINDOW_LO_HOURS = 24;
 const LF_MACRO_WINDOW_HI_HOURS = 72;
 
+/**
+ * Range Kill top-band threshold — fires whose `rangePosAtTrigger` is
+ * at or above this value sit in the session-high cohort. The
+ * 2026-05-15 EDA found 1.30× win50 / 1.75× win100 lift on top-10%.
+ * Display-only badge; the bottom-10% kill chip lives on
+ * LotteryFinderSection.
+ */
+const LF_RANGE_TOP_THRESHOLD = 0.9;
+
 interface LotteryFinderTickerGroupProps {
   ticker: string;
   fires: LotteryFire[];
@@ -293,7 +302,20 @@ function LotteryFinderTickerGroupBase({
           // here (rather than inside LotteryRow) so the row component
           // is untouched while this badge is being rolled out.
           const hrs = f.hoursToNextMacroEvent;
-          const inMacroWindow = hrs != null && hrs >= LF_MACRO_WINDOW_LO_HOURS && hrs <= LF_MACRO_WINDOW_HI_HOURS;
+          const inMacroWindow =
+            hrs != null &&
+            hrs >= LF_MACRO_WINDOW_LO_HOURS &&
+            hrs <= LF_MACRO_WINDOW_HI_HOURS;
+          // Top-range badge — fires in the top 10% of session range
+          // at trigger time (rangePosAtTrigger ≥ 0.90) showed 1.30×
+          // win50 / 1.75× win100 lift per the 2026-05-15 EDA.
+          // Display-only mirror of the bottom-10% "Range Kill" chip
+          // that lives in LotteryFinderSection. Rendered here for the
+          // same reason as the macro badge: keeps LotteryRow
+          // untouched while the parallel session has it dirty.
+          const rangePos = f.rangePosAtTrigger;
+          const inTopRange =
+            rangePos != null && rangePos >= LF_RANGE_TOP_THRESHOLD;
           // Key by chain (server response is chain-day-deduped to one
           // row per chain, so optionChainId is unique within the
           // group). Matches the existing LotteryFinderSection key.
@@ -306,6 +328,17 @@ function LotteryFinderTickerGroupBase({
                   title={`Trigger fires ${Math.round(hrs)}h before the next high-impact economic event (FOMC/CPI/PCE/JOBS). 2026-05-15 EDA found 1.32× win50 / 1.56× win100 lift on fires in the 24-72h window. Display-only.`}
                 >
                   📅 MACRO {Math.round(hrs)}h
+                </span>
+              )}
+              {inTopRange && (
+                <span
+                  data-testid="lottery-top-range-badge"
+                  className={`absolute z-10 rounded border border-emerald-500/60 bg-emerald-950/60 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-200 ${
+                    inMacroWindow ? 'right-2 top-8' : 'right-2 top-2'
+                  }`}
+                  title={`Underlying spot is in the top 10% of its session range at trigger time (range_pos = ${rangePos.toFixed(2)}). 2026-05-15 EDA found 1.30× win50 / 1.75× win100 lift on this cohort. Display-only.`}
+                >
+                  📍 TOP-RANGE
                 </span>
               )}
               <LotteryRow

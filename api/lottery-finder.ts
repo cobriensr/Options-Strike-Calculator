@@ -109,6 +109,10 @@ interface FireRow {
   // raw `score` is preserved on the row; the feed overrides the
   // displayed `scoreTier` to 'tier3' when this flag is set.
   direction_gated: boolean;
+  // Range Kill (migration #153). Position of spot_at_first within the
+  // underlying's session range at trigger_time_ct ∈ [0, 1]. NULL on
+  // pre-#153 fires + new fires where the UW candle fetch failed.
+  range_pos_at_trigger: DbNullableNumeric;
   ticker_n_fires: number | null;
   ticker_high_peak_rate: DbNullableNumeric;
   ticker_ci_lower: DbNullableNumeric;
@@ -279,7 +283,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.realized_eod_pct,
           f.peak_ceiling_pct, f.minutes_to_peak,
           f.inserted_at, f.enriched_at,
-          f.score, f.direction_gated, f.fire_count, f.first_fire_time_ct,
+          f.score, f.direction_gated, f.range_pos_at_trigger,
+          f.fire_count, f.first_fire_time_ct,
           s.n_fires AS ticker_n_fires,
           s.high_peak_rate AS ticker_high_peak_rate,
           s.ci_lower AS ticker_ci_lower,
@@ -342,7 +347,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.realized_eod_pct,
           f.peak_ceiling_pct, f.minutes_to_peak,
           f.inserted_at, f.enriched_at,
-          f.score, f.direction_gated, f.fire_count, f.first_fire_time_ct,
+          f.score, f.direction_gated, f.range_pos_at_trigger,
+          f.fire_count, f.first_fire_time_ct,
           s.n_fires AS ticker_n_fires,
           s.high_peak_rate AS ticker_high_peak_rate,
           s.ci_lower AS ticker_ci_lower,
@@ -404,7 +410,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.realized_eod_pct,
           f.peak_ceiling_pct, f.minutes_to_peak,
           f.inserted_at, f.enriched_at,
-          f.score, f.direction_gated, f.fire_count, f.first_fire_time_ct,
+          f.score, f.direction_gated, f.range_pos_at_trigger,
+          f.fire_count, f.first_fire_time_ct,
           s.n_fires AS ticker_n_fires,
           s.high_peak_rate AS ticker_high_peak_rate,
           s.ci_lower AS ticker_ci_lower,
@@ -613,6 +620,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         // with a "MACRO" badge — 2026-05-15 EDA found 1.32× win50 /
         // 1.56× win100 lift on N=17,465 in that bucket.
         hoursToNextMacroEvent: hoursToNextMacroEvent(r.trigger_time_ct),
+
+        // Position of spot at trigger time within the underlying's
+        // session range ∈ [0, 1]. The UI uses this for the Range Kill
+        // filter chip (hide bottom-10%) and the top-range badge.
+        // Null for pre-#153 rows + new fires whose UW candle fetch
+        // failed; the score-bonus -3 penalty applies only when the
+        // value is < 0.10, so null rows score with their original
+        // weights.
+        rangePosAtTrigger: num(r.range_pos_at_trigger),
 
         insertedAt: toIso(r.inserted_at),
       };

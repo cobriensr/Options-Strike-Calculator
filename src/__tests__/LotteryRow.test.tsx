@@ -134,6 +134,7 @@ function makeFire(overrides: Partial<LotteryFire> = {}): LotteryFire {
       enrichedAt: '2026-05-08T20:00:00Z',
     },
     hoursToNextMacroEvent: null,
+    rangePosAtTrigger: null,
     insertedAt: '2026-05-08T14:31:00Z',
     ...overrides,
   };
