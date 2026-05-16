@@ -19,8 +19,9 @@ the index futures.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -36,10 +37,35 @@ log = logging.getLogger("setups_backtest.setup_3")
 SWEEP_WINDOW_MIN = 15  # first 15min of RTH
 STOP_BUFFER_POINTS = 1.0  # 1pt past the swept extreme
 
+# Econ-calendar CSV (FOMC / CPI / NFP / PCE). Curated, ~50 events / year.
+# Lives next to the harness sources rather than ml/data/ (which is gitignored).
+ECON_CALENDAR_PATH = Path(__file__).resolve().parents[1] / "econ_calendar.csv"
+
+
+def _load_econ_dates() -> set[date]:
+    """Load disqualifier dates from the curated econ-calendar CSV.
+
+    Returns empty set if file missing (silent fail — disqualifier just won't fire).
+    """
+    if not ECON_CALENDAR_PATH.exists():
+        log.warning("Setup 3: econ_calendar.csv not found at %s", ECON_CALENDAR_PATH)
+        return set()
+    df = pd.read_csv(ECON_CALENDAR_PATH)
+    if "date" not in df.columns:
+        return set()
+    out: set[date] = set()
+    for s in df["date"]:
+        try:
+            out.add(pd.Timestamp(s).date())
+        except (TypeError, ValueError):
+            continue
+    return out
+
 
 @dataclass
 class _Setup3Context:
     conn: Any
+    econ_dates: set[date] = field(default_factory=set)
 
 
 @dataclass
@@ -56,14 +82,16 @@ class _OvernightSweepEvaluator:
         "sweeps one extreme (probably stop-running) then reverts inside the "
         "range. Reversion = failed auction → fade the sweep toward the "
         "opposite extreme.\n\n"
-        "**Econ-calendar disqualifier skipped.** No calendar feed in this "
-        "backtest. CPI/FOMC/payrolls days will fire just like any other; "
-        "flagged in metadata so the comparative report can discuss noise."
+        "**Econ-calendar disqualifier enabled.** Curated CSV at "
+        "``ml/data/econ_calendar.csv`` lists FOMC / CPI / NFP / PCE dates "
+        "over 2025-04 → 2026-04 (~50 events). If today is one of those "
+        "dates, the signal is skipped — sweeps on news days are news-driven, "
+        "not auction-failure."
     )
 
     def prepare(self, conn, pg, start: date, end: date) -> _Setup3Context:
         del pg, start, end
-        return _Setup3Context(conn=conn)
+        return _Setup3Context(conn=conn, econ_dates=_load_econ_dates())
 
     def evaluate_minute(
         self,
@@ -80,6 +108,11 @@ class _OvernightSweepEvaluator:
 
         es_contract = str(bars["symbol"].iloc[-1])
         today = pd.Timestamp(now).date()
+
+        # Econ-calendar disqualifier — sweeps on FOMC/CPI/NFP/PCE days are
+        # news-driven, not auction-failure. Skip.
+        if today in ctx.econ_dates:
+            return None
 
         # ETH session bounds (uses features.eth_session_bounds).
         eth_start, rth_open = features.eth_session_bounds(pd.Timestamp(today))

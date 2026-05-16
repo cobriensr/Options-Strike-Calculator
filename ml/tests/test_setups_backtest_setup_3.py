@@ -134,6 +134,26 @@ def test_no_signal_when_swept_but_not_reverted(monkeypatch):
     assert sig is None
 
 
+def test_econ_calendar_disqualifies(monkeypatch):
+    """When today is in ctx.econ_dates, the signal must be skipped even if all
+    other trigger conditions hold."""
+    from datetime import date as date_cls
+
+    eth = _eth_bars(low=5990, high=6010)
+    rth_rows = [(6000, 6005, 5998, 6002)] * 5 + [(6010, 6015, 6008, 6013)] + [(6010, 6013, 6000, 6005)] * 9
+    bars = _bars_15(rth_rows)
+    decision_ts = bars["ts"].iloc[-1] + pd.Timedelta(minutes=1)
+
+    from setups_backtest.evaluators import setup_3_overnight_sweep as mod
+
+    monkeypatch.setattr(mod.data_loaders, "load_ohlcv_range", lambda *a, **k: eth)
+
+    # Today (2026-04-15) is in econ_dates — should skip even though pattern holds.
+    ctx = _Setup3Context(conn=None, econ_dates={date_cls(2026, 4, 15)})
+    sig = EVALUATOR.evaluate_minute(decision_ts, ctx, bars)
+    assert sig is None
+
+
 def test_no_signal_when_bars_not_15(monkeypatch):
     """The evaluator must only fire on the exact minute 15 close."""
     eth = _eth_bars(low=5990, high=6010)
