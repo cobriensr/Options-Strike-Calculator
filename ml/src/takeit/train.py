@@ -358,6 +358,19 @@ def train_one_alert_type(
         brier_ok=oof_brier < BRIER_ALERT_THRESHOLD,
     )
 
+    # Phase 3a: also emit the JSON bundle the TS scorer + Vercel Blob need.
+    # Lives next to the joblib; upload_to_blob.py (Phase 3e) pushes it.
+    from ml.src.takeit.export_model import export_bundle  # lazy: avoid circular import
+
+    json_path = out_dir / f"{alert_type}_classifier.json"
+    export_bundle(
+        bundle,
+        metrics={
+            k: v for k, v in asdict(summary).items() if k != "fold_metrics"
+        },
+        out_path=json_path,
+    )
+
     # Persist metrics JSON.
     with open(findings_dir / f"{alert_type}_metrics.json", "w") as f:
         json.dump(

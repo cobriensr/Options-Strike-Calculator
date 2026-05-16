@@ -4409,4 +4409,50 @@ export const MIGRATIONS: Migration[] = [
             ADD COLUMN IF NOT EXISTS range_pos_at_trigger NUMERIC`,
     ],
   },
+  {
+    id: 154,
+    description:
+      'Add round_trip_net_pct + round_trip_score_deduct columns to lottery_finder_fires AND silent_boom_alerts (spec: docs/superpowers/specs/round-trip-score-deduct-production-2026-05-16.md). round_trip_net_pct stores post_fire_net_pct_of_volume from a 60-min look-forward window on the alert contract: (ask_size − bid_size) / total_size using per-print tag classification (NOT the cumulative *_vol fields — see memory feedback_uw_fulltape_vols_cumulative.md). Negative values indicate post-fire bid-side flow dominated (likely round-trip / position closed). Phase 1 EDA on 641,638 enriched alerts × 92 days fulltape showed AUC 0.59 cohort-uniform, with signal concentrated in 0-7 DTE (collapses to ~random above). round_trip_score_deduct is the stepped-bracket penalty: < −0.50 → −3, [−0.50, −0.30) → −2, [−0.30, −0.10) → −1, else 0. NOT NULL DEFAULT 0 so existing rows read as un-penalized. Populated by api/cron/evaluate-round-trip.ts 60-75 min after fire (Phase 2B), DTE ≤ 7 only. Backfill via scripts/backfill_round_trip_score.py from the existing alert_features.parquet (Phase 2A). Partial index on negative deducts is small (~30% of rows) and supports the "Hide round-tripped" filter chip queries.',
+    statements: (sql) => [
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS round_trip_net_pct NUMERIC`,
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS round_trip_score_deduct SMALLINT NOT NULL DEFAULT 0`,
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS round_trip_net_pct NUMERIC`,
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS round_trip_score_deduct SMALLINT NOT NULL DEFAULT 0`,
+      sql`CREATE INDEX IF NOT EXISTS lottery_finder_fires_rt_deduct_idx
+            ON lottery_finder_fires (round_trip_score_deduct)
+            WHERE round_trip_score_deduct < 0`,
+      sql`CREATE INDEX IF NOT EXISTS silent_boom_alerts_rt_deduct_idx
+            ON silent_boom_alerts (round_trip_score_deduct)
+            WHERE round_trip_score_deduct < 0`,
+    ],
+  },
+  {
+    id: 155,
+    description:
+      'Add takeit_prob + takeit_top_features + takeit_model_version columns to lottery_finder_fires AND silent_boom_alerts (spec: docs/superpowers/specs/takeit-phase3-production-scoring-2026-05-16.md). takeit_prob is the calibrated P(peak_ceiling_pct ≥ 20) from the XGBoost classifier (range [0,1], computed in TS at detect time via api/_lib/takeit-score.ts walking the XGBoost JSON tree dump fetched from Vercel Blob). takeit_top_features is the SHAP top-3 green + top-3 red flags ({"positive": [...], "negative": [...]}) populated ~2 min post-fire by api/cron/takeit-fill-shap.ts calling the sidecar /takeit/explain endpoint. takeit_model_version is the bundle version string (e.g. "v2026-05-23"); enables idempotent backfill and version-aware filtering. Partial index on (date DESC, takeit_prob DESC) WHERE takeit_prob IS NOT NULL supports the future "sort feed by prob" queries. Phase 2 OOF AUC: lottery 0.6991 (+8.5pp over heuristic), silentboom 0.7667 (+4.2pp). Backfill via scripts/backfill_takeit.py.',
+    statements: (sql) => [
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS takeit_prob NUMERIC`,
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS takeit_top_features JSONB`,
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS takeit_model_version TEXT`,
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS takeit_prob NUMERIC`,
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS takeit_top_features JSONB`,
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS takeit_model_version TEXT`,
+      sql`CREATE INDEX IF NOT EXISTS lottery_finder_fires_takeit_prob_idx
+            ON lottery_finder_fires (date DESC, takeit_prob DESC)
+            WHERE takeit_prob IS NOT NULL`,
+      sql`CREATE INDEX IF NOT EXISTS silent_boom_alerts_takeit_prob_idx
+            ON silent_boom_alerts (date DESC, takeit_prob DESC)
+            WHERE takeit_prob IS NOT NULL`,
+    ],
+  },
 ];
