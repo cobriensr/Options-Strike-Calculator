@@ -289,6 +289,57 @@ describe('SilentBoomSection: filter interactions', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('flips the hide-round-tripped aria-pressed state and persists to localStorage', () => {
+    render(<SilentBoomSection marketOpen={false} />);
+    const chip = screen.getByTestId('silent-boom-hide-round-tripped-chip');
+    expect(chip).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(chip);
+    expect(chip).toHaveAttribute('aria-pressed', 'true');
+    expect(window.localStorage.getItem('silentBoom.hideRoundTripped')).toBe(
+      '1',
+    );
+  });
+
+  it('drops alerts with roundTripScoreDeduct < 0 when hide-round-tripped is on', () => {
+    const alerts = [
+      makeAlert({
+        id: 1,
+        optionChainId: 'AAPL260508C00200000',
+        roundTripScoreDeduct: 0,
+      }),
+      makeAlert({
+        id: 2,
+        optionChainId: 'SPY260508P00500000',
+        underlyingSymbol: 'SPY',
+        optionType: 'P',
+        strike: 500,
+        roundTripScoreDeduct: -3,
+      }),
+    ];
+    mockUseSilentBoomFeed.mockReturnValue({
+      ...defaultHookResult,
+      alerts,
+      total: 2,
+    });
+
+    render(<SilentBoomSection marketOpen={false} />);
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('silent-boom-row-SPY260508P00500000'),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('silent-boom-hide-round-tripped-chip'));
+
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('silent-boom-row-SPY260508P00500000'),
+    ).not.toBeInTheDocument();
+  });
+
   it('filters to OTM-only alerts when the OTM moneyness chip is selected', () => {
     const alerts = [
       makeAlert({

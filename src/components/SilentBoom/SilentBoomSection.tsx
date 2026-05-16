@@ -33,6 +33,7 @@ const CONVICTION_LS_KEY = 'silentBoom.convictionFloor';
 const HIDE_LATE_PM_LS_KEY = 'silentBoom.hideLatePm';
 const HIDE_GHOSTS_LS_KEY = 'silentBoom.hideGhosts';
 const HIDE_GATED_LS_KEY = 'silentBoom.hideGated';
+const HIDE_ROUND_TRIPPED_LS_KEY = 'silentBoom.hideRoundTripped';
 const AGGRESSIVE_PREMIUM_LS_KEY = 'silentBoom.aggressivePremium';
 const MONEYNESS_LS_KEY = 'silentBoom.moneynessMode';
 const EXIT_POLICY_LS_KEY = 'silentBoom.exitPolicy';
@@ -467,6 +468,13 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     if (typeof window === 'undefined') return false;
     return window.localStorage.getItem(HIDE_GATED_LS_KEY) === '1';
   });
+  // "Hide round-tripped" — filters out alerts where the round-trip
+  // cron applied a non-zero score deduct. Default OFF; persists locally.
+  // Spec: docs/superpowers/specs/round-trip-score-deduct-production-2026-05-16.md
+  const [hideRoundTripped, setHideRoundTripped] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(HIDE_ROUND_TRIPPED_LS_KEY) === '1';
+  });
   // Aggressive Premium chip — single toggle that ANDs together the
   // trader's 5-criterion UW filter: premium ≥ $100K, DTE ≤ 8,
   // vol/OI > 1, single-leg, OTM. See server-side enforcement in
@@ -519,6 +527,14 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       window.localStorage.setItem(HIDE_GATED_LS_KEY, hideGated ? '1' : '0');
     }
   }, [hideGated]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(
+        HIDE_ROUND_TRIPPED_LS_KEY,
+        hideRoundTripped ? '1' : '0',
+      );
+    }
+  }, [hideRoundTripped]);
   useEffect(() => {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(
@@ -677,6 +693,9 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     if (hideGated) {
       out = out.filter((a) => !a.directionGated);
     }
+    if (hideRoundTripped) {
+      out = out.filter((a) => (a.roundTripScoreDeduct ?? 0) >= 0);
+    }
     if (moneynessMode !== 'all') {
       out = out.filter((a) => {
         const spot = a.underlyingPriceAtSpike;
@@ -692,6 +711,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     hideLatePm,
     hideGhosts,
     hideGated,
+    hideRoundTripped,
     moneynessMode,
     ctMinuteOfDay,
   ]);
@@ -711,6 +731,10 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
   const hiddenGatedCount =
     bucketIso == null && hideGated
       ? alerts.filter((a) => a.directionGated).length
+      : 0;
+  const hiddenRoundTrippedCount =
+    bucketIso == null && hideRoundTripped
+      ? alerts.filter((a) => (a.roundTripScoreDeduct ?? 0) < 0).length
       : 0;
 
   // Top tickers across the WHOLE day from the dedicated counts
@@ -1296,6 +1320,23 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
             </button>
             <button
               type="button"
+              data-testid="silent-boom-hide-round-tripped-chip"
+              onClick={() => setHideRoundTripped(!hideRoundTripped)}
+              className={`${CHIP_BASE} ${
+                hideRoundTripped ? CHIP_ACTIVE.amber : CHIP_INACTIVE
+              }`}
+              title="Hide round-tripped alerts — fires where (ask−bid)/total flow in the 60-min window after the alert was net bid-dominated (round_trip_score_deduct < 0). Phase 1 EDA on 641K alerts × 92 days: AUC 0.59 for predicting loss, concentrated in 0–7 DTE. Score deduct stays on the row; this chip hides the demoted alerts entirely. Client-side filter."
+              aria-pressed={hideRoundTripped}
+            >
+              hide round-tripped
+              {hideRoundTripped && hiddenRoundTrippedCount > 0 && (
+                <span className="text-[10px] opacity-70">
+                  −{hiddenRoundTrippedCount}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
               data-testid="silent-boom-aggressive-premium-chip"
               onClick={() => setAggressivePremium(!aggressivePremium)}
               className={`${CHIP_BASE} ${
@@ -1453,6 +1494,11 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 {hideGated && hiddenGatedCount > 0 && (
                   <span className="ml-2 text-amber-300/80">
                     ({hiddenGatedCount} counter-trend hidden)
+                  </span>
+                )}
+                {hideRoundTripped && hiddenRoundTrippedCount > 0 && (
+                  <span className="ml-2 text-amber-300/80">
+                    ({hiddenRoundTrippedCount} round-tripped hidden)
                   </span>
                 )}
               </span>

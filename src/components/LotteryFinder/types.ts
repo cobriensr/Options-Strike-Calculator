@@ -147,6 +147,15 @@ export interface LotteryFire {
    * "Hide counter-trend" filter chip.
    */
   directionGated: boolean;
+  /** Pre-deduct score as stored on the row. Same as `score` when no
+   *  round-trip deduct has been applied (migration #154 / Phase 2C). */
+  rawScore?: number | null;
+  /** Post-fire (ask − bid) / total volume over a 60-min window from
+   *  the evaluate-round-trip cron. Null until that cron has run. */
+  roundTripNetPct?: number | null;
+  /** Stepped bracket deduct (0 / -1 / -2 / -3) applied to `score` at
+   *  read time. Drives the "Hide round-tripped" filter chip. */
+  roundTripScoreDeduct?: number;
   /** Predicted peak-return range string for the tier (display-only). */
   forecastHighPeakPct: string;
   /** Per-ticker reliability stats; `null` when no row exists. */

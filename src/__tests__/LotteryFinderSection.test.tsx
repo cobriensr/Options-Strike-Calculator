@@ -349,6 +349,56 @@ describe('LotteryFinderSection: filter interactions', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('flips the hide-round-tripped aria-pressed state and persists to localStorage', () => {
+    render(<LotteryFinderSection marketOpen={false} />);
+    const chip = screen.getByTestId('lottery-hide-round-tripped-chip');
+    expect(chip).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(chip);
+    expect(chip).toHaveAttribute('aria-pressed', 'true');
+    expect(window.localStorage.getItem('lottery.hideRoundTripped')).toBe('1');
+  });
+
+  it('drops fires with roundTripScoreDeduct < 0 when hide-round-tripped is on', () => {
+    const fires = [
+      makeFire({
+        id: 1,
+        optionChainId: 'AAPL260508C00200000',
+        roundTripScoreDeduct: 0,
+      }),
+      makeFire({
+        id: 2,
+        optionChainId: 'SPY260508P00500000',
+        underlyingSymbol: 'SPY',
+        optionType: 'P',
+        strike: 500,
+        roundTripScoreDeduct: -3,
+      }),
+    ];
+    mockUseLotteryFinder.mockReturnValue({
+      ...defaultHookResult,
+      fires,
+      total: 2,
+    });
+
+    render(<LotteryFinderSection marketOpen={false} />);
+
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('lottery-row-SPY260508P00500000'),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('lottery-hide-round-tripped-chip'));
+
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('lottery-row-SPY260508P00500000'),
+    ).not.toBeInTheDocument();
+  });
+
   it('flips the aggressive-premium aria-pressed state and persists to localStorage', () => {
     render(<LotteryFinderSection marketOpen={false} />);
     const chip = screen.getByTestId('lottery-aggressive-premium-chip');

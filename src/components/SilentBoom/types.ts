@@ -122,6 +122,16 @@ export interface SilentBoomAlert {
    * offers a "Hide counter-trend" filter chip.
    */
   directionGated: boolean;
+  /** Pre-deduct score as stored on the row. Same as `score` when no
+   *  round-trip deduct has been applied. */
+  rawScore?: number | null;
+  /** Post-fire (ask − bid) / total volume over a 60-min window
+   *  (Phase 2B cron / migration #154). Null until the evaluate-round-trip
+   *  cron has run for the alert. Range [-1, +1]. */
+  roundTripNetPct?: number | null;
+  /** Stepped bracket deduct (0 / -1 / -2 / -3) — applied to `score` at
+   *  read time, drives the "Hide round-tripped" filter chip. */
+  roundTripScoreDeduct?: number;
   /** Market Tide NCP - NPP at the spike-bucket time. Display-only
    *  context — not a selection signal (lottery_finder convention). */
   mktTideDiff: number | null;

@@ -30,6 +30,7 @@ const SORT_LS_KEY = 'lottery.sortMode';
 const CONVICTION_LS_KEY = 'lottery.convictionFloor';
 const HIDE_LATE_PM_LS_KEY = 'lottery.hideLatePm';
 const HIDE_GATED_LS_KEY = 'lottery.hideGated';
+const HIDE_ROUND_TRIPPED_LS_KEY = 'lottery.hideRoundTripped';
 const AGGRESSIVE_PREMIUM_LS_KEY = 'lottery.aggressivePremium';
 const MONEYNESS_LS_KEY = 'lottery.moneynessMode';
 const TICKER_EXPANDED_LS_KEY = 'lottery-ticker-expanded';
@@ -320,6 +321,13 @@ export function LotteryFinderSection({
     if (typeof window === 'undefined') return false;
     return window.localStorage.getItem(HIDE_GATED_LS_KEY) === '1';
   });
+  // Phase 2D — "Hide round-tripped" — filters out fires where the
+  // evaluate-round-trip cron applied a non-zero score deduct. Defaults
+  // OFF; persists locally. Spec: round-trip-score-deduct-production-2026-05-16.md
+  const [hideRoundTripped, setHideRoundTripped] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(HIDE_ROUND_TRIPPED_LS_KEY) === '1';
+  });
   const [aggressivePremium, setAggressivePremium] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     return window.localStorage.getItem(AGGRESSIVE_PREMIUM_LS_KEY) === '1';
@@ -354,6 +362,14 @@ export function LotteryFinderSection({
       window.localStorage.setItem(HIDE_GATED_LS_KEY, hideGated ? '1' : '0');
     }
   }, [hideGated]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(
+        HIDE_ROUND_TRIPPED_LS_KEY,
+        hideRoundTripped ? '1' : '0',
+      );
+    }
+  }, [hideRoundTripped]);
   useEffect(() => {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(
@@ -496,6 +512,9 @@ export function LotteryFinderSection({
     if (hideGated) {
       out = out.filter((f) => !f.directionGated);
     }
+    if (hideRoundTripped) {
+      out = out.filter((f) => (f.roundTripScoreDeduct ?? 0) >= 0);
+    }
     if (aggressivePremium) {
       out = out.filter(isFireAggressivePremium);
     }
@@ -510,6 +529,7 @@ export function LotteryFinderSection({
     fires,
     hideLatePm,
     hideGated,
+    hideRoundTripped,
     aggressivePremium,
     moneynessMode,
     ctMinuteOfDay,
@@ -523,6 +543,9 @@ export function LotteryFinderSection({
     : 0;
   const hiddenGatedCount = hideGated
     ? fires.filter((f) => f.directionGated).length
+    : 0;
+  const hiddenRoundTrippedCount = hideRoundTripped
+    ? fires.filter((f) => (f.roundTripScoreDeduct ?? 0) < 0).length
     : 0;
 
   // Top tickers from the dedicated all-day counts endpoint —
@@ -1036,6 +1059,23 @@ export function LotteryFinderSection({
             </button>
             <button
               type="button"
+              data-testid="lottery-hide-round-tripped-chip"
+              onClick={() => setHideRoundTripped(!hideRoundTripped)}
+              className={`${CHIP_BASE} ${
+                hideRoundTripped ? CHIP_ACTIVE.amber : CHIP_INACTIVE
+              }`}
+              title="Hide round-tripped fires — alerts where (ask−bid)/total flow in the 60-min window after the alert was net bid-dominated (round_trip_score_deduct < 0). Phase 1 EDA on 641K alerts × 92 days: AUC 0.59 for predicting loss, concentrated in 0–7 DTE. Score deduct stays on the row; this chip hides the demoted fires entirely. Client-side filter."
+              aria-pressed={hideRoundTripped}
+            >
+              hide round-tripped
+              {hideRoundTripped && hiddenRoundTrippedCount > 0 && (
+                <span className="text-[10px] opacity-70">
+                  −{hiddenRoundTrippedCount}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
               data-testid="lottery-aggressive-premium-chip"
               onClick={() => setAggressivePremium(!aggressivePremium)}
               className={`${CHIP_BASE} ${
@@ -1187,6 +1227,11 @@ export function LotteryFinderSection({
                 {hideGated && hiddenGatedCount > 0 && (
                   <span className="ml-2 text-amber-300/80">
                     ({hiddenGatedCount} counter-trend hidden)
+                  </span>
+                )}
+                {hideRoundTripped && hiddenRoundTrippedCount > 0 && (
+                  <span className="ml-2 text-amber-300/80">
+                    ({hiddenRoundTrippedCount} round-tripped hidden)
                   </span>
                 )}
               </span>
