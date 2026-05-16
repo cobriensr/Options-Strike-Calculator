@@ -188,6 +188,7 @@ describe('useSilentBoomFeed', () => {
               zeroDteDiff: 300,
               spxSpotGammaOi: 12345,
               underlyingPriceAtSpike: 580,
+              multiLegShare: 0.25,
               avgHoldMinutes: 144,
               outcomes: {
                 peakCeilingPct: 25,

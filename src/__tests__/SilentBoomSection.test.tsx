@@ -76,6 +76,7 @@ function makeAlert(overrides: Partial<SilentBoomAlert> = {}): SilentBoomAlert {
     zeroDteDiff: null,
     spxSpotGammaOi: null,
     underlyingPriceAtSpike: null,
+    multiLegShare: null,
     avgHoldMinutes: 197,
     outcomes: {
       peakCeilingPct: null,
@@ -360,10 +361,9 @@ describe('SilentBoomSection: filter interactions', () => {
   it('hydrates the moneyness chip from a previously-stored localStorage value', () => {
     window.localStorage.setItem('silentBoom.moneynessMode', 'otm');
     render(<SilentBoomSection marketOpen={false} />);
-    expect(screen.getByTestId('silent-boom-moneyness-otm-chip')).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
+    expect(
+      screen.getByTestId('silent-boom-moneyness-otm-chip'),
+    ).toHaveAttribute('aria-pressed', 'true');
     expect(
       screen.getByTestId('silent-boom-moneyness-all-chip'),
     ).toHaveAttribute('aria-pressed', 'false');

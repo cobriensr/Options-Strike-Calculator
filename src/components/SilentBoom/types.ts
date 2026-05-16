@@ -130,6 +130,14 @@ export interface SilentBoomAlert {
   /** SPX spot_exposures gamma_oi sign at the spike-bucket time. */
   spxSpotGammaOi: number | null;
   /**
+   * Multi-leg share at the spike bucket (migration #146). Fraction of
+   * spike-bucket size flagged with a multi-leg-sale UW trade code. Used
+   * by the UI to render a "SPREAD-CONFIRMED" badge when the value is in
+   * the 10-50% sweet spot — EDA 2026-05-15 found 2.08× win50 lift on
+   * that range. Null on rows enriched before #146.
+   */
+  multiLegShare: number | null;
+  /**
    * Underlying spot price at the spike-bucket time (migration #152).
    * Null on pre-#152 rows that were inserted before the field existed.
    * The UI uses this to derive ITM/OTM moneyness client-side for the

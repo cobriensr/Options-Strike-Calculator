@@ -70,6 +70,7 @@ interface AlertRow {
   zero_dte_diff: DbNullableNumeric;
   spx_spot_gamma_oi: DbNullableNumeric;
   underlying_price_at_spike: DbNullableNumeric;
+  multi_leg_share: DbNullableNumeric;
   inserted_at: DbTimestamp;
 }
 
@@ -114,6 +115,15 @@ interface SilentBoomAlertResponse {
    * for the All / OTM / ITM chip group without re-querying.
    */
   underlyingPriceAtSpike: number | null;
+  /**
+   * Multi-leg share at the spike bucket (migration #146). Fraction of
+   * spike-bucket size whose UW trade_code is a multi-leg sale code
+   * (mlat/mlet/mlft/mfto/masl/mesl/mfsl/mlct). Surfaced so the UI can
+   * render a "SPREAD-CONFIRMED" badge in the 10-50% sweet spot — EDA
+   * 2026-05-15 found 2.08× win50 lift on that range. Null on rows
+   * written before #146.
+   */
+  multiLegShare: number | null;
   /**
    * Cohort-derived "typical exit window" hint (P75 of minutes-to-peak
    * among historical winners for the (tier, ticker) cohort). Always
@@ -518,6 +528,7 @@ export default async function handler(
       zeroDteDiff: toNumOrNull(r.zero_dte_diff),
       spxSpotGammaOi: toNumOrNull(r.spx_spot_gamma_oi),
       underlyingPriceAtSpike: toNumOrNull(r.underlying_price_at_spike),
+      multiLegShare: toNumOrNull(r.multi_leg_share),
       avgHoldMinutes: avgHoldMinutesFor({
         tier: r.score_tier,
         ticker: r.underlying_symbol,

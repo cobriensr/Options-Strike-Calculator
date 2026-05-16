@@ -78,6 +78,7 @@ function makeAlert(overrides: Partial<SilentBoomAlert> = {}): SilentBoomAlert {
     zeroDteDiff: null,
     spxSpotGammaOi: null,
     underlyingPriceAtSpike: null,
+    multiLegShare: null,
     avgHoldMinutes: 197,
     outcomes: {
       peakCeilingPct: 47,
@@ -253,6 +254,51 @@ describe('SilentBoomRow: direction-gate pill', () => {
     renderRow(makeAlert({ directionGated: false }));
     expect(
       screen.queryByTestId('silent-boom-gated-pill'),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe('SilentBoomRow: spread-confirmed badge', () => {
+  it('renders the Spread-Confirmed badge when multiLegShare is in the 10-50% sweet spot', () => {
+    renderRow(makeAlert({ multiLegShare: 0.3 }));
+    const badge = screen.getByTestId('silent-boom-spread-confirmed-badge');
+    expect(badge).toBeInTheDocument();
+    expect(badge).toHaveTextContent('Spread-Confirmed');
+    expect(badge).toHaveAttribute('title', expect.stringContaining('30%'));
+  });
+
+  it('renders the badge at the 10% lower boundary (inclusive)', () => {
+    renderRow(makeAlert({ multiLegShare: 0.1 }));
+    expect(
+      screen.getByTestId('silent-boom-spread-confirmed-badge'),
+    ).toBeInTheDocument();
+  });
+
+  it('renders the badge at the 50% upper boundary (inclusive)', () => {
+    renderRow(makeAlert({ multiLegShare: 0.5 }));
+    expect(
+      screen.getByTestId('silent-boom-spread-confirmed-badge'),
+    ).toBeInTheDocument();
+  });
+
+  it('omits the badge below the 10% threshold (single-leg dominated)', () => {
+    renderRow(makeAlert({ multiLegShare: 0.05 }));
+    expect(
+      screen.queryByTestId('silent-boom-spread-confirmed-badge'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('omits the badge above the 50% threshold (dealer-hedge bucket)', () => {
+    renderRow(makeAlert({ multiLegShare: 0.75 }));
+    expect(
+      screen.queryByTestId('silent-boom-spread-confirmed-badge'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('omits the badge when multiLegShare is null (pre-#146 rows)', () => {
+    renderRow(makeAlert({ multiLegShare: null }));
+    expect(
+      screen.queryByTestId('silent-boom-spread-confirmed-badge'),
     ).not.toBeInTheDocument();
   });
 });

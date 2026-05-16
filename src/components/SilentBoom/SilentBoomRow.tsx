@@ -171,6 +171,40 @@ const gatedPill = (): { label: string; cls: string; tooltip: string } => ({
 });
 
 /**
+ * Multi-leg share sweet-spot — 10–50% spread legs is the "spread-
+ * confirmed" cohort with 2.08× win50 and 2.73× win100 lift per the
+ * 2026-05-15 cross-section EDA. Below 10% is single-leg-dominated
+ * (baseline behavior); 50–70% is mixed; 70%+ is dealer-hedge dump
+ * with 0.64× lift (actively bad). Display-only badge for now — N=217
+ * in the sweet spot is too small to justify scoring per the EDA caveat.
+ */
+const SB_SPREAD_CONFIRMED_LO = 0.1;
+const SB_SPREAD_CONFIRMED_HI = 0.5;
+
+/**
+ * Returns a badge spec when the alert falls in the spread-confirmed
+ * sweet spot, null otherwise. Rows with no attribution
+ * (multi_leg_share IS NULL on pre-#146 rows) get no badge.
+ */
+const spreadConfirmedBadge = (
+  multiLegShare: number | null,
+): { label: string; cls: string; tooltip: string } | null => {
+  if (multiLegShare == null) return null;
+  if (
+    multiLegShare < SB_SPREAD_CONFIRMED_LO ||
+    multiLegShare > SB_SPREAD_CONFIRMED_HI
+  ) {
+    return null;
+  }
+  const pct = Math.round(multiLegShare * 100);
+  return {
+    label: 'Spread-Confirmed',
+    cls: 'border-emerald-500/60 bg-emerald-950/40 text-emerald-200',
+    tooltip: `Multi-leg share ${pct}% — in the 10-50% sweet spot where institutional spread positioning confirms the spike. Historical lift: 2.08× win50, 2.73× win100 (EDA 2026-05-15). Display-only badge.`,
+  };
+};
+
+/**
  * Spike-ratio badge — gives the eye an at-a-glance read on how
  * extreme the burst was vs the contract's own preceding 4-bucket
  * baseline. Detector min is 5x; tiers above that flag genuinely
@@ -216,6 +250,7 @@ function areRowsEqual(prev: SilentBoomRowProps, next: SilentBoomRowProps) {
   if (a.score !== b.score) return false;
   if (a.scoreTier !== b.scoreTier) return false;
   if (a.directionGated !== b.directionGated) return false;
+  if (a.multiLegShare !== b.multiLegShare) return false;
   if (a.mktTideDiff !== b.mktTideDiff) return false;
   if (a.avgHoldMinutes !== b.avgHoldMinutes) return false;
   if (a.outcomes.enrichedAt !== b.outcomes.enrichedAt) return false;
@@ -250,6 +285,7 @@ export const SilentBoomRow = memo(function SilentBoomRow({
   const tier = tierBadge(alert.scoreTier, alert.score);
   const tide = tideBadge(alert.mktTideDiff);
   const gated = alert.directionGated ? gatedPill() : null;
+  const spreadConfirmed = spreadConfirmedBadge(alert.multiLegShare);
 
   const [expanded, setExpanded] = useState(false);
 
@@ -337,6 +373,20 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             aria-label={gated.tooltip}
           >
             {gated.label}
+          </span>
+        )}
+        {/* Spread-Confirmed badge — surfaces alerts in the 10-50%
+            multi-leg share sweet spot (2.08×/2.73× lift per the
+            2026-05-15 cross-section EDA). Display-only; no score
+            impact until the sweet-spot N grows past 500. */}
+        {spreadConfirmed && (
+          <span
+            data-testid="silent-boom-spread-confirmed-badge"
+            className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${spreadConfirmed.cls}`}
+            title={spreadConfirmed.tooltip}
+            aria-label={spreadConfirmed.tooltip}
+          >
+            {spreadConfirmed.label}
           </span>
         )}
         {/* Avg-hold-minutes hint — historical P75 minutes-to-peak among

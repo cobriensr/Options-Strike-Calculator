@@ -55,6 +55,7 @@ interface AlertFixture {
   zero_dte_diff: string | null;
   spx_spot_gamma_oi: string | null;
   underlying_price_at_spike: string | null;
+  multi_leg_share: string | null;
   inserted_at: string;
 }
 
@@ -91,6 +92,7 @@ function makeAlert(overrides: Partial<AlertFixture> = {}): AlertFixture {
     zero_dte_diff: '300',
     spx_spot_gamma_oi: '12345',
     underlying_price_at_spike: '1170.25',
+    multi_leg_share: '0.05',
     inserted_at: '2026-05-07T13:30:30Z',
     ...overrides,
   };
@@ -177,12 +179,40 @@ describe('silent-boom-feed handler', () => {
     expect(body.alerts[0]?.underlyingPriceAtSpike).toBe(1170.25);
   });
 
+  it('passes through multi_leg_share as multiLegShare', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([makeAlert({ multi_leg_share: '0.25' })]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      alerts: { multiLegShare: number | null }[];
+    };
+    expect(body.alerts[0]?.multiLegShare).toBe(0.25);
+  });
+
+  it('returns null multiLegShare for pre-#146 rows missing the attribution', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([makeAlert({ multi_leg_share: null })]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      alerts: { multiLegShare: number | null }[];
+    };
+    expect(body.alerts[0]?.multiLegShare).toBeNull();
+  });
+
   it('returns null underlyingPriceAtSpike for pre-#152 rows missing the spot snapshot', async () => {
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
-      .mockResolvedValueOnce([
-        makeAlert({ underlying_price_at_spike: null }),
-      ]);
+      .mockResolvedValueOnce([makeAlert({ underlying_price_at_spike: null })]);
 
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
