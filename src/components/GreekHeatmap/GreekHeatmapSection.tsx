@@ -71,7 +71,23 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
     null,
   );
 
-  const today = useMemo(() => getETDateStr(new Date()), []);
+  // `today` is the ET-anchored "current trading date" we compare
+  // `selectedDate` against. We re-derive it on tab refocus so a
+  // session left open across the ET midnight rollover doesn't keep
+  // treating yesterday's date as today (which would silently route
+  // the section's polling through the wrong query branch). Anchored
+  // to `visibilitychange` rather than a timer so we don't burn CPU
+  // when the tab is idle.
+  const [today, setToday] = useState(() => getETDateStr(new Date()));
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        setToday(getETDateStr(new Date()));
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, []);
   const isViewingToday = selectedDate === today;
   const isLiveTip = scrubbedAt === null;
   // Date min/max bounds for the picker — 90-day floor matches the

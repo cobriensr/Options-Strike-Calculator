@@ -13,17 +13,10 @@
  */
 
 import type { GreekHeatmapNetFlow } from '../../hooks/useGreekHeatmap';
+import { formatPremiumShort } from '../../utils/format-magnitude';
 
 interface NetFlowRowProps {
   netFlow: GreekHeatmapNetFlow | null;
-}
-
-function formatPremium(value: number): string {
-  const sign = value >= 0 ? '' : '-';
-  const abs = Math.abs(value);
-  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(2)}M`;
-  if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(1)}K`;
-  return `${sign}$${abs.toFixed(0)}`;
 }
 
 function formatVol(value: number): string {
@@ -55,7 +48,7 @@ export function NetFlowRow({ netFlow }: NetFlowRowProps) {
           className="text-sm font-medium text-neutral-200 tabular-nums"
           title={`Net call premium · ${formatVol(netFlow.cumulativeCallVol)} contracts`}
         >
-          {formatPremium(netFlow.cumulativeCallPrem)}
+          {formatPremiumShort(netFlow.cumulativeCallPrem)}
         </span>
       </div>
       <div className="flex flex-col">
@@ -66,7 +59,7 @@ export function NetFlowRow({ netFlow }: NetFlowRowProps) {
           className="text-sm font-medium text-neutral-200 tabular-nums"
           title={`Net put premium · ${formatVol(netFlow.cumulativePutVol)} contracts`}
         >
-          {formatPremium(netFlow.cumulativePutPrem)}
+          {formatPremiumShort(netFlow.cumulativePutPrem)}
         </span>
       </div>
       <div className="flex flex-col">
@@ -77,7 +70,7 @@ export function NetFlowRow({ netFlow }: NetFlowRowProps) {
           className={`text-sm font-semibold tabular-nums ${totalClass}`}
           title="NCP + NPP"
         >
-          {formatPremium(total)}
+          {formatPremiumShort(total)}
         </span>
       </div>
     </div>

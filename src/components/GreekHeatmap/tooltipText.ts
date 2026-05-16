@@ -40,6 +40,26 @@ export const GREEK_TOOLTIPS = {
 export type GreekTooltipKey = keyof typeof GREEK_TOOLTIPS;
 
 /**
+ * Two-axis lookup (greek × sign) for the cell tooltip. Lookup is
+ * cleaner than the prior nested-if chain and makes the contract
+ * obvious: every (greek, sign) pair has exactly one string.
+ */
+const TOOLTIP_BY_GREEK = {
+  gamma: {
+    positive: GREEK_TOOLTIPS.gammaPositive,
+    negative: GREEK_TOOLTIPS.gammaNegative,
+  },
+  charm: {
+    positive: GREEK_TOOLTIPS.charmPositive,
+    negative: GREEK_TOOLTIPS.charmNegative,
+  },
+  vanna: {
+    positive: GREEK_TOOLTIPS.vannaPositive,
+    negative: GREEK_TOOLTIPS.vannaNegative,
+  },
+} as const;
+
+/**
  * Pick the right tooltip for a (greek, value) pair. Treats exact 0 as
  * "zero"; any non-zero value picks the positive/negative variant.
  */
@@ -48,12 +68,5 @@ export function tooltipFor(
   value: number | null,
 ): string {
   if (value === null || value === 0) return GREEK_TOOLTIPS.zero;
-  if (value > 0) {
-    if (greek === 'gamma') return GREEK_TOOLTIPS.gammaPositive;
-    if (greek === 'charm') return GREEK_TOOLTIPS.charmPositive;
-    return GREEK_TOOLTIPS.vannaPositive;
-  }
-  if (greek === 'gamma') return GREEK_TOOLTIPS.gammaNegative;
-  if (greek === 'charm') return GREEK_TOOLTIPS.charmNegative;
-  return GREEK_TOOLTIPS.vannaNegative;
+  return TOOLTIP_BY_GREEK[greek][value > 0 ? 'positive' : 'negative'];
 }

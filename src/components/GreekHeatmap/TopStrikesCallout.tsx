@@ -9,20 +9,11 @@
  */
 
 import type { GreekHeatmapTopStrike } from '../../hooks/useGreekHeatmap';
+import { formatSignedShort } from '../../utils/format-magnitude';
 
 interface TopStrikesCalloutProps {
   topStrikes: readonly GreekHeatmapTopStrike[];
   onJumpToStrike: (strike: number) => void;
-}
-
-function formatGamma(value: number): string {
-  const sign = value >= 0 ? '+' : '-';
-  const abs = Math.abs(value);
-  if (abs >= 1_000_000_000)
-    return `${sign}${(abs / 1_000_000_000).toFixed(2)}B`;
-  if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(0)}K`;
-  return `${sign}${abs.toFixed(0)}`;
 }
 
 export function TopStrikesCallout({
@@ -57,7 +48,7 @@ export function TopStrikesCallout({
             aria-label={`Jump to strike ${s.strike}`}
           >
             <span>{s.strike}</span>
-            <span className="opacity-90">{formatGamma(s.netGamma)}</span>
+            <span className="opacity-90">{formatSignedShort(s.netGamma)}</span>
           </button>
         );
       })}

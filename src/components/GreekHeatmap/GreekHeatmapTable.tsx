@@ -22,6 +22,7 @@
 import { useMemo } from 'react';
 
 import type { GreekHeatmapTopStrike } from '../../hooks/useGreekHeatmap';
+import { formatSignedShort } from '../../utils/format-magnitude';
 
 import { tooltipFor } from './tooltipText';
 
@@ -29,16 +30,6 @@ interface GreekHeatmapTableProps {
   chainStrikes: readonly GreekHeatmapTopStrike[];
   atmStrike: number | null;
   highlightedStrike: number | null;
-}
-
-function formatGreek(value: number): string {
-  const abs = Math.abs(value);
-  const sign = value >= 0 ? '+' : '-';
-  if (abs >= 1_000_000_000)
-    return `${sign}${(abs / 1_000_000_000).toFixed(2)}B`;
-  if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(0)}K`;
-  return `${sign}${abs.toFixed(0)}`;
 }
 
 /**
@@ -162,25 +153,25 @@ export function GreekHeatmapTable({
                   className={`px-3 py-1.5 text-right tabular-nums ${gammaStyle.textClass}`}
                   style={{ backgroundColor: gammaStyle.bg }}
                   title={tooltipFor('gamma', s.netGamma)}
-                  aria-label={`Gamma ${formatGreek(s.netGamma)}`}
+                  aria-label={`Gamma ${formatSignedShort(s.netGamma)}`}
                 >
-                  {formatGreek(s.netGamma)}
+                  {formatSignedShort(s.netGamma)}
                 </td>
                 <td
                   className={`px-3 py-1.5 text-right tabular-nums ${charmStyle.textClass}`}
                   style={{ backgroundColor: charmStyle.bg }}
                   title={tooltipFor('charm', s.netCharm)}
-                  aria-label={`Charm ${formatGreek(s.netCharm)}`}
+                  aria-label={`Charm ${formatSignedShort(s.netCharm)}`}
                 >
-                  {formatGreek(s.netCharm)}
+                  {formatSignedShort(s.netCharm)}
                 </td>
                 <td
                   className={`px-3 py-1.5 text-right tabular-nums ${vannaStyle.textClass}`}
                   style={{ backgroundColor: vannaStyle.bg }}
                   title={tooltipFor('vanna', s.netVanna)}
-                  aria-label={`Vanna ${formatGreek(s.netVanna)}`}
+                  aria-label={`Vanna ${formatSignedShort(s.netVanna)}`}
                 >
-                  {formatGreek(s.netVanna)}
+                  {formatSignedShort(s.netVanna)}
                 </td>
               </tr>
             );

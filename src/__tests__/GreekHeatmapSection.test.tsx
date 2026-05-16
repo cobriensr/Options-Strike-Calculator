@@ -303,17 +303,82 @@ describe('GreekHeatmapSection', () => {
     expect(lastCall?.enabled).toBe(false);
   });
 
-  it('Jump to live button resets scrubbedAt to null', () => {
+  it('Jump to live button resets scrubbedAt to null AND re-enables polling', () => {
     render(<GreekHeatmapSection marketOpen={true} />);
     const slider = screen.getByLabelText(
       /scrub to a past minute/i,
     ) as HTMLInputElement;
     fireEvent.change(slider, { target: { value: slider.min } });
-    const jumpBtn = screen.getByRole('button', { name: /jump to live/i });
-    fireEvent.click(jumpBtn);
-    const lastCall = mockUseGreekHeatmap.mock.calls.at(-1)?.[0] as
-      | { at?: string }
+    // Mid-scrub: polling disabled.
+    let lastCall = mockUseGreekHeatmap.mock.calls.at(-1)?.[0] as
+      | { at?: string; enabled: boolean }
+      | undefined;
+    expect(lastCall?.enabled).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: /jump to live/i }));
+    // After Jump to live: at undefined, polling re-enabled.
+    lastCall = mockUseGreekHeatmap.mock.calls.at(-1)?.[0] as
+      | { at?: string; enabled: boolean }
       | undefined;
     expect(lastCall?.at).toBeUndefined();
+    expect(lastCall?.enabled).toBe(true);
+  });
+
+  it('changing date resets scrubbedAt so the new (ticker, date) starts at LIVE', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+    const slider = screen.getByLabelText(
+      /scrub to a past minute/i,
+    ) as HTMLInputElement;
+    fireEvent.change(slider, { target: { value: slider.min } });
+    let lastCall = mockUseGreekHeatmap.mock.calls.at(-1)?.[0] as
+      | { at?: string }
+      | undefined;
+    expect(lastCall?.at).toBe('2026-05-15T13:30:00.000Z');
+    const dateInput = screen.getByLabelText(
+      /heatmap expiry date/i,
+    ) as HTMLInputElement;
+    fireEvent.change(dateInput, { target: { value: '2026-04-01' } });
+    lastCall = mockUseGreekHeatmap.mock.calls.at(-1)?.[0] as
+      | { at?: string }
+      | undefined;
+    // Date change should have reset scrubbedAt back to null → at undefined.
+    expect(lastCall?.at).toBeUndefined();
+  });
+
+  it('renders ATM row with the amber left-border accent', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+    const atmRow = document.getElementById('heatmap-strike-562_5');
+    expect(atmRow).not.toBeNull();
+    expect(atmRow!.className).toContain('border-l-amber-400');
+  });
+
+  it('shades positive-gamma cell green and negative-gamma cell rose', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+    // Strike 565 has netGamma = +150_000 (positive) → emerald rgba.
+    const positiveRow = document.getElementById('heatmap-strike-565');
+    expect(positiveRow).not.toBeNull();
+    const positiveGammaCell = positiveRow!.querySelectorAll('td')[1];
+    expect(positiveGammaCell?.getAttribute('style')).toMatch(
+      /rgba\(\s*34\s*,\s*197\s*,\s*94/,
+    );
+    // Strike 570 has netGamma = -50_000 (negative) → rose rgba.
+    const negativeRow = document.getElementById('heatmap-strike-570');
+    expect(negativeRow).not.toBeNull();
+    const negativeGammaCell = negativeRow!.querySelectorAll('td')[1];
+    expect(negativeGammaCell?.getAttribute('style')).toMatch(
+      /rgba\(\s*244\s*,\s*63\s*,\s*94/,
+    );
+  });
+
+  it('NetFlowRow renders the empty-state message when netFlow is null', () => {
+    mockUseGreekHeatmap.mockReturnValue({
+      data: makeData({ netFlow: null }),
+      loading: false,
+      error: null,
+      refetch: mockRefetch,
+    });
+    render(<GreekHeatmapSection marketOpen={true} />);
+    expect(
+      screen.getByText(/no net-flow data for this date/i),
+    ).toBeInTheDocument();
   });
 });

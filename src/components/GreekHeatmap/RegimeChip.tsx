@@ -7,27 +7,11 @@
  * hedging), red when Short Γ (negative → procyclical hedging).
  */
 
+import { formatNetGexShort } from '../../utils/format-magnitude';
+
 interface RegimeChipProps {
   regime: 'Long Γ' | 'Short Γ' | null;
   netGexK: number | null;
-}
-
-/**
- * Format the netGexK magnitude (which is netGamma / 1000) into a
- * compact human-readable label. The raw value can reach the hundreds
- * of millions in dollars (e.g. +142,672.6 = $142.7M net gamma), so
- * "+142672.6k" is technically correct but unreadable. Scale to M/B
- * so the chip reads at a glance.
- */
-function formatNetGex(netGexK: number): string {
-  const sign = netGexK >= 0 ? '+' : '-';
-  // netGexK is gamma in thousands of dollars, so 1k = $1k, 1000k = $1M,
-  // 1,000,000k = $1B.
-  const absK = Math.abs(netGexK);
-  if (absK >= 1_000_000) return `${sign}$${(absK / 1_000_000).toFixed(2)}B`;
-  if (absK >= 1_000) return `${sign}$${(absK / 1_000).toFixed(1)}M`;
-  if (absK >= 1) return `${sign}$${absK.toFixed(0)}K`;
-  return `${sign}$${(absK * 1000).toFixed(0)}`;
 }
 
 export function RegimeChip({ regime, netGexK }: RegimeChipProps) {
@@ -45,7 +29,7 @@ export function RegimeChip({ regime, netGexK }: RegimeChipProps) {
   const chipClass = isLong
     ? 'border-emerald-500/70 bg-emerald-950/40 text-emerald-200'
     : 'border-rose-500/70 bg-rose-950/40 text-rose-200';
-  const magnitude = formatNetGex(netGexK);
+  const magnitude = formatNetGexShort(netGexK);
   return (
     <span
       className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium tabular-nums ${chipClass}`}
