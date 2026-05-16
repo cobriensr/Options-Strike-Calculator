@@ -339,6 +339,50 @@ def trailing_p95(values: pd.Series, lookback_days: int = 252) -> float:
 # ---------------------------------------------------------------------------
 
 
+def fractal_pivots(
+    bars: pd.DataFrame,
+    lookback: int = 3,
+) -> tuple[list[int], list[int]]:
+    """Identify fractal swing highs / lows in a 1m OHLCV bar frame.
+
+    A bar at index i is a **swing high** if its ``high`` is strictly greater
+    than the ``high`` of all bars in [i-lookback, i-1] AND [i+1, i+lookback].
+    Symmetric for swing lows on ``low``.
+
+    Returns ``(high_indices, low_indices)`` — lists of integer positions into
+    ``bars`` (which should be reset_index(drop=True) by the caller). Pivots
+    can only be confirmed once ``lookback`` bars have printed AFTER them, so
+    the latest possible confirmed pivot is at index ``len(bars) - 1 -
+    lookback``.
+
+    Used by Setup 6b (CVD swing-divergence) to detect real price swings
+    instead of just monotonic moves — the failure mode of Setup 6.
+    """
+    if len(bars) < 2 * lookback + 1:
+        return [], []
+    highs = bars["high"].to_numpy()
+    lows = bars["low"].to_numpy()
+    swing_highs: list[int] = []
+    swing_lows: list[int] = []
+    n = len(bars)
+    # Only bars in [lookback, n-1-lookback] can be pivots (need bars on both sides).
+    for i in range(lookback, n - lookback):
+        h = highs[i]
+        l_ = lows[i]
+        # Strict inequality on both sides — equal-high "double tops" don't qualify.
+        if (
+            (highs[i - lookback : i] < h).all()
+            and (highs[i + 1 : i + lookback + 1] < h).all()
+        ):
+            swing_highs.append(i)
+        if (
+            (lows[i - lookback : i] > l_).all()
+            and (lows[i + 1 : i + lookback + 1] > l_).all()
+        ):
+            swing_lows.append(i)
+    return swing_highs, swing_lows
+
+
 def macro_stress_30m(
     cl_ohlcv: pd.DataFrame,
     end_ts: pd.Timestamp,

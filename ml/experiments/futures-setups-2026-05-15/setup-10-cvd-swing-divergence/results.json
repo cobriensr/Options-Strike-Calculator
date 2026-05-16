@@ -1,0 +1,72 @@
+{
+  "setup_n": 10,
+  "setup_name": "cvd-swing-divergence",
+  "test_window": [
+    "2026-01-01",
+    "2026-04-17"
+  ],
+  "generated_at": "2026-05-16T22:57:57Z",
+  "metrics": {
+    "n_signals": 445,
+    "n_wins": 144,
+    "n_losses": 301,
+    "win_rate": 0.3235955056179775,
+    "avg_r_multiple": -0.358943313877818,
+    "expectancy_dollars": -20.454105957210793,
+    "profit_factor": 0.8727867189805842,
+    "max_consecutive_losers": 18,
+    "sharpe_signal_days": -1.9565785581666872,
+    "max_drawdown_dollars": -14170.888504915347,
+    "max_drawdown_pct": -314.61927319176704,
+    "time_of_day": {
+      "13:30-13:45": {
+        "n": 0,
+        "win_rate": null,
+        "expectancy_dollars": null
+      },
+      "13:45-14:00": {
+        "n": 0,
+        "win_rate": null,
+        "expectancy_dollars": null
+      },
+      "14:00-14:30": {
+        "n": 36,
+        "win_rate": 0.2777777777777778,
+        "expectancy_dollars": -85.08829426317789
+      },
+      "14:30-15:30": {
+        "n": 96,
+        "win_rate": 0.3854166666666667,
+        "expectancy_dollars": -91.12250329194315
+      },
+      "15:30-16:30": {
+        "n": 88,
+        "win_rate": 0.3977272727272727,
+        "expectancy_dollars": 108.57442692855433
+      },
+      "16:30-17:30": {
+        "n": 79,
+        "win_rate": 0.25316455696202533,
+        "expectancy_dollars": -44.1730296546719
+      },
+      "17:30-18:00": {
+        "n": 34,
+        "win_rate": 0.3235294117647059,
+        "expectancy_dollars": 92.913512748698
+      },
+      "18:00-19:00": {
+        "n": 63,
+        "win_rate": 0.25396825396825395,
+        "expectancy_dollars": -78.80427863087095
+      },
+      "19:00-20:00": {
+        "n": 49,
+        "win_rate": 0.30612244897959184,
+        "expectancy_dollars": -31.64098669719221
+      }
+    },
+    "gross_win_dollars": 62447.66260907157,
+    "gross_loss_dollars": -71549.73976003038,
+    "cumulative_net_pnl_dollars": -9102.077150958803
+  }
+}
