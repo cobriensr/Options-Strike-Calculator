@@ -44,6 +44,8 @@ SETUP_MODULES: dict[int, str] = {
     6: "src.setups_backtest.evaluators.setup_6_cvd_divergence",
     7: "src.setups_backtest.evaluators.setup_7_flight_to_safety",
     8: "src.setups_backtest.evaluators.setup_8_mega_cap_earnings",
+    9: "src.setups_backtest.evaluators.setup_1a_nq_ofi_extreme_daily",
+    10: "src.setups_backtest.evaluators.setup_6b_cvd_swing_divergence",
 }
 
 SETUP_SLUGS: dict[int, str] = {
@@ -55,6 +57,8 @@ SETUP_SLUGS: dict[int, str] = {
     6: "cvd-divergence-fade",
     7: "flight-to-safety-continuation",
     8: "mega-cap-earnings-fade",
+    9: "nq-ofi-extreme-daily",
+    10: "cvd-swing-divergence",
 }
 
 
@@ -182,7 +186,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     run_p = sub.add_parser("run", help="Run one setup over a date window.")
-    run_p.add_argument("--setup", type=int, required=True, choices=range(1, 9))
+    run_p.add_argument("--setup", type=int, required=True, choices=range(1, 11))
     run_p.add_argument("--start", type=str, required=True, help="YYYY-MM-DD")
     run_p.add_argument("--end", type=str, required=True, help="YYYY-MM-DD")
     run_p.add_argument(

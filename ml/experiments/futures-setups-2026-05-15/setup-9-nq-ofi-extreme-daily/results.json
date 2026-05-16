@@ -1,0 +1,26 @@
+{
+  "setup_n": 9,
+  "setup_name": "nq-ofi-extreme-daily",
+  "test_window": [
+    "2026-01-01",
+    "2026-04-17"
+  ],
+  "generated_at": "2026-05-16T22:47:33Z",
+  "metrics": {
+    "n_signals": 0,
+    "n_wins": 0,
+    "n_losses": 0,
+    "win_rate": null,
+    "avg_r_multiple": null,
+    "expectancy_dollars": null,
+    "profit_factor": null,
+    "max_consecutive_losers": 0,
+    "sharpe_signal_days": null,
+    "max_drawdown_dollars": null,
+    "max_drawdown_pct": null,
+    "time_of_day": {},
+    "gross_win_dollars": 0.0,
+    "gross_loss_dollars": 0.0,
+    "cumulative_net_pnl_dollars": 0.0
+  }
+}
