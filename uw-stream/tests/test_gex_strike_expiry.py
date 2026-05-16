@@ -27,6 +27,22 @@ from handlers.gex_strike_expiry import (
 _FIXTURE_PATH = (
     Path(__file__).parent / "fixtures" / "gex_strike_expiry_sample.json"
 )
+# Fixture's expiry is 2026-05-01 — pin "today" to match so the
+# 0DTE-only filter introduced by the greek-heatmap retention spec
+# (docs/superpowers/specs/greek-heatmap-ws-retention-2026-05-15.md)
+# admits the fixture's rows. Each test that exercises a happy path
+# must patch `handlers.gex_strike_expiry._today_et` against this date.
+_FIXTURE_EXPIRY = date(2026, 5, 1)
+
+
+@pytest.fixture(autouse=True)
+def pin_today_to_fixture(monkeypatch):
+    """Pin _today_et to the fixture's expiry by default. Tests that
+    explicitly exercise the today-ET filter (TestExpiryNotTodayFilter)
+    override this monkeypatch with their own values."""
+    monkeypatch.setattr(
+        "handlers.gex_strike_expiry._today_et", lambda: _FIXTURE_EXPIRY
+    )
 
 
 @pytest.fixture
@@ -413,3 +429,65 @@ class TestFlushDeduplicatesByConflictKey:
             # the no-op), so we don't shortcut the call.
             mock_db.bulk_upsert_replace.assert_awaited_once()
             assert mock_db.bulk_upsert_replace.await_args.kwargs["rows"] == []
+
+
+class TestExpiryNotTodayFilter:
+    """0DTE-only ingest filter — see retention spec
+    docs/superpowers/specs/greek-heatmap-ws-retention-2026-05-15.md.
+
+    UW pushes every active expiry on `gex_strike_expiry:<TICKER>`; we
+    only consume today's 0DTE in production, so the handler drops
+    payloads whose expiry doesn't match the current ET trading date.
+    Without this filter the table accumulates rows for each future
+    expiry every minute it stays on UW's emit list, which (verified
+    2026-05-15) inflates the SPY/0DTE slice 8-9× and pushes the
+    Greek Heatmap snapshot query to ~18 seconds.
+    """
+
+    def test_today_expiry_admitted(self, handler, payload, monkeypatch):
+        monkeypatch.setattr(
+            "handlers.gex_strike_expiry._today_et", lambda: date(2026, 5, 1)
+        )
+        # Fixture expiry == 2026-05-01; same as pinned today → admitted.
+        row = handler._transform(payload)
+        assert row is not None
+
+    def test_future_expiry_rejected(self, handler, payload, monkeypatch):
+        monkeypatch.setattr(
+            "handlers.gex_strike_expiry._today_et", lambda: date(2026, 4, 28)
+        )
+        # Today is 2026-04-28; fixture expiry 2026-05-01 is a future
+        # expiry that UW is already emitting — must be dropped.
+        assert handler._transform(payload) is None
+
+    def test_past_expiry_rejected(self, handler, payload, monkeypatch):
+        monkeypatch.setattr(
+            "handlers.gex_strike_expiry._today_et", lambda: date(2026, 5, 2)
+        )
+        # Today is 2026-05-02; fixture expiry 2026-05-01 is in the
+        # past. UW shouldn't normally emit these on a per-ticker
+        # channel, but a late-arriving payload at the day boundary
+        # must still be rejected — never admit non-0DTE rows.
+        assert handler._transform(payload) is None
+
+    def test_today_anchored_to_eastern_time_not_utc(self, monkeypatch):
+        """At 22:00 ET on May 1 (= 02:00 UTC on May 2), today_et must
+        still resolve to May 1. The daemon runs on Railway with a
+        UTC clock, so naively calling `datetime.utcnow().date()` would
+        incorrectly flip to May 2 between 19:00 and 23:59 ET — opening
+        a four-hour window each evening where the next day's 0DTE
+        payloads would be admitted while today's would be rejected.
+        """
+        from datetime import datetime as real_datetime
+
+        from handlers import gex_strike_expiry as mod
+
+        class FakeDatetime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                # 02:00 UTC on May 2 = 22:00 ET on May 1.
+                base = real_datetime(2026, 5, 2, 2, 0, 0, tzinfo=UTC)
+                return base.astimezone(tz) if tz is not None else base
+
+        monkeypatch.setattr(mod, "datetime", FakeDatetime)
+        assert mod._today_et() == date(2026, 5, 1)

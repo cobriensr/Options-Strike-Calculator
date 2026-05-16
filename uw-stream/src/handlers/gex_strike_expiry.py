@@ -31,10 +31,21 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import db
 from handlers.base import Handler
 from logger_setup import rate_limited_log
+
+_ET = ZoneInfo("America/New_York")
+
+
+def _today_et() -> date:
+    """Current ET trading date. Anchored to America/New_York so the
+    daemon's UTC clock doesn't admit "tomorrow's" 0DTE rows between
+    19:00 ET (00:00 UTC) and midnight ET.
+    """
+    return datetime.now(tz=_ET).date()
 
 _TABLE = "ws_gex_strike_expiry"
 # Must stay in sync with migration #111 in api/_lib/db-migrations.ts.
@@ -106,6 +117,23 @@ class GexStrikeExpiryHandler(Handler):
                 kind="missing_expiry",
                 message="gex_strike_expiry missing or unparseable expiry",
                 extra={"ticker": ticker, "raw_expiry": payload.get("expiry")},
+            )
+            return None
+
+        # 0DTE-only ingest: the two readers of ws_gex_strike_expiry
+        # (Greek Heatmap, Strike Battle Map) both consume today's
+        # expiry only. UW pushes every active expiry on the
+        # `gex_strike_expiry:<TICKER>` channel, so without this filter
+        # we accumulate weekly/monthly expiries from days before they
+        # become 0DTE — that's the bloat that drove the May 2026
+        # retention spec
+        # (docs/superpowers/specs/greek-heatmap-ws-retention-2026-05-15.md).
+        if expiry != _today_et():
+            rate_limited_log.warning(
+                scope="gex_strike_expiry",
+                kind="expiry_not_today",
+                message="gex_strike_expiry rejecting non-0DTE expiry",
+                extra={"ticker": ticker, "expiry": expiry.isoformat()},
             )
             return None
 
