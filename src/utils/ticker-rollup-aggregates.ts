@@ -24,6 +24,15 @@ export interface RollupAlertSummary {
    * null/undefined rows simply don't contribute to `totalPremium`.
    */
   premium?: number | null;
+  /**
+   * Per-alert "intensity" used by the burst-storm badge — panel-
+   * specific by design: SilentBoom passes spikeRatio (multiplier vs
+   * 4-bucket baseline), Lottery passes fireCount (re-trigger count
+   * on the chain). Each panel sets its own threshold via the
+   * `intensityThreshold` arg on isBurstStorm(). Optional; rows
+   * without a value contribute nothing to `maxIntensity`.
+   */
+  intensity?: number | null;
 }
 
 export type Bias = 'bull' | 'bear' | 'mixed';
@@ -50,6 +59,12 @@ export interface RollupAggregates {
    * row contributed (every row had a null/undefined premium).
    */
   totalPremium: number | null;
+  /**
+   * Max `intensity` across rows where it was provided. Null when no
+   * row contributed. Used by the burst-storm badge — interpretation
+   * (spike-ratio vs fire-count etc.) is panel-specific.
+   */
+  maxIntensity: number | null;
 }
 
 export function computeRollupAggregates(
@@ -63,6 +78,7 @@ export function computeRollupAggregates(
       gatedCount: 0,
       strikeRange: null,
       totalPremium: null,
+      maxIntensity: null,
     };
   }
 
@@ -72,8 +88,30 @@ export function computeRollupAggregates(
   const gatedCount = rows.reduce((n, r) => n + (r.directionGated ? 1 : 0), 0);
   const strikeRange = computeStrikeRange(rows);
   const totalPremium = computeTotalPremium(rows);
+  const maxIntensity = computeMaxIntensity(rows);
 
-  return { bias, tide, spreadMinutes, gatedCount, strikeRange, totalPremium };
+  return {
+    bias,
+    tide,
+    spreadMinutes,
+    gatedCount,
+    strikeRange,
+    totalPremium,
+    maxIntensity,
+  };
+}
+
+function computeMaxIntensity(
+  rows: readonly RollupAlertSummary[],
+): number | null {
+  let max = Number.NEGATIVE_INFINITY;
+  let contributed = false;
+  for (const r of rows) {
+    if (r.intensity == null || !Number.isFinite(r.intensity)) continue;
+    if (r.intensity > max) max = r.intensity;
+    contributed = true;
+  }
+  return contributed ? max : null;
 }
 
 function computeTotalPremium(
@@ -213,6 +251,62 @@ export function isHighConviction(
 
 /** Display label for the high-conviction badge chip. */
 export const HIGH_CONVICTION_BADGE_LABEL = '✦ conviction';
+
+// ============================================================
+// Burst-storm badge — the "LOOK AT ME" tier.
+// ============================================================
+//
+// Distinct from the conviction badge: fires for *loud* setups even
+// when bias/tide are messy. Trader-spec 2026-05-15 from MSFT 9-alert
+// (tide counter, max spike ×221) and NVDA 18-fire (mixed bias, max
+// fireCount ×22) — both worth eyeballing despite failing every
+// conviction criterion.
+
+/** Min alerts/fires for the burst-storm badge. */
+export const BURST_STORM_MIN_COUNT = 8;
+
+/** Aggregate ticker premium floor ($USD) for the badge. */
+export const BURST_STORM_MIN_PREMIUM = 500_000;
+
+/**
+ * Burst-storm predicate. Any one of three signals qualifies:
+ *   1. Alert/fire count >= {@link BURST_STORM_MIN_COUNT}
+ *   2. Max single-alert intensity >= caller-supplied threshold
+ *      (panel-specific: SilentBoom uses spikeRatio, Lottery uses
+ *      fireCount-per-chain)
+ *   3. Aggregate premium >= {@link BURST_STORM_MIN_PREMIUM}
+ *
+ * Intentionally independent of conviction — both badges can fire on
+ * the same ticker. Conviction says "clean"; storm says "loud."
+ */
+export function isBurstStorm(
+  agg: RollupAggregates,
+  fireCount: number,
+  intensityThreshold: number,
+): boolean {
+  if (fireCount >= BURST_STORM_MIN_COUNT) return true;
+  if (agg.maxIntensity != null && agg.maxIntensity >= intensityThreshold) {
+    return true;
+  }
+  if (agg.totalPremium != null && agg.totalPremium >= BURST_STORM_MIN_PREMIUM) {
+    return true;
+  }
+  return false;
+}
+
+/** Per-panel threshold for the {@link isBurstStorm} intensity arm. */
+export const BURST_STORM_INTENSITY_THRESHOLDS = {
+  /** SilentBoom spikeRatio: ×100+ is "extreme outlier" territory. */
+  silentBoom: 100,
+  /**
+   * Lottery per-chain fireCount: ×20 re-triggers on one chain reflects
+   * the kind of sticky-flow pattern NVDA showed (×22 max on 2026-05-15).
+   */
+  lottery: 20,
+} as const;
+
+/** Display label for the burst-storm badge chip. */
+export const BURST_STORM_BADGE_LABEL = '⚡ storm';
 
 /**
  * Compact unsigned dollar formatter for option premium amounts.

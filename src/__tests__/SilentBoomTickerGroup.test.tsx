@@ -543,6 +543,66 @@ describe('SilentBoomTickerGroup', () => {
       ).toHaveTextContent('conviction');
     });
 
+    it('renders the storm badge on a ×221 spike (MSFT golden case)', () => {
+      // MSFT 2026-05-15 had 9 alerts with one ×221 spike — fails
+      // conviction (mixed-direction-resistant) but the spikeRatio
+      // alone trips the burst-storm intensity arm.
+      const alerts = [
+        makeAlert({
+          optionChainId: 'MSFT260518C00550000',
+          underlyingSymbol: 'MSFT',
+          strike: 550,
+          spikeRatio: 221,
+        }),
+        makeAlert({
+          optionChainId: 'MSFT260518P00415000',
+          underlyingSymbol: 'MSFT',
+          strike: 415,
+          optionType: 'P',
+          spikeRatio: 10,
+        }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="MSFT"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.getByTestId('silent-boom-ticker-storm-MSFT'),
+      ).toHaveTextContent('storm');
+    });
+
+    it('omits the storm badge when none of the three gates pass', () => {
+      const alerts = [
+        makeAlert({
+          optionChainId: 'XOM260515C00150000',
+          underlyingSymbol: 'XOM',
+          strike: 150,
+          spikeRatio: 8,
+          entryPrice: 0.5,
+          spikeVolume: 200,
+        }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="XOM"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.queryByTestId('silent-boom-ticker-storm-XOM'),
+      ).not.toBeInTheDocument();
+    });
+
     it('omits the conviction badge when bias is mixed', () => {
       const alerts = [
         makeAlert({

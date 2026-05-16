@@ -7,7 +7,9 @@ import { SilentBoomDayBanner } from './SilentBoomDayBanner.js';
 import { SilentBoomRegimeBanner } from './SilentBoomRegimeBanner.js';
 import { SilentBoomTickerGroup } from './SilentBoomTickerGroup.js';
 import {
+  BURST_STORM_INTENSITY_THRESHOLDS,
   computeRollupAggregates,
+  isBurstStorm,
   isHighConviction,
   type RollupAlertSummary,
 } from '../../utils/ticker-rollup-aggregates.js';
@@ -678,12 +680,18 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
             triggeredAt: a.bucketCt,
             strike: a.strike,
             premium: a.entryPrice * a.spikeVolume * 100,
+            intensity: a.spikeRatio,
           })),
         );
         return {
           ticker,
           alerts: list,
           conviction: isHighConviction(agg, list.length),
+          storm: isBurstStorm(
+            agg,
+            list.length,
+            BURST_STORM_INTENSITY_THRESHOLDS.silentBoom,
+          ),
           // Latest bucket within the group — used as tiebreak so two
           // tickers with the same alert count are ordered by recency.
           latestBucketMs: list.reduce<number>((max, a) => {
@@ -693,8 +701,10 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
         };
       })
       .sort((a, b) => {
-        // Conviction-tagged tickers float to the top across the page.
+        // Conviction first (clean), then storm (loud); both above the
+        // alert-count + recency rule.
         if (a.conviction !== b.conviction) return a.conviction ? -1 : 1;
+        if (a.storm !== b.storm) return a.storm ? -1 : 1;
         if (b.alerts.length !== a.alerts.length) {
           return b.alerts.length - a.alerts.length;
         }

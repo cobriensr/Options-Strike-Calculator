@@ -11,12 +11,15 @@ import { memo, useCallback, useMemo } from 'react';
 import type { SilentBoomAlert, SilentBoomExitPolicy } from './types.js';
 import { SilentBoomRow } from './SilentBoomRow.js';
 import {
+  BURST_STORM_BADGE_LABEL,
+  BURST_STORM_INTENSITY_THRESHOLDS,
   computeRollupAggregates,
   formatBiasLabel,
   formatPremiumAmount,
   formatSpreadDuration,
   formatTideLabel,
   HIGH_CONVICTION_BADGE_LABEL,
+  isBurstStorm,
   isHighConviction,
   type Bias,
   type RollupAlertSummary,
@@ -135,12 +138,21 @@ function SilentBoomTickerGroupBase({
           // spikeVolume is contracts in the burst minute; ×100 lifts
           // to share-equivalents for $ display.
           premium: a.entryPrice * a.spikeVolume * 100,
+          // spikeRatio (multiple of preceding 4-bucket baseline) is
+          // the burst-storm "intensity" arm for SilentBoom — a single
+          // ×100+ outlier is the textbook "look at me" footprint.
+          intensity: a.spikeRatio,
         })),
       ),
     [alerts],
   );
 
   const showConvictionBadge = isHighConviction(agg, alerts.length);
+  const showStormBadge = isBurstStorm(
+    agg,
+    alerts.length,
+    BURST_STORM_INTENSITY_THRESHOLDS.silentBoom,
+  );
 
   const strikesWithSpread =
     agg.strikeRange != null && strikesSummary
@@ -177,6 +189,15 @@ function SilentBoomTickerGroupBase({
               data-testid={`silent-boom-ticker-conviction-${ticker}`}
             >
               {HIGH_CONVICTION_BADGE_LABEL}
+            </span>
+          )}
+          {showStormBadge && (
+            <span
+              className="rounded bg-rose-500/20 px-1.5 py-0.5 font-mono text-[11px] font-bold text-rose-300 ring-1 ring-rose-400/60"
+              title="≥8 alerts OR a ×100+ spike OR ≥$500K total premium"
+              data-testid={`silent-boom-ticker-storm-${ticker}`}
+            >
+              {BURST_STORM_BADGE_LABEL}
             </span>
           )}
           {strikesWithSpread && (

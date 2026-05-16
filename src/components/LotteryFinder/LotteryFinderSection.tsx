@@ -17,7 +17,9 @@ import {
   type TimeOfDay,
 } from './types.js';
 import {
+  BURST_STORM_INTENSITY_THRESHOLDS,
   computeRollupAggregates,
+  isBurstStorm,
   isHighConviction,
   type RollupAlertSummary,
 } from '../../utils/ticker-rollup-aggregates.js';
@@ -457,12 +459,18 @@ export function LotteryFinderSection({
             triggeredAt: f.triggerTimeCt,
             strike: f.strike,
             premium: f.entry.price * f.trigger.windowSize * 100,
+            intensity: f.fireCount,
           })),
         );
         return {
           ticker,
           fires: list,
           conviction: isHighConviction(agg, list.length),
+          storm: isBurstStorm(
+            agg,
+            list.length,
+            BURST_STORM_INTENSITY_THRESHOLDS.lottery,
+          ),
           latestTriggerMs: list.reduce<number>((max, f) => {
             const t = Date.parse(f.triggerTimeCt);
             return Number.isFinite(t) && t > max ? t : max;
@@ -470,11 +478,11 @@ export function LotteryFinderSection({
         };
       })
       .sort((a, b) => {
-        // Conviction badges always rise to the top, regardless of fire
-        // count. Within the conviction tier (and within non-conviction
-        // tier) the existing rule applies: more fires first, then
-        // recency tiebreak.
+        // Conviction first (clean), then storm (loud) — both surface
+        // above the regular fire-count + recency rule. A ticker that
+        // hits BOTH lives at the very top.
         if (a.conviction !== b.conviction) return a.conviction ? -1 : 1;
+        if (a.storm !== b.storm) return a.storm ? -1 : 1;
         if (b.fires.length !== a.fires.length) {
           return b.fires.length - a.fires.length;
         }

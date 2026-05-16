@@ -1,12 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import {
+  BURST_STORM_BADGE_LABEL,
+  BURST_STORM_INTENSITY_THRESHOLDS,
   computeRollupAggregates,
   formatBiasLabel,
   formatPremiumAmount,
   formatSpreadDuration,
   formatTideLabel,
-  isHighConviction,
   HIGH_CONVICTION_BADGE_LABEL,
+  isBurstStorm,
+  isHighConviction,
   type RollupAlertSummary,
 } from '../../utils/ticker-rollup-aggregates';
 
@@ -32,6 +35,7 @@ describe('computeRollupAggregates', () => {
     expect(agg.gatedCount).toBe(0);
     expect(agg.strikeRange).toBeNull();
     expect(agg.totalPremium).toBeNull();
+    expect(agg.maxIntensity).toBeNull();
   });
 
   describe('bias', () => {
@@ -171,6 +175,35 @@ describe('computeRollupAggregates', () => {
     });
   });
 
+  describe('maxIntensity', () => {
+    it('returns null when no row provides intensity', () => {
+      const agg = computeRollupAggregates([
+        makeRow({ strike: 100 }),
+        makeRow({ strike: 105 }),
+      ]);
+      expect(agg.maxIntensity).toBeNull();
+    });
+
+    it('returns the max intensity, ignoring null/NaN', () => {
+      const agg = computeRollupAggregates([
+        makeRow({ strike: 100, intensity: 14 }),
+        makeRow({ strike: 105, intensity: null }),
+        makeRow({ strike: 110, intensity: 221 }),
+        makeRow({ strike: 115, intensity: Number.NaN }),
+        makeRow({ strike: 120, intensity: 37 }),
+      ]);
+      expect(agg.maxIntensity).toBe(221);
+    });
+
+    it('handles negative intensity values (uses max even if negative)', () => {
+      const agg = computeRollupAggregates([
+        makeRow({ strike: 100, intensity: -5 }),
+        makeRow({ strike: 105, intensity: -10 }),
+      ]);
+      expect(agg.maxIntensity).toBe(-5);
+    });
+  });
+
   describe('totalPremium', () => {
     it('returns null when no row provides premium', () => {
       const agg = computeRollupAggregates([
@@ -252,6 +285,153 @@ describe('formatSpreadDuration', () => {
   it('renders hours with one decimal when > 60', () => {
     expect(formatSpreadDuration(150)).toBe('Δ 2.5h');
     expect(formatSpreadDuration(61)).toBe('Δ 1.0h');
+  });
+});
+
+describe('isBurstStorm', () => {
+  // MSFT 2026-05-15 golden case: 9 SilentBoom alerts, max spikeRatio
+  // 221, tide counter, mixed-bias passes — burst-storm catches what
+  // conviction rejects.
+  it('matches the MSFT 9-alert golden case (count gate)', () => {
+    const rows = Array.from({ length: 9 }, (_, i) =>
+      makeRow({
+        optionType: 'C',
+        strike: 430 + i,
+        triggeredAt: `2026-05-15T${14 + i}:30:00Z`,
+        intensity: i === 5 ? 221 : 14 + i,
+        premium: 50_000,
+      }),
+    );
+    const agg = computeRollupAggregates(rows);
+    expect(
+      isBurstStorm(
+        agg,
+        rows.length,
+        BURST_STORM_INTENSITY_THRESHOLDS.silentBoom,
+      ),
+    ).toBe(true);
+  });
+
+  // NVDA 2026-05-15 golden case: 18 fires, max fireCount 22 — count
+  // alone catches it.
+  it('matches the NVDA 18-fire golden case (count gate)', () => {
+    const rows = Array.from({ length: 18 }, (_, i) =>
+      makeRow({
+        optionType: 'C',
+        strike: 220 + i,
+        triggeredAt: `2026-05-15T${13 + (i % 4)}:30:00Z`,
+        intensity: i === 0 ? 22 : 1,
+      }),
+    );
+    const agg = computeRollupAggregates(rows);
+    expect(
+      isBurstStorm(agg, rows.length, BURST_STORM_INTENSITY_THRESHOLDS.lottery),
+    ).toBe(true);
+  });
+
+  it('fires on max intensity alone even when count and premium are quiet', () => {
+    const rows = [
+      makeRow({ strike: 100, intensity: 150, premium: 1_000 }),
+      makeRow({ strike: 105, intensity: 5, premium: 1_000 }),
+    ];
+    const agg = computeRollupAggregates(rows);
+    expect(
+      isBurstStorm(
+        agg,
+        rows.length,
+        BURST_STORM_INTENSITY_THRESHOLDS.silentBoom,
+      ),
+    ).toBe(true);
+  });
+
+  it('fires on aggregate premium alone when count + intensity are quiet', () => {
+    const rows = [
+      makeRow({ strike: 100, intensity: 1, premium: 300_000 }),
+      makeRow({ strike: 105, intensity: 1, premium: 300_000 }),
+    ];
+    const agg = computeRollupAggregates(rows);
+    expect(agg.totalPremium).toBe(600_000);
+    expect(
+      isBurstStorm(
+        agg,
+        rows.length,
+        BURST_STORM_INTENSITY_THRESHOLDS.silentBoom,
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects quiet tickers below all three thresholds', () => {
+    const rows = [
+      makeRow({ strike: 100, intensity: 3, premium: 5_000 }),
+      makeRow({ strike: 105, intensity: 5, premium: 5_000 }),
+      makeRow({ strike: 110, intensity: 7, premium: 5_000 }),
+    ];
+    const agg = computeRollupAggregates(rows);
+    expect(
+      isBurstStorm(
+        agg,
+        rows.length,
+        BURST_STORM_INTENSITY_THRESHOLDS.silentBoom,
+      ),
+    ).toBe(false);
+  });
+
+  it('boundary: exactly 8 fires passes the count gate', () => {
+    const rows = Array.from({ length: 8 }, (_, i) =>
+      makeRow({ strike: 100 + i, intensity: 1 }),
+    );
+    const agg = computeRollupAggregates(rows);
+    expect(
+      isBurstStorm(
+        agg,
+        rows.length,
+        BURST_STORM_INTENSITY_THRESHOLDS.silentBoom,
+      ),
+    ).toBe(true);
+  });
+
+  it('boundary: 7 fires below count gate (and other gates quiet) rejects', () => {
+    const rows = Array.from({ length: 7 }, (_, i) =>
+      makeRow({ strike: 100 + i, intensity: 1, premium: 1_000 }),
+    );
+    const agg = computeRollupAggregates(rows);
+    expect(
+      isBurstStorm(
+        agg,
+        rows.length,
+        BURST_STORM_INTENSITY_THRESHOLDS.silentBoom,
+      ),
+    ).toBe(false);
+  });
+
+  it('boundary: exactly ×100 spike passes the intensity gate', () => {
+    const rows = [
+      makeRow({ strike: 100, intensity: 100, premium: 1_000 }),
+      makeRow({ strike: 105, intensity: 5, premium: 1_000 }),
+    ];
+    const agg = computeRollupAggregates(rows);
+    expect(
+      isBurstStorm(agg, rows.length, BURST_STORM_INTENSITY_THRESHOLDS.silentBoom),
+    ).toBe(true);
+  });
+
+  it('boundary: exactly $500K aggregate premium passes', () => {
+    const rows = [
+      makeRow({ strike: 100, intensity: 1, premium: 250_000 }),
+      makeRow({ strike: 105, intensity: 1, premium: 250_000 }),
+    ];
+    const agg = computeRollupAggregates(rows);
+    expect(
+      isBurstStorm(
+        agg,
+        rows.length,
+        BURST_STORM_INTENSITY_THRESHOLDS.silentBoom,
+      ),
+    ).toBe(true);
+  });
+
+  it('exports a label constant for chip rendering', () => {
+    expect(BURST_STORM_BADGE_LABEL).toBe('⚡ storm');
   });
 });
 

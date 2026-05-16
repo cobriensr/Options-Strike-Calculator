@@ -10,12 +10,15 @@ import { memo, useCallback, useMemo } from 'react';
 import type { ExitPolicy, LotteryFire } from './types.js';
 import { LotteryRow } from './LotteryRow.js';
 import {
+  BURST_STORM_BADGE_LABEL,
+  BURST_STORM_INTENSITY_THRESHOLDS,
   computeRollupAggregates,
   formatBiasLabel,
   formatPremiumAmount,
   formatSpreadDuration,
   formatTideLabel,
   HIGH_CONVICTION_BADGE_LABEL,
+  isBurstStorm,
   isHighConviction,
   type Bias,
   type RollupAlertSummary,
@@ -134,12 +137,22 @@ function LotteryFinderTickerGroupBase({
           // is total contracts in the burst window; ×100 lifts contract
           // count to share-equivalents for $ display.
           premium: f.entry.price * f.trigger.windowSize * 100,
+          // Per-chain fireCount drives the burst-storm "intensity" arm
+          // for Lottery (a chain firing many times in a day is what
+          // "loud" looks like in this panel — analogous to SilentBoom's
+          // spikeRatio).
+          intensity: f.fireCount,
         })),
       ),
     [fires],
   );
 
   const showConvictionBadge = isHighConviction(agg, fires.length);
+  const showStormBadge = isBurstStorm(
+    agg,
+    fires.length,
+    BURST_STORM_INTENSITY_THRESHOLDS.lottery,
+  );
 
   const strikesWithSpread =
     agg.strikeRange != null && strikesSummary
@@ -176,6 +189,15 @@ function LotteryFinderTickerGroupBase({
               data-testid={`lottery-ticker-conviction-${ticker}`}
             >
               {HIGH_CONVICTION_BADGE_LABEL}
+            </span>
+          )}
+          {showStormBadge && (
+            <span
+              className="rounded bg-rose-500/20 px-1.5 py-0.5 font-mono text-[11px] font-bold text-rose-300 ring-1 ring-rose-400/60"
+              title="≥8 fires OR a chain with ≥20 re-triggers OR ≥$500K total premium"
+              data-testid={`lottery-ticker-storm-${ticker}`}
+            >
+              {BURST_STORM_BADGE_LABEL}
             </span>
           )}
           {strikesWithSpread && (

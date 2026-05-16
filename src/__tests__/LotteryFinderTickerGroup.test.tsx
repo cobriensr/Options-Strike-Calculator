@@ -554,6 +554,64 @@ describe('LotteryFinderTickerGroup', () => {
       ).toHaveTextContent('conviction');
     });
 
+    it('renders the storm badge when a chain has ≥20 fireCount', () => {
+      // Mixed-bias multi-chain rollup that fails conviction but the
+      // one chain has fireCount=22 (matches NVDA 2026-05-15 golden).
+      const fires = [
+        makeFire({
+          optionChainId: 'NVDA260518C00227500',
+          underlyingSymbol: 'NVDA',
+          optionType: 'C',
+          strike: 227.5,
+          fireCount: 22,
+        }),
+        makeFire({
+          optionChainId: 'NVDA260518P00227500',
+          underlyingSymbol: 'NVDA',
+          optionType: 'P',
+          strike: 227.5,
+          fireCount: 1,
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="NVDA"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(screen.getByTestId('lottery-ticker-storm-NVDA')).toHaveTextContent(
+        'storm',
+      );
+    });
+
+    it('omits the storm badge when none of the three gates pass', () => {
+      const fires = [
+        makeFire({
+          optionChainId: 'XOM260515C00150000',
+          underlyingSymbol: 'XOM',
+          strike: 150,
+          fireCount: 1,
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="XOM"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.queryByTestId('lottery-ticker-storm-XOM'),
+      ).not.toBeInTheDocument();
+    });
+
     it('omits the conviction badge when bias is mixed', () => {
       // 5 fires, but a put among calls → mixed bias → no badge
       const fires = [
