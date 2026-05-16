@@ -34,6 +34,7 @@ const HIDE_LATE_PM_LS_KEY = 'silentBoom.hideLatePm';
 const HIDE_GHOSTS_LS_KEY = 'silentBoom.hideGhosts';
 const HIDE_GATED_LS_KEY = 'silentBoom.hideGated';
 const AGGRESSIVE_PREMIUM_LS_KEY = 'silentBoom.aggressivePremium';
+const MONEYNESS_LS_KEY = 'silentBoom.moneynessMode';
 const EXIT_POLICY_LS_KEY = 'silentBoom.exitPolicy';
 const ASK_PCT_BAND_LS_KEY = 'silentBoom.askPctBand';
 const TICKER_EXPANDED_LS_KEY = 'silent-boom-ticker-expanded';
@@ -86,6 +87,27 @@ const TIER1_MIN_SCORE = 21;
 const TIER2_MIN_SCORE = 8;
 
 type ConvictionFloor = 'all' | 'tier2' | 'tier1';
+
+/**
+ * Moneyness chip — tri-state filter on the alert's strike vs. underlying
+ * price at the spike bucket. Client-side filter only; rows with no spot
+ * snapshot (pre-#152 backfill) fall through under 'all' and are hidden
+ * under either 'otm' or 'itm'.
+ */
+type MoneynessMode = 'all' | 'otm' | 'itm';
+
+const MONEYNESS_FILTERS: ReadonlyArray<{
+  value: MoneynessMode;
+  label: string;
+}> = [
+  { value: 'all', label: 'all' },
+  { value: 'otm', label: 'OTM' },
+  { value: 'itm', label: 'ITM' },
+];
+
+function isMoneynessMode(v: unknown): v is MoneynessMode {
+  return v === 'all' || v === 'otm' || v === 'itm';
+}
 
 const TOD_FILTERS: Array<{ value: SilentBoomTod | null; label: string }> = [
   { value: null, label: 'all TOD' },
@@ -453,6 +475,11 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     if (typeof window === 'undefined') return false;
     return window.localStorage.getItem(AGGRESSIVE_PREMIUM_LS_KEY) === '1';
   });
+  const [moneynessMode, setMoneynessMode] = useState<MoneynessMode>(() => {
+    if (typeof window === 'undefined') return 'all';
+    const stored = window.localStorage.getItem(MONEYNESS_LS_KEY);
+    return isMoneynessMode(stored) ? stored : 'all';
+  });
   const [exitPolicy, setExitPolicy] = useState<SilentBoomExitPolicy>(() => {
     if (typeof window === 'undefined') return 'realized60mPct';
     const stored = window.localStorage.getItem(EXIT_POLICY_LS_KEY);
@@ -502,6 +529,11 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
   }, [aggressivePremium]);
   useEffect(() => {
     if (typeof window !== 'undefined') {
+      window.localStorage.setItem(MONEYNESS_LS_KEY, moneynessMode);
+    }
+  }, [moneynessMode]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
       window.localStorage.setItem(EXIT_POLICY_LS_KEY, exitPolicy);
     }
   }, [exitPolicy]);
@@ -538,6 +570,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     hideLatePm,
     hideGhosts,
     hideGated,
+    moneynessMode,
   ]);
 
   const isHistorical = date !== todayCt();
@@ -644,8 +677,24 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     if (hideGated) {
       out = out.filter((a) => !a.directionGated);
     }
+    if (moneynessMode !== 'all') {
+      out = out.filter((a) => {
+        const spot = a.underlyingPriceAtSpike;
+        if (spot == null) return false;
+        const isOtm = a.optionType === 'C' ? a.strike > spot : a.strike < spot;
+        return moneynessMode === 'otm' ? isOtm : !isOtm;
+      });
+    }
     return out;
-  }, [alerts, bucketIso, hideLatePm, hideGhosts, hideGated, ctMinuteOfDay]);
+  }, [
+    alerts,
+    bucketIso,
+    hideLatePm,
+    hideGhosts,
+    hideGated,
+    moneynessMode,
+    ctMinuteOfDay,
+  ]);
   // Per-filter hidden counts — computed against the unfiltered set
   // so each chip's "−N" count reflects what THAT filter is hiding,
   // independent of any other active filter.
@@ -1134,6 +1183,38 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                   aria-pressed={active}
                 >
                   {o.label}
+                </button>
+              );
+            })}
+            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+            <span className={SECTION_LABEL}>moneyness</span>
+            {MONEYNESS_FILTERS.map((m) => {
+              const active = moneynessMode === m.value;
+              const activeColor: keyof typeof CHIP_ACTIVE =
+                m.value === 'otm'
+                  ? 'emerald'
+                  : m.value === 'itm'
+                    ? 'amber'
+                    : 'neutral';
+              return (
+                <button
+                  key={m.value}
+                  type="button"
+                  data-testid={`silent-boom-moneyness-${m.value}-chip`}
+                  onClick={() => setMoneynessMode(m.value)}
+                  className={`${CHIP_BASE} ${
+                    active ? CHIP_ACTIVE[activeColor] : CHIP_INACTIVE
+                  }`}
+                  title={
+                    m.value === 'otm'
+                      ? 'Show only out-of-the-money alerts (calls: strike > spot, puts: strike < spot). Client-side filter using underlying_price_at_spike from migration #152. Rows without a spot snapshot are hidden.'
+                      : m.value === 'itm'
+                        ? 'Show only in-the-money alerts (calls: strike ≤ spot, puts: strike ≥ spot). Client-side filter using underlying_price_at_spike from migration #152. Rows without a spot snapshot are hidden.'
+                        : 'Show alerts regardless of moneyness.'
+                  }
+                  aria-pressed={active}
+                >
+                  {m.label}
                 </button>
               );
             })}

@@ -75,6 +75,7 @@ function makeAlert(overrides: Partial<SilentBoomAlert> = {}): SilentBoomAlert {
     mktTideDiff: null,
     zeroDteDiff: null,
     spxSpotGammaOi: null,
+    underlyingPriceAtSpike: null,
     avgHoldMinutes: 197,
     outcomes: {
       peakCeilingPct: null,
@@ -285,6 +286,129 @@ describe('SilentBoomSection: filter interactions', () => {
     expect(
       screen.queryByTestId('silent-boom-row-SPY260508P00500000'),
     ).not.toBeInTheDocument();
+  });
+
+  it('filters to OTM-only alerts when the OTM moneyness chip is selected', () => {
+    const alerts = [
+      makeAlert({
+        id: 1,
+        optionChainId: 'AAPL-otm-call',
+        optionType: 'C',
+        strike: 210,
+        underlyingPriceAtSpike: 200,
+      }),
+      makeAlert({
+        id: 2,
+        optionChainId: 'AAPL-itm-call',
+        optionType: 'C',
+        strike: 195,
+        underlyingPriceAtSpike: 200,
+      }),
+    ];
+    mockUseSilentBoomFeed.mockReturnValue({
+      ...defaultHookResult,
+      alerts,
+      total: 2,
+    });
+
+    render(<SilentBoomSection marketOpen={false} />);
+    fireEvent.click(screen.getByTestId('silent-boom-moneyness-otm-chip'));
+
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL-otm-call'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('silent-boom-row-AAPL-itm-call'),
+    ).not.toBeInTheDocument();
+    expect(window.localStorage.getItem('silentBoom.moneynessMode')).toBe('otm');
+  });
+
+  it('filters to ITM-only alerts when the ITM moneyness chip is selected', () => {
+    const alerts = [
+      makeAlert({
+        id: 1,
+        optionChainId: 'SPY-otm-put',
+        optionType: 'P',
+        strike: 490,
+        underlyingPriceAtSpike: 500,
+      }),
+      makeAlert({
+        id: 2,
+        optionChainId: 'SPY-itm-put',
+        optionType: 'P',
+        strike: 510,
+        underlyingPriceAtSpike: 500,
+      }),
+    ];
+    mockUseSilentBoomFeed.mockReturnValue({
+      ...defaultHookResult,
+      alerts,
+      total: 2,
+    });
+
+    render(<SilentBoomSection marketOpen={false} />);
+    fireEvent.click(screen.getByTestId('silent-boom-moneyness-itm-chip'));
+
+    expect(
+      screen.getByTestId('silent-boom-row-SPY-itm-put'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('silent-boom-row-SPY-otm-put'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('hydrates the moneyness chip from a previously-stored localStorage value', () => {
+    window.localStorage.setItem('silentBoom.moneynessMode', 'otm');
+    render(<SilentBoomSection marketOpen={false} />);
+    expect(screen.getByTestId('silent-boom-moneyness-otm-chip')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(
+      screen.getByTestId('silent-boom-moneyness-all-chip'),
+    ).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('hides alerts with null underlyingPriceAtSpike when an OTM/ITM filter is active', () => {
+    const alerts = [
+      makeAlert({
+        id: 1,
+        optionChainId: 'AAPL-no-spot',
+        underlyingPriceAtSpike: null,
+      }),
+      makeAlert({
+        id: 2,
+        optionChainId: 'AAPL-otm-with-spot',
+        optionType: 'C',
+        strike: 210,
+        underlyingPriceAtSpike: 200,
+      }),
+    ];
+    mockUseSilentBoomFeed.mockReturnValue({
+      ...defaultHookResult,
+      alerts,
+      total: 2,
+    });
+
+    render(<SilentBoomSection marketOpen={false} />);
+
+    // Both visible under default 'all'.
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL-no-spot'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL-otm-with-spot'),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('silent-boom-moneyness-otm-chip'));
+
+    // Row without spot is hidden; the OTM row remains.
+    expect(
+      screen.queryByTestId('silent-boom-row-AAPL-no-spot'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL-otm-with-spot'),
+    ).toBeInTheDocument();
   });
 
   it('persists the conviction-floor selection to localStorage when changed', () => {

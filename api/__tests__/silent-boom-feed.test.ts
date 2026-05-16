@@ -54,6 +54,7 @@ interface AlertFixture {
   mkt_tide_diff: string | null;
   zero_dte_diff: string | null;
   spx_spot_gamma_oi: string | null;
+  underlying_price_at_spike: string | null;
   inserted_at: string;
 }
 
@@ -89,6 +90,7 @@ function makeAlert(overrides: Partial<AlertFixture> = {}): AlertFixture {
     mkt_tide_diff: '5000',
     zero_dte_diff: '300',
     spx_spot_gamma_oi: '12345',
+    underlying_price_at_spike: '1170.25',
     inserted_at: '2026-05-07T13:30:30Z',
     ...overrides,
   };
@@ -156,6 +158,40 @@ describe('silent-boom-feed handler', () => {
       alerts: { mktTideDiff: number | null }[];
     };
     expect(body.alerts[0]?.mktTideDiff).toBeNull();
+  });
+
+  it('passes through underlying_price_at_spike as underlyingPriceAtSpike', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([
+        makeAlert({ underlying_price_at_spike: '1170.25' }),
+      ]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      alerts: { underlyingPriceAtSpike: number | null }[];
+    };
+    expect(body.alerts[0]?.underlyingPriceAtSpike).toBe(1170.25);
+  });
+
+  it('returns null underlyingPriceAtSpike for pre-#152 rows missing the spot snapshot', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([
+        makeAlert({ underlying_price_at_spike: null }),
+      ]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      alerts: { underlyingPriceAtSpike: number | null }[];
+    };
+    expect(body.alerts[0]?.underlyingPriceAtSpike).toBeNull();
   });
 
   it('binds minScore into BOTH the count AND the list query (regression)', async () => {

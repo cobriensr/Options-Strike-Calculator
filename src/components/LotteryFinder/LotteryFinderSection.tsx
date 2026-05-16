@@ -30,6 +30,8 @@ const SORT_LS_KEY = 'lottery.sortMode';
 const CONVICTION_LS_KEY = 'lottery.convictionFloor';
 const HIDE_LATE_PM_LS_KEY = 'lottery.hideLatePm';
 const HIDE_GATED_LS_KEY = 'lottery.hideGated';
+const AGGRESSIVE_PREMIUM_LS_KEY = 'lottery.aggressivePremium';
+const MONEYNESS_LS_KEY = 'lottery.moneynessMode';
 const TICKER_EXPANDED_LS_KEY = 'lottery-ticker-expanded';
 /**
  * Late-PM cutoff (CT minute-of-day). Fires whose triggerTimeCt is at
@@ -49,6 +51,62 @@ const LEGACY_HIGH_CONVICTION_LS_KEY = 'lottery.highConvictionOnly';
 /** Tier floors — match LOTTERY_TIER_THRESHOLDS on the API. */
 const TIER1_MIN_SCORE = 18;
 const TIER2_MIN_SCORE = 12;
+
+/**
+ * Aggressive Premium chip — lottery-native port of the SB chip. Surfaces
+ * fires where a meaningful $-premium was deployed: estimated dollar
+ * premium ≥ $50K, DTE ≤ 3, tier 1 or 2, and OTM. The premium is
+ * derived as entry.price × trigger.volToOiWindow × entry.openInterest
+ * × 100 — `volToOiWindow × openInterest` reconstructs in-window
+ * contract volume; multiplying by entry.price × 100 yields a $-premium
+ * estimate. We drop SB's $100K floor to $50K because the LF universe
+ * (~50 mega-cap names) trades cheaper contracts on average than
+ * SPX/SPXW. Single-leg gating is dropped because multi-leg share is
+ * not in the LF payload; the score tier already filters for conviction.
+ * Client-side filter.
+ */
+const AGGRESSIVE_PREMIUM_MIN_USD = 50_000;
+const AGGRESSIVE_PREMIUM_MAX_DTE = 3;
+
+/**
+ * Moneyness chip — tri-state filter on strike vs. spot at first fire.
+ * Client-side filter only; `entry.spotAtFirst` is always populated by
+ * the lottery feed so there's no null fallthrough.
+ */
+type MoneynessMode = 'all' | 'otm' | 'itm';
+
+const MONEYNESS_FILTERS: ReadonlyArray<{
+  value: MoneynessMode;
+  label: string;
+}> = [
+  { value: 'all', label: 'all' },
+  { value: 'otm', label: 'OTM' },
+  { value: 'itm', label: 'ITM' },
+];
+
+function isMoneynessMode(v: unknown): v is MoneynessMode {
+  return v === 'all' || v === 'otm' || v === 'itm';
+}
+
+function isFireOtm(fire: LotteryFire): boolean {
+  return fire.optionType === 'C'
+    ? fire.strike > fire.entry.spotAtFirst
+    : fire.strike < fire.entry.spotAtFirst;
+}
+
+function isFireAggressivePremium(fire: LotteryFire): boolean {
+  const estimatedPremium =
+    fire.entry.price *
+    fire.trigger.volToOiWindow *
+    fire.entry.openInterest *
+    100;
+  return (
+    estimatedPremium >= AGGRESSIVE_PREMIUM_MIN_USD &&
+    fire.dte <= AGGRESSIVE_PREMIUM_MAX_DTE &&
+    (fire.scoreTier === 'tier1' || fire.scoreTier === 'tier2') &&
+    isFireOtm(fire)
+  );
+}
 
 type ConvictionFloor = 'all' | 'tier2' | 'tier1';
 
@@ -262,6 +320,15 @@ export function LotteryFinderSection({
     if (typeof window === 'undefined') return false;
     return window.localStorage.getItem(HIDE_GATED_LS_KEY) === '1';
   });
+  const [aggressivePremium, setAggressivePremium] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(AGGRESSIVE_PREMIUM_LS_KEY) === '1';
+  });
+  const [moneynessMode, setMoneynessMode] = useState<MoneynessMode>(() => {
+    if (typeof window === 'undefined') return 'all';
+    const stored = window.localStorage.getItem(MONEYNESS_LS_KEY);
+    return isMoneynessMode(stored) ? stored : 'all';
+  });
   /** 0-based page index. Reset to 0 whenever a filter or minute changes. */
   const [page, setPage] = useState<number>(0);
 
@@ -287,6 +354,19 @@ export function LotteryFinderSection({
       window.localStorage.setItem(HIDE_GATED_LS_KEY, hideGated ? '1' : '0');
     }
   }, [hideGated]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(
+        AGGRESSIVE_PREMIUM_LS_KEY,
+        aggressivePremium ? '1' : '0',
+      );
+    }
+  }, [aggressivePremium]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(MONEYNESS_LS_KEY, moneynessMode);
+    }
+  }, [moneynessMode]);
 
   // Reset to page 0 whenever the result set's identity changes.
   // Otherwise the user could be on page 3, click a filter, and land
@@ -305,6 +385,8 @@ export function LotteryFinderSection({
     sortMode,
     convictionFloor,
     hideGated,
+    aggressivePremium,
+    moneynessMode,
   ]);
 
   const { fires, loading, error, fetchedAt, total, offset, hasMore } =
@@ -414,8 +496,24 @@ export function LotteryFinderSection({
     if (hideGated) {
       out = out.filter((f) => !f.directionGated);
     }
+    if (aggressivePremium) {
+      out = out.filter(isFireAggressivePremium);
+    }
+    if (moneynessMode !== 'all') {
+      out = out.filter((f) => {
+        const otm = isFireOtm(f);
+        return moneynessMode === 'otm' ? otm : !otm;
+      });
+    }
     return out;
-  }, [fires, hideLatePm, hideGated, ctMinuteOfDay]);
+  }, [
+    fires,
+    hideLatePm,
+    hideGated,
+    aggressivePremium,
+    moneynessMode,
+    ctMinuteOfDay,
+  ]);
   // Per-filter hidden counts — computed against the unfiltered set so
   // each chip's "−N" reflects only what THAT filter is hiding.
   const hiddenLatePmCount = hideLatePm
@@ -856,6 +954,38 @@ export function LotteryFinderSection({
               );
             })}
             <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+            <span className={SECTION_LABEL}>moneyness</span>
+            {MONEYNESS_FILTERS.map((m) => {
+              const active = moneynessMode === m.value;
+              const activeColor: keyof typeof CHIP_ACTIVE =
+                m.value === 'otm'
+                  ? 'emerald'
+                  : m.value === 'itm'
+                    ? 'amber'
+                    : 'neutral';
+              return (
+                <button
+                  key={m.value}
+                  type="button"
+                  data-testid={`lottery-moneyness-${m.value}-chip`}
+                  onClick={() => setMoneynessMode(m.value)}
+                  className={`${CHIP_BASE} ${
+                    active ? CHIP_ACTIVE[activeColor] : CHIP_INACTIVE
+                  }`}
+                  title={
+                    m.value === 'otm'
+                      ? 'Show only out-of-the-money fires (calls: strike > spotAtFirst, puts: strike < spotAtFirst). Client-side filter.'
+                      : m.value === 'itm'
+                        ? 'Show only in-the-money fires (calls: strike ≤ spotAtFirst, puts: strike ≥ spotAtFirst). Client-side filter.'
+                        : 'Show fires regardless of moneyness.'
+                  }
+                  aria-pressed={active}
+                >
+                  {m.label}
+                </button>
+              );
+            })}
+            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
             <span className={SECTION_LABEL}>tod</span>
             {TOD_FILTERS.map((t) => (
               <button
@@ -903,6 +1033,18 @@ export function LotteryFinderSection({
                   −{hiddenGatedCount}
                 </span>
               )}
+            </button>
+            <button
+              type="button"
+              data-testid="lottery-aggressive-premium-chip"
+              onClick={() => setAggressivePremium(!aggressivePremium)}
+              className={`${CHIP_BASE} ${
+                aggressivePremium ? CHIP_ACTIVE.sky : CHIP_INACTIVE
+              }`}
+              title={`Aggressive Premium: surface only fires with estimated $-premium ≥ $${AGGRESSIVE_PREMIUM_MIN_USD.toLocaleString()}, DTE ≤ ${AGGRESSIVE_PREMIUM_MAX_DTE}, tier 1 or 2, and OTM (strike vs spotAtFirst). Premium estimated as entry.price × trigger.volToOiWindow × entry.openInterest × 100. Client-side filter.`}
+              aria-pressed={aggressivePremium}
+            >
+              💎 aggressive premium
             </button>
           </div>
 

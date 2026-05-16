@@ -69,6 +69,7 @@ interface AlertRow {
   mkt_tide_diff: DbNullableNumeric;
   zero_dte_diff: DbNullableNumeric;
   spx_spot_gamma_oi: DbNullableNumeric;
+  underlying_price_at_spike: DbNullableNumeric;
   inserted_at: DbTimestamp;
 }
 
@@ -107,6 +108,12 @@ interface SilentBoomAlertResponse {
   zeroDteDiff: number | null;
   /** SPX dealer gamma_oi at the spike-bucket time (sign indicator). */
   spxSpotGammaOi: number | null;
+  /**
+   * Underlying spot price at the spike bucket (migration #152). Null on
+   * pre-#152 rows. Surfaced so the client can derive ITM/OTM moneyness
+   * for the All / OTM / ITM chip group without re-querying.
+   */
+  underlyingPriceAtSpike: number | null;
   /**
    * Cohort-derived "typical exit window" hint (P75 of minutes-to-peak
    * among historical winners for the (tier, ticker) cohort). Always
@@ -510,6 +517,7 @@ export default async function handler(
       mktTideDiff: toNumOrNull(r.mkt_tide_diff),
       zeroDteDiff: toNumOrNull(r.zero_dte_diff),
       spxSpotGammaOi: toNumOrNull(r.spx_spot_gamma_oi),
+      underlyingPriceAtSpike: toNumOrNull(r.underlying_price_at_spike),
       avgHoldMinutes: avgHoldMinutesFor({
         tier: r.score_tier,
         ticker: r.underlying_symbol,

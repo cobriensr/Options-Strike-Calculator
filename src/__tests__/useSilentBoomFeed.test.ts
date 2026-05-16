@@ -41,6 +41,7 @@ function emptyFeed(
       burst: null,
       askPctBand: null,
       sort: 'newest',
+      aggressivePremium: false,
     },
     count: 0,
     total: 0,
@@ -186,6 +187,7 @@ describe('useSilentBoomFeed', () => {
               mktTideDiff: 5000,
               zeroDteDiff: 300,
               spxSpotGammaOi: 12345,
+              underlyingPriceAtSpike: 580,
               avgHoldMinutes: 144,
               outcomes: {
                 peakCeilingPct: 25,

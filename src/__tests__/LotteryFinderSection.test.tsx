@@ -346,4 +346,164 @@ describe('LotteryFinderSection: filter interactions', () => {
       screen.queryByTestId('lottery-row-SPY260508P00500000'),
     ).not.toBeInTheDocument();
   });
+
+  it('flips the aggressive-premium aria-pressed state and persists to localStorage', () => {
+    render(<LotteryFinderSection marketOpen={false} />);
+    const chip = screen.getByTestId('lottery-aggressive-premium-chip');
+    expect(chip).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(chip);
+    expect(chip).toHaveAttribute('aria-pressed', 'true');
+    expect(window.localStorage.getItem('lottery.aggressivePremium')).toBe('1');
+  });
+
+  it('keeps only fires matching the aggressive-premium predicate', () => {
+    // Default makeFire matches the predicate: estPremium = 0.85 * 1.5 *
+    // 5000 * 100 = $637,500 ≥ $50K, DTE=0 ≤ 3, tier2, OTM (200 > 198.5).
+    const matching = makeFire({
+      id: 1,
+      optionChainId: 'AAPL-match',
+    });
+    // Too cheap: drop estimated premium below $50K by halving openInterest
+    // (and dropping volToOiWindow). 0.85 × 0.5 × 1000 × 100 = $42.5.
+    const tooCheap = makeFire({
+      id: 2,
+      optionChainId: 'AAPL-cheap',
+      trigger: { ...matching.trigger, volToOiWindow: 0.5 },
+      entry: { ...matching.entry, openInterest: 1000 },
+    });
+    // Tier 3 — excluded regardless of premium size.
+    const tier3 = makeFire({
+      id: 3,
+      optionChainId: 'AAPL-tier3',
+      score: 5,
+      scoreTier: 'tier3',
+    });
+    // ITM call (strike below spot) — excluded by OTM gate.
+    const itm = makeFire({
+      id: 4,
+      optionChainId: 'AAPL-itm',
+      strike: 195,
+    });
+    mockUseLotteryFinder.mockReturnValue({
+      ...defaultHookResult,
+      fires: [matching, tooCheap, tier3, itm],
+      total: 4,
+    });
+
+    render(<LotteryFinderSection marketOpen={false} />);
+    fireEvent.click(screen.getByTestId('lottery-aggressive-premium-chip'));
+
+    expect(screen.getByTestId('lottery-row-AAPL-match')).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('lottery-row-AAPL-cheap'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('lottery-row-AAPL-tier3'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('lottery-row-AAPL-itm'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('filters to OTM-only fires when the OTM moneyness chip is selected', () => {
+    const fires = [
+      makeFire({
+        id: 1,
+        optionChainId: 'AAPL-otm',
+        optionType: 'C',
+        strike: 205,
+        entry: {
+          price: 0.85,
+          openInterest: 5000,
+          spotAtFirst: 200,
+          alertSeq: 7,
+          minutesSincePrevFire: 30,
+        },
+      }),
+      makeFire({
+        id: 2,
+        optionChainId: 'AAPL-itm',
+        optionType: 'C',
+        strike: 195,
+        entry: {
+          price: 0.85,
+          openInterest: 5000,
+          spotAtFirst: 200,
+          alertSeq: 7,
+          minutesSincePrevFire: 30,
+        },
+      }),
+    ];
+    mockUseLotteryFinder.mockReturnValue({
+      ...defaultHookResult,
+      fires,
+      total: 2,
+    });
+
+    render(<LotteryFinderSection marketOpen={false} />);
+    fireEvent.click(screen.getByTestId('lottery-moneyness-otm-chip'));
+
+    expect(screen.getByTestId('lottery-row-AAPL-otm')).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('lottery-row-AAPL-itm'),
+    ).not.toBeInTheDocument();
+    expect(window.localStorage.getItem('lottery.moneynessMode')).toBe('otm');
+  });
+
+  it('hydrates the moneyness chip from a previously-stored localStorage value', () => {
+    window.localStorage.setItem('lottery.moneynessMode', 'itm');
+    render(<LotteryFinderSection marketOpen={false} />);
+    expect(screen.getByTestId('lottery-moneyness-itm-chip')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(screen.getByTestId('lottery-moneyness-all-chip')).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+  });
+
+  it('filters to ITM-only fires when the ITM moneyness chip is selected', () => {
+    const fires = [
+      makeFire({
+        id: 1,
+        optionChainId: 'SPY-otm-put',
+        optionType: 'P',
+        strike: 490,
+        entry: {
+          price: 0.85,
+          openInterest: 5000,
+          spotAtFirst: 500,
+          alertSeq: 7,
+          minutesSincePrevFire: 30,
+        },
+      }),
+      makeFire({
+        id: 2,
+        optionChainId: 'SPY-itm-put',
+        optionType: 'P',
+        strike: 510,
+        entry: {
+          price: 0.85,
+          openInterest: 5000,
+          spotAtFirst: 500,
+          alertSeq: 7,
+          minutesSincePrevFire: 30,
+        },
+      }),
+    ];
+    mockUseLotteryFinder.mockReturnValue({
+      ...defaultHookResult,
+      fires,
+      total: 2,
+    });
+
+    render(<LotteryFinderSection marketOpen={false} />);
+    fireEvent.click(screen.getByTestId('lottery-moneyness-itm-chip'));
+
+    expect(screen.getByTestId('lottery-row-SPY-itm-put')).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('lottery-row-SPY-otm-put'),
+    ).not.toBeInTheDocument();
+  });
 });

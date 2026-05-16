@@ -130,6 +130,14 @@ export interface SilentBoomAlert {
   /** SPX spot_exposures gamma_oi sign at the spike-bucket time. */
   spxSpotGammaOi: number | null;
   /**
+   * Underlying spot price at the spike-bucket time (migration #152).
+   * Null on pre-#152 rows that were inserted before the field existed.
+   * The UI uses this to derive ITM/OTM moneyness client-side for the
+   * All / OTM / ITM chip group. Rows with null spot fall through under
+   * the All mode and are hidden under either OTM or ITM.
+   */
+  underlyingPriceAtSpike: number | null;
+  /**
    * Cohort-derived "typical exit window" hint (P75 of minutes-to-peak
    * among historical winners for the (tier, ticker) cohort). Always
    * populated by /api/silent-boom-feed. See api/_lib/silent-boom-hold.ts.
@@ -152,6 +160,7 @@ export interface SilentBoomFeedResponse {
     burst: SilentBoomBurstColor | null;
     askPctBand: SilentBoomAskPctBand | null;
     sort: SilentBoomSortMode;
+    aggressivePremium: boolean;
   };
   count: number;
   total: number;
