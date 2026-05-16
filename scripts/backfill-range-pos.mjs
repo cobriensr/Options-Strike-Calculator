@@ -58,25 +58,57 @@ const groupLimit =
 
 // ── UW client ──────────────────────────────────────────────
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Fetch with retry-on-429. UW Advanced tier caps /stock/{t}/ohlc/1m
+ * at 120/min — first run hit the wall at request 121 with thousands
+ * of 429s. We pace at 600ms between calls (100/min, safety margin)
+ * and exponential-backoff retry up to 4 times on 429. Non-429
+ * non-2xx returns [] immediately so transient server errors don't
+ * stall the whole backfill.
+ */
 async function fetchStockCandles1m(ticker, date) {
   const url = `${UW_BASE}/stock/${ticker}/ohlc/1m?date=${date}`;
-  try {
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${UW_API_KEY}` },
-    });
-    if (!res.ok) {
-      console.warn(
-        `  UW ${ticker} ${date} → HTTP ${res.status}; leaving NULL`,
-      );
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${UW_API_KEY}` },
+      });
+      if (res.status === 429) {
+        const retryAfterSec = Number.parseInt(
+          res.headers.get('retry-after') ?? '',
+          10,
+        );
+        const wait = Number.isFinite(retryAfterSec)
+          ? retryAfterSec * 1000
+          : 2000 * 2 ** attempt; // 2s, 4s, 8s, 16s
+        console.warn(
+          `  UW ${ticker} ${date} → 429 (attempt ${attempt + 1}/4); ` +
+            `sleeping ${wait}ms`,
+        );
+        await sleep(wait);
+        continue;
+      }
+      if (!res.ok) {
+        console.warn(
+          `  UW ${ticker} ${date} → HTTP ${res.status}; leaving NULL`,
+        );
+        return [];
+      }
+      const body = await res.json();
+      return Array.isArray(body?.data) ? body.data : [];
+    } catch (err) {
+      console.warn(`  UW ${ticker} ${date} → ${err.message}; leaving NULL`);
       return [];
     }
-    const body = await res.json();
-    return Array.isArray(body?.data) ? body.data : [];
-  } catch (err) {
-    console.warn(`  UW ${ticker} ${date} → ${err.message}; leaving NULL`);
-    return [];
   }
+  console.warn(`  UW ${ticker} ${date} → exhausted 4 retries on 429`);
+  return [];
 }
+
+/** Steady-state pacing between calls — keeps us under the 120/min cap. */
+const UW_INTER_CALL_DELAY_MS = 600;
 
 function computeRangePos(candles, triggerTimeMs, spot) {
   let high = -Infinity;
@@ -129,6 +161,9 @@ for (const g of groups) {
   console.log(
     `[${groupsProcessed}/${groups.length}] ${g.ticker} ${g.date} (${g.n} fires)`,
   );
+  // Steady-state pacing — skip on the first request since the loop
+  // entry already has zero rate budget consumed.
+  if (groupsProcessed > 1) await sleep(UW_INTER_CALL_DELAY_MS);
   const candles = await fetchStockCandles1m(g.ticker, g.date);
   if (candles.length === 0) {
     rowsLeftNull += g.n;
@@ -143,6 +178,11 @@ for (const g of groups) {
       AND date = ${g.date}::date
       AND range_pos_at_trigger IS NULL
   `;
+  // Compute all in-memory, then issue ONE batched UPDATE per group
+  // via a JSONB pivot. Per-row UPDATEs on neon-serverless are 50-100x
+  // slower than a batched single round-trip — at 626K rows the per-
+  // row approach is multi-hour while the batched approach is minutes.
+  const updates = [];
   for (const f of fires) {
     const triggerMs =
       f.trigger_time_ct instanceof Date
@@ -153,17 +193,22 @@ for (const g of groups) {
       rowsLeftNull++;
       continue;
     }
-    if (dryRun) {
-      rowsUpdated++;
-      continue;
-    }
-    await sql`
-      UPDATE lottery_finder_fires
-      SET range_pos_at_trigger = ${rangePos}
-      WHERE id = ${f.id}
-    `;
-    rowsUpdated++;
+    updates.push({ id: f.id, pos: rangePos });
   }
+  if (updates.length === 0) continue;
+  if (dryRun) {
+    rowsUpdated += updates.length;
+    continue;
+  }
+  // One round-trip per group via jsonb_array_elements pivot.
+  await sql`
+    UPDATE lottery_finder_fires AS f
+    SET range_pos_at_trigger = (u->>'pos')::numeric
+    FROM jsonb_array_elements(${JSON.stringify(updates)}::jsonb) AS u
+    WHERE f.id = (u->>'id')::int
+      AND f.range_pos_at_trigger IS NULL
+  `;
+  rowsUpdated += updates.length;
 }
 
 console.log('\n── Backfill summary ──');
