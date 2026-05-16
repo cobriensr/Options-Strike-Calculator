@@ -92,6 +92,12 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: DEFAULT_MAX_RUNTIME,
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
+  'evaluate-round-trip': {
+    schedule: '*/10 14-21 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+    failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
+  },
   'embed-yesterday': {
     schedule: '0 7 * * 2-6',
     checkinMargin: DEFAULT_MARGIN,
