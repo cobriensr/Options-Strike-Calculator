@@ -469,11 +469,15 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     return window.localStorage.getItem(HIDE_GATED_LS_KEY) === '1';
   });
   // "Hide round-tripped" — filters out alerts where the round-trip
-  // cron applied a non-zero score deduct. Default OFF; persists locally.
+  // cron applied a non-zero score deduct. Default ON (Phase 3, post-2E
+  // soak: deducted alerts had +14.4pp trail-loss rate vs baseline on
+  // silent_boom — hiding them by default is the higher-EV move). User
+  // can flip the chip OFF to see deducted alerts. Persists locally.
   // Spec: docs/superpowers/specs/round-trip-score-deduct-production-2026-05-16.md
   const [hideRoundTripped, setHideRoundTripped] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return window.localStorage.getItem(HIDE_ROUND_TRIPPED_LS_KEY) === '1';
+    if (typeof window === 'undefined') return true;
+    const stored = window.localStorage.getItem(HIDE_ROUND_TRIPPED_LS_KEY);
+    return stored == null ? true : stored === '1';
   });
   // Aggressive Premium chip — single toggle that ANDs together the
   // trader's 5-criterion UW filter: premium ≥ $100K, DTE ≤ 8,

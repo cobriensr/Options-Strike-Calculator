@@ -349,16 +349,18 @@ describe('LotteryFinderSection: filter interactions', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('flips the hide-round-tripped aria-pressed state and persists to localStorage', () => {
+  it('default ON: chip starts aria-pressed=true; flipping OFF persists "0"', () => {
+    // Phase 3 default-on (post-2E soak result: deducted alerts had
+    // +11.4pp trail-loss vs baseline → safer to hide by default).
     render(<LotteryFinderSection marketOpen={false} />);
     const chip = screen.getByTestId('lottery-hide-round-tripped-chip');
-    expect(chip).toHaveAttribute('aria-pressed', 'false');
-    fireEvent.click(chip);
     expect(chip).toHaveAttribute('aria-pressed', 'true');
-    expect(window.localStorage.getItem('lottery.hideRoundTripped')).toBe('1');
+    fireEvent.click(chip);
+    expect(chip).toHaveAttribute('aria-pressed', 'false');
+    expect(window.localStorage.getItem('lottery.hideRoundTripped')).toBe('0');
   });
 
-  it('drops fires with roundTripScoreDeduct < 0 when hide-round-tripped is on', () => {
+  it('drops fires with roundTripScoreDeduct < 0 by default; toggle OFF reveals them', () => {
     const fires = [
       makeFire({
         id: 1,
@@ -382,21 +384,23 @@ describe('LotteryFinderSection: filter interactions', () => {
 
     render(<LotteryFinderSection marketOpen={false} />);
 
-    expect(
-      screen.getByTestId('lottery-row-AAPL260508C00200000'),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByTestId('lottery-row-SPY260508P00500000'),
-    ).toBeInTheDocument();
-
-    fireEvent.click(screen.getByTestId('lottery-hide-round-tripped-chip'));
-
+    // Default ON — deducted alert is hidden on initial render.
     expect(
       screen.getByTestId('lottery-row-AAPL260508C00200000'),
     ).toBeInTheDocument();
     expect(
       screen.queryByTestId('lottery-row-SPY260508P00500000'),
     ).not.toBeInTheDocument();
+
+    // Flip the chip OFF — both alerts now visible.
+    fireEvent.click(screen.getByTestId('lottery-hide-round-tripped-chip'));
+
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('lottery-row-SPY260508P00500000'),
+    ).toBeInTheDocument();
   });
 
   it('flips the aggressive-premium aria-pressed state and persists to localStorage', () => {

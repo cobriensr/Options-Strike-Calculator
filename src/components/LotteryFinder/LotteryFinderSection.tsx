@@ -323,10 +323,14 @@ export function LotteryFinderSection({
   });
   // Phase 2D — "Hide round-tripped" — filters out fires where the
   // evaluate-round-trip cron applied a non-zero score deduct. Defaults
-  // OFF; persists locally. Spec: round-trip-score-deduct-production-2026-05-16.md
+  // ON (Phase 3 default-on shipped post-2E soak — deducted alerts had
+  // +11.4pp trail-loss rate vs baseline; hiding them by default is the
+  // higher-EV move). Persists locally; user can flip the chip OFF to
+  // see deducted alerts. Spec: round-trip-score-deduct-production-2026-05-16.md
   const [hideRoundTripped, setHideRoundTripped] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return window.localStorage.getItem(HIDE_ROUND_TRIPPED_LS_KEY) === '1';
+    if (typeof window === 'undefined') return true;
+    const stored = window.localStorage.getItem(HIDE_ROUND_TRIPPED_LS_KEY);
+    return stored == null ? true : stored === '1';
   });
   const [aggressivePremium, setAggressivePremium] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
