@@ -21,13 +21,25 @@ vi.mock('../_lib/axiom.js', () => ({
   reportCronRun: vi.fn(),
 }));
 
-const { mockCronGuard } = vi.hoisted(() => ({
+const { mockCronGuard, mockFetchStockCandles1m } = vi.hoisted(() => ({
   mockCronGuard: vi.fn(),
+  // Mocked UW stock-candles client. Default behavior set in beforeEach
+  // — tests that care about range_pos behavior override per-case.
+  mockFetchStockCandles1m: vi.fn(),
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
   cronGuard: mockCronGuard,
 }));
+
+vi.mock('../_lib/uw-stock-candles.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../_lib/uw-stock-candles.js')>();
+  return {
+    ...actual,
+    fetchStockCandles1m: mockFetchStockCandles1m,
+  };
+});
 
 import handler from '../cron/detect-lottery-fires.js';
 
@@ -141,6 +153,10 @@ describe('detect-lottery-fires handler', () => {
     vi.resetAllMocks();
     mockCronGuard.mockReturnValue(GUARD);
     mockSql.mockResolvedValue([]);
+    // Default UW candle fetch returns []; range_pos resolves to null
+    // and the score bonus is not applied. Tests that care about range
+    // behavior override this per-case.
+    mockFetchStockCandles1m.mockResolvedValue([]);
     process.env.CRON_SECRET = 'test-secret';
   });
 
@@ -225,15 +241,104 @@ describe('detect-lottery-fires handler', () => {
     expect(res._status).toBe(200);
     // The INSERT is the last mockSql call (after ticks SELECT, prior
     // fires, flow_data, spot_exposures). Bind order ends with
-    // `score, direction_gated` per Phase 4 direction gate (spec
-    // silent-boom-direction-gate-and-trail-ui-2026-05-14.md) — score
-    // is at(-2), direction_gated trailing at(-1).
+    // `score, direction_gated, range_pos_at_trigger` per the Range
+    // Kill rollout (spec: docs/superpowers/specs/lottery-silentboom-
+    // eda-impl-2026-05-16.md) — range_pos is at(-1), direction_gated
+    // at(-2), score at(-3). UW candles default to [] so range_pos
+    // resolves to null and the score bonus is not applied.
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    const directionGated = insertCall.at(-1);
-    const score = insertCall.at(-2);
+    const rangePos = insertCall.at(-1);
+    const directionGated = insertCall.at(-2);
+    const score = insertCall.at(-3);
     expect(score).toBe(25);
     // SNDK call with no OTM tide tick → ungated.
     expect(directionGated).toBe(false);
+    // No UW candle data in default fixture → range_pos null.
+    expect(rangePos).toBeNull();
+  });
+
+  it('computes range_pos_at_trigger from UW stock candles and applies the bottom-10% score penalty', async () => {
+    // SNDK fixture's spot_at_first is 1170 (per the tick fixture).
+    // Build a session where high=1200, low=1150 BEFORE trigger time —
+    // range_pos = (1170 - 1150) / (1200 - 1150) = 0.4 (mid-range).
+    // No score penalty (range_pos ≥ 0.10), no vol/OI bonus (window
+    // ~0.15 < 0.5). Base score stays 25.
+    const stockCandles = [
+      {
+        start_time: '2026-05-01T13:00:00Z',
+        open: '1150',
+        high: '1200',
+        low: '1150',
+        close: '1175',
+      },
+      {
+        start_time: '2026-05-01T13:01:00Z',
+        open: '1175',
+        high: '1200',
+        low: '1150',
+        close: '1170',
+      },
+    ];
+    mockFetchStockCandles1m.mockResolvedValue(stockCandles);
+    mockSql
+      .mockResolvedValueOnce(fireableSndkStream())
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 42 }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
+    const rangePos = insertCall.at(-1);
+    const score = insertCall.at(-3);
+    // Spot 1170 between low 1150 and high 1200 → 0.4
+    expect(rangePos).toBeCloseTo(0.4, 5);
+    // No penalty applied; base 25 unchanged.
+    expect(score).toBe(25);
+  });
+
+  it('applies the -3 range_pos score penalty when the fire is in the bottom-10% of the session range', async () => {
+    // Session range: low=1100, high=1300; spot=1170 → range_pos =
+    // (1170-1100)/(1300-1100) = 0.35... need spot at bottom-10%.
+    // Pick high=1500, low=1170: range_pos = (1170-1170)/(1500-1170) = 0.
+    // Below the 0.10 threshold → -3 penalty.
+    const stockCandles = [
+      {
+        start_time: '2026-05-01T13:00:00Z',
+        open: '1170',
+        high: '1500',
+        low: '1170',
+        close: '1170',
+      },
+    ];
+    mockFetchStockCandles1m.mockResolvedValue(stockCandles);
+    mockSql
+      .mockResolvedValueOnce(fireableSndkStream())
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 42 }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
+    const rangePos = insertCall.at(-1);
+    const score = insertCall.at(-3);
+    expect(rangePos).toBe(0);
+    // Base 25 - 3 penalty = 22.
+    expect(score).toBe(22);
   });
 
   it('binds mkt_tide_otm_diff from market_tide_otm ncp/npp (regression for vestigial otm_ncp bug, spec: silent-boom-otm-tide-and-trail-2026-05-13.md)', async () => {
@@ -267,15 +372,16 @@ describe('detect-lottery-fires handler', () => {
     //   spx_spot_gamma_oi, spx_spot_gamma_vol, spx_spot_charm_oi,
     //   spx_spot_vanna_oi, gex_strike_call_minus_put,
     //   gex_strike_call_ask_minus_bid, gex_strike_put_ask_minus_bid,
-    //   gex_strike_actual_strike, score, direction_gated
-    // → mkt_tide_otm_diff is the 15th-from-last bind position
-    //   (was -14 before #151 added direction_gated as the trailing bind).
+    //   gex_strike_actual_strike, score, direction_gated, range_pos_at_trigger
+    // → mkt_tide_otm_diff is the 16th-from-last bind position
+    //   (was -14 before #151 added direction_gated, then -15 before #153
+    //   added range_pos_at_trigger).
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    expect(insertCall.at(-15)).toBe(3000); // 4000 - 1000
+    expect(insertCall.at(-16)).toBe(3000); // 4000 - 1000
     // Sanity: mkt_tide_diff (no 'market_tide' source in the mock) is null
-    expect(insertCall.at(-16)).toBeNull();
+    expect(insertCall.at(-17)).toBeNull();
     // SNDK call with otm_diff = +3000 (well below the ±150M gate) → ungated.
-    expect(insertCall.at(-1)).toBe(false);
+    expect(insertCall.at(-2)).toBe(false);
   });
 
   it('binds null mkt_tide_otm_diff when no market_tide_otm row is in the macro window', async () => {
@@ -296,12 +402,12 @@ describe('detect-lottery-fires handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // Bind positions shifted -1 by the trailing direction_gated bind
-    // added in migration #151 (Phase 4 direction gate).
+    // Bind positions shifted -2 vs the original mkt_tide layout:
+    //   -1 from #151 direction_gated, -1 from #153 range_pos_at_trigger.
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    expect(insertCall.at(-16)).toBe(200); // mkt_tide_diff = 500 - 300
-    expect(insertCall.at(-15)).toBeNull(); // mkt_tide_otm_diff absent
-    expect(insertCall.at(-1)).toBe(false); // otm null → ungated
+    expect(insertCall.at(-17)).toBe(200); // mkt_tide_diff = 500 - 300
+    expect(insertCall.at(-16)).toBeNull(); // mkt_tide_otm_diff absent
+    expect(insertCall.at(-2)).toBe(false); // otm null → ungated
   });
 
   it('issues the strike_exposures query for SPY (in TICKERS_WITH_GEX_STRIKE)', async () => {
@@ -522,12 +628,13 @@ describe('detect-lottery-fires handler', () => {
       inserted: 1,
     });
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    // direction_gated is the trailing bind; score is at(-2). The gate
-    // must NOT mutate the score value — only the boolean column flips.
-    expect(insertCall.at(-1)).toBe(true);
+    // Post-#153, range_pos_at_trigger is the trailing bind, then
+    // direction_gated at(-2), score at(-3). The gate must NOT mutate
+    // the score value — only the boolean column flips.
+    expect(insertCall.at(-2)).toBe(true);
     // Score remains the computed value (not zeroed / not demoted).
-    expect(typeof insertCall.at(-2)).toBe('number');
-    expect(insertCall.at(-2)).toBeGreaterThan(0);
+    expect(typeof insertCall.at(-3)).toBe('number');
+    expect(insertCall.at(-3)).toBeGreaterThan(0);
   });
 
   it('still fires when prior-fire is older than the 5-min cooldown', async () => {

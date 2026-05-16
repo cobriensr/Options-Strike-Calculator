@@ -29,6 +29,11 @@ import {
 import { computeLotteryScore } from '../_lib/lottery-score-weights.js';
 import { applyEmpiricalBonuses } from '../_lib/lottery-score-bonuses.js';
 import {
+  computeRangePos,
+  fetchStockCandles1m,
+  type UWStockCandle,
+} from '../_lib/uw-stock-candles.js';
+import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
@@ -284,6 +289,11 @@ export default withCronInstrumentation(
       if (fires.length === 0) continue;
       totalFires += fires.length;
 
+      // Per-(ticker, date) candle cache — multiple fires on the same
+      // chain within one cron run share session-range candles, so
+      // memoize the UW lookup. Cleared at end of handler scope.
+      const candleCache = new Map<string, UWStockCandle[]>();
+
       const records = enrichFires(fires, {
         date: tradeDateStr,
         optionChainId: g.optionChain,
@@ -326,9 +336,32 @@ export default withCronInstrumentation(
           tod: rec.tod,
           optionType: rec.optionType,
         });
+        // Range Kill — Finding 1 of the 2026-05-15 cross-section EDA.
+        // Fetch 1-min stock candles for the underlying × fire date
+        // (cached across fires on the same chain), then compute the
+        // fire's position in the session range up to its trigger time.
+        // Used both as a score bonus (-3 for bottom-10%) and a UI
+        // filter signal. On UW failure or insufficient data, range_pos
+        // stays null and the score bonus is skipped.
+        const cacheKey = `${rec.underlyingSymbol}_${rec.date}`;
+        let candles = candleCache.get(cacheKey);
+        if (candles == null) {
+          candles = await fetchStockCandles1m(
+            ctx.apiKey,
+            rec.underlyingSymbol,
+            rec.date,
+          );
+          candleCache.set(cacheKey, candles);
+        }
+        const rangePosAtTrigger = computeRangePos(
+          candles,
+          rec.triggerTimeCt,
+          rec.spotAtFirst,
+        );
         const score = applyEmpiricalBonuses({
           baseScore,
           triggerVolToOiWindow: rec.triggerVolToOiWindow,
+          rangePosAtTrigger,
         });
         // Phase 4 direction gate (spec:
         // docs/superpowers/specs/silent-boom-direction-gate-and-trail-ui-2026-05-14.md).
@@ -368,7 +401,7 @@ export default withCronInstrumentation(
             spx_spot_gamma_oi, spx_spot_gamma_vol, spx_spot_charm_oi, spx_spot_vanna_oi,
             gex_strike_call_minus_put, gex_strike_call_ask_minus_bid,
             gex_strike_put_ask_minus_bid, gex_strike_actual_strike,
-            score, direction_gated
+            score, direction_gated, range_pos_at_trigger
           ) VALUES (
             ${rec.date}::date, ${rec.triggerTimeCt.toISOString()}, ${rec.entryTimeCt.toISOString()},
             ${rec.optionChainId}, ${rec.underlyingSymbol}, ${rec.optionType},
@@ -386,7 +419,7 @@ export default withCronInstrumentation(
             ${macro.spx_spot_gamma_oi}, ${macro.spx_spot_gamma_vol}, ${macro.spx_spot_charm_oi}, ${macro.spx_spot_vanna_oi},
             ${macro.gex_strike_call_minus_put}, ${macro.gex_strike_call_ask_minus_bid},
             ${macro.gex_strike_put_ask_minus_bid}, ${macro.gex_strike_actual_strike},
-            ${score}, ${directionGated}
+            ${score}, ${directionGated}, ${rangePosAtTrigger}
           )
           ON CONFLICT (option_chain_id, trigger_time_ct) DO NOTHING
           RETURNING id

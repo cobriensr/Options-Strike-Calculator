@@ -31,24 +31,43 @@ export const VOL_TO_OI_WINDOW_BONUS_THRESHOLD = 0.5;
 export const VOL_TO_OI_WINDOW_BONUS_POINTS = 1;
 
 /**
+ * -3 when the fire's position in the session range is < 0.10 at
+ * trigger time (bottom-10%). The 2026-05-15 EDA found this cohort
+ * has a 2.4% win50 rate vs the 35.7% LF baseline (0.07× lift) — a
+ * hard kill, not a soft preference. -3 pulls every bottom-10% fire
+ * out of the tier-2 floor (12), effectively suppressing them from
+ * conviction filters.
+ *
+ * Source: cross-section EDA 2026-05-15, Finding 1 "Range Kill".
+ */
+export const RANGE_KILL_THRESHOLD = 0.1;
+export const RANGE_KILL_PENALTY_POINTS = 3;
+
+/**
  * Apply empirical EDA-derived bonuses on top of the ML-trained base
  * score. Returns the adjusted integer score.
  *
  * Bonus inputs are nullable — when a feature isn't available for a
- * fire (e.g., trigger_vol_to_oi_window is null on a legacy row), the
- * bonus is simply not applied.
+ * fire (e.g., trigger_vol_to_oi_window is null on a legacy row, or
+ * UW candle fetch failed at insert time), the bonus is simply not
+ * applied. This keeps historical rows scoring with their original
+ * weights when re-read by the feed endpoint.
  */
 export function applyEmpiricalBonuses(args: {
   baseScore: number;
   triggerVolToOiWindow: number | null;
+  rangePosAtTrigger?: number | null;
 }): number {
-  const { baseScore, triggerVolToOiWindow } = args;
+  const { baseScore, triggerVolToOiWindow, rangePosAtTrigger } = args;
   let score = baseScore;
   if (
     triggerVolToOiWindow != null &&
     triggerVolToOiWindow >= VOL_TO_OI_WINDOW_BONUS_THRESHOLD
   ) {
     score += VOL_TO_OI_WINDOW_BONUS_POINTS;
+  }
+  if (rangePosAtTrigger != null && rangePosAtTrigger < RANGE_KILL_THRESHOLD) {
+    score -= RANGE_KILL_PENALTY_POINTS;
   }
   return score;
 }

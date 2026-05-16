@@ -4400,4 +4400,13 @@ export const MIGRATIONS: Migration[] = [
             ADD COLUMN IF NOT EXISTS underlying_price_at_spike NUMERIC`,
     ],
   },
+  {
+    id: 153,
+    description:
+      'Add range_pos_at_trigger NUMERIC column to lottery_finder_fires (spec: docs/superpowers/specs/lottery-silentboom-eda-impl-2026-05-16.md Finding 1 — "Range Kill"). Stores (spot_at_first − session_low) / (session_high − session_low) computed from 1-min stock OHLC up to trigger_time_ct. Range ∈ [0, 1] where 0 = at session low, 1 = at session high. The 2026-05-15 cross-section EDA found bottom-10% (range_pos < 0.10) is a near-zero edge bucket (2.4% win50, 0.07× baseline lift) — used as a hard kill filter + −3 score penalty. The top-10% bucket has 1.30× win50 / 1.75× win100 lift. Populated forward by the detect-lottery-fires cron via the UW /stock/{ticker}/ohlc/1m endpoint; historical rows backfilled by scripts/backfill-range-pos.mjs. Nullable because pre-migration rows have no snapshot until backfill lands; the score-bonus function treats null as "no penalty" so older fires retain their original score.',
+    statements: (sql) => [
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS range_pos_at_trigger NUMERIC`,
+    ],
+  },
 ];
