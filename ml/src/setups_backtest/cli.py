@@ -150,8 +150,14 @@ def cmd_run(args: argparse.Namespace) -> int:
             if col in trades_df.columns:
                 trades_df[col] = pd.to_datetime(trades_df[col], utc=True)
         trades_df.to_parquet(trades_path, index=False)
+    # Evaluators may expose a `report_notes` attribute or `report_notes(ctx)`
+    # method to add a per-setup notes block to the Markdown report.
+    notes = None
+    if hasattr(evaluator, "report_notes"):
+        attr = evaluator.report_notes
+        notes = attr() if callable(attr) else attr
     report = metrics.format_report(
-        slug, metrics_dict, (start.isoformat(), end.isoformat())
+        slug, metrics_dict, (start.isoformat(), end.isoformat()), notes=notes
     )
     report_path.write_text(report)
 

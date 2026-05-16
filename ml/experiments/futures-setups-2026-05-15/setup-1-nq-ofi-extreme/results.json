@@ -1,0 +1,72 @@
+{
+  "setup_n": 1,
+  "setup_name": "nq-ofi-extreme",
+  "test_window": [
+    "2026-01-01",
+    "2026-04-17"
+  ],
+  "generated_at": "2026-05-16T06:35:25Z",
+  "metrics": {
+    "n_signals": 156,
+    "n_wins": 112,
+    "n_losses": 44,
+    "win_rate": 0.717948717948718,
+    "avg_r_multiple": 0.12563073868565483,
+    "expectancy_dollars": 117.93218864468797,
+    "profit_factor": 1.3686119300455084,
+    "max_consecutive_losers": 5,
+    "sharpe_signal_days": 2.888262919937246,
+    "max_drawdown_dollars": -13103.214285714348,
+    "max_drawdown_pct": -71.82879651672712,
+    "time_of_day": {
+      "13:30-13:45": {
+        "n": 0,
+        "win_rate": null,
+        "expectancy_dollars": null
+      },
+      "13:45-14:00": {
+        "n": 0,
+        "win_rate": null,
+        "expectancy_dollars": null
+      },
+      "14:00-14:30": {
+        "n": 0,
+        "win_rate": null,
+        "expectancy_dollars": null
+      },
+      "14:30-15:30": {
+        "n": 55,
+        "win_rate": 0.7636363636363637,
+        "expectancy_dollars": 200.5154545454557
+      },
+      "15:30-16:30": {
+        "n": 15,
+        "win_rate": 0.7333333333333333,
+        "expectancy_dollars": -219.24571428571653
+      },
+      "16:30-17:30": {
+        "n": 18,
+        "win_rate": 0.7222222222222222,
+        "expectancy_dollars": 257.89682539682366
+      },
+      "17:30-18:00": {
+        "n": 7,
+        "win_rate": 1.0,
+        "expectancy_dollars": 406.46530612242975
+      },
+      "18:00-19:00": {
+        "n": 22,
+        "win_rate": 0.6818181818181818,
+        "expectancy_dollars": -82.1753246753261
+      },
+      "19:00-20:00": {
+        "n": 39,
+        "win_rate": 0.6153846153846154,
+        "expectancy_dollars": 127.64652014652175
+      }
+    },
+    "gross_win_dollars": 68307.42142857132,
+    "gross_loss_dollars": -49910.0,
+    "cumulative_net_pnl_dollars": 18397.421428571324
+  }
+}

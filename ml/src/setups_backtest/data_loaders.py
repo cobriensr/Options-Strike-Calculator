@@ -434,6 +434,105 @@ def load_futures_snapshot(
 # ---------------------------------------------------------------------------
 
 
+def prior_session_profile(
+    conn: duckdb.DuckDBPyConnection,
+    symbol_prefix: str,
+    today: date,
+    max_back: int = 5,
+) -> dict[str, float]:
+    """Volume profile (POC/VAH/VAL) for the most recent prior session.
+
+    Walks back up to ``max_back`` calendar days from ``today`` until a session
+    with data is found. Always returns prior to ``today`` — never reads the
+    target day's bars, so this is PIT-safe for any decision in ``today``.
+
+    Returns ``{"poc": nan, "vah": nan, "val": nan}`` if no prior session found.
+    Used by Setups 1, 3, 5, 6 (any setup that needs yesterday's value area).
+    """
+    # Imported here to avoid a circular import (features imports from numpy etc;
+    # data_loaders is the bottom of the dep tree otherwise).
+    from . import features
+
+    for back in range(1, max_back + 1):
+        prior = today - pd.Timedelta(days=back).to_pytimedelta()
+        contract = pick_front_month(conn, symbol_prefix, prior.date() if hasattr(prior, "date") else prior)
+        if contract is None:
+            continue
+        prior_d = prior.date() if hasattr(prior, "date") else prior
+        bars = load_ohlcv_day(conn, [contract], prior_d)
+        if bars.empty:
+            continue
+        return features.volume_profile(bars, n_bins=50)
+    return {"poc": float("nan"), "vah": float("nan"), "val": float("nan")}
+
+
+def load_cross_asset_minute(
+    conn: duckdb.DuckDBPyConnection,
+    pg: PgConnection | None,
+    symbol_prefix: str,
+    start: date,
+    end: date,
+) -> pd.DataFrame:
+    """Load 1m bars for a cross-asset symbol (CL, ZN, GC, DX, RTY).
+
+    Three-tier fallback:
+      1. OHLCV Parquet archive (fast, local, may not include the symbol).
+      2. Neon Postgres ``futures_bars`` table (slower, requires DATABASE_URL).
+      3. Empty DataFrame (caller decides how to degrade).
+
+    Returns columns: ts (UTC), close. Used by Setups 1, 4, 7.
+    """
+    # 1) OHLCV parquet probe.
+    try:
+        df = conn.execute(
+            """
+            SELECT
+              ts_event AS ts,
+              symbol,
+              close
+            FROM read_parquet(?)
+            WHERE symbol LIKE ?
+              AND strpos(symbol, ' ') = 0
+              AND strpos(symbol, '-') = 0
+              AND ts_event >= ?::TIMESTAMP
+              AND ts_event < (?::TIMESTAMP + INTERVAL '1 day')
+            """,
+            [ohlcv_glob(), f"{symbol_prefix}%", start.isoformat(), end.isoformat()],
+        ).df()
+    except duckdb.Error:
+        df = pd.DataFrame()
+
+    if not df.empty:
+        df["ts"] = pd.to_datetime(df["ts"], utc=True)
+        # Aggregate when multiple outright contracts exist in the same minute
+        # (rare, but happens around rolls).
+        df = df.groupby("ts", as_index=False).agg({"close": "mean"}).sort_values("ts")
+        return df[["ts", "close"]]
+
+    # 2) Neon fallback.
+    if pg is None:
+        return pd.DataFrame(columns=["ts", "close"])
+    try:
+        df = pd.read_sql_query(
+            """
+            SELECT ts, close
+            FROM futures_bars
+            WHERE symbol = %s
+              AND ts >= %s
+              AND ts < (%s::date + INTERVAL '1 day')
+            ORDER BY ts
+            """,
+            pg,
+            params=[symbol_prefix, start, end],
+        )
+    except psycopg2.Error:
+        pg.rollback()
+        return pd.DataFrame(columns=["ts", "close"])
+    if not df.empty:
+        df["ts"] = pd.to_datetime(df["ts"], utc=True)
+    return df
+
+
 def list_trading_days(
     conn: duckdb.DuckDBPyConnection,
     start: date,
