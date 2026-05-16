@@ -440,6 +440,40 @@ describe('GET /api/gex-strike-expiry', () => {
     });
   });
 
+  it('aliases SPX → SPXW for ws_gex_strike_expiry lookups', async () => {
+    // The uw-stream daemon subscribes to gex_strike_expiry:SPXW (the
+    // weekly 0DTE chain), not SPX, so the WS table holds SPXW rows.
+    // Without the alias, the timestamps query would find zero SPX
+    // rows and fall through to the legacy gex_strike_0dte 10-min
+    // cron table, hiding the minute-resolution cadence from the
+    // picker. Verifies the alias threads through both SQL calls.
+    mockSql
+      .mockResolvedValueOnce([fakeRow(5650, '2026-05-03T19:30:00Z', 'SPX')])
+      .mockResolvedValueOnce([{ ts_minute: '2026-05-03T19:30:00Z' }]);
+    const req = mockRequest({
+      method: 'GET',
+      query: { ticker: 'SPX', expiry: '2026-05-03' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // Both SQL calls (rows + timestamps) should carry 'SPXW' as a
+    // bound parameter for the ws_gex_strike_expiry lookup. The literal
+    // 'SPX' still appears in the rest_series CTE inline (legacy
+    // table's hard-coded gate) but only the parameter array tells us
+    // whether the WS query was aliased.
+    // Both SQL calls (rows + timestamps) should carry 'SPXW' as a
+    // bound parameter for the ws_gex_strike_expiry lookup. Asserting
+    // per-call (not `some`) guards against a regression where one of
+    // the two helpers gets reverted to `${ticker}` while the other
+    // still aliases — a looser test would silently pass.
+    const wsParamsByCall = mockSql.mock.calls.map((call) => call.slice(1));
+    expect(wsParamsByCall).toHaveLength(2);
+    expect(wsParamsByCall[0]).toContain('SPXW');
+    expect(wsParamsByCall[1]).toContain('SPXW');
+  });
+
   it('returns empty rows for SPY with no WS data (REST CTE gated by ticker)', async () => {
     // SPY can never reach gex_strike_0dte (legacy table is SPX-only,
     // gated by `${ticker} = 'SPX'`). Empty WS for SPY → empty result.

@@ -112,6 +112,14 @@ export async function getGreekHeatmapSnapshot(
   // (strike_exposures). Both share the per-strike OI Greek shape so
   // we normalize to the same intermediate row type and the downstream
   // top-N / chain-windowing / regime math stays unchanged.
+  //
+  // NOTE: `ws_gex_strike_expiry` holds SPXW rows for the 0DTE chain
+  // (not SPX). The Greek Heatmap is gated by the lottery universe
+  // (api/_lib/validation/greek-heatmap.ts) which allows SPXW only,
+  // so this code path can't currently be hit with ticker='SPX'. If
+  // SPX is ever added to the universe, also apply the SPX→SPXW
+  // alias from `db-gex-strike-expiry.ts::resolveStoredTicker` here,
+  // or queries will silently return zero rows.
   const rows = isToday
     ? ((await db`
         SELECT DISTINCT ON (strike)

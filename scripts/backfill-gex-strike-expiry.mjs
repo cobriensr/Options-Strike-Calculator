@@ -51,6 +51,20 @@ const TICKERS = (process.env.TICKERS ?? 'SPY,QQQ')
   .split(',')
   .map((s) => s.trim());
 
+// Footgun guard — the GEX Landscape's WS reader aliases SPX → SPXW
+// (api/_lib/db-gex-strike-expiry.ts::resolveStoredTicker) because
+// uw-stream subscribes to gex_strike_expiry:SPXW, not :SPX. Running
+// this script with TICKERS=SPX would write SPX-labeled rows that the
+// panel can no longer read. Use TICKERS=SPXW for SPX 0DTE backfills.
+if (TICKERS.includes('SPX')) {
+  console.error(
+    'ERROR: TICKERS=SPX is a footgun for the GEX Landscape — the WS reader\n' +
+      'aliases SPX → SPXW (see resolveStoredTicker). Use TICKERS=SPXW so the\n' +
+      'rows you backfill are visible to the panel.',
+  );
+  process.exit(1);
+}
+
 // Args may be either a single integer (= last N trading days) or a list
 // of explicit YYYY-MM-DD dates.
 const args = process.argv.slice(2);

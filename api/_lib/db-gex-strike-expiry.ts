@@ -62,6 +62,42 @@ function resolveStoredExpiry(
   return requestedExpiry;
 }
 
+/**
+ * Per-ticker ticker remapping for the `ws_gex_strike_expiry` reads.
+ *
+ * UW's Periscope chart uses ticker "SPX" but the actual 0DTE chain is
+ * ticker "SPXW" (the weekly chain — since the 2022 SPX → SPXW
+ * transition, all dailies including 0DTE live on SPXW). The uw-stream
+ * daemon subscribes to `gex_strike_expiry:SPXW` (added to the lottery
+ * universe 2026-05-07 as "primary 0DTE traded chain"), NOT to
+ * `gex_strike_expiry:SPX`, so the WS table holds SPXW rows.
+ *
+ * Without this remap, frontend calls with `ticker=SPX` find zero
+ * rows in the WS table and fall through to `gex_strike_0dte` (the
+ * legacy REST-cron table at 10-min cadence) for the timestamps
+ * list. Consumers expecting minute-resolution `ts_minute` values
+ * — the GEX Landscape scrub picker since
+ * docs/superpowers/specs/gex-landscape-naive-restore-2026-05-15.md
+ * Phase 6 — silently get 10-min cadence instead.
+ *
+ * The API still accepts and returns ticker='SPX' (consumer-facing
+ * label preserved by the row mapper); only the SQL query swaps in
+ * 'SPXW' for the lookup.
+ *
+ * Narrow scope: SPX is the only ticker with an underlying-vs-chain
+ * label split today. If a similar split lands (e.g. RUTW or NDXW),
+ * add the remap here AND audit the `gex_strike_0dte` legacy fallback
+ * in `getLatestGexPerStrikeWithDeltas` — its rest_series CTE and
+ * ws_count gate are SPX-only literals, so a new alias would need
+ * symmetric handling there.
+ */
+function resolveStoredTicker(
+  ticker: GexStrikeExpiryTicker,
+): GexStrikeExpiryTicker | 'SPXW' {
+  if (ticker === 'SPX') return 'SPXW';
+  return ticker;
+}
+
 export const GEX_STRIKE_EXPIRY_TICKERS = ['SPY', 'QQQ', 'SPX', 'NDX'] as const;
 export type GexStrikeExpiryTicker = (typeof GEX_STRIKE_EXPIRY_TICKERS)[number];
 
@@ -269,6 +305,10 @@ export async function getLatestGexPerStrikeWithDeltas(
   // Remap requested calendar date → stored row expiry. NDX rows are
   // stored under monthly expirations; SPX/SPY/QQQ pass through unchanged.
   const expiry = resolveStoredExpiry(ticker, opts.expiry);
+  // SPX → SPXW for WS table reads (see resolveStoredTicker docs).
+  // Legacy `gex_strike_0dte` (rest_series CTE below) still keys by
+  // 'SPX' literal because it's an SPX-only table — unchanged.
+  const storedTicker = resolveStoredTicker(ticker);
   const atParam = at ?? null;
 
   // 35-minute lookback is enough to cover the largest delta (30m) plus
@@ -317,7 +357,7 @@ export async function getLatestGexPerStrikeWithDeltas(
           ${atParam}::timestamptz,
           GREATEST(
             (SELECT MAX(ts_minute) FROM ws_gex_strike_expiry
-             WHERE ticker = ${ticker} AND expiry = ${expiry}::date),
+             WHERE ticker = ${storedTicker} AND expiry = ${expiry}::date),
             CASE WHEN ${ticker} = 'SPX' THEN
               (SELECT MAX(timestamp) FROM gex_strike_0dte
                WHERE date = ${expiry}::date)
@@ -328,7 +368,11 @@ export async function getLatestGexPerStrikeWithDeltas(
     ),
     ws_series AS (
       SELECT
-        ticker, expiry, strike, ts_minute, price,
+        -- Project the consumer-facing ticker (e.g. 'SPX') instead of
+        -- the stored ticker (e.g. 'SPXW') so the response shape stays
+        -- aligned with the frontend's GexStrikeExpiryTicker union.
+        ${ticker}::text AS ticker,
+        expiry, strike, ts_minute, price,
         call_gamma_oi, put_gamma_oi,
         call_charm_oi, put_charm_oi,
         call_vanna_oi, put_vanna_oi,
@@ -343,7 +387,7 @@ export async function getLatestGexPerStrikeWithDeltas(
         put_vanna_ask_vol, put_vanna_bid_vol,
         (COALESCE(call_gamma_oi, 0) + COALESCE(put_gamma_oi, 0)) AS net_gamma
       FROM ws_gex_strike_expiry
-      WHERE ticker = ${ticker}
+      WHERE ticker = ${storedTicker}
         AND expiry = ${expiry}::date
         AND ts_minute >= (SELECT at_ts FROM effective_at) - INTERVAL '35 minutes'
         AND ts_minute <= (SELECT at_ts FROM effective_at)
@@ -464,6 +508,8 @@ export async function getTimestampsForDay(
   // Same NDX monthly-expiry remap as the strikes query so scrub
   // timestamps line up with the rows the panel actually sees.
   const expiry = resolveStoredExpiry(ticker, requestedExpiry);
+  // SPX → SPXW remap for WS lookups (see resolveStoredTicker docs).
+  const storedTicker = resolveStoredTicker(ticker);
 
   // Cache key includes `at` so live polling (anchor = NOW()) doesn't
   // serve a stale snapshot-window list, and vice versa.
@@ -482,7 +528,7 @@ export async function getTimestampsForDay(
     ws_ts AS (
       SELECT DISTINCT ts_minute
       FROM ws_gex_strike_expiry
-      WHERE ticker = ${ticker}
+      WHERE ticker = ${storedTicker}
         AND expiry = ${expiry}::date
         AND ts_minute > (SELECT ts FROM anchor) - INTERVAL '24 hours'
         AND ts_minute <= (SELECT ts FROM anchor)
