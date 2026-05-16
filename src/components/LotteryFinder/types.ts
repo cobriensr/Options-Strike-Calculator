@@ -185,6 +185,16 @@ export interface LotteryFire {
   macro: LotteryFireMacro;
   outcomes: LotteryFireOutcomes;
 
+  /**
+   * Hours from the fire's `triggerTimeCt` to the next high-impact
+   * economic event (FOMC / CPI / PCE / JOBS). `null` when no such
+   * event is scheduled within 7 days of the fire. The UI renders a
+   * "MACRO" badge when the value is in [24, 72] — the cohort that
+   * showed 1.32× win50 / 1.56× win100 lift on N=17,465 in the
+   * 2026-05-15 cross-section EDA. Display-only — not in the score.
+   */
+  hoursToNextMacroEvent: number | null;
+
   insertedAt: string;
 }
 

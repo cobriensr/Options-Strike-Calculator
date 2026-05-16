@@ -25,6 +25,16 @@ import {
   type TideAggregate,
 } from '../../utils/ticker-rollup-aggregates.js';
 
+/**
+ * Macro Window badge — fires whose triggerTimeCt is in this hours-to-
+ * next-high-impact-event window get a "MACRO Nh" pill. Source:
+ * docs/tmp/lottery-silentboom-eda-findings-2026-05-15.md Finding 4 —
+ * the 24-72h bucket showed 1.32× win50 and 1.56× win100 lift on
+ * N=17,465 LF rows. Display-only — not in the score.
+ */
+const LF_MACRO_WINDOW_LO_HOURS = 24;
+const LF_MACRO_WINDOW_HI_HOURS = 72;
+
 interface LotteryFinderTickerGroupProps {
   ticker: string;
   fires: LotteryFire[];
@@ -276,17 +286,36 @@ function LotteryFinderTickerGroupBase({
         hidden={!expanded}
         className="space-y-2 border-t border-neutral-800 bg-neutral-950 p-2"
       >
-        {fires.map((f) => (
+        {fires.map((f) => {
+          // Macro Window badge — fires 24-72h before a high-impact
+          // macro event (FOMC/CPI/PCE/JOBS) show 1.32×/1.56× lift per
+          // the 2026-05-15 cross-section EDA. Display-only. Rendered
+          // here (rather than inside LotteryRow) so the row component
+          // is untouched while this badge is being rolled out.
+          const hrs = f.hoursToNextMacroEvent;
+          const inMacroWindow = hrs != null && hrs >= LF_MACRO_WINDOW_LO_HOURS && hrs <= LF_MACRO_WINDOW_HI_HOURS;
           // Key by chain (server response is chain-day-deduped to one
           // row per chain, so optionChainId is unique within the
           // group). Matches the existing LotteryFinderSection key.
-          <LotteryRow
-            key={f.optionChainId}
-            fire={f}
-            marketOpen={marketOpen}
-            exitPolicy={exitPolicy}
-          />
-        ))}
+          return (
+            <div key={f.optionChainId} className="relative">
+              {inMacroWindow && (
+                <span
+                  data-testid="lottery-macro-window-badge"
+                  className="absolute right-2 top-2 z-10 rounded border border-purple-500/60 bg-purple-950/60 px-1.5 py-0.5 text-[10px] font-semibold text-purple-200"
+                  title={`Trigger fires ${Math.round(hrs)}h before the next high-impact economic event (FOMC/CPI/PCE/JOBS). 2026-05-15 EDA found 1.32× win50 / 1.56× win100 lift on fires in the 24-72h window. Display-only.`}
+                >
+                  📅 MACRO {Math.round(hrs)}h
+                </span>
+              )}
+              <LotteryRow
+                fire={f}
+                marketOpen={marketOpen}
+                exitPolicy={exitPolicy}
+              />
+            </div>
+          );
+        })}
       </div>
     </div>
   );

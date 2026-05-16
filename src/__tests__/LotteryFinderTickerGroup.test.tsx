@@ -96,6 +96,7 @@ function makeFire(overrides: Partial<LotteryFire> = {}): LotteryFire {
       minutesToPeak: 12,
       enrichedAt: '2026-05-14T20:00:00Z',
     },
+    hoursToNextMacroEvent: null,
     insertedAt: '2026-05-14T19:31:00Z',
     ...overrides,
   };
@@ -178,6 +179,99 @@ describe('LotteryFinderTickerGroup', () => {
     expect(
       screen.getByTestId('lottery-row-TSLA260514C00270000'),
     ).toBeInTheDocument();
+  });
+
+  it('renders the Macro Window badge for fires with hoursToNextMacroEvent in [24, 72]', () => {
+    const fires = [
+      makeFire({
+        optionChainId: 'TSLA260514C00250000',
+        hoursToNextMacroEvent: 48,
+      }),
+      makeFire({
+        optionChainId: 'TSLA260514C00260000',
+        hoursToNextMacroEvent: null,
+      }),
+      makeFire({
+        optionChainId: 'TSLA260514C00270000',
+        hoursToNextMacroEvent: 96,
+      }),
+    ];
+    render(
+      <LotteryFinderTickerGroup
+        ticker="TSLA"
+        fires={fires}
+        expanded={true}
+        onToggle={() => undefined}
+        marketOpen={true}
+        exitPolicy={EXIT_POLICY}
+      />,
+    );
+    // Only the 48h fire should get a badge — null and 96h are out of window.
+    const badges = screen.getAllByTestId('lottery-macro-window-badge');
+    expect(badges).toHaveLength(1);
+    expect(badges[0]).toHaveTextContent('MACRO 48h');
+  });
+
+  it('renders the Macro Window badge at the 24h lower boundary (inclusive)', () => {
+    render(
+      <LotteryFinderTickerGroup
+        ticker="TSLA"
+        fires={[
+          makeFire({
+            optionChainId: 'TSLA-24h',
+            hoursToNextMacroEvent: 24,
+          }),
+        ]}
+        expanded={true}
+        onToggle={() => undefined}
+        marketOpen={true}
+        exitPolicy={EXIT_POLICY}
+      />,
+    );
+    expect(
+      screen.getByTestId('lottery-macro-window-badge'),
+    ).toBeInTheDocument();
+  });
+
+  it('renders the Macro Window badge at the 72h upper boundary (inclusive)', () => {
+    render(
+      <LotteryFinderTickerGroup
+        ticker="TSLA"
+        fires={[
+          makeFire({
+            optionChainId: 'TSLA-72h',
+            hoursToNextMacroEvent: 72,
+          }),
+        ]}
+        expanded={true}
+        onToggle={() => undefined}
+        marketOpen={true}
+        exitPolicy={EXIT_POLICY}
+      />,
+    );
+    expect(
+      screen.getByTestId('lottery-macro-window-badge'),
+    ).toBeInTheDocument();
+  });
+
+  it('omits the Macro Window badge when hoursToNextMacroEvent is outside [24, 72]', () => {
+    render(
+      <LotteryFinderTickerGroup
+        ticker="TSLA"
+        fires={[
+          makeFire({ optionChainId: 'TSLA-23h', hoursToNextMacroEvent: 23 }),
+          makeFire({ optionChainId: 'TSLA-73h', hoursToNextMacroEvent: 73 }),
+          makeFire({ optionChainId: 'TSLA-null', hoursToNextMacroEvent: null }),
+        ]}
+        expanded={true}
+        onToggle={() => undefined}
+        marketOpen={true}
+        exitPolicy={EXIT_POLICY}
+      />,
+    );
+    expect(
+      screen.queryByTestId('lottery-macro-window-badge'),
+    ).not.toBeInTheDocument();
   });
 
   it('calls onToggle with the ticker name when the header is clicked', () => {

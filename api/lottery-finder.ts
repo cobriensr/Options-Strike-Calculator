@@ -444,6 +444,55 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const total = totalRows[0]?.total ?? 0;
 
+    // Macro Window lookup (spec: lottery-silentboom-eda-impl-2026-05-16.md
+    // Finding 4). Pull every high-impact economic event whose event_time
+    // falls between the earliest fire's trigger_time and 7 days after
+    // the latest fire's trigger_time, then per-fire compute hours-to-
+    // next-event in JS. Cheap because economic_events is small
+    // (~1 row/day) and the EDA found 1.32× win50 / 1.56× win100 lift
+    // for fires 24-72h before a high-impact event.
+    const macroEventTimes: Date[] = await (async () => {
+      if (rows.length === 0) return [];
+      const triggerTimes = rows.map((r) =>
+        r.trigger_time_ct instanceof Date
+          ? r.trigger_time_ct
+          : new Date(r.trigger_time_ct),
+      );
+      const minTrigger = new Date(
+        Math.min(...triggerTimes.map((d) => d.getTime())),
+      );
+      const maxTrigger = new Date(
+        Math.max(...triggerTimes.map((d) => d.getTime())),
+      );
+      const windowEnd = new Date(maxTrigger.getTime() + 7 * 24 * 3600 * 1000);
+      const eventRows = (await db`
+        SELECT event_time
+        FROM economic_events
+        WHERE event_type IN ('FOMC', 'CPI', 'PCE', 'JOBS')
+          AND event_time IS NOT NULL
+          AND event_time >= ${minTrigger.toISOString()}::timestamptz
+          AND event_time <= ${windowEnd.toISOString()}::timestamptz
+        ORDER BY event_time ASC
+      `) as { event_time: string | Date }[];
+      return eventRows.map((r) =>
+        r.event_time instanceof Date ? r.event_time : new Date(r.event_time),
+      );
+    })();
+
+    /** Hours from trigger to the next high-impact event, or null if
+     *  none falls within the lookup window. */
+    function hoursToNextMacroEvent(triggerTimeCt: Date | string): number | null {
+      const triggerMs =
+        triggerTimeCt instanceof Date
+          ? triggerTimeCt.getTime()
+          : new Date(triggerTimeCt).getTime();
+      for (const ev of macroEventTimes) {
+        const diffHrs = (ev.getTime() - triggerMs) / 3_600_000;
+        if (diffHrs > 0) return diffHrs;
+      }
+      return null;
+    }
+
     const fires = rows.map((r) => {
       const score = r.score == null ? null : Number(r.score);
       // Phase 4 direction-gate override (spec:
@@ -557,6 +606,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           minutesToPeak: num(r.minutes_to_peak),
           enrichedAt: r.enriched_at != null ? toIso(r.enriched_at) : null,
         },
+
+        // Hours from this fire's trigger to the next high-impact
+        // economic event (FOMC/CPI/PCE/JOBS). Null when no such event
+        // is within 7 days. The UI flags fires in the 24-72h window
+        // with a "MACRO" badge — 2026-05-15 EDA found 1.32× win50 /
+        // 1.56× win100 lift on N=17,465 in that bucket.
+        hoursToNextMacroEvent: hoursToNextMacroEvent(r.trigger_time_ct),
 
         insertedAt: toIso(r.inserted_at),
       };
