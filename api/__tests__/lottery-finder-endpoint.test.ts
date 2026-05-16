@@ -83,6 +83,12 @@ const ROW = {
   // ticker(10) + mode(5) + price(3, ≤$1.00) + tod(0, PM) + opt(2) = 20
   // → Tier 1 (≥18). Ticker stats reflect a "reliable" SNDK row.
   score: 20,
+  direction_gated: false,
+  range_pos_at_trigger: null,
+  // Round-trip score deduct (migration #154 / Phase 2C). Null until the
+  // evaluate-round-trip cron has run for the alert; deduct defaults to 0.
+  round_trip_net_pct: null,
+  round_trip_score_deduct: 0,
   ticker_n_fires: 8147,
   ticker_high_peak_rate: 67.4,
   ticker_ci_lower: 66.4,
@@ -556,6 +562,111 @@ describe('lottery-finder endpoint', () => {
     await handler(req, res);
 
     expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('applies round-trip score deduct and re-derives tier (-3 demotes tier1 → tier3)', async () => {
+    // lottery tiers: tier1 ≥ 18, tier2 ≥ 12, else tier3.
+    // score=14 + deduct=-3 → effective 11 → tier3 (was tier2 stored).
+    mockSql
+      .mockResolvedValueOnce([
+        {
+          ...ROW,
+          score: 14,
+          round_trip_net_pct: '-0.65',
+          round_trip_score_deduct: -3,
+        },
+      ])
+      .mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+    const body = res._json as {
+      fires: {
+        score: number | null;
+        rawScore: number | null;
+        roundTripNetPct: number | null;
+        roundTripScoreDeduct: number;
+        scoreTier: string;
+      }[];
+    };
+    expect(body.fires[0]).toMatchObject({
+      score: 11,
+      rawScore: 14,
+      roundTripNetPct: -0.65,
+      roundTripScoreDeduct: -3,
+      scoreTier: 'tier3',
+    });
+  });
+
+  it('demotes tier1 → tier2 when -3 deduct drops score below 18', async () => {
+    mockSql
+      .mockResolvedValueOnce([
+        {
+          ...ROW,
+          score: 20,
+          round_trip_net_pct: '-0.55',
+          round_trip_score_deduct: -3,
+        },
+      ])
+      .mockResolvedValueOnce([{ total: 1 }]);
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+    const body = res._json as {
+      fires: { score: number | null; scoreTier: string }[];
+    };
+    expect(body.fires[0]).toMatchObject({ score: 17, scoreTier: 'tier2' });
+  });
+
+  it('passes through deduct=0 / round_trip_net_pct=null when cron has not evaluated yet', async () => {
+    mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+    const body = res._json as {
+      fires: {
+        score: number | null;
+        rawScore: number | null;
+        roundTripScoreDeduct: number;
+        roundTripNetPct: number | null;
+      }[];
+    };
+    expect(body.fires[0]).toMatchObject({
+      score: 20,
+      rawScore: 20,
+      roundTripScoreDeduct: 0,
+      roundTripNetPct: null,
+    });
+  });
+
+  it('floors negative effective score at 0', async () => {
+    // score=1 + deduct=-3 → −2 → floored to 0 → tier3.
+    mockSql
+      .mockResolvedValueOnce([
+        {
+          ...ROW,
+          score: 1,
+          round_trip_net_pct: '-0.80',
+          round_trip_score_deduct: -3,
+        },
+      ])
+      .mockResolvedValueOnce([{ total: 1 }]);
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+    const body = res._json as {
+      fires: {
+        score: number | null;
+        rawScore: number | null;
+        scoreTier: string;
+      }[];
+    };
+    expect(body.fires[0]).toMatchObject({
+      score: 0,
+      rawScore: 1,
+      scoreTier: 'tier3',
+    });
   });
 
   it('binds MIN_ALERT_ENTRY_PRICE (0.10) into both rows + count SQL templates', async () => {

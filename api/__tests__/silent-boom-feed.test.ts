@@ -56,6 +56,8 @@ interface AlertFixture {
   spx_spot_gamma_oi: string | null;
   underlying_price_at_spike: string | null;
   multi_leg_share: string | null;
+  round_trip_net_pct: string | null;
+  round_trip_score_deduct: number | null;
   inserted_at: string;
 }
 
@@ -93,6 +95,8 @@ function makeAlert(overrides: Partial<AlertFixture> = {}): AlertFixture {
     spx_spot_gamma_oi: '12345',
     underlying_price_at_spike: '1170.25',
     multi_leg_share: '0.05',
+    round_trip_net_pct: null,
+    round_trip_score_deduct: 0,
     inserted_at: '2026-05-07T13:30:30Z',
     ...overrides,
   };
@@ -145,6 +149,101 @@ describe('silent-boom-feed handler', () => {
 
     const body = res._json as { alerts: { avgHoldMinutes: number }[] };
     expect(body.alerts[0]?.avgHoldMinutes).toBe(89);
+  });
+
+  it('applies round-trip score deduct and re-derives tier (-3 demotes tier2 → tier3)', async () => {
+    // silent-boom tiers: tier1 ≥ 21, tier2 ≥ 8, else tier3.
+    // score=10 + deduct -3 → effective 7 → tier3 (was tier2).
+    mockSql.mockResolvedValueOnce([{ n: 1 }]).mockResolvedValueOnce([
+      makeAlert({
+        score: 10,
+        score_tier: 'tier2',
+        round_trip_net_pct: '-0.75',
+        round_trip_score_deduct: -3,
+      }),
+    ]);
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+    const body = res._json as {
+      alerts: {
+        score: number | null;
+        rawScore: number | null;
+        roundTripNetPct: number | null;
+        roundTripScoreDeduct: number;
+        scoreTier: string | null;
+      }[];
+    };
+    expect(body.alerts[0]).toMatchObject({
+      score: 7,
+      rawScore: 10,
+      roundTripNetPct: -0.75,
+      roundTripScoreDeduct: -3,
+      scoreTier: 'tier3',
+    });
+  });
+
+  it('demotes tier1 → tier2 when -3 deduct drops score below 21', async () => {
+    mockSql.mockResolvedValueOnce([{ n: 1 }]).mockResolvedValueOnce([
+      makeAlert({
+        score: 23,
+        score_tier: 'tier1',
+        round_trip_net_pct: '-0.60',
+        round_trip_score_deduct: -3,
+      }),
+    ]);
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+    const body = res._json as {
+      alerts: { score: number | null; scoreTier: string | null }[];
+    };
+    expect(body.alerts[0]).toMatchObject({ score: 20, scoreTier: 'tier2' });
+  });
+
+  it('preserves tier1 when -1 deduct keeps score >= 21', async () => {
+    mockSql.mockResolvedValueOnce([{ n: 1 }]).mockResolvedValueOnce([
+      makeAlert({
+        score: 25,
+        score_tier: 'tier1',
+        round_trip_net_pct: '-0.20',
+        round_trip_score_deduct: -1,
+      }),
+    ]);
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+    const body = res._json as {
+      alerts: { score: number | null; scoreTier: string | null }[];
+    };
+    expect(body.alerts[0]).toMatchObject({ score: 24, scoreTier: 'tier1' });
+  });
+
+  it('passes through deduct=0 cleanly when no round-trip evaluation yet', async () => {
+    mockSql.mockResolvedValueOnce([{ n: 1 }]).mockResolvedValueOnce([
+      makeAlert({
+        score: 24,
+        round_trip_net_pct: null,
+        round_trip_score_deduct: null,
+      }),
+    ]);
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+    const body = res._json as {
+      alerts: {
+        score: number | null;
+        rawScore: number | null;
+        roundTripScoreDeduct: number;
+        roundTripNetPct: number | null;
+      }[];
+    };
+    expect(body.alerts[0]).toMatchObject({
+      score: 24,
+      rawScore: 24,
+      roundTripScoreDeduct: 0,
+      roundTripNetPct: null,
+    });
   });
 
   it('returns null mktTideDiff for rows lacking a market_tide tick', async () => {

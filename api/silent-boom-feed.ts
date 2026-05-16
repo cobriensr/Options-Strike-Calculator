@@ -22,6 +22,7 @@ import {
 } from './_lib/api-helpers.js';
 import { silentBoomFeedQuerySchema } from './_lib/validation.js';
 import { avgHoldMinutesFor } from './_lib/silent-boom-hold.js';
+import { silentBoomScoreTier } from './_lib/silent-boom-score.js';
 import { MIN_ALERT_ENTRY_PRICE } from './_lib/constants.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
@@ -30,6 +31,8 @@ type DbNumeric = string | number;
 type DbNullableNumeric = DbNumeric | null;
 type DbTimestamp = string | Date;
 type DbOptionType = 'C' | 'P';
+type SilentBoomTier = 'tier1' | 'tier2' | 'tier3';
+type SilentBoomTierOrNull = SilentBoomTier | null;
 
 interface AlertRow {
   id: DbId;
@@ -64,13 +67,18 @@ interface AlertRow {
   realized_trail30_10_pct: DbNullableNumeric;
   enriched_at: DbTimestamp | null;
   score: number | null;
-  score_tier: 'tier1' | 'tier2' | 'tier3' | null;
+  score_tier: SilentBoomTierOrNull;
   direction_gated: boolean;
   mkt_tide_diff: DbNullableNumeric;
   zero_dte_diff: DbNullableNumeric;
   spx_spot_gamma_oi: DbNullableNumeric;
   underlying_price_at_spike: DbNullableNumeric;
   multi_leg_share: DbNullableNumeric;
+  /** Migration #154 / spec round-trip-score-deduct-production-2026-05-16.md.
+   *  See lottery-finder.ts for the bracket semantics — same brackets apply
+   *  here. NULL until the evaluate-round-trip cron has run for the alert. */
+  round_trip_net_pct: DbNullableNumeric;
+  round_trip_score_deduct: number | null;
   inserted_at: DbTimestamp;
 }
 
@@ -91,10 +99,23 @@ interface SilentBoomAlertResponse {
   volOi: number;
   entryPrice: number;
   openInterest: number;
-  /** Composite conviction score. See api/_lib/silent-boom-score.ts. */
+  /**
+   * Effective conviction score = raw insert-time score + round-trip
+   * deduct (Phase 2C of round-trip-score-deduct-production-2026-05-16.md).
+   * Floored at 0 so a -3 deduct on a low-score row doesn't go negative.
+   */
   score: number | null;
-  /** 'tier1' | 'tier2' | 'tier3' — null only on legacy rows. */
-  scoreTier: 'tier1' | 'tier2' | 'tier3' | null;
+  /** Pre-deduct score as stored on the row. Same as `score` when no deduct. */
+  rawScore: number | null;
+  /** Migration #154. Post-fire (ask−bid)/total over a 60-min window. NULL
+   *  until the evaluate-round-trip cron has run. Range [-1, +1]. */
+  roundTripNetPct: number | null;
+  /** Stepped bracket deduct (0 / -1 / -2 / -3). */
+  roundTripScoreDeduct: number;
+  /** 'tier1' | 'tier2' | 'tier3' — re-derived at read time from the
+   *  effective score so the displayed tier matches the displayed score.
+   *  Null only on legacy rows with no score. */
+  scoreTier: SilentBoomTierOrNull;
   /**
    * Phase 4 direction gate (spec:
    * silent-boom-direction-gate-and-trail-ui-2026-05-14.md). TRUE when
@@ -504,47 +525,70 @@ export default async function handler(
       `) as AlertRow[];
     }
 
-    const alerts: SilentBoomAlertResponse[] = rows.map((r) => ({
-      id: Number(r.id),
-      date: toDateIso(r.date),
-      bucketCt: toIso(r.bucket_ct),
-      optionChainId: r.option_chain_id,
-      underlyingSymbol: r.underlying_symbol,
-      optionType: r.option_type,
-      strike: toNum(r.strike),
-      expiry: r.expiry,
-      dte: r.dte,
-      spikeVolume: r.spike_volume,
-      baselineVolume: toNum(r.baseline_volume),
-      spikeRatio: toNum(r.spike_ratio),
-      askPct: toNum(r.ask_pct),
-      volOi: toNum(r.vol_oi),
-      entryPrice: toNum(r.entry_price),
-      openInterest: r.open_interest,
-      score: r.score,
-      scoreTier: r.score_tier,
-      directionGated: r.direction_gated === true,
-      mktTideDiff: toNumOrNull(r.mkt_tide_diff),
-      zeroDteDiff: toNumOrNull(r.zero_dte_diff),
-      spxSpotGammaOi: toNumOrNull(r.spx_spot_gamma_oi),
-      underlyingPriceAtSpike: toNumOrNull(r.underlying_price_at_spike),
-      multiLegShare: toNumOrNull(r.multi_leg_share),
-      avgHoldMinutes: avgHoldMinutesFor({
-        tier: r.score_tier,
-        ticker: r.underlying_symbol,
-      }),
-      outcomes: {
-        peakCeilingPct: toNumOrNull(r.peak_ceiling_pct),
-        minutesToPeak: toNumOrNull(r.minutes_to_peak),
-        realized30mPct: toNumOrNull(r.realized_30m_pct),
-        realized60mPct: toNumOrNull(r.realized_60m_pct),
-        realized120mPct: toNumOrNull(r.realized_120m_pct),
-        realizedEodPct: toNumOrNull(r.realized_eod_pct),
-        realizedTrail3010Pct: toNumOrNull(r.realized_trail30_10_pct),
-        enrichedAt: toIsoOrNull(r.enriched_at),
-      },
-      insertedAt: toIso(r.inserted_at),
-    }));
+    const alerts: SilentBoomAlertResponse[] = rows.map((r) => {
+      // Round-trip score deduct (migration #154 / spec
+      // round-trip-score-deduct-production-2026-05-16.md). Same brackets
+      // as Lottery. Silent boom stores `score_tier` on insert, so we
+      // re-derive the effective tier from (score + deduct) at read time.
+      // direction_gated still overrides to tier3 — that gate is
+      // independent of round-trip and runs first in the override chain.
+      const rawScore = r.score;
+      const rtDeduct =
+        r.round_trip_score_deduct == null
+          ? 0
+          : Number(r.round_trip_score_deduct);
+      const effectiveScore =
+        rawScore == null ? null : Math.max(0, rawScore + rtDeduct);
+      const directionGated = r.direction_gated === true;
+      const tierFromScore = silentBoomScoreTier(effectiveScore);
+      const effectiveTier: SilentBoomTierOrNull = directionGated
+        ? 'tier3'
+        : (tierFromScore as SilentBoomTierOrNull);
+      return {
+        id: Number(r.id),
+        date: toDateIso(r.date),
+        bucketCt: toIso(r.bucket_ct),
+        optionChainId: r.option_chain_id,
+        underlyingSymbol: r.underlying_symbol,
+        optionType: r.option_type,
+        strike: toNum(r.strike),
+        expiry: r.expiry,
+        dte: r.dte,
+        spikeVolume: r.spike_volume,
+        baselineVolume: toNum(r.baseline_volume),
+        spikeRatio: toNum(r.spike_ratio),
+        askPct: toNum(r.ask_pct),
+        volOi: toNum(r.vol_oi),
+        entryPrice: toNum(r.entry_price),
+        openInterest: r.open_interest,
+        score: effectiveScore,
+        rawScore,
+        roundTripNetPct: toNumOrNull(r.round_trip_net_pct),
+        roundTripScoreDeduct: rtDeduct,
+        scoreTier: effectiveTier,
+        directionGated,
+        mktTideDiff: toNumOrNull(r.mkt_tide_diff),
+        zeroDteDiff: toNumOrNull(r.zero_dte_diff),
+        spxSpotGammaOi: toNumOrNull(r.spx_spot_gamma_oi),
+        underlyingPriceAtSpike: toNumOrNull(r.underlying_price_at_spike),
+        multiLegShare: toNumOrNull(r.multi_leg_share),
+        avgHoldMinutes: avgHoldMinutesFor({
+          tier: effectiveTier,
+          ticker: r.underlying_symbol,
+        }),
+        outcomes: {
+          peakCeilingPct: toNumOrNull(r.peak_ceiling_pct),
+          minutesToPeak: toNumOrNull(r.minutes_to_peak),
+          realized30mPct: toNumOrNull(r.realized_30m_pct),
+          realized60mPct: toNumOrNull(r.realized_60m_pct),
+          realized120mPct: toNumOrNull(r.realized_120m_pct),
+          realizedEodPct: toNumOrNull(r.realized_eod_pct),
+          realizedTrail3010Pct: toNumOrNull(r.realized_trail30_10_pct),
+          enrichedAt: toIsoOrNull(r.enriched_at),
+        },
+        insertedAt: toIso(r.inserted_at),
+      };
+    });
 
     const response: SilentBoomFeedResponse = {
       date,

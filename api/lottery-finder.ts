@@ -113,6 +113,15 @@ interface FireRow {
   // underlying's session range at trigger_time_ct ∈ [0, 1]. NULL on
   // pre-#153 fires + new fires where the UW candle fetch failed.
   range_pos_at_trigger: DbNullableNumeric;
+  // Round-trip score deduct (migration #154, spec
+  // round-trip-score-deduct-production-2026-05-16.md). Computed 60-75
+  // min post-fire by the evaluate-round-trip cron from ws_option_trades.
+  // round_trip_net_pct in [-1, +1]; deduct is a stepped bracket: < -0.50
+  // → -3, [-0.50, -0.30) → -2, [-0.30, -0.10) → -1, else 0. Applied to
+  // the displayed score at read time so a strong-tier alert that
+  // round-tripped within an hour gets demoted in the panel.
+  round_trip_net_pct: DbNullableNumeric;
+  round_trip_score_deduct: number | null;
   ticker_n_fires: number | null;
   ticker_high_peak_rate: DbNullableNumeric;
   ticker_ci_lower: DbNullableNumeric;
@@ -230,9 +239,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     //   - chronological: most-recent first (default; preserves prior UX)
     //   - score: Tier-1 fires float to the top, score-tied chronological
     //   - peak: highest realized peak first (post-hoc browsing)
-    // The (date, score DESC NULLS LAST) index from migration #126 makes
-    // the score sort cheap; the peak sort relies on the existing
-    // (date DESC, trigger_time_ct DESC) index for the date prefix.
+    // The (date, score DESC NULLS LAST) index from migration #126 supports
+    // the inner CTE's `WHERE f.date = $1` scan; the score sort's outer
+    // ORDER BY is now an expression `(score + round_trip_score_deduct)`
+    // (Phase 2C, spec round-trip-score-deduct-production-2026-05-16.md), so
+    // the planner sorts on the materialized CTE result rather than reading
+    // the index back-to-front. The peak sort relies on (date DESC,
+    // trigger_time_ct DESC) for the date prefix.
     const [rows, totalRows] = (await Promise.all([
       sort === 'score'
         ? db`
@@ -284,6 +297,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.peak_ceiling_pct, f.minutes_to_peak,
           f.inserted_at, f.enriched_at,
           f.score, f.direction_gated, f.range_pos_at_trigger,
+          f.round_trip_net_pct, f.round_trip_score_deduct,
           f.fire_count, f.first_fire_time_ct,
           s.n_fires AS ticker_n_fires,
           s.high_peak_rate AS ticker_high_peak_rate,
@@ -294,7 +308,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         FROM filtered f
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
         WHERE f.rn = 1
-        ORDER BY f.score DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
+        ORDER BY (COALESCE(f.score, 0) + COALESCE(f.round_trip_score_deduct, 0)) DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
       `
@@ -348,6 +362,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.peak_ceiling_pct, f.minutes_to_peak,
           f.inserted_at, f.enriched_at,
           f.score, f.direction_gated, f.range_pos_at_trigger,
+          f.round_trip_net_pct, f.round_trip_score_deduct,
           f.fire_count, f.first_fire_time_ct,
           s.n_fires AS ticker_n_fires,
           s.high_peak_rate AS ticker_high_peak_rate,
@@ -411,6 +426,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.peak_ceiling_pct, f.minutes_to_peak,
           f.inserted_at, f.enriched_at,
           f.score, f.direction_gated, f.range_pos_at_trigger,
+          f.round_trip_net_pct, f.round_trip_score_deduct,
           f.fire_count, f.first_fire_time_ct,
           s.n_fires AS ticker_n_fires,
           s.high_peak_rate AS ticker_high_peak_rate,
@@ -488,7 +504,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     /** Hours from trigger to the next high-impact event, or null if
      *  none falls within the lookup window. */
-    function hoursToNextMacroEvent(triggerTimeCt: Date | string): number | null {
+    function hoursToNextMacroEvent(
+      triggerTimeCt: Date | string,
+    ): number | null {
       const triggerMs =
         triggerTimeCt instanceof Date
           ? triggerTimeCt.getTime()
@@ -501,7 +519,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const fires = rows.map((r) => {
-      const score = r.score == null ? null : Number(r.score);
+      const rawScore = r.score == null ? null : Number(r.score);
+      // Round-trip score deduct (migration #154 / Phase 2C of
+      // round-trip-score-deduct-production-2026-05-16.md). Read-time
+      // adjustment: a -3 deduct applied to a tier1-edge score can
+      // demote it to tier2 or tier3. Raw `score` stays on the row;
+      // `score` field below carries the displayed/effective value.
+      const rtDeduct =
+        r.round_trip_score_deduct == null
+          ? 0
+          : Number(r.round_trip_score_deduct);
+      const score = rawScore == null ? null : Math.max(0, rawScore + rtDeduct);
+      const roundTripNetPct =
+        r.round_trip_net_pct == null ? null : Number(r.round_trip_net_pct);
       // Phase 4 direction-gate override (spec:
       // silent-boom-direction-gate-and-trail-ui-2026-05-14.md). Lottery
       // does not mutate score on insert; the feed forces the displayed
@@ -537,6 +567,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         dte: Number(r.dte),
 
         score,
+        // Pre-deduct score so the UI can show "was X, deducted to Y".
+        // Equals `score` when no deduct or score was null.
+        rawScore,
+        roundTripNetPct,
+        roundTripScoreDeduct: rtDeduct,
         scoreTier: tier,
         directionGated,
         forecastHighPeakPct: forecastForTier(tier),
