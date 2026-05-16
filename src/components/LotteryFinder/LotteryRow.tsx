@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useCallback, useMemo, useState } from 'react';
 import { useContractTape } from '../../hooks/useContractTape.js';
 import { useNetFlowHistory } from '../../hooks/useNetFlowHistory.js';
 import { useTickerCandles } from '../../hooks/useTickerCandles.js';
@@ -254,6 +254,22 @@ export const LotteryRow = memo(function LotteryRow({
   // summary lines and the two hooks fetch their data. Collapsed by
   // default so we don't burn network on rows the user hasn't looked at.
   const [expanded, setExpanded] = useState(false);
+  /**
+   * Cross-panel hover sync: lifted to LotteryRow so both children can
+   * read each other's cursor position. The value is a UTC second
+   * timestamp (matches lightweight-charts' UTCTimestamp + the bar `ts`
+   * second-resolution). `null` when neither chart is being hovered.
+   *
+   * Owner ergonomics: hovering the CONTRACT bars shows a synced
+   * vertical line on the NET FLOW chart at the same minute — and vice
+   * versa — so "what was the underlying doing when this contract
+   * spiked?" is one glance instead of two.
+   */
+  const [hoverTime, setHoverTime] = useState<number | null>(null);
+  /** Stable identity callback so memoized children don't re-render on every parent tick. */
+  const onHoverTimeChange = useCallback((t: number | null) => {
+    setHoverTime(t);
+  }, []);
 
   const tape = useContractTape({
     chain: fire.optionChainId,
@@ -308,7 +324,12 @@ export const LotteryRow = memo(function LotteryRow({
     };
   }, [tape.series]);
 
-  /** Latest cumulative NCP / NPP plus signed call-minus-put divergence. */
+  /**
+   * Latest cumulative NCP / NPP / NCV / NPV plus signed call-minus-put
+   * divergence (both premium $ and volume contracts). Surfaced in the
+   * NET FLOW header strip so the user reads the regime in one glance:
+   * who's loading on what side, both by dollars and contracts.
+   */
   const flowStats = useMemo(() => {
     if (netFlow.series.length === 0) return null;
     const last = netFlow.series.at(-1);
@@ -316,9 +337,46 @@ export const LotteryRow = memo(function LotteryRow({
     return {
       cumNcp: last.cumNcp,
       cumNpp: last.cumNpp,
+      cumNcv: last.cumNcv,
+      cumNpv: last.cumNpv,
       diff: last.cumNcp - last.cumNpp,
+      diffVol: last.cumNcv - last.cumNpv,
     };
   }, [netFlow.series]);
+
+  /**
+   * Live spot for %OTM — prefer the latest underlying candle so the
+   * value tracks intraday drift; fall back to spot-at-first for the
+   * cases where candles haven't loaded yet (early polls, history).
+   */
+  const liveSpot = useMemo<number | null>(() => {
+    const last = tickerCandles.candles.at(-1);
+    if (last != null && Number.isFinite(last.close)) return last.close;
+    if (Number.isFinite(fire.entry.spotAtFirst)) return fire.entry.spotAtFirst;
+    return null;
+  }, [tickerCandles.candles, fire.entry.spotAtFirst]);
+
+  /**
+   * Distance-from-spot in percent, signed so the reader can tell ITM
+   * vs OTM at a glance. Call OTM: strike > spot → positive. Put OTM:
+   * strike < spot → positive. Sign flipped to negative for ITM.
+   * Result is null when spot is unavailable.
+   */
+  const otmPct = useMemo<number | null>(() => {
+    if (liveSpot == null || liveSpot <= 0) return null;
+    const raw = (fire.strike - liveSpot) / liveSpot;
+    return fire.optionType === 'C' ? raw : -raw;
+  }, [liveSpot, fire.strike, fire.optionType]);
+
+  /**
+   * Total premium $ across the contract tape. Each contract represents
+   * 100 shares, so dollars = volume × avg fill × 100. Used in the
+   * CONTRACT header as the day's total $ traded on this chain.
+   */
+  const tapeTotalPremium = useMemo<number | null>(() => {
+    if (tapeStats == null || tapeStats.avgFill == null) return null;
+    return tapeStats.total * tapeStats.avgFill * 100;
+  }, [tapeStats]);
 
   return (
     <div
@@ -642,32 +700,81 @@ export const LotteryRow = memo(function LotteryRow({
                 bid · ask · mid + VWAP
               </span>
             </div>
-            {/* Side-volume + avg-fill stats strip — UW-style tally. */}
+            {/* Side-volume + avg-fill stats strip — UW-style tally.
+                Carries OI / Premium / %OTM in the same strip so the
+                reader gets the entire "what is this contract worth
+                today" snapshot in one row. Colored swatches before
+                Bid / Mid / Ask map directly to the bar colors so the
+                chart's legend is self-evident. */}
             {tapeStats != null && tapeStats.total > 0 && (
-              <div className="mb-2 flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[10px] text-neutral-400">
-                <span>
+              <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[10px] text-neutral-400">
+                <span className="inline-flex items-center gap-1">
+                  <span
+                    aria-hidden
+                    className="inline-block h-1.5 w-1.5 rounded-sm bg-red-400"
+                  />
                   <span className="text-red-300">Bid</span>{' '}
                   <span className="text-neutral-200">
                     {formatVol(tapeStats.bid)}
                   </span>
                 </span>
-                <span>
+                <span className="inline-flex items-center gap-1">
+                  <span
+                    aria-hidden
+                    className="inline-block h-1.5 w-1.5 rounded-sm bg-blue-400"
+                  />
                   <span className="text-blue-300">Mid</span>{' '}
                   <span className="text-neutral-200">
                     {formatVol(tapeStats.mid)}
                   </span>
                 </span>
-                <span>
+                <span className="inline-flex items-center gap-1">
+                  <span
+                    aria-hidden
+                    className="inline-block h-1.5 w-1.5 rounded-sm bg-green-400"
+                  />
                   <span className="text-green-300">Ask</span>{' '}
                   <span className="text-neutral-200">
                     {formatVol(tapeStats.ask)}
                   </span>
                 </span>
                 {tapeStats.avgFill != null && (
-                  <span>
+                  <span title="Volume-weighted avg fill across the session">
                     Avg fill{' '}
                     <span className="text-neutral-200">
                       {formatDollar(tapeStats.avgFill)}
+                    </span>
+                  </span>
+                )}
+                <span title="Open interest at fire time">
+                  OI{' '}
+                  <span className="text-neutral-200">
+                    {formatVol(fire.entry.openInterest)}
+                  </span>
+                </span>
+                {tapeTotalPremium != null && (
+                  <span title="Total premium traded today = totalVol × avgFill × 100">
+                    Prem{' '}
+                    <span className="text-neutral-200">
+                      {formatPremiumAmount(tapeTotalPremium)}
+                    </span>
+                  </span>
+                )}
+                {otmPct != null && (
+                  <span
+                    title={
+                      otmPct >= 0
+                        ? `${(otmPct * 100).toFixed(1)}% out of the money`
+                        : `${(Math.abs(otmPct) * 100).toFixed(1)}% in the money`
+                    }
+                  >
+                    %OTM{' '}
+                    <span
+                      className={
+                        otmPct >= 0 ? 'text-neutral-200' : 'text-amber-300'
+                      }
+                    >
+                      {(otmPct * 100).toFixed(1)}%
                     </span>
                   </span>
                 )}
@@ -686,6 +793,8 @@ export const LotteryRow = memo(function LotteryRow({
               <ContractTapeChart
                 series={tape.series}
                 markerTs={fire.triggerTimeCt}
+                syncHoverTime={hoverTime}
+                onHoverTime={onHoverTimeChange}
                 ariaLabel={`${fire.optionChainId} per-minute tape`}
               />
             )}
@@ -709,37 +818,94 @@ export const LotteryRow = memo(function LotteryRow({
                 price · NCP · NPP · net vol
               </span>
             </div>
-            {/* Latest cum NCP / NPP / divergence + last spot strip. */}
+            {/* Latest cum NCP / NPP / divergence + last spot strip.
+                Includes both premium-$ (NCP/NPP/Δ) and contract-vol
+                (NCV/NPV/Δv) so the reader can tell big-money flow from
+                retail-contract flow — the dollar Δ alone can be misled
+                by a few mega-prints. Colored swatches mirror the chart
+                lines. */}
             {flowStats != null && (
-              <div className="mb-2 flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[10px] text-neutral-400">
+              <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[10px] text-neutral-400">
                 {tickerCandles.candles.length > 0 && (
-                  <span>
+                  <span className="inline-flex items-center gap-1">
+                    <span
+                      aria-hidden
+                      className="inline-block h-1.5 w-1.5 rounded-sm bg-amber-400"
+                    />
                     <span className="text-amber-300">spot</span>{' '}
                     <span className="text-neutral-200">
                       {tickerCandles.candles.at(-1)!.close.toFixed(2)}
                     </span>
                   </span>
                 )}
-                <span>
+                <span
+                  className="inline-flex items-center gap-1"
+                  title="Cumulative Net Call Premium $ (call buys − call sells)"
+                >
+                  <span
+                    aria-hidden
+                    className="inline-block h-1.5 w-1.5 rounded-sm bg-green-400"
+                  />
                   <span className="text-green-300">NCP</span>{' '}
                   <span className="text-neutral-200">
                     {formatPremium(flowStats.cumNcp)}
                   </span>
                 </span>
-                <span>
+                <span
+                  className="inline-flex items-center gap-1"
+                  title="Cumulative Net Put Premium $ (put buys − put sells)"
+                >
+                  <span
+                    aria-hidden
+                    className="inline-block h-1.5 w-1.5 rounded-sm bg-red-400"
+                  />
                   <span className="text-red-300">NPP</span>{' '}
                   <span className="text-neutral-200">
                     {formatPremium(flowStats.cumNpp)}
                   </span>
                 </span>
-                <span>
-                  Δ{' '}
+                <span title="Premium divergence: NCP − NPP. Positive = bull $-flow regime; negative = bear $-flow regime.">
+                  Δ$
                   <span
                     className={
                       flowStats.diff >= 0 ? 'text-green-300' : 'text-red-300'
                     }
                   >
+                    {' '}
                     {formatPremium(flowStats.diff)}
+                  </span>
+                </span>
+                <span
+                  className="text-neutral-500"
+                  title="Cumulative net call volume (contracts)"
+                >
+                  NCV{' '}
+                  <span className="text-neutral-200">
+                    {formatVol(flowStats.cumNcv)}
+                  </span>
+                </span>
+                <span
+                  className="text-neutral-500"
+                  title="Cumulative net put volume (contracts)"
+                >
+                  NPV{' '}
+                  <span className="text-neutral-200">
+                    {formatVol(flowStats.cumNpv)}
+                  </span>
+                </span>
+                <span
+                  className="text-neutral-500"
+                  title="Volume divergence: NCV − NPV. Bottom-pane series."
+                >
+                  Δv
+                  <span
+                    className={
+                      flowStats.diffVol >= 0 ? 'text-green-300' : 'text-red-300'
+                    }
+                  >
+                    {' '}
+                    {flowStats.diffVol >= 0 ? '+' : ''}
+                    {formatVol(flowStats.diffVol)}
                   </span>
                 </span>
               </div>
@@ -758,6 +924,9 @@ export const LotteryRow = memo(function LotteryRow({
                 candles={tickerCandles.candles}
                 previousClose={tickerCandles.previousClose}
                 markerTs={fire.triggerTimeCt}
+                date={fire.date}
+                syncHoverTime={hoverTime}
+                onHoverTime={onHoverTimeChange}
                 ariaLabel={`${fire.underlyingSymbol} cumulative net call/put premium with stock price overlay`}
               />
             )}

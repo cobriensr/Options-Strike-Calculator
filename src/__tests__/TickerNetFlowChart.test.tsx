@@ -23,6 +23,9 @@ const {
   mockSetData,
   mockCreatePriceLine,
   mockTimeToCoordinate,
+  mockSetCrosshairPosition,
+  mockClearCrosshairPosition,
+  mockSubscribeCrosshairMove,
   mockChart,
 } = vi.hoisted(() => {
   const setData = vi.fn();
@@ -45,11 +48,18 @@ const {
     unsubscribeSizeChange: vi.fn(),
   };
 
+  const subscribeCrosshairMove = vi.fn();
+  const setCrosshairPosition = vi.fn();
+  const clearCrosshairPosition = vi.fn();
   const chart = {
     addSeries: vi.fn().mockImplementation(() => series),
     applyOptions: vi.fn(),
     remove: vi.fn(),
     timeScale: vi.fn().mockReturnValue(timeScale),
+    subscribeCrosshairMove,
+    unsubscribeCrosshairMove: vi.fn(),
+    setCrosshairPosition,
+    clearCrosshairPosition,
   };
 
   return {
@@ -58,6 +68,9 @@ const {
     mockSetData: setData,
     mockCreatePriceLine: createPriceLine,
     mockTimeToCoordinate: timeToCoordinate,
+    mockSetCrosshairPosition: setCrosshairPosition,
+    mockClearCrosshairPosition: clearCrosshairPosition,
+    mockSubscribeCrosshairMove: subscribeCrosshairMove,
     mockChart: chart,
   };
 });
@@ -280,5 +293,110 @@ describe('TickerNetFlowChart: cleanup', () => {
     expect(mockApplyOptions).toHaveBeenCalledWith(
       expect.objectContaining({ height: 300 }),
     );
+  });
+});
+
+// ============================================================
+// CROSS-PANEL HOVER SYNC (Phase 5)
+// ============================================================
+
+describe('TickerNetFlowChart: cross-panel hover sync', () => {
+  it('calls setCrosshairPosition when syncHoverTime is provided', () => {
+    const t = Math.floor(Date.parse('2026-05-08T14:32:00Z') / 1000);
+    render(
+      <TickerNetFlowChart
+        series={[]}
+        candles={[]}
+        syncHoverTime={t}
+        ariaLabel="t"
+      />,
+    );
+    expect(mockSetCrosshairPosition).toHaveBeenCalled();
+    const lastCall = mockSetCrosshairPosition.mock.calls.at(-1);
+    expect(lastCall?.[1]).toBe(t);
+  });
+
+  it('calls clearCrosshairPosition when syncHoverTime is null', () => {
+    render(
+      <TickerNetFlowChart
+        series={[]}
+        candles={[]}
+        syncHoverTime={null}
+        ariaLabel="t"
+      />,
+    );
+    expect(mockClearCrosshairPosition).toHaveBeenCalled();
+  });
+
+  it('emits onHoverTime via the subscribed crosshair callback', () => {
+    const onHoverTime = vi.fn();
+    // Capture the callback that the component passes to subscribeCrosshairMove.
+    let capturedCallback:
+      | ((p: { time?: number; seriesData: Map<unknown, unknown> }) => void)
+      | null = null;
+    mockSubscribeCrosshairMove.mockImplementationOnce(
+      (
+        cb: (p: { time?: number; seriesData: Map<unknown, unknown> }) => void,
+      ) => {
+        capturedCallback = cb;
+      },
+    );
+    render(
+      <TickerNetFlowChart
+        series={[]}
+        candles={[]}
+        onHoverTime={onHoverTime}
+        ariaLabel="t"
+      />,
+    );
+    expect(capturedCallback).not.toBeNull();
+    // Simulate a real cursor move. The sync-guard now clears
+    // synchronously after the imperative call so a genuine move
+    // arriving on the next frame is emitted normally.
+    capturedCallback!({
+      time: 1715179920,
+      seriesData: new Map(),
+    });
+    expect(onHoverTime).toHaveBeenCalledWith(1715179920);
+
+    // Simulate a leave — `time` undefined — should emit null.
+    capturedCallback!({
+      seriesData: new Map(),
+    });
+    expect(onHoverTime).toHaveBeenLastCalledWith(null);
+  });
+
+  it('suppresses onHoverTime when a crosshairMove fires inside setCrosshairPosition', () => {
+    const onHoverTime = vi.fn();
+    let capturedCallback:
+      | ((p: { time?: number; seriesData: Map<unknown, unknown> }) => void)
+      | null = null;
+    mockSubscribeCrosshairMove.mockImplementationOnce(
+      (
+        cb: (p: { time?: number; seriesData: Map<unknown, unknown> }) => void,
+      ) => {
+        capturedCallback = cb;
+      },
+    );
+    // Simulate lightweight-charts' real behavior: setCrosshairPosition
+    // dispatches a crosshairMove synchronously. If our sync-guard works,
+    // that nested move must NOT re-emit onHoverTime, otherwise we'd
+    // ping-pong with the parent's lifted state.
+    mockSetCrosshairPosition.mockImplementationOnce(
+      (_price: number, time: number) => {
+        capturedCallback?.({ time, seriesData: new Map() });
+      },
+    );
+    render(
+      <TickerNetFlowChart
+        series={[]}
+        candles={[]}
+        syncHoverTime={1715179920}
+        onHoverTime={onHoverTime}
+        ariaLabel="t"
+      />,
+    );
+    expect(mockSetCrosshairPosition).toHaveBeenCalled();
+    expect(onHoverTime).not.toHaveBeenCalled();
   });
 });

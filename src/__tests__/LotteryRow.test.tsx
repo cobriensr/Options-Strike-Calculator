@@ -493,6 +493,81 @@ describe('LotteryRow: expand / collapse', () => {
     );
   });
 
+  it('renders OI / Prem / %OTM / NCV / NPV / Δv in the expanded headers', () => {
+    // Same fixtures as the smoke expand test so the header maths is
+    // computable: tapeStats.total = 175, avgFill = 1.25 → premium $22K;
+    // OI = 5000 → 5.0K; strike 200 vs spot 198.5 (call) → +0.8% OTM;
+    // cumNcv 50, cumNpv 30 → Δv = +20.
+    mockUseContractTape.mockReturnValue({
+      ...defaultHookState,
+      series: [
+        {
+          ts: '2026-05-08T14:30:00Z',
+          askVol: 100,
+          bidVol: 50,
+          midVol: 25,
+          noSideVol: 0,
+          totalVol: 175,
+          avgPrice: 1.25,
+          highPrice: 1.3,
+          lowPrice: 1.2,
+        },
+      ],
+    });
+    mockUseNetFlowHistory.mockReturnValue({
+      ...defaultHookState,
+      series: [
+        {
+          ts: '2026-05-08T14:30:00Z',
+          ncp: 100,
+          ncv: 50,
+          npp: 60,
+          npv: 30,
+          cumNcp: 100,
+          cumNcv: 50,
+          cumNpp: 60,
+          cumNpv: 30,
+        },
+      ],
+    });
+    mockUseTickerCandles.mockReturnValue({
+      ...defaultHookState,
+      candles: [
+        {
+          ts: '2026-05-08T14:30:00Z',
+          open: 200,
+          high: 200.5,
+          low: 199.8,
+          close: 200.2,
+          volume: 1_000_000,
+        },
+      ],
+      previousClose: 199.5,
+    });
+    render(
+      <LotteryRow
+        fire={makeFire()}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /▸ expand/ }));
+
+    // CONTRACT header carries OI / Prem / %OTM.
+    expect(screen.getByText('OI')).toBeInTheDocument();
+    // 5000 OI → '5.0K' via formatVol.
+    expect(screen.getByText('5.0K')).toBeInTheDocument();
+    expect(screen.getByText('Prem')).toBeInTheDocument();
+    // Premium = 175 * 1.25 * 100 = 21875 → '$22K' via formatPremiumAmount.
+    expect(screen.getByText('$22K')).toBeInTheDocument();
+    expect(screen.getByText('%OTM')).toBeInTheDocument();
+
+    // NET FLOW header carries NCV / NPV / Δv with computed totals.
+    expect(screen.getByText('NCV')).toBeInTheDocument();
+    expect(screen.getByText('NPV')).toBeInTheDocument();
+    expect(screen.getByText('Δv')).toBeInTheDocument();
+  });
+
   it('shows the loading text when the tape hook is loading and series is empty', () => {
     mockUseContractTape.mockReturnValue({
       ...defaultHookState,

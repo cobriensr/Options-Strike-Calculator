@@ -31,8 +31,42 @@ import {
   BaselineSeries,
   LineStyle,
 } from 'lightweight-charts';
-import type { IChartApi, ISeriesApi, UTCTimestamp } from 'lightweight-charts';
+import type {
+  IChartApi,
+  ISeriesApi,
+  MouseEventParams,
+  Time,
+  UTCTimestamp,
+} from 'lightweight-charts';
 import type { NetFlowTick, TickerCandle } from './types.js';
+import { ctSessionBounds } from './ct-window.js';
+
+/** Live crosshair readout state — populated on hover, cleared on leave. */
+interface CrosshairReadout {
+  time: UTCTimestamp;
+  price: number | null;
+  ncp: number | null;
+  npp: number | null;
+  netVol: number | null;
+}
+
+/** Compact signed $-formatter for the crosshair tooltip. */
+const fmtSignedDollar = (n: number): string => {
+  const sign = n >= 0 ? '+' : '−';
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(2)}M`;
+  if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(0)}K`;
+  return `${sign}$${abs.toFixed(0)}`;
+};
+
+/** Compact signed vol-formatter for the crosshair tooltip. */
+const fmtSignedVol = (n: number): string => {
+  const sign = n >= 0 ? '+' : '−';
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(2)}M`;
+  if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(1)}K`;
+  return `${sign}${abs.toFixed(0)}`;
+};
 
 /** Local time-pinned alias — narrower than the library's Time union. */
 type Point = { time: UTCTimestamp; value: number };
@@ -46,6 +80,29 @@ interface TickerNetFlowChartProps {
   previousClose?: number | null;
   /** Optional fire-time marker (UTC ISO). Renders a vertical purple line. */
   markerTs?: string;
+  /**
+   * YYYY-MM-DD trading day. Used to pin the visible window to the full
+   * regular session (08:30–15:00 CT) regardless of how much data has
+   * arrived. Without this, lightweight-charts auto-fits to the data,
+   * which collapses the axis to a tiny window when the daemon has only
+   * indexed the last few minutes. Optional only to keep existing tests
+   * green — production callers (LotteryRow) always pass it.
+   */
+  date?: string;
+  /**
+   * UTC-second cursor time pushed down from the sibling CONTRACT chart
+   * via the parent LotteryRow. When set, this chart paints a synced
+   * crosshair (via lightweight-charts' setCrosshairPosition) at the
+   * matching time on the price series. `null` clears the synced
+   * cursor.
+   */
+  syncHoverTime?: number | null;
+  /**
+   * Fired when the chart's crosshair moves over real data. Bubbles up
+   * the UTC-second timestamp so the CONTRACT chart can mirror the
+   * cursor. Receives `null` when the cursor leaves the chart.
+   */
+  onHoverTime?: (t: number | null) => void;
   /** Total chart height in pixels. Default 220. */
   height?: number;
   ariaLabel: string;
@@ -53,6 +110,15 @@ interface TickerNetFlowChartProps {
 
 const isoToUtcSec = (iso: string): UTCTimestamp =>
   Math.floor(Date.parse(iso) / 1000) as UTCTimestamp;
+
+/** Format a UTCTimestamp (seconds) as a CT HH:MM string. */
+const formatCt = (t: UTCTimestamp): string =>
+  new Date((t as number) * 1000).toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: 'America/Chicago',
+  });
 
 /**
  * lightweight-charts shows duplicate-time points as outright errors
@@ -84,6 +150,9 @@ function TickerNetFlowChartInner({
   candles,
   previousClose,
   markerTs,
+  date,
+  syncHoverTime,
+  onHoverTime,
   height = 220,
   ariaLabel,
 }: TickerNetFlowChartProps) {
@@ -96,11 +165,31 @@ function TickerNetFlowChartInner({
   const prevCloseLineRef = useRef<ReturnType<
     NonNullable<typeof priceSeriesRef.current>['createPriceLine']
   > | null>(null);
-  const initialFitDoneRef = useRef(false);
 
   /** Pixel x-coordinate of the fire-time marker, recomputed on every
    *  data update + resize. `null` when off-chart or unmeasurable. */
   const [markerX, setMarkerX] = useState<number | null>(null);
+  /**
+   * Crosshair-driven readout for the floating tooltip strip. lightweight-
+   * charts already paints a per-series legend, but it's spread across the
+   * left/right gutters; users want a single compact strip that reads
+   * "@ 11:32 CT  price 124.50  NCP +1.4M  NPP +14.3M  Δ −12.9M". */
+  const [readout, setReadout] = useState<CrosshairReadout | null>(null);
+
+  /**
+   * Latest `onHoverTime` callback, accessed via ref so the
+   * create-chart effect (which runs once) can call the current
+   * callback without re-binding on every prop change. */
+  const onHoverTimeRef = useRef<typeof onHoverTime>(onHoverTime);
+  onHoverTimeRef.current = onHoverTime;
+
+  /**
+   * Flag set while we're imperatively driving the crosshair via
+   * `setCrosshairPosition` (sync from sibling). Without this, the
+   * sibling-driven move would re-trigger our own `crosshairMove`
+   * callback, which would call `onHoverTime` and create a feedback
+   * loop with the parent's lifted state. */
+  const isSyncingRef = useRef(false);
 
   // ── Build series data (memoized per props) ──────────────────────
   const flowData = useMemo(() => {
@@ -159,17 +248,15 @@ function TickerNetFlowChartInner({
         borderColor: '#262626',
         timeVisible: true,
         secondsVisible: false,
+        // `localization.timeFormatter` only formats the crosshair tooltip;
+        // axis tick labels need their own formatter or they default to UTC.
+        // Without this the axis renders 13:30–20:00 (UTC) instead of
+        // 08:30–15:00 (CT) for the regular session. Verified bug pre-fix.
+        tickMarkFormatter: (t: UTCTimestamp) => formatCt(t),
       },
       localization: {
-        // Render time-axis labels + crosshair tooltip in CT to match
-        // the rest of the lottery panel UI.
-        timeFormatter: (t: UTCTimestamp) =>
-          new Date((t as number) * 1000).toLocaleTimeString('en-US', {
-            hour: '2-digit',
-            minute: '2-digit',
-            hour12: false,
-            timeZone: 'America/Chicago',
-          }),
+        // Crosshair-tooltip time formatter (separate from axis labels).
+        timeFormatter: (t: UTCTimestamp) => formatCt(t),
       },
     });
     chartRef.current = chart;
@@ -224,7 +311,50 @@ function TickerNetFlowChartInner({
       title: '',
     });
 
+    // ── Crosshair subscription drives the floating readout strip ──
+    // Called on every mouse move within the chart canvas. When the
+    // cursor leaves the chart, `param.time` is undefined — we use that
+    // to clear the readout. lightweight-charts internally rAF-batches
+    // these callbacks so no extra debouncing is needed.
+    const onCrosshair = (param: MouseEventParams<Time>) => {
+      if (param.time == null) {
+        setReadout(null);
+        // Don't emit when the move came from our own setCrosshairPosition.
+        if (!isSyncingRef.current) onHoverTimeRef.current?.(null);
+        return;
+      }
+      const t = param.time as UTCTimestamp;
+      const readSeries = (
+        s: ISeriesApi<'Line'> | ISeriesApi<'Baseline'> | null,
+      ): number | null => {
+        if (s == null) return null;
+        const v = param.seriesData.get(s);
+        if (v == null) return null;
+        // Both Line and Baseline series carry a `value` field.
+        if (
+          typeof v === 'object' &&
+          'value' in v &&
+          typeof v.value === 'number'
+        ) {
+          return v.value;
+        }
+        return null;
+      };
+      setReadout({
+        time: t,
+        price: readSeries(priceSeriesRef.current),
+        ncp: readSeries(ncpSeriesRef.current),
+        npp: readSeries(nppSeriesRef.current),
+        netVol: readSeries(netVolSeriesRef.current),
+      });
+      // Emit the cursor's UTC second upward — but only when this move
+      // came from a real user gesture, not our own sync-from-sibling.
+      if (!isSyncingRef.current) onHoverTimeRef.current?.(t as number);
+    };
+    chart.subscribeCrosshairMove(onCrosshair);
+
     return () => {
+      chart.unsubscribeCrosshairMove(onCrosshair);
       chart.remove();
       chartRef.current = null;
       priceSeriesRef.current = null;
@@ -248,11 +378,30 @@ function TickerNetFlowChartInner({
     nppSeriesRef.current.setData(flowData.npp);
     if (netVolSeriesRef.current)
       netVolSeriesRef.current.setData(flowData.netVol);
-    if (!initialFitDoneRef.current) {
-      chartRef.current?.timeScale().fitContent();
-      initialFitDoneRef.current = true;
-    }
   }, [flowData]);
+
+  // ── Pin visible window to the full regular session ─────────────
+  // Previously a one-shot `fitContent()` ran on first non-empty data
+  // load. That collapsed the axis to a 14-minute window whenever the
+  // first poll only had the tail of the session indexed. Pin to the
+  // explicit 08:30–15:00 CT range on every data/date change so the
+  // axis always reads as a full trading day. Falls back to fitContent
+  // when `date` isn't supplied (tests).
+  useEffect(() => {
+    if (!chartRef.current) return;
+    if (!flowData && !priceData) return;
+    if (date == null) {
+      chartRef.current.timeScale().fitContent();
+      return;
+    }
+    const bounds = ctSessionBounds(date);
+    const from = Math.floor(Date.parse(bounds.min) / 1000) as UTCTimestamp;
+    const to = Math.floor(Date.parse(bounds.max) / 1000) as UTCTimestamp;
+    if (!Number.isFinite(from as number) || !Number.isFinite(to as number)) {
+      return;
+    }
+    chartRef.current.timeScale().setVisibleRange({ from, to });
+  }, [flowData, priceData, date]);
 
   useEffect(() => {
     if (!priceData || !priceSeriesRef.current) {
@@ -285,6 +434,39 @@ function TickerNetFlowChartInner({
       });
     }
   }, [previousClose]);
+
+  // ── Sibling-driven crosshair sync ───────────────────────────────
+  // When the CONTRACT panel reports its cursor time, push it onto our
+  // own crosshair via setCrosshairPosition. The `isSyncingRef` flag
+  // suppresses the resulting crosshairMove from re-emitting upward.
+  // lightweight-charts dispatches crosshairMove SYNCHRONOUSLY inside
+  // setCrosshairPosition / clearCrosshairPosition, so we can flip the
+  // flag, run the imperative call, and clear it again in the same tick
+  // — no microtask gymnastics, no risk of swallowing a legitimate
+  // user move that lands in the same animation frame.
+  useEffect(() => {
+    const chart = chartRef.current;
+    const priceSeries = priceSeriesRef.current;
+    if (!chart || !priceSeries) return;
+    isSyncingRef.current = true;
+    try {
+      if (syncHoverTime == null) {
+        chart.clearCrosshairPosition();
+      } else {
+        chart.setCrosshairPosition(
+          // Price arg is meaningless when we only want the time crosshair
+          // — lightweight-charts requires it but uses it only for vertical
+          // pinning on the price scale. NaN tells the chart "no price
+          // pin" and just draws the vertical line at the requested time.
+          Number.NaN,
+          syncHoverTime as UTCTimestamp,
+          priceSeries,
+        );
+      }
+    } finally {
+      isSyncingRef.current = false;
+    }
+  }, [syncHoverTime]);
 
   // ── Marker x-coordinate, recomputed on data + visible-range +
   //     width changes ─────────────────────────────────────────────
@@ -328,6 +510,12 @@ function TickerNetFlowChartInner({
   // small "waiting" label as an overlay.
   const showPlaceholder = series.length < 2;
 
+  /** Δ between live NCP and NPP values at the cursor, when both are read. */
+  const readoutDiff =
+    readout != null && readout.ncp != null && readout.npp != null
+      ? readout.ncp - readout.npp
+      : null;
+
   return (
     <div
       className="relative w-full"
@@ -341,19 +529,102 @@ function TickerNetFlowChartInner({
           waiting for ≥2 net-flow ticks…
         </div>
       )}
+      {/* Crosshair readout strip — pinned top-right so it doesn't
+          collide with the fire-time marker label on the left. Only
+          shown while the cursor is over the chart. The unified value
+          row is denser than lightweight-charts' built-in per-series
+          gutter labels. */}
+      {!showPlaceholder && readout != null && (
+        <div
+          className="pointer-events-none absolute top-1 right-1 z-10 flex flex-wrap items-center gap-x-2 rounded border border-neutral-700/80 bg-neutral-950/85 px-1.5 py-0.5 font-mono text-[9px] whitespace-nowrap text-neutral-300 shadow-md backdrop-blur-sm"
+          role="status"
+          aria-live="polite"
+        >
+          <span className="text-neutral-500">@</span>
+          <span className="text-neutral-100">{formatCt(readout.time)}</span>
+          {readout.price != null && (
+            <span>
+              <span className="text-amber-300">$</span>
+              <span className="text-neutral-100">
+                {readout.price.toFixed(2)}
+              </span>
+            </span>
+          )}
+          {readout.ncp != null && (
+            <span>
+              <span className="text-emerald-300">N</span>
+              <span className="text-neutral-100">
+                {fmtSignedDollar(readout.ncp)}
+              </span>
+            </span>
+          )}
+          {readout.npp != null && (
+            <span>
+              <span className="text-rose-300">P</span>
+              <span className="text-neutral-100">
+                {fmtSignedDollar(readout.npp)}
+              </span>
+            </span>
+          )}
+          {readoutDiff != null && (
+            <span>
+              <span className="text-neutral-500">Δ</span>
+              <span
+                className={
+                  readoutDiff >= 0 ? 'text-emerald-300' : 'text-rose-300'
+                }
+              >
+                {fmtSignedDollar(readoutDiff)}
+              </span>
+            </span>
+          )}
+          {readout.netVol != null && (
+            <span>
+              <span className="text-neutral-500">v</span>
+              <span
+                className={
+                  readout.netVol >= 0 ? 'text-emerald-300' : 'text-rose-300'
+                }
+              >
+                {fmtSignedVol(readout.netVol)}
+              </span>
+            </span>
+          )}
+        </div>
+      )}
       {/* Fire-time vertical marker — purple, dashed. Painted as an
           overlay so it can sit above the chart without fighting the
-          imperative chart canvas. */}
-      {!showPlaceholder && markerX != null && (
-        <div
-          className="pointer-events-none absolute top-0 bottom-6 w-px"
-          style={{
-            left: markerX,
-            background:
-              'repeating-linear-gradient(to bottom, rgb(196,181,253) 0 3px, transparent 3px 6px)',
-          }}
-          aria-hidden
-        />
+          imperative chart canvas. Now carries a small CT-time label
+          near the top so the reader knows what the line represents. */}
+      {!showPlaceholder && markerX != null && markerTs != null && (
+        <>
+          <div
+            className="pointer-events-none absolute top-0 bottom-6 w-px"
+            style={{
+              left: markerX,
+              background:
+                'repeating-linear-gradient(to bottom, rgb(196,181,253) 0 3px, transparent 3px 6px)',
+            }}
+            aria-hidden
+          />
+          <div
+            className="pointer-events-none absolute top-0.5 rounded border border-violet-500/40 bg-violet-950/80 px-1 py-px font-mono text-[9px] leading-none text-violet-200"
+            style={{
+              left: markerX,
+              transform: 'translateX(-50%)',
+              whiteSpace: 'nowrap',
+            }}
+            aria-hidden
+          >
+            ⚡{' '}
+            {new Date(markerTs).toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+              hour12: false,
+              timeZone: 'America/Chicago',
+            })}
+          </div>
+        </>
       )}
     </div>
   );
