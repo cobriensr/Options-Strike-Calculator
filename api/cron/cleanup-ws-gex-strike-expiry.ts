@@ -22,9 +22,11 @@
  *
  * Batching: deletes are issued in 50k-row chunks until either the
  * table is drained or the per-run wall budget is exhausted. Daily
- * steady-state load is bounded (~120k rows / day) so a single batch
- * normally finishes the job; the loop exists for the one-time
- * post-deploy catch-up.
+ * steady-state load across the full lottery universe lands in the
+ * ~400k–700k rows / day range (peaks ~1M on days when several
+ * individual-name weeklies expire alongside the ETF dailies); a
+ * handful of batches drains it. The loop also exists for the
+ * one-time post-deploy catch-up.
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';

@@ -121,3 +121,11 @@ ZONE 'America/New_York') < '2026-05-15' RETURNING 1` in a 50k-row
 - Batch size: 50,000 rows per DELETE statement.
 - Daemon TZ: `America/New_York` (ET).
 - Cron schedule: `0 12 * * 1-5` UTC.
+- Steady-state row count (across the full ~75-ticker lottery
+  universe, post-daemon-filter): ~400k–700k rows on a typical
+  trading day; peaks near ~1M on days when several individual-name
+  weeklies expire alongside the ETF dailies. Most lottery tickers
+  (TSLA, NVDA, AAPL, etc.) only have weekly/monthly expiries, so
+  they contribute zero on most days and one day's worth (~30–100k)
+  on their expiry day. SPY alone is ~104k/day (267 strikes × 390
+  minutes).
