@@ -202,6 +202,7 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
         <MinuteScrubber
           range={data.intradayRange}
           at={scrubbedAt}
+          dateStr={selectedDate}
           onChange={setScrubbedAt}
         />
       )}

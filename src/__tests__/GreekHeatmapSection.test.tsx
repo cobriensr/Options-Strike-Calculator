@@ -264,7 +264,10 @@ describe('GreekHeatmapSection', () => {
   it('renders the minute scrubber in LIVE mode by default', () => {
     render(<GreekHeatmapSection marketOpen={true} />);
     expect(
-      screen.getByLabelText(/scrub to a past minute/i),
+      screen.getByRole('button', { name: /previous minute/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /next minute/i }),
     ).toBeInTheDocument();
     expect(screen.getByLabelText(/^live$/i)).toBeInTheDocument();
   });
@@ -285,30 +288,25 @@ describe('GreekHeatmapSection', () => {
     render(<GreekHeatmapSection marketOpen={true} />);
     expect(screen.getByText(/no intraday data/i)).toBeInTheDocument();
     expect(
-      screen.queryByLabelText(/scrub to a past minute/i),
+      screen.queryByRole('button', { name: /previous minute/i }),
     ).not.toBeInTheDocument();
   });
 
-  it('scrubbing to a past minute disables polling and passes `at` to the hook', () => {
+  it('stepping back one minute disables polling and passes `at` to the hook', () => {
     render(<GreekHeatmapSection marketOpen={true} />);
-    const slider = screen.getByLabelText(
-      /scrub to a past minute/i,
-    ) as HTMLInputElement;
-    // Drag to the minimum (start of intraday range).
-    fireEvent.change(slider, { target: { value: slider.min } });
+    // Default at=null (LIVE) → valueMs = range.max (16:30Z). One Prev
+    // step lands at 16:29Z.
+    fireEvent.click(screen.getByRole('button', { name: /previous minute/i }));
     const lastCall = mockUseGreekHeatmap.mock.calls.at(-1)?.[0] as
       | { at?: string; enabled: boolean }
       | undefined;
-    expect(lastCall?.at).toBe('2026-05-15T13:30:00.000Z');
+    expect(lastCall?.at).toBe('2026-05-15T16:29:00.000Z');
     expect(lastCall?.enabled).toBe(false);
   });
 
   it('Jump to live button resets scrubbedAt to null AND re-enables polling', () => {
     render(<GreekHeatmapSection marketOpen={true} />);
-    const slider = screen.getByLabelText(
-      /scrub to a past minute/i,
-    ) as HTMLInputElement;
-    fireEvent.change(slider, { target: { value: slider.min } });
+    fireEvent.click(screen.getByRole('button', { name: /previous minute/i }));
     // Mid-scrub: polling disabled.
     let lastCall = mockUseGreekHeatmap.mock.calls.at(-1)?.[0] as
       | { at?: string; enabled: boolean }
@@ -323,16 +321,52 @@ describe('GreekHeatmapSection', () => {
     expect(lastCall?.enabled).toBe(true);
   });
 
+  it('Next-minute step from the latest snaps back to LIVE (at=undefined)', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+    // First scrub backward so we're SCRUBBED, then Next should walk
+    // forward and re-snap to LIVE when we hit max.
+    fireEvent.click(screen.getByRole('button', { name: /previous minute/i }));
+    fireEvent.click(screen.getByRole('button', { name: /next minute/i }));
+    const lastCall = mockUseGreekHeatmap.mock.calls.at(-1)?.[0] as
+      | { at?: string; enabled: boolean }
+      | undefined;
+    expect(lastCall?.at).toBeUndefined();
+    expect(lastCall?.enabled).toBe(true);
+  });
+
+  it('CT time-picker fires the converted UTC `at` and disables polling', () => {
+    // Pin the clock to the same trading day as the fixture's
+    // intradayRange so `selectedDate` (derived from `new Date()` in
+    // useState init) matches '2026-05-15'. Without this the section's
+    // selectedDate would be today's real date and the time-picker
+    // conversion would clamp to a range bound instead of round-tripping.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-15T18:00:00Z'));
+    try {
+      render(<GreekHeatmapSection marketOpen={true} />);
+      const timeInput = screen.getByLabelText(
+        /jump to \(central time\)/i,
+      ) as HTMLInputElement;
+      // 10:00 CT on 2026-05-15 (CDT, UTC-5) = 15:00 UTC — inside the
+      // fixture's intradayRange [13:30Z, 16:30Z], so no clamp.
+      fireEvent.change(timeInput, { target: { value: '10:00' } });
+      const lastCall = mockUseGreekHeatmap.mock.calls.at(-1)?.[0] as
+        | { at?: string; enabled: boolean }
+        | undefined;
+      expect(lastCall?.at).toBe('2026-05-15T15:00:00.000Z');
+      expect(lastCall?.enabled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('changing date resets scrubbedAt so the new (ticker, date) starts at LIVE', () => {
     render(<GreekHeatmapSection marketOpen={true} />);
-    const slider = screen.getByLabelText(
-      /scrub to a past minute/i,
-    ) as HTMLInputElement;
-    fireEvent.change(slider, { target: { value: slider.min } });
+    fireEvent.click(screen.getByRole('button', { name: /previous minute/i }));
     let lastCall = mockUseGreekHeatmap.mock.calls.at(-1)?.[0] as
       | { at?: string }
       | undefined;
-    expect(lastCall?.at).toBe('2026-05-15T13:30:00.000Z');
+    expect(lastCall?.at).toBe('2026-05-15T16:29:00.000Z');
     const dateInput = screen.getByLabelText(
       /heatmap expiry date/i,
     ) as HTMLInputElement;
