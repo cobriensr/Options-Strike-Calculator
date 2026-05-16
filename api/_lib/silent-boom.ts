@@ -45,12 +45,23 @@ export const SILENT_BOOM_SPEC_V1 = Object.freeze({
   /** Max multi-leg size share of the spike bucket. Buckets at or above
    *  this threshold are rejected — they're dominated by spread-leg
    *  routing (mlat/mlet/etc. trade codes) and carry no directional
-   *  thesis. Empirical basis: scripts/analyze_silent_boom_multileg.py
+   *  thesis.
+   *
+   *  Threshold relaxed from 0.5 → 0.7 on 2026-05-16 after the EDA
+   *  rerun (ml/findings/eda-rerun-2026-05-16/) showed the 50-70%
+   *  bucket (N=89) preserves meaningful signal: mean peak 42.0%,
+   *  median 18.0%, 11.2% hit ≥100% peak, with 1.41× win50 lift vs
+   *  baseline. The 70-100% bucket (N=4,545) is the actual cliff:
+   *  mean 23.7%, median 6.3%, 0.64× win50 lift. The original 0.5
+   *  cut was conservative; 0.7 is where the data says dealer-hedge
+   *  dominance actually starts.
+   *
+   *  Original empirical basis: scripts/analyze_silent_boom_multileg.py
    *  2026-05-12 — multi-leg fires win > 100% at 3× lower rate than
-   *  single-leg in every ask% band. Distribution is bimodal at ~0%
-   *  and ~100%, so 0.5 is a clean separator. Spec:
-   *  docs/superpowers/specs/silent-boom-ask-100-demote-2026-05-12.md */
-  multiLegShareMax: 0.5,
+   *  single-leg in every ask% band. Specs:
+   *  docs/superpowers/specs/silent-boom-ask-100-demote-2026-05-12.md
+   *  docs/superpowers/specs/lottery-silentboom-eda-impl-2026-05-16.md */
+  multiLegShareMax: 0.7,
 } as const);
 
 /** Bucket size in milliseconds (5 minutes). */

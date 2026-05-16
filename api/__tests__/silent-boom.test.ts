@@ -150,8 +150,8 @@ describe('detectSilentBoomFires', () => {
 
   it('rejects when multi-leg share meets or exceeds threshold', () => {
     const seq = fireableSequence();
-    // 1000 of 2000 = 0.5 — at the floor, gate uses ≥.
-    seq[4]!.multiLegSize = 1_000;
+    // 1400 of 2000 = 0.7 — at the 2026-05-16 retuned floor, gate uses ≥.
+    seq[4]!.multiLegSize = 1_400;
     expect(detectSilentBoomFires(seq)).toHaveLength(0);
   });
 
@@ -163,11 +163,25 @@ describe('detectSilentBoomFires', () => {
 
   it('accepts when multi-leg share is below threshold', () => {
     const seq = fireableSequence();
-    // 800 of 2000 = 0.4 — below the 0.5 floor.
-    seq[4]!.multiLegSize = 800;
+    // 1300 of 2000 = 0.65 — below the 0.7 floor (post 2026-05-16
+    // EDA-rerun retune from 0.5). This bucket previously would have
+    // been rejected at 0.5; the rerun showed it preserves meaningful
+    // signal (mean peak 42%, 11% hit ≥100% peak).
+    seq[4]!.multiLegSize = 1_300;
     const fires = detectSilentBoomFires(seq);
     expect(fires).toHaveLength(1);
-    expect(fires[0]!.multiLegShare).toBeCloseTo(0.4, 6);
+    expect(fires[0]!.multiLegShare).toBeCloseTo(0.65, 6);
+  });
+
+  it('accepts a previously-rejected 0.5 bucket post-retune', () => {
+    // Regression test for the 2026-05-16 relaxation from 0.5 → 0.7.
+    // 1000 of 2000 = 0.5 was AT the old floor (rejected); post-retune
+    // it sits comfortably below 0.7 and a fire should emit.
+    const seq = fireableSequence();
+    seq[4]!.multiLegSize = 1_000;
+    const fires = detectSilentBoomFires(seq);
+    expect(fires).toHaveLength(1);
+    expect(fires[0]!.multiLegShare).toBeCloseTo(0.5, 6);
   });
 });
 
