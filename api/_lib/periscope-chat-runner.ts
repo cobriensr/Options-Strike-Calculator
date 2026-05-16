@@ -47,6 +47,7 @@ import { fetchActiveLessons, formatLessonsBlock } from './periscope-lessons.js';
 import {
   buildFlowContextBlock,
   noAlertsSentinelForMode,
+  NO_ALERTS_SENTINEL,
 } from './periscope-flow-context.js';
 import { generateEmbedding } from './embeddings.js';
 import {
@@ -631,6 +632,54 @@ export async function runPeriscopeAutoPlaybook(
   }
 
   // Step 8: success path — embed + map panel_payload.
+
+  // Observability check (Phase 3 of periscope-flow-hallucination-fix-2026-05-16):
+  // when the prompt contained the NO_ALERTS sentinel but the model
+  // emitted an expected_dealer_behavior that doesn't declare
+  // INSUFFICIENT_DATA, log + capture a Sentry message so the
+  // hallucination regression surfaces immediately rather than waiting
+  // for the next 8-day audit. Non-blocking — the schema-side citation
+  // rule already constrains the model; this is a watchdog for drift.
+  if (
+    flowBlock.includes(NO_ALERTS_SENTINEL) &&
+    structured.expected_dealer_behavior != null &&
+    !structured.expected_dealer_behavior.includes(
+      'FLOW-STRUCTURE: INSUFFICIENT_DATA',
+    )
+  ) {
+    logger.warn(
+      {
+        mode,
+        tradingDate,
+        readTimeIso,
+        modelUsed: result.modelUsed,
+        expectedDealerBehavior: structured.expected_dealer_behavior.slice(
+          0,
+          200,
+        ),
+      },
+      'periscope auto-playbook: NO_ALERTS sentinel in prompt but expected_dealer_behavior did not declare INSUFFICIENT_DATA — possible flow-citation drift',
+    );
+    Sentry.captureMessage(
+      'periscope: NO_ALERTS sentinel present but model did not declare INSUFFICIENT_DATA',
+      {
+        level: 'warning',
+        tags: {
+          module: 'periscope-chat-runner',
+          stage: 'flow_structure_drift_check',
+          mode,
+          model: result.modelUsed,
+        },
+        extra: {
+          tradingDate,
+          readTimeIso,
+          expectedDealerBehaviorPreview:
+            structured.expected_dealer_behavior.slice(0, 200),
+        },
+      },
+    );
+  }
+
   const embedding = await buildEmbeddingBestEffort({
     mode,
     tradingDate,

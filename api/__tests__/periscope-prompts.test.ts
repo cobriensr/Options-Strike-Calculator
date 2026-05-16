@@ -30,6 +30,7 @@ import {
   STRUCTURED_TOOL_NAME,
   synthesizeStructuralProse,
 } from '../_lib/periscope-prompts.js';
+import { NO_ALERTS_SENTINEL } from '../_lib/periscope-flow-context.js';
 import type { PeriscopeStructuredFields } from '../_lib/periscope-db.js';
 
 /** Build a PeriscopeStructuredFields with a few overrides — the rest null/[]. */
@@ -427,6 +428,74 @@ describe('STRUCTURED_TOOL definition', () => {
     ]) {
       expect(props[key]).toBeDefined();
     }
+  });
+
+  // Phase 3 of periscope-flow-hallucination-fix-2026-05-16: the
+  // expected_dealer_behavior description carries the FLOW-STRUCTURE
+  // enum + anti-fabrication rule. These assertions lock the load-
+  // bearing keywords so a future copy edit that drops the enum or the
+  // citation rule fails CI rather than silently re-opening the
+  // hallucination path.
+  it('expected_dealer_behavior description requires the FLOW-STRUCTURE enum', () => {
+    const schema = STRUCTURED_TOOL.input_schema as Record<string, unknown>;
+    const props = schema.properties as Record<string, { description?: string }>;
+    const desc = props.expected_dealer_behavior?.description ?? '';
+    expect(desc).toContain('FLOW-STRUCTURE: AGREEMENT');
+    expect(desc).toContain('FLOW-STRUCTURE: DISAGREEMENT');
+    expect(desc).toContain('FLOW-STRUCTURE: INSUFFICIENT_DATA');
+  });
+
+  it('expected_dealer_behavior description bans fabricated citations', () => {
+    const schema = STRUCTURED_TOOL.input_schema as Record<string, unknown>;
+    const props = schema.properties as Record<string, { description?: string }>;
+    const desc = props.expected_dealer_behavior?.description ?? '';
+    expect(desc).toContain('verbatim');
+    // Reference the runtime constant so a rename in periscope-flow-context.ts
+    // forces this test (and the description) to update together — prevents
+    // Phase 2 ↔ Phase 3 string-literal desync.
+    expect(desc).toContain(NO_ALERTS_SENTINEL);
+    expect(desc).toMatch(/INSUFFICIENT_DATA/);
+    expect(desc).toMatch(/verification failure/);
+  });
+
+  it('expected_dealer_behavior description specifies mixed-flow → INSUFFICIENT_DATA', () => {
+    const schema = STRUCTURED_TOOL.input_schema as Record<string, unknown>;
+    const props = schema.properties as Record<string, { description?: string }>;
+    const desc = props.expected_dealer_behavior?.description ?? '';
+    expect(desc).toContain('2:1');
+    expect(desc).toMatch(/Mixed flow.*INSUFFICIENT_DATA/);
+  });
+
+  // Order matters: if the description is reorganized so the enum labels
+  // or anti-fabrication clauses end up in the wrong relative positions,
+  // keyword-presence assertions still pass but the prose loses coherence
+  // for the LLM. Lock in the ordering so paragraph reshuffles fail CI.
+  it('expected_dealer_behavior description keeps load-bearing clauses in order', () => {
+    const schema = STRUCTURED_TOOL.input_schema as Record<string, unknown>;
+    const props = schema.properties as Record<string, { description?: string }>;
+    const desc = props.expected_dealer_behavior?.description ?? '';
+    const positions = {
+      agreement: desc.indexOf('FLOW-STRUCTURE: AGREEMENT'),
+      disagreement: desc.indexOf('FLOW-STRUCTURE: DISAGREEMENT'),
+      insufficient: desc.indexOf('FLOW-STRUCTURE: INSUFFICIENT_DATA'),
+      citationFormat: desc.indexOf('HH:MM CT TYPE STRIKE rule=NAME'),
+      fabricationRule: desc.indexOf('fabricated citations are a verification'),
+      sentinel: desc.indexOf(NO_ALERTS_SENTINEL),
+    };
+    for (const [name, pos] of Object.entries(positions)) {
+      expect(pos, `clause "${name}" missing from description`).toBeGreaterThanOrEqual(
+        0,
+      );
+    }
+    // Enum labels in canonical order (AGREEMENT < DISAGREEMENT < INSUFFICIENT).
+    expect(positions.agreement).toBeLessThan(positions.disagreement);
+    expect(positions.disagreement).toBeLessThan(positions.insufficient);
+    // Citation format spec must come BEFORE the fabrication rule — the rule
+    // references the format, so the format needs to be anchored first.
+    expect(positions.citationFormat).toBeLessThan(positions.fabricationRule);
+    // Sentinel reference comes AFTER the fabrication rule — sentinel is the
+    // trigger condition; the rule is the constraint.
+    expect(positions.fabricationRule).toBeLessThan(positions.sentinel);
   });
 });
 

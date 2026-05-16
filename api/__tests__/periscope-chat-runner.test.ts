@@ -73,6 +73,7 @@ vi.mock('../_lib/periscope-lessons.js', () => ({
 vi.mock('../_lib/periscope-flow-context.js', () => ({
   buildFlowContextBlock: vi.fn(),
   noAlertsSentinelForMode: vi.fn((mode: string) => `__sentinel_${mode}__`),
+  NO_ALERTS_SENTINEL: 'NO_ALERTS_IN_WINDOW',
 }));
 
 vi.mock('../_lib/embeddings.js', () => ({
@@ -367,6 +368,92 @@ describe('runPeriscopeAutoPlaybook', () => {
 
     const arg = vi.mocked(buildUserContent).mock.calls[0]?.[0];
     expect(arg?.flowBlock).toBe('__sentinel_intraday__');
+  });
+
+  // Phase 3 drift check: when the prompt carried the NO_ALERTS sentinel
+  // but the model's expected_dealer_behavior did NOT declare
+  // INSUFFICIENT_DATA, Sentry warning fires so the regression is
+  // observable without waiting for the next periscope audit.
+  it('captures Sentry warning when sentinel in prompt but output missing INSUFFICIENT_DATA', async () => {
+    vi.mocked(buildFlowContextBlock).mockResolvedValue(
+      'Fresh SPXW flow alerts ...\nNO_ALERTS_IN_WINDOW\n\nNo alerts ...',
+    );
+    vi.mocked(parseStructuredFieldsFromToolInput).mockReturnValue({
+      prose: 'narrative prose',
+      structured: {
+        ...structuredFixture,
+        // Drift: model invented an AGREEMENT despite the sentinel.
+        expected_dealer_behavior:
+          'FLOW-STRUCTURE: AGREEMENT — 14:30 CT PUT 7400 rule=RepeatedHits. Passive bid expected.',
+      },
+      parseOk: true,
+    });
+
+    const out = await runPeriscopeAutoPlaybook(baseInput);
+
+    expect(out.status).toBe('complete');
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('NO_ALERTS sentinel present'),
+      expect.objectContaining({
+        level: 'warning',
+        tags: expect.objectContaining({
+          stage: 'flow_structure_drift_check',
+        }),
+      }),
+    );
+  });
+
+  it('does NOT capture Sentry warning when sentinel in prompt AND output declares INSUFFICIENT_DATA', async () => {
+    vi.mocked(buildFlowContextBlock).mockResolvedValue(
+      'Fresh SPXW flow alerts ...\nNO_ALERTS_IN_WINDOW\n\nNo alerts ...',
+    );
+    vi.mocked(parseStructuredFieldsFromToolInput).mockReturnValue({
+      prose: 'narrative prose',
+      structured: {
+        ...structuredFixture,
+        expected_dealer_behavior:
+          'FLOW-STRUCTURE: INSUFFICIENT_DATA. Passive bid expected below 5895, passive offer above 5925.',
+      },
+      parseOk: true,
+    });
+
+    const out = await runPeriscopeAutoPlaybook(baseInput);
+
+    expect(out.status).toBe('complete');
+    // captureMessage may still be called for OTHER reasons (refusal,
+    // truncation) — assert specifically that the drift-check call did
+    // NOT fire.
+    const driftCalls = vi
+      .mocked(Sentry.captureMessage)
+      .mock.calls.filter((call) =>
+        String(call[0]).includes('NO_ALERTS sentinel present'),
+      );
+    expect(driftCalls).toHaveLength(0);
+  });
+
+  it('does NOT capture Sentry warning when prompt has no sentinel (real flow context)', async () => {
+    vi.mocked(buildFlowContextBlock).mockResolvedValue(
+      'Fresh SPXW flow alerts placed in the last 15 min ...\n  - 14:30 CT CALL 5900 rule="RepeatedHits"',
+    );
+    vi.mocked(parseStructuredFieldsFromToolInput).mockReturnValue({
+      prose: 'narrative prose',
+      structured: {
+        ...structuredFixture,
+        // No INSUFFICIENT_DATA needed when real alerts are present.
+        expected_dealer_behavior:
+          'FLOW-STRUCTURE: AGREEMENT — 14:30 CT CALL 5900 rule="RepeatedHits". Passive bid expected.',
+      },
+      parseOk: true,
+    });
+
+    await runPeriscopeAutoPlaybook(baseInput);
+
+    const driftCalls = vi
+      .mocked(Sentry.captureMessage)
+      .mock.calls.filter((call) =>
+        String(call[0]).includes('NO_ALERTS sentinel present'),
+      );
+    expect(driftCalls).toHaveLength(0);
   });
 
   it('pre_trade mode skips parent + parent chain fetches', async () => {

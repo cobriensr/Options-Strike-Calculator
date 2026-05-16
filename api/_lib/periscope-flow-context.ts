@@ -54,6 +54,15 @@ const TICKER = 'SPXW' as const;
 // marker and the anti-fabrication instruction, so the model can
 // declare FLOW-STRUCTURE: INSUFFICIENT_DATA on solid ground.
 
+/**
+ * Literal sentinel emitted in the no-alerts block text. Shared as a
+ * constant so the prompt-side description (periscope-prompts.ts) and
+ * any runtime checks (periscope-chat-runner.ts) reference the same
+ * string — editing one without the other would silently re-open the
+ * hallucination path.
+ */
+export const NO_ALERTS_SENTINEL = 'NO_ALERTS_IN_WINDOW';
+
 const NO_ALERTS_FOOTER =
   'No SPXW informed-flow alerts in the lookback window. ' +
   'Do not cite specific timestamps, strikes, or alert rules. ' +
@@ -61,21 +70,21 @@ const NO_ALERTS_FOOTER =
 
 export const INTRADAY_NO_ALERTS_TEXT = [
   `Fresh SPXW flow alerts placed in the last ${INTRADAY_WINDOW.windowMinutes} min within ±${INTRADAY_WINDOW.spotProximityPts} pts of spot:`,
-  'NO_ALERTS_IN_WINDOW',
+  NO_ALERTS_SENTINEL,
   '',
   NO_ALERTS_FOOTER,
 ].join('\n');
 
 export const PRE_TRADE_NO_ALERTS_TEXT = [
   `Pre-open SPXW flow alerts placed in the last ${PRE_TRADE_WINDOW.windowMinutes} min within ±${PRE_TRADE_WINDOW.spotProximityPts} pts of spot:`,
-  'NO_ALERTS_IN_WINDOW',
+  NO_ALERTS_SENTINEL,
   '',
   NO_ALERTS_FOOTER,
 ].join('\n');
 
 export const DEBRIEF_NO_ALERTS_TEXT = [
   'SPXW flow distribution across the session (hourly CT buckets):',
-  'NO_ALERTS_IN_WINDOW',
+  NO_ALERTS_SENTINEL,
   '',
   NO_ALERTS_FOOTER,
 ].join('\n');

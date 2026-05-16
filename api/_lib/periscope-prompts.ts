@@ -17,6 +17,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { Sentry } from './sentry.js';
 import logger from './logger.js';
 import { parseTrailingJsonBlock } from './json-fence.js';
+import { NO_ALERTS_SENTINEL } from './periscope-flow-context.js';
 import type {
   ParentChainRow,
   PeriscopeBias,
@@ -511,10 +512,19 @@ export const STRUCTURED_TOOL: Anthropic.Messages.Tool = {
         },
         description: 'Structural level map. Floor / ceiling are the IC wings.',
       },
+      // TODO(phase-4-or-5): this field is overloaded — it carries BOTH the
+      // FLOW-STRUCTURE check and the dealer-behavior forecast. The SKILL.md
+      // contract describes expected_dealer_behavior as a single-sentence
+      // forecast only. Split into a dedicated `flow_structure` enum field
+      // (requires schema + DB migration + runner panel-payload mapping
+      // update) once Phase 4 confidence-rubric work lands. Tracked in
+      // docs/superpowers/specs/periscope-flow-hallucination-fix-2026-05-16.md.
       expected_dealer_behavior: {
         type: ['string', 'null'],
         description:
-          'REQUIRED prose field. MUST contain the explicit FLOW-STRUCTURE CHECK from your prose narrative verbatim. State whether informed UW flow (from the flow context block) AGREES or CONFLICTS with the structural map, name the strike(s) where the check applies, and whether the conflict (if any) makes the slot NO-TRADE. Multi-sentence required.',
+          'REQUIRED prose field carrying two things, in order: (1) FLOW-STRUCTURE check on a dedicated line, formatted EXACTLY as one of "FLOW-STRUCTURE: AGREEMENT — <verbatim cite>", "FLOW-STRUCTURE: DISAGREEMENT — <verbatim cite>", or "FLOW-STRUCTURE: INSUFFICIENT_DATA". (2) One-sentence dealer-behavior forecast (e.g. "passive bid below 7,250, passive offer above 7,275"). ' +
+          'CITATION RULES: <verbatim cite> MUST quote an alert from the supplied [Flow context] block as "HH:MM CT TYPE STRIKE rule=NAME". DO NOT cite an alert (timestamp, strike, rule, premium) that does not appear verbatim in the supplied [Flow context] block — fabricated citations are a verification failure. ' +
+          `LABEL RESOLUTION: if the [Flow context] block contains "${NO_ALERTS_SENTINEL}", the only valid label is INSUFFICIENT_DATA — emitting AGREEMENT or DISAGREEMENT in that case is a verification failure. Mixed flow (call/put within 2:1 by premium) → INSUFFICIENT_DATA. Side-dominant flow matching structural bias → AGREEMENT. Side-dominant flow opposing structural bias → DISAGREEMENT (state whether the conflict makes the slot NO-TRADE).`,
       },
       confidence: {
         type: ['string', 'null'],
