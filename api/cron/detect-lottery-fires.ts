@@ -27,6 +27,7 @@ import {
   type OptionTradeTick,
 } from '../_lib/lottery-finder.js';
 import { computeLotteryScore } from '../_lib/lottery-score-weights.js';
+import { applyEmpiricalBonuses } from '../_lib/lottery-score-bonuses.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -318,12 +319,16 @@ export default withCronInstrumentation(
         // is fully derivable for backfills via UPDATE; storing it
         // avoids a JOIN on every read and lets `?sort=score` use the
         // (date, score DESC) index from migration #126.
-        const score = computeLotteryScore({
+        const baseScore = computeLotteryScore({
           ticker: rec.underlyingSymbol,
           mode: rec.mode,
           entryPrice: rec.entryPrice,
           tod: rec.tod,
           optionType: rec.optionType,
+        });
+        const score = applyEmpiricalBonuses({
+          baseScore,
+          triggerVolToOiWindow: rec.triggerVolToOiWindow,
         });
         // Phase 4 direction gate (spec:
         // docs/superpowers/specs/silent-boom-direction-gate-and-trail-ui-2026-05-14.md).
