@@ -28,9 +28,12 @@ vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
 }));
 
+const mockSetTag = vi.fn();
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
-    withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
+    withIsolationScope: vi.fn((cb) =>
+      cb({ setTransactionName: vi.fn(), setTag: mockSetTag }),
+    ),
     captureException: vi.fn(),
   },
   metrics: { request: vi.fn(() => vi.fn()) },
@@ -144,6 +147,7 @@ describe('GET /api/greek-flow', () => {
   beforeEach(() => {
     vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     mockSql.mockReset();
+    mockSetTag.mockClear();
     vi.mocked(Sentry.captureException).mockClear();
     vi.mocked(logger.error).mockClear();
   });
@@ -308,5 +312,32 @@ describe('GET /api/greek-flow', () => {
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(500);
     expect(vi.mocked(Sentry.captureException)).toHaveBeenCalledTimes(1);
+  });
+
+  // ── Sentry tagging (lets us slice Sentry by query shape) ──
+
+  it('tags the Sentry transaction with scope and date', async () => {
+    mockSql.mockResolvedValueOnce(fakeSessionRows());
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { date: '2026-04-25', scope: 'all' },
+      }),
+      res,
+    );
+    expect(res._status).toBe(200);
+    expect(mockSetTag).toHaveBeenCalledWith('greek_flow.scope', 'all');
+    expect(mockSetTag).toHaveBeenCalledWith('greek_flow.date', '2026-04-25');
+  });
+
+  it('tags Sentry date as "latest" when no date param is provided', async () => {
+    mockSql.mockResolvedValueOnce([{ d: '2026-04-28' }]);
+    mockSql.mockResolvedValueOnce(fakeSessionRows());
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+    expect(res._status).toBe(200);
+    expect(mockSetTag).toHaveBeenCalledWith('greek_flow.scope', '0dte');
+    expect(mockSetTag).toHaveBeenCalledWith('greek_flow.date', 'latest');
   });
 });

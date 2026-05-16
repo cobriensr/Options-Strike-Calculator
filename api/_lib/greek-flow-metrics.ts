@@ -145,14 +145,16 @@ export function recentFlip(
 
 /**
  * Returns the largest abs(Δcumulative) over a `windowMinutes` trailing
- * window, but only considers windows whose ending timestamp lies inside
+ * TIME window, restricted to windows whose ending timestamp lies inside
  * the `[startCtHour:00, endCtHour:00)` power-hour band (default 14:00–15:00
  * CT, i.e. 19:00–20:00 UTC during CDT, 20:00–21:00 UTC during CST).
  *
- * `nowUtcOffsetMinutes` is the offset that converts UTC → CT. Pass `-300`
- * during CDT (UTC-5) or `-360` during CST (UTC-6). The endpoint computes
- * this from the row's own timestamp via `Date#getTimezoneOffset`-style
- * adjustment so DST is handled by the JS runtime.
+ * The window is anchored in real time, not array index. If UW drops a
+ * minute bar, the previous index-based implementation silently extended
+ * the lookback to 11+ real minutes; this walks backward by timestamp
+ * until the elapsed delta is ≥ `windowMinutes`, then uses that point
+ * as the window start. A series with gaps still yields an honest 10-min
+ * window — just measured over fewer points.
  *
  * If no qualifying window is present (e.g. session hasn't reached 14:00 CT),
  * returns `{ magnitude: 0, atTimestamp: null }`.
@@ -163,21 +165,39 @@ export function lateDayCliff(
   startCtHour = 14,
   endCtHour = 15,
 ): CliffResult {
-  if (series.length < windowMinutes + 1) {
-    return { magnitude: 0, atTimestamp: null };
-  }
+  if (series.length < 2) return { magnitude: 0, atTimestamp: null };
+
+  // Pre-parse timestamps once. Invalid entries get NaN and are skipped.
+  const epochs = series.map((p) => new Date(p.timestamp).getTime());
+  const windowMs = windowMinutes * 60_000;
 
   let bestMag = 0;
   let bestTs: string | null = null;
 
-  for (let i = windowMinutes; i < series.length; i++) {
+  for (let i = 1; i < series.length; i++) {
     const end = series[i]!;
-    const endDate = new Date(end.timestamp);
-    if (Number.isNaN(endDate.getTime())) continue;
+    const endMs = epochs[i]!;
+    if (Number.isNaN(endMs)) continue;
+
+    const endDate = new Date(endMs);
     const ctHour = ctHourFromUtc(endDate);
     if (ctHour < startCtHour || ctHour >= endCtHour) continue;
 
-    const start = series[i - windowMinutes]!;
+    // Walk backward until we've covered ≥ windowMs of real time. If the
+    // series doesn't extend back that far, skip this candidate — partial
+    // windows would understate the cliff magnitude.
+    let startIdx = -1;
+    for (let j = i - 1; j >= 0; j--) {
+      const jMs = epochs[j]!;
+      if (Number.isNaN(jMs)) continue;
+      if (endMs - jMs >= windowMs) {
+        startIdx = j;
+        break;
+      }
+    }
+    if (startIdx === -1) continue;
+
+    const start = series[startIdx]!;
     const delta = Math.abs(end.cumulative - start.cumulative);
     if (delta > bestMag) {
       bestMag = delta;

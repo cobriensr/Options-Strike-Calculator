@@ -93,6 +93,14 @@ describe('recentFlip', () => {
     expect(result.occurred).toBe(true);
     expect(result.currentSign).toBe(-1);
   });
+
+  it('reports currentSign=0 when the latest cumulative is exactly zero', () => {
+    const series = makeSeries([3, 2, 1, 0]);
+    const result = recentFlip(series, 30);
+    expect(result.currentSign).toBe(0);
+    // Flip detection requires non-zero signs on both sides — 1→0 is not a flip.
+    expect(result.occurred).toBe(false);
+  });
 });
 
 describe('lateDayCliff', () => {
@@ -146,6 +154,40 @@ describe('lateDayCliff', () => {
     const result = lateDayCliff(series, 10);
     expect(result.magnitude).toBeCloseTo(100, 6);
     expect(result.atTimestamp).not.toBeNull();
+  });
+
+  // Regression: the prior index-based implementation walked back N entries
+  // regardless of elapsed time. With a missing-minute gap, that became an
+  // 11+-real-minute "10-min" window and overstated the cliff. Time-based
+  // walk-back honors the wall-clock window, even with sparse series.
+  it('walks back by elapsed time, not array index, when minutes are missing', () => {
+    // 14:00 CT = 19:00Z (CDT). Build 11 minute marks but DROP minute 14:05
+    // — the array now has 10 entries spanning 11 real minutes, with a step
+    // landing at 14:10. An index-based 10-min window would compare 14:10
+    // → 13:59 (11 real minutes) and pull in pre-window movement.
+    const ts = (mins: number) =>
+      new Date(
+        new Date('2026-04-28T18:59:00Z').getTime() + mins * 60_000,
+      ).toISOString();
+    const series: FlowPoint[] = [
+      { timestamp: ts(0), cumulative: 50 }, // 13:59 — pre-window, value 50
+      { timestamp: ts(1), cumulative: 0 }, // 14:00 — value drops to 0
+      { timestamp: ts(2), cumulative: 0 }, // 14:01
+      { timestamp: ts(3), cumulative: 0 }, // 14:02
+      { timestamp: ts(4), cumulative: 0 }, // 14:03
+      { timestamp: ts(5), cumulative: 0 }, // 14:04
+      // 14:05 INTENTIONALLY MISSING (UW dropped a bar)
+      { timestamp: ts(7), cumulative: 0 }, // 14:06 (index 6, t+7)
+      { timestamp: ts(8), cumulative: 0 }, // 14:07
+      { timestamp: ts(9), cumulative: 0 }, // 14:08
+      { timestamp: ts(10), cumulative: 0 }, // 14:09
+      { timestamp: ts(11), cumulative: 100 }, // 14:10 — the actual cliff
+    ];
+    const result = lateDayCliff(series, 10);
+    // Walk back from 14:10 by ≥10 real minutes lands at 14:00 (cum=0),
+    // NOT at 13:59 (cum=50). Cliff magnitude is |100 - 0| = 100.
+    expect(result.magnitude).toBeCloseTo(100, 6);
+    expect(result.atTimestamp).toBe(ts(11));
   });
 });
 

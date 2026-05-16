@@ -51,7 +51,14 @@ export interface TimelinePoint {
 
 export interface TimelineSummary {
   points: TimelinePoint[];
+  /** Total verdict changes across the session (includes flips in/out of `no-trade`). */
   transitions: number;
+  /**
+   * Verdict changes between two non-`no-trade` kinds. Filters out the
+   * early-session "still gathering signal" churn so the displayed metric
+   * reflects how many real regime shifts the day actually produced.
+   */
+  decisiveTransitions: number;
   currentSince: string | null;
 }
 
@@ -140,14 +147,38 @@ function divergenceFromCum(spyCum: number, qqqCum: number): DivergenceResult {
   };
 }
 
+/**
+ * Round an ISO timestamp to the start of its UTC minute. Two minute-aligned
+ * UW bars from SPY and QQQ may differ by a few hundred ms in their `Date`
+ * representations — bucketing both sides ensures the join doesn't silently
+ * drop a minute on either ticker.
+ */
+function minuteBucket(iso: string): number {
+  const ms = new Date(iso).getTime();
+  if (Number.isNaN(ms)) return Number.NaN;
+  return Math.floor(ms / 60_000) * 60_000;
+}
+
 export function computeVerdictTimeline(
   spyRows: readonly GreekFlowRow[],
   qqqRows: readonly GreekFlowRow[],
 ): TimelineSummary {
-  const qqqByTs = new Map(qqqRows.map((r) => [r.timestamp, r]));
+  // Bucket both tickers to the same minute so sub-second timestamp drift
+  // between SPY and QQQ bars doesn't drop a minute from the timeline.
+  const qqqByMinute = new Map<number, GreekFlowRow>();
+  for (const r of qqqRows) {
+    const bucket = minuteBucket(r.timestamp);
+    if (Number.isNaN(bucket)) continue;
+    // First entry wins on duplicate buckets — UW emits one bar per minute,
+    // so duplicates are an upstream anomaly we don't want to mask.
+    if (!qqqByMinute.has(bucket)) qqqByMinute.set(bucket, r);
+  }
+
   const points: TimelinePoint[] = [];
   for (const spy of spyRows) {
-    const qqq = qqqByTs.get(spy.timestamp);
+    const bucket = minuteBucket(spy.timestamp);
+    if (Number.isNaN(bucket)) continue;
+    const qqq = qqqByMinute.get(bucket);
     if (qqq == null) continue;
     const v = computeVerdict(
       divergenceFromCum(spy.cum_otm_dir_delta_flow, qqq.cum_otm_dir_delta_flow),
@@ -157,6 +188,7 @@ export function computeVerdictTimeline(
   }
 
   let transitions = 0;
+  let decisiveTransitions = 0;
   let currentSince: string | null = points[0]?.timestamp ?? null;
   for (let i = 1; i < points.length; i++) {
     const cur = points[i];
@@ -164,10 +196,13 @@ export function computeVerdictTimeline(
     if (cur == null || prev == null) continue;
     if (cur.kind !== prev.kind) {
       transitions++;
+      if (cur.kind !== 'no-trade' && prev.kind !== 'no-trade') {
+        decisiveTransitions++;
+      }
       currentSince = cur.timestamp;
     }
   }
-  return { points, transitions, currentSince };
+  return { points, transitions, decisiveTransitions, currentSince };
 }
 
 export const KIND_LABEL: Record<VerdictKind, string> = {

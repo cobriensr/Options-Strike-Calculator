@@ -3,7 +3,7 @@
  * Greek Flow verdict. Pure logic + types live in `./verdict-logic`.
  */
 
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import type { DivergenceResult, GreekFlowRow } from '../../hooks/useGreekFlow';
 import {
   KIND_LABEL,
@@ -39,9 +39,18 @@ const KIND_BAR: Record<VerdictKind, string> = {
 interface VerdictTileProps {
   delta: DivergenceResult;
   vega: DivergenceResult;
+  /** ISO timestamp the response was assembled. Renders as "as of {time} CT". */
+  asOf?: string;
+  /** When false, render an explicit "(closed)" tag so the tile isn't read as live. */
+  isLive?: boolean;
 }
 
-function VerdictTileInner({ delta, vega }: VerdictTileProps) {
+function VerdictTileInner({
+  delta,
+  vega,
+  asOf,
+  isLive = true,
+}: VerdictTileProps) {
   const v = computeVerdict(delta, vega);
   return (
     <output
@@ -59,6 +68,15 @@ function VerdictTileInner({ delta, vega }: VerdictTileProps) {
         <span className="text-secondary font-mono text-[10px]">
           Δ: {v.delta} · V: {v.vega}
         </span>
+        {asOf ? (
+          <span
+            className="text-secondary font-mono text-[10px]"
+            data-testid="greek-flow-verdict-asof"
+          >
+            as of {fmtTime(asOf)} CT
+            {isLive ? '' : ' · closed'}
+          </span>
+        ) : null}
       </div>
       <p className="text-primary mt-1 font-sans text-xs">{v.action}</p>
     </output>
@@ -72,12 +90,52 @@ interface VerdictTimelineProps {
   qqqRows: readonly GreekFlowRow[];
 }
 
+interface TimelineRun {
+  kind: VerdictKind;
+  startTs: string;
+  endTs: string;
+  pointCount: number;
+}
+
+/**
+ * Collapse consecutive same-kind verdict points into runs. Width per run
+ * is proportional to its point count, so the bar honestly shows what
+ * fraction of the session each regime occupied — an early-session
+ * `no-trade` blip becomes a thin sliver, not a full segment.
+ */
+function collapseRuns(
+  points: readonly { timestamp: string; kind: VerdictKind }[],
+): TimelineRun[] {
+  const runs: TimelineRun[] = [];
+  for (const p of points) {
+    const last = runs.at(-1);
+    if (last && last.kind === p.kind) {
+      last.endTs = p.timestamp;
+      last.pointCount += 1;
+    } else {
+      runs.push({
+        kind: p.kind,
+        startTs: p.timestamp,
+        endTs: p.timestamp,
+        pointCount: 1,
+      });
+    }
+  }
+  return runs;
+}
+
 function VerdictTimelineInner({ spyRows, qqqRows }: VerdictTimelineProps) {
-  const summary = computeVerdictTimeline(spyRows, qqqRows);
+  const summary = useMemo(
+    () => computeVerdictTimeline(spyRows, qqqRows),
+    [spyRows, qqqRows],
+  );
+  const runs = useMemo(() => collapseRuns(summary.points), [summary.points]);
+
   if (summary.points.length < 2) return null;
 
   const last = summary.points.at(-1);
   const currentKind = last?.kind ?? 'no-trade';
+  const totalPoints = summary.points.length;
 
   return (
     <div className="mb-3" data-testid="greek-flow-timeline">
@@ -86,12 +144,14 @@ function VerdictTimelineInner({ spyRows, qqqRows }: VerdictTimelineProps) {
         aria-label="Verdict timeline through the session"
         className="border-edge bg-surface flex h-3 overflow-hidden rounded border"
       >
-        {summary.points.map((p) => (
+        {runs.map((run) => (
           <span
-            key={p.timestamp}
-            title={`${fmtTime(p.timestamp)} — ${KIND_LABEL[p.kind]}`}
-            className={`h-full ${KIND_BAR[p.kind]}`}
-            style={{ width: `${100 / summary.points.length}%` }}
+            key={run.startTs}
+            data-testid="greek-flow-timeline-run"
+            data-verdict-kind={run.kind}
+            title={`${fmtTime(run.startTs)}–${fmtTime(run.endTs)} — ${KIND_LABEL[run.kind]} (${run.pointCount} min)`}
+            className={`h-full ${KIND_BAR[run.kind]}`}
+            style={{ width: `${(run.pointCount / totalPoints) * 100}%` }}
           />
         ))}
       </div>
@@ -102,9 +162,11 @@ function VerdictTimelineInner({ spyRows, qqqRows }: VerdictTimelineProps) {
             ? ` since ${fmtTime(summary.currentSince)}`
             : ''}
         </span>
-        <span>
-          Transitions:{' '}
-          <span className="text-primary">{summary.transitions}</span>
+        <span
+          title={`Decisive regime changes between non-no-trade kinds. Total transitions including no-trade churn: ${summary.transitions}.`}
+        >
+          Regime changes:{' '}
+          <span className="text-primary">{summary.decisiveTransitions}</span>
         </span>
       </div>
     </div>

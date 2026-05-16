@@ -306,4 +306,45 @@ describe('GreekFlowPanel', () => {
       /context only/i,
     );
   });
+
+  // ── as-of timestamp + closed/live framing ─────────────────
+
+  it('renders the as-of timestamp on the verdict tile', () => {
+    mockUseGreekFlow.mockReturnValue(happyPathReturn());
+    render(<GreekFlowPanel marketOpen={true} />);
+    const stamp = screen.getByTestId('greek-flow-verdict-asof');
+    // Format: "as of <time> CT" — exact time depends on TZ formatting,
+    // so just check the prefix and that "CT" is present.
+    expect(stamp.textContent).toMatch(/^as of /);
+    expect(stamp.textContent).toMatch(/CT/);
+  });
+
+  it('marks the verdict as closed when the market is not open', () => {
+    mockUseGreekFlow.mockReturnValue(happyPathReturn());
+    render(<GreekFlowPanel marketOpen={false} />);
+    const stamp = screen.getByTestId('greek-flow-verdict-asof');
+    expect(stamp.textContent).toMatch(/closed/);
+  });
+
+  it('does NOT mark the verdict as closed when the market is open', () => {
+    mockUseGreekFlow.mockReturnValue(happyPathReturn());
+    render(<GreekFlowPanel marketOpen={true} />);
+    const stamp = screen.getByTestId('greek-flow-verdict-asof');
+    expect(stamp.textContent).not.toMatch(/closed/);
+  });
+
+  // ── Time-proportional timeline runs ──────────────────────
+
+  it('collapses consecutive same-kind verdict points into a single proportional run', () => {
+    // happyPathReturn defaults to all rows bear/bear → 5 points all the
+    // same kind → a single run spanning 100% width.
+    mockUseGreekFlow.mockReturnValue(
+      happyPathReturn({ spyDelta: -1, qqqDelta: -1, spyVega: -1, qqqVega: -1 }),
+    );
+    render(<GreekFlowPanel marketOpen={true} />);
+    const runs = screen.getAllByTestId('greek-flow-timeline-run');
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toHaveAttribute('data-verdict-kind', 'directional-bear');
+    expect(runs[0]?.getAttribute('style')).toContain('width: 100%');
+  });
 });

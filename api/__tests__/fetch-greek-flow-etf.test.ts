@@ -559,15 +559,19 @@ describe('fetch-greek-flow-etf handler', () => {
     // ON CONFLICT clause must reference the new (ticker, timestamp, expiry) key.
     expect(sqlText).toContain('ON CONFLICT (ticker, timestamp, expiry)');
 
-    expect(values).toContain('-100000'); // dir_vega_flow
-    expect(values).toContain('-75000'); // otm_dir_vega_flow
-    expect(values).toContain('200000'); // total_vega_flow
-    expect(values).toContain('150000'); // otm_total_vega_flow
-    expect(values).toContain('-3000000'); // dir_delta_flow
-    expect(values).toContain('-1500000'); // otm_dir_delta_flow
-    expect(values).toContain('5000000'); // total_delta_flow
-    expect(values).toContain('3000000'); // otm_total_delta_flow
-    // All-DTE rows pass expiry=null.
+    // Batched UPSERT passes per-column arrays via UNNEST. Flatten the
+    // mix of scalars + arrays so we can assert on individual values
+    // regardless of which slot they're in.
+    const flatValues = values.flatMap((v) => (Array.isArray(v) ? v : [v]));
+    expect(flatValues).toContain('-100000'); // dir_vega_flow
+    expect(flatValues).toContain('-75000'); // otm_dir_vega_flow
+    expect(flatValues).toContain('200000'); // total_vega_flow
+    expect(flatValues).toContain('150000'); // otm_total_vega_flow
+    expect(flatValues).toContain('-3000000'); // dir_delta_flow
+    expect(flatValues).toContain('-1500000'); // otm_dir_delta_flow
+    expect(flatValues).toContain('5000000'); // total_delta_flow
+    expect(flatValues).toContain('3000000'); // otm_total_delta_flow
+    // All-DTE rows pass expiry=null as the scalar parameter (not in any array).
     expect(values).toContain(null);
   });
 
@@ -593,11 +597,13 @@ describe('fetch-greek-flow-etf handler', () => {
     expect(values).not.toContain(null);
   });
 
-  // ── No 5-min downsampling ─────────────────────────────────
+  // ── Per-minute granularity preserved through batching ─────
 
-  it('stores each minute bar as a separate INSERT (no 5-min downsampling)', async () => {
+  it('preserves per-minute granularity in a single batched INSERT (no 5-min downsampling)', async () => {
     const tick1 = makeGreekFlowTick({ timestamp: '2026-04-27T14:31:00Z' });
     const tick2 = makeGreekFlowTick({ timestamp: '2026-04-27T14:33:00Z' });
+    // Batched UPSERT returns one RETURNING row per input tick.
+    mockSql.mockResolvedValueOnce([{ was_insert: true }, { was_insert: true }]);
     setupMocks({ spyAll: [tick1, tick2], qqqAll: [] });
 
     const req = AUTHORIZED_REQ();
@@ -610,6 +616,14 @@ describe('fetch-greek-flow-etf handler', () => {
         SPY: { all: { ticks: 2, inserted: 2, updated: 0, failed: 0 } },
       },
     });
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    // One batched UPSERT for SPY (both ticks), zero for QQQ (empty list).
+    expect(mockSql).toHaveBeenCalledTimes(1);
+    // The single call must carry both timestamps in its payload arrays.
+    const [, ...values] = mockSql.mock.calls[0]!;
+    const arrayParams = values.filter((v): v is unknown[] => Array.isArray(v));
+    const tsArray = arrayParams.find(
+      (a) => a.length === 2 && typeof a[0] === 'string' && a[0].includes('T'),
+    );
+    expect(tsArray).toEqual(['2026-04-27T14:31:00Z', '2026-04-27T14:33:00Z']);
   });
 });

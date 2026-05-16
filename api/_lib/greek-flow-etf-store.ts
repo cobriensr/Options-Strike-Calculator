@@ -17,6 +17,12 @@
  * (`UNIQUE NULLS NOT DISTINCT (ticker, timestamp, expiry)`). Callers
  * pass `expiry = null` for the all-DTE feed and `expiry = '<date>'` for
  * the per-expiry feed.
+ *
+ * Persistence is a single multi-row INSERT…SELECT FROM UNNEST(...)…
+ * RETURNING (xmax = 0) AS was_insert. Per-row INSERT in a loop was
+ * 50–100× slower at this row count (up to ~390 minute-bars per ticker
+ * per scope per backfill run) — the cron now does one round-trip per
+ * ticker per scope regardless of tick count.
  */
 
 import { getDb } from './db.js';
@@ -61,49 +67,76 @@ export async function upsertGreekFlowTicks(
   if (ticks.length === 0) return { inserted: 0, updated: 0, failed: 0 };
 
   const sql = getDb();
-  let inserted = 0;
-  let updated = 0;
-  let failed = 0;
 
-  for (const tick of ticks) {
-    try {
-      const result = (await sql`
-        INSERT INTO vega_flow_etf (
-          ticker, date, timestamp, expiry,
-          dir_vega_flow, otm_dir_vega_flow, total_vega_flow, otm_total_vega_flow,
-          dir_delta_flow, otm_dir_delta_flow, total_delta_flow, otm_total_delta_flow,
-          transactions, volume
-        )
-        VALUES (
-          ${ticker}, ${date}, ${tick.timestamp}, ${expiry},
-          ${tick.dir_vega_flow}, ${tick.otm_dir_vega_flow}, ${tick.total_vega_flow}, ${tick.otm_total_vega_flow},
-          ${tick.dir_delta_flow}, ${tick.otm_dir_delta_flow}, ${tick.total_delta_flow}, ${tick.otm_total_delta_flow},
-          ${tick.transactions}, ${tick.volume}
-        )
-        ON CONFLICT (ticker, timestamp, expiry) DO UPDATE SET
-          dir_vega_flow        = EXCLUDED.dir_vega_flow,
-          otm_dir_vega_flow    = EXCLUDED.otm_dir_vega_flow,
-          total_vega_flow      = EXCLUDED.total_vega_flow,
-          otm_total_vega_flow  = EXCLUDED.otm_total_vega_flow,
-          dir_delta_flow       = EXCLUDED.dir_delta_flow,
-          otm_dir_delta_flow   = EXCLUDED.otm_dir_delta_flow,
-          total_delta_flow     = EXCLUDED.total_delta_flow,
-          otm_total_delta_flow = EXCLUDED.otm_total_delta_flow,
-          transactions         = EXCLUDED.transactions,
-          volume               = EXCLUDED.volume
-        RETURNING (xmax = 0) AS was_insert
-      `) as { was_insert: boolean }[];
-      if (result[0]?.was_insert) inserted++;
+  const timestamps = ticks.map((t) => t.timestamp);
+  const dirVega = ticks.map((t) => t.dir_vega_flow);
+  const otmDirVega = ticks.map((t) => t.otm_dir_vega_flow);
+  const totalVega = ticks.map((t) => t.total_vega_flow);
+  const otmTotalVega = ticks.map((t) => t.otm_total_vega_flow);
+  const dirDelta = ticks.map((t) => t.dir_delta_flow);
+  const otmDirDelta = ticks.map((t) => t.otm_dir_delta_flow);
+  const totalDelta = ticks.map((t) => t.total_delta_flow);
+  const otmTotalDelta = ticks.map((t) => t.otm_total_delta_flow);
+  const transactions = ticks.map((t) => t.transactions);
+  const volume = ticks.map((t) => t.volume);
+
+  try {
+    const rows = (await sql`
+      INSERT INTO vega_flow_etf (
+        ticker, date, timestamp, expiry,
+        dir_vega_flow, otm_dir_vega_flow, total_vega_flow, otm_total_vega_flow,
+        dir_delta_flow, otm_dir_delta_flow, total_delta_flow, otm_total_delta_flow,
+        transactions, volume
+      )
+      SELECT ${ticker}, ${date}::date, t.timestamp::timestamptz, ${expiry}::date,
+             t.dir_vega_flow, t.otm_dir_vega_flow, t.total_vega_flow, t.otm_total_vega_flow,
+             t.dir_delta_flow, t.otm_dir_delta_flow, t.total_delta_flow, t.otm_total_delta_flow,
+             t.transactions, t.volume
+      FROM unnest(
+        ${timestamps}::text[],
+        ${dirVega}::numeric[],
+        ${otmDirVega}::numeric[],
+        ${totalVega}::numeric[],
+        ${otmTotalVega}::numeric[],
+        ${dirDelta}::numeric[],
+        ${otmDirDelta}::numeric[],
+        ${totalDelta}::numeric[],
+        ${otmTotalDelta}::numeric[],
+        ${transactions}::int[],
+        ${volume}::int[]
+      ) AS t(
+        timestamp,
+        dir_vega_flow, otm_dir_vega_flow, total_vega_flow, otm_total_vega_flow,
+        dir_delta_flow, otm_dir_delta_flow, total_delta_flow, otm_total_delta_flow,
+        transactions, volume
+      )
+      ON CONFLICT (ticker, timestamp, expiry) DO UPDATE SET
+        dir_vega_flow        = EXCLUDED.dir_vega_flow,
+        otm_dir_vega_flow    = EXCLUDED.otm_dir_vega_flow,
+        total_vega_flow      = EXCLUDED.total_vega_flow,
+        otm_total_vega_flow  = EXCLUDED.otm_total_vega_flow,
+        dir_delta_flow       = EXCLUDED.dir_delta_flow,
+        otm_dir_delta_flow   = EXCLUDED.otm_dir_delta_flow,
+        total_delta_flow     = EXCLUDED.total_delta_flow,
+        otm_total_delta_flow = EXCLUDED.otm_total_delta_flow,
+        transactions         = EXCLUDED.transactions,
+        volume               = EXCLUDED.volume
+      RETURNING (xmax = 0) AS was_insert
+    `) as { was_insert: boolean }[];
+
+    let inserted = 0;
+    let updated = 0;
+    for (const r of rows) {
+      if (r.was_insert) inserted++;
       else updated++;
-    } catch (err) {
-      logger.warn(
-        { err, ticker, expiry, ts: tick.timestamp },
-        'greek-flow-etf upsert failed',
-      );
-      metrics.increment('greek_flow_etf.store_error');
-      failed++;
     }
+    return { inserted, updated, failed: 0 };
+  } catch (err) {
+    logger.warn(
+      { err, ticker, expiry, count: ticks.length },
+      'greek-flow-etf batched upsert failed',
+    );
+    metrics.increment('greek_flow_etf.store_error');
+    return { inserted: 0, updated: 0, failed: ticks.length };
   }
-
-  return { inserted, updated, failed };
 }

@@ -195,6 +195,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const requestedScope: GreekFlowScope = parsed.data.scope;
     const asOf = new Date().toISOString();
 
+    // Tag every transaction with scope and date so latency p95 / error rate
+    // can be sliced by query shape in Sentry — surfaces the per-row-INSERT
+    // cost of the cron's batched UPSERT migration if it ever regresses.
+    scope.setTag('greek_flow.scope', requestedScope);
+    scope.setTag('greek_flow.date', requestedDate ?? 'latest');
+
     try {
       const date = await resolveLatestGreekFlowDate(requestedDate);
       if (!date) {

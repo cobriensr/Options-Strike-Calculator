@@ -121,6 +121,7 @@ describe('computeVerdictTimeline', () => {
       'vol-expansion',
     ]);
     expect(t.transitions).toBe(2);
+    expect(t.decisiveTransitions).toBe(2);
     expect(t.currentSince).toBe(spy[3]?.timestamp);
   });
 
@@ -129,5 +130,51 @@ describe('computeVerdictTimeline', () => {
     const qqq = [row('QQQ', 0, -1, -1)]; // missing minute 1
     const t = computeVerdictTimeline(spy, qqq);
     expect(t.points).toHaveLength(1);
+  });
+
+  // Regression: SPY/QQQ minute bars can drift by a few hundred ms even
+  // though they represent the same wall-clock minute. Bucketing by minute
+  // means we don't silently drop a minute on either ticker.
+  it('joins SPY and QQQ within the same minute even when sub-second timestamps differ', () => {
+    const spy = [row('SPY', 0, 1, 1), row('SPY', 1, 2, 2)];
+    const qqq = [row('QQQ', 0, 1, 1), row('QQQ', 1, 2, 2)];
+    // Drift QQQ by 500 ms — same minute bucket, different ISO string.
+    const drifted = qqq.map((r) => ({
+      ...r,
+      timestamp: new Date(new Date(r.timestamp).getTime() + 500).toISOString(),
+    }));
+    const t = computeVerdictTimeline(spy, drifted);
+    expect(t.points).toHaveLength(2);
+    expect(t.points.map((p) => p.kind)).toEqual([
+      'directional-bull',
+      'directional-bull',
+    ]);
+  });
+
+  // Decisive transitions ignore flips in/out of `no-trade` so the metric
+  // doesn't overstate "choppy day" when the morning is just signal-building.
+  it('decisiveTransitions excludes transitions in/out of no-trade', () => {
+    const spy = [
+      row('SPY', 0, 1, 0), // mixed (vega 0) → no-trade via vega-mixed branch
+      row('SPY', 1, 1, 1), // bull
+      row('SPY', 2, 1, 1), // bull
+      row('SPY', 3, -1, -1), // bear  ← decisive change
+      row('SPY', 4, 0, 0), // no-trade ← non-decisive
+      row('SPY', 5, 1, 1), // bull ← non-decisive (out of no-trade)
+    ];
+    const qqq = [
+      row('QQQ', 0, -1, 0), // mixed delta + zero vega → no-trade
+      row('QQQ', 1, 1, 1),
+      row('QQQ', 2, 1, 1),
+      row('QQQ', 3, -1, -1),
+      row('QQQ', 4, 0, 0),
+      row('QQQ', 5, 1, 1),
+    ];
+    const t = computeVerdictTimeline(spy, qqq);
+    // Sequence: no-trade → bull → bull → bear → no-trade → bull
+    // total transitions: no-trade→bull, bull→bear, bear→no-trade, no-trade→bull = 4
+    // decisive (neither side no-trade): bull→bear = 1
+    expect(t.transitions).toBe(4);
+    expect(t.decisiveTransitions).toBe(1);
   });
 });
