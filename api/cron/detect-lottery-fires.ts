@@ -37,6 +37,13 @@ import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
+import {
+  loadTakeitDetectContext,
+  scoreLottery,
+  type RecentCofireRow,
+  type RecentFireRow,
+} from '../_lib/takeit-detect.js';
+import type { LotteryAlertRow } from '../_lib/takeit-features.js';
 
 // 7-minute scan window — 5-min v4 window + 2-min slack so a slow cron
 // tick can't drop a trigger that landed at the start of its window.
@@ -266,6 +273,45 @@ export default withCronInstrumentation(
       }
     }
 
+    // Pre-fetch Take-It bundle + sequential context (3 queries, once per
+    // cron tick). On any failure the helper returns null and we proceed
+    // without takeit_prob — the heuristic INSERT still lands.
+    const takeitCtx = await loadTakeitDetectContext('lottery', {
+      fetchRecentSameType: async (lookbackMin) => {
+        const rows = (await db`
+          SELECT trigger_time_ct AS fire_time, underlying_symbol, option_type
+          FROM lottery_finder_fires
+          WHERE trigger_time_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
+        `) as Array<{ fire_time: Date; underlying_symbol: string; option_type: 'C' | 'P' }>;
+        return rows as RecentFireRow[];
+      },
+      fetchRecentOtherTypeByChain: async (lookbackMin) => {
+        const rows = (await db`
+          SELECT option_chain_id, bucket_ct AS fire_time
+          FROM silent_boom_alerts
+          WHERE bucket_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
+        `) as Array<{ option_chain_id: string; fire_time: Date }>;
+        return rows as RecentCofireRow[];
+      },
+      fetchPriorSessionWinRateByTicker: async () => {
+        // Mean of daily win-rates (PIT-correct: only strictly-earlier dates)
+        // per ticker. ~50 rows; cheap aggregate against an indexed table.
+        const rows = (await db`
+          SELECT underlying_symbol, AVG(daily_rate)::float AS win_rate
+          FROM (
+            SELECT underlying_symbol, date,
+                   AVG((peak_ceiling_pct >= 20)::int::float) AS daily_rate
+            FROM lottery_finder_fires
+            WHERE peak_ceiling_pct IS NOT NULL
+              AND date < ${ctx.today}::date
+            GROUP BY underlying_symbol, date
+          ) per_day
+          GROUP BY underlying_symbol
+        `) as Array<{ underlying_symbol: string; win_rate: number | null }>;
+        return rows;
+      },
+    });
+
     for (const g of groups.values()) {
       if (g.ticks.length < PER_CHAIN_MIN_PRINTS) {
         skippedShort += 1;
@@ -389,6 +435,61 @@ export default withCronInstrumentation(
           }
           return false;
         })();
+        // Take-It probability (Phase 3c). Builds a feature vector from the
+        // same data persisted on the row and walks the trained XGBoost tree
+        // dump fetched from Vercel Blob. takeitCtx is null when the bundle
+        // is unreachable; both prob and version then come back null and we
+        // INSERT with the heuristic score alone.
+        const takeitRow: LotteryAlertRow = {
+          fire_time: rec.triggerTimeCt,
+          date: new Date(`${rec.date}T00:00:00Z`),
+          option_chain_id: rec.optionChainId,
+          underlying_symbol: rec.underlyingSymbol,
+          option_type: rec.optionType,
+          strike: rec.strike,
+          dte: rec.dte,
+          trigger_vol_to_oi_window: rec.triggerVolToOiWindow,
+          trigger_vol_to_oi_cum: rec.triggerVolToOiCum,
+          trigger_iv: rec.triggerIv,
+          trigger_delta: rec.triggerDelta,
+          trigger_ask_pct: rec.triggerAskPct,
+          trigger_window_size: rec.triggerWindowSize,
+          trigger_window_prints: rec.triggerWindowPrints,
+          entry_price: rec.entryPrice,
+          open_interest: rec.openInterest,
+          spot_at_first: rec.spotAtFirst,
+          alert_seq: rec.alertSeq,
+          minutes_since_prev_fire: rec.minutesSincePrevFire,
+          flow_quad: rec.flowQuad,
+          tod: rec.tod,
+          mode: rec.mode,
+          reload_tagged: rec.reloadTagged,
+          cheap_call_pm_tagged: rec.cheapCallPmTagged,
+          burst_ratio_vs_prev: rec.burstRatioVsPrev,
+          entry_drop_pct_vs_prev: rec.entryDropPctVsPrev,
+          mkt_tide_ncp: macro.mkt_tide_ncp,
+          mkt_tide_npp: macro.mkt_tide_npp,
+          mkt_tide_diff: macro.mkt_tide_diff,
+          mkt_tide_otm_diff: macro.mkt_tide_otm_diff,
+          spx_flow_diff: macro.spx_flow_diff,
+          spy_etf_diff: macro.spy_etf_diff,
+          qqq_etf_diff: macro.qqq_etf_diff,
+          zero_dte_diff: macro.zero_dte_diff,
+          spx_spot_gamma_oi: macro.spx_spot_gamma_oi,
+          spx_spot_gamma_vol: macro.spx_spot_gamma_vol,
+          spx_spot_charm_oi: macro.spx_spot_charm_oi,
+          spx_spot_vanna_oi: macro.spx_spot_vanna_oi,
+          gex_strike_call_minus_put: macro.gex_strike_call_minus_put,
+          gex_strike_call_ask_minus_bid: macro.gex_strike_call_ask_minus_bid,
+          gex_strike_put_ask_minus_bid: macro.gex_strike_put_ask_minus_bid,
+          score,
+          direction_gated: directionGated,
+        };
+        const { prob: takeitProb, version: takeitVersion } = scoreLottery(
+          takeitCtx,
+          takeitRow,
+        );
+
         const result = (await db`
           INSERT INTO lottery_finder_fires (
             date, trigger_time_ct, entry_time_ct, option_chain_id,
@@ -406,7 +507,8 @@ export default withCronInstrumentation(
             spx_spot_gamma_oi, spx_spot_gamma_vol, spx_spot_charm_oi, spx_spot_vanna_oi,
             gex_strike_call_minus_put, gex_strike_call_ask_minus_bid,
             gex_strike_put_ask_minus_bid, gex_strike_actual_strike,
-            score, direction_gated, range_pos_at_trigger
+            score, direction_gated, range_pos_at_trigger,
+            takeit_prob, takeit_model_version
           ) VALUES (
             ${rec.date}::date, ${rec.triggerTimeCt.toISOString()}, ${rec.entryTimeCt.toISOString()},
             ${rec.optionChainId}, ${rec.underlyingSymbol}, ${rec.optionType},
@@ -424,7 +526,8 @@ export default withCronInstrumentation(
             ${macro.spx_spot_gamma_oi}, ${macro.spx_spot_gamma_vol}, ${macro.spx_spot_charm_oi}, ${macro.spx_spot_vanna_oi},
             ${macro.gex_strike_call_minus_put}, ${macro.gex_strike_call_ask_minus_bid},
             ${macro.gex_strike_put_ask_minus_bid}, ${macro.gex_strike_actual_strike},
-            ${score}, ${directionGated}, ${rangePosAtTrigger}
+            ${score}, ${directionGated}, ${rangePosAtTrigger},
+            ${takeitProb}, ${takeitVersion}
           )
           ON CONFLICT (option_chain_id, trigger_time_ct) DO NOTHING
           RETURNING id

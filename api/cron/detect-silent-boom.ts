@@ -33,6 +33,13 @@ import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
+import {
+  loadTakeitDetectContext,
+  scoreSilentBoom,
+  type RecentCofireRow,
+  type RecentFireRow,
+} from '../_lib/takeit-detect.js';
+import type { SilentBoomAlertRow } from '../_lib/takeit-features.js';
 
 // 35-min scan window — needs at least baselineBuckets+1 buckets of
 // history (4+1 = 5 buckets = 25 min) plus 10 min slack for cron jitter
@@ -255,6 +262,43 @@ export default withCronInstrumentation(
       }
     }
 
+    // Pre-fetch Take-It bundle + sequential context (3 queries, once per
+    // cron tick). On any failure proceed without takeit_prob — heuristic
+    // INSERT still lands.
+    const takeitCtx = await loadTakeitDetectContext('silentboom', {
+      fetchRecentSameType: async (lookbackMin) => {
+        const rows = (await db`
+          SELECT bucket_ct AS fire_time, underlying_symbol, option_type
+          FROM silent_boom_alerts
+          WHERE bucket_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
+        `) as Array<{ fire_time: Date; underlying_symbol: string; option_type: 'C' | 'P' }>;
+        return rows as RecentFireRow[];
+      },
+      fetchRecentOtherTypeByChain: async (lookbackMin) => {
+        const rows = (await db`
+          SELECT option_chain_id, trigger_time_ct AS fire_time
+          FROM lottery_finder_fires
+          WHERE trigger_time_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
+        `) as Array<{ option_chain_id: string; fire_time: Date }>;
+        return rows as RecentCofireRow[];
+      },
+      fetchPriorSessionWinRateByTicker: async () => {
+        const rows = (await db`
+          SELECT underlying_symbol, AVG(daily_rate)::float AS win_rate
+          FROM (
+            SELECT underlying_symbol, date,
+                   AVG((peak_ceiling_pct >= 20)::int::float) AS daily_rate
+            FROM silent_boom_alerts
+            WHERE peak_ceiling_pct IS NOT NULL
+              AND date < ${ctx.today}::date
+            GROUP BY underlying_symbol, date
+          ) per_day
+          GROUP BY underlying_symbol
+        `) as Array<{ underlying_symbol: string; win_rate: number | null }>;
+        return rows;
+      },
+    });
+
     // Pull macro snapshots across the scan window once. Each fire's
     // mkt_tide_diff / zero_dte_diff / spx_spot_gamma_oi is the latest
     // tick at or before the bucket time within 30 min — same window
@@ -417,6 +461,37 @@ export default withCronInstrumentation(
         })();
         const effectiveTier = directionGated ? 'tier3' : tier;
 
+        // Take-It probability (Phase 3c). Mirrors the lottery cron pattern.
+        const takeitRow: SilentBoomAlertRow = {
+          fire_time: f.bucketTs,
+          date: new Date(`${ctx.today}T00:00:00Z`),
+          option_chain_id: g.optionChain,
+          underlying_symbol: g.ticker,
+          option_type: g.optionType,
+          strike: g.strike,
+          dte,
+          spike_volume: f.spikeVolume,
+          baseline_volume: f.baselineVolume,
+          spike_ratio: f.spikeRatio,
+          ask_pct: f.askPct,
+          vol_oi: f.volOi,
+          entry_price: f.entryPrice,
+          open_interest: f.openInterest,
+          mkt_tide_diff: mktTideDiff,
+          mkt_tide_otm_diff: mktTideOtmDiff,
+          zero_dte_diff: zeroDteDiff,
+          spx_spot_gamma_oi: spxSpotGammaOi,
+          multi_leg_share: f.multiLegShare,
+          underlying_price_at_spike: f.underlyingPriceAtSpike,
+          score,
+          score_tier: effectiveTier,
+          direction_gated: directionGated,
+        };
+        const { prob: takeitProb, version: takeitVersion } = scoreSilentBoom(
+          takeitCtx,
+          takeitRow,
+        );
+
         const result = (await db`
           INSERT INTO silent_boom_alerts (
             date, bucket_ct, option_chain_id, underlying_symbol,
@@ -425,7 +500,8 @@ export default withCronInstrumentation(
             ask_pct, vol_oi, entry_price, open_interest,
             score, score_tier, direction_gated,
             mkt_tide_diff, mkt_tide_otm_diff, zero_dte_diff, spx_spot_gamma_oi,
-            multi_leg_share, underlying_price_at_spike
+            multi_leg_share, underlying_price_at_spike,
+            takeit_prob, takeit_model_version
           ) VALUES (
             ${ctx.today}::date, ${f.bucketTs.toISOString()},
             ${g.optionChain}, ${g.ticker},
@@ -434,7 +510,8 @@ export default withCronInstrumentation(
             ${f.askPct}, ${f.volOi}, ${f.entryPrice}, ${f.openInterest},
             ${score}, ${effectiveTier}, ${directionGated},
             ${mktTideDiff}, ${mktTideOtmDiff}, ${zeroDteDiff}, ${spxSpotGammaOi},
-            ${f.multiLegShare}, ${f.underlyingPriceAtSpike}
+            ${f.multiLegShare}, ${f.underlyingPriceAtSpike},
+            ${takeitProb}, ${takeitVersion}
           )
           ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING
           RETURNING id

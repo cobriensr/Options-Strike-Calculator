@@ -25,6 +25,16 @@ const { mockCronGuard } = vi.hoisted(() => ({
   mockCronGuard: vi.fn(),
 }));
 
+// Take-It scoring is fail-open. Mock loadTakeitDetectContext to return
+// null so no Blob fetch happens; scoreSilentBoom returns nulls; INSERT
+// gets null takeit_prob + takeit_model_version at the tail. Use plain
+// functions inside the factory — chained vi.fn().mockReturnValue can
+// lose the return value through vi.mock factory resolution.
+vi.mock('../_lib/takeit-detect.js', () => ({
+  loadTakeitDetectContext: () => Promise.resolve(null),
+  scoreSilentBoom: () => ({ prob: null, version: null }),
+}));
+
 vi.mock('../_lib/api-helpers.js', () => ({
   cronGuard: mockCronGuard,
 }));
@@ -336,13 +346,21 @@ describe('detect-silent-boom handler', () => {
     // INSERT is the last call. Bound order ends with mkt_tide_diff,
     // mkt_tide_otm_diff, zero_dte_diff, spx_spot_gamma_oi,
     // multi_leg_share, underlying_price_at_spike (last; #152).
+    // takeit_prob + takeit_model_version appended (Phase 3c) — indices
+    // shifted by 2. Tail layout is now (...mkt_tide_diff, mkt_tide_otm_diff,
+    // zero_dte_diff, spx_spot_gamma_oi, multi_leg_share,
+    // underlying_price_at_spike, takeit_prob, takeit_model_version).
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    const underlyingAtSpike = insertCall.at(-1);
-    const multiLegShare = insertCall.at(-2);
-    const spxGamma = insertCall.at(-3);
-    const zeroDteDiff = insertCall.at(-4);
-    const tideOtmDiff = insertCall.at(-5);
-    const tideDiff = insertCall.at(-6);
+    const takeitVersion = insertCall.at(-1);
+    const takeitProb = insertCall.at(-2);
+    const underlyingAtSpike = insertCall.at(-3);
+    const multiLegShare = insertCall.at(-4);
+    const spxGamma = insertCall.at(-5);
+    const zeroDteDiff = insertCall.at(-6);
+    const tideOtmDiff = insertCall.at(-7);
+    const tideDiff = insertCall.at(-8);
+    expect(takeitProb).toBeNull(); // mocked context returns null
+    expect(takeitVersion).toBeNull();
     expect(tideDiff).toBe(6000);
     expect(tideOtmDiff).toBe(3000);
     expect(zeroDteDiff).toBe(300);
@@ -386,12 +404,13 @@ describe('detect-silent-boom handler', () => {
     // leg stream → multi_leg_share = 0; all four macro fields (tide,
     // tide_otm, zero_dte, spx_gamma) are null because every tick was
     // stale. underlyingPrice not set in fixture → null at the boundary.
-    expect(insertCall.at(-1)).toBeNull(); // underlying_price_at_spike
-    expect(insertCall.at(-2)).toBe(0); // multi_leg_share
-    expect(insertCall.at(-3)).toBeNull(); // spx_spot_gamma_oi
-    expect(insertCall.at(-4)).toBeNull(); // zero_dte_diff
-    expect(insertCall.at(-5)).toBeNull(); // mkt_tide_otm_diff
-    expect(insertCall.at(-6)).toBeNull(); // mkt_tide_diff
+    // takeit_* appended → shift by 2.
+    expect(insertCall.at(-3)).toBeNull(); // underlying_price_at_spike
+    expect(insertCall.at(-4)).toBe(0); // multi_leg_share
+    expect(insertCall.at(-5)).toBeNull(); // spx_spot_gamma_oi
+    expect(insertCall.at(-6)).toBeNull(); // zero_dte_diff
+    expect(insertCall.at(-7)).toBeNull(); // mkt_tide_otm_diff
+    expect(insertCall.at(-8)).toBeNull(); // mkt_tide_diff
   });
 
   it('flags direction_gated=true and demotes score_tier to tier3 on a counter-trend put fire (mkt_tide_diff > +100M)', async () => {
@@ -434,17 +453,17 @@ describe('detect-silent-boom handler', () => {
     });
     // Bind order ends with score, score_tier, direction_gated,
     // mkt_tide_diff, mkt_tide_otm_diff, zero_dte_diff,
-    // spx_spot_gamma_oi, multi_leg_share, underlying_price_at_spike.
-    // So (after #152):
-    //   at(-1) = underlying_price_at_spike
-    //   at(-2) = multi_leg_share
-    //   at(-6) = mkt_tide_diff
-    //   at(-7) = direction_gated
-    //   at(-8) = score_tier (effective — demoted to 'tier3')
+    // spx_spot_gamma_oi, multi_leg_share, underlying_price_at_spike,
+    // takeit_prob, takeit_model_version (after #155).
+    // So:
+    //   at(-1) = takeit_model_version  at(-2) = takeit_prob
+    //   at(-3) = underlying_price_at_spike  at(-4) = multi_leg_share
+    //   at(-8) = mkt_tide_diff  at(-9) = direction_gated
+    //   at(-10) = score_tier (effective — demoted to 'tier3')
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    expect(insertCall.at(-6)).toBe(150_000_000);
-    expect(insertCall.at(-7)).toBe(true);
-    expect(insertCall.at(-8)).toBe('tier3');
+    expect(insertCall.at(-8)).toBe(150_000_000);
+    expect(insertCall.at(-9)).toBe(true);
+    expect(insertCall.at(-10)).toBe('tier3');
   });
 
   it('still fires when prior-fire is older than the 60-min cooldown', async () => {

@@ -156,6 +156,20 @@ export interface LotteryFire {
   /** Stepped bracket deduct (0 / -1 / -2 / -3) applied to `score` at
    *  read time. Drives the "Hide round-tripped" filter chip. */
   roundTripScoreDeduct?: number;
+  /**
+   * Take-It calibrated win probability (migration #155, spec
+   * takeit-phase3-production-scoring-2026-05-16.md). XGBoost output
+   * walked in pure TS at detect time. NULL when the bundle was
+   * unreachable when this row was inserted (fail-open path).
+   */
+  takeitProb?: number | null;
+  /**
+   * SHAP top-3 green + top-3 red flags as JSON. NULL until the Phase 3d
+   * SHAP fill cron has back-populated it (~2 min after fire).
+   */
+  takeitTopFeatures?: Record<string, unknown> | null;
+  /** Bundle version string e.g. "v2026-05-23". NULL when no bundle was loaded. */
+  takeitModelVersion?: string | null;
   /** Predicted peak-return range string for the tier (display-only). */
   forecastHighPeakPct: string;
   /** Per-ticker reliability stats; `null` when no row exists. */

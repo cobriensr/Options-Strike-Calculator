@@ -122,6 +122,15 @@ interface FireRow {
   // round-tripped within an hour gets demoted in the panel.
   round_trip_net_pct: DbNullableNumeric;
   round_trip_score_deduct: number | null;
+  // Take-It calibrated win probability + bundle version (migration #155,
+  // spec takeit-phase3-production-scoring-2026-05-16.md). Populated at
+  // detect time via api/_lib/takeit-score.ts walking the XGBoost JSON
+  // bundle fetched from Vercel Blob. NULL when the bundle was unreachable
+  // at detect time (fail-open). takeit_top_features is JSONB; null until
+  // the Phase 3d SHAP fill cron back-populates it.
+  takeit_prob: DbNullableNumeric;
+  takeit_top_features: unknown;
+  takeit_model_version: string | null;
   ticker_n_fires: number | null;
   ticker_high_peak_rate: DbNullableNumeric;
   ticker_ci_lower: DbNullableNumeric;
@@ -298,6 +307,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.inserted_at, f.enriched_at,
           f.score, f.direction_gated, f.range_pos_at_trigger,
           f.round_trip_net_pct, f.round_trip_score_deduct,
+          f.takeit_prob, f.takeit_top_features, f.takeit_model_version,
           f.fire_count, f.first_fire_time_ct,
           s.n_fires AS ticker_n_fires,
           s.high_peak_rate AS ticker_high_peak_rate,
@@ -363,6 +373,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.inserted_at, f.enriched_at,
           f.score, f.direction_gated, f.range_pos_at_trigger,
           f.round_trip_net_pct, f.round_trip_score_deduct,
+          f.takeit_prob, f.takeit_top_features, f.takeit_model_version,
           f.fire_count, f.first_fire_time_ct,
           s.n_fires AS ticker_n_fires,
           s.high_peak_rate AS ticker_high_peak_rate,
@@ -427,6 +438,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.inserted_at, f.enriched_at,
           f.score, f.direction_gated, f.range_pos_at_trigger,
           f.round_trip_net_pct, f.round_trip_score_deduct,
+          f.takeit_prob, f.takeit_top_features, f.takeit_model_version,
           f.fire_count, f.first_fire_time_ct,
           s.n_fires AS ticker_n_fires,
           s.high_peak_rate AS ticker_high_peak_rate,
@@ -572,6 +584,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         rawScore,
         roundTripNetPct,
         roundTripScoreDeduct: rtDeduct,
+        takeitProb: r.takeit_prob == null ? null : Number(r.takeit_prob),
+        takeitTopFeatures:
+          r.takeit_top_features == null
+            ? null
+            : (r.takeit_top_features as Record<string, unknown>),
+        takeitModelVersion: r.takeit_model_version,
         scoreTier: tier,
         directionGated,
         forecastHighPeakPct: forecastForTier(tier),

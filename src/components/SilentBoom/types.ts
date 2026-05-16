@@ -132,6 +132,17 @@ export interface SilentBoomAlert {
   /** Stepped bracket deduct (0 / -1 / -2 / -3) — applied to `score` at
    *  read time, drives the "Hide round-tripped" filter chip. */
   roundTripScoreDeduct?: number;
+  /**
+   * Take-It calibrated win probability (migration #155, spec
+   * takeit-phase3-production-scoring-2026-05-16.md). NULL when the
+   * model bundle was unreachable at detect time (fail-open).
+   */
+  takeitProb?: number | null;
+  /** SHAP top-3 green + top-3 red flags as JSON. NULL until the Phase 3d
+   *  SHAP fill cron back-populates it (~2 min after fire). */
+  takeitTopFeatures?: Record<string, unknown> | null;
+  /** Bundle version e.g. "v2026-05-23". NULL when no bundle was loaded. */
+  takeitModelVersion?: string | null;
   /** Market Tide NCP - NPP at the spike-bucket time. Display-only
    *  context — not a selection signal (lottery_finder convention). */
   mktTideDiff: number | null;

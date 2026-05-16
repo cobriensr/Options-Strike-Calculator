@@ -79,6 +79,15 @@ interface AlertRow {
    *  here. NULL until the evaluate-round-trip cron has run for the alert. */
   round_trip_net_pct: DbNullableNumeric;
   round_trip_score_deduct: number | null;
+  /** Take-It calibrated win probability (migration #155, spec
+   *  takeit-phase3-production-scoring-2026-05-16.md). NULL when the
+   *  model bundle was unreachable at detect time (fail-open). */
+  takeit_prob: DbNullableNumeric;
+  /** SHAP top-3 green + top-3 red flags JSONB. NULL until the Phase 3d
+   *  SHAP fill cron back-populates it. */
+  takeit_top_features: unknown;
+  /** Bundle version e.g. "v2026-05-23". NULL when no bundle was loaded. */
+  takeit_model_version: string | null;
   inserted_at: DbTimestamp;
 }
 
@@ -565,6 +574,12 @@ export default async function handler(
         rawScore,
         roundTripNetPct: toNumOrNull(r.round_trip_net_pct),
         roundTripScoreDeduct: rtDeduct,
+        takeitProb: toNumOrNull(r.takeit_prob),
+        takeitTopFeatures:
+          r.takeit_top_features == null
+            ? null
+            : (r.takeit_top_features as Record<string, unknown>),
+        takeitModelVersion: r.takeit_model_version,
         scoreTier: effectiveTier,
         directionGated,
         mktTideDiff: toNumOrNull(r.mkt_tide_diff),
