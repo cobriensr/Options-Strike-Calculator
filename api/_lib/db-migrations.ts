@@ -4555,4 +4555,36 @@ export const MIGRATIONS: Migration[] = [
             ADD COLUMN IF NOT EXISTS takeit_features JSONB`,
     ],
   },
+  {
+    id: 158,
+    description:
+      'Add cum_ncp_at_fire + cum_npp_at_fire NUMERIC columns to lottery_finder_fires AND silent_boom_alerts (spec: docs/superpowers/specs/lottery-silentboom-feed-perf-2026-05-17.md). Snapshot of the ticker cumulative net call/put premium at the detect-time fire — replaces the per-row LATERAL JOIN that commits 26b13630 + 426c1e91 added to all 7 feed sort branches and which caused ~30s page loads on Lottery Finder + Silent Boom feeds. Populated forward by the detect crons via api/_lib/ticker-flow-snapshot.ts (same UNION over ws_net_flow_per_ticker + net_flow_per_ticker_history as the LATERAL, but bounded by ctSessionBounds(date).min instead of the 4-6h-wider UTC midnight). Historical rows backfilled by scripts/backfill-ticker-flow-at-fire.mjs. Nullable because pre-migration rows + rows for tickers outside the WS net-flow universe (~50 tickers) have no snapshot — the feed JS already handles null tickerCumNcpAtFire / tickerCumNppAtFire identically to the LATERAL returning null. No index needed: these columns are SELECTed for display, never filtered or sorted.',
+    statements: (sql) => [
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS cum_ncp_at_fire NUMERIC`,
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS cum_npp_at_fire NUMERIC`,
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS cum_ncp_at_fire NUMERIC`,
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS cum_npp_at_fire NUMERIC`,
+    ],
+  },
+  {
+    id: 159,
+    description:
+      'Add combined_score INTEGER GENERATED ALWAYS column to lottery_finder_fires AND silent_boom_alerts (spec: docs/superpowers/specs/lottery-silentboom-feed-perf-2026-05-17.md). Restores indexed sort path for the lottery score-sort feed branch after commit 4fc7ec99 (Phase 2C round-trip-deduct) changed ORDER BY from the indexed `f.score DESC` to a computed `GREATEST(0, COALESCE(score, 0) + round_trip_score_deduct)` expression that the planner cannot serve from the migration #126 (date, score DESC) index. Generated column auto-populates for all existing rows during ALTER TABLE (no backfill required); evaluate-round-trip cron UPDATEs to round_trip_score_deduct 60-75min post-fire trigger automatic re-computation by Postgres so the new sort index stays consistent. GREATEST(0, ...) preserves the floor-at-zero semantic the feed JS applied today. Partial nullability handled by COALESCE on score. The (date DESC, combined_score DESC NULLS LAST) index serves the new lottery score-sort ORDER BY directly with index-streamed LIMIT termination. Silent-boom does not currently expose score as a sort option, but the column + index are added symmetrically for future use.',
+    statements: (sql) => [
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS combined_score INTEGER
+            GENERATED ALWAYS AS (GREATEST(0, COALESCE(score, 0) + round_trip_score_deduct)) STORED`,
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS combined_score INTEGER
+            GENERATED ALWAYS AS (GREATEST(0, COALESCE(score, 0) + round_trip_score_deduct)) STORED`,
+      sql`CREATE INDEX IF NOT EXISTS lottery_finder_fires_date_combined_idx
+            ON lottery_finder_fires (date DESC, combined_score DESC NULLS LAST)`,
+      sql`CREATE INDEX IF NOT EXISTS silent_boom_alerts_date_combined_idx
+            ON silent_boom_alerts (date DESC, combined_score DESC NULLS LAST)`,
+    ],
+  },
 ];
