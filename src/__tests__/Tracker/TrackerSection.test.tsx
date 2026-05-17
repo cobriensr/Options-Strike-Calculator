@@ -295,7 +295,7 @@ describe('TrackerSection', () => {
   it('handleSelectContract scrolls the matching DOM row into view and adds ring classes', () => {
     let captured: ((id: number) => void) | undefined;
     vi.mocked(useTrackerAlerts).mockImplementation((opts) => {
-      captured = opts.onSelectContract;
+      captured = opts?.onSelectContract;
       return {
         data: [],
         loading: false,
@@ -331,7 +331,7 @@ describe('TrackerSection', () => {
   it('handleSelectContract is a no-op when the DOM row is missing', () => {
     let captured: ((id: number) => void) | undefined;
     vi.mocked(useTrackerAlerts).mockImplementation((opts) => {
-      captured = opts.onSelectContract;
+      captured = opts?.onSelectContract;
       return {
         data: [],
         loading: false,
