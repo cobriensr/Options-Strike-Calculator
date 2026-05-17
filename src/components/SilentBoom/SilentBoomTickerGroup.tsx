@@ -189,7 +189,10 @@ function SilentBoomTickerGroupBase({
           <span className="font-mono text-sm font-bold tracking-wide text-white">
             {ticker}
           </span>
-          <span className="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-neutral-200">
+          <span
+            className="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-neutral-200"
+            title="Number of distinct (chain × spike-bucket) silent-boom alerts for this ticker today. Each spike bucket counts once per chain even if the same contract spikes again later in the session."
+          >
             {count} alert{count === 1 ? '' : 's'}
           </span>
           {showConvictionBadge && (
@@ -213,6 +216,7 @@ function SilentBoomTickerGroupBase({
           {strikesWithSpread && (
             <span
               className="font-mono text-[11px] text-neutral-400"
+              title="Distinct (strike, side) pairs hit by alerts in this group. Up to 3 shown then '+N more'; the trailing (Npt) is the strike-range spread in points between min and max."
               data-testid={`silent-boom-ticker-strikes-${ticker}`}
             >
               {strikesWithSpread}
@@ -221,6 +225,7 @@ function SilentBoomTickerGroupBase({
           {agg.bias && (
             <span
               className={`rounded px-1.5 py-0.5 font-mono text-[11px] font-semibold ${biasChipClass(agg.bias)}`}
+              title="Net call vs put bias across this ticker's alerts. ↑ bull = calls dominate, ↓ bear = puts dominate, ~ mixed = both sides present without a clear lean."
               data-testid={`silent-boom-ticker-bias-${ticker}`}
             >
               {formatBiasLabel(agg.bias)}
@@ -228,6 +233,7 @@ function SilentBoomTickerGroupBase({
           )}
           <span
             className={`rounded px-1.5 py-0.5 font-mono text-[11px] font-semibold ${tideChipClass(agg.tide.align)}`}
+            title="Does Market Tide (NCP − NPP) direction agree with this ticker's bias? aligned = same direction (tape is on the bet's side), counter = opposite (tape fighting), mixed = inconsistent across alerts, unknown = no tide data."
             data-testid={`silent-boom-ticker-tide-${ticker}`}
           >
             {formatTideLabel(agg.tide)}
@@ -235,6 +241,7 @@ function SilentBoomTickerGroupBase({
           {agg.spreadMinutes != null && (
             <span
               className="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-neutral-300"
+              title="Time span from first to last alert in this group. Short Δ (minutes) = burst; long Δ (hours) = sustained interest spread across the session."
               data-testid={`silent-boom-ticker-density-${ticker}`}
             >
               {formatSpreadDuration(agg.spreadMinutes)}
@@ -252,6 +259,7 @@ function SilentBoomTickerGroupBase({
           {agg.gatedCount > 0 && (
             <span
               className="rounded bg-amber-950/40 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-amber-400"
+              title="Number of alerts in this group that were demoted to tier3 by the Market Tide direction gate (counter-trend at fire time, T=±100M on mkt_tide_diff). Score is preserved on each row; only the displayed tier is forced down."
               data-testid={`silent-boom-ticker-gated-${ticker}`}
             >
               {agg.gatedCount} gated
@@ -261,14 +269,21 @@ function SilentBoomTickerGroupBase({
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
           <span
             className="text-neutral-500"
+            title="Most recent alert spike-bucket time (CT) for this ticker today."
             data-testid={`silent-boom-ticker-last-${ticker}`}
           >
             last <span className="font-mono text-neutral-300">{lastHitCt}</span>{' '}
             CT
           </span>
-          <span className="text-neutral-500">best peak</span>
+          <span
+            className="text-neutral-500"
+            title="Best peak return across every alert for this ticker today. Look-ahead reference (not tradeable) — expand the row to see realized exits per the selected policy."
+          >
+            best peak
+          </span>
           <span
             className={`font-mono font-semibold ${peakColorClass(peakBest)}`}
+            title="Best peak return across every alert for this ticker today. Look-ahead reference (not tradeable)."
           >
             {formatPeakPct(peakBest)}
           </span>

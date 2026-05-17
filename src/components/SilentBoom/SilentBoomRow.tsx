@@ -200,7 +200,7 @@ const flowInvertedBadge = (
   optionType: 'C' | 'P',
   fireTimeCumNcp: number | null,
   fireTimeCumNpp: number | null,
-  liveFlowSnapshot: { cumNcp: number; cumNpp: number } | null,
+  liveFlowSnapshot: Pick<TickerNetFlowSnapshot, 'cumNcp' | 'cumNpp'> | null,
 ): { label: string; cls: string; tooltip: string } | null => {
   const state = computeFlowInverted({
     optionType,
@@ -226,7 +226,7 @@ const flowInvertedBadge = (
  */
 const flowMatchBadge = (
   optionType: 'C' | 'P',
-  liveFlowSnapshot: { cumNcp: number; cumNpp: number } | null,
+  liveFlowSnapshot: Pick<TickerNetFlowSnapshot, 'cumNcp' | 'cumNpp'> | null,
 ): { label: string; cls: string; tooltip: string } | null => {
   const state = computeFlowMatch(
     optionType,
@@ -551,6 +551,13 @@ export const SilentBoomRow = memo(function SilentBoomRow({
           triggerTimeCt={alert.bucketCt}
           p75MinutesToPeak={alert.avgHoldMinutes}
         />
+        {/* Force the ticker onto its own line so the visual hierarchy
+            stays consistent regardless of how wide the conviction
+            cluster grew (TakeItScore + SHAP pills + sibling bar make
+            tier1 rows wider than tier3). Without this the ticker
+            sometimes wraps to the right edge of line 1 on tier1 and to
+            the left of line 2 on tier3 — same data, different position. */}
+        <div className="basis-full" aria-hidden />
         <a
           href={uwContractUrl(alert)}
           target="_blank"
